@@ -396,6 +396,22 @@ The output can be used to recreate a database.'
 			tree.VolatilityVolatile,
 		),
 	),
+	"crdb_internal.get_index_tuples": makeBuiltin(
+		tree.FunctionProperties{
+			Class:    tree.GeneratorClass,
+			Category: categorySystemInfo,
+		},
+		makeGeneratorOverload(
+			tree.ArgTypes{{"TableID", types.Int}, {"IndexID", types.Int}},
+			types.MakeLabeledTuple(
+				[]*types.T{types.Bytes, types.Bytes},
+				[]string{"Key", "Value"},
+			),
+			makeGetIndexTuplesGenerator,
+			"Returns tuples from within an index.",
+			tree.VolatilityVolatile,
+		),
+	),
 }
 
 func makeGeneratorOverload(
@@ -1647,6 +1663,14 @@ func makePayloadsForTraceGenerator(
 	}
 
 	return &payloadsForTraceGenerator{it: it}, nil
+}
+
+func makeGetIndexTuplesGenerator(
+	ctx *tree.EvalContext, args tree.Datums,
+) (tree.ValueGenerator, error) {
+	tableID := int64(*args[0].(*tree.DInt))
+	indexID := int64(*args[1].(*tree.DInt))
+	return ctx.Planner.GetIndexTuples(ctx.Context, tableID, indexID)
 }
 
 // ResolvedType implements the tree.ValueGenerator interface.

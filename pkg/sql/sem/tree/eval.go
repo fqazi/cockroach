@@ -3180,6 +3180,10 @@ type EvalPlanner interface {
 	// descriptor ID. See the comment on the planner implementation.
 	ForceDeleteTableData(ctx context.Context, descID int64) error
 
+	// GetIndexTuples returns a generator that goes over all the tuples
+	// in a given index.
+	GetIndexTuples(ctx context.Context, descID int64, indexID int64) (ValueGenerator, error)
+
 	// UnsafeUpsertNamespaceEntry is used to repair namespace entries in dire
 	// circumstances. See the comment on the planner implementation.
 	UnsafeUpsertNamespaceEntry(

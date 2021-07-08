@@ -217,6 +217,13 @@ func (ep *DummyEvalPlanner) ForceDeleteTableData(ctx context.Context, descID int
 	return errors.WithStack(errEvalPlanner)
 }
 
+// GetIndexTuples is part of the EvalPlanner interface.
+func (ep *DummyEvalPlanner) GetIndexTuples(
+	ctx context.Context, descID int64, indexID int64,
+) (tree.ValueGenerator, error) {
+	return nil, errors.WithStack(errEvalPlanner)
+}
+
 // UnsafeUpsertNamespaceEntry is part of the EvalPlanner interface.
 func (ep *DummyEvalPlanner) UnsafeUpsertNamespaceEntry(
 	ctx context.Context, parentID, parentSchemaID int64, name string, descID int64, force bool,
