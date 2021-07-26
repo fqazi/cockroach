@@ -1258,3 +1258,14 @@ define FakeRelPrivate {
 define NormCycleTestRel {
     Scalar ScalarExpr
 }
+
+[Private]
+define IndexScanPrivate {
+    Table TableID
+    Index IndexOrdinal
+}
+
+[Relational]
+define IndexScan {
+    _ IndexScanPrivate
+}

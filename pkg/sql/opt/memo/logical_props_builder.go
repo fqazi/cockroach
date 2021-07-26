@@ -11,6 +11,7 @@
 package memo
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
@@ -63,6 +64,9 @@ func (b *logicalPropsBuilder) clear() {
 	b.evalCtx = nil
 	b.mem = nil
 	b.sb.clear()
+}
+func (b *logicalPropsBuilder) buildIndexScanProps(indexScan *IndexScanExpr, rel *props.Relational) {
+	fmt.Println("Next STAGE")
 }
 
 func (b *logicalPropsBuilder) buildScanProps(scan *ScanExpr, rel *props.Relational) {

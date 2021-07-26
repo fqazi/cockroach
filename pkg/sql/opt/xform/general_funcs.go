@@ -11,6 +11,7 @@
 package xform
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
@@ -46,6 +47,43 @@ func (c *CustomFuncs) Init(e *explorer) {
 	}
 	c.CustomFuncs.Init(e.f)
 	c.im.Init(e.f, e.mem.Metadata(), e.evalCtx)
+}
+
+func (c *CustomFuncs) MakeIndexScanFromZip(
+	projectSet *memo.ProjectSetExpr, exp memo.RelExpr, zip memo.ZipExpr,
+) {
+	item := zip.Child(0).(*memo.ZipItem)
+	functionExpr := item.Fn.(*memo.FunctionExpr)
+	tableIDConstExpr := functionExpr.Args.Child(0).(*memo.ConstExpr)
+	tableIDVal := opt.TableID(*tableIDConstExpr.Value.(*tree.DInt))
+	indexIDConstExpr := functionExpr.Args.Child(1).(*memo.ConstExpr)
+	fmt.Println(indexIDConstExpr.Value)
+	indexIDVal := cat.IndexOrdinal(*indexIDConstExpr.Value.(*tree.DInt))
+	indexScan := memo.IndexScanExpr{
+		IndexScanPrivate: memo.IndexScanPrivate{
+			Index: indexIDVal,
+			Table: tableIDVal}}
+	indexScan.String() // FIXME: Dumb hack..
+	//indexScan.set
+	//indexScan.
+}
+
+func (c *CustomFuncs) IsIndexScanBuiltin(zip memo.ZipExpr) bool {
+	if zip.ChildCount() != 1 {
+		return false
+	}
+	item, ok := zip.Child(0).(*memo.ZipItem)
+	if !ok {
+		return false
+	}
+	functionExpr, ok := item.Fn.(*memo.FunctionExpr)
+	if !ok {
+		return false
+	}
+	if functionExpr.Name == "crdb_internal.get_index_tuples" {
+		return true
+	}
+	return false
 }
 
 // IsCanonicalScan returns true if the given ScanPrivate is an original

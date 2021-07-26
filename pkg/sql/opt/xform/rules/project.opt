@@ -64,3 +64,11 @@
 )
 =>
 (Project $input $projections $passthrough)
+
+[ConvertProjectionIndexScantoIndexScan, Explore]
+(ProjectSet
+   $input:*
+   $zip:* & (IsIndexScanBuiltin $zip)
+)
+=>
+(MakeIndexScanFromZip $input $zip)
