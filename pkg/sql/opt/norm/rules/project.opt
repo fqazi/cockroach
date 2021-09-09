@@ -233,3 +233,12 @@ $input
     (FoldJSONFieldAccess $projections $jsonCols $col $input)
     $passthrough
 )
+
+
+[ConvertProjectionIndexScantoIndexScan, Normalize]
+(ProjectSet
+   $input:*
+   $zip:* & (IsIndexScanBuiltin $zip)
+)
+=>
+(MakeIndexScanFromZip $input $zip)

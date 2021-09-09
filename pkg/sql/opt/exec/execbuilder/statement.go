@@ -332,6 +332,10 @@ func (b *Builder) buildExport(export *memo.ExportExpr) (execPlan, error) {
 	return planWithColumns(node, export.Columns), nil
 }
 
+func (b *Builder) buildIndexScan(indexScan *memo.IndexScanExpr) (execPlan, error) {
+	return execPlan{}, nil
+}
+
 // planWithColumns creates an execPlan for a node which has a fixed output
 // schema.
 func planWithColumns(node exec.Node, cols opt.ColList) execPlan {

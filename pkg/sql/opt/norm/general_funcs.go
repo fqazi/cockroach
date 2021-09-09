@@ -11,6 +11,8 @@
 package norm
 
 import (
+	"fmt"
+
 	"github.com/cockroachdb/apd/v2"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
@@ -1068,4 +1070,38 @@ func (c *CustomFuncs) DuplicateScanPrivate(sp *memo.ScanPrivate) *memo.ScanPriva
 		Flags:   sp.Flags,
 		Locking: sp.Locking,
 	}
+}
+
+func (c *CustomFuncs) MakeIndexScanFromZip(exp memo.RelExpr, zip memo.ZipExpr) memo.RelExpr {
+	item := zip.Child(0).(*memo.ZipItem)
+	functionExpr := item.Fn.(*memo.FunctionExpr)
+	tableIDConstExpr := functionExpr.Args.Child(0).(*memo.ConstExpr)
+	tableIDVal := opt.TableID(*tableIDConstExpr.Value.(*tree.DInt))
+	indexIDConstExpr := functionExpr.Args.Child(1).(*memo.ConstExpr)
+	fmt.Println(indexIDConstExpr.Value)
+	indexIDVal := cat.IndexOrdinal(*indexIDConstExpr.Value.(*tree.DInt))
+	indexScan := c.mem.MemoizeIndexScan(&memo.IndexScanPrivate{
+		Index: indexIDVal,
+		Table: tableIDVal})
+	return indexScan
+	//indexScan.set
+	//indexScan.
+}
+
+func (c *CustomFuncs) IsIndexScanBuiltin(zip memo.ZipExpr) bool {
+	if zip.ChildCount() != 1 {
+		return false
+	}
+	item, ok := zip.Child(0).(*memo.ZipItem)
+	if !ok {
+		return false
+	}
+	functionExpr, ok := item.Fn.(*memo.FunctionExpr)
+	if !ok {
+		return false
+	}
+	if functionExpr.Name == "crdb_internal.get_index_tuples" {
+		return true
+	}
+	return false
 }

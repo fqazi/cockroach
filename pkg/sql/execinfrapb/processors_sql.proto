@@ -51,6 +51,11 @@ enum ScanVisibility {
   PUBLIC_AND_NOT_PUBLIC = 1;
 }
 
+message IndexReaderSpec {
+  optional sqlbase.TableDescriptor table = 1 [(gogoproto.nullable) = false];
+  optional uint32 index_idx = 2 [(gogoproto.nullable) = false];
+}
+
 // TableReaderSpec is the specification for a "table reader". A table reader
 // performs KV operations to retrieve rows for a table and outputs the desired
 // columns of the rows that pass a filter expression.

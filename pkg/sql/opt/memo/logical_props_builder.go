@@ -66,6 +66,10 @@ func (b *logicalPropsBuilder) clear() {
 	b.sb.clear()
 }
 func (b *logicalPropsBuilder) buildIndexScanProps(indexScan *IndexScanExpr, rel *props.Relational) {
+	rel.OutputCols = opt.ColSet{}
+	rel.OutputCols.Add(1)
+	rel.OutputCols.Add(2)
+	rel.NotNullCols = rel.OutputCols
 	fmt.Println("Next STAGE")
 }
 
