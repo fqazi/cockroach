@@ -7,6 +7,10 @@ define Scan {
     ReqOrdering exec.OutputOrdering
 }
 
+define IndexScan {
+    Table cat.Table
+    Index cat.Index
+}
 define Values {
     Rows [][]tree.TypedExpr
     Columns colinfo.ResultColumns

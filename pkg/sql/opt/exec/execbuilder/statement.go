@@ -333,6 +333,9 @@ func (b *Builder) buildExport(export *memo.ExportExpr) (execPlan, error) {
 }
 
 func (b *Builder) buildIndexScan(indexScan *memo.IndexScanExpr) (execPlan, error) {
+	table := b.mem.Metadata().Table(indexScan.Table)
+	index := table.Index(indexScan.Index)
+	b.factory.ConstructIndexScan(table, index)
 	return execPlan{}, nil
 }
 

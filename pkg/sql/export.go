@@ -21,6 +21,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
+	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/exec"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
@@ -29,6 +30,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/errors"
 )
+
+type indexScanNode struct {
+	optColumnsSlot
+}
 
 type exportNode struct {
 	optColumnsSlot
@@ -93,6 +98,21 @@ var featureExportEnabled = settings.RegisterBoolSetting(
 	"set to true to enable exports, false to disable; default is true",
 	featureflag.FeatureFlagEnabledDefault,
 ).WithPublic()
+
+func (ef *distSQLSpecExecFactory) ConstructIndexScan(
+	table cat.Table, index cat.Index,
+) (exec.Node, error) {
+
+	return &indexScanNode{}, nil
+	//indexScanNode{}
+	//	return nil, nil
+}
+func (ef *execFactory) ConstructIndexScan(table cat.Table, index cat.Index) (exec.Node, error) {
+
+	return &indexScanNode{}, nil
+	//indexScanNode{}
+	//	return nil, nil
+}
 
 // ConstructExport is part of the exec.Factory interface.
 func (ef *execFactory) ConstructExport(
