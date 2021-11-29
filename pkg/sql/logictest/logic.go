@@ -1640,6 +1640,13 @@ func (t *logicTest) newCluster(serverArgs TestServerArgs, opts []clusterOpt) {
 		); err != nil {
 			t.Fatal(err)
 		}
+
+		if _, err := conn.Exec(
+			"SET CLUSTER SETTING sql.defaults.experimental_new_schema_changer.enabled = on",
+		); err != nil {
+			t.Fatal(err)
+		}
+
 	}
 
 	if cfg.overrideDistSQLMode != "" {
@@ -1666,7 +1673,6 @@ func (t *logicTest) newCluster(serverArgs TestServerArgs, opts []clusterOpt) {
 			return nil
 		})
 	}
-
 	// db may change over the lifetime of this function, with intermediate
 	// values cached in t.clients and finally closed in t.close().
 	t.clusterCleanupFuncs = append(t.clusterCleanupFuncs, t.setUser(security.RootUser))
