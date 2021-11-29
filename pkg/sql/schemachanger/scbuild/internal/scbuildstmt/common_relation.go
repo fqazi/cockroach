@@ -272,6 +272,19 @@ func decomposeColumnIntoElements(
 			}
 		}
 	}
+	// Get any type references via the columns type and add those for a drop state.
+	children, err := typedesc.GetTypeDescriptorClosure(column.GetType())
+	onErrPanic(err)
+	for typeID := range children {
+		columnTypeRef := &scpb.ColumnTypeReference{
+			TableID:  tbl.GetID(),
+			ColumnID: column.GetID(),
+			TypeID:   typeID,
+		}
+		if !b.HasTarget(dir, columnTypeRef) {
+			addOrDropForDir(b, dir, columnTypeRef)
+		}
+	}
 }
 
 // decomposeViewDescToElements converts view specific
