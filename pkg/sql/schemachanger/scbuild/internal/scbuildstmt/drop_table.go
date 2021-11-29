@@ -83,9 +83,10 @@ func dropTable(b BuildCtx, tbl catalog.TableDescriptor, behavior tree.DropBehavi
 				panic(pgerror.Newf(
 					pgcode.DependentObjectsStillExist,
 					"cannot drop table %s because other objects depend on it",
-					sequence.GetName(),
+					tbl.GetName(),
 				))
 			}
+			dropSequence(b, sequence, tree.DropCascade)
 		})
 	}
 }
