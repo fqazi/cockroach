@@ -391,7 +391,7 @@ CREATE VIEW v4Dep AS (SELECT n2, n1 FROM v2Dep);
 statement ok
 explain (DDL, DEPS) DROP VIEW v1Dep CASCADE;
 
-statement error cannot drop view "test.public.v1dep" because view "test.public.v2dep" depends on it
+statement error cannot drop view "v1dep" because view "v2dep" depends on it\nHINT: you can drop v2dep instead.
 DROP VIEW v1Dep RESTRICT;
 
 statement error pq: "v1dep" is not a materialized view
@@ -452,7 +452,7 @@ DROP TABLE defaultdb.customers;
 statement ok
 CREATE SEQUENCE defaultdb.sq1 OWNED BY defaultdb.shipments.carrier;
 
-statement error cannot drop table sq1 because other objects depend on it
+statement error cannot drop table shipments because other objects depend on it
 DROP TABLE defaultdb.shipments;
 
 statement ok
@@ -626,7 +626,7 @@ statement error schema "sc1" is not empty and CASCADE was not specified
 DROP SCHEMA db1.sc1
 
 statement error database "db1" has a non-empty schema "public" and CASCADE was not specified
-DROP DATABASE db1
+DROP DATABASE db1 RESTRICT
 
 statement ok
 SET experimental_use_new_schema_changer = 'unsafe_always'
