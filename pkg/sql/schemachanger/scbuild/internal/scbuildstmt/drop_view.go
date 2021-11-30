@@ -44,7 +44,7 @@ func DropView(b BuildCtx, n *tree.DropView) {
 }
 
 func dropView(b BuildCtx, view catalog.TableDescriptor, behavior tree.DropBehavior) {
-	// Convert the table descriptor into elements.	b.EnqueueDropIfNotExists(viewNode)
+	// Convert the table descriptor into elements.
 	decomposeTableDescToElements(b, view, scpb.Target_DROP)
 	// Use the c BuildCtx again.
 	{
@@ -62,17 +62,16 @@ func dropView(b BuildCtx, view catalog.TableDescriptor, behavior tree.DropBehavi
 				if !dependentDesc.IsView() {
 					panic(errors.AssertionFailedf("descriptor :%s is not a view", dependentDesc.GetName()))
 				}
-				if behavior != tree.DropCascade {
+				if behavior != tree.DropCascade &&
+					!checkIfDescriptorIsDropped(b, dep.DependedOnBy) {
 					name, err := b.CatalogReader().GetQualifiedTableNameByID(b.EvalCtx().Context, int64(view.GetID()), tree.ResolveRequireViewDesc)
 					onErrPanic(err)
 
 					depViewName, err := b.CatalogReader().GetQualifiedTableNameByID(b.EvalCtx().Context, int64(dep.DependedOnBy), tree.ResolveRequireViewDesc)
 					onErrPanic(err)
 					if dependentDesc.GetParentID() == view.GetParentID() {
-						panic(errors.WithHintf(
-							sqlerrors.NewDependentObjectErrorf("cannot drop view %q because view %q depends on it",
-								name.ObjectName, depViewName.ObjectName),
-							"you can drop %s instead.", depViewName.ObjectName))
+						panic(sqlerrors.NewDependentObjectErrorf("cannot drop view %q because view %q depends on it",
+							name.ObjectName, depViewName.ObjectName))
 					} else {
 						panic(errors.WithHintf(
 							sqlerrors.NewDependentObjectErrorf("cannot drop view %q because view %q depends on it",
