@@ -340,6 +340,33 @@ func init() {
 }
 
 func init() {
+	// Ensure that for any type reference clean up, if the type is being dropped
+	// it should enter a dropped state first.
+	// Dependent objects that will have edges
+	// deleted.
+	dep, depTarget, depNode := targetNodeVars("dep")
+	// Relation that is being dropped.
+	typ, typTarget, typNode := targetNodeVars("type")
+	var id rel.Var = "id"
+	register(
+		"type needs to be in dropped state before references can be cleaned",
+		depNode, typNode,
+		screl.MustQuery(
+			typ.Type((*scpb.Type)(nil)),
+			dep.Type((*scpb.ColumnTypeReference)(nil),
+				(*scpb.ComputedExprTypeReference)(nil),
+				(*scpb.DefaultExprTypeReference)(nil),
+				(*scpb.OnUpdateExprTypeReference)(nil)),
+			id.Entities(screl.DescID, typ),
+			id.Entities(screl.ReferencedDescID, dep),
+
+			joinTargetNode(dep, depTarget, depNode, drop, absent),
+			joinTargetNode(typ, typTarget, typNode, drop, dropped),
+		),
+	)
+}
+
+func init() {
 	// Ensures that the name is drained first, only when
 	// the descriptor is cleaned up.
 	ns, nsTarget, nsNode := targetNodeVars("namespace")

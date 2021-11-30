@@ -37,14 +37,8 @@ func init() {
 			}),
 		),
 		to(scpb.Status_ABSENT,
-			minPhase(scop.PreCommitPhase),
+			minPhase(scop.PostCommitPhase),
 			revertible(false),
-			emit(func(this *scpb.Database) scop.Op {
-
-				return &scop.DrainDescriptorName{
-					TableID: this.DatabaseID,
-				}
-			}),
 			emit(func(this *scpb.Database, md *scpb.ElementMetadata) scop.Op {
 				return &scop.LogEvent{Metadata: *md,
 					DescID:    this.DatabaseID,

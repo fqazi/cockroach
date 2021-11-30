@@ -838,6 +838,11 @@ func (m *visitor) LogEvent(ctx context.Context, op scop.LogEvent) error {
 					SchemaName: fullName,
 				},
 			)
+		case *scpb.Type:
+			return m.ev.AddDropEvent(ctx, op.DescID, &op.Metadata,
+				&eventpb.DropType{
+					TypeName: fullName,
+				})
 		default:
 			panic("unknown element type")
 		}

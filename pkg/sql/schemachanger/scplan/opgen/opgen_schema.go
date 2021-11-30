@@ -40,13 +40,8 @@ func init() {
 			// TODO(ajwerner): The minPhase here feels like it should be PostCommit.
 			// Also, this definitely is not revertible. Leaving to make this commit
 			// a port.
-			minPhase(scop.PreCommitPhase),
+			minPhase(scop.PostCommitPhase),
 			revertible(false),
-			emit(func(this *scpb.Schema) scop.Op {
-				return &scop.DrainDescriptorName{
-					TableID: this.SchemaID,
-				}
-			}),
 			emit(func(this *scpb.Schema, md *scpb.ElementMetadata) scop.Op {
 				return &scop.LogEvent{Metadata: *md,
 					DescID:    this.SchemaID,

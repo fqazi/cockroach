@@ -42,16 +42,18 @@ func DropDatabase(b BuildCtx, n *tree.DropDatabase) {
 			// dependent objects, which that database will add
 			// direct dependencies on.
 			nodeAdded, schemaDroppedIDs := dropSchema(c, db, schema, tree.DropCascade)
-			// Block drops if cascade is not set.
-			if n.DropBehavior != tree.DropCascade && (nodeAdded || !schemaDroppedIDs.Empty()) {
+			if nodeAdded || !schemaDroppedIDs.Empty() {
+				// Block drops if cascade is not set.
+				if n.DropBehavior == tree.DropRestrict {
+					panic(pgerror.Newf(pgcode.DependentObjectsStillExist,
+						"database %q has a non-empty schema %q and CASCADE was not specified", db.GetName(), schema.GetName()))
+				}
 				// The default is CASCADE, however be cautious if CASCADE was
 				// not specified explicitly
 				if b.SessionData().SafeUpdates {
 					panic(pgerror.DangerousStatementf(
 						"DROP DATABASE on non-empty database without explicit CASCADE"))
 				}
-				panic(pgerror.Newf(pgcode.DependentObjectsStillExist,
-					"database %q has a non-empty schema %q and CASCADE was not specified", db.GetName(), schema.GetName()))
 			}
 			// If no schema exists to depend on, then depend on dropped IDs
 			if !nodeAdded {
@@ -76,6 +78,10 @@ func DropDatabase(b BuildCtx, n *tree.DropDatabase) {
 			doSchema(schema)
 		}
 	}
+	b.EnqueueDrop(&scpb.Namespace{
+		DescriptorID: db.GetID(),
+		Name:         db.GetName(),
+	})
 	b.EnqueueDrop(&scpb.Database{
 		DatabaseID:       db.GetID(),
 		DependentObjects: dropIDs.Ordered(),

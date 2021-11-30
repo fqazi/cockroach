@@ -49,6 +49,37 @@ func init() {
 	)
 }
 
+// Optimization to collapse type child elements, when a drop operation occurs.
+// This is used to avoid unnecessary operations.
+func init() {
+	// Dependent objects that will have edges
+	// deleted.
+	dep, depTarget, depNode := targetNodeVars("dep")
+	// Relation that is being dropped.
+	typ, typTarget, typNode := targetNodeVars("type")
+	var id rel.Var = "id"
+	registerNoOpEdges(screl.MustQuery(
+		typ.Type((*scpb.Type)(nil)),
+		dep.Type((*scpb.ColumnTypeReference)(nil),
+			(*scpb.ComputedExprTypeReference)(nil),
+			(*scpb.DefaultExprTypeReference)(nil),
+			(*scpb.OnUpdateExprTypeReference)(nil)),
+		id.Entities(screl.DescID, typ),
+		id.Entities(screl.ReferencedDescID, dep),
+
+		// If the typ is in any drop state in the current phase,
+		// then any dependent edges should be cleaned up.
+		rel.And(
+			screl.JoinTargetNode(typ, typTarget, typNode),
+			typTarget.AttrEq(screl.Direction, scpb.Target_DROP)),
+		rel.And(
+			screl.JoinTargetNode(dep, depTarget, depNode),
+			depTarget.AttrEq(screl.Direction, scpb.Target_DROP)),
+	),
+		depNode, // Node to delete
+	)
+}
+
 // TODO(fqazi): For create operations we will need to have the ability
 // to have transformations that will combine transitions into a single
 // stage for execution. For example, a newly CREATE TABLE will be represented

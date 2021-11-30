@@ -82,6 +82,11 @@ func dropSchema(
 	case catalog.SchemaPublic, catalog.SchemaVirtual, catalog.SchemaTemporary:
 		return false, dropIDs
 	case catalog.SchemaUserDefined:
+		b.EnqueueDrop(&scpb.Namespace{
+			DatabaseID:   sc.GetParentID(),
+			DescriptorID: sc.GetID(),
+			Name:         sc.GetName(),
+		})
 		b.EnqueueDrop(&scpb.Schema{
 			SchemaID:         sc.GetID(),
 			DependentObjects: dropIDs.Ordered(),
