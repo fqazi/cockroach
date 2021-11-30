@@ -86,7 +86,7 @@ func dropTableDependents(b BuildCtx, tbl catalog.TableDescriptor, behavior tree.
 			dropView(c, dependentDesc, behavior)
 			return nil
 		}))
-		// Detect if foreign keys will end up preventing this drop behavior.
+		// Detect if foreign key back refs will end up preventing this drop behavior.
 		scpb.ForEachForeignKeyBackReference(c,
 			func(_ scpb.Status,
 				_ scpb.Target_Direction,
@@ -101,6 +101,19 @@ func dropTableDependents(b BuildCtx, tbl catalog.TableDescriptor, behavior tree.
 					}
 				}
 			})
+		// Clean up any foreign key back refs.
+		scpb.ForEachForeignKey(c,
+			func(_ scpb.Status,
+				_ scpb.Target_Direction,
+				fk *scpb.ForeignKey) {
+				// Add a reverse reference for clean up.
+				b.EnqueueDropIfNotExists(&scpb.ForeignKeyBackReference{
+					OriginID:         fk.ReferenceID,
+					OriginColumns:    fk.ReferenceColumns,
+					ReferenceID:      fk.OriginID,
+					ReferenceColumns: fk.OriginColumns,
+				})
+			})
 		// Detect any sequence ownerships and prevent clean up if cascades
 		// are disallowed.
 		scpb.ForEachSequenceOwnedBy(c, func(_ scpb.Status,
@@ -110,14 +123,14 @@ func dropTableDependents(b BuildCtx, tbl catalog.TableDescriptor, behavior tree.
 				return
 			}
 			sequence := c.MustReadTable(sequenceOwnedBy.SequenceID)
-			if behavior != tree.DropCascade &&
+			/*if behavior != tree.DropCascade &&
 				!checkIfDescriptorIsDropped(b, sequenceOwnedBy.SequenceID) {
 				panic(pgerror.Newf(
 					pgcode.DependentObjectsStillExist,
 					"cannot drop table %s because other objects depend on it",
 					tbl.GetName(),
 				))
-			}
+			}*/
 			dropSequence(b, sequence, tree.DropCascade)
 		})
 	}
