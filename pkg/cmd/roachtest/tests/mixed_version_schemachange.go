@@ -52,6 +52,9 @@ func uploadAndInitSchemaChangeWorkload() versionStep {
 func runSchemaChangeWorkloadStep(loadNode, maxOps, concurrency int) versionStep {
 	var numFeatureRuns int
 	return func(ctx context.Context, t test.Test, u *versionUpgradeTest) {
+		t.L().Printf("skipping schema change workload step due to flaky nature in 21.2 due " +
+			"to missing fixes, see: PR ##76532.")
+		return
 		numFeatureRuns++
 		t.L().Printf("Workload step run: %d", numFeatureRuns)
 		runCmd := []string{
