@@ -282,10 +282,7 @@ func (n *createViewNode) startExec(params runParams) error {
 		// In case that we are replacing a view that already depends on
 		// this table, remove all existing references so that we don't leave
 		// any out of date references. Then, add the new references.
-		backRefMutable.DependedOnBy = removeMatchingReferences(
-			backRefMutable.DependedOnBy,
-			newDesc.ID,
-		)
+		backRefMutable.DependedOnBy = removeMatchingReferences(backRefMutable.DependedOnBy, newDesc.ID, true)
 		for _, dep := range updated.deps {
 			// The logical plan constructor merely registered the dependencies.
 			// It did not populate the "ID" field of TableDescriptor_Reference,
@@ -543,7 +540,7 @@ func (p *planner) replaceViewDesc(
 		// If n.planDeps doesn't contain id, then the new view definition doesn't
 		// reference this table anymore, so we can remove all existing references.
 		if _, ok := n.planDeps[id]; !ok {
-			desc.DependedOnBy = removeMatchingReferences(desc.DependedOnBy, toReplace.ID)
+			desc.DependedOnBy = removeMatchingReferences(desc.DependedOnBy, toReplace.ID, false)
 			if err := p.writeSchemaChange(
 				ctx,
 				desc,

@@ -271,8 +271,8 @@ func (desc *wrapper) validateOutboundTableRef(
 			return nil
 		}
 	}
-	return errors.AssertionFailedf("depends-on relation %q (%d) has no corresponding depended-on-by back reference",
-		referencedTable.GetName(), id)
+	return errors.AssertionFailedf("depends-on relation %q (%d) has no corresponding depended-on-by back reference %v",
+		referencedTable.GetName(), id, referencedTable.TableDesc().DependedOnBy)
 }
 
 func (desc *wrapper) validateOutboundTypeRef(id descpb.ID, vdg catalog.ValidationDescGetter) error {

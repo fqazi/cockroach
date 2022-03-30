@@ -13,6 +13,7 @@ package sql
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
@@ -623,13 +624,16 @@ func removeFKBackReferenceFromTable(
 // removeMatchingReferences removes all refs from the provided slice that
 // match the provided ID, returning the modified slice.
 func removeMatchingReferences(
-	refs []descpb.TableDescriptor_Reference, id descpb.ID,
+	refs []descpb.TableDescriptor_Reference, id descpb.ID, dbg bool,
 ) []descpb.TableDescriptor_Reference {
 	updatedRefs := refs[:0]
 	for _, ref := range refs {
 		if ref.ID != id {
 			updatedRefs = append(updatedRefs, ref)
 		}
+	}
+	if dbg && len(updatedRefs) == 0 {
+		fmt.Printf("REMOVING: %d %v\n------%s\n", id, updatedRefs, debug.Stack())
 	}
 	return updatedRefs
 }

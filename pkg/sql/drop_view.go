@@ -173,7 +173,7 @@ func (p *planner) removeDependentView(
 ) ([]string, error) {
 	// In the table whose index is being removed, filter out all back-references
 	// that refer to the view that's being removed.
-	tableDesc.DependedOnBy = removeMatchingReferences(tableDesc.DependedOnBy, viewDesc.ID)
+	tableDesc.DependedOnBy = removeMatchingReferences(tableDesc.DependedOnBy, viewDesc.ID, true)
 	// Then proceed to actually drop the view and log an event for it.
 	return p.dropViewImpl(ctx, viewDesc, true /* queueJob */, jobDesc, tree.DropCascade)
 }
@@ -203,7 +203,7 @@ func (p *planner) dropViewImpl(
 		if dependencyDesc.Dropped() {
 			continue
 		}
-		dependencyDesc.DependedOnBy = removeMatchingReferences(dependencyDesc.DependedOnBy, viewDesc.ID)
+		dependencyDesc.DependedOnBy = removeMatchingReferences(dependencyDesc.DependedOnBy, viewDesc.ID, true)
 		if err := p.writeSchemaChange(
 			ctx, dependencyDesc, descpb.InvalidMutationID,
 			fmt.Sprintf("removing references for view %s from table %s(%d)",
