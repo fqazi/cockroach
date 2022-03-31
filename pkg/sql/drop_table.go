@@ -13,7 +13,6 @@ package sql
 import (
 	"context"
 	"fmt"
-	"runtime/debug"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
@@ -632,9 +631,10 @@ func removeMatchingReferences(
 			updatedRefs = append(updatedRefs, ref)
 		}
 	}
-	if dbg && len(updatedRefs) == 0 {
-		fmt.Printf("REMOVING: %d %v\n------%s\n", id, updatedRefs, debug.Stack())
-	}
+	//	if dbg && len(updatedRefs) == 0 && len(refs) > 0 {
+	// FIXME: Drop the stack dump..
+	//	tabledesc.LogEntry(fmt.Sprintf("REMOVING: %d %v\n------%s\n", id, updatedRefs /*debug.Stack()*/, "no more stacks"))
+	//}
 	return updatedRefs
 }
 

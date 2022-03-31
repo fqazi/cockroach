@@ -12,6 +12,8 @@ package tabledesc
 
 import (
 	"sort"
+	"strings"
+	"sync/atomic"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -271,8 +273,35 @@ func (desc *wrapper) validateOutboundTableRef(
 			return nil
 		}
 	}
-	return errors.AssertionFailedf("depends-on relation %q (%d) has no corresponding depended-on-by back reference %v",
-		referencedTable.GetName(), id, referencedTable.TableDesc().DependedOnBy)
+	return errors.AssertionFailedf("depends-on relation %q (%d) has no corresponding depended-on-by back reference %v \n-----%s",
+		referencedTable.GetName(), id, referencedTable.TableDesc().DependedOnBy, GetAllLogEntries())
+}
+
+type fe struct {
+	ringBuff []string
+	position int32
+	length   int32
+}
+
+var feInst fe = fe{ringBuff: make([]string, 100, 100)}
+
+func GetAllLogEntries() string {
+	length := int(feInst.length)
+	if length > len(feInst.ringBuff) {
+		length = len(feInst.ringBuff)
+	}
+	sb := strings.Builder{}
+	for x := 0; x < length; x++ {
+		sb.WriteString(feInst.ringBuff[x])
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func LogEntry(entry string) {
+	atomic.AddInt32(&feInst.length, 1)
+	position := atomic.AddInt32(&feInst.position, 1) % int32(len(feInst.ringBuff))
+	feInst.ringBuff[position] = entry
 }
 
 func (desc *wrapper) validateOutboundTypeRef(id descpb.ID, vdg catalog.ValidationDescGetter) error {
