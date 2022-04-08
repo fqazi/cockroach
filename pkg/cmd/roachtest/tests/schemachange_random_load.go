@@ -101,6 +101,7 @@ func registerRandomLoadBenchSpec(r registry.Registry, b randomLoadBenchSpec) {
 func runSchemaChangeRandomLoad(
 	ctx context.Context, t test.Test, c cluster.Cluster, maxOps, concurrency int,
 ) {
+	t.Skip("disabled due to bugs in workload on this branch, see PR: #76532")
 	validate := func(db *gosql.DB) {
 		var (
 			id           int
