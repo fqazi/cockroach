@@ -955,7 +955,8 @@ func performIntToOidCast(
 
 		dOid, err := res.ResolveOIDFromOID(ctx, t, tree.NewDOid(o))
 		// Any unrelated errors should always be surfaced.
-		if pgerror.GetPGCode(err) != pgcode.UndefinedObject {
+		if pgerror.GetPGCode(err) != pgcode.UndefinedObject &&
+			pgerror.GetPGCode(err) != pgcode.UndefinedTable {
 			return nil, err
 		}
 		if err != nil {

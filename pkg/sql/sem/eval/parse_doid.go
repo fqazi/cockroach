@@ -106,7 +106,8 @@ func ParseDOid(ctx *Context, s string, t *types.T) (*tree.DOid, error) {
 
 		dOid, missingTypeErr := ctx.Planner.ResolveOIDFromString(ctx.Ctx(), t, tree.NewDString(tree.Name(s).Normalize()))
 		// Any unrelated errors should always be surfaced.
-		if missingTypeErr == nil || pgerror.GetPGCode(err) != pgcode.UndefinedObject {
+		if missingTypeErr == nil || (pgerror.GetPGCode(err) != pgcode.UndefinedObject &&
+			pgerror.GetPGCode(err) != pgcode.UndefinedTable) {
 			return dOid, missingTypeErr
 		}
 		// Fall back to some special cases that we support for compatibility
