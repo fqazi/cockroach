@@ -397,9 +397,18 @@ func (w *schemaChangeWorker) runInTxn(ctx context.Context, tx pgx.Tx) error {
 }
 
 func (w *schemaChangeWorker) run(ctx context.Context) error {
-	tx, err := w.pool.Get().Begin(ctx)
+	conn, err := w.pool.Get().Acquire(ctx)
 	if err != nil {
 		return errors.Wrap(err, "cannot get a connection and begin a txn")
+	}
+	defer conn.Release()
+	_, err = conn.Exec(ctx, "SET tracing=off; SET tracing= kv")
+	if err != nil {
+		return errors.Wrap(err, "cannot enable trace")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return errors.Wrap(err, "cannot begin a txn")
 	}
 
 	// Release log entry locks if holding all.
@@ -474,6 +483,19 @@ func (w *schemaChangeWorker) run(ctx context.Context) error {
 		// Check for any expected errors.
 		if !w.opGen.expectedCommitErrors.contains(pgcode.MakeCode(pgErr.Code)) &&
 			!w.opGen.potentialCommitErrors.contains(pgcode.MakeCode(pgErr.Code)) {
+			_ = tx.Rollback(ctx)
+			rows, qerr := conn.Query(ctx, "SELECT message from [SHOW TRACE FOR SESSION]")
+			if qerr == nil {
+				for rows.Next() {
+					var message string
+					qerr := rows.Scan(&message)
+					if qerr != nil {
+						panic(qerr)
+					}
+					fmt.Printf("KV TRACE : %s\n", message)
+				}
+				rows.Close()
+			}
 			err = errors.Mark(
 				errors.Wrapf(err, "***UNEXPECTED COMMIT ERROR; Received an unexpected commit error %s", w.getErrorState()),
 				errRunInTxnFatalSentinel,
