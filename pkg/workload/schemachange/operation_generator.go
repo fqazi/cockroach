@@ -248,7 +248,7 @@ var opWeights = []int{
 	dropTable:               1,
 	dropView:                1,
 	dropSchema:              1,
-	primaryRegion:           0, // Disabled and tracked with #83831
+	primaryRegion:           1,
 	renameColumn:            1,
 	renameIndex:             1,
 	renameSequence:          1,
@@ -256,8 +256,8 @@ var opWeights = []int{
 	renameView:              1,
 	setColumnDefault:        1,
 	setColumnNotNull:        1,
-	setColumnType:           0,  // Disabled and tracked with #66662.
-	survive:                 0,  // Disabled and tracked with #83831
+	setColumnType:           0, // Disabled and tracked with #66662.
+	survive:                 1,
 	insertRow:               10, // Temporarily reduced because of #80820
 	selectStmt:              10,
 	validate:                2, // validate twice more often
