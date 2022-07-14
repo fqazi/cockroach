@@ -954,6 +954,10 @@ func performIntToOidCast(
 		}
 
 		dOid, err := res.ResolveOIDFromOID(ctx, t, tree.NewDOid(o))
+		// Any unrelated errors should always be surfaced.
+		if pgerror.GetPGCode(err) != pgcode.UndefinedObject {
+			return nil, err
+		}
 		if err != nil {
 			dOid = tree.NewDOidWithType(o, t)
 		}

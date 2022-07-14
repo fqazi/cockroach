@@ -105,7 +105,8 @@ func ParseDOid(ctx *Context, s string, t *types.T) (*tree.DOid, error) {
 		s = pgSignatureRegexp.ReplaceAllString(s, "$1")
 
 		dOid, missingTypeErr := ctx.Planner.ResolveOIDFromString(ctx.Ctx(), t, tree.NewDString(tree.Name(s).Normalize()))
-		if missingTypeErr == nil {
+		// Any unrelated errors should always be surfaced.
+		if missingTypeErr == nil || pgerror.GetPGCode(err) != pgcode.UndefinedObject {
 			return dOid, missingTypeErr
 		}
 		// Fall back to some special cases that we support for compatibility
