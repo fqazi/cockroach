@@ -12,6 +12,7 @@ package optbuilder
 
 import (
 	"context"
+	"runtime/debug"
 	"strconv"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
@@ -181,6 +182,7 @@ func (b *Builder) Build() (err error) {
 			// possible because the code does not update shared state and does not
 			// manipulate locks.
 			if ok, e := errorutil.ShouldCatch(r); ok {
+				e = errors.Wrapf(e, "stack: %s", string(debug.Stack()))
 				err = e
 			} else {
 				panic(r)

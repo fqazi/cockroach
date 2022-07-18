@@ -11,6 +11,8 @@
 package execbuilder
 
 import (
+	"runtime/debug"
+
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/exec"
@@ -227,6 +229,9 @@ func (b *Builder) build(e opt.Expr) (_ execPlan, err error) {
 			// possible because the code does not update shared state and does not
 			// manipulate locks.
 			if ok, e := errorutil.ShouldCatch(r); ok {
+				//if errors.HasType(e, &reflect.ValueError{}) {
+				e = errors.Wrapf(e, "stack: %s", string(debug.Stack()))
+				//}
 				err = e
 			} else {
 				panic(r)

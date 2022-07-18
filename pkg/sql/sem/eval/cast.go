@@ -12,6 +12,7 @@ package eval
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -145,6 +146,9 @@ func performCastWithoutPrecisionTruncation(
 		}
 		if truncateWidth {
 			ba = tree.FormatBitArrayToType(ba, t)
+		}
+		if ba == nil {
+			panic(fmt.Sprintf("CRAP NULL %v", t.Family()))
 		}
 		return ba, nil
 
@@ -955,8 +959,9 @@ func performIntToOidCast(
 
 		dOid, err := res.ResolveOIDFromOID(ctx, t, tree.NewDOid(o))
 		// Any unrelated errors should always be surfaced.
-		if pgerror.GetPGCode(err) != pgcode.UndefinedObject &&
-			pgerror.GetPGCode(err) != pgcode.UndefinedTable {
+		if err != nil &&
+			(pgerror.GetPGCode(err) != pgcode.UndefinedObject &&
+				pgerror.GetPGCode(err) != pgcode.UndefinedTable) {
 			return nil, err
 		}
 		if err != nil {

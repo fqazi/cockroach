@@ -11,6 +11,8 @@
 package norm
 
 import (
+	"fmt"
+
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
@@ -395,6 +397,9 @@ func (c *CustomFuncs) FoldAssignmentCast(
 
 	datum := memo.ExtractConstDatum(input)
 	result, err := eval.PerformAssignmentCast(c.f.evalCtx, datum, typ)
+	if result == nil && err == nil {
+		panic(fmt.Sprintf("CRAP %v %v %v %T", result, datum, typ, datum))
+	}
 	if err != nil {
 		return nil, false
 	}
