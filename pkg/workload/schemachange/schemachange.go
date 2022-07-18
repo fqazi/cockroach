@@ -438,6 +438,18 @@ func (w *schemaChangeWorker) run(ctx context.Context) error {
 		switch {
 		case errors.Is(err, errRunInTxnFatalSentinel):
 			w.preErrorHook()
+			rows, qerr := conn.Query(ctx, "SELECT message from [SHOW TRACE FOR SESSION]")
+			if qerr == nil {
+				for rows.Next() {
+					var message string
+					qerr := rows.Scan(&message)
+					if qerr != nil {
+						panic(qerr)
+					}
+					fmt.Printf("KV TRACE : %s\n", message)
+				}
+				rows.Close()
+			}
 			return err
 		case errors.Is(err, errRunInTxnRbkSentinel):
 			// Rollbacks are acceptable because all unexpected errors will be
