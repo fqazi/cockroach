@@ -1186,6 +1186,32 @@ func (og *operationGenerator) createTable(ctx context.Context, tx pgx.Tx) (*opSt
 	stmt.Table = *tableName
 	stmt.IfNotExists = og.randIntn(2) == 0
 
+	trigramIsNotSupported, err := isClusterVersionLessThan(
+		ctx,
+		tx,
+		clusterversion.ByKey(clusterversion.TrigramInvertedIndexes))
+	if err != nil {
+		return nil, err
+	}
+	hasTrigramIdxUnsupported := func() bool {
+		if !trigramIsNotSupported {
+			return false
+		}
+		// Check if any of the indexes have trigrams involved.
+		for _, def := range stmt.Defs {
+			if idx, ok := def.(*tree.IndexTableDef); ok {
+				for _, col := range idx.Columns {
+					switch col.OpClass {
+					case "gin_trgm_ops", "gist_trgm_ops":
+						return true
+					}
+				}
+
+			}
+		}
+		return false
+	}()
+
 	tableExists, err := og.tableExists(ctx, tx, tableName)
 	if err != nil {
 		return nil, err
@@ -1198,6 +1224,7 @@ func (og *operationGenerator) createTable(ctx context.Context, tx pgx.Tx) (*opSt
 	codesWithConditions{
 		{code: pgcode.DuplicateRelation, condition: tableExists && !stmt.IfNotExists},
 		{code: pgcode.UndefinedSchema, condition: !schemaExists},
+		{code: pgcode.FeatureNotSupported, condition: hasTrigramIdxUnsupported},
 	}.add(opStmt.expectedExecErrors)
 	opStmt.sql = tree.Serialize(stmt)
 	return opStmt, nil
