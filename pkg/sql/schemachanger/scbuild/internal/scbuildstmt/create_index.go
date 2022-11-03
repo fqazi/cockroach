@@ -264,11 +264,6 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	sec := &scpb.SecondaryIndex{Index: index}
 	b.Add(sec)
 	b.Add(&scpb.IndexData{TableID: sec.TableID, IndexID: sec.IndexID})
-	b.Add(&scpb.IndexName{
-		TableID: index.TableID,
-		IndexID: index.IndexID,
-		Name:    string(n.Name),
-	})
 	if n.PartitionByIndex.ContainsPartitions() {
 		b.Add(&scpb.IndexPartitioning{
 			TableID: index.TableID,
@@ -278,6 +273,22 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			),
 		})
 	}
+	indexName := string(n.Name)
+	if indexName == "" {
+		numImplicitColumns := 0
+		_, _, tbl := scpb.FindTable(relationElements)
+		scpb.ForEachIndexPartitioning(b, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexPartitioning) {
+			if e.IndexID == index.IndexID && e.TableID == index.TableID {
+				numImplicitColumns = int(e.PartitioningDescriptor.NumImplicitColumns)
+			}
+		})
+		indexName = getImplicitSecondaryIndexName(b, tbl, index.IndexID, numImplicitColumns)
+	}
+	b.Add(&scpb.IndexName{
+		TableID: index.TableID,
+		IndexID: index.IndexID,
+		Name:    indexName,
+	})
 
 	temp := &scpb.TemporaryIndex{
 		Index:                    protoutil.Clone(sec).(*scpb.SecondaryIndex).Index,
