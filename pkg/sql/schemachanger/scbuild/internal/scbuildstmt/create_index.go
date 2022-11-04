@@ -44,6 +44,10 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	if _, _, tbl := scpb.FindTable(relationElements); tbl != nil {
 		fallBackIfZoneConfigExists(b, n, tbl.TableID)
 	}
+	if len(n.StorageParams) > 0 {
+		panic(scerrors.NotImplementedErrorf(n,
+			"FIXME: Storage parameters.."))
+	}
 	index := scpb.Index{
 		IsUnique:       n.Unique,
 		IsInverted:     n.Inverted,
@@ -173,6 +177,17 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 		})
 		if columnID == 0 {
 			panic(colinfo.NewUndefinedColumnError(colName))
+		}
+		var columnType *scpb.ColumnType
+		scpb.ForEachColumnType(b, func(current scpb.Status, target scpb.TargetStatus, e *scpb.ColumnType) {
+			if target == scpb.ToPublic && e.ColumnID == columnID {
+				columnType = e
+			}
+		})
+		if columnType.Type.Family() == types.GeometryFamily ||
+			columnType.Type.Family() == types.GeographyFamily {
+			panic(scerrors.NotImplementedErrorf(n,
+				"FIXME: Storage parameters.."))
 		}
 		keyColNames[i] = colName
 		direction := catpb.IndexColumn_ASC
