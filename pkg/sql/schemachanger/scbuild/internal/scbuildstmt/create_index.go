@@ -48,6 +48,18 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 		panic(scerrors.NotImplementedErrorf(n,
 			"FIXME: Storage parameters.."))
 	}
+	// Inverted indexes do not support hash sharing or unique.
+	if n.Inverted {
+		if n.Sharded != nil {
+			panic(pgerror.New(pgcode.InvalidSQLStatementName, "inverted indexes don't support hash sharding"))
+		}
+		if len(n.Storing) > 0 {
+			panic(pgerror.New(pgcode.InvalidSQLStatementName, "inverted indexes don't support stored columns"))
+		}
+		if n.Unique {
+			panic(pgerror.New(pgcode.InvalidSQLStatementName, "inverted indexes can't be unique"))
+		}
+	}
 	index := scpb.Index{
 		IsUnique:       n.Unique,
 		IsInverted:     n.Inverted,
@@ -158,6 +170,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	var newIndexColumns []*scpb.IndexColumn
 	var keyColIDs catalog.TableColSet
 	indexID := nextRelationIndexID(b, relation)
+	lastColumnIdx := len(n.Columns) - 1
 	for i, columnNode := range n.Columns {
 		colName := columnNode.Column.String()
 		if columnNode.Expr != nil {
@@ -188,6 +201,21 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			columnType.Type.Family() == types.GeographyFamily {
 			panic(scerrors.NotImplementedErrorf(n,
 				"FIXME: Storage parameters.."))
+		}
+		// Only certain column types are supported for inverted indexes.
+		if n.Inverted && i == lastColumnIdx &&
+			!colinfo.ColumnTypeIsInvertedIndexable(columnType.Type) {
+			colNameForErr := colName
+			if columnNode.Expr != nil {
+				colNameForErr = columnNode.Expr.String()
+			}
+			panic(tabledesc.NewInvalidInvertedColumnError(colNameForErr,
+				columnType.Type.String()))
+		}
+		// OpClass are only allowed for the last column of an inverted index.
+		if columnNode.OpClass != "" && (i != lastColumnIdx || !n.Inverted) {
+			panic(pgerror.New(pgcode.DatatypeMismatch,
+				"operator classes are only allowed for the last column of an inverted index"))
 		}
 		keyColNames[i] = colName
 		direction := catpb.IndexColumn_ASC
