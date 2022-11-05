@@ -28,6 +28,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 )
@@ -150,7 +151,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	// Check that the index creation spec is sane.
 	columnRefs := map[string]struct{}{}
 	for _, columnNode := range n.Columns {
-		colName := columnNode.Column.String()
+		colName := columnNode.Column.Normalize()
 		if _, found := columnRefs[colName]; found {
 			panic(pgerror.Newf(pgcode.InvalidObjectDefinition,
 				"index %q contains duplicate column %q", n.Name, colName))
@@ -173,6 +174,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	lastColumnIdx := len(n.Columns) - 1
 	for i, columnNode := range n.Columns {
 		colName := columnNode.Column.String()
+		normalizedColName := columnNode.Column.Normalize()
 		if columnNode.Expr != nil {
 			tbl, ok := relation.(*scpb.Table)
 			if !ok {
@@ -180,11 +182,12 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 					"indexing virtual column expressions in materialized views is not supported"))
 			}
 			colName = createVirtualColumnForIndex(b, &n.Table, tbl, columnNode.Expr)
+			normalizedColName = colName
 			relationElements = b.QueryByID(index.TableID)
 		}
 		var columnID catid.ColumnID
 		scpb.ForEachColumnName(relationElements, func(_ scpb.Status, target scpb.TargetStatus, e *scpb.ColumnName) {
-			if target == scpb.ToPublic && e.Name == colName {
+			if target == scpb.ToPublic && tree.Name(e.Name).Normalize() == normalizedColName {
 				columnID = e.ColumnID
 			}
 		})
@@ -202,21 +205,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			panic(scerrors.NotImplementedErrorf(n,
 				"FIXME: Storage parameters.."))
 		}
-		// Only certain column types are supported for inverted indexes.
-		if n.Inverted && i == lastColumnIdx &&
-			!colinfo.ColumnTypeIsInvertedIndexable(columnType.Type) {
-			colNameForErr := colName
-			if columnNode.Expr != nil {
-				colNameForErr = columnNode.Expr.String()
-			}
-			panic(tabledesc.NewInvalidInvertedColumnError(colNameForErr,
-				columnType.Type.String()))
-		}
-		// OpClass are only allowed for the last column of an inverted index.
-		if columnNode.OpClass != "" && (i != lastColumnIdx || !n.Inverted) {
-			panic(pgerror.New(pgcode.DatatypeMismatch,
-				"operator classes are only allowed for the last column of an inverted index"))
-		}
+		processColNodeType(b, n, colName, columnNode, columnType, i == lastColumnIdx)
 		keyColNames[i] = colName
 		direction := catpb.IndexColumn_ASC
 		if columnNode.Direction == tree.Descending {
@@ -264,7 +253,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	for i, storingNode := range n.Storing {
 		var columnID catid.ColumnID
 		scpb.ForEachColumnName(relationElements, func(_ scpb.Status, target scpb.TargetStatus, e *scpb.ColumnName) {
-			if target == scpb.ToPublic && tree.Name(e.Name) == storingNode {
+			if target == scpb.ToPublic && tree.Name(e.Name).Normalize() == storingNode.Normalize() {
 				columnID = e.ColumnID
 			}
 		})
@@ -362,6 +351,65 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	}
 }
 
+func newUndefinedOpclassError(opclass tree.Name) error {
+	return pgerror.Newf(pgcode.UndefinedObject, "operator class %q does not exist", opclass)
+}
+
+func processColNodeType(
+	b BuildCtx,
+	n *tree.CreateIndex,
+	colName string,
+	columnNode tree.IndexElem,
+	columnType *scpb.ColumnType,
+	lastColIdx bool,
+) {
+	// Only certain column types are supported for inverted indexes.
+	if n.Inverted && lastColIdx &&
+		!colinfo.ColumnTypeIsInvertedIndexable(columnType.Type) {
+		colNameForErr := colName
+		if columnNode.Expr != nil {
+			colNameForErr = columnNode.Expr.String()
+		}
+		panic(tabledesc.NewInvalidInvertedColumnError(colNameForErr,
+			columnType.Type.String()))
+	}
+	// OpClass are only allowed for the last column of an inverted index.
+	if columnNode.OpClass != "" && (!lastColIdx || !n.Inverted) {
+		panic(pgerror.New(pgcode.DatatypeMismatch,
+			"operator classes are only allowed for the last column of an inverted index"))
+	}
+
+	if n.Inverted && columnNode.OpClass != "" {
+		switch columnType.Type.Family() {
+		case types.ArrayFamily:
+			switch columnNode.OpClass {
+			case "array_ops", "":
+			default:
+				panic(newUndefinedOpclassError(columnNode.OpClass))
+			}
+		case types.JsonFamily:
+			switch columnNode.OpClass {
+			case "jsonb_ops", "":
+			case "jsonb_path_ops":
+				panic(unimplemented.NewWithIssue(81115, "operator class \"jsonb_path_ops\" is not supported"))
+			default:
+				panic(newUndefinedOpclassError(columnNode.OpClass))
+			}
+		case types.GeometryFamily:
+			panic("unexpected")
+		case types.GeographyFamily:
+			panic("unexpected")
+
+		case types.StringFamily:
+			// Check the opclass of the last column in the list, which is the column
+			// we're going to inverted index.
+			switch columnNode.OpClass {
+			default:
+				panic(newUndefinedOpclassError(columnNode.OpClass))
+			}
+		}
+	}
+}
 func nextRelationIndexID(b BuildCtx, relation scpb.Element) catid.IndexID {
 	switch t := relation.(type) {
 	case *scpb.Table:
