@@ -150,16 +150,26 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	}
 	// Check that the index creation spec is sane.
 	columnRefs := map[string]struct{}{}
+	columnExprRefs := map[string]struct{}{}
 	for _, columnNode := range n.Columns {
-		colName := columnNode.Column.Normalize()
-		if _, found := columnRefs[colName]; found {
-			panic(pgerror.Newf(pgcode.InvalidObjectDefinition,
-				"index %q contains duplicate column %q", n.Name, colName))
+		if columnNode.Expr == nil {
+			colName := columnNode.Column.Normalize()
+			if _, found := columnRefs[colName]; found {
+				panic(pgerror.Newf(pgcode.InvalidObjectDefinition,
+					"index %q contains duplicate column %q", n.Name, colName))
+			}
+			columnRefs[colName] = struct{}{}
+		} else {
+			colExpr := columnNode.Expr.String()
+			if _, found := columnExprRefs[colExpr]; found {
+				panic(pgerror.Newf(pgcode.InvalidObjectDefinition,
+					"index %q contains duplicate expression", n.Name))
+			}
+			columnExprRefs[colExpr] = struct{}{}
 		}
-		columnRefs[colName] = struct{}{}
 	}
 	for _, storingNode := range n.Storing {
-		colName := storingNode.String()
+		colName := storingNode.Normalize()
 		if _, found := columnRefs[colName]; found {
 			panic(pgerror.Newf(pgcode.InvalidObjectDefinition,
 				"index %q contains duplicate column %q", n.Name, colName))
