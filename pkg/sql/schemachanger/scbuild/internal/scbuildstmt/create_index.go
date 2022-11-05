@@ -504,8 +504,7 @@ func createVirtualColumnForIndex(
 	})
 	// TODO(postamar): call addColumn instead of building AST.
 	d := &tree.ColumnTableDef{
-		Name:   tree.Name(colName),
-		Hidden: true,
+		Name: tree.Name(colName),
 	}
 	d.Computed.Computed = true
 	d.Computed.Virtual = true
@@ -546,5 +545,11 @@ func createVirtualColumnForIndex(
 		d.Type = typedExpr.ResolvedType()
 	}
 	alterTableAddColumn(b, tn, tbl, &tree.AlterTableAddColumn{ColumnDef: d})
+	// Mutate the accessibility flag on this column it should be inaccessible.
+	{
+		ers := b.ResolveColumn(tbl.TableID, d.Name, ResolveParams{})
+		_, _, col := scpb.FindColumn(ers)
+		col.IsInaccessible = true
+	}
 	return colName
 }
