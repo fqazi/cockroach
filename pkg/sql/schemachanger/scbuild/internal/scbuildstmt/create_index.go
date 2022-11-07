@@ -49,6 +49,10 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 		panic(scerrors.NotImplementedErrorf(n,
 			"FIXME: Storage parameters.."))
 	}
+	if n.Predicate != nil {
+		panic(scerrors.NotImplementedErrorf(n,
+			"FIXME: partial index support"))
+	}
 	// Inverted indexes do not support hash sharing or unique.
 	if n.Inverted {
 		if n.Sharded != nil {
@@ -191,7 +195,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 				panic(scerrors.NotImplementedErrorf(n,
 					"indexing virtual column expressions in materialized views is not supported"))
 			}
-			colName = createVirtualColumnForIndex(b, &n.Table, tbl, columnNode.Expr)
+			colName = maybeCreateVirtualColumnForIndex(b, &n.Table, tbl, columnNode.Expr)
 			normalizedColName = colName
 			relationElements = b.QueryByID(index.TableID)
 		}
@@ -502,11 +506,32 @@ func maybeCreateAndAddShardCol(
 	return shardColName
 }
 
-func createVirtualColumnForIndex(
+func maybeCreateVirtualColumnForIndex(
 	b BuildCtx, tn *tree.TableName, tbl *scpb.Table, expr tree.Expr,
 ) string {
 	elts := b.QueryByID(tbl.TableID)
-	colName := tabledesc.GenerateUniqueName("crdb_internal_idx_expr", func(name string) (found bool) {
+	colName := ""
+	// Check if any existing columns can satisfy this expression already.
+	scpb.ForEachColumnType(elts, func(current scpb.Status, target scpb.TargetStatus, e *scpb.ColumnType) {
+		if target == scpb.ToPublic && e.ComputeExpr != nil {
+			otherExpr, err := parser.ParseExpr(string(e.ComputeExpr.Expr))
+			if err != nil {
+				panic(err)
+			}
+			if otherExpr.String() == expr.String() {
+				scpb.ForEachColumnName(elts, func(current scpb.Status, target scpb.TargetStatus, cn *scpb.ColumnName) {
+					if target == scpb.ToPublic && e.ColumnID == cn.ColumnID && e.TableID == cn.TableID {
+						colName = cn.Name
+					}
+				})
+			}
+		}
+	})
+	if colName != "" {
+		return colName
+	}
+	// Otherwise, we need to create a new column.
+	colName = tabledesc.GenerateUniqueName("crdb_internal_idx_expr", func(name string) (found bool) {
 		scpb.ForEachColumnName(elts, func(_ scpb.Status, target scpb.TargetStatus, cn *scpb.ColumnName) {
 			if target == scpb.ToPublic && cn.Name == name {
 				found = true
