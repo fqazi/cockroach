@@ -13,6 +13,7 @@ package scbuildstmt
 import (
 	"sort"
 
+	"github.com/cockroachdb/cockroach/pkg/docs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
@@ -189,13 +190,18 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	for i, columnNode := range n.Columns {
 		colName := columnNode.Column.String()
 		normalizedColName := columnNode.Column.Normalize()
+		// Disallow descending last columns in inverted indexes.
+		if n.Inverted && columnNode.Direction == tree.Descending {
+			panic(pgerror.New(pgcode.FeatureNotSupported,
+				"the last column in an inverted index cannot have the DESC option"))
+		}
 		if columnNode.Expr != nil {
 			tbl, ok := relation.(*scpb.Table)
 			if !ok {
 				panic(scerrors.NotImplementedErrorf(n,
 					"indexing virtual column expressions in materialized views is not supported"))
 			}
-			colName = maybeCreateVirtualColumnForIndex(b, &n.Table, tbl, columnNode.Expr)
+			colName = maybeCreateVirtualColumnForIndex(b, &n.Table, tbl, columnNode.Expr, n.Inverted, i == len(n.Columns)-1)
 			normalizedColName = colName
 			relationElements = b.QueryByID(index.TableID)
 		}
@@ -398,6 +404,14 @@ func processColNodeType(
 		}
 		panic(tabledesc.NewInvalidInvertedColumnError(colNameForErr,
 			columnType.Type.String()))
+	} else if (!n.Inverted || !lastColIdx) &&
+		!colinfo.ColumnTypeIsIndexable(columnType.Type) {
+		// Otherwise, check if the column type is indexable.
+		panic(pgerror.Newf(
+			pgcode.InvalidTableDefinition,
+			"index element %s of type %s is not indexable",
+			colName,
+			columnType.Type))
 	}
 	// OpClass are only allowed for the last column of an inverted index.
 	if columnNode.OpClass != "" && (!lastColIdx || !n.Inverted) {
@@ -507,8 +521,57 @@ func maybeCreateAndAddShardCol(
 }
 
 func maybeCreateVirtualColumnForIndex(
-	b BuildCtx, tn *tree.TableName, tbl *scpb.Table, expr tree.Expr,
+	b BuildCtx, tn *tree.TableName, tbl *scpb.Table, expr tree.Expr, inverted bool, lastColumn bool,
 ) string {
+	validateColumnIndexableType := func(t *types.T) {
+		if t.IsAmbiguous() {
+			panic(errors.WithHint(
+				pgerror.Newf(
+					pgcode.InvalidTableDefinition,
+					"type of index element %s is ambiguous",
+					expr.String(),
+				),
+				"consider adding a type cast to the expression",
+			))
+		}
+		// Check if the column type is indexable,
+		// non-inverted types.
+		if !inverted &&
+			!colinfo.ColumnTypeIsIndexable(t) {
+			panic(pgerror.Newf(
+				pgcode.InvalidTableDefinition,
+				"index element %s of type %s is not indexable",
+				expr,
+				t.Name()))
+		}
+		// Check if inverted columns are invertible.
+		if inverted &&
+			!lastColumn &&
+			!colinfo.ColumnTypeIsIndexable(t) {
+			panic(errors.WithHint(
+				pgerror.Newf(
+					pgcode.InvalidTableDefinition,
+					"index element %s of type %s is not allowed as a prefix column in an inverted index",
+					expr.String(),
+					t.Name(),
+				),
+				"see the documentation for more information about inverted indexes: "+docs.URL("inverted-indexes.html"),
+			))
+		}
+		if inverted &&
+			lastColumn &&
+			!colinfo.ColumnTypeIsInvertedIndexable(t) {
+			panic(errors.WithHint(
+				pgerror.Newf(
+					pgcode.InvalidTableDefinition,
+					"index element %s of type %s is not allowed as the last column in an inverted index",
+					expr,
+					t.Name(),
+				),
+				"see the documentation for more information about inverted indexes: "+docs.URL("inverted-indexes.html"),
+			))
+		}
+	}
 	elts := b.QueryByID(tbl.TableID)
 	colName := ""
 	// Check if any existing columns can satisfy this expression already.
@@ -519,6 +582,7 @@ func maybeCreateVirtualColumnForIndex(
 				panic(err)
 			}
 			if otherExpr.String() == expr.String() {
+				validateColumnIndexableType(e.Type)
 				scpb.ForEachColumnName(elts, func(current scpb.Status, target scpb.TargetStatus, cn *scpb.ColumnName) {
 					if target == scpb.ToPublic && e.ColumnID == cn.ColumnID && e.TableID == cn.TableID {
 						colName = cn.Name
@@ -580,16 +644,7 @@ func maybeCreateVirtualColumnForIndex(
 			panic(err)
 		}
 		d.Type = typedExpr.ResolvedType()
-		if typedExpr.ResolvedType().IsAmbiguous() {
-			panic(errors.WithHint(
-				pgerror.Newf(
-					pgcode.InvalidTableDefinition,
-					"type of index element %s is ambiguous",
-					expr.String(),
-				),
-				"consider adding a type cast to the expression",
-			))
-		}
+		validateColumnIndexableType(typedExpr.ResolvedType())
 	}
 	alterTableAddColumn(b, tn, tbl, &tree.AlterTableAddColumn{ColumnDef: d})
 	// Mutate the accessibility flag on this column it should be inaccessible.
