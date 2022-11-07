@@ -134,7 +134,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	}
 	if index.TableID == catid.InvalidDescID || source == nil {
 		panic(pgerror.Newf(pgcode.WrongObjectType,
-			"%q is not an indexable table or a materialized view", n.Table.ObjectName))
+			"%q is not a table or materialized view", n.Table.ObjectName))
 	}
 	// Resolve the index name and make sure it doesn't exist yet.
 	{
@@ -395,30 +395,11 @@ func processColNodeType(
 	columnType *scpb.ColumnType,
 	lastColIdx bool,
 ) {
-	// Only certain column types are supported for inverted indexes.
-	if n.Inverted && lastColIdx &&
-		!colinfo.ColumnTypeIsInvertedIndexable(columnType.Type) {
-		colNameForErr := colName
-		if columnNode.Expr != nil {
-			colNameForErr = columnNode.Expr.String()
-		}
-		panic(tabledesc.NewInvalidInvertedColumnError(colNameForErr,
-			columnType.Type.String()))
-	} else if (!n.Inverted || !lastColIdx) &&
-		!colinfo.ColumnTypeIsIndexable(columnType.Type) {
-		// Otherwise, check if the column type is indexable.
-		panic(pgerror.Newf(
-			pgcode.InvalidTableDefinition,
-			"index element %s of type %s is not indexable",
-			colName,
-			columnType.Type))
-	}
 	// OpClass are only allowed for the last column of an inverted index.
 	if columnNode.OpClass != "" && (!lastColIdx || !n.Inverted) {
 		panic(pgerror.New(pgcode.DatatypeMismatch,
 			"operator classes are only allowed for the last column of an inverted index"))
 	}
-
 	if n.Inverted && columnNode.OpClass != "" {
 		switch columnType.Type.Family() {
 		case types.ArrayFamily:
@@ -448,6 +429,24 @@ func processColNodeType(
 				panic(newUndefinedOpclassError(columnNode.OpClass))
 			}
 		}
+	}
+	// Only certain column types are supported for inverted indexes.
+	if n.Inverted && lastColIdx &&
+		!colinfo.ColumnTypeIsInvertedIndexable(columnType.Type) {
+		colNameForErr := colName
+		if columnNode.Expr != nil {
+			colNameForErr = columnNode.Expr.String()
+		}
+		panic(tabledesc.NewInvalidInvertedColumnError(colNameForErr,
+			columnType.Type.String()))
+	} else if (!n.Inverted || !lastColIdx) &&
+		!colinfo.ColumnTypeIsIndexable(columnType.Type) {
+		// Otherwise, check if the column type is indexable.
+		panic(pgerror.Newf(
+			pgcode.InvalidTableDefinition,
+			"index element %s of type %s is not indexable",
+			colName,
+			columnType.Type))
 	}
 }
 func nextRelationIndexID(b BuildCtx, relation scpb.Element) catid.IndexID {
