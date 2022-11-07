@@ -216,6 +216,18 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 				"FIXME: Storage parameters.."))
 		}
 		processColNodeType(b, n, colName, columnNode, columnType, i == lastColumnIdx)
+		// FIXME: This has to be nested..
+		// Column should be accessible.
+		if columnNode.Expr == nil {
+			scpb.ForEachColumn(relationElements, func(current scpb.Status, target scpb.TargetStatus, e *scpb.Column) {
+				if e.ColumnID == columnID && e.IsInaccessible {
+					panic(pgerror.Newf(
+						pgcode.UndefinedColumn,
+						"column %q is inaccessible and cannot be referenced",
+						colName))
+				}
+			})
+		}
 		keyColNames[i] = colName
 		direction := catpb.IndexColumn_ASC
 		if columnNode.Direction == tree.Descending {
