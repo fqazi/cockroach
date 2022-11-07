@@ -580,6 +580,16 @@ func maybeCreateVirtualColumnForIndex(
 			panic(err)
 		}
 		d.Type = typedExpr.ResolvedType()
+		if typedExpr.ResolvedType().IsAmbiguous() {
+			panic(errors.WithHint(
+				pgerror.Newf(
+					pgcode.InvalidTableDefinition,
+					"type of index element %s is ambiguous",
+					expr.String(),
+				),
+				"consider adding a type cast to the expression",
+			))
+		}
 	}
 	alterTableAddColumn(b, tn, tbl, &tree.AlterTableAddColumn{ColumnDef: d})
 	// Mutate the accessibility flag on this column it should be inaccessible.
