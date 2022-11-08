@@ -131,6 +131,25 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			}
 		}
 	})
+	// Warn against creating a non-partitioned index on a partitioned table,
+	// which is undesirable in most cases.
+	// Avoid the warning if we have PARTITION ALL BY as all indexes will implicitly
+	// have relevant partitioning columns prepended at the front.
+	scpb.ForEachIndexPartitioning(b, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexPartitioning) {
+		if target == scpb.ToPublic &&
+			e.IndexID == source.IndexID && e.TableID == source.TableID &&
+			e.NumColumns > 0 {
+			//TODO (fqazi): This logic can be skipped if partition by all or regional
+			//by row is used.
+			b.EvalCtx().ClientNoticeSender.BufferClientNotice(
+				b,
+				errors.WithHint(
+					pgnotice.Newf("creating non-partitioned index on partitioned table may not be performant"),
+					"Consider modifying the index such that it is also partitioned.",
+				),
+			)
+		}
+	})
 	if n.Unique {
 		index.ConstraintID = b.NextTableConstraintID(index.TableID)
 	}
@@ -179,7 +198,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 		colName := storingNode.Normalize()
 		if _, found := columnRefs[colName]; found {
 			panic(pgerror.Newf(pgcode.InvalidObjectDefinition,
-				"index %q contains duplicate column %q", n.Name, colName))
+				"index %q already contains column %q", n.Name, colName))
 		}
 		columnRefs[colName] = struct{}{}
 	}
@@ -228,15 +247,22 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 				"FIXME: Storage parameters.."))
 		}
 		processColNodeType(b, n, colName, columnNode, columnType, i == lastColumnIdx)
-		// FIXME: This has to be nested..
 		// Column should be accessible.
 		if columnNode.Expr == nil {
 			scpb.ForEachColumn(relationElements, func(current scpb.Status, target scpb.TargetStatus, e *scpb.Column) {
-				if e.ColumnID == columnID && e.IsInaccessible {
-					panic(pgerror.Newf(
-						pgcode.UndefinedColumn,
-						"column %q is inaccessible and cannot be referenced",
-						colName))
+				if e.ColumnID == columnID {
+					if e.IsInaccessible {
+						panic(pgerror.Newf(
+							pgcode.UndefinedColumn,
+							"column %q is inaccessible and cannot be referenced",
+							colName))
+					}
+					if e.IsSystemColumn {
+						panic(pgerror.Newf(
+							pgcode.FeatureNotSupported,
+							"cannot index system column %s",
+							colName))
+					}
 				}
 			})
 		}
@@ -266,6 +292,20 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			e.Kind != scpb.IndexColumn_KEY {
 			return
 		}
+		// Check if the column name was duplicated from the STORING clause, in which
+		// case this isn't allowed.
+		// Note: The column IDs for the key columns are not resolved, so we couldn't
+		// do this earlier.
+		scpb.ForEachColumnName(relationElements, func(current scpb.Status, target scpb.TargetStatus, cn *scpb.ColumnName) {
+			if cn.ColumnID == e.ColumnID &&
+				cn.TableID == e.TableID {
+				if _, found := columnRefs[cn.Name]; found {
+					panic(pgerror.Newf(pgcode.InvalidObjectDefinition,
+						"index %q already contains column %q", n.Name, cn.Name))
+				}
+				columnRefs[cn.Name] = struct{}{}
+			}
+		})
 		keySuffixColumns = append(keySuffixColumns, e)
 	})
 	sort.Slice(keySuffixColumns, func(i, j int) bool {
@@ -294,6 +334,22 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 		if columnID == 0 {
 			panic(colinfo.NewUndefinedColumnError(storingNode.String()))
 		}
+		scpb.ForEachColumn(relationElements, func(current scpb.Status, target scpb.TargetStatus, e *scpb.Column) {
+			if e.ColumnID == columnID {
+				if e.IsInaccessible {
+					panic(pgerror.Newf(
+						pgcode.UndefinedColumn,
+						"column %q is inaccessible and cannot be referenced",
+						storingNode))
+				}
+				if e.IsSystemColumn {
+					panic(pgerror.Newf(
+						pgcode.FeatureNotSupported,
+						"index cannot store system column %s",
+						storingNode))
+				}
+			}
+		})
 		c := &scpb.IndexColumn{
 			TableID:       index.TableID,
 			IndexID:       indexID,
