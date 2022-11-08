@@ -241,7 +241,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 		processColNodeType(b, n, colName, columnNode, columnType, i == lastColumnIdx)
 		// Column should be accessible.
 		if columnNode.Expr == nil {
-			checkColumnAccessibilityForIndex(colName, colElts, "")
+			checkColumnAccessibilityForIndex(colName, colElts, false)
 		}
 		keyColNames[i] = colName
 		direction := catpb.IndexColumn_ASC
@@ -306,7 +306,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			RequiredPrivilege: privilege.CREATE,
 		})
 		_, _, column := scpb.FindColumn(colElts)
-		checkColumnAccessibilityForIndex(storingNode.String(), colElts, "store")
+		checkColumnAccessibilityForIndex(storingNode.String(), colElts, true)
 		c := &scpb.IndexColumn{
 			TableID:       index.TableID,
 			IndexID:       indexID,
@@ -427,14 +427,9 @@ func newUndefinedOpclassError(opclass tree.Name) error {
 	return pgerror.Newf(pgcode.UndefinedObject, "operator class %q does not exist", opclass)
 }
 
-func checkColumnAccessibilityForIndex(colName string, columnElts ElementResultSet, usage string) {
+func checkColumnAccessibilityForIndex(colName string, columnElts ElementResultSet, store bool) {
 	_, _, column := scpb.FindColumn(columnElts)
-	prefix := ""
-	if usage != "" {
-		prefix = "index "
-	} else {
-		usage = " " + usage
-	}
+
 	if column.IsInaccessible {
 		panic(pgerror.Newf(
 			pgcode.UndefinedColumn,
@@ -442,12 +437,17 @@ func checkColumnAccessibilityForIndex(colName string, columnElts ElementResultSe
 			colName))
 	}
 	if column.IsSystemColumn {
-		panic(pgerror.Newf(
-			pgcode.FeatureNotSupported,
-			"%sindex cannot %ssystem column %s",
-			prefix,
-			usage,
-			colName))
+		if store {
+			panic(pgerror.Newf(
+				pgcode.FeatureNotSupported,
+				"index cannot store system column %s",
+				colName))
+		} else {
+			panic(pgerror.Newf(
+				pgcode.FeatureNotSupported,
+				"cannot index system column %s",
+				colName))
+		}
 	}
 }
 
