@@ -11,7 +11,6 @@
 package scbuildstmt
 
 import (
-	"fmt"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/docs"
@@ -45,8 +44,14 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	})
 	// We don't support handling zone config related properties for tables, so
 	// throw an unsupported error.
+	tableID := descpb.InvalidID
 	if _, _, tbl := scpb.FindTable(relationElements); tbl != nil {
+		tableID = tbl.TableID
 		fallBackIfZoneConfigExists(b, n, tbl.TableID)
+	} else if _, _, view := scpb.FindView(relationElements); view != nil {
+		tableID = view.ViewID
+	} else {
+		panic(errors.AssertionFailedf("unable to find table/view element for %s", n.Table.String()))
 	}
 	if len(n.StorageParams) > 0 {
 		panic(scerrors.NotImplementedErrorf(n,
@@ -227,44 +232,16 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			relationElements = b.QueryByID(index.TableID)
 		}
 		var columnID catid.ColumnID
-		scpb.ForEachColumnName(relationElements, func(_ scpb.Status, target scpb.TargetStatus, e *scpb.ColumnName) {
-			if target == scpb.ToPublic && tree.Name(e.Name).Normalize() == normalizedColName {
-				columnID = e.ColumnID
-			}
+		colElts := b.ResolveColumn(tableID, tree.Name(normalizedColName), ResolveParams{
+			RequiredPrivilege: privilege.CREATE,
 		})
-		if columnID == 0 {
-			panic(colinfo.NewUndefinedColumnError(colName))
-		}
-		var columnType *scpb.ColumnType
-		scpb.ForEachColumnType(b, func(current scpb.Status, target scpb.TargetStatus, e *scpb.ColumnType) {
-			if target == scpb.ToPublic && e.ColumnID == columnID {
-				columnType = e
-			}
-		})
-		if columnType.Type.Family() == types.GeometryFamily ||
-			columnType.Type.Family() == types.GeographyFamily {
-			panic(scerrors.NotImplementedErrorf(n,
-				"FIXME: Storage parameters.."))
-		}
+		_, _, column := scpb.FindColumn(colElts)
+		columnID = column.ColumnID
+		_, _, columnType := scpb.FindColumnType(colElts)
 		processColNodeType(b, n, colName, columnNode, columnType, i == lastColumnIdx)
 		// Column should be accessible.
 		if columnNode.Expr == nil {
-			scpb.ForEachColumn(relationElements, func(current scpb.Status, target scpb.TargetStatus, e *scpb.Column) {
-				if e.ColumnID == columnID {
-					if e.IsInaccessible {
-						panic(pgerror.Newf(
-							pgcode.UndefinedColumn,
-							"column %q is inaccessible and cannot be referenced",
-							colName))
-					}
-					if e.IsSystemColumn {
-						panic(pgerror.Newf(
-							pgcode.FeatureNotSupported,
-							"cannot index system column %s",
-							colName))
-					}
-				}
-			})
+			checkColumnAccessibilityForIndex(colName, colElts, "")
 		}
 		keyColNames[i] = colName
 		direction := catpb.IndexColumn_ASC
@@ -325,35 +302,15 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 
 	// Set the storing column IDs.
 	for i, storingNode := range n.Storing {
-		var columnID catid.ColumnID
-		scpb.ForEachColumnName(relationElements, func(_ scpb.Status, target scpb.TargetStatus, e *scpb.ColumnName) {
-			if target == scpb.ToPublic && tree.Name(e.Name).Normalize() == storingNode.Normalize() {
-				columnID = e.ColumnID
-			}
+		colElts := b.ResolveColumn(tableID, storingNode, ResolveParams{
+			RequiredPrivilege: privilege.CREATE,
 		})
-		if columnID == 0 {
-			panic(colinfo.NewUndefinedColumnError(storingNode.String()))
-		}
-		scpb.ForEachColumn(relationElements, func(current scpb.Status, target scpb.TargetStatus, e *scpb.Column) {
-			if e.ColumnID == columnID {
-				if e.IsInaccessible {
-					panic(pgerror.Newf(
-						pgcode.UndefinedColumn,
-						"column %q is inaccessible and cannot be referenced",
-						storingNode))
-				}
-				if e.IsSystemColumn {
-					panic(pgerror.Newf(
-						pgcode.FeatureNotSupported,
-						"index cannot store system column %s",
-						storingNode))
-				}
-			}
-		})
+		_, _, column := scpb.FindColumn(colElts)
+		checkColumnAccessibilityForIndex(storingNode.String(), colElts, "store")
 		c := &scpb.IndexColumn{
 			TableID:       index.TableID,
 			IndexID:       indexID,
-			ColumnID:      columnID,
+			ColumnID:      column.ColumnID,
 			OrdinalInKind: uint32(i),
 			Kind:          scpb.IndexColumn_STORED,
 		}
@@ -372,26 +329,26 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			ShardBuckets: buckets,
 			ColumnNames:  keyColNames,
 		}
-		scpb.ForEachColumnName(relationElements, func(current scpb.Status, target scpb.TargetStatus, e *scpb.ColumnName) {
-			fmt.Printf("%v", e.Name)
-			if target == scpb.ToPublic && e.Name == shardColName {
-				indexColumn := &scpb.IndexColumn{
-					TableID:       e.TableID,
-					ColumnID:      e.ColumnID,
-					OrdinalInKind: 0,
-					Kind:          scpb.IndexColumn_KEY,
-					Direction:     catpb.IndexColumn_ASC,
-				}
-				newIndexColumns = append([]*scpb.IndexColumn{indexColumn}, newIndexColumns...)
-
-				// Shift all other keys and reassign the ordinal in kind for this column.
-				for i, ic := range newIndexColumns {
-					if ic.Kind == scpb.IndexColumn_KEY {
-						ic.OrdinalInKind = uint32(i)
-					}
-				}
-			}
+		colElts := b.ResolveColumn(tableID, tree.Name(shardColName), ResolveParams{
+			RequiredPrivilege: privilege.CREATE,
 		})
+		_, _, column := scpb.FindColumn(colElts)
+
+		indexColumn := &scpb.IndexColumn{
+			TableID:       column.TableID,
+			ColumnID:      column.ColumnID,
+			OrdinalInKind: 0,
+			Kind:          scpb.IndexColumn_KEY,
+			Direction:     catpb.IndexColumn_ASC,
+		}
+		newIndexColumns = append([]*scpb.IndexColumn{indexColumn}, newIndexColumns...)
+
+		// Shift all other keys and reassign the ordinal in kind for this column.
+		for i, ic := range newIndexColumns {
+			if ic.Kind == scpb.IndexColumn_KEY {
+				ic.OrdinalInKind = uint32(i)
+			}
+		}
 	}
 	// Assign the ID here, since we may have added columns
 	// and made a new primary key above.
@@ -470,6 +427,30 @@ func newUndefinedOpclassError(opclass tree.Name) error {
 	return pgerror.Newf(pgcode.UndefinedObject, "operator class %q does not exist", opclass)
 }
 
+func checkColumnAccessibilityForIndex(colName string, columnElts ElementResultSet, usage string) {
+	_, _, column := scpb.FindColumn(columnElts)
+	prefix := ""
+	if usage != "" {
+		prefix = "index "
+	} else {
+		usage = " " + usage
+	}
+	if column.IsInaccessible {
+		panic(pgerror.Newf(
+			pgcode.UndefinedColumn,
+			"column %q is inaccessible and cannot be referenced",
+			colName))
+	}
+	if column.IsSystemColumn {
+		panic(pgerror.Newf(
+			pgcode.FeatureNotSupported,
+			"%sindex cannot %ssystem column %s",
+			prefix,
+			usage,
+			colName))
+	}
+}
+
 func processColNodeType(
 	b BuildCtx,
 	n *tree.CreateIndex,
@@ -478,6 +459,11 @@ func processColNodeType(
 	columnType *scpb.ColumnType,
 	lastColIdx bool,
 ) {
+	if columnType.Type.Family() == types.GeometryFamily ||
+		columnType.Type.Family() == types.GeographyFamily {
+		panic(scerrors.NotImplementedErrorf(n,
+			"FIXME: Storage parameters.."))
+	}
 	// OpClass are only allowed for the last column of an inverted index.
 	if columnNode.OpClass != "" && (!lastColIdx || !n.Inverted) {
 		panic(pgerror.New(pgcode.DatatypeMismatch,
@@ -731,7 +717,9 @@ func maybeCreateVirtualColumnForIndex(
 	alterTableAddColumn(b, tn, tbl, &tree.AlterTableAddColumn{ColumnDef: d})
 	// Mutate the accessibility flag on this column it should be inaccessible.
 	{
-		ers := b.ResolveColumn(tbl.TableID, d.Name, ResolveParams{})
+		ers := b.ResolveColumn(tbl.TableID, d.Name, ResolveParams{
+			RequiredPrivilege: privilege.CREATE,
+		})
 		_, _, col := scpb.FindColumn(ers)
 		col.IsInaccessible = true
 	}
