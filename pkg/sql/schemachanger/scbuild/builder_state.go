@@ -838,7 +838,7 @@ func (b *builderState) ResolveColumn(
 	b.checkPrivilege(rel.GetID(), p.RequiredPrivilege)
 	var columnID catid.ColumnID
 	scpb.ForEachColumnName(c.ers, func(status scpb.Status, _ scpb.TargetStatus, e *scpb.ColumnName) {
-		if e.TableID == relationID && tree.Name(e.Name) == columnName {
+		if e.TableID == relationID && tree.Name(e.Name).Normalize() == columnName.Normalize() {
 			columnID = e.ColumnID
 		}
 	})
