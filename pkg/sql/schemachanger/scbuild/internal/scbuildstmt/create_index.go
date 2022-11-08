@@ -24,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
+	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
@@ -401,6 +402,11 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 				&temp.Index, n.PartitionByIndex.PartitionBy,
 			),
 		})
+	}
+	if n.Concurrently {
+		b.EvalCtx().ClientNoticeSender.BufferClientNotice(b,
+			pgnotice.Newf("CONCURRENTLY is not required as all indexes are created concurrently"),
+		)
 	}
 }
 
