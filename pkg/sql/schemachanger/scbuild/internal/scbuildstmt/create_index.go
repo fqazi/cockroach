@@ -11,6 +11,7 @@
 package scbuildstmt
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/docs"
@@ -314,6 +315,26 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			ShardBuckets: buckets,
 			ColumnNames:  keyColNames,
 		}
+		scpb.ForEachColumnName(relationElements, func(current scpb.Status, target scpb.TargetStatus, e *scpb.ColumnName) {
+			fmt.Printf("%v", e.Name)
+			if target == scpb.ToPublic && e.Name == shardColName {
+				indexColumn := &scpb.IndexColumn{
+					TableID:       e.TableID,
+					ColumnID:      e.ColumnID,
+					OrdinalInKind: 0,
+					Kind:          scpb.IndexColumn_KEY,
+					Direction:     catpb.IndexColumn_ASC,
+				}
+				newIndexColumns = append([]*scpb.IndexColumn{indexColumn}, newIndexColumns...)
+
+				// Shift all other keys and reassign the ordinal in kind for this column.
+				for i, ic := range newIndexColumns {
+					if ic.Kind == scpb.IndexColumn_KEY {
+						ic.OrdinalInKind = uint32(i)
+					}
+				}
+			}
+		})
 	}
 	// Assign the ID here, since we may have added columns
 	// and made a new primary key above.
@@ -510,7 +531,7 @@ func maybeCreateAndAddShardCol(
 		colType: &scpb.ColumnType{
 			TableID:     tbl.TableID,
 			ColumnID:    shardColID,
-			TypeT:       scpb.TypeT{Type: types.Int4},
+			TypeT:       scpb.TypeT{Type: types.Int},
 			ComputeExpr: b.WrapExpression(tbl.TableID, parsedExpr),
 			IsVirtual:   true,
 		},
