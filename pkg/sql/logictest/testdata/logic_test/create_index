@@ -97,7 +97,7 @@ CREATE TABLE privs (a INT PRIMARY KEY, b INT)
 
 user testuser
 
-statement error user testuser does not have CREATE privilege on relation privs
+statement error (must be owner of table privs or have CREATE privilege on table privs|user testuser does not have CREATE privilege on relation privs)
 CREATE INDEX foo ON privs (b)
 
 user root
