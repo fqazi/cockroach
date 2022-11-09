@@ -1455,7 +1455,7 @@ SELECT x FROM t WHERE x > ARRAY[NULL, NULL]:::INT[] ORDER BY x
 {5}
 
 # Test some operations on a descending index.
-statement error column x is of type int\[\] and thus is not indexable
+statement error index element x of type int\[\] is not indexable
 CREATE INDEX i ON t(x DESC)
 
 # Add "t@i" index annotation once #50659 is fixed.
