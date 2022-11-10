@@ -144,6 +144,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 		if target == scpb.ToPublic &&
 			e.IndexID == source.IndexID && e.TableID == source.TableID &&
 			e.NumColumns > 0 {
+			// FIXME: Inherit : e.NumImplicitColumns
 			//TODO (fqazi): This logic can be skipped if partition by all or regional
 			//by row is used.
 			b.EvalCtx().ClientNoticeSender.BufferClientNotice(
@@ -342,13 +343,6 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			Direction:     catpb.IndexColumn_ASC,
 		}
 		newIndexColumns = append([]*scpb.IndexColumn{indexColumn}, newIndexColumns...)
-
-		// Shift all other keys and reassign the ordinal in kind for this column.
-		for i, ic := range newIndexColumns {
-			if ic.Kind == scpb.IndexColumn_KEY {
-				ic.OrdinalInKind = uint32(i)
-			}
-		}
 	}
 	// Assign the ID here, since we may have added columns
 	// and made a new primary key above.
@@ -356,22 +350,70 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	index.IndexID = nextRelationIndexID(b, relation)
 	for _, ic := range newIndexColumns {
 		ic.IndexID = index.IndexID
-		b.Add(ic)
+		if ic.Kind == scpb.IndexColumn_KEY {
+			b.Add(ic)
+		}
 	}
 	tempIndexID := index.IndexID + 1 // this is enforced below
 	index.TemporaryIndexID = tempIndexID
-	sec := &scpb.SecondaryIndex{Index: index}
-	b.Add(sec)
-	b.Add(&scpb.IndexData{TableID: sec.TableID, IndexID: sec.IndexID})
 	if n.PartitionByIndex.ContainsPartitions() {
-		b.Add(&scpb.IndexPartitioning{
+		indexPartitioningDesc := &scpb.IndexPartitioning{
 			TableID: index.TableID,
 			IndexID: index.IndexID,
 			PartitioningDescriptor: b.IndexPartitioningDescriptor(
-				&sec.Index, n.PartitionByIndex.PartitionBy,
+				&index, n.PartitionByIndex.PartitionBy,
 			),
-		})
+		}
+		b.Add(indexPartitioningDesc)
+		var columnsToPrepend []*scpb.IndexColumn
+		for _, field := range n.PartitionByIndex.Fields {
+			// Resolve the column first.
+			ers := b.ResolveColumn(tableID, field, ResolveParams{RequiredPrivilege: privilege.CREATE})
+			_, _, fieldColumn := scpb.FindColumn(ers)
+			// If it already in the index we are done.
+			// FIXME: Deal with sharding
+			if fieldColumn.ColumnID == newIndexColumns[0].ColumnID {
+				break
+			}
+			newIndexColumn := &scpb.IndexColumn{
+				IndexID:   index.IndexID,
+				TableID:   fieldColumn.TableID,
+				ColumnID:  fieldColumn.ColumnID,
+				Kind:      scpb.IndexColumn_KEY,
+				Direction: catpb.IndexColumn_ASC,
+			}
+			// Check if the column is already a suffix, then we should
+			// move it out.
+			for pos, otherIC := range newIndexColumns {
+				if otherIC.ColumnID == fieldColumn.ColumnID {
+					newIndexColumns = append(newIndexColumns[:pos], newIndexColumns[pos+1:]...)
+				}
+			}
+
+			columnsToPrepend = append(columnsToPrepend, newIndexColumn)
+			b.Add(newIndexColumn)
+		}
+		newIndexColumns = append(columnsToPrepend, newIndexColumns...)
 	}
+	// Recompute the ordinal in kind value for keys, since
+	// we just added implicit columns.
+	keyIdx := 0
+	keySuffixIdx := 0
+	for _, ic := range newIndexColumns {
+		if ic.Kind == scpb.IndexColumn_KEY {
+			ic.OrdinalInKind = uint32(keyIdx)
+			keyIdx++
+		} else if ic.Kind == scpb.IndexColumn_KEY_SUFFIX {
+			ic.OrdinalInKind = uint32(keySuffixIdx)
+			keySuffixIdx++
+		}
+		if ic.Kind != scpb.IndexColumn_KEY {
+			b.Add(ic)
+		}
+	}
+	sec := &scpb.SecondaryIndex{Index: index}
+	b.Add(sec)
+	b.Add(&scpb.IndexData{TableID: sec.TableID, IndexID: sec.IndexID})
 	indexName := string(n.Name)
 	if indexName == "" {
 		numImplicitColumns := 0
