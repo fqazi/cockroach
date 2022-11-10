@@ -263,7 +263,11 @@ func (w *walkCtx) walkRelation(tbl catalog.TableDescriptor) {
 			IsTemporary: tbl.IsTemporary(),
 		})
 	}
-
+	if tbl.IsPartitionAllBy() {
+		w.ev(descriptorStatus(tbl), &scpb.TablePartitionAllBy{
+			TableID: tbl.GetID(),
+		})
+	}
 	w.ev(scpb.Status_PUBLIC, &scpb.ObjectParent{
 		ObjectID:       tbl.GetID(),
 		ParentSchemaID: tbl.GetParentSchemaID(),
@@ -488,6 +492,10 @@ func (w *walkCtx) walkIndex(tbl catalog.TableDescriptor, idx catalog.Index) {
 			IsNotVisible:        idx.IsNotVisible(),
 		}
 		for i, c := range cpy.KeyColumnIDs {
+			implicitColumn := false
+			if i < idx.ImplicitPartitioningColumnCount() {
+				implicitColumn = true
+			}
 			w.ev(scpb.Status_PUBLIC, &scpb.IndexColumn{
 				TableID:       tbl.GetID(),
 				IndexID:       idx.GetID(),
@@ -495,6 +503,7 @@ func (w *walkCtx) walkIndex(tbl catalog.TableDescriptor, idx catalog.Index) {
 				OrdinalInKind: uint32(i),
 				Kind:          scpb.IndexColumn_KEY,
 				Direction:     cpy.KeyColumnDirections[i],
+				Implicit:      implicitColumn,
 			})
 		}
 		for i, c := range cpy.KeySuffixColumnIDs {

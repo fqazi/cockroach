@@ -11,6 +11,7 @@
 package scbuildstmt
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/docs"
@@ -61,6 +62,15 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 		panic(scerrors.NotImplementedErrorf(n,
 			"FIXME: partial index support"))
 	}
+	_, _, partitionAllBy := scpb.FindTablePartitionAllBy(relationElements)
+	if partitionAllBy != nil && n.PartitionByIndex != nil &&
+		n.PartitionByIndex.ContainsPartitions() {
+		panic(pgerror.New(
+			pgcode.FeatureNotSupported,
+			"cannot define PARTITION BY on an index if the table has a PARTITION ALL BY definition",
+		))
+	}
+
 	// Inverted indexes do not support hash sharing or unique.
 	if n.Inverted {
 		if n.Sharded != nil {
@@ -136,6 +146,36 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			}
 		}
 	})
+	var indexPartitioningDesc *scpb.IndexPartitioning
+	if partitionAllBy != nil {
+		// Update AST to reflect the partition information.
+		n.PartitionByIndex = &tree.PartitionByIndex{
+			PartitionBy: &tree.PartitionBy{},
+		}
+		var indexImplicitCols []*scpb.IndexColumn
+		scpb.ForEachIndexColumn(relationElements, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexColumn) {
+			if e.IndexID == source.IndexID && e.Implicit {
+				indexImplicitCols = append(indexImplicitCols, e)
+			}
+		})
+		sort.Slice(indexImplicitCols, func(i, j int) bool {
+			return indexImplicitCols[i].OrdinalInKind < indexImplicitCols[j].OrdinalInKind
+		})
+
+		for _, ic := range indexImplicitCols {
+			scpb.ForEachColumnName(relationElements, func(current scpb.Status, target scpb.TargetStatus, e *scpb.ColumnName) {
+				if e.ColumnID == ic.ColumnID && e.TableID == ic.TableID {
+					n.PartitionByIndex.Fields = append(n.PartitionByIndex.Fields, tree.Name(e.Name))
+				}
+			})
+		}
+		// Recover the rest from the partitioning data.
+		scpb.ForEachIndexPartitioning(relationElements, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexPartitioning) {
+			if e.IndexID == source.IndexID {
+				indexPartitioningDesc = protoutil.Clone(e).(*scpb.IndexPartitioning)
+			}
+		})
+	}
 	// Warn against creating a non-partitioned index on a partitioned table,
 	// which is undesirable in most cases.
 	// Avoid the warning if we have PARTITION ALL BY as all indexes will implicitly
@@ -143,7 +183,8 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	scpb.ForEachIndexPartitioning(b, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexPartitioning) {
 		if target == scpb.ToPublic &&
 			e.IndexID == source.IndexID && e.TableID == source.TableID &&
-			e.NumColumns > 0 {
+			e.NumColumns > 0 &&
+			partitionAllBy == nil {
 			// FIXME: Inherit : e.NumImplicitColumns
 			//TODO (fqazi): This logic can be skipped if partition by all or regional
 			//by row is used.
@@ -356,13 +397,22 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	}
 	tempIndexID := index.IndexID + 1 // this is enforced below
 	index.TemporaryIndexID = tempIndexID
-	if n.PartitionByIndex.ContainsPartitions() {
-		indexPartitioningDesc := &scpb.IndexPartitioning{
-			TableID: index.TableID,
-			IndexID: index.IndexID,
-			PartitioningDescriptor: b.IndexPartitioningDescriptor(
-				&index, n.PartitionByIndex.PartitionBy,
-			),
+	if n.PartitionByIndex.ContainsPartitions() || indexPartitioningDesc != nil {
+		if indexPartitioningDesc == nil {
+			indexPartitioningDesc = &scpb.IndexPartitioning{
+				TableID: index.TableID,
+				IndexID: index.IndexID,
+				PartitioningDescriptor: b.IndexPartitioningDescriptor(
+					&index, n.PartitionByIndex.PartitionBy,
+				),
+			}
+			fmt.Printf("Creating %d %d\n", indexPartitioningDesc.IndexID, index.IndexID)
+		} else {
+			fmt.Printf("Inherting %d %d\n", indexPartitioningDesc.IndexID, index.IndexID)
+			indexPartitioningDesc.IndexID = index.IndexID
+		}
+		if len(indexPartitioningDesc.List) == 0 && len(indexPartitioningDesc.Range) == 0 {
+			fmt.Printf("studpitiy\n")
 		}
 		b.Add(indexPartitioningDesc)
 		var columnsToPrepend []*scpb.IndexColumn
@@ -381,6 +431,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 				ColumnID:  fieldColumn.ColumnID,
 				Kind:      scpb.IndexColumn_KEY,
 				Direction: catpb.IndexColumn_ASC,
+				Implicit:  true,
 			}
 			// Check if the column is already a suffix, then we should
 			// move it out.
@@ -449,13 +500,15 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 		tic.IndexID = tempIndexID
 		b.Add(tic)
 	}
-	if n.PartitionByIndex.ContainsPartitions() {
+	if indexPartitioningDesc != nil {
+		partitionDesc := protoutil.Clone(&indexPartitioningDesc.PartitioningDescriptor).(*catpb.PartitioningDescriptor)
 		b.Add(&scpb.IndexPartitioning{
-			TableID: temp.TableID,
-			IndexID: temp.IndexID,
-			PartitioningDescriptor: b.IndexPartitioningDescriptor(
+			TableID:                temp.TableID,
+			IndexID:                temp.IndexID,
+			PartitioningDescriptor: *partitionDesc,
+			/*	PartitioningDescriptor: b.IndexPartitioningDescriptor(
 				&temp.Index, n.PartitionByIndex.PartitionBy,
-			),
+			),*/
 		})
 	}
 	if n.Concurrently {
