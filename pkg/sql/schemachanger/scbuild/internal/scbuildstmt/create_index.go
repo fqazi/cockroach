@@ -324,11 +324,7 @@ func addColumnsForSecondaryIndex(
 				"the last column in an inverted index cannot have the DESC option"))
 		}
 		if columnNode.Expr != nil {
-			tbl, ok := relation.(*scpb.Table)
-			if !ok {
-				panic(scerrors.NotImplementedErrorf(n,
-					"indexing virtual column expressions in materialized views is not supported"))
-			}
+			tbl := relation.(*scpb.Table)
 			colName = maybeCreateVirtualColumnForIndex(b, &n.Table, tbl, columnNode.Expr, n.Inverted, i == len(n.Columns)-1)
 			normalizedColName = colName
 		}
