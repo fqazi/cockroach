@@ -295,7 +295,7 @@ func (b *builderState) nextIndexID(id catid.DescID) (ret catid.IndexID) {
 // IndexPartitioningDescriptor implements the scbuildstmt.TableHelpers
 // interface.
 func (b *builderState) IndexPartitioningDescriptor(
-	indexName string, index *scpb.Index, partBy *tree.PartitionBy,
+	indexName string, index *scpb.Index, columns []*scpb.IndexColumn, partBy *tree.PartitionBy,
 ) catpb.PartitioningDescriptor {
 	b.ensureDescriptor(index.TableID)
 	bd := b.descCache[index.TableID]
@@ -314,12 +314,13 @@ func (b *builderState) IndexPartitioningDescriptor(
 		oldNumImplicitColumns = int(p.PartitioningDescriptor.NumImplicitColumns)
 	})
 
-	var keyColumns []*scpb.IndexColumn
-	scpb.ForEachIndexColumn(bd.ers, func(_ scpb.Status, _ scpb.TargetStatus, e *scpb.IndexColumn) {
-		if e.IndexID == index.IndexID && e.Kind == scpb.IndexColumn_KEY {
-			keyColumns = append(keyColumns, e)
+	keyColumns := make([]*scpb.IndexColumn, 0, len(columns))
+	for _, column := range columns {
+		if column.Kind != scpb.IndexColumn_KEY {
+			continue
 		}
-	})
+		keyColumns = append(keyColumns, column)
+	}
 	sort.Slice(keyColumns, func(i, j int) bool {
 		return keyColumns[i].OrdinalInKind < keyColumns[j].OrdinalInKind
 	})
@@ -368,7 +369,6 @@ func (b *builderState) IndexPartitioningDescriptor(
 		}
 		partitionNames[listPart.Name] = struct{}{}
 	}
-
 	return ret
 }
 

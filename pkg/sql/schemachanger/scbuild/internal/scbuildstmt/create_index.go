@@ -27,6 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/screl"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
@@ -44,12 +45,9 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	})
 	// We don't support handling zone config related properties for tables, so
 	// throw an unsupported error.
-	tableID := descpb.InvalidID
 	if _, _, tbl := scpb.FindTable(relationElements); tbl != nil {
-		tableID = tbl.TableID
 		fallBackIfZoneConfigExists(b, n, tbl.TableID)
 	} else if _, _, view := scpb.FindView(relationElements); view != nil {
-		tableID = view.ViewID
 	} else {
 		panic(errors.AssertionFailedf("unable to find table/view element for %s", n.Table.String()))
 	}
@@ -82,14 +80,16 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			panic(pgerror.New(pgcode.InvalidSQLStatementName, "inverted indexes can't be unique"))
 		}
 	}
-	index := scpb.Index{
-		IsUnique:       n.Unique,
-		IsInverted:     n.Inverted,
-		IsConcurrently: n.Concurrently,
-		IsNotVisible:   n.NotVisible,
+	var indexSpec indexSpec
+	indexSpec.secondary = &scpb.SecondaryIndex{
+		Index: scpb.Index{
+			IsUnique:       n.Unique,
+			IsInverted:     n.Inverted,
+			IsConcurrently: n.Concurrently,
+			IsNotVisible:   n.NotVisible,
+		},
 	}
 	var relation scpb.Element
-	var source *scpb.PrimaryIndex
 	relationElements.ForEachElementStatus(func(_ scpb.Status, target scpb.TargetStatus, e scpb.Element) {
 		switch t := e.(type) {
 		case *scpb.Table:
@@ -97,7 +97,8 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			if descpb.IsVirtualTable(t.TableID) {
 				return
 			}
-			index.TableID = t.TableID
+			indexSpec.secondary.TableID = t.TableID
+			indexSpec.secondary.IndexID = b.NextTableIndexID(t)
 			relation = e
 
 		case *scpb.View:
@@ -109,7 +110,8 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 				panic(pgerror.New(pgcode.InvalidObjectDefinition,
 					"cannot create hash sharded index on materialized view"))
 			}
-			index.TableID = t.ViewID
+			indexSpec.secondary.TableID = t.ViewID
+			indexSpec.secondary.IndexID = b.NextViewIndexID(t)
 			relation = e
 
 		case *scpb.TableLocalityGlobal, *scpb.TableLocalityPrimaryRegion, *scpb.TableLocalitySecondaryRegion:
@@ -141,71 +143,24 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			// initial primary key and include the union of all of the added and
 			// dropped columns.
 			if target == scpb.ToPublic {
-				source = t
+				indexSpec.primary = t
 			}
-		}
-	})
-	var indexPartitioningDesc *scpb.IndexPartitioning
-	if partitionAllBy != nil {
-		// Update AST to reflect the partition information.
-		n.PartitionByIndex = &tree.PartitionByIndex{
-			PartitionBy: &tree.PartitionBy{},
-		}
-		var indexImplicitCols []*scpb.IndexColumn
-		scpb.ForEachIndexColumn(relationElements, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexColumn) {
-			if e.IndexID == source.IndexID && e.Implicit {
-				indexImplicitCols = append(indexImplicitCols, e)
-			}
-		})
-		sort.Slice(indexImplicitCols, func(i, j int) bool {
-			return indexImplicitCols[i].OrdinalInKind < indexImplicitCols[j].OrdinalInKind
-		})
-
-		for _, ic := range indexImplicitCols {
-			scpb.ForEachColumnName(relationElements, func(current scpb.Status, target scpb.TargetStatus, e *scpb.ColumnName) {
-				if e.ColumnID == ic.ColumnID && e.TableID == ic.TableID {
-					n.PartitionByIndex.Fields = append(n.PartitionByIndex.Fields, tree.Name(e.Name))
-				}
-			})
-		}
-		// Recover the rest from the partitioning data.
-		scpb.ForEachIndexPartitioning(relationElements, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexPartitioning) {
-			if e.IndexID == source.IndexID {
-				indexPartitioningDesc = protoutil.Clone(e).(*scpb.IndexPartitioning)
-			}
-		})
-	}
-	// Warn against creating a non-partitioned index on a partitioned table,
-	// which is undesirable in most cases.
-	// Avoid the warning if we have PARTITION ALL BY as all indexes will implicitly
-	// have relevant partitioning columns prepended at the front.
-	scpb.ForEachIndexPartitioning(b, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexPartitioning) {
-		if target == scpb.ToPublic &&
-			e.IndexID == source.IndexID && e.TableID == source.TableID &&
-			e.NumColumns > 0 &&
-			partitionAllBy == nil {
-			// FIXME: Inherit : e.NumImplicitColumns
-			//TODO (fqazi): This logic can be skipped if partition by all or regional
-			//by row is used.
-			b.EvalCtx().ClientNoticeSender.BufferClientNotice(
-				b,
-				errors.WithHint(
-					pgnotice.Newf("creating non-partitioned index on partitioned table may not be performant"),
-					"Consider modifying the index such that it is also partitioned.",
-				),
-			)
 		}
 	})
 	if n.Unique {
-		index.ConstraintID = b.NextTableConstraintID(index.TableID)
+		indexSpec.secondary.ConstraintID = b.NextTableConstraintID(indexSpec.secondary.TableID)
 	}
-	if index.TableID == catid.InvalidDescID || source == nil {
+	if indexSpec.secondary.TableID == catid.InvalidDescID || indexSpec.primary == nil {
 		panic(pgerror.Newf(pgcode.WrongObjectType,
 			"%q is not a table or materialized view", n.Table.ObjectName))
 	}
+	// Assign the IDs for the index.
+	tempIndexID := indexSpec.secondary.IndexID + 1
+	indexSpec.secondary.SourceIndexID = indexSpec.primary.IndexID
+	indexSpec.secondary.TemporaryIndexID = tempIndexID
 	// Resolve the index name and make sure it doesn't exist yet.
 	{
-		indexElements := b.ResolveIndex(index.TableID, n.Name, ResolveParams{
+		indexElements := b.ResolveIndex(indexSpec.secondary.TableID, n.Name, ResolveParams{
 			IsExistenceOptional: true,
 			RequiredPrivilege:   privilege.CREATE,
 		})
@@ -220,6 +175,100 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			panic(pgerror.Newf(pgcode.DuplicateRelation, "index with name %q already exists", n.Name))
 		}
 	}
+	addColumnsForSecondaryIndex(b, n, relation, &indexSpec)
+	maybeAddPartitionDescriptorForIndex(b, n, &indexSpec)
+	// Warn against creating a non-partitioned index on a partitioned table,
+	// which is undesirable in most cases.
+	// Avoid the warning if we have PARTITION ALL BY as all indexes will implicitly
+	// have relevant partitioning columns prepended at the front.
+	scpb.ForEachIndexPartitioning(b, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexPartitioning) {
+		if target == scpb.ToPublic &&
+			e.IndexID == indexSpec.primary.IndexID && e.TableID == indexSpec.primary.TableID &&
+			e.NumColumns > 0 &&
+			partitionAllBy == nil {
+			b.EvalCtx().ClientNoticeSender.BufferClientNotice(
+				b,
+				errors.WithHint(
+					pgnotice.Newf("creating non-partitioned index on partitioned table may not be performant"),
+					"Consider modifying the index such that it is also partitioned.",
+				),
+			)
+		}
+	})
+	// Recompute the ordinal in kind value for keys, since
+	// we just added implicit columns.
+	keyIdx := 0
+	keySuffixIdx := 0
+	for _, ic := range indexSpec.columns {
+		if ic.Kind == scpb.IndexColumn_KEY {
+			ic.OrdinalInKind = uint32(keyIdx)
+			keyIdx++
+		} else if ic.Kind == scpb.IndexColumn_KEY_SUFFIX {
+			ic.OrdinalInKind = uint32(keySuffixIdx)
+			keySuffixIdx++
+		}
+	}
+	indexSpec.data = &scpb.IndexData{TableID: indexSpec.secondary.TableID, IndexID: indexSpec.secondary.IndexID}
+	indexSpec.temporary = &scpb.TemporaryIndex{
+		Index:                    protoutil.Clone(indexSpec.secondary).(*scpb.SecondaryIndex).Index,
+		IsUsingSecondaryEncoding: true,
+	}
+
+	indexSpec.temporary.TemporaryIndexID = 0
+	indexSpec.temporary.IndexID = tempIndexID
+
+	// Construct the temporary objects from the index spec, since these will
+	// be transient.
+	b.AddTransient(&scpb.IndexData{TableID: indexSpec.temporary.TableID, IndexID: indexSpec.temporary.IndexID})
+	b.AddTransient(indexSpec.temporary)
+
+	for _, ic := range indexSpec.columns {
+		tic := protoutil.Clone(ic).(*scpb.IndexColumn)
+		tic.IndexID = indexSpec.temporary.IndexID
+		b.Add(tic)
+	}
+	if indexSpec.partitioning != nil {
+		partitionDesc := protoutil.Clone(&indexSpec.partitioning.PartitioningDescriptor).(*catpb.PartitioningDescriptor)
+		b.AddTransient(&scpb.IndexPartitioning{
+			TableID:                indexSpec.temporary.TableID,
+			IndexID:                indexSpec.temporary.IndexID,
+			PartitioningDescriptor: *partitionDesc,
+		})
+	}
+	indexSpec.temporary = nil
+	indexSpec.primary = nil
+	indexSpec.apply(b.Add)
+	// Apply the name once everything else has been created, since we need
+	// elements to resolve things.
+	indexName := string(n.Name)
+	if indexName == "" {
+		numImplicitColumns := 0
+		_, _, tbl := scpb.FindTable(relationElements)
+		scpb.ForEachIndexPartitioning(b, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexPartitioning) {
+			if e.IndexID == indexSpec.secondary.IndexID && e.TableID == indexSpec.secondary.TableID {
+				numImplicitColumns = int(e.PartitioningDescriptor.NumImplicitColumns)
+			}
+		})
+		indexName = getImplicitSecondaryIndexName(b, tbl, indexSpec.secondary.IndexID, numImplicitColumns)
+	}
+	b.Add(&scpb.IndexName{
+		TableID: indexSpec.secondary.TableID,
+		IndexID: indexSpec.secondary.IndexID,
+		Name:    indexName,
+	})
+	if n.Concurrently {
+		b.EvalCtx().ClientNoticeSender.BufferClientNotice(b,
+			pgnotice.Newf("CONCURRENTLY is not required as all indexes are created concurrently"),
+		)
+	}
+}
+
+func addColumnsForSecondaryIndex(
+	b BuildCtx, n *tree.CreateIndex, relation scpb.Element, indexSpec *indexSpec,
+) {
+	tableID := screl.GetDescID(relation)
+	relationElements := b.QueryByID(tableID)
+
 	// Check that the index creation spec is sane.
 	columnRefs := map[string]struct{}{}
 	columnExprRefs := map[string]struct{}{}
@@ -250,9 +299,8 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	}
 	// Set key column IDs and directions.
 	keyColNames := make([]string, len(n.Columns))
-	var newIndexColumns []*scpb.IndexColumn
 	var keyColIDs catalog.TableColSet
-	indexID := nextRelationIndexID(b, relation)
+	indexID := indexSpec.secondary.IndexID
 	lastColumnIdx := len(n.Columns) - 1
 	for i, columnNode := range n.Columns {
 		colName := columnNode.Column.String()
@@ -270,7 +318,6 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			}
 			colName = maybeCreateVirtualColumnForIndex(b, &n.Table, tbl, columnNode.Expr, n.Inverted, i == len(n.Columns)-1)
 			normalizedColName = colName
-			relationElements = b.QueryByID(index.TableID)
 		}
 		var columnID catid.ColumnID
 		colElts := b.ResolveColumn(tableID, tree.Name(normalizedColName), ResolveParams{
@@ -290,14 +337,14 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			direction = catpb.IndexColumn_DESC
 		}
 		ic := &scpb.IndexColumn{
-			TableID:       index.TableID,
+			TableID:       tableID,
 			IndexID:       indexID,
 			ColumnID:      columnID,
 			OrdinalInKind: uint32(i),
 			Kind:          scpb.IndexColumn_KEY,
 			Direction:     direction,
 		}
-		newIndexColumns = append(newIndexColumns, ic)
+		indexSpec.columns = append(indexSpec.columns, ic)
 		keyColIDs.Add(columnID)
 	}
 	// Set the key suffix column IDs.
@@ -306,7 +353,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	scpb.ForEachIndexColumn(relationElements, func(
 		current scpb.Status, target scpb.TargetStatus, e *scpb.IndexColumn,
 	) {
-		if e.IndexID != source.IndexID || keyColIDs.Contains(e.ColumnID) ||
+		if e.IndexID != indexSpec.primary.IndexID || keyColIDs.Contains(e.ColumnID) ||
 			e.Kind != scpb.IndexColumn_KEY {
 			return
 		}
@@ -331,14 +378,14 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	})
 	for i, c := range keySuffixColumns {
 		ic := &scpb.IndexColumn{
-			TableID:       index.TableID,
+			TableID:       tableID,
 			IndexID:       indexID,
 			ColumnID:      c.ColumnID,
 			OrdinalInKind: uint32(i),
 			Kind:          scpb.IndexColumn_KEY_SUFFIX,
 			Direction:     c.Direction,
 		}
-		newIndexColumns = append(newIndexColumns, ic)
+		indexSpec.columns = append(indexSpec.columns, ic)
 	}
 
 	// Set the storing column IDs.
@@ -349,13 +396,13 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 		_, _, column := scpb.FindColumn(colElts)
 		checkColumnAccessibilityForIndex(storingNode.String(), colElts, true)
 		c := &scpb.IndexColumn{
-			TableID:       index.TableID,
+			TableID:       tableID,
 			IndexID:       indexID,
 			ColumnID:      column.ColumnID,
 			OrdinalInKind: uint32(i),
 			Kind:          scpb.IndexColumn_STORED,
 		}
-		newIndexColumns = append(newIndexColumns, c)
+		indexSpec.columns = append(indexSpec.columns, c)
 	}
 	// Set up sharding.
 	if n.Sharded != nil {
@@ -364,7 +411,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			panic(err)
 		}
 		shardColName := maybeCreateAndAddShardCol(b, int(buckets), relation.(*scpb.Table), keyColNames, n)
-		index.Sharding = &catpb.ShardedDescriptor{
+		indexSpec.secondary.Sharding = &catpb.ShardedDescriptor{
 			IsSharded:    true,
 			Name:         shardColName,
 			ShardBuckets: buckets,
@@ -376,38 +423,66 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 		_, _, column := scpb.FindColumn(colElts)
 
 		indexColumn := &scpb.IndexColumn{
+			IndexID:       indexID,
 			TableID:       column.TableID,
 			ColumnID:      column.ColumnID,
 			OrdinalInKind: 0,
 			Kind:          scpb.IndexColumn_KEY,
 			Direction:     catpb.IndexColumn_ASC,
 		}
-		newIndexColumns = append([]*scpb.IndexColumn{indexColumn}, newIndexColumns...)
+		indexSpec.columns = append([]*scpb.IndexColumn{indexColumn}, indexSpec.columns...)
 	}
-	// Assign the ID here, since we may have added columns
-	// and made a new primary key above.
-	index.SourceIndexID = source.IndexID
-	index.IndexID = nextRelationIndexID(b, relation)
-	for _, ic := range newIndexColumns {
-		ic.IndexID = index.IndexID
-		if ic.Kind == scpb.IndexColumn_KEY {
-			b.Add(ic)
+}
+
+func maybeAddPartitionDescriptorForIndex(b BuildCtx, n *tree.CreateIndex, indexSpec *indexSpec) {
+	tableID := indexSpec.primary.TableID
+	relationElts := b.QueryByID(tableID)
+	var indexPartitioningDesc *scpb.IndexPartitioning
+	// If partition by all is required, then setup the information
+	// for that.
+	_, _, partitionAllBy := scpb.FindTablePartitionAllBy(relationElts)
+	if partitionAllBy != nil {
+		// Update AST to reflect the partition information.
+		n.PartitionByIndex = &tree.PartitionByIndex{
+			PartitionBy: &tree.PartitionBy{},
 		}
+		var indexImplicitCols []*scpb.IndexColumn
+		scpb.ForEachIndexColumn(relationElts, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexColumn) {
+			if e.IndexID == indexSpec.primary.IndexID && e.Implicit {
+				indexImplicitCols = append(indexImplicitCols, e)
+			}
+		})
+		sort.Slice(indexImplicitCols, func(i, j int) bool {
+			return indexImplicitCols[i].OrdinalInKind < indexImplicitCols[j].OrdinalInKind
+		})
+
+		for _, ic := range indexImplicitCols {
+			scpb.ForEachColumnName(relationElts, func(current scpb.Status, target scpb.TargetStatus, e *scpb.ColumnName) {
+				if e.ColumnID == ic.ColumnID && e.TableID == ic.TableID {
+					n.PartitionByIndex.Fields = append(n.PartitionByIndex.Fields, tree.Name(e.Name))
+				}
+			})
+		}
+		// Recover the rest from the partitioning data.
+		scpb.ForEachIndexPartitioning(relationElts, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexPartitioning) {
+			if e.IndexID == indexSpec.primary.IndexID {
+				indexPartitioningDesc = protoutil.Clone(e).(*scpb.IndexPartitioning)
+			}
+		})
 	}
-	tempIndexID := index.IndexID + 1 // this is enforced below
-	index.TemporaryIndexID = tempIndexID
+
 	if n.PartitionByIndex.ContainsPartitions() || indexPartitioningDesc != nil {
 		if indexPartitioningDesc == nil {
 			indexPartitioningDesc = &scpb.IndexPartitioning{
-				TableID: index.TableID,
-				IndexID: index.IndexID,
+				TableID: indexSpec.secondary.TableID,
+				IndexID: indexSpec.secondary.IndexID,
 				PartitioningDescriptor: b.IndexPartitioningDescriptor(n.Name.String(),
-					&index, n.PartitionByIndex.PartitionBy),
+					&indexSpec.secondary.Index, indexSpec.columns, n.PartitionByIndex.PartitionBy),
 			}
 		} else {
-			indexPartitioningDesc.IndexID = index.IndexID
+			indexPartitioningDesc.IndexID = indexSpec.secondary.IndexID
 		}
-		b.Add(indexPartitioningDesc)
+		indexSpec.partitioning = indexPartitioningDesc
 		var columnsToPrepend []*scpb.IndexColumn
 		for _, field := range n.PartitionByIndex.Fields {
 			// Resolve the column first.
@@ -415,11 +490,11 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			_, _, fieldColumn := scpb.FindColumn(ers)
 			// If it already in the index we are done.
 			// FIXME: Deal with sharding
-			if fieldColumn.ColumnID == newIndexColumns[0].ColumnID {
+			if fieldColumn.ColumnID == indexSpec.columns[0].ColumnID {
 				break
 			}
 			newIndexColumn := &scpb.IndexColumn{
-				IndexID:   index.IndexID,
+				IndexID:   indexSpec.secondary.IndexID,
 				TableID:   fieldColumn.TableID,
 				ColumnID:  fieldColumn.ColumnID,
 				Kind:      scpb.IndexColumn_KEY,
@@ -428,86 +503,15 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			}
 			// Check if the column is already a suffix, then we should
 			// move it out.
-			for pos, otherIC := range newIndexColumns {
+			for pos, otherIC := range indexSpec.columns {
 				if otherIC.ColumnID == fieldColumn.ColumnID {
-					newIndexColumns = append(newIndexColumns[:pos], newIndexColumns[pos+1:]...)
+					indexSpec.columns = append(indexSpec.columns[:pos], indexSpec.columns[pos+1:]...)
 				}
 			}
 
 			columnsToPrepend = append(columnsToPrepend, newIndexColumn)
-			b.Add(newIndexColumn)
 		}
-		newIndexColumns = append(columnsToPrepend, newIndexColumns...)
-	}
-	// Recompute the ordinal in kind value for keys, since
-	// we just added implicit columns.
-	keyIdx := 0
-	keySuffixIdx := 0
-	for _, ic := range newIndexColumns {
-		if ic.Kind == scpb.IndexColumn_KEY {
-			ic.OrdinalInKind = uint32(keyIdx)
-			keyIdx++
-		} else if ic.Kind == scpb.IndexColumn_KEY_SUFFIX {
-			ic.OrdinalInKind = uint32(keySuffixIdx)
-			keySuffixIdx++
-		}
-		if ic.Kind != scpb.IndexColumn_KEY {
-			b.Add(ic)
-		}
-	}
-	sec := &scpb.SecondaryIndex{Index: index}
-	b.Add(sec)
-	b.Add(&scpb.IndexData{TableID: sec.TableID, IndexID: sec.IndexID})
-	indexName := string(n.Name)
-	if indexName == "" {
-		numImplicitColumns := 0
-		_, _, tbl := scpb.FindTable(relationElements)
-		scpb.ForEachIndexPartitioning(b, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexPartitioning) {
-			if e.IndexID == index.IndexID && e.TableID == index.TableID {
-				numImplicitColumns = int(e.PartitioningDescriptor.NumImplicitColumns)
-			}
-		})
-		indexName = getImplicitSecondaryIndexName(b, tbl, index.IndexID, numImplicitColumns)
-	}
-	b.Add(&scpb.IndexName{
-		TableID: index.TableID,
-		IndexID: index.IndexID,
-		Name:    indexName,
-	})
-
-	temp := &scpb.TemporaryIndex{
-		Index:                    protoutil.Clone(sec).(*scpb.SecondaryIndex).Index,
-		IsUsingSecondaryEncoding: true,
-	}
-	temp.TemporaryIndexID = 0
-	temp.IndexID = nextRelationIndexID(b, relation)
-	if temp.IndexID != tempIndexID {
-		panic(errors.AssertionFailedf(
-			"assumed temporary index ID %d != %d", tempIndexID, temp.IndexID,
-		))
-	}
-	b.AddTransient(temp)
-	b.AddTransient(&scpb.IndexData{TableID: temp.TableID, IndexID: temp.IndexID})
-	for _, ic := range newIndexColumns {
-		tic := protoutil.Clone(ic).(*scpb.IndexColumn)
-		tic.IndexID = tempIndexID
-		b.Add(tic)
-	}
-	if indexPartitioningDesc != nil {
-		partitionDesc := protoutil.Clone(&indexPartitioningDesc.PartitioningDescriptor).(*catpb.PartitioningDescriptor)
-		b.Add(&scpb.IndexPartitioning{
-			TableID:                temp.TableID,
-			IndexID:                temp.IndexID,
-			PartitioningDescriptor: *partitionDesc,
-			/*	PartitioningDescriptor: b.IndexPartitioningDescriptor(
-				&temp.Index, n.PartitionByIndex.PartitionBy,
-			),*/
-		})
-	}
-	if n.Concurrently {
-		b.EvalCtx().ClientNoticeSender.BufferClientNotice(b,
-			pgnotice.Newf("CONCURRENTLY is not required as all indexes are created concurrently"),
-		)
+		indexSpec.columns = append(columnsToPrepend, indexSpec.columns...)
 	}
 }
 
