@@ -208,10 +208,7 @@ type TableHelpers interface {
 
 	// IndexPartitioningDescriptor creates a new partitioning descriptor
 	// for the secondary index element, or panics.
-	IndexPartitioningDescriptor(
-		index *scpb.Index,
-		partBy *tree.PartitionBy,
-	) catpb.PartitioningDescriptor
+	IndexPartitioningDescriptor(indexName string, index *scpb.Index, partBy *tree.PartitionBy) catpb.PartitioningDescriptor
 
 	// ResolveTypeRef resolves a type reference.
 	ResolveTypeRef(typeref tree.ResolvableTypeReference) scpb.TypeT

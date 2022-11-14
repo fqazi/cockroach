@@ -11,7 +11,6 @@
 package scbuildstmt
 
 import (
-	"fmt"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/docs"
@@ -402,17 +401,11 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			indexPartitioningDesc = &scpb.IndexPartitioning{
 				TableID: index.TableID,
 				IndexID: index.IndexID,
-				PartitioningDescriptor: b.IndexPartitioningDescriptor(
-					&index, n.PartitionByIndex.PartitionBy,
-				),
+				PartitioningDescriptor: b.IndexPartitioningDescriptor(n.Name.String(),
+					&index, n.PartitionByIndex.PartitionBy),
 			}
-			fmt.Printf("Creating %d %d\n", indexPartitioningDesc.IndexID, index.IndexID)
 		} else {
-			fmt.Printf("Inherting %d %d\n", indexPartitioningDesc.IndexID, index.IndexID)
 			indexPartitioningDesc.IndexID = index.IndexID
-		}
-		if len(indexPartitioningDesc.List) == 0 && len(indexPartitioningDesc.Range) == 0 {
-			fmt.Printf("studpitiy\n")
 		}
 		b.Add(indexPartitioningDesc)
 		var columnsToPrepend []*scpb.IndexColumn

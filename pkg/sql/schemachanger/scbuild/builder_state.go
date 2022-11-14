@@ -295,7 +295,7 @@ func (b *builderState) nextIndexID(id catid.DescID) (ret catid.IndexID) {
 // IndexPartitioningDescriptor implements the scbuildstmt.TableHelpers
 // interface.
 func (b *builderState) IndexPartitioningDescriptor(
-	index *scpb.Index, partBy *tree.PartitionBy,
+	indexName string, index *scpb.Index, partBy *tree.PartitionBy,
 ) catpb.PartitioningDescriptor {
 	b.ensureDescriptor(index.TableID)
 	bd := b.descCache[index.TableID]
@@ -352,6 +352,23 @@ func (b *builderState) IndexPartitioningDescriptor(
 	if err != nil {
 		panic(err)
 	}
+	// Validate the index partitioning descriptor.
+	partitionNames := make(map[string]struct{})
+	for _, rangePart := range ret.Range {
+		if _, ok := partitionNames[rangePart.Name]; ok {
+			panic(errors.Newf("PARTITION %s: name must be unique (used twice in index %q)",
+				rangePart.Name, indexName))
+		}
+		partitionNames[rangePart.Name] = struct{}{}
+	}
+	for _, listPart := range ret.List {
+		if _, ok := partitionNames[listPart.Name]; ok {
+			panic(errors.Newf("PARTITION %s: name must be unique (used twice in index %q)",
+				listPart.Name, indexName))
+		}
+		partitionNames[listPart.Name] = struct{}{}
+	}
+
 	return ret
 }
 
