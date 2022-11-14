@@ -55,10 +55,6 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 		panic(scerrors.NotImplementedErrorf(n,
 			"FIXME: Storage parameters.."))
 	}
-	if n.Predicate != nil {
-		panic(scerrors.NotImplementedErrorf(n,
-			"FIXME: partial index support"))
-	}
 	_, _, partitionAllBy := scpb.FindTablePartitionAllBy(relationElements)
 	if partitionAllBy != nil && n.PartitionByIndex != nil &&
 		n.PartitionByIndex.ContainsPartitions() {
@@ -175,6 +171,15 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			panic(pgerror.Newf(pgcode.DuplicateRelation, "index with name %q already exists", n.Name))
 		}
 	}
+	// Handle partial indexes.
+	if n.Predicate != nil {
+		expr := b.PartialIndexPredicateExpression(indexSpec.secondary.TableID, n.Predicate)
+		indexSpec.partial = &scpb.SecondaryIndexPartial{
+			TableID:    indexSpec.secondary.TableID,
+			IndexID:    indexSpec.secondary.IndexID,
+			Expression: *expr,
+		}
+	}
 	addColumnsForSecondaryIndex(b, n, relation, &indexSpec)
 	maybeAddPartitionDescriptorForIndex(b, n, &indexSpec)
 	// Warn against creating a non-partitioned index on a partitioned table,
@@ -235,6 +240,14 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			PartitioningDescriptor: *partitionDesc,
 		})
 	}
+	if indexSpec.partial != nil {
+		b.AddTransient(&scpb.SecondaryIndexPartial{
+			TableID:    indexSpec.temporary.TableID,
+			IndexID:    indexSpec.temporary.IndexID,
+			Expression: indexSpec.partial.Expression,
+		})
+	}
+
 	indexSpec.temporary = nil
 	indexSpec.primary = nil
 	indexSpec.apply(b.Add)
