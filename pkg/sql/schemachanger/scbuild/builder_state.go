@@ -339,6 +339,8 @@ func (b *builderState) IndexPartitioningDescriptor(
 			allowedNewColumnNames = append(allowedNewColumnNames, tree.Name(cn.Name))
 		}
 	})
+	allowImplicitPartitioning := b.evalCtx.SessionData().ImplicitColumnPartitioningEnabled ||
+		tbl.IsLocalityRegionalByRow()
 	_, ret, err := b.createPartCCL(
 		b.ctx,
 		b.clusterSettings,
@@ -348,7 +350,7 @@ func (b *builderState) IndexPartitioningDescriptor(
 		oldKeyColumnNames,
 		partBy,
 		allowedNewColumnNames,
-		true, /* allowImplicitPartitioning */
+		allowImplicitPartitioning, /* allowImplicitPartitioning */
 	)
 	if err != nil {
 		panic(err)
