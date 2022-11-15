@@ -13,6 +13,7 @@ package scbuildstmt
 import (
 	"sort"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/docs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
@@ -317,11 +318,6 @@ func addColumnsForSecondaryIndex(
 	for i, columnNode := range n.Columns {
 		colName := columnNode.Column.String()
 		normalizedColName := columnNode.Column.Normalize()
-		// Disallow descending last columns in inverted indexes.
-		if n.Inverted && columnNode.Direction == tree.Descending {
-			panic(pgerror.New(pgcode.FeatureNotSupported,
-				"the last column in an inverted index cannot have the DESC option"))
-		}
 		if columnNode.Expr != nil {
 			tbl := relation.(*scpb.Table)
 			colName = maybeCreateVirtualColumnForIndex(b, &n.Table, tbl, columnNode.Expr, n.Inverted, i == len(n.Columns)-1)
@@ -334,7 +330,7 @@ func addColumnsForSecondaryIndex(
 		_, _, column := scpb.FindColumn(colElts)
 		columnID = column.ColumnID
 		_, _, columnType := scpb.FindColumnType(colElts)
-		processColNodeType(b, n, colName, columnNode, columnType, i == lastColumnIdx)
+		invertedKind := processColNodeType(b, n, indexSpec, colName, columnNode, columnType, i == lastColumnIdx)
 		// Column should be accessible.
 		if columnNode.Expr == nil {
 			checkColumnAccessibilityForIndex(colName, colElts, false)
@@ -351,6 +347,7 @@ func addColumnsForSecondaryIndex(
 			OrdinalInKind: uint32(i),
 			Kind:          scpb.IndexColumn_KEY,
 			Direction:     direction,
+			InvertedKind:  invertedKind,
 		}
 		indexSpec.columns = append(indexSpec.columns, ic)
 		keyColIDs.Add(columnID)
@@ -548,11 +545,13 @@ func checkColumnAccessibilityForIndex(colName string, columnElts ElementResultSe
 func processColNodeType(
 	b BuildCtx,
 	n *tree.CreateIndex,
+	indexSpec *indexSpec,
 	colName string,
 	columnNode tree.IndexElem,
 	columnType *scpb.ColumnType,
 	lastColIdx bool,
-) {
+) scpb.IndexColumn_InvertedKind {
+	invertedKind := scpb.IndexColumn_NOT_INVERTED
 	if columnType.Type.Family() == types.GeometryFamily ||
 		columnType.Type.Family() == types.GeographyFamily {
 		panic(scerrors.NotImplementedErrorf(n,
@@ -563,7 +562,13 @@ func processColNodeType(
 		panic(pgerror.New(pgcode.DatatypeMismatch,
 			"operator classes are only allowed for the last column of an inverted index"))
 	}
-	if n.Inverted && columnNode.OpClass != "" {
+	// Disallow descending last columns in inverted indexes.
+	if n.Inverted && columnNode.Direction == tree.Descending {
+		panic(pgerror.New(pgcode.FeatureNotSupported,
+			"the last column in an inverted index cannot have the DESC option"))
+	}
+	if n.Inverted && lastColIdx {
+		invertedKind = scpb.IndexColumn_INVERTED
 		switch columnType.Type.Family() {
 		case types.ArrayFamily:
 			switch columnNode.OpClass {
@@ -588,10 +593,33 @@ func processColNodeType(
 			// Check the opclass of the last column in the list, which is the column
 			// we're going to inverted index.
 			switch columnNode.OpClass {
+			case "gin_trgm_ops", "gist_trgm_ops":
+				if !b.EvalCtx().Settings.Version.IsActive(b, clusterversion.V22_2TrigramInvertedIndexes) {
+					panic(pgerror.Newf(pgcode.FeatureNotSupported,
+						"version %v must be finalized to create trigram inverted indexes",
+						clusterversion.ByKey(clusterversion.V22_2TrigramInvertedIndexes)))
+				}
+			case "":
+				panic(errors.WithHint(
+					pgerror.New(pgcode.UndefinedObject, "data type text has no default operator class for access method \"gin\""),
+					"You must specify an operator class for the index (did you mean gin_trgm_ops?)"))
 			default:
 				panic(newUndefinedOpclassError(columnNode.OpClass))
 			}
+			invertedKind = scpb.IndexColumn_INVERTED_TRIGRAM
 		}
+		relationElts := b.QueryByID(indexSpec.primary.TableID)
+		scpb.ForEachIndexColumn(relationElts, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexColumn) {
+			if target == scpb.ToPublic &&
+				e.IndexID == indexSpec.primary.IndexID &&
+				e.ColumnID == columnType.ColumnID &&
+				e.Kind == scpb.IndexColumn_KEY {
+				panic(unimplemented.NewWithIssuef(84405,
+					"primary key column %s cannot be present in an inverted index",
+					colName,
+				))
+			}
+		})
 	}
 	// Only certain column types are supported for inverted indexes.
 	if n.Inverted && lastColIdx &&
@@ -611,6 +639,7 @@ func processColNodeType(
 			colName,
 			columnType.Type))
 	}
+	return invertedKind
 }
 func nextRelationIndexID(b BuildCtx, relation scpb.Element) catid.IndexID {
 	switch t := relation.(type) {

@@ -488,6 +488,15 @@ message IndexColumn {
 
   // Indicates if this column is implicit.
   bool implicit = 7;
+
+  enum InvertedKind {
+    NOT_INVERTED = 0;
+    INVERTED = 1;
+    INVERTED_TRIGRAM = 2;
+  }
+  // InvertedKind determines if this column is inverted and how the information
+  // is stored.
+  InvertedKind inverted_kind = 8;
 }
 
 message EnumTypeValue {
