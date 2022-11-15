@@ -28,6 +28,7 @@ go_library(
     deps = [
         "//pkg/clusterversion",
         "//pkg/docs",
+        "//pkg/geo/geoindex",
         "//pkg/security/username",
         "//pkg/server/telemetry",
         "//pkg/settings/cluster",

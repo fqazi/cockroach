@@ -15,6 +15,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/docs"
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
@@ -243,6 +244,13 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			TableID:    tempIdxSpec.temporary.TableID,
 			IndexID:    tempIdxSpec.temporary.IndexID,
 			Expression: idxSpec.partial.Expression,
+		}
+	}
+	if idxSpec.geoconfig != nil {
+		tempIdxSpec.geoconfig = &scpb.IndexGeoConfig{
+			TableID: tempIdxSpec.temporary.TableID,
+			IndexID: tempIdxSpec.temporary.IndexID,
+			Config:  idxSpec.geoconfig.Config,
 		}
 	}
 	idxSpec.primary = nil
@@ -552,11 +560,6 @@ func processColNodeType(
 	lastColIdx bool,
 ) scpb.IndexColumn_InvertedKind {
 	invertedKind := scpb.IndexColumn_NOT_INVERTED
-	if columnType.Type.Family() == types.GeometryFamily ||
-		columnType.Type.Family() == types.GeographyFamily {
-		panic(scerrors.NotImplementedErrorf(n,
-			"FIXME: Storage parameters.."))
-	}
 	// OpClass are only allowed for the last column of an inverted index.
 	if columnNode.OpClass != "" && (!lastColIdx || !n.Inverted) {
 		panic(pgerror.New(pgcode.DatatypeMismatch,
@@ -585,10 +588,27 @@ func processColNodeType(
 				panic(newUndefinedOpclassError(columnNode.OpClass))
 			}
 		case types.GeometryFamily:
-			panic("unexpected")
+			if columnNode.OpClass != "" {
+				panic(newUndefinedOpclassError(columnNode.OpClass))
+			}
+			config, err := geoindex.GeometryIndexConfigForSRID(columnType.Type.GeoSRIDOrZero())
+			if err != nil {
+				panic(err)
+			}
+			indexSpec.geoconfig = &scpb.IndexGeoConfig{
+				TableID: indexSpec.secondary.TableID,
+				IndexID: indexSpec.secondary.IndexID,
+				Config:  *config,
+			}
 		case types.GeographyFamily:
-			panic("unexpected")
-
+			if columnNode.OpClass != "" {
+				panic(newUndefinedOpclassError(columnNode.OpClass))
+			}
+			indexSpec.geoconfig = &scpb.IndexGeoConfig{
+				TableID: indexSpec.secondary.TableID,
+				IndexID: indexSpec.secondary.IndexID,
+				Config:  *geoindex.DefaultGeographyIndexConfig(),
+			}
 		case types.StringFamily:
 			// Check the opclass of the last column in the list, which is the column
 			// we're going to inverted index.
