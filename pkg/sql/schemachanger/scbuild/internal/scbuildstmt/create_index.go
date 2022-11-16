@@ -32,6 +32,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/screl"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/cockroachdb/cockroach/pkg/sql/storageparam"
+	"github.com/cockroachdb/cockroach/pkg/sql/storageparam/indexstorageparam"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -52,10 +54,6 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	} else if _, _, view := scpb.FindView(relationElements); view != nil {
 	} else {
 		panic(errors.AssertionFailedf("unable to find table/view element for %s", n.Table.String()))
-	}
-	if len(n.StorageParams) > 0 {
-		panic(scerrors.NotImplementedErrorf(n,
-			"FIXME: Storage parameters.."))
 	}
 	_, _, partitionAllBy := scpb.FindTablePartitionAllBy(relationElements)
 	if partitionAllBy != nil && n.PartitionByIndex != nil &&
@@ -174,17 +172,10 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			panic(pgerror.Newf(pgcode.DuplicateRelation, "index with name %q already exists", n.Name))
 		}
 	}
-	// Handle partial indexes.
-	if n.Predicate != nil {
-		expr := b.PartialIndexPredicateExpression(idxSpec.secondary.TableID, n.Predicate)
-		idxSpec.partial = &scpb.SecondaryIndexPartial{
-			TableID:    idxSpec.secondary.TableID,
-			IndexID:    idxSpec.secondary.IndexID,
-			Expression: *expr,
-		}
-	}
 	addColumnsForSecondaryIndex(b, n, relation, &idxSpec)
 	maybeAddPartitionDescriptorForIndex(b, n, &idxSpec)
+	maybeApplyStorageParameters(b, n, &idxSpec)
+	maybeAddIndexPredicate(b, n, &idxSpec)
 	// Warn against creating a non-partitioned index on a partitioned table,
 	// which is undesirable in most cases.
 	// Avoid the warning if we have PARTITION ALL BY as all indexes will implicitly
@@ -324,26 +315,25 @@ func addColumnsForSecondaryIndex(
 	indexID := indexSpec.secondary.IndexID
 	lastColumnIdx := len(n.Columns) - 1
 	for i, columnNode := range n.Columns {
-		colName := columnNode.Column.String()
-		normalizedColName := columnNode.Column.Normalize()
+		colName := columnNode.Column
 		if columnNode.Expr != nil {
 			tbl := relation.(*scpb.Table)
-			colName = maybeCreateVirtualColumnForIndex(b, &n.Table, tbl, columnNode.Expr, n.Inverted, i == len(n.Columns)-1)
-			normalizedColName = colName
+			colNameStr := maybeCreateVirtualColumnForIndex(b, &n.Table, tbl, columnNode.Expr, n.Inverted, i == len(n.Columns)-1)
+			colName = tree.Name(colNameStr)
 		}
 		var columnID catid.ColumnID
-		colElts := b.ResolveColumn(tableID, tree.Name(normalizedColName), ResolveParams{
+		colElts := b.ResolveColumn(tableID, colName, ResolveParams{
 			RequiredPrivilege: privilege.CREATE,
 		})
 		_, _, column := scpb.FindColumn(colElts)
 		columnID = column.ColumnID
 		_, _, columnType := scpb.FindColumnType(colElts)
-		invertedKind := processColNodeType(b, n, indexSpec, colName, columnNode, columnType, i == lastColumnIdx)
+		invertedKind := processColNodeType(b, n, indexSpec, string(colName), columnNode, columnType, i == lastColumnIdx)
 		// Column should be accessible.
 		if columnNode.Expr == nil {
-			checkColumnAccessibilityForIndex(colName, colElts, false)
+			checkColumnAccessibilityForIndex(string(colName), colElts, false)
 		}
-		keyColNames[i] = colName
+		keyColNames[i] = string(colName)
 		direction := catpb.IndexColumn_ASC
 		if columnNode.Direction == tree.Descending {
 			direction = catpb.IndexColumn_DESC
@@ -441,7 +431,16 @@ func addColumnsForSecondaryIndex(
 			Kind:          scpb.IndexColumn_KEY,
 			Direction:     catpb.IndexColumn_ASC,
 		}
+		// Remove the sharded column if it's there in the primary
+		// index already, before adding it.
+		for pos, ic := range indexSpec.columns {
+			if ic.ColumnID == column.ColumnID {
+				indexSpec.columns = append(indexSpec.columns[:pos], indexSpec.columns[pos+1:]...)
+				break
+			}
+		}
 		indexSpec.columns = append([]*scpb.IndexColumn{indexColumn}, indexSpec.columns...)
+		panic(scerrors.NotImplementedErrorf(n.Sharded, "split and scatter support are missing"))
 	}
 }
 
@@ -547,6 +546,38 @@ func checkColumnAccessibilityForIndex(colName string, columnElts ElementResultSe
 				"cannot index system column %s",
 				colName))
 		}
+	}
+}
+
+func maybeApplyStorageParameters(b BuildCtx, n *tree.CreateIndex, idxSpec *indexSpec) {
+	if len(n.StorageParams) == 0 {
+		return
+	}
+	dummyIndexDesc := &descpb.IndexDescriptor{}
+	if idxSpec.geoconfig != nil {
+		dummyIndexDesc.GeoConfig = idxSpec.geoconfig.Config
+	}
+	storageParamSetter := &indexstorageparam.Setter{
+		IndexDesc: dummyIndexDesc,
+	}
+	err := storageparam.Set(b, b.SemaCtx(), b.EvalCtx(), n.StorageParams, storageParamSetter)
+	if err != nil {
+		panic(err)
+	}
+	if idxSpec.geoconfig != nil {
+		idxSpec.geoconfig.Config = dummyIndexDesc.GeoConfig
+	}
+}
+
+func maybeAddIndexPredicate(b BuildCtx, n *tree.CreateIndex, idxSpec *indexSpec) {
+	if n.Predicate == nil {
+		return
+	}
+	expr := b.PartialIndexPredicateExpression(idxSpec.secondary.TableID, n.Predicate)
+	idxSpec.partial = &scpb.SecondaryIndexPartial{
+		TableID:    idxSpec.secondary.TableID,
+		IndexID:    idxSpec.secondary.IndexID,
+		Expression: *expr,
 	}
 }
 
@@ -725,6 +756,7 @@ func maybeCreateAndAddShardCol(
 			TypeT:       scpb.TypeT{Type: types.Int},
 			ComputeExpr: b.WrapExpression(tbl.TableID, parsedExpr),
 			IsVirtual:   true,
+			IsNullable:  false,
 		},
 	}
 	addColumn(b, spec, n)
