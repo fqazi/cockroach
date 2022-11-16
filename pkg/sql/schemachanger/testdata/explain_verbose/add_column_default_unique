@@ -690,15 +690,29 @@ EXPLAIN (ddl, verbose) ALTER TABLE db.public.tbl ADD COLUMN j UUID DEFAULT gen_r
 │   │
 │   ├── • Stage 14 of 15 in PostCommitPhase
 │   │   │
-│   │   ├── • 1 element transitioning toward PUBLIC
+│   │   ├── • 2 elements transitioning toward PUBLIC
 │   │   │   │
-│   │   │   └── • SecondaryIndex:{DescID: 106, IndexID: 4, ConstraintID: 4, TemporaryIndexID: 5, SourceIndexID: 2}
-│   │   │       │ MERGED → WRITE_ONLY
+│   │   │   ├── • SecondaryIndex:{DescID: 106, IndexID: 4, ConstraintID: 4, TemporaryIndexID: 5, SourceIndexID: 2}
+│   │   │   │   │ MERGED → WRITE_ONLY
+│   │   │   │   │
+│   │   │   │   ├── • PreviousTransactionPrecedence dependency from MERGED SecondaryIndex:{DescID: 106, IndexID: 4, ConstraintID: 4, TemporaryIndexID: 5, SourceIndexID: 2}
+│   │   │   │   │     rule: "SecondaryIndex transitions to PUBLIC uphold 2-version invariant: MERGED->WRITE_ONLY"
+│   │   │   │   │
+│   │   │   │   └── • SameStagePrecedence dependency from PUBLIC IndexName:{DescID: 106, Name: tbl_j_key, IndexID: 4}
+│   │   │   │         rule: "index named right before index becomes public"
+│   │   │   │
+│   │   │   └── • IndexName:{DescID: 106, Name: tbl_j_key, IndexID: 4}
+│   │   │       │ ABSENT → PUBLIC
 │   │   │       │
-│   │   │       └── • PreviousTransactionPrecedence dependency from MERGED SecondaryIndex:{DescID: 106, IndexID: 4, ConstraintID: 4, TemporaryIndexID: 5, SourceIndexID: 2}
-│   │   │             rule: "SecondaryIndex transitions to PUBLIC uphold 2-version invariant: MERGED->WRITE_ONLY"
+│   │   │       └── • Precedence dependency from BACKFILL_ONLY SecondaryIndex:{DescID: 106, IndexID: 4, ConstraintID: 4, TemporaryIndexID: 5, SourceIndexID: 2}
+│   │   │             rule: "index existence precedes index dependents"
 │   │   │
-│   │   └── • 3 Mutation operations
+│   │   └── • 4 Mutation operations
+│   │       │
+│   │       ├── • SetIndexName
+│   │       │     IndexID: 4
+│   │       │     Name: tbl_j_key
+│   │       │     TableID: 106
 │   │       │
 │   │       ├── • MakeMergedIndexWriteOnly
 │   │       │     IndexID: 4
@@ -731,7 +745,7 @@ EXPLAIN (ddl, verbose) ALTER TABLE db.public.tbl ADD COLUMN j UUID DEFAULT gen_r
     │
     ├── • Stage 1 of 2 in PostCommitNonRevertiblePhase
     │   │
-    │   ├── • 3 elements transitioning toward PUBLIC
+    │   ├── • 2 elements transitioning toward PUBLIC
     │   │   │
     │   │   ├── • Column:{DescID: 106, ColumnID: 2}
     │   │   │   │ WRITE_ONLY → PUBLIC
@@ -763,27 +777,20 @@ EXPLAIN (ddl, verbose) ALTER TABLE db.public.tbl ADD COLUMN j UUID DEFAULT gen_r
     │   │   │   └── • Precedence dependency from PUBLIC IndexColumn:{DescID: 106, ColumnID: 2, IndexID: 5}
     │   │   │         rule: "column dependents exist before column becomes public"
     │   │   │
-    │   │   ├── • SecondaryIndex:{DescID: 106, IndexID: 4, ConstraintID: 4, TemporaryIndexID: 5, SourceIndexID: 2}
-    │   │   │   │ VALIDATED → PUBLIC
-    │   │   │   │
-    │   │   │   ├── • Precedence dependency from PUBLIC IndexColumn:{DescID: 106, ColumnID: 2, IndexID: 4}
-    │   │   │   │     rule: "index dependents exist before index becomes public"
-    │   │   │   │
-    │   │   │   ├── • Precedence dependency from PUBLIC IndexColumn:{DescID: 106, ColumnID: 1, IndexID: 4}
-    │   │   │   │     rule: "index dependents exist before index becomes public"
-    │   │   │   │
-    │   │   │   ├── • PreviousTransactionPrecedence dependency from VALIDATED SecondaryIndex:{DescID: 106, IndexID: 4, ConstraintID: 4, TemporaryIndexID: 5, SourceIndexID: 2}
-    │   │   │   │     rule: "SecondaryIndex transitions to PUBLIC uphold 2-version invariant: VALIDATED->PUBLIC"
-    │   │   │   │
-    │   │   │   └── • SameStagePrecedence dependency from PUBLIC IndexName:{DescID: 106, Name: tbl_j_key, IndexID: 4}
-    │   │   │         rule: "index dependents exist before index becomes public"
-    │   │   │         rule: "index named right before index becomes public"
-    │   │   │
-    │   │   └── • IndexName:{DescID: 106, Name: tbl_j_key, IndexID: 4}
-    │   │       │ ABSENT → PUBLIC
+    │   │   └── • SecondaryIndex:{DescID: 106, IndexID: 4, ConstraintID: 4, TemporaryIndexID: 5, SourceIndexID: 2}
+    │   │       │ VALIDATED → PUBLIC
     │   │       │
-    │   │       └── • Precedence dependency from BACKFILL_ONLY SecondaryIndex:{DescID: 106, IndexID: 4, ConstraintID: 4, TemporaryIndexID: 5, SourceIndexID: 2}
-    │   │             rule: "index existence precedes index dependents"
+    │   │       ├── • Precedence dependency from PUBLIC IndexColumn:{DescID: 106, ColumnID: 2, IndexID: 4}
+    │   │       │     rule: "index dependents exist before index becomes public"
+    │   │       │
+    │   │       ├── • Precedence dependency from PUBLIC IndexColumn:{DescID: 106, ColumnID: 1, IndexID: 4}
+    │   │       │     rule: "index dependents exist before index becomes public"
+    │   │       │
+    │   │       ├── • PreviousTransactionPrecedence dependency from VALIDATED SecondaryIndex:{DescID: 106, IndexID: 4, ConstraintID: 4, TemporaryIndexID: 5, SourceIndexID: 2}
+    │   │       │     rule: "SecondaryIndex transitions to PUBLIC uphold 2-version invariant: VALIDATED->PUBLIC"
+    │   │       │
+    │   │       └── • Precedence dependency from PUBLIC IndexName:{DescID: 106, Name: tbl_j_key, IndexID: 4}
+    │   │             rule: "index dependents exist before index becomes public"
     │   │
     │   ├── • 4 elements transitioning toward TRANSIENT_ABSENT
     │   │   │
@@ -849,9 +856,27 @@ EXPLAIN (ddl, verbose) ALTER TABLE db.public.tbl ADD COLUMN j UUID DEFAULT gen_r
     │       │     IndexID: 3
     │       │     TableID: 106
     │       │
-    │       ├── • SetIndexName
+    │       ├── • LogEvent
+    │       │     Element:
+    │       │       SecondaryIndex:
+    │       │         constraintId: 4
+    │       │         indexId: 4
+    │       │         isUnique: true
+    │       │         sourceIndexId: 2
+    │       │         tableId: 106
+    │       │         temporaryIndexId: 5
+    │       │     EventBase:
+    │       │       Authorization:
+    │       │         UserName: root
+    │       │       Statement: ALTER TABLE ‹db›.‹public›.‹tbl› ADD COLUMN ‹j› UUID UNIQUE DEFAULT gen_random_uuid()
+    │       │       StatementTag: ALTER TABLE
+    │       │       TargetMetadata:
+    │       │         SourceElementID: 1
+    │       │         SubWorkID: 1
+    │       │     TargetStatus: 2
+    │       │
+    │       ├── • MakeValidatedSecondaryIndexPublic
     │       │     IndexID: 4
-    │       │     Name: tbl_j_key
     │       │     TableID: 106
     │       │
     │       ├── • MakeWriteOnlyIndexDeleteOnly
@@ -860,10 +885,6 @@ EXPLAIN (ddl, verbose) ALTER TABLE db.public.tbl ADD COLUMN j UUID DEFAULT gen_r
     │       │
     │       ├── • MakeWriteOnlyIndexDeleteOnly
     │       │     IndexID: 1
-    │       │     TableID: 106
-    │       │
-    │       ├── • MakeValidatedSecondaryIndexPublic
-    │       │     IndexID: 4
     │       │     TableID: 106
     │       │
     │       ├── • SetJobStateOnDescriptor
