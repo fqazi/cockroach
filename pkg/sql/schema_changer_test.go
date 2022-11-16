@@ -221,6 +221,7 @@ func TestAsyncSchemaChanger(t *testing.T) {
 	defer s.Stopper().Stop(context.Background())
 
 	if _, err := sqlDB.Exec(`
+SET use_declarative_schema_changer='off';
 CREATE DATABASE t;
 CREATE TABLE t.test (k CHAR PRIMARY KEY, v CHAR);
 INSERT INTO t.test VALUES ('a', 'b'), ('c', 'd');
@@ -2452,7 +2453,10 @@ func TestOldRevertedDropIndexesAreIgnored(t *testing.T) {
 	server, sqlDB, kvDB = serverutils.StartServer(t, params)
 	defer server.Stopper().Stop(context.Background())
 
-	_, err := sqlDB.Exec("CREATE DATABASE test; CREATE TABLE test.t (pk INT PRIMARY KEY, b int)")
+	_, err := sqlDB.Exec("SET use_declarative_schema_changer='off'")
+	require.NoError(t, err)
+
+	_, err = sqlDB.Exec("CREATE DATABASE test; CREATE TABLE test.t (pk INT PRIMARY KEY, b int)")
 	require.NoError(t, err)
 
 	// This create index is mutated above to look like it was the
@@ -5332,6 +5336,7 @@ func TestIndexBackfillValidation(t *testing.T) {
 	defer server.Stopper().Stop(context.Background())
 
 	if _, err := sqlDB.Exec(`
+SET use_declarative_schema_changer='off';
 CREATE DATABASE t;
 CREATE TABLE t.test (k INT PRIMARY KEY, v INT);
 `); err != nil {
@@ -5403,6 +5408,7 @@ func TestInvertedIndexBackfillValidation(t *testing.T) {
 	defer server.Stopper().Stop(context.Background())
 
 	if _, err := sqlDB.Exec(`
+SET use_declarative_schema_changer='off';
 CREATE DATABASE t;
 CREATE TABLE t.test (k INT PRIMARY KEY, v JSON);
 `); err != nil {
@@ -6439,6 +6445,7 @@ func TestRetryOnAllErrorsWhenReverting(t *testing.T) {
 		defer s.Stopper().Stop(ctx)
 
 		_, err := sqlDB.Exec(`
+SET use_declarative_schema_changer='off';
 CREATE DATABASE t;
 CREATE TABLE t.test (k INT PRIMARY KEY, v INT8);
 INSERT INTO t.test VALUES (1, 2), (2, 2);
@@ -6640,6 +6647,10 @@ func TestFailureToMarkCanceledReversalLeadsToCanceledStatus(t *testing.T) {
 	}
 
 	s, sqlDB, _ := serverutils.StartServer(t, params)
+	_, err := sqlDB.Exec(`SET use_declarative_schema_changer='off';`)
+	require.NoError(t, err)
+	_, err = sqlDB.Exec(`SET CLUSTER SETTING sql.defaults.use_declarative_schema_changer='off';`)
+	require.NoError(t, err)
 	defer s.Stopper().Stop(ctx)
 
 	tdb := sqlutils.MakeSQLRunner(sqlDB)
@@ -6712,6 +6723,11 @@ func TestCancelMultipleQueued(t *testing.T) {
 		JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 	}
 	s, sqlDB, _ := serverutils.StartServer(t, params)
+	_, err := sqlDB.Exec(`SET use_declarative_schema_changer='off'`)
+	require.NoError(t, err)
+	_, err = sqlDB.Exec(`SET CLUSTER SETTING sql.defaults.use_declarative_schema_changer='off'`)
+	require.NoError(t, err)
+
 	defer s.Stopper().Stop(ctx)
 
 	tdb := sqlutils.MakeSQLRunner(sqlDB)
@@ -8212,7 +8228,8 @@ ALTER TABLE t.test ALTER PRIMARY KEY USING COLUMNS (a)`,
 		},
 		{
 			name: "update during add index with multiple column families",
-			setupSQL: `CREATE DATABASE t;
+			setupSQL: `SET use_declarative_schema_changer = off;
+CREATE DATABASE t;
 CREATE TABLE t.test (
     pk INT PRIMARY KEY,
     a INT,

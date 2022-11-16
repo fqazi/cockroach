@@ -138,6 +138,7 @@ func TestIndexBackfillMergeRetry(t *testing.T) {
 	defer s.Stopper().Stop(context.Background())
 
 	if _, err := sqlDB.Exec(`
+SET use_declarative_schema_changer='off';
 CREATE DATABASE t;
 CREATE TABLE t.test (k INT PRIMARY KEY, v INT);
 `); err != nil {
@@ -585,6 +586,7 @@ func TestIndexBackfillMergeTxnRetry(t *testing.T) {
 	require.NoError(t, err)
 
 	if _, err := sqlDB.Exec(`
+SET use_declarative_schema_changer='off';
 CREATE DATABASE t;
 CREATE TABLE t.test (k INT PRIMARY KEY, v INT);
 `); err != nil {
