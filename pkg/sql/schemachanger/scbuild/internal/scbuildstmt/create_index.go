@@ -684,9 +684,9 @@ func processColNodeType(
 	} else if (!n.Inverted || !lastColIdx) &&
 		!colinfo.ColumnTypeIsIndexable(columnType.Type) {
 		// Otherwise, check if the column type is indexable.
-		panic(pgerror.Newf(
-			pgcode.InvalidTableDefinition,
-			"index element %s of type %s is not indexable",
+		panic(unimplemented.NewWithIssueDetailf(35730,
+			columnType.Type.DebugString(),
+			"column %s is of type %s and thus is not indexable",
 			colName,
 			columnType.Type))
 	}
@@ -825,7 +825,7 @@ func maybeCreateVirtualColumnForIndex(
 				panic(err)
 			}
 			if otherExpr.String() == expr.String() {
-				validateColumnIndexableType(e.Type)
+				// We will let the type validation happen like normal, instead of checking here.
 				scpb.ForEachColumnName(elts, func(current scpb.Status, target scpb.TargetStatus, cn *scpb.ColumnName) {
 					if target == scpb.ToPublic && e.ColumnID == cn.ColumnID && e.TableID == cn.TableID {
 						colName = cn.Name

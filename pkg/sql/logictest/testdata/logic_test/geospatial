@@ -123,10 +123,10 @@ CREATE TABLE bad_geog_table(bad_pk geography primary key)
 statement error column bad_pk is of type geometry and thus is not indexable
 CREATE TABLE bad_geom_table(bad_pk geometry primary key)
 
-statement error pq: index element geog of type geography is not indexable
+statement error column geog is of type geography and thus is not indexable
 CREATE INDEX geog_idx ON geo_table(geog)
 
-statement error pq: index element geom of type geometry is not indexable
+statement error column geom is of type geometry and thus is not indexable
 CREATE INDEX geom_idx ON geo_table(geom)
 
 statement ok

@@ -160,7 +160,8 @@ func alterTableAddColumn(
 		!d.Unique.WithoutIndex &&
 		!colinfo.ColumnTypeIsIndexable(spec.colType.Type) {
 		typInfo := spec.colType.Type.DebugString()
-		panic(unimplemented.NewWithIssueDetailf(35730, typInfo,
+		panic(unimplemented.NewWithIssueDetailf(35730,
+			typInfo,
 			"column %s is of type %s and thus is not indexable",
 			d.Name,
 			spec.colType.Type.Name()))
