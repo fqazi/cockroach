@@ -139,7 +139,7 @@ EXPLAIN (ddl, verbose) rollback at post-commit stage 5 of 7;
     │   │       └── • PreviousTransactionPrecedence dependency from WRITE_ONLY TemporaryIndex:{DescID: 104, IndexID: 4, ConstraintID: 3, SourceIndexID: 1}
     │   │             rule: "TemporaryIndex transitions to ABSENT uphold 2-version invariant: WRITE_ONLY->DELETE_ONLY"
     │   │
-    │   └── • 16 Mutation operations
+    │   └── • 17 Mutation operations
     │       │
     │       ├── • SetColumnName
     │       │     ColumnID: 3
@@ -175,6 +175,9 @@ EXPLAIN (ddl, verbose) rollback at post-commit stage 5 of 7;
     │       │       TargetMetadata:
     │       │         SourceElementID: 1
     │       │         SubWorkID: 1
+    │       │     TableID: 104
+    │       │
+    │       ├── • RefreshStats
     │       │     TableID: 104
     │       │
     │       ├── • RefreshStats

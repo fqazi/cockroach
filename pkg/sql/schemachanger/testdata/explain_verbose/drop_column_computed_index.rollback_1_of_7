@@ -111,7 +111,7 @@ EXPLAIN (ddl, verbose) rollback at post-commit stage 1 of 7;
         │       └── • skip PUBLIC → ABSENT operations
         │             rule: "skip index-column removal ops on index removal"
         │
-        └── • 14 Mutation operations
+        └── • 15 Mutation operations
             │
             ├── • SetColumnName
             │     ColumnID: 2
@@ -153,6 +153,9 @@ EXPLAIN (ddl, verbose) rollback at post-commit stage 1 of 7;
             │       TargetMetadata:
             │         SourceElementID: 1
             │         SubWorkID: 1
+            │     TableID: 104
+            │
+            ├── • RefreshStats
             │     TableID: 104
             │
             ├── • RefreshStats

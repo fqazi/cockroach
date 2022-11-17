@@ -573,7 +573,7 @@ EXPLAIN (ddl, verbose) ALTER TABLE t ALTER PRIMARY KEY USING COLUMNS (j);
     │   │       └── • Precedence dependency from VALIDATED PrimaryIndex:{DescID: 104, IndexID: 1, ConstraintID: 1}
     │   │             rule: "index no longer public before dependents"
     │   │
-    │   └── • 10 Mutation operations
+    │   └── • 11 Mutation operations
     │       │
     │       ├── • MakePublicPrimaryIndexWriteOnly
     │       │     IndexID: 1
@@ -591,6 +591,9 @@ EXPLAIN (ddl, verbose) ALTER TABLE t ALTER PRIMARY KEY USING COLUMNS (j);
     │       │
     │       ├── • MakeWriteOnlyIndexDeleteOnly
     │       │     IndexID: 3
+    │       │     TableID: 104
+    │       │
+    │       ├── • RefreshStats
     │       │     TableID: 104
     │       │
     │       ├── • LogEvent

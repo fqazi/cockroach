@@ -584,7 +584,7 @@ begin transaction #17
 validate forward indexes [5] in table #104
 commit transaction #17
 begin transaction #18
-## PostCommitNonRevertiblePhase stage 1 of 2 with 10 MutationType ops
+## PostCommitNonRevertiblePhase stage 1 of 2 with 11 MutationType ops
 upsert descriptor #104
   ...
            statementTag: CREATE INDEX
@@ -702,6 +702,7 @@ upsert descriptor #104
   -  version: "11"
   +  version: "12"
 write *eventpb.CreateIndex to event log: CREATE UNIQUE INDEX ‹idx› ON ‹defaultdb›.‹public›.‹t› (‹k›)
+adding table for stats refresh: 104
 update progress of schema change job #1: "PostCommitNonRevertiblePhase stage 2 of 2 with 11 MutationType ops pending"
 set schema change job #1 to non-cancellable
 commit transaction #18

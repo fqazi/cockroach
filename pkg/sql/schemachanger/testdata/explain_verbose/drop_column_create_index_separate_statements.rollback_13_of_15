@@ -185,7 +185,7 @@ EXPLAIN (ddl, verbose) rollback at post-commit stage 13 of 15;
     │   │       └── • skip PUBLIC → ABSENT operations
     │   │             rule: "skip index-column removal ops on index removal"
     │   │
-    │   └── • 18 Mutation operations
+    │   └── • 19 Mutation operations
     │       │
     │       ├── • SetIndexName
     │       │     IndexID: 1
@@ -264,6 +264,9 @@ EXPLAIN (ddl, verbose) rollback at post-commit stage 13 of 15;
     │       │         SourceElementID: 1
     │       │         SubWorkID: 1
     │       │     IndexID: 1
+    │       │     TableID: 104
+    │       │
+    │       ├── • RefreshStats
     │       │     TableID: 104
     │       │
     │       ├── • LogEvent

@@ -152,10 +152,11 @@ Schema change plan for ALTER TABLE ‹defaultdb›.‹public›.‹t› DROP COL
       │    │    ├── PUBLIC     → ABSENT                IndexColumn:{DescID: 104, ColumnID: 3, IndexID: 2}
       │    │    ├── PUBLIC     → ABSENT                IndexColumn:{DescID: 104, ColumnID: 1, IndexID: 2}
       │    │    └── VALIDATED  → DELETE_ONLY           SecondaryIndex:{DescID: 104, IndexID: 2, ConstraintID: 0}
-      │    └── 10 Mutation operations
+      │    └── 11 Mutation operations
       │         ├── MakeWriteOnlyColumnDeleteOnly {"ColumnID":2,"TableID":104}
       │         ├── MakeWriteOnlyColumnDeleteOnly {"ColumnID":4,"TableID":104}
       │         ├── MakeWriteOnlyIndexDeleteOnly {"IndexID":4,"TableID":104}
+      │         ├── RefreshStats {"TableID":104}
       │         ├── LogEvent {"TargetStatus":2}
       │         ├── MakeValidatedSecondaryIndexPublic {"IndexID":5,"TableID":104}
       │         ├── MakeWriteOnlyIndexDeleteOnly {"IndexID":6,"TableID":104}

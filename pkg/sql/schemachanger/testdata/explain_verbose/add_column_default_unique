@@ -835,7 +835,7 @@ EXPLAIN (ddl, verbose) ALTER TABLE db.public.tbl ADD COLUMN j UUID DEFAULT gen_r
     │   │       └── • PreviousTransactionPrecedence dependency from VALIDATED PrimaryIndex:{DescID: 106, IndexID: 1, ConstraintID: 1}
     │   │             rule: "PrimaryIndex transitions to ABSENT uphold 2-version invariant: VALIDATED->WRITE_ONLY"
     │   │
-    │   └── • 9 Mutation operations
+    │   └── • 10 Mutation operations
     │       │
     │       ├── • MakeWriteOnlyColumnPublic
     │       │     ColumnID: 2
@@ -854,6 +854,9 @@ EXPLAIN (ddl, verbose) ALTER TABLE db.public.tbl ADD COLUMN j UUID DEFAULT gen_r
     │       │
     │       ├── • MakeWriteOnlyIndexDeleteOnly
     │       │     IndexID: 3
+    │       │     TableID: 106
+    │       │
+    │       ├── • RefreshStats
     │       │     TableID: 106
     │       │
     │       ├── • LogEvent

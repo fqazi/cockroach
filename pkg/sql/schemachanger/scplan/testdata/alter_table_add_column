@@ -1485,7 +1485,7 @@ PostCommitPhase stage 7 of 7 with 2 ValidationType ops
     *scop.ValidateIndex
       IndexID: 4
       TableID: 108
-PostCommitNonRevertiblePhase stage 1 of 3 with 10 MutationType ops
+PostCommitNonRevertiblePhase stage 1 of 3 with 11 MutationType ops
   transitions:
     [[IndexColumn:{DescID: 108, ColumnID: 1, IndexID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[IndexColumn:{DescID: 108, ColumnID: 2, IndexID: 1}, ABSENT], PUBLIC] -> ABSENT
@@ -1512,6 +1512,8 @@ PostCommitNonRevertiblePhase stage 1 of 3 with 10 MutationType ops
       TableID: 108
     *scop.MakeWriteOnlyIndexDeleteOnly
       IndexID: 3
+      TableID: 108
+    *scop.RefreshStats
       TableID: 108
     *scop.LogEvent
       Element:
@@ -1949,7 +1951,7 @@ PostCommitPhase stage 15 of 15 with 1 ValidationType op
     *scop.ValidateIndex
       IndexID: 4
       TableID: 109
-PostCommitNonRevertiblePhase stage 1 of 2 with 9 MutationType ops
+PostCommitNonRevertiblePhase stage 1 of 2 with 10 MutationType ops
   transitions:
     [[IndexColumn:{DescID: 109, ColumnID: 1, IndexID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[PrimaryIndex:{DescID: 109, IndexID: 1, ConstraintID: 1}, ABSENT], VALIDATED] -> DELETE_ONLY
@@ -1976,6 +1978,8 @@ PostCommitNonRevertiblePhase stage 1 of 2 with 9 MutationType ops
       TableID: 109
     *scop.MakeWriteOnlyIndexDeleteOnly
       IndexID: 3
+      TableID: 109
+    *scop.RefreshStats
       TableID: 109
     *scop.LogEvent
       Element:

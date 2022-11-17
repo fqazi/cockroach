@@ -367,7 +367,10 @@ EXPLAIN (ddl, verbose) CREATE INDEX idx1 ON t (v) WHERE (v = 'a');
     │   │       └── • skip PUBLIC → TRANSIENT_ABSENT operations
     │   │             rule: "skip index-column removal ops on index removal"
     │   │
-    │   └── • 6 Mutation operations
+    │   └── • 7 Mutation operations
+    │       │
+    │       ├── • RefreshStats
+    │       │     TableID: 106
     │       │
     │       ├── • LogEvent
     │       │     Element:
