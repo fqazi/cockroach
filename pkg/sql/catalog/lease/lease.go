@@ -198,7 +198,9 @@ type historicalDescriptor struct {
 //
 // In the following scenario v4 is our oldest active lease
 // [v1@t1			][v2@t3			][v3@t5				][v4@t7
-// 		 [start												end]
+//
+//	[start												end]
+//
 // getDescriptorsFromStoreForInterval(..., start, end) will get back:
 // [v3, v2] (reverse order)
 //
@@ -314,10 +316,10 @@ func getDescriptorsFromStoreForInterval(
 // descriptor version we are interested in, resulting at most 2 KV calls.
 //
 // TODO(vivek, james): Future work:
-// 1. Translate multiple simultaneous calls to this method into a single call
-//    as is done for acquireNodeLease().
-// 2. Figure out a sane policy on when these descriptors should be purged.
-//    They are currently purged in PurgeOldVersions.
+//  1. Translate multiple simultaneous calls to this method into a single call
+//     as is done for acquireNodeLease().
+//  2. Figure out a sane policy on when these descriptors should be purged.
+//     They are currently purged in PurgeOldVersions.
 func (m *Manager) readOlderVersionForTimestamp(
 	ctx context.Context, id descpb.ID, timestamp hlc.Timestamp,
 ) ([]historicalDescriptor, error) {
@@ -472,6 +474,13 @@ func (m *Manager) AcquireFreshestFromStore(ctx context.Context, id descpb.ID) er
 func acquireNodeLease(ctx context.Context, m *Manager, id descpb.ID) (bool, error) {
 	var toRelease *storedLease
 	resultChan, didAcquire := m.storage.group.DoChan(fmt.Sprintf("acquire%d", id), func() (interface{}, error) {
+		start := timeutil.Now()
+		defer func() {
+			totalTime := timeutil.Since(start)
+			if totalTime > time.Second/2 {
+				log.Warningf(ctx, "Lease rnewal took %v\n", float64(totalTime)/float64(time.Second))
+			}
+		}()
 		// Note that we use a new `context` here to avoid a situation where a cancellation
 		// of the first context cancels other callers to the `acquireNodeLease()` method,
 		// because of its use of `singleflight.Group`. See issue #41780 for how this has
@@ -1185,6 +1194,7 @@ func (m *Manager) refreshSomeLeases(ctx context.Context) {
 	}
 	m.mu.Unlock()
 	// Limit the number of concurrent lease refreshes.
+	start := timeutil.Now()
 	var wg sync.WaitGroup
 	for i := range ids {
 		id := ids[i]
@@ -1226,6 +1236,8 @@ func (m *Manager) refreshSomeLeases(ctx context.Context) {
 		}
 	}
 	wg.Wait()
+	totalRefreshTime := timeutil.Since(start)
+	log.Warningf(ctx, "Refreshed all by %v", totalRefreshTime)
 }
 
 // DeleteOrphanedLeases releases all orphaned leases created by a prior
