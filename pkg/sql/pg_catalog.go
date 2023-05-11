@@ -383,8 +383,8 @@ https://www.postgresql.org/docs/9.5/catalog-pg-attrdef.html`,
 				h.ColumnOid(table.GetID(), column.GetID()),          // oid
 				tableOid(table.GetID()),                             // adrelid
 				tree.NewDInt(tree.DInt(column.GetPGAttributeNum())), // adnum
-				defSrc, // adbin
-				defSrc, // adsrc
+				defSrc,                                              // adbin
+				defSrc,                                              // adsrc
 			); err != nil {
 				return err
 			}
@@ -436,18 +436,18 @@ https://www.postgresql.org/docs/12/catalog-pg-attribute.html`,
 			}
 
 			return addRow(
-				attRelID,                        // attrelid
-				tree.NewDName(column.GetName()), // attname
-				typOid(colTyp),                  // atttypid
-				zeroVal,                         // attstattarget
-				typLen(colTyp),                  // attlen
-				tree.NewDInt(tree.DInt(attNum)), // attnum
-				zeroVal,                         // attndims
-				negOneVal,                       // attcacheoff
-				tree.NewDInt(tree.DInt(colTyp.TypeModifier())), // atttypmod
-				tree.DNull, // attbyval (see pg_type.typbyval)
-				tree.DNull, // attstorage
-				tree.DNull, // attalign
+				attRelID,                                         // attrelid
+				tree.NewDName(column.GetName()),                  // attname
+				typOid(colTyp),                                   // atttypid
+				zeroVal,                                          // attstattarget
+				typLen(colTyp),                                   // attlen
+				tree.NewDInt(tree.DInt(attNum)),                  // attnum
+				zeroVal,                                          // attndims
+				negOneVal,                                        // attcacheoff
+				tree.NewDInt(tree.DInt(colTyp.TypeModifier())),   // atttypmod
+				tree.DNull,                                       // attbyval (see pg_type.typbyval)
+				tree.DNull,                                       // attstorage
+				tree.DNull,                                       // attalign
 				tree.MakeDBool(tree.DBool(!column.IsNullable())), // attnotnull
 				tree.MakeDBool(tree.DBool(column.HasDefault())),  // atthasdef
 				tree.NewDString(generatedAsIdentityType),         // attidentity
@@ -694,34 +694,34 @@ https://www.postgresql.org/docs/9.5/catalog-pg-class.html`,
 		implicitTypOID := typedesc.TableIDToImplicitTypeOID(table.GetID())
 		namespaceOid := schemaOid(sc.GetID())
 		if err := addRow(
-			tableOid(table.GetID()),        // oid
-			tree.NewDName(table.GetName()), // relname
-			namespaceOid,                   // relnamespace
-			tree.NewDOid(implicitTypOID),   // reltype (PG creates a composite type in pg_type for each table)
-			oidZero,                        // reloftype (used for type tables, which is unsupported)
-			ownerOid,                       // relowner
-			relAm,                          // relam
-			oidZero,                        // relfilenode
-			oidZero,                        // reltablespace
-			tree.DNull,                     // relpages
-			tree.DNull,                     // reltuples
-			zeroVal,                        // relallvisible
-			oidZero,                        // reltoastrelid
-			tree.MakeDBool(tree.DBool(table.IsPhysicalTable())), // relhasindex
-			tree.DBoolFalse, // relisshared
-			relPersistence,  // relpersistence
-			tree.MakeDBool(tree.DBool(table.IsTemporary())), // relistemp
-			relKind, // relkind
+			tableOid(table.GetID()),                                        // oid
+			tree.NewDName(table.GetName()),                                 // relname
+			namespaceOid,                                                   // relnamespace
+			tree.NewDOid(implicitTypOID),                                   // reltype (PG creates a composite type in pg_type for each table)
+			oidZero,                                                        // reloftype (used for type tables, which is unsupported)
+			ownerOid,                                                       // relowner
+			relAm,                                                          // relam
+			oidZero,                                                        // relfilenode
+			oidZero,                                                        // reltablespace
+			tree.DNull,                                                     // relpages
+			tree.DNull,                                                     // reltuples
+			zeroVal,                                                        // relallvisible
+			oidZero,                                                        // reltoastrelid
+			tree.MakeDBool(tree.DBool(table.IsPhysicalTable())),            // relhasindex
+			tree.DBoolFalse,                                                // relisshared
+			relPersistence,                                                 // relpersistence
+			tree.MakeDBool(tree.DBool(table.IsTemporary())),                // relistemp
+			relKind,                                                        // relkind
 			tree.NewDInt(tree.DInt(len(table.AccessibleColumns()))),        // relnatts
 			tree.NewDInt(tree.DInt(len(table.EnforcedCheckConstraints()))), // relchecks
-			tree.DBoolFalse, // relhasoids
-			tree.MakeDBool(tree.DBool(table.IsPhysicalTable())), // relhaspkey
-			tree.DBoolFalse, // relhasrules
-			tree.DBoolFalse, // relhastriggers
-			tree.DBoolFalse, // relhassubclass
-			zeroVal,         // relfrozenxid
-			tree.DNull,      // relacl
-			relOptions,      // reloptions
+			tree.DBoolFalse,                                                // relhasoids
+			tree.MakeDBool(tree.DBool(table.IsPhysicalTable())),            // relhaspkey
+			tree.DBoolFalse,                                                // relhasrules
+			tree.DBoolFalse,                                                // relhastriggers
+			tree.DBoolFalse,                                                // relhassubclass
+			zeroVal,                                                        // relfrozenxid
+			tree.DNull,                                                     // relacl
+			relOptions,                                                     // reloptions
 			// These columns were automatically created by pg_catalog_test's missing column generator.
 			tree.DNull, // relforcerowsecurity
 			tree.DNull, // relispartition
@@ -754,34 +754,34 @@ https://www.postgresql.org/docs/9.5/catalog-pg-class.html`,
 				return err
 			}
 			return addRow(
-				h.IndexOid(table.GetID(), index.GetID()), // oid
-				tree.NewDName(index.GetName()),           // relname
-				namespaceOid,                             // relnamespace
-				oidZero,                                  // reltype
-				oidZero,                                  // reloftype
-				ownerOid,                                 // relowner
-				indexType,                                // relam
-				oidZero,                                  // relfilenode
-				oidZero,                                  // reltablespace
-				tree.DNull,                               // relpages
-				tree.DNull,                               // reltuples
-				zeroVal,                                  // relallvisible
-				oidZero,                                  // reltoastrelid
-				tree.DBoolFalse,                          // relhasindex
-				tree.DBoolFalse,                          // relisshared
-				relPersistencePermanent,                  // relPersistence
-				tree.DBoolFalse,                          // relistemp
-				relKindIndex,                             // relkind
+				h.IndexOid(table.GetID(), index.GetID()),       // oid
+				tree.NewDName(index.GetName()),                 // relname
+				namespaceOid,                                   // relnamespace
+				oidZero,                                        // reltype
+				oidZero,                                        // reloftype
+				ownerOid,                                       // relowner
+				indexType,                                      // relam
+				oidZero,                                        // relfilenode
+				oidZero,                                        // reltablespace
+				tree.DNull,                                     // relpages
+				tree.DNull,                                     // reltuples
+				zeroVal,                                        // relallvisible
+				oidZero,                                        // reltoastrelid
+				tree.DBoolFalse,                                // relhasindex
+				tree.DBoolFalse,                                // relisshared
+				relPersistencePermanent,                        // relPersistence
+				tree.DBoolFalse,                                // relistemp
+				relKindIndex,                                   // relkind
 				tree.NewDInt(tree.DInt(index.NumKeyColumns())), // relnatts
-				zeroVal,         // relchecks
-				tree.DBoolFalse, // relhasoids
-				tree.DBoolFalse, // relhaspkey
-				tree.DBoolFalse, // relhasrules
-				tree.DBoolFalse, // relhastriggers
-				tree.DBoolFalse, // relhassubclass
-				zeroVal,         // relfrozenxid
-				tree.DNull,      // relacl
-				tree.DNull,      // reloptions
+				zeroVal,                                        // relchecks
+				tree.DBoolFalse,                                // relhasoids
+				tree.DBoolFalse,                                // relhaspkey
+				tree.DBoolFalse,                                // relhasrules
+				tree.DBoolFalse,                                // relhastriggers
+				tree.DBoolFalse,                                // relhassubclass
+				zeroVal,                                        // relfrozenxid
+				tree.DNull,                                     // relacl
+				tree.DNull,                                     // reloptions
 				// These columns were automatically created by pg_catalog_test's missing column generator.
 				tree.DNull, // relforcerowsecurity
 				tree.DNull, // relispartition
@@ -1024,32 +1024,32 @@ func populateTableConstraints(
 		}
 
 		if err := addRow(
-			conoid,                   // oid
-			dNameOrNull(c.GetName()), // conname
-			namespaceOid,             // connamespace
-			contype,                  // contype
-			tree.DBoolFalse,          // condeferrable
-			tree.DBoolFalse,          // condeferred
+			conoid,                                                   // oid
+			dNameOrNull(c.GetName()),                                 // conname
+			namespaceOid,                                             // connamespace
+			contype,                                                  // contype
+			tree.DBoolFalse,                                          // condeferrable
+			tree.DBoolFalse,                                          // condeferred
 			tree.MakeDBool(tree.DBool(!c.IsConstraintUnvalidated())), // convalidated
-			tblOid,         // conrelid
-			oidZero,        // contypid
-			conindid,       // conindid
-			confrelid,      // confrelid
-			confupdtype,    // confupdtype
-			confdeltype,    // confdeltype
-			confmatchtype,  // confmatchtype
-			tree.DBoolTrue, // conislocal
-			zeroVal,        // coninhcount
-			tree.DBoolTrue, // connoinherit
-			conkey,         // conkey
-			confkey,        // confkey
-			tree.DNull,     // conpfeqop
-			tree.DNull,     // conppeqop
-			tree.DNull,     // conffeqop
-			tree.DNull,     // conexclop
-			conbin,         // conbin
-			consrc,         // consrc
-			condef,         // condef
+			tblOid,                                                   // conrelid
+			oidZero,                                                  // contypid
+			conindid,                                                 // conindid
+			confrelid,                                                // confrelid
+			confupdtype,                                              // confupdtype
+			confdeltype,                                              // confdeltype
+			confmatchtype,                                            // confmatchtype
+			tree.DBoolTrue,                                           // conislocal
+			zeroVal,                                                  // coninhcount
+			tree.DBoolTrue,                                           // connoinherit
+			conkey,                                                   // conkey
+			confkey,                                                  // confkey
+			tree.DNull,                                               // conpfeqop
+			tree.DNull,                                               // conppeqop
+			tree.DNull,                                               // conffeqop
+			tree.DNull,                                               // conexclop
+			conbin,                                                   // conbin
+			consrc,                                                   // consrc
+			condef,                                                   // condef
 			// These columns were automatically created by pg_catalog_test's missing column generator.
 			tree.DNull, // conparentid
 		); err != nil {
@@ -1096,9 +1096,9 @@ func makeAllRelationsVirtualTableWithDescriptorIDIndex(
 	virtualOpts virtualOpts,
 	includesIndexEntries bool,
 	populateFromTable func(ctx context.Context, p *planner, h oidHasher, db catalog.DatabaseDescriptor,
-		sc catalog.SchemaDescriptor, table catalog.TableDescriptor, lookup simpleSchemaResolver,
-		addRow func(...tree.Datum) error,
-	) error,
+	sc catalog.SchemaDescriptor, table catalog.TableDescriptor, lookup simpleSchemaResolver,
+	addRow func(...tree.Datum) error,
+) error,
 ) virtualSchemaTable {
 	populateAll := func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
 		h := makeOidHasher()
@@ -1116,18 +1116,26 @@ func makeAllRelationsVirtualTableWithDescriptorIDIndex(
 				populate: func(ctx context.Context, unwrappedConstraint tree.Datum, p *planner, db catalog.DatabaseDescriptor,
 					addRow func(...tree.Datum) error) (bool, error) {
 					var id descpb.ID
+					var oid oid.Oid
 					switch t := unwrappedConstraint.(type) {
 					case *tree.DOid:
 						id = descpb.ID(t.Oid)
+						oid = t.Oid
 					case *tree.DInt:
 						id = descpb.ID(*t)
 					default:
 						return false, errors.AssertionFailedf("unexpected type %T for table id column in virtual table %s",
 							unwrappedConstraint, schemaDef)
 					}
-					table, err := p.LookupTableByID(ctx, id)
+					desc, err := p.byIDGetterBuilder().WithoutNonPublic().Get().Desc(ctx, id)
 					if err != nil {
-						if sqlerrors.IsUndefinedRelationError(err) {
+						if errors.Is(err, catalog.ErrDescriptorNotFound) {
+							// We are colliding with a builtin function, we can concretly,
+							// say there should be no rows. Since the only other OIDs we
+							// support are indexes.
+							if oid != 0 && !catid.IsOIDUserDefined(oid) {
+								return true, nil
+							}
 							// No table found, so no rows. In this case, we'll fall back to the
 							// full table scan if the index isn't complete - see the
 							// indexContainsNonTableDescriptorIDs parameter.
@@ -1135,6 +1143,12 @@ func makeAllRelationsVirtualTableWithDescriptorIDIndex(
 							return false, nil
 						}
 						return false, err
+					}
+					// If the descriptor is not a table, then we have a complete result
+					// from this virtual index.
+					table, ok := desc.(catalog.TableDescriptor)
+					if !ok {
+						return true, nil
 					}
 					// Don't include tables that aren't in the current database unless
 					// they're virtual, dropped tables, or ones that the user can't see.
@@ -1144,7 +1158,7 @@ func makeAllRelationsVirtualTableWithDescriptorIDIndex(
 					}
 					if (!table.IsVirtualTable() && table.GetParentID() != db.GetID()) ||
 						table.Dropped() || !canSeeDescriptor {
-						return false, nil
+						return true, nil
 					}
 					h := makeOidHasher()
 					scResolver := oneAtATimeSchemaResolver{p: p, ctx: ctx}
@@ -1684,6 +1698,85 @@ https://www.postgresql.org/docs/9.5/catalog-pg-description.html`,
 		}
 		return nil
 	},
+	indexes: []virtualIndex{
+		{
+			incomplete: true,
+			populate: func(ctx context.Context, unwrappedConstraint tree.Datum, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) (matched bool, err error) {
+				fmt.Printf("%v\n", unwrappedConstraint)
+				oidConst := tree.MustBeDOid(unwrappedConstraint)
+
+				comment, err := p.descCollection.GetAllComments(ctx, p.txn)
+				if err != nil {
+					return false, err
+				}
+				descID := descpb.ID(oidConst.Oid)
+				var objID, classOid *tree.DOid
+				var objSubID *tree.DInt = tree.DZero
+				_ = comment.ForEachCommentOnDescriptor(descID, func(key catalogkeys.CommentKey, cmt string) error {
+					matched = true
+					objSubID = tree.NewDInt(tree.DInt(key.SubID))
+					switch key.CommentType {
+					case catalogkeys.DatabaseCommentType:
+						// Database comments are exported in pg_shdescription.
+						return nil
+					case catalogkeys.SchemaCommentType:
+						// TODO: The type conversion to oid.Oid is safe since we use desc IDs
+						// for this, but it's not ideal. The backing column for objId should be
+						// changed to use the OID type.
+						objID = tree.NewDOid(oid.Oid(key.ObjectID))
+						classOid = tree.NewDOid(catconstants.PgCatalogNamespaceTableID)
+					case catalogkeys.ColumnCommentType, catalogkeys.TableCommentType:
+						// TODO: The type conversion to oid.Oid is safe since we use desc IDs
+						// for this, but it's not ideal. The backing column for objId should be
+						// changed to use the OID type.
+						objID = tree.NewDOid(oid.Oid(key.ObjectID))
+						classOid = tree.NewDOid(catconstants.PgCatalogClassTableID)
+					case catalogkeys.ConstraintCommentType:
+						tableDesc, err := p.Descriptors().ByIDWithLeased(p.txn).WithoutNonPublic().Get().Table(ctx, descpb.ID(tree.MustBeDInt(objID)))
+						if err != nil {
+							return err
+						}
+						schema, err := p.Descriptors().ByIDWithLeased(p.txn).WithoutNonPublic().Get().Schema(ctx, tableDesc.GetParentSchemaID())
+						if err != nil {
+							return err
+						}
+						c, err := catalog.MustFindConstraintByID(tableDesc, descpb.ConstraintID(tree.MustBeDInt(objSubID)))
+						if err != nil {
+							return err
+						}
+						objID = getOIDFromConstraint(c, dbContext.GetID(), schema.GetID(), tableDesc)
+						objSubID = tree.DZero
+						classOid = tree.NewDOid(catconstants.PgCatalogConstraintTableID)
+					case catalogkeys.IndexCommentType:
+						objID = makeOidHasher().IndexOid(
+							descpb.ID(tree.MustBeDInt(objID)),
+							descpb.IndexID(tree.MustBeDInt(objSubID)))
+						objSubID = tree.DZero
+						classOid = tree.NewDOid(catconstants.PgCatalogClassTableID)
+					}
+					return addRow(
+						objID,
+						classOid,
+						objSubID,
+						tree.NewDString(cmt))
+				})
+				if matched {
+					return matched, nil
+				}
+				// Scan the bultins next.
+				builtin, matched := tree.OidToQualifiedBuiltinOverload[oidConst.Oid]
+				if !matched {
+					return matched, err
+				}
+				return true, addRow(
+					tree.NewDOid(builtin.Oid),
+					tree.NewDOid(catconstants.PgCatalogProcTableID),
+					tree.DZero,
+					tree.NewDString(builtin.Info),
+				)
+			},
+		},
+	},
 }
 
 func getOIDFromConstraint(
@@ -2100,13 +2193,13 @@ https://www.postgresql.org/docs/9.6/view-pg-matviews.html`,
 				// TODO(SQL Features): Insert column aliases into view query once we
 				// have a semantic query representation to work with (#10083).
 				return addRow(
-					tree.NewDName(sc.GetName()),   // schemaname
-					tree.NewDName(desc.GetName()), // matviewname
-					owner,                         // matviewowner
-					tree.DNull,                    // tablespace
+					tree.NewDName(sc.GetName()),                             // schemaname
+					tree.NewDName(desc.GetName()),                           // matviewname
+					owner,                                                   // matviewowner
+					tree.DNull,                                              // tablespace
 					tree.MakeDBool(len(desc.PublicNonPrimaryIndexes()) > 0), // hasindexes
-					tree.DBoolTrue,                       // ispopulated,
-					tree.NewDString(desc.GetViewQuery()), // definition
+					tree.DBoolTrue,                                          // ispopulated,
+					tree.NewDString(desc.GetViewQuery()),                    // definition
 				)
 			})
 	},
@@ -2481,23 +2574,23 @@ func addPgProcBuiltinRow(name string, addRow func(...tree.Datum) error) error {
 		proisstrict := !builtin.CalledOnNullInput
 
 		err := addRow(
-			tree.NewDOid(builtin.Oid),                // oid
-			dName,                                    // proname
-			nspOid,                                   // pronamespace
-			tree.DNull,                               // proowner
-			oidZero,                                  // prolang
-			tree.DNull,                               // procost
-			tree.DNull,                               // prorows
-			variadicType,                             // provariadic
-			tree.DNull,                               // protransform
-			tree.MakeDBool(tree.DBool(isAggregate)),  // proisagg
-			tree.MakeDBool(tree.DBool(isWindow)),     // proiswindow
-			tree.DBoolFalse,                          // prosecdef
-			tree.MakeDBool(tree.DBool(proleakproof)), // proleakproof
-			tree.MakeDBool(tree.DBool(proisstrict)),  // proisstrict
-			tree.MakeDBool(tree.DBool(isRetSet)),     // proretset
-			tree.NewDString(provolatile),             // provolatile
-			tree.DNull,                               // proparallel
+			tree.NewDOid(builtin.Oid),                       // oid
+			dName,                                           // proname
+			nspOid,                                          // pronamespace
+			tree.DNull,                                      // proowner
+			oidZero,                                         // prolang
+			tree.DNull,                                      // procost
+			tree.DNull,                                      // prorows
+			variadicType,                                    // provariadic
+			tree.DNull,                                      // protransform
+			tree.MakeDBool(tree.DBool(isAggregate)),         // proisagg
+			tree.MakeDBool(tree.DBool(isWindow)),            // proiswindow
+			tree.DBoolFalse,                                 // prosecdef
+			tree.MakeDBool(tree.DBool(proleakproof)),        // proleakproof
+			tree.MakeDBool(tree.DBool(proisstrict)),         // proisstrict
+			tree.MakeDBool(tree.DBool(isRetSet)),            // proretset
+			tree.NewDString(provolatile),                    // provolatile
+			tree.DNull,                                      // proparallel
 			tree.NewDInt(tree.DInt(builtin.Types.Length())), // pronargs
 			tree.NewDInt(tree.DInt(0)),                      // pronargdefaults
 			retType,                                         // prorettype
@@ -2561,33 +2654,33 @@ func addPgProcUDFRow(
 		h.UserOid(fnDesc.GetPrivileges().Owner()),       // proowner
 		// In postgres oid of sql language is 14, need to add a mapping if
 		// we are going to support more languages.
-		tree.NewDOid(14), // prolang
-		tree.DNull,       // procost
-		tree.DNull,       // prorows
-		oidZero,          // provariadic
-		tree.DNull,       // protransform
-		tree.DBoolFalse,  // proisagg
-		tree.DBoolFalse,  // proiswindow
-		tree.DBoolFalse,  // prosecdef
+		tree.NewDOid(14),                                             // prolang
+		tree.DNull,                                                   // procost
+		tree.DNull,                                                   // prorows
+		oidZero,                                                      // provariadic
+		tree.DNull,                                                   // protransform
+		tree.DBoolFalse,                                              // proisagg
+		tree.DBoolFalse,                                              // proiswindow
+		tree.DBoolFalse,                                              // prosecdef
 		tree.MakeDBool(tree.DBool(fnDesc.GetLeakProof())),            // proleakproof
 		tree.MakeDBool(tree.DBool(isStrict)),                         // proisstrict
 		tree.MakeDBool(tree.DBool(fnDesc.GetReturnType().ReturnSet)), // proretset
 		tree.NewDString(funcVolatility(fnDesc.GetVolatility())),      // provolatile
-		tree.DNull, // proparallel
-		tree.NewDInt(tree.DInt(len(fnDesc.GetParams()))), // pronargs
-		tree.NewDInt(tree.DInt(0)),                       // pronargdefaults
-		tree.NewDOid(fnDesc.GetReturnType().Type.Oid()),  // prorettype
-		tree.NewDOidVectorFromDArray(argTypes),           // proargtypes
-		tree.DNull,                                       // proallargtypes
-		argModes,                                         // proargmodes
-		argNames,                                         // proargnames
-		tree.DNull,                                       // proargdefaults
-		tree.DNull,                                       // protrftypes
-		tree.NewDString(fnDesc.GetFunctionBody()),        // prosrc
-		tree.DNull,                                       // probin
-		tree.DNull,                                       // proconfig
-		tree.DNull,                                       // proacl
-		tree.NewDString("f"),                             // prokind
+		tree.DNull,                                                   // proparallel
+		tree.NewDInt(tree.DInt(len(fnDesc.GetParams()))),             // pronargs
+		tree.NewDInt(tree.DInt(0)),                                   // pronargdefaults
+		tree.NewDOid(fnDesc.GetReturnType().Type.Oid()),              // prorettype
+		tree.NewDOidVectorFromDArray(argTypes),                       // proargtypes
+		tree.DNull,                                                   // proallargtypes
+		argModes,                                                     // proargmodes
+		argNames,                                                     // proargnames
+		tree.DNull,                                                   // proargdefaults
+		tree.DNull,                                                   // protrftypes
+		tree.NewDString(fnDesc.GetFunctionBody()),                    // prosrc
+		tree.DNull,                                                   // probin
+		tree.DNull,                                                   // proconfig
+		tree.DNull,                                                   // proacl
+		tree.NewDString("f"),                                         // prokind
 		// These columns were automatically created by pg_catalog_test's missing column generator.
 		tree.DNull, // prosupport
 	)
@@ -3022,12 +3115,12 @@ https://www.postgresql.org/docs/9.6/catalog-pg-shdepend.html`,
 		// Pinned roles, as stated above, pinned roles only have rows with zeros.
 		for _, role := range pinnedRoles {
 			if err := addRow(
-				tree.NewDOid(0), // dbid
-				tree.NewDOid(0), // classid
-				tree.NewDOid(0), // objid
-				zeroVal,         // objsubid
-				pgAuthIDOid,     // refclassid
-				h.UserOid(role), // refobjid
+				tree.NewDOid(0),                              // dbid
+				tree.NewDOid(0),                              // classid
+				tree.NewDOid(0),                              // objid
+				zeroVal,                                      // objsubid
+				pgAuthIDOid,                                  // refclassid
+				h.UserOid(role),                              // refobjid
 				tree.NewDString(string(sharedDependencyPin)), // deptype
 			); err != nil {
 				return err
@@ -3056,14 +3149,14 @@ https://www.postgresql.org/docs/9.5/view-pg-tables.html`,
 					return err
 				}
 				return addRow(
-					tree.NewDName(sc.GetName()),    // schemaname
-					tree.NewDName(table.GetName()), // tablename
-					owner,                          // tableowner
-					tree.DNull,                     // tablespace
+					tree.NewDName(sc.GetName()),                         // schemaname
+					tree.NewDName(table.GetName()),                      // tablename
+					owner,                                               // tableowner
+					tree.DNull,                                          // tablespace
 					tree.MakeDBool(tree.DBool(table.IsPhysicalTable())), // hasindexes
-					tree.DBoolFalse, // hasrules
-					tree.DBoolFalse, // hastriggers
-					tree.DBoolFalse, // rowsecurity
+					tree.DBoolFalse,                                     // hasrules
+					tree.DBoolFalse,                                     // hastriggers
+					tree.DBoolFalse,                                     // rowsecurity
 				)
 			})
 	},
@@ -4233,8 +4326,8 @@ func addRowForTimezoneNames(tz string, t time.Time, addRow func(...tree.Datum) e
 	abbrev, offset := t.Zone()
 	utcOffsetInterval := duration.MakeDuration(int64(offset)*int64(time.Second), 0, 0)
 	return addRow(
-		tree.NewDString(tz),     // name
-		tree.NewDString(abbrev), // abbrev
+		tree.NewDString(tz),                                                     // name
+		tree.NewDString(abbrev),                                                 // abbrev
 		tree.NewDInterval(utcOffsetInterval, types.DefaultIntervalTypeMetadata), // utc_offset
 		tree.MakeDBool(tree.DBool(t.IsDST())),                                   // is_dst
 	)
@@ -4577,25 +4670,25 @@ https://www.postgresql.org/docs/9.6/catalog-pg-aggregate.html`,
 						regprocForZeroOid := tree.NewDOidWithName(0, types.RegProc, "-")
 						err := addRow(
 							tree.NewDOid(overload.Oid).AsRegProc(name), // aggfnoid
-							aggregateKind,     // aggkind
-							aggNumDirectArgs,  // aggnumdirectargs
-							regprocForZeroOid, // aggtransfn
-							regprocForZeroOid, // aggfinalfn
-							regprocForZeroOid, // aggcombinefn
-							regprocForZeroOid, // aggserialfn
-							regprocForZeroOid, // aggdeserialfn
-							regprocForZeroOid, // aggmtransfn
-							regprocForZeroOid, // aggminvtransfn
-							regprocForZeroOid, // aggmfinalfn
-							tree.DBoolFalse,   // aggfinalextra
-							tree.DBoolFalse,   // aggmfinalextra
-							sortOperatorOid,   // aggsortop
-							tree.DNull,        // aggtranstype
-							tree.DNull,        // aggtransspace
-							tree.DNull,        // aggmtranstype
-							tree.DNull,        // aggmtransspace
-							tree.DNull,        // agginitval
-							tree.DNull,        // aggminitval
+							aggregateKind,                              // aggkind
+							aggNumDirectArgs,                           // aggnumdirectargs
+							regprocForZeroOid,                          // aggtransfn
+							regprocForZeroOid,                          // aggfinalfn
+							regprocForZeroOid,                          // aggcombinefn
+							regprocForZeroOid,                          // aggserialfn
+							regprocForZeroOid,                          // aggdeserialfn
+							regprocForZeroOid,                          // aggmtransfn
+							regprocForZeroOid,                          // aggminvtransfn
+							regprocForZeroOid,                          // aggmfinalfn
+							tree.DBoolFalse,                            // aggfinalextra
+							tree.DBoolFalse,                            // aggmfinalextra
+							sortOperatorOid,                            // aggsortop
+							tree.DNull,                                 // aggtranstype
+							tree.DNull,                                 // aggtransspace
+							tree.DNull,                                 // aggmtranstype
+							tree.DNull,                                 // aggmtransspace
+							tree.DNull,                                 // agginitval
+							tree.DNull,                                 // aggminitval
 							// These columns were automatically created by pg_catalog_test's missing column generator.
 							tree.DNull, // aggfinalmodify
 							tree.DNull, // aggmfinalmodify
