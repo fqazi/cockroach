@@ -374,6 +374,7 @@ go_library(
         "//pkg/sql/catalog/multiregion",
         "//pkg/sql/catalog/nstree",
         "//pkg/sql/catalog/randgen",
+        "//pkg/sql/catalog/redact",
         "//pkg/sql/catalog/resolver",
         "//pkg/sql/catalog/schemadesc",
         "//pkg/sql/catalog/schemaexpr",
