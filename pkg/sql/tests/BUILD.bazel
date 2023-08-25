@@ -32,7 +32,7 @@ go_library(
 
 go_test(
     name = "tests_test",
-    size = "large",
+    size = "enormous",
     srcs = [
         "allow_role_memberships_to_change_during_transaction_test.go",
         "autocommit_extended_protocol_test.go",
