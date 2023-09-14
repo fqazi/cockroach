@@ -49,10 +49,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/multiregion"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/nstree"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemaexpr"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/seqexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/systemschema"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
 	"github.com/cockroachdb/cockroach/pkg/sql/idxusage"
+	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
@@ -84,7 +86,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/collector"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 // CrdbInternalName is the name of the crdb_internal schema.
@@ -5031,129 +5032,84 @@ CREATE TABLE crdb_internal.invalid_objects (
 	populate: func(
 		ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error,
 	) error {
-		// The internalLookupContext will only have descriptors in the current
-		// database. To deal with this, we fall through.
-		c, err := p.Descriptors().Direct().GetCatalogUnvalidated(ctx, p.txn)
+		allDescs, err := p.descCollection.GetAllDescriptors(ctx, p.txn)
 		if err != nil {
 			return err
 		}
-		descs := c.OrderedDescriptors()
-		// Collect all marshaled job metadata and account for its memory usage.
-		acct := p.EvalContext().Mon.MakeBoundAccount()
-		defer acct.Close(ctx)
-		jmg, err := collectMarshaledJobMetadataMap(ctx, p, &acct, descs)
-		if err != nil {
-			return err
-		}
-		version := p.ExecCfg().Settings.Version.ActiveVersion(ctx)
-
-		addValidationErrorRow := func(scName string, ne catalog.NameEntry, validationError error, lCtx tableLookupFn) error {
-			if validationError == nil {
+		return allDescs.ForEachDescriptorEntry(func(desc catalog.Descriptor) error {
+			tableDesc, ok := desc.(catalog.TableDescriptor)
+			if !ok {
 				return nil
 			}
-			dbName := fmt.Sprintf("[%d]", ne.GetParentID())
-			if scName == "" {
-				scName = fmt.Sprintf("[%d]", ne.GetParentSchemaID())
-			}
-			if n, ok := lCtx.dbNames[ne.GetParentID()]; ok {
-				dbName = n
-			}
-			if n, err := lCtx.getSchemaNameByID(ne.GetParentSchemaID()); err == nil {
-				scName = n
-			}
-			objName := ne.GetName()
-			if ne.GetParentSchemaID() == descpb.InvalidID {
-				scName = objName
-				objName = ""
-				if ne.GetParentID() == descpb.InvalidID {
-					dbName = scName
-					scName = ""
-				}
-			}
-			return addRow(
-				tree.NewDInt(tree.DInt(ne.GetID())),
-				tree.NewDString(dbName),
-				tree.NewDString(scName),
-				tree.NewDString(objName),
-				tree.NewDString(validationError.Error()),
-				tree.NewDString(string(redact.Sprint(validationError))),
-			)
-		}
 
-		doDescriptorValidationErrors := func(schema string, descriptor catalog.Descriptor, lCtx tableLookupFn) (err error) {
-			if descriptor == nil {
-				return nil
-			}
-			doError := func(validationError error) {
+			parentDB := allDescs.LookupDescriptorEntry(desc.GetParentID())
+			schema := allDescs.LookupDescriptorEntry(desc.GetParentSchemaID())
+
+			maybeUpgradeSeqReferencesInExpr := func(expr *string) (string, error) {
+				parsedExpr, err := parser.ParseExpr(*expr)
 				if err != nil {
-					return
+					return "", err
 				}
-				err = addValidationErrorRow(schema, descriptor, validationError, lCtx)
-			}
-			ve := c.ValidateWithRecover(ctx, version, descriptor)
-			for _, validationError := range ve {
-				doError(validationError)
-			}
-			jobs.ValidateJobReferencesInDescriptor(descriptor, jmg, doError)
-			return err
-		}
-
-		// Validate table descriptors
-		const allowAdding = true
-		if err := forEachTableDescWithTableLookupInternalFromDescriptors(
-			ctx, p, dbContext, hideVirtual, allowAdding, c, func(
-				_ catalog.DatabaseDescriptor, schema string, descriptor catalog.TableDescriptor, lCtx tableLookupFn,
-			) error {
-				return doDescriptorValidationErrors(schema, descriptor, lCtx)
-			}); err != nil {
-			return err
-		}
-
-		// Validate type descriptors.
-		if err := forEachTypeDescWithTableLookupInternalFromDescriptors(
-			ctx, p, dbContext, allowAdding, c, func(
-				_ catalog.DatabaseDescriptor, schema string, descriptor catalog.TypeDescriptor, lCtx tableLookupFn,
-			) error {
-				return doDescriptorValidationErrors(schema, descriptor, lCtx)
-			}); err != nil {
-			return err
-		}
-
-		// Validate database & schema descriptors, and namespace entries.
-		{
-			lCtx := newInternalLookupCtx(c.OrderedDescriptors(), dbContext)
-
-			if err := c.ForEachDescriptorEntry(func(desc catalog.Descriptor) error {
-				switch d := desc.(type) {
-				case catalog.DatabaseDescriptor:
-					if dbContext != nil && d.GetID() != dbContext.GetID() {
-						return nil
-					}
-				case catalog.SchemaDescriptor:
-					if dbContext != nil && d.GetParentID() != dbContext.GetID() {
-						return nil
-					}
-				default:
-					return nil
+				seqIdentifiers, err := seqexpr.GetUsedSequences(parsedExpr)
+				if err != nil {
+					return "", err
 				}
-				return doDescriptorValidationErrors("" /* scName */, desc, lCtx)
-			}); err != nil {
-				return err
-			}
-
-			return c.ForEachNamespaceEntry(func(ne nstree.NamespaceEntry) error {
-				if dbContext != nil {
-					if ne.GetParentID() == descpb.InvalidID {
-						if ne.GetID() != dbContext.GetID() {
-							return nil
-						}
-					} else if ne.GetParentID() != dbContext.GetID() {
-						return nil
+				if len(seqIdentifiers) == 0 {
+					return *expr, nil
+				}
+				var anyByName bool
+				for _, id := range seqIdentifiers {
+					if anyByName = !id.IsByID(); anyByName {
+						break
 					}
 				}
-				return addValidationErrorRow("" /* scName */, ne, c.ValidateNamespaceEntry(ne), lCtx)
-			})
-		}
+				if !anyByName {
+					return *expr, nil
+				}
+				seqNameToID := make(map[string]descpb.ID)
+				for _, seqIdentifier := range seqIdentifiers {
+					p.SessionData().Database = parentDB.GetName()
+					oldPath := p.SessionData().SearchPath.GetPathArray()
+					oldSearchPath := p.SessionData().SearchPath
+					p.SessionData().SearchPath = p.SessionData().SearchPath.UpdatePaths(append(oldPath, schema.GetName()))
+					seqDesc, err := GetSequenceDescFromIdentifier(ctx, p, seqIdentifier)
+					if err != nil {
+						return "", err
+					}
+					seqNameToID[seqIdentifier.SeqName] = seqDesc.ID
+					p.SessionData().SearchPath = oldSearchPath
+				}
+				newExpr, err := seqexpr.ReplaceSequenceNamesWithIDs(parsedExpr, seqNameToID)
+				if err != nil {
+					return "", err
+				}
+				return tree.AsStringWithFlags(newExpr, tree.FmtParsable), nil
+			}
+			// Check each column's DEFAULT and ON UPDATE expression and update sequence references if any.
+			for _, column := range tableDesc.AllColumns() {
+				if column.HasDefault() {
+					expr := column.GetDefaultExpr()
+					newExpr, err := maybeUpgradeSeqReferencesInExpr(&expr)
+					if err != nil {
+						return err
+					}
+					if expr != newExpr && schema != nil {
+						fmt.Printf("ALTER TABLE %s.%s.%s ALTER COLUMN %s SET DEFAULT %s\n", parentDB.GetName(), schema.GetName(), tableDesc.GetName(), column.GetName(), newExpr)
+					}
+				}
+				if column.HasOnUpdate() {
+					expr := column.GetOnUpdateExpr()
+					newExpr, err := maybeUpgradeSeqReferencesInExpr(&expr)
+					if err != nil {
+						return err
+					}
+					if expr != newExpr && schema != nil {
+						fmt.Printf("ALTER TABLE %s.%s.%s ALTER COLUMN %s SET ON UPDATE %s\n", parentDB.GetName(), schema.GetName(), tableDesc.GetName(), column.GetName(), newExpr)
+					}
+				}
+			}
+			return nil
+		})
 	},
 }
 
