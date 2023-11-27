@@ -33,3 +33,12 @@ func (s *indexSpanSplitter) MaybeSplitIndexSpansForPartitioning(
 ) error {
 	return nil
 }
+
+func (is *indexSpanSplitter) MaybeSplitIndexSpansWithCopy(
+	ctx context.Context,
+	table catalog.TableDescriptor,
+	indexToBackfill catalog.Index,
+	copyPKSplits bool,
+) error {
+	return nil
+}

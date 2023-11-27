@@ -23,26 +23,33 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
+	"github.com/cockroachdb/cockroach/pkg/util/rangedesc"
 )
 
 type indexSplitAndScatter struct {
-	db    *kv.DB
-	codec keys.SQLCodec
-	sv    *settings.Values
+	db        *kv.DB
+	codec     keys.SQLCodec
+	sv        *settings.Values
+	rangeIter rangedesc.IteratorFactory
 }
 
 // NewIndexSplitAndScatter creates a new scexec.IndexSpanSplitter implementation.
 func NewIndexSplitAndScatter(execCfg *ExecutorConfig) scexec.IndexSpanSplitter {
+
 	return &indexSplitAndScatter{
-		db:    execCfg.DB,
-		codec: execCfg.Codec,
-		sv:    &execCfg.Settings.SV,
+		db:        execCfg.DB,
+		codec:     execCfg.Codec,
+		sv:        &execCfg.Settings.SV,
+		rangeIter: execCfg.RangeDescIteratorFactory,
 	}
 }
 
-// MaybeSplitIndexSpans implements the scexec.IndexSpanSplitter interface.
-func (is *indexSplitAndScatter) MaybeSplitIndexSpans(
-	ctx context.Context, table catalog.TableDescriptor, indexToBackfill catalog.Index,
+// MaybeSplitIndexSpansWithCopy implements the scexec.IndexSpanSplitter interface.
+func (is *indexSplitAndScatter) MaybeSplitIndexSpansWithCopy(
+	ctx context.Context,
+	table catalog.TableDescriptor,
+	indexToBackfill catalog.Index,
+	copyPKSplits bool,
 ) error {
 	// We will always pre-split index spans if there is partitioning.
 	err := is.MaybeSplitIndexSpansForPartitioning(ctx, table, indexToBackfill)
@@ -50,15 +57,65 @@ func (is *indexSplitAndScatter) MaybeSplitIndexSpans(
 		return err
 	}
 
-	// Only perform index span splits on the system tenant and non-temporary
-	// indexes.
-	if !is.codec.ForSystemTenant() || indexToBackfill.IsTemporaryIndexForBackfill() {
-		return nil
-	}
 	span := table.IndexSpan(is.codec, indexToBackfill.GetID())
 	const backfillSplitExpiration = time.Hour
 	expirationTime := is.db.Clock().Now().Add(backfillSplitExpiration.Nanoseconds(), 0)
-	return is.db.AdminSplit(ctx, span.Key, expirationTime)
+	if !copyPKSplits && is.codec.ForSystemTenant() {
+		return is.db.AdminSplit(ctx, span.Key, expirationTime)
+	} else if copyPKSplits {
+		pkPrefix := is.codec.IndexPrefix(uint32(table.GetID()), uint32(table.GetPrimaryIndexID()))
+		pkSpan := roachpb.Span{
+			Key:    pkPrefix,
+			EndKey: pkPrefix.PrefixEnd(),
+		}
+		iter, err := is.rangeIter.NewIterator(ctx, pkSpan)
+		if err != nil {
+			return err
+		}
+		for ; iter.Valid(); iter.Next() {
+			rangeDesc := iter.CurRangeDescriptor()
+			pkStart := rangeDesc.StartKey.AsRawKey()
+			pkEnd := rangeDesc.EndKey.AsRawKey()
+
+			remainderStart, _, _, err := is.codec.DecodeIndexPrefix(pkStart)
+			if err != nil {
+				return err
+			}
+			remainderEnd, _, _, err := is.codec.DecodeIndexPrefix(pkEnd)
+			if err != nil {
+				// Split point is the last one.
+				err = nil
+				return err
+			}
+
+			newPrefix := span.Key
+
+			newStartSplitKey := make(roachpb.Key, len(newPrefix)+len(remainderStart))
+			n := copy(newStartSplitKey, newPrefix)
+			copy(newStartSplitKey[n:], remainderStart)
+
+			newEndSplitKey := make(roachpb.Key, len(newPrefix)+len(remainderEnd))
+			n = copy(newEndSplitKey, newPrefix)
+			copy(newEndSplitKey[n:], remainderEnd)
+			err = is.db.AdminSplit(ctx, &newEndSplitKey, expirationTime)
+			if err != nil {
+				return err
+			}
+			_, err = is.db.AdminScatter(ctx, newEndSplitKey, 0)
+			if err != nil {
+				return err
+			}
+
+		}
+	}
+	return nil
+}
+
+// MaybeSplitIndexSpans implements the scexec.IndexSpanSplitter interface.
+func (is *indexSplitAndScatter) MaybeSplitIndexSpans(
+	ctx context.Context, table catalog.TableDescriptor, indexToBackfill catalog.Index,
+) error {
+	return is.MaybeSplitIndexSpansWithCopy(ctx, table, indexToBackfill, false)
 }
 
 func (is *indexSplitAndScatter) shouldSplitAndScatter(idx catalog.Index) bool {

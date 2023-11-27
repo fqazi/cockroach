@@ -454,6 +454,15 @@ func (n noopIndexSpanSplitter) MaybeSplitIndexSpansForPartitioning(
 	return nil
 }
 
+func (n *noopIndexSpanSplitter) MaybeSplitIndexSpansWithCopy(
+	ctx context.Context,
+	table catalog.TableDescriptor,
+	indexToBackfill catalog.Index,
+	copyPKSplits bool,
+) error {
+	return nil
+}
+
 type noopMerger struct{}
 
 var _ scexec.Merger = (*noopMerger)(nil)
