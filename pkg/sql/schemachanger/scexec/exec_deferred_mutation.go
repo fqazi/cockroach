@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec/scmutationexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
@@ -203,8 +204,15 @@ func (s *deferredState) exec(
 		if err != nil {
 			return err
 		}
-		if err := iss.MaybeSplitIndexSpans(ctx, tableDesc, idxDesc); err != nil {
-			return err
+		if idxDesc.GetEncodingType() != catenumpb.PrimaryIndexEncoding ||
+			!idxDesc.CollectKeyColumnIDs().Equals(tableDesc.GetPrimaryIndex().CollectKeyColumnIDs()) {
+			if err := iss.MaybeSplitIndexSpans(ctx, tableDesc, idxDesc); err != nil {
+				return err
+			}
+		} else {
+			if err := iss.MaybeSplitIndexSpansWithCopy(ctx, tableDesc, idxDesc, true); err != nil {
+				return err
+			}
 		}
 	}
 	s.statsToRefresh.ForEach(q.AddTableForStatsRefresh)
