@@ -169,6 +169,24 @@ func TestRegionLivenessProber(t *testing.T) {
 			if _, ok := regions[expectedRegions[1]]; ok {
 				return errors.AssertionFailedf("removed region detected %s", expectedRegions[1])
 			}
+			// Similarly query the unavailable physcial regions
+			unavailablePhysicalRegions, err := regionProber.QueryUnavailablePhysicalRegions(ctx, txn)
+			if err != nil {
+				return err
+			}
+			if len(unavailablePhysicalRegions) != 1 {
+				return errors.AssertionFailedf("physical region was not marked as unavailable")
+			}
+			// Validate the physical region marked as unavailable is correct
+			regionTypeDesc := cachedRegionProvider.GetRegionEnumTypeDesc()
+			for i := 0; i < regionTypeDesc.NumEnumMembers(); i++ {
+				if regionTypeDesc.GetMemberLogicalRepresentation(i) != expectedRegions[1] {
+					continue
+				}
+				if _, ok := unavailablePhysicalRegions[string(regionTypeDesc.GetMemberPhysicalRepresentation(i))]; !ok {
+					return errors.AssertionFailedf("incorrect physical region was marked as unavailable %v", unavailablePhysicalRegions)
+				}
+			}
 			return nil
 		})
 	})
@@ -292,7 +310,7 @@ func TestRegionLivenessProberForLeases(t *testing.T) {
 
 	require.NoError(t, tx.Rollback())
 
-	// Validate we can have a "droped" region and the query won't fail.
+	// Validate we can have a "dropped" region and the query won't fail.
 	lm := tenants[0].LeaseManager().(*lease.Manager)
 	cachedDatabaseRegions, err := regions.NewCachedDatabaseRegions(ctx, tenants[0].DB(), lm)
 	require.NoError(t, err)
@@ -303,7 +321,7 @@ func TestRegionLivenessProberForLeases(t *testing.T) {
 			PhysicalRepresentation: nil,
 			LogicalRepresentation:  "FakeRegion",
 		})
-		return mut
+		return builder.BuildExistingMutableType()
 	})
 	require.NoError(t, lm.WaitForNoVersion(ctx, descpb.ID(tableID), cachedDatabaseRegions, retry.Options{}))
 }
