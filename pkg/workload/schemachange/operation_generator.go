@@ -2476,6 +2476,9 @@ func (og *operationGenerator) setColumnNotNull(ctx context.Context, tx pgx.Tx) (
 		}
 		if colContainsNull {
 			og.candidateExpectedCommitErrors.add(pgcode.NotNullViolation)
+			// If the table is created within the txn, then the not null violation
+			// will be an execution error.
+			stmt.potentialExecErrors.add(pgcode.NotNullViolation)
 		}
 		// If we are running with the legacy schema changer, the not null constraint
 		// is enforced during the job phase. So it's still possible to INSERT not null
