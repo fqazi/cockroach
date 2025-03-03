@@ -703,36 +703,41 @@ func (m *Manager) readOlderVersionForTimestamp(
 		return nil, nil
 	}
 	endTimestamp, done := func() (hlc.Timestamp, bool) {
-		t.mu.Lock()
-		defer t.mu.Unlock()
+		var endTimestamp hlc.Timestamp
+		var done bool
+		_ = t.mu.active.withData(func(data []*descriptorVersionState) error {
+			// If there are no descriptors, then we won't have a valid end timestamp.
+			if len(data) == 0 {
+				done = true
+				return nil
+			}
+			// We permit gaps in historical versions. We want to find the timestamp
+			// that represents the start of the validity interval for the known version
+			// which immediately follows the timestamps we're searching for.
+			i := sort.Search(len(data), func(i int) bool {
+				return timestamp.Less(data[i].GetModificationTime())
+			})
 
-		// If there are no descriptors, then we won't have a valid end timestamp.
-		if len(t.mu.active.data) == 0 {
-			return hlc.Timestamp{}, true
-		}
-		// We permit gaps in historical versions. We want to find the timestamp
-		// that represents the start of the validity interval for the known version
-		// which immediately follows the timestamps we're searching for.
-		i := sort.Search(len(t.mu.active.data), func(i int) bool {
-			return timestamp.Less(t.mu.active.data[i].GetModificationTime())
+			// If the timestamp we're searching for is somehow after the last descriptor
+			// we have in play, then either we have the right descriptor, or some other
+			// shenanigans where we've evicted the descriptor has occurred.
+			//
+			// TODO(ajwerner): When we come to modify this code to allow us to find
+			// historical descriptors which have been dropped, we'll need to rework
+			// this case and support providing no upperBound to
+			// getDescriptorFromStoreForInterval.
+			if i == len(data) ||
+				// If we found a descriptor that isn't the first descriptor, go and check
+				// whether the descriptor for which we're searching actually exists. This
+				// will deal with cases where a concurrent fetch filled it in for us.
+				i > 0 && timestamp.Less(data[i-1].getExpiration(ctx)) {
+				done = true
+				return nil
+			}
+			endTimestamp, done = data[i].GetModificationTime(), false
+			return nil
 		})
-
-		// If the timestamp we're searching for is somehow after the last descriptor
-		// we have in play, then either we have the right descriptor, or some other
-		// shenanigans where we've evicted the descriptor has occurred.
-		//
-		// TODO(ajwerner): When we come to modify this code to allow us to find
-		// historical descriptors which have been dropped, we'll need to rework
-		// this case and support providing no upperBound to
-		// getDescriptorFromStoreForInterval.
-		if i == len(t.mu.active.data) ||
-			// If we found a descriptor that isn't the first descriptor, go and check
-			// whether the descriptor for which we're searching actually exists. This
-			// will deal with cases where a concurrent fetch filled it in for us.
-			i > 0 && timestamp.Less(t.mu.active.data[i-1].getExpiration(ctx)) {
-			return hlc.Timestamp{}, true
-		}
-		return t.mu.active.data[i].GetModificationTime(), false
+		return endTimestamp, done
 	}()
 	if done {
 		return nil, nil
@@ -963,7 +968,7 @@ func purgeOldVersions(
 		if t.mu.maxVersionSeen < minVersion {
 			t.mu.maxVersionSeen = minVersion
 		}
-		return len(t.mu.active.data) == 0 && t.mu.acquisitionsInProgress == 0
+		return t.mu.active.isEmpty() && t.mu.acquisitionsInProgress == 0
 	}()
 	if empty && !dropped {
 		// We don't currently have a version on this descriptor, so no need to refresh
@@ -1545,9 +1550,7 @@ func (m *Manager) isDescriptorStateEmpty(id descpb.ID) bool {
 	if st == nil {
 		return true
 	}
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return len(st.mu.active.data) == 0
+	return st.mu.active.isEmpty()
 }
 
 // maybeWaitForInit waits for the lease manager to startup.
@@ -2151,22 +2154,27 @@ func (m *Manager) VisitLeases(
 
 			takenOffline := ts.mu.takenOffline
 
-			for _, state := range ts.mu.active.data {
-				lease, refCount := func() (*storedLease, int) {
-					state.mu.Lock()
-					defer state.mu.Unlock()
-					return state.mu.lease, int(state.refcount.Load())
-				}()
+			_ = ts.mu.active.withData(func(data []*descriptorVersionState) error {
+				for _, state := range data {
+					lease, refCount := func() (*storedLease, int) {
+						state.mu.Lock()
+						defer state.mu.Unlock()
+						return state.mu.lease, int(state.refcount.Load())
+					}()
 
-				if lease == nil {
-					continue
-				}
+					if lease == nil {
+						continue
+					}
 
-				if !f(state.Descriptor, takenOffline, refCount, lease.expiration) {
-					return false
+					if !f(state.Descriptor, takenOffline, refCount, lease.expiration) {
+						wantMore = false
+						return nil
+					}
 				}
-			}
-			return true
+				wantMore = true
+				return nil
+			})
+			return wantMore
 		}
 		if !visitor() {
 			return

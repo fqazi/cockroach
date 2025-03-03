@@ -129,9 +129,12 @@ func TestTableSet(t *testing.T) {
 }
 
 func getNumVersions(ds *descriptorState) int {
-	ds.mu.Lock()
-	defer ds.mu.Unlock()
-	return len(ds.mu.active.data)
+	var numVersions int
+	_ = ds.mu.active.withData(func(data []*descriptorVersionState) error {
+		numVersions = len(data)
+		return nil
+	})
+	return numVersions
 }
 
 func TestPurgeOldVersions(t *testing.T) {
@@ -216,28 +219,29 @@ CREATE TABLE t.test (k CHAR PRIMARY KEY, v CHAR);
 	if numLeases := getNumVersions(ts); numLeases != 1 {
 		t.Fatalf("found %d versions instead of 1", numLeases)
 	}
-	ts.mu.Lock()
-	correctLease := ts.mu.active.data[0].GetID() == tables[5].GetID() &&
-		ts.mu.active.data[0].GetVersion() == tables[5].GetVersion()
-	correctExpiration := ts.mu.active.data[0].getExpiration(ctx) == expiration
-	ts.mu.Unlock()
-	if !correctLease {
-		t.Fatalf("wrong lease survived purge")
-	}
-	if !correctExpiration {
-		t.Fatalf("wrong lease expiration survived purge")
-	}
+	func() {
+		_ = ts.mu.active.withData(func(data []*descriptorVersionState) error {
+			correctLease := data[0].GetID() == tables[5].GetID() &&
+				data[0].GetVersion() == tables[5].GetVersion()
+			correctExpiration := data[0].getExpiration(ctx) == expiration
+			if !correctLease {
+				t.Fatalf("wrong lease survived purge")
+			}
+			if !correctExpiration {
+				t.Fatalf("wrong lease expiration survived purge")
+			}
+			return nil
+		})
+	}()
 
 	// Test that purgeOldVersions correctly removes a table version
 	// without a lease.
-	ts.mu.Lock()
 	tableVersion := &descriptorVersionState{
 		Descriptor: tables[0],
 	}
 	modTS := tables[5].GetModificationTime()
 	tableVersion.expiration.Store(&modTS)
 	ts.mu.active.insert(tableVersion)
-	ts.mu.Unlock()
 	if numLeases := getNumVersions(ts); numLeases != 2 {
 		t.Fatalf("found %d versions instead of 2", numLeases)
 	}
@@ -353,13 +357,14 @@ CREATE TABLE t.test (k CHAR PRIMARY KEY, v CHAR);
 	if numLeases := getNumVersions(ts); numLeases != 1 {
 		t.Fatalf("found %d versions instead of 1", numLeases)
 	}
-	ts.mu.Lock()
-	correctLease := ts.mu.active.data[0].GetID() == latestDesc.GetID() &&
-		ts.mu.active.data[0].GetVersion() == latestDesc.GetVersion()
-	ts.mu.Unlock()
-	if !correctLease {
-		t.Fatalf("wrong lease survived purge")
-	}
+	_ = ts.mu.active.withData(func(data []*descriptorVersionState) error {
+		correctLease := data[0].GetID() == latestDesc.GetID() &&
+			data[0].GetVersion() == latestDesc.GetVersion()
+		if !correctLease {
+			t.Fatalf("wrong lease survived purge")
+		}
+		return nil
+	})
 }
 
 // Test that a database with conflicting table names under different schemas

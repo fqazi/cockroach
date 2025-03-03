@@ -83,37 +83,38 @@ type descriptorState struct {
 // of the descriptor.
 func (t *descriptorState) findForTimestamp(
 	ctx context.Context, timestamp hlc.Timestamp,
-) (*descriptorVersionState, bool, error) {
+) (desc *descriptorVersionState, latest bool, err error) {
 	expensiveLogEnabled := log.ExpensiveLogEnabled(ctx, 2)
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Acquire a lease if no descriptor exists in the cache.
-	if len(t.mu.active.data) == 0 {
-		return nil, false, errRenewLease
-	}
-
-	// Walk back the versions to find one that is valid for the timestamp.
-	for i := len(t.mu.active.data) - 1; i >= 0; i-- {
-		// Check to see if the ModificationTime is valid.
-		if desc := t.mu.active.data[i]; desc.GetModificationTime().LessEq(timestamp) {
-			latest := i+1 == len(t.mu.active.data)
-			if !desc.hasExpired(ctx, timestamp) {
-				// Existing valid descriptor version.
-				desc.incRefCount(ctx, expensiveLogEnabled)
-				return desc, latest, nil
-			}
-
-			if latest {
-				// Renew the lease if the lease has expired
-				// The latest descriptor always has a lease.
-				return nil, false, errRenewLease
-			}
-			break
+	err = t.mu.active.withData(func(data []*descriptorVersionState) error {
+		// Acquire a lease if no descriptor exists in the cache.
+		if len(data) == 0 {
+			return errRenewLease
 		}
-	}
 
-	return nil, false, errReadOlderVersion
+		// Walk back the versions to find one that is valid for the timestamp.
+		for i := len(data) - 1; i >= 0; i-- {
+			// Check to see if the ModificationTime is valid.
+			if desc = data[i]; desc.GetModificationTime().LessEq(timestamp) {
+				latest = i+1 == len(data)
+				if !desc.hasExpired(ctx, timestamp) {
+					// Existing valid descriptor version.
+					desc.incRefCount(ctx, expensiveLogEnabled)
+					return nil
+				}
+
+				if latest {
+					// Renew the lease if the lease has expired
+					// The latest descriptor always has a lease.
+					desc, latest = nil, false
+					return errRenewLease
+				}
+				break
+			}
+		}
+		desc, latest = nil, false
+		return errReadOlderVersion
+	})
+	return desc, latest, err
 }
 
 // upsertLeaseLocked inserts a lease for a particular descriptor version.
@@ -200,7 +201,12 @@ func (t *descriptorState) removeInactiveVersions() []*storedLease {
 	var leases []*storedLease
 	// A copy of t.mu.active.data must be made since t.mu.active.data will be changed
 	// within the loop.
-	for _, desc := range append([]*descriptorVersionState(nil), t.mu.active.data...) {
+	var dataCopy []*descriptorVersionState
+	_ = t.mu.active.withData(func(data []*descriptorVersionState) error {
+		dataCopy = append(dataCopy, data...)
+		return nil
+	})
+	for _, desc := range dataCopy {
 		func() {
 			if desc.refcount.Load() == 0 {
 				t.mu.active.remove(desc)
