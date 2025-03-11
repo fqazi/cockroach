@@ -436,7 +436,11 @@ func (ibm *IndexBackfillMerger) constructMergeBatch(
 		if len(sourceKV.Key) < prefixLen {
 			return nil, 0, 0, errors.Errorf("key for index entry %v does not start with prefix %v", sourceKV, sourcePrefix)
 		}
-
+		// If the timestamp we are looking at is after the merge timestamp,
+		// then no work needs to be done for this row.
+		if !sourceKV.Value.Timestamp.LessEq(ibm.spec.MergeTimestamp) {
+			continue
+		}
 		destKey = destKey[:0]
 		destKey = append(destKey, destPrefix...)
 		destKey = append(destKey, sourceKV.Key[prefixLen:]...)
