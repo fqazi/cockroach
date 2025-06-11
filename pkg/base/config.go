@@ -235,11 +235,6 @@ var (
 	defaultStoreLivenessSupportDuration = envutil.EnvOrDefaultDuration(
 		"COCKROACH_STORE_LIVENESS_SUPPORT_DURATION", 3*time.Second)
 
-	// defaultFortificationGracePeriod is the default value for
-	// FortificationGracePeriod.
-	defaultFortificationGracePeriod = envutil.EnvOrDefaultDuration(
-		"COCKROACH_RAFT_FORTIFICATION_GRACE_PERIOD", 3*time.Second)
-
 	// defaultRaftTickInterval is the default resolution of the Raft timer.
 	defaultRaftTickInterval = envutil.EnvOrDefaultDuration(
 		"COCKROACH_RAFT_TICK_INTERVAL", 500*time.Millisecond)
@@ -595,10 +590,6 @@ type RaftConfig struct {
 	// stores request and extend.
 	StoreLivenessSupportDuration time.Duration
 
-	// FortificationGracePeriod is the minimum validity of a new leader lease to
-	// allow for the new leader to fortify.
-	FortificationGracePeriod time.Duration
-
 	// RangeLeaseRaftElectionTimeoutMultiplier specifies the range lease duration.
 	RangeLeaseDuration time.Duration
 	// RangeLeaseRenewalFraction specifies what fraction the range lease renewal
@@ -714,9 +705,6 @@ func (cfg *RaftConfig) SetDefaults() {
 	}
 	if cfg.StoreLivenessSupportDuration == 0 {
 		cfg.StoreLivenessSupportDuration = defaultStoreLivenessSupportDuration
-	}
-	if cfg.FortificationGracePeriod == 0 {
-		cfg.FortificationGracePeriod = defaultFortificationGracePeriod
 	}
 	if cfg.RangeLeaseDuration == 0 {
 		cfg.RangeLeaseDuration = defaultRangeLeaseDuration

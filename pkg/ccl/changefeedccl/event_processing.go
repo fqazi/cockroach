@@ -33,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -686,9 +685,6 @@ func (c *parallelEventConsumer) startWorkers() error {
 		id := i
 		consumer := consumers[i]
 		workerClosure := func(ctx2 context.Context) error {
-			ctx2, sp := tracing.ChildSpan(ctx2, "changefeed.parallel_event_consumer.worker")
-			defer sp.Finish()
-
 			return c.workerLoop(ctx2, consumer, id)
 		}
 		c.g.GoCtx(workerClosure)

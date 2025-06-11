@@ -10,9 +10,7 @@ import (
 	"math/rand"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/cspann/workspace"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/num32"
 	"github.com/cockroachdb/cockroach/pkg/util/vector"
 	"github.com/cockroachdb/errors"
 )
@@ -187,18 +185,9 @@ func (fw *fixupWorker) deleteVector(
 	})
 }
 
-// getFullVectorsForPartition fetches the full-size vectors that are quantized
-// by the given partition.
-//
-// For a leaf partition:
-//  1. Fetch the original vectors from the primary index.
-//  2. Randomize the vectors.
-//  3. For the Cosine distance metric, normalize the vectors.
-//
-// For an interior partition:
-//  1. Fetch the centroids for the child partitions.
-//  2. For the Cosine and InnerProduct distance metrics, convert the mean
-//     centroids to spherical centroids.
+// getFullVectorsForPartition fetches the full-size vectors (potentially
+// randomized by the quantizer) that are quantized by the given partition.
+// Discard any dangling vectors in the partition.
 func (fw *fixupWorker) getFullVectorsForPartition(
 	ctx context.Context, partitionKey PartitionKey, partition *Partition,
 ) (vectors vector.Set, err error) {
@@ -238,19 +227,11 @@ func (fw *fixupWorker) getFullVectorsForPartition(
 		vectors = vector.MakeSet(fw.index.quantizer.GetDims())
 		vectors.AddUndefined(len(fw.tempVectorsWithKeys))
 		for i := range fw.tempVectorsWithKeys {
+			// Leaf vectors from the primary index need to be randomized.
 			if partition.Level() == LeafLevel {
-				// Leaf vectors from the primary index need to be randomized and
-				// possibly normalized.
-				fw.index.TransformVector(fw.tempVectorsWithKeys[i].Vector, vectors.At(i))
+				fw.index.RandomizeVector(fw.tempVectorsWithKeys[i].Vector, vectors.At(i))
 			} else {
 				copy(vectors.At(i), fw.tempVectorsWithKeys[i].Vector)
-
-				// Convert mean centroids into spherical centroids for the Cosine
-				// and InnerProduct distance metrics.
-				switch fw.index.quantizer.GetDistanceMetric() {
-				case vecpb.CosineDistance, vecpb.InnerProductDistance:
-					num32.Normalize(vectors.At(i))
-				}
 			}
 		}
 

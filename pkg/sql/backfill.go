@@ -2145,7 +2145,7 @@ func countIndexRowsAndMaybeCheckUniqueness(
 					idx.GetName(),
 					idx.IndexDesc().KeyColumnIDs[idx.ImplicitPartitioningColumnCount():],
 					idx.GetPredicate(),
-					desc.GetPrimaryIndexID(), /* indexIDForValidation */
+					0, /* indexIDForValidation */
 					txn,
 					username.NodeUserName(),
 					false, /* preExisting */

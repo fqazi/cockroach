@@ -507,6 +507,13 @@ func TestLogic_create_index(
 	runLogicTest(t, "create_index")
 }
 
+func TestLogic_create_statements(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runLogicTest(t, "create_statements")
+}
+
 func TestLogic_create_table(
 	t *testing.T,
 ) {
@@ -589,13 +596,6 @@ func TestLogic_dependencies(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "dependencies")
-}
-
-func TestLogic_direct_columnar_scans(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "direct_columnar_scans")
 }
 
 func TestLogic_discard(
@@ -2087,13 +2087,6 @@ func TestLogic_show_create(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "show_create")
-}
-
-func TestLogic_show_create_all_routines(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_create_all_routines")
 }
 
 func TestLogic_show_create_all_schemas(

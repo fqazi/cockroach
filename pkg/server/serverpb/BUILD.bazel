@@ -72,7 +72,6 @@ go_proto_library(
         # NB: The grpc-gateway compiler injects a dependency on the descriptor
         # package that Gazelle isn't prepared to deal with.
         "@com_github_golang_protobuf//descriptor:go_default_library_gen",  # keep
-        "@org_golang_google_genproto_googleapis_api//annotations:go_default_library",
         "//pkg/build",
         "//pkg/clusterversion",
         "//pkg/config/zonepb",
@@ -95,6 +94,7 @@ go_proto_library(
         "//pkg/util/log/logpb",
         "//pkg/util/metric",
         "//pkg/util/tracing/tracingpb",
+        "@org_golang_google_genproto_googleapis_api//annotations:go_default_library",
     ],
 )
 
@@ -102,7 +102,6 @@ go_library(
     name = "serverpb",
     srcs = [
         "admin.go",
-        "rpc_clients.go",
         "status.go",
     ],
     embed = [":serverpb_go_proto"],
@@ -111,7 +110,6 @@ go_library(
     deps = [
         "//pkg/gossip",
         "//pkg/roachpb",
-        "//pkg/rpc/rpcbase",
         "//pkg/util/errorutil",
         "//pkg/util/metric",
         "@com_github_prometheus_client_model//go",

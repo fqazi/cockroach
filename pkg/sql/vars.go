@@ -3943,25 +3943,6 @@ var varGen = map[string]sessionVar{
 	},
 
 	// CockroachDB extension.
-	`create_table_with_schema_locked`: {
-		GetStringVal: makePostgresBoolGetStringValFn(`create_table_with_schema_locked`),
-		Set: func(_ context.Context, m sessionDataMutator, s string) error {
-			b, err := paramparse.ParseBoolVar("create_table_with_schema_locked", s)
-			if err != nil {
-				return err
-			}
-			m.SetCreateTableWithSchemaLocked(b)
-			return nil
-		},
-		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
-			return formatBoolAsPostgresSetting(evalCtx.SessionData().CreateTableWithSchemaLocked), nil
-		},
-		GlobalDefault: func(sv *settings.Values) string {
-			return formatBoolAsPostgresSetting(CreateTableWithSchemaLocked.Get(sv))
-		},
-	},
-
-	// CockroachDB extension.
 	`use_pre_25_2_variadic_builtins`: {
 		GetStringVal: makePostgresBoolGetStringValFn(`use_pre_25_2_variadic_builtins`),
 		Set: func(_ context.Context, m sessionDataMutator, s string) error {
@@ -4032,7 +4013,7 @@ var varGen = map[string]sessionVar{
 		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
 			return formatBoolAsPostgresSetting(evalCtx.SessionData().OptimizerUseExistsFilterHoistRule), nil
 		},
-		GlobalDefault: globalTrue,
+		GlobalDefault: globalFalse,
 	},
 }
 

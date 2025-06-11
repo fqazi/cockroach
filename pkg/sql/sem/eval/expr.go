@@ -502,7 +502,7 @@ func (e *evaluator) EvalFuncExpr(ctx context.Context, expr *tree.FuncExpr) (tree
 
 	res, err := fn.Fn.(FnOverload)(ctx, e.ctx(), args)
 	if err != nil {
-		return nil, err
+		return nil, expr.MaybeWrapError(err)
 	}
 	if e.TestingKnobs.AssertFuncExprReturnTypes {
 		if err := ensureExpectedType(fn.FixedReturnType(), res); err != nil {

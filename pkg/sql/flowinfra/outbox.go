@@ -332,6 +332,7 @@ func (m *Outbox) mainLoop(ctx context.Context, wg *sync.WaitGroup) (retErr error
 				}
 			}
 		case <-flushTimer.C:
+			flushTimer.Read = true
 			err := m.flush(ctx)
 			if err != nil {
 				return err

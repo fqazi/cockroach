@@ -94,12 +94,8 @@ type SQLServerWrapper struct {
 	cfg        *BaseConfig
 	clock      *hlc.Clock
 	rpcContext *rpc.Context
-
-	// The gRPC and DRPC servers on which the different RPC handlers will be
-	// registered
-	grpc *grpcServer
-	drpc *drpcServer
-
+	// The gRPC server on which the different RPC handlers will be registered.
+	grpc         *grpcServer
 	kvNodeDialer *nodedialer.Dialer
 	db           *kv.DB
 
@@ -455,7 +451,7 @@ func newTenantServer(
 	sAuth := authserver.NewServer(baseCfg.Config, sqlServer)
 
 	// Create a drain server.
-	drainServer := newDrainServer(baseCfg, args.stopper, args.stopTrigger, args.grpc, args.drpc, sqlServer)
+	drainServer := newDrainServer(baseCfg, args.stopper, args.stopTrigger, args.grpc, sqlServer)
 
 	// Instantiate the admin API server.
 	sAdmin := newAdminServer(
@@ -471,7 +467,6 @@ func newTenantServer(
 		args.clock,
 		args.distSender,
 		args.grpc,
-		args.drpc,
 		drainServer,
 	)
 
@@ -508,7 +503,6 @@ func newTenantServer(
 		rpcContext: args.rpcContext,
 
 		grpc:         args.grpc,
-		drpc:         args.drpc,
 		kvNodeDialer: args.kvNodeDialer,
 		db:           args.db,
 		registry:     args.registry,
@@ -595,9 +589,7 @@ func (s *SQLServerWrapper) PreStart(ctx context.Context) error {
 		lf = s.sqlServer.cfg.RPCListenerFactory
 	}
 
-	pgL, loopbackPgL, rpcLoopbackDialFn, startRPCServer, err := startListenRPCAndSQL(
-		ctx, workersCtx, *s.sqlServer.cfg, s.stopper,
-		s.grpc, s.drpc, lf, enableSQLListener, s.cfg.AcceptProxyProtocolHeaders)
+	pgL, loopbackPgL, rpcLoopbackDialFn, startRPCServer, err := startListenRPCAndSQL(ctx, workersCtx, *s.sqlServer.cfg, s.stopper, s.grpc, lf, enableSQLListener, s.cfg.AcceptProxyProtocolHeaders)
 	if err != nil {
 		return err
 	}
@@ -780,7 +772,6 @@ func (s *SQLServerWrapper) PreStart(ctx context.Context) error {
 	// After setting modeOperational, we can block until all stores are fully
 	// initialized.
 	s.grpc.setMode(modeOperational)
-	s.drpc.setMode(modeOperational)
 
 	// Report server listen addresses to logs.
 	log.Ops.Infof(ctx, "starting %s server at %s (use: %s)",
@@ -1313,10 +1304,6 @@ func makeTenantSQLServerArgs(
 	if err != nil {
 		return sqlServerArgs{}, err
 	}
-	drpcServer, err := newDRPCServer(startupCtx, rpcContext)
-	if err != nil {
-		return sqlServerArgs{}, err
-	}
 
 	sessionRegistry := sql.NewSessionRegistry()
 
@@ -1381,7 +1368,6 @@ func makeTenantSQLServerArgs(
 		costController:           costController,
 		monitorAndMetrics:        monitorAndMetrics,
 		grpc:                     grpcServer,
-		drpc:                     drpcServer,
 		externalStorageBuilder:   esb,
 		admissionPacerFactory:    noopElasticCPUGrantCoord,
 		rangeDescIteratorFactory: tenantConnect,

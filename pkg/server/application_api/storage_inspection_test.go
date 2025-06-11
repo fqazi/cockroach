@@ -340,8 +340,6 @@ func TestHotRanges2Response(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.WithIssue(t, 146917)
-
 	srv := rangetestutils.StartServer(t)
 	defer srv.Stopper().Stop(context.Background())
 	ts := srv.ApplicationLayer()
@@ -353,31 +351,26 @@ func TestHotRanges2Response(t *testing.T) {
 	if len(hotRangesResp.Ranges) == 0 {
 		t.Fatalf("didn't get hot range responses from any nodes")
 	}
-	cpuSupport := grunning.Supported
-	lastCPU := math.MaxFloat64
+	lastQPS := math.MaxFloat64
 	for _, r := range hotRangesResp.Ranges {
 		if r.RangeID == 0 {
 			t.Errorf("unexpected empty range id: %d", r.RangeID)
 		}
-
 		if r.QPS > 0 {
 			if r.ReadsPerSecond == 0 && r.WritesPerSecond == 0 && r.ReadBytesPerSecond == 0 && r.WriteBytesPerSecond == 0 {
 				t.Errorf("qps %.2f > 0, expected either reads=%.2f, writes=%.2f, readBytes=%.2f or writeBytes=%.2f to be non-zero",
 					r.QPS, r.ReadsPerSecond, r.WritesPerSecond, r.ReadBytesPerSecond, r.WriteBytesPerSecond)
 			}
-
-			if cpuSupport && r.CPUTimePerSecond == 0 {
+			// If the architecture doesn't support sampling CPU, it
+			// will also be zero.
+			if grunning.Supported && r.CPUTimePerSecond == 0 {
 				t.Errorf("qps %.2f > 0, expected cpu=%.2f to be non-zero", r.QPS, r.CPUTimePerSecond)
 			}
 		}
-
-		// Ranges in response should be sorted by cpu.
-		if cpuSupport {
-			if r.CPUTimePerSecond > lastCPU {
-				t.Errorf("unexpected increase in cpu between ranges; prev=%.2f, current=%.2f", lastCPU, r.CPUTimePerSecond)
-			}
-			lastCPU = r.CPUTimePerSecond
+		if r.QPS > lastQPS {
+			t.Errorf("unexpected increase in qps between ranges; prev=%.2f, current=%.2f", lastQPS, r.QPS)
 		}
+		lastQPS = r.QPS
 	}
 }
 

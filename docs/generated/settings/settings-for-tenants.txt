@@ -115,6 +115,7 @@ server.auth_log.sql_sessions.enabled	boolean	false	if set, log verbose SQL sessi
 server.authentication_cache.enabled	boolean	true	enables a cache used during authentication to avoid lookups to system tables when retrieving per-user authentication-related information	application
 server.child_metrics.enabled	boolean	false	enables the exporting of child metrics, additional prometheus time series with extra labels	application
 server.child_metrics.include_aggregate.enabled	boolean	true	include the reporting of the aggregate time series when child metrics are enabled. This cluster setting has no effect if child metrics are disabled.	application
+server.client_cert_expiration_cache.capacity	integer	1000	the maximum number of client cert expirations stored	application
 server.clock.forward_jump_check.enabled (alias: server.clock.forward_jump_check_enabled)	boolean	false	if enabled, forward clock jumps > max_offset/2 will cause a panic	application
 server.clock.persist_upper_bound_interval	duration	0s	the interval between persisting the wall time upper bound of the clock. The clock does not generate a wall time greater than the persisted timestamp and will panic if it sees a wall time greater than this value. When cockroach starts, it waits for the wall time to catch-up till this persisted timestamp. This guarantees monotonic wall time across server restarts. Not setting this or setting a value of 0 disables this feature.	application
 server.eventlog.enabled	boolean	true	if set, logged notable events are also stored in the table system.eventlog	application
@@ -343,7 +344,6 @@ sql.notices.enabled	boolean	true	enable notices in the server/client protocol be
 sql.optimizer.uniqueness_checks_for_gen_random_uuid.enabled	boolean	false	if enabled, uniqueness checks may be planned for mutations of UUID columns updated with gen_random_uuid(); otherwise, uniqueness is assumed due to near-zero collision probability	application
 sql.schema.telemetry.recurrence	string	@weekly	cron-tab recurrence for SQL schema telemetry job	system-visible
 sql.spatial.experimental_box2d_comparison_operators.enabled	boolean	false	enables the use of certain experimental box2d comparison operators	application
-sql.sqlcommenter.enabled	boolean	false	enables support for sqlcommenter. Key value parsed from sqlcommenter comments will be included in sql insights and sql logs. See https://google.github.io/sqlcommenter/ for more details.	application
 sql.stats.activity.persisted_rows.max	integer	200000	maximum number of rows of statement and transaction activity that will be persisted in the system tables	application
 sql.stats.automatic_collection.enabled	boolean	true	automatic statistics collection mode	application
 sql.stats.automatic_collection.fraction_stale_rows	float	0.2	target fraction of stale rows per table that will trigger a statistics refresh	application
@@ -401,9 +401,9 @@ storage.delete_compaction_excise.enabled	boolean	true	set to false to direct Peb
 storage.ingestion.value_blocks.enabled	boolean	true	set to true to enable writing of value blocks in ingestion sstables	application
 storage.max_sync_duration	duration	20s	maximum duration for disk operations; any operations that take longer than this setting trigger a warning log entry or process crash	system-visible
 storage.max_sync_duration.fatal.enabled	boolean	true	if true, fatal the process when a disk operation exceeds storage.max_sync_duration	application
-storage.sstable.compression_algorithm	enumeration	minlz	determines the compression algorithm to use when compressing sstable data blocks for use in a Pebble store; [snappy = 1, zstd = 2, none = 3, minlz = 4]	system-visible
-storage.sstable.compression_algorithm_backup_storage	enumeration	minlz	determines the compression algorithm to use when compressing sstable data blocks for backup row data storage; [snappy = 1, zstd = 2, none = 3, minlz = 4]	system-visible
-storage.sstable.compression_algorithm_backup_transport	enumeration	minlz	determines the compression algorithm to use when compressing sstable data blocks for backup transport; [snappy = 1, zstd = 2, none = 3, minlz = 4]	system-visible
+storage.sstable.compression_algorithm	enumeration	snappy	determines the compression algorithm to use when compressing sstable data blocks for use in a Pebble store; [snappy = 1, zstd = 2, none = 3]	system-visible
+storage.sstable.compression_algorithm_backup_storage	enumeration	snappy	determines the compression algorithm to use when compressing sstable data blocks for backup row data storage; [snappy = 1, zstd = 2, none = 3]	system-visible
+storage.sstable.compression_algorithm_backup_transport	enumeration	snappy	determines the compression algorithm to use when compressing sstable data blocks for backup transport; [snappy = 1, zstd = 2, none = 3]	system-visible
 timeseries.storage.resolution_10s.ttl	duration	240h0m0s	the maximum age of time series data stored at the 10 second resolution. Data older than this is subject to rollup and deletion.	system-visible
 timeseries.storage.resolution_30m.ttl	duration	2160h0m0s	the maximum age of time series data stored at the 30 minute resolution. Data older than this is subject to deletion.	system-visible
 trace.debug_http_endpoint.enabled (alias: trace.debug.enable)	boolean	false	if set, traces for recent requests can be seen at https://<ui>/debug/requests	application
@@ -414,4 +414,4 @@ trace.zipkin.collector	string		the address of a Zipkin instance to receive trace
 ui.database_locality_metadata.enabled	boolean	true	if enabled shows extended locality data about databases and tables in DB Console which can be expensive to compute	application
 ui.default_timezone	string		the default timezone used to format timestamps in the ui	application
 ui.display_timezone	enumeration	etc/utc	the timezone used to format timestamps in the ui. This setting is deprecatedand will be removed in a future version. Use the 'ui.default_timezone' setting instead. 'ui.default_timezone' takes precedence over this setting. [etc/utc = 0, america/new_york = 1]	application
-version	version	1000025.2-upgrading-to-1000025.3-step-004	set the active cluster version in the format '<major>.<minor>'	application
+version	version	25.2	set the active cluster version in the format '<major>.<minor>'	application

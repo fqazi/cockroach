@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"runtime/trace"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvnemesis/kvnemesisutil"
@@ -81,6 +80,10 @@ func optimizePuts(
 				continue
 			}
 		case *kvpb.ConditionalPutRequest:
+			if maybeAddPut(t.Key) {
+				continue
+			}
+		case *kvpb.InitPutRequest:
 			if maybeAddPut(t.Key) {
 				continue
 			}
@@ -184,6 +187,10 @@ func optimizePuts(
 				shallow := *t
 				shallow.Blind = true
 				reqs[i].MustSetInner(&shallow)
+			case *kvpb.InitPutRequest:
+				shallow := *t
+				shallow.Blind = true
+				reqs[i].MustSetInner(&shallow)
 			default:
 				log.Fatalf(ctx, "unexpected non-put request: %s", t)
 			}
@@ -208,6 +215,15 @@ func evaluateBatch(
 	evalPath batchEvalPath,
 	omitInRangefeeds bool, // only relevant for transactional writes
 ) (_ *kvpb.BatchResponse, _ result.Result, retErr *kvpb.Error) {
+	defer func() {
+		// Ensure that errors don't carry the WriteTooOld flag set. The client
+		// handles non-error responses with the WriteTooOld flag set, and errors
+		// with this flag set confuse it.
+		if retErr != nil && retErr.GetTxn() != nil {
+			retErr.GetTxn().WriteTooOld = false
+		}
+	}()
+
 	// NB: Don't mutate BatchRequest directly.
 	baReqs := ba.Requests
 
@@ -336,17 +352,9 @@ func evaluateBatch(
 		// Note that `reply` is populated even when an error is returned: it
 		// may carry a response transaction and in the case of WriteTooOldError
 		// (which is sometimes deferred) it is fully populated.
-		var reg *trace.Region
-		if trace.IsEnabled() {
-			regName := args.Method().String() // NB: this is cheap, no allocs
-			reg = trace.StartRegion(ctx, regName)
-		}
 		curResult, err := evaluateCommand(
 			ctx, readWriter, rec, ms, ss, baHeader, args, reply, g, st, ui, evalPath, omitInRangefeeds,
 		)
-		if reg != nil {
-			reg.End()
-		}
 
 		if filter := rec.EvalKnobs().TestingPostEvalFilter; filter != nil {
 			filterArgs := kvserverbase.FilterArgs{

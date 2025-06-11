@@ -6,7 +6,6 @@
 package ttlschedule
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 
@@ -21,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
-	"github.com/cockroachdb/cockroach/pkg/sql/lexbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -225,13 +223,7 @@ func makeTTLJobDescription(
 ) (string, error) {
 	relationName := tn.FQString()
 	pkIndex := tableDesc.GetPrimaryIndex().IndexDesc()
-	pkColNames := make([]string, 0, len(pkIndex.KeyColumnNames))
-	var buf bytes.Buffer
-	for _, name := range pkIndex.KeyColumnNames {
-		lexbase.EncodeRestrictedSQLIdent(&buf, name, lexbase.EncNoFlags)
-		pkColNames = append(pkColNames, buf.String())
-		buf.Reset()
-	}
+	pkColNames := pkIndex.KeyColumnNames
 	pkColDirs := pkIndex.KeyColumnDirections
 	pkColTypes, err := ttljob.GetPKColumnTypes(tableDesc, pkIndex)
 	if err != nil {

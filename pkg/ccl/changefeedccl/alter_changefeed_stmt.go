@@ -266,8 +266,6 @@ func alterChangefeedPlanHook(
 
 		telemetry.Count(telemetryPath)
 
-		logAlterChangefeedTelemetry(ctx, j, jobPayload.Description)
-
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

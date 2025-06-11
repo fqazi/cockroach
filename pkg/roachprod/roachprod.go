@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -46,7 +45,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/azure"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/flagstub"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/gce"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/ibm"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/local"
 	"github.com/cockroachdb/cockroach/pkg/server/debug/replay"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
@@ -818,7 +816,7 @@ func updatePrometheusTargets(
 	}
 
 	cl := promhelperclient.NewPromClient()
-	nodeIPPorts := promhelperclient.NodeTargets{}
+	nodeIPPorts := make(map[int][]*promhelperclient.NodeInfo)
 	nodeIPPortsMutex := syncutil.RWMutex{}
 	var wg sync.WaitGroup
 	for _, node := range c.Nodes {
@@ -1724,7 +1722,7 @@ func Create(
 			for _, provider := range o.CreateOpts.VMProviders {
 				// TODO(DarrylWong): support zfs on other providers, see: #123775.
 				// Once done, revisit all tests that set zfs to see if they can run on non GCE.
-				if !(provider == gce.ProviderName || provider == aws.ProviderName || provider == ibm.ProviderName) {
+				if !(provider == gce.ProviderName || provider == aws.ProviderName) {
 					return fmt.Errorf(
 						"creating a node with --filesystem=zfs is currently not supported in %q", provider,
 					)
@@ -1751,14 +1749,6 @@ func Create(
 	}
 	l.Printf("Created cluster %s; setting up SSH...", clusterName)
 	return SetupSSH(ctx, l, clusterName, false /* sync */)
-}
-
-func PopulateEtcHosts(ctx context.Context, l *logger.Logger, clusterName string) error {
-	c, err := GetClusterFromCache(l, clusterName)
-	if err != nil {
-		return err
-	}
-	return c.PopulateEtcHosts(ctx, l)
 }
 
 func Grow(
@@ -1861,10 +1851,6 @@ func GC(l *logger.Logger, dryrun bool) error {
 		return cloud.GCAzure(l, dryrun)
 	})
 
-	addOpFn(func() error {
-		return cloud.GCIBM(l, dryrun)
-	})
-
 	// ListCloud may fail for a provider, but we can still attempt GC on
 	// the clusters we do have.
 	cld, _ := cloud.ListCloud(l, vm.ListOptions{IncludeEmptyClusters: true, IncludeProviders: []string{gce.ProviderName}})
@@ -1958,11 +1944,6 @@ func InitProviders() map[string]string {
 			name:  azure.ProviderName,
 			init:  azure.Init,
 			empty: &azure.Provider{},
-		},
-		{
-			name:  ibm.ProviderName,
-			init:  ibm.Init,
-			empty: &ibm.Provider{},
 		},
 		{
 			name: local.ProviderName,
@@ -3061,30 +3042,4 @@ func FetchLogs(
 			dest := filepath.Join(destination, "logs/cockroach.log")
 			return errors.Wrap(c.Get(ctx, l, c.Nodes, "logs/redacted/combined.log" /* src */, dest), "cluster.FetchLogs")
 		})
-}
-
-// FetchCertsDir downloads the certs directory from the cluster using `roachprod get`
-// and ensures the files are not world readable.
-func FetchCertsDir(
-	ctx context.Context, l *logger.Logger, clusterName, certsDir, destinationDir string,
-) error {
-	c, err := GetClusterFromCache(l, clusterName)
-	if err != nil {
-		return err
-	}
-
-	if err = c.Get(ctx, l, c.Nodes, certsDir, destinationDir); err != nil {
-		return err
-	}
-
-	// Need to prevent world readable files or lib/pq will complain.
-	return filepath.WalkDir(destinationDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return errors.Wrap(err, "walking localCertsDir failed")
-		}
-		if d.IsDir() {
-			return nil
-		}
-		return os.Chmod(path, 0600)
-	})
 }

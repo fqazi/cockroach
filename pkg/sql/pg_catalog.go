@@ -30,11 +30,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/funcdesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemadesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemaexpr"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/oidext"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
-	"github.com/cockroachdb/cockroach/pkg/sql/prep"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins/builtinsregistry"
@@ -625,22 +625,15 @@ https://www.postgresql.org/docs/9.5/catalog-pg-authid.html`,
 				return err
 			}
 			roleCanLogin := !noLogin
+			createDB, err := options.createDB()
+			if err != nil {
+				return err
+			}
 			rolValidUntil, err := options.validUntil(p)
 			if err != nil {
 				return err
 			}
-
-			bypassRLS, err := p.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.BYPASSRLS, userName)
-			if err != nil {
-				return err
-			}
-
-			createRole, err := p.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.CREATEROLE, userName)
-			if err != nil {
-				return err
-			}
-
-			createDB, err := p.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.CREATEDB, userName)
+			createRole, err := options.createRole()
 			if err != nil {
 				return err
 			}
@@ -651,18 +644,18 @@ https://www.postgresql.org/docs/9.5/catalog-pg-authid.html`,
 			}
 
 			return addRow(
-				h.UserOid(userName),                              // oid
-				tree.NewDName(userName.Normalized()),             // rolname
-				tree.MakeDBool(isRoot || isSuper),                // rolsuper
-				tree.MakeDBool(roleInherits),                     // rolinherit
-				tree.MakeDBool(isRoot || tree.DBool(createRole)), // rolcreaterole
-				tree.MakeDBool(isRoot || tree.DBool(createDB)),   // rolcreatedb
-				tree.MakeDBool(roleCanLogin),                     // rolcanlogin.
-				tree.DBoolFalse,                                  // rolreplication
-				tree.MakeDBool(tree.DBool(bypassRLS)),            // rolbypassrls
-				negOneVal,                                        // rolconnlimit
-				passwdStarString,                                 // rolpassword
-				rolValidUntil,                                    // rolvaliduntil
+				h.UserOid(userName),                  // oid
+				tree.NewDName(userName.Normalized()), // rolname
+				tree.MakeDBool(isRoot || isSuper),    // rolsuper
+				tree.MakeDBool(roleInherits),         // rolinherit
+				tree.MakeDBool(isRoot || createRole), // rolcreaterole
+				tree.MakeDBool(isRoot || createDB),   // rolcreatedb
+				tree.MakeDBool(roleCanLogin),         // rolcanlogin.
+				tree.DBoolFalse,                      // rolreplication
+				tree.DBoolFalse,                      // rolbypassrls
+				negOneVal,                            // rolconnlimit
+				passwdStarString,                     // rolpassword
+				rolValidUntil,                        // rolvaliduntil
 			)
 		})
 	},
@@ -1003,22 +996,7 @@ func populateTableConstraints(
 				}
 				conoid = h.PrimaryKeyConstraintOid(db.GetID(), sc.GetID(), table.GetID(), uwi)
 				contype = conTypePKey
-				primaryIdxStr, err := catformat.IndexForDisplay(
-					ctx,
-					table,
-					&descpb.AnonymousTable,
-					table.GetPrimaryIndex(),
-					"", /* partition */
-					tree.FmtSimple,
-					p.EvalContext(),
-					p.SemaCtx(),
-					p.SessionData(),
-					catformat.IndexDisplayDefOnly,
-				)
-				if err != nil {
-					return err
-				}
-				condef = tree.NewDString(primaryIdxStr)
+				condef = tree.NewDString(tabledesc.PrimaryKeyString(table))
 			} else {
 				f := tree.NewFmtCtx(tree.FmtSimple)
 				conoid = h.UniqueConstraintOid(db.GetID(), sc.GetID(), table.GetID(), uwi)
@@ -2455,7 +2433,7 @@ var pgCatalogPreparedXactsTable = virtualSchemaTable{
 https://www.postgresql.org/docs/9.6/view-pg-prepared-xacts.html`,
 	schema: vtable.PGCatalogPreparedXacts,
 	populate: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
-		if !p.IsActive(ctx, clusterversion.TODO_Delete_V25_1_PreparedTransactionsTable) {
+		if !p.IsActive(ctx, clusterversion.V25_1_PreparedTransactionsTable) {
 			// TODO(nvanbenschoten): Remove this logic when mixed-version support
 			// with v24.3 is no longer necessary.
 			return nil
@@ -2504,7 +2482,7 @@ https://www.postgresql.org/docs/9.6/view-pg-prepared-statements.html`,
 	schema: vtable.PGCatalogPreparedStatements,
 	populate: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
 		for name, stmt := range p.preparedStatements.List() {
-			placeholderTypes := stmt.Metadata.PlaceholderTypesInfo.Types
+			placeholderTypes := stmt.PrepareMetadata.PlaceholderTypesInfo.Types
 			paramTypes := tree.NewDArray(types.RegType)
 			paramTypes.Array = make(tree.Datums, len(placeholderTypes))
 			paramNames := make([]string, len(placeholderTypes))
@@ -2525,11 +2503,11 @@ https://www.postgresql.org/docs/9.6/view-pg-prepared-statements.html`,
 			}
 
 			fromSQL := tree.DBoolFalse
-			if stmt.Origin() == prep.StatementOriginSQL {
+			if stmt.origin == PreparedStatementOriginSQL {
 				fromSQL = tree.DBoolTrue
 			}
 
-			ts, err := tree.MakeDTimestampTZ(stmt.CreatedAt(), time.Microsecond)
+			ts, err := tree.MakeDTimestampTZ(stmt.createdAt, time.Microsecond)
 			if err != nil {
 				return err
 			}
@@ -2981,46 +2959,38 @@ https://www.postgresql.org/docs/9.5/view-pg-roles.html`,
 					return err
 				}
 				roleCanLogin := isRoot || !noLogin
+				createDB, err := options.createDB()
+				if err != nil {
+					return err
+				}
 				rolValidUntil, err := options.validUntil(p)
 				if err != nil {
 					return err
 				}
-
-				bypassRLS, err := p.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.BYPASSRLS, userName)
+				createRole, err := options.createRole()
 				if err != nil {
 					return err
 				}
-
-				createRole, err := p.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.CREATEROLE, userName)
-				if err != nil {
-					return err
-				}
-
-				createDB, err := p.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.CREATEDB, userName)
-				if err != nil {
-					return err
-				}
-
 				isSuper, err := userIsSuper(ctx, p, userName)
 				if err != nil {
 					return err
 				}
 
 				return addRow(
-					h.UserOid(userName),                               // oid
-					tree.NewDName(userName.Normalized()),              // rolname
-					tree.MakeDBool(isRoot || isSuper),                 // rolsuper
-					tree.MakeDBool(roleInherits),                      // rolinherit
-					tree.MakeDBool(isSuper || tree.DBool(createRole)), // rolcreaterole
-					tree.MakeDBool(isSuper || tree.DBool(createDB)),   // rolcreatedb
-					tree.DBoolFalse,                                   // rolcatupdate
-					tree.MakeDBool(roleCanLogin),                      // rolcanlogin.
-					tree.DBoolFalse,                                   // rolreplication
-					negOneVal,                                         // rolconnlimit
-					passwdStarString,                                  // rolpassword
-					rolValidUntil,                                     // rolvaliduntil
-					tree.MakeDBool(tree.DBool(bypassRLS)),             // rolbypassrls
-					settings,                                          // rolconfig
+					h.UserOid(userName),                   // oid
+					tree.NewDName(userName.Normalized()),  // rolname
+					tree.MakeDBool(isRoot || isSuper),     // rolsuper
+					tree.MakeDBool(roleInherits),          // rolinherit
+					tree.MakeDBool(isSuper || createRole), // rolcreaterole
+					tree.MakeDBool(isSuper || createDB),   // rolcreatedb
+					tree.DBoolFalse,                       // rolcatupdate
+					tree.MakeDBool(roleCanLogin),          // rolcanlogin.
+					tree.DBoolFalse,                       // rolreplication
+					negOneVal,                             // rolconnlimit
+					passwdStarString,                      // rolpassword
+					rolValidUntil,                         // rolvaliduntil
+					tree.DBoolFalse,                       // rolbypassrls
+					settings,                              // rolconfig
 				)
 			})
 	},
@@ -3317,124 +3287,14 @@ https://www.postgresql.org/docs/9.5/catalog-pg-tablespace.html`,
 }
 
 var pgCatalogTriggerTable = virtualSchemaTable{
-	comment: `trigger definitions
-https://www.postgresql.org/docs/16/catalog-pg-trigger.html`,
+	comment: `triggers (empty - feature does not exist)
+https://www.postgresql.org/docs/9.5/catalog-pg-trigger.html`,
 	schema: vtable.PGCatalogTrigger,
 	populate: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
-		h := makeOidHasher()
-		opts := forEachTableDescOptions{virtualOpts: hideVirtual} /* virtual schemas have no triggers */
-		return forEachTableDesc(ctx, p, dbContext, opts,
-			func(ctx context.Context, descCtx tableDescContext) error {
-				tableOid := tableOid(descCtx.table.GetID())
-
-				triggers := descCtx.table.GetTriggers()
-				for i := range triggers {
-					trigger := &triggers[i]
-					triggerOid := h.TriggerOid(descCtx.table.GetID(), trigger.ID)
-
-					// Calculate tgtype bitmap. The bits are defined in Postgres source:
-					// https://github.com/postgres/postgres/blob/44ce4e1593b1821005b29ffaa19d9cbdd80747b2/src/include/catalog/pg_trigger.h#L92-L99
-					// Bit 0: FOR EACH ROW (set) or FOR EACH STATEMENT (unset)
-					// Bit 1: BEFORE (set) or AFTER (unset)
-					// Bits 2-4: One bit for each event type (INSERT=4, DELETE=8, UPDATE=16)
-					// Bit 5: TRUNCATE (64)
-					// Bit 6: INSTEAD OF (128)
-					const tgtypeRow = 1
-					const tgtypeBefore = 1 << 1
-					const tgtypeInsert = 1 << 2
-					const tgtypeDelete = 1 << 3
-					const tgtypeUpdate = 1 << 4
-					const tgtypeTruncate = 1 << 5
-					const tgtypeInstead = 1 << 6
-
-					tgtype := int16(0)
-
-					// Timing bits.
-					switch trigger.ActionTime {
-					case semenumpb.TriggerActionTime_BEFORE:
-						tgtype |= tgtypeBefore
-					case semenumpb.TriggerActionTime_INSTEAD_OF:
-						tgtype |= tgtypeInstead
-					}
-
-					// Row/Statement bit.
-					if trigger.ForEachRow {
-						tgtype |= tgtypeRow
-					}
-
-					// Event type bits.
-					for _, event := range trigger.Events {
-						switch event.Type {
-						case semenumpb.TriggerEventType_INSERT:
-							tgtype |= tgtypeInsert
-						case semenumpb.TriggerEventType_DELETE:
-							tgtype |= tgtypeDelete
-						case semenumpb.TriggerEventType_UPDATE:
-							tgtype |= tgtypeUpdate
-						case semenumpb.TriggerEventType_TRUNCATE:
-							tgtype |= tgtypeTruncate
-						}
-					}
-
-					// tgenabled: O = origin and local, D = disabled, R = replica, A = always
-					tgenabled := tree.NewDString("A")
-					if !trigger.Enabled {
-						tgenabled = tree.NewDString("D")
-					}
-
-					// tgargs: Function arguments as a bytea array.
-					// Format: arg1\000arg2\000...argN\000
-					var tgargs []byte
-					for _, arg := range trigger.FuncArgs {
-						tgargs = append(tgargs, []byte(arg)...)
-						tgargs = append(tgargs, 0) // null terminator
-					}
-
-					// tgattr: Column numbers for UPDATE OF - not implemented.
-					// TODO(#135656): Implement UPDATE OF column list for triggers.
-					tgattr := tree.NewDIntVectorFromDArray(tree.NewDArray(types.Int2))
-					// tgoldtable/tgnewtable: Transition table names.
-					var oldTableName, newTableName tree.Datum = tree.DNull, tree.DNull
-					if trigger.OldTransitionAlias != "" {
-						oldTableName = tree.NewDName(trigger.OldTransitionAlias)
-					}
-					if trigger.NewTransitionAlias != "" {
-						newTableName = tree.NewDName(trigger.NewTransitionAlias)
-					}
-
-					// tgqual: WHEN condition expression (internal format).
-					var tgqual tree.Datum = tree.DNull
-					if trigger.WhenExpr != "" {
-						tgqual = tree.NewDString(trigger.WhenExpr)
-					}
-
-					if err := addRow(
-						triggerOid,                  // oid
-						tableOid,                    // tgrelid
-						oidZero,                     // tgparentid (partitioning not supported)
-						tree.NewDName(trigger.Name), // tgname
-						tree.NewDOid(catid.FuncIDToOID(trigger.FuncID)), // tgfoid
-						tree.NewDInt(tree.DInt(tgtype)),                 // tgtype
-						tgenabled,                                       // tgenabled
-						tree.DBoolFalse,                                 // tgisinternal
-						oidZero,                                         // tgconstrrelid (foreign key table)
-						oidZero,                                         // tgconstrindid (constraint index)
-						oidZero,                                         // tgconstraint (constraint oid)
-						tree.DBoolFalse,                                 // tgdeferrable
-						tree.DBoolFalse,                                 // tginitdeferred
-						tree.NewDInt(tree.DInt(len(trigger.FuncArgs))), // tgnargs
-						tgattr,                              // tgattr
-						tree.NewDBytes(tree.DBytes(tgargs)), // tgargs
-						tgqual,                              // tgqual
-						oldTableName,                        // tgoldtable
-						newTableName,                        // tgnewtable
-					); err != nil {
-						return err
-					}
-				}
-				return nil
-			})
+		// Triggers are unsupported.
+		return nil
 	},
+	unimplemented: true,
 }
 
 var (
@@ -5351,7 +5211,6 @@ const (
 	rewriteTypeTag
 	dbSchemaRoleTypeTag
 	castTypeTag
-	triggerTypeTag
 	policyTypeTag
 )
 
@@ -5549,13 +5408,6 @@ func (h oidHasher) CastOid(srcID oid.Oid, tgtID oid.Oid) *tree.DOid {
 	h.writeTypeTag(castTypeTag)
 	h.writeUInt32(uint32(srcID))
 	h.writeUInt32(uint32(tgtID))
-	return h.getOid()
-}
-
-func (h oidHasher) TriggerOid(tableID descpb.ID, triggerID descpb.TriggerID) *tree.DOid {
-	h.writeTypeTag(triggerTypeTag)
-	h.writeTable(tableID)
-	h.writeUInt32(uint32(triggerID))
 	return h.getOid()
 }
 

@@ -753,12 +753,6 @@ var statsAsOfTimeClusterMode = settings.RegisterDurationSetting(
 	"sql.crdb_internal.table_row_statistics.as_of_time",
 	"historical query time used to build the crdb_internal.table_row_statistics table",
 	-10*time.Second,
-	settings.WithValidateDuration(func(v time.Duration) error {
-		if v > 0 {
-			return errors.Errorf("cannot be set to a positive duration: %s", v)
-		}
-		return nil
-	}),
 )
 
 var crdbInternalTablesTableLastStats = virtualSchemaTable{
@@ -2983,7 +2977,7 @@ func populateQueriesTable(
 // formatActiveQuery formats a serverpb.ActiveQuery by interpolating its
 // placeholders within the string.
 func formatActiveQuery(query serverpb.ActiveQuery) string {
-	parsed, parseErr := parser.ParseOneWithOptions(query.Sql, parser.DefaultParseOptions.RetainComments())
+	parsed, parseErr := parser.ParseOneRetainComments(query.Sql)
 	if parseErr != nil {
 		// If we failed to interpolate, rather than give up just send out the
 		// SQL without interpolated placeholders. Hallelujah!
@@ -3966,7 +3960,7 @@ CREATE TABLE crdb_internal.create_statements (
   state                         STRING NOT NULL,
   create_nofks                  STRING NOT NULL,
   rls_statements                STRING[] NOT NULL,
-  fk_statements                 STRING[] NOT NULL,
+  alter_statements              STRING[] NOT NULL,
   validate_statements           STRING[] NOT NULL,
   create_redactable             STRING NOT NULL,
   has_partitions                BOOL NOT NULL,
@@ -4084,7 +4078,7 @@ func showRowLevelSecurityStatements(
 	rlsStmts *tree.DArray,
 ) error {
 	// Add the row level security ALTER statements to the rls_statements column.
-	if alterRLSStatements, err := showRLSAlterStatement(tn, table); err != nil {
+	if alterRLSStatements, err := showRLSAlterStatement(tn, table, false); err != nil {
 		return err
 	} else if len(alterRLSStatements) != 0 {
 		if err = rlsStmts.Append(tree.NewDString(alterRLSStatements)); err != nil {
@@ -4094,10 +4088,12 @@ func showRowLevelSecurityStatements(
 
 	// Add the row level security policy statements to the rls_statements column.
 	for _, policy := range table.GetPolicies() {
-		if policyStatement, err := showPolicyStatement(ctx, tn, table, evalCtx, semaCtx, sessionData, policy); err != nil {
+		if policyStatement, err := showPolicyStatement(ctx, tn, table, evalCtx, semaCtx, sessionData, policy, false); err != nil {
 			return err
-		} else if err = rlsStmts.Append(tree.NewDString(policyStatement)); err != nil {
-			return err
+		} else if len(policyStatement) != 0 {
+			if err := rlsStmts.Append(tree.NewDString(policyStatement)); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -5554,7 +5550,7 @@ CREATE TABLE crdb_internal.gossip_alerts (
 					tree.NewDInt(tree.DInt(result.NodeID)),
 					storeID,
 					tree.NewDString(strings.ToLower(alert.Category.String())),
-					tree.NewDString(string(alert.SafeDescription)),
+					tree.NewDString(alert.Description),
 					tree.NewDFloat(tree.DFloat(alert.Value)),
 				); err != nil {
 					return err
@@ -8761,8 +8757,7 @@ CREATE TABLE crdb_internal.%s (
 	implicit_txn               BOOL NOT NULL,
 	cpu_sql_nanos              INT8,
 	error_code                 STRING,
-	last_error_redactable      STRING,
-	query_tags                 JSONB
+	last_error_redactable      STRING
 )`
 
 var crdbInternalClusterExecutionInsightsTable = virtualSchemaTable{
@@ -8889,27 +8884,6 @@ func populateStmtInsights(
 				}
 			}
 
-			var keys = []string{"name", "value"}
-			arrayBuilder := json.NewArrayBuilder(len(s.QueryTags))
-			for _, queryTag := range s.QueryTags {
-				builder, err := json.NewFixedKeysObjectBuilder(keys)
-				if err != nil {
-					return err
-				}
-				if err := builder.Set(keys[0], json.FromString(queryTag.Name)); err != nil {
-					return err
-				}
-				if err := builder.Set(keys[1], json.FromString(queryTag.Value)); err != nil {
-					return err
-				}
-				json, err := builder.Build()
-				if err != nil {
-					return err
-				}
-				arrayBuilder.Add(json)
-			}
-			commentsJson := arrayBuilder.Build()
-
 			err = errors.CombineErrors(err, addRow(
 				tree.NewDString(hex.EncodeToString(insight.Session.ID.GetBytes())),
 				tree.NewDUuid(tree.DUuid{UUID: insight.Transaction.ID}),
@@ -8940,7 +8914,6 @@ func populateStmtInsights(
 				tree.NewDInt(tree.DInt(s.CPUSQLNanos)),
 				errorCode,
 				errorMsg,
-				tree.NewDJSON(commentsJson),
 			))
 		}
 	}
@@ -9196,7 +9169,6 @@ FROM system.privileges;`,
 	resultColumns: resultColsFromColDescs(systemschema.SystemPrivilegeTable.TableDesc().Columns),
 }
 
-// Obsolete, so empty output.
 var crdbInternalKVFlowController = virtualSchemaTable{
 	comment: `node-level view of the kv flow controller, its active streams and available tokens state`,
 	schema: `
@@ -9213,6 +9185,21 @@ CREATE TABLE crdb_internal.kv_flow_controller (
 		}
 		if !hasRoleOption {
 			return noViewActivityOrViewActivityRedactedRoleError(p.User())
+		}
+
+		resp, err := p.extendedEvalCtx.ExecCfg.InspectzServer.KVFlowController(ctx, &kvflowinspectpb.ControllerRequest{})
+		if err != nil {
+			return err
+		}
+		for _, stream := range resp.Streams {
+			if err := addRow(
+				tree.NewDInt(tree.DInt(stream.TenantID.ToUint64())),
+				tree.NewDInt(tree.DInt(stream.StoreID)),
+				tree.NewDInt(tree.DInt(stream.AvailableEvalRegularTokens)),
+				tree.NewDInt(tree.DInt(stream.AvailableEvalElasticTokens)),
+			); err != nil {
+				return err
+			}
 		}
 		return nil
 	},
@@ -9257,7 +9244,6 @@ CREATE TABLE crdb_internal.kv_flow_controller_v2 (
 	},
 }
 
-// Obsolete, so empty output.
 var crdbInternalKVFlowHandles = virtualSchemaTable{
 	comment: `node-level view of active kv flow control handles, their underlying streams, and tracked state`,
 	schema: `
@@ -9279,7 +9265,16 @@ CREATE TABLE crdb_internal.kv_flow_control_handles (
 				if !hasRoleOption {
 					return false, noViewActivityOrViewActivityRedactedRoleError(p.User())
 				}
-				return true, nil
+
+				rangeID := roachpb.RangeID(tree.MustBeDInt(constraint))
+				resp, err := p.extendedEvalCtx.ExecCfg.InspectzServer.KVFlowHandles(
+					ctx, &kvflowinspectpb.HandlesRequest{
+						RangeIDs: []roachpb.RangeID{rangeID},
+					})
+				if err != nil {
+					return false, err
+				}
+				return true, populateFlowHandlesResponse(resp, addRow)
 			},
 		},
 	},
@@ -9291,7 +9286,12 @@ CREATE TABLE crdb_internal.kv_flow_control_handles (
 		if !hasRoleOption {
 			return noViewActivityOrViewActivityRedactedRoleError(p.User())
 		}
-		return nil
+
+		resp, err := p.extendedEvalCtx.ExecCfg.InspectzServer.KVFlowHandles(ctx, &kvflowinspectpb.HandlesRequest{})
+		if err != nil {
+			return err
+		}
+		return populateFlowHandlesResponse(resp, addRow)
 	},
 }
 var crdbInternalKVFlowHandlesV2 = virtualSchemaTable{
@@ -9347,6 +9347,28 @@ CREATE TABLE crdb_internal.kv_flow_control_handles_v2 (
 	},
 }
 
+func populateFlowHandlesResponse(
+	resp *kvflowinspectpb.HandlesResponse, addRow func(...tree.Datum) error,
+) error {
+	for _, handle := range resp.Handles {
+		for _, connected := range handle.ConnectedStreams {
+			totalTrackedTokens := int64(0)
+			for _, tracked := range connected.TrackedDeductions {
+				totalTrackedTokens += tracked.Tokens
+			}
+			if err := addRow(
+				tree.NewDInt(tree.DInt(handle.RangeID)),
+				tree.NewDInt(tree.DInt(connected.Stream.TenantID.ToUint64())),
+				tree.NewDInt(tree.DInt(connected.Stream.StoreID)),
+				tree.NewDInt(tree.DInt(totalTrackedTokens)),
+			); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func populateFlowHandlesResponseV2(
 	resp *kvflowinspectpb.HandlesResponse, addRow func(...tree.Datum) error,
 ) error {
@@ -9395,8 +9417,16 @@ CREATE TABLE crdb_internal.kv_flow_token_deductions (
 				if !hasRoleOption {
 					return false, noViewActivityOrViewActivityRedactedRoleError(p.User())
 				}
-				_ = roachpb.RangeID(tree.MustBeDInt(constraint))
-				return true, nil
+
+				rangeID := roachpb.RangeID(tree.MustBeDInt(constraint))
+				resp, err := p.extendedEvalCtx.ExecCfg.InspectzServer.KVFlowHandles(
+					ctx, &kvflowinspectpb.HandlesRequest{
+						RangeIDs: []roachpb.RangeID{rangeID},
+					})
+				if err != nil {
+					return false, err
+				}
+				return true, populateFlowTokensResponse(resp, addRow)
 			},
 		},
 	},
@@ -9408,7 +9438,12 @@ CREATE TABLE crdb_internal.kv_flow_token_deductions (
 		if !hasRoleOption {
 			return noViewActivityOrViewActivityRedactedRoleError(p.User())
 		}
-		return nil
+
+		resp, err := p.extendedEvalCtx.ExecCfg.InspectzServer.KVFlowHandles(ctx, &kvflowinspectpb.HandlesRequest{})
+		if err != nil {
+			return err
+		}
+		return populateFlowTokensResponse(resp, addRow)
 	},
 }
 

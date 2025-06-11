@@ -192,7 +192,7 @@ func TestSSTWriterOption(t *testing.T) {
 	// cluster setting that has been set to the given algorithm as the basis for
 	// determining which compression algorithm is used when the SSTWriterOption
 	// runs over an sstable.WriterOptions.
-	makeCompressionWriterOpt := func(alg CompressionAlgorithm) SSTWriterOption {
+	makeCompressionWriterOpt := func(alg compressionAlgorithm) SSTWriterOption {
 		ctx := context.Background()
 		st := cluster.MakeTestingClusterSettings()
 		CompressionAlgorithmStorage.Override(ctx, &st.SV, alg)
@@ -213,23 +213,16 @@ func TestSSTWriterOption(t *testing.T) {
 		},
 		{
 			"with snappy compression",
-			makeCompressionWriterOpt(CompressionAlgorithmSnappy),
+			makeCompressionWriterOpt(compressionAlgorithmSnappy),
 			func(t *testing.T, opts *sstable.WriterOptions) {
 				require.Equal(t, block.SnappyCompression, opts.Compression)
 			},
 		},
 		{
 			"with zstd compression",
-			makeCompressionWriterOpt(CompressionAlgorithmZstd),
+			makeCompressionWriterOpt(compressionAlgorithmZstd),
 			func(t *testing.T, opts *sstable.WriterOptions) {
 				require.Equal(t, block.ZstdCompression, opts.Compression)
-			},
-		},
-		{
-			"with minlz compression",
-			makeCompressionWriterOpt(CompressionAlgorithmMinLZ),
-			func(t *testing.T, opts *sstable.WriterOptions) {
-				require.Equal(t, block.MinLZCompression, opts.Compression)
 			},
 		},
 	}

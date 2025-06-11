@@ -18,13 +18,14 @@ import (
 	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangecache"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/colflow"
@@ -42,7 +43,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/rowexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
@@ -120,7 +120,7 @@ func (req runnerRequest) run() error {
 		physicalplan.ReleaseFlowSpec(&req.flowReq.Flow)
 	}()
 
-	client, err := execinfrapb.DialDistSQLClient(req.sqlInstanceDialer, req.ctx, roachpb.NodeID(req.sqlInstanceID), rpcbase.DefaultClass)
+	conn, err := req.sqlInstanceDialer.Dial(req.ctx, roachpb.NodeID(req.sqlInstanceID), rpc.DefaultClass)
 	if err != nil {
 		// Mark this error as special runnerDialErr so that we could retry this
 		// distributed query as local.
@@ -128,6 +128,7 @@ func (req runnerRequest) run() error {
 		res.err = err
 		return err
 	}
+	client := execinfrapb.NewDistSQLClient(conn)
 	// TODO(radu): do we want a timeout here?
 	resp, err := client.SetupFlow(req.ctx, req.flowReq)
 	if err != nil {
@@ -258,13 +259,14 @@ func (dsp *DistSQLPlanner) initCancelingWorkers(initCtx context.Context) {
 						continue
 					}
 					log.VEventf(parentCtx, 2, "worker %d is canceling at most %d flows on node %d", workerID, len(req.FlowIDs), sqlInstanceID)
-					client, err := execinfrapb.DialDistSQLClient(dsp.sqlInstanceDialer, parentCtx, roachpb.NodeID(sqlInstanceID), rpcbase.DefaultClass)
+					conn, err := dsp.sqlInstanceDialer.Dial(parentCtx, roachpb.NodeID(sqlInstanceID), rpc.DefaultClass)
 					if err != nil {
 						// We failed to dial the node, so we give up given that
 						// our cancellation is best effort. It is possible that
 						// the node is dead anyway.
 						continue
 					}
+					client := execinfrapb.NewDistSQLClient(conn)
 					_ = timeutil.RunWithTimeout(
 						parentCtx,
 						"cancel dead flows",
@@ -374,19 +376,6 @@ func (c *cancelFlowsCoordinator) addFlowsToCancel(
 	}
 }
 
-// serializeEvalContext serializes some of the fields of a eval.Context into a
-// execinfrapb.EvalContext proto.
-func serializeEvalContext(evalCtx *eval.Context) execinfrapb.EvalContext {
-	sessionDataProto := evalCtx.SessionData().SessionData
-	sessiondata.MarshalNonLocal(evalCtx.SessionData(), &sessionDataProto)
-	return execinfrapb.EvalContext{
-		SessionData:                       sessionDataProto,
-		StmtTimestampNanos:                evalCtx.StmtTimestamp.UnixNano(),
-		TxnTimestampNanos:                 evalCtx.TxnTimestamp.UnixNano(),
-		TestingKnobsForceProductionValues: evalCtx.TestingKnobs.ForceProductionValues,
-	}
-}
-
 // setupFlows sets up all the flows specified in flows using the provided state.
 // It will first attempt to set up the gateway flow (whose output is the
 // DistSQLReceiver provided) and - if successful - will proceed to setting up
@@ -455,9 +444,18 @@ func (dsp *DistSQLPlanner) setupFlows(
 	if len(statementSQL) > setupFlowRequestStmtMaxLength {
 		statementSQL = statementSQL[:setupFlowRequestStmtMaxLength]
 	}
+	var v execversion.V
+	switch {
+	case dsp.st.Version.IsActive(ctx, clusterversion.V25_2):
+		v = execversion.V25_2
+	case dsp.st.Version.IsActive(ctx, clusterversion.V25_1):
+		v = execversion.V25_1
+	default:
+		v = execversion.V24_3
+	}
 	setupReq := execinfrapb.SetupFlowRequest{
 		LeafTxnInputState: leafInputState,
-		Version:           execversion.V25_2,
+		Version:           v,
 		TraceKV:           recv.tracing.KVTracingEnabled(),
 		CollectStats:      planCtx.collectExecStats,
 		StatementSQL:      statementSQL,
@@ -468,7 +466,7 @@ func (dsp *DistSQLPlanner) setupFlows(
 		setupReq.EvalContext.SessionData.VectorizeMode = evalCtx.SessionData().VectorizeMode
 	} else {
 		// In distributed plans populate some extra state.
-		setupReq.EvalContext = serializeEvalContext(evalCtx)
+		setupReq.EvalContext = execinfrapb.MakeEvalContext(evalCtx)
 		if jobTag, ok := logtags.FromContext(ctx).GetTag("job"); ok {
 			setupReq.JobTag = redact.SafeString(jobTag.ValueStr())
 		}

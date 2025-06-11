@@ -54,6 +54,7 @@ var (
 		"bulkio.ingest.flush_delay",
 		"amount of time to wait before sending a file to the KV/Storage layer to ingest",
 		0,
+		settings.NonNegativeDuration,
 	)
 
 	senderConcurrency = settings.RegisterIntSetting(
@@ -132,6 +133,8 @@ type SSTBatcher struct {
 
 	// writeAtBatchTS is passed to the writeAtBatchTs argument to db.AddSStable.
 	writeAtBatchTS bool
+
+	initialSplitDone bool
 
 	// disableScatters controls scatters of the as-we-fill split ranges.
 	disableScatters bool

@@ -170,8 +170,7 @@ func (m *Manager) GetWithDesc(
 		func() (*cspann.Index, error) {
 			// TODO(drewk): use the config to populate the index options as well.
 			config := index.GetVecConfig()
-			quantizer := quantize.NewRaBitQuantizer(
-				int(config.Dims), config.Seed, config.DistanceMetric)
+			quantizer := quantize.NewRaBitQuantizer(int(config.Dims), config.Seed)
 			store, err := vecstore.NewWithColumnID(
 				ctx, m.db, quantizer, m.codec, desc, index.GetID(), index.VectorColumnID(),
 			)
@@ -181,7 +180,7 @@ func (m *Manager) GetWithDesc(
 
 			return cspann.NewIndex(
 				m.ctx, store, quantizer, config.Seed,
-				m.getIndexOptions(&config, store.ReadOnly()), m.stopper,
+				m.getIndexOptions(config, store.ReadOnly()), m.stopper,
 			)
 		},
 	)
@@ -202,8 +201,7 @@ func (m *Manager) Get(
 				return nil, err
 			}
 			// TODO(drewk): use the config to populate the index options as well.
-			quantizer := quantize.NewRaBitQuantizer(
-				int(config.Dims), config.Seed, config.DistanceMetric)
+			quantizer := quantize.NewRaBitQuantizer(int(config.Dims), config.Seed)
 			store, err := vecstore.New(ctx, m.db, quantizer, m.codec, tableID, indexID)
 			if err != nil {
 				return nil, err
@@ -214,15 +212,14 @@ func (m *Manager) Get(
 			// the Get call.
 			return cspann.NewIndex(
 				m.ctx, store, quantizer, config.Seed,
-				m.getIndexOptions(&config, store.ReadOnly()), m.stopper,
+				m.getIndexOptions(config, store.ReadOnly()), m.stopper,
 			)
 		},
 	)
 }
 
-func (m *Manager) getIndexOptions(config *vecpb.Config, readOnly bool) *cspann.IndexOptions {
+func (m *Manager) getIndexOptions(config vecpb.Config, readOnly bool) *cspann.IndexOptions {
 	return &cspann.IndexOptions{
-		RotAlgorithm:     config.RotAlgorithm,
 		MinPartitionSize: int(config.MinPartitionSize),
 		MaxPartitionSize: int(config.MaxPartitionSize),
 		BaseBeamSize:     int(config.BuildBeamSize),
@@ -230,10 +227,7 @@ func (m *Manager) getIndexOptions(config *vecpb.Config, readOnly bool) *cspann.I
 		StalledOpTimeout: func() time.Duration {
 			return StalledOpTimeoutSetting.Get(m.sv)
 		},
-		IsDeterministic: config.IsDeterministic,
-		ReadOnly:        readOnly,
-		// Disable adaptive search until it's extended to work with vecstore.
-		DisableAdaptiveSearch: true,
+		ReadOnly: readOnly,
 	}
 }
 

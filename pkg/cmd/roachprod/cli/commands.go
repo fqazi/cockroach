@@ -132,24 +132,6 @@ Local Clusters
 	return createCmd
 }
 
-func (cr *commandRegistry) buildPopulateEtcHosts() *cobra.Command {
-	populateEtchHostsCmd := &cobra.Command{
-		Use:   `populate-etc-hosts <cluster>`,
-		Short: `populate /etc/hosts`,
-		Long: `populate /etc/hosts on all nodes in a cluster with the private
-IP addresses of the nodes. This is useful for running cockroach tests that use
-DNS to resolve the IP addresses of the nodes (e.g. jepsen) in Cloud environments
-where there is no DNS server to resolve the IP addresses of the nodes.
-`,
-		Args: cobra.ExactArgs(1),
-		Run: wrap(func(cmd *cobra.Command, args []string) error {
-			return roachprod.PopulateEtcHosts(context.Background(), config.Logger, args[0])
-		}),
-	}
-	initFlagInsecureForCmd(populateEtchHostsCmd)
-	return populateEtchHostsCmd
-}
-
 func (cr *commandRegistry) buildGrowCmd() *cobra.Command {
 	growCmd := &cobra.Command{
 		Use:   `grow <cluster> <num-nodes>`,
@@ -2158,34 +2140,6 @@ If the time is not provided, it downloads the latest pprof file across all clust
 			}
 			ctx := context.Background()
 			return roachprod.DownloadLatestPProfFile(ctx, config.Logger, cluster, pprofTimeBefore)
-		}),
-	}
-}
-
-func (cr *commandRegistry) buildFetchCertsDir() *cobra.Command {
-	return &cobra.Command{
-		Use:   "fetch-certs <cluster> [<dest-dir>]",
-		Short: "downloads the PGUrl certs directory from the cluster",
-		Long: fmt.Sprintf(`
-Downloads the PGUrl certs directory from the cluster. In addition to downloading the
-certs, it also makes sure the files are not world readable so lib/pq doesn't complain.
-If a destination is not provided, the certs will be downloaded to a default %s directory.
-
---certs-dir: specify the directory to download the certs from
-
-`, install.CockroachNodeCertsDir),
-		Args: cobra.RangeArgs(1, 2),
-		Run: wrap(func(cmd *cobra.Command, args []string) error {
-			cluster := args[0]
-			// If a destination is not provided, download the certs to a default directory
-			// for safety. FetchCertsDir will walk the entire directory and chmod each file
-			// so we want to avoid side effects.
-			dest := fmt.Sprintf("./%s", install.CockroachNodeCertsDir)
-			if len(args) == 2 {
-				dest = args[1]
-			}
-			ctx := context.Background()
-			return roachprod.FetchCertsDir(ctx, config.Logger, cluster, pgurlCertsDir, dest)
 		}),
 	}
 }

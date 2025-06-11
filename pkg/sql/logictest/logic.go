@@ -966,6 +966,7 @@ type logicQuery struct {
 var allowedKVOpTypes = []string{
 	"CPut",
 	"Put",
+	"InitPut",
 	"Del",
 	"DelRange",
 	"ClearRange",
@@ -1537,6 +1538,7 @@ func (t *logicTest) newCluster(
 					DisableConsistencyQueue:  true,
 					GlobalMVCCRangeTombstone: globalMVCCRangeTombstone,
 					EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
+						DisableInitPutFailOnTombstones:    ignoreMVCCRangeTombstoneErrors,
 						UseRangeTombstonesForPointDeletes: shouldUseMVCCRangeTombstonesForPointDeletes,
 					},
 				},
@@ -1799,13 +1801,6 @@ func (t *logicTest) newCluster(
 			}
 		}
 
-		if cfg.UseSchemaLockedByDefault {
-			if _, err := conn.Exec(
-				"SET CLUSTER SETTING sql.defaults.create_table_with_schema_locked = true",
-			); err != nil {
-				t.Fatal(err)
-			}
-		}
 		// We disable the automatic stats collection in order to have
 		// deterministic tests.
 		//
@@ -1866,14 +1861,6 @@ func (t *logicTest) newCluster(
 		// TODO(andyk): Remove this once vector indexes are enabled by default.
 		if _, err := conn.Exec(
 			"SET CLUSTER SETTING feature.vector_index.enabled = true",
-		); err != nil {
-			t.Fatal(err)
-		}
-
-		// Ensure that vector index background operations are deterministic, so
-		// that tests don't flake.
-		if _, err := conn.Exec(
-			"SET CLUSTER SETTING sql.vecindex.deterministic_fixups.enabled = true",
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -2007,10 +1994,7 @@ func (t *logicTest) setup(
 		skip.UnderRace(t.t(), "test uses a different binary, so the race detector doesn't work")
 		skip.UnderStress(t.t(), "test takes a long time and downloads release artifacts")
 		if !bazel.BuiltWithBazel() {
-			skip.IgnoreLint(t.t(), "cockroach-go/testserver can only be used in bazel builds")
-		}
-		if runtime.GOARCH == "s390x" {
-			skip.IgnoreLint(t.t(), "cockroach-go/testserver is not operational on s390x")
+			skip.IgnoreLint(t.t(), "cockroach-go/testserver can only be uzed in bazel builds")
 		}
 		if cfg.NumNodes != 3 {
 			t.Fatal("cockroach-go testserver tests must use 3 nodes")

@@ -8,10 +8,8 @@ package kvcoord
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
 	"slices"
 	"sort"
-	"strings"
 	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvnemesis/kvnemesisutil"
@@ -26,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/errors"
 )
 
@@ -35,7 +32,7 @@ var BufferedWritesEnabled = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"kv.transaction.write_buffering.enabled",
 	"if enabled, transactional writes are buffered on the client",
-	metamorphic.ConstantWithTestBool("kv.transaction.write_buffering.enabled", false /* defaultValue */),
+	false,
 	settings.WithPublic,
 )
 
@@ -221,7 +218,31 @@ func (twb *txnWriteBuffer) SendLocked(
 		return twb.flushBufferAndSendBatch(ctx, ba)
 	}
 
-	if twb.batchRequiresFlush(ctx, ba) {
+	if _, ok := ba.GetArg(kvpb.DeleteRange); ok {
+		log.VEventf(ctx, 2, "DeleteRangeRequest forcing flush of write buffer")
+		// DeleteRange requests can delete an arbitrary number of keys over a
+		// given keyspan. We won't know the exact scope of the delete until
+		// we've scanned the keyspan, which must happen on the server. We've got
+		// a couple of options here:
+		// 1. We decompose the DeleteRange request into a (potentially locking)
+		// Scan followed by buffered point Deletes for each key in the scan's
+		// result.
+		// 2. We flush the buffer[1] and send the DeleteRange request to the KV
+		// layer.
+		//
+		// We choose option 2, as typically the number of keys deleted is large,
+		// and we may realize we're over budget after performing the initial
+		// scan of the keyspan. At that point, we'll have to flush the buffer
+		// anyway. Moreover, buffered writes are most impactful when a
+		// transaction is writing to a small number of keys. As such, it's fine
+		// to not optimize the DeleteRange case, as typically it results in a
+		// large writing transaction.
+		//
+		// [1] Technically, we only need to flush the overlapping portion of the
+		// buffer. However, for simplicity, the txnWriteBuffer doesn't support
+		// transactions with partially buffered writes and partially flushed
+		// writes. We could change this in the future if there's benefit to
+		// doing so.
 		return twb.flushBufferAndSendBatch(ctx, ba)
 	}
 
@@ -251,12 +272,6 @@ func (twb *txnWriteBuffer) SendLocked(
 		return nil, pErr
 	}
 
-	if log.ExpensiveLogEnabled(ctx, 2) {
-		if summary := rr.Summary(); summary != "" {
-			log.VEventf(ctx, 2, "txn write buffer modified the batch; %s", summary)
-		}
-	}
-
 	if len(transformedBa.Requests) == 0 {
 		// Lower layers (the DistSender and the KVServer) do not expect/handle empty
 		// batches. If all requests in the batch can be handled locally, and we're
@@ -279,55 +294,6 @@ func (twb *txnWriteBuffer) SendLocked(
 	}
 
 	return twb.mergeResponseWithRequestRecords(ctx, rr, br)
-}
-
-func (twb *txnWriteBuffer) batchRequiresFlush(ctx context.Context, ba *kvpb.BatchRequest) bool {
-	for _, ru := range ba.Requests {
-		req := ru.GetInner()
-		switch req.(type) {
-		case *kvpb.IncrementRequest:
-			// We don't typically see IncrementRequest in transactional batches that
-			// haven't already had write buffering disabled becuase of DDL statements.
-			//
-			// However, we do have at least a few users of the NewTransactionalGenerator
-			// in test code and builtins.
-			//
-			// We could handle this similar to how we handle ConditionalPut, but its
-			// not clear there is much value in that.
-			log.VEventf(ctx, 2, "%s forcing flush of write buffer", req.Method())
-			return true
-		case *kvpb.DeleteRangeRequest:
-			// DeleteRange requests can delete an arbitrary number of keys over a
-			// given keyspan. We won't know the exact scope of the delete until
-			// we've scanned the keyspan, which must happen on the server. We've got
-			// a couple of options here:
-			//
-			// 1. We decompose the DeleteRange request into a (potentially
-			//    locking) Scan followed by buffered point Deletes for each
-			//    key in the scan's result.
-			//
-			// 2. We flush the buffer[1] and send the DeleteRange request to
-			//    the KV layer.
-			//
-			// We choose option 2, as typically the number of keys deleted is large,
-			// and we may realize we're over budget after performing the initial
-			// scan of the keyspan. At that point, we'll have to flush the buffer
-			// anyway. Moreover, buffered writes are most impactful when a
-			// transaction is writing to a small number of keys. As such, it's fine
-			// to not optimize the DeleteRange case, as typically it results in a
-			// large writing transaction.
-			//
-			// [1] Technically, we only need to flush the overlapping portion of the
-			// buffer. However, for simplicity, the txnWriteBuffer doesn't support
-			// transactions with partially buffered writes and partially flushed
-			// writes. We could change this in the future if there's benefit to
-			// doing so.
-
-			log.VEventf(ctx, 2, "%s forcing flush of write buffer", req.Method())
-			return true
-		}
-	}
-	return false
 }
 
 // validateBatch returns an error if the batch is unsupported
@@ -388,9 +354,9 @@ func (twb *txnWriteBuffer) validateRequests(ba *kvpb.BatchRequest) error {
 			}
 		case *kvpb.QueryLocksRequest, *kvpb.LeaseInfoRequest:
 		default:
-			// All other requests are unsupported. Note that we assume that requests
-			// that should result in a buffer flush are handled explicitly before this
-			// method was called.
+			// All other requests are unsupported. Note that we assume EndTxn and
+			// DeleteRange requests were handled explicitly before this method was
+			// called.
 			return unsupportedMethodError(t.Method())
 		}
 	}
@@ -1201,40 +1167,6 @@ type requestRecords []requestRecord
 
 func (rr requestRecords) Empty() bool {
 	return len(rr) == 0
-}
-
-// Summary returns a string summarizing the modifications made to the original
-// batch that generated this set of request records. An empty string indicates
-// that the original batch was not modified.
-func (rr requestRecords) Summary() string {
-	fullyBuffered := make(map[kvpb.Method]int)
-	transformed := make(map[kvpb.Method]int)
-	for _, rec := range rr {
-		if rec.stripped {
-			fullyBuffered[rec.origRequest.Method()]++
-		} else if rec.transformed {
-			transformed[rec.origRequest.Method()]++
-		}
-	}
-	if len(fullyBuffered) == 0 && len(transformed) == 0 {
-		return ""
-	}
-	b := &strings.Builder{}
-	sep := ""
-	if len(fullyBuffered) > 0 {
-		b.WriteString("fully buffered:")
-		for method, count := range fullyBuffered {
-			fmt.Fprintf(b, " %s:%d", method, count)
-		}
-		sep = "; "
-	}
-	if len(transformed) > 0 {
-		fmt.Fprintf(b, "%stransformed:", sep)
-		for method, count := range transformed {
-			fmt.Fprintf(b, " %s:%d", method, count)
-		}
-	}
-	return b.String()
 }
 
 // addToBuffer adds a write to the given key to the buffer.

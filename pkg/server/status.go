@@ -45,7 +45,6 @@ import (
 	raft "github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/apiconstants"
@@ -125,7 +124,7 @@ const (
 
 type metricMarshaler interface {
 	json.Marshaler
-	PrintAsText(io.Writer, expfmt.Format, bool) error
+	PrintAsText(io.Writer, expfmt.Format) error
 	ScrapeIntoPrometheus(pm *metric.PrometheusExporter)
 }
 
@@ -789,22 +788,6 @@ func (s *statusServer) redactGossipResponse(resp *gossip.InfoStatus) *gossip.Inf
 	}
 
 	return resp
-}
-
-// EngineStats returns statistical information of storage layer on the given node
-// which is crucial for diagnosing issues related to disk usage,compaction efficiency,
-// read/write amplification and other storage engine metrics critical for database
-// performance.
-func (t *statusServer) EngineStats(
-	ctx context.Context, req *serverpb.EngineStatsRequest,
-) (*serverpb.EngineStatsResponse, error) {
-	ctx = t.AnnotateCtx(ctx)
-
-	if err := t.privilegeChecker.RequireViewClusterMetadataPermission(ctx); err != nil {
-		return nil, err
-	}
-
-	return t.sqlServer.tenantConnect.EngineStats(ctx, req)
 }
 
 func (s *systemStatusServer) EngineStats(
@@ -2239,7 +2222,7 @@ func (s *systemStatusServer) NetworkConnectivity(
 				peer.Error = errors.UnwrapAll(err).Error()
 				continue
 			}
-			if err = s.rpcCtx.ConnHealth(addr.String(), targetNodeId, rpcbase.SystemClass); err != nil {
+			if err = s.rpcCtx.ConnHealth(addr.String(), targetNodeId, rpc.SystemClass); err != nil {
 				if errors.Is(rpc.ErrNotHeartbeated, err) {
 					peer.Status = serverpb.NetworkConnectivityResponse_ESTABLISHING
 				} else {
@@ -2410,9 +2393,8 @@ func (s *systemStatusServer) RaftDebug(
 }
 
 type varsHandler struct {
-	metricSource    metricMarshaler
-	st              *cluster.Settings
-	useStaticLabels bool
+	metricSource metricMarshaler
+	st           *cluster.Settings
 }
 
 func (h varsHandler) handleVars(w http.ResponseWriter, r *http.Request) {
@@ -2420,7 +2402,7 @@ func (h varsHandler) handleVars(w http.ResponseWriter, r *http.Request) {
 
 	contentType := expfmt.Negotiate(r.Header)
 	w.Header().Set(httputil.ContentTypeHeader, string(contentType))
-	err := h.metricSource.PrintAsText(w, contentType, h.useStaticLabels)
+	err := h.metricSource.PrintAsText(w, contentType)
 	if err != nil {
 		log.Errorf(ctx, "%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -38,6 +38,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
@@ -756,9 +757,6 @@ func readPostgresStmt(
 			return unsupportedStmtLogger.log(stmt.String(), false /* isParseError */)
 		}
 		return wrapErrorWithUnsupportedHint(errors.Errorf("unsupported statement: %s", stmt))
-	case *tree.AlterTableSetLogged:
-		// No-op: CockroachDB does not support unlogged tables, tables are logged by default
-		return nil
 	case *tree.CreateSequence:
 		schemaQualifiedTableName, err := getSchemaAndTableName(&stmt.Name)
 		if err != nil {
@@ -1023,6 +1021,9 @@ func newPgDumpReader(
 		jobID:      jobID,
 		evalCtx:    evalCtx,
 	}, nil
+}
+
+func (m *pgDumpReader) start(ctx ctxgroup.Group) {
 }
 
 func (m *pgDumpReader) readFiles(

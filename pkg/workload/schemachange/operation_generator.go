@@ -898,6 +898,15 @@ func (og *operationGenerator) addForeignKeyConstraint(
 	if err != nil {
 		return nil, err
 	}
+	// If we are intentionally using an invalid child type, then it doesn't make
+	// sense to validate if the rows validate the constraint.
+	rowsSatisfyConstraint := true
+	if !fetchInvalidChild {
+		rowsSatisfyConstraint, err = og.rowsSatisfyFkConstraint(ctx, tx, parentTable, parentColumn, childTable, childColumn)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	stmt := makeOpStmt(OpStmtDDL)
 	stmt.expectedExecErrors.addAll(codesWithConditions{
@@ -914,6 +923,7 @@ func (og *operationGenerator) addForeignKeyConstraint(
 	// separate job validating the constraint, we can't at transaction time predict,
 	// perfectly if an error is expected. We can confirm post transaction with a time
 	// travel query.
+	_ = rowsSatisfyConstraint
 	stmt.potentialExecErrors.add(pgcode.ForeignKeyViolation)
 	og.potentialCommitErrors.add(pgcode.ForeignKeyViolation)
 
@@ -1283,18 +1293,18 @@ func (og *operationGenerator) createTable(ctx context.Context, tx pgx.Tx) (*opSt
 		}
 		return false
 	}()
-
-	// Randomly create as schema locked table.
-	versionBefore253, err := isClusterVersionLessThan(ctx, tx, clusterversion.V25_3.Version())
+	mixedVersion, err := isMixedVersionState(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	if og.params.rng.Intn(2) == 0 && !versionBefore253 {
-		stmt.StorageParams = append(stmt.StorageParams, tree.StorageParam{
-			Key:   "schema_locked",
-			Value: tree.DBoolTrue,
-		})
-	}
+	hasUnsupportedBit0Type := func() bool {
+		for _, def := range stmt.Defs {
+			if col, ok := def.(*tree.ColumnTableDef); ok && isUnsupportedBit0Type(col.Type.SQLString(), mixedVersion) {
+				return true
+			}
+		}
+		return false
+	}()
 
 	tableExists, err := og.tableExists(ctx, tx, tableName)
 	if err != nil {
@@ -1314,6 +1324,7 @@ func (og *operationGenerator) createTable(ctx context.Context, tx pgx.Tx) (*opSt
 	opStmt.potentialExecErrors.addAll(codesWithConditions{
 		{code: pgcode.Syntax, condition: hasVectorType},
 		{code: pgcode.FeatureNotSupported, condition: hasVectorType},
+		{code: pgcode.InvalidParameterValue, condition: hasUnsupportedBit0Type},
 	})
 	opStmt.sql = tree.Serialize(stmt)
 	return opStmt, nil
@@ -1644,13 +1655,10 @@ func (og *operationGenerator) dropColumn(ctx context.Context, tx pgx.Tx) (*opStm
 		return nil, err
 	}
 
-	// Check if the table has any policies or triggers
-	tableHasPolicies, tableHasTriggers := false, false
+	// Check if the table has any policies
+	tableHasPolicies := false
 	if tableExists {
 		if tableHasPolicies, err = og.tableHasPolicies(ctx, tx, tableName); err != nil {
-			return nil, err
-		}
-		if tableHasTriggers, err = og.tableHasTriggers(ctx, tx, tableName); err != nil {
 			return nil, err
 		}
 	}
@@ -1706,36 +1714,9 @@ func (og *operationGenerator) dropColumn(ctx context.Context, tx pgx.Tx) (*opStm
 		// It is possible that we cannot drop column because
 		// it is referenced in a policy expression.
 		{code: pgcode.InvalidTableDefinition, condition: tableHasPolicies},
-		// It is possible that we cannot drop column because
-		// it is depended on by a trigger.
-		{code: pgcode.DependentObjectsStillExist, condition: tableHasTriggers},
 	})
 	stmt.sql = fmt.Sprintf(`ALTER TABLE %s DROP COLUMN %s`, tableName.String(), columnName.String())
 	return stmt, nil
-}
-
-// tableHasTriggers checks if a table has any triggers defined
-func (og *operationGenerator) tableHasTriggers(
-	ctx context.Context, tx pgx.Tx, tableName *tree.TableName,
-) (bool, error) {
-	// Query to check if a table has any triggers
-	query := `
-	SELECT EXISTS (
-		SELECT 1
-		FROM information_schema.triggers
-		WHERE event_object_schema = $1
-		AND event_object_table = $2
-		LIMIT 1
-	)
-	`
-
-	var hasTriggers bool
-	err := tx.QueryRow(ctx, query, tableName.Schema(), tableName.Object()).Scan(&hasTriggers)
-	if err != nil {
-		return false, err
-	}
-
-	return hasTriggers, nil
 }
 
 // tableHasPolicies checks if a table has any row-level security policies defined
@@ -2049,8 +2030,7 @@ func (og *operationGenerator) dropTable(ctx context.Context, tx pgx.Tx) (*opStmt
 	if err != nil {
 		return nil, err
 	}
-	tableHasDependencies, err := og.tableHasDependencies(ctx, tx, tableName, true, /* includeFKs */
-		true /* skipSelfRef */)
+	tableHasDependencies, err := og.tableHasDependencies(ctx, tx, tableName, true /* includeFKs */)
 	if err != nil {
 		return nil, err
 	}
@@ -2082,8 +2062,7 @@ func (og *operationGenerator) dropView(ctx context.Context, tx pgx.Tx) (*opStmt,
 	if err != nil {
 		return nil, err
 	}
-	viewHasDependencies, err := og.tableHasDependencies(ctx, tx, viewName, true, /* includeFKs */
-		true /* skipSelfRef */)
+	viewHasDependencies, err := og.tableHasDependencies(ctx, tx, viewName, true /* includeFKs */)
 	if err != nil {
 		return nil, err
 	}
@@ -2200,17 +2179,17 @@ func (og *operationGenerator) renameColumn(ctx context.Context, tx pgx.Tx) (*opS
 	if err != nil {
 		return nil, err
 	}
+	columnIsDependedOnByView, err := og.columnIsDependedOnByView(ctx, tx, tableName, srcColumnName)
+	if err != nil {
+		return nil, err
+	}
 
 	stmt := makeOpStmt(OpStmtDDL)
 	stmt.expectedExecErrors.addAll(codesWithConditions{
 		{pgcode.UndefinedColumn, !srcColumnExists},
 		{pgcode.DuplicateColumn, destColumnExists && srcColumnName != destColumnName},
+		{pgcode.DependentObjectsStillExist, columnIsDependedOnByView},
 	})
-	// The column may be referenced in a view or trigger, which can lead to a
-	// dependency error. This is particularly hard to detect in cases where renaming
-	// a column that is part of a hash-sharded primary key triggers a cascading rename
-	// of the crdb_internal shard column, which might be used indirectly by other objects.
-	stmt.potentialExecErrors.add(pgcode.DependentObjectsStillExist)
 
 	stmt.sql = fmt.Sprintf(`ALTER TABLE %s RENAME COLUMN %s TO %s`,
 		tableName.String(), srcColumnName.String(), destColumnName.String())
@@ -2350,8 +2329,7 @@ func (og *operationGenerator) renameTable(ctx context.Context, tx pgx.Tx) (*opSt
 		return nil, err
 	}
 
-	srcTableHasDependencies, err := og.tableHasDependencies(ctx, tx, srcTableName, false, /* includeFKs */
-		false /* skipSelfRef */)
+	srcTableHasDependencies, err := og.tableHasDependencies(ctx, tx, srcTableName, false /* includeFKs */)
 	if err != nil {
 		return nil, err
 	}
@@ -2401,8 +2379,7 @@ func (og *operationGenerator) renameView(ctx context.Context, tx pgx.Tx) (*opStm
 		return nil, err
 	}
 
-	srcTableHasDependencies, err := og.tableHasDependencies(ctx, tx, srcViewName, true, /* includeFKs */
-		false /* skipSelfRef */)
+	srcTableHasDependencies, err := og.tableHasDependencies(ctx, tx, srcViewName, true /* includeFKs */)
 	if err != nil {
 		return nil, err
 	}
@@ -2681,6 +2658,9 @@ func (og *operationGenerator) alterTableAlterPrimaryKey(
 				AND table_indexes.descriptor_id = columns.table_id
 				AND index_columns.column_id = (columns.col->'id')::int8
 			)) AS is_in_inverted_index,
+		  (EXISTS (
+		  	SELECT * FROM  crdb_internal.table_indexes WHERE table_indexes.descriptor_id = columns.table_id AND index_type <> 'primary'
+		  )) AS has_indexes,
 			(EXISTS(
 				SELECT 
     tc.constraint_name, 
@@ -2730,6 +2710,7 @@ func (og *operationGenerator) alterTableAlterPrimaryKey(
 			"table_name":                     table_name,
 			"table_undergoing_schema_change": grouped[0]["table_undergoing_schema_change"].(bool),
 			"columns":                        grouped,
+			"has_indexes":                    grouped[0]["has_indexes"].(bool),
 		})
 	}
 
@@ -2806,18 +2787,47 @@ func (og *operationGenerator) alterTableAlterPrimaryKey(
 		Template: `{ with TableNotUnderGoingSchemaChange } ALTER TABLE { .table_name } ALTER PRIMARY KEY USING COLUMNS ({ . | Unique true | Nullable false | Generated false | Indexable false | InInvertedIndex false | Columns }) { end }`,
 	})
 
+	// Adds any potential errors based on the selected table.
+	maybeAddPotentialCommitErrors := func(tbl map[string]any) error {
+		// Skip if we are on a version without any potential errors.
+		if less, err := isClusterVersionLessThan(ctx, tx, clusterversion.V25_2.Version()); err != nil || !less {
+			return err
+		}
+		// Secondary index recreation bugs were fixed in 25.2 (#141850),
+		// so we can hit duplicate column errors when running in a mixed
+		// version state.
+		if tbl["has_indexes"].(bool) {
+			og.potentialCommitErrors.add(pgcode.DuplicateColumn)
+		}
+		return nil
+	}
+
 	stmt, code, err := Generate[*tree.AlterTable](og.params.rng, og.produceError(), generationCases, template.FuncMap{
 		"TableNotUnderGoingSchemaChange": func() (map[string]any, error) {
 			tbls := util.Filter(tables, func(table map[string]any) bool {
 				return !table["table_undergoing_schema_change"].(bool)
 			})
-			return PickOne(og.params.rng, tbls)
+			targetTbl, err := PickOne(og.params.rng, tbls)
+			if err != nil {
+				return nil, err
+			}
+			if err := maybeAddPotentialCommitErrors(targetTbl); err != nil {
+				return nil, err
+			}
+			return targetTbl, nil
 		},
 		"TableUnderGoingSchemaChange": func() (map[string]any, error) {
 			tbls := util.Filter(tables, func(table map[string]any) bool {
 				return table["table_undergoing_schema_change"].(bool)
 			})
-			return PickOne(og.params.rng, tbls)
+			targetTbl, err := PickOne(og.params.rng, tbls)
+			if err != nil {
+				return nil, err
+			}
+			if err := maybeAddPotentialCommitErrors(targetTbl); err != nil {
+				return nil, err
+			}
+			return targetTbl, nil
 		},
 		"Columns": func(table map[string]any) (string, error) {
 			selected, err := PickAtLeast(og.params.rng, 1, table["columns"].([]map[string]any))
@@ -2874,9 +2884,6 @@ func (og *operationGenerator) alterTableAlterPrimaryKey(
 	// errors.
 	opStmt.potentialExecErrors.add(pgcode.InvalidColumnReference)
 	opStmt.potentialExecErrors.add(pgcode.DuplicateColumn)
-	// When altering a primary key, the implicit rowid column may be dropped,
-	// but triggers could reference it, causing a dependency violation.
-	opStmt.potentialExecErrors.add(pgcode.DependentObjectsStillExist)
 
 	return opStmt, nil
 }
@@ -3650,12 +3657,22 @@ func (og *operationGenerator) randParentColumnForFkRelation(
 	var typName string
 	var nullable string
 
-	err := tx.QueryRow(ctx, fmt.Sprintf(`
+	nestedTxn, err := tx.Begin(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	err = nestedTxn.QueryRow(ctx, fmt.Sprintf(`
 	SELECT table_schema, table_name, column_name, crdb_sql_type, is_nullable FROM (
 		%s
 	)`, subQuery.String())).Scan(&tableSchema, &tableName, &columnName, &typName, &nullable)
 	if err != nil {
+		if rbErr := nestedTxn.Rollback(ctx); rbErr != nil {
+			err = errors.CombineErrors(rbErr, err)
+		}
 		return nil, nil, err
+	}
+	if err = nestedTxn.Commit(ctx); err != nil {
+		return nil, nil, errors.WithStack(err)
 	}
 
 	columnToReturn := column{
@@ -3837,14 +3854,6 @@ func (og *operationGenerator) randTypeName(
 func (og *operationGenerator) randTable(
 	ctx context.Context, tx pgx.Tx, pctExisting int, desiredSchema string,
 ) (*tree.TableName, error) {
-	// Because the declarative schema change can automatically set / unset
-	// schema_locked on tables, we will allow random table selection include
-	// schema_locked tables. When working with the legacy schema changer, we
-	// will intentionally only select non-schema locked tables.
-	excludeSchemaLocked := "  AND create_statement NOT LIKE '%schema_locked%' "
-	if og.useDeclarativeSchemaChanger {
-		excludeSchemaLocked = ""
-	}
 	if err := og.setSeedInDB(ctx, tx); err != nil {
 		return nil, err
 	}
@@ -3857,15 +3866,13 @@ func (og *operationGenerator) randTable(
 			return &treeTableName, nil
 		}
 		q := fmt.Sprintf(`
-		  SELECT descriptor_name 
-		    FROM crdb_internal.create_statements
-		   WHERE descriptor_name SIMILAR TO 'table_w[0-9]_+%%'
+		  SELECT table_name
+		    FROM [SHOW TABLES]
+		   WHERE table_name SIMILAR TO 'table_w[0-9]_+%%'
 				 AND schema_name = '%s'
-		     AND descriptor_type='table'
-		 	   %s 
 		ORDER BY random()
 		   LIMIT 1;
-		`, desiredSchema, excludeSchemaLocked)
+		`, desiredSchema)
 
 		var tableName string
 		if err := tx.QueryRow(ctx, q).Scan(&tableName); err != nil {
@@ -3896,17 +3903,13 @@ func (og *operationGenerator) randTable(
 		return &treeTableName, nil
 	}
 
-	q := fmt.Sprintf(`
-SELECT schema_name, descriptor_name 
-		    FROM crdb_internal.create_statements
-		   WHERE descriptor_name SIMILAR TO 'table_w[0-9]_+%%'
-		     AND descriptor_type='table'
-		 	   %s 
-		ORDER BY random()
-		   LIMIT 1;
-`,
-		excludeSchemaLocked)
-
+	const q = `
+  SELECT schema_name, table_name
+    FROM [SHOW TABLES]
+   WHERE table_name SIMILAR TO 'table_w[0-9]_+%'
+ORDER BY random()
+   LIMIT 1;
+`
 	var schemaName string
 	var tableName string
 	if err := tx.QueryRow(ctx, q).Scan(&schemaName, &tableName); err != nil {
@@ -4054,9 +4057,14 @@ func (og *operationGenerator) randType(
 	if err != nil {
 		return nil, nil, err
 	}
+	mixedVersion, err := isMixedVersionState(ctx, tx)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	typ := randgen.RandSortingType(og.params.rng)
-	for pgVectorNotSupported && typ.Family() == types.PGVectorFamily {
+	for (pgVectorNotSupported && typ.Family() == types.PGVectorFamily) ||
+		isUnsupportedBit0Type(typ.SQLString(), mixedVersion) {
 		typ = randgen.RandSortingType(og.params.rng)
 	}
 
@@ -4196,8 +4204,7 @@ func (og *operationGenerator) createFunction(ctx context.Context, tx pgx.Tx) (*o
 FROM
 	functions
 	INNER JOIN pg_catalog.pg_proc ON oid = (id + 100000)
-	WHERE COALESCE((descriptor->'state')::STRING, 'PUBLIC') = 'PUBLIC'::STRING
-	AND prorettype != 'trigger'::REGTYPE;`)
+	WHERE COALESCE((descriptor->'state')::STRING, 'PUBLIC') = 'PUBLIC'::STRING;`)
 	enums, err := Collect(ctx, og, tx, pgx.RowToMap, enumQuery)
 	if err != nil {
 		return nil, err
@@ -4239,6 +4246,11 @@ FROM
 		possibleParamReferences = append(possibleParamReferences, fmt.Sprintf(`enum_%d %s`, i, enum["name"]))
 	}
 
+	mixedVersion, err := isMixedVersionState(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+
 	// Generate random parameters / values for builtin types.
 	for i, typeVal := range randgen.SeedTypes {
 		// If we have types where invalid values can exist then skip over these,
@@ -4249,6 +4261,9 @@ FROM
 			typeVal == types.RegClass ||
 			typeVal.Family() == types.OidFamily ||
 			typeVal.Family() == types.VoidFamily {
+			continue
+		}
+		if isUnsupportedBit0Type(typeVal.SQLString(), mixedVersion) {
 			continue
 		}
 
@@ -4507,14 +4522,9 @@ func (og *operationGenerator) dropFunction(ctx context.Context, tx pgx.Tx) (*opS
 	if err != nil {
 		return nil, err
 	}
-
-	opStmt := newOpStmt(stmt, codesWithConditions{
+	return newOpStmt(stmt, codesWithConditions{
 		{expectedCode, true},
-	})
-
-	// Needed for a trigger being created with a dependency on log_change_timestamp().
-	opStmt.potentialExecErrors.add(pgcode.DependentObjectsStillExist)
-	return opStmt, nil
+	}), nil
 }
 
 func (og *operationGenerator) alterFunctionRename(ctx context.Context, tx pgx.Tx) (*opStmt, error) {
@@ -4899,6 +4909,22 @@ func isClusterVersionLessThan(
 		return false, err
 	}
 	return clusterVersion.Less(targetVersion), nil
+}
+
+// isMixedVersionState works similarly to isClusterVersionLessThan, but without
+// specifying a version. It returns true if the cluster version is not the
+// latest, indicating a mixed-version test.
+func isMixedVersionState(ctx context.Context, tx pgx.Tx) (bool, error) {
+	return isClusterVersionLessThan(ctx, tx, clusterversion.Latest.Version())
+}
+
+func isUnsupportedBit0Type(typName string, mixedVersion bool) bool {
+	// TODO(spilchen): In mixed-version testing, declaring a BIT(0) column can cause a
+	// syntax error. Support for this type was recently added and backported, but the
+	// backport release is still pending. We need to regenerate the type until
+	// something other than BIT(0) is generated. This can be removed once 24.2.5 is
+	// publicly released.
+	return mixedVersion && strings.HasPrefix(typName, "BIT(0)")
 }
 
 func (og *operationGenerator) setSeedInDB(ctx context.Context, tx pgx.Tx) error {
@@ -5299,163 +5325,27 @@ func (og *operationGenerator) alterPolicy(ctx context.Context, tx pgx.Tx) (*opSt
 // randUser returns a real username from the database.
 // It returns an error if no user is found.
 func (og *operationGenerator) randUser(ctx context.Context, tx pgx.Tx) (string, error) {
-	if err := og.setSeedInDB(ctx, tx); err != nil {
+	query := "SELECT username FROM [SHOW USERS] ORDER BY random() LIMIT 1"
+	rows, err := tx.Query(ctx, query)
+	if rows.Err() != nil {
+		return "", rows.Err()
+	}
+
+	if err != nil {
 		return "", err
 	}
-	query := "SELECT username FROM [SHOW USERS] ORDER BY random() LIMIT 1"
-	row := tx.QueryRow(ctx, query)
+	defer rows.Close()
 
 	var realUser string
-	if err := row.Scan(&realUser); err != nil {
-		return "", err
-	}
-	og.LogMessage(fmt.Sprintf("Found real user: '%s'", realUser))
-	return realUser, nil
-}
-
-// createTrigger generates a CREATE TRIGGER statement.
-func (og *operationGenerator) createTrigger(ctx context.Context, tx pgx.Tx) (*opStmt, error) {
-	tableName, err := og.randTable(ctx, tx, og.pctExisting(true), "")
-	if err != nil {
-		return nil, err
-	}
-
-	triggerTableExists, err := og.tableExists(ctx, tx, tableName)
-	if err != nil {
-		return nil, err
-	}
-
-	triggerFunctionName := fmt.Sprintf("trigger_function_%s", og.newUniqueSeqNumSuffix())
-
-	// Try to generate a random SELECT statement for more complex dependencies
-	selectStmt, err := og.selectStmt(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-
-	triggerFunction := fmt.Sprintf(`CREATE FUNCTION %s() RETURNS TRIGGER AS $$ BEGIN %s;RETURN NULL;END; $$ LANGUAGE PLpgSQL`, triggerFunctionName, selectStmt.sql)
-
-	og.LogMessage(fmt.Sprintf("Created trigger function %s", triggerFunction))
-
-	// Create TRIGGER statement components
-	triggerActionTime := "BEFORE"
-	if og.randIntn(2) == 1 {
-		triggerActionTime = "AFTER"
-	}
-
-	eventTypes := []string{"INSERT", "UPDATE", "DELETE"}
-	numEvents := og.randIntn(3) + 1 // 1-3 events
-	events := make([]string, 0, numEvents)
-	eventsSet := make(map[string]bool)
-
-	for i := 0; i < numEvents; i++ {
-		eventIndex := og.randIntn(len(eventTypes))
-		event := eventTypes[eventIndex]
-		if !eventsSet[event] {
-			events = append(events, event)
-			eventsSet[event] = true
+	if rows.Next() {
+		if err := rows.Scan(&realUser); err != nil {
+			return "", err
 		}
+		og.LogMessage(fmt.Sprintf("Found real user: '%s'", realUser))
+		return realUser, nil
 	}
 
-	// Join events with OR
-	eventClause := strings.Join(events, " OR ")
-
-	triggerName := fmt.Sprintf("trigger_%s", og.newUniqueSeqNumSuffix())
-
-	// Build the SQL statement
-	sqlStatement := fmt.Sprintf("%s;CREATE TRIGGER %s %s %s ON %s FOR EACH ROW EXECUTE FUNCTION %s()",
-		triggerFunction, triggerName, triggerActionTime, eventClause, tableName, triggerFunctionName)
-
-	og.LogMessage(fmt.Sprintf("createTrigger: %s", sqlStatement))
-
-	opStmt := makeOpStmt(OpStmtDDL)
-	opStmt.sql = sqlStatement
-
-	opStmt.expectedExecErrors.addAll(codesWithConditions{
-		{code: pgcode.FeatureNotSupported, condition: !og.useDeclarativeSchemaChanger},
-		// This checks if the table used for the CREATE TRIGGER statement exists.
-		// It does not catch cases where the select statement in the trigger function
-		// has a select query on a table that doesn't exist.
-		{code: pgcode.UndefinedTable, condition: !triggerTableExists},
-	})
-
-	opStmt.potentialExecErrors.addAll(codesWithConditions{
-		// Can be hit if the select statement in the trigger function
-		// has a select query on a table that doesn't exist.
-		{code: pgcode.UndefinedTable, condition: true},
-	})
-
-	return opStmt, nil
-}
-
-// dropTrigger generates a DROP TRIGGER statement.
-func (og *operationGenerator) dropTrigger(ctx context.Context, tx pgx.Tx) (*opStmt, error) {
-	// Find an existing trigger
-	triggerWithInfo, err := og.findExistingTrigger(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-
-	opStmt := makeOpStmt(OpStmtDDL)
-
-	if triggerWithInfo == nil {
-		opStmt.sql = `DROP TRIGGER dummy_trigger ON dummy_table`
-		opStmt.expectedExecErrors.add(pgcode.UndefinedTable)
-		og.LogMessage("dropTrigger (non-existent): DROP TRIGGER dummy_trigger ON dummy_table")
-	} else {
-		sqlStatement := fmt.Sprintf("DROP TRIGGER %s ON %s", triggerWithInfo.triggerName, &triggerWithInfo.table)
-		og.LogMessage(fmt.Sprintf("dropTrigger: %s", sqlStatement))
-		opStmt.sql = sqlStatement
-	}
-
-	return opStmt, nil
-}
-
-// triggerInfo contains information about a trigger.
-type triggerInfo struct {
-	table       tree.TableName
-	triggerName string
-}
-
-// findExistingTrigger returns a triggerInfo struct with the qualified table name and trigger name.
-// It also returns a boolean indicating whether a trigger was found.
-func (og *operationGenerator) findExistingTrigger(
-	ctx context.Context, tx pgx.Tx,
-) (*triggerInfo, error) {
-	if err := og.setSeedInDB(ctx, tx); err != nil {
-		return nil, err
-	}
-
-	var triggerWithInfo triggerInfo
-
-	// Query to find all triggers in the database using information_schema
-	triggerQuery := `
-		SELECT
-			event_object_schema,
-			event_object_table,
-			trigger_name
-		FROM
-			information_schema.triggers
-		ORDER BY random()
-		LIMIT 1
-	`
-
-	var schemaName, tableName, triggerName string
-	err := tx.QueryRow(ctx, triggerQuery).Scan(&schemaName, &tableName, &triggerName)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	triggerWithInfo = triggerInfo{
-		table: tree.MakeTableNameFromPrefix(tree.ObjectNamePrefix{
-			SchemaName:     tree.Name(schemaName),
-			ExplicitSchema: true,
-		}, tree.Name(tableName)),
-		triggerName: triggerName,
-	}
-
-	return &triggerWithInfo, nil
+	// This should never happen in a valid CockroachDB instance.
+	// There should always be at least one user.
+	return "", errors.New("no users found in the database")
 }

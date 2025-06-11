@@ -398,13 +398,6 @@ func TestReadCommittedLogic_cluster_locks(
 	runLogicTest(t, "cluster_locks")
 }
 
-func TestReadCommittedLogic_cluster_locks_write_buffering(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "cluster_locks_write_buffering")
-}
-
 func TestReadCommittedLogic_cluster_settings(
 	t *testing.T,
 ) {
@@ -620,13 +613,6 @@ func TestReadCommittedLogic_dependencies(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "dependencies")
-}
-
-func TestReadCommittedLogic_direct_columnar_scans(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "direct_columnar_scans")
 }
 
 func TestReadCommittedLogic_discard(
@@ -1938,13 +1924,6 @@ func TestReadCommittedLogic_show_create(
 	runLogicTest(t, "show_create")
 }
 
-func TestReadCommittedLogic_show_create_all_routines(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_create_all_routines")
-}
-
 func TestReadCommittedLogic_show_create_all_schemas(
 	t *testing.T,
 ) {
@@ -2888,13 +2867,6 @@ func TestReadCommittedLogicCCL_triggers(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "triggers")
-}
-
-func TestReadCommittedLogicCCL_txn_retry(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "txn_retry")
 }
 
 func TestReadCommittedLogicCCL_udf_params(

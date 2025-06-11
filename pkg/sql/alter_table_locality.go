@@ -81,7 +81,7 @@ func (p *planner) AlterTableLocality(
 	}
 
 	// Disallow schema changes if this table's schema is locked.
-	if err := p.checkSchemaChangeIsAllowed(ctx, tableDesc, n); err != nil {
+	if err := checkSchemaChangeIsAllowed(tableDesc, n, p.ExecCfg().Settings); err != nil {
 		return nil, err
 	}
 

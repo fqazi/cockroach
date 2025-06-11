@@ -139,13 +139,9 @@ func TestAllRegisteredSetup(t *testing.T) {
 				t.Fatal(err)
 			}
 		case `interleavedpartitioned`:
-			// This require a specific node locality setup.
+			// This require a specific node locality setup
 			continue
 		case `ttlbench`:
-			continue
-		case `vecann`:
-			// This requires downloading from a GCP bucket and storing in the
-			// machine's ~/.cache directory.
 			continue
 		}
 
@@ -251,11 +247,6 @@ func hashTableInitialData(
 					binary.LittleEndian.PutUint64(scratch[:8], uint64(colTime[i].UnixNano()))
 					_, _ = h.Write(scratch[:8])
 				}
-			case types.DecimalFamily:
-				colDecimal := col.Decimal()
-				for i := 0; i < b.Length(); i++ {
-					_, _ = h.Write([]byte(colDecimal[i].String()))
-				}
 			default:
 				return errors.Errorf(`unhandled type %s`, col.Type())
 			}
@@ -291,7 +282,7 @@ func TestDeterministicInitialData(t *testing.T) {
 		`roachmart`:  0xda5e73423dbdb2d9,
 		`sqlsmith`:   0xcbf29ce484222325,
 		`startrek`:   0xa0249fbdf612734c,
-		`tpcc`:       0xccfecd06eed59975,
+		`tpcc`:       0xcccced25deea244e,
 		`tpch`:       0xcd2abbd021ed895d,
 		`ycsb`:       0x0e6012ee6491a0fb,
 	}

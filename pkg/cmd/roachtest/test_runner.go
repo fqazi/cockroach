@@ -108,16 +108,6 @@ var (
 		)
 	}
 
-	// liveMigrationError indicates that a test failed and also experienced
-	// a live migration. These errors are directed to Test Eng instead of owning teams.
-	liveMigrationError = func(liveMigrationVMs string) error {
-		return registry.ErrorWithOwner(
-			registry.OwnerTestEng, fmt.Errorf("liveMigrationError VMs: %s", liveMigrationVMs),
-			registry.WithTitleOverride("live_migration_error"),
-			registry.InfraFlake,
-		)
-	}
-
 	prng, _ = randutil.NewLockedPseudoRand()
 
 	runID string
@@ -936,26 +926,15 @@ func (r *testRunner) runWorker(
 				// Apply metamorphic settings not explicitly defined by the test.
 				// These settings should only be applied to non-benchmark tests.
 				if !testSpec.Benchmark {
-					// 50% chance of enabling the rangefeed buffered sender.
-					// 50% change of enabling buffered writes.
-					//
-					// Disabled by default. Disabled for mixed-version tests
-					// because they use a separate mechanism for metamorphic
-					// cluster settings.
-					for _, tc := range []struct {
-						setting string
-						label   string
-					}{
-						{setting: "kv.rangefeed.buffered_sender.enabled", label: "metamorphicBufferedSender"},
-						{setting: "kv.transaction.write_buffering.enabled", label: "metamorphicWriteBuffering"},
-					} {
-						enable := prng.Intn(2) == 0
-						if !t.spec.Suites.Contains(registry.MixedVersion) && enable {
-							c.clusterSettings[tc.setting] = "true"
-							c.status(fmt.Sprintf("metamorphically setting %q to 'true'", tc.setting))
-							t.AddParam(tc.label, fmt.Sprint(enable))
-						}
+					// 50% chance of enabling the rangefeed buffered sender. Disabled by
+					// default. Disabled for mixed-version tests since this cluster setting
+					// is only supported in >= v25.2.
+					useBufferedSender := prng.Intn(2) == 0
+					if !t.spec.Suites.Contains(registry.MixedVersion) && useBufferedSender {
+						c.clusterSettings["kv.rangefeed.buffered_sender.enabled"] = "true"
 					}
+					c.status(fmt.Sprintf("metamorphically using buffered sender: %t", useBufferedSender))
+					t.AddParam("metamorphicBufferedSender", fmt.Sprint(useBufferedSender))
 				}
 
 				c.goCoverDir = t.GoCoverArtifactsDir()
@@ -1212,12 +1191,6 @@ func (r *testRunner) runTest(
 					t.resetFailures()
 					t.Error(vmHostError(hostErrorVMNames))
 				}
-				liveMigrationVMNames := getLiveMigrationVMNames(c, l)
-				if liveMigrationVMNames != "" {
-					failureMsg = fmt.Sprintf("VMs had live migrations during the test run: %s\n\n**Other Failures:**\n%s", liveMigrationVMNames, failureMsg)
-					t.resetFailures()
-					t.Error(liveMigrationError(hostErrorVMNames))
-				}
 
 				output := fmt.Sprintf("%s\ntest artifacts and logs in: %s", failureMsg, t.ArtifactsDir())
 				params := getTestParameters(t, github.cluster, github.vmCreateOpts)
@@ -1363,13 +1336,12 @@ func (r *testRunner) runTest(
 		// avoid situations where a test times out and the flake assignment logic fails.
 		monitorForPreemptedVMs(runCtx, t, c, l)
 
-		defer monitorTasks(runCtx, t.taskManager, t, l)()
+		monitorTasks(runCtx, t.taskManager, t, l)
 		if t.spec.Monitor {
 			testMonitor.start()
 		}
 		// This is the call to actually run the test.
 		s.Run(runCtx, t, c)
-
 	}()
 
 	var timedOut bool
@@ -1395,7 +1367,6 @@ func (r *testRunner) runTest(
 		if err := c.AddGrafanaAnnotation(ctx, t.L(), grafana.AddAnnotationRequest{Text: annotationText}); err != nil {
 			t.L().Printf(errors.Wrap(err, "error adding annotation for test end").Error())
 		}
-
 	case <-time.After(timeout):
 		// NB: We're adding the timeout failure intentionally without cancelling the context
 		// to capture as much state as possible during artifact collection.
@@ -1404,7 +1375,6 @@ func (r *testRunner) runTest(
 		// We suppress other failures from being surfaced to the top as the timeout is always going
 		// to be the main error and subsequent errors (i.e. context cancelled) add noise.
 		t.suppressFailures()
-
 		timedOut = true
 	}
 
@@ -1494,18 +1464,6 @@ func getHostErrorVMNames(ctx context.Context, c *clusterImpl, l *logger.Logger) 
 	}
 
 	return getVMNames(hostErrorVMs)
-}
-
-// getLiveMigrationVMNames returns a comma separated list of VMs that
-// experienced a live migration over the duration of the test.
-func getLiveMigrationVMNames(c *clusterImpl, l *logger.Logger) string {
-	liveMigrationVMs, err := c.GetLiveMigrationVMs(l)
-	if err != nil {
-		l.Printf("failed to check live migrations:\n%+v", err)
-		return ""
-	}
-
-	return strings.Join(liveMigrationVMs, ", ")
 }
 
 // The assertions here are executed after each test, and may result in a test failure. Test authors
@@ -1613,6 +1571,12 @@ func (r *testRunner) postTestAssertions(
 func (r *testRunner) teardownTest(
 	ctx context.Context, t *testImpl, c *clusterImpl, timedOut bool,
 ) error {
+	defer func() {
+		// Terminate tasks to ensure that any stray tasks are cleaned up.
+		t.L().Printf("terminating tasks")
+		t.taskManager.Terminate(t.L())
+	}()
+
 	if timedOut || t.Failed() || roachtestflags.AlwaysCollectArtifacts {
 		err := r.collectArtifacts(ctx, t, c, timedOut, time.Hour)
 		if err != nil {
@@ -1630,9 +1594,6 @@ func (r *testRunner) teardownTest(
 				t.mu.cancel()
 			}
 			t.L().Printf("test timed out; check __stacks.log and CRDB logs for goroutine dumps")
-
-			// Cancel tasks to ensure that any stray tasks are cleaned up.
-			t.taskManager.Cancel()
 		}
 		return err
 	}
@@ -2014,7 +1975,7 @@ func (m *perfMetricsCollector) collectFromNodes(
 			continue
 		}
 		m.perfNodes = append(m.perfNodes, node)
-		if err := m.processFiles(files, log); err != nil {
+		if err := m.processFiles(files); err != nil {
 			return errors.Wrapf(err, "error while processing files")
 		}
 	}
@@ -2035,7 +1996,7 @@ func (m *perfMetricsCollector) findMetricsFiles(dirPath string) ([]string, error
 	return files, err
 }
 
-func (m *perfMetricsCollector) processFiles(files []string, log *logger.Logger) error {
+func (m *perfMetricsCollector) processFiles(files []string) error {
 	for _, file := range files {
 		fileBytes, err := os.ReadFile(file)
 		if err != nil {
@@ -2044,9 +2005,7 @@ func (m *perfMetricsCollector) processFiles(files []string, log *logger.Logger) 
 
 		histograms, labels, err := roachtestutil.GetHistogramMetrics(bytes.NewBuffer(fileBytes))
 		if err != nil {
-			// This file didn't have valid histograms, continue with other files
-			log.Errorf("error getting histogram metrics for file %s: %v", file, err)
-			continue
+			return errors.Wrapf(err, "getting histogram metrics")
 		}
 
 		m.histogramMetrics.Summaries = append(m.histogramMetrics.Summaries, histograms.Summaries...)
@@ -2276,9 +2235,7 @@ var pollPreemptionInterval struct {
 	interval time.Duration
 }
 
-func monitorTasks(
-	ctx context.Context, taskManager task.Manager, t test.Test, l *logger.Logger,
-) func() {
+func monitorTasks(ctx context.Context, taskManager task.Manager, t test.Test, l *logger.Logger) {
 	// Monitor the task manager for completed events, or failure events and log
 	// them. A failure will call t.Errorf which cancels the test's context.
 	go func() {
@@ -2298,15 +2255,6 @@ func monitorTasks(
 			}
 		}
 	}()
-
-	return func() {
-		// Terminate tasks to ensure that any stray tasks are cleaned up.
-		// Tasks can only be safely terminated after the test has returned. If
-		// we terminate the manager before test code has finished executing, the
-		// test could try to initiate new tasks resulting in undefined behavior.
-		t.L().Printf("terminating stray tasks")
-		taskManager.Terminate(t.L())
-	}
 }
 
 func monitorForPreemptedVMs(ctx context.Context, t test.Test, c cluster.Cluster, l *logger.Logger) {

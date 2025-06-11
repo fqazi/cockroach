@@ -284,36 +284,44 @@ func newRaftSchedulerShard(numWorkers int, maxTicks int64) *raftSchedulerShard {
 }
 
 func (s *raftScheduler) Start(stopper *stop.Stopper) {
-	stopper.OnQuiesce(func() {
+	ctx := s.ambientContext.AnnotateCtx(context.Background())
+	waitQuiesce := func(context.Context) {
+		<-stopper.ShouldQuiesce()
 		for _, shard := range s.shards {
 			shard.Lock()
 			shard.stopped = true
 			shard.Unlock()
 			shard.cond.Broadcast()
 		}
-	})
+	}
+	if err := stopper.RunAsyncTaskEx(ctx,
+		stop.TaskOpts{
+			TaskName: "raftsched-wait-quiesce",
+			// This task doesn't reference a parent because it runs for the server's
+			// lifetime.
+			SpanOpt: stop.SterileRootSpan,
+		},
+		waitQuiesce); err != nil {
+		waitQuiesce(ctx)
+	}
 
-	ctx := s.ambientContext.AnnotateCtx(context.Background())
 	for _, shard := range s.shards {
 		s.done.Add(shard.numWorkers)
-		f := func(ctx context.Context, hdl *stop.Handle) {
-			defer hdl.Activate(ctx).Release(ctx)
-			defer s.done.Done()
-			shard.worker(ctx, s.processor, s.metrics)
-		}
-
 		for i := 0; i < shard.numWorkers; i++ {
-			ctx, hdl, err := stopper.GetHandle(ctx,
+			if err := stopper.RunAsyncTaskEx(ctx,
 				stop.TaskOpts{
 					TaskName: "raft-worker",
 					// This task doesn't reference a parent because it runs for the server's
 					// lifetime.
 					SpanOpt: stop.SterileRootSpan,
-				})
-			if err != nil {
+				},
+				func(ctx context.Context) {
+					shard.worker(ctx, s.processor, s.metrics)
+					s.done.Done()
+				},
+			); err != nil {
 				s.done.Done()
 			}
-			go f(ctx, hdl)
 		}
 	}
 }

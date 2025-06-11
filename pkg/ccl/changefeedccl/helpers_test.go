@@ -1458,27 +1458,41 @@ func verifyLogsWithEmittedBytesAndMessages(
 }
 
 func checkCreateChangefeedLogs(t *testing.T, startTime int64) []eventpb.CreateChangefeed {
-	return checkStructuredChangefeedLogs[eventpb.CreateChangefeed](t, `create_changefeed`, startTime)
-}
+	var matchingEntries []eventpb.CreateChangefeed
 
-func checkAlterChangefeedLogs(t *testing.T, startTime int64) []eventpb.AlterChangefeed {
-	return checkStructuredChangefeedLogs[eventpb.AlterChangefeed](t, `alter_changefeed`, startTime)
+	for _, m := range checkStructuredLogs(t, "create_changefeed", startTime) {
+		jsonPayload := []byte(m)
+		var event eventpb.CreateChangefeed
+		if err := gojson.Unmarshal(jsonPayload, &event); err != nil {
+			t.Errorf("unmarshalling %q: %v", m, err)
+		}
+		matchingEntries = append(matchingEntries, event)
+	}
+
+	return matchingEntries
 }
 
 func checkChangefeedFailedLogs(t *testing.T, startTime int64) []eventpb.ChangefeedFailed {
-	return checkStructuredChangefeedLogs[eventpb.ChangefeedFailed](t, `changefeed_failed`, startTime)
+	var matchingEntries []eventpb.ChangefeedFailed
+
+	for _, m := range checkStructuredLogs(t, "changefeed_failed", startTime) {
+		jsonPayload := []byte(m)
+		var event eventpb.ChangefeedFailed
+		if err := gojson.Unmarshal(jsonPayload, &event); err != nil {
+			t.Errorf("unmarshalling %q: %v", m, err)
+		}
+		matchingEntries = append(matchingEntries, event)
+	}
+
+	return matchingEntries
 }
 
 func checkChangefeedCanceledLogs(t *testing.T, startTime int64) []eventpb.ChangefeedCanceled {
-	return checkStructuredChangefeedLogs[eventpb.ChangefeedCanceled](t, `changefeed_canceled`, startTime)
-}
+	var matchingEntries []eventpb.ChangefeedCanceled
 
-func checkStructuredChangefeedLogs[E any](t *testing.T, name string, startTime int64) []E {
-	var matchingEntries []E
-
-	for _, m := range checkStructuredLogs(t, name, startTime) {
+	for _, m := range checkStructuredLogs(t, "changefeed_canceled", startTime) {
 		jsonPayload := []byte(m)
-		var event E
+		var event eventpb.ChangefeedCanceled
 		if err := gojson.Unmarshal(jsonPayload, &event); err != nil {
 			t.Errorf("unmarshalling %q: %v", m, err)
 		}

@@ -34,7 +34,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/semenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/sql/vtable"
 	"github.com/cockroachdb/cockroach/pkg/util/collatedstring"
@@ -2404,105 +2403,12 @@ var informationSchemaTriggeredUpdateColumnsTable = virtualSchemaTable{
 }
 
 var informationSchemaTriggersTable = virtualSchemaTable{
-	comment: `triggers contains information about triggers
-https://www.postgresql.org/docs/current/infoschema-triggers.html`,
-	schema: vtable.InformationSchemaTriggers,
-	populate: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
-		opts := forEachTableDescOptions{virtualOpts: hideVirtual} /* virtual schemas have no triggers */
-		return forEachTableDesc(ctx, p, dbContext, opts,
-			func(ctx context.Context, descCtx tableDescContext) error {
-				db, sc, table := descCtx.database, descCtx.schema, descCtx.table
-				dbNameStr := tree.NewDString(db.GetName())
-				scNameStr := tree.NewDString(sc.GetName())
-				tbNameStr := tree.NewDString(table.GetName())
-
-				triggers := table.GetTriggers()
-				for i := range triggers {
-					trigger := &triggers[i]
-
-					// Process each event for the trigger.
-					for _, event := range trigger.Events {
-						var eventManipulation string
-						switch event.Type {
-						case semenumpb.TriggerEventType_INSERT:
-							eventManipulation = "INSERT"
-						case semenumpb.TriggerEventType_UPDATE:
-							eventManipulation = "UPDATE"
-						case semenumpb.TriggerEventType_DELETE:
-							eventManipulation = "DELETE"
-						case semenumpb.TriggerEventType_TRUNCATE:
-							eventManipulation = "TRUNCATE"
-						}
-
-						var actionTiming string
-						switch trigger.ActionTime {
-						case semenumpb.TriggerActionTime_BEFORE:
-							actionTiming = "BEFORE"
-						case semenumpb.TriggerActionTime_AFTER:
-							actionTiming = "AFTER"
-						case semenumpb.TriggerActionTime_INSTEAD_OF:
-							actionTiming = "INSTEAD OF"
-						}
-
-						actionOrientation := "STATEMENT"
-						if trigger.ForEachRow {
-							actionOrientation = "ROW"
-						}
-
-						// Build the action statement.
-						funcDesc, err := p.Descriptors().ByIDWithLeased(p.Txn()).Get().Function(ctx, trigger.FuncID)
-						if err != nil {
-							return err
-						}
-						funcName := tree.Name(funcDesc.GetName())
-						actionStatement := fmt.Sprintf(`EXECUTE FUNCTION %s`, funcName.String())
-						if len(trigger.FuncArgs) > 0 {
-							actionStatement += fmt.Sprintf("(%s)", strings.Join(trigger.FuncArgs, ", "))
-						} else {
-							actionStatement += "()"
-						}
-
-						// Handle action condition (WHEN clause).
-						var actionCondition tree.Datum = tree.DNull
-						if trigger.WhenExpr != "" {
-							actionCondition = tree.NewDString(trigger.WhenExpr)
-						}
-
-						// Handle transition table names
-						var oldTableName, newTableName tree.Datum = tree.DNull, tree.DNull
-						if trigger.OldTransitionAlias != "" {
-							oldTableName = tree.NewDString(trigger.OldTransitionAlias)
-						}
-						if trigger.NewTransitionAlias != "" {
-							newTableName = tree.NewDString(trigger.NewTransitionAlias)
-						}
-
-						if err := addRow(
-							dbNameStr,                          // trigger_catalog
-							scNameStr,                          // trigger_schema
-							tree.NewDString(trigger.Name),      // trigger_name
-							tree.NewDString(eventManipulation), // event_manipulation
-							dbNameStr,                          // event_object_catalog
-							scNameStr,                          // event_object_schema
-							tbNameStr,                          // event_object_table
-							tree.DNull,                         // action_order
-							actionCondition,                    // action_condition
-							tree.NewDString(actionStatement),   // action_statement
-							tree.NewDString(actionOrientation), // action_orientation
-							tree.NewDString(actionTiming),      // action_timing
-							oldTableName,                       // action_reference_old_table
-							newTableName,                       // action_reference_new_table
-							tree.DNull,                         // action_reference_old_row
-							tree.DNull,                         // action_reference_new_row
-							tree.DNull,                         // created
-						); err != nil {
-							return err
-						}
-					}
-				}
-				return nil
-			})
+	comment: "triggers was created for compatibility and is currently unimplemented",
+	schema:  vtable.InformationSchemaTriggers,
+	populate: func(ctx context.Context, p *planner, _ catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
+		return nil
 	},
+	unimplemented: true,
 }
 
 var informationSchemaTablesExtensionsTable = virtualSchemaTable{
@@ -2672,6 +2578,10 @@ func forEachTypeDesc(
 		if err != nil {
 			continue
 		}
+		sc, err := lCtx.getSchemaByID(typ.GetParentSchemaID())
+		if err != nil {
+			return err
+		}
 		canSeeDescriptor, err := userCanSeeDescriptor(
 			ctx, p, typ, dbDesc, false /* allowAdding */, false /* includeDropped */)
 		if err != nil {
@@ -2679,10 +2589,6 @@ func forEachTypeDesc(
 		}
 		if !canSeeDescriptor {
 			continue
-		}
-		sc, err := lCtx.getSchemaByID(typ.GetParentSchemaID())
-		if err != nil {
-			return err
 		}
 		if err := fn(ctx, dbDesc, sc, typ); err != nil {
 			return err
@@ -2810,16 +2716,9 @@ func forEachTableDescFromDescriptors(
 		}
 		var sc catalog.SchemaDescriptor
 		if parentExists {
-			// The schema may not exist if the table is temporary or belongs to a
-			// dropped schema. If the schema is dropped and we're configured to
-			// tolerate that (includeDropped is true), then the schema descriptor (sc)
-			// will intentionally remain nil.
-			schemaID := table.GetParentSchemaID()
-			if lCtx.hasSchemaWithID(schemaID) {
-				sc, err = lCtx.getSchemaByID(schemaID)
-				if err != nil {
-					return err
-				}
+			sc, err = lCtx.getSchemaByID(table.GetParentSchemaID())
+			if err != nil && !table.IsTemporary() {
+				return err
 			} else if table.IsTemporary() {
 				// Look up the schemas for this database if we discover that there is a
 				// missing temporary schema name. Temporary schemas have namespace
@@ -2844,8 +2743,6 @@ func forEachTableDescFromDescriptors(
 				if sc == nil {
 					sc = schemadesc.NewTemporarySchema(catconstants.PgTempSchemaName, table.GetParentSchemaID(), dbDesc.GetID())
 				}
-			} else if !opts.includeDropped {
-				return sqlerrors.NewUndefinedSchemaError(fmt.Sprintf("[%d]", schemaID))
 			}
 		}
 		if err := fn(ctx, tableDescContext{dbDesc, sc, table, lCtx}); err != nil {
@@ -2933,6 +2830,11 @@ func (r roleOptions) validUntil(p *planner) (tree.Datum, error) {
 func (r roleOptions) createDB() (tree.DBool, error) {
 	createDB, err := r.Exists("CREATEDB")
 	return tree.DBool(createDB), err
+}
+
+func (r roleOptions) createRole() (tree.DBool, error) {
+	createRole, err := r.Exists("CREATEROLE")
+	return tree.DBool(createRole), err
 }
 
 // forEachRoleAtCacheReadTS reads from system.users and related tables using a

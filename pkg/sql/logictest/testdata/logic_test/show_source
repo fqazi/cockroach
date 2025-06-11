@@ -23,17 +23,7 @@ UTF8                1
 query TT colnames
 SELECT *
 FROM [SHOW ALL]
-WHERE
-  variable NOT IN (
-    'optimizer',
-    'crdb_version',
-    'session_id',
-    'distsql_workmem',
-    'copy_fast_path_enabled',
-    'direct_columnar_scans_enabled',
-    'multiple_active_portals_enabled',
-    'kv_transaction_buffered_writes_enabled'
-  )
+WHERE variable NOT IN ('optimizer', 'crdb_version', 'session_id', 'distsql_workmem', 'copy_fast_path_enabled', 'direct_columnar_scans_enabled', 'multiple_active_portals_enabled')
 ORDER BY variable
 ----
 variable                                                   value
@@ -61,7 +51,6 @@ copy_num_retries_per_batch                                 5
 copy_transaction_quality_of_service                        background
 copy_write_pipelining_enabled                              off
 cost_scans_with_default_col_size                           off
-create_table_with_schema_locked                            off
 database                                                   test
 datestyle                                                  ISO, MDY
 deadlock_timeout                                           0
@@ -127,6 +116,7 @@ is_superuser                                               on
 join_reader_index_join_strategy_batch_size                 4.0 MiB
 join_reader_no_ordering_strategy_batch_size                2.0 MiB
 join_reader_ordering_strategy_batch_size                   100 KiB
+kv_transaction_buffered_writes_enabled                     off
 large_full_scan_rows                                       0
 lc_collate                                                 C.UTF-8
 lc_ctype                                                   C.UTF-8
@@ -161,7 +151,7 @@ optimizer_push_limit_into_project_filtered_scan            on
 optimizer_push_offset_into_index_join                      on
 optimizer_use_conditional_hoist_fix                        on
 optimizer_use_delete_range_fast_path                       on
-optimizer_use_exists_filter_hoist_rule                     on
+optimizer_use_exists_filter_hoist_rule                     off
 optimizer_use_forecasts                                    on
 optimizer_use_histograms                                   on
 optimizer_use_improved_computed_column_filters_derivation  on
@@ -473,7 +463,7 @@ system.public.descriptor  CREATE TABLE public.descriptor (
                             CONSTRAINT "primary" PRIMARY KEY (id ASC),
                             FAMILY "primary" (id),
                             FAMILY fam_2_descriptor (descriptor)
-                          );
+                          )
 
 query TT colnames
 CREATE VIEW v AS SELECT id FROM system.descriptor; SELECT * FROM [SHOW CREATE VIEW v]
@@ -481,7 +471,7 @@ CREATE VIEW v AS SELECT id FROM system.descriptor; SELECT * FROM [SHOW CREATE VI
 table_name  create_statement
 v           CREATE VIEW public.v (
               id
-            ) AS SELECT id FROM system.public.descriptor;
+            ) AS SELECT id FROM system.public.descriptor
 
 
 query TTT colnames

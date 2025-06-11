@@ -10,9 +10,7 @@ import (
 	"crypto/tls"
 	"math"
 	"net"
-	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 	"storj.io/drpc"
@@ -26,17 +24,76 @@ import (
 	"storj.io/drpc/drpcwire"
 )
 
-// Default idle connection timeout for DRPC connections in the pool.
-var defaultDRPCConnIdleTimeout = 5 * time.Minute
+// ErrDRPCDisabled is returned from hosts that in principle could but do not
+// have the DRPC server enabled.
+var ErrDRPCDisabled = errors.New("DRPC is not enabled")
 
-func dialDRPC(
-	rpcCtx *Context,
-) func(ctx context.Context, target string, _ rpcbase.ConnectionClass) (drpc.Conn, error) {
-	return func(ctx context.Context, target string, _ rpcbase.ConnectionClass) (drpc.Conn, error) {
-		// TODO(server): could use connection class instead of empty key here.
-		pool := drpcpool.New[struct{}, drpcpool.Conn](drpcpool.Options{
-			Expiration: defaultDRPCConnIdleTimeout,
+type drpcServerI interface {
+	Serve(ctx context.Context, lis net.Listener) error
+}
+
+type drpcMuxI interface {
+	Register(srv interface{}, desc drpc.Description) error
+}
+
+type DRPCServer struct {
+	Srv    drpcServerI
+	Mux    drpcMuxI
+	TLSCfg *tls.Config
+}
+
+var _ drpcServerI = (*drpcserver.Server)(nil)
+var _ drpcServerI = (*drpcOffServer)(nil)
+
+func newDRPCServer(_ context.Context, rpcCtx *Context) (*DRPCServer, error) {
+	var dmux drpcMuxI = &drpcOffServer{}
+	var dsrv drpcServerI = &drpcOffServer{}
+	var tlsCfg *tls.Config
+
+	if ExperimentalDRPCEnabled.Get(&rpcCtx.Settings.SV) {
+		mux := drpcmux.New()
+		dsrv = drpcserver.NewWithOptions(mux, drpcserver.Options{
+			Log: func(err error) {
+				log.Warningf(context.Background(), "drpc server error %v", err)
+			},
+			// The reader's max buffer size defaults to 4mb, and if it is exceeded (such
+			// as happens with AddSSTable) the RPCs fail.
+			Manager: drpcmanager.Options{Reader: drpcwire.ReaderOptions{MaximumBufferSize: math.MaxInt}},
 		})
+		dmux = mux
+
+		var err error
+		tlsCfg, err = rpcCtx.GetServerTLSConfig()
+		if err != nil {
+			return nil, err
+		}
+
+		// NB: any server middleware (server interceptors in gRPC parlance) would go
+		// here:
+		//     dmux = whateverMiddleware1(dmux)
+		//     dmux = whateverMiddleware2(dmux)
+		//     ...
+		//
+		// Each middleware must implement the Handler interface:
+		//
+		//   HandleRPC(stream Stream, rpc string) error
+		//
+		// where Stream
+		// See here for an example:
+		// https://github.com/bryk-io/pkg/blob/4da5fbfef47770be376e4022eab5c6c324984bf7/net/drpc/server.go#L91-L101
+	}
+
+	return &DRPCServer{
+		Srv:    dsrv,
+		Mux:    dmux,
+		TLSCfg: tlsCfg,
+	}, nil
+}
+
+func dialDRPC(rpcCtx *Context) func(ctx context.Context, target string) (drpcpool.Conn, error) {
+	return func(ctx context.Context, target string) (drpcpool.Conn, error) {
+		// TODO(server): could use connection class instead of empty key here.
+		pool := drpcpool.New[struct{}, drpcpool.Conn](drpcpool.Options{})
 		pooledConn := pool.Get(ctx /* unused */, struct{}{}, func(ctx context.Context,
 			_ struct{}) (drpcpool.Conn, error) {
 
@@ -53,7 +110,6 @@ func dialDRPC(
 					Stream: drpcstream.Options{
 						MaximumBufferSize: 0, // unlimited
 					},
-					SoftCancel: true, // don't close the transport when stream context is canceled
 				},
 			}
 			var conn *drpcconn.Conn
@@ -88,7 +144,7 @@ func dialDRPC(
 }
 
 type closeEntirePoolConn struct {
-	drpc.Conn
+	drpcpool.Conn
 	pool *drpcpool.Pool[struct{}, drpcpool.Conn]
 }
 
@@ -97,69 +153,11 @@ func (c *closeEntirePoolConn) Close() error {
 	return c.pool.Close()
 }
 
-type DRPCConnection = Connection[drpc.Conn]
-
-// ErrDRPCDisabled is returned from hosts that in principle could but do not
-// have the DRPC server enabled.
-var ErrDRPCDisabled = errors.New("DRPC is not enabled")
-
-// DRPCServer defines the interface for a DRPC server, which can serve
-// connections and provides a drpc.Mux for registering handlers.
-type DRPCServer interface {
-	// Serve starts serving DRPC requests on the provided listener.
-	Serve(ctx context.Context, lis net.Listener) error
-	drpc.Mux
-}
-
-// drpcServer implements the DRPCServer interface.
-type drpcServer struct {
-	*drpcserver.Server
-	drpc.Mux
-}
-
-// NewDRPCServer creates a new DRPCServer with the provided rpc context.
-func NewDRPCServer(_ context.Context, rpcCtx *Context) (DRPCServer, error) {
-	d := &drpcServer{}
-	mux := drpcmux.New()
-	d.Server = drpcserver.NewWithOptions(mux, drpcserver.Options{
-		Log: func(err error) {
-			log.Warningf(context.Background(), "drpc server error %v", err)
-		},
-		// The reader's max buffer size defaults to 4mb, and if it is exceeded (such
-		// as happens with AddSSTable) the RPCs fail.
-		Manager: drpcmanager.Options{Reader: drpcwire.ReaderOptions{MaximumBufferSize: math.MaxInt}},
-	})
-	d.Mux = mux
-
-	// NB: any server middleware (server interceptors in gRPC parlance) would go
-	// here:
-	//     dmux = whateverMiddleware1(dmux)
-	//     dmux = whateverMiddleware2(dmux)
-	//     ...
-	//
-	// Each middleware must implement the Handler interface:
-	//
-	//   HandleRPC(stream Stream, rpc string) error
-	//
-	// where Stream
-	// See here for an example:
-	// https://github.com/bryk-io/pkg/blob/4da5fbfef47770be376e4022eab5c6c324984bf7/net/drpc/server.go#L91-L101
-	return d, nil
-}
-
-// NewDummyDRPCServer returns a DRPCServer that is disabled and always returns
+// drpcOffServer is used for drpcServerI and drpcMuxI if the DRPC server is
+// disabled. It immediately closes accepted connections and returns
 // ErrDRPCDisabled.
-func NewDummyDRPCServer() DRPCServer {
-	return &drpcOffServer{}
-}
-
-// drpcOffServer is a disabled DRPC server implementation. It immediately closes
-// accepted connections and returns ErrDRPCDisabled for all Serve calls.
-// Register is a no-op.
 type drpcOffServer struct{}
 
-// Serve implements the DRPCServer interface for drpcOffServer. It closes any
-// accepted connection and returns ErrDRPCDisabled.
 func (srv *drpcOffServer) Serve(_ context.Context, lis net.Listener) error {
 	conn, err := lis.Accept()
 	if err != nil {
@@ -169,8 +167,6 @@ func (srv *drpcOffServer) Serve(_ context.Context, lis net.Listener) error {
 	return ErrDRPCDisabled
 }
 
-// Register implements the drpc.Mux interface for drpcOffServer. It is a no-op
-// when DRPC is disabled.
 func (srv *drpcOffServer) Register(interface{}, drpc.Description) error {
 	return nil
 }

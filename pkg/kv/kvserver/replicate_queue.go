@@ -97,6 +97,7 @@ var EnqueueProblemRangeInReplicateQueueInterval = settings.RegisterDurationSetti
 		"one which is underreplicated or has a replica on a decommissioning store, "+
 		"disabled when set to 0",
 	0,
+	settings.NonNegativeDuration,
 )
 
 var (
@@ -261,9 +262,6 @@ var (
 		Help:        "Number of failed decommissioning replica replacements processed by the replicate queue",
 		Measurement: "Replicas",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_REPLICATION,
-		HowToUse:    `Refer to Decommission the node.`,
 	}
 	metaReplicateQueueRemoveDecommissioningReplicaSuccessCount = metric.Metadata{
 		Name:        "queue.replicate.removedecommissioningreplica.success",

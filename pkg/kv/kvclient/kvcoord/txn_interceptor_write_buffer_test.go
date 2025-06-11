@@ -36,12 +36,6 @@ func makeMockTxnWriteBuffer(st *cluster.Settings) (txnWriteBuffer, *mockLockedSe
 	}, mockSender
 }
 
-func getArgs(key roachpb.Key) *kvpb.GetRequest {
-	return &kvpb.GetRequest{
-		RequestHeader: kvpb.RequestHeader{Key: key},
-	}
-}
-
 func putArgs(key roachpb.Key, value string, seq enginepb.TxnSeq) *kvpb.PutRequest {
 	return &kvpb.PutRequest{
 		RequestHeader: kvpb.RequestHeader{Key: key, Sequence: seq},
@@ -1541,164 +1535,118 @@ func TestTxnWriteBufferFlushesWhenOverBudget(t *testing.T) {
 	require.Equal(t, int64(1), twb.txnMetrics.TxnWriteBufferMemoryLimitExceeded.Count())
 }
 
-// TestTxnWriteBufferFlushesIfBatchRequiresFlushing ensures that the
-// txnWriteBuffer correctly handles requests that aren't currently
-// supported by the txnWriteBuffer by flushing the buffer before
-// processing the request.
-func TestTxnWriteBufferFlushesIfBatchRequiresFlushing(t *testing.T) {
+// TestTxnWriteBufferDeleteRange ensures that the txnWriteBuffer correctly
+// handles DeleteRange requests. In particular, whenever we see a batch with a
+// DeleteRange request, the write buffer is flushed and write buffering is
+// turned off for subsequent requests.
+func TestTxnWriteBufferDeleteRange(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
+	twb, mockSender := makeMockTxnWriteBuffer(cluster.MakeClusterSettings())
+
+	txn := makeTxnProto()
+	txn.Sequence = 10
 	keyA, keyB, keyC := roachpb.Key("a"), roachpb.Key("b"), roachpb.Key("c")
 	valA := "valA"
 
-	type batchSendMock func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error)
-	type testCase struct {
-		name         string
-		ba           func(*kvpb.BatchRequest)
-		baSender     func(*testing.T) batchSendMock
-		validateResp func(*testing.T, *kvpb.BatchResponse, *kvpb.Error)
+	ba := &kvpb.BatchRequest{}
+	ba.Header = kvpb.Header{Txn: &txn}
+	putA := putArgs(keyA, valA, txn.Sequence)
+	delC := delArgs(keyC, txn.Sequence)
+	ba.Add(putA)
+	ba.Add(delC)
+
+	numCalled := mockSender.NumCalled()
+	br, pErr := twb.SendLocked(ctx, ba)
+	require.Nil(t, pErr)
+	require.NotNil(t, br)
+	// All the requests should be buffered and not make it past the
+	// txnWriteBuffer. The response returned should be indistinguishable.
+	require.Equal(t, numCalled, mockSender.NumCalled())
+	require.Len(t, br.Responses, 2)
+	require.IsType(t, &kvpb.PutResponse{}, br.Responses[0].GetInner())
+	// Verify the Put was buffered correctly.
+	expBufferedWrites := []bufferedWrite{
+		makeBufferedWrite(keyA, makeBufferedValue("valA", 10)),
+		makeBufferedWrite(keyC, makeBufferedValue("", 10)),
 	}
+	require.Equal(t, expBufferedWrites, twb.testingBufferedWritesAsSlice())
 
-	testCases := []testCase{
-		{
-			name: "DeleteRange",
-			ba: func(b *kvpb.BatchRequest) {
-				b.Add(delRangeArgs(keyA, keyB, b.Txn.Sequence))
-			},
-			baSender: func(t *testing.T) batchSendMock {
-				return func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
-					require.Len(t, ba.Requests, 3)
-					require.IsType(t, &kvpb.PutRequest{}, ba.Requests[0].GetInner())
-					require.IsType(t, &kvpb.DeleteRequest{}, ba.Requests[1].GetInner())
-					require.IsType(t, &kvpb.DeleteRangeRequest{}, ba.Requests[2].GetInner())
+	// Send a DeleteRange request. This should result in the entire buffer
+	// being flushed. Note that we're flushing the delete to key C as well, even
+	// though it doesn't overlap with the DeleteRange request.
+	ba = &kvpb.BatchRequest{}
+	ba.Header = kvpb.Header{Txn: &txn}
+	delRange := delRangeArgs(keyA, keyB, txn.Sequence)
+	ba.Add(delRange)
 
-					br := ba.CreateReply()
-					br.Txn = ba.Txn
-					return br, nil
-				}
-			},
-			validateResp: func(t *testing.T, br *kvpb.BatchResponse, pErr *kvpb.Error) {
-				require.Nil(t, pErr)
-				require.NotNil(t, br)
-				require.Len(t, br.Responses, 1)
-				require.IsType(t, &kvpb.DeleteRangeResponse{}, br.Responses[0].GetInner())
-			},
-		},
-		{
-			name: "Increment",
-			ba: func(b *kvpb.BatchRequest) {
-				b.Add(&kvpb.IncrementRequest{
-					RequestHeader: kvpb.RequestHeader{Key: keyA},
-					Increment:     1,
-				})
-			},
-			baSender: func(t *testing.T) batchSendMock {
-				return func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
-					require.Len(t, ba.Requests, 3)
-					require.IsType(t, &kvpb.PutRequest{}, ba.Requests[0].GetInner())
-					require.IsType(t, &kvpb.DeleteRequest{}, ba.Requests[1].GetInner())
-					require.IsType(t, &kvpb.IncrementRequest{}, ba.Requests[2].GetInner())
+	mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
+		require.Len(t, ba.Requests, 3)
 
-					br := ba.CreateReply()
-					br.Txn = ba.Txn
-					return br, nil
-				}
-			},
-			validateResp: func(t *testing.T, br *kvpb.BatchResponse, pErr *kvpb.Error) {
-				require.Nil(t, pErr)
-				require.NotNil(t, br)
-				require.Len(t, br.Responses, 1)
-				require.IsType(t, &kvpb.IncrementResponse{}, br.Responses[0].GetInner())
-			},
-		},
-	}
+		require.IsType(t, &kvpb.PutRequest{}, ba.Requests[0].GetInner())
+		require.IsType(t, &kvpb.DeleteRequest{}, ba.Requests[1].GetInner())
+		require.IsType(t, &kvpb.DeleteRangeRequest{}, ba.Requests[2].GetInner())
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			twb, mockSender := makeMockTxnWriteBuffer(cluster.MakeClusterSettings())
+		br = ba.CreateReply()
+		br.Txn = ba.Txn
+		return br, nil
+	})
 
-			txn := makeTxnProto()
-			txn.Sequence = 10
-			ba := &kvpb.BatchRequest{}
-			ba.Header = kvpb.Header{Txn: &txn}
-			putA := putArgs(keyA, valA, txn.Sequence)
-			delC := delArgs(keyC, txn.Sequence)
-			ba.Add(putA)
-			ba.Add(delC)
+	br, pErr = twb.SendLocked(ctx, ba)
+	require.Nil(t, pErr)
+	require.NotNil(t, br)
+	// Even though we flushed some writes, it shouldn't make it back to the response.
+	require.Len(t, br.Responses, 1)
+	require.IsType(t, &kvpb.DeleteRangeResponse{}, br.Responses[0].GetInner())
+	require.Equal(t, int64(1), twb.txnMetrics.TxnWriteBufferDisabledAfterBuffering.Count())
 
-			numCalled := mockSender.NumCalled()
-			br, pErr := twb.SendLocked(ctx, ba)
-			require.Nil(t, pErr)
-			require.NotNil(t, br)
-			// All the requests should be buffered and not make it past the
-			// txnWriteBuffer. The response returned should be indistinguishable.
-			require.Equal(t, numCalled, mockSender.NumCalled())
-			require.Len(t, br.Responses, 2)
-			require.IsType(t, &kvpb.PutResponse{}, br.Responses[0].GetInner())
-			// Verify the Put was buffered correctly.
-			expBufferedWrites := []bufferedWrite{
-				makeBufferedWrite(keyA, makeBufferedValue("valA", 10)),
-				makeBufferedWrite(keyC, makeBufferedValue("", 10)),
-			}
-			require.Equal(t, expBufferedWrites, twb.testingBufferedWritesAsSlice())
+	// Ensure the buffer is empty at this point.
+	require.Equal(t, 0, len(twb.testingBufferedWritesAsSlice()))
 
-			// Send the batch that should require a flush
-			ba = &kvpb.BatchRequest{}
-			ba.Header = kvpb.Header{Txn: &txn}
-			tc.ba(ba)
-			mockSender.MockSend(tc.baSender(t))
-			br, pErr = twb.SendLocked(ctx, ba)
-			tc.validateResp(t, br, pErr)
-			// Ensure the buffer is empty at this point.
-			require.Equal(t, 0, len(twb.testingBufferedWritesAsSlice()))
-			require.Equal(t, int64(1), twb.txnMetrics.TxnWriteBufferDisabledAfterBuffering.Count())
+	// Subsequent batches should not be buffered.
+	ba = &kvpb.BatchRequest{}
+	ba.Header = kvpb.Header{Txn: &txn}
+	putC := putArgs(keyC, valA, txn.Sequence)
+	ba.Add(putC)
 
-			// Subsequent batches should not be buffered.
-			ba = &kvpb.BatchRequest{}
-			ba.Header = kvpb.Header{Txn: &txn}
-			putC := putArgs(keyC, valA, txn.Sequence)
-			ba.Add(putC)
+	mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
+		require.Len(t, ba.Requests, 1)
 
-			mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
-				require.Len(t, ba.Requests, 1)
+		require.IsType(t, &kvpb.PutRequest{}, ba.Requests[0].GetInner())
 
-				require.IsType(t, &kvpb.PutRequest{}, ba.Requests[0].GetInner())
+		br = ba.CreateReply()
+		br.Txn = ba.Txn
+		return br, nil
+	})
 
-				br = ba.CreateReply()
-				br.Txn = ba.Txn
-				return br, nil
-			})
+	br, pErr = twb.SendLocked(ctx, ba)
+	require.Nil(t, pErr)
+	require.NotNil(t, br)
+	require.Len(t, br.Responses, 1)
+	require.IsType(t, &kvpb.PutResponse{}, br.Responses[0].GetInner())
 
-			br, pErr = twb.SendLocked(ctx, ba)
-			require.Nil(t, pErr)
-			require.NotNil(t, br)
-			require.Len(t, br.Responses, 1)
-			require.IsType(t, &kvpb.PutResponse{}, br.Responses[0].GetInner())
+	// Commit the transaction. We flushed the buffer already, and no subsequent
+	// writes were buffered, so the buffer should be empty. As such, no write
+	// requests should be added to the batch.
+	ba = &kvpb.BatchRequest{}
+	ba.Header = kvpb.Header{Txn: &txn}
+	ba.Add(&kvpb.EndTxnRequest{Commit: true})
 
-			// Commit the transaction. We flushed the buffer already, and no subsequent
-			// writes were buffered, so the buffer should be empty. As such, no write
-			// requests should be added to the batch.
-			ba = &kvpb.BatchRequest{}
-			ba.Header = kvpb.Header{Txn: &txn}
-			ba.Add(&kvpb.EndTxnRequest{Commit: true})
+	mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
+		require.Len(t, ba.Requests, 1)
+		require.IsType(t, &kvpb.EndTxnRequest{}, ba.Requests[0].GetInner())
 
-			mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
-				require.Len(t, ba.Requests, 1)
-				require.IsType(t, &kvpb.EndTxnRequest{}, ba.Requests[0].GetInner())
+		br = ba.CreateReply()
+		br.Txn = ba.Txn
+		return br, nil
+	})
 
-				br = ba.CreateReply()
-				br.Txn = ba.Txn
-				return br, nil
-			})
-
-			br, pErr = twb.SendLocked(ctx, ba)
-			require.Nil(t, pErr)
-			require.NotNil(t, br)
-			require.Len(t, br.Responses, 1)
-			require.IsType(t, &kvpb.EndTxnResponse{}, br.Responses[0].GetInner())
-		})
-	}
+	br, pErr = twb.SendLocked(ctx, ba)
+	require.Nil(t, pErr)
+	require.NotNil(t, br)
+	require.Len(t, br.Responses, 1)
+	require.IsType(t, &kvpb.EndTxnResponse{}, br.Responses[0].GetInner())
 }
 
 // TestTxnWriteBufferRollbackToSavepoint tests the savepoint rollback logic.
@@ -1984,6 +1932,27 @@ func TestTxnWriteBufferBatchRequestValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "batch with InitPut",
+			ba: func() *kvpb.BatchRequest {
+				b := &kvpb.BatchRequest{Header: kvpb.Header{Txn: &txn}}
+				b.Add(&kvpb.InitPutRequest{
+					RequestHeader: kvpb.RequestHeader{Key: keyA, Sequence: txn.Sequence},
+					Value:         roachpb.Value{},
+				})
+				return b
+			},
+		},
+		{
+			name: "batch with Increment",
+			ba: func() *kvpb.BatchRequest {
+				b := &kvpb.BatchRequest{Header: kvpb.Header{Txn: &txn}}
+				b.Add(&kvpb.IncrementRequest{
+					RequestHeader: kvpb.RequestHeader{Key: keyA, Sequence: txn.Sequence},
+				})
+				return b
+			},
+		},
+		{
 			name: "batch with ReturnRawMVCCValues Scan",
 			ba: func() *kvpb.BatchRequest {
 				b := &kvpb.BatchRequest{Header: kvpb.Header{Txn: &txn}}
@@ -2053,174 +2022,5 @@ func TestTxnWriteBufferBatchRequestValidation(t *testing.T) {
 			require.Equal(t, numCalledBefore, mockSender.NumCalled())
 
 		})
-	}
-}
-
-// BenchmarkTxnWriteBuffer benchmarks the txnWriteBuffer. The test sets up a
-// transaction with an existing buffer and runs a single batch through
-// SendLocked and flushBufferAndSendBatch. The test varies the state of the
-// buffer, the size of the keys and values, the fraction of reads in the batch,
-// as well as the fraction of  reads served from the buffer.
-// TODO(mira): Should we test more cases?
-//   - Batches with requests other than Get and Put. Notably, CPut.
-//   - Batches that exercise error paths.
-func BenchmarkTxnWriteBuffer(b *testing.B) {
-	defer leaktest.AfterTest(b)()
-	ctx := context.Background()
-
-	makeKey := func(i int, kvSize int) roachpb.Key {
-		// The keys are kvSize bytes.
-		keyPrefix := strings.Repeat("a", kvSize-1)
-		return roachpb.Key(fmt.Sprintf("%s%d", keyPrefix, i))
-	}
-	makeValue := func(kvSize int) string {
-		// The values are kvSize KiB.
-		return strings.Repeat("a", kvSize*1024)
-	}
-	makeBuffer := func(kvSize int, txn *roachpb.Transaction, numWrites int) txnWriteBuffer {
-		twb, mockSender := makeMockTxnWriteBuffer(cluster.MakeClusterSettings())
-		twb.setEnabled(true)
-		sendFunc := func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
-			br := ba.CreateReply()
-			br.Txn = ba.Txn
-			var resps []kvpb.ResponseUnion
-			resp := kvpb.ResponseUnion{}
-			// All requests get responses. Gets also have a return value.
-			for _, req := range ba.Requests {
-				switch req.GetInner().(type) {
-				case *kvpb.GetRequest:
-					resp.Value = &kvpb.ResponseUnion_Get{
-						Get: &kvpb.GetResponse{
-							Value: &roachpb.Value{RawBytes: []byte(makeValue(kvSize))},
-						},
-					}
-				}
-				resps = append(resps, resp)
-			}
-			br.Responses = resps
-			return br, nil
-		}
-		mockSender.MockSend(sendFunc)
-
-		ba := &kvpb.BatchRequest{}
-		ba.Header = kvpb.Header{Txn: txn}
-		// Write to the keys that will later be served from the buffer but
-		// not from the benchmarked batch.
-		for i := 0; i < numWrites; i++ {
-			ba.Add(putArgs(makeKey(i, kvSize), makeValue(kvSize), enginepb.TxnSeq(i)))
-		}
-		_, pErr := twb.SendLocked(ctx, ba)
-		if pErr != nil {
-			b.Fatal(pErr)
-		}
-		return twb
-	}
-
-	numRequests := 100
-	// A size X denotes a key of size X bytes and a value of size X KiB. We don't
-	// want these to push the buffer past its max size. There's a separate test
-	// below for handling flushing the buffer.
-	kvSizes := []int{8, 32}
-	// The fraction of reads in the benchmarked batch.
-	fractionsReads := []float64{0.0, 0.5, 1.0}
-	// The fraction of the reads in the batch to be served from the buffer.
-	fractionsFromBuffer := []float64{0.0, 0.5, 1.0}
-	// The fraction of reads served from the buffer that come from the same batch.
-	fractionsFromBufferSameBatch := []float64{0.0, 0.5, 1.0}
-	for _, kvSize := range kvSizes {
-		for _, fractionReads := range fractionsReads {
-			for _, fractionFromBuffer := range fractionsFromBuffer {
-				for _, fractionFromBufferSameBatch := range fractionsFromBufferSameBatch {
-					name := fmt.Sprintf(
-						"SendLocked/size=%v/reads=%2.2f/from_buffer=%2.2f/from_batch=%2.2f", kvSize,
-						fractionReads*100, fractionFromBuffer*100, fractionFromBufferSameBatch*100,
-					)
-					b.Run(
-						name, func(b *testing.B) {
-							// The total number of requests in the batch being benchmarked are broken down
-							// into five groups, executed in the order below.
-							// 0. Not included in the batch: previous writes by the same transaction.
-							// 1. Reads served from the buffer (same keys as 0).
-							// 2. Writes in the same transaction and the same batch.
-							// 3. Reads served from the buffer from the same batch (same keys as 2).
-							// 4. Reads not served from the buffer.
-							// 5. Writes not seen by any reads in the batch.
-							numReads := int(fractionReads * float64(numRequests))
-							numWrites := numRequests - numReads
-							readsFromBuffer := int(fractionFromBuffer * float64(numReads))
-							readsFromBufferSameBatch := int(fractionFromBufferSameBatch * float64(readsFromBuffer))
-							readsFromPrevBatch := readsFromBuffer - readsFromBufferSameBatch
-
-							// Create the benchmarked batch.
-							txn := makeTxnProto()
-							ba := &kvpb.BatchRequest{}
-							ba.Header = kvpb.Header{Txn: &txn}
-
-							// Read from the keys that were written while setting up the
-							// buffer (same transaction, previous batch).
-							for i := 0; i < readsFromPrevBatch; i++ {
-								ba.Add(getArgs(makeKey(i, kvSize)))
-							}
-							// Write and then read the keys that are served from the buffer
-							// and are in the benchmarked batch.
-							for i := readsFromPrevBatch; i < readsFromPrevBatch+readsFromBufferSameBatch; i++ {
-								// Half of these puts acquire exclusive locks.
-								args := putArgs(makeKey(i, kvSize), makeValue(kvSize), enginepb.TxnSeq(i))
-								if i%2 == 0 {
-									args.MustAcquireExclusiveLock = true
-								}
-								ba.Add(args)
-								ba.Add(getArgs(makeKey(i, kvSize)))
-							}
-							// Add any remaining reads, not served from the buffer.
-							for i := readsFromPrevBatch + readsFromBufferSameBatch; i < numReads; i++ {
-								ba.Add(getArgs(makeKey(i, kvSize)))
-							}
-							// Add any remaining writes, not observed by any reads.
-							for i := readsFromPrevBatch + readsFromBufferSameBatch; i < numWrites; i++ {
-								// Half of these puts acquire exclusive locks.
-								args := putArgs(makeKey(i, kvSize), makeValue(kvSize), enginepb.TxnSeq(i))
-								if i%2 == 0 {
-									args.MustAcquireExclusiveLock = true
-								}
-							}
-
-							b.ResetTimer()
-							for i := 0; i < b.N; i++ {
-								b.StopTimer()
-								twb := makeBuffer(kvSize, &txn, readsFromPrevBatch)
-								b.StartTimer()
-								_, pErr := twb.SendLocked(ctx, ba)
-								if pErr != nil {
-									b.Fatal(pErr)
-								}
-							}
-						},
-					)
-				}
-			}
-		}
-
-		name := fmt.Sprintf("flushBufferAndSendBatch/size=%v", kvSize)
-		b.Run(name, func(b *testing.B) {
-			// Create the benchmarked batch. It's just a single Get as we're
-			// interested in the work to flush the buffer.
-			txn := makeTxnProto()
-			ba := &kvpb.BatchRequest{}
-			ba.Header = kvpb.Header{Txn: &txn}
-			ba.Add(getArgs(makeKey(0, kvSize)))
-
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				// All requests correspond to writes that will be stored in the buffer.
-				twb := makeBuffer(kvSize, &txn, numRequests)
-				twb.flushOnNextBatch = true
-				_, pErr := twb.flushBufferAndSendBatch(ctx, ba)
-				if pErr != nil {
-					b.Fatal(pErr)
-				}
-			}
-		},
-		)
 	}
 }

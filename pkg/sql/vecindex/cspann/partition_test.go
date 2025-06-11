@@ -11,7 +11,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/cspann/quantize"
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/cspann/testutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/cspann/workspace"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecpb"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/vector"
@@ -44,7 +43,7 @@ func TestPartition(t *testing.T) {
 	valueBytes20b := ValueBytes{11, 12}
 
 	var workspace workspace.T
-	quantizer := quantize.NewUnQuantizer(2, vecpb.L2SquaredDistance)
+	quantizer := quantize.NewUnQuantizer(2)
 
 	// newTestPartition creates a partition with 2 vectors.
 	newTestPartition := func() *Partition {
@@ -55,7 +54,7 @@ func TestPartition(t *testing.T) {
 		quantizedSet := quantizer.Quantize(&workspace, vectors)
 		childKeys := []ChildKey{childKey10, childKey20, childKey30}
 		valueBytes := []ValueBytes{valueBytes10, valueBytes20, valueBytes30}
-		metadata := MakeReadyPartitionMetadata(1, vectors.Centroid(make(vector.T, vectors.Dims)))
+		metadata := MakeReadyPartitionMetadata(1, quantizedSet.GetCentroid())
 		return NewPartition(metadata, quantizer, quantizedSet, childKeys, valueBytes)
 	}
 
@@ -96,7 +95,7 @@ func TestPartition(t *testing.T) {
 		require.NotEqual(t, partition, cloned)
 
 		cloned = partition.Clone()
-		cloned.quantizedSet.(*quantize.UnQuantizedVectorSet).Vectors.At(0)[0] = 99
+		cloned.quantizedSet.(*quantize.UnQuantizedVectorSet).CentroidDistances[0] = 99
 		require.NotEqual(t, partition, cloned)
 	})
 
@@ -210,11 +209,11 @@ func TestPartition(t *testing.T) {
 		count = partition.Search(&workspace, RootKey, vector.T{1, 1}, &searchSet)
 		require.Equal(t, 5, count)
 		result1 := SearchResult{
-			QueryDistance: 1, ErrorBound: 0, ParentPartitionKey: 1, ChildKey: childKey10, ValueBytes: valueBytes10}
+			QuerySquaredDistance: 1, ErrorBound: 0, CentroidDistance: 3.2830, ParentPartitionKey: 1, ChildKey: childKey10, ValueBytes: valueBytes10}
 		result2 := SearchResult{
-			QueryDistance: 13, ErrorBound: 0, ParentPartitionKey: 1, ChildKey: childKey40, ValueBytes: valueBytes40}
+			QuerySquaredDistance: 13, ErrorBound: 0, CentroidDistance: 0.3333, ParentPartitionKey: 1, ChildKey: childKey40, ValueBytes: valueBytes40}
 		result3 := SearchResult{
-			QueryDistance: 17, ErrorBound: 0, ParentPartitionKey: 1, ChildKey: childKey20, ValueBytes: valueBytes20}
+			QuerySquaredDistance: 17, ErrorBound: 0, CentroidDistance: 1.6667, ParentPartitionKey: 1, ChildKey: childKey20, ValueBytes: valueBytes20}
 		results = roundResults(searchSet.PopResults(), 4)
 		require.Equal(t, SearchResults{result1, result2, result3}, results)
 	})
@@ -271,8 +270,9 @@ func TestPartition(t *testing.T) {
 func roundResults(results SearchResults, prec int) SearchResults {
 	for i := range results {
 		result := &results[i]
-		result.QueryDistance = float32(scalar.Round(float64(result.QueryDistance), prec))
+		result.QuerySquaredDistance = float32(scalar.Round(float64(result.QuerySquaredDistance), prec))
 		result.ErrorBound = float32(scalar.Round(float64(result.ErrorBound), prec))
+		result.CentroidDistance = float32(scalar.Round(float64(result.CentroidDistance), prec))
 		result.Vector = testutils.RoundFloats(result.Vector, prec)
 	}
 	return results

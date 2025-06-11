@@ -27,7 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
+	"github.com/cockroachdb/cockroach/pkg/storage/storagepb"
 	"github.com/cockroachdb/cockroach/pkg/ts"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
@@ -372,10 +372,6 @@ type zipContext struct {
 
 	// The log/heap/etc files to include.
 	files fileSelection
-
-	// validateZipFile indicates whether the generated zip file should be validated
-	// post debug zip file generation.
-	validateZipFile bool
 }
 
 // setZipContextDefaults set the default values in zipCtx.  This
@@ -398,7 +394,6 @@ func setZipContextDefaults() {
 	zipCtx.includeRunningJobTraces = true
 	zipCtx.cpuProfDuration = 5 * time.Second
 	zipCtx.concurrency = 15
-	zipCtx.validateZipFile = true
 
 	// File selection covers the last 48 hours by default.
 	// We add 24 hours to now for the end timestamp to ensure
@@ -454,7 +449,7 @@ var debugCtx struct {
 	sizes             bool
 	replicated        bool
 	inputFile         string
-	ballastSize       storageconfig.SizeSpec
+	ballastSize       storagepb.SizeSpec
 	maxResults        int
 	decodeAsTableDesc string
 	verbose           bool
@@ -471,7 +466,7 @@ func setDebugContextDefaults() {
 	debugCtx.sizes = false
 	debugCtx.replicated = false
 	debugCtx.inputFile = ""
-	debugCtx.ballastSize = storageconfig.SizeSpec{Capacity: 1000000000}
+	debugCtx.ballastSize = storagepb.SizeSpec{Capacity: 1000000000}
 	debugCtx.maxResults = 0
 	debugCtx.decodeAsTableDesc = ""
 	debugCtx.verbose = false
@@ -755,6 +750,6 @@ func GetServerCfgStores() base.StoreSpecList {
 // WARNING: consider very carefully whether you should be using this.
 // If you are not writing CCL code that performs command-line flag
 // parsing, you probably should not be using this.
-func GetWALFailoverConfig() *storageconfig.WALFailover {
+func GetWALFailoverConfig() *storagepb.WALFailover {
 	return &serverCfg.StorageConfig.WALFailover
 }

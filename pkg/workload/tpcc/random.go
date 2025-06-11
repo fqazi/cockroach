@@ -6,12 +6,11 @@
 package tpcc
 
 import (
-	"math"
 	"math/rand/v2"
 
-	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/util/bufalloc"
 	"github.com/cockroachdb/cockroach/pkg/workload/workloadimpl"
+	randold "golang.org/x/exp/rand"
 )
 
 var cLastTokens = [...]string{
@@ -32,7 +31,13 @@ const numbersAlphabet = `1234567890`
 
 type tpccRand struct {
 	*rand.Rand
-	*rand.PCG
+
+	aChars, letters, numbers workloadimpl.PrecomputedRand
+}
+
+// TODO(#143870): remove this.
+type tpccRandOld struct {
+	*randold.Rand
 
 	aChars, letters, numbers workloadimpl.PrecomputedRand
 }
@@ -40,18 +45,6 @@ type tpccRand struct {
 type aCharsOffset int
 type lettersOffset int
 type numbersOffset int
-
-// Seed resets the RNG with the given seeds.
-func (rng *tpccRand) Seed(seed1, seed2 uint64) {
-	if rng.PCG != nil {
-		// rand.Rand has no state other than the source, so we don't need to
-		// recreate it.
-		rng.PCG.Seed(seed1, seed2)
-		return
-	}
-	rng.PCG = rand.NewPCG(seed1, seed2)
-	rng.Rand = rand.New(rng.PCG)
-}
 
 func randStringFromAlphabet(
 	rng *rand.Rand,
@@ -74,6 +67,27 @@ func randStringFromAlphabet(
 	return b
 }
 
+func randStringFromAlphabetOld(
+	rng *randold.Rand,
+	a *bufalloc.ByteAllocator,
+	minLen, maxLen int,
+	pr workloadimpl.PrecomputedRand,
+	prOffset *int,
+) []byte {
+	size := maxLen
+	if maxLen-minLen != 0 {
+		size = int(randIntOld(rng, minLen, maxLen))
+	}
+	if size == 0 {
+		return nil
+	}
+
+	var b []byte
+	*a, b = a.Alloc(size, 0 /* extraCap */)
+	*prOffset = pr.FillBytes(*prOffset, b)
+	return b
+}
+
 // randAStringInitialDataOnly generates a random alphanumeric string of length
 // between min and max inclusive. It uses a set of pregenerated random data,
 // which the spec allows only for initial data. See 4.3.2.2.
@@ -84,6 +98,12 @@ func randAStringInitialDataOnly(
 	rng *tpccRand, ao *aCharsOffset, a *bufalloc.ByteAllocator, min, max int,
 ) []byte {
 	return randStringFromAlphabet(rng.Rand, a, min, max, rng.aChars, (*int)(ao))
+}
+
+func randAStringInitialDataOnlyOld(
+	rng *tpccRandOld, ao *aCharsOffset, a *bufalloc.ByteAllocator, min, max int,
+) []byte {
+	return randStringFromAlphabetOld(rng.Rand, a, min, max, rng.aChars, (*int)(ao))
 }
 
 // randNStringInitialDataOnly generates a random numeric string of length
@@ -143,10 +163,8 @@ func randZipInitialDataOnly(rng *tpccRand, no *numbersOffset, a *bufalloc.ByteAl
 
 // randTax produces a random tax between [0.0000..0.2000]
 // See 2.1.5.
-func randTax(rng *rand.Rand) apd.Decimal {
-	var result apd.Decimal
-	result.SetFinite(randInt(rng, 0, 2000), -4)
-	return result
+func randTax(rng *rand.Rand) float64 {
+	return float64(randInt(rng, 0, 2000)) / float64(10000.0)
 }
 
 // randInt returns a number within [min, max] inclusive.
@@ -155,20 +173,8 @@ func randInt(rng *rand.Rand, min, max int) int64 {
 	return int64(rng.IntN(max-min+1) + min)
 }
 
-func makeDecimal(value float64, scale int32) apd.Decimal {
-	value = math.Round(value * math.Pow10(int(scale)))
-	var result apd.Decimal
-	result.SetFinite(int64(value), -scale)
-	return result
-}
-
-func randDecimal(rng *rand.Rand, min, max float64, scale int32) apd.Decimal {
-	minInt := int64(min * math.Pow10(int(scale)))
-	maxInt := int64(max * math.Pow10(int(scale)))
-	value := randInt(rng, int(minInt), int(maxInt))
-	var result apd.Decimal
-	result.SetFinite(value, -scale)
-	return result
+func randIntOld(rng *randold.Rand, min, max int) int64 {
+	return int64(rng.Intn(max-min+1) + min)
 }
 
 // randCLastSyllables returns a customer last name string generated according to

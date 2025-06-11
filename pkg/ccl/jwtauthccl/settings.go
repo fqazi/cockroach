@@ -142,6 +142,7 @@ var JWTAuthClientTimeout = settings.RegisterDurationSetting(
 	"sets the client timeout for external calls made during JWT authentication "+
 		"(e.g. fetching JWKS, etc.)",
 	15*time.Second,
+	settings.NonNegativeDuration,
 	settings.WithPublic,
 )
 

@@ -20,9 +20,9 @@ var useFastRetry = envutil.EnvOrDefaultBool(
 // getRetry returns retry object for changefeed.
 func getRetry(ctx context.Context) Retry {
 	opts := retry.Options{
-		InitialBackoff: 1 * time.Second,
+		InitialBackoff: 5 * time.Second,
 		Multiplier:     2,
-		MaxBackoff:     1 * time.Minute,
+		MaxBackoff:     10 * time.Minute,
 	}
 
 	if useFastRetry {

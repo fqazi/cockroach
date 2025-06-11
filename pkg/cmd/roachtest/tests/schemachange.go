@@ -330,7 +330,7 @@ func makeIndexAddTpccTest(
 func registerSchemaChangeBulkIngest(r registry.Registry) {
 	// Allow a long running time to account for runs that use a
 	// cockroach build with runtime assertions enabled.
-	r.Add(makeSchemaChangeBulkIngestTest(r, 12, 4_000_000_000, 2*time.Hour))
+	r.Add(makeSchemaChangeBulkIngestTest(r, 5, 100000000, time.Minute*60))
 }
 
 func makeSchemaChangeBulkIngestTest(
@@ -339,27 +339,25 @@ func makeSchemaChangeBulkIngestTest(
 	return registry.TestSpec{
 		Name:             "schemachange/bulkingest",
 		Owner:            registry.OwnerSQLFoundations,
-		Cluster:          r.MakeClusterSpec(numNodes, spec.WorkloadNode(), spec.VolumeSize(200)),
+		Cluster:          r.MakeClusterSpec(numNodes, spec.WorkloadNode()),
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Timeout:          length * 2,
 		// `fixtures import` (with the workload paths) is not supported in 2.1
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			// Configure column a to have sequential ascending values. The payload
-			// column will be randomized and thus uncorrelated with the primary key
-			// (a, b, c).
-			bNum := 1000
-			cNum := 1000
-			aNum := numRows / (bNum * cNum)
+			// Configure column a to have sequential ascending values, and columns b and c to be constant.
+			// The payload column will be randomized and thus uncorrelated with the primary key (a, b, c).
+			aNum := numRows
 			if c.IsLocal() {
 				aNum = 100000
-				bNum = 1
-				cNum = 1
 			}
-			payloadBytes := 40
+			bNum := 1
+			cNum := 1
+			payloadBytes := 4
 
-			settings := install.MakeClusterSettings()
+			// TODO (lucy): Remove flag once the faster import is enabled by default
+			settings := install.MakeClusterSettings(install.EnvOption([]string{"COCKROACH_IMPORT_WORKLOAD_FASTER=true"}))
 			c.Start(ctx, t.L(), option.DefaultStartOpts(), settings, c.CRDBNodes())
 
 			// Don't add another index when importing.

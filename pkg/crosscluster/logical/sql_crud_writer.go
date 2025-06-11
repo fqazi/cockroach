@@ -45,7 +45,7 @@ func newCrudSqlWriter(
 	discard jobspb.LogicalReplicationDetails_Discard,
 	procConfigByDestID map[descpb.ID]sqlProcessorTableConfig,
 	jobID jobspb.JobID,
-) (BatchHandler, error) {
+) (*sqlCrudWriter, error) {
 	decoder, err := newEventDecoder(ctx, cfg.DB, evalCtx.Settings, procConfigByDestID)
 	if err != nil {
 		return nil, err

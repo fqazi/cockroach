@@ -33,19 +33,19 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/load"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/ctpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/policyrefresher"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/sidetransport"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/idalloc"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/intentresolver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvadmission"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowhandle"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/node_rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/replica_rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage/snaprecv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/multiqueue"
@@ -295,6 +295,7 @@ var LeaseTransferPerIterationTimeout = settings.RegisterDurationSetting(
 		"after changing this setting)",
 	5*time.Second,
 	settings.WithName("server.shutdown.lease_transfer_iteration.timeout"),
+	settings.NonNegativeDuration,
 	settings.WithPublic,
 )
 
@@ -751,7 +752,7 @@ prose below, and the source .dot file is in store_doc_replica_lifecycle.dot.
 	                              +---------------------+
 	          +------------------ |       Absent        | ---------------------------------------------------------------------------------------------------+
 	          |                   +---------------------+                                                                                                    |
-	          |                     |                        Subsume              Crash          applySnapshotRaftMuLocked                                   |
+	          |                     |                        Subsume              Crash          applySnapshot                                               |
 	          |                     | Store.Start          +---------------+    +---------+    +---------------+                                             |
 	          |                     v                      v               |    v         |    v               |                                             |
 	          |                   +-----------------------------------------------------------------------------------------------------------------------+  |
@@ -762,7 +763,7 @@ prose below, and the source .dot file is in store_doc_replica_lifecycle.dot.
 	|    |    |                   +-----------------------------------------------------------------------------------------------------------------------+  |    |
 	|    |    |                     |                      ^                    ^                                   |              |                    |    |    |
 	|    |    | Raft msg            | Crash                | applySnapshot      | post-split                        |              |                    |    |    |
-	|    |    |                     v                      |   RaftMuLocked     |                                   |              |                    |    |    |
+	|    |    |                     v                      |                    |                                   |              |                    |    |    |
 	|    |    |                   +---------------------------------------------------------+  pre-split            |              |                    |    |    |
 	|    |    +-----------------> |                                                         | <---------------------+--------------+--------------------+----+    |
 	|    |                        |                                                         |                       |              |                    |         |
@@ -912,12 +913,16 @@ type Store struct {
 	limiters            batcheval.Limiters
 	txnWaitMetrics      *txnwait.Metrics
 	raftMetrics         *raft.Metrics
-	sstSnapshotStorage  snaprecv.SSTSnapshotStorage
+	sstSnapshotStorage  SSTSnapshotStorage
 	protectedtsReader   spanconfig.ProtectedTSReader
 	ctSender            *sidetransport.Sender
 	policyRefresher     *policyrefresher.PolicyRefresher
 	storeGossip         *StoreGossip
 	rebalanceObjManager *RebalanceObjectiveManager
+	// raftTransportForFlowControl exposes the set of (remote) stores the raft
+	// transport is connected to, and is used by the canonical
+	// replicaFlowControlIntegration implementation.
+	raftTransportForFlowControl raftTransportForFlowControl
 
 	// kvflowRangeControllerFactory is used for replication AC (flow control) V2
 	// to create new range controllers which mediate the flow of requests to
@@ -1289,6 +1294,13 @@ type StoreConfig struct {
 
 	// KVAdmissionController is used for admission control.
 	KVAdmissionController kvadmission.Controller
+	// KVFlowController is used for replication admission control.
+	KVFlowController kvflowcontrol.Controller
+	// KVFlowHandles is used for replication admission control.
+	KVFlowHandles kvflowcontrol.Handles
+	// KVFlowHandleMetrics is a shared metrics struct for all
+	// kvflowcontrol.Handles.
+	KVFlowHandleMetrics *kvflowhandle.Metrics
 	// KVFlowAdmittedPiggybacker is used for replication AC (flow control) v2.
 	KVFlowAdmittedPiggybacker replica_rac2.AdmittedPiggybacker
 	// KVFlowStreamTokenProvider is used for replication AC (flow control) v2 to
@@ -1659,11 +1671,12 @@ func NewStore(
 	// we use them now is because we want snapshot apply to be completely atomic but that
 	// is out the window with two engines, so we may as well break the atomicity in the
 	// common case and do something more effective.
-	s.sstSnapshotStorage = snaprecv.NewSSTSnapshotStorage(s.TODOEngine(), s.limiters.BulkIOWriteRate)
+	s.sstSnapshotStorage = NewSSTSnapshotStorage(s.TODOEngine(), s.limiters.BulkIOWriteRate)
 	if err := s.sstSnapshotStorage.Clear(); err != nil {
 		log.Warningf(ctx, "failed to clear snapshot storage: %v", err)
 	}
 	s.protectedtsReader = cfg.ProtectedTimestampReader
+	s.raftTransportForFlowControl = cfg.Transport
 
 	// On low-CPU instances, a default limit value may still allow ExportRequests
 	// to tie up all cores so cap limiter at cores-1 when setting value is higher.
@@ -2347,7 +2360,7 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 		// acquiring the new lease, which will wake them up.
 		//
 		// NB: cluster settings haven't propagated yet, so we have to check the last
-		// known lease instead of desiredLeaseType. We also check Sequence >
+		// known lease instead of desiredLeaseTypeRLocked. We also check Sequence >
 		// 0 to omit ranges that haven't seen a lease yet.
 		if l, _ := rep.GetLease(); !l.SupportsQuiescence() && l.Sequence > 0 {
 			rep.maybeUnquiesce(ctx, true /* wakeLeader */, true /* mayCampaign */)
@@ -2523,6 +2536,7 @@ func (s *Store) startRangefeedUpdater(ctx context.Context) {
 			timer.Reset(until.Sub(now))
 			select {
 			case <-timer.C:
+				timer.Read = true
 				return nil
 			case <-interrupt:
 				return errInterrupted
@@ -3348,18 +3362,17 @@ func (s *Store) updateReplicationGauges(ctx context.Context) error {
 		totalRaftLogSize int64
 		maxRaftLogSize   int64
 
-		rangeCount                  int64
-		unavailableRangeCount       int64
-		underreplicatedRangeCount   int64
-		overreplicatedRangeCount    int64
-		decommissioningRangeCount   int64
-		behindCount                 int64
-		pausedFollowerCount         int64
-		ioOverload                  float64
-		pendingRaftProposalCount    int64
-		slowRaftProposalCount       int64
-		raftFlowStateCounts         [tracker.StateCount]int64
-		closedTimestampPolicyCounts [ctpb.MAX_CLOSED_TIMESTAMP_POLICY]int64
+		rangeCount                int64
+		unavailableRangeCount     int64
+		underreplicatedRangeCount int64
+		overreplicatedRangeCount  int64
+		decommissioningRangeCount int64
+		behindCount               int64
+		pausedFollowerCount       int64
+		ioOverload                float64
+		pendingRaftProposalCount  int64
+		slowRaftProposalCount     int64
+		raftFlowStateCounts       [tracker.StateCount]int64
 
 		locks                          int64
 		totalLockHoldDurationNanos     int64
@@ -3418,7 +3431,6 @@ func (s *Store) updateReplicationGauges(ctx context.Context) error {
 		}
 		if metrics.Leaseholder {
 			s.metrics.RaftQuotaPoolPercentUsed.RecordValue(metrics.QuotaPoolPercentUsed)
-			closedTimestampPolicyCounts[metrics.ClosedTimestampPolicy] += 1
 			leaseHolderCount++
 			switch metrics.LeaseType {
 			case roachpb.LeaseNone:
@@ -3520,9 +3532,6 @@ func (s *Store) updateReplicationGauges(ctx context.Context) error {
 	s.metrics.UninitializedCount.Update(uninitializedCount)
 	for state, cnt := range raftFlowStateCounts {
 		s.metrics.RaftFlowStateCounts[state].Update(cnt)
-	}
-	for policy, count := range closedTimestampPolicyCounts {
-		s.metrics.RangeClosedTimestampPolicyCount[policy].Update(count)
 	}
 	s.metrics.RaftLogTotalSize.Update(totalRaftLogSize)
 	s.metrics.RaftLogMaxSize.Update(maxRaftLogSize)
@@ -3642,14 +3651,7 @@ func (s *Store) checkpointSpans(desc *roachpb.RangeDescriptor) []roachpb.Span {
 	}
 	// Include replicated user key span containing ranges left, desc, and right.
 	// TODO(tbg): rangeID is ignored here, make a rangeID-agnostic helper.
-	spans = append(spans, rditer.Select(0, rditer.SelectOpts{
-		Ranged: rditer.SelectRangedOptions{
-			RSpan:      userKeys,
-			SystemKeys: true,
-			UserKeys:   true,
-			LockTable:  true,
-		},
-	})...)
+	spans = append(spans, rditer.Select(0, rditer.SelectOpts{ReplicatedBySpan: userKeys})...)
 
 	return spans
 }

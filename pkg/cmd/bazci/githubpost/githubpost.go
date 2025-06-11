@@ -758,12 +758,3 @@ func postGeneralFailureImpl(logs string, fileIssue func(context.Context, Failure
 	}
 
 }
-
-// MicrobenchmarkFailure creates a Failure struct for a microbenchmark failure.
-func MicrobenchmarkFailure(packageName string, benchmarkName string, logs string) Failure {
-	return Failure{
-		packageName: packageName,
-		testName:    benchmarkName,
-		testMessage: logs,
-	}
-}

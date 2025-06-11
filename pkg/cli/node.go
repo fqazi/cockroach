@@ -89,7 +89,6 @@ var baseNodeColumnHeaders = []string{
 	"started_at",
 	"updated_at",
 	"locality",
-	"attrs",
 	"is_available",
 	"is_live",
 }
@@ -169,7 +168,6 @@ func runStatusNodeInner(
             started_at,
 			updated_at,
 			locality,
-			attrs,
             CASE WHEN split_part(expiration,',',1)::decimal > now()::decimal
                  THEN true
                  ELSE false

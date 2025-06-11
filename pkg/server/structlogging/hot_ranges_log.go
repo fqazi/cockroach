@@ -41,6 +41,7 @@ var TelemetryHotRangesStatsInterval = settings.RegisterDurationSetting(
 	"server.telemetry.hot_ranges_stats.interval",
 	"the time interval to log hot ranges stats",
 	4*time.Hour,
+	settings.NonNegativeDuration,
 )
 
 var TelemetryHotRangesStatsEnabled = settings.RegisterBoolSetting(
@@ -55,6 +56,7 @@ var TelemetryHotRangesStatsLoggingDelay = settings.RegisterDurationSetting(
 	"server.telemetry.hot_ranges_stats.logging_delay",
 	"the time delay between emitting individual hot ranges stats logs",
 	1*time.Second,
+	settings.NonNegativeDuration,
 )
 
 // TelemetryHotRangesStatsCPUThreshold defines the cpu duration
@@ -117,7 +119,8 @@ func StartHotRangesLoggingScheduler(
 // installation.
 func (s *hotRangesLoggingScheduler) startTask(ctx context.Context, stopper *stop.Stopper) error {
 	return stopper.RunAsyncTask(ctx, "hot-ranges-stats", func(ctx context.Context) {
-		s.start(ctx, stopper)
+		err := s.start(ctx, stopper)
+		log.Warningf(ctx, "hot ranges stats logging scheduler stopped: %s", err)
 	})
 }
 
@@ -132,7 +135,7 @@ func (s *hotRangesLoggingScheduler) startJob() error {
 	return nil
 }
 
-func (s *hotRangesLoggingScheduler) start(ctx context.Context, stopper *stop.Stopper) {
+func (s *hotRangesLoggingScheduler) start(ctx context.Context, stopper *stop.Stopper) error {
 	for {
 		ci := CheckInterval
 		if s.multiTenant {
@@ -140,9 +143,9 @@ func (s *hotRangesLoggingScheduler) start(ctx context.Context, stopper *stop.Sto
 		}
 		select {
 		case <-stopper.ShouldQuiesce():
-			return
+			return nil
 		case <-ctx.Done():
-			return
+			return nil
 		case <-time.After(ci):
 			s.maybeLogHotRanges(ctx, stopper)
 		case <-TestLoopChannel:

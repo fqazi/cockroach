@@ -608,13 +608,6 @@ func TestRepeatableReadLogic_dependencies(
 	runLogicTest(t, "dependencies")
 }
 
-func TestRepeatableReadLogic_direct_columnar_scans(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "direct_columnar_scans")
-}
-
 func TestRepeatableReadLogic_discard(
 	t *testing.T,
 ) {
@@ -1924,13 +1917,6 @@ func TestRepeatableReadLogic_show_create(
 	runLogicTest(t, "show_create")
 }
 
-func TestRepeatableReadLogic_show_create_all_routines(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_create_all_routines")
-}
-
 func TestRepeatableReadLogic_show_create_all_schemas(
 	t *testing.T,
 ) {
@@ -2874,13 +2860,6 @@ func TestRepeatableReadLogicCCL_triggers(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "triggers")
-}
-
-func TestRepeatableReadLogicCCL_txn_retry(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "txn_retry")
 }
 
 func TestRepeatableReadLogicCCL_udf_params(

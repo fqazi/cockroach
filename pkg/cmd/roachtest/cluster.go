@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"math/rand"
 	"net"
@@ -53,6 +54,10 @@ import (
 	_ "github.com/lib/pq"
 	"golang.org/x/sys/unix"
 )
+
+func init() {
+	_ = roachprod.InitProviders()
+}
 
 //go:embed tsdump-run.sh
 var tsdumpRunSh string
@@ -96,8 +101,6 @@ func validateBinaryFormat(path string, arch vm.CPUArch, checkEA bool) (string, e
 	} else if arch == vm.ArchAMD64 && !strings.Contains(fileFormat, "x86-64") && !strings.Contains(fileFormat, "x86_64") {
 		// Otherwise, we expect a binary that was built for amd64.
 		return "", errors.Newf("%s has incompatible architecture; want: %q, got: %q", abspath, arch, fileFormat)
-	} else if arch == vm.ArchS390x && !strings.Contains(fileFormat, "ibm s/390") {
-		return "", errors.Newf("%s has incompabile architecture; want: %q, got: %q", abspath, arch, fileFormat)
 	}
 	if arch == vm.ArchFIPS && strings.HasSuffix(abspath, "cockroach") {
 		// Check that the binary is patched to use OpenSSL FIPS.
@@ -275,8 +278,6 @@ func initBinariesAndLibraries() {
 		if string(defaultArch) != runtime.GOARCH {
 			fmt.Printf("WARN: local cluster's architecture (%q) differs from default (%q)\n", runtime.GOARCH, defaultArch)
 		}
-	} else if roachtestflags.Cloud == spec.IBM {
-		defaultArch = vm.ArchS390x
 	}
 	fmt.Printf("Locating and verifying binaries for os=%q, arch=%q\n", defaultOSName, defaultArch)
 
@@ -355,7 +356,7 @@ func initBinariesAndLibraries() {
 
 	// In v20.2 or higher, optionally expect certain library files to exist.
 	// Since they may not be found in older versions, do not hard error if they are not found.
-	for _, arch := range []vm.CPUArch{vm.ArchAMD64, vm.ArchARM64, vm.ArchFIPS, vm.ArchS390x} {
+	for _, arch := range []vm.CPUArch{vm.ArchAMD64, vm.ArchARM64, vm.ArchFIPS} {
 		if roachtestflags.ARM64Probability == 0 && defaultArch != vm.ArchARM64 && arch == vm.ArchARM64 {
 			// arm64 isn't used, skip finding libs for it.
 			continue
@@ -540,7 +541,7 @@ func makeClusterName(name string) string {
 	return vm.DNSSafeName(name)
 }
 
-// MachineTypeToCPUs returns a CPU count for GCE, AWS, Azure and IBM machine types.
+// MachineTypeToCPUs returns a CPU count for GCE, AWS, and Azure machine types.
 // -1 is returned for unknown machine types.
 func MachineTypeToCPUs(s string) int {
 	{
@@ -559,23 +560,6 @@ func MachineTypeToCPUs(s string) int {
 			return v
 		}
 		if _, err := fmt.Sscanf(s, "n2-highmem-%d", &v); err == nil {
-			return v
-		}
-	}
-
-	{
-		// IBM machine types.
-		var v int
-		// bz2 is the balanced IBM Z machine type family.
-		if _, err := fmt.Sscanf(s, "bz2-%dx", &v); err == nil {
-			return v
-		}
-		// bz2 is the compute optimized IBM Z machine type family.
-		if _, err := fmt.Sscanf(s, "cz2-%dx", &v); err == nil {
-			return v
-		}
-		// bz2 is the memory optimized IBM Z machine type family.
-		if _, err := fmt.Sscanf(s, "mx2-%dx", &v); err == nil {
 			return v
 		}
 	}
@@ -1067,6 +1051,7 @@ func attachToExistingCluster(
 	if err := c.validate(clusterSpec, l); err != nil {
 		return nil, err
 	}
+	fmt.Printf("cloud: %s\n", c.cloud)
 	// Assert cloud was set.
 	if c.cloud == spec.AnyCloud {
 		return nil, errors.New("unable to validate cloud provider")
@@ -2128,9 +2113,6 @@ func (c *clusterImpl) StartE(
 	defer c.clearStatusForClusterOpt(startOpts.RoachtestOpts.Worker)
 
 	startOpts.RoachprodOpts.EncryptedStores = c.encAtRest
-	if c.t.Spec().(*registry.TestSpec).Benchmark {
-		startOpts.RoachprodOpts.ScheduleBackups = false
-	}
 
 	// Needed for backward-compat on crdb_internal.ranges{_no_leases}.
 	// Remove in v23.2.
@@ -2169,7 +2151,6 @@ func (c *clusterImpl) StartE(
 	// Do not refetch certs if that step already happened once (i.e., we
 	// are restarting a node).
 	if settings.Secure && c.localCertsDir == "" {
-		// Get the certs from the first node.
 		if err := c.RefetchCertsFromNode(ctx, 1); err != nil {
 			return err
 		}
@@ -2246,7 +2227,6 @@ func (c *clusterImpl) StartServiceForVirtualClusterE(
 	}
 
 	if settings.Secure {
-		// Get the certs from the first node.
 		if err := c.RefetchCertsFromNode(ctx, 1); err != nil {
 			return err
 		}
@@ -2304,7 +2284,20 @@ func (c *clusterImpl) RefetchCertsFromNode(ctx context.Context, node int) error 
 	// certs. Bypass that distinction (which should be fixed independently, but
 	// that might cause fallout) by using a non-existing dir here.
 	c.localCertsDir = filepath.Join(c.localCertsDir, install.CockroachNodeCertsDir)
-	return roachprod.FetchCertsDir(ctx, c.l, c.MakeNodes(c.Node(node)), fmt.Sprintf("./%s", install.CockroachNodeCertsDir), c.localCertsDir)
+	// Get the certs from the first node.
+	if err := c.Get(ctx, c.l, fmt.Sprintf("./%s", install.CockroachNodeCertsDir), c.localCertsDir, c.Node(node)); err != nil {
+		return errors.Wrap(err, "cluster.StartE")
+	}
+	// Need to prevent world readable files or lib/pq will complain.
+	return filepath.WalkDir(c.localCertsDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return errors.Wrap(err, "walking localCertsDir failed")
+		}
+		if d.IsDir() {
+			return nil
+		}
+		return os.Chmod(path, 0600)
+	})
 }
 
 func (c *clusterImpl) SetDefaultVirtualCluster(name string) {
@@ -2622,15 +2615,6 @@ func (c *clusterImpl) Install(
 		return errors.New("Error running cluster.Install: no software passed")
 	}
 	return errors.Wrap(roachprod.Install(ctx, l, c.MakeNodes(nodes), software), "cluster.Install")
-}
-
-// PopulatesEtcHosts populates the cluster's /etc/hosts file with the private IP
-// addresses of the nodes in the cluster.
-func (c *clusterImpl) PopulateEtcHosts(ctx context.Context, l *logger.Logger) error {
-	if ctx.Err() != nil {
-		return errors.Wrap(ctx.Err(), "cluster.Install")
-	}
-	return errors.Wrap(roachprod.PopulateEtcHosts(ctx, l, c.name), "cluster.PopulatesEtcHosts")
 }
 
 // pgURLErr returns the Postgres endpoint for the specified nodes. It accepts a
@@ -3134,12 +3118,6 @@ func archForTest(ctx context.Context, l *logger.Logger, testSpec registry.TestSp
 		return testSpec.Cluster.Arch
 	}
 
-	if roachtestflags.Cloud == spec.IBM {
-		// N.B. IBM only supports S390x on the "s390x" architecture.
-		l.PrintfCtx(ctx, "IBM Cloud: forcing arch=%q (only supported), %s", vm.ArchS390x, testSpec.Name)
-		return vm.ArchS390x
-	}
-
 	// CPU architecture is unspecified, choose one according to the
 	// probability distribution.
 	var arch vm.CPUArch
@@ -3251,33 +3229,6 @@ func (c *clusterImpl) GetHostErrorVMs(ctx context.Context, l *logger.Logger) ([]
 		allHostErrorVMs = append(allHostErrorVMs, hostErrorVMS...)
 	}
 	return allHostErrorVMs, nil
-}
-
-func (c *clusterImpl) GetLiveMigrationVMs(l *logger.Logger) ([]string, error) {
-	if c.IsLocal() {
-		return nil, nil
-	}
-	cachedCluster, err := getCachedCluster(c.name)
-	if err != nil {
-		return nil, err
-	}
-
-	var liveMigrationVMs struct {
-		syncutil.Mutex
-		names []string
-	}
-	clusterErr := vm.FanOut(cachedCluster.VMs, func(p vm.Provider, vms vm.List) error {
-		names, err := p.GetLiveMigrationVMs(l, vms, cachedCluster.CreatedAt)
-		if err != nil {
-			return err
-		}
-		liveMigrationVMs.Lock()
-		defer liveMigrationVMs.Unlock()
-		liveMigrationVMs.names = append(liveMigrationVMs.names, names...)
-		return nil
-	})
-
-	return liveMigrationVMs.names, clusterErr
 }
 
 // RegisterClusterHook registers a hook to be run at a certain point as defined

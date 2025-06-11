@@ -84,8 +84,6 @@ var TxnCleanupThreshold = settings.RegisterDurationSetting(
 	"the threshold after which a transaction is considered abandoned and "+
 		"fit for removal, as measured by the maximum of its last heartbeat and timestamp",
 	time.Hour,
-	// TODO(arul): consider increasing the floor.
-	settings.PositiveDuration,
 )
 
 // MaxLocksPerCleanupBatch is the maximum number of locks that GC will send
@@ -590,10 +588,8 @@ func processReplicatedLocks(
 	// We want to find/resolve replicated locks over both local and global
 	// keys. That's what the call to Select below will give us.
 	ltSpans := rditer.Select(desc.RangeID, rditer.SelectOpts{
-		Ranged: rditer.SelectRangedOptions{
-			RSpan:     desc.RSpan(),
-			LockTable: true,
-		},
+		ReplicatedBySpan:      desc.RSpan(),
+		ReplicatedSpansFilter: rditer.ReplicatedSpansLocksOnly,
 	})
 	for _, sp := range ltSpans {
 		if err := process(sp.Key, sp.EndKey); err != nil {

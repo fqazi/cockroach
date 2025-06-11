@@ -38,7 +38,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/exprutil"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -49,7 +48,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/bulk"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -57,7 +55,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/span"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -78,9 +75,7 @@ func init() {
 	jobs.RegisterConstructor(
 		jobspb.TypeChangefeed,
 		func(job *jobs.Job, _ *cluster.Settings) jobs.Resumer {
-			r := &changefeedResumer{job: job}
-			r.mu.perNodeAggregatorStats = make(bulk.ComponentAggregatorStats)
-			return r
+			return &changefeedResumer{job: job}
 		},
 		jobs.UsesTenantCostControl,
 	)
@@ -276,7 +271,7 @@ func changefeedPlanHook(
 			p.ExtendedEvalContext().Descs.ReleaseAll(ctx)
 
 			telemetry.Count(`changefeed.create.core`)
-			logCreateChangefeedTelemetry(ctx, jr, changefeedStmt.Select != nil)
+			logChangefeedCreateTelemetry(ctx, jr, changefeedStmt.Select != nil)
 			if err := maybeShowCursorAgeWarning(ctx, p, opts); err != nil {
 				return err
 			}
@@ -369,7 +364,7 @@ func changefeedPlanHook(
 			return err
 		}
 
-		logCreateChangefeedTelemetry(ctx, jr, changefeedStmt.Select != nil)
+		logChangefeedCreateTelemetry(ctx, jr, changefeedStmt.Select != nil)
 
 		select {
 		case <-ctx.Done():
@@ -422,7 +417,7 @@ func coreChangefeed(
 			knobs.BeforeDistChangefeed()
 		}
 
-		err := distChangefeedFlow(ctx, p, 0 /* jobID */, details, description, localState, resultsCh, nil)
+		err := distChangefeedFlow(ctx, p, 0 /* jobID */, details, description, localState, resultsCh)
 		if err == nil {
 			log.Infof(ctx, "core changefeed completed with no error")
 			return nil
@@ -1052,7 +1047,6 @@ func validateSink(
 			sinkTypeKafka:          {},
 			sinkTypeWebhook:        {},
 			sinkTypeSinklessBuffer: {},
-			sinkTypeCloudstorage:   {},
 		}
 		if _, ok := allowedSinkTypes[sinkTy]; !ok {
 			return errors.Newf("envelope=%s is incompatible with %s sink", changefeedbase.OptEnvelopeEnriched, sinkTy)
@@ -1217,26 +1211,7 @@ func validateAndNormalizeChangefeedExpression(
 
 type changefeedResumer struct {
 	job *jobs.Job
-
-	mu struct {
-		syncutil.Mutex
-		// perNodeAggregatorStats is a per component running aggregate of trace
-		// driven AggregatorStats emitted by the processors.
-		perNodeAggregatorStats bulk.ComponentAggregatorStats
-	}
 }
-
-// DumpTraceAfterRun implements jobs.TraceableJob.
-func (b *changefeedResumer) DumpTraceAfterRun() bool {
-	return true
-}
-
-// ForceRealSpan implements jobs.TraceableJob.
-func (b *changefeedResumer) ForceRealSpan() bool {
-	return true
-}
-
-var _ jobs.TraceableJob = &changefeedResumer{}
 
 func (b *changefeedResumer) setJobStatusMessage(
 	ctx context.Context, lastUpdate time.Time, fmtOrMsg string, args ...interface{},
@@ -1430,17 +1405,6 @@ func (b *changefeedResumer) resumeWithRetries(
 		log.Warningf(ctx, "failed to resolve destination details for change monitoring: %v", err)
 	}
 
-	onTracingEvent := func(ctx context.Context, meta *execinfrapb.TracingAggregatorEvents) {
-		componentID := execinfrapb.ComponentID{
-			FlowID:        meta.FlowID,
-			SQLInstanceID: meta.SQLInstanceID,
-		}
-
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		b.mu.perNodeAggregatorStats[componentID] = *meta
-	}
-
 	for r := getRetry(ctx); r.Next(); {
 		flowErr := maybeUpgradePreProductionReadyExpression(ctx, jobID, details, jobExec)
 
@@ -1458,7 +1422,7 @@ func (b *changefeedResumer) resumeWithRetries(
 			g := ctxgroup.WithContext(ctx)
 			g.GoCtx(func(ctx context.Context) error {
 				defer close(confPoller)
-				return distChangefeedFlow(ctx, jobExec, jobID, details, description, localState, startedCh, onTracingEvent)
+				return distChangefeedFlow(ctx, jobExec, jobID, details, description, localState, startedCh)
 			})
 			g.GoCtx(func(ctx context.Context) error {
 				t := time.NewTicker(15 * time.Second)
@@ -1690,17 +1654,8 @@ func (b *changefeedResumer) OnFailOrCancel(
 }
 
 // CollectProfile is part of the jobs.Resumer interface.
-func (b *changefeedResumer) CollectProfile(ctx context.Context, execCtx interface{}) error {
-	p := execCtx.(sql.JobExecContext)
-	var aggStatsCopy bulk.ComponentAggregatorStats
-	func() {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		aggStatsCopy = b.mu.perNodeAggregatorStats.DeepCopy()
-	}()
-
-	return bulk.FlushTracingAggregatorStats(ctx, b.job.ID(),
-		p.ExecCfg().InternalDB, aggStatsCopy)
+func (b *changefeedResumer) CollectProfile(_ context.Context, _ interface{}) error {
+	return nil
 }
 
 // Try to clean up a protected timestamp created by the changefeed.
@@ -1768,7 +1723,7 @@ func getChangefeedTargetName(
 	return desc.GetName(), nil
 }
 
-func logCreateChangefeedTelemetry(ctx context.Context, jr *jobs.Record, isTransformation bool) {
+func logChangefeedCreateTelemetry(ctx context.Context, jr *jobs.Record, isTransformation bool) {
 	var changefeedEventDetails eventpb.CommonChangefeedEventDetails
 	if jr != nil {
 		changefeedDetails := jr.Details.(jobspb.ChangefeedDetails)
@@ -1781,22 +1736,6 @@ func logCreateChangefeedTelemetry(ctx context.Context, jr *jobs.Record, isTransf
 	}
 
 	log.StructuredEvent(ctx, severity.INFO, createChangefeedEvent)
-}
-
-func logAlterChangefeedTelemetry(ctx context.Context, job *jobs.Job, prevDescription string) {
-	var changefeedEventDetails eventpb.CommonChangefeedEventDetails
-	if job != nil {
-		changefeedDetails := job.Details().(jobspb.ChangefeedDetails)
-		changefeedEventDetails = makeCommonChangefeedEventDetails(
-			ctx, changefeedDetails, job.Payload().Description, job.ID())
-	}
-
-	alterChangefeedEvent := &eventpb.AlterChangefeed{
-		CommonChangefeedEventDetails: changefeedEventDetails,
-		PreviousDescription:          prevDescription,
-	}
-
-	log.StructuredEvent(ctx, severity.INFO, alterChangefeedEvent)
 }
 
 func logChangefeedFailedTelemetry(

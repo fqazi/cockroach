@@ -486,6 +486,7 @@ func restore(
 				}
 				timer.Reset(replanFrequency.Get(&execCtx.ExecCfg().Settings.SV))
 			case <-timer.C:
+				timer.Read = true
 				// Replan the restore job if it has been 10 minutes since the last
 				// processor completed working.
 				return errors.Mark(laggingRestoreProcErr, retryableRestoreProcError)
@@ -1112,10 +1113,9 @@ func createImportingDescriptors(
 
 	// Assign new IDs and privileges to the tables, and update all references to
 	// use the new IDs.
-	typeBackrefsToRemove, err := rewrite.TableDescs(
+	if err := rewrite.TableDescs(
 		mutableTables, details.DescriptorRewrites, details.OverrideDB,
-	)
-	if err != nil {
+	); err != nil {
 		return nil, nil, nil, err
 	}
 	tableDescs := make([]*descpb.TableDescriptor, len(mutableTables))
@@ -1153,19 +1153,18 @@ func createImportingDescriptors(
 	// the ID the descriptor had when it was backed up. Changes to existing type
 	// descriptors will not be written to disk, and is only for accurate,
 	// in-memory resolution hereon out.
-	if err := rewrite.TypeDescs(types, details.DescriptorRewrites, typeBackrefsToRemove); err != nil {
+	if err := rewrite.TypeDescs(types, details.DescriptorRewrites); err != nil {
 		return nil, nil, nil, err
 	}
 
-	// Functions are only restored as part of full database restores and are not
-	// yet referenced by other object types in ways that would require remapping.
-	// This avoids the need for collision resolution between restored functions
-	// and existing ones in the target database.
-	//
-	// For table-level restores, function dependencies are handled by existing
-	// safeguards: if the target DB already has the function, the dependent table
-	// must be dropped before restore; if the function is missing, restore fails
-	// unless skip_missing_udfs is set, in which case the function is omitted.
+	// TODO(chengxiong): for now, we know that functions are not referenced by any
+	// other objects, so that function descriptors are only restored when
+	// restoring databases. This means that all function descriptors are not
+	// remaps. Which means that we don't need resolve collisions between functions
+	// being restored and existing functions in target DB However, this won't be
+	// true when we start supporting udf references from other objects. For
+	// example, we need extra logic to handle remaps for udfs used by a table when
+	// backup/restore is on table level.
 	functionsToWrite := make([]*funcdesc.Mutable, len(functions))
 	writtenFunctions := make([]catalog.FunctionDescriptor, len(functions))
 	for i, fn := range functions {

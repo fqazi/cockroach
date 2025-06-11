@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
@@ -38,11 +37,11 @@ import (
 // defRangefeedConnClass is the default rpc.ConnectionClass used for rangefeed
 // traffic. Normally it is RangefeedClass, but can be flipped to DefaultClass if
 // the corresponding env variable is true.
-var defRangefeedConnClass = func() rpcbase.ConnectionClass {
+var defRangefeedConnClass = func() rpc.ConnectionClass {
 	if envutil.EnvOrDefaultBool("COCKROACH_RANGEFEED_USE_DEFAULT_CONNECTION_CLASS", false) {
-		return rpcbase.DefaultClass
+		return rpc.DefaultClass
 	}
-	return rpcbase.RangefeedClass
+	return rpc.RangefeedClass
 }()
 
 var catchupStartupRate = settings.RegisterIntSetting(

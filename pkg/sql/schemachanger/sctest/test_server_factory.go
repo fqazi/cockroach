@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/server"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -37,10 +36,6 @@ type TestServerFactory interface {
 	// will be the minimum supported binary version.
 	WithMixedVersion() TestServerFactory
 
-	// WithSchemaLockDisabled prevents new objects from having
-	// schema locked set.
-	WithSchemaLockDisabled() TestServerFactory
-
 	// Run creates a test cluster and applies fn to it.
 	Run(
 		ctx context.Context,
@@ -52,9 +47,8 @@ type TestServerFactory interface {
 // SingleNodeTestClusterFactory is the vanilla implementation of
 // the TestServerFactory interface.
 type SingleNodeTestClusterFactory struct {
-	server               *server.TestingKnobs
-	scexec               *scexec.TestingKnobs
-	schemaLockedDisabled bool
+	server *server.TestingKnobs
+	scexec *scexec.TestingKnobs
 }
 
 var _ TestServerFactory = SingleNodeTestClusterFactory{}
@@ -73,12 +67,6 @@ func (f SingleNodeTestClusterFactory) WithMixedVersion() TestServerFactory {
 		ClusterVersionOverride:         OldVersionKey.Version(),
 		DisableAutomaticVersionUpgrade: make(chan struct{}),
 	}
-	return f
-}
-
-// WithSchemaLockDisabled implements the sctest.TestServerFactory interface.
-func (f SingleNodeTestClusterFactory) WithSchemaLockDisabled() TestServerFactory {
-	f.schemaLockedDisabled = true
 	return f
 }
 
@@ -102,12 +90,6 @@ func (f SingleNodeTestClusterFactory) Run(
 	if f.scexec != nil {
 		args.Knobs.SQLDeclarativeSchemaChanger = f.scexec
 	}
-	// Always run this test with schema_locked by default.
-	args.Settings = cluster.MakeTestingClusterSettings()
-	if f.server != nil && f.server.ClusterVersionOverride.Major != 0 {
-		args.Settings = cluster.MakeClusterSettingsWithVersions(clusterversion.Latest.Version(), f.server.ClusterVersionOverride)
-	}
-	sql.CreateTableWithSchemaLocked.Override(ctx, &args.Settings.SV, !f.schemaLockedDisabled)
 	s, db, _ := serverutils.StartServer(t, args)
 	defer func() {
 		s.Stopper().Stop(ctx)

@@ -27,7 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
+	"github.com/cockroachdb/cockroach/pkg/storage/storagepb"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logflags"
 	"github.com/cockroachdb/cockroach/pkg/util/netutil/addr"
@@ -62,7 +62,7 @@ var storeSpecs base.StoreSpecList
 var goMemLimit int64
 var tenantIDFile string
 var localityFile string
-var encryptionSpecs storageconfig.EncryptionSpecList
+var encryptionSpecs storagepb.EncryptionSpecList
 
 // initPreFlagsDefaults initializes the values of the global variables
 // defined above.
@@ -764,7 +764,6 @@ func init() {
 		cliflagcfg.BoolFlag(f, &zipCtx.includeRangeInfo, cliflags.ZipIncludeRangeInfo)
 		cliflagcfg.BoolFlag(f, &zipCtx.includeStacks, cliflags.ZipIncludeGoroutineStacks)
 		cliflagcfg.BoolFlag(f, &zipCtx.includeRunningJobTraces, cliflags.ZipIncludeRunningJobTraces)
-		cliflagcfg.BoolFlag(f, &zipCtx.validateZipFile, cliflags.ZipValidateFile)
 	}
 	// List-files + Zip commands.
 	for _, cmd := range []*cobra.Command{debugZipCmd, debugListFilesCmd} {
@@ -1500,7 +1499,7 @@ func mtStartSQLFlagsInit(cmd *cobra.Command) error {
 		if spec.BallastSize == nil {
 			// Only override if there was no ballast size specified to start
 			// with.
-			zero := storageconfig.SizeSpec{Capacity: 0, Percent: 0}
+			zero := storagepb.SizeSpec{Capacity: 0, Percent: 0}
 			spec.BallastSize = &zero
 		}
 	}

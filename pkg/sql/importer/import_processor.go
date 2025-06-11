@@ -50,33 +50,45 @@ const readImportDataProcessorName = "readImportDataProcessor"
 
 var progressUpdateInterval = time.Second * 10
 
-var importPKAdderBufferSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"kv.bulk_ingest.pk_buffer_size",
-	"the initial size of the BulkAdder buffer handling primary index imports",
-	32<<20,
-)
+var importPKAdderBufferSize = func() *settings.ByteSizeSetting {
+	s := settings.RegisterByteSizeSetting(
+		settings.ApplicationLevel,
+		"kv.bulk_ingest.pk_buffer_size",
+		"the initial size of the BulkAdder buffer handling primary index imports",
+		32<<20,
+	)
+	return s
+}()
 
-var importPKAdderMaxBufferSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"kv.bulk_ingest.max_pk_buffer_size",
-	"the maximum size of the BulkAdder buffer handling primary index imports",
-	128<<20,
-)
+var importPKAdderMaxBufferSize = func() *settings.ByteSizeSetting {
+	s := settings.RegisterByteSizeSetting(
+		settings.ApplicationLevel,
+		"kv.bulk_ingest.max_pk_buffer_size",
+		"the maximum size of the BulkAdder buffer handling primary index imports",
+		128<<20,
+	)
+	return s
+}()
 
-var importIndexAdderBufferSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"kv.bulk_ingest.index_buffer_size",
-	"the initial size of the BulkAdder buffer handling secondary index imports",
-	32<<20,
-)
+var importIndexAdderBufferSize = func() *settings.ByteSizeSetting {
+	s := settings.RegisterByteSizeSetting(
+		settings.ApplicationLevel,
+		"kv.bulk_ingest.index_buffer_size",
+		"the initial size of the BulkAdder buffer handling secondary index imports",
+		32<<20,
+	)
+	return s
+}()
 
-var importIndexAdderMaxBufferSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"kv.bulk_ingest.max_index_buffer_size",
-	"the maximum size of the BulkAdder buffer handling secondary index imports",
-	512<<20,
-)
+var importIndexAdderMaxBufferSize = func() *settings.ByteSizeSetting {
+	s := settings.RegisterByteSizeSetting(
+		settings.ApplicationLevel,
+		"kv.bulk_ingest.max_index_buffer_size",
+		"the maximum size of the BulkAdder buffer handling secondary index imports",
+		512<<20,
+	)
+	return s
+}()
 
 var readerParallelismSetting = settings.RegisterIntSetting(
 	settings.ApplicationLevel,
@@ -86,7 +98,7 @@ var readerParallelismSetting = settings.RegisterIntSetting(
 	settings.NonNegativeInt,
 )
 
-// importBufferConfigSizes determines the minimum, maximum and step size for the
+// ImportBufferConfigSizes determines the minimum, maximum and step size for the
 // BulkAdder buffer used in import.
 func importBufferConfigSizes(st *cluster.Settings, isPKAdder bool) (int64, func() int64) {
 	if isPKAdder {

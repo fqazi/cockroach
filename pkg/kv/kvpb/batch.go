@@ -453,26 +453,20 @@ func (ba *BatchRequest) GetArg(method Method) (Request, bool) {
 }
 
 func (br *BatchResponse) String() string {
-	return redact.StringWithoutMarkers(br)
-}
-
-// SafeFormat implements the redact.SafeFormatter interface.
-func (br *BatchResponse) SafeFormat(s redact.SafePrinter, verb rune) {
-	// Marking Error of BatchResponse as safe as Outside of the RPC boundaries,
-	// this field is nil and must neither be checked nor populated
-	s.Printf("(err: %s)", redact.Safe(br.Error.String()))
-
+	var str []string
+	str = append(str, fmt.Sprintf("(err: %v)", br.Error))
 	for count, union := range br.Responses {
 		// Limit the strings to provide just a summary. Without this limit a log
 		// message with a BatchResponse can be very long.
 		if count >= 20 && count < len(br.Responses)-5 {
 			if count == 20 {
-				s.Printf(", ... %d skipped ...", len(br.Responses)-25)
+				str = append(str, fmt.Sprintf("... %d skipped ...", len(br.Responses)-25))
 			}
 			continue
 		}
-		s.Printf(", %T", redact.Safe(union.GetInner()))
+		str = append(str, fmt.Sprintf("%T", union.GetInner()))
 	}
+	return strings.Join(str, ", ")
 }
 
 // LockSpanIterate calls LockSpanIterate for each request in the batch.
@@ -943,6 +937,11 @@ func (ba *BatchRequest) ValidateForEvaluation() error {
 	}
 	if _, ok := ba.GetArg(EndTxn); ok && ba.Txn == nil {
 		return errors.AssertionFailedf("EndTxn request without transaction")
+	}
+	if ba.Txn != nil {
+		if ba.Txn.WriteTooOld && ba.Txn.ReadTimestamp == ba.Txn.WriteTimestamp {
+			return errors.AssertionFailedf("WriteTooOld set but no offset in timestamps. txn: %s", ba.Txn)
+		}
 	}
 	return nil
 }

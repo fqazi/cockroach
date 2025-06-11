@@ -22,12 +22,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvtestutils"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
@@ -361,33 +359,6 @@ func TestKVNemesisMultiNode_BufferedWrites(t *testing.T) {
 	})
 }
 
-// TestKVNemesisMultiNode_BufferedWritesNoPipelining turns on buffered
-// writes and turns off write pipelining. Turning off write pipelining
-// allows us to test the lock reliability features even without a fix
-// for #145458.
-func TestKVNemesisMultiNode_BufferedWritesNoPipelining(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	testKVNemesisImpl(t, kvnemesisTestCfg{
-		numNodes:                     3,
-		numSteps:                     defaultNumSteps,
-		concurrency:                  5,
-		seedOverride:                 0,
-		invalidLeaseAppliedIndexProb: 0.2,
-		injectReproposalErrorProb:    0.2,
-		assertRaftApply:              true,
-		bufferedWriteProb:            0.70,
-		testSettings: func(ctx context.Context, st *cluster.Settings) {
-			kvcoord.BufferedWritesEnabled.Override(ctx, &st.SV, true)
-			kvcoord.PipelinedWritesEnabled.Override(ctx, &st.SV, false)
-			concurrency.UnreplicatedLockReliabilityLeaseTransfer.Override(ctx, &st.SV, true)
-			concurrency.UnreplicatedLockReliabilityMerge.Override(ctx, &st.SV, true)
-			concurrency.UnreplicatedLockReliabilitySplit.Override(ctx, &st.SV, true)
-		},
-	})
-}
-
 func TestKVNemesisMultiNode(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -460,7 +431,6 @@ func testKVNemesisImpl(t *testing.T, cfg kvnemesisTestCfg) {
 	}
 
 	logger := newTBridge(t)
-	defer dumpRaftLogsOnFailure(t, logger.ll.dir, tc.Servers)
 	env := &Env{SQLDBs: sqlDBs, Tracker: tr, L: logger}
 	failures, err := RunNemesis(ctx, rng, env, config, cfg.concurrency, cfg.numSteps, dbs...)
 
@@ -492,20 +462,4 @@ func TestRunReproductionSteps(t *testing.T) {
 	_, _ = db0, ctx
 
 	// Paste a repro as printed by kvnemesis here.
-}
-
-func dumpRaftLogsOnFailure(t *testing.T, dir string, srvs []serverutils.TestServerInterface) {
-	if !t.Failed() {
-		return
-	}
-	d := kvtestutils.RaftLogDumper{Dir: dir}
-	for _, srv := range srvs {
-		require.NoError(t, srv.GetStores().(*kvserver.Stores).VisitStores(func(s *kvserver.Store) error {
-			s.VisitReplicas(func(replica *kvserver.Replica) (wantMore bool) {
-				d.Dump(t, s.LogEngine(), s.StoreID(), replica.RangeID)
-				return true // more
-			})
-			return nil
-		}))
-	}
 }

@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/security/certnames"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
@@ -57,7 +56,7 @@ import (
 // either expects incoming connections from KV nodes, or from tenant SQL
 // servers.
 func NewServer(ctx context.Context, rpcCtx *Context, opts ...ServerOption) (*grpc.Server, error) {
-	srv, _, err := NewServerEx(ctx, rpcCtx, opts...)
+	srv, _, _, err := NewServerEx(ctx, rpcCtx, opts...)
 	return srv, err
 }
 
@@ -85,7 +84,7 @@ type ClientInterceptorInfo struct {
 // internalClientAdapter does).
 func NewServerEx(
 	ctx context.Context, rpcCtx *Context, opts ...ServerOption,
-) (s *grpc.Server, sii ServerInterceptorInfo, err error) {
+) (s *grpc.Server, d *DRPCServer, sii ServerInterceptorInfo, err error) {
 	var o serverOpts
 	for _, f := range opts {
 		f(&o)
@@ -114,7 +113,7 @@ func NewServerEx(
 	if !rpcCtx.ContextOptions.Insecure {
 		tlsConfig, err := rpcCtx.GetServerTLSConfig()
 		if err != nil {
-			return nil, sii, err
+			return nil, nil, sii, err
 		}
 		grpcOpts = append(grpcOpts, grpc.Creds(newTLSCipherRestrictCred(tlsConfig)))
 	}
@@ -149,9 +148,6 @@ func NewServerEx(
 	if o.metricsInterceptor != nil {
 		unaryInterceptor = append(unaryInterceptor, grpc.UnaryServerInterceptor(o.metricsInterceptor))
 	}
-
-	// Recover from any uncaught panics caused by DB Console requests.
-	unaryInterceptor = append(unaryInterceptor, grpc.UnaryServerInterceptor(gatewayRequestRecoveryInterceptor))
 
 	if !rpcCtx.ContextOptions.Insecure {
 		a := kvAuth{
@@ -195,10 +191,13 @@ func NewServerEx(
 	grpcOpts = append(grpcOpts, grpc.ChainStreamInterceptor(streamInterceptor...))
 
 	s = grpc.NewServer(grpcOpts...)
-
+	d, err = newDRPCServer(ctx, rpcCtx)
+	if err != nil {
+		return nil, nil, ServerInterceptorInfo{}, err
+	}
 	RegisterHeartbeatServer(s, rpcCtx.NewHeartbeatService())
 
-	return s, ServerInterceptorInfo{
+	return s, d, ServerInterceptorInfo{
 		UnaryInterceptors:  unaryInterceptor,
 		StreamInterceptors: streamInterceptor,
 	}, nil
@@ -226,14 +225,14 @@ type Context struct {
 
 	localInternalClient RestrictedInternalClient
 
-	peers peerMap[*grpc.ClientConn]
+	peers peerMap
 
 	// dialbackMap is a map of currently executing dialback connections. This map
 	// is typically empty or close to empty. It only holds entries that are being
 	// verified for dialback due to failing a health check.
 	dialbackMu struct {
 		syncutil.Mutex
-		m map[roachpb.NodeID]*GRPCConnection
+		m map[roachpb.NodeID]*Connection
 	}
 
 	metrics *Metrics
@@ -562,7 +561,7 @@ func NewContext(ctx context.Context, opts ContextOptions) *Context {
 	}
 
 	rpcCtx.dialbackMu.Lock()
-	rpcCtx.dialbackMu.m = map[roachpb.NodeID]*GRPCConnection{}
+	rpcCtx.dialbackMu.m = map[roachpb.NodeID]*Connection{}
 	rpcCtx.dialbackMu.Unlock()
 
 	if !opts.TenantID.IsSet() {
@@ -1347,7 +1346,7 @@ func (rpcCtx *Context) SetLocalInternalServer(
 // Note: the node ID ought to be retyped, see
 // https://github.com/cockroachdb/cockroach/pull/73309
 func (rpcCtx *Context) ConnHealth(
-	target string, nodeID roachpb.NodeID, class rpcbase.ConnectionClass,
+	target string, nodeID roachpb.NodeID, class ConnectionClass,
 ) error {
 	// The local client is always considered healthy.
 	if rpcCtx.GetLocalInternalClientForAddr(nodeID) != nil {
@@ -1372,7 +1371,7 @@ const (
 // GRPCDialOptions returns the minimal `grpc.DialOption`s necessary to connect
 // to a server.
 func (rpcCtx *Context) GRPCDialOptions(
-	ctx context.Context, target string, class rpcbase.ConnectionClass,
+	ctx context.Context, target string, class ConnectionClass,
 ) ([]grpc.DialOption, error) {
 	transport := tcpTransport
 	if rpcCtx.ContextOptions.AdvertiseAddr == target && !rpcCtx.ClientOnly {
@@ -1384,7 +1383,7 @@ func (rpcCtx *Context) GRPCDialOptions(
 
 // grpcDialOptions produces dial options suitable for connecting to the given target and class.
 func (rpcCtx *Context) grpcDialOptionsInternal(
-	ctx context.Context, target string, class rpcbase.ConnectionClass, transport transportType,
+	ctx context.Context, target string, class ConnectionClass, transport transportType,
 ) ([]grpc.DialOption, error) {
 	dialOpts, err := rpcCtx.dialOptsCommon(ctx, target, class)
 	if err != nil {
@@ -1443,7 +1442,7 @@ func (rpcCtx *Context) dialOptsLocal() ([]grpc.DialOption, error) {
 // Do not call .Report() on the returned breaker. The probe manages the lifecycle
 // of the breaker.
 func (rpcCtx *Context) GetBreakerForAddr(
-	nodeID roachpb.NodeID, class rpcbase.ConnectionClass, addr net.Addr,
+	nodeID roachpb.NodeID, class ConnectionClass, addr net.Addr,
 ) (*circuitbreaker.Breaker, bool) {
 	sAddr := addr.String()
 	rpcCtx.peers.mu.RLock()
@@ -1541,7 +1540,7 @@ func (t *statsTracker) HandleConn(ctx context.Context, s stats.ConnStats) {
 // dialOptsNetwork compute options used only for over-the-network RPC
 // connections.
 func (rpcCtx *Context) dialOptsNetwork(
-	ctx context.Context, target string, class rpcbase.ConnectionClass,
+	ctx context.Context, target string, class ConnectionClass,
 ) ([]grpc.DialOption, error) {
 	dialOpts, err := rpcCtx.dialOptsNetworkCredentials()
 	if err != nil {
@@ -1640,7 +1639,7 @@ func (rpcCtx *Context) dialOptsNetwork(
 // dialOptsCommon computes options used for both in-memory and
 // over-the-network RPC connections.
 func (rpcCtx *Context) dialOptsCommon(
-	ctx context.Context, target string, class rpcbase.ConnectionClass,
+	ctx context.Context, target string, class ConnectionClass,
 ) ([]grpc.DialOption, error) {
 	// The limiting factor for lowering the max message size is the fact
 	// that a single large kv can be sent over the network in one message.
@@ -1939,7 +1938,7 @@ type delayingHeader struct {
 }
 
 func (rpcCtx *Context) makeDialCtx(
-	target string, remoteNodeID roachpb.NodeID, class rpcbase.ConnectionClass,
+	target string, remoteNodeID roachpb.NodeID, class ConnectionClass,
 ) context.Context {
 	return rpcCtx.wrapCtx(rpcCtx.MasterCtx, target, remoteNodeID, class)
 }
@@ -1950,7 +1949,7 @@ const Class = "class"
 const RpcTag = "rpc"
 
 func (rpcCtx *Context) wrapCtx(
-	ctx context.Context, target string, remoteNodeID roachpb.NodeID, class rpcbase.ConnectionClass,
+	ctx context.Context, target string, remoteNodeID roachpb.NodeID, class ConnectionClass,
 ) context.Context {
 	var rnodeID interface{} = remoteNodeID
 	if remoteNodeID == 0 {
@@ -1968,10 +1967,7 @@ func (rpcCtx *Context) wrapCtx(
 // The ctx passed as argument must be derived from rpcCtx.masterCtx, so
 // that it respects the same cancellation policy.
 func (rpcCtx *Context) grpcDialRaw(
-	ctx context.Context,
-	target string,
-	class rpcbase.ConnectionClass,
-	additionalOpts ...grpc.DialOption,
+	ctx context.Context, target string, class ConnectionClass, additionalOpts ...grpc.DialOption,
 ) (*grpc.ClientConn, error) {
 	transport := tcpTransport
 	if rpcCtx.ContextOptions.AdvertiseAddr == target && !rpcCtx.ClientOnly {
@@ -1992,10 +1988,8 @@ func (rpcCtx *Context) grpcDialRaw(
 // node ID between client and server. This function should only be
 // used with the gossip client and CLI commands which can talk to any
 // node. This method implies a SystemClass.
-func (rpcCtx *Context) GRPCUnvalidatedDial(
-	target string, locality roachpb.Locality,
-) *GRPCConnection {
-	return rpcCtx.grpcDialNodeInternal(target, 0, locality, rpcbase.SystemClass)
+func (rpcCtx *Context) GRPCUnvalidatedDial(target string, locality roachpb.Locality) *Connection {
+	return rpcCtx.grpcDialNodeInternal(target, 0, locality, SystemClass)
 }
 
 // GRPCDialNode calls grpc.Dial with options appropriate for the
@@ -2009,8 +2003,8 @@ func (rpcCtx *Context) GRPCDialNode(
 	target string,
 	remoteNodeID roachpb.NodeID,
 	remoteLocality roachpb.Locality,
-	class rpcbase.ConnectionClass,
-) *GRPCConnection {
+	class ConnectionClass,
+) *Connection {
 	if remoteNodeID == 0 && !rpcCtx.TestingAllowNamedRPCToAnonymousServer {
 		log.Fatalf(
 			rpcCtx.makeDialCtx(target, remoteNodeID, class),
@@ -2030,8 +2024,8 @@ func (rpcCtx *Context) GRPCDialPod(
 	target string,
 	remoteInstanceID base.SQLInstanceID,
 	remoteLocality roachpb.Locality,
-	class rpcbase.ConnectionClass,
-) *GRPCConnection {
+	class ConnectionClass,
+) *Connection {
 	return rpcCtx.GRPCDialNode(target, roachpb.NodeID(remoteInstanceID), remoteLocality, class)
 }
 
@@ -2041,8 +2035,8 @@ func (rpcCtx *Context) grpcDialNodeInternal(
 	target string,
 	remoteNodeID roachpb.NodeID,
 	remoteLocality roachpb.Locality,
-	class rpcbase.ConnectionClass,
-) *GRPCConnection {
+	class ConnectionClass,
+) *Connection {
 	k := peerKey{TargetAddr: target, NodeID: remoteNodeID, Class: class}
 	if p, ok := rpcCtx.peers.get(k); ok {
 		// There's a cached peer, so we have a cached connection, use it.
@@ -2062,7 +2056,7 @@ func (rpcCtx *Context) grpcDialNodeInternal(
 	// Won race. Actually create a peer.
 
 	if conns.mu.m == nil {
-		conns.mu.m = map[peerKey]*peer[*grpc.ClientConn]{}
+		conns.mu.m = map[peerKey]*peer{}
 	}
 
 	p := rpcCtx.newPeer(k, remoteLocality)
@@ -2100,14 +2094,16 @@ func (rpcCtx *Context) NewHeartbeatService() *HeartbeatService {
 	}
 }
 
+//go:generate mockgen -destination=mocks_generated_test.go --package=. Dialbacker
+
 type Dialbacker interface {
-	GRPCUnvalidatedDial(string, roachpb.Locality) *GRPCConnection
-	GRPCDialNode(string, roachpb.NodeID, roachpb.Locality, rpcbase.ConnectionClass) *GRPCConnection
+	GRPCUnvalidatedDial(string, roachpb.Locality) *Connection
+	GRPCDialNode(string, roachpb.NodeID, roachpb.Locality, ConnectionClass) *Connection
 	grpcDialRaw(
-		context.Context, string, rpcbase.ConnectionClass, ...grpc.DialOption,
+		context.Context, string, ConnectionClass, ...grpc.DialOption,
 	) (*grpc.ClientConn, error)
 	wrapCtx(
-		ctx context.Context, target string, remoteNodeID roachpb.NodeID, class rpcbase.ConnectionClass,
+		ctx context.Context, target string, remoteNodeID roachpb.NodeID, class ConnectionClass,
 	) context.Context
 }
 
@@ -2154,7 +2150,7 @@ func VerifyDialback(
 		// inform the fast path as well.
 		connHealthErr = rpcCtx.GRPCUnvalidatedDial(target, roachpb.Locality{}).Health() // NB: dials SystemClass
 	} else {
-		connHealthErr = rpcCtx.GRPCDialNode(target, request.OriginNodeID, roachpb.Locality{}, rpcbase.SystemClass).Health()
+		connHealthErr = rpcCtx.GRPCDialNode(target, request.OriginNodeID, roachpb.Locality{}, SystemClass).Health()
 	}
 
 	// We have a successful connection so report success. Any ongoing attempts no
@@ -2178,9 +2174,9 @@ func VerifyDialback(
 		// side would try to dial back, which would call into VerifyDialback for this
 		// connection again, etc, for an infinite loop of blocking connections.
 		// A throwaway connection keeps it simple.
-		ctx := rpcCtx.wrapCtx(ctx, target, request.OriginNodeID, rpcbase.SystemClass)
+		ctx := rpcCtx.wrapCtx(ctx, target, request.OriginNodeID, SystemClass)
 		ctx = logtags.AddTag(ctx, "dialback", nil)
-		conn, err := rpcCtx.grpcDialRaw(ctx, target, rpcbase.SystemClass, grpc.WithBlock())
+		conn, err := rpcCtx.grpcDialRaw(ctx, target, SystemClass, grpc.WithBlock())
 		if conn != nil { // NB: the nil check simplifies mocking in TestVerifyDialback
 			_ = conn.Close() // nolint:grpcconnclose
 		}

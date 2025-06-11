@@ -2470,8 +2470,7 @@ var builtinOidsArray = []string{
 	2507: `text(refcursor: refcursor) -> string`,
 	2508: `varchar(refcursor: refcursor) -> varchar`,
 	2509: `crdb_internal.unsafe_revert_tenant_to_timestamp(tenant_name: string, ts: decimal) -> decimal`,
-	// Previously crdb_internal.reset_insights_tables() -> bool.
-	2510: ``,
+	2510: `crdb_internal.reset_insights_tables() -> bool`,
 	2511: `merge_stats_metadata(arg1: jsonb) -> jsonb`,
 	2512: `merge_statement_stats(arg1: jsonb) -> jsonb`,
 	2513: `merge_transaction_stats(arg1: jsonb) -> jsonb`,
@@ -2652,7 +2651,7 @@ var builtinOidsArray = []string{
 	2689: `jsonb_path_exists(target: jsonb, path: jsonpath) -> bool`,
 	2690: `jsonb_path_exists(target: jsonb, path: jsonpath, vars: jsonb) -> bool`,
 	2691: `jsonb_path_exists(target: jsonb, path: jsonpath, vars: jsonb, silent: bool) -> bool`,
-	2692: `st_3dlength(geometry: geometry) -> float`,
+	//2692: `st_3dlength(geometry: geometry) -> float`,
 	2693: `jsonb_path_query_array(target: jsonb, path: jsonpath) -> jsonb`,
 	2694: `jsonb_path_query_array(target: jsonb, path: jsonpath, vars: jsonb) -> jsonb`,
 	2695: `jsonb_path_query_array(target: jsonb, path: jsonpath, vars: jsonb, silent: bool) -> jsonb`,
@@ -2662,8 +2661,6 @@ var builtinOidsArray = []string{
 	2699: `jsonb_path_match(target: jsonb, path: jsonpath) -> bool`,
 	2700: `jsonb_path_match(target: jsonb, path: jsonpath, vars: jsonb) -> bool`,
 	2701: `jsonb_path_match(target: jsonb, path: jsonpath, vars: jsonb, silent: bool) -> bool`,
-	2702: `crdb_internal.force_retry(val: int) -> int`,
-	2703: `crdb_internal.show_create_all_routines(database_name: string) -> string`,
 }
 
 var builtinOidsBySignature map[string]oid.Oid

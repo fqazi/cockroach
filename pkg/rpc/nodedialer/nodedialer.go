@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	circuit2 "github.com/cockroachdb/cockroach/pkg/util/circuit"
@@ -26,7 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 	"google.golang.org/grpc"
-	"storj.io/drpc"
+	"storj.io/drpc/drpcpool"
 )
 
 // An AddressResolver translates NodeIDs into addresses.
@@ -88,7 +87,7 @@ var _ = (*Dialer).Stopper
 // Dial returns a grpc connection to the given node. It logs whenever the
 // node first becomes unreachable or reachable.
 func (n *Dialer) Dial(
-	ctx context.Context, nodeID roachpb.NodeID, class rpcbase.ConnectionClass,
+	ctx context.Context, nodeID roachpb.NodeID, class rpc.ConnectionClass,
 ) (_ *grpc.ClientConn, err error) {
 	if n == nil || n.resolver == nil {
 		return nil, errors.New("no node dialer configured")
@@ -110,7 +109,7 @@ func (n *Dialer) Dial(
 // trying to connect. This function should only be used when there is good
 // reason to believe that the node is reachable.
 func (n *Dialer) DialNoBreaker(
-	ctx context.Context, nodeID roachpb.NodeID, class rpcbase.ConnectionClass,
+	ctx context.Context, nodeID roachpb.NodeID, class rpc.ConnectionClass,
 ) (_ *grpc.ClientConn, err error) {
 	if n == nil || n.resolver == nil {
 		return nil, errors.New("no node dialer configured")
@@ -130,7 +129,7 @@ func (n *Dialer) DialNoBreaker(
 // For a more contextualized explanation, see the comment that decorates
 // (*rpc.Context).loopbackDialFn.
 func (n *Dialer) DialInternalClient(
-	ctx context.Context, nodeID roachpb.NodeID, class rpcbase.ConnectionClass,
+	ctx context.Context, nodeID roachpb.NodeID, class rpc.ConnectionClass,
 ) (rpc.RestrictedInternalClient, error) {
 	if n == nil || n.resolver == nil {
 		return nil, errors.New("no node dialer configured")
@@ -168,7 +167,7 @@ func (n *Dialer) DialInternalClient(
 		client = &unaryDRPCBatchServiceToInternalAdapter{
 			useStreamPoolClient:      useStreamPoolClient,
 			RestrictedInternalClient: client, // for RangeFeed only
-			drpcClient:               kvpb.NewDRPCKVBatchClient(dconn),
+			drpcClient:               kvpb.NewDRPCBatchClient(dconn),
 			drpcStreamPool:           drpcBatchStreamPool,
 		}
 		return client, nil
@@ -187,8 +186,8 @@ func (n *Dialer) dial(
 	addr net.Addr,
 	locality roachpb.Locality,
 	checkBreaker bool,
-	class rpcbase.ConnectionClass,
-) (*grpc.ClientConn, *rpc.BatchStreamPool, drpc.Conn, *rpc.DRPCBatchStreamPool, error) {
+	class rpc.ConnectionClass,
+) (*grpc.ClientConn, *rpc.BatchStreamPool, drpcpool.Conn, *rpc.DRPCBatchStreamPool, error) {
 	const ctxWrapMsg = "dial"
 	// Don't trip the breaker if we're already canceled.
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -217,7 +216,7 @@ func (n *Dialer) dial(
 // class to the given node that succeeded on its most recent heartbeat.
 // Returns circuit.ErrBreakerOpen if the breaker is tripped, otherwise
 // ErrNoConnection if no connection to the node currently exists.
-func (n *Dialer) ConnHealth(nodeID roachpb.NodeID, class rpcbase.ConnectionClass) error {
+func (n *Dialer) ConnHealth(nodeID roachpb.NodeID, class rpc.ConnectionClass) error {
 	if n == nil || n.resolver == nil {
 		return errors.New("no node dialer configured")
 	}
@@ -245,7 +244,7 @@ func (n *Dialer) ConnHealth(nodeID roachpb.NodeID, class rpcbase.ConnectionClass
 // removed and moved into that code. Also, as of #99191, we have stateful
 // circuit breakers that probe in the background and so whatever exactly it
 // is the caller really wants can likely be achieved by more direct means.
-func (n *Dialer) ConnHealthTryDial(nodeID roachpb.NodeID, class rpcbase.ConnectionClass) error {
+func (n *Dialer) ConnHealthTryDial(nodeID roachpb.NodeID, class rpc.ConnectionClass) error {
 	err := n.ConnHealth(nodeID, class)
 	if err == nil {
 		return err
@@ -268,17 +267,17 @@ func (n *Dialer) ConnHealthTryDialInstance(id base.SQLInstanceID, addr string) e
 		return errors.New("no node dialer configured")
 	}
 	if err := n.rpcContext.ConnHealth(
-		addr, roachpb.NodeID(id), rpcbase.DefaultClass); err == nil {
+		addr, roachpb.NodeID(id), rpc.DefaultClass); err == nil {
 		return nil
 	}
-	return n.rpcContext.GRPCDialPod(addr, id, roachpb.Locality{}, rpcbase.DefaultClass).Health()
+	return n.rpcContext.GRPCDialPod(addr, id, roachpb.Locality{}, rpc.DefaultClass).Health()
 }
 
 // GetCircuitBreaker retrieves the circuit breaker for connections to the
 // given node. The breaker should not be mutated as this affects all connections
 // dialing to that node through this NodeDialer.
 func (n *Dialer) GetCircuitBreaker(
-	nodeID roachpb.NodeID, class rpcbase.ConnectionClass,
+	nodeID roachpb.NodeID, class rpc.ConnectionClass,
 ) (*circuit2.Breaker, bool) {
 	addr, _, err := n.resolver(nodeID)
 	if err != nil {
@@ -344,7 +343,7 @@ func shouldUseBatchStreamPoolClient(ctx context.Context, st *cluster.Settings) b
 	// NOTE: we use ActiveVersionOrEmpty(ctx).IsActive(...) instead of the more
 	// common IsActive(ctx, ...) to avoid a fatal error if an RPC is made before
 	// the cluster version is initialized.
-	if !st.Version.ActiveVersionOrEmpty(ctx).IsActive(clusterversion.TODO_Delete_V25_1_BatchStreamRPC) {
+	if !st.Version.ActiveVersionOrEmpty(ctx).IsActive(clusterversion.V25_1_BatchStreamRPC) {
 		return false
 	}
 	if !batchStreamPoolingEnabled.Get(&st.SV) {

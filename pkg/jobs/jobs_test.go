@@ -1187,7 +1187,7 @@ func TestJobLifecycle(t *testing.T) {
 	ctx := context.Background()
 
 	var params base.TestServerArgs
-	params.Knobs.JobsTestingKnobs = &jobs.TestingKnobs{DisableRegistryLifecycleManagement: true}
+	params.Knobs.JobsTestingKnobs = &jobs.TestingKnobs{DisableRegistryLifecycleManagent: true}
 	srv, sqlDB, _ := serverutils.StartServer(t, params)
 	defer srv.Stopper().Stop(ctx)
 	s := srv.ApplicationLayer()

@@ -897,8 +897,7 @@ DELETE FROM [%d as t] WHERE %s
    AND ((t.crdb_internal_mvcc_timestamp < $%[3]d
         AND t.crdb_internal_origin_timestamp IS NULL)
     OR (t.crdb_internal_origin_timestamp < $%[3]d
-        AND t.crdb_internal_origin_timestamp IS NOT NULL))
-RETURNING *`
+        AND t.crdb_internal_origin_timestamp IS NOT NULL))`
 	stmt, err := parser.ParseOne(
 		fmt.Sprintf(baseQuery, dstTableDescID, whereClause.String(), originTSIdx))
 	if err != nil {

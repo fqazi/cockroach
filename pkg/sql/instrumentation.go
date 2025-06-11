@@ -204,9 +204,6 @@ type instrumentationHelper struct {
 	// retryCount is the number of times the transaction was retried.
 	retryCount uint64
 
-	// retryStmtCount is the number of times the statement was retried.
-	retryStmtCount uint64
-
 	// joinTypeCounts records the number of times each type of logical join was
 	// used in the query, up to 255.
 	joinTypeCounts [execbuilder.NumRecordedJoinTypes]uint8
@@ -331,6 +328,7 @@ var inFlightTraceCollectorPollInterval = settings.RegisterDurationSetting(
 	"determines the interval between polling done by the in-flight trace "+
 		"collector for the statement bundle, set to zero to disable",
 	0,
+	settings.NonNegativeDuration,
 )
 
 var timeoutTraceCollectionEnabled = settings.RegisterBoolSetting(
@@ -630,8 +628,6 @@ func (ih *instrumentationHelper) Finish(
 		}
 	}
 
-	ih.retryStmtCount = uint64(p.autoRetryStmtCounter)
-
 	// Record the statement information that we've collected.
 	// Note that in case of implicit transactions, the trace contains the auto-commit too.
 	traceID := ih.sp.TraceID()
@@ -822,10 +818,8 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 	ob.AddDistribution(ih.distribution.String())
 	ob.AddVectorized(ih.vectorized)
 	ob.AddPlanType(ih.generic, ih.optimized)
-	ob.AddRetryCount("transaction", ih.retryCount)
-	ob.AddRetryTime("transaction", phaseTimes.GetTransactionRetryLatency())
-	ob.AddRetryCount("statement", ih.retryStmtCount)
-	ob.AddRetryTime("statement", phaseTimes.GetStatementRetryLatency())
+	ob.AddRetryCount(ih.retryCount)
+	ob.AddRetryTime(phaseTimes.GetTransactionRetryLatency())
 
 	if queryStats != nil {
 		if queryStats.KVRowsRead != 0 {

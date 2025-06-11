@@ -33,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"github.com/gogo/protobuf/proto"
 	"github.com/stretchr/testify/require"
 )
@@ -123,7 +122,7 @@ func createReplicas(t *testing.T, tc *testContext, num int) []*Replica {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tc.store.RemoveReplica(context.Background(), repl1, repl1.Desc().NextReplicaID, redact.SafeString(t.Name()), RemoveOptions{
+	if err := tc.store.RemoveReplica(context.Background(), repl1, repl1.Desc().NextReplicaID, RemoveOptions{
 		DestroyData: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -708,7 +707,7 @@ func TestAcceptsUnsplitRanges(t *testing.T) {
 	// Remove replica for range 1 since it encompasses the entire keyspace.
 	repl1, err := s.GetReplica(1)
 	require.NoError(t, err)
-	require.NoError(t, s.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, redact.SafeString(t.Name()), RemoveOptions{DestroyData: true}))
+	require.NoError(t, s.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, RemoveOptions{DestroyData: true}))
 
 	// This range can never be split due to zone configs boundaries.
 	neverSplits := createReplica(s, 2, roachpb.RKeyMin, maxWontSplitAddr)
@@ -910,7 +909,7 @@ func TestBaseQueuePurgatory(t *testing.T) {
 	// the replica set. The number of processed replicas will be 2 less.
 	const rmReplCount = 2
 	repls[0].replicaID = 2
-	if err := tc.store.RemoveReplica(ctx, repls[1], repls[1].Desc().NextReplicaID, redact.SafeString(t.Name()), RemoveOptions{
+	if err := tc.store.RemoveReplica(ctx, repls[1], repls[1].Desc().NextReplicaID, RemoveOptions{
 		DestroyData: true,
 	}); err != nil {
 		t.Fatal(err)

@@ -176,6 +176,7 @@ func (t *ConnTracker) refreshPartitionsLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.Ch():
+			timer.MarkRead()
 			t.refreshPartitions()
 		}
 	}

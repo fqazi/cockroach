@@ -37,19 +37,18 @@ import (
 // TODO(knz): this struct belongs elsewhere.
 // See: https://github.com/cockroachdb/cockroach/issues/49509
 var debugTimeSeriesDumpOpts = struct {
-	format                 tsDumpFormat
-	from, to               timestampValue
-	clusterLabel           string
-	yaml                   string
-	targetURL              string
-	ddApiKey               string
-	ddSite                 string
-	httpToken              string
-	clusterID              string
-	zendeskTicket          string
-	organizationName       string
-	userName               string
-	storeToNodeMapYAMLFile string
+	format           tsDumpFormat
+	from, to         timestampValue
+	clusterLabel     string
+	yaml             string
+	targetURL        string
+	ddApiKey         string
+	ddSite           string
+	httpToken        string
+	clusterID        string
+	zendeskTicket    string
+	organizationName string
+	userName         string
 }{
 	format:       tsDumpText,
 	from:         timestampValue{},
@@ -161,7 +160,7 @@ will then convert it to the --format requested in the current invocation.
 			if debugTimeSeriesDumpOpts.format == tsDumpRaw {
 				stream, err := tsClient.DumpRaw(context.Background(), req)
 				if err != nil {
-					return errors.Wrapf(err, "connecting to %s", conn.Target())
+					return err
 				}
 
 				// Buffer the writes to os.Stdout since we're going to
@@ -191,7 +190,7 @@ will then convert it to the --format requested in the current invocation.
 			}
 			stream, err := tsClient.Dump(context.Background(), req)
 			if err != nil {
-				return errors.Wrapf(err, "connecting to %s", conn.Target())
+				return err
 			}
 			recv = stream.Recv
 		} else {
@@ -246,7 +245,7 @@ will then convert it to the --format requested in the current invocation.
 				return w.Flush()
 			}
 			if err != nil {
-				return errors.Wrapf(err, "connecting to %s", serverCfg.AdvertiseAddr)
+				return err
 			}
 			if err := w.Emit(data); err != nil {
 				return err

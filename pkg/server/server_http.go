@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/NYTimes/gziphandler"
 	"github.com/cockroachdb/cmux"
@@ -216,9 +215,8 @@ func (s *httpServer) setupRoutes(
 	// Exempt the 2nd health check endpoint from authentication.
 	// (This simply mirrors /health and exists for backward compatibility.)
 	s.mux.Handle(apiconstants.AdminHealth, handleRequestsUnauthenticated)
-	// The /_status/vars and /metrics endpoint is not authenticated either. Useful for monitoring.
-	s.mux.Handle(apiconstants.StatusVars, http.HandlerFunc(varsHandler{metricSource, s.cfg.Settings, false /* useStaticLabels */}.handleVars))
-	s.mux.Handle(apiconstants.MetricsPath, http.HandlerFunc(varsHandler{metricSource, s.cfg.Settings, true /* useStaticLabels */}.handleVars))
+	// The /_status/vars endpoint is not authenticated either. Useful for monitoring.
+	s.mux.Handle(apiconstants.StatusVars, http.HandlerFunc(varsHandler{metricSource, s.cfg.Settings}.handleVars))
 	// Same for /_status/load.
 	le, err := newLoadEndpoint(runtimeStatSampler, metricSource)
 	if err != nil {
@@ -302,7 +300,7 @@ func startHTTPService(
 	}
 
 	if uiTLSConfig != nil {
-		httpMux := cmux.NewWithTimeout(httpLn, time.Minute)
+		httpMux := cmux.New(httpLn)
 		clearL := httpMux.Match(cmux.HTTP1())
 		tlsL := httpMux.Match(cmux.Any())
 

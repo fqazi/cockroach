@@ -39,7 +39,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities/tenantcapabilitieswatcher"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/server/license"
 	"github.com/cockroachdb/cockroach/pkg/server/status"
 	"github.com/cockroachdb/cockroach/pkg/server/tenantsettingswatcher"
@@ -77,7 +77,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 	"github.com/cockroachdb/cockroach/pkg/util/unique"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/pebble"
@@ -175,21 +174,22 @@ This metric is thus not an indicator of KV health.`,
 	}
 	metaCrossZoneBatchRequest = metric.Metadata{
 		Name: "batch_requests.cross_zone.bytes",
-		Help: `Total bytes of batch requests processed cross zones within the same
-		region when zone tiers are configured. If region tiers are not set, it is
-		assumed to be within the same region. To ensure accurate monitoring of
-		cross-zone data transfer, region and zone tiers should be consistently
-		configured across all nodes.`,
+		Help: `Total byte count of batch requests processed cross zone within
+		the same region when region and zone tiers are configured. However, if the
+		region tiers are not configured, this count may also include batch data sent
+		between different regions. Ensuring consistent configuration of region and
+		zone tiers across nodes helps to accurately monitor the data transmitted.`,
 		Measurement: "Bytes",
 		Unit:        metric.Unit_BYTES,
 	}
 	metaCrossZoneBatchResponse = metric.Metadata{
 		Name: "batch_responses.cross_zone.bytes",
-		Help: `Total bytes of batch responses received cross zones within the same
-		region when zone tiers are configured. If region tiers are not set, it is
-		assumed to be within the same region. To ensure accurate monitoring of
-		cross-zone data transfer, region and zone tiers should be consistently
-		configured across all nodes.`,
+		Help: `Total byte count of batch responses received cross zone within the
+		same region when region and zone tiers are configured. However, if the
+		region tiers are not configured, this count may also include batch data
+		received between different regions. Ensuring consistent configuration of
+		region and zone tiers across nodes helps to accurately monitor the data
+		transmitted.`,
 		Measurement: "Bytes",
 		Unit:        metric.Unit_BYTES,
 	}
@@ -309,23 +309,20 @@ func (nm *nodeMetrics) callComplete(d time.Duration, pErr *kvpb.Error) {
 }
 
 // updateCrossLocalityMetricsOnBatchRequest updates nodeMetrics for batch
-// requests processed on the node.
+// requests processed on the node. The metrics being updated include 1. total
+// byte count of batch requests processed 2. cross-region metrics, which monitor
+// activities across different regions, and 3. cross-zone metrics, which monitor
+// activities across different zones within the same region or in cases where
+// region tiers are not configured. These metrics may include batches that were
+// not successfully sent but were terminated at an early stage.
 func (nm *nodeMetrics) updateCrossLocalityMetricsOnBatchRequest(
 	comparisonResult roachpb.LocalityComparisonType, inc int64,
 ) {
-	// Update metrics for total byte count of batch requests processed on the
-	// node.
 	nm.BatchRequestsBytes.Inc(inc)
-	// In cases where both region and zone tiers are not configured,
-	// comparisonResult will be UNDEFINED.
 	switch comparisonResult {
 	case roachpb.LocalityComparisonType_CROSS_REGION:
-		// Update cross-region metrics: monitor activities across different regions.
 		nm.CrossRegionBatchRequestBytes.Inc(inc)
 	case roachpb.LocalityComparisonType_SAME_REGION_CROSS_ZONE:
-		// Update cross-zone metrics: monitor activities across different zones
-		// within the same region. If region tiers are not set, it is assumed to be
-		// within the same region.
 		nm.CrossZoneBatchRequestBytes.Inc(inc)
 	}
 }
@@ -339,8 +336,6 @@ func (nm *nodeMetrics) updateCrossLocalityMetricsOnBatchResponse(
 	comparisonResult roachpb.LocalityComparisonType, inc int64,
 ) {
 	nm.BatchResponsesBytes.Inc(inc)
-	// Read more about locality comparison in
-	// updateCrossLocalityMetricsOnBatchRequest above.
 	switch comparisonResult {
 	case roachpb.LocalityComparisonType_CROSS_REGION:
 		nm.CrossRegionBatchResponseBytes.Inc(inc)
@@ -1170,8 +1165,7 @@ func (n *Node) startPeriodicLivenessCompaction(
 								}.Encode()
 
 							timeBeforeCompaction := timeutil.Now()
-							if err := store.StateEngine().CompactRange(
-								context.Background(), startEngineKey, endEngineKey); err != nil {
+							if err := store.StateEngine().CompactRange(startEngineKey, endEngineKey); err != nil {
 								log.Errorf(ctx, "failed compacting liveness replica: %+v with error: %s", repl, err)
 							}
 
@@ -1196,7 +1190,7 @@ func (n *Node) startPeriodicLivenessCompaction(
 
 // updateNodeRangeCount updates the internal counter of the total ranges across
 // all stores. This value is used to make a decision on whether the node should
-// use expiration leases (see Replica.shouldUseExpirationLease).
+// use expiration leases (see Replica.shouldUseExpirationLeaseRLocked).
 func (n *Node) updateNodeRangeCount() {
 	var count int64
 	_ = n.stores.VisitStores(func(store *kvserver.Store) error {
@@ -1441,6 +1435,7 @@ func startGraphiteStatsExporter(
 			case <-stopper.ShouldQuiesce():
 				return
 			case <-timer.C:
+				timer.Read = true
 				endpoint := graphiteEndpoint.Get(&st.SV)
 				if endpoint != "" {
 					if err := recorder.ExportToGraphite(ctx, endpoint, &pm); err != nil {
@@ -1515,7 +1510,7 @@ func (n *Node) writeNodeStatus(ctx context.Context, mustExist bool) error {
 			}
 			if numNodes > 1 {
 				// Avoid this warning on single-node clusters, which require special UX.
-				log.Warningf(ctx, "health alerts detected: %s", result)
+				log.Warningf(ctx, "health alerts detected: %+v", result)
 			}
 			if err := n.storeCfg.Gossip.AddInfoProto(
 				gossip.MakeNodeHealthAlertKey(n.Descriptor.NodeID), &result, 2*base.DefaultMetricsSampleInterval, /* ttl */
@@ -1867,10 +1862,18 @@ func (n *Node) Batch(ctx context.Context, args *kvpb.BatchRequest) (*kvpb.BatchR
 
 // BatchStream implements the kvpb.InternalServer interface.
 func (n *Node) BatchStream(stream kvpb.Internal_BatchStreamServer) error {
-	return n.batchStreamImpl(stream)
+	return n.batchStreamImpl(stream, func(ba *kvpb.BatchRequest) error {
+		return stream.RecvMsg(ba)
+	})
 }
 
-func (n *Node) batchStreamImpl(stream kvpb.RPCKVBatch_BatchStreamStream) error {
+func (n *Node) batchStreamImpl(
+	stream interface {
+		Context() context.Context
+		Send(response *kvpb.BatchResponse) error
+	},
+	recvMsg func(*kvpb.BatchRequest) error,
+) error {
 	ctx := stream.Context()
 	for {
 		argsAlloc := new(struct {
@@ -1880,7 +1883,7 @@ func (n *Node) batchStreamImpl(stream kvpb.RPCKVBatch_BatchStreamStream) error {
 		args := &argsAlloc.args
 		args.Requests = argsAlloc.reqs[:0]
 
-		err := stream.RecvMsg(args)
+		err := recvMsg(args)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil
@@ -1899,7 +1902,7 @@ func (n *Node) batchStreamImpl(stream kvpb.RPCKVBatch_BatchStreamStream) error {
 	}
 }
 
-func (n *Node) AsDRPCKVBatchServer() kvpb.DRPCKVBatchServer {
+func (n *Node) AsDRPCBatchServer() kvpb.DRPCBatchServer {
 	return (*drpcNode)(n)
 }
 
@@ -1911,8 +1914,12 @@ func (n *drpcNode) Batch(
 	return (*Node)(n).Batch(ctx, request)
 }
 
-func (n *drpcNode) BatchStream(stream kvpb.DRPCKVBatch_BatchStreamStream) error {
-	return (*Node)(n).batchStreamImpl(stream)
+func (n *drpcNode) BatchStream(stream kvpb.DRPCBatch_BatchStreamStream) error {
+	return (*Node)(n).batchStreamImpl(stream, func(ba *kvpb.BatchRequest) error {
+		return stream.(interface {
+			RecvMsg(request *kvpb.BatchRequest) error
+		}).RecvMsg(ba)
+	})
 }
 
 // spanForRequest is the retval of setupSpanForIncomingRPC. It groups together a
@@ -2097,26 +2104,8 @@ type lockedMuxStream struct {
 func (s *lockedMuxStream) SendIsThreadSafe() {}
 
 func (s *lockedMuxStream) Send(e *kvpb.MuxRangeFeedEvent) error {
-	// The threshold of 10s was borrowed from `slowDistSenderReplicaThreshold`
-	// in `dist_sender`, where it was deemed to be a reasonable latency
-	// threshold for an RPC to a single replica (as is the case here).
-	const slowMuxStreamSendThreshold = 10 * time.Second
-
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
-
-	// Our intent is to provide observability into a slow client from the server node.
-	// So, we don't include the lock acquisition time, as it is confounded by other
-	// factors, e.g., the number of rangefeeds contending for the lockedMuxStream.
-	start := crtime.NowMono()
-	defer func() {
-		if dur := start.Elapsed(); dur > slowMuxStreamSendThreshold {
-			log.Infof(s.wrapped.Context(),
-				"slow send on stream %d for r%d took %s",
-				e.StreamID, e.RangeID, dur)
-		}
-	}()
-
 	return s.wrapped.Send(e)
 }
 
@@ -2364,7 +2353,7 @@ func (n *Node) ResetQuorum(
 	log.Infof(ctx, "updated meta2 entry for r%d", desc.RangeID)
 
 	// Set up connection to self. Use rpc.SystemClass to avoid throttling.
-	client, err := kvserver.DialMultiRaftClient(n.storeCfg.NodeDialer, ctx, n.Descriptor.NodeID, rpcbase.SystemClass)
+	conn, err := n.storeCfg.NodeDialer.Dial(ctx, n.Descriptor.NodeID, rpc.SystemClass)
 	if err != nil {
 		return nil, err
 	}
@@ -2377,7 +2366,7 @@ func (n *Node) ResetQuorum(
 		n.clusterID.Get(),
 		n.storeCfg.Settings,
 		n.storeCfg.Tracer(),
-		client,
+		conn,
 		n.storeCfg.Clock.Now(),
 		desc,
 		toReplicaDescriptor,

@@ -20,12 +20,15 @@ type SearchResults []SearchResult
 // SearchResult contains a set of results from searching partitions for data
 // vectors that are nearest to a query vector.
 type SearchResult struct {
-	// QueryDistance is the estimated distance of the data vector from the query
-	// vector. The quantizer used by the index determines the distance metric.
-	QueryDistance float32
+	// QuerySquaredDistance is the estimated squared distance of the data vector
+	// from the query vector.
+	QuerySquaredDistance float32
 	// ErrorBound captures the uncertainty of the distance estimate, which is
-	// highly likely to fall within QueryDistance ± ErrorBound.
+	// highly likely to fall within QuerySquaredDistance ± ErrorBound.
 	ErrorBound float32
+	// CentroidDistance is the (non-squared) exact distance of the data vector
+	// from its partition's centroid.
+	CentroidDistance float32
 	// ParentPartitionKey is the key of the parent of the partition that contains
 	// the data vector.
 	ParentPartitionKey PartitionKey
@@ -33,7 +36,8 @@ type SearchResult struct {
 	// partition, or the key of its partition if it's in a root/branch partition.
 	ChildKey ChildKey
 	// Vector is the original, full-size data vector. This is nil by default,
-	// and is only set when SearchOptions.SkipRerank is false.
+	// and is only set when SearchOptions.SkipRerank is false or
+	// SearchOptions.ReturnVectors is true.
 	// NOTE: If this is an interior centroid vector, then it is randomized.
 	// Otherwise, it's an original, un-randomized leaf vector.
 	Vector vector.T
@@ -46,7 +50,7 @@ type SearchResult struct {
 // MaybeCloser returns true if this result's data vector may be closer (or the
 // same distance) to the query vector than the given result's data vector.
 func (r *SearchResult) MaybeCloser(r2 *SearchResult) bool {
-	return r.QueryDistance-r.ErrorBound <= r2.QueryDistance+r2.ErrorBound
+	return r.QuerySquaredDistance-r.ErrorBound <= r2.QuerySquaredDistance+r2.ErrorBound
 }
 
 // Compare returns an integer comparing two search results. The result is zero
@@ -65,8 +69,8 @@ func (r *SearchResult) Compare(r2 *SearchResult) int {
 	//
 
 	// Compare distances.
-	distance1 := r.QueryDistance
-	distance2 := r2.QueryDistance
+	distance1 := r.QuerySquaredDistance
+	distance2 := r2.QuerySquaredDistance
 	if distance1 < distance2 {
 		return -1
 	} else if distance1 > distance2 {
@@ -276,21 +280,22 @@ func (ss *SearchSet) AddSet(searchSet *SearchSet) {
 	}
 }
 
-// FindBestDistances sets the input "distances" slice to the QueryDistance
-// values for the closest candidate search results. It returns the "distances"
-// slice, possibly truncated if there are not enough search results to fill it.
-// The returned distances are unsorted and duplicates are not filtered.
+// FindBestDistances sets the input "distances" slice to the
+// QuerySquaredDistance values for the closest candidate search results. It
+// returns the "distances" slice, possibly truncated if there are not enough
+// search results to fill it. The returned distances are unsorted and duplicates
+// are not filtered.
 func (ss *SearchSet) FindBestDistances(distances []float64) []float64 {
 	// Can't return more distances than there are candidates.
 	n := len(ss.candidates)
 	k := min(len(distances), n)
 
 	// Copy all distances to the output slice. Track the max distance.
-	var maxDistance float32
+	maxDistance := float32(-1)
 	maxOffset := -1
 	for i := range k {
-		distance := ss.candidates[i].QueryDistance
-		if maxOffset == -1 || distance > maxDistance {
+		distance := ss.candidates[i].QuerySquaredDistance
+		if distance > maxDistance {
 			maxDistance = distance
 			maxOffset = i
 		}
@@ -300,7 +305,7 @@ func (ss *SearchSet) FindBestDistances(distances []float64) []float64 {
 	// For each remaining candidate, if its distance is smaller than the largest
 	// in our result so far, replace that largest one.
 	for i := k; i < n; i++ {
-		distance := ss.candidates[i].QueryDistance
+		distance := ss.candidates[i].QuerySquaredDistance
 		if distance < maxDistance {
 			// Find the largest distance in our current result.
 			distances[maxOffset] = float64(distance)

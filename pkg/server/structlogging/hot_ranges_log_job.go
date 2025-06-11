@@ -26,8 +26,7 @@ func (s *hotRangesLoggingScheduler) Resume(ctx context.Context, execCtxI interfa
 	// terminate the SQL pod whenever the job is running, so mark it as idle.
 	s.job.MarkIdle(true)
 
-	s.start(ctx, s.stopper)
-	return nil
+	return s.start(ctx, s.stopper)
 }
 
 func (s *hotRangesLoggingScheduler) OnFailOrCancel(

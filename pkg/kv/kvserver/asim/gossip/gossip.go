@@ -204,7 +204,7 @@ func (g *gossip) maybeUpdateState(tick time.Time, s state.State) {
 		return
 	}
 
-	updateMap := map[roachpb.StoreID]*storepool.StoreDetailMu{}
+	updateMap := map[roachpb.StoreID]*storepool.StoreDetail{}
 	for _, update := range updates {
 		updateMap[update.Desc.StoreID] = update
 	}

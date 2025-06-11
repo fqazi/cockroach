@@ -690,18 +690,13 @@ func (i *immediateVisitor) UpdateTableBackReferencesInRelations(
 		return err
 	}
 	forwardRefs := backRefTbl.GetAllReferencedTableIDs()
-	for _, ref := range op.RelationReferences {
-		referenced, err := i.checkOutTable(ctx, ref.ID)
+	for _, relID := range op.RelationIDs {
+		referenced, err := i.checkOutTable(ctx, relID)
 		if err != nil {
 			return err
 		}
 		newBackRefIsDupe := false
-		newBackRef := descpb.TableDescriptor_Reference{
-			ID:        op.TableID,
-			IndexID:   ref.IndexID,
-			ColumnIDs: ref.ColumnIDs,
-			ByID:      referenced.IsSequence(),
-		}
+		newBackRef := descpb.TableDescriptor_Reference{ID: op.TableID, ByID: referenced.IsSequence()}
 		removeBackRefs := !forwardRefs.Contains(referenced.GetID())
 		newDependedOnBy := referenced.DependedOnBy[:0]
 		for _, backRef := range referenced.DependedOnBy {

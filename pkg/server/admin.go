@@ -117,7 +117,6 @@ type adminServer struct {
 	rpcContext       *rpc.Context
 	clock            *hlc.Clock
 	grpc             *grpcServer
-	drpc             *drpcServer
 	db               *kv.DB
 	drainServer      *drainServer
 }
@@ -157,7 +156,6 @@ func newSystemAdminServer(
 	clock *hlc.Clock,
 	distSender *kvcoord.DistSender,
 	grpc *grpcServer,
-	drpc *drpcServer,
 	drainServer *drainServer,
 	s *topLevelServer,
 ) *systemAdminServer {
@@ -174,7 +172,6 @@ func newSystemAdminServer(
 		clock,
 		distSender,
 		grpc,
-		drpc,
 		drainServer,
 	)
 	return &systemAdminServer{
@@ -202,7 +199,6 @@ func newAdminServer(
 	clock *hlc.Clock,
 	distSender *kvcoord.DistSender,
 	grpc *grpcServer,
-	drpc *drpcServer,
 	drainServer *drainServer,
 ) *adminServer {
 	server := &adminServer{
@@ -221,7 +217,6 @@ func newAdminServer(
 		rpcContext:     rpcCtx,
 		clock:          clock,
 		grpc:           grpc,
-		drpc:           drpc,
 		db:             db,
 		drainServer:    drainServer,
 	}
@@ -2105,16 +2100,8 @@ func (s *adminServer) Health(
 
 // checkReadinessForHealthCheck returns a gRPC error.
 func (s *adminServer) checkReadinessForHealthCheck(ctx context.Context) error {
-	// A gRPC server will always be running, so ensure that we check its health
-	// until it is completely removed after the DRPC to gRPC migration.
 	if err := s.grpc.health(ctx); err != nil {
 		return err
-	}
-
-	if s.drpc.enabled {
-		if err := s.drpc.health(ctx); err != nil {
-			return err
-		}
 	}
 
 	if !s.sqlServer.isReady.Load() {
@@ -2151,16 +2138,8 @@ func (s *systemAdminServer) Health(
 
 // checkReadinessForHealthCheck returns a gRPC error.
 func (s *systemAdminServer) checkReadinessForHealthCheck(ctx context.Context) error {
-	// A gRPC server will always be running, so ensure that we check its health
-	// until it is completely removed after the DRPC to gRPC migration.
 	if err := s.grpc.health(ctx); err != nil {
 		return err
-	}
-
-	if s.drpc.enabled {
-		if err := s.drpc.health(ctx); err != nil {
-			return err
-		}
 	}
 
 	status := s.nodeLiveness.GetNodeVitalityFromCache(roachpb.NodeID(s.serverIterator.getID()))

@@ -34,7 +34,6 @@ go_library(
         "//pkg/raft/raftpb",
         "//pkg/roachpb",
         "//pkg/rpc",
-        "//pkg/rpc/rpcbase",
         "//pkg/server/serverpb",
         "//pkg/settings/cluster",
         "//pkg/storage",

@@ -88,6 +88,7 @@ var cutoverSignalPollInterval = settings.RegisterDurationSetting(
 	"bulkio.stream_ingestion.failover_signal_poll_interval",
 	"the interval at which the stream ingestion job checks if it has been signaled to cutover",
 	10*time.Second,
+	settings.NonNegativeDuration,
 	settings.WithName("physical_replication.consumer.failover_signal_poll_interval"),
 )
 
@@ -523,6 +524,7 @@ func (sip *streamIngestionProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.Pr
 			return row, nil
 		}
 	case <-sip.aggTimer.C:
+		sip.aggTimer.Read = true
 		sip.aggTimer.Reset(15 * time.Second)
 		return nil, bulkutil.ConstructTracingAggregatorProducerMeta(sip.Ctx(),
 			sip.FlowCtx.NodeID.SQLInstanceID(), sip.FlowCtx.ID, sip.agg)
@@ -699,6 +701,7 @@ func (sip *streamIngestionProcessor) consumeEvents(ctx context.Context) error {
 			// This timer is used to periodically flush a
 			// buffer that may have been previously
 			// skipped.
+			sip.maxFlushRateTimer.Read = true
 			if err := sip.flush(); err != nil {
 				return err
 			}

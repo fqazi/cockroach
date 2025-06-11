@@ -5972,33 +5972,12 @@ SELECT
 					msg += strconv.Itoa(len(msg) / len(foo))
 				case "contextCanceled":
 					panic(context.Canceled)
-				case "stackOverflow":
-					// Cause a stack overflow with infinite recursion.
-					var recurse func(int) int
-					recurse = func(i int) int {
-						if i < 0 {
-							return i
-						}
-						return recurse(i+1) + recurse(i+2) // avoid TCO
-					}
-					return tree.NewDInt(tree.DInt(recurse(0))), nil
-				case "oom":
-					var mem [][]byte
-					// Try to allocate 128 TiB of memory.
-					for range 1024 * 1024 {
-						block := make([]byte, 128*1024*1024) // 128 MiB
-						for j := range 32 * 1024 {
-							block[j*4*1024] = 0xaa // touch each 4 KiB page
-						}
-						mem = append(mem, block)
-					}
-					return tree.NewDInt(tree.DInt(len(mem))), nil
 				default:
 					return nil, errors.Newf(
-						"expected mode to be one of: internalAssertion, indexOutOfRange, divideByZero, " +
-							"contextCanceled, stackOverflow, oom",
+						"expected mode to be one of: internalAssertion, indexOutOfRange, divideByZero, contextCanceled",
 					)
 				}
+				// This code is unreachable.
 				panic(msg)
 			},
 			Info:       "This function is used only by CockroachDB's developers for testing purposes.",
@@ -6061,15 +6040,15 @@ SELECT
 		},
 	),
 
+	// If force_retry is called during the specified interval from the beginning
+	// of the transaction it returns a retryable error. If not, 0 is returned
+	// instead of an error.
+	// The second version allows one to create an error intended for a transaction
+	// different than the current statement's transaction.
 	"crdb_internal.force_retry": makeBuiltin(
 		tree.FunctionProperties{
 			Category: builtinconstants.CategorySystemInfo,
 		},
-		// This overload takes an interval parameter. If force_retry is called
-		// within this interval from the beginning of the transaction, it returns a
-		// retryable error. If force_retry is called after this interval, it returns
-		// 0. This allows the transaction to eventually succeed after the interval
-		// has passed, assuming it is being retried.
 		tree.Overload{
 			Types:      tree.ParamTypes{{Name: "val", Typ: types.Interval}},
 			ReturnType: tree.FixedReturnType(types.Int),
@@ -6084,29 +6063,6 @@ SELECT
 			},
 			Info:       "This function is used only by CockroachDB's developers for testing purposes.",
 			Volatility: volatility.Volatile,
-		},
-		// This overload takes an integer parameter. If the statement or transaction
-		// has already been retried < the parameter number of times, force_retry
-		// will return a retryable error. If the statement or transaction has
-		// already been retried >= the parameter number of times, force_retry will
-		// return 0. This allows precise control of the number of times the
-		// statement or transaction is retied.
-		tree.Overload{
-			Types:      tree.ParamTypes{{Name: "val", Typ: types.Int}},
-			ReturnType: tree.FixedReturnType(types.Int),
-			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
-				retries := int64(evalCtx.Planner.RetryCounter())
-				maxRetries := int64(tree.MustBeDInt(args[0]))
-				if retries < maxRetries {
-					return nil, evalCtx.Txn.GenerateForcedRetryableErr(
-						ctx, "forced by crdb_internal.force_retry()",
-					)
-				}
-				return tree.DZero, nil
-			},
-			Info:             "This function is used only by CockroachDB's developers for testing purposes.",
-			Volatility:       volatility.Volatile,
-			DistsqlBlocklist: true, // applicable only on the gateway
 		},
 	),
 
@@ -7799,6 +7755,32 @@ table's zone configuration this will return NULL.`,
 			Volatility: volatility.Volatile,
 		},
 	),
+	"crdb_internal.reset_insights_tables": makeBuiltin(
+		tree.FunctionProperties{
+			Category:         builtinconstants.CategorySystemInfo,
+			DistsqlBlocklist: true, // applicable only on the gateway
+		},
+		tree.Overload{
+			Types:      tree.ParamTypes{},
+			ReturnType: tree.FixedReturnType(types.Bool),
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				if err := evalCtx.SessionAccessor.CheckPrivilege(
+					ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER,
+				); err != nil {
+					return nil, err
+				}
+				if evalCtx.SQLStatsController == nil {
+					return nil, errors.AssertionFailedf("sql stats controller not set")
+				}
+				if err := evalCtx.SQLStatsController.ResetInsightsTables(ctx); err != nil {
+					return nil, err
+				}
+				return tree.MakeDBool(true), nil
+			},
+			Info:       `This function is used to clear the statement and transaction insights statistics.`,
+			Volatility: volatility.Volatile,
+		},
+	),
 	// Deletes the underlying spans backing a table, only
 	// if the user provides explicit acknowledgement of the
 	// form "I acknowledge this will irrevocably delete all revisions
@@ -9354,7 +9336,7 @@ func makeSubStringImpls() builtinDefinition {
 				start := int(tree.MustBeDInt(args[1]))
 				length := int(tree.MustBeDInt(args[2]))
 
-				substring, err := getSubstringFromIndexOfLength(str, start, length)
+				substring, err := getSubstringFromIndexOfLength(str, "substring", start, length)
 				if err != nil {
 					return nil, err
 				}
@@ -9422,7 +9404,7 @@ func makeSubStringImpls() builtinDefinition {
 				start := int(tree.MustBeDInt(args[1]))
 				length := int(tree.MustBeDInt(args[2]))
 
-				substring, err := getSubstringFromIndexOfLength(bitString.BitArray.String(), start, length)
+				substring, err := getSubstringFromIndexOfLength(bitString.BitArray.String(), "bit subarray", start, length)
 				if err != nil {
 					return nil, err
 				}
@@ -9459,7 +9441,7 @@ func makeSubStringImpls() builtinDefinition {
 				start := int(tree.MustBeDInt(args[1]))
 				length := int(tree.MustBeDInt(args[2]))
 
-				substring, err := getSubstringFromIndexOfLengthBytes(byteString, start, length)
+				substring, err := getSubstringFromIndexOfLengthBytes(byteString, "byte subarray", start, length)
 				if err != nil {
 					return nil, err
 				}
@@ -9507,21 +9489,16 @@ func getSubstringFromIndex(str string, start int) string {
 	return string(runes[start:])
 }
 
-// NegativeSubstringLengthErr should be thrown when the substring builtin
-// is given a value of 'length' less than zero.
-var NegativeSubstringLengthErr = pgerror.New(
-	pgcode.InvalidParameterValue, "negative substring length not allowed",
-)
-
 // Returns a substring of given string starting at given position and
 // include up to a certain length.
-func getSubstringFromIndexOfLength(str string, start, length int) (string, error) {
+func getSubstringFromIndexOfLength(str, errMsg string, start, length int) (string, error) {
 	runes := []rune(str)
 	// SQL strings are 1-indexed.
 	start--
 
 	if length < 0 {
-		return "", NegativeSubstringLengthErr
+		return "", pgerror.Newf(
+			pgcode.InvalidParameterValue, "negative %s length %d not allowed", errMsg, length)
 	}
 
 	end := start + length
@@ -9559,13 +9536,14 @@ func getSubstringFromIndexBytes(str string, start int) string {
 
 // Returns a substring of given string starting at given position and include up
 // to a certain length by interpreting the string as raw bytes.
-func getSubstringFromIndexOfLengthBytes(str string, start, length int) (string, error) {
+func getSubstringFromIndexOfLengthBytes(str, errMsg string, start, length int) (string, error) {
 	bytes := []byte(str)
 	// SQL strings are 1-indexed.
 	start--
 
 	if length < 0 {
-		return "", NegativeSubstringLengthErr
+		return "", pgerror.Newf(
+			pgcode.InvalidParameterValue, "negative %s length %d not allowed", errMsg, length)
 	}
 
 	end := start + length

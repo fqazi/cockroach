@@ -70,7 +70,7 @@ func NewWithColumnID(
 	ps = &Store{
 		db:             db,
 		kv:             db.KV(),
-		rootQuantizer:  quantize.NewUnQuantizer(quantizer.GetDims(), quantizer.GetDistanceMetric()),
+		rootQuantizer:  quantize.NewUnQuantizer(quantizer.GetDims()),
 		quantizer:      quantizer,
 		minConsistency: kvpb.INCONSISTENT,
 		emptyVec:       make(vector.T, quantizer.GetDims()),

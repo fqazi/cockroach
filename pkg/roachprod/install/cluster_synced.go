@@ -263,19 +263,6 @@ func (c *SyncedCluster) GetInternalIP(n Node) (string, error) {
 	return ip, nil
 }
 
-// GetHostname returns the hostname of the specified node.
-func (c *SyncedCluster) GetHostname(n Node) (string, error) {
-	if c.IsLocal() {
-		return c.Host(n), nil
-	}
-
-	hostname := c.VMs[n-1].Name
-	if hostname == "" {
-		return "", errors.Errorf("no private hostname for node %d", n)
-	}
-	return hostname, nil
-}
-
 // roachprodEnvValue returns the value of the ROACHPROD environment variable
 // that is set when starting a process. This value is used to recognize the
 // correct process, when monitoring or stopping.
@@ -471,33 +458,30 @@ func (c *SyncedCluster) Stop(
 	// killProcesses indicates whether processed need to be stopped.
 	killProcesses := true
 
-	// Non system shared process virtual clusters don't get killed but are stopped via SQL.
-	// Figure out if the virtual cluster is one or not.
 	if virtualClusterLabel != "" {
 		name, sqlInstance, err := VirtualClusterInfoFromLabel(virtualClusterLabel)
 		if err != nil {
 			return err
 		}
 
-		if name != SystemInterfaceName {
-			services, err := c.DiscoverServices(ctx, name, ServiceTypeSQL)
-			if err != nil {
-				return err
-			}
-
-			if len(services) == 0 {
-				return fmt.Errorf("no service for virtual cluster %q", virtualClusterName)
-			}
-
-			virtualClusterName = name
-			if services[0].ServiceMode == ServiceModeShared {
-				// For shared process virtual clusters, we just stop the service
-				// via SQL.
-				killProcesses = false
-			} else {
-				virtualClusterDisplay = fmt.Sprintf(" virtual cluster %q, instance %d", virtualClusterName, sqlInstance)
-			}
+		services, err := c.DiscoverServices(ctx, name, ServiceTypeSQL)
+		if err != nil {
+			return err
 		}
+
+		if len(services) == 0 {
+			return fmt.Errorf("no service for virtual cluster %q", virtualClusterName)
+		}
+
+		virtualClusterName = name
+		if services[0].ServiceMode == ServiceModeShared {
+			// For shared process virtual clusters, we just stop the service
+			// via SQL.
+			killProcesses = false
+		} else {
+			virtualClusterDisplay = fmt.Sprintf(" virtual cluster %q, instance %d", virtualClusterName, sqlInstance)
+		}
+
 	}
 
 	if killProcesses {
@@ -605,6 +589,7 @@ fi`,
 				sig,                       // [5]
 				waitCmd,                   // [6]
 			)
+
 			res, err := c.runCmdOnSingleNode(ctx, l, node, cmd, defaultCmdOpts("kill"))
 			if err != nil {
 				return res, err
@@ -2685,43 +2670,4 @@ func GenFilenameFromArgs(maxLen int, args ...string) string {
 	}
 
 	return sb.String()
-}
-
-func (c *SyncedCluster) PopulateEtcHosts(ctx context.Context, l *logger.Logger) error {
-	if err := c.validateHost(ctx, l, c.Nodes); err != nil {
-		return err
-	}
-
-	hosts := make([]string, len(c.Nodes))
-	for i, node := range c.Nodes {
-		hosts[i] = fmt.Sprintf("{ip:%d}:{hostname:%d}", node, node)
-	}
-
-	cmd := fmt.Sprintf(`
-HOSTS_LIST="%s"
-
-while IFS= read -r entry; do
-  # Skip empty lines if any
-  [[ -z "$entry" ]] && continue
-
-  # Parse IP and hostname
-  i="${entry%%%%:*}"
-  h="${entry##*:}"
-
-  # Remove any existing entries for this IP or hostname
-  # The \b "word boundary" in the regex helps avoid partial matches
-  sudo sed -i "/\b${i}\b/d" /etc/hosts
-  sudo sed -i "/\b${h}\b/d" /etc/hosts
-
-  # Append the new entry
-  echo "$i    $h" | sudo tee -a /etc/hosts >/dev/null
-
-done <<< "$HOSTS_LIST"
-`, strings.Join(hosts, "\n"))
-
-	if err := c.Run(ctx, l, l.Stdout, l.Stderr, WithNodes(c.Nodes), "populating cluster /etc/hosts", cmd); err != nil {
-		return rperrors.TransientFailure(err, "install_flake")
-	}
-
-	return nil
 }

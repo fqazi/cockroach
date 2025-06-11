@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/cspann"
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/cspann/quantize"
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecencoding"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecstore"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -65,7 +64,7 @@ func TestSearcher(t *testing.T) {
 		EncodingType:        catenumpb.SecondaryIndexEncoding,
 	}
 
-	quantizer := quantize.NewUnQuantizer(2, vecpb.L2SquaredDistance)
+	quantizer := quantize.NewUnQuantizer(2)
 	store, err := vecstore.NewWithColumnID(
 		ctx,
 		internalDB,
@@ -78,13 +77,10 @@ func TestSearcher(t *testing.T) {
 	require.NoError(t, err)
 
 	options := cspann.IndexOptions{
-		RotAlgorithm:     vecpb.RotGivens,
 		MinPartitionSize: 2,
 		MaxPartitionSize: 4,
 		BaseBeamSize:     1,
 		IsDeterministic:  true,
-		// Disable adaptive search until it's extended to work with vecstore.
-		DisableAdaptiveSearch: true,
 	}
 	idx, err := cspann.NewIndex(ctx, store, quantizer, 42 /* seed */, &options, srv.Stopper())
 	require.NoError(t, err)
@@ -112,7 +108,7 @@ func TestSearcher(t *testing.T) {
 		keyBytes = keys.MakeFamilyKey(encoding.EncodeVarintAscending(keyBytes, key), 0 /* famID */)
 
 		randomized = slices.Grow(randomized, len(vec))[:len(vec)]
-		idx.TransformVector(vec, randomized)
+		idx.RandomizeVector(vec, randomized)
 		err = mutator.txn.AddToPartition(ctx, cspann.TreeKey(prefix), partitionKey, cspann.LeafLevel,
 			randomized, cspann.ChildKey{KeyBytes: keyBytes}, val)
 		require.NoError(t, err)
@@ -153,17 +149,17 @@ func TestSearcher(t *testing.T) {
 	prefix = encoding.EncodeVarintAscending(prefix, 100)
 	require.NoError(t, searcher.Search(ctx, prefix, original))
 	res := searcher.NextResult()
-	require.InDelta(t, float32(1), res.QueryDistance, 0.01)
+	require.InDelta(t, float32(1), res.QuerySquaredDistance, 0.01)
 	res = searcher.NextResult()
-	require.InDelta(t, float32(20), res.QueryDistance, 0.01)
+	require.InDelta(t, float32(20), res.QuerySquaredDistance, 0.01)
 	require.Nil(t, searcher.NextResult())
 
 	// Search again to ensure search state is reset.
 	require.NoError(t, searcher.Search(ctx, prefix, original))
 	res = searcher.NextResult()
-	require.InDelta(t, float32(1), res.QueryDistance, 0.01)
+	require.InDelta(t, float32(1), res.QuerySquaredDistance, 0.01)
 	res = searcher.NextResult()
-	require.InDelta(t, float32(20), res.QueryDistance, 0.01)
+	require.InDelta(t, float32(20), res.QuerySquaredDistance, 0.01)
 	require.Nil(t, searcher.NextResult())
 
 	// Search for a vector to delete that doesn't exist (reuse memory).

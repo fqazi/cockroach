@@ -341,7 +341,6 @@ type ProviderOpts struct {
 	// multiple projects or a single one.
 	MachineType      string
 	MinCPUPlatform   string
-	BootDiskType     string
 	Zones            []string
 	Image            string
 	SSDCount         int
@@ -354,12 +353,6 @@ type ProviderOpts struct {
 	// Use an instance template and a managed instance group to create VMs. This
 	// enables cluster resizing, load balancing, and health monitoring.
 	Managed bool
-	// Enable turbo mode for the instance. Only supported on C4 VM families.
-	// See: https://cloud.google.com/sdk/docs/release-notes#compute_engine_23
-	TurboMode string
-	// The number of visible threads per physical core.
-	// See: https://cloud.google.com/compute/docs/instances/configuring-simultaneous-multithreading.
-	ThreadsPerCore int
 	// This specifies a subset of the Zones above that will run on spot instances.
 	// VMs running in Zones not in this list will be provisioned on-demand. This
 	// is only used by managed instance groups.
@@ -459,12 +452,6 @@ func (p *Provider) GetHostErrorVMs(
 		hostErrorVMs = append(hostErrorVMs, logEntry.ProtoPayload.ResourceName)
 	}
 	return hostErrorVMs, nil
-}
-
-func (p *Provider) GetLiveMigrationVMs(
-	l *logger.Logger, vms vm.List, since time.Time,
-) ([]string, error) {
-	return nil, nil
 }
 
 // GetVMSpecs returns a map from VM.Name to a map of VM attributes, provided by GCE
@@ -1022,7 +1009,7 @@ type ProjectsVal struct {
 // ARM64 builds), but we randomize the specific zone. This is to avoid
 // "zone exhausted" errors in one particular zone, especially during
 // nightly roachtest runs.
-func DefaultZones(arch string, geoDistributed bool) []string {
+func DefaultZones(arch string) []string {
 	zones := []string{"us-east1-b", "us-east1-c", "us-east1-d"}
 	if vm.ParseArch(arch) == vm.ArchARM64 {
 		// T2A instances are only available in us-central1 in NA.
@@ -1030,21 +1017,17 @@ func DefaultZones(arch string, geoDistributed bool) []string {
 	}
 	rand.Shuffle(len(zones), func(i, j int) { zones[i], zones[j] = zones[j], zones[i] })
 
-	if geoDistributed {
-		return []string{
-			zones[0],
-			"us-west1-b",
-			"europe-west2-b",
-			zones[1],
-			"us-west1-c",
-			"europe-west2-c",
-			zones[2],
-			"us-west1-a",
-			"europe-west2-a",
-		}
+	return []string{
+		zones[0],
+		"us-west1-b",
+		"europe-west2-b",
+		zones[1],
+		"us-west1-c",
+		"europe-west2-c",
+		zones[2],
+		"us-west1-a",
+		"europe-west2-a",
 	}
-
-	return []string{zones[0]}
 }
 
 // Set is part of the pflag.Value interface.
@@ -1107,8 +1090,6 @@ func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 
 	flags.StringVar(&o.MachineType, ProviderName+"-machine-type", "n2-standard-4",
 		"Machine type (see https://cloud.google.com/compute/docs/machine-types)")
-	flags.StringVar(&o.BootDiskType, ProviderName+"-boot-disk-type", "pd-ssd",
-		"Type of the boot disk volume")
 	flags.StringVar(&o.MinCPUPlatform, ProviderName+"-min-cpu-platform", "Intel Ice Lake",
 		"Minimum CPU platform (see https://cloud.google.com/compute/docs/instances/specify-min-cpu-platform)")
 	flags.StringVar(&o.Image, ProviderName+"-image", DefaultImage,
@@ -1132,7 +1113,7 @@ func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 		fmt.Sprintf("Zones for cluster. If zones are formatted as AZ:N where N is an integer, the zone\n"+
 			"will be repeated N times. If > 1 zone specified, nodes will be geo-distributed\n"+
 			"regardless of geo (default [%s])",
-			strings.Join(DefaultZones(string(vm.ArchAMD64), true), ",")))
+			strings.Join(DefaultZones(string(vm.ArchAMD64)), ",")))
 	flags.BoolVar(&o.preemptible, ProviderName+"-preemptible", false,
 		"use preemptible GCE instances (lifetime cannot exceed 24h)")
 	flags.BoolVar(&o.UseSpot, ProviderName+"-use-spot", false,
@@ -1143,10 +1124,6 @@ func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 		"use a managed instance group (enables resizing, load balancing, and health monitoring)")
 	flags.BoolVar(&o.EnableCron, ProviderName+"-enable-cron",
 		false, "Enables the cron service (it is disabled by default)")
-	flags.StringVar(&o.TurboMode, ProviderName+"-turbo-mode", "",
-		"enable turbo mode for the instance (only supported on C4 VM families, valid value: 'ALL_CORE_MAX')")
-	flags.IntVar(&o.ThreadsPerCore, ProviderName+"-threads-per-core", 0,
-		"the number of visible threads per physical core (valid values: 1 or 2), default is 0 (auto)")
 }
 
 // ConfigureProviderFlags implements Provider
@@ -1345,7 +1322,11 @@ func computeZones(opts vm.CreateOpts, providerOpts *ProviderOpts) ([]string, err
 		return nil, err
 	}
 	if len(zones) == 0 {
-		zones = DefaultZones(opts.Arch, opts.GeoDistributed)
+		if opts.GeoDistributed {
+			zones = DefaultZones(opts.Arch)
+		} else {
+			zones = []string{DefaultZones(opts.Arch)[0]}
+		}
 	}
 	if providerOpts.useArmAMI() {
 		if len(providerOpts.Zones) == 0 {
@@ -1403,7 +1384,7 @@ func (p *Provider) computeInstanceArgs(
 		"--scopes", "cloud-platform",
 		"--image", image,
 		"--image-project", imageProject,
-		"--boot-disk-type", providerOpts.BootDiskType,
+		"--boot-disk-type", "pd-ssd",
 	}
 
 	if project == p.defaultProject && providerOpts.ServiceAccount == "" {
@@ -1411,12 +1392,6 @@ func (p *Provider) computeInstanceArgs(
 	}
 	if providerOpts.ServiceAccount != "" {
 		args = append(args, "--service-account", providerOpts.ServiceAccount)
-	}
-	if providerOpts.TurboMode != "" {
-		args = append(args, "--turbo-mode", providerOpts.TurboMode)
-	}
-	if providerOpts.ThreadsPerCore > 0 {
-		args = append(args, "--threads-per-core", fmt.Sprintf("%d", providerOpts.ThreadsPerCore))
 	}
 
 	if providerOpts.preemptible {
@@ -1655,11 +1630,6 @@ func (p *Provider) Create(
 	}
 	if providerOpts.Managed {
 		if err := checkSDKVersion("450.0.0" /* minVersion */, "required by managed instance groups"); err != nil {
-			return nil, err
-		}
-	}
-	if providerOpts.TurboMode != "" {
-		if err := checkSDKVersion("492.0.0" /* minVersion */, "required for turbo-mode setting"); err != nil {
 			return nil, err
 		}
 	}

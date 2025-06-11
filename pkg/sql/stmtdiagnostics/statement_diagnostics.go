@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/multitenant"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -31,6 +32,7 @@ var pollingInterval = settings.RegisterDurationSetting(
 	"sql.stmt_diagnostics.poll_interval",
 	"rate at which the stmtdiagnostics.Registry polls for requests, set to zero to disable",
 	10*time.Second,
+	settings.NonNegativeDuration,
 )
 
 var bundleChunkSize = settings.RegisterByteSizeSetting(
@@ -201,6 +203,7 @@ func (r *Registry) poll(ctx context.Context) {
 		case <-pollIntervalChanged:
 			continue // go back around and maybe reset the timer
 		case <-timer.C:
+			timer.Read = true
 		case <-ctx.Done():
 			return
 		}
@@ -305,6 +308,15 @@ func (r *Registry) insertRequestInternal(
 	redacted bool,
 	username string,
 ) (RequestID, error) {
+	if username != "" && !r.st.Version.IsActive(ctx, clusterversion.V25_2_AddUsernameToStmtDiagRequest) {
+		// Setting username is only supported after 25.2 version migrations have
+		// completed.
+		//
+		// Note that we could have required the caller to ensure that the
+		// migration has been completed and then returned an error here, but
+		// doing this silent override seems cleaner.
+		username = ""
+	}
 	if samplingProbability != 0 {
 		if samplingProbability < 0 || samplingProbability > 1 {
 			return 0, errors.Newf(
@@ -680,6 +692,7 @@ func (r *Registry) InsertStatementDiagnostics(
 // updates r.mu.requests accordingly.
 func (r *Registry) pollRequests(ctx context.Context) error {
 	var rows []tree.Datums
+	isUsernameSet := r.st.Version.IsActive(ctx, clusterversion.V25_2_AddUsernameToStmtDiagRequest)
 
 	// Loop until we run the query without straddling an epoch increment.
 	for {
@@ -687,11 +700,15 @@ func (r *Registry) pollRequests(ctx context.Context) error {
 		epoch := r.mu.epoch
 		r.mu.Unlock()
 
+		var extraColumns string
+		if isUsernameSet {
+			extraColumns = ", username"
+		}
 		it, err := r.db.Executor().QueryIteratorEx(ctx, "stmt-diag-poll", nil, /* txn */
 			sessiondata.NodeUserSessionDataOverride,
-			`SELECT id, statement_fingerprint, min_execution_latency, expires_at, sampling_probability, plan_gist, anti_plan_gist, redacted, username
+			fmt.Sprintf(`SELECT id, statement_fingerprint, min_execution_latency, expires_at, sampling_probability, plan_gist, anti_plan_gist, redacted%s
 				FROM system.statement_diagnostics_requests
-				WHERE completed = false AND (expires_at IS NULL OR expires_at > now())`,
+				WHERE completed = false AND (expires_at IS NULL OR expires_at > now())`, extraColumns),
 		)
 		if err != nil {
 			return err
@@ -751,8 +768,10 @@ func (r *Registry) pollRequests(ctx context.Context) error {
 		if b, ok := row[7].(*tree.DBool); ok {
 			redacted = bool(*b)
 		}
-		if u, ok := row[8].(*tree.DString); ok {
-			username = string(*u)
+		if isUsernameSet {
+			if u, ok := row[8].(*tree.DString); ok {
+				username = string(*u)
+			}
 		}
 		ids.Add(int(id))
 		r.addRequestInternalLocked(ctx, id, stmtFingerprint, planGist, antiPlanGist, samplingProbability, minExecutionLatency, expiresAt, redacted, username)

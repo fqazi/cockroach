@@ -18,7 +18,6 @@ SHOW default_int_size
 statement ok
 CREATE TABLE i4 (i4 INT)
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE i4
 ----
@@ -26,17 +25,7 @@ i4  CREATE TABLE public.i4 (
       i4 INT4 NULL,
       rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
       CONSTRAINT i4_pkey PRIMARY KEY (rowid ASC)
-    );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE i4
-----
-i4  CREATE TABLE public.i4 (
-      i4 INT4 NULL,
-      rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-      CONSTRAINT i4_pkey PRIMARY KEY (rowid ASC)
-    ) WITH (schema_locked = true);
+    )
 
 subtest set_int8
 
@@ -51,7 +40,6 @@ SHOW default_int_size
 statement ok
 CREATE TABLE i8 (i8 INT)
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE i8
 ----
@@ -59,17 +47,7 @@ i8  CREATE TABLE public.i8 (
       i8 INT8 NULL,
       rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
       CONSTRAINT i8_pkey PRIMARY KEY (rowid ASC)
-    );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE i8
-----
-i8  CREATE TABLE public.i8 (
-      i8 INT8 NULL,
-      rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-      CONSTRAINT i8_pkey PRIMARY KEY (rowid ASC)
-    ) WITH (schema_locked = true);
+    )
 
 # https://github.com/cockroachdb/cockroach/issues/32846
 subtest issue_32846
@@ -85,7 +63,6 @@ SET default_int_size=4;
 CREATE TABLE late4 (a INT);
 COMMIT;
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE late4
 ----
@@ -93,17 +70,7 @@ late4  CREATE TABLE public.late4 (
          a INT8 NULL,
          rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
          CONSTRAINT late4_pkey PRIMARY KEY (rowid ASC)
-       );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE late4
-----
-late4  CREATE TABLE public.late4 (
-         a INT8 NULL,
-         rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-         CONSTRAINT late4_pkey PRIMARY KEY (rowid ASC)
-       ) WITH (schema_locked = true);
+       )
 
 query T
 SHOW default_int_size
@@ -128,7 +95,6 @@ SET default_int_size=4; SET serial_normalization='rowid';
 statement ok
 CREATE TABLE i4_rowid (a SERIAL)
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE i4_rowid
 ----
@@ -136,17 +102,7 @@ i4_rowid  CREATE TABLE public.i4_rowid (
             a INT8 NOT NULL DEFAULT unique_rowid(),
             rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
             CONSTRAINT i4_rowid_pkey PRIMARY KEY (rowid ASC)
-          );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE i4_rowid
-----
-i4_rowid  CREATE TABLE public.i4_rowid (
-            a INT8 NOT NULL DEFAULT unique_rowid(),
-            rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-            CONSTRAINT i4_rowid_pkey PRIMARY KEY (rowid ASC)
-          ) WITH (schema_locked = true);
+          )
 
 statement ok
 SET default_int_size=8; SET serial_normalization='rowid';
@@ -154,7 +110,6 @@ SET default_int_size=8; SET serial_normalization='rowid';
 statement ok
 CREATE TABLE i8_rowid (a SERIAL)
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE i8_rowid
 ----
@@ -162,17 +117,7 @@ i8_rowid  CREATE TABLE public.i8_rowid (
             a INT8 NOT NULL DEFAULT unique_rowid(),
             rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
             CONSTRAINT i8_rowid_pkey PRIMARY KEY (rowid ASC)
-          );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE i8_rowid
-----
-i8_rowid  CREATE TABLE public.i8_rowid (
-            a INT8 NOT NULL DEFAULT unique_rowid(),
-            rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-            CONSTRAINT i8_rowid_pkey PRIMARY KEY (rowid ASC)
-          ) WITH (schema_locked = true);
+          )
 
 subtest serial_sql_sequence
 # When using rowid, we should see an INTx that matches the current size setting.
@@ -183,7 +128,6 @@ SET default_int_size=4; SET serial_normalization='sql_sequence';
 statement ok
 CREATE TABLE i4_sql_sequence (a SERIAL)
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE i4_sql_sequence
 ----
@@ -191,17 +135,7 @@ i4_sql_sequence  CREATE TABLE public.i4_sql_sequence (
                    a INT4 NOT NULL DEFAULT nextval('public.i4_sql_sequence_a_seq'::REGCLASS),
                    rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
                    CONSTRAINT i4_sql_sequence_pkey PRIMARY KEY (rowid ASC)
-                 );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE i4_sql_sequence
-----
-i4_sql_sequence  CREATE TABLE public.i4_sql_sequence (
-                   a INT4 NOT NULL DEFAULT nextval('public.i4_sql_sequence_a_seq'::REGCLASS),
-                   rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-                   CONSTRAINT i4_sql_sequence_pkey PRIMARY KEY (rowid ASC)
-                 ) WITH (schema_locked = true);
+                 )
 
 statement ok
 SET default_int_size=8; SET serial_normalization='sql_sequence';
@@ -209,7 +143,6 @@ SET default_int_size=8; SET serial_normalization='sql_sequence';
 statement ok
 CREATE TABLE i8_sql_sequence (a SERIAL)
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE i8_sql_sequence
 ----
@@ -217,17 +150,7 @@ i8_sql_sequence  CREATE TABLE public.i8_sql_sequence (
                    a INT8 NOT NULL DEFAULT nextval('public.i8_sql_sequence_a_seq'::REGCLASS),
                    rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
                    CONSTRAINT i8_sql_sequence_pkey PRIMARY KEY (rowid ASC)
-                 );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE i8_sql_sequence
-----
-i8_sql_sequence  CREATE TABLE public.i8_sql_sequence (
-                   a INT8 NOT NULL DEFAULT nextval('public.i8_sql_sequence_a_seq'::REGCLASS),
-                   rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-                   CONSTRAINT i8_sql_sequence_pkey PRIMARY KEY (rowid ASC)
-                 ) WITH (schema_locked = true);
+                 )
 
 subtest serial_virtual_sequence
 # Virtual sequences are a wrapper around unique_rowid(), so they will also
@@ -239,7 +162,6 @@ SET default_int_size=4; SET serial_normalization='virtual_sequence';
 statement ok
 CREATE TABLE i4_virtual_sequence (a SERIAL)
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE i4_virtual_sequence
 ----
@@ -247,17 +169,7 @@ i4_virtual_sequence  CREATE TABLE public.i4_virtual_sequence (
                        a INT8 NOT NULL DEFAULT nextval('public.i4_virtual_sequence_a_seq'::REGCLASS),
                        rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
                        CONSTRAINT i4_virtual_sequence_pkey PRIMARY KEY (rowid ASC)
-                     );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE i4_virtual_sequence
-----
-i4_virtual_sequence  CREATE TABLE public.i4_virtual_sequence (
-                       a INT8 NOT NULL DEFAULT nextval('public.i4_virtual_sequence_a_seq'::REGCLASS),
-                       rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-                       CONSTRAINT i4_virtual_sequence_pkey PRIMARY KEY (rowid ASC)
-                     ) WITH (schema_locked = true);
+                     )
 
 statement ok
 SET default_int_size=8; SET serial_normalization='virtual_sequence';
@@ -265,7 +177,6 @@ SET default_int_size=8; SET serial_normalization='virtual_sequence';
 statement ok
 CREATE TABLE i8_virtual_sequence (a SERIAL)
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE i8_virtual_sequence
 ----
@@ -273,14 +184,4 @@ i8_virtual_sequence  CREATE TABLE public.i8_virtual_sequence (
                        a INT8 NOT NULL DEFAULT nextval('public.i8_virtual_sequence_a_seq'::REGCLASS),
                        rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
                        CONSTRAINT i8_virtual_sequence_pkey PRIMARY KEY (rowid ASC)
-                     );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE i8_virtual_sequence
-----
-i8_virtual_sequence  CREATE TABLE public.i8_virtual_sequence (
-                       a INT8 NOT NULL DEFAULT nextval('public.i8_virtual_sequence_a_seq'::REGCLASS),
-                       rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-                       CONSTRAINT i8_virtual_sequence_pkey PRIMARY KEY (rowid ASC)
-                     ) WITH (schema_locked = true);
+                     )

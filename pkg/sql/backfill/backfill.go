@@ -56,6 +56,7 @@ var IndexBackfillCheckpointInterval = settings.RegisterDurationSetting(
 	"bulkio.index_backfill.checkpoint_interval",
 	"the amount of time between index backfill checkpoint updates",
 	30*time.Second,
+	settings.NonNegativeDuration,
 )
 
 // MutationFilter is the type of a simple predicate on a mutation.
@@ -404,9 +405,8 @@ func (cb *ColumnBackfiller) RunColumnBackfillChunk(
 		// VectorIndexUpdateHelper in this case.
 		var pm row.PartialIndexUpdateHelper
 		var vh row.VectorIndexUpdateHelper
-		var oth row.OriginTimestampCPutHelper
 		if _, err := ru.UpdateRow(
-			ctx, b, oldValues, updateValues, pm, vh, oth, false /* mustValidateOldPKValues */, traceKV,
+			ctx, b, oldValues, updateValues, pm, vh, nil, false /* mustValidateOldPKValues */, traceKV,
 		); err != nil {
 			return roachpb.Key{}, err
 		}
@@ -448,7 +448,7 @@ func ConvertBackfillError(
 	if err != nil {
 		return err
 	}
-	return row.ConvertBatchError(ctx, desc, b, true /* alwaysConvertCondFailed */)
+	return row.ConvertBatchError(ctx, desc, b)
 }
 
 type muBoundAccount struct {

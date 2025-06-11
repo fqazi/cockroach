@@ -448,9 +448,6 @@ type Planner interface {
 
 	// ClearTableStatsCache removes all entries from the node's table stats cache.
 	ClearTableStatsCache()
-
-	// RetryCounter is the number of times this statement has been retried.
-	RetryCounter() int
 }
 
 // InternalRows is an iterator interface that's exposed by the internal
@@ -538,7 +535,7 @@ type PreparedStatementState interface {
 	// HasActivePortals returns true if there are portals in the session.
 	HasActivePortals() bool
 	// MigratablePreparedStatements returns a mapping of all prepared statements.
-	MigratablePreparedStatements() ([]sessiondatapb.MigratableSession_PreparedStatement, error)
+	MigratablePreparedStatements() []sessiondatapb.MigratableSession_PreparedStatement
 	// HasPortal returns true if there exists a given named portal in the session.
 	HasPortal(s string) bool
 }
@@ -714,6 +711,7 @@ type GossipOperator interface {
 type SQLStatsController interface {
 	ResetClusterSQLStats(ctx context.Context) error
 	ResetActivityTables(ctx context.Context) error
+	ResetInsightsTables(ctx context.Context) error
 	CreateSQLStatsCompactionSchedule(ctx context.Context) error
 }
 

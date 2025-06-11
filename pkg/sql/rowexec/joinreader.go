@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/fetchpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execopnode"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execstats"
@@ -173,8 +172,8 @@ type joinReader struct {
 	// remoteLookupExpr contains the lookup join conditions targeting remote
 	// nodes. See comments in the spec for more details.
 	lookupCols       []uint32
-	lookupExpr       execexpr.Helper
-	remoteLookupExpr execexpr.Helper
+	lookupExpr       execinfrapb.ExprHelper
+	remoteLookupExpr execinfrapb.ExprHelper
 
 	// spansCanOverlap indicates whether the spans generated for a given input
 	// batch can overlap. It is used in the fetcher when deciding whether a newly

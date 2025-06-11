@@ -9,7 +9,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
-	"context"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
@@ -30,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -42,7 +40,6 @@ const (
 const (
 	UploadStatusSuccess = "Success"
 	UploadStatusFailure = "Failed"
-	nodeKey             = "node_id"
 )
 
 var (
@@ -66,11 +63,6 @@ var (
 		" These failures can be due to transietnt network errors. If any of these metrics are critical for your investigation," +
 		" please re-upload the Tsdump:\n%s\n"
 	datadogLogsURLFormat = "https://us5.datadoghq.com/logs?query=cluster_label:%s+upload_id:%s"
-
-	translateMetricType = map[string]int{
-		"GAUGE":   DatadogSeriesTypeGauge,
-		"COUNTER": DatadogSeriesTypeCounter,
-	}
 )
 
 // DatadogPoint is a single metric point in Datadog format
@@ -86,7 +78,6 @@ type DatadogSeries struct {
 	Metric    string         `json:"metric"`
 	Type      int            `json:"type"`
 	Points    []DatadogPoint `json:"points"`
-	Interval  int            `json:"interval,omitempty"`
 	Resources []struct {
 		Name string `json:"name"`
 		Type string `json:"type"`
@@ -125,12 +116,10 @@ type datadogWriter struct {
 	apiKey    string
 	// namePrefix sets the string to prepend to all metric names. The
 	// names are kept with `.` delimiters.
-	namePrefix     string
-	doRequest      func(req *http.Request) error
-	threshold      int
-	uploadTime     time.Time
-	storeToNodeMap map[string]string
-	metricTypeMap  map[string]string
+	namePrefix string
+	doRequest  func(req *http.Request) error
+	threshold  int
+	uploadTime time.Time
 }
 
 func makeDatadogWriter(
@@ -140,31 +129,18 @@ func makeDatadogWriter(
 	threshold int,
 	doRequest func(req *http.Request) error,
 ) *datadogWriter {
+
 	currentTime := getCurrentTime()
 
-	var metricTypeMap map[string]string
-	if init {
-		// we only need to load the metric types map when the command is
-		// datadogInit. It's ok to keep it nil otherwise.
-		var err error
-		metricTypeMap, err = loadMetricTypesMap(context.Background())
-		if err != nil {
-			fmt.Printf(
-				"error loading metric types map: %v\nThis may lead to some metrics not behaving correctly on Datadog.\n", err)
-		}
-	}
-
 	return &datadogWriter{
-		targetURL:      targetURL,
-		uploadID:       newTsdumpUploadID(currentTime),
-		init:           init,
-		apiKey:         apiKey,
-		namePrefix:     "crdb.tsdump.", // Default pre-set prefix to distinguish these uploads.
-		doRequest:      doRequest,
-		threshold:      threshold,
-		uploadTime:     currentTime,
-		storeToNodeMap: make(map[string]string),
-		metricTypeMap:  metricTypeMap,
+		targetURL:  targetURL,
+		uploadID:   newTsdumpUploadID(currentTime),
+		init:       init,
+		apiKey:     apiKey,
+		namePrefix: "crdb.tsdump.", // Default pre-set prefix to distinguish these uploads.
+		doRequest:  doRequest,
+		threshold:  threshold,
+		uploadTime: currentTime,
 	}
 }
 
@@ -172,7 +148,7 @@ var getCurrentTime = func() time.Time {
 	return timeutil.Now()
 }
 
-var doDDRequest = func(req *http.Request) error {
+func doDDRequest(req *http.Request) error {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
@@ -196,13 +172,8 @@ var doDDRequest = func(req *http.Request) error {
 	return nil
 }
 
-// appendTag appends a formatted tag to the series tags.
-func appendTag(series *DatadogSeries, tagKey, tagValue string) {
-	series.Tags = append(series.Tags, fmt.Sprintf("%s:%s", tagKey, tagValue))
-}
-
-func (d *datadogWriter) dump(kv *roachpb.KeyValue) (*DatadogSeries, error) {
-	name, source, res, _, err := ts.DecodeDataKey(kv.Key)
+func dump(kv *roachpb.KeyValue) (*DatadogSeries, error) {
+	name, source, _, _, err := ts.DecodeDataKey(kv.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -212,36 +183,22 @@ func (d *datadogWriter) dump(kv *roachpb.KeyValue) (*DatadogSeries, error) {
 	}
 
 	series := &DatadogSeries{
-		Metric:   name,
-		Tags:     []string{},
-		Type:     d.resolveMetricType(name),
-		Points:   make([]DatadogPoint, idata.SampleCount()),
-		Interval: int(res.Duration().Seconds()), // convert from time.Duration to number of seconds.
+		Metric: name,
+		Tags:   []string{},
+		Type:   DatadogSeriesTypeUnknown,
+		Points: make([]DatadogPoint, idata.SampleCount()),
 	}
 
 	sl := reCrStoreNode.FindStringSubmatch(name)
-	if len(sl) >= 3 {
-		// extract the node/store and metric name from the regex match.
-		key := sl[1]
-		series.Metric = sl[2]
-
-		switch key {
-		case "node":
-			appendTag(series, nodeKey, source)
-		case "store":
-			appendTag(series, key, source)
-			// We check the node associated with store if store to node mapping
-			// is provided as part of --store-to-node-map-file flag. If exists then
-			// emit node as tag.
-			if nodeID, ok := d.storeToNodeMap[source]; ok {
-				appendTag(series, nodeKey, nodeID)
-			}
-		default:
-			appendTag(series, key, source)
+	if len(sl) != 0 {
+		storeNodeKey := sl[1]
+		if storeNodeKey == "node" {
+			storeNodeKey += "_id"
 		}
+		series.Tags = append(series.Tags, fmt.Sprintf("%s:%s", storeNodeKey, source))
+		series.Metric = sl[2]
 	} else {
-		// add default node_id as 0 as there is no metric match for the regex.
-		appendTag(series, nodeKey, "0")
+		series.Tags = append(series.Tags, "node_id:0")
 	}
 
 	for i := 0; i < idata.SampleCount(); i++ {
@@ -255,41 +212,6 @@ func (d *datadogWriter) dump(kv *roachpb.KeyValue) (*DatadogSeries, error) {
 
 	}
 	return series, nil
-}
-
-func (d *datadogWriter) resolveMetricType(metricName string) int {
-	if !d.init {
-		// in this is not datadogInit command, we don't need to resolve the metric
-		// type. We can just return DatadogSeriesTypeUnknown. Datadog only expects
-		// us to send the type information only once.
-		return DatadogSeriesTypeUnknown
-	}
-
-	typeLookupKey := strings.TrimPrefix(metricName, "cr.store.")
-	typeLookupKey = strings.TrimPrefix(typeLookupKey, "cr.node.")
-	metricType := d.metricTypeMap[typeLookupKey]
-	if t, ok := translateMetricType[metricType]; ok {
-		return t
-	}
-
-	if strings.HasSuffix(metricName, "-count") {
-		return DatadogSeriesTypeCounter
-	}
-
-	if strings.HasSuffix(metricName, "-avg") ||
-		strings.HasSuffix(metricName, "-max") ||
-		strings.HasSuffix(metricName, "-sum") ||
-		strings.HasSuffix(metricName, "-p50") ||
-		strings.HasSuffix(metricName, "-p75") ||
-		strings.HasSuffix(metricName, "-p90") ||
-		strings.HasSuffix(metricName, "-p99") ||
-		strings.HasSuffix(metricName, "-p99.9") ||
-		strings.HasSuffix(metricName, "-p99.99") ||
-		strings.HasSuffix(metricName, "-p99.999") {
-		return DatadogSeriesTypeGauge
-	}
-
-	return DatadogSeriesTypeUnknown
 }
 
 var printLock syncutil.Mutex
@@ -312,7 +234,7 @@ func (d *datadogWriter) emitDataDogMetrics(data []DatadogSeries) ([]string, erro
 		for i := 0; i < len(data); i++ {
 			data[i].Points = []DatadogPoint{{
 				Value:     0,
-				Timestamp: getCurrentTime().Unix(),
+				Timestamp: timeutil.Now().Unix(),
 			}}
 		}
 	}
@@ -389,7 +311,7 @@ func (d *datadogWriter) flush(data []DatadogSeries) error {
 	}
 
 	retryOpts := base.DefaultRetryOptions()
-	retryOpts.MaxBackoff = 100 * time.Millisecond
+	retryOpts.MaxBackoff = 2 * time.Second
 	retryOpts.MaxRetries = 100
 	var req *http.Request
 	for retry := retry.Start(retryOpts); retry.Next(); {
@@ -416,11 +338,6 @@ func (d *datadogWriter) upload(fileName string) error {
 		return err
 	}
 
-	storeToNodeYamlFile := debugTimeSeriesDumpOpts.storeToNodeMapYAMLFile
-	if storeToNodeYamlFile != "" {
-		d.populateNodeAndStoreMap(storeToNodeYamlFile)
-	}
-
 	dec := gob.NewDecoder(f)
 	decodeOne := func() ([]DatadogSeries, error) {
 		var ddSeries []DatadogSeries
@@ -432,7 +349,7 @@ func (d *datadogWriter) upload(fileName string) error {
 				return ddSeries, err
 			}
 
-			datadogSeries, err := d.dump(&v)
+			datadogSeries, err := dump(&v)
 			if err != nil {
 				return nil, err
 			}
@@ -462,9 +379,9 @@ func (d *datadogWriter) upload(fileName string) error {
 
 	// Note(davidh): This was previously set at 1000 and we'd get regular
 	// 400s from Datadog with the cryptic `Unable to decompress payload`
-	// error. We reduced this to 20 and was able to upload a 3.2GB tsdump
-	// in 6m20s without any errors.
-	for i := 0; i < 20; i++ {
+	// error. I reduced this to 10 and was able to upload a 1.65GB tsdump
+	// in 3m10s without any errors (compared to 1m43s with 700 errors).
+	for i := 0; i < 10; i++ {
 		go func() {
 			for data := range ch {
 				emittedMetrics, err := d.emitDataDogMetrics(data)
@@ -574,27 +491,6 @@ func (d *datadogWriter) upload(fileName string) error {
 	return nil
 }
 
-func (d *datadogWriter) populateNodeAndStoreMap(fileName string) {
-	file, err := os.Open(fileName)
-	if err != nil {
-		fmt.Printf("error in opening store to node mapping YAML file: %v\n", err)
-		return
-	}
-
-	defer func(file *os.File) {
-		err := file.Close()
-		if err != nil {
-			fmt.Printf("error in clsoing store to node mapping YAML: %v\n", err)
-		}
-	}(file)
-
-	decoder := yaml.NewDecoder(file)
-	if err := decoder.Decode(&d.storeToNodeMap); err != nil {
-		fmt.Printf("error decoding store to node mapping file YAML: %v\n", err)
-		return
-	}
-}
-
 // getFileReader returns an io.Reader based on the file type.
 func getFileReader(fileName string) (io.Reader, error) {
 	file, err := os.Open(fileName)
@@ -643,22 +539,4 @@ func fileSize(file *os.File) int64 {
 		return 0
 	}
 	return info.Size()
-}
-
-func loadMetricTypesMap(ctx context.Context) (map[string]string, error) {
-	metricLayers, err := generateMetricList(ctx, true /* skipFiltering */)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to generate metric list")
-	}
-
-	metricTypeMap := make(map[string]string)
-	for _, metric := range metricLayers {
-		for _, catagory := range metric.Categories {
-			for _, m := range catagory.Metrics {
-				metricTypeMap[m.Name] = m.Type
-			}
-		}
-	}
-
-	return metricTypeMap, nil
 }

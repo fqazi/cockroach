@@ -146,12 +146,10 @@ func registerLoadSplits(r registry.Registry) {
 	cSpec := r.MakeClusterSpec(numNodes, spec.WorkloadNode())
 
 	r.Add(registry.TestSpec{
-		Name:    fmt.Sprintf("splits/load/uniform/nodes=%d", numRoachNodes),
-		Owner:   registry.OwnerKV,
-		Cluster: cSpec,
-		// The tests assert on the CPU usage indirectly via the number of splits,
-		// only GCE was intended to be used with the hardcoded split numbers.
-		CompatibleClouds: registry.OnlyGCE,
+		Name:             fmt.Sprintf("splits/load/uniform/nodes=%d", numRoachNodes),
+		Owner:            registry.OwnerKV,
+		Cluster:          cSpec,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -199,7 +197,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/uniform/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -221,7 +219,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/sequential/nodes=%d", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -247,7 +245,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/sequential/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -274,7 +272,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/spanning/nodes=%d", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -295,7 +293,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/spanning/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -325,7 +323,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/ycsb/a/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -350,7 +348,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/ycsb/b/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -374,7 +372,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/ycsb/d/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -399,7 +397,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/ycsb/e/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {

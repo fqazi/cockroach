@@ -614,8 +614,7 @@ func (n *createTableNode) startExec(params runParams) error {
 				// indexes, partial, vector, or otherwise, to update.
 				var pm row.PartialIndexUpdateHelper
 				var vh row.VectorIndexUpdateHelper
-				var oth row.OriginTimestampCPutHelper
-				if err := ti.row(params.ctx, rowBuffer, pm, vh, oth, params.extendedEvalCtx.Tracing.KVTracingEnabled()); err != nil {
+				if err := ti.row(params.ctx, rowBuffer, pm, vh, params.extendedEvalCtx.Tracing.KVTracingEnabled()); err != nil {
 					return err
 				}
 			}
@@ -1421,7 +1420,8 @@ func NewTableDesc(
 	desc := tabledesc.InitTableDescriptor(
 		id, dbID, sc.GetID(), n.Table.Table(), creationTime, privileges, persistence,
 	)
-	setter := tablestorageparam.NewSetter(&desc, true /* isNewObject */)
+
+	setter := tablestorageparam.NewSetter(&desc)
 	if err := storageparam.Set(
 		ctx,
 		semaCtx,
@@ -1977,11 +1977,7 @@ func NewTableDesc(
 				if err != nil {
 					return nil, err
 				}
-				opClass := columns[len(columns)-1].OpClass
-				idx.VecConfig, err = vecindex.MakeVecConfig(ctx, evalCtx, column.GetType(), opClass)
-				if err != nil {
-					return nil, err
-				}
+				idx.VecConfig = vecindex.MakeVecConfig(evalCtx, column.GetType())
 			}
 
 			var idxPartitionBy *tree.PartitionBy
@@ -2579,17 +2575,6 @@ func newTableDesc(
 		}
 		ttl.ScheduleID = j.ScheduleID()
 	}
-
-	// For tables set schema_locked by default if it hasn't been set, and we
-	// aren't running under an internal executor.
-	if !ret.IsView() && !ret.IsSequence() && !ret.IsTemporary() &&
-		n.StorageParams.GetVal("schema_locked") == nil &&
-		!params.p.SessionData().Internal &&
-		params.p.SessionData().CreateTableWithSchemaLocked &&
-		params.p.IsActive(params.ctx, clusterversion.V25_2) {
-		ret.SchemaLocked = true
-	}
-
 	return ret, nil
 }
 
