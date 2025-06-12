@@ -13,6 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/internal/validate"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/zone"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/errors"
 )
 
 // MutableCatalog is like Catalog but mutable.
@@ -44,24 +45,12 @@ func (mc *MutableCatalog) ensureForID(id descpb.ID) *byIDEntry {
 	newEntry := &byIDEntry{
 		id: id,
 	}
-	if replaced := mc.ensureForIDWithEntry(newEntry); replaced != nil {
-		*newEntry = *replaced
+	if replaced := mc.byID.upsert(newEntry); replaced != nil {
+		*newEntry = *(replaced.(*byIDEntry))
 	} else {
 		mc.byteSize += newEntry.ByteSize()
 	}
 	return newEntry
-}
-
-// ensureForWithEntry upserts the entry and returns either the current entry or
-// the one that has replaced.
-func (mc *MutableCatalog) ensureForIDWithEntry(newEntry *byIDEntry) *byIDEntry {
-	mc.maybeInitialize()
-	if replaced := mc.byID.upsert(newEntry); replaced != nil {
-		return replaced.(*byIDEntry)
-	} else {
-		mc.byteSize += newEntry.ByteSize()
-	}
-	return nil
 }
 
 func (mc *MutableCatalog) maybeGetByID(id descpb.ID) *byIDEntry {
@@ -79,22 +68,12 @@ func (mc *MutableCatalog) ensureForName(key catalog.NameKey) *byNameEntry {
 		parentSchemaID: key.GetParentSchemaID(),
 		name:           key.GetName(),
 	}
-	if replaced := mc.ensureForNameWithEntry(newEntry); replaced != nil {
-		*newEntry = *replaced
-	}
-	return newEntry
-}
-
-// ensureForNameWithEntry upserts the entry and returns either the current entry or
-// the one that has replaced.
-func (mc *MutableCatalog) ensureForNameWithEntry(newEntry *byNameEntry) *byNameEntry {
-	mc.maybeInitialize()
 	if replaced := mc.byName.upsert(newEntry); replaced != nil {
-		return replaced.(*byNameEntry)
+		*newEntry = *(replaced.(*byNameEntry))
 	} else {
 		mc.byteSize += newEntry.ByteSize()
 	}
-	return nil
+	return newEntry
 }
 
 // DeleteByName removes all by-name mappings from the MutableCatalog.
@@ -143,8 +122,8 @@ func (mc *MutableCatalog) UpsertDescriptor(desc catalog.Descriptor) {
 // UpsertComment upserts a ((ObjectID, SubID, CommentType) -> Comment) mapping
 // into the catalog.
 func (mc *MutableCatalog) UpsertComment(key catalogkeys.CommentKey, cmt string) error {
-	if err := key.Validate(); err != nil {
-		return err
+	if !catalogkeys.IsValidCommentType(key.CommentType) {
+		return errors.AssertionFailedf("invalid comment type %d", key.CommentType)
 	}
 	e := mc.ensureForID(descpb.ID(key.ObjectID))
 	mc.byteSize -= e.ByteSize()
@@ -213,23 +192,17 @@ func (mc *MutableCatalog) AddAll(c Catalog) {
 		return
 	}
 	_ = c.byName.ascend(func(entry catalog.NameEntry) error {
-		ne := entry.(*byNameEntry)
-		e := mc.ensureForNameWithEntry(ne)
-		if e != nil {
-			// Update the size since the entry was replaced.
-			mc.byteSize -= e.ByteSize()
-			mc.byteSize += ne.ByteSize()
-		}
+		e := mc.ensureForName(entry)
+		mc.byteSize -= e.ByteSize()
+		*e = *(entry.(*byNameEntry))
+		mc.byteSize += e.ByteSize()
 		return nil
 	})
 	_ = c.byID.ascend(func(entry catalog.NameEntry) error {
-		ne := entry.(*byIDEntry)
-		e := mc.ensureForIDWithEntry(ne)
-		if e != nil {
-			// Update the size since the entry was replaced.
-			mc.byteSize -= e.ByteSize()
-			mc.byteSize += ne.ByteSize()
-		}
+		e := mc.ensureForID(entry.GetID())
+		mc.byteSize -= e.ByteSize()
+		*e = *(entry.(*byIDEntry))
+		mc.byteSize += e.ByteSize()
 		return nil
 	})
 }

@@ -10,7 +10,7 @@ def _proto_sources_impl(ctx):
         transitive = [p[ProtoInfo].transitive_sources for p in ctx.attr.protos],
     ))
 
-proto_sources = rule(
+_proto_sources = rule(
     doc = """Provider Adapter from ProtoInfo to DefaultInfo.
         Extracts the transitive_sources from the ProtoInfo provided by the proto attr.
         This allows a macro to access the complete set of .proto files needed during compilation.
@@ -37,7 +37,7 @@ def protobufjs_library(name, out_name, protos, **kwargs):
     ts_target = "_%s_pbts" % name
 
     # grab the transitive .proto files needed to compile the given one
-    proto_sources(
+    _proto_sources(
         name = proto_target,
         protos = protos,
     )

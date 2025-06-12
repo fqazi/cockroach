@@ -16,9 +16,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/gossip"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/keys"
-	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvstreamer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangecache"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/diskmap"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
@@ -113,9 +111,6 @@ type ServerConfig struct {
 	// used during restore.
 	RestoreMonitor *mon.BytesMonitor
 
-	// ChangefeedMonitor is the parent monitor for all CDC DistSQL flows.
-	ChangefeedMonitor *mon.BytesMonitor
-
 	// BulkSenderLimiter is the concurrency limiter that is shared across all of
 	// the processes in a given sql server when sending bulk ingest (AddSST) reqs.
 	BulkSenderLimiter limit.ConcurrentRequestLimiter
@@ -130,14 +125,9 @@ type ServerConfig struct {
 	Metrics            *DistSQLMetrics
 	RowMetrics         *rowinfra.Metrics
 	InternalRowMetrics *rowinfra.Metrics
-	KVStreamerMetrics  *kvstreamer.Metrics
 
 	// SQLLivenessReader provides access to reading the liveness of sessions.
 	SQLLivenessReader sqlliveness.Reader
-	// BlockingSQLLivenessReader is a sqlliveness.Reader that synchronously
-	// blocks to determine the status of a session which it does not know about or
-	// thinks might be expired.
-	BlockingSQLLivenessReader sqlliveness.Reader
 
 	// JobRegistry manages jobs being used by this Server.
 	JobRegistry *jobs.Registry
@@ -157,7 +147,8 @@ type ServerConfig struct {
 	ExternalStorageFromURI cloud.ExternalStorageFromURIFactory
 
 	// ProtectedTimestampProvider maintains the state of the protected timestamp
-	// subsystem. It is queried during the GC process.
+	// subsystem. It is queried during the GC process and in the handling of
+	// AdminVerifyProtectedTimestampRequest.
 	ProtectedTimestampProvider protectedts.Provider
 
 	DistSender *kvcoord.DistSender
@@ -210,11 +201,6 @@ type ServerConfig struct {
 	// RootSQLMemoryPoolSize is the size in bytes of the root SQL memory
 	// monitor.
 	RootSQLMemoryPoolSize int64
-
-	// VecIndexManager allows SQL processors to access the vecindex.VectorIndex
-	// for operations on a vector index. It's stored as an `interface{}` due to
-	// package dependency cycles
-	VecIndexManager interface{}
 }
 
 // RuntimeStats is an interface through which the rowexec layer can get
@@ -242,10 +228,6 @@ type TestingKnobs struct {
 	// function returns an error, or if the table has already been dropped.
 	RunAfterBackfillChunk func()
 
-	// RunBeforeIndexBackfillProgressUpdate is called before updating the
-	// progress for a single index backfill.
-	RunBeforeIndexBackfillProgressUpdate func(ctx context.Context, completed []roachpb.Span)
-
 	// SerializeIndexBackfillCreationAndIngestion ensures that every index batch
 	// created during an index backfill is also ingested before moving on to the
 	// next batch or returning.
@@ -258,10 +240,6 @@ type TestingKnobs struct {
 	// processor pushes the spans for which it has successfully backfilled the
 	// indexes.
 	IndexBackfillProgressReportInterval time.Duration
-
-	// RunDuringReencodeVectorIndexEntry is called during vector index entry backfill to
-	// simulate a transaction error.
-	RunDuringReencodeVectorIndexEntry func(txn *kv.Txn) error
 
 	// ForceDiskSpill forces any processors/operators that can fall back to disk
 	// to fall back to disk immediately.
@@ -341,10 +319,6 @@ type TestingKnobs struct {
 	// will be assigned to the gateway before we start assigning partitions to
 	// other nodes.
 	MinimumNumberOfGatewayPartitions int
-
-	// TableReaderStartScanCb, when non-nil, will be called whenever the
-	// TableReader processor starts its scan.
-	TableReaderStartScanCb func()
 }
 
 // ModuleTestingKnobs is part of the base.ModuleTestingKnobs interface.

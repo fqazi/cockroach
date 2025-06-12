@@ -9,6 +9,7 @@ package colexecbase
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -32,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil/pgdate"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
@@ -51,7 +51,6 @@ var (
 	_ = pgcode.Syntax
 	_ = pgdate.ParseTimestamp
 	_ = pgerror.Wrapf
-	_ = log.ExpensiveLogEnabled
 )
 
 func isIdentityCast(fromType, toType *types.T) bool {
@@ -72,12 +71,7 @@ func isIdentityCast(fromType, toType *types.T) bool {
 	return false
 }
 
-var errUnhandledCast = errors.New("unhandled cast")
-
-var errUnhandledCastToOid = errors.New("unhandled cast to oid")
-
 func GetCastOperator(
-	ctx context.Context,
 	allocator *colmem.Allocator,
 	input colexecop.Operator,
 	colIdx int,
@@ -93,11 +87,6 @@ func GetCastOperator(
 		colIdx:                   colIdx,
 		outputIdx:                resultIdx,
 		evalCtx:                  evalCtx,
-	}
-	if toType.Family() == types.OidFamily {
-		// Casting to Oid has special logic that involves resolving different
-		// objects, so we'll fall back to the row-by-row engine for that.
-		return nil, errUnhandledCastToOid
 	}
 	if fromType.Family() == types.UnknownFamily {
 		return &castOpNullAny{castOpBase: base}, nil
@@ -638,19 +627,14 @@ func GetCastOperator(
 			}
 		}
 	}
-	err := errUnhandledCast
-	if log.ExpensiveLogEnabled(ctx, 1) {
-		err = errors.Newf("unhandled cast %s -> %s", fromType.SQLStringForError(), toType.SQLStringForError())
-	}
-	return nil, err
+	return nil, errors.Errorf(
+		"unhandled cast %s -> %s",
+		fromType.SQLStringForError(),
+		toType.SQLStringForError(),
+	)
 }
 
 func IsCastSupported(fromType, toType *types.T) bool {
-	if toType.Family() == types.OidFamily {
-		// Casting to Oid has special logic that involves resolving different
-		// objects, so we'll fall back to the row-by-row engine for that.
-		return false
-	}
 	if fromType.Family() == types.UnknownFamily {
 		return true
 	}
@@ -1222,7 +1206,7 @@ func (c *castOpNullAny) Next() coldata.Batch {
 			if vecNulls.NullAt(i) {
 				projNulls.SetNull(i)
 			} else {
-				colexecerror.InternalError(errors.AssertionFailedf("unexpected non-null at index %d", i))
+				colexecerror.InternalError(errors.Errorf("unexpected non-null at index %d", i))
 			}
 		}
 	} else {
@@ -1230,7 +1214,7 @@ func (c *castOpNullAny) Next() coldata.Batch {
 			if vecNulls.NullAt(i) {
 				projNulls.SetNull(i)
 			} else {
-				colexecerror.InternalError(errors.AssertionFailedf("unexpected non-null at index %d", i))
+				colexecerror.InternalError(fmt.Errorf("unexpected non-null at index %d", i))
 			}
 		}
 	}
@@ -1274,7 +1258,7 @@ func (c *castIdentityOp) Next() coldata.Batch {
 		return coldata.ZeroBatch
 	}
 	projVec := batch.ColVec(c.outputIdx)
-	c.allocator.PerformOperation([]*coldata.Vec{projVec}, func() {
+	c.allocator.PerformOperation([]coldata.Vec{projVec}, func() {
 		srcVec := batch.ColVec(c.colIdx)
 		if sel := batch.Selection(); sel != nil {
 			// We don't want to perform the deselection during copying, so we
@@ -1314,7 +1298,7 @@ func (c *castBPCharIdentityOp) Next() coldata.Batch {
 	outputNulls := outputVec.Nulls()
 	// Note that the loops below are not as optimized as in other cast operators
 	// since this operator should only be planned in tests.
-	c.allocator.PerformOperation([]*coldata.Vec{outputVec}, func() {
+	c.allocator.PerformOperation([]coldata.Vec{outputVec}, func() {
 		if sel := batch.Selection(); sel != nil {
 			for _, i := range sel[:n] {
 				if inputNulls.NullAt(i) {
@@ -1356,9 +1340,9 @@ func (c *castNativeToDatumOp) Next() coldata.Batch {
 	outputCol := outputVec.Datum()
 	outputNulls := outputVec.Nulls()
 	toType := outputVec.Type()
-	c.allocator.PerformOperation([]*coldata.Vec{outputVec}, func() {
-		if n > c.da.DefaultAllocSize {
-			c.da.DefaultAllocSize = n
+	c.allocator.PerformOperation([]coldata.Vec{outputVec}, func() {
+		if n > c.da.AllocSize {
+			c.da.AllocSize = n
 		}
 		if cap(c.scratch) < n {
 			c.scratch = make([]tree.Datum, n)
@@ -1486,7 +1470,7 @@ func (c *castBoolFloatOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bool()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Float64()
@@ -1634,7 +1618,7 @@ func (c *castBoolInt2Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bool()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int16()
@@ -1782,7 +1766,7 @@ func (c *castBoolInt4Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bool()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int32()
@@ -1930,7 +1914,7 @@ func (c *castBoolIntOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bool()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int64()
@@ -2078,7 +2062,7 @@ func (c *castBoolStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bool()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -2294,7 +2278,7 @@ func (c *castBytesStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -2514,7 +2498,7 @@ func (c *castBytesUuidOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -2658,7 +2642,7 @@ func (c *castDateDecimalOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Decimal()
@@ -2810,7 +2794,7 @@ func (c *castDateFloatOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Float64()
@@ -2946,7 +2930,7 @@ func (c *castDateInt2Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int16()
@@ -3098,7 +3082,7 @@ func (c *castDateInt4Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int32()
@@ -3250,7 +3234,7 @@ func (c *castDateIntOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int64()
@@ -3378,7 +3362,7 @@ func (c *castDateStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -3610,7 +3594,7 @@ func (c *castDecimalBoolOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Decimal()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bool()
@@ -3738,7 +3722,7 @@ func (c *castDecimalDecimalOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Decimal()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Decimal()
@@ -3886,7 +3870,7 @@ func (c *castDecimalFloatOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Decimal()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Float64()
@@ -4046,7 +4030,7 @@ func (c *castDecimalInt2Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Decimal()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int16()
@@ -4250,7 +4234,7 @@ func (c *castDecimalInt4Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Decimal()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int32()
@@ -4454,7 +4438,7 @@ func (c *castDecimalIntOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Decimal()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int64()
@@ -4634,7 +4618,7 @@ func (c *castDecimalStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Decimal()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -4851,7 +4835,7 @@ func (c *castEnumStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -5083,7 +5067,7 @@ func (c *castFloatBoolOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Float64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bool()
@@ -5219,7 +5203,7 @@ func (c *castFloatDecimalOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Float64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Decimal()
@@ -5379,7 +5363,7 @@ func (c *castFloatInt2Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Float64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int16()
@@ -5407,7 +5391,7 @@ func (c *castFloatInt2Op) Next() coldata.Batch {
 							if math.IsNaN(float64(v)) || v <= float64(math.MinInt16) || v >= float64(math.MaxInt16) {
 								colexecerror.ExpectedError(tree.ErrIntOutOfRange)
 							}
-							r = int16(math.RoundToEven(v))
+							r = int16(v)
 
 							outputCol.Set(tupleIdx, r)
 						}
@@ -5436,7 +5420,7 @@ func (c *castFloatInt2Op) Next() coldata.Batch {
 							if math.IsNaN(float64(v)) || v <= float64(math.MinInt16) || v >= float64(math.MaxInt16) {
 								colexecerror.ExpectedError(tree.ErrIntOutOfRange)
 							}
-							r = int16(math.RoundToEven(v))
+							r = int16(v)
 
 							//gcassert:bce
 							outputCol.Set(tupleIdx, r)
@@ -5465,7 +5449,7 @@ func (c *castFloatInt2Op) Next() coldata.Batch {
 							if math.IsNaN(float64(v)) || v <= float64(math.MinInt16) || v >= float64(math.MaxInt16) {
 								colexecerror.ExpectedError(tree.ErrIntOutOfRange)
 							}
-							r = int16(math.RoundToEven(v))
+							r = int16(v)
 
 							outputCol.Set(tupleIdx, r)
 						}
@@ -5494,7 +5478,7 @@ func (c *castFloatInt2Op) Next() coldata.Batch {
 							if math.IsNaN(float64(v)) || v <= float64(math.MinInt16) || v >= float64(math.MaxInt16) {
 								colexecerror.ExpectedError(tree.ErrIntOutOfRange)
 							}
-							r = int16(math.RoundToEven(v))
+							r = int16(v)
 
 							//gcassert:bce
 							outputCol.Set(tupleIdx, r)
@@ -5527,7 +5511,7 @@ func (c *castFloatInt4Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Float64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int32()
@@ -5555,7 +5539,7 @@ func (c *castFloatInt4Op) Next() coldata.Batch {
 							if math.IsNaN(float64(v)) || v <= float64(math.MinInt32) || v >= float64(math.MaxInt32) {
 								colexecerror.ExpectedError(tree.ErrIntOutOfRange)
 							}
-							r = int32(math.RoundToEven(v))
+							r = int32(v)
 
 							outputCol.Set(tupleIdx, r)
 						}
@@ -5584,7 +5568,7 @@ func (c *castFloatInt4Op) Next() coldata.Batch {
 							if math.IsNaN(float64(v)) || v <= float64(math.MinInt32) || v >= float64(math.MaxInt32) {
 								colexecerror.ExpectedError(tree.ErrIntOutOfRange)
 							}
-							r = int32(math.RoundToEven(v))
+							r = int32(v)
 
 							//gcassert:bce
 							outputCol.Set(tupleIdx, r)
@@ -5613,7 +5597,7 @@ func (c *castFloatInt4Op) Next() coldata.Batch {
 							if math.IsNaN(float64(v)) || v <= float64(math.MinInt32) || v >= float64(math.MaxInt32) {
 								colexecerror.ExpectedError(tree.ErrIntOutOfRange)
 							}
-							r = int32(math.RoundToEven(v))
+							r = int32(v)
 
 							outputCol.Set(tupleIdx, r)
 						}
@@ -5642,7 +5626,7 @@ func (c *castFloatInt4Op) Next() coldata.Batch {
 							if math.IsNaN(float64(v)) || v <= float64(math.MinInt32) || v >= float64(math.MaxInt32) {
 								colexecerror.ExpectedError(tree.ErrIntOutOfRange)
 							}
-							r = int32(math.RoundToEven(v))
+							r = int32(v)
 
 							//gcassert:bce
 							outputCol.Set(tupleIdx, r)
@@ -5675,7 +5659,7 @@ func (c *castFloatIntOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Float64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int64()
@@ -5703,7 +5687,7 @@ func (c *castFloatIntOp) Next() coldata.Batch {
 							if math.IsNaN(float64(v)) || v <= float64(math.MinInt64) || v >= float64(math.MaxInt64) {
 								colexecerror.ExpectedError(tree.ErrIntOutOfRange)
 							}
-							r = int64(math.RoundToEven(v))
+							r = int64(v)
 
 							outputCol.Set(tupleIdx, r)
 						}
@@ -5732,7 +5716,7 @@ func (c *castFloatIntOp) Next() coldata.Batch {
 							if math.IsNaN(float64(v)) || v <= float64(math.MinInt64) || v >= float64(math.MaxInt64) {
 								colexecerror.ExpectedError(tree.ErrIntOutOfRange)
 							}
-							r = int64(math.RoundToEven(v))
+							r = int64(v)
 
 							//gcassert:bce
 							outputCol.Set(tupleIdx, r)
@@ -5761,7 +5745,7 @@ func (c *castFloatIntOp) Next() coldata.Batch {
 							if math.IsNaN(float64(v)) || v <= float64(math.MinInt64) || v >= float64(math.MaxInt64) {
 								colexecerror.ExpectedError(tree.ErrIntOutOfRange)
 							}
-							r = int64(math.RoundToEven(v))
+							r = int64(v)
 
 							outputCol.Set(tupleIdx, r)
 						}
@@ -5790,7 +5774,7 @@ func (c *castFloatIntOp) Next() coldata.Batch {
 							if math.IsNaN(float64(v)) || v <= float64(math.MinInt64) || v >= float64(math.MaxInt64) {
 								colexecerror.ExpectedError(tree.ErrIntOutOfRange)
 							}
-							r = int64(math.RoundToEven(v))
+							r = int64(v)
 
 							//gcassert:bce
 							outputCol.Set(tupleIdx, r)
@@ -5823,7 +5807,7 @@ func (c *castFloatStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Float64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -6047,7 +6031,7 @@ func (c *castInt2BoolOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int16()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bool()
@@ -6183,7 +6167,7 @@ func (c *castInt2DecimalOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int16()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Decimal()
@@ -6335,7 +6319,7 @@ func (c *castInt2FloatOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int16()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Float64()
@@ -6471,7 +6455,7 @@ func (c *castInt2Int4Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int16()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int32()
@@ -6599,7 +6583,7 @@ func (c *castInt2IntOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int16()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int64()
@@ -6727,7 +6711,7 @@ func (c *castInt2StringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int16()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -6995,7 +6979,7 @@ func (c *castInt4BoolOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int32()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bool()
@@ -7131,7 +7115,7 @@ func (c *castInt4DecimalOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int32()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Decimal()
@@ -7283,7 +7267,7 @@ func (c *castInt4FloatOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int32()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Float64()
@@ -7419,7 +7403,7 @@ func (c *castInt4Int2Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int32()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int16()
@@ -7571,7 +7555,7 @@ func (c *castInt4IntOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int32()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int64()
@@ -7699,7 +7683,7 @@ func (c *castInt4StringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int32()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -7967,7 +7951,7 @@ func (c *castIntBoolOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bool()
@@ -8103,7 +8087,7 @@ func (c *castIntDecimalOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Decimal()
@@ -8255,7 +8239,7 @@ func (c *castIntFloatOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Float64()
@@ -8391,7 +8375,7 @@ func (c *castIntInt2Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int16()
@@ -8543,7 +8527,7 @@ func (c *castIntInt4Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int32()
@@ -8695,7 +8679,7 @@ func (c *castIntStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Int64()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -8963,7 +8947,7 @@ func (c *castIntervalStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Interval()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -9195,7 +9179,7 @@ func (c *castJsonbStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.JSON()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -9407,7 +9391,7 @@ func (c *castStringBoolOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bool()
@@ -9555,7 +9539,7 @@ func (c *castStringBytesOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -9699,7 +9683,7 @@ func (c *castStringDateOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int64()
@@ -9859,7 +9843,7 @@ func (c *castStringDecimalOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Decimal()
@@ -10067,7 +10051,7 @@ func (c *castStringEnumOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -10215,7 +10199,7 @@ func (c *castStringFloatOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Float64()
@@ -10367,7 +10351,7 @@ func (c *castStringInt2Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int16()
@@ -10551,7 +10535,7 @@ func (c *castStringInt4Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int32()
@@ -10735,7 +10719,7 @@ func (c *castStringIntOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int64()
@@ -10895,7 +10879,7 @@ func (c *castStringIntervalOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Interval()
@@ -11059,7 +11043,7 @@ func (c *castStringJsonbOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.JSON()
@@ -11203,7 +11187,7 @@ func (c *castStringStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -11415,7 +11399,7 @@ func (c *castStringTimestampOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Timestamp()
@@ -11443,8 +11427,7 @@ func (c *castStringTimestampOp) Next() coldata.Batch {
 							_roundTo := tree.TimeFamilyPrecisionToRoundDuration(toType.Precision())
 							_now := evalCtx.GetRelativeParseTime()
 							_dateStyle := evalCtx.GetDateStyle()
-							_h := evalCtx.GetDateHelper()
-							_t, _, err := pgdate.ParseTimestampWithoutTimezone(_now, _dateStyle, string(v), _h)
+							_t, _, err := pgdate.ParseTimestampWithoutTimezone(_now, _dateStyle, string(v))
 							if err != nil {
 								colexecerror.ExpectedError(err)
 							}
@@ -11479,8 +11462,7 @@ func (c *castStringTimestampOp) Next() coldata.Batch {
 							_roundTo := tree.TimeFamilyPrecisionToRoundDuration(toType.Precision())
 							_now := evalCtx.GetRelativeParseTime()
 							_dateStyle := evalCtx.GetDateStyle()
-							_h := evalCtx.GetDateHelper()
-							_t, _, err := pgdate.ParseTimestampWithoutTimezone(_now, _dateStyle, string(v), _h)
+							_t, _, err := pgdate.ParseTimestampWithoutTimezone(_now, _dateStyle, string(v))
 							if err != nil {
 								colexecerror.ExpectedError(err)
 							}
@@ -11517,8 +11499,7 @@ func (c *castStringTimestampOp) Next() coldata.Batch {
 							_roundTo := tree.TimeFamilyPrecisionToRoundDuration(toType.Precision())
 							_now := evalCtx.GetRelativeParseTime()
 							_dateStyle := evalCtx.GetDateStyle()
-							_h := evalCtx.GetDateHelper()
-							_t, _, err := pgdate.ParseTimestampWithoutTimezone(_now, _dateStyle, string(v), _h)
+							_t, _, err := pgdate.ParseTimestampWithoutTimezone(_now, _dateStyle, string(v))
 							if err != nil {
 								colexecerror.ExpectedError(err)
 							}
@@ -11553,8 +11534,7 @@ func (c *castStringTimestampOp) Next() coldata.Batch {
 							_roundTo := tree.TimeFamilyPrecisionToRoundDuration(toType.Precision())
 							_now := evalCtx.GetRelativeParseTime()
 							_dateStyle := evalCtx.GetDateStyle()
-							_h := evalCtx.GetDateHelper()
-							_t, _, err := pgdate.ParseTimestampWithoutTimezone(_now, _dateStyle, string(v), _h)
+							_t, _, err := pgdate.ParseTimestampWithoutTimezone(_now, _dateStyle, string(v))
 							if err != nil {
 								colexecerror.ExpectedError(err)
 							}
@@ -11595,7 +11575,7 @@ func (c *castStringTimestamptzOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Timestamp()
@@ -11623,8 +11603,7 @@ func (c *castStringTimestamptzOp) Next() coldata.Batch {
 							_roundTo := tree.TimeFamilyPrecisionToRoundDuration(toType.Precision())
 							_now := evalCtx.GetRelativeParseTime()
 							_dateStyle := evalCtx.GetDateStyle()
-							_h := evalCtx.GetDateHelper()
-							_t, _, err := pgdate.ParseTimestamp(_now, _dateStyle, string(v), _h)
+							_t, _, err := pgdate.ParseTimestamp(_now, _dateStyle, string(v))
 							if err != nil {
 								colexecerror.ExpectedError(err)
 							}
@@ -11659,8 +11638,7 @@ func (c *castStringTimestamptzOp) Next() coldata.Batch {
 							_roundTo := tree.TimeFamilyPrecisionToRoundDuration(toType.Precision())
 							_now := evalCtx.GetRelativeParseTime()
 							_dateStyle := evalCtx.GetDateStyle()
-							_h := evalCtx.GetDateHelper()
-							_t, _, err := pgdate.ParseTimestamp(_now, _dateStyle, string(v), _h)
+							_t, _, err := pgdate.ParseTimestamp(_now, _dateStyle, string(v))
 							if err != nil {
 								colexecerror.ExpectedError(err)
 							}
@@ -11697,8 +11675,7 @@ func (c *castStringTimestamptzOp) Next() coldata.Batch {
 							_roundTo := tree.TimeFamilyPrecisionToRoundDuration(toType.Precision())
 							_now := evalCtx.GetRelativeParseTime()
 							_dateStyle := evalCtx.GetDateStyle()
-							_h := evalCtx.GetDateHelper()
-							_t, _, err := pgdate.ParseTimestamp(_now, _dateStyle, string(v), _h)
+							_t, _, err := pgdate.ParseTimestamp(_now, _dateStyle, string(v))
 							if err != nil {
 								colexecerror.ExpectedError(err)
 							}
@@ -11733,8 +11710,7 @@ func (c *castStringTimestamptzOp) Next() coldata.Batch {
 							_roundTo := tree.TimeFamilyPrecisionToRoundDuration(toType.Precision())
 							_now := evalCtx.GetRelativeParseTime()
 							_dateStyle := evalCtx.GetDateStyle()
-							_h := evalCtx.GetDateHelper()
-							_t, _, err := pgdate.ParseTimestamp(_now, _dateStyle, string(v), _h)
+							_t, _, err := pgdate.ParseTimestamp(_now, _dateStyle, string(v))
 							if err != nil {
 								colexecerror.ExpectedError(err)
 							}
@@ -11775,7 +11751,7 @@ func (c *castStringUuidOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -11919,7 +11895,7 @@ func (c *castTimestampStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Timestamp()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -12135,7 +12111,7 @@ func (c *castTimestamptzStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Timestamp()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -12387,7 +12363,7 @@ func (c *castUuidStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Bytes()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -12619,7 +12595,7 @@ func (c *castDatumBoolOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bool()
@@ -12776,7 +12752,7 @@ func (c *castDatumInt2Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int16()
@@ -12933,7 +12909,7 @@ func (c *castDatumInt4Op) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int32()
@@ -13090,7 +13066,7 @@ func (c *castDatumIntOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int64()
@@ -13247,7 +13223,7 @@ func (c *castDatumFloatOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Float64()
@@ -13404,7 +13380,7 @@ func (c *castDatumDecimalOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Decimal()
@@ -13561,7 +13537,7 @@ func (c *castDatumDateOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Int64()
@@ -13718,7 +13694,7 @@ func (c *castDatumTimestampOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Timestamp()
@@ -13875,7 +13851,7 @@ func (c *castDatumIntervalOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Interval()
@@ -14032,7 +14008,7 @@ func (c *castDatumStringOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -14185,7 +14161,7 @@ func (c *castDatumBytesOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -14338,7 +14314,7 @@ func (c *castDatumTimestamptzOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Timestamp()
@@ -14495,7 +14471,7 @@ func (c *castDatumUuidOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Bytes()
@@ -14648,7 +14624,7 @@ func (c *castDatumJsonbOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.JSON()
@@ -14801,7 +14777,7 @@ func (c *castDatumDatumOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec.Datum()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec.Datum()

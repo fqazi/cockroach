@@ -38,15 +38,15 @@ subtest end
 
 subtest regular_login
 
-connect user=testuser sslmode=disable show_authentication_method
+connect user=testuser sslmode=disable
 ----
-ok defaultdb insecure
+ok defaultdb
 
 # If a password is provided, it is ignored.
 
-connect user=testuser password=abc sslmode=disable show_authentication_method
+connect user=testuser password=abc sslmode=disable
 ----
-ok defaultdb insecure
+ok defaultdb
 
 subtest end
 

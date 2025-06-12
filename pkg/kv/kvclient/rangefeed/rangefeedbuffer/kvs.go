@@ -6,8 +6,7 @@
 package rangefeedbuffer
 
 import (
-	"cmp"
-	"slices"
+	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -15,12 +14,13 @@ import (
 
 // RangeFeedValueEventToKV is a function to type assert an Event into a
 // *kvpb.RangeFeedValue and then convert it to a roachpb.KeyValue.
-func RangeFeedValueEventToKV(rfv *kvpb.RangeFeedValue) roachpb.KeyValue {
+func RangeFeedValueEventToKV(event Event) roachpb.KeyValue {
+	rfv := event.(*kvpb.RangeFeedValue)
 	return roachpb.KeyValue{Key: rfv.Key, Value: rfv.Value}
 }
 
 // EventsToKVs converts a slice of Events to a slice of KeyValue pairs.
-func EventsToKVs[E Event](events []E, f func(ev E) roachpb.KeyValue) []roachpb.KeyValue {
+func EventsToKVs(events []Event, f func(ev Event) roachpb.KeyValue) []roachpb.KeyValue {
 	kvs := make([]roachpb.KeyValue, 0, len(events))
 	for _, ev := range events {
 		kvs = append(kvs, f(ev))
@@ -41,11 +41,12 @@ func MergeKVs(base, updates []roachpb.KeyValue) []roachpb.KeyValue {
 	}
 	combined := make([]roachpb.KeyValue, 0, len(base)+len(updates))
 	combined = append(append(combined, base...), updates...)
-	slices.SortFunc(combined, func(a, b roachpb.KeyValue) int {
-		return cmp.Or(
-			a.Key.Compare(b.Key),
-			a.Value.Timestamp.Compare(b.Value.Timestamp),
-		)
+	sort.Slice(combined, func(i, j int) bool {
+		cmp := combined[i].Key.Compare(combined[j].Key)
+		if cmp == 0 {
+			return combined[i].Value.Timestamp.Less(combined[j].Value.Timestamp)
+		}
+		return cmp < 0
 	})
 	r := combined[:0]
 	for _, kv := range combined {

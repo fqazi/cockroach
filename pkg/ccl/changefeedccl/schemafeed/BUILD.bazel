@@ -8,7 +8,6 @@ go_library(
         "metrics.go",
         "schema_feed.go",
         "table_event_filter.go",
-        "timestamp_barrier.go",
     ],
     importpath = "github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/schemafeed",
     visibility = ["//visibility:public"],
@@ -37,25 +36,24 @@ go_library(
         "//pkg/util/metric",
         "//pkg/util/syncutil",
         "//pkg/util/timeutil",
-        "//pkg/util/tracing",
         "@com_github_cockroachdb_errors//:errors",
-        "@com_github_cockroachdb_logtags//:logtags",
     ],
 )
 
 go_test(
     name = "schemafeed_test",
-    size = "large",
+    size = "medium",
     srcs = [
         "helpers_test.go",
         "main_test.go",
         "schema_feed_test.go",
         "table_event_filter_datadriven_test.go",
         "table_event_filter_test.go",
-        "timestamp_barrier_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":schemafeed"],
+    tags = ["ccl_test"],
     deps = [
         "//pkg/base",
         "//pkg/ccl",
@@ -90,6 +88,7 @@ go_test(
         "@com_github_gogo_protobuf//proto",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
+        "@org_golang_x_exp//slices",
     ],
 )
 

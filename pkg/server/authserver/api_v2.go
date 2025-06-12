@@ -10,6 +10,8 @@ import (
 	"net/http"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/sql/isql"
+	"github.com/cockroachdb/cockroach/pkg/sql/roleoption"
 )
 
 type ServerV2 interface {
@@ -36,6 +38,7 @@ func NewV2Server(
 		sqlServer:  s,
 		authServer: innerServer,
 		mux:        simpleMux,
+		ctx:        ctx,
 		basePath:   basePath,
 	}
 
@@ -55,11 +58,12 @@ func NewV2Mux(s ServerV2, inner http.Handler, allowAnonymous bool) AuthV2Mux {
 
 // NewRoleAuthzMux creates a new RoleAuthzMux.
 func NewRoleAuthzMux(
-	authzAccessorFactory authzAccessorFactory, role APIRole, inner http.Handler,
+	ie isql.Executor, role APIRole, option roleoption.Option, inner http.Handler,
 ) RoleAuthzMux {
 	return &roleAuthorizationMux{
-		authzAccessorFactory: authzAccessorFactory,
-		role:                 role,
-		inner:                inner,
+		ie:     ie,
+		role:   role,
+		option: option,
+		inner:  inner,
 	}
 }

@@ -12,44 +12,31 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cmux"
-	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
 
-var KeepAliveProbeCount = settings.RegisterIntSetting(
-	settings.ApplicationLevel,
-	"server.sql_tcp_keep_alive.count",
-	"maximum number of probes that will be sent out before a connection is dropped because "+
-		"it's unresponsive (Linux and Darwin only)",
-	3,
-	settings.WithPublic,
-)
-
-var KeepAliveProbeFrequency = settings.RegisterDurationSetting(
-	settings.ApplicationLevel,
-	"server.sql_tcp_keep_alive.interval",
-	"time between keep alive probes and idle time before probes are sent out",
-	time.Second*10,
-	settings.WithPublic,
-)
-
 type tcpKeepAliveManager struct {
+	// The keepalive duration.
+	tcpKeepAlive time.Duration
 	// loggedKeepAliveStatus ensures that errors about setting the TCP
 	// keepalive status are only reported once.
 	loggedKeepAliveStatus int32
-	settings              *cluster.Settings
 }
 
-func makeTCPKeepAliveManager(settings *cluster.Settings) tcpKeepAliveManager {
+func makeTCPKeepAliveManager() tcpKeepAliveManager {
 	return tcpKeepAliveManager{
-		settings: settings,
+		tcpKeepAlive: envutil.EnvOrDefaultDuration("COCKROACH_SQL_TCP_KEEP_ALIVE", time.Minute),
 	}
 }
 
 // configure attempts to set TCP keep-alive on
 // connection. Does not fail on errors.
 func (k *tcpKeepAliveManager) configure(ctx context.Context, conn net.Conn) {
+	if k.tcpKeepAlive == 0 {
+		return
+	}
+
 	muxConn, ok := conn.(*cmux.MuxConn)
 	if !ok {
 		return
@@ -61,25 +48,21 @@ func (k *tcpKeepAliveManager) configure(ctx context.Context, conn net.Conn) {
 
 	// Only log success/failure once.
 	doLog := atomic.CompareAndSwapInt32(&k.loggedKeepAliveStatus, 0, 1)
-	// Based on the maximum connection life span and probe interval, pick a maximum
-	// probe count.
-	probeCount := KeepAliveProbeCount.Get(&k.settings.SV)
-	probeFrequency := KeepAliveProbeFrequency.Get(&k.settings.SV)
-
-	err := tcpConn.SetKeepAliveConfig(net.KeepAliveConfig{
-		Enable:   true,
-		Idle:     probeFrequency,
-		Interval: probeFrequency,
-		Count:    int(probeCount),
-	})
-	if err != nil {
+	if err := tcpConn.SetKeepAlive(true); err != nil {
 		if doLog {
-			log.Ops.Warningf(ctx, "failed to configure TCP keep-alive for pgwire: %v", err)
+			log.Ops.Warningf(ctx, "failed to enable TCP keep-alive for pgwire: %v", err)
+		}
+		return
+
+	}
+	if err := tcpConn.SetKeepAlivePeriod(k.tcpKeepAlive); err != nil {
+		if doLog {
+			log.Ops.Warningf(ctx, "failed to set TCP keep-alive duration for pgwire: %v", err)
 		}
 		return
 	}
 
 	if doLog {
-		log.VEventf(ctx, 2, "setting TCP keep-alive interval %d and probe count to %d for pgwire", probeFrequency, probeCount)
+		log.VEventf(ctx, 2, "setting TCP keep-alive to %s for pgwire", k.tcpKeepAlive)
 	}
 }

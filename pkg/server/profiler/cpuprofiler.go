@@ -7,6 +7,7 @@ package profiler
 
 import (
 	"context"
+	"math"
 	"os"
 	"runtime/pprof"
 	"time"
@@ -35,8 +36,7 @@ var cpuUsageCombined = settings.RegisterIntSetting(
 		"the profiler will never take a profile and conversely, if a value"+
 		"of 0 is set, a profile will be taken every time the cpu profile"+
 		"interval has passed or the provided usage is increasing",
-	65,
-	settings.NonNegativeInt,
+	math.MaxInt64,
 )
 
 var cpuProfileInterval = settings.RegisterDurationSetting(
@@ -46,16 +46,14 @@ var cpuProfileInterval = settings.RegisterDurationSetting(
 	// account the high water mark seen. Without this, if CPU ever reaches 100%,
 	// we'll never take another profile.
 	"duration after which the high water mark resets and a new cpu profile can be taken",
-	20*time.Minute,
-	settings.PositiveDuration,
+	5*time.Minute, settings.PositiveDuration,
 )
 
 var cpuProfileDuration = settings.RegisterDurationSetting(
 	settings.ApplicationLevel,
 	"server.cpu_profile.duration",
 	"the duration for how long a cpu profile is taken",
-	10*time.Second,
-	settings.PositiveDuration,
+	10*time.Second, settings.PositiveDuration,
 )
 
 const cpuProfFileNamePrefix = "cpuprof"

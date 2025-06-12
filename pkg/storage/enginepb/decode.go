@@ -27,14 +27,7 @@ func SplitMVCCKey(mvccKey []byte) (key []byte, ts []byte, ok bool) {
 	if len(mvccKey) == 0 {
 		return nil, nil, false
 	}
-	// Last byte is the version length + 1 when there is a version,
-	// else it is 0.
 	tsLen := int(mvccKey[len(mvccKey)-1])
-	if tsLen == 1 {
-		// We never encode an empty version.
-		return nil, nil, false
-	}
-	// -1 is for excluding the sentinel 0x00 byte.
 	keyPartEnd := len(mvccKey) - 1 - tsLen
 	if keyPartEnd < 0 {
 		return nil, nil, false
@@ -42,7 +35,6 @@ func SplitMVCCKey(mvccKey []byte) (key []byte, ts []byte, ok bool) {
 
 	key = mvccKey[:keyPartEnd]
 	if tsLen > 0 {
-		// +1 is for excluding the sentinel 0x00 byte.
 		ts = mvccKey[keyPartEnd+1 : len(mvccKey)-1]
 	}
 	return key, ts, true
@@ -62,11 +54,13 @@ func DecodeKey(encodedKey []byte) ([]byte, hlc.Timestamp, error) {
 		// No-op.
 	case 8:
 		timestamp.WallTime = int64(binary.BigEndian.Uint64(encodedTS[0:8]))
-	case 12, 13:
+	case 12:
 		timestamp.WallTime = int64(binary.BigEndian.Uint64(encodedTS[0:8]))
 		timestamp.Logical = int32(binary.BigEndian.Uint32(encodedTS[8:12]))
-		// NOTE: byte 13 used to store the timestamp's synthetic bit, but this is no
-		// longer consulted and can be ignored during decoding.
+	case 13:
+		timestamp.WallTime = int64(binary.BigEndian.Uint64(encodedTS[0:8]))
+		timestamp.Logical = int32(binary.BigEndian.Uint32(encodedTS[8:12]))
+		timestamp.Synthetic = encodedTS[12] != 0
 	default:
 		return nil, hlc.Timestamp{}, errors.Errorf(
 			"invalid encoded mvcc key: %x bad timestamp %x", encodedKey, encodedTS)

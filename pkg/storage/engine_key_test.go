@@ -6,7 +6,7 @@
 package storage
 
 import (
-	"encoding/hex"
+	"bytes"
 	"fmt"
 	"math"
 	"math/rand"
@@ -19,8 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/stretchr/testify/require"
@@ -144,6 +142,7 @@ func TestMVCCAndEngineKeyEncodeDecode(t *testing.T) {
 		{key: MVCCKey{Key: roachpb.Key("a")}},
 		{key: MVCCKey{Key: roachpb.Key("glue"), Timestamp: hlc.Timestamp{WallTime: 89999}}},
 		{key: MVCCKey{Key: roachpb.Key("foo"), Timestamp: hlc.Timestamp{WallTime: 99, Logical: 45}}},
+		{key: MVCCKey{Key: roachpb.Key("bar"), Timestamp: hlc.Timestamp{WallTime: 99, Logical: 45, Synthetic: true}}},
 	}
 	for _, test := range testCases {
 		t.Run("", func(t *testing.T) {
@@ -185,33 +184,6 @@ func TestMVCCAndEngineKeyEncodeDecode(t *testing.T) {
 	}
 }
 
-// TestMVCCAndEngineKeyDecodeSyntheticTimestamp tests decoding an MVCC key with
-// a synthetic timestamp. The synthetic timestamp bit is now ignored during key
-// encoding and decoding, but synthetic timestamps may still be present in the
-// wild, so they must not confuse decoding.
-func TestMVCCAndEngineKeyDecodeSyntheticTimestamp(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	// key := MVCCKey{Key: roachpb.Key("bar"), Timestamp: hlc.Timestamp{WallTime: 99, Logical: 45, Synthetic: true}}
-	keyNoSynthetic := MVCCKey{Key: roachpb.Key("bar"), Timestamp: hlc.Timestamp{WallTime: 99, Logical: 45}}
-
-	// encodedStr was computed from key using a previous version of the code that
-	// that included synthetic timestamps in the MVCC key encoding.
-	encodedStr := "6261720000000000000000630000002d010e"
-	encoded, err := hex.DecodeString(encodedStr)
-	require.NoError(t, err)
-
-	// Decode to demonstrate that the synthetic timestamp can be decoded.
-	eKeyDecoded, ok := DecodeEngineKey(encoded)
-	require.True(t, ok)
-	require.False(t, eKeyDecoded.IsLockTableKey())
-	require.True(t, eKeyDecoded.IsMVCCKey())
-	require.NoError(t, eKeyDecoded.Validate())
-	keyDecoded, err := eKeyDecoded.ToMVCCKey()
-	require.NoError(t, err)
-	require.Equal(t, keyNoSynthetic, keyDecoded)
-}
-
 func TestEngineKeyValidate(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	uuid1 := uuid.Must(uuid.FromString("6ba7b810-9dad-11d1-80b4-00c04fd430c8"))
@@ -223,6 +195,7 @@ func TestEngineKeyValidate(t *testing.T) {
 		{key: MVCCKey{Key: roachpb.Key("a")}},
 		{key: MVCCKey{Key: roachpb.Key("glue"), Timestamp: hlc.Timestamp{WallTime: 89999}}},
 		{key: MVCCKey{Key: roachpb.Key("foo"), Timestamp: hlc.Timestamp{WallTime: 99, Logical: 45}}},
+		{key: MVCCKey{Key: roachpb.Key("bar"), Timestamp: hlc.Timestamp{WallTime: 99, Logical: 45, Synthetic: true}}},
 
 		// Valid LockTableKeys.
 		{
@@ -305,160 +278,135 @@ func TestEngineKeyValidate(t *testing.T) {
 	})
 }
 
-func TestEngineKeyVerifyMVCC(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	eng := NewDefaultInMemForTesting()
-	defer eng.Close()
-
-	b := eng.NewBatch()
-	defer b.Close()
-
-	// Test MVCC Key.
-	k := pointKey("mvccKey", 1)
-	v := MVCCValue{Value: roachpb.MakeValueFromString("test")}
-	v.Value.InitChecksum(k.Key)
-	require.NoError(t, b.PutMVCC(k, v))
-	r, err := NewBatchReader(b.Repr())
-	require.NoError(t, err)
-	require.True(t, r.Next())
-	ek, _ := r.EngineKey()
-	require.NoError(t, ek.Verify(r.Value()))
-	// Simulate data corruption
-	r.value[len(r.value)-1]++
-	require.ErrorContains(t, ek.Verify(r.Value()), "invalid checksum")
-}
-
-func TestEngineKeyVerifyLockTableKV(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	eng := NewDefaultInMemForTesting()
-	defer eng.Close()
-
-	b := eng.NewBatch()
-	defer b.Close()
-
-	// Test Lock table Key.
-	lk := LockTableKey{
-		Key:      keys.RangeDescriptorKey(roachpb.RKey("baz")), // causes a doubly-local range local key
+// interestingEngineKeys is a slice of byte slices that may be used in tests as
+// engine keys. Not all the keys are valid keys.
+var interestingEngineKeys = [][]byte{
+	{0x00, 0x00},
+	{0x01, 0x11, 0x01},
+	EncodeMVCCKey(MVCCKey{Key: roachpb.Key("a"), Timestamp: hlc.Timestamp{WallTime: math.MaxInt64}}),
+	EncodeMVCCKey(MVCCKey{Key: roachpb.Key("foo"), Timestamp: hlc.Timestamp{WallTime: 1691183078362053000}}),
+	EncodeMVCCKey(MVCCKey{Key: roachpb.Key("bar")}),
+	EncodeMVCCKey(MVCCKey{Key: roachpb.Key("bar"), Timestamp: hlc.Timestamp{WallTime: 1643550788737652545}}),
+	EncodeMVCCKey(MVCCKey{Key: roachpb.Key("bar"), Timestamp: hlc.Timestamp{WallTime: 1643550788737652545, Logical: 1}}),
+	EncodeMVCCKey(MVCCKey{Key: roachpb.Key("bar"), Timestamp: hlc.Timestamp{WallTime: 1643550788737652545, Logical: 1, Synthetic: true}}),
+	encodeLockTableKey(LockTableKey{
+		Key:      roachpb.Key("foo"),
 		Strength: lock.Exclusive,
-		TxnUUID:  uuid.MakeV4(),
-	}
-	mvccValue := MVCCValue{
-		Value: roachpb.MakeValueFromString("test"),
-	}
-	mvccValue.Value.InitChecksum(lk.Key)
-	ek, _ := lk.ToEngineKey(nil)
-	meta := enginepb.MVCCMetadata{
-		RawBytes: mvccValue.Value.RawBytes,
-	}
-	buf := make([]byte, meta.Size())
-	n, _ := protoutil.MarshalToSizedBuffer(&meta, buf)
-	require.NoError(t, b.PutEngineKey(ek, buf[:n]))
-	r, err := NewBatchReader(b.Repr())
-	require.NoError(t, err)
-	require.True(t, r.Next())
-	require.NoError(t, ek.Verify(r.Value()))
-	// Simulate data corruption
-	r.value[len(r.value)-1]++
-	require.ErrorContains(t, ek.Verify(r.Value()), "invalid checksum")
+		TxnUUID:  uuid.Must(uuid.FromString("6ba7b810-9dad-11d1-80b4-00c04fd430c8")),
+	}),
+	encodeLockTableKey(LockTableKey{
+		Key:      keys.RangeDescriptorKey(roachpb.RKey("baz")),
+		Strength: lock.Exclusive,
+		TxnUUID:  uuid.Must(uuid.FromString("6ba7b810-9dad-11d1-80b4-00c04fd430c8")),
+	}),
 }
 
-// BenchmarkEngineKeyVerify evaluates EngineKey's performance
-// on verifying checksums on different keys value types.
-// Example results with apple m3 cpu:
-// BenchmarkEngineKeyVerify/SimpleMVCCValue
-// BenchmarkEngineKeyVerify/SimpleMVCCValue-12         	  662324	      1806 ns/op
-// BenchmarkEngineKeyVerify/ExtendedMVCCValue
-// BenchmarkEngineKeyVerify/ExtendedMVCCValue-12       	  645627	      1817 ns/op
-// BenchmarkEngineKeyVerify/LockTableKey
-// BenchmarkEngineKeyVerify/LockTableKey-12            	  587613	      2024 ns/op
-func BenchmarkEngineKeyVerify(b *testing.B) {
-	defer log.Scope(b).Close(b)
-
-	type testKV struct {
-		ek  EngineKey
-		val []byte
-	}
-	type testCase struct {
-		name string
-		testKV
+// FuzzEngineKeysInvariants fuzz tests various functions over engine keys,
+// ensuring that invariants over engine keys hold.
+func FuzzEngineKeysInvariants(f *testing.F) {
+	for i := 0; i < len(interestingEngineKeys); i++ {
+		for j := 0; j < len(interestingEngineKeys); j++ {
+			f.Add(interestingEngineKeys[i], interestingEngineKeys[j])
+		}
 	}
 
-	mustDecodeEngineKey := func(raw []byte) EngineKey {
-		ek, ok := DecodeEngineKey(raw)
-		require.True(b, ok)
-		return ek
+	compareEngineKeys := func(t *testing.T, a, b []byte) int {
+		cmp := EngineKeyCompare(a, b)
+		eq := EngineKeyEqual(a, b)
+		// Invariant: Iff EngineKeyCompare(a, b) == 0, EngineKeyEqual(a, b)
+		if eq != (cmp == 0) {
+			t.Errorf("EngineKeyEqual(0x%x, 0x%x) = %t; EngineKeyCompare(0x%x, 0x%x) = %d",
+				a, b, eq, a, b, cmp)
+		}
+		return cmp
 	}
-	mustEncodeMVCC := func(key MVCCKey, v MVCCValue) testKV {
-		encodedKey := EncodeMVCCKey(key)
-		encodedVal, err := EncodeMVCCValue(v)
-		require.NoError(b, err)
-		return testKV{ek: mustDecodeEngineKey(encodedKey), val: encodedVal}
+	computeImmediateSuccessor := func(t *testing.T, a []byte) []byte {
+		succ := EngineComparer.ImmediateSuccessor(nil, a)
+		// Invariant: ImmediateSuccessor(a) > a
+		if cmp := compareEngineKeys(t, a, succ); cmp >= 0 {
+			t.Errorf("ImmediateSuccessor(0x%x) = 0x%x, but EngineKeyCompare(0x%x, 0x%x) = %d",
+				a, succ, a, succ, cmp)
+		}
+		return succ
 	}
-	mustEncodeLockTable := func(key LockTableKey, meta *enginepb.MVCCMetadata, v MVCCValue) testKV {
-		encodedMVCCValue, err := EncodeMVCCValue(v)
-		require.NoError(b, err)
-		meta.RawBytes = encodedMVCCValue
-		encodedVal, err := protoutil.Marshal(meta)
-		require.NoError(b, err)
-		ek, _ := key.ToEngineKey(nil)
-		return testKV{ek: ek, val: encodedVal}
+	decodeEngineKey := func(t *testing.T, a []byte) (EngineKey, bool) {
+		// Invariant: DecodeEngineKey(a) ok iff GetKeyPartFromEngineKey(a) ok
+		// Invariant: DecodeEngineKey(a).Key == GetKeyPartFromEngineKey(a)
+		ek, ok1 := DecodeEngineKey(a)
+		kp, ok2 := GetKeyPartFromEngineKey(a)
+		if ok1 != ok2 || ok1 && !bytes.Equal(ek.Key, kp) {
+			t.Errorf("DecodeEngineKey(0x%x) = (%s, %t); but GetKeyPartFromEngineKey(0x%x) = (0x%x, %t)",
+				a, ek, ok1, a, kp, ok2)
+		}
+
+		return ek, ok1
 	}
 
-	testCases := []testCase{
-		{
-			name: "SimpleMVCCValue",
-			testKV: mustEncodeMVCC(
-				MVCCKey{
-					Key:       roachpb.Key("foobar"),
-					Timestamp: hlc.Timestamp{WallTime: 1711383740550067000, Logical: 2},
-				},
-				MVCCValue{Value: roachpb.Value{RawBytes: []byte("hello world")}},
-			),
-		},
-		{
-			name: "ExtendedMVCCValue",
-			testKV: mustEncodeMVCC(
-				MVCCKey{
-					Key:       roachpb.Key("foobar"),
-					Timestamp: hlc.Timestamp{WallTime: 1711383740550067000, Logical: 2},
-				},
-				MVCCValue{
-					MVCCValueHeader: enginepb.MVCCValueHeader{
-						LocalTimestamp:   hlc.ClockTimestamp{WallTime: 1711383740550069000},
-						OmitInRangefeeds: true,
-					},
-					Value: roachpb.Value{RawBytes: []byte("hello world")},
-				},
-			),
-		},
-		{
-			name: "LockTableKey",
-			testKV: mustEncodeLockTable(
-				LockTableKey{
-					Key:      roachpb.Key("foobar"),
-					Strength: lock.Exclusive,
-					TxnUUID:  uuid.UUID{},
-				},
-				&enginepb.MVCCMetadata{
-					KeyBytes: 100,
-					ValBytes: 100,
-				},
-				MVCCValue{
-					Value: roachpb.Value{RawBytes: []byte("hello world")},
-				},
-			),
-		},
-	}
+	f.Fuzz(func(t *testing.T, a, b []byte) {
+		t.Logf("a = 0x%x; b = 0x%x", a, b)
+		cmp := compareEngineKeys(t, a, b)
+		if cmp == 0 {
+			return
+		}
+		if len(a) == 0 || len(b) == 0 {
+			return
+		}
 
-	for _, tc := range testCases {
-		b.Run(tc.name, func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
-				_ = tc.ek.Verify(tc.val)
+		// Make a < b.
+		if cmp > 0 {
+			a, b = b, a
+			t.Logf("Swapped: a = 0x%x; b = 0x%x", a, b)
+		}
+		// Invariant: Separator(a, b) >= a
+		// Invariant: Separator(a, b) < b
+		sep := EngineComparer.Separator(nil, a, b)
+		if cmp = compareEngineKeys(t, a, b); cmp > 0 {
+			t.Errorf("Separator(0x%x, 0x%x) = 0x%x; but EngineKeyCompare(0x%x, 0x%x) = %d",
+				a, b, sep, a, sep, cmp)
+		}
+		if cmp = compareEngineKeys(t, sep, b); cmp >= 0 {
+			t.Errorf("Separator(0x%x, 0x%x) = 0x%x; but EngineKeyCompare(0x%x, 0x%x) = %d",
+				a, b, sep, sep, b, cmp)
+		}
+		ekA, okA := decodeEngineKey(t, a)
+		ekB, okB := decodeEngineKey(t, b)
+		if !okA || !okB {
+			return
+		}
+		errA := ekA.Validate()
+		errB := ekB.Validate()
+		// The below invariants only apply for valid keys.
+		if errA != nil || errB != nil {
+			return
+		}
+		t.Logf("ekA = %s (Key: 0x%x, Version: 0x%x); ekB = %s (Key: 0x%x, Version: 0x%x)",
+			ekA, ekA.Key, ekA.Version, ekB, ekB.Key, ekB.Version)
+
+		splitA := EngineComparer.Split(a)
+		splitB := EngineComparer.Split(b)
+		aIsSuffixless := splitA == len(a)
+		bIsSuffixless := splitB == len(b)
+		// ImmediateSuccessor is only defined on prefix keys.
+		var immediateSuccessorA, immediateSuccessorB []byte
+		if aIsSuffixless {
+			immediateSuccessorA = computeImmediateSuccessor(t, a)
+		}
+		if bIsSuffixless {
+			immediateSuccessorB = computeImmediateSuccessor(t, b)
+		}
+		if aIsSuffixless && bIsSuffixless {
+			// Invariant: ImmediateSuccessor(a) < ImmediateSuccessor(b)
+			if cmp = compareEngineKeys(t, immediateSuccessorA, immediateSuccessorB); cmp >= 0 {
+				t.Errorf("ImmediateSuccessor(0x%x) = 0x%x, ImmediateSuccessor(0x%x) = 0x%x; but EngineKeyCompare(0x%x, 0x%x) = %d",
+					a, immediateSuccessorA, b, immediateSuccessorB, immediateSuccessorA, immediateSuccessorB, cmp)
 			}
-		})
-	}
+		}
+	})
+}
+
+func encodeLockTableKey(ltk LockTableKey) []byte {
+	ek, _ := ltk.ToEngineKey(nil)
+	return ek.Encode()
 }
 
 func randomMVCCKey(r *rand.Rand) MVCCKey {
@@ -469,6 +417,7 @@ func randomMVCCKey(r *rand.Rand) MVCCKey {
 	if r.Intn(2) == 1 {
 		k.Timestamp.Logical = r.Int31()
 	}
+	k.Timestamp.Synthetic = r.Intn(5) == 1
 	return k
 }
 
@@ -489,28 +438,3 @@ func engineKey(key string, ts int) EngineKey {
 		Version: encodeMVCCTimestamp(wallTS(ts)),
 	}
 }
-
-var possibleVersionLens = []int{
-	engineKeyNoVersion,
-	engineKeyVersionWallTimeLen,
-	engineKeyVersionWallAndLogicalTimeLen,
-	engineKeyVersionWallLogicalAndSyntheticTimeLen,
-	engineKeyVersionLockTableLen,
-}
-
-func randomSerializedEngineKey(r *rand.Rand, maxUserKeyLen int) []byte {
-	userKeyLen := randutil.RandIntInRange(r, 1, maxUserKeyLen)
-	versionLen := possibleVersionLens[r.Intn(len(possibleVersionLens))]
-	serializedLen := userKeyLen + versionLen + 1
-	if versionLen > 0 {
-		serializedLen++ // sentinel
-	}
-	k := randutil.RandBytes(r, serializedLen)
-	k[userKeyLen] = 0x00
-	if versionLen > 0 {
-		k[len(k)-1] = byte(versionLen + 1)
-	}
-	return k
-}
-
-var _ = randomSerializedEngineKey

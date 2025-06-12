@@ -6,7 +6,6 @@
 package ts
 
 import (
-	"context"
 	"reflect"
 	"testing"
 	"time"
@@ -272,8 +271,7 @@ func TestFindTimeSeries(t *testing.T) {
 		},
 	} {
 		snap := e.NewSnapshot()
-		actual, err := tm.DB.findTimeSeries(
-			context.Background(), snap, tcase.start, tcase.end, tcase.timestamp)
+		actual, err := tm.DB.findTimeSeries(snap, tcase.start, tcase.end, tcase.timestamp)
 		snap.Close()
 		if err != nil {
 			t.Fatalf("case %d: unexpected error %q", i, err)

@@ -78,7 +78,7 @@ func TestDistSQLRunningInAbortedTxn(t *testing.T) {
 	internalPlanner, cleanup := NewInternalPlanner(
 		"test",
 		kv.NewTxn(ctx, db, s.NodeID()),
-		username.NodeUserName(),
+		username.RootUserName(),
 		&MemoryMetrics{},
 		&execCfg,
 		sd,
@@ -167,8 +167,7 @@ func TestDistSQLRunningInAbortedTxn(t *testing.T) {
 
 		// We need to re-plan every time, since the plan is closed automatically
 		// by PlanAndRun() below making it unusable across retries.
-		p.stmt = makeStatement(stmt, clusterunique.ID{},
-			tree.FmtFlags(queryFormattingForFingerprintsMask.Get(&execCfg.Settings.SV)))
+		p.stmt = makeStatement(stmt, clusterunique.ID{})
 		if err := p.makeOptimizerPlan(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -178,7 +177,8 @@ func TestDistSQLRunningInAbortedTxn(t *testing.T) {
 		// We need distribute = true so that executing the plan involves marshaling
 		// the root txn meta to leaf txns. Local flows can start in aborted txns
 		// because they just use the root txn.
-		planCtx := execCfg.DistSQLPlanner.NewPlanningCtx(ctx, evalCtx, p, nil /* txn */, FullDistribution)
+		planCtx := execCfg.DistSQLPlanner.NewPlanningCtx(ctx, evalCtx, p, nil,
+			DistributionTypeSystemTenantOnly)
 		planCtx.stmtType = recv.stmtType
 
 		execCfg.DistSQLPlanner.PlanAndRun(
@@ -262,7 +262,7 @@ func TestDistSQLRunningParallelFKChecksAfterAbort(t *testing.T) {
 		internalPlanner, cleanup := NewInternalPlanner(
 			"test",
 			txn,
-			username.NodeUserName(),
+			username.RootUserName(),
 			&MemoryMetrics{},
 			&execCfg,
 			sd,
@@ -285,15 +285,14 @@ func TestDistSQLRunningParallelFKChecksAfterAbort(t *testing.T) {
 			p.ExtendedEvalContext().Tracing,
 		)
 
-		p.stmt = makeStatement(stmt, clusterunique.ID{},
-			tree.FmtFlags(queryFormattingForFingerprintsMask.Get(&s.ClusterSettings().SV)))
+		p.stmt = makeStatement(stmt, clusterunique.ID{})
 		if err := p.makeOptimizerPlan(ctx); err != nil {
 			t.Fatal(err)
 		}
 		defer p.curPlan.close(ctx)
 
 		evalCtx := p.ExtendedEvalContext()
-		planCtx := execCfg.DistSQLPlanner.NewPlanningCtx(ctx, evalCtx, p, txn, LocalDistribution)
+		planCtx := execCfg.DistSQLPlanner.NewPlanningCtx(ctx, evalCtx, p, txn, DistributionTypeNone)
 		planCtx.stmtType = recv.stmtType
 
 		evalCtxFactory := func(bool) *extendedEvalContext {
@@ -609,7 +608,7 @@ func TestDistSQLReceiverDrainsMeta(t *testing.T) {
 			UseDatabase: "test",
 			Knobs: base.TestingKnobs{
 				SQLExecutor: &ExecutorTestingKnobs{
-					DistSQLReceiverPushCallbackFactory: func(_ context.Context, query string) func(rowenc.EncDatumRow, coldata.Batch, *execinfrapb.ProducerMetadata) (rowenc.EncDatumRow, coldata.Batch, *execinfrapb.ProducerMetadata) {
+					DistSQLReceiverPushCallbackFactory: func(query string) func(rowenc.EncDatumRow, coldata.Batch, *execinfrapb.ProducerMetadata) (rowenc.EncDatumRow, coldata.Batch, *execinfrapb.ProducerMetadata) {
 						if query != testQuery {
 							return nil
 						}
@@ -716,7 +715,7 @@ func TestCancelFlowsCoordinator(t *testing.T) {
 	// has 67% probability of participating in the plan.
 	makeFlowsToCancel := func(rng *rand.Rand) map[base.SQLInstanceID]*execinfrapb.FlowSpec {
 		res := make(map[base.SQLInstanceID]*execinfrapb.FlowSpec)
-		flowID := execinfrapb.FlowID{UUID: uuid.MakeV4()}
+		flowID := execinfrapb.FlowID{UUID: uuid.FastMakeV4()}
 		for id := 1; id <= numNodes; id++ {
 			if rng.Float64() < 0.33 {
 				// This node wasn't a part of the current plan.
@@ -1148,7 +1147,7 @@ SELECT id, details FROM jobs AS j INNER JOIN cte1 ON id = job_id WHERE id = 1;
 		ServerArgs: base.TestServerArgs{
 			Knobs: base.TestingKnobs{
 				SQLExecutor: &ExecutorTestingKnobs{
-					DistSQLReceiverPushCallbackFactory: func(_ context.Context, query string) func(rowenc.EncDatumRow, coldata.Batch, *execinfrapb.ProducerMetadata) (rowenc.EncDatumRow, coldata.Batch, *execinfrapb.ProducerMetadata) {
+					DistSQLReceiverPushCallbackFactory: func(query string) func(rowenc.EncDatumRow, coldata.Batch, *execinfrapb.ProducerMetadata) (rowenc.EncDatumRow, coldata.Batch, *execinfrapb.ProducerMetadata) {
 						if !strings.HasPrefix(query, targetQuery[:20]) {
 							return nil
 						}

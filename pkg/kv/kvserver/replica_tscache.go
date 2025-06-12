@@ -15,39 +15,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/tscache"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
-)
-
-// ReadSummaryLocalBudget controls the maximum number of bytes that will be used
-// to summarize the local segment of the timestamp cache during lease transfers
-// and range merges.
-var ReadSummaryLocalBudget = settings.RegisterByteSizeSetting(
-	settings.SystemOnly,
-	"kv.lease_transfer_read_summary.local_budget",
-	"controls the maximum number of bytes that will be used to summarize the local "+
-		"segment of the timestamp cache during lease transfers and range merges. A smaller "+
-		"budget will result in loss of precision.",
-	4<<20, /* 4 MB */
-	settings.WithPublic,
-)
-
-// ReadSummaryGlobalBudget controls the maximum number of bytes that will be
-// used to summarize the global segment of the timestamp cache during lease
-// transfers and range merges.
-var ReadSummaryGlobalBudget = settings.RegisterByteSizeSetting(
-	settings.SystemOnly,
-	"kv.lease_transfer_read_summary.global_budget",
-	"controls the maximum number of bytes that will be used to summarize the global "+
-		"segment of the timestamp cache during lease transfers and range merges. A smaller "+
-		"budget will result in loss of precision.",
-	0,
-	settings.WithPublic,
 )
 
 // addToTSCacheChecked adds the specified timestamp to the timestamp cache
@@ -79,7 +52,7 @@ func (r *Replica) addToTSCacheChecked(
 				"cache update could be lost on a non-cooperative lease change.", ts, ba, br, pErr, exp)
 		}
 	}
-	r.store.tsCache.Add(ctx, start, end, ts, txnID)
+	r.store.tsCache.Add(start, end, ts, txnID)
 }
 
 // updateTimestampCache updates the timestamp cache in order to set a low
@@ -93,7 +66,7 @@ func (r *Replica) updateTimestampCache(
 	// Only call the more expensive addToTSCacheChecked function in test builds.
 	// Otherwise, just add to the timestamp cache without checking the lease.
 	addToTSCache := func(start, end roachpb.Key, ts hlc.Timestamp, txnID uuid.UUID) {
-		r.store.tsCache.Add(ctx, start, end, ts, txnID)
+		r.store.tsCache.Add(start, end, ts, txnID)
 	}
 	if buildutil.CrdbTestBuild {
 		addToTSCache = func(start, end roachpb.Key, ts hlc.Timestamp, txnID uuid.UUID) {
@@ -132,7 +105,7 @@ func (r *Replica) updateTimestampCache(
 		header := req.Header()
 		start, end := header.Key, header.EndKey
 
-		if ba.WaitPolicy == lock.WaitPolicy_SkipLocked && kvpb.CanSkipLocked(req) && resp != nil {
+		if ba.WaitPolicy == lock.WaitPolicy_SkipLocked && kvpb.CanSkipLocked(req) {
 			if ba.IndexFetchSpec != nil {
 				log.Errorf(ctx, "%v", errors.AssertionFailedf("unexpectedly IndexFetchSpec is set with SKIP LOCKED wait policy"))
 			}
@@ -152,7 +125,7 @@ func (r *Replica) updateTimestampCache(
 			//  [Get("a"), Get("c")]
 			if err := kvpb.ResponseKeyIterate(req, resp, func(key roachpb.Key) {
 				addToTSCache(key, nil, ts, txnID)
-			}, false /* includeLockedNonExisting */); err != nil {
+			}); err != nil {
 				log.Errorf(ctx, "error iterating over response keys while "+
 					"updating timestamp cache for ba=%v, br=%v: %v", ba, br, err)
 			}
@@ -223,23 +196,14 @@ func (r *Replica) updateTimestampCache(
 				tombstone = false
 			case roachpb.ABORTED:
 				tombstone = true
-			case roachpb.COMMITTED:
-				// No need to update the timestamp cache. It was already updated by the
-				// corresponding EndTxn request.
-				continue
 			case roachpb.STAGING:
-				// Staging transactions cannot have their timestamp pushed. They can be
-				// aborted, but then they will be in the ABORTED state. So this must
-				// have been a no-op push where the PushTo timestamp was already below
-				// the staging transaction's timestamp.
+				// No need to update the timestamp cache. If a transaction
+				// is in this state then it must have a transaction record.
 				continue
-			case roachpb.PREPARED:
-				// Prepared transactions are not allowed to be pushed, regardless of the
-				// push type. So this must have been a no-op push where the PushTo
-				// timestamp was already below the prepared transaction's timestamp.
+			case roachpb.COMMITTED:
+				// No need to update the timestamp cache. It was already
+				// updated by the corresponding EndTxn request.
 				continue
-			default:
-				log.Fatalf(ctx, "unexpected transaction status: %v", pushee.Status)
 			}
 
 			var key roachpb.Key
@@ -255,8 +219,6 @@ func (r *Replica) updateTimestampCache(
 				// if we were to bump the timestamp cache to the WriteTimestamp,
 				// we could risk adding an entry at a time in advance of the
 				// local clock.
-				// TODO(nvanbenschoten): confirm that this restriction is still
-				// true, now that we ship the timestamp cache on lease transfers.
 				key = transactionTombstoneMarker(start, pushee.ID)
 				pushTS = pushee.MinTimestamp
 			} else {
@@ -268,6 +230,13 @@ func (r *Replica) updateTimestampCache(
 			// ConditionalPut only updates on ConditionFailedErrors. On other
 			// errors, no information is returned. On successful writes, the
 			// intent already protects against writes underneath the read.
+			if _, ok := pErr.GetDetail().(*kvpb.ConditionFailedError); ok {
+				addToTSCache(start, end, ts, txnID)
+			}
+		case *kvpb.InitPutRequest:
+			// InitPut only updates on ConditionFailedErrors. On other errors,
+			// no information is returned. On successful writes, the intent
+			// already protects against writes underneath the read.
 			if _, ok := pErr.GetDetail().(*kvpb.ConditionFailedError); ok {
 				addToTSCache(start, end, ts, txnID)
 			}
@@ -305,36 +274,21 @@ func (r *Replica) updateTimestampCache(
 			}
 			addToTSCache(start, end, ts, txnID)
 		case *kvpb.QueryIntentRequest:
-			// NB: We only need to bump the timestamp cache if the QueryIntentRequest
-			// was querying a write intent and if it wasn't found. This prevents the
-			// intent from ever being written in the future. This is done for the
-			// benefit of txn recovery, where we don't want an intent to land after a
-			// QueryIntent request has already evaluated and determined the fate of
-			// the transaction being recovered. Letting the intent land would cause us
-			// to commit a transaction that we've determined was aborted.
-			//
-			// However, for other replicated locks (shared, exclusive), we know that
-			// they'll never be pipelined if they belong to a batch that's being
-			// committed in parallel. This means that any QueryIntent request for a
-			// replicated shared or exclusive lock is doing so with the knowledge that
-			// the request evaluated successfully (so it can't land later) -- it's
-			// only checking whether the replication succeeded or not.
-			if t.StrengthOrDefault() == lock.Intent {
-				missing := false
-				if pErr != nil {
-					_, missing = pErr.GetDetail().(*kvpb.IntentMissingError)
-				} else {
-					missing = !resp.(*kvpb.QueryIntentResponse).FoundUnpushedIntent
-				}
-				if missing {
-					// If the QueryIntent determined that the intent is missing then we
-					// update the timestamp cache at the intent's key to the intent's
-					// transactional timestamp. This will prevent the intent from ever
-					// being written in the future. We use an empty transaction ID so that
-					// we block the intent regardless of whether it is part of the current
-					// batch's transaction or not.
-					addToTSCache(start, end, t.Txn.WriteTimestamp, uuid.UUID{})
-				}
+			missing := false
+			if pErr != nil {
+				_, missing = pErr.GetDetail().(*kvpb.IntentMissingError)
+			} else {
+				missing = !resp.(*kvpb.QueryIntentResponse).FoundUnpushedIntent
+			}
+			if missing {
+				// If the QueryIntent determined that the intent is missing
+				// then we update the timestamp cache at the intent's key to
+				// the intent's transactional timestamp. This will prevent
+				// the intent from ever being written in the future. We use
+				// an empty transaction ID so that we block the intent
+				// regardless of whether it is part of the current batch's
+				// transaction or not.
+				addToTSCache(start, end, t.Txn.WriteTimestamp, uuid.UUID{})
 			}
 		case *kvpb.ResolveIntentRequest:
 			// Update the timestamp cache on the key the request resolved if there
@@ -378,7 +332,8 @@ func init() {
 
 // applyTimestampCache moves the batch timestamp forward depending on
 // the presence of overlapping entries in the timestamp cache. If the
-// batch is transactional the txn timestamp is updated.
+// batch is transactional, the txn timestamp and the txn.WriteTooOld
+// bool are updated.
 //
 // Two important invariants of Cockroach: 1) encountering a more
 // recently written value means transaction restart. 2) values must
@@ -396,7 +351,7 @@ func init() {
 // adjust the batch's timestamp.
 func (r *Replica) applyTimestampCache(
 	ctx context.Context, ba *kvpb.BatchRequest, minReadTS hlc.Timestamp,
-) (*kvpb.BatchRequest, bool) {
+) bool {
 	// bumpedDueToMinReadTS is set to true if the highest timestamp bump encountered
 	// below is due to the minReadTS.
 	var bumpedDueToMinReadTS bool
@@ -409,7 +364,7 @@ func (r *Replica) applyTimestampCache(
 			header := args.Header()
 
 			// Forward the timestamp if there's been a more recent read (by someone else).
-			rTS, rTxnID := r.store.tsCache.GetMax(ctx, header.Key, header.EndKey)
+			rTS, rTxnID := r.store.tsCache.GetMax(header.Key, header.EndKey)
 			var forwardedToMinReadTS bool
 			if rTS.Forward(minReadTS) {
 				forwardedToMinReadTS = true
@@ -421,18 +376,12 @@ func (r *Replica) applyTimestampCache(
 				if ba.Txn.ID != rTxnID {
 					if ba.Txn.WriteTimestamp.Less(nextRTS) {
 						txn := ba.Txn.Clone()
-						txn.WriteTimestamp = nextRTS
-						ba = ba.ShallowCopy()
+						bumpedCurReq = txn.WriteTimestamp.Forward(nextRTS)
 						ba.Txn = txn
-						bumpedCurReq = true
 					}
 				}
 			} else {
-				if ba.Timestamp.Less(nextRTS) {
-					ba = ba.ShallowCopy()
-					ba.Timestamp = nextRTS
-					bumpedCurReq = true
-				}
+				bumpedCurReq = ba.Timestamp.Forward(nextRTS)
 			}
 			if bumpedCurReq && (rTxnID != uuid.Nil) {
 				conflictingTxn = rTxnID
@@ -440,7 +389,7 @@ func (r *Replica) applyTimestampCache(
 			// Preserve bumpedDueToMinReadTS if we did not just bump or set it
 			// appropriately if we did.
 			bumpedDueToMinReadTS = (!bumpedCurReq && bumpedDueToMinReadTS) || (bumpedCurReq && forwardedToMinReadTS)
-			bumped = bumped || bumpedCurReq
+			bumped, bumpedCurReq = bumped || bumpedCurReq, false
 		}
 	}
 	if bumped {
@@ -455,12 +404,12 @@ func (r *Replica) applyTimestampCache(
 		} else {
 			conflictMsg := "conflicting txn unknown"
 			if conflictingTxn != uuid.Nil {
-				conflictMsg = "conflicting txn: " + conflictingTxn.Short().String()
+				conflictMsg = "conflicting txn: " + conflictingTxn.Short()
 			}
 			log.VEventf(ctx, 2, "bumped write timestamp to %s; %s", bumpedTS, redact.Safe(conflictMsg))
 		}
 	}
-	return ba, bumped
+	return bumped
 }
 
 // CanCreateTxnRecord determines whether a transaction record can be created for
@@ -613,7 +562,7 @@ func (r *Replica) CanCreateTxnRecord(
 	// error: if this is a re-evaluation, then the error will be transformed into
 	// an ambiguous one higher up. Otherwise, if the client is still waiting for
 	// a result, then this cannot be a "replay" of any sort.
-	tombstoneTimestamp, tombstoneTxnID := r.store.tsCache.GetMax(ctx, tombstoneKey, nil /* end */)
+	tombstoneTimestamp, tombstoneTxnID := r.store.tsCache.GetMax(tombstoneKey, nil /* end */)
 	// Compare against the minimum timestamp that the transaction could have
 	// written intents at.
 	if txnMinTS.LessEq(tombstoneTimestamp) {
@@ -633,11 +582,8 @@ func (r *Replica) CanCreateTxnRecord(
 			return false, kvpb.ABORT_REASON_RECORD_ALREADY_WRITTEN_POSSIBLE_REPLAY
 		case uuid.Nil:
 			lease, _ /* nextLease */ := r.GetLease()
-			// Recognize the case where a lease started recently. Lease transfers can
-			// bump the ts cache low water mark. However, in versions of the code >=
-			// 24.1, the lease transfer will also pass a read summary to the new
-			// leaseholder, allowing it to be more selective about what parts of the
-			// ts cache that it bumps and avoiding this case most of the time.
+			// Recognize the case where a lease started recently. Lease transfers bump
+			// the ts cache low water mark.
 			if tombstoneTimestamp == lease.Start.ToTimestamp() {
 				return false, kvpb.ABORT_REASON_NEW_LEASE_PREVENTS_TXN
 			}
@@ -679,7 +625,7 @@ func (r *Replica) MinTxnCommitTS(
 	// commit at. This is used by pushers to push the timestamp of a transaction
 	// without writing to the pushee's transaction record.
 	pushKey := transactionPushMarker(txnKey, txnID)
-	minCommitTS, _ := r.store.tsCache.GetMax(ctx, pushKey, nil /* end */)
+	minCommitTS, _ := r.store.tsCache.GetMax(pushKey, nil /* end */)
 	return minCommitTS
 }
 
@@ -713,9 +659,7 @@ func transactionPushMarker(key roachpb.Key, txnID uuid.UUID) roachpb.Key {
 // GetCurrentReadSummary returns a new ReadSummary reflecting all reads served
 // by the range to this point.
 func (r *Replica) GetCurrentReadSummary(ctx context.Context) rspb.ReadSummary {
-	localBudget := ReadSummaryLocalBudget.Get(&r.store.ClusterSettings().SV)
-	globalBudget := ReadSummaryGlobalBudget.Get(&r.store.ClusterSettings().SV)
-	sum := collectReadSummaryFromTimestampCache(ctx, r.store.tsCache, r.Desc(), localBudget, globalBudget)
+	sum := collectReadSummaryFromTimestampCache(r.store.tsCache, r.Desc())
 	// Forward the read summary by the range's closed timestamp, because any
 	// replica could have served reads below this time. We also return the
 	// closed timestamp separately, in case callers want it split out.
@@ -724,45 +668,22 @@ func (r *Replica) GetCurrentReadSummary(ctx context.Context) rspb.ReadSummary {
 	return sum
 }
 
-// collectReadSummaryFromTimestampCache constructs a read summary for the range
-// with the specified descriptor using the timestamp cache. The function accepts
-// two size budgets, which are used to limit the size of the local and global
-// segments of the read summary, respectively.
+// collectReadSummaryFromTimestampCache constucts a read summary for the range
+// with the specified descriptor using the timestamp cache.
 func collectReadSummaryFromTimestampCache(
-	ctx context.Context,
-	tc tscache.Cache,
-	desc *roachpb.RangeDescriptor,
-	localBudget, globalBudget int64,
+	tc tscache.Cache, desc *roachpb.RangeDescriptor,
 ) rspb.ReadSummary {
-	serializeSegment := func(start, end roachpb.Key, budget int64) rspb.Segment {
-		var seg rspb.Segment
-		if budget > 0 {
-			// Serialize the key range and then compress to the budget.
-			seg = tc.Serialize(ctx, start, end)
-			// TODO(nvanbenschoten): return a boolean from this function indicating
-			// whether the segment lost precision when being compressed. Then use that
-			// to increment a metric to provide observability.
-			seg.Compress(budget)
-		} else {
-			// If the budget is 0, just return the maximum timestamp in the key range.
-			// This is equivalent to serializing the key range and then compressing
-			// the resulting segment to 0 bytes, but much cheaper.
-			seg.LowWater, _ = tc.GetMax(ctx, start, end)
-		}
-		return seg
-	}
 	var s rspb.ReadSummary
-	s.Local = serializeSegment(
+	s.Local.LowWater, _ = tc.GetMax(
 		keys.MakeRangeKeyPrefix(desc.StartKey),
 		keys.MakeRangeKeyPrefix(desc.EndKey),
-		localBudget,
 	)
 	userKeys := desc.KeySpan()
-	s.Global = serializeSegment(
+	s.Global.LowWater, _ = tc.GetMax(
 		userKeys.Key.AsRawKey(),
 		userKeys.EndKey.AsRawKey(),
-		globalBudget,
 	)
+
 	return s
 }
 
@@ -771,23 +692,19 @@ func collectReadSummaryFromTimestampCache(
 // writes in either the local or global keyspace are allowed to invalidate
 // ("write underneath") prior reads.
 func applyReadSummaryToTimestampCache(
-	ctx context.Context, tc tscache.Cache, desc *roachpb.RangeDescriptor, s rspb.ReadSummary,
+	tc tscache.Cache, desc *roachpb.RangeDescriptor, s rspb.ReadSummary,
 ) {
-	applySegment := func(start, end roachpb.Key, seg rspb.Segment) {
-		tc.Add(ctx, start, end, seg.LowWater, uuid.Nil /* txnID */)
-		for _, rs := range seg.ReadSpans {
-			tc.Add(ctx, rs.Key, rs.EndKey, rs.Timestamp, rs.TxnID)
-		}
-	}
-	applySegment(
+	tc.Add(
 		keys.MakeRangeKeyPrefix(desc.StartKey),
 		keys.MakeRangeKeyPrefix(desc.EndKey),
-		s.Local,
+		s.Local.LowWater,
+		uuid.Nil, /* txnID */
 	)
 	userKeys := desc.KeySpan()
-	applySegment(
+	tc.Add(
 		userKeys.Key.AsRawKey(),
 		userKeys.EndKey.AsRawKey(),
-		s.Global,
+		s.Global.LowWater,
+		uuid.Nil, /* txnID */
 	)
 }

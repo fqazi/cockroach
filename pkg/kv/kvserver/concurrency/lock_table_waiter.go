@@ -10,6 +10,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
@@ -32,46 +33,65 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-// LockTableDeadlockOrLivenessDetectionPushDelay sets the delay before pushing
-// in order to detect dependency cycles between transactions or coordinator
-// failure of conflicting transactions.
-var LockTableDeadlockOrLivenessDetectionPushDelay = settings.RegisterDurationSetting(
+// LockTableLivenessPushDelay sets the delay before pushing in order to detect
+// coordinator failures of conflicting transactions.
+var LockTableLivenessPushDelay = settings.RegisterDurationSetting(
+	settings.SystemOnly,
+	"kv.lock_table.coordinator_liveness_push_delay",
+	"the delay before pushing in order to detect coordinator failures of conflicting transactions",
+	// This is set to a short duration to ensure that we quickly detect failed
+	// transaction coordinators that have abandoned one or many locks. We don't
+	// want to wait out a long timeout on each of these locks to detect that
+	// they are abandoned. However, we also don't want to push immediately in
+	// cases where the lock is going to be resolved shortly.
+	//
+	// We could increase this default to somewhere on the order of the
+	// transaction heartbeat timeout (5s) if we had a better way to avoid paying
+	// the cost on each of a transaction's abandoned locks and instead only pay
+	// it once per abandoned transaction per range or per node. This could come
+	// in a few different forms, including:
+	// - a per-store cache of recently detected abandoned transaction IDs
+	// - a per-range reverse index from transaction ID to locked keys
+	//
+	// EDIT: The txnStatusCache gets us part of the way here. It allows us to
+	// pay the liveness push delay cost once per abandoned transaction per range
+	// instead of once per each of an abandoned transaction's locks. This helped
+	// us to feel comfortable increasing the default delay from the original
+	// 10ms to the current 50ms. Still, to feel comfortable increasing this
+	// further, we'd want to improve this cache (e.g. lifting it to the store
+	// level) to reduce the cost to once per abandoned transaction per store.
+	//
+	// TODO(nvanbenschoten): continue increasing this default value.
+	50*time.Millisecond,
+)
+
+// LockTableDeadlockDetectionPushDelay sets the delay before pushing in order to
+// detect dependency cycles between transactions.
+var LockTableDeadlockDetectionPushDelay = settings.RegisterDurationSetting(
 	settings.SystemOnly,
 	"kv.lock_table.deadlock_detection_push_delay",
 	"the delay before pushing in order to detect dependency cycles between transactions",
-	// Transactions that come across contending locks must push the lock holder
-	// to detect whether they're abandoned or are part of a dependency cycle that
-	// would cause a deadlock. We optimistically assume failed transaction
-	// coordinators and deadlocks are not common in production applications, and
-	// wait locally on locks for a while before checking for a deadlock. This
-	// reduces needless pushing in cases where there is no deadlock or coordinator
-	// failure to speak of.
+	// This is set to a medium duration to ensure that deadlock caused by
+	// dependency cycles between transactions are eventually detected, but that
+	// the deadlock detection does not impose any overhead in the vastly common
+	// case where there are no dependency cycles. We optimistically assume that
+	// deadlocks are not common in production applications and wait locally on
+	// locks for a while before checking for a deadlock. Increasing this value
+	// reduces the amount of time wasted in needless deadlock checks, but slows
+	// down reporting of real deadlock scenarios.
 	//
-	// Assuming we care about detecting failed coordinators more than deadlocks
-	// (which are a true rarity and a case we don't want to optimize for),
-	// increasing the value of this setting would come down to optimizing the cost
-	// we pay per-abandoned transaction. Currently, with the txnStatusCache,
-	// we pay a cost per abandoned transaction per range. The txnStatusCache is
-	// also quite small. Some improvements here could be:
-	// - A per-store cache instead of a per-range cache.
-	// - Increasing the number of finalized transactions we keep track of, even if
-	// this is per-request instead of per-range.
-	//
-	// The deadlock portion of this setting is analogous to Postgres'
-	// deadlock_timeout setting, which has a default value of 1s:
+	// The value is analogous to Postgres' deadlock_timeout setting, which has a
+	// default value of 1s:
 	//  https://www.postgresql.org/docs/current/runtime-config-locks.html#GUC-DEADLOCK-TIMEOUT.
 	//
-	// When increasing this value, we should be conscious that even once
+	// We could increase this default to somewhere around 250ms - 1000ms if we
+	// confirmed that we do not observe deadlocks in any of the workloads that
+	// we care about. When doing so, we should be conscious that even once
 	// distributed deadlock detection begins, there is some latency proportional
 	// to the length of the dependency cycle before the deadlock is detected.
 	//
-	//
 	// TODO(nvanbenschoten): increasing this default value.
 	100*time.Millisecond,
-	settings.WithName("kv.lock_table.deadlock_detection_or_liveness_push_delay"),
-	// Old setting name when liveness and deadlock push delays could be set
-	// independently.
-	settings.WithRetiredName("kv.lock_table.coordinator_liveness_push_delay"),
 )
 
 // lockTableWaiterImpl is an implementation of lockTableWaiter.
@@ -117,8 +137,7 @@ func (w *lockTableWaiterImpl) WaitOn(
 	ctxDoneC := ctx.Done()
 	shouldQuiesceC := w.stopper.ShouldQuiesce()
 	// Used to delay liveness and deadlock detection pushes.
-	var timer timeutil.Timer
-	defer timer.Stop()
+	var timer *timeutil.Timer
 	var timerC <-chan time.Time
 	var timerWaitingState waitingState
 	// Used to enforce lock timeouts.
@@ -144,24 +163,41 @@ func (w *lockTableWaiterImpl) WaitOn(
 			log.VEventf(ctx, 3, "lock wait-queue event: %s", state)
 			tracer.notify(ctx, state)
 			switch state.kind {
-			case waitFor:
+			case waitFor, waitForDistinguished:
 				// waitFor indicates that the request is waiting on another
 				// transaction. This transaction may be the lock holder of a
 				// conflicting lock or the head of a lock-wait queue that the
 				// request is a part of.
+				//
+				// waitForDistinguished is like waitFor, except it instructs the
+				// waiter to quickly push the conflicting transaction after a short
+				// liveness push delay instead of waiting out the full deadlock
+				// detection push delay. The lockTable guarantees that there is
+				// always at least one request in the waitForDistinguished state for
+				// each lock that has any waiters.
+				//
+				// The purpose of the waitForDistinguished state is to avoid waiting
+				// out the longer deadlock detection delay before recognizing and
+				// recovering from the failure of a transaction coordinator for
+				// *each* of that transaction's previously written intents.
+				livenessPush := state.kind == waitForDistinguished
+				deadlockPush := true
 				waitPolicyPush := req.WaitPolicy == lock.WaitPolicy_Error
 
-				deadlockOrLivenessPush := true
+				// If the conflict is a claimant transaction that hasn't acquired the
+				// lock yet there's no need to perform a liveness push - the request
+				// must be alive or its context would have been canceled and it would
+				// have exited its lock wait-queues.
+				if !state.held {
+					livenessPush = false
+				}
 
-				// Non-transactional requests do not need to perform a deadlock push as
-				// they can't hold locks that outlive the request's duration. As such,
-				// they can't be part of deadlock cycles.
-				//
-				// Now, if the lock isn't held, we don't need to check for liveness -
-				// the request must be default alive, or its context would have been
-				// cancelled, and it would have exited the lock's wait-queues.
-				if !state.held && req.Txn == nil {
-					deadlockOrLivenessPush = false
+				// For non-transactional requests, there's no need to perform
+				// deadlock detection because a non-transactional request can
+				// not be part of a dependency cycle. Non-transactional requests
+				// cannot hold locks (and by extension, claim them).
+				if req.Txn == nil {
+					deadlockPush = false
 				}
 
 				// For requests that have a lock timeout, push after the timeout to
@@ -174,33 +210,24 @@ func (w *lockTableWaiterImpl) WaitOn(
 				// The push should succeed without entering the txn wait-queue.
 				priorityPush := canPushWithPriority(req, state)
 
-				// If the request doesn't want to perform a delayed push for any reason,
-				// continue waiting without a timer.
-				if !(deadlockOrLivenessPush || timeoutPush || priorityPush || waitPolicyPush) {
+				// If the request doesn't want to perform a delayed push for any
+				// reason, continue waiting without a timer.
+				if !(livenessPush || deadlockPush || timeoutPush || priorityPush || waitPolicyPush) {
 					log.VEventf(ctx, 3, "not pushing")
 					continue
 				}
 
-				// Most[2] requests perform a delayed[1] push for liveness and/or
-				// deadlock detection. A request's priority, wait policy, and lock
-				// timeout may shorten this delay.
-				//
-				// [1] The request should push to detect abandoned locks due to failed
-				// transaction coordinators, detect deadlocks between transactions, or
-				// both, but only after delay. This delay avoids unnecessary push
-				// traffic when the conflicting transaction is continuing to make
-				// forward progress.
-				//
-				// [2] The only exception being non-transactional requests (that can't
-				// be part of deadlock cycles) that are waiting on a known to be live
-				// transaction (one that's acquired a claim but not the lock).
+				// The request should push to detect abandoned locks due to
+				// failed transaction coordinators, detect deadlocks between
+				// transactions, or both, but only after delay. This delay
+				// avoids unnecessary push traffic when the conflicting
+				// transaction is continuing to make forward progress.
 				delay := time.Duration(math.MaxInt64)
-				if deadlockOrLivenessPush {
-					if req.DeadlockTimeout == 0 {
-						delay = LockTableDeadlockOrLivenessDetectionPushDelay.Get(&w.st.SV)
-					} else {
-						delay = req.DeadlockTimeout
-					}
+				if livenessPush {
+					delay = minDuration(delay, LockTableLivenessPushDelay.Get(&w.st.SV))
+				}
+				if deadlockPush {
+					delay = minDuration(delay, LockTableDeadlockDetectionPushDelay.Get(&w.st.SV))
 				}
 				if timeoutPush {
 					// Only reset the lock timeout deadline if this is the first time
@@ -221,11 +248,16 @@ func (w *lockTableWaiterImpl) WaitOn(
 				}
 
 				log.VEventf(ctx, 3, "pushing after %s for: "+
-					"deadlock/liveness detection = %t, timeout enforcement = %t, "+
-					"priority enforcement = %t, wait policy error = %t",
-					delay, deadlockOrLivenessPush, timeoutPush, priorityPush, waitPolicyPush)
+					"liveness detection = %t, deadlock detection = %t, "+
+					"timeout enforcement = %t, priority enforcement = %t, "+
+					"wait policy error = %t",
+					delay, livenessPush, deadlockPush, timeoutPush, priorityPush, waitPolicyPush)
 
 				if delay > 0 {
+					if timer == nil {
+						timer = timeutil.NewTimer()
+						defer timer.Stop()
+					}
 					timer.Reset(delay)
 					timerC = timer.C
 				} else {
@@ -299,11 +331,15 @@ func (w *lockTableWaiterImpl) WaitOn(
 			}
 
 		case <-timerC:
-			// If the request was in the waitFor state and did not observe any update
-			// to its state for the entire delay, it should push. It may be the case
-			// that the transaction is part of a dependency cycle or that the lock
-			// holder's coordinator node has crashed.
+			// If the request was in the waitFor or waitForDistinguished states
+			// and did not observe any update to its state for the entire delay,
+			// it should push. It may be the case that the transaction is part
+			// of a dependency cycle or that the lock holder's coordinator node
+			// has crashed.
 			timerC = nil
+			if timer != nil {
+				timer.Read = true
+			}
 			if w.onPushTimer != nil {
 				w.onPushTimer()
 			}
@@ -444,7 +480,20 @@ func (w *lockTableWaiterImpl) pushLockTxn(
 	h := w.pushHeader(req)
 	var pushType kvpb.PushTxnType
 	var beforePushObs roachpb.ObservedTimestamp
-	if ws.guardStrength == lock.None {
+	// For read-write conflicts, try to push the lock holder's timestamp forward
+	// so the read request can read under the lock. For write-write conflicts, try
+	// to abort the lock holder entirely so the write request can revoke and
+	// replace the lock with its own lock.
+	if req.WaitPolicy == lock.WaitPolicy_Error &&
+		!w.st.Version.IsActive(ctx, clusterversion.V23_2_RemoveLockTableWaiterTouchPush) {
+		// This wait policy signifies that the request wants to raise an error
+		// upon encountering a conflicting lock. We still need to push the lock
+		// holder to ensure that it is active and that this isn't an abandoned
+		// lock, but we push using a PUSH_TOUCH to immediately return an error
+		// if the lock hold is still active.
+		pushType = kvpb.PUSH_TOUCH
+		log.VEventf(ctx, 2, "pushing txn %s to check if abandoned", ws.txn.Short())
+	} else if ws.guardStrength == lock.None {
 		pushType = kvpb.PUSH_TIMESTAMP
 		beforePushObs = roachpb.ObservedTimestamp{
 			NodeID:    w.nodeDesc.NodeID,
@@ -454,10 +503,11 @@ func (w *lockTableWaiterImpl) pushLockTxn(
 		// leading the MVCC timestamp of an intent is lost, we also need to push
 		// the intent up to the top of the transaction's local uncertainty limit
 		// on this node. This logic currently lives in pushHeader, but we could
-		// simplify it and move it out here.
+		// simplify it when removing synthetic timestamps and then move it out
+		// here.
 		//
 		// We could also explore adding a preserve_local_timestamp flag to
-		// MVCCValue that would explicitly store the local timestamp even in
+		// MVCCValue that would explicitly storage the local timestamp even in
 		// cases where it would normally be omitted. This could be set during
 		// intent resolution when a push observation is provided. Or we could
 		// not persist this, but still preserve the local timestamp when the
@@ -727,26 +777,42 @@ func (w *lockTableWaiterImpl) pushHeader(req Request) kvpb.Header {
 		// transaction's uncertainty interval. This allows us to not have to
 		// restart for uncertainty if the push succeeds and we come back and
 		// read.
-		uncertaintyLimit := req.Txn.GlobalUncertaintyLimit
-		// However, because we intend to read on the same node, we can limit
-		// this to a clock reading from the local clock, relying on the fact
-		// that an observed timestamp from this node will limit our local
-		// uncertainty limit when we return to read.
 		//
-		// We intentionally do not use an observed timestamp directly to limit
-		// the push timestamp, because observed timestamps are not applicable in
-		// some cases (e.g. across lease changes). So to avoid an infinite loop
-		// where we continue to push to an unusable observed timestamp and
-		// continue to find the pushee in our uncertainty interval, we instead
-		// use the present time to limit the push timestamp, which is less
-		// optimal but is guaranteed to progress.
-		//
-		// There is some inherent raciness here, because the lease may move
-		// between when we push and when we later read. In such cases, we may
-		// need to push again, but expect to eventually succeed in reading,
-		// either after lease movement subsides or after the reader's read
-		// timestamp surpasses its global uncertainty limit.
-		uncertaintyLimit.Backward(w.clock.Now())
+		// NOTE: GlobalUncertaintyLimit is effectively synthetic because it does
+		// not come from an HLC clock, but it does not currently get marked as
+		// so. See the comment in roachpb.MakeTransaction. This synthetic flag
+		// is then removed if we call Backward(clock.Now()) below.
+		uncertaintyLimit := req.Txn.GlobalUncertaintyLimit.WithSynthetic(true)
+		if !h.Timestamp.Synthetic {
+			// Because we intend to read on the same node, we can limit this to a
+			// clock reading from the local clock, relying on the fact that an
+			// observed timestamp from this node will limit our local uncertainty
+			// limit when we return to read.
+			//
+			// We intentionally do not use an observed timestamp directly to limit
+			// the push timestamp, because observed timestamps are not applicable in
+			// some cases (e.g. across lease changes). So to avoid an infinite loop
+			// where we continue to push to an unusable observed timestamp and
+			// continue to find the pushee in our uncertainty interval, we instead
+			// use the present time to limit the push timestamp, which is less
+			// optimal but is guaranteed to progress.
+			//
+			// There is some inherent raciness here, because the lease may move
+			// between when we push and when we later read. In such cases, we may
+			// need to push again, but expect to eventually succeed in reading,
+			// either after lease movement subsides or after the reader's read
+			// timestamp surpasses its global uncertainty limit.
+			//
+			// However, this argument only holds if we expect to be able to use a
+			// local uncertainty limit when we return to read the pushed intent.
+			// Notably, local uncertainty limits can not be used to ignore intents
+			// with synthetic timestamps that would otherwise be in a reader's
+			// uncertainty interval. This is because observed timestamps do not
+			// apply to intents/values with synthetic timestamps. So if we know
+			// that we will be pushing an intent to a synthetic timestamp, we
+			// don't limit the value to a clock reading from the local clock.
+			uncertaintyLimit.Backward(w.clock.Now())
+		}
 		h.Timestamp.Forward(uncertaintyLimit)
 	}
 	return h
@@ -1107,7 +1173,7 @@ func (tag *contentionTag) notify(ctx context.Context, s waitingState) *kvpb.Cont
 	// on a different key than we were previously. If we're now waiting on a
 	// different key, we'll return an event corresponding to the previous key.
 	switch s.kind {
-	case waitFor, waitSelf, waitElsewhere:
+	case waitFor, waitForDistinguished, waitSelf, waitElsewhere:
 		// If we're tracking an event and see a different txn/key, the event is
 		// done and we initialize the new event tracking the new txn/key.
 		//

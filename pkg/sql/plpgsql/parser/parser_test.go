@@ -37,27 +37,21 @@ func TestParseDataDriven(t *testing.T) {
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
 			switch d.Cmd {
 			case "parse":
-				reParseWithoutLiterals := true
-				for _, arg := range d.CmdArgs {
-					if arg.Key == "no-parse-without-literals" {
-						reParseWithoutLiterals = false
-					}
-				}
-				return sqlutils.VerifyParseFormat(t, d.Input, d.Pos, sqlutils.PLpgSQL, reParseWithoutLiterals)
+				return sqlutils.VerifyParseFormat(t, d.Input, true /* plpgsql */)
 			case "error":
 				_, err := plpgsql.Parse(d.Input)
 				if err == nil {
-					d.Fatalf(t, "%s\nexpected error, found none", d.Pos)
+					d.Fatalf(t, "expected error, found none")
 				}
 				return sqlutils.VerifyParseError(err)
 			case "feature-count":
 				fn, err := utils.CountPLpgSQLStmt(d.Input)
 				if err != nil {
-					d.Fatalf(t, "%s\nunexpected parse error: %v", d.Pos, err)
+					d.Fatalf(t, "unexpected parse error: %v", err)
 				}
 				return fn.String()
 			}
-			d.Fatalf(t, "%s\nunsupported command: %s", d.Pos, d.Cmd)
+			d.Fatalf(t, "unsupported command: %s", d.Cmd)
 			return ""
 		})
 	})

@@ -7,6 +7,7 @@ go_test(
         "propagation_test.go",
         "settings_test.go",
     ],
+    args = ["-test.timeout=295s"],
     exec_properties = {"test.Pool": "large"},
     shard_count = 6,
     deps = [
@@ -15,7 +16,6 @@ go_test(
         "//pkg/security/securitytest",
         "//pkg/server",
         "//pkg/settings",
-        "//pkg/storage/fs",
         "//pkg/testutils",
         "//pkg/testutils/listenerutil",
         "//pkg/testutils/serverutils",

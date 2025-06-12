@@ -22,8 +22,6 @@ import (
 var typeORMReleaseTagRegex = regexp.MustCompile(`^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<point>\d+)$`)
 
 // Use 0.3.18 from the upstream repo once it is released.
-// WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
-// This is used by docs automation to produce a list of supported versions for ORM's.
 const supportedTypeORMRelease = "remove-unsafe-crdb-setting"
 const typeORMRepo = "https://github.com/rafiss/typeorm.git"
 
@@ -83,9 +81,39 @@ func registerTypeORM(r registry.Registry) {
 			t.Fatal(err)
 		}
 
-		// Install NodeJS 18.x and update NPM to the latest.
-		if err := installNode18(ctx, t, c, node, nodeOpts{}); err != nil {
-			t.Fatal(err)
+		// In case we are running into a state where machines are being reused, we first check to see if we
+		// can use npm to reduce the potential of trying to add another nodesource key
+		// (preventing gpg: dearmoring failed: File exists) errors.
+		if err := c.RunE(
+			ctx, node, `sudo npm i -g npm`,
+		); err != nil {
+			if err := repeatRunE(
+				ctx,
+				t,
+				c,
+				node,
+				"add nodesource key and deb repository",
+				`
+sudo apt-get update && \
+sudo apt-get install -y ca-certificates curl gnupg && \
+sudo mkdir -p /etc/apt/keyrings && \
+curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --batch --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_18.x nodistro main" | sudo tee /etc/apt/sources.list.d/nodesource.list`,
+			); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := repeatRunE(
+				ctx, t, c, node, "install nodejs and npm", `sudo apt-get update && sudo apt-get -qq install nodejs`,
+			); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := repeatRunE(
+				ctx, t, c, node, "update npm", `sudo npm i -g npm`,
+			); err != nil {
+				t.Fatal(err)
+			}
 		}
 
 		if err := repeatRunE(
@@ -144,7 +172,7 @@ func registerTypeORM(r registry.Registry) {
 		// We have to pass in the root cert with NODE_EXTRA_CA_CERTS because the JSON
 		// config only accepts the actual certificate contents and not a path.
 		t.Status("running TypeORM test suite - approx 2 mins")
-		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(node),
+		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), node,
 			`cd /mnt/data1/typeorm/ && NODE_EXTRA_CA_CERTS=$HOME/certs/ca.crt npm test`,
 		)
 		rawResults := result.Stdout + result.Stderr

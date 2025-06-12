@@ -8,12 +8,15 @@ package scbuildstmt
 import (
 	"math"
 	"reflect"
+	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
+	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/screl"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
@@ -30,16 +33,13 @@ type supportedAlterTableCommand = supportedStatement
 // declarative schema  changer. Operations marked as non-fully supported can
 // only be with the use_declarative_schema_changer session variable.
 var supportedAlterTableStatements = map[reflect.Type]supportedAlterTableCommand{
-	reflect.TypeOf((*tree.AlterTableAddColumn)(nil)):          {fn: alterTableAddColumn, on: true, checks: nil},
-	reflect.TypeOf((*tree.AlterTableDropColumn)(nil)):         {fn: alterTableDropColumn, on: true, checks: nil},
-	reflect.TypeOf((*tree.AlterTableAlterPrimaryKey)(nil)):    {fn: alterTableAlterPrimaryKey, on: true, checks: nil},
-	reflect.TypeOf((*tree.AlterTableSetNotNull)(nil)):         {fn: alterTableSetNotNull, on: true, checks: nil},
-	reflect.TypeOf((*tree.AlterTableAddConstraint)(nil)):      {fn: alterTableAddConstraint, on: true, checks: nil},
-	reflect.TypeOf((*tree.AlterTableDropConstraint)(nil)):     {fn: alterTableDropConstraint, on: true, checks: nil},
-	reflect.TypeOf((*tree.AlterTableValidateConstraint)(nil)): {fn: alterTableValidateConstraint, on: true, checks: nil},
-	reflect.TypeOf((*tree.AlterTableSetDefault)(nil)):         {fn: alterTableSetDefault, on: true, checks: nil},
-	reflect.TypeOf((*tree.AlterTableAlterColumnType)(nil)):    {fn: alterTableAlterColumnType, on: true, checks: nil},
-	reflect.TypeOf((*tree.AlterTableSetRLSMode)(nil)):         {fn: alterTableSetRLSMode, on: true, checks: isV252Active},
+	reflect.TypeOf((*tree.AlterTableAddColumn)(nil)):          {fn: alterTableAddColumn, on: true, checks: isV222Active},
+	reflect.TypeOf((*tree.AlterTableDropColumn)(nil)):         {fn: alterTableDropColumn, on: true, checks: isV222Active},
+	reflect.TypeOf((*tree.AlterTableAlterPrimaryKey)(nil)):    {fn: alterTableAlterPrimaryKey, on: true, checks: alterTableAlterPrimaryKeyChecks},
+	reflect.TypeOf((*tree.AlterTableSetNotNull)(nil)):         {fn: alterTableSetNotNull, on: true, checks: isV231Active},
+	reflect.TypeOf((*tree.AlterTableAddConstraint)(nil)):      {fn: alterTableAddConstraint, on: true, checks: alterTableAddConstraintChecks},
+	reflect.TypeOf((*tree.AlterTableDropConstraint)(nil)):     {fn: alterTableDropConstraint, on: true, checks: isV231Active},
+	reflect.TypeOf((*tree.AlterTableValidateConstraint)(nil)): {fn: alterTableValidateConstraint, on: true, checks: isV231Active},
 }
 
 func init() {
@@ -51,12 +51,11 @@ func init() {
 			panic(errors.AssertionFailedf("%v entry for statement is "+
 				"not a function", statementType))
 		}
-		if callBackType.NumIn() != 5 ||
+		if callBackType.NumIn() != 4 ||
 			!callBackType.In(0).Implements(reflect.TypeOf((*BuildCtx)(nil)).Elem()) ||
 			callBackType.In(1) != reflect.TypeOf((*tree.TableName)(nil)) ||
 			callBackType.In(2) != reflect.TypeOf((*scpb.Table)(nil)) ||
-			!callBackType.In(3).Implements(reflect.TypeOf((*tree.Statement)(nil)).Elem()) ||
-			callBackType.In(4) != statementType {
+			callBackType.In(3) != statementType {
 			panic(errors.AssertionFailedf("%v entry for alter table statement "+
 				"does not have a valid signature; got %v", statementType, callBackType))
 		}
@@ -102,6 +101,44 @@ func alterTableChecks(
 	return true
 }
 
+func alterTableAlterPrimaryKeyChecks(
+	t *tree.AlterTableAlterPrimaryKey,
+	mode sessiondatapb.NewSchemaChangerMode,
+	activeVersion clusterversion.ClusterVersion,
+) bool {
+	// Start supporting ALTER PRIMARY KEY (in general with fallback cases) from V22_2.
+	if !isV222Active(t, mode, activeVersion) {
+		return false
+	}
+	// Start supporting ALTER PRIMARY KEY USING HASH from V23_1.
+	if t.Sharded != nil && !activeVersion.IsActive(clusterversion.V23_1) {
+		return false
+	}
+	return true
+}
+
+func alterTableAddConstraintChecks(
+	t *tree.AlterTableAddConstraint,
+	mode sessiondatapb.NewSchemaChangerMode,
+	activeVersion clusterversion.ClusterVersion,
+) bool {
+	// Start supporting ADD PRIMARY KEY from V22_2.
+	if d, ok := t.ConstraintDef.(*tree.UniqueConstraintTableDef); ok && d.PrimaryKey && t.ValidationBehavior == tree.ValidationDefault {
+		return isV222Active(t, mode, activeVersion)
+	}
+
+	// Start supporting all other ADD CONSTRAINTs from V23_1, including
+	// - ADD PRIMARY KEY NOT VALID
+	// - ADD UNIQUE [NOT VALID]
+	// - ADD CHECK [NOT VALID]
+	// - ADD FOREIGN KEY [NOT VALID]
+	// - ADD UNIQUE WITHOUT INDEX [NOT VALID]
+	if !isV231Active(t, mode, activeVersion) {
+		return false
+	}
+	return true
+}
+
 // AlterTable implements ALTER TABLE.
 func AlterTable(b BuildCtx, n *tree.AlterTable) {
 	tn := n.Table.ToTableName()
@@ -123,7 +160,7 @@ func AlterTable(b BuildCtx, n *tree.AlterTable) {
 		panic(pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
 			"table %q is being dropped, try again later", n.Table.Object()))
 	}
-	defer checkTableSchemaChangePrerequisites(b, elts, n)()
+	panicIfSchemaIsLocked(elts)
 	tn.ObjectNamePrefix = b.NamePrefix(tbl)
 	b.SetUnresolvedNameAnnotation(n.Table, &tn)
 	b.IncrementSchemaChangeAlterCounter("table")
@@ -136,7 +173,6 @@ func AlterTable(b BuildCtx, n *tree.AlterTable) {
 			reflect.ValueOf(b),
 			reflect.ValueOf(&tn),
 			reflect.ValueOf(tbl),
-			reflect.ValueOf(n),
 			reflect.ValueOf(cmd),
 		})
 		b.IncrementSubWorkID()
@@ -144,6 +180,52 @@ func AlterTable(b BuildCtx, n *tree.AlterTable) {
 	maybeDropRedundantPrimaryIndexes(b, tbl.TableID)
 	maybeRewriteTempIDsInPrimaryIndexes(b, tbl.TableID)
 	disallowDroppingPrimaryIndexReferencedInUDFOrView(b, tbl.TableID, n.String())
+	// TODO (xiang): Remove the following line for the next major release after v23.2,
+	// be it v24.1 or v23.3.
+	disableAlterTableMultipleCommandsOnV232(b, n, tbl.TableID)
+}
+
+// disableAlterTableMultipleCommandsOnV232 disables declarative schema changer
+// if processing this ALTER TABLE stmt requires building more than one new
+// primary indexes by default on v23.2, unless the mode is unsafe or ALTER TABLE
+// is forcefully turned on.
+func disableAlterTableMultipleCommandsOnV232(b BuildCtx, n *tree.AlterTable, tableID catid.DescID) {
+	chain := getPrimaryIndexChain(b, tableID)
+	chainTyp := chain.chainType()
+
+	// isAlterPKWithRowid returns true if the stmt is ALTER PK with rowid.
+	isAlterPKWithRowid := func() bool {
+		if chainTyp == twoNewPrimaryIndexesWithAlteredPKType {
+			_, _, inter2StoredCols := getSortedColumnIDsInIndexByKind(b, tableID, chain.inter2Spec.primary.IndexID)
+			_, _, finalStoredCols := getSortedColumnIDsInIndexByKind(b, tableID, chain.finalSpec.primary.IndexID)
+			inter2StoredColsAsSet := catalog.MakeTableColSet(inter2StoredCols...)
+			finalStoredColsAsSet := catalog.MakeTableColSet(finalStoredCols...)
+			diffSet := inter2StoredColsAsSet.Difference(finalStoredColsAsSet)
+			if diffSet.Len() == 1 {
+				colName := mustRetrieveColumnNameElem(b, tableID, diffSet.Ordered()[0]).Name
+				if strings.HasPrefix(colName, "rowid") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	if chainTyp == twoNewPrimaryIndexesWithAlteredPKType ||
+		chainTyp == twoNewPrimaryIndexesWithAddAndDropColumnsType ||
+		chainTyp == threeNewPrimaryIndexesType {
+		if isAlterPKWithRowid() {
+			// This is the only exception that involves building more than one new
+			// primary indexes but we would enable by default, because it was already
+			// supported in v23.1.
+			return
+		}
+		newSchemaChangerMode := getDeclarativeSchemaChangerModeForStmt(b, n)
+		if newSchemaChangerMode != sessiondatapb.UseNewSchemaChangerUnsafe &&
+			newSchemaChangerMode != sessiondatapb.UseNewSchemaChangerUnsafeAlways {
+			panic(scerrors.NotImplementedErrorf(n, "statement has been disabled on v23.2"))
+		}
+	}
 }
 
 // disallowDroppingPrimaryIndexReferencedInUDFOrView prevents dropping old (current)
@@ -186,42 +268,29 @@ func disallowDroppingPrimaryIndexReferencedInUDFOrView(
 
 // maybeRewriteTempIDsInPrimaryIndexes is part of the post-processing
 // invoked at the end of building each ALTER TABLE statement to replace temporary
-// IDs with real, actual IDs. If any replaced temporary IDs had any subzone
-// configs, we also ensure those references get updated.
+// IDs with real, actual IDs.
 func maybeRewriteTempIDsInPrimaryIndexes(b BuildCtx, tableID catid.DescID) {
 	chain := getPrimaryIndexChain(b, tableID)
-	hasRewrittenPrimaryID := false
 	for i, spec := range chain.allPrimaryIndexSpecs(nonNilPrimaryIndexSpecSelector) {
 		if i == 0 {
 			continue
 		}
-		hasRewrittenPrimaryID = maybeRewriteIndexAndConstraintID(b, tableID, spec.primary.IndexID, spec.primary.ConstraintID)
+		maybeRewriteIndexAndConstraintID(b, tableID, spec.primary.IndexID, spec.primary.ConstraintID)
 		tempIndexSpec := chain.mustGetIndexSpecByID(spec.primary.TemporaryIndexID)
 		maybeRewriteIndexAndConstraintID(b, tableID, tempIndexSpec.temporary.IndexID, tempIndexSpec.temporary.ConstraintID)
 	}
 	chain.validate()
-	currPrimaryIndexID := getCurrentPrimaryIndexID(b, tableID)
-	if hasRewrittenPrimaryID {
-		if err := configureZoneConfigForNewIndexBackfill(b, tableID, currPrimaryIndexID); err != nil {
-			panic(errors.Wrapf(
-				err,
-				"error while updating zone configs for indexID %d of tableID %d",
-				currPrimaryIndexID,
-				tableID))
-		}
-	}
 }
 
-// maybeRewriteIndexAndConstraintID attempts to replace index which currently
-// has a temporary index ID `indexID` with an actual index ID. It also updates
-// all elements that references this index with the actual index ID. It returns
-// a boolean indicating if any work has been done.
+// maybeRewriteIndexAndConstraintID attempts to replace index which currently has
+// a temporary index ID `indexID` with an actual index ID. It also updates
+// all elements that references this index with the actual index ID.
 func maybeRewriteIndexAndConstraintID(
 	b BuildCtx, tableID catid.DescID, indexID catid.IndexID, constraintID catid.ConstraintID,
-) bool {
+) {
 	if indexID < catid.IndexID(TableTentativeIdsStart) || constraintID < catid.ConstraintID(TableTentativeIdsStart) {
 		// Nothing to do if it's already an actual index ID.
-		return false
+		return
 	}
 
 	actualIndexID := b.NextTableIndexID(tableID)
@@ -241,18 +310,7 @@ func maybeRewriteIndexAndConstraintID(
 			}
 			return nil
 		})
-		// If there are references to the indexID in the subzones,
-		// then we should rewrite.
-		if zoneConfig, ok := e.(*scpb.TableZoneConfig); ok {
-			for subzoneIdx := range zoneConfig.ZoneConfig.Subzones {
-				if zoneConfig.ZoneConfig.Subzones[subzoneIdx].IndexID == uint32(indexID) {
-					zoneConfig.ZoneConfig.Subzones[subzoneIdx].IndexID = uint32(actualIndexID)
-				}
-			}
-		}
 	})
-
-	return true
 }
 
 // maybeDropRedundantPrimaryIndexes is part of the post-processing invoked at

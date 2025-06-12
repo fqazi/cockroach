@@ -16,11 +16,9 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -234,10 +232,7 @@ func (m mvccCPutOp) run(ctx context.Context) string {
 	txn.Sequence++
 
 	_, err := storage.MVCCConditionalPut(ctx, writer, m.key,
-		txn.ReadTimestamp, m.value, m.expVal, storage.ConditionalPutWriteOptions{
-			MVCCWriteOptions:    storage.MVCCWriteOptions{Txn: txn},
-			AllowIfDoesNotExist: true,
-		})
+		txn.ReadTimestamp, m.value, m.expVal, true, storage.MVCCWriteOptions{Txn: txn})
 	if err != nil {
 		if writeTooOldErr := (*kvpb.WriteTooOldError)(nil); errors.As(err, &writeTooOldErr) {
 			txn.WriteTimestamp.Forward(writeTooOldErr.ActualTimestamp)
@@ -252,48 +247,30 @@ func (m mvccCPutOp) run(ctx context.Context) string {
 	return "ok"
 }
 
-type mvccCheckForAcquireLockOp struct {
-	m                       *metaTestRunner
-	writer                  readWriterID
-	key                     roachpb.Key
-	txn                     txnID
-	strength                lock.Strength
-	maxLockConflicts        int
-	targetLockConflictBytes int64
+type mvccInitPutOp struct {
+	m      *metaTestRunner
+	writer readWriterID
+	key    roachpb.Key
+	value  roachpb.Value
+	txn    txnID
 }
 
-func (m mvccCheckForAcquireLockOp) run(ctx context.Context) string {
+func (m mvccInitPutOp) run(ctx context.Context) string {
 	txn := m.m.getTxn(m.txn)
 	writer := m.m.getReadWriter(m.writer)
+	txn.Sequence++
 
-	err := storage.MVCCCheckForAcquireLock(ctx, writer, txn, m.strength, m.key, int64(m.maxLockConflicts), m.targetLockConflictBytes)
+	_, err := storage.MVCCInitPut(ctx, writer, m.key, txn.ReadTimestamp, m.value, false, storage.MVCCWriteOptions{Txn: txn})
 	if err != nil {
+		if writeTooOldErr := (*kvpb.WriteTooOldError)(nil); errors.As(err, &writeTooOldErr) {
+			txn.WriteTimestamp.Forward(writeTooOldErr.ActualTimestamp)
+			// Update the txn's lock spans to account for this intent being written.
+			addKeyToLockSpans(txn, m.key)
+		}
 		return fmt.Sprintf("error: %s", err)
 	}
 
-	return "ok"
-}
-
-type mvccAcquireLockOp struct {
-	m                       *metaTestRunner
-	writer                  readWriterID
-	key                     roachpb.Key
-	txn                     txnID
-	strength                lock.Strength
-	maxLockConflicts        int
-	targetLockConflictBytes int64
-}
-
-func (m mvccAcquireLockOp) run(ctx context.Context) string {
-	txn := m.m.getTxn(m.txn)
-	writer := m.m.getReadWriter(m.writer)
-
-	err := storage.MVCCAcquireLock(ctx, writer, &txn.TxnMeta, txn.IgnoredSeqNums, m.strength, m.key, nil, int64(m.maxLockConflicts), m.targetLockConflictBytes)
-	if err != nil {
-		return fmt.Sprintf("error: %s", err)
-	}
-
-	// Update the txn's lock spans to account for this lock being acquired.
+	// Update the txn's lock spans to account for this intent being written.
 	addKeyToLockSpans(txn, m.key)
 	return "ok"
 }
@@ -352,8 +329,9 @@ func (m mvccDeleteRangeUsingRangeTombstoneOp) run(ctx context.Context) string {
 		return "no-op due to no non-conflicting key range"
 	}
 
-	err := storage.MVCCDeleteRangeUsingTombstone(ctx, writer, nil, m.key, m.endKey, m.ts, hlc.ClockTimestamp{}, m.key,
-		m.endKey, false /* idempotent */, math.MaxInt64 /* maxLockConflicts */, 0 /* targetLockConflictBytes */, nil /* msCovered */)
+	err := storage.MVCCDeleteRangeUsingTombstone(ctx, writer, nil, m.key, m.endKey, m.ts,
+		hlc.ClockTimestamp{}, m.key, m.endKey, false /* idempotent */, math.MaxInt64, /* maxLockConflicts */
+		nil /* msCovered */)
 	if err != nil {
 		return fmt.Sprintf("error: %s", err)
 	}
@@ -375,7 +353,7 @@ func (m mvccClearTimeRangeOp) run(ctx context.Context) string {
 		return "no-op due to no non-conflicting key range"
 	}
 	span, err := storage.MVCCClearTimeRange(ctx, m.m.engine, &enginepb.MVCCStats{}, m.key, m.endKey,
-		m.startTime, m.endTime, nil, nil, math.MaxInt64, math.MaxInt64, math.MaxInt64, 0)
+		m.startTime, m.endTime, nil, nil, math.MaxInt64, math.MaxInt64, math.MaxInt64)
 	if err != nil {
 		return fmt.Sprintf("error: %s", err)
 	}
@@ -625,7 +603,7 @@ type iterOpenOp struct {
 
 func (i iterOpenOp) run(ctx context.Context) string {
 	rw := i.m.getReadWriter(i.rw)
-	iter, err := rw.NewMVCCIterator(ctx, storage.MVCCKeyIterKind, storage.IterOptions{
+	iter, err := rw.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		Prefix:     false,
 		LowerBound: i.key,
 		UpperBound: i.endKey.Next(),
@@ -771,7 +749,7 @@ type compactOp struct {
 }
 
 func (c compactOp) run(ctx context.Context) string {
-	err := c.m.engine.CompactRange(ctx, c.key, c.endKey)
+	err := c.m.engine.CompactRange(c.key, c.endKey)
 	if err != nil {
 		return fmt.Sprintf("error: %s", err.Error())
 	}
@@ -785,7 +763,7 @@ type ingestOp struct {
 
 func (i ingestOp) run(ctx context.Context) string {
 	sstPath := filepath.Join(i.m.path, "ingest.sst")
-	f, err := i.m.engineFS.Create(sstPath, fs.UnspecifiedWriteCategory)
+	f, err := i.m.engineFS.Create(sstPath)
 	if err != nil {
 		return fmt.Sprintf("error = %s", err.Error())
 	}
@@ -929,65 +907,29 @@ var opGenerators = []opGenerator{
 		weight: 50,
 	},
 	{
-		name: "mvcc_check_for_acquire_lock",
+		name: "mvcc_init_put",
 		generate: func(ctx context.Context, m *metaTestRunner, args ...string) mvccOp {
 			writer := readWriterID(args[0])
 			txn := txnID(args[1])
 			key := m.txnKeyGenerator.parse(args[2])
-			strength := lock.Shared
-			if m.floatGenerator.parse(args[3]) < 0.5 {
-				strength = lock.Exclusive
-			}
-			maxLockConflicts := int(m.floatGenerator.parse(args[4]) * 1000)
-
-			return &mvccCheckForAcquireLockOp{
-				m:                m,
-				writer:           writer,
-				key:              key.Key,
-				txn:              txn,
-				strength:         strength,
-				maxLockConflicts: maxLockConflicts,
-			}
-		},
-		operands: []operandType{
-			operandReadWriter,
-			operandTransaction,
-			operandMVCCKey,
-			operandFloat,
-			operandFloat,
-		},
-		weight: 50,
-	},
-	{
-		name: "mvcc_acquire_lock",
-		generate: func(ctx context.Context, m *metaTestRunner, args ...string) mvccOp {
-			writer := readWriterID(args[0])
-			txn := txnID(args[1])
-			key := m.txnKeyGenerator.parse(args[2])
-			strength := lock.Shared
-			if m.floatGenerator.parse(args[3]) < 0.5 {
-				strength = lock.Exclusive
-			}
-			maxLockConflicts := int(m.floatGenerator.parse(args[4]) * 1000)
+			value := roachpb.MakeValueFromBytes(m.valueGenerator.parse(args[3]))
 
 			// Track this write in the txn generator. This ensures the batch will be
-			// committed before the transaction is committed.
+			// committed before the transaction is committed
 			m.txnGenerator.trackTransactionalWrite(writer, txn, key.Key, nil)
-			return &mvccAcquireLockOp{
-				m:                m,
-				writer:           writer,
-				key:              key.Key,
-				txn:              txn,
-				strength:         strength,
-				maxLockConflicts: maxLockConflicts,
+			return &mvccInitPutOp{
+				m:      m,
+				writer: writer,
+				key:    key.Key,
+				value:  value,
+				txn:    txn,
 			}
 		},
 		operands: []operandType{
 			operandReadWriter,
 			operandTransaction,
 			operandUnusedMVCCKey,
-			operandFloat,
-			operandFloat,
+			operandValue,
 		},
 		weight: 50,
 	},

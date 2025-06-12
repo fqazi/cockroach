@@ -37,28 +37,19 @@ go_test(
         "encoding_test.go",
         "float_test.go",
         "main_test.go",
-        "pretty_print_test.go",
         "printer_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":encoding"],
-    # A test in this package allocates a 2GB array so we need the extra memory.
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"test.Pool": "heavy"},
-        "//conditions:default": {"test.Pool": "large"},
-    }),
     deps = [
         "//pkg/geo",
         "//pkg/geo/geographiclib",
         "//pkg/geo/geopb",
         "//pkg/roachpb",
-        "//pkg/sql/rowenc/valueside",
-        "//pkg/sql/sem/tree",
-        "//pkg/sql/types",
         "//pkg/testutils/skip",
         "//pkg/util/bitarray",
         "//pkg/util/duration",
         "//pkg/util/ipaddr",
-        "//pkg/util/json",
         "//pkg/util/log",
         "//pkg/util/randutil",
         "//pkg/util/timeofday",
@@ -84,7 +75,7 @@ genrule(
        sed -e 's/type Type encodingtype.T/type Type int/' $(location encoding.go) > encoding_tmp.go && \
          $(location //pkg/build/bazel/util/tinystringer) -output=$@ -type=Type encoding_tmp.go
     """,
-    tools = [
+    exec_tools = [
         "//pkg/build/bazel/util/tinystringer",
     ],
     visibility = [

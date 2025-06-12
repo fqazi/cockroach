@@ -32,82 +32,6 @@ var (
 	_ colexecerror.StorageError
 )
 
-const anyNotNullNumOverloads = 11
-
-func init() {
-	// Sanity check the hard-coded number of overloads.
-	var numOverloads int
-	numOverloads++
-	numOverloads++
-	numOverloads++
-	numOverloads++
-	numOverloads++
-	numOverloads++
-	numOverloads++
-	numOverloads++
-	numOverloads++
-	numOverloads++
-	numOverloads++
-	if numOverloads != anyNotNullNumOverloads {
-		colexecerror.InternalError(errors.AssertionFailedf(
-			"anyNotNullNumOverloads should be updated: expected %d, found %d", numOverloads, anyNotNullNumOverloads,
-		))
-	}
-}
-
-// anyNotNullOverloadOffset returns the offset for this particular type overload
-// within contiguous slice of allocators for this aggregate function.
-func anyNotNullOverloadOffset(t *types.T) int {
-	var offset int
-	canonicalTypeFamily := typeconv.TypeFamilyToCanonicalTypeFamily(t.Family())
-	if canonicalTypeFamily == types.BoolFamily {
-		return offset
-	}
-	offset += 1
-	if canonicalTypeFamily == types.BytesFamily {
-		return offset
-	}
-	offset += 1
-	if canonicalTypeFamily == types.DecimalFamily {
-		return offset
-	}
-	offset += 1
-	if canonicalTypeFamily == types.IntFamily {
-		if t.Width() == 16 {
-			return offset
-		}
-		offset++
-		if t.Width() == 32 {
-			return offset
-		}
-		offset++
-		return offset
-	}
-	offset += 3
-	if canonicalTypeFamily == types.FloatFamily {
-		return offset
-	}
-	offset += 1
-	if canonicalTypeFamily == types.TimestampTZFamily {
-		return offset
-	}
-	offset += 1
-	if canonicalTypeFamily == types.IntervalFamily {
-		return offset
-	}
-	offset += 1
-	if canonicalTypeFamily == types.JsonFamily {
-		return offset
-	}
-	offset += 1
-	if canonicalTypeFamily == typeconv.DatumVecCanonicalTypeFamily {
-		return offset
-	}
-	offset += 1
-	colexecerror.InternalError(errors.AssertionFailedf("didn't find overload offset for %s", t.SQLStringForError()))
-	return 0
-}
-
 func newAnyNotNullOrderedAggAlloc(
 	allocator *colmem.Allocator, t *types.T, allocSize int64,
 ) (aggregateFuncAlloc, error) {
@@ -172,7 +96,7 @@ func newAnyNotNullOrderedAggAlloc(
 			return &anyNotNullDatumOrderedAggAlloc{aggAllocBase: allocBase}, nil
 		}
 	}
-	return nil, errors.AssertionFailedf("unsupported any not null agg type %s", t.Name())
+	return nil, errors.Errorf("unsupported any not null agg type %s", t.Name())
 }
 
 // anyNotNullBoolOrderedAgg implements the ANY_NOT_NULL aggregate, returning the
@@ -186,19 +110,19 @@ type anyNotNullBoolOrderedAgg struct {
 
 var _ AggregateFunc = &anyNotNullBoolOrderedAgg{}
 
-func (a *anyNotNullBoolOrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *anyNotNullBoolOrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Bool()
 }
 
 func (a *anyNotNullBoolOrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Bool(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -385,19 +309,19 @@ type anyNotNullBytesOrderedAgg struct {
 
 var _ AggregateFunc = &anyNotNullBytesOrderedAgg{}
 
-func (a *anyNotNullBytesOrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *anyNotNullBytesOrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Bytes()
 }
 
 func (a *anyNotNullBytesOrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 
 	oldCurAggSize := len(a.curAgg)
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Bytes(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -588,19 +512,19 @@ type anyNotNullDecimalOrderedAgg struct {
 
 var _ AggregateFunc = &anyNotNullDecimalOrderedAgg{}
 
-func (a *anyNotNullDecimalOrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *anyNotNullDecimalOrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Decimal()
 }
 
 func (a *anyNotNullDecimalOrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 
 	oldCurAggSize := a.curAgg.Size()
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Decimal(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -787,19 +711,19 @@ type anyNotNullInt16OrderedAgg struct {
 
 var _ AggregateFunc = &anyNotNullInt16OrderedAgg{}
 
-func (a *anyNotNullInt16OrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *anyNotNullInt16OrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Int16()
 }
 
 func (a *anyNotNullInt16OrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Int16(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -986,19 +910,19 @@ type anyNotNullInt32OrderedAgg struct {
 
 var _ AggregateFunc = &anyNotNullInt32OrderedAgg{}
 
-func (a *anyNotNullInt32OrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *anyNotNullInt32OrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Int32()
 }
 
 func (a *anyNotNullInt32OrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Int32(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -1185,19 +1109,19 @@ type anyNotNullInt64OrderedAgg struct {
 
 var _ AggregateFunc = &anyNotNullInt64OrderedAgg{}
 
-func (a *anyNotNullInt64OrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *anyNotNullInt64OrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Int64()
 }
 
 func (a *anyNotNullInt64OrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Int64(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -1384,19 +1308,19 @@ type anyNotNullFloat64OrderedAgg struct {
 
 var _ AggregateFunc = &anyNotNullFloat64OrderedAgg{}
 
-func (a *anyNotNullFloat64OrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *anyNotNullFloat64OrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Float64()
 }
 
 func (a *anyNotNullFloat64OrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Float64(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -1583,19 +1507,19 @@ type anyNotNullTimestampOrderedAgg struct {
 
 var _ AggregateFunc = &anyNotNullTimestampOrderedAgg{}
 
-func (a *anyNotNullTimestampOrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *anyNotNullTimestampOrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Timestamp()
 }
 
 func (a *anyNotNullTimestampOrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Timestamp(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -1782,19 +1706,19 @@ type anyNotNullIntervalOrderedAgg struct {
 
 var _ AggregateFunc = &anyNotNullIntervalOrderedAgg{}
 
-func (a *anyNotNullIntervalOrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *anyNotNullIntervalOrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Interval()
 }
 
 func (a *anyNotNullIntervalOrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Interval(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -1981,13 +1905,13 @@ type anyNotNullJSONOrderedAgg struct {
 
 var _ AggregateFunc = &anyNotNullJSONOrderedAgg{}
 
-func (a *anyNotNullJSONOrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *anyNotNullJSONOrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.JSON()
 }
 
 func (a *anyNotNullJSONOrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 
 	var oldCurAggSize uintptr
@@ -1996,7 +1920,7 @@ func (a *anyNotNullJSONOrderedAgg) Compute(
 	}
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.JSON(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -2237,13 +2161,13 @@ type anyNotNullDatumOrderedAgg struct {
 
 var _ AggregateFunc = &anyNotNullDatumOrderedAgg{}
 
-func (a *anyNotNullDatumOrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *anyNotNullDatumOrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Datum()
 }
 
 func (a *anyNotNullDatumOrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 
 	var oldCurAggSize uintptr
@@ -2252,7 +2176,7 @@ func (a *anyNotNullDatumOrderedAgg) Compute(
 	}
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Datum(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups

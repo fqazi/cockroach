@@ -43,7 +43,6 @@ func TestDeleteOldStatsForColumns(t *testing.T) {
 		10, /* cacheSize */
 		s.ClusterSettings(),
 		db,
-		s.AppStopper(),
 	)
 	require.NoError(t, cache.Start(ctx, s.Codec(), s.RangeFeedFactory().(*rangefeed.Factory)))
 
@@ -260,7 +259,7 @@ func TestDeleteOldStatsForColumns(t *testing.T) {
 
 		return testutils.SucceedsSoonError(func() error {
 			tableStats, err := cache.getTableStatsFromCache(
-				ctx, tableID, nil /* forecast */, nil /* udtCols */, nil, /* typeResolver */
+				ctx, tableID, nil /* forecast */, nil, /* udtCols */
 			)
 			if err != nil {
 				return err
@@ -270,7 +269,7 @@ func TestDeleteOldStatsForColumns(t *testing.T) {
 				stat := &testData[i]
 				if stat.TableID != tableID {
 					stats, err := cache.getTableStatsFromCache(
-						ctx, stat.TableID, nil /* forecast */, nil /* udtCols */, nil, /* typeResolver */
+						ctx, stat.TableID, nil /* forecast */, nil, /* udtCols */
 					)
 					if err != nil {
 						return err
@@ -344,7 +343,6 @@ func TestDeleteOldStatsForOtherColumns(t *testing.T) {
 		10, /* cacheSize */
 		s.ClusterSettings(),
 		s.InternalDB().(descs.DB),
-		s.AppStopper(),
 	)
 	require.NoError(t, cache.Start(ctx, s.Codec(), s.RangeFeedFactory().(*rangefeed.Factory)))
 	testData := []TableStatisticProto{
@@ -558,7 +556,7 @@ func TestDeleteOldStatsForOtherColumns(t *testing.T) {
 
 		return testutils.SucceedsSoonError(func() error {
 			tableStats, err := cache.getTableStatsFromCache(
-				ctx, tableID, nil /* forecast */, nil /* udtCols */, nil, /* typeResolver */
+				ctx, tableID, nil /* forecast */, nil, /* udtCols */
 			)
 			if err != nil {
 				return err
@@ -568,7 +566,7 @@ func TestDeleteOldStatsForOtherColumns(t *testing.T) {
 				stat := &testData[i]
 				if stat.TableID != tableID {
 					stats, err := cache.getTableStatsFromCache(
-						ctx, stat.TableID, nil /* forecast */, nil /* udtCols */, nil, /* typeResolver */
+						ctx, stat.TableID, nil /* forecast */, nil, /* udtCols */
 					)
 					if err != nil {
 						return err
@@ -678,7 +676,6 @@ func TestStatsAreDeletedForDroppedTables(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	skip.UnderRace(t) // slow test
-	skip.UnderDeadlock(t, "low ScanMaxIdleTime and deadlock overloads the EngFlow executor")
 
 	var params base.TestServerArgs
 	params.ScanMaxIdleTime = time.Millisecond // speed up MVCC GC queue scans

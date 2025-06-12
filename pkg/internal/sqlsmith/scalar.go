@@ -6,11 +6,9 @@
 package sqlsmith
 
 import (
-	"context"
 	"strconv"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/randgen"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/cast"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree/treebin"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree/treecmp"
@@ -35,7 +33,6 @@ var (
 		{5, scalarNoContext(makeOr)},
 		{5, scalarNoContext(makeNot)},
 		{10, makeFunc},
-		{10, scalarNoContext(makeUseSequence)},
 		{10, func(s *Smither, ctx Context, typ *types.T, refs colRefs) (tree.TypedExpr, bool) {
 			return makeConstExpr(s, typ, refs), true
 		}},
@@ -331,21 +328,8 @@ func makeBinOp(s *Smither, typ *types.T, refs colRefs) (tree.TypedExpr, bool) {
 	if len(ops) == 0 {
 		return nil, false
 	}
-	op := ops[s.rnd.Intn(len(ops))]
-	if s.simpleScalarTypes {
-		attempts := 0
-		for !(isSimpleSeedType(op.LeftType) && isSimpleSeedType(op.RightType)) {
-			// We must work harder to pick some other op. Some types may not have ops for
-			// simple types (e.g., pgvector), so we limit the number of attempts before
-			// giving up.
-			attempts++
-			if attempts >= len(ops) {
-				return nil, false
-			}
-			op = ops[s.rnd.Intn(len(ops))]
-		}
-	}
-
+	n := s.rnd.Intn(len(ops))
+	op := ops[n]
 	if s.postgres {
 		if ignorePostgresBinOps[binOpTriple{
 			op.LeftType.Family(),
@@ -437,6 +421,9 @@ func makeFunc(s *Smither, ctx Context, typ *types.T, refs colRefs) (tree.TypedEx
 		return nil, false
 	}
 	fn := fns[s.rnd.Intn(len(fns))]
+	if s.disableUDFs && fn.overload.Type == tree.UDFRoutine {
+		return nil, false
+	}
 	if s.disableNondeterministicFns && fn.overload.Volatility > volatility.Immutable {
 		return nil, false
 	}
@@ -452,34 +439,9 @@ func makeFunc(s *Smither, ctx Context, typ *types.T, refs colRefs) (tree.TypedEx
 		// context.
 		return nil, false
 	}
-	if typ.Family() == types.CollatedStringFamily && s.disableNondeterministicLimits {
-		// 'concat_agg' and 'string_agg' functions can produce non-deterministic
-		// results for collated strings. The general issue is described in a
-		// comment within makeOrderByWithAllCols, but it appears that in some
-		// cases the skip in there doesn't work. One hypothesis is that this is
-		// due to not having the final type when the skip is attempted (and
-		// CollatedString and String types share the same oid). This block
-		// attempts to harden that skip by explicitly not generating these
-		// functions for collated strings.
-		//
-		// However, we might not have the final type in this block as well, in
-		// which case we would need to either completely skip these aggregates,
-		// or teach the unsortedMatricesDiff helpers to do SQL comparison as
-		// opposed to a text one.
-		switch fn.def.Name {
-		case "concat_agg", "string_agg":
-			return nil, false
-		}
-	}
 
 	args := make(tree.TypedExprs, 0)
 	for _, argTyp := range fn.overload.Types.Types() {
-		// Skip this function if we want simple scalar types, but this
-		// function argument is not.
-		if s.simpleScalarTypes && !isSimpleSeedType(argTyp) {
-			return nil, false
-		}
-
 		// Postgres is picky about having Int4 arguments instead of Int8.
 		if s.postgres && argTyp.Family() == types.IntFamily {
 			argTyp = types.Int4
@@ -814,35 +776,6 @@ func makeScalarSubquery(s *Smither, typ *types.T, refs colRefs) (tree.TypedExpr,
 	return subq, true
 }
 
-func makeUseSequence(s *Smither, typ *types.T, refs colRefs) (tree.TypedExpr, bool) {
-	if len(s.sequences) == 0 {
-		return nil, false
-	}
-	// sequences only produce integers, so we need to ensure that a cast to the
-	// target type is possible.
-	if !cast.ValidCast(types.Int, typ, cast.ContextExplicit) {
-		return nil, false
-	}
-	seq := s.sequences[s.rnd.Intn(len(s.sequences))]
-	fn := "nextval"
-	if s.d6() < 3 {
-		fn = "currval"
-	}
-	funcExpr := &tree.FuncExpr{
-		Func:  tree.WrapFunction(fn),
-		Exprs: tree.Exprs{tree.NewDString(seq.SequenceName.String())},
-	}
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
-	t, err := funcExpr.TypeCheck(context.Background(), &semaCtx, types.Int)
-	if err != nil {
-		return nil, false
-	}
-	if typ.Family() == types.IntFamily {
-		return t, true
-	}
-	return tree.NewTypedCastExpr(t, typ), true
-}
-
 // replaceDatumPlaceholderVisitor replaces occurrences of numeric and bool Datum
 // expressions with placeholders, and updates Args with the corresponding Datum
 // values. This is used to prepare and execute a statement with placeholders.
@@ -858,7 +791,7 @@ func (v *replaceDatumPlaceholderVisitor) VisitPre(
 ) (recurse bool, newExpr tree.Expr) {
 	switch t := expr.(type) {
 	case tree.Datum:
-		if t.ResolvedType().IsNumeric() || t.ResolvedType().Identical(types.Bool) {
+		if t.ResolvedType().IsNumeric() || t.ResolvedType() == types.Bool {
 			v.Args = append(v.Args, expr)
 			placeholder, _ := tree.NewPlaceholder(strconv.Itoa(len(v.Args)))
 			return false, placeholder

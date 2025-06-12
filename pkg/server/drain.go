@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/srverrors"
 	"github.com/cockroachdb/cockroach/pkg/settings"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/persistedsqlstats"
 	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -94,7 +95,7 @@ func (s *adminServer) Drain(req *serverpb.DrainRequest, stream serverpb.Admin_Dr
 	// Which node is this request for?
 	nodeID, local, err := s.serverIterator.parseServerID(req.NodeId)
 	if err != nil {
-		return status.Error(codes.InvalidArgument, err.Error())
+		return status.Errorf(codes.InvalidArgument, err.Error())
 	}
 	if !local {
 		// This request is for another node. Forward it.
@@ -119,7 +120,6 @@ type drainServer struct {
 	// stopTrigger is used to request that the server is shut down.
 	stopTrigger  *stopTrigger
 	grpc         *grpcServer
-	drpc         *drpcServer
 	sqlServer    *SQLServer
 	drainSleepFn func(time.Duration)
 	serverCtl    *serverController
@@ -136,7 +136,6 @@ func newDrainServer(
 	stopper *stop.Stopper,
 	stopTrigger *stopTrigger,
 	grpc *grpcServer,
-	drpc *drpcServer,
 	sqlServer *SQLServer,
 ) *drainServer {
 	var drainSleepFn = time.Sleep
@@ -149,7 +148,6 @@ func newDrainServer(
 		stopper:      stopper,
 		stopTrigger:  stopTrigger,
 		grpc:         grpc,
-		drpc:         drpc,
 		sqlServer:    sqlServer,
 		drainSleepFn: drainSleepFn,
 	}
@@ -256,7 +254,7 @@ func delegateDrain(
 			if err == io.EOF {
 				break
 			}
-			if req.Shutdown && grpcutil.IsClosedConnection(err) {
+			if grpcutil.IsClosedConnection(err) {
 				// If the drain request contained Shutdown==true, it's
 				// possible for the RPC connection to the target node to be
 				// shut down before a DrainResponse and EOF is
@@ -328,14 +326,6 @@ func (s *drainServer) runDrain(
 func (s *drainServer) drainInner(
 	ctx context.Context, reporter func(int, redact.SafeString), verbose bool,
 ) (err error) {
-	if s.sqlServer.sqlLivenessSessionID != "" {
-		// Set draining only if SQL instance was initialized
-		if err := s.sqlServer.sqlInstanceStorage.SetInstanceDraining(
-			ctx, s.sqlServer.sqlLivenessSessionID, s.sqlServer.SQLInstanceID()); err != nil {
-			return err
-		}
-	}
-
 	if s.serverCtl != nil {
 		// We are on a KV node, with a server controller.
 		//
@@ -387,8 +377,7 @@ func (s *drainServer) drainClients(
 	// Set the gRPC mode of the node to "draining" and mark the node as "not ready".
 	// Probes to /health?ready=1 will now notice the change in the node's readiness.
 	s.grpc.setMode(modeDraining)
-	s.drpc.setMode(modeDraining)
-	s.sqlServer.isReady.Store(false)
+	s.sqlServer.isReady.Set(false)
 
 	// Log the number of connections periodically.
 	if err := s.logOpenConns(ctx); err != nil {
@@ -446,11 +435,8 @@ func (s *drainServer) drainClients(
 	s.sqlServer.distSQLServer.Drain(ctx, queryMaxWait, reporter)
 
 	// Flush in-memory SQL stats into the statement stats system table.
-	statsProvider := s.sqlServer.pgServer.SQLServer.GetSQLStatsProvider()
-	// If the SQL server is disabled there is nothing to drain here.
-	if !s.sqlServer.cfg.DisableSQLServer {
-		statsProvider.MaybeFlush(ctx, s.stopper)
-	}
+	statsProvider := s.sqlServer.pgServer.SQLServer.GetSQLStatsProvider().(*persistedsqlstats.PersistedSQLStats)
+	statsProvider.Flush(ctx)
 	statsProvider.Stop(ctx)
 
 	// Inform the async tasks for table stats that the node is draining
@@ -470,17 +456,15 @@ func (s *drainServer) drainClients(
 	if err != nil {
 		return err
 	}
-	// If we started a sql session on this node.
-	if session != "" {
-		instanceID := s.sqlServer.sqlIDContainer.SQLInstanceID()
-		err = s.sqlServer.sqlInstanceStorage.ReleaseInstance(ctx, session, instanceID)
-		if err != nil {
-			return err
-		}
+
+	instanceID := s.sqlServer.sqlIDContainer.SQLInstanceID()
+	err = s.sqlServer.sqlInstanceStorage.ReleaseInstance(ctx, session, instanceID)
+	if err != nil {
+		return err
 	}
 
 	// Mark the node as fully drained.
-	s.sqlServer.gracefulDrainComplete.Store(true)
+	s.sqlServer.gracefulDrainComplete.Set(true)
 	// Mark this phase in the logs to clarify the context of any subsequent
 	// errors/warnings, if any.
 	log.Infof(ctx, "SQL server drained successfully; SQL queries cannot execute any more")

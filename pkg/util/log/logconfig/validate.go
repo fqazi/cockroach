@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/errors"
@@ -60,7 +61,7 @@ func (c *Config) Validate(defaultLogDir *string) (resErr error) {
 		BufferedWrites:  &bt,
 		MaxFileSize:     &zeroByteSize,
 		MaxGroupSize:    &zeroByteSize,
-		FilePermissions: func() *FilePermissions { s := DefaultFilePerms; return &s }(),
+		FilePermissions: func() *FilePermissions { s := FilePermissions(0o644); return &s }(),
 		CommonSinkConfig: CommonSinkConfig{
 			Format:      func() *string { s := DefaultFileFormat; return &s }(),
 			Criticality: &bt,
@@ -368,18 +369,14 @@ func (c *Config) newFileSinkConfig(groupName string) *FileSinkConfig {
 func (c *Config) validateFileSinkConfig(fc *FileSinkConfig) error {
 	propagateFileDefaults(&fc.FileDefaults, c.FileDefaults)
 	if !fc.Buffering.IsNone() {
-		if fc.BufferedWrites != nil && *fc.BufferedWrites {
-			return errors.Newf(`Unable to use "buffered-writes" in conjunction with a "buffering" configuration. ` +
-				`These configuration options are mutually exclusive.`)
-		}
-		if *fc.Auditable {
-			return errors.Newf(`File-based audit logging cannot coexist with buffering configuration. ` +
-				`Disable either the buffering configuration ("buffering") or auditable log ("auditable") configuration.`)
-		}
-		// To preserve the format of log files, avoid additional formatting in the
-		// buffering configuration.
-		fmtNone := BufferFmtNone
-		fc.Buffering.Format = &fmtNone
+		// We cannot use unimplemented.WithIssue() here because of a
+		// circular dependency.
+		err := errors.UnimplementedError(
+			errors.IssueLink{IssueURL: build.MakeIssueURL(72452)},
+			`unimplemented: "buffering" not yet supported for file-groups`)
+		err = errors.WithHint(err, `Use "buffered-writes".`)
+		err = errors.WithTelemetry(err, "#72452")
+		return err
 	}
 	if fc.Dir != c.FileDefaults.Dir {
 		// A directory was specified explicitly. Normalize it.

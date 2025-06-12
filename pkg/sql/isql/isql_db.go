@@ -9,13 +9,10 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
-	"github.com/cockroachdb/cockroach/pkg/sql/parser/statements"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
-	"github.com/cockroachdb/redact"
 )
 
 // DB enables clients to create and execute sql transactions from code inside
@@ -48,9 +45,6 @@ type Txn interface {
 	// SessionData returns the transaction's SessionData.
 	SessionData() *sessiondata.SessionData
 
-	// GetSystemSchemaVersion exposes the schema version from the system db desc.
-	GetSystemSchemaVersion(context.Context) (roachpb.Version, error)
-
 	// Executor allows the user to execute transactional SQL statements.
 	Executor
 }
@@ -75,7 +69,7 @@ type Executor interface {
 	// Exec is deprecated because it may transparently execute a query as root.
 	// Use ExecEx instead.
 	Exec(
-		ctx context.Context, opName redact.RedactableString, txn *kv.Txn, statement string, params ...interface{},
+		ctx context.Context, opName string, txn *kv.Txn, statement string, params ...interface{},
 	) (int, error)
 
 	// ExecEx is like Exec, but allows the caller to override some session data
@@ -85,30 +79,19 @@ type Executor interface {
 	// they have previously been set through SetSessionData().
 	ExecEx(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		o sessiondata.InternalExecutorOverride,
 		stmt string,
 		qargs ...interface{},
 	) (int, error)
 
-	// ExecParsed is like Exec but allows the caller to provide an already
-	// parsed statement.
-	ExecParsed(
-		ctx context.Context,
-		opName redact.RedactableString,
-		txn *kv.Txn,
-		o sessiondata.InternalExecutorOverride,
-		parsedStmt statements.Statement[tree.Statement],
-		qargs ...interface{},
-	) (int, error)
-
 	// QueryRow executes the supplied SQL statement and returns a single row, or
-	// nil if no row is found, or an error if more than one row is returned.
+	// nil if no row is found, or an error if more that one row is returned.
 	//
 	// QueryRow is deprecated. Use QueryRowEx() instead.
 	QueryRow(
-		ctx context.Context, opName redact.RedactableString, txn *kv.Txn, statement string, qargs ...interface{},
+		ctx context.Context, opName string, txn *kv.Txn, statement string, qargs ...interface{},
 	) (tree.Datums, error)
 
 	// QueryRowEx is like QueryRow, but allows the caller to override some
@@ -118,21 +101,10 @@ type Executor interface {
 	// they have previously been set through SetSessionData().
 	QueryRowEx(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		session sessiondata.InternalExecutorOverride,
 		stmt string,
-		qargs ...interface{},
-	) (tree.Datums, error)
-
-	// QueryRowExParsed is like QueryRowEx, but allows the caller to provide an
-	// already parsed statement.
-	QueryRowExParsed(
-		ctx context.Context,
-		opName redact.RedactableString,
-		txn *kv.Txn,
-		session sessiondata.InternalExecutorOverride,
-		parsedStmt statements.Statement[tree.Statement],
 		qargs ...interface{},
 	) (tree.Datums, error)
 
@@ -140,7 +112,7 @@ type Executor interface {
 	// computed ResultColumns of the input query.
 	QueryRowExWithCols(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		session sessiondata.InternalExecutorOverride,
 		stmt string,
@@ -158,7 +130,7 @@ type Executor interface {
 	// as root. Use QueryBufferedEx instead.
 	QueryBuffered(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		stmt string,
 		qargs ...interface{},
@@ -173,7 +145,7 @@ type Executor interface {
 	// they have previously been set through SetSessionData().
 	QueryBufferedEx(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		session sessiondata.InternalExecutorOverride,
 		stmt string,
@@ -188,7 +160,7 @@ type Executor interface {
 	// as root. Use QueryIteratorEx instead.
 	QueryIterator(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		stmt string,
 		qargs ...interface{},
@@ -199,7 +171,7 @@ type Executor interface {
 	// *must* be closed.
 	QueryIteratorEx(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		session sessiondata.InternalExecutorOverride,
 		stmt string,
@@ -210,7 +182,7 @@ type Executor interface {
 	// ResultColumns of the input query.
 	QueryBufferedExWithCols(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		session sessiondata.InternalExecutorOverride,
 		stmt string,
@@ -263,6 +235,9 @@ type Rows interface {
 	// Types returns the types of the columns returned by this iterator. The
 	// returned array is guaranteed to correspond 1:1 with the tree.Datums rows
 	// returned by Cur().
+	//
+	// WARNING: this method is safe to call anytime *after* the first call to
+	// Next() (including after Close() was called).
 	Types() colinfo.ResultColumns
 
 	// HasResults returns true if there are results to the query, false otherwise.

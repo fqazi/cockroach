@@ -104,29 +104,45 @@ func TestAzure(t *testing.T) {
 		skip.IgnoreLint(t, "Test not configured for Azure")
 		return
 	}
+	testSettings := cluster.MakeTestingClusterSettings()
 	testID := cloudtestutils.NewTestID()
 	testPath := fmt.Sprintf("backup-test-%d", testID)
 	testListPath := fmt.Sprintf("listing-test-%d", testID)
 
-	info := cloudtestutils.StoreInfo{
-		URI:  cfg.filePath(testPath),
-		User: username.RootUserName(),
-	}
-	cloudtestutils.CheckExportStore(t, info)
-	info.URI = cfg.filePath(testListPath)
-	cloudtestutils.CheckListFiles(t, info)
+	cloudtestutils.CheckExportStore(t, cfg.filePath(testPath),
+		false, username.RootUserName(),
+		nil, /* db */
+		testSettings,
+	)
+	cloudtestutils.CheckListFiles(t, cfg.filePath(testListPath),
+		username.RootUserName(),
+		nil, /* db */
+		testSettings,
+	)
 
 	// Client Secret auth
-	info.URI = cfg.filePathClientAuth(testPath)
-	cloudtestutils.CheckExportStore(t, info)
-	info.URI = cfg.filePathClientAuth(testListPath)
-	cloudtestutils.CheckListFiles(t, info)
+	cloudtestutils.CheckExportStore(t, cfg.filePathClientAuth(testPath),
+		false, username.RootUserName(),
+		nil, /* db */
+		testSettings,
+	)
+	cloudtestutils.CheckListFiles(t, cfg.filePathClientAuth(testListPath),
+		username.RootUserName(),
+		nil, /* db */
+		testSettings,
+	)
 
 	// Implicit auth
-	info.URI = cfg.filePathImplicitAuth(testPath)
-	cloudtestutils.CheckExportStore(t, info)
-	info.URI = cfg.filePathImplicitAuth(testListPath)
-	cloudtestutils.CheckListFiles(t, info)
+	cloudtestutils.CheckExportStore(t, cfg.filePathImplicitAuth(testPath),
+		false, username.RootUserName(),
+		nil, /* db */
+		testSettings,
+	)
+	cloudtestutils.CheckListFiles(t, cfg.filePathImplicitAuth(testListPath),
+		username.RootUserName(),
+		nil, /* db */
+		testSettings,
+	)
 }
 
 func TestAzureSchemes(t *testing.T) {
@@ -187,7 +203,7 @@ func TestParseAzureURL(t *testing.T) {
 		u, err := url.Parse("azure://container/path?AZURE_ACCOUNT_NAME=account&AZURE_ACCOUNT_KEY=key")
 		require.NoError(t, err)
 
-		sut, err := parseAzureURL(u)
+		sut, err := parseAzureURL(cloud.ExternalStorageURIContext{}, u)
 		require.NoError(t, err)
 
 		require.Equal(t, azure.PublicCloud.Name, sut.AzureConfig.Environment)
@@ -197,7 +213,7 @@ func TestParseAzureURL(t *testing.T) {
 		u, err := url.Parse("azure://container/path?AZURE_ACCOUNT_NAME=account&AZURE_CLIENT_ID=client&AZURE_CLIENT_SECRET=secret&AZURE_TENANT_ID=tenant")
 		require.NoError(t, err)
 
-		_, err = parseAzureURL(u)
+		_, err = parseAzureURL(cloud.ExternalStorageURIContext{}, u)
 		require.NoError(t, err)
 	})
 
@@ -205,7 +221,7 @@ func TestParseAzureURL(t *testing.T) {
 		u, err := url.Parse("azure://container/path?AZURE_ACCOUNT_NAME=account&AZURE_ACCOUNT_KEY=key&AZURE_CLIENT_ID=client&AZURE_CLIENT_SECRET=secret&AZURE_TENANT_ID=tenant")
 		require.NoError(t, err)
 
-		_, err = parseAzureURL(u)
+		_, err = parseAzureURL(cloud.ExternalStorageURIContext{}, u)
 		require.Error(t, err)
 
 	})
@@ -214,7 +230,7 @@ func TestParseAzureURL(t *testing.T) {
 		u, err := url.Parse("azure://container/path?AZURE_ACCOUNT_NAME=account&AUTH=implicit")
 		require.NoError(t, err)
 
-		_, err = parseAzureURL(u)
+		_, err = parseAzureURL(cloud.ExternalStorageURIContext{}, u)
 		require.NoError(t, err)
 	})
 
@@ -222,7 +238,7 @@ func TestParseAzureURL(t *testing.T) {
 		u, err := url.Parse("azure-storage://container/path?AZURE_ACCOUNT_NAME=account&AZURE_ACCOUNT_KEY=key&AZURE_ENVIRONMENT=AzureUSGovernmentCloud")
 		require.NoError(t, err)
 
-		sut, err := parseAzureURL(u)
+		sut, err := parseAzureURL(cloud.ExternalStorageURIContext{}, u)
 		require.NoError(t, err)
 
 		require.Equal(t, azure.USGovernmentCloud.Name, sut.AzureConfig.Environment)
@@ -239,7 +255,7 @@ func TestMakeAzureStorageURLFromEnvironment(t *testing.T) {
 	} {
 		t.Run(tt.environment, func(t *testing.T) {
 			testSettings := cluster.MakeTestingClusterSettings()
-			sut, err := makeAzureStorage(context.Background(), cloud.EarlyBootExternalStorageContext{Settings: testSettings}, cloudpb.ExternalStorage{
+			sut, err := makeAzureStorage(context.Background(), cloud.ExternalStorageContext{Settings: testSettings}, cloudpb.ExternalStorage{
 				AzureConfig: &cloudpb.ExternalStorage_Azure{
 					Container:   "container",
 					Prefix:      "path",
@@ -263,6 +279,7 @@ func TestAzureStorageFileImplicitAuth(t *testing.T) {
 		skip.IgnoreLint(t, "Test not configured for Azure")
 		return
 	}
+	testSettings := cluster.MakeTestingClusterSettings()
 	testID := cloudtestutils.NewTestID()
 
 	cleanup := envutil.TestSetEnv(t, "AZURE_CLIENT_ID", "")
@@ -271,11 +288,8 @@ func TestAzureStorageFileImplicitAuth(t *testing.T) {
 	testPath := fmt.Sprintf("backup-test-%d", testID)
 	testListPath := fmt.Sprintf("listing-test-%d", testID)
 
-	info := cloudtestutils.StoreInfo{
-		URI:  cfg.filePathImplicitAuth(testPath),
-		User: username.RootUserName(),
-	}
-	cloudtestutils.CheckNoPermission(t, info)
+	cloudtestutils.CheckNoPermission(t, cfg.filePathImplicitAuth(testPath), username.RootUserName(),
+		nil /*db*/, testSettings)
 
 	tmpDir, cleanup2 := testutils.TempDir(t)
 	defer cleanup2()
@@ -286,7 +300,14 @@ func TestAzureStorageFileImplicitAuth(t *testing.T) {
 	cleanup3 := envutil.TestSetEnv(t, "COCKROACH_AZURE_APPLICATION_CREDENTIALS_FILE", credFile)
 	defer cleanup3()
 
-	cloudtestutils.CheckExportStore(t, info)
-	info.URI = cfg.filePathImplicitAuth(testListPath)
-	cloudtestutils.CheckListFiles(t, info)
+	cloudtestutils.CheckExportStore(t, cfg.filePathImplicitAuth(testPath),
+		false, username.RootUserName(),
+		nil, /* db */
+		testSettings,
+	)
+	cloudtestutils.CheckListFiles(t, cfg.filePathImplicitAuth(testListPath),
+		username.RootUserName(),
+		nil, /* db */
+		testSettings,
+	)
 }

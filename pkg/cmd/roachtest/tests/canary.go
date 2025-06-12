@@ -107,7 +107,7 @@ func repeatRunE(
 		}
 		attempt++
 		t.L().Printf("attempt %d - %s", attempt, operation)
-		lastError = c.RunE(ctx, option.WithNodes(node), args...)
+		lastError = c.RunE(ctx, node, args...)
 		if lastError != nil {
 			t.L().Printf("error - retrying: %s", lastError)
 			continue
@@ -140,7 +140,7 @@ func repeatRunWithDetailsSingleNode(
 		}
 		attempt++
 		t.L().Printf("attempt %d - %s", attempt, operation)
-		lastResult, lastError = c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(node), args...)
+		lastResult, lastError = c.RunWithDetailsSingleNode(ctx, t.L(), node, args...)
 		if lastError != nil {
 			t.L().Printf("error - retrying: %s", lastError)
 			continue
@@ -229,10 +229,10 @@ func repeatGetLatestTag(
 			t.L().Printf("error fetching - retrying: %s", lastError)
 			continue
 		}
+		defer resp.Body.Close()
 
 		var tags Tags
 		lastError = json.NewDecoder(resp.Body).Decode(&tags)
-		resp.Body.Close()
 		if lastError != nil {
 			t.L().Printf("error decoding - retrying: %s", lastError)
 			continue
@@ -241,8 +241,8 @@ func repeatGetLatestTag(
 			return "", fmt.Errorf("no tags found at %s", url)
 		}
 		var releaseTags []releaseTag
-		for _, tag := range tags {
-			match := releaseRegex.FindStringSubmatch(tag.Name)
+		for _, t := range tags {
+			match := releaseRegex.FindStringSubmatch(t.Name)
 			if match == nil {
 				continue
 			}
@@ -254,7 +254,7 @@ func repeatGetLatestTag(
 				continue
 			}
 			releaseTags = append(releaseTags, releaseTag{
-				tag:      tag.Name,
+				tag:      t.Name,
 				major:    atoiOrZero(groups, "major"),
 				minor:    atoiOrZero(groups, "minor"),
 				point:    atoiOrZero(groups, "point"),
@@ -296,5 +296,5 @@ func gitCloneWithRecurseSubmodules(
 		fi
 	'`, dest, branch, src),
 	}
-	return errors.Wrap(c.RunE(ctx, option.WithNodes(node), cmd...), "gitCloneWithRecurseSubmodules")
+	return errors.Wrap(c.RunE(ctx, node, cmd...), "gitCloneWithRecurseSubmodules")
 }

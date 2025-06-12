@@ -137,7 +137,7 @@ func (d *Distribution) FromIndexScan(
 				key := constraint.MakeCompositeKey(datums...)
 				var span constraint.Span
 				span.Init(key, constraint.IncludeBoundary, key, constraint.IncludeBoundary)
-				if c.IntersectsSpan(ctx, evalCtx, &span) {
+				if c.IntersectsSpan(evalCtx, &span) {
 					found = true
 					break
 				}

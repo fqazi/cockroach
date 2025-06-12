@@ -26,7 +26,6 @@ func TestStorePerWorkTokenEstimator(t *testing.T) {
 	var l0Metrics pebble.LevelMetrics
 	var admissionStats storeAdmissionStats
 	var cumLSMIngestedBytes uint64
-	var cumDiskWrites uint64
 
 	datadriven.RunTest(t, datapathutils.TestDataPath(t, "store_per_work_token_estimator"),
 		func(t *testing.T, d *datadriven.TestData) string {
@@ -42,8 +41,8 @@ func TestStorePerWorkTokenEstimator(t *testing.T) {
 				var intFlushed, intIngested uint64
 				d.ScanArgs(t, "flushed", &intFlushed)
 				d.ScanArgs(t, "ingested", &intIngested)
-				l0Metrics.TableBytesFlushed += intFlushed
-				l0Metrics.TableBytesIngested += intIngested
+				l0Metrics.BytesFlushed += intFlushed
+				l0Metrics.BytesIngested += intIngested
 				cumLSMIngestedBytes += intIngested
 				if d.HasArg("other-levels-ingested") {
 					var otherLevelsIngested uint64
@@ -90,22 +89,11 @@ func TestStorePerWorkTokenEstimator(t *testing.T) {
 					d.ScanArgs(t, "ignored-written", &ignoredWritten)
 					admissionStats.statsToIgnore.writeBytes += uint64(ignoredWritten)
 				}
-				if d.HasArg("disk-writes") {
-					var diskWrites int
-					d.ScanArgs(t, "disk-writes", &diskWrites)
-					cumDiskWrites += uint64(diskWrites)
-				}
-				unflushedTooLarge := false
-				if d.HasArg("unflushed-too-large") {
-					unflushedTooLarge = true
-				}
-				estimator.updateEstimates(
-					l0Metrics, cumLSMIngestedBytes, cumDiskWrites, admissionStats, unflushedTooLarge)
-				wL0lm, iL0lm, ilm, wamplm := estimator.getModelsAtDone()
+				estimator.updateEstimates(l0Metrics, cumLSMIngestedBytes, admissionStats)
+				wL0lm, iL0lm, ilm := estimator.getModelsAtDone()
 				require.Equal(t, wL0lm, estimator.atDoneL0WriteTokensLinearModel.smoothedLinearModel)
 				require.Equal(t, iL0lm, estimator.atDoneL0IngestTokensLinearModel.smoothedLinearModel)
 				require.Equal(t, ilm, estimator.atDoneIngestTokensLinearModel.smoothedLinearModel)
-				require.Equal(t, wamplm, estimator.atDoneWriteAmpLinearModel.smoothedLinearModel)
 				var b strings.Builder
 				fmt.Fprintf(&b, "interval state: %+v\n", estimator.aux)
 				fmt.Fprintf(&b, "at-admission-tokens: %d\n",
@@ -116,8 +104,6 @@ func TestStorePerWorkTokenEstimator(t *testing.T) {
 				printLinearModelFitter(&b, estimator.atDoneL0IngestTokensLinearModel)
 				fmt.Fprintf(&b, "ingest-tokens: ")
 				printLinearModelFitter(&b, estimator.atDoneIngestTokensLinearModel)
-				fmt.Fprintf(&b, "write-amp: ")
-				printLinearModelFitter(&b, estimator.atDoneWriteAmpLinearModel)
 				return b.String()
 
 			default:

@@ -192,12 +192,6 @@ func (ddb *databaseDescriptorBuilder) StripNonExistentRoles(
 		}
 	}
 
-	// If the owner doesn't exist, change the owner to admin.
-	if !roleExists(ddb.maybeModified.GetPrivileges().Owner()) {
-		ddb.maybeModified.Privileges.OwnerProto = username.AdminRoleName().EncodeProto()
-		ddb.changes.Add(catalog.StrippedNonExistentRoles)
-	}
-
 	// Remove any non-existent roles from the privileges.
 	newPrivs := make([]catpb.UserPrivileges, 0, len(ddb.maybeModified.Privileges.Users))
 	for _, priv := range ddb.maybeModified.Privileges.Users {

@@ -22,7 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slbase"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slinstance"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -31,7 +31,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
@@ -40,7 +39,7 @@ import (
 // smallEngineBlocks configures Pebble with a block size of 1 byte, to provoke
 // bugs in time-bound iterators. We disable this under race, due to the slowdown.
 var smallEngineBlocks = !util.RaceEnabled &&
-	metamorphic.ConstantWithTestBool("small-engine-blocks", false)
+	util.ConstantWithMetamorphicTestBool("small-engine-blocks", false)
 
 func init() {
 	randutil.SeedForTests()
@@ -82,7 +81,7 @@ func TestEndToEndGC(t *testing.T) {
 				settings := cluster.MakeTestingClusterSettings()
 				// Push the TTL up to 60 hours since we emulate a 50 hours
 				// clock jump below.
-				slbase.DefaultTTL.Override(ctx, &settings.SV, 60*time.Hour)
+				slinstance.DefaultTTL.Override(ctx, &settings.SV, 60*time.Hour)
 
 				manualClock := hlc.NewHybridManualClock()
 				s, appSqlDb, appKvDb := serverutils.StartServer(t, base.TestServerArgs{
@@ -198,6 +197,10 @@ WHERE 'kv' IN (
 					for _, id := range rangeIDs {
 						stats := getRangeStats(t, id)
 						t.Logf("range %d stats: %s", id, &stats)
+						// Test can't give meaningful results if stats contain estimates.
+						// Test also doesn't perform any operations that result in estimated stats
+						// being created, so it is a failure in the environment if that happens.
+						require.Zerof(t, stats.ContainsEstimates, "we must not have estimates")
 						if stats.RangeKeyCount > 0 || stats.KeyCount > 0 {
 							nonEmptyRangeIDs = append(nonEmptyRangeIDs, id)
 						}

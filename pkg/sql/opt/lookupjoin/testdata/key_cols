@@ -166,59 +166,6 @@ key cols:
 input projections:
   lookup_join_const_col_@5 = 0 [type=INT8]
 
-lookup-constraints left=(a int, b int) right=(x int, y int, z int) index=(x, y, z)
-x = a AND y = b
-optional: z IN (3, 4)
-----
-key cols:
-  x = a
-  y = b
-
-lookup-constraints left=(a int, b int) right=(x int, y int, z int) index=(x, y, z)
-x = 1 AND y = b
-optional: z IN (3, 4)
-----
-key cols:
-  x = lookup_join_const_col_@6
-  y = b
-input projections:
-  lookup_join_const_col_@6 = 1 [type=INT8]
-
-lookup-constraints left=(a int, b int, c int) right=(x int, y int, z int) index=(x, y, z)
-x = a
-optional: z IN (3, 4) AND y IN (10, 20)
-----
-key cols:
-  x = a
-
-lookup-constraints left=(a int, b int) right=(x int, y int, z int) index=(x, y, z)
-x = a AND y = b
-optional: z > 10
-----
-key cols:
-  x = a
-  y = b
-
-lookup-constraints left=(a int, b int) right=(x int, y int, z int) index=(x, y, z)
-x = 1 AND y = b
-optional: z > 10
-----
-key cols:
-  x = lookup_join_const_col_@6
-  y = b
-input projections:
-  lookup_join_const_col_@6 = 1 [type=INT8]
-
-lookup-constraints left=(a int, b int) right=(x int, y int, z int, zz int) index=(x, y, z, zz)
-x = 1 AND y = b
-optional: z > 10 AND zz > 0
-----
-key cols:
-  x = lookup_join_const_col_@6
-  y = b
-input projections:
-  lookup_join_const_col_@6 = 1 [type=INT8]
-
 # The projected constant should not have type modifiers of the indexed column.
 lookup-constraints left=(a int) right=(x int, y CHAR(2)) index=(x, y)
 x = a AND y = 'foo'

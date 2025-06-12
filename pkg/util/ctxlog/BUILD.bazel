@@ -5,15 +5,13 @@ go_library(
     srcs = ["context.go"],
     importpath = "github.com/cockroachdb/cockroach/pkg/util/ctxlog",
     visibility = ["//visibility:public"],
-    deps = [
-        "//pkg/util/debugutil",
-        "//pkg/util/log",
-    ],
+    deps = ["//pkg/util/log"],
 )
 
 go_test(
     name = "ctxlog_test",
     srcs = ["context_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":ctxlog"],
     deps = [
         "//pkg/util/timeutil",

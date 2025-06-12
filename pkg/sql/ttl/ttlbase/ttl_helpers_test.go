@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/stretchr/testify/require"
@@ -44,10 +43,10 @@ FROM relation_name
 AS OF SYSTEM TIME INTERVAL '-30 seconds'
 WHERE ((expire_at) <= $1)
 AND (
-  (col0 > $3::INT8)
+  (col0 > $3)
 )
 AND (
-  (col0 <= $2::INT8)
+  (col0 <= $2)
 )
 ORDER BY col0 ASC
 LIMIT 2`,
@@ -64,10 +63,10 @@ FROM relation_name
 AS OF SYSTEM TIME INTERVAL '-30 seconds'
 WHERE ((expire_at) <= $1)
 AND (
-  (col0 < $3::INT8)
+  (col0 < $3)
 )
 AND (
-  (col0 >= $2::INT8)
+  (col0 >= $2)
 )
 ORDER BY col0 DESC
 LIMIT 2`,
@@ -114,10 +113,10 @@ FROM relation_name
 AS OF SYSTEM TIME INTERVAL '-30 seconds'
 WHERE ((expire_at) <= $1)
 AND (
-  (col0 >= $3::INT8)
+  (col0 >= $3)
 )
 AND (
-  (col0 <= $2::INT8)
+  (col0 <= $2)
 )
 ORDER BY col0 ASC
 LIMIT 2`,
@@ -135,10 +134,10 @@ FROM relation_name
 AS OF SYSTEM TIME INTERVAL '-30 seconds'
 WHERE ((expire_at) <= $1)
 AND (
-  (col0 <= $3::INT8)
+  (col0 <= $3)
 )
 AND (
-  (col0 >= $2::INT8)
+  (col0 >= $2)
 )
 ORDER BY col0 DESC
 LIMIT 2`,
@@ -156,12 +155,12 @@ FROM relation_name
 AS OF SYSTEM TIME INTERVAL '-30 seconds'
 WHERE ((expire_at) <= $1)
 AND (
-  (col0 > $4::INT8) OR
-  (col0 = $4::INT8 AND col1 > $5::INT8)
+  (col0 > $4) OR
+  (col0 = $4 AND col1 > $5)
 )
 AND (
-  (col0 < $2::INT8) OR
-  (col0 = $2::INT8 AND col1 <= $3::INT8)
+  (col0 < $2) OR
+  (col0 = $2 AND col1 <= $3)
 )
 ORDER BY col0 ASC, col1 ASC
 LIMIT 2`,
@@ -179,11 +178,11 @@ FROM relation_name
 AS OF SYSTEM TIME INTERVAL '-30 seconds'
 WHERE ((expire_at) <= $1)
 AND (
-  (col0 > $4::INT8)
+  (col0 > $4)
 )
 AND (
-  (col0 < $2::INT8) OR
-  (col0 = $2::INT8 AND col1 <= $3::INT8)
+  (col0 < $2) OR
+  (col0 = $2 AND col1 <= $3)
 )
 ORDER BY col0 ASC, col1 ASC
 LIMIT 2`,
@@ -201,11 +200,11 @@ FROM relation_name
 AS OF SYSTEM TIME INTERVAL '-30 seconds'
 WHERE ((expire_at) <= $1)
 AND (
-  (col0 > $3::INT8) OR
-  (col0 = $3::INT8 AND col1 > $4::INT8)
+  (col0 > $3) OR
+  (col0 = $3 AND col1 > $4)
 )
 AND (
-  (col0 <= $2::INT8)
+  (col0 <= $2)
 )
 ORDER BY col0 ASC, col1 ASC
 LIMIT 2`,
@@ -223,12 +222,12 @@ FROM relation_name
 AS OF SYSTEM TIME INTERVAL '-30 seconds'
 WHERE ((expire_at) <= $1)
 AND (
-  (col0 < $4::INT8) OR
-  (col0 = $4::INT8 AND col1 < $5::INT8)
+  (col0 < $4) OR
+  (col0 = $4 AND col1 < $5)
 )
 AND (
-  (col0 > $2::INT8) OR
-  (col0 = $2::INT8 AND col1 >= $3::INT8)
+  (col0 > $2) OR
+  (col0 = $2 AND col1 >= $3)
 )
 ORDER BY col0 DESC, col1 DESC
 LIMIT 2`,
@@ -246,11 +245,11 @@ FROM relation_name
 AS OF SYSTEM TIME INTERVAL '-30 seconds'
 WHERE ((expire_at) <= $1)
 AND (
-  (col0 < $4::INT8)
+  (col0 < $4)
 )
 AND (
-  (col0 > $2::INT8) OR
-  (col0 = $2::INT8 AND col1 >= $3::INT8)
+  (col0 > $2) OR
+  (col0 = $2 AND col1 >= $3)
 )
 ORDER BY col0 DESC, col1 DESC
 LIMIT 2`,
@@ -268,11 +267,11 @@ FROM relation_name
 AS OF SYSTEM TIME INTERVAL '-30 seconds'
 WHERE ((expire_at) <= $1)
 AND (
-  (col0 < $3::INT8) OR
-  (col0 = $3::INT8 AND col1 < $4::INT8)
+  (col0 < $3) OR
+  (col0 = $3 AND col1 < $4)
 )
 AND (
-  (col0 >= $2::INT8)
+  (col0 >= $2)
 )
 ORDER BY col0 DESC, col1 DESC
 LIMIT 2`,
@@ -291,14 +290,14 @@ FROM relation_name
 AS OF SYSTEM TIME INTERVAL '-30 seconds'
 WHERE ((expire_at) <= $1)
 AND (
-  (col0 > $5::INT8) OR
-  (col0 = $5::INT8 AND col1 < $6::INT8) OR
-  (col0 = $5::INT8 AND col1 = $6::INT8 AND col2 > $7::INT8)
+  (col0 > $5) OR
+  (col0 = $5 AND col1 < $6) OR
+  (col0 = $5 AND col1 = $6 AND col2 > $7)
 )
 AND (
-  (col0 < $2::INT8) OR
-  (col0 = $2::INT8 AND col1 > $3::INT8) OR
-  (col0 = $2::INT8 AND col1 = $3::INT8 AND col2 <= $4::INT8)
+  (col0 < $2) OR
+  (col0 = $2 AND col1 > $3) OR
+  (col0 = $2 AND col1 = $3 AND col2 <= $4)
 )
 ORDER BY col0 ASC, col1 DESC, col2 ASC
 LIMIT 2`,
@@ -317,14 +316,14 @@ FROM relation_name
 AS OF SYSTEM TIME INTERVAL '-30 seconds'
 WHERE ((expire_at) <= $1)
 AND (
-  (col0 < $5::INT8) OR
-  (col0 = $5::INT8 AND col1 > $6::INT8) OR
-  (col0 = $5::INT8 AND col1 = $6::INT8 AND col2 < $7::INT8)
+  (col0 < $5) OR
+  (col0 = $5 AND col1 > $6) OR
+  (col0 = $5 AND col1 = $6 AND col2 < $7)
 )
 AND (
-  (col0 > $2::INT8) OR
-  (col0 = $2::INT8 AND col1 < $3::INT8) OR
-  (col0 = $2::INT8 AND col1 = $3::INT8 AND col2 >= $4::INT8)
+  (col0 > $2) OR
+  (col0 = $2 AND col1 < $3) OR
+  (col0 = $2 AND col1 = $3 AND col2 >= $4)
 )
 ORDER BY col0 DESC, col1 ASC, col2 DESC
 LIMIT 2`,
@@ -335,15 +334,10 @@ LIMIT 2`,
 		t.Run(tc.desc, func(t *testing.T) {
 			pkColDirs := tc.pkColDirs
 			pkColNames := GenPKColNames(len(pkColDirs))
-			pkColTypes := make([]*types.T, len(pkColDirs))
-			for i := range pkColDirs {
-				pkColTypes[i] = types.Int
-			}
 			actualQuery := BuildSelectQuery(
 				relationName,
 				pkColNames,
 				pkColDirs,
-				pkColTypes,
 				DefaultAOSTDuration,
 				ttlExpr,
 				tc.numStartQueryBounds,

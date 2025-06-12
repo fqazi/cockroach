@@ -18,13 +18,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
-	"github.com/cockroachdb/redact"
 )
 
 // RevokeRoleNode removes entries from the system.role_members table.
 // This is called from REVOKE <ROLE>
 type RevokeRoleNode struct {
-	zeroInputPlanNode
 	roles       []username.SQLUsername
 	members     []username.SQLUsername
 	adminOption bool
@@ -114,7 +112,7 @@ func (p *planner) RevokeRoleNode(ctx context.Context, n *tree.RevokeRole) (*Revo
 }
 
 func (n *RevokeRoleNode) startExec(params runParams) error {
-	var opName redact.RedactableString = "revoke-role"
+	opName := "revoke-role"
 
 	var memberStmt string
 	if n.adminOption {
@@ -138,7 +136,7 @@ func (n *RevokeRoleNode) startExec(params runParams) error {
 				params.ctx,
 				opName,
 				params.p.txn,
-				sessiondata.NodeUserSessionDataOverride,
+				sessiondata.RootUserSessionDataOverride,
 				memberStmt,
 				r.Normalized(), m.Normalized(),
 			)

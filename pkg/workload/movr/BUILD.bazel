@@ -17,6 +17,7 @@ go_library(
         "//pkg/workload/histogram",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_spf13_pflag//:pflag",
+        "@org_golang_x_exp//rand",
     ],
 )
 
@@ -24,6 +25,7 @@ go_test(
     name = "movr_test",
     size = "small",
     srcs = ["movr_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":movr"],
     deps = ["@com_github_stretchr_testify//require"],
 )

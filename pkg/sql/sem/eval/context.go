@@ -8,7 +8,6 @@ package eval
 import (
 	"context"
 	"math"
-	"math/rand"
 	"time"
 
 	apd "github.com/cockroachdb/apd/v3"
@@ -37,7 +36,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil/pgdate"
@@ -81,7 +79,8 @@ type Context struct {
 	TxnIsSingleStmt bool
 	// TxnIsoLevel is the isolation level of the current transaction.
 	TxnIsoLevel isolation.Level
-	Settings    *cluster.Settings
+
+	Settings *cluster.Settings
 	// ClusterID is the logical cluster ID for this tenant.
 	ClusterID uuid.UUID
 	// ClusterName is the security string used to secure the RPC layer.
@@ -115,10 +114,9 @@ type Context struct {
 	// transaction_timestamp() and the like.
 	TxnTimestamp time.Time
 
-	// AsOfSystemTime denotes either the explicit (i.e. in the query text) or
-	// implicit (via the txn mode) AS OF SYSTEM TIME timestamp for the query, if
-	// any. If the query is not an AS OF SYSTEM TIME query, AsOfSystemTime is
-	// nil.
+	// AsOfSystemTime denotes the explicit AS OF SYSTEM TIME timestamp for the
+	// query, if any. If the query is not an AS OF SYSTEM TIME query,
+	// AsOfSystemTime is nil.
 	// TODO(knz): we may want to support table readers at arbitrary
 	// timestamps, so that each FROM clause can have its own
 	// timestamp. In that case, the timestamp would not be set
@@ -145,6 +143,12 @@ type Context struct {
 	// need to restore once we finish evaluating it.
 	iVarContainerStack []tree.IndexedVarContainer
 
+	// deprecatedContext holds the context in which the expression is evaluated.
+	//
+	// Deprecated: this field should not be used because an effort to remove it
+	// from Context is under way.
+	deprecatedContext context.Context
+
 	Planner Planner
 
 	StreamManagerFactory StreamManagerFactory
@@ -164,6 +168,8 @@ type Context struct {
 
 	// Regions stores information about regions.
 	Regions RegionOperator
+
+	JoinTokenCreator JoinTokenCreator
 
 	Gossip GossipOperator
 
@@ -205,11 +211,6 @@ type Context struct {
 	SingleDatumAggMemAccount *mon.BoundAccount
 
 	SQLLivenessReader sqlliveness.Reader
-
-	// BlockingSQLLivenessReader is a sqlliveness.Reader that synchronously
-	// blocks to determine the status of a session which it does not know about or
-	// thinks might be expired.
-	BlockingSQLLivenessReader sqlliveness.Reader
 
 	SQLStatsController SQLStatsController
 
@@ -283,77 +284,11 @@ type Context struct {
 	// during local execution. It may be unset.
 	RoutineSender DeferredRoutineSender
 
-	// RNGFactory, if set, provides the random number generator for the "random"
-	// built-in function.
-	//
-	// NB: do not access this field directly - use GetRNG() instead. This field
-	// is exported only for the connExecutor to pass its "external" RNGFactory.
-	RNGFactory *RNGFactory
-
-	// internalRNGFactory provides the random number generator for the "random"
-	// built-in function if RNGFactory is not set. This field exists to allow
-	// not setting RNGFactory on the code paths that don't need to preserve
-	// usage of the same RNG within a session.
-	internalRNGFactory RNGFactory
-
-	// ULIDEntropyFactory, if set, is the entropy source for ULID generation.
-	//
-	// NB: do not access this field directly - use GetULIDEntropy() instead.
-	// This field is exported only for the connExecutor to pass its "external"
-	// ULIDEntropyFactory.
-	ULIDEntropyFactory *ULIDEntropyFactory
-
-	// internalULIDEntropyFactory is the entropy source for ULID generation if
-	// ULIDEntropyFactory is not set. This field exists to allow not setting
-	// ULIDEntropyFactory on the code paths that don't need to preserve usage of
-	// the same RNG within a session.
-	internalULIDEntropyFactory ULIDEntropyFactory
+	// ULIDEntropy is the entropy source for ULID generation.
+	ULIDEntropy ulid.MonotonicReader
 
 	// CidrLookup is used to look up the tag name for a given IP address.
 	CidrLookup *cidr.Lookup
-}
-
-// RNGFactory is a simple wrapper to preserve the RNG throughout the session.
-type RNGFactory struct {
-	rng *rand.Rand
-}
-
-// GetRNG returns the RNG of the Context (which is lazily instantiated if
-// necessary).
-func (ec *Context) GetRNG() *rand.Rand {
-	if ec.RNGFactory != nil {
-		return ec.RNGFactory.getOrCreate()
-	}
-	return ec.internalRNGFactory.getOrCreate()
-}
-
-func (r *RNGFactory) getOrCreate() *rand.Rand {
-	if r.rng == nil {
-		r.rng, _ = randutil.NewPseudoRand()
-	}
-	return r.rng
-}
-
-// ULIDEntropyFactory is a simple wrapper to preserve the ULID entropy
-// throughout the session.
-type ULIDEntropyFactory struct {
-	entropy ulid.MonotonicReader
-}
-
-// GetULIDEntropy returns the ULID entropy of the Context (which is lazily
-// instantiated if necessary).
-func (ec *Context) GetULIDEntropy() ulid.MonotonicReader {
-	if ec.ULIDEntropyFactory != nil {
-		return ec.ULIDEntropyFactory.getOrCreate(ec.GetRNG())
-	}
-	return ec.internalULIDEntropyFactory.getOrCreate(ec.GetRNG())
-}
-
-func (f *ULIDEntropyFactory) getOrCreate(rng *rand.Rand) ulid.MonotonicReader {
-	if f.entropy == nil {
-		f.entropy = ulid.Monotonic(rng, 0 /* inc */)
-	}
-	return f.entropy
 }
 
 // JobsProfiler is the interface used to fetch job specific execution details
@@ -410,18 +345,35 @@ type RangeProber interface {
 	) error
 }
 
+// SetDeprecatedContext updates the context.Context of this Context. Previously
+// stored context is returned.
+//
+// Deprecated: this method should not be used because an effort to remove the
+// context.Context from Context is under way.
+func (ec *Context) SetDeprecatedContext(ctx context.Context) context.Context {
+	oldCtx := ec.deprecatedContext
+	ec.deprecatedContext = ctx
+	return oldCtx
+}
+
 // UnwrapDatum encapsulates UnwrapDatum for use in the tree.CompareContext.
-func (ec *Context) UnwrapDatum(ctx context.Context, d tree.Datum) tree.Datum {
-	return UnwrapDatum(ctx, ec, d)
+func (ec *Context) UnwrapDatum(d tree.Datum) tree.Datum {
+	if ec == nil {
+		// When ec is nil, then eval.UnwrapDatum is equivalent to
+		// tree.UnwrapDOidWrapper. We have this special handling in order to not
+		// hit a nil pointer exception when accessing deprecatedContext field.
+		return tree.UnwrapDOidWrapper(d)
+	}
+	return UnwrapDatum(ec.deprecatedContext, ec, d)
 }
 
 // MustGetPlaceholderValue is part of the tree.CompareContext interface.
-func (ec *Context) MustGetPlaceholderValue(ctx context.Context, p *tree.Placeholder) tree.Datum {
+func (ec *Context) MustGetPlaceholderValue(p *tree.Placeholder) tree.Datum {
 	e, ok := ec.Placeholders.Value(p.Idx)
 	if !ok {
 		panic(errors.AssertionFailedf("fail"))
 	}
-	out, err := Expr(ctx, ec, e)
+	out, err := Expr(ec.deprecatedContext, ec, e)
 	if err != nil {
 		panic(errors.NewAssertionErrorWithWrappedErrf(err, "fail"))
 	}
@@ -430,10 +382,15 @@ func (ec *Context) MustGetPlaceholderValue(ctx context.Context, p *tree.Placehol
 
 // MakeTestingEvalContext returns an EvalContext that includes a MemoryMonitor.
 func MakeTestingEvalContext(st *cluster.Settings) Context {
-	monitor := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("test-monitor"),
-		Settings: st,
-	})
+	monitor := mon.NewMonitor(
+		"test-monitor",
+		mon.MemoryResource,
+		nil,           /* curCount */
+		nil,           /* maxHist */
+		-1,            /* increment */
+		math.MaxInt64, /* noteworthy */
+		st,
+	)
 	return MakeTestingEvalContextWithMon(st, monitor)
 }
 
@@ -452,6 +409,7 @@ func MakeTestingEvalContextWithMon(st *cluster.Settings, monitor *mon.BytesMonit
 	ctx.TestingMon = monitor
 	ctx.Planner = &fakePlannerWithMonitor{monitor: monitor}
 	ctx.StreamManagerFactory = &fakeStreamManagerFactory{}
+	ctx.deprecatedContext = context.TODO()
 	now := timeutil.Now()
 	ctx.SetTxnTimestamp(now)
 	ctx.SetStmtTimestamp(now)
@@ -607,8 +565,8 @@ func (ec *Context) GetClusterTimestamp() (*tree.DDecimal, error) {
 	// multiple timestamps. Prevent this with a gate at the SQL level and return
 	// a pgerror until we decide how this will officially behave. See #103245.
 	if ec.TxnIsoLevel.ToleratesWriteSkew() {
-		return nil, pgerror.Newf(pgcode.FeatureNotSupported,
-			"unsupported in %s isolation", tree.FromKVIsoLevel(ec.TxnIsoLevel).String())
+		treeIso := tree.IsolationLevelFromKVTxnIsolationLevel(ec.TxnIsoLevel)
+		return nil, pgerror.Newf(pgcode.FeatureNotSupported, "unsupported in %s isolation", treeIso.String())
 	}
 
 	ts, err := ec.Txn.CommitTimestamp()
@@ -671,19 +629,18 @@ func DecimalToInexactDTimestampTZ(d *tree.DDecimal) (*tree.DTimestampTZ, error) 
 }
 
 func decimalToHLC(d *tree.DDecimal) (hlc.Timestamp, error) {
-	var floorD apd.Decimal
-	if _, err := tree.DecimalCtx.Floor(&floorD, &d.Decimal); err != nil {
-		return hlc.Timestamp{}, err
-	}
-
-	i, err := floorD.Int64()
-	if err != nil {
+	var coef apd.BigInt
+	coef.Set(&d.Decimal.Coeff)
+	// The physical portion of the HLC is stored shifted up by 10^10, so shift
+	// it down and clear out the logical component.
+	coef.Div(&coef, big10E10)
+	if !coef.IsInt64() {
 		return hlc.Timestamp{}, pgerror.Newf(
 			pgcode.DatetimeFieldOverflow,
 			"timestamp value out of range: %s", d.String(),
 		)
 	}
-	return hlc.Timestamp{WallTime: i}, nil
+	return hlc.Timestamp{WallTime: coef.Int64()}, nil
 }
 
 // DecimalToInexactDTimestamp is the inverse of TimestampToDecimal. It converts
@@ -715,9 +672,6 @@ func TimestampToInexactDTimestamp(ts hlc.Timestamp) *tree.DTimestamp {
 
 // GetRelativeParseTime implements ParseContext.
 func (ec *Context) GetRelativeParseTime() time.Time {
-	if ec == nil {
-		return timeutil.Now()
-	}
 	ret := ec.TxnTimestamp
 	if ret.IsZero() {
 		ret = timeutil.Now()
@@ -823,7 +777,7 @@ func (ec *Context) BoundedStaleness() bool {
 }
 
 // ensureExpectedType will return an error if a datum does not match the
-// provided type. If the expected type is AnyElement or if the datum is a Null
+// provided type. If the expected type is Any or if the datum is a Null
 // type, then no error will be returned.
 func ensureExpectedType(exp *types.T, d tree.Datum) error {
 	if !(exp.Family() == types.AnyFamily || d.ResolvedType().Family() == types.UnknownFamily ||
@@ -850,21 +804,17 @@ func arrayOfType(typ *types.T) (*tree.DArray, error) {
 // where type aliases should be ignored.
 func UnwrapDatum(ctx context.Context, evalCtx *Context, d tree.Datum) tree.Datum {
 	d = tree.UnwrapDOidWrapper(d)
-	if evalCtx == nil || !evalCtx.HasPlaceholders() {
-		return d
+	if p, ok := d.(*tree.Placeholder); ok && evalCtx != nil && evalCtx.HasPlaceholders() {
+		ret, err := Expr(ctx, evalCtx, p)
+		if err != nil {
+			// If we fail to evaluate the placeholder, it's because we don't have
+			// a placeholder available. Just return the placeholder and someone else
+			// will handle this problem.
+			return d
+		}
+		return ret
 	}
-	p, ok := d.(*tree.Placeholder)
-	if !ok {
-		return d
-	}
-	ret, err := Expr(ctx, evalCtx, p)
-	if err != nil {
-		// If we fail to evaluate the placeholder, it's because we don't have
-		// a placeholder available. Just return the placeholder and someone else
-		// will handle this problem.
-		return d
-	}
-	return ret
+	return d
 }
 
 // StreamManagerFactory stores methods that return the streaming managers.
@@ -878,9 +828,7 @@ type StreamManagerFactory interface {
 type ReplicationStreamManager interface {
 	// StartReplicationStream starts a stream replication job for the specified
 	// tenant on the producer side.
-	StartReplicationStream(
-		ctx context.Context, tenantName roachpb.TenantName, req streampb.ReplicationProducerRequest,
-	) (streampb.ReplicationProducerSpec, error)
+	StartReplicationStream(ctx context.Context, tenantName roachpb.TenantName, req streampb.ReplicationProducerRequest) (streampb.ReplicationProducerSpec, error)
 
 	// SetupSpanConfigsStream creates and plans a replication stream to stream the span config updates for a specific tenant.
 	SetupSpanConfigsStream(ctx context.Context, tenantName roachpb.TenantName) (ValueGenerator, error)
@@ -899,13 +847,12 @@ type ReplicationStreamManager interface {
 	// by opaqueSpec which contains serialized streampb.StreamPartitionSpec protocol message and
 	// returns a value generator which yields events for the specified partition.
 	StreamPartition(
-		ctx context.Context,
 		streamID streampb.StreamID,
 		opaqueSpec []byte,
 	) (ValueGenerator, error)
 
-	// GetPhysicalReplicationStreamSpec gets a physical stream replication spec on the producer side.
-	GetPhysicalReplicationStreamSpec(
+	// GetReplicationStreamSpec gets a stream replication spec on the producer side.
+	GetReplicationStreamSpec(
 		ctx context.Context,
 		streamID streampb.StreamID,
 	) (*streampb.ReplicationStreamSpec, error)
@@ -918,28 +865,25 @@ type ReplicationStreamManager interface {
 		streamID streampb.StreamID,
 		successfulIngestion bool,
 	) error
-
-	DebugGetProducerStatuses(ctx context.Context) ([]streampb.DebugProducerStatus, error)
-	DebugGetLogicalConsumerStatuses(ctx context.Context) ([]*streampb.DebugLogicalConsumerStatus, error)
-
-	PlanLogicalReplication(
-		ctx context.Context,
-		req streampb.LogicalReplicationPlanRequest,
-	) (*streampb.ReplicationStreamSpec, error)
-
-	StartReplicationStreamForTables(
-		ctx context.Context,
-		req streampb.ReplicationProducerRequest,
-	) (streampb.ReplicationProducerSpec, error)
-
-	AuthorizeViaJob(ctx context.Context, streamID streampb.StreamID) error
-	AuthorizeViaReplicationPriv(ctx context.Context, tableNames ...string) error
 }
 
 // StreamIngestManager represents a collection of APIs that streaming replication supports
 // on the ingestion side.
 type StreamIngestManager interface {
+	// CompleteStreamIngestion signals a running stream ingestion job to complete on the consumer side.
+	CompleteStreamIngestion(
+		ctx context.Context,
+		ingestionJobID jobspb.JobID,
+		cutoverTimestamp hlc.Timestamp,
+	) error
+
 	// GetStreamIngestionStats gets a statistics summary for a stream ingestion job.
+	GetStreamIngestionStats(
+		ctx context.Context,
+		streamIngestionDetails jobspb.StreamIngestionDetails,
+		jobProgress jobspb.Progress,
+	) (*streampb.StreamIngestionStats, error)
+
 	GetReplicationStatsAndStatus(
 		ctx context.Context,
 		ingestionJobID jobspb.JobID,

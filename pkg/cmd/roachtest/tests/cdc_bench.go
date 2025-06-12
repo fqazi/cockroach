@@ -9,8 +9,9 @@ import (
 	"bytes"
 	"context"
 	gosql "database/sql"
+	"encoding/json"
 	"fmt"
-	"io"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -34,6 +35,7 @@ import (
 
 type cdcBenchScanType string
 type cdcBenchServer string
+type cdcBenchProtocol string
 
 const (
 	// cdcBenchInitialScan runs an initial scan across a table, i.e. it scans and
@@ -55,87 +57,49 @@ const (
 	// practice it can.
 	cdcBenchColdCatchupScan cdcBenchScanType = "catchup-cold"
 
-	cdcBenchNoServer cdcBenchServer = ""
-	// The legacy processor was removed in 25.1+. In such
-	// timeseries, "processor" refers to the now defunct legacy
-	// processor.
+	cdcBenchNoServer        cdcBenchServer = ""
+	cdcBenchProcessorServer cdcBenchServer = "processor" // legacy processor
 	cdcBenchSchedulerServer cdcBenchServer = "scheduler" // new scheduler
+
+	cdcBenchNoProtocol        cdcBenchProtocol = ""
+	cdcBenchRangefeedProtocol cdcBenchProtocol = "rangefeed" // basic rangefeed protocol
+	cdcBenchMuxProtocol       cdcBenchProtocol = "mux"       // multiplexing rangefeed protocol
 )
 
 var (
 	cdcBenchScanTypes = []cdcBenchScanType{
 		cdcBenchInitialScan, cdcBenchCatchupScan, cdcBenchColdCatchupScan}
-	cdcBenchServers = []cdcBenchServer{cdcBenchSchedulerServer}
+	cdcBenchServers   = []cdcBenchServer{cdcBenchProcessorServer, cdcBenchSchedulerServer}
+	cdcBenchProtocols = []cdcBenchProtocol{cdcBenchRangefeedProtocol, cdcBenchMuxProtocol}
 )
 
 func registerCDCBench(r registry.Registry) {
 
-	postProcessScanPerfMetrics := func(testName string, histograms *roachtestutil.HistogramMetric) (roachtestutil.AggregatedPerfMetrics, error) {
-		metrics := roachtestutil.AggregatedPerfMetrics{}
-
-		// Find the scan-rate summary
-		var scanRate float64
-		if len(histograms.Summaries) != 1 {
-			return nil, errors.Errorf("expected exactly 1 histogram summary, got %d", len(histograms.Summaries))
-		}
-		scanRate = float64(histograms.Summaries[0].HighestTrackableValue) / float64(time.Second)
-
-		// Add scan rate metric (higher is better)
-		metrics = append(metrics, &roachtestutil.AggregatedMetric{
-			Name:           "scan_rate",
-			Value:          roachtestutil.MetricPoint(scanRate),
-			Unit:           "rows/s",
-			IsHigherBetter: true,
-		})
-
-		return metrics, nil
-	}
-
 	// Initial/catchup scan benchmarks.
 	for _, scanType := range cdcBenchScanTypes {
 		for _, ranges := range []int64{100, 100000} {
-			const (
-				nodes  = 5 // excluding coordinator/workload node
-				cpus   = 16
-				rows   = 1_000_000_000 // 19 GB
-				format = "json"
-			)
-
-			r.Add(registry.TestSpec{
-				Name: fmt.Sprintf(
-					"cdc/scan/%s/nodes=%d/cpu=%d/rows=%s/ranges=%s/protocol=mux/format=%s/sink=null",
-					scanType, nodes, cpus, formatSI(rows), formatSI(ranges), format),
-				Owner:            registry.OwnerCDC,
-				Benchmark:        true,
-				Cluster:          r.MakeClusterSpec(nodes+1, spec.CPU(cpus)),
-				CompatibleClouds: registry.AllExceptAWS,
-				Suites:           registry.Suites(registry.Weekly),
-				Timeout:          4 * time.Hour, // Allow for the initial import and catchup scans with 100k ranges.
-				Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-					runCDCBenchScan(ctx, t, c, scanType, rows, ranges, format)
-				},
-				PostProcessPerfMetrics: postProcessScanPerfMetrics,
-			})
-
-			// Enriched envelope benchmarks, using the same parameters.
-			for _, enrichedProperties := range []string{"none", "source", "source,schema"} {
+			for _, protocol := range cdcBenchProtocols {
+				scanType, ranges, protocol := scanType, ranges, protocol // pin loop variables
+				const (
+					nodes  = 5 // excluding coordinator/workload node
+					cpus   = 16
+					rows   = 1_000_000_000 // 19 GB
+					format = "json"
+				)
 				r.Add(registry.TestSpec{
-					Name: fmt.Sprintf("cdc/scan/%s/ranges=%s/envelope=enriched/enriched_properties=%s",
-						scanType, formatSI(ranges), enrichedProperties),
+					Name: fmt.Sprintf(
+						"cdc/scan/%s/nodes=%d/cpu=%d/rows=%s/ranges=%s/protocol=%s/format=%s/sink=null",
+						scanType, nodes, cpus, formatSI(rows), formatSI(ranges), protocol, format),
 					Owner:            registry.OwnerCDC,
 					Benchmark:        true,
 					Cluster:          r.MakeClusterSpec(nodes+1, spec.CPU(cpus)),
 					CompatibleClouds: registry.AllExceptAWS,
-					Suites:           registry.Suites(registry.Weekly),
-					Timeout:          4 * time.Hour,
+					Suites:           registry.Suites(registry.Nightly),
+					RequiresLicense:  true,
+					Timeout:          2 * time.Hour, // catchup scans with 100k ranges can take >1 hour
 					Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-						otherOpts := []kv{{"envelope", "enriched"}}
-						if enrichedProperties != "none" {
-							otherOpts = append(otherOpts, kv{"enriched_properties", enrichedProperties})
-						}
-						runCDCBenchScan(ctx, t, c, scanType, rows, ranges, format, otherOpts...)
+						runCDCBenchScan(ctx, t, c, scanType, rows, ranges, protocol, format)
 					},
-					PostProcessPerfMetrics: postProcessScanPerfMetrics,
 				})
 			}
 		}
@@ -147,6 +111,7 @@ func registerCDCBench(r registry.Registry) {
 	// not provide enough value for the noise.
 	for _, readPercent := range []int{0} {
 		for _, ranges := range []int64{100, 100000} {
+			readPercent, ranges := readPercent, ranges // pin loop variables
 			const (
 				nodes  = 5 // excluding coordinator and workload nodes
 				cpus   = 16
@@ -162,44 +127,34 @@ func registerCDCBench(r registry.Registry) {
 				Benchmark:        true,
 				Cluster:          r.MakeClusterSpec(nodes+2, spec.CPU(cpus)),
 				CompatibleClouds: registry.AllExceptAWS,
-				Suites:           registry.Suites(registry.Weekly),
+				Suites:           registry.Suites(registry.Nightly),
+				RequiresLicense:  true,
 				Timeout:          time.Hour,
 				Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-					runCDCBenchWorkload(ctx, t, c, ranges, readPercent, "", "", nullSink)
+					runCDCBenchWorkload(ctx, t, c, ranges, readPercent, "", "", "")
 				},
 			})
 
 			// Workloads with a concurrent changefeed running.
 			for _, server := range cdcBenchServers {
-				r.Add(registry.TestSpec{
-					Name: fmt.Sprintf(
-						"cdc/workload/kv%d/nodes=%d/cpu=%d/ranges=%s/server=%s/protocol=mux/format=%s/sink=null",
-						readPercent, nodes, cpus, formatSI(ranges), server, format),
-					Owner:            registry.OwnerCDC,
-					Benchmark:        true,
-					Cluster:          r.MakeClusterSpec(nodes+2, spec.CPU(cpus)),
-					CompatibleClouds: registry.AllExceptAWS,
-					Suites:           registry.Suites(registry.Weekly),
-					Timeout:          time.Hour,
-					Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-						runCDCBenchWorkload(ctx, t, c, ranges, readPercent, server, format, nullSink)
-					},
-				})
-
-				r.Add(registry.TestSpec{
-					Name: fmt.Sprintf(
-						"cdc/workload/kv%d/nodes=%d/cpu=%d/ranges=%s/server=%s/protocol=mux/format=%s/sink=kafka",
-						readPercent, nodes, cpus, formatSI(ranges), server, format),
-					Owner:            registry.OwnerCDC,
-					Benchmark:        true,
-					Cluster:          r.MakeClusterSpec(nodes+3, spec.CPU(cpus)),
-					CompatibleClouds: registry.AllExceptAWS,
-					Suites:           registry.Suites(registry.Weekly),
-					Timeout:          time.Hour,
-					Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-						runCDCBenchWorkload(ctx, t, c, ranges, readPercent, server, format, kafkaSink)
-					},
-				})
+				for _, protocol := range cdcBenchProtocols {
+					server, protocol := server, protocol // pin loop variables
+					r.Add(registry.TestSpec{
+						Name: fmt.Sprintf(
+							"cdc/workload/kv%d/nodes=%d/cpu=%d/ranges=%s/server=%s/protocol=%s/format=%s/sink=null",
+							readPercent, nodes, cpus, formatSI(ranges), server, protocol, format),
+						Owner:            registry.OwnerCDC,
+						Benchmark:        true,
+						Cluster:          r.MakeClusterSpec(nodes+2, spec.CPU(cpus)),
+						CompatibleClouds: registry.AllExceptAWS,
+						Suites:           registry.Suites(registry.Nightly),
+						RequiresLicense:  true,
+						Timeout:          time.Hour,
+						Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
+							runCDCBenchWorkload(ctx, t, c, ranges, readPercent, server, protocol, format)
+						},
+					})
+				}
 			}
 		}
 	}
@@ -216,10 +171,14 @@ func makeCDCBenchOptions(c cluster.Cluster) (option.StartOpts, install.ClusterSe
 	settings := install.MakeClusterSettings()
 	settings.ClusterSettings["kv.rangefeed.enabled"] = "true"
 
+	// Disable the stuck watcher, since it can cause continual catchup scans when
+	// ranges aren't able to keep up.
+	settings.ClusterSettings["kv.rangefeed.range_stuck_threshold"] = "0"
+
 	// Checkpoint frequently.  Some of the larger benchmarks might overload the
 	// cluster.  Producing frequent span-level checkpoints helps with recovery.
-	settings.ClusterSettings["changefeed.span_checkpoint.interval"] = "60s"
-	settings.ClusterSettings["changefeed.span_checkpoint.lag_threshold"] = "30s"
+	settings.ClusterSettings["changefeed.frontier_checkpoint_frequency"] = "60s"
+	settings.ClusterSettings["changefeed.frontier_highwater_lag_checkpoint_threshold"] = "30s"
 
 	// Bump up the number of allowed catchup scans.  Doing catchup for 100k ranges with default
 	// configuration (8 client side, 16 per store) takes a while (~1500-2000 ranges per min minutes).
@@ -267,10 +226,6 @@ func makeCDCBenchOptions(c cluster.Cluster) (option.StartOpts, install.ClusterSe
 	return opts, settings
 }
 
-type kv struct {
-	k, v string
-}
-
 // runCDCBenchScan benchmarks throughput for a changefeed initial or catchup
 // scan as rows scanned per second.
 //
@@ -283,8 +238,8 @@ func runCDCBenchScan(
 	c cluster.Cluster,
 	scanType cdcBenchScanType,
 	numRows, numRanges int64,
+	protocol cdcBenchProtocol,
 	format string,
-	otherOpts ...kv,
 ) {
 	const sink = "null://"
 	var (
@@ -296,6 +251,16 @@ func runCDCBenchScan(
 	// Start data nodes first to place data on them. We'll start the changefeed
 	// coordinator later, since we don't want any data on it.
 	opts, settings := makeCDCBenchOptions(c)
+
+	switch protocol {
+	case cdcBenchMuxProtocol:
+		settings.ClusterSettings["changefeed.mux_rangefeed.enabled"] = "true"
+	case cdcBenchRangefeedProtocol:
+		settings.ClusterSettings["changefeed.mux_rangefeed.enabled"] = "false"
+	case cdcBenchNoProtocol:
+	default:
+		t.Fatalf("unknown protocol %q", protocol)
+	}
 
 	c.Start(ctx, t.L(), opts, settings, nData)
 	m := c.NewMonitor(ctx, nData.Merge(nCoord))
@@ -312,7 +277,7 @@ func runCDCBenchScan(
 	}
 
 	// Wait for system ranges to upreplicate.
-	require.NoError(t, roachtestutil.WaitFor3XReplication(ctx, t.L(), conn))
+	require.NoError(t, WaitFor3XReplication(ctx, t, conn))
 
 	// Create and split the workload table. We don't import data here, because it
 	// imports before splitting, which takes a very long time.
@@ -320,9 +285,9 @@ func runCDCBenchScan(
 	// NB: don't scatter -- the ranges end up fairly well-distributed anyway, and
 	// the scatter can often fail with 100k ranges.
 	t.L().Printf("creating table with %s ranges", humanize.Comma(numRanges))
-	c.Run(ctx, option.WithNodes(nCoord), fmt.Sprintf(
+	c.Run(ctx, nCoord, fmt.Sprintf(
 		`./cockroach workload init kv --splits %d {pgurl:%d}`, numRanges, nData[0]))
-	require.NoError(t, roachtestutil.WaitFor3XReplication(ctx, t.L(), conn))
+	require.NoError(t, WaitFor3XReplication(ctx, t, conn))
 
 	time.Sleep(1 * time.Second)
 	cursor := timeutil.Now() // before data is ingested
@@ -334,7 +299,7 @@ func runCDCBenchScan(
 		loader = "insert"
 	}
 	t.L().Printf("ingesting %s rows using %s", humanize.Comma(numRows), loader)
-	c.Run(ctx, option.WithNodes(nCoord), fmt.Sprintf(
+	c.Run(ctx, nCoord, fmt.Sprintf(
 		`./cockroach workload init kv --insert-count %d --data-loader %s {pgurl:%d}`,
 		numRows, loader, nData[0]))
 
@@ -355,13 +320,6 @@ func runCDCBenchScan(
 	t.L().Printf("running changefeed %s scan", scanType)
 	with := fmt.Sprintf(`format = '%s', end_time = '%s'`,
 		format, timeutil.Now().Add(30*time.Second).Format(time.RFC3339))
-	for _, opt := range otherOpts {
-		if opt.v != "" {
-			with += fmt.Sprintf(", %s = '%s'", opt.k, opt.v)
-		} else {
-			with += fmt.Sprintf(", %s", opt.k)
-		}
-	}
 	switch scanType {
 	case cdcBenchInitialScan:
 		with += ", initial_scan = 'yes'"
@@ -384,10 +342,10 @@ func runCDCBenchScan(
 	m.Go(func(ctx context.Context) error {
 		t.L().Printf("waiting for changefeed to finish")
 		info, err := waitForChangefeed(ctx, conn, jobID, t.L(), func(info changefeedInfo) (bool, error) {
-			switch jobs.State(info.status) {
-			case jobs.StateSucceeded:
+			switch jobs.Status(info.status) {
+			case jobs.StatusSucceeded:
 				return true, nil
-			case jobs.StatePending, jobs.StateRunning:
+			case jobs.StatusPending, jobs.StatusRunning:
 				return false, nil
 			default:
 				return false, errors.Errorf("unexpected changefeed status %q", info.status)
@@ -397,12 +355,12 @@ func runCDCBenchScan(
 			return err
 		}
 
-		duration := info.GetFinishedTime().Sub(info.startedTime)
+		duration := info.finishedTime.Sub(info.startedTime)
 		rate := int64(float64(numRows) / duration.Seconds())
 		t.L().Printf("changefeed completed in %s (scanned %s rows per second)",
 			duration.Truncate(time.Second), humanize.Comma(rate))
 
-		// Record scan rate to stats file.
+		// Record scan rate to stats.json.
 		return writeCDCBenchStats(ctx, t, c, nCoord, "scan-rate", rate)
 	})
 
@@ -424,11 +382,11 @@ func runCDCBenchWorkload(
 	numRanges int64,
 	readPercent int,
 	server cdcBenchServer,
+	protocol cdcBenchProtocol,
 	format string,
-	sinkType sinkType,
 ) {
+	const sink = "null://"
 	var (
-		sinkURI   string
 		numNodes  = c.Spec().NodeCount
 		nData     = c.Range(1, numNodes-2)
 		nCoord    = c.Node(numNodes - 1)
@@ -438,31 +396,15 @@ func runCDCBenchWorkload(
 		concurrency  = len(nData) * 64
 		duration     = 20 * time.Minute
 		insertCount  = int64(0)
-		cdcEnabled   = format != ""
+		cdcEnabled   = true
 	)
-
-	switch sinkType {
-	case kafkaSink:
-		nData = c.Range(1, numNodes-3)
-		nCoord = c.Node(numNodes - 1)
-		nWorkload = c.Node(numNodes - 2)
-		nKafka := c.Node(numNodes)
-
-		kafka, cleanup := setupKafka(ctx, t, c, nKafka)
-		defer cleanup()
-		sinkURI = kafka.sinkURL(ctx)
-	case nullSink, "":
-		sinkURI = "null://"
-	default:
-		t.Fatalf("unsupported sink type %q", sinkType)
-	}
-
 	if readPercent == 100 {
 		insertCount = 1_000_000 // ingest some data to read
 	}
 	// Either of these will disable changefeeds. Make sure they're all disabled.
-	if server == "" || format == "" {
+	if server == "" || protocol == "" || format == "" {
 		require.Empty(t, server)
+		require.Empty(t, protocol)
 		require.Empty(t, format)
 		cdcEnabled = false
 	}
@@ -471,9 +413,20 @@ func runCDCBenchWorkload(
 	// coordinator later, since we don't want any data on it.
 	opts, settings := makeCDCBenchOptions(c)
 	settings.ClusterSettings["kv.rangefeed.enabled"] = strconv.FormatBool(cdcEnabled)
-	settings.ClusterSettings["server.child_metrics.enabled"] = "true"
+
+	switch protocol {
+	case cdcBenchMuxProtocol:
+		settings.ClusterSettings["changefeed.mux_rangefeed.enabled"] = "true"
+	case cdcBenchRangefeedProtocol:
+		settings.ClusterSettings["changefeed.mux_rangefeed.enabled"] = "false"
+	case cdcBenchNoProtocol:
+	default:
+		t.Fatalf("unknown protocol %q", protocol)
+	}
 
 	switch server {
+	case cdcBenchProcessorServer:
+		settings.ClusterSettings["kv.rangefeed.scheduler.enabled"] = "false"
 	case cdcBenchSchedulerServer:
 		settings.ClusterSettings["kv.rangefeed.scheduler.enabled"] = "true"
 	case cdcBenchNoServer:
@@ -496,16 +449,16 @@ func runCDCBenchWorkload(
 	}
 
 	// Wait for system ranges to upreplicate.
-	require.NoError(t, roachtestutil.WaitFor3XReplication(ctx, t.L(), conn))
+	require.NoError(t, WaitFor3XReplication(ctx, t, conn))
 
 	// Create and split the workload table.
 	//
 	// NB: don't scatter -- the ranges end up fairly well-distributed anyway, and
 	// the scatter can often fail with 100k ranges.
 	t.L().Printf("creating table with %s ranges", humanize.Comma(numRanges))
-	c.Run(ctx, option.WithNodes(nWorkload), fmt.Sprintf(
+	c.Run(ctx, nWorkload, fmt.Sprintf(
 		`./cockroach workload init kv --splits %d {pgurl:%d}`, numRanges, nData[0]))
-	require.NoError(t, roachtestutil.WaitFor3XReplication(ctx, t.L(), conn))
+	require.NoError(t, WaitFor3XReplication(ctx, t, conn))
 
 	// For read-only workloads, ingest some data. init --insert-count does not use
 	// the standard key generator that the read workload uses, so we have to write
@@ -515,7 +468,7 @@ func runCDCBenchWorkload(
 		const batchSize = 1000
 		batches := (insertCount-1)/batchSize + 1 // ceiling division
 		t.L().Printf("ingesting %s rows", humanize.Comma(insertCount))
-		c.Run(ctx, option.WithNodes(nWorkload), fmt.Sprintf(
+		c.Run(ctx, nWorkload, fmt.Sprintf(
 			`./cockroach workload run kv --seed %d --read-percent 0 --batch %d --max-ops %d {pgurl:%d}`,
 			workloadSeed, batchSize, batches, nData[0]))
 	}
@@ -540,7 +493,7 @@ func runCDCBenchWorkload(
 
 		require.NoError(t, conn.QueryRowContext(ctx, fmt.Sprintf(
 			`CREATE CHANGEFEED FOR kv.kv INTO '%s' WITH format = '%s', initial_scan = 'no'`,
-			sinkURI, format)).
+			sink, format)).
 			Scan(&jobID))
 
 		// Monitor the changefeed for failures. When the workload finishes, it will
@@ -554,10 +507,10 @@ func runCDCBenchWorkload(
 		// ranges it was found to sometimes lag by over 8 minutes.
 		m.Go(func(ctx context.Context) error {
 			info, err := waitForChangefeed(ctx, conn, jobID, t.L(), func(info changefeedInfo) (bool, error) {
-				switch jobs.State(info.status) {
-				case jobs.StatePending, jobs.StateRunning:
+				switch jobs.Status(info.status) {
+				case jobs.StatusPending, jobs.StatusRunning:
 					doneValue := done.Load()
-					return doneValue != nil && info.GetHighWater().After(doneValue.(time.Time)), nil
+					return doneValue != nil && info.highwaterTime.After(doneValue.(time.Time)), nil
 				default:
 					return false, errors.Errorf("unexpected changefeed status %s", info.status)
 				}
@@ -565,7 +518,7 @@ func runCDCBenchWorkload(
 			if err != nil {
 				return err
 			}
-			t.L().Printf("changefeed watermark is %s", info.GetHighWater().Format(time.RFC3339))
+			t.L().Printf("changefeed watermark is %s", info.highwaterTime.Format(time.RFC3339))
 			return nil
 		})
 
@@ -575,15 +528,15 @@ func runCDCBenchWorkload(
 		t.L().Printf("waiting for changefeed watermark to reach current time (%s)",
 			now.Format(time.RFC3339))
 		info, err := waitForChangefeed(ctx, conn, jobID, t.L(), func(info changefeedInfo) (bool, error) {
-			switch jobs.State(info.status) {
-			case jobs.StatePending, jobs.StateRunning:
-				return info.GetHighWater().After(now), nil
+			switch jobs.Status(info.status) {
+			case jobs.StatusPending, jobs.StatusRunning:
+				return info.highwaterTime.After(now), nil
 			default:
 				return false, errors.Errorf("unexpected changefeed status %s", info.status)
 			}
 		})
 		require.NoError(t, err)
-		t.L().Printf("changefeed watermark is %s", info.GetHighWater().Format(time.RFC3339))
+		t.L().Printf("changefeed watermark is %s", info.highwaterTime.Format(time.RFC3339))
 
 	} else {
 		t.L().Printf("control run, not starting changefeed")
@@ -603,17 +556,10 @@ func runCDCBenchWorkload(
 			extra += ` --tolerate-errors`
 		}
 		t.L().Printf("running workload")
-		labels := map[string]string{
-			"duration":     duration.String(),
-			"concurrency":  fmt.Sprintf("%d", concurrency),
-			"read_percent": fmt.Sprintf("%d", readPercent),
-			"insert_count": fmt.Sprintf("%d", insertCount),
-		}
-
-		err := c.RunE(ctx, option.WithNodes(nWorkload), fmt.Sprintf(
-			`./cockroach workload run kv --seed %d %s `+
+		err := c.RunE(ctx, nWorkload, fmt.Sprintf(
+			`./cockroach workload run kv --seed %d --histograms=%s/stats.json `+
 				`--concurrency %d --duration %s --write-seq R%d --read-percent %d %s {pgurl:%d-%d}`,
-			workloadSeed, roachtestutil.GetWorkloadHistogramArgs(t, c, labels), concurrency, duration, insertCount, readPercent, extra,
+			workloadSeed, t.PerfArtifactsDir(), concurrency, duration, insertCount, readPercent, extra,
 			nData[0], nData[len(nData)-1]))
 		if err != nil {
 			return err
@@ -630,7 +576,7 @@ func runCDCBenchWorkload(
 				return err
 			}
 			t.L().Printf("waiting for changefeed watermark to reach %s (lagging by %s)",
-				now.Format(time.RFC3339), now.Sub(info.GetHighWater()).Truncate(time.Second))
+				now.Format(time.RFC3339), now.Sub(info.highwaterTime).Truncate(time.Second))
 		}
 		return nil
 	})
@@ -678,8 +624,8 @@ func waitForChangefeed(
 				return changefeedInfo{}, errors.Wrapf(err, "failed %d attempts to get changefeed info", maxLoadJobAttempts)
 			}
 			continue
-		} else if info.GetError() != "" {
-			return changefeedInfo{}, errors.Errorf("changefeed error: %s", info.GetError())
+		} else if info.errMsg != "" {
+			return changefeedInfo{}, errors.Errorf("changefeed error: %s", info.errMsg)
 		}
 		if ok, err := f(*info); err != nil {
 			return changefeedInfo{}, err
@@ -690,7 +636,7 @@ func waitForChangefeed(
 	}
 }
 
-// writeCDCBenchStats writes a single perf metric into stats file on the
+// writeCDCBenchStats writes a single perf metric into stats.json on the
 // given node, for graphing in roachperf.
 func writeCDCBenchStats(
 	ctx context.Context,
@@ -703,24 +649,26 @@ func writeCDCBenchStats(
 	// The easiest way to record a precise metric for roachperf is to cast it as a
 	// duration in seconds in the histogram's upper bound.
 	valueS := time.Duration(value) * time.Second
-
-	exporter := roachtestutil.CreateWorkloadHistogramExporter(t, c)
-	reg := histogram.NewRegistryWithExporter(valueS, histogram.MockWorkloadName, exporter)
-
+	reg := histogram.NewRegistry(valueS, histogram.MockWorkloadName)
 	bytesBuf := bytes.NewBuffer([]byte{})
-	writer := io.Writer(bytesBuf)
-
-	exporter.Init(&writer)
-	defer roachtestutil.CloseExporter(ctx, exporter, t, c, bytesBuf, node, "")
+	jsonEnc := json.NewEncoder(bytesBuf)
 
 	var err error
 	reg.GetHandle().Get(metric).Record(valueS)
 	reg.Tick(func(tick histogram.Tick) {
-		err = tick.Exporter.SnapshotAndWrite(tick.Hist, tick.Now, tick.Elapsed, &tick.Name)
+		err = jsonEnc.Encode(tick.Snapshot())
 	})
 	if err != nil {
 		return err
 	}
 
+	// Upload the perf artifacts to the given node.
+	path := filepath.Join(t.PerfArtifactsDir(), "stats.json")
+	if err := c.RunE(ctx, node, "mkdir -p "+filepath.Dir(path)); err != nil {
+		return err
+	}
+	if err := c.PutString(ctx, bytesBuf.String(), path, 0755, node); err != nil {
+		return err
+	}
 	return nil
 }

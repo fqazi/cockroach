@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -140,16 +139,17 @@ var p99LatencyComputeExprStr = p99LatencyComputeExpr
 
 // These system tables are not part of the system config.
 const (
-	// LeaseTableSchema is the new session based leasing table format.
+	// Note: the column "nodeID" refers to the SQL instance ID. It is named
+	// "nodeID" for historical reasons.
 	LeaseTableSchema = `CREATE TABLE system.lease (
-  desc_id          INT8,
-  version          INT8,
-  sql_instance_id  INT8 NOT NULL,
-  session_id       BYTES,
-  crdb_region      BYTES NOT NULL,
-  CONSTRAINT       "primary" PRIMARY KEY (crdb_region, desc_id, version, session_id),
-  FAMILY           "primary" (desc_id, version, sql_instance_id, session_id, crdb_region)
-) WITH (exclude_data_from_backup = true);`
+  "descID"     INT8,
+  version      INT8,
+  "nodeID"     INT8,
+  expiration   TIMESTAMP,
+  crdb_region  BYTES NOT NULL,
+  CONSTRAINT   "primary" PRIMARY KEY (crdb_region, "descID", version, expiration, "nodeID"),
+  FAMILY       "primary" ("descID", version, "nodeID", expiration, crdb_region)
+);`
 
 	// system.eventlog contains notable events from the cluster.
 	//
@@ -171,9 +171,7 @@ CREATE TABLE system.eventlog (
   "reportingID" INT8       NOT NULL,
   info          STRING,
   "uniqueID"    BYTES      DEFAULT uuid_v4(),
-  payload       JSONB,
-  CONSTRAINT "primary" PRIMARY KEY (timestamp, "uniqueID"),
-  INDEX event_type_idx ("eventType", timestamp DESC)
+  CONSTRAINT "primary" PRIMARY KEY (timestamp, "uniqueID")
 );`
 
 	// rangelog is currently envisioned as a wide table; many different event
@@ -210,19 +208,15 @@ CREATE TABLE system.jobs (
 	id                INT8      DEFAULT unique_rowid(),
 	status            STRING    NOT NULL,
 	created           TIMESTAMP NOT NULL DEFAULT now(),
-	dropped_payload   BYTES NOT VISIBLE,
-	dropped_progress  BYTES NOT VISIBLE,
+	payload           BYTES,
+	progress          BYTES,
 	created_by_type   STRING,
 	created_by_id     INT,
 	claim_session_id  BYTES,
 	claim_instance_id INT8,
 	num_runs          INT8,
 	last_run          TIMESTAMP,
-	job_type          STRING,
-	owner             STRING,
-	description       STRING,
-	error_msg         STRING,
-	finished          TIMESTAMPTZ,
+	job_type              STRING,
 	CONSTRAINT "primary" PRIMARY KEY (id),
 	INDEX (status, created),
 	INDEX (created_by_type, created_by_id) STORING (status),
@@ -233,91 +227,10 @@ CREATE TABLE system.jobs (
   ) STORING(last_run, num_runs, claim_instance_id)
     WHERE ` + JobsRunStatsIdxPredicate + `,
   INDEX jobs_job_type_idx (job_type),
-	FAMILY fam_0_id_status_created_payload (id, status, created, dropped_payload, created_by_type, created_by_id, job_type, owner, description, error_msg, finished),
-	FAMILY progress (dropped_progress),
+	FAMILY fam_0_id_status_created_payload (id, status, created, payload, created_by_type, created_by_id, job_type),
+	FAMILY progress (progress),
 	FAMILY claim (claim_session_id, claim_instance_id, num_runs, last_run)
 );`
-
-	// JobProgressTableSchema is a table that contains one row per job reflecting
-	// that job's current progress for human consumption (e.g. in SHOW or the UI).
-	// This table includes the time the progress was reported in the PK, so to
-	// update the current progress for a job, one would DELETE the old row and
-	// INSERT a new one, rather than UPDATEing the existing row. This is done to
-	// ensure revisions of the progress are not revisions to one "row" in CRDB,
-	// and thus the ranges can split between revisions to progress even though
-	// they cannot split between revisions to a SQL row. This is the same pattern
-	// used by job_info.
-	JobProgressTableSchema = `
-CREATE TABLE system.job_progress (
-	job_id INT8 NOT NULL,
-	written TIMESTAMPTZ NOT NULL DEFAULT now(), -- when this progress was reported.
-	fraction FLOAT, -- the fraction of some known work that is complete (e.g. half done with backfill)
-	resolved DECIMAL, -- a timestamp up to which processing is complete (aka "highwater"/resolvedTS/etc). Typically used by perpetual jobs instead of fraction.
-	--
-	FAMILY "primary" ("job_id", "written", "fraction", "resolved"),
-	CONSTRAINT "primary" PRIMARY KEY (job_id ASC, written DESC)
-)`
-
-	// JobProgressHistoryTableSchema is identical to job_progress, but is allowed
-	// to contain multiple rows for the same job_id. This table is used to track
-	// the progress of a job over time, whereas job_progress only contains the
-	// most recent progress update to allow more efficient lookups of the current
-	// progress in joins for SHOW JOBS. This table generally should only queried
-	// for a specific job at a time. History is not stored indefinitely and may be
-	// pruned based on retention limits.
-	JobProgressHistoryTableSchema = `
-	CREATE TABLE system.job_progress_history (
-		job_id INT8 NOT NULL,
-		written TIMESTAMPTZ NOT NULL DEFAULT now(),
-		fraction FLOAT,
-		resolved DECIMAL,
-		--
-		FAMILY "primary" ("job_id", "written", "fraction", "resolved"),
-		CONSTRAINT "primary" PRIMARY KEY (job_id ASC, written DESC)
-	)`
-
-	// JobStatusTableSchema is the table that contains the current, user-visible
-	// status of a job, which is typically its current phase of execution such as
-	// such as "backfilling" or "waiting for GC". This table contains one row per
-	// job; a change to the "current status" for a job replaces this row with a
-	// new row rather than updating it in place (see the comment on job_progress).
-	// Note: jobs which wish to just make some fact or condition visible to a user
-	// that may be of note but which is not a change in its status, such as if it
-	// is retrying or is catching up but still in its "backfilling" phase, may
-	// wish to write that as a message in job_message rather than changing their
-	// status in this table; jobs should avoid frequent mutations to status.
-	JobStatusTableSchema = `
-	CREATE TABLE system.job_status (
-		job_id INT8 NOT NULL,
-		written TIMESTAMPTZ NOT NULL DEFAULT now(), 
-		status STRING NOT NULL, -- the human-readable status message e.g. "reverting" or "backfilling".
-		--
-		FAMILY "primary" ("job_id", "written", "status"),
-		CONSTRAINT "primary" PRIMARY KEY (job_id, written DESC)
-	)`
-
-	// JobMessageTableSchema is the table that contains a history of messages a
-	// job wishes to be visible to a human inspecting that specific job. Unlike
-	// the status table which only retains one string "status" for any given job
-	// at one time, this table table retains multiple messages per job, both as it
-	// contains historical messages and can contain messages of different kinds at
-	// the same time, thus it is intended to be queried for a specific job at a
-	// time rather than for all jobs at once. Messages can indicate what kind of
-	// message is being reported ("warning", "status_change", "state transition",
-	// etc). Messages may be dropped based on rate and/or retention limits. Jobs
-	// may be more liberal in emitting messages here than they are in changing
-	// their status in job_status, as this table is not joined in the same txn
-	// when listing all jobs.
-	JobMessageTableSchema = `
-	CREATE TABLE system.job_message (
-		job_id INT8 NOT NULL,
-		written TIMESTAMPTZ NOT NULL DEFAULT now(), 
-		kind STRING, -- the type of message, e.g. "warning", "status_change", etc
-		message STRING NOT NULL, -- the human-readable status message e.g. "reverting" or "backfilling".
-		--
-		FAMILY "primary" ("job_id", "written", "kind", "message"),
-		CONSTRAINT "primary" PRIMARY KEY (job_id ASC, written DESC, kind ASC)
-	)`
 
 	// web_sessions are used to track authenticated user actions over stateless
 	// connections, such as the cookie-based authentication used by the Admin
@@ -434,7 +347,7 @@ CREATE TABLE system.replication_constraint_stats (
 		INT8 NOT NULL,
 	CONSTRAINT "primary" PRIMARY KEY (zone_id ASC, subzone_id ASC, type ASC, config ASC),
 	FAMILY "primary" (zone_id, subzone_id, type, config, report_id, violation_start, violating_ranges)
-) WITH (exclude_data_from_backup = true);`
+);`
 
 	// replication_critical_localities stores replication critical localities
 	ReplicationCriticalLocalitiesTableSchema = `
@@ -480,7 +393,7 @@ CREATE TABLE system.replication_stats (
 		under_replicated_ranges,
 		over_replicated_ranges
 	)
-) WITH (exclude_data_from_backup = true);`
+);`
 
 	// protected_ts_meta stores a single row of metadata for the protectedts
 	// subsystem.
@@ -531,12 +444,10 @@ CREATE TABLE system.statement_diagnostics_requests(
 	sampling_probability FLOAT NULL,
 	plan_gist STRING NULL,
 	anti_plan_gist BOOL NULL,
-	redacted BOOL NOT NULL DEFAULT FALSE,
-	username STRING NOT NULL DEFAULT '',
 	CONSTRAINT "primary" PRIMARY KEY (id),
 	CONSTRAINT check_sampling_probability CHECK (sampling_probability BETWEEN 0.0 AND 1.0),
-	INDEX completed_idx_v2 (completed, id) STORING (statement_fingerprint, min_execution_latency, expires_at, sampling_probability, plan_gist, anti_plan_gist, redacted, username),
-	FAMILY "primary" (id, completed, statement_fingerprint, statement_diagnostics_id, requested_at, min_execution_latency, expires_at, sampling_probability, plan_gist, anti_plan_gist, redacted, username)
+	INDEX completed_idx_v2 (completed, id) STORING (statement_fingerprint, min_execution_latency, expires_at, sampling_probability, plan_gist, anti_plan_gist),
+	FAMILY "primary" (id, completed, statement_fingerprint, statement_diagnostics_id, requested_at, min_execution_latency, expires_at, sampling_probability, plan_gist, anti_plan_gist)
 );`
 
 	StatementDiagnosticsTableSchema = `
@@ -885,30 +796,15 @@ CREATE TABLE system.tenant_usage (
   -- Current shares value for this instance.
   instance_shares FLOAT,
 
-  -- -------------------------------------------------------------
-  --  The following fields are used only for the per-tenant state, when
-  --  instance_id = 0.
-  --  These were added later and need to be ordered last in order to
-  --  be compatible with older versions of the table that are upgraded.
-  -- --------------------------------------------------------------
-
-  -- Computed rates of consumption for metrics used in tenant modeling, encoded
-  -- as roachpb.TenantConsumptionRates.
-  current_rates BYTES,
-
-  -- In-progress computed rates of consumption for metrics used in tenant
-  -- modeling, encoded as roachpb.TenantConsumptionRates.
-  next_rates BYTES,
-
   FAMILY "primary" (
     tenant_id, instance_id, next_instance_id, last_update,
     ru_burst_limit, ru_refill_rate, ru_current, current_share_sum,
-    total_consumption, instance_lease, instance_seq, instance_shares,
-    current_rates, next_rates
+    total_consumption,
+    instance_lease, instance_seq, instance_shares
   ),
 
-  CONSTRAINT "primary" PRIMARY KEY (tenant_id, instance_id)
-) WITH (exclude_data_from_backup = true)`
+	CONSTRAINT "primary" PRIMARY KEY (tenant_id, instance_id)
+)`
 
 	SQLInstancesTableSchema = `
 CREATE TABLE system.sql_instances (
@@ -919,18 +815,8 @@ CREATE TABLE system.sql_instances (
     sql_addr       STRING,
     crdb_region    BYTES NOT NULL,
     binary_version STRING,
-    is_draining    BOOL NULL,
     CONSTRAINT "primary" PRIMARY KEY (crdb_region, id),
-    FAMILY "primary" (
-      id, 
-      addr, 
-      session_id, 
-      locality, 
-      sql_addr, 
-      crdb_region, 
-      binary_version, 
-      is_draining
-    )
+    FAMILY "primary" (id, addr, session_id, locality, sql_addr, crdb_region, binary_version)
 )`
 
 	SpanConfigurationsTableSchema = `
@@ -941,7 +827,7 @@ CREATE TABLE system.span_configurations (
     CONSTRAINT "primary" PRIMARY KEY (start_key),
     CONSTRAINT check_bounds CHECK (start_key < end_key),
     FAMILY "primary" (start_key, end_key, config)
-) WITH (exclude_data_from_backup = true)`
+)`
 
 	TenantSettingsTableSchema = `
 CREATE TABLE system.tenant_settings (
@@ -1025,8 +911,6 @@ CREATE TABLE system.task_payloads (
 	FAMILY "primary" (id, created, owner, owner_id, min_version, description, type, value)
 );`
 
-	// SystemJobInfoTableSchema is the schema for the system.job_info table, which
-	// is used by jobs to store arbitrary "info".
 	SystemJobInfoTableSchema = `
 CREATE TABLE system.job_info (
 	job_id INT8 NOT NULL,
@@ -1259,73 +1143,6 @@ CREATE TABLE system.mvcc_statistics (
 			created
 		)
 	);`
-
-	crdbInternalTableIdLastUpdatedShard = "mod(fnv32(md5(crdb_internal.datums_to_bytes(table_id, last_updated))), 16:::INT8)"
-	TableMetadataTableSchema            = ` CREATE TABLE system.table_metadata (
-	  db_id INT8 NOT NULL,
-    table_id INT8 NOT NULL,
-	  db_name STRING NOT NULL,
-		schema_name STRING NOT NULL,
-    table_name STRING NOT NULL,
-    total_columns INT8 NOT NULL,
-    total_indexes INT8 NOT NULL,
-    store_ids INT[] NOT NULL,
-    replication_size_bytes INT NOT NULL,
-    total_ranges INT NOT NULL,
-    total_live_data_bytes INT NOT NULL,
-    total_data_bytes INT NOT NULL,
-    perc_live_data FLOAT NOT NULL,
-    last_update_error string,
-    last_updated TIMESTAMPTZ NOT NULL DEFAULT now(),
-    table_type string NOT NULL,
-		details JSONB NOT NULL,
-		crdb_internal_last_updated_table_id_shard_16 INT4 NOT VISIBLE NOT NULL AS (` + crdbInternalTableIdLastUpdatedShard + `) VIRTUAL,
-    CONSTRAINT "primary" PRIMARY KEY (db_id, table_id),
-		INDEX "replication_size_bytes_table_id_idx" (replication_size_bytes desc, table_id),
-		INDEX "total_ranges_table_id_idx" (total_ranges desc, table_id),
-		INDEX "total_columns_table_id_idx" (total_columns desc, table_id),
-		INDEX "total_indexes_table_id_idx" (total_indexes desc, table_id),
-		INDEX "perc_live_data_id_idx" (perc_live_data desc, table_id),
-		INDEX "last_updated_idx" (last_updated desc, table_id) USING HASH,
-		INVERTED INDEX db_name_gin (db_name gin_trgm_ops),
-		INVERTED INDEX table_name_gin (table_name gin_trgm_ops),
-		INVERTED INDEX schema_name_gin (schema_name gin_trgm_ops),
-		INVERTED INDEX store_ids_gin (store_ids),
-    FAMILY "primary" (
-      db_id,
-			table_id,
-			db_name,
-			schema_name,
-			table_name,
-			total_columns,
-			total_indexes,
-			store_ids,
-			replication_size_bytes,
-			total_ranges,
-			total_live_data_bytes,
-			total_data_bytes,
-			perc_live_data,
-			last_update_error,
-			last_updated,
-			table_type,
-			details
-    )
-	);`
-
-	PreparedTransactionsTableSchema = `
-CREATE TABLE system.prepared_transactions (
-  global_id        STRING       NOT NULL,
-  transaction_id   UUID         NOT NULL,
-  -- Null if the transaction does not have a transaction record.
-  transaction_key  BYTES        NULL,
-  prepared         TIMESTAMPTZ  NOT NULL DEFAULT now(),
-  owner            STRING       NOT NULL,
-  database         STRING       NOT NULL,
-  -- Unused. Included in schema to support a future implementation of XA "heuristic completion".
-  heuristic        STRING       NULL,
-  CONSTRAINT "primary" PRIMARY KEY (global_id),
-  FAMILY "primary" (global_id, transaction_id, transaction_key, prepared, owner, database, heuristic)
-);`
 )
 
 func pk(name string) descpb.IndexDescriptor {
@@ -1359,6 +1176,14 @@ const (
 	// in the hash sharded primary key in the sql stats tables, this value needs to
 	// be updated.
 	SQLStatsHashShardBucketCount = 8
+
+	// StmtStatsHashColumnName is the name of the hash column of
+	// system.statement_statistics.
+	StmtStatsHashColumnName = "crdb_internal_aggregated_ts_app_name_fingerprint_id_node_id_plan_hash_transaction_fingerprint_id_shard_8"
+
+	// TxnStatsHashColumnName is the name of the hash column of
+	// system.transaction_statistics.
+	TxnStatsHashColumnName = "crdb_internal_aggregated_ts_app_name_fingerprint_id_node_id_shard_8"
 )
 
 // SystemDatabaseName is the name of the system database.
@@ -1366,11 +1191,8 @@ const SystemDatabaseName = catconstants.SystemDatabaseName
 
 // SystemDatabaseSchemaBootstrapVersion is the system database schema version
 // that should be used during bootstrap. It should be bumped up alongside any
-// upgrade that has an associated migration (and the upgrade for the final
-// release version).
-//
-// NB: Don't set this to clusterversion.Latest; use a specific version instead.
-var SystemDatabaseSchemaBootstrapVersion = clusterversion.V25_3_AddEventLogColumnAndIndex.Version()
+// upgrade that creates or modifies the schema of a system table.
+var SystemDatabaseSchemaBootstrapVersion = clusterversion.ByKey(clusterversion.V23_2_AddSystemExecInsightsTable)
 
 // MakeSystemDatabaseDesc constructs a copy of the system database
 // descriptor.
@@ -1561,12 +1383,6 @@ func MakeSystemTables() []SystemTable {
 		SystemMVCCStatisticsTable,
 		StatementExecInsightsTable,
 		TransactionExecInsightsTable,
-		TableMetadata,
-		SystemJobProgressTable,
-		SystemJobProgressHistoryTable,
-		SystemJobStatusTable,
-		SystemJobMessageTable,
-		PreparedTransactionsTable,
 	}
 }
 
@@ -1892,9 +1708,7 @@ var (
 // `TestSystemTableLiterals` which checks that they do indeed match, and has
 // suggestions on writing and maintaining them.
 var (
-	LeaseTableTTL = time.Minute * 10
-	// LeaseTable is the descriptor for the leases table with a session based
-	// leasing table format.
+	// LeaseTable is the descriptor for the leases table.
 	LeaseTable = func() SystemTable {
 		return makeSystemTable(
 			LeaseTableSchema,
@@ -1902,36 +1716,57 @@ var (
 				catconstants.LeaseTableName,
 				keys.LeaseTableID,
 				[]descpb.ColumnDescriptor{
-					{Name: "desc_id", ID: 1, Type: types.Int},
+					{Name: "descID", ID: 1, Type: types.Int},
 					{Name: "version", ID: 2, Type: types.Int},
-					{Name: "sql_instance_id", ID: 3, Type: types.Int},
-					{Name: "session_id", ID: 4, Type: types.Bytes},
+					{Name: "nodeID", ID: 3, Type: types.Int},
+					{Name: "expiration", ID: 4, Type: types.Timestamp},
 					{Name: "crdb_region", ID: 5, Type: types.Bytes},
 				},
 				[]descpb.ColumnFamilyDescriptor{
 					{
-						Name:            "primary",
-						ID:              0,
-						ColumnNames:     []string{"desc_id", "version", "sql_instance_id", "session_id", "crdb_region"},
-						DefaultColumnID: 3,
-						ColumnIDs:       []descpb.ColumnID{1, 2, 3, 4, 5},
+						Name:        "primary",
+						ID:          0,
+						ColumnNames: []string{"descID", "version", "nodeID", "expiration", "crdb_region"},
+						ColumnIDs:   []descpb.ColumnID{1, 2, 3, 4, 5},
 					},
 				},
 				descpb.IndexDescriptor{
 					Name:           "primary",
-					ID:             3,
+					ID:             2,
 					Unique:         true,
-					KeyColumnNames: []string{"crdb_region", "desc_id", "version", "session_id"},
+					KeyColumnNames: []string{"crdb_region", "descID", "version", "expiration", "nodeID"},
 					KeyColumnDirections: []catenumpb.IndexColumn_Direction{
-						catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC,
+						catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC,
+						catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC,
 					},
-					KeyColumnIDs: []descpb.ColumnID{5, 1, 2, 4},
+					KeyColumnIDs: []descpb.ColumnID{5, 1, 2, 4, 3},
 				},
-			),
-			func(tbl *descpb.TableDescriptor) {
-				tbl.ExcludeDataFromBackup = true
-			},
-		)
+			))
+	}
+	V22_2_LeaseTable = func() SystemTable {
+		return makeSystemTable(
+			LeaseTableSchema,
+			systemTable(
+				catconstants.LeaseTableName,
+				keys.LeaseTableID,
+				[]descpb.ColumnDescriptor{
+					{Name: "descID", ID: 1, Type: types.Int},
+					{Name: "version", ID: 2, Type: types.Int},
+					{Name: "nodeID", ID: 3, Type: types.Int},
+					{Name: "expiration", ID: 4, Type: types.Timestamp},
+				},
+				[]descpb.ColumnFamilyDescriptor{
+					{Name: "primary", ID: 0, ColumnNames: []string{"descID", "version", "nodeID", "expiration"}, ColumnIDs: []descpb.ColumnID{1, 2, 3, 4}},
+				},
+				descpb.IndexDescriptor{
+					Name:                "primary",
+					ID:                  1,
+					Unique:              true,
+					KeyColumnNames:      []string{"descID", "version", "expiration", "nodeID"},
+					KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC},
+					KeyColumnIDs:        []descpb.ColumnID{1, 2, 4, 3},
+				},
+			))
 	}
 
 	uuidV4String = "uuid_v4()"
@@ -1952,7 +1787,6 @@ var (
 				{Name: "reportingID", ID: 4, Type: types.Int},
 				{Name: "info", ID: 5, Type: types.String, Nullable: true},
 				{Name: "uniqueID", ID: 6, Type: types.Bytes, DefaultExpr: &uuidV4String},
-				{Name: "payload", ID: 7, Type: types.Jsonb, Nullable: true},
 			},
 			[]descpb.ColumnFamilyDescriptor{
 				{Name: "primary", ID: 0, ColumnNames: []string{"timestamp", "uniqueID"}, ColumnIDs: []descpb.ColumnID{1, 6}},
@@ -1960,7 +1794,6 @@ var (
 				{Name: "fam_3_targetID", ID: 3, ColumnNames: []string{"targetID"}, ColumnIDs: []descpb.ColumnID{3}, DefaultColumnID: 3},
 				{Name: "fam_4_reportingID", ID: 4, ColumnNames: []string{"reportingID"}, ColumnIDs: []descpb.ColumnID{4}, DefaultColumnID: 4},
 				{Name: "fam_5_info", ID: 5, ColumnNames: []string{"info"}, ColumnIDs: []descpb.ColumnID{5}, DefaultColumnID: 5},
-				{Name: "fam_7_payload", ID: 7, ColumnNames: []string{"payload"}, ColumnIDs: []descpb.ColumnID{7}, DefaultColumnID: 7},
 			},
 			descpb.IndexDescriptor{
 				Name:                "primary",
@@ -1969,15 +1802,6 @@ var (
 				KeyColumnNames:      []string{"timestamp", "uniqueID"},
 				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC},
 				KeyColumnIDs:        []descpb.ColumnID{1, 6},
-			}, descpb.IndexDescriptor{
-				Name:                "event_type_idx",
-				ID:                  2,
-				Unique:              false,
-				KeyColumnNames:      []string{"eventType", "timestamp"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_DESC},
-				KeyColumnIDs:        []descpb.ColumnID{2, 1},
-				KeySuffixColumnIDs:  []descpb.ColumnID{6},
-				Version:             descpb.StrictIndexColumnIDGuaranteesVersion,
 			},
 		))
 
@@ -2047,8 +1871,8 @@ var (
 				{Name: "id", ID: 1, Type: types.Int, DefaultExpr: &uniqueRowIDString},
 				{Name: "status", ID: 2, Type: types.String},
 				{Name: "created", ID: 3, Type: types.Timestamp, DefaultExpr: &nowString},
-				{Name: "dropped_payload", ID: 4, Type: types.Bytes, Nullable: true, Hidden: true},
-				{Name: "dropped_progress", ID: 5, Type: types.Bytes, Nullable: true, Hidden: true},
+				{Name: "payload", ID: 4, Type: types.Bytes, Nullable: true},
+				{Name: "progress", ID: 5, Type: types.Bytes, Nullable: true},
 				{Name: "created_by_type", ID: 6, Type: types.String, Nullable: true},
 				{Name: "created_by_id", ID: 7, Type: types.Int, Nullable: true},
 				{Name: "claim_session_id", ID: 8, Type: types.Bytes, Nullable: true},
@@ -2056,10 +1880,6 @@ var (
 				{Name: "num_runs", ID: 10, Type: types.Int, Nullable: true},
 				{Name: "last_run", ID: 11, Type: types.Timestamp, Nullable: true},
 				{Name: "job_type", ID: 12, Type: types.String, Nullable: true},
-				{Name: "owner", ID: 13, Type: types.String, Nullable: true},
-				{Name: "description", ID: 14, Type: types.String, Nullable: true},
-				{Name: "error_msg", ID: 15, Type: types.String, Nullable: true},
-				{Name: "finished", ID: 16, Type: types.TimestampTZ, Nullable: true},
 			},
 			[]descpb.ColumnFamilyDescriptor{
 				{
@@ -2068,16 +1888,13 @@ var (
 					// that needed to be done.
 					Name:        "fam_0_id_status_created_payload",
 					ID:          0,
-					ColumnNames: []string{"id", "status", "created", "dropped_payload", "created_by_type", "created_by_id", "job_type", "owner", "description", "error_msg", "finished"},
-					ColumnIDs:   []descpb.ColumnID{1, 2, 3, 4, 6, 7, 12, 13, 14, 15, 16},
+					ColumnNames: []string{"id", "status", "created", "payload", "created_by_type", "created_by_id", "job_type"},
+					ColumnIDs:   []descpb.ColumnID{1, 2, 3, 4, 6, 7, 12},
 				},
 				{
-					// NB: We are using family name that existed prior to adding created_by_type,
-					// created_by_id, and job_type columns. This is done to minimize and simplify migration work
-					// that needed to be done.
 					Name:            "progress",
 					ID:              1,
-					ColumnNames:     []string{"dropped_progress"},
+					ColumnNames:     []string{"progress"},
 					ColumnIDs:       []descpb.ColumnID{5},
 					DefaultColumnID: 5,
 				},
@@ -2510,11 +2327,7 @@ var (
 				},
 				KeyColumnIDs: []descpb.ColumnID{1, 2, 3, 4},
 			},
-		),
-		func(tbl *descpb.TableDescriptor) {
-			tbl.ExcludeDataFromBackup = true
-		},
-	)
+		))
 
 	// TODO(andrei): In 20.1 we should add a foreign key reference to the
 	// reports_meta table. Until then, it would cost us having to create an index
@@ -2599,11 +2412,7 @@ var (
 				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC},
 				KeyColumnIDs:        []descpb.ColumnID{1, 2},
 			},
-		),
-		func(tbl *descpb.TableDescriptor) {
-			tbl.ExcludeDataFromBackup = true
-		},
-	)
+		))
 
 	ProtectedTimestampsMetaTable = makeSystemTable(
 		ProtectedTimestampsMetaTableSchema,
@@ -2747,8 +2556,6 @@ var (
 			pk("id"),
 		))
 
-	emptyString = "'':::STRING"
-
 	// TODO(andrei): Add a foreign key reference to the statement_diagnostics table when
 	// it no longer requires us to create an index on statement_diagnostics_id.
 	StatementDiagnosticsRequestsTable = makeSystemTable(
@@ -2767,14 +2574,12 @@ var (
 				{Name: "sampling_probability", ID: 8, Type: types.Float, Nullable: true},
 				{Name: "plan_gist", ID: 9, Type: types.String, Nullable: true},
 				{Name: "anti_plan_gist", ID: 10, Type: types.Bool, Nullable: true},
-				{Name: "redacted", ID: 11, Type: types.Bool, Nullable: false, DefaultExpr: &falseBoolString},
-				{Name: "username", ID: 12, Type: types.String, Nullable: false, DefaultExpr: &emptyString},
 			},
 			[]descpb.ColumnFamilyDescriptor{
 				{
 					Name:        "primary",
-					ColumnNames: []string{"id", "completed", "statement_fingerprint", "statement_diagnostics_id", "requested_at", "min_execution_latency", "expires_at", "sampling_probability", "plan_gist", "anti_plan_gist", "redacted", "username"},
-					ColumnIDs:   []descpb.ColumnID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
+					ColumnNames: []string{"id", "completed", "statement_fingerprint", "statement_diagnostics_id", "requested_at", "min_execution_latency", "expires_at", "sampling_probability", "plan_gist", "anti_plan_gist"},
+					ColumnIDs:   []descpb.ColumnID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
 				},
 			},
 			pk("id"),
@@ -2784,10 +2589,10 @@ var (
 				ID:                  2,
 				Unique:              false,
 				KeyColumnNames:      []string{"completed", "id"},
-				StoreColumnNames:    []string{"statement_fingerprint", "min_execution_latency", "expires_at", "sampling_probability", "plan_gist", "anti_plan_gist", "redacted", "username"},
+				StoreColumnNames:    []string{"statement_fingerprint", "min_execution_latency", "expires_at", "sampling_probability", "plan_gist", "anti_plan_gist"},
 				KeyColumnIDs:        []descpb.ColumnID{2, 1},
 				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC},
-				StoreColumnIDs:      []descpb.ColumnID{3, 6, 7, 8, 9, 10, 11, 12},
+				StoreColumnIDs:      []descpb.ColumnID{3, 6, 7, 8, 9, 10},
 				Version:             descpb.StrictIndexColumnIDGuaranteesVersion,
 			},
 		),
@@ -3103,7 +2908,7 @@ var (
 				KeyColumnIDs:        []descpb.ColumnID{13},
 				KeySuffixColumnIDs:  []descpb.ColumnID{11, 1, 2, 3, 4, 5, 6},
 				Version:             descpb.StrictIndexColumnIDGuaranteesVersion,
-				Type:                idxtype.INVERTED,
+				Type:                descpb.IndexDescriptor_INVERTED,
 				InvertedColumnKinds: []catpb.InvertedIndexColumnKind{catpb.InvertedIndexColumnKind_DEFAULT},
 			},
 			descpb.IndexDescriptor{
@@ -3892,8 +3697,6 @@ var (
 				{Name: "instance_lease", ID: 10, Type: types.Bytes, Nullable: true},
 				{Name: "instance_seq", ID: 11, Type: types.Int, Nullable: true},
 				{Name: "instance_shares", ID: 12, Type: types.Float, Nullable: true},
-				{Name: "current_rates", ID: 13, Type: types.Bytes, Nullable: true},
-				{Name: "next_rates", ID: 14, Type: types.Bytes, Nullable: true},
 			},
 			[]descpb.ColumnFamilyDescriptor{
 				{
@@ -3904,9 +3707,8 @@ var (
 						"ru_burst_limit", "ru_refill_rate", "ru_current", "current_share_sum",
 						"total_consumption",
 						"instance_lease", "instance_seq", "instance_shares",
-						"current_rates", "next_rates",
 					},
-					ColumnIDs:       []descpb.ColumnID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+					ColumnIDs:       []descpb.ColumnID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
 					DefaultColumnID: 0,
 				},
 			},
@@ -3922,11 +3724,7 @@ var (
 				KeyColumnIDs: []descpb.ColumnID{1, 2},
 				Version:      descpb.StrictIndexColumnIDGuaranteesVersion,
 			},
-		),
-		func(tbl *descpb.TableDescriptor) {
-			tbl.ExcludeDataFromBackup = true
-		},
-	)
+		))
 
 	// SQLInstancesTable is the descriptor for the sqlinstances table. It
 	// stores information about all the SQL instances for a tenant and their
@@ -3948,14 +3746,13 @@ var (
 					{Name: "sql_addr", ID: 5, Type: types.String, Nullable: true},
 					{Name: "crdb_region", ID: 6, Type: types.Bytes, Nullable: false},
 					{Name: "binary_version", ID: 7, Type: types.String, Nullable: true},
-					{Name: "is_draining", ID: 8, Type: types.Bool, Nullable: true},
 				},
 				[]descpb.ColumnFamilyDescriptor{
 					{
 						Name:            "primary",
 						ID:              0,
-						ColumnNames:     []string{"id", "addr", "session_id", "locality", "sql_addr", "crdb_region", "binary_version", "is_draining"},
-						ColumnIDs:       []descpb.ColumnID{1, 2, 3, 4, 5, 6, 7, 8},
+						ColumnNames:     []string{"id", "addr", "session_id", "locality", "sql_addr", "crdb_region", "binary_version"},
+						ColumnIDs:       []descpb.ColumnID{1, 2, 3, 4, 5, 6, 7},
 						DefaultColumnID: 0,
 					},
 				},
@@ -4007,9 +3804,6 @@ var (
 				ConstraintID: tbl.NextConstraintID,
 			}}
 			tbl.NextConstraintID++
-		},
-		func(tbl *descpb.TableDescriptor) {
-			tbl.ExcludeDataFromBackup = true
 		},
 	)
 
@@ -4234,126 +4028,6 @@ var (
 			}),
 	)
 
-	// SystemJobProgressTable is described in comment on JobProgressTableSchema.
-	SystemJobProgressTable = makeSystemTable(
-		JobProgressTableSchema,
-		systemTable(
-			catconstants.JobsProgressTableName,
-			descpb.InvalidID, // dynamically assigned
-			[]descpb.ColumnDescriptor{
-				{Name: "job_id", ID: 1, Type: types.Int},
-				{Name: "written", ID: 2, Type: types.TimestampTZ, DefaultExpr: &nowTZString},
-				{Name: "fraction", ID: 3, Type: types.Float, Nullable: true},
-				{Name: "resolved", ID: 4, Type: types.Decimal, Nullable: true},
-			},
-			[]descpb.ColumnFamilyDescriptor{
-				{
-					Name:        "primary",
-					ID:          0,
-					ColumnNames: []string{"job_id", "written", "fraction", "resolved"},
-					ColumnIDs:   []descpb.ColumnID{1, 2, 3, 4},
-				},
-			},
-			descpb.IndexDescriptor{
-				Name:                "primary",
-				ID:                  1,
-				Unique:              true,
-				KeyColumnNames:      []string{"job_id", "written"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_DESC},
-				KeyColumnIDs:        []descpb.ColumnID{1, 2},
-			}),
-	)
-
-	// SystemJobProgressHistoryTable is described in comment on JobProgressHistoryTableSchema.
-	SystemJobProgressHistoryTable = makeSystemTable(
-		JobProgressHistoryTableSchema,
-		systemTable(
-			catconstants.JobsProgressHistoryTableName,
-			descpb.InvalidID, // dynamically assigned
-			[]descpb.ColumnDescriptor{
-				{Name: "job_id", ID: 1, Type: types.Int},
-				{Name: "written", ID: 2, Type: types.TimestampTZ, DefaultExpr: &nowTZString},
-				{Name: "fraction", ID: 3, Type: types.Float, Nullable: true},
-				{Name: "resolved", ID: 4, Type: types.Decimal, Nullable: true},
-			},
-			[]descpb.ColumnFamilyDescriptor{
-				{
-					Name:        "primary",
-					ID:          0,
-					ColumnNames: []string{"job_id", "written", "fraction", "resolved"},
-					ColumnIDs:   []descpb.ColumnID{1, 2, 3, 4},
-				},
-			},
-			descpb.IndexDescriptor{
-				Name:                "primary",
-				ID:                  1,
-				Unique:              true,
-				KeyColumnNames:      []string{"job_id", "written"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_DESC},
-				KeyColumnIDs:        []descpb.ColumnID{1, 2},
-			}),
-	)
-
-	// SystemJobStatusTable is described in comment on JobStatusTableSchema.
-	SystemJobStatusTable = makeSystemTable(
-		JobStatusTableSchema,
-		systemTable(
-			catconstants.JobsStatusTableName,
-			descpb.InvalidID, // dynamically assigned
-			[]descpb.ColumnDescriptor{
-				{Name: "job_id", ID: 1, Type: types.Int},
-				{Name: "written", ID: 2, Type: types.TimestampTZ, DefaultExpr: &nowTZString},
-				{Name: "status", ID: 3, Type: types.String},
-			},
-			[]descpb.ColumnFamilyDescriptor{
-				{
-					Name:            "primary",
-					ID:              0,
-					ColumnNames:     []string{"job_id", "written", "status"},
-					ColumnIDs:       []descpb.ColumnID{1, 2, 3},
-					DefaultColumnID: 3,
-				},
-			},
-			descpb.IndexDescriptor{
-				Name:                "primary",
-				ID:                  1,
-				Unique:              true,
-				KeyColumnNames:      []string{"job_id", "written"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_DESC},
-				KeyColumnIDs:        []descpb.ColumnID{1, 2},
-			}),
-	)
-
-	SystemJobMessageTable = makeSystemTable(
-		JobMessageTableSchema,
-		systemTable(
-			catconstants.JobsMessageTableName,
-			descpb.InvalidID, // dynamically assigned
-			[]descpb.ColumnDescriptor{
-				{Name: "job_id", ID: 1, Type: types.Int},
-				{Name: "written", ID: 2, Type: types.TimestampTZ, DefaultExpr: &nowTZString},
-				{Name: "kind", ID: 3, Type: types.String},
-				{Name: "message", ID: 4, Type: types.String},
-			},
-			[]descpb.ColumnFamilyDescriptor{
-				{
-					Name:            "primary",
-					ID:              0,
-					ColumnNames:     []string{"job_id", "written", "kind", "message"},
-					ColumnIDs:       []descpb.ColumnID{1, 2, 3, 4},
-					DefaultColumnID: 4,
-				},
-			},
-			descpb.IndexDescriptor{
-				Name:                "primary",
-				ID:                  1,
-				Unique:              true,
-				KeyColumnNames:      []string{"job_id", "written", "kind"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_DESC, catenumpb.IndexColumn_ASC},
-				KeyColumnIDs:        []descpb.ColumnID{1, 2, 3},
-			}),
-	)
-
 	SystemJobInfoTable = makeSystemTable(
 		SystemJobInfoTableSchema,
 		systemTable(
@@ -4512,7 +4186,8 @@ var (
 		),
 	)
 
-	SpanStatsTenantBoundariesTable = makeSystemTable(
+	SpanStatsTenantBoundariesTableTTL = 60 * time.Minute
+	SpanStatsTenantBoundariesTable    = makeSystemTable(
 		SpanStatsTenantBoundariesTableSchema,
 		systemTable(
 			catconstants.SpanStatsTenantBoundaries,
@@ -4962,251 +4637,6 @@ var (
 			}}
 			tbl.NextConstraintID++
 		},
-	)
-
-	crdbInternalTableIdLastUpdatedShardStr = crdbInternalTableIdLastUpdatedShard
-
-	TableMetadata = makeSystemTable(
-		TableMetadataTableSchema,
-		systemTable(catconstants.TableMetadata,
-			descpb.InvalidID, // dynamically assigned table ID
-			[]descpb.ColumnDescriptor{
-				{Name: "db_id", ID: 1, Type: types.Int, Nullable: false},
-				{Name: "table_id", ID: 2, Type: types.Int, Nullable: false},
-				{Name: "db_name", ID: 3, Type: types.String, Nullable: false},
-				{Name: "schema_name", ID: 4, Type: types.String, Nullable: false},
-				{Name: "table_name", ID: 5, Type: types.String, Nullable: false},
-				{Name: "total_columns", ID: 6, Type: types.Int, Nullable: false},
-				{Name: "total_indexes", ID: 7, Type: types.Int, Nullable: false},
-				{Name: "store_ids", ID: 8, Type: types.IntArray, Nullable: false},
-				{Name: "replication_size_bytes", ID: 9, Type: types.Int, Nullable: false},
-				{Name: "total_ranges", ID: 10, Type: types.Int, Nullable: false},
-				{Name: "total_live_data_bytes", ID: 11, Type: types.Int, Nullable: false},
-				{Name: "total_data_bytes", ID: 12, Type: types.Int, Nullable: false},
-				{Name: "perc_live_data", ID: 13, Type: types.Float, Nullable: false},
-				{Name: "last_update_error", ID: 14, Type: types.String, Nullable: true},
-				{Name: "last_updated", ID: 15, Type: types.TimestampTZ, Nullable: false, DefaultExpr: &nowTZString},
-				{Name: "table_type", ID: 16, Type: types.String, Nullable: false},
-				{Name: "details", ID: 17, Type: types.Jsonb, Nullable: false},
-				{
-					Name:        "crdb_internal_last_updated_table_id_shard_16",
-					ID:          18,
-					Type:        types.Int4,
-					Nullable:    false,
-					ComputeExpr: &crdbInternalTableIdLastUpdatedShardStr,
-					Hidden:      true,
-					Virtual:     true,
-				},
-			},
-			[]descpb.ColumnFamilyDescriptor{
-				{
-					Name: "primary",
-					ID:   0,
-					ColumnNames: []string{
-						"db_id",
-						"table_id",
-						"db_name",
-						"schema_name",
-						"table_name",
-						"total_columns",
-						"total_indexes",
-						"store_ids",
-						"replication_size_bytes",
-						"total_ranges",
-						"total_live_data_bytes",
-						"total_data_bytes",
-						"perc_live_data",
-						"last_update_error",
-						"last_updated",
-						"table_type",
-						"details",
-					},
-					ColumnIDs: []descpb.ColumnID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17},
-				},
-			},
-			descpb.IndexDescriptor{
-				Name:           tabledesc.LegacyPrimaryKeyIndexName,
-				ID:             1,
-				Unique:         true,
-				Version:        descpb.StrictIndexColumnIDGuaranteesVersion,
-				KeyColumnNames: []string{"db_id", "table_id"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{
-					catenumpb.IndexColumn_ASC,
-					catenumpb.IndexColumn_ASC,
-				},
-				KeyColumnIDs: []descpb.ColumnID{1, 2},
-			},
-			descpb.IndexDescriptor{
-				Name:           "replication_size_bytes_table_id_idx",
-				ID:             2,
-				Unique:         false,
-				Version:        descpb.StrictIndexColumnIDGuaranteesVersion,
-				KeyColumnNames: []string{"replication_size_bytes", "table_id"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{
-					catenumpb.IndexColumn_DESC,
-					catenumpb.IndexColumn_ASC,
-				},
-				KeyColumnIDs:       []descpb.ColumnID{9, 2},
-				KeySuffixColumnIDs: []descpb.ColumnID{1},
-			},
-			descpb.IndexDescriptor{
-				Name:           "total_ranges_table_id_idx",
-				ID:             3,
-				Unique:         false,
-				Version:        descpb.StrictIndexColumnIDGuaranteesVersion,
-				KeyColumnNames: []string{"total_ranges", "table_id"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{
-					catenumpb.IndexColumn_DESC,
-					catenumpb.IndexColumn_ASC,
-				},
-				KeyColumnIDs:       []descpb.ColumnID{10, 2},
-				KeySuffixColumnIDs: []descpb.ColumnID{1},
-			},
-			descpb.IndexDescriptor{
-				Name:           "total_columns_table_id_idx",
-				ID:             4,
-				Unique:         false,
-				Version:        descpb.StrictIndexColumnIDGuaranteesVersion,
-				KeyColumnNames: []string{"total_columns", "table_id"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{
-					catenumpb.IndexColumn_DESC,
-					catenumpb.IndexColumn_ASC,
-				},
-				KeyColumnIDs:       []descpb.ColumnID{6, 2},
-				KeySuffixColumnIDs: []descpb.ColumnID{1},
-			},
-			descpb.IndexDescriptor{
-				Name:           "total_indexes_table_id_idx",
-				ID:             5,
-				Unique:         false,
-				Version:        descpb.StrictIndexColumnIDGuaranteesVersion,
-				KeyColumnNames: []string{"total_indexes", "table_id"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{
-					catenumpb.IndexColumn_DESC,
-					catenumpb.IndexColumn_ASC,
-				},
-				KeyColumnIDs:       []descpb.ColumnID{7, 2},
-				KeySuffixColumnIDs: []descpb.ColumnID{1},
-			},
-			descpb.IndexDescriptor{
-				Name:           "perc_live_data_id_idx",
-				ID:             6,
-				Unique:         false,
-				Version:        descpb.StrictIndexColumnIDGuaranteesVersion,
-				KeyColumnNames: []string{"perc_live_data", "table_id"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{
-					catenumpb.IndexColumn_DESC,
-					catenumpb.IndexColumn_ASC,
-				},
-				KeyColumnIDs:       []descpb.ColumnID{13, 2},
-				KeySuffixColumnIDs: []descpb.ColumnID{1},
-				CompositeColumnIDs: []descpb.ColumnID{13},
-			},
-			descpb.IndexDescriptor{
-				Name:           "last_updated_idx",
-				ID:             7,
-				Unique:         false,
-				Version:        descpb.StrictIndexColumnIDGuaranteesVersion,
-				KeyColumnNames: []string{"crdb_internal_last_updated_table_id_shard_16", "last_updated", "table_id"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{
-					catenumpb.IndexColumn_ASC,
-					catenumpb.IndexColumn_DESC,
-					catenumpb.IndexColumn_ASC,
-				},
-				KeyColumnIDs:       []descpb.ColumnID{18, 15, 2},
-				KeySuffixColumnIDs: []descpb.ColumnID{1},
-				Sharded: catpb.ShardedDescriptor{
-					IsSharded:    true,
-					Name:         "crdb_internal_last_updated_table_id_shard_16",
-					ShardBuckets: 16, // Cluster setting default.
-					ColumnNames:  []string{"last_updated", "table_id"},
-				},
-			},
-			descpb.IndexDescriptor{
-				Name:                "db_name_gin",
-				Type:                idxtype.INVERTED,
-				ID:                  8,
-				Unique:              false,
-				Version:             descpb.StrictIndexColumnIDGuaranteesVersion,
-				KeyColumnNames:      []string{"db_name"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC},
-				InvertedColumnKinds: []catpb.InvertedIndexColumnKind{catpb.InvertedIndexColumnKind_TRIGRAM},
-				KeyColumnIDs:        []descpb.ColumnID{3},
-				KeySuffixColumnIDs:  []descpb.ColumnID{1, 2},
-			},
-			descpb.IndexDescriptor{
-				Name:                "table_name_gin",
-				Type:                idxtype.INVERTED,
-				ID:                  9,
-				Unique:              false,
-				Version:             descpb.StrictIndexColumnIDGuaranteesVersion,
-				KeyColumnNames:      []string{"table_name"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC},
-				InvertedColumnKinds: []catpb.InvertedIndexColumnKind{catpb.InvertedIndexColumnKind_TRIGRAM},
-				KeyColumnIDs:        []descpb.ColumnID{5},
-				KeySuffixColumnIDs:  []descpb.ColumnID{1, 2},
-			},
-			descpb.IndexDescriptor{
-				Name:                "schema_name_gin",
-				Type:                idxtype.INVERTED,
-				ID:                  10,
-				Unique:              false,
-				Version:             descpb.StrictIndexColumnIDGuaranteesVersion,
-				KeyColumnNames:      []string{"schema_name"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC},
-				InvertedColumnKinds: []catpb.InvertedIndexColumnKind{catpb.InvertedIndexColumnKind_TRIGRAM},
-				KeyColumnIDs:        []descpb.ColumnID{4},
-				KeySuffixColumnIDs:  []descpb.ColumnID{1, 2},
-			},
-			descpb.IndexDescriptor{
-				Name:                "store_ids_gin",
-				Type:                idxtype.INVERTED,
-				ID:                  11,
-				Unique:              false,
-				Version:             descpb.StrictIndexColumnIDGuaranteesVersion,
-				KeyColumnNames:      []string{"store_ids"},
-				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC},
-				InvertedColumnKinds: []catpb.InvertedIndexColumnKind{catpb.InvertedIndexColumnKind_DEFAULT},
-				KeyColumnIDs:        []descpb.ColumnID{8},
-				KeySuffixColumnIDs:  []descpb.ColumnID{1, 2},
-			},
-		), func(tbl *descpb.TableDescriptor) {
-			tbl.Checks = []*descpb.TableDescriptor_CheckConstraint{{
-				Expr:                  "crdb_internal_last_updated_table_id_shard_16 IN (0:::INT8, 1:::INT8, 2:::INT8, 3:::INT8, 4:::INT8, 5:::INT8, 6:::INT8, 7:::INT8, 8:::INT8, 9:::INT8, 10:::INT8, 11:::INT8, 12:::INT8, 13:::INT8, 14:::INT8, 15:::INT8)",
-				Name:                  "check_crdb_internal_last_updated_table_id_shard_16",
-				Validity:              descpb.ConstraintValidity_Validated,
-				ColumnIDs:             []descpb.ColumnID{18},
-				IsNonNullConstraint:   false,
-				FromHashShardedColumn: true,
-				ConstraintID:          tbl.NextConstraintID,
-			}}
-			tbl.NextConstraintID++
-		},
-	)
-
-	PreparedTransactionsTable = makeSystemTable(
-		PreparedTransactionsTableSchema,
-		systemTable(
-			catconstants.PreparedTransactionsTableName,
-			descpb.InvalidID, // dynamically assigned table ID
-			[]descpb.ColumnDescriptor{
-				{Name: "global_id", ID: 1, Type: types.String},
-				{Name: "transaction_id", ID: 2, Type: types.Uuid},
-				{Name: "transaction_key", ID: 3, Type: types.Bytes, Nullable: true},
-				{Name: "prepared", ID: 4, Type: types.TimestampTZ, DefaultExpr: &nowTZString},
-				{Name: "owner", ID: 5, Type: types.String},
-				{Name: "database", ID: 6, Type: types.String},
-				{Name: "heuristic", ID: 7, Type: types.String, Nullable: true},
-			},
-			[]descpb.ColumnFamilyDescriptor{
-				{
-					Name:        "primary",
-					ColumnNames: []string{"global_id", "transaction_id", "transaction_key", "prepared", "owner", "database", "heuristic"},
-					ColumnIDs:   []descpb.ColumnID{1, 2, 3, 4, 5, 6, 7},
-				},
-			},
-			pk("global_id"),
-		),
 	)
 )
 

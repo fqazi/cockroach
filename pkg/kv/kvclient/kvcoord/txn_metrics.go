@@ -17,11 +17,9 @@ type TxnMetrics struct {
 	Aborts                    *metric.Counter
 	Commits                   *metric.Counter
 	Commits1PC                *metric.Counter // Commits which finished in a single phase
-	CommitsReadOnly           *metric.Counter // Commits which finished without acquiring locks
 	ParallelCommits           *metric.Counter // Commits which entered the STAGING state
 	ParallelCommitAutoRetries *metric.Counter // Commits which were retried after entering the STAGING state
 	CommitWaits               *metric.Counter // Commits that waited for linearizability
-	Prepares                  *metric.Counter
 
 	ClientRefreshSuccess                *metric.Counter
 	ClientRefreshFail                   *metric.Counter
@@ -32,18 +30,16 @@ type TxnMetrics struct {
 
 	Durations metric.IHistogram
 
-	TxnsWithCondensedIntents            *metric.Counter
-	TxnsWithCondensedIntentsGauge       *metric.Gauge
-	TxnsRejectedByLockSpanBudget        *metric.Counter
-	TxnsRejectedByCountLimit            *metric.Counter
-	TxnsResponseOverCountLimit          *metric.Counter
-	TxnsInFlightLocksOverTrackingBudget *metric.Counter
+	TxnsWithCondensedIntents      *metric.Counter
+	TxnsWithCondensedIntentsGauge *metric.Gauge
+	TxnsRejectedByLockSpanBudget  *metric.Counter
 
 	// Restarts is the number of times we had to restart the transaction.
 	Restarts metric.IHistogram
 
 	// Counts of restart types.
 	RestartsWriteTooOld            telemetry.CounterWithMetric
+	RestartsWriteTooOldMulti       telemetry.CounterWithMetric
 	RestartsSerializable           telemetry.CounterWithMetric
 	RestartsAsyncWriteFailure      telemetry.CounterWithMetric
 	RestartsCommitDeadlineExceeded telemetry.CounterWithMetric
@@ -55,12 +51,6 @@ type TxnMetrics struct {
 	// End transaction failure counters.
 	RollbacksFailed      *metric.Counter
 	AsyncRollbacksFailed *metric.Counter
-
-	// Write buffering metrics.
-	TxnWriteBufferEnabled                *metric.Counter
-	TxnWriteBufferDisabledAfterBuffering *metric.Counter
-	TxnWriteBufferMemoryLimitExceeded    *metric.Counter
-	TxnWriteBufferFullyHandledBatches    *metric.Counter
 }
 
 var (
@@ -78,19 +68,13 @@ var (
 	}
 	metaCommits1PCRates = metric.Metadata{
 		Name:        "txn.commits1PC",
-		Help:        "Number of KV transaction one-phase commits",
-		Measurement: "KV Transactions",
-		Unit:        metric.Unit_COUNT,
-	}
-	metaCommitsReadOnly = metric.Metadata{
-		Name:        "txn.commits_read_only",
-		Help:        "Number of read only KV transaction commits",
+		Help:        "Number of KV transaction one-phase commit attempts",
 		Measurement: "KV Transactions",
 		Unit:        metric.Unit_COUNT,
 	}
 	metaParallelCommitsRates = metric.Metadata{
 		Name:        "txn.parallelcommits",
-		Help:        "Number of KV transaction parallel commits",
+		Help:        "Number of KV transaction parallel commit attempts",
 		Measurement: "KV Transactions",
 		Unit:        metric.Unit_COUNT,
 	}
@@ -105,12 +89,6 @@ var (
 		Help: "Number of KV transactions that had to commit-wait on commit " +
 			"in order to ensure linearizability. This generally happens to " +
 			"transactions writing to global ranges.",
-		Measurement: "KV Transactions",
-		Unit:        metric.Unit_COUNT,
-	}
-	metaPreparesRates = metric.Metadata{
-		Name:        "txn.prepares",
-		Help:        "Number of prepared KV transactions",
 		Measurement: "KV Transactions",
 		Unit:        metric.Unit_COUNT,
 	}
@@ -189,25 +167,6 @@ var (
 		Measurement: "KV Transactions",
 		Unit:        metric.Unit_COUNT,
 	}
-	metaTxnsRejectedByCountLimit = metric.Metadata{
-		Name:        "txn.count_limit_rejected",
-		Help:        "KV transactions that have been aborted because they exceeded the max number of writes and locking reads allowed",
-		Measurement: "KV Transactions",
-		Unit:        metric.Unit_COUNT,
-	}
-	metaTxnsResponseOverCountLimit = metric.Metadata{
-		Name:        "txn.count_limit_on_response",
-		Help:        "KV transactions that have exceeded the count limit on a response",
-		Measurement: "KV Transactions",
-		Unit:        metric.Unit_COUNT,
-	}
-	metaTxnsInflightLocksOverTrackingBudget = metric.Metadata{
-		Name: "txn.inflight_locks_over_tracking_budget",
-		Help: "KV transactions whose in-flight writes and locking reads have exceeded " +
-			"the intent tracking memory budget (kv.transaction.max_intents_bytes).",
-		Measurement: "KV Transactions",
-		Unit:        metric.Unit_COUNT,
-	}
 
 	metaRestartsHistogram = metric.Metadata{
 		Name:        "txn.restarts",
@@ -222,23 +181,31 @@ var (
 	// the WriteTooOld flag is set on the Transaction, which causes EndTxn to
 	// return a/ TransactionRetryError with RETRY_WRITE_TOO_OLD. These are
 	// captured as txn.restarts.writetooold.
+	//
+	// If the Store's retried operation generates a second WriteTooOldError
+	// (indicating a conflict with a third transaction with a higher timestamp
+	// than the one that caused the first WriteTooOldError), the store doesn't
+	// retry again, and the WriteTooOldError will be returned up the stack to be
+	// retried at this level. These are captured as
+	// txn.restarts.writetoooldmulti. This path is inefficient, and if it turns
+	// out to be common we may want to do something about it.
 	metaRestartsWriteTooOld = metric.Metadata{
 		Name:        "txn.restarts.writetooold",
 		Help:        "Number of restarts due to a concurrent writer committing first",
 		Measurement: "Restarted Transactions",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_SQL,
-		HowToUse:    "This metric is one measure of the impact of contention conflicts on workload performance. For guidance on contention conflicts, review transaction contention best practices and performance tuning recipes. Tens of restarts per minute may be a high value, a signal of an elevated degree of contention in the workload, which should be investigated.",
+	}
+	metaRestartsWriteTooOldMulti = metric.Metadata{
+		Name:        "txn.restarts.writetoooldmulti",
+		Help:        "Number of restarts due to multiple concurrent writers committing first",
+		Measurement: "Restarted Transactions",
+		Unit:        metric.Unit_COUNT,
 	}
 	metaRestartsSerializable = metric.Metadata{
 		Name:        "txn.restarts.serializable",
 		Help:        "Number of restarts due to a forwarded commit timestamp and isolation=SERIALIZABLE",
 		Measurement: "Restarted Transactions",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_SQL,
-		HowToUse:    "This metric is one measure of the impact of contention conflicts on workload performance. For guidance on contention conflicts, review transaction contention best practices and performance tuning recipes. Tens of restarts per minute may be a high value, a signal of an elevated degree of contention in the workload, which should be investigated.",
 	}
 	metaRestartsAsyncWriteFailure = metric.Metadata{
 		Name:        "txn.restarts.asyncwritefailure",
@@ -263,9 +230,6 @@ var (
 		Help:        "Number of restarts due to an abort by a concurrent transaction (usually due to deadlock)",
 		Measurement: "Restarted Transactions",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_SQL,
-		HowToUse:    "The errors tracked by this metric are generally due to deadlocks. Deadlocks can often be prevented with a considered transaction design. Identify the conflicting transactions involved in the deadlocks, then, if possible, redesign the business logic implementation prone to deadlocks.",
 	}
 	// TransactionPushErrors at this level are unusual. They are
 	// normally handled at the Store level with the txnwait and
@@ -278,53 +242,23 @@ var (
 		Help:        "Number of restarts due to a transaction push failure",
 		Measurement: "Restarted Transactions",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_SQL,
-		HowToUse:    "This metric is one measure of the impact of contention conflicts on workload performance. For guidance on contention conflicts, review transaction contention best practices and performance tuning recipes. Tens of restarts per minute may be a high value, a signal of an elevated degree of contention in the workload, which should be investigated.",
 	}
 	metaRestartsUnknown = metric.Metadata{
 		Name:        "txn.restarts.unknown",
 		Help:        "Number of restarts due to a unknown reasons",
 		Measurement: "Restarted Transactions",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_SQL,
-		HowToUse:    "This metric is one measure of the impact of contention conflicts on workload performance. For guidance on contention conflicts, review transaction contention best practices and performance tuning recipes. Tens of restarts per minute may be a high value, a signal of an elevated degree of contention in the workload, which should be investigated.",
 	}
 	metaRollbacksFailed = metric.Metadata{
 		Name:        "txn.rollbacks.failed",
-		Help:        "Number of KV transactions that failed to send final abort",
+		Help:        "Number of KV transaction that failed to send final abort",
 		Measurement: "KV Transactions",
 		Unit:        metric.Unit_COUNT,
 	}
 	metaAsyncRollbacksFailed = metric.Metadata{
 		Name:        "txn.rollbacks.async.failed",
-		Help:        "Number of KV transactions that failed to send abort asynchronously which is not always retried",
+		Help:        "Number of KV transaction that failed to send abort asynchronously which is not always retried",
 		Measurement: "KV Transactions",
-		Unit:        metric.Unit_COUNT,
-	}
-	metaTxnWriteBufferEnabled = metric.Metadata{
-		Name:        "txn.write_buffering.num_enabled",
-		Help:        "Number of KV transactions that enabled buffered writes",
-		Measurement: "KV Transactions",
-		Unit:        metric.Unit_COUNT,
-	}
-	metaTxnWriteBufferDisabledAfterBuffering = metric.Metadata{
-		Name:        "txn.write_buffering.disabled_after_buffering",
-		Help:        "Number of KV transactions that disabled write buffering after buffering some writes but before an EndTxn request",
-		Measurement: "KV Transactions",
-		Unit:        metric.Unit_COUNT,
-	}
-	metaTxnWriteBufferLimitExceeded = metric.Metadata{
-		Name:        "txn.write_buffering.memory_limit_exceeded",
-		Help:        "Number of KV transactions that exceeded the write buffering memory limit",
-		Measurement: "KV Transactions",
-		Unit:        metric.Unit_COUNT,
-	}
-	metaTxnWriteBufferFullyHandledBatches = metric.Metadata{
-		Name:        "txn.write_buffering.batches.fully_handled",
-		Help:        "Number of KV batches that were fully handled by the write buffer (not sent to KV)",
-		Measurement: "KV Batches",
 		Unit:        metric.Unit_COUNT,
 	}
 )
@@ -336,11 +270,9 @@ func MakeTxnMetrics(histogramWindow time.Duration) TxnMetrics {
 		Aborts:                              metric.NewCounter(metaAbortsRates),
 		Commits:                             metric.NewCounter(metaCommitsRates),
 		Commits1PC:                          metric.NewCounter(metaCommits1PCRates),
-		CommitsReadOnly:                     metric.NewCounter(metaCommitsReadOnly),
 		ParallelCommits:                     metric.NewCounter(metaParallelCommitsRates),
 		ParallelCommitAutoRetries:           metric.NewCounter(metaParallelCommitAutoRetries),
 		CommitWaits:                         metric.NewCounter(metaCommitWaitCount),
-		Prepares:                            metric.NewCounter(metaPreparesRates),
 		ClientRefreshSuccess:                metric.NewCounter(metaClientRefreshSuccess),
 		ClientRefreshFail:                   metric.NewCounter(metaClientRefreshFail),
 		ClientRefreshFailWithCondensedSpans: metric.NewCounter(metaClientRefreshFailWithCondensedSpans),
@@ -353,12 +285,9 @@ func MakeTxnMetrics(histogramWindow time.Duration) TxnMetrics {
 			Duration:     histogramWindow,
 			BucketConfig: metric.IOLatencyBuckets,
 		}),
-		TxnsWithCondensedIntents:            metric.NewCounter(metaTxnsWithCondensedIntentSpans),
-		TxnsWithCondensedIntentsGauge:       metric.NewGauge(metaTxnsWithCondensedIntentSpansGauge),
-		TxnsRejectedByLockSpanBudget:        metric.NewCounter(metaTxnsRejectedByLockSpanBudget),
-		TxnsRejectedByCountLimit:            metric.NewCounter(metaTxnsRejectedByCountLimit),
-		TxnsResponseOverCountLimit:          metric.NewCounter(metaTxnsResponseOverCountLimit),
-		TxnsInFlightLocksOverTrackingBudget: metric.NewCounter(metaTxnsInflightLocksOverTrackingBudget),
+		TxnsWithCondensedIntents:      metric.NewCounter(metaTxnsWithCondensedIntentSpans),
+		TxnsWithCondensedIntentsGauge: metric.NewGauge(metaTxnsWithCondensedIntentSpansGauge),
+		TxnsRejectedByLockSpanBudget:  metric.NewCounter(metaTxnsRejectedByLockSpanBudget),
 		Restarts: metric.NewHistogram(metric.HistogramOptions{
 			Metadata:     metaRestartsHistogram,
 			Duration:     histogramWindow,
@@ -366,19 +295,16 @@ func MakeTxnMetrics(histogramWindow time.Duration) TxnMetrics {
 			SigFigs:      3,
 			BucketConfig: metric.Count1KBuckets,
 		}),
-		RestartsWriteTooOld:                  telemetry.NewCounterWithMetric(metaRestartsWriteTooOld),
-		RestartsSerializable:                 telemetry.NewCounterWithMetric(metaRestartsSerializable),
-		RestartsAsyncWriteFailure:            telemetry.NewCounterWithMetric(metaRestartsAsyncWriteFailure),
-		RestartsCommitDeadlineExceeded:       telemetry.NewCounterWithMetric(metaRestartsCommitDeadlineExceeded),
-		RestartsReadWithinUncertainty:        telemetry.NewCounterWithMetric(metaRestartsReadWithinUncertainty),
-		RestartsTxnAborted:                   telemetry.NewCounterWithMetric(metaRestartsTxnAborted),
-		RestartsTxnPush:                      telemetry.NewCounterWithMetric(metaRestartsTxnPush),
-		RestartsUnknown:                      telemetry.NewCounterWithMetric(metaRestartsUnknown),
-		RollbacksFailed:                      metric.NewCounter(metaRollbacksFailed),
-		AsyncRollbacksFailed:                 metric.NewCounter(metaAsyncRollbacksFailed),
-		TxnWriteBufferEnabled:                metric.NewCounter(metaTxnWriteBufferEnabled),
-		TxnWriteBufferDisabledAfterBuffering: metric.NewCounter(metaTxnWriteBufferDisabledAfterBuffering),
-		TxnWriteBufferMemoryLimitExceeded:    metric.NewCounter(metaTxnWriteBufferLimitExceeded),
-		TxnWriteBufferFullyHandledBatches:    metric.NewCounter(metaTxnWriteBufferFullyHandledBatches),
+		RestartsWriteTooOld:            telemetry.NewCounterWithMetric(metaRestartsWriteTooOld),
+		RestartsWriteTooOldMulti:       telemetry.NewCounterWithMetric(metaRestartsWriteTooOldMulti),
+		RestartsSerializable:           telemetry.NewCounterWithMetric(metaRestartsSerializable),
+		RestartsAsyncWriteFailure:      telemetry.NewCounterWithMetric(metaRestartsAsyncWriteFailure),
+		RestartsCommitDeadlineExceeded: telemetry.NewCounterWithMetric(metaRestartsCommitDeadlineExceeded),
+		RestartsReadWithinUncertainty:  telemetry.NewCounterWithMetric(metaRestartsReadWithinUncertainty),
+		RestartsTxnAborted:             telemetry.NewCounterWithMetric(metaRestartsTxnAborted),
+		RestartsTxnPush:                telemetry.NewCounterWithMetric(metaRestartsTxnPush),
+		RestartsUnknown:                telemetry.NewCounterWithMetric(metaRestartsUnknown),
+		RollbacksFailed:                metric.NewCounter(metaRollbacksFailed),
+		AsyncRollbacksFailed:           metric.NewCounter(metaAsyncRollbacksFailed),
 	}
 }

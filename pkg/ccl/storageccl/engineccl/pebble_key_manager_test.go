@@ -17,11 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
+	"github.com/cockroachdb/cockroach/pkg/ccl/storageccl/engineccl/enginepbccl"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/datadriven"
@@ -31,8 +29,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func writeToFile(t *testing.T, vfs vfs.FS, filename string, b []byte) {
-	f, err := vfs.Create(filename, fs.UnspecifiedWriteCategory)
+func writeToFile(t *testing.T, fs vfs.FS, filename string, b []byte) {
+	f, err := fs.Create(filename)
 	require.NoError(t, err)
 	breader := bytes.NewReader(b)
 	_, err = io.Copy(f, breader)
@@ -134,19 +132,19 @@ func TestStoreKeyManager(t *testing.T) {
 
 	kmTimeNow = func() time.Time { return timeutil.Unix(5, 0) }
 
-	keyPlain := &enginepb.SecretKey{}
+	keyPlain := &enginepbccl.SecretKey{}
 	require.NoError(t, proto.UnmarshalText(
 		"info {encryption_type: Plaintext, key_id: \"plain\" creation_time: 5 source: \"plain\"}",
 		keyPlain))
-	key16 := &enginepb.SecretKey{}
+	key16 := &enginepbccl.SecretKey{}
 	require.NoError(t, proto.UnmarshalText(fmt.Sprintf(
 		"info {encryption_type: AES128_CTR, key_id: \"%s\" creation_time: 5 source: \"16.key\"} key: \"%s\"",
 		keyID128, key128), key16))
-	key24 := &enginepb.SecretKey{}
+	key24 := &enginepbccl.SecretKey{}
 	require.NoError(t, proto.UnmarshalText(fmt.Sprintf(
 		"info {encryption_type: AES192_CTR, key_id: \"%s\" creation_time: 5 source: \"24.key\"} key: \"%s\"",
 		keyID192, key192), key24))
-	key32 := &enginepb.SecretKey{}
+	key32 := &enginepbccl.SecretKey{}
 	require.NoError(t, proto.UnmarshalText(fmt.Sprintf(
 		"info {encryption_type: AES256_CTR, key_id: \"%s\" creation_time: 5 source: \"32.key\"} key: \"%s\"",
 		keyID256, key256), key32))
@@ -158,7 +156,7 @@ func TestStoreKeyManager(t *testing.T) {
 	{
 		skm := &StoreKeyManager{fs: memFS, activeKeyFilename: "plain", oldKeyFilename: "plain"}
 		require.NoError(t, skm.Load(context.Background()))
-		key, err := skm.ActiveKeyForWriter(context.Background())
+		key, err := skm.ActiveKey(context.Background())
 		require.NoError(t, err)
 		require.Equal(t, keyPlain.String(), key.String())
 		key, err = skm.GetKey("plain")
@@ -170,7 +168,7 @@ func TestStoreKeyManager(t *testing.T) {
 	{
 		skm := &StoreKeyManager{fs: memFS, activeKeyFilename: "16.key", oldKeyFilename: "24.key"}
 		require.NoError(t, skm.Load(context.Background()))
-		key, err := skm.ActiveKeyForWriter(context.Background())
+		key, err := skm.ActiveKey(context.Background())
 		require.NoError(t, err)
 		require.Equal(t, key16.String(), key.String())
 		key, err = skm.GetKey(keyID128)
@@ -185,7 +183,7 @@ func TestStoreKeyManager(t *testing.T) {
 	{
 		skm := &StoreKeyManager{fs: memFS, activeKeyFilename: "32.key", oldKeyFilename: "plain"}
 		require.NoError(t, skm.Load(context.Background()))
-		key, err := skm.ActiveKeyForWriter(context.Background())
+		key, err := skm.ActiveKey(context.Background())
 		require.NoError(t, err)
 		require.Equal(t, key32.String(), key.String())
 		key, err = skm.GetKey(keyID256)
@@ -197,18 +195,18 @@ func TestStoreKeyManager(t *testing.T) {
 	}
 }
 
-func setActiveStoreKeyInProto(dkr *enginepb.DataKeysRegistry, id string) {
-	dkr.StoreKeys[id] = &enginepb.KeyInfo{
-		EncryptionType: enginepb.EncryptionType_AES128_CTR,
+func setActiveStoreKeyInProto(dkr *enginepbccl.DataKeysRegistry, id string) {
+	dkr.StoreKeys[id] = &enginepbccl.KeyInfo{
+		EncryptionType: enginepbccl.EncryptionType_AES128_CTR,
 		KeyId:          id,
 	}
 	dkr.ActiveStoreKeyId = id
 }
 
-func setActiveDataKeyInProto(dkr *enginepb.DataKeysRegistry, id string) {
-	dkr.DataKeys[id] = &enginepb.SecretKey{
-		Info: &enginepb.KeyInfo{
-			EncryptionType: enginepb.EncryptionType_AES192_CTR,
+func setActiveDataKeyInProto(dkr *enginepbccl.DataKeysRegistry, id string) {
+	dkr.DataKeys[id] = &enginepbccl.SecretKey{
+		Info: &enginepbccl.KeyInfo{
+			EncryptionType: enginepbccl.EncryptionType_AES192_CTR,
 			KeyId:          id,
 			CreationTime:   kmTimeNow().Unix(),
 		},
@@ -217,8 +215,8 @@ func setActiveDataKeyInProto(dkr *enginepb.DataKeysRegistry, id string) {
 	dkr.ActiveDataKeyId = id
 }
 
-func setActiveStoreKey(dkm *DataKeyManager, id string, kind enginepb.EncryptionType) string {
-	err := dkm.SetActiveStoreKeyInfo(context.Background(), &enginepb.KeyInfo{
+func setActiveStoreKey(dkm *DataKeyManager, id string, kind enginepbccl.EncryptionType) string {
+	err := dkm.SetActiveStoreKeyInfo(context.Background(), &enginepbccl.KeyInfo{
 		EncryptionType: kind,
 		KeyId:          id,
 	})
@@ -228,7 +226,7 @@ func setActiveStoreKey(dkm *DataKeyManager, id string, kind enginepb.EncryptionT
 	return ""
 }
 
-func CompareKeys(last, curr *enginepb.SecretKey) string {
+func CompareKeys(last, curr *enginepbccl.SecretKey) string {
 	if (last == nil && curr == nil) || (last != nil && curr == nil) || (last == nil && curr != nil) ||
 		(last.Info.KeyId == curr.Info.KeyId) {
 		return "same\n"
@@ -242,8 +240,8 @@ func TestDataKeyManager(t *testing.T) {
 	memFS := vfs.NewMem()
 
 	var dkm *DataKeyManager
-	var keyMap map[string]*enginepb.SecretKey
-	var lastActiveDataKey *enginepb.SecretKey
+	var keyMap map[string]*enginepbccl.SecretKey
+	var lastActiveDataKey *enginepbccl.SecretKey
 
 	var unixTime int64
 	kmTimeNow = func() time.Time {
@@ -264,13 +262,13 @@ func TestDataKeyManager(t *testing.T) {
 				if err != nil {
 					return err.Error()
 				}
-				keyMap = make(map[string]*enginepb.SecretKey)
+				keyMap = make(map[string]*enginepbccl.SecretKey)
 				lastActiveDataKey = nil
 				require.NoError(t, memFS.MkdirAll(data[0], 0755))
 				dkm = &DataKeyManager{fs: memFS, dbDir: data[0], rotationPeriod: int64(period)}
-				dkr := &enginepb.DataKeysRegistry{
-					StoreKeys: make(map[string]*enginepb.KeyInfo),
-					DataKeys:  make(map[string]*enginepb.SecretKey),
+				dkr := &enginepbccl.DataKeysRegistry{
+					StoreKeys: make(map[string]*enginepbccl.KeyInfo),
+					DataKeys:  make(map[string]*enginepbccl.SecretKey),
 				}
 				for i := 2; i < len(data); i++ {
 					keyInfo := strings.Split(data[i], " ")
@@ -313,26 +311,15 @@ func TestDataKeyManager(t *testing.T) {
 			case "set-active-store-key":
 				var id string
 				d.ScanArgs(t, "id", &id)
-				version := 1
-				d.MaybeScanArgs(t, "version", &version)
-				var et enginepb.EncryptionType
-				switch version {
-				case 1:
-					et = enginepb.EncryptionType_AES128_CTR
-				case 2:
-					et = enginepb.EncryptionType_AES_128_CTR_V2
-				default:
-					t.Fatalf("unknown version %d", version)
-				}
-				return setActiveStoreKey(dkm, id, et)
+				return setActiveStoreKey(dkm, id, enginepbccl.EncryptionType_AES128_CTR)
 			case "set-active-store-key-plain":
 				var id string
 				d.ScanArgs(t, "id", &id)
-				return setActiveStoreKey(dkm, d.CmdArgs[0].Vals[0], enginepb.EncryptionType_Plaintext)
+				return setActiveStoreKey(dkm, d.CmdArgs[0].Vals[0], enginepbccl.EncryptionType_Plaintext)
 			case "check-exposed":
 				var val bool
 				d.ScanArgs(t, "val", &val)
-				for _, key := range dkm.writeMu.mu.keyRegistry.DataKeys {
+				for _, key := range dkm.mu.keyRegistry.DataKeys {
 					if key.Info.WasExposed != val {
 						return fmt.Sprintf(
 							"WasExposed: actual: %t, expected: %t\n", key.Info.WasExposed, val)
@@ -340,7 +327,7 @@ func TestDataKeyManager(t *testing.T) {
 				}
 				return ""
 			case "get-active-data-key":
-				key, err := dkm.ActiveKeyForWriter(context.Background())
+				key, err := dkm.ActiveKey(context.Background())
 				if err != nil {
 					return err.Error()
 				}
@@ -348,12 +335,12 @@ func TestDataKeyManager(t *testing.T) {
 				if key == nil {
 					return "none\n"
 				}
-				keyInfo := &enginepb.KeyInfo{}
+				keyInfo := &enginepbccl.KeyInfo{}
 				proto.Merge(keyInfo, key.Info)
 				keyInfo.KeyId = ""
 				return strings.TrimSpace(keyInfo.String()) + "\n"
 			case "get-active-store-key":
-				id := dkm.writeMu.mu.keyRegistry.ActiveStoreKeyId
+				id := dkm.mu.keyRegistry.ActiveStoreKeyId
 				if id == "" {
 					return "none\n"
 				}
@@ -361,12 +348,12 @@ func TestDataKeyManager(t *testing.T) {
 			case "get-store-key":
 				var id string
 				d.ScanArgs(t, "id", &id)
-				if dkm.writeMu.mu.keyRegistry.StoreKeys != nil && dkm.writeMu.mu.keyRegistry.StoreKeys[id] != nil {
-					return strings.TrimSpace(dkm.writeMu.mu.keyRegistry.StoreKeys[id].String()) + "\n"
+				if dkm.mu.keyRegistry.StoreKeys != nil && dkm.mu.keyRegistry.StoreKeys[id] != nil {
+					return strings.TrimSpace(dkm.mu.keyRegistry.StoreKeys[id].String()) + "\n"
 				}
 				return "none\n"
 			case "record-active-data-key":
-				key, err := dkm.ActiveKeyForWriter(context.Background())
+				key, err := dkm.ActiveKey(context.Background())
 				if err != nil {
 					return err.Error()
 				}
@@ -375,7 +362,7 @@ func TestDataKeyManager(t *testing.T) {
 				}
 				return ""
 			case "compare-active-data-key":
-				key, err := dkm.ActiveKeyForWriter(context.Background())
+				key, err := dkm.ActiveKey(context.Background())
 				if err != nil {
 					return err.Error()
 				}
@@ -383,7 +370,7 @@ func TestDataKeyManager(t *testing.T) {
 				lastActiveDataKey = key
 				return rv
 			case "check-all-recorded-data-keys":
-				actual := fmt.Sprint(dkm.writeMu.mu.keyRegistry.DataKeys)
+				actual := fmt.Sprint(dkm.mu.keyRegistry.DataKeys)
 				expected := fmt.Sprint(keyMap)
 				require.Equal(t, expected, actual)
 				return ""
@@ -463,7 +450,7 @@ func TestDataKeyManagerIO(t *testing.T) {
 			case "set-active-store-key":
 				var id string
 				d.ScanArgs(t, "id", &id)
-				fmt.Fprintf(&buf, "%s", setActiveStoreKey(dkm, id, enginepb.EncryptionType_AES128_CTR))
+				fmt.Fprintf(&buf, "%s", setActiveStoreKey(dkm, id, enginepbccl.EncryptionType_AES128_CTR))
 				return buf.String()
 			default:
 				return fmt.Sprintf("unknown command: %s\n", d.Cmd)
@@ -476,9 +463,9 @@ type loggingFS struct {
 	w io.Writer
 }
 
-func (fs loggingFS) Create(name string, category vfs.DiskWriteCategory) (vfs.File, error) {
+func (fs loggingFS) Create(name string) (vfs.File, error) {
 	fmt.Fprintf(fs.w, "create(%q)\n", name)
-	f, err := fs.FS.Create(name, category)
+	f, err := fs.FS.Create(name)
 	if err != nil {
 		return nil, err
 	}
@@ -518,18 +505,16 @@ func (fs loggingFS) Rename(oldname, newname string) error {
 	return fs.FS.Rename(oldname, newname)
 }
 
-func (fs loggingFS) ReuseForWrite(
-	oldname, newname string, category vfs.DiskWriteCategory,
-) (vfs.File, error) {
+func (fs loggingFS) ReuseForWrite(oldname, newname string) (vfs.File, error) {
 	fmt.Fprintf(fs.w, "reuseForWrite(%q, %q)\n", oldname, newname)
-	f, err := fs.FS.ReuseForWrite(oldname, newname, category)
+	f, err := fs.FS.ReuseForWrite(oldname, newname)
 	if err == nil {
 		f = loggingFile{f, newname, fs.w}
 	}
 	return f, err
 }
 
-func (fs loggingFS) Stat(path string) (vfs.FileInfo, error) {
+func (fs loggingFS) Stat(path string) (os.FileInfo, error) {
 	fmt.Fprintf(fs.w, "stat(%q)\n", path)
 	return fs.FS.Stat(path)
 }
@@ -563,30 +548,4 @@ func (f loggingFile) Close() error {
 func (f loggingFile) Sync() error {
 	fmt.Fprintf(f.w, "sync(%q)\n", f.name)
 	return f.File.Sync()
-}
-
-func TestDataKeyManagerBlockedWriteAllowsRead(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	mem := vfs.NewMem()
-	fs := &fs.BlockingWriteFSForTesting{FS: mem}
-	dkm := &DataKeyManager{fs: fs, dbDir: "", rotationPeriod: 10000}
-	require.NoError(t, dkm.Load(ctx))
-	require.Equal(t, "", setActiveStoreKey(dkm, "foo", enginepb.EncryptionType_AES128_CTR))
-	activeKey, err := dkm.ActiveKeyForWriter(ctx)
-	require.NoError(t, err)
-	activeKeyID := activeKey.Info.KeyId
-	fs.Block()
-	go func() {
-		require.Equal(t, "", setActiveStoreKey(dkm, "bar", enginepb.EncryptionType_AES128_CTR))
-	}()
-	time.Sleep(time.Millisecond)
-	k, err := dkm.GetKey(activeKeyID)
-	require.NoError(t, err)
-	require.NotNil(t, k)
-	require.NotNil(t, dkm.ActiveKeyInfoForStats())
-	fs.WaitForBlockAndUnblock()
-	require.NoError(t, dkm.Close())
 }

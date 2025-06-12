@@ -58,13 +58,11 @@ func TestWindowFunctions(t *testing.T) {
 		},
 		DiskMonitor: testDiskMonitor,
 	}
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	queueCfg, cleanup := colcontainerutils.NewTestingDiskQueueCfg(t, true /* inMem */)
 	defer cleanup()
 	var monitorRegistry colexecargs.MonitorRegistry
 	defer monitorRegistry.Close(ctx)
-	var closerRegistry colexecargs.CloserRegistry
-	defer closerRegistry.Close(ctx)
 
 	dec := func(val string) apd.Decimal {
 		res, _, err := apd.NewFromString(val)
@@ -1035,6 +1033,7 @@ func TestWindowFunctions(t *testing.T) {
 			},
 		} {
 			log.Infof(ctx, "spillForced=%t/%s", spillForced, tc.windowerSpec.WindowFns[0].Func.String())
+			var toClose []colexecop.Closers
 			var semsToCheck []semaphore.Semaphore
 			colexectestutils.RunTests(t, testAllocator, []colexectestutils.Tuples{tc.tuples}, tc.expected, colexectestutils.UnorderedVerifier, func(sources []colexecop.Operator) (colexecop.Operator, error) {
 				tc.init()
@@ -1070,21 +1069,23 @@ func TestWindowFunctions(t *testing.T) {
 				// FDs.
 				sem := colexecop.NewTestingSemaphore(relativeRankNumRequiredFDs)
 				args := &colexecargs.NewColOperatorArgs{
-					Spec:            spec,
-					Inputs:          colexectestutils.MakeInputs(sources),
-					DiskQueueCfg:    queueCfg,
-					FDSemaphore:     sem,
-					MonitorRegistry: &monitorRegistry,
-					CloserRegistry:  &closerRegistry,
+					Spec:                spec,
+					Inputs:              colexectestutils.MakeInputs(sources),
+					StreamingMemAccount: testMemAcc,
+					DiskQueueCfg:        queueCfg,
+					FDSemaphore:         sem,
+					MonitorRegistry:     &monitorRegistry,
 				}
 				semsToCheck = append(semsToCheck, sem)
 				result, err := colexecargs.TestNewColOperator(ctx, flowCtx, args)
+				toClose = append(toClose, result.ToClose)
 				return result.Root, err
 			})
 			// Close all closers manually (in production this is done on the
 			// flow cleanup).
-			closerRegistry.Close(ctx)
-			closerRegistry.Reset()
+			for _, c := range toClose {
+				require.NoError(t, c.Close(ctx))
+			}
 			for i, sem := range semsToCheck {
 				require.Equal(t, 0, sem.GetCount(), "sem still reports open FDs at index %d", i)
 			}
@@ -1096,7 +1097,7 @@ func BenchmarkWindowFunctions(b *testing.B) {
 	defer log.Scope(b).Close(b)
 	ctx := context.Background()
 	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 
 	const (
 		memLimit        = 64 << 20
@@ -1158,7 +1159,7 @@ func BenchmarkWindowFunctions(b *testing.B) {
 			QueueCfg:        queueCfg,
 			FdSemaphore:     colexecop.NewTestingSemaphore(fdLimit),
 			DiskAcc:         testDiskAcc,
-			DiskQueueMemAcc: testMemAcc,
+			ConverterMemAcc: testMemAcc,
 			Input:           source,
 			InputTypes:      sourceTypes,
 			OutputColIdx:    outputIdx,
@@ -1221,8 +1222,7 @@ func BenchmarkWindowFunctions(b *testing.B) {
 				colexecagg.ProcessAggregations(ctx, &evalCtx, &semaCtx, aggregations, sourceTypes)
 			require.NoError(b, err)
 			aggFnsAlloc, _, toClose, err := colexecagg.NewAggregateFuncsAlloc(
-				ctx, &aggArgs, aggregations, 1, /* initialAllocSize */
-				1 /* maxAllocSize */, colexecagg.WindowAggKind,
+				ctx, &aggArgs, aggregations, 1 /* allocSize */, colexecagg.WindowAggKind,
 			)
 			require.NoError(b, err)
 			op = NewWindowAggregatorOperator(
@@ -1238,11 +1238,11 @@ func BenchmarkWindowFunctions(b *testing.B) {
 		return op
 	}
 
-	inputCreator := func(length int) []*coldata.Vec {
+	inputCreator := func(length int) []coldata.Vec {
 		const arg1Offset, arg1Range = 5, 10
-		vecs := make([]*coldata.Vec, len(sourceTypes))
+		vecs := make([]coldata.Vec, len(sourceTypes))
 		for i := range vecs {
-			vecs[i] = testAllocator.NewVec(sourceTypes[i], length)
+			vecs[i] = testAllocator.NewMemColumn(sourceTypes[i], length)
 		}
 		argCol1 := vecs[arg1ColIdx].Int64()
 		argCol2 := vecs[arg2ColIdx].Int64()

@@ -10,13 +10,13 @@ import (
 	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/apply"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
 	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 // replica_application_*.go files provide concrete implementations of
@@ -75,7 +75,7 @@ func (d *replicaDecoder) decode(ctx context.Context, ents []raftpb.Entry) error 
 // with a proposal in that way are considered "local", meaning a client is
 // waiting on their result, and may be reproposed (as a new proposal) with a new
 // lease index in case they apply with an illegal lease index (see
-// tryReproposeWithNewLeaseIndexRaftMuLocked).
+// tryReproposeWithNewLeaseIndex).
 func (d *replicaDecoder) retrieveLocalProposals() (anyLocal bool) {
 	d.r.mu.Lock()
 	defer d.r.mu.Unlock()
@@ -145,7 +145,7 @@ func (d *replicaDecoder) createTracingSpans(ctx context.Context) {
 			propCtx := ctx // raft scheduler's ctx
 			var propSp *tracing.Span
 			// If the client has a trace, put a child into propCtx.
-			if sp := tracing.SpanFromContext(cmd.proposal.Context()); sp != nil {
+			if sp := tracing.SpanFromContext(cmd.proposal.ctx); sp != nil {
 				propCtx, propSp = sp.Tracer().StartSpanCtx(
 					propCtx, "local proposal", tracing.WithParent(sp),
 				)

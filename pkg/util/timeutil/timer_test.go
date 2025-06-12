@@ -23,6 +23,7 @@ func TestTimerTimeout(t *testing.T) {
 	timer.Reset(timeStep)
 
 	<-timer.C
+	timer.Read = true
 
 	select {
 	case <-timer.C:
@@ -61,6 +62,7 @@ func TestTimerStop(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestTimerUninitializedStopNoop(t *testing.T) {
@@ -77,6 +79,7 @@ func TestTimerResetBeforeTimeout(t *testing.T) {
 
 	timer.Reset(timeStep)
 	<-timer.C
+	timer.Read = true
 
 	select {
 	case <-timer.C:
@@ -94,6 +97,7 @@ func TestTimerResetAfterTimeoutAndNoRead(t *testing.T) {
 
 	timer.Reset(timeStep)
 	<-timer.C
+	timer.Read = true
 
 	select {
 	case <-timer.C:
@@ -108,9 +112,11 @@ func TestTimerResetAfterTimeoutAndRead(t *testing.T) {
 	timer.Reset(timeStep)
 
 	<-timer.C
+	timer.Read = true
 
 	timer.Reset(timeStep)
 	<-timer.C
+	timer.Read = true
 
 	select {
 	case <-timer.C:
@@ -125,19 +131,6 @@ func TestTimerMakesProgressInLoop(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		timer.Reset(timeStep)
 		<-timer.C
-	}
-}
-
-func BenchmarkTimer(b *testing.B) {
-	run := func() {
-		var timer Timer
-		defer timer.Stop()
-		for i := 0; i < 10; i++ {
-			timer.Reset(10 * time.Microsecond)
-			<-timer.C
-		}
-	}
-	for i := 0; i < b.N; i++ {
-		run()
+		timer.Read = true
 	}
 }

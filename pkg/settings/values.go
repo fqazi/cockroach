@@ -260,37 +260,9 @@ func (sv *Values) TestingCopyForVirtualCluster(input *Values) {
 		if s.Class() != ApplicationLevel && s.Class() != SystemVisible {
 			continue
 		}
-		// This test-only method is used when creating new virtual clusters which
-		// initialize their own version and thus do not want an existing version.
-		if s.Typ() == VersionSettingValueType {
-			continue
-		}
 
 		// Copy the value.
-		sv.container.intVals[slot] = atomic.LoadInt64(&input.container.intVals[slot])
-		if v := input.container.genericVals[slot].Load(); v != nil {
-			sv.container.genericVals[slot].Store(v)
-		}
-
-		// Copy the default.
-		input.defaultOverridesMu.Lock()
-		v, hasVal := input.defaultOverridesMu.defaultOverrides[slot]
-		input.defaultOverridesMu.Unlock()
-		if !hasVal {
-			continue
-		}
-		sv.setDefaultOverride(slot, v)
-	}
-}
-
-// TestingCopyForServer makes a copy of the input Values in the target Values
-// for use when initializing a server in a test cluster. This is meant to
-// propagate initial values and overrides.
-func (sv *Values) TestingCopyForServer(input *Values, newOpaque interface{}) {
-	sv.opaque = newOpaque
-	for slot := slotIdx(0); slot < slotIdx(len(registry)); slot++ {
-		// Copy the value.
-		sv.container.intVals[slot] = atomic.LoadInt64(&input.container.intVals[slot])
+		sv.container.intVals[slot] = input.container.intVals[slot]
 		if v := input.container.genericVals[slot].Load(); v != nil {
 			sv.container.genericVals[slot].Store(v)
 		}

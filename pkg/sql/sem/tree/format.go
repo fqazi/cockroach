@@ -58,10 +58,6 @@ const (
 	// identifiers without wrapping quotes in any case.
 	FmtBareIdentifiers = FmtFlags(lexbase.EncBareIdentifiers)
 
-	// FmtBareReservedKeywords instructs the pretty-printer to print
-	// reserved keywords without wrapping quotes.
-	FmtBareReservedKeywords = FmtFlags(lexbase.EncBareReservedKeywords)
-
 	// FmtShowPasswords instructs the pretty-printer to not suppress passwords.
 	// If not set, passwords are replaced by *****.
 	FmtShowPasswords = FmtFlags(lexbase.EncFirstFreeFlagBit) << iota
@@ -72,7 +68,7 @@ const (
 
 	// FmtHideConstants instructs the pretty-printer to produce a
 	// representation that does not disclose query-specific data. It
-	// also shortens long lists in tuples, VALUES and array expressions.
+	// also shorten long lists in tuples, VALUES and array expressions.
 	FmtHideConstants
 
 	// FmtAnonymize instructs the pretty-printer to remove any name.
@@ -105,6 +101,10 @@ const (
 	// resolutions.
 	fmtDisambiguateDatumTypes
 
+	// fmtSymbolicVars indicates that IndexedVars must be pretty-printed
+	// using numeric notation (@123).
+	fmtSymbolicVars
+
 	// fmtUnicodeStrings prints strings and JSON using the Go string
 	// formatter. This is used e.g. for emitting values to CSV files.
 	fmtRawStrings
@@ -115,16 +115,13 @@ const (
 	// the numeric by enclosing them within parentheses.
 	FmtParsableNumerics
 
-	// fmtPGCatalog is used to produce array and bytes expressions formatted in
-	// a way that's as close as possible to what clients expect to live in
-	// pg_catalog (e.g. pg_attrdef.adbin, pg_constraint.condef and
-	// pg_indexes.indexdef columns).
-	fmtPGCatalog
-
-	// fmtPGCatalogCasts adds cast expressions for non-numeric constants and
-	// strips type annotations. This matches Postgres's formatting of
-	// expressions in pg_catalog.
-	fmtPGCatalogCasts
+	// FmtPGCatalog is used to produce expressions formatted in a way that's as
+	// close as possible to what clients expect to live in pg_catalog (e.g.
+	// pg_attrdef.adbin, pg_constraint.condef and pg_indexes.indexdef columns).
+	// Specifically, this strips type annotations (Postgres doesn't know what
+	// those are), adds cast expressions for non-numeric constants, and formats
+	// indexes in Postgres-specific syntax.
+	FmtPGCatalog
 
 	// If set, user defined types and datums of user defined types will be
 	// formatted in a way that is stable across changes to the underlying type.
@@ -167,41 +164,14 @@ const (
 	// This flag *overrides* `FmtMarkRedactionNode` above.
 	FmtOmitNameRedaction
 
-	// FmtShortenConstants shortens long lists in tuples, VALUES and array
-	// expressions. FmtHideConstants takes precedence over it.
-	FmtShortenConstants
-
-	// FmtCollapseLists instructs the pretty-printer to shorten lists
-	// containing only literals, placeholders and/or similar subexpressions
-	// of literals/placeholders to their first element (scrubbed) followed
-	// by "__more__". E.g.
-	//  SELECT * FROM foo where v IN (1, 2+2, $1, $2*3) => SELECT * FROM foo where v IN (_, __more__)
-	FmtCollapseLists
-
-	// FmtConstantsAsUnderscores instructs the pretty-printer to format
-	// constants (literals, placeholders) as underscores.
-	// e.g.
-	//   SELECT 1, 'a', $1 => SELECT _, _, _
-	FmtConstantsAsUnderscores
-
-	// FmtAlwaysQualifyUserDefinedTypeNames instructs the pretty-printer to include
-	// the name of user-defined types as a three-part name.
-	FmtAlwaysQualifyUserDefinedTypeNames
+	// FmtTagDollarQuotes instructs tags to be kept intact in tagged dollar
+	// quotes. It also applies tags when formatting UDFs.
+	FmtTagDollarQuotes
 
 	// FmtShowFullURIs instructs the pretty-printer to not sanitize URIs. If not
 	// set, URIs are sanitized to prevent leaking secrets.
 	FmtShowFullURIs
-
-	// FmtSkipAsOfSystemTimeClauses prevents the formatter from printing AS OF
-	// SYSTEM TIME clauses.
-	FmtSkipAsOfSystemTimeClauses
 )
-
-const genericArityIndicator = "__more__"
-
-// StmtFingerprintPlaceholder is the char that replaces all literals and
-// placeholders in a query when computing its fingerprint.
-const StmtFingerprintPlaceholder = '_'
 
 // PasswordSubstitution is the string that replaces
 // passwords unless FmtShowPasswords is specified.
@@ -219,16 +189,6 @@ const (
 	// a pg-compatible conversion to strings. See comments
 	// in pgwire_encode.go.
 	FmtPgwireText = fmtPgwireFormat | FmtFlags(lexbase.EncBareStrings)
-
-	// FmtPGCatalog is used to produce expressions formatted in a way that's as
-	// close as possible to what clients expect to live in pg_catalog (e.g.
-	// pg_attrdef.adbin, pg_constraint.condef and pg_indexes.indexdef columns).
-	// Specifically, this strips type annotations (Postgres doesn't know what
-	// those are), adds cast expressions for non-numeric constants, formats
-	// arrays as strings with curly brackets (like FmtPGWireText), formats bytes
-	// with double quotes (also like FmtPGWireText), and formats indexes in
-	// Postgres-specific syntax.
-	FmtPGCatalog = fmtPGCatalog | fmtPGCatalogCasts
 
 	// FmtParsable instructs the pretty-printer to produce a representation that
 	// can be parsed into an equivalent expression. If there is a chance that the
@@ -255,7 +215,8 @@ const (
 	//  - user defined types and datums of user defined types are formatted
 	//    using static representations to avoid name resolution and invalidation
 	//    due to changes in the underlying type.
-	FmtCheckEquivalence = fmtDisambiguateDatumTypes |
+	FmtCheckEquivalence = fmtSymbolicVars |
+		fmtDisambiguateDatumTypes |
 		FmtParsableNumerics |
 		fmtStaticallyFormatUserDefinedTypes
 
@@ -279,9 +240,6 @@ const (
 	// with PostgreSQL, whereas EXPORT may evolve over time to support
 	// other things (eg. fixing #33429).
 	FmtExport = FmtBareStrings | fmtRawStrings
-
-	// FmtAlwaysQualifyNames will fully qualify various types of names.
-	FmtAlwaysQualifyNames = FmtAlwaysQualifyTableNames | FmtAlwaysQualifyUserDefinedTypeNames
 )
 
 const flagsRequiringAnnotations = FmtAlwaysQualifyTableNames
@@ -300,8 +258,7 @@ type FmtCtx struct {
 	location             *time.Location
 
 	// NOTE: if you add more flags to this structure, make sure to add
-	// corresponding cleanup code in FmtCtx.Close(), as well as handling in
-	// FmtCtx.Clone().
+	// corresponding cleanup code in FmtCtx.Close().
 
 	// The flags to use for pretty-printing.
 	flags FmtFlags
@@ -392,23 +349,7 @@ func NewFmtCtx(f FmtFlags, opts ...FmtCtxOption) *FmtCtx {
 	if ctx.ann == nil && f&flagsRequiringAnnotations != 0 {
 		panic(errors.AssertionFailedf("no Annotations provided"))
 	}
-
 	return ctx
-}
-
-// Clone returns a new FmtCtx with all the same flags and options as the
-// original.
-func (ctx *FmtCtx) Clone() *FmtCtx {
-	newCtx := fmtCtxPool.Get().(*FmtCtx)
-	newCtx.flags = ctx.flags
-	newCtx.ann = ctx.ann
-	newCtx.indexedVarFormat = ctx.indexedVarFormat
-	newCtx.placeholderFormat = ctx.placeholderFormat
-	newCtx.tableNameFormatter = ctx.tableNameFormatter
-	newCtx.indexedTypeFormatter = ctx.indexedTypeFormatter
-	newCtx.dataConversionConfig = ctx.dataConversionConfig
-	newCtx.location = ctx.location
-	return newCtx
 }
 
 // SetDataConversionConfig sets the DataConversionConfig on ctx and returns the
@@ -448,29 +389,6 @@ func (ctx *FmtCtx) WithFlags(flags FmtFlags, fn func()) {
 	oldFlags := ctx.flags
 	ctx.flags = flags
 	defer func() { ctx.flags = oldFlags }()
-
-	fn()
-}
-
-// WithoutConstantRedaction modifies FmtCtx to ensure that constants are
-// displayed rather than being replaced by '_', calls fn, then restores the
-// original flags.
-func (ctx *FmtCtx) WithoutConstantRedaction(fn func()) {
-	oldFlags := ctx.flags
-	ctx.flags &= ^FmtHideConstants
-	ctx.flags &= ^FmtAnonymize
-	defer func() { ctx.flags = oldFlags }()
-
-	fn()
-}
-
-// WithAnnotations modifies FmtCtx to use the provided Annotations, calls fn,
-// then restores the original ones.
-func (ctx *FmtCtx) WithAnnotations(ann *Annotations, fn func()) {
-	defer func(oldAnn *Annotations) {
-		ctx.ann = oldAnn
-	}(ctx.ann)
-	ctx.ann = ann
 
 	fn()
 }
@@ -518,42 +436,6 @@ func (ctx *FmtCtx) FormatNameP(s *string) {
 	ctx.FormatNode((*Name)(s))
 }
 
-// FormatStringConstant formats a constant string value, redacting it if
-// FmtHideConstants is set.
-func (ctx *FmtCtx) FormatStringConstant(s string) {
-	ctx.WriteString("'")
-	if ctx.HasFlags(FmtHideConstants) {
-		ctx.WriteString("_")
-	} else {
-		ctx.WriteString(s)
-	}
-	ctx.WriteString("'")
-}
-
-// FormatStringDollarQuotes formats a string constant with dollar quotes.
-func (ctx *FmtCtx) FormatStringDollarQuotes(s string) {
-	// Find a delimiter that will not collide with any part of the string. This is
-	// very similar to what Postgres does.
-	delimiter := ""
-	if strings.Contains(s, "$$") {
-		delimiter = "funcbody"
-		for strings.Contains(s, "$"+delimiter+"$") {
-			delimiter = delimiter + "x"
-		}
-	}
-	ctx.WriteByte('$')
-	ctx.WriteString(delimiter)
-	ctx.WriteByte('$')
-	if ctx.flags.HasFlags(FmtAnonymize) || ctx.flags.HasFlags(FmtHideConstants) {
-		ctx.WriteString("_")
-	} else {
-		ctx.WriteString(s)
-	}
-	ctx.WriteByte('$')
-	ctx.WriteString(delimiter)
-	ctx.WriteByte('$')
-}
-
 // FormatURIs formats a list of string literals or placeholders containing URIs.
 func (ctx *FmtCtx) FormatURIs(uris []Expr) {
 	if len(uris) > 1 {
@@ -576,7 +458,7 @@ func (ctx *FmtCtx) FormatURI(uri Expr) {
 	switch n := uri.(type) {
 	case *StrVal, *DString:
 		if ctx.HasAnyFlags(
-			FmtShowPasswords | FmtShowFullURIs | FmtHideConstants | FmtConstantsAsUnderscores,
+			FmtShowPasswords | FmtShowFullURIs | FmtHideConstants,
 		) {
 			ctx.FormatNode(n)
 			return
@@ -610,8 +492,6 @@ func (ctx *FmtCtx) FormatURI(uri Expr) {
 // FormatNode recurses into a node for pretty-printing.
 // Flag-driven special cases can hook into this.
 func (ctx *FmtCtx) FormatNode(n NodeFormatter) {
-	// TODO(yuzefovich): consider adding a panic-catcher here and propagating
-	// the caught panics as return parameters.
 	f := ctx.flags
 	if f.HasFlags(FmtShowTypes) {
 		if te, ok := n.(TypedExpr); ok {
@@ -620,7 +500,7 @@ func (ctx *FmtCtx) FormatNode(n NodeFormatter) {
 			if f.HasFlags(FmtMarkRedactionNode) {
 				ctx.formatNodeMaybeMarkRedaction(n)
 			} else {
-				ctx.formatNodeOrAdjustConstants(n)
+				ctx.formatNodeOrHideConstants(n)
 			}
 
 			ctx.WriteString(")[")
@@ -652,7 +532,7 @@ func (ctx *FmtCtx) FormatNode(n NodeFormatter) {
 	if f.HasFlags(FmtMarkRedactionNode) {
 		ctx.formatNodeMaybeMarkRedaction(n)
 	} else {
-		ctx.formatNodeOrAdjustConstants(n)
+		ctx.formatNodeOrHideConstants(n)
 	}
 
 	if f.HasFlags(FmtAlwaysGroupExprs) {
@@ -660,7 +540,7 @@ func (ctx *FmtCtx) FormatNode(n NodeFormatter) {
 			ctx.WriteByte(')')
 		}
 	}
-	if f.HasAnyFlags(fmtDisambiguateDatumTypes | fmtPGCatalogCasts) {
+	if f.HasAnyFlags(fmtDisambiguateDatumTypes | FmtPGCatalog) {
 		var typ *types.T
 		if d, isDatum := n.(Datum); isDatum {
 			if p, isPlaceholder := d.(*Placeholder); isPlaceholder {
@@ -668,7 +548,7 @@ func (ctx *FmtCtx) FormatNode(n NodeFormatter) {
 				typ = p.typ
 			} else if d.AmbiguousFormat() {
 				typ = d.ResolvedType()
-			} else if _, isArray := d.(*DArray); isArray && f.HasFlags(fmtPGCatalogCasts) {
+			} else if _, isArray := d.(*DArray); isArray && f.HasFlags(FmtPGCatalog) {
 				typ = d.ResolvedType()
 			}
 		}
@@ -676,7 +556,7 @@ func (ctx *FmtCtx) FormatNode(n NodeFormatter) {
 			if f.HasFlags(fmtDisambiguateDatumTypes) {
 				ctx.WriteString(":::")
 				ctx.FormatTypeReference(typ)
-			} else if f.HasFlags(fmtPGCatalogCasts) && !typ.IsNumeric() {
+			} else if f.HasFlags(FmtPGCatalog) && !typ.IsNumeric() {
 				ctx.WriteString("::")
 				ctx.FormatTypeReference(typ)
 			}
@@ -688,7 +568,7 @@ func (ctx *FmtCtx) FormatNode(n NodeFormatter) {
 // number of characters to be printed.
 func (ctx *FmtCtx) formatLimitLength(n NodeFormatter, maxLength int) {
 	temp := NewFmtCtx(ctx.flags)
-	temp.formatNodeSummary(n)
+	temp.FormatNodeSummary(n)
 	s := temp.CloseAndGetString()
 	if len(s) > maxLength {
 		truncated := s[:maxLength] + "..."
@@ -744,7 +624,7 @@ func (ctx *FmtCtx) formatSummaryInsert(node *Insert) {
 	expr := rows.Select
 	if _, ok := expr.(*SelectClause); ok {
 		ctx.WriteByte(' ')
-		ctx.formatNodeSummary(rows)
+		ctx.FormatNodeSummary(rows)
 	} else if node.Columns != nil {
 		ctx.WriteByte('(')
 		ctx.formatLimitLength(&node.Columns, ColumnLimit)
@@ -767,8 +647,8 @@ func (ctx *FmtCtx) formatSummaryUpdate(node *Update) {
 	}
 }
 
-// formatNodeSummary recurses into a node for pretty-printing a summarized version.
-func (ctx *FmtCtx) formatNodeSummary(n NodeFormatter) {
+// FormatNodeSummary recurses into a node for pretty-printing a summarized version.
+func (ctx *FmtCtx) FormatNodeSummary(n NodeFormatter) {
 	switch node := n.(type) {
 	case *Insert:
 		ctx.formatSummaryInsert(node)
@@ -788,7 +668,7 @@ func (ctx *FmtCtx) formatNodeSummary(n NodeFormatter) {
 func AsStringWithFlags(n NodeFormatter, fl FmtFlags, opts ...FmtCtxOption) string {
 	ctx := NewFmtCtx(fl, opts...)
 	if fl.HasFlags(FmtSummary) {
-		ctx.formatNodeSummary(n)
+		ctx.FormatNodeSummary(n)
 	} else {
 		ctx.FormatNode(n)
 	}
@@ -798,7 +678,7 @@ func AsStringWithFlags(n NodeFormatter, fl FmtFlags, opts ...FmtCtxOption) strin
 // AsStringWithFQNames pretty prints a node to a string with the
 // FmtAlwaysQualifyTableNames flag (which requires annotations).
 func AsStringWithFQNames(n NodeFormatter, ann *Annotations) string {
-	ctx := NewFmtCtx(FmtAlwaysQualifyNames, FmtAnnotations(ann))
+	ctx := NewFmtCtx(FmtAlwaysQualifyTableNames, FmtAnnotations(ann))
 	ctx.FormatNode(n)
 	return ctx.CloseAndGetString()
 }

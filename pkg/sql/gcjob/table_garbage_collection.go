@@ -46,7 +46,7 @@ func gcTables(
 
 		var table catalog.TableDescriptor
 		if err := sql.DescsTxn(ctx, execCfg, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
-			table, err = col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, droppedTable.ID)
+			table, err = col.ByID(txn.KV()).Get().Table(ctx, droppedTable.ID)
 			return err
 		}); err != nil {
 			if isMissingDescriptorError(err) {
@@ -142,7 +142,7 @@ func clearSpanData(
 	var n int
 	lastKey := span.Key
 	ri := kvcoord.MakeRangeIterator(distSender)
-	var timer timeutil.Timer
+	timer := timeutil.NewTimer()
 	defer timer.Stop()
 
 	for ri.Seek(ctx, span.Key, kvcoord.Ascending); ; ri.Next(ctx) {
@@ -171,6 +171,7 @@ func clearSpanData(
 			timer.Reset(waitTime)
 			select {
 			case <-timer.C:
+				timer.Read = true
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -284,7 +285,7 @@ func deleteTableDescriptorsAfterGC(
 
 		var table catalog.TableDescriptor
 		if err := sql.DescsTxn(ctx, execCfg, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
-			table, err = col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, droppedTable.ID)
+			table, err = col.ByID(txn.KV()).Get().Table(ctx, droppedTable.ID)
 			return err
 		}); err != nil {
 			if isMissingDescriptorError(err) {

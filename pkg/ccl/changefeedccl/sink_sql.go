@@ -15,9 +15,9 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvevent"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins"
 	"github.com/cockroachdb/cockroach/pkg/util/bufalloc"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/unique"
 	"github.com/cockroachdb/errors"
 	"github.com/lib/pq"
 )
@@ -71,10 +71,7 @@ func (s *sqlSink) getConcreteType() sinkType {
 const sqlSinkTableName = `sqlsink`
 
 func makeSQLSink(
-	u *changefeedbase.SinkURL,
-	tableName string,
-	targets changefeedbase.Targets,
-	mb metricsRecorderBuilder,
+	u sinkURL, tableName string, targets changefeedbase.Targets, mb metricsRecorderBuilder,
 ) (Sink, error) {
 	// Swap the changefeed prefix for the sql connection one that sqlSink
 	// expects.
@@ -90,12 +87,12 @@ func makeSQLSink(
 	}
 
 	uri := u.String()
-	u.ConsumeParam(`sslcert`)
-	u.ConsumeParam(`sslkey`)
-	u.ConsumeParam(`sslmode`)
-	u.ConsumeParam(`sslrootcert`)
+	u.consumeParam(`sslcert`)
+	u.consumeParam(`sslkey`)
+	u.consumeParam(`sslmode`)
+	u.consumeParam(`sslrootcert`)
 
-	if unknownParams := u.RemainingQueryParams(); len(unknownParams) > 0 {
+	if unknownParams := u.remainingQueryParams(); len(unknownParams) > 0 {
 		return nil, errors.Errorf(
 			`unknown SQL sink query parameters: %s`, strings.Join(unknownParams, ", "))
 	}
@@ -132,7 +129,6 @@ func (s *sqlSink) EmitRow(
 	key, value []byte,
 	updated, mvcc hlc.Timestamp,
 	alloc kvevent.Alloc,
-	_headers rowHeaders,
 ) error {
 	defer alloc.Release(ctx)
 	defer s.metrics.recordOneMessage()(mvcc, len(key)+len(value), sinkDoesNotCompress)
@@ -190,7 +186,7 @@ func (s *sqlSink) emit(
 	// Generate the message id on the client to match the guaranttees of kafka
 	// (two messages are only guaranteed to keep their order if emitted from the
 	// same producer to the same partition).
-	messageID := unique.GenerateUniqueInt(unique.ProcessUniqueID(partition))
+	messageID := builtins.GenerateUniqueInt(builtins.ProcessUniqueID(partition))
 	s.rowBuf = append(s.rowBuf, topic, partition, messageID, key, value, resolved)
 	if len(s.rowBuf)/sqlSinkEmitCols >= sqlSinkRowBatchSize {
 		return s.Flush(ctx)

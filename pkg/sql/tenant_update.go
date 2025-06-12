@@ -9,10 +9,11 @@ import (
 	"context"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
+	"github.com/cockroachdb/cockroach/pkg/multitenant"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -22,11 +23,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
-	"github.com/cockroachdb/cockroach/pkg/util/retry"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 )
 
@@ -73,6 +71,11 @@ func UpdateTenantRecord(
 SET active = $2, info = $3, name = $4, data_state = $5, service_mode = $6
 WHERE id = $1`
 	args := []interface{}{info.ID, active, infoBytes, name, info.DataState, info.ServiceMode}
+	if !settings.Version.IsActive(ctx, clusterversion.V23_1TenantNamesStateAndServiceMode) {
+		// Ensure the update can succeed if the upgrade is not finalized yet.
+		query = `UPDATE system.tenants SET active = $2, info = $3 WHERE id = $1`
+		args = args[:3]
+	}
 
 	if num, err := txn.ExecEx(
 		ctx, "update-tenant", txn.KV(), sessiondata.NodeUserSessionDataOverride,
@@ -98,9 +101,30 @@ func validateTenantInfo(
 		return errors.Newf("tenant in data state %v with dropped name %q", info.DataState, info.DroppedName)
 	}
 
-	if info.ServiceMode != mtinfopb.ServiceModeNone && info.DataState != mtinfopb.DataStateReady {
-		return errors.Newf("cannot use tenant service mode %v with data state %v",
-			info.ServiceMode, info.DataState)
+	if settings.Version.IsActive(ctx, clusterversion.V23_1TenantNamesStateAndServiceMode) {
+		// We can only check the service mode after upgrading to a version
+		// that supports the service mode column.
+		if info.ServiceMode != mtinfopb.ServiceModeNone && info.DataState != mtinfopb.DataStateReady {
+			return errors.Newf("cannot use tenant service mode %v with data state %v",
+				info.ServiceMode, info.DataState)
+		}
+	}
+
+	// Sanity check. Note that this interlock is not a guarantee that
+	// the cluster setting will never be set to an invalid tenant. There
+	// is a race condition between changing the cluster setting and the
+	// check here. Generally, other subsystems should always tolerate
+	// when the cluster setting is set to a tenant without service (or
+	// even one that doesn't exist).
+	if multitenant.VerifyTenantService.Get(&settings.SV) &&
+		info.ServiceMode == mtinfopb.ServiceModeNone &&
+		info.Name != "" &&
+		multitenant.DefaultTenantSelect.Get(&settings.SV) == string(info.Name) {
+		return errors.WithHintf(
+			pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
+				"cannot stop service while tenant is selected as default"),
+			"Update the cluster setting %q to a different value.",
+			multitenant.DefaultClusterSelectSettingName)
 	}
 
 	return nil
@@ -118,12 +142,14 @@ func TestingUpdateTenantRecord(
 func (p *planner) UpdateTenantResourceLimits(
 	ctx context.Context,
 	tenantID uint64,
-	availableTokens float64,
+	availableRU float64,
 	refillRate float64,
-	maxBurstTokens float64,
+	maxBurstRU float64,
+	asOf time.Time,
+	asOfConsumedRequestUnits float64,
 ) error {
 	const op = "update-resource-limits"
-	if err := p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER); err != nil {
+	if err := p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTERMETADATA); err != nil {
 		return err
 	}
 
@@ -135,16 +161,16 @@ func (p *planner) UpdateTenantResourceLimits(
 	}
 
 	return p.ExecCfg().TenantUsageServer.ReconfigureTokenBucket(
-		ctx, p.InternalSQLTxn(), roachpb.MustMakeTenantID(tenantID), availableTokens, refillRate,
-		maxBurstTokens,
+		ctx, p.InternalSQLTxn(), roachpb.MustMakeTenantID(tenantID), availableRU, refillRate,
+		maxBurstRU, asOf, asOfConsumedRequestUnits,
 	)
 }
 
-// ActivateRestoredTenant marks a restored tenant active.
+// ActivateTenant marks a tenant active.
 //
 // The caller is responsible for checking that the user is authorized
 // to take this action.
-func ActivateRestoredTenant(
+func ActivateTenant(
 	ctx context.Context,
 	settings *cluster.Settings,
 	codec keys.SQLCodec,
@@ -177,7 +203,7 @@ func ActivateRestoredTenant(
 }
 
 func (p *planner) setTenantService(
-	ctx context.Context, info *mtinfopb.TenantInfo, targetMode mtinfopb.TenantServiceMode,
+	ctx context.Context, info *mtinfopb.TenantInfo, newMode mtinfopb.TenantServiceMode,
 ) error {
 	if p.EvalContext().TxnReadOnly {
 		return readOnlyError("ALTER VIRTUAL CLUSTER SERVICE")
@@ -193,163 +219,21 @@ func (p *planner) setTenantService(
 		return err
 	}
 
-	if !p.extendedEvalCtx.TxnIsSingleStmt {
-		return errors.Errorf("ALTER VIRTUAL CLUSTER SERVICE cannot be used inside a multi-statement transaction")
+	if newMode == info.ServiceMode {
+		// No-op. Do nothing.
+		return nil
 	}
 
-	lastMode := info.ServiceMode
-	for {
-		mode, err := stepTenantServiceState(ctx,
-			p.ExecCfg().InternalDB,
-			p.execCfg.SQLStatusServer,
-			p.ExecCfg().Settings, info, targetMode)
-		if err != nil {
-			return err
-		}
-		if targetMode == mode {
-			return nil
-		}
-		if mode == lastMode {
-			return errors.AssertionFailedf("service mode did not advance from %q", lastMode)
-		}
-	}
-}
-
-func stepTenantServiceState(
-	ctx context.Context,
-	db *InternalDB,
-	statusSrv serverpb.SQLStatusServer,
-	settings *cluster.Settings,
-	inInfo *mtinfopb.TenantInfo,
-	targetMode mtinfopb.TenantServiceMode,
-) (mtinfopb.TenantServiceMode, error) {
-	updateTenantMode := func(txn isql.Txn, info *mtinfopb.TenantInfo, mode mtinfopb.TenantServiceMode) error {
-		// Zero the LastRevertTenantTimestamp since
-		// starting the service invalidates any
-		// previous revert.
-		if mode == mtinfopb.ServiceModeShared || mode == mtinfopb.ServiceModeExternal {
-			info.LastRevertTenantTimestamp = hlc.Timestamp{}
-		}
-		log.Infof(ctx, "transitioning tenant %d from %s to %s", info.ID, info.ServiceMode, mode)
-		info.ServiceMode = mode
-		return UpdateTenantRecord(ctx, settings, txn, info)
+	if newMode != mtinfopb.ServiceModeNone && info.ServiceMode != mtinfopb.ServiceModeNone {
+		return errors.WithHint(pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
+			"cannot change service mode %v to %v directly",
+			info.ServiceMode, newMode),
+			"Use ALTER VIRTUAL CLUSTER STOP SERVICE first.")
 	}
 
-	// In 24.1 we support the following state transitions
-	//
-	//      +-> External -+
-	// None-|             |-> Stopping
-	//   ^  +->  Shared  -+      |
-	//   |                       |
-	//   +-----------------------+
-	//
-	// NB: We could eliminate some of the error cases here. For
-	// instance we could support External -> Shared now but still
-	// return an error in that case.
-	nextMode := func(currentMode mtinfopb.TenantServiceMode, targetMode mtinfopb.TenantServiceMode) (mtinfopb.TenantServiceMode, error) {
-		switch currentMode {
-		case mtinfopb.ServiceModeNone:
-			switch targetMode {
-			case mtinfopb.ServiceModeShared, mtinfopb.ServiceModeExternal:
-				return targetMode, nil
-			default:
-				return 0, errors.AssertionFailedf("unsupported service mode transition from %s to %s", currentMode, targetMode)
-			}
-		case mtinfopb.ServiceModeShared, mtinfopb.ServiceModeExternal:
-			switch targetMode {
-			case mtinfopb.ServiceModeNone:
-				return mtinfopb.ServiceModeStopping, nil
-			case mtinfopb.ServiceModeExternal, mtinfopb.ServiceModeShared:
-				return 0, errors.WithHint(pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
-					"cannot change service mode %v to %v directly", currentMode, targetMode),
-					"Use ALTER VIRTUAL CLUSTER STOP SERVICE first.")
-			default:
-				return 0, errors.AssertionFailedf("unsupported service mode transition from %s to %s", currentMode, targetMode)
-			}
-		case mtinfopb.ServiceModeStopping:
-			switch targetMode {
-			case mtinfopb.ServiceModeNone:
-				return targetMode, nil
-			case mtinfopb.ServiceModeShared, mtinfopb.ServiceModeExternal:
-				return 0, pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
-					"service currently stopping, cannot start service until stop has completed")
-			default:
-				return 0, errors.AssertionFailedf("unsupported service mode transition from %s to %s", currentMode, targetMode)
-			}
-		default:
-			return 0, errors.AssertionFailedf("unknown service mode %q", currentMode)
-		}
-
-	}
-
-	var mode mtinfopb.TenantServiceMode
-	if err := db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		tid, err := roachpb.MakeTenantID(inInfo.ID)
-		if err != nil {
-			return err
-		}
-
-		info, err := GetTenantRecordByID(ctx, txn, tid, settings)
-		if err != nil {
-			return err
-		}
-
-		if targetMode == info.ServiceMode {
-			// No-op. Do nothing.
-			mode = targetMode
-			return nil
-		}
-
-		mode, err = nextMode(info.ServiceMode, targetMode)
-		if err != nil {
-			return err
-		}
-		return updateTenantMode(txn, info, mode)
-	}); err != nil {
-		return mode, err
-	}
-
-	if mode == mtinfopb.ServiceModeStopping {
-		// The timeout here is to protect against a scenario
-		// in which another client also stops the service,
-		// observes the stopped state first, and then restarts
-		// the service while we are still waiting for all
-		// nodes to observe the stopped state.
-		//
-		// We could avoid this by treating these transitions
-		// more like schema changes.
-		log.Infof(ctx, "waiting for all nodes to stop service for tenant %d", inInfo.ID)
-		if err := timeutil.RunWithTimeout(ctx, "wait-for-tenant-stop", 10*time.Minute, func(ctx context.Context) error {
-			retryOpts := retry.Options{MaxBackoff: 10 * time.Second}
-			for re := retry.StartWithCtx(ctx, retryOpts); re.Next(); {
-				resp, err := statusSrv.TenantServiceStatus(ctx, &serverpb.TenantServiceStatusRequest{TenantID: inInfo.ID})
-				if err != nil {
-					return errors.Wrap(err, "failed waiting for tenant service status")
-				}
-				if len(resp.ErrorsByNodeID) > 0 {
-					for _, errStr := range resp.ErrorsByNodeID {
-						return errors.Newf("failed to poll service status on all nodes (first error): %s", errStr)
-					}
-				}
-				allStopped := true
-				for n, info := range resp.StatusByNodeID {
-					stoppedOrStopping := info.ServiceMode == mtinfopb.ServiceModeStopping || info.ServiceMode == mtinfopb.ServiceModeNone
-					if !stoppedOrStopping {
-						log.Infof(ctx, "tenant %d is still running on node %s", info.ID, n)
-						allStopped = false
-					}
-				}
-				if allStopped {
-					break
-				}
-			}
-			return nil
-		}); err != nil {
-			return mode, err
-		}
-	}
-
-	return mode, nil
+	info.ServiceMode = newMode
+	info.LastRevertTenantTimestamp = hlc.Timestamp{}
+	return UpdateTenantRecord(ctx, p.ExecCfg().Settings, p.InternalSQLTxn(), info)
 }
 
 func (p *planner) renameTenant(
@@ -371,6 +255,10 @@ func (p *planner) renameTenant(
 	if newName != "" {
 		if err := newName.IsValid(); err != nil {
 			return pgerror.WithCandidateCode(err, pgcode.Syntax)
+		}
+
+		if !p.EvalContext().Settings.Version.IsActive(ctx, clusterversion.V23_1TenantNamesStateAndServiceMode) {
+			return pgerror.Newf(pgcode.FeatureNotSupported, "cannot use tenant names")
 		}
 	}
 

@@ -47,20 +47,20 @@ func validateTargetClusterVersion(
 	targetCV *clusterversion.ClusterVersion,
 	instanceID base.SQLInstanceID,
 ) error {
-	if targetCV.Less(tenantVersion.MinSupportedVersion()) {
+	if targetCV.Less(tenantVersion.BinaryMinSupportedVersion()) {
 		err := errors.Newf("requested tenant cluster upgrade version %s is less than the "+
 			"binary's minimum supported version %s for SQL server instance %d",
-			targetCV, tenantVersion.MinSupportedVersion(),
+			targetCV, tenantVersion.BinaryMinSupportedVersion(),
 			instanceID)
 		log.Warningf(ctx, "%v", err)
 		return err
 	}
 
-	if tenantVersion.LatestVersion().Less(targetCV.Version) {
+	if tenantVersion.BinaryVersion().Less(targetCV.Version) {
 		err := errors.Newf("sql server %d is running a binary version %s which is "+
 			"less than the attempted upgrade version %s",
 			instanceID,
-			tenantVersion.LatestVersion(), targetCV)
+			tenantVersion.BinaryVersion(), targetCV)
 		log.Warningf(ctx, "%v", err)
 		return errors.WithHintf(err,
 			"upgrade sql server %d binary to version %s (or higher) to allow tenant upgrade to succeed",

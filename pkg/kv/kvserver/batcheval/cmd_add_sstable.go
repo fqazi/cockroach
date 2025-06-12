@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvnemesis/kvnemesisutil"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
@@ -21,11 +20,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 	"github.com/gogo/protobuf/types"
@@ -48,30 +45,22 @@ func declareKeysAddSSTable(
 	lockSpans *lockspanset.LockSpanSet,
 	maxOffset time.Duration,
 ) error {
-	reqHeader := req.Header()
+	args := req.(*kvpb.AddSSTableRequest)
 	if err := DefaultDeclareIsolatedKeys(rs, header, req, latchSpans, lockSpans, maxOffset); err != nil {
 		return err
 	}
 	// We look up the range descriptor key to return its span.
 	latchSpans.AddNonMVCC(spanset.SpanReadOnly, roachpb.Span{Key: keys.RangeDescriptorKey(rs.GetStartKey())})
-	var mvccStats *enginepb.MVCCStats
-	switch v := req.(type) {
-	case *kvpb.AddSSTableRequest:
-		mvccStats = v.MVCCStats
-	case *kvpb.LinkExternalSSTableRequest:
-		mvccStats = v.ExternalFile.MVCCStats
-	default:
-		return errors.AssertionFailedf("unexpected rpc request called on declareKeysAddSStable")
-	}
+
 	// TODO(bilal): Audit all AddSSTable callers to ensure they send MVCCStats.
-	if mvccStats == nil || mvccStats.RangeKeyCount > 0 {
+	if args.MVCCStats == nil || args.MVCCStats.RangeKeyCount > 0 {
 		// NB: The range end key is not available, so this will pessimistically
 		// latch up to args.EndKey.Next(). If EndKey falls on the range end key, the
 		// span will be tightened during evaluation.
 		// Even if we obtain latches beyond the end range here, it won't cause
 		// contention with the subsequent range because latches are enforced per
 		// range.
-		l, r := rangeTombstonePeekBounds(reqHeader.Key, reqHeader.EndKey, rs.GetStartKey().AsRawKey(), nil)
+		l, r := rangeTombstonePeekBounds(args.Key, args.EndKey, rs.GetStartKey().AsRawKey(), nil)
 		latchSpans.AddMVCC(spanset.SpanReadOnly, roachpb.Span{Key: l, EndKey: r}, header.Timestamp)
 
 		// Obtain a read only lock on range key GC key to serialize with
@@ -88,7 +77,7 @@ var AddSSTableRewriteConcurrency = settings.RegisterIntSetting(
 	settings.SystemOnly,
 	"kv.bulk_io_write.sst_rewrite_concurrency.per_call",
 	"concurrency to use when rewriting sstable timestamps by block, or 0 to use a loop",
-	int64(metamorphic.ConstantWithTestRange("addsst-rewrite-concurrency", 4, 0, 16)),
+	int64(util.ConstantWithMetamorphicTestRange("addsst-rewrite-concurrency", 4, 0, 16)),
 	settings.NonNegativeInt,
 )
 
@@ -100,6 +89,15 @@ var AddSSTableRequireAtRequestTimestamp = settings.RegisterBoolSetting(
 	"kv.bulk_io_write.sst_require_at_request_timestamp.enabled",
 	"rejects addsstable requests that don't write at the request timestamp",
 	false,
+)
+
+// addSSTableCapacityRemainingLimit is the fraction of remaining store capacity
+// under which addsstable requests are rejected.
+var addSSTableCapacityRemainingLimit = settings.RegisterFloatSetting(
+	settings.SystemOnly,
+	"kv.bulk_io_write.min_capacity_remaining_fraction",
+	"remaining store capacity fraction below which an addsstable request is rejected",
+	0.05,
 )
 
 // prefixSeekCollisionCheckRatio specifies the minimum engine:sst byte ratio at
@@ -121,7 +119,7 @@ var AddSSTableRequireAtRequestTimestamp = settings.RegisterBoolSetting(
 // old status quo was regular seeks.
 const prefixSeekCollisionCheckRatio = 10
 
-var forceRewrite = metamorphic.ConstantWithTestBool("addsst-rewrite-forced", false)
+var forceRewrite = util.ConstantWithMetamorphicTestBool("addsst-rewrite-forced", false)
 
 // EvalAddSSTable evaluates an AddSSTable command. For details, see doc comment
 // on AddSSTableRequest.
@@ -137,11 +135,11 @@ func EvalAddSSTable(
 
 	var span *tracing.Span
 	var err error
-	ctx, span = tracing.ChildSpan(ctx, "EvalAddSSTable")
+	ctx, span = tracing.ChildSpan(ctx, "AddSSTable")
 	defer span.Finish()
 	log.Eventf(ctx, "evaluating AddSSTable [%s,%s)", start.Key, end.Key)
 
-	if min := storage.MinCapacityForBulkIngest.Get(&cArgs.EvalCtx.ClusterSettings().SV); min > 0 {
+	if min := addSSTableCapacityRemainingLimit.Get(&cArgs.EvalCtx.ClusterSettings().SV); min > 0 {
 		cap, err := cArgs.EvalCtx.GetEngineCapacity()
 		if err != nil {
 			return result.Result{}, err
@@ -155,6 +153,33 @@ func EvalAddSSTable(
 				Required:  min,
 			}
 		}
+	}
+
+	if args.RemoteFile.Path != "" {
+		if len(args.Data) > 0 {
+			return result.Result{}, errors.AssertionFailedf(
+				"AddSSTable requests cannot add bytes and remote file at same time")
+		}
+		log.Infof(ctx, "AddSSTable of remote file: %s in %s", args.RemoteFile.Path, args.RemoteFile.Locator)
+		stats := *args.MVCCStats
+		stats.ContainsEstimates++
+
+		ms.Add(stats)
+
+		mvccHistoryMutation := &kvserverpb.ReplicatedEvalResult_MVCCHistoryMutation{
+			Spans: []roachpb.Span{{Key: start.Key, EndKey: end.Key}},
+		}
+		return result.Result{
+			Replicated: kvserverpb.ReplicatedEvalResult{
+				AddSSTable: &kvserverpb.ReplicatedEvalResult_AddSSTable{
+					RemoteFileLoc:   args.RemoteFile.Locator,
+					RemoteFilePath:  args.RemoteFile.Path,
+					BackingFileSize: args.RemoteFile.BackingFileSize,
+					Span:            roachpb.Span{Key: start.Key, EndKey: end.Key},
+				},
+				MVCCHistoryMutation: mvccHistoryMutation,
+			},
+		}, nil
 	}
 
 	// Reject AddSSTable requests not writing at the request timestamp if requested.
@@ -196,16 +221,17 @@ func EvalAddSSTable(
 
 	var statsDelta enginepb.MVCCStats
 	maxLockConflicts := storage.MaxConflictsPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV)
-	targetLockConflictBytes := storage.TargetBytesPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV)
-	checkConflicts := args.DisallowConflicts || !args.DisallowShadowingBelow.IsEmpty()
+	checkConflicts := args.DisallowConflicts || args.DisallowShadowing ||
+		!args.DisallowShadowingBelow.IsEmpty()
 	if checkConflicts {
 		// If requested, check for MVCC conflicts with existing keys. This enforces
 		// all MVCC invariants by returning WriteTooOldError for any existing
 		// values at or above the SST timestamp, returning LockConflictError to
 		// resolve any encountered intents, and accurately updating MVCC stats.
 		//
-		// Additionally, if DisallowShadowingBelow is set, it will not write
-		// above existing/visible values (but will write above tombstones).
+		// Additionally, if DisallowShadowing or DisallowShadowingBelow is set, it
+		// will not write above existing/visible values (but will write above
+		// tombstones).
 		//
 		// If the overlap between the ingested SST and the engine is large (i.e.
 		// the SST is wide in keyspace), or if the ingested SST is very small,
@@ -230,7 +256,7 @@ func EvalAddSSTable(
 
 		log.VEventf(ctx, 2, "checking conflicts for SSTable [%s,%s)", start.Key, end.Key)
 		statsDelta, err = storage.CheckSSTConflicts(ctx, sst, readWriter, start, end, leftPeekBound, rightPeekBound,
-			args.DisallowShadowingBelow, sstTimestamp, maxLockConflicts, targetLockConflictBytes, usePrefixSeek)
+			args.DisallowShadowing, args.DisallowShadowingBelow, sstTimestamp, maxLockConflicts, usePrefixSeek)
 		statsDelta.Add(sstReqStatsDelta)
 		if err != nil {
 			return result.Result{}, errors.Wrap(err, "checking for key collisions")
@@ -241,8 +267,7 @@ func EvalAddSSTable(
 		// caller is expected to make sure there are no writers across the span,
 		// and thus no or few locks, so this is cheap in the common case.
 		log.VEventf(ctx, 2, "checking conflicting locks for SSTable [%s,%s)", start.Key, end.Key)
-		locks, err := storage.ScanLocks(
-			ctx, readWriter, start.Key, end.Key, maxLockConflicts, 0)
+		locks, err := storage.ScanLocks(ctx, readWriter, start.Key, end.Key, maxLockConflicts, 0)
 		if err != nil {
 			return result.Result{}, errors.Wrap(err, "scanning locks")
 		} else if len(locks) > 0 {
@@ -378,13 +403,12 @@ func EvalAddSSTable(
 	// needs to know what data is there, it must issue its own real Scan.
 	if args.ReturnFollowingLikelyNonEmptySpanStart {
 		existingIter, err := spanset.DisableReaderAssertions(readWriter).NewMVCCIterator(
-			ctx,
 			storage.MVCCKeyIterKind, // don't care if it is committed or not, just that it isn't empty.
 			storage.IterOptions{
-				KeyTypes:     storage.IterKeyTypePointsAndRanges,
-				UpperBound:   reply.RangeSpan.EndKey,
-				ReadCategory: fs.BatchEvalReadCategory,
-			})
+				KeyTypes:   storage.IterKeyTypePointsAndRanges,
+				UpperBound: reply.RangeSpan.EndKey,
+			},
+		)
 		if err != nil {
 			return result.Result{}, errors.Wrap(err, "error when creating iterator for non-empty span")
 		}
@@ -510,7 +534,7 @@ func EvalAddSSTable(
 // * Only SST set operations (not explicitly verified).
 // * No intents or unversioned values.
 // * If sstTimestamp is set, all MVCC timestamps equal it.
-// * The LocalTimestamp in the MVCCValueHeader is empty.
+// * MVCCValueHeader is empty.
 // * Given MVCC stats match the SST contents.
 func assertSSTContents(sst []byte, sstTimestamp hlc.Timestamp, stats *enginepb.MVCCStats) error {
 
@@ -544,9 +568,8 @@ func assertSSTContents(sst []byte, sstTimestamp hlc.Timestamp, stats *enginepb.M
 			return errors.NewAssertionErrorWithWrappedErrf(err,
 				"SST contains invalid value for key %s", key)
 		}
-		if !value.MVCCValueHeader.LocalTimestamp.IsEmpty() {
-			return errors.AssertionFailedf("SST contains non-empty Local Timestamp in the MVCC value"+
-				" header for key %s", key)
+		if value.MVCCValueHeader != (enginepb.MVCCValueHeader{}) {
+			return errors.AssertionFailedf("SST contains non-empty MVCC value header for key %s", key)
 		}
 	}
 
@@ -586,11 +609,6 @@ func assertSSTContents(sst []byte, sstTimestamp hlc.Timestamp, stats *enginepb.M
 			if !value.IsTombstone() {
 				return errors.AssertionFailedf("SST contains non-tombstone range key %s", rangeKey)
 			}
-
-			// Set the KVNemesisSeq to its zero value so that we can run KVNemesis
-			// under the race detector.
-			var emptyContainer kvnemesisutil.Container
-			value.MVCCValueHeader.KVNemesisSeq = emptyContainer
 			if value.MVCCValueHeader != (enginepb.MVCCValueHeader{}) {
 				return errors.AssertionFailedf("SST contains non-empty MVCC value header for range key %s",
 					rangeKey)

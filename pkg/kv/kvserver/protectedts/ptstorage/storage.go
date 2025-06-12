@@ -67,7 +67,7 @@ func (p *storage) Protect(ctx context.Context, r *ptpb.Record) error {
 	// migration we should continue write records that protect `spans`.
 	//
 	// TODO(adityamaru): Delete in 22.2 once we exclusively protect `target`s.
-	if useDeprecatedProtectedTSStorage(ctx, p.settings, p.knobs) || writeDeprecatedPTSRecord(p.knobs, r) {
+	if useDeprecatedProtectedTSStorage(ctx, p.settings, p.knobs) {
 		return p.deprecatedProtect(ctx, r, meta)
 	}
 
@@ -82,30 +82,16 @@ func (p *storage) Protect(ctx context.Context, r *ptpb.Record) error {
 	if err != nil { // how can this possibly fail?
 		return errors.Wrap(err, "failed to marshal spans")
 	}
-
-	updateMeta := usePTSMetaTable(ctx, p.settings, p.knobs)
-	query := protectInsertRecordCTE
-	args := []interface{}{
-		r.ID, r.Timestamp.AsOfSystemTime(),
-		r.MetaType, meta,
-		len(r.DeprecatedSpans), encodedTarget, encodedTarget}
-
-	if updateMeta {
-		query = protectQuery
-		args = []interface{}{s.maxSpans, s.maxBytes, len(r.DeprecatedSpans),
-			r.ID, r.Timestamp.AsOfSystemTime(),
-			r.MetaType, meta,
-			len(r.DeprecatedSpans), encodedTarget, encodedTarget}
-	}
-
 	it, err := p.txn.QueryIteratorEx(ctx, "protectedts-protect", p.txn.KV(),
 		sessiondata.NodeUserSessionDataOverride,
-		query,
-		args...)
+		protectQuery,
+		s.maxSpans, s.maxBytes, len(r.DeprecatedSpans),
+		r.ID, r.Timestamp.WithSynthetic(false).AsOfSystemTime(),
+		r.MetaType, meta,
+		len(r.DeprecatedSpans), encodedTarget, encodedTarget)
 	if err != nil {
 		return errors.Wrapf(err, "failed to write record %v", r.ID)
 	}
-
 	ok, err := it.Next(ctx)
 	if err != nil {
 		return errors.Wrapf(err, "failed to write record %v", r.ID)
@@ -113,24 +99,18 @@ func (p *storage) Protect(ctx context.Context, r *ptpb.Record) error {
 	if !ok {
 		return errors.Newf("failed to write record %v", r.ID)
 	}
-
-	defer func() {
-		if err := it.Close(); err != nil {
-			log.Infof(ctx, "encountered %v when writing record %v", err, r.ID)
-		}
-	}()
-
 	row := it.Cur()
+	if err := it.Close(); err != nil {
+		log.Infof(ctx, "encountered %v when writing record %v", err, r.ID)
+	}
 	if failed := *row[0].(*tree.DBool); failed {
-		if updateMeta {
-			curBytes := int64(*row[1].(*tree.DInt))
-			recordBytes := int64(len(encodedTarget) + len(r.Meta) + len(r.MetaType))
-			if s.maxBytes > 0 && curBytes+recordBytes > s.maxBytes {
-				return errors.WithHint(
-					errors.Errorf("protectedts: limit exceeded: %d+%d > %d bytes", curBytes, recordBytes,
-						s.maxBytes),
-					"SET CLUSTER SETTING kv.protectedts.max_bytes to a higher value")
-			}
+		curBytes := int64(*row[1].(*tree.DInt))
+		recordBytes := int64(len(encodedTarget) + len(r.Meta) + len(r.MetaType))
+		if s.maxBytes > 0 && curBytes+recordBytes > s.maxBytes {
+			return errors.WithHint(
+				errors.Errorf("protectedts: limit exceeded: %d+%d > %d bytes", curBytes, recordBytes,
+					s.maxBytes),
+				"SET CLUSTER SETTING kv.protectedts.max_bytes to a higher value")
 		}
 		return protectedts.ErrExists
 	}
@@ -172,13 +152,9 @@ func (p storage) MarkVerified(ctx context.Context, id uuid.UUID) error {
 }
 
 func (p storage) Release(ctx context.Context, id uuid.UUID) error {
-	query := releaseQueryWithMeta
-	if !usePTSMetaTable(ctx, p.settings, p.knobs) {
-		query = releaseQuery
-	}
 	numRows, err := p.txn.ExecEx(ctx, "protectedts-Release", p.txn.KV(),
 		sessiondata.NodeUserSessionDataOverride,
-		query, id.GetBytesMut())
+		releaseQuery, id.GetBytesMut())
 	if err != nil {
 		return errors.Wrapf(err, "failed to release record %v", id)
 	}
@@ -247,13 +223,9 @@ func (p *storage) getRecords(ctx context.Context) ([]ptpb.Record, error) {
 }
 
 func (p storage) UpdateTimestamp(ctx context.Context, id uuid.UUID, timestamp hlc.Timestamp) error {
-	query := updateTimestampQuery
-	if !usePTSMetaTable(ctx, p.settings, p.knobs) {
-		query = updateTimestampUpsertRecordCTE
-	}
 	row, err := p.txn.QueryRowEx(ctx, "protectedts-update", p.txn.KV(),
 		sessiondata.NodeUserSessionDataOverride,
-		query, id.GetBytesMut(), timestamp.AsOfSystemTime())
+		updateTimestampQuery, id.GetBytesMut(), timestamp.WithSynthetic(false).AsOfSystemTime())
 	if err != nil {
 		return errors.Wrapf(err, "failed to update record %v", id)
 	}
@@ -278,16 +250,6 @@ func useDeprecatedProtectedTSStorage(
 	ctx context.Context, st *cluster.Settings, knobs *protectedts.TestingKnobs,
 ) bool {
 	return knobs.DisableProtectedTimestampForMultiTenant
-}
-
-func writeDeprecatedPTSRecord(knobs *protectedts.TestingKnobs, r *ptpb.Record) bool {
-	return knobs != nil && knobs.WriteDeprecatedPTSRecords && r.DeprecatedSpans != nil && len(r.DeprecatedSpans) > 0
-}
-
-func usePTSMetaTable(
-	ctx context.Context, st *cluster.Settings, knobs *protectedts.TestingKnobs,
-) bool {
-	return knobs.UseMetaTable
 }
 
 // New creates a new Storage.
@@ -355,7 +317,7 @@ func (p *storage) deprecatedProtect(ctx context.Context, r *ptpb.Record, meta []
 		sessiondata.NodeUserSessionDataOverride,
 		protectQueryWithoutTarget,
 		s.maxSpans, s.maxBytes, len(r.DeprecatedSpans),
-		r.ID, r.Timestamp.AsOfSystemTime(),
+		r.ID, r.Timestamp.WithSynthetic(false).AsOfSystemTime(),
 		r.MetaType, meta,
 		len(r.DeprecatedSpans), encodedSpans)
 	if err != nil {

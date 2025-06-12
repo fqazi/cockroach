@@ -21,9 +21,6 @@ import (
 )
 
 var npgsqlReleaseTagRegex = regexp.MustCompile(`^v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<point>\d+)$`)
-
-// WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
-// This is used by docs automation to produce a list of supported versions for ORM's.
 var npgsqlSupportedTag = "v7.0.2"
 
 // This test runs npgsql's full test suite against a single cockroach node.
@@ -101,7 +98,7 @@ sudo ln -s /snap/dotnet-sdk/current/dotnet /usr/local/bin/dotnet`,
 		t.L().Printf("Latest npgsql release is %s.", latestTag)
 		t.L().Printf("Supported release is %s.", npgsqlSupportedTag)
 
-		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(c.Nodes(1)), "echo -n {pgport:1}")
+		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), c.Nodes(1), "echo -n {pgport:1}")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -130,7 +127,7 @@ echo '%s' | git apply --ignore-whitespace -`, fmt.Sprintf(npgsqlPatch, result.St
 		t.Status("running npgsql test suite")
 		// Running the test suite is expected to error out, so swallow the error.
 		result, err = c.RunWithDetailsSingleNode(
-			ctx, t.L(), option.WithNodes(node),
+			ctx, t.L(), node,
 			`cd /mnt/data1/npgsql && dotnet test test/Npgsql.Tests --logger trx`,
 		)
 

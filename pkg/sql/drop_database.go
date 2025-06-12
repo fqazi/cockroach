@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
@@ -28,7 +27,6 @@ import (
 )
 
 type dropDatabaseNode struct {
-	zeroInputPlanNode
 	n      *tree.DropDatabase
 	dbDesc *dbdesc.Mutable
 	d      *dropCascadeState
@@ -49,7 +47,7 @@ func (p *planner) DropDatabase(ctx context.Context, n *tree.DropDatabase) (planN
 	}
 
 	if n.Name == "" {
-		return nil, sqlerrors.ErrEmptyDatabaseName
+		return nil, errEmptyDatabaseName
 	}
 
 	if string(n.Name) == p.SessionData().Database && p.SessionData().SafeUpdates {
@@ -104,7 +102,7 @@ func (p *planner) DropDatabase(ctx context.Context, n *tree.DropDatabase) (planN
 		}
 	}
 
-	if err := d.resolveCollectedObjects(ctx, true /*dropDatabase*/, p); err != nil {
+	if err := d.resolveCollectedObjects(ctx, p); err != nil {
 		return nil, err
 	}
 
@@ -211,6 +209,11 @@ func (n *dropDatabaseNode) startExec(params runParams) error {
 	if err := p.deleteComment(
 		ctx, n.dbDesc.GetID(), 0 /* subID */, catalogkeys.DatabaseCommentType,
 	); err != nil {
+		return err
+	}
+
+	// TODO(jeffswenson): delete once region_livess is implemented (#107966)
+	if err := p.maybeUpdateSystemDBSurvivalGoal(ctx); err != nil {
 		return err
 	}
 

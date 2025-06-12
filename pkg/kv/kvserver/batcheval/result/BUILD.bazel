@@ -23,11 +23,10 @@ go_test(
     name = "result_test",
     size = "small",
     srcs = ["result_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":result"],
     deps = [
         "//pkg/kv/kvserver/kvserverpb",
-        "//pkg/roachpb",
         "//pkg/util/leaktest",
-        "@com_github_stretchr_testify//require",
     ],
 )

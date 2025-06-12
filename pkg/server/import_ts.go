@@ -67,7 +67,7 @@ func maybeImportTS(ctx context.Context, s *topLevelServer) (returnErr error) {
 	// store statuses to map the store timeseries to the node under which they
 	// fall). An alternative to this is setting a FirstStoreID and FirstNodeID that
 	// is not in use in the data set to import.
-	s.node.suppressNodeStatus.Store(true)
+	s.node.suppressNodeStatus.Set(true)
 
 	// Disable raft log synchronization to make the server generally faster.
 	logstore.DisableSyncRaftLog.Override(ctx, &s.cfg.Settings.SV, true)
@@ -80,7 +80,7 @@ func maybeImportTS(ctx context.Context, s *topLevelServer) (returnErr error) {
 	} {
 		if _, err := s.sqlServer.internalExecutor.ExecEx(
 			ctx, "tsdump-cfg", nil, /* txn */
-			sessiondata.NodeUserSessionDataOverride,
+			sessiondata.RootUserSessionDataOverride,
 			stmt,
 		); err != nil {
 			return errors.Wrapf(err, "%s", stmt)

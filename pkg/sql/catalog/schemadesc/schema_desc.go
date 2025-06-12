@@ -6,7 +6,6 @@
 package schemadesc
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -15,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catprivilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
@@ -26,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -87,14 +84,6 @@ func (desc *immutable) ForEachUDTDependentForHydration(fn func(t *types.T) error
 					return iterutil.Map(err)
 				}
 			}
-			for _, typ := range sig.OutParamTypes {
-				if !catid.IsOIDUserDefined(typ.Oid()) {
-					continue
-				}
-				if err := fn(typ); err != nil {
-					return iterutil.Map(err)
-				}
-			}
 			if !catid.IsOIDUserDefined(sig.ReturnType.Oid()) {
 				continue
 			}
@@ -104,28 +93,6 @@ func (desc *immutable) ForEachUDTDependentForHydration(fn func(t *types.T) error
 		}
 	}
 	return nil
-}
-
-// MaybeRequiresTypeHydration implements the catalog.Descriptor interface.
-func (desc *immutable) MaybeRequiresTypeHydration() bool {
-	for _, f := range desc.Functions {
-		for _, sig := range f.Signatures {
-			if catid.IsOIDUserDefined(sig.ReturnType.Oid()) {
-				return true
-			}
-			for _, typ := range sig.ArgTypes {
-				if catid.IsOIDUserDefined(typ.Oid()) {
-					return true
-				}
-			}
-			for _, typ := range sig.OutParamTypes {
-				if catid.IsOIDUserDefined(typ.Oid()) {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }
 
 // SafeMessage makes Mutable a SafeMessager.
@@ -270,20 +237,13 @@ func (desc *immutable) ValidateSelf(vea catalog.ValidationErrorAccumulator) {
 
 // GetReferencedDescIDs returns the IDs of all descriptors referenced by
 // this descriptor, including itself.
-func (desc *immutable) GetReferencedDescIDs(
-	level catalog.ValidationLevel,
-) (catalog.DescriptorIDSet, error) {
+func (desc *immutable) GetReferencedDescIDs() (catalog.DescriptorIDSet, error) {
 	ret := catalog.MakeDescriptorIDSet(desc.GetID(), desc.GetParentID())
-	// We only need to resolve functions in this schema if we are validating
-	// back references as well.
-	if level&catalog.ValidationLevelBackReferences == catalog.ValidationLevelBackReferences {
-		for _, f := range desc.Functions {
-			for _, sig := range f.Signatures {
-				ret.Add(sig.ID)
-			}
+	for _, f := range desc.Functions {
+		for _, sig := range f.Signatures {
+			ret.Add(sig.ID)
 		}
 	}
-
 	return ret, nil
 }
 
@@ -519,50 +479,6 @@ func (desc *Mutable) RemoveFunction(name string, id descpb.ID) {
 	}
 }
 
-// ReplaceOverload updates the function signature that matches the existing
-// overload with the new one. An error is returned if the function doesn't exist
-// or a match is not found.
-//
-// DefaultExprs in existing are expected to have been type-checked.
-func (desc *Mutable) ReplaceOverload(
-	name string,
-	existing *tree.QualifiedOverload,
-	newSignature descpb.SchemaDescriptor_FunctionSignature,
-) error {
-	fn, ok := desc.Functions[name]
-	if !ok {
-		return errors.AssertionFailedf("unexpectedly didn't find a function %s", name)
-	}
-	for i := range fn.Signatures {
-		sig := fn.Signatures[i]
-		match := existing.Types.Length() == len(sig.ArgTypes) &&
-			len(existing.OutParamOrdinals) == len(sig.OutParamOrdinals) &&
-			len(existing.DefaultExprs) == len(sig.DefaultExprs)
-		for j := 0; match && j < len(sig.ArgTypes); j++ {
-			match = existing.Types.GetAt(j).Equivalent(sig.ArgTypes[j])
-		}
-		for j := 0; match && j < len(sig.OutParamOrdinals); j++ {
-			match = existing.OutParamOrdinals[j] == sig.OutParamOrdinals[j] &&
-				existing.OutParamTypes.GetAt(j).Equivalent(sig.OutParamTypes[j])
-		}
-		for j := 0; match && j < len(sig.DefaultExprs); j++ {
-			texpr, ok := existing.DefaultExprs[j].(tree.TypedExpr)
-			if !ok {
-				return errors.AssertionFailedf(
-					"expected DEFAULT expr %s to have been type-checked, found %T",
-					existing.DefaultExprs[j], existing.DefaultExprs[j],
-				)
-			}
-			match = tree.Serialize(texpr) == sig.DefaultExprs[j]
-		}
-		if match {
-			fn.Signatures[i] = newSignature
-			return nil
-		}
-	}
-	return errors.AssertionFailedf("unexpectedly didn't find overload match for function %s with types %v", name, existing.Types.Types())
-}
-
 // GetObjectType implements the Object interface.
 func (desc *immutable) GetObjectType() privilege.ObjectType {
 	return privilege.Schema
@@ -577,7 +493,7 @@ func (desc *immutable) GetObjectTypeString() string {
 // TODO(mgartner): This should not create tree.Overloads because it cannot fully
 // populated them.
 func (desc *immutable) GetResolvedFuncDefinition(
-	ctx context.Context, name string,
+	name string,
 ) (*tree.ResolvedFunctionDefinition, bool) {
 	funcDescPb, found := desc.GetFunction(name)
 	if !found {
@@ -601,14 +517,10 @@ func (desc *immutable) GetResolvedFuncDefinition(
 			},
 			Type:                     routineType,
 			UDFContainsOnlySignature: true,
-			OutParamOrdinals:         sig.OutParamOrdinals,
 		}
 		if funcDescPb.Signatures[i].ReturnSet {
 			overload.Class = tree.GeneratorClass
 		}
-		// There is no need to look at the parameter classes since ArgTypes
-		// already contains only parameters that are included into the
-		// signature of the overload.
 		paramTypes := make(tree.ParamTypes, 0, len(sig.ArgTypes))
 		for _, paramType := range sig.ArgTypes {
 			paramTypes = append(
@@ -617,30 +529,6 @@ func (desc *immutable) GetResolvedFuncDefinition(
 			)
 		}
 		overload.Types = paramTypes
-		if len(sig.OutParamTypes) > 0 {
-			outParamTypes := make(tree.ParamTypes, len(sig.OutParamTypes))
-			for j := range outParamTypes {
-				outParamTypes[j] = tree.ParamType{Typ: sig.OutParamTypes[j]}
-			}
-			overload.OutParamTypes = outParamTypes
-		}
-		if len(sig.DefaultExprs) > 0 {
-			overload.DefaultExprs = make(tree.Exprs, len(sig.DefaultExprs))
-			for j, expr := range sig.DefaultExprs {
-				var err error
-				overload.DefaultExprs[j], err = parser.ParseExpr(expr)
-				if err != nil {
-					// We should never get an error during parsing the default
-					// expr.
-					inputParamOrdinal := len(sig.ArgTypes) - (len(sig.DefaultExprs) - j)
-					log.Errorf(
-						ctx, "DEFAULT expr for input param %d for routine %s: %v",
-						inputParamOrdinal, name, err,
-					)
-					return nil, false
-				}
-			}
-		}
 		prefixedOverload := tree.MakeQualifiedOverload(desc.GetName(), overload)
 		funcDef.Overloads = append(funcDef.Overloads, prefixedOverload)
 	}
@@ -660,11 +548,6 @@ func (desc *immutable) ForEachFunctionSignature(
 		}
 	}
 	return nil
-}
-
-// GetReplicatedPCRVersion is a part of the catalog.Descriptor
-func (desc *immutable) GetReplicatedPCRVersion() descpb.DescriptorVersion {
-	return desc.ReplicatedPCRVersion
 }
 
 // IsSchemaNameValid returns whether the input name is valid for a user defined

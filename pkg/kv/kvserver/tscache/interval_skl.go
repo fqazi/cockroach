@@ -15,10 +15,8 @@ import (
 	"unsafe"
 
 	"github.com/andy-kimball/arenaskl"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/readsummary/rspb"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/container/list"
-	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -195,7 +193,7 @@ func newIntervalSkl(clock *hlc.Clock, minRet time.Duration, metrics sklMetrics) 
 		minPages: defaultMinSklPages,
 		metrics:  metrics,
 	}
-	s.pushNewPage(0 /* maxWallTime */, nil /* arena */)
+	s.pushNewPage(0 /* maxTime */, nil /* arena */)
 	s.metrics.Pages.Update(1)
 	return &s
 }
@@ -203,8 +201,8 @@ func newIntervalSkl(clock *hlc.Clock, minRet time.Duration, metrics sklMetrics) 
 // Add marks the a single key as having been read at the given timestamp. Once
 // Add completes, future lookups of this key are guaranteed to return an equal
 // or greater timestamp.
-func (s *intervalSkl) Add(ctx context.Context, key []byte, val cacheValue) {
-	s.AddRange(ctx, nil, key, 0, val)
+func (s *intervalSkl) Add(key []byte, val cacheValue) {
+	s.AddRange(nil, key, 0, val)
 }
 
 // AddRange marks the given range of keys [from, to] as having been read at the
@@ -226,9 +224,7 @@ func (s *intervalSkl) Add(ctx context.Context, key []byte, val cacheValue) {
 // the range is split into sub-ranges that are each marked with the maximum read
 // timestamp for that sub-range. Once AddRange completes, future lookups at any
 // point in the range are guaranteed to return an equal or greater timestamp.
-func (s *intervalSkl) AddRange(
-	ctx context.Context, from, to []byte, opt rangeOptions, val cacheValue,
-) {
+func (s *intervalSkl) AddRange(from, to []byte, opt rangeOptions, val cacheValue) {
 	if from == nil && to == nil {
 		panic("from and to keys cannot be nil")
 	}
@@ -274,13 +270,13 @@ func (s *intervalSkl) AddRange(
 
 	for {
 		// Try to add the range to the later page.
-		filledPage := s.addRange(ctx, from, to, opt, val)
+		filledPage := s.addRange(from, to, opt, val)
 		if filledPage == nil {
 			break
 		}
 
 		// The page was filled up, so rotate the pages and then try again.
-		s.rotatePages(ctx, filledPage)
+		s.rotatePages(filledPage)
 	}
 }
 
@@ -290,17 +286,16 @@ func (s *intervalSkl) AddRange(
 // "to" arguments in accordance with AddRange's contract. It returns nil if the
 // operation was successful, or a pointer to an sklPage if the operation failed
 // because that page was full.
-func (s *intervalSkl) addRange(
-	ctx context.Context, from, to []byte, opt rangeOptions, val cacheValue,
-) *sklPage {
+func (s *intervalSkl) addRange(from, to []byte, opt rangeOptions, val cacheValue) *sklPage {
 	// Acquire the rotation mutex read lock so that the page will not be rotated
 	// while add or lookup operations are in progress.
-	s.rotMutex.TracedRLock(ctx)
+	s.rotMutex.RLock()
 	defer s.rotMutex.RUnlock()
 
-	// If floor ts is >= requested timestamp, then no need to perform a search or
-	// add any records.
-	if val.ts.LessEq(s.floorTS) {
+	// If floor ts is greater than the requested timestamp, then no need to
+	// perform a search or add any records. We don't return early when the
+	// timestamps are equal, because their flags may differ.
+	if val.ts.Less(s.floorTS) {
 		return nil
 	}
 
@@ -322,12 +317,8 @@ func (s *intervalSkl) addRange(
 			err = fp.addNode(&it, to, val, 0, true /* mustInit */)
 		}
 
-		if err != nil {
-			if errors.Is(err, arenaskl.ErrArenaFull) {
-				return fp
-			} else {
-				panic(fmt.Sprintf("unexpected error: %v", err))
-			}
+		if errors.Is(err, arenaskl.ErrArenaFull) {
+			return fp
 		}
 	}
 
@@ -344,12 +335,8 @@ func (s *intervalSkl) addRange(
 		err = fp.addNode(&it, from, val, hasGap, false /* mustInit */)
 	}
 
-	if err != nil {
-		if errors.Is(err, arenaskl.ErrArenaFull) {
-			return fp
-		} else {
-			panic(fmt.Sprintf("unexpected error: %v", err))
-		}
+	if errors.Is(err, arenaskl.ErrArenaFull) {
+		return fp
 	}
 
 	// Seek to the node immediately after the "from" node.
@@ -390,7 +377,7 @@ func (s *intervalSkl) frontPage() *sklPage {
 
 // pushNewPage prepends a new empty page to the front of the pages list. It
 // accepts an optional arena argument to facilitate re-use.
-func (s *intervalSkl) pushNewPage(maxWallTime int64, arena *arenaskl.Arena) {
+func (s *intervalSkl) pushNewPage(maxTime ratchetingTime, arena *arenaskl.Arena) {
 	size := s.nextPageSize()
 	if arena != nil && arena.Cap() == size {
 		// Re-use the provided arena, if possible.
@@ -400,7 +387,7 @@ func (s *intervalSkl) pushNewPage(maxWallTime int64, arena *arenaskl.Arena) {
 		arena = arenaskl.NewArena(size)
 	}
 	p := newSklPage(arena)
-	p.maxWallTime.Store(maxWallTime)
+	p.maxTime = maxTime
 	s.pages.PushFront(p)
 }
 
@@ -430,9 +417,9 @@ func (s *intervalSkl) maximumPageSize() uint32 {
 // earlier page. The max timestamp of the earlier page becomes the new floor
 // timestamp, in order to guarantee that timestamp lookups never return decreasing
 // values.
-func (s *intervalSkl) rotatePages(ctx context.Context, filledPage *sklPage) {
+func (s *intervalSkl) rotatePages(filledPage *sklPage) {
 	// Acquire the rotation mutex write lock to lock the entire intervalSkl.
-	s.rotMutex.TracedLock(ctx)
+	s.rotMutex.Lock()
 	defer s.rotMutex.Unlock()
 
 	fp := s.frontPage()
@@ -477,13 +464,13 @@ func (s *intervalSkl) rotatePages(ctx context.Context, filledPage *sklPage) {
 		s.pages.Remove(evict)
 	}
 
-	// Push a new empty page on the front of the pages list. We give this page the
-	// maxWallTime of the old front page. This assures that the maxWallTime for a
+	// Push a new empty page on the front of the pages list. We give this page
+	// the maxTime of the old front page. This assures that the maxTime for a
 	// page is always equal to or greater than that for all earlier pages. In
-	// other words, it assures that the maxWallTime for a page is not only the
+	// other words, it assures that the maxTime for a page is not only the
 	// maximum timestamp for all values it contains, but also for all values any
 	// earlier pages contain.
-	s.pushNewPage(fp.maxWallTime.Load(), oldArena)
+	s.pushNewPage(fp.maxTime, oldArena)
 
 	// Update metrics.
 	s.metrics.Pages.Update(int64(s.pages.Len()))
@@ -493,23 +480,21 @@ func (s *intervalSkl) rotatePages(ctx context.Context, filledPage *sklPage) {
 // LookupTimestamp returns the latest timestamp value at which the given key was
 // read. If this operation is repeated with the same key, it will always result
 // in an equal or greater timestamp.
-func (s *intervalSkl) LookupTimestamp(ctx context.Context, key []byte) cacheValue {
-	return s.LookupTimestampRange(ctx, nil, key, 0)
+func (s *intervalSkl) LookupTimestamp(key []byte) cacheValue {
+	return s.LookupTimestampRange(nil, key, 0)
 }
 
 // LookupTimestampRange returns the latest timestamp value of any key within the
 // specified range. If this operation is repeated with the same range, it will
 // always result in an equal or greater timestamp.
-func (s *intervalSkl) LookupTimestampRange(
-	ctx context.Context, from, to []byte, opt rangeOptions,
-) cacheValue {
+func (s *intervalSkl) LookupTimestampRange(from, to []byte, opt rangeOptions) cacheValue {
 	if from == nil && to == nil {
 		panic("from and to keys cannot be nil")
 	}
 
 	// Acquire the rotation mutex read lock so that the page will not be rotated
 	// while add or lookup operations are in progress.
-	s.rotMutex.TracedRLock(ctx)
+	s.rotMutex.RLock()
 	defer s.rotMutex.RUnlock()
 
 	// Iterate over the pages, performing the lookup on each and remembering the
@@ -550,41 +535,6 @@ func (s *intervalSkl) LookupTimestampRange(
 	return val
 }
 
-// Serialize returns a serialized representation of the intervalSkl over the
-// interval spanning from start to end.
-func (s *intervalSkl) Serialize(ctx context.Context, from, to []byte) rspb.Segment {
-	if from == nil && to == nil {
-		panic("from and to keys cannot be nil")
-	}
-
-	// Serialize each page into a separate segment under the rotMutex and then
-	// merge them together outside the rotMutex.
-	var merged rspb.Segment
-	for _, seg := range s.serializePages(ctx, from, to) {
-		merged.Merge(seg)
-	}
-	return merged
-}
-
-// serializePages returns a serialized representation of each of the
-// intervalSkl's pages over the interval spanning from start to end.
-func (s *intervalSkl) serializePages(ctx context.Context, from, to []byte) []rspb.Segment {
-	// Acquire the rotation mutex read lock so that the page will not be rotated
-	// while serialize operations are in progress.
-	s.rotMutex.TracedRLock(ctx)
-	defer s.rotMutex.RUnlock()
-
-	// Iterate over the pages, serializing each and merging as we go.
-	segs := make([]rspb.Segment, 0, s.pages.Len())
-	for e := s.pages.Front(); e != nil; e = e.Next() {
-		p := e.Value
-		seg := p.serialize(from, to)
-		seg.LowWater = s.floorTS
-		segs = append(segs, seg)
-	}
-	return segs
-}
-
 // FloorTS returns the receiver's floor timestamp.
 func (s *intervalSkl) FloorTS() hlc.Timestamp {
 	s.rotMutex.RLock()
@@ -596,134 +546,16 @@ func (s *intervalSkl) FloorTS() hlc.Timestamp {
 // filled up, it returns arenaskl.ErrArenaFull. At that point, a new fixed page
 // must be allocated and used instead.
 type sklPage struct {
-	list        *arenaskl.Skiplist
-	maxWallTime atomic.Int64
-	isFull      atomic.Int32
+	list    *arenaskl.Skiplist
+	maxTime ratchetingTime // accessed atomically
+	isFull  int32          // accessed atomically
 }
 
 func newSklPage(arena *arenaskl.Arena) *sklPage {
 	return &sklPage{list: arenaskl.NewSkiplist(arena)}
 }
 
-// lookupTimestampRange scans the range of keys between from and to and returns
-// the maximum (initialized or uninitialized) value found.
 func (p *sklPage) lookupTimestampRange(from, to []byte, opt rangeOptions) cacheValue {
-	var maxVal cacheValue
-	p.visitRange(from, to, opt, func(_ []byte, val cacheValue, _ nodeOptions) {
-		maxVal, _ = ratchetValue(maxVal, val)
-	})
-	return maxVal
-}
-
-func (p *sklPage) serialize(from, to []byte) rspb.Segment {
-	var seg rspb.Segment
-
-	// Serializing the page requires a scan over the skiplist while stitching read
-	// spans back together. This is necessary because the skiplist stores keys and
-	// gaps separately, but the serialized representation stores them together. To
-	// support this, we construct read spans across consecutive calls to the
-	// visitor function and flush them when we encounter their end key.
-	var lastSpan rspb.ReadSpan
-	var lastOpts nodeOptions
-	flushLastSpan := func(endKey []byte) {
-		lastSpan.EndKey = endKey
-		seg.AddReadSpan(lastSpan)
-		lastSpan = rspb.ReadSpan{}
-		lastOpts = 0
-	}
-	visit := func(key []byte, val cacheValue, opt nodeOptions) {
-		// Maybe flush the previous read span.
-		if lastOpts&hasGap != 0 /* lastOpts == hasGap || lastOpts == (hasKey|hasGap) */ {
-			// Previous read span was a range which ends at this key. Flush it.
-			if bytes.Equal(lastSpan.Key, key) {
-				// If the previous read span has the same start key as this key, we're in
-				// one of two cases:
-				// 1. there's a bug and the skiplist has two nodes with the same key, or
-				// 2. we're in a rare case where the immediately preceding key was a gap
-				//    value with no key value, so we hit the Key.Next() case below. In
-				//    such cases, the gap value can be discarded, because it is filling
-				//    an empty space which cannot be represented in a roachpb.Key.
-				//
-				// An example where case 2 is possible is:
-				// 1. Read(["a", "b"), ts100)
-				// 2. Read(["a", nil), ts200)
-				// 3. Read(["a\x00", nil), ts200)
-				//
-				// In this case, the skiplist will retain a gap value between "a" and
-				// "a\x00", even when such a gap is effectively empty because it cannot
-				// be represented in a roachpb.Key.
-				if lastOpts != hasGap {
-					panic("unexpected same key as previous read span")
-				} else {
-					lastSpan, lastOpts = rspb.ReadSpan{}, 0
-				}
-			} else {
-				flushLastSpan(key /* endKey */)
-			}
-		} else if lastOpts == hasKey {
-			// Determine whether this is the gap portion of a previous read span, or
-			// whether this is a new read span.
-			sameSpan := bytes.Equal(lastSpan.Key, key) && lastSpan.Timestamp == val.ts && lastSpan.TxnID == val.txnID
-			if sameSpan {
-				if opt != hasGap {
-					panic("expected gap value after key value for same read span")
-				}
-				// Combine key with gap into same read span.
-				lastOpts |= opt
-				return
-			} else {
-				// Previous key was a point key, so flush it and start a new read span.
-				flushLastSpan(nil /* endKey */)
-			}
-		} else if lastOpts != 0 {
-			panic("unexpected")
-		}
-
-		// Track val as a new read span, if not empty.
-		if !val.ts.IsEmpty() {
-			if opt&hasKey == 0 {
-				// The value is a gap value with no key value. This means that the value
-				// has an exclusive start key, so we advance the key to the next key.
-				key = encoding.BytesNext(key) // Key.Next()
-			}
-			lastSpan = rspb.ReadSpan{
-				Key:       key,
-				Timestamp: val.ts,
-				TxnID:     val.txnID,
-			}
-			lastOpts = opt
-		}
-	}
-
-	// Scan over the skiplist. If the visitor is called at all (i.e. if there are
-	// any overlapping read spans), then the visitor will be called first with
-	// either a key value (opt=hasKey) or a key+gap value (opt=(hasKey|hasGap)).
-	//
-	// We use a rangeOptions of excludeTo, meaning an inclusive start key and an
-	// exclusive end key. This is all callers of this function need, and it allows
-	// us to simplify the translation from cacheValues to ReadSpans.
-	p.visitRange(from, to, excludeTo, visit)
-
-	// Flush the last read span. This will be a no-op if the visitor was never
-	// previously called because there were no overlapping read spans.
-	visit(to, cacheValue{}, hasKey)
-
-	return seg
-}
-
-// sklPageVisitor is a visitor function that is called on each key and gap value
-// encountered during a scan of an sklPage. The visitor function is called with
-// a nodeOptions bitset to indicate whether the node is a key value (hasKey), a
-// gap value (hasGap), or both (hasKey|hasGap).
-//
-// If the key range is empty, the visitor function will not be called. Else the
-// visitor function will be called at least once and the first call will always
-// be for either a key value (hasKey) or a key+gap value (hasKey|hasGap).
-type sklPageVisitor func(key []byte, value cacheValue, opt nodeOptions)
-
-// visitRange scans the range of keys between from and to and calls the visitor
-// function for each (initialized or uninitialized) value found.
-func (p *sklPage) visitRange(from, to []byte, opt rangeOptions, visit sklPageVisitor) {
 	if to != nil {
 		cmp := 0
 		if from != nil {
@@ -732,13 +564,13 @@ func (p *sklPage) visitRange(from, to []byte, opt rangeOptions, visit sklPageVis
 
 		if cmp > 0 {
 			// Starting key is after ending key, so range is zero length.
-			return
+			return cacheValue{}
 		}
 		if cmp == 0 {
 			// Starting key is same as ending key.
 			if opt == (excludeFrom | excludeTo) {
 				// Both from and to keys are excluded, so range is zero length.
-				return
+				return cacheValue{}
 			}
 
 			// Scan over a single key.
@@ -751,30 +583,7 @@ func (p *sklPage) visitRange(from, to []byte, opt rangeOptions, visit sklPageVis
 	it.Init(p.list)
 	it.SeekForPrev(from)
 
-	// Determine the previous gap value. This will move the iterator to the
-	// first node >= from.
-	prevGapVal := p.incomingGapVal(&it, from)
-
-	if !it.Valid() {
-		// No more nodes. Visit the previous gap value and return.
-		visit(from, prevGapVal, hasKey|hasGap)
-		return
-	} else if bytes.Equal(it.Key(), from) {
-		// Found a node at from. No need to visit the gap value.
-		if (it.Meta() & initialized) != 0 {
-			// The node was initialized. Ignore the previous gap value.
-			prevGapVal = cacheValue{}
-		}
-	} else {
-		// No node at from. Visit the gap value and remove the excludeFrom option.
-		visit(from, prevGapVal, hasKey|hasGap)
-		opt &^= excludeFrom
-	}
-
-	// Scan the rest of the way. Notice that we provide the previous gap value.
-	// This is important because it will be used to ratchet uninitialized nodes
-	// that the scan sees before any initialized nodes.
-	p.scanTo(&it, to, opt, prevGapVal, visit)
+	return p.maxInRange(&it, from, to, opt)
 }
 
 // addNode adds a new node at key with the provided value if one does not exist.
@@ -833,7 +642,7 @@ func (p *sklPage) addNode(
 
 		switch {
 		case errors.Is(err, arenaskl.ErrArenaFull):
-			p.isFull.Store(1)
+			atomic.StoreInt32(&p.isFull, 1)
 			return err
 		case errors.Is(err, arenaskl.ErrRecordExists):
 			// Another thread raced and added the node, so just ratchet its
@@ -955,7 +764,7 @@ func (p *sklPage) ensureFloorValue(it *arenaskl.Iterator, to []byte, val cacheVa
 			break
 		}
 
-		if p.isFull.Load() == 1 {
+		if atomic.LoadInt32(&p.isFull) == 1 {
 			// Page is full, so stop iterating. The caller will then be able to
 			// release the read lock and rotate the pages. Not doing this could
 			// result in forcing all other operations to wait for this thread to
@@ -985,6 +794,55 @@ func (p *sklPage) ensureFloorValue(it *arenaskl.Iterator, to []byte, val cacheVa
 }
 
 func (p *sklPage) ratchetMaxTimestamp(ts hlc.Timestamp) {
+	new := makeRatchetingTime(ts)
+	for {
+		old := ratchetingTime(atomic.LoadInt64((*int64)(&p.maxTime)))
+		if new <= old {
+			break
+		}
+
+		if atomic.CompareAndSwapInt64((*int64)(&p.maxTime), int64(old), int64(new)) {
+			break
+		}
+	}
+}
+
+func (p *sklPage) getMaxTimestamp() hlc.Timestamp {
+	return ratchetingTime(atomic.LoadInt64((*int64)(&p.maxTime))).get()
+}
+
+// ratchetingTime is a compressed representation of an hlc.Timestamp, reduced
+// down to 64 bits to support atomic access.
+//
+// ratchetingTime implements compression such that any loss of information when
+// passing through the type results in the resulting Timestamp being ratcheted
+// to a larger value. This provides the guarantee that the following relation
+// holds, regardless of the value of x:
+//
+//	x.LessEq(makeRatchetingTime(x).get())
+//
+// It also provides the guarantee that if the synthetic flag is set on the
+// initial timestamp, then this flag is set on the resulting Timestamp. So the
+// following relation is guaranteed to hold, regardless of the value of x:
+//
+//	x.IsFlagSet(SYNTHETIC) == makeRatchetingTime(x).get().IsFlagSet(SYNTHETIC)
+//
+// Compressed ratchetingTime values compare such that taking the maximum of any
+// two ratchetingTime values and converting that back to a Timestamp is always
+// equal to or larger than the equivalent call through the Timestamp.Forward
+// method. So the following relation is guaranteed to hold, regardless of the
+// value of x or y:
+//
+//	z := max(makeRatchetingTime(x), makeRatchetingTime(y)).get()
+//	x.Forward(y).LessEq(z)
+//
+// Bit layout (LSB to MSB):
+//
+//	bits 0:      inverted synthetic flag
+//	bits 1 - 63: upper 63 bits of wall time
+type ratchetingTime int64
+
+func makeRatchetingTime(ts hlc.Timestamp) ratchetingTime {
 	// Cheat and just use the max wall time portion of the timestamp, since it's
 	// fine for the max timestamp to be a bit too large. This is the case
 	// because it's always safe to increase the timestamp in a range. It's also
@@ -998,25 +856,38 @@ func (p *sklPage) ratchetMaxTimestamp(ts hlc.Timestamp) {
 	// We could use an atomic.Value to store a "MaxValue" cacheValue for a given
 	// page, but this would be more expensive and it's not clear that it would
 	// be worth it.
-	new := ts.WallTime
+	rt := ratchetingTime(ts.WallTime)
 	if ts.Logical > 0 {
-		new++
+		rt++
 	}
 
-	for {
-		old := p.maxWallTime.Load()
-		if new <= old {
-			break
-		}
-
-		if p.maxWallTime.CompareAndSwap(old, new) {
-			break
-		}
+	// Similarly, cheat and use the last bit in the wall time to indicate
+	// whether the timestamp is synthetic or not. Do so by first rounding up the
+	// last bit of the wall time so that it is empty. This is safe for the same
+	// reason that rounding up the logical portion of the timestamp in the wall
+	// time is safe (see above).
+	//
+	// We use the last bit to indicate that the flag is NOT set. This ensures
+	// that if two timestamps have the same ordering but different values for
+	// the synthetic flag, the timestamp without the synthetic flag has a larger
+	// ratchetingTime value. This follows how Timestamp.Forward treats the flag.
+	if rt&1 == 1 {
+		rt++
 	}
+	if !ts.Synthetic {
+		rt |= 1
+	}
+
+	return rt
 }
 
-func (p *sklPage) getMaxTimestamp() hlc.Timestamp {
-	return hlc.Timestamp{WallTime: p.maxWallTime.Load()}
+func (rt ratchetingTime) get() hlc.Timestamp {
+	var ts hlc.Timestamp
+	ts.WallTime = int64(rt &^ 1)
+	if rt&1 == 0 {
+		ts.Synthetic = true
+	}
+	return ts
 }
 
 // ratchetPolicy defines the behavior a ratcheting attempt should take when
@@ -1112,7 +983,7 @@ func (p *sklPage) ratchetValueSet(
 				// was initialized after this, its value set would be relied
 				// upon to stand on its own even though it would be missing the
 				// ratcheting we tried to perform here.
-				p.isFull.Store(1)
+				atomic.StoreInt32(&p.isFull, 1)
 
 				if !inited && (meta&cantInit) == 0 {
 					err := it.SetMeta(meta | cantInit)
@@ -1152,6 +1023,37 @@ func (p *sklPage) ratchetValueSet(
 	}
 }
 
+// maxInRange scans the range of keys between from and to and returns the
+// maximum (initialized or uninitialized) value found. When finished, the
+// iterator will be positioned the same as if it.Seek(to) had been called.
+func (p *sklPage) maxInRange(it *arenaskl.Iterator, from, to []byte, opt rangeOptions) cacheValue {
+	// Determine the previous gap value. This will move the iterator to the
+	// first node >= from.
+	prevGapVal := p.incomingGapVal(it, from)
+
+	if !it.Valid() {
+		// No more nodes.
+		return prevGapVal
+	} else if bytes.Equal(it.Key(), from) {
+		// Found a node at from.
+		if (it.Meta() & initialized) != 0 {
+			// The node was initialized. Ignore the previous gap value.
+			prevGapVal = cacheValue{}
+		}
+	} else {
+		// No node at from. Remove excludeFrom option.
+		opt &^= excludeFrom
+	}
+
+	// Scan the rest of the way. Notice that we provide the previous gap value.
+	// This is important for two reasons:
+	// 1. it will be counted towards the maxVal result.
+	// 2. it will be used to ratchet uninitialized nodes that the scan sees
+	//    before any initialized nodes.
+	_, maxVal := p.scanTo(it, to, opt, prevGapVal)
+	return maxVal
+}
+
 // incomingGapVal determines the gap value active at the specified key by first
 // scanning backwards to the first initialized node and then scanning forwards
 // to the specified key. If there is already a node at key then the previous gap
@@ -1177,7 +1079,8 @@ func (p *sklPage) incomingGapVal(it *arenaskl.Iterator, key []byte) cacheValue {
 	prevInitNode(it)
 
 	// Iterate forwards to key, remembering the last gap value.
-	return p.scanTo(it, key, 0, cacheValue{}, nil)
+	prevGapVal, _ := p.scanTo(it, key, 0, cacheValue{})
+	return prevGapVal
 }
 
 // scanTo scans from the current iterator position until the key "to". While
@@ -1185,24 +1088,16 @@ func (p *sklPage) incomingGapVal(it *arenaskl.Iterator, key []byte) cacheValue {
 // which is essential to avoiding ratchet inversions (see the comment on
 // ensureInitialized).
 //
-// The function calls the provided visitor function for each value that it
-// encounters, if not nil. The visitor function is called for both key and gap
-// values.
-//
-// The function then returns the gap value at the end of the scan. If the
-// iterator is positioned at a key > "to", the function will return a zero
-// value.
-//
-// The function takes an optional initial gap value argument, which is used to
-// initialize the running gap value so that it can ratchet uninitialized nodes
-// that the scan sees before any initialized nodes.
-//
-// When finished, the iterator will be positioned the same as if it.Seek(to) had
-// been called.
+// The function then returns the maximum value seen along with the gap value at
+// the end of the scan. If the iterator is positioned at a key > "to", the
+// function will return zero values. The function takes an optional initial gap
+// value argument, which is used to initialize the running maximum and gap
+// values. When finished, the iterator will be positioned the same as if
+// it.Seek(to) had been called.
 func (p *sklPage) scanTo(
-	it *arenaskl.Iterator, to []byte, opt rangeOptions, initGapVal cacheValue, visit sklPageVisitor,
-) (prevGapVal cacheValue) {
-	prevGapVal = initGapVal
+	it *arenaskl.Iterator, to []byte, opt rangeOptions, initGapVal cacheValue,
+) (prevGapVal, maxVal cacheValue) {
+	prevGapVal, maxVal = initGapVal, initGapVal
 	first := true
 	for {
 		util.RacePreempt()
@@ -1212,8 +1107,7 @@ func (p *sklPage) scanTo(
 			return
 		}
 
-		key := it.Key()
-		toCmp := bytes.Compare(key, to)
+		toCmp := bytes.Compare(it.Key(), to)
 		if to == nil {
 			// to == nil means open range, so toCmp will always be -1.
 			toCmp = -1
@@ -1230,33 +1124,27 @@ func (p *sklPage) scanTo(
 
 		// Decode the current node's value set.
 		keyVal, gapVal := decodeValueSet(it.Value(), it.Meta())
-		if ratchetErr != nil {
-			if errors.Is(ratchetErr, arenaskl.ErrArenaFull) {
-				// If we failed to ratchet an uninitialized node above, the desired
-				// ratcheting won't be reflected in the decoded values. Perform the
-				// ratcheting manually.
-				keyVal, _ = ratchetValue(keyVal, prevGapVal)
-				gapVal, _ = ratchetValue(gapVal, prevGapVal)
-			} else {
-				panic(fmt.Sprintf("unexpected error: %v", ratchetErr))
-			}
+		if errors.Is(ratchetErr, arenaskl.ErrArenaFull) {
+			// If we failed to ratchet an uninitialized node above, the desired
+			// ratcheting won't be reflected in the decoded values. Perform the
+			// ratcheting manually.
+			keyVal, _ = ratchetValue(keyVal, prevGapVal)
+			gapVal, _ = ratchetValue(gapVal, prevGapVal)
 		}
 
-		if !(first && (opt&excludeFrom) != 0) && visit != nil {
+		if !(first && (opt&excludeFrom) != 0) {
 			// As long as this isn't the first key and opt says to exclude the
-			// first key, we call the visitor.
-			visit(key, keyVal, hasKey)
+			// first key, we ratchet the maxVal.
+			maxVal, _ = ratchetValue(maxVal, keyVal)
 		}
 
 		if toCmp == 0 {
-			// We're on the scan's end key, so return.
+			// We're on the scan's end key, so return the max value seen.
 			return
 		}
 
-		// Call the visitor with the current gapVal.
-		if visit != nil {
-			visit(key, gapVal, hasGap)
-		}
+		// Ratchet the maxVal by the current gapVal.
+		maxVal, _ = ratchetValue(maxVal, gapVal)
 
 		// Haven't yet reached the scan's end key, so keep iterating.
 		prevGapVal = gapVal

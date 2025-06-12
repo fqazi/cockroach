@@ -23,7 +23,6 @@ import (
 )
 
 type renameDatabaseNode struct {
-	zeroInputPlanNode
 	n       *tree.RenameDatabase
 	dbDesc  *dbdesc.Mutable
 	newName string
@@ -43,7 +42,7 @@ func (p *planner) RenameDatabase(ctx context.Context, n *tree.RenameDatabase) (p
 	}
 
 	if n.Name == "" || n.NewName == "" {
-		return nil, sqlerrors.ErrEmptyDatabaseName
+		return nil, errEmptyDatabaseName
 	}
 
 	if string(n.Name) == p.SessionData().Database && p.SessionData().SafeUpdates {
@@ -206,7 +205,7 @@ func maybeFailOnDependentDescInRename(
 	if withLeased {
 		b = p.Descriptors().ByIDWithLeased(p.txn)
 	} else {
-		b = p.Descriptors().ByIDWithoutLeased(p.txn)
+		b = p.Descriptors().ByID(p.txn)
 	}
 	descs, err := b.WithoutNonPublic().Get().Descs(ctx, ids)
 	if err != nil {

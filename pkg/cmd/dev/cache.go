@@ -67,8 +67,18 @@ func (d *dev) cache(cmd *cobra.Command, _ []string) error {
 			log.Printf("%v\n", err)
 		}
 	}
-	_, err := d.setUpCache(ctx)
-	return err
+	bazelRcLine, err := d.setUpCache(ctx)
+	if err != nil {
+		return err
+	}
+	errStr, err := d.checkPresenceInBazelRc(bazelRcLine)
+	if err != nil {
+		return err
+	}
+	if errStr != "" {
+		return fmt.Errorf("%s", errStr)
+	}
+	return nil
 }
 
 func bazelRemoteCacheDir() (string, error) {

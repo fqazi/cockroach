@@ -80,7 +80,7 @@ func (r *Reader) Start(ctx context.Context, self sqlinstance.InstanceInfo) {
 	// Make sure that the reader shuts down gracefully.
 	ctx, cancel := r.stopper.WithCancelOnQuiesce(ctx)
 	err := r.stopper.RunAsyncTask(ctx, "start-instance-reader", func(ctx context.Context) {
-		cache, err := r.storage.newInstanceCache(ctx)
+		cache, err := r.storage.newInstanceCache(ctx, r.stopper)
 		if err != nil {
 			r.setInitialScanDone(err)
 			return
@@ -130,8 +130,6 @@ func makeInstanceInfo(row instancerow) sqlinstance.InstanceInfo {
 		SessionID:       row.sessionID,
 		Locality:        row.locality,
 		BinaryVersion:   row.binaryVersion,
-		Region:          row.region,
-		IsDraining:      row.isDraining,
 	}
 }
 

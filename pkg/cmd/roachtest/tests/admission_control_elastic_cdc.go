@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/grafana"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/prometheus"
@@ -31,28 +30,31 @@ func registerElasticControlForCDC(r registry.Registry) {
 		Benchmark:        true,
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Weekly),
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(8), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(8)),
+		RequiresLicense:  true,
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			if c.Spec().NodeCount < 4 {
 				t.Fatalf("expected at least 4 nodes, found %d", c.Spec().NodeCount)
 			}
 
+			crdbNodes := c.Spec().NodeCount - 1
+			workloadNode := crdbNodes + 1
 			numWarehouses, workloadDuration, estimatedSetupTime := 1000, 60*time.Minute, 10*time.Minute
 			if c.IsLocal() {
 				numWarehouses, workloadDuration, estimatedSetupTime = 1, time.Minute, 2*time.Minute
 			}
 
 			promCfg := &prometheus.Config{}
-			promCfg.WithPrometheusNode(c.WorkloadNode().InstallNodes()[0]).
-				WithNodeExporter(c.CRDBNodes().InstallNodes()).
-				WithCluster(c.CRDBNodes().InstallNodes()).
+			promCfg.WithPrometheusNode(c.Node(workloadNode).InstallNodes()[0]).
+				WithNodeExporter(c.Range(1, c.Spec().NodeCount-1).InstallNodes()).
+				WithCluster(c.Range(1, c.Spec().NodeCount-1).InstallNodes()).
 				WithGrafanaDashboardJSON(grafana.ChangefeedAdmissionControlGrafana).
 				WithScrapeConfigs(
 					prometheus.MakeWorkloadScrapeConfig("workload", "/",
 						makeWorkloadScrapeNodes(
-							c.WorkloadNode().InstallNodes()[0],
-							[]workloadInstance{{nodes: c.WorkloadNode()}},
+							c.Node(workloadNode).InstallNodes()[0],
+							[]workloadInstance{{nodes: c.Node(workloadNode)}},
 						),
 					),
 				)
@@ -63,16 +65,16 @@ func registerElasticControlForCDC(r registry.Registry) {
 				t.Status(fmt.Sprintf("initializing + running tpcc for %s (<%s)", workloadDuration, 10*time.Minute))
 			}
 
-			padDuration, err := time.ParseDuration(roachtestutil.IfLocal(c, "5s", "5m"))
+			padDuration, err := time.ParseDuration(ifLocal(c, "5s", "5m"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			stopFeedsDuration, err := time.ParseDuration(roachtestutil.IfLocal(c, "5s", "1m"))
+			stopFeedsDuration, err := time.ParseDuration(ifLocal(c, "5s", "1m"))
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			runTPCC(ctx, t, t.L(), c, tpccOptions{
+			runTPCC(ctx, t, c, tpccOptions{
 				Warehouses:                    numWarehouses,
 				Duration:                      workloadDuration,
 				SetupType:                     usingImport,
@@ -82,12 +84,12 @@ func registerElasticControlForCDC(r registry.Registry) {
 				PrometheusConfig:              promCfg,
 				DisableDefaultScheduledBackup: true,
 				During: func(ctx context.Context) error {
-					db := c.Conn(ctx, t.L(), len(c.CRDBNodes()))
+					db := c.Conn(ctx, t.L(), crdbNodes)
 					defer db.Close()
 
 					t.Status(fmt.Sprintf("configuring cluster (<%s)", 30*time.Second))
 					{
-						roachtestutil.SetAdmissionControl(ctx, t, c, true)
+						setAdmissionControl(ctx, t, c, true)
 
 						// Changefeeds depend on rangefeeds being enabled.
 						if _, err := db.Exec("SET CLUSTER SETTING kv.rangefeed.enabled = true"); err != nil {
@@ -105,7 +107,7 @@ func registerElasticControlForCDC(r registry.Registry) {
 					stopFeeds(db) // stop stray feeds (from repeated runs against the same cluster for ex.)
 					defer stopFeeds(db)
 
-					m := c.NewMonitor(ctx, c.CRDBNodes())
+					m := c.NewMonitor(ctx, c.Range(1, crdbNodes))
 					m.Go(func(ctx context.Context) error {
 						const iters, changefeeds = 5, 10
 						for i := 0; i < iters; i++ {

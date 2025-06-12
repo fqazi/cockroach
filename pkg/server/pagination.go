@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,25 +36,26 @@ import (
 // in cases where input has been exhausted, helps when it's being returned
 // back to the client as a `json:omitempty` field, as the JSON mashal code will
 // simply ignore the field if it's a zero value.
-func simplePaginate[T any](input []T, limit, offset int) (result []T, next int) {
-	if limit <= 0 {
+func simplePaginate(input interface{}, limit, offset int) (result interface{}, next int) {
+	val := reflect.ValueOf(input)
+	if limit <= 0 || val.Kind() != reflect.Slice {
 		return input, 0
 	} else if offset < 0 {
 		offset = 0
 	}
 	startIdx := offset
 	endIdx := offset + limit
-	if startIdx > len(input) {
-		startIdx = len(input)
+	if startIdx > val.Len() {
+		startIdx = val.Len()
 	}
-	if endIdx > len(input) {
-		endIdx = len(input)
+	if endIdx > val.Len() {
+		endIdx = val.Len()
 	}
 	next = endIdx
-	if endIdx == len(input) {
+	if endIdx == val.Len() {
 		next = 0
 	}
-	return input[startIdx:endIdx], next
+	return val.Slice(startIdx, endIdx).Interface(), next
 }
 
 // paginationState represents the current state of pagination through the result
@@ -261,9 +263,11 @@ func (p *paginationState) MarshalText() (text []byte, err error) {
 
 // paginatedNodeResponse stores the response from one node in a paginated fan-out
 // request. For use with rpcNodePaginator.
-type paginatedNodeResponse[T any] struct {
+type paginatedNodeResponse struct {
 	nodeID   roachpb.NodeID
-	response []T
+	response interface{}
+	value    reflect.Value
+	len      int
 	err      error
 }
 
@@ -285,17 +289,17 @@ type paginatedNodeResponse[T any] struct {
 // Nodes already queried on past calls from the same user (according to
 // pagState) are not ignored. The goroutine that calls processResponses handles
 // slice truncation and response ordering.
-type rpcNodePaginator[Client, Result any] struct {
+type rpcNodePaginator struct {
 	limit        int
 	numNodes     int
 	errorCtx     redact.RedactableString
 	pagState     paginationState
-	responseChan chan paginatedNodeResponse[Result]
+	responseChan chan paginatedNodeResponse
 	nodeStatuses map[serverID]livenesspb.NodeLivenessStatus
 
-	dialFn     func(ctx context.Context, id roachpb.NodeID) (client Client, err error)
-	nodeFn     func(ctx context.Context, client Client, nodeID roachpb.NodeID) ([]Result, error)
-	responseFn func(nodeID roachpb.NodeID, res []Result)
+	dialFn     func(ctx context.Context, id roachpb.NodeID) (client interface{}, err error)
+	nodeFn     func(ctx context.Context, client interface{}, nodeID roachpb.NodeID) (res interface{}, err error)
+	responseFn func(nodeID roachpb.NodeID, resp interface{})
 	errorFn    func(nodeID roachpb.NodeID, nodeFnError error)
 
 	mu struct {
@@ -311,9 +315,9 @@ type rpcNodePaginator[Client, Result any] struct {
 	done int32
 }
 
-func (r *rpcNodePaginator[Client, Result]) init() {
+func (r *rpcNodePaginator) init() {
 	r.mu.turnCond.L = &r.mu
-	r.responseChan = make(chan paginatedNodeResponse[Result], r.numNodes)
+	r.responseChan = make(chan paginatedNodeResponse, r.numNodes)
 }
 
 const noTimeout time.Duration = 0
@@ -321,15 +325,15 @@ const noTimeout time.Duration = 0
 // queryNode queries the given node, and sends the responses back through responseChan
 // in order of idx (i.e. when all nodes with a lower idx have already sent theirs).
 // Safe for concurrent use.
-func (r *rpcNodePaginator[Client, Result]) queryNode(
+func (r *rpcNodePaginator) queryNode(
 	ctx context.Context, nodeID roachpb.NodeID, idx int, timeout time.Duration,
 ) {
 	if atomic.LoadInt32(&r.done) != 0 {
 		// There are more values than we need. currentLen >= limit.
 		return
 	}
-	var client Client
-	addNodeResp := func(resp paginatedNodeResponse[Result]) {
+	var client interface{}
+	addNodeResp := func(resp paginatedNodeResponse) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 
@@ -348,14 +352,14 @@ func (r *rpcNodePaginator[Client, Result]) queryNode(
 			return
 		}
 		r.responseChan <- resp
-		r.mu.currentLen += len(resp.response)
+		r.mu.currentLen += resp.len
 		if nodeID == r.pagState.inProgress {
 			// We're resuming partway through a node's response. Subtract away the
 			// count of values already sent in previous calls (i.e. inProgressIndex).
-			if len(resp.response) > r.pagState.inProgressIndex {
+			if resp.len > r.pagState.inProgressIndex {
 				r.mu.currentLen -= r.pagState.inProgressIndex
 			} else {
-				r.mu.currentLen -= len(resp.response)
+				r.mu.currentLen -= resp.len
 			}
 		}
 		if r.mu.currentLen >= r.limit {
@@ -372,11 +376,11 @@ func (r *rpcNodePaginator[Client, Result]) queryNode(
 	}); err != nil {
 		err = errors.Wrapf(err, "failed to dial into node %d (%s)",
 			nodeID, r.nodeStatuses[serverID(nodeID)])
-		addNodeResp(paginatedNodeResponse[Result]{nodeID: nodeID, err: err})
+		addNodeResp(paginatedNodeResponse{nodeID: nodeID, err: err})
 		return
 	}
 
-	var res []Result
+	var res interface{}
 	var err error
 	if timeout == noTimeout {
 		res, err = r.nodeFn(ctx, client, nodeID)
@@ -392,14 +396,20 @@ func (r *rpcNodePaginator[Client, Result]) queryNode(
 		err = errors.Wrapf(err, "error requesting %s from node %d (%s)",
 			r.errorCtx, nodeID, r.nodeStatuses[serverID(nodeID)])
 	}
-	addNodeResp(paginatedNodeResponse[Result]{nodeID: nodeID, response: res, err: err})
+	length := 0
+	value := reflect.ValueOf(res)
+	if res != nil && !value.IsNil() {
+		length = 1
+		if value.Kind() == reflect.Slice {
+			length = value.Len()
+		}
+	}
+	addNodeResp(paginatedNodeResponse{nodeID: nodeID, response: res, len: length, value: value, err: err})
 }
 
 // processResponses processes the responses returned into responseChan. Must only
 // be called once.
-func (r *rpcNodePaginator[Client, Result]) processResponses(
-	ctx context.Context,
-) (next paginationState, err error) {
+func (r *rpcNodePaginator) processResponses(ctx context.Context) (next paginationState, err error) {
 	// Copy r.pagState, as concurrent invocations of queryNode expect it to not
 	// change.
 	next = r.pagState
@@ -411,13 +421,20 @@ func (r *rpcNodePaginator[Client, Result]) processResponses(
 			if res.err != nil {
 				r.errorFn(res.nodeID, res.err)
 			} else {
-				start, end, newLimit, err2 := next.paginate(limit, res.nodeID, len(res.response))
+				start, end, newLimit, err2 := next.paginate(limit, res.nodeID, res.len)
 				if err2 != nil {
 					r.errorFn(res.nodeID, err2)
 					// Break out of select, resume loop.
 					break
 				}
-				r.responseFn(res.nodeID, res.response[start:end])
+				var response interface{}
+				if res.value.Kind() == reflect.Slice {
+					response = res.value.Slice(start, end).Interface()
+				} else if end > start {
+					// res.len must be 1 if res.value.Kind is not Slice.
+					response = res.value.Interface()
+				}
+				r.responseFn(res.nodeID, response)
 				limit = newLimit
 			}
 			if !ok {

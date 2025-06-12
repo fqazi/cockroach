@@ -9,7 +9,6 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlinstance"
-	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -25,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/collector"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
-	"github.com/cockroachdb/errors"
 	"github.com/gogo/protobuf/types"
 	"github.com/stretchr/testify/require"
 )
@@ -235,7 +232,6 @@ func TestClusterInflightTraces(t *testing.T) {
 			}
 
 			type testCase struct {
-				name    string
 				servers []serverutils.ApplicationLayerInterface
 				dbs     []*gosql.DB
 				// otherServers, if set, represents the servers corresponding to
@@ -247,7 +243,6 @@ func TestClusterInflightTraces(t *testing.T) {
 			switch config {
 			case "single-tenant":
 				testCases = []testCase{{
-					name:    "system-tenant",
 					servers: []serverutils.ApplicationLayerInterface{tc.Servers[0], tc.Servers[1]},
 					dbs:     systemDBs,
 				}}
@@ -263,13 +258,11 @@ func TestClusterInflightTraces(t *testing.T) {
 				}
 				testCases = []testCase{
 					{
-						name:         "application-tenant",
 						servers:      tenants,
 						dbs:          dbs,
 						otherServers: systemServers,
 					},
 					{
-						name:         "system-tenant",
 						servers:      systemServers,
 						dbs:          systemDBs,
 						otherServers: tenants,
@@ -288,13 +281,11 @@ func TestClusterInflightTraces(t *testing.T) {
 				}
 				testCases = []testCase{
 					{
-						name:         "application-tenant",
 						servers:      tenants,
 						dbs:          dbs,
 						otherServers: systemServers,
 					},
 					{
-						name:         "system-tenant",
 						servers:      systemServers,
 						dbs:          systemDBs,
 						otherServers: tenants,
@@ -303,65 +294,45 @@ func TestClusterInflightTraces(t *testing.T) {
 			}
 
 			for _, tc := range testCases {
-				t.Run(tc.name, func(t *testing.T) {
-					// Set up the traces we're going to look for.
-					localTraceID, _, cleanup := setupTraces(tc.servers[0].Tracer(), tc.servers[1].Tracer())
-					defer cleanup()
+				// Set up the traces we're going to look for.
+				localTraceID, _, cleanup := setupTraces(tc.servers[0].Tracer(), tc.servers[1].Tracer())
+				defer cleanup()
 
-					// Create some other spans on tc.otherServers, that we don't
-					// expect to find.
-					const otherServerSpanName = "other-server-span"
-					for _, s := range tc.otherServers {
-						sp := s.Tracer().StartSpan(otherServerSpanName)
-						defer sp.Finish()
+				// Create some other spans on tc.otherServers, that we don't
+				// expect to find.
+				const otherServerSpanName = "other-server-span"
+				for _, s := range tc.otherServers {
+					sp := s.Tracer().StartSpan(otherServerSpanName)
+					defer sp.Finish()
+				}
+
+				// We're going to query the cluster_inflight_traces through
+				// every SQL instance.
+				for _, db := range tc.dbs {
+					rows, err := db.Query(
+						"SELECT node_id, trace_str FROM crdb_internal.cluster_inflight_traces "+
+							"WHERE trace_id=$1 ORDER BY node_id",
+						localTraceID)
+					require.NoError(t, err)
+
+					expSpans := map[int][]string{
+						1: {"root", "root.child", "root.child.remotechilddone"},
+						2: {"root.child.remotechild"},
 					}
-
-					// We're going to query the cluster_inflight_traces through every SQL instance.
-					// We use SucceedsSoon because sqlInstanceReader.GetAllInstances is powered by a
-					// cache under the hood that isn't guaranteed to be consistent, so we give the
-					// cache extra time to populate while the tenant startup process completes.
-					testutils.SucceedsSoon(t, func() error {
-						for _, db := range tc.dbs {
-							rows, err := db.Query(
-								"SELECT node_id, trace_str FROM crdb_internal.cluster_inflight_traces "+
-									"WHERE trace_id=$1 ORDER BY node_id",
-								localTraceID)
-							if err != nil {
-								return errors.Wrap(err, "failed to query crdb_internal.cluster_inflight_traces")
-							}
-							expSpans := map[int][]string{
-								1: {"root", "root.child", "root.child.remotechilddone"},
-								2: {"root.child.remotechild"},
-							}
-							for rows.Next() {
-								var nodeID int
-								var trace string
-								if err := rows.Scan(&nodeID, &trace); err != nil {
-									return errors.Wrap(err, "failed to scan row")
-								}
-								exp, ok := expSpans[nodeID]
-								if !ok {
-									return errors.Newf("no expected spans found for nodeID %d", nodeID)
-								}
-								delete(expSpans, nodeID) // Consume this entry; we'll check that they were all consumed.
-								for _, span := range exp {
-									spanName := "=== operation:" + span
-									if !strings.Contains(trace, spanName) {
-										return errors.Newf("failed to find span %q in trace %q", spanName, trace)
-									}
-								}
-								otherServerSpanOp := "=== operation:" + otherServerSpanName
-								if strings.Contains(trace, otherServerSpanOp) {
-									return errors.Newf("unexpected span %q found in trace %q", otherServerSpanOp, trace)
-								}
-							}
-							if len(expSpans) != 0 {
-								return errors.Newf("didn't find all expected spans, remaining spans: %v", expSpans)
-							}
+					for rows.Next() {
+						var nodeID int
+						var trace string
+						require.NoError(t, rows.Scan(&nodeID, &trace))
+						exp, ok := expSpans[nodeID]
+						require.True(t, ok)
+						delete(expSpans, nodeID) // Consume this entry; we'll check that they were all consumed.
+						for _, span := range exp {
+							require.Contains(t, trace, "=== operation:"+span)
 						}
-						return nil
-					})
-				})
+						require.NotContains(t, trace, "=== operation:"+otherServerSpanName)
+					}
+					require.Len(t, expSpans, 0)
+				}
 			}
 		})
 	}

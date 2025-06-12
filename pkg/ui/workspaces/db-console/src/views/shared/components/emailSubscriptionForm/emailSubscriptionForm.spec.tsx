@@ -3,8 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { mount, ReactWrapper } from "enzyme";
 import React from "react";
+import { mount, ReactWrapper } from "enzyme";
 
 import { EmailSubscriptionForm } from "./index";
 

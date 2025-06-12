@@ -3,19 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Button, commonStyles } from "@cockroachlabs/cluster-ui";
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import { ArrowLeft } from "@cockroachlabs/icons";
-import flatMap from "lodash/flatMap";
-import flow from "lodash/flow";
-import head from "lodash/head";
-import isEmpty from "lodash/isEmpty";
-import isEqual from "lodash/isEqual";
-import isNil from "lodash/isNil";
-import orderBy from "lodash/orderBy";
-import some from "lodash/some";
-import sortBy from "lodash/sortBy";
-import sortedUniqBy from "lodash/sortedUniqBy";
+import _ from "lodash";
 import Long from "long";
 import React from "react";
 import { Helmet } from "react-helmet";
@@ -35,15 +23,15 @@ import { CachedDataReducerState } from "src/redux/cachedDataReducer";
 import { AdminUIState } from "src/redux/state";
 import { rangeIDAttr } from "src/util/constants";
 import { FixLong } from "src/util/fixLong";
-import { getMatchParamByName } from "src/util/query";
-import AllocatorOutput from "src/views/reports/containers/range/allocator";
 import ConnectionsTable from "src/views/reports/containers/range/connectionsTable";
-import LeaseTable from "src/views/reports/containers/range/leaseTable";
-import LogTable from "src/views/reports/containers/range/logTable";
-import RangeInfo from "src/views/reports/containers/range/rangeInfo";
 import RangeTable from "src/views/reports/containers/range/rangeTable";
-
-import IRangeInfo = cockroach.server.serverpb.IRangeInfo;
+import LogTable from "src/views/reports/containers/range/logTable";
+import AllocatorOutput from "src/views/reports/containers/range/allocator";
+import RangeInfo from "src/views/reports/containers/range/rangeInfo";
+import LeaseTable from "src/views/reports/containers/range/leaseTable";
+import { getMatchParamByName } from "src/util/query";
+import { Button, commonStyles } from "@cockroachlabs/cluster-ui";
+import { ArrowLeft } from "@cockroachlabs/icons";
 
 interface RangeDispatchProps {
   refreshRange: typeof refreshRange;
@@ -75,21 +63,21 @@ function ErrorPage(props: {
   );
 }
 
-function rangeRequestFromProps(props: RouteComponentProps) {
+function rangeRequestFromProps(props: RangeProps) {
   const rangeId = getMatchParamByName(props.match, rangeIDAttr);
   return new protos.cockroach.server.serverpb.RangeRequest({
     range_id: Long.fromString(rangeId),
   });
 }
 
-function allocatorRequestFromProps(props: RouteComponentProps) {
+function allocatorRequestFromProps(props: RangeProps) {
   const rangeId = getMatchParamByName(props.match, rangeIDAttr);
   return new protos.cockroach.server.serverpb.AllocatorRangeRequest({
     range_id: Long.fromString(rangeId),
   });
 }
 
-function rangeLogRequestFromProps(props: RouteComponentProps) {
+function rangeLogRequestFromProps(props: RangeProps) {
   const rangeId = getMatchParamByName(props.match, rangeIDAttr);
   // TODO(bram): Remove this limit once #18159 is resolved.
   return new protos.cockroach.server.serverpb.RangeLogRequest({
@@ -114,7 +102,7 @@ export class Range extends React.Component<RangeProps, {}> {
   }
 
   componentDidUpdate(prevProps: RangeProps) {
-    if (!isEqual(this.props.location, prevProps.location)) {
+    if (!_.isEqual(this.props.location, prevProps.location)) {
       this.refresh(this.props);
     }
   }
@@ -128,7 +116,7 @@ export class Range extends React.Component<RangeProps, {}> {
     const rangeID = getMatchParamByName(match, rangeIDAttr);
 
     // A bunch of quick error cases.
-    if (!isNil(range) && !isNil(range.lastError)) {
+    if (!_.isNil(range) && !_.isNil(range.lastError)) {
       return (
         <ErrorPage
           rangeID={rangeID}
@@ -136,7 +124,7 @@ export class Range extends React.Component<RangeProps, {}> {
         />
       );
     }
-    if (isNil(range) || isEmpty(range.data)) {
+    if (_.isNil(range) || _.isEmpty(range.data)) {
       return (
         <ErrorPage rangeID={rangeID} errorText={`Loading cluster status...`} />
       );
@@ -157,7 +145,9 @@ export class Range extends React.Component<RangeProps, {}> {
     }
 
     // Did we get any responses?
-    if (!some(range.data.responses_by_node_id, resp => resp.infos.length > 0)) {
+    if (
+      !_.some(range.data.responses_by_node_id, resp => resp.infos.length > 0)
+    ) {
       return (
         <ErrorPage
           rangeID={rangeID}
@@ -169,9 +159,9 @@ export class Range extends React.Component<RangeProps, {}> {
 
     // Collect all the infos and sort them, putting the leader (or the replica
     // with the highest term, first.
-    const infos = orderBy(
-      flatMap(range.data.responses_by_node_id, resp => {
-        if (resp.response && isEmpty(resp.error_message)) {
+    const infos = _.orderBy(
+      _.flatMap(range.data.responses_by_node_id, resp => {
+        if (resp.response && _.isEmpty(resp.error_message)) {
           return resp.infos;
         }
         return [];
@@ -182,19 +172,18 @@ export class Range extends React.Component<RangeProps, {}> {
         info => FixLong(info.raft_state.hard_state.term).toNumber(),
         info => {
           const localReplica = RangeInfo.GetLocalReplica(info);
-          return isNil(localReplica) ? 0 : localReplica.replica_id;
+          return _.isNil(localReplica) ? 0 : localReplica.replica_id;
         },
       ],
       ["desc", "desc", "desc", "asc"],
     );
 
     // Gather all replica IDs.
-    const replicas = flow(
-      (infos: IRangeInfo[]) =>
-        flatMap(infos, info => info.state.state.desc.internal_replicas),
-      descriptors => sortBy(descriptors, d => d.replica_id),
-      descriptors => sortedUniqBy(descriptors, d => d.replica_id),
-    )(infos);
+    const replicas = _.chain(infos)
+      .flatMap(info => info.state.state.desc.internal_replicas)
+      .sortBy(rep => rep.replica_id)
+      .sortedUniqBy(rep => rep.replica_id)
+      .value();
 
     return (
       <div className="section">
@@ -218,7 +207,7 @@ export class Range extends React.Component<RangeProps, {}> {
           Enqueue Range
         </a>
         <RangeTable infos={infos} replicas={replicas} />
-        <LeaseTable info={head(infos)} />
+        <LeaseTable info={_.head(infos)} />
         <ConnectionsTable range={range} />
         <AllocatorOutput allocator={this.props.allocator} />
         <LogTable rangeID={responseRangeID} log={this.props.rangeLog} />
@@ -227,7 +216,7 @@ export class Range extends React.Component<RangeProps, {}> {
   }
 }
 
-const mapStateToProps = (state: AdminUIState, props: RouteComponentProps) => ({
+const mapStateToProps = (state: AdminUIState, props: RangeProps) => ({
   range: state.cachedData.range[rangeRequestKey(rangeRequestFromProps(props))],
   allocator:
     state.cachedData.allocatorRange[
@@ -246,12 +235,7 @@ const mapDispatchToProps = {
 };
 
 export default withRouter(
-  connect<
-    RangeStateProps,
-    RangeDispatchProps,
-    RouteComponentProps,
-    AdminUIState
-  >(
+  connect<RangeStateProps, RangeDispatchProps>(
     mapStateToProps,
     mapDispatchToProps,
   )(Range),

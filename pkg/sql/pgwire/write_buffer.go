@@ -137,9 +137,7 @@ func (b *writeBuffer) putInt64(v int64) {
 }
 
 func (b *writeBuffer) putInt32AtIndex(index int, v int32) {
-	if b.err == nil {
-		binary.BigEndian.PutUint32(b.wrapped.Bytes()[index:index+4], uint32(v))
-	}
+	binary.BigEndian.PutUint32(b.wrapped.Bytes()[index:index+4], uint32(v))
 }
 
 func (b *writeBuffer) putErrFieldMsg(field pgwirebase.ServerErrFieldType) {

@@ -7,8 +7,8 @@ package delegate
 
 import (
 	"context"
-	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/sql/deprecatedshowranges"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -50,14 +50,11 @@ func TryDelegate(
 	case *tree.ShowDatabases:
 		return d.delegateShowDatabases(t)
 
-	case *tree.ShowPolicies:
-		return d.delegateShowPolicies(t)
-
 	case *tree.ShowEnums:
 		return d.delegateShowEnums(t)
 
 	case *tree.ShowTypes:
-		return d.delegateShowTypes(t)
+		return d.delegateShowTypes()
 
 	case *tree.ShowCreate:
 		return d.delegateShowCreate(t)
@@ -73,9 +70,6 @@ func TryDelegate(
 
 	case *tree.ShowCreateAllTypes:
 		return d.delegateShowCreateAllTypes()
-
-	case *tree.ShowCreateAllRoutines:
-		return d.delegateShowCreateAllRoutines()
 
 	case *tree.ShowDatabaseIndexes:
 		return d.delegateShowDatabaseIndexes(t)
@@ -98,9 +92,6 @@ func TryDelegate(
 	case *tree.ShowJobs:
 		return d.delegateShowJobs(t)
 
-	case *tree.ShowLogicalReplicationJobs:
-		return d.delegateShowLogicalReplicationJobs(t)
-
 	case *tree.ShowChangefeedJobs:
 		return d.delegateShowChangefeedJobs(t)
 
@@ -108,6 +99,13 @@ func TryDelegate(
 		return d.delegateShowQueries(t)
 
 	case *tree.ShowRanges:
+		// Remove in v23.2.
+		//
+		// This chooses a different implementation of the SHOW statement
+		// depending on a run-time config setting.
+		if deprecatedshowranges.EnableDeprecatedBehavior(ctx, evalCtx.Settings, evalCtx.ClientNoticeSender) {
+			return d.delegateShowRangesDEPRECATED(t)
+		}
 		return d.delegateShowRanges(t)
 
 	case *tree.ShowRangeForRow:
@@ -148,9 +146,6 @@ func TryDelegate(
 
 	case *tree.ShowUsers:
 		return d.delegateShowRoles()
-
-	case *tree.ShowDefaultSessionVariablesForRole:
-		return d.delegateShowDefaultSessionVariablesForRole(t)
 
 	case *tree.ShowVar:
 		return d.delegateShowVar(t)
@@ -276,24 +271,4 @@ func (d *delegator) resolveAndModifyTableIndexName(
 		(*name).Table = resName.ToUnresolvedObjectName().ToTableName()
 	}
 	return dataSource, resName, nil
-}
-
-func (d *delegator) getCommentQuery(
-	commentTableName string, classOidType int, objIdColumn string,
-) (string, string) {
-	commentColumn := `, comment`
-	commentJoin := fmt.Sprintf(`
-			LEFT JOIN
-				(
-					SELECT 
-						objoid, description as comment
-					FROM
-						%s
-					WHERE
-						classoid = %d
-				) c
-			ON
-				%s = c.objoid`, commentTableName, classOidType, objIdColumn)
-
-	return commentColumn, commentJoin
 }

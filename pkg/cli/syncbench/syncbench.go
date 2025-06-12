@@ -17,7 +17,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -138,9 +137,9 @@ func Run(opts Options) error {
 
 	db, err := storage.Open(
 		context.Background(),
-		fs.MustInitPhysicalTestingEnv(opts.Dir),
+		storage.Filesystem(opts.Dir),
 		cluster.MakeTestingClusterSettings(),
-		storage.CacheSize(1<<20 /* 1MiB */))
+		storage.CacheSize(0))
 	if err != nil {
 		return err
 	}

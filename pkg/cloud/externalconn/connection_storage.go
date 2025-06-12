@@ -94,11 +94,6 @@ func makeExternalConnectionStorage(
 }
 
 func init() {
-	cloud.RegisterExternalStorageProvider(cloudpb.ExternalStorageProvider_external,
-		cloud.RegisteredProvider{
-			ParseFn:        parseExternalConnectionURL,
-			ConstructFn:    makeExternalConnectionStorage,
-			RedactedParams: cloud.RedactedParams(),
-			Schemes:        []string{scheme},
-		})
+	cloud.RegisterExternalStorageProvider(cloudpb.ExternalStorageProvider_external, parseExternalConnectionURL,
+		makeExternalConnectionStorage, cloud.RedactedParams(), scheme)
 }

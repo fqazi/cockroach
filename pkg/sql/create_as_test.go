@@ -59,8 +59,7 @@ func TestCreateAsVTable(t *testing.T) {
 						}
 						// Filter out vector columns to prevent error in CTAS:
 						// "VECTOR column types are unsupported".
-						if colDef.Type.(*types.T).Identical(types.Int2Vector) ||
-							colDef.Type.(*types.T).Identical(types.OidVector) {
+						if colDef.Type == types.Int2Vector || colDef.Type == types.OidVector {
 							continue
 						}
 						ctasColumns = append(ctasColumns, colDef.Name.String())
@@ -382,7 +381,7 @@ func TestFormat(t *testing.T) {
 			// "updating view reference" job.
 			query := fmt.Sprintf(
 				`SELECT description
-FROM [SHOW JOBS SELECT id FROM system.jobs]
+FROM [SHOW JOBS]
 WHERE job_type IN ('SCHEMA CHANGE', 'NEW SCHEMA CHANGE')
 AND description LIKE 'CREATE%%%s%%'`,
 				name,

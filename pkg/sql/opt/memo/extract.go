@@ -6,8 +6,6 @@
 package memo
 
 import (
-	"context"
-
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -137,33 +135,6 @@ func ExtractAggInputColumns(e opt.ScalarExpr) opt.ColSet {
 	}
 
 	return res
-}
-
-// AddAggInputColumns adds the set of columns the aggregate depands on to the
-// given set. The modified set is returned.
-//
-// NOTE: The original set may be mutated.
-func AddAggInputColumns(cols opt.ColSet, e opt.ScalarExpr) opt.ColSet {
-	if filter, ok := e.(*AggFilterExpr); ok {
-		cols.Add(filter.Filter.(*VariableExpr).Col)
-		e = filter.Input
-	}
-
-	if distinct, ok := e.(*AggDistinctExpr); ok {
-		e = distinct.Input
-	}
-
-	if !opt.IsAggregateOp(e) {
-		panic(errors.AssertionFailedf("not an Aggregate"))
-	}
-
-	for i, n := 0, e.ChildCount(); i < n; i++ {
-		if variable, ok := e.Child(i).(*VariableExpr); ok {
-			cols.Add(variable.Col)
-		}
-	}
-
-	return cols
 }
 
 // ExtractAggFirstVar is given an aggregate expression and returns the Variable
@@ -447,14 +418,12 @@ func ExtractRemainingJoinFilters(on FiltersExpr, leftEq, rightEq opt.ColList) Fi
 
 // ExtractConstColumns returns columns in the filters expression that have been
 // constrained to fixed values.
-func ExtractConstColumns(
-	ctx context.Context, on FiltersExpr, evalCtx *eval.Context,
-) (fixedCols opt.ColSet) {
+func ExtractConstColumns(on FiltersExpr, evalCtx *eval.Context) (fixedCols opt.ColSet) {
 	for i := range on {
 		scalar := on[i]
 		scalarProps := scalar.ScalarProps()
 		if scalarProps.Constraints != nil && !scalarProps.Constraints.IsUnconstrained() {
-			fixedCols.UnionWith(scalarProps.Constraints.ExtractConstCols(ctx, evalCtx))
+			fixedCols.UnionWith(scalarProps.Constraints.ExtractConstCols(evalCtx))
 		}
 	}
 	return fixedCols
@@ -463,86 +432,16 @@ func ExtractConstColumns(
 // ExtractValueForConstColumn returns the constant value of a column returned by
 // ExtractConstColumns.
 func ExtractValueForConstColumn(
-	ctx context.Context, on FiltersExpr, evalCtx *eval.Context, col opt.ColumnID,
+	on FiltersExpr, evalCtx *eval.Context, col opt.ColumnID,
 ) tree.Datum {
 	for i := range on {
 		scalar := on[i]
 		scalarProps := scalar.ScalarProps()
 		if scalarProps.Constraints != nil {
-			if val := scalarProps.Constraints.ExtractValueForConstCol(ctx, evalCtx, col); val != nil {
+			if val := scalarProps.Constraints.ExtractValueForConstCol(evalCtx, col); val != nil {
 				return val
 			}
 		}
 	}
 	return nil
-}
-
-// ExtractTailCalls traverses the given expression tree, searching for routines
-// that are in tail-call position relative to the (assumed) calling routine.
-// ExtractTailCalls assumes that the given expression is the last body statement
-// of the calling routine, and that the map is already initialized.
-//
-// In order for a nested routine to qualify as a tail-call, the following
-// condition must be true: If the nested routine is evaluated, then the calling
-// routine must return the result of the nested routine without further
-// modification. This means even simple expressions like CAST are not allowed.
-//
-// ExtractTailCalls is best-effort, but is sufficient to identify the tail-calls
-// produced among PL/pgSQL sub-routines.
-//
-// NOTE: ExtractTailCalls does not take into account whether the calling routine
-// has an exception handler. The execution engine must take this into account
-// before applying tail-call optimization.
-func ExtractTailCalls(expr opt.Expr, tailCalls map[opt.ScalarExpr]struct{}) {
-	switch t := expr.(type) {
-	case *ProjectExpr:
-		// * The cardinality cannot be greater than one: Otherwise, a nested routine
-		// will be evaluated more than once, and all evaluations other than the last
-		// are not tail-calls.
-		//
-		// * There must be a single projection: the execution does not provide
-		// guarantees about order of evaluation for projections (though it may in
-		// the future).
-		//
-		// * The passthrough set must be empty: Otherwise, the result of the nested
-		// routine cannot directly be used as the result of the calling routine.
-		//
-		// * No routine in the input of the project can be a tail-call, since the
-		// Project will perform work after the nested routine evaluates.
-		// Note: this condition is enforced by simply not calling ExtractTailCalls
-		// on the input of the Project.
-		if t.Relational().Cardinality.IsZeroOrOne() &&
-			len(t.Projections) == 1 && t.Passthrough.Empty() {
-			ExtractTailCalls(t.Projections[0].Element, tailCalls)
-		}
-
-	case *ValuesExpr:
-		// Allow only the case where the Values expression contains only a single
-		// expression. Note: it may be possible to make an explicit guarantee that
-		// expressions in a row are evaluated in order, in which case it would be
-		// sufficient to ensure that the nested routine is in the last column.
-		if len(t.Rows) == 1 && len(t.Rows[0].(*TupleExpr).Elems) == 1 {
-			ExtractTailCalls(t.Rows[0].(*TupleExpr).Elems[0], tailCalls)
-		}
-
-	case *CaseExpr:
-		// Case expressions guarantee that exactly one branch is evaluated, and pass
-		// through the result of the chosen branch. Therefore, a routine within a
-		// CASE branch can be a tail-call.
-		for i := range t.Whens {
-			ExtractTailCalls(t.Whens[i].(*WhenExpr).Value, tailCalls)
-		}
-		ExtractTailCalls(t.OrElse, tailCalls)
-
-	case *SubqueryExpr:
-		// A subquery within a routine is lazily evaluated as a nested routine.
-		// Therefore, we consider it a tail call.
-		tailCalls[t] = struct{}{}
-
-	case *UDFCallExpr:
-		// If we reached a scalar UDFCall expression, it is a tail call.
-		if !t.Def.SetReturning {
-			tailCalls[t] = struct{}{}
-		}
-	}
 }

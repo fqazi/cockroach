@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for cast.eg.go. It's formatted in a
@@ -18,6 +19,7 @@ package colexecbase
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/cockroachdb/apd/v3"
@@ -37,7 +39,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil/pgdate"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
@@ -56,7 +57,6 @@ var (
 	_ = pgcode.Syntax
 	_ = pgdate.ParseTimestamp
 	_ = pgerror.Wrapf
-	_ = log.ExpensiveLogEnabled
 )
 
 // {{/*
@@ -101,12 +101,7 @@ func isIdentityCast(fromType, toType *types.T) bool {
 	return false
 }
 
-var errUnhandledCast = errors.New("unhandled cast")
-
-var errUnhandledCastToOid = errors.New("unhandled cast to oid")
-
 func GetCastOperator(
-	ctx context.Context,
 	allocator *colmem.Allocator,
 	input colexecop.Operator,
 	colIdx int,
@@ -122,11 +117,6 @@ func GetCastOperator(
 		colIdx:                   colIdx,
 		outputIdx:                resultIdx,
 		evalCtx:                  evalCtx,
-	}
-	if toType.Family() == types.OidFamily {
-		// Casting to Oid has special logic that involves resolving different
-		// objects, so we'll fall back to the row-by-row engine for that.
-		return nil, errUnhandledCastToOid
 	}
 	if fromType.Family() == types.UnknownFamily {
 		return &castOpNullAny{castOpBase: base}, nil
@@ -187,19 +177,14 @@ func GetCastOperator(
 			// {{end}}
 		}
 	}
-	err := errUnhandledCast
-	if log.ExpensiveLogEnabled(ctx, 1) {
-		err = errors.Newf("unhandled cast %s -> %s", fromType.SQLStringForError(), toType.SQLStringForError())
-	}
-	return nil, err
+	return nil, errors.Errorf(
+		"unhandled cast %s -> %s",
+		fromType.SQLStringForError(),
+		toType.SQLStringForError(),
+	)
 }
 
 func IsCastSupported(fromType, toType *types.T) bool {
-	if toType.Family() == types.OidFamily {
-		// Casting to Oid has special logic that involves resolving different
-		// objects, so we'll fall back to the row-by-row engine for that.
-		return false
-	}
 	if fromType.Family() == types.UnknownFamily {
 		return true
 	}
@@ -289,7 +274,7 @@ func (c *castOpNullAny) Next() coldata.Batch {
 			if vecNulls.NullAt(i) {
 				projNulls.SetNull(i)
 			} else {
-				colexecerror.InternalError(errors.AssertionFailedf("unexpected non-null at index %d", i))
+				colexecerror.InternalError(errors.Errorf("unexpected non-null at index %d", i))
 			}
 		}
 	} else {
@@ -297,7 +282,7 @@ func (c *castOpNullAny) Next() coldata.Batch {
 			if vecNulls.NullAt(i) {
 				projNulls.SetNull(i)
 			} else {
-				colexecerror.InternalError(errors.AssertionFailedf("unexpected non-null at index %d", i))
+				colexecerror.InternalError(fmt.Errorf("unexpected non-null at index %d", i))
 			}
 		}
 	}
@@ -341,7 +326,7 @@ func (c *castIdentityOp) Next() coldata.Batch {
 		return coldata.ZeroBatch
 	}
 	projVec := batch.ColVec(c.outputIdx)
-	c.allocator.PerformOperation([]*coldata.Vec{projVec}, func() {
+	c.allocator.PerformOperation([]coldata.Vec{projVec}, func() {
 		srcVec := batch.ColVec(c.colIdx)
 		if sel := batch.Selection(); sel != nil {
 			// We don't want to perform the deselection during copying, so we
@@ -381,7 +366,7 @@ func (c *castBPCharIdentityOp) Next() coldata.Batch {
 	outputNulls := outputVec.Nulls()
 	// Note that the loops below are not as optimized as in other cast operators
 	// since this operator should only be planned in tests.
-	c.allocator.PerformOperation([]*coldata.Vec{outputVec}, func() {
+	c.allocator.PerformOperation([]coldata.Vec{outputVec}, func() {
 		if sel := batch.Selection(); sel != nil {
 			for _, i := range sel[:n] {
 				if inputNulls.NullAt(i) {
@@ -423,9 +408,9 @@ func (c *castNativeToDatumOp) Next() coldata.Batch {
 	outputCol := outputVec.Datum()
 	outputNulls := outputVec.Nulls()
 	toType := outputVec.Type()
-	c.allocator.PerformOperation([]*coldata.Vec{outputVec}, func() {
-		if n > c.da.DefaultAllocSize {
-			c.da.DefaultAllocSize = n
+	c.allocator.PerformOperation([]coldata.Vec{outputVec}, func() {
+		if n > c.da.AllocSize {
+			c.da.AllocSize = n
 		}
 		if cap(c.scratch) < n {
 			c.scratch = make([]tree.Datum, n)
@@ -528,7 +513,7 @@ func (c *cast_NAMEOp) Next() coldata.Batch {
 	// Remove unused warnings.
 	_ = toType
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec}, func() {
+		[]coldata.Vec{outputVec}, func() {
 			inputCol := inputVec._FROM_TYPE()
 			inputNulls := inputVec.Nulls()
 			outputCol := outputVec._TO_TYPE()

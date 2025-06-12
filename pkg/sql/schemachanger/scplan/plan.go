@@ -16,7 +16,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan/internal/opgen"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan/internal/rules"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan/internal/rules/current"
-	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan/internal/rules/release_25_2"
+	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan/internal/rules/release_22_2"
+	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan/internal/rules/release_23_1"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan/internal/scgraph"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan/internal/scstage"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -94,7 +95,6 @@ func (p Plan) StagesForCurrentPhase() []scstage.Stage {
 func MakePlan(ctx context.Context, initial scpb.CurrentState, params Params) (p Plan, err error) {
 	defer scerrors.StartEventf(
 		ctx,
-		0, /* level */
 		"building declarative schema changer plan in %s (rollback=%v) for %s",
 		redact.Safe(params.ExecutionPhase),
 		redact.Safe(params.InRollback),
@@ -154,8 +154,9 @@ type rulesForRelease struct {
 // rulesForRelease supported rules for each release, this is an ordered array
 // with the newest supported version first.
 var rulesForReleases = []rulesForRelease{
-	{activeVersion: clusterversion.Latest, rulesRegistry: current.GetRegistry()},
-	{activeVersion: clusterversion.V25_2, rulesRegistry: release_25_2.GetRegistry()},
+	{activeVersion: clusterversion.V23_2, rulesRegistry: current.GetRegistry()},
+	{activeVersion: clusterversion.V23_1, rulesRegistry: release_23_1.GetRegistry()},
+	{activeVersion: clusterversion.V22_2, rulesRegistry: release_22_2.GetRegistry()},
 }
 
 // minVersionForRules the oldest version supported by the rules.
@@ -190,7 +191,7 @@ func GetReleasesForRulesRegistries() []clusterversion.ClusterVersion {
 	for _, r := range rulesForReleases {
 		supportedVersions = append(supportedVersions,
 			clusterversion.ClusterVersion{
-				Version: r.activeVersion.Version(),
+				Version: clusterversion.ByKey(r.activeVersion),
 			})
 	}
 	return supportedVersions
@@ -207,10 +208,21 @@ func getMinValidVersionForRules(
 			minVersionForRules,
 			activeVersion)
 		return clusterversion.ClusterVersion{
-			Version: minVersionForRules.Version(),
+			Version: clusterversion.ByKey(minVersionForRules),
 		}
 	}
 	return activeVersion
+}
+
+// Deprecated.
+//
+// TODO(postamar): remove once the release_22_2 ruleset is also removed
+func applyOpRules(
+	ctx context.Context, activeVersion clusterversion.ClusterVersion, g *scgraph.Graph,
+) (*scgraph.Graph, error) {
+	activeVersion = getMinValidVersionForRules(ctx, activeVersion)
+	registry := GetRulesRegistryForRelease(ctx, activeVersion)
+	return registry.ApplyOpRules(ctx, g)
 }
 
 func applyDepRules(
@@ -235,6 +247,10 @@ func buildGraph(
 	err = g.Validate()
 	if err != nil {
 		panic(errors.Wrapf(err, "validate graph"))
+	}
+	g, err = applyOpRules(ctx, activeVersion, g)
+	if err != nil {
+		panic(errors.Wrapf(err, "mark op edges as no-op"))
 	}
 	return g
 }

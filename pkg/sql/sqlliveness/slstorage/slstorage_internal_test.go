@@ -10,6 +10,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
+	"github.com/cockroachdb/cockroach/pkg/server/settingswatcher"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/systemschema"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -24,6 +25,7 @@ func TestGetEncoder(t *testing.T) {
 	const (
 		isNil codecType = iota
 		isRbr
+		isRbt
 	)
 
 	checkCodec := func(t *testing.T, typ codecType, codec keyCodec) {
@@ -35,6 +37,10 @@ func TestGetEncoder(t *testing.T) {
 			require.NotNil(t, codec)
 			_, ok := codec.(*rbrEncoder)
 			require.True(t, ok, "expected %v to be an rbr encoder", codec)
+		case isRbt:
+			require.NotNil(t, codec)
+			_, ok := codec.(*rbtEncoder)
+			require.True(t, ok, "expected %v to be an rbt encoder", codec)
 		}
 	}
 
@@ -46,8 +52,38 @@ func TestGetEncoder(t *testing.T) {
 	}
 	tests := []testCase{
 		{
-			name:      "current",
-			version:   clusterversion.Latest,
+			name:      "v23_1",
+			version:   clusterversion.V23_1,
+			readCodec: isRbr,
+			dualCodec: isNil,
+		},
+		{
+			name:      "v22_2",
+			version:   clusterversion.V22_2,
+			readCodec: isRbt,
+			dualCodec: isNil,
+		},
+		{
+			name:      "V23_1_SystemRbrDualWrite",
+			version:   clusterversion.V23_1_SystemRbrDualWrite,
+			readCodec: isRbt,
+			dualCodec: isRbr,
+		},
+		{
+			name:      "V23_1_SystemRbrReadNew",
+			version:   clusterversion.V23_1_SystemRbrReadNew,
+			readCodec: isRbr,
+			dualCodec: isRbt,
+		},
+		{
+			name:      "V23_1_SystemRbrSingleWrite",
+			version:   clusterversion.V23_1_SystemRbrSingleWrite,
+			readCodec: isRbr,
+			dualCodec: isNil,
+		},
+		{
+			name:      "V23_1_SystemRbrCleanup",
+			version:   clusterversion.V23_1_SystemRbrCleanup,
 			readCodec: isRbr,
 			dualCodec: isNil,
 		},
@@ -55,9 +91,13 @@ func TestGetEncoder(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			storage := NewTestingStorage(
-				log.AmbientContext{}, nil, nil, nil, keys.SystemSQLCodec, nil, nil, systemschema.SqllivenessTable(), nil, true /*withSyntheticClock*/)
+				log.AmbientContext{}, nil, nil, nil, keys.SystemSQLCodec, nil, nil, systemschema.SqllivenessTable(), nil)
 
-			checkCodec(t, tc.readCodec, storage.keyCodec)
+			version := clusterversion.ClusterVersion{Version: clusterversion.ByKey(tc.version)}
+			guard := settingswatcher.TestMakeVersionGuard(version)
+
+			checkCodec(t, tc.readCodec, storage.getReadCodec(&guard))
+			checkCodec(t, tc.dualCodec, storage.getDualWriteCodec(&guard))
 		})
 	}
 }

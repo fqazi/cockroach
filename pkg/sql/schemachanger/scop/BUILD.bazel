@@ -1,4 +1,4 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
 load("//build:STRINGER.bzl", "stringer")
 
 go_library(
@@ -21,7 +21,6 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scop",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/config/zonepb",
         "//pkg/jobs/jobspb",
         "//pkg/sql/catalog/catenumpb",
         "//pkg/sql/catalog/catpb",
@@ -29,7 +28,17 @@ go_library(
         "//pkg/sql/schemachanger/scpb",
         "//pkg/sql/sem/catid",
         "//pkg/sql/sem/semenumpb",
-        "@com_github_cockroachdb_redact//:redact",
+    ],
+)
+
+go_binary(
+    name = "gen-visitors",
+    srcs = ["generate_visitor.go"],
+    gotags = ["generator"],
+    deps = [
+        "//pkg/cli/exit",
+        "@com_github_cockroachdb_errors//:errors",
+        "@com_github_cockroachdb_gostdlib//go/format",
     ],
 )
 
@@ -38,10 +47,10 @@ genrule(
     srcs = ["immediate_mutation.go"],
     outs = ["immediate_mutation_visitor_generated.go"],
     cmd = """
-        $(location //pkg/sql/schemachanger/scop/generate-visitors) scop ImmediateMutation $(location immediate_mutation.go) $(location immediate_mutation_visitor_generated.go)
+        $(location :gen-visitors) scop ImmediateMutation $(location immediate_mutation.go) $(location immediate_mutation_visitor_generated.go)
        """,
-    tools = [
-        "//pkg/sql/schemachanger/scop/generate-visitors",
+    exec_tools = [
+        ":gen-visitors",
     ],
     visibility = [
         ":__pkg__",
@@ -54,10 +63,10 @@ genrule(
     srcs = ["deferred_mutation.go"],
     outs = ["deferred_mutation_visitor_generated.go"],
     cmd = """
-        $(location //pkg/sql/schemachanger/scop/generate-visitors) scop DeferredMutation $(location deferred_mutation.go) $(location deferred_mutation_visitor_generated.go)
+        $(location :gen-visitors) scop DeferredMutation $(location deferred_mutation.go) $(location deferred_mutation_visitor_generated.go)
        """,
-    tools = [
-        "//pkg/sql/schemachanger/scop/generate-visitors",
+    exec_tools = [
+        ":gen-visitors",
     ],
     visibility = [
         ":__pkg__",
@@ -70,10 +79,10 @@ genrule(
     srcs = ["backfill.go"],
     outs = ["backfill_visitor_generated.go"],
     cmd = """
-        $(location //pkg/sql/schemachanger/scop/generate-visitors) scop Backfill $(location backfill.go) $(location backfill_visitor_generated.go)
+        $(location :gen-visitors) scop Backfill $(location backfill.go) $(location backfill_visitor_generated.go)
        """,
-    tools = [
-        "//pkg/sql/schemachanger/scop/generate-visitors",
+    exec_tools = [
+        ":gen-visitors",
     ],
     visibility = [
         ":__pkg__",
@@ -86,10 +95,10 @@ genrule(
     srcs = ["validation.go"],
     outs = ["validation_visitor_generated.go"],
     cmd = """
-        $(location //pkg/sql/schemachanger/scop/generate-visitors) scop Validation $(location validation.go) $(location validation_visitor_generated.go)
+        $(location :gen-visitors) scop Validation $(location validation.go) $(location validation_visitor_generated.go)
        """,
-    tools = [
-        "//pkg/sql/schemachanger/scop/generate-visitors",
+    exec_tools = [
+        ":gen-visitors",
     ],
     visibility = [
         ":__pkg__",

@@ -60,12 +60,8 @@ const (
 	CREATELOGIN              Kind = 33
 	CREATEDB                 Kind = 34
 	CONTROLJOB               Kind = 35
-	REPAIRCLUSTER            Kind = 36
-	TRIGGER                  Kind = 37
-	BYPASSRLS                Kind = 38
-	REPLICATIONDEST          Kind = 39
-	REPLICATIONSOURCE        Kind = 40
-	largestKind                   = REPLICATIONSOURCE
+	REPAIRCLUSTERMETADATA    Kind = 36
+	largestKind                   = REPAIRCLUSTERMETADATA
 )
 
 var isDeprecatedKind = map[Kind]bool{
@@ -76,8 +72,6 @@ var isDeprecatedKind = map[Kind]bool{
 // privilege internally. It is not visible to end-users.
 type KindInternalKey string
 
-// InternalKey returns the KindInternalKey for a Kind (see docs on
-// KindInternalKey). The InternalKey must not change between releases.
 func (k Kind) InternalKey() KindInternalKey {
 	switch k {
 	case ALL:
@@ -149,16 +143,8 @@ func (k Kind) InternalKey() KindInternalKey {
 		return "CREATEDB"
 	case CONTROLJOB:
 		return "CONTROLJOB"
-	case REPAIRCLUSTER:
+	case REPAIRCLUSTERMETADATA:
 		return "REPAIRCLUSTERMETADATA"
-	case TRIGGER:
-		return "TRIGGER"
-	case BYPASSRLS:
-		return "BYPASSRLS"
-	case REPLICATIONDEST:
-		return "REPLICATIONDEST"
-	case REPLICATIONSOURCE:
-		return "REPLICATIONSOURCE"
 	default:
 		panic(errors.AssertionFailedf("unhandled kind: %d", int(k)))
 	}
@@ -174,8 +160,6 @@ func (k Kind) DisplayName() KindDisplayName {
 	switch k {
 	case MANAGEVIRTUALCLUSTER:
 		return "MANAGEVIRTUALCLUSTER"
-	case REPAIRCLUSTER:
-		return "REPAIRCLUSTER"
 	default:
 		// Unless we have an exception above, the internal
 		// key is also a valid display name.

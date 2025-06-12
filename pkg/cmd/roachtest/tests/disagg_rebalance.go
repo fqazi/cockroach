@@ -28,27 +28,26 @@ func registerDisaggRebalance(r registry.Registry) {
 		Suites:            registry.Suites(registry.Nightly),
 		Owner:             registry.OwnerStorage,
 		Cluster:           disaggRebalanceSpec,
+		RequiresLicense:   true,
 		EncryptionSupport: registry.EncryptionAlwaysDisabled,
-		Timeout:           4 * time.Hour,
+		Timeout:           1 * time.Hour,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			s3dir := fmt.Sprintf("s3://%s/disagg-rebalance/%s?AUTH=implicit", testutils.BackupTestingBucketLongTTL(), c.Name())
 			startOpts := option.NewStartOpts(option.NoBackupSchedule)
 			startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs, fmt.Sprintf("--experimental-shared-storage=%s", s3dir))
 			c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.Range(1, 3))
 
-			warehouses := 1000
-			activeWarehouses := 20
+			initialWaitDuration := 2 * time.Minute
+			warehouses := 20
 
 			t.Status("workload initialization")
-			// Checks are turned off as they take a while for high warehouse counts on
-			// top of disaggregated storage.
 			cmd := fmt.Sprintf(
-				"./cockroach workload fixtures import tpcc --warehouses=%d --checks=false {pgurl:1}",
+				"./cockroach workload fixtures import tpcc --warehouses=%d {pgurl:1}",
 				warehouses,
 			)
 			m := c.NewMonitor(ctx, c.Range(1, 3))
 			m.Go(func(ctx context.Context) error {
-				return c.RunE(ctx, option.WithNodes(c.Node(1)), cmd)
+				return c.RunE(ctx, c.Node(1), cmd)
 			})
 			m.Wait()
 
@@ -58,30 +57,17 @@ func registerDisaggRebalance(r registry.Registry) {
 				t.Status("run tpcc")
 
 				cmd := fmt.Sprintf(
-					"./cockroach workload run tpcc --warehouses=%d --active-warehouses=%d --duration=2m {pgurl:1-3}",
-					warehouses, activeWarehouses,
+					"./cockroach workload run tpcc --warehouses=%d --duration=10m {pgurl:1-3}",
+					warehouses,
 				)
 
-				return c.RunE(ctx, option.WithNodes(c.Node(1)), cmd)
+				return c.RunE(ctx, c.Node(1), cmd)
 			})
 
-			if err := m2.WaitE(); err != nil {
-				t.Fatal(err)
-			}
-
-			// Compact the ranges containing tpcc on the first three nodes. This increases
-			// the chances of a shared snapshot being sent when we start the 4th node.
-			t.Status("compacting tpcc db on nodes")
-			for i := 0; i < 3; i++ {
-				db := c.Conn(ctx, t.L(), i+1)
-				_, err := db.ExecContext(ctx, `SELECT crdb_internal.compact_engine_span(
-					$1, $2,
-					(SELECT raw_start_key FROM [SHOW RANGES FROM DATABASE tpcc WITH KEYS] ORDER BY start_key LIMIT 1),
-					(SELECT raw_end_key FROM [SHOW RANGES FROM DATABASE tpcc WITH KEYS] ORDER BY end_key DESC LIMIT 1))`, i+1, i+1)
-				if err != nil {
-					t.Fatal(err)
-				}
-				db.Close()
+			select {
+			case <-time.After(initialWaitDuration):
+			case <-ctx.Done():
+				return
 			}
 
 			t.Status("starting fourth node")
@@ -127,29 +113,32 @@ func registerDisaggRebalance(r registry.Registry) {
 				t.Fatalf("did not replicate to n4 quickly enough, only found %d replicas", count)
 			}
 
-			testutils.SucceedsWithin(t, func() error {
-				var bytesInRanges int64
-				if err := db.QueryRow(
-					"SELECT metrics['livebytes']::INT FROM crdb_internal.kv_store_status WHERE node_id = $1 LIMIT 1",
-					4,
-				).Scan(&bytesInRanges); err != nil {
-					t.Fatal(err)
-				}
-				var bytesSnapshotted int64
-				if err := db.QueryRow(
-					"SELECT metrics['range.snapshots.rcvd-bytes']::INT FROM crdb_internal.kv_store_status WHERE node_id = $1 LIMIT 1",
-					4,
-				).Scan(&bytesSnapshotted); err != nil {
-					t.Fatal(err)
-				}
+			var bytesInRanges int64
+			if err := db.QueryRow(
+				"SELECT sum(used) "+
+					"FROM crdb_internal.kv_store_status WHERE node_id = $1 GROUP BY node_id LIMIT 1",
+				4,
+			).Scan(&bytesInRanges); err != nil {
+				t.Fatal(err)
+			}
+			var bytesSnapshotted int64
+			if err := db.QueryRow(
+				"SELECT metrics['range.snapshots.rcvd-bytes']::INT FROM crdb_internal.kv_store_status WHERE node_id = $1 LIMIT 1",
+				4,
+			).Scan(&bytesSnapshotted); err != nil {
+				t.Fatal(err)
+			}
 
-				t.L().PrintfCtx(ctx, "got snapshot received bytes = %s, logical bytes in ranges = %s", humanize.IBytes(uint64(bytesSnapshotted)), humanize.IBytes(uint64(bytesInRanges)))
-				if bytesSnapshotted > bytesInRanges {
-					return errors.Errorf("unexpected snapshot received bytes %d > bytes in all replicas on n4 %d, did not do a disaggregated rebalance?", bytesSnapshotted, bytesInRanges)
-				}
-				return nil
-			}, 5*time.Minute)
+			t.L().PrintfCtx(ctx, "got snapshot received bytes = %s, logical bytes in ranges = %s", humanize.IBytes(uint64(bytesSnapshotted)), humanize.IBytes(uint64(bytesInRanges)))
+			if bytesSnapshotted > bytesInRanges {
+				t.Fatalf("unexpected snapshot received bytes %d > bytes in all replicas on n4 %d, did not do a disaggregated rebalance?", bytesSnapshotted, bytesInRanges)
+			}
 
+			t.Status("continue tpcc")
+
+			if err := m2.WaitE(); err != nil {
+				t.Fatal(err)
+			}
 		},
 	})
 }

@@ -38,8 +38,7 @@ const templateText = `
 {{- define "runLogicTest" }}
 {{- if .LogicTest -}}
 func runLogicTest(t *testing.T, file string) {
-	{{if .SkipUnderRace}}skip.UnderRace(t, "times out and/or hangs")
-	{{end}}skip.UnderDeadlock(t, "times out and/or hangs")
+	skip.UnderDeadlock(t, "times out and/or hangs")
 	logictest.RunLogicTest(t, logictest.TestServerArgs{}, configIdx, filepath.Join(logicTestDir, file))
 }
 {{ end }}
@@ -48,8 +47,7 @@ func runLogicTest(t *testing.T, file string) {
 {{- define "runCCLLogicTest" }}
 {{- if .CclLogicTest -}}
 func runCCLLogicTest(t *testing.T, file string) {
-	{{if .SkipUnderRace}}skip.UnderRace(t, "times out and/or hangs")
-	{{end}}skip.UnderDeadlock(t, "times out and/or hangs")
+	skip.UnderDeadlock(t, "times out and/or hangs")
 	logictest.RunLogicTest(t, logictest.TestServerArgs{}, configIdx, filepath.Join(cclLogicTestDir, file))
 }
 {{ end }}
@@ -249,7 +247,12 @@ const buildFileTemplate = `load("@io_bazel_rules_go//go:def.bzl", "go_test")
 go_test(
     name = "{{ .TestRuleName }}_test",
     size = "enormous",
-    srcs = ["generated_test.go"],
+    srcs = ["generated_test.go"],{{ if .SqliteLogicTest }}
+    args = ["-test.timeout=7195s"],{{ else }}
+    args = select({
+        "//build/toolchains:use_ci_timeouts": ["-test.timeout=895s"],
+        "//conditions:default": ["-test.timeout=3595s"],
+    }),{{ end }}
     data = [
         "//c-deps:libgeos",  # keep{{ if .SqliteLogicTest }}
         "@com_github_cockroachdb_sqllogictest//:testfiles",  # keep{{ end }}{{ if .CclLogicTest }}
@@ -259,12 +262,12 @@ go_test(
         "//pkg/sql/logictest:testdata",  # keep{{ end }}{{ if .ExecBuildLogicTest }}
         "//pkg/sql/opt/exec/execbuilder:testdata",  # keep{{ end }}
     ],
-    exec_properties = {{ if .SqliteLogicTest }}{"test.Pool": "default"},{{ else if eq .UseHeavyPool 2 }}{"test.Pool": "heavy"},{{ else if eq .UseHeavyPool 1 }}select({
-        "//build/toolchains:is_heavy": {"test.Pool": "heavy"},
-        "//conditions:default": {"test.Pool": "large"},
-    }),{{ else }}{"test.Pool": "large"},{{ end }}
+    exec_properties = {"Pool": "large"},
     shard_count = {{ if gt .TestCount 48 }}48{{ else }}{{ .TestCount }}{{end}},
-    tags = ["cpu:{{ if gt .NumCPU 4 }}4{{ else }}{{ .NumCPU }}{{ end }}"],
+    tags = [{{ if .Ccl }}
+        "ccl_test",{{ end }}
+        "cpu:{{ if gt .NumCPU 4 }}4{{ else }}{{ .NumCPU }}{{ end }}",
+    ],
     deps = [
         "//pkg/base",
         "//pkg/build/bazel",{{ if .Ccl }}

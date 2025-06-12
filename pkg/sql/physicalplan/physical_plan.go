@@ -128,7 +128,7 @@ type PhysicalPlan struct {
 	// plan. These are the routers to which we have to connect new streams in
 	// order to extend the plan.
 	//
-	// The processors which have these routers are all part of the same "stage":
+	// The processors which have this routers are all part of the same "stage":
 	// they have the same "schema" and PostProcessSpec.
 	//
 	// We assume all processors have a single output so we only need the processor
@@ -282,7 +282,6 @@ func (p *PhysicalPlan) AddNoInputStage(
 	post execinfrapb.PostProcessSpec,
 	outputTypes []*types.T,
 	newOrdering execinfrapb.Ordering,
-	finalizeLastStageCb func(*PhysicalPlan),
 ) {
 	// Note that in order to find out whether we have a remote processor it is
 	// not sufficient to have len(corePlacements) be greater than one - we might
@@ -315,9 +314,6 @@ func (p *PhysicalPlan) AddNoInputStage(
 		p.ResultRouters[i] = pIdx
 	}
 	p.SetMergeOrdering(newOrdering)
-	if finalizeLastStageCb != nil {
-		finalizeLastStageCb(p)
-	}
 }
 
 // AddNoGroupingStage adds a processor for each result router, on the same node
@@ -329,7 +325,6 @@ func (p *PhysicalPlan) AddNoGroupingStage(
 	post execinfrapb.PostProcessSpec,
 	outputTypes []*types.T,
 	newOrdering execinfrapb.Ordering,
-	finalizeLastStageCb func(*PhysicalPlan),
 ) {
 	// New stage has the same distribution as the previous one, so we need to
 	// figure out whether the last stage contains a remote processor.
@@ -365,9 +360,6 @@ func (p *PhysicalPlan) AddNoGroupingStage(
 		})
 
 		p.ResultRouters[i] = pIdx
-	}
-	if finalizeLastStageCb != nil {
-		finalizeLastStageCb(p)
 	}
 	p.SetMergeOrdering(newOrdering)
 }
@@ -429,7 +421,6 @@ func (p *PhysicalPlan) AddSingleGroupStage(
 	core execinfrapb.ProcessorCoreUnion,
 	post execinfrapb.PostProcessSpec,
 	outputTypes []*types.T,
-	finalizeLastStageCb func(*PhysicalPlan),
 ) {
 	proc := Processor{
 		SQLInstanceID: sqlInstanceID,
@@ -461,9 +452,7 @@ func (p *PhysicalPlan) AddSingleGroupStage(
 	// We now have a single result stream.
 	p.ResultRouters = p.ResultRouters[:1]
 	p.ResultRouters[0] = pIdx
-	if finalizeLastStageCb != nil {
-		finalizeLastStageCb(p)
-	}
+
 	p.MergeOrdering = execinfrapb.Ordering{}
 }
 
@@ -487,9 +476,7 @@ func (p *PhysicalPlan) ReplaceLastStage(
 // EnsureSingleStreamOnGateway ensures that there is only one stream on the
 // gateway node in the plan (meaning it possibly merges multiple streams or
 // brings a single stream from a remote node to the gateway).
-func (p *PhysicalPlan) EnsureSingleStreamOnGateway(
-	ctx context.Context, finalizeLastStageCb func(*PhysicalPlan),
-) {
+func (p *PhysicalPlan) EnsureSingleStreamOnGateway(ctx context.Context) {
 	// If we don't already have a single result router on the gateway, add a
 	// single grouping stage.
 	if len(p.ResultRouters) != 1 ||
@@ -500,7 +487,6 @@ func (p *PhysicalPlan) EnsureSingleStreamOnGateway(
 			execinfrapb.ProcessorCoreUnion{Noop: &execinfrapb.NoopCoreSpec{}},
 			execinfrapb.PostProcessSpec{},
 			p.GetResultTypes(),
-			finalizeLastStageCb,
 		)
 		if len(p.ResultRouters) != 1 || p.Processors[p.ResultRouters[0]].SQLInstanceID != p.GatewaySQLInstanceID {
 			panic("ensuring a single stream on the gateway failed")
@@ -581,9 +567,7 @@ func isIdentityProjection(columns []uint32, numExistingCols int) bool {
 //
 // Note: the columns slice is relinquished to this function, which can modify it
 // or use it directly in specs.
-func (p *PhysicalPlan) AddProjection(
-	columns []uint32, newMergeOrdering execinfrapb.Ordering, finalizeLastStageCb func(*PhysicalPlan),
-) {
+func (p *PhysicalPlan) AddProjection(columns []uint32, newMergeOrdering execinfrapb.Ordering) {
 	// If the projection we are trying to apply projects every column, don't
 	// update the spec.
 	if isIdentityProjection(columns, len(p.GetResultTypes())) {
@@ -599,23 +583,18 @@ func (p *PhysicalPlan) AddProjection(
 	post := p.GetLastStagePost()
 
 	if post.RenderExprs != nil {
-		// Check whether each render expression is projected exactly once. If that's
-		// not the case, then we must add another processor in order for each render
-		// expression to be evaluated once (this is needed for edge cases like the
-		// render expressions resulting in errors or other side effects).
+		// Check whether each render expression is projected at least once, if
+		// that's not the case, then we must add another processor in order for
+		// each render expression to be evaluated (this is needed for edge cases
+		// like the render expressions resulting in errors).
 		var addNewProcessor bool
 		if len(columns) < len(post.RenderExprs) {
 			// We're definitely not projecting some render expressions, so we'll
 			// need a new processor.
 			addNewProcessor = true
 		} else {
-			var seenCols intsets.Fast
 			renderUsed := make([]bool, len(post.RenderExprs))
 			for _, c := range columns {
-				if seenCols.Contains(int(c)) {
-					addNewProcessor = true
-				}
-				seenCols.Add(int(c))
 				renderUsed[c] = true
 			}
 			for _, used := range renderUsed {
@@ -633,7 +612,6 @@ func (p *PhysicalPlan) AddProjection(
 				},
 				newResultTypes,
 				newMergeOrdering,
-				finalizeLastStageCb,
 			)
 			return
 		}
@@ -689,7 +667,6 @@ func (p *PhysicalPlan) AddRendering(
 	indexVarMap []int,
 	outTypes []*types.T,
 	newMergeOrdering execinfrapb.Ordering,
-	finalizeLastStageCb func(*PhysicalPlan),
 ) error {
 	// First check if we need an Evaluator, or we are just shuffling values. We
 	// also check if the rendering is a no-op ("identity").
@@ -720,7 +697,7 @@ func (p *PhysicalPlan) AddRendering(
 			}
 			cols[i] = uint32(streamCol)
 		}
-		p.AddProjection(cols, newMergeOrdering, finalizeLastStageCb)
+		p.AddProjection(cols, newMergeOrdering)
 		return nil
 	}
 
@@ -735,7 +712,6 @@ func (p *PhysicalPlan) AddRendering(
 			post,
 			p.GetResultTypes(),
 			p.MergeOrdering,
-			finalizeLastStageCb,
 		)
 	}
 
@@ -744,14 +720,9 @@ func (p *PhysicalPlan) AddRendering(
 		compositeMap = reverseProjection(post.OutputColumns, indexVarMap)
 	}
 	post.RenderExprs = make([]execinfrapb.Expression, len(exprs))
-	var ef ExprFactory
-	ef.Init(ctx, exprCtx, compositeMap)
-	// The number of expressions to render is a rough estimate for the number of
-	// indexed vars that will be created in all the calls to ef.Make below.
-	ef.IndexedVarsHint(len(exprs))
 	for i, e := range exprs {
 		var err error
-		post.RenderExprs[i], err = ef.Make(e)
+		post.RenderExprs[i], err = MakeExpression(ctx, e, exprCtx, compositeMap)
 		if err != nil {
 			return err
 		}
@@ -828,11 +799,7 @@ func reverseProjection(outputColumns []uint32, indexVarMap []int) []int {
 //
 // See MakeExpression for a description of indexVarMap.
 func (p *PhysicalPlan) AddFilter(
-	ctx context.Context,
-	expr tree.TypedExpr,
-	exprCtx ExprContext,
-	indexVarMap []int,
-	finalizeLastStageCb func(*PhysicalPlan),
+	ctx context.Context, expr tree.TypedExpr, exprCtx ExprContext, indexVarMap []int,
 ) error {
 	if expr == nil {
 		return errors.Errorf("nil filter")
@@ -848,7 +815,6 @@ func (p *PhysicalPlan) AddFilter(
 		execinfrapb.PostProcessSpec{},
 		p.GetResultTypes(),
 		p.MergeOrdering,
-		finalizeLastStageCb,
 	)
 	return nil
 }
@@ -859,11 +825,7 @@ func (p *PhysicalPlan) AddFilter(
 //
 // For no limit, count should be MaxInt64.
 func (p *PhysicalPlan) AddLimit(
-	ctx context.Context,
-	count int64,
-	offset int64,
-	exprCtx ExprContext,
-	finalizeLastStageCb func(*PhysicalPlan),
+	ctx context.Context, count int64, offset int64, exprCtx ExprContext,
 ) error {
 	if count < 0 {
 		return errors.Errorf("negative limit")
@@ -927,7 +889,7 @@ func (p *PhysicalPlan) AddLimit(
 		}
 		p.SetLastStagePost(post, p.GetResultTypes())
 		if limitZero {
-			if err := p.AddFilter(ctx, tree.DBoolFalse, exprCtx, nil /* indexVarMap */, finalizeLastStageCb); err != nil {
+			if err := p.AddFilter(ctx, tree.DBoolFalse, exprCtx, nil); err != nil {
 				return err
 			}
 		}
@@ -960,10 +922,9 @@ func (p *PhysicalPlan) AddLimit(
 		execinfrapb.ProcessorCoreUnion{Noop: &execinfrapb.NoopCoreSpec{}},
 		post,
 		p.GetResultTypes(),
-		finalizeLastStageCb,
 	)
 	if limitZero {
-		if err := p.AddFilter(ctx, tree.DBoolFalse, exprCtx, nil /* indexVarMap */, finalizeLastStageCb); err != nil {
+		if err := p.AddFilter(ctx, tree.DBoolFalse, exprCtx, nil); err != nil {
 			return err
 		}
 	}
@@ -1008,14 +969,7 @@ func (p *PhysicalPlan) PopulateEndpoints() {
 
 // GenerateFlowSpecs takes a plan (with populated endpoints) and generates the
 // set of FlowSpecs (one per node involved in the plan).
-//
-// The returned function should be called whenever the caller is done with all
-// FlowSpecs. The caller is free to ignore it if the specs will be released
-// separately.
-func (p *PhysicalPlan) GenerateFlowSpecs() (
-	_ map[base.SQLInstanceID]*execinfrapb.FlowSpec,
-	cleanup func(map[base.SQLInstanceID]*execinfrapb.FlowSpec),
-) {
+func (p *PhysicalPlan) GenerateFlowSpecs() map[base.SQLInstanceID]*execinfrapb.FlowSpec {
 	flowID := execinfrapb.FlowID{
 		UUID: p.FlowID,
 	}
@@ -1029,15 +983,7 @@ func (p *PhysicalPlan) GenerateFlowSpecs() (
 		}
 		flowSpec.Processors = append(flowSpec.Processors, proc.Spec)
 	}
-	// Note that we don't return an anonymous function with no arguments to not
-	// incur an allocation.
-	return flows, releaseAll
-}
-
-func releaseAll(flows map[base.SQLInstanceID]*execinfrapb.FlowSpec) {
-	for _, flowSpec := range flows {
-		ReleaseFlowSpec(flowSpec)
-	}
+	return flows
 }
 
 // SetRowEstimates updates p according to the row estimates of left and right
@@ -1074,7 +1020,6 @@ func (p *PhysicalPlan) AddJoinStage(
 	leftMergeOrd, rightMergeOrd execinfrapb.Ordering,
 	leftRouters, rightRouters []ProcessorIdx,
 	resultTypes []*types.T,
-	finalizeLastStageCb func(*PhysicalPlan),
 ) {
 	pIdxStart := ProcessorIdx(len(p.Processors))
 	stageID := p.NewStageOnNodes(sqlInstanceIDs)
@@ -1136,9 +1081,6 @@ func (p *PhysicalPlan) AddJoinStage(
 
 		p.ResultRouters = append(p.ResultRouters, pIdx)
 	}
-	if finalizeLastStageCb != nil {
-		finalizeLastStageCb(p)
-	}
 }
 
 // AddStageOnNodes adds a stage of processors that take in a single input
@@ -1153,7 +1095,6 @@ func (p *PhysicalPlan) AddStageOnNodes(
 	inputTypes, resultTypes []*types.T,
 	mergeOrd execinfrapb.Ordering,
 	routers []ProcessorIdx,
-	finalizeLastStageCb func(*PhysicalPlan),
 ) {
 	pIdxStart := len(p.Processors)
 	newStageID := p.NewStageOnNodes(sqlInstanceIDs)
@@ -1198,9 +1139,6 @@ func (p *PhysicalPlan) AddStageOnNodes(
 	for i := 0; i < len(sqlInstanceIDs); i++ {
 		p.ResultRouters = append(p.ResultRouters, ProcessorIdx(pIdxStart+i))
 	}
-	if finalizeLastStageCb != nil {
-		finalizeLastStageCb(p)
-	}
 }
 
 // AddDistinctSetOpStage creates a distinct stage and a join stage to implement
@@ -1219,7 +1157,6 @@ func (p *PhysicalPlan) AddDistinctSetOpStage(
 	leftMergeOrd, rightMergeOrd execinfrapb.Ordering,
 	leftRouters, rightRouters []ProcessorIdx,
 	resultTypes []*types.T,
-	finalizeLastStageCb func(*PhysicalPlan),
 ) {
 	// Create distinct stages for the left and right sides, where left and right
 	// sources are sent by hash to the node which will contain the join processor.
@@ -1230,7 +1167,7 @@ func (p *PhysicalPlan) AddDistinctSetOpStage(
 	distinctProcs := make(map[base.SQLInstanceID][]ProcessorIdx)
 	p.AddStageOnNodes(
 		ctx, sqlInstanceIDs, distinctCores[0], execinfrapb.PostProcessSpec{}, eqCols,
-		leftTypes, leftTypes, leftMergeOrd, leftRouters, finalizeLastStageCb,
+		leftTypes, leftTypes, leftMergeOrd, leftRouters,
 	)
 	for _, leftDistinctProcIdx := range p.ResultRouters {
 		node := p.Processors[leftDistinctProcIdx].SQLInstanceID
@@ -1238,7 +1175,7 @@ func (p *PhysicalPlan) AddDistinctSetOpStage(
 	}
 	p.AddStageOnNodes(
 		ctx, sqlInstanceIDs, distinctCores[1], execinfrapb.PostProcessSpec{}, eqCols,
-		rightTypes, rightTypes, rightMergeOrd, rightRouters, finalizeLastStageCb,
+		rightTypes, rightTypes, rightMergeOrd, rightRouters,
 	)
 	for _, rightDistinctProcIdx := range p.ResultRouters {
 		node := p.Processors[rightDistinctProcIdx].SQLInstanceID
@@ -1278,9 +1215,6 @@ func (p *PhysicalPlan) AddDistinctSetOpStage(
 
 		p.ResultRouters = append(p.ResultRouters, pIdx)
 	}
-	if finalizeLastStageCb != nil {
-		finalizeLastStageCb(p)
-	}
 }
 
 // EnsureSingleStreamPerNode goes over the ResultRouters and merges any group of
@@ -1296,7 +1230,6 @@ func (p *PhysicalPlan) EnsureSingleStreamPerNode(
 	forceSerialization bool,
 	post execinfrapb.PostProcessSpec,
 	serialStreamErrorSpec SerialStreamErrorSpec,
-	finalizeLastStageCb func(*PhysicalPlan),
 ) {
 	// Fast path - check if we need to do anything.
 	var nodes intsets.Fast
@@ -1345,19 +1278,14 @@ func (p *PhysicalPlan) EnsureSingleStreamPerNode(
 				Post:        post,
 				Core:        execinfrapb.ProcessorCoreUnion{Noop: &execinfrapb.NoopCoreSpec{}},
 				Output:      []execinfrapb.OutputRouterSpec{{Type: execinfrapb.OutputRouterSpec_PASS_THROUGH}},
-				StageID:     p.NewStage(node != p.GatewaySQLInstanceID /* containsRemoteProcessor */, false /* allowPartialDistribution */),
 				ResultTypes: p.GetResultTypes(),
 			},
 		}
 		mergedProcIdx := p.AddProcessor(proc)
-		p.MergeResultStreams(
-			ctx, streams, 0 /* sourceRouterSlot */, p.MergeOrdering, mergedProcIdx,
+		p.MergeResultStreams(ctx, streams, 0 /* sourceRouterSlot */, p.MergeOrdering, mergedProcIdx,
 			0 /* destInput */, forceSerialization, serialStreamErrorSpec,
 		)
 		p.ResultRouters[i] = mergedProcIdx
-	}
-	if finalizeLastStageCb != nil {
-		finalizeLastStageCb(p)
 	}
 }
 

@@ -26,9 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec"
-	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scop"
-	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltestutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -174,7 +171,6 @@ func TestAlterTableLocalityRegionalByRowError(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	skip.UnderRace(t, "takes >400s under race")
-	skip.UnderDeadlock(t, "skipping as per issue #146428")
 
 	var chunkSize int64 = 100
 	var maxValue = 4000
@@ -328,7 +324,7 @@ func TestAlterTableLocalityRegionalByRowError(t *testing.T) {
 						job_type = 'SCHEMA CHANGE' AND
 						status = $1 AND
 						description NOT LIKE 'ROLL BACK%'
-				)`, jobs.StateRunning)
+				)`, jobs.StatusRunning)
 								return err
 							},
 							errorContains: "job canceled by user",
@@ -547,10 +543,6 @@ CREATE TABLE db.t(k INT PRIMARY KEY) LOCALITY REGIONAL BY ROW`)
 		t.Error(err)
 	}
 
-	sqlDB.SetMaxOpenConns(1)
-	_, err = sqlDB.Exec(`SET autocommit_before_ddl = false`)
-	require.NoError(t, err)
-
 	_, err = sqlDB.Exec(`BEGIN;
 ALTER DATABASE db ADD REGION "us-east3";
 ALTER DATABASE db DROP REGION "us-east2";
@@ -756,19 +748,19 @@ func TestRegionChangeRacingRegionalByRowChange(t *testing.T) {
 			setup:                          `CREATE TABLE t.test (k INT NOT NULL, v INT) LOCALITY REGIONAL BY ROW`,
 			cmd:                            `ALTER TABLE t.test ADD CONSTRAINT v_uniq UNIQUE (v)`,
 			errorOnAddOrDropRegionSandwich: "pq: cannot perform database region changes while an index is being created or dropped on a REGIONAL BY ROW table",
-			errorOnTableChangeSandwich:     "pq: cannot CREATE INDEX on a REGIONAL BY ROW table while a region is being added or dropped on the database",
+			errorOnTableChangeSandwich:     "pq: cannot create an UNIQUE CONSTRAINT on a REGIONAL BY ROW table while a region is being added or dropped on the database",
 		},
 		{
 			setup:                          `CREATE TABLE t.test (k INT NOT NULL, v INT) LOCALITY REGIONAL BY ROW`,
 			cmd:                            `ALTER TABLE t.test ADD COLUMN z INT UNIQUE`,
 			errorOnAddOrDropRegionSandwich: "pq: cannot perform database region changes while an index is being created or dropped on a REGIONAL BY ROW table",
-			errorOnTableChangeSandwich:     "pq: cannot add a UNIQUE COLUMN on a REGIONAL BY ROW table while a region is being added or dropped on the database",
+			errorOnTableChangeSandwich:     "pq: cannot add an UNIQUE COLUMN on a REGIONAL BY ROW table while a region is being added or dropped on the database",
 		},
 		{
 			setup:                          `CREATE TABLE t.test (k INT NOT NULL, v INT NOT NULL) LOCALITY REGIONAL BY ROW`,
 			cmd:                            `ALTER TABLE t.test ALTER PRIMARY KEY USING COLUMNS (v)`,
 			errorOnAddOrDropRegionSandwich: "pq: cannot perform database region changes while a ALTER PRIMARY KEY is underway",
-			errorOnTableChangeSandwich:     "pq: cannot ALTER PRIMARY KEY on a REGIONAL BY ROW table while a region is being added or dropped on the database",
+			errorOnTableChangeSandwich:     "pq: cannot perform a primary key change on a REGIONAL BY ROW table while a region is being added or dropped on the database",
 		},
 	}
 
@@ -822,16 +814,6 @@ USE t;
 								return nil
 							},
 						},
-						SQLDeclarativeSchemaChanger: &scexec.TestingKnobs{
-							BeforeStage: func(p scplan.Plan, stageIdx int) error {
-								if p.Params.ExecutionPhase == scop.PostCommitPhase && performInterrupt {
-									performInterrupt = false
-									close(interruptStartCh)
-									<-interruptEndCh
-								}
-								return nil
-							},
-						},
 					},
 				)
 				defer cleanup()
@@ -878,9 +860,6 @@ USE t;
 					t,
 					3, /* numServers */
 					base.TestingKnobs{
-						// When ADD/DROP region is implemented in the declarative schema
-						// changer, we will need to use SQLDeclarativeSchemaChanger testing
-						// knobs here instead.
 						SQLTypeSchemaChanger: &sql.TypeSchemaChangerTestingKnobs{
 							RunBeforeExec: func() error {
 								if performInterrupt {

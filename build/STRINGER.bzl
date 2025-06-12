@@ -12,7 +12,7 @@ $(location //pkg/build/bazel/util/tinystringer) -output=$@ -type={typ} {args} $<
          args = " ".join(additional_args),
         ),
         visibility = [":__pkg__", "//pkg/gen:__pkg__"],
-        tools = [
+        exec_tools = [
             "//pkg/build/bazel/util/tinystringer",
         ],
     )

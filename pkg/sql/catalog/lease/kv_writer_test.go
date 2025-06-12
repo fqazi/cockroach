@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/settingswatcher"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/systemschema"
 	"github.com/cockroachdb/cockroach/pkg/sql/enum"
@@ -35,11 +34,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// MoveTablePrimaryIndexID used to move the primary index of the created
-// lease table from 1 to some target. It is injected from the lease_test package so that
+// MoveTablePrimaryIndexIDto2 is used to move the primary index of the created
+// lease table from 1 to 2. It is injected from the lease_test package so that
 // it can use sql primitives.
-var MoveTablePrimaryIndexIDtoTarget func(
-	context.Context, *testing.T, serverutils.ApplicationLayerInterface, descpb.ID, descpb.IndexID,
+var MoveTablePrimaryIndexIDto2 func(
+	context.Context, *testing.T, serverutils.ApplicationLayerInterface, descpb.ID,
 )
 
 // TestKVWriterMatchesIEWriter is a rather involved test to exercise the
@@ -47,16 +46,13 @@ var MoveTablePrimaryIndexIDtoTarget func(
 // to the underlying key-value store. It does this by teeing operations to
 // both under different table prefixes and then fetching the histories of
 // those tables, removing the prefix and exact timestamps, and ensuring
-// they are the same. This test will run against both the old and new table
-// formats (with expiration or session ID).
+// they are the same.
 func TestKVWriterMatchesIEWriter(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	serverArgs := base.TestServerArgs{}
-	serverArgs.Settings = cluster.MakeClusterSettings()
-	srv, sqlDB, kvDB := serverutils.StartServer(t, serverArgs)
+	srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
 	defer srv.Stopper().Stop(ctx)
 	s := srv.ApplicationLayer()
 
@@ -66,24 +62,18 @@ func TestKVWriterMatchesIEWriter(t *testing.T) {
 	)
 
 	tdb := sqlutils.MakeSQLRunner(sqlDB)
-	schema := strings.Replace(systemschema.LeaseTableSchema,
-		"exclude_data_from_backup = true",
-		"exclude_data_from_backup = false",
-		1)
-
+	schema := systemschema.LeaseTableSchema
 	makeTable := func(name string) (id descpb.ID) {
-		// Rewrite the schema and drop the exclude_data_from_backup from flag,
-		// since this will prevent export from working later on in the test.
 		tdb.Exec(t, strings.Replace(schema, "system.lease", name, 1))
 		tdb.QueryRow(t, "SELECT id FROM system.namespace WHERE name = $1", name).Scan(&id)
-		// Modifies the primary index IDs to line up with the session based
-		// or multi-region expiry based formats of the table.
-		MoveTablePrimaryIndexIDtoTarget(ctx, t, s, id, 3)
+		// The MR variant of the table uses a non-
+		MoveTablePrimaryIndexIDto2(ctx, t, s, id)
 		return id
 	}
 	lease1ID := makeTable("lease1")
 	lease2ID := makeTable("lease2")
-	ie := s.InternalDB().(isql.DB).Executor()
+
+	ie := s.InternalExecutor().(isql.Executor)
 	codec := s.Codec()
 	settingsWatcher := s.SettingsWatcher().(*settingswatcher.SettingsWatcher)
 	w := teeWriter{
@@ -216,7 +206,6 @@ func generateWriteOps(n, numGroups int) func() (_ []writeOp, wantMore bool) {
 			version:      descpb.DescriptorVersion(rand.Intn(vals)),
 			instanceID:   base.SQLInstanceID(rand.Intn(vals)),
 			expiration:   *ts,
-			sessionID:    []byte(ts.String() + "_session"),
 			regionPrefix: enum.One,
 		}
 		return lf

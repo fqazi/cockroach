@@ -12,7 +12,6 @@ import (
 	"encoding/base64"
 	"net/http"
 
-	"github.com/cockroachdb/cockroach/pkg/server/authserver"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
@@ -59,13 +58,16 @@ func newKeyAndSignedToken(
 		return nil, err
 	}
 
-	secretKeyCookie := authserver.CreateOIDCCookie(
-		secretCookieName,
-		base64.URLEncoding.EncodeToString(secretKey),
-	)
+	secretKeyCookie := http.Cookie{
+		Name:     secretCookieName,
+		Value:    base64.URLEncoding.EncodeToString(secretKey),
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
 
 	return &keyAndSignedToken{
-		secretKeyCookie,
+		&secretKeyCookie,
 		signedTokenEncoded,
 	}, nil
 }

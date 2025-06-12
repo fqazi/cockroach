@@ -86,14 +86,14 @@ func (ss *DiskSideloadStorage) Put(
 	for {
 		// Use 0644 since that's what RocksDB uses:
 		// https://github.com/facebook/rocksdb/blob/56656e12d67d8a63f1e4c4214da9feeec2bd442b/env/env_posix.cc#L171
-		if err := kvserverbase.WriteFileSyncing(ctx, filename, contents, ss.eng.Env(), 0644, ss.st, ss.limiter, fs.PebbleIngestionWriteCategory); err == nil {
+		if err := kvserverbase.WriteFileSyncing(ctx, filename, contents, ss.eng, 0644, ss.st, ss.limiter); err == nil {
 			return nil
 		} else if !oserror.IsNotExist(err) {
 			return err
 		}
 		// Ensure that ss.dir exists. The filename() is placed directly in ss.dir,
 		// so the next loop iteration should succeed.
-		if err := mkdirAllAndSyncParents(ss.eng.Env(), ss.dir, os.ModePerm); err != nil {
+		if err := mkdirAllAndSyncParents(ss.eng, ss.dir, os.ModePerm); err != nil {
 			return err
 		}
 		continue
@@ -102,7 +102,7 @@ func (ss *DiskSideloadStorage) Put(
 
 // Sync implements SideloadStorage.
 func (ss *DiskSideloadStorage) Sync() error {
-	dir, err := ss.eng.Env().OpenDir(ss.dir)
+	dir, err := ss.eng.OpenDir(ss.dir)
 	// The directory can be missing because we did not Put() any entry to it yet,
 	// or it has been removed by TruncateTo() or Clear().
 	//
@@ -127,7 +127,7 @@ func (ss *DiskSideloadStorage) Get(
 	ctx context.Context, index kvpb.RaftIndex, term kvpb.RaftTerm,
 ) ([]byte, error) {
 	filename := ss.filename(ctx, index, term)
-	b, err := fs.ReadFile(ss.eng.Env(), filename)
+	b, err := fs.ReadFile(ss.eng, filename)
 	if oserror.IsNotExist(err) {
 		return nil, errSideloadedFileNotFound
 	}
@@ -155,7 +155,7 @@ func (ss *DiskSideloadStorage) Purge(
 }
 
 func (ss *DiskSideloadStorage) fileSize(filename string) (int64, error) {
-	info, err := ss.eng.Env().Stat(filename)
+	info, err := ss.eng.Stat(filename)
 	if err != nil {
 		if oserror.IsNotExist(err) {
 			return 0, errSideloadedFileNotFound
@@ -170,7 +170,7 @@ func (ss *DiskSideloadStorage) purgeFile(ctx context.Context, filename string) (
 	if err != nil {
 		return 0, err
 	}
-	if err := ss.eng.Env().Remove(filename); err != nil {
+	if err := ss.eng.Remove(filename); err != nil {
 		if oserror.IsNotExist(err) {
 			return 0, errSideloadedFileNotFound
 		}
@@ -181,33 +181,56 @@ func (ss *DiskSideloadStorage) purgeFile(ctx context.Context, filename string) (
 
 // Clear implements SideloadStorage.
 func (ss *DiskSideloadStorage) Clear(_ context.Context) error {
-	return ss.eng.Env().RemoveAll(ss.dir)
+	return ss.eng.RemoveAll(ss.dir)
 }
 
 // TruncateTo implements SideloadStorage.
-func (ss *DiskSideloadStorage) TruncateTo(ctx context.Context, lastIndex kvpb.RaftIndex) error {
-	span := kvpb.RaftSpan{Last: lastIndex}
+func (ss *DiskSideloadStorage) TruncateTo(
+	ctx context.Context, firstIndex kvpb.RaftIndex,
+) (bytesFreed, bytesRetained int64, _ error) {
+	return ss.possiblyTruncateTo(ctx, 0, firstIndex, true /* doTruncate */)
+}
+
+// Helper for truncation or byte calculation for [from, to).
+func (ss *DiskSideloadStorage) possiblyTruncateTo(
+	ctx context.Context, from kvpb.RaftIndex, to kvpb.RaftIndex, doTruncate bool,
+) (bytesFreed, bytesRetained int64, _ error) {
 	deletedAll := true
 	if err := ss.forEach(ctx, func(index kvpb.RaftIndex, filename string) (bool, error) {
-		if !span.Contains(index) {
+		if index >= to {
+			size, err := ss.fileSize(filename)
+			if err != nil {
+				return false, err
+			}
+			bytesRetained += size
 			deletedAll = false
 			return true, nil
 		}
-		// index is in (span.After, span.Last].
-		// TODO(pav-kv): don't compute the size in purgeFile.
-		_, err := ss.purgeFile(ctx, filename)
+		if index < from {
+			// TODO(pavelkalinnikov): these files may never be removed. Clean them up.
+			return true, nil
+		}
+		// index is in [from, to)
+		var fileSize int64
+		var err error
+		if doTruncate {
+			fileSize, err = ss.purgeFile(ctx, filename)
+		} else {
+			fileSize, err = ss.fileSize(filename)
+		}
 		if err != nil {
 			return false, err
 		}
+		bytesFreed += fileSize
 		return true, nil
 	}); err != nil {
-		return err
+		return 0, 0, err
 	}
 
-	if deletedAll {
+	if deletedAll && doTruncate {
 		// The directory may not exist, or it may exist and have been empty.
 		// Not worth trying to figure out which one, just try to delete.
-		err := ss.eng.Env().Remove(ss.dir)
+		err := ss.eng.Remove(ss.dir)
 		if err != nil && !oserror.IsNotExist(err) {
 			// TODO(pavelkalinnikov): this is possible because deletedAll can be left
 			// true despite existence of files with index < from which are skipped.
@@ -215,28 +238,32 @@ func (ss *DiskSideloadStorage) TruncateTo(ctx context.Context, lastIndex kvpb.Ra
 			err = nil // handled
 		}
 	}
-	return nil
+	return bytesFreed, bytesRetained, nil
 }
 
-// Stats implements SideloadStorage.
-func (ss *DiskSideloadStorage) Stats(
-	ctx context.Context, span kvpb.RaftSpan,
-) (entries uint64, size int64, _ error) {
-	if err := ss.forEach(ctx, func(index kvpb.RaftIndex, filename string) (bool, error) {
-		if !span.Contains(index) {
-			return true, nil // skip
+// HasAnyEntry implements SideloadStorage.
+func (ss *DiskSideloadStorage) HasAnyEntry(
+	ctx context.Context, from, to kvpb.RaftIndex,
+) (bool, error) {
+	// Find any file at index in [from, to).
+	found := false
+	if err := ss.forEach(ctx, func(index kvpb.RaftIndex, _ string) (bool, error) {
+		if index >= from && index < to {
+			found = true
+			return false, nil // stop the iteration
 		}
-		entries++
-		fileSize, err := ss.fileSize(filename)
-		if err != nil {
-			return false, err
-		}
-		size += fileSize
 		return true, nil
 	}); err != nil {
-		return 0, 0, err
+		return false, err
 	}
-	return entries, size, nil
+	return found, nil
+}
+
+// BytesIfTruncatedFromTo implements SideloadStorage.
+func (ss *DiskSideloadStorage) BytesIfTruncatedFromTo(
+	ctx context.Context, from kvpb.RaftIndex, to kvpb.RaftIndex,
+) (freed, retained int64, _ error) {
+	return ss.possiblyTruncateTo(ctx, from, to, false /* doTruncate */)
 }
 
 // forEach runs the given visit function for each file in the sideloaded storage
@@ -246,7 +273,7 @@ func (ss *DiskSideloadStorage) forEach(
 	ctx context.Context, visit func(index kvpb.RaftIndex, filename string) (bool, error),
 ) error {
 	// TODO(pavelkalinnikov): consider making the List method iterative.
-	matches, err := ss.eng.Env().List(ss.dir)
+	matches, err := ss.eng.List(ss.dir)
 	if oserror.IsNotExist(err) {
 		return nil // nothing to do
 	} else if err != nil {

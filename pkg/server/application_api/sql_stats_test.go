@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/apiconstants"
-	"github.com/cockroachdb/cockroach/pkg/server/authserver"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/srvtestutils"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -43,9 +42,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// additionalTimeoutUnderDuress is the additional timeout to use for the http
+// additionalTimeoutUnderStress is the additional timeout to use for the http
 // client if under stress.
-const additionalTimeoutUnderDuress = 30 * time.Second
+const additionalTimeoutUnderStress = 30 * time.Second
 
 func TestStatusAPICombinedTransactions(t *testing.T) {
 	defer leaktest.AfterTest(t)()
@@ -53,8 +52,8 @@ func TestStatusAPICombinedTransactions(t *testing.T) {
 
 	// Increase the timeout for the http client if under stress.
 	additionalTimeout := 0 * time.Second
-	if skip.Duress() {
-		additionalTimeout = additionalTimeoutUnderDuress
+	if skip.Stress() {
+		additionalTimeout = additionalTimeoutUnderStress
 	}
 
 	var params base.TestServerArgs
@@ -82,7 +81,7 @@ func TestStatusAPICombinedTransactions(t *testing.T) {
 		{query: `CREATE TABLE posts (id INT8 PRIMARY KEY, body STRING)`, count: 1, numRows: 0},
 		{
 			query:         `INSERT INTO posts VALUES (1, 'foo')`,
-			fingerprinted: `INSERT INTO posts VALUES (_, __more__)`,
+			fingerprinted: `INSERT INTO posts VALUES (_, '_')`,
 			count:         1,
 			numRows:       1,
 		},
@@ -129,8 +128,6 @@ func TestStatusAPICombinedTransactions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-
-	// Wait for last app name to be flushed to in memory stats.
 
 	// Hit query endpoint.
 	var resp serverpb.StatementsResponse
@@ -196,9 +193,6 @@ func TestStatusAPITransactions(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderDeadlock(t, "test is very slow under deadlock")
-	skip.UnderRace(t, "test is too slow to run under race")
-
 	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{})
 	ctx := context.Background()
 	defer testCluster.Stopper().Stop(ctx)
@@ -220,7 +214,7 @@ func TestStatusAPITransactions(t *testing.T) {
 		{query: `CREATE TABLE posts (id INT8 PRIMARY KEY, body STRING)`, count: 1, numRows: 0},
 		{
 			query:         `INSERT INTO posts VALUES (1, 'foo')`,
-			fingerprinted: `INSERT INTO posts VALUES (_, __more__)`,
+			fingerprinted: `INSERT INTO posts VALUES (_, _)`,
 			count:         1,
 			numRows:       1,
 		},
@@ -266,6 +260,7 @@ func TestStatusAPITransactions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+
 	// Hit query endpoint.
 	var resp serverpb.StatementsResponse
 	if err := srvtestutils.GetStatusJSONProto(firstServerProto, "statements", &resp); err != nil {
@@ -390,8 +385,8 @@ func TestStatusAPIStatements(t *testing.T) {
 
 	// Increase the timeout for the http client if under stress.
 	additionalTimeout := 0 * time.Second
-	if skip.Duress() {
-		additionalTimeout = additionalTimeoutUnderDuress
+	if skip.Stress() {
+		additionalTimeout = additionalTimeoutUnderStress
 	}
 
 	// Aug 30 2021 19:50:00 GMT+0000
@@ -422,12 +417,11 @@ func TestStatusAPIStatements(t *testing.T) {
 		{stmt: `CREATE TABLE posts (id INT8 PRIMARY KEY, body STRING)`},
 		{
 			stmt:          `INSERT INTO posts VALUES (1, 'foo')`,
-			fingerprinted: `INSERT INTO posts VALUES (_, __more__)`,
+			fingerprinted: `INSERT INTO posts VALUES (_, '_')`,
 		},
 		{stmt: `SELECT * FROM posts`},
 	}
 
-	thirdServerSQL.Exec(t, `SET application_name = "test"`)
 	for _, stmt := range statements {
 		thirdServerSQL.Exec(t, stmt.stmt)
 	}
@@ -448,12 +442,14 @@ func TestStatusAPIStatements(t *testing.T) {
 		// See if the statements returned are what we executed.
 		var statementsInResponse []string
 		for _, respStatement := range resp.Statements {
-			if respStatement.Stats.FailureCount > 0 {
+			if respStatement.Key.KeyData.Failed {
 				// We ignore failed statements here as the INSERT statement can fail and
 				// be automatically retried, confusing the test success check.
 				continue
 			}
-			if respStatement.Key.KeyData.App != "test" {
+			if strings.HasPrefix(respStatement.Key.KeyData.App, catconstants.InternalAppNamePrefix) {
+				// We ignore internal queries, these are not relevant for the
+				// validity of this test.
 				continue
 			}
 			if strings.HasPrefix(respStatement.Key.KeyData.Query, "ALTER USER") {
@@ -516,8 +512,8 @@ func TestStatusAPICombinedStatementsTotalLatency(t *testing.T) {
 	skip.UnderRace(t, "test is too slow to run under race")
 	// Increase the timeout for the http client if under stress.
 	additionalTimeout := 0 * time.Second
-	if skip.Duress() {
-		additionalTimeout = additionalTimeoutUnderDuress
+	if skip.Stress() {
+		additionalTimeout = additionalTimeoutUnderStress
 	}
 
 	sqlStatsKnobs := sqlstats.CreateTestingKnobs()
@@ -672,10 +668,10 @@ func TestStatusAPICombinedStatementsWithFullScans(t *testing.T) {
 
 	// Increase the timeout for the http client if under stress.
 	additionalTimeout := 0 * time.Second
-	if skip.Duress() {
-		additionalTimeout = additionalTimeoutUnderDuress
+	if skip.Stress() {
+		additionalTimeout = additionalTimeoutUnderStress
 	}
-	skip.UnderRace(t, "test is too slow to run under race")
+	skip.UnderStressRace(t, "test is too slow to run under race")
 
 	// Aug 30 2021 19:50:00 GMT+0000
 	aggregatedTs := int64(1630353000)
@@ -695,7 +691,7 @@ func TestStatusAPICombinedStatementsWithFullScans(t *testing.T) {
 	defer testCluster.Stopper().Stop(context.Background())
 
 	endpoint := fmt.Sprintf("combinedstmts?start=%d&end=%d", aggregatedTs-3600, oneMinAfterAggregatedTs)
-	findJobQuery := "SELECT status FROM crdb_internal.jobs WHERE statement = 'CREATE INDEX idx_age ON football.public.players (age) STORING (name)';"
+	findJobQuery := "SELECT status FROM [SHOW JOBS] WHERE statement = 'CREATE INDEX idx_age ON football.public.players (age) STORING (name)';"
 	testAppName := "TestCombinedStatementsWithFullScans"
 
 	firstServerProto := testCluster.Server(0).ApplicationLayer()
@@ -726,7 +722,7 @@ func TestStatusAPICombinedStatementsWithFullScans(t *testing.T) {
 		{stmt: `CREATE DATABASE football`, respQuery: `CREATE DATABASE football`, fullScan: false, distSQL: false, failed: false, count: 1},
 		{stmt: `SET database = football`, respQuery: `SET database = football`, fullScan: false, distSQL: false, failed: false, count: 1},
 		{stmt: `CREATE TABLE players (id INT PRIMARY KEY, name TEXT, position TEXT, age INT,goals INT)`, respQuery: `CREATE TABLE players (id INT8 PRIMARY KEY, name STRING, "position" STRING, age INT8, goals INT8)`, fullScan: false, distSQL: false, failed: false, count: 1},
-		{stmt: `INSERT INTO players (id, name, position, age, goals) VALUES (1, 'Lionel Messi', 'Forward', 34, 672), (2, 'Cristiano Ronaldo', 'Forward', 36, 674)`, respQuery: `INSERT INTO players(id, name, "position", age, goals) VALUES (_, __more__), (__more__)`, fullScan: false, distSQL: false, failed: false, count: 1},
+		{stmt: `INSERT INTO players (id, name, position, age, goals) VALUES (1, 'Lionel Messi', 'Forward', 34, 672), (2, 'Cristiano Ronaldo', 'Forward', 36, 674)`, respQuery: `INSERT INTO players(id, name, "position", age, goals) VALUES (_, '_', __more1_10__), (__more1_10__)`, fullScan: false, distSQL: false, failed: false, count: 1},
 		{stmt: `SELECT avg(goals) FROM players`, respQuery: `SELECT avg(goals) FROM players`, fullScan: true, distSQL: true, failed: false, count: 1},
 		{stmt: `SELECT name FROM players WHERE age >= 32`, respQuery: `SELECT name FROM players WHERE age >= _`, fullScan: true, distSQL: true, failed: false, count: 1},
 	}
@@ -749,6 +745,7 @@ func TestStatusAPICombinedStatementsWithFullScans(t *testing.T) {
 		count    int
 		fullScan bool
 		distSQL  bool
+		failed   bool
 	}
 
 	// expectedStatementStatsMap maps the query response format to the associated
@@ -756,16 +753,15 @@ func TestStatusAPICombinedStatementsWithFullScans(t *testing.T) {
 	expectedStatementStatsMap := make(map[string]ExpectedStatementData)
 
 	// Helper function to execute the statements and store the expected statement
-	stmtCount := 0
 	executeStatements := func(statements []TestCases) {
 		// Clear the map at the start of each execution batch.
 		expectedStatementStatsMap = make(map[string]ExpectedStatementData)
 		for _, stmt := range statements {
-			stmtCount++
 			thirdServerSQL.Exec(t, stmt.stmt)
 			expectedStatementStatsMap[stmt.respQuery] = ExpectedStatementData{
 				fullScan: stmt.fullScan,
 				distSQL:  stmt.distSQL,
+				failed:   stmt.failed,
 				count:    stmt.count,
 			}
 		}
@@ -794,7 +790,7 @@ func TestStatusAPICombinedStatementsWithFullScans(t *testing.T) {
 			// statements that were that were successfully executed by the test app
 			// to avoid counting such failures. If a statement that we expect to be
 			// successful is not found in the response, the test will fail later.
-			if respStatement.Key.KeyData.App == testAppName && respStatement.Stats.FailureCount == 0 {
+			if respStatement.Key.KeyData.App == testAppName && !respStatement.Key.KeyData.Failed {
 				actualResponseStatsMap[respStatement.Key.KeyData.Query] = respStatement
 			}
 		}
@@ -806,11 +802,13 @@ func TestStatusAPICombinedStatementsWithFullScans(t *testing.T) {
 			actualCount := respStatement.Stats.FirstAttemptCount
 			actualFullScan := respStatement.Key.KeyData.FullScan
 			actualDistSQL := respStatement.Key.KeyData.DistSQL
+			actualFailed := respStatement.Key.KeyData.Failed
 
 			stmtJSONString := responseToJSON(respStatement)
 
 			require.Equal(t, expectedData.fullScan, actualFullScan, "failed for respStatement: %v", stmtJSONString)
 			require.Equal(t, expectedData.distSQL, actualDistSQL, "failed for respStatement: %v", stmtJSONString)
+			require.Equal(t, expectedData.failed, actualFailed, "failed for respStatement: %v", stmtJSONString)
 			require.Equal(t, expectedData.count, int(actualCount), "failed for respStatement: %v", stmtJSONString)
 		}
 	}
@@ -850,7 +848,7 @@ func TestStatusAPICombinedStatements(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	// Resource-intensive test, times out under stress.
-	skip.UnderRace(t, "expensive tests")
+	skip.UnderStressRace(t, "expensive tests")
 
 	// Aug 30 2021 19:50:00 GMT+0000
 	aggregatedTs := int64(1630353000)
@@ -870,7 +868,6 @@ func TestStatusAPICombinedStatements(t *testing.T) {
 
 	firstServerProto := testCluster.Server(0).ApplicationLayer()
 	thirdServerSQL := sqlutils.MakeSQLRunner(testCluster.ServerConn(2))
-	obsConn := sqlutils.MakeSQLRunner(testCluster.Server(0).SQLConn(t))
 
 	statements := []struct {
 		stmt          string
@@ -881,12 +878,11 @@ func TestStatusAPICombinedStatements(t *testing.T) {
 		{stmt: `CREATE TABLE posts (id INT8 PRIMARY KEY, body STRING)`},
 		{
 			stmt:          `INSERT INTO posts VALUES (1, 'foo')`,
-			fingerprinted: `INSERT INTO posts VALUES (_, __more__)`,
+			fingerprinted: `INSERT INTO posts VALUES (_, '_')`,
 		},
 		{stmt: `SELECT * FROM posts`},
 	}
 
-	thirdServerSQL.Exec(t, `SET application_name = "test"`)
 	for _, stmt := range statements {
 		thirdServerSQL.Exec(t, stmt.stmt)
 	}
@@ -908,17 +904,17 @@ func TestStatusAPICombinedStatements(t *testing.T) {
 		var statementsInResponse []string
 		expectedTxnFingerprints := map[appstatspb.TransactionFingerprintID]struct{}{}
 		for _, respStatement := range resp.Statements {
-			if respStatement.Stats.FailureCount > 0 {
+			if respStatement.Key.KeyData.Failed {
 				// We ignore failed statements here as the INSERT statement can fail and
 				// be automatically retried, confusing the test success check.
 				continue
 			}
-			if respStatement.Key.KeyData.App != "test" {
+			if strings.HasPrefix(respStatement.Key.KeyData.App, catconstants.InternalAppNamePrefix) {
 				// CombinedStatementStats should filter out internal queries.
-				if strings.HasPrefix(respStatement.Key.KeyData.Query, catconstants.InternalAppNamePrefix) {
-					t.Fatalf("unexpected internal query: %s", respStatement.Key.KeyData.Query)
-				}
-				// Otherwise, ignore this statement since it's probably from the observer conn.
+				t.Fatalf("unexpected internal query: %s", respStatement.Key.KeyData.Query)
+			}
+			if strings.HasPrefix(respStatement.Key.KeyData.Query, "ALTER USER") {
+				// Ignore the ALTER USER ... VIEWACTIVITY statement.
 				continue
 			}
 
@@ -964,7 +960,7 @@ func TestStatusAPICombinedStatements(t *testing.T) {
 
 	t.Run("fetch_mode=combined, VIEWACTIVITY", func(t *testing.T) {
 		// Grant VIEWACTIVITY.
-		obsConn.Exec(t, fmt.Sprintf("ALTER USER %s VIEWACTIVITY", apiconstants.TestingUserNameNoAdmin().Normalized()))
+		thirdServerSQL.Exec(t, fmt.Sprintf("ALTER USER %s VIEWACTIVITY", apiconstants.TestingUserNameNoAdmin().Normalized()))
 
 		// Test with no query params.
 		verifyStmts("combinedstmts", expectedStatements, true, t)
@@ -979,9 +975,9 @@ func TestStatusAPICombinedStatements(t *testing.T) {
 
 	t.Run("fetch_mode=combined, VIEWACTIVITYREDACTED", func(t *testing.T) {
 		// Remove VIEWACTIVITY so we can test with just the VIEWACTIVITYREDACTED role.
-		obsConn.Exec(t, fmt.Sprintf("ALTER USER %s NOVIEWACTIVITY", apiconstants.TestingUserNameNoAdmin().Normalized()))
+		thirdServerSQL.Exec(t, fmt.Sprintf("ALTER USER %s NOVIEWACTIVITY", apiconstants.TestingUserNameNoAdmin().Normalized()))
 		// Grant VIEWACTIVITYREDACTED.
-		obsConn.Exec(t, fmt.Sprintf("ALTER USER %s VIEWACTIVITYREDACTED", apiconstants.TestingUserNameNoAdmin().Normalized()))
+		thirdServerSQL.Exec(t, fmt.Sprintf("ALTER USER %s VIEWACTIVITYREDACTED", apiconstants.TestingUserNameNoAdmin().Normalized()))
 
 		// Test with no query params.
 		verifyStmts("combinedstmts", expectedStatements, true, t)
@@ -1025,7 +1021,7 @@ func TestStatusAPIStatementDetails(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	// The liveness session might expire before the stress race can finish.
-	skip.UnderRace(t, "expensive tests")
+	skip.UnderStressRace(t, "expensive tests")
 
 	// Aug 30 2021 19:50:00 GMT+0000
 	aggregatedTs := int64(1630353000)
@@ -1045,7 +1041,6 @@ func TestStatusAPIStatementDetails(t *testing.T) {
 
 	firstServerProto := testCluster.Server(0).ApplicationLayer()
 	thirdServerSQL := sqlutils.MakeSQLRunner(testCluster.ServerConn(2))
-	obsConn := sqlutils.MakeSQLRunner(testCluster.Server(0).SQLConn(t))
 
 	statements := []string{
 		`set application_name = 'first-app'`,
@@ -1062,8 +1057,9 @@ func TestStatusAPIStatementDetails(t *testing.T) {
 		thirdServerSQL.Exec(t, stmt)
 	}
 
-	query := `INSERT INTO posts VALUES (_, __more__)`
-	fingerprintID := appstatspb.ConstructStatementFingerprintID(query, true, `roachblog`)
+	query := `INSERT INTO posts VALUES (_, '_')`
+	fingerprintID := appstatspb.ConstructStatementFingerprintID(query,
+		false, true, `roachblog`)
 	path := fmt.Sprintf(`stmtdetails/%v`, fingerprintID)
 
 	var resp serverpb.StatementDetailsResponse
@@ -1097,7 +1093,7 @@ func TestStatusAPIStatementDetails(t *testing.T) {
 	}
 
 	// Grant VIEWACTIVITY.
-	obsConn.Exec(t, fmt.Sprintf("ALTER USER %s VIEWACTIVITY", apiconstants.TestingUserNameNoAdmin().Normalized()))
+	thirdServerSQL.Exec(t, fmt.Sprintf("ALTER USER %s VIEWACTIVITY", apiconstants.TestingUserNameNoAdmin().Normalized()))
 
 	// Test with no query params.
 	testPath(
@@ -1254,8 +1250,10 @@ func TestStatusAPIStatementDetails(t *testing.T) {
 	for _, stmt := range statements {
 		thirdServerSQL.Exec(t, stmt)
 	}
+
 	selectQuery := "SELECT _, _, _, _"
-	fingerprintID = appstatspb.ConstructStatementFingerprintID(selectQuery, true, "defaultdb")
+	fingerprintID = appstatspb.ConstructStatementFingerprintID(selectQuery, false,
+		true, "defaultdb")
 
 	testPath(
 		fmt.Sprintf(`stmtdetails/%v`, fingerprintID),
@@ -1294,7 +1292,7 @@ func TestUnprivilegedUserResetIndexUsageStats(t *testing.T) {
 		"SELECT crdb_internal.reset_index_usage_stats()",
 	)
 
-	require.Contains(t, err.Error(), "user non_admin_user does not have REPAIRCLUSTER system privilege")
+	require.Contains(t, err.Error(), "requires admin privilege")
 }
 
 // TestCombinedStatementUsesCorrectSourceTable tests that requests read from
@@ -1326,7 +1324,6 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 	conn := sqlutils.MakeSQLRunner(srv.ApplicationLayer().SQLConn(t))
 	conn.Exec(t, "SET application_name = $1", server.CrdbInternalStmtStatsCombined)
 	conn.Exec(t, "SET CLUSTER SETTING sql.stats.activity.flush.enabled = 'f'")
-
 	// Clear the in-memory stats so we only have the above app name.
 	// Then populate it with 1 query.
 	conn.Exec(t, "SELECT crdb_internal.reset_sql_stats()")
@@ -1351,7 +1348,7 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 		stmt.AggregatedTs = startTs
 		stmt.Key.App = server.CrdbInternalStmtStatsPersisted
 		stmt.Key.TransactionFingerprintID = 1
-		require.NoError(t, sqlstatstestutil.InsertMockedIntoSystemStmtStats(ctx, ie, []appstatspb.CollectedStatementStatistics{stmt}, 1))
+		require.NoError(t, sqlstatstestutil.InsertMockedIntoSystemStmtStats(ctx, ie, &stmt, 1 /* nodeId */, nil))
 
 		stmt.Key.App = server.CrdbInternalStmtStatsCached
 		require.NoError(t, sqlstatstestutil.InsertMockedIntoSystemStmtActivity(ctx, ie, &stmt, nil))
@@ -1361,7 +1358,7 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 		txn.TransactionFingerprintID = 1
 		txn.AggregatedTs = startTs
 		txn.App = server.CrdbInternalTxnStatsPersisted
-		require.NoError(t, sqlstatstestutil.InsertMockedIntoSystemTxnStats(ctx, ie, []appstatspb.CollectedTransactionStatistics{txn}, 1))
+		require.NoError(t, sqlstatstestutil.InsertMockedIntoSystemTxnStats(ctx, ie, &txn, 1, nil))
 		txn.App = server.CrdbInternalTxnStatsCached
 		require.NoError(t, sqlstatstestutil.InsertMockedIntoSystemTxnActivity(ctx, ie, &txn, nil))
 
@@ -1431,6 +1428,7 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(0)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(1)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(2)},
+				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(3)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(4)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(5)},
 			},
@@ -1446,6 +1444,7 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(0)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(1)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(2)},
+				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(3)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(4)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(5)},
 			},
@@ -1458,6 +1457,8 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 			expectedTxnsTable:  server.CrdbInternalTxnStatsPersisted,
 			// These sort options do not exist on the activity table.
 			reqs: []serverpb.CombinedStatementsStatsRequest{
+				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(6)},
+				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(7)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(8)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(9)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(10)},
@@ -1497,6 +1498,7 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(0)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(1)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(2)},
+				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(3)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(4)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(5)},
 			},
@@ -1546,167 +1548,6 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 	}
 }
 
-func TestDrainSqlStats(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	appName := "drain_stats_app"
-	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{})
-	ctx := context.Background()
-	defer testCluster.Stopper().Stop(ctx)
-
-	conn1 := sqlutils.MakeSQLRunner(testCluster.ServerConn(0))
-	conn2 := sqlutils.MakeSQLRunner(testCluster.ServerConn(1))
-	conn3 := sqlutils.MakeSQLRunner(testCluster.ServerConn(2))
-
-	for _, conn := range []*sqlutils.SQLRunner{conn1, conn2, conn3} {
-		conn.Exec(t, fmt.Sprintf("SET application_name = '%s'", appName))
-		conn.Exec(t, "SELECT 1")
-	}
-	statusServer := testCluster.Server(0).GetStatusClient(t)
-	resp, err := statusServer.DrainSqlStats(ctx, &serverpb.DrainSqlStatsRequest{})
-	require.NoError(t, err)
-	checkFingerprintCount(t, resp)
-	stmts, txns := filterStatementStatsByAppName(resp.Statements, resp.Transactions, appName)
-	require.Len(t, stmts, 1)
-	require.Equal(t, int64(3), stmts[0].Stats.Count)
-	require.Equal(t, "SELECT _", stmts[0].Key.Query)
-	require.Len(t, txns, 1)
-	require.Equal(t, int64(3), txns[0].Stats.Count)
-	require.Len(t, txns[0].StatementFingerprintIDs, 1)
-	require.Equal(t, stmts[0].ID, txns[0].StatementFingerprintIDs[0])
-
-	// Check that the stats are cleared.
-	resp, err = statusServer.DrainSqlStats(ctx, &serverpb.DrainSqlStatsRequest{})
-	require.NoError(t, err)
-	stmts, txns = filterStatementStatsByAppName(resp.Statements, resp.Transactions, appName)
-	require.Empty(t, stmts)
-	require.Empty(t, txns)
-}
-
-func TestDrainSqlStats_partialOutage(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	appName := "drain_stats_app"
-	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{})
-	ctx := context.Background()
-	defer testCluster.Stopper().Stop(ctx)
-
-	conn1 := sqlutils.MakeSQLRunner(testCluster.ServerConn(0))
-	conn2 := sqlutils.MakeSQLRunner(testCluster.ServerConn(1))
-	conn3 := sqlutils.MakeSQLRunner(testCluster.ServerConn(2))
-
-	for _, conn := range []*sqlutils.SQLRunner{conn1, conn2, conn3} {
-		conn.Exec(t, fmt.Sprintf("SET application_name = '%s'", appName))
-		conn.Exec(t, "SELECT 1")
-	}
-
-	// Stop server 2 to simulate a partial outage
-	testCluster.StopServer(2)
-	statusServer := testCluster.Server(0).GetStatusClient(t)
-	resp, err := statusServer.DrainSqlStats(ctx, &serverpb.DrainSqlStatsRequest{})
-	require.NoError(t, err)
-	checkFingerprintCount(t, resp)
-	stmts, txns := filterStatementStatsByAppName(resp.Statements, resp.Transactions, appName)
-	require.Len(t, stmts, 1)
-	require.Equal(t, int64(2), stmts[0].Stats.Count)
-	require.Equal(t, "SELECT _", stmts[0].Key.Query)
-	require.Len(t, txns, 1)
-	require.Equal(t, int64(2), txns[0].Stats.Count)
-}
-
-func TestDrainSqlStatsPermissionDenied(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	ts := serverutils.StartServerOnly(t, base.TestServerArgs{})
-	ctx := context.Background()
-	nonRootUser := apiconstants.TestingUserNameNoAdmin()
-	sqlutils.MakeSQLRunner(ts.SQLConn(t)).Exec(t, fmt.Sprintf("CREATE USER IF NOT EXISTS %s", nonRootUser))
-	ctx = authserver.ContextWithHTTPAuthInfo(ctx, nonRootUser.Normalized(), 1)
-	ctx = authserver.ForwardHTTPAuthInfoToRPCCalls(ctx, nil)
-
-	statusClient := ts.GetStatusClient(t)
-	defer ts.Stopper().Stop(ctx)
-	_, err := statusClient.DrainSqlStats(ctx, &serverpb.DrainSqlStatsRequest{})
-
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "user does not have admin role")
-}
-
-func TestClusterResetSQLStats(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-
-	for _, flushed := range []bool{false, true} {
-		t.Run(fmt.Sprintf("flushed=%t", flushed), func(t *testing.T) {
-			testCluster := serverutils.StartCluster(t, 3 /* numNodes */, base.TestClusterArgs{
-				ServerArgs: base.TestServerArgs{
-					Insecure: true,
-					Knobs: base.TestingKnobs{
-						SQLStatsKnobs: sqlstats.CreateTestingKnobs(),
-					},
-				},
-			})
-			defer testCluster.Stopper().Stop(ctx)
-
-			gateway := testCluster.Server(1 /* idx */).ApplicationLayer()
-			status := gateway.StatusServer().(serverpb.SQLStatusServer)
-
-			sqlRunner := sqlutils.MakeSQLRunner(gateway.SQLConn(t))
-			sqlRunner.Exec(t, `CREATE DATABASE t;`)
-			sqlRunner.Exec(t, `CREATE TABLE t.test (x INT PRIMARY KEY);`)
-			sqlRunner.Exec(t, `INSERT INTO t.test VALUES (1);`)
-			sqlRunner.Exec(t, `INSERT INTO t.test VALUES (2);`)
-			sqlRunner.Exec(t, `INSERT INTO t.test VALUES (3);`)
-
-			if flushed {
-				gateway.SQLServer().(*sql.Server).
-					GetSQLStatsProvider().MaybeFlush(ctx, gateway.AppStopper())
-			}
-
-			statsPreReset, err := status.Statements(ctx, &serverpb.StatementsRequest{
-				Combined: flushed,
-			})
-			require.NoError(t, err)
-
-			if statsCount := len(statsPreReset.Statements); statsCount == 0 {
-				t.Fatal("expected to find stats for at least one statement, but found:", statsCount)
-			}
-
-			_, err = status.ResetSQLStats(ctx, &serverpb.ResetSQLStatsRequest{
-				ResetPersistedStats: true,
-			})
-			require.NoError(t, err)
-
-			statsPostReset, err := status.Statements(ctx, &serverpb.StatementsRequest{
-				Combined: flushed,
-			})
-			require.NoError(t, err)
-
-			if !statsPostReset.LastReset.After(statsPreReset.LastReset) {
-				t.Fatal("expected to find stats last reset value changed, but didn't")
-			}
-
-			for _, txn := range statsPostReset.Transactions {
-				for _, previousTxn := range statsPreReset.Transactions {
-					if reflect.DeepEqual(txn, previousTxn) {
-						t.Fatal("expected to have reset SQL stats, but still found transaction", txn)
-					}
-				}
-			}
-
-			for _, stmt := range statsPostReset.Statements {
-				for _, previousStmt := range statsPreReset.Statements {
-					if reflect.DeepEqual(stmt, previousStmt) {
-						t.Fatal("expected to have reset SQL stats, but still found statement", stmt)
-					}
-				}
-			}
-		})
-	}
-}
-
 func createStmtFetchMode(
 	sort serverpb.StatsSortOptions,
 ) *serverpb.CombinedStatementsStatsRequest_FetchMode {
@@ -1734,6 +1575,7 @@ func generateStatement() appstatspb.CollectedStatementStatistics {
 			Database:                 "test_database",
 			DistSQL:                  true,
 			FullScan:                 true,
+			Failed:                   false,
 			ImplicitTxn:              true,
 			PlanHash:                 uint64(200),
 			Query:                    "SELECT * FROM foo",
@@ -1798,27 +1640,25 @@ func generateStatisticsColumn(
 
 	// Create stats JSON
 	stats := struct {
-		BytesRead        appstatspb.NumericStat `json:"bytesRead"`
-		Cnt              int64                  `json:"cnt"`
-		FirstAttemptCnt  int64                  `json:"firstAttemptCnt"`
-		IdleLat          appstatspb.NumericStat `json:"idleLat"`
-		Indexes          []string               `json:"indexes"`
-		LastErrorCode    string                 `json:"lastErrorCode"`
-		LastExecAt       time.Time              `json:"lastExecAt"`
-		MaxRetries       int                    `json:"maxRetries"`
-		Nodes            []int64                `json:"nodes"`
-		KVNodeIDs        []int32                `json:"kvNodeIds"`
-		NumRows          appstatspb.NumericStat `json:"numRows"`
-		OvhLat           appstatspb.NumericStat `json:"ovhLat"`
-		ParseLat         appstatspb.NumericStat `json:"parseLat"`
-		PlanGists        []string               `json:"planGists"`
-		PlanLat          appstatspb.NumericStat `json:"planLat"`
-		Regions          []string               `json:"regions"`
-		UsedFollowerRead bool                   `json:"usedFollowerRead"`
-		RowsRead         appstatspb.NumericStat `json:"rowsRead"`
-		RowsWritten      appstatspb.NumericStat `json:"rowsWritten"`
-		RunLat           appstatspb.NumericStat `json:"runLat"`
-		SvcLat           appstatspb.NumericStat `json:"svcLat"`
+		BytesRead       appstatspb.NumericStat `json:"bytesRead"`
+		Cnt             int64                  `json:"cnt"`
+		FirstAttemptCnt int64                  `json:"firstAttemptCnt"`
+		IdleLat         appstatspb.NumericStat `json:"idleLat"`
+		Indexes         []string               `json:"indexes"`
+		LastErrorCode   string                 `json:"lastErrorCode"`
+		LastExecAt      time.Time              `json:"lastExecAt"`
+		MaxRetries      int                    `json:"maxRetries"`
+		Nodes           []int64                `json:"nodes"`
+		NumRows         appstatspb.NumericStat `json:"numRows"`
+		OvhLat          appstatspb.NumericStat `json:"ovhLat"`
+		ParseLat        appstatspb.NumericStat `json:"parseLat"`
+		PlanGists       []string               `json:"planGists"`
+		PlanLat         appstatspb.NumericStat `json:"planLat"`
+		Regions         []string               `json:"regions"`
+		RowsRead        appstatspb.NumericStat `json:"rowsRead"`
+		RowsWritten     appstatspb.NumericStat `json:"rowsWritten"`
+		RunLat          appstatspb.NumericStat `json:"runLat"`
+		SvcLat          appstatspb.NumericStat `json:"svcLat"`
 	}{
 		BytesRead: appstatspb.NumericStat{
 			Mean:         0,
@@ -1835,7 +1675,6 @@ func generateStatisticsColumn(
 		LastExecAt:    statement.AggregatedTs.Add(time.Minute * 10),
 		MaxRetries:    0,
 		Nodes:         statement.Stats.Nodes,
-		KVNodeIDs:     statement.Stats.KVNodeIDs,
 		NumRows: appstatspb.NumericStat{
 			Mean:         0,
 			SquaredDiffs: 0,
@@ -1853,8 +1692,7 @@ func generateStatisticsColumn(
 			Mean:         0,
 			SquaredDiffs: 0,
 		},
-		Regions:          statement.Stats.Regions,
-		UsedFollowerRead: statement.Stats.UsedFollowerRead,
+		Regions: statement.Stats.Regions,
 		RowsRead: appstatspb.NumericStat{
 			Mean:         0,
 			SquaredDiffs: 0,
@@ -1883,6 +1721,7 @@ func insertStatementIntoSystemStmtStatsTable(
 	metadata := struct {
 		Database     string `json:"db"`
 		DistSQL      bool   `json:"distsql"`
+		Failed       bool   `json:"failed"`
 		FullScan     bool   `json:"fullScan"`
 		ImplicitTxn  bool   `json:"implicitTxn"`
 		Query        string `json:"query"`
@@ -1892,6 +1731,7 @@ func insertStatementIntoSystemStmtStatsTable(
 	}{
 		Database:     statement.Key.Database,
 		DistSQL:      statement.Key.DistSQL,
+		Failed:       statement.Key.Failed,
 		FullScan:     statement.Key.FullScan,
 		ImplicitTxn:  statement.Key.ImplicitTxn,
 		Query:        statement.Key.Query,
@@ -2026,45 +1866,4 @@ VALUES (
 		float64(statement.Stats.Count) * statement.Stats.ServiceLat.Mean,
 	}
 	db.Exec(t, query, args...)
-}
-
-func filterStatementStatsByAppName(
-	statements []*appstatspb.CollectedStatementStatistics,
-	transactions []*appstatspb.CollectedTransactionStatistics,
-	appName string,
-) ([]*appstatspb.CollectedStatementStatistics, []*appstatspb.CollectedTransactionStatistics) {
-	var filteredStatements []*appstatspb.CollectedStatementStatistics
-	var filteredTransactions []*appstatspb.CollectedTransactionStatistics
-
-	for _, stmt := range statements {
-		if stmt.Key.App == appName {
-			filteredStatements = append(filteredStatements, stmt)
-		}
-	}
-
-	for _, txn := range transactions {
-		if txn.App == appName {
-			filteredTransactions = append(filteredTransactions, txn)
-		}
-	}
-
-	return filteredStatements, filteredTransactions
-}
-
-func checkFingerprintCount(t *testing.T, resp *serverpb.DrainStatsResponse) {
-	stmtFingerprints := make(map[appstatspb.StmtFingerprintID]struct{})
-	txnFingerprints := make(map[appstatspb.TransactionFingerprintID]struct{})
-	for _, stmt := range resp.Statements {
-		if _, ok := stmtFingerprints[stmt.ID]; !ok {
-			stmtFingerprints[stmt.ID] = struct{}{}
-		}
-	}
-
-	for _, txn := range resp.Transactions {
-		if _, ok := txnFingerprints[txn.TransactionFingerprintID]; !ok {
-			txnFingerprints[txn.TransactionFingerprintID] = struct{}{}
-		}
-	}
-	actualFpCount := len(stmtFingerprints) + len(txnFingerprints)
-	require.Equal(t, resp.FingerprintCount, int64(actualFpCount))
 }

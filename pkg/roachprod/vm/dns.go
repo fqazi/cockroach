@@ -75,16 +75,19 @@ func FanOutDNS(list List, action func(DNSProvider, List) error) error {
 
 	var g errgroup.Group
 	for name, vms := range m {
+		// capture loop variables
+		n := name
+		v := vms
 		g.Go(func() error {
-			p, ok := Providers[name]
+			p, ok := Providers[n]
 			if !ok {
-				return errors.Errorf("unknown provider name: %s", name)
+				return errors.Errorf("unknown provider name: %s", n)
 			}
 			dnsProvider, ok := p.(DNSProvider)
 			if !ok {
-				return errors.Errorf("provider %s is not a DNS provider", name)
+				return errors.Errorf("provider %s is not a DNS provider", n)
 			}
-			return action(dnsProvider, vms)
+			return action(dnsProvider, v)
 		})
 	}
 

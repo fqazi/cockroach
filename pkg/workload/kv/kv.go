@@ -74,7 +74,6 @@ type kv struct {
 	minBlockSizeBytes, maxBlockSizeBytes int
 	cycleLength                          int64
 	readPercent                          int
-	followerReadPercent                  int
 	spanPercent                          int
 	delPercent                           int
 	spanLimit                            int
@@ -91,8 +90,7 @@ type kv struct {
 	enum                                 bool
 	keySize                              int
 	insertCount                          int
-	txnQoS                               string
-	prepareReadOnly                      bool
+	useBackgroundTxnQoS                  bool
 }
 
 func init() {
@@ -118,17 +116,16 @@ var kvMeta = workload.Meta{
 		g := &kv{}
 		g.flags.FlagSet = pflag.NewFlagSet(`kv`, pflag.ContinueOnError)
 		g.flags.Meta = map[string]workload.FlagMeta{
-			`batch`:             {RuntimeOnly: true},
-			`sfu-wait-delay`:    {RuntimeOnly: true},
-			`sfu-writes`:        {RuntimeOnly: true},
-			`read-percent`:      {RuntimeOnly: true},
-			`span-percent`:      {RuntimeOnly: true},
-			`span-limit`:        {RuntimeOnly: true},
-			`del-percent`:       {RuntimeOnly: true},
-			`splits`:            {RuntimeOnly: true},
-			`scatter`:           {RuntimeOnly: true},
-			`timeout`:           {RuntimeOnly: true},
-			`prepare-read-only`: {RuntimeOnly: true},
+			`batch`:          {RuntimeOnly: true},
+			`sfu-wait-delay`: {RuntimeOnly: true},
+			`sfu-writes`:     {RuntimeOnly: true},
+			`read-percent`:   {RuntimeOnly: true},
+			`span-percent`:   {RuntimeOnly: true},
+			`span-limit`:     {RuntimeOnly: true},
+			`del-percent`:    {RuntimeOnly: true},
+			`splits`:         {RuntimeOnly: true},
+			`scatter`:        {RuntimeOnly: true},
+			`timeout`:        {RuntimeOnly: true},
 		}
 		g.flags.IntVar(&g.batchSize, `batch`, 1,
 			`Number of blocks to read/insert in a single SQL statement.`)
@@ -140,8 +137,6 @@ var kvMeta = workload.Meta{
 			`Number of keys repeatedly accessed by each writer through upserts.`)
 		g.flags.IntVar(&g.readPercent, `read-percent`, 0,
 			`Percent (0-100) of operations that are reads of existing keys.`)
-		g.flags.IntVar(&g.followerReadPercent, `follower-read-percent`, 0,
-			`Percent (0-100) of read operations that are follower reads.`)
 		g.flags.IntVar(&g.spanPercent, `span-percent`, 0,
 			`Percent (0-100) of operations that are spanning queries of all ranges.`)
 		g.flags.IntVar(&g.delPercent, `del-percent`, 0,
@@ -179,10 +174,8 @@ var kvMeta = workload.Meta{
 			`Use string key of appropriate size instead of int`)
 		g.flags.DurationVar(&g.sfuDelay, `sfu-wait-delay`, 10*time.Millisecond,
 			`Delay before sfu write transaction commits or aborts`)
-		g.flags.StringVar(&g.txnQoS, `txn-qos`, `regular`,
-			`Set default_transaction_quality_of_service session variable, accepted`+
-				`values are 'background', 'regular' and 'critical'.`)
-		g.flags.BoolVar(&g.prepareReadOnly, `prepare-read-only`, false, `Prepare and perform only read statements.`)
+		g.flags.BoolVar(&g.useBackgroundTxnQoS, `background-qos`, false,
+			`Set default_transaction_quality_of_service session variable to "background".`)
 		g.connFlags = workload.NewConnFlags(&g.flags)
 		return g
 	},
@@ -193,9 +186,6 @@ func (*kv) Meta() workload.Meta { return kvMeta }
 
 // Flags implements the Flagser interface.
 func (w *kv) Flags() workload.Flags { return w.flags }
-
-// ConnFlags implements the ConnFlagser interface.
-func (w *kv) ConnFlags() *workload.ConnFlags { return w.connFlags }
 
 // Hooks implements the Hookser interface.
 func (w *kv) Hooks() workload.Hooks {
@@ -246,9 +236,6 @@ func (w *kv) validateConfig() (err error) {
 	if w.readPercent+w.spanPercent+w.delPercent > 100 {
 		return errors.New("'read-percent', 'span-percent' and 'del-precent' combined exceed 100%")
 	}
-	if w.prepareReadOnly && w.readPercent < 100 {
-		return errors.New("'prepare-read-only' can only be used with 'read-percent' set to 100")
-	}
 	if w.targetCompressionRatio < 1.0 || math.IsNaN(w.targetCompressionRatio) {
 		return errors.New("'target-compression-ratio' must be a number >= 1.0")
 	}
@@ -278,12 +265,6 @@ func (w *kv) validateConfig() (err error) {
 			return errors.Errorf(
 				"zipfian --write-seq is incompatible with a --sequential or default (random) key sequence")
 		}
-	}
-	if w.txnQoS != "" && w.txnQoS != "background" &&
-		w.txnQoS != "regular" && w.txnQoS != "critical" {
-		return errors.Errorf(
-			"--txn-qos must be one of 'background', 'regular' or 'critical', found %s", w.txnQoS,
-		)
 	}
 	// We create generator and discard it to have a single piece of code that
 	// handles generator type which affects target key range.
@@ -450,6 +431,10 @@ func (w *kv) Tables() []workload.Table {
 func (w *kv) Ops(
 	ctx context.Context, urls []string, reg *histogram.Registry,
 ) (workload.QueryLoad, error) {
+	sqlDatabase, err := workload.SanitizeUrls(w, w.connFlags.DBOverride, urls)
+	if err != nil {
+		return workload.QueryLoad{}, err
+	}
 	cfg := workload.NewMultiConnPoolCfgFromFlags(w.connFlags)
 	cfg.MaxTotalConnections = w.connFlags.Concurrency + 1
 	mcp, err := workload.NewMultiConnPool(ctx, cfg, urls...)
@@ -459,27 +444,25 @@ func (w *kv) Ops(
 
 	// Read statement
 	var buf strings.Builder
-	var folBuf strings.Builder
 	if w.enum {
 		buf.WriteString(`SELECT k, v, e FROM kv WHERE k IN (`)
-		folBuf.WriteString(`SELECT k, v, e FROM kv AS OF SYSTEM TIME follower_read_timestamp() WHERE k IN (`)
+		for i := 0; i < w.batchSize; i++ {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			fmt.Fprintf(&buf, `$%d`, i+1)
+		}
 	} else {
 		buf.WriteString(`SELECT k, v FROM kv WHERE k IN (`)
-		folBuf.WriteString(`SELECT k, v FROM kv AS OF SYSTEM TIME follower_read_timestamp() WHERE k IN (`)
-	}
-	for i := 0; i < w.batchSize; i++ {
-		if i > 0 {
-			buf.WriteString(", ")
-			folBuf.WriteString(", ")
+		for i := 0; i < w.batchSize; i++ {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			fmt.Fprintf(&buf, `$%d`, i+1)
 		}
-		fmt.Fprintf(&buf, `$%d`, i+1)
-		fmt.Fprintf(&folBuf, `$%d`, i+1)
 	}
 	buf.WriteString(`)`)
-	folBuf.WriteString(`)`)
-
 	readStmtStr := buf.String()
-	followerReadStmtStr := folBuf.String()
 
 	// Write statement
 	buf.Reset()
@@ -534,7 +517,7 @@ func (w *kv) Ops(
 	delStmtStr := buf.String()
 
 	gen, _, kt, _ := w.createKeyGenerator()
-	ql := workload.QueryLoad{}
+	ql := workload.QueryLoad{SQLDatabase: sqlDatabase}
 	var numEmptyResults atomic.Int64
 	for i := 0; i < w.connFlags.Concurrency; i++ {
 		op := &kvOp{
@@ -543,22 +526,16 @@ func (w *kv) Ops(
 			numEmptyResults: &numEmptyResults,
 		}
 		op.readStmt = op.sr.Define(readStmtStr)
-		op.followerReadStmt = op.sr.Define(followerReadStmtStr)
-		if !op.config.prepareReadOnly {
-			op.writeStmt = op.sr.Define(writeStmtStr)
-		}
-		if len(sfuStmtStr) > 0 && !op.config.prepareReadOnly {
+		op.writeStmt = op.sr.Define(writeStmtStr)
+		if len(sfuStmtStr) > 0 {
 			op.sfuStmt = op.sr.Define(sfuStmtStr)
 		}
 		op.spanStmt = op.sr.Define(spanStmtStr)
-		if w.txnQoS != `regular` {
-			stmt := op.sr.Define(fmt.Sprintf(
-				" SET default_transaction_quality_of_service = %s", w.txnQoS))
+		if w.useBackgroundTxnQoS {
+			stmt := op.sr.Define(" SET default_transaction_quality_of_service = background")
 			op.qosStmt = &stmt
 		}
-		if !op.config.prepareReadOnly {
-			op.delStmt = op.sr.Define(delStmtStr)
-		}
+		op.delStmt = op.sr.Define(delStmtStr)
 		if err := op.sr.Init(ctx, "kv", mcp); err != nil {
 			return workload.QueryLoad{}, err
 		}
@@ -572,20 +549,19 @@ func (w *kv) Ops(
 }
 
 type kvOp struct {
-	config           *kv
-	hists            *histogram.Histograms
-	sr               workload.SQLRunner
-	mcp              *workload.MultiConnPool
-	qosStmt          *workload.StmtHandle
-	readStmt         workload.StmtHandle
-	followerReadStmt workload.StmtHandle
-	writeStmt        workload.StmtHandle
-	spanStmt         workload.StmtHandle
-	sfuStmt          workload.StmtHandle
-	delStmt          workload.StmtHandle
-	g                keyGenerator
-	t                keyTransformer
-	numEmptyResults  *atomic.Int64
+	config          *kv
+	hists           *histogram.Histograms
+	sr              workload.SQLRunner
+	mcp             *workload.MultiConnPool
+	qosStmt         *workload.StmtHandle
+	readStmt        workload.StmtHandle
+	writeStmt       workload.StmtHandle
+	spanStmt        workload.StmtHandle
+	sfuStmt         workload.StmtHandle
+	delStmt         workload.StmtHandle
+	g               keyGenerator
+	t               keyTransformer
+	numEmptyResults *atomic.Int64
 }
 
 func (o *kvOp) run(ctx context.Context) (retErr error) {
@@ -608,14 +584,7 @@ func (o *kvOp) run(ctx context.Context) (retErr error) {
 			args[i] = o.t.getKey(o.g.readKey())
 		}
 		start := timeutil.Now()
-		readStmt := o.readStmt
-		opName := `read`
-
-		if o.g.rand().Intn(100) < o.config.followerReadPercent {
-			readStmt = o.followerReadStmt
-			opName = `follower-read`
-		}
-		rows, err := readStmt.Query(ctx, args...)
+		rows, err := o.readStmt.Query(ctx, args...)
 		if err != nil {
 			return err
 		}
@@ -627,7 +596,7 @@ func (o *kvOp) run(ctx context.Context) (retErr error) {
 			o.numEmptyResults.Add(1)
 		}
 		elapsed := timeutil.Since(start)
-		o.hists.Get(opName).Record(elapsed)
+		o.hists.Get(`read`).Record(elapsed)
 		return rows.Err()
 	}
 	// Since we know the statement is not a read, we recalibrate
@@ -656,9 +625,6 @@ func (o *kvOp) run(ctx context.Context) (retErr error) {
 			_, err = o.spanStmt.Exec(ctx, arg)
 		} else {
 			_, err = o.spanStmt.Exec(ctx)
-		}
-		if err != nil {
-			return err
 		}
 		elapsed := timeutil.Since(start)
 		o.hists.Get(`span`).Record(elapsed)
@@ -716,9 +682,6 @@ func (o *kvOp) run(ctx context.Context) (retErr error) {
 		}
 	} else {
 		_, err = o.writeStmt.Exec(ctx, writeArgs...)
-	}
-	if err != nil {
-		return err
 	}
 	elapsed := timeutil.Since(start)
 	o.hists.Get(`write`).Record(elapsed)

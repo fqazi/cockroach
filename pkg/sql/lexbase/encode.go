@@ -42,10 +42,6 @@ const (
 	// without wrapping quotes.
 	EncBareIdentifiers
 
-	// EncBareReservedKeywords indicates that reserved keywords will be rendered
-	// without wrapping quotes.
-	EncBareReservedKeywords
-
 	// EncFirstFreeFlagBit needs to remain unused; it is used as base
 	// bit offset for tree.FmtFlags.
 	EncFirstFreeFlagBit
@@ -56,8 +52,7 @@ const (
 // contains special characters, or the identifier is a reserved SQL
 // keyword.
 func EncodeRestrictedSQLIdent(buf *bytes.Buffer, s string, flags EncodeFlags) {
-	if flags.HasFlags(EncBareIdentifiers) ||
-		(IsBareIdentifier(s) && (flags.HasFlags(EncBareReservedKeywords) || !isReservedKeyword(s))) {
+	if flags.HasFlags(EncBareIdentifiers) || (!isReservedKeyword(s) && IsBareIdentifier(s)) {
 		buf.WriteString(s)
 		return
 	}
@@ -108,12 +103,7 @@ func EncodeEscapedSQLIdent(buf *bytes.Buffer, s string) {
 	buf.WriteByte('"')
 }
 
-const (
-	minPrintableChar = 0x20 // ' '
-	maxPrintableChar = 0x7E // '~'
-)
-
-var mustQuoteMap = [maxPrintableChar + 1]bool{
+var mustQuoteMap = map[byte]bool{
 	' ': true,
 	',': true,
 	'{': true,
@@ -151,7 +141,7 @@ func EncodeSQLStringWithFlags(buf *bytes.Buffer, in string, flags EncodeFlags) {
 			continue
 		}
 		ch := byte(r)
-		if r >= minPrintableChar && r <= maxPrintableChar {
+		if r >= 0x20 && r < 0x7F {
 			if mustQuoteMap[ch] {
 				// We have to quote this string - ignore bareStrings setting
 				bareStrings = false
@@ -166,7 +156,6 @@ func EncodeSQLStringWithFlags(buf *bytes.Buffer, in string, flags EncodeFlags) {
 			escapedString = true
 		}
 		buf.WriteString(in[start:i])
-
 		ln := utf8.RuneLen(r)
 		if ln < 0 {
 			start = i + 1

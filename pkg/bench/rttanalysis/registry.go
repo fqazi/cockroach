@@ -42,7 +42,7 @@ func NewRegistry(numNodes int, cc ClusterConstructor) *Registry {
 func (r *Registry) Run(b *testing.B) {
 	tests, ok := r.r[bName(b)]
 	require.True(b, ok)
-	runCPUMemBenchmark(bShim{b}, tests, r.cc)
+	runRoundTripBenchmark(bShim{b}, tests, r.cc)
 }
 
 // RunExpectations runs all the benchmarks for one iteration
@@ -57,7 +57,6 @@ func (r *Registry) RunExpectations(t *testing.T) {
 	skip.UnderStress(t)
 	skip.UnderRace(t)
 	skip.UnderShort(t)
-	skip.UnderDeadlock(t)
 
 	runBenchmarkExpectationTests(t, r)
 }

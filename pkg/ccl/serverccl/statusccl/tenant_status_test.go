@@ -19,17 +19,21 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	_ "github.com/cockroachdb/cockroach/pkg/ccl/kvccl"
 	"github.com/cockroachdb/cockroach/pkg/ccl/serverccl"
+	"github.com/cockroachdb/cockroach/pkg/ccl/utilccl/licenseccl"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/securitytest"
+	"github.com/cockroachdb/cockroach/pkg/server/diagnostics"
+	"github.com/cockroachdb/cockroach/pkg/server/license"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
+	"github.com/cockroachdb/cockroach/pkg/server/srvtestutils"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/persistedsqlstats/sqlstatstestutil"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -39,6 +43,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -52,7 +57,7 @@ func TestTenantStatusAPI(t *testing.T) {
 	defer s.SetupSingleFileLogging()()
 
 	// The liveness session might expire before the stress race can finish.
-	skip.UnderRace(t, "expensive tests")
+	skip.UnderStressRace(t, "expensive tests")
 
 	ctx := context.Background()
 
@@ -72,10 +77,6 @@ func TestTenantStatusAPI(t *testing.T) {
 	tdb.Exec(t, "SET CLUSTER SETTING kv.closed_timestamp.target_duration = '10ms'")
 	tdb.Exec(t, "SET CLUSTER SETTING kv.closed_timestamp.side_transport_interval = '10 ms'")
 	tdb.Exec(t, "SET CLUSTER SETTING kv.rangefeed.closed_timestamp_refresh_interval = '10 ms'")
-	// If we happen to enable buffered writes metamorphically, we must have the
-	// split lock reliability enabled (which can be tweaked metamorphically too,
-	// #146387).
-	tdb.Exec(t, "SET CLUSTER SETTING kv.lock_table.unreplicated_lock_reliability.split.enabled = true")
 
 	t.Run("reset_sql_stats", func(t *testing.T) {
 		skip.UnderDeadlockWithIssue(t, 99559)
@@ -121,10 +122,6 @@ func TestTenantStatusAPI(t *testing.T) {
 
 	t.Run("tenant_ranges", func(t *testing.T) {
 		testTenantRangesRPC(ctx, t, testHelper)
-	})
-
-	t.Run("ranges", func(t *testing.T) {
-		testRangesRPC(ctx, t, testHelper)
 	})
 
 	t.Run("tenant_auth_statement", func(t *testing.T) {
@@ -215,7 +212,7 @@ func testTenantSpanStats(ctx context.Context, t *testing.T, helper serverccl.Ten
 		require.NoError(t, err)
 		require.Contains(t, res.SpanToStats, aSpan.String())
 		// Reset the span batch limit to default.
-		_, err = helper.HostCluster().ServerConn(0).Exec(`RESET CLUSTER SETTING server.span_stats.span_batch_limit`)
+		_, err = helper.HostCluster().ServerConn(0).Exec(`SET CLUSTER SETTING server.span_stats.span_batch_limit = $1`, roachpb.DefaultSpanStatsSpanLimit)
 		require.NoError(t, err)
 	})
 
@@ -226,7 +223,6 @@ func testTenantSpanStats(ctx context.Context, t *testing.T, helper serverccl.Ten
 
 		makeKey := func(keys ...[]byte) roachpb.Key {
 			return bytes.Join(keys, nil)
-
 		}
 
 		// Create a new range in this tenant.
@@ -418,7 +414,6 @@ func TestTenantCannotSeeNonTenantStats(t *testing.T) {
 		},
 	})
 
-	appName := "test-app"
 	systemLayer := testCluster.Server(1 /* idx */).SystemLayer()
 
 	tenantStatusServer := tenant.StatusServer().(serverpb.SQLStatusServer)
@@ -434,23 +429,17 @@ func TestTenantCannotSeeNonTenantStats(t *testing.T) {
 		{stmt: `CREATE TABLE posts_t (id INT8 PRIMARY KEY, body STRING)`},
 		{
 			stmt:        `INSERT INTO posts_t VALUES (1, 'foo')`,
-			fingerprint: `INSERT INTO posts_t VALUES (_, __more__)`,
+			fingerprint: `INSERT INTO posts_t VALUES (_, '_')`,
 		},
 		{stmt: `SELECT * FROM posts_t`},
 	}
 
-	_, err := sqlDB.Exec(`SET application_name = $1`, appName)
-	require.NoError(t, err)
 	for _, stmt := range testCaseTenant {
 		_, err := sqlDB.Exec(stmt.stmt)
 		require.NoError(t, err)
 	}
 
-	conn := sqlutils.MakeSQLRunner(tenant.SQLConn(t))
-	sqlstatstestutil.WaitForStatementEntriesAtLeast(t, conn, len(testCaseTenant),
-		sqlstatstestutil.StatementFilter{App: appName})
-
-	err = sqlDB.Close()
+	err := sqlDB.Close()
 	require.NoError(t, err)
 
 	testCaseNonTenant := []testCase{
@@ -459,25 +448,17 @@ func TestTenantCannotSeeNonTenantStats(t *testing.T) {
 		{stmt: `CREATE TABLE posts_nt (id INT8 PRIMARY KEY, body STRING)`},
 		{
 			stmt:        `INSERT INTO posts_nt VALUES (1, 'foo')`,
-			fingerprint: `INSERT INTO posts_nt VALUES (_, __more__)`,
+			fingerprint: `INSERT INTO posts_nt VALUES (_, '_')`,
 		},
 		{stmt: `SELECT * FROM posts_nt`},
 	}
 
 	sqlDB = systemLayer.SQLConn(t)
 
-	_, err = sqlDB.Exec(`SET application_name = $1`, appName)
-	require.NoError(t, err)
 	for _, stmt := range testCaseNonTenant {
 		_, err = sqlDB.Exec(stmt.stmt)
 		require.NoError(t, err)
 	}
-
-	conn = sqlutils.MakeSQLRunner(systemLayer.SQLConn(t))
-	sqlstatstestutil.WaitForStatementEntriesAtLeast(t, conn, len(testCaseTenant), sqlstatstestutil.StatementFilter{
-		App: appName,
-	})
-
 	err = sqlDB.Close()
 	require.NoError(t, err)
 
@@ -520,12 +501,14 @@ func TestTenantCannotSeeNonTenantStats(t *testing.T) {
 
 		var actualStatements []string
 		for _, respStatement := range actual.Statements {
-			if respStatement.Stats.FailureCount > 0 {
+			if respStatement.Key.KeyData.Failed {
 				// We ignore failed statements here as the INSERT statement can fail and
 				// be automatically retried, confusing the test success check.
 				continue
 			}
-			if respStatement.Key.KeyData.App != appName {
+			if strings.HasPrefix(respStatement.Key.KeyData.App, catconstants.InternalAppNamePrefix) {
+				// We ignore internal queries, these are not relevant for the
+				// validity of this test.
 				continue
 			}
 			actualStatements = append(actualStatements, respStatement.Key.KeyData.Query)
@@ -592,24 +575,9 @@ func testResetSQLStatsRPCForTenant(
 
 	}()
 
-	getObsConn := func(tenant serverccl.TestTenant) (*sqlutils.SQLRunner, func()) {
-		pgUrl, cleanupPgUrl := tenant.GetTenant().PGUrl(t)
-		obsConn, cleanupObsConn := sqlstatstestutil.MakeObserverConnection(t, pgUrl)
-		cleanup := func() {
-			cleanupPgUrl()
-			cleanupObsConn()
-		}
-		return obsConn, cleanup
-	}
-
-	testTenantObs, cleanup1 := getObsConn(testCluster.Tenant(serverccl.RandomServer))
-	defer cleanup1()
-	controlTenantObsConn, cleanup2 := getObsConn(controlCluster.Tenant(serverccl.RandomServer))
-	defer cleanup2()
 	for _, flushed := range []bool{false, true} {
 		testTenant := testCluster.Tenant(serverccl.RandomServer)
 		testTenantConn := testTenant.GetTenantConn()
-
 		t.Run(fmt.Sprintf("flushed=%t", flushed), func(t *testing.T) {
 			// Clears the SQL Stats at the end of each test via builtin.
 			defer func() {
@@ -622,20 +590,9 @@ func testResetSQLStatsRPCForTenant(
 				controlCluster.TenantConn(serverccl.RandomServer).Exec(t, stmt)
 			}
 
-			sqlstatstestutil.WaitForStatementEntriesAtLeast(t, testTenantObs, len(stmts))
-			sqlstatstestutil.WaitForStatementEntriesAtLeast(t, controlTenantObsConn, len(stmts))
-
 			if flushed {
-				testTenantServer := testTenant.TenantSQLServer()
-				testTenantServer.GetSQLStatsProvider().MaybeFlush(
-					ctx,
-					testTenant.GetTenant().AppStopper(),
-				)
-				randomTenantServer := controlCluster.TenantSQLServer(serverccl.RandomServer)
-				randomTenantServer.GetSQLStatsProvider().MaybeFlush(
-					ctx,
-					controlCluster.Tenant(0).GetTenant().AppStopper(),
-				)
+				testTenant.TenantSQLStats().Flush(ctx)
+				controlCluster.TenantSQLStats(serverccl.RandomServer).Flush(ctx)
 			}
 
 			status := testTenant.TenantStatusSrv()
@@ -918,6 +875,7 @@ WHERE tablename = 'test' AND indexname = $1`
 		requireAfter(t, &resp.Statistics[0].Statistics.Stats.LastRead, &timePreRead)
 		indexName := resp.Statistics[0].IndexName
 		createStmt := cluster.TenantConn(0).QueryStr(t, getCreateStmtQuery, indexName)[0][0]
+		print(createStmt)
 		require.Equal(t, resp.Statistics[0].CreateStatement, createStmt)
 		requireBetween(t, timePreCreate, resp.Statistics[0].CreatedAt, timePreRead)
 	})
@@ -1146,16 +1104,8 @@ func selectClusterSessionIDs(t *testing.T, conn *sqlutils.SQLRunner) []string {
 
 func testTenantStatusCancelSession(t *testing.T, helper serverccl.TenantTestHelper) {
 	// Open a SQL session on tenant SQL pod 0.
-	ctx := context.Background()
-	// Open two different SQL sessions on tenant SQL pod 0.
-	sqlPod0 := helper.TestCluster().TenantDB(0)
-	sqlPod0SessionToCancel, err := sqlPod0.Conn(ctx)
-	require.NoError(t, err)
-	sqlPod0SessionForIntrospection, err := sqlPod0.Conn(ctx)
-	require.NoError(t, err)
-	_, err = sqlPod0SessionToCancel.ExecContext(ctx, "SELECT 1")
-	require.NoError(t, err)
-	introspectionRunner := sqlutils.MakeSQLRunner(sqlPod0SessionForIntrospection)
+	sqlPod0 := helper.TestCluster().TenantConn(0)
+	sqlPod0.Exec(t, "SELECT 1")
 
 	// See the session over HTTP on tenant SQL pod 1.
 	httpPod1 := helper.TestCluster().TenantAdminHTTPClient(t, 1)
@@ -1174,7 +1124,7 @@ func testTenantStatusCancelSession(t *testing.T, helper serverccl.TenantTestHelp
 	// See the session over SQL on tenant SQL pod 0.
 	sessionID := hex.EncodeToString(session.ID)
 	require.Eventually(t, func() bool {
-		return strings.Contains(strings.Join(selectClusterSessionIDs(t, introspectionRunner), ","), sessionID)
+		return strings.Contains(strings.Join(selectClusterSessionIDs(t, sqlPod0), ","), sessionID)
 	}, 5*time.Second, 100*time.Millisecond)
 
 	// Cancel the session over HTTP from tenant SQL pod 1.
@@ -1186,7 +1136,7 @@ func testTenantStatusCancelSession(t *testing.T, helper serverccl.TenantTestHelp
 	// No longer see the session over SQL from tenant SQL pod 0.
 	// (The SQL client maintains an internal connection pool and automatically reconnects.)
 	require.Eventually(t, func() bool {
-		return !strings.Contains(strings.Join(selectClusterSessionIDs(t, introspectionRunner), ","), sessionID)
+		return !strings.Contains(strings.Join(selectClusterSessionIDs(t, sqlPod0), ","), sessionID)
 	}, 5*time.Second, 100*time.Millisecond)
 
 	// Attempt to cancel the session again over HTTP from tenant SQL pod 1, so that we can see the error message.
@@ -1413,7 +1363,8 @@ func testTxnIDResolutionRPC(ctx context.Context, t *testing.T, helper serverccl.
 	t.Run("tenant_cluster", func(t *testing.T) {
 		// Select a different tenant status server here so a pod-to-pod RPC will
 		// happen.
-		status := helper.TestCluster().TenantStatusSrv(2 /* idx */)
+		status :=
+			helper.TestCluster().TenantStatusSrv(2 /* idx */)
 		sqlConn := helper.TestCluster().TenantConn(0 /* idx */)
 		run(sqlConn, status, 1 /* coordinatorNodeID */)
 	})
@@ -1424,10 +1375,20 @@ func testTenantRangesRPC(_ context.Context, t *testing.T, helper serverccl.Tenan
 	tenantB := helper.ControlCluster().TenantStatusSrv(0).(serverpb.TenantStatusServer)
 
 	// Wait for range splits to occur so we get more than just a single range during our tests.
-	waitForRangeSplit(t, tenantA)
-	waitForRangeSplit(t, tenantB)
+	testutils.SucceedsSoon(t, func() error {
+		resp, err := tenantA.TenantRanges(context.Background(), &serverpb.TenantRangesRequest{})
+		if err != nil {
+			return err
+		}
+		for _, ranges := range resp.RangesByLocality {
+			if len(ranges.Ranges) > 1 {
+				return nil
+			}
+		}
+		return errors.New("waiting for tenant range split")
+	})
 
-	t.Run("test TenantRanges respects tenant isolation", func(t *testing.T) {
+	t.Run("test tenant ranges respects tenant isolation", func(t *testing.T) {
 		tenIDA := helper.TestCluster().Tenant(0).GetRPCContext().TenantID
 		tenIDB := helper.ControlCluster().Tenant(0).GetRPCContext().TenantID
 		keySpanForA := keys.MakeTenantSpan(tenIDA)
@@ -1456,7 +1417,7 @@ func testTenantRangesRPC(_ context.Context, t *testing.T, helper serverccl.Tenan
 		}
 	})
 
-	t.Run("test TenantRanges pagination", func(t *testing.T) {
+	t.Run("test tenant ranges pagination", func(t *testing.T) {
 		ctx := context.Background()
 		resp1, err := tenantA.TenantRanges(ctx, &serverpb.TenantRangesRequest{
 			Limit: 1,
@@ -1495,54 +1456,6 @@ func testTenantRangesRPC(_ context.Context, t *testing.T, helper serverccl.Tenan
 			return nil
 		})
 
-	})
-}
-
-func testRangesRPC(_ context.Context, t *testing.T, helper serverccl.TenantTestHelper) {
-	tenantA := helper.TestCluster().TenantStatusSrv(0).(serverpb.TenantStatusServer)
-	tenantB := helper.ControlCluster().TenantStatusSrv(0).(serverpb.TenantStatusServer)
-
-	req := &serverpb.RangesRequest{NodeId: "1"}
-
-	// Wait for range splits to occur so we get more than just a single range during our tests.
-	waitForRangeSplit(t, tenantA)
-	waitForRangeSplit(t, tenantB)
-
-	t.Run("test Ranges respects tenant isolation", func(t *testing.T) {
-		tenIDA := helper.TestCluster().Tenant(0).GetRPCContext().TenantID
-		tenIDB := helper.ControlCluster().Tenant(0).GetRPCContext().TenantID
-		keySpanForA := keys.MakeTenantSpan(tenIDA)
-		keySpanForB := keys.MakeTenantSpan(tenIDB)
-
-		resp, err := tenantA.Ranges(context.Background(), req)
-		require.NoError(t, err)
-		require.NotEmpty(t, resp.Ranges)
-		for _, r := range resp.Ranges {
-			assertStartKeyInRange(t, r.Span.StartKey, keySpanForA.Key)
-			assertEndKeyInRange(t, r.Span.EndKey, keySpanForA.Key, keySpanForA.EndKey)
-		}
-
-		resp, err = tenantB.Ranges(context.Background(), req)
-		require.NoError(t, err)
-		require.NotEmpty(t, resp.Ranges)
-		for _, r := range resp.Ranges {
-			assertStartKeyInRange(t, r.Span.StartKey, keySpanForB.Key)
-			assertEndKeyInRange(t, r.Span.EndKey, keySpanForB.Key, keySpanForB.EndKey)
-		}
-	})
-}
-
-func waitForRangeSplit(t *testing.T, tenant serverpb.TenantStatusServer) {
-	req := &serverpb.RangesRequest{NodeId: "1"}
-	testutils.SucceedsSoon(t, func() error {
-		resp, err := tenant.Ranges(context.Background(), req)
-		if err != nil {
-			return err
-		}
-		if len(resp.Ranges) <= 1 {
-			return errors.New("waiting for tenant range split")
-		}
-		return nil
 	})
 }
 
@@ -1670,4 +1583,206 @@ func testTenantHotRanges(_ context.Context, t *testing.T, helper serverccl.Tenan
 		require.Error(t, err)
 		require.Nil(t, resp)
 	})
+}
+
+func TestThrottlingMetadata(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	skip.UnderRace(t, "times out under race")
+
+	testtime := timeutil.Now()
+
+	s := serverutils.StartCluster(t, 3, base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			Knobs: base.TestingKnobs{
+				LicenseTestingKnobs: &license.TestingKnobs{
+					OverrideStartTime: &testtime,
+				},
+			},
+		},
+	})
+	defer s.Stopper().Stop(context.Background())
+	sys := s.SystemLayer(1)
+
+	for i := range s.NodeIDs() {
+		s.SystemLayer(i).DiagnosticsReporter().(*diagnostics.Reporter).LastSuccessfulTelemetryPing.Store(testtime.Unix())
+		s.ApplicationLayer(i).DiagnosticsReporter().(*diagnostics.Reporter).LastSuccessfulTelemetryPing.Store(testtime.Unix())
+	}
+
+	for _, tc := range []struct {
+		name                        string
+		license                     *licenseccl.License
+		lastSuccessfulTelemetryPing int64
+		expected                    serverpb.GetThrottlingMetadataResponse
+	}{
+		{
+			name:    "no license",
+			license: nil,
+			expected: serverpb.GetThrottlingMetadataResponse{
+				HasGracePeriod:               true,
+				GracePeriodEndSeconds:        testtime.Add(7 * 24 * time.Hour).Unix(),
+				NodeIdsWithTelemetryProblems: []string{},
+			},
+		},
+		{
+			name: "free license",
+			license: &licenseccl.License{
+				Type:              licenseccl.License_Free,
+				ValidUntilUnixSec: testtime.Add(1 * time.Hour).Unix(),
+			},
+			lastSuccessfulTelemetryPing: testtime.Unix(),
+			expected: serverpb.GetThrottlingMetadataResponse{
+				HasGracePeriod:               true,
+				GracePeriodEndSeconds:        testtime.Add((30 * 24 * time.Hour) + time.Hour).Unix(),
+				NodeIdsWithTelemetryProblems: []string{},
+				HasTelemetryDeadline:         true,
+				LastTelemetryReceivedSeconds: testtime.Unix(),
+				TelemetryDeadlineSeconds:     testtime.Unix() + 604800,
+			},
+		},
+		{
+			name: "trial license",
+			license: &licenseccl.License{
+				Type:              licenseccl.License_Trial,
+				ValidUntilUnixSec: testtime.Add(1 * time.Hour).Unix(),
+			},
+			lastSuccessfulTelemetryPing: testtime.Unix(),
+			expected: serverpb.GetThrottlingMetadataResponse{
+				HasGracePeriod:               true,
+				GracePeriodEndSeconds:        testtime.Add((7 * 24 * time.Hour) + time.Hour).Unix(),
+				NodeIdsWithTelemetryProblems: []string{},
+				HasTelemetryDeadline:         true,
+				LastTelemetryReceivedSeconds: testtime.Unix(),
+				TelemetryDeadlineSeconds:     testtime.Unix() + 604800,
+			},
+		},
+		{
+			name: "enterprise license",
+			license: &licenseccl.License{
+				Type: licenseccl.License_Enterprise,
+			},
+			expected: serverpb.GetThrottlingMetadataResponse{
+				NodeIdsWithTelemetryProblems: []string{},
+			},
+		},
+		{
+			name: "evaluation license",
+			license: &licenseccl.License{
+				Type:              licenseccl.License_Evaluation,
+				ValidUntilUnixSec: testtime.Add(1 * time.Hour).Unix(),
+			},
+			lastSuccessfulTelemetryPing: testtime.Unix(),
+			expected: serverpb.GetThrottlingMetadataResponse{
+				HasGracePeriod:               true,
+				GracePeriodEndSeconds:        testtime.Add((30 * 24 * time.Hour) + time.Hour).Unix(),
+				NodeIdsWithTelemetryProblems: []string{},
+				HasTelemetryDeadline:         false,
+			},
+		},
+		{
+			name: "free license with missing telemetry",
+			license: &licenseccl.License{
+				Type:              licenseccl.License_Free,
+				ValidUntilUnixSec: testtime.Add(1 * time.Hour).Unix(),
+			},
+			lastSuccessfulTelemetryPing: testtime.Add(-2 * 24 * time.Hour).Unix(),
+			expected: serverpb.GetThrottlingMetadataResponse{
+				HasGracePeriod:               true,
+				GracePeriodEndSeconds:        testtime.Add((30 * 24 * time.Hour) + time.Hour).Unix(),
+				NodeIdsWithTelemetryProblems: []string{"1", "2", "3"},
+				HasTelemetryDeadline:         true,
+				LastTelemetryReceivedSeconds: testtime.Add(-2 * 24 * time.Hour).Unix(),
+				TelemetryDeadlineSeconds:     testtime.Add(5 * 24 * time.Hour).Unix(), // 7 days from last ping.
+			},
+		},
+		{
+			name: "free license expired",
+			license: &licenseccl.License{
+				Type:              licenseccl.License_Free,
+				ValidUntilUnixSec: testtime.Add(-1 * time.Hour).Unix(),
+			},
+			lastSuccessfulTelemetryPing: testtime.Unix(),
+			expected: serverpb.GetThrottlingMetadataResponse{
+				HasGracePeriod:               true,
+				GracePeriodEndSeconds:        testtime.Add((30 * 24 * time.Hour) - time.Hour).Unix(),
+				NodeIdsWithTelemetryProblems: []string{},
+				HasTelemetryDeadline:         true,
+				LastTelemetryReceivedSeconds: testtime.Unix(),
+				TelemetryDeadlineSeconds:     testtime.Add(7 * 24 * time.Hour).Unix(), // 7 days from last ping.
+			},
+		},
+		{
+			name: "free license expired and grace period over",
+			license: &licenseccl.License{
+				Type:              licenseccl.License_Free,
+				ValidUntilUnixSec: testtime.Add(-40 * 24 * time.Hour).Unix(),
+			},
+			lastSuccessfulTelemetryPing: testtime.Unix(),
+			expected: serverpb.GetThrottlingMetadataResponse{
+				Throttled:                    true,
+				ThrottleExplanation:          fmt.Sprintf("License expired on %s. The maximum number of concurrently open transactions has been reached.", timeutil.Unix(testtime.Add(-40*24*time.Hour).Unix(), 0)),
+				HasGracePeriod:               true,
+				GracePeriodEndSeconds:        testtime.Add(-10 * 24 * time.Hour).Unix(),
+				NodeIdsWithTelemetryProblems: []string{},
+				HasTelemetryDeadline:         true,
+				LastTelemetryReceivedSeconds: testtime.Unix(),
+				TelemetryDeadlineSeconds:     testtime.Unix() + 604800,
+			},
+		},
+		{
+			name: "free license telemetry missing and telemetry deadline over",
+			license: &licenseccl.License{
+				Type:              licenseccl.License_Free,
+				ValidUntilUnixSec: testtime.Add(10 * 24 * time.Hour).Unix(),
+			},
+			lastSuccessfulTelemetryPing: testtime.Add(-8 * 24 * time.Hour).Unix(),
+			expected: serverpb.GetThrottlingMetadataResponse{
+				Throttled:                    true,
+				ThrottleExplanation:          "The maximum number of concurrently open transactions has been reached because the license requires diagnostic reporting, but none has been received by Cockroach Labs.",
+				HasGracePeriod:               true,
+				GracePeriodEndSeconds:        testtime.Add(40 * 24 * time.Hour).Unix(),
+				NodeIdsWithTelemetryProblems: []string{"1", "2", "3"},
+				HasTelemetryDeadline:         true,
+				LastTelemetryReceivedSeconds: testtime.Add(-8 * 24 * time.Hour).Unix(),
+				TelemetryDeadlineSeconds:     testtime.Add(-8*24*time.Hour).Unix() + 604800,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.license != nil {
+				lic, err := tc.license.Encode()
+				require.NoError(t, err)
+				_, err = sys.SQLConn(t).Exec(
+					fmt.Sprintf("SET CLUSTER SETTING enterprise.license = '%s'", lic),
+				)
+				require.NoError(t, err)
+			}
+
+			if tc.lastSuccessfulTelemetryPing != 0 {
+				for i := range s.NodeIDs() {
+					s.SystemLayer(i).DiagnosticsReporter().(*diagnostics.Reporter).LastSuccessfulTelemetryPing.Store(
+						tc.lastSuccessfulTelemetryPing,
+					)
+					s.ApplicationLayer(i).DiagnosticsReporter().(*diagnostics.Reporter).LastSuccessfulTelemetryPing.Store(
+						tc.lastSuccessfulTelemetryPing,
+					)
+				}
+			}
+
+			testutils.SucceedsSoon(t, func() error {
+				var resp serverpb.GetThrottlingMetadataResponse
+				if err := srvtestutils.GetStatusJSONProto(sys, "throttling", &resp); err != nil {
+					t.Fatal(err)
+				}
+
+				sort.Strings(resp.NodeIdsWithTelemetryProblems)
+				if !assert.ObjectsAreEqual(tc.expected, resp) {
+					return errors.Newf("not equal: %v and %v", tc.expected, resp)
+				}
+				return nil
+			})
+		})
+	}
+
 }

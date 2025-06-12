@@ -7,11 +7,12 @@ package colflow_test
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -35,11 +36,15 @@ func TestDrainingAfterRemoteError(t *testing.T) {
 	// Create a disk monitor for the temp storage only with 1 byte of space.
 	// This ensures that the query will run into "out of temporary storage"
 	// error.
-	diskMonitor := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("test-disk"),
-		Res:      mon.DiskResource,
-		Settings: st,
-	})
+	diskMonitor := mon.NewMonitor(
+		"test-disk",
+		mon.DiskResource,
+		nil, /* curCount */
+		nil, /* maxHist */
+		-1,  /* increment: use default block size */
+		math.MaxInt64,
+		st,
+	)
 	diskMonitor.Start(ctx, nil /* pool */, mon.NewStandaloneBudget(1))
 
 	// Set up a two node cluster.
@@ -54,10 +59,13 @@ func TestDrainingAfterRemoteError(t *testing.T) {
 	tc := testcluster.StartTestCluster(t, 2 /* nodes */, args)
 	defer tc.Stopper().Stop(ctx)
 
-	if tc.DefaultTenantDeploymentMode().IsExternal() {
-		tc.GrantTenantCapabilities(
-			ctx, t, serverutils.TestTenantID(),
-			map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanAdminRelocateRange: "true"})
+	if srv := tc.Server(0); srv.TenantController().StartedDefaultTestTenant() {
+		systemSqlDB := srv.SystemLayer().SQLConn(t, serverutils.DBName("system"))
+		_, err := systemSqlDB.Exec(`ALTER TENANT [$1] GRANT CAPABILITY can_admin_relocate_range=true`, serverutils.TestTenantID().ToUint64())
+		require.NoError(t, err)
+		serverutils.WaitForTenantCapabilities(t, srv, serverutils.TestTenantID(), map[tenantcapabilities.ID]string{
+			tenantcapabilities.CanAdminRelocateRange: "true",
+		}, "")
 	}
 
 	// Create two tables, one with small values, and another with large rows.
@@ -76,6 +84,9 @@ func TestDrainingAfterRemoteError(t *testing.T) {
 	// Make sure that the query is fully distributed (i.e. all execution happens
 	// on node 2).
 	sqlDB.Exec(t, "SET distsql = always;")
+	// Disable the streamer to prevent this test from triggering the known race
+	// #119201.
+	sqlDB.Exec(t, "SET streamer_enabled = false;")
 
 	// Sanity check that, indeed, node 2 is part of the physical plan.
 	rows, err := conn.Query("EXPLAIN (VEC) SELECT sum(length(v)) FROM large, small WHERE small.k = large.k GROUP BY large.k;")

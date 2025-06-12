@@ -6,7 +6,6 @@
 package raftlog
 
 import (
-	"context"
 	"math"
 	"math/rand"
 	"testing"
@@ -14,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
@@ -24,6 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 const rangeID = 1
@@ -51,7 +50,7 @@ type mockReader struct {
 }
 
 func (m *mockReader) NewMVCCIterator(
-	context.Context, storage.MVCCIterKind, storage.IterOptions,
+	storage.MVCCIterKind, storage.IterOptions,
 ) (storage.MVCCIterator, error) {
 	return m.iter, nil
 }
@@ -93,8 +92,7 @@ func mkBenchEnt(b *testing.B) (_ raftpb.Entry, metaB []byte) {
 	cmd := mkRaftCommand(100, 1800, 2000)
 	cmdB, err := protoutil.Marshal(cmd)
 	require.NoError(b, err)
-	data := EncodeCommandBytes(
-		EntryEncodingStandardWithoutAC, "cmd12345", cmdB, 0 /* pri */)
+	data := EncodeCommandBytes(EntryEncodingStandardWithoutAC, "cmd12345", cmdB)
 
 	ent := raftpb.Entry{
 		Term:  1,
@@ -130,13 +128,12 @@ func BenchmarkIterator(b *testing.B) {
 		}
 
 	}
-	ctx := context.Background()
 
 	b.Run("NewIterator", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			it, err := NewIterator(ctx, rangeID, &mockReader{}, IterOptions{Hi: 123456})
+			it, err := NewIterator(rangeID, &mockReader{}, IterOptions{Hi: 123456})
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -146,7 +143,7 @@ func BenchmarkIterator(b *testing.B) {
 	})
 
 	benchForOp := func(b *testing.B, method func(*Iterator) (bool, error)) {
-		it, err := NewIterator(ctx, rangeID, &mockReader{}, IterOptions{Hi: 123456})
+		it, err := NewIterator(rangeID, &mockReader{}, IterOptions{Hi: 123456})
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -184,12 +181,11 @@ func BenchmarkVisit(b *testing.B) {
 
 	ent, metaB := mkBenchEnt(b)
 	require.NoError(b, eng.PutUnversioned(keys.RaftLogKey(rangeID, kvpb.RaftIndex(ent.Index)), metaB))
-	ctx := context.Background()
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := Visit(ctx, eng, rangeID, 0, math.MaxUint64, func(entry raftpb.Entry) error {
+		if err := Visit(eng, rangeID, 0, math.MaxUint64, func(entry raftpb.Entry) error {
 			return nil
 		}); err != nil {
 			b.Fatal(err)

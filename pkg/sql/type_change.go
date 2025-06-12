@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
-	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -31,10 +30,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	plpgsql "github.com/cockroachdb/cockroach/pkg/sql/plpgsql/parser"
-	"github.com/cockroachdb/cockroach/pkg/sql/regions"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/plpgsqltree"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/plpgsqltree/utils"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
@@ -165,14 +164,6 @@ func (p *planner) writeTypeDesc(ctx context.Context, typeDesc *typedesc.Mutable)
 	return p.txn.Run(ctx, b)
 }
 
-func (p *planner) writeDescToBatch(
-	ctx context.Context, typeDesc catalog.MutableDescriptor, b *kv.Batch,
-) error {
-	return p.Descriptors().WriteDescToBatch(
-		ctx, p.extendedEvalCtx.Tracing.KVTracingEnabled(), typeDesc, b,
-	)
-}
-
 // typeSchemaChanger is the struct that actually runs the type schema change.
 type typeSchemaChanger struct {
 	typeID descpb.ID
@@ -212,7 +203,7 @@ func (t *typeSchemaChanger) getTypeDescFromStore(
 	if err := DescsTxn(ctx, t.execCfg, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
 		// Avoid GetImmutableTypeByID, downstream logic relies on
 		// catalog.ErrDescriptorNotFound.
-		desc, err := col.ByIDWithoutLeased(txn.KV()).Get().Desc(ctx, t.typeID)
+		desc, err := col.ByID(txn.KV()).Get().Desc(ctx, t.typeID)
 		if err != nil {
 			return err
 		}
@@ -228,19 +219,15 @@ func (t *typeSchemaChanger) getTypeDescFromStore(
 // and its array type descriptor (if one exists). If a descriptor is not found,
 // it is assumed dropped, and the error is swallowed.
 func refreshTypeDescriptorLeases(
-	ctx context.Context, leaseMgr *lease.Manager, db *kv.DB, typeDesc catalog.TypeDescriptor,
+	ctx context.Context, leaseMgr *lease.Manager, typeDesc catalog.TypeDescriptor,
 ) error {
 	var err error
 	var ids = []descpb.ID{typeDesc.GetID()}
 	if aID := typeDesc.TypeDesc().ArrayTypeID; aID != descpb.InvalidID {
 		ids = append(ids, aID)
 	}
-	cachedRegions, err := regions.NewCachedDatabaseRegions(ctx, db, leaseMgr)
-	if err != nil {
-		return err
-	}
 	for _, id := range ids {
-		if _, updateErr := WaitToUpdateLeases(ctx, leaseMgr, cachedRegions, id); updateErr != nil {
+		if _, updateErr := WaitToUpdateLeases(ctx, leaseMgr, id); updateErr != nil {
 			// Swallow the descriptor not found error.
 			if errors.Is(updateErr, catalog.ErrDescriptorNotFound) {
 				log.Infof(ctx,
@@ -273,7 +260,7 @@ func (t *typeSchemaChanger) exec(ctx context.Context) error {
 	}
 
 	// Make sure all of the leases have dropped before attempting to validate.
-	if err := refreshTypeDescriptorLeases(ctx, leaseMgr, t.execCfg.DB, typeDesc); err != nil {
+	if err := refreshTypeDescriptorLeases(ctx, leaseMgr, typeDesc); err != nil {
 		return err
 	}
 
@@ -312,7 +299,7 @@ func (t *typeSchemaChanger) exec(ctx context.Context) error {
 		// exposing things in the right order in OnFailOrCancel. This is because
 		// OnFailOrCancel doesn't expose any new state in the type descriptor
 		// (it just cleans up non-public states).
-		var isDroppingMultiRegionEnumMember bool
+		var multiRegionPreDropIsNecessary bool
 		withDatabaseRegionChangeFinalizer := func(
 			ctx context.Context, txn descs.Txn,
 			f func(finalizer *databaseRegionChangeFinalizer) error,
@@ -367,7 +354,7 @@ func (t *typeSchemaChanger) exec(ctx context.Context) error {
 			for _, member := range typeDesc.EnumMembers {
 				if t.isTransitioningInCurrentJob(&member) && enumMemberIsRemoving(&member) {
 					if typeDesc.Kind == descpb.TypeDescriptor_MULTIREGION_ENUM {
-						isDroppingMultiRegionEnumMember = true
+						multiRegionPreDropIsNecessary = true
 					}
 					toDrop = append(toDrop, member)
 				}
@@ -385,7 +372,7 @@ func (t *typeSchemaChanger) exec(ctx context.Context) error {
 			// transaction to be a writing transaction; it would have a heck of
 			// a lot of data to refresh. We instead defer the repartitioning until
 			// after this checking confirms the safety of the change.
-			if isDroppingMultiRegionEnumMember {
+			if multiRegionPreDropIsNecessary {
 				repartitioned, err := prepareRepartitionedRegionalByRowTables(ctx, txn)
 				if err != nil {
 					return err
@@ -403,51 +390,10 @@ func (t *typeSchemaChanger) exec(ctx context.Context) error {
 			}
 			return nil
 		}
-
-		var idsToRemove []int
-		populateIDsToRemove := func(holder context.Context, txn descs.Txn) error {
-			typeDesc, err := txn.Descriptors().MutableByID(txn.KV()).Type(ctx, t.typeID)
-			if err != nil {
-				return err
-			}
-			for _, member := range typeDesc.EnumMembers {
-				if !t.isTransitioningInCurrentJob(&member) ||
-					!enumMemberIsRemoving(&member) ||
-					typeDesc.Kind != descpb.TypeDescriptor_MULTIREGION_ENUM {
-					continue
-				}
-				rows, err := txn.QueryBufferedEx(ctx, "select-invalid-instances", txn.KV(),
-					sessiondata.NodeUserSessionDataOverride, `SELECT id FROM system.sql_instances 
- 							WHERE crdb_region = $1`, member.PhysicalRepresentation)
-				if err != nil {
-					return err
-				}
-				for _, row := range rows {
-					idsToRemove = append(idsToRemove, int(tree.MustBeDInt(row[0])))
-				}
-			}
-			return nil
-		}
-
-		removeReferences := func(ctx context.Context, txn descs.Txn) error {
-			for _, id := range idsToRemove {
-				deleteQuery := fmt.Sprintf(
-					`DELETE FROM system.sql_instances WHERE id = %d`, id)
-				if _, err := txn.ExecEx(ctx, "delete-dropped-region-ref", txn.KV(),
-					sessiondata.NodeUserSessionDataOverride, deleteQuery); err != nil {
-					return err
-				}
-
-			}
-			return nil
-		}
 		if err := t.execCfg.InternalDB.DescsTxn(ctx, validateDrops); err != nil {
 			return err
 		}
-		if isDroppingMultiRegionEnumMember {
-			if err := t.execCfg.InternalDB.DescsTxn(ctx, populateIDsToRemove); err != nil {
-				return err
-			}
+		if multiRegionPreDropIsNecessary {
 			if err := t.execCfg.InternalDB.DescsTxn(ctx, repartitionRegionalByRowTables); err != nil {
 				return err
 			}
@@ -538,14 +484,8 @@ func (t *typeSchemaChanger) exec(ctx context.Context) error {
 		}
 
 		// Finally, make sure all of the type descriptor leases are updated.
-		if err := refreshTypeDescriptorLeases(ctx, leaseMgr, t.execCfg.DB, typeDesc); err != nil {
+		if err := refreshTypeDescriptorLeases(ctx, leaseMgr, typeDesc); err != nil {
 			return err
-		}
-
-		if isDroppingMultiRegionEnumMember && len(idsToRemove) != 0 {
-			if err := t.execCfg.InternalDB.DescsTxn(ctx, removeReferences); err != nil {
-				return err
-			}
 		}
 	}
 
@@ -793,18 +733,16 @@ func findUsagesOfEnumValueInViewQuery(
 	return foundUsage, nil
 }
 
-// canRemoveEnumValueFromUDF checks if the enum value is being used within the
-// function body or within DEFAULT expressions for input arguments.
+// canRemoveEnumValueFromUDF checks if the enum value is being used
+// within the function body. As of today, CockroachDB does not support
+// default values for input arguments. However, when we add that support,
+// we should augment this method to also check if the enum value is being
+// used within the function input arguments.
 func (t *typeSchemaChanger) canRemoveEnumValueFromUDF(
 	typeDesc *typedesc.Mutable,
 	member *descpb.TypeDescriptor_EnumMember,
 	udfDesc catalog.FunctionDescriptor,
 ) error {
-	makeError := func() error {
-		return pgerror.Newf(pgcode.DependentObjectsStillExist,
-			"could not remove enum value %q as it is being used in a routine %q",
-			member.LogicalRepresentation, udfDesc.GetName())
-	}
 	var foundUsage, foundUsageInCurrentWalk bool
 	visitFunc := func(expr tree.Expr) (recurse bool, newExpr tree.Expr, err error) {
 		foundUsageInCurrentWalk, recurse, newExpr, err = visitExprToCheckEnumValueUsage(expr, typeDesc.ID, member)
@@ -821,43 +759,28 @@ func (t *typeSchemaChanger) canRemoveEnumValueFromUDF(
 		for _, stmt := range parsedStmts {
 			_, err = tree.SimpleStmtVisit(stmt.AST, visitFunc)
 			if err != nil {
-				return errors.Wrapf(err, "failed to parse routine %s", udfDesc.GetName())
+				return errors.Wrapf(err, "failed to parse UDF %s", udfDesc.GetName())
 			}
 			if foundUsage {
-				return makeError()
+				return pgerror.Newf(pgcode.DependentObjectsStillExist,
+					"could not remove enum value %q as it is being used in a UDF %q",
+					member.LogicalRepresentation, udfDesc.GetName())
 			}
 		}
 	case catpb.Function_PLPGSQL:
 		stmt, err := plpgsql.Parse(udfDesc.GetFunctionBody())
 		if err != nil {
-			return errors.Wrapf(err, "failed to parse routine %s", udfDesc.GetName())
+			return errors.Wrapf(err, "failed to parse UDF %s", udfDesc.GetName())
 		}
-		v := plpgsqltree.SQLStmtVisitor{Fn: visitFunc}
+		v := utils.SQLStmtVisitor{Fn: visitFunc}
 		plpgsqltree.Walk(&v, stmt.AST)
 		if v.Err != nil {
-			return errors.NewAssertionErrorWithWrappedErrf(v.Err, "failed to parse routine %s", udfDesc.GetName())
+			return errors.Wrapf(v.Err, "failed to parse UDF %s", udfDesc.GetName())
 		}
 		if foundUsage {
-			return makeError()
-		}
-	}
-	for _, param := range udfDesc.GetParams() {
-		if param.DefaultExpr != nil {
-			expr, err := parser.ParseExpr(*param.DefaultExpr)
-			if err != nil {
-				return errors.NewAssertionErrorWithWrappedErrf(
-					err, "when parsing DEFAULT expression for parameter %q of routine %s",
-					param.Name, udfDesc.GetName())
-			}
-			_, err = tree.SimpleVisit(expr, visitFunc)
-			if err != nil {
-				return errors.NewAssertionErrorWithWrappedErrf(
-					err, "failed to parse DEFAULT expression for parameter %q of routine %s",
-					param.Name, udfDesc.GetName())
-			}
-			if foundUsage {
-				return makeError()
-			}
+			return pgerror.Newf(pgcode.DependentObjectsStillExist,
+				"could not remove enum value %q as it is being used in a UDF %q",
+				member.LogicalRepresentation, udfDesc.GetName())
 		}
 	}
 	return nil
@@ -1035,13 +958,13 @@ func (t *typeSchemaChanger) canRemoveEnumValueFromTable(
 		// be unset by default) when executing the query constructed above. This is
 		// because the enum value may be used in a view expression, which is
 		// name resolved in the context of the type's database.
-		dbDesc, err := descsCol.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Database(ctx, typeDesc.ParentID)
+		dbDesc, err := descsCol.ByID(txn.KV()).WithoutNonPublic().Get().Database(ctx, typeDesc.ParentID)
 		const validationErr = "could not validate removal of enum value %q"
 		if err != nil {
 			return errors.Wrapf(err, validationErr, member.LogicalRepresentation)
 		}
 		override := sessiondata.InternalExecutorOverride{
-			User:     username.NodeUserName(),
+			User:     username.RootUserName(),
 			Database: dbDesc.GetName(),
 		}
 		var rows tree.Datums
@@ -1056,18 +979,6 @@ func (t *typeSchemaChanger) canRemoveEnumValueFromTable(
 		// Check if the above query returned a result. If it did, then the
 		// enum value is being used by some place.
 		if len(rows) > 0 {
-			// If our enum member is being removed, we can skip this check
-			// because we need to wait until the region is removed from our
-			// multiregion enum before we can drop the reference entirely.
-			// We will perform said cleanup later on during the type schema
-			// change. We have to do this because
-			// instancestorage.RunInstanceIDReclaimLoop will add prewarmed
-			// entries in the instances table for each public region.
-			if member.Direction == descpb.TypeDescriptor_EnumMember_REMOVE {
-				if desc.GetID() == keys.SQLInstancesTableID {
-					return nil
-				}
-			}
 			return pgerror.Newf(pgcode.DependentObjectsStillExist,
 				"could not remove enum value %q as it is being used by %q in row: %s",
 				member.LogicalRepresentation, desc.GetName(), labeledRowValues(desc.AccessibleColumns(), rows))
@@ -1101,7 +1012,7 @@ func (t *typeSchemaChanger) canRemoveEnumValue(
 	member *descpb.TypeDescriptor_EnumMember,
 	descsCol *descs.Collection,
 ) error {
-	descGetter := descsCol.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get()
+	descGetter := descsCol.ByID(txn.KV()).WithoutNonPublic().Get()
 	for _, id := range typeDesc.ReferencingDescriptorIDs {
 		desc, err := descGetter.Desc(ctx, id)
 		if err != nil {
@@ -1323,12 +1234,12 @@ func (t *typeSchemaChanger) canRemoveEnumValueFromArrayUsages(
 		}
 		query.WriteString(fmt.Sprintf(") WHERE unnest = %s", sqlPhysRep))
 
-		dbDesc, err := descsCol.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Database(ctx, arrayTypeDesc.GetParentID())
+		dbDesc, err := descsCol.ByID(txn.KV()).WithoutNonPublic().Get().Database(ctx, arrayTypeDesc.GetParentID())
 		if err != nil {
 			return errors.Wrapf(err, validationErr, member.LogicalRepresentation)
 		}
 		override := sessiondata.InternalExecutorOverride{
-			User:     username.NodeUserName(),
+			User:     username.RootUserName(),
 			Database: dbDesc.GetName(),
 		}
 		row, err := txn.QueryRowEx(
@@ -1431,8 +1342,8 @@ func (t *typeSchemaChanger) execWithRetry(ctx context.Context) error {
 
 func (t *typeSchemaChanger) logTags() *logtags.Buffer {
 	buf := &logtags.Buffer{}
-	buf = buf.Add("typeChangeExec", nil)
-	buf = buf.Add("type", t.typeID)
+	buf.Add("typeChangeExec", nil)
+	buf.Add("type", t.typeID)
 	return buf
 }
 

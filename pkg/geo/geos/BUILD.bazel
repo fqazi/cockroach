@@ -42,13 +42,7 @@ go_library(
         "@io_bazel_rules_go//go/platform:openbsd": [
             "-ldl -lm",
         ],
-        "@io_bazel_rules_go//go/platform:osx": [
-            "-ldl -lm",
-        ],
         "@io_bazel_rules_go//go/platform:plan9": [
-            "-ldl -lm",
-        ],
-        "@io_bazel_rules_go//go/platform:qnx": [
             "-ldl -lm",
         ],
         "@io_bazel_rules_go//go/platform:solaris": [
@@ -73,6 +67,7 @@ go_test(
     name = "geos_test",
     size = "small",
     srcs = ["geos_test.go"],
+    args = ["-test.timeout=55s"],
     data = ["//c-deps:libgeos"],
     embed = [":geos"],
     deps = [

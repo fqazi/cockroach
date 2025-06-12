@@ -80,8 +80,6 @@ var (
 	// LocalRangeAppliedStateSuffix is the suffix for the range applied state
 	// key.
 	LocalRangeAppliedStateSuffix = []byte("rask")
-	// LocalRangeForceFlushSuffix is the suffix for the range force flush key.
-	LocalRangeForceFlushSuffix = []byte("rffk")
 	// This was previously used for the replicated RaftTruncatedState. It is no
 	// longer used and this key has been removed via a migration. See
 	// LocalRaftTruncatedStateSuffix for the corresponding unreplicated
@@ -216,20 +214,6 @@ var (
 	// is to allow a restarting node to discover approximately how long it has
 	// been down without needing to retrieve liveness records from the cluster.
 	localStoreLastUpSuffix = []byte("uptm")
-	// localStoreLivenessRequesterMeta stores the Store Liveness metadata
-	// corresponding to support requested by the local store. In particular,
-	// RequesterMeta stores the highest timestamp and highest epoch at which
-	// support has been requested.
-	localStoreLivenessRequesterMeta = []byte("slrm")
-	// localStoreLivenessSupporterMeta stores the Store Liveness metadata
-	// corresponding to support provided by the local store. In particular,
-	// SupporterMeta stores the highest timestamp at which support has been
-	// withdrawn.
-	localStoreLivenessSupporterMeta = []byte("slsm")
-	// localStoreLivenessSupportFor stores the Store Liveness support by the local
-	// store for a store in the cluster. It includes the epoch and expiration of
-	// support.
-	localStoreLivenessSupportFor = []byte("slsf")
 	// localRemovedLeakedRaftEntriesSuffix is DEPRECATED and remains to prevent
 	// reuse.
 	localRemovedLeakedRaftEntriesSuffix = []byte("dlre")
@@ -305,6 +289,12 @@ var (
 	// TrialLicenseExpiry is used to track the expiry of any trial license (past or present)
 	TrialLicenseExpiry = roachpb.Key(makeKey(SystemPrefix, roachpb.RKey("lic-tle")))
 	//
+	// LegacyDescIDGenerator is the legacy global descriptor ID generator sequence
+	// used for table and namespace IDs for the system tenant in clusters <23.1.
+	// Otherwise, a SQL sequence is used for this purpose.
+	//
+	// TODO(postamar): remove along with clusterversion.V23_1DescIDSequenceForSystemTenant
+	LegacyDescIDGenerator = roachpb.Key(makeKey(SystemPrefix, roachpb.RKey("desc-idgen")))
 	// NodeIDGenerator is the global node ID generator sequence.
 	NodeIDGenerator = roachpb.Key(makeKey(SystemPrefix, roachpb.RKey("node-idgen")))
 	// RangeIDGenerator is the global range ID generator sequence.

@@ -11,12 +11,10 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/hba"
@@ -27,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 )
@@ -107,11 +106,11 @@ type PreServeConnHandler struct {
 	// than a boolean, i.e. to accept the provided address only from
 	// certain peer IPs, or with certain certificates. (could it be a
 	// special hba.conf directive?)
-	trustClientProvidedRemoteAddr atomic.Bool
+	trustClientProvidedRemoteAddr syncutil.AtomicBool
 
 	// acceptSystemIdentityOption determines whether the system_identity
 	// option will be read from the client. This is used in tests.
-	acceptSystemIdentityOption atomic.Bool
+	acceptSystemIdentityOption syncutil.AtomicBool
 
 	// acceptTenantName determines whether this pre-serve handler will
 	// interpret a tenant name specification in the connection
@@ -139,19 +138,16 @@ func NewPreServeConnHandler(
 		tenantIndependentMetrics: metrics,
 		getTLSConfig:             getTLSConfig,
 
-		tenantIndependentConnMonitor: mon.NewMonitor(mon.Options{
-			Name:       mon.MakeName("pre-conn"),
-			CurCount:   metrics.PreServeCurBytes,
-			MaxHist:    metrics.PreServeMaxBytes,
-			Increment:  int64(connReservationBatchSize) * baseSQLMemoryBudget,
-			Settings:   st,
-			LongLiving: true,
-		}),
+		tenantIndependentConnMonitor: mon.NewMonitor("pre-conn",
+			mon.MemoryResource,
+			metrics.PreServeCurBytes,
+			metrics.PreServeMaxBytes,
+			int64(connReservationBatchSize)*baseSQLMemoryBudget, noteworthyConnMemoryUsageBytes, st),
 	}
 	s.tenantIndependentConnMonitor.StartNoReserved(ctx, parentMemoryMonitor)
 
 	// TODO(knz,ben): Use a cluster setting for this.
-	s.trustClientProvidedRemoteAddr.Store(trustClientProvidedRemoteAddrOverride)
+	s.trustClientProvidedRemoteAddr.Set(trustClientProvidedRemoteAddrOverride)
 
 	return &s
 }
@@ -166,7 +162,7 @@ func (s *PreServeConnHandler) AnnotateCtxForIncomingConn(
 	ctx context.Context, conn net.Conn,
 ) context.Context {
 	tag := "client"
-	if s.trustClientProvidedRemoteAddr.Load() {
+	if s.trustClientProvidedRemoteAddr.Get() {
 		tag = "peer"
 	}
 	return logtags.AddTag(ctx, tag, conn.RemoteAddr().String())
@@ -408,7 +404,7 @@ func (s *PreServeConnHandler) PreServe(
 
 	// Load the client-provided session parameters.
 	st.clientParameters, err = parseClientProvidedSessionParameters(
-		ctx, &buf, conn.RemoteAddr(), s.trustClientProvidedRemoteAddr.Load(), s.acceptTenantName, s.acceptSystemIdentityOption.Load())
+		ctx, &buf, conn.RemoteAddr(), s.trustClientProvidedRemoteAddr.Get(), s.acceptTenantName, s.acceptSystemIdentityOption.Get())
 	if err != nil {
 		st.Reserved.Clear(ctx)
 		return conn, st, s.sendErr(ctx, s.st, conn, err)
@@ -491,11 +487,6 @@ func (s *PreServeConnHandler) maybeUpgradeToSecureConn(
 			return
 		}
 		newConn = tls.Server(conn, tlsConfig)
-		// Conditionally perform handshake connection and determine additional restrictions.
-		if err := security.TLSCipherRestrict(newConn); err != nil {
-			clientErr = pgerror.Wrapf(err, pgcode.SQLserverRejectedEstablishmentOfSQLconnection, "cannot use SSL/TLS with the requested ciphers")
-			return
-		}
 		newConnType = hba.ConnHostSSL
 	}
 	s.tenantIndependentMetrics.PreServeBytesOutCount.Inc(int64(n))

@@ -7,7 +7,7 @@ package cluster
 
 import (
 	"context"
-	"strconv"
+	"sync"
 	"sync/atomic"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 )
 
@@ -33,6 +32,8 @@ type Settings struct {
 	// overwriting the default of a single setting.
 	Manual atomic.Value // bool
 
+	ExternalIODir string
+
 	// Tracks whether a CPU profile is going on and if so, which kind. See
 	// CPUProfileType().
 	// This is used so that we can enable "non-cheap" instrumentation only when it
@@ -47,7 +48,7 @@ type Settings struct {
 
 	// Cache can be used for arbitrary caching, e.g. to cache decoded
 	// enterprises licenses for utilccl.CheckEnterpriseEnabled().
-	Cache syncutil.Map[any, any]
+	Cache sync.Map
 
 	// OverridesInformer can be nil.
 	OverridesInformer OverridesInformer
@@ -63,25 +64,8 @@ type OverridesInformer interface {
 	IsOverridden(settingKey settings.InternalKey) bool
 }
 
-var SettingOverrideErr = errors.New("cluster setting is overridden by system virtual cluster")
-
-// telemetryOptOutCompTimeString controls whether to opt out of telemetry
-// (including Sentry) or not compile time. The variable is set by bazel via stamping
-// (`stamp.sh -d true/false`). Becuase Go only supports strings for in
-// `-ldflags "-X ..."`, we have to use a string representation here.
-
-var telemetryOptOutCompTimeString = "false"
-
-func telemetryOptOutCompTime(defaultValue bool) bool {
-	ret, err := strconv.ParseBool(telemetryOptOutCompTimeString)
-	if err != nil {
-		return defaultValue
-	}
-	return ret
-}
-
 // TelemetryOptOut controls whether to opt out of telemetry (including Sentry) or not.
-var TelemetryOptOut = envutil.EnvOrDefaultBool("COCKROACH_SKIP_ENABLING_DIAGNOSTIC_REPORTING", false) || telemetryOptOutCompTime(false)
+var TelemetryOptOut = envutil.EnvOrDefaultBool("COCKROACH_SKIP_ENABLING_DIAGNOSTIC_REPORTING", false)
 
 // NoSettings is used when a func requires a Settings but none is available
 // (for example, a CLI subcommand that does not connect to a cluster).
@@ -134,66 +118,54 @@ func (s *Settings) MakeUpdater() settings.Updater {
 	return settings.NewUpdater(&s.SV)
 }
 
-// MakeClusterSettings returns a Settings object. The cluster version setting is
-// not initialized.
-func MakeClusterSettings() *Settings {
-	return MakeClusterSettingsWithVersions(clusterversion.Latest.Version(), clusterversion.MinSupported.Version())
-}
-
-// MakeClusterSettingsWithVersions returns a Settings object that has the given
-// latest and minimum supported versions. The cluster version setting is not
+// MakeClusterSettings returns a Settings object that has its binary and
+// minimum supported versions set to this binary's build and it's minimum
+// supported versions respectively. The cluster version setting is not
 // initialized.
-func MakeClusterSettingsWithVersions(latest, minSupported roachpb.Version) *Settings {
+func MakeClusterSettings() *Settings {
 	s := &Settings{}
 
 	sv := &s.SV
-	s.Version = clusterversion.MakeVersionHandle(&s.SV, latest, minSupported)
+	s.Version = clusterversion.MakeVersionHandle(&s.SV)
 	sv.Init(context.TODO(), s.Version)
 	return s
 }
 
-// MakeTestingClusterSettings returns a Settings object that is initialized with
-// the latest version.
+// MakeTestingClusterSettings returns a Settings object that has its binary and
+// minimum supported versions set to the baked in binary version. It also
+// initializes the cluster version setting to the binary version.
 //
 // It is typically used for testing or one-off situations in which a Settings
 // object is needed, but cluster settings don't play a crucial role.
 func MakeTestingClusterSettings() *Settings {
 	return MakeTestingClusterSettingsWithVersions(
-		clusterversion.Latest.Version(),
-		clusterversion.Latest.Version(),
+		clusterversion.TestingBinaryVersion,
+		clusterversion.TestingBinaryVersion,
 		true /* initializeVersion */)
 }
 
 // MakeTestingClusterSettingsWithVersions returns a Settings object that has its
-// latest and minimum supported versions set to the provided versions.
+// binary and minimum supported versions set to the provided versions.
+// It also can also initialize the cluster version setting to the specified
+// binaryVersion.
 //
-// It can optionally initialize the cluster version setting to the specified
-// latestVersion.
-//
-// It is typically used in tests that want to override the binary's latest and
+// It is typically used in tests that want to override the default binary and
 // minimum supported versions.
 func MakeTestingClusterSettingsWithVersions(
-	latestVersion, minSupportedVersion roachpb.Version, initializeVersion bool,
+	binaryVersion, binaryMinSupportedVersion roachpb.Version, initializeVersion bool,
 ) *Settings {
-	s := MakeClusterSettingsWithVersions(latestVersion, minSupportedVersion)
+	s := &Settings{}
+
+	sv := &s.SV
+	s.Version = clusterversion.MakeVersionHandleWithOverride(
+		&s.SV, binaryVersion, binaryMinSupportedVersion)
+	sv.Init(context.TODO(), s.Version)
 
 	if initializeVersion {
-		// Initialize cluster version to specified latestVersion.
-		if err := clusterversion.Initialize(context.TODO(), latestVersion, &s.SV); err != nil {
+		// Initialize cluster version to specified binaryVersion.
+		if err := clusterversion.Initialize(context.TODO(), binaryVersion, &s.SV); err != nil {
 			log.Fatalf(context.TODO(), "unable to initialize version: %s", err)
 		}
 	}
 	return s
-}
-
-// TestingCloneClusterSettings makes a clone of the Settings object. This is to
-// be used for settings objects that are passed as initial parameters for test
-// clusters; the given Settings object should not be in use by any server.
-func TestingCloneClusterSettings(st *Settings) *Settings {
-	result := &Settings{}
-	result.Version = clusterversion.MakeVersionHandle(
-		&result.SV, st.Version.LatestVersion(), st.Version.MinSupportedVersion(),
-	)
-	result.SV.TestingCopyForServer(&st.SV, result.Version)
-	return result
 }

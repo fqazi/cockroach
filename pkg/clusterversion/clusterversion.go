@@ -3,11 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-// Package clusterversion defines the interfaces to interact with cluster
-// versions in order to accommodate backward incompatible behaviors. It handles
-// the feature gates and so must maintain a fairly lightweight set of
-// dependencies. The upgrade package handles advancing a cluster from one
-// version to a later one.
+// Package clusterversion defines the interfaces to interact with cluster/binary
+// versions in order accommodate backward incompatible behaviors. It handles the
+// feature gates and so must maintain a fairly lightweight set of dependencies.
+// The upgrade sub-package handles advancing a cluster from one version to
+// a later one.
 //
 // Ideally, every code change in a database would be backward compatible, but
 // this is not always possible. Some features, fixes, or cleanups need to
@@ -16,16 +16,15 @@
 // disruption. It works as follows:
 //
 //   - Each node in the cluster is running a binary that was released at some
-//     version which corresponds to a certain logical cluster version ("latest
-//     version"). We allow for rolling upgrades, so two nodes in the cluster may
-//     be running different binary versions. All nodes in a given cluster must
-//     be within 1 major release of each other (i.e. to upgrade two major
-//     releases, the cluster must first be rolled onto X+1 and then to X+2).
+//     version ("binary version"). We allow for rolling upgrades, so two nodes in
+//     the cluster may be running different binary versions. All nodes in a given
+//     cluster must be within 1 major release of each other (i.e. to upgrade two
+//     major releases, the cluster must first be rolled onto X+1 and then to X+2).
 //   - Separate from the build versions of the binaries, the cluster itself has a
-//     logical "active cluster version", the version all nodes are currently
-//     operating at. This is used for two related things: first as a promise
-//     from the user that they'll never downgrade any nodes in the cluster to a
-//     binary below some "minimum supported version", and second, to unlock
+//     logical "active cluster version", the version all the binaries are
+//     currently operating at. This is used for two related things: first as a
+//     promise from the user that they'll never downgrade any nodes in the cluster
+//     to a binary below some "minimum supported version", and second, to unlock
 //     features that are not backwards compatible (which is now safe given that
 //     the old binary will never be used).
 //   - Each binary can operate within a "range of supported versions". When a
@@ -41,7 +40,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
-	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
 
@@ -105,12 +103,12 @@ type Handle interface {
 	// node has, and it will too, eventually.
 	IsActive(context.Context, Key) bool
 
-	// LatestVersion returns the latest cluster version understood by this binary.
-	LatestVersion() roachpb.Version
+	// BinaryVersion returns the build version of this binary.
+	BinaryVersion() roachpb.Version
 
-	// MinSupportedVersion returns the earliest cluster version that can
+	// BinaryMinSupportedVersion returns the earliest binary version that can
 	// interoperate with this binary.
-	MinSupportedVersion() roachpb.Version
+	BinaryMinSupportedVersion() roachpb.Version
 
 	// SetActiveVersion lets the caller set the given cluster version as the
 	// currently active one. When a new active version is set, all subsequent
@@ -145,7 +143,7 @@ type Handle interface {
 
 // handleImpl is a concrete implementation of Handle. It mostly relegates to the
 // underlying cluster version setting, though provides a way for callers to
-// override the latest and minimum supported versions (for tests usually).
+// override the binary and minimum supported versions (for tests usually).
 type handleImpl struct {
 	// setting is the version that this handle operates on.
 	setting *clusterVersionSetting
@@ -153,37 +151,45 @@ type handleImpl struct {
 	// immutable cluster version setting.
 	sv *settings.Values
 
-	// Each handler stores its own view of the latest and minimum supported
-	// version. Tests can use `MakeVersionHandleWithOverride` to specify versions
-	// other than the baked in ones, but by default (`MakeVersionHandle`) they are
-	// initialized with the latest and minimum supported versions.
-	latestVersion       roachpb.Version
-	minSupportedVersion roachpb.Version
+	// Each handler stores its own view of the binary and minimum supported
+	// version. Tests can use `MakeVersionHandleWithOverride` to specify
+	// versions other than the baked in ones, but by default
+	// (`MakeVersionHandle`) they are initialized with this binary's build
+	// and minimum supported versions.
+	binaryVersion             roachpb.Version
+	binaryMinSupportedVersion roachpb.Version
 }
 
 var _ Handle = (*handleImpl)(nil)
 
-// MakeVersionHandle returns a Handle that has its binary and minimum supported
-// versions initialized to the provided versions.
+// MakeVersionHandle returns a Handle that has its binary and minimum
+// supported versions initialized to this binary's build and it's minimum
+// supported versions respectively.
+func MakeVersionHandle(sv *settings.Values) Handle {
+	return MakeVersionHandleWithOverride(sv, binaryVersion, binaryMinSupportedVersion)
+}
+
+// MakeVersionHandleWithOverride returns a Handle that has its
+// binary and minimum supported versions initialized to the provided versions.
 //
 // It's typically used in tests that want to override the default binary and
 // minimum supported versions.
-func MakeVersionHandle(
-	sv *settings.Values, latestVersion, minSupportedVersion roachpb.Version,
+func MakeVersionHandleWithOverride(
+	sv *settings.Values, binaryVersion, binaryMinSupportedVersion roachpb.Version,
 ) Handle {
-	return newHandleImpl(version, sv, latestVersion, minSupportedVersion)
+	return newHandleImpl(version, sv, binaryVersion, binaryMinSupportedVersion)
 }
 
 func newHandleImpl(
 	setting *clusterVersionSetting,
 	sv *settings.Values,
-	latestVersion, minSupportedVersion roachpb.Version,
+	binaryVersion, binaryMinSupportedVersion roachpb.Version,
 ) Handle {
 	return &handleImpl{
-		setting:             setting,
-		sv:                  sv,
-		latestVersion:       latestVersion,
-		minSupportedVersion: minSupportedVersion,
+		setting:                   setting,
+		sv:                        sv,
+		binaryVersion:             binaryVersion,
+		binaryMinSupportedVersion: binaryMinSupportedVersion,
 	}
 }
 
@@ -208,7 +214,12 @@ func (v *handleImpl) SetActiveVersion(ctx context.Context, cv ClusterVersion) er
 		return err
 	}
 
-	v.setting.SetInternal(ctx, v.sv, cv)
+	encoded, err := protoutil.Marshal(&cv)
+	if err != nil {
+		return err
+	}
+
+	v.setting.SetInternal(ctx, v.sv, encoded)
 	return nil
 }
 
@@ -224,14 +235,14 @@ func (v *handleImpl) IsActive(ctx context.Context, key Key) bool {
 	return v.setting.isActive(ctx, v.sv, key)
 }
 
-// LatestVersion is part of the Handle interface.
-func (v *handleImpl) LatestVersion() roachpb.Version {
-	return v.latestVersion
+// BinaryVersion implements the Handle interface.
+func (v *handleImpl) BinaryVersion() roachpb.Version {
+	return v.binaryVersion
 }
 
-// MinSupportedVersion is part of the Handle interface.
-func (v *handleImpl) MinSupportedVersion() roachpb.Version {
-	return v.minSupportedVersion
+// BinaryMinSupportedVersion implements the Handle interface.
+func (v *handleImpl) BinaryMinSupportedVersion() roachpb.Version {
+	return v.binaryMinSupportedVersion
 }
 
 // IsActiveVersion returns true if the features of the supplied version are
@@ -243,7 +254,8 @@ func (cv ClusterVersion) IsActiveVersion(v roachpb.Version) bool {
 // IsActive returns true if the features of the supplied version are active at
 // the running version.
 func (cv ClusterVersion) IsActive(versionKey Key) bool {
-	return cv.IsActiveVersion(versionKey.Version())
+	v := ByKey(versionKey)
+	return cv.IsActiveVersion(v)
 }
 
 func (cv ClusterVersion) String() string {
@@ -255,33 +267,8 @@ func (cv ClusterVersion) SafeFormat(p redact.SafePrinter, _ rune) {
 	p.Print(cv.Version)
 }
 
-// Encode the cluster version (using the protobuf encoding).
-func (cv ClusterVersion) Encode() []byte {
-	encoded, err := protoutil.Marshal(&cv)
-	if err != nil {
-		// Marshal should never fail.
-		panic(errors.NewAssertionErrorWithWrappedErrf(err, "error marshalling version"))
-	}
-	return encoded
-}
-
-// FenceVersion is the fence version -- the internal immediately prior -- for
-// the given version.
-//
-// Fence versions allow the upgrades infrastructure to safely step through
-// consecutive cluster versions in the presence of Nodes (running any binary
-// version) being added to the cluster. See the upgrademanager package for
-// intended usage.
-//
-// Fence versions (and the upgrades infrastructure entirely) were introduced in
-// the 21.1 release cycle. In the same release cycle, we introduced the
-// invariant that new user-defined versions (users being crdb engineers) must
-// always have even-numbered Internal versions, thus reserving the odd numbers
-// to slot in fence versions for each cluster version. See top-level
-// documentation in the clusterversion package for more details.
-func (cv ClusterVersion) FenceVersion() ClusterVersion {
-	return ClusterVersion{Version: cv.Version.FenceVersion()}
-}
+// ClusterVersionImpl implements the settings.ClusterVersionImpl interface.
+func (cv ClusterVersion) ClusterVersionImpl() {}
 
 var _ settings.ClusterVersionImpl = ClusterVersion{}
 

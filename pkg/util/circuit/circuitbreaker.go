@@ -58,16 +58,8 @@ func NewBreaker(opts Options) *Breaker {
 
 // Signal is returned from the Breaker.Signal method.
 type Signal interface {
-	// Err returns a non-nil error if the breaker is tripped. When tripped, it
-	// will also launch a probe if one isn't already running, since this method
-	// indicates that there is a caller with a vested interest in untripping the
-	// circuit breaker.
 	Err() error
-	// C returns a channel that is closed when the breaker trips.
 	C() <-chan struct{}
-	// IsTripped returns true if the breaker is tripped. Unlike Err(), this does
-	// not launch a probe when tripped.
-	IsTripped() bool
 }
 
 // Signal returns a channel that is closed once the breaker trips and a function
@@ -150,9 +142,7 @@ func (b *Breaker) Report(err error) {
 	}()
 
 	opts := b.Opts()
-	if opts.EventHandler != nil {
-		opts.EventHandler.OnTrip(b, prevErr, storeErr)
-	}
+	opts.EventHandler.OnTrip(b, prevErr, storeErr)
 	if prevErr == nil {
 		// If the breaker wasn't previously tripped, trigger the probe to give the
 		// Breaker a shot at healing right away. If the breaker is already tripped,
@@ -164,25 +154,18 @@ func (b *Breaker) Report(err error) {
 	}
 }
 
-// Reset resets (i.e. un-trips, if it was tripped) the breaker. This usually
-// shouldn't be used outside of tests, as it is the probe's job to reset the
-// breaker as appropriate.
+// Reset resets (i.e. un-trips, if it was tripped) the breaker.
+// Outside of testing, there should be no reason to call this
+// as it is the probe's job to reset the breaker if appropriate.
 func (b *Breaker) Reset() {
-	prevErr := func() error {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		// Avoid replacing errAndCh if it wasn't tripped. Otherwise,
-		// clients waiting on it would never get cancelled even if the
-		// breaker did trip in the future.
-		err := b.mu.errAndCh.err
-		if err != nil {
-			b.mu.errAndCh = b.newErrAndCh()
-		}
-		return err
-	}()
-	opts := b.Opts()
-	if opts.EventHandler != nil {
-		opts.EventHandler.OnReset(b, prevErr)
+	b.Opts().EventHandler.OnReset(b)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// Avoid replacing errAndCh if it wasn't tripped. Otherwise,
+	// clients waiting on it would never get cancelled even if the
+	// breaker did trip in the future.
+	if wasTripped := b.mu.errAndCh.err != nil; wasTripped {
+		b.mu.errAndCh = b.newErrAndCh()
 	}
 }
 
@@ -229,10 +212,6 @@ func (a *alwaysTrippedSignaler) C() <-chan struct{} {
 	return closedCh
 }
 
-func (a *alwaysTrippedSignaler) IsTripped() bool {
-	return true
-}
-
 func TestingSetTripped(b *Breaker, err error) (undo func()) {
 	err = errors.Mark(errors.Mark(err, ErrBreakerOpen), b.errMark())
 	a := &alwaysTrippedSignaler{
@@ -271,9 +250,7 @@ func (b *Breaker) maybeTriggerProbe(force bool) {
 	opts := *b.mu.Options // ok to leak out from under the lock
 	b.mu.Unlock()
 
-	if opts.EventHandler != nil {
-		opts.EventHandler.OnProbeLaunched(b)
-	}
+	opts.EventHandler.OnProbeLaunched(b)
 	var once sync.Once
 	opts.AsyncProbe(
 		func(err error) {
@@ -287,9 +264,7 @@ func (b *Breaker) maybeTriggerProbe(force bool) {
 			// Avoid potential problems when probe calls done() multiple times.
 			// It shouldn't do that, but mistakes happen.
 			once.Do(func() {
-				if opts.EventHandler != nil {
-					opts.EventHandler.OnProbeDone(b)
-				}
+				opts.EventHandler.OnProbeDone(b)
 				b.mu.Lock()
 				defer b.mu.Unlock()
 				b.mu.probing = false
@@ -327,15 +302,6 @@ func (eac *errAndCh) Err() error {
 		return eac.err
 	default:
 		return nil
-	}
-}
-
-func (eac *errAndCh) IsTripped() bool {
-	select {
-	case <-eac.ch:
-		return true
-	default:
-		return false
 	}
 }
 

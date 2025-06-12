@@ -407,8 +407,8 @@ func (expr *NumVal) ResolveAsType(
 		if err != nil {
 			return nil, err
 		}
-		o, err := IntToOid(MustBeDInt(d))
-		return NewDOid(o), err
+		dInt := MustBeDInt(d)
+		return IntToOid(dInt)
 	default:
 		return nil, errors.AssertionFailedf("could not resolve %T %v into a %s", expr, expr, typ.SQLStringForError())
 	}
@@ -536,11 +536,8 @@ var (
 		types.UUIDArray,
 		types.INet,
 		types.Jsonb,
-		types.Jsonpath,
 		types.PGLSN,
 		types.PGLSNArray,
-		types.PGVector,
-		types.PGVectorArray,
 		types.RefCursor,
 		types.RefCursorArray,
 		types.TSQuery,
@@ -552,7 +549,6 @@ var (
 		types.VarBitArray,
 		types.AnyTuple,
 		types.AnyTupleArray,
-		// TODO(#22513): Reevaluate conversions for jsonpath array.
 	}
 	// StrValAvailBytes is the set of types convertible to byte array.
 	StrValAvailBytes = []*types.T{types.Bytes, types.Uuid, types.String, types.AnyEnum}
@@ -627,9 +623,6 @@ func (expr *StrVal) ResolveAsType(
 
 	// Typing a string literal constant into some value type.
 	switch typ.Family() {
-	// If we don't care about output type, just pick the low effort conversion.
-	case types.AnyFamily:
-		fallthrough
 	case types.StringFamily:
 		switch typ.Oid() {
 		case oid.T_name:

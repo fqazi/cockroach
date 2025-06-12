@@ -65,7 +65,7 @@ func TestStorage(t *testing.T) {
 		stopper := stop.NewStopper(stop.WithTracer(s.TracerI().(*tracing.Tracer)))
 		var ambientCtx log.AmbientContext
 		storage := slstorage.NewTestingStorage(ambientCtx, stopper, clock, kvDB, s.Codec(), settings,
-			s.SettingsWatcher().(*settingswatcher.SettingsWatcher), table, timeSource.NewTimer, true /*withSyntheticClock*/)
+			s.SettingsWatcher().(*settingswatcher.SettingsWatcher), table, timeSource.NewTimer)
 		return clock, timeSource, settings, stopper, storage
 	}
 
@@ -146,7 +146,7 @@ func TestStorage(t *testing.T) {
 
 		// Update the expiration for id2.
 		{
-			exists, _, err := storage.Update(ctx, id2, hlc.Timestamp{WallTime: nextGC.UnixNano() + 1})
+			exists, err := storage.Update(ctx, id2, hlc.Timestamp{WallTime: nextGC.UnixNano() + 1})
 			require.NoError(t, err)
 			require.True(t, exists)
 			require.Equal(t, int64(3), metrics.WriteSuccesses.Count())
@@ -196,7 +196,7 @@ func TestStorage(t *testing.T) {
 		}
 		// Ensure that attempts to update the now dead session fail.
 		{
-			exists, _, err := storage.Update(ctx, id1, hlc.Timestamp{WallTime: nextGC.UnixNano() + 1})
+			exists, err := storage.Update(ctx, id1, hlc.Timestamp{WallTime: nextGC.UnixNano() + 1})
 			require.NoError(t, err)
 			require.False(t, exists)
 			require.Equal(t, int64(1), metrics.WriteFailures.Count())
@@ -264,7 +264,7 @@ func TestStorage(t *testing.T) {
 		}
 		// Ensure it cannot be updated.
 		{
-			exists, _, err := storage.Update(ctx, id, exp.Add(time.Second.Nanoseconds(), 0))
+			exists, err := storage.Update(ctx, id, exp.Add(time.Second.Nanoseconds(), 0))
 			require.NoError(t, err)
 			require.False(t, exists)
 			require.Equal(t, int64(1), metrics.WriteFailures.Count())
@@ -325,7 +325,7 @@ func TestConcurrentAccessesAndEvictions(t *testing.T) {
 	slstorage.CacheSize.Override(ctx, &settings.SV, 10)
 	var ambientCtx log.AmbientContext
 	storage := slstorage.NewTestingStorage(ambientCtx, stopper, clock, kvDB, s.Codec(), settings,
-		s.SettingsWatcher().(*settingswatcher.SettingsWatcher), table, timeSource.NewTimer, true /*withSyntheticClock*/)
+		s.SettingsWatcher().(*settingswatcher.SettingsWatcher), table, timeSource.NewTimer)
 	storage.Start(ctx)
 	reader := storage.BlockingReader()
 
@@ -376,7 +376,7 @@ func TestConcurrentAccessesAndEvictions(t *testing.T) {
 			newExp := now.Add(expiration.Nanoseconds(), 0)
 			s := &state.sessions[i]
 			s.expiration = newExp
-			alive, _, err := storage.Update(ctx, s.id, s.expiration)
+			alive, err := storage.Update(ctx, s.id, s.expiration)
 			require.True(t, alive)
 			require.NoError(t, err)
 		}
@@ -485,7 +485,7 @@ func TestConcurrentAccessSynchronization(t *testing.T) {
 	slstorage.CacheSize.Override(ctx, &settings.SV, 10)
 	var ambientCtx log.AmbientContext
 	storage := slstorage.NewTestingStorage(ambientCtx, stopper, clock, kvDB, s.Codec(), settings,
-		s.SettingsWatcher().(*settingswatcher.SettingsWatcher), table, timeSource.NewTimer, true /*withSyntheticClock*/)
+		s.SettingsWatcher().(*settingswatcher.SettingsWatcher), table, timeSource.NewTimer)
 	storage.Start(ctx)
 
 	// Synchronize reading from the store with the blocked channel by detecting
@@ -676,7 +676,7 @@ func TestDeleteMidUpdateFails(t *testing.T) {
 	storage := slstorage.NewTestingStorage(
 		s.DB().AmbientContext,
 		s.AppStopper(), s.Clock(), kvDB, s.Codec(), s.ClusterSettings(),
-		s.SettingsWatcher().(*settingswatcher.SettingsWatcher), table, timeutil.DefaultTimeSource{}.NewTimer, false, /*withSyntheticclock*/
+		s.SettingsWatcher().(*settingswatcher.SettingsWatcher), table, timeutil.DefaultTimeSource{}.NewTimer,
 	)
 
 	// Insert a session.
@@ -710,7 +710,7 @@ func TestDeleteMidUpdateFails(t *testing.T) {
 	resCh := make(chan result)
 	go func() {
 		var res result
-		res.exists, _, res.err = storage.Update(ctx, ID, s.Clock().Now())
+		res.exists, res.err = storage.Update(ctx, ID, s.Clock().Now())
 		resCh <- res
 	}()
 

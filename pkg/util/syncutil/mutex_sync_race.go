@@ -4,6 +4,7 @@
 // included in the /LICENSE file.
 
 //go:build !deadlock && race
+// +build !deadlock,race
 
 package syncutil
 
@@ -25,15 +26,6 @@ type Mutex struct {
 func (m *Mutex) Lock() {
 	m.mu.Lock()
 	atomic.StoreInt32(&m.wLocked, 1)
-}
-
-// TryLock tries to lock m and reports whether it succeeded.
-func (m *Mutex) TryLock() bool {
-	if !m.mu.TryLock() {
-		return false
-	}
-	atomic.StoreInt32(&m.wLocked, 1)
-	return true
 }
 
 // Unlock unlocks m.
@@ -58,51 +50,33 @@ func (m *Mutex) AssertHeld() {
 
 // An RWMutex is a reader/writer mutual exclusion lock.
 type RWMutex struct {
-	mu      sync.RWMutex
+	sync.RWMutex
 	wLocked int32 // updated atomically
 	rLocked int32 // updated atomically
 }
 
 // Lock locks rw for writing.
 func (rw *RWMutex) Lock() {
-	rw.mu.Lock()
+	rw.RWMutex.Lock()
 	atomic.StoreInt32(&rw.wLocked, 1)
-}
-
-// TryLock tries to lock rw for writing and reports whether it succeeded.
-func (rw *RWMutex) TryLock() bool {
-	if !rw.mu.TryLock() {
-		return false
-	}
-	atomic.StoreInt32(&rw.wLocked, 1)
-	return true
 }
 
 // Unlock unlocks rw for writing.
 func (rw *RWMutex) Unlock() {
 	atomic.StoreInt32(&rw.wLocked, 0)
-	rw.mu.Unlock()
+	rw.RWMutex.Unlock()
 }
 
 // RLock locks m for reading.
 func (rw *RWMutex) RLock() {
-	rw.mu.RLock()
+	rw.RWMutex.RLock()
 	atomic.AddInt32(&rw.rLocked, 1)
-}
-
-// TryRLock tries to lock rw for reading and reports whether it succeeded.
-func (rw *RWMutex) TryRLock() bool {
-	if !rw.mu.TryRLock() {
-		return false
-	}
-	atomic.AddInt32(&rw.rLocked, 1)
-	return true
 }
 
 // RUnlock undoes a single RLock call.
 func (rw *RWMutex) RUnlock() {
 	atomic.AddInt32(&rw.rLocked, -1)
-	rw.mu.RUnlock()
+	rw.RWMutex.RUnlock()
 }
 
 // RLocker returns a Locker interface that implements

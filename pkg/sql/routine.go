@@ -10,18 +10,14 @@ import (
 	"strconv"
 
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
-	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
@@ -29,78 +25,27 @@ import (
 
 // A callNode executes a procedure.
 type callNode struct {
-	zeroInputPlanNode
 	proc *tree.RoutineExpr
-	r    tree.Datums
 }
 
 var _ planNode = &callNode{}
 
 // startExec implements the planNode interface.
 func (d *callNode) startExec(params runParams) error {
-	res, err := eval.Expr(params.ctx, params.EvalContext(), d.proc)
-	if err != nil {
-		return err
-	}
-	if params.p.storedProcTxnState.getTxnOp() != tree.StoredProcTxnNoOp {
-		// The stored procedure has paused execution to COMMIT or ROLLBACK the
-		// current transaction. The current iteration should have no result.
-		return nil
-	}
-	if d.proc.Typ.Family() == types.VoidFamily {
-		// With VOID return type we expect no rows to be produced, so we should
-		// get NULL value from the expression evaluation.
-		if res != tree.DNull {
-			return errors.AssertionFailedf("expected NULL, got %T", res)
-		}
-		return nil
-	}
-	if d.proc.Typ.Family() != types.TupleFamily {
-		return errors.AssertionFailedf("expected VOID or RECORD type for procedures, got %s", d.proc.Typ.SQLStringForError())
-	}
-	if res == tree.DNull {
-		return pgerror.New(pgcode.Internal, "procedure returned null record")
-	}
-	tuple, ok := tree.AsDTuple(res)
-	if !ok {
-		return errors.AssertionFailedf("expected a tuple, got %T", res)
-	}
-	d.r = tuple.D
-	return nil
+	// Until OUT and INOUT parameters are supported, all procedures return no
+	// results, so we can ignore the results of the routine.
+	_, err := eval.Expr(params.ctx, params.EvalContext(), d.proc)
+	return err
 }
 
 // Next implements the planNode interface.
-func (d *callNode) Next(params runParams) (bool, error) {
-	return d.r != nil, nil
-}
+func (d *callNode) Next(params runParams) (bool, error) { return false, nil }
 
 // Values implements the planNode interface.
-func (d *callNode) Values() tree.Datums {
-	r := d.r
-	d.r = nil
-	return r
-}
+func (d *callNode) Values() tree.Datums { return nil }
 
 // Close implements the planNode interface.
 func (d *callNode) Close(ctx context.Context) {}
-
-func (d *callNode) getResultColumns() colinfo.ResultColumns {
-	// The schema of the result row is specified in the tuple contents except
-	// when the return type is VOID (in which case the callNode returns
-	// nothing).
-	if d.proc.Typ.Family() == types.VoidFamily {
-		return colinfo.ResultColumns{}
-	}
-	names, typs := d.proc.Typ.TupleLabels(), d.proc.Typ.TupleContents()
-	cols := make(colinfo.ResultColumns, len(names))
-	for i := range cols {
-		cols[i] = colinfo.ResultColumn{
-			Name: names[i],
-			Typ:  typs[i],
-		}
-	}
-	return cols
-}
 
 // EvalRoutineExpr returns the result of evaluating the routine. It calls the
 // routine's ForEachPlan closure to generate a plan for each statement in the
@@ -124,10 +69,9 @@ func (p *planner) EvalRoutineExpr(
 		return expr.CachedResult, nil
 	}
 
-	if tailCallOptimizationEnabled && expr.TailCall && !expr.Generator {
+	if expr.TailCall && !expr.Generator && p.EvalContext().RoutineSender != nil {
 		// This is a nested routine in tail-call position.
-		sender := p.EvalContext().RoutineSender
-		if sender != nil && sender.CanOptimizeTailCall(expr) {
+		if tailCallOptimizationEnabled {
 			// Tail-call optimizations are enabled. Send the information needed to
 			// evaluate this routine to the parent routine, then return. It is safe to
 			// return NULL here because the parent is guaranteed not to perform any
@@ -135,24 +79,6 @@ func (p *planner) EvalRoutineExpr(
 			p.EvalContext().RoutineSender.SendDeferredRoutine(expr, args)
 			return tree.DNull, nil
 		}
-	}
-
-	if expr.TriggerFunc {
-		// In cyclical reference situations, the number of nested trigger actions
-		// can be arbitrarily large. To avoid OOM, we enforce a limit on the depth
-		// of nested triggers. This is also a safeguard in case we have a bug that
-		// results in an infinite trigger loop.
-		var triggerDepth int
-		if triggerDepthValue := ctx.Value(triggerDepthKey{}); triggerDepthValue != nil {
-			triggerDepth = triggerDepthValue.(int)
-		}
-		if limit := int(p.SessionData().RecursionDepthLimit); triggerDepth > limit {
-			telemetry.Inc(sqltelemetry.RecursionDepthLimitReached)
-			err = pgerror.Newf(pgcode.TriggeredActionException,
-				"trigger reached recursion depth limit: %d", limit)
-			return nil, err
-		}
-		ctx = context.WithValue(ctx, triggerDepthKey{}, triggerDepth+1)
 	}
 
 	var g routineGenerator
@@ -189,8 +115,6 @@ func (p *planner) EvalRoutineExpr(
 	}
 	return res, nil
 }
-
-type triggerDepthKey struct{}
 
 // RoutineExprGenerator returns an eval.ValueGenerator that produces the results
 // of a routine.
@@ -240,33 +164,18 @@ func (g *routineGenerator) reset(
 	g.init(p, expr, args)
 }
 
-// ResolvedType is part of the eval.ValueGenerator interface.
+// ResolvedType is part of the ValueGenerator interface.
 func (g *routineGenerator) ResolvedType() *types.T {
 	return g.expr.ResolvedType()
 }
 
-// Start is part of the eval.ValueGenerator interface.
+// Start is part of the ValueGenerator interface.
 func (g *routineGenerator) Start(ctx context.Context, txn *kv.Txn) (err error) {
-	enabledStepping := false
-	var prevSteppingMode kv.SteppingMode
-	var prevSeqNum enginepb.TxnSeq
 	for {
-		if g.expr.EnableStepping && !enabledStepping {
-			prevSteppingMode = txn.ConfigureStepping(ctx, kv.SteppingEnabled)
-			prevSeqNum = txn.GetReadSeqNum()
-			enabledStepping = true
-		}
 		err = g.startInternal(ctx, txn)
-		if err != nil {
-			return err
-		}
-		if g.deferredRoutine.expr == nil {
+		if err != nil || g.deferredRoutine.expr == nil {
 			// No tail-call optimization.
-			if enabledStepping {
-				_ = txn.ConfigureStepping(ctx, prevSteppingMode)
-				return txn.SetReadSeqNum(prevSeqNum)
-			}
-			return nil
+			return err
 		}
 		// A nested routine in tail-call position deferred its execution until now.
 		// Since it's in tail-call position, evaluating it will give the result of
@@ -301,65 +210,73 @@ func (g *routineGenerator) startInternal(ctx context.Context, txn *kv.Txn) (err 
 		return err
 	}
 
+	// Configure stepping for volatile routines so that mutations made by the
+	// invoking statement are visible to the routine.
+	if g.expr.EnableStepping {
+		prevSteppingMode := txn.ConfigureStepping(ctx, kv.SteppingEnabled)
+		prevSeqNum := txn.GetReadSeqNum()
+		defer func() {
+			// If the routine errored, the transaction should be aborted, so
+			// there is no need to reconfigure stepping or revert to the
+			// original sequence number.
+			if err == nil {
+				_ = txn.ConfigureStepping(ctx, prevSteppingMode)
+				err = txn.SetReadSeqNum(prevSeqNum)
+			}
+		}()
+	}
+
 	// Execute each statement in the routine sequentially.
 	stmtIdx := 0
 	ef := newExecFactory(ctx, g.p)
 	rrw := NewRowResultWriter(&g.rch)
 	var cursorHelper *plpgsqlCursorHelper
-	err = g.expr.ForEachPlan(ctx, ef, rrw, g.args,
-		func(plan tree.RoutinePlan, stmtForDistSQLDiagram string, isFinalPlan bool) error {
-			stmtIdx++
-			opName := "routine-stmt-" + g.expr.Name + "-" + strconv.Itoa(stmtIdx)
-			ctx, sp := tracing.ChildSpan(ctx, opName)
-			defer sp.Finish()
+	err = g.expr.ForEachPlan(ctx, ef, g.args, func(plan tree.RoutinePlan, isFinalPlan bool) error {
+		stmtIdx++
+		opName := "udf-stmt-" + g.expr.Name + "-" + strconv.Itoa(stmtIdx)
+		ctx, sp := tracing.ChildSpan(ctx, opName)
+		defer sp.Finish()
 
-			var w rowResultWriter
-			var openCursor bool
-			switch {
-			case isFinalPlan && !g.expr.DiscardLastStmtResult:
-				// The result of this statement is the routine's output.
-				w = rrw
-			case stmtIdx == 1 && g.expr.CursorDeclaration != nil:
-				// The result of the first statement will be used to open a SQL cursor.
-				openCursor = true
-				cursorHelper, err = g.newCursorHelper(plan.(*planComponents))
-				if err != nil {
-					return err
-				}
-				w = NewRowResultWriter(&cursorHelper.container)
-			case stmtIdx == 1 && g.expr.FirstStmtResultWriter != nil:
-				// The result of the first statement will be added to an existing result
-				// set.
-				w = g.expr.FirstStmtResultWriter.(*RowResultWriter)
-			default:
-				// The result of this statement is not needed. Use a rowResultWriter
-				// that drops all rows added to it.
-				w = &droppingResultWriter{}
-			}
-
-			// Place a sequence point before each statement in the routine for
-			// volatile functions. Unlike Postgres, we don't allow the txn's external
-			// read snapshot to advance, because we do not support restoring the txn's
-			// prior external read snapshot after returning from the volatile
-			// function.
-			if g.expr.EnableStepping {
-				if err := txn.Step(ctx, false /* allowReadTimestampStep */); err != nil {
-					return err
-				}
-			}
-
-			// Run the plan.
-			params := runParams{ctx, g.p.ExtendedEvalContext(), g.p}
-			err = runPlanInsidePlan(ctx, params, plan.(*planComponents), w, g, stmtForDistSQLDiagram)
+		var w rowResultWriter
+		openCursor := stmtIdx == 1 && g.expr.CursorDeclaration != nil
+		if isFinalPlan && !g.expr.Procedure {
+			// The result of this statement is the routine's output. This is never the
+			// case for a procedure, which does not output any rows (since we do not
+			// yet support OUT or INOUT parameters).
+			w = rrw
+		} else if openCursor {
+			// The result of the first statement will be used to open a SQL cursor.
+			cursorHelper, err = g.newCursorHelper(plan.(*planComponents))
 			if err != nil {
 				return err
 			}
-			if openCursor {
-				return cursorHelper.createCursor(g.p)
+			w = NewRowResultWriter(&cursorHelper.container)
+		} else {
+			// The result of this statement is not needed. Use a rowResultWriter that
+			// drops all rows added to it.
+			w = &droppingResultWriter{}
+		}
+
+		// Place a sequence point before each statement in the routine for volatile
+		// functions. Unlike Postgres, we don't allow the txn's external read
+		// snapshot to advance, because we do not support restoring the txn's prior
+		// external read snapshot after returning from the volatile function.
+		if g.expr.EnableStepping {
+			if err := txn.Step(ctx, false /* allowReadTimestampStep */); err != nil {
+				return err
 			}
-			return nil
-		},
-	)
+		}
+
+		// Run the plan.
+		err = runPlanInsidePlan(ctx, g.p.RunParams(ctx), plan.(*planComponents), w, g)
+		if err != nil {
+			return err
+		}
+		if openCursor {
+			return cursorHelper.createCursor(g.p, g.expr.BlockState)
+		}
+		return nil
+	})
 	if err != nil {
 		if cursorHelper != nil && !cursorHelper.addedCursor {
 			// The cursor wasn't successfully added to the list, so we clean it up
@@ -384,135 +301,93 @@ func (g *routineGenerator) startInternal(ctx context.Context, txn *kv.Txn) (err 
 // in which case the savepoint will be rolled back either by a parent PLpgSQL
 // block (if the error is eventually caught), or when the transaction aborts.
 func (g *routineGenerator) handleException(ctx context.Context, err error) error {
+	blockState := g.expr.BlockState
+	if err == nil || blockState == nil || blockState.ExceptionHandler == nil {
+		return err
+	}
 	caughtCode := pgerror.GetPGCode(err)
 	if caughtCode == pgcode.Uncategorized {
 		// It is not safe to catch an uncategorized error.
 		return err
 	}
-	// Attempt to catch the error, starting with the exception handler for the
-	// current block, and propagating the error up to ancestor exception handlers
-	// if necessary.
-	for blockState := g.expr.BlockState; blockState != nil; blockState = blockState.Parent {
-		if blockState.ExceptionHandler == nil {
-			// This block has no exception handler.
-			continue
+	if !g.p.Txn().CanUseSavepoint(ctx, blockState.SavepointTok.(kv.SavepointToken)) {
+		// The current transaction state does not allow roll-back.
+		// TODO(111446): some retryable errors allow the transaction to be rolled
+		// back partially (e.g. for read committed). We should be able to take
+		// advantage of that mechanism here as well.
+		return err
+	}
+	// Unset the exception handler to indicate that it has already encountered an
+	// error.
+	exceptionHandler := blockState.ExceptionHandler
+	blockState.ExceptionHandler = nil
+	for i, code := range exceptionHandler.Codes {
+		caughtException := code == caughtCode
+		if code.String() == "OTHERS" {
+			// The special OTHERS condition matches any error code apart from
+			// query_canceled and assert_failure (though they can still be caught
+			// explicitly).
+			caughtException = caughtCode != pgcode.QueryCanceled && caughtCode != pgcode.AssertFailure
 		}
-		if !g.p.Txn().CanUseSavepoint(ctx, blockState.SavepointTok.(kv.SavepointToken)) {
-			// The current transaction state does not allow roll-back.
-			// TODO(111446): some retryable errors allow the transaction to be rolled
-			// back partially (e.g. for read committed). We should be able to take
-			// advantage of that mechanism here as well.
-			return err
-		}
-		// Unset the exception handler to indicate that it has already encountered an
-		// error.
-		exceptionHandler := blockState.ExceptionHandler
-		blockState.ExceptionHandler = nil
-		var branch *tree.RoutineExpr
-		for i, code := range exceptionHandler.Codes {
-			caughtException := code == caughtCode
-			if code.String() == "OTHERS" {
-				// The special OTHERS condition matches any error code apart from
-				// query_canceled and assert_failure (though they can still be caught
-				// explicitly).
-				caughtException = caughtCode != pgcode.QueryCanceled && caughtCode != pgcode.AssertFailure
-			}
-			if caughtException {
-				branch = exceptionHandler.Actions[i]
-				break
-			}
-		}
-		if branch != nil {
+		if caughtException {
 			cursErr := g.closeCursors(blockState)
 			if cursErr != nil {
-				// This error is unexpected, so return immediately.
-				return errors.CombineErrors(err, errors.WithAssertionFailure(cursErr))
+				return errors.CombineErrors(err, cursErr)
 			}
 			spErr := g.p.Txn().RollbackToSavepoint(ctx, blockState.SavepointTok.(kv.SavepointToken))
 			if spErr != nil {
-				// This error is unexpected, so return immediately.
-				return errors.CombineErrors(err, errors.WithAssertionFailure(spErr))
+				return errors.CombineErrors(err, spErr)
 			}
-			// Truncate the arguments using the number of variables in scope for the
-			// current block. This is necessary because the error may originate from
-			// a child block, but propagate up to a parent block. See the BlockState
-			// comments for further details.
-			args := g.args[:blockState.VariableCount]
-			g.reset(ctx, g.p, branch, args)
-
-			// Configure stepping for volatile routines so that mutations made by the
-			// invoking statement are visible to the routine.
-			var prevSteppingMode kv.SteppingMode
-			var prevSeqNum enginepb.TxnSeq
-			txn := g.p.Txn()
-			if g.expr.EnableStepping {
-				prevSteppingMode = txn.ConfigureStepping(ctx, kv.SteppingEnabled)
-				prevSeqNum = txn.GetReadSeqNum()
-			}
-
-			// If handling the exception results in another error, that error can in
-			// turn be caught by a parent exception handler. Otherwise, the exception
-			// was handled, so just return.
-			err = g.startInternal(ctx, txn)
-			if err == nil {
-				if g.expr.EnableStepping {
-					_ = txn.ConfigureStepping(ctx, prevSteppingMode)
-					return txn.SetReadSeqNum(prevSeqNum)
-				}
-				return nil
-			}
+			g.reset(ctx, g.p, exceptionHandler.Actions[i], g.args)
+			return g.startInternal(ctx, g.p.Txn())
 		}
 	}
-	// We reached the end of the exception handlers without handling this error.
 	return err
 }
 
 // closeCursors closes any cursors that were opened within the scope of the
 // current block. It is used for PLpgSQL exception handling.
 func (g *routineGenerator) closeCursors(blockState *tree.BlockState) error {
-	if blockState == nil || blockState.CursorTimestamp == nil {
+	if blockState == nil {
 		return nil
 	}
-	blockStart := *blockState.CursorTimestamp
-	blockState.CursorTimestamp = nil
 	var err error
-	for name, cursor := range g.p.sqlCursors.list() {
-		if cursor.created.After(blockStart) {
-			if curErr := g.p.sqlCursors.closeCursor(name); curErr != nil {
-				// Try to close all cursors in the scope, even if one throws an error.
-				err = errors.CombineErrors(err, curErr)
-			}
+	for _, name := range blockState.Cursors {
+		if g.p.sqlCursors.getCursor(name) == nil {
+			// This cursor has already been closed.
+			continue
+		}
+		if curErr := g.p.sqlCursors.closeCursor(name); curErr != nil {
+			// Attempt to close all cursors in the block, even if one throws an error.
+			err = errors.CombineErrors(err, curErr)
 		}
 	}
 	return err
 }
 
-// maybeInitBlockState creates a savepoint for a routine that marks a transition
-// into a PL/pgSQL block with an exception handler. It also tracks the current
-// timestamp in order to correctly roll back cursors opened within the block.
+// maybeInitBlockState creates a savepoint if all the following are true:
+//  1. The current routine is within a PLpgSQL exception block.
+//  2. The current block has an exception handler
+//  3. The savepoint hasn't already been created for this block.
 //
 // Note that it is not necessary to explicitly release the savepoint at any
 // point, because it does not add any overhead.
 func (g *routineGenerator) maybeInitBlockState(ctx context.Context) error {
 	blockState := g.expr.BlockState
-	if blockState == nil || !g.expr.BlockStart {
+	if blockState == nil {
 		return nil
 	}
-	if blockState.ExceptionHandler != nil {
+	if blockState.ExceptionHandler != nil && blockState.SavepointTok == nil {
 		// Drop down a savepoint for the current scope.
 		var err error
 		if blockState.SavepointTok, err = g.p.Txn().CreateSavepoint(ctx); err != nil {
 			return err
 		}
-		// Save the current timestamp, so that cursors opened from now on can be
-		// rolled back by the exception handler.
-		curTime := timeutil.Now()
-		blockState.CursorTimestamp = &curTime
 	}
 	return nil
 }
 
-// Next is part of the eval.ValueGenerator interface.
+// Next is part of the ValueGenerator interface.
 func (g *routineGenerator) Next(ctx context.Context) (bool, error) {
 	var err error
 	g.currVals, err = g.rci.Next()
@@ -522,12 +397,12 @@ func (g *routineGenerator) Next(ctx context.Context) (bool, error) {
 	return g.currVals != nil, nil
 }
 
-// Values is part of the eval.ValueGenerator interface.
+// Values is part of the ValueGenerator interface.
 func (g *routineGenerator) Values() (tree.Datums, error) {
 	return g.currVals, nil
 }
 
-// Close is part of the eval.ValueGenerator interface.
+// Close is part of the ValueGenerator interface.
 func (g *routineGenerator) Close(ctx context.Context) {
 	if g.rci != nil {
 		g.rci.Close()
@@ -536,36 +411,38 @@ func (g *routineGenerator) Close(ctx context.Context) {
 	*g = routineGenerator{}
 }
 
-var tailCallOptimizationEnabled = metamorphic.ConstantWithTestBool(
+var tailCallOptimizationEnabled = util.ConstantWithMetamorphicTestBool(
 	"tail-call-optimization-enabled",
 	true,
 )
 
-func (g *routineGenerator) CanOptimizeTailCall(nestedRoutine *tree.RoutineExpr) bool {
-	// Tail-call optimization is allowed only if the current routine will not
-	// perform any work after its body statements finish executing.
-	//
-	// Note: cursors are opened after the first body statement, and there is
-	// always more than one body statement if a cursor is opened. This is enforced
-	// during exec-building. For this reason, we only have to check for an
-	// exception handler.
-	if g.expr.BlockState != nil {
-		// If the current routine has an exception handler (which is the case when
-		// BlockState is non-nil), the nested routine must either be part of the
-		// same PL/pgSQL block, or a child block. Otherwise, enabling TCO could
-		// cause execution to skip the exception handler.
-		childBlock := nestedRoutine.BlockState
-		if childBlock == nil {
-			return false
-		}
-		return childBlock == g.expr.BlockState || childBlock.Parent == g.expr.BlockState
-	}
-	return true
+func (g *routineGenerator) SendDeferredRoutine(routine *tree.RoutineExpr, args tree.Datums) {
+	g.deferredRoutine.expr = routine
+	g.deferredRoutine.args = args
 }
 
-func (g *routineGenerator) SendDeferredRoutine(nestedRoutine *tree.RoutineExpr, args tree.Datums) {
-	g.deferredRoutine.expr = nestedRoutine
-	g.deferredRoutine.args = args
+// droppingResultWriter drops all rows that are added to it. It only tracks
+// errors with the SetError and Err functions.
+type droppingResultWriter struct {
+	err error
+}
+
+// AddRow is part of the rowResultWriter interface.
+func (d *droppingResultWriter) AddRow(ctx context.Context, row tree.Datums) error {
+	return nil
+}
+
+// SetRowsAffected is part of the rowResultWriter interface.
+func (d *droppingResultWriter) SetRowsAffected(ctx context.Context, n int) {}
+
+// SetError is part of the rowResultWriter interface.
+func (d *droppingResultWriter) SetError(err error) {
+	d.err = err
+}
+
+// Err is part of the rowResultWriter interface.
+func (d *droppingResultWriter) Err() error {
+	return d.err
 }
 
 func (g *routineGenerator) newCursorHelper(plan *planComponents) (*plpgsqlCursorHelper, error) {
@@ -582,32 +459,18 @@ func (g *routineGenerator) newCursorHelper(plan *planComponents) (*plpgsqlCursor
 		// "unnamed" portal, which always exists.
 		return nil, pgerror.Newf(pgcode.DuplicateCursor, "cursor \"\" already in use")
 	}
-	// Disabling the CloseCursorsAtCommit setting provides oracle-compatible
-	// behavior, where cursors are holdable by default unless they contain
-	// locking.
-	withHold := !g.p.SessionData().CloseCursorsAtCommit && !plan.flags.IsSet(planFlagContainsLocking)
-	planCols := plan.main.planColumns()
-	cursorHelper := &plpgsqlCursorHelper{
-		cursorName: cursorName,
-		cursorSql:  open.CursorSQL,
-		withHold:   withHold,
-	}
 	// Use context.Background(), since the cursor can outlive the context in which
 	// it was created.
-	cursorHelper.ctx = context.Background()
-	cursorHelper.resultCols = make(colinfo.ResultColumns, len(planCols))
-	copy(cursorHelper.resultCols, planCols)
-	mon := g.p.Mon()
-	if withHold {
-		mon = g.p.sessionMonitor
-		if mon == nil {
-			return nil, errors.AssertionFailedf("cannot open cursor WITH HOLD without an active session")
-		}
+	planCols := plan.main.planColumns()
+	cursorHelper := &plpgsqlCursorHelper{
+		ctx:        context.Background(),
+		cursorName: cursorName,
+		resultCols: make(colinfo.ResultColumns, len(planCols)),
 	}
-	cursorHelper.container.InitWithParentMon(
+	copy(cursorHelper.resultCols, planCols)
+	cursorHelper.container.Init(
 		cursorHelper.ctx,
 		getTypesFromResultColumns(planCols),
-		mon,
 		g.p.ExtendedEvalContextCopy(),
 		"routine_open_cursor", /* opName */
 	)
@@ -617,30 +480,31 @@ func (g *routineGenerator) newCursorHelper(plan *planComponents) (*plpgsqlCursor
 // plpgsqlCursorHelper wraps a row container in order to feed the results of
 // executing a SQL statement to a SQL cursor. Note that the SQL statement is not
 // lazily executed; its entire result is written to the container.
-//
-// TODO(#111479): while the row container can spill to disk, we should default
-// to lazy execution for cursors for performance reasons.
+// TODO(drewk): while the row container can spill to disk, we should default to
+// lazy execution for cursors for performance reasons.
 type plpgsqlCursorHelper struct {
-	persistedCursorHelper
-
+	ctx         context.Context
 	cursorName  tree.Name
 	cursorSql   string
 	addedCursor bool
-	withHold    bool
+
+	// Fields related to implementing the isql.Rows interface.
+	container    rowContainerHelper
+	iter         *rowContainerIterator
+	resultCols   colinfo.ResultColumns
+	lastRow      tree.Datums
+	rowsAffected int
 }
 
-var _ isql.Rows = &plpgsqlCursorHelper{}
-
-func (h *plpgsqlCursorHelper) createCursor(p *planner) error {
+func (h *plpgsqlCursorHelper) createCursor(p *planner, blockState *tree.BlockState) error {
 	h.iter = newRowContainerIterator(h.ctx, h.container)
 	cursor := &sqlCursor{
-		Rows:       h,
-		readSeqNum: p.txn.GetReadSeqNum(),
-		txn:        p.txn,
-		statement:  h.cursorSql,
-		created:    timeutil.Now(),
-		withHold:   h.withHold,
-		persisted:  true,
+		Rows:           h,
+		readSeqNum:     p.txn.GetReadSeqNum(),
+		txn:            p.txn,
+		statement:      h.cursorSql,
+		created:        timeutil.Now(),
+		eagerExecution: true,
 	}
 	if err := p.checkIfCursorExists(h.cursorName); err != nil {
 		return err
@@ -648,71 +512,57 @@ func (h *plpgsqlCursorHelper) createCursor(p *planner) error {
 	if err := p.sqlCursors.addCursor(h.cursorName, cursor); err != nil {
 		return err
 	}
+	if blockState != nil {
+		// Add the cursor name to the block's state. This allows the exception handler
+		// to close it, if necessary.
+		blockState.Cursors = append(blockState.Cursors, h.cursorName)
+	}
 	h.addedCursor = true
 	return nil
 }
 
-// storedProcTxnStateAccessor provides a method for stored procedures to request
-// that the current transaction be committed or aborted and supply a
-// continuation stored procedure to resume execution in the new transaction.
-type storedProcTxnStateAccessor struct {
-	ex *connExecutor
+var _ isql.Rows = &plpgsqlCursorHelper{}
+
+// Next implements the isql.Rows interface.
+func (h *plpgsqlCursorHelper) Next(_ context.Context) (bool, error) {
+	row, err := h.iter.Next()
+	if err != nil || row == nil {
+		return false, err
+	}
+	// Shallow-copy the row to ensure that it is safe to hold on to after Next()
+	// and Close() calls - see the isql.Rows interface.
+	h.lastRow = make(tree.Datums, len(row))
+	copy(h.lastRow, row)
+	h.rowsAffected++
+	return true, nil
 }
 
-func (a *storedProcTxnStateAccessor) setStoredProcTxnState(
-	txnOp tree.StoredProcTxnOp, txnModes *tree.TransactionModes, resumeProc *memo.Memo,
-) {
-	if a.ex == nil {
-		panic(errors.AssertionFailedf("setStoredProcTxnState is not supported without connExecutor"))
-	}
-	a.ex.extraTxnState.storedProcTxnState.txnOp = txnOp
-	a.ex.extraTxnState.storedProcTxnState.txnModes = txnModes
-	a.ex.extraTxnState.storedProcTxnState.resumeProc = resumeProc
+// Cur implements the isql.Rows interface.
+func (h *plpgsqlCursorHelper) Cur() tree.Datums {
+	return h.lastRow
 }
 
-func (a *storedProcTxnStateAccessor) getTxnOp() tree.StoredProcTxnOp {
-	if a.ex == nil {
-		return tree.StoredProcTxnNoOp
-	}
-	return a.ex.extraTxnState.storedProcTxnState.txnOp
+// RowsAffected implements the isql.Rows interface.
+func (h *plpgsqlCursorHelper) RowsAffected() int {
+	return h.rowsAffected
 }
 
-func (a *storedProcTxnStateAccessor) getResumeProc() *memo.Memo {
-	if a.ex == nil {
-		return nil
+// Close implements the isql.Rows interface.
+func (h *plpgsqlCursorHelper) Close() error {
+	if h.iter != nil {
+		h.iter.Close()
+		h.iter = nil
 	}
-	return a.ex.extraTxnState.storedProcTxnState.resumeProc
+	h.container.Close(h.ctx)
+	return nil
 }
 
-func (a *storedProcTxnStateAccessor) getTxnModes() *tree.TransactionModes {
-	if a.ex == nil {
-		return nil
-	}
-	return a.ex.extraTxnState.storedProcTxnState.txnModes
+// Types implements the isql.Rows interface.
+func (h *plpgsqlCursorHelper) Types() colinfo.ResultColumns {
+	return h.resultCols
 }
 
-// EvalTxnControlExpr produces the side effects of a COMMIT or ROLLBACK
-// statement within a PL/pgSQL stored procedure. It directs the connExecutor to
-// either commit or abort the current transaction, and provides a plan for a
-// "continuation" stored procedure which will resume execution in the new
-// transaction.
-//
-// EvalTxnControlExpr returns NULL, but this result is simply discarded without
-// being examined or modified when the transaction finishes.
-func (p *planner) EvalTxnControlExpr(
-	ctx context.Context, expr *tree.TxnControlExpr, args tree.Datums,
-) (tree.Datum, error) {
-	if !p.EvalContext().TxnImplicit {
-		// Transaction control statements are not allowed in explicit transactions.
-		return nil, errors.WithDetail(
-			pgerror.Newf(pgcode.InvalidTransactionTermination, "invalid transaction termination"),
-			"PL/pgSQL COMMIT/ROLLBACK is not allowed in an explicit transaction",
-		)
-	}
-	resumeProc, err := expr.Gen(ctx, args)
-	if err != nil {
-		return nil, err
-	}
-	p.storedProcTxnState.setStoredProcTxnState(expr.Op, &expr.Modes, resumeProc.(*memo.Memo))
-	return tree.DNull, nil
+// HasResults implements the isql.Rows interface.
+func (h *plpgsqlCursorHelper) HasResults() bool {
+	return h.lastRow != nil
 }

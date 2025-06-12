@@ -13,14 +13,12 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/base",
-        "//pkg/clusterversion",
         "//pkg/kv/kvpb",
         "//pkg/kv/kvserver/closedts",
         "//pkg/kv/kvserver/closedts/ctpb",
-        "//pkg/kv/kvserver/closedts/policyrefresher",
         "//pkg/roachpb",
+        "//pkg/rpc",
         "//pkg/rpc/nodedialer",
-        "//pkg/rpc/rpcbase",
         "//pkg/settings/cluster",
         "//pkg/util/hlc",
         "//pkg/util/intsets",
@@ -30,7 +28,7 @@ go_library(
         "//pkg/util/syncutil",
         "//pkg/util/timeutil",
         "@com_github_cockroachdb_errors//:errors",
-        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//:go_default_library",
     ],
 )
 
@@ -40,16 +38,15 @@ go_test(
         "receiver_test.go",
         "sender_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":sidetransport"],
     deps = [
         "//pkg/base",
         "//pkg/kv/kvpb",
         "//pkg/kv/kvserver/closedts",
         "//pkg/kv/kvserver/closedts/ctpb",
-        "//pkg/kv/kvserver/closedts/policyrefresher",
         "//pkg/roachpb",
         "//pkg/rpc",
-        "//pkg/rpc/rpcbase",
         "//pkg/settings/cluster",
         "//pkg/testutils",
         "//pkg/util/hlc",
@@ -59,7 +56,7 @@ go_test(
         "//pkg/util/syncutil",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_stretchr_testify//require",
-        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//:go_default_library",
     ],
 )
 

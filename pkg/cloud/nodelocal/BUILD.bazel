@@ -5,7 +5,6 @@ go_library(
     srcs = [
         "nodelocal_connection.go",
         "nodelocal_storage.go",
-        "test_nodelocal_storage.go",
     ],
     importpath = "github.com/cockroachdb/cockroach/pkg/cloud/nodelocal",
     visibility = ["//visibility:public"],
@@ -20,7 +19,6 @@ go_library(
         "//pkg/roachpb",
         "//pkg/server/telemetry",
         "//pkg/settings/cluster",
-        "//pkg/util/buildutil",
         "//pkg/util/ioctx",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_errors//oserror",
@@ -32,10 +30,12 @@ go_library(
 go_test(
     name = "nodelocal_test",
     srcs = ["nodelocal_storage_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":nodelocal"],
     deps = [
         "//pkg/cloud/cloudtestutils",
         "//pkg/security/username",
+        "//pkg/settings/cluster",
         "//pkg/testutils",
         "//pkg/util/leaktest",
     ],

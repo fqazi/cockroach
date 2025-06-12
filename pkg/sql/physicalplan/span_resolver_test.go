@@ -13,7 +13,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/keys"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvclient"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -23,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/randgen"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -36,8 +34,6 @@ import (
 func TestSpanResolverUsesCaches(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	skip.UnderRace(t, "the test rarely flakes under race")
 
 	ctx := context.Background()
 	tc := testcluster.StartTestCluster(t, 4,
@@ -90,7 +86,7 @@ func TestSpanResolverUsesCaches(t *testing.T) {
 	lr := physicalplan.NewSpanResolver(
 		s3.ClusterSettings(),
 		s3.DistSenderI().(*kvcoord.DistSender),
-		s3.NodeDescStoreI().(kvclient.NodeDescStore),
+		s3.NodeDescStoreI().(kvcoord.NodeDescStore),
 		s3.DistSQLPlanningNodeID(),
 		s3.Locality(),
 		s3.Clock(),
@@ -198,7 +194,7 @@ func TestSpanResolver(t *testing.T) {
 	lr := physicalplan.NewSpanResolver(
 		s.ClusterSettings(),
 		s.DistSenderI().(*kvcoord.DistSender),
-		s.NodeDescStoreI().(kvclient.NodeDescStore),
+		s.NodeDescStoreI().(kvcoord.NodeDescStore),
 		s.DistSQLPlanningNodeID(),
 		s.Locality(),
 		s.Clock(),
@@ -299,7 +295,7 @@ func TestMixedDirections(t *testing.T) {
 	lr := physicalplan.NewSpanResolver(
 		s.ClusterSettings(),
 		s.DistSenderI().(*kvcoord.DistSender),
-		s.NodeDescStoreI().(kvclient.NodeDescStore),
+		s.NodeDescStoreI().(kvcoord.NodeDescStore),
 		s.DistSQLPlanningNodeID(),
 		s.Locality(),
 		s.Clock(),

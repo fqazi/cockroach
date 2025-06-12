@@ -4,6 +4,7 @@
 // included in the /LICENSE file.
 
 //go:build !windows
+// +build !windows
 
 package sdnotify
 
@@ -22,16 +23,12 @@ const (
 	netType  = "unixgram"
 )
 
-func ready(preNotify func()) error {
-	return notifyEnv(preNotify, readyMsg)
+func ready() error {
+	return notifyEnv(readyMsg)
 }
 
-func notifyEnv(preNotify func(), msg string) error {
+func notifyEnv(msg string) error {
 	if path, ok := os.LookupEnv(envName); ok {
-		// Only run preNotify if we need to notify.
-		if preNotify != nil {
-			preNotify()
-		}
 		return notify(path, msg)
 	}
 	return nil

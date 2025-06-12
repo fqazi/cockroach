@@ -52,8 +52,8 @@
   }
 
   &__status,
-  &__running-status:first-letter {
-    text-transform: uppercase;
+  &__running-status {
+    text-transform: capitalize;
   }
   &__progress {
     display: flex;
@@ -146,7 +146,7 @@
     font-size: $font-size--medium;
     display: flex;
     align-items: center;
-    .crdb-ant-divider {
+    .ant-divider {
       height: 20px;
     }
   }
@@ -166,7 +166,7 @@
   .job-status__line--percentage {
     display: flex;
     align-items: center;
-    .crdb-ant-divider {
+    .ant-divider {
       height: 20px;
     }
     span {
@@ -178,7 +178,7 @@
       margin: 0;
     }
   }
-  .crdb-ant-divider {
+  .ant-divider {
     margin-left: 15px;
     margin-right: 15px;
   }
@@ -189,21 +189,6 @@
     font-size: $font-size--medium;
     line-height: 22px;
     color: $colors--neutral-7;
-  }
-
-  .job-messages {
-    overflow: scroll;
-    .message {
-      white-space: pre;
-    }
-  }
-
-  .details-header {
-    margin-top: 12px;
-    margin-bottom: 12px;
-  }
-  .messages-card {
-    padding: 0;
   }
 }
 

@@ -64,8 +64,8 @@ func (s *SimRelocateOneOptions) StorePool() storepool.AllocatorStorePool {
 	return s.storePool
 }
 
-// LoadSpanConfig loads the span configuration for the range with start key.
-func (s *SimRelocateOneOptions) LoadSpanConfig(
+// SpanConfig returns the span configuration for the range with start key.
+func (s *SimRelocateOneOptions) SpanConfig(
 	ctx context.Context, startKey roachpb.RKey,
 ) (*roachpb.SpanConfig, error) {
 	return s.state.RangeFor(state.ToKey(startKey.AsRawKey())).SpanConfig(), nil

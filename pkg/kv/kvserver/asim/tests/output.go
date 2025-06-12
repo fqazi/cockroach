@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/asim/gen"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/asim/history"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/asim/scheduled"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/asim/state"
 )
 
 // OutputFlags sets flags for what to output in tests. If you want to add a flag
@@ -55,23 +55,22 @@ func (o OutputFlags) set(f OutputFlags) OutputFlags {
 	return o | f
 }
 
-// Has returns true if this flag has all of the given f OutputFlags on.
+// Has returns true if this flag has the given f OutputFlags on.
 func (o OutputFlags) Has(f OutputFlags) bool {
-	return o&f == f
+	return o&f != 0
 }
 
 type testResult struct {
-	seed            int64
-	failed          bool
-	reason          string
-	clusterGen      gen.ClusterGen
-	rangeGen        gen.RangeGen
-	loadGen         gen.LoadGen
-	eventGen        gen.EventGen
-	initialTime     time.Time
-	initialStateStr string
-	eventExecutor   scheduled.EventExecutor
-	history         history.History
+	seed          int64
+	failed        bool
+	reason        string
+	clusterGen    gen.ClusterGen
+	rangeGen      gen.RangeGen
+	loadGen       gen.LoadGen
+	eventGen      gen.EventGen
+	initialTime   time.Time
+	initialState  state.State
+	eventExecutor scheduled.EventExecutor
 }
 
 type testResultsReport struct {
@@ -155,10 +154,10 @@ func (tr testResultsReport) String() string {
 		}
 		if failed || tr.flags.Has(OutputInitialState) {
 			buf.WriteString(fmt.Sprintf("initial state at %s:\n", output.initialTime.Format("2006-01-02 15:04:05")))
-			buf.WriteString(fmt.Sprintf("\t%v\n", output.initialStateStr))
+			buf.WriteString(fmt.Sprintf("\t%v\n", output.initialState.PrettyPrint()))
 		}
 		if failed || tr.flags.Has(OutputTopology) {
-			topology := output.history.S.Topology()
+			topology := output.initialState.Topology()
 			buf.WriteString(fmt.Sprintf("topology:\n%s", topology.String()))
 		}
 		if failed || tr.flags.Has(OutputEvents) {

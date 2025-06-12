@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -17,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessioninit"
 	"github.com/cockroachdb/cockroach/pkg/sql/ttl/ttlbase"
@@ -57,10 +55,10 @@ func (mu metadataUpdater) DeleteDatabaseRoleSettings(ctx context.Context, dbID d
 	rowsDeleted, err := mu.txn.ExecEx(ctx,
 		"delete-db-role-setting",
 		mu.txn.KV(),
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		fmt.Sprintf(
-			`DELETE FROM system.public.%s WHERE database_id = $1`,
-			catconstants.DatabaseRoleSettingsTableName,
+			`DELETE FROM %s WHERE database_id = $1`,
+			sessioninit.DatabaseRoleSettingsTableName,
 		),
 		dbID,
 	)
@@ -82,12 +80,12 @@ func (mu metadataUpdater) DeleteDatabaseRoleSettings(ctx context.Context, dbID d
 }
 
 // DeleteSchedule implement scexec.DescriptorMetadataUpdater.
-func (mu metadataUpdater) DeleteSchedule(ctx context.Context, scheduleID jobspb.ScheduleID) error {
+func (mu metadataUpdater) DeleteSchedule(ctx context.Context, scheduleID int64) error {
 	_, err := mu.txn.ExecEx(
 		ctx,
 		"delete-schedule",
 		mu.txn.KV(),
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		"DELETE FROM system.scheduled_jobs WHERE schedule_id = $1",
 		scheduleID,
 	)
@@ -106,7 +104,7 @@ func (mu metadataUpdater) UpdateTTLScheduleLabel(
 		ctx,
 		"update-ttl-schedule-label",
 		mu.txn.KV(),
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		"UPDATE system.scheduled_jobs SET schedule_name = $1 WHERE schedule_id = $2",
 		ttlbase.BuildScheduleLabel(tbl),
 		tbl.RowLevelTTL.ScheduleID,

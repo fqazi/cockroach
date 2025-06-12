@@ -73,7 +73,7 @@ func (s *InternalExecutorWriter) WriteRangeLogEvent(
 		return errors.Errorf("no transaction provided")
 	}
 	rows, err := s.ie.ExecEx(ctx, "log-range-event", txn,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		s.insertQuery, args...)
 	if err != nil {
 		return err

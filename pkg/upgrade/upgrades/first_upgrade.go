@@ -10,8 +10,6 @@ import (
 	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
-	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
@@ -24,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 // RunFirstUpgradePrecondition short-circuits FirstUpgradeFromReleasePrecondition if set to false.
@@ -86,10 +83,6 @@ func upgradeDescriptors(
 		descBatch := idsToRewrite[currentIdx:min(currentIdx+batchSize, len(idsToRewrite))]
 		err := timeutil.RunWithTimeout(ctx, "repair-post-deserialization", repairBatchTimeLimit, func(ctx context.Context) error {
 			return d.DB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
-				// We explicitly specify a low retry limit because this operation is
-				// wrapped with its own retry function that will also take care of
-				// adjusting the batch size on each retry.
-				txn.KV().SetMaxAutoRetries(10)
 				if batchSize <= HighPriBatchSize {
 					if err := txn.KV().SetUserPriority(roachpb.MaxUserPriority); err != nil {
 						return err
@@ -113,8 +106,7 @@ func upgradeDescriptors(
 		if err != nil {
 			// If either the operation hits the retry limit or
 			// times out, then reduce the batch size.
-			if kv.IsAutoRetryLimitExhaustedError(err) ||
-				errors.HasType(err, (*timeutil.TimeoutError)(nil)) {
+			if errors.HasType(err, (*timeutil.TimeoutError)(nil)) {
 				batchSize = max(batchSize/2, 1)
 				log.Infof(ctx, "reducing batch size of invalid_object repair query to %d (hipri=%t)",
 					batchSize,
@@ -126,16 +118,6 @@ func upgradeDescriptors(
 		currentIdx += batchSize
 	}
 	return nil
-}
-
-var firstUpgradePreconditionUsesAOST = true
-
-// TestingSetFirstUpgradePreconditionAOST allows tests to disable withAOST trick in upgrade
-// precondition check, which otherwise can produce false negative.
-func TestingSetFirstUpgradePreconditionAOST(enabled bool) func() {
-	old := firstUpgradePreconditionUsesAOST
-	firstUpgradePreconditionUsesAOST = enabled
-	return func() { firstUpgradePreconditionUsesAOST = old }
 }
 
 // FirstUpgradeFromReleasePrecondition is the precondition check for upgrading
@@ -159,29 +141,17 @@ func FirstUpgradeFromReleasePrecondition(
 	// a diagnostic query. If no corruptions were found back then, we assume that
 	// there are no corruptions now. Otherwise, we retry and do everything
 	// without an AOST clause henceforth.
-	withAOST := firstUpgradePreconditionUsesAOST
-	diagnose := func(tbl redact.SafeString) (hasRows bool, err error) {
-		withAOST := withAOST
-		for {
-			q := fmt.Sprintf("SELECT count(*) FROM \"\".crdb_internal.%s", tbl)
-			if withAOST {
-				q = q + " AS OF SYSTEM TIME '-10s'"
-			}
-			row, err := d.InternalExecutor.QueryRow(ctx, redact.Sprintf("query-%s", tbl), nil /* txn */, q)
-			if err == nil && row[0].String() != "0" {
-				hasRows = true
-			}
-			// In tests like "declarative_schema_changer/job-compatibility-mixed-version", its
-			// possible to hit BatchTimestampBeforeGCError, because the GC interval is
-			// set to a second. If we ever see BatchTimestampBeforeGCError re-run without
-			// AOST.
-			if withAOST && errors.HasType(err, &kvpb.BatchTimestampBeforeGCError{}) {
-				// Retry with the AOST removed.
-				withAOST = false
-				continue
-			}
-			return hasRows, err
+	withAOST := true
+	diagnose := func(tbl string) (hasRows bool, err error) {
+		q := fmt.Sprintf("SELECT count(*) FROM \"\".crdb_internal.%s", tbl)
+		if withAOST {
+			q = q + " AS OF SYSTEM TIME '-10s'"
 		}
+		row, err := d.InternalExecutor.QueryRow(ctx, "query-"+tbl, nil /* txn */, q)
+		if err == nil && row[0].String() != "0" {
+			hasRows = true
+		}
+		return hasRows, err
 	}
 	// Check for possibility of time travel.
 	if hasRows, err := diagnose("databases"); err != nil {
@@ -220,10 +190,6 @@ WHERE
 			var rowsUpdated tree.DInt
 			err := timeutil.RunWithTimeout(ctx, "descriptor-repair", repairBatchTimeLimit, func(ctx context.Context) error {
 				return d.DB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
-					// We explicitly specify a low retry limit because this operation is
-					// wrapped with its own retry function that will also take care of
-					// adjusting the batch size on each retry.
-					txn.KV().SetMaxAutoRetries(10)
 					if batchSize <= HighPriBatchSize {
 						if err = txn.KV().SetUserPriority(roachpb.MaxUserPriority); err != nil {
 							return err
@@ -242,8 +208,7 @@ WHERE
 			if err != nil {
 				// If either the operation hits the retry limit or
 				// times out, then reduce the batch size.
-				if kv.IsAutoRetryLimitExhaustedError(err) ||
-					errors.HasType(err, (*timeutil.TimeoutError)(nil)) {
+				if errors.HasType(err, (*timeutil.TimeoutError)(nil)) {
 					batchSize = max(batchSize/2, 1)
 					log.Infof(ctx, "reducing batch size of invalid_object repair query to %d (hipri=%t)",
 						batchSize,
@@ -286,23 +251,4 @@ WHERE
 		return nil
 	}
 	return errors.AssertionFailedf("\"\".crdb_internal.invalid_objects is not empty")
-}
-
-// newFirstUpgrade creates a TenantUpgrade that corresponds to the first
-// (Vxy_zStart) internal version of a release.
-func newFirstUpgrade(v roachpb.Version) *upgrade.TenantUpgrade {
-	if v.Internal != 2 {
-		panic("not the first internal release")
-	}
-	return upgrade.NewTenantUpgrade(
-		firstUpgradeDescription(v),
-		v,
-		FirstUpgradeFromReleasePrecondition,
-		FirstUpgradeFromRelease,
-		upgrade.RestoreActionNotRequired("first upgrade is a persists nothing"),
-	)
-}
-
-func firstUpgradeDescription(v roachpb.Version) string {
-	return fmt.Sprintf("prepare upgrade to v%d.%d release", v.Major, v.Minor)
 }

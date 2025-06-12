@@ -11,16 +11,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/raft/confchange"
-	"github.com/cockroachdb/cockroach/pkg/raft/quorum"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/confchange"
+	"go.etcd.io/raft/v3/quorum"
+	"go.etcd.io/raft/v3/tracker"
 )
 
 func rd(typ ReplicaType, id uint64) ReplicaDescriptor {
@@ -182,8 +182,8 @@ func TestReplicaDescriptorsConfState(t *testing.T) {
 	for _, test := range tests {
 		t.Run("", func(t *testing.T) {
 			r := MakeReplicaSet(test.in)
-			cs := r.ConfState().Describe()
-			require.Equal(t, test.out, cs)
+			cs := r.ConfState()
+			require.Equal(t, test.out, raft.DescribeConfState(cs))
 		})
 	}
 }
@@ -332,12 +332,7 @@ func TestReplicaDescriptorsCanMakeProgressRandom(t *testing.T) {
 
 		raftCanMakeProgress, skip := func() (res bool, skip bool) {
 			cfg, _, err := confchange.Restore(
-				confchange.Changer{
-					Config:           quorum.MakeEmptyConfig(),
-					ProgressMap:      tracker.MakeEmptyProgressMap(),
-					MaxInflight:      1,
-					MaxInflightBytes: 0,
-				},
+				confchange.Changer{Tracker: tracker.MakeProgressTracker(1, 0)},
 				rng.ConfState(),
 			)
 			if err != nil {
@@ -346,10 +341,10 @@ func TestReplicaDescriptorsCanMakeProgressRandom(t *testing.T) {
 				}
 				return false, true
 			}
-			votes := make(map[raftpb.PeerID]bool, len(rng.wrapped))
+			votes := make(map[uint64]bool, len(rng.wrapped))
 			for _, rDesc := range rng.wrapped {
 				if liveness[rDesc.ReplicaID-1] {
-					votes[raftpb.PeerID(rDesc.ReplicaID)] = true
+					votes[uint64(rDesc.ReplicaID)] = true
 				}
 			}
 			return cfg.Voters.VoteResult(votes) == quorum.VoteWon, false

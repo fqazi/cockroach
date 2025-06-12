@@ -12,8 +12,8 @@ go_library(
         "doc.go",
         "expr.go",
         "hash_sharded_compute_expr.go",
-        "name.go",
         "partial_index.go",
+        "select_name_resolution.go",
         "sequence_options.go",
         "unique_contraint.go",
     ],
@@ -56,6 +56,7 @@ go_test(
         "partial_index_test.go",
         "testutils_test.go",
     ],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
     embed = [":schemaexpr"],
     deps = [

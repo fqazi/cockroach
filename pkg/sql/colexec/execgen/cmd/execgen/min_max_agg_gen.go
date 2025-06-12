@@ -60,7 +60,5 @@ func genMinMaxAgg(inputFileContents string, wr io.Writer) error {
 
 func init() {
 	registerAggGenerator(
-		genMinMaxAgg, "min_max_agg.eg.go", /* filenameSuffix */
-		minMaxAggTmpl, "minMax" /* aggName */, true, /* genWindowVariant */
-	)
+		genMinMaxAgg, "min_max_agg.eg.go", minMaxAggTmpl, true /* genWindowVariant */)
 }

@@ -47,7 +47,7 @@ type Schema struct {
 func Upgrade(
 	t *testing.T, sqlDB *gosql.DB, key clusterversion.Key, done chan struct{}, expectError bool,
 ) {
-	UpgradeToVersion(t, sqlDB, key.Version(), done, expectError)
+	UpgradeToVersion(t, sqlDB, clusterversion.ByKey(key), done, expectError)
 }
 
 func UpgradeToVersion(
@@ -121,7 +121,6 @@ func ValidateSchemaExists(
 	schemas []Schema,
 	expectExists bool,
 ) {
-	t.Helper()
 	// First validate by reading the columns and the index.
 	for _, stmt := range stmts {
 		_, err := sqlDB.Exec(stmt)
@@ -159,7 +158,7 @@ func GetTable(
 	err := s.InternalDB().(descs.DB).DescsTxn(ctx, func(
 		ctx context.Context, txn descs.Txn,
 	) (err error) {
-		table, err = txn.Descriptors().ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Table(ctx, tableID)
+		table, err = txn.Descriptors().ByID(txn.KV()).WithoutNonPublic().Get().Table(ctx, tableID)
 		return err
 	})
 	require.NoError(t, err)
@@ -202,7 +201,7 @@ func ExecForCountInTxns(
 func ValidateSystemDatabaseSchemaVersionBumped(
 	t *testing.T, sqlDB *gosql.DB, expectedVersion clusterversion.Key,
 ) {
-	expectedSchemaVersion := expectedVersion.Version()
+	expectedSchemaVersion := clusterversion.ByKey(expectedVersion)
 
 	var actualSchemaVersionBytes []byte
 	require.NoError(t, sqlDB.QueryRow(

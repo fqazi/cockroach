@@ -8,7 +8,6 @@ package integration
 import (
 	"context"
 	gosql "database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -24,10 +23,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
-	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
 	"github.com/cockroachdb/cockroach/pkg/sql/contention"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/insights"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -54,16 +51,17 @@ func TestInsightsIntegration(t *testing.T) {
 	const appName = "TestInsightsIntegration"
 	const appNameToIgnore = "TestInsightsIntegrationIgnore"
 
-	// Start the server. (One node is sufficient; the outliers system is
-	// currently in-memory only.)
+	// Start the cluster. (One node is sufficient; the outliers system is currently in-memory only.)
 	ctx := context.Background()
-	srv, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	sv := &srv.ApplicationLayer().ClusterSettings().SV
+	settings := cluster.MakeTestingClusterSettings()
+	args := base.TestClusterArgs{ServerArgs: base.TestServerArgs{Settings: settings}}
+	tc := testcluster.StartTestCluster(t, 1, args)
+	defer tc.Stopper().Stop(ctx)
+	conn := tc.ServerConn(0)
 
 	// Enable detection by setting a latencyThreshold > 0.
 	latencyThreshold := 250 * time.Millisecond
-	insights.LatencyThreshold.Override(ctx, sv, latencyThreshold)
+	insights.LatencyThreshold.Override(ctx, &settings.SV, latencyThreshold)
 
 	_, err := conn.ExecContext(ctx, "SET SESSION application_name=$1", appNameToIgnore)
 	require.NoError(t, err)
@@ -91,7 +89,7 @@ func TestInsightsIntegration(t *testing.T) {
 	require.NoError(t, err)
 
 	// Eventually see one recorded insight.
-	testutils.SucceedsSoon(t, func() error {
+	testutils.SucceedsWithin(t, func() error {
 		row = conn.QueryRowContext(ctx, "SELECT count(*), coalesce(string_agg(query, ';'),'') "+
 			"FROM crdb_internal.cluster_execution_insights where app_name = $1 ", appName)
 		if err = row.Scan(&count, &queryText); err != nil {
@@ -101,10 +99,10 @@ func TestInsightsIntegration(t *testing.T) {
 			return fmt.Errorf("expected 1, but was %d, queryText:%s", count, queryText)
 		}
 		return nil
-	})
+	}, 1*time.Second)
 
 	// Verify the table content is valid.
-	testutils.SucceedsSoon(t, func() error {
+	testutils.SucceedsWithin(t, func() error {
 		row = conn.QueryRowContext(ctx, "SELECT "+
 			"query, "+
 			"status, "+
@@ -115,7 +113,7 @@ func TestInsightsIntegration(t *testing.T) {
 			"cpu_sql_nanos, "+
 			"COALESCE(error_code, '') error_code "+
 			"FROM crdb_internal.node_execution_insights where "+
-			"query = $1 and app_name = $2 ", "SELECT pg_sleep(_)", appName)
+			"query = $1 and app_name = $2 ", "SELECT pg_sleep($1)", appName)
 
 		var query, status string
 		var startInsights, endInsights time.Time
@@ -149,12 +147,12 @@ func TestInsightsIntegration(t *testing.T) {
 		}
 
 		return nil
-	})
+	}, 1*time.Second)
 
 	// TODO (xzhang) Turn this into a datadriven test
 	// https://github.com/cockroachdb/cockroach/issues/95010
 	// Verify the txn table content is valid.
-	testutils.SucceedsSoon(t, func() error {
+	testutils.SucceedsWithin(t, func() error {
 		row = conn.QueryRowContext(ctx, "SELECT "+
 			"query, "+
 			"start_time, "+
@@ -163,7 +161,7 @@ func TestInsightsIntegration(t *testing.T) {
 			"cpu_sql_nanos, "+
 			"COALESCE(last_error_code, '') last_error_code "+
 			"FROM crdb_internal.cluster_txn_execution_insights WHERE "+
-			"query = $1 and app_name = $2 ", "SELECT pg_sleep(_)", appName)
+			"query = $1 and app_name = $2 ", "SELECT pg_sleep($1)", appName)
 
 		var query string
 		var startInsights, endInsights time.Time
@@ -196,78 +194,7 @@ func TestInsightsIntegration(t *testing.T) {
 		}
 
 		return nil
-	})
-}
-
-// TestRetainCommentsInInsights tests that when the sql.sqlcommenter.enabled
-// setting is enabled / disabled, querying crdb_internal.cluster_execution_insights and
-// crdb_internal.node_execution_insights will / won't return query tags, respectively.
-func TestRetainCommentsInInsights(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	// Start the server.
-	ctx := context.Background()
-	srv, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	sv := &srv.ApplicationLayer().ClusterSettings().SV
-
-	// Set a low latency threshold to ensure our queries are captured
-	insights.LatencyThreshold.Override(ctx, sv, 10*time.Millisecond)
-
-	const queryWithComments = `SELECT pg_sleep(0.02)/* key='This is a test comment' */`
-
-	type Comment struct {
-		Name  string `json:"name"`
-		Value string `json:"value"`
-	}
-
-	testutils.RunTrueAndFalse(t, "withComments", func(t *testing.T, withComments bool) {
-		appName := fmt.Sprintf("TestRetainCommentsInInsights_%t", withComments)
-		// Set the application name for our test
-		_, err := conn.ExecContext(ctx, "SET SESSION application_name=$1", appName)
-		require.NoError(t, err)
-
-		_, err = conn.ExecContext(ctx, fmt.Sprintf("SET CLUSTER SETTING sql.sqlcommenter.enabled = %t", withComments))
-		require.NoError(t, err)
-
-		_, err = conn.ExecContext(ctx, queryWithComments)
-		require.NoError(t, err)
-
-		// Verify that the comments are present in the cluster_execution_insights table
-		testutils.RunValues(t, "table", []string{"cluster_execution_insights", "node_execution_insights"}, func(t *testing.T, table string) {
-			query := fmt.Sprintf(`
-			SELECT query_tags
-			FROM crdb_internal.%s
-			WHERE query = 'SELECT pg_sleep(_)' AND app_name = $1
-		`, table)
-			testutils.SucceedsSoon(t, func() error {
-				var comments []Comment
-				var commentsRaw []byte
-				row := conn.QueryRowContext(ctx, query, appName)
-
-				if err := row.Scan(&commentsRaw); err != nil {
-					return err
-				}
-
-				if err := json.Unmarshal(commentsRaw, &comments); err != nil {
-					return err
-				}
-				if withComments {
-					if len(comments) != 1 || comments[0].Value != "This is a test comment" || comments[0].Name != "key" {
-						return fmt.Errorf("expected comment to contain `key='This is a test comment'`, but got: %s", comments)
-					}
-
-					return nil
-				} else {
-					if len(comments) == 1 {
-						return fmt.Errorf("expected no comments, but got: %s", comments)
-					}
-					return nil
-				}
-			})
-		})
-	})
+	}, 1*time.Second)
 }
 
 func TestFailedInsights(t *testing.T) {
@@ -277,32 +204,29 @@ func TestFailedInsights(t *testing.T) {
 	const appName = "TestFailedInsights"
 	re := regexp.MustCompile(",?SlowExecution,?")
 
-	// Start the server. (One node is sufficient; the outliers system is
-	// currently in-memory only.)
+	// Start the cluster. (One node is sufficient; the outliers system is currently in-memory only.)
 	ctx := context.Background()
-	srv, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
-	sv := &s.ClusterSettings().SV
-	rootConn := sqlutils.MakeSQLRunner(conn)
+	settings := cluster.MakeTestingClusterSettings()
+	args := base.TestClusterArgs{ServerArgs: base.TestServerArgs{Settings: settings}}
+	tc := testcluster.StartTestCluster(t, 1, args)
+	defer tc.Stopper().Stop(ctx)
+	rootConn := sqlutils.MakeSQLRunner(tc.ApplicationLayer(0).SQLConn(t))
 
 	// Enable detection by setting a latencyThreshold > 0.
 	latencyThreshold := 100 * time.Millisecond
-	insights.LatencyThreshold.Override(ctx, sv, latencyThreshold)
+	insights.LatencyThreshold.Override(ctx, &settings.SV, latencyThreshold)
 
 	rootConn.Exec(t, fmt.Sprintf("CREATE USER %s WITH VIEWACTIVITYREDACTED", "testuser"))
 	rootConn.Exec(t, "SET SESSION application_name=$1", appName)
 
 	testutils.RunTrueAndFalse(t, "with_redaction", func(t *testing.T, testRedacted bool) {
 		rootConn.Exec(t, `select crdb_internal.reset_sql_stats()`)
-		conn := s.SQLConn(t)
+		conn := tc.ApplicationLayer(0).SQLConn(t)
 		if testRedacted {
-			conn = s.SQLConn(t, serverutils.User("testuser"))
+			conn = tc.ApplicationLayer(0).SQLConn(t, serverutils.User("testuser"))
 		}
-		conn.SetMaxOpenConns(1)
-		_, err := conn.Exec("SET autocommit_before_ddl = false")
-		require.NoError(t, err)
-		_, err = conn.Exec("SET SESSION application_name=$1", appName)
+
+		_, err := conn.Exec("SET SESSION application_name=$1", appName)
 		require.NoError(t, err)
 
 		testCases := []struct {
@@ -348,7 +272,8 @@ func TestFailedInsights(t *testing.T) {
 			_, _ = conn.ExecContext(ctx, tc.stmt)
 
 			var query, status, problem, errorCode, errorMsg string
-			testutils.SucceedsSoon(t, func() error {
+			testutils.SucceedsWithin(t, func() error {
+
 				// Query the node execution insights table.
 				row := conn.QueryRowContext(ctx, `
 SELECT query, 
@@ -361,7 +286,7 @@ WHERE query = $1 AND app_name = $2 `,
 					tc.fingerprint, appName)
 
 				return row.Scan(&query, &status, &problem, &errorCode, &errorMsg)
-			})
+			}, 1*time.Second)
 
 			require.Equal(t, tc.status, status)
 			require.Equal(t, tc.problem, problem)
@@ -434,7 +359,7 @@ WHERE query = $1 AND app_name = $2 `,
 			}
 
 			var query, problems, status, errorCode, errorMsg string
-			testutils.SucceedsSoon(t, func() error {
+			testutils.SucceedsWithin(t, func() error {
 
 				// Query the node txn execution insights table.
 				row := conn.QueryRowContext(ctx, `
@@ -447,7 +372,7 @@ FROM crdb_internal.node_txn_execution_insights
 WHERE query = $1 AND app_name = $2`, tc.fingerprint, appName)
 
 				return row.Scan(&query, &problems, &status, &errorCode, &errorMsg)
-			})
+			}, 1*time.Second)
 
 			require.Equal(t, tc.txnStatus, status)
 			require.Equal(t, tc.errorCode, errorCode)
@@ -467,6 +392,7 @@ WHERE query = $1 AND app_name = $2`, tc.fingerprint, appName)
 			require.Equal(t, tc.problems, replacedSlowProblems, "received: %s, used to compare: %s", problems, replacedSlowProblems)
 
 		}
+
 	})
 }
 
@@ -487,10 +413,9 @@ func TestTransactionInsightsFailOnCommit(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	var conflictingTxns []txnInConflict
+	conflictingTxns := make([]txnInConflict, 0, 4)
 
-	// Start the server. (One node is sufficient; the outliers system is
-	// currently in-memory only.)
+	// Start the cluster. (One node is sufficient; the outliers system is currently in-memory only.)
 	srv, db, _ := serverutils.StartServer(t, base.TestServerArgs{
 		Knobs: base.TestingKnobs{
 			SQLExecutor: &sql.ExecutorTestingKnobs{
@@ -515,34 +440,19 @@ func TestTransactionInsightsFailOnCommit(t *testing.T) {
 	conn2 := sqlutils.MakeSQLRunner(srv.ApplicationLayer().SQLConn(t))
 
 	connDefault.Exec(t, "SET CLUSTER SETTING sql.contention.event_store.resolution_interval = '100ms'")
-	// Disable write buffering since this test assumes that
-	// kvpb.TransactionRetryWithProtoRefreshError.ConflictingTxn
-	// is populated which is only the case for some retry reasons
-	// (like REASON_INTENT during a refresh) that doesn't happen
-	// with write buffering.
-	//
-	// Write buffering produces a different error than the
-	// non-buffered case because of #146732.
-	//
-	// Despite #146732, however, we should be able to annotate the
-	// error received in this test with conflicting txn
-	// information.
-	//
-	// TODO(#146732, #146734): Allow write buffering in this test
-	// once one of the two bugs are fixed.
-	connDefault.Exec(t, "SET CLUSTER SETTING kv.transaction.write_buffering.enabled = false")
 
 	// Set up myUsers table with 2 users.
-	connDefault.Exec(t, "CREATE TABLE myUsers (k INT PRIMARY KEY, name STRING, city STRING)")
-	connDefault.Exec(t, "INSERT INTO myUsers VALUES (1, 'WENDY', 'NYC'), (2, 'NOVI', 'TORONTO')")
+	connDefault.Exec(t, "CREATE TABLE myUsers (name STRING, city STRING)")
+	connDefault.Exec(t, "INSERT INTO myUsers VALUES ('WENDY', 'NYC'), ('NOVI', 'TORONTO')")
 
 	conn1.Exec(t, "SET SESSION application_name=$1", appName)
 	conn2.Exec(t, "SET SESSION application_name=$1", appName)
 
+	// The first 2 recorded txns are setting the session name.
+	conflictingTxns = conflictingTxns[2:]
+
 	testutils.RunTrueAndFalse(t, "enable recording SERIALIZATION_CONFLICT events", func(t *testing.T, enabled bool) {
 		contention.EnableSerializationConflictEvents.Override(ctx, &srv.ApplicationLayer().ClusterSettings().SV, enabled)
-		// Ignore any recorded txns before the test begins.
-		conflictingTxns = conflictingTxns[:0]
 		// We will simulate a 40001 transaction retry error due to conflicting locks.
 		// Transaction 1 will fail on COMMIT.
 		tx1 := conn1.Begin(t)
@@ -574,16 +484,12 @@ SELECT query,
        COALESCE(last_error_code, '') last_error_code,
        COALESCE(last_error_redactable, '') last_error
 FROM crdb_internal.node_txn_execution_insights 
-WHERE app_name = $1
-AND query = 'SELECT * FROM myusers WHERE city = _ ; UPDATE myusers SET name = _ WHERE city = _'`, appName)
+WHERE app_name = $1`, appName)
 
 					return row.Scan(&query, &problems, &status, &errorCode, &errorMsg)
 				})
 
-				require.Equalf(t,
-					"SELECT * FROM myusers WHERE city = _ ; UPDATE myusers SET name = _ WHERE city = _", query,
-					"unexpected txn insight found - query: %s, problems: %s, status: %s, errCode: %s, errMsg: %s",
-					query, problems, status, errorCode, errorMsg)
+				require.Equal(t, "SELECT * FROM myusers WHERE city = '_' ; UPDATE myusers SET name = '_' WHERE city = '_'", query)
 				expectedProblem := "{FailedExecution}"
 				replacedSlowProblems := problems
 				if problems != expectedProblem {
@@ -605,7 +511,6 @@ AND query = 'SELECT * FROM myusers WHERE city = _ ; UPDATE myusers SET name = _ 
 		var txRetryErr *kvpb.TransactionRetryWithProtoRefreshError
 		require.Error(t, conflictingTxns[0].err)
 		require.ErrorAs(t, conflictingTxns[0].err, &txRetryErr)
-		require.NotNil(t, txRetryErr.ConflictingTxn)
 		conflictingTxnID := txRetryErr.ConflictingTxn.ID
 
 		if enabled {
@@ -645,6 +550,8 @@ WHERE contention_type = 'SERIALIZATION_CONFLICT'`)
 			require.NoError(t, err)
 			require.False(t, rows.Next())
 		}
+
+		conflictingTxns = make([]txnInConflict, 0, 2)
 	})
 }
 
@@ -655,13 +562,15 @@ func TestInsightsPriorityIntegration(t *testing.T) {
 	const appName = "TestInsightsPriorityIntegration"
 
 	ctx := context.Background()
-	srv, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	sv := &srv.ApplicationLayer().ClusterSettings().SV
+	settings := cluster.MakeTestingClusterSettings()
+	args := base.TestClusterArgs{ServerArgs: base.TestServerArgs{Settings: settings}}
+	tc := testcluster.StartTestCluster(t, 1, args)
+	defer tc.Stopper().Stop(ctx)
+	conn := tc.ServerConn(0)
 
 	// Enable detection by setting a latencyThreshold > 0.
 	latencyThreshold := 50 * time.Millisecond
-	insights.LatencyThreshold.Override(ctx, sv, latencyThreshold)
+	insights.LatencyThreshold.Override(ctx, &settings.SV, latencyThreshold)
 
 	_, err := conn.ExecContext(ctx, "SET SESSION application_name=$1", appName)
 	require.NoError(t, err)
@@ -673,7 +582,7 @@ func TestInsightsPriorityIntegration(t *testing.T) {
 	_, err = conn.ExecContext(ctx, "SELECT pg_sleep(.11)")
 	require.NoError(t, err)
 
-	testutils.SucceedsSoon(t, func() error {
+	testutils.SucceedsWithin(t, func() error {
 		row := conn.QueryRowContext(ctx, "SELECT "+
 			"implicit_txn "+
 			"FROM crdb_internal.node_execution_insights where "+
@@ -690,7 +599,7 @@ func TestInsightsPriorityIntegration(t *testing.T) {
 		}
 
 		return nil
-	})
+	}, 2*time.Second)
 
 	var priorities = []struct {
 		setPriorityQuery      string
@@ -701,31 +610,31 @@ func TestInsightsPriorityIntegration(t *testing.T) {
 		{
 			setPriorityQuery:      "SET TRANSACTION PRIORITY LOW",
 			query:                 "INSERT INTO t(id, s) VALUES ('test', 'originalValue')",
-			queryNoValues:         "INSERT INTO t(id, s) VALUES (_, __more__)",
+			queryNoValues:         "INSERT INTO t(id, s) VALUES ('_', '_')",
 			expectedPriorityValue: "low",
 		},
 		{
 			setPriorityQuery:      "SET TRANSACTION PRIORITY NORMAL",
 			query:                 "UPDATE t set s = 'updatedValue' where id = 'test'",
-			queryNoValues:         "UPDATE t SET s = _ WHERE id = _",
+			queryNoValues:         "UPDATE t SET s = '_' WHERE id = '_'",
 			expectedPriorityValue: "normal",
 		},
 		{
 			setPriorityQuery:      "SELECT 1", // use a dummy query to validate default scenario
 			query:                 "UPDATE t set s = 'updatedValue'",
-			queryNoValues:         "UPDATE t SET s = _",
+			queryNoValues:         "UPDATE t SET s = '_'",
 			expectedPriorityValue: "normal",
 		},
 		{
 			setPriorityQuery:      "SET TRANSACTION PRIORITY HIGH",
 			query:                 "DELETE FROM t WHERE t.s = 'originalValue'",
-			queryNoValues:         "DELETE FROM t WHERE t.s = _",
+			queryNoValues:         "DELETE FROM t WHERE t.s = '_'",
 			expectedPriorityValue: "high",
 		},
 	}
 
 	for _, p := range priorities {
-		testutils.SucceedsSoon(t, func() error {
+		testutils.SucceedsWithin(t, func() error {
 			tx, errTxn := conn.BeginTx(ctx, &gosql.TxOptions{})
 			require.NoError(t, errTxn)
 
@@ -740,9 +649,9 @@ func TestInsightsPriorityIntegration(t *testing.T) {
 			errTxn = tx.Commit()
 			require.NoError(t, errTxn)
 			return nil
-		})
+		}, 2*time.Second)
 
-		testutils.SucceedsSoon(t, func() error {
+		testutils.SucceedsWithin(t, func() error {
 			row := conn.QueryRowContext(ctx, "SELECT "+
 				"query, "+
 				"priority, "+
@@ -771,7 +680,7 @@ func TestInsightsPriorityIntegration(t *testing.T) {
 			}
 
 			return nil
-		})
+		}, 2*time.Second)
 	}
 }
 
@@ -965,12 +874,16 @@ func TestInsightsIndexRecommendationIntegration(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderRace(t, "expensive tests")
+	skip.UnderStressRace(t, "expensive tests")
 
 	ctx := context.Background()
-	srv, sqlConn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	ts := srv.ApplicationLayer()
+	settings := cluster.MakeTestingClusterSettings()
+	args := base.TestClusterArgs{ServerArgs: base.TestServerArgs{Settings: settings}}
+	tc := testcluster.StartTestCluster(t, 1, args)
+	defer tc.Stopper().Stop(ctx)
+
+	ts := tc.ApplicationLayer(0)
+	sqlConn := tc.ServerConn(0)
 
 	// Enable detection by setting a latencyThreshold > 0.
 	latencyThreshold := 30 * time.Millisecond
@@ -997,7 +910,7 @@ func TestInsightsIndexRecommendationIntegration(t *testing.T) {
 	}
 
 	// Verify the table content is valid.
-	testutils.SucceedsSoon(t, func() error {
+	testutils.SucceedsWithin(t, func() error {
 		rows, err := sqlConn.QueryContext(ctx, "SELECT "+
 			"query, "+
 			"array_to_string(index_recommendations, ';') as cmb_index_recommendations "+
@@ -1038,44 +951,5 @@ func TestInsightsIndexRecommendationIntegration(t *testing.T) {
 		}
 
 		return nil
-	})
-}
-
-// TestInsightsClearsPerSessionMemory ensures that memory allocated
-// for a session is freed when that session is closed.
-func TestInsightsClearsPerSessionMemory(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	sessionClosedCh := make(chan struct{})
-	clearedSessionID := clusterunique.ID{}
-	ts := serverutils.StartServerOnly(t, base.TestServerArgs{
-		Knobs: base.TestingKnobs{
-			SQLStatsKnobs: &sqlstats.TestingKnobs{
-				OnIngesterSessionClear: func(sessionID clusterunique.ID) {
-					defer close(sessionClosedCh)
-					clearedSessionID = sessionID
-				},
-			},
-		},
-	})
-	defer ts.Stopper().Stop(ctx)
-	s := ts.ApplicationLayer()
-	conn1 := sqlutils.MakeSQLRunner(s.SQLConn(t))
-	conn2 := sqlutils.MakeSQLRunner(s.SQLConn(t))
-
-	var sessionID1 string
-	conn1.QueryRow(t, "SHOW session_id").Scan(&sessionID1)
-
-	// Start a transaction and cancel the session - ensure that the memory is freed.
-	conn1.Exec(t, "BEGIN")
-	for i := 0; i < 5; i++ {
-		conn1.Exec(t, "SELECT 1")
-	}
-
-	conn2.Exec(t, "CANCEL SESSION $1", sessionID1)
-
-	<-sessionClosedCh
-	require.Equal(t, clearedSessionID.String(), sessionID1)
+	}, 1*time.Second)
 }

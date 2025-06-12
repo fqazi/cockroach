@@ -55,6 +55,20 @@ func TestDockerCLI_test_cluster_name(t *testing.T) {
 	runTestDockerCLI(t, "test_cluster_name", "../cli/interactive_tests/test_cluster_name.tcl")
 }
 
+func TestDockerCLI_test_connect(t *testing.T) {
+	s := log.Scope(t)
+	defer s.Close(t)
+
+	runTestDockerCLI(t, "test_connect", "../cli/interactive_tests/test_connect.tcl")
+}
+
+func TestDockerCLI_test_connect_cmd(t *testing.T) {
+	s := log.Scope(t)
+	defer s.Close(t)
+
+	runTestDockerCLI(t, "test_connect_cmd", "../cli/interactive_tests/test_connect_cmd.tcl")
+}
+
 func TestDockerCLI_test_contextual_help(t *testing.T) {
 	s := log.Scope(t)
 	defer s.Close(t)
@@ -118,6 +132,13 @@ func TestDockerCLI_test_demo_memory_warning(t *testing.T) {
 	runTestDockerCLI(t, "test_demo_memory_warning", "../cli/interactive_tests/test_demo_memory_warning.tcl")
 }
 
+func TestDockerCLI_test_demo_multitenant(t *testing.T) {
+	s := log.Scope(t)
+	defer s.Close(t)
+
+	runTestDockerCLI(t, "test_demo_multitenant", "../cli/interactive_tests/test_demo_multitenant.tcl")
+}
+
 func TestDockerCLI_test_demo_networking(t *testing.T) {
 	s := log.Scope(t)
 	defer s.Close(t)
@@ -158,13 +179,6 @@ func TestDockerCLI_test_disable_replication(t *testing.T) {
 	defer s.Close(t)
 
 	runTestDockerCLI(t, "test_disable_replication", "../cli/interactive_tests/test_disable_replication.tcl")
-}
-
-func TestDockerCLI_test_distinguished_name_validation(t *testing.T) {
-	s := log.Scope(t)
-	defer s.Close(t)
-
-	runTestDockerCLI(t, "test_distinguished_name_validation", "../cli/interactive_tests/test_distinguished_name_validation.tcl")
 }
 
 func TestDockerCLI_test_dump_sig(t *testing.T) {
@@ -256,13 +270,6 @@ func TestDockerCLI_test_init_command(t *testing.T) {
 	defer s.Close(t)
 
 	runTestDockerCLI(t, "test_init_command", "../cli/interactive_tests/test_init_command.tcl")
-}
-
-func TestDockerCLI_test_init_virtualized_command(t *testing.T) {
-	s := log.Scope(t)
-	defer s.Close(t)
-
-	runTestDockerCLI(t, "test_init_virtualized_command", "../cli/interactive_tests/test_init_virtualized_command.tcl")
 }
 
 func TestDockerCLI_test_interrupt(t *testing.T) {
@@ -382,13 +389,6 @@ func TestDockerCLI_test_sb_recreate_mr(t *testing.T) {
 	defer s.Close(t)
 
 	runTestDockerCLI(t, "test_sb_recreate_mr", "../cli/interactive_tests/test_sb_recreate_mr.tcl")
-}
-
-func TestDockerCLI_test_sb_recreate_rls(t *testing.T) {
-	s := log.Scope(t)
-	defer s.Close(t)
-
-	runTestDockerCLI(t, "test_sb_recreate_rls", "../cli/interactive_tests/test_sb_recreate_rls.tcl")
 }
 
 func TestDockerCLI_test_secure(t *testing.T) {

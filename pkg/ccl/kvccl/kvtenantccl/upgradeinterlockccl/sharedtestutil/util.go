@@ -44,7 +44,7 @@ var Tests = map[string]TestConfig{
 		ExpUpgradeErr: [NumConfigs][]string{
 			{""},
 			{"pq: upgrade failed due to active SQL servers with incompatible binary version",
-				fmt.Sprintf("sql server 2 is running a binary version %s which is less than the attempted upgrade version", clusterversion.MinSupported.String())},
+				fmt.Sprintf("sql server 2 is running a binary version %s which is less than the attempted upgrade version", clusterversion.TestingBinaryMinSupportedVersion.String())},
 		},
 		ExpStartupErr: [NumConfigs]string{
 			"",

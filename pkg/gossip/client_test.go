@@ -70,13 +70,13 @@ func startGossipAtAddr(
 }
 
 type fakeGossipServer struct {
-	nodeAddr     util.UnresolvedAddr
-	receivedArgs chan Request
+	nodeAddr   util.UnresolvedAddr
+	nodeIDChan chan roachpb.NodeID
 }
 
 func newFakeGossipServer(grpcServer *grpc.Server, stopper *stop.Stopper) *fakeGossipServer {
 	s := &fakeGossipServer{
-		receivedArgs: make(chan Request, 1),
+		nodeIDChan: make(chan roachpb.NodeID, 1),
 	}
 	RegisterGossipServer(grpcServer, s)
 	return s
@@ -90,7 +90,7 @@ func (s *fakeGossipServer) Gossip(stream Gossip_GossipServer) error {
 		}
 
 		select {
-		case s.receivedArgs <- *args:
+		case s.nodeIDChan <- args.NodeID:
 		default:
 		}
 
@@ -105,11 +105,10 @@ func (s *fakeGossipServer) Gossip(stream Gossip_GossipServer) error {
 
 // startFakeServerGossips creates local gossip instances and remote
 // faked gossip instance. The remote gossip instance launches its
-// faked gossip service just for check the client message. Also, it returns the
-// rpc context for both local and remote servers.
+// faked gossip service just for check the client message.
 func startFakeServerGossips(
 	t *testing.T, clusterID uuid.UUID, localNodeID roachpb.NodeID, stopper *stop.Stopper,
-) (*Gossip, *fakeGossipServer, *rpc.Context, *rpc.Context) {
+) (*Gossip, *fakeGossipServer) {
 	ctx := context.Background()
 	clock := hlc.NewClockForTesting(nil)
 	lRPCContext := rpc.NewInsecureTestingContextWithClusterID(ctx, clock, stopper, clusterID)
@@ -131,7 +130,7 @@ func startFakeServerGossips(
 	addr := rln.Addr()
 	remote.nodeAddr = util.MakeUnresolvedAddr(addr.Network(), addr.String())
 
-	return local, remote, lRPCContext, rRPCContext
+	return local, remote
 }
 
 func gossipSucceedsSoon(
@@ -244,7 +243,7 @@ func TestClientGossipMetrics(t *testing.T) {
 					s.nodeMetrics.BytesReceived,
 				} {
 					if count := counter.Count(); count <= 0 {
-						return errors.Errorf("%d: expected metrics counter %q > 0; = %d", i, counter.GetName(false /* useStaticLabels */), count)
+						return errors.Errorf("%d: expected metrics counter %q > 0; = %d", i, counter.GetName(), count)
 					}
 				}
 			}
@@ -284,7 +283,7 @@ func TestClientNodeID(t *testing.T) {
 	clusterID := uuid.MakeV4()
 
 	localNodeID := roachpb.NodeID(1)
-	local, remote, _, _ := startFakeServerGossips(t, clusterID, localNodeID, stopper)
+	local, remote := startFakeServerGossips(t, clusterID, localNodeID, stopper)
 
 	clock := hlc.NewClockForTesting(nil)
 	// Use an insecure context. We're talking to tcp socket which are not in the certs.
@@ -306,9 +305,9 @@ func TestClientNodeID(t *testing.T) {
 	for {
 		// Wait for c.gossip to start.
 		select {
-		case args := <-remote.receivedArgs:
-			if args.NodeID != localNodeID {
-				t.Fatalf("client should send NodeID with %v, got %v", localNodeID, args.NodeID)
+		case receivedNodeID := <-remote.nodeIDChan:
+			if receivedNodeID != localNodeID {
+				t.Fatalf("client should send NodeID with %v, got %v", localNodeID, receivedNodeID)
 			}
 			return
 		case <-disconnected:
@@ -535,87 +534,4 @@ func TestClientForwardUnresolved(t *testing.T) {
 	if !client.forwardAddr.Equal(&newAddr) {
 		t.Fatalf("unexpected forward address %v, expected %v", client.forwardAddr, &newAddr)
 	}
-}
-
-// TestClientHighStampsDiff verifies that a client sends a diff of the high
-// water stamps rather than sending the whole map.
-func TestClientSendsHighStampsDiff(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	ctx := context.Background()
-	stopper := stop.NewStopper()
-	disconnected := make(chan *client, 1)
-
-	// Shared cluster ID by all gossipers (this ensures that the gossipers
-	// don't talk to servers from unrelated tests by accident).
-	clusterID := uuid.MakeV4()
-
-	localNodeID := roachpb.NodeID(1)
-	local, remote, _, rCtx := startFakeServerGossips(t, clusterID, localNodeID, stopper)
-
-	clock := hlc.NewClockForTesting(nil)
-	// Use an insecure context. We're talking to tcp socket which are not in the
-	// certs.
-	rpc.NewInsecureTestingContextWithClusterID(ctx, clock, stopper, clusterID)
-
-	// Create a client and let it connect to the remote address.
-	c := newClient(log.MakeTestingAmbientCtxWithNewTracer(), &remote.nodeAddr, roachpb.Locality{}, makeMetrics())
-	disconnected <- c
-
-	ctxNew, cancel := context.WithCancel(c.AnnotateCtx(context.Background()))
-	defer func() {
-		cancel()
-	}()
-
-	conn, err := rCtx.GRPCUnvalidatedDial(c.addr.String(), roachpb.Locality{}).Connect(ctxNew)
-	require.NoError(t, err)
-
-	stream, err := NewGossipClient(conn).Gossip(ctx)
-	require.NoError(t, err)
-
-	// Add an info to generate some deltas and allow the request to be sent.
-	err = local.AddInfo("local-key", nil, time.Hour)
-	require.NoError(t, err)
-
-	// The first thing the client does is to request the gossips from the server.
-	// It attaches ALL the high water timestamps that it has.
-	err = c.requestGossip(local, stream)
-	require.NoError(t, err)
-
-	args := <-remote.receivedArgs
-	local.mu.Lock()
-	currentHighStamps := local.mu.is.getHighWaterStamps()
-	local.mu.Unlock()
-	require.Equal(t, args.HighWaterStamps, currentHighStamps)
-
-	// Expect that the requests will only contain high water stamps if they are
-	// different from what was previously sent. Since we didn't change any info,
-	// the client should send an empty map of high water stamps.
-	err = c.sendGossip(local, stream, true /* firstReq */)
-	require.NoError(t, err)
-
-	args = <-remote.receivedArgs
-	require.Empty(t, args.HighWaterStamps)
-
-	// Adding an info causes an update in the high water stamps.
-	err = local.AddInfo("local-key", nil, time.Hour)
-	require.NoError(t, err)
-
-	err = c.sendGossip(local, stream, false /* firstReq */)
-	require.NoError(t, err)
-
-	// Now that the timestamp is newer than what was previously sent, expect that
-	// the high water stamps will contain the new timestamp.
-	args = <-remote.receivedArgs
-	local.mu.Lock()
-	currentHighStamps = local.mu.is.getHighWaterStamps()
-	local.mu.Unlock()
-	require.Equal(t, args.HighWaterStamps, currentHighStamps)
-
-	defer func() {
-		stopper.Stop(ctx)
-		if c != <-disconnected {
-			t.Errorf("expected client disconnect after remote close")
-		}
-	}()
 }

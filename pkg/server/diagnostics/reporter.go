@@ -67,6 +67,7 @@ var reportFrequency = settings.RegisterDurationSetting(
 	"diagnostics.reporting.interval",
 	"interval at which diagnostics data should be reported",
 	time.Hour,
+	settings.NonNegativeDuration,
 	settings.WithPublic)
 
 // Reporter is a helper struct that phones home to report usage and diagnostics.
@@ -181,9 +182,6 @@ func shouldReportDiagnostics(ctx context.Context, st *cluster.Settings) bool {
 // phones home to report usage and diagnostics.
 func (r *Reporter) PeriodicallyReportDiagnostics(ctx context.Context, stopper *stop.Stopper) {
 	_ = stopper.RunAsyncTaskEx(ctx, stop.TaskOpts{TaskName: "diagnostics", SpanOpt: stop.SterileRootSpan}, func(ctx context.Context) {
-		var cancel context.CancelFunc
-		ctx, cancel = stopper.WithCancelOnQuiesce(ctx)
-		defer cancel()
 		defer logcrash.RecoverAndReportNonfatalPanic(ctx, &r.Settings.SV)
 		nextReport := r.StartTime
 
@@ -204,6 +202,7 @@ func (r *Reporter) PeriodicallyReportDiagnostics(ctx context.Context, stopper *s
 			case <-stopper.ShouldQuiesce():
 				return
 			case <-timer.C:
+				timer.Read = true
 			}
 		}
 	})
@@ -279,10 +278,7 @@ func (r *Reporter) ReportDiagnostics(ctx context.Context) {
 		log.Warningf(ctx, "failed to report node usage metrics: status: %s, body: %s", res.Status, b)
 		return
 	}
-	err = r.SQLServer.GetReportedSQLStatsProvider().Reset(ctx)
-	if err != nil {
-		log.Warningf(ctx, "failed to reset SQL stats: %s", err)
-	}
+	r.SQLServer.GetReportedSQLStatsController().ResetLocalSQLStats(ctx)
 }
 
 // GetLastSuccessfulTelemetryPing will return the timestamp of when we last got
@@ -328,7 +324,7 @@ func (r *Reporter) CreateReport(
 	// flattened for quick reads, but we'd rather only report the non-defaults.
 	if it, err := r.InternalExec.QueryIteratorEx(
 		ctx, "read-setting", nil, /* txn */
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		"SELECT name FROM system.settings",
 	); err != nil {
 		log.Warningf(ctx, "failed to read settings: %s", err)
@@ -353,7 +349,7 @@ func (r *Reporter) CreateReport(
 		ctx,
 		"read-zone-configs",
 		nil, /* txn */
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		"SELECT id, config FROM system.zones",
 	); err != nil {
 		log.Warningf(ctx, "%v", err)
@@ -383,7 +379,7 @@ func (r *Reporter) CreateReport(
 		}
 	}
 
-	info.SqlStats, err = r.SQLServer.GetScrubbedReportingStats(ctx, 100 /* limit */, false)
+	info.SqlStats, err = r.SQLServer.GetScrubbedReportingStats(ctx)
 	if err != nil {
 		if log.V(2 /* level */) {
 			log.Warningf(ctx, "unexpected error encountered when getting scrubbed reporting stats: %s", err)

@@ -113,7 +113,7 @@ func TestRandomized(t *testing.T) {
 	})
 	for i := 0; i < numOps; i++ {
 		updates := getRandomUpdates()
-		_, _, err := store.apply(ctx, updates...)
+		_, _, err := store.apply(ctx, false /* dryrun */, updates...)
 		require.NoError(t, err)
 		for _, update := range updates {
 			if testSpan.Overlaps(update.GetTarget().GetSpan()) {
@@ -170,7 +170,7 @@ func TestRandomized(t *testing.T) {
 
 			// Ensure that the config accessed through the StoreReader interface is
 			// the same as above.
-			storeReaderConfig, _, found := store.getSpanConfigForKey(ctx, roachpb.RKey(testSpan.Key))
+			storeReaderConfig, found := store.getSpanConfigForKey(ctx, roachpb.RKey(testSpan.Key))
 			require.True(t, found)
 			require.True(t, foundSpanConfigPair.config.Equal(storeReaderConfig))
 		})
@@ -260,7 +260,7 @@ func TestRandomized(t *testing.T) {
 			require.Truef(t, querySpan.ProperlyContainsKey(curSplitKey.AsRawKey()),
 				"invalid split key %s (over span %s)", curSplitKey, querySpan)
 
-			confAtCurSplitKey, _, found := store.getSpanConfigForKey(ctx, curSplitKey)
+			confAtCurSplitKey, found := store.getSpanConfigForKey(ctx, curSplitKey)
 			require.True(t, found)
 
 			if i == 0 {

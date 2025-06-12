@@ -8,10 +8,9 @@ package inverted
 import (
 	"bytes"
 	"fmt"
-	"strings"
+	"strconv"
 
 	"github.com/cockroachdb/cockroach/pkg/keysbase"
-	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/treeprinter"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
@@ -103,7 +102,7 @@ func MakeSingleValSpan(val EncVal) Span {
 
 // IsSingleVal returns true iff the span is equivalent to [val, val].
 func (s Span) IsSingleVal() bool {
-	return s.Start != nil && bytes.Equal(keysbase.PrefixEnd(s.Start), s.End)
+	return bytes.Equal(keysbase.PrefixEnd(s.Start), s.End)
 }
 
 // Equals returns true if this span has the same start and end as the given
@@ -154,20 +153,16 @@ func (is Spans) Format(tp treeprinter.Node, label string, redactable bool) {
 }
 
 func formatSpan(span Span, redactable bool) string {
+	end := span.End
 	spanEndOpenOrClosed := ')'
-	vals, _ := encoding.PrettyPrintValuesWithTypes(nil, span.Start)
-	start := strings.Join(vals, "/")
-	var end string
 	if span.IsSingleVal() {
-		end = start
+		end = span.Start
 		spanEndOpenOrClosed = ']'
-	} else {
-		vals, _ := encoding.PrettyPrintValuesWithTypes(nil, span.End)
-		end = strings.Join(vals, "/")
 	}
-	output := fmt.Sprintf("[%s, %s%c", start, end, spanEndOpenOrClosed)
+	output := fmt.Sprintf("[%s, %s%c", strconv.Quote(string(span.Start)),
+		strconv.Quote(string(end)), spanEndOpenOrClosed)
 	if redactable {
-		output = string(redact.Sprintf("%s", encoding.Unsafe(output)))
+		output = string(redact.Sprintf("%s", redact.Unsafe(output)))
 	}
 	return output
 }
@@ -309,7 +304,7 @@ type SpanExpression struct {
 	// produce duplicate primary keys. Otherwise, Unique is false. Unique may
 	// be true for certain JSON or Array SpanExpressions, and it holds when
 	// unique SpanExpressions are combined with And. It does not hold when
-	// these non-empty SpanExpressions are combined with Or.
+	// these SpanExpressions are combined with Or.
 	//
 	// Once a SpanExpression is built, this field is relevant if the root
 	// SpanExpression has no children (i.e., Operator is None). In this case,
@@ -685,17 +680,14 @@ func intersectSpanExpressions(left, right *SpanExpression) *SpanExpression {
 		left.FactoredUnionSpans = subtractSpans(left.FactoredUnionSpans, expr.FactoredUnionSpans)
 		right.FactoredUnionSpans = subtractSpans(right.FactoredUnionSpans, expr.FactoredUnionSpans)
 	}
-	tryPruneChildren(expr)
+	tryPruneChildren(expr, SetIntersection)
 	return expr
 }
 
 // Unions two SpanExpressions.
 func unionSpanExpressions(left, right *SpanExpression) *SpanExpression {
 	expr := &SpanExpression{
-		Tight: left.Tight && right.Tight,
-		// Whenever one side is empty, we keep the Unique property from the
-		// other side.
-		Unique:             (left.Unique && len(right.FactoredUnionSpans) == 0) || (right.Unique && len(left.FactoredUnionSpans) == 0),
+		Tight:              left.Tight && right.Tight,
 		SpansToRead:        unionSpans(left.SpansToRead, right.SpansToRead),
 		FactoredUnionSpans: unionSpans(left.FactoredUnionSpans, right.FactoredUnionSpans),
 		Operator:           SetUnion,
@@ -704,13 +696,13 @@ func unionSpanExpressions(left, right *SpanExpression) *SpanExpression {
 	}
 	left.FactoredUnionSpans = nil
 	right.FactoredUnionSpans = nil
-	tryPruneChildren(expr)
+	tryPruneChildren(expr, SetUnion)
 	return expr
 }
 
 // tryPruneChildren takes an expr with two child *SpanExpression and removes
 // children when safe to do so.
-func tryPruneChildren(expr *SpanExpression) {
+func tryPruneChildren(expr *SpanExpression, op SetOperator) {
 	isEmptyExpr := func(e *SpanExpression) bool {
 		return len(e.FactoredUnionSpans) == 0 && e.Left == nil && e.Right == nil
 	}

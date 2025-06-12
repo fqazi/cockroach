@@ -551,93 +551,6 @@ project
       │         └── unfiltered-cols: (7-11)
       └── filters (true)
 
-# Semi-join with empty right input. The cardinality should be zero.
-expr
-(SemiJoin
-  (Values
-    [
-      (Tuple [ (Const 1 "int") (Const 10 "int") ] "tuple{int}" )
-      (Tuple [ (Const 2 "int") (Const 20 "int") ] "tuple{int}" )
-      (Tuple [ (Const 3 "int") (Const 30 "int") ] "tuple{int}" )
-    ]
-    [ (Cols [ (NewColumn "x" "int") (NewColumn "y" "int") ]) ]
-  )
-  (Select (Scan [ (Table "uv") (Cols "u,v") ]) [ (False) ])
-  [ (Eq (Var "x") (Var "u")) ]
-  []
-)
-----
-semi-join (hash)
- ├── columns: x:1(int!null) y:2(int!null)
- ├── cardinality: [0 - 0]
- ├── prune: (2)
- ├── values
- │    ├── columns: x:1(int!null) y:2(int!null)
- │    ├── cardinality: [3 - 3]
- │    ├── prune: (1,2)
- │    ├── tuple [type=tuple{int}]
- │    │    ├── const: 1 [type=int]
- │    │    └── const: 10 [type=int]
- │    ├── tuple [type=tuple{int}]
- │    │    ├── const: 2 [type=int]
- │    │    └── const: 20 [type=int]
- │    └── tuple [type=tuple{int}]
- │         ├── const: 3 [type=int]
- │         └── const: 30 [type=int]
- ├── select
- │    ├── columns: u:3(int) v:4(int!null)
- │    ├── cardinality: [0 - 0]
- │    ├── prune: (3,4)
- │    ├── scan uv
- │    │    ├── columns: u:3(int) v:4(int!null)
- │    │    └── prune: (3,4)
- │    └── filters
- │         └── false [type=bool, constraints=(contradiction; tight)]
- └── filters
-      └── eq [type=bool, outer=(1,3), constraints=(/1: (/NULL - ]; /3: (/NULL - ]), fd=(1)==(3), (3)==(1)]
-           ├── variable: x:1 [type=int]
-           └── variable: u:3 [type=int]
-
-# Semi-join with False filters. The cardinality should be zero.
-expr
-(SemiJoin
-  (Values
-    [
-      (Tuple [ (Const 1 "int") (Const 10 "int") ] "tuple{int}" )
-      (Tuple [ (Const 2 "int") (Const 20 "int") ] "tuple{int}" )
-      (Tuple [ (Const 3 "int") (Const 30 "int") ] "tuple{int}" )
-    ]
-    [ (Cols [ (NewColumn "x" "int") (NewColumn "y" "int") ]) ]
-  )
-  (Scan [ (Table "uv") (Cols "u,v") ])
-  [ (False) ]
-  []
-)
-----
-semi-join (cross)
- ├── columns: x:1(int!null) y:2(int!null)
- ├── cardinality: [0 - 0]
- ├── prune: (1,2)
- ├── values
- │    ├── columns: x:1(int!null) y:2(int!null)
- │    ├── cardinality: [3 - 3]
- │    ├── prune: (1,2)
- │    ├── tuple [type=tuple{int}]
- │    │    ├── const: 1 [type=int]
- │    │    └── const: 10 [type=int]
- │    ├── tuple [type=tuple{int}]
- │    │    ├── const: 2 [type=int]
- │    │    └── const: 20 [type=int]
- │    └── tuple [type=tuple{int}]
- │         ├── const: 3 [type=int]
- │         └── const: 30 [type=int]
- ├── scan uv
- │    ├── columns: u:3(int) v:4(int!null)
- │    ├── prune: (3,4)
- │    └── unfiltered-cols: (3-7)
- └── filters
-      └── false [type=bool, constraints=(contradiction; tight)]
-
 # Semi-join-apply.
 opt
 SELECT * FROM xysd WHERE EXISTS(SELECT * FROM uv WHERE v=x OFFSET 1)
@@ -738,95 +651,6 @@ anti-join (hash)
       └── eq [type=bool, outer=(1,7), constraints=(/1: (/NULL - ]; /7: (/NULL - ]), fd=(1)==(7), (7)==(1)]
            ├── variable: x:1 [type=int]
            └── variable: u:7 [type=int]
-
-# Anti-join with empty right input. The cardinality of the left input should be
-# passed through.
-expr
-(AntiJoin
-  (Values
-    [
-      (Tuple [ (Const 1 "int") (Const 10 "int") ] "tuple{int}" )
-      (Tuple [ (Const 2 "int") (Const 20 "int") ] "tuple{int}" )
-      (Tuple [ (Const 3 "int") (Const 30 "int") ] "tuple{int}" )
-    ]
-    [ (Cols [ (NewColumn "x" "int") (NewColumn "y" "int") ]) ]
-  )
-  (Select (Scan [ (Table "uv") (Cols "u,v") ]) [ (False) ])
-  [ (Eq (Var "x") (Var "u")) ]
-  []
-)
-----
-anti-join (hash)
- ├── columns: x:1(int!null) y:2(int!null)
- ├── cardinality: [3 - 3]
- ├── prune: (2)
- ├── values
- │    ├── columns: x:1(int!null) y:2(int!null)
- │    ├── cardinality: [3 - 3]
- │    ├── prune: (1,2)
- │    ├── tuple [type=tuple{int}]
- │    │    ├── const: 1 [type=int]
- │    │    └── const: 10 [type=int]
- │    ├── tuple [type=tuple{int}]
- │    │    ├── const: 2 [type=int]
- │    │    └── const: 20 [type=int]
- │    └── tuple [type=tuple{int}]
- │         ├── const: 3 [type=int]
- │         └── const: 30 [type=int]
- ├── select
- │    ├── columns: u:3(int) v:4(int!null)
- │    ├── cardinality: [0 - 0]
- │    ├── prune: (3,4)
- │    ├── scan uv
- │    │    ├── columns: u:3(int) v:4(int!null)
- │    │    └── prune: (3,4)
- │    └── filters
- │         └── false [type=bool, constraints=(contradiction; tight)]
- └── filters
-      └── eq [type=bool, outer=(1,3), constraints=(/1: (/NULL - ]; /3: (/NULL - ]), fd=(1)==(3), (3)==(1)]
-           ├── variable: x:1 [type=int]
-           └── variable: u:3 [type=int]
-
-# Anti-join with False filters. The cardinality of the left input should be
-# passed through.
-expr
-(AntiJoin
-  (Values
-    [
-      (Tuple [ (Const 1 "int") (Const 10 "int") ] "tuple{int}" )
-      (Tuple [ (Const 2 "int") (Const 20 "int") ] "tuple{int}" )
-      (Tuple [ (Const 3 "int") (Const 30 "int") ] "tuple{int}" )
-    ]
-    [ (Cols [ (NewColumn "x" "int") (NewColumn "y" "int") ]) ]
-  )
-  (Scan [ (Table "uv") (Cols "u,v") ])
-  [ (False) ]
-  []
-)
-----
-anti-join (cross)
- ├── columns: x:1(int!null) y:2(int!null)
- ├── cardinality: [3 - 3]
- ├── prune: (1,2)
- ├── values
- │    ├── columns: x:1(int!null) y:2(int!null)
- │    ├── cardinality: [3 - 3]
- │    ├── prune: (1,2)
- │    ├── tuple [type=tuple{int}]
- │    │    ├── const: 1 [type=int]
- │    │    └── const: 10 [type=int]
- │    ├── tuple [type=tuple{int}]
- │    │    ├── const: 2 [type=int]
- │    │    └── const: 20 [type=int]
- │    └── tuple [type=tuple{int}]
- │         ├── const: 3 [type=int]
- │         └── const: 30 [type=int]
- ├── scan uv
- │    ├── columns: u:3(int) v:4(int!null)
- │    ├── prune: (3,4)
- │    └── unfiltered-cols: (3-7)
- └── filters
-      └── false [type=bool, constraints=(contradiction; tight)]
 
 # Anti-join-apply.
 opt
@@ -996,38 +820,39 @@ project
 opt
 SELECT * FROM (SELECT count(*) cnt FROM xysd) WHERE EXISTS(SELECT * FROM uv WHERE cnt=1)
 ----
-select
+project
  ├── columns: cnt:7(int!null)
  ├── cardinality: [0 - 1]
  ├── key: ()
  ├── fd: ()-->(7)
- ├── scalar-group-by
- │    ├── columns: count_rows:7(int!null)
- │    ├── cardinality: [1 - 1]
- │    ├── key: ()
- │    ├── fd: ()-->(7)
- │    ├── prune: (7)
- │    ├── scan xysd@xysd_s_d_key
- │    └── aggregations
- │         └── count-rows [as=count_rows:7, type=int]
- └── filters
-      ├── coalesce [type=bool, subquery]
-      │    ├── subquery [type=bool]
-      │    │    └── project
-      │    │         ├── columns: column14:14(bool!null)
-      │    │         ├── cardinality: [0 - 1]
-      │    │         ├── key: ()
-      │    │         ├── fd: ()-->(14)
-      │    │         ├── prune: (14)
-      │    │         ├── scan uv
-      │    │         │    ├── limit: 1
-      │    │         │    └── key: ()
-      │    │         └── projections
-      │    │              └── true [as=column14:14, type=bool]
-      │    └── false [type=bool]
-      └── eq [type=bool, outer=(7), constraints=(/7: [/1 - /1]; tight), fd=()-->(7)]
-           ├── variable: count_rows:7 [type=int]
-           └── const: 1 [type=int]
+ └── inner-join (cross)
+      ├── columns: count_rows:7(int!null)
+      ├── cardinality: [0 - 1]
+      ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-one)
+      ├── key: ()
+      ├── fd: ()-->(7)
+      ├── select
+      │    ├── columns: count_rows:7(int!null)
+      │    ├── cardinality: [0 - 1]
+      │    ├── key: ()
+      │    ├── fd: ()-->(7)
+      │    ├── scalar-group-by
+      │    │    ├── columns: count_rows:7(int!null)
+      │    │    ├── cardinality: [1 - 1]
+      │    │    ├── key: ()
+      │    │    ├── fd: ()-->(7)
+      │    │    ├── prune: (7)
+      │    │    ├── scan xysd@xysd_s_d_key
+      │    │    └── aggregations
+      │    │         └── count-rows [as=count_rows:7, type=int]
+      │    └── filters
+      │         └── eq [type=bool, outer=(7), constraints=(/7: [/1 - /1]; tight), fd=()-->(7)]
+      │              ├── variable: count_rows:7 [type=int]
+      │              └── const: 1 [type=int]
+      ├── scan uv
+      │    ├── limit: 1
+      │    └── key: ()
+      └── filters (true)
 
 # Maximum cardinality of the right input is propagated to the SemiJoin when
 # right rows are guaranteed at most one match each over the join filters.
@@ -1090,7 +915,7 @@ expr
 ----
 semi-join-apply
  ├── columns: a:1(int)
- ├── cardinality: [0 - 0]
+ ├── cardinality: [0 - 10]
  ├── fake-rel
  │    ├── columns: a:1(int)
  │    └── cardinality: [0 - 10]
@@ -1890,9 +1715,9 @@ SELECT (SELECT m FROM
 ) FROM uv
 ----
 with &1
- ├── columns: m:30(int)
+ ├── columns: m:29(int)
  ├── volatile, mutations
- ├── prune: (30)
+ ├── prune: (29)
  ├── project
  │    ├── columns: uv.u:6(int!null) uv.v:7(int!null)
  │    ├── cardinality: [1 - 1]
@@ -1926,11 +1751,11 @@ with &1
  │                   ├── const: 2 [type=int]
  │                   └── function: unique_rowid [type=int]
  └── project
-      ├── columns: m:30(int)
-      ├── prune: (30)
+      ├── columns: m:29(int)
+      ├── prune: (29)
       ├── scan uv
       └── projections
-           └── subquery [as=m:30, type=int, subquery]
+           └── subquery [as=m:29, type=int, subquery]
                 └── values
                      ├── columns: mn.m:21(int!null)
                      ├── cardinality: [0 - 0]
@@ -1945,11 +1770,11 @@ FROM uv
 WHERE NOT EXISTS(SELECT uv.u);
 ----
 values
- ├── columns: "?column?":8(unknown!null)
+ ├── columns: "?column?":7(unknown!null)
  ├── cardinality: [0 - 0]
  ├── key: ()
- ├── fd: ()-->(8)
- └── prune: (8)
+ ├── fd: ()-->(7)
+ └── prune: (7)
 
 # Regression test #43651: outer join with empty key.
 opt
@@ -2462,7 +2287,7 @@ inner-join (hash)
  ├── cardinality: [0 - 1]
  ├── multiplicity: left-rows(exactly-one), right-rows(exactly-one)
  ├── key: ()
- ├── fd: ()-->(1-4,7-10), (1)==(7), (7)==(1), (2)==(8), (8)==(2), (3)==(9), (9)==(3), (4)==(10), (10)==(4)
+ ├── fd: ()-->(1-4,7-10), (7)==(1), (1)==(7), (2)==(8), (8)==(2), (3)==(9), (9)==(3), (4)==(10), (10)==(4)
  ├── prune: (2-4,8-10)
  ├── select
  │    ├── columns: xysd.x:1(int!null) xysd.y:2(int) xysd.s:3(string) xysd.d:4(decimal!null)
@@ -2559,7 +2384,7 @@ inner-join (hash)
  ├── columns: k:1(int!null) v:2(int) r1:3(int!null) r2:4(int) x:7(int!null) y:8(int) s:9(string) d:10(decimal!null) x:13(int!null) y:14(int) s:15(string) d:16(decimal!null)
  ├── multiplicity: left-rows(exactly-one), right-rows(zero-or-more)
  ├── key: (1)
- ├── fd: (1)-->(2-4), (7)-->(8-10), (9,10)~~>(7,8), (13)-->(14-16), (15,16)~~>(13,14), (3)==(7,13), (7)==(3,13), (13)==(3,7), (8)==(14), (14)==(8), (9)==(15), (15)==(9), (10)==(16), (16)==(10)
+ ├── fd: (1)-->(2-4), (7)-->(8-10), (9,10)~~>(7,8), (13)-->(14-16), (15,16)~~>(13,14), (7)==(3,13), (13)==(3,7), (8)==(14), (14)==(8), (9)==(15), (15)==(9), (10)==(16), (16)==(10), (3)==(7,13)
  ├── prune: (1,2,4,8-10,14-16)
  ├── interesting orderings: (+1) (+7) (-9,+10,+7) (+13) (-15,+16,+13)
  ├── scan fk
@@ -2604,21 +2429,39 @@ norm
 SELECT * FROM fk
 INNER JOIN (SELECT xysd.x, a.x AS t FROM xysd INNER JOIN xysd AS a ON xysd.x = a.x) ON r1 = t
 ----
-project
+inner-join (hash)
  ├── columns: k:1(int!null) v:2(int) r1:3(int!null) r2:4(int) x:7(int!null) t:13(int!null)
+ ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-more)
  ├── key: (1)
- ├── fd: (1)-->(2-4), (3)==(7,13), (7)==(3,13), (13)==(3,7)
- ├── prune: (1-4,7,13)
- ├── interesting orderings: (+1)
+ ├── fd: (1)-->(2-4), (7)==(3,13), (13)==(3,7), (3)==(7,13)
+ ├── prune: (1,2,4,7)
+ ├── interesting orderings: (+1) (+(7|13))
  ├── scan fk
  │    ├── columns: k:1(int!null) v:2(int) r1:3(int!null) r2:4(int)
  │    ├── key: (1)
  │    ├── fd: (1)-->(2-4)
  │    ├── prune: (1-4)
- │    └── interesting orderings: (+1)
- └── projections
-      ├── variable: r1:3 [as=a.x:13, type=int, outer=(3)]
-      └── variable: r1:3 [as=xysd.x:7, type=int, outer=(3)]
+ │    ├── interesting orderings: (+1)
+ │    └── unfiltered-cols: (1-6)
+ ├── project
+ │    ├── columns: a.x:13(int!null) xysd.x:7(int!null)
+ │    ├── key: (7)
+ │    ├── fd: (7)==(13), (13)==(7)
+ │    ├── prune: (7,13)
+ │    ├── interesting orderings: (+(7|13))
+ │    ├── unfiltered-cols: (7-12)
+ │    ├── scan xysd
+ │    │    ├── columns: xysd.x:7(int!null)
+ │    │    ├── key: (7)
+ │    │    ├── prune: (7)
+ │    │    ├── interesting orderings: (+7)
+ │    │    └── unfiltered-cols: (7-12)
+ │    └── projections
+ │         └── variable: xysd.x:7 [as=a.x:13, type=int, outer=(7)]
+ └── filters
+      └── eq [type=bool, outer=(3,13), constraints=(/3: (/NULL - ]; /13: (/NULL - ]), fd=(3)==(13), (13)==(3)]
+           ├── variable: r1:3 [type=int]
+           └── variable: a.x:13 [type=int]
 
 # Case with an equality with a synthesized column.
 norm
@@ -2932,54 +2775,55 @@ WHERE st_id = t_st_id
   AND ex_id = s_ex_id
 LIMIT 50;
 ----
-project
+limit
  ├── columns: t_st_id:1(int!null) t_tt_id:2(int!null) t_s_symb:3(int!null) st_id:7(int!null) tt_id:10(int!null) s_symb:13(int!null) s_st_id:14(int!null) s_ex_id:15(int!null) ex_id:18(int!null)
  ├── cardinality: [0 - 50]
- ├── fd: (13)-->(14,15), (1)==(7), (7)==(1), (2)==(10), (10)==(2), (3)==(13), (13)==(3), (15)==(18), (18)==(15)
- ├── prune: (1-3,7,10,13-15,18)
- ├── interesting orderings: (+(1|7)) (+(2|10)) (+(3|13))
- ├── limit
- │    ├── columns: t_st_id:1(int!null) t_tt_id:2(int!null) t_s_symb:3(int!null) st_id:7(int!null) tt_id:10(int!null) s_symb:13(int!null) s_st_id:14(int!null) s_ex_id:15(int!null)
- │    ├── cardinality: [0 - 50]
- │    ├── fd: (13)-->(14,15), (1)==(7), (7)==(1), (2)==(10), (10)==(2), (3)==(13), (13)==(3)
- │    ├── prune: (14,15)
+ ├── fd: (13)-->(14,15), (15)==(18), (18)==(15), (1)==(7), (7)==(1), (2)==(10), (10)==(2), (3)==(13), (13)==(3)
+ ├── prune: (14,15,18)
+ ├── interesting orderings: (+7) (+10) (+13)
+ ├── inner-join (hash)
+ │    ├── columns: t_st_id:1(int!null) t_tt_id:2(int!null) t_s_symb:3(int!null) st_id:7(int!null) tt_id:10(int!null) s_symb:13(int!null) s_st_id:14(int!null) s_ex_id:15(int!null) ex_id:18(int!null)
+ │    ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-more)
+ │    ├── fd: (13)-->(14,15), (15)==(18), (18)==(15), (1)==(7), (7)==(1), (2)==(10), (10)==(2), (3)==(13), (13)==(3)
+ │    ├── limit hint: 50.00
+ │    ├── prune: (14,15,18)
  │    ├── interesting orderings: (+7) (+10) (+13)
- │    ├── inner-join (hash)
- │    │    ├── columns: t_st_id:1(int!null) t_tt_id:2(int!null) t_s_symb:3(int!null) st_id:7(int!null) tt_id:10(int!null) s_symb:13(int!null) s_st_id:14(int!null) s_ex_id:15(int!null)
- │    │    ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-more)
- │    │    ├── fd: (13)-->(14,15), (1)==(7), (7)==(1), (2)==(10), (10)==(2), (3)==(13), (13)==(3)
- │    │    ├── limit hint: 50.00
- │    │    ├── prune: (14,15)
+ │    ├── scan trade
+ │    │    ├── columns: t_st_id:1(int!null) t_tt_id:2(int!null) t_s_symb:3(int!null)
+ │    │    ├── prune: (1-3)
+ │    │    └── unfiltered-cols: (1-6)
+ │    ├── inner-join (cross)
+ │    │    ├── columns: st_id:7(int!null) tt_id:10(int!null) s_symb:13(int!null) s_st_id:14(int!null) s_ex_id:15(int!null) ex_id:18(int!null)
+ │    │    ├── multiplicity: left-rows(zero-or-more), right-rows(one-or-more)
+ │    │    ├── key: (7,10,13)
+ │    │    ├── fd: (13)-->(14,15), (15)==(18), (18)==(15)
+ │    │    ├── prune: (7,10,13-15,18)
  │    │    ├── interesting orderings: (+7) (+10) (+13)
- │    │    ├── scan trade
- │    │    │    ├── columns: t_st_id:1(int!null) t_tt_id:2(int!null) t_s_symb:3(int!null)
- │    │    │    ├── prune: (1-3)
- │    │    │    └── unfiltered-cols: (1-6)
+ │    │    ├── scan status_type
+ │    │    │    ├── columns: st_id:7(int!null)
+ │    │    │    ├── key: (7)
+ │    │    │    ├── prune: (7)
+ │    │    │    ├── interesting orderings: (+7)
+ │    │    │    └── unfiltered-cols: (7-9)
  │    │    ├── inner-join (cross)
- │    │    │    ├── columns: st_id:7(int!null) tt_id:10(int!null) s_symb:13(int!null) s_st_id:14(int!null) s_ex_id:15(int!null)
- │    │    │    ├── multiplicity: left-rows(zero-or-more), right-rows(one-or-more)
- │    │    │    ├── key: (7,10,13)
- │    │    │    ├── fd: (13)-->(14,15)
- │    │    │    ├── prune: (7,10,13-15)
- │    │    │    ├── interesting orderings: (+7) (+10) (+13)
- │    │    │    ├── scan status_type
- │    │    │    │    ├── columns: st_id:7(int!null)
- │    │    │    │    ├── key: (7)
- │    │    │    │    ├── prune: (7)
- │    │    │    │    ├── interesting orderings: (+7)
- │    │    │    │    └── unfiltered-cols: (7-9)
- │    │    │    ├── inner-join (cross)
- │    │    │    │    ├── columns: tt_id:10(int!null) s_symb:13(int!null) s_st_id:14(int!null) s_ex_id:15(int!null)
- │    │    │    │    ├── key: (10,13)
- │    │    │    │    ├── fd: (13)-->(14,15)
- │    │    │    │    ├── prune: (10,13-15)
- │    │    │    │    ├── interesting orderings: (+10) (+13)
- │    │    │    │    ├── scan trade_type
- │    │    │    │    │    ├── columns: tt_id:10(int!null)
- │    │    │    │    │    ├── key: (10)
- │    │    │    │    │    ├── prune: (10)
- │    │    │    │    │    ├── interesting orderings: (+10)
- │    │    │    │    │    └── unfiltered-cols: (10-12)
+ │    │    │    ├── columns: tt_id:10(int!null) s_symb:13(int!null) s_st_id:14(int!null) s_ex_id:15(int!null) ex_id:18(int!null)
+ │    │    │    ├── key: (10,13)
+ │    │    │    ├── fd: (13)-->(14,15), (15)==(18), (18)==(15)
+ │    │    │    ├── prune: (10,13-15,18)
+ │    │    │    ├── interesting orderings: (+10) (+13)
+ │    │    │    ├── scan trade_type
+ │    │    │    │    ├── columns: tt_id:10(int!null)
+ │    │    │    │    ├── key: (10)
+ │    │    │    │    ├── prune: (10)
+ │    │    │    │    ├── interesting orderings: (+10)
+ │    │    │    │    └── unfiltered-cols: (10-12)
+ │    │    │    ├── project
+ │    │    │    │    ├── columns: ex_id:18(int!null) s_symb:13(int!null) s_st_id:14(int!null) s_ex_id:15(int!null)
+ │    │    │    │    ├── key: (13)
+ │    │    │    │    ├── fd: (13)-->(14,15), (15)==(18), (18)==(15)
+ │    │    │    │    ├── prune: (13-15,18)
+ │    │    │    │    ├── interesting orderings: (+13)
+ │    │    │    │    ├── unfiltered-cols: (13-17)
  │    │    │    │    ├── scan security
  │    │    │    │    │    ├── columns: s_symb:13(int!null) s_st_id:14(int!null) s_ex_id:15(int!null)
  │    │    │    │    │    ├── key: (13)
@@ -2987,21 +2831,21 @@ project
  │    │    │    │    │    ├── prune: (13-15)
  │    │    │    │    │    ├── interesting orderings: (+13)
  │    │    │    │    │    └── unfiltered-cols: (13-17)
- │    │    │    │    └── filters (true)
+ │    │    │    │    └── projections
+ │    │    │    │         └── variable: s_ex_id:15 [as=ex_id:18, type=int, outer=(15)]
  │    │    │    └── filters (true)
- │    │    └── filters
- │    │         ├── eq [type=bool, outer=(1,7), constraints=(/1: (/NULL - ]; /7: (/NULL - ]), fd=(1)==(7), (7)==(1)]
- │    │         │    ├── variable: st_id:7 [type=int]
- │    │         │    └── variable: t_st_id:1 [type=int]
- │    │         ├── eq [type=bool, outer=(2,10), constraints=(/2: (/NULL - ]; /10: (/NULL - ]), fd=(2)==(10), (10)==(2)]
- │    │         │    ├── variable: tt_id:10 [type=int]
- │    │         │    └── variable: t_tt_id:2 [type=int]
- │    │         └── eq [type=bool, outer=(3,13), constraints=(/3: (/NULL - ]; /13: (/NULL - ]), fd=(3)==(13), (13)==(3)]
- │    │              ├── variable: s_symb:13 [type=int]
- │    │              └── variable: t_s_symb:3 [type=int]
- │    └── const: 50 [type=int]
- └── projections
-      └── variable: s_ex_id:15 [as=ex_id:18, type=int, outer=(15)]
+ │    │    └── filters (true)
+ │    └── filters
+ │         ├── eq [type=bool, outer=(1,7), constraints=(/1: (/NULL - ]; /7: (/NULL - ]), fd=(1)==(7), (7)==(1)]
+ │         │    ├── variable: st_id:7 [type=int]
+ │         │    └── variable: t_st_id:1 [type=int]
+ │         ├── eq [type=bool, outer=(2,10), constraints=(/2: (/NULL - ]; /10: (/NULL - ]), fd=(2)==(10), (10)==(2)]
+ │         │    ├── variable: tt_id:10 [type=int]
+ │         │    └── variable: t_tt_id:2 [type=int]
+ │         └── eq [type=bool, outer=(3,13), constraints=(/3: (/NULL - ]; /13: (/NULL - ]), fd=(3)==(13), (13)==(3)]
+ │              ├── variable: s_symb:13 [type=int]
+ │              └── variable: t_s_symb:3 [type=int]
+ └── const: 50 [type=int]
 
 # Regression test for #50059.
 exec-ddl
@@ -3107,7 +2951,9 @@ inner-join (hash)
            ├── variable: xyz.x:1 [type=int]
            └── variable: foo.x:6 [type=int]
 
-# TODO(#39054): if the optimizer could see that the same row is being selected
+# Self-join filters can only be inferred even if the join key was a key in the
+# base table.
+# TODO(drewk): if the optimizer could see that the same row is being selected
 # from each input, we could still infer equalities.
 norm
 SELECT * FROM xyz INNER JOIN xyz foo ON xyz.x = foo.x AND xyz.y = 1 AND foo.y = 1
@@ -3209,123 +3055,6 @@ inner-join (hash)
            ├── variable: xyz.x:1 [type=int]
            └── variable: foo.x:6 [type=int]
 
-# Regression tests for #116943.
-
-# Semi-joins with right side cardinality of 0 have cardinality of 0.
-norm disable=(EliminateExistsZeroRows,SimplifyZeroCardinalitySemiJoin)
-SELECT * FROM mn WHERE m = 5 AND n::FLOAT IN (SELECT x::FLOAT FROM xysd WHERE false)
-----
-project
- ├── columns: m:1(int!null) n:2(int)
- ├── cardinality: [0 - 0]
- ├── immutable
- ├── key: ()
- ├── fd: ()-->(1,2)
- ├── prune: (1,2)
- └── semi-join (hash)
-      ├── columns: m:1(int!null) n:2(int) column13:13(float)
-      ├── cardinality: [0 - 0]
-      ├── immutable
-      ├── key: ()
-      ├── fd: ()-->(1,2,13)
-      ├── prune: (1,2)
-      ├── project
-      │    ├── columns: column13:13(float) m:1(int!null) n:2(int)
-      │    ├── cardinality: [0 - 1]
-      │    ├── immutable
-      │    ├── key: ()
-      │    ├── fd: ()-->(1,2,13)
-      │    ├── prune: (1,2,13)
-      │    ├── select
-      │    │    ├── columns: m:1(int!null) n:2(int)
-      │    │    ├── cardinality: [0 - 1]
-      │    │    ├── key: ()
-      │    │    ├── fd: ()-->(1,2)
-      │    │    ├── prune: (2)
-      │    │    ├── scan mn
-      │    │    │    ├── columns: m:1(int!null) n:2(int)
-      │    │    │    ├── key: (1)
-      │    │    │    ├── fd: (1)-->(2), (2)~~>(1)
-      │    │    │    ├── prune: (1,2)
-      │    │    │    └── interesting orderings: (+1) (+2,+1)
-      │    │    └── filters
-      │    │         └── eq [type=bool, outer=(1), constraints=(/1: [/5 - /5]; tight), fd=()-->(1)]
-      │    │              ├── variable: m:1 [type=int]
-      │    │              └── const: 5 [type=int]
-      │    └── projections
-      │         └── cast: FLOAT8 [as=column13:13, type=float, outer=(2), immutable]
-      │              └── variable: n:2 [type=int]
-      ├── project
-      │    ├── columns: x:11(float!null)
-      │    ├── cardinality: [0 - 0]
-      │    ├── immutable
-      │    ├── key: ()
-      │    ├── fd: ()-->(11)
-      │    ├── prune: (11)
-      │    ├── values
-      │    │    ├── columns: xysd.x:5(int!null)
-      │    │    ├── cardinality: [0 - 0]
-      │    │    ├── key: ()
-      │    │    ├── fd: ()-->(5)
-      │    │    └── prune: (5)
-      │    └── projections
-      │         └── cast: FLOAT8 [as=x:11, type=float, outer=(5), immutable]
-      │              └── variable: xysd.x:5 [type=int]
-      └── filters
-           └── eq [type=bool, outer=(11,13), constraints=(/11: (/NULL - ]; /13: (/NULL - ]), fd=(11)==(13), (13)==(11)]
-                ├── variable: column13:13 [type=float]
-                └── variable: x:11 [type=float]
-
-# Anti-joins with right side cardinality of 0 have cardinality equal to left side cardinality.
-norm disable=(EliminateExistsZeroRows,EliminateAntiJoin)
-SELECT * FROM mn WHERE m = 5 AND n::FLOAT NOT IN (SELECT x::FLOAT FROM xysd WHERE false)
-----
-anti-join (cross)
- ├── columns: m:1(int!null) n:2(int)
- ├── cardinality: [0 - 1]
- ├── immutable
- ├── key: ()
- ├── fd: ()-->(1,2)
- ├── select
- │    ├── columns: m:1(int!null) n:2(int)
- │    ├── cardinality: [0 - 1]
- │    ├── key: ()
- │    ├── fd: ()-->(1,2)
- │    ├── prune: (2)
- │    ├── scan mn
- │    │    ├── columns: m:1(int!null) n:2(int)
- │    │    ├── key: (1)
- │    │    ├── fd: (1)-->(2), (2)~~>(1)
- │    │    ├── prune: (1,2)
- │    │    └── interesting orderings: (+1) (+2,+1)
- │    └── filters
- │         └── eq [type=bool, outer=(1), constraints=(/1: [/5 - /5]; tight), fd=()-->(1)]
- │              ├── variable: m:1 [type=int]
- │              └── const: 5 [type=int]
- ├── project
- │    ├── columns: x:11(float!null)
- │    ├── cardinality: [0 - 0]
- │    ├── immutable
- │    ├── key: ()
- │    ├── fd: ()-->(11)
- │    ├── prune: (11)
- │    ├── values
- │    │    ├── columns: xysd.x:5(int!null)
- │    │    ├── cardinality: [0 - 0]
- │    │    ├── key: ()
- │    │    ├── fd: ()-->(5)
- │    │    └── prune: (5)
- │    └── projections
- │         └── cast: FLOAT8 [as=x:11, type=float, outer=(5), immutable]
- │              └── variable: xysd.x:5 [type=int]
- └── filters
-      └── is-not [type=bool, outer=(2,11), immutable]
-           ├── eq [type=bool]
-           │    ├── variable: x:11 [type=float]
-           │    └── cast: FLOAT8 [type=float]
-           │         └── variable: n:2 [type=int]
-           └── false [type=bool]
-
 # Regression test for #119441 - marking a set of columns constant should not
 # remove equalities among them.
 exec-ddl
@@ -3374,12 +3103,12 @@ project
  │    │    │    ├── outer: (2)
  │    │    │    ├── cardinality: [0 - 1]
  │    │    │    ├── key: ()
- │    │    │    ├── fd: ()-->(8-10,14-16,22), (9)==(10,15), (10)==(9,15), (15)==(9,10), (8)==(16), (16)==(8), (14)==(22), (22)==(14)
+ │    │    │    ├── fd: ()-->(8-10,14-16,22), (10)==(9,15), (8)==(16), (16)==(8), (15)==(9,10), (14)==(22), (22)==(14), (9)==(10,15)
  │    │    │    ├── interesting orderings: (+(9|10)) (+22)
  │    │    │    ├── inner-join (hash)
  │    │    │    │    ├── columns: col1_8:8(bytes!null) col1_11:9(string!null) col1_12:10(string!null) col2_1:14(int4!null) col2_2:15(string!null) col2_3:16(bytes!null) table3_119441.col3_16:22(int!null)
  │    │    │    │    ├── outer: (2)
- │    │    │    │    ├── fd: ()-->(9,10,15), (9)==(10,15), (10)==(9,15), (15)==(9,10), (8)==(16), (16)==(8), (14)==(22), (22)==(14)
+ │    │    │    │    ├── fd: ()-->(9,10,15), (9)==(10,15), (10)==(9,15), (8)==(16), (16)==(8), (15)==(9,10), (14)==(22), (22)==(14)
  │    │    │    │    ├── limit hint: 1.00
  │    │    │    │    ├── interesting orderings: (+(9|10)) (+22)
  │    │    │    │    ├── top-k
@@ -3393,7 +3122,7 @@ project
  │    │    │    │    │         └── prune: (22)
  │    │    │    │    ├── inner-join (hash)
  │    │    │    │    │    ├── columns: col1_8:8(bytes!null) col1_11:9(string!null) col1_12:10(string!null) col2_1:14(int4) col2_2:15(string!null) col2_3:16(bytes!null)
- │    │    │    │    │    ├── fd: (9)==(10,15), (10)==(9,15), (15)==(9,10), (8)==(16), (16)==(8)
+ │    │    │    │    │    ├── fd: (9)==(10,15), (10)==(9,15), (8)==(16), (16)==(8), (15)==(9,10)
  │    │    │    │    │    ├── prune: (14)
  │    │    │    │    │    ├── interesting orderings: (+(9|10))
  │    │    │    │    │    ├── scan table2_119441

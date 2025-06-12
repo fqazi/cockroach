@@ -13,7 +13,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
@@ -162,7 +161,7 @@ func (f *FeedBudget) TryGet(ctx context.Context, amount int64) (*SharedBudgetAll
 	}
 	var err error
 	if f.mu.memBudget.Used()+amount > f.limit {
-		return nil, errors.Wrap(mon.NewMemoryBudgetExceededError(amount,
+		return nil, errors.Wrap(f.mu.memBudget.Monitor().Resource().NewBudgetExceededError(amount,
 			f.mu.memBudget.Used(),
 			f.limit), "rangefeed budget")
 	}
@@ -228,7 +227,7 @@ func (f *FeedBudget) Close(ctx context.Context) {
 	f.closed.Do(func() {
 		f.mu.Lock()
 		f.mu.closed = true
-		f.mu.memBudget.Clear(ctx)
+		f.mu.memBudget.Close(ctx)
 		close(f.stopC)
 		f.mu.Unlock()
 	})
@@ -245,10 +244,10 @@ type SharedBudgetAllocation struct {
 // Use increases usage count for the allocation. It should be called by each
 // new consumer that plans to retain allocation after returning to a caller
 // that passed this allocation.
-func (a *SharedBudgetAllocation) Use(ctx context.Context) {
+func (a *SharedBudgetAllocation) Use() {
 	if a != nil {
 		if atomic.AddInt32(&a.refCount, 1) == 1 {
-			log.Fatalf(ctx, "unexpected shared memory allocation usage increase after free")
+			panic("unexpected shared memory allocation usage increase after free")
 		}
 	}
 }
@@ -281,7 +280,7 @@ type BudgetFactoryConfig struct {
 	rootMon                 *mon.BytesMonitor
 	provisionalFeedLimit    int64
 	adjustLimit             func(int64) int64
-	totalRangeFeedBudget    int64
+	totalRangeReedBudget    int64
 	histogramWindowInterval time.Duration
 	settings                *settings.Values
 }
@@ -303,13 +302,13 @@ func CreateBudgetFactoryConfig(
 	if rootMon == nil || !useBudgets {
 		return BudgetFactoryConfig{}
 	}
-	totalRangeFeedBudget := int64(float64(memoryPoolSize) * totalSharedFeedBudgetFraction)
-	feedSizeLimit := int64(float64(totalRangeFeedBudget) * maxFeedFraction)
+	totalRangeReedBudget := int64(float64(memoryPoolSize) * totalSharedFeedBudgetFraction)
+	feedSizeLimit := int64(float64(totalRangeReedBudget) * maxFeedFraction)
 	return BudgetFactoryConfig{
 		rootMon:                 rootMon,
 		provisionalFeedLimit:    feedSizeLimit,
 		adjustLimit:             adjustLimit,
-		totalRangeFeedBudget:    totalRangeFeedBudget,
+		totalRangeReedBudget:    totalRangeReedBudget,
 		histogramWindowInterval: histogramWindowInterval,
 		settings:                settings,
 	}
@@ -322,18 +321,16 @@ func NewBudgetFactory(ctx context.Context, config BudgetFactoryConfig) *BudgetFa
 		return nil
 	}
 	metrics := NewFeedBudgetMetrics(config.histogramWindowInterval)
-	systemRangeMonitor := mon.NewMonitorInheritWithLimit(
-		mon.MakeName("rangefeed-system-monitor"), systemRangeFeedBudget, config.rootMon,
-		true, /* longLiving */
-	)
+	systemRangeMonitor := mon.NewMonitorInheritWithLimit("rangefeed-system-monitor",
+		systemRangeFeedBudget, config.rootMon)
 	systemRangeMonitor.SetMetrics(metrics.SystemBytesCount, nil /* maxHist */)
 	systemRangeMonitor.Start(ctx, config.rootMon,
 		mon.NewStandaloneBudget(systemRangeFeedBudget))
 
 	rangeFeedPoolMonitor := mon.NewMonitorInheritWithLimit(
-		mon.MakeName("rangefeed-monitor"), config.totalRangeFeedBudget, config.rootMon,
-		true, /* longLiving */
-	)
+		"rangefeed-monitor",
+		config.totalRangeReedBudget,
+		config.rootMon)
 	rangeFeedPoolMonitor.SetMetrics(metrics.SharedBytesCount, nil /* maxHist */)
 	rangeFeedPoolMonitor.StartNoReserved(ctx, config.rootMon)
 

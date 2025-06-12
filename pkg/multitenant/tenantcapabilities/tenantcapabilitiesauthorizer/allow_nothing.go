@@ -25,13 +25,6 @@ func NewAllowNothingAuthorizer() *AllowNothingAuthorizer {
 	return &AllowNothingAuthorizer{}
 }
 
-// HasCrossTenantRead returns true if a tenant can read from other tenants.
-func (n *AllowNothingAuthorizer) HasCrossTenantRead(
-	ctx context.Context, tenID roachpb.TenantID,
-) bool {
-	return false
-}
-
 // HasCapabilityForBatch implements the tenantcapabilities.Authorizer interface.
 func (n *AllowNothingAuthorizer) HasCapabilityForBatch(
 	context.Context, roachpb.TenantID, *kvpb.BatchRequest,
@@ -70,13 +63,6 @@ func (n *AllowNothingAuthorizer) IsExemptFromRateLimiting(context.Context, roach
 
 // HasProcessDebugCapability implements the tenantcapabilities.Authorizer interface.
 func (n *AllowNothingAuthorizer) HasProcessDebugCapability(
-	ctx context.Context, tenID roachpb.TenantID,
-) error {
-	return errors.New("operation blocked")
-}
-
-// HasTSDBAllMetricsCapability implements the tenantcapabilities.Authorizer interface.
-func (n *AllowNothingAuthorizer) HasTSDBAllMetricsCapability(
 	ctx context.Context, tenID roachpb.TenantID,
 ) error {
 	return errors.New("operation blocked")

@@ -25,9 +25,9 @@ import (
 
 // TestingApplyInternal exports an internal method for testing purposes.
 func (s *Store) TestingApplyInternal(
-	ctx context.Context, updates ...spanconfig.Update,
+	ctx context.Context, dryrun bool, updates ...spanconfig.Update,
 ) (deleted []spanconfig.Target, added []spanconfig.Record, err error) {
-	return s.applyInternal(ctx, updates...)
+	return s.applyInternal(ctx, dryrun, updates...)
 }
 
 // TestingSplitKeys returns the computed list of range split points between
@@ -109,12 +109,6 @@ func (s *spanConfigStore) TestingSplitKeys(
 // delete /Tenant/10
 // ----
 //
-// checkpoint
-// ----
-//
-// restore-checkpoint
-// ----
-//
 // Text of the form [a,b), {entire-keyspace}, {source=1,target=20}, and [a,b):C
 // correspond to targets {spans, system targets} and span config records; see
 // spanconfigtestutils.Parse{Target,Config,SpanConfigRecord} for more details.
@@ -130,16 +124,16 @@ func TestDataDriven(t *testing.T) {
 			boundsReader,
 			&spanconfig.TestingKnobs{
 				StoreIgnoreCoalesceAdjacentExceptions: true,
+				StoreInternConfigsInDryRuns:           true,
 			},
 		)
-
-		var checkpointedStore *Store
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
 			var spanStr, keyStr string
 			switch d.Cmd {
 			case "apply":
 				updates := spanconfigtestutils.ParseStoreApplyArguments(t, d.Input)
-				deleted, added, err := store.TestingApplyInternal(ctx, updates...)
+				dryrun := d.HasArg("dryrun")
+				deleted, added, err := store.TestingApplyInternal(ctx, dryrun, updates...)
 				if err != nil {
 					return fmt.Sprintf("err: %v", err)
 				}
@@ -158,19 +152,10 @@ func TestDataDriven(t *testing.T) {
 				}
 				return b.String()
 
-			case "checkpoint":
-				checkpointedStore = store.Clone()
-
-			case "restore-checkpoint":
-				if checkpointedStore == nil {
-					t.Error("error trying to restore a non-existent checkpoint")
-				}
-				store = checkpointedStore.Clone()
-
 			case "get":
 				d.ScanArgs(t, "key", &keyStr)
 				key, _ := spanconfigtestutils.ParseKey(t, keyStr)
-				config, _, err := store.GetSpanConfigForKey(ctx, roachpb.RKey(key))
+				config, err := store.GetSpanConfigForKey(ctx, roachpb.RKey(key))
 				require.NoError(t, err)
 				return fmt.Sprintf("conf=%s", spanconfigtestutils.PrintSpanConfig(config))
 
@@ -319,7 +304,7 @@ func TestStoreClone(t *testing.T) {
 		NewEmptyBoundsReader(),
 		nil,
 	)
-	original.Apply(ctx, updates...)
+	original.Apply(ctx, false, updates...)
 	clone := original.Clone()
 
 	var originalRecords, clonedRecords []spanconfig.Record
@@ -364,7 +349,7 @@ func BenchmarkStoreComputeSplitKey(b *testing.B) {
 				updates = append(updates, spanconfigtestutils.ParseStoreApplyArguments(b,
 					fmt.Sprintf("set [%08d,%08d):X", i, i+1))...)
 			}
-			deleted, added := store.Apply(ctx, updates...)
+			deleted, added := store.Apply(ctx, false, updates...)
 			require.Len(b, deleted, 0)
 			require.Len(b, added, numEntries)
 

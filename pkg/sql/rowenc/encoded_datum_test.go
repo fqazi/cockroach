@@ -30,7 +30,6 @@ func TestEncDatum(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
 	a := &tree.DatumAlloc{}
-	ctx := context.Background()
 	evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
 	defer evalCtx.Stop(context.Background())
 	v := rowenc.EncDatum{}
@@ -76,9 +75,7 @@ func TestEncDatum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cmp, err := y.Datum.Compare(ctx, evalCtx, x.Datum); err != nil {
-		t.Fatal(err)
-	} else if cmp != 0 {
+	if cmp := y.Datum.Compare(evalCtx, x.Datum); cmp != 0 {
 		t.Errorf("Datums should be equal, cmp = %d", cmp)
 	}
 
@@ -104,9 +101,7 @@ func TestEncDatum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cmp, err := y.Datum.Compare(ctx, evalCtx, z.Datum); err != nil {
-		t.Fatal(err)
-	} else if cmp != 0 {
+	if cmp := y.Datum.Compare(evalCtx, z.Datum); cmp != 0 {
 		t.Errorf("Datums should be equal, cmp = %d", cmp)
 	}
 	y.UnsetDatum()
@@ -179,7 +174,7 @@ func checkEncDatumCmp(
 
 	evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
 	defer evalCtx.Stop(context.Background())
-	if val, err := dec1.Compare(context.Background(), typ, a, evalCtx, &dec2); err != nil {
+	if val, err := dec1.Compare(typ, a, evalCtx, &dec2); err != nil {
 		t.Fatal(err)
 	} else if val != expectedCmp {
 		t.Errorf("comparing %s (%s), %s (%s) resulted in %d, expected %d",
@@ -208,15 +203,14 @@ func TestEncDatumCompare(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
 	a := &tree.DatumAlloc{}
-	ctx := context.Background()
 	evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
-	defer evalCtx.Stop(ctx)
+	defer evalCtx.Stop(context.Background())
 	rng, _ := randutil.NewTestRand()
 
 	for _, typ := range types.OidToType {
 		switch typ.Family() {
 		case types.AnyFamily, types.UnknownFamily, types.ArrayFamily, types.JsonFamily, types.TupleFamily, types.VoidFamily,
-			types.TSQueryFamily, types.TSVectorFamily, types.PGVectorFamily, types.TriggerFamily, types.JsonpathFamily:
+			types.TSQueryFamily, types.TSVectorFamily:
 			continue
 		case types.CollatedStringFamily:
 			typ = types.MakeCollatedString(types.String, *randgen.RandCollationLocale(rng))
@@ -227,16 +221,14 @@ func TestEncDatumCompare(t *testing.T) {
 		for {
 			d1 = randgen.RandDatum(rng, typ, false)
 			d2 = randgen.RandDatum(rng, typ, false)
-			if cmp, err := d1.Compare(ctx, evalCtx, d2); err != nil {
-				t.Fatal(err)
-			} else if cmp < 0 {
+			if cmp := d1.Compare(evalCtx, d2); cmp < 0 {
 				break
 			}
 		}
 		v1 := rowenc.DatumToEncDatum(typ, d1)
 		v2 := rowenc.DatumToEncDatum(typ, d2)
 
-		if val, err := v1.Compare(context.Background(), typ, a, evalCtx, &v2); err != nil {
+		if val, err := v1.Compare(typ, a, evalCtx, &v2); err != nil {
 			t.Fatal(err)
 		} else if val != -1 {
 			t.Errorf("compare(1, 2) = %d", val)
@@ -271,9 +263,8 @@ func TestEncDatumFromBuffer(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
 	var alloc tree.DatumAlloc
-	ctx := context.Background()
 	evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
-	defer evalCtx.Stop(ctx)
+	defer evalCtx.Stop(context.Background())
 	rng, _ := randutil.NewTestRand()
 	for test := 0; test < 20; test++ {
 		var err error
@@ -318,9 +309,7 @@ func TestEncDatumFromBuffer(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%+v: ensuredecoded: %v (%+v)", ed[i], err, typs[i])
 			}
-			if cmp, err := decoded.Datum.Compare(ctx, evalCtx, ed[i].Datum); err != nil {
-				t.Fatal(err)
-			} else if cmp != 0 {
+			if decoded.Datum.Compare(evalCtx, ed[i].Datum) != 0 {
 				t.Errorf("decoded datum %+v doesn't equal original %+v", decoded.Datum, ed[i].Datum)
 			}
 		}
@@ -462,7 +451,7 @@ func TestEncDatumRowCompare(t *testing.T) {
 		for i := range typs {
 			typs[i] = types.Int
 		}
-		cmp, err := c.row1.Compare(context.Background(), typs, a, c.ord, evalCtx, c.row2)
+		cmp, err := c.row1.Compare(typs, a, c.ord, evalCtx, c.row2)
 		if err != nil {
 			t.Error(err)
 		} else if cmp != c.cmp {
@@ -477,9 +466,8 @@ func TestEncDatumRowCompare(t *testing.T) {
 func TestEncDatumRowAlloc(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
-	ctx := context.Background()
 	evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
-	defer evalCtx.Stop(ctx)
+	defer evalCtx.Stop(context.Background())
 	rng, _ := randutil.NewTestRand()
 	for _, cols := range []int{1, 2, 4, 10, 40, 100} {
 		for _, rows := range []int{1, 2, 3, 5, 10, 20} {
@@ -509,10 +497,7 @@ func TestEncDatumRowAlloc(t *testing.T) {
 			}
 			for i := 0; i < rows; i++ {
 				for j := 0; j < cols; j++ {
-					a, b := in[i][j].Datum, out[i][j].Datum
-					if cmp, err := a.Compare(ctx, evalCtx, b); err != nil {
-						t.Fatal(err)
-					} else if cmp != 0 {
+					if a, b := in[i][j].Datum, out[i][j].Datum; a.Compare(evalCtx, b) != 0 {
 						t.Errorf("copied datum %s doesn't equal original %s", b, a)
 					}
 				}
@@ -525,14 +510,13 @@ func TestValueEncodeDecodeTuple(t *testing.T) {
 	rng, seed := randutil.NewTestRand()
 	tests := make([]tree.Datum, 1000)
 	colTypes := make([]*types.T, 1000)
-	ctx := context.Background()
 	evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
 
 	for i := range tests {
 		len := rng.Intn(5)
 		contents := make([]*types.T, len)
 		for j := range contents {
-			contents[j] = randgen.RandType(rng)
+			contents[j] = randgen.RandEncodableType(rng)
 		}
 		colTypes[i] = types.MakeTuple(contents)
 		tests[i] = randgen.RandDatum(rng, colTypes[i], true)
@@ -543,7 +527,7 @@ func TestValueEncodeDecodeTuple(t *testing.T) {
 		switch typedTest := test.(type) {
 		case *tree.DTuple:
 
-			buf, err := valueside.Encode(nil, valueside.NoColumnID, typedTest)
+			buf, err := valueside.Encode(nil, valueside.NoColumnID, typedTest, nil)
 			if err != nil {
 				t.Fatalf("seed %d: encoding tuple %v with types %v failed with error: %v",
 					seed, test, colTypes[i], err)
@@ -561,9 +545,7 @@ func TestValueEncodeDecodeTuple(t *testing.T) {
 					seed, test, colTypes[i], testTyp, len(buf))
 			}
 
-			if cmp, err := decodedTuple.Compare(ctx, evalCtx, test); err != nil {
-				t.Fatal(err)
-			} else if cmp != 0 {
+			if cmp := decodedTuple.Compare(evalCtx, test); cmp != 0 {
 				t.Fatalf("seed %d: encoded %+v, decoded %+v, expected equal, received comparison: %d", seed, test, decodedTuple, cmp)
 			}
 		default:

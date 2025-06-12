@@ -44,7 +44,6 @@ func runFKBench(
 			setup(b, r, cfg.setupFKs)
 			b.ResetTimer()
 			run(b, r)
-			b.StopTimer()
 		})
 	}
 }

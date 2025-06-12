@@ -10,7 +10,7 @@ option go_package = "github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb";
 import "gogoproto/gogo.proto";
 import "kv/kvpb/api.proto";
 import "roachpb/data.proto";
-import "multitenant/tenantcapabilitiespb/capabilities.proto";
+import "multitenant/tenantcapabilities/tenantcapabilitiespb/capabilities.proto";
 import "util/hlc/timestamp.proto";
 
 // ProtoInfo represents the metadata for a tenant as
@@ -78,12 +78,7 @@ message ProtoInfo {
   // VIRTUAL CLUSTER FROM REPLICATION STREAM.
   optional util.hlc.Timestamp last_revert_tenant_timestamp = 8 [(gogoproto.nullable) = false];
 
-  // ReadFromTenant is the ID, if any, of another tenant from which this tenant
-  // should be configured to serve read-only SQL requests (by configuring and
-  // maintaining its catalog accordingly).
-  optional roachpb.TenantID read_from_tenant = 9 ;
-
-  // Next ID: 10.
+  // Next ID: 9
 }
 
 message PreviousSourceTenant {
@@ -106,15 +101,6 @@ message PreviousSourceTenant {
   // CutoverTimestamp is the time at which we cutover from the source
   // tenant.
   optional util.hlc.Timestamp cutover_timestamp = 3 [(gogoproto.nullable) = false];
-
-  // CutoverAsOf, if set is a timestamp, later than cutover timestamp, as of
-  // which the data was known to be in a state equal to the state as of the time
-  // in CutoverTimestamp. For example, if a backup as of time X is restored at
-  // time Y, then at time Y the data is equal to what it was at time X, so a
-  // resumption of replication could revert to Y, rather than X, to resume, as
-  // this revert would have the same effect, while a revert to X might not be
-  // possible since replica GC could be above X when the restore runs.
-  optional util.hlc.Timestamp cutover_as_of = 4 [(gogoproto.nullable) = false];
 }
 
 

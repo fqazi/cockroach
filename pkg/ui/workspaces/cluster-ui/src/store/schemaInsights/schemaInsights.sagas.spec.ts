@@ -3,27 +3,25 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import moment from "moment-timezone";
 import { expectSaga } from "redux-saga-test-plan";
-import * as matchers from "redux-saga-test-plan/matchers";
 import {
   EffectProviders,
   StaticProvider,
   throwError,
 } from "redux-saga-test-plan/providers";
-
+import * as matchers from "redux-saga-test-plan/matchers";
+import moment from "moment-timezone";
 import { getSchemaInsights, SqlApiResponse } from "../../api";
-import { InsightRecommendation } from "../../insights";
-
+import {
+  refreshSchemaInsightsSaga,
+  requestSchemaInsightsSaga,
+} from "./schemaInsights.sagas";
 import {
   actions,
   reducer,
   SchemaInsightsState,
 } from "./schemaInsights.reducer";
-import {
-  refreshSchemaInsightsSaga,
-  requestSchemaInsightsSaga,
-} from "./schemaInsights.sagas";
+import { InsightRecommendation } from "../../insights";
 
 const lastUpdated = moment();
 

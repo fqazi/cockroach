@@ -1,65 +1,55 @@
 parse
-<<foo>>
 DECLARE
   var1 integer := 30;
 BEGIN
 END
 ----
-<<foo>>
 DECLARE
 var1 INT8 := 30;
 BEGIN
-END foo;
+END
  -- normalized!
-<<foo>>
 DECLARE
 var1 INT8 := (30);
 BEGIN
-END foo;
+END
  -- fully parenthesized
-<<foo>>
 DECLARE
 var1 INT8 := _;
 BEGIN
-END foo;
+END
  -- literals removed
-<<_>>
 DECLARE
-_ INT8 := 30;
+var1 INT8 := 30;
 BEGIN
-END _;
+END
  -- identifiers removed
 
 parse
-<<foo>>
 DECLARE
   var1 CONSTANT INTEGER COLLATE collation_name NOT NULL := 30;
 BEGIN
-END foo
+END
 ----
-<<foo>>
 DECLARE
 var1 CONSTANT INT8 COLLATE collation_name NOT NULL := 30;
 BEGIN
-END foo;
+END
  -- normalized!
-<<foo>>
 DECLARE
 var1 CONSTANT INT8 COLLATE collation_name NOT NULL := (30);
 BEGIN
-END foo;
+END
  -- fully parenthesized
-<<foo>>
 DECLARE
 var1 CONSTANT INT8 COLLATE collation_name NOT NULL := _;
 BEGIN
-END foo;
+END
  -- literals removed
-<<_>>
 DECLARE
-_ CONSTANT INT8 COLLATE _ NOT NULL := 30;
+var1 CONSTANT INT8 COLLATE _ NOT NULL := 30;
 BEGIN
-END _;
+END
  -- identifiers removed
 
 parse
@@ -71,49 +61,22 @@ END
 DECLARE
 var1 CONSTANT INT8 COLLATE collation_name NOT NULL := 30;
 BEGIN
-END;
+END
  -- normalized!
 DECLARE
 var1 CONSTANT INT8 COLLATE collation_name NOT NULL := (30);
 BEGIN
-END;
+END
  -- fully parenthesized
 DECLARE
 var1 CONSTANT INT8 COLLATE collation_name NOT NULL := _;
 BEGIN
-END;
+END
  -- literals removed
 DECLARE
-_ CONSTANT INT8 COLLATE _ NOT NULL := 30;
-BEGIN
-END;
- -- identifiers removed
-
-parse
-DECLARE
-  "%_2jd9$f foo" integer := 30;
+var1 CONSTANT INT8 COLLATE _ NOT NULL := 30;
 BEGIN
 END
-----
-DECLARE
-"%_2jd9$f foo" INT8 := 30;
-BEGIN
-END;
- -- normalized!
-DECLARE
-"%_2jd9$f foo" INT8 := (30);
-BEGIN
-END;
- -- fully parenthesized
-DECLARE
-"%_2jd9$f foo" INT8 := _;
-BEGIN
-END;
- -- literals removed
-DECLARE
-_ INT8 := 30;
-BEGIN
-END;
  -- identifiers removed
 
 error
@@ -152,22 +115,22 @@ END
 DECLARE
 var1 CURSOR FOR SELECT * FROM t1 WHERE id = arg1;
 BEGIN
-END;
+END
  -- normalized!
 DECLARE
 var1 CURSOR FOR SELECT (*) FROM t1 WHERE ((id) = (arg1));
 BEGIN
-END;
+END
  -- fully parenthesized
 DECLARE
 var1 CURSOR FOR SELECT * FROM t1 WHERE id = arg1;
 BEGIN
-END;
+END
  -- literals removed
 DECLARE
-_ CURSOR FOR SELECT * FROM _ WHERE _ = _;
+var1 CURSOR FOR SELECT * FROM _ WHERE _ = _;
 BEGIN
-END;
+END
  -- identifiers removed
 
 error
@@ -255,9 +218,6 @@ DETAIL: source SQL:
 DECLARE
   var1 xy%ROWTYPE;
           ^
-HINT: you may have attempted to use %TYPE or %ROWTYPE syntax, which is unsupported.
---
-See: https://go.crdb.dev/issue-v/114676/
 
 error
 DECLARE
@@ -272,6 +232,3 @@ DECLARE
   var1 INT;
   var2 var1%TYPE;
             ^
-HINT: you may have attempted to use %TYPE or %ROWTYPE syntax, which is unsupported.
---
-See: https://go.crdb.dev/issue-v/114676/

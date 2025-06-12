@@ -407,10 +407,10 @@ norm expect=EliminateExistsZeroRows
 SELECT EXISTS(SELECT * FROM (VALUES (1)) WHERE false)
 ----
 values
- ├── columns: exists:3!null
+ ├── columns: exists:2!null
  ├── cardinality: [1 - 1]
  ├── key: ()
- ├── fd: ()-->(3)
+ ├── fd: ()-->(2)
  └── (false,)
 
 # --------------------------------------------------
@@ -431,10 +431,10 @@ select
       └── coalesce [subquery]
            ├── subquery
            │    └── project
-           │         ├── columns: column18:18!null
+           │         ├── columns: column17:17!null
            │         ├── cardinality: [0 - 1]
            │         ├── key: ()
-           │         ├── fd: ()-->(18)
+           │         ├── fd: ()-->(17)
            │         ├── limit
            │         │    ├── cardinality: [0 - 1]
            │         │    ├── key: ()
@@ -442,7 +442,7 @@ select
            │         │    │    └── limit hint: 1.00
            │         │    └── 1
            │         └── projections
-           │              └── true [as=column18:18]
+           │              └── true [as=column17:17]
            └── false
 
 # --------------------------------------------------
@@ -465,10 +465,10 @@ select
       └── coalesce [subquery]
            ├── subquery
            │    └── project
-           │         ├── columns: column17:17!null
+           │         ├── columns: column16:16!null
            │         ├── cardinality: [1 - 1]
            │         ├── key: ()
-           │         ├── fd: ()-->(17)
+           │         ├── fd: ()-->(16)
            │         ├── scalar-group-by
            │         │    ├── cardinality: [1 - 1]
            │         │    ├── key: ()
@@ -476,7 +476,7 @@ select
            │         │         ├── cardinality: [0 - 0]
            │         │         └── key: ()
            │         └── projections
-           │              └── true [as=column17:17]
+           │              └── true [as=column16:16]
            └── false
 
 norm expect=EliminateExistsGroupBy
@@ -494,10 +494,10 @@ select
       └── coalesce [subquery]
            ├── subquery
            │    └── project
-           │         ├── columns: column16:16!null
+           │         ├── columns: column15:15!null
            │         ├── cardinality: [0 - 1]
            │         ├── key: ()
-           │         ├── fd: ()-->(16)
+           │         ├── fd: ()-->(15)
            │         ├── limit
            │         │    ├── cardinality: [0 - 1]
            │         │    ├── key: ()
@@ -505,7 +505,7 @@ select
            │         │    │    └── limit hint: 1.00
            │         │    └── 1
            │         └── projections
-           │              └── true [as=column16:16]
+           │              └── true [as=column15:15]
            └── false
 
 norm expect=EliminateExistsGroupBy
@@ -523,10 +523,10 @@ select
       └── coalesce [subquery]
            ├── subquery
            │    └── project
-           │         ├── columns: column16:16!null
+           │         ├── columns: column15:15!null
            │         ├── cardinality: [0 - 1]
            │         ├── key: ()
-           │         ├── fd: ()-->(16)
+           │         ├── fd: ()-->(15)
            │         ├── limit
            │         │    ├── cardinality: [0 - 1]
            │         │    ├── key: ()
@@ -534,7 +534,7 @@ select
            │         │    │    └── limit hint: 1.00
            │         │    └── 1
            │         └── projections
-           │              └── true [as=column16:16]
+           │              └── true [as=column15:15]
            └── false
 
 # Ensure that EliminateExistsGroupBy does not activate for an EnsureDistinctOn.
@@ -553,10 +553,10 @@ select
       └── coalesce [subquery]
            ├── subquery
            │    └── project
-           │         ├── columns: column21:21!null
+           │         ├── columns: column20:20!null
            │         ├── cardinality: [0 - 1]
            │         ├── key: ()
-           │         ├── fd: ()-->(21)
+           │         ├── fd: ()-->(20)
            │         ├── limit
            │         │    ├── columns: k:8!null
            │         │    ├── cardinality: [0 - 1]
@@ -580,7 +580,7 @@ select
            │         │    │              └── xy.y:16 = k:8 [outer=(8,16), constraints=(/8: (/NULL - ]; /16: (/NULL - ]), fd=(8)==(16), (16)==(8)]
            │         │    └── 1
            │         └── projections
-           │              └── true [as=column21:21]
+           │              └── true [as=column20:20]
            └── false
 
 # --------------------------------------------------
@@ -601,10 +601,10 @@ select
       └── coalesce [subquery]
            ├── subquery
            │    └── project
-           │         ├── columns: column17:17!null
+           │         ├── columns: column16:16!null
            │         ├── cardinality: [0 - 1]
            │         ├── key: ()
-           │         ├── fd: ()-->(17)
+           │         ├── fd: ()-->(16)
            │         ├── limit
            │         │    ├── cardinality: [0 - 1]
            │         │    ├── key: ()
@@ -612,7 +612,7 @@ select
            │         │    │    └── limit hint: 1.00
            │         │    └── 1
            │         └── projections
-           │              └── true [as=column17:17]
+           │              └── true [as=column16:16]
            └── false
 
 # --------------------------------------------------
@@ -676,9 +676,9 @@ semi-join (hash)
  │    │    ├── key: (1)
  │    │    └── fd: (1)-->(2-5)
  │    └── filters
+ │         ├── i:2 = 2 [outer=(2), constraints=(/2: [/2 - /2]; tight), fd=()-->(2)]
  │         ├── f:3 > 1.0 [outer=(3), constraints=(/3: [/1.0000000000000002 - ]; tight)]
- │         ├── s:4 = 'foo' [outer=(4), constraints=(/4: [/'foo' - /'foo']; tight), fd=()-->(4)]
- │         └── i:2 = 2 [outer=(2), constraints=(/2: [/2 - /2]; tight), fd=()-->(2)]
+ │         └── s:4 = 'foo' [outer=(4), constraints=(/4: [/'foo' - /'foo']; tight), fd=()-->(4)]
  ├── scan xy
  │    ├── columns: x:8!null
  │    └── key: (8)
@@ -722,18 +722,18 @@ semi-join (hash)
  ├── scan abcd
  │    └── columns: a:1 b:2 c:3 d:4
  ├── project
- │    ├── columns: column16:16 column15:15!null
+ │    ├── columns: column15:15 column14:14!null
  │    ├── immutable
  │    ├── scan xy
  │    │    ├── columns: x:8!null y:9
  │    │    ├── key: (8)
  │    │    └── fd: (8)-->(9)
  │    └── projections
- │         ├── y:9 + 1 [as=column16:16, outer=(9), immutable]
- │         └── x:8 + 1 [as=column15:15, outer=(8), immutable]
+ │         ├── y:9 + 1 [as=column15:15, outer=(9), immutable]
+ │         └── x:8 + 1 [as=column14:14, outer=(8), immutable]
  └── filters
-      ├── a:1 = column15:15 [outer=(1,15), constraints=(/1: (/NULL - ]; /15: (/NULL - ]), fd=(1)==(15), (15)==(1)]
-      └── b:2 = column16:16 [outer=(2,16), constraints=(/2: (/NULL - ]; /16: (/NULL - ]), fd=(2)==(16), (16)==(2)]
+      ├── a:1 = column14:14 [outer=(1,14), constraints=(/1: (/NULL - ]; /14: (/NULL - ]), fd=(1)==(14), (14)==(1)]
+      └── b:2 = column15:15 [outer=(2,15), constraints=(/2: (/NULL - ]; /15: (/NULL - ]), fd=(2)==(15), (15)==(2)]
 
 # --------------------------------------------------
 # ConvertUncorrelatedExistsToCoalesceSubquery
@@ -754,10 +754,10 @@ select
       └── coalesce [subquery]
            ├── subquery
            │    └── project
-           │         ├── columns: column16:16!null
+           │         ├── columns: column15:15!null
            │         ├── cardinality: [0 - 1]
            │         ├── key: ()
-           │         ├── fd: ()-->(16)
+           │         ├── fd: ()-->(15)
            │         ├── limit
            │         │    ├── cardinality: [0 - 1]
            │         │    ├── key: ()
@@ -765,23 +765,23 @@ select
            │         │    │    └── limit hint: 1.00
            │         │    └── 1
            │         └── projections
-           │              └── true [as=column16:16]
+           │              └── true [as=column15:15]
            └── false
 
 norm expect=ConvertUncorrelatedExistsToCoalesceSubquery
 SELECT EXISTS(SELECT * FROM (VALUES (1))) FROM a
 ----
 project
- ├── columns: exists:11
+ ├── columns: exists:10
  ├── scan a
  └── projections
-      └── coalesce [as=exists:11, subquery]
+      └── coalesce [as=exists:10, subquery]
            ├── subquery
            │    └── values
-           │         ├── columns: column10:10!null
+           │         ├── columns: column9:9!null
            │         ├── cardinality: [1 - 1]
            │         ├── key: ()
-           │         ├── fd: ()-->(10)
+           │         ├── fd: ()-->(9)
            │         └── (true,)
            └── false
 
@@ -804,10 +804,10 @@ inner-join (cross)
  │         └── coalesce [subquery]
  │              ├── subquery
  │              │    └── values
- │              │         ├── columns: column17:17!null
+ │              │         ├── columns: column16:16!null
  │              │         ├── cardinality: [1 - 1]
  │              │         ├── key: ()
- │              │         ├── fd: ()-->(17)
+ │              │         ├── fd: ()-->(16)
  │              │         └── (true,)
  │              └── false
  ├── select
@@ -822,10 +822,10 @@ inner-join (cross)
  │         └── coalesce [subquery]
  │              ├── subquery
  │              │    └── values
- │              │         ├── columns: column17:17!null
+ │              │         ├── columns: column16:16!null
  │              │         ├── cardinality: [1 - 1]
  │              │         ├── key: ()
- │              │         ├── fd: ()-->(17)
+ │              │         ├── fd: ()-->(16)
  │              │         └── (true,)
  │              └── false
  └── filters (true)
@@ -846,6 +846,70 @@ semi-join (hash)
  │    └── columns: a2.i:9
  └── filters
       └── a1.i:2 = a2.i:9 [outer=(2,9), constraints=(/2: (/NULL - ]; /9: (/NULL - ]), fd=(2)==(9), (9)==(2)]
+
+# --------------------------------------------------
+# IntroduceExistsLimit
+# --------------------------------------------------
+norm expect=IntroduceExistsLimit disable=ConvertUncorrelatedExistsToCoalesceSubquery
+SELECT * FROM a WHERE EXISTS(SELECT i FROM a)
+----
+select
+ ├── columns: k:1!null i:2 f:3 s:4 arr:5
+ ├── key: (1)
+ ├── fd: (1)-->(2-5)
+ ├── scan a
+ │    ├── columns: k:1!null i:2 f:3 s:4 arr:5
+ │    ├── key: (1)
+ │    └── fd: (1)-->(2-5)
+ └── filters
+      └── exists [subquery]
+           └── limit
+                ├── columns: i:9
+                ├── cardinality: [0 - 1]
+                ├── key: ()
+                ├── fd: ()-->(9)
+                ├── scan a
+                │    ├── columns: i:9
+                │    └── limit hint: 1.00
+                └── 1
+
+# Don't introduce a limit on correlated subqueries (when HasOuterCols is true).
+norm expect-not=IntroduceExistsLimit
+SELECT * FROM a a1 WHERE EXISTS(SELECT i FROM a a2 where a1.i = a2.i)
+----
+semi-join (hash)
+ ├── columns: k:1!null i:2 f:3 s:4 arr:5
+ ├── key: (1)
+ ├── fd: (1)-->(2-5)
+ ├── scan a [as=a1]
+ │    ├── columns: a1.k:1!null a1.i:2 a1.f:3 a1.s:4 a1.arr:5
+ │    ├── key: (1)
+ │    └── fd: (1)-->(2-5)
+ ├── scan a [as=a2]
+ │    └── columns: a2.i:9
+ └── filters
+      └── a1.i:2 = a2.i:9 [outer=(2,9), constraints=(/2: (/NULL - ]; /9: (/NULL - ]), fd=(2)==(9), (9)==(2)]
+
+# Don't introduce a limit when the subquery has one row.
+norm expect-not=IntroduceExistsLimit disable=ConvertUncorrelatedExistsToCoalesceSubquery
+SELECT * FROM a WHERE EXISTS(SELECT * FROM (VALUES (1)))
+----
+select
+ ├── columns: k:1!null i:2 f:3 s:4 arr:5
+ ├── key: (1)
+ ├── fd: (1)-->(2-5)
+ ├── scan a
+ │    ├── columns: k:1!null i:2 f:3 s:4 arr:5
+ │    ├── key: (1)
+ │    └── fd: (1)-->(2-5)
+ └── filters
+      └── exists [subquery]
+           └── values
+                ├── columns: column1:8!null
+                ├── cardinality: [1 - 1]
+                ├── key: ()
+                ├── fd: ()-->(8)
+                └── (1,)
 
 # --------------------------------------------------
 # EliminateExistsLimit
@@ -1024,250 +1088,6 @@ values
                 ├── key: ()
                 ├── fd: ()-->(1)
                 └── (gen_random_uuid(),)
-
-
-# --------------------------------------------------
-# EliminateUDFCallSubquery
-# --------------------------------------------------
-
-exec-ddl
-CREATE FUNCTION f1(i INT) RETURNS INT AS $$
-  SELECT i
-$$ LANGUAGE SQL
-----
-
-opt expect=EliminateUDFCallSubquery format=show-scalars
-SELECT (VALUES (f1(0)))
-----
-values
- ├── columns: column1:4
- ├── cardinality: [1 - 1]
- ├── volatile
- ├── key: ()
- ├── fd: ()-->(4)
- └── tuple
-      └── udf: f1
-           ├── args
-           │    └── const: 0
-           ├── params: i:1
-           └── body
-                └── values
-                     ├── columns: i:2
-                     ├── outer: (1)
-                     ├── cardinality: [1 - 1]
-                     ├── key: ()
-                     ├── fd: ()-->(2)
-                     └── tuple
-                          └── variable: i:1
-
-
-opt expect=EliminateUDFCallSubquery format=show-scalars
-SELECT (SELECT f1(0))
-----
-values
- ├── columns: f1:4
- ├── cardinality: [1 - 1]
- ├── volatile
- ├── key: ()
- ├── fd: ()-->(4)
- └── tuple
-      └── udf: f1
-           ├── args
-           │    └── const: 0
-           ├── params: i:1
-           └── body
-                └── values
-                     ├── columns: i:2
-                     ├── outer: (1)
-                     ├── cardinality: [1 - 1]
-                     ├── key: ()
-                     ├── fd: ()-->(2)
-                     └── tuple
-                          └── variable: i:1
-
-opt expect=EliminateUDFCallSubquery format=show-scalars
-SELECT (SELECT v FROM (VALUES (f1(0))) AS v(v))
-----
-values
- ├── columns: v:4
- ├── cardinality: [1 - 1]
- ├── volatile
- ├── key: ()
- ├── fd: ()-->(4)
- └── tuple
-      └── udf: f1
-           ├── args
-           │    └── const: 0
-           ├── params: i:1
-           └── body
-                └── values
-                     ├── columns: i:2
-                     ├── outer: (1)
-                     ├── cardinality: [1 - 1]
-                     ├── key: ()
-                     ├── fd: ()-->(2)
-                     └── tuple
-                          └── variable: i:1
-
-
-# Cannot eliminate multi-row values subquery.
-opt expect-not=EliminateUDFCallSubquery format=show-scalars
-SELECT (VALUES (f1(0)), (f1(1)))
-----
-values
- ├── columns: column1:6
- ├── cardinality: [1 - 1]
- ├── volatile
- ├── key: ()
- ├── fd: ()-->(6)
- └── tuple
-      └── subquery
-           └── max1-row
-                ├── columns: column1:5
-                ├── error: "more than one row returned by a subquery used as an expression"
-                ├── cardinality: [1 - 1]
-                ├── volatile
-                ├── key: ()
-                ├── fd: ()-->(5)
-                └── values
-                     ├── columns: column1:5
-                     ├── cardinality: [2 - 2]
-                     ├── volatile
-                     ├── tuple
-                     │    └── udf: f1
-                     │         ├── args
-                     │         │    └── const: 0
-                     │         ├── params: i:1
-                     │         └── body
-                     │              └── values
-                     │                   ├── columns: i:2
-                     │                   ├── outer: (1)
-                     │                   ├── cardinality: [1 - 1]
-                     │                   ├── key: ()
-                     │                   ├── fd: ()-->(2)
-                     │                   └── tuple
-                     │                        └── variable: i:1
-                     └── tuple
-                          └── udf: f1
-                               ├── args
-                               │    └── const: 1
-                               ├── params: i:3
-                               └── body
-                                    └── values
-                                         ├── columns: i:4
-                                         ├── outer: (3)
-                                         ├── cardinality: [1 - 1]
-                                         ├── key: ()
-                                         ├── fd: ()-->(4)
-                                         └── tuple
-                                              └── variable: i:3
-
-# Cannot eliminate multi-column values subquery.
-opt expect-not=EliminateUDFCallSubquery format=show-scalars
-SELECT (f1(0), f1(1)) = (SELECT f1(0), f1(1))
-----
-values
- ├── columns: "?column?":12
- ├── cardinality: [1 - 1]
- ├── volatile
- ├── key: ()
- ├── fd: ()-->(12)
- └── tuple
-      └── eq
-           ├── tuple
-           │    ├── udf: f1
-           │    │    ├── args
-           │    │    │    └── const: 0
-           │    │    ├── params: i:7
-           │    │    └── body
-           │    │         └── values
-           │    │              ├── columns: i:8
-           │    │              ├── outer: (7)
-           │    │              ├── cardinality: [1 - 1]
-           │    │              ├── key: ()
-           │    │              ├── fd: ()-->(8)
-           │    │              └── tuple
-           │    │                   └── variable: i:7
-           │    └── udf: f1
-           │         ├── args
-           │         │    └── const: 1
-           │         ├── params: i:9
-           │         └── body
-           │              └── values
-           │                   ├── columns: i:10
-           │                   ├── outer: (9)
-           │                   ├── cardinality: [1 - 1]
-           │                   ├── key: ()
-           │                   ├── fd: ()-->(10)
-           │                   └── tuple
-           │                        └── variable: i:9
-           └── subquery
-                └── project
-                     ├── columns: column11:11
-                     ├── cardinality: [1 - 1]
-                     ├── volatile
-                     ├── key: ()
-                     ├── fd: ()-->(11)
-                     ├── values
-                     │    ├── columns: f1:3 f1:6
-                     │    ├── cardinality: [1 - 1]
-                     │    ├── volatile
-                     │    ├── key: ()
-                     │    ├── fd: ()-->(3,6)
-                     │    └── tuple
-                     │         ├── udf: f1
-                     │         │    ├── args
-                     │         │    │    └── const: 0
-                     │         │    ├── params: i:1
-                     │         │    └── body
-                     │         │         └── values
-                     │         │              ├── columns: i:2
-                     │         │              ├── outer: (1)
-                     │         │              ├── cardinality: [1 - 1]
-                     │         │              ├── key: ()
-                     │         │              ├── fd: ()-->(2)
-                     │         │              └── tuple
-                     │         │                   └── variable: i:1
-                     │         └── udf: f1
-                     │              ├── args
-                     │              │    └── const: 1
-                     │              ├── params: i:4
-                     │              └── body
-                     │                   └── values
-                     │                        ├── columns: i:5
-                     │                        ├── outer: (4)
-                     │                        ├── cardinality: [1 - 1]
-                     │                        ├── key: ()
-                     │                        ├── fd: ()-->(5)
-                     │                        └── tuple
-                     │                             └── variable: i:4
-                     └── projections
-                          └── tuple [as=column11:11, outer=(3,6)]
-                               ├── variable: f1:3
-                               └── variable: f1:6
-
-
-# Cannot eliminate non-udf call subquery.
-opt expect-not=EliminateUDFCallSubquery format=show-scalars
-SELECT (SELECT gen_random_uuid())
-----
-values
- ├── columns: gen_random_uuid:2
- ├── cardinality: [1 - 1]
- ├── volatile
- ├── key: ()
- ├── fd: ()-->(2)
- └── tuple
-      └── subquery
-           └── values
-                ├── columns: gen_random_uuid:1
-                ├── cardinality: [1 - 1]
-                ├── volatile
-                ├── key: ()
-                ├── fd: ()-->(1)
-                └── tuple
-                     └── function: gen_random_uuid
-
 
 # --------------------------------------------------
 # SimplifyCaseWhenConstValue
@@ -2035,7 +1855,7 @@ project
  │    ├── columns: b.k:1!null a.k:8!null array_agg:17!null
  │    ├── grouping columns: b.k:1!null
  │    ├── key: (1)
- │    ├── fd: (1)-->(8,17), (1)==(8), (8)==(1)
+ │    ├── fd: (1)==(8), (8)==(1), (1)-->(8,17)
  │    ├── project
  │    │    ├── columns: a.k:8!null b.k:1!null
  │    │    ├── key: (1)

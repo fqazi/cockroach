@@ -373,7 +373,7 @@ func (i *Inbox) Next() coldata.Batch {
 					// to keep errors unchanged (e.g. kvpb.ErrPriority() will
 					// be called on each error in the DistSQLReceiver).
 					i.bufferedMeta = append(i.bufferedMeta, meta)
-					colexecutils.AccountForMetadata(i.Ctx, i.allocator.Acc(), i.bufferedMeta[len(i.bufferedMeta)-1:])
+					colexecutils.AccountForMetadata(i.allocator, i.bufferedMeta[len(i.bufferedMeta)-1:])
 				}
 			}
 			if receivedErr != nil {
@@ -437,7 +437,9 @@ func (i *Inbox) GetNumMessages() int64 {
 func (i *Inbox) sendDrainSignal(ctx context.Context) error {
 	log.VEvent(ctx, 2, "Inbox sending drain signal to Outbox")
 	if err := i.stream.Send(&execinfrapb.ConsumerSignal{DrainRequest: &execinfrapb.DrainRequest{}}); err != nil {
-		log.VWarningf(ctx, 1, "Inbox unable to send drain signal to Outbox: %+v", err)
+		if log.V(1) {
+			log.Warningf(ctx, "Inbox unable to send drain signal to Outbox: %+v", err)
+		}
 		return err
 	}
 	return nil

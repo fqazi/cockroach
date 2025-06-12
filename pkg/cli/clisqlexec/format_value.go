@@ -11,8 +11,6 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/cockroachdb/cockroach/pkg/sql/lexbase"
 )
 
 func isNotPrintableASCII(r rune) bool { return r < 0x20 || r > 0x7e || r == '"' || r == '\\' }
@@ -42,11 +40,10 @@ func FormatVal(val driver.Value, showPrintableUnicode bool, showNewLinesAndTabs 
 				return t
 			}
 		}
-		s := lexbase.EscapeSQLString(t)
-		// The result from EscapeSQLString is an escape-quoted string, like e'...'.
+		s := fmt.Sprintf("%+q", t)
 		// Strip the start and final quotes. The surrounding display
 		// format (e.g. CSV/TSV) will add its own quotes.
-		return s[2 : len(s)-1]
+		return s[1 : len(s)-1]
 	}
 
 	// Fallback to printing the value as-is.

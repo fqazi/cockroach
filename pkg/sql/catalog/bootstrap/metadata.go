@@ -10,7 +10,6 @@ package bootstrap
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"sort"
@@ -93,6 +92,24 @@ func (ms *MetadataSchema) AddDescriptor(desc catalog.Descriptor) {
 	ms.descs = append(ms.descs, desc)
 }
 
+// AddDescriptorForSystemTenant is like AddDescriptor but only for the system
+// tenant.
+func (ms *MetadataSchema) AddDescriptorForSystemTenant(desc catalog.Descriptor) {
+	if !ms.codec.ForSystemTenant() {
+		return
+	}
+	ms.AddDescriptor(desc)
+}
+
+// AddDescriptorForNonSystemTenant is like AddDescriptor but only for non-system
+// tenants.
+func (ms *MetadataSchema) AddDescriptorForNonSystemTenant(desc catalog.Descriptor) {
+	if ms.codec.ForSystemTenant() {
+		return
+	}
+	ms.AddDescriptor(desc)
+}
+
 // ForEachCatalogDescriptor iterates through each catalog.Descriptor object in
 // this schema.
 // iterutil.StopIteration is supported.
@@ -148,6 +165,13 @@ func (ms MetadataSchema) GetInitialValues() ([]roachpb.KeyValue, []roachpb.RKey)
 		value := roachpb.Value{}
 		value.SetInt(int64(ms.FirstNonSystemDescriptorID()))
 		add(ms.codec.SequenceKey(keys.DescIDSequenceID), value)
+		if ms.codec.ForSystemTenant() {
+			// We need to also set the value of the legacy descriptor ID generator
+			// until clusterversion.V23_1DescIDSequenceForSystemTenant is removed.
+			legacyValue := roachpb.Value{}
+			legacyValue.SetInt(int64(ms.FirstNonSystemDescriptorID()))
+			add(keys.LegacyDescIDGenerator, legacyValue)
+		}
 	}
 	// Generate initial values for the system database's public schema, which
 	// doesn't have a descriptor.
@@ -321,7 +345,7 @@ func InitialValuesFromString(
 	}
 	// Add back the filtered out tenant end key.
 	if !codec.ForSystemTenant() {
-		splits = append(splits, roachpb.RKey(codec.TenantEndKey()))
+		splits = append(splits, roachpb.RKey(p.PrefixEnd()))
 	}
 	return kvs, splits, nil
 }
@@ -371,7 +395,7 @@ func addSystemDescriptorsToSchema(target *MetadataSchema) {
 	target.AddDescriptor(systemschema.ZonesTable)
 	target.AddDescriptor(systemschema.SettingsTable)
 	target.AddDescriptor(systemschema.DescIDSequence)
-	target.AddDescriptor(systemschema.TenantsTable)
+	target.AddDescriptorForSystemTenant(systemschema.TenantsTable)
 
 	// Add all the other system tables.
 	target.AddDescriptor(systemschema.LeaseTable())
@@ -418,14 +442,14 @@ func addSystemDescriptorsToSchema(target *MetadataSchema) {
 	target.AddDescriptor(systemschema.StatementStatisticsTable)
 	target.AddDescriptor(systemschema.TransactionStatisticsTable)
 	target.AddDescriptor(systemschema.DatabaseRoleSettingsTable)
-	target.AddDescriptor(systemschema.TenantUsageTable)
+	target.AddDescriptorForSystemTenant(systemschema.TenantUsageTable)
 	target.AddDescriptor(systemschema.SQLInstancesTable())
-	target.AddDescriptor(systemschema.SpanConfigurationsTable)
+	target.AddDescriptorForSystemTenant(systemschema.SpanConfigurationsTable)
 
 	// Tables introduced in 22.1.
 
-	target.AddDescriptor(systemschema.TenantSettingsTable)
-	target.AddDescriptor(systemschema.SpanCountTable)
+	target.AddDescriptorForSystemTenant(systemschema.TenantSettingsTable)
+	target.AddDescriptorForNonSystemTenant(systemschema.SpanCountTable)
 
 	// Tables introduced in 22.2.
 	target.AddDescriptor(systemschema.SystemPrivilegeTable)
@@ -438,27 +462,17 @@ func addSystemDescriptorsToSchema(target *MetadataSchema) {
 	target.AddDescriptor(systemschema.SpanStatsBucketsTable)
 	target.AddDescriptor(systemschema.SpanStatsSamplesTable)
 	target.AddDescriptor(systemschema.SpanStatsTenantBoundariesTable)
-	target.AddDescriptor(systemschema.SystemTaskPayloadsTable)
-	target.AddDescriptor(systemschema.SystemTenantTasksTable)
+	target.AddDescriptorForSystemTenant(systemschema.SystemTaskPayloadsTable)
+	target.AddDescriptorForSystemTenant(systemschema.SystemTenantTasksTable)
 	target.AddDescriptor(systemschema.StatementActivityTable)
 	target.AddDescriptor(systemschema.TransactionActivityTable)
-	target.AddDescriptor(systemschema.TenantIDSequence)
+	target.AddDescriptorForSystemTenant(systemschema.TenantIDSequence)
 
 	// Tables introduced in 23.2.
 	target.AddDescriptor(systemschema.RegionLivenessTable)
 	target.AddDescriptor(systemschema.SystemMVCCStatisticsTable)
 	target.AddDescriptor(systemschema.TransactionExecInsightsTable)
 	target.AddDescriptor(systemschema.StatementExecInsightsTable)
-
-	// Tables introduced in 24.3
-	target.AddDescriptor(systemschema.TableMetadata)
-
-	// Tables introduced in 25.1
-	target.AddDescriptor(systemschema.SystemJobProgressTable)
-	target.AddDescriptor(systemschema.SystemJobProgressHistoryTable)
-	target.AddDescriptor(systemschema.SystemJobStatusTable)
-	target.AddDescriptor(systemschema.SystemJobMessageTable)
-	target.AddDescriptor(systemschema.PreparedTransactionsTable)
 
 	// Adding a new system table? It should be added here to the metadata schema,
 	// and also created as a migration for older clusters.
@@ -472,7 +486,7 @@ func addSystemDescriptorsToSchema(target *MetadataSchema) {
 // NumSystemTablesForSystemTenant is the number of system tables defined on
 // the system tenant. This constant is only defined to avoid having to manually
 // update auto stats tests every time a new system table is added.
-const NumSystemTablesForSystemTenant = 62
+const NumSystemTablesForSystemTenant = 55
 
 // addSplitIDs adds a split point for each of the PseudoTableIDs to the supplied
 // MetadataSchema.
@@ -516,41 +530,30 @@ func InitialZoneConfigKVs(
 	metaRangeZoneConf := protoutil.Clone(defaultSystemZoneConfig).(*zonepb.ZoneConfig)
 	livenessZoneConf := protoutil.Clone(defaultSystemZoneConfig).(*zonepb.ZoneConfig)
 
-	// The timeseries zone should inherit everything except for gc.ttlseconds from
-	// the default zone. We create it explicitly here so it's clearly visible
-	// when using SHOW ALL ZONE CONFIGURATIONS.
-	timeseriesZoneConf := zonepb.NewZoneConfig()
-	timeseriesZoneConf.GC = &zonepb.GCPolicy{TTLSeconds: defaultZoneConfig.GC.TTLSeconds}
-
 	// .meta zone config entry with a shorter GC time.
 	metaRangeZoneConf.GC.TTLSeconds = 60 * 60 // 1h
 
 	// Some reporting tables have shorter GC times.
-	replicationConstraintStatsZoneConf := zonepb.NewZoneConfig()
-	replicationConstraintStatsZoneConf.GC = &zonepb.GCPolicy{TTLSeconds: int32(systemschema.ReplicationConstraintStatsTableTTL.Seconds())}
-
-	replicationStatsZoneConf := zonepb.NewZoneConfig()
-	replicationStatsZoneConf.GC = &zonepb.GCPolicy{TTLSeconds: int32(systemschema.ReplicationStatsTableTTL.Seconds())}
-
-	tenantUsageZoneConf := zonepb.NewZoneConfig()
-	tenantUsageZoneConf.GC = &zonepb.GCPolicy{TTLSeconds: int32(systemschema.TenantUsageTableTTL.Seconds())}
+	replicationConstraintStatsZoneConf := &zonepb.ZoneConfig{
+		GC: &zonepb.GCPolicy{TTLSeconds: int32(systemschema.ReplicationConstraintStatsTableTTL.Seconds())},
+	}
+	replicationStatsZoneConf := &zonepb.ZoneConfig{
+		GC: &zonepb.GCPolicy{TTLSeconds: int32(systemschema.ReplicationStatsTableTTL.Seconds())},
+	}
+	tenantUsageZoneConf := &zonepb.ZoneConfig{
+		GC: &zonepb.GCPolicy{TTLSeconds: int32(systemschema.TenantUsageTableTTL.Seconds())},
+	}
 
 	// Liveness zone config entry with a shorter GC time.
 	livenessZoneConf.GC.TTLSeconds = 10 * 60 // 10m
 
-	// Lease table zone config
-	leaseZoneConfig := zonepb.NewZoneConfig()
-	leaseZoneConfig.GC = &zonepb.GCPolicy{TTLSeconds: int32(systemschema.LeaseTableTTL.Seconds())}
-
 	add(keys.MetaRangesID, metaRangeZoneConf)
 	add(keys.LivenessRangesID, livenessZoneConf)
 	add(keys.SystemRangesID, systemZoneConf)
-	add(keys.TimeseriesRangesID, timeseriesZoneConf)
 	add(keys.SystemDatabaseID, systemZoneConf)
 	add(keys.ReplicationConstraintStatsTableID, replicationConstraintStatsZoneConf)
 	add(keys.ReplicationStatsTableID, replicationStatsZoneConf)
 	add(keys.TenantUsageTableID, tenantUsageZoneConf)
-	add(keys.LeaseTableID, leaseZoneConfig)
 
 	return ret
 }
@@ -647,19 +650,4 @@ func TestingUserDescID(offset uint32) uint32 {
 // user table data key in a simple unit test setting.
 func TestingUserTableDataMin(codec keys.SQLCodec) roachpb.Key {
 	return codec.TablePrefix(testingMinUserDescID(codec))
-}
-
-// GetAndHashInitialValuesToString generates the bootstrap keys and sha-256 that
-// can be used to generate data files (to be included in future releases).
-func GetAndHashInitialValuesToString(tenantID uint64) (initialValues string, hash string) {
-	codec := keys.SystemSQLCodec
-	if tenantID > 0 {
-		codec = keys.MakeSQLCodec(roachpb.MustMakeTenantID(tenantID))
-	}
-	ms := MakeMetadataSchema(codec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef())
-
-	initialValues = InitialValuesToString(ms)
-	h := sha256.Sum256([]byte(initialValues))
-	hash = hex.EncodeToString(h[:])
-	return initialValues, hash
 }

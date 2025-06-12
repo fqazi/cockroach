@@ -26,9 +26,9 @@ func PlanAndRunCTAS(
 	out execinfrapb.ProcessorCoreUnion,
 	recv *DistSQLReceiver,
 ) {
-	distribute := DistributionType(LocalDistribution)
+	distribute := DistributionType(DistributionTypeNone)
 	if !isLocal {
-		distribute = FullDistribution
+		distribute = DistributionTypeSystemTenantOnly
 	}
 	planCtx := dsp.NewPlanningCtx(ctx, planner.ExtendedEvalContext(), planner,
 		txn, distribute)
@@ -41,16 +41,16 @@ func PlanAndRunCTAS(
 		return
 	}
 	physPlan.AddNoGroupingStage(
-		out, execinfrapb.PostProcessSpec{}, rowexec.CTASPlanResultTypes, execinfrapb.Ordering{}, nil, /* finalizeLastStageCb */
+		out, execinfrapb.PostProcessSpec{}, rowexec.CTASPlanResultTypes, execinfrapb.Ordering{},
 	)
 
 	// The bulk row writers will emit a binary encoded BulkOpSummary.
 	physPlan.PlanToStreamColMap = []int{0}
 
+	// Make copy of evalCtx as Run might modify it.
+	evalCtxCopy := planner.ExtendedEvalContextCopy()
 	FinalizePlan(ctx, planCtx, physPlan)
 	finishedSetupFn, cleanup := getFinishedSetupFn(planner)
 	defer cleanup()
-	// Copy the eval.Context, as dsp.Run() might change it.
-	evalCtxCopy := planner.ExtendedEvalContext().Context.Copy()
 	dsp.Run(ctx, planCtx, txn, physPlan, recv, evalCtxCopy, finishedSetupFn)
 }

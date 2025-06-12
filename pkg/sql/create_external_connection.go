@@ -11,6 +11,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/cloud"
 	"github.com/cockroachdb/cockroach/pkg/cloud/externalconn"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
@@ -24,8 +25,7 @@ import (
 
 const externalConnectionOp = "CREATE EXTERNAL CONNECTION"
 
-type createExternalConnectionNode struct {
-	zeroInputPlanNode
+type createExternalConectionNode struct {
 	n *tree.CreateExternalConnection
 }
 
@@ -33,10 +33,10 @@ type createExternalConnectionNode struct {
 func (p *planner) CreateExternalConnection(
 	ctx context.Context, n *tree.CreateExternalConnection,
 ) (planNode, error) {
-	return &createExternalConnectionNode{n: n}, nil
+	return &createExternalConectionNode{n: n}, nil
 }
 
-func (c *createExternalConnectionNode) startExec(params runParams) error {
+func (c *createExternalConectionNode) startExec(params runParams) error {
 	return params.p.createExternalConnection(params, c.n)
 }
 
@@ -125,25 +125,22 @@ func (p *planner) createExternalConnection(
 	ex.SetConnectionDetails(*exConn.ConnectionProto())
 	ex.SetConnectionType(exConn.ConnectionType())
 	ex.SetOwner(p.User())
-
-	row, err := txn.QueryRowEx(params.ctx, `get-user-id`, txn.KV(),
-		sessiondata.NodeUserSessionDataOverride,
-		`SELECT user_id FROM system.users WHERE username = $1`,
-		p.User(),
-	)
-	if err != nil {
-		return errors.Wrap(err, "failed to get owner ID for External Connection")
+	if p.ExecCfg().Settings.Version.IsActive(params.ctx, clusterversion.V23_1ExternalConnectionsTableHasOwnerIDColumn) {
+		row, err := txn.QueryRowEx(params.ctx, `get-user-id`, txn.KV(),
+			sessiondata.NodeUserSessionDataOverride,
+			`SELECT user_id FROM system.users WHERE username = $1`,
+			p.User(),
+		)
+		if err != nil {
+			return errors.Wrap(err, "failed to get owner ID for External Connection")
+		}
+		ownerID := tree.MustBeDOid(row[0]).Oid
+		ex.SetOwnerID(ownerID)
 	}
-	ownerID := tree.MustBeDOid(row[0]).Oid
-	ex.SetOwnerID(ownerID)
 
 	// Create the External Connection and persist it in the
 	// `system.external_connections` table.
 	if err := ex.Create(params.ctx, txn); err != nil {
-		ifNotExists := n.ConnectionLabelSpec.IfNotExists
-		if ifNotExists && pgerror.GetPGCode(err) == pgcode.DuplicateObject {
-			return nil
-		}
 		return errors.Wrap(err, "failed to create external connection")
 	}
 
@@ -168,6 +165,6 @@ func logAndSanitizeExternalConnectionURI(ctx context.Context, externalConnection
 	return nil
 }
 
-func (c *createExternalConnectionNode) Next(_ runParams) (bool, error) { return false, nil }
-func (c *createExternalConnectionNode) Values() tree.Datums            { return nil }
-func (c *createExternalConnectionNode) Close(_ context.Context)        {}
+func (c *createExternalConectionNode) Next(_ runParams) (bool, error) { return false, nil }
+func (c *createExternalConectionNode) Values() tree.Datums            { return nil }
+func (c *createExternalConectionNode) Close(_ context.Context)        {}

@@ -15,10 +15,9 @@ package serverutils
 import (
 	"context"
 	gosql "database/sql"
-	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -43,9 +42,6 @@ type TestClusterInterface interface {
 
 	// ServerConn returns a gosql.DB connection to a specific node.
 	ServerConn(idx int) *gosql.DB
-
-	// Restart stops and then starts all servers in the cluster.
-	Restart() error
 
 	// StopServer stops a single server.
 	StopServer(idx int)
@@ -152,21 +148,6 @@ type TestClusterInterface interface {
 		hint *roachpb.ReplicationTarget,
 	) (roachpb.ReplicationTarget, error)
 
-	// FindRangeLeaseEx returns information about a range's lease. As opposed to
-	// FindRangeLeaseHolder, it doesn't check the validity of the lease; instead it
-	// returns a timestamp from a node's clock.
-	//
-	// If hint is not nil, the respective node will be queried. If that node doesn't
-	// have a replica able to serve a LeaseInfoRequest, an error will be returned.
-	// If hint is nil, the first node is queried. In either case, if the returned
-	// lease is not valid, it's possible that the returned lease information is
-	// stale - i.e. there might be a newer lease unbeknownst to the queried node.
-	FindRangeLeaseEx(
-		ctx context.Context,
-		rangeDesc roachpb.RangeDescriptor,
-		hint *roachpb.ReplicationTarget,
-	) (_ roachpb.LeaseInfo, now hlc.ClockTimestamp, _ error)
-
 	// TransferRangeLease transfers the lease for a range from whoever has it to
 	// a particular store. That store must already have a replica of the range. If
 	// that replica already has the (active) lease, this method is a no-op.
@@ -185,11 +166,6 @@ type TestClusterInterface interface {
 		t TestFataler, rangeDesc roachpb.RangeDescriptor, dest roachpb.ReplicationTarget,
 	)
 
-	// MaybeWaitForLeaseUpgrade waits until the lease held for the given range
-	// descriptor is upgraded to an epoch-based or leader lease, but only if we
-	// expect the lease to be upgraded.
-	MaybeWaitForLeaseUpgrade(_ context.Context, _ TestFataler, _ roachpb.RangeDescriptor)
-
 	// MoveRangeLeaseNonCooperatively performs a non-cooperative transfer of the
 	// lease for a range from whoever has it to a particular store. That store
 	// must already have a replica of the range. If that replica already has the
@@ -205,7 +181,6 @@ type TestClusterInterface interface {
 	// If the lease starts out on dest, this is a no-op and the current lease is
 	// returned.
 	MoveRangeLeaseNonCooperatively(
-		t *testing.T,
 		ctx context.Context,
 		rangeDesc roachpb.RangeDescriptor,
 		dest roachpb.ReplicationTarget,
@@ -255,11 +230,6 @@ type TestClusterInterface interface {
 	// cluster.
 	StorageLayer(idx int) StorageLayerInterface
 
-	// DefaultTenantDeploymentMode returns the deployment mode of the default
-	// server or tenant, which can be single-tenant (system-only),
-	// shared-process, or external-process.
-	DefaultTenantDeploymentMode() DeploymentMode
-
 	// SplitTable splits a range in the table, creates a replica for the right
 	// side of the split on TargetNodeIdx, and moves the lease for the right
 	// side of the split to TargetNodeIdx for each SplitPoint. This forces the
@@ -269,34 +239,15 @@ type TestClusterInterface interface {
 	// are indeed distributed as intended.
 	SplitTable(t TestFataler, desc catalog.TableDescriptor, sps []SplitPoint)
 
-	// GrantTenantCapabilities grants a capability to a tenant and waits until all
-	// servers have the in-memory cache reflects the change.
-	//
-	// Note: There is no need to call WaitForTenantCapabilities separately.
-	GrantTenantCapabilities(
-		context.Context,
-		TestFataler,
-		roachpb.TenantID,
-		map[tenantcapabilitiespb.ID]string,
-	)
-
 	// WaitForTenantCapabilities waits until all servers have the specified
 	// tenant capabilities for the specified tenant ID.
 	// Only boolean capabilities are currently supported as we wait for the
 	// specified capabilities to have a "true" value.
-	WaitForTenantCapabilities(TestFataler, roachpb.TenantID, map[tenantcapabilitiespb.ID]string)
+	WaitForTenantCapabilities(TestFataler, roachpb.TenantID, map[tenantcapabilities.ID]string)
 
 	// ToggleReplicateQueues activates or deactivates the replication queues on all
 	// the stores on all the nodes.
 	ToggleReplicateQueues(active bool)
-
-	// TogglesplitQueues activates or deactivates the split queues on all
-	// the stores on all the nodes.
-	ToggleSplitQueues(active bool)
-
-	// ToggleLeaseQueues activates or deactivates the lease queues on all
-	// the stores on all the nodes.
-	ToggleLeaseQueues(active bool)
 }
 
 // SplitPoint describes a split point that is passed to SplitTable.

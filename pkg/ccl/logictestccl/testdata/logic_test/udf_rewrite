@@ -1,3 +1,5 @@
+# LogicTest: !local-mixed-23.1
+
 statement ok
 CREATE SEQUENCE seq;
 
@@ -46,21 +48,6 @@ $$
   BEGIN
     RAISE NOTICE USING MESSAGE = format('next val: %d',nextval('seq'));
     RAISE NOTICE 'val1: %, val2: %', nextval('seq'), nextval('seq');
-    DECLARE
-      k INT := nextval('seq');
-    BEGIN
-      RAISE NOTICE 'k: %, nextval: %', k, nextval('seq');
-      IF k > 0 THEN
-        SELECT nextval('seq');
-      END IF;
-    EXCEPTION
-      WHEN division_by_zero THEN
-        RAISE NOTICE USING MESSAGE = format('next val: %d',nextval('seq'));
-      WHEN not_null_violation THEN
-        SELECT nextval('seq');
-        SELECT nextval('seq');
-        RAISE NOTICE USING MESSAGE = format('next val: %d',nextval('seq'));
-    END;
     WHILE nextval('seq') < 10 LOOP
       i = nextval('seq');
       SELECT nextval('seq');
@@ -77,13 +64,20 @@ $$
     END LOOP;
     OPEN curs FOR SELECT nextval('seq');
     RETURN nextval('seq');
+  EXCEPTION
+    WHEN division_by_zero THEN
+      RAISE NOTICE USING MESSAGE = format('next val: %d',nextval('seq'));
+    WHEN not_null_violation THEN
+      SELECT nextval('seq');
+      SELECT nextval('seq');
+      RAISE NOTICE USING MESSAGE = format('next val: %d',nextval('seq'));
   END
 $$ LANGUAGE PLPGSQL;
 
 query T
 SELECT get_body_str('f_rewrite');
 ----
-"DECLARE\ni INT8 := nextval(106:::REGCLASS);\nj INT8 := nextval(106:::REGCLASS);\ncurs REFCURSOR := nextval(106:::REGCLASS)::STRING;\ncurs2 CURSOR FOR SELECT nextval(106:::REGCLASS);\nBEGIN\nRAISE NOTICE\nUSING MESSAGE = format('next val: %d':::STRING, nextval(106:::REGCLASS));\nRAISE NOTICE 'val1: %, val2: %', nextval(106:::REGCLASS), nextval(106:::REGCLASS);\nDECLARE\nk INT8 := nextval(106:::REGCLASS);\nBEGIN\nRAISE NOTICE 'k: %, nextval: %', k, nextval(106:::REGCLASS);\nIF k > 0 THEN\n\tSELECT nextval(106:::REGCLASS);\nEND IF;\nEXCEPTION\nWHEN division_by_zero THEN\nRAISE NOTICE\nUSING MESSAGE = format('next val: %d':::STRING, nextval(106:::REGCLASS));\nWHEN not_null_violation THEN\nSELECT nextval(106:::REGCLASS);\nSELECT nextval(106:::REGCLASS);\nRAISE NOTICE\nUSING MESSAGE = format('next val: %d':::STRING, nextval(106:::REGCLASS));\nEND;\nWHILE nextval(106:::REGCLASS) < 10:::INT8 LOOP\ni := nextval(106:::REGCLASS);\nSELECT nextval(106:::REGCLASS);\nIF nextval(106:::REGCLASS) = 1:::INT8 THEN\n\tSELECT nextval(106:::REGCLASS);\n\tSELECT nextval(106:::REGCLASS);\n\tCONTINUE;\nELSIF nextval(106:::REGCLASS) = 2:::INT8 THEN\n\tSELECT v FROM ROWS FROM (nextval(106:::REGCLASS)) AS v (\"int\") INTO i;\nELSIF nextval(106:::REGCLASS) = 3:::INT8 THEN\n\tSELECT nextval(106:::REGCLASS);\n\tSELECT nextval(106:::REGCLASS);\nEND IF;\nEND LOOP;\nOPEN curs FOR SELECT nextval(106:::REGCLASS);\nRETURN nextval(106:::REGCLASS);\nEND;\n"
+"DECLARE\ni INT8 := nextval(106:::REGCLASS);\nj INT8 := nextval(106:::REGCLASS);\ncurs REFCURSOR := nextval(106:::REGCLASS)::STRING;\ncurs2 CURSOR FOR SELECT nextval(106:::REGCLASS);\nBEGIN\nRAISE notice\nUSING MESSAGE = format('next val: %d':::STRING, nextval(106:::REGCLASS));\nRAISE notice 'val1: %, val2: %', nextval(106:::REGCLASS), nextval(106:::REGCLASS);\nWHILE nextval(106:::REGCLASS) < 10:::INT8 LOOP\ni := nextval(106:::REGCLASS);\nSELECT nextval(106:::REGCLASS);\nIF nextval(106:::REGCLASS) = 1:::INT8 THEN\n\tSELECT nextval(106:::REGCLASS);\n\tSELECT nextval(106:::REGCLASS);\n\tCONTINUE;\nELSIF nextval(106:::REGCLASS) = 2:::INT8 THEN\n\tSELECT v FROM ROWS FROM (nextval(106:::REGCLASS)) AS v (\"int\") INTO i;\nELSIF nextval(106:::REGCLASS) = 3:::INT8 THEN\n\tSELECT nextval(106:::REGCLASS);\n\tSELECT nextval(106:::REGCLASS);\nEND IF;\nEND LOOP;\nOPEN curs FOR SELECT nextval(106:::REGCLASS);\nRETURN nextval(106:::REGCLASS);\nEXCEPTION\nWHEN division_by_zero THEN\nRAISE notice\nUSING MESSAGE = format('next val: %d':::STRING, nextval(106:::REGCLASS));\nWHEN not_null_violation THEN\nSELECT nextval(106:::REGCLASS);\nSELECT nextval(106:::REGCLASS);\nRAISE notice\nUSING MESSAGE = format('next val: %d':::STRING, nextval(106:::REGCLASS));\nEND\n;"
 
 query TT
 SHOW CREATE FUNCTION f_rewrite;
@@ -94,7 +88,6 @@ f_rewrite  CREATE FUNCTION public.f_rewrite()
              NOT LEAKPROOF
              CALLED ON NULL INPUT
              LANGUAGE plpgsql
-             SECURITY INVOKER
              AS $$
              DECLARE
              i INT8 := nextval('public.seq'::REGCLASS);
@@ -102,26 +95,9 @@ f_rewrite  CREATE FUNCTION public.f_rewrite()
              curs REFCURSOR := nextval('public.seq'::REGCLASS)::STRING;
              curs2 CURSOR FOR SELECT nextval('public.seq'::REGCLASS);
              BEGIN
-             RAISE NOTICE
+             RAISE notice
              USING MESSAGE = format('next val: %d':::STRING, nextval('public.seq'::REGCLASS));
-             RAISE NOTICE 'val1: %, val2: %', nextval('public.seq'::REGCLASS), nextval('public.seq'::REGCLASS);
-             DECLARE
-             k INT8 := nextval('public.seq'::REGCLASS);
-             BEGIN
-             RAISE NOTICE 'k: %, nextval: %', k, nextval('public.seq'::REGCLASS);
-             IF k > 0 THEN
-               SELECT nextval('public.seq'::REGCLASS);
-             END IF;
-             EXCEPTION
-             WHEN division_by_zero THEN
-             RAISE NOTICE
-             USING MESSAGE = format('next val: %d':::STRING, nextval('public.seq'::REGCLASS));
-             WHEN not_null_violation THEN
-             SELECT nextval('public.seq'::REGCLASS);
-             SELECT nextval('public.seq'::REGCLASS);
-             RAISE NOTICE
-             USING MESSAGE = format('next val: %d':::STRING, nextval('public.seq'::REGCLASS));
-             END;
+             RAISE notice 'val1: %, val2: %', nextval('public.seq'::REGCLASS), nextval('public.seq'::REGCLASS);
              WHILE nextval('public.seq'::REGCLASS) < 10:::INT8 LOOP
              i := nextval('public.seq'::REGCLASS);
              SELECT nextval('public.seq'::REGCLASS);
@@ -138,7 +114,16 @@ f_rewrite  CREATE FUNCTION public.f_rewrite()
              END LOOP;
              OPEN curs FOR SELECT nextval('public.seq'::REGCLASS);
              RETURN nextval('public.seq'::REGCLASS);
-             END;
+             EXCEPTION
+             WHEN division_by_zero THEN
+             RAISE notice
+             USING MESSAGE = format('next val: %d':::STRING, nextval('public.seq'::REGCLASS));
+             WHEN not_null_violation THEN
+             SELECT nextval('public.seq'::REGCLASS);
+             SELECT nextval('public.seq'::REGCLASS);
+             RAISE notice
+             USING MESSAGE = format('next val: %d':::STRING, nextval('public.seq'::REGCLASS));
+             END
            $$
 
 statement ok
@@ -147,7 +132,7 @@ ALTER SEQUENCE seq RENAME TO renamed;
 query T
 SELECT get_body_str('f_rewrite');
 ----
-"DECLARE\ni INT8 := nextval(106:::REGCLASS);\nj INT8 := nextval(106:::REGCLASS);\ncurs REFCURSOR := nextval(106:::REGCLASS)::STRING;\ncurs2 CURSOR FOR SELECT nextval(106:::REGCLASS);\nBEGIN\nRAISE NOTICE\nUSING MESSAGE = format('next val: %d':::STRING, nextval(106:::REGCLASS));\nRAISE NOTICE 'val1: %, val2: %', nextval(106:::REGCLASS), nextval(106:::REGCLASS);\nDECLARE\nk INT8 := nextval(106:::REGCLASS);\nBEGIN\nRAISE NOTICE 'k: %, nextval: %', k, nextval(106:::REGCLASS);\nIF k > 0 THEN\n\tSELECT nextval(106:::REGCLASS);\nEND IF;\nEXCEPTION\nWHEN division_by_zero THEN\nRAISE NOTICE\nUSING MESSAGE = format('next val: %d':::STRING, nextval(106:::REGCLASS));\nWHEN not_null_violation THEN\nSELECT nextval(106:::REGCLASS);\nSELECT nextval(106:::REGCLASS);\nRAISE NOTICE\nUSING MESSAGE = format('next val: %d':::STRING, nextval(106:::REGCLASS));\nEND;\nWHILE nextval(106:::REGCLASS) < 10:::INT8 LOOP\ni := nextval(106:::REGCLASS);\nSELECT nextval(106:::REGCLASS);\nIF nextval(106:::REGCLASS) = 1:::INT8 THEN\n\tSELECT nextval(106:::REGCLASS);\n\tSELECT nextval(106:::REGCLASS);\n\tCONTINUE;\nELSIF nextval(106:::REGCLASS) = 2:::INT8 THEN\n\tSELECT v FROM ROWS FROM (nextval(106:::REGCLASS)) AS v (\"int\") INTO i;\nELSIF nextval(106:::REGCLASS) = 3:::INT8 THEN\n\tSELECT nextval(106:::REGCLASS);\n\tSELECT nextval(106:::REGCLASS);\nEND IF;\nEND LOOP;\nOPEN curs FOR SELECT nextval(106:::REGCLASS);\nRETURN nextval(106:::REGCLASS);\nEND;\n"
+"DECLARE\ni INT8 := nextval(106:::REGCLASS);\nj INT8 := nextval(106:::REGCLASS);\ncurs REFCURSOR := nextval(106:::REGCLASS)::STRING;\ncurs2 CURSOR FOR SELECT nextval(106:::REGCLASS);\nBEGIN\nRAISE notice\nUSING MESSAGE = format('next val: %d':::STRING, nextval(106:::REGCLASS));\nRAISE notice 'val1: %, val2: %', nextval(106:::REGCLASS), nextval(106:::REGCLASS);\nWHILE nextval(106:::REGCLASS) < 10:::INT8 LOOP\ni := nextval(106:::REGCLASS);\nSELECT nextval(106:::REGCLASS);\nIF nextval(106:::REGCLASS) = 1:::INT8 THEN\n\tSELECT nextval(106:::REGCLASS);\n\tSELECT nextval(106:::REGCLASS);\n\tCONTINUE;\nELSIF nextval(106:::REGCLASS) = 2:::INT8 THEN\n\tSELECT v FROM ROWS FROM (nextval(106:::REGCLASS)) AS v (\"int\") INTO i;\nELSIF nextval(106:::REGCLASS) = 3:::INT8 THEN\n\tSELECT nextval(106:::REGCLASS);\n\tSELECT nextval(106:::REGCLASS);\nEND IF;\nEND LOOP;\nOPEN curs FOR SELECT nextval(106:::REGCLASS);\nRETURN nextval(106:::REGCLASS);\nEXCEPTION\nWHEN division_by_zero THEN\nRAISE notice\nUSING MESSAGE = format('next val: %d':::STRING, nextval(106:::REGCLASS));\nWHEN not_null_violation THEN\nSELECT nextval(106:::REGCLASS);\nSELECT nextval(106:::REGCLASS);\nRAISE notice\nUSING MESSAGE = format('next val: %d':::STRING, nextval(106:::REGCLASS));\nEND\n;"
 
 query TT
 SHOW CREATE FUNCTION f_rewrite;
@@ -158,7 +143,6 @@ f_rewrite  CREATE FUNCTION public.f_rewrite()
              NOT LEAKPROOF
              CALLED ON NULL INPUT
              LANGUAGE plpgsql
-             SECURITY INVOKER
              AS $$
              DECLARE
              i INT8 := nextval('public.renamed'::REGCLASS);
@@ -166,26 +150,9 @@ f_rewrite  CREATE FUNCTION public.f_rewrite()
              curs REFCURSOR := nextval('public.renamed'::REGCLASS)::STRING;
              curs2 CURSOR FOR SELECT nextval('public.renamed'::REGCLASS);
              BEGIN
-             RAISE NOTICE
+             RAISE notice
              USING MESSAGE = format('next val: %d':::STRING, nextval('public.renamed'::REGCLASS));
-             RAISE NOTICE 'val1: %, val2: %', nextval('public.renamed'::REGCLASS), nextval('public.renamed'::REGCLASS);
-             DECLARE
-             k INT8 := nextval('public.renamed'::REGCLASS);
-             BEGIN
-             RAISE NOTICE 'k: %, nextval: %', k, nextval('public.renamed'::REGCLASS);
-             IF k > 0 THEN
-               SELECT nextval('public.renamed'::REGCLASS);
-             END IF;
-             EXCEPTION
-             WHEN division_by_zero THEN
-             RAISE NOTICE
-             USING MESSAGE = format('next val: %d':::STRING, nextval('public.renamed'::REGCLASS));
-             WHEN not_null_violation THEN
-             SELECT nextval('public.renamed'::REGCLASS);
-             SELECT nextval('public.renamed'::REGCLASS);
-             RAISE NOTICE
-             USING MESSAGE = format('next val: %d':::STRING, nextval('public.renamed'::REGCLASS));
-             END;
+             RAISE notice 'val1: %, val2: %', nextval('public.renamed'::REGCLASS), nextval('public.renamed'::REGCLASS);
              WHILE nextval('public.renamed'::REGCLASS) < 10:::INT8 LOOP
              i := nextval('public.renamed'::REGCLASS);
              SELECT nextval('public.renamed'::REGCLASS);
@@ -202,31 +169,21 @@ f_rewrite  CREATE FUNCTION public.f_rewrite()
              END LOOP;
              OPEN curs FOR SELECT nextval('public.renamed'::REGCLASS);
              RETURN nextval('public.renamed'::REGCLASS);
-             END;
+             EXCEPTION
+             WHEN division_by_zero THEN
+             RAISE notice
+             USING MESSAGE = format('next val: %d':::STRING, nextval('public.renamed'::REGCLASS));
+             WHEN not_null_violation THEN
+             SELECT nextval('public.renamed'::REGCLASS);
+             SELECT nextval('public.renamed'::REGCLASS);
+             RAISE notice
+             USING MESSAGE = format('next val: %d':::STRING, nextval('public.renamed'::REGCLASS));
+             END
            $$
 
 # Reset sequence name for subtest.
 statement ok
 ALTER SEQUENCE renamed RENAME TO seq;
-
-statement ok
-CREATE FUNCTION f_nested(x INT, y weekday) RETURNS INT AS $$
-  BEGIN
-    IF x > 0 THEN
-      RAISE NOTICE 'x: %, y: %', x, y;
-    END IF;
-    RETURN x * 2;
-  END
-$$ LANGUAGE PLpgSQL;
-
-statement ok
-CREATE PROCEDURE p_nested(x INT, y weekday, OUT z weekday) AS $$
-  BEGIN
-    IF x > 0 THEN
-      RAISE NOTICE 'x: %, y: %', x, y;
-    END IF;
-  END
-$$ LANGUAGE PLpgSQL;
 
 statement ok
 DROP FUNCTION f_rewrite();
@@ -242,22 +199,6 @@ $$
   BEGIN
     RAISE NOTICE USING MESSAGE = format('val: %d','wednesday'::weekday);
     RAISE NOTICE 'val1: %, val2: %', 'wednesday'::weekday, 'thursday'::weekday;
-    SELECT f_nested(1, 'wednesday'::weekday);
-    CALL p_nested(1, 'wednesday'::weekday, day);
-    DECLARE
-      yesterday weekday := 'wednesday'::weekday;
-    BEGIN
-      RAISE NOTICE 'val3: %, val4: %', 'wednesday'::weekday, 'thursday'::weekday;
-      IF yesterday IS NOT NULL THEN
-        SELECT 'wednesday'::weekday;
-      END IF;
-    EXCEPTION
-      WHEN division_by_zero THEN
-        RAISE NOTICE USING MESSAGE = format('val: %d','wednesday'::weekday);
-      WHEN not_null_violation THEN
-        SELECT 'wednesday'::weekday;
-        RAISE NOTICE 'val: %', 'wednesday'::weekday;
-    END;
     WHILE day != 'wednesday'::weekday LOOP
       day = 'friday'::weekday;
       SELECT 'wednesday'::weekday;
@@ -274,68 +215,63 @@ $$
     END LOOP;
     OPEN curs FOR SELECT 'wednesday'::weekday;
     RETURN 'wednesday'::weekday;
+  EXCEPTION
+    WHEN division_by_zero THEN
+      RAISE NOTICE USING MESSAGE = format('val: %d','wednesday'::weekday);
+    WHEN not_null_violation THEN
+      SELECT 'wednesday'::weekday;
+      RAISE NOTICE 'val: %', 'wednesday'::weekday;
   END
 $$ LANGUAGE PLPGSQL;
 
 query T
 SELECT get_body_str('f_rewrite');
 ----
-"DECLARE\nday @100107 := b'\\x80':::@100107;\ntoday @100107 := b'\\xa0':::@100107;\ncurs REFCURSOR := b' ':::@100107::STRING;\ncurs2 CURSOR FOR SELECT b'@':::@100107;\nBEGIN\nRAISE NOTICE\nUSING MESSAGE = format('val: %d':::STRING, b'\\x80':::@100107);\nRAISE NOTICE 'val1: %, val2: %', b'\\x80':::@100107, b'\\xa0':::@100107;\nSELECT public.f_nested(1:::INT8, b'\\x80':::@100107);\nCALL public.p_nested(1, b'\\x80':::@100107, day);\nDECLARE\nyesterday @100107 := b'\\x80':::@100107;\nBEGIN\nRAISE NOTICE 'val3: %, val4: %', b'\\x80':::@100107, b'\\xa0':::@100107;\nIF yesterday IS NOT NULL THEN\n\tSELECT b'\\x80':::@100107;\nEND IF;\nEXCEPTION\nWHEN division_by_zero THEN\nRAISE NOTICE\nUSING MESSAGE = format('val: %d':::STRING, b'\\x80':::@100107);\nWHEN not_null_violation THEN\nSELECT b'\\x80':::@100107;\nRAISE NOTICE 'val: %', b'\\x80':::@100107;\nEND;\nWHILE day != b'\\x80':::@100107 LOOP\nday := b'\\xc0':::@100107;\nSELECT b'\\x80':::@100107;\nIF day = b'\\x80':::@100107 THEN\n\tday := b'\\xa0':::@100107;\n\tSELECT b'@':::@100107;\n\tCONTINUE;\nELSIF day = b' ':::@100107 THEN\n\tSELECT b'@':::@100107 INTO day;\nELSIF day = b'@':::@100107 THEN\n\tSELECT b'\\x80':::@100107 INTO day;\n\tSELECT b'\\x80':::@100107;\nEND IF;\nEND LOOP;\nOPEN curs FOR SELECT b'\\x80':::@100107;\nRETURN b'\\x80':::@100107;\nEND;\n"
+"DECLARE\nday @100107 := b'\\x80':::@100107;\ntoday @100107 := b'\\xa0':::@100107;\ncurs REFCURSOR := b' ':::@100107::STRING;\ncurs2 CURSOR FOR SELECT b'@':::@100107;\nBEGIN\nRAISE notice\nUSING MESSAGE = format('val: %d':::STRING, b'\\x80':::@100107);\nRAISE notice 'val1: %, val2: %', b'\\x80':::@100107, b'\\xa0':::@100107;\nWHILE day != b'\\x80':::@100107 LOOP\nday := b'\\xc0':::@100107;\nSELECT b'\\x80':::@100107;\nIF day = b'\\x80':::@100107 THEN\n\tday := b'\\xa0':::@100107;\n\tSELECT b'@':::@100107;\n\tCONTINUE;\nELSIF day = b' ':::@100107 THEN\n\tSELECT b'@':::@100107 INTO day;\nELSIF day = b'@':::@100107 THEN\n\tSELECT b'\\x80':::@100107 INTO day;\n\tSELECT b'\\x80':::@100107;\nEND IF;\nEND LOOP;\nOPEN curs FOR SELECT b'\\x80':::@100107;\nRETURN b'\\x80':::@100107;\nEXCEPTION\nWHEN division_by_zero THEN\nRAISE notice\nUSING MESSAGE = format('val: %d':::STRING, b'\\x80':::@100107);\nWHEN not_null_violation THEN\nSELECT b'\\x80':::@100107;\nRAISE notice 'val: %', b'\\x80':::@100107;\nEND\n;"
 
 query TT
 SHOW CREATE FUNCTION f_rewrite;
 ----
 f_rewrite  CREATE FUNCTION public.f_rewrite()
-             RETURNS public.weekday
+             RETURNS test.public.weekday
              VOLATILE
              NOT LEAKPROOF
              CALLED ON NULL INPUT
              LANGUAGE plpgsql
-             SECURITY INVOKER
              AS $$
              DECLARE
-             day public.weekday := 'wednesday':::public.weekday;
-             today public.weekday := 'thursday':::public.weekday;
-             curs REFCURSOR := 'monday':::public.weekday::STRING;
-             curs2 CURSOR FOR SELECT 'tuesday':::public.weekday;
+             day test.public.weekday := 'wednesday':::test.public.weekday;
+             today test.public.weekday := 'thursday':::test.public.weekday;
+             curs REFCURSOR := 'monday':::test.public.weekday::STRING;
+             curs2 CURSOR FOR SELECT 'tuesday':::test.public.weekday;
              BEGIN
-             RAISE NOTICE
-             USING MESSAGE = format('val: %d':::STRING, 'wednesday':::public.weekday);
-             RAISE NOTICE 'val1: %, val2: %', 'wednesday':::public.weekday, 'thursday':::public.weekday;
-             SELECT public.f_nested(1:::INT8, 'wednesday':::public.weekday);
-             CALL public.p_nested(1, 'wednesday':::public.weekday, day);
-             DECLARE
-             yesterday public.weekday := 'wednesday':::public.weekday;
-             BEGIN
-             RAISE NOTICE 'val3: %, val4: %', 'wednesday':::public.weekday, 'thursday':::public.weekday;
-             IF yesterday IS NOT NULL THEN
-               SELECT 'wednesday':::public.weekday;
-             END IF;
-             EXCEPTION
-             WHEN division_by_zero THEN
-             RAISE NOTICE
-             USING MESSAGE = format('val: %d':::STRING, 'wednesday':::public.weekday);
-             WHEN not_null_violation THEN
-             SELECT 'wednesday':::public.weekday;
-             RAISE NOTICE 'val: %', 'wednesday':::public.weekday;
-             END;
-             WHILE day != 'wednesday':::public.weekday LOOP
-             day := 'friday':::public.weekday;
-             SELECT 'wednesday':::public.weekday;
-             IF day = 'wednesday':::public.weekday THEN
-               day := 'thursday':::public.weekday;
-               SELECT 'tuesday':::public.weekday;
+             RAISE notice
+             USING MESSAGE = format('val: %d':::STRING, 'wednesday':::test.public.weekday);
+             RAISE notice 'val1: %, val2: %', 'wednesday':::test.public.weekday, 'thursday':::test.public.weekday;
+             WHILE day != 'wednesday':::test.public.weekday LOOP
+             day := 'friday':::test.public.weekday;
+             SELECT 'wednesday':::test.public.weekday;
+             IF day = 'wednesday':::test.public.weekday THEN
+               day := 'thursday':::test.public.weekday;
+               SELECT 'tuesday':::test.public.weekday;
                CONTINUE;
-             ELSIF day = 'monday':::public.weekday THEN
-               SELECT 'tuesday':::public.weekday INTO day;
-             ELSIF day = 'tuesday':::public.weekday THEN
-               SELECT 'wednesday':::public.weekday INTO day;
-               SELECT 'wednesday':::public.weekday;
+             ELSIF day = 'monday':::test.public.weekday THEN
+               SELECT 'tuesday':::test.public.weekday INTO day;
+             ELSIF day = 'tuesday':::test.public.weekday THEN
+               SELECT 'wednesday':::test.public.weekday INTO day;
+               SELECT 'wednesday':::test.public.weekday;
              END IF;
              END LOOP;
-             OPEN curs FOR SELECT 'wednesday':::public.weekday;
-             RETURN 'wednesday':::public.weekday;
-             END;
+             OPEN curs FOR SELECT 'wednesday':::test.public.weekday;
+             RETURN 'wednesday':::test.public.weekday;
+             EXCEPTION
+             WHEN division_by_zero THEN
+             RAISE notice
+             USING MESSAGE = format('val: %d':::STRING, 'wednesday':::test.public.weekday);
+             WHEN not_null_violation THEN
+             SELECT 'wednesday':::test.public.weekday;
+             RAISE notice 'val: %', 'wednesday':::test.public.weekday;
+             END
            $$
 
 statement ok
@@ -347,62 +283,51 @@ ALTER TYPE weekday RENAME TO workday;
 query T
 SELECT get_body_str('f_rewrite');
 ----
-"DECLARE\nday @100107 := b'\\x80':::@100107;\ntoday @100107 := b'\\xa0':::@100107;\ncurs REFCURSOR := b' ':::@100107::STRING;\ncurs2 CURSOR FOR SELECT b'@':::@100107;\nBEGIN\nRAISE NOTICE\nUSING MESSAGE = format('val: %d':::STRING, b'\\x80':::@100107);\nRAISE NOTICE 'val1: %, val2: %', b'\\x80':::@100107, b'\\xa0':::@100107;\nSELECT public.f_nested(1:::INT8, b'\\x80':::@100107);\nCALL public.p_nested(1, b'\\x80':::@100107, day);\nDECLARE\nyesterday @100107 := b'\\x80':::@100107;\nBEGIN\nRAISE NOTICE 'val3: %, val4: %', b'\\x80':::@100107, b'\\xa0':::@100107;\nIF yesterday IS NOT NULL THEN\n\tSELECT b'\\x80':::@100107;\nEND IF;\nEXCEPTION\nWHEN division_by_zero THEN\nRAISE NOTICE\nUSING MESSAGE = format('val: %d':::STRING, b'\\x80':::@100107);\nWHEN not_null_violation THEN\nSELECT b'\\x80':::@100107;\nRAISE NOTICE 'val: %', b'\\x80':::@100107;\nEND;\nWHILE day != b'\\x80':::@100107 LOOP\nday := b'\\xc0':::@100107;\nSELECT b'\\x80':::@100107;\nIF day = b'\\x80':::@100107 THEN\n\tday := b'\\xa0':::@100107;\n\tSELECT b'@':::@100107;\n\tCONTINUE;\nELSIF day = b' ':::@100107 THEN\n\tSELECT b'@':::@100107 INTO day;\nELSIF day = b'@':::@100107 THEN\n\tSELECT b'\\x80':::@100107 INTO day;\n\tSELECT b'\\x80':::@100107;\nEND IF;\nEND LOOP;\nOPEN curs FOR SELECT b'\\x80':::@100107;\nRETURN b'\\x80':::@100107;\nEND;\n"
+"DECLARE\nday @100107 := b'\\x80':::@100107;\ntoday @100107 := b'\\xa0':::@100107;\ncurs REFCURSOR := b' ':::@100107::STRING;\ncurs2 CURSOR FOR SELECT b'@':::@100107;\nBEGIN\nRAISE notice\nUSING MESSAGE = format('val: %d':::STRING, b'\\x80':::@100107);\nRAISE notice 'val1: %, val2: %', b'\\x80':::@100107, b'\\xa0':::@100107;\nWHILE day != b'\\x80':::@100107 LOOP\nday := b'\\xc0':::@100107;\nSELECT b'\\x80':::@100107;\nIF day = b'\\x80':::@100107 THEN\n\tday := b'\\xa0':::@100107;\n\tSELECT b'@':::@100107;\n\tCONTINUE;\nELSIF day = b' ':::@100107 THEN\n\tSELECT b'@':::@100107 INTO day;\nELSIF day = b'@':::@100107 THEN\n\tSELECT b'\\x80':::@100107 INTO day;\n\tSELECT b'\\x80':::@100107;\nEND IF;\nEND LOOP;\nOPEN curs FOR SELECT b'\\x80':::@100107;\nRETURN b'\\x80':::@100107;\nEXCEPTION\nWHEN division_by_zero THEN\nRAISE notice\nUSING MESSAGE = format('val: %d':::STRING, b'\\x80':::@100107);\nWHEN not_null_violation THEN\nSELECT b'\\x80':::@100107;\nRAISE notice 'val: %', b'\\x80':::@100107;\nEND\n;"
 
 query TT
 SHOW CREATE FUNCTION f_rewrite;
 ----
 f_rewrite  CREATE FUNCTION public.f_rewrite()
-             RETURNS public.workday
+             RETURNS test.public.workday
              VOLATILE
              NOT LEAKPROOF
              CALLED ON NULL INPUT
              LANGUAGE plpgsql
-             SECURITY INVOKER
              AS $$
              DECLARE
-             day public.workday := 'humpday':::public.workday;
-             today public.workday := 'thursday':::public.workday;
-             curs REFCURSOR := 'monday':::public.workday::STRING;
-             curs2 CURSOR FOR SELECT 'tuesday':::public.workday;
+             day test.public.workday := 'humpday':::test.public.workday;
+             today test.public.workday := 'thursday':::test.public.workday;
+             curs REFCURSOR := 'monday':::test.public.workday::STRING;
+             curs2 CURSOR FOR SELECT 'tuesday':::test.public.workday;
              BEGIN
-             RAISE NOTICE
-             USING MESSAGE = format('val: %d':::STRING, 'humpday':::public.workday);
-             RAISE NOTICE 'val1: %, val2: %', 'humpday':::public.workday, 'thursday':::public.workday;
-             SELECT public.f_nested(1:::INT8, 'humpday':::public.workday);
-             CALL public.p_nested(1, 'humpday':::public.workday, day);
-             DECLARE
-             yesterday public.workday := 'humpday':::public.workday;
-             BEGIN
-             RAISE NOTICE 'val3: %, val4: %', 'humpday':::public.workday, 'thursday':::public.workday;
-             IF yesterday IS NOT NULL THEN
-               SELECT 'humpday':::public.workday;
-             END IF;
-             EXCEPTION
-             WHEN division_by_zero THEN
-             RAISE NOTICE
-             USING MESSAGE = format('val: %d':::STRING, 'humpday':::public.workday);
-             WHEN not_null_violation THEN
-             SELECT 'humpday':::public.workday;
-             RAISE NOTICE 'val: %', 'humpday':::public.workday;
-             END;
-             WHILE day != 'humpday':::public.workday LOOP
-             day := 'friday':::public.workday;
-             SELECT 'humpday':::public.workday;
-             IF day = 'humpday':::public.workday THEN
-               day := 'thursday':::public.workday;
-               SELECT 'tuesday':::public.workday;
+             RAISE notice
+             USING MESSAGE = format('val: %d':::STRING, 'humpday':::test.public.workday);
+             RAISE notice 'val1: %, val2: %', 'humpday':::test.public.workday, 'thursday':::test.public.workday;
+             WHILE day != 'humpday':::test.public.workday LOOP
+             day := 'friday':::test.public.workday;
+             SELECT 'humpday':::test.public.workday;
+             IF day = 'humpday':::test.public.workday THEN
+               day := 'thursday':::test.public.workday;
+               SELECT 'tuesday':::test.public.workday;
                CONTINUE;
-             ELSIF day = 'monday':::public.workday THEN
-               SELECT 'tuesday':::public.workday INTO day;
-             ELSIF day = 'tuesday':::public.workday THEN
-               SELECT 'humpday':::public.workday INTO day;
-               SELECT 'humpday':::public.workday;
+             ELSIF day = 'monday':::test.public.workday THEN
+               SELECT 'tuesday':::test.public.workday INTO day;
+             ELSIF day = 'tuesday':::test.public.workday THEN
+               SELECT 'humpday':::test.public.workday INTO day;
+               SELECT 'humpday':::test.public.workday;
              END IF;
              END LOOP;
-             OPEN curs FOR SELECT 'humpday':::public.workday;
-             RETURN 'humpday':::public.workday;
-             END;
+             OPEN curs FOR SELECT 'humpday':::test.public.workday;
+             RETURN 'humpday':::test.public.workday;
+             EXCEPTION
+             WHEN division_by_zero THEN
+             RAISE notice
+             USING MESSAGE = format('val: %d':::STRING, 'humpday':::test.public.workday);
+             WHEN not_null_violation THEN
+             SELECT 'humpday':::test.public.workday;
+             RAISE notice 'val: %', 'humpday':::test.public.workday;
+             END
            $$
 
 # Reset types for subtest.
@@ -414,75 +339,6 @@ ALTER TYPE weekday RENAME VALUE 'humpday' TO 'wednesday';
 
 statement ok
 DROP FUNCTION f_rewrite();
-
-statement ok
-CREATE FUNCTION f_rewrite(INOUT param1 weekday, OUT param2 weekday) AS
-$$
-  BEGIN
-    param2 = param1;
-    param1 = 'friday'::weekday;
-  END
-$$ LANGUAGE PLPGSQL;
-
-query T
-SELECT get_body_str('f_rewrite');
-----
-"BEGIN\nparam2 := param1;\nparam1 := b'\\xc0':::@100107;\nEND;\n"
-
-query TT
-SHOW CREATE FUNCTION f_rewrite;
-----
-f_rewrite  CREATE FUNCTION public.f_rewrite(INOUT param1 public.weekday, OUT param2 public.weekday)
-             RETURNS RECORD
-             VOLATILE
-             NOT LEAKPROOF
-             CALLED ON NULL INPUT
-             LANGUAGE plpgsql
-             SECURITY INVOKER
-             AS $$
-             BEGIN
-             param2 := param1;
-             param1 := 'friday':::public.weekday;
-             END;
-           $$
-
-statement ok
-ALTER TYPE weekday RENAME VALUE 'friday' TO 'humpday';
-
-statement ok
-ALTER TYPE weekday RENAME TO workday;
-
-query T
-SELECT get_body_str('f_rewrite');
-----
-"BEGIN\nparam2 := param1;\nparam1 := b'\\xc0':::@100107;\nEND;\n"
-
-query TT
-SHOW CREATE FUNCTION f_rewrite;
-----
-f_rewrite  CREATE FUNCTION public.f_rewrite(INOUT param1 public.workday, OUT param2 public.workday)
-             RETURNS RECORD
-             VOLATILE
-             NOT LEAKPROOF
-             CALLED ON NULL INPUT
-             LANGUAGE plpgsql
-             SECURITY INVOKER
-             AS $$
-             BEGIN
-             param2 := param1;
-             param1 := 'humpday':::public.workday;
-             END;
-           $$
-
-# Reset types for subtest.
-statement ok
-ALTER TYPE workday RENAME TO weekday;
-
-statement ok
-ALTER TYPE weekday RENAME VALUE 'humpday' TO 'friday';
-
-statement ok
-DROP FUNCTION f_rewrite;
 
 subtest end
 
@@ -499,7 +355,7 @@ $$ LANGUAGE PLPGSQL
 query T
 SELECT get_body_str('p_rewrite');
 ----
-"BEGIN\nINSERT INTO test.public.t_rewrite(v) VALUES (nextval(106:::REGCLASS)) RETURNING v;\nEND;\n"
+"BEGIN\nINSERT INTO test.public.t_rewrite(v) VALUES (nextval(106:::REGCLASS)) RETURNING v;\nEND\n;"
 
 statement ok
 DROP PROCEDURE p_rewrite();
@@ -515,181 +371,6 @@ $$ LANGUAGE PLPGSQL
 query T
 SELECT get_body_str('p_rewrite');
 ----
-"BEGIN\nUPDATE test.public.t_rewrite SET w = b'\\xa0':::@100107 WHERE w = b'\\x80':::@100107 RETURNING w;\nEND;\n"
-
-statement ok
-DROP PROCEDURE p_rewrite();
-
-statement ok
-CREATE PROCEDURE p_rewrite(INOUT param1 weekday, OUT param2 weekday) AS
-$$
-  BEGIN
-    param2 = param1;
-    param1 = 'friday'::weekday;
-  END
-$$ LANGUAGE PLPGSQL;
-
-query T
-SELECT get_body_str('p_rewrite');
-----
-"BEGIN\nparam2 := param1;\nparam1 := b'\\xc0':::@100107;\nEND;\n"
-
-query TT
-SHOW CREATE PROCEDURE p_rewrite;
-----
-p_rewrite  CREATE PROCEDURE public.p_rewrite(INOUT param1 public.weekday, OUT param2 public.weekday)
-             LANGUAGE plpgsql
-             SECURITY INVOKER
-             AS $$
-             BEGIN
-             param2 := param1;
-             param1 := 'friday':::public.weekday;
-             END;
-           $$
-
-statement ok
-ALTER TYPE weekday RENAME VALUE 'friday' TO 'humpday';
-
-statement ok
-ALTER TYPE weekday RENAME TO workday;
-
-query T
-SELECT get_body_str('p_rewrite');
-----
-"BEGIN\nparam2 := param1;\nparam1 := b'\\xc0':::@100107;\nEND;\n"
-
-query TT
-SHOW CREATE PROCEDURE p_rewrite;
-----
-p_rewrite  CREATE PROCEDURE public.p_rewrite(INOUT param1 public.workday, OUT param2 public.workday)
-             LANGUAGE plpgsql
-             SECURITY INVOKER
-             AS $$
-             BEGIN
-             param2 := param1;
-             param1 := 'humpday':::public.workday;
-             END;
-           $$
-
-# Reset types for subtest.
-statement ok
-ALTER TYPE workday RENAME TO weekday;
-
-statement ok
-ALTER TYPE weekday RENAME VALUE 'humpday' TO 'friday';
-
-statement ok
-DROP PROCEDURE p_rewrite;
-
-subtest end
-
-subtest do_block
-
-statement ok
-CREATE FUNCTION f_rewrite() RETURNS INT AS $$
-  BEGIN
-    DO $foo$
-      BEGIN
-        SELECT nextval('seq');
-        SELECT 'wednesday'::weekday;
-        RAISE NOTICE 'foo';
-        DO $bar$
-          BEGIN
-            RAISE NOTICE 'bar';
-            SELECT nextval('seq');
-            SELECT 'wednesday'::weekday;
-          END;
-        $bar$;
-      END
-    $foo$;
-    RETURN 100;
-  END
-$$ LANGUAGE PLpgSQL;
-
-query T
-SELECT get_body_str('f_rewrite');
-----
-"BEGIN\nDO $funcbody$\nBEGIN\nSELECT nextval(106:::REGCLASS);\nSELECT b'\\x80':::@100107;\nRAISE NOTICE 'foo';\nDO $$\nBEGIN\nRAISE NOTICE 'bar';\nSELECT nextval(106:::REGCLASS);\nSELECT b'\\x80':::@100107;\nEND;\n$$;\nEND;\n$funcbody$;\nRETURN 100;\nEND;\n"
-
-query TT
-SHOW CREATE FUNCTION f_rewrite;
-----
-f_rewrite  CREATE FUNCTION public.f_rewrite()
-             RETURNS INT8
-             VOLATILE
-             NOT LEAKPROOF
-             CALLED ON NULL INPUT
-             LANGUAGE plpgsql
-             SECURITY INVOKER
-             AS $funcbodyx$
-             BEGIN
-             DO $funcbody$
-             BEGIN
-             SELECT nextval('public.seq'::REGCLASS);
-             SELECT 'wednesday':::public.weekday;
-             RAISE NOTICE 'foo';
-             DO $$
-             BEGIN
-             RAISE NOTICE 'bar';
-             SELECT nextval('public.seq'::REGCLASS);
-             SELECT 'wednesday':::public.weekday;
-             END;
-             $$;
-             END;
-             $funcbody$;
-             RETURN 100;
-             END;
-           $funcbodyx$
-
-statement ok
-ALTER TYPE weekday RENAME VALUE 'friday' TO 'humpday';
-
-statement ok
-ALTER TYPE weekday RENAME TO workday;
-
-query T
-SELECT get_body_str('f_rewrite');
-----
-"BEGIN\nDO $funcbody$\nBEGIN\nSELECT nextval(106:::REGCLASS);\nSELECT b'\\x80':::@100107;\nRAISE NOTICE 'foo';\nDO $$\nBEGIN\nRAISE NOTICE 'bar';\nSELECT nextval(106:::REGCLASS);\nSELECT b'\\x80':::@100107;\nEND;\n$$;\nEND;\n$funcbody$;\nRETURN 100;\nEND;\n"
-
-query TT
-SHOW CREATE FUNCTION f_rewrite;
-----
-f_rewrite  CREATE FUNCTION public.f_rewrite()
-             RETURNS INT8
-             VOLATILE
-             NOT LEAKPROOF
-             CALLED ON NULL INPUT
-             LANGUAGE plpgsql
-             SECURITY INVOKER
-             AS $funcbodyx$
-             BEGIN
-             DO $funcbody$
-             BEGIN
-             SELECT nextval('public.seq'::REGCLASS);
-             SELECT 'wednesday':::public.workday;
-             RAISE NOTICE 'foo';
-             DO $$
-             BEGIN
-             RAISE NOTICE 'bar';
-             SELECT nextval('public.seq'::REGCLASS);
-             SELECT 'wednesday':::public.workday;
-             END;
-             $$;
-             END;
-             $funcbody$;
-             RETURN 100;
-             END;
-           $funcbodyx$
-
-# Reset types for subtest.
-statement ok
-ALTER TYPE workday RENAME TO weekday;
-
-statement ok
-ALTER TYPE weekday RENAME VALUE 'humpday' TO 'friday';
-
-statement ok
-DROP FUNCTION f_rewrite;
+"BEGIN\nUPDATE test.public.t_rewrite SET w = b'\\xa0':::@100107 WHERE w = b'\\x80':::@100107 RETURNING w;\nEND\n;"
 
 subtest end

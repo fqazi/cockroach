@@ -1,3 +1,5 @@
+# LogicTest: !local-mixed-23.1
+
 statement ok
 CREATE TABLE t (a INT PRIMARY KEY, b INT DEFAULT 0);
 
@@ -235,7 +237,8 @@ SELECT f_drop(5,100,101);
 ----
 (5,100,101)
 
-statement error pgcode 2BP01 cannot drop column \"c\" because function \"f_drop\" depends on it
+# TODO(#102771): Expected error due to f_drop's dependency on c.
+statement ok
 ALTER TABLE t_alter DROP COLUMN c;
 
 query T

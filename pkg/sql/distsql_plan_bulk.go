@@ -56,9 +56,8 @@ func (dsp *DistSQLPlanner) setupAllNodesPlanningSystem(
 	oracle replicaoracle.Oracle,
 	localityFilter roachpb.Locality,
 ) (*PlanningCtx, []base.SQLInstanceID, error) {
-	planCtx := dsp.NewPlanningCtxWithOracle(
-		ctx, evalCtx, nil /* planner */, nil /* txn */, FullDistribution, oracle, localityFilter,
-	)
+	planCtx := dsp.NewPlanningCtxWithOracle(ctx, evalCtx, nil /* planner */, nil, /* txn */
+		DistributionTypeAlways, oracle, localityFilter)
 
 	ss, err := execCfg.NodesStatusServer.OptionalNodesStatusServer()
 	if err != nil {
@@ -95,15 +94,12 @@ func (dsp *DistSQLPlanner) setupAllNodesPlanningTenant(
 	oracle replicaoracle.Oracle,
 	localityFilter roachpb.Locality,
 ) (*PlanningCtx, []base.SQLInstanceID, error) {
-	planCtx := dsp.NewPlanningCtxWithOracle(
-		ctx, evalCtx, nil /* planner */, nil /* txn */, FullDistribution, oracle, localityFilter,
-	)
+	planCtx := dsp.NewPlanningCtxWithOracle(ctx, evalCtx, nil /* planner */, nil, /* txn */
+		DistributionTypeAlways, oracle, localityFilter)
 	pods, err := dsp.sqlAddressResolver.GetAllInstances(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	pods, _ = dsp.filterUnhealthyInstances(pods, planCtx.nodeStatuses)
-
 	sqlInstanceIDs := make([]base.SQLInstanceID, 0, len(pods))
 	for _, pod := range pods {
 		if ok, _ := pod.Locality.Matches(localityFilter); ok {
@@ -121,10 +117,8 @@ type PhysicalPlanMaker func(context.Context, *DistSQLPlanner) (*PhysicalPlan, *P
 // the number in the old one.
 func calculatePlanGrowth(before, after *PhysicalPlan) (int, float64) {
 	var changed int
-	beforeSpecs, beforeCleanup := before.GenerateFlowSpecs()
-	defer beforeCleanup(beforeSpecs)
-	afterSpecs, afterCleanup := after.GenerateFlowSpecs()
-	defer afterCleanup(afterSpecs)
+	beforeSpecs := before.GenerateFlowSpecs()
+	afterSpecs := after.GenerateFlowSpecs()
 
 	// How many nodes are in after that are not in before, or are in both but
 	// have changed their spec?
@@ -175,54 +169,29 @@ func ReplanOnChangedFraction(thresholdFn func() float64) PlanChangeDecision {
 	}
 }
 
-// countNodesFn counts the source and dest nodes in a Physical Plan
-type countNodesFn func(plan *PhysicalPlan) (src, dst map[string]struct{}, nodeCount int)
+// PlanDeltaFn describes a function that measures the difference of two physical
+// plans as a scalar.
+type PlanDeltaFn func(*PhysicalPlan, *PhysicalPlan) float64
 
 // ReplanOnCustomFunc returns a PlanChangeDecision that returns true when a new
 // plan is sufficiently different than the previous plan. This occurs if the
 // measureChangeFn returns a scalar higher than the thresholdFn.
 //
 // If the thresholdFn returns 0.0, a new plan is never chosen.
-func ReplanOnCustomFunc(getNodes countNodesFn, thresholdFn func() float64) PlanChangeDecision {
+func ReplanOnCustomFunc(
+	measureChangeFn PlanDeltaFn, thresholdFn func() float64,
+) PlanChangeDecision {
 	return func(ctx context.Context, oldPlan, newPlan *PhysicalPlan) bool {
 		threshold := thresholdFn()
 		if threshold == 0.0 {
 			return false
 		}
-		change := MeasurePlanChange(oldPlan, newPlan, getNodes)
+		change := measureChangeFn(oldPlan, newPlan)
 		replan := change > threshold
 		log.VEventf(ctx, 1, "Replanning change: %.2f; threshold: %.2f; choosing new plan %v", change,
 			threshold, replan)
 		return replan
 	}
-}
-
-// measurePlanChange computes the number of node changes (addition or removal)
-// in the source and destination clusters as a fraction of the total number of
-// nodes in both clusters in the previous plan.
-func MeasurePlanChange(
-	before, after *PhysicalPlan,
-	getNodes func(plan *PhysicalPlan) (src, dst map[string]struct{}, nodeCount int),
-) float64 {
-	countMissingElements := func(set1, set2 map[string]struct{}) int {
-		diff := 0
-		for id := range set1 {
-			if _, ok := set2[id]; !ok {
-				diff++
-			}
-		}
-		return diff
-	}
-
-	oldSrc, oldDst, oldCount := getNodes(before)
-	newSrc, newDst, _ := getNodes(after)
-	diff := 0
-	// To check for both introduced nodes and removed nodes, swap input order.
-	diff += countMissingElements(oldSrc, newSrc)
-	diff += countMissingElements(newSrc, oldSrc)
-	diff += countMissingElements(oldDst, newDst)
-	diff += countMissingElements(newDst, oldDst)
-	return float64(diff) / float64(oldCount)
 }
 
 // ErrPlanChanged is a sentinel marker error for use to signal a plan changed.

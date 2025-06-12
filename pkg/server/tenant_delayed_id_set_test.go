@@ -16,13 +16,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -51,8 +51,7 @@ func TestStartTenantWithDelayedID(t *testing.T) {
 
 	st := cluster.MakeTestingClusterSettings()
 	baseCfg := makeTestBaseConfig(st, s.Stopper().Tracer())
-	require.Equal(t, roachpb.Locality{}, baseCfg.Locality)
-	sqlCfg := makeTestSQLConfig(st, roachpb.TenantID{}, "")
+	sqlCfg := makeTestSQLConfig(st, roachpb.TenantID{})
 	sqlCfg.TenantLoopbackAddr = s.AdvRPCAddr()
 
 	var tenantIDSet, listenerReady sync.WaitGroup
@@ -60,17 +59,12 @@ func TestStartTenantWithDelayedID(t *testing.T) {
 	listenerReady.Add(1)
 
 	var timeTenantIDSet time.Time
-	sqlCfg.DelayedSetTenantID = func(ctx context.Context) (roachpb.TenantID, roachpb.Locality, error) {
+	sqlCfg.DelayedSetTenantID = func(ctx context.Context) (roachpb.TenantID, error) {
 		// Unblock the connect code bellow, so it can try to connect.
 		listenerReady.Done()
 		// Wait until getting a go ahead with setting the tenant id.
 		tenantIDSet.Wait()
-		return serverutils.TestTenantID(), roachpb.Locality{
-			Tiers: []roachpb.Tier{
-				{Key: "region", Value: "us-central1"},
-				{Key: "az", Value: "az1"},
-			},
-		}, nil
+		return serverutils.TestTenantID(), nil
 	}
 
 	go func() {
@@ -87,7 +81,7 @@ func TestStartTenantWithDelayedID(t *testing.T) {
 
 	listenerReady.Wait()
 	// Try a connection.
-	pgURL, cleanupFn, err := pgurlutils.PGUrlE(
+	pgURL, cleanupFn, err := sqlutils.PGUrlE(
 		baseCfg.SQLAdvertiseAddr, "testConn", url.User(username.RootUser))
 	require.NoError(t, err)
 	defer cleanupFn()
@@ -99,21 +93,13 @@ func TestStartTenantWithDelayedID(t *testing.T) {
 	c, err := pgx.Connect(ctx, pgURL.String())
 	durationFromTenantIDSetToConnect := timeutil.Since(timeTenantIDSet)
 	require.NoError(t, err)
-	defer func(conn *pgx.Conn) { _ = conn.Close(ctx) }(c)
+	defer func() { _ = c.Close(ctx) }()
 	t.Logf("cold connect duration (from tenant id set to connect) %s", durationFromTenantIDSetToConnect)
 
 	connectStart := timeutil.Now()
 	c, err = pgx.Connect(ctx, pgURL.String())
 	warmConnectDuration := timeutil.Since(connectStart)
 	require.NoError(t, err)
-	defer func(conn *pgx.Conn) { _ = conn.Close(ctx) }(c)
+	defer func() { _ = c.Close(ctx) }()
 	t.Logf("warm connect duration %s", warmConnectDuration)
-
-	// Ensure that delayed locality is set.
-	var loc string
-	require.NoError(t, c.QueryRow(
-		ctx,
-		"SELECT locality FROM system.sql_instances WHERE locality IS NOT NULL",
-	).Scan(&loc))
-	require.Regexp(t, `"Tiers": "region=us-central1,az=az1"`, loc)
 }

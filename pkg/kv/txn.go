@@ -8,13 +8,10 @@ package kv
 import (
 	"context"
 	"fmt"
-	"math"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/ctpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
@@ -25,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
-	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -45,29 +41,6 @@ import (
 // path for some reason), and the async pool is full (i.e. the system is
 // under load), then it makes sense to abandon the cleanup before too long.
 const asyncRollbackTimeout = time.Minute
-
-// MaxInternalTxnAutoRetries controls the maximum number of auto-retries a call
-// to kv.DB.Txn will perform before aborting the transaction and returning an
-// error. This is used to prevent infinite retry loops where a transaction has
-// little chance of succeeding in the future but continues to hold locks from
-// earlier epochs.
-var MaxInternalTxnAutoRetries = settings.RegisterIntSetting(
-	settings.ApplicationLevel,
-	"kv.transaction.internal.max_auto_retries",
-	"controls the maximum number of auto-retries an internal KV transaction will "+
-		"perform before aborting and returning an error. Can be set to 0 to disable any "+
-		"retry attempt.",
-	100,
-	settings.NonNegativeInt,
-)
-
-var ErrAutoRetryLimitExhausted = errors.New("retry limit exhausted")
-
-// IsAutoRetryLimitExhaustedError checks if the given error indicates
-// that the maximum number of transaction auto-retries has been reached.
-func IsAutoRetryLimitExhaustedError(err error) bool {
-	return errors.Is(err, ErrAutoRetryLimitExhausted)
-}
 
 // Txn is an in-progress distributed database transaction. A Txn is safe for
 // concurrent use by multiple goroutines.
@@ -104,11 +77,6 @@ type Txn struct {
 		// The txn has to be committed by this deadline. A zero value indicates no
 		// deadline.
 		deadline hlc.Timestamp
-
-		// maxAutoRetries is the number of times this transaction can be retried
-		// automatically in the KV layer. If it is zero, then the
-		// kv.transaction.internal.max_auto_retries setting is used.
-		maxAutoRetries int
 	}
 
 	// admissionHeader is used for admission control for work done in this
@@ -231,11 +199,7 @@ func NewTxnFromProto(
 
 // NewLeafTxn instantiates a new leaf transaction.
 func NewLeafTxn(
-	ctx context.Context,
-	db *DB,
-	gatewayNodeID roachpb.NodeID,
-	tis *roachpb.LeafTxnInputState,
-	header *kvpb.AdmissionHeader,
+	ctx context.Context, db *DB, gatewayNodeID roachpb.NodeID, tis *roachpb.LeafTxnInputState,
 ) *Txn {
 	if db == nil {
 		panic(errors.WithContextTags(
@@ -250,19 +214,6 @@ func NewLeafTxn(
 	txn.mu.ID = tis.Txn.ID
 	txn.mu.userPriority = roachpb.NormalUserPriority
 	txn.mu.sender = db.factory.LeafTransactionalSender(tis)
-	if header != nil {
-		if admissionpb.WorkPriority(header.Priority) != admissionpb.NormalPri {
-			log.VEventf(ctx, 2,
-				"initializing leaf txn admission control header with priority: %v",
-				admissionpb.WorkPriority(header.Priority),
-			)
-		}
-		txn.admissionHeader = kvpb.AdmissionHeader{
-			CreateTime: header.CreateTime,
-			Priority:   header.Priority,
-			Source:     header.Source,
-		}
-	}
 	return txn
 }
 
@@ -285,36 +236,6 @@ func (txn *Txn) ID() uuid.UUID {
 	return txn.mu.ID
 }
 
-// SetMaxAutoRetries sets the maximum number of times the transaction can
-// be retried internally in the KV layer.
-func (txn *Txn) SetMaxAutoRetries(maxAutoRetries int) {
-	txn.mu.Lock()
-	defer txn.mu.Unlock()
-	txn.mu.maxAutoRetries = maxAutoRetries
-}
-
-// MaxAutoRetries returns the maximum number of times the transaction can be
-// retried internally in the KV layer.
-func (txn *Txn) MaxAutoRetries() int {
-	txn.mu.Lock()
-	defer txn.mu.Unlock()
-	if r := txn.mu.maxAutoRetries; r != 0 {
-		return r
-	} else if txn.db.ctx.Settings != nil {
-		// txn.db.ctx.Settings == nil is only expected in tests.
-		return int(MaxInternalTxnAutoRetries.Get(&txn.db.ctx.Settings.SV))
-	}
-	return math.MaxInt64
-}
-
-// Key returns the current "anchor" key of the transaction, or nil if no such
-// key has been set because the transaction has not yet acquired any locks.
-func (txn *Txn) Key() roachpb.Key {
-	txn.mu.Lock()
-	defer txn.mu.Unlock()
-	return txn.mu.sender.Key()
-}
-
 // Epoch exports the txn's epoch.
 func (txn *Txn) Epoch() enginepb.TxnEpoch {
 	txn.mu.Lock()
@@ -327,25 +248,27 @@ func (txn *Txn) statusLocked() roachpb.TransactionStatus {
 	return txn.mu.sender.TxnStatus()
 }
 
-// hasStatus returns true iff the transaction has the provided status.
-func (txn *Txn) hasStatus(s roachpb.TransactionStatus) bool {
+// IsCommitted returns true iff the transaction has the committed status.
+func (txn *Txn) IsCommitted() bool {
 	txn.mu.Lock()
 	defer txn.mu.Unlock()
-	return txn.statusLocked() == s
+	return txn.statusLocked() == roachpb.COMMITTED
 }
 
-// IsCommitted returns true iff the transaction has the committed status.
-func (txn *Txn) IsCommitted() bool { return txn.hasStatus(roachpb.COMMITTED) }
-
 // IsAborted returns true iff the transaction has the aborted status.
-func (txn *Txn) IsAborted() bool { return txn.hasStatus(roachpb.ABORTED) }
-
-// IsPrepared returns true iff the transaction has the prepared status.
-func (txn *Txn) IsPrepared() bool { return txn.hasStatus(roachpb.PREPARED) }
+func (txn *Txn) IsAborted() bool {
+	txn.mu.Lock()
+	defer txn.mu.Unlock()
+	return txn.statusLocked() == roachpb.ABORTED
+}
 
 // IsOpen returns true iff the transaction is in the open state where
 // it can accept further commands.
-func (txn *Txn) IsOpen() bool { return txn.hasStatus(roachpb.PENDING) }
+func (txn *Txn) IsOpen() bool {
+	txn.mu.Lock()
+	defer txn.mu.Unlock()
+	return txn.statusLocked() == roachpb.PENDING
+}
 
 // isClientFinalized returns true if the client has issued an EndTxn request in
 // an attempt to finalize the transaction.
@@ -440,24 +363,6 @@ func (txn *Txn) DebugName() string {
 
 func (txn *Txn) debugNameLocked() string {
 	return fmt.Sprintf("%s (id: %s)", txn.mu.debugName, txn.mu.ID)
-}
-
-func (txn *Txn) SetBufferedWritesEnabled(enabled bool) {
-	if txn.typ != RootTxn {
-		panic(errors.AssertionFailedf("SetBufferedWritesEnabled() called on leaf txn"))
-	}
-
-	txn.mu.Lock()
-	defer txn.mu.Unlock()
-
-	txn.mu.sender.SetBufferedWritesEnabled(enabled)
-}
-
-func (txn *Txn) BufferedWritesEnabled() bool {
-	txn.mu.Lock()
-	defer txn.mu.Unlock()
-
-	return txn.mu.sender.BufferedWritesEnabled()
 }
 
 // String returns a string version of this transaction.
@@ -673,6 +578,20 @@ func (txn *Txn) Put(ctx context.Context, key, value interface{}) error {
 func (txn *Txn) CPut(ctx context.Context, key, value interface{}, expValue []byte) error {
 	b := txn.NewBatch()
 	b.CPut(key, value, expValue)
+	return getOneErr(txn.Run(ctx, b), b)
+}
+
+// InitPut sets the first value for a key to value. An error is reported if a
+// value already exists for the key and it's not equal to the value passed in.
+// If failOnTombstones is set to true, tombstones count as mismatched values
+// and will cause a ConditionFailedError.
+//
+// key can be either a byte slice or a string. value can be any key type, a
+// protoutil.Message or any Go primitive type (bool, int, etc). It is illegal to
+// set value to nil.
+func (txn *Txn) InitPut(ctx context.Context, key, value interface{}, failOnTombstones bool) error {
+	b := txn.NewBatch()
+	b.InitPut(key, value, failOnTombstones)
 	return getOneErr(txn.Run(ctx, b), b)
 }
 
@@ -940,7 +859,7 @@ func (txn *Txn) UpdateDeadline(ctx context.Context, deadline hlc.Timestamp) erro
 // the current time, except in extraordinary circumstances. In cases where
 // considering it helps, it helps a lot. In cases where considering it
 // does not help, it does not hurt much.
-func (txn *Txn) DeadlineLikelySufficient() bool {
+func (txn *Txn) DeadlineLikelySufficient(sv *settings.Values) bool {
 	txn.mu.Lock()
 	defer txn.mu.Unlock()
 	// Instead of using the current HLC clock we will
@@ -952,19 +871,14 @@ func (txn *Txn) DeadlineLikelySufficient() bool {
 	// 3) If we are writing to non-blocking ranges than any
 	//    push will be into the future.
 	getTargetTS := func() hlc.Timestamp {
-		sv := txn.db.SettingsValues()
 		now := txn.db.Clock().NowAsClockTimestamp()
 		maxClockOffset := txn.db.Clock().MaxOffset()
 		lagTargetDuration := closedts.TargetDuration.Get(sv)
 		leadTargetOverride := closedts.LeadForGlobalReadsOverride.Get(sv)
 		sideTransportCloseInterval := closedts.SideTransportCloseInterval.Get(sv)
-		// Pass the DefaultMaxNetworkRTT regardless of leadTargetAutoTune because we
-		// don't have a good way to estimate the network RTT here. We choose to be
-		// more conservative as this is just for an optimization if the deadline is
-		// far in the future. Missing the optimization is not a big deal.
 		return closedts.TargetForPolicy(now, maxClockOffset,
 			lagTargetDuration, leadTargetOverride, sideTransportCloseInterval,
-			ctpb.LEAD_FOR_GLOBAL_READS_WITH_NO_LATENCY_INFO).Add(int64(time.Second), 0)
+			roachpb.LEAD_FOR_GLOBAL_READS).Add(int64(time.Second), 0)
 	}
 
 	return !txn.mu.deadline.IsEmpty() &&
@@ -1055,21 +969,6 @@ func (txn *Txn) rollback(ctx context.Context) *kvpb.Error {
 	return nil
 }
 
-// Prepare sends an EndTxnRequest with Prepare=true. Once a transaction is
-// prepared, it cannot be used to perform any more reads or writes. A prepared
-// transaction can only be committed or rolled back.
-func (txn *Txn) Prepare(ctx context.Context) error {
-	if txn.typ != RootTxn {
-		return errors.WithContextTags(errors.AssertionFailedf("Prepare() called on leaf txn"), ctx)
-	}
-
-	et := endTxnReq(true, txn.deadline())
-	et.req.Prepare = true
-	ba := &kvpb.BatchRequest{Requests: et.unionArr[:]}
-	_, pErr := txn.Send(ctx, ba)
-	return pErr.GoError()
-}
-
 // AddCommitTrigger adds a closure to be executed on successful commit
 // of the transaction.
 func (txn *Txn) AddCommitTrigger(trigger func(ctx context.Context)) {
@@ -1121,10 +1020,7 @@ func (e *AutoCommitError) Error() string {
 func (txn *Txn) exec(ctx context.Context, fn func(context.Context, *Txn) error) (err error) {
 	// Run fn in a retry loop until we encounter a success or
 	// error condition this loop isn't capable of handling.
-	retryOpts := base.DefaultRetryOptions()
-	retryOpts.InitialBackoff = 20 * time.Millisecond
-	retryOpts.MaxBackoff = 200 * time.Millisecond
-	for r := retry.Start(retryOpts); r.Next(); {
+	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return errors.Wrap(err, "txn exec")
 		}
@@ -1169,7 +1065,7 @@ func (txn *Txn) exec(ctx context.Context, fn func(context.Context, *Txn) error) 
 					// TransactionRetryWithProtoRefreshError if the closure ran another
 					// transaction internally and let the error propagate upwards instead
 					// of handling it.
-					return errors.Wrap(errors.Opaque(err), "retryable error from another txn")
+					return errors.Wrapf(err, "retryable error from another txn")
 				}
 				if txn.isClientFinalized() {
 					// We've already committed or rolled back, so we can't retry. The
@@ -1182,31 +1078,6 @@ func (txn *Txn) exec(ctx context.Context, fn func(context.Context, *Txn) error) 
 		}
 
 		if !retryable {
-			break
-		}
-
-		// Determine whether the transaction has exceeded the maximum number of
-		// automatic retries. We check this after each failed attempt to allow the
-		// cluster setting to be changed while a transaction is stuck in a retry
-		// loop.
-		maxRetries := txn.MaxAutoRetries()
-		// Add 1 because r.CurrentAttempt() starts at 0.
-		attempt := r.CurrentAttempt() + 1
-		if attempt > maxRetries {
-			// If the retries limit has been exceeded, rollback and return an error.
-			rollbackErr := txn.Rollback(ctx)
-			// NOTE: we don't errors.Wrap the most recent retry error because we want
-			// to terminate it here. Instead, we mark the error to allow callers to
-			// detect this condition and avoid automatic retries. We also include the
-			// original error in the error message.
-			err = errors.Mark(
-				errors.Errorf("have retried transaction: %s %d times, most recently because of the "+
-					"retryable error: %s. Terminating retry loop and returning error due to max retry limit (%d). "+
-					"Rollback error: %v.",
-					txn.DebugName(), attempt, err, maxRetries, rollbackErr,
-				),
-				ErrAutoRetryLimitExhausted)
-			log.Warningf(ctx, "%v", err)
 			break
 		}
 

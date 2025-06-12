@@ -21,126 +21,6 @@ provided the `redactable` functionality is enabled on the logging sink.
 
 Events not documented on this page will have an unstructured format in log messages.
 
-## Changefeed telemetry events
-
-Events in this category pertain to changefeed usage and metrics.
-
-Events in this category are logged to the `TELEMETRY` channel.
-
-
-### `alter_changefeed`
-
-An event of type `alter_changefeed` is an event for any ALTER CHANGEFEED statements that are run.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `PreviousDescription` | The description of the changefeed job before the ALTER CHANGEFEED. | yes |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Description` | The description of that would show up in the job's description field, redacted | yes |
-| `SinkType` | The type of sink being emitted to (ex: kafka, nodelocal, webhook-https). | no |
-| `NumTables` | The number of tables listed in the query that the changefeed is to run on. | no |
-| `Resolved` | The behavior of emitted resolved spans (ex: yes, no, 10s) | no |
-| `InitialScan` | The desired behavior of initial scans (ex: yes, no, only) | no |
-| `Format` | The data format being emitted (ex: JSON, Avro). | no |
-| `JobId` | The job id for enterprise changefeeds. | no |
-
-### `changefeed_canceled`
-
-An event of type `changefeed_canceled` is an event for any changefeed cancellations.
-
-
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Description` | The description of that would show up in the job's description field, redacted | yes |
-| `SinkType` | The type of sink being emitted to (ex: kafka, nodelocal, webhook-https). | no |
-| `NumTables` | The number of tables listed in the query that the changefeed is to run on. | no |
-| `Resolved` | The behavior of emitted resolved spans (ex: yes, no, 10s) | no |
-| `InitialScan` | The desired behavior of initial scans (ex: yes, no, only) | no |
-| `Format` | The data format being emitted (ex: JSON, Avro). | no |
-| `JobId` | The job id for enterprise changefeeds. | no |
-
-### `changefeed_emitted_bytes`
-
-An event of type `changefeed_emitted_bytes` is an event representing the bytes emitted by a changefeed over an interval.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `EmittedBytes` | The number of bytes emitted. | no |
-| `EmittedMessages` | The number of messages emitted. | no |
-| `LoggingInterval` | The time period in nanoseconds between emitting telemetry events of this type (per-aggregator). | no |
-| `Closing` | Flag to indicate that the changefeed is closing. | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Description` | The description of that would show up in the job's description field, redacted | yes |
-| `SinkType` | The type of sink being emitted to (ex: kafka, nodelocal, webhook-https). | no |
-| `NumTables` | The number of tables listed in the query that the changefeed is to run on. | no |
-| `Resolved` | The behavior of emitted resolved spans (ex: yes, no, 10s) | no |
-| `InitialScan` | The desired behavior of initial scans (ex: yes, no, only) | no |
-| `Format` | The data format being emitted (ex: JSON, Avro). | no |
-| `JobId` | The job id for enterprise changefeeds. | no |
-
-### `changefeed_failed`
-
-An event of type `changefeed_failed` is an event for any changefeed failure since the plan hook
-was triggered.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `FailureType` | The reason / environment with which the changefeed failed (ex: connection_closed, changefeed_behind). | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Description` | The description of that would show up in the job's description field, redacted | yes |
-| `SinkType` | The type of sink being emitted to (ex: kafka, nodelocal, webhook-https). | no |
-| `NumTables` | The number of tables listed in the query that the changefeed is to run on. | no |
-| `Resolved` | The behavior of emitted resolved spans (ex: yes, no, 10s) | no |
-| `InitialScan` | The desired behavior of initial scans (ex: yes, no, only) | no |
-| `Format` | The data format being emitted (ex: JSON, Avro). | no |
-| `JobId` | The job id for enterprise changefeeds. | no |
-
-### `create_changefeed`
-
-An event of type `create_changefeed` is an event for any CREATE CHANGEFEED query that
-successfully starts running. Failed CREATE statements will show up as
-ChangefeedFailed events.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Transformation` | Flag representing whether the changefeed is using CDC queries. | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Description` | The description of that would show up in the job's description field, redacted | yes |
-| `SinkType` | The type of sink being emitted to (ex: kafka, nodelocal, webhook-https). | no |
-| `NumTables` | The number of tables listed in the query that the changefeed is to run on. | no |
-| `Resolved` | The behavior of emitted resolved spans (ex: yes, no, 10s) | no |
-| `InitialScan` | The desired behavior of initial scans (ex: yes, no, only) | no |
-| `Format` | The data format being emitted (ex: JSON, Avro). | no |
-| `JobId` | The job id for enterprise changefeeds. | no |
-
 ## Cluster-level events
 
 Events in this category pertain to an entire cluster and are
@@ -164,66 +44,6 @@ reloaded/rotated from disk.
 |--|--|--|
 | `Success` | Whether the operation completed without errors. | no |
 | `ErrorMessage` | If an error was encountered, the text of the error. | yes |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
-| `EventType` | The type of the event. | no |
-
-### `disk_slowness_cleared`
-
-An event of type `disk_slowness_cleared` is recorded when disk slowness in a store has cleared.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `NodeID` | The node ID where the event was originated. | no |
-| `StoreID` |  | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
-| `EventType` | The type of the event. | no |
-
-### `disk_slowness_detected`
-
-An event of type `disk_slowness_detected` is recorded when a store observes disk slowness
-events.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `NodeID` | The node ID where the event was originated. | no |
-| `StoreID` |  | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
-| `EventType` | The type of the event. | no |
-
-### `low_disk_space`
-
-An event of type `low_disk_space` is emitted when a store is reaching capacity, as we reach
-certain thresholds. It is emitted periodically while we are in a low disk
-state.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `NodeID` | The node ID where the event was originated. | no |
-| `StoreID` |  | no |
-| `PercentThreshold` | The free space percent threshold that we went under. | no |
-| `AvailableBytes` |  | no |
-| `TotalBytes` |  | no |
 
 
 #### Common fields
@@ -469,34 +289,6 @@ Events in this category pertain to the health of one or more servers.
 Events in this category are logged to the `HEALTH` channel.
 
 
-### `hot_ranges_stats`
-
-An event of type `hot_ranges_stats`
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `RangeID` |  | no |
-| `Qps` |  | no |
-| `SchemaName` | SchemaName is the name of the schema in which the index was created. | yes |
-| `LeaseholderNodeID` | LeaseholderNodeID indicates the Node ID that is the current leaseholder for the given range. | no |
-| `WritesPerSecond` | Writes per second is the recent number of keys written per second on this range. | no |
-| `ReadsPerSecond` | Reads per second is the recent number of keys read per second on this range. | no |
-| `WriteBytesPerSecond` | Write bytes per second is the recent number of bytes written per second on this range. | no |
-| `ReadBytesPerSecond` | Read bytes per second is the recent number of bytes read per second on this range. | no |
-| `CPUTimePerSecond` | CPU time per second is the recent cpu usage in nanoseconds of this range. | no |
-| `Databases` | Databases for the range. | no |
-| `Tables` | Tables for the range | no |
-| `Indexes` | Indexes for the range | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
-| `EventType` | The type of the event. | no |
-
 ### `runtime_stats`
 
 An event of type `runtime_stats` is recorded every 10 seconds as server health metrics.
@@ -590,30 +382,6 @@ successful revert.
 | `DescriptorIDs` | The object descriptors affected by the job. Set to zero for operations that don't affect descriptors. | yes |
 | `Status` | The status of the job that triggered the event. This allows the job to indicate which phase execution it is in when the event is triggered. | no |
 
-### `status_change`
-
-An event of type `status_change` is recorded when a job changes statuses.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `JobID` | The ID of the job that is changing statuses. | no |
-| `JobType` | The type of the job that is changing statuses. | no |
-| `Description` | A human parsable description of the status change | partially |
-| `PreviousStatus` | The status that the job is transitioning out of | no |
-| `NewStatus` | The status that the job has transitioned into | no |
-| `RunNum` | The run number of the job. | no |
-| `Error` | An error that may have occurred while the job was running. | yes |
-| `FinalResumeErr` | An error that occurred that requires the job to be reverted. | yes |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
-| `EventType` | The type of the event. | no |
-
 ## Miscellaneous SQL events
 
 Events in this category report miscellaneous SQL events.
@@ -622,7 +390,7 @@ They are relative to a particular SQL tenant.
 In a multi-tenant setup, copies of these miscellaneous events are
 preserved in each tenant's own system.eventlog table.
 
-Events in this category are logged to the `OPS` channel.
+Events in this category are logged to the `DEV` channel.
 
 
 ### `set_cluster_setting`
@@ -855,8 +623,8 @@ An event of type `alter_database_add_region` is recorded when a region is added 
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `DatabaseName` | The name of the database. | no |
-| `RegionName` | The region being added. | no |
+| `DatabaseName` | The name of the database. | yes |
+| `RegionName` | The region being added. | yes |
 
 
 #### Common fields
@@ -879,8 +647,8 @@ AlterDatabaseAddRegion is recorded when a region is added to a database.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `DatabaseName` | The name of the database. | no |
-| `RegionName` | The region being dropped. | no |
+| `DatabaseName` | The name of the database. | yes |
+| `RegionName` | The region being dropped. | yes |
 
 
 #### Common fields
@@ -903,8 +671,8 @@ An event of type `alter_database_placement` is recorded when the database placem
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `DatabaseName` | The name of the database. | no |
-| `Placement` | The new placement policy. | no |
+| `DatabaseName` | The name of the database. | yes |
+| `Placement` | The new placement policy. | yes |
 
 
 #### Common fields
@@ -927,8 +695,8 @@ An event of type `alter_database_primary_region` is recorded when a primary regi
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `DatabaseName` | The name of the database. | no |
-| `PrimaryRegionName` | The new primary region. | no |
+| `DatabaseName` | The name of the database. | yes |
+| `PrimaryRegionName` | The new primary region. | yes |
 
 
 #### Common fields
@@ -974,8 +742,8 @@ An event of type `alter_database_survival_goal` is recorded when the survival go
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `DatabaseName` | The name of the database. | no |
-| `SurvivalGoal` | The new survival goal | no |
+| `DatabaseName` | The name of the database. | yes |
+| `SurvivalGoal` | The new survival goal | yes |
 
 
 #### Common fields
@@ -999,7 +767,7 @@ altered.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `FunctionName` | Name of the affected function. | no |
+| `FunctionName` | Name of the affected function. | yes |
 
 
 #### Common fields
@@ -1022,8 +790,8 @@ An event of type `alter_index` is recorded when an index is altered.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The name of the table containing the affected index. | no |
-| `IndexName` | The name of the affected index. | no |
+| `TableName` | The name of the table containing the affected index. | yes |
+| `IndexName` | The name of the affected index. | yes |
 | `MutationID` | The mutation ID for the asynchronous job that is processing the index update. | no |
 
 
@@ -1047,8 +815,8 @@ AlterIndex is recorded when an index visibility is altered.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The name of the table containing the affected index. | no |
-| `IndexName` | The name of the affected index. | no |
+| `TableName` | The name of the table containing the affected index. | yes |
+| `IndexName` | The name of the affected index. | yes |
 | `NotVisible` | Set true if index is not visible. NOTE: THIS FIELD IS DEPRECATED in favor of invisibility. | no |
 | `Invisibility` | The new invisibility of the affected index. | no |
 
@@ -1073,7 +841,7 @@ An event of type `alter_sequence` is recorded when a sequence is altered.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `SequenceName` | The name of the affected sequence. | no |
+| `SequenceName` | The name of the affected sequence. | yes |
 
 
 #### Common fields
@@ -1096,9 +864,9 @@ An event of type `alter_table` is recorded when a table is altered.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The name of the affected table. | no |
+| `TableName` | The name of the affected table. | yes |
 | `MutationID` | The mutation ID for the asynchronous job that is processing the index update, if any. | no |
-| `CascadeDroppedViews` | The names of the views dropped as a result of a cascade operation. | no |
+| `CascadeDroppedViews` | The names of the views dropped as a result of a cascade operation. | yes |
 
 
 #### Common fields
@@ -1121,7 +889,7 @@ EventAlterType is recorded when a user-defined type is altered.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TypeName` | The name of the affected type. | no |
+| `TypeName` | The name of the affected type. | yes |
 
 
 #### Common fields
@@ -1144,8 +912,8 @@ An event of type `comment_on_column` is recorded when a column is commented.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The name of the table containing the affected column. | no |
-| `ColumnName` | The affected column. | no |
+| `TableName` | The name of the table containing the affected column. | yes |
+| `ColumnName` | The affected column. | yes |
 | `Comment` | The new comment. | yes |
 | `NullComment` | Set to true if the comment was removed entirely. | no |
 
@@ -1170,8 +938,8 @@ An event of type `comment_on_constraint` is recorded when an constraint is comme
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The name of the table containing the affected constraint. | no |
-| `ConstraintName` | The name of the affected constraint. | no |
+| `TableName` | The name of the table containing the affected constraint. | yes |
+| `ConstraintName` | The name of the affected constraint. | yes |
 | `Comment` | The new comment. | yes |
 | `NullComment` | Set to true if the comment was removed entirely. | no |
 
@@ -1196,7 +964,7 @@ CommentOnTable is recorded when a database is commented.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `DatabaseName` | The name of the affected database. | no |
+| `DatabaseName` | The name of the affected database. | yes |
 | `Comment` | The new comment. | yes |
 | `NullComment` | Set to true if the comment was removed entirely. | no |
 
@@ -1221,8 +989,8 @@ An event of type `comment_on_index` is recorded when an index is commented.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The name of the table containing the affected index. | no |
-| `IndexName` | The name of the affected index. | no |
+| `TableName` | The name of the table containing the affected index. | yes |
+| `IndexName` | The name of the affected index. | yes |
 | `Comment` | The new comment. | yes |
 | `NullComment` | Set to true if the comment was removed entirely. | no |
 
@@ -1246,7 +1014,7 @@ An event of type `comment_on_index` is recorded when an index is commented.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `SchemaName` | Name of the affected schema. | no |
+| `SchemaName` | Name of the affected schema. | yes |
 | `Comment` | The new comment. | yes |
 | `NullComment` | Set to true if the comment was removed entirely. | no |
 
@@ -1271,7 +1039,7 @@ An event of type `comment_on_table` is recorded when a table is commented.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The name of the affected table. | no |
+| `TableName` | The name of the affected table. | yes |
 | `Comment` | The new comment. | yes |
 | `NullComment` | Set to true if the comment was removed entirely. | no |
 
@@ -1289,16 +1057,15 @@ An event of type `comment_on_table` is recorded when a table is commented.
 | `ApplicationName` | The application name for the session where the event was emitted. This is included in the event to ease filtering of logging output by application. | no |
 | `PlaceholderValues` | The mapping of SQL placeholders to their values, for prepared statements. | yes |
 
-### `comment_on_type`
+### `convert_to_schema`
 
-An event of type `comment_on_type` is recorded when a type is commented.
+An event of type `convert_to_schema` is recorded when a database is converted to a schema.
 
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TypeName` | The name of the affected type. | no |
-| `Comment` | The new comment. | yes |
-| `NullComment` | Set to true if the comment was removed entirely. | no |
+| `DatabaseName` | The name of the database being converted to a schema. | yes |
+| `NewDatabaseParent` | The name of the parent database for the new schema. | yes |
 
 
 #### Common fields
@@ -1321,7 +1088,7 @@ An event of type `create_database` is recorded when a database is created.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `DatabaseName` | The name of the new database. | no |
+| `DatabaseName` | The name of the new database. | yes |
 
 
 #### Common fields
@@ -1344,7 +1111,7 @@ An event of type `create_function` is recorded when a user-defined function is c
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `FunctionName` | Name of the created function. | no |
+| `FunctionName` | Name of the created function. | yes |
 | `IsReplace` | If the new function is a replace of an existing function. | no |
 
 
@@ -1368,33 +1135,9 @@ An event of type `create_index` is recorded when an index is created.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The name of the table containing the new index. | no |
-| `IndexName` | The name of the new index. | no |
+| `TableName` | The name of the table containing the new index. | yes |
+| `IndexName` | The name of the new index. | yes |
 | `MutationID` | The mutation ID for the asynchronous job that is processing the index update. | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
-| `EventType` | The type of the event. | no |
-| `Statement` | A normalized copy of the SQL statement that triggered the event. The statement string contains a mix of sensitive and non-sensitive details (it is redactable). | partially |
-| `Tag` | The statement tag. This is separate from the statement string, since the statement string can contain sensitive information. The tag is guaranteed not to. | no |
-| `User` | The user account that triggered the event. The special usernames `root` and `node` are not considered sensitive. | depends |
-| `DescriptorID` | The primary object descriptor affected by the operation. Set to zero for operations that don't affect descriptors. | no |
-| `ApplicationName` | The application name for the session where the event was emitted. This is included in the event to ease filtering of logging output by application. | no |
-| `PlaceholderValues` | The mapping of SQL placeholders to their values, for prepared statements. | yes |
-
-### `create_policy`
-
-An event of type `create_policy` is recorded when a policy is created.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `TableName` | Name of the policy's table. | no |
-| `PolicyName` | Name of the created policy. | no |
 
 
 #### Common fields
@@ -1417,8 +1160,8 @@ An event of type `create_schema` is recorded when a schema is created.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `SchemaName` | The name of the new schema. | no |
-| `Owner` | The name of the owner for the new schema. | no |
+| `SchemaName` | The name of the new schema. | yes |
+| `Owner` | The name of the owner for the new schema. | yes |
 
 
 #### Common fields
@@ -1441,8 +1184,8 @@ An event of type `create_sequence` is recorded when a sequence is created.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `SequenceName` | The name of the new sequence. | no |
-| `Owner` | The name of the owner for the new sequence. | no |
+| `SequenceName` | The name of the new sequence. | yes |
+| `Owner` | The name of the owner for the new sequence. | yes |
 
 
 #### Common fields
@@ -1469,7 +1212,7 @@ Events of this type are only collected when the cluster setting
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The name of the table for which the statistics were created. | no |
+| `TableName` | The name of the table for which the statistics were created. | yes |
 
 
 #### Common fields
@@ -1492,32 +1235,8 @@ An event of type `create_table` is recorded when a table is created.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The name of the new table. | no |
-| `Owner` | The name of the owner for the new table. | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
-| `EventType` | The type of the event. | no |
-| `Statement` | A normalized copy of the SQL statement that triggered the event. The statement string contains a mix of sensitive and non-sensitive details (it is redactable). | partially |
-| `Tag` | The statement tag. This is separate from the statement string, since the statement string can contain sensitive information. The tag is guaranteed not to. | no |
-| `User` | The user account that triggered the event. The special usernames `root` and `node` are not considered sensitive. | depends |
-| `DescriptorID` | The primary object descriptor affected by the operation. Set to zero for operations that don't affect descriptors. | no |
-| `ApplicationName` | The application name for the session where the event was emitted. This is included in the event to ease filtering of logging output by application. | no |
-| `PlaceholderValues` | The mapping of SQL placeholders to their values, for prepared statements. | yes |
-
-### `create_trigger`
-
-An event of type `create_trigger` is recorded when a trigger is created.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `TableName` | Name of the trigger's table. | no |
-| `TriggerName` | Name of the created trigger. | no |
+| `TableName` | The name of the new table. | yes |
+| `Owner` | The name of the owner for the new table. | yes |
 
 
 #### Common fields
@@ -1540,8 +1259,8 @@ An event of type `create_type` is recorded when a user-defined type is created.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TypeName` | The name of the new type. | no |
-| `Owner` | The name of the owner for the new type. | no |
+| `TypeName` | The name of the new type. | yes |
+| `Owner` | The name of the owner for the new type. | yes |
 
 
 #### Common fields
@@ -1564,8 +1283,8 @@ An event of type `create_view` is recorded when a view is created.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `ViewName` | The name of the new view. | no |
-| `Owner` | The name of the owner of the new view. | no |
+| `ViewName` | The name of the new view. | yes |
+| `Owner` | The name of the owner of the new view. | yes |
 | `ViewQuery` | The SQL selection clause used to define the view. | yes |
 
 
@@ -1589,8 +1308,8 @@ An event of type `drop_database` is recorded when a database is dropped.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `DatabaseName` | The name of the affected database. | no |
-| `DroppedSchemaObjects` | The names of the schemas dropped by a cascade operation. | no |
+| `DatabaseName` | The name of the affected database. | yes |
+| `DroppedSchemaObjects` | The names of the schemas dropped by a cascade operation. | yes |
 
 
 #### Common fields
@@ -1613,7 +1332,7 @@ An event of type `drop_function` is recorded when a user-defined function is dro
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `FunctionName` | Name of the dropped function. | no |
+| `FunctionName` | Name of the created function. | yes |
 
 
 #### Common fields
@@ -1636,34 +1355,10 @@ An event of type `drop_index` is recorded when an index is dropped.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The name of the table containing the affected index. | no |
-| `IndexName` | The name of the affected index. | no |
+| `TableName` | The name of the table containing the affected index. | yes |
+| `IndexName` | The name of the affected index. | yes |
 | `MutationID` | The mutation ID for the asynchronous job that is processing the index update. | no |
-| `CascadeDroppedViews` | The names of the views dropped as a result of a cascade operation. | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
-| `EventType` | The type of the event. | no |
-| `Statement` | A normalized copy of the SQL statement that triggered the event. The statement string contains a mix of sensitive and non-sensitive details (it is redactable). | partially |
-| `Tag` | The statement tag. This is separate from the statement string, since the statement string can contain sensitive information. The tag is guaranteed not to. | no |
-| `User` | The user account that triggered the event. The special usernames `root` and `node` are not considered sensitive. | depends |
-| `DescriptorID` | The primary object descriptor affected by the operation. Set to zero for operations that don't affect descriptors. | no |
-| `ApplicationName` | The application name for the session where the event was emitted. This is included in the event to ease filtering of logging output by application. | no |
-| `PlaceholderValues` | The mapping of SQL placeholders to their values, for prepared statements. | yes |
-
-### `drop_policy`
-
-An event of type `drop_policy` is recorded when a policy is dropped.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `TableName` | Name of the policy's table. | no |
-| `PolicyName` | Name of the dropped policy. | no |
+| `CascadeDroppedViews` | The names of the views dropped as a result of a cascade operation. | yes |
 
 
 #### Common fields
@@ -1686,7 +1381,7 @@ An event of type `drop_schema` is recorded when a schema is dropped.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `SchemaName` | The name of the affected schema. | no |
+| `SchemaName` | The name of the affected schema. | yes |
 
 
 #### Common fields
@@ -1709,7 +1404,7 @@ An event of type `drop_sequence` is recorded when a sequence is dropped.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `SequenceName` | The name of the affected sequence. | no |
+| `SequenceName` | The name of the affected sequence. | yes |
 
 
 #### Common fields
@@ -1732,32 +1427,8 @@ An event of type `drop_table` is recorded when a table is dropped.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The name of the affected table. | no |
-| `CascadeDroppedViews` | The names of the views dropped as a result of a cascade operation. | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
-| `EventType` | The type of the event. | no |
-| `Statement` | A normalized copy of the SQL statement that triggered the event. The statement string contains a mix of sensitive and non-sensitive details (it is redactable). | partially |
-| `Tag` | The statement tag. This is separate from the statement string, since the statement string can contain sensitive information. The tag is guaranteed not to. | no |
-| `User` | The user account that triggered the event. The special usernames `root` and `node` are not considered sensitive. | depends |
-| `DescriptorID` | The primary object descriptor affected by the operation. Set to zero for operations that don't affect descriptors. | no |
-| `ApplicationName` | The application name for the session where the event was emitted. This is included in the event to ease filtering of logging output by application. | no |
-| `PlaceholderValues` | The mapping of SQL placeholders to their values, for prepared statements. | yes |
-
-### `drop_trigger`
-
-An event of type `drop_trigger` is recorded when a trigger is dropped.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `TableName` | Name of the trigger's table. | no |
-| `TriggerName` | Name of the dropped trigger. | no |
+| `TableName` | The name of the affected table. | yes |
+| `CascadeDroppedViews` | The names of the views dropped as a result of a cascade operation. | yes |
 
 
 #### Common fields
@@ -1780,7 +1451,7 @@ An event of type `drop_type` is recorded when a user-defined type is dropped.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TypeName` | The name of the affected type. | no |
+| `TypeName` | The name of the affected type. | yes |
 
 
 #### Common fields
@@ -1803,8 +1474,8 @@ An event of type `drop_view` is recorded when a view is dropped.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `ViewName` | The name of the affected view. | no |
-| `CascadeDroppedViews` | The names of the views dropped as a result of a cascade operation. | no |
+| `ViewName` | The name of the affected view. | yes |
+| `CascadeDroppedViews` | The names of the views dropped as a result of a cascade operation. | yes |
 
 
 #### Common fields
@@ -1891,8 +1562,8 @@ An event of type `rename_database` is recorded when a database is renamed.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `DatabaseName` | The old name of the affected database. | no |
-| `NewDatabaseName` | The new name of the affected database. | no |
+| `DatabaseName` | The old name of the affected database. | yes |
+| `NewDatabaseName` | The new name of the affected database. | yes |
 
 
 #### Common fields
@@ -1915,8 +1586,8 @@ An event of type `rename_function` is recorded when a user-defined function is r
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `FunctionName` | The old name of the affected function. | no |
-| `NewFunctionName` | The new name of the affected function. | no |
+| `FunctionName` | The old name of the affected function. | yes |
+| `NewFunctionName` | The new name of the affected function. | yes |
 
 
 #### Common fields
@@ -1939,8 +1610,8 @@ An event of type `rename_schema` is recorded when a schema is renamed.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `SchemaName` | The old name of the affected schema. | no |
-| `NewSchemaName` | The new name of the affected schema. | no |
+| `SchemaName` | The old name of the affected schema. | yes |
+| `NewSchemaName` | The new name of the affected schema. | yes |
 
 
 #### Common fields
@@ -1963,8 +1634,8 @@ An event of type `rename_table` is recorded when a table, sequence or view is re
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The old name of the affected table. | no |
-| `NewTableName` | The new name of the affected table. | no |
+| `TableName` | The old name of the affected table. | yes |
+| `NewTableName` | The new name of the affected table. | yes |
 
 
 #### Common fields
@@ -1987,8 +1658,8 @@ An event of type `rename_type` is recorded when a user-defined type is renamed.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TypeName` | The old name of the affected type. | no |
-| `NewTypeName` | The new name of the affected type. | no |
+| `TypeName` | The old name of the affected type. | yes |
+| `NewTypeName` | The new name of the affected type. | yes |
 
 
 #### Common fields
@@ -2012,7 +1683,7 @@ encounters a problem and is reversed.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `Error` | The error encountered that caused the schema change to be reversed. The specific format of the error is variable and can change across releases without warning. | partially |
+| `Error` | The error encountered that caused the schema change to be reversed. The specific format of the error is variable and can change across releases without warning. | yes |
 | `SQLSTATE` | The SQLSTATE code for the error. | no |
 | `LatencyNanos` | The amount of time the schema change job took before being reverted. | no |
 
@@ -2034,9 +1705,9 @@ An event of type `set_schema` is recorded when a table, view, sequence or type's
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `DescriptorName` | The old name of the affected descriptor. | no |
-| `NewDescriptorName` | The new name of the affected descriptor. | no |
-| `DescriptorType` | The descriptor type being changed (table, view, sequence, type). | no |
+| `DescriptorName` | The old name of the affected descriptor. | yes |
+| `NewDescriptorName` | The new name of the affected descriptor. | yes |
+| `DescriptorType` | The descriptor type being changed (table, view, sequence, type). | yes |
 
 
 #### Common fields
@@ -2059,7 +1730,7 @@ An event of type `truncate_table` is recorded when a table is truncated.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `TableName` | The name of the affected table. | no |
+| `TableName` | The name of the affected table. | yes |
 
 
 #### Common fields
@@ -2088,7 +1759,7 @@ patch releases without advance notice.
 |--|--|--|
 | `ParentID` |  | no |
 | `ParentSchemaID` |  | no |
-| `Name` |  | no |
+| `Name` |  | yes |
 | `Force` |  | no |
 | `ForceNotice` |  | yes |
 
@@ -2119,7 +1790,7 @@ patch releases without advance notice.
 |--|--|--|
 | `ParentID` |  | no |
 | `ParentSchemaID` |  | no |
-| `Name` |  | no |
+| `Name` |  | yes |
 | `Force` |  | no |
 | `ForceNotice` |  | yes |
 
@@ -2177,7 +1848,7 @@ patch releases without advance notice.
 |--|--|--|
 | `ParentID` |  | no |
 | `ParentSchemaID` |  | no |
-| `Name` |  | no |
+| `Name` |  | yes |
 | `PreviousID` |  | no |
 | `Force` |  | no |
 | `FailedValidation` |  | no |
@@ -3165,6 +2836,104 @@ An event of type `captured_index_usage_stats`
 | `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
 | `EventType` | The type of the event. | no |
 
+### `changefeed_emitted_bytes`
+
+An event of type `changefeed_emitted_bytes` is an event representing the bytes emitted by a changefeed over an interval.
+
+
+| Field | Description | Sensitive |
+|--|--|--|
+| `JobId` | The job id for enterprise changefeeds. | no |
+| `EmittedBytes` | The number of bytes emitted. | no |
+| `EmittedMessages` | The number of messages emitted. | no |
+| `LoggingInterval` | The time period in nanoseconds between emitting telemetry events of this type (per-aggregator). | no |
+| `Closing` | Flag to indicate that the changefeed is closing. | no |
+
+
+#### Common fields
+
+| Field | Description | Sensitive |
+|--|--|--|
+| `Description` | The description of that would show up in the job's description field, redacted | yes |
+| `SinkType` | The type of sink being emitted to (ex: kafka, nodelocal, webhook-https). | no |
+| `NumTables` | The number of tables listed in the query that the changefeed is to run on. | no |
+| `Resolved` | The behavior of emitted resolved spans (ex: yes, no, 10s) | no |
+| `InitialScan` | The desired behavior of initial scans (ex: yes, no, only) | no |
+| `Format` | The data format being emitted (ex: JSON, Avro). | no |
+
+### `changefeed_failed`
+
+An event of type `changefeed_failed` is an event for any Changefeed failure since the plan hook
+was triggered.
+
+
+| Field | Description | Sensitive |
+|--|--|--|
+| `FailureType` | The reason / environment with which the changefeed failed (ex: connection_closed, changefeed_behind) | no |
+
+
+#### Common fields
+
+| Field | Description | Sensitive |
+|--|--|--|
+| `Description` | The description of that would show up in the job's description field, redacted | yes |
+| `SinkType` | The type of sink being emitted to (ex: kafka, nodelocal, webhook-https). | no |
+| `NumTables` | The number of tables listed in the query that the changefeed is to run on. | no |
+| `Resolved` | The behavior of emitted resolved spans (ex: yes, no, 10s) | no |
+| `InitialScan` | The desired behavior of initial scans (ex: yes, no, only) | no |
+| `Format` | The data format being emitted (ex: JSON, Avro). | no |
+
+### `create_changefeed`
+
+An event of type `create_changefeed` is an event for any CREATE CHANGEFEED query that
+successfully starts running.  Failed CREATE statements will show up as
+ChangefeedFailed events.
+
+
+| Field | Description | Sensitive |
+|--|--|--|
+| `Transformation` |  | no |
+
+
+#### Common fields
+
+| Field | Description | Sensitive |
+|--|--|--|
+| `Description` | The description of that would show up in the job's description field, redacted | yes |
+| `SinkType` | The type of sink being emitted to (ex: kafka, nodelocal, webhook-https). | no |
+| `NumTables` | The number of tables listed in the query that the changefeed is to run on. | no |
+| `Resolved` | The behavior of emitted resolved spans (ex: yes, no, 10s) | no |
+| `InitialScan` | The desired behavior of initial scans (ex: yes, no, only) | no |
+| `Format` | The data format being emitted (ex: JSON, Avro). | no |
+
+### `hot_ranges_stats`
+
+An event of type `hot_ranges_stats`
+
+
+| Field | Description | Sensitive |
+|--|--|--|
+| `RangeID` |  | no |
+| `Qps` |  | no |
+| `DatabaseName` | DatabaseName is the name of the database in which the index was created. | yes |
+| `TableName` | TableName is the name of the table on which the index was created. | yes |
+| `IndexName` | IndexName is the name of the index within the scope of the given table. | yes |
+| `SchemaName` | SchemaName is the name of the schema in which the index was created. | yes |
+| `LeaseholderNodeID` | LeaseholderNodeID indicates the Node ID that is the current leaseholder for the given range. | no |
+| `WritesPerSecond` | Writes per second is the recent number of keys written per second on this range. | no |
+| `ReadsPerSecond` | Reads per second is the recent number of keys read per second on this range. | no |
+| `WriteBytesPerSecond` | Write bytes per second is the recent number of bytes written per second on this range. | no |
+| `ReadBytesPerSecond` | Read bytes per second is the recent number of bytes read per second on this range. | no |
+| `CPUTimePerSecond` | CPU time per second is the recent cpu usage in nanoseconds of this range. | no |
+
+
+#### Common fields
+
+| Field | Description | Sensitive |
+|--|--|--|
+| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
+| `EventType` | The type of the event. | no |
+
 ### `m_v_c_c_iterator_stats`
 
 Internal storage iteration statistics for a single execution.
@@ -3244,10 +3013,10 @@ Fields in this struct should be updated in sync with apps_stats.proto.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `NetworkBytes` | NetworkBytes collects the number of bytes sent over the network by DistSQL components. | no |
+| `NetworkBytes` | NetworkBytes collects the number of bytes sent over the network. | no |
 | `MaxMemUsage` | MaxMemUsage collects the maximum memory usage that occurred on a node. | no |
 | `ContentionTime` | ContentionTime collects the time in seconds statements in the transaction spent contending. | no |
-| `NetworkMessages` | NetworkMessages collects the number of messages that were sent over the network by DistSQL components. | no |
+| `NetworkMessages` | NetworkMessages collects the number of messages that were sent over the network. | no |
 | `MaxDiskUsage` | MaxDiskUsage collects the maximum temporary disk usage that occurred. This is set in cases where a query had to spill to disk, e.g. when performing a large sort where not all of the tuples fit in memory. | no |
 | `CPUSQLNanos` | CPUSQLNanos collects the CPU time spent executing SQL operations in nanoseconds. Currently, it is only collected for statements without mutations that have a vectorized plan. | no |
 | `MVCCIteratorStats` | Internal storage iteration statistics. | yes |
@@ -3295,13 +3064,13 @@ contains common SQL event/execution details.
 | `ZigZagJoinCount` | The number of zig zag joins in the query plan. | no |
 | `ContentionNanos` | The duration of time in nanoseconds that the query experienced contention. | no |
 | `Regions` | The regions of the nodes where SQL processors ran. | no |
-| `NetworkBytesSent` | The number of network bytes by DistSQL components. | no |
+| `NetworkBytesSent` | The number of network bytes sent by nodes for this query. | no |
 | `MaxMemUsage` | The maximum amount of memory usage by nodes for this query. | no |
 | `MaxDiskUsage` | The maximum amount of disk usage by nodes for this query. | no |
 | `KVBytesRead` | The number of bytes read at the KV layer for this query. | no |
 | `KVPairsRead` | The number of key-value pairs read at the KV layer for this query. | no |
 | `KVRowsRead` | The number of rows read at the KV layer for this query. | no |
-| `NetworkMessages` | The number of network messages sent by nodes for this query by DistSQL components. | no |
+| `NetworkMessages` | The number of network messages sent by nodes for this query. | no |
 | `IndexRecommendations` | Generated index recommendations for this query. | no |
 | `ScanCount` | The number of scans in the query plan. | no |
 | `ScanWithStatsCount` | The number of scans using statistics (including forecasted statistics) in the query plan. | no |
@@ -3333,9 +3102,7 @@ contains common SQL event/execution details.
 | `MvccRangeKeySkippedPoints` | RangeKeySkippedPoints collects the count of the subset of ContainedPoints point keys that were skipped during iteration due to range-key masking. For details, see pkg/storage/engine.go, pebble.RangeKeyIteratorStats, and https://github.com/cockroachdb/cockroach/blob/master/docs/tech-notes/mvcc-range-tombstones.md. | no |
 | `SchemaChangerMode` | SchemaChangerMode is the mode that was used to execute the schema change, if any. | no |
 | `SQLInstanceIDs` | SQLInstanceIDs is a list of all the SQL instances used in this statement's execution. | no |
-| `KVNodeIDs` | KVNodeIDs is a list of all the KV nodes used in this statement's execution. | no |
 | `StatementFingerprintID` | Statement fingerprint ID of the query. | no |
-| `UsedFollowerRead` | UsedFollowerRead indicates whether at least some reads were served by the follower replicas. | no |
 
 
 #### Common fields
@@ -3542,7 +3309,6 @@ authentication failure.
 | 6 | CREDENTIALS_INVALID | occurs when the client-provided credentials were invalid. |
 | 7 | CREDENTIALS_EXPIRED | occur when the credentials provided by the client are expired. |
 | 8 | NO_REPLICATION_ROLEOPTION | occurs when the connection requires a replication role option, but the user does not have it. |
-| 9 | AUTHORIZATION_ERROR | is used for errors during the authorization phase. For example, this would include issues with mapping LDAP groups to SQL roles and granting those roles to the user. |
 
 
 

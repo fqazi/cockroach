@@ -13,7 +13,7 @@ import (
 
 func TestClientName(t *testing.T) {
 	options := func(options ...ExternalStorageOption) ExternalStorageOptions {
-		context := EarlyBootExternalStorageContext{
+		context := ExternalStorageContext{
 			Options: options,
 		}
 		return context.ExternalStorageOptions()

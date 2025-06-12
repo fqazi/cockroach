@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -29,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/limit"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
-	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
@@ -54,6 +52,7 @@ var (
 		"bulkio.ingest.flush_delay",
 		"amount of time to wait before sending a file to the KV/Storage layer to ingest",
 		0,
+		settings.NonNegativeDuration,
 	)
 
 	senderConcurrency = settings.RegisterIntSetting(
@@ -133,6 +132,8 @@ type SSTBatcher struct {
 	// writeAtBatchTS is passed to the writeAtBatchTs argument to db.AddSStable.
 	writeAtBatchTS bool
 
+	initialSplitDone bool
+
 	// disableScatters controls scatters of the as-we-fill split ranges.
 	disableScatters bool
 
@@ -185,8 +186,6 @@ type SSTBatcher struct {
 	ms enginepb.MVCCStats
 
 	asyncAddSSTs ctxgroup.Group
-
-	valueScratch []byte
 
 	mu struct {
 		syncutil.Mutex
@@ -324,42 +323,6 @@ func (b *SSTBatcher) SetOnFlush(onFlush func(summary kvpb.BulkOpSummary)) {
 	b.mu.onFlush = onFlush
 }
 
-func (b *SSTBatcher) AddMVCCKeyWithImportEpoch(
-	ctx context.Context, key storage.MVCCKey, value []byte, importEpoch uint32,
-) error {
-
-	mvccVal, err := storage.DecodeMVCCValue(value)
-	if err != nil {
-		return err
-	}
-	mvccVal.MVCCValueHeader.ImportEpoch = importEpoch
-	buf, canRetainBuffer, err := storage.EncodeMVCCValueToBuf(mvccVal, b.valueScratch[:0])
-	if canRetainBuffer {
-		b.valueScratch = buf
-	}
-	if err != nil {
-		return err
-	}
-	return b.AddMVCCKey(ctx, key, b.valueScratch)
-}
-
-func (b *SSTBatcher) AddMVCCKeyLDR(ctx context.Context, key storage.MVCCKey, value []byte) error {
-
-	mvccVal, err := storage.DecodeMVCCValue(value)
-	if err != nil {
-		return err
-	}
-	mvccVal.MVCCValueHeader.OriginTimestamp = key.Timestamp
-	mvccVal.OriginID = 1
-	// NOTE: since we are setting header values, EncodeMVCCValueToBuf will
-	// always use the sctarch buffer or return an error.
-	b.valueScratch, _, err = storage.EncodeMVCCValueToBuf(mvccVal, b.valueScratch[:0])
-	if err != nil {
-		return err
-	}
-	return b.AddMVCCKey(ctx, key, b.valueScratch)
-}
-
 // AddMVCCKey adds a key+timestamp/value pair to the batch (flushing if needed).
 // This is only for callers that want to control the timestamp on individual
 // keys -- like RESTORE where we want the restored data to look like the backup.
@@ -420,7 +383,8 @@ func (b *SSTBatcher) AddMVCCKey(ctx context.Context, key storage.MVCCKey, value 
 	if !b.disallowShadowingBelow.IsEmpty() {
 		b.updateMVCCStats(key, value)
 	}
-	return b.sstWriter.PutRawMVCC(key, value)
+
+	return b.sstWriter.Put(key, value)
 }
 
 // Reset clears all state in the batcher and prepares it for reuse.
@@ -443,7 +407,6 @@ func (b *SSTBatcher) Reset(ctx context.Context) {
 	b.batchEndTimestamp = hlc.Timestamp{}
 	b.flushKey = nil
 	b.flushKeyChecked = false
-	b.valueScratch = b.valueScratch[:0]
 	b.ms.Reset()
 
 	if b.writeAtBatchTS {
@@ -481,7 +444,7 @@ func (b *SSTBatcher) flushIfNeeded(ctx context.Context, nextKey roachpb.Key) err
 			if r, err := b.rc.Lookup(ctx, k); err != nil {
 				log.Warningf(ctx, "failed to lookup range cache entry for key %v: %v", k, err)
 			} else {
-				k := r.Desc.EndKey.AsRawKey()
+				k := r.Desc().EndKey.AsRawKey()
 				b.flushKey = k
 				log.VEventf(ctx, 3, "%s building sstable that will flush before %v", b.name, k)
 			}
@@ -644,12 +607,9 @@ func (b *SSTBatcher) doFlush(ctx context.Context, reason int) error {
 					resp, err := b.db.AdminScatter(ctx, splitAt, maxScatterSize)
 					b.currentStats.ScatterWait += timeutil.Since(beforeScatter)
 					if err != nil {
-						// TODO(dt): switch to a typed error.
-						if strings.Contains(err.Error(), "existing range size") {
-							log.VEventf(ctx, 1, "%s scattered non-empty range rejected: %v", b.name, err)
-						} else {
-							log.Warningf(ctx, "%s failed to scatter	: %v", b.name, err)
-						}
+						// err could be a max size violation, but this is unexpected since we
+						// split before, so a warning is probably ok.
+						log.Warningf(ctx, "%s failed to scatter	: %v", b.name, err)
 					} else {
 						b.currentStats.Scatters++
 						b.currentStats.ScatterMoved += resp.ReplicasScatteredBytes
@@ -812,9 +772,6 @@ func (b *SSTBatcher) addSSTable(
 	updatesLastRange bool,
 	ingestionPerformanceStats *bulkpb.IngestionPerformanceStats,
 ) error {
-	ctx, sp := tracing.ChildSpan(ctx, "*SSTBatcher.addSSTable")
-	defer sp.Finish()
-
 	sendStart := timeutil.Now()
 	if ingestionPerformanceStats == nil {
 		return errors.AssertionFailedf("ingestionPerformanceStats should not be nil")
@@ -835,8 +792,6 @@ func (b *SSTBatcher) addSSTable(
 
 	if (stats == enginepb.MVCCStats{}) {
 		iter.SeekGE(storage.MVCCKey{Key: start})
-		// NB: even though this ComputeStatsForIter call exhausts the iterator, we
-		// can reuse/re-seek on the iterator, as part of the MVCCIterator contract.
 		stats, err = storage.ComputeStatsForIter(iter, sendStart.UnixNano())
 		if err != nil {
 			return errors.Wrapf(err, "computing stats for SST [%s, %s)", start, end)
@@ -845,17 +800,13 @@ func (b *SSTBatcher) addSSTable(
 
 	work := []*sstSpan{{start: start, end: end, sstBytes: sstBytes, stats: stats}}
 	var files int
+	const maxAddSSTableRetries = 10
 	for len(work) > 0 {
 		item := work[0]
 		work = work[1:]
 		if err := func() error {
 			var err error
-			opts := retry.Options{
-				InitialBackoff: 30 * time.Millisecond,
-				Multiplier:     2,
-				MaxRetries:     10,
-			}
-			for r := retry.StartWithCtx(ctx, opts); r.Next(); {
+			for i := 0; i < maxAddSSTableRetries; i++ {
 				log.VEventf(ctx, 4, "sending %s AddSSTable [%s,%s)", sz(len(item.sstBytes)), item.start, item.end)
 				// If this SST is "too small", the fixed costs associated with adding an
 				// SST – in terms of triggering flushes, extra compactions, etc – would
@@ -877,6 +828,7 @@ func (b *SSTBatcher) addSSTable(
 				req := &kvpb.AddSSTableRequest{
 					RequestHeader:                          kvpb.RequestHeader{Key: item.start, EndKey: item.end},
 					Data:                                   item.sstBytes,
+					DisallowShadowing:                      !b.disallowShadowingBelow.IsEmpty(),
 					DisallowShadowingBelow:                 b.disallowShadowingBelow,
 					MVCCStats:                              &item.stats,
 					IngestAsWrites:                         ingestAsWriteBatch,
@@ -897,11 +849,7 @@ func (b *SSTBatcher) addSSTable(
 				}
 				ba.Add(req)
 				beforeSend := timeutil.Now()
-
-				sendCtx, sendSp := tracing.ChildSpan(ctx, "*SSTBatcher.addSSTable/Send")
-				br, pErr := b.db.NonTransactionalSender().Send(sendCtx, ba)
-				sendSp.Finish()
-
+				br, pErr := b.db.NonTransactionalSender().Send(ctx, ba)
 				sendTime := timeutil.Since(beforeSend)
 
 				ingestionPerformanceStats.SendWait += sendTime
@@ -943,7 +891,7 @@ func (b *SSTBatcher) addSSTable(
 				err = pErr.GoError()
 				// Retry on AmbiguousResult.
 				if errors.HasType(err, (*kvpb.AmbiguousResultError)(nil)) {
-					log.Warningf(ctx, "addsstable [%s,%s) attempt %d failed: %+v", start, end, r.CurrentAttempt(), err)
+					log.Warningf(ctx, "addsstable [%s,%s) attempt %d failed: %+v", start, end, i, err)
 					continue
 				}
 				// This range has split -- we need to split the SST to try again.
@@ -960,9 +908,25 @@ func (b *SSTBatcher) addSSTable(
 					if err != nil {
 						return err
 					}
-					if err := addStatsToSplitTables(left, right, item, sendStart); err != nil {
+
+					// Needs a new iterator with new bounds.
+					statsIter, err := storage.NewMemSSTIterator(sstBytes, true, storage.IterOptions{
+						KeyTypes:   storage.IterKeyTypePointsOnly,
+						LowerBound: right.start,
+						UpperBound: right.end,
+					})
+					if err != nil {
 						return err
 					}
+					statsIter.SeekGE(storage.MVCCKey{Key: right.start})
+					right.stats, err = storage.ComputeStatsForIter(statsIter, sendStart.Unix())
+					statsIter.Close()
+					if err != nil {
+						return err
+					}
+					left.stats = item.stats
+					left.stats.Subtract(right.stats)
+
 					// Add more work.
 					work = append([]*sstSpan{left, right}, work...)
 					return nil
@@ -991,9 +955,6 @@ func createSplitSSTable(
 	settings *cluster.Settings,
 ) (*sstSpan, *sstSpan, error) {
 	sstFile := &storage.MemObject{}
-	if start.Compare(splitKey) >= 0 {
-		return nil, nil, errors.AssertionFailedf("start key %s of original sst must be greater than than split key %s", start, splitKey)
-	}
 	w := storage.MakeIngestionSSTWriter(ctx, settings, sstFile)
 	defer w.Close()
 
@@ -1045,33 +1006,6 @@ func createSplitSSTable(
 	if err != nil {
 		return nil, nil, err
 	}
-	if !split {
-		return nil, nil, errors.AssertionFailedf("split key %s after last key %s", splitKey, last.Next())
-	}
 	right = &sstSpan{start: first, end: last.Next(), sstBytes: sstFile.Data()}
 	return left, right, nil
-}
-
-// addStatsToSplitTables computes the stats of the new lhs and rhs SSTs by
-// computing the rhs sst stats, then computing the lhs stats as
-// originalStats-rhsStats.
-func addStatsToSplitTables(left, right, original *sstSpan, sendStartTimestamp time.Time) error {
-	// Needs a new iterator with new bounds.
-	statsIter, err := storage.NewMemSSTIterator(original.sstBytes, true, storage.IterOptions{
-		KeyTypes:   storage.IterKeyTypePointsOnly,
-		LowerBound: right.start,
-		UpperBound: right.end,
-	})
-	if err != nil {
-		return err
-	}
-	statsIter.SeekGE(storage.MVCCKey{Key: right.start})
-	right.stats, err = storage.ComputeStatsForIter(statsIter, sendStartTimestamp.Unix())
-	statsIter.Close()
-	if err != nil {
-		return err
-	}
-	left.stats = original.stats
-	left.stats.Subtract(right.stats)
-	return nil
 }

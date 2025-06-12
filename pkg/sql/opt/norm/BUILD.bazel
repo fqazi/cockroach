@@ -14,7 +14,6 @@ go_library(
         "join_funcs.go",
         "limit_funcs.go",
         "list_sorter.go",
-        "lock_funcs.go",
         "mutation_funcs.go",
         "ordering_funcs.go",
         "project_builder.go",
@@ -58,7 +57,6 @@ go_library(
         "//pkg/util/errorutil",
         "//pkg/util/intsets",
         "//pkg/util/json",
-        "//pkg/util/log",
         "//pkg/util/sentryutil",
         "@com_github_cockroachdb_apd_v3//:apd",
         "@com_github_cockroachdb_errors//:errors",
@@ -76,6 +74,7 @@ go_test(
         "general_funcs_test.go",
         "norm_test.go",
     ],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]) + [
         "//c-deps:libgeos",
         "//pkg/sql/opt/testutils/opttester:testfixtures",
@@ -121,7 +120,7 @@ genrule(
     cmd = """
       $(location //pkg/sql/opt/optgen/cmd/optgen) -out $@ factory $(locations //pkg/sql/opt:ops) $(locations :rules)
     """,
-    tools = ["//pkg/sql/opt/optgen/cmd/optgen"],
+    exec_tools = ["//pkg/sql/opt/optgen/cmd/optgen"],
     visibility = [
         ":__pkg__",
         "//pkg/gen:__pkg__",

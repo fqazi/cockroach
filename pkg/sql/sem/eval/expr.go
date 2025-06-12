@@ -208,36 +208,17 @@ func (e *evaluator) EvalCollateExpr(
 		return nil, err
 	}
 	unwrapped := UnwrapDatum(ctx, e.ctx(), d)
-
-	// buildCollated is a recursive helper function to handle evaluating COLLATE
-	// on arrays.
-	var buildCollated func(tree.Datum) (tree.Datum, error)
-	buildCollated = func(datum tree.Datum) (tree.Datum, error) {
-		if datum == tree.DNull {
-			return tree.DNull, nil
-		}
-		switch d := datum.(type) {
-		case *tree.DString:
-			return tree.NewDCollatedString(string(*d), expr.Locale, &e.CollationEnv)
-		case *tree.DCollatedString:
-			return tree.NewDCollatedString(d.Contents, expr.Locale, &e.CollationEnv)
-		case *tree.DArray:
-			a := tree.NewDArray(types.MakeCollatedType(d.ParamTyp, expr.Locale))
-			a.Array = make(tree.Datums, 0, len(d.Array))
-			for _, elem := range d.Array {
-				collatedElem, err := buildCollated(elem)
-				if err != nil {
-					return nil, err
-				}
-				if err := a.Append(collatedElem); err != nil {
-					return nil, err
-				}
-			}
-			return a, nil
-		}
-		return nil, pgerror.Newf(pgcode.DatatypeMismatch, "incompatible type for COLLATE: %s", datum)
+	if unwrapped == tree.DNull {
+		return tree.DNull, nil
 	}
-	return buildCollated(unwrapped)
+	switch d := unwrapped.(type) {
+	case *tree.DString:
+		return tree.NewDCollatedString(string(*d), expr.Locale, &e.CollationEnv)
+	case *tree.DCollatedString:
+		return tree.NewDCollatedString(d.Contents, expr.Locale, &e.CollationEnv)
+	default:
+		return nil, pgerror.Newf(pgcode.DatatypeMismatch, "incompatible type for COLLATE: %s", d)
+	}
 }
 
 func (e *evaluator) EvalColumnAccessExpr(
@@ -299,7 +280,7 @@ func (e *evaluator) EvalIndexedVar(ctx context.Context, iv *tree.IndexedVar) (tr
 		return nil, errors.AssertionFailedf(
 			"indexed var container of type %T may not be evaluated", e.IVarContainer)
 	}
-	return eivc.IndexedVarEval(iv.Idx)
+	return eivc.IndexedVarEval(ctx, iv.Idx, e)
 }
 
 func (e *evaluator) EvalIndirectionExpr(
@@ -502,7 +483,7 @@ func (e *evaluator) EvalFuncExpr(ctx context.Context, expr *tree.FuncExpr) (tree
 
 	res, err := fn.Fn.(FnOverload)(ctx, e.ctx(), args)
 	if err != nil {
-		return nil, err
+		return nil, expr.MaybeWrapError(err)
 	}
 	if e.TestingKnobs.AssertFuncExprReturnTypes {
 		if err := ensureExpectedType(fn.FixedReturnType(), res); err != nil {
@@ -642,7 +623,7 @@ func (e *evaluator) EvalSubquery(ctx context.Context, subquery *tree.Subquery) (
 func (e *evaluator) EvalRoutineExpr(
 	ctx context.Context, routine *tree.RoutineExpr,
 ) (tree.Datum, error) {
-	args, err := e.evalRoutineArgs(ctx, routine.Args)
+	args, err := e.evalRoutineArgs(ctx, routine)
 	if err != nil {
 		return nil, err
 	}
@@ -650,31 +631,21 @@ func (e *evaluator) EvalRoutineExpr(
 }
 
 func (e *evaluator) evalRoutineArgs(
-	ctx context.Context, routineArgs tree.TypedExprs,
+	ctx context.Context, expr *tree.RoutineExpr,
 ) (args tree.Datums, err error) {
-	if len(routineArgs) > 0 {
+	if len(expr.Args) > 0 {
 		// Evaluate each argument expression.
 		// TODO(mgartner): Use a scratch tree.Datums to avoid allocation on
 		// every invocation.
-		args = make(tree.Datums, len(routineArgs))
-		for i := range routineArgs {
-			args[i], err = routineArgs[i].Eval(ctx, e)
+		args = make(tree.Datums, len(expr.Args))
+		for i := range expr.Args {
+			args[i], err = expr.Args[i].Eval(ctx, e)
 			if err != nil {
 				return nil, err
 			}
 		}
 	}
 	return args, nil
-}
-
-func (e *evaluator) EvalTxnControlExpr(
-	ctx context.Context, expr *tree.TxnControlExpr,
-) (tree.Datum, error) {
-	args, err := e.evalRoutineArgs(ctx, expr.Args)
-	if err != nil {
-		return nil, err
-	}
-	return e.Planner.EvalTxnControlExpr(ctx, expr, args)
 }
 
 func (e *evaluator) EvalTuple(ctx context.Context, t *tree.Tuple) (tree.Datum, error) {

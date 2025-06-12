@@ -459,10 +459,10 @@ func (o *OS) ListFilesWithSuffix(root, suffix string) ([]string, error) {
 
 	output, err := o.Next(command, func() (output string, err error) {
 		var ret []string
-		if err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err := filepath.Walk(root, func(path string, info fs.FileInfo, err error) error {
 			// If there's an error walking the tree, throw it away -- there's
 			// nothing interesting we can do with it.
-			if err != nil || d.IsDir() {
+			if err != nil || info.IsDir() {
 				//nolint:returnerrcheck
 				return nil
 			}
@@ -532,7 +532,7 @@ func (o *OS) CurrentUserAndGroup() (uid string, gid string, err error) {
 
 // UserCacheDir returns the cache directory for the current user if possible.
 func (o *OS) UserCacheDir() (dir string, err error) {
-	command := "echo $HOME/.cache"
+	command := "echo $HOME"
 	if !o.knobs.silent {
 		o.logger.Print(command)
 	}
@@ -541,20 +541,6 @@ func (o *OS) UserCacheDir() (dir string, err error) {
 		return os.UserCacheDir()
 	})
 
-}
-
-// UserCacheDir returns the cache directory for the current user if possible.
-func (o *OS) HomeDir() (dir string, err error) {
-	command := "echo $HOME"
-	if !o.knobs.silent {
-		o.logger.Print(command)
-	}
-
-	dir, err = o.Next(command, func() (dir string, err error) {
-		return os.UserHomeDir()
-	})
-
-	return strings.TrimSpace(dir), err
 }
 
 // Next is a thin interceptor for all os activity, running them through

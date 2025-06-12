@@ -9,7 +9,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	_ "embed"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -18,27 +17,19 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
+	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
 	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
+	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/stretchr/testify/require"
 )
 
 var rubyPGTestFailureRegex = regexp.MustCompile(`^rspec ./.*# .*`)
 var testFailureFilenameRegexp = regexp.MustCompile("^rspec .*.rb.*([0-9]|]) # ")
 var testSummaryRegexp = regexp.MustCompile("^([0-9]+) examples, [0-9]+ failures")
-
-// WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
-// This is used by docs automation to produce a list of supported versions for ORM's.
-var rubyPGVersion = "v1.4.6"
-
-// Embed the helper file, so we don't need to know where it is
-// relative to the roachtest runner, just relative to this test.
-// This way we can still find it if roachtest changes paths.
-//
-//go:embed ruby_pg_helpers.rb
-var rubyPGHelpersFile string
+var rubyPGVersion = "v1.3.5"
 
 // This test runs Ruby PG's full test suite against a single cockroach node.
 func registerRubyPG(r registry.Registry) {
@@ -122,23 +113,6 @@ func registerRubyPG(r registry.Registry) {
 			t.Fatal(err)
 		}
 
-		for original, replacement := range map[string]string{
-			"CREATE FUNCTION errfunc()":    "DROP FUNCTION IF EXISTS errfunc(); CREATE FUNCTION errfunc()",
-			"CREATE TEMP TABLE copytable":  "DROP TABLE IF EXISTS copytable; CREATE TEMP TABLE copytable",
-			"CREATE TEMP TABLE copytable2": "DROP TABLE IF EXISTS copytable2; CREATE TEMP TABLE copytable2",
-			"CREATE TABLE fmodtest":        "DROP TABLE IF EXISTS fmodtest; CREATE TABLE fmodtest",
-			"CREATE TABLE ftablecoltest":   "DROP TABLE IF EXISTS ftablecoltest; CREATE TABLE ftablecoltest",
-			"CREATE TABLE ftabletest":      "DROP TABLE IF EXISTS ftabletest; CREATE TABLE ftabletest",
-			"CREATE TABLE students":        "DROP TABLE IF EXISTS students; CREATE TABLE students",
-		} {
-			if err := repeatRunE(
-				ctx, t, c, node, "patch test to workaround flaky cleanup logic",
-				fmt.Sprintf(`find /mnt/data1/ruby-pg/spec/pg/ -name "*_spec.rb" | xargs sed -i -e "s/%s/%s/g"`, original, replacement),
-			); err != nil {
-				t.Fatal(err)
-			}
-		}
-
 		t.Status("installing bundler")
 		if err := repeatRunE(
 			ctx,
@@ -146,7 +120,7 @@ func registerRubyPG(r registry.Registry) {
 			c,
 			node,
 			"installing bundler",
-			`cd /mnt/data1/ruby-pg/ && sudo gem install bundler:2.4.9`,
+			`cd /mnt/data1/ruby-pg/ && sudo gem install bundler:2.1.4`,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -170,13 +144,14 @@ func registerRubyPG(r registry.Registry) {
 		}
 
 		// Write the cockroach config into the test suite to use.
-		err = c.PutString(ctx, rubyPGHelpersFile, "/mnt/data1/ruby-pg/spec/helpers.rb", 0755, c.All())
+		rubyPGHelpersFile := "./pkg/cmd/roachtest/tests/ruby_pg_helpers.rb"
+		err = c.PutE(ctx, t.L(), rubyPGHelpersFile, "/mnt/data1/ruby-pg/spec/helpers.rb", c.All())
 		require.NoError(t, err)
 
 		t.Status("running ruby-pg test suite")
 		// Note that this is expected to return an error, since the test suite
 		// will fail. And it is safe to swallow it here.
-		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(node),
+		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), node,
 			`cd /mnt/data1/ruby-pg/ && bundle exec rake compile test`,
 		)
 
@@ -257,14 +232,18 @@ func registerRubyPG(r registry.Registry) {
 	}
 
 	r.Add(registry.TestSpec{
-		Name:             "ruby-pg",
-		Timeout:          1 * time.Hour,
-		Owner:            registry.OwnerSQLFoundations,
-		Cluster:          r.MakeClusterSpec(1),
+		Skip:    "uses old ruby version",
+		Name:    "ruby-pg",
+		Timeout: 1 * time.Hour,
+		Owner:   registry.OwnerSQLFoundations,
+		// TODO(DarrylWong): This test currently fails on Ubuntu 22.04 so we run it on 20.04.
+		// See: https://github.com/cockroachdb/cockroach/issues/112109
+		// Once this issue is fixed we should remove this Ubuntu Version override.
+		Cluster:          r.MakeClusterSpec(1, spec.UbuntuVersion(vm.FocalFossa)),
 		Leases:           registry.MetamorphicLeases,
 		NativeLibs:       registry.LibGEOS,
-		CompatibleClouds: registry.OnlyGCE,
-		Suites:           registry.Suites(registry.Nightly, registry.Driver),
+		CompatibleClouds: registry.AllExceptAWS,
+		Suites:           registry.Suites(registry.Nightly, registry.ORM),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runRubyPGTest(ctx, t, c)
 		},

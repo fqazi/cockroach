@@ -12,7 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -20,7 +19,6 @@ import (
 
 func registerRoachmart(r registry.Registry) {
 	runRoachmart := func(ctx context.Context, t test.Test, c cluster.Cluster, partition bool) {
-		// This test expects the workload binary on all nodes.
 		c.Put(ctx, t.DeprecatedWorkload(), "./workload")
 		c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings())
 
@@ -42,7 +40,7 @@ func registerRoachmart(r registry.Registry) {
 				"--orders=100",
 				fmt.Sprintf("--partition=%v", partition))
 
-			if err := c.RunE(ctx, option.WithNodes(c.Node(nodes[i].i)), args...); err != nil {
+			if err := c.RunE(ctx, c.Node(nodes[i].i), args...); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -51,7 +49,7 @@ func registerRoachmart(r registry.Registry) {
 		// See https://github.com/cockroachdb/cockroach/issues/94062 for the --data-loader.
 		roachmartRun(ctx, 0, "./workload", "init", "roachmart", "--data-loader=INSERT", "{pgurl:1}")
 
-		duration := " --duration=" + roachtestutil.IfLocal(c, "10s", "10m")
+		duration := " --duration=" + ifLocal(c, "10s", "10m")
 
 		t.Status("running workload")
 		m := c.NewMonitor(ctx)
@@ -69,13 +67,12 @@ func registerRoachmart(r registry.Registry) {
 	for _, v := range []bool{true, false} {
 		v := v
 		r.Add(registry.TestSpec{
-			Name:                       fmt.Sprintf("roachmart/partition=%v", v),
-			Owner:                      registry.OwnerKV,
-			Cluster:                    r.MakeClusterSpec(9, spec.Geo(), spec.GCEZones("us-central1-b,us-west1-b,europe-west2-b")),
-			CompatibleClouds:           registry.OnlyGCE,
-			Suites:                     registry.Suites(registry.Nightly),
-			Leases:                     registry.MetamorphicLeases,
-			RequiresDeprecatedWorkload: true, // uses roachmart
+			Name:             fmt.Sprintf("roachmart/partition=%v", v),
+			Owner:            registry.OwnerKV,
+			Cluster:          r.MakeClusterSpec(9, spec.Geo(), spec.GCEZones("us-central1-b,us-west1-b,europe-west2-b")),
+			CompatibleClouds: registry.OnlyGCE,
+			Suites:           registry.Suites(registry.Nightly),
+			Leases:           registry.MetamorphicLeases,
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 				runRoachmart(ctx, t, c, v)
 			},

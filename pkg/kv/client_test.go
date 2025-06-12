@@ -28,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -911,9 +910,8 @@ func TestNodeIDAndObservedTimestamps(t *testing.T) {
 		})
 
 	setup := func(nodeID roachpb.NodeID) *kv.DB {
-		st := cluster.MakeTestingClusterSettings()
 		clock := hlc.NewClockForTesting(nil)
-		dbCtx := kv.DefaultDBContext(st, stopper)
+		dbCtx := kv.DefaultDBContext(stopper)
 		var c base.NodeIDContainer
 		if nodeID != 0 {
 			c.Set(context.Background(), nodeID)

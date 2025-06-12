@@ -4,11 +4,11 @@
 // included in the /LICENSE file.
 
 //go:build crdb_test && !crdb_test_off
+// +build crdb_test,!crdb_test_off
 
 package pebbleiter
 
 import (
-	"context"
 	"math/rand"
 	"time"
 
@@ -88,16 +88,6 @@ func (i *assertionIter) Clone(cloneOpts pebble.CloneOptions) (Iterator, error) {
 	return MaybeWrap(iter), nil
 }
 
-func (i *assertionIter) CloneWithContext(
-	ctx context.Context, cloneOpts pebble.CloneOptions,
-) (Iterator, error) {
-	iter, err := i.Iterator.CloneWithContext(ctx, cloneOpts)
-	if err != nil {
-		return nil, err
-	}
-	return MaybeWrap(iter), nil
-}
-
 func (i *assertionIter) Close() error {
 	if i.closed {
 		panic(errors.AssertionFailedf("pebble.Iterator already closed"))
@@ -117,24 +107,12 @@ func (i *assertionIter) Key() []byte {
 }
 
 func (i *assertionIter) Value() []byte {
-	panic(errors.AssertionFailedf("Value() is deprecated; use ValueAndErr()"))
-}
-
-func (i *assertionIter) ValueAndErr() ([]byte, error) {
 	if !i.Valid() {
-		panic(errors.AssertionFailedf("ValueAndErr() called on !Valid() pebble.Iterator"))
+		panic(errors.AssertionFailedf("Value() called on !Valid() pebble.Iterator"))
 	}
-	val, err := i.Iterator.ValueAndErr()
 	idx := i.unsafeBufs.idx
-	i.unsafeBufs.val[idx] = append(i.unsafeBufs.val[idx][:0], val...)
-	// Preserve nil-ness to ensure we test exactly the behavior of Pebble.
-	if val == nil {
-		return val, err
-	}
-	if i.unsafeBufs.val[idx] == nil {
-		i.unsafeBufs.val[idx] = []byte{}
-	}
-	return i.unsafeBufs.val[idx], err
+	i.unsafeBufs.val[idx] = append(i.unsafeBufs.val[idx][:0], i.Iterator.Value()...)
+	return i.unsafeBufs.val[idx]
 }
 
 func (i *assertionIter) LazyValue() pebble.LazyValue {

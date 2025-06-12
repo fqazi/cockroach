@@ -10,10 +10,8 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"slices"
 	"testing"
 
-	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdcevent"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdctest"
@@ -35,6 +33,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/slices"
 )
 
 // TestParquetRows tests that the parquetWriter correctly writes datums. It does
@@ -60,48 +59,12 @@ func TestParquetRows(t *testing.T) {
 	sqlDB := sqlutils.MakeSQLRunner(db)
 	sqlDB.Exec(t, "SET CLUSTER SETTING kv.rangefeed.enabled = true")
 
-	newDecimal := func(s string) *tree.DDecimal {
-		d, _, _ := apd.NewFromString(s)
-		return &tree.DDecimal{Decimal: *d}
-	}
-
 	for _, tc := range []struct {
 		testName          string
 		createTable       string
 		stmts             []string
 		expectedDatumRows [][]tree.Datum
 	}{
-		{
-			testName: "decimal",
-			createTable: `
-				CREATE TABLE foo (
-				i INT PRIMARY KEY,
-				d DECIMAL(18,9)
-				)
-				`,
-			stmts: []string{
-				`INSERT INTO foo VALUES (0, 0)`,
-				`DELETE FROM foo WHERE d = 0.0`,
-				`INSERT INTO foo VALUES (1, 1.000000000)`,
-				`UPDATE foo SET d = 2.000000000 WHERE d = 1.000000000`,
-				`INSERT INTO foo VALUES (2, 3.14)`,
-				`INSERT INTO foo VALUES (3, 1.234567890123456789)`,
-				`INSERT INTO foo VALUES (4, '-Inf'::DECIMAL)`,
-				`INSERT INTO foo VALUES (5, 'Inf'::DECIMAL)`,
-				`INSERT INTO foo VALUES (6, 'NaN'::DECIMAL)`,
-			},
-			expectedDatumRows: [][]tree.Datum{
-				{tree.NewDInt(0), newDecimal("0.000000000"), parquetEventTypeDatumStringMap[parquetEventInsert]},
-				{tree.NewDInt(0), tree.DNull, parquetEventTypeDatumStringMap[parquetEventDelete]},
-				{tree.NewDInt(1), newDecimal("1.000000000"), parquetEventTypeDatumStringMap[parquetEventInsert]},
-				{tree.NewDInt(1), newDecimal("2.000000000"), parquetEventTypeDatumStringMap[parquetEventUpdate]},
-				{tree.NewDInt(2), newDecimal("3.140000000"), parquetEventTypeDatumStringMap[parquetEventInsert]},
-				{tree.NewDInt(3), newDecimal("1.234567890"), parquetEventTypeDatumStringMap[parquetEventInsert]},
-				{tree.NewDInt(4), tree.DNegInfDecimal, parquetEventTypeDatumStringMap[parquetEventInsert]},
-				{tree.NewDInt(5), tree.DPosInfDecimal, parquetEventTypeDatumStringMap[parquetEventInsert]},
-				{tree.NewDInt(6), tree.DNaNDecimal, parquetEventTypeDatumStringMap[parquetEventInsert]},
-			},
-		},
 		{
 			testName: "mixed",
 			createTable: `
@@ -220,7 +183,7 @@ func TestParquetRows(t *testing.T) {
 					writer, err = newParquetWriterFromRow(updatedRow, f, encodingOpts, parquet.WithMaxRowGroupLength(maxRowGroupSize),
 						parquet.WithCompressionCodec(parquet.CompressionGZIP))
 					if err != nil {
-						t.Fatal(err)
+						t.Fatalf(err.Error())
 					}
 					numCols = len(updatedRow.ResultColumns()) + 1
 				}
@@ -239,6 +202,9 @@ func TestParquetRows(t *testing.T) {
 			err = writer.close()
 			require.NoError(t, err)
 
+			// We inserted 18 updates, but may get dupes from rangefeeds.
+			require.GreaterOrEqual(t, numRows, 18)
+
 			meta, readDatums, err := parquet.ReadFile(f.Name())
 			require.NoError(t, err)
 			require.Equal(t, meta.NumRows, numRows)
@@ -246,13 +212,12 @@ func TestParquetRows(t *testing.T) {
 			// NB: Rangefeeds have per-key ordering, so the rows in the parquet
 			// file may not match the order we insert them. To accommodate for
 			// this, sort the expected and actual datums by the primary key.
-			sortFn := func(a []tree.Datum, b []tree.Datum) int {
-				cmp, err := a[0].Compare(ctx, &eval.Context{}, b[0])
-				require.NoError(t, err)
-				return cmp
-			}
-			slices.SortStableFunc(datums, sortFn)
-			slices.SortStableFunc(readDatums, sortFn)
+			slices.SortStableFunc(datums, func(a []tree.Datum, b []tree.Datum) bool {
+				return a[0].Compare(&eval.Context{}, b[0]) == -1
+			})
+			slices.SortStableFunc(readDatums, func(a []tree.Datum, b []tree.Datum) bool {
+				return a[0].Compare(&eval.Context{}, b[0]) == -1
+			})
 			for r := 0; r < numRows; r++ {
 				t.Logf("comparing row expected: %s to actual: %s\n", datums[r], readDatums[r])
 				for c := 0; c < numCols; c++ {

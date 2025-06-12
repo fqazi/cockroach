@@ -19,11 +19,10 @@ go_library(
         "//pkg/kv/kvserver/asim/config",
         "//pkg/kv/kvserver/asim/op",
         "//pkg/kv/kvserver/asim/state",
-        "//pkg/kv/kvserver/kvflowcontrol/rac2",
-        "//pkg/raft",
         "//pkg/roachpb",
         "//pkg/util/hlc",
         "@com_github_cockroachdb_errors//:errors",
+        "@io_etcd_go_raft_v3//:raft",
     ],
 )
 
@@ -33,6 +32,7 @@ go_test(
         "replica_rankings_test.go",
         "store_rebalancer_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":storerebalancer"],
     deps = [
         "//pkg/kv/kvserver",

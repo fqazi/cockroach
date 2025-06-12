@@ -80,7 +80,7 @@ func TestStringConcat(t *testing.T) {
 	defer evalCtx.Stop(ctx)
 	for _, typ := range append([]*types.T{types.AnyTuple}, types.Scalar...) {
 		// Strings and Bytes are handled specially.
-		if typ.Identical(types.String) || typ.Identical(types.Bytes) {
+		if typ == types.String || typ == types.Bytes {
 			continue
 		}
 		d := randgen.RandDatum(rng, typ, false /* nullOk */)
@@ -148,7 +148,7 @@ func TestExprString(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", exprStr, err)
 		}
-		typedExpr, err := tree.TypeCheck(ctx, expr, nil, types.AnyElement)
+		typedExpr, err := tree.TypeCheck(ctx, expr, nil, types.Any)
 		if err != nil {
 			t.Fatalf("%s: %v", expr, err)
 		}
@@ -158,7 +158,7 @@ func TestExprString(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", exprStr, err)
 		}
-		typedExpr2, err := tree.TypeCheck(ctx, expr2, nil, types.AnyElement)
+		typedExpr2, err := tree.TypeCheck(ctx, expr2, nil, types.Any)
 		if err != nil {
 			t.Fatalf("%s: %v", expr2, err)
 		}

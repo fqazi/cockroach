@@ -14,19 +14,12 @@ else
   export CROSSLINUX_CONFIG="crosslinux"
 fi
 
-BAZEL_BIN=$(bazel info bazel-bin --config=$CROSSLINUX_CONFIG)
-
-bazel build --config=$CROSSLINUX_CONFIG //pkg/cmd/cockroach-short \
+bazel build --config=$CROSSLINUX_CONFIG --config=ci //pkg/cmd/cockroach-short \
       //pkg/cmd/roachtest \
       //pkg/cmd/roachprod \
       //pkg/cmd/workload
 
-bazel build --config=$CROSSLINUX_CONFIG --config=force_build_cdeps //c-deps:libgeos
-
-mkdir -p lib
-cp $BAZEL_BIN/c-deps/libgeos_foreign/lib/libgeos.so lib/libgeos.so
-cp $BAZEL_BIN/c-deps/libgeos_foreign/lib/libgeos_c.so lib/libgeos_c.so
-chmod a+w lib/libgeos.so lib/libgeos_c.so
+BAZEL_BIN=$(bazel info bazel-bin --config=$CROSSLINUX_CONFIG --config=ci)
 
 # if there are any local clusters on this host, stop them before we
 # attempt to run acceptance tests. While this is generally not the

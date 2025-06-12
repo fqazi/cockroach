@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -19,11 +19,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/load"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/constraint"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftutil"
-	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -31,7 +27,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
+	"go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/tracker"
 )
 
 const (
@@ -231,9 +228,6 @@ func (a AllocatorAction) String() string {
 	return allocatorActionNames[a]
 }
 
-// SafeValue implements the redact.SafeValue interface.
-func (a AllocatorAction) SafeValue() {}
-
 // Priority defines the priorities for various repair operations.
 //
 // NB: These priorities only influence the replicateQueue's understanding of
@@ -345,9 +339,6 @@ func (t TargetReplicaType) String() string {
 	}
 }
 
-// SafeValue implements the redact.SafeValue interface.
-func (t TargetReplicaType) SafeValue() {}
-
 func (s ReplicaStatus) String() string {
 	switch s {
 	case Alive:
@@ -361,13 +352,10 @@ func (s ReplicaStatus) String() string {
 	}
 }
 
-// SafeValue implements the redact.SafeValue interface.
-func (t ReplicaStatus) SafeValue() {}
-
-type accessLocalityTransferDecision int
+type transferDecision int
 
 const (
-	_ accessLocalityTransferDecision = iota
+	_ transferDecision = iota
 	shouldTransfer
 	shouldNotTransfer
 	decideWithoutStats
@@ -384,81 +372,66 @@ type allocatorError struct {
 	existingNonVoterCount int
 	aliveStores           int
 	throttledStores       int
-	fullStores            int
 }
-
-var _ errors.SafeFormatter = &allocatorError{}
 
 func (ae *allocatorError) Error() string {
-	return redact.Sprint(ae).StripMarkers()
-}
-
-func (ae *allocatorError) SafeFormatError(p errors.Printer) (next error) {
-	var existingVoterStr redact.RedactableString
+	var existingVoterStr string
 	if ae.existingVoterCount == 1 {
 		existingVoterStr = "1 already has a voter"
 	} else {
-		existingVoterStr = redact.Sprintf("%d already have a voter",
-			ae.existingVoterCount)
+		existingVoterStr = fmt.Sprintf("%d already have a voter", ae.existingVoterCount)
 	}
 
-	var existingNonVoterStr redact.RedactableString
+	var existingNonVoterStr string
 	if ae.existingNonVoterCount == 1 {
 		existingNonVoterStr = "1 already has a non-voter"
 	} else {
-		existingNonVoterStr = redact.Sprintf("%d already have a non-voter",
-			ae.existingNonVoterCount)
+		existingNonVoterStr = fmt.Sprintf("%d already have a non-voter", ae.existingNonVoterCount)
 	}
 
-	var throttledMessage redact.RedactableString
+	var baseMsg string
 	if ae.throttledStores != 0 {
-		throttledMessage = redact.Sprintf("%d throttled, ", ae.throttledStores)
+		baseMsg = fmt.Sprintf(
+			"0 of %d live stores are able to take a new replica for the range (%d throttled, %s, %s)",
+			ae.aliveStores, ae.throttledStores, existingVoterStr, existingNonVoterStr)
+	} else {
+		baseMsg = fmt.Sprintf(
+			"0 of %d live stores are able to take a new replica for the range (%s, %s)",
+			ae.aliveStores, existingVoterStr, existingNonVoterStr)
 	}
-
-	var fullStoreMessage redact.RedactableString
-	if ae.fullStores != 0 {
-		fullStoreMessage = redact.Sprintf("%d full disk, ", ae.fullStores)
-	}
-
-	baseMsg := redact.Sprintf(
-		"0 of %d live stores are able to take a new replica for the range (%s%s%s, %s)",
-		ae.aliveStores, throttledMessage, fullStoreMessage,
-		existingVoterStr, existingNonVoterStr)
 
 	if len(ae.constraints) == 0 && len(ae.voterConstraints) == 0 {
-		p.Print(baseMsg)
-		if ae.throttledStores == 0 {
-			p.Printf("; likely not enough nodes in cluster")
+		if ae.throttledStores > 0 {
+			return baseMsg
 		}
-		return
+		return baseMsg + "; likely not enough nodes in cluster"
 	}
 
-	var b redact.StringBuilder
-	b.Print(baseMsg)
-	b.Printf("; replicas must match constraints [")
+	var b strings.Builder
+	b.WriteString(baseMsg)
+	b.WriteString("; replicas must match constraints [")
 	for i := range ae.constraints {
 		if i > 0 {
-			b.SafeRune(' ')
+			b.WriteByte(' ')
 		}
-		b.SafeRune('{')
-		b.Print(ae.constraints[i])
-		b.SafeRune('}')
+		b.WriteByte('{')
+		b.WriteString(ae.constraints[i].String())
+		b.WriteByte('}')
 	}
-	b.SafeRune(']')
+	b.WriteString("]")
 
-	b.Printf("; voting replicas must match voter_constraints [")
+	b.WriteString("; voting replicas must match voter_constraints [")
 	for i := range ae.voterConstraints {
 		if i > 0 {
-			b.SafeRune(' ')
+			b.WriteByte(' ')
 		}
-		b.SafeRune('{')
-		b.Print(ae.voterConstraints[i].String())
-		b.SafeRune('}')
+		b.WriteByte('{')
+		b.WriteString(ae.voterConstraints[i].String())
+		b.WriteByte('}')
 	}
-	b.SafeRune(']')
+	b.WriteString("]")
 
-	p.Print(b)
-	return nil
+	return b.String()
 }
 
 func (*allocatorError) AllocationErrorMarker() {}
@@ -1225,7 +1198,6 @@ func (a *Allocator) AllocateTarget(
 	replicaStatus ReplicaStatus,
 	targetType TargetReplicaType,
 ) (roachpb.ReplicationTarget, string, error) {
-	options := a.ScorerOptions(ctx)
 	candidateStoreList, aliveStoreCount, throttled := storePool.GetStoreList(storepool.StoreFilterThrottled)
 
 	// If the replica is alive we are upreplicating, and in that case we want to
@@ -1258,7 +1230,7 @@ func (a *Allocator) AllocateTarget(
 		existingVoters,
 		existingNonVoters,
 		decommissioningReplica,
-		options,
+		a.ScorerOptions(ctx),
 		selector,
 		// When allocating a *new* replica, we explicitly disregard nodes with any
 		// existing replicas. This is important for multi-store scenarios as
@@ -1280,16 +1252,6 @@ func (a *Allocator) AllocateTarget(
 			"%d matching stores are currently throttled: %v", len(throttled), throttled,
 		)
 	}
-
-	// Count the number of live stores which have full disks, to be included in
-	// the error detail.
-	aliveFullStoreCount := 0
-	for _, store := range candidateStoreList.Stores {
-		if !options.getDiskOptions().maxCapacityCheck(store) {
-			aliveFullStoreCount++
-		}
-	}
-
 	return roachpb.ReplicationTarget{}, "", &allocatorError{
 		voterConstraints:      conf.VoterConstraints,
 		constraints:           conf.Constraints,
@@ -1297,7 +1259,6 @@ func (a *Allocator) AllocateTarget(
 		existingNonVoterCount: len(existingNonVoters),
 		aliveStores:           aliveStoreCount,
 		throttledStores:       len(throttled),
-		fullStores:            aliveFullStoreCount,
 	}
 }
 
@@ -2015,8 +1976,7 @@ func (a *Allocator) ValidLeaseTargets(
 	leaseRepl interface {
 		StoreID() roachpb.StoreID
 		RaftStatus() *raft.Status
-		GetCompactedIndex() kvpb.RaftIndex
-		SendStreamStats(*rac2.RangeSendStreamStats)
+		GetFirstIndex() kvpb.RaftIndex
 	},
 	opts allocator.TransferLeaseOptions,
 ) []roachpb.ReplicaDescriptor {
@@ -2079,9 +2039,7 @@ func (a *Allocator) ValidLeaseTargets(
 		}
 
 		candidates = append(validSnapshotCandidates, excludeReplicasInNeedOfSnapshots(
-			ctx, status, leaseRepl.GetCompactedIndex(), candidates)...)
-		candidates = excludeReplicasInNeedOfCatchup(
-			ctx, leaseRepl.SendStreamStats, candidates)
+			ctx, status, leaseRepl.GetFirstIndex(), candidates)...)
 	}
 
 	// Determine which store(s) is preferred based on user-specified preferences.
@@ -2122,6 +2080,7 @@ func (a *Allocator) nonIOOverloadedLeaseTargets(
 	}
 
 	sl, _, _ := storePool.GetStoreListFromIDs(replDescsToStoreIDs(existingReplicas), storepool.StoreFilterSuspect)
+	avgIOOverload := sl.CandidateIOOverloadScores.Mean
 
 	for _, replDesc := range existingReplicas {
 		store, ok := sl.FindStoreByID(replDesc.StoreID)
@@ -2136,7 +2095,7 @@ func (a *Allocator) nonIOOverloadedLeaseTargets(
 		// Instead, we create a buffer between the two to avoid leases moving back
 		// and forth.
 		if (replDesc.StoreID == leaseStoreID) &&
-			(!ok || !ioOverloadOptions.ExistingLeaseCheck(ctx, store, sl)) {
+			(!ok || !ioOverloadOptions.existingLeaseCheck(ctx, store, avgIOOverload)) {
 			continue
 		}
 
@@ -2144,7 +2103,7 @@ func (a *Allocator) nonIOOverloadedLeaseTargets(
 		// if it is filtered out similar to above, or the replica store doesn't
 		// pass the lease transfer IO overload check.
 		if replDesc.StoreID != leaseStoreID &&
-			(!ok || !ioOverloadOptions.transferLeaseToCheck(ctx, store, sl)) {
+			(!ok || !ioOverloadOptions.transferLeaseToCheck(ctx, store, avgIOOverload)) {
 			continue
 		}
 
@@ -2164,6 +2123,7 @@ func (a *Allocator) leaseholderShouldMoveDueToIOOverload(
 	ioOverloadOptions IOOverloadOptions,
 ) bool {
 	sl, _, _ := storePool.GetStoreListFromIDs(replDescsToStoreIDs(existingReplicas), storepool.StoreFilterSuspect)
+	avgIOOverload := sl.CandidateIOOverloadScores.Mean
 
 	// Check the existing replicas for the leaseholder, if it doesn't meet the
 	// check return that the lease should be moved due to IO overload on the
@@ -2172,28 +2132,26 @@ func (a *Allocator) leaseholderShouldMoveDueToIOOverload(
 	// overloaded.
 	for _, replDesc := range existingReplicas {
 		if store, ok := sl.FindStoreByID(replDesc.StoreID); ok && replDesc.StoreID == leaseStoreID {
-			return !ioOverloadOptions.ExistingLeaseCheck(ctx, store, sl)
+			return !ioOverloadOptions.existingLeaseCheck(ctx, store, avgIOOverload)
 		}
 	}
 
 	return false
 }
 
-// LeaseholderShouldMoveDueToPreferences returns true if the current leaseholder
+// leaseholderShouldMoveDueToPreferences returns true if the current leaseholder
 // is in violation of lease preferences _that can otherwise be satisfied_ by
 // some existing replica.
-func (a *Allocator) LeaseholderShouldMoveDueToPreferences(
+func (a *Allocator) leaseholderShouldMoveDueToPreferences(
 	ctx context.Context,
 	storePool storepool.AllocatorStorePool,
 	conf *roachpb.SpanConfig,
 	leaseRepl interface {
 		StoreID() roachpb.StoreID
 		RaftStatus() *raft.Status
-		GetCompactedIndex() kvpb.RaftIndex
-		SendStreamStats(*rac2.RangeSendStreamStats)
+		GetFirstIndex() kvpb.RaftIndex
 	},
 	allExistingReplicas []roachpb.ReplicaDescriptor,
-	exclReplsInNeedOfSnapshots bool,
 ) bool {
 	// Defensive check to ensure that this is never called with a replica set that
 	// does not contain the leaseholder.
@@ -2220,11 +2178,9 @@ func (a *Allocator) LeaseholderShouldMoveDueToPreferences(
 	// If there are any replicas that do match lease preferences, then we check if
 	// the existing leaseholder is one of them.
 	preferred := a.PreferredLeaseholders(storePool, conf, candidates)
-	if exclReplsInNeedOfSnapshots {
+	if a.knobs == nil || !a.knobs.AllowLeaseTransfersToReplicasNeedingSnapshots {
 		preferred = excludeReplicasInNeedOfSnapshots(
-			ctx, leaseRepl.RaftStatus(), leaseRepl.GetCompactedIndex(), preferred)
-		preferred = excludeReplicasInNeedOfCatchup(
-			ctx, leaseRepl.SendStreamStats, preferred)
+			ctx, leaseRepl.RaftStatus(), leaseRepl.GetFirstIndex(), preferred)
 	}
 	if len(preferred) == 0 {
 		return false
@@ -2249,9 +2205,8 @@ func (a *Allocator) DiskOptions() DiskCapacityOptions {
 // enforcement level.
 func (a *Allocator) IOOverloadOptions() IOOverloadOptions {
 	return IOOverloadOptions{
-		ReplicaEnforcementLevel:      ReplicaIOOverloadThresholdEnforcement.Get(&a.st.SV),
-		LeaseEnforcementLevel:        LeaseIOOverloadThresholdEnforcement.Get(&a.st.SV),
-		UseIOThresholdMax:            true,
+		ReplicaEnforcementLevel:      IOOverloadEnforcementLevel(ReplicaIOOverloadThresholdEnforcement.Get(&a.st.SV)),
+		LeaseEnforcementLevel:        IOOverloadEnforcementLevel(LeaseIOOverloadThresholdEnforcement.Get(&a.st.SV)),
 		ReplicaIOOverloadThreshold:   ReplicaIOOverloadThreshold.Get(&a.st.SV),
 		LeaseIOOverloadThreshold:     LeaseIOOverloadThreshold.Get(&a.st.SV),
 		LeaseIOOverloadShedThreshold: LeaseIOOverloadShedThreshold.Get(&a.st.SV),
@@ -2282,21 +2237,19 @@ func (a *Allocator) TransferLeaseTarget(
 		StoreID() roachpb.StoreID
 		GetRangeID() roachpb.RangeID
 		RaftStatus() *raft.Status
-		GetCompactedIndex() kvpb.RaftIndex
-		SendStreamStats(*rac2.RangeSendStreamStats)
+		GetFirstIndex() kvpb.RaftIndex
 	},
 	usageInfo allocator.RangeUsageInfo,
 	forceDecisionWithoutStats bool,
 	opts allocator.TransferLeaseOptions,
 ) roachpb.ReplicaDescriptor {
 	if a.knobs != nil {
-		if blockFn := a.knobs.BlockTransferTarget; blockFn != nil && blockFn(leaseRepl.GetRangeID()) {
+		if blockFn := a.knobs.BlockTransferTarget; blockFn != nil && blockFn() {
 			return roachpb.ReplicaDescriptor{}
 		}
 	}
 	excludeLeaseRepl := opts.ExcludeLeaseRepl
-	excludeReplsInNeedOfSnap := a.knobs == nil || !a.knobs.AllowLeaseTransfersToReplicasNeedingSnapshots
-	if a.LeaseholderShouldMoveDueToPreferences(ctx, storePool, conf, leaseRepl, existing, excludeReplsInNeedOfSnap) ||
+	if a.leaseholderShouldMoveDueToPreferences(ctx, storePool, conf, leaseRepl, existing) ||
 		a.leaseholderShouldMoveDueToIOOverload(ctx, storePool, existing, leaseRepl.StoreID(), a.IOOverloadOptions()) {
 		// Explicitly exclude the current leaseholder from the result set if it is
 		// in violation of lease preferences that can be satisfied by some other
@@ -2545,100 +2498,6 @@ func getLoadDelta(
 	return maxCandidateLoad - minCandidateLoad
 }
 
-// TransferLeaseDecision indicates whether a range lease should be transferred
-// and if so, for what reason.
-type TransferLeaseDecision int
-
-const (
-	_ TransferLeaseDecision = iota
-	// DontTransferLeaseCountBalanced indicates the load/lease counts of the
-	// valid replica stores are balanced within the target threshold and
-	// therefore the lease should not be transferred.
-	DontTransferLeaseBalanced
-	// DontTransferLeaseNoValidTargets indicates the lease should no be
-	// transferred from the current leaseholder because there are no valid
-	// leaseholder targets.
-	DontTransferLeaseNoValidTargets
-	// DontTransferLeaseNoStoreDescriptor indicates the lease should not be
-	// transferred because the current leaseholder's store descriptor cannot be
-	// found. This can occur on startup, before gossip has propogated the local
-	// descriptor.
-	DontTransferLeaseNoStoreDescriptor
-	// TransferLeaseForCountBalance indicates the lease should be transferred to
-	// better balance lease counts.
-	TransferLeaseForCountBalance
-	// TransferLeaseForAccessLocality indicates the lease should be transferred
-	// for better access locality.
-	TransferLeaseForAccessLocality
-	// TransferLeaseForIOOverload indicates the lease should be transferred
-	// because the current leaseholder's store is IO overloaded.
-	TransferLeaseForIOOverload
-	// TransferLeaseForPreferences indicates the lease should be transferred
-	// because there is a more preferred leaseholder according the applied range
-	// lease preferences.
-	TransferLeaseForPreferences
-)
-
-// ShouldTransfer returns true when the lease should be transferred, false
-// otherwise.
-func (t TransferLeaseDecision) ShouldTransfer() bool {
-	switch t {
-	case TransferLeaseForCountBalance, TransferLeaseForAccessLocality,
-		TransferLeaseForIOOverload, TransferLeaseForPreferences:
-		return true
-	case DontTransferLeaseBalanced, DontTransferLeaseNoValidTargets,
-		DontTransferLeaseNoStoreDescriptor:
-		return false
-	default:
-		panic(fmt.Sprintf("unknown transfer lease decision %d", t))
-	}
-}
-
-// Priority returns the relative urgency of the lease transfer decision. The
-// priority may be used to determine the ordering of lease transfers when
-// multiple should occur.
-func (t TransferLeaseDecision) Priority() float64 {
-	switch t {
-	case TransferLeaseForPreferences:
-		return 300
-	case TransferLeaseForIOOverload:
-		return 200
-	case TransferLeaseForAccessLocality:
-		return 100
-	case TransferLeaseForCountBalance:
-		return 0
-	case DontTransferLeaseBalanced, DontTransferLeaseNoValidTargets,
-		DontTransferLeaseNoStoreDescriptor:
-		return 0
-	default:
-		panic(fmt.Sprintf("unknown transfer lease decision %d", t))
-	}
-}
-
-// SafeValue implements the redact.SafeValue interface.
-func (t TransferLeaseDecision) SafeValue() {}
-
-func (t TransferLeaseDecision) String() string {
-	switch t {
-	case TransferLeaseForCountBalance:
-		return "transfer(lease count)"
-	case TransferLeaseForAccessLocality:
-		return "transfer(access locality)"
-	case TransferLeaseForIOOverload:
-		return "transfer(io-overload)"
-	case TransferLeaseForPreferences:
-		return "transfer(preferences)"
-	case DontTransferLeaseBalanced:
-		return "no-transfer(balanced)"
-	case DontTransferLeaseNoStoreDescriptor:
-		return "no-transfer(missing store descriptor)"
-	case DontTransferLeaseNoValidTargets:
-		return "no-transfer(no valid targets)"
-	default:
-		panic(fmt.Sprintf("unknown transfer lease decision %d", t))
-	}
-}
-
 // ShouldTransferLease returns true if the specified store is overfull in terms
 // of leases with respect to the other stores matching the specified
 // attributes.
@@ -2651,19 +2510,17 @@ func (a *Allocator) ShouldTransferLease(
 	leaseRepl interface {
 		StoreID() roachpb.StoreID
 		RaftStatus() *raft.Status
-		GetCompactedIndex() kvpb.RaftIndex
-		SendStreamStats(*rac2.RangeSendStreamStats)
+		GetFirstIndex() kvpb.RaftIndex
 	},
 	usageInfo allocator.RangeUsageInfo,
-) TransferLeaseDecision {
-	excludeReplsInNeedOfSnap := a.knobs == nil || !a.knobs.AllowLeaseTransfersToReplicasNeedingSnapshots
-	if a.LeaseholderShouldMoveDueToPreferences(ctx, storePool, conf, leaseRepl, existing, excludeReplsInNeedOfSnap) {
-		return TransferLeaseForPreferences
+) bool {
+	if a.leaseholderShouldMoveDueToPreferences(ctx, storePool, conf, leaseRepl, existing) {
+		return true
 	}
 
 	if a.leaseholderShouldMoveDueToIOOverload(
 		ctx, storePool, existing, leaseRepl.StoreID(), a.IOOverloadOptions()) {
-		return TransferLeaseForIOOverload
+		return true
 	}
 
 	existing = a.ValidLeaseTargets(
@@ -2678,11 +2535,11 @@ func (a *Allocator) ShouldTransferLease(
 
 	// Short-circuit if there are no valid targets out there.
 	if len(existing) == 0 || (len(existing) == 1 && existing[0].StoreID == leaseRepl.StoreID()) {
-		return DontTransferLeaseNoValidTargets
+		return false
 	}
 	source, ok := storePool.GetStoreDescriptor(leaseRepl.StoreID())
 	if !ok {
-		return DontTransferLeaseNoStoreDescriptor
+		return false
 	}
 
 	sl, _, _ := storePool.GetStoreList(storepool.StoreFilterSuspect)
@@ -2699,23 +2556,20 @@ func (a *Allocator) ShouldTransferLease(
 		nil,
 		sl.CandidateLeases.Mean,
 	)
-	var result TransferLeaseDecision
+	var result bool
 	switch transferDec {
 	case shouldNotTransfer:
-		result = DontTransferLeaseBalanced
+		result = false
 	case shouldTransfer:
-		result = TransferLeaseForAccessLocality
+		result = true
 	case decideWithoutStats:
-		if a.shouldTransferLeaseForLeaseCountConvergence(ctx, storePool, sl, source, existing) {
-			result = TransferLeaseForCountBalance
-		} else {
-			result = DontTransferLeaseBalanced
-		}
+		result = a.shouldTransferLeaseForLeaseCountConvergence(ctx, storePool, sl, source, existing)
 	default:
 		log.KvDistribution.Fatalf(ctx, "unexpected transfer decision %d", transferDec)
 	}
+
 	log.KvDistribution.VEventf(
-		ctx, 3, "ShouldTransferLease decision (lease-holder=s%d): %v", leaseRepl.StoreID(), result,
+		ctx, 3, "ShouldTransferLease decision (lease-holder=s%d): %t", leaseRepl.StoreID(), result,
 	)
 	return result
 }
@@ -2755,7 +2609,7 @@ func (a Allocator) shouldTransferLeaseForAccessLocality(
 	usageInfo allocator.RangeUsageInfo,
 	rebalanceAdjustments map[roachpb.StoreID]float64,
 	candidateLeasesMean float64,
-) (accessLocalityTransferDecision, roachpb.ReplicaDescriptor) {
+) (transferDecision, roachpb.ReplicaDescriptor) {
 	// Only use load-based rebalancing if it's enabled and we have both
 	// stats and locality information to base our decision on.
 	if usageInfo.RequestLocality == nil ||
@@ -3033,12 +2887,12 @@ func FilterBehindReplicas(
 func excludeReplicasInNeedOfSnapshots(
 	ctx context.Context,
 	st *raft.Status,
-	compacted kvpb.RaftIndex,
+	firstIndex kvpb.RaftIndex,
 	replicas []roachpb.ReplicaDescriptor,
 ) []roachpb.ReplicaDescriptor {
 	filled := 0
 	for _, repl := range replicas {
-		snapStatus := raftutil.ReplicaMayNeedSnapshot(st, compacted, repl.ReplicaID)
+		snapStatus := raftutil.ReplicaMayNeedSnapshot(st, firstIndex, repl.ReplicaID)
 		if snapStatus != raftutil.NoSnapshotNeeded {
 			log.KvDistribution.VEventf(
 				ctx,
@@ -3049,63 +2903,6 @@ func excludeReplicasInNeedOfSnapshots(
 			)
 			continue
 		}
-		replicas[filled] = repl
-		filled++
-	}
-	return replicas[:filled]
-}
-
-// sendStreamStatsPool is a pool of RangeSendStreamStats objects, used to avoid
-// churning memory when computing lease transfer decisions.
-var sendStreamStatsPool = sync.Pool{
-	New: func() interface{} {
-		return &rac2.RangeSendStreamStats{}
-	},
-}
-
-// excludeReplicasInNeedOfCatchup filters out the `replicas` that may be in
-// need of a catchup messages before able to apply the lease, based on the
-// provided RangeSendStreamStats.
-func excludeReplicasInNeedOfCatchup(
-	ctx context.Context,
-	sendStreamStats func(*rac2.RangeSendStreamStats),
-	replicas []roachpb.ReplicaDescriptor,
-) []roachpb.ReplicaDescriptor {
-	if sendStreamStats == nil {
-		// When we don't have stats, we can't make an informed decision about which
-		// replicas are behind. We'll just return the replicas as is. This can
-		// occur if the current leaseholder is not yet the raft leader, or only
-		// recently became one (concurrent to the lease transfer decision).
-		return replicas
-	}
-	stats := sendStreamStatsPool.Get().(*rac2.RangeSendStreamStats)
-	stats.Clear()
-	defer sendStreamStatsPool.Put(stats)
-	sendStreamStats(stats)
-	filled := 0
-	for _, repl := range replicas {
-		if replicaSendStreamStats, ok := stats.ReplicaSendStreamStats(repl.ReplicaID); ok &&
-			(!replicaSendStreamStats.IsStateReplicate || replicaSendStreamStats.HasSendQueue) {
-			log.KvDistribution.VEventf(ctx, 5,
-				"not considering %v as a potential candidate for a lease transfer "+
-					"because the replica requires catchup: "+
-					"replica=(%v) range=%v",
-				repl, replicaSendStreamStats, stats)
-			continue
-		} else if ok {
-			log.KvDistribution.VEventf(ctx, 6,
-				"replica %v is up-to-date and does not require catchup "+
-					"replica=(%v) range=%v",
-				repl, replicaSendStreamStats, stats)
-		} else {
-			log.KvDistribution.VEventf(ctx, 4,
-				"replica %v is not in the send stream stats range=%v",
-				repl, stats)
-		}
-		// We are also not excluding any replicas which weren't included in the
-		// stats here. If they weren't included it indicates that they were either
-		// recently added or removed and in either case we don't know enough to
-		// preclude them as lease transfer targets.
 		replicas[filled] = repl
 		filled++
 	}
@@ -3123,7 +2920,7 @@ func simulateFilterUnremovableReplicas(
 	brandNewReplicaID roachpb.ReplicaID,
 ) []roachpb.ReplicaDescriptor {
 	status := *raftStatus
-	status.Progress[raftpb.PeerID(brandNewReplicaID)] = tracker.Progress{
+	status.Progress[uint64(brandNewReplicaID)] = tracker.Progress{
 		State: tracker.StateReplicate,
 		Match: status.Commit,
 	}

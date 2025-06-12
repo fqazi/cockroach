@@ -23,7 +23,9 @@ go_test(
         "local_test.go",
         "throttle_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":throttler"],
+    tags = ["ccl_test"],
     deps = [
         "//pkg/ccl/testutilsccl",
         "//pkg/util/leaktest",

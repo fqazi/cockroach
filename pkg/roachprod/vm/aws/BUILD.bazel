@@ -1,4 +1,4 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "aws",
@@ -24,7 +24,6 @@ go_library(
         "//pkg/util/timeutil",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_spf13_pflag//:pflag",
-        "@org_golang_x_exp//maps",
         "@org_golang_x_sync//errgroup",
         "@org_golang_x_time//rate",
     ],
@@ -36,22 +35,9 @@ genrule(
     cmd = """
       $(location //pkg/roachprod/vm/aws/terraformgen) -o $@
     """,
-    tools = ["//pkg/roachprod/vm/aws/terraformgen"],
+    exec_tools = ["//pkg/roachprod/vm/aws/terraformgen"],
     visibility = [
         ":__pkg__",
         "//pkg/gen:__pkg__",
-    ],
-)
-
-go_test(
-    name = "aws_test",
-    srcs = ["support_test.go"],
-    data = glob(["testdata/**"]),
-    embed = [":aws"],
-    deps = [
-        "//pkg/roachprod/vm",
-        "//pkg/testutils/datapathutils",
-        "//pkg/testutils/echotest",
-        "@com_github_stretchr_testify//require",
     ],
 )

@@ -3,10 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import sample from "lodash/sample";
+import _ from "lodash";
 
 export function randomTablePrivilege(): string {
-  return sample([
+  return _.sample([
     "ALL",
     "CREATE",
     "DROP",

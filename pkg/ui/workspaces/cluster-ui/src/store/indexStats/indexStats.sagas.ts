@@ -3,7 +3,6 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { PayloadAction } from "@reduxjs/toolkit";
 import {
   all,
@@ -13,22 +12,20 @@ import {
   takeLatest,
   takeEvery,
 } from "redux-saga/effects";
-
 import { ErrorWithKey } from "src/api/statementsApi";
+import {
+  actions as indexStatsActions,
+  ResetIndexUsageStatsPayload,
+} from "./indexStats.reducer";
 import { CACHE_INVALIDATION_PERIOD } from "src/store/utils";
-
+import { generateTableID } from "../../util";
 import {
   getIndexStats,
   resetIndexStats,
   TableIndexStatsRequest,
   TableIndexStatsResponseWithKey,
 } from "../../api/indexDetailsApi";
-import { generateTableID, maybeError } from "../../util";
-
-import {
-  actions as indexStatsActions,
-  ResetIndexUsageStatsPayload,
-} from "./indexStats.reducer";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 
 export function* refreshIndexStatsSaga(
   action: PayloadAction<TableIndexStatsRequest>,
@@ -51,7 +48,7 @@ export function* requestIndexStatsSaga(
     yield put(indexStatsActions.received(resultWithKey));
   } catch (e) {
     const err: ErrorWithKey = {
-      err: maybeError(e),
+      err: e,
       key,
     };
     yield put(indexStatsActions.failed(err));
@@ -91,7 +88,7 @@ export function* resetIndexStatsSaga(
     );
   } catch (e) {
     const err: ErrorWithKey = {
-      err: maybeError(e),
+      err: e,
       key,
     };
     yield put(indexStatsActions.failed(err));

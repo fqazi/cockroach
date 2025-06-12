@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
@@ -192,29 +193,29 @@ func assertRecomputedStats(
 ) {
 	t.Helper()
 
-	ms, err := rditer.ComputeStatsForRange(context.Background(), desc, r, nowNanos)
+	ms, err := rditer.ComputeStatsForRange(desc, r, nowNanos)
 	require.NoError(t, err)
 
 	// When used with a real wall clock these will not be the same, since it
 	// takes time to load stats.
 	expMS.AgeTo(ms.LastUpdateNanos)
-	// Recomputing stats always has ContainsEstimates = 0, while on-disk stats may
-	// have a non-zero value. ContainsEstimates should be asserted separately.
-	ms.ContainsEstimates = expMS.ContainsEstimates
 	require.Equal(t, expMS, ms, "%s: recomputed stats diverge", name)
 }
 
 func waitForTombstone(
 	t *testing.T, reader storage.Reader, rangeID roachpb.RangeID,
 ) (tombstone kvserverpb.RangeTombstone) {
-	sl := stateloader.Make(rangeID)
 	testutils.SucceedsSoon(t, func() error {
-		ts, err := sl.LoadRangeTombstone(context.Background(), reader)
-		require.NoError(t, err)
-		if ts.NextReplicaID == 0 {
+		tombstoneKey := keys.RangeTombstoneKey(rangeID)
+		ok, err := storage.MVCCGetProto(
+			context.Background(), reader, tombstoneKey, hlc.Timestamp{}, &tombstone, storage.MVCCGetOptions{},
+		)
+		if err != nil {
+			t.Fatalf("failed to read tombstone: %v", err)
+		}
+		if !ok {
 			return fmt.Errorf("tombstone not found for range %d", rangeID)
 		}
-		tombstone = ts
 		return nil
 	})
 	return tombstone

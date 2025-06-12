@@ -20,6 +20,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 )
 
 func init() {
@@ -31,6 +32,7 @@ func initializeMultiRegionMetadata(
 	ctx context.Context,
 	descIDGenerator eval.DescIDGenerator,
 	settings *cluster.Settings,
+	clusterID uuid.UUID,
 	liveRegions sql.LiveClusterRegions,
 	goal tree.SurvivalGoal,
 	primaryRegion catpb.RegionName,
@@ -39,7 +41,7 @@ func initializeMultiRegionMetadata(
 	secondaryRegion catpb.RegionName,
 ) (*multiregion.RegionConfig, error) {
 	if err := CheckClusterSupportsMultiRegion(
-		settings,
+		settings, clusterID,
 	); err != nil {
 		return nil, err
 	}
@@ -115,7 +117,7 @@ func initializeMultiRegionMetadata(
 		descpb.ZoneConfigExtensions{},
 		multiregion.WithSecondaryRegion(secondaryRegion),
 	)
-	if err := multiregion.ValidateRegionConfig(regionConfig, false); err != nil {
+	if err := multiregion.ValidateRegionConfig(regionConfig); err != nil {
 		return nil, err
 	}
 
@@ -124,9 +126,10 @@ func initializeMultiRegionMetadata(
 
 // CheckClusterSupportsMultiRegion returns whether the current cluster supports
 // multi-region features.
-func CheckClusterSupportsMultiRegion(settings *cluster.Settings) error {
+func CheckClusterSupportsMultiRegion(settings *cluster.Settings, clusterID uuid.UUID) error {
 	return utilccl.CheckEnterpriseEnabled(
 		settings,
+		clusterID,
 		"multi-region features",
 	)
 }
@@ -136,6 +139,7 @@ func getMultiRegionEnumAddValuePlacement(
 ) (tree.AlterTypeAddValue, error) {
 	if err := utilccl.CheckEnterpriseEnabled(
 		execCfg.Settings,
+		execCfg.NodeInfo.LogicalClusterID(),
 		"ADD REGION",
 	); err != nil {
 		return tree.AlterTypeAddValue{}, err

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangefeed"
@@ -25,12 +26,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catsessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/systemschema"
 	"github.com/cockroachdb/cockroach/pkg/sql/enum"
-	"github.com/cockroachdb/cockroach/pkg/sql/regionliveness"
-	"github.com/cockroachdb/cockroach/pkg/sql/regions"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlinstance"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slstorage"
@@ -75,14 +73,13 @@ var errNoPreallocatedRows = errors.New("no preallocated rows")
 // instances ids if the owning session has expired.
 type Storage struct {
 	db            *kv.DB
-	codec         keys.SQLCodec
 	slReader      sqlliveness.Reader
-	rowCodec      rowCodec
+	oldRowCodec   rowCodec
+	newRowCodec   rowCodec
 	settings      *cluster.Settings
 	settingsWatch *settingswatcher.SettingsWatcher
 	clock         *hlc.Clock
 	f             *rangefeed.Factory
-	cf            *descs.CollectionFactory
 	// TestingKnobs refers to knobs used for testing.
 	TestingKnobs struct {
 		// JitteredIntervalFn corresponds to the function used to jitter the
@@ -100,7 +97,6 @@ type instancerow struct {
 	sessionID     sqlliveness.SessionID
 	locality      roachpb.Locality
 	binaryVersion roachpb.Version
-	isDraining    bool
 	timestamp     hlc.Timestamp
 }
 
@@ -124,14 +120,13 @@ func NewTestingStorage(
 ) *Storage {
 	s := &Storage{
 		db:            db,
-		codec:         codec,
-		rowCodec:      makeRowCodec(codec, table, true),
+		newRowCodec:   makeRowCodec(codec, table, true),
+		oldRowCodec:   makeRowCodec(codec, table, false),
 		slReader:      slReader,
 		clock:         clock,
 		f:             f,
 		settings:      settings,
 		settingsWatch: settingsWatch,
-		cf:            descs.NewBareBonesCollectionFactory(settings, codec),
 	}
 	return s
 }
@@ -178,65 +173,35 @@ func (s *Storage) CreateInstance(
 	return s.createInstanceRow(ctx, session, rpcAddr, sqlAddr, locality, binaryVersion, noNodeID)
 }
 
-// getKeyAndInstance is a helper method to form key from session id and instance
-// id and get the value with that key.
-func (s *Storage) getKeyAndInstance(
-	ctx context.Context, sessionID sqlliveness.SessionID, instanceID base.SQLInstanceID, txn *kv.Txn,
-) (roachpb.Key, instancerow, error) {
-	instance := instancerow{}
-	region, _, err := slstorage.UnsafeDecodeSessionID(sessionID)
-	if err != nil {
-		return nil, instance, errors.Wrap(err, "unable to determine region for sql_instance")
-	}
-
-	key := s.rowCodec.encodeKey(region, instanceID)
-	kv, err := txn.Get(ctx, key)
-	if err != nil {
-		return nil, instance, err
-	}
-
-	instance, err = s.rowCodec.decodeRow(kv.Key, kv.Value)
-	if err != nil {
-		return nil, instance, err
-	}
-
-	return key, instance, nil
-}
-
-// SetInstanceDraining sets the is_draining column of sql_instances system table
-// to true.
-func (s *Storage) SetInstanceDraining(
-	ctx context.Context, sessionID sqlliveness.SessionID, instanceID base.SQLInstanceID,
-) error {
-	return s.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-		key, n, err := s.getKeyAndInstance(ctx, sessionID, instanceID, txn)
-		if err != nil {
-			return err
-		}
-		// TODO: When can be instance.sessionID unequal sessionID?
-
-		batch := txn.NewBatch()
-		value, err := s.rowCodec.encodeValue(
-			n.rpcAddr, n.sqlAddr, n.sessionID, n.locality, n.binaryVersion,
-			true /* encodeIsDraining */, true /* isDraining */)
-		if err != nil {
-			return err
-		}
-		batch.Put(key, value)
-		return txn.CommitInBatch(ctx, batch)
-	})
-}
-
 // ReleaseInstance deallocates the instance id iff it is currently owned by the
 // provided sessionID.
 func (s *Storage) ReleaseInstance(
 	ctx context.Context, sessionID sqlliveness.SessionID, instanceID base.SQLInstanceID,
 ) error {
 	return s.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-		key, instance, err := s.getKeyAndInstance(ctx, sessionID, instanceID, txn)
+		version, err := s.versionGuard(ctx, txn)
 		if err != nil {
 			return err
 		}
+
+		region, _, err := slstorage.UnsafeDecodeSessionID(sessionID)
+		if err != nil {
+			return errors.Wrap(err, "unable to determine region for sql_instance")
+		}
+
+		readCodec := s.getReadCodec(&version)
+
+		key := readCodec.encodeKey(region, instanceID)
+		kv, err := txn.Get(ctx, key)
+		if err != nil {
+			return err
+		}
+
+		instance, err := readCodec.decodeRow(kv.Key, kv.Value)
+		if err != nil {
+			return err
+		}
+
 		if instance.sessionID != sessionID {
 			// Great! The session was already released or released and
 			// claimed by another server.
@@ -244,11 +209,22 @@ func (s *Storage) ReleaseInstance(
 		}
 
 		batch := txn.NewBatch()
-		value, err := s.rowCodec.encodeAvailableValue(true /* encodeIsDraining */)
+
+		value, err := readCodec.encodeAvailableValue()
 		if err != nil {
 			return err
 		}
 		batch.Put(key, value)
+
+		if dualCodec := s.getDualWriteCodec(&version); dualCodec != nil {
+			dualKey := dualCodec.encodeKey(region, instanceID)
+			dualValue, err := dualCodec.encodeAvailableValue()
+			if err != nil {
+				return err
+			}
+			batch.Put(dualKey, dualValue)
+		}
+
 		return txn.CommitInBatch(ctx, batch)
 	})
 }
@@ -287,6 +263,11 @@ func (s *Storage) createInstanceRow(
 				return err
 			}
 
+			version, err := s.versionGuard(ctx, txn)
+			if err != nil {
+				return err
+			}
+
 			// Set the transaction deadline to the session expiration to ensure
 			// transaction commits before the session expires.
 			err = txn.UpdateDeadline(ctx, session.Expiration())
@@ -305,7 +286,7 @@ func (s *Storage) createInstanceRow(
 			} else {
 				// Try to retrieve an available instance ID. This blocks until one
 				// is available.
-				availableID, err = s.getAvailableInstanceIDForRegion(ctx, region, txn)
+				availableID, err = s.getAvailableInstanceIDForRegion(ctx, region, txn, &version)
 				if err != nil {
 					return err
 				}
@@ -313,13 +294,20 @@ func (s *Storage) createInstanceRow(
 
 			b := txn.NewBatch()
 
-			value, err := s.rowCodec.encodeValue(rpcAddr, sqlAddr,
-				session.ID(), locality, binaryVersion,
-				true /* encodeIsDraining*/, false /* isDraining */)
+			rowCodec := s.getReadCodec(&version)
+			value, err := rowCodec.encodeValue(rpcAddr, sqlAddr, session.ID(), locality, binaryVersion)
 			if err != nil {
 				return err
 			}
-			b.Put(s.rowCodec.encodeKey(region, availableID), value)
+			b.Put(rowCodec.encodeKey(region, availableID), value)
+
+			if dualCodec := s.getDualWriteCodec(&version); dualCodec != nil {
+				dualValue, err := dualCodec.encodeValue(rpcAddr, sqlAddr, session.ID(), locality, binaryVersion)
+				if err != nil {
+					return err
+				}
+				b.Put(dualCodec.encodeKey(region, availableID), dualValue)
+			}
 
 			return txn.CommitInBatch(ctx, b)
 		}); err != nil {
@@ -364,7 +352,7 @@ func (s *Storage) createInstanceRow(
 		// every region, then writing to the local region. Allocating globally
 		// would require one round trip for reading and one round trip for
 		// writes.
-		if err := s.generateAvailableInstanceRows(ctx, [][]byte{region}, session.Expiration()); err != nil {
+		if err := s.generateAvailableInstanceRows(ctx, [][]byte{region}, session); err != nil {
 			log.Warningf(ctx, "failed to generate available instance rows: %v", err)
 		}
 	}
@@ -376,17 +364,28 @@ func (s *Storage) createInstanceRow(
 // newInstanceCache constructs an instanceCache backed by a range feed over the
 // sql_instances table. newInstanceCache blocks until the initial scan is
 // complete.
-func (s *Storage) newInstanceCache(ctx context.Context) (instanceCache, error) {
-	return newRangeFeedCache(ctx, s.rowCodec, s.clock, s.f, s)
+func (s *Storage) newInstanceCache(
+	ctx context.Context, stopper *stop.Stopper,
+) (instanceCache, error) {
+	if !s.settings.Version.IsActive(ctx, clusterversion.V23_1_SystemRbrReadNew) {
+		oldCache := func(ctx context.Context) (instanceCache, error) {
+			return newRangeFeedCache(ctx, s.oldRowCodec, s.clock, s.f)
+		}
+		newCache := func(ctx context.Context) (instanceCache, error) {
+			return newRangeFeedCache(ctx, s.newRowCodec, s.clock, s.f)
+		}
+		return newMigrationCache(ctx, stopper, s.settings, oldCache, newCache)
+	}
+	return newRangeFeedCache(ctx, s.newRowCodec, s.clock, s.f)
 }
 
 // getAvailableInstanceIDForRegion retrieves an available instance ID for the
 // current region associated with Storage s, and returns errNoPreallocatedRows
 // if there are no available rows.
 func (s *Storage) getAvailableInstanceIDForRegion(
-	ctx context.Context, region []byte, txn *kv.Txn,
+	ctx context.Context, region []byte, txn *kv.Txn, version *settingswatcher.VersionGuard,
 ) (base.SQLInstanceID, error) {
-	rows, err := s.getInstanceRows(ctx, region, txn, lock.WaitPolicy_SkipLocked)
+	rows, err := s.getInstanceRows(ctx, region, version, txn, lock.WaitPolicy_SkipLocked)
 	if err != nil {
 		return base.SQLInstanceID(0), err
 	}
@@ -423,8 +422,11 @@ func (s *Storage) reclaimRegion(ctx context.Context, region []byte) error {
 	// never become active again.
 	var instances []instancerow
 	if err := s.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-		var err error
-		instances, err = s.getInstanceRows(ctx, region, txn, lock.WaitPolicy_Block)
+		version, err := s.versionGuard(ctx, txn)
+		if err != nil {
+			return err
+		}
+		instances, err = s.getInstanceRows(ctx, region, &version, txn, lock.WaitPolicy_Block)
 		return err
 	}); err != nil {
 		return err
@@ -443,23 +445,42 @@ func (s *Storage) reclaimRegion(ctx context.Context, region []byte) error {
 	// Reclaim and delete rows
 	target := int(PreallocatedCount.Get(&s.settings.SV))
 	return s.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-		instances, err := s.getInstanceRows(ctx, region, txn, lock.WaitPolicy_Block)
+		version, err := s.versionGuard(ctx, txn)
+		if err != nil {
+			return err
+		}
+
+		instances, err := s.getInstanceRows(ctx, region, &version, txn, lock.WaitPolicy_Block)
 		if err != nil {
 			return err
 		}
 
 		toReclaim, toDelete := idsToReclaim(target, instances, isExpired)
 
+		readCodec := s.getReadCodec(&version)
+		dualCodec := s.getDualWriteCodec(&version)
+
 		writeBatch := txn.NewBatch()
 		for _, instance := range toReclaim {
-			availableValue, err := s.rowCodec.encodeAvailableValue(true /* encodeIsDraining */)
+			availableValue, err := readCodec.encodeAvailableValue()
 			if err != nil {
 				return err
 			}
-			writeBatch.Put(s.rowCodec.encodeKey(region, instance), availableValue)
+			writeBatch.Put(readCodec.encodeKey(region, instance), availableValue)
+
+			if dualCodec != nil {
+				dualValue, err := dualCodec.encodeAvailableValue()
+				if err != nil {
+					return err
+				}
+				writeBatch.Put(dualCodec.encodeKey(region, instance), dualValue)
+			}
 		}
 		for _, instance := range toDelete {
-			writeBatch.Del(s.rowCodec.encodeKey(region, instance))
+			writeBatch.Del(readCodec.encodeKey(region, instance))
+			if dualCodec != nil {
+				writeBatch.Del(dualCodec.encodeKey(region, instance))
+			}
 		}
 
 		return txn.CommitInBatch(ctx, writeBatch)
@@ -469,7 +490,11 @@ func (s *Storage) reclaimRegion(ctx context.Context, region []byte) error {
 // getAllInstanceRows returns all instance rows, including instance rows that
 // are pre-allocated.
 func (s *Storage) getAllInstanceRows(ctx context.Context, txn *kv.Txn) ([]instancerow, error) {
-	return s.getInstanceRows(ctx, nil, txn, lock.WaitPolicy_Block)
+	version, err := s.versionGuard(ctx, txn)
+	if err != nil {
+		return nil, err
+	}
+	return s.getInstanceRows(ctx, nil, &version, txn, lock.WaitPolicy_Block)
 }
 
 // getInstanceRows decodes and returns all instance rows associated
@@ -480,13 +505,19 @@ func (s *Storage) getAllInstanceRows(ctx context.Context, txn *kv.Txn) ([]instan
 // case where multiple instances attempt to initialize their instance IDs
 // simultaneously.
 func (s *Storage) getInstanceRows(
-	ctx context.Context, region []byte, txn *kv.Txn, waitPolicy lock.WaitPolicy,
+	ctx context.Context,
+	region []byte,
+	version *settingswatcher.VersionGuard,
+	txn *kv.Txn,
+	waitPolicy lock.WaitPolicy,
 ) ([]instancerow, error) {
+	rowCodec := s.getReadCodec(version)
+
 	var start roachpb.Key
 	if region == nil {
-		start = s.rowCodec.makeIndexPrefix()
+		start = rowCodec.makeIndexPrefix()
 	} else {
-		start = s.rowCodec.makeRegionPrefix(region)
+		start = rowCodec.makeRegionPrefix(region)
 	}
 
 	// Scan the entire range
@@ -508,7 +539,7 @@ func (s *Storage) getInstanceRows(
 	instances := make([]instancerow, len(rows))
 	for i := range rows {
 		var err error
-		instances[i], err = s.rowCodec.decodeRow(rows[i].Key, rows[i].Value)
+		instances[i], err = rowCodec.decodeRow(rows[i].Key, rows[i].Value)
 		if err != nil {
 			return nil, err
 		}
@@ -523,11 +554,11 @@ func (s *Storage) RunInstanceIDReclaimLoop(
 	stopper *stop.Stopper,
 	ts timeutil.TimeSource,
 	db descs.DB,
-	sessionExpirationFn func() hlc.Timestamp,
+	session sqlliveness.Session,
 ) error {
 	loadRegions := func(ctx context.Context) ([][]byte, error) {
 		// Load regions from the system DB.
-		var regionsBytes [][]byte
+		var regions [][]byte
 		if err := db.DescsTxn(ctx, func(
 			ctx context.Context, txn descs.Txn,
 		) error {
@@ -535,23 +566,23 @@ func (s *Storage) RunInstanceIDReclaimLoop(
 				ctx, txn.KV(), keys.SystemDatabaseID, txn.Descriptors(),
 			)
 			if err != nil {
-				if errors.Is(err, regions.ErrNotMultiRegionDatabase) {
+				if errors.Is(err, sql.ErrNotMultiRegionDatabase) {
 					return nil
 				}
 				return err
 			}
 			for _, r := range enumReps {
-				regionsBytes = append(regionsBytes, r)
+				regions = append(regions, r)
 			}
 			return nil
 		}); err != nil {
 			return nil, err
 		}
 		// The system database isn't multi-region.
-		if len(regionsBytes) == 0 {
-			regionsBytes = [][]byte{enum.One}
+		if len(regions) == 0 {
+			regions = [][]byte{enum.One}
 		}
-		return regionsBytes, nil
+		return regions, nil
 	}
 
 	return stopper.RunAsyncTask(ctx, "instance-id-reclaim-loop", func(ctx context.Context) {
@@ -571,6 +602,7 @@ func (s *Storage) RunInstanceIDReclaimLoop(
 			case <-ctx.Done():
 				return
 			case <-timer.Ch():
+				timer.MarkRead()
 
 				// Load the regions each time we attempt to generate rows since
 				// regions can be added/removed to/from the system DB.
@@ -584,14 +616,13 @@ func (s *Storage) RunInstanceIDReclaimLoop(
 				// and delete surplus IDs. Cleaning up surplus IDs is necessary
 				// to avoid ID exhaustion.
 				for _, region := range regions {
-
 					if err := s.reclaimRegion(ctx, region); err != nil {
 						log.Warningf(ctx, "failed to reclaim instances in region '%v': %v", region, err)
 					}
 				}
 
 				// Allocate new ids regions that do not have enough pre-allocated sql instances.
-				if err := s.generateAvailableInstanceRows(ctx, regions, sessionExpirationFn()); err != nil {
+				if err := s.generateAvailableInstanceRows(ctx, regions, session); err != nil {
 					log.Warningf(ctx, "failed to generate available instance rows: %v", err)
 				}
 			}
@@ -599,119 +630,70 @@ func (s *Storage) RunInstanceIDReclaimLoop(
 	})
 }
 
-// readRegionsFromSystemDatabase reads physical representation for regions from the system database.
-func (s *Storage) readRegionsFromSystemDatabase(
-	ctx context.Context, txn *kv.Txn,
-) ([][]byte, error) {
-	descs := s.cf.NewCollection(ctx)
-	descs.SetDescriptorSessionDataProvider(catsessiondata.DefaultDescriptorSessionDataProvider)
-	defer descs.ReleaseAll(ctx)
-	systemDB, err := descs.ByIDWithoutLeased(txn).Get().Database(ctx, keys.SystemDatabaseID)
-	if err != nil {
-		return nil, err
+func (s *Storage) getReadCodec(version *settingswatcher.VersionGuard) *rowCodec {
+	if version.IsActive(clusterversion.V23_1_SystemRbrReadNew) {
+		return &s.newRowCodec
 	}
-	if !systemDB.IsMultiRegion() {
-		return [][]byte{enum.One}, nil
-	}
-	regionEnumID, err := systemDB.MultiRegionEnumID()
-	if err != nil {
-		return nil, err
-	}
-	typeEnum, err := descs.ByIDWithoutLeased(txn).Get().Type(ctx, regionEnumID)
-	if err != nil {
-		return nil, err
-	}
-	regionEnum := typeEnum.AsRegionEnumTypeDescriptor()
-	result := make([][]byte, 0, regionEnum.NumEnumMembers())
-	for i := 0; i < regionEnum.NumEnumMembers(); i++ {
-		result = append(result, regionEnum.GetMemberPhysicalRepresentation(i))
-	}
-	return result, nil
+	return &s.oldRowCodec
 }
 
-// generateAvailableInstanceRows allocates available instance IDs, and store
-// them in the sql_instances table. When instance IDs are pre-allocated, all
-// other fields in that row will be NULL.
-func (s *Storage) generateAvailableInstanceRowsWithTxn(
-	ctx context.Context, regions [][]byte, txn *kv.Txn, commit bool,
-) error {
-	target := int(PreallocatedCount.Get(&s.settings.SV))
-	// Figure out which regions are down, so that we can skip them in the allocation
-	// loop below.
-	regionLiveness := regionliveness.NewLivenessProber(s.db, s.codec, nil, s.settings)
-	downRegions, err := regionLiveness.QueryUnavailablePhysicalRegions(ctx, txn, true)
-	if err != nil {
-		return err
+func (s *Storage) getDualWriteCodec(version *settingswatcher.VersionGuard) *rowCodec {
+	switch {
+	case version.IsActive(clusterversion.V23_1_SystemRbrSingleWrite):
+		return nil
+	case version.IsActive(clusterversion.V23_1_SystemRbrReadNew):
+		return &s.oldRowCodec
+	case version.IsActive(clusterversion.V23_1_SystemRbrDualWrite):
+		return &s.newRowCodec
+	default:
+		return nil
 	}
-	var onlineInstances []instancerow
-	// Read all available regions from the system database.
-	allRegions, err := s.readRegionsFromSystemDatabase(ctx, txn)
-	if err != nil {
-		return err
-	}
-	// Allocate instance rows by region, skipping over any regions
-	// that were detected as down.
-	for _, region := range allRegions {
-		if downRegions.ContainsPhysicalRepresentation(string(region)) {
-			continue
-		}
+}
 
-		var instances []instancerow
-		getInstanceRows := func(ctx context.Context) error {
-			var err error
-			instances, err = s.getInstanceRows(ctx, region /*global*/, txn, lock.WaitPolicy_Block)
-			if err != nil {
-				return err
-			}
-			return nil
-		}
-		// Attempt to fetch instance rows with a timeout when region liveness
-		// is used. If the region times out, we are going to probe in later
-		// on.
-		if hasTimeout, timeout := regionLiveness.GetProbeTimeout(); hasTimeout {
-			err = timeutil.RunWithTimeout(ctx, "get-instance-rows", timeout, getInstanceRows)
-		} else {
-			err = getInstanceRows(ctx)
-		}
-		if err != nil {
-			if regionliveness.IsQueryTimeoutErr(err) {
-				// Probe and mark the region potentially.
-				probeErr := regionLiveness.ProbeLivenessWithPhysicalRegion(ctx, region)
-				if probeErr != nil {
-					err = errors.WithSecondaryError(err, probeErr)
-					return err
-				}
-				return errors.Wrapf(err, "get-instance-rows timed out reading from a region")
-			}
-			return err
-		}
-		onlineInstances = append(onlineInstances, instances...)
-	}
-
-	b := txn.NewBatch()
-
-	for _, row := range idsToAllocate(target, regions, onlineInstances) {
-		value, err := s.rowCodec.encodeAvailableValue(true /* encodeIsDraining */)
-		if err != nil {
-			return errors.Wrapf(err, "failed to encode row for instance id %d", row.instanceID)
-		}
-		b.Put(s.rowCodec.encodeKey(row.region, row.instanceID), value)
-	}
-	if commit {
-		return txn.CommitInBatch(ctx, b)
-	}
-	return txn.Run(ctx, b)
+func (s *Storage) versionGuard(
+	ctx context.Context, txn *kv.Txn,
+) (settingswatcher.VersionGuard, error) {
+	return s.settingsWatch.MakeVersionGuard(ctx, txn, clusterversion.V23_1_SystemRbrCleanup)
 }
 
 // generateAvailableInstanceRows allocates available instance IDs, and store
 // them in the sql_instances table. When instance IDs are pre-allocated, all
 // other fields in that row will be NULL.
 func (s *Storage) generateAvailableInstanceRows(
-	ctx context.Context, regions [][]byte, sessionExpiration hlc.Timestamp,
+	ctx context.Context, regions [][]byte, session sqlliveness.Session,
 ) error {
 	ctx = multitenant.WithTenantCostControlExemption(ctx)
+	target := int(PreallocatedCount.Get(&s.settings.SV))
 	return s.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-		return s.generateAvailableInstanceRowsWithTxn(ctx, regions, txn, true)
+		version, err := s.versionGuard(ctx, txn)
+		if err != nil {
+			return err
+		}
+
+		instances, err := s.getInstanceRows(ctx, nil /*global*/, &version, txn, lock.WaitPolicy_Block)
+		if err != nil {
+			return err
+		}
+
+		readCodec := s.getReadCodec(&version)
+		dualCodec := s.getDualWriteCodec(&version)
+
+		b := txn.NewBatch()
+		for _, row := range idsToAllocate(target, regions, instances) {
+			value, err := readCodec.encodeAvailableValue()
+			if err != nil {
+				return errors.Wrapf(err, "failed to encode row for instance id %d", row.instanceID)
+			}
+			b.Put(readCodec.encodeKey(row.region, row.instanceID), value)
+			if dualCodec != nil {
+				dualValue, err := dualCodec.encodeAvailableValue()
+				if err != nil {
+					return errors.Wrapf(err, "failed to encode dual write row for instance id %d", row.instanceID)
+				}
+				b.Put(dualCodec.encodeKey(row.region, row.instanceID), dualValue)
+			}
+		}
+		return txn.CommitInBatch(ctx, b)
 	})
 }
 

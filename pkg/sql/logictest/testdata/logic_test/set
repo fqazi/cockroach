@@ -149,14 +149,6 @@ on
 statement error parameter "ssl" cannot be changed
 SET ssl = 'off'
 
-query T
-SHOW authentication_method
-----
-cert-password
-
-statement error parameter "authentication_method" cannot be changed
-SET authentication_method = 'password'
-
 statement ok
 SET escape_string_warning = 'ON'
 
@@ -224,7 +216,7 @@ SET intervalstyle = 'iso_8601'
 statement ok
 SET intervalstyle = 'sql_standard'
 
-statement error invalid value for parameter "IntervalStyle": "other"\nHINT: Available values: postgres,iso_8601,sql_standard
+statement error invalid value for parameter "IntervalStyle": "other"
 SET intervalstyle = 'other'
 
 statement ok
@@ -401,22 +393,6 @@ SET lock_timeout = 0
 
 query T
 SHOW lock_timeout
-----
-0
-
-statement ok
-SET deadlock_timeout = '1ms'
-
-query T
-SHOW deadlock_timeout
-----
-1
-
-statement ok
-SET deadlock_timeout = 0
-
-query T
-SHOW deadlock_timeout
 ----
 0
 

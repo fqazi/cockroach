@@ -11,10 +11,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 // Asserter is a test utility that tracks application of Raft commands, and
@@ -145,7 +145,7 @@ func (a *Asserter) Propose(
 	replicaID roachpb.ReplicaID,
 	cmdID, seedID kvserverbase.CmdIDKey,
 	cmd *kvserverpb.RaftCommand,
-	req *kvpb.BatchRequest,
+	req kvpb.BatchRequest,
 ) {
 	a.forRange(rangeID).propose(replicaID, cmdID, seedID, cmd, req)
 }
@@ -154,7 +154,7 @@ func (r *rangeAsserter) propose(
 	replicaID roachpb.ReplicaID,
 	cmdID, seedID kvserverbase.CmdIDKey,
 	cmd *kvserverpb.RaftCommand,
-	req *kvpb.BatchRequest,
+	req kvpb.BatchRequest,
 ) {
 	fail := func(msg string, args ...interface{}) {
 		panic(fmt.Sprintf("r%d/%d cmd %s: %s (%s)",

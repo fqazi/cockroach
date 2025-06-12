@@ -20,7 +20,6 @@ go_library(
         "//pkg/sql/isql",
         "//pkg/sql/schemachanger/scexec",
         "//pkg/util/intsets",
-        "//pkg/util/log",
         "//pkg/util/syncutil",
         "//pkg/util/timeutil",
         "@com_github_cockroachdb_errors//:errors",
@@ -34,6 +33,7 @@ go_test(
         "periodic_progress_flusher_test.go",
         "tracker_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":backfiller"],
     deps = [
         "//pkg/keys",

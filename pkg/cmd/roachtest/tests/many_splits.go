@@ -11,7 +11,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/stretchr/testify/require"
@@ -28,7 +27,7 @@ func runManySplits(ctx context.Context, t test.Test, c cluster.Cluster) {
 	defer db.Close()
 
 	// Wait for up-replication then create many ranges.
-	err := roachtestutil.WaitFor3XReplication(ctx, t.L(), db)
+	err := WaitFor3XReplication(ctx, t, db)
 	require.NoError(t, err)
 
 	m := c.NewMonitor(ctx, c.All())

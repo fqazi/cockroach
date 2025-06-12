@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"sort"
-	"sync/atomic"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
@@ -120,7 +119,7 @@ func TestConverterFlushesBatches(t *testing.T) {
 				}
 
 				kvCh := make(chan row.KVBatch, batchSize)
-				semaCtx := tree.MakeSemaContext(nil /* resolver */)
+				semaCtx := tree.MakeSemaContext()
 				conv, err := makeInputConverter(ctx, &semaCtx, converterSpec, &evalCtx, kvCh,
 					nil /* seqChunkProvider */, db)
 				if err != nil {
@@ -238,7 +237,7 @@ func TestImportIgnoresProcessedFiles(t *testing.T) {
 		Mon:     evalCtx.TestingMon,
 		Cfg: &execinfra.ServerConfig{
 			JobRegistry:     &jobs.Registry{},
-			Settings:        cluster.MakeTestingClusterSettings(),
+			Settings:        &cluster.Settings{},
 			ExternalStorage: externalStorageFactory,
 			DB:              fakeDB{},
 			BulkAdder: func(
@@ -363,7 +362,7 @@ func TestImportHonorsResumePosition(t *testing.T) {
 		Mon:     evalCtx.TestingMon,
 		Cfg: &execinfra.ServerConfig{
 			JobRegistry:     &jobs.Registry{},
-			Settings:        cluster.MakeTestingClusterSettings(),
+			Settings:        &cluster.Settings{},
 			ExternalStorage: externalStorageFactory,
 			DB:              fakeDB{},
 			BulkAdder: func(
@@ -402,9 +401,6 @@ func TestImportHonorsResumePosition(t *testing.T) {
 		numKeys := 0
 
 		for _, resumePos := range resumes {
-			// t.Failed() acquires a read lock only, so in order to prevent the
-			// race in the progress consumer goroutine, we use our own atomic.
-			var failed atomic.Bool
 			spec.ResumePos = map[int32]int64{0: resumePos}
 			if resumePos == 0 {
 				// We use 0 resume position to record the set of keys in the input file.
@@ -429,7 +425,6 @@ func TestImportHonorsResumePosition(t *testing.T) {
 					keys.Lock()
 					idx := sort.Search(maxKeyIdx, func(i int) bool { return keys.keys[i].Compare(k) == 0 })
 					if idx < maxKeyIdx {
-						failed.Store(true)
 						t.Errorf("failed to skip key[%d]=%s", idx, k)
 					}
 					keys.Unlock()
@@ -447,7 +442,7 @@ func TestImportHonorsResumePosition(t *testing.T) {
 					// (BulkAdderFlushesEveryBatch), then the progress resport must be emitted every
 					// batchSize rows (possibly out of order), starting from our initial resumePos
 					for prog := range progCh {
-						if !failed.Load() && prog.ResumePos[0] < (rp+int64(batchSize)) {
+						if !t.Failed() && prog.ResumePos[0] < (rp+int64(batchSize)) {
 							t.Logf("unexpected progress resume pos: %d", prog.ResumePos[0])
 							t.Fail()
 						}
@@ -497,7 +492,7 @@ func TestImportHandlesDuplicateKVs(t *testing.T) {
 		Mon:     evalCtx.TestingMon,
 		Cfg: &execinfra.ServerConfig{
 			JobRegistry:     &jobs.Registry{},
-			Settings:        cluster.MakeTestingClusterSettings(),
+			Settings:        &cluster.Settings{},
 			ExternalStorage: externalStorageFactory,
 			DB:              fakeDB{},
 			BulkAdder: func(
@@ -627,7 +622,7 @@ func setImportReaderParallelism(parallelism int32) func() {
 // Queries the status and the import progress of the job.
 type jobState struct {
 	err    error
-	status jobs.State
+	status jobs.Status
 	prog   jobspb.ImportProgress
 }
 
@@ -649,7 +644,7 @@ SELECT status, payload, progress FROM crdb_internal.system_jobs WHERE id = $1
 		return
 	}
 
-	if js.status == jobs.StateFailed {
+	if js.status == jobs.StatusFailed {
 		payload := &jobspb.Payload{}
 		js.err = protoutil.Unmarshal(payloadBytes, payload)
 		if js.err == nil {
@@ -774,7 +769,7 @@ func TestCSVImportCanBeResumed(t *testing.T) {
 	unblockImport()
 
 	// Get updated resume position counter.
-	js = queryJobUntil(t, sqlDB.DB, jobID, func(js jobState) bool { return jobs.StatePaused == js.status })
+	js = queryJobUntil(t, sqlDB.DB, jobID, func(js jobState) bool { return jobs.StatusPaused == js.status })
 	resumePos := js.prog.ResumePos[0]
 	t.Logf("Resume pos: %v\n", js.prog.ResumePos[0])
 
@@ -782,7 +777,7 @@ func TestCSVImportCanBeResumed(t *testing.T) {
 	if err := registry.Unpause(ctx, nil, jobID); err != nil {
 		t.Fatal(err)
 	}
-	js = queryJobUntil(t, sqlDB.DB, jobID, func(js jobState) bool { return jobs.StateSucceeded == js.status })
+	js = queryJobUntil(t, sqlDB.DB, jobID, func(js jobState) bool { return jobs.StatusSucceeded == js.status })
 
 	// Verify that the import proceeded from the resumeRow position.
 	assert.Equal(t, importSummary.Rows, int64(csv1.numRows)-resumePos)
@@ -875,7 +870,7 @@ func TestCSVImportMarksFilesFullyProcessed(t *testing.T) {
 
 	// All files should have been processed,
 	// and the resume position set to maxInt64.
-	js := queryJobUntil(t, sqlDB.DB, jobID, func(js jobState) bool { return jobs.StatePaused == js.status })
+	js := queryJobUntil(t, sqlDB.DB, jobID, func(js jobState) bool { return jobs.StatusPaused == js.status })
 	for _, pos := range js.prog.ResumePos {
 		assert.True(t, pos == math.MaxInt64)
 	}
@@ -887,7 +882,7 @@ func TestCSVImportMarksFilesFullyProcessed(t *testing.T) {
 	if err := registry.Unpause(ctx, nil, jobID); err != nil {
 		t.Fatal(err)
 	}
-	js = queryJobUntil(t, sqlDB.DB, jobID, func(js jobState) bool { return jobs.StateSucceeded == js.status })
+	js = queryJobUntil(t, sqlDB.DB, jobID, func(js jobState) bool { return jobs.StatusSucceeded == js.status })
 
 	// Verify that after resume we have not processed any additional rows.
 	assert.Zero(t, importSummary.Rows)

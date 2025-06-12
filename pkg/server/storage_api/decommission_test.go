@@ -319,7 +319,7 @@ func waitForSpanConfig(
 			if err != nil {
 				return errors.Wrapf(err, "missing store on server %d", i)
 			}
-			conf, _, err := store.GetStoreConfig().SpanConfigSubscriber.GetSpanConfigForKey(context.Background(), key)
+			conf, err := store.GetStoreConfig().SpanConfigSubscriber.GetSpanConfigForKey(context.Background(), key)
 			if err != nil {
 				return errors.Wrapf(err, "missing span config for %s on server %d", key, i)
 			}
@@ -964,10 +964,8 @@ func TestAdminDecommissionedOperations(t *testing.T) {
 					// This will cause SuccessWithin to retry.
 					return err
 				}
-				if tc.expectCode == s.Code() {
-					return nil
-				}
-				return err
+				require.Equal(t, tc.expectCode, s.Code(), "%+v", err)
+				return nil
 			})
 		})
 	}

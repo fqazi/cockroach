@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/clusterstats"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -44,6 +43,7 @@ type allocationBenchSpec struct {
 	nodes, cpus int
 	load        allocBenchLoad
 
+	nodeAttrs   map[int]string
 	startRecord time.Duration
 	samples     int
 }
@@ -76,6 +76,8 @@ type kvAllocBenchEventRunner struct {
 	insertCount int
 
 	name string
+
+	replFactor int
 }
 
 var (
@@ -132,8 +134,9 @@ func (r kvAllocBenchEventRunner) addname(add string) kvAllocBenchEventRunner {
 }
 
 func (r kvAllocBenchEventRunner) run(ctx context.Context, c cluster.Cluster, t test.Test) error {
+	workloadNode := c.Spec().NodeCount
 	name := r.name
-	setupCmd := fmt.Sprintf("./cockroach workload init kv --db=%s", name)
+	setupCmd := fmt.Sprintf("./workload init kv --db=%s", name)
 	if r.insertCount > 0 {
 		setupCmd += fmt.Sprintf(" --insert-count=%d --min-block-bytes=%d --max-block-bytes=%d", r.insertCount, r.blockSize, r.blockSize)
 		if r.skew {
@@ -141,16 +144,27 @@ func (r kvAllocBenchEventRunner) run(ctx context.Context, c cluster.Cluster, t t
 		}
 	}
 	setupCmd += " {pgurl:1}"
-	err := c.RunE(ctx, option.WithNodes(c.WorkloadNode()), setupCmd)
+	err := c.RunE(ctx, c.Node(workloadNode), setupCmd)
 	if err != nil {
 		return err
+	}
+
+	if r.replFactor == 0 {
+		r.replFactor = 3
 	}
 
 	db := c.Conn(ctx, t.L(), 1)
 	defer db.Close()
 
+	// Set the replication factor of the database to match the spec.
+	stmt := fmt.Sprintf("alter database %s configure zone using num_replicas=%d",
+		name, r.replFactor)
+	if _, err = db.ExecContext(ctx, stmt); err != nil {
+		return err
+	}
+
 	runCmd := fmt.Sprintf(
-		"./cockroach workload run kv --db=%s --read-percent=%d --min-block-bytes=%d --max-block-bytes=%d --max-rate=%d",
+		"./workload run kv --db=%s --read-percent=%d --min-block-bytes=%d --max-block-bytes=%d --max-rate=%d",
 		name, r.readPercent, r.blockSize, r.blockSize, r.rate)
 	if r.skew {
 		runCmd += " --zipfian"
@@ -164,11 +178,11 @@ func (r kvAllocBenchEventRunner) run(ctx context.Context, c cluster.Cluster, t t
 	}
 
 	runCmd = fmt.Sprintf(
-		"%s --tolerate-errors --concurrency=%d --duration=%s {pgurl%s}",
-		runCmd, defaultAllocBenchConcurrency, defaultAllocBenchDuration.String(), c.CRDBNodes())
+		"%s --tolerate-errors --concurrency=%d --duration=%s {pgurl:1-%d}",
+		runCmd, defaultAllocBenchConcurrency, defaultAllocBenchDuration.String(), workloadNode-1)
 
 	t.Status("running kv workload", runCmd)
-	return c.RunE(ctx, option.WithNodes(c.WorkloadNode()), runCmd)
+	return c.RunE(ctx, c.Node(workloadNode), runCmd)
 }
 func registerAllocationBench(r registry.Registry) {
 	for _, spec := range []allocationBenchSpec{
@@ -247,7 +261,7 @@ func registerAllocationBench(r registry.Registry) {
 }
 
 func registerAllocationBenchSpec(r registry.Registry, allocSpec allocationBenchSpec) {
-	specOptions := []spec.Option{spec.CPU(allocSpec.cpus), spec.WorkloadNode(), spec.WorkloadNodeCPU(allocSpec.cpus)}
+	specOptions := []spec.Option{spec.CPU(allocSpec.cpus)}
 	r.Add(registry.TestSpec{
 		Name:      fmt.Sprintf("allocbench/nodes=%d/cpu=%d/%s", allocSpec.nodes, allocSpec.cpus, allocSpec.load.desc),
 		Owner:     registry.OwnerKV,
@@ -269,10 +283,16 @@ func registerAllocationBenchSpec(r registry.Registry, allocSpec allocationBenchS
 func setupAllocationBench(
 	ctx context.Context, t test.Test, c cluster.Cluster, spec allocationBenchSpec,
 ) (clusterstats.StatCollector, func(context.Context)) {
+	workloadNode := c.Spec().NodeCount
+	c.Put(ctx, t.DeprecatedWorkload(), "./workload", c.Node(workloadNode))
 	t.Status("starting cluster")
 	for i := 1; i <= spec.nodes; i++ {
 		// Don't start a backup schedule as this test reports to roachperf.
 		startOpts := option.NewStartOpts(option.NoBackupSchedule)
+		if attr, ok := spec.nodeAttrs[i]; ok {
+			startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs,
+				fmt.Sprintf("--attrs=%s", attr))
+		}
 		startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs,
 			"--vmodule=store_rebalancer=2,allocator=2,replicate_queue=2")
 		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.Node(i))
@@ -287,9 +307,11 @@ func setupStatCollector(
 	t.Status("setting up prometheus and grafana")
 
 	// Setup the prometheus instance and client.
+	clusNodes := c.Range(1, spec.nodes)
+	promNode := c.Node(c.Spec().NodeCount)
 	cfg := (&prometheus.Config{}).
-		WithCluster(c.CRDBNodes().InstallNodes()).
-		WithPrometheusNode(c.WorkloadNode().InstallNodes()[0])
+		WithCluster(clusNodes.InstallNodes()).
+		WithPrometheusNode(promNode.InstallNodes()[0])
 
 	err := c.StartGrafana(ctx, t.L(), cfg)
 	require.NoError(t, err)
@@ -351,26 +373,13 @@ func runAllocationBench(
 	// worst/best case outcomes.
 	result, sampleStddev := findMinDistanceClusterStatRun(t, samples)
 	for tag, value := range sampleStddev {
-		metricName := fmt.Sprintf("std_%s", tag)
-		result.Total[metricName] = value
-
-		// Populate BenchmarkMetrics with metadata if it's initialized
-		// (it will be initialized only when OpenMetrics is enabled)
-		if result.BenchmarkMetrics != nil {
-			result.BenchmarkMetrics[metricName] = roachtestutil.AggregatedMetric{
-				Name:             metricName,
-				Value:            roachtestutil.MetricPoint(value),
-				Unit:             "stddev",
-				IsHigherBetter:   false, // Lower standard deviation is better
-				AdditionalLabels: nil,
-			}
-		}
+		result.Total[fmt.Sprintf("std_%s", tag)] = value
 	}
 	if result == nil {
 		t.L().PrintfCtx(ctx, "no samples found for allocation bench run, won't put any artifacts")
 		return
 	}
-	if err := result.SerializeOutRun(ctx, t, c, t.ExportOpenmetrics()); err != nil {
+	if err := result.SerializeOutRun(ctx, t, c); err != nil {
 		t.L().PrintfCtx(ctx, "error putting run artifacts, %v", err)
 	}
 }
@@ -390,6 +399,8 @@ func runAllocationBenchSample(
 	specLoad := &spec.load
 	m := c.NewMonitor(ctx, c.Nodes(1, spec.nodes))
 	for i := range spec.load.events {
+		// Copy the loop variable.
+		i := i
 		m.Go(func(ctx context.Context) error {
 			return runAllocationBenchEvent(ctx, t, c, specLoad, i)
 		})
@@ -409,46 +420,28 @@ func runAllocationBenchSample(
 		true, /* dryRun */
 		startTime, endTime,
 		joinSummaryQueries(resourceMinMaxSummary, overloadMaxSummary, rebalanceCostSummary),
-		func(stats map[string]clusterstats.StatSummary) *roachtestutil.AggregatedMetric {
+		func(stats map[string]clusterstats.StatSummary) (string, float64) {
 			ret, name := 0.0, "cpu(%)"
 			if stat, ok := stats[cpuStat.Query]; ok {
 				ret = roundFraction(arithmeticMean(stat.Value), 1, 2)
 			}
-			return &roachtestutil.AggregatedMetric{
-				Name:             name,
-				Value:            roachtestutil.MetricPoint(ret),
-				Unit:             "percent",
-				IsHigherBetter:   false,
-				AdditionalLabels: nil,
-			}
+			return name, ret
 		},
-		func(stats map[string]clusterstats.StatSummary) *roachtestutil.AggregatedMetric {
+		func(stats map[string]clusterstats.StatSummary) (string, float64) {
 			ret, name := 0.0, "write(%)"
 			if stat, ok := stats[ioWriteStat.Query]; ok {
 				ret = roundFraction(arithmeticMean(stat.Value), 1, 2)
 			}
-			return &roachtestutil.AggregatedMetric{
-				Name:             name,
-				Value:            roachtestutil.MetricPoint(ret),
-				Unit:             "percent",
-				IsHigherBetter:   false,
-				AdditionalLabels: nil,
-			}
+			return name, ret
 		},
-		func(stats map[string]clusterstats.StatSummary) *roachtestutil.AggregatedMetric {
+		func(stats map[string]clusterstats.StatSummary) (string, float64) {
 			rebalanceMb := 0.0
 			values := stats[rebalanceSnapshotSentStat.Query].Value
 			if len(values) > 0 {
 				startMB, endMB := values[0], values[len(values)-1]
 				rebalanceMb = roundFraction(endMB-startMB, 1024, 2)
 			}
-			return &roachtestutil.AggregatedMetric{
-				Name:             "cost(gb)",
-				Value:            roachtestutil.MetricPoint(rebalanceMb),
-				Unit:             "GB",
-				IsHigherBetter:   false,
-				AdditionalLabels: nil,
-			}
+			return "cost(gb)", rebalanceMb
 		},
 	)
 }

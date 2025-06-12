@@ -119,7 +119,7 @@ var cdcFunctions = map[string]*tree.ResolvedFunctionDefinition{
 		volatility.Stable,
 		types.Decimal,
 		func(rowEvalCtx *rowEvalContext) hlc.Timestamp {
-			return rowEvalCtx.creationTime
+			return rowEvalCtx.startTime
 		},
 	),
 }
@@ -153,7 +153,7 @@ func cdcTimestampBuiltin(
 	tsFn func(rowEvalCtx *rowEvalContext) hlc.Timestamp,
 ) *tree.ResolvedFunctionDefinition {
 	pref := func(t *types.T) tree.OverloadPreference {
-		if preferredOverloadReturnType.Identical(t) {
+		if preferredOverloadReturnType == t {
 			return tree.OverloadPreferencePreferred
 		}
 		return tree.OverloadPreferenceNone

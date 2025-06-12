@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/jobs"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/scheduledjobs"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
@@ -79,7 +78,7 @@ func (j *jobMonitor) start(
 		stopCtx, cancel := stopper.WithCancelOnQuiesce(ctx)
 		defer cancel()
 
-		var timer timeutil.Timer
+		timer := timeutil.NewTimer()
 		// Ensure schedule at startup.
 		timer.Reset(0)
 		defer timer.Stop()
@@ -96,6 +95,7 @@ func (j *jobMonitor) start(
 		for {
 			select {
 			case <-timer.C:
+				timer.Read = true
 			case <-drain:
 				// Graceful shutdown.
 				return
@@ -141,7 +141,7 @@ func (j *jobMonitor) getSchedule(
 		return nil, errScheduleNotFound
 	}
 
-	scheduledJobID := jobspb.ScheduleID(tree.MustBeDInt(row[0]))
+	scheduledJobID := int64(tree.MustBeDInt(row[0]))
 
 	sj, err = jobs.ScheduledJobTxn(txn).Load(ctx, scheduledjobs.ProdJobSchedulerEnv, scheduledJobID)
 	if err != nil {
@@ -177,10 +177,10 @@ func (j *jobMonitor) updateSchedule(ctx context.Context, cronExpr string) {
 			if sj.ScheduleExpr() == cronExpr {
 				return nil
 			}
-			if err := sj.SetScheduleAndNextRun(cronExpr); err != nil {
+			if err := sj.SetSchedule(cronExpr); err != nil {
 				return err
 			}
-			sj.SetScheduleStatus(string(jobs.StatePending))
+			sj.SetScheduleStatus(string(jobs.StatusPending))
 			return jobs.ScheduledJobTxn(txn).Update(ctx, sj)
 		}); err != nil && ctx.Err() == nil {
 			log.Errorf(ctx, "failed to update stats scheduled compaction job: %s", err)

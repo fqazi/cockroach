@@ -73,10 +73,7 @@ func TestVectorizeInternalMemorySpaceError(t *testing.T) {
 				if len(tc.spec.Input) > 1 {
 					sources = append(sources, colexecutils.NewFixedNumTuplesNoInputOp(testAllocator, 0 /* numTuples */, nil /* opToInitialize */))
 				}
-				memMon := mon.NewMonitor(mon.Options{
-					Name:     mon.MakeName("MemoryMonitor"),
-					Settings: st,
-				})
+				memMon := mon.NewMonitor("MemoryMonitor", mon.MemoryResource, nil, nil, 0, math.MaxInt64, st)
 				if success {
 					memMon.Start(ctx, nil, mon.NewStandaloneBudget(math.MaxInt64))
 				} else {
@@ -124,8 +121,6 @@ func TestVectorizeAllocatorSpaceError(t *testing.T) {
 	}
 	var monitorRegistry colexecargs.MonitorRegistry
 	defer monitorRegistry.Close(ctx)
-	var closerRegistry colexecargs.CloserRegistry
-	defer closerRegistry.Close(ctx)
 
 	oneInput := []execinfrapb.InputSyncSpec{
 		{ColumnTypes: []*types.T{types.Int}},
@@ -203,10 +198,7 @@ func TestVectorizeAllocatorSpaceError(t *testing.T) {
 				if len(tc.spec.Input) > 1 {
 					sources = append(sources, colexecop.NewRepeatableBatchSource(testAllocator, batch, typs))
 				}
-				memMon := mon.NewMonitor(mon.Options{
-					Name:     mon.MakeName("MemoryMonitor"),
-					Settings: st,
-				})
+				memMon := mon.NewMonitor("MemoryMonitor", mon.MemoryResource, nil, nil, 0, math.MaxInt64, st)
 				flowCtx.Cfg.TestingKnobs = execinfra.TestingKnobs{}
 				if expectNoMemoryError {
 					memMon.Start(ctx, nil, mon.NewStandaloneBudget(math.MaxInt64))
@@ -230,7 +222,6 @@ func TestVectorizeAllocatorSpaceError(t *testing.T) {
 					StreamingMemAccount: &acc,
 					FDSemaphore:         colexecop.NewTestingSemaphore(256),
 					MonitorRegistry:     &monitorRegistry,
-					CloserRegistry:      &closerRegistry,
 				}
 				var (
 					result *colexecargs.NewColOperatorResult

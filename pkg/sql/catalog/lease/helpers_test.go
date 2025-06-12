@@ -114,7 +114,9 @@ func (m *Manager) ExpireLeases(clock *hlc.Clock) {
 	defer m.names.mu.Unlock()
 	_ = m.names.descriptors.IterateByID(func(entry catalog.NameEntry) error {
 		desc := entry.(*descriptorVersionState)
-		desc.expiration.Store(&past)
+		desc.mu.Lock()
+		defer desc.mu.Unlock()
+		desc.mu.expiration = past
 		return nil
 	})
 }
@@ -151,7 +153,7 @@ func (m *Manager) PublishMultiple(
 		// of the descriptors.
 		expectedVersions := make(map[descpb.ID]descpb.DescriptorVersion)
 		for _, id := range ids {
-			expected, err := m.WaitForOneVersion(ctx, id, nil, base.DefaultRetryOptions())
+			expected, err := m.WaitForOneVersion(ctx, id, base.DefaultRetryOptions())
 			if err != nil {
 				return nil, err
 			}
@@ -290,7 +292,7 @@ func (m *Manager) Publish(
 }
 
 func (m *Manager) TestingRefreshSomeLeases(ctx context.Context) {
-	m.refreshSomeLeases(ctx, false /*refreshAndPurgeAllDescriptors*/)
+	m.refreshSomeLeases(ctx)
 }
 
 func (m *Manager) TestingDescriptorStateIsNil(id descpb.ID) bool {

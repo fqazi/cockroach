@@ -280,7 +280,7 @@ func (c *Lookup) setDestinations(ctx context.Context, contents []byte) error {
 	// TODO(#130814): This only handles IPv4. We could change to 128 if we want
 	// to handle IPv6.
 	byLength := make([]map[string]string, 33)
-	for i := range 33 {
+	for i := 0; i < 33; i++ {
 		byLength[i] = make(map[string]string)
 	}
 	for _, d := range destinations {

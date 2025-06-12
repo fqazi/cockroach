@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 // nilT is a nil instance of the Template type.
@@ -24,7 +25,7 @@ const (
 	minItems = degree - 1
 )
 
-// compare returns a value indicating the sort order relationship between
+// cmp returns a value indicating the sort order relationship between
 // a and b. The comparison is performed lexicographically on
 //
 //	(a.Key(), a.EndKey(), a.ID())
@@ -35,12 +36,12 @@ const (
 //
 // tuples.
 //
-// Given c = compare(a, b):
+// Given c = cmp(a, b):
 //
 //	c == -1  if (a.Key(), a.EndKey(), a.ID()) <  (b.Key(), b.EndKey(), b.ID())
 //	c ==  0  if (a.Key(), a.EndKey(), a.ID()) == (b.Key(), b.EndKey(), b.ID())
 //	c ==  1  if (a.Key(), a.EndKey(), a.ID()) >  (b.Key(), b.EndKey(), b.ID())
-func compare(a, b *example) int {
+func cmp(a, b *example) int {
 	c := bytes.Compare(a.Key(), b.Key())
 	if c != 0 {
 		return c
@@ -93,45 +94,43 @@ func upperBound(c *example) keyBound {
 	return keyBound{key: c.Key(), inc: true}
 }
 
-type node struct {
+type leafNode struct {
 	ref   int32
 	count int16
-
-	// These fields form a keyBound, but by inlining them into node we can avoid
-	// the extra word that would be needed to pad out maxInc if it were part of
-	// its own struct.
-	maxInc bool
-	maxKey []byte
-
+	leaf  bool
+	max   keyBound
 	items [maxItems]*example
-
-	// The children array pointer is only populated for interior nodes; it is nil
-	// for leaf nodes.
-	children *childrenArray
 }
 
-type childrenArray = [maxItems + 1]*node
+type node struct {
+	leafNode
+	children [maxItems + 1]*node
+}
+
+//go:nocheckptr casts a ptr to a smaller struct to a ptr to a larger struct.
+func leafToNode(ln *leafNode) *node {
+	return (*node)(unsafe.Pointer(ln))
+}
+
+func nodeToLeaf(n *node) *leafNode {
+	return (*leafNode)(unsafe.Pointer(n))
+}
 
 var leafPool = sync.Pool{
 	New: func() interface{} {
-		return new(node)
+		return new(leafNode)
 	},
 }
 
 var nodePool = sync.Pool{
 	New: func() interface{} {
-		type interiorNode struct {
-			node
-			children childrenArray
-		}
-		n := new(interiorNode)
-		n.node.children = &n.children
-		return &n.node
+		return new(node)
 	},
 }
 
 func newLeafNode() *node {
-	n := leafPool.Get().(*node)
+	n := leafToNode(leafPool.Get().(*leafNode))
+	n.leaf = true
 	n.ref = 1
 	return n
 }
@@ -168,25 +167,6 @@ func mut(n **node) *node {
 	return *n
 }
 
-// leaf returns true if this is a leaf node.
-func (n *node) leaf() bool {
-	return n.children == nil
-}
-
-// max returns the maximum keyBound in the subtree rooted at this node.
-func (n *node) max() keyBound {
-	return keyBound{
-		key: n.maxKey,
-		inc: n.maxInc,
-	}
-}
-
-// setMax sets the maximum keyBound for the subtree rooted at this node.
-func (n *node) setMax(k keyBound) {
-	n.maxKey = k.key
-	n.maxInc = k.inc
-}
-
 // incRef acquires a reference to the node.
 func (n *node) incRef() {
 	atomic.AddInt32(&n.ref, 1)
@@ -200,9 +180,10 @@ func (n *node) decRef(recursive bool) {
 		return
 	}
 	// Clear and release node into memory pool.
-	if n.leaf() {
-		*n = node{}
-		leafPool.Put(n)
+	if n.leaf {
+		ln := nodeToLeaf(n)
+		*ln = leafNode{}
+		leafPool.Put(ln)
 	} else {
 		// Release child references first, if requested.
 		if recursive {
@@ -210,8 +191,7 @@ func (n *node) decRef(recursive bool) {
 				n.children[i].decRef(true /* recursive */)
 			}
 		}
-		*n = node{children: n.children}
-		*n.children = childrenArray{}
+		*n = node{}
 		nodePool.Put(n)
 	}
 }
@@ -219,7 +199,7 @@ func (n *node) decRef(recursive bool) {
 // clone creates a clone of the receiver with a single reference count.
 func (n *node) clone() *node {
 	var c *node
-	if n.leaf() {
+	if n.leaf {
 		c = newLeafNode()
 	} else {
 		c = newNode()
@@ -227,12 +207,11 @@ func (n *node) clone() *node {
 	// NB: copy field-by-field without touching n.ref to avoid
 	// triggering the race detector and looking like a data race.
 	c.count = n.count
-	c.maxKey = n.maxKey
-	c.maxInc = n.maxInc
+	c.max = n.max
 	c.items = n.items
-	if !c.leaf() {
+	if !c.leaf {
 		// Copy children and increase each refcount.
-		*c.children = *n.children
+		c.children = n.children
 		for i := int16(0); i <= c.count; i++ {
 			c.children[i].incRef()
 		}
@@ -243,12 +222,12 @@ func (n *node) clone() *node {
 func (n *node) insertAt(index int, item *example, nd *node) {
 	if index < int(n.count) {
 		copy(n.items[index+1:n.count+1], n.items[index:n.count])
-		if !n.leaf() {
+		if !n.leaf {
 			copy(n.children[index+2:n.count+2], n.children[index+1:n.count+1])
 		}
 	}
 	n.items[index] = item
-	if !n.leaf() {
+	if !n.leaf {
 		n.children[index+1] = nd
 	}
 	n.count++
@@ -256,14 +235,14 @@ func (n *node) insertAt(index int, item *example, nd *node) {
 
 func (n *node) pushBack(item *example, nd *node) {
 	n.items[n.count] = item
-	if !n.leaf() {
+	if !n.leaf {
 		n.children[n.count+1] = nd
 	}
 	n.count++
 }
 
 func (n *node) pushFront(item *example, nd *node) {
-	if !n.leaf() {
+	if !n.leaf {
 		copy(n.children[1:n.count+2], n.children[:n.count+1])
 		n.children[0] = nd
 	}
@@ -276,7 +255,7 @@ func (n *node) pushFront(item *example, nd *node) {
 // back.
 func (n *node) removeAt(index int) (*example, *node) {
 	var child *node
-	if !n.leaf() {
+	if !n.leaf {
 		child = n.children[index+1]
 		copy(n.children[index+1:n.count], n.children[index+2:n.count+1])
 		n.children[n.count] = nil
@@ -293,7 +272,7 @@ func (n *node) popBack() (*example, *node) {
 	n.count--
 	out := n.items[n.count]
 	n.items[n.count] = nilT
-	if n.leaf() {
+	if n.leaf {
 		return out, nil
 	}
 	child := n.children[n.count+1]
@@ -305,7 +284,7 @@ func (n *node) popBack() (*example, *node) {
 func (n *node) popFront() (*example, *node) {
 	n.count--
 	var child *node
-	if !n.leaf() {
+	if !n.leaf {
 		child = n.children[0]
 		copy(n.children[:n.count+1], n.children[1:n.count+2])
 		n.children[n.count+1] = nil
@@ -326,7 +305,7 @@ func (n *node) find(item *example) (index int, found bool) {
 	for i < j {
 		h := int(uint(i+j) >> 1) // avoid overflow when computing h
 		// i ≤ h < j
-		v := compare(item, n.items[h])
+		v := cmp(item, n.items[h])
 		if v == 0 {
 			return h, true
 		} else if v > 0 {
@@ -362,7 +341,7 @@ func (n *node) find(item *example) (index int, found bool) {
 func (n *node) split(i int) (*example, *node) {
 	out := n.items[i]
 	var next *node
-	if n.leaf() {
+	if n.leaf {
 		next = newLeafNode()
 	} else {
 		next = newNode()
@@ -372,7 +351,7 @@ func (n *node) split(i int) (*example, *node) {
 	for j := int16(i); j < n.count; j++ {
 		n.items[j] = nilT
 	}
-	if !n.leaf() {
+	if !n.leaf {
 		copy(next.children[:], n.children[i+1:n.count+1])
 		for j := int16(i + 1); j <= n.count; j++ {
 			n.children[j] = nil
@@ -380,14 +359,12 @@ func (n *node) split(i int) (*example, *node) {
 	}
 	n.count = int16(i)
 
-	nextMax := next.findUpperBound()
-	next.setMax(nextMax)
-	nMax := n.max()
-	if nMax.compare(nextMax) != 0 && nMax.compare(upperBound(out)) != 0 {
+	next.max = next.findUpperBound()
+	if n.max.compare(next.max) != 0 && n.max.compare(upperBound(out)) != 0 {
 		// If upper bound wasn't from new node or item
 		// at index i, it must still be from old node.
 	} else {
-		n.setMax(n.findUpperBound())
+		n.max = n.findUpperBound()
 	}
 	return out, next
 }
@@ -402,7 +379,7 @@ func (n *node) insert(item *example) (replaced, newBound bool) {
 		n.items[i] = item
 		return true, false
 	}
-	if n.leaf() {
+	if n.leaf {
 		n.insertAt(i, item, nil)
 		return false, n.adjustUpperBoundOnInsertion(item, nil)
 	}
@@ -410,10 +387,10 @@ func (n *node) insert(item *example) (replaced, newBound bool) {
 		splitLa, splitNode := mut(&n.children[i]).split(maxItems / 2)
 		n.insertAt(i, splitLa, splitNode)
 
-		switch v := compare(item, n.items[i]); {
-		case v < 0:
+		switch cmp := cmp(item, n.items[i]); {
+		case cmp < 0:
 			// no change, we want first split node
-		case v > 0:
+		case cmp > 0:
 			i++ // we want second split node
 		default:
 			n.items[i] = item
@@ -430,7 +407,7 @@ func (n *node) insert(item *example) (replaced, newBound bool) {
 // removeMax removes and returns the maximum item from the subtree rooted at
 // this node.
 func (n *node) removeMax() *example {
-	if n.leaf() {
+	if n.leaf {
 		n.count--
 		out := n.items[n.count]
 		n.items[n.count] = nilT
@@ -455,7 +432,7 @@ func (n *node) removeMax() *example {
 // the node's upper bound changes.
 func (n *node) remove(item *example) (out *example, newBound bool) {
 	i, found := n.find(item)
-	if n.leaf() {
+	if n.leaf {
 		if found {
 			out, _ = n.removeAt(i)
 			return out, n.adjustUpperBoundOnRemoval(out, nil)
@@ -596,7 +573,7 @@ func (n *node) rebalanceOrMerge(i int) {
 		mergeLa, mergeChild := n.removeAt(i)
 		child.items[child.count] = mergeLa
 		copy(child.items[child.count+1:], mergeChild.items[:mergeChild.count])
-		if !child.leaf() {
+		if !child.leaf {
 			copy(child.children[child.count+1:], mergeChild.children[:mergeChild.count+1])
 		}
 		child.count += mergeChild.count + 1
@@ -616,9 +593,9 @@ func (n *node) findUpperBound() keyBound {
 			max = up
 		}
 	}
-	if !n.leaf() {
+	if !n.leaf {
 		for i := int16(0); i <= n.count; i++ {
-			up := n.children[i].max()
+			up := n.children[i].max
 			if max.compare(up) < 0 {
 				max = up
 			}
@@ -633,12 +610,12 @@ func (n *node) findUpperBound() keyBound {
 func (n *node) adjustUpperBoundOnInsertion(item *example, child *node) bool {
 	up := upperBound(item)
 	if child != nil {
-		if childMax := child.max(); up.compare(childMax) < 0 {
-			up = childMax
+		if up.compare(child.max) < 0 {
+			up = child.max
 		}
 	}
-	if n.max().compare(up) < 0 {
-		n.setMax(up)
+	if n.max.compare(up) < 0 {
+		n.max = up
 		return true
 	}
 	return false
@@ -650,15 +627,14 @@ func (n *node) adjustUpperBoundOnInsertion(item *example, child *node) bool {
 func (n *node) adjustUpperBoundOnRemoval(item *example, child *node) bool {
 	up := upperBound(item)
 	if child != nil {
-		if childMax := child.max(); up.compare(childMax) < 0 {
-			up = childMax
+		if up.compare(child.max) < 0 {
+			up = child.max
 		}
 	}
-	if n.max().compare(up) == 0 {
+	if n.max.compare(up) == 0 {
 		// up was previous upper bound of n.
-		max := n.findUpperBound()
-		n.setMax(max)
-		return max.compare(up) != 0
+		n.max = n.findUpperBound()
+		return n.max.compare(up) != 0
 	}
 	return false
 }
@@ -724,7 +700,7 @@ func (t *btree) Delete(item *example) {
 	}
 	if t.root.count == 0 {
 		old := t.root
-		if t.root.leaf() {
+		if t.root.leaf {
 			t.root = nil
 		} else {
 			t.root = t.root.children[0]
@@ -745,7 +721,7 @@ func (t *btree) Set(item *example) {
 		newRoot.items[0] = splitLa
 		newRoot.children[0] = t.root
 		newRoot.children[1] = splitNode
-		newRoot.setMax(newRoot.findUpperBound())
+		newRoot.max = newRoot.findUpperBound()
 		t.root = newRoot
 	}
 	if replaced, _ := mut(&t.root).insert(item); !replaced {
@@ -767,7 +743,7 @@ func (t *btree) Height() int {
 	}
 	h := 1
 	n := t.root
-	for !n.leaf() {
+	for !n.leaf {
 		n = n.children[0]
 		h++
 	}
@@ -791,7 +767,7 @@ func (t *btree) String() string {
 }
 
 func (n *node) writeString(b *strings.Builder) {
-	if n.leaf() {
+	if n.leaf {
 		for i := int16(0); i < n.count; i++ {
 			if i != 0 {
 				b.WriteString(",")
@@ -908,7 +884,7 @@ func (i *iterator) SeekGE(item *example) {
 		if found {
 			return
 		}
-		if i.n.leaf() {
+		if i.n.leaf {
 			if i.pos == i.n.count {
 				i.Next()
 			}
@@ -927,7 +903,7 @@ func (i *iterator) SeekLT(item *example) {
 	for {
 		pos, found := i.n.find(item)
 		i.pos = int16(pos)
-		if found || i.n.leaf() {
+		if found || i.n.leaf {
 			i.Prev()
 			return
 		}
@@ -941,7 +917,7 @@ func (i *iterator) First() {
 	if i.n == nil {
 		return
 	}
-	for !i.n.leaf() {
+	for !i.n.leaf {
 		i.descend(i.n, 0)
 	}
 	i.pos = 0
@@ -953,7 +929,7 @@ func (i *iterator) Last() {
 	if i.n == nil {
 		return
 	}
-	for !i.n.leaf() {
+	for !i.n.leaf {
 		i.descend(i.n, i.n.count)
 	}
 	i.pos = i.n.count - 1
@@ -966,7 +942,7 @@ func (i *iterator) Next() {
 		return
 	}
 
-	if i.n.leaf() {
+	if i.n.leaf {
 		i.pos++
 		if i.pos < i.n.count {
 			return
@@ -978,7 +954,7 @@ func (i *iterator) Next() {
 	}
 
 	i.descend(i.n, i.pos+1)
-	for !i.n.leaf() {
+	for !i.n.leaf {
 		i.descend(i.n, 0)
 	}
 	i.pos = 0
@@ -991,7 +967,7 @@ func (i *iterator) Prev() {
 		return
 	}
 
-	if i.n.leaf() {
+	if i.n.leaf {
 		i.pos--
 		if i.pos >= 0 {
 			return
@@ -1004,7 +980,7 @@ func (i *iterator) Prev() {
 	}
 
 	i.descend(i.n, i.pos)
-	for !i.n.leaf() {
+	for !i.n.leaf {
 		i.descend(i.n, i.n.count)
 	}
 	i.pos = i.n.count - 1
@@ -1021,23 +997,14 @@ func (i *iterator) Cur() *example {
 	return i.n.items[i.pos]
 }
 
-// An overlap scan is a scan over all items that overlap with the provided item
-// (start key inclusive, end key exclusive) in order of the overlapping items'
-// start keys. The goal of the scan is to minimize the number of key comparisons
-// performed in total. The algorithm operates based on the following two
-// invariants maintained by augmented interval btree:
+// An overlap scan is a scan over all items that overlap with the provided
+// item in order of the overlapping items' start keys. The goal of the scan
+// is to minimize the number of key comparisons performed in total. The
+// algorithm operates based on the following two invariants maintained by
+// augmented interval btree:
 //  1. all items are sorted in the btree based on their start key.
 //  2. all btree nodes maintain the upper bound end key of all items
 //     in their subtree.
-//
-// An overlapping scan can be performed either in the forward or reverse
-// direction. The algorithm for each is slightly different. First, we present
-// each algorithm, and then we talk about the differences (and the reasons for
-// for them).
-//
-// -----------------------------------------------------------------------------
-// Forward Overlap Scan Algorithm
-// -----------------------------------------------------------------------------
 //
 // The scan algorithm starts in "unconstrained minimum" and "unconstrained
 // maximum" states. To enter a "constrained minimum" state, the scan must reach
@@ -1052,113 +1019,33 @@ func (i *iterator) Cur() *example {
 //
 // The scan algorithm works like a standard btree forward scan with the
 // following augmentations:
-//  1. before traversing the tree, the scan performs a binary search on the
+//  1. before tranversing the tree, the scan performs a binary search on the
 //     root node's items to determine a "soft" lower-bound constraint position
 //     and a "hard" upper-bound constraint position in the root's children.
-//  2. when traversing into a child node in the lower or upper bound constraint
+//  2. when tranversing into a child node in the lower or upper bound constraint
 //     position, the constraint is refined by searching the child's items.
 //  3. the initial traversal down the tree follows the left-most children
 //     whose upper bound end keys are equal to or greater than the start key
 //     of the search range. The children followed will be equal to or less
 //     than the soft lower bound constraint.
-//  4. once the initial traversal completes and the scan is in the left-most
+//  4. once the initial tranversal completes and the scan is in the left-most
 //     btree node whose upper bound overlaps the search range, key comparisons
 //     must be performed with each item in the tree. This is necessary because
 //     any of these items may have end keys that cause them to overlap with the
 //     search range.
 //  5. once the scan reaches the lower bound constraint position (the first item
 //     with a start key equal to or greater than the search range's start key),
-//     it can begin scanning without performing key comparisons. This is allowed
+//     it can begin scaning without performing key comparisons. This is allowed
 //     because all items from this point forward will have end keys that are
 //     greater than the search range's start key.
 //  6. once the scan reaches the upper bound constraint position, it terminates.
 //     It does so because the item at this position is the first item with a
 //     start key larger than the search range's end key.
-//
-// -----------------------------------------------------------------------------
-// Reverse Overlap Scan Algorithm
-// -----------------------------------------------------------------------------
-//
-// The scan algorithm starts in a "unconstrained minimum" and "unconstrained
-// maximum" state. To enter the "constrained maximum" state, the scan must reach
-// items in the tree with start keys below the search range's end key. Once the
-// scan enters the "constrained maximum" state, it will remain there. To enter
-// the "constrained minimum" state, the scan must reach items in the tree with
-// start keys above the search range's start key. To enter a "constrained
-// minimum" state, the scan must determine the first child btree node in a given
-// subtree that can have items with start keys less than the search range's
-// start key. The scan then remains in the "constrained minimum" state, until it
-// traverses into this child node, at which point it moves to the "unconstrained
-// minimum" state again.
-//
-// The scan algorithm works like a standard btree reverse scan with the
-// following augmentations:
-//  1. before traversing the tree, the scan performs a binary search on the root
-//     node's items to determine a "soft" lower-bound constraint position and a
-//     "hard" upper-bound constraint position in the root's children.
-//  2. when traversing into a child node in the lower or upper bound constraint
-//     position the constraint is refined by searching the child's items.
-//  3. the initial traversal down the tree follows the right-most children whose
-//     upper bound end keys are equal to or greater than the start key of the search
-//     range. The children followed will be equal to or less than the hard
-//     upper-bound constraint.
-//  4. once the initial traversal completes and the scan is in the right-most
-//     btree node whose upper bound overlaps the search range, then jumps directly
-//     to the first item before the upper bound constraint position. This is because
-//     the upper bound constraint position is exclusive.
-//  5. as long as the scan hasn't reached the lower bound constraint position
-//     (the first item with a start key equal or greater than the search range's
-//     start key), it can continue scanning without performing key comparisions.
-//     This is allowed because all items until the lower bound constraint position
-//     is reached will have end keys greater than the search range's start key, and
-//     we know that all items in the tree have start keys less than the search
-//     range's end key.
-//  6. once the scan reaches the lower bound constraint position, key comparisons
-//     must be performed with each item in the tree. This is necessary because even
-//     though the scan is dealing with items that have start keys less than the
-//     serach range's start key, it is possible that these items have end keys that
-//     cause them to overlap with the search range.
-//
-// -----------------------------------------------------------------------------
-// Differences between forward and reverse overlap scans
-// -----------------------------------------------------------------------------
-//
-//  1. The forward overlapping scan can terminate early. It can do so once it
-//     reaches the hard upper bound constaint. This is the first item whose start
-//     key is greater than or equal to the search range's end key.
-//  2. The reverse overlaping scan can directly "jump" directly to the item right
-//     before the hard upper bound constraint. This allows it to skip any subtree/
-//     items that are past the search range's end key.
-//  3. Once the forward overlapping scan enters the inConstrMin condition, it
-//     stays there. The scan reaches inConstrMin at the first item whose start key
-//     is greater than the search range's start key. While inConstrMin is true, no
-//     key comparisons need to be performed[1].
-//  4. In contrast, the reverse overlapping starts off[2] in the inConstrMin
-//     state (where no key comparisons are needed). Once it exitst this state, key
-//     comparisons are needed.
-//
-// [1] This is because the search interval's end key must be greater than the
-// item's start key. Otherwise, we'd have terminated the scan. So, the item must
-// overlap with the search range, and we can skip key comparisons.
-// [2] After it's jumped to the item right before the "hard" upper bound
-// constraint.
-//
-// There's a few reasons for the differences here:
-//  1. All items in the b-tree are sorted by start key. This means that we have a
-//     "hard" upper bound, but a "soft" lower bound. For forward scans, this means
-//     that we can terminate early when this "hard" upper bound is reached. For
-//     reverse scans, this means that we can directly jump to the last item the scan
-//     will ever see.
-//  2. The number of children at an interior node is one more than the number of
-//     items. For a forward scan, the scan starts off at the 0th index regardless of
-//     the type of node. For a reverse scan, however, the scan must start off at the
-//     last child for interior nodes, and the last item for leaf-nodes. These are "off
-//     by one", which requires some care to get right.
 type overlapScan struct {
 	// The "soft" lower-bound constraint.
-	constrMinN   *node
-	constrMinPos int16
-	inConstrMin  bool
+	constrMinN       *node
+	constrMinPos     int16
+	constrMinReached bool
 
 	// The "hard" upper-bound constraint.
 	constrMaxN   *node
@@ -1173,23 +1060,10 @@ func (i *iterator) FirstOverlap(item *example) {
 		return
 	}
 	i.pos = 0
+	i.o = overlapScan{}
 	i.constrainMinSearchBounds(item)
 	i.constrainMaxSearchBounds(item)
 	i.findNextOverlap(item)
-}
-
-// LastOverlap seeks to the last item in the btree that overlaps with the
-// provided search item.
-func (i *iterator) LastOverlap(item *example) {
-	i.reset()
-	if i.n == nil {
-		return
-	}
-	i.pos = i.n.count
-	i.o.inConstrMin = true // reverse scans start inConstrMin
-	i.constrainMinSearchBounds(item)
-	i.constrainMaxSearchBounds(item)
-	i.findPrevOverlap(item)
 }
 
 // NextOverlap positions the iterator to the item immediately following
@@ -1202,24 +1076,6 @@ func (i *iterator) NextOverlap(item *example) {
 	i.findNextOverlap(item)
 }
 
-// PrevOverlap positions the iterator to the item immediately preceding
-// its current position that overlaps with the search item.
-func (i *iterator) PrevOverlap(item *example) {
-	if i.n == nil {
-		return
-	}
-	i.findPrevOverlap(item)
-}
-
-// constrainMinSearchBounds sets the "soft" lower-bound constraint. This is the
-// first item whose start key is greater than or equal to the supplied search
-// range's start key.
-//
-//	| search range:           [-------------)
-//	| items:         [----) [----) [----) [----) [----)
-//	|                                ^
-//	|                                |
-//	|                                +---constrMinPos
 func (i *iterator) constrainMinSearchBounds(item *example) {
 	k := item.Key()
 	j := sort.Search(int(i.n.count), func(j int) bool {
@@ -1229,15 +1085,6 @@ func (i *iterator) constrainMinSearchBounds(item *example) {
 	i.o.constrMinPos = int16(j)
 }
 
-// constrainMaxSearchBounds sets the "hard" upper-bound constraint. This is the
-// first item whose start key is greater than the supplied search range's end
-// key.
-//
-//	| search range:           [--------------)
-//	| items:         [----) [----) [----) [----) [----)
-//	|                                               ^
-//	|                                               |
-//	|                                               +---constrMaxPos
 func (i *iterator) constrainMaxSearchBounds(item *example) {
 	up := upperBound(item)
 	j := sort.Search(int(i.n.count), func(j int) bool {
@@ -1252,9 +1099,9 @@ func (i *iterator) findNextOverlap(item *example) {
 		if i.pos > i.n.count {
 			// Iterate up tree.
 			i.ascend()
-		} else if !i.n.leaf() {
+		} else if !i.n.leaf {
 			// Iterate down tree.
-			if i.o.inConstrMin || i.n.children[i.pos].max().contains(item) {
+			if i.o.constrMinReached || i.n.children[i.pos].max.contains(item) {
 				par := i.n
 				pos := i.pos
 				i.descend(par, pos)
@@ -1278,14 +1125,14 @@ func (i *iterator) findNextOverlap(item *example) {
 		}
 		if i.n == i.o.constrMinN && i.pos == i.o.constrMinPos {
 			// The scan reached the soft lower-bound constraint.
-			i.o.inConstrMin = true
+			i.o.constrMinReached = true
 		}
 
 		// Iterate across node.
 		if i.pos < i.n.count {
 			// Check for overlapping item.
-			if i.o.inConstrMin {
-				// Fast-path to avoid span comparison. i.o.inConstrMin
+			if i.o.constrMinReached {
+				// Fast-path to avoid span comparison. i.o.constrMinReached
 				// tells us that all items have end keys above our search
 				// span's start key.
 				return
@@ -1295,95 +1142,5 @@ func (i *iterator) findNextOverlap(item *example) {
 			}
 		}
 		i.pos++
-	}
-}
-
-func (i *iterator) findPrevOverlap(item *example) {
-	for {
-		// First off, we want to avoid exploring any items that are past the
-		// search range's end key.
-		if i.n == i.o.constrMaxN && i.pos > i.o.constrMaxPos {
-			// The item at i.o.constrMaxPos is the first item with a start key
-			// that's greater than the search range's end key. As such, it is
-			// the left-most item that does not overlap with the search range --
-			// we want to "jump" straight to the preceding position. However, we
-			// can't just position the iterator to i.o.constrMaxPos - 1; if this
-			// is an interior node, we might need to descend into the child on
-			// the right of i.o.constrMaxPos - 1 first. So, we set the position
-			// to that of the child node, and let the loop decide whether to
-			// descend further or not.
-			i.pos = i.o.constrMaxPos
-		}
-
-		if i.pos < 0 {
-			if i.s.len() > 0 {
-				// Iterate up tree, if possible.
-				i.ascend()
-			} else {
-				// We've reached the root, so there's no more ascending to do;
-				// the iterator is already invalid, so simply return.
-				return
-			}
-		} else if !i.n.leaf() {
-			// Iterate down tree, but only if there's any hope of finding an
-			// overlap. In particular, if the max key found in the child subtree
-			// is less than the search item's start key, there's no way we'll
-			// find an overlap.
-			if i.o.inConstrMin || i.n.children[i.pos].max().contains(item) {
-				par := i.n
-				pos := i.pos
-				i.descend(par, pos)
-				// Position the iterator to the last child. It's fine if we
-				// descended to a leaf node; we'll be positioned to the last
-				// item in the leaf node in the next iteration.
-				i.pos = i.n.count
-
-				// Refine the constraint bounds, if necessary.
-				if par == i.o.constrMinN && pos == i.o.constrMinPos {
-					i.constrainMinSearchBounds(item)
-				}
-				if par == i.o.constrMaxN && pos == i.o.constrMaxPos {
-					i.constrainMaxSearchBounds(item)
-				}
-				continue
-			}
-		}
-
-		if i.n == i.o.constrMinN && i.pos == i.o.constrMinPos {
-			// The item at i.o.constrMinPos is the left-most item whose start
-			// key is greater than or equal to the search range's start key. As
-			// such, it's the last item we can eschew key comparisons for. The
-			// i.pos-- is going to transition us from a constrained minimum to
-			// an unconstrained minimum scan; update state to reflect this.
-			i.o.inConstrMin = false
-		}
-
-		// NB: We decrement the position between descending into a child node
-		// and checking an item. This is in contrast to the forward scan, where
-		// the increment happens after doing both.
-		//
-		// This is because the number of children at an interior node is one
-		// more than the number of items. As such, positioning the iterator at
-		// the last child is different than positioning it at the last item
-		// (it's off by one). On the other hand, positioning the iterator at the
-		// first item or the first child is the same index (0).
-		i.pos--
-
-		// Iterate across node.
-		if i.pos >= 0 {
-			if i.o.inConstrMin {
-				// Fast-path to avoid span comparison. i.o.inConstrMin
-				// tells us that the item has a start key that's greater than
-				// the search range's start key.
-				return
-			}
-			if upperBound(i.n.items[i.pos]).contains(item) {
-				// We're not in the constrained minimum state, which means the
-				// item's start key is less than the search range's start key.
-				// We must check if the item's end key results in an overlap
-				// (i.e. if the end key is contained in the search range).
-				return
-			}
-		}
 	}
 }

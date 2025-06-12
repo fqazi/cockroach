@@ -16,12 +16,6 @@ func (st LeaseStatus) IsValid() bool {
 	return st.State == LeaseState_VALID
 }
 
-// IsExpired returns whether the lease was expired at the time that the
-// lease status was computed.
-func (st LeaseStatus) IsExpired() bool {
-	return st.State == LeaseState_EXPIRED
-}
-
 // OwnedBy returns whether the lease is owned by the given store.
 func (st LeaseStatus) OwnedBy(storeID roachpb.StoreID) bool {
 	return st.Lease.OwnedBy(storeID)
@@ -33,21 +27,7 @@ func (st LeaseStatus) Expiration() hlc.Timestamp {
 	case roachpb.LeaseExpiration:
 		return st.Lease.GetExpiration()
 	case roachpb.LeaseEpoch:
-		exp := st.Lease.MinExpiration
-		// The expiration of the liveness record is inherited by the lease iff the
-		// lease epoch matches the liveness epoch.
-		if st.Lease.Epoch == st.Liveness.Epoch {
-			exp.Forward(st.Liveness.Expiration.ToTimestamp())
-		}
-		return exp
-	case roachpb.LeaseLeader:
-		exp := st.Lease.MinExpiration
-		// The leader support applies to the lease iff the lease term matches the
-		// raft term.
-		if st.Lease.Term == st.LeaderSupport.Term {
-			exp.Forward(st.LeaderSupport.LeadSupportUntil)
-		}
-		return exp
+		return st.Liveness.Expiration.ToTimestamp()
 	default:
 		panic("unexpected")
 	}
@@ -75,5 +55,10 @@ func (st LeaseStatus) Expiration() hlc.Timestamp {
 // Until a new lease is acquired, all writes will be pushed into this last
 // nanosecond of the lease.
 func (st LeaseStatus) ClosedTimestampUpperBound() hlc.Timestamp {
-	return st.Expiration().WallPrev()
+	// HACK(andrei): We declare the lease expiration to be synthetic by fiat,
+	// because it frequently is synthetic even though currently it's not marked
+	// as such. See the TODO in Timestamp.Add() about the work remaining to
+	// properly mark these timestamps as synthetic. We need to make sure it's
+	// synthetic here so that the results of Backwards() can be synthetic.
+	return st.Expiration().WithSynthetic(true).WallPrev()
 }

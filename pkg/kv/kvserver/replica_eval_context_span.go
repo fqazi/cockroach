@@ -7,7 +7,6 @@ package kvserver
 
 import (
 	"context"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -80,9 +79,9 @@ func (rec *SpanSetReplicaEvalContext) GetNodeLocality() roachpb.Locality {
 	return rec.i.GetNodeLocality()
 }
 
-// GetCompactedIndex returns the compacted index of the raft log.
-func (rec *SpanSetReplicaEvalContext) GetCompactedIndex() kvpb.RaftIndex {
-	return rec.i.GetCompactedIndex()
+// GetFirstIndex returns the first index.
+func (rec *SpanSetReplicaEvalContext) GetFirstIndex() kvpb.RaftIndex {
+	return rec.i.GetFirstIndex()
 }
 
 // GetTerm returns the term for the given index in the Raft log.
@@ -174,10 +173,8 @@ func (rec SpanSetReplicaEvalContext) GetGCThreshold() hlc.Timestamp {
 
 // ExcludeDataFromBackup returns whether the replica is to be excluded from a
 // backup.
-func (rec SpanSetReplicaEvalContext) ExcludeDataFromBackup(
-	ctx context.Context, sp roachpb.Span,
-) (bool, error) {
-	return rec.i.ExcludeDataFromBackup(ctx, sp)
+func (rec SpanSetReplicaEvalContext) ExcludeDataFromBackup(ctx context.Context) bool {
+	return rec.i.ExcludeDataFromBackup(ctx)
 }
 
 // String implements Stringer.
@@ -200,12 +197,10 @@ func (rec SpanSetReplicaEvalContext) GetLastReplicaGCTimestamp(
 
 // GetLease returns the Replica's current and next lease (if any).
 func (rec SpanSetReplicaEvalContext) GetLease() (roachpb.Lease, roachpb.Lease) {
+	rec.ss.AssertAllowed(spanset.SpanReadOnly,
+		roachpb.Span{Key: keys.RangeLeaseKey(rec.GetRangeID())},
+	)
 	return rec.i.GetLease()
-}
-
-// GetRangeLeaseDuration is part of the EvalContext interface.
-func (rec SpanSetReplicaEvalContext) GetRangeLeaseDuration() time.Duration {
-	return rec.i.GetRangeLeaseDuration()
 }
 
 // GetRangeInfo is part of the EvalContext interface.
@@ -275,11 +270,6 @@ func (rec *SpanSetReplicaEvalContext) GetApproximateDiskBytes(
 	from, to roachpb.Key,
 ) (uint64, error) {
 	return rec.i.GetApproximateDiskBytes(from, to)
-}
-
-// AdmissionHeader implements the batcheval.EvalContext interface.
-func (rec *SpanSetReplicaEvalContext) AdmissionHeader() kvpb.AdmissionHeader {
-	return rec.i.AdmissionHeader()
 }
 
 // Release implements the batcheval.EvalContext interface.

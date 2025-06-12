@@ -19,6 +19,7 @@ go_library(
         "//pkg/sql/sem/tree",
         "//pkg/util/log",
         "//pkg/util/timeutil",
+        "//pkg/util/uuid",
         "@com_github_cockroachdb_errors//:errors",
     ],
 )
@@ -31,7 +32,9 @@ go_test(
         "license_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":utilccl"],
+    tags = ["ccl_test"],
     deps = [
         "//pkg/base",
         "//pkg/ccl",
@@ -50,6 +53,7 @@ go_test(
         "//pkg/util/randutil",
         "//pkg/util/stop",
         "//pkg/util/timeutil",
+        "//pkg/util/uuid",
         "@com_github_stretchr_testify//require",
     ],
 )

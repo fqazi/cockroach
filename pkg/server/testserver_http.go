@@ -91,28 +91,6 @@ func (ts *httpTestServer) GetUnauthenticatedHTTPClient() (http.Client, error) {
 	return client, nil
 }
 
-// GetUnauthenticatedHTTPClientWithTransport implements TestServerInterface.
-func (ts *httpTestServer) GetUnauthenticatedHTTPClientWithTransport() (
-	http.Client,
-	*http.Transport,
-	error,
-) {
-	client, err := ts.t.sqlServer.execCfg.RPCContext.GetHTTPClient()
-	if err != nil {
-		return client, nil, err
-	}
-	transport := client.Transport.(*http.Transport)
-	client.Transport = &tenantHeaderDecorator{
-		RoundTripper: client.Transport,
-		tenantName:   ts.t.tenantName,
-	}
-	client.Timeout = 2 * time.Second
-	if util.RaceEnabled {
-		client.Timeout = 30 * time.Second
-	}
-	return client, transport, nil
-}
-
 // GetAdminHTTPClient implements the TestServerInterface.
 func (ts *httpTestServer) GetAdminHTTPClient() (http.Client, error) {
 	httpClient, _, err := ts.GetAuthenticatedHTTPClientAndCookie(
@@ -222,7 +200,7 @@ func (ts *httpTestServer) GetAuthenticatedHTTPClientAndCookie(
 func (ts *httpTestServer) CreateAuthUser(userName username.SQLUsername, isAdmin bool) error {
 	if _, err := ts.t.sqlServer.internalExecutor.ExecEx(context.TODO(),
 		"create-auth-user", nil,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		fmt.Sprintf("CREATE USER %s", userName.Normalized()),
 	); err != nil {
 		return err
@@ -230,7 +208,7 @@ func (ts *httpTestServer) CreateAuthUser(userName username.SQLUsername, isAdmin 
 	if isAdmin {
 		if _, err := ts.t.sqlServer.internalExecutor.ExecEx(context.TODO(),
 			"grant-admin", nil,
-			sessiondata.NodeUserSessionDataOverride,
+			sessiondata.RootUserSessionDataOverride,
 			fmt.Sprintf("GRANT admin TO %s WITH ADMIN OPTION", userName.Normalized()),
 		); err != nil {
 			return err

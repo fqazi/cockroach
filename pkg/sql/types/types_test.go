@@ -27,9 +27,9 @@ func TestTypes(t *testing.T) {
 		expected *T
 	}{
 		// ARRAY
-		{MakeArray(AnyElement), AnyArray},
-		{MakeArray(AnyElement), &T{InternalType: InternalType{
-			Family: ArrayFamily, ArrayContents: AnyElement, Oid: oid.T_anyarray, Locale: &emptyLocale}}},
+		{MakeArray(Any), AnyArray},
+		{MakeArray(Any), &T{InternalType: InternalType{
+			Family: ArrayFamily, ArrayContents: Any, Oid: oid.T_anyarray, Locale: &emptyLocale}}},
 
 		{MakeArray(Float), FloatArray},
 		{MakeArray(Float), &T{InternalType: InternalType{
@@ -341,11 +341,6 @@ func TestTypes(t *testing.T) {
 			Family: JsonFamily, Oid: oid.T_jsonb, Locale: &emptyLocale}}},
 		{Jsonb, MakeScalar(JsonFamily, oid.T_jsonb, 0, 0, emptyLocale)},
 
-		// JSONPATH
-		{Jsonpath, &T{InternalType: InternalType{
-			Family: JsonpathFamily, Oid: oidext.T_jsonpath, Locale: &emptyLocale}}},
-		{Jsonpath, MakeScalar(JsonpathFamily, oidext.T_jsonpath, 0, 0, emptyLocale)},
-
 		// OID
 		{Oid, &T{InternalType: InternalType{
 			Family: OidFamily, Oid: oid.T_oid, Locale: &emptyLocale}}},
@@ -487,7 +482,7 @@ func TestTypes(t *testing.T) {
 
 		// TUPLE
 		{MakeTuple(nil), EmptyTuple},
-		{MakeTuple([]*T{AnyElement}), AnyTuple},
+		{MakeTuple([]*T{Any}), AnyTuple},
 		{MakeTuple([]*T{Int}), &T{InternalType: InternalType{
 			Family: TupleFamily, Oid: oid.T_record, TupleContents: []*T{Int}, Locale: &emptyLocale}}},
 		{MakeTuple([]*T{Int, String}), &T{InternalType: InternalType{
@@ -585,7 +580,7 @@ func TestEquivalent(t *testing.T) {
 		// BIT
 		{MakeBit(1), MakeBit(2), true},
 		{MakeBit(1), MakeVarBit(2), true},
-		{MakeVarBit(10), AnyElement, true},
+		{MakeVarBit(10), Any, true},
 		{VarBit, Bytes, false},
 
 		// COLLATEDSTRING
@@ -598,13 +593,13 @@ func TestEquivalent(t *testing.T) {
 		// DECIMAL
 		{Decimal, MakeDecimal(3, 2), true},
 		{MakeDecimal(3, 2), MakeDecimal(3, 0), true},
-		{AnyElement, MakeDecimal(10, 0), true},
+		{Any, MakeDecimal(10, 0), true},
 		{Decimal, Float, false},
 
 		// INT
 		{Int2, Int4, true},
 		{Int4, Int, true},
-		{Int, AnyElement, true},
+		{Int, Any, true},
 		{Int, IntArray, false},
 
 		// TUPLE
@@ -625,7 +620,7 @@ func TestEquivalent(t *testing.T) {
 		// UNKNOWN
 		{Unknown, &T{InternalType: InternalType{
 			Family: UnknownFamily, Oid: oid.T_unknown, Locale: &emptyLocale}}, true},
-		{AnyElement, Unknown, true},
+		{Any, Unknown, true},
 		{Unknown, Int, false},
 	}
 
@@ -672,7 +667,7 @@ func TestIdentical(t *testing.T) {
 		{MakeBit(1), MakeBit(1), true},
 		{MakeBit(1), MakeBit(2), false},
 		{MakeBit(1), MakeVarBit(1), false},
-		{MakeVarBit(10), AnyElement, false},
+		{MakeVarBit(10), Any, false},
 		{VarBit, Bytes, false},
 
 		// COLLATEDSTRING
@@ -691,7 +686,7 @@ func TestIdentical(t *testing.T) {
 		{Decimal, MakeDecimal(3, 2), false},
 		{MakeDecimal(3, 2), MakeDecimal(3, 2), true},
 		{MakeDecimal(3, 2), MakeDecimal(3, 0), false},
-		{AnyElement, MakeDecimal(10, 0), false},
+		{Any, MakeDecimal(10, 0), false},
 		{Decimal, Float, false},
 
 		// INT
@@ -699,7 +694,7 @@ func TestIdentical(t *testing.T) {
 		{Int4, Int4, true},
 		{Int2, Int4, false},
 		{Int4, Int, false},
-		{Int, AnyElement, false},
+		{Int, Any, false},
 		{Int, IntArray, false},
 
 		// TUPLE
@@ -721,7 +716,7 @@ func TestIdentical(t *testing.T) {
 		// UNKNOWN
 		{Unknown, &T{InternalType: InternalType{
 			Family: UnknownFamily, Oid: oid.T_unknown, Locale: &emptyLocale}}, true},
-		{AnyElement, Unknown, false},
+		{Any, Unknown, false},
 		{Unknown, Int, false},
 	}
 
@@ -1071,7 +1066,7 @@ func TestOidSetDuringUpgrade(t *testing.T) {
 }
 
 func TestSQLStandardName(t *testing.T) {
-	for _, typ := range append([]*T{AnyElement, AnyArray}, Scalar...) {
+	for _, typ := range Scalar {
 		t.Run(typ.Name(), func(t *testing.T) {
 			require.NotEmpty(t, typ.SQLStandardName())
 		})
@@ -1180,15 +1175,11 @@ func TestDelimiter(t *testing.T) {
 
 // Prior to the patch which introduced this test, the below calls would
 // have panicked.
-func TestUDTWithoutTypeMetaNameDoesNotPanicInSQLString(t *testing.T) {
+func TestEnumWithoutTypeMetaNameDoesNotPanicInSQLString(t *testing.T) {
 	typ := MakeEnum(100100, 100101)
 	require.Equal(t, "@100100", typ.SQLString())
 	arrayType := MakeArray(typ)
 	require.Equal(t, "@100100[]", arrayType.SQLString())
-	compositeType := NewCompositeType(100200, 100201, nil, nil)
-	require.Equal(t, "@100200", compositeType.SQLString())
-	arrayCompositeType := MakeArray(compositeType)
-	require.Equal(t, "@100200[]", arrayCompositeType.SQLString())
 }
 
 func TestSQLStringForError(t *testing.T) {
@@ -1245,7 +1236,7 @@ func TestSQLStringForError(t *testing.T) {
 		},
 		{ // Case 10: redacted because user-defined
 			typ:      userDefinedTuple,
-			expected: "USER DEFINED RECORD: ‹foo›",
+			expected: "USER DEFINED RECORD: ‹FOO›",
 		},
 		{ // Case 11: un-redacted
 			typ:      MakeArray(Int),

@@ -14,6 +14,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/keyvisualizer/keyvispb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
@@ -35,7 +36,7 @@ func writeSample(
 		ctx,
 		"write-sample",
 		nil,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.InternalExecutorOverride{User: username.RootUserName()},
 		stmt,
 	)
 
@@ -61,7 +62,7 @@ func writeNewKeys(ctx context.Context, ie *sql.InternalExecutor, newKeys map[str
 		"key_bytes) VALUES %s", strings.Join(values, ","))
 
 	_, err := ie.ExecEx(ctx, "write-new-keys", nil,
-		sessiondata.NodeUserSessionDataOverride, stmt)
+		sessiondata.InternalExecutorOverride{User: username.RootUserName()}, stmt)
 
 	return err
 }
@@ -114,7 +115,7 @@ func writeBuckets(
 		ctx,
 		"write-buckets",
 		nil,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.InternalExecutorOverride{User: username.RootUserName()},
 		stmt,
 	)
 
@@ -141,7 +142,7 @@ func getKeys(
 		ctx,
 		"query-unique-keys",
 		nil,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.InternalExecutorOverride{User: username.RootUserName()},
 		stmt,
 	)
 

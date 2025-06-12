@@ -9,9 +9,11 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
+	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
@@ -43,7 +45,7 @@ func (p *planner) ShowHistogram(ctx context.Context, n *tree.ShowHistogram) (pla
 				ctx,
 				"read-histogram",
 				p.txn,
-				sessiondata.NodeUserSessionDataOverride,
+				sessiondata.RootUserSessionDataOverride,
 				`SELECT histogram
 				 FROM system.table_statistics
 				 WHERE "statisticID" = $1`,
@@ -90,17 +92,16 @@ func (p *planner) ShowHistogram(ctx context.Context, n *tree.ShowHistogram) (pla
 			if err := typedesc.EnsureTypeIsHydrated(ctx, histogram.ColumnType, &resolver); err != nil {
 				return nil, err
 			}
-			var a tree.DatumAlloc
 			for _, b := range histogram.Buckets {
-				var upperBound string
-				datum, err := stats.DecodeUpperBound(histogram.Version, histogram.ColumnType, &a, b.UpperBound)
+				ed, _, err := rowenc.EncDatumFromBuffer(
+					catenumpb.DatumEncoding_ASCENDING_KEY, b.UpperBound,
+				)
 				if err != nil {
-					upperBound = fmt.Sprintf("<error: %v>", err)
-				} else {
-					upperBound = datum.String()
+					v.Close(ctx)
+					return nil, err
 				}
 				row := tree.Datums{
-					tree.NewDString(upperBound),
+					tree.NewDString(ed.String(histogram.ColumnType)),
 					tree.NewDInt(tree.DInt(b.NumRange)),
 					tree.NewDFloat(tree.DFloat(b.DistinctRange)),
 					tree.NewDInt(tree.DInt(b.NumEq)),

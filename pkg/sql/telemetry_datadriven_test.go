@@ -56,9 +56,9 @@ import (
 func TestTelemetryLoggingDataDriven(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	// Some queries may be retried under stress.
-	skip.UnderRace(t, "results inconsistent under stress")
+	skip.UnderStressRace(t, "results inconsistent under stress")
 
-	sc := log.Scope(t)
+	sc := log.ScopeWithoutShowLogs(t)
 	defer sc.Close(t)
 
 	appName := "telemetry-logging-datadriven"
@@ -153,7 +153,7 @@ func TestTelemetryLoggingDataDriven(t *testing.T) {
 				d.MaybeScanArgs(t, "stubStatementFingerprintId", &stubStatementFingerprintId)
 				if stubStatementFingerprintId != "" {
 					defer testutils.TestingHook(&appstatspb.ConstructStatementFingerprintID,
-						func(stmtNoConstants string, implicitTxn bool, database string) appstatspb.StmtFingerprintID {
+						func(stmtNoConstants string, failed bool, implicitTxn bool, database string) appstatspb.StmtFingerprintID {
 							parseUint, e := strconv.ParseUint(stubStatementFingerprintId, 10, 64)
 							if e != nil {
 								panic(e.Error())

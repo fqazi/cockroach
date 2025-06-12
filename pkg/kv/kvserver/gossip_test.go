@@ -158,8 +158,8 @@ func TestGossipHandlesReplacedNode(t *testing.T) {
 			MaxBackoff:     50 * time.Millisecond,
 		},
 	}
-	serverArgs.RaftConfig.RaftTickInterval = 50 * time.Millisecond
-	serverArgs.RaftConfig.RaftElectionTimeoutTicks = 10
+	serverArgs.RaftTickInterval = 50 * time.Millisecond
+	serverArgs.RaftElectionTimeoutTicks = 10
 
 	tc := testcluster.StartTestCluster(t, 3,
 		base.TestClusterArgs{

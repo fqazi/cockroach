@@ -221,8 +221,6 @@ func TestFormatExpr(t *testing.T) {
 		{`'63616665-6630-3064-6465-616462656562':::UUID`, tree.FmtParsable,
 			`'63616665-6630-3064-6465-616462656562':::UUID`},
 
-		{`123::INT`, tree.FmtCheckEquivalence, `123:::INT8`},
-		{`ARRAY[1, 2]::INT[]`, tree.FmtCheckEquivalence, `ARRAY[1:::INT8, 2:::INT8]:::INT8[]`},
 		{`(123:::INT, 123:::DECIMAL)`, tree.FmtCheckEquivalence,
 			`(123:::INT8, 123:::DECIMAL)`},
 
@@ -237,8 +235,8 @@ func TestFormatExpr(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			semaContext := tree.MakeSemaContext(nil /* resolver */)
-			typeChecked, err := tree.TypeCheck(ctx, expr, &semaContext, types.AnyElement)
+			semaContext := tree.MakeSemaContext()
+			typeChecked, err := tree.TypeCheck(ctx, expr, &semaContext, types.Any)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -290,38 +288,6 @@ func TestFormatUntypedExpr(t *testing.T) {
 	}
 }
 
-func TestFmtShortenConstants(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	testData := []struct {
-		expr     string
-		expected string
-	}{
-		{`VALUES (1), (2)`, `VALUES (1), (2)`},
-		{`VALUES (1), (2), (3), (4)`, `VALUES (1), (2), (__more1_10__), (4)`},
-		{`VALUES (1), (2), (3), (4), (5), (6)`, `VALUES (1), (2), (__more1_10__), (6)`},
-		{`VALUES (ARRAY[1, 2])`, `VALUES (ARRAY[1, 2])`},
-		{`VALUES (ARRAY[1, 2, 3, 4])`, `VALUES (ARRAY[1, 2, __more1_10__, 4])`},
-		{`VALUES (ARRAY[1, 2, 3, 4, 5, 6])`, `VALUES (ARRAY[1, 2, __more1_10__, 6])`},
-		{`SELECT (1, 2)`, `SELECT (1, 2)`},
-		{`SELECT (1, 2, 3, 4)`, `SELECT (1, 2, __more1_10__, 4)`},
-		{`SELECT (1, 2, 3, 4, 5, 6)`, `SELECT (1, 2, __more1_10__, 6)`},
-	}
-
-	for i, test := range testData {
-		t.Run(fmt.Sprintf("%d %s", i, test.expr), func(t *testing.T) {
-			stmt, err := parser.ParseOne(test.expr)
-			if err != nil {
-				t.Fatal(err)
-			}
-			stmtStr := tree.AsStringWithFlags(stmt.AST, tree.FmtShortenConstants)
-			if stmtStr != test.expected {
-				t.Fatalf("expected %q, got %q", test.expected, stmtStr)
-			}
-		})
-	}
-}
-
 func TestFormatExpr2(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -355,24 +321,24 @@ func TestFormatExpr2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// This tests formatting from an stmt AST. Suitable for use if your input
+	// This tests formatting from an expr AST. Suitable for use if your input
 	// isn't easily creatable from a string without running an Eval.
 	testData := []struct {
 		expr     tree.Expr
 		f        tree.FmtFlags
 		expected string
 	}{
-		{tree.NewDOidWithTypeAndName(10, types.RegClass, "foo"),
+		{tree.NewDOidWithName(10, types.RegClass, "foo"),
 			tree.FmtParsable, `crdb_internal.create_regclass(10,'foo'):::REGCLASS`},
-		{tree.NewDOidWithTypeAndName(10, types.RegNamespace, "foo"),
+		{tree.NewDOidWithName(10, types.RegNamespace, "foo"),
 			tree.FmtParsable, `crdb_internal.create_regnamespace(10,'foo'):::REGNAMESPACE`},
-		{tree.NewDOidWithTypeAndName(10, types.RegProc, "foo"),
+		{tree.NewDOidWithName(10, types.RegProc, "foo"),
 			tree.FmtParsable, `crdb_internal.create_regproc(10,'foo'):::REGPROC`},
-		{tree.NewDOidWithTypeAndName(10, types.RegProcedure, "foo"),
+		{tree.NewDOidWithName(10, types.RegProcedure, "foo"),
 			tree.FmtParsable, `crdb_internal.create_regprocedure(10,'foo'):::REGPROCEDURE`},
-		{tree.NewDOidWithTypeAndName(10, types.RegRole, "foo"),
+		{tree.NewDOidWithName(10, types.RegRole, "foo"),
 			tree.FmtParsable, `crdb_internal.create_regrole(10,'foo'):::REGROLE`},
-		{tree.NewDOidWithTypeAndName(10, types.RegType, "foo"),
+		{tree.NewDOidWithName(10, types.RegType, "foo"),
 			tree.FmtParsable, `crdb_internal.create_regtype(10,'foo'):::REGTYPE`},
 
 		// Ensure that nulls get properly type annotated when printed in an
@@ -423,8 +389,8 @@ func TestFormatExpr2(t *testing.T) {
 	ctx := context.Background()
 	for i, test := range testData {
 		t.Run(fmt.Sprintf("%d %s", i, test.expr), func(t *testing.T) {
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
-			typeChecked, err := tree.TypeCheck(ctx, test.expr, &semaCtx, types.AnyElement)
+			semaCtx := tree.MakeSemaContext()
+			typeChecked, err := tree.TypeCheck(ctx, test.expr, &semaCtx, types.Any)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -484,8 +450,8 @@ func TestFormatPgwireText(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
-			typeChecked, err := tree.TypeCheck(ctx, expr, &semaCtx, types.AnyElement)
+			semaCtx := tree.MakeSemaContext()
+			typeChecked, err := tree.TypeCheck(ctx, expr, &semaCtx, types.Any)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -647,152 +613,4 @@ func BenchmarkFormatRandomStatements(b *testing.B) {
 			}
 		}
 	})
-}
-
-// Verify FmtCollapseLists format flag works as expected.
-func TestFmtCollapseListsFormatFlag(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	tests := []struct {
-		stmt     string
-		expected string
-	}{
-		{
-			stmt:     `VALUES (())`,
-			expected: `VALUES (())`,
-		},
-		{
-			stmt:     `VALUES (1)`,
-			expected: `VALUES (1)`,
-		},
-		{
-			stmt:     `VALUES ((1, 2), (3, 4)), ((5, 6), (7, 8))`,
-			expected: `VALUES ((1, __more__), __more__), (__more__)`,
-		},
-		{
-			// For VALUES clauses, we always shorten the list of values.
-			// The first expression will be shortened if possible, and the
-			// rest of the values are replaced with __more__ regardless of
-			// whether or not they contain names.
-			stmt:     `VALUES ((a, b), (3, 4)), ((a, b), (1, 2))`,
-			expected: `VALUES ((a, b), (3, __more__)), (__more__)`,
-		},
-		{
-			stmt:     `SELECT * FROM foo WHERE f IN ()`,
-			expected: `SELECT * FROM foo WHERE f IN ()`,
-		},
-		{
-			stmt:     `SELECT * FROM foo WHERE f IN ($1)`,
-			expected: `SELECT * FROM foo WHERE f IN ($1,)`,
-		},
-		{
-			stmt:     `SELECT * FROM foo WHERE f IN (2, (3 - $1)::INT, 2*3, -$2, NULL, 'ok', (3,$3))`,
-			expected: `SELECT * FROM foo WHERE f IN (2, __more__)`,
-		},
-		{
-			stmt:     `SELECT * FROM foo WHERE f IN (1, 2, a, b, c)`,
-			expected: `SELECT * FROM foo WHERE f IN (1, 2, a, b, c)`,
-		},
-		{
-			stmt:     `SELECT * FROM foo WHERE f IN (1, 2, a + 1)`,
-			expected: `SELECT * FROM foo WHERE f IN (1, 2, a + 1)`,
-		},
-		{
-			stmt:     `SELECT ARRAY[]`,
-			expected: `SELECT ARRAY[]`,
-		},
-		{
-			stmt:     `SELECT ARRAY['crdb', 'world', CAST((2*2*3) AS FLOAT)]`,
-			expected: `SELECT ARRAY['crdb', __more__]`,
-		},
-		{
-			stmt:     `SELECT ARRAY[1+2, -2, $1::INT, NULL, 4*$2::INT, 'hello-world']`,
-			expected: `SELECT ARRAY[1 + 2, __more__]`,
-		},
-		{
-			stmt:     `SELECT ARRAY[1, 2, 3]`,
-			expected: `SELECT ARRAY[1, __more__]`,
-		},
-		{
-			stmt:     `SELECT ARRAY[1, 2, 3, a]`,
-			expected: `SELECT ARRAY[1, 2, 3, a]`,
-		},
-		{
-			stmt:     `SELECT * FROM foo WHERE f IN (1) AND f IN (2)`,
-			expected: `SELECT * FROM foo WHERE (f IN (1,)) AND (f IN (2,))`,
-		},
-	}
-
-	for i, test := range tests {
-		t.Run(fmt.Sprintf("%d %s", i, test.stmt), func(t *testing.T) {
-			stmt, err := parser.ParseOne(test.stmt)
-			if err != nil {
-				t.Fatal(err)
-			}
-			exprStr := tree.AsStringWithFlags(stmt.AST, tree.FmtCollapseLists)
-			if exprStr != test.expected {
-				t.Fatalf("expected %q, got %q", test.expected, exprStr)
-			}
-		})
-	}
-}
-
-func TestFormatStringDollarQuotes(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	tests := []struct {
-		input string
-		delim string
-	}{
-		{
-			input: ``,
-			delim: `$$`,
-		},
-		{
-			input: `foo`,
-			delim: `$$`,
-		},
-		{
-			input: `foo $ bar`,
-			delim: `$$`,
-		},
-		{
-			input: `foo $bar$ baz`,
-			delim: `$$`,
-		},
-		{
-			input: `foo $$ bar`,
-			delim: `$funcbody$`,
-		},
-		{
-			input: `foo $$ $funcbody$ bar`,
-			delim: `$funcbodyx$`,
-		},
-		{
-			input: `foo $$ $funcbody$ $funcbodyx$ bar`,
-			delim: `$funcbodyxx$`,
-		},
-		{
-			input: `foo $funcbody$ bar`,
-			delim: `$$`,
-		},
-		{
-			input: `foo $$ $funcbodyx$ bar`,
-			delim: `$funcbody$`,
-		},
-	}
-
-	for i, test := range tests {
-		t.Run(fmt.Sprintf("%d %s", i, test.input), func(t *testing.T) {
-			f := tree.NewFmtCtx(tree.FmtSimple)
-			f.FormatStringDollarQuotes(test.input)
-			res := f.CloseAndGetString()
-			expected := test.delim + test.input + test.delim
-			if res != expected {
-				t.Fatalf("expected %q, got %q", expected, res)
-			}
-		})
-	}
 }

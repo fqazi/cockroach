@@ -226,7 +226,7 @@ func newMockCluster(
 		t:        t,
 		nodes:    make(map[roachpb.NodeID]roachpb.NodeDescriptor),
 		ranges:   make(map[roachpb.RangeID]roachpb.RangeDescriptor),
-		liveness: livenesspb.TestCreateNodeVitality(),
+		liveness: livenesspb.TestNodeVitality{},
 		store: spanconfigstore.New(
 			roachpb.TestingDefaultSpanConfig(),
 			st,
@@ -276,7 +276,7 @@ func (s *mockCluster) ComputeSplitKey(
 // GetSpanConfigForKey implements spanconfig.StoreReader.
 func (s *mockCluster) GetSpanConfigForKey(
 	ctx context.Context, key roachpb.RKey,
-) (roachpb.SpanConfig, roachpb.Span, error) {
+) (roachpb.SpanConfig, error) {
 	return s.store.GetSpanConfigForKey(ctx, key)
 }
 
@@ -320,5 +320,5 @@ func (s *mockCluster) getRangeDescriptor(id roachpb.RangeID) roachpb.RangeDescri
 func (s *mockCluster) applyConfig(ctx context.Context, span roachpb.Span, conf roachpb.SpanConfig) {
 	update, err := spanconfig.Addition(spanconfig.MakeTargetFromSpan(span), conf)
 	require.NoError(s.t, err)
-	s.store.Apply(ctx, update)
+	s.store.Apply(ctx, false, update)
 }

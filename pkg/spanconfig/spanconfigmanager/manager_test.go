@@ -104,7 +104,7 @@ func TestManagerConcurrentJobCreation(t *testing.T) {
 
 	var g errgroup.Group
 	g.Go(func() error {
-		started, err := manager.TestingCreateAndStartJobIfNoneExists(ctx, ts.ClusterSettings())
+		started, err := manager.TestingCreateAndStartJobIfNoneExists(ctx)
 		if err != nil {
 			return err
 		}
@@ -117,7 +117,7 @@ func TestManagerConcurrentJobCreation(t *testing.T) {
 		// Only try to start the job if the first goroutine has reached the testing
 		// knob and is blocked.
 		<-isBlocked
-		started, err := manager.TestingCreateAndStartJobIfNoneExists(ctx, ts.ClusterSettings())
+		started, err := manager.TestingCreateAndStartJobIfNoneExists(ctx)
 		if err != nil {
 			return err
 		}
@@ -172,7 +172,7 @@ func TestManagerStartsJobIfFailed(t *testing.T) {
 	_, err = db.Exec(
 		`INSERT INTO system.jobs (id, status) VALUES ($1, $2)`,
 		id,
-		jobs.StateFailed,
+		jobs.StatusFailed,
 	)
 	require.NoError(t, err)
 	_, err = db.Exec(
@@ -183,7 +183,7 @@ func TestManagerStartsJobIfFailed(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	started, err := manager.TestingCreateAndStartJobIfNoneExists(ctx, ts.ClusterSettings())
+	started, err := manager.TestingCreateAndStartJobIfNoneExists(ctx)
 	require.NoError(t, err)
 	require.True(t, started)
 }
@@ -303,7 +303,7 @@ func TestReconciliationJobErrorAndRecovery(t *testing.T) {
 				ManagerDisableJobCreation:                      true, // disable the automatic job creation
 				JobDisableInternalRetry:                        true,
 				SQLWatcherCheckpointNoopsEveryDurationOverride: 100 * time.Millisecond,
-				JobOnCheckpointInterceptor: func(_ hlc.Timestamp) error {
+				JobOnCheckpointInterceptor: func() error {
 					mu.Lock()
 					defer mu.Unlock()
 
@@ -331,7 +331,7 @@ func TestReconciliationJobErrorAndRecovery(t *testing.T) {
 		},
 	)
 
-	started, err := manager.TestingCreateAndStartJobIfNoneExists(ctx, ts.ClusterSettings())
+	started, err := manager.TestingCreateAndStartJobIfNoneExists(ctx)
 	require.NoError(t, err)
 	require.True(t, started)
 
@@ -348,17 +348,17 @@ func TestReconciliationJobErrorAndRecovery(t *testing.T) {
 	mu.err = errors.New("injected")
 	mu.Unlock()
 
-	waitForJobState(t, tdb, jobID, jobs.StateFailed)
+	waitForJobStatus(t, tdb, jobID, jobs.StatusFailed)
 
 	mu.Lock()
 	mu.err = nil
 	mu.Unlock()
 
-	started, err = manager.TestingCreateAndStartJobIfNoneExists(ctx, ts.ClusterSettings())
+	started, err = manager.TestingCreateAndStartJobIfNoneExists(ctx)
 	require.NoError(t, err)
 	require.True(t, started)
 
-	waitForJobState(t, tdb, jobID, jobs.StateRunning)
+	waitForJobStatus(t, tdb, jobID, jobs.StatusRunning)
 
 	mu.Lock()
 	require.True(t, mu.lastStartTS.IsEmpty(), "expected reconciler to start with empty checkpoint")
@@ -388,7 +388,7 @@ func TestReconciliationUsesRightCheckpoint(t *testing.T) {
 				},
 				ManagerDisableJobCreation:                      true, // disable the automatic job creation
 				SQLWatcherCheckpointNoopsEveryDurationOverride: 10 * time.Millisecond,
-				JobOnCheckpointInterceptor: func(_ hlc.Timestamp) error {
+				JobOnCheckpointInterceptor: func() error {
 					select {
 					case err := <-errCh:
 						return err
@@ -421,7 +421,7 @@ func TestReconciliationUsesRightCheckpoint(t *testing.T) {
 		nil,
 	)
 
-	started, err := manager.TestingCreateAndStartJobIfNoneExists(ctx, ts.ClusterSettings())
+	started, err := manager.TestingCreateAndStartJobIfNoneExists(ctx)
 	require.NoError(t, err)
 	require.True(t, started)
 
@@ -457,12 +457,14 @@ func TestReconciliationUsesRightCheckpoint(t *testing.T) {
 	})
 }
 
-func waitForJobState(t *testing.T, tdb *sqlutils.SQLRunner, jobID jobspb.JobID, status jobs.State) {
+func waitForJobStatus(
+	t *testing.T, tdb *sqlutils.SQLRunner, jobID jobspb.JobID, status jobs.Status,
+) {
 	testutils.SucceedsSoon(t, func() error {
 		var jobStatus string
 		tdb.QueryRow(t, `SELECT status FROM system.jobs WHERE id = $1`, jobID).Scan(&jobStatus)
 
-		if jobs.State(jobStatus) != status {
+		if jobs.Status(jobStatus) != status {
 			return errors.Newf("expected jobID %d to have status %, got %s", jobID, status, jobStatus)
 		}
 		return nil

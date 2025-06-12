@@ -127,7 +127,7 @@ func ListLogFiles() (logFiles []logpb.FileInfo, err error) {
 		l.mu.Lock()
 		thisLogDir := l.mu.logDir
 		l.mu.Unlock()
-		if !l.enabled.Load() || thisLogDir == "" {
+		if !l.enabled.Get() || thisLogDir == "" {
 			// This file sink is detached from file storage.
 			return nil
 		}
@@ -204,7 +204,7 @@ func GetLogReader(filename string) (io.ReadCloser, error) {
 		return nil
 	})
 	// Check whether we found a sink and it has a log directory.
-	if fs == nil || !fs.enabled.Load() {
+	if fs == nil || !fs.enabled.Get() {
 		return nil, errors.Newf("no log directory found for %s", filename)
 	}
 	dir := func() string {

@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
-	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/errors"
 )
 
@@ -70,9 +69,7 @@ var (
 	changefeedReplicationDisabled = settings.RegisterBoolSetting(
 		settings.ApplicationLevel,
 		"sql.ttl.changefeed_replication.disabled",
-		"if true, deletes issued by TTL will not be replicated via changefeeds "+
-			"(this setting will be ignored by changefeeds that have the ignore_disable_changefeed_replication option set; "+
-			"such changefeeds will continue to replicate all TTL deletes)",
+		"if true, deletes issued by TTL will not be replicated via changefeeds",
 		false,
 		settings.WithPublic,
 	)
@@ -159,12 +156,7 @@ func CheckJobEnabled(settingsValues *settings.Values) error {
 
 // GetChangefeedReplicationDisabled returns whether changefeed replication
 // should be disabled for this job based on the relevant cluster setting.
-func GetChangefeedReplicationDisabled(
-	settingsValues *settings.Values, ttl *catpb.RowLevelTTL,
-) bool {
-	if ttl.DisableChangefeedReplication {
-		return true
-	}
+func GetChangefeedReplicationDisabled(settingsValues *settings.Values) bool {
 	return changefeedReplicationDisabled.Get(settingsValues)
 }
 
@@ -190,7 +182,6 @@ func BuildSelectQuery(
 	relationName string,
 	pkColNames []string,
 	pkColDirs []catenumpb.IndexColumn_Direction,
-	pkColTypes []*types.T,
 	aostDuration time.Duration,
 	ttlExpr catpb.Expression,
 	numStartQueryBounds, numEndQueryBounds int,
@@ -239,8 +230,6 @@ func BuildSelectQuery(
 					buf.WriteString(pkColNames[j])
 					buf.WriteString(" = $")
 					buf.WriteString(strconv.Itoa(j + placeholderOffset))
-					buf.WriteString("::")
-					buf.WriteString(pkColTypes[j].SQLStringFullyQualified())
 					buf.WriteString(" AND ")
 				}
 				buf.WriteString(pkColNames[i])
@@ -251,8 +240,6 @@ func BuildSelectQuery(
 				}
 				buf.WriteString(" $")
 				buf.WriteString(strconv.Itoa(i + placeholderOffset))
-				buf.WriteString("::")
-				buf.WriteString(pkColTypes[i].SQLStringFullyQualified())
 				buf.WriteString(")")
 				if !isLast {
 					buf.WriteString(" OR")

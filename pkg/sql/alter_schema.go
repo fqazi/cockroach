@@ -28,7 +28,6 @@ import (
 )
 
 type alterSchemaNode struct {
-	zeroInputPlanNode
 	n    *tree.AlterSchema
 	db   *dbdesc.Mutable
 	desc *schemadesc.Mutable
@@ -73,13 +72,19 @@ func (p *planner) AlterSchema(ctx context.Context, n *tree.AlterSchema) (planNod
 		if err != nil {
 			return nil, err
 		}
-		// The user must be the owner of the schema to modify it.
-		hasOwnership, err := p.HasOwnership(ctx, desc)
+		// The user must be a superuser or the owner of the schema to modify it.
+		hasAdmin, err := p.HasAdminRole(ctx)
 		if err != nil {
 			return nil, err
 		}
-		if !hasOwnership {
-			return nil, pgerror.Newf(pgcode.InsufficientPrivilege, "must be owner of schema %q", desc.Name)
+		if !hasAdmin {
+			hasOwnership, err := p.HasOwnership(ctx, desc)
+			if err != nil {
+				return nil, err
+			}
+			if !hasOwnership {
+				return nil, pgerror.Newf(pgcode.InsufficientPrivilege, "must be owner of schema %q", desc.Name)
+			}
 		}
 		sqltelemetry.IncrementUserDefinedSchemaCounter(sqltelemetry.UserDefinedSchemaAlter)
 		return &alterSchemaNode{n: n, db: db, desc: desc}, nil

@@ -12,7 +12,6 @@ import (
 
 	clustersettings "github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
-	"github.com/cockroachdb/cockroach/pkg/sql/oidext"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc/valueside"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/lib/pq/oid"
@@ -21,8 +20,7 @@ import (
 var (
 	// SeedTypes includes the following types that form the basis of randomly
 	// generated types:
-	//   - All scalar types, except UNKNOWN, ANY, TRIGGER, REGNAMESPACE, and
-	//     FLOAT4
+	//   - All scalar types, except UNKNOWN, ANY, REGNAMESPACE, and FLOAT4
 	//   - ARRAY of ANY and TUPLE of ANY, where the ANY will be replaced with
 	//     one of the legal array element types in RandType
 	//   - OIDVECTOR and INT2VECTOR types
@@ -41,13 +39,11 @@ func init() {
 			// Temporarily don't include this.
 			// TODO(msirek): Remove this exclusion once
 			// https://github.com/cockroachdb/cockroach/issues/55791 is fixed.
-		case oid.T_unknown, oid.T_anyelement, oid.T_any, oid.T_trigger:
+		case oid.T_unknown, oid.T_anyelement:
 			// Don't include these.
 		case oid.T_float4:
 			// Don't include FLOAT4 due to known bugs that cause test failures.
 			// See #73743 and #48613.
-		case oidext.T_jsonpath:
-			// TODO(#22513): Temporarily don't include Jsonpath
 		case oid.T_anyarray, oid.T_oidvector, oid.T_int2vector:
 			// Include these.
 			SeedTypes = append(SeedTypes, typ)
@@ -131,12 +127,6 @@ func RandTypeFromSlice(rng *rand.Rand, typs []*types.T) *types.T {
 			return types.MakeArray(RandTupleFromSlice(rng, typs))
 		}
 	case types.TupleFamily:
-		// In 50% of cases generate a new tuple type based on the given slice;
-		// in other 50% just use the provided tuple type (if it's not a wildcard
-		// type).
-		if rng.Intn(2) == 0 && !typ.Identical(types.AnyTuple) {
-			return typ
-		}
 		return RandTupleFromSlice(rng, typs)
 	}
 	return typ
@@ -179,25 +169,20 @@ func IsLegalColumnType(typ *types.T) bool {
 		// is low risk.
 		// TODO(#95641): Remove this once we correctly handle this edge case.
 		return false
-	case oidext.T_jsonpath, oidext.T__jsonpath:
-		// Jsonpath and Jsonpath[] columns are not supported yet. Customers are very
-		// unlikely to use these types of columns, so disabling their generation
-		// is low risk.
-		return false
 	}
 	ctx := context.Background()
-	st := clustersettings.MakeTestingClusterSettings()
-	return colinfo.ValidateColumnDefType(ctx, st, typ) == nil
+	version := clustersettings.MakeTestingClusterSettings().Version
+	return colinfo.ValidateColumnDefType(ctx, version, typ) == nil
 }
 
 // RandArrayType generates a random array type.
 func RandArrayType(rng *rand.Rand) *types.T {
 	ctx := context.Background()
-	st := clustersettings.MakeTestingClusterSettings()
+	version := clustersettings.MakeTestingClusterSettings().Version
 	for {
 		typ := RandColumnType(rng)
 		resTyp := types.MakeArray(typ)
-		if err := colinfo.ValidateColumnDefType(ctx, st, resTyp); err == nil {
+		if err := colinfo.ValidateColumnDefType(ctx, version, resTyp); err == nil {
 			return resTyp
 		}
 	}
@@ -216,7 +201,7 @@ func RandColumnTypes(rng *rand.Rand, numCols int) []*types.T {
 // RandSortingType returns a column type which can be key-encoded.
 func RandSortingType(rng *rand.Rand) *types.T {
 	typ := RandType(rng)
-	for colinfo.MustBeValueEncoded(typ) || typ.Family() == types.VoidFamily {
+	for colinfo.MustBeValueEncoded(typ) || typ == types.Void {
 		typ = RandType(rng)
 	}
 	return typ
@@ -235,4 +220,65 @@ func RandSortingTypes(rng *rand.Rand, numCols int) []*types.T {
 // RandCollationLocale returns a random element of collationLocales.
 func RandCollationLocale(rng *rand.Rand) *string {
 	return &collationLocales[rng.Intn(len(collationLocales))]
+}
+
+// RandEncodableType wraps RandType in order to workaround #36736, which fails
+// when name[] (or other type using DTypeWrapper) is encoded.
+//
+// TODO(andyk): Remove this workaround once #36736 is resolved. Also, RandDatum
+// really should be extended to create DTypeWrapper datums with alternate OIDs
+// like oid.T_varchar for better testing.
+func RandEncodableType(rng *rand.Rand) *types.T {
+	var isEncodableType func(t *types.T) bool
+	isEncodableType = func(t *types.T) bool {
+		switch t.Family() {
+		case types.ArrayFamily:
+			// Due to #36736, any type returned by RandType that gets turned into
+			// a DTypeWrapper random datum will not work. Currently, that's just
+			// types.Name.
+			if t.ArrayContents().Oid() == oid.T_name {
+				return false
+			}
+			return isEncodableType(t.ArrayContents())
+
+		case types.TupleFamily:
+			for i := range t.TupleContents() {
+				if !isEncodableType(t.TupleContents()[i]) {
+					return false
+				}
+			}
+
+		case types.VoidFamily:
+			return false
+
+		}
+		return true
+	}
+
+	for {
+		typ := RandType(rng)
+		if isEncodableType(typ) {
+			return typ
+		}
+	}
+}
+
+// RandEncodableColumnTypes works around #36736, which fails when name[] (or
+// other type using DTypeWrapper) is encoded.
+//
+// TODO(andyk): Remove this workaround once #36736 is resolved. Replace calls to
+// it with calls to RandColumnTypes.
+func RandEncodableColumnTypes(rng *rand.Rand, numCols int) []*types.T {
+	ctx := context.Background()
+	version := clustersettings.MakeTestingClusterSettings().Version
+	types := make([]*types.T, numCols)
+	for i := range types {
+		for {
+			types[i] = RandEncodableType(rng)
+			if err := colinfo.ValidateColumnDefType(ctx, version, types[i]); err == nil {
+				break
+			}
+		}
+	}
+	return types
 }

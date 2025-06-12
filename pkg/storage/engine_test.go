@@ -29,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -139,7 +138,7 @@ func TestEngineBatchStaleCachedIterator(t *testing.T) {
 	{
 		batch := eng.NewBatch()
 		defer batch.Close()
-		iter, err := batch.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{UpperBound: roachpb.KeyMax})
+		iter, err := batch.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{UpperBound: roachpb.KeyMax})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -312,7 +311,7 @@ func TestEngineBatch(t *testing.T) {
 			t.Errorf("%d: expected %s, but got %s", i, expectedValue, actualValue)
 		}
 		// Try using an iterator to get the value from the batch.
-		iter, err := b.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{UpperBound: roachpb.KeyMax})
+		iter, err := b.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{UpperBound: roachpb.KeyMax})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -539,15 +538,13 @@ func TestEngineMustExist(t *testing.T) {
 	tempDir, dirCleanupFn := testutils.TempDir(t)
 	defer dirCleanupFn()
 
-	env := fs.MustInitPhysicalTestingEnv(tempDir)
-	_, err := Open(context.Background(), env, cluster.MakeClusterSettings(), MustExist)
+	_, err := Open(context.Background(), Filesystem(tempDir), cluster.MakeClusterSettings(), MustExist)
 	if err == nil {
 		t.Fatal("expected error related to missing directory")
 	}
 	if !strings.Contains(fmt.Sprint(err), "does not exist") {
 		t.Fatal(err)
 	}
-	env.Close()
 }
 
 func TestEngineTimeBound(t *testing.T) {
@@ -584,7 +581,7 @@ func TestEngineTimeBound(t *testing.T) {
 	}{
 		"right not touching": {
 			iter: func() (MVCCIterator, error) {
-				return batch.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{
+				return batch.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 					MinTimestamp: maxTimestamp.WallNext(),
 					MaxTimestamp: maxTimestamp.WallNext().WallNext(),
 					UpperBound:   roachpb.KeyMax,
@@ -594,7 +591,7 @@ func TestEngineTimeBound(t *testing.T) {
 		},
 		"left not touching": {
 			iter: func() (MVCCIterator, error) {
-				return batch.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{
+				return batch.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 					MinTimestamp: minTimestamp.WallPrev().WallPrev(),
 					MaxTimestamp: minTimestamp.WallPrev(),
 					UpperBound:   roachpb.KeyMax,
@@ -604,7 +601,7 @@ func TestEngineTimeBound(t *testing.T) {
 		},
 		"right touching": {
 			iter: func() (MVCCIterator, error) {
-				return batch.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{
+				return batch.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 					MinTimestamp: maxTimestamp,
 					MaxTimestamp: maxTimestamp,
 					UpperBound:   roachpb.KeyMax,
@@ -619,7 +616,7 @@ func TestEngineTimeBound(t *testing.T) {
 		// visible.
 		"right touching enfoces logical": {
 			iter: func() (MVCCIterator, error) {
-				return batch.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{
+				return batch.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 					MinTimestamp: maxTimestamp.Next(),        // @7,1
 					MaxTimestamp: maxTimestamp.Next().Next(), // @7,2
 					UpperBound:   roachpb.KeyMax,
@@ -629,7 +626,7 @@ func TestEngineTimeBound(t *testing.T) {
 		},
 		"left touching": {
 			iter: func() (MVCCIterator, error) {
-				return batch.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{
+				return batch.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 					MinTimestamp: minTimestamp,
 					MaxTimestamp: minTimestamp,
 					UpperBound:   roachpb.KeyMax,
@@ -639,7 +636,7 @@ func TestEngineTimeBound(t *testing.T) {
 		},
 		"left touching upperbound": {
 			iter: func() (MVCCIterator, error) {
-				return batch.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{
+				return batch.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 					MinTimestamp: minTimestamp,
 					MaxTimestamp: minTimestamp,
 					UpperBound:   []byte("02"),
@@ -649,7 +646,7 @@ func TestEngineTimeBound(t *testing.T) {
 		},
 		"between": {
 			iter: func() (MVCCIterator, error) {
-				return batch.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{
+				return batch.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 					MinTimestamp: minTimestamp.Next(),
 					MaxTimestamp: minTimestamp.Next(),
 					UpperBound:   roachpb.KeyMax,
@@ -681,7 +678,7 @@ func TestEngineTimeBound(t *testing.T) {
 
 	// Make a regular iterator. Before #21721, this would accidentally pick up the
 	// time bounded iterator instead.
-	iter, err := batch.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{UpperBound: roachpb.KeyMax})
+	iter, err := batch.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{UpperBound: roachpb.KeyMax})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -705,7 +702,7 @@ func TestFlushNumSSTables(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	engine := NewDefaultInMemForTesting(DiskWriteStatsCollector(vfs.NewDiskWriteStatsCollector()))
+	engine := NewDefaultInMemForTesting()
 	defer engine.Close()
 
 	batch := engine.NewBatch()
@@ -765,20 +762,20 @@ func TestEngineScan1(t *testing.T) {
 	}
 	sort.Strings(sortedKeys)
 
-	keyvals, err := Scan(context.Background(), engine, roachpb.Key("chinese"), roachpb.Key("german"), 0)
+	keyvals, err := Scan(engine, roachpb.Key("chinese"), roachpb.Key("german"), 0)
 	if err != nil {
 		t.Fatalf("could not run scan: %+v", err)
 	}
 	ensureRangeEqual(t, sortedKeys[1:4], keyMap, keyvals)
 
 	// Check an end of range which does not equal an existing key.
-	keyvals, err = Scan(context.Background(), engine, roachpb.Key("chinese"), roachpb.Key("german1"), 0)
+	keyvals, err = Scan(engine, roachpb.Key("chinese"), roachpb.Key("german1"), 0)
 	if err != nil {
 		t.Fatalf("could not run scan: %+v", err)
 	}
 	ensureRangeEqual(t, sortedKeys[1:5], keyMap, keyvals)
 
-	keyvals, err = Scan(context.Background(), engine, roachpb.Key("chinese"), roachpb.Key("german"), 2)
+	keyvals, err = Scan(engine, roachpb.Key("chinese"), roachpb.Key("german"), 2)
 	if err != nil {
 		t.Fatalf("could not run scan: %+v", err)
 	}
@@ -788,7 +785,7 @@ func TestEngineScan1(t *testing.T) {
 	// LocalMax is the lowest possible global key.
 	startKeys := []roachpb.Key{roachpb.Key("cat"), keys.LocalMax}
 	for _, startKey := range startKeys {
-		keyvals, err = Scan(context.Background(), engine, startKey, roachpb.KeyMax, 0)
+		keyvals, err = Scan(engine, startKey, roachpb.KeyMax, 0)
 		if err != nil {
 			t.Fatalf("could not run scan: %+v", err)
 		}
@@ -796,8 +793,9 @@ func TestEngineScan1(t *testing.T) {
 	}
 
 	// Test iterator stats.
-	ro := engine.NewReader(StandardDurability)
-	iter, err := ro.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{LowerBound: roachpb.Key("cat"), UpperBound: roachpb.Key("server")})
+	ro := engine.NewReadOnly(StandardDurability)
+	iter, err := ro.NewMVCCIterator(MVCCKeyIterKind,
+		IterOptions{LowerBound: roachpb.Key("cat"), UpperBound: roachpb.Key("server")})
 	require.NoError(t, err)
 	iter.SeekGE(MVCCKey{Key: roachpb.Key("cat")})
 	for {
@@ -812,14 +810,17 @@ func TestEngineScan1(t *testing.T) {
 	// Setting non-deterministic InternalStats to empty.
 	stats.InternalStats = pebble.InternalIteratorStats{}
 	require.Equal(t, "seeked 1 times (1 internal); stepped 5 times (5 internal)", stats.String())
+
 	iter.Close()
-	iter, err = ro.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{LowerBound: roachpb.Key("cat"), UpperBound: roachpb.Key("server")})
+	iter, err = ro.NewMVCCIterator(MVCCKeyIterKind,
+		IterOptions{LowerBound: roachpb.Key("cat"), UpperBound: roachpb.Key("server")})
 	require.NoError(t, err)
 	// pebble.Iterator is reused, but stats are reset.
 	stats = iter.Stats().Stats
 	// Setting non-deterministic InternalStats to empty.
 	stats.InternalStats = pebble.InternalIteratorStats{}
 	require.Equal(t, "seeked 0 times (0 internal); stepped 0 times (0 internal)", stats.String())
+
 	iter.SeekGE(MVCCKey{Key: roachpb.Key("french")})
 	iter.SeekLT(MVCCKey{Key: roachpb.Key("server")})
 	stats = iter.Stats().Stats
@@ -832,7 +833,7 @@ func TestEngineScan1(t *testing.T) {
 }
 
 func verifyScan(start, end roachpb.Key, max int64, expKeys []MVCCKey, engine Engine, t *testing.T) {
-	kvs, err := Scan(context.Background(), engine, start, end, max)
+	kvs, err := Scan(engine, start, end, max)
 	if err != nil {
 		t.Errorf("scan %q-%q: expected no error, but got %s", start, end, err)
 	}
@@ -919,8 +920,8 @@ func TestSnapshot(t *testing.T) {
 			valSnapshot, val1)
 	}
 
-	keyvals, _ := Scan(context.Background(), engine, key.Key, roachpb.KeyMax, 0)
-	keyvalsSnapshot, error := Scan(context.Background(), snap, key.Key, roachpb.KeyMax, 0)
+	keyvals, _ := Scan(engine, key.Key, roachpb.KeyMax, 0)
+	keyvalsSnapshot, error := Scan(snap, key.Key, roachpb.KeyMax, 0)
 	if error != nil {
 		t.Fatalf("error : %s", error)
 	}
@@ -967,8 +968,8 @@ func TestSnapshotMethods(t *testing.T) {
 	}
 
 	// Verify Scan.
-	keyvals, _ := Scan(context.Background(), engine, localMax, roachpb.KeyMax, 0)
-	keyvalsSnapshot, err := Scan(context.Background(), snap, localMax, roachpb.KeyMax, 0)
+	keyvals, _ := Scan(engine, localMax, roachpb.KeyMax, 0)
+	keyvalsSnapshot, err := Scan(snap, localMax, roachpb.KeyMax, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -979,9 +980,8 @@ func TestSnapshotMethods(t *testing.T) {
 
 	// Verify MVCCIterate.
 	index := 0
-	if err := snap.MVCCIterate(context.Background(), localMax, roachpb.KeyMax,
-		MVCCKeyAndIntentsIterKind, IterKeyTypePointsOnly,
-		fs.UnknownReadCategory, func(kv MVCCKeyValue, _ MVCCRangeKeyStack) error {
+	if err := snap.MVCCIterate(localMax, roachpb.KeyMax, MVCCKeyAndIntentsIterKind, IterKeyTypePointsOnly,
+		func(kv MVCCKeyValue, _ MVCCRangeKeyStack) error {
 			if !kv.Key.Equal(keys[index]) || !bytes.Equal(kv.Value, vals[index]) {
 				t.Errorf("%d: key/value not equal between expected and snapshot: %s/%s, %s/%s",
 					index, keys[index], vals[index], kv.Key, kv.Value)
@@ -1000,7 +1000,7 @@ func TestSnapshotMethods(t *testing.T) {
 	}
 
 	// Verify NewMVCCIterator still iterates over original snapshot.
-	iter, err := snap.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{UpperBound: roachpb.KeyMax})
+	iter, err := snap.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{UpperBound: roachpb.KeyMax})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1042,7 +1042,7 @@ func TestCreateCheckpoint(t *testing.T) {
 
 	db, err := Open(
 		context.Background(),
-		fs.MustInitPhysicalTestingEnv(dir),
+		Filesystem(dir),
 		cluster.MakeTestingClusterSettings())
 	assert.NoError(t, err)
 	defer db.Close()
@@ -1059,7 +1059,7 @@ func TestCreateCheckpoint(t *testing.T) {
 	// Verify that we can open the checkpoint.
 	db2, err := Open(
 		context.Background(),
-		fs.MustInitPhysicalTestingEnv(checkpointDir),
+		Filesystem(checkpointDir),
 		cluster.MakeTestingClusterSettings(),
 		MustExist)
 	require.NoError(t, err)
@@ -1071,41 +1071,35 @@ func TestCreateCheckpoint(t *testing.T) {
 	}
 }
 
-func mustInitTestEnv(t testing.TB, baseFS vfs.FS, dir string) *fs.Env {
-	e, err := fs.InitEnv(context.Background(), baseFS, dir, fs.EnvConfig{}, nil /* statsCollector */)
-	require.NoError(t, err)
-	return e
-}
-
 func TestCreateCheckpoint_SpanConstrained(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 
 	rng, _ := randutil.NewTestRand()
+	dir, cleanup := testutils.TempDir(t)
+	defer cleanup()
+
 	key := func(i int) roachpb.Key {
 		return keys.SystemSQLCodec.TablePrefix(uint32(i))
 	}
 
-	mem := vfs.NewMem()
-	dir := "foo"
 	db, err := Open(
 		ctx,
-		mustInitTestEnv(t, mem, dir),
+		Filesystem(dir),
 		cluster.MakeTestingClusterSettings(),
-		TargetFileSize(2<<10 /* 2 KB */),
+		TargetFileSize(10<<10 /* 10 KB */),
 	)
 	assert.NoError(t, err)
 	defer db.Close()
 
 	// Write keys /Table/1/../Table/10000.
-	// 10,000 * 100 byte KVs = ~1MB.
 	b := db.NewWriteBatch()
 	const maxTableID = 10000
 	for i := 1; i <= maxTableID; i++ {
 		require.NoError(t, b.PutMVCC(
 			MVCCKey{Key: key(i), Timestamp: hlc.Timestamp{WallTime: int64(i)}},
-			MVCCValue{Value: roachpb.Value{RawBytes: randutil.RandBytes(rng, 100)}},
+			MVCCValue{Value: roachpb.Value{RawBytes: randutil.RandBytes(rng, 500)}},
 		))
 	}
 	require.NoError(t, b.Commit(true /* sync */))
@@ -1119,19 +1113,17 @@ func TestCreateCheckpoint_SpanConstrained(t *testing.T) {
 		}
 	}
 
-	checkpointRootDir := mem.PathJoin(dir, "checkpoint")
-	require.NoError(t, db.Env().MkdirAll(checkpointRootDir, os.ModePerm))
+	checkpointRootDir := filepath.Join(dir, "checkpoint")
+	require.NoError(t, db.FS.MkdirAll(checkpointRootDir, os.ModePerm))
 
 	var checkpointNum int
 	checkpointSpan := func(s roachpb.Span) string {
 		checkpointNum++
-		dir := mem.PathJoin(checkpointRootDir, fmt.Sprintf("%06d", checkpointNum))
+		dir := filepath.Join(checkpointRootDir, fmt.Sprintf("%06d", checkpointNum))
 		t.Logf("Writing checkpoint for span %s to %q", s, dir)
 		assert.NoError(t, db.CreateCheckpoint(dir, []roachpb.Span{s}))
-		// Check that the dir exists.
-		_, err := mem.Stat(dir)
-		assert.NoError(t, err)
-		m, err := mem.List(dir)
+		assert.DirExists(t, dir)
+		m, err := filepath.Glob(dir + "/*")
 		assert.NoError(t, err)
 		assert.True(t, len(m) > 0)
 		t.Logf("Checkpoint wrote files: %s", strings.Join(m, ", "))
@@ -1142,13 +1134,13 @@ func TestCreateCheckpoint_SpanConstrained(t *testing.T) {
 		// Verify that we can open the checkpoint.
 		cDB, err := Open(
 			ctx,
-			mustInitTestEnv(t, mem, dir),
+			Filesystem(dir),
 			cluster.MakeTestingClusterSettings(),
 			MustExist)
 		require.NoError(t, err)
 		defer cDB.Close()
 
-		iter, err := cDB.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{
+		iter, err := cDB.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 			LowerBound: key(low),
 			UpperBound: key(high),
 		})
@@ -1205,7 +1197,7 @@ func TestIngestDelayLimit(t *testing.T) {
 		{max, 55, -1},
 	} {
 		var m pebble.Metrics
-		m.Levels[0].TablesCount = tc.fileCount
+		m.Levels[0].NumFiles = tc.fileCount
 		m.Levels[0].Sublevels = tc.sublevelCount
 		require.Equal(t, tc.exp, calculatePreIngestDelay(s, &m))
 	}
@@ -1215,9 +1207,8 @@ func TestEngineFS(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	engine := NewDefaultInMemForTesting()
-	defer engine.Close()
-	e := engine.Env()
+	e := NewDefaultInMemForTesting()
+	defer e.Close()
 
 	testCases := []string{
 		"1a: f = create /bar",
@@ -1288,9 +1279,9 @@ func TestEngineFS(t *testing.T) {
 		)
 		switch s[0] {
 		case "create":
-			g, err = e.Create(s[1], fs.UnspecifiedWriteCategory)
+			g, err = e.Create(s[1])
 		case "create-with-sync":
-			g, err = fs.CreateWithSync(e, s[1], 1, fs.UnspecifiedWriteCategory)
+			g, err = fs.CreateWithSync(e, s[1], 1)
 		case "link":
 			err = e.Link(s[1], s[2])
 		case "open":
@@ -1380,23 +1371,22 @@ func TestEngineFSFileNotFoundError(t *testing.T) {
 
 	dir, dirCleanup := testutils.TempDir(t)
 	defer dirCleanup()
-	db, err := Open(context.Background(), fs.MustInitPhysicalTestingEnv(dir), cluster.MakeClusterSettings(), CacheSize(testCacheSize))
+	db, err := Open(context.Background(), Filesystem(dir), cluster.MakeClusterSettings(), CacheSize(testCacheSize))
 	require.NoError(t, err)
 	defer db.Close()
-	env := db.Env()
 
 	// Verify Remove returns os.ErrNotExist if file does not exist.
-	if err := env.Remove("/non/existent/file"); !oserror.IsNotExist(err) {
+	if err := db.Remove("/non/existent/file"); !oserror.IsNotExist(err) {
 		t.Fatalf("expected IsNotExist, but got %v (%T)", err, err)
 	}
 	// Verify RemoveAll returns nil if path does not exist.
-	if err := env.RemoveAll("/non/existent/file"); err != nil {
+	if err := db.RemoveAll("/non/existent/file"); err != nil {
 		t.Fatalf("expected nil, but got %v (%T)", err, err)
 	}
 
 	fname := filepath.Join(dir, "random.file")
 	data := "random data"
-	if f, err := env.Create(fname, fs.UnspecifiedWriteCategory); err != nil {
+	if f, err := db.Create(fname); err != nil {
 		t.Fatalf("unable to open file with filename %s, got err %v", fname, err)
 	} else {
 		// Write data to file so we can read it later.
@@ -1411,23 +1401,23 @@ func TestEngineFSFileNotFoundError(t *testing.T) {
 		}
 	}
 
-	if b, err := fs.ReadFile(env, fname); err != nil {
+	if b, err := fs.ReadFile(db, fname); err != nil {
 		t.Errorf("unable to read file with filename %s, got err %v", fname, err)
 	} else if string(b) != data {
 		t.Errorf("expected content in %s is '%s', got '%s'", fname, data, string(b))
 	}
 
-	if err := env.Remove(fname); err != nil {
+	if err := db.Remove(fname); err != nil {
 		t.Errorf("unable to delete file with filename %s, got err %v", fname, err)
 	}
 
 	// Verify ReadFile returns os.ErrNotExist if reading an already deleted file.
-	if _, err := fs.ReadFile(env, fname); !oserror.IsNotExist(err) {
+	if _, err := fs.ReadFile(db, fname); !oserror.IsNotExist(err) {
 		t.Fatalf("expected IsNotExist, but got %v (%T)", err, err)
 	}
 
 	// Verify Remove returns os.ErrNotExist if deleting an already deleted file.
-	if err := env.Remove(fname); !oserror.IsNotExist(err) {
+	if err := db.Remove(fname); !oserror.IsNotExist(err) {
 		t.Fatalf("expected IsNotExist, but got %v (%T)", err, err)
 	}
 }
@@ -1439,16 +1429,15 @@ func TestFS(t *testing.T) {
 	dir, cleanupDir := testutils.TempDir(t)
 	defer cleanupDir()
 
-	engineDest := map[string]*fs.Env{
+	engineDest := map[string]Location{
 		"in_memory":  InMemory(),
-		"filesystem": fs.MustInitPhysicalTestingEnv(dir),
+		"filesystem": Filesystem(dir),
 	}
 	for name, loc := range engineDest {
 		t.Run(name, func(t *testing.T) {
-			engine, err := Open(context.Background(), loc, cluster.MakeClusterSettings(), CacheSize(testCacheSize), ForTesting)
+			fs, err := Open(context.Background(), loc, cluster.MakeClusterSettings(), CacheSize(testCacheSize), ForTesting)
 			require.NoError(t, err)
-			defer engine.Close()
-			e := engine.Env()
+			defer fs.Close()
 
 			path := func(rel string) string {
 				return filepath.Join(dir, rel)
@@ -1456,52 +1445,52 @@ func TestFS(t *testing.T) {
 			expectLS := func(dir string, want []string) {
 				t.Helper()
 
-				got, err := e.List(dir)
+				got, err := fs.List(dir)
 				sort.Strings(got)
 				require.NoError(t, err)
 				if !reflect.DeepEqual(got, want) {
-					t.Fatalf("e.List(%q) = %#v, want %#v", dir, got, want)
+					t.Fatalf("fs.List(%q) = %#v, want %#v", dir, got, want)
 				}
 			}
 
 			// Create a/ and assert that it's empty.
-			require.NoError(t, e.MkdirAll(path("a"), os.ModePerm))
+			require.NoError(t, fs.MkdirAll(path("a"), os.ModePerm))
 			expectLS(path("a"), []string{})
-			if _, err := e.Stat(path("a/b/c")); !oserror.IsNotExist(err) {
-				t.Fatal(`e.Stat("a/b/c") should not exist`)
+			if _, err := fs.Stat(path("a/b/c")); !oserror.IsNotExist(err) {
+				t.Fatal(`fs.Stat("a/b/c") should not exist`)
 			}
 
 			// Create a/b/ and a/b/c/ in a single MkdirAll call.
 			// Then ensure that a duplicate call returns a nil error.
-			require.NoError(t, e.MkdirAll(path("a/b/c"), os.ModePerm))
-			require.NoError(t, e.MkdirAll(path("a/b/c"), os.ModePerm))
+			require.NoError(t, fs.MkdirAll(path("a/b/c"), os.ModePerm))
+			require.NoError(t, fs.MkdirAll(path("a/b/c"), os.ModePerm))
 			expectLS(path("a"), []string{"b"})
 			expectLS(path("a/b"), []string{"c"})
 			expectLS(path("a/b/c"), []string{})
-			_, err = e.Stat(path("a/b/c"))
+			_, err = fs.Stat(path("a/b/c"))
 			require.NoError(t, err)
 
 			// Create a file at a/b/c/foo.
-			f, err := e.Create(path("a/b/c/foo"), fs.UnspecifiedWriteCategory)
+			f, err := fs.Create(path("a/b/c/foo"))
 			require.NoError(t, err)
 			require.NoError(t, f.Close())
 			expectLS(path("a/b/c"), []string{"foo"})
 
 			// Create a file at a/b/c/bar.
-			f, err = e.Create(path("a/b/c/bar"), fs.UnspecifiedWriteCategory)
+			f, err = fs.Create(path("a/b/c/bar"))
 			require.NoError(t, err)
 			require.NoError(t, f.Close())
 			expectLS(path("a/b/c"), []string{"bar", "foo"})
-			_, err = e.Stat(path("a/b/c/bar"))
+			_, err = fs.Stat(path("a/b/c/bar"))
 			require.NoError(t, err)
 
 			// RemoveAll a file.
-			require.NoError(t, e.RemoveAll(path("a/b/c/bar")))
+			require.NoError(t, fs.RemoveAll(path("a/b/c/bar")))
 			expectLS(path("a/b/c"), []string{"foo"})
 
 			// RemoveAll a directory that contains subdirectories and
 			// descendant files.
-			require.NoError(t, e.RemoveAll(path("a/b")))
+			require.NoError(t, fs.RemoveAll(path("a/b")))
 			expectLS(path("a"), []string{})
 		})
 	}
@@ -1534,9 +1523,9 @@ func TestGetIntent(t *testing.T) {
 	// Key "b" has an intent, an exclusive lock, and a shared lock from txn1.
 	// NOTE: acquire in increasing strength order so that acquisition is never
 	// skipped.
-	err = MVCCAcquireLock(ctx, eng, &txn1.TxnMeta, txn1.IgnoredSeqNums, lock.Shared, keyB, nil, 0, 0)
+	err = MVCCAcquireLock(ctx, eng, txn1, lock.Shared, keyB, nil, 0)
 	require.NoError(t, err)
-	err = MVCCAcquireLock(ctx, eng, &txn1.TxnMeta, txn1.IgnoredSeqNums, lock.Exclusive, keyB, nil, 0, 0)
+	err = MVCCAcquireLock(ctx, eng, txn1, lock.Exclusive, keyB, nil, 0)
 	require.NoError(t, err)
 	_, err = MVCCPut(ctx, eng, keyB, txn1.ReadTimestamp, val, MVCCWriteOptions{Txn: txn1})
 	require.NoError(t, err)
@@ -1546,15 +1535,15 @@ func TestGetIntent(t *testing.T) {
 	require.NoError(t, err)
 
 	// Key "d" has an exclusive lock and a shared lock from txn2.
-	err = MVCCAcquireLock(ctx, eng, &txn2.TxnMeta, txn2.IgnoredSeqNums, lock.Shared, keyD, nil, 0, 0)
+	err = MVCCAcquireLock(ctx, eng, txn2, lock.Shared, keyD, nil, 0)
 	require.NoError(t, err)
-	err = MVCCAcquireLock(ctx, eng, &txn2.TxnMeta, txn2.IgnoredSeqNums, lock.Exclusive, keyD, nil, 0, 0)
+	err = MVCCAcquireLock(ctx, eng, txn2, lock.Exclusive, keyD, nil, 0)
 	require.NoError(t, err)
 
 	// Key "e" has a shared lock from each txn.
-	err = MVCCAcquireLock(ctx, eng, &txn1.TxnMeta, txn1.IgnoredSeqNums, lock.Shared, keyE, nil, 0, 0)
+	err = MVCCAcquireLock(ctx, eng, txn1, lock.Shared, keyE, nil, 0)
 	require.NoError(t, err)
-	err = MVCCAcquireLock(ctx, eng, &txn2.TxnMeta, txn2.IgnoredSeqNums, lock.Shared, keyE, nil, 0, 0)
+	err = MVCCAcquireLock(ctx, eng, txn2, lock.Shared, keyE, nil, 0)
 	require.NoError(t, err)
 
 	// Key "f" has no intent/locks.
@@ -1574,7 +1563,7 @@ func TestGetIntent(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(string(test.key), func(t *testing.T) {
-			intent, err := GetIntent(ctx, eng, test.key)
+			intent, err := GetIntent(eng, test.key)
 			if test.expErr {
 				require.Error(t, err)
 			} else {
@@ -1642,7 +1631,7 @@ func TestScanLocks(t *testing.T) {
 		if str == lock.Intent {
 			_, err = MVCCPut(ctx, eng, roachpb.Key(k), txn1.ReadTimestamp, roachpb.Value{RawBytes: roachpb.Key(k)}, MVCCWriteOptions{Txn: txn1})
 		} else {
-			err = MVCCAcquireLock(ctx, eng, &txn1.TxnMeta, txn1.IgnoredSeqNums, str, roachpb.Key(k), nil, 0, 0)
+			err = MVCCAcquireLock(ctx, eng, txn1, str, roachpb.Key(k), nil, 0)
 		}
 		require.NoError(t, err)
 	}
@@ -1813,7 +1802,7 @@ func TestEngineClearRange(t *testing.T) {
 
 		"ClearRangeWithHeuristic individual": {
 			clearRange: func(rw ReadWriter, start, end roachpb.Key) error {
-				return ClearRangeWithHeuristic(ctx, rw, rw, start, end, math.MaxInt)
+				return ClearRangeWithHeuristic(rw, rw, start, end, math.MaxInt, math.MaxInt)
 			},
 			clearsPointKeys: true,
 			clearsRangeKeys: true,
@@ -1821,7 +1810,7 @@ func TestEngineClearRange(t *testing.T) {
 		},
 		"ClearRangeWithHeuristic ranged": {
 			clearRange: func(rw ReadWriter, start, end roachpb.Key) error {
-				return ClearRangeWithHeuristic(ctx, rw, rw, start, end, 1)
+				return ClearRangeWithHeuristic(rw, rw, start, end, 1, 1)
 			},
 			clearsPointKeys: true,
 			clearsRangeKeys: true,
@@ -1829,9 +1818,33 @@ func TestEngineClearRange(t *testing.T) {
 		},
 		"ClearRangeWithHeuristic point keys individual": {
 			clearRange: func(rw ReadWriter, start, end roachpb.Key) error {
-				return ClearRangeWithHeuristic(ctx, rw, rw, start, end, math.MaxInt)
+				return ClearRangeWithHeuristic(rw, rw, start, end, math.MaxInt, 0)
 			},
 			clearsPointKeys: true,
+			clearsRangeKeys: false,
+			clearsIntents:   false,
+		},
+		"ClearRangeWithHeuristic point keys ranged": {
+			clearRange: func(rw ReadWriter, start, end roachpb.Key) error {
+				return ClearRangeWithHeuristic(rw, rw, start, end, 1, 0)
+			},
+			clearsPointKeys: true,
+			clearsRangeKeys: false,
+			clearsIntents:   false,
+		},
+		"ClearRangeWithHeuristic range keys individual": {
+			clearRange: func(rw ReadWriter, start, end roachpb.Key) error {
+				return ClearRangeWithHeuristic(rw, rw, start, end, 0, math.MaxInt)
+			},
+			clearsPointKeys: false,
+			clearsRangeKeys: true,
+			clearsIntents:   false,
+		},
+		"ClearRangeWithHeuristic range keys ranged": {
+			clearRange: func(rw ReadWriter, start, end roachpb.Key) error {
+				return ClearRangeWithHeuristic(rw, rw, start, end, 0, 1)
+			},
+			clearsPointKeys: false,
 			clearsRangeKeys: true,
 			clearsIntents:   false,
 		},
@@ -1931,11 +1944,6 @@ func TestEngineIteratorVisibility(t *testing.T) {
 			canWrite:         true,
 			readOwnWrites:    false,
 		},
-		"Reader": {
-			makeReader:       func(e Engine) Reader { return e.NewReader(StandardDurability) },
-			expectConsistent: true,
-			canWrite:         false,
-		},
 		"ReadOnly": {
 			makeReader:       func(e Engine) Reader { return e.NewReadOnly(StandardDurability) },
 			expectConsistent: true,
@@ -1973,7 +1981,7 @@ func TestEngineIteratorVisibility(t *testing.T) {
 					LowerBound: keys.LocalMax,
 					UpperBound: keys.MaxKey,
 				}
-				iterOld, err := r.NewMVCCIterator(context.Background(), iterKind, opts)
+				iterOld, err := r.NewMVCCIterator(iterKind, opts)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1982,9 +1990,9 @@ func TestEngineIteratorVisibility(t *testing.T) {
 				// Pin the pinned reader, if it supports it. This should ensure later
 				// iterators see the current state.
 				if rPinned.ConsistentIterators() {
-					require.NoError(t, rPinned.PinEngineStateForIterators(fs.UnknownReadCategory))
+					require.NoError(t, rPinned.PinEngineStateForIterators())
 				} else {
-					require.Error(t, rPinned.PinEngineStateForIterators(fs.UnknownReadCategory))
+					require.Error(t, rPinned.PinEngineStateForIterators())
 				}
 
 				// Write a new key to the engine, and set up the expected results.
@@ -2009,7 +2017,7 @@ func TestEngineIteratorVisibility(t *testing.T) {
 				// Create another iterator from the regular reader. Consistent iterators
 				// should see the old state (because iterOld was already created for
 				// it), others should see the new state.
-				iterNew, err := r.NewMVCCIterator(context.Background(), iterKind, opts)
+				iterNew, err := r.NewMVCCIterator(iterKind, opts)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -2023,7 +2031,7 @@ func TestEngineIteratorVisibility(t *testing.T) {
 				// Create a new iterator from the pinned reader. Readers with consistent
 				// iterators should see the old (pinned) state, others should see the
 				// new state.
-				iterPinned, err := rPinned.NewMVCCIterator(context.Background(), iterKind, opts)
+				iterPinned, err := rPinned.NewMVCCIterator(iterKind, opts)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -2075,7 +2083,7 @@ func TestEngineIteratorVisibility(t *testing.T) {
 					// A new iterator should read our own writes if the reader supports it,
 					// but consistent iterators should not see the changes to the underlying
 					// engine either way.
-					iterOwn, err := r.NewMVCCIterator(context.Background(), iterKind, opts)
+					iterOwn, err := r.NewMVCCIterator(iterKind, opts)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -2211,11 +2219,11 @@ func TestScanConflictingIntentsForDroppingLatchesEarly(t *testing.T) {
 			setup: func(t *testing.T, rw ReadWriter, _ *roachpb.Transaction) {
 				txnA := newTxn(belowTxnTS)
 				txnB := newTxn(belowTxnTS)
-				err := MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err := MVCCAcquireLock(ctx, rw, txnA, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnB.TxnMeta, txnB.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnB, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Exclusive, keyB, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnA, lock.Exclusive, keyB, nil /*ms*/, 0 /*maxConflicts*/)
 				require.NoError(t, err)
 			},
 			start:                 keyA,
@@ -2229,9 +2237,9 @@ func TestScanConflictingIntentsForDroppingLatchesEarly(t *testing.T) {
 			name: "shared and exclusive locks should be ignored no end key",
 			setup: func(t *testing.T, rw ReadWriter, _ *roachpb.Transaction) {
 				txnA := newTxn(belowTxnTS)
-				err := MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err := MVCCAcquireLock(ctx, rw, txnA, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Exclusive, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnA, lock.Exclusive, keyA, nil /*ms*/, 0 /*maxConflicts*/)
 				require.NoError(t, err)
 			},
 			start:                 keyA,
@@ -2244,11 +2252,11 @@ func TestScanConflictingIntentsForDroppingLatchesEarly(t *testing.T) {
 			setup: func(t *testing.T, rw ReadWriter, _ *roachpb.Transaction) {
 				txnA := newTxn(belowTxnTS)
 				txnB := newTxn(belowTxnTS)
-				err := MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err := MVCCAcquireLock(ctx, rw, txnA, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnB.TxnMeta, txnB.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnB, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Exclusive, keyB, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnA, lock.Exclusive, keyB, nil /*ms*/, 0 /*maxConflicts*/)
 				require.NoError(t, err)
 				require.NoError(t, err)
 				_, err = MVCCPut(ctx, rw, keyC, txnA.WriteTimestamp, val, MVCCWriteOptions{Txn: txnA})
@@ -2264,11 +2272,11 @@ func TestScanConflictingIntentsForDroppingLatchesEarly(t *testing.T) {
 			setup: func(t *testing.T, rw ReadWriter, txn *roachpb.Transaction) {
 				txnA := newTxn(belowTxnTS)
 				txnB := newTxn(belowTxnTS)
-				err := MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err := MVCCAcquireLock(ctx, rw, txnA, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnB.TxnMeta, txnB.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnB, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Exclusive, keyB, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnA, lock.Exclusive, keyB, nil /*ms*/, 0 /*maxConflicts*/)
 				require.NoError(t, err)
 				_, err = MVCCPut(ctx, rw, keyC, txn.WriteTimestamp, val, MVCCWriteOptions{Txn: txn})
 				require.NoError(t, err)
@@ -2299,7 +2307,6 @@ func TestScanConflictingIntentsForDroppingLatchesEarly(t *testing.T) {
 				tc.end,
 				&intents,
 				0, /* maxLockConflicts */
-				0, /* targetLockConflictBytes */
 			)
 			if tc.expErr != "" {
 				require.Error(t, err)
@@ -2522,7 +2529,6 @@ func TestScanConflictingIntentsForDroppingLatchesEarlyReadYourOwnWrites(t *testi
 				nil,
 				&intents,
 				0, /* maxLockConflicts */
-				0, /* targetLockConflictBytes */
 			)
 			require.NoError(t, err)
 			if alwaysFallbackToIntentInterleavingIteratorForReadYourOwnWrites {
@@ -2565,9 +2571,9 @@ func TestEngineRangeKeyMutations(t *testing.T) {
 
 				// Engine methods don't do validation, but just pass through to Pebble.
 				require.NoError(t, rw.PutEngineRangeKey(
-					rk.StartKey, rk.EndKey, mvccencoding.EncodeMVCCTimestampSuffix(rk.Timestamp), nil))
+					rk.StartKey, rk.EndKey, EncodeMVCCTimestampSuffix(rk.Timestamp), nil))
 				require.NoError(t, rw.ClearEngineRangeKey(
-					rk.StartKey, rk.EndKey, mvccencoding.EncodeMVCCTimestampSuffix(rk.Timestamp)))
+					rk.StartKey, rk.EndKey, EncodeMVCCTimestampSuffix(rk.Timestamp)))
 				require.NoError(t, rw.ClearRawRange(
 					rk.StartKey, rk.EndKey, false /* pointKeys */, true /* rangeKeys */))
 			})
@@ -2635,7 +2641,7 @@ func TestEngineRangeKeyMutations(t *testing.T) {
 		valueRaw, err := EncodeMVCCValue(MVCCValue{})
 		require.NoError(t, err)
 		require.NoError(t, rw.PutEngineRangeKey(
-			roachpb.Key("c"), roachpb.Key("e"), mvccencoding.EncodeMVCCTimestampSuffix(wallTS(1)), valueRaw))
+			roachpb.Key("c"), roachpb.Key("e"), EncodeMVCCTimestampSuffix(wallTS(1)), valueRaw))
 		require.NoError(t, rw.PutRawMVCCRangeKey(rangeKey("e", "g", 1), valueRaw))
 		require.Equal(t, []MVCCRangeKeyValue{
 			rangeKV("a", "f", 1, MVCCValue{}),
@@ -2679,7 +2685,7 @@ func TestEngineRangeKeyMutations(t *testing.T) {
 func scanRangeKeys(t *testing.T, r Reader) []MVCCRangeKeyValue {
 	t.Helper()
 
-	iter, err := r.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{
+	iter, err := r.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 		KeyTypes:   IterKeyTypeRangesOnly,
 		LowerBound: keys.LocalMax,
 		UpperBound: keys.MaxKey,
@@ -2705,7 +2711,7 @@ func scanRangeKeys(t *testing.T, r Reader) []MVCCRangeKeyValue {
 func scanPointKeys(t *testing.T, r Reader) []MVCCKey {
 	t.Helper()
 
-	iter, err := r.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{
+	iter, err := r.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 		LowerBound: keys.LocalMax,
 		UpperBound: keys.MaxKey,
 	})

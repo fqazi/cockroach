@@ -28,7 +28,6 @@ import (
 )
 
 type dropFunctionNode struct {
-	zeroInputPlanNode
 	toDrop       []*funcdesc.Mutable
 	dropBehavior tree.DropBehavior
 }
@@ -57,7 +56,7 @@ func (p *planner) DropFunction(ctx context.Context, n *tree.DropRoutine) (ret pl
 	}
 	fnResolved := intsets.MakeFast()
 	for _, fn := range n.Routines {
-		ol, err := p.matchRoutine(ctx, &fn, !n.IfExists, routineType, true /* inDropContext */)
+		ol, err := p.matchRoutine(ctx, &fn, !n.IfExists, routineType)
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +101,7 @@ func (p *planner) DropFunction(ctx context.Context, n *tree.DropRoutine) (ret pl
 
 func (n *dropFunctionNode) startExec(params runParams) error {
 	for _, fnMutable := range n.toDrop {
-		if err := params.p.dropFunctionImpl(params.ctx, fnMutable, n.dropBehavior); err != nil {
+		if err := params.p.dropFunctionImpl(params.ctx, fnMutable); err != nil {
 			return err
 		}
 	}
@@ -119,11 +118,7 @@ func (n *dropFunctionNode) Close(ctx context.Context)           {}
 // returned if the function is not found. An error is also returning if a
 // builtin function is matched.
 func (p *planner) matchRoutine(
-	ctx context.Context,
-	routineObj *tree.RoutineObj,
-	required bool,
-	routineType tree.RoutineType,
-	inDropContext bool,
+	ctx context.Context, routineObj *tree.RoutineObj, required bool, routineType tree.RoutineType,
 ) (*tree.QualifiedOverload, error) {
 	path := p.CurrentSearchPath()
 	unresolvedName := routineObj.FuncName.ToUnresolvedObjectName().ToUnresolvedName()
@@ -141,9 +136,11 @@ func (p *planner) matchRoutine(
 		return nil, err
 	}
 
-	ol, err := fnDef.MatchOverload(
-		ctx, p, routineObj, &path, routineType, inDropContext, false, /* tryDefaultExprs */
-	)
+	paramTypes, err := routineObj.ParamTypes(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	ol, err := fnDef.MatchOverload(paramTypes, routineObj.FuncName.Schema(), &path, routineType)
 	if err != nil {
 		if !required && errors.Is(err, tree.ErrRoutineUndefined) {
 			return nil, nil
@@ -187,14 +184,12 @@ func (p *planner) canDropFunction(ctx context.Context, fnDesc catalog.FunctionDe
 		return err
 	}
 	if !hasOwernship {
-		return pgerror.Newf(pgcode.InsufficientPrivilege, "must be owner of function %s", fnDesc.GetName())
+		return errors.Errorf("must be owner of function %s", fnDesc.GetName())
 	}
 	return nil
 }
 
-func (p *planner) dropFunctionImpl(
-	ctx context.Context, fnMutable *funcdesc.Mutable, dropBehavior tree.DropBehavior,
-) error {
+func (p *planner) dropFunctionImpl(ctx context.Context, fnMutable *funcdesc.Mutable) error {
 	if fnMutable.Dropped() {
 		return errors.Errorf("function %q is already being dropped", fnMutable.Name)
 	}
@@ -204,23 +199,6 @@ func (p *planner) dropFunctionImpl(
 	// createOrUpdateSchemaChangeJob.
 	if catalog.HasConcurrentDeclarativeSchemaChange(fnMutable) {
 		return scerrors.ConcurrentSchemaChangeError(fnMutable)
-	}
-
-	// Drop dependent functions first if cascade is specified.
-	if dropBehavior == tree.DropCascade {
-		for _, ref := range fnMutable.DependedOnBy {
-			depFuncMutable, err := p.Descriptors().MutableByID(p.txn).Function(ctx, ref.ID)
-			if err != nil {
-				return err
-			}
-			// Skip functions that are already being dropped.
-			if depFuncMutable.Dropped() {
-				continue
-			}
-			if err := p.dropFunctionImpl(ctx, depFuncMutable, dropBehavior); err != nil {
-				return err
-			}
-		}
 	}
 
 	// Remove backreference from tables/views/sequences referenced by this UDF.
@@ -239,20 +217,6 @@ func (p *planner) dropFunctionImpl(
 				fnMutable.Name, fnMutable.ID, refMutable.Name, refMutable.ID,
 			),
 		); err != nil {
-			return err
-		}
-	}
-
-	// Remove this function from the dependencies
-	for _, id := range fnMutable.DependsOnFunctions {
-		refMutable, err := p.Descriptors().MutableByID(p.txn).Function(ctx, id)
-		if err != nil {
-			return err
-		}
-		if err := refMutable.RemoveFunctionReference(fnMutable.ID); err != nil {
-			return err
-		}
-		if err := p.writeFuncDesc(ctx, refMutable); err != nil {
 			return err
 		}
 	}
@@ -329,11 +293,11 @@ func (p *planner) writeDropFuncSchemaChange(ctx context.Context, funcDesc *funcd
 }
 
 func (p *planner) removeDependentFunction(
-	ctx context.Context, tbl *tabledesc.Mutable, fn *funcdesc.Mutable, dropBehavior tree.DropBehavior,
+	ctx context.Context, tbl *tabledesc.Mutable, fn *funcdesc.Mutable,
 ) error {
 	// In the table whose index is being removed, filter out all back-references
 	// that refer to the view that's being removed.
 	tbl.DependedOnBy = removeMatchingReferences(tbl.DependedOnBy, fn.ID)
 	// Then proceed to actually drop the view and log an event for it.
-	return p.dropFunctionImpl(ctx, fn, dropBehavior)
+	return p.dropFunctionImpl(ctx, fn)
 }

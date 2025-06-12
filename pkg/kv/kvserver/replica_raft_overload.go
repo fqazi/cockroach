@@ -6,19 +6,17 @@
 package kvserver
 
 import (
-	"cmp"
 	"context"
 	"math/rand"
-	"slices"
+	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/redact"
+	"go.etcd.io/raft/v3/tracker"
 )
 
 // pauseReplicationIOThreshold is the admission.io.overload threshold at which
@@ -43,7 +41,7 @@ type computeExpendableOverloadedFollowersInput struct {
 	ioOverloadMap ioThresholdMapI
 	// getProgressMap returns Raft's view of the progress map. This is only called
 	// when needed, and at most once.
-	getProgressMap func(context.Context) map[raftpb.PeerID]tracker.Progress
+	getProgressMap func(context.Context) map[uint64]tracker.Progress
 	// seed is used to randomize selection of which followers to pause in case
 	// there are multiple followers that qualify, but quorum constraints require
 	// picking a subset. In practice, we set this to the RangeID to ensure maximum
@@ -98,9 +96,9 @@ func computeExpendableOverloadedFollowers(
 	var nonLive map[roachpb.ReplicaID]nonLiveReason
 	var liveOverloadedVoterCandidates map[roachpb.ReplicaID]struct{}
 	var liveOverloadedNonVoterCandidates map[roachpb.ReplicaID]struct{}
-	var prs map[raftpb.PeerID]tracker.Progress
+	var prs map[uint64]tracker.Progress
 
-	for _, replDesc := range d.replDescs.Descriptors() {
+	for _, replDesc := range d.replDescs.AsProto() {
 		if pausable := d.ioOverloadMap.AbovePauseThreshold(replDesc.StoreID); !pausable || replDesc.ReplicaID == d.self {
 			continue
 		}
@@ -135,7 +133,7 @@ func computeExpendableOverloadedFollowers(
 		// follower immediately becomes non-live, so if we want stable metrics on
 		// which followers are "paused", then we need the "pausing" state to
 		// overrule the "non-live" state.
-		if prs[raftpb.PeerID(replDesc.ReplicaID)].IsLearner {
+		if prs[uint64(replDesc.ReplicaID)].IsLearner {
 			liveOverloadedNonVoterCandidates[replDesc.ReplicaID] = struct{}{}
 		} else {
 			liveOverloadedVoterCandidates[replDesc.ReplicaID] = struct{}{}
@@ -169,7 +167,9 @@ func computeExpendableOverloadedFollowers(
 			sl = append(sl, sid)
 		}
 		// Sort for determinism during tests.
-		slices.Sort(sl)
+		sort.Slice(sl, func(i, j int) bool {
+			return sl[i] < sl[j]
+		})
 		// Remove a random voter candidate, and loop around to see if we now have
 		// quorum.
 		if rnd == nil {
@@ -202,10 +202,10 @@ func (osm ioThresholdMap) SafeFormat(s redact.SafePrinter, verb rune) {
 	for id := range osm.m {
 		sl = append(sl, id)
 	}
-	slices.SortFunc(sl, func(a, b roachpb.StoreID) int {
-		aScore, _ := osm.m[a].Score()
-		bScore, _ := osm.m[b].Score()
-		return cmp.Compare(aScore, bScore)
+	sort.Slice(sl, func(i, j int) bool {
+		a, _ := osm.m[sl[i]].Score()
+		b, _ := osm.m[sl[j]].Score()
+		return a < b
 	})
 	for i, id := range sl {
 		if i > 0 {
@@ -295,10 +295,7 @@ func (osm *ioThresholds) Replace(
 func (r *Replica) updatePausedFollowersLocked(ctx context.Context, ioThresholdMap *ioThresholdMap) {
 	r.mu.pausedFollowers = nil
 
-	desc := r.descRLocked()
-	repls := desc.Replicas()
-
-	if !ioThresholdMap.AnyAbovePauseThreshold(repls) {
+	if !ioThresholdMap.AnyAbovePauseThreshold(r.descRLocked().Replicas()) {
 		return
 	}
 
@@ -308,14 +305,7 @@ func (r *Replica) updatePausedFollowersLocked(ctx context.Context, ioThresholdMa
 		return
 	}
 
-	if r.shouldReplicationAdmissionControlUsePullMode(ctx) {
-		// Replication admission control is enabled and is using pull-mode which
-		// allows for formation of a send-queue. The send-queue and pull-mode
-		// behavior is RAC2 subsumes follower pausing, so do not pause.
-		return
-	}
-
-	if !quotaPoolEnabledForRange(desc) {
+	if !quotaPoolEnabledForRange(*r.descRLocked()) {
 		// If the quota pool isn't enabled (like for the liveness range), play it
 		// safe. The range is unlikely to be a major contributor to any follower's
 		// I/O and wish to reduce the likelihood of a problem in replication pausing
@@ -346,11 +336,11 @@ func (r *Replica) updatePausedFollowersLocked(ctx context.Context, ioThresholdMa
 	now := r.store.Clock().Now().GoTime()
 	d := computeExpendableOverloadedFollowersInput{
 		self:          r.replicaID,
-		replDescs:     repls,
+		replDescs:     r.descRLocked().Replicas(),
 		ioOverloadMap: ioThresholdMap,
-		getProgressMap: func(_ context.Context) map[raftpb.PeerID]tracker.Progress {
+		getProgressMap: func(_ context.Context) map[uint64]tracker.Progress {
 			prs := r.mu.internalRaftGroup.Status().Progress
-			updateRaftProgressFromActivity(ctx, prs, repls.Descriptors(), func(id roachpb.ReplicaID) bool {
+			updateRaftProgressFromActivity(ctx, prs, r.descRLocked().Replicas().AsProto(), func(id roachpb.ReplicaID) bool {
 				return r.mu.lastUpdateTimes.isFollowerActiveSince(id, now, r.store.cfg.RangeLeaseDuration)
 			})
 			return prs
@@ -359,11 +349,7 @@ func (r *Replica) updatePausedFollowersLocked(ctx context.Context, ioThresholdMa
 		seed:              seed,
 	}
 	r.mu.pausedFollowers, _ = computeExpendableOverloadedFollowers(ctx, d)
-	bypassFn := r.store.TestingKnobs().RaftReportUnreachableBypass
 	for replicaID := range r.mu.pausedFollowers {
-		if bypassFn != nil && bypassFn(replicaID) {
-			continue
-		}
 		// We're dropping messages to those followers (see handleRaftReady) but
 		// it's a good idea to tell raft not to even bother sending in the first
 		// place. Raft will react to this by moving the follower to probing state
@@ -371,6 +357,7 @@ func (r *Replica) updatePausedFollowersLocked(ctx context.Context, ioThresholdMa
 		// MsgApp (which it can only do once we stop dropping messages). Something
 		// similar would result naturally if we didn't report as unreachable, but
 		// with more wasted work.
-		r.mu.internalRaftGroup.ReportUnreachable(raftpb.PeerID(replicaID))
+		r.mu.internalRaftGroup.ReportUnreachable(uint64(replicaID))
 	}
+	r.mu.replicaFlowControlIntegration.onFollowersPaused(ctx)
 }

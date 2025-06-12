@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod"
@@ -68,7 +67,7 @@ func registerTPCDSVec(r registry.Registry) {
 		t.Status("restoring TPCDS dataset for Scale Factor 1")
 		if _, err := clusterConn.Exec(
 			`
-RESTORE DATABASE tpcds FROM '/' IN 'gs://cockroach-fixtures-us-east1/workload/tpcds/scalefactor=1/backup?AUTH=implicit'
+RESTORE DATABASE tpcds FROM 'gs://cockroach-fixtures-us-east1/workload/tpcds/scalefactor=1/backup?AUTH=implicit'
 WITH unsafe_restore_incompatible_version;
 `,
 		); err != nil {
@@ -80,7 +79,7 @@ WITH unsafe_restore_incompatible_version;
 		}
 		scatterTables(t, clusterConn, tpcdsTables)
 		t.Status("waiting for full replication")
-		err := roachtestutil.WaitFor3XReplication(ctx, t.L(), clusterConn)
+		err := WaitFor3XReplication(ctx, t, clusterConn)
 		require.NoError(t, err)
 
 		// TODO(yuzefovich): it seems like if cmpconn.CompareConns hits a
@@ -182,15 +181,16 @@ WITH unsafe_restore_incompatible_version;
 	}
 
 	r.Add(registry.TestSpec{
-		Name:      "tpcdsvec",
-		Owner:     registry.OwnerSQLQueries,
-		Benchmark: true,
-		Cluster:   r.MakeClusterSpec(3),
-		// Uses gs://cockroach-fixtures-us-east1. See:
-		// https://github.com/cockroachdb/cockroach/issues/105968
-		CompatibleClouds: registry.Clouds(spec.GCE, spec.Local),
+		Name:             "tpcdsvec",
+		Owner:            registry.OwnerSQLQueries,
+		Benchmark:        true,
+		Cluster:          r.MakeClusterSpec(3),
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
+			if c.Cloud() != spec.GCE && !c.IsLocal() {
+				t.Skip("uses gs://cockroach-fixtures-us-east1; see https://github.com/cockroachdb/cockroach/issues/105968")
+			}
 			runTPCDSVec(ctx, t, c)
 		},
 	})

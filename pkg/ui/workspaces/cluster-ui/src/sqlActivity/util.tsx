@@ -3,18 +3,17 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { createSelector } from "@reduxjs/toolkit";
-
-import { SqlStatsResponse } from "src/api/statementsApi";
-import { Filters, getTimeValueInSeconds } from "src/queryFilter";
-import { AggregateStatistics } from "src/statementsTable";
+import { containAny } from "src/util/arrays";
 import {
   CollectedStatementStatistics,
   flattenStatementStats,
 } from "src/util/appStats/appStats";
-import { containAny } from "src/util/arrays";
-import { INTERNAL_APP_NAME_PREFIX, unset } from "src/util/constants";
 import { FixFingerprintHexValue } from "src/util/format";
+import { INTERNAL_APP_NAME_PREFIX, unset } from "src/util/constants";
+import { createSelector } from "@reduxjs/toolkit";
+import { SqlStatsResponse } from "src/api/statementsApi";
+import { Filters, getTimeValueInSeconds } from "src/queryFilter";
+import { AggregateStatistics } from "src/statementsTable";
 
 // filterBySearchQuery returns true if a search query matches the statement.
 export function filterBySearchQuery(

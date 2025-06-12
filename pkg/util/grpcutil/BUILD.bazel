@@ -13,7 +13,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/roachpb",
-        "//pkg/util/ctxutil",
         "//pkg/util/log",
         "//pkg/util/log/severity",
         "//pkg/util/netutil",
@@ -37,6 +36,7 @@ go_test(
         "grpc_log_test.go",
         "grpc_util_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":grpcutil"],
     deps = [
         "//pkg/server",

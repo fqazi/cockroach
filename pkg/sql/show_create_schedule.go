@@ -21,7 +21,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 )
 
-var showCreateScheduleColumns = colinfo.ResultColumns{
+var showCreateTableColumns = colinfo.ResultColumns{
 	{Name: "schedule_id", Typ: types.Int},
 	{Name: "create_statement", Typ: types.String},
 }
@@ -46,7 +46,7 @@ func loadSchedules(params runParams, n *tree.ShowCreateSchedules) ([]*jobs.Sched
 		datums, columns, err := params.p.InternalSQLTxn().QueryRowExWithCols(
 			params.ctx,
 			"load-schedules",
-			params.p.Txn(), sessiondata.NodeUserSessionDataOverride,
+			params.p.Txn(), sessiondata.RootUserSessionDataOverride,
 			fmt.Sprintf("SELECT * FROM %s WHERE schedule_id = $1", env.ScheduledJobsTableName()),
 			tree.NewDInt(tree.DInt(sjID)))
 		if err != nil {
@@ -58,7 +58,7 @@ func loadSchedules(params runParams, n *tree.ShowCreateSchedules) ([]*jobs.Sched
 		datums, columns, err := params.p.InternalSQLTxn().QueryBufferedExWithCols(
 			params.ctx,
 			"load-schedules",
-			params.p.Txn(), sessiondata.NodeUserSessionDataOverride,
+			params.p.Txn(), sessiondata.RootUserSessionDataOverride,
 			fmt.Sprintf("SELECT * FROM %s", env.ScheduledJobsTableName()))
 		if err != nil {
 			return nil, err
@@ -89,7 +89,7 @@ func (p *planner) ShowCreateSchedule(
 
 	return &delayedNode{
 		name:    fmt.Sprintf("SHOW CREATE SCHEDULE %d", n.ScheduleID),
-		columns: showCreateScheduleColumns,
+		columns: showCreateTableColumns,
 		constructor: func(ctx context.Context, p *planner) (planNode, error) {
 			scheduledJobs, err := loadSchedules(
 				runParams{ctx: ctx, p: p, extendedEvalCtx: &p.extendedEvalCtx}, n)
@@ -116,7 +116,7 @@ func (p *planner) ShowCreateSchedule(
 				rows = append(rows, row)
 			}
 
-			v := p.newContainerValuesNode(showCreateScheduleColumns, len(rows))
+			v := p.newContainerValuesNode(showCreateTableColumns, len(rows))
 			for _, row := range rows {
 				if _, err := v.rows.AddRow(ctx, row); err != nil {
 					v.Close(ctx)

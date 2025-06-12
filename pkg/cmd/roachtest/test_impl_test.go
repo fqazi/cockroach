@@ -179,10 +179,11 @@ func Test_failuresMatchingError(t *testing.T) {
 }
 
 func Test_failureSpecifyOwnerAndAddFailureCombination(t *testing.T) {
-	ti := testImpl{}
-	ti.ReplaceL(nilLogger())
-	ti.addFailure(0, "", vmPreemptionError("my_VM"))
-	errWithOwnership := failuresAsErrorWithOwnership(ti.failures())
+	ti := testImpl{
+		l: nilLogger(),
+	}
+	ti.addFailure(0, "", errClusterProvisioningFailed(errors.New("oops")))
+	errWithOwnership := failuresSpecifyOwner(ti.failures())
 
 	require.NotNil(t, errWithOwnership)
 	require.Equal(t, registry.OwnerTestEng, errWithOwnership.Owner)

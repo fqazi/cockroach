@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for proj_non_const_ops.eg.go. It's
@@ -42,11 +43,10 @@ import (
 // pick up the right packages when run within the bazel sandbox.
 var (
 	_ duration.Duration
+	_ = coldataext.CompareDatum
 	_ sqltelemetry.EnumTelemetryType
 	_ telemetry.Counter
 	_ apd.Context
-	_ = coldataext.CompareDatum
-	_ = encoding.UnsafeConvertStringToBytes
 )
 
 // {{/*
@@ -107,7 +107,7 @@ func (p _OP_NAME) Next() coldata.Batch {
 		return coldata.ZeroBatch
 	}
 	projVec := batch.ColVec(p.outputIdx)
-	p.allocator.PerformOperation([]*coldata.Vec{projVec}, func() {
+	p.allocator.PerformOperation([]coldata.Vec{projVec}, func() {
 		projCol := projVec._RET_TYP()
 		vec1 := batch.ColVec(p.col1Idx)
 		vec2 := batch.ColVec(p.col2Idx)

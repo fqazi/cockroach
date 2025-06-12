@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import Long from "long";
-
 import { CollectedStatementStatistics } from ".";
 
 export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistics[] =
@@ -16,6 +15,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
             "UPDATE system.jobs SET claim_session_id = _ WHERE ((claim_session_id != $1) AND (status IN (_, _, __more1_10__))) AND (NOT crdb_internal.sql_liveness_is_alive(claim_session_id))",
           app: "$ internal-expire-sessions",
           distSQL: false,
+          failed: false,
           implicit_txn: true,
           vec: false,
           full_scan: false,
@@ -24,7 +24,6 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
       },
       stats: {
         count: new Long(25),
-        failure_count: new Long(3),
         first_attempt_count: new Long(25),
         max_retries: new Long(0),
         legacy_last_err: "",
@@ -116,7 +115,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
           p99: 1.1,
         },
       },
-      id: Long.fromString("8717981371097536892"),
+      id: new Long(8717981371097536892),
     },
     {
       key: {
@@ -125,6 +124,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
             "UPDATE system.jobs SET claim_session_id = _ WHERE ((claim_session_id != $1) AND (status IN (_, _, __more1_10__))) AND (NOT crdb_internal.sql_liveness_is_alive(claim_session_id))",
           app: "$ internal-expire-sessions",
           distSQL: false,
+          failed: false,
           implicit_txn: true,
           vec: false,
           full_scan: false,
@@ -133,7 +133,6 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
       },
       stats: {
         count: new Long(25),
-        failure_count: new Long(0),
         first_attempt_count: new Long(25),
         max_retries: new Long(0),
         legacy_last_err: "",
@@ -234,7 +233,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
           p99: 1.1,
         },
       },
-      id: Long.fromString("8717981371097536892"),
+      id: new Long(8717981371097536892),
     },
     {
       key: {
@@ -243,6 +242,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
             "UPDATE system.jobs SET claim_session_id = _ WHERE ((claim_session_id != $1) AND (status IN (_, _, __more1_10__))) AND (NOT crdb_internal.sql_liveness_is_alive(claim_session_id))",
           app: "$ internal-expire-sessions",
           distSQL: false,
+          failed: false,
           implicit_txn: true,
           vec: false,
           full_scan: false,
@@ -251,7 +251,6 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
       },
       stats: {
         count: new Long(25),
-        failure_count: new Long(12),
         first_attempt_count: new Long(25),
         max_retries: new Long(0),
         legacy_last_err: "",
@@ -355,7 +354,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
           p99: 1.1,
         },
       },
-      id: Long.fromString("8717981371097536892"),
+      id: new Long(8717981371097536892),
     },
     {
       key: {
@@ -364,6 +363,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
             "UPDATE system.jobs SET claim_session_id = _ WHERE ((claim_session_id != $1) AND (status IN (_, _, __more1_10__))) AND (NOT crdb_internal.sql_liveness_is_alive(claim_session_id))",
           app: "$ internal-expire-sessions",
           distSQL: false,
+          failed: false,
           implicit_txn: true,
           vec: false,
           full_scan: false,
@@ -372,7 +372,6 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
       },
       stats: {
         count: new Long(25),
-        failure_count: new Long(1),
         first_attempt_count: new Long(25),
         max_retries: new Long(0),
         legacy_last_err: "",
@@ -467,7 +466,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
           p99: 1.1,
         },
       },
-      id: Long.fromString("8717981371097536892"),
+      id: new Long(8717981371097536892),
     },
     {
       key: {
@@ -476,6 +475,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
             "UPDATE system.jobs SET claim_session_id = _ WHERE ((claim_session_id != $1) AND (status IN (_, _, __more1_10__))) AND (NOT crdb_internal.sql_liveness_is_alive(claim_session_id))",
           app: "$ internal-expire-sessions",
           distSQL: false,
+          failed: false,
           implicit_txn: true,
           vec: false,
           full_scan: false,
@@ -484,7 +484,6 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
       },
       stats: {
         count: new Long(25),
-        failure_count: new Long(6),
         first_attempt_count: new Long(25),
         max_retries: new Long(0),
         legacy_last_err: "",
@@ -579,7 +578,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
           p99: 1.1,
         },
       },
-      id: Long.fromString("8717981371097536892"),
+      id: new Long(8717981371097536892),
     },
     {
       key: {
@@ -588,6 +587,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
             "UPDATE system.jobs SET claim_session_id = _ WHERE ((claim_session_id != $1) AND (status IN (_, _, __more1_10__))) AND (NOT crdb_internal.sql_liveness_is_alive(claim_session_id))",
           app: "$ internal-expire-sessions",
           distSQL: false,
+          failed: false,
           implicit_txn: true,
           vec: false,
           full_scan: false,
@@ -596,7 +596,6 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
       },
       stats: {
         count: new Long(25),
-        failure_count: new Long(0),
         first_attempt_count: new Long(25),
         max_retries: new Long(0),
         legacy_last_err: "",
@@ -700,7 +699,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
           p99: 1.1,
         },
       },
-      id: Long.fromString("8717981371097536892"),
+      id: new Long(8717981371097536892),
     },
     {
       key: {
@@ -709,6 +708,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
             "UPDATE system.jobs SET claim_session_id = _ WHERE ((claim_session_id != $1) AND (status IN (_, _, __more1_10__))) AND (NOT crdb_internal.sql_liveness_is_alive(claim_session_id))",
           app: "$ internal-expire-sessions",
           distSQL: false,
+          failed: false,
           implicit_txn: true,
           vec: false,
           full_scan: false,
@@ -717,7 +717,6 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
       },
       stats: {
         count: new Long(25),
-        failure_count: new Long(5),
         first_attempt_count: new Long(25),
         max_retries: new Long(0),
         legacy_last_err: "",
@@ -821,7 +820,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
           p99: 1.1,
         },
       },
-      id: Long.fromString("8717981371097536892"),
+      id: new Long(8717981371097536892),
     },
     {
       key: {
@@ -830,6 +829,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
             "UPDATE system.jobs SET claim_session_id = _ WHERE ((claim_session_id != $1) AND (status IN (_, _, __more1_10__))) AND (NOT crdb_internal.sql_liveness_is_alive(claim_session_id))",
           app: "$ internal-expire-sessions",
           distSQL: false,
+          failed: false,
           implicit_txn: true,
           vec: false,
           full_scan: false,
@@ -838,7 +838,6 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
       },
       stats: {
         count: new Long(25),
-        failure_count: new Long(2),
         first_attempt_count: new Long(25),
         max_retries: new Long(0),
         legacy_last_err: "",
@@ -945,7 +944,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
           p99: 1.1,
         },
       },
-      id: Long.fromString("8717981371097536892"),
+      id: new Long(8717981371097536892),
     },
     {
       key: {
@@ -954,6 +953,7 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
             "UPDATE system.jobs SET claim_session_id = _ WHERE ((claim_session_id != $1) AND (status IN (_, _, __more1_10__))) AND (NOT crdb_internal.sql_liveness_is_alive(claim_session_id))",
           app: "$ internal-expire-sessions",
           distSQL: false,
+          failed: false,
           implicit_txn: true,
           vec: false,
           full_scan: false,
@@ -962,7 +962,6 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
       },
       stats: {
         count: new Long(25),
-        failure_count: new Long(0),
         first_attempt_count: new Long(25),
         max_retries: new Long(0),
         legacy_last_err: "",
@@ -1066,6 +1065,6 @@ export const statementsWithSameIdButDifferentNodeId: CollectedStatementStatistic
           p99: 1.1,
         },
       },
-      id: Long.fromString("8717981371097536892"),
+      id: new Long(8717981371097536892),
     },
   ];

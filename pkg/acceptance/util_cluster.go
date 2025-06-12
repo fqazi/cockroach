@@ -7,7 +7,6 @@ package acceptance
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -29,7 +28,6 @@ var stopper = stop.NewStopper()
 
 // RunDocker runs the given acceptance test using a Docker cluster.
 func RunDocker(t *testing.T, testee func(t *testing.T)) {
-	maybeSkipTest(t)
 	t.Run(dockerTest, testee)
 }
 
@@ -69,16 +67,7 @@ func StartCluster(ctx context.Context, t *testing.T, cfg cluster.TestConfig) (c 
 
 	switch runMode {
 	case dockerTest:
-		var logDir string
-		isRemote := os.Getenv("REMOTE_EXEC")
-		if len(isRemote) > 0 {
-			logDir = os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
-			if logDir != "" {
-				logDir = filepath.Join(logDir, "logs")
-			}
-		} else {
-			logDir = *flagLogDir
-		}
+		logDir := *flagLogDir
 		if logDir != "" {
 			logDir = filepath.Join(logDir, filepath.Clean(t.Name()))
 		}

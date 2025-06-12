@@ -9,9 +9,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/ccl/baseccl"
+	"github.com/cockroachdb/cockroach/pkg/ccl/storageccl/engineccl/enginepbccl"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/pebble/vfs"
@@ -103,13 +104,13 @@ func (f *encryptedFile) ReadAt(p []byte, off int64) (n int, err error) {
 // encryptedFS implements vfs.FS.
 type encryptedFS struct {
 	vfs.FS
-	fileRegistry  *fs.FileRegistry
+	fileRegistry  *storage.PebbleFileRegistry
 	streamCreator *FileCipherStreamCreator
 }
 
 // Create implements vfs.FS.Create.
-func (fs *encryptedFS) Create(name string, category vfs.DiskWriteCategory) (vfs.File, error) {
-	f, err := fs.FS.Create(name, category)
+func (fs *encryptedFS) Create(name string) (vfs.File, error) {
+	f, err := fs.FS.Create(name)
 	if err != nil {
 		return f, err
 	}
@@ -122,7 +123,7 @@ func (fs *encryptedFS) Create(name string, category vfs.DiskWriteCategory) (vfs.
 	// Add an entry for the file to the pebble file registry if it is encrypted.
 	// We choose not to store an entry for unencrypted files since the absence of
 	// a file in the file registry implies that it is unencrypted.
-	if settings.EncryptionType == enginepb.EncryptionType_Plaintext {
+	if settings.EncryptionType == enginepbccl.EncryptionType_Plaintext {
 		if err := fs.fileRegistry.MaybeDeleteEntry(name); err != nil {
 			_ = f.Close()
 			return nil, err
@@ -157,14 +158,14 @@ func (fs *encryptedFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, erro
 		return f, err
 	}
 	fileEntry := fs.fileRegistry.GetFileEntry(name)
-	var settings *enginepb.EncryptionSettings
+	var settings *enginepbccl.EncryptionSettings
 	if fileEntry != nil {
 		if fileEntry.EnvType != fs.streamCreator.envType {
 			f.Close()
 			return nil, fmt.Errorf("filename: %s has env %d not equal to FS env %d",
 				name, fileEntry.EnvType, fs.streamCreator.envType)
 		}
-		settings = &enginepb.EncryptionSettings{}
+		settings = &enginepbccl.EncryptionSettings{}
 		if err := protoutil.Unmarshal(fileEntry.EncryptionSettings, settings); err != nil {
 			f.Close()
 			return nil, err
@@ -226,15 +227,13 @@ func (fs *encryptedFS) Rename(oldname, newname string) error {
 // like non-empty WAL files with zero readable entries. There is a todo in env_encryption.cc
 // to change this RocksDB behavior. We need to handle a user switching from Pebble to RocksDB,
 // so cannot generate WAL files that RocksDB will complain about.
-func (fs *encryptedFS) ReuseForWrite(
-	oldname, newname string, category vfs.DiskWriteCategory,
-) (vfs.File, error) {
+func (fs *encryptedFS) ReuseForWrite(oldname, newname string) (vfs.File, error) {
 	// This is slower than simply calling Create(newname) since the Remove() and Create()
 	// will write and sync the file registry file twice. We can optimize this if needed.
 	if err := fs.Remove(oldname); err != nil {
 		return nil, err
 	}
-	return fs.Create(newname, category)
+	return fs.Create(newname)
 }
 
 type encryptionStatsHandler struct {
@@ -243,12 +242,17 @@ type encryptionStatsHandler struct {
 }
 
 func (e *encryptionStatsHandler) GetEncryptionStatus() ([]byte, error) {
-	var s enginepb.EncryptionStatus
+	var s enginepbccl.EncryptionStatus
 	if e.storeKM.activeKey != nil {
 		s.ActiveStoreKey = e.storeKM.activeKey.Info
 	}
-	ki := e.dataKM.ActiveKeyInfoForStats()
-	s.ActiveDataKey = ki
+	k, err := e.dataKM.ActiveKey(context.TODO())
+	if err != nil {
+		return nil, err
+	}
+	if k != nil {
+		s.ActiveDataKey = k.Info
+	}
 	return protoutil.Marshal(&s)
 }
 
@@ -258,9 +262,12 @@ func (e *encryptionStatsHandler) GetDataKeysRegistry() ([]byte, error) {
 }
 
 func (e *encryptionStatsHandler) GetActiveDataKeyID() (string, error) {
-	ki := e.dataKM.ActiveKeyInfoForStats()
-	if ki != nil {
-		return ki.KeyId, nil
+	k, err := e.dataKM.ActiveKey(context.TODO())
+	if err != nil {
+		return "", err
+	}
+	if k != nil {
+		return k.Info.KeyId, nil
 	}
 	return "plain", nil
 }
@@ -269,11 +276,11 @@ func (e *encryptionStatsHandler) GetActiveStoreKeyType() int32 {
 	if e.storeKM.activeKey != nil {
 		return int32(e.storeKM.activeKey.Info.EncryptionType)
 	}
-	return int32(enginepb.EncryptionType_Plaintext)
+	return int32(enginepbccl.EncryptionType_Plaintext)
 }
 
 func (e *encryptionStatsHandler) GetKeyIDFromSettings(settings []byte) (string, error) {
-	var s enginepb.EncryptionSettings
+	var s enginepbccl.EncryptionSettings
 	if err := protoutil.Unmarshal(settings, &s); err != nil {
 		return "", err
 	}
@@ -282,26 +289,27 @@ func (e *encryptionStatsHandler) GetKeyIDFromSettings(settings []byte) (string, 
 
 // init initializes function hooks used in non-CCL code.
 func init() {
-	fs.NewEncryptedEnvFunc = newEncryptedEnv
-	fs.CanRegistryElideFunc = canRegistryElide
+	storage.NewEncryptedEnvFunc = newEncryptedEnv
+	storage.CanRegistryElideFunc = canRegistryElide
 }
 
 // newEncryptedEnv creates an encrypted environment and returns the vfs.FS to use for reading and
-// writing data.
+// writing data. The optionBytes is a binary serialized baseccl.EncryptionOptions, so that non-CCL
+// code does not depend on CCL code.
 //
 // See the comment at the top of this file for the structure of this environment.
 func newEncryptedEnv(
-	unencryptedFS vfs.FS,
-	fr *fs.FileRegistry,
-	dbDir string,
-	readOnly bool,
-	options *storageconfig.EncryptionOptions,
-) (*fs.EncryptionEnv, error) {
-	if options.KeySource != storageconfig.EncryptionKeyFromFiles {
+	fs vfs.FS, fr *storage.PebbleFileRegistry, dbDir string, readOnly bool, optionBytes []byte,
+) (*storage.EncryptionEnv, error) {
+	options := &baseccl.EncryptionOptions{}
+	if err := protoutil.Unmarshal(optionBytes, options); err != nil {
+		return nil, err
+	}
+	if options.KeySource != baseccl.EncryptionKeySource_KeyFiles {
 		return nil, fmt.Errorf("unknown encryption key source: %d", options.KeySource)
 	}
 	storeKeyManager := &StoreKeyManager{
-		fs:                unencryptedFS,
+		fs:                fs,
 		activeKeyFilename: options.KeyFiles.CurrentKey,
 		oldKeyFilename:    options.KeyFiles.OldKey,
 	}
@@ -309,7 +317,7 @@ func newEncryptedEnv(
 		return nil, err
 	}
 	storeFS := &encryptedFS{
-		FS:           unencryptedFS,
+		FS:           fs,
 		fileRegistry: fr,
 		streamCreator: &FileCipherStreamCreator{
 			envType:    enginepb.EnvType_Store,
@@ -326,7 +334,7 @@ func newEncryptedEnv(
 		return nil, err
 	}
 	dataFS := &encryptedFS{
-		FS:           unencryptedFS,
+		FS:           fs,
 		fileRegistry: fr,
 		streamCreator: &FileCipherStreamCreator{
 			envType:    enginepb.EnvType_Data,
@@ -335,7 +343,7 @@ func newEncryptedEnv(
 	}
 
 	if !readOnly {
-		key, err := storeKeyManager.ActiveKeyForWriter(context.TODO())
+		key, err := storeKeyManager.ActiveKey(context.TODO())
 		if err != nil {
 			return nil, err
 		}
@@ -344,7 +352,7 @@ func newEncryptedEnv(
 		}
 	}
 
-	return &fs.EncryptionEnv{
+	return &storage.EncryptionEnv{
 		Closer: dataKeyManager,
 		FS:     dataFS,
 		StatsHandler: &encryptionStatsHandler{
@@ -358,9 +366,9 @@ func canRegistryElide(entry *enginepb.FileEntry) bool {
 	if entry == nil {
 		return true
 	}
-	settings := &enginepb.EncryptionSettings{}
+	settings := &enginepbccl.EncryptionSettings{}
 	if err := protoutil.Unmarshal(entry.EncryptionSettings, settings); err != nil {
 		return false
 	}
-	return settings.EncryptionType == enginepb.EncryptionType_Plaintext
+	return settings.EncryptionType == enginepbccl.EncryptionType_Plaintext
 }

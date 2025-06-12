@@ -32,7 +32,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
@@ -42,6 +41,10 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/lib/pq/oid"
 )
+
+// DebugRowFetch can be used to turn on some low-level debugging logs. We use
+// this to avoid using log.V in the hot path.
+const DebugRowFetch = false
 
 // noOutputColumn is a sentinel value to denote that a system column is not
 // part of the output.
@@ -194,20 +197,6 @@ type tableInfo struct {
 	tableOid     tree.Datum
 	oidOutputIdx int
 
-	// Fields for outputting the OriginID system column.
-	rowLastOriginID   int
-	originIDOutputIdx int
-
-	// Fields for outputting the OriginTimestamp system column.
-	rowLastOriginTimestamp hlc.Timestamp
-	// rowLastModifiedWithoutOriginTimestamp is the largest MVCC
-	// timestamp seen for any column family that _doesn't_ have an
-	// OriginTimestamp set. If this is greater than the
-	// rowLastOriginTimestamp field, we output NULL for origin
-	// timestamp.
-	rowLastModifiedWithoutOriginTimestamp hlc.Timestamp
-	originTimestampOutputIdx              int
-
 	// rowIsDeleted is true when the row has been deleted. This is only
 	// meaningful when kv deletion tombstones are returned by the KVBatchFetcher,
 	// which the one used by `StartScan` (the common case) doesnt. Notably,
@@ -244,8 +233,6 @@ type Fetcher struct {
 	// mvccDecodeStrategy controls whether or not MVCC timestamps should
 	// be decoded from KV's fetched.
 	mvccDecodeStrategy storage.MVCCDecodingStrategy
-
-	shouldRequestRawMVCCKeys bool
 
 	// -- Fields updated during a scan --
 
@@ -295,10 +282,6 @@ func (rf *Fetcher) Close(ctx context.Context) {
 	}
 }
 
-// TraceKVVerbosity is the verbosity level at which pretty printed KVs
-// are logged.
-const TraceKVVerbosity = 2
-
 // FetcherInitArgs contains arguments for Fetcher.Init.
 type FetcherInitArgs struct {
 	// StreamingKVFetcher, if non-nil, contains the KVFetcher that uses the
@@ -328,18 +311,12 @@ type FetcherInitArgs struct {
 	// wait while attempting to acquire a lock on a key or while blocking on an
 	// existing lock in order to perform a non-locking read on a key.
 	LockTimeout time.Duration
-	// DeadlockTimeout specifies the amount of time before pushing the lock holder
-	// for deadlock detection.
-	DeadlockTimeout time.Duration
 	// Alloc is used for buffered allocation of decoded datums.
 	Alloc      *tree.DatumAlloc
 	MemMonitor *mon.BytesMonitor
 	Spec       *fetchpb.IndexFetchSpec
 	// TraceKV indicates whether or not session tracing is enabled.
-	TraceKV bool
-	// TraceKVEvery controls how often KVs are sampled for logging with traceKV
-	// enabled.
-	TraceKVEvery               *util.EveryN
+	TraceKV                    bool
 	ForceProductionKVBatchSize bool
 	// SpansCanOverlap indicates whether the spans in a given batch can overlap
 	// with one another. If it is true, spans that correspond to the same row must
@@ -358,9 +335,7 @@ func (rf *Fetcher) Init(ctx context.Context, args FetcherInitArgs) error {
 	rf.args = args
 
 	if args.MemMonitor != nil {
-		rf.mon = mon.NewMonitorInheritWithLimit(
-			mon.MakeName("fetcher-mem"), 0 /* limit */, args.MemMonitor, false, /* longLiving */
-		)
+		rf.mon = mon.NewMonitorInheritWithLimit("fetcher-mem", 0 /* limit */, args.MemMonitor)
 		rf.mon.StartNoReserved(ctx, args.MemMonitor)
 		memAcc := rf.mon.MakeBoundAccount()
 		rf.kvFetcherMemAcc = &memAcc
@@ -374,13 +349,11 @@ func (rf *Fetcher) Init(ctx context.Context, args FetcherInitArgs) error {
 
 		// These slice fields might get re-allocated below, so reslice them from
 		// the old table here in case they've got enough capacity already.
-		indexColIdx:              rf.table.indexColIdx[:0],
-		keyVals:                  rf.table.keyVals[:0],
-		extraVals:                rf.table.extraVals[:0],
-		timestampOutputIdx:       noOutputColumn,
-		oidOutputIdx:             noOutputColumn,
-		originIDOutputIdx:        noOutputColumn,
-		originTimestampOutputIdx: noOutputColumn,
+		indexColIdx:        rf.table.indexColIdx[:0],
+		keyVals:            rf.table.keyVals[:0],
+		extraVals:          rf.table.extraVals[:0],
+		timestampOutputIdx: noOutputColumn,
+		oidOutputIdx:       noOutputColumn,
 	}
 
 	for idx := range args.Spec.FetchedColumns {
@@ -395,25 +368,7 @@ func (rf *Fetcher) Init(ctx context.Context, args FetcherInitArgs) error {
 			case catpb.SystemColumnKind_TABLEOID:
 				table.oidOutputIdx = idx
 				table.tableOid = tree.NewDOid(oid.Oid(args.Spec.TableID))
-
-			case catpb.SystemColumnKind_ORIGINID:
-				table.originIDOutputIdx = idx
-				rf.mvccDecodeStrategy = storage.MVCCDecodingRequired
-				rf.shouldRequestRawMVCCKeys = true
-
-			case catpb.SystemColumnKind_ORIGINTIMESTAMP:
-				table.originTimestampOutputIdx = idx
-				rf.mvccDecodeStrategy = storage.MVCCDecodingRequired
-				rf.shouldRequestRawMVCCKeys = true
 			}
-		}
-	}
-
-	// Disable buffered writes if any system columns are needed that require
-	// MVCC decoding.
-	if rf.mvccDecodeStrategy == storage.MVCCDecodingRequired {
-		if rf.args.Txn != nil && rf.args.Txn.BufferedWritesEnabled() {
-			rf.args.Txn.SetBufferedWritesEnabled(false /* enabled */)
 		}
 	}
 
@@ -495,19 +450,17 @@ func (rf *Fetcher) Init(ctx context.Context, args FetcherInitArgs) error {
 			lockWaitPolicy:             args.LockWaitPolicy,
 			lockDurability:             args.LockDurability,
 			lockTimeout:                args.LockTimeout,
-			deadlockTimeout:            args.DeadlockTimeout,
 			acc:                        rf.kvFetcherMemAcc,
-			rawMVCCValues:              rf.shouldRequestRawMVCCKeys,
 			forceProductionKVBatchSize: args.ForceProductionKVBatchSize,
 			kvPairsRead:                &kvPairsRead,
 			batchRequestsIssued:        &batchRequestsIssued,
 		}
 		if args.Txn != nil {
-			fetcherArgs.sendFn = makeSendFunc(args.Txn, args.Spec.External, &batchRequestsIssued)
+			fetcherArgs.sendFn = makeTxnKVFetcherDefaultSendFunc(args.Txn, &batchRequestsIssued)
 			fetcherArgs.admission.requestHeader = args.Txn.AdmissionHeader()
 			fetcherArgs.admission.responseQ = args.Txn.DB().SQLKVResponseAdmissionQ
 			fetcherArgs.admission.pacerFactory = args.Txn.DB().AdmissionPacerFactory
-			fetcherArgs.admission.settingsValues = args.Txn.DB().SettingsValues()
+			fetcherArgs.admission.settingsValues = args.Txn.DB().SettingsValues
 		}
 		rf.kvFetcher = newKVFetcher(newTxnKVFetcherInternal(fetcherArgs))
 	}
@@ -529,21 +482,13 @@ func (rf *Fetcher) Init(ctx context.Context, args FetcherInitArgs) error {
 // Consider using GetBatchRequestsIssued if that information is needed.
 func (rf *Fetcher) SetTxn(txn *kv.Txn) error {
 	var batchRequestsIssued int64
-	sendFn := makeSendFunc(txn, rf.args.Spec.External, &batchRequestsIssued)
+	sendFn := makeTxnKVFetcherDefaultSendFunc(txn, &batchRequestsIssued)
 	return rf.setTxnAndSendFn(txn, sendFn)
 }
 
 // setTxnAndSendFn peeks inside of the KVFetcher to update the underlying
 // txnKVFetcher with the new txn and sendFn.
 func (rf *Fetcher) setTxnAndSendFn(txn *kv.Txn, sendFn sendFunc) error {
-	// Disable buffered writes if any system columns are needed that require
-	// MVCC decoding.
-	if rf.mvccDecodeStrategy == storage.MVCCDecodingRequired {
-		if txn != nil && txn.BufferedWritesEnabled() {
-			txn.SetBufferedWritesEnabled(false /* enabled */)
-		}
-	}
-
 	f, ok := rf.kvFetcher.KVBatchFetcher.(*txnKVFetcher)
 	if !ok {
 		return errors.AssertionFailedf(
@@ -653,28 +598,14 @@ func (rf *Fetcher) StartInconsistentScan(
 		return errors.AssertionFailedf("no spans")
 	}
 
-	txnStartTime := timeutil.Now()
-	if txnStartTime.Sub(initialTimestamp.GoTime()) >= maxTimestampAge {
-		// The initial timestamp is too far into the past already (which can
-		// happen when the cluster is overloaded, or there was a delay in the
-		// stats job being picked up for execution, or some other reason). In
-		// such case we'll advance the timestamp so that its age is about 1/10
-		// of the maximum age.
-		targetTimestampAge := maxTimestampAge.Nanoseconds() / 10
-		if targetTimestampAge < int64(100*time.Millisecond) {
-			// Ensure at least 100ms timestamp age. We shouldn't reach this line
-			// unless the max timestamp age setting is set way too low (or
-			// negative, by mistake), so we're just being conservative.
-			targetTimestampAge = int64(100 * time.Millisecond)
-		}
-		advanceBy := txnStartTime.Sub(initialTimestamp.GoTime()).Nanoseconds() - targetTimestampAge
-		if log.V(1) {
-			log.Infof(ctx, "initial timestamp %v too far into the past, advancing it by %v", initialTimestamp, advanceBy)
-		}
-		initialTimestamp = initialTimestamp.Add(advanceBy, 0 /* logical */)
-	}
-
 	txnTimestamp := initialTimestamp
+	txnStartTime := timeutil.Now()
+	if txnStartTime.Sub(txnTimestamp.GoTime()) >= maxTimestampAge {
+		return errors.Errorf(
+			"AS OF SYSTEM TIME: cannot specify timestamp older than %s for this operation",
+			maxTimestampAge,
+		)
+	}
 	txn := kv.NewTxnWithSteppingEnabled(ctx, db, 0 /* gatewayNodeID */, qualityOfService)
 	if err := txn.SetFixedTimestamp(ctx, txnTimestamp); err != nil {
 		return err
@@ -702,15 +633,6 @@ func (rf *Fetcher) StartInconsistentScan(
 			}
 		}
 
-		if rf.args.Spec.MaxKeysPerRow > 1 {
-			// If the table has multiple column families, we need to ensure that
-			// the scan stops at the end of the full SQL row - otherwise, the
-			// row might be deleted between two timestamps leading to incorrect
-			// results (or internal errors).
-			ba.Header.WholeRowsOfSize = int32(rf.args.Spec.MaxKeysPerRow)
-		}
-
-		log.VEventf(ctx, 2, "inconsistent scan: sending a batch with %d requests", len(ba.Requests))
 		res, err := txn.Send(ctx, ba)
 		if err != nil {
 			return nil, err.GoError()
@@ -729,7 +651,7 @@ func (rf *Fetcher) StartInconsistentScan(
 	}
 
 	if err := rf.kvFetcher.SetupNextFetch(
-		ctx, spans, nil /* spanIDs */, batchBytesLimit,
+		ctx, spans, nil, batchBytesLimit,
 		rf.rowLimitToKeyLimit(rowLimitHint), false, /* spansCanOverlap */
 	); err != nil {
 		return err
@@ -934,27 +856,15 @@ func (rf *Fetcher) processKV(
 		// As kvs are iterated for this row, it keeps track of the greatest
 		// timestamp seen.
 		table.rowLastModified = hlc.Timestamp{}
-		table.rowLastOriginID = 0
-		table.rowLastOriginTimestamp = hlc.Timestamp{}
-		table.rowLastModifiedWithoutOriginTimestamp = hlc.Timestamp{}
 		// All row encodings (both before and after column families) have a
 		// sentinel kv (column family 0) that is always present when a row is
 		// present, even if that row is all NULLs. Thus, a row is deleted if and
 		// only if the first kv in it a tombstone (RawBytes is empty).
-		table.rowIsDeleted = !kv.Value.IsPresent()
+		table.rowIsDeleted = len(kv.Value.RawBytes) == 0
 	}
 
 	if table.rowLastModified.Less(kv.Value.Timestamp) {
 		table.rowLastModified = kv.Value.Timestamp
-	}
-	if vh, err := kv.Value.GetMVCCValueHeader(); err == nil {
-		if table.rowLastOriginTimestamp.LessEq(vh.OriginTimestamp) {
-			table.rowLastOriginID = int(vh.OriginID)
-			table.rowLastOriginTimestamp = vh.OriginTimestamp
-		}
-		if vh.OriginTimestamp.IsEmpty() && table.rowLastModifiedWithoutOriginTimestamp.Less(kv.Value.Timestamp) {
-			table.rowLastModifiedWithoutOriginTimestamp = kv.Value.Timestamp
-		}
 	}
 
 	if len(table.spec.FetchedColumns) == 0 {
@@ -988,7 +898,7 @@ func (rf *Fetcher) processKV(
 			if err != nil {
 				break
 			}
-			prettyKey, prettyValue, err = rf.processValueBytes(table, tupleBytes, prettyKey)
+			prettyKey, prettyValue, err = rf.processValueBytes(ctx, table, kv, tupleBytes, prettyKey)
 		default:
 			var familyID uint64
 			_, familyID, err = encoding.DecodeUvarintAscending(rf.keyRemainingBytes)
@@ -1018,7 +928,7 @@ func (rf *Fetcher) processKV(
 							errors.Errorf("single entry value with no default column id for key %s", prettyKey)
 					}
 				} else {
-					prettyKey, prettyValue, err = rf.processValueSingle(table, defaultColumnID, kv, prettyKey)
+					prettyKey, prettyValue, err = rf.processValueSingle(ctx, table, defaultColumnID, kv, prettyKey)
 				}
 			}
 		}
@@ -1067,7 +977,9 @@ func (rf *Fetcher) processKV(
 		}
 
 		if len(valueBytes) > 0 {
-			prettyKey, prettyValue, err = rf.processValueBytes(table, valueBytes, prettyKey)
+			prettyKey, prettyValue, err = rf.processValueBytes(
+				ctx, table, kv, valueBytes, prettyKey,
+			)
 			if err != nil {
 				return "", "", scrub.WrapError(scrub.IndexValueDecodingError, err)
 			}
@@ -1084,13 +996,20 @@ func (rf *Fetcher) processKV(
 // processValueSingle processes the given value (of column colID), setting
 // values in table.row accordingly. The key is only used for logging.
 func (rf *Fetcher) processValueSingle(
-	table *tableInfo, colID descpb.ColumnID, kv roachpb.KeyValue, prettyKeyPrefix string,
+	ctx context.Context,
+	table *tableInfo,
+	colID descpb.ColumnID,
+	kv roachpb.KeyValue,
+	prettyKeyPrefix string,
 ) (prettyKey string, prettyValue string, err error) {
 	prettyKey = prettyKeyPrefix
 	idx, ok := table.colIdxMap.Get(colID)
 	if !ok {
 		// No need to unmarshal the column value. Either the column was part of
 		// the index key or it isn't needed.
+		if DebugRowFetch {
+			log.Infof(ctx, "Scan %s -> [%d] (skipped)", kv.Key, colID)
+		}
 		return prettyKey, "", nil
 	}
 
@@ -1114,11 +1033,18 @@ func (rf *Fetcher) processValueSingle(
 		prettyValue = value.String()
 	}
 	table.row[idx] = rowenc.DatumToEncDatum(typ, value)
+	if DebugRowFetch {
+		log.Infof(ctx, "Scan %s -> %v", kv.Key, value)
+	}
 	return prettyKey, prettyValue, nil
 }
 
 func (rf *Fetcher) processValueBytes(
-	table *tableInfo, valueBytes []byte, prettyKeyPrefix string,
+	ctx context.Context,
+	table *tableInfo,
+	kv roachpb.KeyValue,
+	valueBytes []byte,
+	prettyKeyPrefix string,
 ) (prettyKey string, prettyValue string, err error) {
 	prettyKey = prettyKeyPrefix
 	if rf.args.TraceKV {
@@ -1127,21 +1053,56 @@ func (rf *Fetcher) processValueBytes(
 		}
 		rf.prettyValueBuf.Reset()
 	}
-	neededCols := rf.table.neededValueCols - rf.valueColsFound
-	colOrds, err := rowenc.DecodeValueBytes(table.colIdxMap, valueBytes, neededCols, table.row)
-	if err != nil {
-		return "", "", err
-	}
-	rf.valueColsFound += colOrds.Len()
-	if rf.args.TraceKV {
-		for colOrd, ok := colOrds.Next(0); ok; colOrd, ok = colOrds.Next(colOrd + 1) {
-			prettyKey = fmt.Sprintf("%s/%s", prettyKey, table.spec.FetchedColumns[colOrd].Name)
-			err = table.row[colOrd].EnsureDecoded(table.spec.FetchedColumns[colOrd].Type, rf.args.Alloc)
+
+	var colIDDiff uint32
+	var lastColID descpb.ColumnID
+	var typeOffset, dataOffset int
+	var typ encoding.Type
+	for len(valueBytes) > 0 && rf.valueColsFound < table.neededValueCols {
+		typeOffset, dataOffset, colIDDiff, typ, err = encoding.DecodeValueTag(valueBytes)
+		if err != nil {
+			return "", "", err
+		}
+		colID := lastColID + descpb.ColumnID(colIDDiff)
+		lastColID = colID
+		idx, ok := table.colIdxMap.Get(colID)
+		if !ok {
+			// This column wasn't requested, so read its length and skip it.
+			numBytes, err := encoding.PeekValueLengthWithOffsetsAndType(valueBytes, dataOffset, typ)
 			if err != nil {
 				return "", "", err
 			}
-			fmt.Fprintf(rf.prettyValueBuf, "/%v", table.row[colOrd].Datum)
+			valueBytes = valueBytes[numBytes:]
+			if DebugRowFetch {
+				log.Infof(ctx, "Scan %s -> [%d] (skipped)", kv.Key, colID)
+			}
+			continue
 		}
+
+		if rf.args.TraceKV {
+			prettyKey = fmt.Sprintf("%s/%s", prettyKey, table.spec.FetchedColumns[idx].Name)
+		}
+
+		var encValue rowenc.EncDatum
+		encValue, valueBytes, err = rowenc.EncDatumValueFromBufferWithOffsetsAndType(valueBytes, typeOffset,
+			dataOffset, typ)
+		if err != nil {
+			return "", "", err
+		}
+		if rf.args.TraceKV {
+			err := encValue.EnsureDecoded(table.spec.FetchedColumns[idx].Type, rf.args.Alloc)
+			if err != nil {
+				return "", "", err
+			}
+			fmt.Fprintf(rf.prettyValueBuf, "/%v", encValue.Datum)
+		}
+		table.row[idx] = encValue
+		rf.valueColsFound++
+		if DebugRowFetch {
+			log.Infof(ctx, "Scan %d -> %v", idx, encValue)
+		}
+	}
+	if rf.args.TraceKV {
 		prettyValue = rf.prettyValueBuf.String()
 	}
 	return prettyKey, prettyValue, nil
@@ -1171,12 +1132,8 @@ func (rf *Fetcher) NextRow(ctx context.Context) (row rowenc.EncDatumRow, spanID 
 		if err != nil {
 			return nil, 0, err
 		}
-		// TraceKVEvery is a util.EveryN and not a log.EveryN because
-		// log.EveryN will always print under verbosity level 2.
-		// The caller may choose to set it to avoid logging
-		// too many rows. If unset, we log every KV.
-		if rf.args.TraceKV && (rf.args.TraceKVEvery == nil || rf.args.TraceKVEvery.ShouldProcess(timeutil.Now())) {
-			log.VEventf(ctx, TraceKVVerbosity, "fetched: %s -> %s", prettyKey, prettyVal)
+		if rf.args.TraceKV {
+			log.VEventf(ctx, 2, "fetched: %s -> %s", prettyKey, prettyVal)
 		}
 
 		rowDone, spanID, err := rf.nextKey(ctx)
@@ -1254,13 +1211,13 @@ func (rf *Fetcher) NextRowDecoded(ctx context.Context) (datums tree.Datums, err 
 // If there are no more rows, returns ok=false.
 func (rf *Fetcher) NextRowDecodedInto(
 	ctx context.Context, destination tree.Datums, colIdxMap catalog.TableColMap,
-) (ok bool, spanID int, err error) {
-	row, spanID, err := rf.NextRow(ctx)
+) (ok bool, err error) {
+	row, _, err := rf.NextRow(ctx)
 	if err != nil {
-		return false, spanID, err
+		return false, err
 	}
 	if row == nil {
-		return false, spanID, nil
+		return false, nil
 	}
 
 	for i := range rf.table.spec.FetchedColumns {
@@ -1276,12 +1233,18 @@ func (rf *Fetcher) NextRowDecodedInto(
 			continue
 		}
 		if err := encDatum.EnsureDecoded(col.Type, rf.args.Alloc); err != nil {
-			return false, spanID, err
+			return false, err
 		}
 		destination[ord] = encDatum.Datum
 	}
 
-	return true, spanID, nil
+	return true, nil
+}
+
+// RowLastModified may only be called after NextRow has returned a non-nil row
+// and returns the timestamp of the last modification to that row.
+func (rf *Fetcher) RowLastModified() hlc.Timestamp {
+	return rf.table.rowLastModified
 }
 
 // RowIsDeleted may only be called after NextRow has returned a non-nil row and
@@ -1300,24 +1263,11 @@ func (rf *Fetcher) finalizeRow() error {
 		// TODO (rohany): Datums are immutable, so we can't store a DDecimal on the
 		//  fetcher and change its contents with each row. If that assumption gets
 		//  lifted, then we can avoid an allocation of a new decimal datum here.
-		dec := rf.args.Alloc.NewDDecimal(tree.DDecimal{Decimal: eval.TimestampToDecimal(rf.table.rowLastModified)})
+		dec := rf.args.Alloc.NewDDecimal(tree.DDecimal{Decimal: eval.TimestampToDecimal(rf.RowLastModified())})
 		table.row[table.timestampOutputIdx] = rowenc.EncDatum{Datum: dec}
 	}
 	if table.oidOutputIdx != noOutputColumn {
 		table.row[table.oidOutputIdx] = rowenc.EncDatum{Datum: table.tableOid}
-	}
-
-	if table.originIDOutputIdx != noOutputColumn {
-		table.row[table.originIDOutputIdx] = rowenc.EncDatum{Datum: tree.NewDInt(tree.DInt(rf.table.rowLastOriginID))}
-	}
-
-	if table.originTimestampOutputIdx != noOutputColumn {
-		if rf.table.rowLastOriginTimestamp.IsSet() && rf.table.rowLastModifiedWithoutOriginTimestamp.Less(rf.table.rowLastOriginTimestamp) {
-			dec := rf.args.Alloc.NewDDecimal(tree.DDecimal{Decimal: eval.TimestampToDecimal(rf.table.rowLastOriginTimestamp)})
-			table.row[table.originTimestampOutputIdx] = rowenc.EncDatum{Datum: dec}
-		} else {
-			table.row[table.originTimestampOutputIdx] = rowenc.NullEncDatum()
-		}
 	}
 
 	// Fill in any missing values with NULLs

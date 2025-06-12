@@ -16,8 +16,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/roleoption"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
-	"github.com/cockroachdb/redact"
+	"github.com/cockroachdb/errors"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 )
@@ -34,7 +36,7 @@ type adminPrivilegeChecker struct {
 	// comment in pkg/scheduledjobs/env.go on planHookMaker. It should
 	// be cast to AuthorizationAccessor in order to use privilege
 	// checking functions.
-	makeAuthzAccessor func(opName redact.SafeString) (sql.AuthorizationAccessor, func())
+	makeAuthzAccessor func(opName string) (sql.AuthorizationAccessor, func())
 }
 
 // RequireViewActivityPermission is part of the CheckerForRPCHandlers interface.
@@ -86,6 +88,36 @@ func (c *adminPrivilegeChecker) RequireViewActivityOrViewActivityRedactedPermiss
 	return grpcstatus.Errorf(
 		codes.PermissionDenied, "this operation requires the %s or %s system privileges",
 		roleoption.VIEWACTIVITY, roleoption.VIEWACTIVITYREDACTED)
+}
+
+// RequireViewClusterSettingOrModifyClusterSettingPermission's error return is a gRPC error.
+func (c *adminPrivilegeChecker) RequireViewClusterSettingOrModifyClusterSettingPermission(
+	ctx context.Context,
+) (err error) {
+	userName, isAdmin, err := c.GetUserAndRole(ctx)
+	if err != nil {
+		return srverrors.ServerError(ctx, err)
+	}
+	if isAdmin {
+		return nil
+	}
+	hasView, err := c.HasPrivilegeOrRoleOption(ctx, userName, privilege.VIEWCLUSTERSETTING)
+	if err != nil {
+		return srverrors.ServerError(ctx, err)
+	}
+	if hasView {
+		return nil
+	}
+	hasModify, err := c.HasPrivilegeOrRoleOption(ctx, userName, privilege.MODIFYCLUSTERSETTING)
+	if err != nil {
+		return srverrors.ServerError(ctx, err)
+	}
+	if hasModify {
+		return nil
+	}
+	return grpcstatus.Errorf(
+		codes.PermissionDenied, "this operation requires the %s or %s system privileges",
+		privilege.VIEWCLUSTERSETTING.DisplayName(), privilege.MODIFYCLUSTERSETTING.DisplayName())
 }
 
 // RequireViewActivityAndNoViewActivityRedactedPermission requires
@@ -148,10 +180,12 @@ func (c *adminPrivilegeChecker) RequireViewClusterMetadataPermission(
 		privilege.VIEWCLUSTERMETADATA.DisplayName())
 }
 
-// RequireRepairClusterPermission requires the user have admin
-// or the REPAIRCLUSTER system privilege and returns an error if
+// RequireRepairClusterMetadataPermission requires the user have admin
+// or the VIEWCLUSTERMETADATA system privilege and returns an error if
 // the user does not have it.
-func (c *adminPrivilegeChecker) RequireRepairClusterPermission(ctx context.Context) (err error) {
+func (c *adminPrivilegeChecker) RequireRepairClusterMetadataPermission(
+	ctx context.Context,
+) (err error) {
 	userName, isAdmin, err := c.GetUserAndRole(ctx)
 	if err != nil {
 		return srverrors.ServerError(ctx, err)
@@ -159,14 +193,14 @@ func (c *adminPrivilegeChecker) RequireRepairClusterPermission(ctx context.Conte
 	if isAdmin {
 		return nil
 	}
-	if hasRepairCluster, err := c.HasGlobalPrivilege(ctx, userName, privilege.REPAIRCLUSTER); err != nil {
+	if hasRepairClusterMetadata, err := c.HasGlobalPrivilege(ctx, userName, privilege.REPAIRCLUSTERMETADATA); err != nil {
 		return srverrors.ServerError(ctx, err)
-	} else if hasRepairCluster {
+	} else if hasRepairClusterMetadata {
 		return nil
 	}
 	return grpcstatus.Errorf(
 		codes.PermissionDenied, "this operation requires the %s system privilege",
-		privilege.REPAIRCLUSTER.DisplayName())
+		privilege.REPAIRCLUSTERMETADATA.DisplayName())
 }
 
 // RequireViewDebugPermission requires the user have admin or the
@@ -208,20 +242,58 @@ func (c *adminPrivilegeChecker) GetUserAndRole(
 func (c *adminPrivilegeChecker) HasAdminRole(
 	ctx context.Context, user username.SQLUsername,
 ) (bool, error) {
-	aa, cleanup := c.makeAuthzAccessor("check-admin-role")
-	defer cleanup()
-	return aa.UserHasAdminRole(ctx, user)
+	if user.IsRootUser() {
+		// Shortcut.
+		return true, nil
+	}
+	row, err := c.ie.QueryRowEx(
+		ctx, "check-is-admin", nil, /* txn */
+		sessiondata.InternalExecutorOverride{User: user},
+		"SELECT crdb_internal.is_admin()")
+	if err != nil {
+		return false, err
+	}
+	if row == nil {
+		return false, errors.AssertionFailedf("hasAdminRole: expected 1 row, got 0")
+	}
+	if len(row) != 1 {
+		return false, errors.AssertionFailedf("hasAdminRole: expected 1 column, got %d", len(row))
+	}
+	dbDatum, ok := tree.AsDBool(row[0])
+	if !ok {
+		return false, errors.AssertionFailedf("hasAdminRole: expected bool, got %T", row[0])
+	}
+	return bool(dbDatum), nil
 }
 
-// HasRoleOption is part of the SQLPrivilegeChecker interface.
+// HasRoleOptions is part of the SQLPrivilegeChecker interface.
 // Note that the function returns plain errors, and it is the caller's
 // responsibility to convert them to serverErrors.
 func (c *adminPrivilegeChecker) HasRoleOption(
 	ctx context.Context, user username.SQLUsername, roleOption roleoption.Option,
 ) (bool, error) {
-	aa, cleanup := c.makeAuthzAccessor("check-role-option")
-	defer cleanup()
-	return aa.UserHasRoleOption(ctx, user, roleOption)
+	if user.IsRootUser() {
+		// Shortcut.
+		return true, nil
+	}
+	row, err := c.ie.QueryRowEx(
+		ctx, "check-role-option", nil, /* txn */
+		sessiondata.InternalExecutorOverride{User: user},
+		"SELECT crdb_internal.has_role_option($1)", roleOption.String())
+	if err != nil {
+		return false, err
+	}
+	if row == nil {
+		return false, errors.AssertionFailedf("hasRoleOption: expected 1 row, got 0")
+	}
+	if len(row) != 1 {
+		return false, errors.AssertionFailedf("hasRoleOption: expected 1 column, got %d", len(row))
+	}
+	dbDatum, ok := tree.AsDBool(row[0])
+	if !ok {
+		return false, errors.AssertionFailedf("hasRoleOption: expected bool, got %T", row[0])
+	}
+	return bool(dbDatum), nil
 }
 
 // HasPrivilegeOrRoleOption is a helper function which calls both HasGlobalPrivilege and HasRoleOption.
@@ -257,8 +329,9 @@ func (c *adminPrivilegeChecker) HasGlobalPrivilege(
 	return aa.HasPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege, user)
 }
 
+// TestingSetPlannerFn is used in tests only.
 func (c *adminPrivilegeChecker) SetAuthzAccessorFactory(
-	fn func(opName redact.SafeString) (sql.AuthorizationAccessor, func()),
+	fn func(opName string) (sql.AuthorizationAccessor, func()),
 ) {
 	c.makeAuthzAccessor = fn
 }

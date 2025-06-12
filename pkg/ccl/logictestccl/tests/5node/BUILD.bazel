@@ -4,16 +4,20 @@ go_test(
     name = "5node_test",
     size = "enormous",
     srcs = ["generated_test.go"],
+    args = select({
+        "//build/toolchains:use_ci_timeouts": ["-test.timeout=895s"],
+        "//conditions:default": ["-test.timeout=3595s"],
+    }),
     data = [
         "//c-deps:libgeos",  # keep
         "//pkg/ccl/logictestccl:testdata",  # keep
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"test.Pool": "heavy"},
-        "//conditions:default": {"test.Pool": "large"},
-    }),
-    shard_count = 6,
-    tags = ["cpu:3"],
+    exec_properties = {"Pool": "large"},
+    shard_count = 5,
+    tags = [
+        "ccl_test",
+        "cpu:3",
+    ],
     deps = [
         "//pkg/base",
         "//pkg/build/bazel",

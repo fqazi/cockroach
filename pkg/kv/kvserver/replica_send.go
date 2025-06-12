@@ -9,9 +9,9 @@ import (
 	"context"
 	"reflect"
 	"runtime/pprof"
-	"runtime/trace"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
@@ -129,9 +129,6 @@ func (r *Replica) SendWithWriteBytes(
 		ctx = pprof.WithLabels(ctx, pprof.Labels("range_str", r.rangeStr.ID()))
 		pprof.SetGoroutineLabels(ctx)
 	}
-	if trace.IsEnabled() {
-		defer trace.StartRegion(ctx, r.rangeStr.String() /* cheap */).End()
-	}
 	// Add the range log tag.
 	ctx = r.AnnotateCtx(ctx)
 
@@ -139,6 +136,12 @@ func (r *Replica) SendWithWriteBytes(
 	// recorded regardless of errors that are encountered.
 	startCPU := grunning.Time()
 	defer r.MeasureReqCPUNanos(startCPU)
+	// Record summary throughput information about the batch request for
+	// accounting.
+	r.recordBatchRequestLoad(ctx, ba)
+
+	// If the internal Raft group is quiesced, wake it and the leader.
+	r.maybeUnquiesce(true /* wakeLeader */, true /* mayCampaign */)
 
 	isReadOnly := ba.IsReadOnly()
 	if err := r.checkBatchRequest(ba, isReadOnly); err != nil {
@@ -208,9 +211,6 @@ func (r *Replica) SendWithWriteBytes(
 		r.recordBatchForLoadBasedSplitting(ctx, ba, br, int(grunning.Difference(startCPU, grunning.Time())))
 	}
 
-	// Record summary throughput information about the batch request for
-	// accounting.
-	r.recordBatchRequestLoad(ctx, ba)
 	r.recordRequestWriteBytes(writeBytes)
 	r.recordImpactOnRateLimiter(ctx, br, isReadOnly)
 	return br, writeBytes, pErr
@@ -310,8 +310,14 @@ func (r *Replica) maybeAddRangeInfoToResponse(
 	// DistSender and never use ClientRangeInfo.
 	//
 	// From 23.2, all DistSenders ensure ExplicitlyRequested is set when otherwise
-	// empty.
-	if ba.ClientRangeInfo == (roachpb.ClientRangeInfo{}) {
+	// empty. Fall back to check for lease requests, to avoid 23.1 regressions.
+	if r.ClusterSettings().Version.IsActive(ctx, clusterversion.V23_2) {
+		if ba.ClientRangeInfo == (roachpb.ClientRangeInfo{}) {
+			return
+		}
+	} else if ba.IsSingleRequestLeaseRequest() {
+		// TODO(erikgrinaker): Remove this branch when 23.1 support is dropped.
+		_ = clusterversion.V23_1
 		return
 	}
 
@@ -420,7 +426,7 @@ func (r *Replica) executeBatchWithConcurrencyRetries(
 	defer func() {
 		// NB: wrapped to delay g evaluation to its value when returning.
 		if g != nil {
-			r.concMgr.FinishReq(ctx, g)
+			r.concMgr.FinishReq(g)
 		}
 	}()
 	pp := poison.Policy_Error
@@ -461,13 +467,11 @@ func (r *Replica) executeBatchWithConcurrencyRetries(
 			ReadConsistency: ba.ReadConsistency,
 			WaitPolicy:      ba.WaitPolicy,
 			LockTimeout:     ba.LockTimeout,
-			DeadlockTimeout: ba.DeadlockTimeout,
 			AdmissionHeader: ba.AdmissionHeader,
 			PoisonPolicy:    pp,
 			Requests:        ba.Requests,
 			LatchSpans:      latchSpans, // nil if g != nil
 			LockSpans:       lockSpans,  // nil if g != nil
-			Batch:           ba,
 		}, requestEvalKind)
 		if pErr != nil {
 			if poisonErr := (*poison.PoisonedError)(nil); errors.As(pErr.GoError(), &poisonErr) {
@@ -521,7 +525,7 @@ func (r *Replica) executeBatchWithConcurrencyRetries(
 				if reuseLatchAndLockSpans {
 					latchSpans, lockSpans = g.TakeSpanSets()
 				}
-				r.concMgr.FinishReq(ctx, g)
+				r.concMgr.FinishReq(g)
 				g = nil
 			}
 		}
@@ -806,9 +810,7 @@ func (r *Replica) handleReadWithinUncertaintyIntervalError(
 	// Attempt a server-side retry of the request. Note that we pass nil for
 	// latchSpans, because we have already released our latches and plan to
 	// re-acquire them if the retry is allowed.
-	var ok bool
-	ba, ok = canDoServersideRetry(ctx, pErr, ba, nil /* g */, hlc.Timestamp{} /* deadline */)
-	if !ok {
+	if !canDoServersideRetry(ctx, pErr, ba, nil /* g */, hlc.Timestamp{} /* deadline */) {
 		r.store.Metrics().ReadWithinUncertaintyIntervalErrorServerSideRetryFailure.Inc(1)
 		return nil, pErr
 	}
@@ -940,17 +942,17 @@ func (r *Replica) executeAdminBatch(
 	switch tArgs := args.(type) {
 	case *kvpb.AdminSplitRequest:
 		var reply kvpb.AdminSplitResponse
-		reply, pErr = r.AdminSplit(ctx, *tArgs, manualAdminReason)
+		reply, pErr = r.AdminSplit(ctx, *tArgs, "manual")
 		resp = &reply
 
 	case *kvpb.AdminUnsplitRequest:
 		var reply kvpb.AdminUnsplitResponse
-		reply, pErr = r.AdminUnsplit(ctx, *tArgs, manualAdminReason)
+		reply, pErr = r.AdminUnsplit(ctx, *tArgs, "manual")
 		resp = &reply
 
 	case *kvpb.AdminMergeRequest:
 		var reply kvpb.AdminMergeResponse
-		reply, pErr = r.AdminMerge(ctx, *tArgs, manualAdminReason)
+		reply, pErr = r.AdminMerge(ctx, *tArgs, "manual")
 		resp = &reply
 
 	case *kvpb.AdminTransferLeaseRequest:
@@ -959,7 +961,7 @@ func (r *Replica) executeAdminBatch(
 
 	case *kvpb.AdminChangeReplicasRequest:
 		chgs := tArgs.Changes()
-		desc, err := r.ChangeReplicas(ctx, &tArgs.ExpDesc, kvserverpb.ReasonAdminRequest, "", chgs)
+		desc, err := r.ChangeReplicas(ctx, &tArgs.ExpDesc, kvserverpb.SnapshotRequest_REBALANCE, kvserverpb.ReasonAdminRequest, "", chgs)
 		pErr = kvpb.NewError(err)
 		if pErr != nil {
 			resp = &kvpb.AdminChangeReplicasResponse{}
@@ -990,6 +992,11 @@ func (r *Replica) executeAdminBatch(
 
 	case *kvpb.AdminScatterRequest:
 		reply, err := r.adminScatter(ctx, *tArgs)
+		pErr = kvpb.NewError(err)
+		resp = &reply
+
+	case *kvpb.AdminVerifyProtectedTimestampRequest:
+		reply, err := r.adminVerifyProtectedTimestamp(ctx, *tArgs)
 		pErr = kvpb.NewError(err)
 		resp = &reply
 
@@ -1105,7 +1112,7 @@ func (r *Replica) collectSpans(
 	latchSpans, lockSpans = spanset.New(), lockspanset.New()
 	r.mu.RLock()
 	desc := r.descRLocked()
-	liveCount := r.shMu.state.Stats.LiveCount
+	liveCount := r.mu.state.Stats.LiveCount
 	r.mu.RUnlock()
 	// TODO(bdarnell): need to make this less global when local
 	// latches are used more heavily. For example, a split will
@@ -1352,6 +1359,6 @@ func (ec *endCmds) done(
 	// this method is called and the Guard is not set. Consider removing this
 	// check and upgrading the previous observation to an invariant.
 	if ec.g != nil {
-		ec.repl.concMgr.FinishReq(ctx, ec.g)
+		ec.repl.concMgr.FinishReq(ec.g)
 	}
 }

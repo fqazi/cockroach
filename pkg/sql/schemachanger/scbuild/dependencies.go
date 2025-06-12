@@ -8,7 +8,6 @@ package scbuild
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
@@ -51,17 +50,12 @@ type Dependencies interface {
 	// of checking whether CCL features are enabled.
 	ClusterID() uuid.UUID
 
-	// Codec returns the current SQL codec.
+	// Codec returns the current session data, as in execCfg.
+	// So far this is used only to build a eval.Context.
 	Codec() keys.SQLCodec
 
 	// Statements returns the statements behind this schema change.
 	Statements() []string
-
-	// EvalCtx returns the eval.Context for the schema change statement.
-	EvalCtx() *eval.Context
-
-	// SemaCtx returns the tree.SemaContext for the schema change statement.
-	SemaCtx() *tree.SemaContext
 
 	// AstFormatter returns something that can format AST nodes.
 	AstFormatter() AstFormatter
@@ -78,11 +72,7 @@ type Dependencies interface {
 	DescriptorCommentGetter() CommentGetter
 
 	// ZoneConfigGetter returns a zone config reader.
-	ZoneConfigGetter() scdecomp.ZoneConfigGetter
-
-	// GetDefaultZoneConfig is used to get the default zone config inside the
-	// server.
-	GetDefaultZoneConfig() *zonepb.ZoneConfig
+	ZoneConfigGetter() ZoneConfigGetter
 
 	// ClientNoticeSender returns a eval.ClientNoticeSender.
 	ClientNoticeSender() eval.ClientNoticeSender
@@ -95,15 +85,6 @@ type Dependencies interface {
 
 	// ReferenceProviderFactory returns a ReferenceProviderFactory.
 	ReferenceProviderFactory() ReferenceProviderFactory
-
-	// TemporarySchemaProvider returns a TemporarySchemaProvider.
-	TemporarySchemaProvider() TemporarySchemaProvider
-
-	// NodesStatusInfo returns a NodesStatusInfo.
-	NodesStatusInfo() NodesStatusInfo
-
-	// RegionProvider returns a RegionProvider.
-	RegionProvider() RegionProvider
 }
 
 // CreatePartitioningCCLCallback is the type of the CCL callback for creating
@@ -193,17 +174,14 @@ type AuthorizationAccessor interface {
 		ctx context.Context, privilegeObject privilege.Object, privilege privilege.Kind,
 	) error
 
-	// HasAdminRole verifies if current user has an admin role.
+	// HasAdminRole verifies if a user has an admin role.
 	HasAdminRole(ctx context.Context) (bool, error)
 
 	// HasOwnership returns true iff the role, or any role the role is a member
 	// of, has ownership privilege of the desc.
 	HasOwnership(ctx context.Context, privilegeObject privilege.Object) (bool, error)
 
-	// UserHasOwnership is like HasOwnership but allows you to specify the owner.
-	UserHasOwnership(ctx context.Context, privilegeObject privilege.Object, user username.SQLUsername) (bool, error)
-
-	// CheckPrivilegeForUser verifies that `user` has `privilege` on `descriptor`.
+	// CheckPrivilegeForUser verifies that the user has `privilege` on `descriptor`.
 	CheckPrivilegeForUser(
 		ctx context.Context, privilegeObject privilege.Object, privilege privilege.Kind, user username.SQLUsername,
 	) error
@@ -212,18 +190,11 @@ type AuthorizationAccessor interface {
 	// and indirect) and returns a map of "role" -> "isAdmin".
 	MemberOfWithAdminOption(ctx context.Context, member username.SQLUsername) (map[username.SQLUsername]bool, error)
 
-	// HasPrivilege checks if the `user` has `privilege` on `privilegeObject`.
+	// HasPrivilege checks if the user has `privilege` on `descriptor`.
 	HasPrivilege(ctx context.Context, privilegeObject privilege.Object, privilege privilege.Kind, user username.SQLUsername) (bool, error)
 
 	// HasAnyPrivilege returns true if user has any privileges at all.
 	HasAnyPrivilege(ctx context.Context, privilegeObject privilege.Object) (bool, error)
-
-	// HasGlobalPrivilegeOrRoleOption returns a bool representing whether the current user
-	// has a global privilege or the corresponding legacy role option.
-	HasGlobalPrivilegeOrRoleOption(ctx context.Context, privilege privilege.Kind) (bool, error)
-
-	// CheckRoleExists returns nil if `role` exists.
-	CheckRoleExists(ctx context.Context, role username.SQLUsername) error
 }
 
 // AstFormatter provides interfaces for formatting AST nodes.
@@ -232,6 +203,9 @@ type AstFormatter interface {
 	// qualified names, where parts can be redacted.
 	FormatAstAsRedactableString(statement tree.Statement, annotations *tree.Annotations) redact.RedactableString
 }
+
+// ZoneConfigGetter see scdecomp.ZoneConfigGetter.
+type ZoneConfigGetter scdecomp.ZoneConfigGetter
 
 // CommentGetter see scdecomp.CommentGetter.
 type CommentGetter scdecomp.CommentGetter
@@ -276,8 +250,4 @@ type (
 	// FeatureChecker contains operations for checking if a schema change
 	// feature is allowed by the database administrator.
 	FeatureChecker = scbuildstmt.SchemaFeatureChecker
-
-	TemporarySchemaProvider = scbuildstmt.TemporarySchemaProvider
-	NodesStatusInfo         = scbuildstmt.NodeStatusInfo
-	RegionProvider          = scbuildstmt.RegionProvider
 )

@@ -38,7 +38,6 @@ go_library(
         "@com_github_cockroachdb_redact//interfaces",
         "@com_github_gogo_protobuf//jsonpb",
         "@com_github_gogo_protobuf//proto",
-        "@org_golang_x_exp//constraints",
     ],
 )
 
@@ -52,6 +51,7 @@ go_test(
         "settings_test.go",
         "validation_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":settings"],
     deps = [
         "//pkg/testutils",

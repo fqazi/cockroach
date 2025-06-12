@@ -13,11 +13,9 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/txnwait"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -32,12 +30,6 @@ import (
 func makeMockTxnHeartbeater(
 	txn *roachpb.Transaction,
 ) (th txnHeartbeater, mockSender, mockGatekeeper *mockLockedSender) {
-	return makeMockTxnHeartbeaterWithSettings(txn, cluster.MakeTestingClusterSettings())
-}
-
-func makeMockTxnHeartbeaterWithSettings(
-	txn *roachpb.Transaction, st *cluster.Settings,
-) (th txnHeartbeater, mockSender, mockGatekeeper *mockLockedSender) {
 	mockSender, mockGatekeeper = &mockLockedSender{}, &mockLockedSender{}
 	th.init(
 		log.MakeTestingAmbientCtxWithNewTracer(),
@@ -48,8 +40,6 @@ func makeMockTxnHeartbeaterWithSettings(
 		mockGatekeeper,
 		new(syncutil.Mutex),
 		txn,
-		st,
-		nil, /* testingKnobs */
 	)
 	th.setWrapped(mockSender)
 	return th, mockSender, mockGatekeeper
@@ -68,8 +58,7 @@ func waitForHeartbeatLoopToStop(t *testing.T, th *txnHeartbeater) {
 }
 
 // TestTxnHeartbeaterSetsTransactionKey tests that the txnHeartbeater sets the
-// transaction key to the key of a write that was part of the first batch that
-// is sent through it.
+// transaction key to the key of the first write that is sent through it.
 func TestTxnHeartbeaterSetsTransactionKey(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -106,13 +95,13 @@ func TestTxnHeartbeaterSetsTransactionKey(t *testing.T) {
 
 	// The key of the first write is set as the transaction key.
 	ba.Requests = nil
-	ba.Add(&kvpb.GetRequest{RequestHeader: kvpb.RequestHeader{Key: keyA}})
 	ba.Add(&kvpb.PutRequest{RequestHeader: kvpb.RequestHeader{Key: keyB}})
+	ba.Add(&kvpb.PutRequest{RequestHeader: kvpb.RequestHeader{Key: keyA}})
 
 	mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
 		require.Len(t, ba.Requests, 2)
-		require.Equal(t, keyA, ba.Requests[0].GetInner().Header().Key)
-		require.Equal(t, keyB, ba.Requests[1].GetInner().Header().Key)
+		require.Equal(t, keyB, ba.Requests[0].GetInner().Header().Key)
+		require.Equal(t, keyA, ba.Requests[1].GetInner().Header().Key)
 
 		require.Equal(t, txn.ID, ba.Txn.ID)
 		require.Equal(t, keyB, roachpb.Key(ba.Txn.Key))
@@ -274,7 +263,7 @@ func TestTxnHeartbeaterLoopStartsBeforeExpiry(t *testing.T) {
 		},
 		{
 			// First locking request happens at expiration. Heartbeat immediately.
-			lockingRequestDelay: 5*time.Second + 1*time.Nanosecond,
+			lockingRequestDelay: 5 * time.Second,
 			consideredExpired:   true,
 			loopStarts:          StartImmediately,
 		},
@@ -287,10 +276,11 @@ func TestTxnHeartbeaterLoopStartsBeforeExpiry(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("delay=%s", test.lockingRequestDelay), func(t *testing.T) {
 			ctx := context.Background()
+			txn := makeTxnProto()
+
 			manualTime := timeutil.NewManualTime(timeutil.Unix(0, 123))
 			clock := hlc.NewClockForTesting(manualTime)
-			txn := roachpb.MakeTransaction("test", []byte("key"), isolation.Serializable, 0, clock.Now(),
-				0 /* maxOffsetNs */, 0 /* coordinatorNodeID */, 0, false /* omitInRangefeeds */)
+			txn.MinTimestamp, txn.WriteTimestamp = clock.Now(), clock.Now()
 
 			// We attempt to simulate a transaction that heartbeats every 1s, however
 			// it is important to note that a transaction is considered expired when it
@@ -309,8 +299,6 @@ func TestTxnHeartbeaterLoopStartsBeforeExpiry(t *testing.T) {
 				mockGatekeeper,
 				new(syncutil.Mutex),
 				&txn,
-				cluster.MakeClusterSettings(),
-				nil, /* testingKnobs */
 			)
 			th.setWrapped(mockSender)
 			defer th.stopper.Stop(ctx)
@@ -845,84 +833,4 @@ func TestTxnHeartbeaterEndTxnLoopHandling(t *testing.T) {
 			require.Equal(t, tc.expectHeartbeatRunning, heartbeaterRunning(&th), "heartbeat loop state")
 		})
 	}
-}
-
-// TestTxnHeartbeaterRandLockingIndex ensures that the txn heartbeater picks the
-// transaction's anchor key at correctly, and as dictated by the RandomizedTxnAnchorKeyEnabled
-// cluster setting. In particular:
-// - it picks it randomly, from a uniform distribution of locking indices, if
-// the cluster setting dictates such.
-// - it picks the first locking index otherwise.
-func TestTxnHeartbeaterRandLockingIndex(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	txn := makeTxnProto()
-	txn.Key = nil // reset
-	st := cluster.MakeTestingClusterSettings()
-	th, _, _ := makeMockTxnHeartbeaterWithSettings(&txn, st)
-	ctx := context.Background()
-	defer th.stopper.Stop(ctx)
-
-	const numKeys = 6
-	const trials = 1000000
-	keyA, keyB, keyC, keyD, keyE, keyF := roachpb.Key("a"), roachpb.Key("b"), roachpb.Key("c"),
-		roachpb.Key("d"), roachpb.Key("e"), roachpb.Key("f")
-
-	ba := &kvpb.BatchRequest{}
-	ba.Add(&kvpb.PutRequest{RequestHeader: kvpb.RequestHeader{Key: keyA}})
-	ba.Add(&kvpb.PutRequest{RequestHeader: kvpb.RequestHeader{Key: keyB}})
-	ba.Add(&kvpb.GetRequest{RequestHeader: kvpb.RequestHeader{Key: keyC}}) // non-locking
-	ba.Add(&kvpb.GetRequest{
-		RequestHeader: kvpb.RequestHeader{Key: keyD}, KeyLockingStrength: lock.Shared,
-	})
-	ba.Add(&kvpb.GetRequest{
-		RequestHeader: kvpb.RequestHeader{Key: keyE}, KeyLockingStrength: lock.Exclusive,
-	})
-	ba.Add(&kvpb.GetRequest{
-		RequestHeader:        kvpb.RequestHeader{Key: keyF},
-		KeyLockingStrength:   lock.Shared,
-		KeyLockingDurability: lock.Replicated,
-	})
-
-	testutils.RunTrueAndFalse(t, "randomized_anchor_key.enabled", func(
-		t *testing.T, randomizedAnchorKeyEnabled bool) {
-		values := make([]int, numKeys)
-		RandomizedTxnAnchorKeyEnabled.Override(ctx, &st.SV, randomizedAnchorKeyEnabled)
-
-		for i := 0; i < trials; i++ {
-			idx, err := th.randLockingIndex(ba)
-			require.Nil(t, err)
-			values[idx]++
-		}
-
-		// checkVal verifies if a value is close to an expected value, within a fraction (e.g. if
-		// fraction=0.1, it checks if val is within 10% of expected).
-		checkVal := func(val, expected, errFraction float64) bool {
-			return val > expected*(1-errFraction) && val < expected*(1+errFraction)
-		}
-
-		for i, val := range values {
-			if !randomizedAnchorKeyEnabled {
-				// Randomization isn't enabled. The anchor key should always point to
-				// the first locking request's index, which in our case, is 0.
-				if i == 0 {
-					require.Equal(t, trials, val)
-				} else {
-					require.Equal(t, 0, val)
-				}
-				continue
-			}
-
-			if i == 2 { // non-locking get
-				require.Equal(t, 0, val)
-				continue
-			}
-
-			valRatio := float64(val) / trials
-			expRatio := (float64(trials) / 5) / trials // numKeys - 1
-			t.Logf("%d: chosen: %d; valRatio %f; expRatio %f", i, val, valRatio, expRatio)
-			require.True(t, checkVal(valRatio, expRatio, 0.1))
-		}
-	})
 }

@@ -40,7 +40,7 @@ const clippingBoundsDelta = 0.01
 // writes on this index must use the same config. Writes must use the same
 // config to correctly process deletions. Reads must use the same config since
 // the bounds affect when a read needs to look at the exceedsBoundsCellID.
-func NewS2GeometryIndex(cfg geopb.S2GeometryConfig) GeometryIndex {
+func NewS2GeometryIndex(cfg S2GeometryConfig) GeometryIndex {
 	// TODO(sumeer): Sanity check cfg.
 	return &s2GeometryIndex{
 		rc: &s2.RegionCoverer{
@@ -62,9 +62,9 @@ func NewS2GeometryIndex(cfg geopb.S2GeometryConfig) GeometryIndex {
 // INDEX.
 
 // DefaultGeometryIndexConfig returns a default config for a geometry index.
-func DefaultGeometryIndexConfig() *geopb.Config {
-	return &geopb.Config{
-		S2Geometry: &geopb.S2GeometryConfig{
+func DefaultGeometryIndexConfig() *Config {
+	return &Config{
+		S2Geometry: &S2GeometryConfig{
 			// Bounding box similar to the circumference of the earth (~2B meters)
 			MinX:     -(1 << 31),
 			MaxX:     (1 << 31) - 1,
@@ -76,7 +76,7 @@ func DefaultGeometryIndexConfig() *geopb.Config {
 }
 
 // GeometryIndexConfigForSRID returns a geometry index config for srid.
-func GeometryIndexConfigForSRID(srid geopb.SRID) (*geopb.Config, error) {
+func GeometryIndexConfigForSRID(srid geopb.SRID) (*Config, error) {
 	if srid == 0 {
 		return DefaultGeometryIndexConfig(), nil
 	}
@@ -115,8 +115,8 @@ func GeometryIndexConfigForSRID(srid geopb.SRID) (*geopb.Config, error) {
 	boundsExpansion := 2 * clippingBoundsDelta
 	deltaX := (maxX - minX) * boundsExpansion
 	deltaY := (maxY - minY) * boundsExpansion
-	return &geopb.Config{
-		S2Geometry: &geopb.S2GeometryConfig{
+	return &Config{
+		S2Geometry: &S2GeometryConfig{
 			MinX:     minX - deltaX,
 			MaxX:     maxX + deltaX,
 			MinY:     minY - deltaY,

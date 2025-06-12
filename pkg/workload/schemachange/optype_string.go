@@ -23,48 +23,33 @@ func _() {
 	_ = x[alterDatabaseAddRegion-7]
 	_ = x[alterDatabasePrimaryRegion-8]
 	_ = x[alterDatabaseSurvivalGoal-9]
-	_ = x[alterDatabaseAddSuperRegion-10]
-	_ = x[alterDatabaseDropSuperRegion-11]
-	_ = x[alterFunctionRename-12]
-	_ = x[alterFunctionSetSchema-13]
-	_ = x[alterPolicy-14]
-	_ = x[alterTableAddColumn-15]
-	_ = x[alterTableAddConstraint-16]
-	_ = x[alterTableAddConstraintForeignKey-17]
-	_ = x[alterTableAddConstraintUnique-18]
-	_ = x[alterTableAlterColumnType-19]
-	_ = x[alterTableAlterPrimaryKey-20]
-	_ = x[alterTableDropColumn-21]
-	_ = x[alterTableDropColumnDefault-22]
-	_ = x[alterTableDropConstraint-23]
-	_ = x[alterTableDropNotNull-24]
-	_ = x[alterTableDropStored-25]
-	_ = x[alterTableRLS-26]
-	_ = x[alterTableLocality-27]
-	_ = x[alterTableRenameColumn-28]
-	_ = x[alterTableSetColumnDefault-29]
-	_ = x[alterTableSetColumnNotNull-30]
-	_ = x[alterTypeDropValue-31]
-	_ = x[createTypeEnum-32]
-	_ = x[createTypeComposite-33]
-	_ = x[createIndex-34]
-	_ = x[createPolicy-35]
-	_ = x[createSchema-36]
-	_ = x[createSequence-37]
-	_ = x[createTable-38]
-	_ = x[createTableAs-39]
-	_ = x[createView-40]
-	_ = x[createFunction-41]
-	_ = x[createTrigger-42]
-	_ = x[commentOn-43]
-	_ = x[dropFunction-44]
-	_ = x[dropIndex-45]
-	_ = x[dropPolicy-46]
-	_ = x[dropSchema-47]
-	_ = x[dropSequence-48]
-	_ = x[dropTable-49]
-	_ = x[dropTrigger-50]
-	_ = x[dropView-51]
+	_ = x[alterTableAddColumn-10]
+	_ = x[alterTableAddConstraint-11]
+	_ = x[alterTableAddConstraintForeignKey-12]
+	_ = x[alterTableAddConstraintUnique-13]
+	_ = x[alterTableAlterColumnType-14]
+	_ = x[alterTableDropColumn-15]
+	_ = x[alterTableDropConstraint-16]
+	_ = x[alterTableDropNotNull-17]
+	_ = x[alterTableDropColumnDefault-18]
+	_ = x[alterTableDropStored-19]
+	_ = x[alterTableLocality-20]
+	_ = x[alterTableRenameColumn-21]
+	_ = x[alterTableSetColumnDefault-22]
+	_ = x[alterTableSetColumnNotNull-23]
+	_ = x[alterTypeDropValue-24]
+	_ = x[createTypeEnum-25]
+	_ = x[createIndex-26]
+	_ = x[createSchema-27]
+	_ = x[createSequence-28]
+	_ = x[createTable-29]
+	_ = x[createTableAs-30]
+	_ = x[createView-31]
+	_ = x[dropIndex-32]
+	_ = x[dropSchema-33]
+	_ = x[dropSequence-34]
+	_ = x[dropTable-35]
+	_ = x[dropView-36]
 }
 
 func (i opType) String() string {
@@ -89,16 +74,6 @@ func (i opType) String() string {
 		return "alterDatabasePrimaryRegion"
 	case alterDatabaseSurvivalGoal:
 		return "alterDatabaseSurvivalGoal"
-	case alterDatabaseAddSuperRegion:
-		return "alterDatabaseAddSuperRegion"
-	case alterDatabaseDropSuperRegion:
-		return "alterDatabaseDropSuperRegion"
-	case alterFunctionRename:
-		return "alterFunctionRename"
-	case alterFunctionSetSchema:
-		return "alterFunctionSetSchema"
-	case alterPolicy:
-		return "alterPolicy"
 	case alterTableAddColumn:
 		return "alterTableAddColumn"
 	case alterTableAddConstraint:
@@ -109,20 +84,16 @@ func (i opType) String() string {
 		return "alterTableAddConstraintUnique"
 	case alterTableAlterColumnType:
 		return "alterTableAlterColumnType"
-	case alterTableAlterPrimaryKey:
-		return "alterTableAlterPrimaryKey"
 	case alterTableDropColumn:
 		return "alterTableDropColumn"
-	case alterTableDropColumnDefault:
-		return "alterTableDropColumnDefault"
 	case alterTableDropConstraint:
 		return "alterTableDropConstraint"
 	case alterTableDropNotNull:
 		return "alterTableDropNotNull"
+	case alterTableDropColumnDefault:
+		return "alterTableDropColumnDefault"
 	case alterTableDropStored:
 		return "alterTableDropStored"
-	case alterTableRLS:
-		return "alterTableRLS"
 	case alterTableLocality:
 		return "alterTableLocality"
 	case alterTableRenameColumn:
@@ -135,12 +106,8 @@ func (i opType) String() string {
 		return "alterTypeDropValue"
 	case createTypeEnum:
 		return "createTypeEnum"
-	case createTypeComposite:
-		return "createTypeComposite"
 	case createIndex:
 		return "createIndex"
-	case createPolicy:
-		return "createPolicy"
 	case createSchema:
 		return "createSchema"
 	case createSequence:
@@ -151,26 +118,14 @@ func (i opType) String() string {
 		return "createTableAs"
 	case createView:
 		return "createView"
-	case createFunction:
-		return "createFunction"
-	case createTrigger:
-		return "createTrigger"
-	case commentOn:
-		return "commentOn"
-	case dropFunction:
-		return "dropFunction"
 	case dropIndex:
 		return "dropIndex"
-	case dropPolicy:
-		return "dropPolicy"
 	case dropSchema:
 		return "dropSchema"
 	case dropSequence:
 		return "dropSequence"
 	case dropTable:
 		return "dropTable"
-	case dropTrigger:
-		return "dropTrigger"
 	case dropView:
 		return "dropView"
 	default:

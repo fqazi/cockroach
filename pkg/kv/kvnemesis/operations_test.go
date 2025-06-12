@@ -50,6 +50,7 @@ func TestOperationsFormat(t *testing.T) {
 	sstFile := &storage.MemObject{}
 	{
 		st := cluster.MakeTestingClusterSettings()
+		storage.ValueBlocksEnabled.Override(ctx, &st.SV, false)
 		w := storage.MakeIngestionSSTWriter(ctx, st, sstFile)
 		defer w.Close()
 
@@ -80,15 +81,6 @@ func TestOperationsFormat(t *testing.T) {
 		},
 		{
 			step: step(addSSTable(sstFile.Data(), sstSpan, sstTS, sstValueHeader.KVNemesisSeq.Get(), true)),
-		},
-		{
-			step: step(
-				closureTxn(ClosureTxnType_Commit,
-					isolation.Serializable,
-					createSavepoint(0), put(k9, 3), releaseSavepoint(0),
-					get(k8),
-					createSavepoint(4), del(k9, 1), rollbackSavepoint(4),
-				)),
 		},
 		{step: step(barrier(k1, k2, false /* withLAI */))},
 		{step: step(barrier(k3, k4, true /* withLAI */))},

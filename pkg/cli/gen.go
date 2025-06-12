@@ -7,8 +7,10 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"html"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -33,36 +35,7 @@ import (
 	slugify "github.com/mozillazg/go-slugify"
 	"github.com/spf13/cobra"
 	"github.com/spf13/cobra/doc"
-	"gopkg.in/yaml.v2"
 )
-
-type MetricInfo struct {
-	Name         string `yaml:"name"`
-	ExportedName string `yaml:"exported_name"`
-	LabeledName  string `yaml:"labeled_name,omitempty"`
-	Description  string `yaml:"description"`
-	YAxisLabel   string `yaml:"y_axis_label"`
-	Type         string `yaml:"type"`
-	Unit         string `yaml:"unit"`
-	Aggregation  string `yaml:"aggregation"`
-	Derivative   string `yaml:"derivative"`
-	HowToUse     string `yaml:"how_to_use,omitempty"`
-	Essential    bool   `yaml:"essential,omitempty"`
-}
-
-type Category struct {
-	Name    string
-	Metrics []MetricInfo
-}
-
-type Layer struct {
-	Name       string
-	Categories []Category
-}
-
-type YAMLOutput struct {
-	Layers []*Layer
-}
 
 var manPath string
 
@@ -167,6 +140,63 @@ func runGenAutocompleteCmd(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Generated %s completion file: %s\n", shell, autoCompletePath)
 	return nil
+}
+
+var aesSize int
+var overwriteKey bool
+
+// GenEncryptionKeyCmd is a command to generate a store key for Encryption At
+// Rest.
+// Exported to allow use by CCL code.
+var GenEncryptionKeyCmd = &cobra.Command{
+	Use:   "encryption-key <key-file>",
+	Short: "generate store key for encryption at rest",
+	Long: `Generate store key for encryption at rest.
+
+Generates a key suitable for use as a store key for Encryption At Rest.
+The resulting key file will be 32 bytes (random key ID) + key_size in bytes.
+`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		encryptionKeyPath := args[0]
+
+		// Check encryptionKeySize is suitable for the encryption algorithm.
+		if aesSize != 128 && aesSize != 192 && aesSize != 256 {
+			return fmt.Errorf("store key size should be 128, 192, or 256 bits, got %d", aesSize)
+		}
+
+		// 32 bytes are reserved for key ID.
+		kSize := aesSize/8 + 32
+		b := make([]byte, kSize)
+		if _, err := rand.Read(b); err != nil {
+			return fmt.Errorf("failed to create key with size %d bytes", kSize)
+		}
+
+		// Write key to the file with owner read/write permission.
+		openMode := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+		if !overwriteKey {
+			openMode |= os.O_EXCL
+		}
+
+		f, err := os.OpenFile(encryptionKeyPath, openMode, 0600)
+		if err != nil {
+			return err
+		}
+		n, err := f.Write(b)
+		if err == nil && n < len(b) {
+			err = io.ErrShortWrite
+		}
+		if err1 := f.Close(); err == nil {
+			err = err1
+		}
+
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("successfully created AES-%d key: %s\n", aesSize, encryptionKeyPath)
+		return nil
+	},
 }
 
 var includeAllSettings bool
@@ -297,35 +327,103 @@ var genMetricListCmd = &cobra.Command{
 Output the list of metrics typical for a node.
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		layers, err := generateMetricList(context.Background(), false /* skipFiltering */)
+		ctx := context.Background()
+
+		// Use a testserver. We presume that all relevant metrics exist in
+		// test servers too.
+		sArgs := base.TestServerArgs{
+			Insecure:          true,
+			DefaultTestTenant: base.ExternalTestTenantAlwaysEnabled,
+		}
+		s, err := server.TestServerFactory.New(sArgs)
 		if err != nil {
 			return err
 		}
+		srv := s.(serverutils.TestServerInterfaceRaw)
+		defer srv.Stopper().Stop(ctx)
 
-		output := YAMLOutput{}
+		// We want to only return after the server is ready.
+		readyCh := make(chan struct{})
+		srv.SetReadyFn(func(bool) {
+			close(readyCh)
+		})
 
-		var layerNames []string
-		for name := range layers {
-			layerNames = append(layerNames, name)
-		}
-		sort.Strings(layerNames)
-
-		for _, layer := range layerNames {
-			output.Layers = append(output.Layers, layers[layer])
-		}
-
-		// Output YAML
-		yamlData, err := yaml.Marshal(output)
-		if err != nil {
+		// Start the server.
+		if err := srv.Start(ctx); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stdout, "%s", yamlData)
-		return nil
+
+		// Wait until the server is ready to action.
+		select {
+		case <-readyCh:
+		case <-time.After(5 * time.Second):
+			return errors.AssertionFailedf("could not initialize server in time")
+		}
+
+		var sections []catalog.ChartSection
+
+		// Retrieve the chart catalog (metric list) for the system tenant over RPC.
+		retrieve := func(layer serverutils.ApplicationLayerInterface, predicate func(catalog.MetricLayer) bool) error {
+			conn, err := layer.RPCClientConnE(username.RootUserName())
+			if err != nil {
+				return err
+			}
+			client := serverpb.NewAdminClient(conn)
+
+			resp, err := client.ChartCatalog(ctx, &serverpb.ChartCatalogRequest{})
+			if err != nil {
+				return err
+			}
+			for _, section := range resp.Catalog {
+				if !predicate(section.MetricLayer) {
+					continue
+				}
+				sections = append(sections, section)
+			}
+			return nil
+		}
+
+		if err := retrieve(srv, func(layer catalog.MetricLayer) bool {
+			return layer != catalog.MetricLayer_APPLICATION
+		}); err != nil {
+			return err
+		}
+		if err := retrieve(srv.TestTenant(), func(layer catalog.MetricLayer) bool {
+			return layer == catalog.MetricLayer_APPLICATION
+		}); err != nil {
+			return err
+		}
+
+		// Sort by layer then metric name.
+		sort.Slice(sections, func(i, j int) bool {
+			return sections[i].MetricLayer < sections[j].MetricLayer ||
+				(sections[i].MetricLayer == sections[j].MetricLayer &&
+					sections[i].Title < sections[j].Title)
+		})
+
+		// Populate the resulting table.
+		cols := []string{"Layer", "Metric", "Description", "Y-Axis Label", "Type", "Unit", "Aggregation", "Derivative"}
+		var rows [][]string
+		for _, section := range sections {
+			rows = append(rows,
+				[]string{
+					section.MetricLayer.String(),
+					section.Title,
+					section.Charts[0].Metrics[0].Help,
+					section.Charts[0].AxisLabel,
+					section.Charts[0].Metrics[0].MetricType.String(),
+					section.Charts[0].Units.String(),
+					section.Charts[0].Aggregator.String(),
+					section.Charts[0].Derivative.String(),
+				})
+		}
+		align := "dddddddd"
+		sliceIter := clisqlexec.NewRowSliceIter(rows, align)
+		return sqlExecCtx.PrintQueryOutput(os.Stdout, stderr, cols, sliceIter)
 	},
 }
 
-// GenCmd is the root of all gen commands. Exported to allow modification by CCL code.
-var GenCmd = &cobra.Command{
+var genCmd = &cobra.Command{
 	Use:   "gen [command]",
 	Short: "generate auxiliary files",
 	Long:  "Generate manpages, example shell settings, example databases, etc.",
@@ -339,7 +437,7 @@ var genCmds = []*cobra.Command{
 	genHAProxyCmd,
 	genSettingsListCmd,
 	genMetricListCmd,
-	genEncryptionKeyCmd,
+	GenEncryptionKeyCmd,
 }
 
 func init() {
@@ -350,6 +448,10 @@ func init() {
 	genHAProxyCmd.PersistentFlags().StringVar(&haProxyPath, "out", "haproxy.cfg",
 		"path to generated haproxy configuration file")
 	cliflagcfg.VarFlag(genHAProxyCmd.Flags(), &haProxyLocality, cliflags.Locality)
+	GenEncryptionKeyCmd.PersistentFlags().IntVarP(&aesSize, "size", "s", 128,
+		"AES key size for encryption at rest (one of: 128, 192, 256)")
+	GenEncryptionKeyCmd.PersistentFlags().BoolVar(&overwriteKey, "overwrite", false,
+		"Overwrite key if it exists")
 
 	f := genSettingsListCmd.PersistentFlags()
 	f.BoolVar(&includeAllSettings, "all-settings", false,
@@ -364,146 +466,5 @@ func init() {
 		[]string{"system-only", "system-visible", "application"},
 		"label to use in the output for the various setting classes")
 
-	genMetricListCmd.Flags().Bool("essential", false, "only emit essential metrics")
-
-	GenCmd.AddCommand(genCmds...)
-}
-
-func generateMetricList(ctx context.Context, skipFiltering bool) (map[string]*Layer, error) {
-	sArgs := base.TestServerArgs{
-		Insecure:          true,
-		DefaultTestTenant: base.ExternalTestTenantAlwaysEnabled,
-	}
-	s, err := server.TestServerFactory.New(sArgs)
-	if err != nil {
-		return nil, err
-	}
-	srv := s.(serverutils.TestServerInterfaceRaw)
-	defer srv.Stopper().Stop(ctx)
-
-	// We want to only return after the server is ready.
-	readyCh := make(chan struct{})
-	srv.SetReadyFn(func(bool) {
-		close(readyCh)
-	})
-
-	// Start the server.
-	if err := srv.Start(ctx); err != nil {
-		return nil, err
-	}
-
-	// Wait until the server is ready to action.
-	select {
-	case <-readyCh:
-	case <-time.After(5 * time.Second):
-		return nil, errors.AssertionFailedf("could not initialize server in time")
-	}
-
-	var sections []catalog.ChartSection
-
-	// Retrieve the chart catalog (metric list) for the system tenant over RPC.
-	retrieve := func(layer serverutils.ApplicationLayerInterface, predicate func(catalog.MetricLayer) bool) error {
-		conn, err := layer.RPCClientConnE(username.RootUserName())
-		if err != nil {
-			return err
-		}
-		client := serverpb.NewAdminClient(conn)
-
-		resp, err := client.ChartCatalog(ctx, &serverpb.ChartCatalogRequest{})
-		if err != nil {
-			return err
-		}
-		for _, section := range resp.Catalog {
-			if !predicate(section.MetricLayer) {
-				continue
-			}
-			sections = append(sections, section)
-		}
-		return nil
-	}
-
-	if err := retrieve(srv, func(layer catalog.MetricLayer) bool {
-		if skipFiltering {
-			return true
-		}
-		return layer != catalog.MetricLayer_APPLICATION
-	}); err != nil {
-		return nil, err
-	}
-	if err := retrieve(srv.TestTenant(), func(layer catalog.MetricLayer) bool {
-		if skipFiltering {
-			return true
-		}
-		return layer == catalog.MetricLayer_APPLICATION
-	}); err != nil {
-		return nil, err
-	}
-
-	// Sort by layer then category name.
-	sort.Slice(sections, func(i, j int) bool {
-		return sections[i].MetricLayer < sections[j].MetricLayer ||
-			(sections[i].MetricLayer == sections[j].MetricLayer &&
-				sections[i].Title < sections[j].Title)
-	})
-
-	// Structure for file is:
-	// layers:
-	//  - name: APPLICATION
-	//    categories:
-	//      - name: SQL
-	//        metrics:
-	//          - name: sql.statements.active
-	//            exported_name: sql_statements_active
-	//            description: Number of currently active user SQL statements
-	//            y_axis_label: Active Statements
-
-	layers := make(map[string]*Layer)
-	for _, section := range sections {
-		// Get or create the layer that the current section is in
-		layerName := section.MetricLayer.String()
-		layer, ok := layers[layerName]
-		if !ok {
-			layer = &Layer{
-				Name:       layerName,
-				Categories: []Category{},
-			}
-			layers[layerName] = layer
-		}
-
-		// Every section is a separate category
-		category := Category{
-			Name: section.Title,
-		}
-
-		for _, chart := range section.Charts {
-			// There are many charts, but only 1 metric per chart.
-			metric := MetricInfo{
-				Name:         chart.Metrics[0].Name,
-				ExportedName: chart.Metrics[0].ExportedName,
-				LabeledName:  chart.Metrics[0].LabeledName,
-				Description:  chart.Metrics[0].Help,
-				YAxisLabel:   chart.AxisLabel,
-				Type:         chart.Metrics[0].MetricType.String(),
-				Unit:         chart.Units.String(),
-				Aggregation:  chart.Aggregator.String(),
-				Derivative:   chart.Derivative.String(),
-				HowToUse:     chart.Metrics[0].HowToUse,
-				Essential:    chart.Metrics[0].Essential,
-			}
-			category.Metrics = append(category.Metrics, metric)
-		}
-
-		layer.Categories = append(layer.Categories, category)
-	}
-
-	// Sort metrics within each layer by name
-	for _, layer := range layers {
-		for _, cat := range layer.Categories {
-			sort.Slice(cat.Metrics, func(i, j int) bool {
-				return cat.Metrics[i].Name < cat.Metrics[j].Name
-			})
-		}
-	}
-
-	return layers, nil
+	genCmd.AddCommand(genCmds...)
 }

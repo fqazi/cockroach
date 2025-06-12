@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
@@ -54,15 +53,6 @@ func (p *planner) AlterPrimaryKey(
 	alterPKNode tree.AlterTableAlterPrimaryKey,
 	alterPrimaryKeyLocalitySwap *alterPrimaryKeyLocalitySwap,
 ) error {
-	// Check if sql_safe_updates is enabled and the table has vector indexes
-	if len(tableDesc.VectorIndexes()) > 0 {
-		if p.EvalContext().SessionData().SafeUpdates {
-			return pgerror.DangerousStatementf("ALTER PRIMARY KEY on a table with vector indexes will disable writes to the table while the index is being rebuilt")
-		} else {
-			p.BufferClientNotice(ctx, pgnotice.Newf("ALTER PRIMARY KEY on a table with vector indexes will disable writes to the table while the index is being rebuilt"))
-		}
-	}
-
 	if err := paramparse.ValidateUniqueConstraintParams(
 		alterPKNode.StorageParams,
 		paramparse.UniqueConstraintParamContext{
@@ -188,7 +178,7 @@ func (p *planner) AlterPrimaryKey(
 		Unique:            true,
 		CreatedExplicitly: true,
 		EncodingType:      catenumpb.PrimaryIndexEncoding,
-		Type:              idxtype.FORWARD,
+		Type:              descpb.IndexDescriptor_FORWARD,
 		// TODO(postamar): bump version to LatestIndexDescriptorVersion in 22.2
 		// This is not possible until then because of a limitation in 21.2 which
 		// affects mixed-21.2-22.1-version clusters (issue #78426).
@@ -379,8 +369,7 @@ func (p *planner) AlterPrimaryKey(
 	}
 
 	// We have to rewrite all indexes that either:
-	// * depend on uniqueness from the old primary key (inverted, vector,
-	//   non-unique, or unique with nulls).
+	// * depend on uniqueness from the old primary key (inverted, non-unique, or unique with nulls).
 	// * don't store or index all columns in the new primary key.
 	// * is affected by a locality config swap.
 	shouldRewriteIndex := func(idx catalog.Index) (bool, error) {
@@ -433,20 +422,7 @@ func (p *planner) AlterPrimaryKey(
 			}
 		}
 
-		// If keySuffix has a column that is not one of the key column in new
-		// primary index, we should rewrite the index as well.
-		// This can happen for unique index on some column `col` with keySuffix
-		// `rowid` and the new PK is on a column other than `rowid`, in which case
-		// such an index should be rewritten bc otherwise it would contain
-		// keySuffixColumn `rowid` that is not part of the key columns in the (new)
-		// primary key.
-		if !idx.CollectKeySuffixColumnIDs().SubsetOf(catalog.MakeTableColSet(newPrimaryIndexDesc.KeyColumnIDs...)) {
-			return true, nil
-		}
-
-		return !idx.IsUnique() ||
-			idx.GetType() == idxtype.INVERTED ||
-			idx.GetType() == idxtype.VECTOR, nil
+		return !idx.IsUnique() || idx.GetType() == descpb.IndexDescriptor_INVERTED, nil
 	}
 	var indexesToRewrite []catalog.Index
 	for _, idx := range tableDesc.PublicNonPrimaryIndexes() {
@@ -457,7 +433,7 @@ func (p *planner) AlterPrimaryKey(
 		if idx.GetID() != newPrimaryIndexDesc.ID && shouldRewrite {
 			indexesToRewrite = append(indexesToRewrite, idx)
 		}
-		// If this index is referenced by any other objects, then we will
+		// If this index is referenced by any other objects, then we wil
 		// block the primary key swap, since we don't have a mechanism to
 		// fix these references yet.
 		for _, tableRef := range tableDesc.GetDependedOnBy() {
@@ -796,38 +772,33 @@ func addIndexMutationWithSpecificPrimaryKey(
 	if err := table.AddIndexMutationMaybeWithTempIndex(toAdd, descpb.DescriptorMutation_ADD); err != nil {
 		return err
 	}
-	if err := table.AllocateIDsWithoutValidation(ctx, true /*createMissingPrimaryKey*/); err != nil {
+	if err := table.AllocateIDsWithoutValidation(ctx); err != nil {
 		return err
 	}
 
-	if err := setKeySuffixAndStoredColumnIDsFromPrimary(table, toAdd, primary); err != nil {
+	if err := setKeySuffixColumnIDsFromPrimary(table, toAdd, primary); err != nil {
 		return err
 	}
 	if tempIdx := catalog.FindCorrespondingTemporaryIndexByID(table, toAdd.ID); tempIdx != nil {
-		if err := setKeySuffixAndStoredColumnIDsFromPrimary(table, tempIdx.IndexDesc(), primary); err != nil {
+		if err := setKeySuffixColumnIDsFromPrimary(table, tempIdx.IndexDesc(), primary); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// setKeySuffixAndStoredColumnIDsFromPrimary uses the columns in the given
-// primary index to construct this toAdd's KeySuffixColumnIDs and
-// StoredColumnIDs list.
-func setKeySuffixAndStoredColumnIDsFromPrimary(
+// setKeySuffixColumnIDsFromPrimary uses the columns in the given
+// primary index to construct this toAdd's KeySuffixColumnIDs list.
+func setKeySuffixColumnIDsFromPrimary(
 	table *tabledesc.Mutable, toAdd *descpb.IndexDescriptor, primary *descpb.IndexDescriptor,
 ) error {
-	// First, find all key columns in the secondary index.
-	idxColIDs := catalog.MakeTableColSet(toAdd.KeyColumnIDs...)
-	// Second, determine the key suffix columns: add all primary key columns
-	// which have not already been in the key columns in the secondary index.
+	presentColIDs := catalog.MakeTableColSet(toAdd.KeyColumnIDs...)
+	presentColIDs.UnionWith(catalog.MakeTableColSet(toAdd.StoreColumnIDs...))
 	toAdd.KeySuffixColumnIDs = nil
-	invIdx := toAdd.Type == idxtype.INVERTED
-	vecIdx := toAdd.Type == idxtype.VECTOR
+	invIdx := toAdd.Type == descpb.IndexDescriptor_INVERTED
 	for _, colID := range primary.KeyColumnIDs {
-		if !idxColIDs.Contains(colID) {
+		if !presentColIDs.Contains(colID) {
 			toAdd.KeySuffixColumnIDs = append(toAdd.KeySuffixColumnIDs, colID)
-			idxColIDs.Add(colID)
 		} else if invIdx && colID == toAdd.InvertedColumnID() {
 			// In an inverted index, the inverted column's value is not equal to the
 			// actual data in the row for that column. As a result, if the inverted
@@ -845,22 +816,6 @@ func setKeySuffixAndStoredColumnIDsFromPrimary(
 				"primary key column %s cannot be present in an inverted index",
 				col.GetName(),
 			)
-		} else if vecIdx && colID == toAdd.VectorColumnID() {
-			// VECTOR columns are not allowed in the primary key.
-			return errors.AssertionFailedf(
-				"indexed vector column cannot be part of the primary key")
-		}
-	}
-	// Finally, add all the stored columns if it is not already a key or key suffix column.
-	toAddOldStoredColumnIDs := toAdd.StoreColumnIDs
-	toAddOldStoredColumnNames := toAdd.StoreColumnNames
-	toAdd.StoreColumnIDs = nil
-	toAdd.StoreColumnNames = nil
-	for i, colID := range toAddOldStoredColumnIDs {
-		if !idxColIDs.Contains(colID) {
-			toAdd.StoreColumnIDs = append(toAdd.StoreColumnIDs, colID)
-			toAdd.StoreColumnNames = append(toAdd.StoreColumnNames, toAddOldStoredColumnNames[i])
-			idxColIDs.Add(colID)
 		}
 	}
 	return nil
@@ -879,8 +834,7 @@ func (p *planner) disallowDroppingPrimaryIndexReferencedInUDFOrView(
 		if tableRef.IndexID == currentPrimaryIndex.GetID() {
 			// canRemoveDependent with `DropDefault` will return the right error.
 			err := p.canRemoveDependent(
-				ctx, "index", currentPrimaryIndex.GetName(), tableDesc.ID, tableDesc.ParentID, tableRef, tree.DropDefault,
-				true /* blockOnTriggerDependency */)
+				ctx, "index", currentPrimaryIndex.GetName(), tableDesc.ParentID, tableRef, tree.DropDefault)
 			if err != nil {
 				return errors.WithDetail(err, sqlerrors.PrimaryIndexSwapDetail)
 			}

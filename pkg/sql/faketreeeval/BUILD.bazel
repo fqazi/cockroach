@@ -7,7 +7,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/clusterversion",
-        "//pkg/jobs/jobspb",
         "//pkg/roachpb",
         "//pkg/security/username",
         "//pkg/sql/catalog/descpb",
@@ -15,6 +14,7 @@ go_library(
         "//pkg/sql/pgwire/pgerror",
         "//pkg/sql/pgwire/pgnotice",
         "//pkg/sql/privilege",
+        "//pkg/sql/roleoption",
         "//pkg/sql/sem/eval",
         "//pkg/sql/sem/tree",
         "//pkg/sql/sessiondata",
@@ -26,7 +26,6 @@ go_library(
         "//pkg/util/mon",
         "//pkg/util/rangedesc",
         "@com_github_cockroachdb_errors//:errors",
-        "@com_github_cockroachdb_redact//:redact",
         "@com_github_lib_pq//oid",
     ],
 )

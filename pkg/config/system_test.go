@@ -552,6 +552,7 @@ func TestGetZoneConfigForKey(t *testing.T) {
 		{roachpb.RKey(keys.SystemPrefix), keys.SystemRangesID},
 		{roachpb.RKey(keys.SystemPrefix.Next()), keys.SystemRangesID},
 		{roachpb.RKey(keys.NodeLivenessPrefix), keys.LivenessRangesID},
+		{roachpb.RKey(keys.LegacyDescIDGenerator), keys.SystemRangesID},
 		{roachpb.RKey(keys.NodeIDGenerator), keys.SystemRangesID},
 		{roachpb.RKey(keys.RangeIDGenerator), keys.SystemRangesID},
 		{roachpb.RKey(keys.StoreIDGenerator), keys.SystemRangesID},
@@ -612,7 +613,7 @@ func TestGetZoneConfigForKey(t *testing.T) {
 			objectID = id
 			return cfg.DefaultZoneConfig, nil, false, nil
 		}
-		_, _, err := cfg.GetSpanConfigForKey(ctx, tc.key)
+		_, err := cfg.GetSpanConfigForKey(ctx, tc.key)
 		if err != nil {
 			t.Errorf("#%d: GetSpanConfigForKey(%v) got error: %v", tcNum, tc.key, err)
 		}

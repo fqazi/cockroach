@@ -15,13 +15,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/featureflag"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/exprutil"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/exec"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
-	"github.com/cockroachdb/cockroach/pkg/sql/physicalplan"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -32,23 +30,20 @@ import (
 )
 
 type exportNode struct {
-	singleInputPlanNode
 	optColumnsSlot
-	exportPlanningInfo
-}
 
-type exportPlanningInfo struct {
+	source planNode
+
 	// destination represents the destination URI for the export,
 	// typically a directory
 	destination string
 	// fileNamePattern represents the file naming pattern for the
 	// export, typically to be appended to the destination URI
-	fileNamePattern     string
-	format              roachpb.IOFileFormat
-	chunkRows           int
-	chunkSize           int64
-	colNames            []string
-	finalizeLastStageCb func(*physicalplan.PhysicalPlan) // will be nil in the spec factory
+	fileNamePattern string
+	format          roachpb.IOFileFormat
+	chunkRows       int
+	chunkSize       int64
+	colNames        []string
 }
 
 func (e *exportNode) startExec(params runParams) error {
@@ -64,7 +59,7 @@ func (e *exportNode) Values() tree.Datums {
 }
 
 func (e *exportNode) Close(ctx context.Context) {
-	e.input.Close(ctx)
+	e.source.Close(ctx)
 }
 
 const (
@@ -110,31 +105,10 @@ func (ef *execFactory) ConstructExport(
 	options []exec.KVOption,
 	notNullCols exec.NodeColumnOrdinalSet,
 ) (exec.Node, error) {
-	planInfo, err := buildExportPlanningInfo(
-		ef.ctx, ef.planner, planColumns(input.(planNode)), fileName, fileSuffix, options, notNullCols,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &exportNode{
-		singleInputPlanNode: singleInputPlanNode{input.(planNode)},
-		exportPlanningInfo:  *planInfo,
-	}, nil
-}
-
-func buildExportPlanningInfo(
-	ctx context.Context,
-	planner *planner,
-	inputCols colinfo.ResultColumns,
-	fileName tree.TypedExpr,
-	fileSuffix string,
-	options []exec.KVOption,
-	notNullCols exec.NodeColumnOrdinalSet,
-) (*exportPlanningInfo, error) {
-	planner.BufferClientNotice(ctx, pgnotice.Newf("EXPORT is not the recommended way to move data out "+
+	ef.planner.BufferClientNotice(ef.ctx, pgnotice.Newf("EXPORT is not the recommended way to move data out "+
 		"of CockroachDB and may be deprecated in the future. Please consider exporting data with changefeeds instead: "+
 		"https://www.cockroachlabs.com/docs/stable/export-data-with-changefeeds"))
-	if !featureExportEnabled.Get(&planner.ExecCfg().Settings.SV) {
+	if !featureExportEnabled.Get(&ef.planner.ExecCfg().Settings.SV) {
 		return nil, pgerror.Newf(
 			pgcode.OperatorIntervention,
 			"feature EXPORT was disabled by the database administrator",
@@ -143,15 +117,15 @@ func buildExportPlanningInfo(
 	fileSuffix = strings.ToLower(fileSuffix)
 
 	if err := featureflag.CheckEnabled(
-		ctx,
-		planner.execCfg,
+		ef.ctx,
+		ef.planner.execCfg,
 		featureExportEnabled,
 		"EXPORT",
 	); err != nil {
 		return nil, err
 	}
 
-	if !planner.ExtendedEvalContext().TxnIsSingleStmt {
+	if !ef.planner.ExtendedEvalContext().TxnIsSingleStmt {
 		return nil, errors.Errorf("EXPORT cannot be used inside a multi-statement transaction")
 	}
 
@@ -159,7 +133,7 @@ func buildExportPlanningInfo(
 		return nil, errors.Errorf("unsupported export format: %q", fileSuffix)
 	}
 
-	destinationDatum, err := eval.Expr(ctx, planner.EvalContext(), fileName)
+	destinationDatum, err := eval.Expr(ef.ctx, ef.planner.EvalContext(), fileName)
 	if err != nil {
 		return nil, err
 	}
@@ -168,21 +142,21 @@ func buildExportPlanningInfo(
 	if !ok {
 		return nil, errors.Errorf("expected string value for the file location")
 	}
-	admin, err := planner.HasAdminRole(ctx)
+	admin, err := ef.planner.HasAdminRole(ef.ctx)
 	if err != nil {
 		panic(err)
 	}
 	// TODO(adityamaru): Ideally we'd use
-	// `sql.CheckDestinationPrivileges privileges here, but because of
+	// `cloudprivilege.CheckDestinationPrivileges privileges here, but because of
 	// a ciruclar dependancy with `pkg/sql` this is not possible. Consider moving
 	// this file into `pkg/sql/importer` to get around this.
-	hasExternalIOImplicitAccess := planner.CheckPrivilege(
-		ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.EXTERNALIOIMPLICITACCESS,
+	hasExternalIOImplicitAccess := ef.planner.CheckPrivilege(
+		ef.ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.EXTERNALIOIMPLICITACCESS,
 	) == nil
 	if !admin &&
-		!planner.ExecCfg().ExternalIODirConfig.EnableNonAdminImplicitAndArbitraryOutbound &&
+		!ef.planner.ExecCfg().ExternalIODirConfig.EnableNonAdminImplicitAndArbitraryOutbound &&
 		!hasExternalIOImplicitAccess {
-		conf, err := cloud.ExternalStorageConfFromURI(string(*destination), planner.User())
+		conf, err := cloud.ExternalStorageConfFromURI(string(*destination), ef.planner.User())
 		if err != nil {
 			return nil, err
 		}
@@ -193,19 +167,20 @@ func buildExportPlanningInfo(
 					"are allowed to access the specified %s URI", conf.Provider.String()))
 		}
 	}
-	exprEval := planner.ExprEvaluator("EXPORT")
+	exprEval := ef.planner.ExprEvaluator("EXPORT")
 	treeOptions := make(tree.KVOptions, len(options))
 	for i, o := range options {
 		treeOptions[i] = tree.KVOption{Key: tree.Name(o.Key), Value: o.Value}
 	}
-	optVals, err := exprEval.KVOptions(ctx, treeOptions, exportOptionExpectValues)
+	optVals, err := exprEval.KVOptions(ef.ctx, treeOptions, exportOptionExpectValues)
 	if err != nil {
 		return nil, err
 	}
 
-	colNames := make([]string, len(inputCols))
-	colNullability := make([]bool, len(inputCols))
-	for i, col := range inputCols {
+	cols := planColumns(input.(planNode))
+	colNames := make([]string, len(cols))
+	colNullability := make([]bool, len(cols))
+	for i, col := range cols {
 		colNames[i] = col.Name
 		colNullability[i] = !notNullCols.Contains(i)
 	}
@@ -271,10 +246,11 @@ func buildExportPlanningInfo(
 		format.Compression = codec
 	}
 
-	exportID := planner.stmt.QueryID.String()
+	exportID := ef.planner.stmt.QueryID.String()
 	exportFilePattern := exportFilePatternPart + "." + fileSuffix
 	namePattern := fmt.Sprintf("export%s-%s", exportID, exportFilePattern)
-	return &exportPlanningInfo{
+	return &exportNode{
+		source:          input.(planNode),
 		destination:     string(*destination),
 		fileNamePattern: namePattern,
 		format:          format,

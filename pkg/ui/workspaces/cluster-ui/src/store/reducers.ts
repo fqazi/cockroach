@@ -5,15 +5,10 @@
 
 import { createReducer } from "@reduxjs/toolkit";
 import { combineReducers, createStore } from "redux";
-
 import {
   ClusterLocksReqState,
   reducer as clusterLocks,
 } from "./clusterLocks/clusterLocks.reducer";
-import {
-  ClusterSettingsState,
-  reducer as clusterSettings,
-} from "./clusterSettings/clusterSettings.reducer";
 import {
   DatabasesListState,
   reducer as databasesList,
@@ -27,10 +22,6 @@ import {
   TxnInsightDetailsCachedState,
 } from "./insightDetails/transactionInsightDetails";
 import {
-  reducer as statementFingerprintInsights,
-  StatementFingerprintInsightsCachedState,
-} from "./insights/statementFingerprintInsights";
-import {
   reducer as stmtInsights,
   StmtInsightsState,
 } from "./insights/statementInsights";
@@ -40,14 +31,9 @@ import {
 } from "./insights/transactionInsights";
 import { JobDetailsReducerState, reducer as job } from "./jobDetails";
 import { JobsState, reducer as jobs } from "./jobs";
-import {
-  JobProfilerExecutionDetailFilesState,
-  reducer as executionDetailFiles,
-} from "./jobs/jobProfiler.reducer";
 import { LivenessState, reducer as liveness } from "./liveness";
 import { LocalStorageState, reducer as localStorage } from "./localStorage";
 import { NodesState, reducer as nodes } from "./nodes";
-import { rootActions } from "./rootActions";
 import {
   reducer as schemaInsights,
   SchemaInsightsState,
@@ -66,8 +52,31 @@ import {
   reducer as terminateQuery,
   TerminateQueryState,
 } from "./terminateQuery";
-import { reducer as txnStats, TxnStatsState } from "./transactionStats";
 import { reducer as uiConfig, UIConfigState } from "./uiConfig";
+import {
+  reducer as statementFingerprintInsights,
+  StatementFingerprintInsightsCachedState,
+} from "./insights/statementFingerprintInsights";
+import { reducer as txnStats, TxnStatsState } from "./transactionStats";
+import {
+  ClusterSettingsState,
+  reducer as clusterSettings,
+} from "./clusterSettings/clusterSettings.reducer";
+import {
+  KeyedDatabaseDetailsState,
+  KeyedDatabaseDetailsSpanStatsState,
+  databaseDetailsReducer,
+  databaseDetailsSpanStatsReducer,
+} from "./databaseDetails";
+import {
+  KeyedTableDetailsState,
+  reducer as tableDetails,
+} from "./databaseTableDetails/tableDetails.reducer";
+import {
+  JobProfilerExecutionDetailFilesState,
+  reducer as executionDetailFiles,
+} from "./jobs/jobProfiler.reducer";
+import { rootActions } from "./rootActions";
 
 export type AdminUiState = {
   statementDiagnostics: StatementDiagnosticsState;
@@ -86,6 +95,9 @@ export type AdminUiState = {
   executionDetailFiles: JobProfilerExecutionDetailFilesState;
   clusterLocks: ClusterLocksReqState;
   databasesList: DatabasesListState;
+  databaseDetails: KeyedDatabaseDetailsState;
+  databaseDetailsSpanStats: KeyedDatabaseDetailsSpanStatsState;
+  tableDetails: KeyedTableDetailsState;
   stmtInsights: StmtInsightsState;
   txnInsightDetails: TxnInsightDetailsCachedState;
   txnInsights: TxnInsightsState;
@@ -118,6 +130,9 @@ export const reducers = combineReducers<AdminUiState>({
   executionDetailFiles,
   clusterLocks,
   databasesList,
+  databaseDetails: databaseDetailsReducer.reducer,
+  databaseDetailsSpanStats: databaseDetailsSpanStatsReducer.reducer,
+  tableDetails,
   schemaInsights,
   statementFingerprintInsights,
   clusterSettings,

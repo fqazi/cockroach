@@ -8,7 +8,6 @@ package sql
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -41,7 +40,7 @@ func newDatabaseRegionChangeFinalizer(
 	p, cleanup := NewInternalPlanner(
 		"repartition-regional-by-row-tables",
 		txn.KV(),
-		username.NodeUserName(),
+		username.RootUserName(),
 		&MemoryMetrics{},
 		execCfg,
 		txn.SessionData(),
@@ -51,7 +50,7 @@ func newDatabaseRegionChangeFinalizer(
 
 	var regionalByRowTables []*tabledesc.Mutable
 	if err := func() error {
-		dbDesc, err := txn.Descriptors().ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Database(ctx, dbID)
+		dbDesc, err := txn.Descriptors().ByID(txn.KV()).WithoutNonPublic().Get().Database(ctx, dbID)
 		if err != nil {
 			return err
 		}
@@ -157,7 +156,7 @@ func (r *databaseRegionChangeFinalizer) updateGlobalTablesZoneConfig(
 
 	descsCol := r.localPlanner.Descriptors()
 
-	dbDesc, err := descsCol.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Database(ctx, r.dbID)
+	dbDesc, err := descsCol.ByID(txn.KV()).WithoutNonPublic().Get().Database(ctx, r.dbID)
 	if err != nil {
 		return err
 	}
@@ -213,16 +212,7 @@ func (r *databaseRegionChangeFinalizer) updateDatabaseZoneConfig(
 func (r *databaseRegionChangeFinalizer) repartitionRegionalByRowTables(
 	ctx context.Context, txn descs.Txn,
 ) (repartitioned []*tabledesc.Mutable, zoneConfigUpdates []*zoneConfigUpdate, _ error) {
-	var regionConfigOpts []multiregion.SynthesizeRegionConfigOption
-	// For regional by row tables these will be forced as survive zone on
-	// the system database, even if the system database is survive region
-	if r.dbID == keys.SystemDatabaseID {
-		regionConfigOpts = []multiregion.SynthesizeRegionConfigOption{
-			multiregion.SynthesizeRegionConfigOptionForceSurvivalZone,
-		}
-	}
-
-	regionConfig, err := SynthesizeRegionConfig(ctx, txn.KV(), r.dbID, r.localPlanner.Descriptors(), regionConfigOpts...)
+	regionConfig, err := SynthesizeRegionConfig(ctx, txn.KV(), r.dbID, r.localPlanner.Descriptors())
 	if err != nil {
 		return nil, nil, err
 	}

@@ -25,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/persistedsqlstats/sqlstatsutil"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/arith"
 	"github.com/cockroachdb/cockroach/pkg/util/bitarray"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
@@ -104,7 +103,7 @@ var aggregates = map[string]builtinDefinition{
 				volatility.Immutable,
 				true, /* calledOnNullInput */
 			)
-		}, true /* supportsArrayInput */),
+		}),
 	),
 
 	"array_cat_agg": setProps(tree.FunctionProperties{},
@@ -126,7 +125,7 @@ var aggregates = map[string]builtinDefinition{
 				volatility.Immutable,
 				true, /* calledOnNullInput */
 			)
-		}, false /* supportsArrayInput */),
+		}),
 	),
 
 	"avg": makeBuiltin(tree.FunctionProperties{},
@@ -254,14 +253,6 @@ var aggregates = map[string]builtinDefinition{
 		),
 	)),
 
-	"merge_aggregated_stmt_metadata": makeBuiltin(tree.FunctionProperties{
-		Undocumented: true,
-	},
-		makeAggOverload([]*types.T{types.Jsonb}, types.Jsonb, newAggregatedStmtMetadataAggregate,
-			"Merges the statistics data of appstatspb.AggregatedStatementMetadata.", volatility.Stable, true, /* calledOnNullInput */
-		),
-	),
-
 	"merge_stats_metadata": makeBuiltin(tree.FunctionProperties{
 		Undocumented: true,
 	},
@@ -347,7 +338,7 @@ var aggregates = map[string]builtinDefinition{
 	),
 
 	"count": makeBuiltin(tree.FunctionProperties{},
-		makeAggOverload([]*types.T{types.AnyElement}, types.Int, newCountAggregate,
+		makeAggOverload([]*types.T{types.Any}, types.Int, newCountAggregate,
 			"Calculates the number of selected elements.", volatility.Immutable, true /* calledOnNullInput */),
 	),
 
@@ -526,21 +517,21 @@ var aggregates = map[string]builtinDefinition{
 	),
 
 	"json_agg": makeBuiltin(tree.FunctionProperties{},
-		makeAggOverload([]*types.T{types.AnyElement}, types.Jsonb, newJSONAggregate,
+		makeAggOverload([]*types.T{types.Any}, types.Jsonb, newJSONAggregate,
 			"Aggregates values as a JSON or JSONB array.", volatility.Stable, true /* calledOnNullInput */),
 	),
 
 	"jsonb_agg": makeBuiltin(tree.FunctionProperties{},
-		makeAggOverload([]*types.T{types.AnyElement}, types.Jsonb, newJSONAggregate,
+		makeAggOverload([]*types.T{types.Any}, types.Jsonb, newJSONAggregate,
 			"Aggregates values as a JSON or JSONB array.", volatility.Stable, true /* calledOnNullInput */),
 	),
 
 	"json_object_agg": makeBuiltin(tree.FunctionProperties{},
-		makeAggOverload([]*types.T{types.String, types.AnyElement}, types.Jsonb, newJSONObjectAggregate,
+		makeAggOverload([]*types.T{types.String, types.Any}, types.Jsonb, newJSONObjectAggregate,
 			"Aggregates values as a JSON or JSONB object.", volatility.Stable, true /* calledOnNullInput */),
 	),
 	"jsonb_object_agg": makeBuiltin(tree.FunctionProperties{},
-		makeAggOverload([]*types.T{types.String, types.AnyElement}, types.Jsonb, newJSONObjectAggregate,
+		makeAggOverload([]*types.T{types.String, types.Any}, types.Jsonb, newJSONObjectAggregate,
 			"Aggregates values as a JSON or JSONB object.", volatility.Stable, true /* calledOnNullInput */),
 	),
 
@@ -591,7 +582,7 @@ var aggregates = map[string]builtinDefinition{
 
 	AnyNotNull: makePrivate(makeBuiltin(tree.FunctionProperties{},
 		makeImmutableAggOverloadWithReturnType(
-			[]*types.T{types.AnyElement},
+			[]*types.T{types.Any},
 			tree.IdentityReturnType(0),
 			newAnyNotNullAggregate,
 			"Returns an arbitrary not-NULL value, or NULL if none exists.",
@@ -747,15 +738,14 @@ func makeAggOverloadWithReturnType(
 			switch w := aggWindowFunc.(type) {
 			case *minAggregate:
 				min := &slidingWindowFunc{}
-				min.sw = makeSlidingWindow(evalCtx, func(ctx context.Context, evalCtx *eval.Context, a, b tree.Datum) (int, error) {
-					cmp, err := a.Compare(ctx, evalCtx, b)
-					return -cmp, err
+				min.sw = makeSlidingWindow(evalCtx, func(evalCtx *eval.Context, a, b tree.Datum) int {
+					return -a.Compare(evalCtx, b)
 				})
 				return min
 			case *maxAggregate:
 				max := &slidingWindowFunc{}
-				max.sw = makeSlidingWindow(evalCtx, func(ctx context.Context, evalCtx *eval.Context, a, b tree.Datum) (int, error) {
-					return a.Compare(ctx, evalCtx, b)
+				max.sw = makeSlidingWindow(evalCtx, func(evalCtx *eval.Context, a, b tree.Datum) int {
+					return a.Compare(evalCtx, b)
 				})
 				return max
 			case *intSumAggregate:
@@ -1384,9 +1374,8 @@ const sizeOfSTUnionAggregate = int64(unsafe.Sizeof(stUnionAgg{}))
 const sizeOfSTCollectAggregate = int64(unsafe.Sizeof(stCollectAgg{}))
 const sizeOfSTExtentAggregate = int64(unsafe.Sizeof(stExtentAgg{}))
 const sizeOfStatementStatistics = int64(unsafe.Sizeof(aggStatementStatistics{}))
-const sizeOfAggStatementMetadata = int64(unsafe.Sizeof(aggStatementMetadata{}))
+const sizeOfAggregatedStatementMetadata = int64(unsafe.Sizeof(aggStatementMetadata{}))
 const sizeOfTransactionStatistics = int64(unsafe.Sizeof(aggTransactionStatistics{}))
-const sizeOfAggregatedStmtMetadataAggregate = int64(unsafe.Sizeof(aggregatedStmtMetadataAggregate{}))
 
 // aggregateWithIntermediateResult is a common interface for aggregate functions
 // which can return a result without loss of precision. This is useful when an
@@ -1741,7 +1730,7 @@ func (a *aggStatementMetadata) Close(ctx context.Context) {
 
 // Size is part of the eval.AggregateFunc interface.
 func (a *aggStatementMetadata) Size() int64 {
-	return sizeOfAggStatementMetadata
+	return sizeOfAggregatedStatementMetadata
 }
 
 type aggTransactionStatistics struct {
@@ -1791,73 +1780,6 @@ func (a *aggTransactionStatistics) Close(ctx context.Context) {
 // Size is part of the eval.AggregateFunc interface.
 func (a *aggTransactionStatistics) Size() int64 {
 	return sizeOfTransactionStatistics
-}
-
-// Aggregate function for the appstatspb.AggregatedStatementMetadata type.
-// This aggregate function should mostly replace the use of
-// crdb_internal.merge_aggregated_stmt_metadata, which requires an array
-// argument and often required an additional array_agg on the column.
-type aggregatedStmtMetadataAggregate struct {
-	singleDatumAggregateBase
-	stats appstatspb.AggregatedStatementMetadata
-
-	// Scratch space for the Add method.
-	tmpStats appstatspb.AggregatedStatementMetadata
-}
-
-func newAggregatedStmtMetadataAggregate(
-	_ []*types.T, evalCtx *eval.Context, _ tree.Datums,
-) eval.AggregateFunc {
-	return &aggregatedStmtMetadataAggregate{
-		singleDatumAggregateBase: makeSingleDatumAggregateBase(evalCtx),
-		stats:                    appstatspb.AggregatedStatementMetadata{},
-	}
-}
-
-// Add the statistics and metadata to a single object.
-func (a *aggregatedStmtMetadataAggregate) Add(
-	ctx context.Context, datum tree.Datum, _ ...tree.Datum,
-) error {
-	if datum == nil || datum == tree.DNull {
-		return nil
-	}
-
-	// Rather than try to figure out how the size of a.stats object changes with
-	// each addition, we'll approximate its final memory usage as equal to the
-	// size of the last datum.
-	datumSize := int64(datum.Size())
-	if err := a.updateMemoryUsage(ctx, datumSize); err != nil {
-		return err
-	}
-
-	return mergeAggregatedMetadataHelper(&a.stats, &a.tmpStats, datum)
-}
-
-// Result returns a copy of the aggregated json object.
-func (a *aggregatedStmtMetadataAggregate) Result() (tree.Datum, error) {
-	aggregatedJSON, err := sqlstatsutil.BuildStmtDetailsMetadataJSON(&a.stats)
-	if err != nil {
-		return nil, err
-	}
-
-	return tree.NewDJSON(aggregatedJSON), nil
-}
-
-// Reset implements eval.AggregateFunc interface.
-func (a *aggregatedStmtMetadataAggregate) Reset(ctx context.Context) {
-	a.stats.Reset()
-	a.reset(ctx)
-}
-
-// Close allows the aggregate to release the memory it requested during
-// operation.
-func (a *aggregatedStmtMetadataAggregate) Close(ctx context.Context) {
-	a.close(ctx)
-}
-
-// Size is part of the eval.AggregateFunc interface.
-func (a *aggregatedStmtMetadataAggregate) Size() int64 {
-	return sizeOfAggregatedStmtMetadataAggregate
 }
 
 func mergeStatsMetadataHelper(
@@ -1931,60 +1853,6 @@ func mergeTransactionStatsHelper(
 	}
 
 	aggregatedStats.Add(&stats)
-	return nil
-}
-
-// mergeAggregatedMetadataHelper decodes the provided json datum into tmpMetadata.
-// It then aggregates the relevant fields from tmpMetadata into aggMetadata.
-// It is assumed that fields in tmpMetadata are cleared for use and that
-// the following fields are constant between // objects being aggregated:
-// QuerySummary, Query, ImplicitTxn, and StmtType.
-func mergeAggregatedMetadataHelper(
-	aggMetadata *appstatspb.AggregatedStatementMetadata,
-	tmpMetadata *appstatspb.AggregatedStatementMetadata,
-	datum tree.Datum,
-) error {
-	if datum == tree.DNull {
-		return nil
-	}
-
-	metadataJSON, ok := tree.AsDJSON(datum)
-	if !ok {
-		return nil
-	}
-
-	// Reset the tmpMetadata object to free memory and avoid potential
-	// issues with leftover data.
-	defer func() {
-		*tmpMetadata = appstatspb.AggregatedStatementMetadata{}
-	}()
-	var err error
-	if aggMetadata.Query == "" {
-		// Decode and set the constant info only if they haven't been set yet.
-		err = sqlstatsutil.DecodeAggregatedMetadataJSON(metadataJSON.JSON, tmpMetadata)
-		aggMetadata.ImplicitTxn = tmpMetadata.ImplicitTxn
-		aggMetadata.Query = tmpMetadata.Query
-		aggMetadata.QuerySummary = tmpMetadata.QuerySummary
-		aggMetadata.StmtType = tmpMetadata.StmtType
-	} else {
-		// Only decode the fields that are not constant.
-		err = sqlstatsutil.DecodeAggregatedMetadataAggregatedFieldsOnlyJSON(metadataJSON.JSON, tmpMetadata)
-	}
-	if err != nil {
-		return err
-	}
-
-	// Aggregate relevant stats. We don't need to set QuerySummary, Query,
-	// ImplicitTxn, and StmtType here because they are set above and are assumed
-	// to be constant between the objects being aggregated.
-	aggMetadata.Databases = util.CombineUnique(aggMetadata.Databases, tmpMetadata.Databases)
-	aggMetadata.AppNames = util.CombineUnique(aggMetadata.AppNames, tmpMetadata.AppNames)
-
-	aggMetadata.DistSQLCount += tmpMetadata.DistSQLCount
-	aggMetadata.FullScanCount += tmpMetadata.FullScanCount
-	aggMetadata.VecCount += tmpMetadata.VecCount
-	aggMetadata.TotalCount += tmpMetadata.TotalCount
-
 	return nil
 }
 
@@ -3633,7 +3501,7 @@ func (a *maxAggregate) Add(ctx context.Context, datum tree.Datum, _ ...tree.Datu
 		a.max = datum
 		return nil
 	}
-	c, err := a.max.Compare(ctx, a.evalCtx, datum)
+	c, err := a.max.CompareError(a.evalCtx, datum)
 	if err != nil {
 		return err
 	}
@@ -3706,7 +3574,7 @@ func (a *minAggregate) Add(ctx context.Context, datum tree.Datum, _ ...tree.Datu
 		a.min = datum
 		return nil
 	}
-	c, err := a.min.Compare(ctx, a.evalCtx, datum)
+	c, err := a.min.CompareError(a.evalCtx, datum)
 	if err != nil {
 		return err
 	}
@@ -5076,14 +4944,14 @@ func validateInputFractions(datum tree.Datum) ([]float64, bool, error) {
 		return nil
 	}
 
-	if t := datum.ResolvedType(); t.Family() == types.FloatFamily {
+	if datum.ResolvedType().Identical(types.Float) {
 		fraction := float64(tree.MustBeDFloat(datum))
 		singleInput = true
 		if err := validate(fraction); err != nil {
 			return nil, false, err
 		}
 		fractions = append(fractions, fraction)
-	} else if t.Family() == types.ArrayFamily && t.ArrayContents().Family() == types.FloatFamily {
+	} else if datum.ResolvedType().Equivalent(types.FloatArray) {
 		fractionsDatum := tree.MustBeDArray(datum)
 		for _, f := range fractionsDatum.Array {
 			fraction := float64(tree.MustBeDFloat(f))
@@ -5266,7 +5134,7 @@ func (a *percentileContAggregate) Result() (tree.Datum, error) {
 			ceilRowNumber := int(math.Ceil(rowNumber))
 			floorRowNumber := int(math.Floor(rowNumber))
 
-			if t := a.arr.ParamTyp; t.Family() == types.FloatFamily {
+			if a.arr.ParamTyp.Identical(types.Float) {
 				var target float64
 				if rowNumber == float64(ceilRowNumber) && rowNumber == float64(floorRowNumber) {
 					target = float64(tree.MustBeDFloat(a.arr.Array[int(rowNumber)-1]))
@@ -5279,7 +5147,7 @@ func (a *percentileContAggregate) Result() (tree.Datum, error) {
 				if err := res.Append(tree.NewDFloat(tree.DFloat(target))); err != nil {
 					return nil, err
 				}
-			} else if t.Family() == types.IntervalFamily {
+			} else if a.arr.ParamTyp.Family() == types.IntervalFamily {
 				var target *tree.DInterval
 				if rowNumber == float64(ceilRowNumber) && rowNumber == float64(floorRowNumber) {
 					target = tree.MustBeDInterval(a.arr.Array[int(rowNumber)-1])
@@ -5352,8 +5220,8 @@ func (a *jsonObjectAggregate) Add(
 
 	// If the key datum is NULL, return an error.
 	if datum == tree.DNull {
-		return pgerror.New(pgcode.NullValueNotAllowed,
-			"null value not allowed for object key")
+		return pgerror.New(pgcode.InvalidParameterValue,
+			"field name must not be null")
 	}
 
 	key, err := asJSONBuildObjectKey(

@@ -150,9 +150,7 @@ func (v *tableImplicitRecordType) NewBuilder() catalog.DescriptorBuilder {
 }
 
 // GetReferencedDescIDs implements the catalog.Descriptor interface.
-func (v *tableImplicitRecordType) GetReferencedDescIDs(
-	catalog.ValidationLevel,
-) (catalog.DescriptorIDSet, error) {
+func (v *tableImplicitRecordType) GetReferencedDescIDs() (catalog.DescriptorIDSet, error) {
 	return catalog.DescriptorIDSet{}, errors.AssertionFailedf(
 		"GetReferencedDescIDs are unsupported for implicit table record types")
 }
@@ -189,9 +187,6 @@ func (v *tableImplicitRecordType) ForEachUDTDependentForHydration(_ func(t *type
 	return nil
 }
 
-// MaybeRequiresTypeHydration implements the catalog.Descriptor interface.
-func (v *tableImplicitRecordType) MaybeRequiresTypeHydration() bool { return false }
-
 // TypeDesc implements the catalog.TypeDescriptor interface.
 func (v *tableImplicitRecordType) TypeDesc() *descpb.TypeDescriptor {
 	v.panicNotSupported("TypeDesc")
@@ -204,7 +199,7 @@ func (v *tableImplicitRecordType) AsTypesT() *types.T {
 	typs := make([]*types.T, len(cols))
 	names := make([]string, len(cols))
 	for i, col := range cols {
-		typs[i] = col.GetType().CopyForHydrate()
+		typs[i] = col.GetType()
 		names[i] = col.GetName()
 	}
 	// the catalog.TypeDescriptor will be an alias to this Tuple type, which contains
@@ -344,9 +339,4 @@ func (v *tableImplicitRecordType) AsTableImplicitRecordTypeDescriptor() catalog.
 // catalog.TableImplicitRecordTypeDescriptor interface.
 func (v *tableImplicitRecordType) UnderlyingTableDescriptor() catalog.TableDescriptor {
 	return v.desc
-}
-
-// GetReplicatedPCRVersion is a part of the catalog.Descriptor
-func (v *tableImplicitRecordType) GetReplicatedPCRVersion() descpb.DescriptorVersion {
-	return v.desc.GetReplicatedPCRVersion()
 }

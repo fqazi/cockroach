@@ -6,6 +6,8 @@
 package slstorage
 
 import (
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
+	"github.com/cockroachdb/cockroach/pkg/sql/enum"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
@@ -62,8 +64,26 @@ func MakeSessionID(region []byte, id uuid.UUID) (sqlliveness.SessionID, error) {
 // not be mutated.
 func UnsafeDecodeSessionID(session sqlliveness.SessionID) (region, id []byte, err error) {
 	b := session.UnsafeBytes()
-	if err = ValidateSessionID(sqlliveness.SessionID(b)); err != nil {
-		return nil, nil, err
+	if len(b) == legacyLen {
+		// TODO(jeffswenson): once the V23_1_SystemRbrCleanup version gate is
+		// deleted, replace this branch with a validation error.
+		_ = clusterversion.V23_1_SystemRbrCleanup
+
+		// Legacy format of SessionID. Treat the session as if it belongs to
+		// region enum.One. This may crop up briefly if a session was created
+		// with an old binary right before the server is upgraded and the
+		// upgrade is kicked off while the session is still 'live'.
+		return enum.One, b, nil
+	}
+	if len(b) < minimumNonLegacyLen {
+		// The smallest valid v1 session id is a [version, 1, single_byte_region, uuid...],
+		// which is three bytes larger than a uuid.
+		return nil, nil, errors.New("session id is too short")
+	}
+
+	// Decode the version.
+	if b[0] != sessionIDVersion {
+		return nil, nil, errors.Newf("invalid session id version: %d", b[0])
 	}
 	regionLen := int(b[1])
 	rest := b[2:]
@@ -74,36 +94,4 @@ func UnsafeDecodeSessionID(session sqlliveness.SessionID) (region, id []byte, er
 	}
 
 	return rest[:regionLen], rest[regionLen:], nil
-}
-
-// ValidateSessionID validates that the SessionID has the correct format.
-func ValidateSessionID(session sqlliveness.SessionID) error {
-	if len(session) == legacyLen {
-		return errors.Newf("unexpected legacy SessionID format")
-	}
-	if len(session) < minimumNonLegacyLen {
-		// The smallest valid v1 session id is a [version, 1, single_byte_region, uuid...],
-		// which is three bytes larger than a uuid.
-		return errors.New("session id is too short")
-	}
-	// Decode the version.
-	if session[0] != sessionIDVersion {
-		return errors.Newf("invalid session id version: %d", session[0])
-	}
-	return nil
-}
-
-// SafeDecodeSessionID decodes the region and id from the SessionID.
-func SafeDecodeSessionID(session sqlliveness.SessionID) (region, id string, err error) {
-	if err = ValidateSessionID(session); err != nil {
-		return "", "", err
-	}
-	regionLen := int(session[1])
-	rest := session[2:]
-	// Decode and validate the length of the region.
-	if len(rest) != regionLen+uuid.Size {
-		return "", "", errors.Newf("session id with length %d is the wrong size to include a region with length %d", len(session), regionLen)
-	}
-
-	return string(rest[:regionLen]), string(rest[regionLen:]), nil
 }

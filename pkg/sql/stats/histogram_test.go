@@ -6,7 +6,6 @@
 package stats
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"math/rand"
@@ -15,13 +14,11 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
-	"github.com/cockroachdb/cockroach/pkg/sql/rowenc/valueside"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 )
 
 type expBucket struct {
@@ -33,12 +30,11 @@ type expBucket struct {
 
 func TestEquiDepthHistogram(t *testing.T) {
 	testCases := []struct {
-		samples         []int64
-		numRows         int64
-		distinctCount   int64
-		maxBuckets      int
-		maxFractionMCVs float64
-		buckets         []expBucket
+		samples       []int64
+		numRows       int64
+		distinctCount int64
+		maxBuckets    int
+		buckets       []expBucket
 	}{
 		{
 			samples:       []int64{1, 2, 4, 5, 5, 9},
@@ -224,127 +220,9 @@ func TestEquiDepthHistogram(t *testing.T) {
 			maxBuckets:    2,
 			buckets:       []expBucket{},
 		},
-		{
-			samples: []int64{
-				1, 2, 2, 3, 4, 5, 6, 7, 8, 8, 9, 10,
-			},
-			numRows:       12,
-			distinctCount: 10,
-			maxBuckets:    3,
-			buckets: []expBucket{
-				{
-					// Bucket contains 1.
-					upper: 1, numEq: 1, numLess: 0, distinctLess: 0,
-				},
-				{
-					// Bucket contains 2, 2, 3, 4, 5.
-					upper: 5, numEq: 1, numLess: 4, distinctLess: 3,
-				},
-				{
-					// Bucket contains 6, 7, 8, 8, 9, 10.
-					upper: 10, numEq: 1, numLess: 5, distinctLess: 4,
-				},
-			},
-		},
-		{
-			// Same test as the previous one, but using 67% of buckets as MCVs. As a
-			// result, the bucket boundaries are shifted and we have an additional
-			// bucket output.
-			samples: []int64{
-				1, 2, 2, 3, 4, 5, 6, 7, 8, 8, 9, 10,
-			},
-			numRows:         12,
-			distinctCount:   10,
-			maxBuckets:      3,
-			maxFractionMCVs: 0.67,
-			buckets: []expBucket{
-				{
-					// Bucket contains 1.
-					upper: 1, numEq: 1, numLess: 0, distinctLess: 0,
-				},
-				{
-					// Bucket contains 2, 2.
-					upper: 2, numEq: 2, numLess: 0, distinctLess: 0,
-				},
-				{
-					// Bucket contains 3, 4, 5, 6, 7, 8, 8.
-					upper: 8, numEq: 2, numLess: 6, distinctLess: 5,
-				},
-				{
-					// Bucket contains 9, 10.
-					upper: 10, numEq: 1, numLess: 1, distinctLess: 1,
-				},
-			},
-		},
-		{
-			// With 5 buckets, no MCVs.
-			samples: []int64{
-				1, 2, 2, 3, 4, 5, 6, 7, 8, 8, 9, 10,
-			},
-			numRows:       12,
-			distinctCount: 10,
-			maxBuckets:    5,
-			buckets: []expBucket{
-				{
-					// Bucket contains 1.
-					upper: 1, numEq: 1, numLess: 0, distinctLess: 0,
-				},
-				{
-					// Bucket contains 2, 2.
-					upper: 2, numEq: 2, numLess: 0, distinctLess: 0,
-				},
-				{
-					// Bucket contains 3, 4, 5,
-					upper: 5, numEq: 1, numLess: 2, distinctLess: 2,
-				},
-				{
-					// Bucket contains 6, 7, 8, 8.
-					upper: 8, numEq: 2, numLess: 2, distinctLess: 2,
-				},
-				{
-					// Bucket contains 9, 10.
-					upper: 10, numEq: 1, numLess: 1, distinctLess: 1,
-				},
-			},
-		},
-		{
-			// When we add MCVs, the output doesn't change since the MCVs already
-			// align with bucket boundaries.
-			samples: []int64{
-				1, 2, 2, 3, 4, 5, 6, 7, 8, 8, 9, 10,
-			},
-			numRows:         12,
-			distinctCount:   10,
-			maxBuckets:      5,
-			maxFractionMCVs: 0.4,
-			buckets: []expBucket{
-				{
-					// Bucket contains 1.
-					upper: 1, numEq: 1, numLess: 0, distinctLess: 0,
-				},
-				{
-					// Bucket contains 2, 2.
-					upper: 2, numEq: 2, numLess: 0, distinctLess: 0,
-				},
-				{
-					// Bucket contains 3, 4, 5,
-					upper: 5, numEq: 1, numLess: 2, distinctLess: 2,
-				},
-				{
-					// Bucket contains 6, 7, 8, 8.
-					upper: 8, numEq: 2, numLess: 2, distinctLess: 2,
-				},
-				{
-					// Bucket contains 9, 10.
-					upper: 10, numEq: 1, numLess: 1, distinctLess: 1,
-				},
-			},
-		},
 	}
 
-	ctx := context.Background()
-	st := cluster.MakeTestingClusterSettings()
-	evalCtx := eval.NewTestingEvalContext(st)
+	evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
 
 	for i, tc := range testCases {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
@@ -357,10 +235,8 @@ func TestEquiDepthHistogram(t *testing.T) {
 				samples[i] = tree.NewDInt(tree.DInt(val))
 			}
 
-			MaxFractionHistogramMCVs.Override(ctx, &st.SV, tc.maxFractionMCVs)
-
 			h, _, err := EquiDepthHistogram(
-				ctx, evalCtx, types.Int, samples, tc.numRows, tc.distinctCount, tc.maxBuckets, st,
+				evalCtx, types.Int, samples, tc.numRows, tc.distinctCount, tc.maxBuckets,
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -372,8 +248,7 @@ func TestEquiDepthHistogram(t *testing.T) {
 	t.Run("invalid-numRows", func(t *testing.T) {
 		samples := tree.Datums{tree.NewDInt(1), tree.NewDInt(2), tree.NewDInt(3)}
 		_, _, err := EquiDepthHistogram(
-			ctx, evalCtx, types.Int, samples, 2, /* numRows */
-			2 /* distinctCount */, 10 /* maxBuckets */, st,
+			evalCtx, types.Int, samples, 2 /* numRows */, 2 /* distinctCount */, 10, /* maxBuckets */
 		)
 		if err == nil {
 			t.Fatal("expected error")
@@ -383,8 +258,7 @@ func TestEquiDepthHistogram(t *testing.T) {
 	t.Run("nulls", func(t *testing.T) {
 		samples := tree.Datums{tree.NewDInt(1), tree.NewDInt(2), tree.DNull}
 		_, _, err := EquiDepthHistogram(
-			ctx, evalCtx, types.Int, samples, 100, /* numRows */
-			3 /* distinctCount */, 10 /* maxBuckets */, st,
+			evalCtx, types.Int, samples, 100 /* numRows */, 3 /* distinctCount */, 10, /* maxBuckets */
 		)
 		if err == nil {
 			t.Fatal("expected error")
@@ -470,9 +344,7 @@ func TestConstructExtremesHistogram(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
-	st := cluster.MakeTestingClusterSettings()
-	evalCtx := eval.NewTestingEvalContext(st)
+	evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
 	for i, tc := range testCases {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 			samples := make(tree.Datums, len(tc.values))
@@ -483,10 +355,7 @@ func TestConstructExtremesHistogram(t *testing.T) {
 
 				samples[i] = tree.NewDInt(tree.DInt(val))
 			}
-			h, _, err := ConstructExtremesHistogram(
-				ctx, evalCtx, types.Int, samples, tc.numRows, tc.distinctCount,
-				tc.maxBuckets, tree.NewDInt(tree.DInt(tc.lowerBound)), st,
-			)
+			h, _, err := ConstructExtremesHistogram(evalCtx, types.Int, samples, tc.numRows, tc.distinctCount, tc.maxBuckets, tree.NewDInt(tree.DInt(tc.lowerBound)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -940,34 +809,8 @@ func TestAdjustCounts(t *testing.T) {
 				{NumRange: 0, NumEq: 100, DistinctRange: 0, UpperBound: d(-60)},
 			},
 		},
-		{ // Over-estimate of distinct count for bools when both values were
-			// already sampled.
-			h: []cat.HistogramBucket{
-				{NumRange: 0, NumEq: 1, DistinctRange: 0, UpperBound: tree.DBoolFalse},
-				{NumRange: 0, NumEq: 1, DistinctRange: 0, UpperBound: tree.DBoolTrue},
-			},
-			rowCount:      4,
-			distinctCount: 4,
-			expected: []cat.HistogramBucket{
-				{NumRange: 0, NumEq: 2, DistinctRange: 0, UpperBound: tree.DBoolFalse},
-				{NumRange: 0, NumEq: 2, DistinctRange: 0, UpperBound: tree.DBoolTrue},
-			},
-		},
-		{ // Over-estimate of distinct count for bools when only 'false' was
-			// already sampled (#142022).
-			h: []cat.HistogramBucket{
-				{NumRange: 0, NumEq: 1, DistinctRange: 0, UpperBound: tree.DBoolFalse},
-			},
-			rowCount:      4,
-			distinctCount: 4,
-			expected: []cat.HistogramBucket{
-				{NumRange: 0, NumEq: 2, DistinctRange: 0, UpperBound: tree.DBoolFalse},
-				{NumRange: 0, NumEq: 2, DistinctRange: 0, UpperBound: tree.DBoolTrue},
-			},
-		},
 	}
 
-	ctx := context.Background()
 	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
 
 	for i, tc := range testData {
@@ -978,7 +821,7 @@ func TestAdjustCounts(t *testing.T) {
 			if len(tc.h) > 0 {
 				colType = tc.h[0].UpperBound.ResolvedType()
 			}
-			actual.adjustCounts(ctx, &evalCtx, colType, tc.rowCount, tc.distinctCount)
+			actual.adjustCounts(&evalCtx, colType, tc.rowCount, tc.distinctCount)
 			roundHistogram(&actual)
 			if !reflect.DeepEqual(actual.buckets, tc.expected) {
 				t.Fatalf("expected %v but found %v", tc.expected, actual.buckets)
@@ -1030,7 +873,7 @@ func TestAdjustCounts(t *testing.T) {
 			distinctCount = max(distinctCount, len(h.buckets))
 
 			// Adjust the counts in the histogram to match the provided counts.
-			h.adjustCounts(ctx, &evalCtx, colType, float64(rowCount), float64(distinctCount))
+			h.adjustCounts(&evalCtx, colType, float64(rowCount), float64(distinctCount))
 
 			// Check that the resulting histogram is valid.
 			if h.buckets[0].NumRange > 0 || h.buckets[0].DistinctRange > 0 {
@@ -1040,7 +883,7 @@ func TestAdjustCounts(t *testing.T) {
 			for i := 1; i < len(h.buckets); i++ {
 				lowerBound := h.buckets[i-1].UpperBound
 				upperBound := h.buckets[i].UpperBound
-				maxDistRange, countable := maxDistinctRange(ctx, &evalCtx, lowerBound, upperBound)
+				maxDistRange, countable := maxDistinctRange(&evalCtx, lowerBound, upperBound)
 				if countable && math.Round(h.buckets[i].DistinctRange) > math.Round(maxDistRange) {
 					t.Errorf(
 						"distinct range in bucket exceeds maximum (%f). found %f",
@@ -1069,79 +912,6 @@ func TestAdjustCounts(t *testing.T) {
 			}
 		}
 	})
-}
-
-func TestGetMCVs(t *testing.T) {
-	testCases := []struct {
-		samples  []int64
-		maxMCVs  int
-		expected []int
-	}{
-		{
-			samples:  []int64{1, 1, 2, 4, 5, 5, 9, 9},
-			maxMCVs:  2,
-			expected: []int{1, 7},
-		},
-		{
-			// Only one value is common.
-			samples:  []int64{1, 2, 4, 5, 5, 9},
-			maxMCVs:  2,
-			expected: []int{4},
-		},
-		{
-			// No value is more common than any other.
-			samples:  []int64{1, 2, 4, 5, 9},
-			maxMCVs:  2,
-			expected: []int{},
-		},
-		{
-			samples:  []int64{1, 1, 2, 4, 5, 5, 5, 9, 9},
-			maxMCVs:  2,
-			expected: []int{6, 8},
-		},
-		{
-			samples:  []int64{1, 1, 2, 4, 5, 5, 9, 9, 9},
-			maxMCVs:  1,
-			expected: []int{8},
-		},
-		{
-			samples:  []int64{1, 1, 1, 2, 4, 5, 5, 9, 9},
-			maxMCVs:  1,
-			expected: []int{2},
-		},
-		{
-			// Only 3 values are common.
-			samples:  []int64{1, 1, 2, 4, 5, 5, 9, 9, 9},
-			maxMCVs:  4,
-			expected: []int{1, 5, 8},
-		},
-		{
-			samples:  []int64{1, 2, 3, 3},
-			maxMCVs:  0,
-			expected: []int{},
-		},
-	}
-
-	ctx := context.Background()
-	st := cluster.MakeTestingClusterSettings()
-	evalCtx := eval.NewTestingEvalContext(st)
-
-	for i, tc := range testCases {
-		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
-			samples := make(tree.Datums, len(tc.samples))
-			for i := range samples {
-				samples[i] = tree.NewDInt(tree.DInt(tc.samples[i]))
-			}
-
-			mcvs, err := getMCVs(ctx, evalCtx, samples, tc.maxMCVs)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(mcvs, tc.expected) {
-				t.Errorf("actual mcvs (%v) != expected mcvs (%v)", mcvs, tc.expected)
-			}
-		})
-	}
 }
 
 func makeEnums(t *testing.T) tree.Datums {
@@ -1213,9 +983,16 @@ func roundHistogram(h *histogram) {
 	}
 }
 
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func validateHistogramBuckets(t *testing.T, expected []expBucket, h HistogramData) {
-	if h.Version != HistVersion {
-		t.Errorf("Invalid histogram version %d expected %d", h.Version, HistVersion)
+	if h.Version != histVersion {
+		t.Errorf("Invalid histogram version %d expected %d", h.Version, histVersion)
 	}
 	if (h.Buckets == nil) != (expected == nil) {
 		t.Fatalf("Invalid bucket == nil: %v, expected %v", h.Buckets == nil, expected == nil)
@@ -1223,15 +1000,14 @@ func validateHistogramBuckets(t *testing.T, expected []expBucket, h HistogramDat
 	if len(h.Buckets) != len(expected) {
 		t.Fatalf("Invalid number of buckets %d, expected %d", len(h.Buckets), len(expected))
 	}
-	var a tree.DatumAlloc
 	for i, b := range h.Buckets {
-		val, _, err := valueside.Decode(&a, types.Int, b.UpperBound)
+		_, val, err := encoding.DecodeVarintAscending(b.UpperBound)
 		if err != nil {
 			t.Fatal(err)
 		}
 		exp := expected[i]
-		if int64(*val.(*tree.DInt)) != int64(exp.upper) {
-			t.Errorf("bucket %d: incorrect boundary %d, expected %d", i, *val.(*tree.DInt), exp.upper)
+		if val != int64(exp.upper) {
+			t.Errorf("bucket %d: incorrect boundary %d, expected %d", i, val, exp.upper)
 		}
 		if b.NumEq != exp.numEq {
 			t.Errorf("bucket %d: incorrect EqRows %d, expected %d", i, b.NumEq, exp.numEq)
@@ -1243,47 +1019,6 @@ func validateHistogramBuckets(t *testing.T, expected []expBucket, h HistogramDat
 		distinctRange := math.Round(b.DistinctRange*100.0) / 100.0
 		if distinctRange != exp.distinctLess {
 			t.Errorf("bucket %d: incorrect DistinctRows %f, expected %f", i, distinctRange, exp.distinctLess)
-		}
-	}
-}
-
-// TestUpperBoundsRoundTrip sanity checks that upper bound datums of any type
-// can be encoded and decoded correctly.
-func TestUpperBoundsRoundTrip(t *testing.T) {
-	const numBuckets = 200
-	rng, _ := randutil.NewTestRand()
-	st := cluster.MakeTestingClusterSettings()
-	// Pick a random type and some random datums of that type.
-	typ := RandType(rng)
-	upperBounds := make([]tree.Datum, numBuckets)
-	for i := range upperBounds {
-		upperBounds[i] = RandDatum(rng, typ, false /* nullOk */)
-	}
-	// Create an incomplete histogram that uses those datums as the upper bounds
-	// of the buckets.
-	var h histogram
-	h.buckets = make([]cat.HistogramBucket, numBuckets)
-	for i := 0; i < numBuckets; i++ {
-		h.buckets[i].UpperBound = upperBounds[i]
-	}
-	hd, err := h.toHistogramData(context.Background(), typ, st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Now decode the histogram buckets and ensure that decoded datums match the
-	// original ones.
-	var stat TableStatistic
-	stat.HistogramData = &hd
-	if err = DecodeHistogramBuckets(&stat); err != nil {
-		t.Fatal(err)
-	}
-	evalCtx := eval.MakeTestingEvalContext(st)
-	for i, expected := range upperBounds {
-		decoded := stat.Histogram[i].UpperBound
-		if cmp, err := expected.Compare(context.Background(), &evalCtx, decoded); err != nil {
-			t.Fatal(err)
-		} else if cmp != 0 {
-			t.Errorf("type %s: expected %s, decoded %s", typ.SQLString(), expected, decoded)
 		}
 	}
 }

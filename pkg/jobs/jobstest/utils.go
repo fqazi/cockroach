@@ -143,7 +143,7 @@ func GetJobsTableSchema(env scheduledjobs.JobSchedulerEnv) string {
 var DummyClusterID = uuid.UUID{1}
 
 // DummyClusterVersion is used while instantiating dummy schedules
-var DummyClusterVersion = clusterversion.ClusterVersion{Version: clusterversion.Latest.Version()}
+var DummyClusterVersion = clusterversion.ClusterVersion{Version: clusterversion.TestingBinaryVersion}
 
 // AddDummyScheduleDetails augments passed in details with a dummy clusterID and CreationClusterVersion.
 func AddDummyScheduleDetails(details jobspb.ScheduleDetails) jobspb.ScheduleDetails {

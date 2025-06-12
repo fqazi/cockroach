@@ -15,9 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/errors"
 )
 
 func init() {
@@ -54,43 +52,25 @@ func ConditionalPut(
 		ts = h.Timestamp
 	}
 
-	if err := args.Validate(); err != nil {
-		return result.Result{}, err
-	}
+	handleMissing := storage.CPutMissingBehavior(args.AllowIfDoesNotExist)
 
-	originTimestampForValueHeader := h.WriteOptions.GetOriginTimestamp()
-	if args.OriginTimestamp.IsSet() {
-		originTimestampForValueHeader = args.OriginTimestamp
-		if h.WriteOptions.GetOriginTimestamp().IsSet() && args.OriginTimestamp != h.WriteOptions.GetOriginTimestamp() {
-			return result.Result{}, errors.AssertionFailedf("OriginTimestamp passed via CPut arg must match the origin timestamp in the request header")
-		}
-	}
-
-	opts := storage.ConditionalPutWriteOptions{
-		MVCCWriteOptions: storage.MVCCWriteOptions{
-			Txn:                            h.Txn,
-			LocalTimestamp:                 cArgs.Now,
-			Stats:                          cArgs.Stats,
-			ReplayWriteTimestampProtection: h.AmbiguousReplayProtection,
-			OmitInRangefeeds:               cArgs.OmitInRangefeeds,
-			OriginID:                       h.WriteOptions.GetOriginID(),
-			OriginTimestamp:                originTimestampForValueHeader,
-			MaxLockConflicts:               storage.MaxConflictsPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV),
-			TargetLockConflictBytes:        storage.TargetBytesPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV),
-			Category:                       fs.BatchEvalReadCategory,
-		},
-		AllowIfDoesNotExist: storage.CPutMissingBehavior(args.AllowIfDoesNotExist),
-		OriginTimestamp:     args.OriginTimestamp,
+	opts := storage.MVCCWriteOptions{
+		Txn:                            h.Txn,
+		LocalTimestamp:                 cArgs.Now,
+		Stats:                          cArgs.Stats,
+		ReplayWriteTimestampProtection: h.AmbiguousReplayProtection,
+		OmitInRangefeeds:               cArgs.OmitInRangefeeds,
+		MaxLockConflicts:               storage.MaxConflictsPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV),
 	}
 
 	var err error
 	var acq roachpb.LockAcquisition
 	if args.Blind {
 		acq, err = storage.MVCCBlindConditionalPut(
-			ctx, readWriter, args.Key, ts, args.Value, args.ExpBytes, opts)
+			ctx, readWriter, args.Key, ts, args.Value, args.ExpBytes, handleMissing, opts)
 	} else {
 		acq, err = storage.MVCCConditionalPut(
-			ctx, readWriter, args.Key, ts, args.Value, args.ExpBytes, opts)
+			ctx, readWriter, args.Key, ts, args.Value, args.ExpBytes, handleMissing, opts)
 	}
 	if err != nil {
 		return result.Result{}, err

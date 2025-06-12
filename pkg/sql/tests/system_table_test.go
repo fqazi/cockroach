@@ -48,10 +48,10 @@ func TestInitialKeys(t *testing.T) {
 		var nonDescKeys int
 		if systemTenant {
 			codec = keys.SystemSQLCodec
-			nonDescKeys = 17
+			nonDescKeys = 16
 		} else {
 			codec = keys.MakeSQLCodec(roachpb.MustMakeTenantID(5))
-			nonDescKeys = 8
+			nonDescKeys = 4
 		}
 
 		ms := bootstrap.MakeMetadataSchema(codec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef())
@@ -189,9 +189,13 @@ func TestSystemTableLiterals(t *testing.T) {
 		}
 	}
 
-	require.Equal(t, bootstrap.NumSystemTablesForSystemTenant, len(testcases))
+	// Add one for the system.span_count table, which is currently the only
+	// non-system tenant table.
+	const expectedNumberOfSystemTables = bootstrap.NumSystemTablesForSystemTenant + 1
+	require.Equal(t, expectedNumberOfSystemTables, len(testcases))
 
 	runTest := func(t *testing.T, name string, test testcase) {
+		t.Helper()
 		privs := *test.pkg.GetPrivileges()
 		desc := test.pkg
 		// Allocate an ID to dynamically allocated system tables.
@@ -230,8 +234,8 @@ func TestSystemTableLiterals(t *testing.T) {
 			gen.TableDescriptor.PrimaryIndex.ID = 2
 			gen.TableDescriptor.NextIndexID = 3
 		case keys.LeaseTableID:
-			gen.TableDescriptor.PrimaryIndex.ID = 3
-			gen.TableDescriptor.NextIndexID = 4
+			gen.TableDescriptor.PrimaryIndex.ID = 2
+			gen.TableDescriptor.NextIndexID = 3
 		}
 
 		if desc.TableDesc().Equal(gen.TableDesc()) {

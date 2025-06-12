@@ -20,7 +20,7 @@ import (
 )
 
 func TestTryJoinJsonOrArrayIndex(t *testing.T) {
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.NewTestingEvalContext(st)
 
@@ -214,7 +214,7 @@ func TestTryJoinJsonOrArrayIndex(t *testing.T) {
 }
 
 func TestTryFilterJsonOrArrayIndex(t *testing.T) {
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.NewTestingEvalContext(st)
 
@@ -420,7 +420,7 @@ func TestTryFilterJsonOrArrayIndex(t *testing.T) {
 			indexOrd:         jsonOrd,
 			ok:               true,
 			tight:            false,
-			unique:           true,
+			unique:           false,
 			remainingFilters: "j @> '[[1, 2]]' OR j @> '[3, 4]'",
 		},
 		{
@@ -430,7 +430,7 @@ func TestTryFilterJsonOrArrayIndex(t *testing.T) {
 			indexOrd:         jsonOrd,
 			ok:               true,
 			tight:            false,
-			unique:           true,
+			unique:           false,
 			remainingFilters: "j @> '[1, 2]' OR j @> '[[3, 4]]'",
 		},
 		{
@@ -440,7 +440,7 @@ func TestTryFilterJsonOrArrayIndex(t *testing.T) {
 			indexOrd: jsonOrd,
 			ok:       true,
 			tight:    true,
-			unique:   true,
+			unique:   false,
 		},
 		{
 			// With AND conditions the remaining filters may be a subset of the
@@ -990,7 +990,7 @@ func TestTryFilterJsonOrArrayIndex(t *testing.T) {
 			indexOrd:         jsonOrd,
 			ok:               true,
 			tight:            false,
-			unique:           true,
+			unique:           false,
 			remainingFilters: `j->'a' IN ('[1,2,3]', '[1]')`,
 		},
 		{
@@ -1031,7 +1031,7 @@ func TestTryFilterJsonOrArrayIndex(t *testing.T) {
 			indexOrd:         jsonOrd,
 			ok:               true,
 			tight:            false,
-			unique:           true,
+			unique:           false,
 			remainingFilters: `j->'a'->0 IN ('[1,2,3]', '[1]')`,
 		},
 		{
@@ -1104,7 +1104,7 @@ func TestTryFilterJsonOrArrayIndex(t *testing.T) {
 			indexOrd:         jsonOrd,
 			ok:               true,
 			tight:            false,
-			unique:           true,
+			unique:           false,
 			remainingFilters: `j = '{"a": "b"}' OR j = '[1, 2, 3]'`,
 		},
 		{
@@ -1151,7 +1151,7 @@ func TestTryFilterJsonOrArrayIndex(t *testing.T) {
 			indexOrd:         jsonOrd,
 			ok:               true,
 			tight:            false,
-			unique:           true,
+			unique:           false,
 			remainingFilters: `j IN ('[1, 2, 3]', '{"a": "b"}')`,
 		},
 		{

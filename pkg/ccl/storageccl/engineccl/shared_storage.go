@@ -36,42 +36,33 @@ func configureForSharedStorage(opts *pebble.Options, remoteStorage remote.Storag
 // over a range's user key span; IterateReplicaKeySpans must be called to
 // iterate over the other key spans.
 //
-// If this method returns pebble.ErrInvalidSkipSharedIteration, only the
-// shared external visitors may have been invoked. In particular, no
-// local data has been visited yet.
-// The above contract appears true for the current implementation of this
-// method, but is likely untested.
-//
 // Must use a reader with consistent iterators.
 func iterateReplicaKeySpansShared(
 	ctx context.Context,
 	desc *roachpb.RangeDescriptor,
 	st *cluster.Settings,
-	_ uuid.UUID,
+	clusterID uuid.UUID,
 	reader storage.Reader,
 	visitPoint func(key *pebble.InternalKey, val pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start, end []byte, seqNum pebble.SeqNum) error,
+	visitRangeDel func(start, end []byte, seqNum uint64) error,
 	visitRangeKey func(start, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
-	visitExternalFile func(sst *pebble.ExternalFile) error,
 ) error {
 	if !reader.ConsistentIterators() {
 		panic("reader must provide consistent iterators")
 	}
-	if err := utilccl.CheckEnterpriseEnabled(st, "disaggregated shared storage"); err != nil {
+	if err := utilccl.CheckEnterpriseEnabled(st, clusterID, "disaggregated shared storage"); err != nil {
 		// NB: ScanInternal returns ErrInvalidSkipSharedIteration if we can't do
 		// a skip-shared iteration. Return the same error here so the caller can
 		// fall back to regular, non-shared snapshots.
 		return pebble.ErrInvalidSkipSharedIteration
 	}
 	spans := rditer.Select(desc.RangeID, rditer.SelectOpts{
-		Ranged: rditer.SelectRangedOptions{
-			RSpan:    desc.RSpan(),
-			UserKeys: true,
-		},
+		ReplicatedSpansFilter: rditer.ReplicatedSpansUserOnly,
+		ReplicatedBySpan:      desc.RSpan(),
 	})
 	span := spans[0]
-	return reader.ScanInternal(ctx, span.Key, span.EndKey, visitPoint, visitRangeDel, visitRangeKey, visitSharedFile, visitExternalFile)
+	return reader.ScanInternal(ctx, span.Key, span.EndKey, visitPoint, visitRangeDel, visitRangeKey, visitSharedFile)
 }
 
 func init() {

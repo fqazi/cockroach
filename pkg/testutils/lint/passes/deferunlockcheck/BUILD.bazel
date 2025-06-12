@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/testutils/lint/passes/deferunlockcheck",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/testutils/lint/passes/loopvarcapture",
         "//pkg/testutils/lint/passes/passesutil",
         "@org_golang_x_tools//go/analysis",
         "@org_golang_x_tools//go/analysis/passes/inspect",
@@ -17,6 +18,7 @@ go_library(
 go_test(
     name = "deferunlockcheck_test",
     srcs = ["deferunlockcheck_test.go"],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]) + [
         "@go_sdk//:files",
     ],

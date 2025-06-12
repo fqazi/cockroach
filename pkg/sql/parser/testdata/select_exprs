@@ -1,12 +1,4 @@
 parse
-SELECT
-----
-SELECT  -- normalized!
-SELECT  -- fully parenthesized
-SELECT  -- literals removed
-SELECT  -- identifiers removed
-
-parse
 SELECT 1 + 1
 ----
 SELECT 1 + 1
@@ -85,6 +77,7 @@ lexical error: invalid floating point literal
 DETAIL: source SQL:
 SELECT 1e-\n-1
        ^
+HINT: try \h SELECT
 
 parse
 SELECT *,-/* comment */-5
@@ -112,7 +105,7 @@ SELECT _ - _ -- literals removed
 SELECT -0. - -1 -- identifiers removed
 
 parse
-SELECT~+~+~++~bd(*)
+SELECT~~+~++~bd(*)
 ----
 SELECT ~(~(~(~bd(*)))) -- normalized!
 SELECT (~((~((~((~(bd((*)))))))))) -- fully parenthesized
@@ -658,6 +651,7 @@ at or near "5": syntax error
 DETAIL: source SQL:
 SELECT 1 ||/ 5
              ^
+HINT: try \h SELECT
 
 
 parse
@@ -1412,6 +1406,7 @@ lexical error: invalid hexadecimal numeric literal
 DETAIL: source SQL:
 SELECT 0x FROM t
        ^
+HINT: try \h SELECT
 
 error
 SELECT x'fail' FROM t
@@ -1420,6 +1415,7 @@ lexical error: invalid hexadecimal bytes literal
 DETAIL: source SQL:
 SELECT x'fail' FROM t
        ^
+HINT: try \h SELECT
 
 error
 SELECT x'AAB' FROM t
@@ -1428,6 +1424,7 @@ lexical error: invalid hexadecimal bytes literal
 DETAIL: source SQL:
 SELECT x'AAB' FROM t
        ^
+HINT: try \h SELECT
 
 parse
 SELECT CAST(1 AS STRING)
@@ -1867,6 +1864,7 @@ lexical error: unterminated string
 DETAIL: source SQL:
 SELECT '1
        ^
+HINT: try \h SELECT
 
 error
 SELECT family FROM test
@@ -1875,30 +1873,16 @@ at or near "from": syntax error
 DETAIL: source SQL:
 SELECT family FROM test
               ^
-
-parse
-SELECT FROM t
-----
-SELECT  FROM t -- normalized!
-SELECT  FROM t -- fully parenthesized
-SELECT  FROM t -- literals removed
-SELECT  FROM _ -- identifiers removed
-
-parse
-SELECT ALL FROM t
-----
-SELECT  FROM t -- normalized!
-SELECT  FROM t -- fully parenthesized
-SELECT  FROM t -- literals removed
-SELECT  FROM _ -- identifiers removed
+HINT: try \h SELECT
 
 error
-SELECT DISTINCT FROM test
+SELECT FROM t
 ----
 at or near "from": syntax error
 DETAIL: source SQL:
-SELECT DISTINCT FROM test
-                ^
+SELECT FROM t
+       ^
+HINT: try \h SELECT
 
 error
 SELECT $0
@@ -1907,6 +1891,7 @@ lexical error: placeholder index must be between 1 and 65536
 DETAIL: source SQL:
 SELECT $0
        ^
+HINT: try \h SELECT
 
 error
 SELECT $-1
@@ -1915,6 +1900,7 @@ at or near "$": syntax error
 DETAIL: source SQL:
 SELECT $-1
        ^
+HINT: try \h SELECT
 
 error
 SELECT $123456789
@@ -1923,6 +1909,7 @@ lexical error: placeholder index must be between 1 and 65536
 DETAIL: source SQL:
 SELECT $123456789
        ^
+HINT: try \h SELECT
 
 error
 SELECT (0) FROM y[array[]]
@@ -1955,30 +1942,6 @@ at or near "EOF": syntax error: type void[] does not exist
 DETAIL: source SQL:
 SELECT ''::void[]
                  ^
-
-parse
-SELECT ''::trigger
-----
-SELECT ''::TRIGGER -- normalized!
-SELECT (('')::TRIGGER) -- fully parenthesized
-SELECT '_'::TRIGGER -- literals removed
-SELECT ''::TRIGGER -- identifiers removed
-
-parse
-SELECT '':::trigger
-----
-SELECT '':::TRIGGER -- normalized!
-SELECT ((''):::TRIGGER) -- fully parenthesized
-SELECT '_':::TRIGGER -- literals removed
-SELECT '':::TRIGGER -- identifiers removed
-
-error
-SELECT ''::trigger[]
-----
-at or near "EOF": syntax error: type trigger[] does not exist
-DETAIL: source SQL:
-SELECT ''::trigger[]
-                    ^
 
 parse
 SELECT overlaps(
@@ -2074,6 +2037,7 @@ DATE '2000-03-03')
 OVERLAPS
 (DATE '2000-01-03')
                   ^
+HINT: try \h SELECT
 
 parse
 SELECT NOT ('a' ~ ANY (ARRAY['x']:::STRING[]))
@@ -2098,51 +2062,3 @@ SELECT my_func('a', 1, true)
 SELECT (my_func(('a'), (1), (true))) -- fully parenthesized
 SELECT my_func('_', _, _) -- literals removed
 SELECT _('a', 1, true) -- identifiers removed
-
-parse
-SELECT "[1,2]" <-> "[3,4]"
-----
-SELECT "[1,2]" <-> "[3,4]"
-SELECT (("[1,2]") <-> ("[3,4]")) -- fully parenthesized
-SELECT "[1,2]" <-> "[3,4]" -- literals removed
-SELECT _ <-> _ -- identifiers removed
-
-parse
-SELECT "[2,2]" <=> "[3,4]"
-----
-SELECT "[2,2]" <=> "[3,4]"
-SELECT (("[2,2]") <=> ("[3,4]")) -- fully parenthesized
-SELECT "[2,2]" <=> "[3,4]" -- literals removed
-SELECT _ <=> _ -- identifiers removed
-
-parse
-SELECT "[2,2]" <#> "[3,4]"
-----
-SELECT "[2,2]" <#> "[3,4]"
-SELECT (("[2,2]") <#> ("[3,4]")) -- fully parenthesized
-SELECT "[2,2]" <#> "[3,4]" -- literals removed
-SELECT _ <#> _ -- identifiers removed
-
-error
-SELECT "[2,2]" <# "[3,4]"
-----
-at or near "#": syntax error
-DETAIL: source SQL:
-SELECT "[2,2]" <# "[3,4]"
-                ^
-
-parse
-SELECT "[2,2]" <- "[3,4]"
-----
-SELECT "[2,2]" < (-"[3,4]") -- normalized!
-SELECT (("[2,2]") < ((-("[3,4]")))) -- fully parenthesized
-SELECT "[2,2]" < (-"[3,4]") -- literals removed
-SELECT _ < (-_) -- identifiers removed
-
-parse
-SELECT '$'::JSONPATH;
-----
-SELECT '$'::JSONPATH -- normalized!
-SELECT (('$')::JSONPATH) -- fully parenthesized
-SELECT '_'::JSONPATH -- literals removed
-SELECT '$'::JSONPATH -- identifiers removed

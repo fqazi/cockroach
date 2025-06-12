@@ -31,7 +31,6 @@ const commitOnReleaseSavepointName = "cockroach_restart"
 func (ex *connExecutor) execSavepointInOpenState(
 	ctx context.Context, s *tree.Savepoint, res RestrictedCommandResult,
 ) (fsm.Event, fsm.EventPayload, error) {
-	ex.state.mu.hasSavepoints = true
 	savepoints := &ex.extraTxnState.savepoints
 	// Sanity check for "SAVEPOINT cockroach_restart".
 	commitOnRelease := ex.isCommitOnReleaseSavepoint(s.Name)
@@ -182,12 +181,6 @@ func (ex *connExecutor) execRelease(
 		return ev, payload
 	}
 
-	if len(ex.extraTxnState.savepoints) == 0 {
-		// NB: Only RELEASE SAVEPOINT can clear the entire savepoint stack. ROLLBACK
-		// TO SAVEPOINT will always leave at least one savepoint.
-		ex.state.mu.hasSavepoints = false
-	}
-
 	return nil, nil
 }
 
@@ -219,7 +212,6 @@ func (ex *connExecutor) execRollbackToSavepointInOpenState(
 	if entry.kvToken.Initial() {
 		return eventTxnRestart{}, nil
 	}
-
 	// No event is necessary; there's nothing for the state machine to do.
 	return nil, nil
 }

@@ -12,7 +12,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/security/password"
@@ -28,10 +28,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/srverrors"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/settings/rulebasedscanner"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire"
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/hba"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
@@ -111,6 +109,7 @@ var WebSessionTimeout = settings.RegisterDurationSetting(
 	"server.web_session_timeout",
 	"the duration that a newly created web session will be valid",
 	7*24*time.Hour,
+	settings.NonNegativeDuration,
 	settings.WithName("server.web_session.timeout"),
 	settings.WithPublic)
 
@@ -145,15 +144,6 @@ func (s *authenticationServer) RegisterGateway(
 	return serverpb.RegisterLogOutHandler(ctx, mux, conn)
 }
 
-// ldapManager is a duplicate of singleton global pgwire object which gets
-// initialized from UserLogin method whenever an LDAP auth attempt happens. It
-// depends on ldapccl module to be imported properly to override its default
-// ConfigureLDAPAuth constructor.
-var ldapManager = struct {
-	sync.Once
-	m pgwire.LDAPManager
-}{}
-
 // UserLogin is part of the Server interface.
 func (s *authenticationServer) UserLogin(
 	ctx context.Context, req *serverpb.UserLoginRequest,
@@ -171,66 +161,21 @@ func (s *authenticationServer) UserLogin(
 	// table: the APIs extract the username from the session table
 	// without further normalization.
 	username, _ := username.MakeSQLUsernameFromUserInput(req.Username, username.PurposeValidation)
-	// Verify the user and check if DB console session could be started.
-	verified, pwRetrieveFn, err := s.VerifyUserSessionDBConsole(ctx, username)
+
+	// Verify the provided username/password pair.
+	verified, expired, err := s.VerifyPasswordDBConsole(ctx, username, req.Password)
 	if err != nil {
 		return nil, srverrors.APIInternalError(ctx, err)
 	}
+	if expired {
+		return nil, status.Errorf(
+			codes.Unauthenticated,
+			"the password for %s has expired",
+			username,
+		)
+	}
 	if !verified {
 		return nil, errWebAuthenticationFailure
-	}
-
-	ldapAuthSuccess := false
-	originIP := s.lookupIncomingRequestOriginIP(ctx)
-	hbaConf, identMap := s.sqlServer.PGServer().GetAuthenticationConfiguration()
-	authMethod, hbaEntry, err := s.lookupAuthenticationMethodUsingRules(hba.ConnHostSSL, hbaConf, username, originIP)
-	if err != nil {
-		if log.V(1) {
-			log.Infof(ctx, "invalid retrieval of HBA entry: error: %v", err)
-		}
-	} else if authMethod.String() == "ldap" {
-		if log.V(1) {
-			log.Infof(ctx, "retrieved LDAP HBA entry successfully: authMethod: %s, hbaEntry: %v", authMethod.String(), hbaEntry)
-		}
-		execCfg := s.sqlServer.ExecutorConfig()
-		ldapManager.Do(func() {
-			if ldapManager.m == nil {
-				ldapManager.m = pgwire.ConfigureLDAPAuth(ctx, execCfg.AmbientCtx, execCfg.Settings, execCfg.NodeInfo.LogicalClusterID())
-			}
-		})
-		ldapUserDN, detailedErrors, authError := ldapManager.m.FetchLDAPUserDN(ctx, execCfg.Settings, username, hbaEntry, identMap)
-		if authError != nil {
-			if log.V(1) {
-				log.Infof(ctx, "ldap search response error: ldapUserDN %v, authError %v, detailedErrors %v", ldapUserDN, authError, detailedErrors)
-			}
-		} else {
-			detailedErrors, authError = ldapManager.m.ValidateLDAPLogin(ctx, execCfg.Settings, ldapUserDN, username, req.Password, hbaEntry, identMap)
-			if authError != nil {
-				if log.V(1) {
-					log.Infof(ctx, "ldap bind response error: ldapUserDN %v, authError %v, detailedErrors %v", ldapUserDN, authError, detailedErrors)
-				}
-			} else {
-				ldapAuthSuccess = true
-			}
-		}
-	}
-
-	if !ldapAuthSuccess {
-		// Verify the provided username/password pair.
-		verified, expired, err := s.VerifyPasswordDBConsole(ctx, username, req.Password, pwRetrieveFn)
-		if err != nil {
-			return nil, srverrors.APIInternalError(ctx, err)
-		}
-		if expired {
-			return nil, status.Errorf(
-				codes.Unauthenticated,
-				"the password for %s has expired",
-				username,
-			)
-		}
-		if !verified {
-			return nil, errWebAuthenticationFailure
-		}
 	}
 
 	cookie, err := s.createSessionFor(ctx, username)
@@ -281,19 +226,8 @@ func (s *authenticationServer) DemoLogin(w http.ResponseWriter, req *http.Reques
 	// table: the APIs extract the username from the session table
 	// without further normalization.
 	username, _ := username.MakeSQLUsernameFromUserInput(userInput, username.PurposeValidation)
-	// Verify the user and check if DB console session could be started.
-	verified, pwRetrieveFn, err := s.VerifyUserSessionDBConsole(ctx, username)
-	if err != nil {
-		fail(err)
-		return
-	}
-	if !verified {
-		fail(errors.New("password invalid"))
-		return
-	}
-
 	// Verify the provided username/password pair.
-	verified, expired, err := s.VerifyPasswordDBConsole(ctx, username, password, pwRetrieveFn)
+	verified, expired, err := s.VerifyPasswordDBConsole(ctx, username, password)
 	if err != nil {
 		fail(err)
 		return
@@ -335,7 +269,7 @@ func (s *authenticationServer) UserLoginFromSSO(
 	// without further normalization.
 	username, _ := username.MakeSQLUsernameFromUserInput(reqUsername, username.PurposeValidation)
 
-	exists, _, canLoginDBConsole, _, _, _, _, _, err := sql.GetUserSessionInitInfo(
+	exists, _, canLoginDBConsole, _, _, _, _, err := sql.GetUserSessionInitInfo(
 		ctx,
 		s.sqlServer.ExecutorConfig(),
 		username,
@@ -399,7 +333,7 @@ func (s *authenticationServer) UserLogout(
 		ctx,
 		"revoke-auth-session",
 		nil, /* txn */
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		`UPDATE system.web_sessions SET "revokedAt" = now() WHERE id = $1`,
 		sessionID,
 	); err != nil {
@@ -414,7 +348,7 @@ func (s *authenticationServer) UserLogout(
 
 	// Send back a header which will cause the browser to destroy the cookie.
 	// See https://tools.ietf.org/search/rfc6265, page 7.
-	cookie := CreateSessionCookie("", false /* forHTTPSOnly */)
+	cookie := makeCookieWithValue("", false /* forHTTPSOnly */)
 	cookie.MaxAge = -1
 
 	// Set the cookie header on the outgoing response.
@@ -446,7 +380,7 @@ WHERE id = $1`
 		ctx,
 		"lookup-auth-session",
 		nil, /* txn */
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		sessionQuery, cookie.ID)
 	if row == nil || err != nil {
 		return false, "", err
@@ -493,7 +427,7 @@ func (s *authenticationServer) VerifyUserSessionDBConsole(
 	pwRetrieveFn func(ctx context.Context) (expired bool, hashedPassword password.PasswordHash, err error),
 	err error,
 ) {
-	exists, _, canLoginDBConsole, _, _, _, _, pwRetrieveFn, err := sql.GetUserSessionInitInfo(
+	exists, _, canLoginDBConsole, _, _, _, pwRetrieveFn, err := sql.GetUserSessionInitInfo(
 		ctx,
 		s.sqlServer.ExecutorConfig(),
 		userName,
@@ -511,11 +445,20 @@ func (s *authenticationServer) VerifyUserSessionDBConsole(
 // VerifyPasswordDBConsole is part of the Server interface.
 // (CockroachDB has case-insensitive usernames, unlike PostgreSQL.)
 func (s *authenticationServer) VerifyPasswordDBConsole(
-	ctx context.Context,
-	userName username.SQLUsername,
-	passwordStr string,
-	pwRetrieveFn func(ctx context.Context) (expired bool, hashedPassword password.PasswordHash, err error),
+	ctx context.Context, userName username.SQLUsername, passwordStr string,
 ) (valid bool, expired bool, err error) {
+	exists, _, canLoginDBConsole, _, _, _, pwRetrieveFn, err := sql.GetUserSessionInitInfo(
+		ctx,
+		s.sqlServer.ExecutorConfig(),
+		userName,
+		"", /* databaseName */
+	)
+	if err != nil {
+		return false, false, err
+	}
+	if !exists || !canLoginDBConsole {
+		return false, false, nil
+	}
 	expired, hashedPassword, err := pwRetrieveFn(ctx)
 	if err != nil {
 		return false, false, err
@@ -602,59 +545,6 @@ func (s *authenticationServer) VerifyJWT(
 	return true, retrievedUser.Normalized(), nil
 }
 
-// lookupIncomingRequestOriginIP retrieves the client IP address from the
-// context metadata, parsing the `x-forwarded-for` tag.
-//
-// TODO(souravcrl): update the implementation to handle load balancer added
-// x-forwarded-for metadata tag. e.g.
-// X-Forwarded-For: <client-ip>,<load-balancer-ip>
-// X-Forwarded-For: <supplied-value>,<client-ip>,<load-balancer-ip>
-// X-forwarded-for might also be missing and the implementation should consider
-// X-real-ip tag for client IP address. Reference managed-service util
-// `GetPublicPeerIP` which supports more IP formats and metadata tags.
-func (s *authenticationServer) lookupIncomingRequestOriginIP(ctx context.Context) net.IP {
-	const xForwardedFor = "x-forwarded-for"
-	const localhost = "127.0.0.1"
-	clientIP := localhost
-	if reqMetadata, ok := metadata.FromIncomingContext(ctx); ok {
-		if xForwardedFor, ok := reqMetadata[xForwardedFor]; ok && len(xForwardedFor) == 1 {
-			clientIP = xForwardedFor[0]
-		}
-	}
-	return net.ParseIP(clientIP)
-}
-
-func (s *authenticationServer) lookupAuthenticationMethodUsingRules(
-	connType hba.ConnType, auth *hba.Conf, user username.SQLUsername, originIP net.IP,
-) (authMethod rulebasedscanner.String, entry *hba.Entry, err error) {
-	// Look up the method.
-	for i := range auth.Entries {
-		entry = &auth.Entries[i]
-		var connMatch bool
-		connMatch, err = entry.ConnMatches(connType, originIP)
-		if err != nil {
-			// TODO(souravcrl): Determine if an error should be reported
-			// upon unknown address formats.
-			// See: https://github.com/cockroachdb/cockroach/issues/43716
-			return
-		}
-		if !connMatch {
-			// The address does not match.
-			continue
-		}
-		if !entry.UserMatches(user) {
-			// The user does not match.
-			continue
-		}
-
-		return entry.Method, entry, nil
-	}
-
-	// No match.
-	err = errors.Errorf("no hba_conf entry for host %q, user %q", originIP, user)
-	return rulebasedscanner.String{}, nil, err
-}
-
 // CreateAuthSecret creates a secret, hash pair to populate a session auth token.
 func CreateAuthSecret() (secret, hashedSecret []byte, err error) {
 	secret = make([]byte, secretLength)
@@ -678,6 +568,8 @@ func (s *authenticationServer) NewAuthSession(
 	ctx context.Context, userName username.SQLUsername,
 ) (int64, []byte, error) {
 	st := s.sqlServer.ExecutorConfig().Settings
+	webSessionsTableHasUserIDCol := st.Version.IsActive(ctx,
+		clusterversion.V23_1WebSessionsTableHasUserIDColumn)
 
 	secret, hashedSecret, err := CreateAuthSecret()
 	if err != nil {
@@ -687,17 +579,24 @@ func (s *authenticationServer) NewAuthSession(
 	expiration := s.sqlServer.ExecutorConfig().Clock.PhysicalTime().Add(WebSessionTimeout.Get(&st.SV))
 
 	insertSessionStmt := `
+INSERT INTO system.web_sessions ("hashedSecret", username, "expiresAt")
+VALUES($1, $2, $3)
+RETURNING id
+`
+	if webSessionsTableHasUserIDCol {
+		insertSessionStmt = `
 INSERT INTO system.web_sessions ("hashedSecret", username, "expiresAt", user_id)
 VALUES($1, $2, $3, (SELECT user_id FROM system.users WHERE username = $2))
 RETURNING id
 `
+	}
 	var id int64
 
 	row, err := s.sqlServer.InternalExecutor().QueryRowEx(
 		ctx,
 		"create-auth-session",
 		nil, /* txn */
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		insertSessionStmt,
 		hashedSecret,
 		userName.Normalized(),
@@ -785,7 +684,17 @@ func EncodeSessionCookie(
 		return nil, errors.Wrap(err, "session cookie could not be encoded")
 	}
 	value := base64.StdEncoding.EncodeToString(cookieValueBytes)
-	return CreateSessionCookie(value, forHTTPSOnly), nil
+	return makeCookieWithValue(value, forHTTPSOnly), nil
+}
+
+func makeCookieWithValue(value string, forHTTPSOnly bool) *http.Cookie {
+	return &http.Cookie{
+		Name:     SessionCookieName,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   forHTTPSOnly,
+	}
 }
 
 // getSession decodes the cookie from the request, looks up the corresponding session, and

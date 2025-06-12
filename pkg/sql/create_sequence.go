@@ -20,10 +20,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
@@ -34,25 +31,8 @@ import (
 )
 
 type createSequenceNode struct {
-	zeroInputPlanNode
 	n      *tree.CreateSequence
 	dbDesc catalog.DatabaseDescriptor
-}
-
-// resolveTemporaryStatus checks for the pg_temp naming convention from
-// Postgres, where qualifying an object name with pg_temp is equivalent to
-// explicitly specifying TEMP/TEMPORARY in the CREATE syntax.
-// resolveTemporaryStatus returns true if either(or both) of these conditions
-// are true.
-func resolveTemporaryStatus(
-	name tree.ObjectNamePrefix, persistence tree.Persistence,
-) (bool, error) {
-	// An explicit schema can only be provided in the CREATE TEMP statement
-	// iff it is pg_temp.
-	if persistence.IsTemporary() && name.ExplicitSchema && name.SchemaName != catconstants.PgTempSchemaName {
-		return false, pgerror.New(pgcode.InvalidTableDefinition, "cannot create temporary relation in non-temporary schema")
-	}
-	return name.SchemaName == catconstants.PgTempSchemaName || persistence.IsTemporary(), nil
 }
 
 func (p *planner) CreateSequence(ctx context.Context, n *tree.CreateSequence) (planNode, error) {
@@ -64,20 +44,16 @@ func (p *planner) CreateSequence(ctx context.Context, n *tree.CreateSequence) (p
 		return nil, err
 	}
 
-	if ok, err := resolveTemporaryStatus(n.Name.ObjectNamePrefix, n.Persistence); err != nil {
-		return nil, err
-	} else if ok {
-		n.Name.ObjectNamePrefix.SchemaName = ""
-		n.Name.ObjectNamePrefix.ExplicitSchema = false
-		n.Persistence = tree.PersistenceTemporary
-	}
-
 	un := n.Name.ToUnresolvedObjectName()
 	dbDesc, _, prefix, err := p.ResolveTargetObject(ctx, un)
 	if err != nil {
 		return nil, err
 	}
 	n.Name.ObjectNamePrefix = prefix
+
+	if err := p.CheckPrivilege(ctx, dbDesc, privilege.CREATE); err != nil {
+		return nil, err
+	}
 
 	return &createSequenceNode{
 		n:      n,

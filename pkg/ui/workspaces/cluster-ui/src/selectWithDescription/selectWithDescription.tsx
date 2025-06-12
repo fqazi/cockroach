@@ -3,15 +3,15 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import React, { useState } from "react";
+import classNames from "classnames/bind";
 import { CaretUp, CaretDown } from "@cockroachlabs/icons";
 import { Radio } from "antd";
-import classNames from "classnames/bind";
-import React, { useState } from "react";
-
-import { Button } from "../button";
-import styles from "../statementsPage/statementTypeSelect.module.scss";
-
+import "antd/lib/radio/style";
 import type { RadioChangeEvent } from "antd/lib/radio";
+import { Button } from "../button";
+
+import styles from "../statementsPage/statementTypeSelect.module.scss";
 
 const cx = classNames.bind(styles);
 

@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/datadriven"
-	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/kr/pretty"
 )
@@ -38,7 +37,7 @@ func TestJSONFormats(t *testing.T) {
 
 	ctx := context.Background()
 	sysIDPayload := testIDPayload{tenantID: "1"}
-	ctx = serverident.ContextWithServerIdentification(ctx, sysIDPayload)
+	ctx = context.WithValue(ctx, serverident.ServerIdentificationContextKey{}, sysIDPayload)
 	ctx = logtags.AddTag(ctx, "noval", nil)
 	ctx = logtags.AddTag(ctx, "s", "1")
 	ctx = logtags.AddTag(ctx, "long", "2")
@@ -115,7 +114,7 @@ func TestJsonDecode(t *testing.T) {
 				for {
 					var e logpb.Entry
 					if err := d.Decode(&e); err != nil {
-						if err == io.EOF || errors.Is(err, ErrMalformedLogEntry) {
+						if err == io.EOF {
 							break
 						}
 						td.Fatalf(t, "error while decoding: %v", err)

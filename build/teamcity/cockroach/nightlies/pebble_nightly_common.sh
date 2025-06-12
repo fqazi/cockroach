@@ -33,23 +33,20 @@ mkdir -p "$PWD/bin"
 chmod o+rwx "$PWD/bin"
 
 # Build the roachtest binary.
-bazel build //pkg/cmd/roachtest -c opt
-BAZEL_BIN=$(bazel info bazel-bin -c opt)
+bazel build //pkg/cmd/roachtest --config ci -c opt
+BAZEL_BIN=$(bazel info bazel-bin --config ci -c opt)
 cp $BAZEL_BIN/pkg/cmd/roachtest/roachtest_/roachtest bin
 chmod a+w bin/roachtest
 
-# Pull in the version of Pebble from upstream. If none is specified, the
-# benchmarks run against the tip of the 'master' branch. We do this by `go
-# get`ting the SHA of the module, and then running `mirror` to update `DEPS.bzl`
+# Pull in the latest version of Pebble from upstream. The benchmarks run against
+# the tip of the 'crl-release-23.2' branch. We do this by `go get`ting the
+# latest version of the module, and then running `mirror` to update `DEPS.bzl`
 # accordingly.
-pebble_go_get_version="${PEBBLE_SHA:-master}"
-echo "Benchmarking against: ${pebble_go_get_version}"
-
-bazel run @go_sdk//:bin/go get "github.com/cockroachdb/pebble@${pebble_go_get_version}"
+bazel run @go_sdk//:bin/go get github.com/cockroachdb/pebble@crl-release-23.2
 NEW_DEPS_BZL_CONTENT=$(bazel run //pkg/cmd/mirror/go:mirror)
 echo "$NEW_DEPS_BZL_CONTENT" > DEPS.bzl
-bazel build @com_github_cockroachdb_pebble//cmd/pebble -c opt
-BAZEL_BIN=$(bazel info bazel-bin -c opt)
+bazel build @com_github_cockroachdb_pebble//cmd/pebble --config ci -c opt
+BAZEL_BIN=$(bazel info bazel-bin --config ci -c opt)
 cp $BAZEL_BIN/external/com_github_cockroachdb_pebble/cmd/pebble/pebble_/pebble ./pebble.linux
 chmod a+w ./pebble.linux
 
@@ -76,8 +73,8 @@ function prepare_datadir() {
 # Build the mkbench tool from within the Pebble repo. This is used to parse
 # the benchmark data.
 function build_mkbench() {
-  bazel build @com_github_cockroachdb_pebble//internal/mkbench -c opt
-  BAZEL_BIN=$(bazel info bazel-bin -c opt)
+  bazel build @com_github_cockroachdb_pebble//internal/mkbench --config ci -c opt
+  BAZEL_BIN=$(bazel info bazel-bin --config ci -c opt)
   cp $BAZEL_BIN/external/com_github_cockroachdb_pebble/internal/mkbench/mkbench_/mkbench .
   chmod a+w mkbench
 }

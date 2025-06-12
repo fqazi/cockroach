@@ -15,13 +15,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/colexec/colexecutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecop"
+	"github.com/cockroachdb/cockroach/pkg/sql/colmem"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execopnode"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execreleasable"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 )
@@ -66,9 +66,8 @@ type drainHelper struct {
 	// are noops.
 	ctx context.Context
 
-	// streamingMemAcc can be nil in tests.
-	streamingMemAcc      *mon.BoundAccount
-	metadataAccountedFor int64
+	// allocator can be nil in tests.
+	allocator *colmem.Allocator
 
 	statsCollectors []colexecop.VectorizedStatsCollector
 	sources         colexecop.MetadataSources
@@ -114,18 +113,17 @@ func (d *drainHelper) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerMetadata)
 	if !d.drained {
 		d.meta = d.sources.DrainMeta()
 		d.drained = true
-		if d.streamingMemAcc != nil {
-			d.metadataAccountedFor = colexecutils.AccountForMetadata(d.ctx, d.streamingMemAcc, d.meta)
+		if d.allocator != nil {
+			colexecutils.AccountForMetadata(d.allocator, d.meta)
 		}
 	}
 	if len(d.meta) == 0 {
 		// Eagerly lose the reference to the slice.
 		d.meta = nil
-		if d.streamingMemAcc != nil {
-			// At this point, the caller took over the metadata, so we can
-			// release the allocations.
-			d.streamingMemAcc.Shrink(d.ctx, d.metadataAccountedFor)
-			d.metadataAccountedFor = 0
+		if d.allocator != nil {
+			// At this point, the caller took over all of the metadata, so we
+			// can release all of the allocations.
+			d.allocator.ReleaseAll()
 		}
 		return nil, nil
 	}
@@ -149,12 +147,13 @@ var materializerPool = sync.Pool{
 // NewMaterializer creates a new Materializer processor which processes the
 // columnar data coming from input to return it as rows.
 // Arguments:
-// - streamingMemAcc can be nil in tests.
+// - allocator must use a memory account that is not shared with any other user,
+// can be nil in tests.
 // - typs is the output types schema. Typs are assumed to have been hydrated.
 // NOTE: the constructor does *not* take in an execinfrapb.PostProcessSpec
 // because we expect input to handle that for us.
 func NewMaterializer(
-	streamingMemAcc *mon.BoundAccount,
+	allocator *colmem.Allocator,
 	flowCtx *execinfra.FlowCtx,
 	processorID int32,
 	input colexecargs.OpWithMetaInfo,
@@ -166,22 +165,19 @@ func NewMaterializer(
 		input:                 input.Root,
 		typs:                  typs,
 		converter:             colconv.NewAllVecToDatumConverter(len(typs)),
-		row:                   m.row,
+		row:                   make(rowenc.EncDatumRow, len(typs)),
 	}
-	if cap(m.row) >= len(typs) && cap(m.row) > 0 {
-		// The latter part of the condition is needed in order to distinguish
-		// between a row with no columns and no rows.
-		m.row = m.row[:len(typs)]
-	} else {
-		m.row = make(rowenc.EncDatumRow, len(typs))
-	}
-	m.drainHelper.streamingMemAcc = streamingMemAcc
+	m.drainHelper.allocator = allocator
 	m.drainHelper.statsCollectors = input.StatsCollectors
 	m.drainHelper.sources = input.MetadataSources
 
 	m.Init(
 		m,
 		flowCtx,
+		// The materializer will update the eval context when closed, so we give
+		// it a copy of the eval context to preserve the "global" eval context
+		// from being mutated.
+		flowCtx.NewEvalCtx(),
 		processorID,
 		execinfra.ProcStateOpts{
 			// We append drainHelper to inputs to drain below in order to reuse
@@ -293,14 +289,10 @@ func (m *Materializer) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerMetadata
 func (m *Materializer) Release() {
 	m.ProcessorBaseNoHelper.Reset()
 	m.converter.Release()
-	for i := range m.row {
-		m.row[i] = rowenc.EncDatum{}
-	}
 	*m = Materializer{
 		// We're keeping the reference to the same ProcessorBaseNoHelper since
 		// it allows us to reuse some of the slices.
 		ProcessorBaseNoHelper: m.ProcessorBaseNoHelper,
-		row:                   m.row[:0],
 	}
 	materializerPool.Put(m)
 }

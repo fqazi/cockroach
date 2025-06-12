@@ -49,7 +49,6 @@ type ExprEvaluator interface {
 	EvalSubquery(context.Context, *Subquery) (Datum, error)
 	EvalTuple(context.Context, *Tuple) (Datum, error)
 	EvalTupleStar(context.Context, *TupleStar) (Datum, error)
-	EvalTxnControlExpr(context.Context, *TxnControlExpr) (Datum, error)
 	EvalTypedDummy(context.Context, *TypedDummy) (Datum, error)
 	EvalUnaryExpr(context.Context, *UnaryExpr) (Datum, error)
 	EvalUnqualifiedStar(context.Context, UnqualifiedStar) (Datum, error)
@@ -203,11 +202,6 @@ func (node *DJSON) Eval(ctx context.Context, v ExprEvaluator) (Datum, error) {
 }
 
 // Eval is part of the TypedExpr interface.
-func (node *DJsonpath) Eval(ctx context.Context, v ExprEvaluator) (Datum, error) {
-	return node, nil
-}
-
-// Eval is part of the TypedExpr interface.
 func (node *DOid) Eval(ctx context.Context, v ExprEvaluator) (Datum, error) {
 	return node, nil
 }
@@ -219,11 +213,6 @@ func (node *DOidWrapper) Eval(ctx context.Context, v ExprEvaluator) (Datum, erro
 
 // Eval is part of the TypedExpr interface.
 func (node *DPGLSN) Eval(ctx context.Context, v ExprEvaluator) (Datum, error) {
-	return node, nil
-}
-
-// Eval is part of the TypedExpr interface.
-func (node *DPGVector) Eval(ctx context.Context, v ExprEvaluator) (Datum, error) {
 	return node, nil
 }
 
@@ -370,11 +359,6 @@ func (node *Tuple) Eval(ctx context.Context, v ExprEvaluator) (Datum, error) {
 // Eval is part of the TypedExpr interface.
 func (node *TupleStar) Eval(ctx context.Context, v ExprEvaluator) (Datum, error) {
 	return v.EvalTupleStar(ctx, node)
-}
-
-// Eval is part of the TypedExpr interface.
-func (node *TxnControlExpr) Eval(ctx context.Context, v ExprEvaluator) (Datum, error) {
-	return v.EvalTxnControlExpr(ctx, node)
 }
 
 // Eval is part of the TypedExpr interface.

@@ -59,7 +59,7 @@ func (p *planner) getCurrentEncodedVersionSettingValue(
 					datums, err := txn.QueryRowEx(
 						ctx, "read-setting",
 						txn.KV(),
-						sessiondata.NodeUserSessionDataOverride,
+						sessiondata.RootUserSessionDataOverride,
 						"SELECT value FROM system.settings WHERE name = $1", key,
 					)
 					if err != nil {
@@ -91,9 +91,9 @@ func (p *planner) getCurrentEncodedVersionSettingValue(
 						return errors.AssertionFailedf("no value found for version setting")
 					}
 
-					localVal := s.GetInternal(&st.SV)
+					localRawVal := []byte(s.Get(&st.SV))
 					if err := checkClusterSettingValuesAreEquivalent(
-						localVal.Encode(), kvRawVal,
+						localRawVal, kvRawVal,
 					); err != nil {
 						// NB: errors.Wrapf(nil, ...) returns nil.
 						// nolint:errwrap
@@ -136,15 +136,10 @@ func checkClusterSettingValuesAreEquivalent(localRawVal, kvRawVal []byte) error 
 	}
 	decodedLocal, localVal, localOk := maybeDecodeVersion(localRawVal)
 	decodedKV, kvVal, kvOk := maybeDecodeVersion(kvRawVal)
-	if localOk && kvOk && decodedLocal.IsFence() {
-		// NB: The internal version is -1 for the fence version of all final cluster
-		// versions. In these cases, we cannot simply check that the local version
-		// is off-by-one from the KV version, since (for example's sake) we would be
-		// comparing (24,1,12) to (24,2,-1). Instead, we can use ListBetween to
-		// verify that there are no cluster versions in between the local and KV
-		// versions.
-		versionsBetween := clusterversion.ListBetween(decodedKV.Version, decodedLocal.Version)
-		if len(versionsBetween) == 0 {
+	if localOk && kvOk && decodedLocal.Internal%2 == 1 /* isFence */ {
+		predecessor := decodedLocal
+		predecessor.Internal--
+		if predecessor.Equal(decodedKV) {
 			return nil
 		}
 	}
@@ -218,7 +213,7 @@ func getShowClusterSettingPlanColumns(
 	switch val.(type) {
 	case *settings.IntSetting:
 		dType = types.Int
-	case *settings.StringSetting, *settings.ByteSizeSetting, *settings.VersionSetting, settings.AnyEnumSetting, *settings.ProtobufSetting:
+	case *settings.StringSetting, *settings.ByteSizeSetting, *settings.VersionSetting, *settings.EnumSetting, *settings.ProtobufSetting:
 		dType = types.String
 	case *settings.BoolSetting:
 		dType = types.Bool
@@ -256,7 +251,7 @@ func planShowClusterSetting(
 			if isNotNull {
 				switch s := val.(type) {
 				case *settings.IntSetting:
-					v, err := s.DecodeNumericValue(encoded)
+					v, err := s.DecodeValue(encoded)
 					if err != nil {
 						return nil, err
 					}

@@ -130,7 +130,7 @@ func newRowLevelTTLTestJobTestHelper(
 }
 
 func (h *rowLevelTTLTestJobTestHelper) waitForScheduledJob(
-	t *testing.T, expectedStatus jobs.State, expectedErrorRe string,
+	t *testing.T, expectedStatus jobs.Status, expectedErrorRe string,
 ) {
 	require.NoError(t, h.executeSchedules())
 
@@ -209,12 +209,12 @@ func (h *rowLevelTTLTestJobTestHelper) verifyExpiredRowsJobOnly(
 		var progressBytes []byte
 		require.NoError(t, rows.Scan(&status, &progressBytes))
 
-		require.Equal(t, string(jobs.StateSucceeded), status)
+		require.Equal(t, string(jobs.StatusSucceeded), status)
 
 		var progress jobspb.Progress
 		require.NoError(t, protoutil.Unmarshal(progressBytes, &progress))
 
-		actualNumExpiredRows := progress.UnwrapDetails().(jobspb.RowLevelTTLProgress).JobDeletedRowCount
+		actualNumExpiredRows := progress.UnwrapDetails().(jobspb.RowLevelTTLProgress).JobRowCount
 		require.Equal(t, int64(expectedNumExpiredRows), actualNumExpiredRows)
 		jobCount++
 	}
@@ -240,7 +240,7 @@ func (h *rowLevelTTLTestJobTestHelper) verifyExpiredRows(
 		var progressBytes []byte
 		require.NoError(t, rows.Scan(&status, &progressBytes))
 
-		require.Equal(t, string(jobs.StateSucceeded), status)
+		require.Equal(t, string(jobs.StatusSucceeded), status)
 
 		var progress jobspb.Progress
 		require.NoError(t, protoutil.Unmarshal(progressBytes, &progress))
@@ -270,9 +270,8 @@ func (h *rowLevelTTLTestJobTestHelper) verifyExpiredRows(
 			require.Equal(t, expectedProcessorRowCount, processorProgress.ProcessorRowCount)
 			expectedJobRowCount += expectedProcessorRowCount
 		}
-		require.Equal(t, expectedJobSpanCount, rowLevelTTLProgress.JobProcessedSpanCount)
-		require.Equal(t, expectedJobSpanCount, rowLevelTTLProgress.JobTotalSpanCount)
-		require.Equal(t, expectedJobRowCount, rowLevelTTLProgress.JobDeletedRowCount)
+		require.Equal(t, expectedJobSpanCount, rowLevelTTLProgress.JobSpanCount)
+		require.Equal(t, expectedJobRowCount, rowLevelTTLProgress.JobRowCount)
 		jobCount++
 	}
 	require.Equal(t, 1, jobCount)
@@ -294,7 +293,7 @@ func TestRowLevelTTLNoTestingKnobs(t *testing.T) {
 	th.sqlDB.Exec(t, `INSERT INTO t (id, crdb_internal_expiration) VALUES (1, now() - '1 month')`)
 
 	// Force the schedule to execute.
-	th.waitForScheduledJob(t, jobs.StateFailed, `found a recent schema change on the table`)
+	th.waitForScheduledJob(t, jobs.StatusFailed, `found a recent schema change on the table`)
 }
 
 // TestRowLevelTTLInterruptDuringExecution tests that row-level TTL errors
@@ -318,12 +317,12 @@ INSERT INTO t (id, crdb_internal_expiration) VALUES (1, now() - '1 month'), (2, 
 	}{
 		{
 			desc:             "schema change too recent to start TTL job",
-			expectedTTLError: "found a recent schema change on the table at .*, job will run at the next scheduled time",
+			expectedTTLError: "found a recent schema change on the table at .*, aborting",
 			aostDuration:     -48 * time.Hour,
 		},
 		{
 			desc:             "schema change during job",
-			expectedTTLError: "error during row deletion: table has had a schema change since the job has started at .*, job will run at the next scheduled time",
+			expectedTTLError: "error during row deletion: table has had a schema change since the job has started at .*, aborting",
 			aostDuration:     zeroDuration,
 			// We cannot use a schema change to change the version in this test as
 			// we overtook the job adoption method, which means schema changes get
@@ -353,39 +352,9 @@ INSERT INTO t (id, crdb_internal_expiration) VALUES (1, now() - '1 month'), (2, 
 			th.sqlDB.Exec(t, createTable)
 
 			// Force the schedule to execute.
-			th.waitForScheduledJob(t, jobs.StateFailed, tc.expectedTTLError)
+			th.waitForScheduledJob(t, jobs.StatusFailed, tc.expectedTTLError)
 		})
 	}
-}
-
-func TestRowLevelTTLAlterTypeInPrimaryKey(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	th, cleanupFunc := newRowLevelTTLTestJobTestHelper(
-		t,
-		&sql.TTLTestingKnobs{
-			AOSTDuration: &zeroDuration,
-			// Prior to https://github.com/cockroachdb/cockroach/pull/145374, this
-			// pre-select ALTER TYPE statement would hang forever.
-			PreSelectStatement: `ALTER TYPE defaultdb.public.typ ADD VALUE 'c'`,
-		},
-		false, /* testMultiTenant */
-		1,     /* numNodes */
-	)
-	defer cleanupFunc()
-	th.sqlDB.Exec(t, `CREATE TYPE typ AS ENUM ('foo', 'bar')`)
-	th.sqlDB.Exec(t, `CREATE TABLE t (
-	id INT,
-  v typ,
-  PRIMARY KEY (id, v)
-) WITH (ttl_expire_after = '10 minutes')`)
-	th.sqlDB.Exec(t, `ALTER TABLE t SPLIT AT VALUES (1), (2)`)
-	th.sqlDB.Exec(t, `INSERT INTO t (id, v, crdb_internal_expiration) VALUES (1, 'foo', now() - '1 month'), (2, 'bar', now() - '1 month')`)
-
-	// Prior to https://github.com/cockroachdb/cockroach/pull/145374, the job
-	// would fail with a "comparison of two different versions of enum" error.
-	th.waitForScheduledJob(t, jobs.StateSucceeded, "")
 }
 
 func TestRowLevelTTLJobDisabled(t *testing.T) {
@@ -435,7 +404,7 @@ INSERT INTO t (id, crdb_internal_expiration) VALUES (1, now() - '1 month'), (2, 
 			th.sqlDB.ExecMultiple(t, strings.Split(tc.setup, ";")...)
 
 			// Force the schedule to execute.
-			th.waitForScheduledJob(t, jobs.StateFailed, tc.expectedTTLError)
+			th.waitForScheduledJob(t, jobs.StatusFailed, tc.expectedTTLError)
 
 			var numRows int
 			th.sqlDB.QueryRow(t, `SELECT count(1) FROM t`).Scan(&numRows)
@@ -583,7 +552,7 @@ func TestRowLevelTTLJobMultipleNodes(t *testing.T) {
 			}
 
 			// Force the schedule to execute.
-			th.waitForScheduledJob(t, jobs.StateSucceeded, "")
+			th.waitForScheduledJob(t, jobs.StatusSucceeded, "")
 
 			// Verify results
 			th.verifyNonExpiredRows(t, tableName, expirationExpr, expectedNumNonExpiredRows)
@@ -807,8 +776,8 @@ func TestRowLevelTTLJobRandomEntries(t *testing.T) {
 					randgen.RandTypeFromSlice(rng, indexableTyps).SQLString(),
 					randgen.RandTypeFromSlice(rng, indexableTyps).SQLString(),
 					familyClauses,
-					10+rng.Intn(100),
-					10+rng.Intn(100),
+					1+rng.Intn(100),
+					1+rng.Intn(100),
 				),
 				numSplits:         1 + rng.Intn(9),
 				numExpiredRows:    rng.Intn(2000),
@@ -941,7 +910,7 @@ func TestRowLevelTTLJobRandomEntries(t *testing.T) {
 			}
 
 			// Force the schedule to execute.
-			th.waitForScheduledJob(t, jobs.StateSucceeded, "")
+			th.waitForScheduledJob(t, jobs.StatusSucceeded, "")
 
 			tableName := createTableStmt.Table.Table()
 			expirationExpression := "crdb_internal_expiration"
@@ -985,7 +954,7 @@ CREATE TABLE t (
 	// Force the schedule to execute. Normally, the job would not fail due to a
 	// stats error, but we have set the ReturnStatsError knob to true in this
 	// test.
-	th.waitForScheduledJob(t, jobs.StateFailed, "cancelling TTL stats query because TTL job completed")
+	th.waitForScheduledJob(t, jobs.StatusFailed, "cancelling TTL stats query because TTL job completed")
 
 	results := th.sqlDB.QueryStr(t, "SELECT * FROM t")
 	require.Empty(t, results)
@@ -1014,7 +983,7 @@ func TestOutboundForeignKey(t *testing.T) {
 	sqlDB.Exec(t, "INSERT INTO tbl VALUES (1, '2020-01-01', 1)")
 
 	// Force the schedule to execute.
-	th.waitForScheduledJob(t, jobs.StateSucceeded, "")
+	th.waitForScheduledJob(t, jobs.StatusSucceeded, "")
 
 	results := sqlDB.QueryStr(t, "SELECT * FROM tbl")
 	require.Empty(t, results)
@@ -1043,7 +1012,7 @@ func TestInboundForeignKeyOnDeleteCascade(t *testing.T) {
 	sqlDB.Exec(t, "INSERT INTO child VALUES (1, 1)")
 
 	// Force the schedule to execute.
-	th.waitForScheduledJob(t, jobs.StateSucceeded, "")
+	th.waitForScheduledJob(t, jobs.StatusSucceeded, "")
 
 	results := sqlDB.QueryStr(t, "SELECT * FROM tbl")
 	require.Empty(t, results)
@@ -1075,7 +1044,7 @@ func TestInboundForeignKeyOnDeleteRestrict(t *testing.T) {
 	sqlDB.Exec(t, "INSERT INTO child VALUES (1, 1)")
 
 	// Force the schedule to execute.
-	th.waitForScheduledJob(t, jobs.StateFailed, `delete on table "tbl" violates foreign key constraint "child_tbl_id_fkey" on table "child"`)
+	th.waitForScheduledJob(t, jobs.StatusFailed, `delete on table "tbl" violates foreign key constraint "child_tbl_id_fkey" on table "child"`)
 
 	results := sqlDB.QueryStr(t, "SELECT * FROM tbl")
 	require.Len(t, results, 1)
@@ -1107,7 +1076,7 @@ func TestInboundForeignKeyOnDeleteRestrictNull(t *testing.T) {
 	sqlDB.Exec(t, "INSERT INTO child VALUES (1, NULL)")
 
 	// Force the schedule to execute.
-	th.waitForScheduledJob(t, jobs.StateSucceeded, "")
+	th.waitForScheduledJob(t, jobs.StatusSucceeded, "")
 
 	results := sqlDB.QueryStr(t, "SELECT * FROM tbl")
 	require.Len(t, results, 0)
@@ -1166,9 +1135,8 @@ func TestMakeTTLJobDescription(t *testing.T) {
 			defer cleanupFunc()
 			createTable := getCreateTable(testCase.tableSelectBatchSize)
 			th.sqlDB.Exec(t, createTable)
-			th.waitForScheduledJob(t, jobs.StateSucceeded, "")
-			rows := th.sqlDB.QueryStr(t, "SELECT description FROM [SHOW JOBS SELECT id FROM system.jobs WHERE job_type = 'ROW LEVEL TTL']")
-			t.Log(rows)
+			th.waitForScheduledJob(t, jobs.StatusSucceeded, "")
+			rows := th.sqlDB.QueryStr(t, "SELECT description FROM [SHOW JOBS] WHERE job_type = 'ROW LEVEL TTL'")
 			require.Len(t, rows, 1)
 			row := rows[0]
 			require.Contains(t, row[0], fmt.Sprintf("LIMIT %d", testCase.jobSelectBatchSize))

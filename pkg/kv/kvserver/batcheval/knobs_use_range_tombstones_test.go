@@ -80,7 +80,6 @@ func TestKnobsUseRangeTombstonesForPointDeletes(t *testing.T) {
 		switch kv := kvI.(type) {
 		case storage.MVCCRangeKeyValue:
 			kv.RangeKey.Timestamp = hlc.Timestamp{}
-			kv.RangeKey.EncodedTimestampSuffix = nil
 			rangeTombstones = append(rangeTombstones, kv.RangeKey)
 
 		case storage.MVCCKeyValue:

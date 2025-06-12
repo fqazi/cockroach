@@ -113,9 +113,6 @@ func (*bulkingest) Meta() workload.Meta { return bulkingestMeta }
 // Flags implements the Flagser interface.
 func (w *bulkingest) Flags() workload.Flags { return w.flags }
 
-// ConnFlags implements the ConnFlagser interface.
-func (w *bulkingest) ConnFlags() *workload.ConnFlags { return w.connFlags }
-
 // Hooks implements the Hookser interface.
 func (w *bulkingest) Hooks() workload.Hooks {
 	return workload.Hooks{}
@@ -178,6 +175,10 @@ func (w *bulkingest) Tables() []workload.Table {
 func (w *bulkingest) Ops(
 	ctx context.Context, urls []string, reg *histogram.Registry,
 ) (workload.QueryLoad, error) {
+	sqlDatabase, err := workload.SanitizeUrls(w, w.connFlags.DBOverride, urls)
+	if err != nil {
+		return workload.QueryLoad{}, err
+	}
 	db, err := gosql.Open(`cockroach`, strings.Join(urls, ` `))
 	if err != nil {
 		return workload.QueryLoad{}, err
@@ -195,7 +196,7 @@ func (w *bulkingest) Ops(
 		return workload.QueryLoad{}, err
 	}
 
-	ql := workload.QueryLoad{}
+	ql := workload.QueryLoad{SQLDatabase: sqlDatabase}
 	for i := 0; i < w.connFlags.Concurrency; i++ {
 		rng := rand.New(rand.NewSource(RandomSeed.Seed()))
 		hists := reg.GetHandle()

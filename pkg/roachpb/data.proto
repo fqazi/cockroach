@@ -33,18 +33,22 @@ message Span {
 }
 
 // ValueType defines a set of type constants placed in the "tag" field of Value
-// messages. These are defined as a protocol buffer enumeration for historical
-// reasons.
+// messages. These are defined as a protocol buffer enumeration so that they
+// can be used portably between our Go and C code. The tags are used by the
+// RocksDB Merge Operator to perform specialized merges.
 enum ValueType {
   // This is a subset of the SQL column type values, representing the underlying
-  // storage for various types.
+  // storage for various types. The DELIMITED_foo entries each represent a foo
+  // variant that self-delimits length.
   UNKNOWN = 0;
-  reserved 7, 8, 9;
+  reserved 7;
   INT = 1;
   FLOAT = 2;
   BYTES = 3;
+  DELIMITED_BYTES = 8;
   TIME = 4;
   DECIMAL = 5;
+  DELIMITED_DECIMAL = 9;
   DURATION = 6;
   TIMETZ = 12;
   GEO = 13;
@@ -119,23 +123,8 @@ message SplitTrigger {
 
   RangeDescriptor left_desc = 1 [(gogoproto.nullable) = false];
   RangeDescriptor right_desc = 2 [(gogoproto.nullable) = false];
-  // Pre-computed stats for the LHS spans corresponding to user data.
-  // Used in splitTrigger to estimate the LHS range's MVCC stats.
-  storage.enginepb.MVCCStats pre_split_left_user_stats = 5 [(gogoproto.nullable) = false];
-  // Pre-computed stats for the entire range.
-  // Used in splitTrigger to fall back to accurate stats computation if these
-  // pre-computed stats differ significantly from the stats retrieved from
-  // disk while holding latches in splitTrigger.
-  storage.enginepb.MVCCStats pre_split_stats = 6 [(gogoproto.nullable) = false];
 
   reserved 3, 4;
-
-  // UseEstimatesBecauseExternalBytesArePresent is true if we should consider estimating MVCC
-  // stats when calculating them in the splitTrigger.
-  bool use_estimates_because_external_bytes_are_present = 7;
-
-  // ManualSplit indicates that this split is manually triggered via an AdminSplitRequest by a sql client.
-  bool manualSplit = 8;
 }
 
 // A MergeTrigger is run after a successful commit of an AdminMerge
@@ -187,7 +176,7 @@ message MergeTrigger {
   // the two sides are collocated at merge time, we don't need to use the
   // read_summary and simply use this field.
   util.hlc.Timestamp right_closed_timestamp = 6 [(gogoproto.nullable) = false];
-
+  
   // RightReadSummary is a summary of the reads that have been performed on the
   // right-hand side up to the point of the Subsume request, which serializes
   // with past reads and begins blocking future reads. It is suitable for use to
@@ -200,8 +189,8 @@ message MergeTrigger {
   //    through a range merge, to make the merge less disruptive to writes on
   //    the post-merge range because the timestamp cache won't be bumped as
   //    high.
-  // 2. it can transfer information about reads with future-time timestamps,
-  //    which are not otherwise captured by the FreezeStart clock timestamp.
+  // 2. it can transfer information about reads with synthetic timestamps, which
+  //    are not otherwise captured by the FreezeStart clock timestamp.
   //
   // When a RightReadSummary is set in ReplicatedEvalResult.Merge.Trigger, there
   // is always also a write to the RangePriorReadSummaryKey in the corresponding
@@ -313,18 +302,10 @@ enum TransactionStatus {
   option (gogoproto.goproto_enum_prefix) = false;
 
   // PENDING is the default state for a new transaction. Transactions
-  // move from PENDING to one of PREPARED, STAGING, COMMITTED, or
-  // ABORTED. Mutations made as part of a PENDING transactions are
-  // recorded as "intents" in the underlying MVCC model.
+  // move from PENDING to one of COMMITTED or ABORTED. Mutations made
+  // as part of a PENDING transactions are recorded as "intents" in
+  // the underlying MVCC model.
   PENDING = 0;
-  // PREPARED is the state for a transaction which has been prepared as
-  // part of the XA two-phase commit protocol. Transactions in state
-  // PREPARED can be subsequently moved to either state COMMITTED or
-  // ABORTED. Once a transaction is in state PREPARED, it is guaranteed
-  // to be able to commit if the coordinator node decides to do so;
-  // conflicting transactions cannot prevent it from doing so by pushing
-  // it to a higher timestamp or aborting it.
-  PREPARED = 4;
   // STAGING is the state for a transaction which has issued all of
   // its writes and is in the process of committing. Mutations made
   // as part of a transaction in this state may still be in-flight
@@ -449,7 +430,35 @@ message Transaction {
   // slice should be treated as immutable and all updates should be performed
   // on a copy of the slice.
   repeated ObservedTimestamp observed_timestamps = 8 [(gogoproto.nullable) = false];
-
+  // If set, a write performed by the transaction could not be performed at the
+  // transaction's read timestamp because a newer value was present. Had our
+  // write been performed, it would have overwritten the other value even though
+  // that value might not have been read by a previous read in the transaction
+  // (i.e. lost update anomaly). The write is still performed, but this flag is
+  // set and the txn's write timestamp is bumped, so the client will not be able
+  // to commit without performing a refresh.
+  //
+  // Since 20.1, errors do not carry this flag; only successful BatchResponses
+  // do. When possible, such a BatchResponse is preferred to a WriteTooOldError
+  // because the former leaves intents behind to act as locks.
+  //
+  // On the client, the txnSpanRefresher terminates this flag by refreshing
+  // eagerly when the flag is set. If the key that generated the write too old
+  // condition had been previously read by the transaction, a refresh of the
+  // transaction's read span will surely fail. The client is not currently smart
+  // enough to avoid hopeless refreshes, though.
+  //
+  // Historically, this field was also important for SNAPSHOT transactions which
+  // could commit in other situations when the write timestamp is bumped, but
+  // not when this flag is set (since lost updates cannot be tolerated even in
+  // SNAPSHOT). In SERIALIZABLE isolation, transactions generally don't commit
+  // with a bumped write timestamp, so this flag is only telling us that a
+  // refresh is less likely to succeed than in other cases where
+  // ReadTimestamp != WriteTimestamp.
+  //
+  // TODO(nvanbenschoten): this flag is no longer assigned by v23.2 nodes.
+  // Remove it when compatibility with v23.1 nodes is no longer a concern.
+  bool write_too_old = 12;
   // Set of spans that the transaction has acquired locks within. These are
   // spans which must be resolved on txn completion. Note that these spans
   // may be condensed to cover aggregate spans if the keys locked by the
@@ -465,7 +474,6 @@ message Transaction {
   // treated as immutable and all updates should be performed on a copy
   // of the slice.
   repeated Span lock_spans = 11 [(gogoproto.nullable) = false];
-
   // Set of in-flight intent writes that have been issued by the transaction but
   // which may not have succeeded yet. If any in-flight writes are provided, a
   // committing EndTxn request will move a PENDING transaction to the STAGING
@@ -507,7 +515,7 @@ message Transaction {
   // choose which writes are exported on a per-transaction basis.
   bool omit_in_rangefeeds = 20;
 
-  reserved 3, 6, 9, 12, 13, 14;
+  reserved 3, 6, 9, 13, 14;
 }
 
 // A TransactionRecord message contains the subset of the fields in a
@@ -603,8 +611,6 @@ message LockStateInfo {
   // The readers and writers currently waiting on the lock.  Stable ordering
   // is not guaranteed.
   repeated kv.kvserver.concurrency.lock.Waiter waiters = 6 [(gogoproto.nullable) = false];
-  // The strength of the lock is being held at.
-  kv.kvserver.concurrency.lock.Strength lock_strength = 7;
 }
 
 // A SequencedWrite is a point write to a key with a certain sequence number.
@@ -616,8 +622,6 @@ message SequencedWrite {
   // The sequence number of the request that created the write.
   int32 sequence = 2 [
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/storage/enginepb.TxnSeq"];
-  // The strength with which the lock was acquired at.
-  kv.kvserver.concurrency.lock.Strength strength = 3;
 }
 
 // LeaseAcquisitionType indicates the type of lease acquisition event that
@@ -647,24 +651,12 @@ message Lease {
   // The expiration is a timestamp at which the lease expires. This means that a
   // new lease can be granted for a later timestamp. This field is only set for
   // expiration-based leases.
-  //
-  // This is an exclusive value, i.e. the lease is valid in [start, expiration).
   util.hlc.Timestamp expiration = 2;
 
   // The address of the would-be lease holder.
   ReplicaDescriptor replica = 3 [(gogoproto.nullable) = false];
 
   // The start of the lease stasis period. This field is deprecated.
-  //
-  // TODO(erikgrinaker): remove this. Migration:
-  //
-  // - 2016: the field was deprecated (#10305).
-  //
-  // - 24.1: stop reading the field. 23.2 nodes compare the field below Raft in
-  //   Lease.Equal(), so we must populate the field for backwards compatibility.
-  //
-  // - 24.2 or later: remove the field when backwards compatibility with 23.2
-  //   is no longer needed.
   util.hlc.Timestamp deprecated_start_stasis = 4;
 
   // The current timestamp when this lease has been proposed. Used after a
@@ -672,17 +664,12 @@ message Lease {
   // proposed after the time of the said transfer or restart. This is nullable
   // to help with the rollout (such that a lease applied by some nodes before
   // the rollout and some nodes after the rollout is serialized the same).
+  // TODO(andrei): Make this non-nullable after the rollout.
   util.hlc.Timestamp proposed_ts  = 5 [(gogoproto.customname) = "ProposedTS",
-    (gogoproto.nullable) = false,
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/util/hlc.ClockTimestamp"];
 
-  // The epoch of the lease holder's node liveness record. The lease inherits
-  // the expiration of the node liveness record for as long as the node liveness
-  // record retains this epoch. The lease is invalid if the node liveness record
-  // is updated with a different epoch.
-  //
-  // This field is only set for epoch-based leases. If this value is non-zero,
-  // the expiration field and the term field must not be set.
+  // The epoch of the lease holder's node liveness entry. If this value is
+  // non-zero, the expiration field is ignored.
   int64 epoch = 6;
 
   // A zero-indexed sequence number which is incremented during the acquisition
@@ -699,25 +686,6 @@ message Lease {
   // The type of acquisition event that result in this lease (transfer or
   // request).
   LeaseAcquisitionType acquisition_type = 8;
-
-  // The minimum expiration at which the lease expires, independent of any other
-  // expiry condition. This field can be used to place a floor on the expiration
-  // for epoch-based leases and leader leases to prevent expiration regressions
-  // when upgrading from an expiration-based lease. It is not supported for
-  // expiration-based leases.
-  //
-  // Like expiration above, this is an exclusive value, i.e. the lease is valid
-  // in [start, max(min_expiration, <expiration from epoch or term>)).
-  util.hlc.Timestamp min_expiration = 9 [(gogoproto.nullable) = false];
-
-  // The term of the raft leader that a leader lease is associated with. The
-  // lease is valid for as long as the raft leader has a guarantee from store
-  // liveness that it remains the leader under this term. The lease is invalid
-  // if the raft leader loses leadership (i.e. changes its term).
-  //
-  // This field is only set for leader leases. If non-zero, the expiration field
-  // and the epoch field must not be set.
-  uint64 term = 10;
 }
 
 // AbortSpanEntry contains information about a transaction which has
@@ -739,18 +707,6 @@ message AbortSpanEntry {
   // The priority of the transaction.
   int32 priority = 3 [
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/storage/enginepb.TxnPriority"];
-}
-
-// BufferedWrite contains information about all writes buffered on the root txn
-// for a given key.
-message BufferedWrite {
-  message Val {
-    Value val = 1 [(gogoproto.nullable) = false];
-    int32 seq = 2 [(gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/storage/enginepb.TxnSeq"];
-  }
-  uint64 id = 1 [(gogoproto.customname) = "ID"];
-  bytes key = 2 [(gogoproto.casttype) = "Key"];
-  repeated Val vals = 3 [(gogoproto.nullable) = false];
 }
 
 // LeafTxnInputState is the state from a transaction coordinator
@@ -781,13 +737,6 @@ message LeafTxnInputState {
   // updated via the (kv.TxnSender).Step() operation.
   int32 read_seq_num = 10 [
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/storage/enginepb.TxnSeq"];
-  // buffered_writes stores all writes that are buffered on the root txn (on the
-  // gateway node). Overlapping read requests need to be aware of these in order
-  // to support read-your-own-writes.
-  // TODO(#139060): ship only a part of the write buffer that intersects with
-  // tables that we'll be scanned by the leaf. Also consider applying the same
-  // optimization to in_flight_writes.
-  repeated BufferedWrite buffered_writes = 11 [(gogoproto.nullable) = false];
 }
 
 // LeafTxnFinalState is the state from a leaf transaction coordinator
@@ -799,11 +748,17 @@ message LeafTxnFinalState {
   // record. This can be simplified.
   // See: https://github.com/cockroachdb/cockroach/issues/43192
   Transaction txn = 1 [(gogoproto.nullable) = false];
-  reserved 2, 3;
+  reserved 2;
+  // deprecated_command_count indicates that at least one request
+  // has been processed in this transaction.
+  // Populated only for compatibility with pre-20.1 nodes.
+  // TODO(knz,andrei): Remove this in 20.2.
+  int32 deprecated_command_count = 3;
   // refresh_spans contains the key spans read by the leaf. The root will add
   // them to its own tracking of reads.
   repeated Span refresh_spans = 4 [(gogoproto.nullable) = false];
-  reserved 5, 6;
+  reserved 5;
+  reserved 6;
   // refresh_invalid is set if refresh spans have not been collected. In this
   // case, refresh_spans is empty. It may be set because the leaf was asked not
   // to collect spans or because the leaf's reads exceeded the tracking memory
@@ -817,15 +772,6 @@ message LeafTxnFinalState {
 // in the past (lag) or in the future (lead) MVCC history is closed off.
 enum RangeClosedTimestampPolicy {
   option (gogoproto.goproto_enum_prefix) = false;
-
-  // NB: there is a local-only enum value of -1, see `rangecache.UnknownClosedTimestampPolicy`.
-  // This value is used for the range cache as a placeholder.
-  //
-  // Whenever we send a RangeInfo via DistSender, this unknown policy
-  // instead defaults to `kvcoord.defaultSendClosedTimestampPolicy`.
-  //
-  // If we re-did this today, we'd reserve the zero value of the enum
-  // for an UNKNOWN value.
 
   // LAG_BY_CLUSTER_SETTING indicates that the range's closed timestamp is
   // configured to lag behind present time by the value configured for the
@@ -851,11 +797,6 @@ enum RangeClosedTimestampPolicy {
 message ClientRangeInfo {
   int64 descriptor_generation = 1 [(gogoproto.casttype) = "RangeGeneration"];
   int64 lease_sequence = 2 [(gogoproto.casttype) = "LeaseSequence"];
-  // NB: This field may occasionally be constructed with the (wire-invalid)
-  // value of -1, corresponding to rangecache's unknownClosedTimestampPolicy.
-  // Before attaching to a request, it is coalesced to a valid enum value.
-  //
-  // See: https://github.com/cockroachdb/cockroach/issues/129981.
   RangeClosedTimestampPolicy closed_timestamp_policy = 3;
   // ExplicitlyRequested causes range info to be returned even if other fields
   // are up-to-date or empty.

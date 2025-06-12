@@ -8,7 +8,6 @@ go_library(
         "errors.go",
         "keys.go",
         "printer.go",
-        "printer_fuzz.go",
         "spans.go",
         "sql.go",
     ],
@@ -21,7 +20,6 @@ go_library(
         "//pkg/util/uuid",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_redact//:redact",
-        "@com_github_cockroachdb_redact//interfaces",
     ],
 )
 
@@ -33,6 +31,7 @@ go_test(
         "printer_test.go",
         "sql_test.go",
     ],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
     embed = [":keys"],
     deps = [
@@ -48,7 +47,6 @@ go_test(
         "@com_github_cockroachdb_apd_v3//:apd",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_redact//:redact",
-        "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
     ],
 )

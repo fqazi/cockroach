@@ -5,10 +5,7 @@
 
 package collatedstring
 
-import (
-	"golang.org/x/text/collate"
-	"golang.org/x/text/language"
-)
+import "golang.org/x/text/collate"
 
 // DefaultCollationTag is the "default" collation for strings.
 const DefaultCollationTag = "default"
@@ -47,14 +44,4 @@ func init() {
 	for _, t := range collate.Supported() {
 		supportedTagNames = append(supportedTagNames, t.String())
 	}
-}
-
-// A collation is considered deterministic if there exists no equivalence
-// mapping between different representations of its unicode characters.
-func IsDeterministicCollation(tag language.Tag) bool {
-	// ks_level2 + kc_true might be deterministic, but we won't support it for now.
-	hasDeterministicLevel := tag.TypeForKey("ks") != "level1" && tag.TypeForKey("ks") != "level2"
-	hasNoAlternateHandling := tag.TypeForKey("ka") != "shifted"
-
-	return hasDeterministicLevel && hasNoAlternateHandling
 }

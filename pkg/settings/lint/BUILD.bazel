@@ -6,6 +6,7 @@ go_test(
         "lint_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=295s"],
     deps = [
         "//pkg/base",
         "//pkg/ccl",

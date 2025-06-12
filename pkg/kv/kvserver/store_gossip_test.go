@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/allocatorimpl"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -66,30 +65,9 @@ func TestStoreGossipDeltaTrigger(t *testing.T) {
 			expectedShould: true,
 		},
 		{
-			desc:           "no delta: IO overload <= minimum",
-			lastGossiped:   roachpb.StoreCapacity{IOThresholdMax: allocatorimpl.TestingIOThresholdWithScore(0)},
-			cached:         roachpb.StoreCapacity{IOThresholdMax: allocatorimpl.TestingIOThresholdWithScore(allocatorimpl.DefaultLeaseIOOverloadThreshold - 1e9)},
-			expectedReason: "",
-			expectedShould: false,
-		},
-		{
-			desc:           "no delta: IO overload unchanged",
-			lastGossiped:   roachpb.StoreCapacity{IOThresholdMax: allocatorimpl.TestingIOThresholdWithScore(allocatorimpl.DefaultLeaseIOOverloadThreshold)},
-			cached:         roachpb.StoreCapacity{IOThresholdMax: allocatorimpl.TestingIOThresholdWithScore(allocatorimpl.DefaultLeaseIOOverloadThreshold)},
-			expectedReason: "",
-			expectedShould: false,
-		},
-		{
-			desc:           "should gossip on IO overload increase greater than min",
-			lastGossiped:   roachpb.StoreCapacity{IOThresholdMax: allocatorimpl.TestingIOThresholdWithScore(0)},
-			cached:         roachpb.StoreCapacity{IOThresholdMax: allocatorimpl.TestingIOThresholdWithScore(allocatorimpl.DefaultLeaseIOOverloadThreshold)},
-			expectedReason: "io-overload(0.3) change",
-			expectedShould: true,
-		},
-		{
-			desc:           "should gossip on IO overload increase greater than min but last gossip was too recent",
-			lastGossiped:   roachpb.StoreCapacity{IOThresholdMax: allocatorimpl.TestingIOThresholdWithScore(0)},
-			cached:         roachpb.StoreCapacity{IOThresholdMax: allocatorimpl.TestingIOThresholdWithScore(allocatorimpl.DefaultLeaseIOOverloadThreshold)},
+			desc:           "should gossip on all delta but last gossip was too recent",
+			lastGossiped:   roachpb.StoreCapacity{QueriesPerSecond: 100, WritesPerSecond: 100, RangeCount: 10, LeaseCount: 10},
+			cached:         roachpb.StoreCapacity{QueriesPerSecond: 200, WritesPerSecond: 0, RangeCount: 15, LeaseCount: 5},
 			expectedReason: "",
 			expectedShould: false,
 			// Set the last gossip time to be some time far in the future, so the

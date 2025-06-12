@@ -22,12 +22,16 @@ type TimerI interface {
 	// Reset will set the timer to notify on Ch() after duration.
 	Reset(duration time.Duration)
 
-	// Stop prevents the Timer from firing.
+	// Stop must only be called one time per timer.
 	Stop() bool
 
 	// Ch returns the channel which will be notified when the timer reaches its
 	// time.
 	Ch() <-chan time.Time
+
+	// MarkRead should be called when a value is read from the Ch() channel.
+	// If MarkRead is not called, the resetting the timer is less efficient.
+	MarkRead()
 }
 
 // TickerI is an interface wrapping Ticker.
@@ -62,7 +66,7 @@ func (DefaultTimeSource) Since(t time.Time) time.Duration {
 
 // NewTimer returns a TimerI wrapping *Timer.
 func (DefaultTimeSource) NewTimer() TimerI {
-	return (*timer)(new(Timer))
+	return (*timer)(NewTimer())
 }
 
 // NewTicker creates a new ticker.
@@ -84,6 +88,10 @@ func (t *timer) Stop() bool {
 
 func (t *timer) Ch() <-chan time.Time {
 	return t.C
+}
+
+func (t *timer) MarkRead() {
+	t.Read = true
 }
 
 type ticker time.Ticker

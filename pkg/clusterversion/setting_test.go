@@ -20,8 +20,8 @@ import (
 func TestMakeMetricsAndRegisterOnVersionChangeCallback(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	ctx := context.Background()
-	s1 := cluster.MakeTestingClusterSettingsWithVersions(clusterversion.Latest.Version(), clusterversion.MinSupported.Version(), true)
-	s2 := cluster.MakeTestingClusterSettingsWithVersions(clusterversion.Latest.Version(), clusterversion.MinSupported.Version(), true)
+	s1 := cluster.MakeTestingClusterSettingsWithVersions(clusterversion.TestingBinaryVersion, clusterversion.TestingBinaryMinSupportedVersion, true)
+	s2 := cluster.MakeTestingClusterSettingsWithVersions(clusterversion.TestingBinaryVersion, clusterversion.TestingBinaryMinSupportedVersion, true)
 
 	m1 := clusterversion.MakeMetricsAndRegisterOnVersionChangeCallback(&s1.SV)
 	m2 := clusterversion.MakeMetricsAndRegisterOnVersionChangeCallback(&s2.SV)
@@ -30,7 +30,7 @@ func TestMakeMetricsAndRegisterOnVersionChangeCallback(t *testing.T) {
 	require.Equal(t, int64(0), m2.PreserveDowngradeLastUpdated.Value())
 
 	// Test that the metrics returned are independent.
-	clusterversion.PreserveDowngradeVersion.Override(ctx, &s1.SV, clusterversion.Latest.String())
+	clusterversion.PreserveDowngradeVersion.Override(ctx, &s1.SV, clusterversion.TestingBinaryVersion.String())
 	testutils.SucceedsSoon(t, func() error {
 		if int64(0) >= m1.PreserveDowngradeLastUpdated.Value() {
 			return errors.New("metric is zero. expected positive number.")
@@ -39,7 +39,7 @@ func TestMakeMetricsAndRegisterOnVersionChangeCallback(t *testing.T) {
 	})
 	require.Equal(t, int64(0), m2.PreserveDowngradeLastUpdated.Value())
 
-	clusterversion.PreserveDowngradeVersion.Override(ctx, &s2.SV, clusterversion.Latest.String())
+	clusterversion.PreserveDowngradeVersion.Override(ctx, &s2.SV, clusterversion.TestingBinaryVersion.String())
 	testutils.SucceedsSoon(t, func() error {
 		if int64(0) >= m2.PreserveDowngradeLastUpdated.Value() {
 			return errors.New("metric is zero. expected positive number.")
@@ -57,11 +57,11 @@ func TestMakeMetricsAndRegisterOnVersionChangeCallback(t *testing.T) {
 }
 
 func BenchmarkClusterVersionSettingIsActive(b *testing.B) {
-	s := cluster.MakeTestingClusterSettings()
+	s := cluster.MakeTestingClusterSettingsWithVersions(clusterversion.TestingBinaryVersion, clusterversion.TestingBinaryMinSupportedVersion, true)
 	ctx := context.Background()
 	active := true
 	for i := 0; i < b.N; i++ {
-		active = s.Version.IsActive(ctx, clusterversion.Latest) && active
+		active = s.Version.IsActive(ctx, clusterversion.VCurrent_Start) && active
 	}
 	require.True(b, active)
 }

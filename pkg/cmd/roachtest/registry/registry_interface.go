@@ -15,6 +15,5 @@ import (
 type Registry interface {
 	MakeClusterSpec(nodeCount int, opts ...spec.Option) spec.ClusterSpec
 	Add(TestSpec)
-	AddOperation(OperationSpec)
 	PromFactory() promauto.Factory
 }

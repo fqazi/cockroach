@@ -9,8 +9,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig/spanconfigbounds"
 	"github.com/cockroachdb/cockroach/pkg/sql/paramparse"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -25,7 +26,6 @@ import (
 const alterTenantCapabilityOp = "ALTER VIRTUAL CLUSTER CAPABILITY"
 
 type alterTenantCapabilityNode struct {
-	zeroInputPlanNode
 	n          *tree.AlterTenantCapability
 	tenantSpec tenantSpec
 
@@ -40,6 +40,9 @@ func (p *planner) AlterTenantCapability(
 ) (planNode, error) {
 	if err := rejectIfCantCoordinateMultiTenancy(p.execCfg.Codec, "grant/revoke capabilities to", p.execCfg.Settings); err != nil {
 		return nil, err
+	}
+	if !p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.V23_1TenantCapabilities) {
+		return nil, pgerror.Newf(pgcode.ObjectNotInPrerequisiteState, "cannot alter tenant capabilities until version is finalized")
 	}
 
 	tSpec, err := p.planTenantSpec(ctx, n.TenantSpec, alterTenantCapabilityOp)
@@ -91,6 +94,7 @@ func (p *planner) AlterTenantCapability(
 				typedValue, err = p.analyzeExpr(
 					ctx,
 					update.Value,
+					nil, /* source */
 					dummyHelper,
 					desiredType,
 					true, /* requireType */
@@ -139,7 +143,7 @@ func (n *alterTenantCapabilityNode) startExec(params runParams) error {
 	dst := &tenantInfo.Capabilities
 
 	if n.n.AllCapabilities {
-		for capID := tenantcapabilitiespb.ID(1); capID <= tenantcapabilitiespb.MaxCapabilityID; capID++ {
+		for capID := tenantcapabilities.ID(1); capID <= tenantcapabilities.MaxCapabilityID; capID++ {
 			cap, _ := tenantcapabilities.FromID(capID)
 			switch c := cap.(type) {
 			case tenantcapabilities.BoolCapability:

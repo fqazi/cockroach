@@ -11,12 +11,12 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/kv/kvpb",
-        "//pkg/raft/raftpb",
         "//pkg/roachpb",
         "//pkg/util",
         "//pkg/util/metric",
         "//pkg/util/syncutil",
         "@com_github_cockroachdb_errors//:errors",
+        "@io_etcd_go_raft_v3//raftpb",
     ],
 )
 
@@ -27,12 +27,13 @@ go_test(
         "cache_test.go",
         "ring_buffer_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":raftentry"],
     deps = [
         "//pkg/kv/kvpb",
-        "//pkg/raft/raftpb",
         "//pkg/roachpb",
         "//pkg/util/leaktest",
         "@com_github_stretchr_testify//require",
+        "@io_etcd_go_raft_v3//raftpb",
     ],
 )

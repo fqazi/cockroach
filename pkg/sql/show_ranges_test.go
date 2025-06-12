@@ -14,9 +14,9 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/sql/deprecatedshowranges"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltestutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
+	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -82,13 +82,11 @@ FROM [SHOW RANGES FROM TABLE t WITH DETAILS]`
 	}
 }
 
-// TestShowRangesMultipleStores tests that the leaseholder_locality shown in
+// TestRangeLocalityBasedOnNodeIDs tests that the leaseholder_locality shown in
 // SHOW RANGES works correctly.
 func TestShowRangesMultipleStores(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	skip.UnderRace(t, "the test is too heavy")
 
 	ctx := context.Background()
 
@@ -120,7 +118,7 @@ func TestShowRangesMultipleStores(t *testing.T) {
 	)
 	assert.NoError(t, tc.WaitForFullReplication())
 
-	// Scatter a system table so that the lease is unlikely to be on node 1.
+	// Scatter a system table so that the lease is unlike to be on node 1.
 	sqlDB := sqlutils.MakeSQLRunner(tc.Conns[0])
 	sqlDB.Exec(t, "ALTER TABLE system.jobs SCATTER")
 	// Ensure that the localities line up.
@@ -132,7 +130,7 @@ func TestShowRangesMultipleStores(t *testing.T) {
 		"SHOW RANGE FROM INDEX system.jobs@jobs_status_created_idx FOR ROW ('running', now(), 0)",
 	} {
 		t.Run(q, func(t *testing.T) {
-			// Retry because if there's not a leaseholder, you can get a NULL.
+			// Retry because if there's not a leaseholder, you can NULL.
 			sqlDB.CheckQueryResultsRetry(t,
 				fmt.Sprintf(`
 SELECT DISTINCT
@@ -143,6 +141,34 @@ SELECT DISTINCT
 	FROM [%s]`, q), [][]string{{"true"}})
 		})
 	}
+}
+
+// Regression test for #102183 and #102218.
+func TestDeprecatedShowRangesWithClusterSettingChange(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+
+	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
+
+	db := sqlutils.MakeSQLRunner(sqlDB)
+
+	// Initialize the plan cache with the default (modern) behavior.
+	deprecatedshowranges.ShowRangesDeprecatedBehaviorSetting.Override(ctx, &s.ClusterSettings().SV, false)
+	db.Exec(t, `TABLE crdb_internal.ranges_no_leases`)
+	db.Exec(t, `TABLE crdb_internal.ranges`)
+
+	// Now change the setting and verify that the plan cache is invalidated.
+	deprecatedshowranges.ShowRangesDeprecatedBehaviorSetting.Override(ctx, &s.ClusterSettings().SV, true)
+	db.Exec(t, `TABLE crdb_internal.ranges_no_leases`)
+	db.Exec(t, `TABLE crdb_internal.ranges`)
+
+	// Now change the setting back and verify that the plan cache is invalidated again.
+	deprecatedshowranges.ShowRangesDeprecatedBehaviorSetting.Override(ctx, &s.ClusterSettings().SV, false)
+	db.Exec(t, `TABLE crdb_internal.ranges_no_leases`)
+	db.Exec(t, `TABLE crdb_internal.ranges`)
 }
 
 func TestShowRangesWithDetails(t *testing.T) {
@@ -234,68 +260,4 @@ func TestShowRangesWithDetails(t *testing.T) {
 	// Assert that the sum of val_bytes for each range equals the
 	// val_bytes for the whole table.
 	require.Equal(t, valBytesPreSplit, valBytesR1+valBytesR2)
-}
-
-// TestShowRangesUnavailableReplicas tests that SHOW RANGES does not return an
-// error if it encounters an unavailable range. Moreover, crdb_internal.ranges
-// includes the encountered error.
-func TestShowRangesUnavailableReplicas(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	const numNodes = 3
-	ctx := context.Background()
-	st := cluster.MakeTestingClusterSettings()
-	tc := testcluster.StartTestCluster(
-		// Manual replication will prevent the leaseholder for the unavailable range
-		// from moving a different node.
-		t, numNodes, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings: st,
-			},
-		},
-	)
-	defer tc.Stopper().Stop(ctx)
-
-	sqlDB := sqlutils.MakeSQLRunner(tc.Conns[0])
-	sqlDB.Exec(t, `SET CLUSTER SETTING kv.replica_circuit_breaker.slow_replication_threshold='1s'`)
-	sqlDB.Exec(t, `SET CLUSTER SETTING kv.replica_raft.leaderless_unavailable_threshold='5s'`)
-	sqlDB.Exec(t, `CREATE TABLE t (x INT PRIMARY KEY)`)
-	// Split the table's range to have a better chance of moving some leaseholders
-	// off of node 1 in the scatter below.
-	sqlDB.Exec(t, `ALTER TABLE t SPLIT AT SELECT i FROM generate_series(0, 20) AS g(i)`)
-	sqlDB.Exec(t, `ALTER TABLE t SCATTER`)
-
-	// Server 0 includes the leaseholders for all system ranges, but the other two
-	// are safe to stop to create some unavailable ranges that belong to table t.
-	tc.StopServer(1)
-	tc.StopServer(2)
-
-	q := `SELECT range_id, lease_holder, range_size FROM [SHOW RANGES FROM TABLE t WITH DETAILS]`
-	result := sqlDB.QueryStr(t, q)
-	unavailableRangeID := ""
-	// Iterate over the results to find an unavailable range.
-	for _, row := range result {
-		// crdb_internal.ranges powers the lease_holder and range_size fields in
-		// SHOW RANGES. If a range is unavailable, the former returns NULL for both
-		// fields but the latter converts the NULL leaseholder to 0.
-		if row[1] == "0" {
-			unavailableRangeID = row[0]
-			require.Equal(t, "NULL", row[2])
-			break
-		}
-	}
-	// Ensure there it at least one unavailable range.
-	require.NotEqual(t, "", unavailableRangeID)
-
-	// crdb_internal.ranges also has an "errors" field that includes any errors
-	// encountered while fetching the leaseholder and range stats. For the
-	// unavailable range, we expect a "replica unavailable" error.
-	q = fmt.Sprintf(`SELECT errors FROM crdb_internal.ranges WHERE range_id = %s`, unavailableRangeID)
-	result = sqlDB.QueryStr(t, q)
-	expectedError := fmt.Sprintf(
-		"replica unavailable.*unable to serve request to r%s", unavailableRangeID,
-	)
-	require.Regexp(t, expectedError, result[0][0])
 }

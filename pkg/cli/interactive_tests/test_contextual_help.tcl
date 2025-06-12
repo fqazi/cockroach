@@ -72,6 +72,7 @@ eexpect "use '??'"
 eexpect " ->"
 # restore the normal state
 send ";\r"
+eexpect HINT
 eexpect root@
 end_test
 

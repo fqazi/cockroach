@@ -155,7 +155,7 @@ type PlaceholderInfo struct {
 
 // Init initializes a PlaceholderInfo structure appropriate for the given number
 // of placeholders, and with the given (optional) type hints.
-func (p *PlaceholderInfo) Init(numPlaceholders int, typeHints PlaceholderTypes) {
+func (p *PlaceholderInfo) Init(numPlaceholders int, typeHints PlaceholderTypes) error {
 	if typeHints == nil {
 		p.TypeHints = make(PlaceholderTypes, numPlaceholders)
 		p.Types = make(PlaceholderTypes, numPlaceholders)
@@ -164,16 +164,17 @@ func (p *PlaceholderInfo) Init(numPlaceholders int, typeHints PlaceholderTypes) 
 		p.TypeHints = typeHints
 	}
 	p.Values = nil
+	return nil
 }
 
 // Assign resets the PlaceholderInfo to the contents of src.
 // If src is nil, a new structure is initialized.
-func (p *PlaceholderInfo) Assign(src *PlaceholderInfo, numPlaceholders int) {
+func (p *PlaceholderInfo) Assign(src *PlaceholderInfo, numPlaceholders int) error {
 	if src != nil {
 		*p = *src
-		return
+		return nil
 	}
-	p.Init(numPlaceholders, nil /* typeHints */)
+	return p.Init(numPlaceholders, nil /* typeHints */)
 }
 
 // MaybeExtendTypes is to fill the nil types with the type hints, if exists.

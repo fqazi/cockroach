@@ -48,8 +48,8 @@ func TestFirstUpgrade(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	var (
-		v0 = clusterversion.MinSupported.Version()
-		v1 = clusterversion.Latest.Version()
+		v0 = clusterversion.TestingBinaryMinSupportedVersion
+		v1 = clusterversion.ByKey(clusterversion.BinaryVersionKey)
 	)
 
 	ctx := context.Background()
@@ -60,7 +60,7 @@ func TestFirstUpgrade(t *testing.T) {
 		Knobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
 				DisableAutomaticVersionUpgrade: make(chan struct{}),
-				ClusterVersionOverride:         v0,
+				BinaryVersionOverride:          v0,
 			},
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 		},
@@ -153,8 +153,8 @@ func TestFirstUpgradeRepair(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	var (
-		v0 = clusterversion.MinSupported.Version()
-		v1 = clusterversion.Latest.Version()
+		v0 = clusterversion.TestingBinaryMinSupportedVersion
+		v1 = clusterversion.ByKey(clusterversion.BinaryVersionKey)
 	)
 
 	ctx := context.Background()
@@ -179,7 +179,7 @@ func TestFirstUpgradeRepair(t *testing.T) {
 			},
 			Server: &server.TestingKnobs{
 				DisableAutomaticVersionUpgrade: make(chan struct{}),
-				ClusterVersionOverride:         v0,
+				BinaryVersionOverride:          v0,
 			},
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 		},
@@ -269,10 +269,9 @@ func TestFirstUpgradeRepair(t *testing.T) {
 	tdb.CheckQueryResults(t, "SELECT test.public.f()", [][]string{{"1"}})
 
 	// The corruption should interfere with DDL statements.
-	const errRE = "relation \"foo\" \\(106\\): invalid foreign key backreference: missing table=123456789: referenced table ID 123456789: referenced descriptor not found"
+	const errRE = "referenced table ID 123456789: referenced descriptor not found"
 	tdb.ExpectErr(t, errRE, "ALTER TABLE test.public.foo RENAME TO bar")
-	const errReForFunction = " function \"f\" \\(107\\): referenced descriptor ID 123456789: referenced descriptor not found"
-	tdb.ExpectErr(t, errReForFunction, "ALTER FUNCTION test.public.f RENAME TO g")
+	tdb.ExpectErr(t, errRE, "ALTER FUNCTION test.public.f RENAME TO g")
 
 	// Check that the corruption is detected by invalid_objects.
 	const qDetectCorruption = `SELECT count(*) FROM "".crdb_internal.invalid_objects`
@@ -364,8 +363,8 @@ func TestFirstUpgradeRepairBatchSize(t *testing.T) {
 	skip.UnderDuress(t)
 
 	var (
-		v0 = clusterversion.MinSupported.Version()
-		v1 = clusterversion.Latest.Version()
+		v0 = clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey)
+		v1 = clusterversion.ByKey(clusterversion.BinaryVersionKey)
 	)
 
 	ctx := context.Background()
@@ -382,7 +381,7 @@ func TestFirstUpgradeRepairBatchSize(t *testing.T) {
 		Knobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
 				DisableAutomaticVersionUpgrade: make(chan struct{}),
-				ClusterVersionOverride:         v0,
+				BinaryVersionOverride:          v0,
 			},
 			SQLEvalContext: &eval.TestingKnobs{
 				ForceProductionValues: true,
@@ -396,8 +395,6 @@ func TestFirstUpgradeRepairBatchSize(t *testing.T) {
 	sqlRunner := sqlutils.MakeSQLRunner(sqlDB)
 	idb := testServer.InternalDB().(*sql.InternalDB)
 	tx := sqlRunner.Begin(t)
-	_, err := tx.Exec("SET LOCAL autocommit_before_ddl = false")
-	require.NoError(t, err)
 	const batchSize = 100
 	lastCommit := 0
 	commitFn := func(startIdx int) {
@@ -441,8 +438,6 @@ func TestFirstUpgradeRepairBatchSize(t *testing.T) {
 			return
 		}
 		tx = sqlRunner.Begin(t)
-		_, err = tx.Exec("SET LOCAL autocommit_before_ddl = false")
-		require.NoError(t, err)
 	}
 	for i := 0; i < totalDescriptorsToTest; i++ {
 		if i%batchSize == 0 {

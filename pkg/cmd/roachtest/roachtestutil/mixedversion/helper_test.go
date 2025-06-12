@@ -27,7 +27,7 @@ func TestClusterVersionAtLeast(t *testing.T) {
 			name:           "invalid minVersion",
 			currentVersion: "23.1",
 			minVersion:     "v23.1",
-			expectedErr:    `invalid version v23.1`,
+			expectedErr:    `invalid version v23.1: strconv.ParseInt: parsing "v23": invalid syntax`,
 		},
 		{
 			name:           "cluster version is behind",

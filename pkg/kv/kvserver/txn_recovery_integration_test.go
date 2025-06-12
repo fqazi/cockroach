@@ -42,7 +42,8 @@ func TestTxnRecoveryFromStaging(t *testing.T) {
 		// implicit-commit condition.
 		implicitCommit bool
 		// futureWrites dictates whether the transaction has been writing at the
-		// present time or whether it has been writing into the future.
+		// present time or whether it has been writing into the future with a
+		// synthetic timestamp.
 		futureWrites bool
 	}{
 		{
@@ -79,7 +80,7 @@ func TestTxnRecoveryFromStaging(t *testing.T) {
 			// where it has refreshed up to its write timestamp in preparation
 			// to commit.
 			if tc.futureWrites {
-				txn.WriteTimestamp = txn.ReadTimestamp.Add(50, 0)
+				txn.WriteTimestamp = txn.ReadTimestamp.Add(50, 0).WithSynthetic(true)
 				txn.ReadTimestamp = txn.WriteTimestamp // simulate refresh
 			}
 

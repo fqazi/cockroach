@@ -99,7 +99,7 @@ func (ec *Builtins) EncodeTableIndexKey(
 		if err != nil {
 			return nil, err
 		}
-		if d.ResolvedType().Family() == types.UnknownFamily {
+		if d.ResolvedType() == types.Unknown {
 			if !col.IsNullable() {
 				return nil, pgerror.Newf(pgcode.NotNullViolation, "NULL provided as a value for a nonnullable column")
 			}

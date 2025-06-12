@@ -83,7 +83,7 @@ func (g *mockLockTableGuard) CheckOptimisticNoConflicts(*lockspanset.LockSpanSet
 	return true
 }
 func (g *mockLockTableGuard) IsKeyLockedByConflictingTxn(
-	context.Context, roachpb.Key, lock.Strength,
+	roachpb.Key, lock.Strength,
 ) (bool, *enginepb.TxnMeta, error) {
 	panic("unimplemented")
 }
@@ -110,7 +110,8 @@ func setupLockTableWaiterTest() (
 ) {
 	ir := &mockIntentResolver{}
 	st := cluster.MakeTestingClusterSettings()
-	LockTableDeadlockOrLivenessDetectionPushDelay.Override(context.Background(), &st.SV, 0)
+	LockTableLivenessPushDelay.Override(context.Background(), &st.SV, 0)
+	LockTableDeadlockDetectionPushDelay.Override(context.Background(), &st.SV, 0)
 	manual := timeutil.NewManualTime(lockTableWaiterTestClock.GoTime())
 	guard := &mockLockTableGuard{
 		signal: make(chan struct{}, 1),
@@ -137,81 +138,92 @@ func TestLockTableWaiterWithTxn(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 
-	uncertaintyLimit := hlc.Timestamp{WallTime: 15}
-	makeReq := func() Request {
-		txn := makeTxnProto("request")
-		txn.GlobalUncertaintyLimit = uncertaintyLimit
-		ba := &kvpb.BatchRequest{}
-		ba.Txn = &txn
-		ba.Timestamp = txn.ReadTimestamp
-		return Request{
-			Txn:       &txn,
-			Timestamp: ba.Timestamp,
-			Batch:     ba,
+	testutils.RunTrueAndFalse(t, "synthetic", func(t *testing.T, synthetic bool) {
+		uncertaintyLimit := hlc.Timestamp{WallTime: 15}
+		makeReq := func() Request {
+			txn := makeTxnProto("request")
+			txn.GlobalUncertaintyLimit = uncertaintyLimit
+			if synthetic {
+				txn.ReadTimestamp = txn.ReadTimestamp.WithSynthetic(true)
+			}
+			return Request{
+				Txn:       &txn,
+				Timestamp: txn.ReadTimestamp,
+			}
 		}
-	}
 
-	expPushTS := func() hlc.Timestamp {
-		// The waiter uses the local clock to bound its push timestamp, with the
-		// assumption that it will be able to use its local uncertainty limit to
-		// ignore the intent. For more, see lockTableWaiterImpl.pushHeader.
-		//
-		// NOTE: lockTableWaiterTestClock < uncertaintyLimit
-		return lockTableWaiterTestClock
-	}
+		expPushTS := func() hlc.Timestamp {
+			// If the waiter has a synthetic timestamp, it pushes all the way up to
+			// its global uncertainty limit, because it won't be able to use a local
+			// uncertainty limit to ignore a synthetic intent. If the waiter does not
+			// have a synthetic timestamp, it uses the local clock to bound its push
+			// timestamp, with the assumption that it will be able to use its local
+			// uncertainty limit to ignore a non-synthetic intent. For more, see
+			// lockTableWaiterImpl.pushHeader.
+			if synthetic {
+				return uncertaintyLimit.WithSynthetic(true)
+			}
+			// NOTE: lockTableWaiterTestClock < uncertaintyLimit
+			return lockTableWaiterTestClock
+		}
 
-	t.Run("state", func(t *testing.T) {
-		t.Run("waitFor", func(t *testing.T) {
-			testWaitPush(t, waitFor, makeReq, expPushTS())
+		t.Run("state", func(t *testing.T) {
+			t.Run("waitFor", func(t *testing.T) {
+				testWaitPush(t, waitFor, makeReq, expPushTS())
+			})
+
+			t.Run("waitForDistinguished", func(t *testing.T) {
+				testWaitPush(t, waitForDistinguished, makeReq, expPushTS())
+			})
+
+			t.Run("waitElsewhere", func(t *testing.T) {
+				testWaitPush(t, waitElsewhere, makeReq, expPushTS())
+			})
+
+			t.Run("waitSelf", func(t *testing.T) {
+				testWaitNoopUntilDone(t, waitSelf, makeReq)
+			})
+
+			t.Run("waitQueueMaxLengthExceeded", func(t *testing.T) {
+				testErrorWaitPush(t, waitQueueMaxLengthExceeded, makeReq, dontExpectPush, reasonWaitQueueMaxLengthExceeded)
+			})
+
+			t.Run("doneWaiting", func(t *testing.T) {
+				w, _, g, _ := setupLockTableWaiterTest()
+				defer w.stopper.Stop(ctx)
+
+				g.state = waitingState{kind: doneWaiting}
+				g.notify()
+
+				err := w.WaitOn(ctx, makeReq(), g)
+				require.Nil(t, err)
+			})
 		})
 
-		t.Run("waitElsewhere", func(t *testing.T) {
-			testWaitPush(t, waitElsewhere, makeReq, expPushTS())
-		})
-
-		t.Run("waitSelf", func(t *testing.T) {
-			testWaitNoopUntilDone(t, waitSelf, makeReq)
-		})
-
-		t.Run("waitQueueMaxLengthExceeded", func(t *testing.T) {
-			testErrorWaitPush(t, waitQueueMaxLengthExceeded, makeReq, dontExpectPush, reasonWaitQueueMaxLengthExceeded)
-		})
-
-		t.Run("doneWaiting", func(t *testing.T) {
+		t.Run("ctx done", func(t *testing.T) {
 			w, _, g, _ := setupLockTableWaiterTest()
 			defer w.stopper.Stop(ctx)
 
-			g.state = waitingState{kind: doneWaiting}
-			g.notify()
+			ctxWithCancel, cancel := context.WithCancel(ctx)
+			go cancel()
+
+			err := w.WaitOn(ctxWithCancel, makeReq(), g)
+			require.NotNil(t, err)
+			require.Equal(t, context.Canceled.Error(), err.GoError().Error())
+		})
+
+		t.Run("stopper quiesce", func(t *testing.T) {
+			w, _, g, _ := setupLockTableWaiterTest()
+			defer w.stopper.Stop(ctx)
+
+			go func() {
+				w.stopper.Quiesce(ctx)
+			}()
 
 			err := w.WaitOn(ctx, makeReq(), g)
-			require.Nil(t, err)
+			require.NotNil(t, err)
+			require.IsType(t, &kvpb.NodeUnavailableError{}, err.GetDetail())
 		})
-	})
-
-	t.Run("ctx done", func(t *testing.T) {
-		w, _, g, _ := setupLockTableWaiterTest()
-		defer w.stopper.Stop(ctx)
-
-		ctxWithCancel, cancel := context.WithCancel(ctx)
-		go cancel()
-
-		err := w.WaitOn(ctxWithCancel, makeReq(), g)
-		require.NotNil(t, err)
-		require.Equal(t, context.Canceled.Error(), err.GoError().Error())
-	})
-
-	t.Run("stopper quiesce", func(t *testing.T) {
-		w, _, g, _ := setupLockTableWaiterTest()
-		defer w.stopper.Stop(ctx)
-
-		go func() {
-			w.stopper.Quiesce(ctx)
-		}()
-
-		err := w.WaitOn(ctx, makeReq(), g)
-		require.NotNil(t, err)
-		require.IsType(t, &kvpb.NodeUnavailableError{}, err.GetDetail())
 	})
 }
 
@@ -224,19 +236,20 @@ func TestLockTableWaiterWithNonTxn(t *testing.T) {
 
 	reqHeaderTS := hlc.Timestamp{WallTime: 10}
 	makeReq := func() Request {
-		ba := &kvpb.BatchRequest{}
-		ba.Timestamp = reqHeaderTS
-		ba.UserPriority = roachpb.NormalUserPriority
 		return Request{
-			Timestamp:      ba.Timestamp,
-			NonTxnPriority: ba.UserPriority,
-			Batch:          ba,
+			Timestamp:      reqHeaderTS,
+			NonTxnPriority: roachpb.NormalUserPriority,
 		}
 	}
 
 	t.Run("state", func(t *testing.T) {
 		t.Run("waitFor", func(t *testing.T) {
-			testWaitPush(t, waitFor, makeReq, reqHeaderTS)
+			t.Log("waitFor does not cause non-transactional requests to push")
+			testWaitNoopUntilDone(t, waitFor, makeReq)
+		})
+
+		t.Run("waitForDistinguished", func(t *testing.T) {
+			testWaitPush(t, waitForDistinguished, makeReq, reqHeaderTS)
 		})
 
 		t.Run("waitElsewhere", func(t *testing.T) {
@@ -423,15 +436,10 @@ func TestLockTableWaiterWithErrorWaitPolicy(t *testing.T) {
 	makeReq := func() Request {
 		txn := makeTxnProto("request")
 		txn.GlobalUncertaintyLimit = uncertaintyLimit
-		ba := &kvpb.BatchRequest{}
-		ba.Txn = &txn
-		ba.Timestamp = txn.ReadTimestamp
-		ba.WaitPolicy = lock.WaitPolicy_Error
 		return Request{
 			Txn:        &txn,
-			Timestamp:  ba.Timestamp,
-			WaitPolicy: ba.WaitPolicy,
-			Batch:      ba,
+			Timestamp:  txn.ReadTimestamp,
+			WaitPolicy: lock.WaitPolicy_Error,
 		}
 	}
 	makeHighPriReq := func() Request {
@@ -450,6 +458,10 @@ func TestLockTableWaiterWithErrorWaitPolicy(t *testing.T) {
 
 		t.Run("waitFor high priority", func(t *testing.T) {
 			testErrorWaitPush(t, waitFor, makeHighPriReq, expPushTS, reasonWaitPolicy)
+		})
+
+		t.Run("waitForDistinguished", func(t *testing.T) {
+			testErrorWaitPush(t, waitForDistinguished, makeReq, expPushTS, reasonWaitPolicy)
 		})
 
 		t.Run("waitElsewhere", func(t *testing.T) {
@@ -591,26 +603,17 @@ func TestLockTableWaiterWithLockTimeout(t *testing.T) {
 		const lockTimeout = 1 * time.Millisecond
 		makeReq := func() Request {
 			txn := makeTxnProto("request")
-			ba := &kvpb.BatchRequest{}
-			ba.Txn = &txn
-			ba.Timestamp = txn.ReadTimestamp
-			ba.LockTimeout = lockTimeout
 			return Request{
-				Txn:         ba.Txn,
-				Timestamp:   ba.Timestamp,
-				LockTimeout: ba.LockTimeout,
-				Batch:       ba,
+				Txn:         &txn,
+				Timestamp:   txn.ReadTimestamp,
+				LockTimeout: lockTimeout,
 			}
 		}
 		if !txn {
 			makeReq = func() Request {
-				ba := &kvpb.BatchRequest{}
-				ba.Timestamp = hlc.Timestamp{WallTime: 10}
-				ba.LockTimeout = lockTimeout
 				return Request{
-					Timestamp:   ba.Timestamp,
-					LockTimeout: ba.LockTimeout,
-					Batch:       ba,
+					Timestamp:   hlc.Timestamp{WallTime: 10},
+					LockTimeout: lockTimeout,
 				}
 			}
 		}
@@ -618,6 +621,10 @@ func TestLockTableWaiterWithLockTimeout(t *testing.T) {
 		t.Run("state", func(t *testing.T) {
 			t.Run("waitFor", func(t *testing.T) {
 				testWaitPushWithTimeout(t, waitFor, makeReq)
+			})
+
+			t.Run("waitForDistinguished", func(t *testing.T) {
+				testWaitPushWithTimeout(t, waitForDistinguished, makeReq)
 			})
 
 			t.Run("waitElsewhere", func(t *testing.T) {
@@ -781,13 +788,9 @@ func TestLockTableWaiterIntentResolverError(t *testing.T) {
 	err2 := kvpb.NewErrorf("error2")
 
 	txn := makeTxnProto("request")
-	ba := &kvpb.BatchRequest{}
-	ba.Txn = &txn
-	ba.Timestamp = txn.ReadTimestamp
 	req := Request{
-		Txn:       ba.Txn,
-		Timestamp: ba.Timestamp,
-		Batch:     ba,
+		Txn:       &txn,
+		Timestamp: txn.ReadTimestamp,
 	}
 
 	// Test with both synchronous and asynchronous pushes.
@@ -797,7 +800,7 @@ func TestLockTableWaiterIntentResolverError(t *testing.T) {
 		pusheeTxn := makeTxnProto("pushee")
 		lockHeld := sync
 		g.state = waitingState{
-			kind:          waitFor,
+			kind:          waitForDistinguished,
 			txn:           &pusheeTxn.TxnMeta,
 			key:           keyA,
 			held:          lockHeld,
@@ -841,13 +844,9 @@ func TestLockTableWaiterDeferredIntentResolverError(t *testing.T) {
 	defer w.stopper.Stop(ctx)
 
 	txn := makeTxnProto("request")
-	ba := &kvpb.BatchRequest{}
-	ba.Txn = &txn
-	ba.Timestamp = txn.ReadTimestamp
 	req := Request{
-		Txn:       ba.Txn,
-		Timestamp: ba.Timestamp,
-		Batch:     ba,
+		Txn:       &txn,
+		Timestamp: txn.ReadTimestamp,
 	}
 	keyA := roachpb.Key("keyA")
 	pusheeTxn := makeTxnProto("pushee")
@@ -988,7 +987,7 @@ func TestContentionEventTracer(t *testing.T) {
 		events = append(events, ev)
 	})
 	h.notify(ctx, waitingState{
-		kind: waitFor,
+		kind: waitForDistinguished,
 		key:  roachpb.Key("a"),
 		txn:  &txn1.TxnMeta,
 	})
@@ -1045,7 +1044,7 @@ func TestContentionEventTracer(t *testing.T) {
 	// emit an event.
 	manual.Advance(12)
 	h.notify(ctx, waitingState{
-		kind: waitFor,
+		kind: waitForDistinguished,
 		key:  roachpb.Key("b"),
 		txn:  &txn2.TxnMeta,
 	})

@@ -9,12 +9,12 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
+	"github.com/cockroachdb/errors"
 )
 
 func init() {
@@ -32,38 +32,30 @@ func Scan(
 	h := cArgs.Header
 	reply := resp.(*kvpb.ScanResponse)
 
-	var lockTableForSkipLocked storage.LockTableView
-	if h.WaitPolicy == lock.WaitPolicy_SkipLocked {
-		lockTableForSkipLocked = newRequestBoundLockTableView(
-			readWriter, cArgs.Concurrency, h.Txn, args.KeyLockingStrength,
-		)
-		defer lockTableForSkipLocked.Close()
+	if err := maybeDisallowSkipLockedRequest(h, args.KeyLockingStrength); err != nil {
+		return result.Result{}, err
 	}
 
 	var res result.Result
 	var scanRes storage.MVCCScanResult
 	var err error
 
-	readCategory := ScanReadCategory(cArgs.EvalCtx.AdmissionHeader())
 	opts := storage.MVCCScanOptions{
-		Inconsistent:            h.ReadConsistency != kvpb.CONSISTENT,
-		SkipLocked:              h.WaitPolicy == lock.WaitPolicy_SkipLocked,
-		Txn:                     h.Txn,
-		ScanStats:               cArgs.ScanStats,
-		Uncertainty:             cArgs.Uncertainty,
-		MaxKeys:                 h.MaxSpanRequestKeys,
-		MaxLockConflicts:        storage.MaxConflictsPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV),
-		TargetLockConflictBytes: storage.TargetBytesPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV),
-		TargetBytes:             h.TargetBytes,
-		AllowEmpty:              h.AllowEmpty,
-		WholeRowsOfSize:         h.WholeRowsOfSize,
-		FailOnMoreRecent:        args.KeyLockingStrength != lock.None,
-		Reverse:                 false,
-		MemoryAccount:           cArgs.EvalCtx.GetResponseMemoryAccount(),
-		LockTable:               lockTableForSkipLocked,
-		DontInterleaveIntents:   cArgs.DontInterleaveIntents,
-		ReadCategory:            readCategory,
-		ReturnRawMVCCValues:     args.ReturnRawMVCCValues,
+		Inconsistent:          h.ReadConsistency != kvpb.CONSISTENT,
+		SkipLocked:            h.WaitPolicy == lock.WaitPolicy_SkipLocked,
+		Txn:                   h.Txn,
+		ScanStats:             cArgs.ScanStats,
+		Uncertainty:           cArgs.Uncertainty,
+		MaxKeys:               h.MaxSpanRequestKeys,
+		MaxLockConflicts:      storage.MaxConflictsPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV),
+		TargetBytes:           h.TargetBytes,
+		AllowEmpty:            h.AllowEmpty,
+		WholeRowsOfSize:       h.WholeRowsOfSize,
+		FailOnMoreRecent:      args.KeyLockingStrength != lock.None,
+		Reverse:               false,
+		MemoryAccount:         cArgs.EvalCtx.GetResponseMemoryAccount(),
+		LockTable:             cArgs.Concurrency,
+		DontInterleaveIntents: cArgs.DontInterleaveIntents,
 	}
 
 	switch args.ScanFormat {
@@ -118,12 +110,12 @@ func Scan(
 		}
 	}
 
-	if args.KeyLockingStrength != lock.None {
+	if args.KeyLockingStrength != lock.None && h.Txn != nil {
 		acquiredLocks, err := acquireLocksOnKeys(
 			ctx, readWriter, h.Txn, args.KeyLockingStrength, args.KeyLockingDurability,
 			args.ScanFormat, &scanRes, cArgs.Stats, cArgs.EvalCtx.ClusterSettings())
 		if err != nil {
-			return result.Result{}, err
+			return result.Result{}, maybeInterceptDisallowedSkipLockedUsage(h, err)
 		}
 		res.Local.AcquiredLocks = acquiredLocks
 	}
@@ -132,10 +124,52 @@ func Scan(
 	return res, nil
 }
 
-func ScanReadCategory(ah kvpb.AdmissionHeader) fs.ReadCategory {
-	readCategory := fs.ScanRegularBatchEvalReadCategory
-	if admissionpb.WorkPriority(ah.Priority) < admissionpb.NormalPri {
-		readCategory = fs.ScanBackgroundBatchEvalReadCategory
+// maybeInterceptDisallowedSkipLockedUsage checks if read evaluation for a skip
+// locked request encountered a replicated lock by checking the supplier error
+// type. It transforms the error into an unimplemented error if that's the case;
+// otherwise, the error is passed through.
+//
+// TODO(arul): this won't be needed once
+// https://github.com/cockroachdb/cockroach/issues/115057 is addressed.
+func maybeInterceptDisallowedSkipLockedUsage(h kvpb.Header, err error) error {
+	if h.WaitPolicy == lock.WaitPolicy_SkipLocked && errors.HasType(err, (*kvpb.LockConflictError)(nil)) {
+		return MarkSkipLockedUnsupportedError(errors.UnimplementedError(
+			errors.IssueLink{IssueURL: build.MakeIssueURL(115057)},
+			"usage of replicated locks in conjunction with skip locked wait policy is currently unsupported",
+		))
 	}
-	return readCategory
+	return err
+}
+
+// maybeDisallowSkipLockedRequest returns an error if the skip locked wait
+// policy is used in conjunction with shared locks.
+//
+// TODO(arul): this won't be needed once
+// https://github.com/cockroachdb/cockroach/issues/110743 is addressed. Until
+// then, we return unimplemented errors.
+func maybeDisallowSkipLockedRequest(h kvpb.Header, str lock.Strength) error {
+	if h.WaitPolicy == lock.WaitPolicy_SkipLocked && str == lock.Shared {
+		return MarkSkipLockedUnsupportedError(errors.UnimplementedError(
+			errors.IssueLink{IssueURL: build.MakeIssueURL(110743)},
+			"usage of shared locks in conjunction with skip locked wait policy is currently unsupported",
+		))
+	}
+	return nil
+}
+
+// SkipLockedUnsupportedError is used to mark errors resulting from unsupported
+// (currently unimplemented) uses of the skip locked wait policy.
+type SkipLockedUnsupportedError struct{}
+
+func (e *SkipLockedUnsupportedError) Error() string {
+	return "unsupported skip locked use error"
+}
+
+// MarkSkipLockedUnsupportedError wraps the given error, if not nil, as a skip
+// locked unsupported error.
+func MarkSkipLockedUnsupportedError(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return errors.Mark(cause, &SkipLockedUnsupportedError{})
 }

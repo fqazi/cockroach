@@ -24,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils/listenerutil"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -89,9 +88,9 @@ func TestStartupFailureRandomRange(t *testing.T) {
 	// of CI at all, and we also don't want to stress it in nightlies as part of
 	// a big package (where it will take a lot of time that could be spent running
 	// "faster" tests). In this package, it is the only test and so it's fine to
-	// run it under nightly (skipping race builds because with many nodes they are
-	// very resource intensive and tend to collapse).
-	skip.UnderRace(t, "6 nodes with replication is too slow for race")
+	// run it under nightly (skipping nightly stressrace because race builds with
+	// many nodes are very resource intensive and tend to collapse).
+	skip.UnderStressRace(t, "6 nodes with replication is too slow for stress race")
 	if !skip.NightlyStress() {
 		skip.IgnoreLint(t, "test takes 30s to run due to circuit breakers and timeouts")
 	}
@@ -135,7 +134,7 @@ func runCircuitBreakerTestForKey(
 
 	lReg := listenerutil.NewListenerRegistry()
 	defer lReg.Close()
-	reg := fs.NewStickyRegistry()
+	reg := server.NewStickyVFSRegistry()
 
 	// TODO: Disable expiration based leases metamorphism since it currently
 	// breaks closed timestamps and prevent rangefeeds from advancing checkpoint

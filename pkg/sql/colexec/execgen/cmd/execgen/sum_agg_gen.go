@@ -107,7 +107,7 @@ const sumAggTmpl = "pkg/sql/colexec/colexecagg/sum_agg_tmpl.go"
 
 func genSumAgg(inputFileContents string, wr io.Writer, isSumInt bool) error {
 	r := strings.NewReplacer(
-		"_CANONICAL_TYPE_FAMILY", "{{.TypeFamily}}",
+		"_TYPE_FAMILY", "{{.TypeFamily}}",
 		"_TYPE_WIDTH", typeWidthReplacement,
 		"_SUMKIND", "{{.SumKind}}",
 		"_RET_GOTYPESLICE", `{{.RetGoTypeSlice}}`,
@@ -159,10 +159,9 @@ func genSumAgg(inputFileContents string, wr io.Writer, isSumInt bool) error {
 			TypeFamily: familyToString(inputTypeFamily),
 		}
 		for _, inputTypeWidth := range supportedWidthsByCanonicalTypeFamily[inputTypeFamily] {
-			// Note that we don't use execinfrapb.GetAggregateOutputType because
-			// we don't want to bring in a dependency on that package to reduce
-			// the burden of regenerating execgen code when the protobufs get
-			// generated.
+			// Note that we don't use execinfrapb.GetAggregateInfo because we don't
+			// want to bring in a dependency on that package to reduce the burden
+			// of regenerating execgen code when the protobufs get generated.
 			retTypeFamily, retTypeWidth := inputTypeFamily, inputTypeWidth
 			if inputTypeFamily == types.IntFamily {
 				if isSumInt {
@@ -203,11 +202,9 @@ func init() {
 		}
 	}
 	registerAggGenerator(
-		sumAggGenerator(false /* isSumInt */), "sum_agg.eg.go", /* filenameSuffix */
-		sumAggTmpl, "sum" /* aggName */, true, /* genWindowVariant */
-	)
+		sumAggGenerator(false /* isSumInt */), "sum_agg.eg.go",
+		sumAggTmpl, true /* genWindowVariant */)
 	registerAggGenerator(
-		sumAggGenerator(true /* isSumInt */), "sum_int_agg.eg.go", /* filenameSuffix */
-		sumAggTmpl, "sumInt" /* aggName */, true, /* genWindowVariant */
-	)
+		sumAggGenerator(true /* isSumInt */), "sum_int_agg.eg.go",
+		sumAggTmpl, true /* genWindowVariant */)
 }

@@ -47,6 +47,8 @@ type Upgrade interface {
 	// not baked into the bootstrap image and need to be run on new cluster
 	// regardless of the cluster's bootstrap version.
 	Permanent() bool
-
-	RestoreBehavior() string
+	// V22_2StartupMigrationName represents the name of the old pre-23.1
+	// startupmigration corresponding to this permanent upgrade. Calling this on
+	// non-permanent upgrades panics.
+	V22_2StartupMigrationName() string
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/joberror"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
+	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/settings"
@@ -75,7 +76,8 @@ func (t rowLevelTTLResumer) Resume(ctx context.Context, execCtx interface{}) (re
 
 	jobExecCtx := execCtx.(sql.JobExecContext)
 	execCfg := jobExecCtx.ExecCfg()
-	db := execCfg.InternalDB
+	db := execCfg.DB
+	descsCol := jobExecCtx.ExtendedEvalContext().Descs
 
 	settingsValues := execCfg.SV()
 	if err := ttlbase.CheckJobEnabled(settingsValues); err != nil {
@@ -95,23 +97,29 @@ func (t rowLevelTTLResumer) Resume(ctx context.Context, execCtx interface{}) (re
 	if knobs.AOSTDuration != nil {
 		aostDuration = *knobs.AOSTDuration
 	}
+	aost := details.Cutoff.Add(aostDuration)
+
+	ttlSpecAOST := aost
+	// Set ttlSpec.AOST to 0 to avoid overriding 0 duration in tests.
+	if knobs.AOSTDuration != nil {
+		ttlSpecAOST = time.Time{}
+	}
 
 	var rowLevelTTL *catpb.RowLevelTTL
 	var relationName string
 	var entirePKSpan roachpb.Span
-	if err := db.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
-		desc, err := txn.Descriptors().ByIDWithLeased(txn.KV()).WithoutNonPublic().Get().Table(ctx, details.TableID)
+	if err := db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
+		desc, err := descsCol.ByIDWithLeased(txn).WithoutNonPublic().Get().Table(ctx, details.TableID)
 		if err != nil {
 			return err
 		}
 		// If the AOST timestamp is before the latest descriptor timestamp, exit
 		// early as the delete will not work.
 		modificationTime := desc.GetModificationTime().GoTime()
-		aost := details.Cutoff.Add(aostDuration)
 		if modificationTime.After(aost) {
 			return pgerror.Newf(
 				pgcode.ObjectNotInPrerequisiteState,
-				"found a recent schema change on the table at %s, job will run at the next scheduled time",
+				"found a recent schema change on the table at %s, aborting",
 				modificationTime.Format(time.RFC3339),
 			)
 		}
@@ -126,7 +134,7 @@ func (t rowLevelTTLResumer) Resume(ctx context.Context, execCtx interface{}) (re
 			return pgerror.Newf(pgcode.OperatorIntervention, "ttl jobs on table %s are currently paused", tree.Name(desc.GetName()))
 		}
 
-		tn, err := descs.GetObjectName(ctx, txn.KV(), txn.Descriptors(), desc)
+		tn, err := descs.GetObjectName(ctx, txn, descsCol, desc)
 		if err != nil {
 			return errors.Wrapf(err, "error fetching table relation name for TTL")
 		}
@@ -171,16 +179,18 @@ func (t rowLevelTTLResumer) Resume(ctx context.Context, execCtx interface{}) (re
 	}
 
 	distSQLPlanner := jobExecCtx.DistSQLPlanner()
+	evalCtx := jobExecCtx.ExtendedEvalContext()
+	jobID := t.job.ID()
 
 	jobSpanCount := 0
 	makePlan := func(ctx context.Context, distSQLPlanner *sql.DistSQLPlanner) (*sql.PhysicalPlan, *sql.PlanningCtx, error) {
 		// We don't return the compatible nodes here since PartitionSpans will
 		// filter out incompatible nodes.
-		planCtx, _, err := distSQLPlanner.SetupAllNodesPlanning(ctx, jobExecCtx.ExtendedEvalContext(), execCfg)
+		planCtx, _, err := distSQLPlanner.SetupAllNodesPlanning(ctx, evalCtx, execCfg)
 		if err != nil {
 			return nil, nil, err
 		}
-		spanPartitions, err := distSQLPlanner.PartitionSpans(ctx, planCtx, []roachpb.Span{entirePKSpan}, sql.PartitionSpansBoundDefault)
+		spanPartitions, err := distSQLPlanner.PartitionSpans(ctx, planCtx, []roachpb.Span{entirePKSpan})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -195,16 +205,17 @@ func (t rowLevelTTLResumer) Resume(ctx context.Context, execCtx interface{}) (re
 			}
 		}
 
-		jobID := t.job.ID()
 		selectBatchSize := ttlbase.GetSelectBatchSize(settingsValues, rowLevelTTL)
 		deleteBatchSize := ttlbase.GetDeleteBatchSize(settingsValues, rowLevelTTL)
 		selectRateLimit := ttlbase.GetSelectRateLimit(settingsValues, rowLevelTTL)
 		deleteRateLimit := ttlbase.GetDeleteRateLimit(settingsValues, rowLevelTTL)
-		disableChangefeedReplication := ttlbase.GetChangefeedReplicationDisabled(settingsValues, rowLevelTTL)
+		disableChangefeedReplication := ttlbase.GetChangefeedReplicationDisabled(settingsValues)
 		newTTLSpec := func(spans []roachpb.Span) *execinfrapb.TTLSpec {
 			return &execinfrapb.TTLSpec{
-				JobID:                        jobID,
-				RowLevelTTLDetails:           details,
+				JobID:              jobID,
+				RowLevelTTLDetails: details,
+				// Set AOST in case of mixed 22.2.0/22.2.1+ cluster where the job started on a 22.2.1+ node.
+				AOST:                         ttlSpecAOST,
 				TTLExpr:                      ttlExpr,
 				Spans:                        spans,
 				SelectBatchSize:              selectBatchSize,
@@ -246,7 +257,6 @@ func (t rowLevelTTLResumer) Resume(ctx context.Context, execCtx interface{}) (re
 			execinfrapb.PostProcessSpec{},
 			[]*types.T{},
 			execinfrapb.Ordering{},
-			nil, /* finalizeLastStageCb */
 		)
 		physicalPlan.PlanToStreamColMap = []int{}
 
@@ -261,15 +271,16 @@ func (t rowLevelTTLResumer) Resume(ctx context.Context, execCtx interface{}) (re
 		return err
 	}
 
-	if err := t.job.NoTxn().Update(ctx,
+	jobRegistry := execCfg.JobRegistry
+	if err := jobRegistry.UpdateJobWithTxn(
+		ctx,
+		jobID,
+		nil,  /* txn */
+		true, /* useReadLock */
 		func(_ isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
 			progress := md.Progress
 			rowLevelTTL := progress.Details.(*jobspb.Progress_RowLevelTTL).RowLevelTTL
-			rowLevelTTL.JobTotalSpanCount = int64(jobSpanCount)
-			rowLevelTTL.JobProcessedSpanCount = 0
-			progress.Progress = &jobspb.Progress_FractionCompleted{
-				FractionCompleted: 0,
-			}
+			rowLevelTTL.JobSpanCount = int64(jobSpanCount)
 			ju.UpdateProgress(progress)
 			return nil
 		},
@@ -303,19 +314,19 @@ func (t rowLevelTTLResumer) Resume(ctx context.Context, execCtx interface{}) (re
 			execCfg.RangeDescriptorCache,
 			nil, /* txn */
 			nil, /* clockUpdater */
-			jobExecCtx.ExtendedEvalContext().Tracing,
+			evalCtx.Tracing,
 		)
 		defer distSQLReceiver.Release()
 
-		// Copy the eval.Context, as dsp.Run() might change it.
-		evalCtxCopy := jobExecCtx.ExtendedEvalContext().Context.Copy()
+		// Copy the evalCtx, as dsp.Run() might change it.
+		evalCtxCopy := *evalCtx
 		distSQLPlanner.Run(
 			ctx,
 			planCtx,
 			nil, /* txn */
 			physicalPlan,
 			distSQLReceiver,
-			evalCtxCopy,
+			&evalCtxCopy,
 			nil, /* finishedSetupFn */
 		)
 

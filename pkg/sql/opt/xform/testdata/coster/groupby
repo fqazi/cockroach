@@ -129,7 +129,7 @@ limit
  │         └── count-rows [as=count_rows:7]
  └── 10
 
-opt
+opt set=(optimizer_use_improved_distinct_on_limit_hint_costing=on)
 SELECT DISTINCT a FROM b
 ----
 distinct-on
@@ -145,7 +145,7 @@ distinct-on
       ├── cost: 1068.42
       └── ordering: +2
 
-opt
+opt set=(optimizer_use_improved_distinct_on_limit_hint_costing=on)
 SELECT DISTINCT a FROM b LIMIT 10
 ----
 limit
@@ -170,7 +170,7 @@ limit
  │         └── limit hint: 12.75
  └── 10
 
-opt set=(optimizer_use_improved_distinct_on_limit_hint_costing=false)
+opt
 SELECT DISTINCT a FROM b LIMIT 10
 ----
 limit
@@ -195,7 +195,7 @@ limit
  │         └── limit hint: 12.75
  └── 10
 
-opt
+opt set=(optimizer_use_improved_distinct_on_limit_hint_costing=on)
 SELECT DISTINCT a, b FROM b
 ----
 distinct-on
@@ -211,7 +211,7 @@ distinct-on
       ├── cost: 1078.52
       └── ordering: +2,+3
 
-opt
+opt set=(optimizer_use_improved_distinct_on_limit_hint_costing=on)
 SELECT DISTINCT a, b FROM b LIMIT 10
 ----
 limit

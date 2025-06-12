@@ -39,7 +39,7 @@ StatementPhase stage 1 of 1 with 11 MutationType ops
         Params:
         - name: a
           class:
-            class: 0
+            class: 1
           type:
             type: |
               family: EnumFamily
@@ -55,13 +55,10 @@ StatementPhase stage 1 of 1 with 11 MutationType ops
             closedtypeids:
             - 107
             - 108
-            typename: public.notmyworkday
-          defaultexpr: ""
         ReturnType:
           Type:
             family: VoidFamily
             oid: 2278
-          TypeName: VOID
     *scop.SetFunctionName
       FunctionID: 109
       Name: p
@@ -183,7 +180,7 @@ PreCommitPhase stage 2 of 2 with 11 MutationType ops
         Params:
         - name: a
           class:
-            class: 0
+            class: 1
           type:
             type: |
               family: EnumFamily
@@ -199,13 +196,10 @@ PreCommitPhase stage 2 of 2 with 11 MutationType ops
             closedtypeids:
             - 107
             - 108
-            typename: public.notmyworkday
-          defaultexpr: ""
         ReturnType:
           Type:
             family: VoidFamily
             oid: 2278
-          TypeName: VOID
     *scop.SetFunctionName
       FunctionID: 109
       Name: p
@@ -398,7 +392,7 @@ StatementPhase stage 1 of 1 with 11 MutationType ops
         Params:
         - name: a
           class:
-            class: 0
+            class: 1
           type:
             type: |
               family: EnumFamily
@@ -414,13 +408,10 @@ StatementPhase stage 1 of 1 with 11 MutationType ops
             closedtypeids:
             - 107
             - 108
-            typename: public.notmyworkday
-          defaultexpr: ""
         ReturnType:
           Type:
             family: VoidFamily
             oid: 2278
-          TypeName: VOID
     *scop.SetFunctionName
       FunctionID: 111
       Name: p
@@ -447,7 +438,7 @@ StatementPhase stage 1 of 1 with 11 MutationType ops
         WithGrantOption: 2
     *scop.SetFunctionBody
       Body:
-        Body: |
+        Body: |-
           BEGIN
           SELECT a FROM t;
           SELECT b FROM t@t_idx_b;
@@ -455,7 +446,8 @@ StatementPhase stage 1 of 1 with 11 MutationType ops
           SELECT a FROM v;
           SELECT b'@':::@100107;
           SELECT nextval(105:::REGCLASS);
-          END;
+          END
+          ;
         FunctionID: 111
         Lang:
           Lang: 2
@@ -544,7 +536,7 @@ PreCommitPhase stage 2 of 2 with 11 MutationType ops
         Params:
         - name: a
           class:
-            class: 0
+            class: 1
           type:
             type: |
               family: EnumFamily
@@ -560,13 +552,10 @@ PreCommitPhase stage 2 of 2 with 11 MutationType ops
             closedtypeids:
             - 107
             - 108
-            typename: public.notmyworkday
-          defaultexpr: ""
         ReturnType:
           Type:
             family: VoidFamily
             oid: 2278
-          TypeName: VOID
     *scop.SetFunctionName
       FunctionID: 111
       Name: p
@@ -593,7 +582,7 @@ PreCommitPhase stage 2 of 2 with 11 MutationType ops
         WithGrantOption: 2
     *scop.SetFunctionBody
       Body:
-        Body: |
+        Body: |-
           BEGIN
           SELECT a FROM t;
           SELECT b FROM t@t_idx_b;
@@ -601,7 +590,8 @@ PreCommitPhase stage 2 of 2 with 11 MutationType ops
           SELECT a FROM v;
           SELECT b'@':::@100107;
           SELECT nextval(105:::REGCLASS);
-          END;
+          END
+          ;
         FunctionID: 111
         Lang:
           Lang: 2

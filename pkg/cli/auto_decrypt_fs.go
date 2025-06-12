@@ -11,9 +11,6 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/tool"
 	"github.com/cockroachdb/pebble/vfs"
 )
 
@@ -28,11 +25,11 @@ var _ vfs.FS = (*autoDecryptFS)(nil)
 
 type encryptedDir struct {
 	once       sync.Once
-	env        *fs.Env
+	fs         vfs.FS
 	resolveErr error
 }
 
-type resolveEncryptedDirFn func(dir string) (*fs.Env, error)
+type resolveEncryptedDirFn func(dir string) (vfs.FS, error)
 
 // Init sets up the given paths as encrypted and provides a callback that can
 // resolve an encrypted directory path into an FS.
@@ -52,14 +49,7 @@ func (afs *autoDecryptFS) Init(encryptedDirs []string, resolveFn resolveEncrypte
 	}
 }
 
-func (afs *autoDecryptFS) Close() error {
-	for _, eDir := range afs.encryptedDirs {
-		eDir.env.Close()
-	}
-	return nil
-}
-
-func (afs *autoDecryptFS) Create(name string, category vfs.DiskWriteCategory) (vfs.File, error) {
+func (afs *autoDecryptFS) Create(name string) (vfs.File, error) {
 	name, err := filepath.Abs(name)
 	if err != nil {
 		return nil, err
@@ -68,7 +58,7 @@ func (afs *autoDecryptFS) Create(name string, category vfs.DiskWriteCategory) (v
 	if err != nil {
 		return nil, err
 	}
-	return fs.Create(name, category)
+	return fs.Create(name)
 }
 
 func (afs *autoDecryptFS) Link(oldname, newname string) error {
@@ -99,9 +89,7 @@ func (afs *autoDecryptFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, e
 	return fs.Open(name, opts...)
 }
 
-func (afs *autoDecryptFS) OpenReadWrite(
-	name string, category vfs.DiskWriteCategory, opts ...vfs.OpenOption,
-) (vfs.File, error) {
+func (afs *autoDecryptFS) OpenReadWrite(name string, opts ...vfs.OpenOption) (vfs.File, error) {
 	name, err := filepath.Abs(name)
 	if err != nil {
 		return nil, err
@@ -110,7 +98,7 @@ func (afs *autoDecryptFS) OpenReadWrite(
 	if err != nil {
 		return nil, err
 	}
-	return fs.OpenReadWrite(name, category, opts...)
+	return fs.OpenReadWrite(name, opts...)
 }
 
 func (afs *autoDecryptFS) OpenDir(name string) (vfs.File, error) {
@@ -157,9 +145,7 @@ func (afs *autoDecryptFS) Rename(oldname, newname string) error {
 	return fs.Rename(oldname, newname)
 }
 
-func (afs *autoDecryptFS) ReuseForWrite(
-	oldname, newname string, category vfs.DiskWriteCategory,
-) (vfs.File, error) {
+func (afs *autoDecryptFS) ReuseForWrite(oldname, newname string) (vfs.File, error) {
 	oldname, err := filepath.Abs(oldname)
 	if err != nil {
 		return nil, err
@@ -172,7 +158,7 @@ func (afs *autoDecryptFS) ReuseForWrite(
 	if err != nil {
 		return nil, err
 	}
-	return fs.ReuseForWrite(oldname, newname, category)
+	return fs.ReuseForWrite(oldname, newname)
 }
 
 func (afs *autoDecryptFS) MkdirAll(dir string, perm os.FileMode) error {
@@ -211,7 +197,7 @@ func (afs *autoDecryptFS) List(dir string) ([]string, error) {
 	return fs.List(dir)
 }
 
-func (afs *autoDecryptFS) Stat(name string) (vfs.FileInfo, error) {
+func (afs *autoDecryptFS) Stat(name string) (os.FileInfo, error) {
 	name, err := filepath.Abs(name)
 	if err != nil {
 		return nil, err
@@ -247,18 +233,13 @@ func (afs *autoDecryptFS) GetDiskUsage(path string) (vfs.DiskUsage, error) {
 	return fs.GetDiskUsage(path)
 }
 
-// Unwrap is part of the vfs.FS interface.
-func (afs *autoDecryptFS) Unwrap() vfs.FS {
-	return nil
-}
-
 // maybeSwitchFS finds the first ancestor of path that is registered as an
 // encrypted FS; if there is such a path, returns the decrypted FS for that
 // path. Otherwise, returns the default FS.
 //
 // Assumes that path is absolute and clean (i.e. filepath.Abs was run on it);
 // the returned FS also assumes that any paths used are absolute and clean. This
-// is needed when using encryptedFS, since the FileRegistry used in that
+// is needed when using encryptedFS, since the PebbleFileRegistry used in that
 // context attempts to convert function input paths to relative paths using the
 // DBDir. Both the DBDir and function input paths in a CockroachDB node are
 // absolute paths, but when using the Pebble tool, the function input paths are
@@ -268,21 +249,12 @@ func (afs *autoDecryptFS) Unwrap() vfs.FS {
 // path parameter are quite varied: ranging from "pebble db" to "pebble lsm", so
 // it is simplest to intercept the function input paths here.
 func (afs *autoDecryptFS) maybeSwitchFS(path string) (vfs.FS, error) {
-	if e, err := afs.getEnv(path); err != nil {
-		return nil, err
-	} else if e != nil {
-		return e, nil
-	}
-	return vfs.Default, nil
-}
-
-func (afs *autoDecryptFS) getEnv(path string) (*fs.Env, error) {
 	for {
 		if e := afs.encryptedDirs[path]; e != nil {
 			e.once.Do(func() {
-				e.env, e.resolveErr = afs.resolveFn(path)
+				e.fs, e.resolveErr = afs.resolveFn(path)
 			})
-			return e.env, e.resolveErr
+			return e.fs, e.resolveErr
 		}
 		parent := filepath.Dir(path)
 		if path == parent {
@@ -290,35 +262,5 @@ func (afs *autoDecryptFS) getEnv(path string) (*fs.Env, error) {
 		}
 		path = parent
 	}
-	return nil, nil
-}
-
-// pebbleOpenOptionLockDir implements pebble/tool.OpenOption, updating the
-// *pebble.Options with a *pebble.Lock for the relevant directory. When
-// initializing an fs.Env for a data directory, CockroachDB must manually lock
-// the directory in order to protect additional CockroachDB internal state (eg,
-// encryption-at-rest). pebble.Open will also try to acquire the directory lock
-// if the caller hasn't passed an existing lock through the *pebble.Options.
-// This OpenOption will acquire the relevant lock (by opening the Env, if it
-// isn't already open) and pass it into the *pebble.Options.
-type pebbleOpenOptionLockDir struct {
-	*autoDecryptFS
-}
-
-// Assert that pebbleOpenOptionLockDir implements tool.OpenOption.
-var _ tool.OpenOption = pebbleOpenOptionLockDir{}
-
-// Apply implements tool.OpenOption.
-func (o pebbleOpenOptionLockDir) Apply(dirname string, opts *pebble.Options) {
-	absolutePath, err := filepath.Abs(dirname)
-	if err != nil {
-		panic(err)
-	}
-	e, err := o.getEnv(absolutePath)
-	if err != nil {
-		panic(err)
-	}
-	if e != nil {
-		opts.Lock = e.DirectoryLock
-	}
+	return vfs.Default, nil
 }

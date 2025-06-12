@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -102,24 +101,15 @@ type SeparatedIntentScanner struct {
 
 // NewSeparatedIntentScanner returns an IntentScanner appropriate for
 // use when the separated intents migration has completed.
-func NewSeparatedIntentScanner(
-	ctx context.Context, reader storage.Reader, span roachpb.RSpan,
-) (IntentScanner, error) {
+func NewSeparatedIntentScanner(reader storage.Reader, span roachpb.RSpan) (IntentScanner, error) {
 	lowerBound, _ := keys.LockTableSingleKey(span.Key.AsRawKey(), nil)
 	upperBound, _ := keys.LockTableSingleKey(span.EndKey.AsRawKey(), nil)
-	iter, err := storage.NewLockTableIterator(
-		// Do not use ctx, since it is not the ctx passed in when ConsumeIntents
-		// is called. See https://github.com/cockroachdb/cockroach/issues/116440.
-		//
-		// NB: the storage iterator does not respect context cancellation, and
-		// only uses it for tracing.
-		context.Background(), reader, storage.LockTableIteratorOptions{
-			LowerBound: lowerBound,
-			UpperBound: upperBound,
-			// Ignore Shared and Exclusive locks. We only care about intents.
-			MatchMinStr:  lock.Intent,
-			ReadCategory: fs.RangefeedReadCategory,
-		})
+	iter, err := storage.NewLockTableIterator(reader, storage.LockTableIteratorOptions{
+		LowerBound: lowerBound,
+		UpperBound: upperBound,
+		// Ignore Shared and Exclusive locks. We only care about intents.
+		MatchMinStr: lock.Intent,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -132,8 +122,6 @@ func (s *SeparatedIntentScanner) ConsumeIntents(
 ) error {
 	ltStart, _ := keys.LockTableSingleKey(startKey, nil)
 	var meta enginepb.MVCCMetadata
-	// TODO(sumeer): ctx is not used for iteration. Fix by adding a method to
-	// EngineIterator to replace the context.
 	for valid, err := s.iter.SeekEngineKeyGE(storage.EngineKey{Key: ltStart}); ; valid, err = s.iter.NextEngineKey() {
 		if err != nil {
 			return err
@@ -275,7 +263,7 @@ func (a *txnPushAttempt) pushOldTxns(ctx context.Context) error {
 	var intentsToCleanup []roachpb.LockUpdate
 	for i, txn := range pushedTxns {
 		switch txn.Status {
-		case roachpb.PENDING, roachpb.PREPARED, roachpb.STAGING:
+		case roachpb.PENDING, roachpb.STAGING:
 			// The transaction is still in progress but its timestamp was moved
 			// forward to the current time. Inform the Processor that it can
 			// forward the txn's timestamp in its unresolvedIntentQueue.

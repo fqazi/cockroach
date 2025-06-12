@@ -23,48 +23,28 @@ UTF8                1
 query TT colnames
 SELECT *
 FROM [SHOW ALL]
-WHERE
-  variable NOT IN (
-    'optimizer',
-    'crdb_version',
-    'session_id',
-    'distsql_workmem',
-    'copy_fast_path_enabled',
-    'direct_columnar_scans_enabled',
-    'multiple_active_portals_enabled',
-    'kv_transaction_buffered_writes_enabled'
-  )
+WHERE variable NOT IN ('optimizer', 'crdb_version', 'session_id', 'distsql_workmem', 'copy_fast_path_enabled', 'direct_columnar_scans_enabled', 'multiple_active_portals_enabled')
 ORDER BY variable
 ----
 variable                                                   value
-allow_create_trigger_function_with_argv_references         off
 allow_ordinal_column_references                            off
 allow_role_memberships_to_change_during_transaction        off
 alter_primary_region_super_region_override                 off
-always_distribute_full_scans                               off
 application_name                                           ·
-authentication_method                                      cert-password
-autocommit_before_ddl                                      on
 avoid_buffering                                            off
-avoid_full_table_scans_in_mutations                        on
 backslash_quote                                            safe_encoding
-buffered_writes_use_locking_on_non_unique_indexes          off
-bypass_pcr_reader_catalog_aost                             off
 bytea_output                                               hex
 check_function_bodies                                      on
 client_encoding                                            UTF8
 client_min_messages                                        notice
-close_cursors_at_commit                                    on
 copy_from_atomic_enabled                                   on
 copy_from_retries_enabled                                  on
 copy_num_retries_per_batch                                 5
 copy_transaction_quality_of_service                        background
 copy_write_pipelining_enabled                              off
 cost_scans_with_default_col_size                           off
-create_table_with_schema_locked                            off
 database                                                   test
 datestyle                                                  ISO, MDY
-deadlock_timeout                                           0
 declare_cursor_statement_timeout_enabled                   on
 default_int_size                                           8
 default_table_access_method                                heap
@@ -83,15 +63,10 @@ disable_partially_distributed_plans                        off
 disable_plan_gists                                         off
 disable_vec_union_eager_cancellation                       off
 disallow_full_table_scans                                  off
-distribute_group_by_row_count_threshold                    1000
-distribute_join_row_count_threshold                        1000
-distribute_scan_row_count_threshold                        10000
-distribute_sort_row_count_threshold                        1000
 distsql                                                    off
 distsql_plan_gateway_bias                                  2
 enable_auto_rehoming                                       off
-enable_create_stats_using_extremes                         on
-enable_create_stats_using_extremes_bool_enum               off
+enable_create_stats_using_extremes                         off
 enable_durable_locking_for_serializable                    off
 enable_experimental_alter_column_type_general              off
 enable_implicit_fk_locking_for_serializable                off
@@ -127,14 +102,14 @@ is_superuser                                               on
 join_reader_index_join_strategy_batch_size                 4.0 MiB
 join_reader_no_ordering_strategy_batch_size                2.0 MiB
 join_reader_ordering_strategy_batch_size                   100 KiB
-large_full_scan_rows                                       0
+large_full_scan_rows                                       1000
 lc_collate                                                 C.UTF-8
 lc_ctype                                                   C.UTF-8
 lc_messages                                                C.UTF-8
 lc_monetary                                                C.UTF-8
 lc_numeric                                                 C.UTF-8
 lc_time                                                    C.UTF-8
-legacy_varchar_typing                                      off
+legacy_varchar_typing                                      on
 locality                                                   region=test,dc=dc1
 locality_optimized_partitioned_index_scan                  on
 lock_timeout                                               0
@@ -142,61 +117,44 @@ log_timezone                                               UTC
 max_connections                                            -1
 max_identifier_length                                      128
 max_index_keys                                             32
-max_prepared_transactions                                  2147483647
 max_retries_for_read_committed                             10
 node_id                                                    1
 null_ordered_last                                          off
 on_update_rehome_row_enabled                               on
 opt_split_scan_limit                                       2048
 optimizer_always_use_histograms                            on
-optimizer_check_input_min_row_count                        1
-optimizer_enable_lock_elision                              on
+optimizer_apply_full_scan_penalty_to_virtual_tables        off
 optimizer_hoist_uncorrelated_equality_subqueries           on
-optimizer_merge_joins_enabled                              on
-optimizer_min_row_count                                    0
-optimizer_plan_lookup_joins_with_reverse_scans             on
-optimizer_prefer_bounded_cardinality                       off
-optimizer_prove_implication_with_virtual_computed_columns  on
-optimizer_push_limit_into_project_filtered_scan            on
-optimizer_push_offset_into_index_join                      on
-optimizer_use_conditional_hoist_fix                        on
-optimizer_use_delete_range_fast_path                       on
-optimizer_use_exists_filter_hoist_rule                     on
+optimizer_prove_implication_with_virtual_computed_columns  off
+optimizer_push_offset_into_index_join                      off
 optimizer_use_forecasts                                    on
 optimizer_use_histograms                                   on
 optimizer_use_improved_computed_column_filters_derivation  on
 optimizer_use_improved_disjunction_stats                   on
-optimizer_use_improved_distinct_on_limit_hint_costing      on
+optimizer_use_improved_distinct_on_limit_hint_costing      off
 optimizer_use_improved_join_elimination                    on
-optimizer_use_improved_multi_column_selectivity_estimate   on
+optimizer_use_improved_multi_column_selectivity_estimate   off
 optimizer_use_improved_split_disjunction_for_joins         on
-optimizer_use_improved_trigram_similarity_selectivity      on
-optimizer_use_improved_zigzag_join_costing                 on
+optimizer_use_improved_trigram_similarity_selectivity      off
+optimizer_use_improved_zigzag_join_costing                 off
 optimizer_use_limit_ordering_for_streaming_group_by        on
-optimizer_use_lock_elision_multiple_families               off
 optimizer_use_lock_op_for_serializable                     off
-optimizer_use_merged_partial_statistics                    on
 optimizer_use_multicol_stats                               on
 optimizer_use_not_visible_indexes                          off
-optimizer_use_polymorphic_parameter_fix                    on
 optimizer_use_provided_ordering_fix                        on
-optimizer_use_trigram_similarity_optimization              on
-optimizer_use_virtual_computed_column_stats                on
+optimizer_use_trigram_similarity_optimization              off
+optimizer_use_virtual_computed_column_stats                off
 override_multi_region_zone_config                          off
 parallelize_multi_key_lookup_joins_enabled                 off
 password_encryption                                        scram-sha-256
 pg_trgm.similarity_threshold                               0.3
-plan_cache_mode                                            auto
-plpgsql_use_strict_into                                    off
+plan_cache_mode                                            force_custom_plan
 prefer_lookup_joins_for_fks                                off
 prepared_statements_cache_size                             0 B
-propagate_admission_header_to_leaf_transactions            on
 propagate_input_ordering                                   off
-recursion_depth_limit                                      1000
-register_latch_wait_contention_events                      off
 reorder_joins_limit                                        8
 require_explicit_primary_keys                              off
-results_buffer_size                                        524288
+results_buffer_size                                        16384
 role                                                       none
 row_security                                               off
 search_path                                                "$user", public
@@ -238,12 +196,8 @@ transaction_timeout                                        0
 troubleshooting_mode                                       off
 unbounded_parallel_scans                                   off
 unconstrained_non_covering_index_scan_enabled              off
-unsafe_allow_triggers_modifying_cascades                   off
-use_cputs_on_non_unique_indexes                            off
 use_declarative_schema_changer                             on
-use_pre_25_2_variadic_builtins                             off
 variable_inequality_lookup_join_enabled                    on
-vector_search_beam_size                                    32
 vectorize                                                  on
 xmloption                                                  content
 
@@ -347,23 +301,125 @@ public           tenant_id_seq
 
 query TTTTT colnames
 SELECT schema_name, table_name, type, owner, locality FROM [SHOW TABLES FROM system]
-WHERE table_name IN ('descriptor_id_seq', 'comments', 'locations')
 ORDER BY schema_name, table_name
 ----
-schema_name  table_name         type      owner  locality
-public       comments           table     node   NULL
-public       descriptor_id_seq  sequence  node   NULL
-public       locations          table     node   NULL
+schema_name  table_name                       type      owner  locality
+public       comments                         table     node   NULL
+public       database_role_settings           table     node   NULL
+public       descriptor                       table     node   NULL
+public       descriptor_id_seq                sequence  node   NULL
+public       eventlog                         table     node   NULL
+public       external_connections             table     node   NULL
+public       job_info                         table     node   NULL
+public       jobs                             table     node   NULL
+public       join_tokens                      table     node   NULL
+public       lease                            table     node   NULL
+public       locations                        table     node   NULL
+public       migrations                       table     node   NULL
+public       mvcc_statistics                  table     node   NULL
+public       namespace                        table     node   NULL
+public       privileges                       table     node   NULL
+public       protected_ts_meta                table     node   NULL
+public       protected_ts_records             table     node   NULL
+public       rangelog                         table     node   NULL
+public       region_liveness                  table     node   NULL
+public       replication_constraint_stats     table     node   NULL
+public       replication_critical_localities  table     node   NULL
+public       replication_stats                table     node   NULL
+public       reports_meta                     table     node   NULL
+public       role_id_seq                      sequence  node   NULL
+public       role_members                     table     node   NULL
+public       role_options                     table     node   NULL
+public       scheduled_jobs                   table     node   NULL
+public       settings                         table     node   NULL
+public       span_configurations              table     node   NULL
+public       span_stats_buckets               table     node   NULL
+public       span_stats_samples               table     node   NULL
+public       span_stats_tenant_boundaries     table     node   NULL
+public       span_stats_unique_keys           table     node   NULL
+public       sql_instances                    table     node   NULL
+public       sqlliveness                      table     node   NULL
+public       statement_activity               table     node   NULL
+public       statement_bundle_chunks          table     node   NULL
+public       statement_diagnostics            table     node   NULL
+public       statement_diagnostics_requests   table     node   NULL
+public       statement_execution_insights     table     node   NULL
+public       statement_statistics             table     node   NULL
+public       table_statistics                 table     node   NULL
+public       task_payloads                    table     node   NULL
+public       tenant_id_seq                    sequence  node   NULL
+public       tenant_settings                  table     node   NULL
+public       tenant_tasks                     table     node   NULL
+public       tenant_usage                     table     node   NULL
+public       tenants                          table     node   NULL
+public       transaction_activity             table     node   NULL
+public       transaction_execution_insights   table     node   NULL
+public       transaction_statistics           table     node   NULL
+public       ui                               table     node   NULL
+public       users                            table     node   NULL
+public       web_sessions                     table     node   NULL
+public       zones                            table     node   NULL
 
 query TTTTTT colnames
 SELECT schema_name, table_name, type, owner, locality, comment FROM [SHOW TABLES FROM system WITH COMMENT]
-WHERE table_name IN ('comments', 'locations', 'descriptor_id_seq')
 ORDER BY schema_name, table_name
 ----
-schema_name  table_name         type      owner  locality  comment
-public       comments           table     node   NULL      ·
-public       descriptor_id_seq  sequence  node   NULL      ·
-public       locations          table     node   NULL      ·
+schema_name  table_name                       type      owner  locality  comment
+public       comments                         table     node   NULL      ·
+public       database_role_settings           table     node   NULL      ·
+public       descriptor                       table     node   NULL      ·
+public       descriptor_id_seq                sequence  node   NULL      ·
+public       eventlog                         table     node   NULL      ·
+public       external_connections             table     node   NULL      ·
+public       job_info                         table     node   NULL      ·
+public       jobs                             table     node   NULL      ·
+public       join_tokens                      table     node   NULL      ·
+public       lease                            table     node   NULL      ·
+public       locations                        table     node   NULL      ·
+public       migrations                       table     node   NULL      ·
+public       mvcc_statistics                  table     node   NULL      ·
+public       namespace                        table     node   NULL      ·
+public       privileges                       table     node   NULL      ·
+public       protected_ts_meta                table     node   NULL      ·
+public       protected_ts_records             table     node   NULL      ·
+public       rangelog                         table     node   NULL      ·
+public       region_liveness                  table     node   NULL      ·
+public       replication_constraint_stats     table     node   NULL      ·
+public       replication_critical_localities  table     node   NULL      ·
+public       replication_stats                table     node   NULL      ·
+public       reports_meta                     table     node   NULL      ·
+public       role_id_seq                      sequence  node   NULL      ·
+public       role_members                     table     node   NULL      ·
+public       role_options                     table     node   NULL      ·
+public       scheduled_jobs                   table     node   NULL      ·
+public       settings                         table     node   NULL      ·
+public       span_configurations              table     node   NULL      ·
+public       span_stats_buckets               table     node   NULL      ·
+public       span_stats_samples               table     node   NULL      ·
+public       span_stats_tenant_boundaries     table     node   NULL      ·
+public       span_stats_unique_keys           table     node   NULL      ·
+public       sql_instances                    table     node   NULL      ·
+public       sqlliveness                      table     node   NULL      ·
+public       statement_activity               table     node   NULL      ·
+public       statement_bundle_chunks          table     node   NULL      ·
+public       statement_diagnostics            table     node   NULL      ·
+public       statement_diagnostics_requests   table     node   NULL      ·
+public       statement_execution_insights     table     node   NULL      ·
+public       statement_statistics             table     node   NULL      ·
+public       table_statistics                 table     node   NULL      ·
+public       task_payloads                    table     node   NULL      ·
+public       tenant_id_seq                    sequence  node   NULL      ·
+public       tenant_settings                  table     node   NULL      ·
+public       tenant_tasks                     table     node   NULL      ·
+public       tenant_usage                     table     node   NULL      ·
+public       tenants                          table     node   NULL      ·
+public       transaction_activity             table     node   NULL      ·
+public       transaction_execution_insights   table     node   NULL      ·
+public       transaction_statistics           table     node   NULL      ·
+public       ui                               table     node   NULL      ·
+public       users                            table     node   NULL      ·
+public       web_sessions                     table     node   NULL      ·
+public       zones                            table     node   NULL      ·
 
 query ITTT colnames
 SELECT node_id, user_name, application_name, active_queries
@@ -372,33 +428,6 @@ SELECT node_id, user_name, application_name, active_queries
 ----
 node_id  user_name  application_name  active_queries
 1        root       ·                 SELECT node_id, user_name, application_name, active_queries FROM [SHOW CLUSTER SESSIONS] WHERE active_queries != ''
-
-statement ok
-SET tracing=off
-
-query B colnames
-SELECT trace_id > 0 AS has_trace_id FROM [SHOW SESSIONS] WHERE active_queries != ''
-----
-has_trace_id
-false
-
-statement ok
-SET tracing=on
-
-query B colnames
-SELECT trace_id > 0 AS has_trace_id FROM [SHOW SESSIONS] WHERE active_queries != ''
-----
-has_trace_id
-true
-
-statement ok
-SET tracing=off
-
-query B colnames
-SELECT goroutine_id > 0 AS has_goroutine_id FROM [SHOW SESSIONS] WHERE active_queries != ''
-----
-has_goroutine_id
-true
 
 query ITT colnames
 SELECT node_id, user_name, query FROM [SHOW QUERIES]
@@ -473,7 +502,7 @@ system.public.descriptor  CREATE TABLE public.descriptor (
                             CONSTRAINT "primary" PRIMARY KEY (id ASC),
                             FAMILY "primary" (id),
                             FAMILY fam_2_descriptor (descriptor)
-                          );
+                          )
 
 query TT colnames
 CREATE VIEW v AS SELECT id FROM system.descriptor; SELECT * FROM [SHOW CREATE VIEW v]
@@ -481,7 +510,7 @@ CREATE VIEW v AS SELECT id FROM system.descriptor; SELECT * FROM [SHOW CREATE VI
 table_name  create_statement
 v           CREATE VIEW public.v (
               id
-            ) AS SELECT id FROM system.public.descriptor;
+            ) AS SELECT id FROM system.public.descriptor
 
 
 query TTT colnames
@@ -497,7 +526,7 @@ query TTTI colnames
 SELECT start_key, end_key, replicas, lease_holder FROM [SHOW RANGES FROM CURRENT_CATALOG WITH DETAILS]
 ----
 start_key  end_key  replicas  lease_holder
-/Table/72  /Max     {1}       1
+/Table/65  /Max     {1}       1
 
 query TTTI colnames
 SELECT start_key, end_key, replicas, lease_holder FROM [SHOW RANGES FROM TABLE system.descriptor WITH DETAILS]
@@ -524,10 +553,10 @@ SELECT * FROM [SHOW COMPACT TRACE FOR SESSION] LIMIT 0
 ----
 age  message  tag  operation
 
-query ITTTTTTTTTRTI colnames
+query ITTTTTTTTTTRTIITTIT colnames
 SELECT * FROM [SHOW JOBS] LIMIT 0
 ----
-job_id  job_type  description  user_name  status  running_status  created  started  finished  modified  fraction_completed  error  coordinator_id
+job_id  job_type  description  statement  user_name  status  running_status  created  started  finished  modified  fraction_completed  error  coordinator_id  trace_id  last_run  next_run  num_runs  execution_errors
 
 query TT colnames
 SELECT * FROM [SHOW SYNTAX 'select 1; select 2']

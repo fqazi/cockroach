@@ -20,9 +20,6 @@ import (
 )
 
 var libPQReleaseTagRegex = regexp.MustCompile(`^v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<point>\d+)$`)
-
-// WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
-// This is used by docs automation to produce a list of supported versions for ORM's.
 var libPQSupportedTag = "v1.10.5"
 
 func registerLibPQ(r registry.Registry) {
@@ -73,7 +70,7 @@ func registerLibPQ(r registry.Registry) {
 		// It's safer to clean up dependencies this way than it is to give the cluster
 		// wipe root access.
 		defer func() {
-			c.Run(ctx, option.WithNodes(c.All()), "go clean -modcache")
+			c.Run(ctx, c.All(), "go clean -modcache")
 		}()
 
 		err = repeatGitCloneE(
@@ -86,7 +83,7 @@ func registerLibPQ(r registry.Registry) {
 			node,
 		)
 		require.NoError(t, err)
-		if err := c.RunE(ctx, option.WithNodes(node), fmt.Sprintf("mkdir -p %s", resultsDir)); err != nil {
+		if err := c.RunE(ctx, node, fmt.Sprintf("mkdir -p %s", resultsDir)); err != nil {
 			t.Fatal(err)
 		}
 
@@ -98,7 +95,7 @@ func registerLibPQ(r registry.Registry) {
 		testListRegex := "^(Test|Example)"
 		result, err := c.RunWithDetailsSingleNode(
 			ctx, t.L(),
-			option.WithNodes(node),
+			node,
 			fmt.Sprintf(
 				`cd %s && PGPORT={pgport:1} PGUSER=%s PGPASSWORD=%s PGSSLMODE=require PGDATABASE=postgres go test -list "%s"`,
 				libPQPath, install.DefaultUser, install.DefaultPassword, testListRegex),
@@ -127,7 +124,7 @@ func registerLibPQ(r registry.Registry) {
 		// Ignore the error as there will be failing tests.
 		_ = c.RunE(
 			ctx,
-			option.WithNodes(node),
+			node,
 			fmt.Sprintf("cd %s && PGPORT={pgport:1} PGUSER=%s PGPASSWORD=%s PGSSLMODE=require PGDATABASE=postgres go test -run %s -v 2>&1 | %s/bin/go-junit-report > %s",
 				libPQPath, install.DefaultUser, install.DefaultPassword, allowedTestsRegExp, goPath, resultsPath),
 		)

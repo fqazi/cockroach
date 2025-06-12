@@ -9,7 +9,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -25,7 +24,6 @@ import (
 // alterTenantSetClusterSettingNode represents an
 // ALTER VIRTUAL CLUSTER ... SET CLUSTER SETTING statement.
 type alterTenantSetClusterSettingNode struct {
-	zeroInputPlanNode
 	name       settings.SettingName
 	tenantSpec tenantSpec
 	st         *cluster.Settings
@@ -53,11 +51,6 @@ func (p *planner) AlterTenantSetClusterSetting(
 	}
 
 	name := settings.SettingName(strings.ToLower(n.Name))
-	// Disallow setting the 'version' setting for any tenant.
-	if name == clusterversion.KeyVersionSetting {
-		return nil, errors.Errorf("cannot set '%s' for tenants", name)
-	}
-
 	st := p.EvalContext().Settings
 	setting, ok, nameStatus := settings.LookupForLocalAccess(name, true /* forSystemTenant - checked above already */)
 	if !ok {
@@ -122,7 +115,7 @@ func (n *alterTenantSetClusterSettingNode) startExec(params runParams) error {
 		reportedValue = "DEFAULT"
 		if _, err := params.p.InternalSQLTxn().ExecEx(
 			params.ctx, "reset-tenant-setting", params.p.Txn(),
-			sessiondata.NodeUserSessionDataOverride,
+			sessiondata.RootUserSessionDataOverride,
 			"DELETE FROM system.tenant_settings WHERE tenant_id = $1 AND name = $2", tenantID, n.setting.InternalKey(),
 		); err != nil {
 			return err
@@ -139,7 +132,7 @@ func (n *alterTenantSetClusterSettingNode) startExec(params runParams) error {
 		}
 		if _, err := params.p.InternalSQLTxn().ExecEx(
 			params.ctx, "update-tenant-setting", params.p.Txn(),
-			sessiondata.NodeUserSessionDataOverride,
+			sessiondata.RootUserSessionDataOverride,
 			`UPSERT INTO system.tenant_settings (tenant_id, name, value, last_updated, value_type) VALUES ($1, $2, $3, now(), $4)`,
 			tenantID, n.setting.InternalKey(), encoded, n.setting.Typ(),
 		); err != nil {

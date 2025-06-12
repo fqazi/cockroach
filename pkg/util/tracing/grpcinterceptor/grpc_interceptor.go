@@ -46,9 +46,6 @@ func setGRPCErrorTag(sp *tracing.Span, err error) {
 // BatchMethodName is the method name of Internal.Batch RPC.
 const BatchMethodName = "/cockroach.roachpb.Internal/Batch"
 
-// BatchStreamMethodName is the method name of the Internal.BatchStream RPC.
-const BatchStreamMethodName = "/cockroach.roachpb.Internal/BatchStream"
-
 // sendKVBatchMethodName is the method name for adminServer.SendKVBatch.
 const sendKVBatchMethodName = "/cockroach.server.serverpb.Admin/SendKVBatch"
 
@@ -64,7 +61,6 @@ const flowStreamMethodName = "/cockroach.sql.distsqlrun.DistSQL/FlowStream"
 // tracing because it's not worth it.
 func methodExcludedFromTracing(method string) bool {
 	return method == BatchMethodName ||
-		method == BatchStreamMethodName ||
 		method == sendKVBatchMethodName ||
 		method == SetupFlowMethodName ||
 		method == flowStreamMethodName
@@ -146,16 +142,7 @@ func StreamServerInterceptor(tracer *tracing.Tracer) grpc.StreamServerIntercepto
 		if err != nil {
 			return err
 		}
-		sp := tracing.SpanFromContext(ss.Context())
-		// NB: when this method is called through the local internal client optimization,
-		// we also invoke this interceptor, but don't have spanMeta available. If we then
-		// call straight into the handler below without making a child span, we hit various
-		// use-after-finish conditions. So we also check whether we have a nontrivial `sp`
-		// and if so make sure to go through `StartSpanCtx` below. This can be seen as a
-		// workaround for the following issue:
-		//
-		// https://github.com/cockroachdb/cockroach/issues/135686
-		if sp == nil && !tracing.SpanInclusionFuncForServer(tracer, spanMeta) {
+		if !tracing.SpanInclusionFuncForServer(tracer, spanMeta) {
 			return handler(srv, ss)
 		}
 

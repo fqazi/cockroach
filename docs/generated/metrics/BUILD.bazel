@@ -1,8 +1,8 @@
 genrule(
     name = "metrics",
-    outs = ["metrics.yaml"],
-    cmd = "$(location //pkg/cmd/cockroach-short) gen metric-list --logtostderr=NONE > $@",
-    tools = ["//pkg/cmd/cockroach-short"],
+    outs = ["metrics.html"],
+    cmd = "$(location //pkg/cmd/cockroach-short) gen metric-list --format=unnumbered-html --logtostderr=NONE > $@",
+    exec_tools = ["//pkg/cmd/cockroach-short"],
     visibility = [
         ":__pkg__",
         "//pkg/gen:__pkg__",

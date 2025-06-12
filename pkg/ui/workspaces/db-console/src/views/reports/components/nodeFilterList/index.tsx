@@ -3,15 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Location } from "history";
-import forEach from "lodash/forEach";
-import isEmpty from "lodash/isEmpty";
-import isNil from "lodash/isNil";
-import join from "lodash/join";
-import map from "lodash/map";
-import sortBy from "lodash/sortBy";
-import split from "lodash/split";
+import _ from "lodash";
 import React from "react";
+import { Location } from "history";
 
 import * as protos from "src/js/protos";
 
@@ -27,9 +21,9 @@ export function getFilters(location: Location) {
   const locality = searchParams.get("locality");
 
   // Node id list.
-  if (!isEmpty(nodeIds)) {
+  if (!_.isEmpty(nodeIds)) {
     const nodeIDs: Set<number> = new Set();
-    forEach(split(nodeIds, ","), nodeIDString => {
+    _.forEach(_.split(nodeIds, ","), nodeIDString => {
       const nodeID = parseInt(nodeIDString, 10);
       if (nodeID) {
         nodeIDs.add(nodeID);
@@ -41,7 +35,7 @@ export function getFilters(location: Location) {
   }
 
   // Locality regex filter.
-  if (!isEmpty(locality)) {
+  if (!_.isEmpty(locality)) {
     try {
       filters.localityRegex = new RegExp(locality);
     } catch (e) {
@@ -53,8 +47,8 @@ export function getFilters(location: Location) {
 }
 
 export function localityToString(locality: protos.cockroach.roachpb.ILocality) {
-  return join(
-    map(locality.tiers, tier => tier.key + "=" + tier.value),
+  return _.join(
+    _.map(locality.tiers, tier => tier.key + "=" + tier.value),
     ",",
   );
 }
@@ -62,16 +56,17 @@ export function localityToString(locality: protos.cockroach.roachpb.ILocality) {
 export function NodeFilterList(props: NodeFilterListProps) {
   const { nodeIDs, localityRegex } = props;
   const filters: string[] = [];
-  if (!isNil(nodeIDs) && nodeIDs.size > 0) {
-    const nodeList = sortBy(Array.from(nodeIDs.keys()))
+  if (!_.isNil(nodeIDs) && nodeIDs.size > 0) {
+    const nodeList = _.chain(Array.from(nodeIDs.keys()))
+      .sort()
       .map(nodeID => `n${nodeID}`)
       .join(",");
     filters.push(`Only nodes: ${nodeList}`);
   }
-  if (!isNil(localityRegex)) {
+  if (!_.isNil(localityRegex)) {
     filters.push(`Locality Regex: ${localityRegex.source}`);
   }
-  if (isEmpty(filters)) {
+  if (_.isEmpty(filters)) {
     return null;
   }
 
@@ -79,7 +74,7 @@ export function NodeFilterList(props: NodeFilterListProps) {
     <div>
       <h2 className="base-heading">Filters</h2>
       <ul className="node-filter-list">
-        {map(filters, (filter, i) => (
+        {_.map(filters, (filter, i) => (
           <li key={i}>{filter}</li>
         ))}
       </ul>

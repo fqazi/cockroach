@@ -19,7 +19,6 @@ package upgrade
 import (
 	"fmt"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/upgrade/upgradebase"
 )
@@ -36,49 +35,21 @@ type JobDeps interface {
 	SystemDeps() SystemDeps
 }
 
-// RestoreBehavior explains what the behavior of a given upgrade migration is
-// during restoration of table, database or a cluster backups.
-//
-// For example, a migration that modifies every descriptor in the catalog e.g.
-// to populate a new field, needs to also insert itself into RESTORE, so that
-// when raw descriptors from a backup that could predate that migration, and
-// thus not have that field populated, are injected into the catalog, they are
-// migrated accordingly to uphold the invariant that all descriptors in the
-// catalog are migrated. Such a migration would use `RestoreActionImplemented`
-// and then a sentence specifying what is done during restore, for example:
-// RestoreActionImplemented("new field is populated during allocateDescriptorRequests").
-//
-// If an upgrade migration only affects state that is not restored, such as the
-// system tables that contain instance information and liveness, it can use a
-// RestoreActionNotRequired string explaining this fact, e.g.
-// RestoreActionNotRequired("liveness table is not restored").
-type RestoreBehavior struct {
-	msg string
-}
-
-// RestoreActionNotRequired is used to signal an upgrade migration only affects
-// persisted state that is not written by restore. The string should mention
-// why no action is required.
-func RestoreActionNotRequired(msg string) RestoreBehavior {
-	return RestoreBehavior{msg: msg}
-}
-
-// RestoreActionImplemented is used to signal an upgrade migration affects state
-// that is written by restore and has implemented the requisite logic in restore
-// to perform the equivalent upgrade on restored data as it is restored. The
-// string should mention what is done during restore and where it is done.
-func RestoreActionImplemented(msg string) RestoreBehavior {
-	return RestoreBehavior{msg: msg}
-}
-
 type upgrade struct {
 	description string
 	// v is the version that this upgrade is associated with. The upgrade runs
 	// when the cluster's version is incremented to v or, for permanent upgrades
 	// (see below) when the cluster is bootstrapped at v or above.
 	v roachpb.Version
-
-	restore RestoreBehavior
+	// permanent is set for "permanent" upgrades - i.e. upgrades that are not
+	// baked into the bootstrap image and need to be run on new clusters
+	// regardless of the cluster's bootstrap version.
+	permanent bool
+	// v22_2StartupMigrationName, if set, is the name of the corresponding
+	// startupmigration in 22.2. In 23.1, we've turned these startupmigrations
+	// into permanent upgrades. We don't want to run the upgrade if the
+	// startupmigration had run.
+	v22_2StartupMigrationName string
 }
 
 // Version is part of the upgradebase.Upgrade interface.
@@ -88,17 +59,18 @@ func (m *upgrade) Version() roachpb.Version {
 
 // Permanent is part of the upgradebase.Upgrade interface.
 func (m *upgrade) Permanent() bool {
-	return m.v.LessEq(clusterversion.VBootstrapMax.Version())
+	return m.permanent
 }
 
 // Name is part of the upgradebase.Upgrade interface.
 func (m *upgrade) Name() string {
-	if m.Permanent() {
-		return m.description
-	}
 	return fmt.Sprintf("Upgrade to %s: %q", m.v.String(), m.description)
 }
 
-func (m *upgrade) RestoreBehavior() string {
-	return m.restore.msg
+// V22_2StartupMigrationName is part of the upgradebase.Upgrade interface.
+func (m *upgrade) V22_2StartupMigrationName() string {
+	if !m.permanent {
+		panic("V22_2StartupMigrationName() called on non-permanent upgrade.")
+	}
+	return m.v22_2StartupMigrationName
 }

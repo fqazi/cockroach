@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/sql"
-	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -261,11 +260,6 @@ func (m *manualKVAccessor) UpdateSpanConfigRecords(
 }
 
 func (m *manualKVAccessor) WithTxn(context.Context, *kv.Txn) spanconfig.KVAccessor {
-	panic("unimplemented")
-}
-
-// WithISQLTxn is part of the KVAccessor interface.
-func (k *manualKVAccessor) WithISQLTxn(context.Context, isql.Txn) spanconfig.KVAccessor {
 	panic("unimplemented")
 }
 

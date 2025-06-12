@@ -10,24 +10,16 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/rsa"
-	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	gosql "database/sql"
-	_ "embed"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"math/big"
 	"math/rand"
 	"net"
-	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
-	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -35,14 +27,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/IBM/sarama"
-	"github.com/aws/aws-sdk-go-v2/config"
-	msk "github.com/aws/aws-sdk-go-v2/service/kafka"
-	msktypes "github.com/aws/aws-sdk-go-v2/service/kafka/types"
-	"github.com/aws/aws-sdk-go/aws"
-	awslog "github.com/aws/smithy-go/logging"
+	"github.com/Shopify/sarama"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdctest"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
@@ -51,22 +39,19 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/grafana"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
+	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/prometheus"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
-	roachprodaws "github.com/cockroachdb/cockroach/pkg/roachprod/vm/aws"
-	"github.com/cockroachdb/cockroach/pkg/testutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
+	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/cockroach/pkg/workload/debug"
 	"github.com/cockroachdb/errors"
-	prompb "github.com/prometheus/client_model/go"
-	"github.com/prometheus/common/expfmt"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2/clientcredentials"
 )
@@ -83,13 +68,11 @@ var hydraRetryDuration = 1 * time.Minute
 type sinkType string
 
 const (
-	cloudStorageSink       sinkType = "cloudstorage"
-	webhookSink            sinkType = "webhook"
-	pubsubSink             sinkType = "pubsub"
-	kafkaSink              sinkType = "kafka"
-	azureEventHubKafkaSink sinkType = "azure-event-hub"
-	mskSink                sinkType = "msk"
-	nullSink               sinkType = "null"
+	cloudStorageSink sinkType = "cloudstorage"
+	webhookSink      sinkType = "webhook"
+	pubsubSink       sinkType = "pubsub"
+	kafkaSink        sinkType = "kafka"
+	nullSink         sinkType = "null"
 )
 
 var envVars = []string{
@@ -97,11 +80,6 @@ var envVars = []string{
 	// NB: This is crucial for chaos tests as we expect changefeeds to see
 	// many retries.
 	"COCKROACH_CHANGEFEED_TESTING_FAST_RETRY=true",
-	"COCKROACH_CHANGEFEED_TESTING_INCLUDE_PARQUET_TEST_METADATA=true",
-	"COCKROACH_CHANGEFEED_TESTING_INCLUDE_PARQUET_READER_METADATA=true",
-	// Enable strict re-balancing checks to ensure that rebalancing doesn't create an
-	// incorrect set of spans for the changefeed.
-	"COCKROACH_CHANGEFEED_TESTING_REBALANCING_CHECKS=true",
 }
 
 type cdcTester struct {
@@ -111,7 +89,6 @@ type cdcTester struct {
 	cluster      cluster.Cluster
 	crdbNodes    option.NodeListOption
 	workloadNode option.NodeListOption
-	sinkNodes    option.NodeListOption
 	logger       *logger.Logger
 	promCfg      *prometheus.Config
 
@@ -120,6 +97,16 @@ type cdcTester struct {
 
 	workloadWg *sync.WaitGroup
 	doneCh     chan struct{}
+}
+
+// The node on which the webhook sink will be installed and run on.
+func (ct *cdcTester) webhookSinkNode() option.NodeListOption {
+	return ct.cluster.Node(ct.cluster.Spec().NodeCount)
+}
+
+// The node on which the kafka sink will be installed and run on.
+func (ct *cdcTester) kafkaSinkNode() option.NodeListOption {
+	return ct.cluster.Node(ct.cluster.Spec().NodeCount)
 }
 
 // startStatsCollection sets the start point of the stats collection window
@@ -142,7 +129,7 @@ func (ct *cdcTester) startStatsCollection() func() {
 			startTime,
 			endTime,
 			[]clusterstats.AggQuery{sqlServiceLatencyAgg, changefeedThroughputAgg, cpuUsageAgg},
-			func(stats map[string]clusterstats.StatSummary) *roachtestutil.AggregatedMetric {
+			func(stats map[string]clusterstats.StatSummary) (string, float64) {
 				// TODO(jayant): update this metric to be more accurate.
 				// It may be worth plugging in real latency values from the latency
 				// verifier here in the future for more accuracy. However, it may not be
@@ -150,25 +137,13 @@ func (ct *cdcTester) startStatsCollection() func() {
 				// up as roachtest failures, we don't need to make them very apparent in
 				// roachperf. Note that other roachperf stats, such as the aggregate stats
 				// above, will be accurate.
-				duration := endTime.Sub(startTime).Minutes()
-				return &roachtestutil.AggregatedMetric{
-					Name:             "Total Run Time (mins)",
-					Value:            roachtestutil.MetricPoint(duration),
-					Unit:             "minutes",
-					IsHigherBetter:   false,
-					AdditionalLabels: nil,
-				}
+				return "Total Run Time (mins)", endTime.Sub(startTime).Minutes()
 			},
 		)
 		if err != nil {
 			ct.t.Errorf("error exporting stats file: %s", err)
 		}
 	}
-}
-
-type AuthorizationRuleKeys struct {
-	KeyName    string `json:"keyName"`
-	PrimaryKey string `json:"primaryKey"`
 }
 
 func (ct *cdcTester) startCRDBChaos() {
@@ -202,7 +177,7 @@ func (ct *cdcTester) setupSink(args feedArgs) string {
 		sinkURI = `experimental-gs://cockroach-tmp/roachtest/` + ts + "?AUTH=implicit"
 	case webhookSink:
 		ct.t.Status("webhook install")
-		webhookNode := ct.sinkNodes
+		webhookNode := ct.webhookSinkNode()
 		rootFolder := `/home/ubuntu`
 		nodeIPs, _ := ct.cluster.ExternalIP(ct.ctx, ct.logger, webhookNode)
 
@@ -232,7 +207,7 @@ func (ct *cdcTester) setupSink(args feedArgs) string {
 		serverExecCmd := fmt.Sprintf(`go run webhook-server-%d.go`, webhookPort)
 		m := ct.cluster.NewMonitor(ct.ctx, ct.workloadNode)
 		m.Go(func(ctx context.Context) error {
-			return ct.cluster.RunE(ct.ctx, option.WithNodes(webhookNode), serverExecCmd, rootFolder)
+			return ct.cluster.RunE(ct.ctx, webhookNode, serverExecCmd, rootFolder)
 		})
 
 		sinkDestHost, err := url.Parse(fmt.Sprintf(`https://%s:%d`, nodeIPs[0], webhookPort))
@@ -248,15 +223,17 @@ func (ct *cdcTester) setupSink(args feedArgs) string {
 	case pubsubSink:
 		sinkURI = changefeedccl.GcpScheme + `://cockroach-ephemeral` + "?AUTH=implicit&topic_name=pubsubSink-roachtest&region=us-east1"
 	case kafkaSink:
-		kafka, _ := setupKafka(ct.ctx, ct.t, ct.cluster, ct.sinkNodes)
-		kafka.mon = ct.mon
-		kafka.validateOrder = args.kafkaArgs.validateOrder
-
-		if err := kafka.startTopicConsumers(ct.ctx, args.targets, ct.doneCh); err != nil {
-			ct.t.Fatal(err)
+		kafkaNode := ct.kafkaSinkNode()
+		kafka := kafkaManager{
+			t:     ct.t,
+			c:     ct.cluster,
+			nodes: kafkaNode,
+			mon:   ct.mon,
 		}
+		kafka.install(ct.ctx)
+		kafka.start(ct.ctx, "kafka")
 
-		if args.kafkaArgs.kafkaChaos {
+		if args.kafkaChaos {
 			ct.mon.Go(func(ctx context.Context) error {
 				period, downTime := 2*time.Minute, 20*time.Second
 				return kafka.chaosLoop(ctx, period, downTime, ct.doneCh)
@@ -264,34 +241,6 @@ func (ct *cdcTester) setupSink(args feedArgs) string {
 		}
 
 		sinkURI = kafka.sinkURL(ct.ctx)
-	case azureEventHubKafkaSink:
-		kafkaNode := ct.sinkNodes
-		kafka := kafkaManager{
-			t:              ct.t,
-			c:              ct.cluster,
-			kafkaSinkNodes: kafkaNode,
-			mon:            ct.mon,
-		}
-		kafka.install(ct.ctx)
-		kafka.start(ct.ctx, "kafka")
-		if err := kafka.installAzureCli(ct.ctx); err != nil {
-			kafka.t.Fatal(err)
-		}
-		accessKeyName, accessKey, err := kafka.getAzureEventHubAccess(ct.ctx)
-		if err != nil {
-			kafka.t.Fatal(err)
-		}
-		sinkURI = fmt.Sprintf(
-			`azure-event-hub://cdc-roachtest.servicebus.windows.net:9093?shared_access_key_name=%s&shared_access_key=%s&topic_name=testing`,
-			url.QueryEscape(accessKeyName), url.QueryEscape(accessKey),
-		)
-	case mskSink:
-		// Currently, the only msk tests are manual tests. When they are run,
-		// this placeholder should be replaced with the actual bootstrap server
-		// for the cluster being used.
-		// TODO(yang): If we want to run msk roachtests nightly, replace this
-		// with a long-running MSK cluster or maybe create a fresh cluster.
-		sinkURI = "kafka://placeholder"
 	default:
 		ct.t.Fatalf("unknown sink provided: %s", args.sinkType)
 	}
@@ -335,7 +284,7 @@ func (ct *cdcTester) runTPCCWorkload(args tpccArgs) {
 	if !ct.t.SkipInit() {
 		ct.t.Status("installing TPCC workload")
 		tpcc.install(ct.ctx, ct.cluster)
-		if args.SchemaLockTables.enabled(globalEntropy) == featureEnabled {
+		if args.SchemaLockTables.enabled(globalEnthropy) == featureEnabled {
 			ct.t.Status(fmt.Sprintf("Setting schema_locked for %s", allTpccTargets))
 			ct.lockSchema(allTpccTargets)
 		}
@@ -454,28 +403,25 @@ var (
 	featureEnabled  featureState = 2
 )
 
-type entropy struct {
+func (s featureState) bool() bool {
+	return s == featureEnabled
+}
+
+type enthropy struct {
 	*rand.Rand
 }
 
-func (r *entropy) Bool() bool {
+func (r *enthropy) Bool() bool {
 	if r.Rand == nil {
 		return rand.Int()%2 == 0
 	}
 	return r.Rand.Int()%2 == 0
 }
 
-func (r *entropy) Intn(n int) int {
-	if r.Rand == nil {
-		return rand.Intn(n)
-	}
-	return r.Rand.Intn(n)
-}
-
 var globalRand *rand.Rand
-var globalEntropy entropy
+var globalEnthropy enthropy
 
-func (f *featureFlag) enabled(r entropy) featureState {
+func (f *featureFlag) enabled(r enthropy) featureState {
 	if f.v != nil {
 		return *f.v
 	}
@@ -488,32 +434,12 @@ func (f *featureFlag) enabled(r entropy) featureState {
 	return featureDisabled
 }
 
-type enumFeatureFlag struct {
-	state string
-	v     *featureState
-}
-
-// enabled returns a valid string if the returned featureState is featureEnabled.
-func (f *enumFeatureFlag) enabled(r entropy, choose func(entropy) string) (string, featureState) {
-	if f.v != nil {
-		return f.state, *f.v
-	}
-
-	if r.Bool() {
-		f.v = &featureEnabled
-		f.state = choose(r)
-		return f.state, featureEnabled
-	}
-	f.v = &featureDisabled
-	return f.state, featureDisabled
-}
-
 // cdcFeatureFlags describes various cdc feature flags.
 // zero value cdcFeatureFlags uses metamorphic settings for features.
 type cdcFeatureFlags struct {
-	RangeFeedScheduler   featureFlag
-	SchemaLockTables     featureFlag
-	DistributionStrategy enumFeatureFlag
+	MuxRangefeed       featureFlag
+	RangeFeedScheduler featureFlag
+	SchemaLockTables   featureFlag
 }
 
 func makeDefaultFeatureFlags() cdcFeatureFlags {
@@ -523,25 +449,15 @@ func makeDefaultFeatureFlags() cdcFeatureFlags {
 type feedArgs struct {
 	sinkType        sinkType
 	targets         []string
-	envelope        string
 	opts            map[string]string
+	kafkaChaos      bool
 	assumeRole      string
 	tolerateErrors  bool
 	sinkURIOverride string
 	cdcFeatureFlags
-	kafkaArgs kafkaFeedArgs
 }
 
-// kafkaFeedArgs are args that are specific to kafkaSink changefeeds.
-type kafkaFeedArgs struct {
-	// If kafkaChaos is true, the Kafka cluster will periodically restart
-	// to simulate unreliability.
-	kafkaChaos bool
-	// If validateOrder is set to true, order validators will be created
-	// for each topic to validate the changefeed's ordering guarantees.
-	validateOrder bool
-}
-
+// TODO: Maybe move away from feedArgs since its only 3 things
 func (ct *cdcTester) newChangefeed(args feedArgs) changefeedJob {
 	ct.t.Status(fmt.Sprintf("initiating %s sink", args.sinkType))
 	var sinkURI string
@@ -554,20 +470,17 @@ func (ct *cdcTester) newChangefeed(args feedArgs) changefeedJob {
 
 	targetsStr := strings.Join(args.targets, ", ")
 
-	if args.envelope == "" {
-		args.envelope = "wrapped"
-	}
-
 	feedOptions := make(map[string]string)
 	feedOptions["min_checkpoint_frequency"] = "'10s'"
-	feedOptions["envelope"] = args.envelope
 	if args.sinkType == cloudStorageSink || args.sinkType == webhookSink {
+		// Webhook and cloudstorage don't have a concept of keys and therefore
+		// require envelope=wrapped
+		feedOptions["envelope"] = "wrapped"
+
 		feedOptions["resolved"] = "'10s'"
+
 	} else {
 		feedOptions["resolved"] = ""
-	}
-	if args.kafkaArgs.validateOrder {
-		feedOptions["updated"] = ""
 	}
 
 	for option, value := range args.opts {
@@ -582,7 +495,7 @@ func (ct *cdcTester) newChangefeed(args feedArgs) changefeedJob {
 		args.sinkType, args.targets, feedOptions,
 	))
 	db := ct.DB()
-	jobID, err := newChangefeedCreator(db, db, ct.logger, globalRand, targetsStr, sinkURI, makeDefaultFeatureFlags()).
+	jobID, err := newChangefeedCreator(db, ct.logger, globalRand, targetsStr, sinkURI, makeDefaultFeatureFlags()).
 		With(feedOptions).Create()
 	if err != nil {
 		ct.t.Fatalf("failed to create changefeed: %s", err.Error())
@@ -602,38 +515,6 @@ func (ct *cdcTester) newChangefeed(args feedArgs) changefeedJob {
 	ct.t.Status(fmt.Sprintf("created changefeed %s with jobID %d", cj.Label(), jobID))
 
 	return cj
-}
-
-// verifyMetrics runs the check function on the prometheus metrics of each
-// cockroach node in the cluster until it returns true, or until its retry
-// period expires.
-func (ct *cdcTester) verifyMetrics(
-	ctx context.Context, check func(metrics map[string]*prompb.MetricFamily) (ok bool),
-) {
-	parser := expfmt.TextParser{}
-
-	testutils.SucceedsSoon(ct.t, func() error {
-		uiAddrs, err := ct.cluster.ExternalAdminUIAddr(ctx, ct.logger, ct.cluster.CRDBNodes())
-		if err != nil {
-			return err
-		}
-		for _, uiAddr := range uiAddrs {
-			uiAddr = fmt.Sprintf("https://%s/_status/vars", uiAddr)
-			out, err := exec.Command("curl", "-kf", uiAddr).Output()
-			if err != nil {
-				return err
-			}
-			res, err := parser.TextToMetricFamilies(bytes.NewReader(out))
-			if err != nil {
-				return err
-			}
-			if check(res) {
-				ct.t.Status("metrics check passed")
-				return nil
-			}
-		}
-		return errors.New("metrics check failed")
-	})
 }
 
 // runFeedLatencyVerifier runs a goroutine which polls the various latencies
@@ -726,26 +607,7 @@ func (cj *changefeedJob) waitForCompletion() {
 	}
 }
 
-type opt func(ct *cdcTester)
-
-// withNumSinkNodes sets the number of nodes to use for sink nodes. Only Kafka has been tested currently.
-// N.B. this allocates a workload + sink only node, without it, workload and sink will be on the same node.
-func withNumSinkNodes(num int) opt {
-	return func(ct *cdcTester) {
-		ct.crdbNodes = ct.cluster.Range(1, ct.cluster.Spec().NodeCount-num-1)
-		ct.workloadNode = ct.cluster.Node(ct.cluster.Spec().NodeCount)
-		ct.sinkNodes = ct.cluster.Range(ct.cluster.Spec().NodeCount-num, ct.cluster.Spec().NodeCount-1)
-	}
-}
-
-// Silence staticcheck.
-var _ = withNumSinkNodes
-
-func newCDCTester(ctx context.Context, t test.Test, c cluster.Cluster, opts ...opt) cdcTester {
-	// By convention the nodes are split up like [crdb..., sink..., workload].
-	// N.B.:
-	//    - If it's a single node cluster everything shares node 1.
-	//    - If the sink is not provisioned through the withNumSinkNodes opt, it shares a node with the workload node.
+func newCDCTester(ctx context.Context, t test.Test, c cluster.Cluster) cdcTester {
 	lastCrdbNode := c.Spec().NodeCount - 1
 	if lastCrdbNode == 0 {
 		lastCrdbNode = 1
@@ -757,16 +619,10 @@ func newCDCTester(ctx context.Context, t test.Test, c cluster.Cluster, opts ...o
 		cluster:      c,
 		crdbNodes:    c.Range(1, lastCrdbNode),
 		workloadNode: c.Node(c.Spec().NodeCount),
-		sinkNodes:    c.Node(c.Spec().NodeCount),
 		doneCh:       make(chan struct{}),
 		sinkCache:    make(map[sinkType]string),
 		workloadWg:   &sync.WaitGroup{},
 	}
-
-	for _, opt := range opts {
-		opt(&tester)
-	}
-
 	tester.mon = c.NewMonitor(ctx, tester.crdbNodes)
 
 	changefeedLogger, err := t.L().ChildLogger("changefeed")
@@ -777,20 +633,16 @@ func newCDCTester(ctx context.Context, t test.Test, c cluster.Cluster, opts ...o
 
 	startOpts, settings := makeCDCBenchOptions(c)
 
-	// With a target_duration of 10s, we won't see slow span logs from changefeeds until we are > 100s
+	// With a target_duration of 10s, we won't see slow span logs from changefeeds untils we are > 100s
 	// behind, which is well above the 60s targetSteadyLatency we have in some tests.
 	settings.ClusterSettings["changefeed.slow_span_log_threshold"] = "30s"
 	settings.ClusterSettings["server.child_metrics.enabled"] = "true"
-
-	// Randomly set a quantization interval since metamorphic settings
-	// don't extend to roachtests.
-	quantization := fmt.Sprintf("%ds", rand.Intn(30))
-	settings.ClusterSettings["changefeed.resolved_timestamp.granularity"] = quantization
-	t.Status(fmt.Sprintf("changefeed.resolved_timestamp.granularity: %s", quantization))
+	settings.ClusterSettings["changefeed.balance_range_distribution.enable"] = "true"
 
 	settings.Env = append(settings.Env, envVars...)
 
 	c.Start(ctx, t.L(), startOpts, settings, tester.crdbNodes)
+	c.Put(ctx, t.DeprecatedWorkload(), "./workload", tester.workloadNode)
 	tester.startGrafana()
 	return tester
 }
@@ -826,31 +678,13 @@ type latencyTargets struct {
 	steadyLatency      time.Duration
 }
 
-type cdcBankConfig struct {
-	kafkaChaos         bool
-	forceCheckpointing bool
-}
-
-func (c cdcBankConfig) String() string {
-	var b strings.Builder
-	maybeWrite := func(opt bool, name string) {
-		if !opt {
-			return
-		}
-		b.WriteString("/")
-		b.WriteString(name)
-	}
-	maybeWrite(c.kafkaChaos, "kafka-chaos")
-	maybeWrite(c.forceCheckpointing, "force-checkpointing")
-	return b.String()
-}
-
-func runCDCBank(ctx context.Context, t test.Test, c cluster.Cluster, cfg cdcBankConfig) {
+func runCDCBank(ctx context.Context, t test.Test, c cluster.Cluster) {
 	// Make the logs dir on every node to work around the `roachprod get logs`
 	// spam.
-	c.Run(ctx, option.WithNodes(c.All()), `mkdir -p logs`)
+	c.Run(ctx, c.All(), `mkdir -p logs`)
 
-	crdbNodes, workloadNode, kafkaNode := c.CRDBNodes(), c.Node(c.Spec().NodeCount), c.Node(c.Spec().NodeCount)
+	crdbNodes, workloadNode, kafkaNode := c.Range(1, c.Spec().NodeCount-1), c.Node(c.Spec().NodeCount), c.Node(c.Spec().NodeCount)
+	c.Put(ctx, t.DeprecatedWorkload(), "./workload", workloadNode)
 	startOpts := option.DefaultStartOpts()
 	startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs,
 		"--vmodule=changefeed=2",
@@ -865,42 +699,31 @@ func runCDCBank(ctx context.Context, t test.Test, c cluster.Cluster, cfg cdcBank
 		t.Fatal(err)
 	}
 
-	c.Run(ctx, option.WithNodes(workloadNode), `./cockroach workload init bank {pgurl:1}`)
+	c.Run(ctx, workloadNode, `./workload init bank {pgurl:1}`)
 	db := c.Conn(ctx, t.L(), 1)
 	defer stopFeeds(db)
 
-	if cfg.forceCheckpointing {
-		for _, stmt := range []string{
-			`SET CLUSTER SETTING changefeed.span_checkpoint.interval = '1s'`,
-			`SET CLUSTER SETTING changefeed.span_checkpoint.lag_threshold = '1us'`,
-		} {
-			if _, err := db.Exec(stmt); err != nil {
-				t.Fatal(fmt.Sprintf("failed to execute stmt %q: %v", stmt, err))
-			}
-		}
-	}
-
 	options := map[string]string{
 		"updated":  "",
-		"resolved": "'1s'",
+		"resolved": "",
 		// we need to set a min_checkpoint_frequency here because if we
 		// use the default 30s duration, the test will likely not be able
 		// to finish within 30 minutes
 		"min_checkpoint_frequency": "'2s'",
 		"diff":                     "",
 	}
-	_, err := newChangefeedCreator(db, db, t.L(), globalRand, "bank.bank", kafka.sinkURL(ctx), makeDefaultFeatureFlags()).
+	_, err := newChangefeedCreator(db, t.L(), globalRand, "bank.bank", kafka.sinkURL(ctx), makeDefaultFeatureFlags()).
 		With(options).
 		Create()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	tc, err := kafka.newConsumer(ctx, "bank", nil /* stopper */)
+	tc, err := kafka.newConsumer(ctx, "bank")
 	if err != nil {
 		t.Fatal(errors.Wrap(err, "could not create kafka consumer"))
 	}
-	defer tc.close()
+	defer tc.Close()
 
 	l, err := t.L().ChildLogger(`changefeed`)
 	if err != nil {
@@ -909,40 +732,29 @@ func runCDCBank(ctx context.Context, t test.Test, c cluster.Cluster, cfg cdcBank
 	defer l.Close()
 
 	t.Status("running workload")
+	workloadCtx, workloadCancel := context.WithCancel(ctx)
+	defer workloadCancel()
 
+	m := c.NewMonitor(workloadCtx, crdbNodes)
+	var doneAtomic int64
 	messageBuf := make(chan *sarama.ConsumerMessage, 4096)
 	const requestedResolved = 100
 
-	m := c.NewMonitor(ctx, crdbNodes)
-	chaosCancel := func() func() {
-		if !cfg.kafkaChaos {
-			return func() {}
-		}
-		return m.GoWithCancel(func(ctx context.Context) error {
-			period, downTime := time.Minute, 10*time.Second
-			err := kafka.chaosLoop(ctx, period, downTime, nil)
-			if errors.Is(err, context.Canceled) {
-				return nil
-			}
-			return errors.Wrap(err, "kafka chaos loop failed")
-		})
-	}()
-	workloadCancel := m.GoWithCancel(func(ctx context.Context) error {
-		err := c.RunE(ctx, option.WithNodes(workloadNode), `./cockroach workload run bank {pgurl:1} --max-rate=10`)
-		if errors.Is(err, context.Canceled) {
+	m.Go(func(ctx context.Context) error {
+		err := c.RunE(ctx, workloadNode, `./workload run bank {pgurl:1} --max-rate=10`)
+		if atomic.LoadInt64(&doneAtomic) > 0 {
 			return nil
 		}
 		return errors.Wrap(err, "workload failed")
 	})
 	m.Go(func(ctx context.Context) error {
-		defer chaosCancel()
 		defer workloadCancel()
-		defer close(messageBuf)
-		v := cdctest.NewCountValidator(cdctest.NoOpValidator)
+		defer func() { close(messageBuf) }()
+		v := cdctest.MakeCountValidator(cdctest.NoOpValidator)
 		for {
-			m, err := tc.next(ctx)
-			if err != nil {
-				return err
+			m := tc.Next(ctx)
+			if m == nil {
+				return fmt.Errorf("unexpected end of changefeed")
 			}
 			messageBuf <- m
 			updated, resolved, err := cdctest.ParseJSONValueTimestamps(m.Value)
@@ -952,7 +764,7 @@ func runCDCBank(ctx context.Context, t test.Test, c cluster.Cluster, cfg cdcBank
 
 			partitionStr := strconv.Itoa(int(m.Partition))
 			if len(m.Key) > 0 {
-				if err := v.NoteRow(partitionStr, string(m.Key), string(m.Value), updated, m.Topic); err != nil {
+				if err := v.NoteRow(partitionStr, string(m.Key), string(m.Value), updated); err != nil {
 					return err
 				}
 			} else {
@@ -962,6 +774,7 @@ func runCDCBank(ctx context.Context, t test.Test, c cluster.Cluster, cfg cdcBank
 				l.Printf("%d of %d resolved timestamps received from kafka, latest is %s behind realtime, %s beind realtime when sent to kafka",
 					v.NumResolvedWithRows, requestedResolved, timeutil.Since(resolved.GoTime()), m.Timestamp.Sub(resolved.GoTime()))
 				if v.NumResolvedWithRows >= requestedResolved {
+					atomic.StoreInt64(&doneAtomic, 1)
 					break
 				}
 			}
@@ -979,7 +792,7 @@ func runCDCBank(ctx context.Context, t test.Test, c cluster.Cluster, cfg cdcBank
 		if err != nil {
 			return errors.Wrap(err, "error creating validator")
 		}
-		baV, err := cdctest.NewBeforeAfterValidator(db, `bank.bank`, true)
+		baV, err := cdctest.NewBeforeAfterValidator(db, `bank.bank`)
 		if err != nil {
 			return err
 		}
@@ -988,7 +801,7 @@ func runCDCBank(ctx context.Context, t test.Test, c cluster.Cluster, cfg cdcBank
 			fprintV,
 			baV,
 		}
-		v := cdctest.NewCountValidator(validators)
+		v := cdctest.MakeCountValidator(validators)
 
 		timeSpentValidatingRows := 0 * time.Second
 		numRowsValidated := 0
@@ -1006,7 +819,7 @@ func runCDCBank(ctx context.Context, t test.Test, c cluster.Cluster, cfg cdcBank
 			partitionStr := strconv.Itoa(int(m.Partition))
 			if len(m.Key) > 0 {
 				startTime := timeutil.Now()
-				if err := v.NoteRow(partitionStr, string(m.Key), string(m.Value), updated, m.Topic); err != nil {
+				if err := v.NoteRow(partitionStr, string(m.Key), string(m.Value), updated); err != nil {
 					return err
 				}
 				timeSpentValidatingRows += timeutil.Since(startTime)
@@ -1034,414 +847,6 @@ func runCDCBank(ctx context.Context, t test.Test, c cluster.Cluster, cfg cdcBank
 	m.Wait()
 }
 
-type cdcCheckpointType int
-
-const (
-	cdcNormalCheckpoint cdcCheckpointType = iota
-	cdcShutdownCheckpoint
-)
-
-// runCDCInitialScanRollingRestart runs multiple initial-scan-only changefeeds
-// on a 4-node cluster, using node 1 as the coordinator and continuously
-// restarting nodes 2-4 to hopefully force the changefeed to replan and exercise
-// the checkpoint restore logic.
-func runCDCInitialScanRollingRestart(
-	ctx context.Context, t test.Test, c cluster.Cluster, checkpointType cdcCheckpointType,
-) {
-	startOpts := option.DefaultStartOpts()
-	ips, err := c.ExternalIP(ctx, t.L(), c.Node(1))
-	sinkURL := fmt.Sprintf("https://%s:%d", ips[0], debug.WebhookServerPort)
-	sink := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// We configure "racks" localities to push replicas off n1 later.
-	racks := install.MakeClusterSettings(install.NumRacksOption(c.Spec().NodeCount))
-	racks.Env = append(racks.Env, `COCKROACH_CHANGEFEED_TESTING_FAST_RETRY=true`)
-	c.Start(ctx, t.L(), option.DefaultStartOpts(), racks)
-	m := c.NewMonitor(ctx, c.All())
-
-	restart := func(n int) error {
-		cmd := fmt.Sprintf("./cockroach node drain --certs-dir=%s --port={pgport:%d} --self", install.CockroachNodeCertsDir, n)
-		if err := c.RunE(ctx, option.WithNodes(c.Node(n)), cmd); err != nil {
-			return err
-		}
-		m.ExpectDeath()
-		c.Stop(ctx, t.L(), option.DefaultStopOpts(), c.Node(n))
-		opts := startOpts
-		opts.RoachprodOpts.IsRestart = true
-		c.Start(ctx, t.L(), opts, racks, c.Node(n))
-		m.ResetDeaths()
-		return nil
-	}
-
-	// Restart n1 to shed any leases it still has.
-	if err := restart(1); err != nil {
-		t.Fatal(err)
-	}
-
-	db := c.Conn(ctx, t.L(), 1)
-
-	// Setup a large table with 1M rows and a small table with 5 rows.
-	// Keep ranges off n1 so that our plans use 2, 3, and 4.
-	const (
-		largeRowCount = 1000000
-		smallRowCount = 5
-	)
-	t.L().Printf("setting up test data...")
-	setupStmts := []string{
-		`ALTER RANGE default CONFIGURE ZONE USING constraints = '[-rack=0]'`,
-		fmt.Sprintf(`CREATE TABLE large (id PRIMARY KEY) AS SELECT generate_series(1, %d) id`, largeRowCount),
-		`ALTER TABLE large SCATTER`,
-		fmt.Sprintf(`CREATE TABLE small (id PRIMARY KEY) AS SELECT generate_series(%d, %d)`, largeRowCount+1, largeRowCount+smallRowCount),
-		`ALTER TABLE small SCATTER`,
-	}
-	switch checkpointType {
-	case cdcNormalCheckpoint:
-		setupStmts = append(setupStmts,
-			`SET CLUSTER SETTING changefeed.span_checkpoint.interval = '1s'`,
-			`SET CLUSTER SETTING changefeed.shutdown_checkpoint.enabled = 'false'`,
-		)
-	case cdcShutdownCheckpoint:
-		const largeSplitCount = 5
-		setupStmts = append(setupStmts,
-			`SET CLUSTER SETTING changefeed.span_checkpoint.interval = '0'`,
-			`SET CLUSTER SETTING changefeed.shutdown_checkpoint.enabled = 'true'`,
-			// Split some bigger chunks up to scatter it a bit more.
-			fmt.Sprintf(`ALTER TABLE large SPLIT AT SELECT id FROM large ORDER BY random() LIMIT %d`, largeSplitCount/4),
-			`ALTER TABLE large SCATTER`,
-			// Finish splitting, so that drained ranges spread out evenly.
-			fmt.Sprintf(`ALTER TABLE large SPLIT AT SELECT id FROM large ORDER BY random() LIMIT %d`, largeSplitCount),
-			`ALTER TABLE large SCATTER`,
-		)
-	}
-	for _, s := range setupStmts {
-		t.L().Printf(s)
-		if _, err := db.Exec(s); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.L().Printf("test data is setup")
-
-	// Run the sink server.
-	m.Go(func(ctx context.Context) error {
-		t.L().Printf("starting up sink server at %s...", sinkURL)
-		err := c.RunE(ctx, option.WithNodes(c.Node(1)), "./cockroach workload debug webhook-server")
-		if err != nil {
-			return err
-		}
-		t.L().Printf("sink server exited")
-		return nil
-	})
-
-	// Restart nodes 2, 3, and 4 in a loop.
-	stopRestarts := make(chan struct{})
-	m.Go(func(ctx context.Context) error {
-		defer func() {
-			t.L().Printf("done restarting nodes")
-		}()
-		t.L().Printf("starting rolling drain+restarts of 2, 3, 4...")
-		timer := time.NewTimer(0 * time.Second)
-		for {
-			for _, n := range []int{2, 3, 4} {
-				select {
-				case <-stopRestarts:
-					return nil
-				case <-ctx.Done():
-					return nil
-				case <-timer.C:
-				}
-				if err := restart(n); err != nil {
-					return err
-				}
-				// We wait a bit between restarts so that the change aggregators have
-				// a chance to make some progress.
-				timer.Reset(10 * time.Second)
-			}
-		}
-	})
-
-	wait := make(chan struct{})
-
-	// Run the changefeed, then ask the sink how many rows it saw.
-	var unique int
-	func() {
-		defer close(wait)
-		defer close(stopRestarts)
-		defer func() {
-			_, err := sink.Get(sinkURL + "/exit")
-			t.L().Printf("exiting webhook sink status: %v", err)
-		}()
-
-		const numChangefeeds = 5
-		for i := 0; i < numChangefeeds; i++ {
-			t.L().Printf("starting changefeed %d...", i)
-			var job int
-			if err := db.QueryRow(
-				fmt.Sprintf("CREATE CHANGEFEED FOR TABLE large, small INTO 'webhook-%s/?insecure_tls_skip_verify=true' WITH initial_scan='only'", sinkURL),
-			).Scan(&job); err != nil {
-				t.Fatal(err)
-			}
-
-			t.L().Printf("waiting for changefeed %d...", job)
-			if _, err := db.ExecContext(ctx, "SHOW JOB WHEN COMPLETE $1", job); err != nil {
-				t.Fatal(err)
-			}
-
-			t.L().Printf("changefeed complete, checking sink...")
-			get := func(p string) (int, error) {
-				b, err := sink.Get(sinkURL + p)
-				if err != nil {
-					return 0, err
-				}
-				body, err := io.ReadAll(b.Body)
-				if err != nil {
-					return 0, err
-				}
-				i, err := strconv.Atoi(string(body))
-				if err != nil {
-					return 0, err
-				}
-				return i, nil
-			}
-			unique, err = get("/unique")
-			if err != nil {
-				t.Fatal(err)
-			}
-			dupes, err := get("/dupes")
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.L().Printf("sink got %d unique, %d dupes", unique, dupes)
-			expected := largeRowCount + smallRowCount
-			if unique != expected {
-				t.Fatalf("expected %d, got %d", expected, unique)
-			}
-			_, err = sink.Get(sinkURL + "/reset")
-			t.L().Printf("resetting sink %v", err)
-		}
-	}()
-
-	<-wait
-	// TODO(#116314)
-	if runtime.GOOS != "darwin" {
-		m.Wait()
-	}
-}
-
-type fineGrainedCheckpointingParams struct {
-	numRanges               int
-	transientErrorFrequency time.Duration
-	rangeDelays             []time.Duration
-	maxVal                  int
-}
-
-// runCDCFineGrainedCheckpointingBenchmark runs a changefeed
-// on a 4-node cluster, using node 1 as the coordinator. It will split the
-// table into many ranges and start a sink which will be artificially slower
-// on some of the ranges so that our fine grained checkpoints are exercised.
-// This sink will also occasionally error which should force restarts and
-// restore from these fine-grained checkpoints.
-func runCDCFineGrainedCheckpointingBenchmark(
-	ctx context.Context, t test.Test, c cluster.Cluster, params fineGrainedCheckpointingParams,
-) {
-	if len(params.rangeDelays) > params.numRanges {
-		t.Fatalf("too many range delays provided")
-	}
-
-	ips, err := c.ExternalIP(ctx, t.L(), c.Node(c.Spec().NodeCount))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sinkURL := fmt.Sprintf("https://%s:%d", ips[0], debug.WebhookServerPort)
-	sink := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings())
-	m := c.NewMonitor(ctx, c.All())
-
-	db := c.Conn(ctx, t.L(), 1)
-
-	startTime := timeutil.Now()
-
-	startStatsCollection := func() func(roachtestutil.MetricPoint) {
-		promCfg := (&prometheus.Config{}).
-			WithPrometheusNode(c.Node(4).InstallNodes()[0]).
-			WithCluster(c.Nodes(1, 2, 3, 4).InstallNodes()).
-			WithNodeExporter(c.Nodes(1, 2, 3, 4).InstallNodes()).
-			WithGrafanaDashboardJSON(grafana.ChangefeedRoachtestGrafanaDashboardJSON)
-
-		promCfg.Grafana.Enabled = true
-
-		err := c.StartGrafana(ctx, t.L(), promCfg)
-		if err != nil {
-			t.Errorf("error starting prometheus/grafana: %s", err)
-		}
-		nodeURLs, err := c.ExternalIP(ctx, t.L(), c.Node(4))
-		if err != nil {
-			t.Errorf("error getting grafana node external ip: %s", err)
-		}
-		t.Status(fmt.Sprintf("started grafana at http://%s:3000/d/928XNlN4k/basic?from=now-15m&to=now", nodeURLs[0]))
-
-		promClient, err := clusterstats.SetupCollectorPromClient(ctx, c, t.L(), promCfg)
-		if err != nil {
-			t.Errorf("error creating prometheus client for stats collector: %s", err)
-		}
-
-		return func(dupesPercentage roachtestutil.MetricPoint) {
-			statsCollector := clusterstats.NewStatsCollector(ctx, promClient)
-			_, err = statsCollector.Exporter().Export(ctx, c, t, false, /* dryRun */
-				startTime,
-				timeutil.Now(),
-				[]clusterstats.AggQuery{changefeedThroughputAgg, cpuUsageAgg},
-				func(stats map[string]clusterstats.StatSummary) *roachtestutil.AggregatedMetric {
-					return &roachtestutil.AggregatedMetric{
-						Name:             "Dupes percentage",
-						Value:            dupesPercentage,
-						Unit:             "percent",
-						IsHigherBetter:   false,
-						AdditionalLabels: nil,
-					}
-				},
-			)
-
-			if err != nil {
-				t.Errorf("error exporting stats file: %s", err)
-			}
-		}
-	}()
-
-	t.L().Printf("setting up test data...")
-	setupStmts := []string{
-		`CREATE TABLE foo (id INT PRIMARY KEY, val INT)`,
-		`SET CLUSTER SETTING changefeed.span_checkpoint.interval = '1s'`,
-		`SET CLUSTER SETTING changefeed.shutdown_checkpoint.enabled = 'false'`,
-		`SET CLUSTER SETTING changefeed.frontier_highwater_lag_checkpoint_threshold = '100ms'`,
-		`SET CLUSTER SETTING changefeed.frontier_checkpoint_frequency = '1s'`,
-		// We do not set timestamp quantization here since it is off by default
-		`SET CLUSTER SETTING kv.rangefeed.enabled = true`,
-	}
-
-	values := []string{}
-	for i := 0; i < params.numRanges; i++ {
-		values = append(values, fmt.Sprintf("(%d, 0)", i*10))
-	}
-	setupStmts = append(setupStmts, fmt.Sprintf("INSERT INTO foo VALUES %s", strings.Join(values, ", ")))
-	setupStmts = append(setupStmts, fmt.Sprintf("ALTER TABLE foo SPLIT AT SELECT generate_series(0, %d, 10)", params.numRanges*10))
-
-	for _, s := range setupStmts {
-		t.L().Printf(s)
-		if _, err := db.Exec(s); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	delayStrings := []string{}
-	for _, delay := range params.rangeDelays {
-		delayStrings = append(delayStrings, fmt.Sprint(delay.Milliseconds()))
-	}
-
-	// Run the sink server.
-	m.Go(func(ctx context.Context) error {
-		t.L().Printf("starting up sink server at %s...", sinkURL)
-		err := c.RunE(ctx, option.WithNodes(c.Node(c.Spec().NodeCount)),
-			fmt.Sprintf("./cockroach workload debug webhook-server-slow %d %s", params.transientErrorFrequency.Milliseconds(), strings.Join(delayStrings, " ")))
-		if err != nil {
-			return err
-		}
-		return nil
-	})
-
-	defer func() {
-		_, err := sink.Get(sinkURL + "/exit")
-		t.L().Printf("exiting webhook sink status: %v", err)
-	}()
-
-	t.L().Printf("starting changefeed...")
-	var job int
-	if err := db.QueryRow(
-		fmt.Sprintf("CREATE CHANGEFEED FOR TABLE foo INTO 'webhook-%s/?insecure_tls_skip_verify=true' WITH initial_scan='no', updated", sinkURL),
-	).Scan(&job); err != nil {
-		t.Fatal(err)
-	}
-
-	var inserts []string
-	for i := 0; i < params.numRanges; i++ {
-		for j := 1; j < 10; j++ {
-			inserts = append(inserts, fmt.Sprintf("(%d, 0)", i*10+j))
-		}
-	}
-
-	sql := "INSERT INTO foo (id, val) VALUES " + strings.Join(inserts, ",")
-	if _, err := db.Exec(sql); err != nil {
-		t.Fatal(err)
-	}
-
-	for c := 1; c <= params.maxVal; c++ {
-		if _, err := db.Exec(fmt.Sprintf(
-			"UPDATE foo SET val = %d", c)); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	t.L().Printf("waiting for changefeed %d...", job)
-
-	get := func(p string) (int, error) {
-		b, err := sink.Get(sinkURL + p)
-		if err != nil {
-			return 0, err
-		}
-		body, err := io.ReadAll(b.Body)
-		if err != nil {
-			return 0, err
-		}
-		i, err := strconv.Atoi(string(body))
-		if err != nil {
-			return 0, err
-		}
-		return i, nil
-	}
-
-	// 10 keys per range are each updated maxVal + 1 times
-	// except for one key per range which is set to 0 before
-	// the changefeed starts and only updated maxVal times.
-	expected := 10*params.numRanges*(params.maxVal+1) - params.numRanges
-	t.L().Printf("expecting %d rows", expected)
-
-	var dupes int
-	testutils.SucceedsWithin(t, func() error {
-		unique, err := get("/unique")
-		if err != nil {
-			t.L().Errorf("error getting unique count: %v", err)
-			return err
-		}
-		dupes, err = get("/dupes")
-		if err != nil {
-			t.L().Errorf("error getting dupes count: %v", err)
-			return err
-		}
-		t.L().Printf("sink got %d unique, %d dupes", unique, dupes)
-
-		if unique != expected {
-			return fmt.Errorf("expected %d, got %d", expected, unique)
-		}
-
-		return nil
-	}, 30*time.Minute)
-
-	dupesPercentage := 100 * (float64(dupes) / float64(expected))
-	dupesPercentageMetricPoint := roachtestutil.MetricPoint(dupesPercentage)
-	t.L().Printf("sink got %d dupes, which is %f percent of the total number of unique messages", dupes, dupesPercentage)
-
-	startStatsCollection(dupesPercentageMetricPoint)
-	t.L().Printf("changefeed complete, checking sink...")
-	_, err = sink.Get(sinkURL + "/reset")
-	t.L().Printf("resetting sink %v", err)
-}
-
 // This test verifies that the changefeed avro + confluent schema registry works
 // end-to-end (including the schema registry default of requiring backward
 // compatibility within a topic).
@@ -1449,9 +854,9 @@ func runCDCSchemaRegistry(ctx context.Context, t test.Test, c cluster.Cluster) {
 	crdbNodes, kafkaNode := c.Node(1), c.Node(1)
 	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), crdbNodes)
 	kafka := kafkaManager{
-		t:              t,
-		c:              c,
-		kafkaSinkNodes: kafkaNode,
+		t:     t,
+		c:     c,
+		nodes: kafkaNode,
 	}
 	kafka.install(ctx)
 	kafka.start(ctx, "schema-registry")
@@ -1472,7 +877,7 @@ func runCDCSchemaRegistry(ctx context.Context, t test.Test, c cluster.Cluster) {
 		"diff":                      "",
 	}
 
-	_, err := newChangefeedCreator(db, db, t.L(), globalRand, "foo", kafka.sinkURL(ctx), makeDefaultFeatureFlags()).
+	_, err := newChangefeedCreator(db, t.L(), globalRand, "foo", kafka.sinkURL(ctx), makeDefaultFeatureFlags()).
 		With(options).
 		Args(kafka.schemaRegistryURL(ctx)).
 		Create()
@@ -1507,7 +912,7 @@ func runCDCSchemaRegistry(ctx context.Context, t test.Test, c cluster.Cluster) {
 	pageSize := 7
 
 	for len(updatedMap) < 10 && pagesFetched < 5 {
-		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(kafkaNode),
+		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), kafkaNode,
 			kafka.makeCommand("kafka-avro-console-consumer",
 				fmt.Sprintf("--offset=%d", pagesFetched*pageSize),
 				"--partition=0",
@@ -1556,13 +961,18 @@ func runCDCSchemaRegistry(ctx context.Context, t test.Test, c cluster.Cluster) {
 }
 
 func runCDCKafkaAuth(ctx context.Context, t test.Test, c cluster.Cluster) {
-	crdbNodes, kafkaNode := c.CRDBNodes(), c.Node(c.Spec().NodeCount)
+	lastCrdbNode := c.Spec().NodeCount - 1
+	if lastCrdbNode == 0 {
+		lastCrdbNode = 1
+	}
+
+	crdbNodes, kafkaNode := c.Range(1, lastCrdbNode), c.Node(c.Spec().NodeCount)
 	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), crdbNodes)
 
 	kafka := kafkaManager{
-		t:              t,
-		c:              c,
-		kafkaSinkNodes: kafkaNode,
+		t:     t,
+		c:     c,
+		nodes: kafkaNode,
 	}
 	kafka.install(ctx)
 	testCerts := kafka.configureAuth(ctx)
@@ -1613,8 +1023,8 @@ func runCDCKafkaAuth(ctx context.Context, t test.Test, c cluster.Cluster) {
 	}
 
 	for _, f := range feeds {
-		t.Status(fmt.Sprintf("running:%s, query:%s", f.desc, f.queryArg))
-		_, err := newChangefeedCreator(db, db, t.L(), globalRand, "auth_test_table", f.queryArg, makeDefaultFeatureFlags()).Create()
+		t.Status(f.desc)
+		_, err := newChangefeedCreator(db, t.L(), globalRand, "auth_test_table", f.queryArg, makeDefaultFeatureFlags()).Create()
 		if err != nil {
 			t.Fatalf("%s: %s", f.desc, err.Error())
 		}
@@ -1681,14 +1091,12 @@ highwaterLoop:
 
 func registerCDC(r registry.Registry) {
 	r.Add(registry.TestSpec{
-		Name:      "cdc/initial-scan-only",
-		Owner:     registry.OwnerCDC,
-		Benchmark: true,
-		Cluster:   r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode(), spec.Arch(vm.ArchAMD64)),
-		// This test uses google cloudStorageSink because it is the fastest,
-		// but it is not a requirement for this test. The sink could be
-		// chosen on a per cloud basis if we want to run this on other clouds.
-		CompatibleClouds: registry.OnlyGCE,
+		Name:             "cdc/initial-scan-only",
+		Owner:            registry.OwnerCDC,
+		Benchmark:        true,
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.Arch(vm.ArchAMD64)),
+		RequiresLicense:  true,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
@@ -1711,63 +1119,13 @@ func registerCDC(r registry.Registry) {
 		},
 	})
 	r.Add(registry.TestSpec{
-		Name:             "cdc/initial-scan-rolling-restart/normal-checkpoint",
-		Owner:            registry.OwnerCDC,
-		Cluster:          r.MakeClusterSpec(4),
-		CompatibleClouds: registry.OnlyGCE,
-		Suites:           registry.Suites(registry.Nightly),
-		Timeout:          30 * time.Minute,
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			runCDCInitialScanRollingRestart(ctx, t, c, cdcNormalCheckpoint)
-		},
-	})
-	r.Add(registry.TestSpec{
-		Name:             "cdc/initial-scan-rolling-restart/shutdown-checkpoint",
-		Owner:            registry.OwnerCDC,
-		Cluster:          r.MakeClusterSpec(4),
-		CompatibleClouds: registry.OnlyGCE,
-		Suites:           registry.Suites(registry.Nightly),
-		Timeout:          30 * time.Minute,
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			runCDCInitialScanRollingRestart(ctx, t, c, cdcShutdownCheckpoint)
-		},
-	})
-	r.Add(registry.TestSpec{
-		Name:             "cdc/fine-grained-checkpointing",
+		Name:             "cdc/tpcc-1000",
 		Owner:            registry.OwnerCDC,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4),
-		CompatibleClouds: registry.AllExceptAzure,
-		Suites:           registry.Suites(registry.Nightly),
-		Timeout:          30 * time.Minute,
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			runCDCFineGrainedCheckpointingBenchmark(ctx, t, c, fineGrainedCheckpointingParams{
-				numRanges:               1000,
-				transientErrorFrequency: 500 * time.Millisecond,
-				rangeDelays: []time.Duration{
-					2 * time.Millisecond,
-					4 * time.Millisecond,
-					8 * time.Millisecond,
-					16 * time.Millisecond,
-					32 * time.Millisecond,
-					2 * time.Millisecond,
-					4 * time.Millisecond,
-					8 * time.Millisecond,
-					16 * time.Millisecond,
-					32 * time.Millisecond,
-				},
-				maxVal: 100,
-			})
-		},
-	})
-	r.Add(registry.TestSpec{
-		Name:      "cdc/tpcc-1000/sink=kafka",
-		Owner:     registry.OwnerCDC,
-		Benchmark: true,
-		Cluster:   r.MakeClusterSpec(4, spec.WorkloadNode(), spec.CPU(16)),
-		Leases:    registry.MetamorphicLeases,
-		// Disabled on IBM due to lack of Kafka support on s390x.
-		CompatibleClouds: registry.AllClouds.NoIBM(),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
+		Leases:           registry.MetamorphicLeases,
+		RequiresLicense:  true,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
@@ -1778,41 +1136,7 @@ func registerCDC(r registry.Registry) {
 			feed := ct.newChangefeed(feedArgs{
 				sinkType: kafkaSink,
 				targets:  allTpccTargets,
-				kafkaArgs: kafkaFeedArgs{
-					validateOrder: true,
-				},
-				opts: map[string]string{"initial_scan": "'no'"},
-			})
-			ct.runFeedLatencyVerifier(feed, latencyTargets{
-				initialScanLatency: 3 * time.Minute,
-				steadyLatency:      10 * time.Minute,
-			})
-			ct.waitForWorkload()
-		},
-	})
-	r.Add(registry.TestSpec{
-		Name:             "cdc/tpcc-1000/sink=msk",
-		Owner:            registry.OwnerCDC,
-		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.WorkloadNode(), spec.CPU(16)),
-		Leases:           registry.MetamorphicLeases,
-		CompatibleClouds: registry.OnlyAWS,
-		Suites:           registry.ManualOnly,
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			ct := newCDCTester(ctx, t, c)
-			defer ct.Close()
-
-			ct.runTPCCWorkload(tpccArgs{warehouses: 1000, duration: "60m"})
-
-			feed := ct.newChangefeed(feedArgs{
-				sinkType: mskSink,
-				targets:  allTpccTargets,
-				opts: map[string]string{
-					"initial_scan": "'no'",
-					// updated is specified so that we can compare emitted bytes with
-					// cdc/tpcc-1000/sink=kafka.
-					"updated": "",
-				},
+				opts:     map[string]string{"initial_scan": "'no'"},
 			})
 			ct.runFeedLatencyVerifier(feed, latencyTargets{
 				initialScanLatency: 3 * time.Minute,
@@ -1825,9 +1149,10 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/tpcc-1000/sink=cloudstorage",
 		Owner:            registry.OwnerCDC,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.WorkloadNode(), spec.CPU(16)),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
-		CompatibleClouds: registry.OnlyGCE,
+		RequiresLicense:  true,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
@@ -1851,14 +1176,12 @@ func registerCDC(r registry.Registry) {
 		},
 	})
 	r.Add(registry.TestSpec{
-		Name:      "cdc/initial-scan-only/parquet",
-		Owner:     registry.OwnerCDC,
-		Benchmark: true,
-		Cluster:   r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode(), spec.Arch(vm.ArchAMD64)),
-		// This test uses google cloudStorageSink because it is the fastest,
-		// but it is not a requirement for this test. The sink could be
-		// chosen on a per cloud basis if we want to run this on other clouds.
-		CompatibleClouds: registry.OnlyGCE,
+		Name:             "cdc/initial-scan-only/parquet",
+		Owner:            registry.OwnerCDC,
+		Benchmark:        true,
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.Arch(vm.ArchAMD64)),
+		RequiresLicense:  true,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
@@ -1879,56 +1202,15 @@ func registerCDC(r registry.Registry) {
 		},
 	})
 	r.Add(registry.TestSpec{
-		Name:             "cdc/initial-scan-only/parquet/metamorphic",
-		Skip:             "#119295",
-		Owner:            registry.OwnerCDC,
-		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode(), spec.Arch(vm.ArchAMD64)),
-		CompatibleClouds: registry.OnlyGCE,
-		Suites:           registry.Suites(registry.Nightly),
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			ct := newCDCTester(ctx, t, c)
-			defer ct.Close()
-
-			// Metamorphic testing runs two changefeeds,
-			// Run the workload with 1 warehouse only to speed up the test.
-			ct.runTPCCWorkload(tpccArgs{warehouses: 1})
-
-			// Randomly select one table as changefeed target and skip other tables to
-			// speed up the test.
-			randomlySelectedIndex := getRandomIndex(len(allTpccTargets))
-			selectedTargetTable := allTpccTargets[randomlySelectedIndex]
-			trimmedTargetTable := strings.TrimPrefix(selectedTargetTable, `tpcc.`)
-
-			firstFeed := ct.newChangefeed(feedArgs{
-				sinkType: cloudStorageSink,
-				targets:  []string{selectedTargetTable},
-				opts:     map[string]string{"initial_scan": "'only'", "format": "'parquet'"},
-			})
-			firstFeed.waitForCompletion()
-
-			secFeed := ct.newChangefeed(feedArgs{
-				sinkType: cloudStorageSink,
-				targets:  []string{selectedTargetTable},
-				opts:     map[string]string{"initial_scan": "'only'", "format": "'parquet'"},
-			})
-			secFeed.waitForCompletion()
-
-			db := c.Conn(context.Background(), t.L(), 1)
-			sqlRunner := sqlutils.MakeSQLRunner(db)
-			checkTwoChangeFeedExportContent(ctx, t, sqlRunner, firstFeed.sinkURI, secFeed.sinkURI, trimmedTargetTable)
-		},
-	})
-	r.Add(registry.TestSpec{
 		Name:      "cdc/tpcc-1000/sink=null",
 		Owner:     registry.OwnerCDC,
 		Benchmark: true,
-		Cluster:   r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:   r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:    registry.MetamorphicLeases,
 		// TODO(radu): fix this.
-		// Disabled on IBM due to lack of Kafka support on s390x.
-		CompatibleClouds: registry.AllClouds.NoIBM(),
+		CompatibleClouds: registry.AllClouds,
 		Suites:           registry.ManualOnly,
+		RequiresLicense:  true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
 			defer ct.Close()
@@ -1948,14 +1230,14 @@ func registerCDC(r registry.Registry) {
 		},
 	})
 	r.Add(registry.TestSpec{
-		Name:      "cdc/initial-scan",
-		Owner:     registry.OwnerCDC,
-		Benchmark: true,
-		Cluster:   r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
-		Leases:    registry.MetamorphicLeases,
-		// Disabled on IBM due to lack of Kafka support on s390x.
-		CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
+		Name:             "cdc/initial-scan",
+		Owner:            registry.OwnerCDC,
+		Benchmark:        true,
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
+		Leases:           registry.MetamorphicLeases,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
 			defer ct.Close()
@@ -1971,14 +1253,14 @@ func registerCDC(r registry.Registry) {
 		},
 	})
 	r.Add(registry.TestSpec{
-		Name:      "cdc/kafka-chaos",
-		Owner:     `cdc`,
-		Benchmark: true,
-		Cluster:   r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
-		Leases:    registry.MetamorphicLeases,
-		// Disabled on IBM due to lack of Kafka support on s390x.
-		CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
+		Name:             "cdc/sink-chaos",
+		Owner:            `cdc`,
+		Benchmark:        true,
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
+		Leases:           registry.MetamorphicLeases,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
 			defer ct.Close()
@@ -1986,129 +1268,41 @@ func registerCDC(r registry.Registry) {
 			ct.runTPCCWorkload(tpccArgs{warehouses: 100, duration: "30m"})
 
 			feed := ct.newChangefeed(feedArgs{
-				sinkType: kafkaSink,
-				targets:  allTpccTargets,
-				kafkaArgs: kafkaFeedArgs{
-					kafkaChaos:    true,
-					validateOrder: true,
-				},
-				opts: map[string]string{"initial_scan": "'no'"},
+				sinkType:   kafkaSink,
+				targets:    allTpccTargets,
+				kafkaChaos: true,
+				opts:       map[string]string{"initial_scan": "'no'"},
 			})
 			ct.runFeedLatencyVerifier(feed, latencyTargets{
 				initialScanLatency: 3 * time.Minute,
 				steadyLatency:      5 * time.Minute,
 			})
 			ct.waitForWorkload()
-			ct.verifyMetrics(ctx, verifyMetricsNonZero("changefeed_network_bytes_in", "changefeed_network_bytes_out"))
 		},
 	})
 	r.Add(registry.TestSpec{
-		Name:    "cdc/kafka-chaos-single-row",
-		Owner:   `cdc`,
-		Cluster: r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
-		Leases:  registry.MetamorphicLeases,
-		// Disabled on IBM due to lack of Kafka support on s390x.
-		CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
+		Name:             "cdc/crdb-chaos",
+		Owner:            `cdc`,
+		Benchmark:        true,
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
+		Leases:           registry.MetamorphicLeases,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
 			defer ct.Close()
 
-			// Since this test fails with the v1 kafka sink, hardcode the v2 sink.
-			_, err := ct.DB().ExecContext(ctx, `SET CLUSTER SETTING changefeed.new_kafka_sink.enabled = true;`)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			_, err = ct.DB().ExecContext(ctx, `CREATE TABLE t (id INT PRIMARY KEY, x INT);`)
-			if err != nil {
-				t.Fatal("failed to create table")
-			}
-			_, err = ct.DB().ExecContext(ctx, `INSERT INTO t VALUES (1, -1);`)
-			if err != nil {
-				t.Fatal("failed to insert row into table")
-			}
-
-			feed := ct.newChangefeed(feedArgs{
-				sinkType: kafkaSink,
-				targets:  []string{"t"},
-				kafkaArgs: kafkaFeedArgs{
-					kafkaChaos:    true,
-					validateOrder: true,
-				},
-				opts: map[string]string{
-					"updated":                       "",
-					"initial_scan":                  "'no'",
-					"min_checkpoint_frequency":      "'3s'",
-					"protect_data_from_gc_on_pause": "",
-					"on_error":                      "pause",
-					"kafka_sink_config":             `'{"Flush": {"MaxMessages": 100, "Frequency": "1s","Messages": 100 }, "Version": "2.7.2", "RequiredAcks": "ALL","Compression": "GZIP"}'`,
-				},
-			})
-			ct.runFeedLatencyVerifier(feed, latencyTargets{
-				steadyLatency: 5 * time.Minute,
-			})
-
-			conn1, err := ct.DB().Conn(ctx)
-			if err != nil {
-				t.Fatalf("failed to create a conn: %s", err)
-			}
-			defer func() {
-				_ = conn1.Close()
-			}()
-			conn2, err := ct.DB().Conn(ctx)
-			if err != nil {
-				t.Fatalf("failed to create a conn: %s", err)
-			}
-			defer func() {
-				_ = conn2.Close()
-			}()
-
-			const testDuration = 30 * time.Minute
-			// Repeatedly update a single row in a table in order to create a large
-			// number of events with the same key that will span multiple batches.
-			for start, i := timeutil.Now(), 0; i < 1000000 && timeutil.Since(start) < testDuration; i++ {
-				stmt := fmt.Sprintf(`UPDATE t SET x = %d WHERE id = 1;`, i)
-				if i%2 == 0 {
-					_, err = conn1.ExecContext(ctx, stmt)
-				} else {
-					_, err = conn2.ExecContext(ctx, stmt)
-				}
-				if err != nil {
-					t.Fatalf("failed to execute stmt %q: %s", stmt, err)
-				}
-			}
-		},
-	})
-	r.Add(registry.TestSpec{
-		Name:      "cdc/crdb-chaos",
-		Owner:     `cdc`,
-		Benchmark: true,
-		Cluster:   r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
-		Leases:    registry.MetamorphicLeases,
-		// Disabled on IBM due to lack of Kafka support on s390x.
-		CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
-		Suites:           registry.Suites(registry.Nightly),
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			ct := newCDCTester(ctx, t, c)
-			defer ct.Close()
+			ct.startCRDBChaos()
 
 			ct.runTPCCWorkload(tpccArgs{warehouses: 100, duration: "30m", tolerateErrors: true})
 
 			feed := ct.newChangefeed(feedArgs{
-				sinkType: kafkaSink,
-				targets:  allTpccTargets,
-				kafkaArgs: kafkaFeedArgs{
-					validateOrder: true,
-				},
+				sinkType:       kafkaSink,
+				targets:        allTpccTargets,
 				opts:           map[string]string{"initial_scan": "'no'"},
 				tolerateErrors: true,
 			})
-
-			// Restart nodes after starting the changefeed so that we avoid trying to
-			// start the feed on a down node.
-			ct.startCRDBChaos()
-
 			ct.runFeedLatencyVerifier(feed, latencyTargets{
 				initialScanLatency: 3 * time.Minute,
 				steadyLatency:      5 * time.Minute,
@@ -2122,13 +1316,12 @@ func registerCDC(r registry.Registry) {
 		// TODO(mrtracy): This workload is designed to be running on a 20CPU nodes,
 		// but this cannot be allocated without some sort of configuration outside
 		// of this test. Look into it.
-		Benchmark: true,
-		Cluster:   r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
-		Leases:    registry.MetamorphicLeases,
-		// Disabled on IBM due to lack of Kafka support on s390x.
-		CompatibleClouds:           registry.AllClouds.NoAWS().NoIBM(),
-		Suites:                     registry.Suites(registry.Nightly),
-		RequiresDeprecatedWorkload: true, // uses ledger
+		Benchmark:        true,
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
+		Leases:           registry.MetamorphicLeases,
+		CompatibleClouds: registry.AllExceptAWS,
+		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
 			defer ct.Close()
@@ -2141,13 +1334,7 @@ func registerCDC(r registry.Registry) {
 				t.Fatalf("failed statement %q: %s", alterStmt, err.Error())
 			}
 
-			feed := ct.newChangefeed(feedArgs{
-				sinkType: kafkaSink,
-				targets:  allLedgerTargets,
-				kafkaArgs: kafkaFeedArgs{
-					validateOrder: true,
-				},
-			})
+			feed := ct.newChangefeed(feedArgs{sinkType: kafkaSink, targets: allLedgerTargets})
 			ct.runFeedLatencyVerifier(feed, latencyTargets{
 				initialScanLatency: 10 * time.Minute,
 				steadyLatency:      time.Minute,
@@ -2159,10 +1346,11 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/cloud-sink-gcs/rangefeed=true",
 		Owner:            `cdc`,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
 			defer ct.Close()
@@ -2182,21 +1370,25 @@ func registerCDC(r registry.Registry) {
 				steadyLatency:      time.Minute,
 			})
 			ct.waitForWorkload()
-			ct.verifyMetrics(ctx, verifyMetricsNonZero("cloud_read_bytes", "cloud_write_bytes"))
 		},
 	})
 	r.Add(registry.TestSpec{
 		Name:             "cdc/pubsub-sink",
 		Owner:            `cdc`,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		CompatibleClouds: registry.OnlyGCE,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
+		RequiresLicense:  true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
 			defer ct.Close()
 
+			// The deprecated pubsub sink is unable to handle the throughput required for 100 warehouses
+			if _, err := ct.DB().Exec("SET CLUSTER SETTING changefeed.new_pubsub_sink_enabled = true;"); err != nil {
+				ct.t.Fatal(err)
+			}
 			ct.runTPCCWorkload(tpccArgs{warehouses: 100, duration: "30m"})
 
 			feed := ct.newChangefeed(feedArgs{
@@ -2207,10 +1399,7 @@ func registerCDC(r registry.Registry) {
 				initialScanLatency: 30 * time.Minute,
 				steadyLatency:      time.Minute,
 			})
-
 			ct.waitForWorkload()
-
-			ct.verifyMetrics(ctx, verifyMetricsNonZero("changefeed_network_bytes_in", "changefeed_network_bytes_out"))
 		},
 	})
 
@@ -2219,24 +1408,23 @@ func registerCDC(r registry.Registry) {
 	// the first account on the assume-role chain:
 	// cdc-roachtest-intermediate@cockroach-ephemeral.iam.gserviceaccount.com. See
 	// https://cloud.google.com/iam/docs/create-short-lived-credentials-direct.
+	//
+	// TODO(rui): Change to a shorter test as it just needs to validate
+	// permissions and shouldn't need to run a full 30m workload.
 	r.Add(registry.TestSpec{
 		Name:             "cdc/pubsub-sink/assume-role",
 		Owner:            `cdc`,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
 		CompatibleClouds: registry.OnlyGCE,
 		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
 			defer ct.Close()
 
-			// Bump memory limit (too low in 22.2)
-			if _, err := ct.DB().Exec("SET CLUSTER SETTING changefeed.memory.per_changefeed_limit = '512MiB';"); err != nil {
-				ct.t.Fatal(err)
-			}
-
-			ct.runTPCCWorkload(tpccArgs{warehouses: 1, duration: "5m"})
+			ct.runTPCCWorkload(tpccArgs{warehouses: 1, duration: "30m"})
 
 			feed := ct.newChangefeed(feedArgs{
 				sinkType:   pubsubSink,
@@ -2248,10 +1436,7 @@ func registerCDC(r registry.Registry) {
 				initialScanLatency: 5 * time.Minute,
 				steadyLatency:      time.Minute,
 			})
-
 			ct.waitForWorkload()
-
-			ct.verifyMetrics(ctx, verifyMetricsNonZero("changefeed_network_bytes_in", "changefeed_network_bytes_out"))
 		},
 	})
 
@@ -2260,24 +1445,23 @@ func registerCDC(r registry.Registry) {
 	// the first account on the assume-role chain:
 	// cdc-roachtest-intermediate@cockroach-ephemeral.iam.gserviceaccount.com. See
 	// https://cloud.google.com/iam/docs/create-short-lived-credentials-direct.
+	//
+	// TODO(rui): Change to a shorter test as it just needs to validate
+	// permissions and shouldn't need to run a full 30m workload.
 	r.Add(registry.TestSpec{
 		Name:             "cdc/cloud-sink-gcs/assume-role",
 		Owner:            `cdc`,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
 			defer ct.Close()
 
-			// Bump memory limit (too low in 22.2)
-			if _, err := ct.DB().Exec("SET CLUSTER SETTING changefeed.memory.per_changefeed_limit = '512MiB';"); err != nil {
-				ct.t.Fatal(err)
-			}
-
-			ct.runTPCCWorkload(tpccArgs{warehouses: 50, duration: "5m"})
+			ct.runTPCCWorkload(tpccArgs{warehouses: 50, duration: "30m"})
 
 			feed := ct.newChangefeed(feedArgs{
 				sinkType:   cloudStorageSink,
@@ -2296,22 +1480,28 @@ func registerCDC(r registry.Registry) {
 		Name:             "cdc/webhook-sink",
 		Owner:            `cdc`,
 		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
+		Cluster:          r.MakeClusterSpec(4, spec.CPU(16)),
 		Leases:           registry.MetamorphicLeases,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			ct := newCDCTester(ctx, t, c)
 			defer ct.Close()
 
 			// Consider an installation failure to be a flake which is out of
 			// our control. This should be rare.
-			err := c.Install(ctx, t.L(), ct.sinkNodes, "go")
+			err := c.Install(ctx, t.L(), ct.webhookSinkNode(), "go")
 			if err != nil {
 				t.Skip(err)
 			}
 
 			ct.runTPCCWorkload(tpccArgs{warehouses: 100, duration: "30m"})
+
+			// The deprecated webhook sink is unable to handle the throughput required for 100 warehouses
+			if _, err := ct.DB().Exec("SET CLUSTER SETTING changefeed.new_webhook_sink_enabled = true;"); err != nil {
+				ct.t.Fatal(err)
+			}
 
 			feed := ct.newChangefeed(feedArgs{
 				sinkType: webhookSink,
@@ -2327,8 +1517,6 @@ func registerCDC(r registry.Registry) {
 			})
 
 			ct.waitForWorkload()
-
-			ct.verifyMetrics(ctx, verifyMetricsNonZero("changefeed_network_bytes_in", "changefeed_network_bytes_out"))
 		},
 	})
 	r.Add(registry.TestSpec{
@@ -2336,43 +1524,11 @@ func registerCDC(r registry.Registry) {
 		Owner:            `cdc`,
 		Cluster:          r.MakeClusterSpec(1),
 		Leases:           registry.MetamorphicLeases,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runCDCKafkaAuth(ctx, t, c)
-		},
-	})
-	r.Add(registry.TestSpec{
-		Name:             "cdc/kafka-auth-msk",
-		Owner:            registry.OwnerCDC,
-		Cluster:          r.MakeClusterSpec(1, spec.Arch(vm.ArchAMD64)),
-		Leases:           registry.MetamorphicLeases,
-		CompatibleClouds: registry.OnlyAWS,
-		Suites:           registry.Suites(registry.Nightly),
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.All())
-			mskMgr := newMSKManager(ctx, t)
-			mskMgr.MakeCluster(ctx)
-			defer mskMgr.TearDown()
-
-			t.Status("waiting for msk cluster to be active")
-			waitCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-			defer cancel()
-			brokers := mskMgr.WaitForClusterActiveAndDNSUpdated(waitCtx, c)
-			t.Status("cluster is active")
-			mskMgr.CreateTopic(ctx, "auth_test_table", c)
-
-			db := c.Conn(ctx, t.L(), 1)
-			defer stopFeeds(db)
-
-			tdb := sqlutils.MakeSQLRunner(db)
-			tdb.Exec(t, `CREATE TABLE auth_test_table (a INT PRIMARY KEY)`)
-
-			t.L().Printf("creating changefeed with iam: %s", brokers.connectURI)
-			_, err := newChangefeedCreator(db, db, t.L(), globalRand, "auth_test_table", brokers.connectURI, makeDefaultFeatureFlags()).Create()
-			if err != nil {
-				t.Fatalf("creating changefeed: %v", err)
-			}
 		},
 	})
 	r.Add(registry.TestSpec{
@@ -2380,11 +1536,11 @@ func registerCDC(r registry.Registry) {
 		Owner:     `cdc`,
 		Benchmark: true,
 		// Only Kafka 3 supports Arm64, but the broker setup for Oauth used only works with Kafka 2
-		Cluster: r.MakeClusterSpec(4, spec.WorkloadNode(), spec.Arch(vm.ArchAMD64)),
-		Leases:  registry.MetamorphicLeases,
-		// Disabled on IBM due to lack of Kafka support on s390x.
-		CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
+		Cluster:          r.MakeClusterSpec(4, spec.Arch(vm.ArchAMD64)),
+		Leases:           registry.MetamorphicLeases,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			if c.Cloud() == spec.Local && runtime.GOARCH == "arm64" {
 				// N.B. We have to skip locally since amd64 emulation may not be available everywhere.
@@ -2400,13 +1556,13 @@ func registerCDC(r registry.Registry) {
 			// (This can be removed once #108530 resolved).
 			ct.runTPCCWorkload(tpccArgs{warehouses: 1, duration: "30s"})
 
-			kafkaNode := ct.sinkNodes
+			kafkaNode := ct.kafkaSinkNode()
 			kafka := kafkaManager{
-				t:              ct.t,
-				c:              ct.cluster,
-				kafkaSinkNodes: kafkaNode,
-				mon:            ct.mon,
-				useKafka2:      true, // The broker-side oauth configuration used only works with Kafka 2
+				t:         ct.t,
+				c:         ct.cluster,
+				nodes:     kafkaNode,
+				mon:       ct.mon,
+				useKafka2: true, // The broker-side oauth configuration used only works with Kafka 2
 			}
 			kafka.install(ct.ctx)
 
@@ -2425,190 +1581,26 @@ func registerCDC(r registry.Registry) {
 		},
 	})
 	r.Add(registry.TestSpec{
-		Name:    "cdc/kafka-topics",
-		Owner:   `cdc`,
-		Cluster: r.MakeClusterSpec(4, spec.WorkloadNode(), spec.Arch(vm.ArchAMD64)),
-		Leases:  registry.MetamorphicLeases,
-		// Disabled on IBM due to lack of Kafka support on s390x.
-		CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
-		Suites:           registry.Suites(registry.Nightly),
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			ct := newCDCTester(ctx, t, c)
-			defer ct.Close()
-
-			// cdc/kafka-topics tests that sarama clients only fetches metadata for
-			// topics that changefeeds need but not for all topics on the kafka
-			// cluster. The test verifies the work by 1. creating lots of random kafka
-			// topics on the kafka cluster 2. running some tpcc workload with a
-			// changefeed configured to watch all tpcc tables (note that cdc creates
-			// kafka topics for every target tables internally) 3. assert that
-			// changefeed only fetches metadata for tpcc tables but not for other
-			// random topics created in 1.
-
-			// Run minimal level of tpcc workload and changefeed.
-			ct.runTPCCWorkload(tpccArgs{warehouses: 1, duration: "30s"})
-
-			kafka, cleanup := setupKafka(ctx, t, c, c.Node(c.Spec().NodeCount))
-			defer cleanup()
-
-			db := c.Conn(ctx, t.L(), 1)
-			defer stopFeeds(db)
-			const ignoreTopicPrefix = "ignore_topic_do_not_fetch"
-
-			// Create random topics on kafka cluster.
-			t.Status("creating kafka topics")
-			for i := 0; i < 100; i++ {
-				if err := kafka.createTopic(ctx, ignoreTopicPrefix+fmt.Sprintf("%d", i)); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			// Wait for workload to complete to make sure the tables are created and some writes to the table are done.
-			ct.waitForWorkload()
-
-			// Run initial_scan on all tpcc tables.
-			feed := ct.newChangefeed(feedArgs{
-				sinkType: kafkaSink,
-				targets:  allTpccTargets,
-				opts:     map[string]string{"initial_scan": "'only'"},
-			})
-			feed.waitForCompletion()
-
-			testutils.SucceedsWithin(t, func() error {
-				// Check logs on cockroach nodes (skip the last node running workload
-				// and kafka). We are looking for logs that begin with "client/metadata
-				// fetching metadata for". This is a log line outputted from
-				// sarama/client.go.tryRefreshMetadata
-				// https://github.com/IBM/sarama/blob/fd84c2b0f0185100dbaec28ca4074289b35cc1b1/client.go#L1023-L1027
-				// which tells us what topics are being fetched for metadata. We expect
-				// to see logs for tpcc tables but not for random topics.
-				//
-				// We now also check for similar logs from the kafka v2 sink &
-				// kgo. There isn't a direct equivalent, however, so check a few
-				// things.
-				logSearchStr := `(client/metadata fetching metadata for|updating kafka metadata for topics|fetching metadata to learn its partitions|waiting for metadata for new topic)`
-				results, checkLogsErr := ct.cluster.RunWithDetails(ct.ctx, t.L(),
-					option.WithNodes(ct.cluster.Range(1, c.Spec().NodeCount-1)),
-					fmt.Sprintf(`grep -E "%s" logs/cockroach.log`, logSearchStr))
-				if checkLogsErr != nil {
-					t.Fatal(checkLogsErr)
-				}
-
-				hasUnexpectedMetadata := func(str string) error {
-					// We do not expect to see fetching metadata for any topics with
-					// ignoreTopicPrefix.
-					if strings.Contains(str, ignoreTopicPrefix) {
-						return errors.Newf("did not expect to fetch metadata for %s", ignoreTopicPrefix)
-					}
-
-					// We do not expect to see fetching metadata for all topics.
-					if strings.Contains(str, "all topics") || strings.Contains(str, "updating kafka metadata for topics: []") {
-						return errors.New("did not expect to fetch metadata for all topics")
-					}
-					return nil
-				}
-
-				hasTpccTargets := func(str string) (bool, bool) {
-					hasSomeTpccTargets := false
-					hasAllTpccTargets := true
-					for _, target := range allTpccTargets {
-						trimmedTargetName := strings.TrimPrefix(target, `tpcc.`)
-						// Make sure we are actually fetching metadata for tpcc topics.
-						if strings.Contains(str, trimmedTargetName) {
-							hasSomeTpccTargets = true
-						} else {
-							hasAllTpccTargets = false
-						}
-					}
-
-					return hasSomeTpccTargets, hasAllTpccTargets
-				}
-
-				hasExpectedTargets := false
-				var err error
-				for i, res := range results {
-					hasSomeTpccTargets, hasAllTpccTargets := hasTpccTargets(res.Stdout)
-					if hasAllTpccTargets {
-						hasExpectedTargets = true
-					}
-					if hasSomeTpccTargets && !hasAllTpccTargets {
-						// We expect that nodes either fetch metadata for all tpcc tables or none.
-						err = errors.CombineErrors(err,
-							errors.Newf("node %d fetched metadata for some tpcc tables but not all", i+1))
-					}
-
-					if checkForAllNodes := hasUnexpectedMetadata(res.Stdout); checkForAllNodes != nil {
-						// We do not expect any nodes to fetch metadata for topics with ignoreTopicPrefix.
-						err = errors.CombineErrors(err, errors.Wrapf(checkForAllNodes, "node %d", i+1))
-					}
-				}
-				if !hasExpectedTargets {
-					// Note that we are not sure which node is running changefeeds, so we
-					// assert that at least one node fetches metadata for all tpcc tables.
-					err = errors.CombineErrors(err,
-						errors.New("expected fetching metadata for tpcc tables on at least one node but did not find any"))
-				}
-				return err
-			}, time.Minute)
-		},
-	})
-	r.Add(registry.TestSpec{
-		Name:             "cdc/kafka-azure",
+		Name:             "cdc/bank",
 		Owner:            `cdc`,
-		CompatibleClouds: registry.OnlyAzure,
-		// The Azure CLI only packages AMD64 binaries in its deb installer, so lock to AMD64.
-		Cluster: r.MakeClusterSpec(2, spec.WorkloadNode(), spec.Arch(vm.ArchAMD64)),
-		Leases:  registry.MetamorphicLeases,
-		Suites:  registry.Suites(registry.Nightly),
+		Cluster:          r.MakeClusterSpec(4),
+		Leases:           registry.MetamorphicLeases,
+		CompatibleClouds: registry.AllExceptAWS,
+		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
+		Timeout:          60 * time.Minute,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			ct := newCDCTester(ctx, t, c)
-			defer ct.Close()
-			// Just use 1 warehouse and no initial scan since this would involve
-			// cross-cloud traffic which is far more expensive.  The throughput also
-			// can't be too high to not hit the Throughput Unit (TU) limit of 1MBps/TU
-			ct.runTPCCWorkload(tpccArgs{warehouses: 1, duration: "30m"})
-			feed := ct.newChangefeed(feedArgs{
-				sinkType: azureEventHubKafkaSink,
-				targets:  allTpccTargets,
-				opts:     map[string]string{"initial_scan": "'no'"},
-			})
-			ct.runFeedLatencyVerifier(feed, latencyTargets{
-				initialScanLatency: 3 * time.Minute,
-				steadyLatency:      10 * time.Minute,
-			})
-			ct.waitForWorkload()
-			ct.verifyMetrics(ctx, verifyMetricsNonZero("changefeed_network_bytes_in", "changefeed_network_bytes_out"))
+			runCDCBank(ctx, t, c)
 		},
 	})
-	for _, kafkaChaos := range []bool{false, true} {
-		for _, forceCheckpointing := range []bool{false, true} {
-			cfg := cdcBankConfig{
-				kafkaChaos:         kafkaChaos,
-				forceCheckpointing: forceCheckpointing,
-			}
-			r.Add(registry.TestSpec{
-				Name:    fmt.Sprintf("cdc/bank%s", cfg),
-				Owner:   registry.OwnerCDC,
-				Cluster: r.MakeClusterSpec(4, spec.WorkloadNode()),
-				Leases:  registry.MetamorphicLeases,
-				// Disabled on IBM due to lack of Kafka support on s390x.
-				CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
-				Suites:           registry.Suites(registry.Nightly),
-				Timeout:          60 * time.Minute,
-				Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-					runCDCBank(ctx, t, c, cfg)
-				},
-			})
-		}
-	}
 	r.Add(registry.TestSpec{
-		Name:    "cdc/schemareg",
-		Owner:   `cdc`,
-		Cluster: r.MakeClusterSpec(1),
-		Leases:  registry.MetamorphicLeases,
-		// Disabled on IBM due to lack of Kafka support on s390x.
-		CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
+		Name:             "cdc/schemareg",
+		Owner:            `cdc`,
+		Cluster:          r.MakeClusterSpec(1),
+		Leases:           registry.MetamorphicLeases,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runCDCSchemaRegistry(ctx, t, c)
 		},
@@ -2622,40 +1614,6 @@ func registerCDC(r registry.Registry) {
 		Suites:           registry.Suites(registry.Nightly),
 		Timeout:          1 * time.Hour,
 		Run:              runCDCMultipleSchemaChanges,
-	})
-	r.Add(registry.TestSpec{
-		Name:             "cdc/tpcc-100/10min/sink=kafka/envelope=enriched",
-		Owner:            registry.OwnerCDC,
-		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(4, spec.WorkloadNode(), spec.CPU(16)),
-		Leases:           registry.MetamorphicLeases,
-		CompatibleClouds: registry.AllClouds,
-		Suites:           registry.Suites(registry.Nightly),
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			ct := newCDCTester(ctx, t, c)
-			defer ct.Close()
-
-			ct.runTPCCWorkload(tpccArgs{warehouses: 100, duration: "10m"})
-
-			feed := ct.newChangefeed(feedArgs{
-				sinkType: kafkaSink,
-				envelope: "enriched",
-				targets:  allTpccTargets,
-				kafkaArgs: kafkaFeedArgs{
-					validateOrder: true,
-				},
-				opts: map[string]string{
-					"initial_scan":        "'no'",
-					"updated":             "",
-					"enriched_properties": "source",
-				},
-			})
-			ct.runFeedLatencyVerifier(feed, latencyTargets{
-				initialScanLatency: 3 * time.Minute,
-				steadyLatency:      10 * time.Minute,
-			})
-			ct.waitForWorkload()
-		},
 	})
 }
 
@@ -2681,7 +1639,7 @@ func (t *testCerts) CACertBase64() string {
 	return base64.StdEncoding.EncodeToString([]byte(t.CACert))
 }
 
-func makeTestCerts(sinkNodeIP string, dnsNames ...string) (*testCerts, error) {
+func makeTestCerts(sinkNodeIP string) (*testCerts, error) {
 	CAKey, err := rsa.GenerateKey(cryptorand.Reader, keyLength)
 	if err != nil {
 		return nil, errors.Wrap(err, "CA private key")
@@ -2697,7 +1655,7 @@ func makeTestCerts(sinkNodeIP string, dnsNames ...string) (*testCerts, error) {
 		return nil, errors.Wrap(err, "CA cert gen")
 	}
 
-	SinkCert, err := generateSinkCert(sinkNodeIP, SinkKey, CACertSpec, CAKey, dnsNames...)
+	SinkCert, err := generateSinkCert(sinkNodeIP, SinkKey, CACertSpec, CAKey)
 	if err != nil {
 		return nil, errors.Wrap(err, "kafka cert gen")
 	}
@@ -2731,11 +1689,7 @@ func makeTestCerts(sinkNodeIP string, dnsNames ...string) (*testCerts, error) {
 }
 
 func generateSinkCert(
-	sinkIP string,
-	priv *rsa.PrivateKey,
-	CACert *x509.Certificate,
-	CAKey *rsa.PrivateKey,
-	dnsNames ...string,
+	sinkIP string, priv *rsa.PrivateKey, CACert *x509.Certificate, CAKey *rsa.PrivateKey,
 ) ([]byte, error) {
 	ip := net.ParseIP(sinkIP)
 	if ip == nil {
@@ -2759,9 +1713,10 @@ func generateSinkCert(
 		NotAfter:    timeutil.Now().Add(certLifetime),
 		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDataEncipherment | x509.KeyUsageDigitalSignature | x509.KeyUsageKeyAgreement,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		DNSNames:    append([]string{"localhost"}, dnsNames...),
+		DNSNames:    []string{"localhost"},
 		IPAddresses: []net.IP{ip},
 	}
+
 	return x509.CreateCertificate(cryptorand.Reader, certSpec, CACert, &priv.PublicKey, CAKey)
 }
 
@@ -2847,18 +1802,6 @@ export HYDRA_ADMIN_URL=http://localhost:4445
 export DSN=memory
 
 ./hydra serve all --dev
-`
-
-var installAzureCliScript = `
-sudo apt-get update && \
-sudo apt-get install -y ca-certificates curl apt-transport-https lsb-release gnupg && \
-sudo mkdir -p /etc/apt/keyrings && \
-curl -sLS https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor | sudo tee /etc/apt/keyrings/microsoft.gpg > /dev/null && \
-sudo chmod go+r /etc/apt/keyrings/microsoft.gpg && \
-AZ_DIST=$(lsb_release -cs) && \
-echo "deb [arch=\"dpkg --print-architecture\" signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ $AZ_DIST main" | sudo tee /etc/apt/sources.list.d/azure-cli.list && \
-sudo apt-get update && \
-sudo apt-get install -y azure-cli
 `
 
 const (
@@ -2972,17 +1915,13 @@ confluent.support.customer.id=anonymous
 )
 
 type kafkaManager struct {
-	t              test.Test
-	c              cluster.Cluster
-	kafkaSinkNodes option.NodeListOption
-	mon            cluster.Monitor
+	t     test.Test
+	c     cluster.Cluster
+	nodes option.NodeListOption
+	mon   cluster.Monitor
 
 	// Our method of requiring OAuth on the broker only works with Kafka 2
 	useKafka2 bool
-
-	// validateOrder specifies whether consumers created by the
-	// kafkaManager should create and use order validators.
-	validateOrder bool
 }
 
 func (k kafkaManager) basePath() string {
@@ -3142,17 +2081,17 @@ func (k kafkaManager) install(ctx context.Context) {
 	k.t.Status("installing kafka")
 	folder := k.basePath()
 
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes), `mkdir -p `+folder)
+	k.c.Run(ctx, k.nodes, `mkdir -p `+folder)
 
 	downloadScriptPath := filepath.Join(folder, "install.sh")
 	downloadScript := k.confluentDownloadScript()
-	err := k.c.PutString(ctx, downloadScript, downloadScriptPath, 0700, k.kafkaSinkNodes)
+	err := k.c.PutString(ctx, downloadScript, downloadScriptPath, 0700, k.nodes)
 	if err != nil {
 		k.t.Fatal(err)
 	}
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes), downloadScriptPath, folder)
+	k.c.Run(ctx, k.nodes, downloadScriptPath, folder)
 	if !k.c.IsLocal() {
-		k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes), `mkdir -p logs`)
+		k.c.Run(ctx, k.nodes, `mkdir -p logs`)
 		if err := k.installJRE(ctx); err != nil {
 			k.t.Fatal(err)
 		}
@@ -3165,67 +2104,12 @@ func (k kafkaManager) installJRE(ctx context.Context) error {
 		MaxBackoff:     5 * time.Minute,
 	}
 	return retry.WithMaxAttempts(ctx, retryOpts, 3, func() error {
-		err := k.c.RunE(ctx, option.WithNodes(k.kafkaSinkNodes), `sudo apt-get -q update 2>&1 > logs/apt-get-update.log`)
+		err := k.c.RunE(ctx, k.nodes, `sudo apt-get -q update 2>&1 > logs/apt-get-update.log`)
 		if err != nil {
 			return err
 		}
-		return k.c.RunE(ctx, option.WithNodes(k.kafkaSinkNodes), `sudo DEBIAN_FRONTEND=noninteractive apt-get -yq --no-install-recommends install openssl default-jre maven 2>&1 > logs/apt-get-install.log`)
+		return k.c.RunE(ctx, k.nodes, `sudo DEBIAN_FRONTEND=noninteractive apt-get -yq --no-install-recommends install openssl default-jre maven 2>&1 > logs/apt-get-install.log`)
 	})
-}
-
-// installAzureCli installs azure cli on the kafka node which is necessary for
-// retrieving endpoint connection string for the roachtest azure event hub.
-func (k kafkaManager) installAzureCli(ctx context.Context) error {
-	k.t.Status("installing azure cli")
-	retryOpts := retry.Options{
-		InitialBackoff: 1 * time.Minute,
-		MaxBackoff:     5 * time.Minute,
-	}
-	return retry.WithMaxAttempts(ctx, retryOpts, 3, func() error {
-		return k.c.RunE(ctx, option.WithNodes(k.kafkaSinkNodes), installAzureCliScript)
-	})
-}
-
-// getAzureEventHubAccess retrieves the Azure Event Hub access key name and key
-// for the cdc-roachtest event hub set up in the CRL Azure account for roachtest
-// testing.
-func (k kafkaManager) getAzureEventHubAccess(ctx context.Context) (string, string, error) {
-	// The necessary credential env vars have been added to TeamCity agents by
-	// dev-inf. Note that running this test on roachprod would not work due to
-	// lacking the required credentials env vars set up.
-	azureClientID := os.Getenv("AZURE_CLIENT_ID")
-	azureClientSecret := os.Getenv("AZURE_CLIENT_SECRET")
-	azureSubscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
-	azureTenantID := os.Getenv("AZURE_TENANT_ID")
-
-	k.t.Status("getting azure event hub connection string")
-	// az login --service-principal -t <Tenant-ID> -u <Client-ID> -p=<Client-secret>
-	cmdStr := fmt.Sprintf("az login --service-principal -t %s -u %s -p=%s", azureTenantID, azureClientID, azureClientSecret)
-	_, err := k.c.RunWithDetailsSingleNode(ctx, k.t.L(), option.WithNodes(k.kafkaSinkNodes), cmdStr)
-	if err != nil {
-		return "", "", errors.Wrap(err, "error running `az login`")
-	}
-
-	cmdStr = fmt.Sprintf("az account set --subscription %s", azureSubscriptionID)
-	_, err = k.c.RunWithDetailsSingleNode(ctx, k.t.L(), option.WithNodes(k.kafkaSinkNodes), cmdStr)
-	if err != nil {
-		return "", "", errors.Wrap(err, "error running `az account set` command")
-	}
-
-	cmdStr = "az eventhubs namespace authorization-rule keys list --name cdc-roachtest-auth-rule " +
-		"--namespace-name cdc-roachtest --resource-group e2e-infra-event-hub-rg"
-	results, err := k.c.RunWithDetailsSingleNode(ctx, k.t.L(), option.WithNodes(k.kafkaSinkNodes), cmdStr)
-	if err != nil {
-		return "", "", errors.Wrap(err, "error running `az eventhubs` command")
-	}
-
-	var keys AuthorizationRuleKeys
-	err = json.Unmarshal([]byte(results.Stdout), &keys)
-	if err != nil {
-		return "", "", errors.Wrap(err, "error unmarshalling az eventhubs keys")
-	}
-
-	return keys.KeyName, keys.PrimaryKey, nil
 }
 
 func (k kafkaManager) runWithRetry(ctx context.Context, cmd string) {
@@ -3234,7 +2118,7 @@ func (k kafkaManager) runWithRetry(ctx context.Context, cmd string) {
 		MaxBackoff:     5 * time.Minute,
 	}
 	err := retry.WithMaxAttempts(ctx, retryOpts, 3, func() error {
-		return k.c.RunE(ctx, option.WithNodes(k.kafkaSinkNodes), cmd)
+		return k.c.RunE(ctx, k.nodes, cmd)
 	})
 	if err != nil {
 		k.t.Fatal(err)
@@ -3242,16 +2126,16 @@ func (k kafkaManager) runWithRetry(ctx context.Context, cmd string) {
 }
 
 func (k kafkaManager) configureHydraOauth(ctx context.Context) (string, string) {
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes), `rm -rf /home/ubuntu/hydra`)
+	k.c.Run(ctx, k.nodes, `rm -rf /home/ubuntu/hydra`)
 	k.runWithRetry(ctx, `bash <(curl https://raw.githubusercontent.com/ory/meta/master/install.sh) -d -b . hydra v2.0.3`)
 
-	err := k.c.PutString(ctx, hydraServerStartScript, "/home/ubuntu/hydra-serve.sh", 0700, k.kafkaSinkNodes)
+	err := k.c.PutString(ctx, hydraServerStartScript, "/home/ubuntu/hydra-serve.sh", 0700, k.nodes)
 	if err != nil {
 		k.t.Fatal(err)
 	}
-	mon := k.c.NewMonitor(ctx, k.kafkaSinkNodes)
+	mon := k.c.NewMonitor(ctx, k.nodes)
 	mon.Go(func(ctx context.Context) error {
-		err := k.c.RunE(ctx, option.WithNodes(k.kafkaSinkNodes), `/home/ubuntu/hydra-serve.sh`)
+		err := k.c.RunE(ctx, k.nodes, `/home/ubuntu/hydra-serve.sh`)
 		return errors.Wrap(err, "hydra failed")
 	})
 
@@ -3260,7 +2144,7 @@ func (k kafkaManager) configureHydraOauth(ctx context.Context) (string, string) 
 	// until it succeeds or times out.
 
 	err = retry.ForDuration(hydraRetryDuration, func() error {
-		result, err = k.c.RunWithDetailsSingleNode(ctx, k.t.L(), option.WithNodes(k.kafkaSinkNodes), "/home/ubuntu/hydra create oauth2-client",
+		result, err = k.c.RunWithDetailsSingleNode(ctx, k.t.L(), k.c.Node(k.c.Spec().NodeCount), "/home/ubuntu/hydra create oauth2-client",
 			"-e", "http://localhost:4445",
 			"--grant-type", "client_credentials",
 			"--token-endpoint-auth-method", "client_secret_basic",
@@ -3286,7 +2170,7 @@ func (k kafkaManager) configureHydraOauth(ctx context.Context) (string, string) 
 func (k kafkaManager) configureOauth(ctx context.Context) (clientcredentials.Config, string) {
 	configDir := k.configDir()
 
-	ips, err := k.c.InternalIP(ctx, k.t.L(), k.kafkaSinkNodes)
+	ips, err := k.c.InternalIP(ctx, k.t.L(), k.nodes)
 	if err != nil {
 		k.t.Fatal(err)
 	}
@@ -3300,9 +2184,9 @@ func (k kafkaManager) configureOauth(ctx context.Context) (clientcredentials.Con
 
 	// In order to run Kafka with OAuth a custom implementation of certain Java
 	// classes has to be provided.
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes), `rm -rf /home/ubuntu/kafka-oauth`)
+	k.c.Run(ctx, k.nodes, `rm -rf /home/ubuntu/kafka-oauth`)
 	k.runWithRetry(ctx, `git clone https://github.com/jairsjunior/kafka-oauth.git /home/ubuntu/kafka-oauth`)
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes), `(cd /home/ubuntu/kafka-oauth; git checkout c2b307548ef944d3fbe899b453d24e1fc8380add; mvn package)`)
+	k.c.Run(ctx, k.nodes, `(cd /home/ubuntu/kafka-oauth; git checkout c2b307548ef944d3fbe899b453d24e1fc8380add; mvn package)`)
 
 	// CLASSPATH allows Kafka to load in the custom implementation
 	kafkaEnv := "CLASSPATH='/home/ubuntu/kafka-oauth/target/*'"
@@ -3339,19 +2223,13 @@ func (k kafkaManager) configureOauth(ctx context.Context) (clientcredentials.Con
 
 func (k kafkaManager) configureAuth(ctx context.Context) *testCerts {
 	k.t.Status("generating TLS certificates")
-	ips, err := k.c.InternalIP(ctx, k.t.L(), k.kafkaSinkNodes)
+	ips, err := k.c.InternalIP(ctx, k.t.L(), k.nodes)
 	if err != nil {
 		k.t.Fatal(err)
 	}
 	kafkaIP := ips[0]
 
-	details, err := k.c.RunWithDetailsSingleNode(ctx, k.t.L(), option.WithNodes(k.kafkaSinkNodes), "hostname", "-f")
-	if err != nil {
-		k.t.Fatal(err)
-	}
-	hostname := strings.TrimSpace(details.Stdout)
-	k.t.L().Printf("hostname included in TLS certificates: %s", hostname)
-	testCerts, err := makeTestCerts(kafkaIP, hostname)
+	testCerts, err := makeTestCerts(kafkaIP)
 	if err != nil {
 		k.t.Fatal(err)
 	}
@@ -3393,28 +2271,28 @@ func (k kafkaManager) configureAuth(ctx context.Context) *testCerts {
 
 	k.t.Status("constructing java keystores")
 	// Convert PEM cert and key into pkcs12 bundle so that it can be imported into a java keystore.
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes),
+	k.c.Run(ctx, k.nodes,
 		fmt.Sprintf("openssl pkcs12 -export -in %s -inkey %s -name kafka -out %s -password pass:%s",
 			kafkaCertPath,
 			kafkaKeyPath,
 			kafkaBundlePath,
 			keystorePassword))
 
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes), fmt.Sprintf("rm -f %s", keystorePath))
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes), fmt.Sprintf("rm -f %s", truststorePath))
+	k.c.Run(ctx, k.nodes, fmt.Sprintf("rm -f %s", keystorePath))
+	k.c.Run(ctx, k.nodes, fmt.Sprintf("rm -f %s", truststorePath))
 
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes),
+	k.c.Run(ctx, k.nodes,
 		fmt.Sprintf("keytool -importkeystore -deststorepass %s -destkeystore %s -srckeystore %s -srcstoretype PKCS12 -srcstorepass %s -alias kafka",
 			keystorePassword,
 			keystorePath,
 			kafkaBundlePath,
 			keystorePassword))
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes),
+	k.c.Run(ctx, k.nodes,
 		fmt.Sprintf("keytool -keystore %s -alias CAroot -importcert -file %s -no-prompt -storepass %s",
 			truststorePath,
 			caCertPath,
 			keystorePassword))
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes),
+	k.c.Run(ctx, k.nodes,
 		fmt.Sprintf("keytool -keystore %s -alias CAroot -importcert -file %s -no-prompt -storepass %s",
 			keystorePath,
 			caCertPath,
@@ -3424,7 +2302,7 @@ func (k kafkaManager) configureAuth(ctx context.Context) *testCerts {
 }
 
 func (k kafkaManager) PutConfigContent(ctx context.Context, data string, path string) {
-	err := k.c.PutString(ctx, data, path, 0600, k.kafkaSinkNodes)
+	err := k.c.PutString(ctx, data, path, 0600, k.nodes)
 	if err != nil {
 		k.t.Fatal(err)
 	}
@@ -3432,14 +2310,14 @@ func (k kafkaManager) PutConfigContent(ctx context.Context, data string, path st
 
 func (k kafkaManager) addSCRAMUsers(ctx context.Context) {
 	k.t.Status("adding entries for SASL/SCRAM users")
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes), filepath.Join(k.binDir(), "kafka-configs"),
+	k.c.Run(ctx, k.nodes, filepath.Join(k.binDir(), "kafka-configs"),
 		"--zookeeper", "localhost:2181",
 		"--alter",
 		"--add-config", "SCRAM-SHA-512=[password=scram512-secret]",
 		"--entity-type", "users",
 		"--entity-name", "scram512")
 
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes), filepath.Join(k.binDir(), "kafka-configs"),
+	k.c.Run(ctx, k.nodes, filepath.Join(k.binDir(), "kafka-configs"),
 		"--zookeeper", "localhost:2181",
 		"--alter",
 		"--add-config", "SCRAM-SHA-256=[password=scram256-secret]",
@@ -3449,19 +2327,8 @@ func (k kafkaManager) addSCRAMUsers(ctx context.Context) {
 
 func (k kafkaManager) start(ctx context.Context, service string, envVars ...string) {
 	// This isn't necessary for the nightly tests, but it's nice for iteration.
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes), k.makeCommand("confluent", "local destroy || true"))
+	k.c.Run(ctx, k.nodes, k.makeCommand("confluent", "local destroy || true"))
 	k.restart(ctx, service, envVars...)
-	// Wait for kafka to be ready. Otherwise we can sometimes try to connect to
-	// it too fast which fails the test.
-	k.waitForKafkaAvailable(ctx)
-}
-
-func (k kafkaManager) waitForKafkaAvailable(ctx context.Context) {
-	k.t.Status("waiting for kafka to be ready")
-	// Note: this command will retry the connection itself for some seconds, so
-	// we don't need to explicitly retry here.
-	k.c.Run(ctx, option.WithNodes(k.kafkaSinkNodes), filepath.Join(k.binDir(), "kafka-topics"),
-		"--bootstrap-server=localhost:9092", "--list")
 }
 
 var kafkaServices = map[string][]string{
@@ -3471,17 +2338,9 @@ var kafkaServices = map[string][]string{
 }
 
 func (k kafkaManager) restart(ctx context.Context, targetService string, envVars ...string) {
-	if err := k.restartE(ctx, targetService, envVars...); err != nil {
-		k.t.Fatal(err)
-	}
-}
-
-func (k kafkaManager) restartE(ctx context.Context, targetService string, envVars ...string) error {
 	services := kafkaServices[targetService]
 
-	if err := k.c.RunE(ctx, option.WithNodes(k.kafkaSinkNodes), "touch", k.serverJAASConfig()); err != nil {
-		return err
-	}
+	k.c.Run(ctx, k.nodes, "touch", k.serverJAASConfig())
 	for _, svcName := range services {
 		// The confluent tool applies the KAFKA_OPTS to all
 		// services. Also, the kafka.logs.dir is used by each
@@ -3499,22 +2358,8 @@ func (k kafkaManager) restartE(ctx context.Context, targetService string, envVar
 		)
 		startCmd += fmt.Sprintf(" %s local services %s start", k.confluentBin(), svcName)
 
-		// Sometimes kafka wants to be difficult and not start back up first try. Give it some time.
-		if err := k.c.RunE(ctx, option.
-			WithNodes(k.kafkaSinkNodes).
-			WithRetryOpts(retry.Options{
-				InitialBackoff: 5 * time.Second,
-				MaxBackoff:     30 * time.Second,
-				MaxRetries:     30,
-			}).
-			WithShouldRetryFn(func(*install.RunResultDetails) bool { return true }),
-			startCmd,
-		); err != nil {
-			return err
-		}
+		k.c.Run(ctx, k.nodes, startCmd)
 	}
-
-	return nil
 }
 
 func (k kafkaManager) makeCommand(exe string, args ...string) string {
@@ -3526,27 +2371,16 @@ func (k kafkaManager) makeCommand(exe string, args ...string) string {
 }
 
 func (k kafkaManager) stop(ctx context.Context) {
-	if err := k.stopE(ctx); err != nil {
-		k.t.Fatal(err)
-	}
-}
-
-func (k kafkaManager) stopE(ctx context.Context) error {
-	if err := k.c.RunE(ctx, option.WithNodes(k.kafkaSinkNodes), fmt.Sprintf("rm -f %s", k.serverJAASConfig())); err != nil {
-		return err
-	}
-	if err := k.c.RunE(ctx, option.WithNodes(k.kafkaSinkNodes), k.makeCommand("confluent", "local services stop")); err != nil {
-		return err
-	}
-	return nil
+	k.c.Run(ctx, k.nodes, fmt.Sprintf("rm -f %s", k.serverJAASConfig()))
+	k.c.Run(ctx, k.nodes, k.makeCommand("confluent", "local services stop"))
 }
 
 func (k kafkaManager) chaosLoop(
-	ctx context.Context, period, downTime time.Duration, stopper <-chan struct{},
+	ctx context.Context, period, downTime time.Duration, stopper chan struct{},
 ) error {
 	t := time.NewTicker(period)
 	defer t.Stop()
-	for i := 0; ; i++ {
+	for {
 		select {
 		case <-stopper:
 			return nil
@@ -3555,10 +2389,7 @@ func (k kafkaManager) chaosLoop(
 		case <-t.C:
 		}
 
-		k.t.L().Printf("kafka chaos loop iteration %d: stopping", i)
-		if err := k.stopE(ctx); err != nil {
-			return err
-		}
+		k.stop(ctx)
 
 		select {
 		case <-stopper:
@@ -3568,15 +2399,12 @@ func (k kafkaManager) chaosLoop(
 		case <-time.After(downTime):
 		}
 
-		k.t.L().Printf("kafka chaos loop iteration %d: restarting", i)
-		if err := k.restartE(ctx, "kafka"); err != nil {
-			return err
-		}
+		k.restart(ctx, "kafka")
 	}
 }
 
 func (k kafkaManager) sinkURL(ctx context.Context) string {
-	ips, err := k.c.InternalIP(ctx, k.t.L(), k.kafkaSinkNodes)
+	ips, err := k.c.InternalIP(ctx, k.t.L(), k.nodes)
 	if err != nil {
 		k.t.Fatal(err)
 	}
@@ -3584,7 +2412,7 @@ func (k kafkaManager) sinkURL(ctx context.Context) string {
 }
 
 func (k kafkaManager) sinkURLTLS(ctx context.Context) string {
-	ips, err := k.c.InternalIP(ctx, k.t.L(), k.kafkaSinkNodes)
+	ips, err := k.c.InternalIP(ctx, k.t.L(), k.nodes)
 	if err != nil {
 		k.t.Fatal(err)
 	}
@@ -3592,7 +2420,7 @@ func (k kafkaManager) sinkURLTLS(ctx context.Context) string {
 }
 
 func (k kafkaManager) sinkURLSASL(ctx context.Context) string {
-	ips, err := k.c.InternalIP(ctx, k.t.L(), k.kafkaSinkNodes)
+	ips, err := k.c.InternalIP(ctx, k.t.L(), k.nodes)
 	if err != nil {
 		k.t.Fatal(err)
 	}
@@ -3602,7 +2430,7 @@ func (k kafkaManager) sinkURLSASL(ctx context.Context) string {
 // sinkURLAsConfluentCloudUrl allows the test to connect to the kafka brokers
 // as if it was connecting to kafka hosted in confluent cloud.
 func (k kafkaManager) sinkURLAsConfluentCloudUrl(ctx context.Context) string {
-	ips, err := k.c.InternalIP(ctx, k.t.L(), k.kafkaSinkNodes)
+	ips, err := k.c.InternalIP(ctx, k.t.L(), k.nodes)
 	if err != nil {
 		k.t.Fatal(err)
 	}
@@ -3614,7 +2442,7 @@ func (k kafkaManager) sinkURLAsConfluentCloudUrl(ctx context.Context) string {
 }
 
 func (k kafkaManager) sinkURLOAuth(ctx context.Context, creds clientcredentials.Config) string {
-	ips, err := k.c.InternalIP(ctx, k.t.L(), k.kafkaSinkNodes)
+	ips, err := k.c.InternalIP(ctx, k.t.L(), k.nodes)
 	if err != nil {
 		k.t.Fatal(err)
 	}
@@ -3635,19 +2463,8 @@ func (k kafkaManager) sinkURLOAuth(ctx context.Context, creds clientcredentials.
 	return kafkaURI.String()
 }
 
-func (k kafkaManager) advertiseURLs(ctx context.Context) []string {
-	ips, err := k.c.ExternalIP(ctx, k.t.L(), k.kafkaSinkNodes)
-	if err != nil {
-		k.t.Fatal(err)
-	}
-	for i := range ips {
-		ips[i] += `:9092`
-	}
-	return ips
-}
-
 func (k kafkaManager) consumerURL(ctx context.Context) string {
-	ips, err := k.c.ExternalIP(ctx, k.t.L(), k.kafkaSinkNodes)
+	ips, err := k.c.ExternalIP(ctx, k.t.L(), k.nodes)
 	if err != nil {
 		k.t.Fatal(err)
 	}
@@ -3655,7 +2472,7 @@ func (k kafkaManager) consumerURL(ctx context.Context) string {
 }
 
 func (k kafkaManager) schemaRegistryURL(ctx context.Context) string {
-	ips, err := k.c.InternalIP(ctx, k.t.L(), k.kafkaSinkNodes)
+	ips, err := k.c.InternalIP(ctx, k.t.L(), k.nodes)
 	if err != nil {
 		k.t.Fatal(err)
 	}
@@ -3677,14 +2494,12 @@ func (k kafkaManager) createTopic(ctx context.Context, topic string) error {
 	})
 }
 
-func (k kafkaManager) newConsumer(
-	ctx context.Context, topic string, stopper <-chan struct{},
-) (*topicConsumer, error) {
+func (k kafkaManager) newConsumer(ctx context.Context, topic string) (*topicConsumer, error) {
 	kafkaAddrs := []string{k.consumerURL(ctx)}
 	config := sarama.NewConfig()
 	// I was seeing "error processing FetchRequest: kafka: error decoding
 	// packet: unknown magic byte (2)" errors which
-	// https://github.com/IBM/sarama/issues/962 identifies as the
+	// https://github.com/Shopify/sarama/issues/962 identifies as the
 	// consumer's fetch size being less than the "max.message.bytes" that
 	// kafka is configured with. Kafka notes that this is required in
 	// https://kafka.apache.org/documentation.html#upgrade_11_message_format
@@ -3693,64 +2508,12 @@ func (k kafkaManager) newConsumer(
 	if err != nil {
 		return nil, err
 	}
-	var validator cdctest.Validator
-	if k.validateOrder {
-		validator = cdctest.NewOrderValidator(topic)
-	}
-	tc, err := newTopicConsumer(k.t, consumer, topic, validator, stopper)
+	tc, err := makeTopicConsumer(consumer, topic)
 	if err != nil {
 		_ = consumer.Close()
 		return nil, err
 	}
-	k.t.L().Printf("topic consumer for %s has partitions: %s", topic, tc.partitions)
 	return tc, nil
-}
-
-func (k kafkaManager) startTopicConsumers(
-	ctx context.Context, targets []string, stopper <-chan struct{},
-) error {
-	for _, target := range targets {
-		// We need to strip off the database and schema name since the topic name
-		// is just the table name.
-		topic := target
-		lastPeriodIndex := strings.LastIndex(target, ".")
-		if lastPeriodIndex != -1 {
-			topic = topic[lastPeriodIndex+1:]
-		}
-
-		k.t.L().Printf("starting topic consumer for topic: %s", topic)
-		k.mon.Go(func(ctx context.Context) error {
-			topicConsumer, err := k.newConsumer(ctx, topic, stopper)
-			if err != nil {
-				return err
-			}
-			defer topicConsumer.close()
-			everyN := roachtestutil.Every(30 * time.Second)
-			for {
-				select {
-				case <-stopper:
-					return nil
-				case <-ctx.Done():
-					return ctx.Err()
-				default:
-				}
-
-				// The topicConsumer has order validation built-in so this has
-				// the side effect of validating the order of incoming messages.
-				_, err := topicConsumer.next(ctx)
-				if err != nil {
-					k.t.L().Printf("topic consumer for %s encountered error: %s", topic, err)
-					return err
-				}
-				if everyN.ShouldLog() {
-					k.t.L().Printf("topic consumer for %s validated %d rows and %d resolved timestamps",
-						topic, topicConsumer.validator.NumRows, topicConsumer.validator.NumResolved)
-				}
-			}
-		})
-	}
-
-	return nil
 }
 
 type tpccWorkload struct {
@@ -3765,7 +2528,7 @@ type tpccWorkload struct {
 func (tw *tpccWorkload) install(ctx context.Context, c cluster.Cluster) {
 	// For fixtures import, use the version built into the cockroach binary so
 	// the tpcc workload-versions match on release branches.
-	c.Run(ctx, option.WithNodes(tw.workloadNodes), fmt.Sprintf(
+	c.Run(ctx, tw.workloadNodes, fmt.Sprintf(
 		`./cockroach workload fixtures import tpcc --warehouses=%d --checks=false {pgurl%s}`,
 		tw.tpccWarehouseCount,
 		tw.sqlNodes.RandNode(),
@@ -3774,7 +2537,7 @@ func (tw *tpccWorkload) install(ctx context.Context, c cluster.Cluster) {
 
 func (tw *tpccWorkload) run(ctx context.Context, c cluster.Cluster, workloadDuration string) {
 	var cmd bytes.Buffer
-	fmt.Fprintf(&cmd, "./cockroach workload run tpcc --warehouses=%d --duration=%s ", tw.tpccWarehouseCount, workloadDuration)
+	fmt.Fprintf(&cmd, "./workload run tpcc --warehouses=%d --duration=%s ", tw.tpccWarehouseCount, workloadDuration)
 	if tw.tolerateErrors {
 		cmd.WriteString("--tolerate-errors ")
 	}
@@ -3786,7 +2549,7 @@ func (tw *tpccWorkload) run(ctx context.Context, c cluster.Cluster, workloadDura
 	}
 	fmt.Fprintf(&cmd, "{pgurl%s}", tw.sqlNodes)
 
-	c.Run(ctx, option.WithNodes(tw.workloadNodes), cmd.String())
+	c.Run(ctx, tw.workloadNodes, cmd.String())
 }
 
 type ledgerWorkload struct {
@@ -3796,7 +2559,7 @@ type ledgerWorkload struct {
 
 func (lw *ledgerWorkload) install(ctx context.Context, c cluster.Cluster) {
 	// TODO(#94136): remove --data-loader=INSERT
-	c.Run(ctx, option.WithNodes(lw.workloadNodes.RandNode()), fmt.Sprintf(
+	c.Run(ctx, lw.workloadNodes.RandNode(), fmt.Sprintf(
 		`./workload init ledger --data-loader=INSERT {pgurl%s}`,
 		lw.sqlNodes.RandNode(),
 	))
@@ -3804,7 +2567,7 @@ func (lw *ledgerWorkload) install(ctx context.Context, c cluster.Cluster) {
 
 func (lw *ledgerWorkload) run(ctx context.Context, c cluster.Cluster, workloadDuration string) {
 	// TODO(#94136): remove --data-loader=INSERT
-	c.Run(ctx, option.WithNodes(lw.workloadNodes), fmt.Sprintf(
+	c.Run(ctx, lw.workloadNodes, fmt.Sprintf(
 		`./workload run ledger --data-loader=INSERT --mix=balance=0,withdrawal=50,deposit=50,reversal=0 {pgurl%s} --duration=%s`,
 		lw.sqlNodes,
 		workloadDuration,
@@ -3815,33 +2578,27 @@ func (lw *ledgerWorkload) run(ctx context.Context, c cluster.Cluster, workloadDu
 // different options and sinks
 type changefeedCreator struct {
 	db              *gosql.DB
-	systemDB        *gosql.DB
 	logger          *logger.Logger
 	targets         string
 	sinkURL         string
 	options         map[string]string
 	extraArgs       []interface{}
 	flags           cdcFeatureFlags
-	rng             entropy
+	rng             enthropy
 	settingsApplied bool
 }
 
 func newChangefeedCreator(
-	db, systemDB *gosql.DB,
-	logger *logger.Logger,
-	r *rand.Rand,
-	targets, sinkURL string,
-	flags cdcFeatureFlags,
+	db *gosql.DB, logger *logger.Logger, r *rand.Rand, targets, sinkURL string, flags cdcFeatureFlags,
 ) *changefeedCreator {
 	return &changefeedCreator{
-		db:       db,
-		systemDB: systemDB,
-		logger:   logger,
-		targets:  targets,
-		sinkURL:  sinkURL,
-		options:  make(map[string]string),
-		flags:    flags,
-		rng:      entropy{Rand: r},
+		db:      db,
+		logger:  logger,
+		targets: targets,
+		sinkURL: sinkURL,
+		options: make(map[string]string),
+		flags:   flags,
+		rng:     enthropy{Rand: r},
 	}
 }
 
@@ -3864,11 +2621,6 @@ func (cfc *changefeedCreator) Args(args ...interface{}) *changefeedCreator {
 	return cfc
 }
 
-func chooseDistributionStrategy(r entropy) string {
-	vals := changefeedccl.RangeDistributionStrategy.GetAvailableValues()
-	return vals[r.Intn(len(vals))]
-}
-
 // applySettings aplies various settings to the cluster -- once per the
 // lifetime of changefeedCreator
 func (cfc *changefeedCreator) applySettings() error {
@@ -3876,30 +2628,29 @@ func (cfc *changefeedCreator) applySettings() error {
 		return nil
 	}
 	// kv.rangefeed.enabled is required for changefeeds to run
-	if _, err := cfc.systemDB.Exec("SET CLUSTER SETTING kv.rangefeed.enabled = true"); err != nil {
+	if _, err := cfc.db.Exec("SET CLUSTER SETTING kv.rangefeed.enabled = true"); err != nil {
 		return err
 	}
 
-	schedEnabled := cfc.flags.RangeFeedScheduler.enabled(cfc.rng)
-	if schedEnabled != featureUnset {
-		cfc.logger.Printf("Setting kv.rangefeed.scheduler.enabled to %t", schedEnabled == featureEnabled)
-		if _, err := cfc.systemDB.Exec(
-			"SET CLUSTER SETTING kv.rangefeed.scheduler.enabled = $1", schedEnabled == featureEnabled,
+	muxEnabled := cfc.flags.MuxRangefeed.enabled(cfc.rng)
+	if muxEnabled != featureUnset {
+		cfc.logger.Printf("Setting changefeed.mux_rangefeed.enabled to %t", muxEnabled.bool())
+		if _, err := cfc.db.Exec(
+			"SET CLUSTER SETTING changefeed.mux_rangefeed.enabled = $1", muxEnabled.bool(),
 		); err != nil {
 			return err
 		}
 	}
 
-	rangeDistribution, rangeDistributionEnabled := cfc.flags.DistributionStrategy.enabled(cfc.rng,
-		chooseDistributionStrategy)
-	if rangeDistributionEnabled == featureEnabled {
-		cfc.logger.Printf("Setting changefeed.default_range_distribution_strategy to %s", rangeDistribution)
-		if _, err := cfc.db.Exec(fmt.Sprintf(
-			"SET CLUSTER SETTING changefeed.default_range_distribution_strategy = '%s'", rangeDistribution)); err != nil {
+	schedEnabled := cfc.flags.RangeFeedScheduler.enabled(cfc.rng)
+	if schedEnabled != featureUnset {
+		cfc.logger.Printf("Setting kv.rangefeed.scheduler.enabled to %t", schedEnabled.bool())
+		if _, err := cfc.db.Exec(
+			"SET CLUSTER SETTING kv.rangefeed.scheduler.enabled = $1", schedEnabled.bool(),
+		); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 
@@ -3935,23 +2686,48 @@ func (cfc *changefeedCreator) Create() (int, error) {
 }
 
 type changefeedInfo struct {
-	*jobRecord
-
+	status        string
+	errMsg        string
 	startedTime   time.Time
 	statementTime time.Time
+	highwaterTime time.Time
+	finishedTime  time.Time
 }
+
+func (c *changefeedInfo) GetHighWater() time.Time    { return c.highwaterTime }
+func (c *changefeedInfo) GetFinishedTime() time.Time { return c.finishedTime }
+func (c *changefeedInfo) GetStatus() string          { return c.status }
+func (c *changefeedInfo) GetError() string           { return c.status }
 
 var _ jobInfo = (*changefeedInfo)(nil)
 
 func getChangefeedInfo(db *gosql.DB, jobID int) (*changefeedInfo, error) {
-	jr, err := getJobRecord(db, jobID)
-	if err != nil {
+	var status string
+	var payloadBytes []byte
+	var progressBytes []byte
+	if err := db.QueryRow(jobutils.InternalSystemJobsBaseQuery, jobID).Scan(&status, &payloadBytes, &progressBytes); err != nil {
 		return nil, err
 	}
+	var payload jobspb.Payload
+	if err := protoutil.Unmarshal(payloadBytes, &payload); err != nil {
+		return nil, err
+	}
+	var progress jobspb.Progress
+	if err := protoutil.Unmarshal(progressBytes, &progress); err != nil {
+		return nil, err
+	}
+	var highwaterTime time.Time
+	highwater := progress.GetHighWater()
+	if highwater != nil {
+		highwaterTime = highwater.GoTime()
+	}
 	return &changefeedInfo{
-		jobRecord:     jr,
-		startedTime:   time.UnixMicro(jr.payload.StartedMicros),
-		statementTime: jr.payload.GetChangefeed().StatementTime.GoTime(),
+		status:        status,
+		errMsg:        payload.Error,
+		startedTime:   time.UnixMicro(payload.StartedMicros),
+		statementTime: payload.GetChangefeed().StatementTime.GoTime(),
+		highwaterTime: highwaterTime,
+		finishedTime:  time.UnixMicro(payload.FinishedMicros),
 	}, nil
 }
 
@@ -3959,7 +2735,7 @@ func getChangefeedInfo(db *gosql.DB, jobID int) (*changefeedInfo, error) {
 // nightly, but nice for development.
 func stopFeeds(db *gosql.DB) {
 	_, _ = db.Exec(`CANCEL JOBS (
-			SELECT job_id FROM [SHOW CHANGEFEED JOBS] WHERE status = 'running'
+			SELECT job_id FROM [SHOW JOBS] WHERE status = 'running'
 		)`)
 }
 
@@ -3970,9 +2746,9 @@ func setupKafka(
 	ctx context.Context, t test.Test, c cluster.Cluster, nodes option.NodeListOption,
 ) (kafkaManager, func()) {
 	kafka := kafkaManager{
-		t:              t,
-		c:              c,
-		kafkaSinkNodes: nodes,
+		t:     t,
+		c:     c,
+		nodes: nodes,
 	}
 
 	kafka.install(ctx)
@@ -3980,327 +2756,63 @@ func setupKafka(
 		// TODO(dan): This test currently connects to kafka from the test
 		// runner, so kafka needs to advertise the external address. Better
 		// would be a binary we could run on one of the roachprod machines.
-		urls := kafka.advertiseURLs(ctx)
-		// Setup multiple kafkas.
-		for i, url := range urls {
-			c.Run(ctx, option.WithNodes([]int{[]int(kafka.kafkaSinkNodes)[i]}), `echo "advertised.listeners=PLAINTEXT://`+url+`" >> `+
-				filepath.Join(kafka.configDir(), "server.properties"))
-			c.Run(ctx, option.WithNodes([]int{[]int(kafka.kafkaSinkNodes)[i]}), `echo "broker.id=`+strconv.Itoa(i)+`" >> `+
-				filepath.Join(kafka.configDir(), "server.properties"))
-			// Default num partitions = num nodes.
-			c.Run(ctx, option.WithNodes([]int{[]int(kafka.kafkaSinkNodes)[i]}), `echo "num.partitions=`+strconv.Itoa(len(urls))+`" >> `+
-				filepath.Join(kafka.configDir(), "server.properties"))
-			// Use the zookeeper on first kafka node, and ignore the rest of them (if any).
-			if i > 0 {
-				zkUrl := strings.Replace(urls[0], ":9092", ":2181", 1)
-				c.Run(ctx, option.WithNodes([]int{[]int(kafka.kafkaSinkNodes)[i]}), `echo "zookeeper.connect=`+zkUrl+`" >> `+
-					filepath.Join(kafka.configDir(), "server.properties"))
-			}
-		}
+		c.Run(ctx, kafka.nodes, `echo "advertised.listeners=PLAINTEXT://`+kafka.consumerURL(ctx)+`" >> `+
+			filepath.Join(kafka.configDir(), "server.properties"))
 	}
 
 	kafka.start(ctx, "kafka")
-	kafka.waitForKafkaAvailable(ctx)
 	return kafka, func() { kafka.stop(ctx) }
 }
 
-const mskRoleArn = "arn:aws:iam::541263489771:role/roachprod-msk-full-access" // See pkg/roachprod/vm/aws/terraform/iam.tf
-const mskRegion = "us-east-2"
-
-type mskManager struct {
-	t         test.Test
-	mskClient *msk.Client
-	// awsOpts lets us set the region and logger for each aws-sdk request.
-	awsOpts func(*msk.Options)
-
-	clusterArn  string
-	connectInfo mskIAMConnectInfo
-}
-
-func newMSKManager(ctx context.Context, t test.Test) *mskManager {
-	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithDefaultRegion(mskRegion))
-	if err != nil {
-		t.Fatalf("failed to load aws config: %v", err)
-	}
-	mskClient := msk.NewFromConfig(awsCfg)
-
-	return &mskManager{
-		t:         t,
-		mskClient: mskClient,
-		awsOpts: func(o *msk.Options) {
-			o.Logger = awslog.LoggerFunc(func(classification awslog.Classification, format string, v ...interface{}) {
-				format = fmt.Sprintf("msk(%v): %s", classification, format)
-				t.L().Printf(format, v...)
-			})
-			o.Region = mskRegion
-		}}
-}
-
-func (m *mskManager) getAWSRegion() roachprodaws.AWSRegion {
-	var region roachprodaws.AWSRegion
-	for _, r := range roachprodaws.DefaultConfig.Regions {
-		if r.Name == mskRegion {
-			region = r
-			break
-		}
-	}
-	if region.Name == "" {
-		m.t.Fatalf("failed to find region %s in roachprodaws.DefaultConfig.Regions", mskRegion)
-	}
-	return region
-}
-
-// MakeCluster creates a new MSK Serverless cluster.
-func (m *mskManager) MakeCluster(ctx context.Context) {
-	clusterName := fmt.Sprintf("roachtest-cdc-%v", timeutil.Now().Format("2006-01-02-15-04-05"))
-	clusterTags := map[string]string{"roachtest": "true"}
-
-	region := m.getAWSRegion()
-	subnets := make([]string, 0, 3)
-	for _, az := range region.AvailabilityZones {
-		subnets = append(subnets, az.SubnetID)
-	}
-
-	req := &msk.CreateClusterV2Input{
-		ClusterName: aws.String(clusterName),
-		Tags:        clusterTags,
-		Serverless: &msktypes.ServerlessRequest{
-			VpcConfigs: []msktypes.VpcConfig{
-				{
-					SubnetIds:        subnets,
-					SecurityGroupIds: []string{region.SecurityGroup},
-				},
-			},
-			ClientAuthentication: &msktypes.ServerlessClientAuthentication{
-				Sasl: &msktypes.ServerlessSasl{Iam: &msktypes.Iam{Enabled: aws.Bool(true)}},
-			},
-		},
-	}
-	resp, err := m.mskClient.CreateClusterV2(ctx, req, m.awsOpts)
-	if err != nil {
-		m.t.Fatalf("failed to create msk serverless cluster: %v", err)
-	}
-	m.clusterArn = *resp.ClusterArn
-}
-
-type mskIAMConnectInfo struct {
-	broker     string
-	connectURI string
-}
-
-// WaitForClusterActiveAndDNSUpdated waits for the MSK cluster to become active and to be available via DNS.
-func (m *mskManager) WaitForClusterActiveAndDNSUpdated(
-	ctx context.Context, c cluster.Cluster,
-) mskIAMConnectInfo {
-	for ctx.Err() == nil {
-		resp, err := m.mskClient.DescribeClusterV2(ctx, &msk.DescribeClusterV2Input{ClusterArn: &m.clusterArn}, m.awsOpts)
-		if err != nil {
-			m.t.Fatalf("failed to describe msk cluster: %v", err)
-		}
-		if resp.ClusterInfo.State == msktypes.ClusterStateActive {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			m.t.Fatalf("timed out waiting for msk cluster to become active")
-		case <-time.After(5 * time.Second):
-		}
-	}
-
-	resp, err := m.mskClient.GetBootstrapBrokers(ctx, &msk.GetBootstrapBrokersInput{ClusterArn: &m.clusterArn}, m.awsOpts)
-	if err != nil {
-		m.t.Fatalf("failed to describe msk cluster: %v", err)
-	}
-	broker := *resp.BootstrapBrokerStringSaslIam
-	connectInfo := mskIAMConnectInfo{
-		broker:     broker,
-		connectURI: fmt.Sprintf("kafka://%s?tls_enabled=true&sasl_enabled=true&sasl_mechanism=AWS_MSK_IAM&sasl_aws_region=%s&sasl_aws_iam_role_arn=%s&sasl_aws_iam_session_name=cdc-msk", broker, mskRegion, mskRoleArn),
-	}
-
-	// Wait for the broker's DNS to propagate.
-	m.t.L().Printf("waiting for dns to resolve for %s", connectInfo.broker)
-	host := strings.Split(connectInfo.broker, ":")[0]
-	for ctx.Err() == nil {
-		if err := c.RunE(ctx, option.WithNodes(c.All()), "nslookup", host); err == nil {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			m.t.Fatalf("timed out waiting for msk dns to resolve")
-		case <-time.After(5 * time.Second):
-		}
-	}
-
-	m.connectInfo = connectInfo
-	return connectInfo
-}
-
-//go:embed create-msk-topic/main.go.txt
-var createMskTopicMain string
-
-const createMSKTopicBinPath = "/tmp/create-msk-topic"
-
-var setupMskTopicScript = fmt.Sprintf(`
-#!/bin/bash
-set -e -o pipefail
-wget https://go.dev/dl/go1.23.7.linux-amd64.tar.gz -O /tmp/go.tar.gz
-sudo rm -rf /usr/local/go
-sudo tar -C /usr/local -xzf /tmp/go.tar.gz
-echo export PATH=$PATH:/usr/local/go/bin >> ~/.profile
-source ~/.profile
-
-cd %s
-rm -f go.mod go.sum
-go mod init create-msk-topic
-go mod tidy
-go build .
-`, createMSKTopicBinPath)
-
-// CreateTopic creates a topic on the MSK cluster.
-func (m *mskManager) CreateTopic(ctx context.Context, topic string, c cluster.Cluster) {
-	createTopicNode := c.Node(1)
-	withCTN := option.WithNodes(createTopicNode)
-
-	require.NoError(m.t, c.RunE(ctx, withCTN, "mkdir", "-p", createMSKTopicBinPath))
-	require.NoError(m.t, c.PutString(ctx, createMskTopicMain, path.Join(createMSKTopicBinPath, "main.go"), 0700, createTopicNode))
-	require.NoError(m.t, c.PutString(ctx, setupMskTopicScript,
-		path.Join(createMSKTopicBinPath, "setup.sh"), 0700, createTopicNode))
-	require.NoError(m.t, c.RunE(ctx, withCTN,
-		path.Join(createMSKTopicBinPath, "setup.sh"), m.connectInfo.broker, topic, mskRoleArn))
-	retryOpts := retry.Options{
-		InitialBackoff: 1 * time.Minute,
-		MaxBackoff:     5 * time.Minute,
-	}
-	require.NoError(m.t, retry.WithMaxAttempts(ctx, retryOpts, 3,
-		func() error {
-			return c.RunE(ctx, withCTN,
-				path.Join(createMSKTopicBinPath, "create-msk-topic"),
-				"--broker", m.connectInfo.broker, "--topic", topic, "--role-arn", mskRoleArn)
-
-		}))
-}
-
-// TearDown deletes the MSK cluster.
-func (m *mskManager) TearDown() {
-	_, err := m.mskClient.DeleteCluster(context.Background(), &msk.DeleteClusterInput{ClusterArn: &m.clusterArn}, m.awsOpts)
-	if err != nil {
-		m.t.Fatalf("failed to delete msk cluster: %v", err)
-	}
-}
-
 type topicConsumer struct {
-	t                  test.Test
-	consumer           sarama.Consumer
+	sarama.Consumer
+
 	topic              string
 	partitions         []string
-	partitionConsumers map[int32]sarama.PartitionConsumer
-	validator          *cdctest.CountValidator
-	stopper            <-chan struct{}
+	partitionConsumers []sarama.PartitionConsumer
 }
 
-func newTopicConsumer(
-	t test.Test,
-	consumer sarama.Consumer,
-	topic string,
-	validator cdctest.Validator,
-	stopper <-chan struct{},
-) (*topicConsumer, error) {
-	partitions, err := consumer.Partitions(topic)
+func makeTopicConsumer(c sarama.Consumer, topic string) (*topicConsumer, error) {
+	t := &topicConsumer{Consumer: c, topic: topic}
+	partitions, err := t.Partitions(t.topic)
 	if err != nil {
 		return nil, err
 	}
-
-	numPartitions := len(partitions)
-	topicPartitions := make([]string, 0, numPartitions)
-	partitionConsumers := make(map[int32]sarama.PartitionConsumer, numPartitions)
 	for _, partition := range partitions {
-		topicPartitions = append(topicPartitions, strconv.Itoa(int(partition)))
-		pc, err := consumer.ConsumePartition(topic, partition, sarama.OffsetOldest)
+		t.partitions = append(t.partitions, strconv.Itoa(int(partition)))
+		pc, err := t.ConsumePartition(topic, partition, sarama.OffsetOldest)
 		if err != nil {
 			return nil, err
 		}
-		partitionConsumers[partition] = pc
+		t.partitionConsumers = append(t.partitionConsumers, pc)
 	}
-
-	if validator == nil {
-		validator = cdctest.NoOpValidator
-	}
-	countValidator := cdctest.NewCountValidator(validator)
-
-	return &topicConsumer{
-		t:                  t,
-		consumer:           consumer,
-		topic:              topic,
-		partitions:         topicPartitions,
-		partitionConsumers: partitionConsumers,
-		validator:          countValidator,
-		stopper:            stopper,
-	}, nil
+	return t, nil
 }
 
-func (c *topicConsumer) tryNextMessage(ctx context.Context) (*sarama.ConsumerMessage, error) {
-	for partition, pc := range c.partitionConsumers {
+func (c *topicConsumer) tryNextMessage(ctx context.Context) *sarama.ConsumerMessage {
+	for _, pc := range c.partitionConsumers {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil
 		case m := <-pc.Messages():
-			if m == nil {
-				return m, nil
-			}
-			if err := c.validateMessage(partition, m); err != nil {
-				return nil, err
-			}
-			return m, nil
+			return m
 		default:
 		}
-	}
-	return nil, nil
-}
-
-func (c *topicConsumer) validateMessage(partition int32, m *sarama.ConsumerMessage) error {
-	updated, resolved, err := cdctest.ParseJSONValueTimestamps(m.Value)
-	if err != nil {
-		return err
-	}
-	partitionStr := strconv.Itoa(int(partition))
-	switch {
-	case len(m.Key) == 0:
-		err := c.validator.NoteResolved(partitionStr, resolved)
-		if err != nil {
-			return err
-		}
-	default:
-		err := c.validator.NoteRow(partitionStr, string(m.Key), string(m.Value), updated, m.Topic)
-		if err != nil {
-			return err
-		}
-	}
-	if failures := c.validator.Failures(); len(failures) > 0 {
-		c.t.Fatalf("topic consumer for %s encountered validator error(s): %s", c.topic, strings.Join(failures, ","))
 	}
 	return nil
 }
 
-func (c *topicConsumer) next(ctx context.Context) (*sarama.ConsumerMessage, error) {
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-c.stopper:
-			return nil, nil
-		default:
-		}
-		m, err := c.tryNextMessage(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if m != nil {
-			return m, nil
+func (c *topicConsumer) Next(ctx context.Context) *sarama.ConsumerMessage {
+	m := c.tryNextMessage(ctx)
+	for ; m == nil; m = c.tryNextMessage(ctx) {
+		if ctx.Err() != nil {
+			return nil
 		}
 	}
+	return m
 }
 
-func (c *topicConsumer) close() {
+func (c *topicConsumer) Close() {
 	for _, pc := range c.partitionConsumers {
 		pc.AsyncClose()
 		// Drain the messages and errors as required by AsyncClose.
@@ -4309,35 +2821,5 @@ func (c *topicConsumer) close() {
 		for range pc.Errors() {
 		}
 	}
-	_ = c.consumer.Close()
-}
-
-// verifyMetricsNonZero returns a check function for runMetricsVerifier that
-// checks that the metrics matching the names input are > 0.
-func verifyMetricsNonZero(names ...string) func(metrics map[string]*prompb.MetricFamily) (ok bool) {
-	namesMap := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		namesMap[name] = struct{}{}
-	}
-
-	return func(metrics map[string]*prompb.MetricFamily) (ok bool) {
-		found := map[string]struct{}{}
-
-		for name, fam := range metrics {
-			if _, ok := namesMap[name]; !ok {
-				continue
-			}
-
-			for _, m := range fam.Metric {
-				if m.Counter.GetValue() > 0 {
-					found[name] = struct{}{}
-				}
-			}
-
-			if len(found) == len(names) {
-				return true
-			}
-		}
-		return false
-	}
+	_ = c.Consumer.Close()
 }

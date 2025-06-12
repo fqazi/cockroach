@@ -275,9 +275,8 @@ func typeToStringCastHasIncorrectVolatility(t *types.T) bool {
 		types.IntervalFamily, types.TupleFamily:
 		return true
 	case types.OidFamily:
-		return t.Identical(types.RegClass) || t.Identical(types.RegNamespace) ||
-			t.Identical(types.RegProc) || t.Identical(types.RegProcedure) ||
-			t.Identical(types.RegRole) || t.Identical(types.RegType)
+		return t == types.RegClass || t == types.RegNamespace || t == types.RegProc ||
+			t == types.RegProcedure || t == types.RegRole || t == types.RegType
 	default:
 		return false
 	}

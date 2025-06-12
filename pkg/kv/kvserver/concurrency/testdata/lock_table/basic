@@ -122,7 +122,7 @@ start-waiting: true
 
 guard-state r=req4
 ----
-new: state=waitFor txn=txn1 key="b" held=true guard-strength=Exclusive
+new: state=waitForDistinguished txn=txn1 key="b" held=true guard-strength=Exclusive
 
 # 3s passes while req4 is waiting on locks on b,c
 time-tick s=3
@@ -145,7 +145,7 @@ num=3
 
 guard-state r=req4
 ----
-new: state=waitFor txn=txn1 key="c" held=true guard-strength=Exclusive
+new: state=waitForDistinguished txn=txn1 key="c" held=true guard-strength=Exclusive
 
 # 1s passes while req4 continues to wait on c (and only has reservation on b)
 time-tick s=1
@@ -247,7 +247,7 @@ time-tick s=2
 
 guard-state r=req4
 ----
-new: state=waitFor txn=txn3 key="a" held=true guard-strength=Exclusive
+new: state=waitForDistinguished txn=txn3 key="a" held=true guard-strength=Exclusive
 
 print
 ----
@@ -256,6 +256,7 @@ num=5
   holder: txn: 00000000-0000-0000-0000-000000000003 epoch: 0, iso: Serializable, ts: 6.000000000,0, info: repl [Intent]
    queued locking requests:
     active: true req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 4
  lock: "b"
    queued locking requests:
     active: false req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
@@ -269,7 +270,7 @@ num=5
 
 query
 ----
-num locks: 1, bytes returned: 85, resume reason: RESUME_UNKNOWN, resume span: <nil>
+num locks: 1, bytes returned: 83, resume reason: RESUME_UNKNOWN, resume span: <nil>
  locks:
   range_id=3 key="a" holder=00000000-0000-0000-0000-000000000003 durability=Replicated duration=2s
    waiters:
@@ -280,6 +281,7 @@ metrics
 locks: 5
 locksheld: 3
 totallockholddurationnanos: 11400000000
+lockswithreservation: 2
 lockswithwaitqueues: 3
 waiters: 3
 waitingreaders: 0
@@ -392,6 +394,7 @@ num=5
   holder: txn: 00000000-0000-0000-0000-000000000003 epoch: 0, iso: Serializable, ts: 6.000000000,0, info: repl [Intent]
    queued locking requests:
     active: true req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 4
  lock: "b"
    queued locking requests:
     active: false req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
@@ -439,10 +442,12 @@ num=5
   holder: txn: 00000000-0000-0000-0000-000000000003 epoch: 0, iso: Serializable, ts: 6.000000000,0, info: repl [Intent]
    queued locking requests:
     active: true req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 4
  lock: "b"
    queued locking requests:
     active: false req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 6, strength: Intent, txn: 00000000-0000-0000-0000-000000000001
+   distinguished req: 6
  lock: "c"
    queued locking requests:
     active: false req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
@@ -456,6 +461,7 @@ metrics
 locks: 5
 locksheld: 3
 totallockholddurationnanos: 12600000000
+lockswithreservation: 2
 lockswithwaitqueues: 3
 waiters: 4
 waitingreaders: 0
@@ -548,7 +554,7 @@ topklocksbywaitduration:
 
 guard-state r=req6
 ----
-new: state=waitFor txn=txn2 key="b" held=false guard-strength=Intent
+new: state=waitForDistinguished txn=txn2 key="b" held=false guard-strength=Intent
 
 # 250ms passes between req6 and req7
 time-tick ms=250
@@ -582,7 +588,7 @@ start-waiting: true
 
 guard-state r=req7
 ----
-new: state=waitFor txn=txn2 key="c" held=false guard-strength=Intent
+new: state=waitForDistinguished txn=txn2 key="c" held=false guard-strength=Intent
 
 print
 ----
@@ -591,14 +597,17 @@ num=5
   holder: txn: 00000000-0000-0000-0000-000000000003 epoch: 0, iso: Serializable, ts: 6.000000000,0, info: repl [Intent]
    queued locking requests:
     active: true req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 4
  lock: "b"
    queued locking requests:
     active: false req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 6, strength: Intent, txn: 00000000-0000-0000-0000-000000000001
+   distinguished req: 6
  lock: "c"
    queued locking requests:
     active: false req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 7, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 7
  lock: "e"
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 0, iso: Serializable, ts: 10.000000000,1, info: unrepl [(str: Exclusive seq: 0)]
  lock: "f"
@@ -609,6 +618,7 @@ metrics
 locks: 5
 locksheld: 3
 totallockholddurationnanos: 13350000000
+lockswithreservation: 2
 lockswithwaitqueues: 3
 waiters: 5
 waitingreaders: 0
@@ -702,7 +712,7 @@ topklocksbywaitduration:
 
 query
 ----
-num locks: 3, bytes returned: 282, resume reason: RESUME_UNKNOWN, resume span: <nil>
+num locks: 3, bytes returned: 286, resume reason: RESUME_UNKNOWN, resume span: <nil>
  locks:
   range_id=3 key="a" holder=00000000-0000-0000-0000-000000000003 durability=Replicated duration=2.65s
    waiters:
@@ -732,10 +742,12 @@ num=5
    queued locking requests:
     active: false req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 6, strength: Intent, txn: 00000000-0000-0000-0000-000000000001
+   distinguished req: 6
  lock: "c"
    queued locking requests:
     active: false req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 7, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 7
  lock: "e"
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 0, iso: Serializable, ts: 10.000000000,1, info: unrepl [(str: Exclusive seq: 0)]
  lock: "f"
@@ -743,11 +755,11 @@ num=5
 
 guard-state r=req4
 ----
-new: state=waitFor txn=txn3 key="f" held=true guard-strength=None
+new: state=waitForDistinguished txn=txn3 key="f" held=true guard-strength=None
 
 guard-state r=req6
 ----
-old: state=waitFor txn=txn2 key="b" held=false guard-strength=Intent
+old: state=waitForDistinguished txn=txn2 key="b" held=false guard-strength=Intent
 
 print
 ----
@@ -759,22 +771,26 @@ num=5
    queued locking requests:
     active: false req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 6, strength: Intent, txn: 00000000-0000-0000-0000-000000000001
+   distinguished req: 6
  lock: "c"
    queued locking requests:
     active: false req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 7, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 7
  lock: "e"
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 0, iso: Serializable, ts: 10.000000000,1, info: unrepl [(str: Exclusive seq: 0)]
  lock: "f"
   holder: txn: 00000000-0000-0000-0000-000000000003 epoch: 0, iso: Serializable, ts: 6.000000000,0, info: repl [Intent]
    waiting readers:
     req: 4, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 4
 
 metrics
 ----
 locks: 5
 locksheld: 2
 totallockholddurationnanos: 10900000000
+lockswithreservation: 3
 lockswithwaitqueues: 4
 waiters: 6
 waitingreaders: 1
@@ -867,7 +883,7 @@ topklocksbywaitduration:
 
 query
 ----
-num locks: 3, bytes returned: 258, resume reason: RESUME_UNKNOWN, resume span: <nil>
+num locks: 3, bytes returned: 266, resume reason: RESUME_UNKNOWN, resume span: <nil>
  locks:
   range_id=3 key="b" holder=<nil> durability=Unreplicated duration=0s
    waiters:
@@ -898,10 +914,12 @@ num=4
    queued locking requests:
     active: false req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 6, strength: Intent, txn: 00000000-0000-0000-0000-000000000001
+   distinguished req: 6
  lock: "c"
    queued locking requests:
     active: false req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 7, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 7
  lock: "e"
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 0, iso: Serializable, ts: 10.000000000,1, info: unrepl [(str: Exclusive seq: 0)]
 
@@ -939,10 +957,12 @@ num=4
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: repl [Intent]
    queued locking requests:
     active: true req: 6, strength: Intent, txn: 00000000-0000-0000-0000-000000000001
+   distinguished req: 6
  lock: "c"
    queued locking requests:
     active: false req: 4, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 7, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 7
  lock: "e"
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 0, iso: Serializable, ts: 10.000000000,1, info: unrepl [(str: Exclusive seq: 0)]
 
@@ -956,20 +976,22 @@ num=4
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: repl [Intent]
    queued locking requests:
     active: true req: 6, strength: Intent, txn: 00000000-0000-0000-0000-000000000001
+   distinguished req: 6
  lock: "c"
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: repl [Intent]
    queued locking requests:
     active: true req: 7, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 7
  lock: "e"
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 0, iso: Serializable, ts: 10.000000000,1, info: unrepl [(str: Exclusive seq: 0)]
 
 guard-state r=req6
 ----
-new: state=waitFor txn=txn2 key="b" held=true guard-strength=Intent
+new: state=waitForDistinguished txn=txn2 key="b" held=true guard-strength=Intent
 
 guard-state r=req7
 ----
-new: state=waitFor txn=txn2 key="c" held=true guard-strength=Intent
+new: state=waitForDistinguished txn=txn2 key="c" held=true guard-strength=Intent
 
 print
 ----
@@ -981,10 +1003,12 @@ num=4
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: repl [Intent]
    queued locking requests:
     active: true req: 6, strength: Intent, txn: 00000000-0000-0000-0000-000000000001
+   distinguished req: 6
  lock: "c"
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: repl [Intent]
    queued locking requests:
     active: true req: 7, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 7
  lock: "e"
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 0, iso: Serializable, ts: 10.000000000,1, info: unrepl [(str: Exclusive seq: 0)]
 
@@ -993,6 +1017,7 @@ metrics
 locks: 4
 locksheld: 3
 totallockholddurationnanos: 8650000000
+lockswithreservation: 1
 lockswithwaitqueues: 3
 waiters: 3
 waitingreaders: 0
@@ -1090,10 +1115,12 @@ num=3
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: repl [Intent]
    queued locking requests:
     active: true req: 6, strength: Intent, txn: 00000000-0000-0000-0000-000000000001
+   distinguished req: 6
  lock: "c"
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: repl [Intent]
    queued locking requests:
     active: true req: 7, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 7
  lock: "e"
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 0, iso: Serializable, ts: 10.000000000,1, info: unrepl [(str: Exclusive seq: 0)]
 
@@ -1124,6 +1151,7 @@ num=3
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: repl [Intent]
    queued locking requests:
     active: true req: 6, strength: Intent, txn: 00000000-0000-0000-0000-000000000001
+   distinguished req: 6
  lock: "c"
    queued locking requests:
     active: false req: 7, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
@@ -1136,7 +1164,7 @@ new: state=doneWaiting
 
 guard-state r=req6
 ----
-old: state=waitFor txn=txn2 key="b" held=true guard-strength=Intent
+old: state=waitForDistinguished txn=txn2 key="b" held=true guard-strength=Intent
 
 print
 ----
@@ -1145,6 +1173,7 @@ num=3
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: repl [Intent]
    queued locking requests:
     active: true req: 6, strength: Intent, txn: 00000000-0000-0000-0000-000000000001
+   distinguished req: 6
  lock: "c"
    queued locking requests:
     active: false req: 7, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
@@ -1156,6 +1185,7 @@ metrics
 locks: 3
 locksheld: 2
 totallockholddurationnanos: 12650000000
+lockswithreservation: 1
 lockswithwaitqueues: 2
 waiters: 2
 waitingreaders: 0
@@ -1305,6 +1335,7 @@ metrics
 locks: 3
 locksheld: 1
 totallockholddurationnanos: 10690000000
+lockswithreservation: 2
 lockswithwaitqueues: 2
 waiters: 3
 waitingreaders: 0
@@ -1397,7 +1428,7 @@ start-waiting: true
 
 guard-state r=req7
 ----
-new: state=waitFor txn=txn1 key="c" held=false guard-strength=Intent
+new: state=waitForDistinguished txn=txn1 key="c" held=false guard-strength=Intent
 
 scan r=req6
 ----
@@ -1443,7 +1474,7 @@ start-waiting: true
 
 guard-state r=req8
 ----
-new: state=waitFor txn=txn1 key="e" held=true guard-strength=Intent
+new: state=waitForDistinguished txn=txn1 key="e" held=true guard-strength=Intent
 
 dequeue r=req8
 ----
@@ -1469,6 +1500,7 @@ metrics
 locks: 0
 locksheld: 0
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 0
 waiters: 0
 waitingreaders: 0
@@ -1583,6 +1615,7 @@ metrics
 locks: 1
 locksheld: 1
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 0
 waiters: 0
 waitingreaders: 0
@@ -1674,7 +1707,7 @@ start-waiting: true
 
 guard-state r=req10
 ----
-new: state=waitFor txn=txn1 key="c" held=true guard-strength=Exclusive
+new: state=waitForDistinguished txn=txn1 key="c" held=true guard-strength=Exclusive
 
 new-request r=req11 txn=txn3 ts=6 spans=intent@c
 ----
@@ -1707,12 +1740,14 @@ num=1
     active: true req: 10, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 11, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
     active: true req: 12, strength: Intent, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 10
 
 metrics
 ----
 locks: 1
 locksheld: 1
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 1
 waiters: 3
 waitingreaders: 0
@@ -1805,6 +1840,7 @@ num=1
     active: false req: 10, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 11, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
     active: true req: 12, strength: Intent, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 11
 
 guard-state r=req10
 ----
@@ -1812,7 +1848,7 @@ new: state=doneWaiting
 
 guard-state r=req11
 ----
-new: state=waitFor txn=txn2 key="c" held=false guard-strength=Intent
+new: state=waitForDistinguished txn=txn2 key="c" held=false guard-strength=Intent
 
 guard-state r=req12
 ----
@@ -1830,12 +1866,14 @@ num=1
     active: false req: 10, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 11, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
     active: true req: 12, strength: Intent, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 11
 
 metrics
 ----
 locks: 1
 locksheld: 0
 totallockholddurationnanos: 0
+lockswithreservation: 1
 lockswithwaitqueues: 1
 waiters: 3
 waitingreaders: 0
@@ -1926,10 +1964,11 @@ num=1
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: unrepl [(str: Exclusive seq: 0)]
    queued locking requests:
     active: true req: 11, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 11
 
 guard-state r=req11
 ----
-new: state=waitFor txn=txn2 key="c" held=true guard-strength=Intent
+new: state=waitForDistinguished txn=txn2 key="c" held=true guard-strength=Intent
 
 # Since req10 that is also txn2 has acquired the lock, req12 does not need to wait here anymore.
 guard-state r=req12
@@ -1943,12 +1982,14 @@ num=1
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: unrepl [(str: Exclusive seq: 0)]
    queued locking requests:
     active: true req: 11, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 11
 
 metrics
 ----
 locks: 1
 locksheld: 1
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 1
 waiters: 1
 waitingreaders: 0
@@ -2040,6 +2081,7 @@ num=1
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: unrepl [(str: Exclusive seq: 0)]
    queued locking requests:
     active: true req: 11, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 11
 
 acquire r=req12 k=c durability=r strength=intent
 ----
@@ -2048,6 +2090,7 @@ num=1
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: repl [Intent], unrepl [(str: Exclusive seq: 0)]
    queued locking requests:
     active: true req: 11, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 11
 
 dequeue r=req12
 ----
@@ -2056,10 +2099,11 @@ num=1
   holder: txn: 00000000-0000-0000-0000-000000000002 epoch: 0, iso: Serializable, ts: 8.000000000,12, info: repl [Intent], unrepl [(str: Exclusive seq: 0)]
    queued locking requests:
     active: true req: 11, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 11
 
 guard-state r=req11
 ----
-old: state=waitFor txn=txn2 key="c" held=true guard-strength=Intent
+old: state=waitForDistinguished txn=txn2 key="c" held=true guard-strength=Intent
 
 release txn=txn2 span=b,d
 ----
@@ -2084,6 +2128,7 @@ metrics
 locks: 1
 locksheld: 0
 totallockholddurationnanos: 0
+lockswithreservation: 1
 lockswithwaitqueues: 1
 waiters: 1
 waitingreaders: 0
@@ -2239,6 +2284,7 @@ metrics
 locks: 0
 locksheld: 0
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 0
 waiters: 0
 waitingreaders: 0
@@ -2374,16 +2420,19 @@ num=2
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 9.000000000,0, info: unrepl [(str: Exclusive seq: 0)]
    queued locking requests:
     active: true req: 18, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 18
  lock: "d"
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 9.000000000,0, info: unrepl [(str: Exclusive seq: 0)]
    queued locking requests:
     active: true req: 19, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 19
 
 metrics
 ----
 locks: 2
 locksheld: 2
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 2
 waiters: 2
 waitingreaders: 0
@@ -2481,6 +2530,7 @@ num=2
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 9.000000000,0, info: unrepl [(str: Exclusive seq: 0)]
    queued locking requests:
     active: true req: 19, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 19
 
 guard-state r=req18
 ----
@@ -2497,12 +2547,14 @@ num=2
    queued locking requests:
     active: true req: 18, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
     active: true req: 19, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 19
 
 metrics
 ----
 locks: 2
 locksheld: 1
 totallockholddurationnanos: 0
+lockswithreservation: 1
 lockswithwaitqueues: 2
 waiters: 3
 waitingreaders: 0
@@ -2696,6 +2748,7 @@ num=2
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 10.000000000,0, info: unrepl [(str: Exclusive seq: 0)]
    queued locking requests:
     active: true req: 22, strength: Intent, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 22
  lock: "d"
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 10.000000000,0, info: unrepl [(str: Exclusive seq: 0)]
 
@@ -2704,6 +2757,7 @@ metrics
 locks: 2
 locksheld: 2
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 1
 waiters: 1
 waitingreaders: 0
@@ -2803,6 +2857,7 @@ num=2
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 10.000000000,0, info: unrepl [(str: Exclusive seq: 0)]
    queued locking requests:
     active: true req: 22, strength: Intent, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 22
  lock: "d"
    queued locking requests:
     active: false req: 23, strength: Exclusive, txn: 00000000-0000-0000-0000-000000000003
@@ -2850,6 +2905,7 @@ metrics
 locks: 2
 locksheld: 0
 totallockholddurationnanos: 0
+lockswithreservation: 2
 lockswithwaitqueues: 2
 waiters: 3
 waitingreaders: 0
@@ -2971,6 +3027,7 @@ metrics
 locks: 0
 locksheld: 0
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 0
 waiters: 0
 waitingreaders: 0
@@ -3087,6 +3144,7 @@ metrics
 locks: 1
 locksheld: 1
 totallockholddurationnanos: 5000000000
+lockswithreservation: 0
 lockswithwaitqueues: 1
 waiters: 1
 waitingreaders: 0

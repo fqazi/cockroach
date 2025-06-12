@@ -45,9 +45,7 @@ const (
 	maxLen, maxOffset = lenMask, 1<<(64-lenBits) - 1
 )
 
-func (b *kvBuf) fits(
-	ctx context.Context, toAdd sz, maxUsed sz, acc *mon.EarmarkedBoundAccount,
-) bool {
+func (b *kvBuf) fits(ctx context.Context, toAdd sz, maxUsed sz, acc *mon.BoundAccount) bool {
 	if len(b.entries) < cap(b.entries) && sz(len(b.slab))+toAdd < sz(cap(b.slab)) {
 		return true // fits in current cap, nothing to do.
 	}

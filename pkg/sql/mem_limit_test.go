@@ -8,8 +8,6 @@ package sql
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,9 +17,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -40,23 +36,17 @@ func TestMemoryLimit(t *testing.T) {
 	// BatchResponses do hit the memory limit.
 	//
 	// When the Streamer API is not used, then SQL creates a single BatchRequest
-	// with TargetBytes of 10MiB (controlled by
-	// rowinfra.defaultBatchBytesLimitProductionValue), so the storage layer is
-	// happy to get two blobs only to hit the memory limit. A concurrency of 1
-	// is sufficient.
+	// for both blobs without setting TargetBytes, so the storage layer is happy
+	// to get two blobs only to hit the memory limit. A concurrency of 1 is
+	// sufficient.
 	//
 	// When the Streamer API is used, TargetBytes are set, so each blob gets a
 	// separate BatchResponse. Thus, we need concurrency of 2 so that the
 	// aggregate memory usage exceeds the memory limit. It's also likely that
 	// the error is encountered in the SQL layer when performing accounting for
 	// the read datums.
-	//
-	// The size here is constructed in such a manner that both rows are returned
-	// in a single ScanResponse, meaning that both rows together (including
-	// non-blob columns) don't exceed 10MiB.
-	const blobSize = 5<<20 - 1<<10 /* 5MiB - 1KiB */
 	serverArgs := base.TestServerArgs{
-		SQLMemoryPoolSize: 2*blobSize - 1,
+		SQLMemoryPoolSize: 5 << 20, /* 5MiB */
 	}
 	serverArgs.Knobs.SQLEvalContext = &eval.TestingKnobs{
 		// This test expects the default value of
@@ -68,9 +58,9 @@ func TestMemoryLimit(t *testing.T) {
 	defer s.Stopper().Stop(ctx)
 	_, err := db.Exec("CREATE TABLE foo (id INT PRIMARY KEY, attribute INT, blob TEXT, INDEX(attribute))")
 	require.NoError(t, err)
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO foo SELECT 1, 10, repeat('a', %d)", blobSize))
+	_, err = db.Exec("INSERT INTO foo SELECT 1, 10, repeat('a', 3000000)")
 	require.NoError(t, err)
-	_, err = db.Exec(fmt.Sprintf("INSERT INTO foo SELECT 2, 10, repeat('a', %d)", blobSize))
+	_, err = db.Exec("INSERT INTO foo SELECT 2, 10, repeat('a', 3000000)")
 	require.NoError(t, err)
 
 	for _, tc := range []struct {
@@ -159,41 +149,43 @@ func TestStreamerTightBudget(t *testing.T) {
 	// Streamer isn't hitting the root budget exceeded error.
 	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
 		SQLMemoryPoolSize: 1 << 30, /* 1GiB */
-		Insecure:          true,
 	})
-	defer s.Stopper().Stop(context.Background())
-	sqlDB := sqlutils.MakeSQLRunner(db)
+	ctx := context.Background()
+	defer s.Stopper().Stop(ctx)
 
 	const blobSize = 1 << 20
 	const numRows = 5
 
-	sqlDB.Exec(t, "CREATE TABLE t (pk INT PRIMARY KEY, k INT, blob STRING, INDEX (k))")
+	_, err := db.Exec("CREATE TABLE t (pk INT PRIMARY KEY, k INT, blob STRING, INDEX (k))")
+	require.NoError(t, err)
 	for i := 0; i < numRows; i++ {
 		if i > 0 {
 			// Create a new range for this row.
-			sqlDB.Exec(t, fmt.Sprintf("ALTER TABLE t SPLIT AT VALUES(%d)", i))
+			_, err = db.Exec(fmt.Sprintf("ALTER TABLE t SPLIT AT VALUES(%d)", i))
+			require.NoError(t, err)
 		}
-		sqlDB.Exec(t, fmt.Sprintf("INSERT INTO t SELECT %d, 1, repeat('a', %d)", i, blobSize))
+		_, err = db.Exec(fmt.Sprintf("INSERT INTO t SELECT %d, 1, repeat('a', %d)", i, blobSize))
+		require.NoError(t, err)
 	}
 
 	// Populate the range cache.
-	sqlDB.Exec(t, "SELECT count(*) from t")
+	_, err = db.Exec("SELECT count(*) from t")
+	require.NoError(t, err)
 
 	// Set the workmem limit to a low value such that it will allow the Streamer
 	// to have at most one request to be "in progress".
-	sqlDB.Exec(t, fmt.Sprintf("SET distsql_workmem = '%dB'", blobSize))
+	_, err = db.Exec(fmt.Sprintf("SET distsql_workmem = '%dB'", blobSize))
+	require.NoError(t, err)
 
 	// Perform an index join to read the blobs.
-	query := "SELECT sum(length(blob)) FROM t@t_k_idx WHERE k = 1"
+	query := "EXPLAIN ANALYZE SELECT sum(length(blob)) FROM t@t_k_idx WHERE k = 1"
 	maximumMemoryUsageRegex := regexp.MustCompile(`maximum memory usage: (\d+\.\d+) MiB`)
-	rows := sqlDB.QueryStr(t, "EXPLAIN ANALYZE (VERBOSE) "+query)
-	// Build pretty output for an error message in case we need it.
-	var sb strings.Builder
-	for _, row := range rows {
-		sb.WriteString(row[0] + "\n")
-	}
-	for _, row := range rows {
-		if matches := maximumMemoryUsageRegex.FindStringSubmatch(row[0]); len(matches) > 0 {
+	rows, err := db.QueryContext(ctx, query)
+	require.NoError(t, err)
+	for rows.Next() {
+		var res string
+		require.NoError(t, rows.Scan(&res))
+		if matches := maximumMemoryUsageRegex.FindStringSubmatch(res); len(matches) > 0 {
 			usage, err := strconv.ParseFloat(matches[1], 64)
 			require.NoError(t, err)
 			// We expect that the maximum memory usage is about 2MiB (1MiB is
@@ -201,45 +193,9 @@ func TestStreamerTightBudget(t *testing.T) {
 			// by the ColIndexJoin when the blob is copied into the columnar
 			// batch). We allow for 0.1MiB for other memory usage in the query.
 			maxAllowed := 2.1
-			if maxAllowed >= usage {
-				return
-			}
-			// Get a stmt bundle for this query that might help in debugging the
-			// failure.
-			rows = sqlDB.QueryStr(t, "EXPLAIN ANALYZE (DEBUG) "+query)
-			url := getBundleDownloadURL(t, fmt.Sprint(rows))
-			// First check whether the bundle experienced the elevated memory
-			// usage too.
-			unzip := downloadAndUnzipBundle(t, url)
-			for _, f := range unzip.File {
-				switch f.Name {
-				case "plan.txt":
-					contents := readUnzippedFile(t, f)
-					sb.WriteString("\n\n\nbundle plan.txt:\n\n\n")
-					sb.WriteString(contents)
-					// Check that the memory usage is still elevated.
-					if matches := maximumMemoryUsageRegex.FindStringSubmatch(contents); len(matches) == 0 {
-						t.Fatalf("unexpectedly didn't find a match for maximum memory usage\n%s", sb.String())
-					} else {
-						bundleUsage, err := strconv.ParseFloat(matches[1], 64)
-						require.NoError(t, err)
-						if maxAllowed >= bundleUsage {
-							// Memory usage is as expected in the bundle - do
-							// not fail the test since we don't have any
-							// information to help in understanding the original
-							// high memory usage.
-							return
-						}
-					}
-				}
-			}
-			// NB: we're not using t.TempDir() because we want these to survive
-			// on failure.
-			f, err := os.Create(filepath.Join(datapathutils.DebuggableTempDir(), "bundle.zip"))
-			require.NoError(t, err)
-			downloadBundle(t, url, f)
-			t.Fatalf("unexpectedly high memory usage\n----\n%s", sb.String())
+			require.GreaterOrEqual(t, maxAllowed, usage, "unexpectedly high memory usage")
+			return
 		}
 	}
-	t.Fatalf("unexpectedly didn't find a match for maximum memory usage\n%s", sb.String())
+	t.Fatal("unexpectedly didn't find a match for maximum memory usage")
 }

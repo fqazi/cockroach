@@ -75,14 +75,14 @@ func (s *FakeStorage) Insert(
 // Update implements the slinstance.Storage interface.
 func (s *FakeStorage) Update(
 	_ context.Context, sid sqlliveness.SessionID, expiration hlc.Timestamp,
-) (bool, hlc.Timestamp, error) {
+) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.mu.sessions[sid]; !ok {
-		return false, hlc.Timestamp{}, nil
+		return false, nil
 	}
 	s.mu.sessions[sid] = expiration
-	return true, expiration, nil
+	return true, nil
 }
 
 // Delete is needed to manually delete a session for testing purposes.

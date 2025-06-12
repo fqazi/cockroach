@@ -16,10 +16,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/norm"
+	"github.com/cockroachdb/cockroach/pkg/sql/opt/props"
+	"github.com/cockroachdb/cockroach/pkg/sql/opt/props/physical"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/cast"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree/treebin"
@@ -216,11 +219,11 @@ func (b *Builder) buildScalar(
 		// arguments with a CastExpr that preserves the static type.
 
 		left := t.TypedLeft()
-		if left.ResolvedType().Family() == types.UnknownFamily {
+		if left.ResolvedType() == types.Unknown {
 			left = reType(left, t.ResolvedBinOp().LeftType)
 		}
 		right := t.TypedRight()
-		if right.ResolvedType().Family() == types.UnknownFamily {
+		if right.ResolvedType() == types.Unknown {
 			right = reType(right, t.ResolvedBinOp().RightType)
 		}
 		out = b.constructBinary(
@@ -491,7 +494,7 @@ func (b *Builder) buildScalar(
 		panic(unimplemented.Newf(fmt.Sprintf("optbuilder.%T", scalar), "not yet implemented: scalar expression: %T", scalar))
 	}
 
-	return b.finishBuildScalar(scalar, out, outScope, outCol)
+	return b.finishBuildScalar(scalar, out, inScope, outScope, outCol)
 }
 
 func (b *Builder) hasSubOperator(t *tree.ComparisonExpr) bool {
@@ -571,14 +574,7 @@ func (b *Builder) buildFunction(
 	})
 
 	if overload.Class == tree.GeneratorClass {
-		if overload.ReturnsRecordType {
-			if colDefListTypes := b.getColumnDefinitionListTypes(inScope); colDefListTypes != nil {
-				// Use the types from the column definition list to determine the
-				// function return type.
-				f.SetTypeAnnotation(colDefListTypes)
-			}
-		}
-		return b.finishBuildGeneratorFunction(f, out, inScope, outScope, outCol)
+		return b.finishBuildGeneratorFunction(f, overload, out, inScope, outScope, outCol)
 	}
 
 	// Add a dependency on sequences that are used as a string argument.
@@ -591,7 +587,7 @@ func (b *Builder) buildFunction(
 			var ds cat.DataSource
 			if seqIdentifier.IsByID() {
 				flags := cat.Flags{
-					AvoidDescriptorCaches: b.insideViewDef || b.insideFuncDef || b.insideTriggerDef,
+					AvoidDescriptorCaches: b.insideViewDef || b.insideFuncDef,
 				}
 				ds, _, err = b.catalog.ResolveDataSourceByID(b.ctx, flags, cat.StableID(seqIdentifier.SeqID))
 				if err != nil {
@@ -610,28 +606,102 @@ func (b *Builder) buildFunction(
 		}
 	}
 
-	return b.finishBuildScalar(f, out, outScope, outCol)
+	return b.finishBuildScalar(f, out, inScope, outScope, outCol)
 }
 
-// getColumnDefinitionListTypes returns a composite type representing the column
-// definition list for the current scope, if any. If one doesn't exist,
-// getColumnDefinitionListTypes returns nil.
-func (b *Builder) getColumnDefinitionListTypes(inScope *scope) *types.T {
-	alias := inScope.alias
-	if alias == nil || len(alias.Cols) == 0 || alias.Cols[0].Type == nil {
-		return nil
+// finishBuildLastStmt manages the columns returned by the last statement of a
+// UDF. Depending on the context and return type of the UDF, this may mean
+// expanding a tuple into multiple columns, or combining multiple columns into
+// a tuple.
+func (b *Builder) finishBuildLastStmt(
+	stmtScope *scope, bodyScope *scope, isSetReturning bool, f *tree.FuncExpr,
+) (expr memo.RelExpr, physProps *physical.Required, isMultiColDataSource bool) {
+	expr, physProps = stmtScope.expr, stmtScope.makePhysicalProps()
+	rtyp := f.ResolvedType()
+
+	// Add a LIMIT 1 to the last statement if the UDF is not
+	// set-returning. This is valid because any other rows after the
+	// first can simply be ignored. The limit could be beneficial
+	// because it could allow additional optimization.
+	if !isSetReturning {
+		b.buildLimit(&tree.Limit{Count: tree.NewDInt(1)}, b.allocScope(), stmtScope)
+		expr = stmtScope.expr
+		// The limit expression will maintain the desired ordering, if any,
+		// so the physical props ordering can be cleared. The presentation
+		// must remain.
+		physProps.Ordering = props.OrderingChoice{}
 	}
-	contents := make([]*types.T, len(alias.Cols))
-	labels := make([]string, len(alias.Cols))
-	for i, c := range alias.Cols {
-		defTyp, err := tree.ResolveType(b.ctx, c.Type, b.semaCtx.TypeResolver)
-		if err != nil {
-			panic(err)
+
+	// Only a single column can be returned from a UDF, unless it is used as a
+	// data source. Data sources may output multiple columns, and if the
+	// statement body produces a tuple it needs to be expanded into columns.
+	// When not used as a data source, combine statements producing multiple
+	// columns into a tuple. If the last statement is already returning a
+	// tuple and the function has a record return type, then we do not need to
+	// wrap the output in another tuple.
+	cols := physProps.Presentation
+	isSingleTupleResult := len(stmtScope.cols) == 1 &&
+		stmtScope.cols[0].typ.Family() == types.TupleFamily
+	if b.insideDataSource && rtyp.Family() == types.TupleFamily {
+		// When the UDF is used as a data source and expects to output a tuple
+		// type, its output needs to be a row of columns instead of the usual
+		// tuple. If the last statement output a tuple, we need to expand the
+		// tuple into individual columns.
+		isMultiColDataSource = true
+		if isSingleTupleResult {
+			stmtScope = bodyScope.push()
+			elems := make([]scopeColumn, len(rtyp.TupleContents()))
+			for i := range rtyp.TupleContents() {
+				e := b.factory.ConstructColumnAccess(b.factory.ConstructVariable(cols[0].ID), memo.TupleOrdinal(i))
+				col := b.synthesizeColumn(stmtScope, scopeColName(""), rtyp.TupleContents()[i], nil, e)
+				elems[i] = *col
+			}
+			expr = b.constructProject(expr, elems)
+			physProps = stmtScope.makePhysicalProps()
 		}
-		contents[i] = defTyp
-		labels[i] = string(c.Name)
+	} else if len(cols) > 1 || (types.IsRecordType(rtyp) && !isSingleTupleResult) {
+		// Only a single column can be returned from a UDF, unless it is used as a
+		// data source (see comment above). If there are multiple columns, combine
+		// them into a tuple. If the last statement is already returning a tuple
+		// and the function has a record return type, then do not wrap the
+		// output in another tuple.
+		elems := make(memo.ScalarListExpr, len(cols))
+		for i := range cols {
+			elems[i] = b.factory.ConstructVariable(cols[i].ID)
+		}
+		tup := b.factory.ConstructTuple(elems, rtyp)
+		stmtScope = bodyScope.push()
+		col := b.synthesizeColumn(stmtScope, scopeColName(""), rtyp, nil /* expr */, tup)
+		expr = b.constructProject(expr, []scopeColumn{*col})
+		physProps = stmtScope.makePhysicalProps()
 	}
-	return types.MakeLabeledTuple(contents, labels)
+
+	// We must preserve the presentation of columns as physical
+	// properties to prevent the optimizer from pruning the output
+	// column. If necessary, we add an assignment cast to the result
+	// column so that its type matches the function return type. Record return
+	// types do not need an assignment cast, since at this point the return
+	// column is already a tuple.
+	cols = physProps.Presentation
+	if len(cols) > 0 {
+		returnCol := physProps.Presentation[0].ID
+		returnColMeta := b.factory.Metadata().ColumnMeta(returnCol)
+		if !types.IsRecordType(rtyp) && !isMultiColDataSource && !returnColMeta.Type.Identical(rtyp) {
+			if !cast.ValidCast(returnColMeta.Type, rtyp, cast.ContextAssignment) {
+				panic(sqlerrors.NewInvalidAssignmentCastError(
+					returnColMeta.Type, rtyp, returnColMeta.Alias))
+			}
+			cast := b.factory.ConstructAssignmentCast(
+				b.factory.ConstructVariable(physProps.Presentation[0].ID),
+				rtyp,
+			)
+			stmtScope = bodyScope.push()
+			col := b.synthesizeColumn(stmtScope, scopeColName(""), rtyp, nil /* expr */, cast)
+			expr = b.constructProject(expr, []scopeColumn{*col})
+			physProps = stmtScope.makePhysicalProps()
+		}
+	}
+	return expr, physProps, isMultiColDataSource
 }
 
 // buildRangeCond builds a RANGE clause as a simpler expression. Examples:
@@ -850,12 +920,6 @@ func (b *Builder) constructBinary(
 		return b.factory.ConstructFetchValPath(left, right)
 	case treebin.JSONFetchTextPath:
 		return b.factory.ConstructFetchTextPath(left, right)
-	case treebin.Distance:
-		return b.factory.ConstructVectorDistance(left, right)
-	case treebin.CosDistance:
-		return b.factory.ConstructVectorCosDistance(left, right)
-	case treebin.NegInnerProduct:
-		return b.factory.ConstructVectorNegInnerProduct(left, right)
 	}
 	panic(errors.AssertionFailedf("unhandled binary operator: %s", redact.Safe(bin)))
 }
@@ -943,7 +1007,7 @@ func (sb *ScalarBuilder) Build(expr tree.Expr) (_ opt.ScalarExpr, err error) {
 		}
 	}()
 
-	typedExpr := sb.scope.resolveType(expr, types.AnyElement)
+	typedExpr := sb.scope.resolveType(expr, types.Any)
 	scalar := sb.buildScalar(typedExpr, &sb.scope, nil, nil, nil)
 	return scalar, nil
 }

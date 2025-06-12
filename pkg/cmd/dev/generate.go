@@ -42,7 +42,7 @@ func makeGenerateCmd(runE func(cmd *cobra.Command, args []string) error) *cobra.
         dev generate execgen       # execgen targets (subset of 'dev generate go')
         dev generate schemachanger # schemachanger targets (subset of 'dev generate go')
         dev generate stringer      # stringer targets (subset of 'dev generate go')
-        dev generate testlogic     # logictest generated code (includes 'dev generate schemachanger')
+        dev generate testlogic     # logictest generated code (subset of 'dev generate bazel')
         dev generate ui            # Create UI assets to be consumed by 'go build'
 `,
 		Args: cobra.MinimumNArgs(0),
@@ -220,12 +220,9 @@ func (d *dev) generateLogicTest(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	if err = d.exec.CommandContextInheritingStdStreams(
+	return d.exec.CommandContextInheritingStdStreams(
 		ctx, "bazel", "run", "pkg/cmd/generate-logictest", "--", fmt.Sprintf("-out-dir=%s", workspace),
-	); err != nil {
-		return err
-	}
-	return d.generateSchemaChanger(cmd)
+	)
 }
 
 func (d *dev) generateAcceptanceTests(cmd *cobra.Command) error {
@@ -304,7 +301,7 @@ func (d *dev) generateJs(cmd *cobra.Command) error {
 
 	args := []string{
 		"build",
-		"//pkg/ui/workspaces/eslint-plugin-crdb:ts_project",
+		"//pkg/ui/workspaces/eslint-plugin-crdb:eslint-plugin-crdb-lib",
 		"//pkg/ui/workspaces/db-console/src/js:crdb-protobuf-client",
 		"//pkg/ui/workspaces/cluster-ui:ts_project",
 	}
@@ -331,14 +328,8 @@ func (d *dev) generateJs(cmd *cobra.Command) error {
 
 	// Copy the eslint-plugin output tree back out of the sandbox, since eslint
 	// plugins in editors default to only searching in ./node_modules for plugins.
-	err = d.os.CopyAll(
+	return d.os.CopyAll(
 		filepath.Join(bazelBin, eslintPluginDist),
 		filepath.Join(workspace, eslintPluginDist),
 	)
-	if err != nil {
-		return err
-	}
-
-	// Generate crdb-api-client package.
-	return makeUICrdbApiClientCmd(d).RunE(cmd, []string{})
 }

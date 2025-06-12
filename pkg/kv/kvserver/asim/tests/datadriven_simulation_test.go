@@ -314,7 +314,7 @@ func TestDataDriven(t *testing.T) {
 				capacityOverride.Capacity = capacity
 				capacityOverride.Available = available
 				if ioThreshold != -1 {
-					capacityOverride.IOThresholdMax = allocatorimpl.TestingIOThresholdWithScore(ioThreshold)
+					capacityOverride.IOThreshold = allocatorimpl.TestingIOThresholdWithScore(ioThreshold)
 				}
 				eventGen.ScheduleEvent(settingsGen.Settings.StartTime, delay, event.SetCapacityOverrideEvent{
 					StoreID:          state.StoreID(store),
@@ -407,26 +407,20 @@ func TestDataDriven(t *testing.T) {
 						Stores:    stores,
 					})
 				case "conformance":
-					var under, over, unavailable, violating, leaseViolating, leaseLessPref int
+					var under, over, unavailable, violating int
 					under = assertion.ConformanceAssertionSentinel
 					over = assertion.ConformanceAssertionSentinel
 					unavailable = assertion.ConformanceAssertionSentinel
 					violating = assertion.ConformanceAssertionSentinel
-					leaseLessPref = assertion.ConformanceAssertionSentinel
-					leaseViolating = assertion.ConformanceAssertionSentinel
 					scanIfExists(t, d, "under", &under)
 					scanIfExists(t, d, "over", &over)
 					scanIfExists(t, d, "unavailable", &unavailable)
 					scanIfExists(t, d, "violating", &violating)
-					scanIfExists(t, d, "lease-violating", &leaseViolating)
-					scanIfExists(t, d, "lease-less-preferred", &leaseLessPref)
 					assertions = append(assertions, assertion.ConformanceAssertion{
-						Underreplicated:           under,
-						Overreplicated:            over,
-						ViolatingConstraints:      violating,
-						Unavailable:               unavailable,
-						ViolatingLeasePreferences: leaseViolating,
-						LessPreferredLeases:       leaseLessPref,
+						Underreplicated: under,
+						Overreplicated:  over,
+						Violating:       violating,
+						Unavailable:     unavailable,
 					})
 				}
 				return ""

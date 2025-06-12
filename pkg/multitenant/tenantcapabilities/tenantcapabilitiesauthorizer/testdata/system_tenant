@@ -24,12 +24,3 @@ ok
 has-capability-for-batch ten=system cmds=(AdminSplit)
 ----
 ok
-
-# service mode check does not apply to the system tenant.
-upsert ten=system can_admin_split=false service=none
-----
-ok
-
-has-capability-for-batch ten=system cmds=(AdminSplit)
-----
-ok

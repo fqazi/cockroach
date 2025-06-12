@@ -240,20 +240,16 @@ func TestValidateCrossSchemaReferences(t *testing.T) {
 }
 
 func TestStripNonExistentRoles(t *testing.T) {
-	badOwnerPrivilege := catpb.NewBaseDatabasePrivilegeDescriptor(username.MakeSQLUsernameFromPreNormalizedString("dropped_user"))
-	goodOwnerPrivilege := catpb.NewBaseDatabasePrivilegeDescriptor(username.AdminRoleName())
 	badPrivilege := catpb.NewBaseDatabasePrivilegeDescriptor(username.RootUserName())
 	goodPrivilege := catpb.NewBaseDatabasePrivilegeDescriptor(username.RootUserName())
 	badPrivilege.Users = append(badPrivilege.Users, catpb.UserPrivileges{
 		UserProto: username.TestUserName().EncodeProto(),
 	})
 	tests := []struct {
-		name    string
 		desc    descpb.SchemaDescriptor
 		expDesc descpb.SchemaDescriptor
 	}{
-		{
-			name: "grants reference missing user",
+		{ // 0
 			desc: descpb.SchemaDescriptor{
 				ID:         52,
 				ParentID:   51,
@@ -265,21 +261,6 @@ func TestStripNonExistentRoles(t *testing.T) {
 				ParentID:   51,
 				Name:       "schema1",
 				Privileges: goodPrivilege,
-			},
-		},
-		{
-			name: "missing owner",
-			desc: descpb.SchemaDescriptor{
-				ID:         52,
-				ParentID:   51,
-				Name:       "schema1",
-				Privileges: badOwnerPrivilege,
-			},
-			expDesc: descpb.SchemaDescriptor{
-				ID:         52,
-				ParentID:   51,
-				Name:       "schema1",
-				Privileges: goodOwnerPrivilege,
 			},
 		},
 	}

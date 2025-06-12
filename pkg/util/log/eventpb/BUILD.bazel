@@ -36,6 +36,7 @@ go_test(
     name = "eventpb_test",
     size = "small",
     srcs = ["event_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":eventpb"],
     deps = [
         "//pkg/util/log/logpb",
@@ -47,7 +48,6 @@ go_test(
 proto_library(
     name = "eventpb_proto",
     srcs = [
-        "changefeed_events.proto",
         "cluster_events.proto",
         "ddl_events.proto",
         "debug_events.proto",
@@ -94,8 +94,8 @@ genrule(
         {} \
         >$(location eventlog_channels_generated.go)
     """.format(_EVENTPB_PROTO_LOCATIONS),
-    tools = [
-        "//pkg/util/log/eventpb/eventpbgen",
+    exec_tools = [
+        "//pkg/util/log/eventpb/eventpbgen:eventpbgen",
     ],
     visibility = [
         ":__pkg__",
@@ -114,8 +114,8 @@ genrule(
         {} \
         >$(location json_encode_generated.go)
     """.format(_EVENTPB_PROTO_LOCATIONS),
-    tools = [
-        "//pkg/util/log/eventpb/eventpbgen",
+    exec_tools = [
+        "//pkg/util/log/eventpb/eventpbgen:eventpbgen",
     ],
     visibility = [
         ":__pkg__",

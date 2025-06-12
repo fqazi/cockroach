@@ -29,10 +29,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/admission"
@@ -76,16 +74,16 @@ func TestExportCmd(t *testing.T) {
 
 	exportAndSlurpOne := func(
 		t *testing.T, start hlc.Timestamp, mvccFilter kvpb.MVCCFilter, maxResponseSSTBytes int64,
-	) (int, []storage.MVCCKeyValue, kvpb.ResponseHeader) {
+	) ([]string, []storage.MVCCKeyValue, kvpb.ResponseHeader) {
 		res, pErr := export(t, start, mvccFilter, maxResponseSSTBytes)
 		if pErr != nil {
 			t.Fatalf("%+v", pErr)
 		}
 
-		var files int
+		var paths []string
 		var kvs []storage.MVCCKeyValue
 		for _, file := range res.(*kvpb.ExportResponse).Files {
-			files++
+			paths = append(paths, file.Path)
 			iterOpts := storage.IterOptions{
 				KeyTypes:   storage.IterKeyTypePointsOnly,
 				LowerBound: keys.LocalMax,
@@ -116,13 +114,13 @@ func TestExportCmd(t *testing.T) {
 			}
 		}
 
-		return files, kvs, res.(*kvpb.ExportResponse).Header()
+		return paths, kvs, res.(*kvpb.ExportResponse).Header()
 	}
 	type ExportAndSlurpResult struct {
 		end                      hlc.Timestamp
-		mvccLatestFiles          int
+		mvccLatestFiles          []string
 		mvccLatestKVs            []storage.MVCCKeyValue
-		mvccAllFiles             int
+		mvccAllFiles             []string
 		mvccAllKVs               []storage.MVCCKeyValue
 		mvccLatestResponseHeader kvpb.ResponseHeader
 		mvccAllResponseHeader    kvpb.ResponseHeader
@@ -143,9 +141,9 @@ func TestExportCmd(t *testing.T) {
 		mvccLatestFilesLen int, mvccLatestKVsLen int, mvccAllFilesLen int, mvccAllKVsLen int,
 	) {
 		t.Helper()
-		require.Equal(t, res.mvccLatestFiles, mvccLatestFilesLen, "unexpected files in latest export")
+		require.Len(t, res.mvccLatestFiles, mvccLatestFilesLen, "unexpected files in latest export")
 		require.Len(t, res.mvccLatestKVs, mvccLatestKVsLen, "unexpected kvs in latest export")
-		require.Equal(t, res.mvccAllFiles, mvccAllFilesLen, "unexpected files in all export")
+		require.Len(t, res.mvccAllFiles, mvccAllFilesLen, "unexpected files in all export")
 		require.Len(t, res.mvccAllKVs, mvccAllKVsLen, "unexpected kvs in all export")
 	}
 
@@ -429,11 +427,6 @@ func TestExportRequestWithCPULimitResumeSpans(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	// This test runs into overload issues when run with the {race, deadlock}
-	// detector using remote execution.
-	skip.UnderRace(t)
-	skip.UnderDeadlock(t)
-
 	ctx := context.Background()
 	rng, _ := randutil.NewTestRand()
 
@@ -544,7 +537,7 @@ func exportUsingGoIterator(
 		return nil, nil
 	}
 
-	iter, err := storage.NewMVCCIncrementalIterator(ctx, reader, storage.MVCCIncrementalIterOptions{
+	iter, err := storage.NewMVCCIncrementalIterator(reader, storage.MVCCIncrementalIterOptions{
 		EndKey:    endKey,
 		StartTime: startTime,
 		EndTime:   endTime,
@@ -774,7 +767,7 @@ func TestRandomKeyAndTimestampExport(t *testing.T) {
 	st := cluster.MakeTestingClusterSettings()
 	mkEngine := func(t *testing.T) (e storage.Engine, cleanup func()) {
 		dir, cleanupDir := testutils.TempDir(t)
-		e, err := storage.Open(ctx, fs.MustInitPhysicalTestingEnv(dir), st, storage.CacheSize(0))
+		e, err := storage.Open(ctx, storage.Filesystem(dir), st, storage.CacheSize(0))
 		if err != nil {
 			t.Fatal(err)
 		}

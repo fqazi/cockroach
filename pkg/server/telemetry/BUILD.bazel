@@ -12,10 +12,8 @@ go_library(
         "//pkg/sql/pgwire/pgcode",
         "//pkg/sql/pgwire/pgerror",
         "//pkg/util/metric",
-        "//pkg/util/metric/aggmetric",
         "//pkg/util/syncutil",
         "@com_github_cockroachdb_errors//:errors",
-        "@com_github_prometheus_client_model//go",
     ],
 )
 
@@ -23,6 +21,7 @@ go_test(
     name = "telemetry_test",
     size = "small",
     srcs = ["features_test.go"],
+    args = ["-test.timeout=55s"],
     deps = [
         ":telemetry",
         "//pkg/util/metric",

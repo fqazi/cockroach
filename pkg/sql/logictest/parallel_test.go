@@ -172,7 +172,7 @@ func (t *parallelTest) setup(ctx context.Context, spec *parTestSpec) {
 		mode := sessiondatapb.DistSQLOff
 		st := server.ClusterSettings()
 		st.Manual.Store(true)
-		sql.DistSQLClusterExecMode.Override(ctx, &st.SV, mode)
+		sql.DistSQLClusterExecMode.Override(ctx, &st.SV, int64(mode))
 		// Disable automatic stats - they can interfere with the test shutdown.
 		stats.AutomaticStatisticsClusterMode.Override(ctx, &st.SV, false)
 		stats.UseStatisticsOnSystemTables.Override(ctx, &st.SV, false)
@@ -225,7 +225,6 @@ func TestParallel(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
 	skip.UnderRace(t, "takes >1 min under race")
-	skip.UnderDeadlock(t, "too slow")
 
 	glob := *paralleltestdata
 	paths, err := filepath.Glob(glob)

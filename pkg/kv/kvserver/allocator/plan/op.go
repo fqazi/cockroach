@@ -53,8 +53,9 @@ func (o AllocationTransferLeaseOp) ApplyImpact(storepool storepool.AllocatorStor
 // replicas txn.
 type AllocationChangeReplicasOp struct {
 	Usage             allocator.RangeUsageInfo
-	LeaseholderStore  roachpb.StoreID
+	lhStore           roachpb.StoreID
 	Chgs              kvpb.ReplicationChanges
+	Priority          kvserverpb.SnapshotRequest_Priority
 	AllocatorPriority float64
 	Reason            kvserverpb.RangeLogEventReason
 	Details           string
@@ -66,7 +67,7 @@ var _ AllocationOp = &AllocationChangeReplicasOp{}
 // operation includes the leaseholder store.
 func (o AllocationChangeReplicasOp) LHBeingRemoved() bool {
 	for _, chg := range o.Chgs.VoterRemovals() {
-		if chg.StoreID == o.LeaseholderStore {
+		if chg.StoreID == o.lhStore {
 			return true
 		}
 	}

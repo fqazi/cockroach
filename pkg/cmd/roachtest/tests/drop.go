@@ -30,14 +30,16 @@ func registerDrop(r registry.Registry) {
 	// rows). Next, it issues a `DROP` for the whole database, and sets the GC TTL
 	// to one second.
 	runDrop := func(ctx context.Context, t test.Test, c cluster.Cluster, warehouses, nodes int) {
+		c.Put(ctx, t.DeprecatedWorkload(), "./workload", c.Range(1, nodes))
 		settings := install.MakeClusterSettings()
 		settings.Env = append(settings.Env, "COCKROACH_MEMPROF_INTERVAL=15s")
-		c.Start(ctx, t.L(), option.DefaultStartOpts(), settings)
+		c.Start(ctx, t.L(), option.DefaultStartOpts(), settings, c.Range(1, nodes))
 
-		m := c.NewMonitor(ctx, c.All())
+		m := c.NewMonitor(ctx, c.Range(1, nodes))
 		m.Go(func(ctx context.Context) error {
 			t.WorkerStatus("importing TPCC fixture")
-			c.Run(ctx, option.WithNodes(c.Node(1)), tpccImportCmd("", warehouses, "{pgurl:1}"))
+
+			c.Run(ctx, c.Node(1), tpccImportCmd(warehouses, "{pgurl:1}"))
 
 			// Don't open the DB connection until after the data has been imported.
 			// Otherwise the ALTER TABLE query below might fail to find the
@@ -143,7 +145,7 @@ func registerDrop(r registry.Registry) {
 			if !allNodesSpaceCleared {
 				sizeReport += fmt.Sprintf("disk space usage has not dropped below %s on all nodes.",
 					humanizeutil.IBytes(int64(maxSizeBytes)))
-				t.Fatal(sizeReport)
+				t.Fatalf(sizeReport)
 			}
 
 			return nil

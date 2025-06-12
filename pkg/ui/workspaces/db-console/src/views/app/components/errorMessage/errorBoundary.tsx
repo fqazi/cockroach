@@ -5,7 +5,6 @@
 
 import React, { ErrorInfo } from "react";
 import Helmet from "react-helmet";
-
 import "./errorMessage.styl";
 import SleepyMoonImg from "assets/sleepy-moon.svg";
 
@@ -37,11 +36,8 @@ export default class ErrorBoundary extends React.Component<
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     // Console.error for developer visibility as well as production logging.
-    // eslint-disable-next-line no-console
     console.error("[ErrorBoundary::componentDidCatch] error = ", error);
-    // eslint-disable-next-line no-console
     console.error("[ErrorBoundary::componentDidCatch] errorInfo = ", errorInfo);
-    // eslint-disable-next-line no-console
     console.log("children = ", this.props.children);
     this.props.onCatch && this.props.onCatch(error, errorInfo);
   }

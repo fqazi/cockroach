@@ -67,12 +67,10 @@ func init() {
 			from.Node.AttrEq(screl.CurrentStatus, t.From()),
 			to.Node.AttrEq(screl.CurrentStatus, t.To()),
 			descriptorIsNotBeingDropped(from.El),
-			// Make sure to join a data element to confirm that data exists.
+			// Make sure to join a data element o confirm that data exists.
 			descriptorData.Type((*scpb.TableData)(nil)),
-			descriptorData.JoinTargetNode(),
-			descriptorData.CurrentStatus(scpb.Status_PUBLIC),
+			descriptorData.JoinTarget(),
 			descriptorData.DescIDEq(descID),
-			descriptorDataIsNotBeingAdded(descID),
 		}
 		if len(prePrevStatuses) > 0 {
 			clauses = append(clauses,
@@ -114,12 +112,8 @@ func init() {
 			addRules(el, scpb.ToPublic)
 		}
 		if opgen.HasTransient(el) {
-			addRules(el, scpb.TransientAbsent)
+			addRules(el, scpb.Transient)
 		}
-		if opgen.HasTransientPublic(el) {
-			addRules(el, scpb.TransientPublic)
-		}
-
 		addRules(el, scpb.ToAbsent) // every element has ToAbsent
 		return nil
 	})

@@ -58,38 +58,42 @@ func markIndexGCed(
 // initDetailsAndProgress sets up the job progress if not already populated and
 // validates that the job details is properly formatted.
 func initDetailsAndProgress(
-	ctx context.Context, execCfg *sql.ExecutorConfig, job *jobs.Job,
+	ctx context.Context, execCfg *sql.ExecutorConfig, jobID jobspb.JobID,
 ) (*jobspb.SchemaChangeGCDetails, *jobspb.SchemaChangeGCProgress, error) {
 	var details jobspb.SchemaChangeGCDetails
 	var progress *jobspb.SchemaChangeGCProgress
+	var job *jobs.Job
 	if err := execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		return job.WithTxn(txn).Update(ctx, func(txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
-			details = *md.Payload.GetSchemaChangeGC()
-			progress = md.Progress.GetSchemaChangeGC()
-			if err := validateDetails(&details); err != nil {
-				return err
-			}
-			if initializeProgress(&details, progress) {
-				if err := md.CheckRunningOrReverting(); err != nil {
-					return err
-				}
-				md.Progress.Details = jobspb.WrapProgressDetails(*progress)
-				ju.UpdateProgress(md.Progress)
-			}
-			return nil
-		})
+		var err error
+		job, err = execCfg.JobRegistry.LoadJobWithTxn(ctx, jobID, txn)
+		if err != nil {
+			return err
+		}
+		details = job.Details().(jobspb.SchemaChangeGCDetails)
+		jobProgress := job.Progress()
+		progress = jobProgress.GetSchemaChangeGC()
+		return nil
 	}); err != nil {
 		return nil, nil, err
 	}
-
+	if err := validateDetails(&details); err != nil {
+		return nil, nil, err
+	}
+	if err := initializeProgress(ctx, execCfg, jobID, &details, progress); err != nil {
+		return nil, nil, err
+	}
 	return &details, progress, nil
 }
 
 // initializeProgress converts the details provided into a progress payload that
 // will be updated as the elements that need to be GC'd get processed.
 func initializeProgress(
-	details *jobspb.SchemaChangeGCDetails, progress *jobspb.SchemaChangeGCProgress,
-) bool {
+	ctx context.Context,
+	execCfg *sql.ExecutorConfig,
+	jobID jobspb.JobID,
+	details *jobspb.SchemaChangeGCDetails,
+	progress *jobspb.SchemaChangeGCProgress,
+) error {
 	var update bool
 	if details.Tenant != nil && progress.Tenant == nil {
 		progress.Tenant = &jobspb.SchemaChangeGCProgress_TenantProgress{
@@ -111,7 +115,19 @@ func initializeProgress(
 			})
 		}
 	}
-	return update
+
+	if update {
+		if err := execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+			job, err := execCfg.JobRegistry.LoadJobWithTxn(ctx, jobID, txn)
+			if err != nil {
+				return err
+			}
+			return job.WithTxn(txn).SetProgress(ctx, *progress)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Check if we are done GC'ing everything.
@@ -133,9 +149,9 @@ func isDoneGC(progress *jobspb.SchemaChangeGCProgress) bool {
 	return true
 }
 
-// statusGC generates a status string which always remains under
+// runningStatusGC generates a RunningStatus string which always remains under
 // a certain size, given any progress struct.
-func statusGC(progress *jobspb.SchemaChangeGCProgress) jobs.StatusMessage {
+func runningStatusGC(progress *jobspb.SchemaChangeGCProgress) jobs.RunningStatus {
 	var anyWaitingForMVCCGC bool
 	maybeSetAnyDeletedOrWaitingForMVCCGC := func(status jobspb.SchemaChangeGCProgress_Status) {
 		switch status {
@@ -204,11 +220,11 @@ func statusGC(progress *jobspb.SchemaChangeGCProgress) jobs.StatusMessage {
 	switch {
 	// `flag` not set implies we're not GCing anything.
 	case !flag && anyWaitingForMVCCGC:
-		return sql.StatusWaitingForMVCCGC
+		return sql.RunningStatusWaitingForMVCCGC
 	case !flag:
-		return sql.StatusWaitingGC // legacy status
+		return sql.RunningStatusWaitingGC // legacy status
 	default:
-		return jobs.StatusMessage(b.String())
+		return jobs.RunningStatus(b.String())
 	}
 }
 
@@ -253,24 +269,30 @@ func validateDetails(details *jobspb.SchemaChangeGCDetails) error {
 func persistProgress(
 	ctx context.Context,
 	execCfg *sql.ExecutorConfig,
-	job *jobs.Job,
+	jobID jobspb.JobID,
 	progress *jobspb.SchemaChangeGCProgress,
-	status jobs.StatusMessage,
+	runningStatus jobs.RunningStatus,
 ) {
 	if err := execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		return job.WithTxn(txn).Update(ctx, func(txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
-			if err := md.CheckRunningOrReverting(); err != nil {
-				return err
-			}
-			md.Progress.StatusMessage = string(status)
-			md.Progress.Details = jobspb.WrapProgressDetails(*progress)
-			ju.UpdateProgress(md.Progress)
-			return nil
+		job, err := execCfg.JobRegistry.LoadJobWithTxn(ctx, jobID, txn)
+		if err != nil {
+			return err
+		}
+		if err := job.WithTxn(txn).SetProgress(ctx, *progress); err != nil {
+			return err
+		}
+		log.Infof(ctx, "updated progress payload: %+v", progress)
+		err = job.WithTxn(txn).RunningStatus(ctx, func(_ context.Context, _ jobspb.Details) (jobs.RunningStatus, error) {
+			return runningStatus, nil
 		})
+		if err != nil {
+			return err
+		}
+		log.Infof(ctx, "updated running status: %+v", runningStatus)
+		return nil
 	}); err != nil {
 		log.Warningf(ctx, "failed to update job's progress payload or running status err: %+v", err)
 	}
-	log.Infof(ctx, "updated progress status: %s, payload: %+v", status, progress)
 }
 
 // getDropTimes returns the data stored in details as a map for convenience.

@@ -76,7 +76,7 @@ func (p synthetic) NewBuilder() catalog.DescriptorBuilder {
 		"%s schema cannot create a builder", p.kindName())
 	return nil // unreachable
 }
-func (p synthetic) GetReferencedDescIDs(catalog.ValidationLevel) (catalog.DescriptorIDSet, error) {
+func (p synthetic) GetReferencedDescIDs() (catalog.DescriptorIDSet, error) {
 	return catalog.DescriptorIDSet{}, nil
 }
 func (p synthetic) ValidateSelf(_ catalog.ValidationErrorAccumulator) {
@@ -114,7 +114,7 @@ func (p synthetic) ConcurrentSchemaChangeJobIDs() []catpb.JobID {
 // SkipNamespace implements the descriptor interface.
 // We never store synthetic descriptors.
 func (p synthetic) SkipNamespace() bool {
-	return p.SchemaKind() != catalog.SchemaTemporary
+	return true
 }
 
 // GetObjectType implements the Object interface.
@@ -149,17 +149,12 @@ func (p synthetic) ForEachUDTDependentForHydration(fn func(t *types.T) error) er
 	return nil
 }
 
-// MaybeRequiresTypeHydration implements the catalog.Descriptor interface.
-func (p synthetic) MaybeRequiresTypeHydration() bool { return false }
-
 func (p synthetic) GetRawBytesInStorage() []byte {
 	return nil
 }
 
 // GetResolvedFuncDefinition implements the SchemaDescriptor interface.
-func (p synthetic) GetResolvedFuncDefinition(
-	context.Context, string,
-) (*tree.ResolvedFunctionDefinition, bool) {
+func (p synthetic) GetResolvedFuncDefinition(name string) (*tree.ResolvedFunctionDefinition, bool) {
 	return nil, false
 }
 

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
@@ -104,7 +103,7 @@ func runPebbleYCSB(
 	// larger value sizes, so we do this once and reuse the same DB state on
 	// all of the workloads.
 	runPebbleCmd(ctx, t, c, fmt.Sprintf(
-		"./pebble bench ycsb %s"+
+		"(./pebble bench ycsb %s"+
 			" --wipe "+
 			" --workload=read=100"+
 			" --concurrency=1"+
@@ -112,7 +111,7 @@ func runPebbleYCSB(
 			" --initial-keys=%d"+
 			" --cache=%d"+
 			" --num-ops=1 && "+
-			"rm -f %s && tar cvPf %s %s",
+			"rm -f %s && tar cvPf %s %s) > init.log 2>&1",
 		benchDir, size, initialKeys, cache, dataTar, dataTar, benchDir))
 
 	for _, workload := range workloads {
@@ -159,7 +158,7 @@ func runPebbleYCSB(
 // runPebbleCmd runs the given command on all worker nodes in the test cluster.
 func runPebbleCmd(ctx context.Context, t test.Test, c cluster.Cluster, cmd string) {
 	t.L().PrintfCtx(ctx, "> %s", cmd)
-	err := c.RunE(ctx, option.WithNodes(c.All()), cmd)
+	err := c.RunE(ctx, c.All(), cmd)
 	t.L().Printf("> result: %+v", err)
 	if err := ctx.Err(); err != nil {
 		t.L().Printf("(note: incoming context was canceled: %s", err)

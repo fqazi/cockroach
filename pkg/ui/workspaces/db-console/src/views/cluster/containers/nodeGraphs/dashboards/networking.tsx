@@ -3,13 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { AxisUnits } from "@cockroachlabs/cluster-ui";
 import React from "react";
 
 import LineGraph from "src/views/cluster/components/linegraph";
 import { Axis, Metric } from "src/views/shared/components/metricQuery";
 
 import { GraphDashboardProps, nodeDisplayName } from "./dashboardUtils";
+import { AxisUnits } from "@cockroachlabs/cluster-ui";
 
 export default function (props: GraphDashboardProps) {
   const { nodeIDs, nodeDisplayNameByID, tenantSource } = props;
@@ -177,7 +177,7 @@ export default function (props: GraphDashboardProps) {
     <LineGraph
       title="Unhealthy RPC Connections"
       tooltip={`The number of outgoing connections on each node that are in an
-        unhealthy state.`}
+          unhealthy state.`}
       showMetricsInTooltip={true}
     >
       <Axis label="connections">
@@ -188,82 +188,6 @@ export default function (props: GraphDashboardProps) {
             title={nodeDisplayName(nodeDisplayNameByID, nid)}
             sources={[nid]}
             tenantSource={tenantSource}
-          />
-        ))}
-      </Axis>
-    </LineGraph>,
-
-    <LineGraph
-      title="Proxy requests"
-      tooltip={`The number of proxy attempts each gateway node is initiating.`}
-      showMetricsInTooltip={true}
-    >
-      <Axis label="requests">
-        {nodeIDs.map(nid => (
-          <Metric
-            key={nid}
-            name="cr.node.distsender.rpc.proxy.sent"
-            title={nodeDisplayName(nodeDisplayNameByID, nid)}
-            sources={[nid]}
-            tenantSource={tenantSource}
-            nonNegativeRate
-          />
-        ))}
-      </Axis>
-    </LineGraph>,
-
-    <LineGraph
-      title="Proxy request errors"
-      tooltip={`The number of proxy attempts which resulted in an error.`}
-      showMetricsInTooltip={true}
-    >
-      <Axis label="errors">
-        {nodeIDs.map(nid => (
-          <Metric
-            key={nid}
-            name="cr.node.distsender.rpc.proxy.err"
-            title={nodeDisplayName(nodeDisplayNameByID, nid)}
-            sources={[nid]}
-            tenantSource={tenantSource}
-            nonNegativeRate
-          />
-        ))}
-      </Axis>
-    </LineGraph>,
-
-    <LineGraph
-      title="Proxy forwards"
-      tooltip={`The number of proxy requests each server node is attempting to foward.`}
-      showMetricsInTooltip={true}
-    >
-      <Axis label="requests">
-        {nodeIDs.map(nid => (
-          <Metric
-            key={nid}
-            name="cr.node.distsender.rpc.proxy.forward.sent"
-            title={nodeDisplayName(nodeDisplayNameByID, nid)}
-            sources={[nid]}
-            tenantSource={tenantSource}
-            nonNegativeRate
-          />
-        ))}
-      </Axis>
-    </LineGraph>,
-
-    <LineGraph
-      title="Proxy forward errors"
-      tooltip={`The number of proxy forward attempts which resulted in an error.`}
-      showMetricsInTooltip={true}
-    >
-      <Axis label="errors">
-        {nodeIDs.map(nid => (
-          <Metric
-            key={nid}
-            name="cr.node.distsender.rpc.proxy.forward.err"
-            title={nodeDisplayName(nodeDisplayNameByID, nid)}
-            sources={[nid]}
-            tenantSource={tenantSource}
-            nonNegativeRate
           />
         ))}
       </Axis>

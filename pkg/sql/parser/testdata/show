@@ -327,28 +327,12 @@ SHOW TYPES -- literals removed
 SHOW TYPES -- identifiers removed
 
 parse
-SHOW TYPES WITH COMMENT
-----
-SHOW TYPES WITH COMMENT
-SHOW TYPES WITH COMMENT -- fully parenthesized
-SHOW TYPES WITH COMMENT -- literals removed
-SHOW TYPES WITH COMMENT -- identifiers removed
-
-parse
 EXPLAIN SHOW TYPES
 ----
 EXPLAIN SHOW TYPES
 EXPLAIN SHOW TYPES -- fully parenthesized
 EXPLAIN SHOW TYPES -- literals removed
 EXPLAIN SHOW TYPES -- identifiers removed
-
-parse
-EXPLAIN SHOW TYPES WITH COMMENT
-----
-EXPLAIN SHOW TYPES WITH COMMENT
-EXPLAIN SHOW TYPES WITH COMMENT -- fully parenthesized
-EXPLAIN SHOW TYPES WITH COMMENT -- literals removed
-EXPLAIN SHOW TYPES WITH COMMENT -- identifiers removed
 
 parse
 SHOW SCHEMAS
@@ -373,22 +357,6 @@ SHOW SCHEMAS FROM a
 SHOW SCHEMAS FROM a -- fully parenthesized
 SHOW SCHEMAS FROM a -- literals removed
 SHOW SCHEMAS FROM _ -- identifiers removed
-
-parse
-EXPLAIN SHOW SCHEMAS WITH COMMENT
-----
-EXPLAIN SHOW SCHEMAS WITH COMMENT
-EXPLAIN SHOW SCHEMAS WITH COMMENT -- fully parenthesized
-EXPLAIN SHOW SCHEMAS WITH COMMENT -- literals removed
-EXPLAIN SHOW SCHEMAS WITH COMMENT -- identifiers removed
-
-parse
-SHOW SCHEMAS FROM a WITH COMMENT
-----
-SHOW SCHEMAS FROM a WITH COMMENT
-SHOW SCHEMAS FROM a WITH COMMENT -- fully parenthesized
-SHOW SCHEMAS FROM a WITH COMMENT -- literals removed
-SHOW SCHEMAS FROM _ WITH COMMENT -- identifiers removed
 
 parse
 SHOW SEQUENCES
@@ -1340,36 +1308,12 @@ SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE d.t -- literals removed
 SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE _._ -- identifiers removed
 
 parse
-SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE d.t WITH START TIMESTAMP = '132412341234.000000', EXCLUDE COLUMNS = ('crdb_original_replication_timestamp', 'other_column')
-----
-SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE d.t WITH OPTIONS (START TIMESTAMP = '132412341234.000000', EXCLUDE COLUMNS = ('crdb_original_replication_timestamp', 'other_column')) -- normalized!
-SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE d.t WITH OPTIONS (START TIMESTAMP = ('132412341234.000000'), EXCLUDE COLUMNS = (('crdb_original_replication_timestamp'), ('other_column'))) -- fully parenthesized
-SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE d.t WITH OPTIONS (START TIMESTAMP = '_', EXCLUDE COLUMNS = ('_', '_')) -- literals removed
-SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE _._ WITH OPTIONS (START TIMESTAMP = '132412341234.000000', EXCLUDE COLUMNS = ('crdb_original_replication_timestamp', 'other_column')) -- identifiers removed
-
-parse
 SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER t
 ----
 SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER t
 SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER (t) -- fully parenthesized
 SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER t -- literals removed
 SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER _ -- identifiers removed
-
-parse
-SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER t WITH START TIMESTAMP = '132412341234.000000'
-----
-SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER t WITH OPTIONS (START TIMESTAMP = '132412341234.000000') -- normalized!
-SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER (t) WITH OPTIONS (START TIMESTAMP = ('132412341234.000000')) -- fully parenthesized
-SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER t WITH OPTIONS (START TIMESTAMP = '_') -- literals removed
-SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER _ WITH OPTIONS (START TIMESTAMP = '132412341234.000000') -- identifiers removed
-
-parse
-SHOW EXPERIMENTAL_FINGERPRINTS FROM TENANT t WITH START TIMESTAMP = '132412341234.000000'
-----
-SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER t WITH OPTIONS (START TIMESTAMP = '132412341234.000000') -- normalized!
-SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER (t) WITH OPTIONS (START TIMESTAMP = ('132412341234.000000')) -- fully parenthesized
-SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER t WITH OPTIONS (START TIMESTAMP = '_') -- literals removed
-SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER _ WITH OPTIONS (START TIMESTAMP = '132412341234.000000') -- identifiers removed
 
 parse
 SHOW ZONE CONFIGURATIONS
@@ -2053,22 +1997,6 @@ SHOW CREATE SECONDARY INDEXES FROM t -- literals removed
 SHOW CREATE SECONDARY INDEXES FROM _ -- identifiers removed
 
 parse
-SHOW LOGICAL REPLICATION JOBS
-----
-SHOW LOGICAL REPLICATION JOBS
-SHOW LOGICAL REPLICATION JOBS -- fully parenthesized
-SHOW LOGICAL REPLICATION JOBS -- literals removed
-SHOW LOGICAL REPLICATION JOBS -- identifiers removed
-
-parse
-SHOW LOGICAL REPLICATION JOBS WITH DETAILS
-----
-SHOW LOGICAL REPLICATION JOBS WITH DETAILS
-SHOW LOGICAL REPLICATION JOBS WITH DETAILS -- fully parenthesized
-SHOW LOGICAL REPLICATION JOBS WITH DETAILS -- literals removed
-SHOW LOGICAL REPLICATION JOBS WITH DETAILS -- identifiers removed
-
-parse
 SHOW VIRTUAL CLUSTER foo
 ----
 SHOW VIRTUAL CLUSTER foo
@@ -2133,154 +2061,36 @@ SHOW VIRTUAL CLUSTER ALL WITH REPLICATION STATUS -- literals removed
 SHOW VIRTUAL CLUSTER ALL WITH REPLICATION STATUS -- identifiers removed
 
 parse
-SHOW VIRTUAL CLUSTER ALL WITH PRIOR REPLICATION DETAILS
+SHOW VIRTUAL CLUSTER foo WITH REPLICATION STATUS, CAPABILITIES
 ----
-SHOW VIRTUAL CLUSTER ALL WITH PRIOR REPLICATION DETAILS
-SHOW VIRTUAL CLUSTER ALL WITH PRIOR REPLICATION DETAILS -- fully parenthesized
-SHOW VIRTUAL CLUSTER ALL WITH PRIOR REPLICATION DETAILS -- literals removed
-SHOW VIRTUAL CLUSTER ALL WITH PRIOR REPLICATION DETAILS -- identifiers removed
+SHOW VIRTUAL CLUSTER foo WITH REPLICATION STATUS, CAPABILITIES
+SHOW VIRTUAL CLUSTER (foo) WITH REPLICATION STATUS, CAPABILITIES -- fully parenthesized
+SHOW VIRTUAL CLUSTER foo WITH REPLICATION STATUS, CAPABILITIES -- literals removed
+SHOW VIRTUAL CLUSTER _ WITH REPLICATION STATUS, CAPABILITIES -- identifiers removed
 
 parse
-SHOW VIRTUAL CLUSTER foo WITH REPLICATION STATUS, PRIOR REPLICATION DETAILS, CAPABILITIES
+SHOW BACKUP 'family' IN ('string', 'placeholder', 'placeholder', 'placeholder', 'string', 'placeholder', 'string', 'placeholder') WITH incremental_location = 'nullif', privileges, debug_dump_metadata_sst
 ----
-SHOW VIRTUAL CLUSTER foo WITH REPLICATION STATUS, PRIOR REPLICATION DETAILS, CAPABILITIES
-SHOW VIRTUAL CLUSTER (foo) WITH REPLICATION STATUS, PRIOR REPLICATION DETAILS, CAPABILITIES -- fully parenthesized
-SHOW VIRTUAL CLUSTER foo WITH REPLICATION STATUS, PRIOR REPLICATION DETAILS, CAPABILITIES -- literals removed
-SHOW VIRTUAL CLUSTER _ WITH REPLICATION STATUS, PRIOR REPLICATION DETAILS, CAPABILITIES -- identifiers removed
+SHOW BACKUP 'family' IN ('*****', '*****', '*****', '*****', '*****', '*****', '*****', '*****') WITH OPTIONS (incremental_location = '*****', privileges, debug_dump_metadata_sst) -- normalized!
+SHOW BACKUP ('family') IN (('*****'), ('*****'), ('*****'), ('*****'), ('*****'), ('*****'), ('*****'), ('*****')) WITH OPTIONS (incremental_location = ('*****'), privileges, debug_dump_metadata_sst) -- fully parenthesized
+SHOW BACKUP '_' IN ('_', '_', '_', '_', '_', '_', '_', '_') WITH OPTIONS (incremental_location = '_', privileges, debug_dump_metadata_sst) -- literals removed
+SHOW BACKUP 'family' IN ('*****', '*****', '*****', '*****', '*****', '*****', '*****', '*****') WITH OPTIONS (incremental_location = '*****', privileges, debug_dump_metadata_sst) -- identifiers removed
+SHOW BACKUP 'family' IN ('string', 'placeholder', 'placeholder', 'placeholder', 'string', 'placeholder', 'string', 'placeholder') WITH OPTIONS (incremental_location = 'nullif', privileges, debug_dump_metadata_sst) -- passwords exposed
 
 parse
-SHOW BACKUP 'family' IN ('string', 'placeholder', 'placeholder', 'placeholder', 'string', 'placeholder', 'string', 'placeholder') WITH incremental_location = 'nullif', privileges
+SHOW BACKUP 'abc' WITH SKIP SIZE
 ----
-SHOW BACKUP 'family' IN ('*****', '*****', '*****', '*****', '*****', '*****', '*****', '*****') WITH OPTIONS (incremental_location = '*****', privileges) -- normalized!
-SHOW BACKUP ('family') IN (('*****'), ('*****'), ('*****'), ('*****'), ('*****'), ('*****'), ('*****'), ('*****')) WITH OPTIONS (incremental_location = ('*****'), privileges) -- fully parenthesized
-SHOW BACKUP '_' IN ('_', '_', '_', '_', '_', '_', '_', '_') WITH OPTIONS (incremental_location = '_', privileges) -- literals removed
-SHOW BACKUP 'family' IN ('*****', '*****', '*****', '*****', '*****', '*****', '*****', '*****') WITH OPTIONS (incremental_location = '*****', privileges) -- identifiers removed
-SHOW BACKUP 'family' IN ('string', 'placeholder', 'placeholder', 'placeholder', 'string', 'placeholder', 'string', 'placeholder') WITH OPTIONS (incremental_location = 'nullif', privileges) -- passwords exposed
+SHOW BACKUP '*****' WITH OPTIONS (skip size) -- normalized!
+SHOW BACKUP ('*****') WITH OPTIONS (skip size) -- fully parenthesized
+SHOW BACKUP '_' WITH OPTIONS (skip size) -- literals removed
+SHOW BACKUP '*****' WITH OPTIONS (skip size) -- identifiers removed
+SHOW BACKUP 'abc' WITH OPTIONS (skip size) -- passwords exposed
 
 parse
-SHOW BACKUP 'abc' IN 'def' WITH SKIP SIZE
+SHOW BACKUP 'abc' WITH NOWAIT
 ----
-SHOW BACKUP 'abc' IN '*****' WITH OPTIONS (skip size) -- normalized!
-SHOW BACKUP ('abc') IN ('*****') WITH OPTIONS (skip size) -- fully parenthesized
-SHOW BACKUP '_' IN '_' WITH OPTIONS (skip size) -- literals removed
-SHOW BACKUP 'abc' IN '*****' WITH OPTIONS (skip size) -- identifiers removed
-SHOW BACKUP 'abc' IN 'def' WITH OPTIONS (skip size) -- passwords exposed
-
-parse
-SHOW BACKUP 'abc' IN 'def' WITH NOWAIT
-----
-SHOW BACKUP 'abc' IN '*****' WITH OPTIONS (skip size) -- normalized!
-SHOW BACKUP ('abc') IN ('*****') WITH OPTIONS (skip size) -- fully parenthesized
-SHOW BACKUP '_' IN '_' WITH OPTIONS (skip size) -- literals removed
-SHOW BACKUP 'abc' IN '*****' WITH OPTIONS (skip size) -- identifiers removed
-SHOW BACKUP 'abc' IN 'def' WITH OPTIONS (skip size) -- passwords exposed
-
-parse
-SHOW DEFAULT SESSION VARIABLES FOR ROLE foo
-----
-SHOW DEFAULT SESSION VARIABLES FOR ROLE foo
-SHOW DEFAULT SESSION VARIABLES FOR ROLE foo -- fully parenthesized
-SHOW DEFAULT SESSION VARIABLES FOR ROLE foo -- literals removed
-SHOW DEFAULT SESSION VARIABLES FOR ROLE _ -- identifiers removed
-
-parse
-SHOW DEFAULT SESSION VARIABLES FOR ROLE ALL
-----
-SHOW DEFAULT SESSION VARIABLES FOR ROLE ALL
-SHOW DEFAULT SESSION VARIABLES FOR ROLE ALL -- fully parenthesized
-SHOW DEFAULT SESSION VARIABLES FOR ROLE ALL -- literals removed
-SHOW DEFAULT SESSION VARIABLES FOR ROLE ALL -- identifiers removed
-
-parse
-SHOW TRIGGERS FROM foo;
-----
-SHOW TRIGGERS FROM foo -- normalized!
-SHOW TRIGGERS FROM foo -- fully parenthesized
-SHOW TRIGGERS FROM foo -- literals removed
-SHOW TRIGGERS FROM _ -- identifiers removed
-
-parse
-SHOW TRIGGERS FROM foo.bar;
-----
-SHOW TRIGGERS FROM foo.bar -- normalized!
-SHOW TRIGGERS FROM foo.bar -- fully parenthesized
-SHOW TRIGGERS FROM foo.bar -- literals removed
-SHOW TRIGGERS FROM _._ -- identifiers removed
-
-error
-SHOW TRIGGER FROM foo;
-----
-at or near "from": syntax error
-DETAIL: source SQL:
-SHOW TRIGGER FROM foo
-             ^
-HINT: try \h SHOW TRIGGERS
-
-error
-SHOW TRIGGERS ON foo;
-----
-at or near "on": syntax error
-DETAIL: source SQL:
-SHOW TRIGGERS ON foo
-              ^
-HINT: try \h SHOW TRIGGERS
-
-error
-SHOW TRIGGERS FOR foo;
-----
-at or near "for": syntax error
-DETAIL: source SQL:
-SHOW TRIGGERS FOR foo
-              ^
-HINT: try \h SHOW TRIGGERS
-
-parse
-SHOW CREATE TRIGGER foo ON bar;
-----
-SHOW CREATE TRIGGER foo ON bar -- normalized!
-SHOW CREATE TRIGGER foo ON bar -- fully parenthesized
-SHOW CREATE TRIGGER foo ON bar -- literals removed
-SHOW CREATE TRIGGER _ ON _ -- identifiers removed
-
-parse
-SHOW CREATE TRIGGER foo ON bar.baz;
-----
-SHOW CREATE TRIGGER foo ON bar.baz -- normalized!
-SHOW CREATE TRIGGER foo ON bar.baz -- fully parenthesized
-SHOW CREATE TRIGGER foo ON bar.baz -- literals removed
-SHOW CREATE TRIGGER _ ON _._ -- identifiers removed
-
-error
-SHOW CREATE TRIGGER foo ON TABLE bar;
-----
-at or near "table": syntax error
-DETAIL: source SQL:
-SHOW CREATE TRIGGER foo ON TABLE bar
-                           ^
-HINT: try \h SHOW CREATE
-
-error
-SHOW CREATE TRIGGER foo FROM bar;
-----
-at or near "from": syntax error
-DETAIL: source SQL:
-SHOW CREATE TRIGGER foo FROM bar
-                        ^
-HINT: try \h SHOW CREATE
-
-error
-SHOW CREATE TRIGGER foo;
-----
-at or near "EOF": syntax error
-DETAIL: source SQL:
-SHOW CREATE TRIGGER foo
-                       ^
-HINT: try \h SHOW CREATE
-
-error
-SHOW CREATE TRIGGERS ON foo;
-----
-at or near "on": syntax error
-DETAIL: source SQL:
-SHOW CREATE TRIGGERS ON foo
-                     ^
+SHOW BACKUP '*****' WITH OPTIONS (skip size) -- normalized!
+SHOW BACKUP ('*****') WITH OPTIONS (skip size) -- fully parenthesized
+SHOW BACKUP '_' WITH OPTIONS (skip size) -- literals removed
+SHOW BACKUP '*****' WITH OPTIONS (skip size) -- identifiers removed
+SHOW BACKUP 'abc' WITH OPTIONS (skip size) -- passwords exposed

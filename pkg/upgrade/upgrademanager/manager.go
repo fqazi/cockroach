@@ -19,10 +19,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfo"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/server/license"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/settingswatcher"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -37,11 +35,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/upgrade/upgradecluster"
 	"github.com/cockroachdb/cockroach/pkg/upgrade/upgradejob"
 	"github.com/cockroachdb/cockroach/pkg/upgrade/upgrades"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/startup"
+	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
@@ -58,7 +55,6 @@ type Manager struct {
 	settings  *cluster.Settings
 	knobs     upgradebase.TestingKnobs
 	clusterID *base.ClusterIDContainer
-	le        *license.Enforcer
 }
 
 // GetUpgrade returns the upgrade associated with this key.
@@ -90,7 +86,6 @@ func NewManager(
 	settings *cluster.Settings,
 	clusterID *base.ClusterIDContainer,
 	testingKnobs *upgradebase.TestingKnobs,
-	le *license.Enforcer,
 ) *Manager {
 	var knobs upgradebase.TestingKnobs
 	if testingKnobs != nil {
@@ -104,7 +99,6 @@ func NewManager(
 		codec:     codec,
 		settings:  settings,
 		clusterID: clusterID,
-		le:        le,
 		knobs:     knobs,
 	}
 }
@@ -120,16 +114,10 @@ func safeToUpgradeTenant(
 	codec keys.SQLCodec,
 	overrides cluster.OverridesInformer,
 	tenantClusterVersion clusterversion.ClusterVersion,
-	tenantInfoAccessor mtinfo.ReadFromTenantInfoAccessor,
 ) (bool, error) {
 	if codec.ForSystemTenant() {
 		// Unconditionally run upgrades for the system tenant.
 		return true, nil
-	}
-	if tenantInfoAccessor != nil {
-		if id, _, _ := tenantInfoAccessor.ReadFromTenantInfo(ctx); id.IsSet() {
-			return false, errors.Newf("reader virtual clusters cannot be upgraded. Instead, drop the current read only virtual cluster, and recreate a new one via ALTER VIRTUAL CLUSTER...")
-		}
 	}
 	// The overrides informer can be nil, but only in a system tenant.
 	if overrides == nil {
@@ -195,7 +183,7 @@ func (m *Manager) RunPermanentUpgrades(ctx context.Context, upToVersion roachpb.
 		permanentUpgrades = append(permanentUpgrades, u)
 	}
 
-	user := username.NodeUserName()
+	user := username.RootUserName()
 
 	if len(permanentUpgrades) == 0 {
 		// If we didn't find any permanent migrations, it must be that a test used
@@ -220,7 +208,7 @@ func (m *Manager) RunPermanentUpgrades(ctx context.Context, upToVersion roachpb.
 	// because upgrades run in order.
 	latest := permanentUpgrades[len(permanentUpgrades)-1]
 	lastVer := latest.Version()
-	enterpriseEnabled := base.CCLDistributionAndEnterpriseEnabled(m.settings)
+	enterpriseEnabled := base.CCLDistributionAndEnterpriseEnabled(m.settings, m.clusterID.Get())
 	lastUpgradeCompleted, err := startup.RunIdempotentWithRetryEx(ctx,
 		m.deps.Stopper.ShouldQuiesce(),
 		"check if migration completed",
@@ -249,6 +237,45 @@ func (m *Manager) RunPermanentUpgrades(ctx context.Context, upToVersion roachpb.
 	}
 
 	for _, u := range permanentUpgrades {
+		// Check whether a 22.2 or older node has ran the old startupmigration
+		// corresponding to this upgrade. If it has, we don't want to run this
+		// upgrade, for two reasons:
+		// 1. Creating a job for this upgrade would be dubious. If the respective
+		//    job were to be adopted by a 22.2 node, that node would fail to find an
+		//    upgrade for the respective version, and would declare the job to be
+		//    successful even though the upgrade didn't run. Even though that would
+		//    technically be OK, since the existence of a 22.2 node running the job
+		//    implies that the startupmigration had been run, it's confusing at the
+		//    very least.
+		// 2. The upgrade can fail if the corresponding startupmigration had already
+		//    run. This is because the upgrade is assuming that the cluster has been
+		//    bootstrapped at the current binary version, with the current schema
+		//    for system tables. See a discussion in upgrade/doc.go about why that
+		//    would be.
+		//
+		// TODO(andrei): Get rid of this once compatibility with 22.2 is not necessary.
+		startupMigrationAlreadyRan, err := checkOldStartupMigrationRan(
+			ctx, m.deps.Stopper, u.V22_2StartupMigrationName(), m.deps.DB.KV(), m.codec)
+		if err != nil {
+			return err
+		}
+		if startupMigrationAlreadyRan {
+			log.Infof(ctx,
+				"skipping permanent upgrade for v%s because the corresponding startupmigration "+
+					"was already run by a v22.2 or older node",
+				u.Version())
+			// Mark the upgrade as completed so that we can get rid of this logic when
+			// compatibility with 22.2 is no longer necessary.
+			if err := startup.RunIdempotentWithRetry(ctx,
+				m.deps.Stopper.ShouldQuiesce(),
+				"mark upgrade complete", func(ctx context.Context) (err error) {
+					return migrationstable.MarkMigrationCompletedIdempotent(ctx, m.ie, u.Version())
+				}); err != nil {
+				return err
+			}
+			continue
+		}
+
 		log.Infof(ctx, "running permanent upgrade for version %s", u.Version())
 		if err := m.runMigration(ctx, u, user, u.Version(), !m.knobs.DontUseJobs); err != nil {
 			return err
@@ -257,18 +284,40 @@ func (m *Manager) RunPermanentUpgrades(ctx context.Context, upToVersion roachpb.
 	return nil
 }
 
+// Check whether this is a cluster upgraded from a pre-23.1 version and the
+// old startupmigration with the given name has run. If it did, the
+// corresponding upgrade should not run.
+func checkOldStartupMigrationRan(
+	ctx context.Context, stopper *stop.Stopper, migrationName string, db *kv.DB, codec keys.SQLCodec,
+) (bool, error) {
+	if migrationName == "" {
+		return false, nil
+	}
+	migrationKey := append(codec.StartupMigrationKeyPrefix(), roachpb.RKey(migrationName)...)
+	kv, err := startup.RunIdempotentWithRetryEx(ctx,
+		stopper.ShouldQuiesce(),
+		"check old startup migration",
+		func(ctx context.Context) (kv kv.KeyValue, err error) {
+			return db.Get(ctx, migrationKey)
+		})
+	if err != nil {
+		return false, err
+	}
+	return kv.Exists(), nil
+}
+
 // runPermanentMigrationsWithoutJobsForTests runs all permanent migrations up to
-// VBootstrapMax. They are run without jobs, in order to minimize the side
+// VPrimordialMax. They are run without jobs, in order to minimize the side
 // effects left on cluster.
 //
-// NOTE: VBootstrapMax was chosen arbitrarily, since we don't have a great way
+// NOTE: VPrimordialMax was chosen arbitrarily, since we don't have a great way
 // to tell which migrations are needed and which aren't on the code path leading
 // here.
 func (m *Manager) runPermanentMigrationsWithoutJobsForTests(
 	ctx context.Context, user username.SQLUsername,
 ) error {
 	log.Infof(ctx, "found test configuration that eliminated all upgrades; running permanent upgrades anyway")
-	vers := clusterversion.ListBetween(roachpb.Version{}, clusterversion.VBootstrapMax.Version())
+	vers := clusterversion.ListBetween(roachpb.Version{}, clusterversion.ByKey(clusterversion.VPrimordialMax))
 	for _, v := range vers {
 		upg, exists := upgrades.GetUpgrade(v)
 		if !exists || !upg.Permanent() {
@@ -324,8 +373,6 @@ func (m *Manager) Migrate(
 		return nil
 	}
 
-	rng, _ := randutil.NewPseudoRand()
-
 	// Validation functions for updating the settings table. We use this in the
 	// tenant upgrade case to ensure that no new SQL servers were started
 	// mid-upgrade, with versions that are incompatible with the attempted
@@ -338,18 +385,13 @@ func (m *Manager) Migrate(
 	}
 
 	// Determine whether it's safe to perform the upgrade for secondary tenants.
-	if safe, err := safeToUpgradeTenant(ctx, m.codec, m.settings.OverridesInformer, from, m.deps.TenantInfoAccessor); !safe {
+	if safe, err := safeToUpgradeTenant(ctx, m.codec, m.settings.OverridesInformer, from); !safe {
 		return err
 	}
 
 	clusterVersions := m.listBetween(from.Version, to.Version)
 	log.Infof(ctx, "migrating cluster from %s to %s (stepping through %s)", from, to, clusterVersions)
 	if len(clusterVersions) == 0 {
-		if buildutil.CrdbTestBuild && from.Version != to.Version {
-			// This suggests a test is using bogus versions and didn't set up
-			// ListBetweenOverride properly.
-			panic(errors.AssertionFailedf("no valid versions in (%s, %s]", from.Version, to.Version))
-		}
 		return nil
 	}
 
@@ -472,7 +514,7 @@ func (m *Manager) Migrate(
 
 		cv := clusterversion.ClusterVersion{Version: clusterVersion}
 
-		fenceVersion := cv.FenceVersion()
+		fenceVersion := upgrade.FenceVersionFor(ctx, cv)
 		if err := bumpClusterVersion(ctx, m.deps.Cluster, fenceVersion); err != nil {
 			return err
 		}
@@ -528,25 +570,7 @@ func (m *Manager) Migrate(
 		// Run the actual upgrade, if any.
 		mig, exists := m.GetUpgrade(clusterVersion)
 		if exists {
-			for {
-				if err := m.runMigration(ctx, mig, user, clusterVersion, !m.knobs.DontUseJobs); err != nil {
-					return err
-				}
-				if !buildutil.CrdbTestBuild || rng.Float64() < 0.5 {
-					// To ensure that migrations are idempotent we'll run each
-					// migration random number of times in test builds.
-					break
-				}
-			}
-		}
-
-		// Bump the version of the system database schema if this is the final
-		// version for a release.
-		// NB: The final version never has an associated migration, which is why we
-		// bump the SystemDatabaseSchemaVersion here; we cannot do it inside of
-		// runMigration.
-		if clusterVersion.Equal(clusterversion.Latest.Version()) && clusterVersion.IsFinal() {
-			if err := upgrade.BumpSystemDatabaseSchemaVersion(ctx, cv.Version, m.deps.DB); err != nil {
+			if err := m.runMigration(ctx, mig, user, clusterVersion, !m.knobs.DontUseJobs); err != nil {
 				return err
 			}
 		}
@@ -655,7 +679,6 @@ func (m *Manager) runMigration(
 		// since this code doesn't do retries and we also don't want to complicate
 		// test only code.
 		ctx := startup.WithoutChecks(ctx)
-		v := mig.Version()
 		alreadyCompleted, err := migrationstable.CheckIfMigrationCompleted(
 			ctx, version, nil /* txn */, m.ie, false /* enterpriseEnabled */, migrationstable.ConsistentRead,
 		)
@@ -665,38 +688,29 @@ func (m *Manager) runMigration(
 
 		switch upg := mig.(type) {
 		case *upgrade.SystemUpgrade:
-			if err := upg.Run(ctx, v, m.SystemDeps()); err != nil {
+			if err := upg.Run(ctx, mig.Version(), m.SystemDeps()); err != nil {
 				return err
 			}
 		case *upgrade.TenantUpgrade:
 			// The TenantDeps used here are incomplete, but enough for the "permanent
 			// upgrades" that run under this testing knob.
-			if err := upg.Run(ctx, v, upgrade.TenantDeps{
-				KVDB:               m.deps.DB.KV(),
-				DB:                 m.deps.DB,
-				Codec:              m.codec,
-				Settings:           m.settings,
-				LeaseManager:       m.lm,
-				InternalExecutor:   m.ie,
-				JobRegistry:        m.jr,
-				TestingKnobs:       &m.knobs,
-				ClusterID:          m.clusterID.Get(),
-				LicenseEnforcer:    m.le,
-				TenantInfoAccessor: m.deps.TenantInfoAccessor,
+			if err := upg.Run(ctx, mig.Version(), upgrade.TenantDeps{
+				KVDB:             m.deps.DB.KV(),
+				DB:               m.deps.DB,
+				Codec:            m.codec,
+				Settings:         m.settings,
+				LeaseManager:     m.lm,
+				InternalExecutor: m.ie,
+				JobRegistry:      m.jr,
+				TestingKnobs:     &m.knobs,
+				ClusterID:        m.clusterID.Get(),
 			}); err != nil {
 				return err
 			}
 		}
 
-		if err := migrationstable.MarkMigrationCompleted(ctx, m.ie, v); err != nil {
+		if err := migrationstable.MarkMigrationCompleted(ctx, m.ie, mig.Version()); err != nil {
 			return err
-		}
-		// Bump the version of the system database schema whenever we run a
-		// non-permanent migration.
-		if !mig.Permanent() {
-			if err := upgrade.BumpSystemDatabaseSchemaVersion(ctx, v, m.deps.DB); err != nil {
-				return err
-			}
 		}
 		return nil
 	} else {
@@ -720,14 +734,14 @@ func (m *Manager) runMigration(
 			return err
 		}
 		if alreadyExisting {
-			log.Infof(ctx, "waiting for %s", redact.Safe(mig.Name()))
+			log.Infof(ctx, "waiting for %s", mig.Name())
 			return startup.RunIdempotentWithRetry(ctx,
 				m.deps.Stopper.ShouldQuiesce(),
 				"upgrade wait jobs", func(ctx context.Context) error {
 					return m.jr.WaitForJobs(ctx, []jobspb.JobID{id})
 				})
 		} else {
-			log.Infof(ctx, "running %s", redact.Safe(mig.Name()))
+			log.Infof(ctx, "running %s", mig.Name())
 			return startup.RunIdempotentWithRetry(ctx,
 				m.deps.Stopper.ShouldQuiesce(),
 				"upgrade run jobs", func(ctx context.Context) error {
@@ -742,7 +756,7 @@ func (m *Manager) getOrCreateMigrationJob(
 ) (alreadyCompleted, alreadyExisting bool, jobID jobspb.JobID, _ error) {
 	newJobID := m.jr.MakeJobID()
 	if err := m.deps.DB.Txn(ctx, func(ctx context.Context, txn isql.Txn) (err error) {
-		enterpriseEnabled := base.CCLDistributionAndEnterpriseEnabled(m.settings)
+		enterpriseEnabled := base.CCLDistributionAndEnterpriseEnabled(m.settings, m.clusterID.Get())
 		alreadyCompleted, err = migrationstable.CheckIfMigrationCompleted(
 			ctx, version, txn.KV(), txn, enterpriseEnabled, migrationstable.ConsistentRead,
 		)
@@ -767,6 +781,19 @@ func (m *Manager) getOrCreateMigrationJob(
 }
 
 const (
+	preJobInfoTableQuery = `
+SELECT id, status
+FROM (
+     SELECT id, status,
+     crdb_internal.pb_to_json(
+	'cockroach.sql.jobs.jobspb.Payload',
+	payload,
+	false -- emit_defaults
+     ) AS pl
+     FROM system.jobs
+     WHERE status IN ` + jobs.NonTerminalStatusTupleString + `
+)
+WHERE ((pl->'migration')->'clusterVersion') = $1::JSONB`
 	// PostJobInfoQuery avoids the crdb_internal.system_jobs table
 	// to avoid expensive full scans.
 	// Exported for testing.
@@ -775,7 +802,7 @@ WITH
 running_migration_jobs AS (
     SELECT id, status
     FROM system.jobs
-    WHERE status IN ` + jobs.NonTerminalStateTupleString + `
+    WHERE status IN ` + jobs.NonTerminalStatusTupleString + `
     AND job_type = 'MIGRATION'
 ),
 payloads AS (
@@ -798,7 +825,12 @@ func (m *Manager) getRunningMigrationJob(
 	// Wrap the version into a ClusterVersion so that the JSON looks like what the
 	// Payload proto has inside.
 	cv := clusterversion.ClusterVersion{Version: version}
-	query := PostJobInfoTableQuery
+	var query string
+	if m.settings.Version.IsActive(ctx, clusterversion.V23_1JobInfoTableIsBackfilled) {
+		query = PostJobInfoTableQuery
+	} else {
+		query = preJobInfoTableQuery
+	}
 	jsonMsg, err := protoreflect.MessageToJSON(&cv, protoreflect.FmtFlags{EmitDefaults: false})
 	if err != nil {
 		return false, 0, errors.Wrap(err, "failed to marshal version to JSON")
@@ -807,8 +839,8 @@ func (m *Manager) getRunningMigrationJob(
 	if err != nil {
 		return false, 0, err
 	}
-	parseRow := func(row tree.Datums) (id jobspb.JobID, status jobs.State) {
-		return jobspb.JobID(*row[0].(*tree.DInt)), jobs.State(*row[1].(*tree.DString))
+	parseRow := func(row tree.Datums) (id jobspb.JobID, status jobs.Status) {
+		return jobspb.JobID(*row[0].(*tree.DInt)), jobs.Status(*row[1].(*tree.DString))
 	}
 	switch len(rows) {
 	case 0:
@@ -835,14 +867,7 @@ func (m *Manager) getRunningMigrationJob(
 
 func (m *Manager) listBetween(from roachpb.Version, to roachpb.Version) []roachpb.Version {
 	if m.knobs.ListBetweenOverride != nil {
-		result := m.knobs.ListBetweenOverride(from, to)
-		// Sanity check result to catch invalid overrides.
-		for _, v := range result {
-			if v.LessEq(from) || to.Less(v) {
-				panic(fmt.Sprintf("ListBetweenOverride(%s, %s) returned invalid version %s", from, to, v))
-			}
-		}
-		return result
+		return m.knobs.ListBetweenOverride(from, to)
 	}
 	return clusterversion.ListBetween(from, to)
 }
@@ -860,16 +885,13 @@ func (m *Manager) checkPreconditions(ctx context.Context, versions []roachpb.Ver
 			continue
 		}
 		if err := tm.Precondition(ctx, clusterversion.ClusterVersion{Version: v}, upgrade.TenantDeps{
-			DB:                 m.deps.DB,
-			Codec:              m.codec,
-			Settings:           m.settings,
-			LeaseManager:       m.lm,
-			InternalExecutor:   m.ie,
-			JobRegistry:        m.jr,
-			TestingKnobs:       &m.knobs,
-			ClusterID:          m.clusterID.Get(),
-			LicenseEnforcer:    m.le,
-			TenantInfoAccessor: m.deps.TenantInfoAccessor,
+			DB:               m.deps.DB,
+			Codec:            m.codec,
+			Settings:         m.settings,
+			LeaseManager:     m.lm,
+			InternalExecutor: m.ie,
+			JobRegistry:      m.jr,
+			ClusterID:        m.clusterID.Get(),
 		}); err != nil {
 			return errors.Wrapf(
 				err,

@@ -46,10 +46,10 @@ func TestValidRoles(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, false, hasRole)
 
-		// Skip PASSWORD and SUBJECT options. Since PASSWORD still resides in
-		// system.users and SUBJECT is an enterprise feature that is tested
-		// separately.
-		if name == "PASSWORD" || name == "SUBJECT" {
+		// Skip PASSWORD and DEFAULTSETTINGS options.
+		// Since PASSWORD still resides in system.users and
+		// DEFAULTSETTINGS is stored in system.database_role_settings.
+		if name == "PASSWORD" || name == "DEFAULTSETTINGS" {
 			continue
 		}
 		// Add the role and check if the role was added (or in the cases of roles starting
@@ -59,11 +59,7 @@ func TestValidRoles(t *testing.T) {
 			extraInfo = " '3000-01-01'"
 		}
 		_, err = sqlDB.Exec(fmt.Sprintf("ALTER USER %s %s%s", fooUser, name, extraInfo))
-		if err != nil {
-			// If there is an error, we only allow the 'unimplemented' error
-			require.Contains(t, err.Error(), "unimplemented:")
-			continue
-		}
+		require.NoError(t, err)
 
 		hasRole, err = privChecker.HasRoleOption(ctx, fooUser, roleoption.ByName[name])
 		require.NoError(t, err)

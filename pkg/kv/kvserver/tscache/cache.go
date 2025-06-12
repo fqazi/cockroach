@@ -8,11 +8,9 @@
 package tscache
 
 import (
-	"context"
 	"fmt"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/readsummary/rspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -52,7 +50,7 @@ type Cache interface {
 	// from start to end. If end is nil, the range covers the start key only.
 	// An empty txnID can be passed when the operation is not done on behalf of a
 	// particular txn.
-	Add(ctx context.Context, start, end roachpb.Key, ts hlc.Timestamp, txnID uuid.UUID)
+	Add(start, end roachpb.Key, ts hlc.Timestamp, txnID uuid.UUID)
 
 	// GetMax returns the maximum timestamp which overlaps the interval spanning
 	// from start to end. If that maximum timestamp belongs to a single
@@ -61,11 +59,7 @@ type Cache interface {
 	// Finally, if no part of the specified range is overlapped by timestamp
 	// intervals from any transactions in the cache, the low water timestamp is
 	// returned for the read timestamps.
-	GetMax(ctx context.Context, start, end roachpb.Key) (hlc.Timestamp, uuid.UUID)
-
-	// Serialize returns a serialized representation of the Cache over the
-	// interval spanning from start to end.
-	Serialize(ctx context.Context, start, end roachpb.Key) rspb.Segment
+	GetMax(start, end roachpb.Key) (hlc.Timestamp, uuid.UUID)
 
 	// Metrics returns the Cache's metrics struct.
 	Metrics() Metrics
@@ -123,13 +117,16 @@ func ratchetValue(old, new cacheValue) (res cacheValue, updated bool) {
 	}
 
 	// Equal times.
+	if new.ts.Synthetic != old.ts.Synthetic {
+		// old.ts == new.ts but the values have different synthetic flags.
+		// Remove the synthetic flag from the resulting value.
+		new.ts.Synthetic = false
+	}
 	if new.txnID != old.txnID {
 		// old.ts == new.ts but the values have different txnIDs. Remove the
 		// transaction ID from the resulting value so that it is no longer owned
 		// by any transaction.
 		new.txnID = noTxnID
-		return new, old.txnID != noTxnID
 	}
-	// old == new.
-	return old, false
+	return new, new != old
 }

@@ -7,7 +7,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/ccl/utilccl",
-        "//pkg/config/zonepb",
         "//pkg/settings/cluster",
         "//pkg/sql",
         "//pkg/sql/catalog",
@@ -40,7 +39,9 @@ go_test(
         "scrub_test.go",
         "zone_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":partitionccl"],
+    tags = ["ccl_test"],
     deps = [
         "//pkg/base",
         "//pkg/ccl",
@@ -85,6 +86,7 @@ go_test(
         "//pkg/util/protoutil",
         "//pkg/util/randutil",
         "//pkg/util/timeutil",
+        "//pkg/util/uuid",
         "@com_github_cockroachdb_cockroach_go_v2//crdb",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_redact//:redact",

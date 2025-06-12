@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/stretchr/testify/assert"
@@ -89,17 +88,89 @@ var (
 
 	// smallEngineBlocks configures Pebble with a block size of 1 byte, to provoke
 	// bugs in time-bound iterators.
-	smallEngineBlocks = metamorphic.ConstantWithTestBool("small-engine-blocks", false)
+	smallEngineBlocks = util.ConstantWithMetamorphicTestBool("small-engine-blocks", false)
 )
 
 const lockAgeThreshold = 2 * time.Hour
 const txnCleanupThreshold = time.Hour
 
-// BenchmarkRun benchmarks Run with different
+// TestRunNewVsOld exercises the behavior of Run relative to the old
+// implementation. It runs both the new and old implementation and ensures
+// that they produce exactly the same results on the same set of keys.
+func TestRunNewVsOld(t *testing.T) {
+	ctx := context.Background()
+	const N = 100000
+
+	for _, tc := range []randomRunGCTestSpec{
+		{
+			ds: someVersionsMidSizeRowsLotsOfIntents,
+			// Current time in the future enough for intents to get resolved
+			now: hlc.Timestamp{
+				WallTime: (lockAgeThreshold + 100*time.Second).Nanoseconds(),
+			},
+			// GC everything beyond intent resolution threshold
+			ttlSec: int32(lockAgeThreshold.Seconds()),
+		},
+		{
+			ds: someVersionsMidSizeRows,
+			now: hlc.Timestamp{
+				WallTime: 100 * time.Second.Nanoseconds(),
+			},
+			ttlSec: 1,
+		},
+	} {
+		t.Run(fmt.Sprintf("%v@%v,ttlSec=%v", tc.ds, tc.now, tc.ttlSec), func(t *testing.T) {
+			rng, seed := randutil.NewTestRand()
+			t.Logf("Using subtest seed: %d", seed)
+
+			eng := storage.NewDefaultInMemForTesting(storage.If(smallEngineBlocks, storage.BlockSize(1)))
+			defer eng.Close()
+
+			tc.ds.dist(N, rng).setupTest(t, eng, *tc.ds.desc())
+			snap := eng.NewSnapshot()
+			defer snap.Close()
+
+			oldGCer := makeFakeGCer()
+			ttl := time.Duration(tc.ttlSec) * time.Second
+			newThreshold := CalculateThreshold(tc.now, ttl)
+			gcInfoOld, err := runGCOld(ctx, tc.ds.desc(), snap, tc.now,
+				newThreshold, RunOptions{
+					LockAgeThreshold:    lockAgeThreshold,
+					TxnCleanupThreshold: txnCleanupThreshold,
+				}, ttl,
+				&oldGCer,
+				oldGCer.resolveIntents,
+				oldGCer.resolveIntentsAsync)
+			require.NoError(t, err)
+
+			newGCer := makeFakeGCer()
+			gcInfoNew, err := Run(ctx, tc.ds.desc(), snap, tc.now,
+				newThreshold, RunOptions{
+					LockAgeThreshold:    lockAgeThreshold,
+					TxnCleanupThreshold: txnCleanupThreshold,
+				}, ttl,
+				&newGCer,
+				newGCer.resolveIntents,
+				newGCer.resolveIntentsAsync)
+			require.NoError(t, err)
+
+			oldGCer.normalize()
+			newGCer.normalize()
+			require.EqualValues(t, gcInfoOld, gcInfoNew)
+			require.EqualValues(t, oldGCer, newGCer)
+		})
+	}
+}
+
+// BenchmarkRun benchmarks the old and implementations of Run with different
 // data distributions.
 func BenchmarkRun(b *testing.B) {
 	ctx := context.Background()
-	runGC := func(eng storage.Engine, spec randomRunGCTestSpec) (Info, error) {
+	runGC := func(eng storage.Engine, old bool, spec randomRunGCTestSpec) (Info, error) {
+		runGCFunc := Run
+		if old {
+			runGCFunc = runGCOld
+		}
 		snap := eng.NewSnapshot()
 		defer snap.Close()
 		ttl := time.Duration(spec.ttlSec) * time.Second
@@ -107,7 +178,7 @@ func BenchmarkRun(b *testing.B) {
 		if spec.intentAgeSec > 0 {
 			intentThreshold = time.Duration(spec.intentAgeSec) * time.Second
 		}
-		return Run(ctx, spec.ds.desc(), snap, spec.now,
+		return runGCFunc(ctx, spec.ds.desc(), snap, spec.now,
 			CalculateThreshold(spec.now, ttl), RunOptions{
 				LockAgeThreshold:    intentThreshold,
 				TxnCleanupThreshold: txnCleanupThreshold,
@@ -122,14 +193,14 @@ func BenchmarkRun(b *testing.B) {
 				return nil
 			})
 	}
-	makeTest := func(spec randomRunGCTestSpec, rng *rand.Rand) func(b *testing.B) {
+	makeTest := func(old bool, spec randomRunGCTestSpec, rng *rand.Rand) func(b *testing.B) {
 		return func(b *testing.B) {
 			eng := storage.NewDefaultInMemForTesting()
 			defer eng.Close()
 			ms := spec.ds.dist(b.N, rng).setupTest(b, eng, *spec.ds.desc())
 			b.SetBytes(int64(float64(ms.Total()) / float64(b.N)))
 			b.ResetTimer()
-			_, err := runGC(eng, spec)
+			_, err := runGC(eng, old, spec)
 			b.StopTimer()
 			require.NoError(b, err)
 		}
@@ -151,14 +222,16 @@ func BenchmarkRun(b *testing.B) {
 	specs := specsWithTTLs(fewVersionsTinyRows, ts100, ttls)
 	specs = append(specs, specsWithTTLs(someVersionsMidSizeRows, ts100, ttls)...)
 	specs = append(specs, specsWithTTLs(lotsOfVersionsMidSizeRows, ts100, ttls)...)
-	b.Run("old=false", func(b *testing.B) {
-		rng, seed := randutil.NewTestRand()
-		b.Logf("Using benchmark seed: %d", seed)
+	for _, old := range []bool{true, false} {
+		b.Run(fmt.Sprintf("old=%v", old), func(b *testing.B) {
+			rng, seed := randutil.NewTestRand()
+			b.Logf("Using benchmark seed: %d", seed)
 
-		for _, spec := range specs {
-			b.Run(fmt.Sprint(spec.ds), makeTest(spec, rng))
-		}
-	})
+			for _, spec := range specs {
+				b.Run(fmt.Sprint(spec.ds), makeTest(old, spec, rng))
+			}
+		})
+	}
 }
 
 func TestNewVsInvariants(t *testing.T) {
@@ -358,22 +431,24 @@ func assertLiveData(
 		GCTTL:     gcTTL,
 		Threshold: gcThreshold,
 	}
-	pointIt, err := before.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
-		LowerBound: desc.StartKey.AsRawKey(),
-		UpperBound: desc.EndKey.AsRawKey(),
-		KeyTypes:   storage.IterKeyTypePointsAndRanges,
-	})
+	pointIt, err := before.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind,
+		storage.IterOptions{
+			LowerBound: desc.StartKey.AsRawKey(),
+			UpperBound: desc.EndKey.AsRawKey(),
+			KeyTypes:   storage.IterKeyTypePointsAndRanges,
+		})
 	require.NoError(t, err)
 	defer pointIt.Close()
 	pointIt.SeekGE(storage.MVCCKey{Key: desc.StartKey.AsRawKey()})
 	pointExpectationsGenerator := getExpectationsGenerator(t, pointIt, gcThreshold, intentThreshold,
 		&expInfo)
 
-	rangeIt, err := before.NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
-		LowerBound: desc.StartKey.AsRawKey(),
-		UpperBound: desc.EndKey.AsRawKey(),
-		KeyTypes:   storage.IterKeyTypeRangesOnly,
-	})
+	rangeIt, err := before.NewMVCCIterator(storage.MVCCKeyIterKind,
+		storage.IterOptions{
+			LowerBound: desc.StartKey.AsRawKey(),
+			UpperBound: desc.EndKey.AsRawKey(),
+			KeyTypes:   storage.IterKeyTypeRangesOnly,
+		})
 	require.NoError(t, err)
 	defer rangeIt.Close()
 	rangeIt.SeekGE(storage.MVCCKey{Key: desc.StartKey.AsRawKey()})
@@ -382,7 +457,7 @@ func assertLiveData(
 
 	// Loop over engine data after applying GCer requests and compare with
 	// expected point keys.
-	itAfter, err := after.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
+	itAfter, err := after.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
 		LowerBound: desc.StartKey.AsRawKey(),
 		UpperBound: desc.EndKey.AsRawKey(),
 		KeyTypes:   storage.IterKeyTypePointsOnly,
@@ -420,7 +495,7 @@ func assertLiveData(
 		}
 	}
 
-	rangeItAfter, err := after.NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
+	rangeItAfter, err := after.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		LowerBound:           desc.StartKey.AsRawKey(),
 		UpperBound:           desc.EndKey.AsRawKey(),
 		KeyTypes:             storage.IterKeyTypeRangesOnly,
@@ -596,7 +671,7 @@ func getExpectationsGenerator(
 func getKeyHistory(t *testing.T, r storage.Reader, key roachpb.Key) string {
 	var result []string
 
-	it, err := r.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
+	it, err := r.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
 		LowerBound:           key,
 		UpperBound:           key.Next(),
 		KeyTypes:             storage.IterKeyTypePointsAndRanges,
@@ -703,10 +778,9 @@ func mergeRanges(fragments [][]storage.MVCCRangeKeyValue) []storage.MVCCRangeKey
 					// tombstone types.
 					newPartial = append(newPartial, storage.MVCCRangeKeyValue{
 						RangeKey: storage.MVCCRangeKey{
-							StartKey:               partialRangeKeys[j].RangeKey.StartKey,
-							EndKey:                 stack[i].RangeKey.EndKey,
-							Timestamp:              partialRangeKeys[j].RangeKey.Timestamp,
-							EncodedTimestampSuffix: partialRangeKeys[j].RangeKey.EncodedTimestampSuffix,
+							StartKey:  partialRangeKeys[j].RangeKey.StartKey,
+							EndKey:    stack[i].RangeKey.EndKey,
+							Timestamp: partialRangeKeys[j].RangeKey.Timestamp,
 						},
 						Value: partialRangeKeys[j].Value,
 					})

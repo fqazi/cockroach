@@ -8,27 +8,19 @@ package changefeedccl
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 	"testing"
 
-	"github.com/IBM/sarama"
-	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvevent"
 	"github.com/cockroachdb/cockroach/pkg/ccl/utilccl"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
+	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"github.com/twmb/franz-go/pkg/kgo"
-	kgosasl "github.com/twmb/franz-go/pkg/sasl"
-	kgosaslplain "github.com/twmb/franz-go/pkg/sasl/plain"
 )
 
 // externalConnectionKafkaSink is a wrapper sink that asserts the underlying
@@ -70,12 +62,7 @@ func (e *externalConnectionKafkaSink) Close() error {
 
 // EmitRow implements the Sink interface.
 func (e *externalConnectionKafkaSink) EmitRow(
-	_ context.Context,
-	_ TopicDescriptor,
-	_, _ []byte,
-	_, _ hlc.Timestamp,
-	_ kvevent.Alloc,
-	_ rowHeaders,
+	_ context.Context, _ TopicDescriptor, _, _ []byte, _, _ hlc.Timestamp, _ kvevent.Alloc,
 ) error {
 	return nil
 }
@@ -120,6 +107,11 @@ func TestChangefeedExternalConnections(t *testing.T) {
 	enableEnterprise()
 	unknownParams := func(sink string, params ...string) string {
 		return fmt.Sprintf(`unknown %s sink query parameters: [%s]`, sink, strings.Join(params, ", "))
+	}
+
+	// TODO(#127536): We disabled testing the Kafka V2 sink here, since it doesnt support MSK yet. Re-enable it.
+	if KafkaV2Enabled.Get(&s.Server.ClusterSettings().SV) {
+		skip.WithIssue(t, 127536, "Kafka V2 sink does not support MSK yet")
 	}
 
 	for _, tc := range []struct {
@@ -199,7 +191,7 @@ func TestChangefeedExternalConnections(t *testing.T) {
 		},
 		{
 			name:          "param sasl_handshake must be a bool",
-			uri:           "kafka://nope/?sasl_enabled=true&sasl_user=x&sasl_password=y&sasl_handshake=maybe",
+			uri:           "kafka://nope/?sasl_enabled=true&sasl_handshake=maybe",
 			expectedError: "param sasl_handshake must be a bool",
 		},
 		{
@@ -233,24 +225,9 @@ func TestChangefeedExternalConnections(t *testing.T) {
 			expectedError: "sasl_enabled must be enabled to configure SASL mechanism",
 		},
 		{
-			name:          "param sasl_mechanism must be one of AWS_MSK_IAM, OAUTHBEARER, PLAIN, SCRAM-SHA-256, or SCRAM-SHA-512",
+			name:          "param sasl_mechanism must be one of SCRAM-SHA-256, SCRAM-SHA-512, OAUTHBEARER, or PLAIN",
 			uri:           "kafka://nope/?sasl_enabled=true&sasl_mechanism=unsuppported",
-			expectedError: "param sasl_mechanism must be one of AWS_MSK_IAM, OAUTHBEARER, PLAIN, SCRAM-SHA-256, or SCRAM-SHA-512",
-		},
-		{
-			name:          "sasl_aws_iam_session_name must be provided when AWS IAM role authentication is enabled",
-			uri:           "kafka://nope/?sasl_enabled=true&sasl_mechanism=AWS_MSK_IAM&sasl_aws_region=us-west-1&sasl_aws_iam_role_arn=foo",
-			expectedError: "sasl_aws_iam_session_name must be provided when SASL is enabled using mechanism AWS_MSK_IAM",
-		},
-		{
-			name:          "sasl_aws_iam_role_arn must be provided when AWS IAM role authentication is enabled",
-			uri:           "kafka://nope/?sasl_enabled=true&sasl_mechanism=AWS_MSK_IAM&sasl_aws_region=us-west-1&sasl_aws_iam_session_name=foo",
-			expectedError: "sasl_aws_iam_role_arn must be provided when SASL is enabled using mechanism AWS_MSK_IAM",
-		},
-		{
-			name:          "sasl_aws_region must be provided when AWS IAM role authentication is enabled",
-			uri:           "kafka://nope/?sasl_enabled=true&sasl_mechanism=AWS_MSK_IAM&sasl_aws_iam_session_name=foo&sasl_aws_iam_role_arn=foo",
-			expectedError: "sasl_aws_region must be provided when SASL is enabled using mechanism AWS_MSK_IAM",
+			expectedError: "param sasl_mechanism must be one of SCRAM-SHA-256, SCRAM-SHA-512, OAUTHBEARER, or PLAIN",
 		},
 		// confluent-cloud scheme tests
 		{
@@ -288,47 +265,6 @@ func TestChangefeedExternalConnections(t *testing.T) {
 			uri:           "confluent-cloud://nope?api_key=fee&api_secret=bar&ca_cert=abcd",
 			expectedError: "invalid query parameters",
 		},
-		// azure-event-hub scheme tests
-		{
-			name:          "requires parameter SharedAccessKeyName",
-			uri:           "azure-event-hub://nope?",
-			expectedError: "requires parameter shared_access_key_name",
-		},
-		{
-			name:          "requires parameter SharedAccessKey",
-			uri:           "azure-event-hub://nope?shared_access_key_name=saspolicytpcc",
-			expectedError: "requires parameter shared_access_key",
-		},
-		{
-			name:          "requires sasl_enabled=true",
-			uri:           "azure-event-hub://nope?shared_access_key_name=saspolicytpcc&shared_access_key=123&sasl_enabled=false",
-			expectedError: "unsupported value false for parameter sasl_enabled, please use true",
-		},
-		{
-			name:          "requires parameter sasl_mechanism=PLAIN",
-			uri:           "azure-event-hub://nope?shared_access_key_name=saspolicytpcc&shared_access_key=123&sasl_mechanism=OAUTHBEARER",
-			expectedError: "unsupported value OAUTHBEARER for parameter sasl_mechanism, please use PLAIN",
-		},
-		{
-			name:          "requires parameter sasl_handshake=true",
-			uri:           "azure-event-hub://nope?shared_access_key_name=saspolicytpcc&shared_access_key=123&sasl_handshake=false",
-			expectedError: "unsupported value false for parameter sasl_handshake, please use true",
-		},
-		{
-			name:          "requires parameter tls_enabled=true",
-			uri:           "azure-event-hub://nope?shared_access_key_name=saspolicytpcc&shared_access_key=123&tls_enabled=false",
-			expectedError: "unsupported value false for parameter tls_enabled, please use true",
-		},
-		{
-			name:          "invalid query parameters",
-			uri:           "azure-event-hub://nope?shared_access_key_name=saspolicytpcc&shared_access_key=123&ca_cert=abcd",
-			expectedError: "invalid query parameters",
-		},
-		{
-			name:          "test error with entity_path",
-			uri:           "azure-event-hub://nope?shared_access_key_name=saspolicytpcc&shared_access_key=123&entity_path=history",
-			expectedError: "invalid query parameters",
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sqlDB.ExpectErr(
@@ -344,17 +280,11 @@ func TestChangefeedExternalConnections(t *testing.T) {
 		// kafka scheme external connections
 		sqlDB.Exec(t, `CREATE EXTERNAL CONNECTION nope AS 'kafka://nope'`)
 		sqlDB.Exec(t, `CREATE EXTERNAL CONNECTION "nope-with-params" AS 'kafka://nope/?tls_enabled=true&insecure_tls_skip_verify=true&topic_name=foo'`)
-		sqlDB.Exec(t, `CREATE EXTERNAL CONNECTION "nope-with-aws-iam-auth" AS 'kafka://nope/?sasl_enabled=true&sasl_mechanism=AWS_MSK_IAM&sasl_aws_region=us-west-1&sasl_aws_iam_role_arn=foo&sasl_aws_iam_session_name=bar'`)
 		// confluent-cloud external connections
 		sqlDB.Exec(t, `CREATE EXTERNAL CONNECTION confluent1 AS 'confluent-cloud://nope?api_key=fee&api_secret=bar'`)
 		sqlDB.Exec(t, `CREATE EXTERNAL CONNECTION confluent2 AS 'confluent-cloud://nope?api_key=fee&api_secret=bar&`+
 			`sasl_mechanism=PLAIN&tls_enabled=true&topic_prefix=foo&sasl_enabled=true&sasl_handshake=true&`+
 			`insecure_tls_skip_verify=true'`)
-		sqlDB.Exec(t, `CREATE EXTERNAL CONNECTION azure1 AS 'azure-event-hub://nope?shared_access_key_name=fee&shared_access_key=123&topic_prefix=foo'`)
-		sqlDB.Exec(t, `CREATE EXTERNAL CONNECTION azure2 AS 'azure-event-hub://nope?shared_access_key_name=fee&shared_access_key=123&topic_prefix=foo&`+
-			`sasl_mechanism=PLAIN&tls_enabled=true&sasl_enabled=true&sasl_handshake=true'`)
-		sqlDB.Exec(t, `CREATE EXTERNAL CONNECTION azure3 AS 'azure-event-hub://nope?shared_access_key_name=fee&shared_access_key=123&topic_name=foo&`+
-			`sasl_mechanism=PLAIN&tls_enabled=true&sasl_enabled=true&sasl_handshake=true'`)
 
 		sqlDB.Exec(t, `CREATE CHANGEFEED FOR foo INTO 'external://nope'`)
 		sqlDB.Exec(t, `CREATE CHANGEFEED FOR foo INTO 'external://nope-with-params'`)
@@ -372,132 +302,4 @@ func TestChangefeedExternalConnections(t *testing.T) {
 			t, `CREATE CHANGEFEED FOR foo INTO 'external://confluent2/' WITH kafka_sink_config='{"Flush": {"Messages": 100, "Frequency": "1s"}}'`,
 		)
 	})
-}
-
-// TestAzureKafkaDefaults verifies that buildAzureKafkaConfig correctly
-// parses the parameter and constructs the changefeed correctly for azure
-// data streaming.
-func TestAzureKafkaDefaults(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-
-	type expectation struct {
-		saslUser      string
-		saslPassword  string
-		saslEnabled   bool
-		tlsEnabled    bool
-		saslHandshake bool
-		saslMechanism sarama.SASLMechanism
-	}
-
-	assertExpectedSaramaCfg := func(exp expectation, cfg *sarama.Config) {
-		assert.Equal(t, exp.saslUser, cfg.Net.SASL.User)
-		assert.Equal(t, exp.saslPassword, cfg.Net.SASL.Password)
-		assert.Equal(t, exp.saslEnabled, cfg.Net.SASL.Enable)
-		assert.Equal(t, exp.tlsEnabled, cfg.Net.TLS.Enable)
-		assert.Equal(t, exp.saslHandshake, cfg.Net.SASL.Handshake)
-		assert.Equal(t, exp.saslMechanism, cfg.Net.SASL.Mechanism)
-	}
-
-	assertExpectedKgoOpts := func(exp expectation, opts []kgo.Opt) {
-		sinkClient, err := newKafkaSinkClientV2(ctx, opts, sinkBatchConfig{},
-			"", cluster.MakeTestingClusterSettings(), kafkaSinkV2Knobs{}, nilMetricsRecorderBuilder, nil)
-		require.NoError(t, err)
-		defer func() { require.NoError(t, sinkClient.Close()) }()
-		client := sinkClient.client.(*kgo.Client)
-		expectedSaslMechanism := kgosaslplain.Plain(func(ctc context.Context) (kgosaslplain.Auth, error) {
-			return kgosaslplain.Auth{
-				User: exp.saslUser,
-				Pass: exp.saslPassword,
-			}, nil
-		})
-		saslMechanisms := client.OptValue("SASL").([]kgosasl.Mechanism)
-		require.Len(t, saslMechanisms, 1)
-		saslMechanism := saslMechanisms[0]
-		_, expectedSaslBs, err := expectedSaslMechanism.Authenticate(ctx, "")
-		require.NoError(t, err)
-		_, saslBs, err := saslMechanism.Authenticate(ctx, "")
-		require.NoError(t, err)
-		assert.Equal(t, expectedSaslBs, saslBs)
-
-		// There's no way to assert that tls was enabled here, since we set that
-		// by altering the custom Dialer function we always pass. We can rely on
-		// the assertion for sarama, and the fact that tls_enabled is passed in
-		// the dialConfig, which is shared between the two.
-	}
-
-	makeExpectation := func(hostName string, decodedAccessKeyName string, decodedAccessKey string) expectation {
-		return expectation{
-			saslUser: "$ConnectionString",
-			saslPassword: fmt.Sprintf(
-				"Endpoint=sb://%s/;SharedAccessKeyName=%s;SharedAccessKey=%s",
-				hostName, decodedAccessKeyName, decodedAccessKey),
-			saslEnabled:   true,
-			tlsEnabled:    true,
-			saslHandshake: true,
-			saslMechanism: sarama.SASLTypePlaintext,
-		}
-	}
-
-	cases := []struct {
-		name     string
-		uri      string
-		expected expectation
-	}{
-		{
-			name:     "test basic key/password with sasl_mechanism",
-			uri:      "azure-event-hub://myeventhubs.servicebus.windows.net:9093?shared_access_key_name=saspolicytpcc&shared_access_key=123&sasl_mechanism=PLAIN",
-			expected: makeExpectation("myeventhubs.servicebus.windows.net", "saspolicytpcc", "123"),
-		},
-		{
-			name:     "test basic key/password with sasl_enabled",
-			uri:      "azure-event-hub://myeventhubs.servicebus.windows.net:9093?shared_access_key_name=saspolicytpcc&shared_access_key=123&sasl_enabled=true",
-			expected: makeExpectation("myeventhubs.servicebus.windows.net", "saspolicytpcc", "123"),
-		},
-		{
-			name:     "test basic key/password with tls_enabled",
-			uri:      "azure-event-hub://myeventhubs.servicebus.windows.net:9093?shared_access_key_name=saspolicytpcc&shared_access_key=123&tls_enabled=true",
-			expected: makeExpectation("myeventhubs.servicebus.windows.net", "saspolicytpcc", "123"),
-		},
-		{
-			name:     "test basic key/password with sasl_handshake",
-			uri:      "azure-event-hub://myeventhubs.servicebus.windows.net:9093?shared_access_key_name=saspolicytpcc&shared_access_key=123&sasl_enabled=true&tls_enabled=true&sasl_handshake=true",
-			expected: makeExpectation("myeventhubs.servicebus.windows.net", "saspolicytpcc", "123"),
-		},
-		{
-			name:     "test more complex key/password with saspolicyhistory policy",
-			uri:      "azure-event-hub://myeventhubs.servicebus.windows.net:9093?shared_access_key_name=saspolicyhistory&shared_access_key=q%2BSecretRedacted%3D",
-			expected: makeExpectation("myeventhubs.servicebus.windows.net", "saspolicyhistory", "q+SecretRedacted="),
-		},
-	}
-	t.Run("sarama", func(t *testing.T) {
-		for _, tc := range cases {
-			url, err := url.Parse(tc.uri)
-			require.NoError(t, err)
-			u := &changefeedbase.SinkURL{URL: url}
-
-			t.Run(tc.name, func(t *testing.T) {
-				cfg, err := buildKafkaConfig(ctx, u, `{}`, nil, nil)
-				require.NoError(t, err)
-				assertExpectedSaramaCfg(tc.expected, cfg)
-			})
-		}
-	})
-
-	t.Run("kgo", func(t *testing.T) {
-		for _, tc := range cases {
-			url, err := url.Parse(tc.uri)
-			require.NoError(t, err)
-			u := &changefeedbase.SinkURL{URL: url}
-
-			t.Run(tc.name, func(t *testing.T) {
-				opts, err := buildKgoConfig(ctx, u, `{}`, nil)
-				require.NoError(t, err)
-				assertExpectedKgoOpts(tc.expected, opts)
-			})
-		}
-	})
-
 }

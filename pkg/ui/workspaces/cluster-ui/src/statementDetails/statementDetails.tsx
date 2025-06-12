@@ -3,30 +3,25 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import { ArrowLeft } from "@cockroachlabs/icons";
-import { InlineAlert, Text } from "@cockroachlabs/ui-components";
-import { Col, Row, Tabs } from "antd";
-import classNames from "classnames/bind";
-import isNil from "lodash/isNil";
-import Long from "long";
-import moment from "moment-timezone";
 import React, { ReactNode, useContext } from "react";
+import { Col, Row, Tabs } from "antd";
+import "antd/lib/col/style";
+import "antd/lib/row/style";
+import "antd/lib/tabs/style";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
+import { InlineAlert, Text } from "@cockroachlabs/ui-components";
+import { Anchor } from "src/anchor";
+import { ArrowLeft } from "@cockroachlabs/icons";
+import { isNil } from "lodash";
+import Long from "long";
 import { Helmet } from "react-helmet";
 import { Link, RouteComponentProps } from "react-router-dom";
+import classNames from "classnames/bind";
+import { PageConfig, PageConfigItem } from "src/pageConfig";
+import { BarGraphTimeSeries, XScale } from "../graphs/bargraph";
+import { AxisUnits } from "../graphs";
 import { AlignedData, Options } from "uplot";
 
-import { Anchor } from "src/anchor";
-import { StatementDetailsRequest } from "src/api/statementsApi";
-import { Button } from "src/button";
-import { commonStyles } from "src/common";
-import { getValidErrorsList, Loading } from "src/loading";
-import { PageConfig, PageConfigItem } from "src/pageConfig";
-import { SqlBox, SqlBoxSize } from "src/sql";
-import { SummaryCard, SummaryCardItem } from "src/summaryCard";
-import summaryCardStyles from "src/summaryCard/summaryCard.module.scss";
-import timeScaleStyles from "src/timeScaleDropdown/timeScale.module.scss";
-import { TimeScaleLabel } from "src/timeScaleDropdown/timeScaleLabel";
 import {
   appAttr,
   appNamesAttr,
@@ -43,33 +38,19 @@ import {
   Count,
   longToInt,
 } from "src/util";
-
-import {
-  InsertStmtDiagnosticRequest,
-  InsightRecommendation,
-  StatementDiagnosticsReport,
-  StmtInsightsReq,
-} from "../api";
-import { CockroachCloudContext } from "../contexts";
-import { Delayed } from "../delayed";
-import { AxisUnits } from "../graphs";
-import { BarGraphTimeSeries, XScale } from "../graphs/bargraph";
-import {
-  getStmtInsightRecommendations,
-  InsightType,
-  StmtInsightEvent,
-} from "../insights";
-import {
-  InsightsSortedTable,
-  makeInsightsColumns,
-} from "../insightsTable/insightsTable";
+import { getValidErrorsList, Loading } from "src/loading";
+import { Button } from "src/button";
+import { SqlBox, SqlBoxSize } from "src/sql";
+import { PlanDetails } from "./planDetails";
+import { SummaryCard, SummaryCardItem } from "src/summaryCard";
+import { DiagnosticsView } from "./diagnostics/diagnosticsView";
 import insightTableStyles from "../insightsTable/insightsTable.module.scss";
-import LoadingError from "../sqlActivity/errorComponent";
-import {
-  ActivateDiagnosticsModalRef,
-  ActivateStatementDiagnosticsModal,
-} from "../statementsDiagnostics";
+import summaryCardStyles from "src/summaryCard/summaryCard.module.scss";
+import timeScaleStyles from "src/timeScaleDropdown/timeScale.module.scss";
+import styles from "./statementDetails.module.scss";
+import { commonStyles } from "src/common";
 import { UIConfigState } from "../store";
+import { StatementDetailsRequest } from "src/api/statementsApi";
 import {
   getValidOption,
   TimeScale,
@@ -77,13 +58,11 @@ import {
   TimeScaleDropdown,
   toRoundedDateRange,
 } from "../timeScaleDropdown";
-import { FormattedTimescale } from "../timeScaleDropdown/formattedTimeScale";
-import { Timestamp } from "../timestamp";
-
-import { filterByTimeScale } from "./diagnostics/diagnosticsUtils";
-import { DiagnosticsView } from "./diagnostics/diagnosticsView";
-import { PlanDetails } from "./planDetails";
-import styles from "./statementDetails.module.scss";
+import LoadingError from "../sqlActivity/errorComponent";
+import {
+  ActivateDiagnosticsModalRef,
+  ActivateStatementDiagnosticsModal,
+} from "../statementsDiagnostics";
 import {
   generateContentionTimeseries,
   generateExecCountTimeseries,
@@ -93,6 +72,28 @@ import {
   generateCPUTimeseries,
   generateClientWaitTimeseries,
 } from "./timeseriesUtils";
+import { Delayed } from "../delayed";
+import moment from "moment-timezone";
+import {
+  InsertStmtDiagnosticRequest,
+  InsightRecommendation,
+  StatementDiagnosticsReport,
+  StmtInsightsReq,
+} from "../api";
+import {
+  getStmtInsightRecommendations,
+  InsightType,
+  StmtInsightEvent,
+} from "../insights";
+import {
+  InsightsSortedTable,
+  makeInsightsColumns,
+} from "../insightsTable/insightsTable";
+import { CockroachCloudContext } from "../contexts";
+import { filterByTimeScale } from "./diagnostics/diagnosticsUtils";
+import { FormattedTimescale } from "../timeScaleDropdown/formattedTimeScale";
+import { Timestamp } from "../timestamp";
+import { TimeScaleLabel } from "src/timeScaleDropdown/timeScaleLabel";
 
 type StatementDetailsResponse =
   cockroach.server.serverpb.StatementDetailsResponse;
@@ -525,7 +526,7 @@ export class StatementDetails extends React.Component<
             <Col className="gutter-row" span={24}>
               <SqlBox
                 value={this.state.formattedQuery}
-                size={SqlBoxSize.CUSTOM}
+                size={SqlBoxSize.custom}
                 format={true}
               />
             </Col>
@@ -561,21 +562,21 @@ export class StatementDetails extends React.Component<
     const { nodeRegions, isTenant, statementFingerprintInsights } = this.props;
     const { stats } = this.props.statementDetails.statement;
     const {
-      app_names: appNames,
+      app_names,
       databases,
-      fingerprint_id: fingerprintId,
-      full_scan_count: fullScanCount,
-      vec_count: vecCount,
-      total_count: totalCount,
-      implicit_txn: implicitTxn,
+      fingerprint_id,
+      failed_count,
+      full_scan_count,
+      vec_count,
+      total_count,
+      implicit_txn,
     } = this.props.statementDetails.statement.metadata;
-    const statementStatisticsPerAggregatedTs =
-      this.props.statementDetails.statement_statistics_per_aggregated_ts;
+    const { statement_statistics_per_aggregated_ts } =
+      this.props.statementDetails;
 
     const nodes: string[] = unique(
       (stats.nodes || []).map(node => node.toString()),
     ).sort();
-    // TODO(yuzefovich): use kv_node_ids to show KV regions.
     const regions = unique(
       isTenant
         ? stats.regions || []
@@ -590,7 +591,6 @@ export class StatementDetails extends React.Component<
     );
 
     const statementSampled = stats.exec_stats.count > Long.fromNumber(0);
-    const failureCount = stats.failure_count;
     const unavailableTooltip = !statementSampled && (
       <div>
         This metric is part of the statement execution and therefore will not be
@@ -605,13 +605,13 @@ export class StatementDetails extends React.Component<
       <Text className={cx("app-name", "app-name__unset")}>(unset)</Text>
     );
 
-    const statsPerAggregatedTs = statementStatisticsPerAggregatedTs.sort(
+    const statsPerAggregatedTs = statement_statistics_per_aggregated_ts.sort(
       (a, b) =>
         a.aggregated_ts.seconds < b.aggregated_ts.seconds
           ? -1
           : a.aggregated_ts.seconds > b.aggregated_ts.seconds
-            ? 1
-            : 0,
+          ? 1
+          : 0,
     );
 
     const executionAndPlanningTimeseries: AlignedData =
@@ -725,7 +725,7 @@ export class StatementDetails extends React.Component<
             <Col className="gutter-row" span={24}>
               <SqlBox
                 value={this.state.formattedQuery}
-                size={SqlBoxSize.CUSTOM}
+                size={SqlBoxSize.custom}
                 format={true}
               />
             </Col>
@@ -750,33 +750,33 @@ export class StatementDetails extends React.Component<
                 <SummaryCardItem
                   label="Application Name"
                   value={intersperse<ReactNode>(
-                    appNames.map(a => <AppLink app={a} key={a} />),
+                    app_names.map(a => <AppLink app={a} key={a} />),
                     ", ",
                   )}
                 />
                 <SummaryCardItem
                   label="Fingerprint ID"
-                  value={FixFingerprintHexValue(fingerprintId)}
+                  value={FixFingerprintHexValue(fingerprint_id)}
                 />
               </SummaryCard>
             </Col>
             <Col className="gutter-row" span={12}>
               <SummaryCard className={cx("summary-card")}>
                 <SummaryCardItem
-                  label="Failure Count"
-                  value={Count(failureCount.toNumber())}
+                  label="Failed?"
+                  value={RenderCount(failed_count, total_count)}
                 />
                 <SummaryCardItem
                   label="Full scan?"
-                  value={RenderCount(fullScanCount, totalCount)}
+                  value={RenderCount(full_scan_count, total_count)}
                 />
                 <SummaryCardItem
                   label="Vectorized execution?"
-                  value={RenderCount(vecCount, totalCount)}
+                  value={RenderCount(vec_count, total_count)}
                 />
                 <SummaryCardItem
                   label="Transaction type"
-                  value={renderTransactionType(implicitTxn)}
+                  value={renderTransactionType(implicit_txn)}
                 />
                 <SummaryCardItem label="Last execution time" value={lastExec} />
               </SummaryCard>
@@ -961,10 +961,8 @@ export class StatementDetails extends React.Component<
     if (!hasData) {
       return this.renderNoDataWithTimeScaleAndSqlBoxTabContent(hasTimeout);
     }
-    const statementStatisticsPerPlanHash =
-      this.props.statementDetails.statement_statistics_per_plan_hash;
-    const formattedQuery =
-      this.props.statementDetails.statement.metadata.formatted_query;
+    const { statement_statistics_per_plan_hash } = this.props.statementDetails;
+    const { formatted_query } = this.props.statementDetails.statement.metadata;
     return (
       <>
         <PageConfig>
@@ -989,8 +987,8 @@ export class StatementDetails extends React.Component<
           <Row gutter={24}>
             <Col className="gutter-row" span={24}>
               <SqlBox
-                value={formattedQuery}
-                size={SqlBoxSize.CUSTOM}
+                value={formatted_query}
+                size={SqlBoxSize.custom}
                 format={true}
               />
             </Col>
@@ -998,7 +996,7 @@ export class StatementDetails extends React.Component<
           <p className={summaryCardStylesCx("summary--card__divider")} />
           <PlanDetails
             statementFingerprintID={this.props.statementFingerprintID}
-            plans={statementStatisticsPerPlanHash}
+            plans={statement_statistics_per_plan_hash}
             hasAdminRole={this.props.hasAdminRole}
           />
         </section>

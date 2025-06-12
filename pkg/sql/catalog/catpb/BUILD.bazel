@@ -40,7 +40,6 @@ go_library(
         "job_id.go",
         "multiregion.go",
         "privilege.go",
-        "redact.go",
         ":gen-privilegedescversion-stringer",  # keep
     ],
     embed = [":catpb_go_proto"],
@@ -59,6 +58,7 @@ go_library(
 go_test(
     name = "catpb_test",
     srcs = ["privilege_test.go"],
+    args = ["-test.timeout=295s"],
     deps = [
         ":catpb",
         "//pkg/keys",

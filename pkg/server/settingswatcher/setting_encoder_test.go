@@ -64,7 +64,7 @@ WHERE
 
 	// Next set the version to an invalid one using pure KV calls
 	start := timeutil.Now()
-	version = clusterversion.ClusterVersion{Version: clusterversion.MinSupported.Version()}
+	version = clusterversion.ClusterVersion{Version: clusterversion.TestingBinaryMinSupportedVersion}
 	versionBytes, err := protoutil.Marshal(&version)
 	require.NoError(t, err)
 	newVal, err := settingswatcher.EncodeSettingValue(versionBytes, val.Type)

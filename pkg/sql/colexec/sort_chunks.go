@@ -50,8 +50,6 @@ func NewSortChunks(
 type sortChunksOp struct {
 	colexecop.InitHelper
 
-	// allocator is used by both the input (for buffered tuples) and the sorter
-	// (for a handful of things).
 	allocator *colmem.Allocator
 	input     *chunker
 	sorter    colexecop.ResettableOperator
@@ -59,7 +57,6 @@ type sortChunksOp struct {
 	exportedFromBuffer int
 	exportedFromBatch  int
 	windowedBatch      coldata.Batch
-	exportComplete     bool
 }
 
 var _ colexecop.Operator = &sortChunksOp{}
@@ -84,6 +81,10 @@ func (c *sortChunksOp) Init(ctx context.Context) {
 	}
 	c.input.init(c.Ctx)
 	c.sorter.Init(c.Ctx)
+	// TODO(yuzefovich): switch to calling this method on allocator. This will
+	// require plumbing unlimited allocator to work correctly in tests with
+	// memory limit of 1.
+	c.windowedBatch = coldata.NewMemBatchNoCols(c.input.inputTypes, coldata.BatchSize())
 }
 
 func (c *sortChunksOp) Next() coldata.Batch {
@@ -107,15 +108,6 @@ func (c *sortChunksOp) Next() coldata.Batch {
 }
 
 func (c *sortChunksOp) ExportBuffered(colexecop.Operator) coldata.Batch {
-	if c.exportComplete {
-		return coldata.ZeroBatch
-	}
-	if c.windowedBatch == nil {
-		// TODO(yuzefovich): switch to calling this method on allocator. This will
-		// require plumbing unlimited allocator to work correctly in tests with
-		// memory limit of 1.
-		c.windowedBatch = coldata.NewMemBatchNoCols(c.input.inputTypes, coldata.BatchSize())
-	}
 	// First, we check whether chunker has buffered up any tuples, and if so,
 	// whether we have exported them all.
 	if c.input.bufferedTuples.Length() > 0 {
@@ -145,23 +137,7 @@ func (c *sortChunksOp) ExportBuffered(colexecop.Operator) coldata.Batch {
 		c.exportedFromBatch = c.windowedBatch.Length()
 		return c.windowedBatch
 	}
-	c.exportComplete = true
 	return coldata.ZeroBatch
-}
-
-// ReleaseBeforeExport implements the colexecop.BufferingInMemoryOperator
-// interface.
-func (c *sortChunksOp) ReleaseBeforeExport() {}
-
-// ReleaseAfterExport implements the colexecop.BufferingInMemoryOperator
-// interface.
-func (c *sortChunksOp) ReleaseAfterExport(colexecop.Operator) {
-	if c.allocator == nil {
-		// Resources have already been released.
-		return
-	}
-	defer c.allocator.ReleaseAll()
-	*c = sortChunksOp{exportComplete: true}
 }
 
 // chunkerState represents the state of the chunker spooler.
@@ -224,6 +200,7 @@ type chunker struct {
 	colexecop.OneInputNode
 	colexecop.NonExplainable
 
+	allocator *colmem.Allocator
 	// inputTypes contains the types of all of the columns from input.
 	inputTypes []*types.T
 	// inputDone indicates whether input has been fully consumed.
@@ -274,8 +251,6 @@ type chunker struct {
 
 var _ spooler = &chunker{}
 
-// allocator will only be used for the append-only buffered batch for buffered
-// tuples.
 func newChunker(
 	unlimitedAllocator *colmem.Allocator,
 	allocator *colmem.Allocator,
@@ -291,17 +266,18 @@ func newChunker(
 	deselector := colexecutils.NewDeselectorOp(unlimitedAllocator, input, inputTypes)
 	return &chunker{
 		OneInputNode:      colexecop.NewOneInputNode(deselector),
+		allocator:         allocator,
 		inputTypes:        inputTypes,
 		alreadySortedCols: alreadySortedCols,
 		nullsAreDistinct:  nullsAreDistinct,
 		partitioners:      partitioners,
 		state:             chunkerReading,
-		bufferedTuples:    colexecutils.NewAppendOnlyBufferedBatch(allocator, inputTypes, nil /* colsToStore */),
 	}
 }
 
 func (s *chunker) init(ctx context.Context) {
 	s.Input.Init(ctx)
+	s.bufferedTuples = colexecutils.NewAppendOnlyBufferedBatch(s.allocator, s.inputTypes, nil /* colsToStore */)
 	s.partitionCol = make([]bool, coldata.BatchSize())
 	s.chunks = make([]int, 0, 16)
 }
@@ -451,7 +427,7 @@ func (s *chunker) spool() {
 	s.readFrom = s.prepareNextChunks()
 }
 
-func (s *chunker) getValues(i int) *coldata.Vec {
+func (s *chunker) getValues(i int) coldata.Vec {
 	switch s.readFrom {
 	case chunkerReadFromBuffer:
 		return s.bufferedTuples.ColVec(i).Window(0 /* start */, s.bufferedTuples.Length())

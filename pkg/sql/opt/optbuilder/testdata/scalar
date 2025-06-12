@@ -1279,21 +1279,7 @@ project
 build
 SELECT ARRAY(SELECT y FROM u ORDER BY x) FROM v
 ----
-project
- ├── columns: array:10
- ├── scan v
- │    └── columns: v.y:1 v.rowid:2!null v.crdb_internal_mvcc_timestamp:3 v.tableoid:4
- └── projections
-      └── array-flatten col=9 [as=array:10]
-           └── sort
-                ├── columns: y:9  [hidden: x:5]
-                ├── ordering: +5
-                └── project
-                     ├── columns: y:9 x:5
-                     ├── scan u
-                     │    └── columns: x:5 u.rowid:6!null u.crdb_internal_mvcc_timestamp:7 u.tableoid:8
-                     └── projections
-                          └── v.y:1 [as=y:9]
+error (0A000): unimplemented: can't execute a correlated ARRAY(...) over int[]
 
 build-scalar
 ISERROR(1/0)
@@ -1664,6 +1650,7 @@ project
       └── filters
            └── NOT ((t:1 >= t:1) AND (t:1 <= CASE NULL WHEN true THEN c:5 ELSE t:1::BPCHAR END))
 
+# TODO(#108360): implicit casts from STRING to CHAR should use bpchar.
 exec-ddl
 CREATE TABLE t108360_1 (t TEXT)
 ----

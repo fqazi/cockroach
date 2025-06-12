@@ -69,7 +69,13 @@ func (s *statusServer) IndexUsageStatistics(
 		return statusClient.IndexUsageStatistics(ctx, localReq)
 	}
 
-	fetchIndexUsageStats := func(ctx context.Context, statusClient serverpb.StatusClient, _ roachpb.NodeID) (interface{}, error) {
+	dialFn := func(ctx context.Context, nodeID roachpb.NodeID) (interface{}, error) {
+		client, err := s.dialNode(ctx, nodeID)
+		return client, err
+	}
+
+	fetchIndexUsageStats := func(ctx context.Context, client interface{}, _ roachpb.NodeID) (interface{}, error) {
+		statusClient := client.(serverpb.StatusClient)
 		return statusClient.IndexUsageStatistics(ctx, localReq)
 	}
 
@@ -87,12 +93,10 @@ func (s *statusServer) IndexUsageStatistics(
 	// It's unfortunate that we cannot use paginatedIterateNodes here because we
 	// need to aggregate all stats before returning. Returning a partial result
 	// yields an incorrect result.
-	if err := iterateNodes(ctx,
-		s.serverIterator, s.stopper,
+	if err := s.iterateNodes(ctx,
 		"requesting index usage stats",
 		noTimeout,
-		s.dialNode,
-		fetchIndexUsageStats, aggFn, errFn); err != nil {
+		dialFn, fetchIndexUsageStats, aggFn, errFn); err != nil {
 		return nil, err
 	}
 
@@ -127,7 +131,7 @@ func (s *statusServer) ResetIndexUsageStats(
 	ctx = authserver.ForwardSQLIdentityThroughRPCCalls(ctx)
 	ctx = s.AnnotateCtx(ctx)
 
-	if err := s.privilegeChecker.RequireRepairClusterPermission(ctx); err != nil {
+	if err := s.privilegeChecker.RequireRepairClusterMetadataPermission(ctx); err != nil {
 		return nil, err
 	}
 
@@ -167,7 +171,13 @@ func (s *statusServer) ResetIndexUsageStats(
 		return statusClient.ResetIndexUsageStats(ctx, localReq)
 	}
 
-	resetIndexUsageStats := func(ctx context.Context, statusClient serverpb.StatusClient, _ roachpb.NodeID) (interface{}, error) {
+	dialFn := func(ctx context.Context, nodeID roachpb.NodeID) (interface{}, error) {
+		client, err := s.dialNode(ctx, nodeID)
+		return client, err
+	}
+
+	resetIndexUsageStats := func(ctx context.Context, client interface{}, _ roachpb.NodeID) (interface{}, error) {
+		statusClient := client.(serverpb.StatusClient)
 		return statusClient.ResetIndexUsageStats(ctx, localReq)
 	}
 
@@ -180,12 +190,10 @@ func (s *statusServer) ResetIndexUsageStats(
 		combinedError = errors.CombineErrors(combinedError, nodeFnError)
 	}
 
-	if err := iterateNodes(ctx,
-		s.serverIterator, s.stopper,
+	if err := s.iterateNodes(ctx,
 		"Resetting index usage stats",
 		noTimeout,
-		s.dialNode,
-		resetIndexUsageStats, aggFn, errFn); err != nil {
+		dialFn, resetIndexUsageStats, aggFn, errFn); err != nil {
 		return nil, err
 	}
 
@@ -224,7 +232,7 @@ func getTableIndexUsageStats(
 		return nil, err
 	}
 
-	tableID, dbID, err := getIDFromDatabaseAndTableName(ctx, req.Database, req.Table, ie, userName)
+	tableID, err := getTableIDFromDatabaseAndTableName(ctx, req.Database, req.Table, ie, userName)
 
 	if err != nil {
 		return nil, err
@@ -329,42 +337,40 @@ func getTableIndexUsageStats(
 		Statistics:           idxUsageStats,
 		LastReset:            &lastReset,
 		IndexRecommendations: idxRecommendations,
-		DatabaseID:           int32(dbID),
 	}
 
 	return resp, nil
 }
 
-// getIDFromDatabaseAndTableName is a helper function that retrieves
+// getTableIDFromDatabaseAndTableName is a helper function that retrieves
 // the tableID given the database and table name. The tablename must be of
 // the form schema.table if a schema exists.
-func getIDFromDatabaseAndTableName(
+func getTableIDFromDatabaseAndTableName(
 	ctx context.Context,
 	database string,
 	table string,
 	ie isql.Executor,
 	userName username.SQLUsername,
-) (tableID, databaseID int, err error) {
+) (int, error) {
 	// Fully qualified table name is either database.table or database.schema.table
 	fqtName, err := getFullyQualifiedTableName(database, table)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 
 	row, err := ie.QueryRowEx(
 		ctx, "get-table-id", nil,
 		sessiondata.InternalExecutorOverride{User: userName, Database: database},
-		"SELECT $1::regclass::oid, crdb_internal.get_database_id($2)", table, database,
+		"SELECT $1::regclass::oid", table,
 	)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	if row == nil {
-		return 0, 0, errors.Newf("expected to find table ID for table %s, but found nothing", fqtName)
+		return 0, errors.Newf("expected to find table ID for table %s, but found nothing", fqtName)
 	}
-	tableID = int(tree.MustBeDOid(row[0]).Oid)
-	databaseID = int(tree.MustBeDInt(row[1]))
-	return tableID, databaseID, nil
+	tableID := tree.MustBeDOid(row[0]).Oid
+	return int(tableID), nil
 }
 
 func getDatabaseIndexRecommendations(

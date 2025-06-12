@@ -11,11 +11,8 @@ import (
 	"math/bits"
 	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
-	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/multiregion"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
@@ -24,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"github.com/lib/pq/oid"
 )
@@ -40,11 +36,6 @@ type SchemaID int32
 // that is present in the bitmap is represented by a bit that is shifted by
 // 1 << privilege.Kind, so that multiple privileges can be stored.
 type privilegeBitmap uint64
-
-type routineDep struct {
-	overload        *tree.Overload
-	invocationTypes []*types.T
-}
 
 // Metadata assigns unique ids to the columns, tables, and other metadata used
 // for global identification within the scope of a particular query. These ids
@@ -126,8 +117,8 @@ type Metadata struct {
 	dataSourceDeps map[cat.StableID]cat.DataSource
 
 	// routineDeps stores each user-defined function and stored procedure overload
-	// (as well as the invocation signature) that the query depends on.
-	routineDeps map[cat.StableID]routineDep
+	// that the query depends on.
+	routineDeps map[cat.StableID]*tree.Overload
 
 	// objectRefsByName stores each unique name that the query uses to reference
 	// each object. It is needed because changes to the search path may change
@@ -143,15 +134,6 @@ type Metadata struct {
 	// path cause a function call to be resolved to a UDF with the same signature
 	// as a builtin function.
 	builtinRefsByName map[tree.UnresolvedName]struct{}
-
-	// rlsMeta stores row-level security policy metadata enforced during query
-	// execution.
-	rlsMeta RowLevelSecurityMeta
-
-	digest struct {
-		syncutil.Mutex
-		depDigest cat.DependencyDigest
-	}
 
 	// NOTE! When adding fields here, update Init (if reusing allocated
 	// data structures is desired), CopyFrom and TestMetadata.
@@ -196,7 +178,7 @@ func (md *Metadata) Init() {
 
 	routineDeps := md.routineDeps
 	if routineDeps == nil {
-		routineDeps = make(map[cat.StableID]routineDep)
+		routineDeps = make(map[cat.StableID]*tree.Overload)
 	}
 	for id := range md.routineDeps {
 		delete(md.routineDeps, id)
@@ -254,7 +236,7 @@ func (md *Metadata) CopyFrom(from *Metadata, copyScalarFn func(Expr) Expr) {
 		len(md.sequences) != 0 || len(md.views) != 0 || len(md.userDefinedTypes) != 0 ||
 		len(md.userDefinedTypesSlice) != 0 || len(md.dataSourceDeps) != 0 ||
 		len(md.routineDeps) != 0 || len(md.objectRefsByName) != 0 || len(md.privileges) != 0 ||
-		len(md.builtinRefsByName) != 0 || md.rlsMeta.IsInitialized {
+		len(md.builtinRefsByName) != 0 {
 		panic(errors.AssertionFailedf("CopyFrom requires empty destination"))
 	}
 	md.schemas = append(md.schemas, from.schemas...)
@@ -299,7 +281,7 @@ func (md *Metadata) CopyFrom(from *Metadata, copyScalarFn func(Expr) Expr) {
 
 	for id, overload := range from.routineDeps {
 		if md.routineDeps == nil {
-			md.routineDeps = make(map[cat.StableID]routineDep)
+			md.routineDeps = make(map[cat.StableID]*tree.Overload)
 		}
 		md.routineDeps[id] = overload
 	}
@@ -333,8 +315,6 @@ func (md *Metadata) CopyFrom(from *Metadata, copyScalarFn func(Expr) Expr) {
 
 	// We cannot copy the bound expressions; they must be rebuilt in the new memo.
 	md.withBindings = nil
-
-	md.rlsMeta = from.rlsMeta.Copy()
 }
 
 // MDDepName stores either the unresolved DataSourceName or the StableID from
@@ -375,56 +355,6 @@ func (md *Metadata) AddDependency(name MDDepName, ds cat.DataSource, priv privil
 	}
 }
 
-// dependencyDigestEquals checks if the stored dependency digest matches the
-// current dependency digest.
-func (md *Metadata) dependencyDigestEquals(currentDigest *cat.DependencyDigest) bool {
-	md.digest.Lock()
-	defer md.digest.Unlock()
-	return currentDigest.Equal(&md.digest.depDigest)
-}
-
-// leaseObjectsInMetaData ensures that all references within this metadata
-// are leased to prevent schema changes from modifying the underlying objects
-// excessively. Additionally, the metadata version and leased descriptor versions
-// are compared.
-func (md *Metadata) leaseObjectsInMetaData(
-	ctx context.Context, optCatalog cat.Catalog,
-) (leasedVersionMatchesMetadata bool, err error) {
-	for id, ds := range md.dataSourceDeps {
-		ver, err := optCatalog.LeaseByStableID(ctx, id)
-		if err != nil {
-			return false, err
-		}
-		if ver != ds.Version() {
-			return false, nil
-		}
-	}
-	for id, rd := range md.routineDeps {
-		ver, err := optCatalog.LeaseByStableID(ctx, id)
-		if err != nil {
-			return false, err
-		}
-		if ver != rd.overload.Version {
-			return false, nil
-		}
-	}
-	for _, typ := range md.userDefinedTypesSlice {
-		id := typedesc.UserDefinedTypeOIDToID(typ.Oid())
-		// Not a user defined type.
-		if id == catid.InvalidDescID {
-			continue
-		}
-		ver, err := optCatalog.LeaseByStableID(ctx, cat.StableID(id))
-		if err != nil {
-			return false, err
-		}
-		if ver != uint64(typ.TypeMeta.Version) {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
 // CheckDependencies resolves (again) each database object on which this
 // metadata depends, in order to check the following conditions:
 //  1. The object has not been modified.
@@ -442,24 +372,6 @@ func (md *Metadata) leaseObjectsInMetaData(
 func (md *Metadata) CheckDependencies(
 	ctx context.Context, evalCtx *eval.Context, optCatalog cat.Catalog,
 ) (upToDate bool, err error) {
-	// If the query is AOST we must check all the dependencies, since the descriptors
-	// may have been different in the past. Otherwise, the dependency digest
-	// is sufficient.
-	currentDigest := optCatalog.GetDependencyDigest()
-	if evalCtx.SessionData().CatalogDigestStalenessCheckEnabled &&
-		evalCtx.Settings.Version.IsActive(ctx, clusterversion.V25_1) &&
-		evalCtx.AsOfSystemTime == nil &&
-		!evalCtx.Txn.ReadTimestampFixed() &&
-		md.dependencyDigestEquals(&currentDigest) {
-		// Lease the underlying descriptors for this metadata. If we fail to lease
-		// any descriptors attempt to resolve them by name through the more expensive
-		// code path below.
-		upToDate, err = md.leaseObjectsInMetaData(ctx, optCatalog)
-		if err == nil {
-			return upToDate, nil
-		}
-	}
-
 	// Check that no referenced data sources have changed.
 	for id, dataSource := range md.dataSourceDeps {
 		var toCheck cat.DataSource
@@ -502,8 +414,7 @@ func (md *Metadata) CheckDependencies(
 
 	// Check that no referenced user defined functions or stored procedures have
 	// changed.
-	for id, dep := range md.routineDeps {
-		overload := dep.overload
+	for id, overload := range md.routineDeps {
 		if names, ok := md.objectRefsByName[id]; ok {
 			for _, name := range names {
 				definition, err := optCatalog.ResolveFunction(
@@ -513,41 +424,16 @@ func (md *Metadata) CheckDependencies(
 				if err != nil {
 					return false, maybeSwallowMetadataResolveErr(err)
 				}
-				routineObj := tree.RoutineObj{
-					FuncName: name.ToRoutineName(),
-					Params:   make(tree.RoutineParams, len(dep.invocationTypes)),
-				}
-				for i := 0; i < len(routineObj.Params); i++ {
-					routineObj.Params[i] = tree.RoutineParam{
-						Type: dep.invocationTypes[i],
-						// Since we're not in the DROP context, it's sufficient
-						// to specify only the input parameters.
-						Class: tree.RoutineParamIn,
-						// Note that we don't need to specify the DefaultVal
-						// here because invocationTypes specifies the argument
-						// schema that was actually used. Instead, we will ask
-						// for matching overloads to use their DEFAULT
-						// expressions if necessary.
-					}
-				}
 				// NOTE: We match for all types of routines here, including
 				// procedures so that if a function has been dropped and a
 				// procedure is created with the same signature, we do not get a
 				// "<func> is not a function" error here. Instead, we'll return
 				// false and attempt to rebuild the statement.
-				routineType := tree.UDFRoutine | tree.BuiltinRoutine | tree.ProcedureRoutine
-				// Always allowing using DEFAULT expressions for input
-				// parameters since the signature of the routine might have
-				// changed even though the invocation remained the same.
-				const tryDefaultExprs = true
 				toCheck, err := definition.MatchOverload(
-					ctx,
-					optCatalog,
-					&routineObj,
+					overload.Types.Types(),
+					name.Schema(),
 					&evalCtx.SessionData().SearchPath,
-					routineType,
-					false, /* inDropContext */
-					tryDefaultExprs,
+					tree.UDFRoutine|tree.BuiltinRoutine|tree.ProcedureRoutine,
 				)
 				if err != nil || toCheck.Oid != overload.Oid || toCheck.Version != overload.Version {
 					return false, maybeSwallowMetadataResolveErr(err)
@@ -586,24 +472,12 @@ func (md *Metadata) CheckDependencies(
 	if err := md.checkDataSourcePrivileges(ctx, optCatalog); err != nil {
 		return false, err
 	}
-	for _, dep := range md.routineDeps {
-		if err := optCatalog.CheckExecutionPrivilege(ctx, dep.overload.Oid, optCatalog.GetCurrentUser()); err != nil {
+	for _, overload := range md.routineDeps {
+		if err := optCatalog.CheckExecutionPrivilege(ctx, overload.Oid); err != nil {
 			return false, err
 		}
 	}
 
-	// Check for staleness from a row-level security point of view.
-	if upToDate, err := md.checkRLSDependencies(ctx, evalCtx, optCatalog); err != nil || !upToDate {
-		return upToDate, err
-	}
-
-	// Update the digest after a full dependency check, since our fast
-	// check did not succeed.
-	if evalCtx.SessionData().CatalogDigestStalenessCheckEnabled {
-		md.digest.Lock()
-		md.digest.depDigest = currentDigest
-		md.digest.Unlock()
-	}
 	return true, nil
 }
 
@@ -639,7 +513,7 @@ func (md *Metadata) checkDataSourcePrivileges(ctx context.Context, optCatalog ca
 			// privileges do not need to be checked). Ignore the "zero privilege".
 			priv := privilege.Kind(bits.TrailingZeros32(uint32(privs)))
 			if priv != 0 {
-				if err := optCatalog.CheckPrivilege(ctx, dataSource, optCatalog.GetCurrentUser(), priv); err != nil {
+				if err := optCatalog.CheckPrivilege(ctx, dataSource, priv); err != nil {
 					return err
 				}
 			}
@@ -696,16 +570,13 @@ func (md *Metadata) HasUserDefinedRoutines() bool {
 // metadata for this query. If the routine was resolved by name, the name will
 // also be tracked.
 func (md *Metadata) AddUserDefinedRoutine(
-	overload *tree.Overload, invocationTypes []*types.T, name *tree.UnresolvedObjectName,
+	overload *tree.Overload, name *tree.UnresolvedObjectName,
 ) {
 	if overload.Type == tree.BuiltinRoutine {
 		return
 	}
 	id := cat.StableID(catid.UserDefinedOIDToID(overload.Oid))
-	md.routineDeps[id] = routineDep{
-		overload:        overload,
-		invocationTypes: invocationTypes,
-	}
+	md.routineDeps[id] = overload
 	if name != nil {
 		md.objectRefsByName[id] = append(md.objectRefsByName[id], name)
 	}
@@ -716,7 +587,7 @@ func (md *Metadata) AddUserDefinedRoutine(
 // non-deterministic.
 func (md *Metadata) ForEachUserDefinedRoutine(fn func(overload *tree.Overload)) {
 	for _, dep := range md.routineDeps {
-		fn(dep.overload)
+		fn(dep)
 	}
 }
 
@@ -921,11 +792,6 @@ func (md *Metadata) NumColumns() int {
 	return len(md.cols)
 }
 
-// MaxColumn returns the maximum column ID tracked by this Metadata instance.
-func (md *Metadata) MaxColumn() ColumnID {
-	return ColumnID(len(md.cols))
-}
-
 // ColumnMeta looks up the metadata for the column associated with the given
 // column id. The same column can be added multiple times to the query metadata
 // and associated with multiple column ids.
@@ -944,7 +810,7 @@ func (md *Metadata) ColumnMeta(colID ColumnID) *ColumnMeta {
 //     name: "tabName.columnAlias". If alwaysQualify is true, then the column
 //     alias is always prefixed with the table alias.
 func (md *Metadata) QualifiedAlias(
-	ctx context.Context, colID ColumnID, fullyQualify, alwaysQualify bool, catalog cat.Catalog,
+	colID ColumnID, fullyQualify, alwaysQualify bool, catalog cat.Catalog,
 ) string {
 	cm := md.ColumnMeta(colID)
 	if cm.Table == 0 {
@@ -986,7 +852,7 @@ func (md *Metadata) QualifiedAlias(
 
 	var sb strings.Builder
 	if fullyQualify {
-		tn, err := catalog.FullyQualifiedName(ctx, md.TableMeta(cm.Table).Table)
+		tn, err := catalog.FullyQualifiedName(context.TODO(), md.TableMeta(cm.Table).Table)
 		if err != nil {
 			panic(err)
 		}
@@ -1001,9 +867,7 @@ func (md *Metadata) QualifiedAlias(
 
 // UpdateTableMeta allows the caller to replace the cat.Table struct that a
 // TableMeta instance stores.
-func (md *Metadata) UpdateTableMeta(
-	ctx context.Context, evalCtx *eval.Context, tables map[cat.StableID]cat.Table,
-) {
+func (md *Metadata) UpdateTableMeta(evalCtx *eval.Context, tables map[cat.StableID]cat.Table) {
 	for i := range md.tables {
 		oldTable := md.tables[i].Table
 		if newTable, ok := tables[oldTable.ID()]; ok {
@@ -1011,8 +875,7 @@ func (md *Metadata) UpdateTableMeta(
 			// will have extra inverted columns added. Add any new inverted columns to
 			// the metadata.
 			for j, n := oldTable.ColumnCount(), newTable.ColumnCount(); j < n; j++ {
-				colID := md.AddColumn(string(newTable.Column(j).ColName()), types.Bytes)
-				md.ColumnMeta(colID).Table = md.tables[i].MetaID
+				md.AddColumn(string(newTable.Column(j).ColName()), types.Bytes)
 			}
 			if newTable.ColumnCount() > oldTable.ColumnCount() {
 				// If we added any new columns, we need to recalculate the not null
@@ -1020,7 +883,7 @@ func (md *Metadata) UpdateTableMeta(
 				md.SetTableAnnotation(md.tables[i].MetaID, NotNullAnnID, nil)
 			}
 			md.tables[i].Table = newTable
-			md.tables[i].CacheIndexPartitionLocalities(ctx, evalCtx)
+			md.tables[i].CacheIndexPartitionLocalities(evalCtx)
 		}
 	}
 }
@@ -1114,13 +977,6 @@ func (md *Metadata) WithBinding(id WithID) Expr {
 	return res
 }
 
-// HasWithBinding returns true if the given WithID is already bound to an
-// expression.
-func (md *Metadata) HasWithBinding(id WithID) bool {
-	_, ok := md.withBindings[id]
-	return ok
-}
-
 // ForEachWithBinding calls fn with each bound (WithID, Expr) pair in the
 // metadata.
 func (md *Metadata) ForEachWithBinding(fn func(WithID, Expr)) {
@@ -1163,7 +1019,7 @@ func (md *Metadata) TestingRoutineDepsEqual(other *Metadata) bool {
 		if !ok {
 			return false
 		}
-		if dep.overload != otherDep.overload || len(dep.invocationTypes) != len(otherDep.invocationTypes) {
+		if dep != otherDep {
 			return false
 		}
 	}
@@ -1178,78 +1034,4 @@ func (md *Metadata) TestingObjectRefsByName() map[cat.StableID][]*tree.Unresolve
 // TestingPrivileges exposes the privileges for testing.
 func (md *Metadata) TestingPrivileges() map[cat.StableID]privilegeBitmap {
 	return md.privileges
-}
-
-// SetRLSEnabled will update the metadata to indicate we came across a table
-// that had row-level security enabled.
-func (md *Metadata) SetRLSEnabled(
-	user username.SQLUsername,
-	isAdmin bool,
-	tableID TableID,
-	isTableOwnerAndNotForced, bypassRLS bool,
-) {
-	md.rlsMeta.MaybeInit(user, isAdmin)
-	md.rlsMeta.AddTableUse(tableID, isTableOwnerAndNotForced, bypassRLS)
-}
-
-// ClearRLSEnabled will clear out the initialized state for the rls meta. This
-// is used as a test helper.
-func (md *Metadata) ClearRLSEnabled() {
-	md.rlsMeta.Clear()
-}
-
-// GetRLSMeta returns the rls metadata struct
-func (md *Metadata) GetRLSMeta() *RowLevelSecurityMeta {
-	return &md.rlsMeta
-}
-
-// checkRLSDependencies will check the metadata for row-level security
-// dependencies to see if it is up to date.
-func (md *Metadata) checkRLSDependencies(
-	ctx context.Context, evalCtx *eval.Context, optCatalog cat.Catalog,
-) (upToDate bool, err error) {
-	// rlsMeta is lazily updated. If we didn't initialize it, then we didn't come
-	// across any RLS enabled tables. So, from a rls point of view the memo is up
-	// to date.
-	if !md.rlsMeta.IsInitialized {
-		return true, nil
-	}
-
-	// RLS policies that get applied could differ vastly based on the role. So, if
-	// the user is different, we cannot trust anything in the current memo.
-	if md.rlsMeta.User != evalCtx.SessionData().User() {
-		return false, nil
-	}
-
-	// If the role membership changes, resulting in the user gaining or losing
-	// admin privileges, the memo is considered stale. Admins are exempt from
-	// RLS policies.
-	if hasAdminRole, err := optCatalog.HasAdminRole(ctx); err != nil {
-		return false, err
-	} else if md.rlsMeta.HasAdminRole != hasAdminRole {
-		return false, nil
-	}
-
-	// Check if the current user has a role option/privilege that changed
-	// affecting the exemption of policies.
-	for i := range md.tables {
-		table := &md.tables[i]
-		policiesApplied, ok := md.rlsMeta.PoliciesApplied[table.MetaID]
-		if !ok {
-			continue
-		}
-		bypassRLS, err := optCatalog.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.BYPASSRLS, md.rlsMeta.User)
-		if err != nil {
-			return false, err
-		}
-		if bypassRLS != policiesApplied.BypassRLS {
-			return false, nil
-		}
-	}
-
-	// We do not check for specific policy changes or exemption due to FORCE RLS.
-	// Any time a policy or table attribute such as forced is modified on a table,
-	// a new version of the table descriptor is created. The metadata dependency
-	// check already accounts for changes in the table descriptor version.
-	return true, nil
 }

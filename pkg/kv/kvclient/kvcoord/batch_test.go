@@ -371,7 +371,7 @@ func TestTruncate(t *testing.T) {
 				}
 
 				for i, test := range testCases {
-					goldenOriginal := &kvpb.BatchRequest{}
+					goldenOriginal := kvpb.BatchRequest{}
 					for _, ks := range test.keys {
 						if len(ks[1]) > 0 {
 							goldenOriginal.Add(&kvpb.ResolveIntentRangeRequest{
@@ -387,7 +387,7 @@ func TestTruncate(t *testing.T) {
 						}
 					}
 
-					original := &kvpb.BatchRequest{Requests: make([]kvpb.RequestUnion, len(goldenOriginal.Requests))}
+					original := kvpb.BatchRequest{Requests: make([]kvpb.RequestUnion, len(goldenOriginal.Requests))}
 					for i, request := range goldenOriginal.Requests {
 						original.Requests[i].MustSetInner(request.GetInner().ShallowCopy())
 					}

@@ -3,20 +3,6 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import moment from "moment-timezone";
-
-import {
-  ContentionDetails,
-  InsightExecEnum,
-  StatementStatus,
-  StmtInsightEvent,
-} from "src/insights/types";
-import { INTERNAL_APP_NAME_PREFIX } from "src/util/constants";
-
-import { getInsightsFromProblemsAndCauses } from "../insights/utils";
-import { FixFingerprintHexValue } from "../util";
-
-import { getContentionDetailsApi } from "./contentionApi";
 import {
   SqlApiResponse,
   executeInternalSql,
@@ -27,6 +13,17 @@ import {
   sqlResultsAreEmpty,
   SqlTxnResult,
 } from "./sqlApi";
+import {
+  ContentionDetails,
+  getInsightsFromProblemsAndCauses,
+  InsightExecEnum,
+  StatementStatus,
+  StmtInsightEvent,
+} from "src/insights";
+import moment from "moment-timezone";
+import { INTERNAL_APP_NAME_PREFIX } from "src/util/constants";
+import { FixFingerprintHexValue } from "../util";
+import { getContentionDetailsApi } from "./contentionApi";
 
 export type StmtInsightsReq = {
   start?: moment.Moment;
@@ -54,7 +51,6 @@ export type StmtInsightsResponseRow = {
   priority: string;
   retries: number;
   exec_node_ids: number[];
-  kv_node_ids: number[];
   contention: string; // interval
   contention_events: ContentionDetails[];
   last_retry_reason?: string;
@@ -66,7 +62,6 @@ export type StmtInsightsResponseRow = {
   error_code: string;
   last_error_redactable: string;
   status: StatementStatus;
-  query_tags: Array<{ name: string; value: string }>;
 };
 
 const stmtColumns = `
@@ -88,7 +83,6 @@ rows_written,
 priority,
 retries,
 exec_node_ids,
-kv_node_ids,
 contention,
 last_retry_reason,
 causes,
@@ -98,37 +92,42 @@ plan_gist,
 cpu_sql_nanos,
 error_code,
 last_error_redactable,
-status,
-query_tags
+status
 `;
 
-const stmtInsightsOverviewQuery = (req?: StmtInsightsReq): string => {
-  if (req?.stmtExecutionID) {
-    return `SELECT ${stmtColumns} FROM crdb_internal.cluster_execution_insights WHERE stmt_id = '${req.stmtExecutionID}'`;
+const stmtInsightsOverviewQuery = (filters?: StmtInsightsReq): string => {
+  if (filters?.stmtExecutionID) {
+    return `
+SELECT ${stmtColumns} FROM crdb_internal.cluster_execution_insights
+WHERE stmt_id = '${filters.stmtExecutionID}'`;
   }
 
   let whereClause = `
   WHERE app_name NOT LIKE '${INTERNAL_APP_NAME_PREFIX}%'
   AND problem != 'None'
   AND txn_id != '00000000-0000-0000-0000-000000000000'`;
-  if (req?.start) {
+  if (filters?.start) {
     whereClause =
-      whereClause + ` AND start_time >= '${req.start.toISOString()}'`;
+      whereClause + ` AND start_time >= '${filters.start.toISOString()}'`;
   }
-  if (req?.end) {
-    whereClause = whereClause + ` AND end_time <= '${req.end.toISOString()}'`;
+  if (filters?.end) {
+    whereClause =
+      whereClause + ` AND end_time <= '${filters.end.toISOString()}'`;
   }
-  if (req?.stmtFingerprintId) {
+  if (filters?.stmtFingerprintId) {
     whereClause =
       whereClause +
-      ` AND encode(stmt_fingerprint_id, 'hex') = '${req.stmtFingerprintId}'`;
+      ` AND encode(stmt_fingerprint_id, 'hex') = '${filters.stmtFingerprintId}'`;
   }
 
-  return `SELECT ${stmtColumns} FROM
+  return `
+SELECT ${stmtColumns} FROM
    (
      SELECT DISTINCT ON (stmt_fingerprint_id, problem, causes)
        *
-     FROM crdb_internal.cluster_execution_insights ${whereClause}
+     FROM
+       crdb_internal.cluster_execution_insights
+         ${whereClause}
      ORDER BY stmt_fingerprint_id, problem, causes, end_time DESC
    )`;
 };
@@ -208,11 +207,10 @@ export function formatStmtInsights(
   return response.rows.map((row: StmtInsightsResponseRow) => {
     const start = moment.utc(row.start_time);
     const end = moment.utc(row.end_time);
-    const r = row as StmtInsightsResponseRow;
 
     return {
-      transactionExecutionID: r.txn_id,
-      transactionFingerprintID: FixFingerprintHexValue(r.txn_fingerprint_id),
+      transactionExecutionID: row.txn_id,
+      transactionFingerprintID: FixFingerprintHexValue(row.txn_fingerprint_id),
       implicitTxn: row.implicit_txn,
       databaseName: row.database_name,
       application: row.app_name,
@@ -225,8 +223,8 @@ export function formatStmtInsights(
       startTime: start,
       endTime: end,
       elapsedTimeMillis: end.diff(start, "milliseconds"),
-      statementExecutionID: r.stmt_id,
-      statementFingerprintID: FixFingerprintHexValue(r.stmt_fingerprint_id),
+      statementExecutionID: row.stmt_id,
+      statementFingerprintID: FixFingerprintHexValue(row.stmt_fingerprint_id),
       isFullScan: row.full_scan,
       rowsRead: row.rows_read,
       rowsWritten: row.rows_written,
@@ -243,7 +241,6 @@ export function formatStmtInsights(
       errorCode: row.error_code,
       errorMsg: row.last_error_redactable,
       status: row.status,
-      queryTags: row.query_tags || [],
     } as StmtInsightEvent;
   });
 }

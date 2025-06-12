@@ -56,11 +56,6 @@ type SampleReservoir struct {
 	// each row. Note that the sampled rows still contain all columns, but
 	// any columns not part of this set are given a null value.
 	sampleCols intsets.Fast
-
-	// scratch is used as the staging area for the new row to be copied into the
-	// reservoir, before we know whether the memory reservation for it will be
-	// approved.
-	scratch rowenc.EncDatumRow
 }
 
 var _ heap.Interface = &SampleReservoir{}
@@ -80,7 +75,6 @@ func (sr *SampleReservoir) Init(
 	sr.colTypes = colTypes
 	sr.memAcc = memAcc
 	sr.sampleCols = sampleCols
-	sr.scratch = make(rowenc.EncDatumRow, len(colTypes))
 }
 
 // Disable releases the memory of this SampleReservoir and sets its capacity
@@ -193,6 +187,9 @@ func (sr *SampleReservoir) SampleRow(
 		// Replace the max rank if ours is smaller.
 		if len(sr.samples) > 0 && rank < sr.samples[0].Rank {
 			if err := sr.copyRow(ctx, evalCtx, sr.samples[0].Row, row); err != nil {
+				// WARNING: At this point sr.samples[0].Row might have a mix of old and
+				// new values. The caller must call heap.Pop() to keep using the
+				// reservoir.
 				return err
 			}
 			sr.samples[0].Rank = rank
@@ -240,14 +237,9 @@ func (sr *SampleReservoir) GetNonNullDatums(
 func (sr *SampleReservoir) copyRow(
 	ctx context.Context, evalCtx *eval.Context, dst, src rowenc.EncDatumRow,
 ) error {
-	// First, we calculate how much memory has already been accounted for the
-	// "before" row (row that we're about to overwrite) as well as how much
-	// space we need for the "after" row (row that we're about to keep).
-	// Simultaneously, we're staging the "after" row into the scratch space.
-	var beforeRowSize, afterRowSize int64
 	for i := range src {
 		if !sr.sampleCols.Contains(i) {
-			sr.scratch[i].Datum = tree.DNull
+			dst[i].Datum = tree.DNull
 			continue
 		}
 		// Copy only the decoded datum to ensure that we remove any reference to
@@ -257,27 +249,26 @@ func (sr *SampleReservoir) copyRow(
 		if err := src[i].EnsureDecoded(sr.colTypes[i], nil /* da */); err != nil {
 			return err
 		}
-		beforeRowSize += int64(dst[i].Size())
-		sr.scratch[i] = rowenc.DatumToEncDatum(sr.colTypes[i], src[i].Datum)
-		afterSize := sr.scratch[i].Size()
+		beforeSize := dst[i].Size()
+		dst[i] = rowenc.DatumToEncDatum(sr.colTypes[i], src[i].Datum)
+		afterSize := dst[i].Size()
 
-		// If the datum is too large, truncate it.
+		// If the datum is too large, truncate it (this also performs a copy).
+		// Otherwise, just perform a copy.
 		if afterSize > uintptr(maxBytesPerSample) {
-			sr.scratch[i].Datum = truncateDatum(evalCtx, sr.scratch[i].Datum, maxBytesPerSample)
-			afterSize = sr.scratch[i].Size()
+			dst[i].Datum = truncateDatum(evalCtx, dst[i].Datum, maxBytesPerSample)
+			afterSize = dst[i].Size()
+		} else {
+			dst[i].Datum = deepCopyDatum(dst[i].Datum)
 		}
-		afterRowSize += int64(afterSize)
-	}
-	// Now that we know the exact row sizes we're dealing with, we perform the
-	// memory accounting.
-	if sr.memAcc != nil {
-		if err := sr.memAcc.Resize(ctx, beforeRowSize, afterRowSize); err != nil {
-			return err
+
+		// Perform memory accounting.
+		if sr.memAcc != nil {
+			if err := sr.memAcc.Resize(ctx, int64(beforeSize), int64(afterSize)); err != nil {
+				return err
+			}
 		}
 	}
-	// The memory reservation, if needed, was approved, so we're ok to keep the
-	// row.
-	copy(dst, sr.scratch)
 	return nil
 }
 
@@ -345,6 +336,43 @@ func truncateString(s string, maxBytes int) string {
 	// Copy the truncated string so that the memory from the longer string can
 	// be garbage collected.
 	b := make([]byte, last)
+	copy(b, s)
+	return string(b)
+}
+
+// deepCopyDatum performs a deep copy for datums such as DString to remove any
+// references to the kv batch and allow the batch to be garbage collected.
+// Note: this function is currently only called for key-encoded datums. Update
+// the calling function if there is a need to call this for value-encoded
+// datums as well.
+func deepCopyDatum(d tree.Datum) tree.Datum {
+	switch t := d.(type) {
+	case *tree.DString:
+		return tree.NewDString(deepCopyString(string(*t)))
+
+	case *tree.DCollatedString:
+		return &tree.DCollatedString{
+			Contents: deepCopyString(t.Contents),
+			Locale:   t.Locale,
+			Key:      t.Key,
+		}
+
+	case *tree.DOidWrapper:
+		return &tree.DOidWrapper{
+			Wrapped: deepCopyDatum(t.Wrapped),
+			Oid:     t.Oid,
+		}
+
+	default:
+		// We do not collect stats on JSON, and other types do not require a deep
+		// copy (or they are already copied during decoding).
+		return d
+	}
+}
+
+// deepCopyString performs a deep copy of a string.
+func deepCopyString(s string) string {
+	b := make([]byte, len(s))
 	copy(b, s)
 	return string(b)
 }

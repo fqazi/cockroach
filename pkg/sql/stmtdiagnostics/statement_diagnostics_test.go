@@ -140,7 +140,7 @@ func TestDiagnosticsRequest(t *testing.T) {
 	// Verify that EXECUTE triggers diagnostics collection (#66048).
 	t.Run("execute", func(t *testing.T) {
 		id, err := registry.InsertRequestInternal(
-			ctx, "SELECT x + _ FROM test", anyPlan, noAntiMatch,
+			ctx, "SELECT x + $1 FROM test", anyPlan, noAntiMatch,
 			sampleAll, noLatencyThreshold, noExpiration,
 		)
 		require.NoError(t, err)
@@ -215,7 +215,7 @@ func TestDiagnosticsRequest(t *testing.T) {
 	t.Run("conditional with concurrency", func(t *testing.T) {
 		minExecutionLatency := 100 * time.Millisecond
 		reqID, err := registry.InsertRequestInternal(
-			ctx, "SELECT pg_sleep(_)", anyPlan, noAntiMatch,
+			ctx, "SELECT pg_sleep($1)", anyPlan, noAntiMatch,
 			sampleAll, minExecutionLatency, noExpiration,
 		)
 		require.NoError(t, err)
@@ -479,7 +479,7 @@ func TestDiagnosticsRequest(t *testing.T) {
 		runner.Exec(t, "ANALYZE small;")
 		runner.Exec(t, "CREATE TABLE large (v INT, INDEX (v));")
 		runner.Exec(t, "INSERT INTO large VALUES (1);")
-		runner.Exec(t, "INSERT INTO large SELECT 2 FROM generate_series(1, 100);")
+		runner.Exec(t, "INSERT INTO large SELECT 2 FROM generate_series(1, 10000);")
 		runner.Exec(t, "ANALYZE large;")
 
 		// query1 results in scan + lookup join whereas query2 does two scans +

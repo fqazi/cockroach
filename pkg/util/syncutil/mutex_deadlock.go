@@ -4,6 +4,7 @@
 // included in the /LICENSE file.
 
 //go:build deadlock
+// +build deadlock
 
 package syncutil
 
@@ -49,10 +50,5 @@ func (rw *RWMutex) AssertRHeld() {
 
 // TryLock is a no-op for deadlock mutexes.
 func (rw *RWMutex) TryLock() bool {
-	return false
-}
-
-// TryRLock is a no-op for deadlock mutexes.
-func (rw *RWMutex) TryRLock() bool {
 	return false
 }

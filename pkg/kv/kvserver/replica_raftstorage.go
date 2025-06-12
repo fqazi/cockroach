@@ -12,159 +12,198 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage/snaprecv"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/readsummary"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
-	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
+	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/redact"
+	"go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 var snapshotIngestAsWriteThreshold = settings.RegisterByteSizeSetting(
 	settings.SystemOnly,
 	"kv.snapshot.ingest_as_write_threshold",
 	"size below which a range snapshot ingestion will be performed as a normal write",
-	metamorphic.ConstantWithTestChoice[int64](
-		"kv.snapshot.ingest_as_write_threshold",
-		100<<10, /* default value is 100KiB */
-		1<<30,   /* 1GiB causes everything to be a normal write */
-		0 /* 0B causes everything to be an ingest */),
-)
+	func() int64 {
+		return int64(util.ConstantWithMetamorphicTestChoice(
+			"kv.snapshot.ingest_as_write_threshold",
+			100<<10, /* default value is 100KiB */
+			1<<30,   /* 1GiB causes everything to be a normal write */
+			0,       /* 0B causes everything to be an ingest */
+		).(int))
+	}())
 
 // replicaRaftStorage implements the raft.Storage interface.
-//
-// All mutating calls to raft.RawNode require that r.mu is held. All read-only
-// calls to raft.RawNode require that r.mu is held at least for reads.
-//
-// All methods implementing raft.Storage are called from within, or on behalf of
-// a RawNode. When called from within RawNode, r.mu is held necessarily (and
-// maybe r.raftMu). Conceptually, r.mu only needs to be locked for reading, but
-// implementation details may require an exclusive lock (see method comments).
-// When called from outside RawNode (on behalf of a RawNode "snapshot"), the
-// caller must hold r.raftMu and/or r.mu.
-//
-// RawNode has the in-memory "unstable" state which services most of its needs.
-// Most RawNode.Step updates are completed in memory, while only holding r.mu.
-//
-// RawNode falls back to reading from Storage when it does not have the needed
-// state in memory. For example, the leader may need to read log entries from
-// storage to construct a log append request for a follower, or a follower may
-// need to interact with its storage upon receiving such a request to check
-// whether the appended log slice is consistent with raft rules.
-//
-// (1) RawNode guarantees that everything it reads from Storage has no in-flight
-// writes. Raft always reads state that it knows to be stable (meaning it does
-// not have pending writes) and, in some cases, also synced / durable. Storage
-// acknowledges completed writes / syncs back to RawNode, under r.mu, so that
-// RawNode can correctly implement this guarantee.
-//
-// (2) The content of raft.Storage is always mutated while holding r.raftMu,
-// which is an un-contended "IO" mutex and is allowed to be held longer. Most
-// writes are extracted from RawNode while holding r.raftMu and r.mu (in the
-// Ready() loop), and handed over to storage under r.raftMu. There are a few
-// cases when CRDB synthesizes the writes (e.g. during a range split / merge, or
-// raft log truncations) under r.raftMu.
-//
-// The guarantees explain why holding only r.mu is sufficient for RawNode or its
-// snapshot to be in a consistent state. Under r.mu, new writes are blocked,
-// because of (2), and by (1) reads never conflict with the in-flight writes.
-//
-// However, r.mu is a widely used mutex, and not recommended for IO. When doing
-// work on behalf RawNode that involves IO (like constructing log appends for a
-// follower), we would like to release r.mu. The two guarantees make it possible
-// to observe a consistent RawNode snapshot while only holding r.raftMu.
-//
-// While both r.raftMu and r.mu are held, we can take a shallow / COW copy of
-// the RawNode or its relevant subset (e.g. the raft log; the Ready struct is
-// also considered such). A subsequent release of r.mu allows RawNode to resume
-// making progress. The raft.Storage does not observe any new writes while
-// r.raftMu is still held, by the guarantee (2). Combined with guarantee (1), it
-// means that both the original and the snapshot RawNode remain consistent. The
-// shallow copy represents a valid past state of the RawNode.
-//
-// All the implementation methods assume that the required locks are held, and
-// don't acquire them. The specific locking requirements are noted in each
-// method's comment. The method names do not follow our "Locked" naming
-// conventions, due to being an implementation of raft.Storage interface from a
-// different package.
-//
-// Many of the methods defined in this file are wrappers around static
-// functions. This is done to facilitate their use from Replica.Snapshot(),
-// where it is important that all the data that goes into the snapshot comes
-// from a consistent view of the database, and not the replica's in-memory state
-// or via a reference to Replica.store.Engine().
 type replicaRaftStorage Replica
 
 var _ raft.Storage = (*replicaRaftStorage)(nil)
 
-// InitialState implements the raft.Storage interface.
-func (r *replicaRaftStorage) InitialState() (raftpb.HardState, raftpb.ConfState, error) {
-	// The call must synchronize with raft IO. Called when raft is initialized
-	// under both r.raftMu and r.mu. We don't technically need r.mu here, but we
-	// know it is held.
-	r.raftMu.AssertHeld()
-	r.mu.AssertHeld()
+// All calls to raft.RawNode require that both Replica.raftMu and
+// Replica.mu are held. All of the functions exposed via the
+// raft.Storage interface will in turn be called from RawNode, so none
+// of these methods may acquire either lock, but they may require
+// their caller to hold one or both locks (even though they do not
+// follow our "Locked" naming convention). Specific locking
+// requirements (e.g. whether r.mu must be held for reading or writing)
+// are noted in each method's comments.
+//
+// Many of the methods defined in this file are wrappers around static
+// functions. This is done to facilitate their use from
+// Replica.Snapshot(), where it is important that all the data that
+// goes into the snapshot comes from a consistent view of the
+// database, and not the replica's in-memory state or via a reference
+// to Replica.store.Engine().
 
+// InitialState implements the raft.Storage interface.
+// InitialState requires that r.mu is held for writing because it requires
+// exclusive access to r.mu.stateLoader.
+func (r *replicaRaftStorage) InitialState() (raftpb.HardState, raftpb.ConfState, error) {
 	ctx := r.AnnotateCtx(context.TODO())
-	hs, err := r.raftMu.stateLoader.LoadHardState(ctx, r.store.TODOEngine())
-	if err != nil {
-		r.reportRaftStorageError(err)
+	hs, err := r.mu.stateLoader.LoadHardState(ctx, r.store.TODOEngine())
+	// For uninitialized ranges, membership is unknown at this point.
+	if raft.IsEmptyHardState(hs) || err != nil {
 		return raftpb.HardState{}, raftpb.ConfState{}, err
 	}
-	// For uninitialized ranges, membership is unknown at this point.
-	if raft.IsEmptyHardState(hs) {
-		return raftpb.HardState{}, raftpb.ConfState{}, nil
-	}
-	// NB: r.mu.state is guarded by both r.raftMu and r.mu.
-	cs := r.shMu.state.Desc.Replicas().ConfState()
+	cs := r.mu.state.Desc.Replicas().ConfState()
 	return hs, cs, nil
 }
 
-// TODO(pav-kv): remove the adapter methods from Entries() to LogSnapshot() below.
-// One way to do it: eliminate raft.Storage interface in favour of separate
-// raft.LogStorage and raft.StateStorage, and pass both to the RawNode constructor.
-
-func (r *replicaRaftStorage) Entries(lo, hi, maxSize uint64) ([]raftpb.Entry, error) {
-	return (*Replica)(r).asLogStorage().Entries(lo, hi, maxSize)
+// Entries implements the raft.Storage interface. Note that maxBytes is advisory
+// and this method will always return at least one entry even if it exceeds
+// maxBytes. Sideloaded proposals count towards maxBytes with their payloads inlined.
+// Entries requires that r.mu is held for writing because it requires exclusive
+// access to r.mu.stateLoader.
+//
+// Entries can return log entries that are not yet stable in durable storage.
+func (r *replicaRaftStorage) Entries(lo, hi uint64, maxBytes uint64) ([]raftpb.Entry, error) {
+	return r.TypedEntries(kvpb.RaftIndex(lo), kvpb.RaftIndex(hi), maxBytes)
 }
 
-func (r *replicaRaftStorage) Term(index uint64) (uint64, error) {
-	return (*Replica)(r).asLogStorage().Term(index)
+func (r *replicaRaftStorage) TypedEntries(
+	lo, hi kvpb.RaftIndex, maxBytes uint64,
+) ([]raftpb.Entry, error) {
+	ctx := r.AnnotateCtx(context.TODO())
+	if r.raftMu.sideloaded == nil {
+		return nil, errors.New("sideloaded storage is uninitialized")
+	}
+	ents, _, loadedSize, err := logstore.LoadEntries(ctx, r.mu.stateLoader.StateLoader, r.store.TODOEngine(), r.RangeID,
+		r.store.raftEntryCache, r.raftMu.sideloaded, lo, hi, maxBytes)
+	r.store.metrics.RaftStorageReadBytes.Inc(int64(loadedSize))
+	return ents, err
 }
 
-func (r *replicaRaftStorage) LastIndex() uint64 {
-	return (*Replica)(r).asLogStorage().LastIndex()
+// raftEntriesLocked requires that r.mu is held for writing.
+func (r *Replica) raftEntriesLocked(
+	lo, hi kvpb.RaftIndex, maxBytes uint64,
+) ([]raftpb.Entry, error) {
+	return (*replicaRaftStorage)(r).TypedEntries(lo, hi, maxBytes)
 }
 
-func (r *replicaRaftStorage) Compacted() uint64 {
-	return (*Replica)(r).asLogStorage().Compacted()
+// invalidLastTerm is an out-of-band value for r.mu.lastTermNotDurable that
+// invalidates lastTermNotDurable caching and forces retrieval of
+// Term(lastIndexNotDurable) from the raftEntryCache/Pebble.
+const invalidLastTerm = 0
+
+// Term implements the raft.Storage interface.
+func (r *replicaRaftStorage) Term(i uint64) (uint64, error) {
+	term, err := r.TypedTerm(kvpb.RaftIndex(i))
+	return uint64(term), err
 }
 
-func (r *replicaRaftStorage) LogSnapshot() raft.LogStorageSnapshot {
-	return (*Replica)(r).asLogStorage().LogSnapshot()
+// TypedTerm requires that r.mu is held for writing because it requires exclusive
+// access to r.mu.stateLoader.
+func (r *replicaRaftStorage) TypedTerm(i kvpb.RaftIndex) (kvpb.RaftTerm, error) {
+	// TODO(nvanbenschoten): should we set r.mu.lastTermNotDurable when
+	//   r.mu.lastIndexNotDurable == i && r.mu.lastTermNotDurable == invalidLastTerm?
+	if r.mu.lastIndexNotDurable == i && r.mu.lastTermNotDurable != invalidLastTerm {
+		return r.mu.lastTermNotDurable, nil
+	}
+	ctx := r.AnnotateCtx(context.TODO())
+	return logstore.LoadTerm(ctx, r.mu.stateLoader.StateLoader, r.store.TODOEngine(), r.RangeID,
+		r.store.raftEntryCache, i)
+}
+
+// raftTermLocked requires that r.mu is locked for writing.
+func (r *Replica) raftTermLocked(i kvpb.RaftIndex) (kvpb.RaftTerm, error) {
+	return (*replicaRaftStorage)(r).TypedTerm(i)
+}
+
+// GetTerm returns the term of the given index in the raft log. It requires that
+// r.mu is not held.
+func (r *Replica) GetTerm(i kvpb.RaftIndex) (kvpb.RaftTerm, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.raftTermLocked(i)
+}
+
+// raftLastIndexRLocked requires that r.mu is held for reading.
+func (r *Replica) raftLastIndexRLocked() kvpb.RaftIndex {
+	return r.mu.lastIndexNotDurable
+}
+
+// LastIndex implements the raft.Storage interface.
+// LastIndex requires that r.mu is held for reading.
+func (r *replicaRaftStorage) LastIndex() (uint64, error) {
+	index, err := r.TypedLastIndex()
+	return uint64(index), err
+}
+
+func (r *replicaRaftStorage) TypedLastIndex() (kvpb.RaftIndex, error) {
+	return (*Replica)(r).raftLastIndexRLocked(), nil
+}
+
+// GetLastIndex returns the index of the last entry in the replica's Raft log.
+func (r *Replica) GetLastIndex() kvpb.RaftIndex {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.raftLastIndexRLocked()
+}
+
+// raftFirstIndexRLocked requires that r.mu is held for reading.
+func (r *Replica) raftFirstIndexRLocked() kvpb.RaftIndex {
+	// TruncatedState is guaranteed to be non-nil.
+	return r.mu.state.TruncatedState.Index + 1
+}
+
+// FirstIndex implements the raft.Storage interface.
+// FirstIndex requires that r.mu is held for reading.
+func (r *replicaRaftStorage) FirstIndex() (uint64, error) {
+	index, err := r.TypedFirstIndex()
+	return uint64(index), err
+}
+
+func (r *replicaRaftStorage) TypedFirstIndex() (kvpb.RaftIndex, error) {
+	return (*Replica)(r).raftFirstIndexRLocked(), nil
+}
+
+// GetFirstIndex returns the index of the first entry in the replica's Raft log.
+func (r *Replica) GetFirstIndex() kvpb.RaftIndex {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.raftFirstIndexRLocked()
 }
 
 // GetLeaseAppliedIndex returns the lease index of the last applied command.
 func (r *Replica) GetLeaseAppliedIndex() kvpb.LeaseAppliedIndex {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.shMu.state.LeaseAppliedIndex
+	return r.mu.state.LeaseAppliedIndex
 }
 
 // Snapshot implements the raft.Storage interface.
@@ -187,19 +226,10 @@ func (r *replicaRaftStorage) Snapshot() (raftpb.Snapshot, error) {
 	r.mu.AssertHeld()
 	return raftpb.Snapshot{
 		Metadata: raftpb.SnapshotMetadata{
-			Index: uint64(r.shMu.state.RaftAppliedIndex),
-			Term:  uint64(r.shMu.state.RaftAppliedIndexTerm),
+			Index: uint64(r.mu.state.RaftAppliedIndex),
+			Term:  uint64(r.mu.state.RaftAppliedIndexTerm),
 		},
 	}, nil
-}
-
-var raftStorageErrorLogger = log.Every(30 * time.Second)
-
-func (r *replicaRaftStorage) reportRaftStorageError(err error) {
-	if raftStorageErrorLogger.ShouldLog() {
-		log.Errorf(r.raftCtx, "error in raft.Storage %v", err)
-	}
-	r.store.metrics.RaftStorageError.Inc(1)
 }
 
 // raftSnapshotLocked requires that r.mu is held for writing.
@@ -216,14 +246,27 @@ func (r *Replica) GetSnapshot(
 	// Get a snapshot while holding raftMu to make sure we're not seeing "half
 	// an AddSSTable" (i.e. a state in which an SSTable has been linked in, but
 	// the corresponding Raft command not applied yet).
+	var snap storage.Reader
+	var startKey roachpb.RKey
 	r.raftMu.Lock()
-	startKey := r.shMu.state.Desc.StartKey
-	spans := rditer.MakeAllKeySpans(r.shMu.state.Desc) // needs unreplicated to access Raft state
-	snap := r.store.TODOEngine().NewSnapshot(spans...)
-	if util.RaceEnabled {
-		ss := rditer.MakeAllKeySpanSet(r.shMu.state.Desc)
-		defer ss.Release()
-		snap = spanset.NewReader(snap, ss, hlc.Timestamp{})
+	if r.store.cfg.SharedStorageEnabled || storage.ShouldUseEFOS(&r.ClusterSettings().SV) {
+		var ss *spanset.SpanSet
+		r.mu.RLock()
+		spans := rditer.MakeAllKeySpans(r.mu.state.Desc) // needs unreplicated to access Raft state
+		startKey = r.mu.state.Desc.StartKey
+		if util.RaceEnabled {
+			ss = rditer.MakeAllKeySpanSet(r.mu.state.Desc)
+			defer ss.Release()
+		}
+		r.mu.RUnlock()
+		efos := r.store.TODOEngine().NewEventuallyFileOnlySnapshot(spans)
+		if util.RaceEnabled {
+			snap = spanset.NewEventuallyFileOnlySnapshot(efos, ss)
+		} else {
+			snap = efos
+		}
+	} else {
+		snap = r.store.TODOEngine().NewSnapshot()
 	}
 	r.raftMu.Unlock()
 
@@ -232,7 +275,13 @@ func (r *Replica) GetSnapshot(
 			snap.Close()
 		}
 	}()
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	rangeID := r.RangeID
+	if startKey == nil {
+		startKey = r.mu.state.Desc.StartKey
+	}
 
 	ctx, sp := r.AnnotateCtxWithSpan(ctx, "snapshot")
 	defer sp.Finish()
@@ -243,8 +292,8 @@ func (r *Replica) GetSnapshot(
 	// on any indirect calls to r.store.Engine() (or other in-memory
 	// state of the Replica). Everything must come from the snapshot.
 	//
-	// NB: we don't hold either of locks, so can't use Replica.mu.stateLoader or
-	// Replica.raftMu.stateLoader. This call is not performance sensitive, so
+	// NB: We have Replica.mu read-locked, but we need it write-locked in order
+	// to use Replica.mu.stateLoader. This call is not performance sensitive, so
 	// create a new state loader.
 	snapData, err := snapshot(ctx, snapUUID, stateloader.Make(rangeID), snap, startKey)
 	if err != nil {
@@ -294,7 +343,7 @@ func (s *OutgoingSnapshot) Close() {
 type IncomingSnapshot struct {
 	SnapUUID uuid.UUID
 	// The storage interface for the underlying SSTs.
-	SSTStorageScratch *snaprecv.SSTSnapshotStorageScratch
+	SSTStorageScratch *SSTSnapshotStorageScratch
 	FromReplica       roachpb.ReplicaDescriptor
 	// The descriptor in the snapshot, never nil.
 	Desc *roachpb.RangeDescriptor
@@ -307,13 +356,10 @@ type IncomingSnapshot struct {
 	raftAppliedIndex kvpb.RaftIndex      // logging only
 	msgAppRespCh     chan raftpb.Message // receives MsgAppResp if/when snap is applied
 	sharedSSTs       []pebble.SharedSSTMeta
-	externalSSTs     []pebble.ExternalFile
+	doExcise         bool
 	// clearedSpans represents the key spans in the existing store that will be
 	// cleared by doing the Ingest*. This is tracked so that we can convert the
 	// ssts into a WriteBatch if the total size of the ssts is small.
-	//
-	// This contains both the spans that have explicit rangedels, and the
-	// MVCC span (which would be cleared by Excise on Ingest).
 	clearedSpans []roachpb.Span
 }
 
@@ -341,8 +387,7 @@ func snapshot(
 	// know they cannot be committed yet; operations that modify range
 	// descriptors resolve their own intents when they commit.
 	ok, err := storage.MVCCGetProto(ctx, snap, keys.RangeDescriptorKey(startKey),
-		hlc.MaxTimestamp, &desc, storage.MVCCGetOptions{
-			Inconsistent: true, ReadCategory: fs.RangeSnapshotReadCategory})
+		hlc.MaxTimestamp, &desc, storage.MVCCGetOptions{Inconsistent: true})
 	if err != nil {
 		return OutgoingSnapshot{}, errors.Wrap(err, "failed to get desc")
 	}
@@ -350,16 +395,10 @@ func snapshot(
 		return OutgoingSnapshot{}, errors.Mark(errors.Errorf("couldn't find range descriptor"), errMarkSnapshotError)
 	}
 
-	// TODO(sep-raft-log): do not load the state that is not useful for sending
-	// snapshots, e.g. Lease, GCThreshold, etc. Only applied indices and the
-	// descriptor are used, everything else is included in the snapshot data.
 	state, err := rsl.Load(ctx, snap, &desc)
 	if err != nil {
 		return OutgoingSnapshot{}, err
 	}
-	// There is no need in sending TruncatedState because the receiver assigns it
-	// to match snap.RaftSnap.Metadata.{Index,Term}. See (*Replica).applySnapshotRaftMuLocked.
-	state.TruncatedState = nil
 
 	return OutgoingSnapshot{
 		EngineSnap: snap,
@@ -400,12 +439,12 @@ func (r *Replica) updateRangeInfo(ctx context.Context, desc *roachpb.RangeDescri
 	}
 
 	// Find span config for this range.
-	conf, sp, err := confReader.GetSpanConfigForKey(ctx, desc.StartKey)
+	conf, err := confReader.GetSpanConfigForKey(ctx, desc.StartKey)
 	if err != nil {
 		return errors.Wrapf(err, "%s: failed to lookup span config", r)
 	}
 
-	changed := r.SetSpanConfig(conf, sp)
+	changed := r.SetSpanConfig(conf)
 	if changed {
 		r.MaybeQueue(ctx, r.store.cfg.Clock.NowAsClockTimestamp())
 	}
@@ -413,35 +452,13 @@ func (r *Replica) updateRangeInfo(ctx context.Context, desc *roachpb.RangeDescri
 	return nil
 }
 
-// applySnapshotTODO is the plan for splitting snapshot application into
-// cross-engine writes.
-//
-//  1. Log engine write (durable):
-//     1.1. HardState, RaftTruncatedState for new LogID. Log is empty.
-//     1.2. WAG node with the state machine mutation (2).
-//
-//  2. State machine mutation:
-//     2.1. For subsumed, clear RangeID-local un-/replicated state.
-//     2.2. For subsumed, write RangeTombstone with max NextReplicaID / LogID.
-//     2.3. Clear MVCC keyspace for (this + subsumed).
-//     2.4. Ingest snapshot SSTs.
-//     2.5. Update RaftReplicaID with the new LogID.
-//
-//  3. Log engine GC (after state machine mutation 2 is durably applied):
-//     3.1. Remove previous LogID.
-//     3.2. For each subsumed, remove the last LogID.
-//
-// TODO(sep-raft-log): support the status quo in which 1+2+3 is written
-// atomically, and 1.2 is not written.
-const applySnapshotTODO = 0
-
-// applySnapshotRaftMuLocked updates the replica and its store based on the given
+// applySnapshot updates the replica and its store based on the given
 // (non-empty) snapshot and associated HardState. All snapshots must pass
 // through Raft for correctness, i.e. the parameters to this method must be
 // taken from a raft.Ready. Any replicas specified in subsumedRepls will be
 // destroyed atomically with the application of the snapshot.
 //
-// If there is a placeholder associated with r, applySnapshotRaftMuLocked will remove that
+// If there is a placeholder associated with r, applySnapshot will remove that
 // placeholder from the store if and only if it does not return an error.
 //
 // This method requires that r.raftMu is held, as well as the raftMus of any
@@ -450,7 +467,7 @@ const applySnapshotTODO = 0
 // TODO(benesch): the way this replica method reaches into its store to update
 // replicasByKey is unfortunate, but the fix requires a substantial refactor to
 // maintain the necessary synchronization.
-func (r *Replica) applySnapshotRaftMuLocked(
+func (r *Replica) applySnapshot(
 	ctx context.Context,
 	inSnap IncomingSnapshot,
 	nonemptySnap raftpb.Snapshot,
@@ -533,7 +550,7 @@ func (r *Replica) applySnapshotRaftMuLocked(
 		ingestion time.Time
 	}
 	log.KvDistribution.Infof(ctx, "applying %s", inSnap)
-	applyAsIngest := true
+	appliedAsWrite := false
 	defer func(start time.Time) {
 		var logDetails redact.StringBuilder
 		logDetails.Printf("total=%0.0fms", timeutil.Since(start).Seconds()*1000)
@@ -545,23 +562,33 @@ func (r *Replica) applySnapshotRaftMuLocked(
 		if len(inSnap.sharedSSTs) > 0 {
 			logDetails.Printf(" shared=%d sharedSize=%s", len(inSnap.sharedSSTs), humanizeutil.IBytes(inSnap.SharedSize))
 		}
-		logDetails.Printf(" excise=true")
+		if inSnap.doExcise {
+			logDetails.Printf(" excise=true")
+		}
 		logDetails.Printf(" ingestion=%d@%0.0fms", len(inSnap.SSTStorageScratch.SSTs()),
 			stats.ingestion.Sub(stats.subsumedReplicas).Seconds()*1000)
-		var appliedAsWriteStr redact.SafeString
-		if !applyAsIngest {
+		var appliedAsWriteStr string
+		if appliedAsWrite {
 			appliedAsWriteStr = "as write "
 		}
 		log.Infof(ctx, "applied %s %s(%s)", inSnap, appliedAsWriteStr, logDetails)
 	}(timeutil.Now())
 
-	// Clear the raft state and reset it. The log starts from the applied entry ID
-	// of the snapshot.
-	truncState := kvserverpb.RaftTruncatedState{
-		Index: kvpb.RaftIndex(nonemptySnap.Metadata.Index),
-		Term:  kvpb.RaftTerm(nonemptySnap.Metadata.Term),
-	}
 	clearedSpans := inSnap.clearedSpans
+	unreplicatedSSTFile, clearedSpan, err := writeUnreplicatedSST(
+		ctx, r.ID(), r.ClusterSettings(), nonemptySnap.Metadata, hs, &r.raftMu.stateLoader.StateLoader,
+	)
+	if err != nil {
+		return err
+	}
+	clearedSpans = append(clearedSpans, clearedSpan)
+	// TODO(itsbilal): Write to SST directly in unreplicatedSST rather than
+	// buffering in a MemObject first.
+	if err := inSnap.SSTStorageScratch.WriteSST(ctx, unreplicatedSSTFile.Data()); err != nil {
+		return err
+	}
+	// Update Raft entries.
+	r.store.raftEntryCache.Drop(r.RangeID)
 
 	subsumedDescs := make([]*roachpb.RangeDescriptor, 0, len(subsumedRepls))
 	for _, sr := range subsumedRepls {
@@ -583,35 +610,22 @@ func (r *Replica) applySnapshotRaftMuLocked(
 		subsumedDescs = append(subsumedDescs, sr.Desc())
 	}
 
-	st := r.ClusterSettings()
-	prepInput := prepareSnapApplyInput{
-		id: r.ID(),
-
-		st:       st,
-		todoEng:  r.store.TODOEngine(),
-		sl:       r.raftMu.stateLoader,
-		writeSST: inSnap.SSTStorageScratch.WriteSST,
-
-		truncState:    truncState,
-		hardState:     hs,
-		desc:          desc,
-		subsumedDescs: subsumedDescs,
-	}
-
-	_ = applySnapshotTODO
-	clearedUnreplicatedSpan, clearedSubsumedSpans, err := prepareSnapApply(ctx, prepInput)
+	// If we're subsuming a replica below, we don't have its last NextReplicaID,
+	// nor can we obtain it. That's OK: we can just be conservative and use the
+	// maximum possible replica ID. preDestroyRaftMuLocked will write a replica
+	// tombstone using this maximum possible replica ID, which would normally be
+	// problematic, as it would prevent this store from ever having a new replica
+	// of the removed range. In this case, however, it's copacetic, as subsumed
+	// ranges _can't_ have new replicas.
+	clearedSubsumedSpans, err := clearSubsumedReplicaDiskData(
+		// TODO(sep-raft-log): needs access to both engines.
+		ctx, r.store.ClusterSettings(), r.store.TODOEngine(), inSnap.SSTStorageScratch.WriteSST,
+		desc, subsumedDescs, mergedTombstoneReplicaID,
+	)
 	if err != nil {
 		return err
 	}
-	clearedSpans = append(clearedSpans, clearedUnreplicatedSpan)
 	clearedSpans = append(clearedSpans, clearedSubsumedSpans...)
-
-	ls := r.asLogStorage()
-
-	// Stage the truncation, so that in-memory state reflects an
-	// empty log.
-	ls.stageApplySnapshotRaftMuLocked(truncState)
-
 	stats.subsumedReplicas = timeutil.Now()
 
 	// Ingest all SSTs atomically.
@@ -620,43 +634,39 @@ func (r *Replica) applySnapshotRaftMuLocked(
 			return err
 		}
 	}
-
-	if len(inSnap.externalSSTs)+len(inSnap.sharedSSTs) == 0 && /* simple */
-		inSnap.SSTSize <= snapshotIngestAsWriteThreshold.Get(&st.SV) /* small */ {
-		applyAsIngest = false
-	}
-
 	var ingestStats pebble.IngestOperationStats
 	var writeBytes uint64
-	if applyAsIngest {
-		_ = applySnapshotTODO // all atomic
+	// TODO: separate ingestions for log and statemachine engine. See:
+	//
+	// https://github.com/cockroachdb/cockroach/issues/93251
+	if inSnap.doExcise {
 		exciseSpan := desc.KeySpan().AsRawSpanWithNoLocals()
-		if ingestStats, err = r.store.TODOEngine().IngestAndExciseFiles(ctx, inSnap.SSTStorageScratch.SSTs(), inSnap.sharedSSTs, inSnap.externalSSTs, exciseSpan); err != nil {
-			return errors.Wrapf(err, "while ingesting %s and excising %s-%s",
-				inSnap.SSTStorageScratch.SSTs(), exciseSpan.Key, exciseSpan.EndKey)
+		if ingestStats, err =
+			r.store.TODOEngine().IngestAndExciseFiles(ctx, inSnap.SSTStorageScratch.SSTs(), inSnap.sharedSSTs, exciseSpan); err != nil {
+			return errors.Wrapf(err, "while ingesting %s and excising %s-%s", inSnap.SSTStorageScratch.SSTs(), exciseSpan.Key, exciseSpan.EndKey)
 		}
 	} else {
-		_ = applySnapshotTODO // all atomic
-		err := r.store.TODOEngine().ConvertFilesToBatchAndCommit(
-			ctx, inSnap.SSTStorageScratch.SSTs(), clearedSpans)
-		if err != nil {
-			return errors.Wrapf(err, "while applying as batch %s", inSnap.SSTStorageScratch.SSTs())
+		if inSnap.SSTSize > snapshotIngestAsWriteThreshold.Get(&r.ClusterSettings().SV) {
+			if ingestStats, err =
+				r.store.TODOEngine().IngestLocalFilesWithStats(ctx, inSnap.SSTStorageScratch.SSTs()); err != nil {
+				return errors.Wrapf(err, "while ingesting %s", inSnap.SSTStorageScratch.SSTs())
+			}
+		} else {
+			appliedAsWrite = true
+			err := r.store.TODOEngine().ConvertFilesToBatchAndCommit(
+				ctx, inSnap.SSTStorageScratch.SSTs(), clearedSpans)
+			if err != nil {
+				return errors.Wrapf(err, "while applying as batch %s", inSnap.SSTStorageScratch.SSTs())
+			}
+			// Admission control wants the writeBytes to be roughly equivalent to
+			// the bytes in the SST when these writes are eventually flushed. We use
+			// the SST size of the incoming snapshot as that approximation. We've
+			// written additional SSTs to clear some data earlier in this method,
+			// but we ignore those since the bulk of the data is in the incoming
+			// snapshot.
+			writeBytes = uint64(inSnap.SSTSize)
 		}
-		// Admission control wants the writeBytes to be roughly equivalent to
-		// the bytes in the SST when these writes are eventually flushed. We use
-		// the SST size of the incoming snapshot as that approximation. We've
-		// written additional SSTs to clear some data earlier in this method,
-		// but we ignore those since the bulk of the data is in the incoming
-		// snapshot.
-		writeBytes = uint64(inSnap.SSTSize)
 	}
-	// The snapshot is visible, so finalize the truncation.
-	ls.finalizeApplySnapshotRaftMuLocked(ctx)
-
-	// The "ignored" here is to ignore the writes to create the AC linear models
-	// for LSM writes. Since these writes typically correspond to actual writes
-	// onto the disk, we account for them separately in
-	// kvBatchSnapshotStrategy.Receive().
 	if r.store.cfg.KVAdmissionController != nil {
 		r.store.cfg.KVAdmissionController.SnapshotIngestedOrWritten(
 			r.store.StoreID(), ingestStats, writeBytes)
@@ -667,8 +677,7 @@ func (r *Replica) applySnapshotRaftMuLocked(
 	// has not yet been updated. Any errors past this point must therefore be
 	// treated as fatal.
 
-	sl := stateloader.Make(desc.RangeID)
-	state, err := sl.Load(ctx, r.store.TODOEngine(), desc)
+	state, err := stateloader.Make(desc.RangeID).Load(ctx, r.store.TODOEngine(), desc)
 	if err != nil {
 		log.Fatalf(ctx, "unable to load replica state: %s", err)
 	}
@@ -680,9 +689,6 @@ func (r *Replica) applySnapshotRaftMuLocked(
 	if uint64(state.RaftAppliedIndexTerm) != nonemptySnap.Metadata.Term {
 		log.Fatalf(ctx, "snapshot RaftAppliedIndexTerm %d doesn't match its metadata term %d",
 			state.RaftAppliedIndexTerm, nonemptySnap.Metadata.Term)
-	}
-	if ls.shMu.size != 0 {
-		log.Fatalf(ctx, "expected empty raft log after snapshot, got %d", ls.shMu.size)
 	}
 
 	// Read the prior read summary for this range, which was included in the
@@ -738,18 +744,33 @@ func (r *Replica) applySnapshotRaftMuLocked(
 	// without risking a lock-ordering deadlock.
 	r.store.mu.Unlock()
 
+	// We set the persisted last index to the last applied index. This is
+	// not a correctness issue, but means that we may have just transferred
+	// some entries we're about to re-request from the leader and overwrite.
+	// However, raft.MultiNode currently expects this behavior, and the
+	// performance implications are not likely to be drastic. If our
+	// feelings about this ever change, we can add a LastIndex field to
+	// raftpb.SnapshotMetadata.
+	r.mu.lastIndexNotDurable = state.RaftAppliedIndex
+
+	// TODO(sumeer): We should be able to set this to
+	// nonemptySnap.Metadata.Term. See
+	// https://github.com/cockroachdb/cockroach/pull/75675#pullrequestreview-867926687
+	// for a discussion regarding this.
+	r.mu.lastTermNotDurable = invalidLastTerm
+	r.mu.raftLogSize = 0
 	// Update the store stats for the data in the snapshot.
-	r.store.metrics.subtractMVCCStats(ctx, r.tenantMetricsRef, *r.shMu.state.Stats)
+	r.store.metrics.subtractMVCCStats(ctx, r.tenantMetricsRef, *r.mu.state.Stats)
 	r.store.metrics.addMVCCStats(ctx, r.tenantMetricsRef, *state.Stats)
-	lastKnownLease := r.shMu.state.Lease
+	lastKnownLease := r.mu.state.Lease
 	// Update the rest of the Raft state. Changes to r.mu.state.Desc must be
 	// managed by r.setDescRaftMuLocked and changes to r.mu.state.Lease must be handled
 	// by r.leasePostApply, but we called those above, so now it's safe to
 	// wholesale replace r.mu.state.
-	r.shMu.state = state
-	if r.shMu.state.ForceFlushIndex != (roachpb.ForceFlushIndex{}) {
-		r.flowControlV2.ForceFlushIndexChangedLocked(ctx, r.shMu.state.ForceFlushIndex.Index)
-	}
+	r.mu.state = state
+	// Snapshots typically have fewer log entries than the leaseholder. The next
+	// time we hold the lease, recompute the log size before making decisions.
+	r.mu.raftLogSizeTrusted = false
 
 	// Invoke the leasePostApply method to ensure we properly initialize the
 	// replica according to whether it holds the lease. We allow jumps in the
@@ -762,7 +783,7 @@ func (r *Replica) applySnapshotRaftMuLocked(
 	// make sure to update the timestamp cache using the prior read summary to
 	// account for any reads that were served on the right-hand side range(s).
 	if len(subsumedRepls) > 0 && state.Lease.Replica.ReplicaID == r.replicaID && prioReadSum != nil {
-		applyReadSummaryToTimestampCache(ctx, r.store.tsCache, r.descRLocked(), *prioReadSum)
+		applyReadSummaryToTimestampCache(r.store.tsCache, r.descRLocked(), *prioReadSum)
 	}
 
 	// Inform the concurrency manager that this replica just applied a snapshot.
@@ -770,10 +791,18 @@ func (r *Replica) applySnapshotRaftMuLocked(
 
 	if fn := r.store.cfg.TestingKnobs.AfterSnapshotApplication; fn != nil {
 		desc, _ := r.getReplicaDescriptorRLocked()
-		fn(desc, r.shMu.state, inSnap)
+		fn(desc, r.mu.state, inSnap)
 	}
 
 	r.mu.Unlock()
+
+	// Assert that the in-memory and on-disk states of the Replica are congruent
+	// after the application of the snapshot. Do so under a read lock, as this
+	// operation can be expensive. This is safe, as we hold the Replica.raftMu
+	// across both Replica.mu critical sections.
+	r.mu.RLock()
+	r.assertStateRaftMuLockedReplicaMuRLocked(ctx, r.store.TODOEngine())
+	r.mu.RUnlock()
 
 	// The rangefeed processor is listening for the logical ops attached to
 	// each raft command. These will be lost during a snapshot, so disconnect
@@ -792,6 +821,196 @@ func (r *Replica) applySnapshotRaftMuLocked(
 	return nil
 }
 
+// writeUnreplicatedSST creates an SST for snapshot application that
+// covers the RangeID-unreplicated keyspace. A range tombstone is
+// laid down and the Raft state provided by the arguments is overlaid
+// onto it.
+func writeUnreplicatedSST(
+	ctx context.Context,
+	id storage.FullReplicaID,
+	st *cluster.Settings,
+	meta raftpb.SnapshotMetadata,
+	hs raftpb.HardState,
+	sl *logstore.StateLoader,
+) (_ *storage.MemObject, clearedSpan roachpb.Span, _ error) {
+	unreplicatedSSTFile := &storage.MemObject{}
+	unreplicatedSST := storage.MakeIngestionSSTWriter(
+		ctx, st, unreplicatedSSTFile,
+	)
+	defer unreplicatedSST.Close()
+
+	// Clearing the unreplicated state.
+	//
+	// NB: We do not expect to see range keys in the unreplicated state, so
+	// we don't drop a range tombstone across the range key space.
+	unreplicatedPrefixKey := keys.MakeRangeIDUnreplicatedPrefix(id.RangeID)
+	unreplicatedStart := unreplicatedPrefixKey
+	unreplicatedEnd := unreplicatedPrefixKey.PrefixEnd()
+	clearedSpan = roachpb.Span{Key: unreplicatedStart, EndKey: unreplicatedEnd}
+	if err := unreplicatedSST.ClearRawRange(
+		unreplicatedStart, unreplicatedEnd, true /* pointKeys */, false, /* rangeKeys */
+	); err != nil {
+		return nil, roachpb.Span{}, errors.Wrapf(err, "error clearing range of unreplicated SST writer")
+	}
+
+	// Update HardState.
+	if err := sl.SetHardState(ctx, &unreplicatedSST, hs); err != nil {
+		return nil, roachpb.Span{}, errors.Wrapf(err, "unable to write HardState to unreplicated SST writer")
+	}
+	// We've cleared all the raft state above, so we are forced to write the
+	// RaftReplicaID again here.
+	if err := sl.SetRaftReplicaID(
+		ctx, &unreplicatedSST, id.ReplicaID); err != nil {
+		return nil, roachpb.Span{}, errors.Wrapf(err, "unable to write RaftReplicaID to unreplicated SST writer")
+	}
+
+	if err := sl.SetRaftTruncatedState(
+		ctx, &unreplicatedSST,
+		&kvserverpb.RaftTruncatedState{
+			Index: kvpb.RaftIndex(meta.Index),
+			Term:  kvpb.RaftTerm(meta.Term),
+		},
+	); err != nil {
+		return nil, roachpb.Span{}, errors.Wrapf(err, "unable to write TruncatedState to unreplicated SST writer")
+	}
+
+	if err := unreplicatedSST.Finish(); err != nil {
+		return nil, roachpb.Span{}, err
+	}
+	return unreplicatedSSTFile, clearedSpan, nil
+}
+
+// clearSubsumedReplicaDiskData clears the on disk data of the subsumed
+// replicas by creating SSTs with range deletion tombstones. We have to be
+// careful here not to have overlapping ranges with the SSTs we have already
+// created since that will throw an error while we are ingesting them. This
+// method requires that each of the subsumed replicas raftMu is held, and that
+// the Reader reflects the latest I/O each of the subsumed replicas has done
+// (i.e. Reader was instantiated after all raftMu were acquired).
+func clearSubsumedReplicaDiskData(
+	ctx context.Context,
+	st *cluster.Settings,
+	reader storage.Reader,
+	writeSST func(context.Context, []byte) error,
+	desc *roachpb.RangeDescriptor,
+	subsumedDescs []*roachpb.RangeDescriptor,
+	subsumedNextReplicaID roachpb.ReplicaID,
+) (clearedSpans []roachpb.Span, _ error) {
+	// NB: we don't clear RangeID local key spans here. That happens
+	// via the call to preDestroyRaftMuLocked.
+	getKeySpans := func(d *roachpb.RangeDescriptor) []roachpb.Span {
+		return rditer.Select(d.RangeID, rditer.SelectOpts{
+			ReplicatedBySpan: d.RSpan(),
+		})
+	}
+	keySpans := getKeySpans(desc)
+	totalKeySpans := append([]roachpb.Span(nil), keySpans...)
+	for _, subDesc := range subsumedDescs {
+		// We have to create an SST for the subsumed replica's range-id local keys.
+		subsumedReplSSTFile := &storage.MemObject{}
+		subsumedReplSST := storage.MakeIngestionSSTWriter(
+			ctx, st, subsumedReplSSTFile,
+		)
+		defer subsumedReplSST.Close()
+		// NOTE: We set mustClearRange to true because we are setting
+		// RangeTombstoneKey. Since Clears and Puts need to be done in increasing
+		// order of keys, it is not safe to use ClearRangeIter.
+		opts := kvstorage.ClearRangeDataOptions{
+			ClearReplicatedByRangeID:   true,
+			ClearUnreplicatedByRangeID: true,
+			MustUseClearRange:          true,
+		}
+		subsumedClearedSpans := rditer.Select(subDesc.RangeID, rditer.SelectOpts{
+			ReplicatedByRangeID:   opts.ClearReplicatedByRangeID,
+			UnreplicatedByRangeID: opts.ClearUnreplicatedByRangeID,
+		})
+		clearedSpans = append(clearedSpans, subsumedClearedSpans...)
+		if err := kvstorage.DestroyReplica(ctx, subDesc.RangeID, reader, &subsumedReplSST, subsumedNextReplicaID, opts); err != nil {
+			subsumedReplSST.Close()
+			return nil, err
+		}
+		if err := subsumedReplSST.Finish(); err != nil {
+			return nil, err
+		}
+		if subsumedReplSST.DataSize > 0 {
+			// TODO(itsbilal): Write to SST directly in subsumedReplSST rather than
+			// buffering in a MemObject first.
+			if err := writeSST(ctx, subsumedReplSSTFile.Data()); err != nil {
+				return nil, err
+			}
+		}
+
+		srKeySpans := getKeySpans(subDesc)
+		// Compute the total key space covered by the current replica and all
+		// subsumed replicas.
+		for i := range srKeySpans {
+			if srKeySpans[i].Key.Compare(totalKeySpans[i].Key) < 0 {
+				totalKeySpans[i].Key = srKeySpans[i].Key
+			}
+			if srKeySpans[i].EndKey.Compare(totalKeySpans[i].EndKey) > 0 {
+				totalKeySpans[i].EndKey = srKeySpans[i].EndKey
+			}
+		}
+	}
+
+	// We might have to create SSTs for the range local keys, lock table keys,
+	// and user keys depending on if the subsumed replicas are not fully
+	// contained by the replica in our snapshot. The following is an example to
+	// this case happening.
+	//
+	// a       b       c       d
+	// |---1---|-------2-------|  S1
+	// |---1-------------------|  S2
+	// |---1-----------|---3---|  S3
+	//
+	// Since the merge is the first operation to happen, a follower could be down
+	// before it completes. It is reasonable for a snapshot for r1 from S3 to
+	// subsume both r1 and r2 in S1.
+	for i := range keySpans {
+		if totalKeySpans[i].EndKey.Compare(keySpans[i].EndKey) > 0 {
+			subsumedReplSSTFile := &storage.MemObject{}
+			subsumedReplSST := storage.MakeIngestionSSTWriter(
+				ctx, st, subsumedReplSSTFile,
+			)
+			defer subsumedReplSST.Close()
+			if err := storage.ClearRangeWithHeuristic(
+				reader,
+				&subsumedReplSST,
+				keySpans[i].EndKey,
+				totalKeySpans[i].EndKey,
+				kvstorage.ClearRangeThresholdPointKeys,
+				kvstorage.ClearRangeThresholdRangeKeys,
+			); err != nil {
+				subsumedReplSST.Close()
+				return nil, err
+			}
+			clearedSpans = append(clearedSpans,
+				roachpb.Span{Key: keySpans[i].EndKey, EndKey: totalKeySpans[i].EndKey})
+			if err := subsumedReplSST.Finish(); err != nil {
+				return nil, err
+			}
+			if subsumedReplSST.DataSize > 0 {
+				// TODO(itsbilal): Write to SST directly in subsumedReplSST rather than
+				// buffering in a MemObject first.
+				if err := writeSST(ctx, subsumedReplSSTFile.Data()); err != nil {
+					return nil, err
+				}
+			}
+		}
+		// The snapshot must never subsume a replica that extends the range of the
+		// replica to the left. This is because splits and merges (the only
+		// operation that change the key bounds) always leave the start key intact.
+		// Extending to the left implies that either we merged "to the left" (we
+		// don't), or that we're applying a snapshot for another range (we don't do
+		// that either). Something is severely wrong for this to happen.
+		if totalKeySpans[i].Key.Compare(keySpans[i].Key) < 0 {
+			log.Fatalf(ctx, "subsuming replica to our left; key span: %v; total key span %v",
+				keySpans[i], totalKeySpans[i])
+		}
+	}
+	return clearedSpans, nil
+}
+
 // clearSubsumedReplicaInMemoryData clears the in-memory data of the subsumed
 // replicas. This method requires that each of the subsumed replicas raftMu is
 // held.
@@ -807,13 +1026,11 @@ func (r *Replica) clearSubsumedReplicaInMemoryData(
 		// consume. Without this, there would be a risk of errant snapshots being
 		// allowed in (perhaps not involving any of the RangeIDs known to the merge
 		// but still touching its keyspace) and causing corruption.
-		ph, err := r.store.removeInitializedReplicaRaftMuLocked(
-			ctx, sr, subsumedNextReplicaID, "subsumed by snapshot",
-			RemoveOptions{
-				// The data was already destroyed by clearSubsumedReplicaDiskData.
-				DestroyData:       false,
-				InsertPlaceholder: true,
-			})
+		ph, err := r.store.removeInitializedReplicaRaftMuLocked(ctx, sr, subsumedNextReplicaID, RemoveOptions{
+			// The data was already destroyed by clearSubsumedReplicaDiskData.
+			DestroyData:       false,
+			InsertPlaceholder: true,
+		})
 		if err != nil {
 			return nil, err
 		}

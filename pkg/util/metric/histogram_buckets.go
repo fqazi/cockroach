@@ -36,7 +36,6 @@ const (
 	LATENCY unitType = iota
 	SIZE
 	COUNT
-	DURATION
 )
 
 var IOLatencyBuckets = staticBucketConfig{
@@ -81,15 +80,6 @@ var LongRunning60mLatencyBuckets = staticBucketConfig{
 	max:          3600e9, // 1h
 	count:        60,
 	units:        LATENCY,
-	distribution: Exponential,
-}
-
-var DataCount16MBuckets = staticBucketConfig{
-	category:     "DataCount16MBuckets",
-	min:          1,
-	max:          16e6,
-	count:        24,
-	units:        COUNT,
 	distribution: Exponential,
 }
 
@@ -145,19 +135,11 @@ var Percent100Buckets = staticBucketConfig{
 	units:        COUNT,
 	distribution: Uniform,
 }
-var ResponseTime30sBuckets = staticBucketConfig{
-	category:     "ResponseTime30sBuckets",
-	min:          1e6,  // 1ms
-	max:          30e9, // 30s
-	count:        24,
-	units:        DURATION,
-	distribution: Exponential,
-}
 
 var StaticBucketConfigs = []staticBucketConfig{IOLatencyBuckets,
-	BatchProcessLatencyBuckets, LongRunning60mLatencyBuckets, DataCount16MBuckets,
+	BatchProcessLatencyBuckets, LongRunning60mLatencyBuckets,
 	DataSize16MBBuckets, MemoryUsage64MBBuckets, ReplicaCPUTimeBuckets,
-	ReplicaBatchRequestCountBuckets, Count1KBuckets, Percent100Buckets, ResponseTime30sBuckets}
+	ReplicaBatchRequestCountBuckets, Count1KBuckets, Percent100Buckets}
 
 func (config staticBucketConfig) GetBucketsFromBucketConfig() []float64 {
 	var buckets []float64

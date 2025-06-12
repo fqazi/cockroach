@@ -16,9 +16,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/sql"
-	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/ssmemstorage"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/persistedsqlstats"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -26,8 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/errors"
-	"github.com/stretchr/testify/require"
 )
 
 func BenchmarkConcurrentSelect1(b *testing.B) {
@@ -96,7 +92,7 @@ func runBenchmarkPersistedSqlStatsFlush(
 			db.Exec(b, "SELECT id FROM bench.t1 LIMIT 5")
 		}
 		b.StartTimer()
-		tc.Server(0).SQLServer().(*sql.Server).GetSQLStatsProvider().MaybeFlush(ctx, tc.ApplicationLayer(0).AppStopper())
+		tc.Server(0).SQLServer().(*sql.Server).GetSQLStatsProvider().(*persistedsqlstats.PersistedSQLStats).Flush(ctx)
 		b.StopTimer()
 	}
 }
@@ -361,98 +357,4 @@ func BenchmarkSqlStatsPersisted(b *testing.B) {
 			}
 		})
 	}
-}
-
-// BenchmarkSqlStatsFlushTime benchmarks the time it takes to flush the SQL stats
-// when we are at the limit of the number of fingerprints that can be stored in memory.
-// The benchmark is run twice, once with all statements being INSERTs and once with
-// all statements being UPDATEs.
-func BenchmarkSqlStatsMaxFlushTime(b *testing.B) {
-	skip.UnderShort(b)
-	defer log.Scope(b).Close(b)
-	ctx := context.Background()
-	fakeTime := &stubTime{}
-	fakeTime.setTime(timeutil.Now())
-	s, conn, _ := serverutils.StartServer(b, base.TestServerArgs{
-		Knobs: base.TestingKnobs{
-			SQLStatsKnobs: &sqlstats.TestingKnobs{
-				StubTimeNow: fakeTime.Now,
-			},
-		},
-	})
-	defer s.Stopper().Stop(ctx)
-	sqlConn := sqlutils.MakeSQLRunner(conn)
-
-	sqlStats := s.SQLServer().(*sql.Server).GetLocalSQLStatsProvider()
-	pss := s.SQLServer().(*sql.Server).GetSQLStatsProvider()
-	stmtFingerprintLimit := sqlstats.MaxMemSQLStatsStmtFingerprints.Get(&s.ClusterSettings().SV)
-	txnFingerprintLimit := sqlstats.MaxMemSQLStatsTxnFingerprints.Get(&s.ClusterSettings().SV)
-
-	// Fills the in-memory stats for the 'bench' application until the fingerprint limit is reached.
-	fillBenchAppMemStats := func() {
-		appContainer := sqlStats.GetApplicationStats("bench")
-		for i := int64(1); i <= stmtFingerprintLimit; i++ {
-			mockStmtValue := &sqlstats.RecordedStmtStats{
-				Query:                    "SELECT 1",
-				App:                      "bench",
-				DistSQL:                  false,
-				ImplicitTxn:              false,
-				Vec:                      false,
-				FullScan:                 false,
-				Database:                 "",
-				PlanHash:                 0,
-				QuerySummary:             "",
-				TransactionFingerprintID: appstatspb.TransactionFingerprintID(i),
-			}
-			err := appContainer.RecordStatement(ctx, mockStmtValue)
-			if errors.Is(err, ssmemstorage.ErrFingerprintLimitReached) {
-				break
-			}
-		}
-
-		for i := int64(1); i <= txnFingerprintLimit; i++ {
-			mockTxnValue := &sqlstats.RecordedTxnStats{
-				FingerprintID: appstatspb.TransactionFingerprintID(i),
-			}
-			err := appContainer.RecordTransaction(ctx, mockTxnValue)
-			if errors.Is(err, ssmemstorage.ErrFingerprintLimitReached) {
-				break
-			}
-		}
-	}
-
-	logRowCounts := func() {
-		// Print row count, just to verify that the stats are being flushed correctly.
-		stmtCount := sqlConn.QueryStr(b, `SELECT count(*) FROM system.statement_statistics`)
-		txnCount := sqlConn.QueryStr(b, `SELECT count(*) FROM system.transaction_statistics`)
-		b.Logf("statement_statistics row count :%s, transaction_statistics row count: %s", stmtCount[0][0], txnCount[0][0])
-	}
-
-	// We'll do one flush where each statement is an INSERT, and another where each
-	// statement is an UPDATE.
-	totalFingerprints := stmtFingerprintLimit + txnFingerprintLimit
-	b.Run(fmt.Sprintf("single-application/writes=insert/%d-fingerprints", totalFingerprints), func(b *testing.B) {
-		b.StopTimer()
-		for i := 0; i < b.N; i++ {
-			require.NoError(b, pss.ResetClusterSQLStats(ctx))
-			fillBenchAppMemStats()
-			b.StartTimer()
-			require.True(b, pss.MaybeFlush(ctx, s.AppStopper()))
-			b.StopTimer()
-		}
-	})
-
-	logRowCounts()
-
-	b.Run(fmt.Sprintf("single-application/writes=update/%d-fingerprints", totalFingerprints), func(b *testing.B) {
-		b.StopTimer()
-		for i := 0; i < b.N; i++ {
-			fillBenchAppMemStats()
-			b.StartTimer()
-			require.True(b, pss.MaybeFlush(ctx, s.AppStopper()))
-			b.StopTimer()
-		}
-	})
-
-	logRowCounts()
 }

@@ -1,7 +1,0 @@
-setup
-create table t(i int);
-----
-
-test
-alter table t drop column i, add column i bool;
-----

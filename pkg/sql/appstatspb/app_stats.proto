@@ -103,10 +103,6 @@ message StatementStatistics {
   // Nodes is the ordered list of nodes ids on which the statement was executed.
   repeated int64 nodes = 24;
 
-  // KVNodeIDs is the ordered list of KV node ids which were used to evaluate KV
-  // read requests.
-  repeated int32 kv_node_ids = 34 [(gogoproto.customname) = "KVNodeIDs"];
-
   // Regions is the ordered list of regions on which the statement was executed.
   repeated string regions = 29;
 
@@ -127,16 +123,6 @@ message StatementStatistics {
 
   // last_error_code is the last error code for a failed statement, if it exists.
   optional string last_error_code = 32 [(gogoproto.nullable) = false];
-
-  // failure_count is the count of failed executions for a given statement fingerprint.
-  optional int64 failure_count = 33 [(gogoproto.nullable) = false];
-
-  // UsedFollowerRead indicates whether at least some reads were served by the
-  // follower replicas.
-  optional bool used_follower_read = 35 [(gogoproto.nullable) = false];
-
-  // generic_count is the count of executions that used a generic query plan.
-  optional int64 generic_count = 36 [(gogoproto.nullable) = false];
 
   // Note: be sure to update `sql/app_stats.go` when adding/removing fields here!
 
@@ -218,6 +204,7 @@ message StatementStatisticsKey {
   optional string query = 1 [(gogoproto.nullable) = false];
   optional string app = 2 [(gogoproto.nullable) = false];
   optional bool distSQL = 3 [(gogoproto.nullable) = false];
+  optional bool failed = 4 [(gogoproto.nullable) = false];
   optional bool implicit_txn = 6 [(gogoproto.nullable) = false];
   optional bool vec = 7 [(gogoproto.nullable) = false];
   optional bool full_scan = 8 [(gogoproto.nullable) = false];
@@ -225,7 +212,7 @@ message StatementStatisticsKey {
   optional uint64 plan_hash = 10 [(gogoproto.nullable) = false];
   optional string query_summary = 12 [(gogoproto.nullable) = false];
 
-  reserved 4, 5;
+  reserved 5;
   optional uint64 transaction_fingerprint_id = 11
     [(gogoproto.nullable) = false,
      (gogoproto.customname) = "TransactionFingerprintID",
@@ -243,12 +230,11 @@ message AggregatedStatementMetadata {
   repeated string databases = 6;
   optional bool implicit_txn = 7 [(gogoproto.nullable) = false];
   optional int64 dist_sql_count = 8 [(gogoproto.nullable) = false, (gogoproto.customname) = "DistSQLCount"];
+  optional int64 failed_count = 9 [(gogoproto.nullable) = false];
   optional int64 full_scan_count = 10 [(gogoproto.nullable) = false];
   optional int64 vec_count = 11 [(gogoproto.nullable) = false];
   optional int64 total_count = 12 [(gogoproto.nullable) = false];
   optional string fingerprint_id = 13 [(gogoproto.nullable) = false, (gogoproto.customname) = "FingerprintID"];
-
-  reserved 9;
 }
 
 // CollectedStatementStatistics wraps collected timings and metadata for some
@@ -331,9 +317,7 @@ message ExecStats {
   // run.
   optional int64 count = 1 [(gogoproto.nullable) = false];
 
-  // NetworkBytes collects the number of bytes sent over the network by DistSQL
-  // components.
-  // TODO(yuzefovich): rename this all the way up to the DB Console.
+  // NetworkBytes collects the number of bytes sent over the network.
   optional NumericStat network_bytes = 2 [(gogoproto.nullable) = false];
 
   // MaxMemUsage collects the maximum memory usage that occurred on a node.
@@ -343,8 +327,7 @@ message ExecStats {
   optional NumericStat contention_time = 4 [(gogoproto.nullable) = false];
 
   // NetworkMessages collects the number of messages that were sent over the
-  // network by DistSQL components.
-  // TODO(yuzefovich): rename this all the way up to the DB Console.
+  // network.
   optional NumericStat network_messages = 5 [(gogoproto.nullable) = false];
 
   // MaxDiskUsage collects the maximum temporary disk usage that occurred. This
@@ -374,23 +357,13 @@ message LatencyInfo {
   // Max is the maximum time in seconds spent executing the fingerprint.
   optional double max = 2 [(gogoproto.nullable) = false];
 
-  // Note: the percentiles below were previously populated via a method
-  // that led to much user confusion because the intervals over which
-  // the percentiles were computed was not well-defined and did not
-  // align with the aggregated timestamps used for the rest of the SQL
-  // Activity. The fields below are currently not populated but remain
-  // here so that we can re-introduce their use in the near-future.
-
-  // P50 is the 50 Percentile in seconds for the fingerprint. This
-  // value is currently unset.
+  // P50 is the 50 Percentile in seconds for the fingerprint.
   optional double p50 = 3 [(gogoproto.nullable) = false];
 
-  // P90 is the 90 Percentile in seconds for the fingerprint. This
-  // value is currently unset.
+  // P90 is the 90 Percentile in seconds for the fingerprint.
   optional double p90 = 4 [(gogoproto.nullable) = false];
 
-  // P99 is the 99 Percentile in seconds for the fingerprint. This
-  // value is currently unset.
+  // P99 is the 99 Percentile in seconds for the fingerprint.
   optional double p99 = 5 [(gogoproto.nullable) = false];
 }
 

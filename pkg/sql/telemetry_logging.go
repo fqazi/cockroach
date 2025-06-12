@@ -94,7 +94,6 @@ var telemetrySamplingMode = settings.RegisterEnumSetting(
 		telemetryModeStatement:   "statement",
 		telemetryModeTransaction: "transaction",
 	},
-	settings.WithPublic,
 )
 
 // SampledQuery objects are short-lived but can be

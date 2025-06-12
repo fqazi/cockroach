@@ -8,10 +8,12 @@ package kvserver
 import (
 	"context"
 	"strings"
+	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
+	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 	"github.com/cockroachdb/errors"
 )
 
@@ -29,8 +31,10 @@ func MakeStoresIterator(stores *Stores) *StoresIterator {
 // ForEachStore is part of kvserverbase.StoresIterator.
 func (s *StoresIterator) ForEachStore(f func(kvserverbase.Store) error) error {
 	var err error
-	s.storeMap.Range(func(_ roachpb.StoreID, s *Store) bool {
-		err = f((*baseStore)(s))
+	s.storeMap.Range(func(k int64, v unsafe.Pointer) bool {
+		store := (*Store)(v)
+
+		err = f((*baseStore)(store))
 		return err == nil
 	})
 	return err
@@ -50,21 +54,21 @@ func (s *baseStore) StoreID() roachpb.StoreID {
 // Enqueue is part of kvserverbase.Store.
 func (s *baseStore) Enqueue(
 	ctx context.Context, queue string, rangeID roachpb.RangeID, skipShouldQueue bool,
-) error {
+) (tracingpb.Recording, error) {
 	store := (*Store)(s)
 	repl, err := store.GetReplica(rangeID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	processErr, enqueueErr := store.Enqueue(ctx, queue, repl, skipShouldQueue, false /* async */)
+	trace, processErr, enqueueErr := store.Enqueue(ctx, queue, repl, skipShouldQueue, false /* async */)
 	if processErr != nil {
-		return processErr
+		return nil, processErr
 	}
 	if enqueueErr != nil {
-		return enqueueErr
+		return nil, enqueueErr
 	}
-	return nil
+	return trace, nil
 }
 
 // SetQueueActive is part of kvserverbase.Store.
@@ -90,7 +94,7 @@ func (s *baseStore) SetQueueActive(active bool, queue string) error {
 func (s *baseStore) GetReplicaMutexForTesting(rangeID roachpb.RangeID) *syncutil.RWMutex {
 	store := (*Store)(s)
 	if repl := store.GetReplicaIfExists(rangeID); repl != nil {
-		return (*syncutil.RWMutex)(repl.GetMutexForTesting())
+		return (*syncutil.RWMutex)(&repl.mu.ReplicaMutex)
 	}
 	return nil
 }

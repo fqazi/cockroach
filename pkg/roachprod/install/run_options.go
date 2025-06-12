@@ -22,11 +22,6 @@ type RunOptions struct {
 	// recommended to check the documentation of the function you are using to see
 	// what the default behaviour is.
 	FailOption FailOption
-	// ExpanderConfig configures the behaviour of the roachprod expander
-	// during a run.
-	ExpanderConfig ExpanderConfig
-	// LogExpandedCmd will log the expanded command if it differs from the original.
-	LogExpandedCmd bool
 
 	// These are private to roachprod
 	Nodes       Nodes
@@ -37,10 +32,7 @@ type RunOptions struct {
 type FailOption int8
 
 const (
-	// FailDefault will use the default behaviour of the function it's being used
-	// with. For instance, note that `RunWithDetails` will use FailSlow, while
-	// `Run` and `Parallel` will use FailFast when FailDefault is specified in the
-	// RunOptions.
+	// FailDefault will use the default behaviour of the function you are using.
 	FailDefault FailOption = iota
 	// FailFast will exit immediately on the first error, in which case the slice
 	// of ParallelResults will only contain the one error result.
@@ -50,23 +42,10 @@ const (
 	FailSlow
 )
 
-// AlwaysTrue is a should retry predicate function that always returns true to
-// indicate that the operation is always retryable no matter what the previous
-// result was.
-var AlwaysTrue = func(res *RunResultDetails) bool { return true }
-
-func DefaultRunOptions() RunOptions {
+func OnNodes(nodes Nodes) RunOptions {
 	return RunOptions{
-		RetryOptions:  DefaultRetryOpt,
-		ShouldRetryFn: DefaultShouldRetryFn,
-		FailOption:    FailDefault,
+		Nodes: nodes,
 	}
-}
-
-func WithNodes(nodes Nodes) RunOptions {
-	r := DefaultRunOptions()
-	r.Nodes = nodes
-	return r
 }
 
 func (r RunOptions) WithRetryOpts(retryOpts retry.Options) RunOptions {
@@ -79,7 +58,7 @@ func (r RunOptions) WithRetryDisabled() RunOptions {
 	return r
 }
 
-func (r RunOptions) WithShouldRetryFn(fn func(*RunResultDetails) bool) RunOptions {
+func (r RunOptions) WithRetryFn(fn func(*RunResultDetails) bool) RunOptions {
 	r.ShouldRetryFn = fn
 	return r
 }
@@ -101,15 +80,5 @@ func (r RunOptions) WithConcurrency(concurrency int) RunOptions {
 
 func (r RunOptions) WithDisplay(display string) RunOptions {
 	r.Display = display
-	return r
-}
-
-func (r RunOptions) WithExpanderConfig(cfg ExpanderConfig) RunOptions {
-	r.ExpanderConfig = cfg
-	return r
-}
-
-func (r RunOptions) WithLogExpandedCommand() RunOptions {
-	r.LogExpandedCmd = true
 	return r
 }

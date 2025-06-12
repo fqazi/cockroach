@@ -70,23 +70,19 @@ go_library(
         "//pkg/sql/memsize",
         "//pkg/sql/row",
         "//pkg/sql/rowenc",
-        "//pkg/sql/sem/builtins",  # keep
         "//pkg/sql/sem/catid",
         "//pkg/sql/sem/eval",
         "//pkg/sql/sem/tree",
         "//pkg/sql/sessiondata",
         "//pkg/sql/sqltelemetry",  # keep
         "//pkg/sql/types",
-        "//pkg/storage/enginepb",
+        "//pkg/util",
         "//pkg/util/buildutil",
-        "//pkg/util/cancelchecker",
         "//pkg/util/duration",  # keep
         "//pkg/util/encoding",  # keep
         "//pkg/util/intsets",
         "//pkg/util/json",  # keep
         "//pkg/util/log",
-        "//pkg/util/metamorphic",
-        "//pkg/util/mon",
         "//pkg/util/stringarena",
         "//pkg/util/tracing",
         "@com_github_cockroachdb_apd_v3//:apd",  # keep
@@ -139,6 +135,7 @@ go_test(
         "types_integration_test.go",
         "values_test.go",
     ],
+    args = ["-test.timeout=895s"],
     embed = [":colexec"],
     shard_count = 16,
     deps = [

@@ -41,8 +41,6 @@ type Simulator struct {
 
 	// Store replicate queues.
 	rqs map[state.StoreID]queue.RangeQueue
-	// Store lease queues.
-	lqs map[state.StoreID]queue.RangeQueue
 	// Store split queues.
 	sqs map[state.StoreID]queue.RangeQueue
 	// Store rebalancers.
@@ -84,7 +82,6 @@ func NewSimulator(
 ) *Simulator {
 	pacers := make(map[state.StoreID]queue.ReplicaPacer)
 	rqs := make(map[state.StoreID]queue.RangeQueue)
-	lqs := make(map[state.StoreID]queue.RangeQueue)
 	sqs := make(map[state.StoreID]queue.RangeQueue)
 	srs := make(map[state.StoreID]storerebalancer.StoreRebalancer)
 	changer := state.NewReplicaChanger()
@@ -99,7 +96,6 @@ func NewSimulator(
 		state:          initialState,
 		changer:        changer,
 		rqs:            rqs,
-		lqs:            lqs,
 		sqs:            sqs,
 		controllers:    controllers,
 		srs:            srs,
@@ -134,14 +130,6 @@ func (s *Simulator) addStore(storeID state.StoreID, tick time.Time) {
 	allocator := s.state.MakeAllocator(storeID)
 	storePool := s.state.StorePool(storeID)
 	s.rqs[storeID] = queue.NewReplicateQueue(
-		storeID,
-		s.changer,
-		s.settings,
-		allocator,
-		storePool,
-		tick,
-	)
-	s.lqs[storeID] = queue.NewLeaseQueue(
 		storeID,
 		s.changer,
 		s.settings,
@@ -295,8 +283,6 @@ func (s *Simulator) tickQueues(ctx context.Context, tick time.Time, state state.
 		s.sqs[storeID].Tick(ctx, tick, state)
 		// Tick the replicate queue.
 		s.rqs[storeID].Tick(ctx, tick, state)
-		// Tick the lease queue.
-		s.lqs[storeID].Tick(ctx, tick, state)
 
 		// Tick changes that may have been enqueued with a lower completion
 		// than the current tick, from the queues.
@@ -326,8 +312,6 @@ func (s *Simulator) tickQueues(ctx context.Context, tick time.Time, state state.
 			s.sqs[storeID].MaybeAdd(ctx, r, state)
 			// Try adding the replica to the replicate queue.
 			s.rqs[storeID].MaybeAdd(ctx, r, state)
-			// Try adding the replica to the lease queue.
-			s.lqs[storeID].MaybeAdd(ctx, r, state)
 		}
 	}
 }

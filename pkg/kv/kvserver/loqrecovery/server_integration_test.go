@@ -23,9 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/listenerutil"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -47,8 +45,6 @@ func TestReplicaCollection(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-
-	skip.UnderDeadlock(t, "occasionally flakes")
 
 	// This test stops cluster servers. Use "reusable" listeners, otherwise the
 	// ports can be reused by other test clusters, and we may accidentally connect
@@ -85,8 +81,7 @@ func TestReplicaCollection(t *testing.T) {
 		var replicas loqrecoverypb.ClusterReplicaInfo
 		var stats loqrecovery.CollectionStats
 
-		replicas, stats, err := loqrecovery.CollectRemoteReplicaInfo(ctx, adm,
-			-1 /* maxConcurrency */, nil /* logOutput */)
+		replicas, stats, err := loqrecovery.CollectRemoteReplicaInfo(ctx, adm, -1 /* maxConcurrency */)
 		require.NoError(t, err, "failed to retrieve replica info")
 
 		// Check counters on retrieved replica info.
@@ -106,7 +101,7 @@ func TestReplicaCollection(t *testing.T) {
 		}
 		require.NotEqual(t, replicas.ClusterID, uuid.UUID{}.String(), "cluster UUID must not be empty")
 		require.Equal(t, replicas.Version,
-			clusterversion.Latest.Version(),
+			clusterversion.ByKey(clusterversion.BinaryVersionKey),
 			"replica info version must match current binary version")
 	}
 
@@ -158,8 +153,7 @@ func TestStreamRestart(t *testing.T) {
 		var replicas loqrecoverypb.ClusterReplicaInfo
 		var stats loqrecovery.CollectionStats
 
-		replicas, stats, err := loqrecovery.CollectRemoteReplicaInfo(ctx, adm,
-			-1 /* maxConcurrency */, nil /* logOutput */)
+		replicas, stats, err := loqrecovery.CollectRemoteReplicaInfo(ctx, adm, -1 /* maxConcurrency */)
 		require.NoError(t, err, "failed to retrieve replica info")
 
 		// Check counters on retrieved replica info.
@@ -204,7 +198,7 @@ func TestGetPlanStagingState(t *testing.T) {
 
 	ctx := context.Background()
 
-	tc, _, planStores := prepTestCluster(ctx, t, 3)
+	tc, _, planStores := prepTestCluster(t, 3)
 	defer tc.Stopper().Stop(ctx)
 
 	adm := tc.GetAdminClient(t, 0)
@@ -264,7 +258,7 @@ func TestStageRecoveryPlans(t *testing.T) {
 
 	ctx := context.Background()
 
-	tc, _, _ := prepTestCluster(ctx, t, 3)
+	tc, _, _ := prepTestCluster(t, 3)
 	defer tc.Stopper().Stop(ctx)
 
 	adm := tc.GetAdminClient(t, 0)
@@ -307,7 +301,7 @@ func TestStageBadVersions(t *testing.T) {
 
 	ctx := context.Background()
 
-	tc, _, _ := prepTestCluster(ctx, t, 1)
+	tc, _, _ := prepTestCluster(t, 1)
 	defer tc.Stopper().Stop(ctx)
 
 	adm := tc.GetAdminClient(t, 0)
@@ -317,7 +311,7 @@ func TestStageBadVersions(t *testing.T) {
 	plan.Updates = []loqrecoverypb.ReplicaUpdate{
 		createRecoveryForRange(t, tc, sk, 1),
 	}
-	plan.Version = clusterversion.MinSupported.Version()
+	plan.Version = clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey)
 	plan.Version.Major -= 1
 
 	_, err := adm.RecoveryStagePlan(ctx, &serverpb.RecoveryStagePlanRequest{
@@ -327,8 +321,7 @@ func TestStageBadVersions(t *testing.T) {
 	})
 	require.Error(t, err, "shouldn't stage plan with old version")
 
-	plan.Version = clusterversion.Latest.Version()
-	plan.Version.Major += 1
+	plan.Version.Major += 2
 	_, err = adm.RecoveryStagePlan(ctx, &serverpb.RecoveryStagePlanRequest{
 		Plan:           &plan,
 		AllNodes:       true,
@@ -343,7 +336,7 @@ func TestStageConflictingPlans(t *testing.T) {
 
 	ctx := context.Background()
 
-	tc, _, _ := prepTestCluster(ctx, t, 3)
+	tc, _, _ := prepTestCluster(t, 3)
 	defer tc.Stopper().Stop(ctx)
 
 	adm := tc.GetAdminClient(t, 0)
@@ -389,7 +382,7 @@ func TestForcePlanUpdate(t *testing.T) {
 
 	ctx := context.Background()
 
-	tc, _, _ := prepTestCluster(ctx, t, 3)
+	tc, _, _ := prepTestCluster(t, 3)
 	defer tc.Stopper().Stop(ctx)
 
 	adm := tc.GetAdminClient(t, 0)
@@ -437,7 +430,7 @@ func TestNodeDecommissioned(t *testing.T) {
 
 	ctx := context.Background()
 
-	tc, _, _ := prepTestCluster(ctx, t, 3)
+	tc, _, _ := prepTestCluster(t, 3)
 	defer tc.Stopper().Stop(ctx)
 
 	adm := tc.GetAdminClient(t, 0)
@@ -471,7 +464,7 @@ func TestRejectDecommissionReachableNode(t *testing.T) {
 
 	ctx := context.Background()
 
-	tc, _, _ := prepTestCluster(ctx, t, 3)
+	tc, _, _ := prepTestCluster(t, 3)
 	defer tc.Stopper().Stop(ctx)
 
 	adm := tc.GetAdminClient(t, 0)
@@ -493,7 +486,7 @@ func TestStageRecoveryPlansToWrongCluster(t *testing.T) {
 
 	ctx := context.Background()
 
-	tc, _, _ := prepTestCluster(ctx, t, 3)
+	tc, _, _ := prepTestCluster(t, 3)
 	defer tc.Stopper().Stop(ctx)
 
 	adm := tc.GetAdminClient(t, 0)
@@ -506,7 +499,7 @@ func TestStageRecoveryPlansToWrongCluster(t *testing.T) {
 
 	sk := tc.ScratchRange(t)
 
-	fakeClusterID := uuid.NewV4()
+	fakeClusterID, _ := uuid.NewV4()
 	// Stage plan with id of different cluster and see if error is raised.
 	plan := makeTestRecoveryPlan(ctx, t, adm)
 	plan.ClusterID = fakeClusterID.String()
@@ -527,7 +520,7 @@ func TestRetrieveRangeStatus(t *testing.T) {
 
 	ctx := context.Background()
 
-	tc, _, _ := prepTestCluster(ctx, t, 5)
+	tc, _, _ := prepTestCluster(t, 5)
 	defer tc.Stopper().Stop(ctx)
 
 	// Use scratch range to ensure we have a range that loses quorum.
@@ -584,7 +577,7 @@ func TestRetrieveApplyStatus(t *testing.T) {
 
 	ctx := context.Background()
 
-	tc, _, _ := prepTestCluster(ctx, t, 5)
+	tc, _, _ := prepTestCluster(t, 5)
 	defer tc.Stopper().Stop(ctx)
 
 	// Use scratch range to ensure we have a range that loses quorum.
@@ -611,8 +604,7 @@ func TestRetrieveApplyStatus(t *testing.T) {
 	var replicas loqrecoverypb.ClusterReplicaInfo
 	testutils.SucceedsSoon(t, func() error {
 		var err error
-		replicas, _, err = loqrecovery.CollectRemoteReplicaInfo(ctx, adm,
-			-1 /* maxConcurrency */, nil /* logOutput */)
+		replicas, _, err = loqrecovery.CollectRemoteReplicaInfo(ctx, adm, -1 /* maxConcurrency */)
 		return err
 	})
 	plan, planDetails, err := loqrecovery.PlanReplicas(ctx, replicas, nil, nil, uuid.DefaultGenerator)
@@ -686,7 +678,7 @@ func TestRejectBadVersionApplication(t *testing.T) {
 
 	ctx := context.Background()
 
-	tc, _, pss := prepTestCluster(ctx, t, 3)
+	tc, _, pss := prepTestCluster(t, 3)
 	defer tc.Stopper().Stop(ctx)
 
 	adm := tc.GetAdminClient(t, 0)
@@ -694,8 +686,7 @@ func TestRejectBadVersionApplication(t *testing.T) {
 	var replicas loqrecoverypb.ClusterReplicaInfo
 	testutils.SucceedsSoon(t, func() error {
 		var err error
-		replicas, _, err = loqrecovery.CollectRemoteReplicaInfo(ctx, adm,
-			-1 /* maxConcurrency */, nil /* logOutput */)
+		replicas, _, err = loqrecovery.CollectRemoteReplicaInfo(ctx, adm, -1 /* maxConcurrency */)
 		return err
 	})
 	plan, _, err := loqrecovery.PlanReplicas(ctx, replicas, nil, nil, uuid.DefaultGenerator)
@@ -722,11 +713,11 @@ func TestRejectBadVersionApplication(t *testing.T) {
 }
 
 func prepTestCluster(
-	ctx context.Context, t *testing.T, nodes int,
-) (*testcluster.TestCluster, fs.StickyRegistry, map[int]loqrecovery.PlanStore) {
-	skip.UnderRace(t, "cluster frequently fails to start under stress race")
+	t *testing.T, nodes int,
+) (*testcluster.TestCluster, server.StickyVFSRegistry, map[int]loqrecovery.PlanStore) {
+	skip.UnderStressRace(t, "cluster frequently fails to start under stress race")
 
-	reg := fs.NewStickyRegistry()
+	reg := server.NewStickyVFSRegistry()
 
 	lReg := listenerutil.NewListenerRegistry()
 
@@ -734,11 +725,8 @@ func prepTestCluster(
 		ServerArgsPerNode:   make(map[int]base.TestServerArgs),
 		ReusableListenerReg: lReg,
 	}
-
-	st := cluster.MakeTestingClusterSettings()
 	for i := 0; i < nodes; i++ {
 		args.ServerArgsPerNode[i] = base.TestServerArgs{
-			Settings: st,
 			Knobs: base.TestingKnobs{
 				Server: &server.TestingKnobs{
 					StickyVFSRegistry: reg,
@@ -798,6 +786,6 @@ func makeTestRecoveryPlan(
 	return loqrecoverypb.ReplicaUpdatePlan{
 		PlanID:    uuid.MakeV4(),
 		ClusterID: cr.ClusterID,
-		Version:   clusterversion.Latest.Version(),
+		Version:   clusterversion.ByKey(clusterversion.BinaryVersionKey),
 	}
 }

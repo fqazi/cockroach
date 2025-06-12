@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/protoreflect"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/gogo/protobuf/jsonpb"
 )
 
@@ -89,9 +88,6 @@ const (
 func emitResolvedTimestamp(
 	ctx context.Context, encoder Encoder, sink ResolvedTimestampSink, resolved hlc.Timestamp,
 ) error {
-	ctx, sp := tracing.ChildSpan(ctx, "changefeed.emit_resolved_timestamp")
-	defer sp.Finish()
-
 	// TODO(dan): Emit more fine-grained (table level) resolved
 	// timestamps.
 	if err := sink.EmitResolvedTimestamp(ctx, encoder, resolved); err != nil {
@@ -115,7 +111,6 @@ func init() {
 				changefeedbase.SinkParamClientKey,
 				changefeedbase.SinkParamClientCert,
 				changefeedbase.SinkParamConfluentAPISecret,
-				changefeedbase.SinkParamAzureAccessKey,
 			})
 			if err != nil {
 				return nil, err

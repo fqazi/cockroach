@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import { unset } from "src/util";
-
 import {
   ExecutionDetails,
   getInsightFromCause,
@@ -158,7 +157,7 @@ export function insightType(type: InsightType): string {
     case "DropIndex":
       return "Drop Unused Index";
     case "ReplaceIndex":
-      return "Create Replacement Index";
+      return "Replace Index";
     case "AlterIndex":
       return "Alter Index";
     case "HighContention":
@@ -286,14 +285,14 @@ export function getInsightsFromProblemsAndCauses(
 
         if (insights.length === 0) {
           insights.push(
-            getInsightFromCause(InsightNameEnum.SLOW_EXECUTION, execType),
+            getInsightFromCause(InsightNameEnum.slowExecution, execType),
           );
         }
         break;
 
       case "FailedExecution":
         insights.push(
-          getInsightFromCause(InsightNameEnum.FAILED_EXECUTION, execType),
+          getInsightFromCause(InsightNameEnum.failedExecution, execType),
         );
         break;
 
@@ -335,39 +334,39 @@ export function getRecommendationForExecInsight(
   execDetails: ExecutionDetails | null,
 ): InsightRecommendation {
   switch (insight.name) {
-    case InsightNameEnum.HIGH_CONTENTION:
+    case InsightNameEnum.highContention:
       return {
-        type: InsightNameEnum.HIGH_CONTENTION,
+        type: InsightNameEnum.highContention,
         execution: execDetails,
         details: {
           duration: execDetails.contentionTimeMs,
           description: insight.description,
         },
       };
-    case InsightNameEnum.FAILED_EXECUTION:
+    case InsightNameEnum.failedExecution:
       return {
-        type: InsightNameEnum.FAILED_EXECUTION,
+        type: InsightNameEnum.failedExecution,
         execution: execDetails,
       };
-    case InsightNameEnum.HIGH_RETRY_COUNT:
+    case InsightNameEnum.highRetryCount:
       return {
-        type: InsightNameEnum.HIGH_RETRY_COUNT,
-        execution: execDetails,
-        details: {
-          description: insight.description,
-        },
-      };
-    case InsightNameEnum.PLAN_REGRESSION:
-      return {
-        type: InsightNameEnum.PLAN_REGRESSION,
+        type: InsightNameEnum.highRetryCount,
         execution: execDetails,
         details: {
           description: insight.description,
         },
       };
-    case InsightNameEnum.SUBOPTIMAL_PLAN:
+    case InsightNameEnum.planRegression:
       return {
-        type: InsightNameEnum.SUBOPTIMAL_PLAN,
+        type: InsightNameEnum.planRegression,
+        execution: execDetails,
+        details: {
+          description: insight.description,
+        },
+      };
+    case InsightNameEnum.suboptimalPlan:
+      return {
+        type: InsightNameEnum.suboptimalPlan,
         database: execDetails.databaseName,
         execution: execDetails,
         details: {
@@ -392,23 +391,23 @@ export function getStmtInsightRecommendations(
   if (!insightDetails) return [];
 
   const execDetails: ExecutionDetails = {
-    application: insightDetails?.application,
-    statement: insightDetails?.query,
-    fingerprintID: insightDetails?.statementFingerprintID,
-    retries: insightDetails?.retries,
-    indexRecommendations: insightDetails?.indexRecommendations,
-    databaseName: insightDetails?.databaseName,
-    elapsedTimeMillis: insightDetails?.elapsedTimeMillis,
-    contentionTimeMs: insightDetails?.contentionTime?.asMilliseconds(),
-    statementExecutionID: insightDetails?.statementExecutionID,
-    transactionExecutionID: insightDetails?.transactionExecutionID,
+    application: insightDetails.application,
+    statement: insightDetails.query,
+    fingerprintID: insightDetails.statementFingerprintID,
+    retries: insightDetails.retries,
+    indexRecommendations: insightDetails.indexRecommendations,
+    databaseName: insightDetails.databaseName,
+    elapsedTimeMillis: insightDetails.elapsedTimeMillis,
+    contentionTimeMs: insightDetails.contentionTime?.asMilliseconds(),
+    statementExecutionID: insightDetails.statementExecutionID,
+    transactionExecutionID: insightDetails.transactionExecutionID,
     execType: InsightExecEnum.STATEMENT,
-    errorCode: insightDetails?.errorCode,
-    errorMsg: insightDetails?.errorMsg,
-    status: insightDetails?.status,
+    errorCode: insightDetails.errorCode,
+    errorMsg: insightDetails.errorMsg,
+    status: insightDetails.status,
   };
 
-  const recs: InsightRecommendation[] = insightDetails?.insights?.map(insight =>
+  const recs: InsightRecommendation[] = insightDetails.insights?.map(insight =>
     getRecommendationForExecInsight(insight, execDetails),
   );
 
@@ -421,14 +420,14 @@ export function getTxnInsightRecommendations(
   if (!insightDetails) return [];
 
   const execDetails: ExecutionDetails = {
-    application: insightDetails?.application,
-    transactionExecutionID: insightDetails?.transactionExecutionID,
-    retries: insightDetails?.retries,
-    contentionTimeMs: insightDetails?.contentionTime.asMilliseconds(),
-    elapsedTimeMillis: insightDetails?.elapsedTimeMillis,
+    application: insightDetails.application,
+    transactionExecutionID: insightDetails.transactionExecutionID,
+    retries: insightDetails.retries,
+    contentionTimeMs: insightDetails.contentionTime.asMilliseconds(),
+    elapsedTimeMillis: insightDetails.elapsedTimeMillis,
     execType: InsightExecEnum.TRANSACTION,
-    errorCode: insightDetails?.errorCode,
-    errorMsg: insightDetails?.errorMsg,
+    errorCode: insightDetails.errorCode,
+    errorMsg: insightDetails.errorMsg,
   };
   const recs: InsightRecommendation[] = [];
 

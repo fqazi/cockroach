@@ -3,15 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import flatMap from "lodash/flatMap";
-import map from "lodash/map";
+import _ from "lodash";
 import Long from "long";
-import { call, put, delay } from "redux-saga/effects";
 import { expectSaga, testSaga } from "redux-saga-test-plan";
 import * as matchers from "redux-saga-test-plan/matchers";
 
-import * as protos from "src/js/protos";
+import { call, put, delay } from "redux-saga/effects";
 import { queryTimeSeries, TimeSeriesQueryRequestMessage } from "src/util/api";
+import * as protos from "src/js/protos";
 
 import * as metrics from "./metrics";
 
@@ -79,7 +78,7 @@ describe("metrics reducer", function () {
       );
       expect(state.queries).toBeDefined();
       expect(state.queries[componentID]).toBeDefined();
-      expect(Object.keys(state.queries).length).toBe(1);
+      expect(_.keys(state.queries).length).toBe(1);
       expect(state.queries[componentID].nextRequest).toEqual(request);
       expect(state.queries[componentID].data).toBeUndefined();
       expect(state.queries[componentID].error).toBeUndefined();
@@ -108,7 +107,7 @@ describe("metrics reducer", function () {
       );
       expect(state.queries).toBeDefined();
       expect(state.queries[componentID]).toBeDefined();
-      expect(Object.keys(state.queries).length).toBe(1);
+      expect(_.keys(state.queries).length).toBe(1);
       expect(state.queries[componentID].data).toBeUndefined();
       expect(state.queries[componentID].request).toBeUndefined();
       expect(state.queries[componentID].nextRequest).toBeUndefined();
@@ -143,7 +142,7 @@ describe("metrics reducer", function () {
       );
       expect(state.queries).toBeDefined();
       expect(state.queries[componentID]).toBeDefined();
-      expect(Object.keys(state.queries).length).toBe(1);
+      expect(_.keys(state.queries).length).toBe(1);
       expect(state.queries[componentID].data).toEqual(response);
       expect(state.queries[componentID].request).toEqual(request);
       expect(state.queries[componentID].error).toBeUndefined();
@@ -157,7 +156,7 @@ describe("metrics reducer", function () {
       );
       expect(state.queries).toBeDefined();
       expect(state.queries[componentID]).toBeDefined();
-      expect(Object.keys(state.queries).length).toBe(1);
+      expect(_.keys(state.queries).length).toBe(1);
       expect(state.queries[componentID].error).toEqual(error);
       expect(state.queries[componentID].request).toBeUndefined();
       expect(state.queries[componentID].data).toBeUndefined();
@@ -186,7 +185,7 @@ describe("metrics reducer", function () {
       return new protos.cockroach.ts.tspb.TimeSeriesQueryRequest({
         start_nanos: ts[0],
         end_nanos: ts[1],
-        queries: map(names, s => {
+        queries: _.map(names, s => {
           return {
             name: s,
           };
@@ -309,7 +308,7 @@ describe("metrics reducer", function () {
         ];
 
         // Mix the requests together and send the combined request set.
-        const mixedRequests = flatMap(shortRequests, (short, i) => [
+        const mixedRequests = _.flatMap(shortRequests, (short, i) => [
           short,
           longRequests[i],
         ]);
@@ -359,7 +358,7 @@ describe("metrics reducer", function () {
         // Return a valid response.
         const response = createResponse(expectedRequest.queries);
         // Generate the expected put effects to be generated after receiving the response.
-        const expectedEffects = map(requests, req =>
+        const expectedEffects = _.map(requests, req =>
           metrics.receiveMetrics(
             req.id,
             req.data,
@@ -392,7 +391,7 @@ describe("metrics reducer", function () {
         // Return an error response.
         const err = new Error("network error");
         // Generate the expected put effects to be generated after receiving the response.
-        const expectedEffects = map(requests, req =>
+        const expectedEffects = _.map(requests, req =>
           metrics.errorMetrics(req.id, err),
         );
 

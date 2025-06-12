@@ -3,26 +3,16 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { util } from "@cockroachlabs/cluster-ui";
 import classNames from "classnames";
-import flow from "lodash/flow";
-import get from "lodash/get";
-import has from "lodash/has";
-import isEmpty from "lodash/isEmpty";
-import isEqual from "lodash/isEqual";
-import isNil from "lodash/isNil";
-import join from "lodash/join";
-import map from "lodash/map";
-import orderBy from "lodash/orderBy";
-import uniq from "lodash/uniq";
+import _ from "lodash";
 import Long from "long";
 import moment from "moment-timezone";
 import React from "react";
 import { Helmet } from "react-helmet";
 import { connect } from "react-redux";
 import { withRouter, RouteComponentProps } from "react-router-dom";
-
 import { InlineAlert } from "src/components";
+
 import * as protos from "src/js/protos";
 import { refreshLiveness, refreshNodes } from "src/redux/apiReducers";
 import {
@@ -33,18 +23,18 @@ import {
   livenessStatusByNodeIDSelector,
 } from "src/redux/nodes";
 import { AdminUIState } from "src/redux/state";
+import { util } from "@cockroachlabs/cluster-ui";
 import { FixLong } from "src/util/fixLong";
 import {
   getFilters,
   localityToString,
   NodeFilterList,
 } from "src/views/reports/components/nodeFilterList";
-import Dropdown, { DropdownOption } from "src/views/shared/components/dropdown";
 import {
   PageConfig,
   PageConfigItem,
 } from "src/views/shared/components/pageconfig";
-
+import Dropdown, { DropdownOption } from "src/views/shared/components/dropdown";
 import { BackToAdvanceDebug } from "../util";
 
 interface NodesOwnProps {
@@ -103,7 +93,7 @@ function printSingleValue(value: string) {
   return function (
     status: protos.cockroach.server.status.statuspb.INodeStatus,
   ) {
-    return get(status, value, null);
+    return _.get(status, value, null);
   };
 }
 
@@ -114,7 +104,7 @@ function printSingleValueWithFunction(
   return function (
     status: protos.cockroach.server.status.statuspb.INodeStatus,
   ) {
-    return fn(get(status, value, null));
+    return fn(_.get(status, value, null));
   };
 }
 
@@ -122,7 +112,7 @@ function printMultiValue(value: string) {
   return function (
     status: protos.cockroach.server.status.statuspb.INodeStatus,
   ) {
-    return join(get(status, value, []), "\n");
+    return _.join(_.get(status, value, []), "\n");
   };
 }
 
@@ -130,10 +120,10 @@ function printDateValue(value: string, inputDateFormat: string) {
   return function (
     status: protos.cockroach.server.status.statuspb.INodeStatus,
   ) {
-    if (!has(status, value)) {
+    if (!_.has(status, value)) {
       return null;
     }
-    return moment(get(status, value), inputDateFormat).format(dateFormat);
+    return moment(_.get(status, value), inputDateFormat).format(dateFormat);
   };
 }
 
@@ -141,11 +131,11 @@ function printTimestampValue(value: string) {
   return function (
     status: protos.cockroach.server.status.statuspb.INodeStatus,
   ) {
-    if (!has(status, value)) {
+    if (!_.has(status, value)) {
       return null;
     }
     return util
-      .LongToMoment(FixLong(get(status, value) as Long))
+      .LongToMoment(FixLong(_.get(status, value) as Long))
       .format(dateFormat);
   };
 }
@@ -156,10 +146,10 @@ function titleDateValue(value: string, inputDateFormat: string) {
   return function (
     status: protos.cockroach.server.status.statuspb.INodeStatus,
   ) {
-    if (!has(status, value)) {
+    if (!_.has(status, value)) {
       return null;
     }
-    const raw = get(status, value);
+    const raw = _.get(status, value);
     return `${moment(raw, inputDateFormat).format(dateFormat)}\n${raw}`;
   };
 }
@@ -168,10 +158,10 @@ function titleTimestampValue(value: string) {
   return function (
     status: protos.cockroach.server.status.statuspb.INodeStatus,
   ) {
-    if (!has(status, value)) {
+    if (!_.has(status, value)) {
       return null;
     }
-    const raw = FixLong(get(status, value) as Long);
+    const raw = FixLong(_.get(status, value) as Long);
     return `${util.LongToMoment(raw).format(dateFormat)}\n${raw.toString()}`;
   };
 }
@@ -182,10 +172,10 @@ function extractMultiValue(value: string) {
   return function (
     status: protos.cockroach.server.status.statuspb.INodeStatus,
   ) {
-    const items = map(get(status, value, []), item => item.toString());
+    const items = _.map(_.get(status, value, []), item => item.toString());
     return (
       <ul className="nodes-entries-list">
-        {map(items, (item, key) => (
+        {_.map(items, (item, key) => (
           <li key={key} className="nodes-entries-list--item">
             {item}
           </li>
@@ -309,7 +299,7 @@ export class Nodes extends React.Component<NodesProps, LocalNodeState> {
     super(props);
 
     this.state = {
-      selectFilter: isEmpty(getFilters(this.props.location))
+      selectFilter: _.isEmpty(getFilters(this.props.location))
         ? LivenessStatus.NODE_STATUS_LIVE
         : null,
     };
@@ -325,7 +315,7 @@ export class Nodes extends React.Component<NodesProps, LocalNodeState> {
   }
 
   componentDidUpdate(prevProps: NodesProps) {
-    if (!isEqual(this.props.location, prevProps.location)) {
+    if (!_.isEqual(this.props.location, prevProps.location)) {
       this.refresh(this.props);
     }
   }
@@ -345,13 +335,12 @@ export class Nodes extends React.Component<NodesProps, LocalNodeState> {
     ) => string,
   ) {
     const inconsistent =
-      !isNil(equality) &&
-      flow(
-        (nodeIds: string[]) =>
-          map(nodeIds, nodeID => this.props.nodeStatusByID[nodeID]),
-        statuses => map(statuses, status => equality(status)),
-        uniq,
-      )(orderedNodeIDs).length > 1;
+      !_.isNil(equality) &&
+      _.chain(orderedNodeIDs)
+        .map(nodeID => this.props.nodeStatusByID[nodeID])
+        .map(status => equality(status))
+        .uniq()
+        .value().length > 1;
     const headerClassName = classNames(
       "nodes-table__cell",
       "nodes-table__cell--header",
@@ -361,13 +350,13 @@ export class Nodes extends React.Component<NodesProps, LocalNodeState> {
     return (
       <tr className="nodes-table__row" key={key}>
         <th className={headerClassName}>{title}</th>
-        {map(orderedNodeIDs, nodeID => {
+        {_.map(orderedNodeIDs, nodeID => {
           const status = this.props.nodeStatusByID[nodeID];
           return (
             <NodeTableCell
               key={nodeID}
               value={extract(status)}
-              title={isNil(cellTitle) ? null : cellTitle(status)}
+              title={_.isNil(cellTitle) ? null : cellTitle(status)}
             />
           );
         })}
@@ -390,21 +379,21 @@ export class Nodes extends React.Component<NodesProps, LocalNodeState> {
       );
     }
 
-    if (isEmpty(nodeIds)) {
+    if (_.isEmpty(nodeIds)) {
       return loading;
     }
 
     const filters = getFilters(this.props.location);
 
-    let nodeIDsContext = nodeIds.map((nodeID: string) =>
+    let nodeIDsContext = _.chain(nodeIds).map((nodeID: string) =>
       Number.parseInt(nodeID, 10),
     );
-    if (!isNil(filters.nodeIDs) && filters.nodeIDs.size > 0) {
+    if (!_.isNil(filters.nodeIDs) && filters.nodeIDs.size > 0) {
       nodeIDsContext = nodeIDsContext.filter(nodeID =>
         filters.nodeIDs.has(nodeID),
       );
     }
-    if (!isNil(filters.localityRegex)) {
+    if (!_.isNil(filters.localityRegex)) {
       nodeIDsContext = nodeIDsContext.filter(nodeID =>
         filters.localityRegex.test(
           localityToString(nodeStatusByID[nodeID.toString()].desc.locality),
@@ -431,9 +420,10 @@ export class Nodes extends React.Component<NodesProps, LocalNodeState> {
     }
 
     // Sort the node IDs and then convert them back to string for lookups.
-    const orderedNodeIDs = orderBy(nodeIDsContext, nodeID => nodeID).map(
-      nodeID => nodeID.toString(),
-    );
+    const orderedNodeIDs = nodeIDsContext
+      .orderBy(nodeID => nodeID)
+      .map(nodeID => nodeID.toString())
+      .value();
 
     const dropdownOptions: DropdownOption[] = [
       {
@@ -456,8 +446,8 @@ export class Nodes extends React.Component<NodesProps, LocalNodeState> {
           nodeIDs={filters.nodeIDs}
           localityRegex={filters.localityRegex}
         />
-        {!isEmpty(orderedNodeIDs) && <h2 className="base-heading">Nodes</h2>}
-        {isEmpty(filters) && (
+        {!_.isEmpty(orderedNodeIDs) && <h2 className="base-heading">Nodes</h2>}
+        {_.isEmpty(filters) && (
           <PageConfig>
             <PageConfigItem>
               <Dropdown
@@ -478,7 +468,7 @@ export class Nodes extends React.Component<NodesProps, LocalNodeState> {
             </PageConfigItem>
           </PageConfig>
         )}
-        {isEmpty(orderedNodeIDs) ? (
+        {_.isEmpty(orderedNodeIDs) ? (
           <section className="section">
             <NodeFilterList
               nodeIDs={filters.nodeIDs}
@@ -489,7 +479,7 @@ export class Nodes extends React.Component<NodesProps, LocalNodeState> {
         ) : (
           <table className="nodes-table">
             <tbody>
-              {map(nodesTableRows, (row, key) => {
+              {_.map(nodesTableRows, (row, key) => {
                 return this.renderNodesTableRow(
                   orderedNodeIDs,
                   key,

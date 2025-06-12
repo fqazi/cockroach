@@ -6,8 +6,6 @@
 package colenc
 
 import (
-	"context"
-
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -21,7 +19,7 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-func invertedColToDatum(vec *coldata.Vec, row int) tree.Datum {
+func invertedColToDatum(vec coldata.Vec, row int) tree.Datum {
 	if vec.Nulls().NullAt(row) {
 		return tree.DNull
 	}
@@ -41,13 +39,13 @@ func invertedColToDatum(vec *coldata.Vec, row int) tree.Datum {
 // doesn't attempt to do bulk KV operations. TODO(cucaroach): optimize
 // inverted index encoding to do bulk allocations and bulk KV puts.
 func (b *BatchEncoder) encodeInvertedSecondaryIndex(
-	ctx context.Context, index catalog.Index, kys []roachpb.Key, extraKeys [][]byte,
+	index catalog.Index, kys []roachpb.Key, extraKeys [][]byte,
 ) error {
 	var err error
 	if kys, err = b.encodeInvertedIndexPrefixKeys(kys, index); err != nil {
 		return err
 	}
-	var vec *coldata.Vec
+	var vec coldata.Vec
 	if i, ok := b.colMap.Get(index.InvertedColumnID()); ok {
 		vec = b.b.ColVecs()[i]
 	}
@@ -59,7 +57,7 @@ func (b *BatchEncoder) encodeInvertedSecondaryIndex(
 		var keys [][]byte
 		val := invertedColToDatum(vec, row+b.start)
 		if !indexGeoConfig.IsEmpty() {
-			if keys, err = rowenc.EncodeGeoInvertedIndexTableKeys(ctx, val, kys[row], indexGeoConfig); err != nil {
+			if keys, err = rowenc.EncodeGeoInvertedIndexTableKeys(val, kys[row], indexGeoConfig); err != nil {
 				return err
 			}
 		} else {
@@ -94,11 +92,7 @@ func (b *BatchEncoder) encodeInvertedSecondaryIndexNoFamiliesOneRow(
 	}
 	var kvValue roachpb.Value
 	kvValue.SetBytes(value)
-	if ind.IsUnique() || b.useCPutsOnNonUniqueIndexes {
-		b.p.CPut(&key, &kvValue, nil /* expValue */)
-	} else {
-		b.p.Put(&key, &kvValue)
-	}
+	b.p.InitPut(&key, &kvValue, false)
 	return b.checkMemory()
 }
 
@@ -115,7 +109,7 @@ func (b *BatchEncoder) encodeInvertedIndexPrefixKeys(
 		colIDs := index.IndexDesc().KeyColumnIDs[:numColumns-1]
 		dirs := index.IndexDesc().KeyColumnDirections
 
-		err = encodeColumns(colIDs, dirs, b.colMap, b.start, b.end, b.b.ColVecs(), kys)
+		_, err = encodeColumns(colIDs, dirs, b.colMap, b.start, b.end, b.b.ColVecs(), kys)
 		if err != nil {
 			return nil, err
 		}
@@ -126,7 +120,7 @@ func (b *BatchEncoder) encodeInvertedIndexPrefixKeys(
 func writeColumnValueOneRow(
 	value []byte,
 	colMap catalog.TableColMap,
-	vecs []*coldata.Vec,
+	vecs []coldata.Vec,
 	cols []rowenc.ValueEncodedColumn,
 	row int,
 ) ([]byte, error) {
@@ -151,7 +145,7 @@ func writeColumnValueOneRow(
 		}
 		colIDDelta := valueside.MakeColumnIDDelta(lastColID, col.ColID)
 		lastColID = col.ColID
-		value, err = valuesideEncodeCol(value, colIDDelta, vec, row)
+		value, err = valuesideEncodeCol(value, vec.Type(), colIDDelta, vec, row)
 		if err != nil {
 			return nil, err
 		}

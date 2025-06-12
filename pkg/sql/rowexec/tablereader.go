@@ -80,7 +80,7 @@ func newTableReader(
 ) (*tableReader, error) {
 	// NB: we hit this with a zero NodeID (but !ok) with multi-tenancy.
 	if nodeID, ok := flowCtx.NodeID.OptionalNodeID(); ok && nodeID == 0 {
-		return nil, errors.AssertionFailedf("attempting to create a tableReader with uninitialized NodeID")
+		return nil, errors.Errorf("attempting to create a tableReader with uninitialized NodeID")
 	}
 
 	if spec.LimitHint > 0 || spec.BatchBytesLimit > 0 {
@@ -150,7 +150,6 @@ func newTableReader(
 			LockWaitPolicy:             spec.LockingWaitPolicy,
 			LockDurability:             spec.LockingDurability,
 			LockTimeout:                flowCtx.EvalCtx.SessionData().LockTimeout,
-			DeadlockTimeout:            flowCtx.EvalCtx.SessionData().DeadlockTimeout,
 			Alloc:                      &tr.alloc,
 			MemMonitor:                 flowCtx.Mon,
 			Spec:                       &spec.FetchSpec,
@@ -169,9 +168,6 @@ func newTableReader(
 	}
 
 	if execstats.ShouldCollectStats(ctx, flowCtx.CollectStats) {
-		if flowTxn := flowCtx.EvalCtx.Txn; flowTxn != nil {
-			tr.contentionEventsListener.Init(flowTxn.ID())
-		}
 		tr.fetcher = newRowFetcherStatCollector(&fetcher)
 		tr.ExecStatsForTrace = tr.execStatsForTrace
 	} else {
@@ -205,9 +201,6 @@ func (tr *tableReader) Start(ctx context.Context) {
 }
 
 func (tr *tableReader) startScan(ctx context.Context) error {
-	if cb := tr.FlowCtx.Cfg.TestingKnobs.TableReaderStartScanCb; cb != nil {
-		cb()
-	}
 	limitBatches := !tr.parallelize
 	var bytesLimit rowinfra.BytesLimit
 	if !limitBatches {
@@ -225,7 +218,7 @@ func (tr *tableReader) startScan(ctx context.Context) error {
 		initialTS := tr.FlowCtx.Txn.ReadTimestamp()
 		err = tr.fetcher.StartInconsistentScan(
 			ctx, tr.FlowCtx.Cfg.DB.KV(), initialTS, tr.maxTimestampAge, tr.Spans,
-			bytesLimit, tr.limitHint, tr.FlowCtx.EvalCtx.QualityOfService(),
+			bytesLimit, tr.limitHint, tr.EvalCtx.QualityOfService(),
 		)
 	}
 	tr.scanStarted = true
@@ -319,17 +312,14 @@ func (tr *tableReader) execStatsForTrace() *execinfrapb.ComponentStats {
 			KVPairsRead:         optional.MakeUint(uint64(tr.fetcher.GetKVPairsRead())),
 			TuplesRead:          is.NumTuples,
 			KVTime:              is.WaitTime,
-			ContentionTime:      optional.MakeTimeValue(tr.contentionEventsListener.GetContentionTime()),
-			LockWaitTime:        optional.MakeTimeValue(tr.contentionEventsListener.GetLockWaitTime()),
-			LatchWaitTime:       optional.MakeTimeValue(tr.contentionEventsListener.GetLatchWaitTime()),
+			ContentionTime:      optional.MakeTimeValue(tr.contentionEventsListener.CumulativeContentionTime),
 			BatchRequestsIssued: optional.MakeUint(uint64(tr.fetcher.GetBatchRequestsIssued())),
 			KVCPUTime:           optional.MakeTimeValue(is.kvCPUTime),
 		},
 		Output: tr.OutputHelper.Stats(),
 	}
-	ret.Exec.ConsumedRU = optional.MakeUint(tr.tenantConsumptionListener.GetConsumedRU())
-	scanStats := tr.scanStatsListener.GetScanStats()
-	execstats.PopulateKVMVCCStats(&ret.KV, &scanStats)
+	ret.Exec.ConsumedRU = optional.MakeUint(tr.tenantConsumptionListener.ConsumedRU)
+	execstats.PopulateKVMVCCStats(&ret.KV, &tr.scanStatsListener.ScanStats)
 	return ret
 }
 

@@ -190,23 +190,6 @@ func (b *appBatch) runPostAddTriggers(
 			b.numMutations += int(added)
 		}
 	}
-	if res.LinkExternalSSTable != nil {
-		linkExternalSStablePreApply(
-			ctx,
-			env,
-			kvpb.RaftTerm(cmd.Term),
-			cmd.Index(),
-			*res.LinkExternalSSTable)
-	}
-
-	if res.Excise != nil {
-		if err := env.eng.Excise(ctx, res.Excise.Span); err != nil {
-			return errors.Wrapf(err, "error while excising span: %v", res.Excise.Span)
-		}
-		if err := env.eng.Excise(ctx, res.Excise.LockTableSpan); err != nil {
-			return errors.Wrapf(err, "error while excising span: %v", res.Excise.LockTableSpan)
-		}
-	}
 
 	return nil
 }

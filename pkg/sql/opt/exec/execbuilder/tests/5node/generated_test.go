@@ -26,7 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 )
 
-const configIdx = 8
+const configIdx = 6
 
 var execBuildLogicTestDir string
 
@@ -279,4 +279,11 @@ func TestExecBuild_scan_parallel(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "scan_parallel")
+}
+
+func TestExecBuild_stats(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runExecBuildLogicTest(t, "stats")
 }

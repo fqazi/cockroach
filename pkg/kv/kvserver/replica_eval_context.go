@@ -9,7 +9,6 @@ import (
 	"context"
 	"sync"
 
-	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/util"
@@ -40,14 +39,10 @@ type evalContextImpl struct {
 	// track it separately.
 	closedTSElided bool
 	closedTS       hlc.Timestamp
-	ah             kvpb.AdmissionHeader
 }
 
 func newEvalContextImpl(
-	ctx context.Context,
-	r *Replica,
-	requiresClosedTSOlderThanStorageSnap bool,
-	ah kvpb.AdmissionHeader,
+	ctx context.Context, r *Replica, requiresClosedTSOlderThanStorageSnap bool,
 ) (ec *evalContextImpl) {
 	var closedTS hlc.Timestamp
 	if requiresClosedTSOlderThanStorageSnap {
@@ -61,7 +56,6 @@ func newEvalContextImpl(
 		Replica:        r,
 		closedTSElided: !requiresClosedTSOlderThanStorageSnap,
 		closedTS:       closedTS,
-		ah:             ah,
 	}
 	return ec
 }
@@ -82,11 +76,6 @@ func (ec *evalContextImpl) Release() {
 	evalContextPool.Put(ec)
 }
 
-// AdmissionHeader implements the EvalContext interface.
-func (ec *evalContextImpl) AdmissionHeader() kvpb.AdmissionHeader {
-	return ec.ah
-}
-
 var _ batcheval.EvalContext = &evalContextImpl{}
 
 // NewReplicaEvalContext returns a batcheval.EvalContext to use for command
@@ -96,17 +85,13 @@ var _ batcheval.EvalContext = &evalContextImpl{}
 // The caller must call rec.Release() once done with the evaluation context in
 // order to return its memory back to a sync.Pool.
 func NewReplicaEvalContext(
-	ctx context.Context,
-	r *Replica,
-	ss *spanset.SpanSet,
-	requiresClosedTSOlderThanStorageSnap bool,
-	ah kvpb.AdmissionHeader,
+	ctx context.Context, r *Replica, ss *spanset.SpanSet, requiresClosedTSOlderThanStorageSnap bool,
 ) (rec batcheval.EvalContext) {
 	if ss == nil {
 		log.Fatalf(r.AnnotateCtx(context.Background()), "can't create a ReplicaEvalContext with assertions but no SpanSet")
 	}
 
-	rec = newEvalContextImpl(ctx, r, requiresClosedTSOlderThanStorageSnap, ah)
+	rec = newEvalContextImpl(ctx, r, requiresClosedTSOlderThanStorageSnap)
 	if util.RaceEnabled {
 		return &SpanSetReplicaEvalContext{
 			i:  rec,

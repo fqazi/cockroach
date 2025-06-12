@@ -21,10 +21,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/pprompt"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
+	"github.com/cockroachdb/cockroach/pkg/util/version"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/version"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgconn"
+	"github.com/jackc/pgx/v4"
 	"github.com/otan/gopgkrb5"
 )
 
@@ -614,27 +614,20 @@ func (c *sqlConn) ExecTxn(
 }
 
 func (c *sqlConn) Exec(ctx context.Context, query string, args ...interface{}) error {
-	_, err := c.ExecWithRowsAffected(ctx, query, args...)
-	return err
-}
-
-func (c *sqlConn) ExecWithRowsAffected(
-	ctx context.Context, query string, args ...interface{},
-) (int64, error) {
 	if err := c.EnsureConn(ctx); err != nil {
-		return 0, err
+		return err
 	}
 	if c.connCtx.Echo {
 		fmt.Fprintln(c.errw, ">", query)
 	}
-	r, err := c.conn.Exec(ctx, query, args...)
+	_, err := c.conn.Exec(ctx, query, args...)
 	c.flushNotices()
 	if c.conn.IsClosed() {
 		c.reconnecting = true
 		c.silentClose()
-		return r.RowsAffected(), MarkWithConnectionClosed(err)
+		return MarkWithConnectionClosed(err)
 	}
-	return r.RowsAffected(), err
+	return err
 }
 
 func (c *sqlConn) Query(ctx context.Context, query string, args ...interface{}) (Rows, error) {
@@ -659,7 +652,7 @@ func (c *sqlConn) Query(ctx context.Context, query string, args ...interface{}) 
 		if err != nil {
 			return nil, err
 		}
-		return &sqlRows{rows: rows, typeMap: c.conn.TypeMap(), conn: c}, nil
+		return &sqlRows{rows: rows, connInfo: c.conn.ConnInfo(), conn: c}, nil
 	}
 
 	// Otherwise, we use pgconn. This allows us to add support for multiple
@@ -671,9 +664,9 @@ func (c *sqlConn) Query(ctx context.Context, query string, args ...interface{}) 
 		return nil, MarkWithConnectionClosed(multiResultReader.Close())
 	}
 	rs := &sqlRowsMultiResultSet{
-		rows:    multiResultReader,
-		typeMap: c.conn.TypeMap(),
-		conn:    c,
+		rows:     multiResultReader,
+		connInfo: c.conn.ConnInfo(),
+		conn:     c,
 	}
 	if _, err := rs.NextResultSet(); err != nil {
 		return nil, err

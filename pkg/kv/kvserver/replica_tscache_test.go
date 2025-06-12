@@ -6,7 +6,6 @@
 package kvserver
 
 import (
-	"context"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -31,7 +30,6 @@ func TestReadSummaryApplyForR1(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	ctx := context.Background()
 	baseTS := hlc.Timestamp{WallTime: 123}
 	clock := hlc.NewClockForTesting(timeutil.NewManualTime(baseTS.GoTime()))
 	tc := tscache.New(clock)
@@ -46,20 +44,20 @@ func TestReadSummaryApplyForR1(t *testing.T) {
 		Local:  rspb.Segment{LowWater: ts1},
 		Global: rspb.Segment{LowWater: ts1},
 	}
-	applyReadSummaryToTimestampCache(ctx, tc, &r1desc, summary)
-	tc.GetMax(ctx, keys.LocalPrefix, nil)
+	applyReadSummaryToTimestampCache(tc, &r1desc, summary)
+	tc.GetMax(keys.LocalPrefix, nil)
 
 	// Make sure that updating the tscache did something, so the test is not
 	// fooling itself.
-	ts, _ := tc.GetMax(ctx, roachpb.Key("a"), nil)
+	ts, _ := tc.GetMax(roachpb.Key("a"), nil)
 	require.Equal(t, ts1, ts)
 
 	// Check that the local keyspace was not affected.
-	ts, _ = tc.GetMax(ctx, keys.LocalPrefix, nil)
+	ts, _ = tc.GetMax(keys.LocalPrefix, nil)
 	require.Equal(t, baseTS, ts)
 
 	// Check that the range-local keyspace for the range in question was affected.
-	ts, _ = tc.GetMax(ctx, keys.MakeRangeKeyPrefix(r1desc.StartKey), nil)
+	ts, _ = tc.GetMax(keys.MakeRangeKeyPrefix(r1desc.StartKey), nil)
 	require.Equal(t, ts1, ts)
 }
 
@@ -70,7 +68,6 @@ func TestReadSummaryCollectForR1(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	ctx := context.Background()
 	baseTS := hlc.Timestamp{WallTime: 123}
 	clock := hlc.NewClockForTesting(timeutil.NewManualTime(baseTS.GoTime()))
 	tc := tscache.New(clock)
@@ -86,11 +83,11 @@ func TestReadSummaryCollectForR1(t *testing.T) {
 		EndKey:   roachpb.RKeyMax,
 	}
 	// Populate the timestamp cache for a range-local key for r2.
-	tc.Add(ctx, keys.MakeRangeKeyPrefix(r2desc.StartKey), nil, hlc.Timestamp{WallTime: 1000}, uuid.Nil)
+	tc.Add(keys.MakeRangeKeyPrefix(r2desc.StartKey), nil, hlc.Timestamp{WallTime: 1000}, uuid.Nil)
 
 	// Assert that r1's summary was not influenced by the r2 range-local key we
 	// set above.
-	summary := collectReadSummaryFromTimestampCache(ctx, tc, &r1desc, 0, 0)
+	summary := collectReadSummaryFromTimestampCache(tc, &r1desc)
 	require.Equal(t, baseTS, summary.Global.LowWater)
 	require.Equal(t, baseTS, summary.Local.LowWater)
 }

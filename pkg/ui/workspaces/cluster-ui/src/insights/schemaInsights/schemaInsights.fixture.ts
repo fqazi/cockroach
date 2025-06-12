@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import { indexUnusedDuration } from "src/util/constants";
-
 import { SchemaInsightsViewProps } from "./schemaInsightsView";
 
 export const SchemaInsightsPropsFixture: SchemaInsightsViewProps = {

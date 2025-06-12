@@ -6,7 +6,6 @@ go_library(
         "cpustopwatch.go",
         "manual_time.go",
         "stopwatch.go",
-        "ticker.go",
         "time.go",
         "time_source.go",
         "time_zone_util.go",
@@ -37,12 +36,12 @@ go_test(
         "manual_time_test.go",
         "now_test.go",
         "stopwatch_test.go",
-        "ticker_test.go",
         "time_test.go",
         "time_zone_util_test.go",
         "timeout_error_test.go",
         "timer_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":timeutil"],
     deps = [
         "//pkg/util/leaktest",
@@ -66,7 +65,7 @@ genrule(
       --zoneinfo=$(location @go_sdk//:lib/time/zoneinfo.zip) \
       --crlfmt=$(location @com_github_cockroachdb_crlfmt//:crlfmt)
        """,
-    tools = [
+    exec_tools = [
         "//pkg/util/timeutil/gen",
         "@com_github_cockroachdb_crlfmt//:crlfmt",
     ],

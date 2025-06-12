@@ -57,7 +57,7 @@ func (ds dataDistribution) setupTest(
 				"invalid test data, range can't be used together with value: key=%s, rangeKey=%s",
 				kv.Key.String(), rangeKey.String())
 			err := storage.MVCCDeleteRangeUsingTombstone(ctx, eng, &ms, rangeKey.StartKey,
-				rangeKey.EndKey, rangeKey.Timestamp, hlc.ClockTimestamp{}, nil, nil, false, 1, 0, nil)
+				rangeKey.EndKey, rangeKey.Timestamp, hlc.ClockTimestamp{}, nil, nil, false, 1, nil)
 			require.NoError(t, err, "failed to put delete range")
 		} else if txn == nil {
 			if kv.Key.Timestamp.IsEmpty() {
@@ -89,7 +89,7 @@ func (ds dataDistribution) setupTest(
 	require.NoError(t, eng.Flush())
 	snap := eng.NewSnapshot()
 	defer snap.Close()
-	ms, err := rditer.ComputeStatsForRange(ctx, &desc, snap, maxTs.WallTime)
+	ms, err := rditer.ComputeStatsForRange(&desc, snap, maxTs.WallTime)
 	require.NoError(t, err)
 	return ms
 }

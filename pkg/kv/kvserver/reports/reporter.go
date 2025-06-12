@@ -47,6 +47,7 @@ var ReporterInterval = settings.RegisterDurationSetting(
 	"the frequency for generating the replication_constraint_stats, replication_stats_report and "+
 		"replication_critical_localities reports (set to 0 to disable)",
 	time.Minute,
+	settings.NonNegativeDuration,
 	settings.WithPublic)
 
 // Reporter periodically produces a couple of reports on the cluster's data
@@ -162,6 +163,7 @@ func (stats *Reporter) Start(ctx context.Context, stopper *stop.Stopper) {
 			// update to the frequency setting.
 			select {
 			case <-timerCh:
+				timer.Read = true
 			case <-changeCh:
 			case <-ctx.Done():
 				return
@@ -449,7 +451,7 @@ func visitAncestors(
 	if descVal == nil {
 		// Couldn't find a descriptor. This is not expected to happen.
 		// Let's just look at the default zone config.
-		return visitDefaultZone(ctx, cfg, visitor)
+		return visitDefaultZone(ctx, cfg, visitor), nil
 	}
 
 	// TODO(ajwerner): Reconsider how this zone config picking apart happens. This
@@ -460,7 +462,7 @@ func visitAncestors(
 	}
 	// If it's a database, the parent is the default zone.
 	if b == nil || b.DescriptorType() != catalog.Table {
-		return visitDefaultZone(ctx, cfg, visitor)
+		return visitDefaultZone(ctx, cfg, visitor), nil
 	}
 	tableDesc := b.BuildImmutable()
 	// If it's a table, the parent is a database.
@@ -474,22 +476,22 @@ func visitAncestors(
 		}
 	}
 	// The parent database did not have constraints. Its parent is the default zone.
-	return visitDefaultZone(ctx, cfg, visitor)
+	return visitDefaultZone(ctx, cfg, visitor), nil
 }
 
 func visitDefaultZone(
 	ctx context.Context,
 	cfg *config.SystemConfig,
 	visitor func(context.Context, *zonepb.ZoneConfig, ZoneKey) bool,
-) (bool, error) {
+) bool {
 	zone, err := getZoneByID(keys.RootNamespaceID, cfg)
 	if err != nil {
-		return false, errors.Wrapf(err, "failed to get default zone config from: %v", cfg)
+		log.Fatalf(ctx, "failed to get default zone config: %s", err)
 	}
 	if zone == nil {
-		return false, errors.AssertionFailedf("default zone config missing unexpectedly from: %v", cfg)
+		log.Fatal(ctx, "default zone config missing unexpectedly")
 	}
-	return visitor(ctx, zone, MakeZoneKey(keys.RootNamespaceID, NoSubzone)), nil
+	return visitor(ctx, zone, MakeZoneKey(keys.RootNamespaceID, NoSubzone))
 }
 
 // getZoneByID returns a zone given its id. Inheritance does not apply.

@@ -922,7 +922,7 @@ SELECT * FROM ab WHERE (a, b) IN (SELECT x+1, y+1 FROM xy);
 # The outer ROW(ROW(a, b)) is already a tuple, so shouldn't be wrapped in
 # another tuple before comparison. But the comparison should fail due to
 # mismatched types.
-query error pgcode 22023 unsupported binary operator: <int> \+ <int> \(returning <tuple\{int, int\}>\)
+query error pgcode 22023 unsupported binary operator: <int> \+ <int> \(desired <tuple\{int, int\}>\)
 SELECT * FROM ab WHERE ROW(ROW(a, b)) IN (SELECT x+1 FROM xy);
 
 # The outer ROW(ROW(a, b)) is already a tuple, so shouldn't be wrapped in
@@ -959,7 +959,7 @@ true
 # The outer ((2, 2), (3, 3)) is already a tuple, so shouldn't be wrapped in
 # another tuple before comparison. But the comparison should fail due to
 # mismatched types.
-query error pgcode 22023 unsupported binary operator: <int> \+ <int> \(returning \<tuple\{int\, int\}>\)
+query error pgcode 22023 unsupported binary operator: <int> \+ <int> \(desired \<tuple\{int\, int\}>\)
 SELECT (SELECT (2, 2), (3, 3)) IN (SELECT x+1, y+1 FROM xy)
 
 # Outer scalar is a tuple with 2 elements. Subquery has only 1 column.
@@ -1039,38 +1039,4 @@ LEFT JOIN LATERAL (
 row-1  row-1  {row-1}  1
 row-2  row-2  {row-2}  1
 
-# Regression test for #127814. The vectorized engine should correctly project
-# expressions operating on NULL.
-statement ok
-CREATE TABLE t127814_empty (i INT)
-
-statement ok
-CREATE TABLE t127814 (o OID)
-
-statement ok
-INSERT INTO t127814 VALUES (0)
-
-query B
-SELECT o NOT IN ((SELECT NULL FROM t127814_empty),) FROM t127814
-----
-NULL
-
-# Regression test for #130759. The vectorized engine should correctly evaluate
-# IN expressions where the tuple on the RHS contains a single NULL value.
-statement ok
-CREATE TABLE t130759 (
-  i INT
-);
-
-statement ok
-INSERT INTO t130759 VALUES (0);
-
-query I
-SELECT 1
-FROM t130759
-WHERE NOT (
-  ('127.0.0.1'::INET - i) IN (
-    (SELECT NULL FROM (VALUES (0)) v(i) WHERE false),
-  )
-)
-----
+subtest end

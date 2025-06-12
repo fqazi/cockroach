@@ -6,22 +6,19 @@
 package storage
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 )
 
 // mvccIncrementalIteratorMetamorphicTBI will randomly enable TBIs.
-var mvccIncrementalIteratorMetamorphicTBI = metamorphic.ConstantWithTestBool(
+var mvccIncrementalIteratorMetamorphicTBI = util.ConstantWithMetamorphicTestBool(
 	"mvcc-incremental-iter-tbi", true)
 
 // MVCCIncrementalIterator iterates over the diff of the key range
@@ -121,28 +118,6 @@ type MVCCIncrementalIterator struct {
 
 	// Optional collection of intents created on demand when first intent encountered.
 	intents []roachpb.Intent
-
-	// maxLockConflicts is a maximum number of conflicting locks collected before
-	// returning LockConflictError. This setting only works under
-	// MVCCIncrementalIterIntentPolicyAggregate. Caller must call TryGetIntentError
-	// even when the collected intents is less than the threshold.
-	//
-	// The zero value indicates no limit.
-	maxLockConflicts uint64
-
-	// targetLockConflictBytes sets target bytes for collected intents with
-	// LockConflictError. This setting will stop collecting intents when total intent
-	// size exceeding the target threshold. This setting only work under
-	// MVCCIncrementalIterIntentPolicyAggregate. Caller must call TryGetIntentError
-	// even when the total collected intents size is less than the threshold.
-	//
-	// The zero value indicates no limit.
-	targetLockConflictBytes uint64
-
-	// collectedIntentBytes tracks the collected intents' memory usage, intent
-	// collection could stop early if targetLockConflictBytes is reached. This
-	// setting is only relevant under MVCCIncrementalIterIntentPolicyAggregate.
-	collectedIntentBytes uint64
 }
 
 var _ SimpleMVCCIterator = &MVCCIncrementalIterator{}
@@ -161,21 +136,12 @@ const (
 	// first encountered intent, but will proceed further. All
 	// found intents will be aggregated into a single
 	// LockConflictError which would be updated during
-	// iteration. The LockConflictError's intents size is
-	// constrained by MaxLockConflicts setting. Consumer would
-	// be free to decide if it wants to keep collecting entries
-	// and intents or skip entries.
+	// iteration. Consumer would be free to decide if it wants to
+	// keep collecting entries and intents or skip entries.
 	MVCCIncrementalIterIntentPolicyAggregate
 	// MVCCIncrementalIterIntentPolicyEmit will return intents to
 	// the caller if they are inside or outside the time range.
 	MVCCIncrementalIterIntentPolicyEmit
-	// MVCCIncrementalIterIntentPolicyIgnore will not emit intents at all, by
-	// disabling intent interleaving and filtering out any encountered intents.
-	// This gives a minor performance improvement, but is only safe if the caller
-	// has already checked the lock table prior to using the iterator. Otherwise,
-	// any provisional values will be emitted, as they can't be disambiguated from
-	// committed values.
-	MVCCIncrementalIterIntentPolicyIgnore
 )
 
 // MVCCIncrementalIterOptions bundles options for NewMVCCIncrementalIterator.
@@ -198,34 +164,13 @@ type MVCCIncrementalIterOptions struct {
 	RangeKeyMaskingBelow hlc.Timestamp
 
 	IntentPolicy MVCCIncrementalIterIntentPolicy
-
-	// ReadCategory is used to map to a user-understandable category string, for
-	// stats aggregation and metrics, and a Pebble-understandable QoS.
-	ReadCategory fs.ReadCategory
-
-	// MaxLockConflicts is a maximum number of conflicting locks collected before
-	// returning LockConflictError. This setting only work under
-	// MVCCIncrementalIterIntentPolicyAggregate. Caller must call TryGetIntentError
-	// when the collected intents is less that the Threshold.
-	//
-	// The zero value indicates no limit.
-	MaxLockConflicts uint64
-
-	// TargetLockConflictBytes sets target bytes for collected intents with
-	// LockConflictError. This setting will stop collecting intents when total intent
-	// size exceeding the target threshold. This setting only work under
-	// MVCCIncrementalIterIntentPolicyAggregate. Caller must call TryGetIntentError
-	// even when the total collected intents size is less than the threshold.
-	//
-	// The zero value indicates no limit.
-	TargetLockConflictBytes uint64
 }
 
 // NewMVCCIncrementalIterator creates an MVCCIncrementalIterator with the
 // specified reader and options. The timestamp hint range should not be more
 // restrictive than the start and end time range.
 func NewMVCCIncrementalIterator(
-	ctx context.Context, reader Reader, opts MVCCIncrementalIterOptions,
+	reader Reader, opts MVCCIncrementalIterOptions,
 ) (*MVCCIncrementalIterator, error) {
 	// Default to MaxTimestamp for EndTime, since the code assumes it is set.
 	if opts.EndTime.IsEmpty() {
@@ -236,14 +181,8 @@ func NewMVCCIncrementalIterator(
 	// using a TBI unless StartTime is set. However, we always vary it in
 	// metamorphic test builds, for better test coverage of both paths.
 	useTBI := opts.StartTime.IsSet()
-	if metamorphic.IsMetamorphicBuild() { // NB: always randomize when metamorphic
+	if util.IsMetamorphicBuild() { // NB: always randomize when metamorphic
 		useTBI = mvccIncrementalIteratorMetamorphicTBI
-	}
-
-	// Disable intent interleaving if requested.
-	iterKind := MVCCKeyAndIntentsIterKind
-	if opts.IntentPolicy == MVCCIncrementalIterIntentPolicyIgnore {
-		iterKind = MVCCKeyIterKind
 	}
 
 	var iter MVCCIterator
@@ -252,12 +191,11 @@ func NewMVCCIncrementalIterator(
 	if useTBI {
 		// An iterator without the timestamp hints is created to ensure that the
 		// iterator visits every required version of every key that has changed.
-		iter, err = reader.NewMVCCIterator(ctx, iterKind, IterOptions{
+		iter, err = reader.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
 			KeyTypes:             opts.KeyTypes,
 			LowerBound:           opts.StartKey,
 			UpperBound:           opts.EndKey,
 			RangeKeyMaskingBelow: opts.RangeKeyMaskingBelow,
-			ReadCategory:         opts.ReadCategory,
 		})
 		if err != nil {
 			return nil, err
@@ -271,7 +209,7 @@ func NewMVCCIncrementalIterator(
 		if tbiRangeKeyMasking.LessEq(opts.StartTime) && opts.KeyTypes == IterKeyTypePointsAndRanges {
 			tbiRangeKeyMasking = opts.StartTime.Next()
 		}
-		timeBoundIter, err = reader.NewMVCCIterator(ctx, MVCCKeyIterKind, IterOptions{
+		timeBoundIter, err = reader.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 			KeyTypes:   opts.KeyTypes,
 			LowerBound: opts.StartKey,
 			UpperBound: opts.EndKey,
@@ -280,19 +218,17 @@ func NewMVCCIncrementalIterator(
 			MinTimestamp:         opts.StartTime.Next(),
 			MaxTimestamp:         opts.EndTime,
 			RangeKeyMaskingBelow: tbiRangeKeyMasking,
-			ReadCategory:         opts.ReadCategory,
 		})
 		if err != nil {
 			iter.Close()
 			return nil, err
 		}
 	} else {
-		iter, err = reader.NewMVCCIterator(ctx, iterKind, IterOptions{
+		iter, err = reader.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
 			KeyTypes:             opts.KeyTypes,
 			LowerBound:           opts.StartKey,
 			UpperBound:           opts.EndKey,
 			RangeKeyMaskingBelow: opts.RangeKeyMaskingBelow,
-			ReadCategory:         opts.ReadCategory,
 		})
 		if err != nil {
 			return nil, err
@@ -300,13 +236,11 @@ func NewMVCCIncrementalIterator(
 	}
 
 	return &MVCCIncrementalIterator{
-		iter:                    iter,
-		startTime:               opts.StartTime,
-		endTime:                 opts.EndTime,
-		timeBoundIter:           timeBoundIter,
-		intentPolicy:            opts.IntentPolicy,
-		maxLockConflicts:        opts.MaxLockConflicts,
-		targetLockConflictBytes: opts.TargetLockConflictBytes,
+		iter:          iter,
+		startTime:     opts.StartTime,
+		endTime:       opts.EndTime,
+		timeBoundIter: timeBoundIter,
+		intentPolicy:  opts.IntentPolicy,
 	}, nil
 }
 
@@ -515,34 +449,16 @@ func (i *MVCCIncrementalIterator) updateMeta() error {
 			i.valid = false
 			return i.err
 		case MVCCIncrementalIterIntentPolicyAggregate:
-			// We are collecting intents, so we need to save it and advance to its proposed value. Caller could then use a
-			// value key to update proposed row counters for the sake of bookkeeping and advance more.
-			intent := roachpb.MakeIntent(i.meta.Txn, i.iter.UnsafeKey().Key.Clone())
-			i.intents = append(i.intents, intent)
-			i.collectedIntentBytes += uint64(intent.Size())
-			if i.targetLockConflictBytes > 0 && i.collectedIntentBytes >= i.targetLockConflictBytes {
-				i.valid = false
-				i.err = i.TryGetIntentError()
-				return i.err
-			}
-			if i.maxLockConflicts > 0 && uint64(len(i.intents)) >= i.maxLockConflicts {
-				i.valid = false
-				i.err = i.TryGetIntentError()
-				return i.err
-			}
+			// We are collecting intents, so we need to save it and advance to its proposed value.
+			// Caller could then use a value key to update proposed row counters for the sake of bookkeeping
+			// and advance more.
+			i.intents = append(i.intents, roachpb.MakeIntent(i.meta.Txn, i.iter.UnsafeKey().Key.Clone()))
 			return nil
 		case MVCCIncrementalIterIntentPolicyEmit:
 			// We will emit this intent to the caller.
 			return nil
-		case MVCCIncrementalIterIntentPolicyIgnore:
-			// We don't expect to see this since we disabled intent interleaving.
-			i.err = errors.AssertionFailedf("unexpected intent (interleaving disabled): %s", &i.meta)
-			i.valid = false
-			return i.err
 		default:
-			i.err = errors.AssertionFailedf("unknown intent policy: %d", i.intentPolicy)
-			i.valid = false
-			return i.err
+			return errors.AssertionFailedf("unknown intent policy: %d", i.intentPolicy)
 		}
 	}
 	return nil
@@ -641,13 +557,11 @@ func (i *MVCCIncrementalIterator) advance(seeked bool) {
 				// If our policy is emit, we may want this
 				// intent. If it is outside our time bounds, it
 				// will be filtered below.
-			case MVCCIncrementalIterIntentPolicyError,
-				MVCCIncrementalIterIntentPolicyAggregate,
-				MVCCIncrementalIterIntentPolicyIgnore:
+			case MVCCIncrementalIterIntentPolicyError, MVCCIncrementalIterIntentPolicyAggregate:
 				// We have encountered an intent but it must lie outside the timestamp
-				// span (startTime, endTime], or have been aggregated or ignored. In
-				// either case, we want to advance past it, unless we're also on a new
-				// range key that must be emitted.
+				// span (startTime, endTime] or we have aggregated it. In either case,
+				// we want to advance past it, unless we're also on a new range key that
+				// must be emitted.
 				if newRangeKey {
 					i.hasPoint = false
 					return
@@ -846,10 +760,16 @@ func (i *MVCCIncrementalIterator) IgnoringTime() bool {
 	return i.ignoringTime
 }
 
+// NumCollectedIntents returns number of intents encountered during iteration.
+// This is only the case when intent aggregation is enabled, otherwise it is
+// always 0.
+func (i *MVCCIncrementalIterator) NumCollectedIntents() int {
+	return len(i.intents)
+}
+
 // TryGetIntentError returns kvpb.LockConflictError if intents were encountered
 // during iteration and intent aggregation is enabled. Otherwise function
-// returns nil. kvpb.LockConflictError will contain encountered intents, the
-// collected intents are bounded by maxLockConflict or targetBytes constraint.
+// returns nil. kvpb.LockConflictError will contain all encountered intents.
 // TODO(nvanbenschoten): rename to TryGetLockConflictError.
 func (i *MVCCIncrementalIterator) TryGetIntentError() error {
 	if len(i.intents) == 0 {
@@ -894,7 +814,7 @@ func (i *MVCCIncrementalIterator) assertInvariants() error {
 	}
 
 	// If startTime is empty, the TBI should be disabled in non-metamorphic builds.
-	if !metamorphic.IsMetamorphicBuild() && i.startTime.IsEmpty() && i.timeBoundIter != nil {
+	if !util.IsMetamorphicBuild() && i.startTime.IsEmpty() && i.timeBoundIter != nil {
 		return errors.AssertionFailedf("TBI enabled without i.startTime")
 	}
 
@@ -910,7 +830,7 @@ func (i *MVCCIncrementalIterator) assertInvariants() error {
 	// i.meta should match the underlying iterator's key.
 	if hasPoint, _ := i.iter.HasPointAndRange(); hasPoint {
 		metaTS := i.meta.Timestamp.ToTimestamp()
-		if iterKey.Timestamp.IsSet() && metaTS != iterKey.Timestamp {
+		if iterKey.Timestamp.IsSet() && !metaTS.EqOrdering(iterKey.Timestamp) {
 			return errors.AssertionFailedf("i.meta.Timestamp %s differs from i.iter.UnsafeKey %s",
 				metaTS, iterKey)
 		}

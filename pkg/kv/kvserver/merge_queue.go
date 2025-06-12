@@ -7,6 +7,7 @@ package kvserver
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"time"
 
@@ -22,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 const (
@@ -45,16 +45,7 @@ var MergeQueueInterval = settings.RegisterDurationSetting(
 	"kv.range_merge.queue_interval",
 	"how long the merge queue waits between processing replicas",
 	5*time.Second,
-)
-
-// SkipMergeQueueForExternalBytes is a setting that controls whether
-// replicas with external bytes should be processed by the merge
-// queue.
-var SkipMergeQueueForExternalBytes = settings.RegisterBoolSetting(
-	settings.SystemOnly,
-	"kv.range_merge.skip_external_bytes.enabled",
-	"skip the merge queue for external bytes",
-	true,
+	settings.NonNegativeDuration,
 )
 
 // mergeQueue manages a queue of ranges slated to be merged with their right-
@@ -118,17 +109,17 @@ func newMergeQueue(store *Store, db *kv.DB) *mergeQueue {
 			// hard to determine ahead of time. An alternative would be to calculate
 			// the timeout with a function that additionally considers the replication
 			// factor.
-			processTimeoutFunc:                  makeRateLimitedTimeoutFunc(rebalanceSnapshotRate),
-			needsLease:                          true,
-			needsSpanConfigs:                    true,
-			acceptsUnsplitRanges:                false,
-			successes:                           store.metrics.MergeQueueSuccesses,
-			failures:                            store.metrics.MergeQueueFailures,
-			pending:                             store.metrics.MergeQueuePending,
-			processingNanos:                     store.metrics.MergeQueueProcessingNanos,
-			purgatory:                           store.metrics.MergeQueuePurgatory,
-			disabledConfig:                      kvserverbase.MergeQueueEnabled,
-			skipIfReplicaHasExternalFilesConfig: SkipMergeQueueForExternalBytes,
+			processTimeoutFunc:   makeRateLimitedTimeoutFunc(rebalanceSnapshotRate),
+			needsLease:           true,
+			needsSpanConfigs:     true,
+			acceptsUnsplitRanges: false,
+			successes:            store.metrics.MergeQueueSuccesses,
+			failures:             store.metrics.MergeQueueFailures,
+			storeFailures:        store.metrics.StoreFailures,
+			pending:              store.metrics.MergeQueuePending,
+			processingNanos:      store.metrics.MergeQueueProcessingNanos,
+			purgatory:            store.metrics.MergeQueuePurgatory,
+			disabledConfig:       kvserverbase.MergeQueueEnabled,
 		},
 	)
 	return mq
@@ -277,7 +268,7 @@ func (mq *mergeQueue) process(
 	mergedStats.Add(rhsStats)
 
 	lhsLoadSplitSnap := lhsRepl.loadBasedSplitter.Snapshot(ctx, mq.store.Clock().PhysicalTime())
-	var loadMergeReason redact.RedactableString
+	var loadMergeReason string
 	if lhsRepl.SplitByLoadEnabled() {
 		var canMergeLoad bool
 		if canMergeLoad, loadMergeReason = canMergeRangeLoad(
@@ -391,7 +382,7 @@ func (mq *mergeQueue) process(
 	}
 
 	log.VEventf(ctx, 2, "merging to produce range: %s-%s", mergedDesc.StartKey, mergedDesc.EndKey)
-	reason := redact.Sprintf("lhs+rhs size (%s+%s=%s) below threshold (%s) %s",
+	reason := fmt.Sprintf("lhs+rhs size (%s+%s=%s) below threshold (%s) %s",
 		humanizeutil.IBytes(lhsStats.Total()),
 		humanizeutil.IBytes(rhsStats.Total()),
 		humanizeutil.IBytes(mergedStats.Total()),
@@ -452,7 +443,7 @@ func (mq *mergeQueue) updateChan() <-chan time.Time {
 
 func canMergeRangeLoad(
 	ctx context.Context, lhs, rhs split.LoadSplitSnapshot,
-) (can bool, reason redact.RedactableString) {
+) (can bool, reason string) {
 	// When load is a consideration for splits and, by extension, merges, the
 	// mergeQueue is fairly conservative. In an effort to avoid thrashing and to
 	// avoid overreacting to temporary fluctuations in load, the mergeQueue will
@@ -475,7 +466,7 @@ func canMergeRangeLoad(
 	// just after changing the split objective to a different value, where
 	// there is a mismatch.
 	if lhs.SplitObjective != rhs.SplitObjective {
-		return false, redact.Sprintf("LHS load measurement is a different type (%s) than the RHS (%s)",
+		return false, fmt.Sprintf("LHS load measurement is a different type (%s) than the RHS (%s)",
 			lhs.SplitObjective,
 			rhs.SplitObjective,
 		)
@@ -490,7 +481,7 @@ func canMergeRangeLoad(
 	conservativeLoadBasedSplitThreshold := 0.5 * lhs.Threshold
 
 	if merged >= conservativeLoadBasedSplitThreshold {
-		return false, redact.Sprintf("lhs+rhs %s (%s+%s=%s) above threshold (%s)",
+		return false, fmt.Sprintf("lhs+rhs %s (%s+%s=%s) above threshold (%s)",
 			obj,
 			obj.Format(lhs.Max),
 			obj.Format(rhs.Max),
@@ -499,7 +490,7 @@ func canMergeRangeLoad(
 		)
 	}
 
-	return true, redact.Sprintf("lhs+rhs %s (%s+%s=%s) below threshold (%s)",
+	return true, fmt.Sprintf("lhs+rhs %s (%s+%s=%s) below threshold (%s)",
 		obj,
 		obj.Format(lhs.Max),
 		obj.Format(rhs.Max),

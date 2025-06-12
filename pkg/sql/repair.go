@@ -32,14 +32,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
-	"github.com/cockroachdb/cockroach/pkg/sql/regions"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/ioctx"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
-	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/errors"
 )
 
@@ -169,22 +168,6 @@ func (p *planner) UnsafeUpsertDescriptor(
 
 	if force {
 		p.Descriptors().SkipValidationOnWrite()
-	}
-
-	// If we are pushing out a brand new descriptor confirm that no leases
-	// exist before we publish it. This could happen if we did an unsafe delete,
-	// since we will not wait for all leases to expire. So, as a safety force the
-	// unsafe upserts to wait for no leases to exist on this descriptor.
-	if !force &&
-		mut.GetVersion() == 1 {
-		execCfg := p.execCfg
-		regionCache, err := regions.NewCachedDatabaseRegions(ctx, execCfg.DB, execCfg.LeaseManager)
-		if err != nil {
-			return err
-		}
-		if err := execCfg.LeaseManager.WaitForNoVersion(ctx, mut.GetID(), regionCache, retry.Options{}); err != nil {
-			return err
-		}
 	}
 
 	{
@@ -722,7 +705,7 @@ func checkPlannerStateForRepairFunctions(ctx context.Context, p *planner, method
 	if p.extendedEvalCtx.TxnReadOnly {
 		return readOnlyError(method)
 	}
-	if err := p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER); err != nil {
+	if err := p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTERMETADATA); err != nil {
 		return err
 	}
 	return nil
@@ -739,7 +722,7 @@ func (p *planner) ForceDeleteTableData(ctx context.Context, descID int64) error 
 
 	// Validate no descriptor exists for this table
 	id := descpb.ID(descID)
-	desc, err := p.Descriptors().ByIDWithoutLeased(p.txn).WithoutNonPublic().Get().Table(ctx, id)
+	desc, err := p.Descriptors().ByID(p.txn).WithoutNonPublic().Get().Table(ctx, id)
 	if err != nil && pgerror.GetPGCode(err) != pgcode.UndefinedTable {
 		return err
 	}
@@ -762,12 +745,18 @@ func (p *planner) ForceDeleteTableData(ctx context.Context, descID int64) error 
 		Key: tableSpan.Key, EndKey: tableSpan.EndKey,
 	}
 	b := p.Txn().NewBatch()
-	b.AddRawRequest(&kvpb.DeleteRangeRequest{
-		RequestHeader:           requestHeader,
-		UseRangeTombstone:       true,
-		IdempotentTombstone:     true,
-		UpdateRangeDeleteGCHint: true,
-	})
+	if storage.CanUseMVCCRangeTombstones(ctx, p.execCfg.Settings) {
+		b.AddRawRequest(&kvpb.DeleteRangeRequest{
+			RequestHeader:           requestHeader,
+			UseRangeTombstone:       true,
+			IdempotentTombstone:     true,
+			UpdateRangeDeleteGCHint: true,
+		})
+	} else {
+		b.AddRawRequest(&kvpb.ClearRangeRequest{
+			RequestHeader: requestHeader,
+		})
+	}
 	if err := p.txn.DB().Run(ctx, b); err != nil {
 		return err
 	}
@@ -779,7 +768,7 @@ func (p *planner) ForceDeleteTableData(ctx context.Context, descID int64) error 
 }
 
 func (p *planner) ExternalReadFile(ctx context.Context, uri string) ([]byte, error) {
-	if err := p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER); err != nil {
+	if err := p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTERMETADATA); err != nil {
 		return nil, err
 	}
 
@@ -796,7 +785,7 @@ func (p *planner) ExternalReadFile(ctx context.Context, uri string) ([]byte, err
 }
 
 func (p *planner) ExternalWriteFile(ctx context.Context, uri string, content []byte) error {
-	if err := p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER); err != nil {
+	if err := p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTERMETADATA); err != nil {
 		return err
 	}
 
@@ -819,7 +808,7 @@ func (p *planner) UpsertDroppedRelationGCTTL(
 	}
 
 	// Fetch the descriptor and check that it's a dropped table.
-	tbl, err := p.Descriptors().ByIDWithoutLeased(p.txn).Get().Table(ctx, descpb.ID(id))
+	tbl, err := p.Descriptors().ByID(p.txn).Get().Table(ctx, descpb.ID(id))
 	if err != nil {
 		return err
 	}

@@ -26,13 +26,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts/ptpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
-	"github.com/cockroachdb/cockroach/pkg/spanconfig/spanconfigjob"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig/spanconfigptsreader"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/bootstrap"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/distsql"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
@@ -100,7 +97,7 @@ func TestChangefeedUpdateProtectedTimestamp(t *testing.T) {
 			span roachpb.Span) func() []hlc.Timestamp {
 			return func() (r []hlc.Timestamp) {
 				require.NoError(t,
-					spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, srv.Clock().Now()))
+					spanconfigptsreader.TestingRefreshPTSState(ctx, t, ptsReader, srv.Clock().Now()))
 				protections, _, err := ptsReader.GetProtectionTimestamps(ctx, span)
 				require.NoError(t, err)
 				return protections
@@ -217,7 +214,7 @@ func TestChangefeedProtectedTimestamps(t *testing.T) {
 			span roachpb.Span) func() []hlc.Timestamp {
 			return func() (r []hlc.Timestamp) {
 				require.NoError(t,
-					spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, srv.Clock().Now()))
+					spanconfigptsreader.TestingRefreshPTSState(ctx, t, ptsReader, srv.Clock().Now()))
 				protections, _, err := ptsReader.GetProtectionTimestamps(ctx, span)
 				require.NoError(t, err)
 				return protections
@@ -442,8 +439,8 @@ func TestChangefeedCanceledWhenPTSIsOld(t *testing.T) {
 		sqlDB.Exec(t, fmt.Sprintf("ALTER CHANGEFEED %d SET gc_protect_expires_after = '250ms'", jobFeed.JobID()))
 
 		// Stale PTS record should trigger job cancellation.
-		require.NoError(t, jobFeed.WaitForState(func(s jobs.State) bool {
-			return s == jobs.StateCanceled
+		require.NoError(t, jobFeed.WaitForStatus(func(s jobs.Status) bool {
+			return s == jobs.StatusCanceled
 		}))
 	}
 
@@ -456,41 +453,16 @@ func TestPTSRecordProtectsTargetsAndSystemTables(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	ctx := context.Background()
-
-	// Useful for debugging.
-	require.NoError(t, log.SetVModule("spanconfigstore=2,store=2,reconciler=3,mvcc_gc_queue=2,kvaccessor=2"))
-
-	settings := cluster.MakeTestingClusterSettings()
-	spanconfigjob.ReconciliationJobCheckpointInterval.Override(ctx, &settings.SV, 1*time.Second)
-
-	// Keep track of where the spanconfig reconciler is up to.
-	lastReconcilerCheckpoint := atomic.Value{}
-	lastReconcilerCheckpoint.Store(hlc.Timestamp{})
-	s, db, stopServer := startTestFullServer(t, feedTestOptions{
-		knobsFn: func(knobs *base.TestingKnobs) {
-			if knobs.SpanConfig == nil {
-				knobs.SpanConfig = &spanconfig.TestingKnobs{}
-			}
-			scKnobs := knobs.SpanConfig.(*spanconfig.TestingKnobs)
-			scKnobs.JobOnCheckpointInterceptor = func(lastCheckpoint hlc.Timestamp) error {
-				now := hlc.Timestamp{WallTime: time.Now().UnixNano()}
-				t.Logf("reconciler checkpoint %s (%s)", lastCheckpoint, now.GoTime().Sub(lastCheckpoint.GoTime()))
-				lastReconcilerCheckpoint.Store(lastCheckpoint)
-				return nil
-			}
-			scKnobs.SQLWatcherCheckpointNoopsEveryDurationOverride = 1 * time.Second
-		},
-		settings: settings,
-	})
-
+	s, db, stopServer := startTestFullServer(t, feedTestOptions{})
 	defer stopServer()
 	execCfg := s.ExecutorConfig().(sql.ExecutorConfig)
 	sqlDB := sqlutils.MakeSQLRunner(db)
+	sqlDB.Exec(t, `ALTER DATABASE system CONFIGURE ZONE USING gc.ttlseconds = 1`)
 	sqlDB.Exec(t, "CREATE TABLE foo (a INT, b STRING)")
 	sqlDB.Exec(t, `CREATE USER test`)
 	sqlDB.Exec(t, `GRANT admin TO test`)
 	ts := s.Clock().Now()
+	ctx := context.Background()
 
 	fooDescr := cdctest.GetHydratedTableDescriptor(t, s.ExecutorConfig(), "d", "foo")
 	var targets changefeedbase.Targets
@@ -498,29 +470,11 @@ func TestPTSRecordProtectsTargetsAndSystemTables(t *testing.T) {
 		TableID: fooDescr.GetID(),
 	})
 
-	// We need to give our PTS record a legit job ID so the protected ts
-	// reconciler doesn't delete it, so start up a dummy changefeed job and use its id.
-	registry := s.JobRegistry().(*jobs.Registry)
-	dummyJobDone := make(chan struct{})
-	defer close(dummyJobDone)
-	registry.TestingWrapResumerConstructor(jobspb.TypeChangefeed,
-		func(raw jobs.Resumer) jobs.Resumer {
-			return &fakeResumer{done: dummyJobDone}
-		})
-	var jobID jobspb.JobID
-	sqlDB.QueryRow(t, `CREATE CHANGEFEED FOR TABLE foo INTO 'null://'`).Scan(&jobID)
-	waitForJobState(sqlDB, t, jobID, `running`)
-
 	// Lay protected timestamp record.
-	ptr := createProtectedTimestampRecord(ctx, s.Codec(), jobID, targets, ts)
+	ptr := createProtectedTimestampRecord(ctx, s.Codec(), 42, targets, ts)
 	require.NoError(t, execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 		return execCfg.ProtectedTimestampProvider.WithTxn(txn).Protect(ctx, ptr)
 	}))
-
-	// Set GC TTL to a small value to make the tables GC'd. We need to set this
-	// *after* we set the PTS record so that we dont GC the tables before
-	// the PTS is applied/picked up.
-	sqlDB.Exec(t, `ALTER DATABASE system CONFIGURE ZONE USING gc.ttlseconds = 1`)
 
 	// The following code was shameless stolen from
 	// TestShowTenantFingerprintsProtectsTimestamp which almost
@@ -548,7 +502,7 @@ func TestPTSRecordProtectsTargetsAndSystemTables(t *testing.T) {
 		t.Logf("updating PTS reader cache to %s", asOf)
 		require.NoError(
 			t,
-			spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, asOf),
+			spanconfigptsreader.TestingRefreshPTSState(ctx, t, ptsReader, asOf),
 		)
 		require.NoError(t, repl.ReadProtectedTimestampsForTesting(ctx))
 	}
@@ -557,7 +511,7 @@ func TestPTSRecordProtectsTargetsAndSystemTables(t *testing.T) {
 		var rangeID int64
 		row.Scan(&rangeID)
 		refreshPTSReaderCache(s.Clock().Now(), tableName, databaseName)
-		t.Logf("enqueuing range %d (table %s.%s) for mvccGC", rangeID, tableName, databaseName)
+		t.Logf("enqueuing range %d for mvccGC", rangeID)
 		sqlDB.Exec(t, `SELECT crdb_internal.kv_enqueue_replica($1, 'mvccGC', true)`, rangeID)
 	}
 
@@ -571,21 +525,7 @@ func TestPTSRecordProtectsTargetsAndSystemTables(t *testing.T) {
 	// Change the user's password to update the users table.
 	sqlDB.Exec(t, `ALTER USER test WITH PASSWORD 'testpass'`)
 
-	// Sleep for enough time to pass the configured GC threshold (1 second).
 	time.Sleep(2 * time.Second)
-
-	// Wait for the spanconfigs to be reconciled.
-	now := hlc.Timestamp{WallTime: time.Now().UnixNano()}
-	t.Logf("waiting for spanconfigs to be reconciled")
-	testutils.SucceedsWithin(t, func() error {
-		lastCheckpoint := lastReconcilerCheckpoint.Load().(hlc.Timestamp)
-		if lastCheckpoint.Less(now) {
-			return errors.Errorf("last checkpoint %s is not less than now %s", lastCheckpoint, now)
-		}
-		t.Logf("last reconciler checkpoint ok at %s", lastCheckpoint)
-		return nil
-	}, 1*time.Minute)
-
 	// If you want to GC all system tables:
 	//
 	// tabs := systemschema.MakeSystemTables()
@@ -594,7 +534,6 @@ func TestPTSRecordProtectsTargetsAndSystemTables(t *testing.T) {
 	// 		gcTestTableRange("system", t.GetName())
 	// 	}
 	// }
-	t.Logf("GC'ing system tables")
 	gcTestTableRange("system", "descriptor")
 	gcTestTableRange("system", "zones")
 	gcTestTableRange("system", "comments")
@@ -671,7 +610,7 @@ func TestChangefeedMigratesProtectedTimestampTargets(t *testing.T) {
 		removeOnePTSTarget := func(recordID uuid.UUID) error {
 			return execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 				s := `select target from system.protected_ts_records where id = $1`
-				datums, err := txn.QueryRowEx(ctx, "pts-test", txn.KV(), sessiondata.NodeUserSessionDataOverride, s, recordID)
+				datums, err := txn.QueryRowEx(ctx, "pts-test", txn.KV(), sessiondata.NodeUserSessionDataOverride, s, recordID.GetBytes())
 				require.NoError(t, err)
 				j := tree.MustBeDBytes(datums[0])
 
@@ -687,7 +626,7 @@ func TestChangefeedMigratesProtectedTimestampTargets(t *testing.T) {
 				require.NoError(t, err)
 
 				_, err = txn.ExecEx(ctx, "pts-test", txn.KV(), sessiondata.NodeUserSessionDataOverride,
-					"UPDATE system.protected_ts_records SET target = $1 WHERE id = $2", bs, recordID,
+					"UPDATE system.protected_ts_records SET target = $1 WHERE id = $2", bs, recordID.GetBytes(),
 				)
 				require.NoError(t, err)
 				return nil
@@ -731,109 +670,6 @@ func TestChangefeedMigratesProtectedTimestampTargets(t *testing.T) {
 		targetIDs = newRec.Target.GetSchemaObjects().IDs
 		require.Contains(t, targetIDs, fooID)
 		require.Subset(t, targetIDs, systemTablesToProtect)
-
-		// Ensure the old pts record was deleted.
-		_, err = readPTSRecord(ctx, t, execCfg, ptp, oldRecordID)
-		require.ErrorContains(t, err, "does not exist")
-	}
-
-	cdcTestWithSystem(t, testFn, feedTestEnterpriseSinks)
-}
-
-// TestChangefeedUpdateProtectedTimestamp tests that changefeeds using the
-// old style PTS records will migrate themselves to use the new style PTS
-// records.
-func TestChangefeedMigratesProtectedTimestamps(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	testFn := func(t *testing.T, s TestServerWithSystem, f cdctest.TestFeedFactory) {
-		ctx := context.Background()
-
-		useOldStylePts := atomic.Bool{}
-		useOldStylePts.Store(true)
-		knobs := s.TestingKnobs.
-			DistSQL.(*execinfra.TestingKnobs).
-			Changefeed.(*TestingKnobs)
-		knobs.PreserveDeprecatedPts = func() bool {
-			return useOldStylePts.Load()
-		}
-
-		ptsInterval := 50 * time.Millisecond
-		changefeedbase.ProtectTimestampInterval.Override(
-			context.Background(), &s.Server.ClusterSettings().SV, ptsInterval)
-		changefeedbase.ProtectTimestampLag.Override(
-			context.Background(), &s.Server.ClusterSettings().SV, ptsInterval)
-
-		sqlDB := sqlutils.MakeSQLRunner(s.DB)
-		sysDB := sqlutils.MakeSQLRunner(s.SystemServer.SQLConn(t))
-
-		sysDB.Exec(t, "SET CLUSTER SETTING kv.protectedts.poll_interval = '10ms'")
-		sysDB.Exec(t, "SET CLUSTER SETTING kv.closed_timestamp.target_duration = '100ms'") // speeds up the test
-		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
-
-		foo := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '20ms'`)
-		defer closeFeed(t, foo)
-
-		registry := s.Server.JobRegistry().(*jobs.Registry)
-		execCfg := s.Server.ExecutorConfig().(sql.ExecutorConfig)
-		ptp := s.Server.DistSQLServer().(*distsql.ServerImpl).ServerConfig.ProtectedTimestampProvider
-		fooDesc := desctestutils.TestingGetPublicTableDescriptor(s.SystemServer.DB(), s.Codec, "d", "foo")
-		fooID := fooDesc.GetID()
-		descID := descpb.ID(keys.DescriptorTableID)
-
-		jobFeed := foo.(cdctest.EnterpriseTestFeed)
-
-		removePTSTarget := func(recordID uuid.UUID) error {
-			return execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-				if _, err := txn.ExecEx(ctx, "pts-test", txn.KV(), sessiondata.NodeUserSessionDataOverride,
-					fmt.Sprintf(
-						"UPDATE system.protected_ts_records SET target = NULL WHERE id = '%s'",
-						recordID),
-				); err != nil {
-					return err
-				}
-				return nil
-			})
-		}
-
-		// Wipe out the targets from the changefeed PTS record, simulating an old-style PTS record.
-		oldRecordID := getPTSRecordID(ctx, t, registry, jobFeed)
-		require.NoError(t, removePTSTarget(oldRecordID))
-		rec, err := readPTSRecord(ctx, t, execCfg, ptp, oldRecordID)
-		require.NoError(t, err)
-		require.NotNil(t, rec)
-		require.Nil(t, rec.Target)
-
-		// Flip the knob so the changefeed migrates the old style PTS record to the new one.
-		useOldStylePts.Store(false)
-
-		getNewPTSRecord := func() *ptpb.Record {
-			var recID uuid.UUID
-			var record *ptpb.Record
-			testutils.SucceedsSoon(t, func() error {
-				recID = getPTSRecordID(ctx, t, registry, jobFeed)
-				if recID.Equal(oldRecordID) {
-					return errors.New("waiting for new PTS record")
-				}
-
-				return nil
-			})
-			record, err = readPTSRecord(ctx, t, execCfg, ptp, recID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return record
-		}
-
-		// Read the new PTS record.
-		newRec := getNewPTSRecord()
-		require.NotNil(t, newRec.Target)
-
-		// Assert the new PTS record has the right targets.
-		targetIDs := newRec.Target.GetSchemaObjects().IDs
-		require.Contains(t, targetIDs, fooID)
-		require.Contains(t, targetIDs, descID)
 
 		// Ensure the old pts record was deleted.
 		_, err = readPTSRecord(ctx, t, execCfg, ptp, oldRecordID)

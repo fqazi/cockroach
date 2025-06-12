@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/fetchpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
-	"github.com/cockroachdb/cockroach/pkg/sql/row"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 )
 
@@ -33,10 +32,6 @@ var cFetcherTableArgsPool = sync.Pool{
 	New: func() interface{} {
 		return &cFetcherTableArgs{}
 	},
-}
-
-func (a cFetcherTableArgs) RequiresRawMVCCValues() bool {
-	return row.FetchSpecRequiresRawMVCCValues(a.spec)
 }
 
 func (a *cFetcherTableArgs) Release() {

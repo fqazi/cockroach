@@ -13,10 +13,10 @@ import (
 	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 // Cache is a specialized data structure for storing deserialized raftpb.Entry
@@ -193,7 +193,7 @@ func (c *Cache) Add(id roachpb.RangeID, ents []raftpb.Entry, truncate bool) {
 	c.recordUpdate(p, bytesAdded-bytesRemoved, bytesGuessed, entriesAdded-entriesRemoved)
 }
 
-// Clear removes all entries on the given range with index <= hi.
+// Clear removes all entries on the given range with index less than hi.
 func (c *Cache) Clear(id roachpb.RangeID, hi kvpb.RaftIndex) {
 	c.mu.Lock()
 	p := c.getPartLocked(id, false /* create */, false /* recordUse */)

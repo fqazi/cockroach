@@ -151,28 +151,27 @@ func (t *lockfreeTracker) Track(ctx context.Context, ts hlc.Timestamp) RemovalTo
 	// b1 and the rest (the "high" ones) go on to create and join b2). But that's
 	// harder to implement.
 	if !initialized || wts <= t1 {
-		return b1.extendAndJoin(ctx, wts)
+		return b1.extendAndJoin(ctx, wts, ts.Synthetic)
 	}
 
 	// We know that b1 < wts. We can technically join either bucket, but we always
 	// prefer b2 in order to let b1 drain as soon as possible (at which point
 	// we'll be able to create a new bucket).
-	return b2.extendAndJoin(ctx, wts)
+	return b2.extendAndJoin(ctx, wts, ts.Synthetic)
 }
 
 // Untrack is part of the Tracker interface.
 func (t *lockfreeTracker) Untrack(ctx context.Context, tok RemovalToken) {
 	b := tok.(lockfreeToken).b
 	// Note that atomic ops are not required here, as we hold the exclusive lock.
-	// We use them here anyway because they are required by the atomic int wrapper
-	// types.
-	refcnt := b.refcnt.Add(-1)
-	if refcnt < 0 {
-		log.Fatalf(ctx, "negative bucket refcount: %d", refcnt)
+	b.refcnt--
+	if b.refcnt < 0 {
+		log.Fatalf(ctx, "negative bucket refcount: %d", b.refcnt)
 	}
-	if refcnt == 0 {
+	if b.refcnt == 0 {
 		// Reset the bucket, so that future Track() calls can create a new one.
-		b.ts.Store(0)
+		b.ts = 0
+		b.synthetic = 0
 		// If we reset b1, swap the pointers, so that, if b2 is currently
 		// initialized, it becomes b1. If a single bucket is initialized, we want it
 		// to be b1.
@@ -192,14 +191,15 @@ func (t *lockfreeTracker) LowerBound(ctx context.Context) hlc.Timestamp {
 		return hlc.Timestamp{}
 	}
 	return hlc.Timestamp{
-		WallTime: ts,
-		Logical:  0,
+		WallTime:  ts,
+		Logical:   0,
+		Synthetic: t.b1.isSynthetic(),
 	}
 }
 
 // Count is part of the Tracker interface.
 func (t *lockfreeTracker) Count() int {
-	return int(t.b1.refcnt.Load()) + int(t.b2.refcnt.Load())
+	return int(t.b1.refcnt) + int(t.b2.refcnt)
 }
 
 // bucket represent a Tracker bucket: a data structure that coalesces a number
@@ -208,24 +208,31 @@ func (t *lockfreeTracker) Count() int {
 // A bucket can be initialized or uninitialized. It's initialized when the ts is
 // set.
 type bucket struct {
-	ts     atomic.Int64 // nanos
-	refcnt atomic.Int32
+	ts        int64 // atomic, nanos
+	refcnt    int32 // atomic
+	synthetic int32 // atomic
 }
 
 func (b *bucket) String() string {
-	ts := b.ts.Load()
+	ts := atomic.LoadInt64(&b.ts)
 	if ts == 0 {
 		return "uninit"
 	}
-	refcnt := b.refcnt.Load()
+	refcnt := atomic.LoadInt32(&b.refcnt)
 	return fmt.Sprintf("%d requests, lower bound: %s", refcnt, timeutil.Unix(0, ts))
 }
 
 // timestamp returns the bucket's timestamp. The bool retval is true if the
 // bucket is initialized. If false, the timestamp is 0.
 func (b *bucket) timestamp() (int64, bool) {
-	ts := b.ts.Load()
+	ts := atomic.LoadInt64(&b.ts)
 	return ts, ts != 0
+}
+
+// isSynthetic returns true if the bucket's timestamp (i.e. the bucket's lower
+// bound) should be considered a synthetic timestamp.
+func (b *bucket) isSynthetic() bool {
+	return atomic.LoadInt32(&b.synthetic) != 0
 }
 
 // extendAndJoin extends the bucket downwards (if necessary) so that its
@@ -233,20 +240,30 @@ func (b *bucket) timestamp() (int64, bool) {
 // token to be used for removing the timestamp from the bucket.
 //
 // If the bucket it not initialized, it will be initialized to ts.
-func (b *bucket) extendAndJoin(ctx context.Context, ts int64) lockfreeToken {
+func (b *bucket) extendAndJoin(ctx context.Context, ts int64, synthetic bool) lockfreeToken {
 	// Loop until either we set the bucket's timestamp, or someone else sets it to
 	// an even lower value.
 	var t int64
 	for {
-		t = b.ts.Load()
+		t = atomic.LoadInt64(&b.ts)
 		if t != 0 && t <= ts {
 			break
 		}
-		if b.ts.CompareAndSwap(t, ts) {
+		if atomic.CompareAndSwapInt64(&b.ts, t, ts) {
 			break
 		}
 	}
-	b.refcnt.Add(1)
+	// If we created the bucket, then we dictate if its lower bound will be
+	// considered a synthetic timestamp or not. It's possible that we're now
+	// inserting a synthetic timestamp into the bucket but, over time, a higher
+	// non-synthetic timestamp joins. Or, that a lower non-synthetic timestamp
+	// joins. In either case, the bucket will remain "synthetic" although it'd be
+	// correct to make it non-synthetic. We don't make an effort to keep the
+	// synthetic bit up to date within a bucket.
+	if t == 0 && synthetic {
+		atomic.StoreInt32(&b.synthetic, 1)
+	}
+	atomic.AddInt32(&b.refcnt, 1)
 	return lockfreeToken{b: b}
 }
 

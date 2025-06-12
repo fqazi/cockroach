@@ -15,7 +15,6 @@ SET CLUSTER SETTING kv.range_merge.queue.enabled = false
 statement ok
 ALTER TABLE ab SPLIT AT VALUES (2)
 
-retry
 statement ok
 ALTER TABLE ab EXPERIMENTAL_RELOCATE VALUES (ARRAY[1], 1), (ARRAY[2], 2)
 
@@ -24,7 +23,7 @@ SELECT start_key, end_key, replicas, lease_holder from [SHOW RANGES FROM TABLE a
 ORDER BY 1
 ----
 start_key           end_key       replicas  lease_holder
-<before:/Table/72>  …/1/2         {1}       1
+<before:/Table/65>  …/1/2         {1}       1
 …/1/2               <after:/Max>  {2}       2
 
 query T
@@ -38,7 +37,6 @@ statement ok
 CREATE TABLE t86075 (k INT PRIMARY KEY, c REGPROCEDURE, a REGPROCEDURE[]);
 INSERT INTO t86075 VALUES (1, 1, ARRAY[1]);
 
-retry
 statement ok
 ALTER TABLE t86075 EXPERIMENTAL_RELOCATE VALUES (ARRAY[2], 1)
 

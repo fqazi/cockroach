@@ -76,8 +76,6 @@ message MetricSnap {
   int64 bytes_sent = 3;
   int64 infos_received = 4;
   int64 infos_sent = 5;
-  int64 messages_received = 7;
-  int64 messages_sent = 8;
   int64 conns_refused = 6;
 }
 
@@ -128,7 +126,6 @@ message InfoStatus {
   ClientStatus client = 2 [(gogoproto.nullable) = false];
   ServerStatus server = 3 [(gogoproto.nullable) = false];
   Connectivity connectivity = 4 [(gogoproto.nullable) = false];
-  map<int32, int64> high_water_stamps = 5 [(gogoproto.castkey) = "github.com/cockroachdb/cockroach/pkg/roachpb.NodeID", (gogoproto.nullable) = false];
 }
 
 // Info is the basic unit of information traded over the

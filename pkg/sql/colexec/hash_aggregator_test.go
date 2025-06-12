@@ -429,6 +429,7 @@ func TestHashAggregator(t *testing.T) {
 			func(sources []colexecop.Operator) (colexecop.Operator, error) {
 				args := &colexecagg.NewAggregatorArgs{
 					Allocator:      testAllocator,
+					MemAccount:     testMemAcc,
 					Input:          sources[0],
 					InputTypes:     tc.typs,
 					Spec:           tc.spec,
@@ -512,7 +513,7 @@ func BenchmarkHashAggregatorInputTuplesTracking(b *testing.B) {
 								DiskQueueCfg:       queueCfg,
 								FDSemaphore:        &colexecop.TestingSemaphore{},
 								DiskAcc:            testDiskAcc,
-								DiskQueueMemAcc:    testMemAcc,
+								ConverterMemAcc:    testMemAcc,
 							},
 						)
 					},
@@ -522,9 +523,7 @@ func BenchmarkHashAggregatorInputTuplesTracking(b *testing.B) {
 			} {
 				benchmarkAggregateFunction(
 					b, agg, aggFn, []*types.T{types.Int}, 1 /* numGroupCol */, groupSize,
-					0 /* distinctProb */, numInputRows, 0, /* chunkSize */
-					0 /* limit */, 0, /* numSameAggs */
-				)
+					0 /* distinctProb */, numInputRows, 0 /* chunkSize */, 0 /* limit */)
 			}
 		}
 	}
@@ -578,7 +577,7 @@ func BenchmarkHashAggregatorPartialOrder(b *testing.B) {
 				DiskQueueCfg:       queueCfg,
 				FDSemaphore:        &colexecop.TestingSemaphore{},
 				DiskAcc:            testDiskAcc,
-				DiskQueueMemAcc:    testMemAcc,
+				ConverterMemAcc:    testMemAcc,
 			},
 		)
 	}
@@ -613,10 +612,7 @@ func BenchmarkHashAggregatorPartialOrder(b *testing.B) {
 							// so we can skip all but one case.
 							continue
 						}
-						benchmarkAggregateFunction(
-							b, agg, aggFn, []*types.T{types.Int}, 2 /* numGroupCol */, groupSize,
-							0 /* distinctProb */, numInputRows, chunkSize, limit, 0, /* numSameAggs */
-						)
+						benchmarkAggregateFunction(b, agg, aggFn, []*types.T{types.Int}, 2, groupSize, 0, numInputRows, chunkSize, limit)
 					}
 				}
 			}

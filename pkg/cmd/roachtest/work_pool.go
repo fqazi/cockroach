@@ -82,11 +82,11 @@ func (p *workPool) workRemaining() []testWithCount {
 //
 // cr is used for its information about how many clusters with a given tag currently exist.
 func (p *workPool) selectTestForCluster(
-	ctx context.Context, l *logger.Logger, s spec.ClusterSpec, cr *clusterRegistry, cloud spec.Cloud,
+	ctx context.Context, l *logger.Logger, s spec.ClusterSpec, cr *clusterRegistry,
 ) testToRunRes {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	testsWithCounts := p.findCompatibleTestsLocked(s, cloud)
+	testsWithCounts := p.findCompatibleTestsLocked(s)
 
 	if len(testsWithCounts) == 0 {
 		return testToRunRes{noWork: true}
@@ -150,7 +150,7 @@ func (p *workPool) selectTest(
 		smallestTestCPU := math.MaxInt64
 		smallestTestIdx := -1
 		for i, t := range p.mu.tests {
-			cpu := t.spec.Cluster.TotalCPUs()
+			cpu := t.spec.Cluster.NodeCount * t.spec.Cluster.CPUs
 			if cpu < smallestTestCPU {
 				smallestTestCPU = cpu
 				smallestTestIdx = i
@@ -183,7 +183,7 @@ func (p *workPool) selectTest(
 			runNum:          runNum,
 			canReuseCluster: false,
 		}
-		cpu := tc.spec.Cluster.TotalCPUs()
+		cpu := tc.spec.Cluster.NodeCount * tc.spec.Cluster.CPUs
 		return uint64(cpu), nil
 	})
 
@@ -211,7 +211,7 @@ func scoreTestAgainstCluster(
 	t := tc.spec
 	testPolicy := t.Cluster.ReusePolicy
 	if tag != "" && testPolicy != (spec.ReusePolicyTagged{Tag: tag}) {
-		logFatalfCtx(context.Background(), l,
+		l.Fatalf(
 			"incompatible test and cluster. Cluster tag: %s. Test policy: %+v",
 			tag, t.Cluster.ReusePolicy,
 		)
@@ -237,16 +237,14 @@ func scoreTestAgainstCluster(
 }
 
 // findCompatibleTestsLocked returns a list of tests compatible with a cluster spec.
-func (p *workPool) findCompatibleTestsLocked(
-	clusterSpec spec.ClusterSpec, cloud spec.Cloud,
-) []testWithCount {
+func (p *workPool) findCompatibleTestsLocked(clusterSpec spec.ClusterSpec) []testWithCount {
 	if _, ok := clusterSpec.ReusePolicy.(spec.ReusePolicyNone); ok {
 		// Cluster cannot be reused, so no tests are compatible.
 		return nil
 	}
 	var tests []testWithCount
 	for _, tc := range p.mu.tests {
-		if spec.ClustersCompatible(clusterSpec, tc.spec.Cluster, cloud) {
+		if spec.ClustersCompatible(clusterSpec, tc.spec.Cluster) {
 			tests = append(tests, tc)
 		}
 	}
@@ -263,7 +261,7 @@ func (p *workPool) decTestLocked(ctx context.Context, l *logger.Logger, name str
 		}
 	}
 	if idx == -1 {
-		logFatalfCtx(ctx, l, "failed to find test: %s", name)
+		l.FatalfCtx(ctx, "failed to find test: %s", name)
 	}
 	tc := &p.mu.tests[idx]
 	tc.count--

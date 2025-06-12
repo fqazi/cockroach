@@ -7,6 +7,7 @@ package lease
 
 import (
 	"context"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -50,23 +51,15 @@ type ManagerTestingKnobs struct {
 	// the lease manager attempts to acquire a lease for descriptor `id`.
 	TestingBeforeAcquireLeaseDuringRefresh func(id descpb.ID) error
 
-	// TestingOnNewVersion invoked when the range feed detects a new descriptor.
-	TestingOnNewVersion func(id descpb.ID)
-
-	// TestingOnLeaseGenerationBumpForNewVersion invoked when the lease generation,
-	// after a new descriptor or initial descriptor version are observed via
-	// the range feed.
-	TestingOnLeaseGenerationBumpForNewVersion func(id descpb.ID)
-
 	// To disable the deletion of orphaned leases at server startup.
 	DisableDeleteOrphanedLeases bool
 
-	// DisableRangeFeedCheckpoint is used to disable rangefeed checkpoints.
-	DisableRangeFeedCheckpoint bool
-
-	// RangeFeedReset channel is closed to indicate that the range feed
-	// has been reset.
-	RangeFeedResetChannel chan struct{}
+	// VersionPollIntervalForRangefeeds controls the polling interval for the
+	// check whether the requisite version for rangefeed-based notifications has
+	// been finalized.
+	//
+	// TODO(ajwerner): Remove this and replace it with a callback.
+	VersionPollIntervalForRangefeeds time.Duration
 
 	LeaseStoreTestingKnobs StorageTestingKnobs
 }
@@ -99,16 +92,4 @@ func (m *Manager) TestingAcquireAndAssertMinVersion(
 // used by this lease manager.
 func (m *Manager) TestingOutstandingLeasesGauge() *metric.Gauge {
 	return m.storage.outstandingLeases
-}
-
-// TestingSessionBasedLeasesExpiredGauge returns the session based leases
-// expired gauge that is used by this lease manager.
-func (m *Manager) TestingSessionBasedLeasesExpiredGauge() *metric.Gauge {
-	return m.storage.sessionBasedLeasesExpired
-}
-
-// TestingSessionBasedLeasesWaitingToExpireGauge returns the session based leases
-// waiting to expire gauge that is used by this lease manager.
-func (m *Manager) TestingSessionBasedLeasesWaitingToExpireGauge() *metric.Gauge {
-	return m.storage.sessionBasedLeasesWaitingToExpire
 }

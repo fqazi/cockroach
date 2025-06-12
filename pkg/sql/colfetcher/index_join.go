@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/col/typeconv"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvstreamer"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
@@ -33,8 +32,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
@@ -105,11 +104,11 @@ type ColIndexJoin struct {
 
 	// tracingSpan is created when the stats should be collected for the query
 	// execution, and it will be finished when closing the operator.
-	tracingSpan *tracing.Span
-	execstats.ContentionEventsListener
-	execstats.ScanStatsListener
-	execstats.TenantConsumptionListener
-	mu struct {
+	tracingSpan               *tracing.Span
+	contentionEventsListener  execstats.ContentionEventsListener
+	scanStatsListener         execstats.ScanStatsListener
+	tenantConsumptionListener execstats.TenantConsumptionListener
+	mu                        struct {
 		syncutil.Mutex
 		// rowsRead contains the number of total rows this ColIndexJoin has
 		// returned so far.
@@ -138,7 +137,7 @@ func (s *ColIndexJoin) Init(ctx context.Context) {
 	}
 	s.Ctx, s.tracingSpan = execinfra.ProcessorSpan(
 		s.Ctx, s.flowCtx, "colindexjoin", s.processorID,
-		&s.ContentionEventsListener, &s.ScanStatsListener, &s.TenantConsumptionListener,
+		&s.contentionEventsListener, &s.scanStatsListener, &s.tenantConsumptionListener,
 	)
 	s.Input.Init(s.Ctx)
 }
@@ -413,6 +412,21 @@ func (s *ColIndexJoin) GetKVCPUTime() time.Duration {
 	return s.cf.cpuStopWatch.Elapsed()
 }
 
+// GetContentionTime is part of the colexecop.KVReader interface.
+func (s *ColIndexJoin) GetContentionTime() time.Duration {
+	return s.contentionEventsListener.CumulativeContentionTime
+}
+
+// GetScanStats is part of the colexecop.KVReader interface.
+func (s *ColIndexJoin) GetScanStats() execstats.ScanStats {
+	return s.scanStatsListener.ScanStats
+}
+
+// GetConsumedRU is part of the colexecop.KVReader interface.
+func (s *ColIndexJoin) GetConsumedRU() uint64 {
+	return s.tenantConsumptionListener.ConsumedRU
+}
+
 // UsedStreamer is part of the colexecop.KVReader interface.
 func (s *ColIndexJoin) UsedStreamer() bool {
 	return s.usesStreamer
@@ -424,7 +438,7 @@ func (s *ColIndexJoin) UsedStreamer() bool {
 // result batches. TODO(drewk): once the Streamer work is finished, the fetcher
 // logic will be able to control result size without sacrificing parallelism, so
 // we can remove this limit.
-var inputBatchSizeLimit = int64(metamorphic.ConstantWithTestRange(
+var inputBatchSizeLimit = int64(util.ConstantWithMetamorphicTestRange(
 	"ColIndexJoin-batch-size",
 	productionIndexJoinBatchSize, /* defaultValue */
 	1,                            /* min */
@@ -435,7 +449,7 @@ var inputBatchSizeLimit = int64(metamorphic.ConstantWithTestRange(
 // execinfra.joinReaderIndexJoinStrategyBatchSizeDefault.
 const productionIndexJoinBatchSize = 4 << 20 /* 4MiB */
 
-var usingStreamerInputBatchSizeLimit = int64(metamorphic.ConstantWithTestRange(
+var usingStreamerInputBatchSizeLimit = int64(util.ConstantWithMetamorphicTestRange(
 	"ColIndexJoin-using-streamer-batch-size",
 	productionIndexJoinUsingStreamerBatchSize, /* defaultValue */
 	1, /* min */
@@ -496,7 +510,7 @@ func NewColIndexJoin(
 ) (*ColIndexJoin, error) {
 	// NB: we hit this with a zero NodeID (but !ok) with multi-tenancy.
 	if nodeID, ok := flowCtx.NodeID.OptionalNodeID(); nodeID == 0 && ok {
-		return nil, errors.AssertionFailedf("attempting to create a ColIndexJoin with uninitialized NodeID")
+		return nil, errors.Errorf("attempting to create a ColIndexJoin with uninitialized NodeID")
 	}
 	if !spec.LookupExpr.Empty() {
 		return nil, errors.AssertionFailedf("non-empty lookup expressions are not supported for index joins")
@@ -517,7 +531,7 @@ func NewColIndexJoin(
 	cFetcherMemoryLimit := totalMemoryLimit
 
 	var kvFetcher *row.KVFetcher
-	useStreamer, txn, err := flowCtx.UseStreamer(ctx)
+	useStreamer, txn, err := flowCtx.UseStreamer()
 	if err != nil {
 		return nil, err
 	}
@@ -540,25 +554,14 @@ func NewColIndexJoin(
 		if flowCtx.EvalCtx.SessionData().StreamerAlwaysMaintainOrdering {
 			maintainOrdering = true
 		}
-		var diskBuffer kvstreamer.ResultDiskBuffer
-		if maintainOrdering {
-			if diskMonitor == nil {
-				return nil, errors.AssertionFailedf("diskMonitor is nil when ordering needs to be maintained")
-			}
-			// Explicitly create a separate memory account bound to the
-			// unlimited monitor here - this passes ownership to the disk buffer
-			// which will close the acc.
-			diskBufferMemAcc := streamerBudgetAcc.Monitor().MakeBoundAccount()
-			diskBuffer = rowcontainer.NewKVStreamerResultDiskBuffer(
-				flowCtx.Cfg.TempStorage, diskBufferMemAcc, diskMonitor, false, /* reverse */
-			)
+		if maintainOrdering && diskMonitor == nil {
+			return nil, errors.AssertionFailedf("diskMonitor is nil when ordering needs to be maintained")
 		}
 		kvFetcher = row.NewStreamingKVFetcher(
 			flowCtx.Cfg.DistSender,
-			flowCtx.Cfg.KVStreamerMetrics,
 			flowCtx.Stopper(),
 			txn,
-			flowCtx.Cfg.Settings,
+			flowCtx.EvalCtx.Settings,
 			flowCtx.EvalCtx.SessionData(),
 			spec.LockingWaitPolicy,
 			spec.LockingStrength,
@@ -568,30 +571,25 @@ func NewColIndexJoin(
 			maintainOrdering,
 			true, /* singleRowLookup */
 			int(spec.FetchSpec.MaxKeysPerRow),
-			false, /* reverse */
-			diskBuffer,
+			rowcontainer.NewKVStreamerResultDiskBuffer(
+				flowCtx.Cfg.TempStorage, diskMonitor,
+			),
 			kvFetcherMemAcc,
-			spec.FetchSpec.External,
-			tableArgs.RequiresRawMVCCValues(),
 		)
 	} else {
 		kvFetcher = row.NewKVFetcher(
 			txn,
 			nil,   /* bsHeader */
 			false, /* reverse */
-			tableArgs.RequiresRawMVCCValues(),
 			spec.LockingStrength,
 			spec.LockingWaitPolicy,
 			spec.LockingDurability,
 			flowCtx.EvalCtx.SessionData().LockTimeout,
-			flowCtx.EvalCtx.SessionData().DeadlockTimeout,
 			kvFetcherMemAcc,
 			flowCtx.EvalCtx.TestingKnobs.ForceProductionValues,
-			spec.FetchSpec.External,
 		)
 	}
 
-	shouldCollectStats := execstats.ShouldCollectStats(ctx, flowCtx.CollectStats)
 	fetcher := cFetcherPool.Get().(*cFetcher)
 	fetcher.cFetcherArgs = cFetcherArgs{
 		cFetcherMemoryLimit,
@@ -600,9 +598,8 @@ func NewColIndexJoin(
 		0, /* estimatedRowCount */
 		flowCtx.TraceKV,
 		false, /* singleUse */
-		shouldCollectStats,
+		execstats.ShouldCollectStats(ctx, flowCtx.CollectStats),
 		false, /* alwaysReallocate */
-		txn,
 	}
 	if err = fetcher.Init(
 		fetcherAllocator, kvFetcher, tableArgs,
@@ -643,11 +640,6 @@ func NewColIndexJoin(
 		// enqueued requests) alone might exceed the budget leading to the
 		// Streamer erroring out in Enqueue().
 		op.mem.inputBatchSizeLimit = cFetcherMemoryLimit
-	}
-	if shouldCollectStats {
-		if flowTxn := flowCtx.EvalCtx.Txn; flowTxn != nil {
-			op.ContentionEventsListener.Init(flowTxn.ID())
-		}
 	}
 
 	return op, nil

@@ -721,7 +721,7 @@ func (b *Builder) buildAggregateFunction(
 	if f.OrderBy != nil {
 		for _, o := range f.OrderBy {
 			// ORDER BY (a, b) => ORDER BY a, b.
-			te := fromScope.resolveType(o.Expr, types.AnyElement)
+			te := fromScope.resolveType(o.Expr, types.Any)
 			cols := flattenTuples([]tree.TypedExpr{te})
 
 			nullsDefaultOrder := b.hasDefaultNullsOrder(o)
@@ -893,8 +893,6 @@ func (b *Builder) constructAggregate(name string, args []opt.ScalarExpr) opt.Sca
 		return b.factory.ConstructMergeStatementStats(args[0])
 	case "merge_transaction_stats":
 		return b.factory.ConstructMergeTransactionStats(args[0])
-	case "merge_aggregated_stmt_metadata":
-		return b.factory.ConstructMergeAggregatedStmtMetadata(args[0])
 	}
 
 	panic(errors.AssertionFailedf("unhandled aggregate: %s", name))
@@ -989,7 +987,7 @@ func (b *Builder) allowImplicitGroupingColumn(colID opt.ColumnID, g *groupby) bo
 	// Check UNIQUE INDEX constraints.
 	for i := 1; i < tab.IndexCount(); i++ {
 		index := tab.Index(i)
-		if !index.IsUnique() || !index.Type().CanBeUnique() {
+		if !index.IsUnique() || index.IsInverted() {
 			continue
 		}
 		// If any of the key columns is nullable, uniqueCols is suffixed with the

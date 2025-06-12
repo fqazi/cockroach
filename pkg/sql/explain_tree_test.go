@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/execstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/exec/explain"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessionphase"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -24,6 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/datadriven"
+	yaml "gopkg.in/yaml.v2"
 )
 
 func TestPlanToTreeAndPlanToString(t *testing.T) {
@@ -49,7 +49,7 @@ func TestPlanToTreeAndPlanToString(t *testing.T) {
 			r.Exec(t, d.Input)
 			return ""
 
-		case "plan-string":
+		case "plan-string", "plan-tree":
 			stmt, err := parser.ParseOne(d.Input)
 			if err != nil {
 				t.Fatal(err)
@@ -59,7 +59,7 @@ func TestPlanToTreeAndPlanToString(t *testing.T) {
 			internalPlanner, cleanup := NewInternalPlanner(
 				"test",
 				kv.NewTxn(ctx, db, s.NodeID()),
-				username.NodeUserName(),
+				username.RootUserName(),
 				&MemoryMetrics{},
 				&execCfg,
 				sd,
@@ -70,21 +70,29 @@ func TestPlanToTreeAndPlanToString(t *testing.T) {
 			ih := &p.instrumentation
 			ih.codec = execCfg.Codec
 			ih.collectBundle = true
+			ih.savePlanForStats = true
 
-			p.stmt = makeStatement(stmt, clusterunique.ID{},
-				tree.FmtFlags(queryFormattingForFingerprintsMask.Get(&execCfg.Settings.SV)))
+			p.stmt = makeStatement(stmt, clusterunique.ID{})
 			if err := p.makeOptimizerPlan(ctx); err != nil {
 				t.Fatal(err)
 			}
 			defer p.curPlan.close(ctx)
 			p.curPlan.savePlanInfo()
-			ob := ih.emitExplainAnalyzePlanToOutputBuilder(
-				ctx,
-				explain.Flags{Verbose: true, ShowTypes: true},
-				sessionphase.NewTimes(),
-				&execstats.QueryLevelStats{},
-			)
-			return ob.BuildString()
+			if d.Cmd == "plan-string" {
+				ob := ih.emitExplainAnalyzePlanToOutputBuilder(
+					ctx,
+					explain.Flags{Verbose: true, ShowTypes: true},
+					sessionphase.NewTimes(),
+					&execstats.QueryLevelStats{},
+				)
+				return ob.BuildString()
+			}
+			treeYaml, err := yaml.Marshal(ih.PlanForStats(ctx))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(treeYaml)
+
 		default:
 			t.Fatalf("unsupported command %s", d.Cmd)
 			return ""

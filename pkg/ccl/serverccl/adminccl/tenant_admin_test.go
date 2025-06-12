@@ -7,15 +7,15 @@ package adminccl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl/serverccl"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
-	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/ts/tspb"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -29,7 +29,7 @@ func TestTenantAdminAPI(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	// The liveness session might expire before the stress race can finish.
-	skip.UnderRace(t, "expensive tests")
+	skip.UnderStressRace(t, "expensive tests")
 
 	ctx := context.Background()
 
@@ -79,39 +79,20 @@ func testTenantMetricsCapabilityRPC(
 	err := http.PostJSONChecked("/ts/query", &query, &queryResp)
 	require.Error(t, err)
 
-	s := helper.HostCluster().Server(0)
 	db := helper.HostCluster().ServerConn(0)
 	_, err = db.Exec("ALTER TENANT [10] GRANT CAPABILITY can_view_tsdb_metrics=true\n")
 	require.NoError(t, err)
-	capability := map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanViewTSDBMetrics: "true"}
-	serverutils.WaitForTenantCapabilities(t, s, serverutils.TestTenantID(), capability, "")
 
-	err = http.PostJSONChecked("/ts/query", &query, &queryResp)
-	require.NoError(t, err)
-	require.Greater(t, len(queryResp.Results), 0)
-
-	// Check system tenant metric retrieval.
-	query = tspb.TimeSeriesQueryRequest{
-		StartNanos: 0,
-		EndNanos:   timeutil.Now().UnixNano(),
-		Queries: []tspb.Query{
-			{
-				Name: "cr.node.sys.rss",
-			},
-		},
-		SampleNanos: 0,
-	}
-	err = http.PostJSONChecked("/ts/query", &query, &queryResp)
-	require.Error(t, err)
-
-	_, err = db.Exec("ALTER TENANT [10] GRANT CAPABILITY can_view_all_metrics=true\n")
-	require.NoError(t, err)
-	capability = map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanViewAllMetrics: "true"}
-	serverutils.WaitForTenantCapabilities(t, s, serverutils.TestTenantID(), capability, "")
-
-	err = http.PostJSONChecked("/ts/query", &query, &queryResp)
-	require.NoError(t, err)
-	require.Greater(t, len(queryResp.Results), 0)
+	testutils.SucceedsSoon(t, func() error {
+		err := http.PostJSONChecked("/ts/query", &query, &queryResp)
+		if err != nil {
+			return err
+		}
+		if len(queryResp.Results) == 0 {
+			return errors.New("missing metrics data")
+		}
+		return nil
+	})
 }
 
 func testMetricMetadataRPC(ctx context.Context, t *testing.T, helper serverccl.TenantTestHelper) {

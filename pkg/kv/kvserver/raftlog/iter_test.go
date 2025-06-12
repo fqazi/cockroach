@@ -7,7 +7,6 @@
 package raftlog
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -17,11 +16,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 func ents(inds ...uint64) []raftpb.Entry {
@@ -45,7 +44,7 @@ func ents(inds ...uint64) []raftpb.Entry {
 			if ind%2 == 0 {
 				enc = EntryEncodingSideloadedWithAC
 			}
-			data = EncodeCommandBytes(enc, cmdID, b, 0 /* pri */)
+			data = EncodeCommandBytes(enc, cmdID, b)
 		case raftpb.EntryConfChangeV2:
 			c := kvserverpb.ConfChangeContext{
 				CommandID: string(cmdID),
@@ -151,7 +150,7 @@ func TestIteratorEmptyLog(t *testing.T) {
 	eng := storage.NewDefaultInMemForTesting()
 	defer eng.Close()
 	for _, hi := range []kvpb.RaftIndex{0, 1} {
-		it, err := NewIterator(context.Background(), rangeID, eng, IterOptions{Hi: hi})
+		it, err := NewIterator(rangeID, eng, IterOptions{Hi: hi})
 		require.NoError(t, err)
 		ok, err := it.SeekGE(0)
 		it.Close()
@@ -241,12 +240,13 @@ func TestIterator(t *testing.T) {
 					li = math.MaxUint64 - 1
 				}
 				for hi := lo - 1; hi-3 < li; hi++ {
+					hi := hi // allow mutating in the next line w/o clobbering loop var
 					if hi-2 == li {
 						// As the last case, make `hi` unlimited.
 						hi = 0
 					}
 					t.Run(fmt.Sprintf("lo=%s,hi=%s", indToName(lo), indToName(hi)), func(t *testing.T) {
-						it, err := NewIterator(context.Background(), rangeID, eng, IterOptions{Hi: hi})
+						it, err := NewIterator(rangeID, eng, IterOptions{Hi: hi})
 						require.NoError(t, err)
 						sl, err := consumeIter(it, lo)
 						it.Close()

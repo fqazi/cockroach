@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
 
@@ -29,12 +28,8 @@ func Get(
 	h := cArgs.Header
 	reply := resp.(*kvpb.GetResponse)
 
-	var lockTableForSkipLocked storage.LockTableView
-	if h.WaitPolicy == lock.WaitPolicy_SkipLocked {
-		lockTableForSkipLocked = newRequestBoundLockTableView(
-			readWriter, cArgs.Concurrency, h.Txn, args.KeyLockingStrength,
-		)
-		defer lockTableForSkipLocked.Close()
+	if err := maybeDisallowSkipLockedRequest(h, args.KeyLockingStrength); err != nil {
+		return result.Result{}, err
 	}
 
 	getRes, err := storage.MVCCGet(ctx, readWriter, args.Key, h.Timestamp, storage.MVCCGetOptions{
@@ -45,13 +40,11 @@ func Get(
 		ScanStats:             cArgs.ScanStats,
 		Uncertainty:           cArgs.Uncertainty,
 		MemoryAccount:         cArgs.EvalCtx.GetResponseMemoryAccount(),
-		LockTable:             lockTableForSkipLocked,
+		LockTable:             cArgs.Concurrency,
 		DontInterleaveIntents: cArgs.DontInterleaveIntents,
 		MaxKeys:               cArgs.Header.MaxSpanRequestKeys,
 		TargetBytes:           cArgs.Header.TargetBytes,
 		AllowEmpty:            cArgs.Header.AllowEmpty,
-		ReadCategory:          fs.BatchEvalReadCategory,
-		ReturnRawMVCCValues:   args.ReturnRawMVCCValues,
 	})
 	if err != nil {
 		return result.Result{}, err
@@ -88,17 +81,14 @@ func Get(
 		}
 	}
 
-	shouldLockKey := getRes.Value != nil || args.LockNonExisting
 	var res result.Result
-	if args.KeyLockingStrength != lock.None && shouldLockKey {
+	if args.KeyLockingStrength != lock.None && h.Txn != nil && getRes.Value != nil {
 		acq, err := acquireLockOnKey(ctx, readWriter, h.Txn, args.KeyLockingStrength,
 			args.KeyLockingDurability, args.Key, cArgs.Stats, cArgs.EvalCtx.ClusterSettings())
 		if err != nil {
-			return result.Result{}, err
+			return result.Result{}, maybeInterceptDisallowedSkipLockedUsage(h, err)
 		}
-		if !acq.Empty() {
-			res.Local.AcquiredLocks = []roachpb.LockAcquisition{acq}
-		}
+		res.Local.AcquiredLocks = []roachpb.LockAcquisition{acq}
 	}
 	res.Local.EncounteredIntents = intents
 	return res, err

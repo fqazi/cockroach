@@ -5,7 +5,7 @@ sh_binary(
     srcs = ["//pkg/sql/lexbase:sql-gen.sh"],
 )
 
-# Define the target to auto-generate plpgsql.go from the grammar file.
+# Define the target to auto-generate sql.go from the grammar file.
 genrule(
     name = "plpgsql-goyacc",
     srcs = [
@@ -16,8 +16,9 @@ genrule(
     export GOPATH=/nonexist-gopath
       $(location :plpgsql-gen) $(location plpgsql.y) plpgsql ""\
           $(location plpgsql.go) $(location @org_golang_x_tools//cmd/goyacc)
+
     """,
-    tools = [
+    exec_tools = [
         ":plpgsql-gen",
         "@org_golang_x_tools//cmd/goyacc",
     ],
@@ -25,7 +26,7 @@ genrule(
 )
 
 go_library(
-    name = "parser",
+    name = "plpgparser",
     srcs = [
         "lexer.go",
         "parse.go",
@@ -34,7 +35,6 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/plpgsql/parser",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/build",  # keep
         "//pkg/sql/parser",
         "//pkg/sql/parser/statements",
         "//pkg/sql/pgwire/pgcode",
@@ -60,9 +60,10 @@ exports_files(
 go_test(
     name = "parser_test",
     srcs = ["parser_test.go"],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     deps = [
-        ":parser",
+        ":plpgparser",
         "//pkg/sql/sem/plpgsqltree/utils",
         "//pkg/testutils/datapathutils",
         "//pkg/testutils/sqlutils",

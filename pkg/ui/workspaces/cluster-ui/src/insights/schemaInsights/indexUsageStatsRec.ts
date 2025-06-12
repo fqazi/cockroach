@@ -10,7 +10,7 @@ export const indexNeverUsedReason =
 
 const minDate = moment.utc("0001-01-01"); // minimum value as per UTC.
 
-type DropIndexRecommendation = {
+type dropIndexRecommendation = {
   recommend: boolean;
   reason: string;
 };
@@ -23,7 +23,7 @@ export interface IndexUsageStatistic {
 
 export function recommendDropUnusedIndex(
   indexUsageStat: IndexUsageStatistic,
-): DropIndexRecommendation {
+): dropIndexRecommendation {
   const createdAt = indexUsageStat.created_at
     ? moment.utc(indexUsageStat.created_at)
     : minDate;

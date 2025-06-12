@@ -3,13 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { util } from "@cockroachlabs/cluster-ui";
-import classNames from "classnames";
-import isEqual from "lodash/isEqual";
+import _ from "lodash";
 import React, { Component } from "react";
-
-import { cockroach, google } from "src/js/protos";
-import { ToolTipWrapper } from "src/views/shared/components/toolTip";
+import classNames from "classnames";
 
 import {
   TreeNode,
@@ -20,8 +16,12 @@ import {
   LayoutCell,
   FlattenedNode,
 } from "./tree";
+import { ToolTipWrapper } from "src/views/shared/components/toolTip";
+import { util } from "@cockroachlabs/cluster-ui";
 
+import { cockroach } from "src/js/protos";
 import NodeDescriptor$Properties = cockroach.roachpb.INodeDescriptor;
+import { google } from "src/js/protos";
 import ITimestamp = google.protobuf.ITimestamp;
 
 import "./replicaMatrix.styl";
@@ -57,7 +57,9 @@ class ReplicaMatrix extends Component<ReplicaMatrixProps, ReplicaMatrixState> {
 
   expandRow = (path: TreePath) => {
     this.setState({
-      collapsedRows: this.state.collapsedRows.filter(tp => !isEqual(tp, path)),
+      collapsedRows: this.state.collapsedRows.filter(
+        tp => !_.isEqual(tp, path),
+      ),
     });
   };
 
@@ -69,7 +71,9 @@ class ReplicaMatrix extends Component<ReplicaMatrixProps, ReplicaMatrixState> {
 
   expandCol = (path: TreePath) => {
     this.setState({
-      collapsedCols: this.state.collapsedCols.filter(tp => !isEqual(tp, path)),
+      collapsedCols: this.state.collapsedCols.filter(
+        tp => !_.isEqual(tp, path),
+      ),
     });
   };
 

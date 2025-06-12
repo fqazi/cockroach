@@ -28,7 +28,7 @@ write *eventpb.DropIndex to event log:
     tag: DROP INDEX
     user: root
   tableName: defaultdb.public.v2
-## StatementPhase stage 1 of 1 with 42 MutationType ops
+## StatementPhase stage 1 of 1 with 34 MutationType ops
 delete object namespace entry {100 101 v3} -> 106
 upsert descriptor #105
   ...
@@ -62,7 +62,6 @@ upsert descriptor #105
   -    name: idx
   -    partitioning: {}
   -    sharded: {}
-  -    vecConfig: {}
   -    version: 4
   +  indexes: []
      isMaterializedView: true
@@ -87,7 +86,6 @@ upsert descriptor #105
   +      name: idx
   +      partitioning: {}
   +      sharded: {}
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: WRITE_ONLY
@@ -113,7 +111,7 @@ upsert descriptor #106
 ## PreCommitPhase stage 1 of 2 with 1 MutationType op
 undo all catalog changes within txn #1
 persist all catalog changes to storage
-## PreCommitPhase stage 2 of 2 with 45 MutationType ops
+## PreCommitPhase stage 2 of 2 with 37 MutationType ops
 delete object namespace entry {100 101 v3} -> 106
 upsert descriptor #105
   ...
@@ -134,8 +132,6 @@ upsert descriptor #105
   +        "1": i
   +        "2": j
   +        "3": rowid
-  +        "4294967292": crdb_internal_origin_timestamp
-  +        "4294967293": crdb_internal_origin_id
   +        "4294967294": tableoid
   +        "4294967295": crdb_internal_mvcc_timestamp
   +      families:
@@ -174,7 +170,6 @@ upsert descriptor #105
   -    name: idx
   -    partitioning: {}
   -    sharded: {}
-  -    vecConfig: {}
   -    version: 4
   +  indexes: []
      isMaterializedView: true
@@ -199,7 +194,6 @@ upsert descriptor #105
   +      name: idx
   +      partitioning: {}
   +      sharded: {}
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: WRITE_ONLY
@@ -259,7 +253,6 @@ upsert descriptor #105
   +      name: crdb_internal_index_2_name_placeholder
          partitioning: {}
          sharded: {}
-  ...
          version: 4
        mutationId: 1
   -    state: WRITE_ONLY
@@ -296,8 +289,6 @@ upsert descriptor #105
   -        "1": i
   -        "2": j
   -        "3": rowid
-  -        "4294967292": crdb_internal_origin_timestamp
-  -        "4294967293": crdb_internal_origin_id
   -        "4294967294": tableoid
   -        "4294967295": crdb_internal_mvcc_timestamp
   -      families:
@@ -338,7 +329,6 @@ upsert descriptor #105
   -      name: crdb_internal_index_2_name_placeholder
   -      partitioning: {}
   -      sharded: {}
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY

@@ -28,10 +28,7 @@ SHOW TABLES
 public  t  table  root  0  NULL
 
 statement ok
-SET database = test
-
-statement ok
-DROP DATABASE public
+SET database = test; DROP DATABASE public
 
 # Unqualified pg_type resolves from pg_catalog.
 query T

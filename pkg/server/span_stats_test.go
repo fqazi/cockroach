@@ -72,22 +72,11 @@ func TestSpanStatsFanOut(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 	const numNodes = 3
-	serverArgs := base.TestServerArgs{
-		StoreSpecs: []base.StoreSpec{
-			base.DefaultTestStoreSpec,
-			base.DefaultTestStoreSpec,
-			base.DefaultTestStoreSpec},
-	}
-	tc := testcluster.StartTestCluster(t, numNodes, base.TestClusterArgs{
-		ServerArgsPerNode: map[int]base.TestServerArgs{
-			1: serverArgs,
-			2: serverArgs,
-			3: serverArgs,
-		},
-	})
+	tc := testcluster.StartTestCluster(t, numNodes, base.TestClusterArgs{})
 	defer tc.Stopper().Stop(ctx)
 
 	s := tc.Server(0)
+
 	store, err := s.GetStores().(*kvserver.Stores).GetStore(s.GetFirstStoreID())
 	require.NoError(t, err)
 	// Create a number of ranges using splits.
@@ -158,6 +147,7 @@ func TestSpanStatsFanOut(t *testing.T) {
 	}
 
 	testutils.SucceedsSoon(t, func() error {
+
 		// Multi-span request
 		multiResult, err := s.StatusServer().(serverpb.StatusServer).SpanStats(ctx,
 			&roachpb.SpanStatsRequest{
@@ -174,20 +164,6 @@ func TestSpanStatsFanOut(t *testing.T) {
 
 			// Assert expected values from multi-span request
 			spanStats := multiResult.SpanToStats[tcase.span.String()]
-			if len(spanStats.StoreIDs) < 3 {
-				if tcase.expectedRanges == 1 && len(spanStats.StoreIDs) > 3 {
-					return errors.Newf("Multi-span: expected exactly 3 storeIDs in span [%s - %s], found %v",
-						rSpan.Key.String(),
-						rSpan.EndKey.String(),
-						spanStats.StoreIDs,
-					)
-				}
-				return errors.Newf("Multi-span: expected at least 3 storeIDs in span [%s - %s], found %v",
-					rSpan.Key.String(),
-					rSpan.EndKey.String(),
-					spanStats.StoreIDs,
-				)
-			}
 			if tcase.expectedRanges != spanStats.RangeCount {
 				return errors.Newf("Multi-span: expected %d ranges in span [%s - %s], found %d",
 					tcase.expectedRanges,
@@ -216,182 +192,6 @@ func TestSpanStatsFanOut(t *testing.T) {
 					spanStats.TotalStats.LiveCount,
 				)
 			}
-
-			expectedReplicas := tcase.expectedRanges * 3
-			if spanStats.ReplicaCount != expectedReplicas {
-				return errors.Newf(
-					"Multi-span: expected %d replica in span [%s - %s], found %d",
-					expectedReplicas,
-					rSpan.Key.String(),
-					rSpan.EndKey.String(),
-					spanStats.ReplicaCount,
-				)
-			}
-		}
-
-		return nil
-	})
-}
-
-// With replication off, we should only get responses from the
-// first store and the replica count should be 1 per range.
-func TestSpanStatsMultiStoreReplicationOff(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	ctx := context.Background()
-	const numNodes = 3
-	serverArgs := base.TestServerArgs{
-		StoreSpecs: []base.StoreSpec{
-			base.DefaultTestStoreSpec,
-			base.DefaultTestStoreSpec,
-			base.DefaultTestStoreSpec},
-	}
-	tc := testcluster.StartTestCluster(t, numNodes, base.TestClusterArgs{
-		ReplicationMode: base.ReplicationManual,
-		ServerArgsPerNode: map[int]base.TestServerArgs{
-			1: serverArgs,
-			2: serverArgs,
-			3: serverArgs,
-		},
-	})
-	defer tc.Stopper().Stop(ctx)
-
-	s := tc.Server(0)
-	store, err := s.GetStores().(*kvserver.Stores).GetStore(s.GetFirstStoreID())
-	require.NoError(t, err)
-	// Create a number of ranges using splits.
-	splitKeys := []string{"a", "c", "e", "g", "i"}
-	for _, k := range splitKeys {
-		_, _, err := s.SplitRange(roachpb.Key(k))
-		require.NoError(t, err)
-	}
-
-	// Create some keys across the ranges.
-	incKeys := []string{"b", "bb", "bbb", "d", "dd", "h"}
-	for _, k := range incKeys {
-		if _, err := store.DB().Inc(context.Background(), []byte(k), 5); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// Create spans encompassing different ranges.
-	spans := []roachpb.Span{
-		{
-			Key:    roachpb.Key("a"),
-			EndKey: roachpb.Key("i"),
-		},
-		{
-			Key:    roachpb.Key("a"),
-			EndKey: roachpb.Key("c"),
-		},
-		{
-			Key:    roachpb.Key("b"),
-			EndKey: roachpb.Key("e"),
-		},
-		{
-			Key:    roachpb.Key("e"),
-			EndKey: roachpb.Key("i"),
-		},
-		{
-			Key:    roachpb.Key("b"),
-			EndKey: roachpb.Key("d"),
-		},
-		{
-			Key:    roachpb.Key("b"),
-			EndKey: roachpb.Key("bbb"),
-		},
-	}
-
-	type testCase struct {
-		span           roachpb.Span
-		expectedRanges int32
-		expectedKeys   int64
-	}
-
-	testCases := []testCase{
-		{spans[0], 4, int64(6)},
-		{spans[1], 1, int64(3)},
-		{spans[2], 2, int64(5)},
-		{spans[3], 2, int64(1)},
-		{spans[4], 2, int64(3)},
-		{spans[5], 1, int64(2)},
-	}
-
-	testutils.SucceedsSoon(t, func() error {
-		// Multi-span request
-		multiResult, err := s.StatusServer().(serverpb.StatusServer).SpanStats(ctx,
-			&roachpb.SpanStatsRequest{
-				NodeID: "0",
-				Spans:  spans,
-			},
-		)
-		require.NoError(t, err)
-
-		equalStoreIDs := func(a, b []roachpb.StoreID) bool {
-			if len(a) != len(b) {
-				return false
-			}
-			for i := range a {
-				if a[i] != b[i] {
-					return false
-				}
-			}
-			return true
-		}
-
-		// Verify stats across different spans.
-		for _, tcase := range testCases {
-			rSpan, err := keys.SpanAddr(tcase.span)
-			require.NoError(t, err)
-
-			// Assert expected values from multi-span request
-			spanStats := multiResult.SpanToStats[tcase.span.String()]
-			if !equalStoreIDs([]roachpb.StoreID{1}, spanStats.StoreIDs) {
-				return errors.Newf("Multi-span: expected  storeIDs %v in span [%s - %s], found %v",
-					[]roachpb.StoreID{1},
-					rSpan.Key.String(),
-					rSpan.EndKey.String(),
-					spanStats.StoreIDs,
-				)
-			}
-			if tcase.expectedRanges != spanStats.RangeCount {
-				return errors.Newf("Multi-span: expected %d ranges in span [%s - %s], found %d",
-					tcase.expectedRanges,
-					rSpan.Key.String(),
-					rSpan.EndKey.String(),
-					spanStats.RangeCount,
-				)
-			}
-			if tcase.expectedKeys != spanStats.TotalStats.LiveCount {
-				return errors.Newf(
-					"Multi-span: expected %d keys in span [%s - %s], found %d",
-					tcase.expectedKeys,
-					rSpan.Key.String(),
-					rSpan.EndKey.String(),
-					spanStats.TotalStats.LiveCount,
-				)
-			}
-
-			approxKeys := tcase.expectedKeys
-			if approxKeys != spanStats.ApproximateTotalStats.LiveCount {
-				return errors.Newf(
-					"Multi-span: expected %d post-replicated keys in span [%s - %s], found %d",
-					approxKeys,
-					rSpan.Key.String(),
-					rSpan.EndKey.String(),
-					spanStats.TotalStats.LiveCount,
-				)
-			}
-
-			if spanStats.ReplicaCount != tcase.expectedRanges {
-				return errors.Newf(
-					"Multi-span: expected %d replica in span [%s - %s], found %d",
-					tcase.expectedRanges,
-					rSpan.Key.String(),
-					rSpan.EndKey.String(),
-					spanStats.ReplicaCount,
-				)
-			}
 		}
 
 		return nil
@@ -402,13 +202,7 @@ func TestSpanStatsMultiStoreReplicationOff(t *testing.T) {
 func TestSpanStatsFanOutFaultTolerance(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	// This test simulates a specific set of failures and verifies that
-	// the response collects them appropriately. It is flaky under stress
-	// and race.
-	skip.UnderStress(t)
-	skip.UnderRace(t)
-
+	skip.UnderStressWithIssue(t, 108534)
 	ctx := context.Background()
 	const numNodes = 5
 
@@ -416,7 +210,7 @@ func TestSpanStatsFanOutFaultTolerance(t *testing.T) {
 		name         string
 		dialCallback func(nodeID roachpb.NodeID) error
 		nodeCallback func(ctx context.Context, nodeID roachpb.NodeID) error
-		assertions   func(t *testing.T, res *roachpb.SpanStatsResponse)
+		assertions   func(res *roachpb.SpanStatsResponse)
 	}
 
 	containsError := func(errors []string, testString string) bool {
@@ -456,7 +250,7 @@ func TestSpanStatsFanOutFaultTolerance(t *testing.T) {
 				}
 				return nil
 			},
-			assertions: func(t *testing.T, res *roachpb.SpanStatsResponse) {
+			assertions: func(res *roachpb.SpanStatsResponse) {
 				// Expect to still be able to access SpanToStats for keys.EverythingSpan
 				// without panicking, even though there was a failure on every node.
 				require.Equal(t, int64(0), res.SpanToStats[keys.EverythingSpan.String()].TotalStats.LiveCount)
@@ -491,13 +285,10 @@ func TestSpanStatsFanOutFaultTolerance(t *testing.T) {
 				}
 				return nil
 			},
-			assertions: func(t *testing.T, res *roachpb.SpanStatsResponse) {
-				require.Greater(t, res.SpanToStats[keys.EverythingSpan.String()].TotalStats.LiveCount, int64(0),
-					"response contains no stats: %v", res)
+			assertions: func(res *roachpb.SpanStatsResponse) {
+				require.Greater(t, res.SpanToStats[keys.EverythingSpan.String()].TotalStats.LiveCount, int64(0))
 				// 3 nodes could not service their requests.
-				require.Equal(t, 3, len(res.Errors),
-					"response contains incorrect number of errors: %v", res,
-				)
+				require.Equal(t, 3, len(res.Errors))
 
 				require.Equal(t, true, containsError(res.Errors, "error dialing node 1"))
 				require.Equal(t, true, containsError(res.Errors, "kv error on node 3"))
@@ -532,7 +323,7 @@ func TestSpanStatsFanOutFaultTolerance(t *testing.T) {
 			})
 
 			require.NoError(t, err)
-			tCase.assertions(t, res)
+			tCase.assertions(res)
 		})
 	}
 }

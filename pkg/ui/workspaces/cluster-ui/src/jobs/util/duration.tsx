@@ -5,7 +5,6 @@
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import moment from "moment-timezone";
 import React from "react";
-
 import { TimestampToMoment } from "src/util";
 
 import { JOB_STATUS_SUCCEEDED, isRunning } from "./jobOptions";
@@ -34,20 +33,12 @@ export class Duration extends React.PureComponent<{
       const fractionCompleted = job.fraction_completed;
       if (!startedAt || !modifiedAt || fractionCompleted === 0) {
         return null;
-      } else if (fractionCompleted < 0.05) {
-        return <span className={className}>Initializing...</span>;
       }
       const duration = modifiedAt.diff(startedAt);
-      const remaining = moment.duration(
-        duration / fractionCompleted - duration,
-      );
+      const remaining = duration / fractionCompleted - duration;
       return (
         <span className={className}>
-          {`${
-            remaining >= moment.duration(1, "minutes")
-              ? formatDuration(remaining)
-              : "Less than a minute"
-          } remaining`}
+          {formatDuration(moment.duration(remaining)) + " remaining"}
         </span>
       );
     } else if (

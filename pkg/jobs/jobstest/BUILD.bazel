@@ -14,6 +14,7 @@ go_library(
         "//pkg/jobs/jobspb",
         "//pkg/scheduledjobs",
         "//pkg/sql/catalog/systemschema",
+        "//pkg/sql/isql",
         "//pkg/sql/sem/tree",
         "//pkg/testutils",
         "//pkg/util/log",

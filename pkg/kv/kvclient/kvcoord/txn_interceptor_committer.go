@@ -148,6 +148,7 @@ func (tc *txnCommitter) SendLocked(
 	if err := tc.validateEndTxnBatch(ba); err != nil {
 		return nil, kvpb.NewError(err)
 	}
+
 	// Determine whether we can elide the EndTxn entirely. We can do so if the
 	// transaction is read-only, which we determine based on whether the EndTxn
 	// request contains any writes.
@@ -202,9 +203,6 @@ func (tc *txnCommitter) SendLocked(
 	switch br.Txn.Status {
 	case roachpb.STAGING:
 		// Continue with STAGING-specific validation and cleanup.
-	case roachpb.PREPARED:
-		// The transaction is prepared.
-		return br, nil
 	case roachpb.COMMITTED:
 		// The transaction is explicitly committed. This is possible if all
 		// in-flight writes were sent to the same range as the EndTxn request,
@@ -351,11 +349,6 @@ func (tc *txnCommitter) canCommitInParallel(ba *kvpb.BatchRequest, et *kvpb.EndT
 		return false
 	}
 
-	// We don't support a parallel prepare.
-	if et.Prepare {
-		return false
-	}
-
 	// If the transaction has a commit trigger, we don't allow it to commit in
 	// parallel with writes. There's no fundamental reason for this restriction,
 	// but for now it's not worth the complication.
@@ -369,21 +362,31 @@ func (tc *txnCommitter) canCommitInParallel(ba *kvpb.BatchRequest, et *kvpb.EndT
 	for _, ru := range ba.Requests[:len(ba.Requests)-1] {
 		req := ru.GetInner()
 		switch {
-		case kvpb.CanParallelCommit(req):
-			//  The request can be part of a batch that is committed in parallel.
+		case kvpb.IsIntentWrite(req):
+			if kvpb.IsRange(req) {
+				// Similar to how we can't pipeline ranged writes, we also can't
+				// commit in parallel with them. The reason for this is that the
+				// status resolution process for STAGING transactions wouldn't
+				// know where to look for the corresponding intents.
+				return false
+			}
+			// All other point writes are included in the EndTxn request's
+			// InFlightWrites set and are visible to the status resolution
+			// process for STAGING transactions. Populating InFlightWrites
+			// has already been done by the txnPipeliner.
 
 		case req.Method() == kvpb.QueryIntent:
-			// QueryIntent requests are compatible with parallel commits. The
+			// QueryIntent requests are compatable with parallel commits. The
 			// intents being queried are also attached to the EndTxn request's
 			// InFlightWrites set and are visible to the status resolution
 			// process for STAGING transactions. Populating InFlightWrites has
 			// already been done by the txnPipeliner.
 
 		default:
-			// All other request types, notably Get, Scan and DeleteRange requests,
-			// are incompatible with parallel commits because their outcome is not
-			// taken into consideration by the status resolution process for STAGING
-			// transactions.
+			// All other request types, notably Get and Scan requests, are
+			// incompatible with parallel commits because their outcome is
+			// not taken into consideration by the status resolution process
+			// for STAGING transactions.
 			return false
 		}
 	}
@@ -473,10 +476,6 @@ func (tc *txnCommitter) retryTxnCommitAfterFailedParallelCommit(
 	if err := br.Combine(ctx, brSuffix, []int{etIdx}, ba); err != nil {
 		return nil, kvpb.NewError(err)
 	}
-	if br.Txn == nil || !br.Txn.Status.IsFinalized() {
-		return nil, kvpb.NewError(errors.AssertionFailedf(
-			"txn status not finalized after successful retried EndTxn: %v", br.Txn))
-	}
 	return br, nil
 }
 
@@ -499,26 +498,17 @@ func (tc *txnCommitter) makeTxnCommitExplicitAsync(
 	if multitenant.HasTenantCostControlExemption(ctx) {
 		asyncCtx = multitenant.WithTenantCostControlExemption(asyncCtx)
 	}
-
-	work := func(ctx context.Context) {
-		tc.mu.Lock()
-		defer tc.mu.Unlock()
-		if err := makeTxnCommitExplicitLocked(ctx, tc.wrapped, txn, lockSpans); err != nil {
-			log.Errorf(ctx, "making txn commit explicit failed for %s: %v", txn, err)
-		}
-	}
-
-	asyncCtx, hdl, err := tc.stopper.GetHandle(asyncCtx, stop.TaskOpts{
-		TaskName: "txnCommitter: making txn commit explicit",
-	})
-	if err != nil {
+	if err := tc.stopper.RunAsyncTask(
+		asyncCtx, "txnCommitter: making txn commit explicit", func(ctx context.Context) {
+			tc.mu.Lock()
+			defer tc.mu.Unlock()
+			if err := makeTxnCommitExplicitLocked(ctx, tc.wrapped, txn, lockSpans); err != nil {
+				log.Errorf(ctx, "making txn commit explicit failed for %s: %v", txn, err)
+			}
+		},
+	); err != nil {
 		log.VErrEventf(ctx, 1, "failed to make txn commit explicit: %v", err)
-		return
 	}
-	go func(ctx context.Context) {
-		defer hdl.Activate(ctx).Release(ctx)
-		work(ctx)
-	}(asyncCtx)
 }
 
 func makeTxnCommitExplicitLocked(
@@ -608,9 +598,6 @@ func (tc *txnCommitter) setWrapped(wrapped lockedSender) { tc.wrapped = wrapped 
 
 // populateLeafInputState is part of the txnInterceptor interface.
 func (*txnCommitter) populateLeafInputState(*roachpb.LeafTxnInputState) {}
-
-// initializeLeaf is part of the txnInterceptor interface.
-func (*txnCommitter) initializeLeaf(tis *roachpb.LeafTxnInputState) {}
 
 // populateLeafFinalState is part of the txnInterceptor interface.
 func (*txnCommitter) populateLeafFinalState(*roachpb.LeafTxnFinalState) {}

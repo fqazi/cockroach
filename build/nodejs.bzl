@@ -5,39 +5,38 @@ load("@rules_nodejs//nodejs/private:nodejs_repo_host_os_alias.bzl", "nodejs_repo
 load("@rules_nodejs//nodejs/private:toolchains_repo.bzl", "toolchains_repo")
 
 _NODE_VERSION = "16.14.2"
-_NODE_VERSIONS = {
+_VERSIONS = {
     "darwin_amd64": ("node-v16.14.2-darwin-x64.tar.gz", "node-v16.14.2-darwin-x64", "d3076ca7fcc7269c8ff9b03fe7d1c277d913a7e84a46a14eff4af7791ff9d055"),
     "darwin_arm64": ("node-v16.14.2-darwin-arm64.tar.gz", "node-v16.14.2-darwin-arm64", "a66d9217d2003bd416d3dd06dfd2c7a044c4c9ff2e43a27865790bd0d59c682d"),
     "linux_amd64": ("node-v16.14.2-linux-x64.tar.xz", "node-v16.14.2-linux-x64", "e40c6f81bfd078976d85296b5e657be19e06862497741ad82902d0704b34bb1b"),
     "linux_arm64": ("node-v16.14.2-linux-arm64.tar.xz", "node-v16.14.2-linux-arm64", "f7c5a573c06a520d6c2318f6ae204141b8420386553a692fc359f8ae3d88df96"),
-    "linux_s390x": ("node-v16.14.2-linux-s390x.tar.xz", "node-v16.14.2-linux-s390x", "3197925919ca357e17a31132dc6ef4e5afae819fa09905cfe9f7ff7924a00bf5"),
     "windows_amd64": ("node-v16.14.2-win-x64.zip", "node-v16.14.2-win-x64", "4731da4fbb2015d414e871fa9118cabb643bdb6dbdc8a69a3ed563266ac93229"),
 }
 
 # Versions of copy_directory and copy_to_directory from bazel-lib (github.com/aspect-build/bazel-lib)
-# These are built by `build/scripts/build-bazel-lib-helpers.sh`.
-# Update these when updating `aspect_bazel_lib` (see comment in `WORKSPACE`)
-_URL_PREFIX = "https://storage.googleapis.com/public-bazel-artifacts/js/aspect-bazel-lib-utils-20250224-115846"
-_COPY_DIRECTORY_URL_PREFIX = _URL_PREFIX + "/copy_directory-"
+# NOTE(ricky): I had to build my own version of these binaries and mirror them
+# myself using a version of the code you can find at aspect-build/bazel-lib#447.
+# We can use an updated version when that PR is merged. Note we still need this
+# bespoke code to set up the repos because our build process must go through our
+# infra/storage.
+_COPY_DIRECTORY_URL_PREFIX = "https://storage.googleapis.com/public-bazel-artifacts/js/aspect-bazel-lib-utils-2023-06-05/copy_directory-"
 
 _COPY_DIRECTORY_VERSIONS = {
-    "darwin_amd64": "2f4befad49d25f867221f9beb7d03b174c03af5395fc860c24447c85fbdd2d7d",
-    "darwin_arm64": "e8ca2ab1655cc71fab3106d433dd4274389bdf9f143f586ab83a6f8ab7aeabad",
-    "linux_amd64": "fae863215e3acc6e5e50ac2979e6d9d29c95b57fa1eb719de801926db57e5941",
-    "linux_arm64": "7dff652aa2b1e4d5ab163cf2be841038da1cc3530e9875d5fb2cef0ef4e9efb8",
-    "linux_s390x": "8238e319e64371f188914992fd0745d153452bd79155185a069b939d52f6407f",
-    "windows_amd64": "a12cd040fa48e7989a47e6a1388b8a84ed1b6b825370e03973f48e6cf273b7f8",
+    "darwin_amd64": "b4d39cd9498b8367ba75ad6c13c7687562dabafbf8c782883815314061f9f043",
+    "darwin_arm64": "1fd4268a242181d7cdbee7f8035b34548b895fd9e438fab05d48e4627e072e53",
+    "linux_amd64": "ce4aaaf41b3b8f9589290d0f3d657400514b7361b9c27f85ac8f966ee4d663b8",
+    "linux_arm64": "51099a643689c2e563ab7cd9e14345dd9670ee4814ac4046501675d402decdf4",
+    "windows_amd64": "6df30928734abb48515ea16d1273a829651adb77b9ecbbe49e02d17cfffab519",
 }
 
-_COPY_TO_DIRECTORY_URL_PREFIX = _URL_PREFIX + "/copy_to_directory-"
+_COPY_TO_DIRECTORY_URL_PREFIX = "https://storage.googleapis.com/public-bazel-artifacts/js/aspect-bazel-lib-utils-2023-06-05/copy_to_directory-"
 
 _COPY_TO_DIRECTORY_VERSIONS = {
-    "darwin_amd64": "6132ce07141ed17d658acb72a777bf619b17a18b6f3950b3689ac057f81ebdb0",
-    "darwin_arm64": "fe8ba630878178adcebe52097dde407b1554c6118c3a17b67c0f47f461c7b3d5",
-    "linux_amd64": "6ce36555a198a42fa1642b19fcd685d9584fb71e0da9b9fec15dc14f43527171",
-    "linux_arm64": "17015a948a3d106222c157925a4b5edc832d336beb5fc7f8d34a7ee0c827809d",
-    "linux_s390x": "5bf65abc6c189febccee635d6865ab009e33825bc9de9be2d13b801bbe3d2da3",
-    "windows_amd64": "15f857eeb830a02b4eeb421ac0988a90f8255d95ee109596259aaf129fb4edbd",
+    "darwin_amd64": "dadf2fc200a14968664c4b740a76fcee700cb975eb5bfcd3215d253b97a28b23",
+    "darwin_arm64": "97ae06279adf44786c1151aa3e4715474603a4792fa64ec6bccb1b52fa00abc1",
+    "linux_amd64": "cfac1d923b7039555265ecf1558200d391ffbed62804a4b8c4510b12a18d6e70",
+    "linux_arm64": "5c4c69f6f20ba0d6646435ad9922d6193871f3b4262cbc65295e4b89ece667a4",
+    "windows_amd64": "2be5d8b2771ffa3922438cda8899f782046633d6d230f744bf63031888a8bf48",
 }
 
 # NOTE: This code is adapted from upstream at
@@ -46,7 +45,7 @@ _COPY_TO_DIRECTORY_VERSIONS = {
 def _copy_directory_platform_repo_impl(rctx):
     plat = rctx.attr.platform
     is_windows = "windows" in rctx.attr.platform
-    url = _COPY_DIRECTORY_URL_PREFIX + plat + (".exe" if is_windows else "")
+    url = "https://storage.googleapis.com/public-bazel-artifacts/js/aspect-bazel-lib-utils-2023-06-05/copy_directory-" + plat + (".exe" if is_windows else "")
     rctx.download(
         url = url,
         output = "copy_directory.exe" if is_windows else "copy_directory",
@@ -72,7 +71,7 @@ copy_directory_platform_repo = repository_rule(
 def _copy_to_directory_platform_repo_impl(rctx):
     plat = rctx.attr.platform
     is_windows = "windows" in rctx.attr.platform
-    url = _COPY_TO_DIRECTORY_URL_PREFIX + plat + (".exe" if is_windows else "")
+    url = "https://storage.googleapis.com/public-bazel-artifacts/js/aspect-bazel-lib-utils-2023-06-05/copy_to_directory-" + plat + (".exe" if is_windows else "")
     rctx.download(
         url = url,
         output = "copy_to_directory.exe" if is_windows else "copy_to_directory",
@@ -102,11 +101,11 @@ copy_to_directory_platform_repo = repository_rule(
 # We do this to have more control over how this stuff is created, to use our
 # node mirrors, etc.
 def declare_nodejs_repos():
-    for name in _NODE_VERSIONS:
+    for name in _VERSIONS:
         node_repositories(
             name = "nodejs_" + name,
             node_repositories = {
-                _NODE_VERSION + "-" + name: _NODE_VERSIONS[name]
+                _NODE_VERSION + "-" + name: _VERSIONS[name]
             },
             node_urls = [
                 "https://storage.googleapis.com/public-bazel-artifacts/js/node/v{version}/{filename}",

@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
@@ -72,22 +71,18 @@ func declareKeysRevertRange(
 
 // isEmptyKeyTimeRange checks if the span has no writes in (since,until].
 func isEmptyKeyTimeRange(
-	ctx context.Context,
-	readWriter storage.ReadWriter,
-	from, to roachpb.Key,
-	since, until hlc.Timestamp,
+	readWriter storage.ReadWriter, from, to roachpb.Key, since, until hlc.Timestamp,
 ) (bool, error) {
 	// Use a TBI to check if there is anything to delete -- the first key Seek hits
 	// may not be in the time range but the fact the TBI found any key indicates
 	// that there is *a* key in the SST that is in the time range. Thus we should
 	// proceed to iteration that actually checks timestamps on each key.
-	iter, err := readWriter.NewMVCCIterator(ctx, storage.MVCCKeyIterKind, storage.IterOptions{
+	iter, err := readWriter.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		KeyTypes:     storage.IterKeyTypePointsAndRanges,
 		LowerBound:   from,
 		UpperBound:   to,
 		MinTimestamp: since.Next(), // make exclusive
 		MaxTimestamp: until,
-		ReadCategory: fs.BatchEvalReadCategory,
 	})
 	if err != nil {
 		return false, err
@@ -126,7 +121,7 @@ func RevertRange(
 	}
 
 	if empty, err := isEmptyKeyTimeRange(
-		ctx, readWriter, args.Key, args.EndKey, args.TargetTime, cArgs.Header.Timestamp,
+		readWriter, args.Key, args.EndKey, args.TargetTime, cArgs.Header.Timestamp,
 	); err != nil {
 		return result.Result{}, err
 	} else if empty {
@@ -136,13 +131,12 @@ func RevertRange(
 
 	leftPeekBound, rightPeekBound := rangeTombstonePeekBounds(
 		args.Key, args.EndKey, desc.StartKey.AsRawKey(), desc.EndKey.AsRawKey())
-	maxLockConflicts := storage.MaxConflictsPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV)
 
 	log.VEventf(ctx, 2, "clearing keys with timestamp (%v, %v]", args.TargetTime, cArgs.Header.Timestamp)
 
 	resumeKey, err := storage.MVCCClearTimeRange(ctx, readWriter, cArgs.Stats, args.Key, args.EndKey,
 		args.TargetTime, cArgs.Header.Timestamp, leftPeekBound, rightPeekBound,
-		clearRangeThreshold, cArgs.Header.MaxSpanRequestKeys, maxRevertRangeBatchBytes, maxLockConflicts)
+		clearRangeThreshold, cArgs.Header.MaxSpanRequestKeys, maxRevertRangeBatchBytes)
 	if err != nil {
 		return result.Result{}, err
 	}

@@ -7,7 +7,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/sql/opt",
-        "//pkg/sql/opt/cat",
         "//pkg/sql/opt/constraint",
         "//pkg/sql/opt/memo",
         "//pkg/sql/opt/norm",
@@ -24,12 +23,12 @@ go_test(
     name = "idxconstraint_test",
     size = "small",
     srcs = ["index_constraints_test.go"],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
     deps = [
         ":idxconstraint",
         "//pkg/settings/cluster",
         "//pkg/sql/opt",
-        "//pkg/sql/opt/constraint",
         "//pkg/sql/opt/exec/execbuilder",
         "//pkg/sql/opt/memo",
         "//pkg/sql/opt/norm",

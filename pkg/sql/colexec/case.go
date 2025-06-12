@@ -83,7 +83,7 @@ type caseOp struct {
 	scratch struct {
 		// output contains the result of CASE projections where results that
 		// came from the same WHEN arm are grouped together.
-		output *coldata.Vec
+		output coldata.Vec
 		order  []int
 	}
 
@@ -170,12 +170,13 @@ func (c *caseOp) Init(ctx context.Context) {
 // vector. It is assumed that the selection vector of batch is non-nil.
 func (c *caseOp) copyIntoScratch(batch coldata.Batch, inputColIdx int, numAlreadyMatched int) {
 	n := batch.Length()
+	inputCol := batch.ColVec(inputColIdx)
 	// Copy the results into the scratch output vector, using the selection
 	// vector to copy only the elements that we actually wrote according to the
 	// current projection arm.
 	c.scratch.output.Copy(
 		coldata.SliceArgs{
-			Src:       batch.ColVecs()[inputColIdx],
+			Src:       inputCol,
 			Sel:       batch.Selection()[:n],
 			DestIdx:   numAlreadyMatched,
 			SrcEndIdx: n,
@@ -207,7 +208,7 @@ func (c *caseOp) Next() coldata.Batch {
 	outputCol := c.buffer.batch.ColVec(c.outputIdx)
 
 	if c.scratch.output == nil || c.scratch.output.Capacity() < origLen {
-		c.scratch.output = c.allocator.NewVec(c.typ, origLen)
+		c.scratch.output = c.allocator.NewMemColumn(c.typ, origLen)
 	} else {
 		coldata.ResetIfBytesLike(c.scratch.output)
 	}
@@ -219,7 +220,7 @@ func (c *caseOp) Next() coldata.Batch {
 
 	// Run all WHEN arms.
 	numAlreadyMatched := 0
-	c.allocator.PerformOperation([]*coldata.Vec{c.scratch.output}, func() {
+	c.allocator.PerformOperation([]coldata.Vec{c.scratch.output}, func() {
 		for i := range c.caseOps {
 			// Run the next case operator chain. It will project its THEN expression
 			// for all tuples that matched its WHEN expression and that were not
@@ -315,7 +316,7 @@ func (c *caseOp) Next() coldata.Batch {
 		// projection straight into the output batch because the result will be
 		// in the correct order.
 		batch := c.elseOp.Next()
-		c.allocator.PerformOperation([]*coldata.Vec{outputCol}, func() {
+		c.allocator.PerformOperation([]coldata.Vec{outputCol}, func() {
 			outputCol.Copy(
 				coldata.SliceArgs{
 					Src:       batch.ColVec(c.thenIdxs[len(c.thenIdxs)-1]),
@@ -325,7 +326,7 @@ func (c *caseOp) Next() coldata.Batch {
 		outputReady = true
 	} else if numAlreadyMatched < origLen {
 		batch := c.elseOp.Next()
-		c.allocator.PerformOperation([]*coldata.Vec{c.scratch.output}, func() {
+		c.allocator.PerformOperation([]coldata.Vec{c.scratch.output}, func() {
 			c.copyIntoScratch(batch, c.thenIdxs[len(c.thenIdxs)-1], numAlreadyMatched)
 		})
 	}
@@ -333,7 +334,7 @@ func (c *caseOp) Next() coldata.Batch {
 	// Copy the output vector from the scratch space into the batch if
 	// necessary.
 	if !outputReady {
-		c.allocator.PerformOperation([]*coldata.Vec{outputCol}, func() {
+		c.allocator.PerformOperation([]coldata.Vec{outputCol}, func() {
 			if origHasSel {
 				// If the original batch had a selection vector, we cannot just
 				// copy the output from the scratch because we want to preserve

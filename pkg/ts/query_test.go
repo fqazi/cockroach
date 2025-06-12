@@ -395,11 +395,15 @@ func TestQueryWorkerMemoryConstraint(t *testing.T) {
 		// Track the total maximum memory used for a query with no budget.
 		{
 			// Swap model's memory monitor in order to adjust allocation size.
-			adjustedMon := mon.NewMonitor(mon.Options{
-				Name:      mon.MakeName("timeseries-test-worker-adjusted"),
-				Increment: 1,
-				Settings:  cluster.MakeTestingClusterSettings(),
-			})
+			adjustedMon := mon.NewMonitor(
+				"timeseries-test-worker-adjusted",
+				mon.MemoryResource,
+				nil,
+				nil,
+				1,
+				math.MaxInt64,
+				cluster.MakeTestingClusterSettings(),
+			)
 			adjustedMon.StartNoReserved(context.Background(), tm.workerMemMonitor)
 			defer adjustedMon.Stop(context.Background())
 
@@ -468,12 +472,16 @@ func TestQueryWorkerMemoryMonitor(t *testing.T) {
 
 		// Create a limited bytes monitor.
 		memoryBudget := int64(100 * 1024)
-		limitedMon := mon.NewMonitor(mon.Options{
-			Name:      mon.MakeName("timeseries-test-limited"),
-			Limit:     memoryBudget,
-			Increment: 100,
-			Settings:  cluster.MakeTestingClusterSettings(),
-		})
+		limitedMon := mon.NewMonitorWithLimit(
+			"timeseries-test-limited",
+			mon.MemoryResource,
+			memoryBudget,
+			nil,
+			nil,
+			100,
+			100,
+			cluster.MakeTestingClusterSettings(),
+		)
 		limitedMon.StartNoReserved(context.Background(), tm.workerMemMonitor)
 		defer limitedMon.Stop(context.Background())
 

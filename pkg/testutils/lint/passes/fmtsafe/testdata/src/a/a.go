@@ -8,9 +8,9 @@ package a
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/raft/raftlogger"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
+	"go.etcd.io/raft/v3"
 )
 
 var unsafeStr = "abc %d"
@@ -47,7 +47,7 @@ func init() {
 	log.Errorf(ctx, "abo"+unsafeStr, 123) // want `format argument is not a constant expression`
 
 	var m myLogger
-	var l raftlogger.Logger = m
+	var l raft.Logger = m
 
 	l.Infof("safe %d", 123)
 	l.Infof(constOk, 123)

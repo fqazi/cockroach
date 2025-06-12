@@ -6,13 +6,11 @@
 package rttanalysis
 
 import (
-	"cmp"
 	"encoding/csv"
 	"flag"
 	"os"
 	"os/exec"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,8 +18,8 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/system"
@@ -59,7 +57,7 @@ var (
 // RunBenchmarkExpectationTests runs tests to validate or rewrite the contents
 // of the benchmark expectations file.
 func runBenchmarkExpectationTests(t *testing.T, r *Registry) {
-	if metamorphic.IsMetamorphicBuild() {
+	if util.IsMetamorphicBuild() {
 		execTestSubprocess(t)
 		return
 	}
@@ -182,7 +180,7 @@ func execTestSubprocess(t *testing.T) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env, metamorphic.DisableMetamorphicEnvVar+"=t")
+	cmd.Env = append(cmd.Env, util.DisableMetamorphicEnvVar+"=t")
 	t.Log(cmd.Args)
 	if err := cmd.Run(); err != nil {
 		t.FailNow()
@@ -218,8 +216,8 @@ func (s *resultSet) toSlice() (res []benchmarkResult) {
 }
 
 func resultsToExpectations(t *testing.T, results []benchmarkResult) benchmarkExpectations {
-	slices.SortFunc(results, func(a, b benchmarkResult) int {
-		return cmp.Compare(a.name, b.name)
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].name < results[j].name
 	})
 	var res benchmarkExpectations
 	var cur benchmarkExpectation

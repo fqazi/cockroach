@@ -2,30 +2,20 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "nodedialer",
-    srcs = [
-        "nodedialer.go",
-        "nodedialer_drpc.go",
-    ],
+    srcs = ["nodedialer.go"],
     importpath = "github.com/cockroachdb/cockroach/pkg/rpc/nodedialer",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/base",
-        "//pkg/clusterversion",
         "//pkg/kv/kvbase",
         "//pkg/kv/kvpb",
         "//pkg/roachpb",
         "//pkg/rpc",
-        "//pkg/rpc/rpcbase",
-        "//pkg/settings",
-        "//pkg/settings/cluster",
         "//pkg/util/circuit",
         "//pkg/util/log",
-        "//pkg/util/metamorphic",
         "//pkg/util/stop",
         "//pkg/util/tracing",
         "@com_github_cockroachdb_errors//:errors",
-        "@io_storj_drpc//:drpc",
-        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//:go_default_library",
     ],
 )
 
@@ -33,13 +23,13 @@ go_test(
     name = "nodedialer_test",
     size = "small",
     srcs = ["nodedialer_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":nodedialer"],
     deps = [
         "//pkg/clusterversion",
         "//pkg/kv/kvpb",
         "//pkg/roachpb",
         "//pkg/rpc",
-        "//pkg/rpc/rpcbase",
         "//pkg/settings/cluster",
         "//pkg/testutils",
         "//pkg/util/circuit",
@@ -53,7 +43,7 @@ go_test(
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
-        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//:go_default_library",
         "@org_golang_google_grpc//codes",
     ],
 )

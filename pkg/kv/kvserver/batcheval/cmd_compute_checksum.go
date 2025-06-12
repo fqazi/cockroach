@@ -47,7 +47,7 @@ func declareKeysComputeChecksum(
 
 // ReplicaChecksumVersion versions the checksum computation. Requests silently no-op
 // unless the versions between the requesting and requested replica are compatible.
-const ReplicaChecksumVersion = 5
+const ReplicaChecksumVersion = 4
 
 // ComputeChecksum starts the process of computing a checksum on the replica at
 // a particular snapshot. The checksum is later verified through a

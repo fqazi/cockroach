@@ -14,7 +14,6 @@ import (
 )
 
 type renameTenantNode struct {
-	zeroInputPlanNode
 	tenantSpec tenantSpec
 	newName    tree.TypedExpr
 }
@@ -37,7 +36,7 @@ func (p *planner) alterRenameTenant(
 		e = tree.NewStrVal(tree.AsStringWithFlags(s, tree.FmtBareIdentifiers))
 	}
 	tname, err := p.analyzeExpr(
-		ctx, e, tree.IndexedVarHelper{}, types.String, true, "ALTER VIRTUAL CLUSTER RENAME")
+		ctx, e, nil, tree.IndexedVarHelper{}, types.String, true, "ALTER VIRTUAL CLUSTER RENAME")
 	if err != nil {
 		return nil, err
 	}

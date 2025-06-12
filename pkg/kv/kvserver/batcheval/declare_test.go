@@ -42,10 +42,6 @@ func TestRequestsSerializeWithAllKeys(t *testing.T) {
 			// Lease requests ignore latches, since they can be evaluated on
 			// any replica.
 			continue
-		case kvpb.LeaseInfo:
-			// LeaseInfo can ignore latches since RequestLease does too. The lease
-			// is read from the in-memory state.
-			continue
 		}
 		t.Run(method.String(), func(t *testing.T) {
 			var otherLatchSpans spanset.SpanSet
@@ -60,7 +56,7 @@ func TestRequestsSerializeWithAllKeys(t *testing.T) {
 			}
 			testTxn := &roachpb.Transaction{
 				TxnMeta: enginepb.TxnMeta{
-					ID:             uuid.MakeV4(),
+					ID:             uuid.FastMakeV4(),
 					Key:            startKey,
 					WriteTimestamp: hlc.Timestamp{WallTime: 1},
 				},

@@ -7,8 +7,6 @@ package rangefeed
 
 import (
 	"context"
-	"iter"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -25,6 +23,7 @@ type Option interface {
 type config struct {
 	scanConfig
 	retryOptions       retry.Options
+	useMuxRangefeed    bool
 	onInitialScanDone  OnInitialScanDone
 	withInitialScan    bool
 	onInitialScanError OnInitialScanError
@@ -34,22 +33,13 @@ type config struct {
 	// be sane depending on your use case.
 	useRowTimestampInInitialScan bool
 
-	invoker func(func() error) error
-
-	withDiff              bool
-	withFiltering         bool
-	withMatchingOriginIDs []uint32
-	consumerID            int64
-	onUnrecoverableError  OnUnrecoverableError
-	onCheckpoint          OnCheckpoint
-	frontierQuantize      time.Duration
-	onFrontierAdvance     OnFrontierAdvance
-	frontierVisitor       FrontierSpanVisitor
-	onSSTable             OnSSTable
-	onValues              OnValues
-	onDeleteRange         OnDeleteRange
-	onMetadata            OnMetadata
-	extraPProfLabels      []string
+	withDiff             bool
+	onUnrecoverableError OnUnrecoverableError
+	onCheckpoint         OnCheckpoint
+	onFrontierAdvance    OnFrontierAdvance
+	onSSTable            OnSSTable
+	onDeleteRange        OnDeleteRange
+	extraPProfLabels     []string
 }
 
 type scanConfig struct {
@@ -65,8 +55,11 @@ type scanConfig struct {
 	// mon is the memory monitor to while scanning.
 	mon *mon.BytesMonitor
 
-	// OnSpanDone is invoked when initial scan of some span is completed.
-	OnSpanDone OnScanCompleted
+	// callback to invoke when initial scan of a span completed.
+	onSpanDone OnScanCompleted
+
+	// configures retry behavior
+	retryBehavior ScanRetryBehavior
 
 	// overSystemTable indicates whether this rangefeed is over a system table
 	// (used internally for CRDB's own functioning) and therefore should be
@@ -146,53 +139,10 @@ func WithDiff(withDiff bool) Option {
 	})
 }
 
-// WithFiltering makes an option to set whether to filter out rangefeeds events
-// where the user has set omit_from_changefeeds in their session.
-func WithFiltering(withFiltering bool) Option {
-	return optionFunc(func(c *config) {
-		c.withFiltering = withFiltering
-	})
-}
-
-func WithOriginIDsMatching(originIDs ...uint32) Option {
-	return optionFunc(func(c *config) {
-		c.withMatchingOriginIDs = originIDs
-	})
-}
-
-func WithConsumerID(cid int64) Option {
-	return optionFunc(func(c *config) {
-		c.consumerID = cid
-	})
-}
-
-// WithInvoker makes an option to invoke the rangefeed tasks such as running the
-// the client and processing events emitted by the client with a caller-supplied
-// function, which can make it easier to introspect into work done by a given
-// caller as the stacks for these tasks will now include the caller's invoker.
-func WithInvoker(invoker func(func() error) error) Option {
-	return optionFunc(func(c *config) {
-		c.invoker = invoker
-	})
-}
-
 // WithRetry configures the retry options for the rangefeed.
 func WithRetry(options retry.Options) Option {
 	return optionFunc(func(c *config) {
 		c.retryOptions = options
-	})
-}
-
-// WithOnValues sets up a callback that's invoked whenever a batch of values is
-// passed such as during initial scans, allowing passing it as a batch to the
-// client rather than key-by-key to reduce overhead. This however comes with
-// some limitations: for batches passed this way the rangefeed client will not
-// process individual values and instead leaves this to the caller, meaning that
-// the options WithRowTimestampInInitialScan is implied, and WithDiff is ignored
-// as these are per-key processing that is not performed on batches.
-func WithOnValues(fn OnValues) Option {
-	return optionFunc(func(c *config) {
-		c.onValues = fn
 	})
 }
 
@@ -238,23 +188,14 @@ func WithOnSSTable(f OnSSTable) Option {
 	})
 }
 
-// OnMetadata is called when a RangefeedMetadata event is passed to the eventCh.
-// This occurs when a partial rangefeed begins, and if the the rangefeed client
-// was initialized with an OnMetadata function.
-type OnMetadata func(ctx context.Context, value *kvpb.RangeFeedMetadata)
-
-// WithOnMetadata sets up a callback that's invoked when a partial rangefeed is
-// spawned.
-func WithOnMetadata(fn OnMetadata) Option {
-	return optionFunc(func(c *config) {
-		c.onMetadata = fn
-	})
-}
-
 // OnDeleteRange is called when an MVCC range tombstone is written (e.g. when
 // DeleteRange is called with UseRangeTombstone, but not when the range is
 // deleted using point tombstones). If this callback is not provided, an error
 // is emitted when these are encountered.
+//
+// MVCC range tombstones are currently experimental, and requires the
+// MVCCRangeTombstones version gate. They are only expected during certain
+// operations like schema GC and IMPORT INTO (i.e. not across live tables).
 type OnDeleteRange func(ctx context.Context, value *kvpb.RangeFeedDeleteRange)
 
 // WithOnDeleteRange sets up a callback that's invoked whenever an MVCC range
@@ -277,27 +218,9 @@ func WithOnFrontierAdvance(f OnFrontierAdvance) Option {
 	})
 }
 
-// VisitableFrontier is the subset of the span.Frontier interface required to
-// inspect the content of the frontier.
-type VisitableFrontier interface {
-	Entries() iter.Seq2[roachpb.Span, hlc.Timestamp]
-}
-
-// FrontierSpanVisitor is called when the frontier is updated by a checkpoint,
-// and is passed the iterable frontier, as well as if the checkpoint advanced it
-// when it was added.
-type FrontierSpanVisitor func(ctx context.Context, advanced bool, frontier VisitableFrontier)
-
-// WithFrontierSpanVisitor sets up a callback to optionally inspect the frontier
-// after a checkpoint is processed.
-func WithFrontierSpanVisitor(fn FrontierSpanVisitor) Option {
-	return optionFunc(func(c *config) {
-		c.frontierVisitor = fn
-	})
-}
-
 func initConfig(c *config, options []Option) {
 	*c = config{} // the default config is its zero value
+	c.useMuxRangefeed = useMuxRangeFeed
 	for _, o := range options {
 		o.set(c)
 	}
@@ -340,7 +263,24 @@ type OnScanCompleted func(ctx context.Context, sp roachpb.Span) error
 // have been completed when performing an initial scan.
 func WithOnScanCompleted(fn OnScanCompleted) Option {
 	return optionFunc(func(c *config) {
-		c.OnSpanDone = fn
+		c.onSpanDone = fn
+	})
+}
+
+// ScanRetryBehavior specifies how rangefeed should handle errors during initial scan.
+type ScanRetryBehavior int
+
+const (
+	// ScanRetryAll will retry all spans if any error occurred during initial scan.
+	ScanRetryAll ScanRetryBehavior = iota
+	// ScanRetryRemaining will retry remaining spans, including the one that failed.
+	ScanRetryRemaining
+)
+
+// WithScanRetryBehavior configures range feed to retry initial scan as per specified behavior.
+func WithScanRetryBehavior(b ScanRetryBehavior) Option {
+	return optionFunc(func(c *config) {
+		c.retryBehavior = b
 	})
 }
 
@@ -361,12 +301,8 @@ func WithSystemTablePriority() Option {
 	})
 }
 
-// WithFrontierQuantized enables quantization of timestamps down to the nearest
-// multiple of d to potentially reduce overhead in the frontier thanks to more
-// sub-spans having equal timestamps and thus being able to be merged, resulting
-// in fewer distinct spans in the frontier.
-func WithFrontierQuantized(d time.Duration) Option {
+func WithMuxRangefeed(enabled bool) Option {
 	return optionFunc(func(c *config) {
-		c.frontierQuantize = d
+		c.useMuxRangefeed = enabled
 	})
 }

@@ -174,8 +174,8 @@ message RowLevelTTL {
   optional int64 delete_batch_size = 3 [(gogoproto.nullable)=false];
   // DeletionCron signifies how often the TTL deletion job runs in a cron format.
   optional string deletion_cron = 4 [(gogoproto.nullable)=false];
-  // ScheduleID is the ID of the row-level TTL job schedule.
-  optional int64 schedule_id = 5 [(gogoproto.customname)="ScheduleID",(gogoproto.nullable)=false, (gogoproto.casttype)="ScheduleID"];
+  // ScheduleID is the ID of the row-level TTL job schedules.
+  optional int64 schedule_id = 5 [(gogoproto.customname)="ScheduleID",(gogoproto.nullable)=false];
   // RangeConcurrency is based on the number of spans and is no longer configurable.
   reserved 6;
   // DeleteRateLimit is the maximum amount of rows to delete per second.
@@ -192,9 +192,6 @@ message RowLevelTTL {
   optional string expiration_expr = 11 [(gogoproto.nullable)=false, (gogoproto.casttype)="Expression"];
   // SelectRateLimit is the maximum amount of rows to select per second.
   optional int64 select_rate_limit = 12 [(gogoproto.nullable)=false];
-  // DisableChangefeedReplication disables changefeed replication for the
-  // deletes performed by the TTL job.
-  optional bool disable_changefeed_replication = 13 [(gogoproto.nullable) = false];
 }
 
 // AutoStatsSettings represents settings related to automatic statistics
@@ -210,12 +207,4 @@ message AutoStatsSettings {
   optional int64 min_stale_rows = 2;
   // FractionStaleRows is table setting sql_stats_automatic_collection_fraction_stale_rows.
   optional double fraction_stale_rows = 3;
-  // PartialEnabled is table setting sql_stats_automatic_partial_collection_enabled.
-  optional bool partial_enabled = 4;
-  // PartialMinStaleRows is table setting sql_stats_automatic_partial_collection_min_stale_rows.
-  optional int64 partial_min_stale_rows = 5;
-  // PartialFractionStaleRows is table setting sql_stats_automatic_partial_collection_fraction_stale_rows.
-  optional double partial_fraction_stale_rows = 6;
-  // FullEnabled is table setting sql_stats_automatic_full_collection_enabled.
-  optional bool full_enabled = 7;
 }

@@ -4,12 +4,12 @@
 // included in the /LICENSE file.
 
 import { Tooltip } from "antd";
-import classNames from "classnames/bind";
+import "antd/lib/tooltip/style";
 import React from "react";
+import type { AbstractTooltipProps } from "antd/lib/tooltip";
+import classNames from "classnames/bind";
 
 import styles from "./tooltip.module.styl";
-
-import type { AbstractTooltipProps } from "antd/lib/tooltip";
 
 interface ToolTipWrapperProps extends AbstractTooltipProps {
   text: React.ReactNode;

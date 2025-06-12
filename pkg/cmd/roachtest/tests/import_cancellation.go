@@ -9,49 +9,58 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
-	"github.com/cockroachdb/cockroach/pkg/workload/tpch"
 	"github.com/cockroachdb/errors"
 )
 
 func registerImportCancellation(r registry.Registry) {
 	r.Add(registry.TestSpec{
-		Name:    `import-cancellation`,
-		Owner:   registry.OwnerSQLQueries,
-		Timeout: 6 * time.Hour,
-		Cluster: r.MakeClusterSpec(6, spec.CPU(32)),
-		// Uses gs://cockroach-fixtures-us-east1. See:
-		// https://github.com/cockroachdb/cockroach/issues/105968
-		CompatibleClouds: registry.Clouds(spec.GCE, spec.Local),
+		Name:             `import-cancellation`,
+		Owner:            registry.OwnerSQLQueries,
+		Benchmark:        true,
+		Timeout:          4 * time.Hour,
+		Cluster:          r.MakeClusterSpec(6, spec.CPU(32)),
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
+			if c.Cloud() != spec.GCE && !c.IsLocal() {
+				t.Skip("uses gs://cockroach-fixtures-us-east1; see https://github.com/cockroachdb/cockroach/issues/105968")
+			}
 			runImportCancellation(ctx, t, c)
 		},
-		// Disable metamorphic variables as otherwise TPCH queries might take
-		// extremely long time to complete.
-		CockroachBinary: registry.StandardCockroach,
 	})
 }
 
 func runImportCancellation(ctx context.Context, t test.Test, c cluster.Cluster) {
-	startOpts := roachtestutil.MaybeUseMemoryBudget(t, 50)
+	c.Put(ctx, t.DeprecatedWorkload(), "./workload") // required for tpch
+	startOpts := maybeUseMemoryBudget(t, 50)
 	startOpts.RoachprodOpts.ScheduleBackups = true
 	c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings())
 	t.Status("starting csv servers")
-	c.Run(ctx, option.WithNodes(c.All()), `./cockroach workload csv-server --port=8081 &> logs/workload-csv-server.log < /dev/null &`)
+	c.Run(ctx, c.All(), `./cockroach workload csv-server --port=8081 &> logs/workload-csv-server.log < /dev/null &`)
+
+	// Download the tpch queries file. After the import, we'll run tpch queries
+	// against the imported tables.
+	const queriesFilename = "tpch"
+	const queriesURL = "https://raw.githubusercontent.com/cockroachdb/cockroach/master/pkg/workload/querybench/tpch-queries"
+	t.Status(fmt.Sprintf("downloading %s query file from %s", queriesFilename, queriesURL))
+	if err := c.RunE(ctx, c.Node(1), fmt.Sprintf("curl %s > %s", queriesURL, queriesFilename)); err != nil {
+		t.Fatal(err)
+	}
+	numQueries, err := getNumQueriesInFile(queriesFilename, queriesURL)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Create the tables.
 	conn := c.Conn(ctx, t.L(), 1)
@@ -111,6 +120,7 @@ func runImportCancellation(ctx context.Context, t test.Test, c cluster.Cluster) 
 	var wg sync.WaitGroup
 	wg.Add(len(tablesToNumFiles))
 	for tableName, numFiles := range tablesToNumFiles {
+		tableName, numFiles := tableName, numFiles // bind to iteration scope
 		rng := rand.New(rand.NewSource(test.rootRng.Int63()))
 		m.Go(func(ctx context.Context) error {
 			defer wg.Done()
@@ -128,7 +138,7 @@ func runImportCancellation(ctx context.Context, t test.Test, c cluster.Cluster) 
 	// that becomes GC'd.
 	for tbl := range tablesToNumFiles {
 		stmt := fmt.Sprintf(`ALTER TABLE csv.%s CONFIGURE ZONE USING gc.ttlseconds = $1`, tbl)
-		_, err := conn.ExecContext(ctx, stmt, 60*60*4 /* 4 hours */)
+		_, err = conn.ExecContext(ctx, stmt, 60*60*4 /* 4 hours */)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -139,30 +149,17 @@ func runImportCancellation(ctx context.Context, t test.Test, c cluster.Cluster) 
 	// the TPCH workload should observe it.
 	m.Go(func(ctx context.Context) error {
 		t.WorkerStatus(`running tpch workload`)
-		// --enable-checks flag verifies the results against the expected output
-		// for Scale Factor 1, so since we're using Scale Factor 100 some TPCH
-		// queries are expected to return different results - skip those.
-		var queries string
-		var numQueries int
-		for i := 1; i <= tpch.NumQueries; i++ {
-			switch i {
-			case 11, 13, 16, 18, 20:
-				// These five queries return different results on SF1 and SF100.
-			default:
-				if len(queries) > 0 {
-					queries += ","
-				}
-				queries += strconv.Itoa(i)
-				numQueries++
-			}
-		}
 		// maxOps flag will allow us to exit the workload once all the queries
 		// were run 2 times.
-		maxOps := 2 * numQueries
+		const numRunsPerQuery = 2
+		const maxLatency = 500 * time.Second
+		maxOps := numRunsPerQuery * numQueries
 		cmd := fmt.Sprintf(
-			"./cockroach workload run tpch --db=csv --concurrency=1 --queries=%s --max-ops=%d {pgurl%s} "+
-				"--enable-checks=true", queries, maxOps, c.All())
-		if err := c.RunE(ctx, option.WithNodes(c.Node(1)), cmd); err != nil {
+			"./workload run querybench --db=csv --concurrency=1 --query-file=%s "+
+				"--num-runs=%d --max-ops=%d {pgurl%s} "+
+				"--histograms="+t.PerfArtifactsDir()+"/stats.json --histograms-max-latency=%s",
+			queriesFilename, numRunsPerQuery, maxOps, c.All(), maxLatency.String())
+		if err := c.RunE(ctx, c.Node(1), cmd); err != nil {
 			t.Fatal(err)
 		}
 		return nil

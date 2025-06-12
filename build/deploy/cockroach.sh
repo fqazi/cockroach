@@ -194,7 +194,7 @@ process_init_files() {
 
 # run_sql_query is a helper function to run sql queries.
 run_sql_query() {
-  $cockroach_entrypoint sql --url="$(cat server.url)" --database="${COCKROACH_DATABASE}" "$@"
+  $cockroach_entrypoint sql --url="$(cat server.url)" "$@"
 }
 
 # db_already_exists runs a sql query to check if the database already exists.
@@ -293,7 +293,7 @@ _main() {
 set_env_var "COCKROACH_ARGS"
 
 if [[ -n "$COCKROACH_ARGS" ]]; then
-  _main $COCKROACH_ARGS
+  _main "$COCKROACH_ARGS"
 else
   _main "$@"
 fi

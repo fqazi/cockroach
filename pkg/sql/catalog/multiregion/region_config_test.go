@@ -101,7 +101,7 @@ func TestValidateRegionConfig(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		err := multiregion.ValidateRegionConfig(tc.regionConfig, false)
+		err := multiregion.ValidateRegionConfig(tc.regionConfig)
 
 		require.Error(t, err)
 		require.True(
@@ -315,7 +315,7 @@ func TestValidateSuperRegionConfig(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		err := multiregion.ValidateRegionConfig(tc.regionConfig, false)
+		err := multiregion.ValidateRegionConfig(tc.regionConfig)
 
 		require.Error(t, err)
 		require.True(

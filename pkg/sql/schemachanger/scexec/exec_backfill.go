@@ -41,7 +41,7 @@ func executeBackfillOps(ctx context.Context, deps Dependencies, execute []scop.O
 		return err
 	}
 	if err := runBackfiller(ctx, deps, tracker, backfillProgresses, mergeProgresses, deps.TransactionalJobRegistry().CurrentJob(), tables); err != nil {
-		if errors.HasType(err, (*kvpb.InsufficientSpaceError)(nil)) {
+		if errors.HasType(err, &kvpb.InsufficientSpaceError{}) {
 			return jobs.MarkPauseRequestError(errors.UnwrapAll(err))
 		}
 		return err
@@ -317,13 +317,13 @@ func runBackfiller(
 ) error {
 	if deps.GetTestingKnobs() != nil &&
 		deps.GetTestingKnobs().RunBeforeBackfill != nil {
-		err := deps.GetTestingKnobs().RunBeforeBackfill(backfillProgresses)
+		err := deps.GetTestingKnobs().RunBeforeBackfill()
 		if err != nil {
 			return err
 		}
 	}
 	stop := deps.PeriodicProgressFlusher().StartPeriodicUpdates(ctx, tracker)
-	defer stop()
+	defer func() { _ = stop() }()
 	ib := deps.IndexBackfiller()
 	im := deps.IndexMerger()
 	const op = "run backfills and merges"
@@ -347,6 +347,9 @@ func runBackfiller(
 			deps.Telemetry().IncrementSchemaChangeErrorType("uncategorized")
 		}
 		return scerrors.SchemaChangerUserError(err)
+	}
+	if err := stop(); err != nil {
+		return err
 	}
 	if err := tracker.FlushFractionCompleted(ctx); err != nil {
 		return err

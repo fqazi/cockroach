@@ -386,15 +386,11 @@ func TestMaybeConvertIncompatibleDBPrivilegesToDefaultPrivileges(t *testing.T) {
 
 func TestStripDanglingBackReferencesAndRoles(t *testing.T) {
 	type testCase struct {
-		name                           string
-		input, expectedOutput          descpb.DatabaseDescriptor
-		validIDs                       catalog.DescriptorIDSet
-		strippedDanglingBackReferences bool
-		strippedNonExistentRoles       bool
+		name                  string
+		input, expectedOutput descpb.DatabaseDescriptor
+		validIDs              catalog.DescriptorIDSet
 	}
 
-	badOwnerPrivilege := catpb.NewBaseDatabasePrivilegeDescriptor(username.MakeSQLUsernameFromPreNormalizedString("dropped_user"))
-	goodOwnerPrivilege := catpb.NewBaseDatabasePrivilegeDescriptor(username.AdminRoleName())
 	badPrivilege := catpb.NewBaseDatabasePrivilegeDescriptor(username.RootUserName())
 	goodPrivilege := catpb.NewBaseDatabasePrivilegeDescriptor(username.RootUserName())
 	badPrivilege.Users = append(badPrivilege.Users, catpb.UserPrivileges{
@@ -420,30 +416,7 @@ func TestStripDanglingBackReferencesAndRoles(t *testing.T) {
 				},
 				Privileges: goodPrivilege,
 			},
-			validIDs:                       catalog.MakeDescriptorIDSet(100, 101),
-			strippedDanglingBackReferences: true,
-			strippedNonExistentRoles:       true,
-		},
-		{
-			name: "missing owner",
-			input: descpb.DatabaseDescriptor{
-				Name: "foo",
-				ID:   100,
-				Schemas: map[string]descpb.DatabaseDescriptor_SchemaInfo{
-					"bar": {ID: 101},
-				},
-				Privileges: badOwnerPrivilege,
-			},
-			expectedOutput: descpb.DatabaseDescriptor{
-				Name: "foo",
-				ID:   100,
-				Schemas: map[string]descpb.DatabaseDescriptor_SchemaInfo{
-					"bar": {ID: 101},
-				},
-				Privileges: goodOwnerPrivilege,
-			},
-			validIDs:                 catalog.MakeDescriptorIDSet(100, 101),
-			strippedNonExistentRoles: true,
+			validIDs: catalog.MakeDescriptorIDSet(100, 101),
 		},
 	}
 
@@ -457,11 +430,11 @@ func TestStripDanglingBackReferencesAndRoles(t *testing.T) {
 				return false
 			}))
 			require.NoError(t, b.StripNonExistentRoles(func(role username.SQLUsername) bool {
-				return role.IsAdminRole() || role.IsPublicRole() || role.IsRootUser() || role.IsNodeUser()
+				return role.IsAdminRole() || role.IsPublicRole() || role.IsRootUser()
 			}))
 			desc := b.BuildCreatedMutableDatabase()
-			require.Equal(t, test.strippedDanglingBackReferences, desc.GetPostDeserializationChanges().Contains(catalog.StrippedDanglingBackReferences))
-			require.Equal(t, test.strippedNonExistentRoles, desc.GetPostDeserializationChanges().Contains(catalog.StrippedNonExistentRoles))
+			require.True(t, desc.GetPostDeserializationChanges().Contains(catalog.StrippedDanglingBackReferences))
+			require.True(t, desc.GetPostDeserializationChanges().Contains(catalog.StrippedNonExistentRoles))
 			require.Equal(t, out.BuildCreatedMutableDatabase().DatabaseDesc(), desc.DatabaseDesc())
 		})
 	}

@@ -150,11 +150,11 @@ func TestDataDriven(t *testing.T) {
 		if strings.Contains(path, "tenant") {
 			tenantID := roachpb.MustMakeTenantID(10)
 			tenant = spanConfigTestCluster.InitializeTenant(ctx, tenantID)
+			spanConfigTestCluster.EnsureTenantCanSetZoneConfigurationsOrFatal(t, tenant)
 		} else {
 			tenant = spanConfigTestCluster.InitializeTenant(ctx, roachpb.SystemTenantID)
 		}
 		execCfg := tenant.ExecCfg()
-		tenant.Exec("SET autocommit_before_ddl = false")
 
 		var f func(t *testing.T, d *datadriven.TestData) string
 		f = func(t *testing.T, d *datadriven.TestData) string {

@@ -6,9 +6,8 @@
 package txnrecovery
 
 import (
-	"bytes"
 	"context"
-	"slices"
+	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -201,15 +200,13 @@ func (m *manager) resolveIndeterminateCommitForTxnProbe(
 			RequestHeader: kvpb.RequestHeader{
 				Key: w.Key,
 			},
-			Txn:            meta,
-			Strength:       w.Strength,
-			IgnoredSeqNums: txn.IgnoredSeqNums,
+			Txn: meta,
 		})
 	}
 
 	// Sort the query intent requests to maximize batching by range.
-	slices.SortFunc(queryIntentReqs, func(a, b kvpb.QueryIntentRequest) int {
-		return bytes.Compare(a.Key, b.Key)
+	sort.Slice(queryIntentReqs, func(i, j int) bool {
+		return queryIntentReqs[i].Header().Key.Compare(queryIntentReqs[j].Header().Key) < 0
 	})
 
 	// Query all of the intents in batches of size defaultBatchSize. The maximum
@@ -330,7 +327,7 @@ func (m *manager) updateMetrics() func(*roachpb.Transaction, error) {
 				m.metrics.SuccessesAsCommitted.Inc(1)
 			case roachpb.ABORTED:
 				m.metrics.SuccessesAsAborted.Inc(1)
-			case roachpb.PENDING, roachpb.PREPARED, roachpb.STAGING:
+			case roachpb.PENDING, roachpb.STAGING:
 				m.metrics.SuccessesAsPending.Inc(1)
 			default:
 				panic("unexpected")

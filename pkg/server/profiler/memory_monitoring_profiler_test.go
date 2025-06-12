@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -21,16 +22,12 @@ func addMonitor(
 	t *testing.T,
 	ctx context.Context,
 	st *cluster.Settings,
-	name redact.SafeString,
+	name string,
 	parent *mon.BytesMonitor,
 	usedBytes int64,
 	reservedBytes int64,
 ) *mon.BytesMonitor {
-	m := mon.NewMonitor(mon.Options{
-		Name:      mon.MakeName(name),
-		Increment: 1,
-		Settings:  st,
-	})
+	m := mon.NewMonitor(redact.RedactableString(name), mon.MemoryResource, nil, nil, 1, math.MaxInt64, st)
 	m.Start(ctx, parent, mon.NewStandaloneBudget(reservedBytes))
 	if usedBytes != 0 {
 		acc := m.MakeBoundAccount()

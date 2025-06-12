@@ -3,24 +3,24 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { AxisUnits } from "@cockroachlabs/cluster-ui";
 import React from "react";
 
-import { cockroach } from "src/js/protos";
 import LineGraph from "src/views/cluster/components/linegraph";
-import {
-  CircuitBreakerTrippedReplicasTooltip,
-  LogicalBytesGraphTooltip,
-  ReceiverSnapshotsQueuedTooltip,
-} from "src/views/cluster/containers/nodeGraphs/dashboards/graphTooltips";
 import { Axis, Metric } from "src/views/shared/components/metricQuery";
+import { AxisUnits } from "@cockroachlabs/cluster-ui";
 
 import {
   GraphDashboardProps,
   nodeDisplayName,
   storeIDsForNode,
 } from "./dashboardUtils";
-
+import {
+  CircuitBreakerTrippedReplicasTooltip,
+  LogicalBytesGraphTooltip,
+  PausedFollowersTooltip,
+  ReceiverSnapshotsQueuedTooltip,
+} from "src/views/cluster/containers/nodeGraphs/dashboards/graphTooltips";
+import { cockroach } from "src/js/protos";
 import TimeSeriesQueryAggregator = cockroach.ts.tspb.TimeSeriesQueryAggregator;
 
 export default function (props: GraphDashboardProps) {
@@ -102,46 +102,6 @@ export default function (props: GraphDashboardProps) {
     </LineGraph>,
 
     <LineGraph
-      title="Lease Types"
-      sources={storeSources}
-      tenantSource={tenantSource}
-      tooltip={`Details about the types of leases in use by ranges in the
-                system. A cluster is expected to have a mix of lease types.
-                In the node view, shows details about leases the node is
-                responsible for. In the cluster view, shows details about
-                leases all across the cluster.`}
-      showMetricsInTooltip={true}
-    >
-      <Axis label="leases">
-        <Metric name="cr.store.leases.expiration" title="Expiration Leases" />
-        <Metric name="cr.store.leases.epoch" title="Epoch Leases" />
-        <Metric name="cr.store.leases.leader" title="Leader Leases" />
-      </Axis>
-    </LineGraph>,
-
-    <LineGraph
-      title="Lease Preferences"
-      sources={storeSources}
-      tenantSource={tenantSource}
-      tooltip={`Details about the conformance of range lease preferences. In 
-                the node view, shows details about ranges the node is 
-                responsible for. In the cluster view, shows details about
-                ranges all across the cluster.`}
-      showMetricsInTooltip={true}
-    >
-      <Axis label="ranges">
-        <Metric
-          name="cr.store.leases.preferences.violating"
-          title="Lease Preferences Violating"
-        />
-        <Metric
-          name="cr.store.leases.preferences.less-preferred"
-          title="Lease Preferences Less Preferred"
-        />
-      </Axis>
-    </LineGraph>,
-
-    <LineGraph
       title="Average Replica Queries per Node"
       tenantSource={tenantSource}
       tooltip={`Moving average of the number of KV batch requests processed by
@@ -207,14 +167,7 @@ export default function (props: GraphDashboardProps) {
     >
       <Axis label="replicas">
         <Metric name="cr.store.replicas" title="Replicas" />
-        <Metric
-          name="cr.store.replicas.quiescent"
-          title="Epoch Lease Quiescent"
-        />
-        <Metric
-          name="cr.store.replicas.asleep"
-          title="Leader Lease Quiescent"
-        />
+        <Metric name="cr.store.replicas.quiescent" title="Quiescent" />
       </Axis>
     </LineGraph>,
 
@@ -305,15 +258,6 @@ export default function (props: GraphDashboardProps) {
               sources={storeIDsForNode(storeIDsByNodeID, nid)}
               nonNegativeRate
             />
-            <Metric
-              key={nid}
-              name="cr.store.range.snapshots.upreplication.rcvd-bytes"
-              title={
-                nodeDisplayName(nodeDisplayNameByID, nid) + "-upreplication"
-              }
-              sources={storeIDsForNode(storeIDsByNodeID, nid)}
-              nonNegativeRate
-            />
           </>
         ))}
       </Axis>
@@ -351,6 +295,25 @@ export default function (props: GraphDashboardProps) {
             title={nodeDisplayName(nodeDisplayNameByID, nid)}
             sources={storeIDsForNode(storeIDsByNodeID, nid)}
             downsampler={TimeSeriesQueryAggregator.SUM}
+          />
+        ))}
+      </Axis>
+    </LineGraph>,
+    <LineGraph
+      title="Paused Followers"
+      sources={storeSources}
+      tenantSource={tenantSource}
+      tooltip={PausedFollowersTooltip}
+      showMetricsInTooltip={true}
+    >
+      <Axis label="replicas">
+        {nodeIDs.map(nid => (
+          <Metric
+            key={nid}
+            name="cr.store.admission.raft.paused_replicas"
+            title={nodeDisplayName(nodeDisplayNameByID, nid)}
+            sources={storeIDsForNode(storeIDsByNodeID, nid)}
+            nonNegativeRate
           />
         ))}
       </Axis>
@@ -439,12 +402,15 @@ export default function (props: GraphDashboardProps) {
       tenantSource={tenantSource}
       showMetricsInTooltip={true}
     >
-      <Axis label="Replaced Errors / Sec" units={AxisUnits.Count}>
+      <Axis label="replicas" units={AxisUnits.Count}>
         {nodeIDs.map(nid => (
           <Metric
             key={nid}
             name="cr.store.queue.replicate.replacedecommissioningreplica.error"
-            title={nodeDisplayName(nodeDisplayNameByID, nid)}
+            title={
+              nodeDisplayName(nodeDisplayNameByID, nid) +
+              " - Replaced Errors / Sec"
+            }
             sources={storeIDsForNode(storeIDsByNodeID, nid)}
             nonNegativeRate
           />

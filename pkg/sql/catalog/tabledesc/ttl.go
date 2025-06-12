@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemaexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
+	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/errors"
 	"github.com/robfig/cron/v3"
 )
@@ -96,7 +98,7 @@ func ValidateTTLExpirationExpr(desc catalog.TableDescriptor) error {
 // ValidateTTLExpirationColumn validates that the ttl_expire_after setting, if
 // any, is in a valid state. It requires that the TTLDefaultExpirationColumn
 // exists and has DEFAULT/ON UPDATE clauses.
-func ValidateTTLExpirationColumn(desc catalog.TableDescriptor) error {
+func ValidateTTLExpirationColumn(desc catalog.TableDescriptor, allowDescPK bool) error {
 	if !desc.HasRowLevelTTL() {
 		return nil
 	}
@@ -124,6 +126,20 @@ func ValidateTTLExpirationColumn(desc catalog.TableDescriptor) error {
 			catpb.TTLDefaultExpirationColumnName,
 			expectedStr,
 		)
+	}
+
+	// For row-level TTL, only ascending PKs are permitted.
+	if !allowDescPK {
+		pk := desc.GetPrimaryIndex()
+		for i := 0; i < pk.NumKeyColumns(); i++ {
+			dir := pk.GetKeyColumnDirection(i)
+			if dir != catenumpb.IndexColumn_ASC {
+				return unimplemented.NewWithIssuef(
+					76912,
+					`non-ascending ordering on PRIMARY KEYs are not supported with row-level TTL`,
+				)
+			}
+		}
 	}
 
 	return nil

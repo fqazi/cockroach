@@ -30,7 +30,6 @@ go_library(
         "//pkg/sql/opt/props",
         "//pkg/sql/rowenc",
         "//pkg/sql/sem/eval",
-        "//pkg/sql/sem/idxtype",
         "//pkg/sql/sem/tree",
         "//pkg/sql/sem/tree/treecmp",
         "//pkg/sql/types",
@@ -54,6 +53,7 @@ go_test(
         "trigram_test.go",
         "tsearch_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":invertedidx"],
     deps = [
         "//pkg/geo",

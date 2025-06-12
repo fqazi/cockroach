@@ -14,7 +14,6 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/clusterupgrade"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
@@ -24,14 +23,15 @@ import (
 
 func registerDeclSchemaChangeCompatMixedVersions(r registry.Registry) {
 	r.Add(registry.TestSpec{
-		Name:    "schemachange/mixed-versions-compat",
-		Owner:   registry.OwnerSQLFoundations,
-		Cluster: r.MakeClusterSpec(1),
-		// Uses gs://cockroach-fixtures-us-east1. See:
-		// https://github.com/cockroachdb/cockroach/issues/105968
-		CompatibleClouds: registry.Clouds(spec.GCE, spec.Local),
-		Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
+		Name:             "schemachange/mixed-versions-compat",
+		Owner:            registry.OwnerSQLFoundations,
+		Cluster:          r.MakeClusterSpec(1),
+		CompatibleClouds: registry.AllExceptAWS,
+		Suites:           registry.Suites(registry.Nightly),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
+			if c.Cloud() != spec.GCE && !c.IsLocal() {
+				t.Skip("uses gs://cockroach-corpus; see https://github.com/cockroachdb/cockroach/issues/105968")
+			}
 			runDeclSchemaChangeCompatMixedVersions(ctx, t, c)
 		},
 	})
@@ -62,7 +62,7 @@ func fetchCorpusToTmpDir(
 		versionsToCheck = []string{versionNumber, alternateVersion}
 	}
 	for i, version := range versionsToCheck {
-		err = c.RunE(ctx, option.WithNodes(c.Node(1)),
+		err = c.RunE(ctx, c.Node(1),
 			fmt.Sprintf(" gsutil cp gs://cockroach-corpus/corpus-%s/corpus %s",
 				version,
 				corpusFilePath))
@@ -89,7 +89,7 @@ func validateCorpusFile(
 ) {
 	details, err := c.RunWithDetailsSingleNode(ctx,
 		t.L(),
-		option.WithNodes(c.Node(1)),
+		c.Node(1),
 		fmt.Sprintf("%s debug declarative-corpus-validate %s",
 			binaryName,
 			corpusPath))
@@ -133,11 +133,13 @@ func runDeclSchemaChangeCompatMixedVersions(ctx context.Context, t test.Test, c 
 	predecessorVersion := clusterupgrade.MustParseVersion(predecessorVersionStr)
 
 	releaseSeries := func(v *clusterupgrade.Version) string {
-		return v.Format("%X.%Y")
+		return fmt.Sprintf("%d.%d", v.Major(), v.Minor())
 	}
 
 	// Test definitions which indicates which version of the corpus to fetch,
 	// and the binary to validate against.
+	// Note: Testing against 23.1 corpus files has been removed since we no longer
+	// run nightlies on that branch because that version is end of life.
 	compatTests := []struct {
 		testName               string
 		binaryVersion          *clusterupgrade.Version
@@ -151,15 +153,9 @@ func runDeclSchemaChangeCompatMixedVersions(ctx context.Context, t test.Test, c 
 			alternateCorpusVersion: "mixed-master",
 		},
 		{
-			testName:      "forwards compatibility",
+			testName:      "same version",
 			binaryVersion: currentVersion,
-			corpusVersion: fmt.Sprintf("release-%s", releaseSeries(predecessorVersion)),
-		},
-		{
-			testName:               "same version",
-			binaryVersion:          currentVersion,
-			corpusVersion:          fmt.Sprintf("release-%s", releaseSeries(currentVersion)),
-			alternateCorpusVersion: "master",
+			corpusVersion: fmt.Sprintf("release-%s", releaseSeries(currentVersion)),
 		},
 	}
 	for _, testInfo := range compatTests {

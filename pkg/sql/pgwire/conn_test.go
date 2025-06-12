@@ -6,6 +6,7 @@
 package pgwire
 
 import (
+	"bytes"
 	"context"
 	gosql "database/sql"
 	"database/sql/driver"
@@ -32,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgwirebase"
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgwirecancel"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
@@ -590,7 +590,7 @@ func execQuery(
 ) error {
 	it, err := s.InternalExecutor().(isql.Executor).QueryIteratorEx(
 		ctx, "test", nil, /* txn */
-		sessiondata.InternalExecutorOverride{User: username.NodeUserName(), Database: "system"},
+		sessiondata.InternalExecutorOverride{User: username.RootUserName(), Database: "system"},
 		query,
 	)
 	if err != nil {
@@ -707,7 +707,7 @@ func newTestServer() *Server {
 // waitForClientConn blocks until a client connects and performs the pgwire
 // handshake. This emulates what pgwire.Server does.
 func waitForClientConn(ln net.Listener) (net.Conn, error) {
-	conn, _, err := getSessionArgs(ln, false /* trustRemoteAddr */, false /* sendResponse */)
+	conn, _, err := getSessionArgs(ln, false /* trustRemoteAddr */)
 	return conn, err
 }
 
@@ -716,17 +716,16 @@ func waitForClientConn(ln net.Listener) (net.Conn, error) {
 // this also sends back a response to the client to indicate that the
 // connection is ready.
 func getSessionArgs(
-	ln net.Listener, trustRemoteAddr bool, sendResponse bool,
-) (netConn net.Conn, _ sql.SessionArgs, retErr error) {
+	ln net.Listener, trustRemoteAddr bool,
+) (conn net.Conn, _ sql.SessionArgs, err error) {
 	for {
-		var err error
-		netConn, err = ln.Accept()
+		conn, err = ln.Accept()
 		if err != nil {
 			return nil, sql.SessionArgs{}, err
 		}
 
 		buf := pgwirebase.MakeReadBuffer()
-		_, err = buf.ReadUntypedMsg(netConn)
+		_, err = buf.ReadUntypedMsg(conn)
 		if err != nil {
 			return nil, sql.SessionArgs{}, err
 		}
@@ -742,35 +741,14 @@ func getSessionArgs(
 		if version != version30 {
 			return nil, sql.SessionArgs{}, errors.Errorf("unexpected protocol version: %d", version)
 		}
-		defer func() {
-			if !sendResponse {
-				return
-			}
-			// Implement a fake pgwire connection handshake. Send the response
-			// after parsing the client-sent parameters.
-			c := &conn{conn: netConn}
-			c.msgBuilder.init(nilStat)
-			if err := c.authOKMessage(); err != nil {
-				retErr = errors.CombineErrors(retErr, err)
-				return
-			}
-			if err := c.bufferInitialReadyForQuery(pgwirecancel.BackendKeyData(0)); err != nil {
-				retErr = errors.CombineErrors(retErr, err)
-				return
-			}
-			if err := c.Flush(0); err != nil {
-				retErr = errors.CombineErrors(retErr, err)
-				return
-			}
-		}()
 		ctx := context.Background()
-		cp, err := parseClientProvidedSessionParameters(ctx, &buf, netConn.RemoteAddr(), trustRemoteAddr,
+		cp, err := parseClientProvidedSessionParameters(ctx, &buf, conn.RemoteAddr(), trustRemoteAddr,
 			false /* acceptTenantName */, false /* acceptSystemIdentityOption */)
 		if err != nil {
-			return netConn, sql.SessionArgs{}, err
+			return conn, sql.SessionArgs{}, err
 		}
 		args, err := finalizeClientParameters(ctx, cp, nil)
-		return netConn, args, err
+		return conn, args, err
 	}
 }
 
@@ -835,10 +813,10 @@ func expectExecStmt(
 		t.Fatalf("expected %s, got %s", expSQL, es.AST.String())
 	}
 
-	if es.ParseStart == 0 {
+	if es.ParseStart == (time.Time{}) {
 		t.Fatalf("ParseStart not filled in")
 	}
-	if es.ParseEnd == 0 {
+	if es.ParseEnd == (time.Time{}) {
 		t.Fatalf("ParseEnd not filled in")
 	}
 	if typ == queryStringComplete {
@@ -1301,6 +1279,80 @@ func TestMaliciousInputs(t *testing.T) {
 	}
 }
 
+// TestReadTimeoutConn asserts that a readTimeoutConn performs reads normally
+// and exits with an appropriate error when exit conditions are satisfied.
+func TestReadTimeoutConnExits(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	// Cannot use net.Pipe because deadlines are not supported.
+	ln, err := net.Listen(util.TestAddr.Network(), util.TestAddr.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Infof(context.Background(), "started listener on %s", ln.Addr())
+	defer func() {
+		if err := ln.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	expectedRead := []byte("expectedRead")
+
+	// Start a goroutine that performs reads using a readTimeoutConn.
+	errChan := make(chan error)
+	go func() {
+		defer close(errChan)
+		errChan <- func() error {
+			c, err := ln.Accept()
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+
+			readTimeoutConn := &readTimeoutConn{
+				Conn: c,
+				checkExitConds: func() error {
+					return ctx.Err()
+				},
+			}
+			// Assert that reads are performed normally.
+			readBytes := make([]byte, len(expectedRead))
+			if _, err := readTimeoutConn.Read(readBytes); err != nil {
+				return err
+			}
+			if !bytes.Equal(readBytes, expectedRead) {
+				return errors.Errorf("expected %v got %v", expectedRead, readBytes)
+			}
+
+			// The main goroutine will cancel the context, which should abort
+			// this read with an appropriate error.
+			_, err = readTimeoutConn.Read(make([]byte, 1))
+			return err
+		}()
+	}()
+
+	c, err := net.Dial(ln.Addr().Network(), ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	if _, err := c.Write(expectedRead); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-errChan:
+		t.Fatalf("goroutine unexpectedly returned: %v", err)
+	default:
+	}
+	cancel()
+	if err := <-errChan; !errors.Is(err, context.Canceled) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestConnResultsBufferSize(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1313,7 +1365,7 @@ func TestConnResultsBufferSize(t *testing.T) {
 	{
 		var size string
 		require.NoError(t, db.QueryRow(`SHOW results_buffer_size`).Scan(&size))
-		require.Equal(t, `524288`, size)
+		require.Equal(t, `16384`, size)
 	}
 
 	pgURL, cleanup := s.PGUrl(t, serverutils.CertsDirPrefix(t.Name()), serverutils.User(username.RootUser))
@@ -1474,6 +1526,15 @@ func TestParseClientProvidedSessionParameters(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
+	// Start a pgwire "server".
+	addr := util.TestAddr
+	ln, err := net.Listen(addr.Network(), addr.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	serverAddr := ln.Addr()
+	log.Infof(context.Background(), "started listener on %s", serverAddr)
 	testCases := []struct {
 		desc   string
 		query  string
@@ -1696,40 +1757,26 @@ func TestParseClientProvidedSessionParameters(t *testing.T) {
 		},
 	}
 
+	baseURL := fmt.Sprintf("postgres://%s/system?sslmode=disable", serverAddr)
+
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
-			// Start a pgwire "server".
-			addr := util.TestAddr
-			ln, err := net.Listen(addr.Network(), addr.String())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = ln.Close() }()
-			serverAddr := ln.Addr()
-			log.Infof(context.Background(), "started listener on %s", serverAddr)
-			baseURL := fmt.Sprintf("postgres://%s/system?sslmode=disable", serverAddr)
 
-			var netConn net.Conn
-			clientDone := sync.WaitGroup{}
-			clientDone.Add(1)
-			serverReceivedConn := sync.WaitGroup{}
-			serverReceivedConn.Add(1)
+			wg := sync.WaitGroup{}
+			wg.Add(1)
 			go func(query string) {
-				defer clientDone.Done()
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer wg.Done()
+				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 				defer cancel()
 				url := fmt.Sprintf("%s&%s", baseURL, query)
 				c, connErr := pgx.Connect(ctx, url)
 				if connErr != nil {
-					t.Error(connErr)
-					_ = ln.Close()
 					return
 				}
 				// ignore the error because there is no answer from the server, we are
-				// interested in parsing session arguments only. We close the connection
-				// immediately, since getSessionArgs is blocking.
-				serverReceivedConn.Wait()
-				_ = netConn.Close()
+				// interested in parsing session arguments only
+				_ = c.Ping(ctx)
+				// closing connection immediately, since getSessionArgs is blocking
 				_ = c.Close(ctx)
 
 				select {
@@ -1740,15 +1787,9 @@ func TestParseClientProvidedSessionParameters(t *testing.T) {
 					t.Error("pgconn asyncClose did not clean up on time")
 				}
 			}(tc.query)
-			// Wait for the client to connect and perform the handshake. Use a
-			// closure so that the WaitGroup is marked as done even if there's a
-			// panic.
-			var args sql.SessionArgs
-			func() {
-				defer serverReceivedConn.Done()
-				netConn, args, err = getSessionArgs(ln, true /* trustRemoteAddr */, true /* sendResponse */)
-			}()
-			clientDone.Wait()
+			// Wait for the client to connect and perform the handshake.
+			_, args, err := getSessionArgs(ln, true /* trustRemoteAddr */)
+			wg.Wait()
 			tc.assert(t, args, err)
 		})
 	}
@@ -1871,6 +1912,93 @@ func TestParseSearchPathInConnectionString(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.expectedSearchPath, sp)
 		})
+	}
+}
+
+func TestSetSessionArguments(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	srv := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	ctx := context.Background()
+	defer srv.Stopper().Stop(ctx)
+	s := srv.ApplicationLayer()
+
+	_, err := s.SQLConn(t, serverutils.DBName("defaultdb")).Exec(`SET CLUSTER SETTING sql.txn.read_committed_isolation.enabled = true`)
+	require.NoError(t, err)
+
+	pgURL, cleanupFunc := s.PGUrl(
+		t, serverutils.CertsDirPrefix("testConnClose"), serverutils.User(username.RootUser),
+	)
+	defer cleanupFunc()
+
+	testOptionValues, err := url.ParseQuery(`options=` + `  --user=test -c    search_path=public,testsp,"Abc",Def %20 ` +
+		"--default-transaction-isolation=read\\ uncommitted   " +
+		"-capplication_name=test  " +
+		"--DateStyle=ymd\\ ,\\ iso\\  " +
+		"-c intervalstyle%3DISO_8601 " +
+		"-ccustom_option.custom_option=test2")
+	require.NoError(t, err)
+
+	query := pgURL.Query()
+	query.Set("options", query.Get("options")+" "+testOptionValues.Get("options"))
+	pgURL.RawQuery = query.Encode()
+
+	noBufferDB, err := gosql.Open("postgres", pgURL.String())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer noBufferDB.Close()
+
+	pgxConfig, err := pgx.ParseConfig(pgURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := pgx.ConnectConfig(ctx, pgxConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := conn.Query(ctx, "show all")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expectedOptions := map[string]string{
+		"search_path": "public, testsp, \"Abc\", def",
+		// Setting the isolation level to read uncommitted should map
+		// to read committed.
+		"default_transaction_isolation": "read committed",
+		"application_name":              "test",
+		"datestyle":                     "ISO, YMD",
+		"intervalstyle":                 "iso_8601",
+	}
+	expectedFoundOptions := len(expectedOptions)
+
+	var foundOptions int
+	var variable, value string
+	for rows.Next() {
+		err = rows.Scan(&variable, &value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v, ok := expectedOptions[variable]; ok {
+			foundOptions++
+			if v != value {
+				t.Fatalf("option %q expected value %q, actual %q", variable, v, value)
+			}
+		}
+	}
+	require.Equal(t, expectedFoundOptions, foundOptions)
+
+	// Custom session options don't show up on SHOW ALL
+	var customOption string
+	require.NoError(t, conn.QueryRow(ctx, "SHOW custom_option.custom_option").Scan(&customOption))
+	require.Equal(t, "test2", customOption)
+
+	if err := conn.Close(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -2283,122 +2411,4 @@ func TestConnCloseReleasesReservedMem(t *testing.T) {
 	// Check that no accounted-for memory is leaked, after the connection attempt fails.
 	after := s.PGServer().(*Server).tenantSpecificConnMonitor.AllocBytes()
 	require.Equal(t, before, after)
-}
-
-// write unit tests for the function publishConnLatencyMetric
-func TestPublishConnLatencyMetric(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	c := conn{
-		metrics: &tenantSpecificMetrics{
-			AuthJWTConnLatency: metric.NewHistogram(
-				getHistogramOptionsForIOLatency(AuthJWTConnLatency, time.Hour)),
-			AuthCertConnLatency: metric.NewHistogram(
-				getHistogramOptionsForIOLatency(AuthCertConnLatency, time.Hour)),
-			AuthPassConnLatency: metric.NewHistogram(
-				getHistogramOptionsForIOLatency(AuthPassConnLatency, time.Hour)),
-			AuthLDAPConnLatency: metric.NewHistogram(
-				getHistogramOptionsForIOLatency(AuthLDAPConnLatency, time.Hour)),
-			AuthGSSConnLatency: metric.NewHistogram(
-				getHistogramOptionsForIOLatency(AuthGSSConnLatency, time.Hour)),
-			AuthScramConnLatency: metric.NewHistogram(
-				getHistogramOptionsForIOLatency(AuthScramConnLatency, time.Hour)),
-		},
-	}
-
-	// JWT Token Authentication
-	jwtDuration := int64(1)
-	c.publishConnLatencyMetric(jwtDuration, jwtHBAEntry.string())
-	w := c.metrics.AuthJWTConnLatency.WindowedSnapshot()
-	count, sum := w.Total()
-	require.Equal(t, int64(1), count)
-	require.Equal(t, float64(1), sum)
-
-	// republish on JWT
-	jwtDuration = int64(2)
-	c.publishConnLatencyMetric(jwtDuration, jwtHBAEntry.string())
-	w = c.metrics.AuthJWTConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(2), count)
-	require.Equal(t, float64(3), sum)
-
-	// Cert
-	certDuration := int64(3)
-	c.publishConnLatencyMetric(certDuration, certHBAEntry.string())
-	w = c.metrics.AuthCertConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(1), count)
-	require.Equal(t, float64(3), sum)
-
-	// republish on cert
-	certDuration = int64(2)
-	c.publishConnLatencyMetric(certDuration, certHBAEntry.string())
-	w = c.metrics.AuthCertConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(2), count)
-	require.Equal(t, float64(5), sum)
-
-	// Password
-	passDuration := int64(4)
-	c.publishConnLatencyMetric(passDuration, passwordHBAEntry.string())
-	w = c.metrics.AuthPassConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(1), count)
-	require.Equal(t, float64(4), sum)
-
-	// republish on pass
-	passDuration = int64(3)
-	c.publishConnLatencyMetric(passDuration, passwordHBAEntry.string())
-	w = c.metrics.AuthPassConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(2), count)
-	require.Equal(t, float64(7), sum)
-
-	// LDAP
-	ldapDuration := int64(5)
-	c.publishConnLatencyMetric(ldapDuration, ldapHBAEntry.string())
-	w = c.metrics.AuthLDAPConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(1), count)
-	require.Equal(t, float64(5), sum)
-
-	// republish on LDAP
-	ldapDuration = int64(2)
-	c.publishConnLatencyMetric(ldapDuration, ldapHBAEntry.string())
-	w = c.metrics.AuthLDAPConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(2), count)
-	require.Equal(t, float64(7), sum)
-
-	// GSS
-	gssDuration := int64(6)
-	c.publishConnLatencyMetric(gssDuration, gssHBAEntry.string())
-	w = c.metrics.AuthGSSConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(1), count)
-	require.Equal(t, float64(6), sum)
-
-	// republish on GSS
-	gssDuration = int64(3)
-	c.publishConnLatencyMetric(gssDuration, gssHBAEntry.string())
-	w = c.metrics.AuthGSSConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(2), count)
-	require.Equal(t, float64(9), sum)
-
-	// scram
-	scramDuration := int64(7)
-	c.publishConnLatencyMetric(scramDuration, scramSHA256HBAEntry.string())
-	w = c.metrics.AuthScramConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(1), count)
-	require.Equal(t, float64(7), sum)
-
-	// republish on scram
-	scramDuration = int64(2)
-	c.publishConnLatencyMetric(scramDuration, scramSHA256HBAEntry.string())
-	w = c.metrics.AuthScramConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(2), count)
-	require.Equal(t, float64(9), sum)
 }

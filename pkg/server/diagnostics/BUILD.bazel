@@ -59,6 +59,7 @@ go_test(
         "reporter_test.go",
         "update_checker_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":diagnostics"],
     deps = [
         "//pkg/base",

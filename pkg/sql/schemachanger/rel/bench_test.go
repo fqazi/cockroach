@@ -124,7 +124,7 @@ func BenchmarkLinkedList(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			q = rand.Intn(numQueries)
-			require.NoError(b, queries[q].Iterate(db, nil, run))
+			require.NoError(b, queries[q].Iterate(db, run))
 		}
 	}
 

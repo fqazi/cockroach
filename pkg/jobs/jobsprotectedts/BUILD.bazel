@@ -23,7 +23,6 @@ go_library(
         "//pkg/sql/isql",
         "//pkg/util/ctxgroup",
         "//pkg/util/hlc",
-        "//pkg/util/timeutil",
         "//pkg/util/uuid",
         "@com_github_cockroachdb_errors//:errors",
     ],
@@ -36,6 +35,7 @@ go_test(
         "jobs_protected_ts_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=295s"],
     deps = [
         "//pkg/security/securityassets",
         "//pkg/security/securitytest",

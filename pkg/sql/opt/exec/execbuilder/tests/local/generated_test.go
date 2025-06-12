@@ -113,13 +113,6 @@ func TestExecBuild_call(
 	runExecBuildLogicTest(t, "call")
 }
 
-func TestExecBuild_call_plpgsql(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "call_plpgsql")
-}
-
 func TestExecBuild_cascade(
 	t *testing.T,
 ) {
@@ -139,13 +132,6 @@ func TestExecBuild_check_constraints(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "check_constraints")
-}
-
-func TestExecBuild_collated_strings(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "collated_strings")
 }
 
 func TestExecBuild_ddl(
@@ -244,6 +230,13 @@ func TestExecBuild_fk(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "fk")
+}
+
+func TestExecBuild_fk_read_committed(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runExecBuildLogicTest(t, "fk_read_committed")
 }
 
 func TestExecBuild_forecast(
@@ -435,6 +428,13 @@ func TestExecBuild_not_visible_index(
 	runExecBuildLogicTest(t, "not_visible_index")
 }
 
+func TestExecBuild_observability(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runExecBuildLogicTest(t, "observability")
+}
+
 func TestExecBuild_orderby(
 	t *testing.T,
 ) {
@@ -512,6 +512,13 @@ func TestExecBuild_select_for_update(
 	runExecBuildLogicTest(t, "select_for_update")
 }
 
+func TestExecBuild_select_for_update_read_committed(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runExecBuildLogicTest(t, "select_for_update_read_committed")
+}
+
 func TestExecBuild_select_index(
 	t *testing.T,
 ) {
@@ -531,13 +538,6 @@ func TestExecBuild_select_index_vectorize_off(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "select_index_vectorize_off")
-}
-
-func TestExecBuild_show_tables(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "show_tables")
 }
 
 func TestExecBuild_show_trace(
@@ -582,20 +582,6 @@ func TestExecBuild_srfs(
 	runExecBuildLogicTest(t, "srfs")
 }
 
-func TestExecBuild_stats(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "stats")
-}
-
-func TestExecBuild_straight_join(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "straight_join")
-}
-
 func TestExecBuild_subquery(
 	t *testing.T,
 ) {
@@ -622,13 +608,6 @@ func TestExecBuild_tpch_vec(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "tpch_vec")
-}
-
-func TestExecBuild_triggers(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "triggers")
 }
 
 func TestExecBuild_trigram_index(
@@ -673,6 +652,13 @@ func TestExecBuild_unique(
 	runExecBuildLogicTest(t, "unique")
 }
 
+func TestExecBuild_unique_read_committed(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runExecBuildLogicTest(t, "unique_read_committed")
+}
+
 func TestExecBuild_update(
 	t *testing.T,
 ) {
@@ -687,6 +673,13 @@ func TestExecBuild_update_from(
 	runExecBuildLogicTest(t, "update_from")
 }
 
+func TestExecBuild_update_read_committed(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runExecBuildLogicTest(t, "update_read_committed")
+}
+
 func TestExecBuild_upsert(
 	t *testing.T,
 ) {
@@ -694,25 +687,18 @@ func TestExecBuild_upsert(
 	runExecBuildLogicTest(t, "upsert")
 }
 
+func TestExecBuild_upsert_read_committed(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runExecBuildLogicTest(t, "upsert_read_committed")
+}
+
 func TestExecBuild_values(
 	t *testing.T,
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "values")
-}
-
-func TestExecBuild_vector_mutation(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "vector_mutation")
-}
-
-func TestExecBuild_vector_search(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "vector_search")
 }
 
 func TestExecBuild_vectorize_local(

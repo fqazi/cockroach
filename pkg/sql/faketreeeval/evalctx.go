@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -19,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
+	"github.com/cockroachdb/cockroach/pkg/sql/roleoption"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
@@ -30,7 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/rangedesc"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"github.com/lib/pq/oid"
 )
 
@@ -129,7 +128,7 @@ func (so *DummyRegionOperator) ValidateAllMultiRegionZoneConfigsInCurrentDatabas
 // ResetMultiRegionZoneConfigsForTable is part of the eval.RegionOperator
 // interface.
 func (so *DummyRegionOperator) ResetMultiRegionZoneConfigsForTable(
-	_ context.Context, id int64, forceSurviveZone bool,
+	_ context.Context, id int64,
 ) error {
 	return errors.WithStack(errRegionOperator)
 }
@@ -348,16 +347,6 @@ func (*DummyEvalPlanner) PLpgSQLFetchCursor(
 	return nil, errors.WithStack(errEvalPlanner)
 }
 
-func (p *DummyEvalPlanner) StartHistoryRetentionJob(
-	ctx context.Context, desc string, protectTS hlc.Timestamp, expiration time.Duration,
-) (jobspb.JobID, error) {
-	return 0, errors.WithStack(errEvalPlanner)
-}
-
-func (p *DummyEvalPlanner) ExtendHistoryRetention(ctx context.Context, id jobspb.JobID) error {
-	return errors.WithStack(errEvalPlanner)
-}
-
 var _ eval.Planner = &DummyEvalPlanner{}
 
 var errEvalPlanner = pgerror.New(pgcode.ScalarOperationCannotRunWithoutFullSessionContext,
@@ -420,9 +409,7 @@ func (ep *DummyEvalPlanner) ResolveTableName(
 }
 
 // GetTypeFromValidSQLSyntax is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) GetTypeFromValidSQLSyntax(
-	ctx context.Context, sql string,
-) (*types.T, error) {
+func (ep *DummyEvalPlanner) GetTypeFromValidSQLSyntax(sql string) (*types.T, error) {
 	return nil, errors.WithStack(errEvalPlanner)
 }
 
@@ -445,13 +432,6 @@ func (ep *DummyEvalPlanner) RoutineExprGenerator(
 	return nil
 }
 
-// EvalTxnControlExpr is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) EvalTxnControlExpr(
-	ctx context.Context, expr *tree.TxnControlExpr, args tree.Datums,
-) (tree.Datum, error) {
-	return nil, errors.WithStack(errEvalPlanner)
-}
-
 // ResolveTypeByOID implements the tree.TypeReferenceResolver interface.
 func (ep *DummyEvalPlanner) ResolveTypeByOID(_ context.Context, _ oid.Oid) (*types.T, error) {
 	return nil, errors.WithStack(errEvalPlanner)
@@ -467,8 +447,8 @@ func (ep *DummyEvalPlanner) ResolveType(
 // QueryRowEx is part of the eval.Planner interface.
 func (ep *DummyEvalPlanner) QueryRowEx(
 	ctx context.Context,
-	opName redact.RedactableString,
-	override sessiondata.InternalExecutorOverride,
+	opName string,
+	session sessiondata.InternalExecutorOverride,
 	stmt string,
 	qargs ...interface{},
 ) (tree.Datums, error) {
@@ -478,7 +458,7 @@ func (ep *DummyEvalPlanner) QueryRowEx(
 // QueryIteratorEx is part of the eval.Planner interface.
 func (ep *DummyEvalPlanner) QueryIteratorEx(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	override sessiondata.InternalExecutorOverride,
 	stmt string,
 	qargs ...interface{},
@@ -559,24 +539,6 @@ func (ep *DummyEvalPlanner) AutoCommit() bool {
 	return false
 }
 
-// InsertTemporarySchema is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) InsertTemporarySchema(
-	tempSchemaName string, databaseID descpb.ID, schemaID descpb.ID,
-) {
-
-}
-
-// ClearQueryPlanCache is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) ClearQueryPlanCache() {}
-
-// ClearTableStatsCache is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) ClearTableStatsCache() {}
-
-// RetryCounter is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) RetryCounter() int {
-	return 0
-}
-
 // DummyPrivilegedAccessor implements the tree.PrivilegedAccessor interface by returning errors.
 type DummyPrivilegedAccessor struct{}
 
@@ -633,11 +595,23 @@ func (ep *DummySessionAccessor) HasGlobalPrivilegeOrRoleOption(
 	return false, nil
 }
 
+// HasAdminRole is part of the eval.SessionAccessor interface.
+func (ep *DummySessionAccessor) HasAdminRole(_ context.Context) (bool, error) {
+	return false, errors.WithStack(errEvalSessionVar)
+}
+
 // CheckPrivilege is part of the eval.SessionAccessor interface.
 func (ep *DummySessionAccessor) CheckPrivilege(
 	_ context.Context, _ privilege.Object, _ privilege.Kind,
 ) error {
 	return errors.WithStack(errEvalSessionVar)
+}
+
+// HasRoleOption is part of the eval.SessionAccessor interface.
+func (ep *DummySessionAccessor) HasRoleOption(
+	ctx context.Context, roleOption roleoption.Option,
+) (bool, error) {
+	return false, errors.WithStack(errEvalSessionVar)
 }
 
 // HasViewActivityOrViewActivityRedactedRole is part of the eval.SessionAccessor interface.
@@ -656,7 +630,7 @@ var _ eval.ClientNoticeSender = &DummyClientNoticeSender{}
 func (c *DummyClientNoticeSender) BufferClientNotice(context.Context, pgnotice.Notice) {}
 
 // SendClientNotice is part of the eval.ClientNoticeSender interface.
-func (c *DummyClientNoticeSender) SendClientNotice(context.Context, pgnotice.Notice, bool) error {
+func (c *DummyClientNoticeSender) SendClientNotice(context.Context, pgnotice.Notice) error {
 	return nil
 }
 
@@ -687,13 +661,20 @@ func (c *DummyTenantOperator) DropTenantByID(
 	return errors.WithStack(errEvalTenant)
 }
 
+// GCTenant is part of the tree.TenantOperator interface.
+func (c *DummyTenantOperator) GCTenant(_ context.Context, _ uint64) error {
+	return errors.WithStack(errEvalTenant)
+}
+
 // UpdateTenantResourceLimits is part of the tree.TenantOperator interface.
 func (c *DummyTenantOperator) UpdateTenantResourceLimits(
 	_ context.Context,
 	tenantID uint64,
-	availableTokens float64,
+	availableRU float64,
 	refillRate float64,
-	maxBurstTokens float64,
+	maxBurstRU float64,
+	asOf time.Time,
+	asOfConsumedRequestUnits float64,
 ) error {
 	return errors.WithStack(errEvalTenant)
 }
@@ -710,11 +691,8 @@ func (ps *DummyPreparedStatementState) HasActivePortals() bool {
 }
 
 // MigratablePreparedStatements is part of the tree.PreparedStatementState interface.
-func (ps *DummyPreparedStatementState) MigratablePreparedStatements() (
-	[]sessiondatapb.MigratableSession_PreparedStatement,
-	error,
-) {
-	return nil, nil
+func (ps *DummyPreparedStatementState) MigratablePreparedStatements() []sessiondatapb.MigratableSession_PreparedStatement {
+	return nil
 }
 
 // HasPortal is part of the tree.PreparedStatementState interface.

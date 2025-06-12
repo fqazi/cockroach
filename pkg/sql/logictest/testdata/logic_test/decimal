@@ -465,8 +465,8 @@ NaN        Infinity   NaN        NaN        NaN
 NaN        -Infinity  NaN        NaN        NaN
 NaN        NaN        NaN        NaN        NaN
 
-# TODO(#115679): There are a few differences vs postgres in the number of
-# decimal places and negative zeros.
+# TODO(drewk): There are a few differences vs postgres in the number of decimal
+# places and negative zeros.
 query RRRRR
 WITH v(id, x) AS (VALUES (1, '0'::numeric), (2, '1'::numeric), (3, '-1'::numeric),
   (4, '4.2'::numeric), (5, 'inf'::numeric), (6, '-inf'::numeric), (7, 'nan'::numeric)
@@ -564,15 +564,13 @@ SELECT 'NaN'::numeric::int2
 statement error integer out of range
 SELECT '-Infinity'::numeric::int8
 
-query I
+statement error operand, lower bound, and upper bound cannot be infinity
 SELECT width_bucket('inf', 3.0, 4.0, 888)
-----
-889
 
-statement error pgcode 2201G pq: lower and upper bounds must be finite
+statement error operand, lower bound, and upper bound cannot be infinity
 SELECT width_bucket(2.0, 3.0, '-inf', 888)
 
-statement error pgcode 2201G pq: lower and upper bounds must be finite
+statement error operand, lower bound, and upper bound cannot be infinity
 SELECT width_bucket(0, '-inf', 4.0, 888)
 
 query RRR

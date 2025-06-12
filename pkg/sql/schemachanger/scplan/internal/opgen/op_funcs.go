@@ -14,11 +14,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/screl"
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/redact"
 )
 
 func statementForDropJob(e scpb.Element, md *opGenContext) scop.StatementForDropJob {
 	stmtID := md.Targets[md.elementToTarget[e]].Metadata.StatementID
-	stmt := md.Statements[stmtID].RedactedStatement.StripMarkers()
+	stmt := redact.RedactableString(md.Statements[stmtID].RedactedStatement).StripMarkers()
 	switch e.(type) {
 	case *scpb.PrimaryIndex:
 		stmt = "removed primary index; " + stmt
@@ -45,7 +46,6 @@ func statementForDropJob(e scpb.Element, md *opGenContext) scop.StatementForDrop
 type opGenContext struct {
 	scpb.TargetState
 	Current         []scpb.Status
-	Initial         []scpb.Status
 	ActiveVersion   clusterversion.ClusterVersion
 	elementToTarget map[scpb.Element]int
 	InRollback      bool
@@ -58,7 +58,6 @@ func makeOpgenContext(
 		ActiveVersion:   activeVersion,
 		InRollback:      cs.InRollback,
 		TargetState:     cs.TargetState,
-		Initial:         cs.Initial,
 		Current:         cs.Current,
 		elementToTarget: make(map[scpb.Element]int),
 	}
@@ -168,6 +167,10 @@ func checkOpFunc(el scpb.Element, fn interface{}) (opType scop.Type, _ error) {
 // a descriptor is an added state, and has no data. This can allow us to
 // skip certain operations like backfills / validation.
 func checkIfDescriptorIsWithoutData(id descpb.ID, md *opGenContext) bool {
+	// Older versions did not emit the data element.
+	if !md.ActiveVersion.IsActive(clusterversion.V23_2) {
+		return false
+	}
 	doesDescriptorHaveData := false
 	for idx, t := range md.Targets {
 		// Validate this is the descriptor ID we are
@@ -179,68 +182,11 @@ func checkIfDescriptorIsWithoutData(id descpb.ID, md *opGenContext) bool {
 		case *scpb.IndexData, *scpb.TableData:
 			// Check if this descriptor has any data within
 			// a public state.
-			if md.Current[idx] == scpb.Status_PUBLIC &&
-				md.Initial[idx] == scpb.Status_PUBLIC {
+			if md.Current[idx] == scpb.Status_PUBLIC ||
+				t.TargetStatus == scpb.Status_PUBLIC {
 				doesDescriptorHaveData = true
 			}
 		}
-		if doesDescriptorHaveData {
-			break
-		}
 	}
 	return !doesDescriptorHaveData
-}
-
-// checkIfZoneConfigHasGCDependents will determine if a table/database
-// descriptor has data dependencies it still needs to GC. This allows us to
-// determine when we need to skip certain operations like deleting a zone
-// config.
-func checkIfZoneConfigHasGCDependents(elem scpb.ZoneConfigElement, md *opGenContext) bool {
-	isValidTableData := func(td *scpb.TableData) bool {
-		switch e := elem.(type) {
-		case *scpb.DatabaseZoneConfig:
-			return e.DatabaseID == td.DatabaseID
-		case *scpb.TableZoneConfig:
-			return e.TableID == td.TableID
-		default:
-			panic(errors.AssertionFailedf(
-				"element type %T not allowed for checkIfZoneConfigHasGCDependents", e))
-		}
-	}
-	for idx, t := range md.Targets {
-		switch e := t.Element().(type) {
-		case *scpb.TableData:
-			// Filter out any elements we do not want to consider.
-			if !isValidTableData(e) {
-				continue
-			}
-			// Check if this descriptor has any data marked for an absent state.
-			if t.TargetStatus == scpb.Status_ABSENT &&
-				md.Initial[idx] == scpb.Status_PUBLIC {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// checkIfIndexHasGCDependents is like checkIfZoneConfigHasGCDependents, but
-// for indexes. We also ensure that we filter out irrelevant indexes here.
-func checkIfIndexHasGCDependents(tableID descpb.ID, md *opGenContext) bool {
-	for idx, t := range md.Targets {
-		switch e := t.Element().(type) {
-		case *scpb.IndexData:
-			// Validate this is the table ID we are
-			// looking for.
-			if e.TableID != tableID {
-				continue
-			}
-			// Check if this descriptor has any data marked for an absent state.
-			if t.TargetStatus == scpb.Status_ABSENT &&
-				md.Initial[idx] == scpb.Status_PUBLIC {
-				return true
-			}
-		}
-	}
-	return false
 }

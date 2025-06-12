@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -26,8 +25,9 @@ import (
 func runMultiTenantTPCH(
 	ctx context.Context, t test.Test, c cluster.Cluster, enableDirectScans bool, sharedProcess bool,
 ) {
+	clusterSettings := install.MakeClusterSettings()
 	start := func() {
-		c.Start(ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule), install.MakeClusterSettings(), c.All())
+		c.Start(ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule), clusterSettings, c.All())
 	}
 	start()
 
@@ -59,7 +59,7 @@ func runMultiTenantTPCH(
 				Flag("max-ops", numRunsPerQuery).
 				Flag("queries", queryNum).
 				Arg("{pgurl:%d:%s}", node, virtualClusterName)
-			result, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(c.Node(1)), cmd.String())
+			result, err := c.RunWithDetailsSingleNode(ctx, t.L(), c.Node(1), cmd.String())
 			workloadOutput := result.Stdout + result.Stderr
 			t.L().Printf(workloadOutput)
 			if err != nil {
@@ -97,7 +97,7 @@ func runMultiTenantTPCH(
 		startOpts = option.StartVirtualClusterOpts(appTenantName, separateProcessNode)
 	}
 	c.StartServiceForVirtualCluster(
-		ctx, t.L(), startOpts, install.MakeClusterSettings(),
+		ctx, t.L(), startOpts, clusterSettings,
 	)
 
 	// Allow the tenant to be able to split tables. We need to run a dummy
@@ -136,6 +136,7 @@ func runMultiTenantTPCH(
 func registerMultiTenantTPCH(r registry.Registry) {
 	for _, sharedProcess := range []bool{false, true} {
 		for _, enableDirectScans := range []bool{false, true} {
+			sharedProcess, enableDirectScans := sharedProcess, enableDirectScans
 			name := "multitenant/tpch"
 			if sharedProcess {
 				name += "/shared_process"
@@ -146,13 +147,11 @@ func registerMultiTenantTPCH(r registry.Registry) {
 				name += "/enable_direct_scans"
 			}
 			r.Add(registry.TestSpec{
-				Name:      name,
-				Owner:     registry.OwnerSQLQueries,
-				Benchmark: true,
-				Cluster:   r.MakeClusterSpec(1 /* nodeCount */),
-				// Uses gs://cockroach-fixtures-us-east1. See:
-				// https://github.com/cockroachdb/cockroach/issues/105968
-				CompatibleClouds: registry.Clouds(spec.GCE, spec.Local),
+				Name:             name,
+				Owner:            registry.OwnerSQLQueries,
+				Benchmark:        true,
+				Cluster:          r.MakeClusterSpec(1 /* nodeCount */),
+				CompatibleClouds: registry.AllExceptAWS,
 				Suites:           registry.Suites(registry.Nightly),
 				Leases:           registry.MetamorphicLeases,
 				Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {

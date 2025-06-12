@@ -183,17 +183,13 @@ func (d *dev) testlogic(cmd *cobra.Command, commandLine []string) error {
 		}
 
 		if rewrite {
-			writeablePathArg := func(dir string) string {
-				return fmt.Sprintf("--sandbox_writable_path=%s", filepath.Join(workspace, dir))
-			}
-
 			dir := filepath.Join(filepath.Dir(baseTestsDir), "testdata")
-			args = append(args, writeablePathArg(dir))
+			args = append(args, fmt.Sprintf("--sandbox_writable_path=%s", filepath.Join(workspace, dir)))
 			if choice == "ccl" {
 				// The ccl logictest target shares the testdata directory with the base
 				// logictest target -- make an allowance explicitly for that.
-				args = append(args, writeablePathArg("pkg/sql/logictest"))
-				args = append(args, writeablePathArg("pkg/sql/opt/exec/execbuilder/testdata/"))
+				args = append(args, fmt.Sprintf("--sandbox_writable_path=%s",
+					filepath.Join(workspace, "pkg/sql/logictest")))
 			}
 		}
 	}
@@ -204,7 +200,9 @@ func (d *dev) testlogic(cmd *cobra.Command, commandLine []string) error {
 	}
 	args = append(args, targets...)
 	args = append(args, "--test_env=GOTRACEBACK=all")
-	addCommonBazelArguments(&args)
+	if numCPUs != 0 {
+		args = append(args, fmt.Sprintf("--local_cpu_resources=%d", numCPUs))
+	}
 	if ignoreCache {
 		args = append(args, "--nocache_test_results")
 	}
@@ -249,7 +247,15 @@ func (d *dev) testlogic(cmd *cobra.Command, commandLine []string) error {
 		args = append(args, "--test_arg", "-show-diff")
 	}
 	if timeout > 0 {
-		args = append(args, fmt.Sprintf("--test_timeout=%d", int(timeout.Seconds())))
+		// The bazel timeout should be higher than the timeout passed to the
+		// test binary (giving it ample time to clean up, 5 seconds is probably
+		// enough).
+		args = append(args, fmt.Sprintf("--test_timeout=%d", 5+int(timeout.Seconds())))
+		args = append(args, "--test_arg", fmt.Sprintf("-test.timeout=%s", timeout.String()))
+
+		// If --test-args '-test.timeout=X' is specified as well, or
+		// -- --test_arg '-test.timeout=X', that'll take precedence further
+		// below.
 	}
 	if stress {
 		if count == 1 {

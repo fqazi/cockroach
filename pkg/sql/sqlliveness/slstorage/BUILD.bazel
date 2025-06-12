@@ -6,13 +6,13 @@ go_library(
         "key_encoder.go",
         "metrics.go",
         "sessionid.go",
-        "sessionid_fuzz.go",
         "slstorage.go",
         "test_helpers.go",
     ],
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slstorage",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/clusterversion",
         "//pkg/keys",
         "//pkg/kv",
         "//pkg/kv/kvpb",
@@ -24,14 +24,12 @@ go_library(
         "//pkg/sql/catalog",
         "//pkg/sql/catalog/systemschema",
         "//pkg/sql/enum",
-        "//pkg/sql/regionliveness",
         "//pkg/sql/sem/eval",
         "//pkg/sql/sqlliveness",
         "//pkg/util/admission/admissionpb",
         "//pkg/util/cache",
         "//pkg/util/encoding",
         "//pkg/util/hlc",
-        "//pkg/util/leaktest",
         "//pkg/util/log",
         "//pkg/util/metric",
         "//pkg/util/stop",
@@ -42,13 +40,12 @@ go_library(
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_redact//:redact",
         "@com_github_prometheus_client_model//go",
-        "@com_github_stretchr_testify//require",
     ],
 )
 
 go_test(
     name = "slstorage_test",
-    size = "medium",
+    size = "small",
     srcs = [
         "key_encoder_test.go",
         "main_test.go",
@@ -56,6 +53,7 @@ go_test(
         "slstorage_internal_test.go",
         "slstorage_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":slstorage"],
     deps = [
         "//pkg/base",

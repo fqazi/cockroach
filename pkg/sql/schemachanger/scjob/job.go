@@ -7,7 +7,6 @@ package scjob
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
@@ -37,20 +36,7 @@ func init() {
 
 type newSchemaChangeResumer struct {
 	job           *jobs.Job
-	deps          scrun.JobRunDependencies
 	rollbackCause error
-}
-
-var _ jobs.TraceableJob = (*newSchemaChangeResumer)(nil)
-
-// ForceRealSpan implements the TraceableJob interface.
-func (n *newSchemaChangeResumer) ForceRealSpan() bool {
-	return true
-}
-
-// DumpTraceAfterRun implements the TraceableJob interface.
-func (n *newSchemaChangeResumer) DumpTraceAfterRun() bool {
-	return true
 }
 
 func (n *newSchemaChangeResumer) Resume(ctx context.Context, execCtxI interface{}) (err error) {
@@ -65,7 +51,7 @@ func (n *newSchemaChangeResumer) OnFailOrCancel(
 	// Permanent error has been hit, so there is no rollback
 	// from here. Only if the status is reverting will these be
 	// treated as fatal.
-	if jobs.IsPermanentJobError(err) && n.job.State() == jobs.StateReverting {
+	if jobs.IsPermanentJobError(err) && n.job.Status() == jobs.StatusReverting {
 		log.Warningf(ctx, "schema change will not rollback; permanent error detected: %v", err)
 		return nil
 	}
@@ -79,15 +65,8 @@ func (n *newSchemaChangeResumer) OnFailOrCancel(
 	return n.run(ctx, execCtx)
 }
 
-// CollectProfile writes the current phase's explain output, captured earlier,
-// to the jobs_info table.
-func (n *newSchemaChangeResumer) CollectProfile(ctx context.Context, execCtx interface{}) error {
-	p := execCtx.(sql.JobExecContext)
-	return p.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		exOp := n.deps.GetExplain()
-		filename := fmt.Sprintf("explain-phase.%s.txt", timeutil.Now().Format("20060102_150405.00"))
-		return jobs.WriteExecutionDetailFile(ctx, filename, []byte(exOp), txn, n.job.ID())
-	})
+func (n *newSchemaChangeResumer) CollectProfile(_ context.Context, _ interface{}) error {
+	return nil
 }
 
 func (n *newSchemaChangeResumer) run(ctx context.Context, execCtxI interface{}) error {
@@ -106,7 +85,7 @@ func (n *newSchemaChangeResumer) run(ctx context.Context, execCtxI interface{}) 
 		return err
 	}
 	payload := n.job.Payload()
-	n.deps = scdeps.NewJobRunDependencies(
+	deps := scdeps.NewJobRunDependencies(
 		execCfg.CollectionFactory,
 		execCfg.InternalDB,
 		execCfg.IndexBackfiller,
@@ -145,7 +124,7 @@ func (n *newSchemaChangeResumer) run(ctx context.Context, execCtxI interface{}) 
 	err := scrun.RunSchemaChangesInJob(
 		ctx,
 		execCfg.DeclarativeSchemaChangerTestingKnobs,
-		n.deps,
+		deps,
 		n.job.ID(),
 		startTime,
 		payload.DescriptorIDs,
@@ -156,11 +135,7 @@ func (n *newSchemaChangeResumer) run(ctx context.Context, execCtxI interface{}) 
 		// If a descriptor can't be found, we additionally mark the error as a
 		// permanent job error, so that non-cancelable jobs don't get retried. If a
 		// descriptor has gone missing, it isn't likely to come back.
-		// We also mark assertion errors as permanent job errors, since they are
-		// never expected.
-		if errors.IsAny(
-			err, catalog.ErrDescriptorNotFound, catalog.ErrDescriptorDropped, catalog.ErrReferencedDescriptorNotFound,
-		) || errors.HasAssertionFailure(err) {
+		if errors.IsAny(err, catalog.ErrDescriptorNotFound, catalog.ErrDescriptorDropped, catalog.ErrReferencedDescriptorNotFound) {
 			return jobs.MarkAsPermanentJobError(err)
 		}
 		return err

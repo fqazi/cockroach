@@ -6,7 +6,6 @@
 package sql
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
@@ -34,41 +33,26 @@ func TestCheckClusterSettingValuesAreEquivalent(t *testing.T) {
 		exp   string
 	}{
 		{ // 0
-			local: encode(t, "22.2-upgrading-to-23.1-step-010"),
-			kv:    encode(t, "22.2-upgrading-to-23.1-step-010"),
+			local: encode(t, "22.2-10"),
+			kv:    encode(t, "22.2-10"),
 		},
 		{ // 1
-			local: encode(t, "22.2-upgrading-to-23.1-step-012"),
-			kv:    encode(t, "22.2-upgrading-to-23.1-step-011"),
-			exp:   "value differs between local setting (22.2-upgrading-to-23.1-step-012) and KV (22.2-upgrading-to-23.1-step-011)",
+			local: encode(t, "22.2-12"),
+			kv:    encode(t, "22.2-11"),
+			exp:   "value differs between local setting (22.2-12) and KV (22.2-11)",
 		},
 		{ // 2
-			local: encode(t, "22.2-upgrading-to-23.1-step-011"),
-			kv:    encode(t, "22.2-upgrading-to-23.1-step-010"),
+			local: encode(t, "22.2-11"),
+			kv:    encode(t, "22.2-10"),
 		},
 		{ // 3
-			local: encode(t, "22.2-upgrading-to-23.1-step-011"),
+			local: encode(t, "22.2-11"),
 			kv:    []byte("abc"),
-			exp:   "value differs between local setting (22.2-upgrading-to-23.1-step-011) and KV ([97 98 99])",
+			exp:   "value differs between local setting (22.2-11) and KV ([97 98 99])",
 		},
 		{ // 4
-			kv:  encode(t, "22.2-upgrading-to-23.1-step-011"),
-			exp: "value differs between local setting ([]) and KV (22.2-upgrading-to-23.1-step-011)",
-		},
-		{ // 5
-			// NB: On release branches, clusterversion.Latest will have a fence
-			// version that has -1 for the internal version.
-			local: encode(t, clusterversion.Latest.Version().FenceVersion().String()),
-			kv:    encode(t, (clusterversion.Latest - 1).Version().String()),
-		},
-		{ // 6
-			local: encode(t, clusterversion.Latest.Version().String()),
-			kv:    encode(t, (clusterversion.Latest - 1).Version().String()),
-			exp: fmt.Sprintf(
-				"value differs between local setting (%s) and KV (%s)",
-				clusterversion.ClusterVersion{Version: clusterversion.Latest.Version()},
-				clusterversion.ClusterVersion{Version: (clusterversion.Latest - 1).Version()},
-			),
+			kv:  encode(t, "22.2-11"),
+			exp: "value differs between local setting ([]) and KV (22.2-11)",
 		},
 	} {
 		t.Run("", func(t *testing.T) {

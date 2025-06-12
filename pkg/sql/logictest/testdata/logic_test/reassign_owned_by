@@ -45,7 +45,7 @@ GRANT CREATE ON DATABASE test TO new_role
 
 user testuser
 
-# Ensure the current user is a member of the role we are setting to.
+# Ensure the current user is a member of the role we're setting to.
 statement error pq: permission denied to reassign objects\nHINT: user must be a member of the new role
 REASSIGN OWNED BY old_role TO new_role
 
@@ -365,15 +365,11 @@ DROP SCHEMA db1.sc1 CASCADE;
 
 statement ok
 USE db1;
-
-statement ok
 REASSIGN OWNED BY testuser TO testuser2;
 
 user root
 statement ok
 USE test;
-
-statement ok
 DROP DATABASE db1 CASCADE;
 
 # Also validate the reverse, where the REASSIGN OWNED BY job
@@ -391,11 +387,9 @@ ALTER TABLE db1.sc1.table OWNER TO testuser;
 statement ok
 SET CLUSTER SETTING jobs.debug.pausepoints = 'schemachanger.before.exec';
 
-statement ok
-use db1;
-
 skipif config local-legacy-schema-changer
 statement error job \d+ was paused before it completed with reason: pause point "schemachanger.before.exec" hit
+use db1;
 REASSIGN OWNED BY testuser TO testuser2;
 
 statement ok

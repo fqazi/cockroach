@@ -4,7 +4,6 @@ go_library(
     name = "queue",
     srcs = [
         "allocator_replica.go",
-        "lease_queue.go",
         "pacer.go",
         "queue.go",
         "replicate_queue.go",
@@ -21,24 +20,23 @@ go_library(
         "//pkg/kv/kvserver/asim/config",
         "//pkg/kv/kvserver/asim/state",
         "//pkg/kv/kvserver/constraint",
-        "//pkg/kv/kvserver/kvflowcontrol/rac2",
         "//pkg/kv/kvserver/kvserverpb",
-        "//pkg/raft",
         "//pkg/roachpb",
         "//pkg/util/hlc",
         "//pkg/util/log",
         "//pkg/util/timeutil",
+        "@io_etcd_go_raft_v3//:raft",
     ],
 )
 
 go_test(
     name = "queue_test",
     srcs = [
-        "lease_queue_test.go",
         "pacer_test.go",
         "replicate_queue_test.go",
         "split_queue_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":queue"],
     deps = [
         "//pkg/kv/kvserver/asim/config",

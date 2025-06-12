@@ -178,6 +178,58 @@ func TestTxnSpanRefresherRefreshesTransactions(t *testing.T) {
 			expRefresh: false,
 			expErr:     true,
 		},
+		{
+			name: "write_too_old flag (pending)",
+			onFirstSend: func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
+				br := ba.CreateReply()
+				br.Txn = ba.Txn.Clone()
+				br.Txn.Status = roachpb.PENDING
+				br.Txn.WriteTooOld = true
+				br.Txn.WriteTimestamp = txn.WriteTimestamp.Add(20, 1)
+				return br, nil
+			},
+			expRefresh:   true,
+			expRefreshTS: txn.WriteTimestamp.Add(20, 1), // Same as br.Txn.WriteTimestamp.
+		},
+		{
+			name: "write_too_old flag (staging)",
+			onFirstSend: func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
+				br := ba.CreateReply()
+				br.Txn = ba.Txn.Clone()
+				br.Txn.Status = roachpb.STAGING
+				br.Txn.WriteTooOld = true
+				br.Txn.WriteTimestamp = txn.WriteTimestamp.Add(20, 1)
+				return br, nil
+			},
+			expRefresh: false,
+			expErr:     false,
+		},
+		{
+			name: "write_too_old flag (committed)",
+			onFirstSend: func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
+				br := ba.CreateReply()
+				br.Txn = ba.Txn.Clone()
+				br.Txn.Status = roachpb.COMMITTED
+				br.Txn.WriteTooOld = true
+				br.Txn.WriteTimestamp = txn.WriteTimestamp.Add(20, 1)
+				return br, nil
+			},
+			expRefresh: false,
+			expErr:     false,
+		},
+		{
+			name: "write_too_old flag (aborted)",
+			onFirstSend: func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
+				br := ba.CreateReply()
+				br.Txn = ba.Txn.Clone()
+				br.Txn.Status = roachpb.ABORTED
+				br.Txn.WriteTooOld = true
+				br.Txn.WriteTimestamp = txn.WriteTimestamp.Add(20, 1)
+				return br, nil
+			},
+			expRefresh: false,
+			expErr:     false,
+		},
 	}
 	for _, tc := range cases {
 		name := tc.name
@@ -265,6 +317,7 @@ func TestTxnSpanRefresherRefreshesTransactions(t *testing.T) {
 				require.Nil(t, pErr)
 				require.NotNil(t, br)
 				require.NotNil(t, br.Txn)
+				require.False(t, br.Txn.WriteTooOld)
 				require.Equal(t, tc.expRefreshTS, br.Txn.WriteTimestamp)
 				require.Equal(t, tc.expRefreshTS, br.Txn.ReadTimestamp)
 				require.Equal(t, tc.expRefreshTS, tsr.refreshedTimestamp)
@@ -280,6 +333,7 @@ func TestTxnSpanRefresherRefreshesTransactions(t *testing.T) {
 					require.Nil(t, pErr)
 					require.NotNil(t, br)
 					require.NotNil(t, br.Txn)
+					require.False(t, br.Txn.WriteTooOld)
 				}
 				require.Zero(t, tsr.refreshedTimestamp)
 				require.Equal(t, int64(0), tsr.metrics.ClientRefreshSuccess.Count())
@@ -1377,77 +1431,57 @@ func TestTxnSpanRefresherEpochIncrement(t *testing.T) {
 func TestTxnSpanRefresherSavepoint(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	ctx := context.Background()
+	tsr, mockSender := makeMockTxnSpanRefresher()
 
-	testutils.RunTrueAndFalse(t, "keep-refresh-spans", func(t *testing.T, keepRefreshSpans bool) {
-		ctx := context.Background()
-		tsr, mockSender := makeMockTxnSpanRefresher()
+	keyA, keyB := roachpb.Key("a"), roachpb.Key("b")
+	txn := makeTxnProto()
 
-		if keepRefreshSpans {
-			KeepRefreshSpansOnSavepointRollback.Override(ctx, &tsr.st.SV, true)
-		} else {
-			KeepRefreshSpansOnSavepointRollback.Override(ctx, &tsr.st.SV, false)
-		}
+	read := func(key roachpb.Key) {
+		ba := &kvpb.BatchRequest{}
+		ba.Header = kvpb.Header{Txn: &txn}
+		getArgs := kvpb.GetRequest{RequestHeader: kvpb.RequestHeader{Key: key}}
+		ba.Add(&getArgs)
+		mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
+			require.Len(t, ba.Requests, 1)
+			require.IsType(t, &kvpb.GetRequest{}, ba.Requests[0].GetInner())
 
-		keyA, keyB := roachpb.Key("a"), roachpb.Key("b")
-		txn := makeTxnProto()
+			br := ba.CreateReply()
+			br.Txn = ba.Txn
+			return br, nil
+		})
+		br, pErr := tsr.SendLocked(ctx, ba)
+		require.Nil(t, pErr)
+		require.NotNil(t, br)
+	}
+	read(keyA)
+	require.Equal(t, []roachpb.Span{{Key: keyA}}, tsr.refreshFootprint.asSlice())
 
-		read := func(key roachpb.Key) {
-			ba := &kvpb.BatchRequest{}
-			ba.Header = kvpb.Header{Txn: &txn}
-			getArgs := kvpb.GetRequest{RequestHeader: kvpb.RequestHeader{Key: key}}
-			ba.Add(&getArgs)
-			mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
-				require.Len(t, ba.Requests, 1)
-				require.IsType(t, &kvpb.GetRequest{}, ba.Requests[0].GetInner())
+	s := savepoint{}
+	tsr.createSavepointLocked(ctx, &s)
 
-				br := ba.CreateReply()
-				br.Txn = ba.Txn
-				return br, nil
-			})
-			br, pErr := tsr.SendLocked(ctx, ba)
-			require.Nil(t, pErr)
-			require.NotNil(t, br)
-		}
-		read(keyA)
-		require.Equal(t, []roachpb.Span{{Key: keyA}}, tsr.refreshFootprint.asSlice())
+	// Another read after the savepoint was created.
+	read(keyB)
+	require.Equal(t, []roachpb.Span{{Key: keyA}, {Key: keyB}}, tsr.refreshFootprint.asSlice())
 
-		s := savepoint{}
-		tsr.createSavepointLocked(ctx, &s)
+	require.Equal(t, []roachpb.Span{{Key: keyA}}, s.refreshSpans)
+	require.False(t, s.refreshInvalid)
 
-		// Another read after the savepoint was created.
-		read(keyB)
-		require.Equal(t, []roachpb.Span{{Key: keyA}, {Key: keyB}}, tsr.refreshFootprint.asSlice())
+	// Rollback the savepoint and check that refresh spans were overwritten.
+	tsr.rollbackToSavepointLocked(ctx, s)
+	require.Equal(t, []roachpb.Span{{Key: keyA}}, tsr.refreshFootprint.asSlice())
 
-		require.Equal(t, []roachpb.Span{{Key: keyA}}, s.refreshSpans)
-		require.False(t, s.refreshInvalid)
+	// Check that rolling back to the savepoint resets refreshInvalid.
+	tsr.refreshInvalid = true
+	tsr.rollbackToSavepointLocked(ctx, s)
+	require.False(t, tsr.refreshInvalid)
 
-		// Rollback the savepoint.
-		tsr.rollbackToSavepointLocked(ctx, s)
-		if keepRefreshSpans {
-			// Check that refresh spans were kept as such.
-			require.Equal(t, []roachpb.Span{{Key: keyA}, {Key: keyB}}, tsr.refreshFootprint.asSlice())
-		} else {
-			// Check that refresh spans were overwritten.
-			require.Equal(t, []roachpb.Span{{Key: keyA}}, tsr.refreshFootprint.asSlice())
-		}
-
-		tsr.refreshInvalid = true
-		tsr.rollbackToSavepointLocked(ctx, s)
-		if keepRefreshSpans {
-			// Check that rolling back to the savepoint keeps refreshInvalid as such.
-			require.True(t, tsr.refreshInvalid)
-		} else {
-			// Check that rolling back to the savepoint resets refreshInvalid.
-			require.False(t, tsr.refreshInvalid)
-		}
-
-		// Set refreshInvalid and then create a savepoint.
-		tsr.refreshInvalid = true
-		s = savepoint{}
-		tsr.createSavepointLocked(ctx, &s)
-		require.True(t, s.refreshInvalid)
-		// Rollback to the savepoint check that refreshes are still invalid.
-		tsr.rollbackToSavepointLocked(ctx, s)
-		require.True(t, tsr.refreshInvalid)
-	})
+	// Set refreshInvalid and then create a savepoint.
+	tsr.refreshInvalid = true
+	s = savepoint{}
+	tsr.createSavepointLocked(ctx, &s)
+	require.True(t, s.refreshInvalid)
+	// Rollback to the savepoint check that refreshes are still invalid.
+	tsr.rollbackToSavepointLocked(ctx, s)
+	require.True(t, tsr.refreshInvalid)
 }

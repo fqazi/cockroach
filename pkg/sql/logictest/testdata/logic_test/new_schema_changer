@@ -39,7 +39,7 @@ statement ok
 SET use_declarative_schema_changer = 'unsafe_always'
 
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN
 
 statement ok
 ALTER TABLE foo ADD COLUMN j INT
@@ -151,7 +151,7 @@ statement ok
 SET use_declarative_schema_changer = 'unsafe_always'
 
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN
 
 statement ok
 ALTER TABLE foo ADD COLUMN a INT
@@ -182,6 +182,9 @@ j  b
 
 statement ok
 SET use_declarative_schema_changer = 'unsafe'
+
+statement error pgcode 0A000 cannot explain a statement which is not supported by the declarative schema changer
+EXPLAIN (DDL) ALTER TABLE bar ALTER COLUMN j TYPE BOOL
 
 statement ok
 DROP TABLE foo, bar
@@ -551,9 +554,9 @@ statement ok
 CREATE TABLE defaultdb.ttyp (id INT PRIMARY KEY, name varchar(256), x defaultdb.typ);
 
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN;
 
-statement ok
+statement ok;
 DROP TABLE defaultdb.ttyp;
 
 statement ok
@@ -683,8 +686,6 @@ CREATE INDEX tmp_idx ON db1.sc1.t1(name)
 
 statement ok
 use db1;
-
-statement ok
 COMMENT ON DATABASE db1 IS 'BLAH';
 COMMENT ON SCHEMA sc1 IS 'BLAH2';
 COMMENT ON TABLE db1.sc1.t1 IS 'BLAH3';
@@ -744,10 +745,7 @@ SET use_declarative_schema_changer = 'unsafe_always'
 # Sanity check: Things are properly executed in post rollback. We should
 # be able to select from tables/views/sequences still
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
-
-statement ok
-SET LOCAL autocommit_before_ddl=off;
+BEGIN
 
 statement ok
 DROP DATABASE db1 CASCADE
@@ -828,7 +826,6 @@ SET experimental_computed_column_rewrites = "(ts :: STRING) -> (to_char(ts AT TI
 statement ok
 ALTER TABLE trewrite ADD COLUMN c STRING AS (ts::STRING) STORED
 
-skipif config local-schema-locked
 query T
 SELECT create_statement FROM [SHOW CREATE TABLE trewrite]
 ----
@@ -838,19 +835,7 @@ CREATE TABLE public.trewrite (
   c STRING NULL AS (to_char(timezone('utc':::STRING, ts))) STORED,
   CONSTRAINT trewrite_pkey PRIMARY KEY (k ASC),
   FAMILY fam_0_k_ts (k, ts, c)
-);
-
-onlyif config local-schema-locked
-query T
-SELECT create_statement FROM [SHOW CREATE TABLE trewrite]
-----
-CREATE TABLE public.trewrite (
-  k INT8 NOT NULL,
-  ts TIMESTAMPTZ NULL,
-  c STRING NULL AS (to_char(timezone('utc':::STRING, ts))) STORED,
-  CONSTRAINT trewrite_pkey PRIMARY KEY (k ASC),
-  FAMILY fam_0_k_ts (k, ts, c)
-) WITH (schema_locked = true);
+)
 
 subtest create-index
 
@@ -1460,7 +1445,7 @@ statement ok
 SET use_declarative_schema_changer = 'unsafe_always';
 
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN
 
 statement ok
 ALTER TABLE t ADD COLUMN k INT AS (i + 3) STORED NOT NULL UNIQUE;
@@ -1469,7 +1454,6 @@ ALTER TABLE t ADD COLUMN j INT DEFAULT 42;
 statement ok
 COMMIT
 
-skipif config local-schema-locked
 query T
 SELECT create_statement FROM [SHOW CREATE TABLE t]
 ----
@@ -1479,19 +1463,7 @@ CREATE TABLE public.t (
   j INT8 NULL DEFAULT 42:::INT8,
   CONSTRAINT t_pkey PRIMARY KEY (i ASC),
   UNIQUE INDEX t_k_key (k ASC)
-);
-
-onlyif config local-schema-locked
-query T
-SELECT create_statement FROM [SHOW CREATE TABLE t]
-----
-CREATE TABLE public.t (
-  i INT8 NOT NULL,
-  k INT8 NOT NULL AS (i + 3:::INT8) STORED,
-  j INT8 NULL DEFAULT 42:::INT8,
-  CONSTRAINT t_pkey PRIMARY KEY (i ASC),
-  UNIQUE INDEX t_k_key (k ASC)
-) WITH (schema_locked = true);
+)
 
 query III rowsort
 SELECT * FROM t
@@ -1503,11 +1475,13 @@ SELECT * FROM t
 subtest create-schema
 
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN
 
+skipif config local-mixed-23.1
 statement ok
 CREATE SCHEMA sc
 
+skipif config local-mixed-23.1
 query TT rowsort
 SHOW SCHEMAS
 ----
@@ -1518,9 +1492,11 @@ pg_extension        node
 public              root
 sc                  root
 
+skipif config local-mixed-23.1
 statement ok
 DROP SCHEMA sc
 
+skipif config local-mixed-23.1
 query TT rowsort
 SHOW SCHEMAS
 ----
@@ -1544,7 +1520,7 @@ statement ok
 SET CLUSTER SETTING sql.schema.force_declarative_statements='!ALTER TABLE'
 
 statement ok
-CREATE TABLE stmt_ctrl(n int primary key) WITH (schema_locked = false)
+CREATE TABLE stmt_ctrl(n int primary key)
 
 statement error pgcode 0A000 cannot explain a statement which is not supported by the declarative schema changer
 EXPLAIN (DDL) ALTER TABLE stmt_ctrl ADD COLUMN j BOOL
@@ -1552,37 +1528,102 @@ EXPLAIN (DDL) ALTER TABLE stmt_ctrl ADD COLUMN j BOOL
 statement ok
 ALTER TABLE stmt_ctrl ADD COLUMN fallback_works BOOL
 
-statement ok
-SET CLUSTER SETTING sql.schema.force_declarative_statements='!CREATE SCHEMA'
-
-# Validate that CREATE SCHEMA can be disabled and can be re-enabled with the same flag.
+# Validate that CREATE SEQUENCE is disabled and can be re-enabled with the same flag.
 statement error pgcode 0A000 cannot explain a statement which is not supported by the declarative schema changer
-EXPLAIN (DDL) CREATE SCHEMA schema1
+EXPLAIN (DDL) CREATE SEQUENCE sq2
 
 statement ok
-SET CLUSTER SETTING sql.schema.force_declarative_statements='+CREATE SCHEMA'
+SET CLUSTER SETTING sql.schema.force_declarative_statements='+CREATE SEQUENCE'
 
+skipif config local-mixed-23.1
 statement ok
-EXPLAIN (DDL) CREATE SCHEMA sc1
+EXPLAIN (DDL) CREATE SEQUENCE sq2
 
 subtest end
 
-
-subtest multiple_primary_key
-
-statement ok
-CREATE TABLE multiple_pk_attempt(n INT PRIMARY KEY, j INT)
-
-let $use_decl_sc
-SHOW use_declarative_schema_changer
+# This subtest ensures ALTER TABLE with multiple ADD COLUMN, DROP COLUMN, and/or
+# ALTER PK is disabled with declarative schema changer by default, unless
+# `use_declarative_schema_changer = (unsafe|unsafe_always)` or
+# `sql.schema.force_declarative_statements='+ALTER TABLE'`.
+# TODO (xiang): Enable it by default on the next major release after v23.2, be it v24.1 or v23.3.
+subtest 108870
 
 statement ok
-SET use_declarative_schema_changer = 'unsafe_always'
-
-statement error pgcode 42611 multiple primary keys for table \"multiple_pk_attempt\" are not allowed
-ALTER TABLE multiple_pk_attempt ADD PRIMARY KEY (j);
+SET sql_safe_updates = false;
+SET use_declarative_schema_changer = 'on';
 
 statement ok
-SET use_declarative_schema_changer = $use_decl_sc
+SET CLUSTER SETTING sql.schema.force_declarative_statements = '';
+
+statement ok
+CREATE TABLE t_108870 (i INT PRIMARY KEY, j INT NOT NULL);
+
+# Ensure ALTER TABLE with only ADD COLUMN, only DROP COLUMN, or only ALTER PK can use declarative schema changer.
+statement ok
+EXPLAIN (DDL) ALTER TABLE t_108870 DROP COLUMN j;
+
+statement ok
+EXPLAIN (DDL) ALTER TABLE t_108870 ADD COLUMN k INT DEFAULT 40;
+
+statement ok
+EXPLAIN (DDL) ALTER TABLE t_108870 ADD COLUMN k INT DEFAULT 40, ADD COLUMN p INT DEFAULT 50;
+
+statement ok
+EXPLAIN (DDL) ALTER TABLE t_108870 ALTER PRIMARY KEY USING COLUMNS (j);
+
+# Ensure ALTER TABLE with multiple ADD COLUMN, DROP COLUMN, and/or ALTER PK cannot use declarative schema changer.
+statement error pgcode 0A000 cannot explain a statement which is not supported by the declarative schema changer
+EXPLAIN (DDL) ALTER TABLE t_108870 ALTER PRIMARY KEY USING COLUMNS (j), DROP COLUMN i;
+
+statement error pgcode 0A000 cannot explain a statement which is not supported by the declarative schema changer
+EXPLAIN (DDL) ALTER TABLE t_108870 DROP COLUMN j, ADD COLUMN k INT DEFAULT 30;
+
+statement error pgcode 0A000 cannot explain a statement which is not supported by the declarative schema changer
+EXPLAIN (DDL) ALTER TABLE t_108870 ADD COLUMN k INT DEFAULT 30, ALTER PRIMARY KEY USING COLUMNS (j);
+
+statement error pgcode 0A000 cannot explain a statement which is not supported by the declarative schema changer
+EXPLAIN (DDL) ALTER TABLE t_108870 ALTER PRIMARY KEY USING COLUMNS (j), DROP COLUMN i, ADD COLUMN k INT DEFAULT 30;
+
+# Ensure we can enable it in declarative schema changer with cluster setting
+# sql.schema.force_declarative_statements.
+statement ok
+SET CLUSTER SETTING sql.schema.force_declarative_statements='+ALTER TABLE';
+
+statement ok
+SET use_declarative_schema_changer = 'on';
+
+statement ok
+EXPLAIN (DDL) ALTER TABLE t_108870 ALTER PRIMARY KEY USING COLUMNS (j), DROP COLUMN i;
+
+statement ok
+EXPLAIN (DDL) ALTER TABLE t_108870 DROP COLUMN j, ADD COLUMN k INT DEFAULT 30;
+
+statement ok
+EXPLAIN (DDL) ALTER TABLE t_108870 ADD COLUMN k INT DEFAULT 30, ALTER PRIMARY KEY USING COLUMNS (j);
+
+skipif config local-mixed-23.1
+statement ok
+EXPLAIN (DDL) ALTER TABLE t_108870 ALTER PRIMARY KEY USING COLUMNS (j), DROP COLUMN i, ADD COLUMN k INT DEFAULT 30;
+
+# Ensure we can also enable it in declarative schema changer with session variable
+# use_declarative_schema_changer.
+statement ok
+SET CLUSTER SETTING sql.schema.force_declarative_statements='';
+
+statement ok
+SET use_declarative_schema_changer = 'unsafe_always';
+
+statement ok
+EXPLAIN (DDL) ALTER TABLE t_108870 ALTER PRIMARY KEY USING COLUMNS (j), DROP COLUMN i;
+
+statement ok
+EXPLAIN (DDL) ALTER TABLE t_108870 DROP COLUMN j, ADD COLUMN k INT DEFAULT 30;
+
+statement ok
+EXPLAIN (DDL) ALTER TABLE t_108870 ADD COLUMN k INT DEFAULT 30, ALTER PRIMARY KEY USING COLUMNS (j);
+
+skipif config local-mixed-23.1
+statement ok
+EXPLAIN (DDL) ALTER TABLE t_108870 ALTER PRIMARY KEY USING COLUMNS (j), DROP COLUMN i, ADD COLUMN k INT DEFAULT 30;
 
 subtest end

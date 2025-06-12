@@ -7,7 +7,6 @@ package schemafeed
 
 import (
 	"context"
-	"slices"
 	"testing"
 	"time"
 
@@ -33,6 +32,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/slices"
 )
 
 func TestTableHistoryIngestionTracking(t *testing.T) {
@@ -54,36 +54,52 @@ func TestTableHistoryIngestionTracking(t *testing.T) {
 		default:
 		}
 	}
+	requireWaitingFor := func(t *testing.T, sf *schemaFeed, ts hlc.Timestamp) {
+		t.Helper()
+		testutils.SucceedsSoon(t, func() error {
+			sf.mu.Lock()
+			defer sf.mu.Unlock()
 
-	m := schemaFeed{}
-	frontier := func() hlc.Timestamp {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		return m.mu.ts.frontier
+			for _, w := range sf.mu.waiters {
+				if w.ts == ts {
+					return nil
+				}
+			}
+			return errors.Newf("expected to find waiter for ts=%s", ts)
+		})
 	}
 
-	require.Equal(t, ts(0), frontier())
+	m := schemaFeed{}
+	m.mu.highWater = ts(0)
+
+	require.Equal(t, ts(0), m.highWater())
 
 	// advance
 	require.NoError(t, m.ingestDescriptors(ctx, ts(0), ts(1), nil, validateFn))
-	require.Equal(t, ts(1), frontier())
+	require.Equal(t, ts(1), m.highWater())
 	require.NoError(t, m.ingestDescriptors(ctx, ts(1), ts(2), nil, validateFn))
-	require.Equal(t, ts(2), frontier())
+	require.Equal(t, ts(2), m.highWater())
+
+	// no-ops
+	require.NoError(t, m.ingestDescriptors(ctx, ts(0), ts(1), nil, validateFn))
+	require.Equal(t, ts(2), m.highWater())
+	require.NoError(t, m.ingestDescriptors(ctx, ts(1), ts(2), nil, validateFn))
+	require.Equal(t, ts(2), m.highWater())
 
 	// overlap
 	require.NoError(t, m.ingestDescriptors(ctx, ts(1), ts(3), nil, validateFn))
-	require.Equal(t, ts(3), frontier())
+	require.Equal(t, ts(3), m.highWater())
 
 	// gap
 	require.EqualError(t, m.ingestDescriptors(ctx, ts(4), ts(5), nil, validateFn),
 		`gap between 0.000000003,0 and 0.000000004,0`)
-	require.Equal(t, ts(3), frontier())
+	require.Equal(t, ts(3), m.highWater())
 
 	// validates
 	require.NoError(t, m.ingestDescriptors(ctx, ts(3), ts(4), []catalog.Descriptor{
 		tabledesc.NewBuilder(&descpb.TableDescriptor{ID: 0}).BuildImmutable(),
 	}, validateFn))
-	require.Equal(t, ts(4), frontier())
+	require.Equal(t, ts(4), m.highWater())
 
 	// high-water already high enough. fast-path
 	require.NoError(t, m.waitForTS(ctx, ts(3)))
@@ -94,6 +110,8 @@ func TestTableHistoryIngestionTracking(t *testing.T) {
 	errCh7 := make(chan error, 1)
 	go func() { errCh7 <- m.waitForTS(ctx, ts(7)) }()
 	go func() { errCh6 <- m.waitForTS(ctx, ts(6)) }()
+	requireWaitingFor(t, &m, ts(7))
+	requireWaitingFor(t, &m, ts(6))
 	requireChannelEmpty(t, errCh6)
 	requireChannelEmpty(t, errCh7)
 
@@ -106,6 +124,7 @@ func TestTableHistoryIngestionTracking(t *testing.T) {
 	require.NoError(t, m.ingestDescriptors(ctx, ts(5), ts(6), nil, validateFn))
 	require.NoError(t, <-errCh6)
 	requireChannelEmpty(t, errCh7)
+	requireWaitingFor(t, &m, ts(7))
 
 	// high-water advances again, unblocks errCh7
 	require.NoError(t, m.ingestDescriptors(ctx, ts(6), ts(7), nil, validateFn))
@@ -115,6 +134,7 @@ func TestTableHistoryIngestionTracking(t *testing.T) {
 	errCh8 := make(chan error, 1)
 	ctxTS8, cancelTS8 := context.WithCancel(ctx)
 	go func() { errCh8 <- m.waitForTS(ctxTS8, ts(8)) }()
+	requireWaitingFor(t, &m, ts(8))
 	requireChannelEmpty(t, errCh8)
 	cancelTS8()
 	require.EqualError(t, <-errCh8, `context canceled`)
@@ -123,7 +143,7 @@ func TestTableHistoryIngestionTracking(t *testing.T) {
 	require.EqualError(t, m.ingestDescriptors(ctx, ts(7), ts(10), []catalog.Descriptor{
 		tabledesc.NewBuilder(&descpb.TableDescriptor{ID: 0, Name: `whoops!`}).BuildImmutable(),
 	}, validateFn), `descriptor: whoops!`)
-	require.Equal(t, ts(7), frontier())
+	require.Equal(t, ts(7), m.highWater())
 
 	// ts 10 has errored, so validate can return its error without blocking
 	require.EqualError(t, m.waitForTS(ctx, ts(10)), `descriptor: whoops!`)
@@ -133,6 +153,8 @@ func TestTableHistoryIngestionTracking(t *testing.T) {
 	errCh9 := make(chan error, 1)
 	go func() { errCh8 <- m.waitForTS(ctx, ts(8)) }()
 	go func() { errCh9 <- m.waitForTS(ctx, ts(9)) }()
+	requireWaitingFor(t, &m, ts(8))
+	requireWaitingFor(t, &m, ts(9))
 	requireChannelEmpty(t, errCh8)
 	requireChannelEmpty(t, errCh9)
 
@@ -140,10 +162,11 @@ func TestTableHistoryIngestionTracking(t *testing.T) {
 	require.EqualError(t, m.ingestDescriptors(ctx, ts(7), ts(9), []catalog.Descriptor{
 		tabledesc.NewBuilder(&descpb.TableDescriptor{ID: 0, Name: `oh no!`}).BuildImmutable(),
 	}, validateFn), `descriptor: oh no!`)
-	require.Equal(t, ts(7), frontier())
+	require.Equal(t, ts(7), m.highWater())
 	require.EqualError(t, <-errCh9, `descriptor: oh no!`)
 
 	// ts 8 is still unknown
+	requireWaitingFor(t, &m, ts(8))
 	requireChannelEmpty(t, errCh8)
 
 	// always return the earliest error seen (so waiting for ts 10 immediately
@@ -152,7 +175,7 @@ func TestTableHistoryIngestionTracking(t *testing.T) {
 
 	// something earlier than ts 10 can still be okay
 	require.NoError(t, m.ingestDescriptors(ctx, ts(7), ts(8), nil, validateFn))
-	require.Equal(t, ts(8), frontier())
+	require.Equal(t, ts(8), m.highWater())
 	require.NoError(t, <-errCh8)
 }
 
@@ -427,73 +450,66 @@ func TestPauseOrResumePolling(t *testing.T) {
 		targets: CreateChangefeedTargets(tableID),
 	}
 
-	getFrontier := func() hlc.Timestamp {
+	setHighWater := func(t hlc.Timestamp) {
 		sf.mu.Lock()
 		defer sf.mu.Unlock()
-		return sf.mu.ts.frontier
+		sf.mu.highWater = t
 	}
-	setFrontier := func(ts hlc.Timestamp) error {
-		sf.mu.Lock()
-		defer sf.mu.Unlock()
-		return sf.mu.ts.advanceFrontier(ts)
-	}
-
-	// Set the initial frontier to 10.
-	require.NoError(t, setFrontier(hlc.Timestamp{WallTime: 10}))
+	setHighWater(hlc.Timestamp{WallTime: 10})
 
 	// Initially, polling should not be paused.
 	require.False(t, sf.pollingPaused())
-	require.Equal(t, hlc.Timestamp{WallTime: 10}, getFrontier())
+	require.Equal(t, hlc.Timestamp{WallTime: 10}, sf.highWater())
 
 	// We expect a non-terminal error to be swallowed for time 10.
 	require.NoError(t, sf.pauseOrResumePolling(ctx, hlc.Timestamp{WallTime: 10}))
 	require.False(t, sf.pollingPaused())
-	require.Equal(t, hlc.Timestamp{WallTime: 10}, getFrontier())
+	require.Equal(t, hlc.Timestamp{WallTime: 10}, sf.highWater())
 
 	// We bump the highwater up to reflect a descriptor being read at time 20.
-	require.NoError(t, setFrontier(hlc.Timestamp{WallTime: 20}))
+	setHighWater(hlc.Timestamp{WallTime: 20})
 	require.False(t, sf.pollingPaused())
-	require.Equal(t, hlc.Timestamp{WallTime: 20}, getFrontier())
+	require.Equal(t, hlc.Timestamp{WallTime: 20}, sf.highWater())
 
 	// We expect polling not to be paused for time 30.
 	require.NoError(t, sf.pauseOrResumePolling(ctx, hlc.Timestamp{WallTime: 30}))
 	require.False(t, sf.pollingPaused())
-	require.Equal(t, hlc.Timestamp{WallTime: 20}, getFrontier())
+	require.Equal(t, hlc.Timestamp{WallTime: 20}, sf.highWater())
 
 	// We expect polling not to be paused for time 40 since the highwater
 	// has not caught up to the schema-locked version.
 	require.NoError(t, sf.pauseOrResumePolling(ctx, hlc.Timestamp{WallTime: 40}))
 	require.False(t, sf.pollingPaused())
-	require.Equal(t, hlc.Timestamp{WallTime: 20}, getFrontier())
+	require.Equal(t, hlc.Timestamp{WallTime: 20}, sf.highWater())
 
 	// We bump the highwater up to reflect a descriptor being read at time 40.
-	require.NoError(t, setFrontier(hlc.Timestamp{WallTime: 40}))
+	setHighWater(hlc.Timestamp{WallTime: 40})
 	require.False(t, sf.pollingPaused())
-	require.Equal(t, hlc.Timestamp{WallTime: 40}, getFrontier())
+	require.Equal(t, hlc.Timestamp{WallTime: 40}, sf.highWater())
 
 	// We expect polling to be paused for time 40 now that the highwater has
 	// caught up to the schema-locked version.
 	require.NoError(t, sf.pauseOrResumePolling(ctx, hlc.Timestamp{WallTime: 40}))
 	require.True(t, sf.pollingPaused())
-	require.Equal(t, hlc.Timestamp{WallTime: 40}, getFrontier())
+	require.Equal(t, hlc.Timestamp{WallTime: 40}, sf.highWater())
 
 	// We expect polling continue to be paused for time 50 and to see the
 	// highwater bumped up.
 	require.NoError(t, sf.pauseOrResumePolling(ctx, hlc.Timestamp{WallTime: 50}))
 	require.True(t, sf.pollingPaused())
-	require.Equal(t, hlc.Timestamp{WallTime: 50}, getFrontier())
+	require.Equal(t, hlc.Timestamp{WallTime: 50}, sf.highWater())
 
 	// We expect polling continue to be paused for time 20 and to see the
 	// highwater remain unchanged (fast path).
 	require.NoError(t, sf.pauseOrResumePolling(ctx, hlc.Timestamp{WallTime: 20}))
 	require.True(t, sf.pollingPaused())
-	require.Equal(t, hlc.Timestamp{WallTime: 50}, getFrontier())
+	require.Equal(t, hlc.Timestamp{WallTime: 50}, sf.highWater())
 
 	// We expect polling to be resumed for time 60 and to not see the highwater
 	// bumped up.
 	require.NoError(t, sf.pauseOrResumePolling(ctx, hlc.Timestamp{WallTime: 60}))
 	require.False(t, sf.pollingPaused())
-	require.Equal(t, hlc.Timestamp{WallTime: 50}, getFrontier())
+	require.Equal(t, hlc.Timestamp{WallTime: 50}, sf.highWater())
 }
 
 // BenchmarkPauseOrResumePolling benchmarks pauseOrResumePolling in cases where
@@ -516,14 +532,14 @@ func BenchmarkPauseOrResumePolling(b *testing.B) {
 		},
 		targets: CreateChangefeedTargets(tableID),
 	}
-	setFrontier := func(ts hlc.Timestamp) error {
+	setHighWater := func(t hlc.Timestamp) {
 		sf.mu.Lock()
 		defer sf.mu.Unlock()
-		return sf.mu.ts.advanceFrontier(ts)
+		sf.mu.highWater = t
 	}
 
 	// Set the initial frontier to 10.
-	require.NoError(b, setFrontier(hlc.Timestamp{WallTime: 10}))
+	setHighWater(hlc.Timestamp{WallTime: 10})
 	// Initially, polling should not be paused.
 	require.False(b, sf.pollingPaused())
 
@@ -538,7 +554,7 @@ func BenchmarkPauseOrResumePolling(b *testing.B) {
 	})
 	b.Run("not schema locked", func(b *testing.B) {
 		// We bump the highwater up to reflect a descriptor being read at time 30.
-		require.NoError(b, setFrontier(hlc.Timestamp{WallTime: 30}))
+		setHighWater(hlc.Timestamp{WallTime: 30})
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			// We do not expect polling to be paused for time 30 since the descriptor
@@ -549,7 +565,7 @@ func BenchmarkPauseOrResumePolling(b *testing.B) {
 	})
 	b.Run("schema locked", func(b *testing.B) {
 		// We bump the highwater up to reflect a descriptor being read at time 50.
-		require.NoError(b, setFrontier(hlc.Timestamp{WallTime: 50}))
+		setHighWater(hlc.Timestamp{WallTime: 50})
 		for i := 0; i < b.N; i++ {
 			// We expect polling to be paused for time 50 now that the highwater on a
 			// schema-locked version.

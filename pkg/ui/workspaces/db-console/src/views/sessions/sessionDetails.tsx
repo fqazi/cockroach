@@ -3,11 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { SessionDetails, byteArrayToUuid } from "@cockroachlabs/cluster-ui";
-import { connect } from "react-redux";
+import { getMatchParamByName } from "src/util/query";
+import { sessionAttr } from "src/util/constants";
 import { RouteComponentProps, withRouter } from "react-router-dom";
 import { createSelector } from "reselect";
-
+import { Pick } from "src/util/pick";
+import { AdminUIState } from "src/redux/state";
+import { SessionsResponseMessage } from "src/util/api";
+import { connect } from "react-redux";
 import {
   CachedDataReducerState,
   refreshLiveness,
@@ -19,12 +22,8 @@ import {
   terminateQueryAction,
   terminateSessionAction,
 } from "src/redux/sessions/sessionsSagas";
-import { AdminUIState } from "src/redux/state";
 import { setTimeScale } from "src/redux/timeScale";
-import { SessionsResponseMessage } from "src/util/api";
-import { sessionAttr } from "src/util/constants";
-import { Pick } from "src/util/pick";
-import { getMatchParamByName } from "src/util/query";
+import { byteArrayToUuid, SessionDetails } from "@cockroachlabs/cluster-ui";
 
 type SessionsState = Pick<AdminUIState, "cachedData", "sessions">;
 

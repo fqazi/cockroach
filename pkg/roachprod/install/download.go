@@ -69,7 +69,7 @@ func Download(
 		dest,
 	)
 	if err := c.Run(ctx, l, l.Stdout, l.Stderr,
-		WithNodes(downloadNodes),
+		OnNodes(downloadNodes),
 		fmt.Sprintf("downloading %s", basename),
 		downloadCmd,
 	); err != nil {
@@ -81,7 +81,7 @@ func Download(
 	if c.IsLocal() && !filepath.IsAbs(dest) {
 		src := filepath.Join(c.localVMDir(downloadNodes[0]), dest)
 		cpCmd := fmt.Sprintf(`cp "%s" "%s"`, src, dest)
-		return c.Run(ctx, l, l.Stdout, l.Stderr, WithNodes(c.Nodes[1:]), "copying to remaining nodes", cpCmd)
+		return c.Run(ctx, l, l.Stdout, l.Stderr, OnNodes(c.Nodes[1:]), "copying to remaining nodes", cpCmd)
 	}
 
 	return nil

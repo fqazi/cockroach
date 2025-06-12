@@ -405,7 +405,7 @@ func TestGetLogReader(t *testing.T) {
 	// Validate and apply the config.
 	require.NoError(t, config.Validate(&sc.logDir))
 	TestingResetActive()
-	cleanupFn, err := ApplyConfig(config, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+	cleanupFn, err := ApplyConfig(config)
 	require.NoError(t, err)
 	defer cleanupFn()
 
@@ -617,7 +617,7 @@ func TestFd2Capture(t *testing.T) {
 		t.Fatal(err)
 	}
 	TestingResetActive()
-	cleanupFn, err := ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+	cleanupFn, err := ApplyConfig(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,8 +744,8 @@ func TestLogEntryPropagation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	require.NoError(t, hijackStderr(f))
-	defer func() { require.NoError(t, hijackStderr(OrigStderr)) }()
+	defer func(prevStderr *os.File) { OrigStderr = prevStderr }(OrigStderr)
+	OrigStderr = f
 
 	const specialMessage = `CAPTAIN KIRK`
 
@@ -822,26 +822,5 @@ func BenchmarkEventf_WithVerboseTraceSpan(b *testing.B) {
 				Eventf(ctx, "%s %s %s", "foo", "bar", "baz")
 			}
 		})
-	}
-}
-
-// BenchmarkExpensiveLogEnabled measures the overhead of checking whether
-// expensive logging is enabled.
-//
-// Results with go1.21.4 on a Mac with an Apple M1 Pro processor:
-//
-// name                    time/op
-// ExpensiveLogEnabled-10  13.5ns ± 1%
-func BenchmarkExpensiveLogEnabled(b *testing.B) {
-	ctx := context.Background()
-	// Add a few values to the context, to make sure ctx.Value is not
-	// unrealistically cheap.
-	for i := 0; i < 10; i++ {
-		type key int // avoid lint warning
-		ctx = context.WithValue(ctx, key(i), i)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = ExpensiveLogEnabled(ctx, 2)
 	}
 }

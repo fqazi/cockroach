@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/build"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvnemesis/kvnemesisutil"
@@ -28,9 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
-	"github.com/cockroachdb/cockroach/pkg/storage/mvcceval"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/bufalloc"
@@ -65,11 +62,6 @@ const (
 	// LockConflictError is set to half of the maximum lock table size. This value
 	// is subject to tuning in real environment as we have more data available.
 	MaxConflictsPerLockConflictErrorDefault = 5000
-	// TargetBytesPerLockConflictErrorDefault is the default value for maximum
-	// size of locks reported by ExportToSST and Scan operations in
-	// LockConflictError. This value
-	// is subject to tuning in real environment as we have more data available.
-	TargetBytesPerLockConflictErrorDefault = 8388608
 )
 
 var minWALSyncInterval = settings.RegisterDurationSetting(
@@ -79,6 +71,37 @@ var minWALSyncInterval = settings.RegisterDurationSetting(
 	0*time.Millisecond,
 	settings.NonNegativeDurationWithMaximum(1*time.Second),
 )
+
+// MVCCRangeTombstonesEnabledInMixedClusters enables writing of MVCC range
+// tombstones. Currently, this is used for schema GC and import cancellation
+// rollbacks.
+//
+// Note that any executing jobs may not pick up this change, so these need to be
+// waited out before being certain that the setting has taken effect.
+//
+// If disabled after being enabled, this will prevent new range tombstones from
+// being written, but already written tombstones will remain until GCed. The
+// above note on jobs also applies in this case.
+//
+// If the version of the cluster is at or beyond the version
+// V23_1_MVCCRangeTombstonesUnconditionallyEnabled, the feature is
+// unconditionally enabled.
+var MVCCRangeTombstonesEnabledInMixedClusters = settings.RegisterBoolSetting(
+	settings.SystemVisible,
+	"storage.mvcc.range_tombstones.enabled",
+	"controls the use of MVCC range tombstones in mixed version clusters; range tombstones are always on in finalized 23.1 clusters",
+	false)
+
+// CanUseMVCCRangeTombstones returns true if the caller can begin writing MVCC
+// range tombstones, by setting DeleteRangeRequest.UseRangeTombstone. It
+// requires the storage.mvcc.range_tombstones.enabled cluster setting to be
+// enabled, OR the cluster version is at or beyond the
+// V23_1_MVCCRangeTombstonesUnconditionallyEnabled version (i.e. in 23.1, the
+// feature is unconditionally enabled).
+func CanUseMVCCRangeTombstones(ctx context.Context, st *cluster.Settings) bool {
+	return st.Version.IsActive(ctx, clusterversion.V23_1_MVCCRangeTombstonesUnconditionallyEnabled) ||
+		MVCCRangeTombstonesEnabledInMixedClusters.Get(&st.SV)
+}
 
 // MaxConflictsPerLockConflictError sets maximum number of locks returned in
 // LockConflictError in operations that return multiple locks per error.
@@ -90,74 +113,51 @@ var MaxConflictsPerLockConflictError = settings.RegisterIntSetting(
 	settings.WithName("storage.mvcc.max_conflicts_per_lock_conflict_error"),
 )
 
-// TargetBytesPerLockConflictError sets target bytes for collected intents with
-// LockConflictError. This setting will stop collecting intents when total intent
-// size exceeding the target threshold.
-var TargetBytesPerLockConflictError = settings.RegisterIntSetting(
-	settings.ApplicationLevel,
-	"storage.mvcc.target_intent_bytes_per_error",
-	"maximum total lock size returned in errors during evaluation",
-	TargetBytesPerLockConflictErrorDefault,
-	settings.WithName("storage.mvcc.target_bytes_per_lock_conflict_error"),
-)
-
-var defaultMaxConcurrentCompactions = getDefaultMaxConcurrentCompactions()
-
-// By default, we use up to min(GOMAXPROCS-1, 3) threads for background
-// compactions per store (reserving the final process for flushes).
-func getDefaultMaxConcurrentCompactions() int {
-	const def = 3
-	if n := runtime.GOMAXPROCS(0); n-1 < def {
-		return max(n-1, 1)
-	}
-	return def
-}
-
-// envMaxConcurrentCompactions is not zero if this node has an env var override
-// for the concurrency.
-var envMaxConcurrentCompactions = getMaxConcurrentCompactionsFromEnv()
-
-func getMaxConcurrentCompactionsFromEnv() int {
-	if v := envutil.EnvOrDefaultInt("COCKROACH_CONCURRENT_COMPACTIONS", 0); v > 0 {
-		return v
-	}
-	// The old COCKROACH_ROCKSDB_CONCURRENCY environment variable was never
-	// documented, but customers were told about it and use today in
-	// production. We don't want to break them, so if the new env var
-	// is unset but COCKROACH_ROCKSDB_CONCURRENCY is set, use the old env
-	// var's value. This old env var has a wart in that it's expressed as a
-	// number of concurrency slots to make available to both flushes and
-	// compactions (a vestige of the corresponding RocksDB option's
-	// mechanics). We need to adjust it to be in terms of just compaction
-	// concurrency by subtracting the flushing routine's dedicated slot.
-	if oldV := envutil.EnvOrDefaultInt("COCKROACH_ROCKSDB_CONCURRENCY", 0); oldV > 0 {
-		return max(oldV-1, 1)
-	}
-	return 0
-}
-
-// determineMaxConcurrentCompactions determines the upper limit on compaction
-// concurrency.
+// getMaxConcurrentCompactions wraps the maxConcurrentCompactions env var in a
+// func that may be installed on Options.MaxConcurrentCompactions. It also
+// imposes a floor on the max, so that an engine is always created with at least
+// 1 slot for a compactions.
 //
-// Normally, we use the default limit of min(3, numCPU-1). This limit can be
-// changed via an environment variable or via a cluster setting. If both of
-// those are used, the maximum of them is taken.
-func determineMaxConcurrentCompactions(defaultValue int, envValue int, clusterSetting int) int {
-	if envValue > 0 {
-		if clusterSetting > 0 {
-			return max(envValue, clusterSetting)
-		}
-		return envValue
+// NB: This function inspects the environment every time it's called. This is
+// okay, because Engine construction in NewPebble will invoke it and store the
+// value on the Engine itself.
+func getMaxConcurrentCompactions() int {
+	n := envutil.EnvOrDefaultInt(
+		"COCKROACH_CONCURRENT_COMPACTIONS", func() int {
+			// The old COCKROACH_ROCKSDB_CONCURRENCY environment variable was never
+			// documented, but customers were told about it and use today in
+			// production. We don't want to break them, so if the new env var
+			// is unset but COCKROACH_ROCKSDB_CONCURRENCY is set, use the old env
+			// var's value. This old env var has a wart in that it's expressed as a
+			// number of concurrency slots to make available to both flushes and
+			// compactions (a vestige of the corresponding RocksDB option's
+			// mechanics). We need to adjust it to be in terms of just compaction
+			// concurrency by subtracting the flushing routine's dedicated slot.
+			//
+			// TODO(jackson): Should envutil expose its `getEnv` internal func for
+			// cases like this where we actually want to know whether it's present
+			// or not; not just fallback to a default?
+			if oldV := envutil.EnvOrDefaultInt("COCKROACH_ROCKSDB_CONCURRENCY", 0); oldV > 0 {
+				return oldV - 1
+			}
+
+			// By default use up to min(numCPU-1, 3) threads for background
+			// compactions per store (reserving the final process for flushes).
+			const max = 3
+			if n := runtime.GOMAXPROCS(0); n-1 < max {
+				return n - 1
+			}
+			return max
+		}())
+	if n < 1 {
+		return 1
 	}
-	if clusterSetting > 0 {
-		return clusterSetting
-	}
-	return defaultValue
+	return n
 }
 
 // l0SubLevelCompactionConcurrency is the sub-level threshold at which to
 // allow an increase in compaction concurrency. The maximum is still
-// controlled by pebble.Options.CompactionConcurrencyRange. The default of 2
+// controlled by pebble.Options.MaxConcurrentCompactions. The default of 2
 // allows an additional compaction (so total 1 + 1 = 2 compactions) when the
 // sub-level count is 2, and increments concurrency by 1 whenever sub-level
 // count increases by 2 (so 1 + 2 = 3 compactions) when sub-level count is 4,
@@ -395,15 +395,15 @@ func (r MVCCRangeKeyValue) Clone() MVCCRangeKeyValue {
 	return r
 }
 
-// optionalValue represents an optional MVCCValue. It is preferred
-// over a *roachpb.Value or *MVCCValue to avoid the forced heap allocation.
+// optionalValue represents an optional roachpb.Value. It is preferred
+// over a *roachpb.Value to avoid the forced heap allocation.
 type optionalValue struct {
-	MVCCValue
+	roachpb.Value
 	exists bool
 }
 
-func makeOptionalValue(v MVCCValue) optionalValue {
-	return optionalValue{MVCCValue: v, exists: true}
+func makeOptionalValue(v roachpb.Value) optionalValue {
+	return optionalValue{Value: v, exists: true}
 }
 
 func (v *optionalValue) IsPresent() bool {
@@ -421,21 +421,6 @@ func (v *optionalValue) ToPointer() *roachpb.Value {
 	// Copy to prevent forcing receiver onto heap.
 	cpy := v.Value
 	return &cpy
-}
-
-func (v *optionalValue) isOriginTimestampWinner(
-	proposedTS hlc.Timestamp, inclusive bool,
-) (bool, hlc.Timestamp) {
-	if !v.exists {
-		return true, hlc.Timestamp{}
-	}
-
-	existTS := v.Value.Timestamp
-	if v.MVCCValueHeader.OriginTimestamp.IsSet() {
-		existTS = v.MVCCValueHeader.OriginTimestamp
-	}
-
-	return existTS.Less(proposedTS) || (inclusive && existTS.Equal(proposedTS)), existTS
 }
 
 // isSysLocal returns whether the key is system-local.
@@ -867,11 +852,11 @@ func updateStatsOnRangeKeyPut(rangeKeys MVCCRangeKeyStack) enginepb.MVCCStats {
 	var ms enginepb.MVCCStats
 	ms.AgeTo(rangeKeys.Newest().WallTime)
 	ms.RangeKeyCount++
-	ms.RangeKeyBytes += int64(mvccencoding.EncodedMVCCKeyPrefixLength(rangeKeys.Bounds.Key)) +
-		int64(mvccencoding.EncodedMVCCKeyPrefixLength(rangeKeys.Bounds.EndKey))
+	ms.RangeKeyBytes += int64(EncodedMVCCKeyPrefixLength(rangeKeys.Bounds.Key)) +
+		int64(EncodedMVCCKeyPrefixLength(rangeKeys.Bounds.EndKey))
 	for _, v := range rangeKeys.Versions {
 		ms.AgeTo(v.Timestamp.WallTime)
-		ms.RangeKeyBytes += int64(mvccencoding.EncodedMVCCTimestampSuffixLength(v.Timestamp))
+		ms.RangeKeyBytes += int64(EncodedMVCCTimestampSuffixLength(v.Timestamp))
 		ms.RangeValCount++
 		ms.RangeValBytes += int64(len(v.Value))
 	}
@@ -890,8 +875,8 @@ func updateStatsOnRangeKeyPutVersion(
 	// have to move the GCBytesAge contribution of the key up from the latest
 	// version to the new version if it's written at the top.
 	if rangeKeys.Newest().Less(version.Timestamp) {
-		keyBytes := int64(mvccencoding.EncodedMVCCKeyPrefixLength(rangeKeys.Bounds.Key)) +
-			int64(mvccencoding.EncodedMVCCKeyPrefixLength(rangeKeys.Bounds.EndKey))
+		keyBytes := int64(EncodedMVCCKeyPrefixLength(rangeKeys.Bounds.Key)) +
+			int64(EncodedMVCCKeyPrefixLength(rangeKeys.Bounds.EndKey))
 		ms.AgeTo(rangeKeys.Newest().WallTime)
 		ms.RangeKeyBytes -= keyBytes
 		ms.AgeTo(version.Timestamp.WallTime)
@@ -900,7 +885,7 @@ func updateStatsOnRangeKeyPutVersion(
 
 	// Account for the new version.
 	ms.AgeTo(version.Timestamp.WallTime)
-	ms.RangeKeyBytes += int64(mvccencoding.EncodedMVCCTimestampSuffixLength(version.Timestamp))
+	ms.RangeKeyBytes += int64(EncodedMVCCTimestampSuffixLength(version.Timestamp))
 	ms.RangeValCount++
 	ms.RangeValBytes += int64(len(version.Value))
 
@@ -957,13 +942,13 @@ func UpdateStatsOnRangeKeySplit(
 	// contribution of the end and start keys of the split stacks.
 	ms.AgeTo(versions[0].Timestamp.WallTime)
 	ms.RangeKeyCount++
-	ms.RangeKeyBytes += 2 * int64(mvccencoding.EncodedMVCCKeyPrefixLength(splitKey))
+	ms.RangeKeyBytes += 2 * int64(EncodedMVCCKeyPrefixLength(splitKey))
 
 	// Account for the creation of all versions in new new stack.
 	for _, v := range versions {
 		ms.AgeTo(v.Timestamp.WallTime)
 		ms.RangeValCount++
-		ms.RangeKeyBytes += int64(mvccencoding.EncodedMVCCTimestampSuffixLength(v.Timestamp))
+		ms.RangeKeyBytes += int64(EncodedMVCCTimestampSuffixLength(v.Timestamp))
 		ms.RangeValBytes += int64(len(v.Value))
 	}
 
@@ -1178,11 +1163,10 @@ func MVCCBlindPutInlineWithPrev(
 	// plenty of other tests and assertions for this.
 	if false && ms != nil {
 		iter, err := newMVCCIterator(
-			ctx, rw, hlc.Timestamp{}, false /* rangeKeyMasking */, false, /* noInterleavedIntents */
+			rw, hlc.Timestamp{}, false /* rangeKeyMasking */, false, /* noInterleavedIntents */
 			IterOptions{
 				KeyTypes: IterKeyTypePointsAndRanges,
 				Prefix:   true,
-				// Don't bother with ReadCategory.
 			},
 		)
 		if err != nil {
@@ -1209,7 +1193,7 @@ func MVCCBlindPutInlineWithPrev(
 	return err
 }
 
-// LockTableView is a request-bound snapshot into an in-memory collections of
+// LockTableView is a transaction-bound view into an in-memory collections of
 // key-level locks. The set of per-key locks stored in the in-memory lock table
 // structure overlaps with those stored in the persistent lock table keyspace
 // (i.e. intents produced by an MVCCKeyAndIntentsIterKind iterator), but one is
@@ -1218,16 +1202,20 @@ func MVCCBlindPutInlineWithPrev(
 // table keyspace (i.e. replicated locks that have yet to be "discovered").
 type LockTableView interface {
 	// IsKeyLockedByConflictingTxn returns whether the specified key is locked by
-	// a conflicting transaction in the request's snapshot of the lock table,
-	// given the request's own desired locking strength. If so, true is returned
-	// and so is the lock holder. Otherwise, false is returned.
+	// a conflicting transaction in the lockTableGuard's snapshot of the lock
+	// table, given the caller's own desired locking strength. If so, true is
+	// returned and so is the lock holder. If the lock is held by the transaction
+	// itself, there's no conflict to speak of, so false is returned.
 	//
 	// This method is used by requests in conjunction with the SkipLocked wait
 	// policy to determine which keys they should skip over during evaluation.
-	IsKeyLockedByConflictingTxn(context.Context, roachpb.Key) (bool, *enginepb.TxnMeta, error)
-	// Close cleans up the LockTableView; it should not be used after being
-	// closed.
-	Close()
+	//
+	// If the supplied lock strength is locking (!= lock.None), then any queued
+	// locking requests that came before the lockTableGuard will also be checked
+	// for conflicts. This helps prevent a stream of locking SKIP LOCKED requests
+	// from starving out regular locking requests. In such cases, true is
+	// returned, but so is nil.
+	IsKeyLockedByConflictingTxn(roachpb.Key, lock.Strength) (bool, *enginepb.TxnMeta, error)
 }
 
 // MVCCGetOptions bundles options for the MVCCGet family of functions.
@@ -1267,13 +1255,6 @@ type MVCCGetOptions struct {
 	// AllowEmpty will return an empty result if the request key exceeds the
 	// TargetBytes limit.
 	AllowEmpty bool
-	// ReadCategory is used to map to a user-understandable category string, for
-	// stats aggregation and metrics, and a Pebble-understandable QoS.
-	ReadCategory fs.ReadCategory
-	// ReturnRawMVCCValues indicates the get should return a
-	// roachpb.Value whose RawBytes may contain MVCCValueHeader
-	// data.
-	ReturnRawMVCCValues bool
 }
 
 // MVCCGetResult bundles return values for the MVCCGet family of functions.
@@ -1338,7 +1319,6 @@ type MVCCResolveWriteIntentRangeOptions struct {
 // inline values, disabling intents and range keys. If rangeKeyMasking is true,
 // IterOptions.RangeKeyMaskingBelow is set to the given timestamp.
 func newMVCCIterator(
-	ctx context.Context,
 	reader Reader,
 	timestamp hlc.Timestamp,
 	rangeKeyMasking bool,
@@ -1349,7 +1329,7 @@ func newMVCCIterator(
 	// However, we allow the caller to enable range keys, since they may be needed
 	// for conflict checks when writing inline values.
 	if timestamp.IsEmpty() {
-		return reader.NewMVCCIterator(ctx, MVCCKeyIterKind, opts)
+		return reader.NewMVCCIterator(MVCCKeyIterKind, opts)
 	}
 	// Enable range key masking if requested.
 	if rangeKeyMasking && opts.KeyTypes != IterKeyTypePointsOnly &&
@@ -1360,7 +1340,7 @@ func newMVCCIterator(
 	if noInterleavedIntents {
 		iterKind = MVCCKeyIterKind
 	}
-	return reader.NewMVCCIterator(ctx, iterKind, opts)
+	return reader.NewMVCCIterator(iterKind, opts)
 }
 
 // MVCCGet returns a MVCCGetResult.
@@ -1409,71 +1389,6 @@ func MVCCGet(
 	return res, err
 }
 
-// MVCCGetForKnownTimestampWithNoIntent returns the value for key@timestamp,
-// which is required to exist as a point (not a rangekey) and not have a
-// corresponding intent. It returns a tombstone if that is the value at
-// key@timestamp. It returns an error if there is no value. The caller should
-// set valueInBatch to true if the value is known to be in the batch and does
-// not need to be read from the engine (if the batch does not have it).
-//
-// REQUIRES: batch is an indexed batch.
-//
-// TODO(sumeer): microbenchmark for valueInBatch={false,true}. There are some
-// macro-benchmark numbers using kv0 and changefeeds in
-// https://github.com/cockroachdb/cockroach/issues/113090#issuecomment-1782902045.
-func MVCCGetForKnownTimestampWithNoIntent(
-	ctx context.Context, batch Batch, key roachpb.Key, timestamp hlc.Timestamp, valueInBatch bool,
-) (*roachpb.Value, enginepb.MVCCValueHeader, error) {
-	var iter MVCCIterator
-	var err error
-	if valueInBatch {
-		iter, err = batch.NewBatchOnlyMVCCIterator(ctx,
-			IterOptions{KeyTypes: IterKeyTypePointsAndRanges, Prefix: true})
-	} else {
-		// TODO(sumeer): Use Pebble's Get. The value has likely been written
-		// recently, so may be in the memtable or L0. A Pebble Get will
-		// iteratively go down the levels and find the value in a higher level,
-		// which would avoid seeking all the levels. This will not need to handle
-		// rangekeys. We won't be able to use mvccGet, that we are using below for
-		// convenience. We should also measure that the Get is performant enough
-		// to avoid the need to use a batch-only iterator for the valueInBatch
-		// case (though using the batch-only iterator allows us to assert that the
-		// value was indeed found in the batch).
-		iter, err = batch.NewMVCCIterator(ctx, MVCCKeyIterKind,
-			IterOptions{
-				KeyTypes: IterKeyTypePointsAndRanges, Prefix: true, ReadCategory: fs.RangefeedReadCategory})
-	}
-	if err != nil {
-		return nil, enginepb.MVCCValueHeader{}, err
-	}
-	defer iter.Close()
-
-	// Use mvccGet, even though we know the exact timestamp, since it
-	// convenient.
-	//
-	// mvccGet will expose a rangekey tombstone for key@timesamp, as a
-	// point, even though we know key@timestamp must be a point-key. We
-	// should stop using mvccGet, which would allow us to assert on this
-	// expected behavior.
-	value, intent, err := mvccGet(
-		ctx, iter, key, timestamp, MVCCGetOptions{Tombstones: true})
-	val := value.ToPointer()
-	if intent != nil {
-		// This is an assertion failure since we constructed the iterators above
-		// with MVCCKeyIterKind, so they should not see intents.
-		return nil, enginepb.MVCCValueHeader{}, errors.AssertionFailedf(
-			"unexpected intent %v for key %v", intent, key)
-	}
-	if val == nil {
-		return nil, enginepb.MVCCValueHeader{}, errors.Errorf("value missing for key %v", key)
-	}
-	if val.Timestamp != timestamp {
-		return nil, enginepb.MVCCValueHeader{}, errors.Errorf(
-			"expected timestamp %v and found %v for key %v", timestamp, val.Timestamp, key)
-	}
-	return val, value.MVCCValueHeader, err
-}
-
 // MVCCGetWithValueHeader is like MVCCGet, but in addition returns the
 // MVCCValueHeader for the value.
 func MVCCGetWithValueHeader(
@@ -1494,18 +1409,16 @@ func MVCCGetWithValueHeader(
 		return result, enginepb.MVCCValueHeader{}, nil
 	}
 	iter, err := newMVCCIterator(
-		ctx, reader, timestamp, false /* rangeKeyMasking */, opts.DontInterleaveIntents,
-		IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			Prefix:       true,
-			ReadCategory: opts.ReadCategory,
+		reader, timestamp, false /* rangeKeyMasking */, opts.DontInterleaveIntents, IterOptions{
+			KeyTypes: IterKeyTypePointsAndRanges,
+			Prefix:   true,
 		},
 	)
 	if err != nil {
 		return result, enginepb.MVCCValueHeader{}, err
 	}
 	defer iter.Close()
-	value, intent, err := mvccGet(ctx, iter, key, timestamp, opts)
+	value, intent, vh, err := mvccGetWithValueHeader(ctx, iter, key, timestamp, opts)
 	val := value.ToPointer()
 	if err == nil && val != nil {
 		// NB: This calculation is different from Scan, since Scan responses include
@@ -1522,13 +1435,10 @@ func MVCCGetWithValueHeader(
 	}
 	result.Value = val
 	result.Intent = intent
-	return result, value.MVCCValueHeader, err
+	return result, vh, err
 }
 
-// mvccGet returns an optionalValue containing the MVCCValue for the
-// given key (if it exists).
-//
-// The MVCCValueHeader is included in the returned MVCCValue.
+// gcassert:inline
 func mvccGet(
 	ctx context.Context,
 	iter MVCCIterator,
@@ -1536,45 +1446,48 @@ func mvccGet(
 	timestamp hlc.Timestamp,
 	opts MVCCGetOptions,
 ) (value optionalValue, intent *roachpb.Intent, err error) {
+	value, intent, _, err = mvccGetWithValueHeader(ctx, iter, key, timestamp, opts)
+	return value, intent, err
+}
+
+func mvccGetWithValueHeader(
+	ctx context.Context,
+	iter MVCCIterator,
+	key roachpb.Key,
+	timestamp hlc.Timestamp,
+	opts MVCCGetOptions,
+) (value optionalValue, intent *roachpb.Intent, vh enginepb.MVCCValueHeader, err error) {
 	if len(key) == 0 {
-		return optionalValue{}, nil, emptyKeyError()
+		return optionalValue{}, nil, enginepb.MVCCValueHeader{}, emptyKeyError()
 	}
 	if timestamp.WallTime < 0 {
-		return optionalValue{}, nil, errors.Errorf("cannot write to %q at timestamp %s", key, timestamp)
+		return optionalValue{}, nil, enginepb.MVCCValueHeader{}, errors.Errorf("cannot write to %q at timestamp %s", key, timestamp)
 	}
 	if util.RaceEnabled && !iter.IsPrefix() {
-		return optionalValue{}, nil, errors.AssertionFailedf("mvccGet called with non-prefix iterator")
+		return optionalValue{}, nil, enginepb.MVCCValueHeader{}, errors.AssertionFailedf("mvccGet called with non-prefix iterator")
 	}
 	if err := opts.validate(); err != nil {
-		return optionalValue{}, nil, err
+		return optionalValue{}, nil, enginepb.MVCCValueHeader{}, err
 	}
 
 	mvccScanner := pebbleMVCCScannerPool.Get().(*pebbleMVCCScanner)
 	defer mvccScanner.release()
 
-	memAccount := mvccScanner.memAccount
-	if opts.MemoryAccount != nil {
-		memAccount = opts.MemoryAccount
-	}
-
 	// MVCCGet is implemented as an MVCCScan where we retrieve a single key. We
 	// specify an empty key for the end key which will ensure we don't retrieve a
 	// key different than the start key. This is a bit of a hack.
 	*mvccScanner = pebbleMVCCScanner{
-		parent:            iter,
-		memAccount:        memAccount,
-		unlimitedMemAcc:   mvccScanner.unlimitedMemAcc,
-		lockTable:         opts.LockTable,
-		start:             key,
-		ts:                timestamp,
-		maxKeys:           1,
-		inconsistent:      opts.Inconsistent,
-		skipLocked:        opts.SkipLocked,
-		tombstones:        opts.Tombstones,
-		rawMVCCValues:     opts.ReturnRawMVCCValues,
-		failOnMoreRecent:  opts.FailOnMoreRecent,
-		keyBuf:            mvccScanner.keyBuf,
-		decodeMVCCHeaders: true,
+		parent:           iter,
+		memAccount:       opts.MemoryAccount,
+		lockTable:        opts.LockTable,
+		start:            key,
+		ts:               timestamp,
+		maxKeys:          1,
+		inconsistent:     opts.Inconsistent,
+		skipLocked:       opts.SkipLocked,
+		tombstones:       opts.Tombstones,
+		failOnMoreRecent: opts.FailOnMoreRecent,
+		keyBuf:           mvccScanner.keyBuf,
 	}
 
 	results := &mvccScanner.alloc.pebbleResults
@@ -1589,41 +1502,40 @@ func mvccGet(
 	}
 
 	if mvccScanner.err != nil {
-		return optionalValue{}, nil, mvccScanner.err
+		return optionalValue{}, nil, enginepb.MVCCValueHeader{}, mvccScanner.err
 	}
 	intents, err := buildScanIntents(mvccScanner.intentsRepr())
 	if err != nil {
-		return optionalValue{}, nil, err
+		return optionalValue{}, nil, enginepb.MVCCValueHeader{}, err
 	}
 	if opts.errOnIntents() && len(intents) > 0 {
 		lcErr := &kvpb.LockConflictError{Locks: roachpb.AsLocks(intents)}
-		return optionalValue{}, nil, lcErr
+		return optionalValue{}, nil, enginepb.MVCCValueHeader{}, lcErr
 	}
 
 	if len(intents) > 1 {
-		return optionalValue{}, nil, errors.Errorf("expected 0 or 1 intents, got %d", len(intents))
+		return optionalValue{}, nil, enginepb.MVCCValueHeader{}, errors.Errorf("expected 0 or 1 intents, got %d", len(intents))
 	} else if len(intents) == 1 {
 		intent = &intents[0]
 	}
 
 	if len(results.repr) == 0 {
-		return optionalValue{}, intent, nil
+		return optionalValue{}, intent, enginepb.MVCCValueHeader{}, nil
 	}
 
 	mvccKey, rawValue, _, err := MVCCScanDecodeKeyValue(results.repr)
 	if err != nil {
-		return optionalValue{}, nil, err
+		return optionalValue{}, nil, enginepb.MVCCValueHeader{}, err
 	}
 
+	value = makeOptionalValue(roachpb.Value{
+		RawBytes:  rawValue,
+		Timestamp: mvccKey.Timestamp,
+	})
 	// NB: we may return MVCCValueHeader out of curUnsafeValue because that
 	// type does not contain any pointers. A comment on MVCCValueHeader ensures
 	// that this stays true.
-	value = makeOptionalValue(MVCCValue{Value: roachpb.Value{
-		RawBytes:  rawValue,
-		Timestamp: mvccKey.Timestamp,
-	}, MVCCValueHeader: mvccScanner.curUnsafeValue.MVCCValueHeader})
-
-	return value, intent, nil
+	return value, intent, mvccScanner.curUnsafeValue.MVCCValueHeader, nil
 }
 
 // MVCCGetAsTxn constructs a temporary transaction from the given transaction
@@ -1752,7 +1664,7 @@ func mvccGetMetadata(
 			if isTombstone {
 				keyLastSeen = unsafeKey.Timestamp
 			}
-			return true, int64(mvccencoding.EncodedMVCCKeyPrefixLength(metaKey.Key)), 0, keyLastSeen, nil
+			return true, int64(EncodedMVCCKeyPrefixLength(metaKey.Key)), 0, keyLastSeen, nil
 		}
 	}
 
@@ -1761,7 +1673,7 @@ func mvccGetMetadata(
 	meta.Deleted = isTombstone
 	meta.Timestamp = unsafeKey.Timestamp.ToLegacyTimestamp()
 
-	return true, int64(mvccencoding.EncodedMVCCKeyPrefixLength(metaKey.Key)), 0, unsafeKey.Timestamp, nil
+	return true, int64(EncodedMVCCKeyPrefixLength(metaKey.Key)), 0, unsafeKey.Timestamp, nil
 }
 
 // putBuffer holds pointer data needed by mvccPutInternal. Bundling
@@ -1944,11 +1856,9 @@ func MVCCPut(
 	if !blind {
 		var err error
 		iter, err = newMVCCIterator(
-			ctx, rw, timestamp, false /* rangeKeyMasking */, true, /* noInterleavedIntents */
-			IterOptions{
-				KeyTypes:     IterKeyTypePointsAndRanges,
-				Prefix:       true,
-				ReadCategory: opts.Category,
+			rw, timestamp, false /* rangeKeyMasking */, true /* noInterleavedIntents */, IterOptions{
+				KeyTypes: IterKeyTypePointsAndRanges,
+				Prefix:   true,
 			},
 		)
 		if err != nil {
@@ -1958,8 +1868,7 @@ func MVCCPut(
 
 		inlinePut := timestamp.IsEmpty()
 		if !inlinePut {
-			ltScanner, err = newLockTableKeyScanner(
-				ctx, rw, opts.TxnID(), lock.Intent, opts.MaxLockConflicts, opts.TargetLockConflictBytes, opts.Category)
+			ltScanner, err = newLockTableKeyScanner(rw, opts.Txn, lock.Intent, opts.MaxLockConflicts)
 			if err != nil {
 				return roachpb.LockAcquisition{}, err
 			}
@@ -2007,11 +1916,9 @@ func MVCCDelete(
 	opts MVCCWriteOptions,
 ) (foundKey bool, _ roachpb.LockAcquisition, err error) {
 	iter, err := newMVCCIterator(
-		ctx, rw, timestamp, false /* rangeKeyMasking */, true, /* noInterleavedIntents */
-		IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			Prefix:       true,
-			ReadCategory: opts.Category,
+		rw, timestamp, false /* rangeKeyMasking */, true /* noInterleavedIntents */, IterOptions{
+			KeyTypes: IterKeyTypePointsAndRanges,
+			Prefix:   true,
 		},
 	)
 	if err != nil {
@@ -2022,8 +1929,7 @@ func MVCCDelete(
 	inlineDelete := timestamp.IsEmpty()
 	var ltScanner *lockTableKeyScanner
 	if !inlineDelete {
-		ltScanner, err = newLockTableKeyScanner(
-			ctx, rw, opts.TxnID(), lock.Intent, opts.MaxLockConflicts, opts.TargetLockConflictBytes, opts.Category)
+		ltScanner, err = newLockTableKeyScanner(rw, opts.Txn, lock.Intent, opts.MaxLockConflicts)
 		if err != nil {
 			return false, roachpb.LockAcquisition{}, err
 		}
@@ -2129,7 +2035,7 @@ func replayTransactionalWrite(
 			if err != nil {
 				return err
 			}
-			writtenValue = makeOptionalValue(intentVal)
+			writtenValue = makeOptionalValue(intentVal.Value)
 		}
 	}
 	if !writtenValue.exists {
@@ -2139,7 +2045,7 @@ func replayTransactionalWrite(
 			txn.ID, meta.Txn.Sequence, txn.Sequence)
 		errWithIssue := errors.WithIssueLink(err,
 			errors.IssueLink{
-				IssueURL: build.MakeIssueURL(71236),
+				IssueURL: "https://github.com/cockroachdb/cockroach/issues/71236",
 				Detail: "This error may be caused by `DelRange` operation in a batch that also contains a " +
 					"write on an intersecting key, as in the case the other write hits a `WriteTooOld` " +
 					"error, it is possible for the `DelRange` operation to pick up a new key to delete on " +
@@ -2163,20 +2069,19 @@ func replayTransactionalWrite(
 			if err != nil {
 				return err
 			}
-			exVal = makeOptionalValue(prevIntentVal)
+			exVal = makeOptionalValue(prevIntentVal.Value)
 		} else {
 			// If the previous value at the key wasn't written by this
 			// transaction, or it was hidden by a rolled back seqnum, we look at
 			// last committed value on the key. Since we want the last committed
 			// value on the key, we read below our previous intents here.
 			metaTimestamp := meta.Timestamp.ToTimestamp()
-			val, _, err := mvccGet(ctx, iter, key, metaTimestamp.Prev(), MVCCGetOptions{
+			exVal, _, err = mvccGet(ctx, iter, key, metaTimestamp.Prev(), MVCCGetOptions{
 				Tombstones: true,
 			})
 			if err != nil {
 				return err
 			}
-			exVal = val
 		}
 
 		value, err = valueFn(exVal)
@@ -2188,9 +2093,9 @@ func replayTransactionalWrite(
 	// To ensure the transaction is idempotent, we must assert that the
 	// calculated value on this replay is the same as the one we've previously
 	// written.
-	if !bytes.Equal(value.RawBytes, writtenValue.Value.RawBytes) {
+	if !bytes.Equal(value.RawBytes, writtenValue.RawBytes) {
 		return errors.AssertionFailedf("transaction %s with sequence %d has a different value %+v after recomputing from what was written: %+v",
-			txn.ID, txn.Sequence, value.RawBytes, writtenValue.Value.RawBytes)
+			txn.ID, txn.Sequence, value.RawBytes, writtenValue.RawBytes)
 	}
 
 	// If ambiguous replay protection is enabled, a replay that changes the
@@ -2278,7 +2183,6 @@ func mvccPutInternal(
 	if !value.Timestamp.IsEmpty() {
 		return false, roachpb.LockAcquisition{}, errors.Errorf("cannot have timestamp set in value")
 	}
-
 	if err := opts.validate(); err != nil {
 		return false, roachpb.LockAcquisition{}, err
 	}
@@ -2293,7 +2197,6 @@ func mvccPutInternal(
 			return false, roachpb.LockAcquisition{}, errors.Errorf(
 				"ltScanner must be nil for putIsBlind %t, putIsInline %t", putIsBlind, putIsInline)
 		}
-
 	}
 
 	metaKey := MakeMVCCMetadataKey(key)
@@ -2317,26 +2220,24 @@ func mvccPutInternal(
 			return false, roachpb.LockAcquisition{}, errors.Errorf("%q: put is inline=%t, but existing value is inline=%t",
 				metaKey, putIsInline, meta.IsInline())
 		}
-
-		// If at least one version is found, scan the lock table for conflicting
-		// locks and/or an intent on the key from different transactions. If any
-		// such conflicts are found, the lock table scanner will return a
-		// LockConflictError.
-		mustScanLockTable := ok && !meta.IsInline()
-		// We now (20-02-2025) allow locks on non-existing keys. Unfortunately, this
-		// means we must also scan the lock table even if we haven't found a key. As a result,
-		// writes to non-existent keys now perform 2 seeks rather than 1.
-		//
-		// We need to double check that the put isn't inline so that our assumption
-		// that the ltScanner scanner is non-nil holds.
-		mustScanLockTable = mustScanLockTable || (!putIsInline && lock.LockNonExistentKeys)
-		if mustScanLockTable {
+		if ok && !meta.IsInline() {
 			// INVARIANTS:
 			//   !putIsBlind
 			//   !meta.IsInline()
 			//   !meta.IsInline() => !putIsInline (due to previous if-block)
 			//   !putIsInline && !putIsBlind => ltScanner != nil (due to error check earlier in function)
 			//   So we can use ltScanner safely.
+			//
+			// If at least one version is found, scan the lock table for conflicting
+			// locks and/or an intent on the key from different transactions. If any
+			// such conflicts are found, the lock table scanner will return a
+			// LockConflictError.
+			//
+			// We only need to scan the lock table if we find at least one version.
+			// This is because locks cannot be acquired on non-existent keys. This
+			// constraint permits an important performance optimization — writes to
+			// non-existent keys only perform a single seek (of the MVCC keyspace) and
+			// no second seek (of the lock table keyspace).
 			err = ltScanner.scan(key)
 			if err != nil {
 				return false, roachpb.LockAcquisition{}, err
@@ -2363,7 +2264,7 @@ func mvccPutInternal(
 		if valueFn != nil {
 			var inlineVal optionalValue
 			if ok {
-				inlineVal = makeOptionalValue(MVCCValue{Value: roachpb.Value{RawBytes: meta.RawBytes}})
+				inlineVal = makeOptionalValue(roachpb.Value{RawBytes: meta.RawBytes})
 			}
 			if value, err = valueFn(inlineVal); err != nil {
 				return false, roachpb.LockAcquisition{}, err
@@ -2506,7 +2407,7 @@ func mvccPutInternal(
 					if err != nil {
 						return false, roachpb.LockAcquisition{}, err
 					}
-					exVal = makeOptionalValue(curIntentVal)
+					exVal = makeOptionalValue(curIntentVal.Value)
 				} else {
 					// Seqnum of last write was ignored. Try retrieving the value from the history.
 					prevIntent, prevIntentOk := meta.GetPrevIntentSeq(opts.Txn.Sequence, opts.Txn.IgnoredSeqNums)
@@ -2515,7 +2416,7 @@ func mvccPutInternal(
 						if err != nil {
 							return false, roachpb.LockAcquisition{}, err
 						}
-						exVal = makeOptionalValue(prevIntentVal)
+						exVal = makeOptionalValue(prevIntentVal.Value)
 					}
 				}
 			}
@@ -2527,14 +2428,12 @@ func mvccPutInternal(
 				//
 				// Since we want the last committed value on the key, we must
 				// read below our previous intents here.
-				optVal, _, err := mvccGet(ctx, iter, key, metaTimestamp.Prev(), MVCCGetOptions{
-					Tombstones:   true,
-					ReadCategory: opts.Category,
+				exVal, _, err = mvccGet(ctx, iter, key, metaTimestamp.Prev(), MVCCGetOptions{
+					Tombstones: true,
 				})
 				if err != nil {
 					return false, roachpb.LockAcquisition{}, err
 				}
-				exVal = optVal
 			}
 
 			exReplaced = exVal.IsPresent()
@@ -2658,25 +2557,22 @@ func mvccPutInternal(
 			// NB: even if metaTimestamp is less than writeTimestamp, we can't
 			// avoid the WriteTooOld error if metaTimestamp is equal to or
 			// greater than readTimestamp. This is because certain operations
-			// like ConditionalPuts avoid ever needing refreshes by ensuring
-			// that they propagate WriteTooOld errors immediately instead of
-			// allowing their transactions to continue and be retried before
-			// committing.
+			// like ConditionalPuts and InitPuts avoid ever needing refreshes
+			// by ensuring that they propagate WriteTooOld errors immediately
+			// instead of allowing their transactions to continue and be retried
+			// before committing.
 			writeTimestamp.Forward(metaTimestamp.Next())
 			writeTooOldErr := kvpb.NewWriteTooOldError(readTimestamp, writeTimestamp, key)
 			return false, roachpb.LockAcquisition{}, writeTooOldErr
 		} else /* meta.Txn == nil && metaTimestamp.Less(readTimestamp) */ {
 			// If a valueFn is specified, read the existing value using iter.
-			opts := MVCCGetOptions{
-				Tombstones:   true,
-				ReadCategory: opts.Category,
-			}
 			if valueFn != nil {
-				exVal, _, err := mvccGet(ctx, iter, key, readTimestamp, opts)
+				exVal, _, err := mvccGet(ctx, iter, key, readTimestamp, MVCCGetOptions{
+					Tombstones: true,
+				})
 				if err != nil {
 					return false, roachpb.LockAcquisition{}, err
 				}
-
 				value, err = valueFn(exVal)
 				if err != nil {
 					return false, roachpb.LockAcquisition{}, err
@@ -2701,11 +2597,6 @@ func mvccPutInternal(
 	versionValue.Value = value
 	versionValue.LocalTimestamp = opts.LocalTimestamp
 	versionValue.OmitInRangefeeds = opts.OmitInRangefeeds
-	versionValue.ImportEpoch = opts.ImportEpoch
-	versionValue.OriginID = opts.OriginID
-	if opts.OriginTimestamp.IsSet() {
-		versionValue.OriginTimestamp = opts.OriginTimestamp
-	}
 
 	if buildutil.CrdbTestBuild {
 		if seq, seqOK := kvnemesisutil.FromContext(ctx); seqOK {
@@ -2833,11 +2724,9 @@ func MVCCIncrement(
 	inc int64,
 ) (int64, roachpb.LockAcquisition, error) {
 	iter, err := newMVCCIterator(
-		ctx, rw, timestamp, false /* rangeKeyMasking */, true, /* noInterleavedIntents */
-		IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			Prefix:       true,
-			ReadCategory: opts.Category,
+		rw, timestamp, false /* rangeKeyMasking */, true /* noInterleavedIntents */, IterOptions{
+			KeyTypes: IterKeyTypePointsAndRanges,
+			Prefix:   true,
 		},
 	)
 	if err != nil {
@@ -2848,8 +2737,7 @@ func MVCCIncrement(
 	inlineIncrement := timestamp.IsEmpty()
 	var ltScanner *lockTableKeyScanner
 	if !inlineIncrement {
-		ltScanner, err = newLockTableKeyScanner(
-			ctx, rw, opts.TxnID(), lock.Intent, opts.MaxLockConflicts, opts.TargetLockConflictBytes, opts.Category)
+		ltScanner, err = newLockTableKeyScanner(rw, opts.Txn, lock.Intent, opts.MaxLockConflicts)
 		if err != nil {
 			return 0, roachpb.LockAcquisition{}, err
 		}
@@ -2861,7 +2749,7 @@ func MVCCIncrement(
 	valueFn := func(value optionalValue) (roachpb.Value, error) {
 		if value.IsPresent() {
 			var err error
-			if int64Val, err = value.Value.GetInt(); err != nil {
+			if int64Val, err = value.GetInt(); err != nil {
 				return roachpb.Value{}, errors.Errorf("key %q does not contain an integer value", key)
 			}
 		}
@@ -2900,20 +2788,6 @@ const (
 	CPutFailIfMissing CPutMissingBehavior = false
 )
 
-// ConditionalPutWriteOptions bundles options for the
-// MVCCConditionalPut and MVCCBlindConditionalPut functions.
-type ConditionalPutWriteOptions struct {
-	MVCCWriteOptions
-
-	AllowIfDoesNotExist CPutMissingBehavior
-	// OriginTimestamp, if set, indicates that the caller wants to put the
-	// value only if any existing key is older than this timestamp.
-	//
-	// See the comment on the OriginTimestamp field of
-	// kvpb.ConditionalPutRequest for more details.
-	OriginTimestamp hlc.Timestamp
-}
-
 // MVCCConditionalPut sets the value for a specified key only if the expected
 // value matches. If not, the return a ConditionFailedError containing the
 // actual value. An empty expVal signifies that the key is expected to not
@@ -2936,14 +2810,13 @@ func MVCCConditionalPut(
 	timestamp hlc.Timestamp,
 	value roachpb.Value,
 	expVal []byte,
-	opts ConditionalPutWriteOptions,
+	allowIfDoesNotExist CPutMissingBehavior,
+	opts MVCCWriteOptions,
 ) (roachpb.LockAcquisition, error) {
 	iter, err := newMVCCIterator(
-		ctx, rw, timestamp, false /* rangeKeyMasking */, true, /* noInterleavedIntents */
-		IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			Prefix:       true,
-			ReadCategory: opts.Category,
+		rw, timestamp, false /* rangeKeyMasking */, true /* noInterleavedIntents */, IterOptions{
+			KeyTypes: IterKeyTypePointsAndRanges,
+			Prefix:   true,
 		},
 	)
 	if err != nil {
@@ -2954,15 +2827,14 @@ func MVCCConditionalPut(
 	inlinePut := timestamp.IsEmpty()
 	var ltScanner *lockTableKeyScanner
 	if !inlinePut {
-		ltScanner, err = newLockTableKeyScanner(
-			ctx, rw, opts.TxnID(), lock.Intent, opts.MaxLockConflicts, opts.TargetLockConflictBytes, opts.Category)
+		ltScanner, err = newLockTableKeyScanner(rw, opts.Txn, lock.Intent, opts.MaxLockConflicts)
 		if err != nil {
 			return roachpb.LockAcquisition{}, err
 		}
 		defer ltScanner.close()
 	}
 	return mvccConditionalPutUsingIter(
-		ctx, rw, iter, ltScanner, key, timestamp, value, expVal, opts)
+		ctx, rw, iter, ltScanner, key, timestamp, value, expVal, allowIfDoesNotExist, opts)
 }
 
 // MVCCBlindConditionalPut is a fast-path of MVCCConditionalPut. See the
@@ -2981,20 +2853,11 @@ func MVCCBlindConditionalPut(
 	timestamp hlc.Timestamp,
 	value roachpb.Value,
 	expVal []byte,
-	opts ConditionalPutWriteOptions,
+	allowIfDoesNotExist CPutMissingBehavior,
+	opts MVCCWriteOptions,
 ) (roachpb.LockAcquisition, error) {
 	return mvccConditionalPutUsingIter(
-		ctx, writer, nil, nil, key, timestamp, value, expVal, opts)
-}
-
-// maybeConditionFailedError returns a non-nil ConditionFailedError if
-// the expBytes and actVal don't match. If allowNoExisting is true,
-// then a non-existent actual value is allowed even when
-// expected-value is non-empty.
-func maybeConditionFailedError(
-	expBytes []byte, actVal optionalValue, allowNoExisting bool,
-) *kvpb.ConditionFailedError {
-	return mvcceval.MaybeConditionFailedError(expBytes, actVal.ToPointer(), actVal.IsPresent(), allowNoExisting)
+		ctx, writer, nil, nil, key, timestamp, value, expVal, allowIfDoesNotExist, opts)
 }
 
 func mvccConditionalPutUsingIter(
@@ -3006,55 +2869,116 @@ func mvccConditionalPutUsingIter(
 	timestamp hlc.Timestamp,
 	value roachpb.Value,
 	expBytes []byte,
-	opts ConditionalPutWriteOptions,
+	allowNoExisting CPutMissingBehavior,
+	opts MVCCWriteOptions,
 ) (roachpb.LockAcquisition, error) {
-	if !opts.OriginTimestamp.IsEmpty() {
-		if bool(opts.AllowIfDoesNotExist) {
-			return roachpb.LockAcquisition{}, errors.AssertionFailedf("AllowIfDoesNotExist and non-zero OriginTimestamp are incompatible")
-		}
-		putIsInline := timestamp.IsEmpty()
-		if putIsInline {
-			return roachpb.LockAcquisition{}, errors.AssertionFailedf("inline put and non-zero OriginTimestamp are incompatible")
-		}
-	}
-
-	var valueFn func(existVal optionalValue) (roachpb.Value, error)
-	if opts.OriginTimestamp.IsEmpty() {
-		valueFn = func(actualValue optionalValue) (roachpb.Value, error) {
-			if err := maybeConditionFailedError(expBytes, actualValue, bool(opts.AllowIfDoesNotExist)); err != nil {
-				return roachpb.Value{}, err
-			}
-			return value, nil
-		}
-	} else {
-		valueFn = func(existVal optionalValue) (roachpb.Value, error) {
-			originTSWinner, existTS := existVal.isOriginTimestampWinner(opts.OriginTimestamp, false)
-			if !originTSWinner {
+	valueFn := func(existVal optionalValue) (roachpb.Value, error) {
+		if expValPresent, existValPresent := len(expBytes) != 0, existVal.IsPresent(); expValPresent && existValPresent {
+			if !bytes.Equal(expBytes, existVal.TagAndDataBytes()) {
 				return roachpb.Value{}, &kvpb.ConditionFailedError{
-					OriginTimestampOlderThan: existTS,
+					ActualValue: existVal.ToPointer(),
 				}
 			}
-
-			// We are the OriginTimestamp comparison winner. We
-			// check the expected bytes because a mismatch implies
-			// that the caller may have produced other commands with
-			// outdated data.
-			if err := maybeConditionFailedError(expBytes, existVal, false); err != nil {
-				err.HadNewerOriginTimestamp = true
-				return roachpb.Value{}, err
+		} else if expValPresent != existValPresent && (existValPresent || !bool(allowNoExisting)) {
+			return roachpb.Value{}, &kvpb.ConditionFailedError{
+				ActualValue: existVal.ToPointer(),
 			}
-			return value, nil
 		}
+		return value, nil
+	}
+	return mvccPutUsingIter(ctx, writer, iter, ltScanner, key, timestamp, noValue, valueFn, opts)
+}
 
-		// TODO(ssd): We set the OriginTimestamp on our write
-		// options to the originTimestamp passed to us. We
-		// don't assert they are the same yet because it is
-		// still unclear how exactly we want to manage this in
-		// the long run.
-		opts.MVCCWriteOptions.OriginTimestamp = opts.OriginTimestamp
+// MVCCInitPut sets the value for a specified key if the key doesn't exist. It
+// returns a ConditionFailedError when the write fails or if the key exists with
+// an existing value that is different from the supplied value. If
+// failOnTombstones is set to true, tombstones count as mismatched values and
+// will cause a ConditionFailedError.
+//
+// Note that, when writing transactionally, the txn's timestamps
+// dictate the timestamp of the operation, and the timestamp parameter is
+// confusing and redundant. See the comment on mvccPutInternal for details.
+func MVCCInitPut(
+	ctx context.Context,
+	rw ReadWriter,
+	key roachpb.Key,
+	timestamp hlc.Timestamp,
+	value roachpb.Value,
+	failOnTombstones bool,
+	opts MVCCWriteOptions,
+) (roachpb.LockAcquisition, error) {
+	iter, err := newMVCCIterator(
+		rw, timestamp, false /* rangeKeyMasking */, true /* noInterleavedIntents */, IterOptions{
+			KeyTypes: IterKeyTypePointsAndRanges,
+			Prefix:   true,
+		},
+	)
+	if err != nil {
+		return roachpb.LockAcquisition{}, err
+	}
+	defer iter.Close()
+
+	inlinePut := timestamp.IsEmpty()
+	var ltScanner *lockTableKeyScanner
+	if !inlinePut {
+		ltScanner, err = newLockTableKeyScanner(rw, opts.Txn, lock.Intent, opts.MaxLockConflicts)
+		if err != nil {
+			return roachpb.LockAcquisition{}, err
+		}
+		defer ltScanner.close()
 	}
 
-	return mvccPutUsingIter(ctx, writer, iter, ltScanner, key, timestamp, noValue, valueFn, opts.MVCCWriteOptions)
+	return mvccInitPutUsingIter(ctx, rw, iter, ltScanner, key, timestamp, value, failOnTombstones, opts)
+}
+
+// MVCCBlindInitPut is a fast-path of MVCCInitPut. See the MVCCInitPut
+// comments for details of the semantics. MVCCBlindInitPut skips
+// retrieving the existing metadata for the key requiring the caller
+// to guarantee no version for the key currently exist.
+//
+// Note that, when writing transactionally, the txn's timestamps
+// dictate the timestamp of the operation, and the timestamp parameter is
+// confusing and redundant. See the comment on mvccPutInternal for details.
+func MVCCBlindInitPut(
+	ctx context.Context,
+	rw ReadWriter,
+	key roachpb.Key,
+	timestamp hlc.Timestamp,
+	value roachpb.Value,
+	failOnTombstones bool,
+	opts MVCCWriteOptions,
+) (roachpb.LockAcquisition, error) {
+	return mvccInitPutUsingIter(
+		ctx, rw, nil, nil, key, timestamp, value, failOnTombstones, opts)
+}
+
+func mvccInitPutUsingIter(
+	ctx context.Context,
+	rw ReadWriter,
+	iter MVCCIterator,
+	ltScanner *lockTableKeyScanner,
+	key roachpb.Key,
+	timestamp hlc.Timestamp,
+	value roachpb.Value,
+	failOnTombstones bool,
+	opts MVCCWriteOptions,
+) (roachpb.LockAcquisition, error) {
+	valueFn := func(existVal optionalValue) (roachpb.Value, error) {
+		if failOnTombstones && existVal.IsTombstone() {
+			// We found a tombstone and failOnTombstones is true: fail.
+			return roachpb.Value{}, &kvpb.ConditionFailedError{
+				ActualValue: existVal.ToPointer(),
+			}
+		}
+		if existVal.IsPresent() && !existVal.EqualTagAndData(value) {
+			// The existing value does not match the supplied value.
+			return roachpb.Value{}, &kvpb.ConditionFailedError{
+				ActualValue: existVal.ToPointer(),
+			}
+		}
+		return value, nil
+	}
+	return mvccPutUsingIter(ctx, rw, iter, ltScanner, key, timestamp, noValue, valueFn, opts)
 }
 
 // mvccKeyFormatter is an fmt.Formatter for MVCC Keys.
@@ -3146,15 +3070,15 @@ func MVCCMerge(
 // incremental deltas of clearing these keys (and correctly determining if it
 // does or not not change the live and gc keys).
 //
-// If the function encounters an intent (with any timestamp), a replicated lock,
-// or any inline meta in the key span, it will return an error.
+// If the underlying iterator encounters an intent with a timestamp in the span
+// (startTime, endTime], or any inline meta, this method will return an error.
 //
 // TODO(erikgrinaker): endTime does not actually work here -- if there are keys
 // above endTime then the stats do not properly account for them. We probably
 // don't need those semantics, so consider renaming this to MVCCRevertRange and
 // removing the endTime parameter.
 func MVCCClearTimeRange(
-	ctx context.Context,
+	_ context.Context,
 	rw ReadWriter,
 	ms *enginepb.MVCCStats,
 	key, endKey roachpb.Key,
@@ -3162,7 +3086,6 @@ func MVCCClearTimeRange(
 	leftPeekBound, rightPeekBound roachpb.Key,
 	clearRangeThreshold int,
 	maxBatchSize, maxBatchByteSize int64,
-	maxLockConflicts int64,
 ) (roachpb.Key, error) {
 	var batchSize, batchByteSize int64
 	var resumeKey roachpb.Key
@@ -3194,17 +3117,6 @@ func MVCCClearTimeRange(
 	// Since we're setting up multiple iterators, we require consistent iterators.
 	if !rw.ConsistentIterators() {
 		return nil, errors.AssertionFailedf("requires consistent iterators")
-	}
-
-	// Check for any overlapping locks (at any timestamp), and return them to
-	// be resolved. We don't _expect_ to hit any since the RevertRange is only
-	// intended for non-live key spans, but there could be an intent or lock
-	// leftover from before the keyspace become non-live.
-	if locks, err := ScanLocks(
-		ctx, rw, key, endKey, maxLockConflicts, 0); err != nil {
-		return nil, err
-	} else if len(locks) > 0 {
-		return nil, &kvpb.LockConflictError{Locks: locks}
 	}
 
 	// When iterating, instead of immediately clearing a matching key we can
@@ -3315,11 +3227,10 @@ func MVCCClearTimeRange(
 		// Fetch the existing range keys (if any), to adjust MVCC stats. We set up
 		// a new iterator for every batch, which both sees our own writes as well as
 		// any range keys outside of the time bounds.
-		rkIter, err := rw.NewMVCCIterator(ctx, MVCCKeyIterKind, IterOptions{
-			KeyTypes:     IterKeyTypeRangesOnly,
-			LowerBound:   leftPeekBound,
-			UpperBound:   rightPeekBound,
-			ReadCategory: fs.BatchEvalReadCategory,
+		rkIter, err := rw.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
+			KeyTypes:   IterKeyTypeRangesOnly,
+			LowerBound: leftPeekBound,
+			UpperBound: rightPeekBound,
 		})
 		if err != nil {
 			return err
@@ -3392,16 +3303,16 @@ func MVCCClearTimeRange(
 	// swaths of uninteresting keys, but then use a normal iteration to actually
 	// do the delete including updating the live key stats correctly.
 	//
-	// We've already scanned over the lock table with the call to ScanLocks above,
-	// so we disable intent interleaving.
-	iter, err := NewMVCCIncrementalIterator(ctx, rw, MVCCIncrementalIterOptions{
-		KeyTypes:     IterKeyTypePointsAndRanges,
-		IntentPolicy: MVCCIncrementalIterIntentPolicyIgnore,
-		StartKey:     key,
-		EndKey:       endKey,
-		StartTime:    startTime,
-		EndTime:      endTime,
-		ReadCategory: fs.BatchEvalReadCategory,
+	// The MVCCIncrementalIterator checks for and fails on any intents in our
+	// time-range, as we do not want to clear any running transactions. We don't
+	// _expect_ to hit this since the RevertRange is only intended for non-live
+	// key spans, but there could be an intent leftover.
+	iter, err := NewMVCCIncrementalIterator(rw, MVCCIncrementalIterOptions{
+		KeyTypes:  IterKeyTypePointsAndRanges,
+		StartKey:  key,
+		EndKey:    endKey,
+		StartTime: startTime,
+		EndTime:   endTime,
 	})
 	if err != nil {
 		return nil, err
@@ -3640,23 +3551,19 @@ func MVCCDeleteRange(
 		scanTxn = prevSeqTxn
 	}
 	res, err := MVCCScan(ctx, rw, key, endKey, scanTs, MVCCScanOptions{
-		FailOnMoreRecent:        failOnMoreRecent,
-		Txn:                     scanTxn,
-		MaxKeys:                 max,
-		MaxLockConflicts:        opts.MaxLockConflicts,
-		TargetLockConflictBytes: opts.TargetLockConflictBytes,
-		ReadCategory:            opts.Category,
+		FailOnMoreRecent: failOnMoreRecent,
+		Txn:              scanTxn,
+		MaxKeys:          max,
+		MaxLockConflicts: opts.MaxLockConflicts,
 	})
 	if err != nil {
 		return nil, nil, 0, nil, err
 	}
 
 	iter, err := newMVCCIterator(
-		ctx, rw, timestamp, false /* rangeKeyMasking */, true, /* noInterleavedIntents */
-		IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			Prefix:       true,
-			ReadCategory: opts.Category,
+		rw, timestamp, false /* rangeKeyMasking */, true /* noInterleavedIntents */, IterOptions{
+			KeyTypes: IterKeyTypePointsAndRanges,
+			Prefix:   true,
 		},
 	)
 	if err != nil {
@@ -3667,8 +3574,7 @@ func MVCCDeleteRange(
 	inlineDelete := timestamp.IsEmpty()
 	var ltScanner *lockTableKeyScanner
 	if !inlineDelete {
-		ltScanner, err = newLockTableKeyScanner(
-			ctx, rw, opts.TxnID(), lock.Intent, opts.MaxLockConflicts, opts.TargetLockConflictBytes, opts.Category)
+		ltScanner, err = newLockTableKeyScanner(rw, opts.Txn, lock.Intent, opts.MaxLockConflicts)
 		if err != nil {
 			return nil, nil, 0, nil, err
 		}
@@ -3744,16 +3650,7 @@ func MVCCPredicateDeleteRange(
 	maxBatchSize, maxBatchByteSize int64,
 	rangeTombstoneThreshold int64,
 	maxLockConflicts int64,
-	targetLockConflictBytes int64,
 ) (*roachpb.Span, error) {
-	if endTime.IsEmpty() {
-		return nil, errors.AssertionFailedf("MVCCPredicateDeleteRange expects non-empty endTime")
-	}
-	if ms == nil {
-		return nil, errors.AssertionFailedf(
-			"MVCCStats passed in to MVCCPredicateDeleteRange must be non-nil to ensure proper stats" +
-				" computation during Delete operations")
-	}
 
 	if maxBatchSize == 0 {
 		// Set maxBatchSize to a large number to ensure MVCCPredicateDeleteRange
@@ -3780,35 +3677,17 @@ func MVCCPredicateDeleteRange(
 	var keyAlloc bufalloc.ByteAllocator
 	buf := make([]roachpb.Key, 0, rangeTombstoneThreshold)
 
+	if ms == nil {
+		return nil, errors.AssertionFailedf(
+			"MVCCStats passed in to MVCCPredicateDeleteRange must be non-nil to ensure proper stats" +
+				" computation during Delete operations")
+	}
+
 	// Check for any overlapping locks, and return them to be resolved.
-	if locks, err := ScanLocks(
-		ctx, rw, startKey, endKey, maxLockConflicts, targetLockConflictBytes); err != nil {
+	if locks, err := ScanLocks(ctx, rw, startKey, endKey, maxLockConflicts, 0); err != nil {
 		return nil, err
 	} else if len(locks) > 0 {
 		return nil, &kvpb.LockConflictError{Locks: locks}
-	}
-
-	var stopRunBasedOnPredicate func(k MVCCKey, iter *MVCCIncrementalIterator) (bool, error)
-	if predicates.ImportEpoch > 0 {
-		// TODO(ssd): We will likely eventually want something
-		// that consturcts our iterator opetions based on the
-		// predicate so that we can use a block-property
-		// filter for import epochs.
-		stopRunBasedOnPredicate = func(k MVCCKey, it *MVCCIncrementalIterator) (bool, error) {
-			rawV, err := it.UnsafeValue()
-			if err != nil {
-				return true, err
-			}
-			v, err := DecodeMVCCValue(rawV)
-			if err != nil {
-				return true, err
-			}
-			return v.ImportEpoch != predicates.ImportEpoch, nil
-		}
-	} else {
-		stopRunBasedOnPredicate = func(k MVCCKey, _ *MVCCIncrementalIterator) (bool, error) {
-			return k.Timestamp.LessEq(predicates.StartTime), nil
-		}
 	}
 
 	// continueRun returns three bools: the first is true if the current run
@@ -3862,23 +3741,20 @@ func MVCCPredicateDeleteRange(
 		}
 
 		// The latest key is a live point key. Conduct predicate filtering.
-		if stop, err := stopRunBasedOnPredicate(k, iter); err != nil {
-			return false, false, false, err
-		} else if stop {
+		if k.Timestamp.LessEq(predicates.StartTime) {
 			return false, false, false, nil
 		}
 
+		// TODO (msbutler): use MVCCValueHeader to match on job ID predicate
 		return true, false, false, nil
 	}
 
 	// Create some reusable machinery for flushing a run with point tombstones
 	// that is typically used in a single MVCCPut call.
 	pointTombstoneIter, err := newMVCCIterator(
-		ctx, rw, endTime, false /* rangeKeyMasking */, true, /* noInterleavedIntents */
-		IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			Prefix:       true,
-			ReadCategory: fs.BatchEvalReadCategory,
+		rw, endTime, false /* rangeKeyMasking */, true /* noInterleavedIntents */, IterOptions{
+			KeyTypes: IterKeyTypePointsAndRanges,
+			Prefix:   true,
 		},
 	)
 	if err != nil {
@@ -3886,14 +3762,15 @@ func MVCCPredicateDeleteRange(
 	}
 	defer pointTombstoneIter.Close()
 
-	ltScanner, err := newLockTableKeyScanner(
-		ctx, rw, uuid.UUID{} /* txnID */, lock.Intent,
-		maxLockConflicts, targetLockConflictBytes, fs.BatchEvalReadCategory,
-	)
-	if err != nil {
-		return nil, err
+	inlineDelete := endTime.IsEmpty()
+	var ltScanner *lockTableKeyScanner
+	if !inlineDelete {
+		ltScanner, err = newLockTableKeyScanner(rw, nil /* txn */, lock.Intent, maxLockConflicts)
+		if err != nil {
+			return nil, err
+		}
+		defer ltScanner.close()
 	}
-	defer ltScanner.close()
 
 	pointTombstoneBuf := newPutBuffer()
 	defer pointTombstoneBuf.release()
@@ -3909,7 +3786,7 @@ func MVCCPredicateDeleteRange(
 			batchByteSize+runByteSize >= maxBatchByteSize {
 			if err := MVCCDeleteRangeUsingTombstone(ctx, rw, ms,
 				runStart, runEnd.Next(), endTime, localTimestamp, leftPeekBound, rightPeekBound,
-				false /* idempotent */, maxLockConflicts, targetLockConflictBytes, nil); err != nil {
+				false /* idempotent */, maxLockConflicts, nil); err != nil {
 				return err
 			}
 			batchByteSize += int64(MVCCRangeKey{StartKey: runStart, EndKey: runEnd, Timestamp: endTime}.EncodedSize())
@@ -3920,8 +3797,7 @@ func MVCCPredicateDeleteRange(
 			for i := int64(0); i < runSize; i++ {
 				_, acq, err := mvccPutInternal(
 					ctx, rw, pointTombstoneIter, ltScanner, buf[i], endTime, noValue, pointTombstoneBuf,
-					nil, MVCCWriteOptions{
-						LocalTimestamp: localTimestamp, Stats: ms, Category: fs.BatchEvalReadCategory},
+					nil, MVCCWriteOptions{LocalTimestamp: localTimestamp, Stats: ms},
 				)
 				if err != nil {
 					return err
@@ -3958,13 +3834,12 @@ func MVCCPredicateDeleteRange(
 	// endTime. We don't _expect_ to hit intents or newer keys in the client
 	// provided span since the MVCCPredicateDeleteRange is only intended for
 	// non-live key spans, but there could be an intent leftover.
-	iter, err := NewMVCCIncrementalIterator(ctx, rw, MVCCIncrementalIterOptions{
+	iter, err := NewMVCCIncrementalIterator(rw, MVCCIncrementalIterOptions{
 		EndKey:               endKey,
 		StartTime:            predicates.StartTime,
 		EndTime:              hlc.MaxTimestamp,
 		RangeKeyMaskingBelow: endTime,
 		KeyTypes:             IterKeyTypePointsAndRanges,
-		ReadCategory:         fs.BatchEvalReadCategory,
 	})
 	if err != nil {
 		return nil, err
@@ -4043,7 +3918,6 @@ func MVCCPredicateDeleteRange(
 			// current key we're about to delete.
 			iter.NextKeyIgnoringTime()
 		} else {
-
 			// This key does not match. Flush the run of matching keys,
 			// to prevent issuing tombstones on keys that do not match the predicates.
 			if err := flushDeleteKeys(); err != nil {
@@ -4096,7 +3970,6 @@ func MVCCDeleteRangeUsingTombstone(
 	leftPeekBound, rightPeekBound roachpb.Key,
 	idempotent bool,
 	maxLockConflicts int64,
-	targetLockConflictBytes int64,
 	msCovered *enginepb.MVCCStats,
 ) error {
 	// Validate the range key. We must do this first, to catch e.g. any bound violations.
@@ -4129,8 +4002,7 @@ func MVCCDeleteRangeUsingTombstone(
 	}
 
 	// Check for any overlapping locks, and return them to be resolved.
-	if locks, err := ScanLocks(
-		ctx, rw, startKey, endKey, maxLockConflicts, targetLockConflictBytes); err != nil {
+	if locks, err := ScanLocks(ctx, rw, startKey, endKey, maxLockConflicts, 0); err != nil {
 		return err
 	} else if len(locks) > 0 {
 		return &kvpb.LockConflictError{Locks: locks}
@@ -4141,12 +4013,11 @@ func MVCCDeleteRangeUsingTombstone(
 	// with newer MVCC range tombstones.
 	if idempotent {
 		if noPointKeys, err := func() (bool, error) {
-			iter, err := rw.NewMVCCIterator(ctx, MVCCKeyIterKind, IterOptions{
+			iter, err := rw.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 				KeyTypes:             IterKeyTypePointsAndRanges,
 				LowerBound:           startKey,
 				UpperBound:           endKey,
 				RangeKeyMaskingBelow: timestamp,
-				ReadCategory:         fs.BatchEvalReadCategory,
 			})
 			if err != nil {
 				return false, err
@@ -4172,17 +4043,13 @@ func MVCCDeleteRangeUsingTombstone(
 
 	// If we're omitting point keys in the stats/conflict scan below, we need to
 	// do a separate time-bound scan for point key conflicts.
-	//
-	// We can disable intent interleaving, since we've already scanned for locks.
 	if msCovered != nil {
 		if err := func() error {
-			iter, err := NewMVCCIncrementalIterator(ctx, rw, MVCCIncrementalIterOptions{
-				KeyTypes:     IterKeyTypePointsOnly,
-				IntentPolicy: MVCCIncrementalIterIntentPolicyIgnore,
-				StartKey:     startKey,
-				EndKey:       endKey,
-				StartTime:    timestamp.Prev(), // make inclusive
-				ReadCategory: fs.BatchEvalReadCategory,
+			iter, err := NewMVCCIncrementalIterator(rw, MVCCIncrementalIterOptions{
+				KeyTypes:  IterKeyTypePointsOnly,
+				StartKey:  startKey,
+				EndKey:    endKey,
+				StartTime: timestamp.Prev(), // make inclusive
 			})
 			if err != nil {
 				return err
@@ -4208,13 +4075,12 @@ func MVCCDeleteRangeUsingTombstone(
 		LowerBound:           startKey,
 		UpperBound:           endKey,
 		RangeKeyMaskingBelow: timestamp, // lower point keys have already been accounted for
-		ReadCategory:         fs.BatchEvalReadCategory,
 	}
 	if msCovered != nil {
 		iterOpts.KeyTypes = IterKeyTypeRangesOnly
 		iterOpts.RangeKeyMaskingBelow = hlc.Timestamp{}
 	}
-	iter, err := rw.NewMVCCIterator(ctx, MVCCKeyIterKind, iterOpts)
+	iter, err := rw.NewMVCCIterator(MVCCKeyIterKind, iterOpts)
 	if err != nil {
 		return err
 	}
@@ -4298,11 +4164,10 @@ func MVCCDeleteRangeUsingTombstone(
 		if rightPeekBound == nil {
 			rightPeekBound = keys.MaxKey
 		}
-		rkIter, err := rw.NewMVCCIterator(ctx, MVCCKeyIterKind, IterOptions{
-			KeyTypes:     IterKeyTypeRangesOnly,
-			LowerBound:   leftPeekBound,
-			UpperBound:   rightPeekBound,
-			ReadCategory: fs.BatchEvalReadCategory,
+		rkIter, err := rw.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
+			KeyTypes:   IterKeyTypeRangesOnly,
+			LowerBound: leftPeekBound,
+			UpperBound: rightPeekBound,
 		})
 		if err != nil {
 			return err
@@ -4444,14 +4309,9 @@ func mvccScanInit(
 		}, nil
 	}
 
-	memAccount := mvccScanner.memAccount
-	if opts.MemoryAccount != nil {
-		memAccount = opts.MemoryAccount
-	}
 	*mvccScanner = pebbleMVCCScanner{
 		parent:           iter,
-		memAccount:       memAccount,
-		unlimitedMemAcc:  mvccScanner.unlimitedMemAcc,
+		memAccount:       opts.MemoryAccount,
 		lockTable:        opts.LockTable,
 		reverse:          opts.Reverse,
 		start:            key,
@@ -4460,7 +4320,6 @@ func mvccScanInit(
 		maxKeys:          opts.MaxKeys,
 		targetBytes:      opts.TargetBytes,
 		allowEmpty:       opts.AllowEmpty,
-		rawMVCCValues:    opts.ReturnRawMVCCValues,
 		wholeRows:        opts.WholeRowsOfSize > 1, // single-KV rows don't need processing
 		maxLockConflicts: opts.MaxLockConflicts,
 		inconsistent:     opts.Inconsistent,
@@ -4606,8 +4465,7 @@ func buildScanIntents(data []byte) ([]roachpb.Intent, error) {
 	return intents, nil
 }
 
-// MVCCWriteOptions bundles options for the MVCCPut and MVCCDelete families of
-// functions.
+// MVCCWriteOptions bundles options for the MVCCPut and MVCCDelete families of functions.
 type MVCCWriteOptions struct {
 	// See the comment on mvccPutInternal for details on these parameters.
 	Txn                            *roachpb.Transaction
@@ -4615,13 +4473,6 @@ type MVCCWriteOptions struct {
 	Stats                          *enginepb.MVCCStats
 	ReplayWriteTimestampProtection bool
 	OmitInRangefeeds               bool
-	ImportEpoch                    uint32
-	// OriginID, when set during Logical Data Replication, will bind to the
-	// putting key's MVCCValueHeader.
-	OriginID uint32
-	// OriginTimestamp, when set during Logical Data Replication, will bind to the
-	// putting key's MVCCValueHeader.
-	OriginTimestamp hlc.Timestamp
 	// MaxLockConflicts is a maximum number of conflicting locks collected before
 	// returning LockConflictError. Even single-key writes can encounter multiple
 	// conflicting shared locks, so the limit is important to bound the number of
@@ -4629,13 +4480,6 @@ type MVCCWriteOptions struct {
 	//
 	// The zero value indicates no limit.
 	MaxLockConflicts int64
-	// TargetLockConflictBytes is the number of bytes returned in LockConflictError.
-	// The process will stop collecting intents when total size is exceeds the threshold.
-	//
-	// The zero value indicates no limit.
-	TargetLockConflictBytes int64
-	// Category is used for writes that need to do a read.
-	Category fs.ReadCategory
 }
 
 func (opts *MVCCWriteOptions) validate() error {
@@ -4643,16 +4487,6 @@ func (opts *MVCCWriteOptions) validate() error {
 		return errors.Errorf("cannot enable replay protection without a transaction")
 	}
 	return nil
-}
-
-// TxnID returns the transaction ID if the write corresponds to a transactional
-// write. Otherwise, if it corresponds to a non-transactional write, an empty ID
-// is returned.
-func (opts *MVCCWriteOptions) TxnID() uuid.UUID {
-	if opts.Txn != nil {
-		return opts.Txn.ID
-	}
-	return uuid.UUID{}
 }
 
 // MVCCScanOptions bundles options for the MVCCScan family of functions.
@@ -4700,14 +4534,6 @@ type MVCCScanOptions struct {
 	// Not used in inconsistent scans.
 	// The zero value indicates no limit.
 	MaxLockConflicts int64
-	// TargetLockConflictBytes sets target bytes for collected intents with
-	// LockConflictError. This setting will stop collecting intents when total intent
-	// size exceeding the target threshold. This setting only work under
-	// MVCCIncrementalIterIntentPolicyAggregate. Caller must call TryGetIntentError
-	// even when the total collected intents size is less than the threshold.
-	//
-	// The zero value indicates no limit.
-	TargetLockConflictBytes int64
 	// MemoryAccount is used for tracking memory allocations.
 	MemoryAccount *mon.BoundAccount
 	// LockTable is used to determine whether keys are locked in the in-memory
@@ -4721,13 +4547,6 @@ type MVCCScanOptions struct {
 	// or not. It is usually set by read-only requests that have resolved their
 	// conflicts before they begin their MVCC scan.
 	DontInterleaveIntents bool
-	// ReadCategory is used to map to a user-understandable category string, for
-	// stats aggregation and metrics, and a Pebble-understandable QoS.
-	ReadCategory fs.ReadCategory
-	// ReturnRawMVCCValues indicates that the scan should return
-	// roachpb.Value whose RawBytes may contain MVCCValueHeader
-	// data.
-	ReturnRawMVCCValues bool
 }
 
 func (opts *MVCCScanOptions) validate() error {
@@ -4822,11 +4641,10 @@ func MVCCScan(
 	opts MVCCScanOptions,
 ) (MVCCScanResult, error) {
 	iter, err := newMVCCIterator(
-		ctx, reader, timestamp, !opts.Tombstones, opts.DontInterleaveIntents, IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			LowerBound:   key,
-			UpperBound:   endKey,
-			ReadCategory: opts.ReadCategory,
+		reader, timestamp, !opts.Tombstones, opts.DontInterleaveIntents, IterOptions{
+			KeyTypes:   IterKeyTypePointsAndRanges,
+			LowerBound: key,
+			UpperBound: endKey,
 		},
 	)
 	if err != nil {
@@ -4845,11 +4663,10 @@ func MVCCScanToBytes(
 	opts MVCCScanOptions,
 ) (MVCCScanResult, error) {
 	iter, err := newMVCCIterator(
-		ctx, reader, timestamp, !opts.Tombstones, opts.DontInterleaveIntents, IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			LowerBound:   key,
-			UpperBound:   endKey,
-			ReadCategory: opts.ReadCategory,
+		reader, timestamp, !opts.Tombstones, opts.DontInterleaveIntents, IterOptions{
+			KeyTypes:   IterKeyTypePointsAndRanges,
+			LowerBound: key,
+			UpperBound: endKey,
 		},
 	)
 	if err != nil {
@@ -4899,11 +4716,10 @@ func MVCCIterate(
 	f func(roachpb.KeyValue) error,
 ) ([]roachpb.Intent, error) {
 	iter, err := newMVCCIterator(
-		ctx, reader, timestamp, !opts.Tombstones, opts.DontInterleaveIntents, IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			LowerBound:   key,
-			UpperBound:   endKey,
-			ReadCategory: opts.ReadCategory,
+		reader, timestamp, !opts.Tombstones, opts.DontInterleaveIntents, IterOptions{
+			KeyTypes:   IterKeyTypePointsAndRanges,
+			LowerBound: key,
+			UpperBound: endKey,
 		},
 	)
 	if err != nil {
@@ -5075,11 +4891,10 @@ func MVCCResolveWriteIntent(
 	// the database.
 	beforeBytes := rw.BufferedSize()
 
-	// Iterate over all locks held by update.Txn on this key.
-	ltIter, err := NewLockTableIterator(ctx, rw, LockTableIteratorOptions{
-		Prefix:       true,
-		MatchTxnID:   update.Txn.ID,
-		ReadCategory: fs.IntentResolutionReadCategory,
+	// Iterate over all locks held by intent.Txn on this key.
+	ltIter, err := NewLockTableIterator(rw, LockTableIteratorOptions{
+		Prefix:     true,
+		MatchTxnID: update.Txn.ID,
 	})
 	if err != nil {
 		return false, 0, nil, false, err
@@ -5136,16 +4951,17 @@ func MVCCResolveWriteIntent(
 			// Intent resolution requires an MVCC iterator to look up the MVCC
 			// version associated with the intent. Create one.
 			var iter MVCCIterator
-			iter, err = rw.NewMVCCIterator(ctx, MVCCKeyIterKind, IterOptions{
-				Prefix:       true,
-				KeyTypes:     IterKeyTypePointsAndRanges,
-				ReadCategory: fs.IntentResolutionReadCategory,
-			})
-			if err != nil {
-				return false, 0, nil, false, err
+			{
+				iter, err = rw.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
+					Prefix:   true,
+					KeyTypes: IterKeyTypePointsAndRanges,
+				})
+				if err != nil {
+					return false, 0, nil, false, err
+				}
+				defer iter.Close()
 			}
 			outcome, err = mvccResolveWriteIntent(ctx, rw, iter, ms, update, &buf.meta, buf)
-			iter.Close()
 		} else {
 			outcome, err = mvccReleaseLockInternal(ctx, rw, ms, update, str, &buf.meta, buf)
 			replLocksReleased = replLocksReleased || outcome != lockNoop
@@ -5806,11 +5622,10 @@ func MVCCResolveWriteIntentRange(
 
 	ltStart, _ := keys.LockTableSingleKey(update.Key, nil)
 	ltEnd, _ := keys.LockTableSingleKey(update.EndKey, nil)
-	ltIter, err := NewLockTableIterator(ctx, rw, LockTableIteratorOptions{
-		LowerBound:   ltStart,
-		UpperBound:   ltEnd,
-		MatchTxnID:   update.Txn.ID,
-		ReadCategory: fs.IntentResolutionReadCategory,
+	ltIter, err := NewLockTableIterator(rw, LockTableIteratorOptions{
+		LowerBound: ltStart,
+		UpperBound: ltEnd,
+		MatchTxnID: update.Txn.ID,
 	})
 	if err != nil {
 		return 0, 0, nil, 0, false, err
@@ -5818,20 +5633,19 @@ func MVCCResolveWriteIntentRange(
 	defer ltIter.Close()
 	var mvccIter MVCCIterator
 	iterOpts := IterOptions{
-		KeyTypes:     IterKeyTypePointsAndRanges,
-		LowerBound:   update.Key,
-		UpperBound:   update.EndKey,
-		ReadCategory: fs.IntentResolutionReadCategory,
+		KeyTypes:   IterKeyTypePointsAndRanges,
+		LowerBound: update.Key,
+		UpperBound: update.EndKey,
 	}
 	if rw.ConsistentIterators() {
 		// Production code should always have consistent iterators.
-		mvccIter, err = rw.NewMVCCIterator(ctx, MVCCKeyIterKind, iterOpts)
+		mvccIter, err = rw.NewMVCCIterator(MVCCKeyIterKind, iterOpts)
 		if err != nil {
 			return 0, 0, nil, 0, false, err
 		}
 	} else {
 		// For correctness, we need mvccIter to be consistent with engineIter.
-		mvccIter = newPebbleIteratorByCloning(ctx, ltIter.CloneContext(), iterOpts, StandardDurability)
+		mvccIter = newPebbleIteratorByCloning(ltIter.CloneContext(), iterOpts, StandardDurability)
 	}
 	defer mvccIter.Close()
 	buf := newPutBuffer()
@@ -5920,16 +5734,10 @@ func MVCCResolveWriteIntentRange(
 
 // MVCCCheckForAcquireLock scans the replicated lock table to determine whether
 // a lock acquisition at the specified key and strength by the specified
-// transaction[1] would succeed. If the lock table scan finds one or more
-// existing locks on the key that conflict with the acquisition then a
-// LockConflictError is returned. Otherwise, nil is returned. Unlike
-// MVCCAcquireLock, this method does not actually acquire the lock (i.e. write
-// to the lock table).
-//
-// [1] Non-transactional requests cannot acquire locks that outlive themselves,
-// but they are still able to specify a locking strength and conflict with other
-// transactions. Therefore, it is valid to supply a nil transaction to this
-// function.
+// transaction would succeed. If the lock table scan finds one or more existing
+// locks on the key that conflict with the acquisition then a LockConflictError
+// is returned. Otherwise, nil is returned. Unlike MVCCAcquireLock, this method
+// does not actually acquire the lock (i.e. write to the lock table).
 func MVCCCheckForAcquireLock(
 	ctx context.Context,
 	reader Reader,
@@ -5937,17 +5745,11 @@ func MVCCCheckForAcquireLock(
 	str lock.Strength,
 	key roachpb.Key,
 	maxLockConflicts int64,
-	targetLockConflictBytes int64,
 ) error {
-	if err := validateLockAcquisitionStrength(str); err != nil {
+	if err := validateLockAcquisition(txn, str); err != nil {
 		return err
 	}
-	var txnID uuid.UUID
-	if txn != nil {
-		txnID = txn.ID
-	}
-	ltScanner, err := newLockTableKeyScanner(
-		ctx, reader, txnID, str, maxLockConflicts, targetLockConflictBytes, fs.BatchEvalReadCategory)
+	ltScanner, err := newLockTableKeyScanner(reader, txn, str, maxLockConflicts)
 	if err != nil {
 		return err
 	}
@@ -5963,25 +5765,16 @@ func MVCCCheckForAcquireLock(
 func MVCCAcquireLock(
 	ctx context.Context,
 	rw ReadWriter,
-	txn *enginepb.TxnMeta,
-	ignoredSeqNums []enginepb.IgnoredSeqNumRange,
+	txn *roachpb.Transaction,
 	str lock.Strength,
 	key roachpb.Key,
 	ms *enginepb.MVCCStats,
 	maxLockConflicts int64,
-	targetLockConflictBytes int64,
 ) error {
-	if txn == nil {
-		// Non-transactional requests cannot acquire locks that outlive their
-		// lifespan; they can only check for conflicting locks using
-		// MVCCCheckForAcquireLock.
-		return errors.Errorf("txn must be non-nil to acquire a replicated lock")
-	}
-	if err := validateLockAcquisitionStrength(str); err != nil {
+	if err := validateLockAcquisition(txn, str); err != nil {
 		return err
 	}
-	ltScanner, err := newLockTableKeyScanner(
-		ctx, rw, txn.ID, str, maxLockConflicts, targetLockConflictBytes, fs.BatchEvalReadCategory)
+	ltScanner, err := newLockTableKeyScanner(rw, txn, str, maxLockConflicts)
 	if err != nil {
 		return err
 	}
@@ -6036,7 +5829,7 @@ func MVCCAcquireLock(
 				"cannot acquire lock with strength %s at seq number %d, "+
 					"already held at higher seq number %d",
 				str.String(), txn.Sequence, foundLock.Txn.Sequence)
-		} else if enginepb.TxnSeqIsIgnored(foundLock.Txn.Sequence, ignoredSeqNums) {
+		} else if enginepb.TxnSeqIsIgnored(foundLock.Txn.Sequence, txn.IgnoredSeqNums) {
 			// Acquiring at same epoch and new sequence number after
 			// previous sequence number was rolled back.
 			//
@@ -6062,7 +5855,7 @@ func MVCCAcquireLock(
 				// can still avoid reacquisition.
 				inHistoryNotRolledBack := false
 				for _, e := range foundLock.IntentHistory {
-					if !enginepb.TxnSeqIsIgnored(e.Sequence, ignoredSeqNums) {
+					if !enginepb.TxnSeqIsIgnored(e.Sequence, txn.IgnoredSeqNums) {
 						inHistoryNotRolledBack = true
 						break
 					}
@@ -6095,7 +5888,7 @@ func MVCCAcquireLock(
 	defer buf.release()
 
 	newMeta := &buf.newMeta
-	newMeta.Txn = txn
+	newMeta.Txn = &txn.TxnMeta
 	newMeta.Timestamp = txn.WriteTimestamp.ToLegacyTimestamp()
 	keyBytes, valBytes, err := buf.putLockMeta(rw, key, str, newMeta, rolledBack)
 	if err != nil {
@@ -6116,109 +5909,14 @@ func MVCCAcquireLock(
 	return nil
 }
 
-func validateLockAcquisitionStrength(str lock.Strength) error {
+func validateLockAcquisition(txn *roachpb.Transaction, str lock.Strength) error {
+	if txn == nil {
+		return errors.Errorf("txn must be non-nil to acquire lock")
+	}
 	if !(str == lock.Shared || str == lock.Exclusive) {
 		return errors.Errorf("invalid lock strength to acquire lock: %s", str.String())
 	}
 	return nil
-}
-
-// MVCCVerifyLock returns true if the supplied transaction holds a lock that
-// offers equal to or greater protection[1] than the supplied lock strength.
-//
-// [1] Locks that were acquired at sequence numbers that have since been ignored
-// aren't considered, as they may be rolled back in the future.
-func MVCCVerifyLock(
-	ctx context.Context,
-	reader Reader,
-	txn *enginepb.TxnMeta,
-	str lock.Strength,
-	key roachpb.Key,
-	ignoredSeqNums []enginepb.IgnoredSeqNumRange,
-) (bool, error) {
-	if txn == nil {
-		// Non-transactional requests cannot acquire locks that outlive their
-		// lifespan. Nothing to verify.
-		return false, errors.Errorf("txn must be non-nil to verify replicated lock")
-	}
-	if str == lock.None {
-		return false, errors.Errorf("querying a lock with strength %s is nonsensical", lock.None)
-	}
-	// NB: Pass in lock.None when configuring the lockTableKeyScanner to only
-	// return locks held by the our transaction.
-	ltScanner, err := newLockTableKeyScanner(
-		ctx, reader, txn.ID, lock.None, 0, 0, fs.BatchEvalReadCategory,
-	)
-	if err != nil {
-		return false, err
-	}
-
-	defer ltScanner.close()
-	err = ltScanner.scan(key)
-	if err != nil {
-		return false, err
-	}
-
-	for _, iterStr := range strongerOrEqualStrengths(str) {
-		foundLock := ltScanner.foundOwn(iterStr)
-		if foundLock == nil {
-			// Proceed to check weaker strengths...
-			continue
-		}
-
-		if foundLock.Txn.Epoch != txn.Epoch {
-			continue // the lock belongs to a different epoch
-		}
-
-		// We don't keep a full history of all sequence numbers a replicated lock
-		// was acquired at. As long as there exists a lock at some (non-rolled back)
-		// sequence number with sufficient lock strength, we have the desired mutual
-		// exclusion guarantees. We need to make sure the lock we found was written
-		// at a sequence number that hasn't been rolled back; otherwise, there's
-		// nothing stopping another request from rolling back the lock even though
-		// it exists right now.
-		if enginepb.TxnSeqIsIgnored(foundLock.Txn.Sequence, ignoredSeqNums) {
-			if iterStr != lock.Intent {
-				// The lock is ignored. Proceed to check weaker lock strengths...
-				continue
-			}
-			// If the existing lock is an intent, additionally check the intent
-			// history to verify that all of the intent writes in the intent history
-			// are also rolled back. If not, an element in the intent history is
-			// providing the required protection.
-			//
-			// This is not just an optimization. It is necessary for the correctness
-			// of MVCCVerifyLock because MVCCAcquireLock will skip lock acquisition if
-			// it finds a non-rolled back intent in the intent history.
-			inHistoryNotRolledBack := false
-			for _, e := range foundLock.IntentHistory {
-				if !enginepb.TxnSeqIsIgnored(e.Sequence, ignoredSeqNums) {
-					inHistoryNotRolledBack = true
-					break
-				}
-			}
-			if !inHistoryNotRolledBack {
-				// The intent and all prior intents in the intent history are
-				// ignored, proceed to check weaker lock strengths...
-				continue
-			}
-		}
-
-		return true, nil
-	}
-	return false, nil
-}
-
-var didUpdate bool
-
-func ApproximateLockTableSize(acq *roachpb.LockAcquisition) int64 {
-	keySize := int64(len(acq.Key)) + engineKeyVersionLockTableLen
-	metaSize := int64((&enginepb.MVCCMetadata{
-		Txn:                 &acq.Txn,
-		Timestamp:           acq.Txn.WriteTimestamp.ToLegacyTimestamp(),
-		TxnDidNotUpdateMeta: &didUpdate,
-	}).Size())
-	return keySize + metaSize
 }
 
 // mvccReleaseLockInternal releases a lock at the specified key and strength and
@@ -6297,16 +5995,13 @@ func MVCCGarbageCollect(
 ) (retE error) {
 
 	var count int64
-	if log.ExpensiveLogEnabled(ctx, 1) {
-		defer func(begin time.Time) {
-			lk, c := len(keys), count // alloc only when neeeded
-			log.Eventf(ctx, "handled %d incoming point keys; deleted %d in %s",
-				lk, c, timeutil.Since(begin))
-			if retE != nil {
-				log.Eventf(ctx, "err: %s", retE)
-			}
-		}(timeutil.Now())
-	}
+	defer func(begin time.Time) {
+		log.Eventf(ctx, "handled %d incoming point keys; deleted %d in %s",
+			len(keys), count, timeutil.Since(begin))
+		if retE != nil {
+			log.Eventf(ctx, "err: %s", retE)
+		}
+	}(timeutil.Now())
 
 	// If there are no keys then there is no work.
 	if len(keys) == 0 {
@@ -6323,11 +6018,10 @@ func MVCCGarbageCollect(
 
 	// Bound the iterator appropriately for the set of keys we'll be garbage
 	// collecting.
-	iter, err := rw.NewMVCCIterator(ctx, MVCCKeyAndIntentsIterKind, IterOptions{
-		LowerBound:   keys[0].Key,
-		UpperBound:   keys[len(keys)-1].Key.Next(),
-		KeyTypes:     IterKeyTypePointsAndRanges,
-		ReadCategory: fs.MVCCGCReadCategory,
+	iter, err := rw.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
+		LowerBound: keys[0].Key,
+		UpperBound: keys[len(keys)-1].Key.Next(),
+		KeyTypes:   IterKeyTypePointsAndRanges,
 	})
 	if err != nil {
 		return err
@@ -6652,11 +6346,10 @@ func MVCCGarbageCollectRangeKeys(
 		// Bound the iterator appropriately for the set of keys we'll be garbage
 		// collecting. We are using latch bounds to collect info about adjacent
 		// range fragments for correct MVCCStats updates.
-		iter, err := rw.NewMVCCIterator(ctx, MVCCKeyIterKind, IterOptions{
-			LowerBound:   gcKey.LatchSpan.Key,
-			UpperBound:   gcKey.LatchSpan.EndKey,
-			KeyTypes:     IterKeyTypeRangesOnly,
-			ReadCategory: fs.MVCCGCReadCategory,
+		iter, err := rw.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
+			LowerBound: gcKey.LatchSpan.Key,
+			UpperBound: gcKey.LatchSpan.EndKey,
+			KeyTypes:   IterKeyTypeRangesOnly,
 		})
 		if err != nil {
 			return err
@@ -6745,8 +6438,30 @@ func MVCCGarbageCollectRangeKeys(
 
 			// Verify that there are no remaining data under the deleted range using
 			// time bound iterator.
-			if err := verifyNoValuesUnderRangeKey(ctx, rw, rangeKeys.Bounds, gcKey); err != nil {
+			ptIter, err := NewMVCCIncrementalIterator(rw, MVCCIncrementalIterOptions{
+				KeyTypes:     IterKeyTypePointsOnly,
+				StartKey:     rangeKeys.Bounds.Key,
+				EndKey:       rangeKeys.Bounds.EndKey,
+				EndTime:      gcKey.Timestamp,
+				IntentPolicy: MVCCIncrementalIterIntentPolicyEmit,
+			})
+			if err != nil {
 				return err
+			}
+			defer ptIter.Close()
+
+			for ptIter.SeekGE(MVCCKey{Key: rangeKeys.Bounds.Key}); ; ptIter.Next() {
+				if ok, err := ptIter.Valid(); err != nil {
+					return err
+				} else if !ok {
+					break
+				}
+				// Disallow any value under the range key. We only skip intents as they
+				// must have a provisional value with appropriate timestamp.
+				if pointKey := ptIter.UnsafeKey(); pointKey.IsValue() {
+					return errors.Errorf("attempt to delete range tombstone %q hiding key at %q",
+						gcKey, pointKey)
+				}
 			}
 		}
 		return nil
@@ -6759,37 +6474,6 @@ func MVCCGarbageCollectRangeKeys(
 	}
 
 	return nil
-}
-
-func verifyNoValuesUnderRangeKey(
-	ctx context.Context, reader Reader, bounds roachpb.Span, gcKey CollectableGCRangeKey,
-) error {
-	// Use a time bound iterator to verify there is no remaining data under the
-	// deleted range.
-	ptIter, err := NewMVCCIncrementalIterator(ctx, reader, MVCCIncrementalIterOptions{
-		KeyTypes:     IterKeyTypePointsOnly,
-		StartKey:     bounds.Key,
-		EndKey:       bounds.EndKey,
-		EndTime:      gcKey.Timestamp,
-		IntentPolicy: MVCCIncrementalIterIntentPolicyEmit,
-		ReadCategory: fs.MVCCGCReadCategory,
-	})
-	if err != nil {
-		return err
-	}
-	defer ptIter.Close()
-
-	for ptIter.SeekGE(MVCCKey{Key: bounds.Key}); ; ptIter.Next() {
-		if ok, err := ptIter.Valid(); err != nil || !ok {
-			return err
-		}
-		// Disallow any value under the range key. We only skip intents as they
-		// must have a provisional value with appropriate timestamp.
-		if pointKey := ptIter.UnsafeKey(); pointKey.IsValue() {
-			return errors.Errorf("attempt to delete range tombstone %q hiding key at %q",
-				gcKey, pointKey)
-		}
-	}
 }
 
 // MVCCGarbageCollectWholeRange removes all the range data and resets counters.
@@ -6848,12 +6532,11 @@ func CanGCEntireRange(
 	if isLocal(start) || isLocal(end) {
 		return coveredByRangeTombstones, errors.Errorf("range emptiness check can only be done on global ranges")
 	}
-	iter, err := rw.NewMVCCIterator(ctx, MVCCKeyAndIntentsIterKind, IterOptions{
+	iter, err := rw.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
 		KeyTypes:             IterKeyTypePointsAndRanges,
 		LowerBound:           start,
 		UpperBound:           end,
 		RangeKeyMaskingBelow: gcThreshold,
-		ReadCategory:         fs.MVCCGCReadCategory,
 	})
 	if err != nil {
 		return coveredByRangeTombstones, err
@@ -6907,11 +6590,10 @@ func MVCCGarbageCollectPointsWithClearRange(
 			countKeys, float64(countKeys)*1e9/float64(timeutil.Since(begin)), removedEntries)
 	}(timeutil.Now())
 
-	iter, err := rw.NewMVCCIterator(ctx, MVCCKeyAndIntentsIterKind, IterOptions{
-		LowerBound:   start,
-		UpperBound:   end,
-		KeyTypes:     IterKeyTypePointsAndRanges,
-		ReadCategory: fs.MVCCGCReadCategory,
+	iter, err := rw.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
+		LowerBound: start,
+		UpperBound: end,
+		KeyTypes:   IterKeyTypePointsAndRanges,
 	})
 	if err != nil {
 		return err
@@ -7006,7 +6688,7 @@ func MVCCGarbageCollectPointsWithClearRange(
 
 		if ms != nil {
 			if newKey {
-				ms.Add(updateStatsOnGC(unsafeKey.Key, int64(mvccencoding.EncodedMVCCKeyPrefixLength(unsafeKey.Key)), 0,
+				ms.Add(updateStatsOnGC(unsafeKey.Key, int64(EncodedMVCCKeyPrefixLength(unsafeKey.Key)), 0,
 					true /* metaKey */, validTill.WallTime))
 			}
 			ms.Add(updateStatsOnGC(unsafeKey.Key, MVCCVersionTimestampSize, int64(valueLen), false, /* metaKey */
@@ -7029,17 +6711,13 @@ func MVCCGarbageCollectPointsWithClearRange(
 // range keys. The returned key will never be chosen from the key ranges listed
 // in keys.NoSplitSpans.
 func MVCCFindSplitKey(
-	ctx context.Context, reader Reader, key, endKey roachpb.RKey, targetSize int64,
+	_ context.Context, reader Reader, key, endKey roachpb.RKey, targetSize int64,
 ) (roachpb.Key, error) {
 	if key.Less(roachpb.RKey(keys.LocalMax)) {
 		key = roachpb.RKey(keys.LocalMax)
 	}
 
-	it, err := reader.NewMVCCIterator(
-		ctx, MVCCKeyAndIntentsIterKind, IterOptions{
-			UpperBound:   endKey.AsRawKey(),
-			ReadCategory: fs.BatchEvalReadCategory,
-		})
+	it, err := reader.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{UpperBound: endKey.AsRawKey()})
 	if err != nil {
 		return nil, err
 	}
@@ -7150,7 +6828,7 @@ func mvccMinSplitKey(it MVCCIterator, startKey roachpb.Key) (roachpb.Key, error)
 // The returned split key is NOT guaranteed to be outside a no-split span, such
 // as Meta2Max or Node Liveness.
 func MVCCFirstSplitKey(
-	ctx context.Context, reader Reader, desiredSplitKey, startKey, endKey roachpb.RKey,
+	_ context.Context, reader Reader, desiredSplitKey, startKey, endKey roachpb.RKey,
 ) (roachpb.Key, error) {
 	// If the start key of the range is within the meta1 key space, the range
 	// cannot be split.
@@ -7158,11 +6836,7 @@ func MVCCFirstSplitKey(
 		return nil, nil
 	}
 
-	it, err := reader.NewMVCCIterator(
-		ctx, MVCCKeyAndIntentsIterKind, IterOptions{
-			UpperBound:   endKey.AsRawKey(),
-			ReadCategory: fs.BatchEvalReadCategory,
-		})
+	it, err := reader.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{UpperBound: endKey.AsRawKey()})
 	if err != nil {
 		return nil, err
 	}
@@ -7214,10 +6888,8 @@ func willOverflow(a, b int64) bool {
 // ComputeStats scans the given key span and computes MVCC stats. nowNanos
 // specifies the wall time in nanoseconds since the epoch and is used to compute
 // age-related stats quantities.
-func ComputeStats(
-	ctx context.Context, r Reader, start, end roachpb.Key, nowNanos int64,
-) (enginepb.MVCCStats, error) {
-	return ComputeStatsWithVisitors(ctx, r, start, end, nowNanos, ComputeStatsVisitors{})
+func ComputeStats(r Reader, start, end roachpb.Key, nowNanos int64) (enginepb.MVCCStats, error) {
+	return ComputeStatsWithVisitors(r, start, end, nowNanos, ComputeStatsVisitors{})
 }
 
 // ComputeStatsVisitors holds a set of callbacks that are invoked on each key
@@ -7231,19 +6903,13 @@ type ComputeStatsVisitors struct {
 // ComputeStatsWithVisitors is like ComputeStats, but also takes callbacks that
 // are invoked on each key.
 func ComputeStatsWithVisitors(
-	ctx context.Context,
-	r Reader,
-	start, end roachpb.Key,
-	nowNanos int64,
-	visitors ComputeStatsVisitors,
+	r Reader, start, end roachpb.Key, nowNanos int64, visitors ComputeStatsVisitors,
 ) (enginepb.MVCCStats, error) {
-	ctx, sp := tracing.ChildSpan(ctx, "ComputeStatsWithVisitors")
-	defer sp.Finish()
 	if isLockTableKey(start) {
-		return computeLockTableStatsWithVisitors(ctx, r, start, end, nowNanos, visitors.LockTableKey)
+		return computeLockTableStatsWithVisitors(r, start, end, nowNanos, visitors.LockTableKey)
 	}
 
-	iter, err := r.NewMVCCIterator(ctx, MVCCKeyAndIntentsIterKind, IterOptions{
+	iter, err := r.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
 		KeyTypes:   IterKeyTypePointsAndRanges,
 		LowerBound: start,
 		UpperBound: end,
@@ -7323,12 +6989,12 @@ func computeStatsForIterWithVisitors(
 					// though it is actually variable-length, likely for historical
 					// reasons. But for range keys we may as well use the actual
 					// variable-length encoded size.
-					keyBytes := int64(mvccencoding.EncodedMVCCTimestampSuffixLength(v.Timestamp))
+					keyBytes := int64(EncodedMVCCTimestampSuffixLength(v.Timestamp))
 					valBytes := int64(len(v.Value))
 					if i == 0 {
 						ms.RangeKeyCount++
-						keyBytes += int64(mvccencoding.EncodedMVCCKeyPrefixLength(rangeKeys.Bounds.Key) +
-							mvccencoding.EncodedMVCCKeyPrefixLength(rangeKeys.Bounds.EndKey))
+						keyBytes += int64(EncodedMVCCKeyPrefixLength(rangeKeys.Bounds.Key) +
+							EncodedMVCCKeyPrefixLength(rangeKeys.Bounds.EndKey))
 					}
 					ms.RangeKeyBytes += keyBytes
 					ms.RangeValCount++
@@ -7551,13 +7217,12 @@ func computeStatsForIterWithVisitors(
 // Unlike computeStatsForIterWithVisitors, this function accepts a Reader and
 // a start and end key. The start and end key must both be lock table keys.
 func computeLockTableStatsWithVisitors(
-	ctx context.Context,
 	r Reader,
 	start, end roachpb.Key,
 	nowNanos int64,
 	lockTableKeyVisitor func(LockTableKey, []byte) error,
 ) (enginepb.MVCCStats, error) {
-	iter, err := NewLockTableIterator(ctx, r, LockTableIteratorOptions{
+	iter, err := NewLockTableIterator(r, LockTableIteratorOptions{
 		LowerBound:  start,
 		UpperBound:  end,
 		MatchMinStr: lock.Shared, // all locks
@@ -7636,25 +7301,23 @@ func MVCCIsSpanEmpty(
 	var iter SimpleMVCCIterator
 	if opts.StartTS.IsEmpty() && opts.EndTS.IsEmpty() {
 		var err error
-		iter, err = reader.NewMVCCIterator(ctx, MVCCKeyAndIntentsIterKind, IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			LowerBound:   opts.StartKey,
-			UpperBound:   opts.EndKey,
-			ReadCategory: fs.BatchEvalReadCategory,
+		iter, err = reader.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
+			KeyTypes:   IterKeyTypePointsAndRanges,
+			LowerBound: opts.StartKey,
+			UpperBound: opts.EndKey,
 		})
 		if err != nil {
 			return false, err
 		}
 	} else {
 		var err error
-		iter, err = NewMVCCIncrementalIterator(ctx, reader, MVCCIncrementalIterOptions{
+		iter, err = NewMVCCIncrementalIterator(reader, MVCCIncrementalIterOptions{
 			KeyTypes:     IterKeyTypePointsAndRanges,
 			StartKey:     opts.StartKey,
 			EndKey:       opts.EndKey,
 			StartTime:    opts.StartTS,
 			EndTime:      opts.EndTS,
 			IntentPolicy: MVCCIncrementalIterIntentPolicyEmit,
-			ReadCategory: fs.BatchEvalReadCategory,
 		})
 		if err != nil {
 			return false, err
@@ -7715,7 +7378,7 @@ func MVCCExportToSST(
 ) (kvpb.BulkOpSummary, ExportRequestResumeInfo, error) {
 	ctx, span := tracing.ChildSpan(ctx, "storage.MVCCExportToSST")
 	defer span.Finish()
-	sstWriter := MakeTransportSSTWriter(ctx, cs, dest)
+	sstWriter := MakeBackupSSTWriter(ctx, cs, dest)
 	defer sstWriter.Close()
 
 	summary, resumeInfo, exportErr := mvccExportToWriter(ctx, reader, opts, &sstWriter)
@@ -7824,17 +7487,14 @@ func mvccExportToWriter(
 	elasticCPUHandle.StartTimer()
 	startTime := timeutil.Now()
 
-	iter, err := NewMVCCIncrementalIterator(ctx, reader, MVCCIncrementalIterOptions{
-		KeyTypes:                IterKeyTypePointsAndRanges,
-		StartKey:                opts.StartKey.Key,
-		EndKey:                  opts.EndKey,
-		StartTime:               opts.StartTS,
-		EndTime:                 opts.EndTS,
-		RangeKeyMaskingBelow:    rangeKeyMasking,
-		IntentPolicy:            MVCCIncrementalIterIntentPolicyAggregate,
-		ReadCategory:            fs.BackupReadCategory,
-		MaxLockConflicts:        opts.MaxLockConflicts,
-		TargetLockConflictBytes: opts.TargetLockConflictBytes,
+	iter, err := NewMVCCIncrementalIterator(reader, MVCCIncrementalIterOptions{
+		KeyTypes:             IterKeyTypePointsAndRanges,
+		StartKey:             opts.StartKey.Key,
+		EndKey:               opts.EndKey,
+		StartTime:            opts.StartTS,
+		EndTime:              opts.EndTS,
+		RangeKeyMaskingBelow: rangeKeyMasking,
+		IntentPolicy:         MVCCIncrementalIterIntentPolicyAggregate,
 	})
 	if err != nil {
 		return kvpb.BulkOpSummary{}, ExportRequestResumeInfo{}, err
@@ -7925,14 +7585,13 @@ func mvccExportToWriter(
 		return maxSize
 	}
 
-	var valueScratch []byte
 	iter.SeekGE(opts.StartKey)
 	for {
 		if ok, err := iter.Valid(); err != nil {
 			return kvpb.BulkOpSummary{}, ExportRequestResumeInfo{}, err
 		} else if !ok {
 			break
-		} else if iter.TryGetIntentError() != nil {
+		} else if iter.NumCollectedIntents() > 0 {
 			break
 		}
 
@@ -7977,7 +7636,7 @@ func mvccExportToWriter(
 			for _, v := range rangeKeys.Versions {
 				mvccValue, ok, err := tryDecodeSimpleMVCCValue(v.Value)
 				if !ok && err == nil {
-					mvccValue, err = decodeExtendedMVCCValue(v.Value, false)
+					mvccValue, err = decodeExtendedMVCCValue(v.Value)
 				}
 				if err != nil {
 					return kvpb.BulkOpSummary{}, ExportRequestResumeInfo{}, errors.Wrapf(err,
@@ -8053,24 +7712,15 @@ func mvccExportToWriter(
 		if unsafeKey.IsValue() {
 			mvccValue, ok, err := tryDecodeSimpleMVCCValue(unsafeValue)
 			if !ok && err == nil {
-				mvccValue, err = decodeExtendedMVCCValue(unsafeValue, opts.IncludeMVCCValueHeader)
+				mvccValue, err = decodeExtendedMVCCValue(unsafeValue)
 			}
 			if err != nil {
 				return kvpb.BulkOpSummary{}, ExportRequestResumeInfo{}, errors.Wrapf(err, "decoding mvcc value %s", unsafeKey)
 			}
 
-			if !ok && opts.IncludeMVCCValueHeader {
-				buf, canRetainBuf, err := EncodeMVCCValueForExport(mvccValue, valueScratch[:0])
-				if err != nil {
-					return kvpb.BulkOpSummary{}, ExportRequestResumeInfo{}, errors.Wrapf(err, "repackaging imported mvcc value %s", unsafeKey)
-				}
-				if canRetainBuf {
-					valueScratch = buf
-				}
-				unsafeValue = buf
-			} else {
-				unsafeValue = mvccValue.Value.RawBytes
-			}
+			// Export only the inner roachpb.Value, not the MVCCValue header.
+			unsafeValue = mvccValue.Value.RawBytes
+
 			// Skip tombstone records when start time is zero (non-incremental)
 			// and we are not exporting all versions.
 			skip = skipTombstones && mvccValue.IsTombstone()
@@ -8133,16 +7783,18 @@ func mvccExportToWriter(
 	// First check if we encountered an intent while iterating the data.
 	// If we do it means this export can't complete and is aborted. We need to loop over remaining data
 	// to collect all matching intents before returning them in an error to the caller.
-	// TODO: move below logic inside MVCCIncrementalIterator, make the iterator advance for intent collection when an
-	// intent is found.
-	if iter.TryGetIntentError() != nil {
-		// If we encounter an error during intent collection, bail out but return
-		// an intent error. MVCCIncrementalIterator will enforce MaxLockConflicts
-		// and return an error when exceeded.
-		for ok, _ := iter.Valid(); ok; ok, _ = iter.Valid() {
+	if iter.NumCollectedIntents() > 0 {
+		for uint64(iter.NumCollectedIntents()) < opts.MaxLockConflicts {
 			iter.NextKey()
+			// If we encounter other errors during intent collection, we return our original write intent failure.
+			// We would find this new error again upon retry.
+			ok, _ := iter.Valid()
+			if !ok {
+				break
+			}
 		}
-		return kvpb.BulkOpSummary{}, ExportRequestResumeInfo{}, iter.TryGetIntentError()
+		err := iter.TryGetIntentError()
+		return kvpb.BulkOpSummary{}, ExportRequestResumeInfo{}, err
 	}
 
 	// Flush any pending buffered range keys, truncated to the resume key (if
@@ -8164,7 +7816,7 @@ func mvccExportToWriter(
 		for _, v := range rangeKeys.Versions {
 			mvccValue, ok, err := tryDecodeSimpleMVCCValue(v.Value)
 			if !ok && err == nil {
-				mvccValue, err = decodeExtendedMVCCValue(v.Value, false)
+				mvccValue, err = decodeExtendedMVCCValue(v.Value)
 			}
 			if err != nil {
 				return kvpb.BulkOpSummary{}, ExportRequestResumeInfo{}, errors.Wrapf(err,
@@ -8209,15 +7861,9 @@ type MVCCExportOptions struct {
 	// MaxLockConflicts specifies the number of locks (intents) to collect and
 	// return in a LockConflictError. The caller will likely resolve the returned
 	// intents and retry the call, which would be quadratic, so this significantly
-	// reduces the overall number of scans.
-	//
-	// The zero value indicates no limit.
+	// reduces the overall number of scans. 0 disables batching and returns the
+	// first intent, pass math.MaxUint64 to collect all.
 	MaxLockConflicts uint64
-	// TargetLockConflictBytes specifies the size target of locks collected in
-	// LockConflictError. The lock collection process will stop when collected locks
-	// exceed this bytes limit. This prevents excessive allocation of memory from
-	// large intents. 0 value disable this target on intent size.
-	TargetLockConflictBytes uint64
 	// If StopMidKey is false, once function reaches targetSize it would continue
 	// adding all versions until it reaches next key or end of range. If true, it
 	// would stop immediately when targetSize is reached and return the next versions
@@ -8236,14 +7882,6 @@ type MVCCExportOptions struct {
 	// FingerprintOptions controls how fingerprints are generated
 	// when using MVCCExportFingerprint.
 	FingerprintOptions MVCCExportFingerprintOptions
-
-	// IncludeMVCCValueHeader controls whether we include
-	// MVCCValueHeaders in the exported data. When true, the
-	// portions of the header appropriate for export are included
-	// in the encoded values. Callers should be ready to decode
-	// full MVCCValue's in this case.
-	IncludeMVCCValueHeader bool
-
 	// ScanStats, if set, is updated with iterator stats upon export success of
 	// failure. Non-iterator stats i.e., {NumGets,NumReverseScans} are left
 	// unchanged, and NumScans is incremented by 1.
@@ -8330,12 +7968,11 @@ func ReplacePointTombstonesWithRangeTombstones(
 		end = start.Next()
 	}
 
-	iter, err := rw.NewMVCCIterator(ctx, MVCCKeyAndIntentsIterKind, IterOptions{
+	iter, err := rw.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
 		KeyTypes:   IterKeyTypePointsAndRanges,
 		Prefix:     end.Equal(start.Next()),
 		LowerBound: start,
 		UpperBound: end,
-		// Don't bother with ReadCategory since this function is used in tests.
 	})
 	if err != nil {
 		return err
@@ -8399,7 +8036,7 @@ func ReplacePointTombstonesWithRangeTombstones(
 		}
 		clearedKey.Key = append(clearedKey.Key[:0], key.Key...)
 		clearedKey.Timestamp = key.Timestamp
-		clearedKeySize := int64(mvccencoding.EncodedMVCCKeyPrefixLength(clearedKey.Key))
+		clearedKeySize := int64(EncodedMVCCKeyPrefixLength(clearedKey.Key))
 		if err := rw.ClearMVCC(key, ClearOptions{
 			ValueSizeKnown: true,
 			ValueSize:      uint32(valueLen),
@@ -8449,7 +8086,7 @@ func ReplacePointTombstonesWithRangeTombstones(
 		// Write the range tombstone, with proper stats.
 		if err := MVCCDeleteRangeUsingTombstone(ctx, rw, ms,
 			clearedKey.Key, clearedKey.Key.Next(), clearedKey.Timestamp, hlc.ClockTimestamp{},
-			start.Prevish(roachpb.PrevishKeyLength), end.Next(), false, 0, 0, nil); err != nil {
+			start.Prevish(roachpb.PrevishKeyLength), end.Next(), false, 0, nil); err != nil {
 			return err
 		}
 
@@ -8495,13 +8132,12 @@ func isWatchedSystemTable(key roachpb.Key) bool {
 // [key,endKey). An error is returned if a matching range deletion cannot be
 // found.
 func MVCCLookupRangeKeyValue(
-	ctx context.Context, reader Reader, key, endKey roachpb.Key, ts hlc.Timestamp,
+	reader Reader, key, endKey roachpb.Key, ts hlc.Timestamp,
 ) ([]byte, error) {
-	it, err := reader.NewMVCCIterator(ctx, MVCCKeyIterKind, IterOptions{
-		LowerBound:   key,
-		UpperBound:   endKey,
-		KeyTypes:     IterKeyTypeRangesOnly,
-		ReadCategory: fs.RangefeedReadCategory,
+	it, err := reader.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
+		LowerBound: key,
+		UpperBound: endKey,
+		KeyTypes:   IterKeyTypeRangesOnly,
 	})
 	if err != nil {
 		return nil, err

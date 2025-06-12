@@ -32,12 +32,10 @@ func registerMultiTenantDistSQL(r registry.Registry) {
 			b := bundle
 			to := timeout
 			r.Add(registry.TestSpec{
-				Skip:             "https://github.com/cockroachdb/cockroach/issues/128366",
-				SkipDetails:      "test is broken",
 				Name:             fmt.Sprintf("multitenant/distsql/instances=%d/bundle=%s/timeout=%d", numInstances, b, to),
 				Owner:            registry.OwnerSQLQueries,
 				Cluster:          r.MakeClusterSpec(4),
-				CompatibleClouds: registry.CloudsWithServiceRegistration,
+				CompatibleClouds: registry.AllExceptAWS,
 				Suites:           registry.Suites(registry.Nightly),
 				Leases:           registry.MetamorphicLeases,
 				Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -130,19 +128,17 @@ func runMultiTenantDistSQL(
 	for {
 		time.Sleep(time.Second)
 		res, err := inst1Conn.Query("EXPLAIN (VEC) SELECT DISTINCT i FROM t")
-		attempts--
 		if err != nil {
+			attempts--
 			require.Greater(t, attempts, 0, "All nodes didn't show up in time")
 			continue
 		}
 
 		var nodesInPlan intsets.Fast
-		var resStr string
 		for res.Next() {
 			str := ""
 			err = res.Scan(&str)
 			require.NoError(t, err)
-			resStr += str + "\n"
 			fields := strings.Fields(str)
 			l := len(fields)
 			if l > 2 && fields[l-2] == "Node" {
@@ -152,13 +148,13 @@ func runMultiTenantDistSQL(
 				}
 			}
 		}
-		if nodes.Equals(nodesInPlan) {
+		if nodes == nodesInPlan {
 			t.L().Printf("Nodes all present")
 			cancel()
 			break
+		} else {
+			t.L().Printf("Only %d nodes present: %v", nodesInPlan.Len(), nodesInPlan)
 		}
-		t.L().Printf("Only %d nodes present: %v, expected %v", nodesInPlan.Len(), nodesInPlan, nodes)
-		require.Greater(t, attempts, 0, "All nodes didn't show up in time. EXPLAIN (VEC):\n%s", resStr)
 	}
 	m.Wait()
 

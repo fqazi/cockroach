@@ -7,7 +7,7 @@ package spanconfigkvsubscriber
 
 import (
 	"context"
-	"slices"
+	"sort"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -113,8 +113,8 @@ func TestGetProtectionTimestamps(t *testing.T) {
 			func(t *testing.T, m *manualStore, subscriber *KVSubscriber) {
 				protections, _, err := subscriber.GetProtectionTimestamps(ctx, sp42)
 				require.NoError(t, err)
-				slices.IsSortedFunc(protections, func(a, b hlc.Timestamp) int {
-					return a.Compare(b)
+				sort.SliceIsSorted(protections, func(i, j int) bool {
+					return protections[i].Less(protections[j])
 				})
 				require.Equal(t, []hlc.Timestamp{ts1, ts2}, protections)
 			},
@@ -124,8 +124,8 @@ func TestGetProtectionTimestamps(t *testing.T) {
 			func(t *testing.T, m *manualStore, subscriber *KVSubscriber) {
 				protections, _, err := subscriber.GetProtectionTimestamps(ctx, sp43)
 				require.NoError(t, err)
-				slices.IsSortedFunc(protections, func(a, b hlc.Timestamp) int {
-					return a.Compare(b)
+				sort.SliceIsSorted(protections, func(i, j int) bool {
+					return protections[i].Less(protections[j])
 				})
 				require.Equal(t, []hlc.Timestamp{ts4}, protections)
 			},
@@ -135,8 +135,8 @@ func TestGetProtectionTimestamps(t *testing.T) {
 			func(t *testing.T, m *manualStore, subscriber *KVSubscriber) {
 				protections, _, err := subscriber.GetProtectionTimestamps(ctx, sp4243)
 				require.NoError(t, err)
-				slices.IsSortedFunc(protections, func(a, b hlc.Timestamp) int {
-					return a.Compare(b)
+				sort.SliceIsSorted(protections, func(i, j int) bool {
+					return protections[i].Less(protections[j])
 				})
 				require.Equal(t, []hlc.Timestamp{ts1, ts2, ts4}, protections)
 			},
@@ -146,8 +146,8 @@ func TestGetProtectionTimestamps(t *testing.T) {
 			func(t *testing.T, m *manualStore, subscriber *KVSubscriber) {
 				protections, _, err := subscriber.GetProtectionTimestamps(ctx, keys.ExcludeFromBackupSpan)
 				require.NoError(t, err)
-				slices.IsSortedFunc(protections, func(a, b hlc.Timestamp) int {
-					return a.Compare(b)
+				sort.SliceIsSorted(protections, func(i, j int) bool {
+					return protections[i].Less(protections[j])
 				})
 				require.Empty(t, protections)
 			},
@@ -157,8 +157,8 @@ func TestGetProtectionTimestamps(t *testing.T) {
 			func(t *testing.T, m *manualStore, subscriber *KVSubscriber) {
 				protections, _, err := subscriber.GetProtectionTimestamps(ctx, keys.NodeLivenessSpan)
 				require.NoError(t, err)
-				slices.IsSortedFunc(protections, func(a, b hlc.Timestamp) int {
-					return a.Compare(b)
+				sort.SliceIsSorted(protections, func(i, j int) bool {
+					return protections[i].Less(protections[j])
 				})
 				require.Empty(t, protections)
 			},
@@ -171,8 +171,8 @@ func TestGetProtectionTimestamps(t *testing.T) {
 					roachpb.Span{Key: keys.MinKey, EndKey: sp43.EndKey},
 				)
 				require.NoError(t, err)
-				slices.IsSortedFunc(protections, func(a, b hlc.Timestamp) int {
-					return a.Compare(b)
+				sort.SliceIsSorted(protections, func(i, j int) bool {
+					return protections[i].Less(protections[j])
 				})
 				require.Equal(t, []hlc.Timestamp{ts1, ts2, ts4}, protections)
 			},
@@ -206,7 +206,7 @@ type manualStore struct {
 
 // Apply implements the spanconfig.Store interface.
 func (m *manualStore) Apply(
-	context.Context, ...spanconfig.Update,
+	context.Context, bool, ...spanconfig.Update,
 ) (deleted []spanconfig.Target, added []spanconfig.Record) {
 	panic("unimplemented")
 }
@@ -226,7 +226,7 @@ func (m *manualStore) ComputeSplitKey(
 // GetSpanConfigForKey implements the spanconfig.Store interface.
 func (m *manualStore) GetSpanConfigForKey(
 	context.Context, roachpb.RKey,
-) (roachpb.SpanConfig, roachpb.Span, error) {
+) (roachpb.SpanConfig, error) {
 	panic("unimplemented")
 }
 

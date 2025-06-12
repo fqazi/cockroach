@@ -2,18 +2,7 @@
 
 # List of commit statuses that must pass on the merge commit before it is
 # pushed to master.
-status = [
-       "acceptance",
-       "check_generated_code",
-       "docker_image_amd64",
-       "examples_orms",
-       "lint",
-       "linux_amd64_build",
-       "linux_amd64_fips_build",
-       "local_roachtest",
-       "local_roachtest_fips",
-       "unit_tests",
-]
+status = ["Bazel Essential CI (Cockroach)"]
 
 # List of commit statuses that must not be failing on the PR commit when it is
 # r+-ed. If it's still in progress (for e.g. if CI is still running), bors will

@@ -32,8 +32,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/plan"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
@@ -41,19 +39,21 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/bootstrap"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/listenerutil"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util"
+	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 	"github.com/cockroachdb/errors"
 	"github.com/gogo/protobuf/proto"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/raft/v3/tracker"
 )
 
 func TestReplicateQueueRebalance(t *testing.T) {
@@ -82,7 +82,7 @@ func TestReplicateQueueRebalance(t *testing.T) {
 	for _, server := range tc.Servers {
 		st := server.ClusterSettings()
 		st.Manual.Store(true)
-		kvserver.LoadBasedRebalancingMode.Override(ctx, &st.SV, kvserver.LBRebalancingOff)
+		kvserver.LoadBasedRebalancingMode.Override(ctx, &st.SV, int64(kvserver.LBRebalancingOff))
 	}
 
 	const newRanges = 10
@@ -204,6 +204,7 @@ func TestReplicateQueueRebalanceMultiStore(t *testing.T) {
 		spec = func(node int, store int) base.StoreSpec {
 			return base.StoreSpec{
 				Path: filepath.Join(td, fmt.Sprintf("n%ds%d", node, store)),
+				Size: base.SizeSpec{},
 			}
 		}
 		t.Cleanup(func() {
@@ -796,31 +797,9 @@ func TestReplicateQueueDecommissioningNonVoters(t *testing.T) {
 		require.NoError(t,
 			tc.Server(0).Decommission(ctx, livenesspb.MembershipStatus_DECOMMISSIONING, nonVoterNodeIDs))
 
-		testutils.SucceedsSoon(t, func() error {
-			// Ensure that the leaseholder store notices the decommissioning nodes
-			// before we re-enable the replicate queue. This is necessary because the
-			// replicate queue might otherwise race with the gossip update, removing
-			// the non-voters without noticing they are decommissioning, failing the
-			// RemoveDecommissioningNonVoterReplicaCount assertion below. See
-			// #115750.
-			repl, err := store.GetReplica(scratchRange.RangeID)
-			if err != nil {
-				return err
-			}
-			if decomRepls := store.GetStoreConfig().StorePool.DecommissioningReplicas(
-				repl.Desc().Replicas().Descriptors()); len(decomRepls) < 2 {
-				return errors.Errorf(
-					"expected 2 decommissioning replicas, found %d [%v]",
-					len(decomRepls), decomRepls)
-			}
-			return nil
-		})
-
 		// At this point, we know that we have an over-replicated range with
-		// non-voters on nodes that are marked as decommissioning, and that the
-		// leaseholder store has received the gossip update which changes the
-		// non-voter node status to decommissioning. So turn the replicateQueue on
-		// and ensure that these redundant non-voters are removed.
+		// non-voters on nodes that are marked as decommissioning. So turn the
+		// replicateQueue on and ensure that these redundant non-voters are removed.
 		tc.ToggleReplicateQueues(true)
 		require.Eventually(t, func() bool {
 			ok, err := checkReplicaCount(ctx, tc, &scratchRange, 1 /* voterCount */, 0 /* nonVoterCount */)
@@ -905,11 +884,9 @@ func TestReplicateQueueTracingOnError(t *testing.T) {
 	require.NoError(t, err)
 
 	testStartTs := timeutil.Now()
-	traceCtx, rec := tracing.ContextWithRecordingSpan(ctx, store.GetStoreConfig().Tracer(), "trace-enqueue")
-	processErr, enqueueErr := tc.GetFirstStoreFromServer(t, 0).Enqueue(
-		traceCtx, "replicate", repl, true /* skipShouldQueue */, false, /* async */
+	recording, processErr, enqueueErr := tc.GetFirstStoreFromServer(t, 0).Enqueue(
+		ctx, "replicate", repl, true /* skipShouldQueue */, false, /* async */
 	)
-	recording := rec()
 	require.NoError(t, enqueueErr)
 	require.Error(t, processErr, "expected processing error")
 
@@ -1030,7 +1007,7 @@ func TestReplicateQueueDecommissionPurgatoryError(t *testing.T) {
 	store := tc.GetFirstStoreFromServer(t, 0)
 	repl, err := store.GetReplica(tc.LookupRangeOrFatal(t, scratchKey).RangeID)
 	require.NoError(t, err)
-	processErr, enqueueErr := tc.GetFirstStoreFromServer(t, 0).Enqueue(
+	_, processErr, enqueueErr := tc.GetFirstStoreFromServer(t, 0).Enqueue(
 		ctx, "replicate", repl, true /* skipShouldQueue */, false, /* async */
 	)
 	require.NoError(t, enqueueErr)
@@ -1611,7 +1588,7 @@ func TestReplicateQueueShouldQueueNonVoter(t *testing.T) {
 
 	// The zone config change leads to snapshot timeouts under stress race which
 	// make the test take 300+s.
-	skip.UnderRace(t)
+	skip.UnderStressRace(t)
 
 	ctx := context.Background()
 	serverArgs := make(map[int]base.TestServerArgs)
@@ -1687,11 +1664,9 @@ func TestReplicateQueueShouldQueueNonVoter(t *testing.T) {
 		// because we know that it is the leaseholder (since it is the only voting
 		// replica).
 		store, repl := getFirstStoreReplica(t, tc.Server(0), scratchStartKey)
-		traceCtx, rec := tracing.ContextWithRecordingSpan(ctx, store.GetStoreConfig().Tracer(), "trace-enqueue")
-		processErr, err := store.Enqueue(
-			traceCtx, "replicate", repl, false /* skipShouldQueue */, false, /* async */
+		recording, processErr, err := store.Enqueue(
+			ctx, "replicate", repl, false /* skipShouldQueue */, false, /* async */
 		)
-		recording := rec()
 		if err != nil {
 			log.Errorf(ctx, "err: %s", err.Error())
 			return false
@@ -1757,13 +1732,13 @@ func filterRangeLog(
 	eventType kvserverpb.RangeLogEventType,
 	reason kvserverpb.RangeLogEventReason,
 ) ([]kvserverpb.RangeLogEvent_Info, error) {
-	return queryRangeLog(conn, `SELECT info FROM system.rangelog WHERE "rangeID" = $1 AND "eventType" = $2 AND info LIKE concat('%', $3::STRING, '%') ORDER BY timestamp ASC;`, rangeID, eventType.String(), reason)
+	return queryRangeLog(conn, `SELECT info FROM system.rangelog WHERE "rangeID" = $1 AND "eventType" = $2 AND info LIKE concat('%', $3, '%') ORDER BY timestamp ASC;`, rangeID, eventType.String(), reason)
 }
 
 func toggleReplicationQueues(tc *testcluster.TestCluster, active bool) {
 	for _, s := range tc.Servers {
 		_ = s.GetStores().(*kvserver.Stores).VisitStores(func(store *kvserver.Store) error {
-			store.TestingSetReplicateQueueActive(active)
+			store.SetReplicateQueueActive(active)
 			return nil
 		})
 	}
@@ -1781,7 +1756,7 @@ func forceScanOnAllReplicationQueues(tc *testcluster.TestCluster) (err error) {
 func toggleSplitQueues(tc *testcluster.TestCluster, active bool) {
 	for _, s := range tc.Servers {
 		_ = s.GetStores().(*kvserver.Stores).VisitStores(func(store *kvserver.Store) error {
-			store.TestingSetSplitQueueActive(active)
+			store.SetSplitQueueActive(active)
 			return nil
 		})
 	}
@@ -2043,7 +2018,7 @@ func TestTransferLeaseToLaggingNode(t *testing.T) {
 	})
 	testutils.SucceedsSoon(t, func() error {
 		status := leaseHolderRepl.RaftStatus()
-		progress := status.Progress[raftpb.PeerID(remoteRepl.ReplicaID())]
+		progress := status.Progress[uint64(remoteRepl.ReplicaID())]
 		if progress.Match > 0 {
 			return nil
 		}
@@ -2056,7 +2031,7 @@ func TestTransferLeaseToLaggingNode(t *testing.T) {
 	for {
 		// Ensure that the replica on the remote node is lagging.
 		status := leaseHolderRepl.RaftStatus()
-		progress := status.Progress[raftpb.PeerID(remoteRepl.ReplicaID())]
+		progress := status.Progress[uint64(remoteRepl.ReplicaID())]
 		if progress.State == tracker.StateReplicate &&
 			(status.Commit-progress.Match) > 0 {
 			break
@@ -2113,6 +2088,112 @@ func TestTransferLeaseToLaggingNode(t *testing.T) {
 	})
 }
 
+// TestReplicateQueueAcquiresInvalidLeases asserts that following a restart,
+// leases are invalidated and that the replicate queue acquires invalid leases
+// when enabled.
+func TestReplicateQueueAcquiresInvalidLeases(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	st := cluster.MakeTestingClusterSettings()
+	kvserver.ExpirationLeasesOnly.Override(ctx, &st.SV, false) // override metamorphism
+
+	lisReg := listenerutil.NewListenerRegistry()
+	defer lisReg.Close()
+
+	zcfg := zonepb.DefaultZoneConfig()
+	zcfg.NumReplicas = proto.Int32(1)
+	tc := testcluster.StartTestCluster(t, 1,
+		base.TestClusterArgs{
+			// Disable the replication queue initially, to assert on the lease
+			// statuses pre and post enabling the replicate queue.
+			ReplicationMode:     base.ReplicationManual,
+			ReusableListenerReg: lisReg,
+			ServerArgs: base.TestServerArgs{
+				Settings:          st,
+				DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
+				ScanMinIdleTime:   time.Millisecond,
+				ScanMaxIdleTime:   time.Millisecond,
+				Knobs: base.TestingKnobs{
+					Server: &server.TestingKnobs{
+						StickyVFSRegistry:         server.NewStickyVFSRegistry(),
+						DefaultZoneConfigOverride: &zcfg,
+					},
+				},
+			},
+		},
+	)
+	defer tc.Stopper().Stop(ctx)
+	db := tc.Conns[0]
+	// Disable consistency checker and sql stats collection that may acquire a
+	// lease by querying a range.
+	_, err := db.Exec("set cluster setting server.consistency_check.interval = '0s'")
+	require.NoError(t, err)
+	_, err = db.Exec("set cluster setting sql.stats.automatic_collection.enabled = false")
+	require.NoError(t, err)
+
+	// Create ranges to assert on their lease status post restart and after
+	// replicate queue processing.
+	ranges := 30
+	scratchRangeKeys := make([]roachpb.Key, ranges)
+	splitKey := tc.ScratchRange(t)
+	for i := range scratchRangeKeys {
+		_, _ = tc.SplitRangeOrFatal(t, splitKey)
+		scratchRangeKeys[i] = splitKey
+		splitKey = splitKey.Next()
+	}
+
+	invalidLeases := func() []kvserverpb.LeaseStatus {
+		invalid := []kvserverpb.LeaseStatus{}
+		for _, key := range scratchRangeKeys {
+			// Assert that the lease is invalid after restart.
+			repl := tc.GetRaftLeader(t, roachpb.RKey(key))
+			if leaseStatus := repl.CurrentLeaseStatus(ctx); !leaseStatus.IsValid() {
+				invalid = append(invalid, leaseStatus)
+			}
+		}
+		return invalid
+	}
+
+	// Assert that the leases are valid initially.
+	require.Len(t, invalidLeases(), 0)
+
+	// Restart the servers to invalidate the leases.
+	for i := range tc.Servers {
+		tc.StopServer(i)
+		err = tc.RestartServerWithInspect(i, nil)
+		require.NoError(t, err)
+	}
+
+	forceProcess := func() {
+		// Speed up the queue processing.
+		for _, s := range tc.Servers {
+			err := s.GetStores().(*kvserver.Stores).VisitStores(func(store *kvserver.Store) error {
+				return store.ForceReplicationScanAndProcess()
+			})
+			require.NoError(t, err)
+		}
+	}
+
+	// NB: The cosnsistency checker and sql stats collector both will attempt a
+	// lease acquisition when processing a range, if it the lease is currently
+	// invalid. They are disabled in this test. We do not assert on the number
+	// of invalid leases prior to enabling the replicate queue here to avoid
+	// test flakiness if this changes in the future or for some other reason.
+	// Instead, we are only concerned that no invalid leases remain.
+	toggleReplicationQueues(tc, true /* active */)
+	testutils.SucceedsSoon(t, func() error {
+		forceProcess()
+		// Assert that there are now no invalid leases.
+		invalid := invalidLeases()
+		if len(invalid) > 0 {
+			return errors.Newf("The number of invalid leases are greater than 0, %+v", invalid)
+		}
+		return nil
+	})
+}
+
 func iterateOverAllStores(
 	t *testing.T, tc *testcluster.TestCluster, f func(*kvserver.Store) error,
 ) {
@@ -2126,30 +2207,26 @@ func iterateOverAllStores(
 //
 // ZONE survival configuration:
 // Region 1: 3 of [n1 (voter) n2 (voter) n3 (voter)]
-// Region 2: 1 of [n4 or n5 (non-voter)]
-// Region 3: 1 of [n6 or n7 (non-voter)]
+// Region 2: 1 of [n4 (non-voter) n5 (non-voter)]
+// Region 3: 1 of [n6 (non-voter) n7 (non-voter)]
 // to REGION survival configuration:
-// Region 1: 2 of [two of n1-n3 (voter)]
-// Region 2: 2 of [n4 (voter) and n5 (voter)]
-// Region 3: 1 of [n6 or n7 (voter)]
+// Region 1: 2 of [n1 (voter) n2 (voter) n3 (voter)]
+// Region 2: 2 of [n4 (voter) n5 (voter)]
+// Region 3: 1 of [n6 (voter) n7 (voter)]
 //
 // Here we have 7 stores: 3 in Region 1, 2 in Region 2, and 2 in Region 3.
 //
-// What the test wants to see is that when we switch from ZONE to REGION,
-// the non-voters in Region 2 and Region 3 are promoted to voters.
+// The expected behaviour is that there should not be any add voter events in
+// the range log where the added replica type is a LEARNER.
 func TestPromoteNonVoterInAddVoter(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	scope := log.Scope(t)
-	defer scope.Close(t)
+	defer log.Scope(t).Close(t)
 
 	// This test is slow under stress/race and can time out when upreplicating /
 	// rebalancing to ensure all stores have the same range count initially, due
 	// to slow heartbeats.
 	skip.UnderStress(t)
-	skip.UnderDeadlock(t)
 	skip.UnderRace(t)
-
-	defer testutils.StartExecTrace(t, scope.GetDirectory()).Finish(t)
 
 	ctx := context.Background()
 
@@ -2196,18 +2273,18 @@ func TestPromoteNonVoterInAddVoter(t *testing.T) {
 		if err := forceScanOnAllReplicationQueues(tc); err != nil {
 			return err
 		}
-		s, err := sqlutils.RowsToDataDrivenOutput(sqlutils.MakeSQLRunner(tc.Conns[0]).Query(t, `
-SELECT * FROM (
-    SELECT
-        range_id,
-        array_length(voting_replicas, 1) AS vc,
-        COALESCE(array_length(non_voting_replicas, 1), 0) AS nvc
-    FROM crdb_internal.ranges_no_leases
-) WHERE vc != 7 OR nvc > 0 ORDER BY range_id ASC LIMIT 1
-`))
-		require.NoError(t, err)
-		if len(s) > 0 {
-			return errors.Errorf("still upreplicating:\n%s", s)
+		rangeCount := -1
+		allEqualRangeCount := true
+		iterateOverAllStores(t, tc, func(s *kvserver.Store) error {
+			if rangeCount == -1 {
+				rangeCount = s.ReplicaCount()
+			} else if rangeCount != s.ReplicaCount() {
+				allEqualRangeCount = false
+			}
+			return nil
+		})
+		if !allEqualRangeCount {
+			return errors.New("Range counts are not all equal")
 		}
 		return nil
 	})
@@ -2216,7 +2293,6 @@ SELECT * FROM (
 	_, err := db.Exec("CREATE TABLE t (i INT PRIMARY KEY, s STRING)")
 	require.NoError(t, err)
 
-	log.Infof(ctx, "test setting ZONE survival configuration")
 	// ZONE survival configuration.
 	setConstraintFn("TABLE t", 5, 3,
 		", constraints = '{\"+region=2\": 1, \"+region=3\": 1}', voter_constraints = '{\"+region=1\": 3}'")
@@ -2261,11 +2337,6 @@ SELECT * FROM (
 	})
 
 	// REGION survival configuration.
-	log.Infof(ctx, "test setting REGION survival configuration")
-	// Clear the rangelog so that we can rest assured to only pick up events
-	// resulting from the zone config change.
-	_, err = tc.Conns[0].ExecContext(ctx, `DELETE FROM system.rangelog WHERE TRUE`)
-	require.NoError(t, err)
 	setConstraintFn("TABLE t", 5, 5,
 		", constraints = '{}', voter_constraints = '{\"+region=1\": 2, \"+region=2\": 2, \"+region=3\": 1}'")
 	require.NoError(t, err)
@@ -2348,71 +2419,210 @@ SELECT * FROM (
 	}
 }
 
-// TestReplicateQueueAllocatorToken asserts that the replicate queue will not
-// process a replica if it is unable to acquire the replica's allocator token.
-func TestReplicateQueueAllocatorToken(t *testing.T) {
+// TestReplicateQueueExpirationLeasesOnly tests that changing
+// kv.expiration_leases_only.enabled switches all leases to the correct kind.
+func TestReplicateQueueExpirationLeasesOnly(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	ctx := context.Background()
 
-	tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{
-		ReplicationMode: base.ReplicationManual,
+	skip.UnderRace(t) // too slow under stressrace
+	skip.UnderDeadlock(t)
+	skip.UnderShort(t)
+
+	ctx := context.Background()
+	st := cluster.MakeTestingClusterSettings()
+	kvserver.ExpirationLeasesOnly.Override(ctx, &st.SV, false) // override metamorphism
+
+	tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
-			DisableSQLServer: true,
+			Settings: st,
+			// Speed up the replicate queue, which switches the lease type.
+			ScanMinIdleTime: time.Millisecond,
+			ScanMaxIdleTime: time.Millisecond,
 		},
 	})
 	defer tc.Stopper().Stop(ctx)
 
-	scratchKey := tc.ScratchRange(t)
+	require.NoError(t, tc.WaitForFullReplication())
 
-	repl := tc.GetRaftLeader(t, roachpb.RKey(scratchKey))
-	require.NoError(t, repl.AllocatorToken().TryAcquire(ctx, "test"))
-	processErr, _ := repl.Store().Enqueue(ctx, "replicate", repl, true /* skipShouldQueue */, false /* async */)
-	require.ErrorIs(t, processErr, plan.NewErrAllocatorToken("test"))
-	repl.AllocatorToken().Release(ctx)
-	processErr, _ = repl.Store().Enqueue(ctx, "replicate", repl, true /* skipShouldQueue */, false /* async */)
-	// Expect processing to acquire the token and error on not enough stores in
-	// the cluster, an allocation error.
-	var allocationError allocator.AllocationError
-	require.ErrorAs(t, processErr, &allocationError)
+	db := tc.Server(0).DB()
+	sqlDB := tc.ServerConn(0)
+
+	// Split off a few ranges so we have something to work with.
+	scratchKey := tc.ScratchRange(t)
+	for i := 0; i <= 255; i++ {
+		splitKey := append(scratchKey.Clone(), byte(i))
+		require.NoError(t, db.AdminSplit(ctx, splitKey, hlc.MaxTimestamp))
+	}
+
+	countLeases := func() (epoch int64, expiration int64) {
+		for i := 0; i < tc.NumServers(); i++ {
+			require.NoError(t, tc.Server(i).GetStores().(*kvserver.Stores).VisitStores(func(s *kvserver.Store) error {
+				require.NoError(t, s.ComputeMetrics(ctx))
+				expiration += s.Metrics().LeaseExpirationCount.Value()
+				epoch += s.Metrics().LeaseEpochCount.Value()
+				return nil
+			}))
+		}
+		return
+	}
+
+	// We expect to have both expiration and epoch leases at the start, since the
+	// meta and liveness ranges require expiration leases. However, it's possible
+	// that there are a few other stray expiration leases too, since lease
+	// transfers use expiration leases as well.
+	epochLeases, expLeases := countLeases()
+	require.NotZero(t, epochLeases)
+	require.NotZero(t, expLeases)
+	initialExpLeases := expLeases
+	t.Logf("initial: epochLeases=%d expLeases=%d", epochLeases, expLeases)
+
+	// Switch to expiration leases and wait for them to change.
+	_, err := sqlDB.ExecContext(ctx, `SET CLUSTER SETTING kv.expiration_leases_only.enabled = true`)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		epochLeases, expLeases = countLeases()
+		t.Logf("enabling: epochLeases=%d expLeases=%d", epochLeases, expLeases)
+		return epochLeases == 0 && expLeases > 0
+	}, 30*time.Second, 500*time.Millisecond) // accomodate stress/deadlock builds
+
+	// Run a scan across the ranges, just to make sure they work.
+	scanCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err = db.Scan(scanCtx, scratchKey, scratchKey.PrefixEnd(), 1)
+	require.NoError(t, err)
+
+	// Switch back to epoch leases and wait for them to change. We still expect to
+	// have some required expiration leases, but they should be at or below the
+	// number of expiration leases we had at the start (primarily the meta and
+	// liveness ranges, but possibly a few more since lease transfers also use
+	// expiration leases).
+	_, err = sqlDB.ExecContext(ctx, `SET CLUSTER SETTING kv.expiration_leases_only.enabled = false`)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		epochLeases, expLeases = countLeases()
+		t.Logf("disabling: epochLeases=%d expLeases=%d", epochLeases, expLeases)
+		return epochLeases > 0 && expLeases > 0 && expLeases <= initialExpLeases
+	}, 30*time.Second, 500*time.Millisecond)
 }
 
-// TestAdminScatterAllocatorToken verifies that AdminScatter does perform
-// allocator token acquisition. When the token is held, scatter should not move
-// any replicas. Once released, scatter should successfully rebalance replicas.
-// Regression test for #144579.
-func TestAdminScatterAllocatorToken(t *testing.T) {
+// TestReplicateQueueLeasePreferencePurgatoryError tests that not finding a
+// lease transfer target whilst violating lease preferences, will put the
+// replica in the replicate queue purgatory.
+func TestReplicateQueueLeasePreferencePurgatoryError(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 
-	tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
-		ReplicationMode: base.ReplicationManual,
+	skip.UnderRace(t) // too slow under stressrace
+	skip.UnderDeadlock(t)
+	skip.UnderShort(t)
+
+	const initialPreferredNode = 1
+	const nextPreferredNode = 2
+	const numRanges = 40
+	const numNodes = 3
+
+	var blockTransferTarget atomic.Bool
+
+	blockTransferTargetFn := func() bool {
+		block := blockTransferTarget.Load()
+		return block
+	}
+
+	knobs := base.TestingKnobs{
+		Store: &kvserver.StoreTestingKnobs{
+			AllocatorKnobs: &allocator.TestingKnobs{
+				BlockTransferTarget: blockTransferTargetFn,
+			},
+		},
+	}
+
+	serverArgs := make(map[int]base.TestServerArgs, numNodes)
+	for i := 0; i < numNodes; i++ {
+		serverArgs[i] = base.TestServerArgs{
+			Knobs: knobs,
+			Locality: roachpb.Locality{
+				Tiers: []roachpb.Tier{{Key: "rack", Value: fmt.Sprintf("%d", i+1)}},
+			},
+		}
+	}
+
+	tc := testcluster.StartTestCluster(t, numNodes, base.TestClusterArgs{
+		ServerArgsPerNode: serverArgs,
 	})
 	defer tc.Stopper().Stop(ctx)
 
-	key := roachpb.Key("a")
-	_, _, err := tc.SplitRange(key)
-	require.NoError(t, err)
-	repl := tc.GetRaftLeader(t, roachpb.RKey(key))
+	db := tc.Conns[0]
+	setLeasePreferences := func(node int) {
+		_, err := db.Exec(fmt.Sprintf(`ALTER TABLE t CONFIGURE ZONE USING
+      num_replicas=3, num_voters=3, voter_constraints='[]', lease_preferences='[[+rack=%d]]'`,
+			node))
+		require.NoError(t, err)
+	}
 
-	// Hold allocator token and verify scatter is blocked
-	require.NoError(t, repl.AllocatorToken().TryAcquire(ctx, "test"))
-	s := tc.Server(0)
-	db := s.DB()
-	require.NoError(t, db.Put(ctx, key, "abc"))
-	scatterRespWithTokenHeld, err := db.AdminScatter(ctx, key, 0 /*maxSize*/)
-	require.NoError(t, err)
-	require.NotNil(t, scatterRespWithTokenHeld)
-	require.Equal(t, int64(0), scatterRespWithTokenHeld.ReplicasScatteredBytes)
+	leaseCount := func(node int) int {
+		var count int
+		err := db.QueryRow(fmt.Sprintf(
+			"SELECT count(*) FROM [SHOW RANGES FROM TABLE t WITH DETAILS] WHERE lease_holder = %d", node),
+		).Scan(&count)
+		require.NoError(t, err)
+		return count
+	}
 
-	// Release token and verify scatter succeeds.
-	repl.AllocatorToken().Release(ctx)
+	checkLeaseCount := func(node, expectedLeaseCount int) error {
+		if count := leaseCount(node); count != expectedLeaseCount {
+			return errors.Errorf("expected %d leases on node %d, found %d",
+				expectedLeaseCount, node, count)
+		}
+		return nil
+	}
+
+	// Create a test table with numRanges-1 splits, to end up with numRanges
+	// ranges. We will use the test table ranges to assert on the purgatory lease
+	// preference behavior.
+	_, err := db.Exec("CREATE TABLE t (i int);")
 	require.NoError(t, err)
-	scatterRespAfterRelease, err := db.AdminScatter(ctx, key, 0 /*maxSize*/)
+	_, err = db.Exec(
+		fmt.Sprintf("INSERT INTO t(i) select generate_series(1,%d)", numRanges-1))
 	require.NoError(t, err)
-	require.NotNil(t, scatterRespAfterRelease)
-	require.Greater(t, scatterRespAfterRelease.ReplicasScatteredBytes, int64(0))
+	_, err = db.Exec("ALTER TABLE t SPLIT AT SELECT i FROM t;")
+	require.NoError(t, err)
+	require.NoError(t, tc.WaitForFullReplication())
+
+	// Set a preference on the initial node, then wait until all the leases for
+	// the test table are on that node.
+	setLeasePreferences(initialPreferredNode)
+	testutils.SucceedsSoon(t, func() error {
+		for serverIdx := 0; serverIdx < numNodes; serverIdx++ {
+			require.NoError(t, tc.GetFirstStoreFromServer(t, serverIdx).
+				ForceReplicationScanAndProcess())
+		}
+		return checkLeaseCount(initialPreferredNode, numRanges)
+	})
+
+	// Block returning transfer targets from the allocator, then update the
+	// preferred node. We expect that every range for the test table will end up
+	// in purgatory on the initially preferred node.
+	store := tc.GetFirstStoreFromServer(t, 0)
+	blockTransferTarget.Store(true)
+	setLeasePreferences(nextPreferredNode)
+	testutils.SucceedsSoon(t, func() error {
+		require.NoError(t, store.ForceReplicationScanAndProcess())
+		if purgLen := store.ReplicateQueuePurgatoryLength(); purgLen != numRanges {
+			return errors.Errorf("expected %d in purgatory but got %v", numRanges, purgLen)
+		}
+		return nil
+	})
+
+	// Lastly, unblock returning transfer targets. Expect that the leases from
+	// the test table all move to the new preference. Note we don't force a
+	// replication queue scan, as the purgatory retry should handle the
+	// transfers.
+	blockTransferTarget.Store(false)
+	testutils.SucceedsSoon(t, func() error {
+		return checkLeaseCount(nextPreferredNode, numRanges)
+	})
 }
 
 // TestReplicateQueueDecommissionScannerDisabled asserts that decommissioning

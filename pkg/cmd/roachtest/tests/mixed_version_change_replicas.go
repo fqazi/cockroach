@@ -14,10 +14,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/clusterupgrade"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/mixedversion"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -26,13 +26,11 @@ import (
 
 func registerChangeReplicasMixedVersion(r registry.Registry) {
 	r.Add(registry.TestSpec{
-		Name:    "change-replicas/mixed-version",
-		Owner:   registry.OwnerKV,
-		Cluster: r.MakeClusterSpec(4),
-		// Disabled on IBM because s390x is only built on master and mixed-version
-		// is impossible to test as of 05/2025.
-		CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
-		Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
+		Name:             "change-replicas/mixed-version",
+		Owner:            registry.OwnerKV,
+		Cluster:          r.MakeClusterSpec(4),
+		CompatibleClouds: registry.AllExceptAWS,
+		Suites:           registry.Suites(registry.Nightly),
 		Randomized:       true,
 		Run:              runChangeReplicasMixedVersion,
 		Timeout:          60 * time.Minute,
@@ -56,7 +54,7 @@ func runChangeReplicasMixedVersion(ctx context.Context, t test.Test, c cluster.C
 			return err
 		}
 		_, db := h.RandomDB(r)
-		if err := roachtestutil.WaitFor3XReplication(ctx, l, db); err != nil {
+		if err := WaitFor3XReplication(ctx, t, db); err != nil {
 			return err
 		}
 
@@ -214,7 +212,7 @@ func runChangeReplicasMixedVersion(ctx context.Context, t test.Test, c cluster.C
 			// If ranges still failed after exhausting retries, give up.
 			if len(rangeErrors) > 0 {
 				for rangeID, result := range rangeErrors {
-					l.Printf("failed to move r%d from n%d to n%d: %s",
+					t.L().Printf("failed to move r%d from n%d to n%d: %s",
 						rangeID, node, target, result)
 				}
 				return errors.Errorf("failed to move %d replicas from n%d to n%d",
@@ -250,7 +248,16 @@ func runChangeReplicasMixedVersion(ctx context.Context, t test.Test, c cluster.C
 		})
 
 		for _, node := range nodes {
-			if r.Float64() < 0.5 {
+			// No patch release of v22.2 and earlier has #114365, so they have the
+			// potential to be flaky when evacuating nodes using zone configs. Don't
+			// use zone config movement for these versions.
+			bv, err := clusterupgrade.BinaryVersion(ctx, h.Connect(node))
+			if err != nil {
+				return errors.Wrapf(err, "failed to get binary version for node %d", node)
+			}
+			evacuateNodeUsingZoneConfigFlaky := bv.Less(roachpb.Version{Major: 23})
+
+			if r.Float64() < 0.5 && !evacuateNodeUsingZoneConfigFlaky {
 				if err := evacuateNodeUsingZoneConfig(ctx, l, r, h, node); err != nil {
 					return err
 				}
@@ -282,9 +289,6 @@ func runChangeReplicasMixedVersion(ctx context.Context, t test.Test, c cluster.C
 			// Speed up the queues.
 			install.EnvOption{"COCKROACH_SCAN_MAX_IDLE_TIME=10ms"},
 		),
-		// Avoid repeatedly running into #114549 on earlier minor versions.
-		// TODO(kvoli): Remove in 24.2.
-		mixedversion.AlwaysUseLatestPredecessors,
 	)
 
 	mvt.OnStartup("create test table", createTable)
@@ -298,9 +302,6 @@ func runChangeReplicasMixedVersion(ctx context.Context, t test.Test, c cluster.C
 // mixedversion test is running on a multitenant deployment, and only
 // if required by the active version.
 func enableTenantSplitScatter(l *logger.Logger, r *rand.Rand, h *mixedversion.Helper) error {
-	// Note that although TenantsAndSystemAlignedSettingsVersion generally refers to
-	// shared process deployments, the defaults for SPLIT and SCATTER were also changed
-	// for separate process in the same version.
 	if h.Context().FromVersion.AtLeast(mixedversion.TenantsAndSystemAlignedSettingsVersion) {
 		return nil
 	}
@@ -344,27 +345,20 @@ func setTenantSetting(
 		return errors.Wrapf(err, "failed to set %s", name)
 	}
 
-	// Wait for the setting to be visible to all nodes in the tenant.
-	for _, n := range h.Tenant.Descriptor.Nodes {
-		db := h.Tenant.Connect(n)
-		if err := testutils.SucceedsSoonError(func() error {
-			var currentValue bool
-			if err := db.QueryRow(fmt.Sprintf("SHOW CLUSTER SETTING %s", name)).Scan(&currentValue); err != nil {
-				return errors.Wrapf(err, "failed to retrieve setting %s", name)
-			}
+	return testutils.SucceedsSoonError(func() error {
+		var currentValue bool
+		if err := h.QueryRow(r, fmt.Sprintf("SHOW CLUSTER SETTING %s", name)).Scan(&currentValue); err != nil {
+			return errors.Wrapf(err, "failed to retrieve setting %s", name)
+		}
 
-			if currentValue != value {
-				err := fmt.Errorf(
-					"waiting for setting %s: current (%t) != expected (%t)", name, currentValue, value,
-				)
-				l.Printf("%v", err)
-				return err
-			}
-
-			return nil
-		}); err != nil {
+		if currentValue != value {
+			err := fmt.Errorf(
+				"waiting for setting %s: current (%t) != expected (%t)", name, currentValue, value,
+			)
+			l.Printf("%v", err)
 			return err
 		}
-	}
-	return nil
+
+		return nil
+	})
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -35,10 +36,7 @@ func BackupSuccess(t *testing.T, path string, factory TestServerFactory) {
 	// These tests are expensive.
 	skip.UnderStress(t)
 	skip.UnderRace(t)
-	skip.UnderDeadlock(t)
 
-	// Disable schema_locked in backup and restore tests, since the userfiles table
-	// cannot be created with schema_locked by default yet.
 	cumulativeTestForEachPostCommitStage(t, path, factory, func(t *testing.T, cs CumulativeTestCaseSpec) {
 		backupSuccess(t, factory, cs)
 	})
@@ -50,13 +48,10 @@ func BackupRollbacks(t *testing.T, path string, factory TestServerFactory) {
 	// These tests are expensive.
 	skip.UnderStress(t)
 	skip.UnderRace(t)
-	skip.UnderDeadlock(t)
 	// These tests are only marginally more useful than BackupSuccess
 	// and at least as expensive to run.
 	skip.UnderShort(t)
-	// Disable schema_locked in backup and restore tests, since the userfiles table
-	// cannot be created with schema_locked by default yet.
-	factory = factory.WithSchemaLockDisabled()
+
 	cumulativeTestForEachPostCommitStage(t, path, factory, func(t *testing.T, cs CumulativeTestCaseSpec) {
 		backupRollbacks(t, factory, cs)
 	})
@@ -68,14 +63,11 @@ func BackupSuccessMixedVersion(t *testing.T, path string, factory TestServerFact
 	// These tests are expensive.
 	skip.UnderStress(t)
 	skip.UnderRace(t)
-	skip.UnderDeadlock(t)
 	// These tests are only marginally more useful than BackupSuccess
 	// and at least as expensive to run.
 	skip.UnderShort(t)
+
 	factory = factory.WithMixedVersion()
-	// Disable schema_locked in mixed version tests, since we do not support
-	// disabling schema_locked in a mixed version state yet.
-	factory = factory.WithSchemaLockDisabled()
 	cumulativeTestForEachPostCommitStage(t, path, factory, func(t *testing.T, cs CumulativeTestCaseSpec) {
 		backupSuccess(t, factory, cs)
 	})
@@ -87,15 +79,11 @@ func BackupRollbacksMixedVersion(t *testing.T, path string, factory TestServerFa
 	// These tests are expensive.
 	skip.UnderStress(t)
 	skip.UnderRace(t)
-	skip.UnderDeadlock(t)
 	// These tests are only marginally more useful than BackupSuccess
 	// and at least as expensive to run.
 	skip.UnderShort(t)
 
 	factory = factory.WithMixedVersion()
-	// Disable schema_locked in mixed version tests, since we do not support
-	// disabling schema_locked in a mixed version state yet.
-	factory = factory.WithSchemaLockDisabled()
 	cumulativeTestForEachPostCommitStage(t, path, factory, func(t *testing.T, cs CumulativeTestCaseSpec) {
 		backupRollbacks(t, factory, cs)
 	})
@@ -117,43 +105,17 @@ func maybeRandomlySkip(t *testing.T) {
 
 func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCaseSpec) {
 	maybeRandomlySkip(t)
-	// Skip comparing outputs, if there are any newly created objects, since
-	// in transactional cases these may not exist within the image. We include
-	// all relations and types since those are excluded in Adding state from
-	// being restored. For functions this logic does not apply and they are always
-	// backed up.
-	skipOutputComparison := false
-	skipTags := map[string]struct{}{
-		"CREATE TABLE":    {},
-		"CREATE SEQUENCE": {},
-		"CREATE VIEW":     {},
-		"CREATE TYPE":     {},
-		"CREATE SCHEMA":   {},
-		"CREATE DATABASE": {},
-		"CREATE FUNCTION": {},
-	}
-	for _, stmt := range cs.Stmts {
-		if _, found := skipTags[stmt.AST.StatementTag()]; found && len(cs.Stmts) > 1 {
-			t.Logf("Skipping comparison of state after schema changes because new "+
-				"objects are being created, which may not be persisted %s\n", stmt.AST.String())
-			skipOutputComparison = true
-		}
-	}
+	t.Parallel() // SAFE FOR TESTING (this comment is for the linter)
 	ctx := context.Background()
 	url := fmt.Sprintf("userfile://backups.public.userfiles_$user/data_%s_%d",
 		cs.Phase, cs.StageOrdinal)
 	var dbForBackup atomic.Pointer[gosql.DB]
-	var isBackupPostBackfill atomic.Bool
-	var knobEnabled atomic.Bool
+	var isBackupPostBackfill syncutil.AtomicBool
 	pe := MakePlanExplainer()
 	knobs := &scexec.TestingKnobs{
 		// Back up the database exactly once when reaching the stage prescribed
 		// by the test case specification.
 		BeforeStage: func(p scplan.Plan, stageIdx int) error {
-			// Only enabled after setup.
-			if !knobEnabled.Load() {
-				return nil
-			}
 			// Collect EXPLAIN (DDL) diagram for debug purposes.
 			if err := pe.MaybeUpdateWithPlan(p); err != nil {
 				return err
@@ -176,7 +138,7 @@ func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCas
 						// schema changer state.
 						for j := i + 1; j < stageIdx; j++ {
 							if p.Stages[j].Type() == scop.MutationType {
-								isBackupPostBackfill.Store(true)
+								isBackupPostBackfill.Set(true)
 								break OuterLoop
 							}
 						}
@@ -191,14 +153,13 @@ func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCas
 			return nil
 		},
 	}
-	runfn := func(s serverutils.TestServerInterface, db *gosql.DB) {
+	runfn := func(_ serverutils.TestServerInterface, db *gosql.DB) {
 		dbForBackup.Store(db)
 		tdb := sqlutils.MakeSQLRunner(db)
 
 		// Setup the test cluster.
 		tdb.Exec(t, "CREATE DATABASE backups")
 		require.NoError(t, setupSchemaChange(ctx, t, cs.CumulativeTestSpec, db))
-		knobEnabled.Swap(true)
 
 		// Fetch the state of the cluster before the schema change kicks off.
 		tdb.Exec(t, fmt.Sprintf("USE %q", cs.DatabaseName))
@@ -216,14 +177,13 @@ func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCas
 		// Determine whether the post-RESTORE schema change may perhaps
 		// be rolled back.
 		b := backupRestoreOutcome{
-			url:                     url,
-			maySucceed:              true,
-			expectedOnSuccess:       after,
-			skipComparisonOnSuccess: skipOutputComparison,
-			mayRollback:             false,
-			expectedOnRollback:      before,
+			url:                url,
+			maySucceed:         true,
+			expectedOnSuccess:  after,
+			mayRollback:        false,
+			expectedOnRollback: before,
 		}
-		if isBackupPostBackfill.Load() {
+		if isBackupPostBackfill.Get() {
 			const countRowsQ = `
 				SELECT coalesce(sum(rows), 0)
 				FROM [SHOW BACKUP FROM LATEST IN $2]
@@ -241,7 +201,7 @@ func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCas
 		}
 
 		// Upgrade the cluster if applicable.
-		tdb.Exec(t, "SET CLUSTER SETTING VERSION = $1", clusterversion.Latest.String())
+		tdb.Exec(t, "SET CLUSTER SETTING VERSION = $1", clusterversion.TestingBinaryVersion.String())
 
 		// Restore the backup of the database taken mid-successful-schema-change
 		// in various ways, check that it ends up in the same state as present.
@@ -255,20 +215,16 @@ func backupRollbacks(t *testing.T, factory TestServerFactory, cs CumulativeTestC
 		return
 	}
 	maybeRandomlySkip(t)
+	t.Parallel() // SAFE FOR TESTING (this comment is for the linter)
 	ctx := context.Background()
 	var urls atomic.Value
 	var dbForBackup atomic.Pointer[gosql.DB]
 	pe := MakePlanExplainer()
-	var knobEnabled atomic.Bool
 	knobs := &scexec.TestingKnobs{
 		// Inject an error when reaching the stage prescribed by the test case
 		// specification. This will trigger a rollback.
 		// Before each stage during the rollback, back up the database.
 		BeforeStage: func(p scplan.Plan, stageIdx int) error {
-			// Only enabled after setup.
-			if !knobEnabled.Load() {
-				return nil
-			}
 			// Collect EXPLAIN (DDL) diagram for debug purposes.
 			if err := pe.MaybeUpdateWithPlan(p); err != nil {
 				return err
@@ -287,7 +243,7 @@ func backupRollbacks(t *testing.T, factory TestServerFactory, cs CumulativeTestC
 					urls.Store(append(v.([]string), url))
 				}
 				backupStmt := fmt.Sprintf("BACKUP DATABASE %s INTO '%s'", cs.DatabaseName, url)
-				_, err := dbForBackup.Load().ExecContext(ctx, backupStmt)
+				_, err := dbForBackup.Load().Exec(backupStmt)
 				return err
 			}
 			if s := p.Stages[stageIdx]; s.Phase == cs.Phase && s.Ordinal == cs.StageOrdinal {
@@ -296,15 +252,13 @@ func backupRollbacks(t *testing.T, factory TestServerFactory, cs CumulativeTestC
 			return nil
 		},
 	}
-	runfn := func(s serverutils.TestServerInterface, db *gosql.DB) {
-		_, err := db.Exec("SET create_table_with_schema_locked = 'off'")
-		require.NoError(t, err)
+	runfn := func(_ serverutils.TestServerInterface, db *gosql.DB) {
 		dbForBackup.Store(db)
 		tdb := sqlutils.MakeSQLRunner(db)
+
 		// Setup the test cluster.
 		tdb.Exec(t, "CREATE DATABASE backups")
 		require.NoError(t, setupSchemaChange(ctx, t, cs.CumulativeTestSpec, db))
-		knobEnabled.Swap(true)
 
 		// Fetch the state of the cluster before the schema change kicks off.
 		tdb.Exec(t, fmt.Sprintf("USE %q", cs.DatabaseName))
@@ -361,7 +315,6 @@ type backupRestoreOutcome struct {
 	url                                   string
 	maySucceed, mayRollback               bool
 	expectedOnSuccess, expectedOnRollback [][]string
-	skipComparisonOnSuccess               bool
 }
 
 func exerciseBackupRestore(
@@ -455,7 +408,7 @@ func exerciseBackupRestore(
 			tdb.Exec(t, fmt.Sprintf("DROP DATABASE IF EXISTS %q CASCADE", cs.DatabaseName))
 			if rc.restoreFlavor == restoreAllTablesInDatabase {
 				// Database must be created explicitly pre-RESTORE in this case.
-				tdb.Exec(t, cs.CreateDatabaseStmt)
+				tdb.Exec(t, fmt.Sprintf("CREATE DATABASE %q", cs.DatabaseName))
 			}
 
 			// RESTORE.
@@ -469,10 +422,8 @@ func exerciseBackupRestore(
 
 			// Define expectations based on outcome.
 			var expected [][]string
-			skipComparison := false
 			if hasLatestSchemaChangeSucceeded(t, tdb) {
 				expected = b.expectedOnSuccess
-				skipComparison = b.skipComparisonOnSuccess
 				if !b.maySucceed {
 					t.Fatal("post-RESTORE schema change was expected to not succeed")
 				}
@@ -487,29 +438,20 @@ func exerciseBackupRestore(
 			if rc.restoreFlavor == restoreAllTablesInDatabase {
 				// Expected table schema state must be stripped of UDF references.
 				expected = parserRoundTrip(t, expected) // deep copy
-				tmpExpected := make([][]string, 0, len(expected))
 				for i := range expected {
 					stmt, err := parser.ParseOne(expected[i][0])
 					require.NoError(t, err)
-					if _, ok := stmt.AST.(*tree.CreateRoutine); ok {
-						continue
-					}
 					if c, ok := stmt.AST.(*tree.CreateTable); ok {
 						require.NoError(t, removeDefsDependOnUDFs(c))
 					}
-					tmpExpected = append(tmpExpected, []string{tree.AsString(stmt.AST)})
+					expected[i][0] = tree.AsString(stmt.AST)
 				}
-				expected = tmpExpected
 			}
 
 			// Check expectations.
-			if !skipComparison {
-				require.Equalf(t, expected, actual,
-					"backup contents:\nparent_schema_name,object_name,object_type\n%s\n%s",
-					sqlutils.MatrixToStr(backupContents), pe.GetExplain())
-			} else {
-				t.Log("Skipping comparison of SQL afterwards as requested.")
-			}
+			require.Equalf(t, expected, actual,
+				"backup contents:\nparent_schema_name,object_name,object_type\n%s\n%s",
+				sqlutils.MatrixToStr(backupContents), pe.GetExplain())
 
 			// Clean up.
 			tdb.Exec(t, fmt.Sprintf("DROP DATABASE %q CASCADE", cs.DatabaseName))

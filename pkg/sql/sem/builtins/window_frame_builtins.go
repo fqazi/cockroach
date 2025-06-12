@@ -34,12 +34,11 @@ type indexedValue struct {
 type slidingWindow struct {
 	values  ring.Buffer[*indexedValue]
 	evalCtx *eval.Context
-	cmp     func(context.Context, *eval.Context, tree.Datum, tree.Datum) (int, error)
+	cmp     func(*eval.Context, tree.Datum, tree.Datum) int
 }
 
 func makeSlidingWindow(
-	evalCtx *eval.Context,
-	cmp func(context.Context, *eval.Context, tree.Datum, tree.Datum) (int, error),
+	evalCtx *eval.Context, cmp func(*eval.Context, tree.Datum, tree.Datum) int,
 ) *slidingWindow {
 	return &slidingWindow{
 		evalCtx: evalCtx,
@@ -52,18 +51,14 @@ func makeSlidingWindow(
 // deque always contains unique values sorted in descending order of their
 // "priority" (when we encounter duplicates, we always keep the one with the
 // largest idx).
-func (sw *slidingWindow) add(ctx context.Context, iv *indexedValue) error {
+func (sw *slidingWindow) add(iv *indexedValue) {
 	for i := sw.values.Len() - 1; i >= 0; i-- {
-		cmp, err := sw.cmp(ctx, sw.evalCtx, sw.values.Get(i).value, iv.value)
-		if err != nil {
-			return err
-		} else if cmp > 0 {
+		if sw.cmp(sw.evalCtx, sw.values.Get(i).value, iv.value) > 0 {
 			break
 		}
 		sw.values.RemoveLast()
 	}
 	sw.values.AddLast(iv)
-	return nil
 }
 
 // removeAllBefore removes all values from the beginning of the deque that have
@@ -130,10 +125,7 @@ func (w *slidingWindowFunc) Compute(
 			if res == nil {
 				res = args[0]
 			} else {
-				cmp, err := w.sw.cmp(ctx, evalCtx, args[0], res)
-				if err != nil {
-					return nil, err
-				} else if cmp > 0 {
+				if w.sw.cmp(evalCtx, args[0], res) > 0 {
 					res = args[0]
 				}
 			}
@@ -167,10 +159,7 @@ func (w *slidingWindowFunc) Compute(
 			// case of a window frame with no non-null values is handled below.
 			continue
 		}
-		err = w.sw.add(ctx, &indexedValue{value: value, idx: idx})
-		if err != nil {
-			return nil, err
-		}
+		w.sw.add(&indexedValue{value: value, idx: idx})
 	}
 	w.prevEnd = frameEndIdx
 
@@ -182,6 +171,13 @@ func (w *slidingWindowFunc) Compute(
 	// The datum with "highest priority" within the frame is at the very front
 	// of the deque.
 	return w.sw.values.GetFirst().value, nil
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // Reset implements tree.WindowFunc interface.

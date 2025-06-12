@@ -1,7 +1,3 @@
-# LogicTest: !weak-iso-level-configs !metamorphic-batch-sizes
-# This test assumes that SERIALIZABLE isolation is being used. See
-# select_for_update_read_committed for READ COMMITTED testing.
-
 query I
 SELECT 1 FOR UPDATE
 ----
@@ -471,27 +467,6 @@ BEGIN; SELECT * FROM t FOR UPDATE NOWAIT
 statement ok
 ROLLBACK
 
-statement ok
-SET optimizer_use_lock_op_for_serializable = on
-
-query error pgcode 55P03 could not obtain lock on row \(k\)=\(1\) in t@t_pkey
-SELECT * FROM t FOR UPDATE NOWAIT
-
-query error pgcode 55P03 could not obtain lock on row \(k\)=\(1\) in t@t_pkey
-SELECT * FROM t FOR SHARE FOR UPDATE OF t NOWAIT
-
-query error pgcode 55P03 could not obtain lock on row \(k\)=\(1\) in t@t_pkey
-SELECT * FROM t FOR SHARE NOWAIT FOR UPDATE OF t
-
-query error pgcode 55P03 could not obtain lock on row \(k\)=\(1\) in t@t_pkey
-BEGIN; SELECT * FROM t FOR UPDATE NOWAIT
-
-statement ok
-ROLLBACK
-
-statement ok
-RESET optimizer_use_lock_op_for_serializable
-
 user root
 
 statement ok
@@ -519,24 +494,30 @@ user testuser
 statement ok
 SET enable_shared_locking_for_serializable = true
 
+skipif config local-mixed-23.1
 query error pgcode 55P03 could not obtain lock on row \(k\)=\(1\) in t@t_pkey
 SELECT v, v2 FROM t JOIN t2 USING (k) FOR SHARE FOR SHARE OF t NOWAIT
 
+skipif config local-mixed-23.1
 query error pgcode 55P03 could not obtain lock on row \(k\)=\(1\) in t@t_pkey
 SELECT v, v2 FROM t JOIN t2 USING (k) FOR SHARE OF t2 FOR SHARE OF t NOWAIT
 
+skipif config local-mixed-23.1
 query error pgcode 55P03 could not obtain lock on row \(k\)=\(1\) in t@t_pkey
 SELECT v, v2 FROM t JOIN t2 USING (k) FOR SHARE NOWAIT FOR SHARE OF t
 
+skipif config local-mixed-23.1
 query error pgcode 55P03 could not obtain lock on row \(k\)=\(1\) in t@t_pkey
 SELECT v, v2 FROM t JOIN t2 USING (k) FOR SHARE NOWAIT FOR SHARE OF t2
 
 statement ok
 SET statement_timeout = '10ms'
 
+skipif config local-mixed-23.1
 query error pgcode 57014 query execution canceled due to statement timeout
 SELECT v, v2 FROM t JOIN t2 USING (k) FOR SHARE FOR SHARE OF t2 NOWAIT
 
+skipif config local-mixed-23.1
 query error pgcode 57014 query execution canceled due to statement timeout
 SELECT v, v2 FROM t JOIN t2 USING (k) FOR SHARE OF t FOR SHARE OF t2 NOWAIT
 
@@ -560,15 +541,9 @@ CREATE TABLE t3 (
   u INT,
   INDEX (u),
   FAMILY (k, v, u)
-)
-
-statement ok
-INSERT INTO t3 VALUES (1, 1, 1), (2, 2, 2), (3, 3, 3), (4, 4, 2)
-
-statement ok
-GRANT SELECT ON t3 TO testuser
-
-statement ok
+);
+INSERT INTO t3 VALUES (1, 1, 1), (2, 2, 2), (3, 3, 3), (4, 4, 2);
+GRANT SELECT ON t3 TO testuser;
 GRANT UPDATE ON t3 TO testuser
 
 statement ok
@@ -654,12 +629,13 @@ SELECT * FROM t94290 WHERE b = 2 FOR UPDATE;
 statement ok
 RESET statement_timeout;
 
-# Ensure FOR UPDATE SKIP LOCKED works correctly with replicated locks.
+# Ensure when SKIP LOCKED is used in conjunction with replicated locks we return
+# appropriate errors.
 
 statement ok
 DROP TABLE IF EXISTS t;
 CREATE TABLE t(a INT PRIMARY KEY);
-INSERT INTO t VALUES(1), (2);
+INSERT INTO t VALUES(1);
 GRANT ALL ON t TO testuser;
 GRANT SYSTEM MODIFYCLUSTERSETTING TO testuser;
 
@@ -668,26 +644,29 @@ user testuser
 statement ok
 SET enable_durable_locking_for_serializable = true;
 
+statement ok
+BEGIN
+
 query I
-BEGIN;
 SELECT * FROM t WHERE a = 1 FOR UPDATE;
 ----
 1
 
 user root
 
+skipif config local-mixed-23.1
 query TTTTTTTBB colnames,retry,rowsort
 SELECT database_name, schema_name, table_name, lock_key_pretty, lock_strength, durability, isolation_level, granted, contended FROM crdb_internal.cluster_locks
 ----
 database_name  schema_name  table_name  lock_key_pretty  lock_strength  durability  isolation_level  granted  contended
 
-query I
+skipif config local-mixed-23.1
+statement error usage of replicated locks in conjunction with skip locked wait policy is currently unsupported
 SELECT * FROM t FOR UPDATE SKIP LOCKED
-----
-2
 
 # Ensure the replicated lock isn't pulled into the in-memory lock table, even
 # after the skip locked statement has run.
+skipif config local-mixed-23.1
 query TTTTTTTBB colnames,retry,rowsort
 SELECT database_name, schema_name, table_name, lock_key_pretty, lock_strength, durability, isolation_level, granted, contended FROM crdb_internal.cluster_locks
 ----
@@ -697,135 +676,3 @@ user testuser
 
 statement ok
 COMMIT
-
-user root
-
-# Regression test for #121917 and #129145: ensure SKIP LOCKED and NOWAIT both
-# work when locking comes after the initial scan, due to
-# optimizer_use_lock_op_for_serializable.
-
-statement ok
-CREATE TABLE t129145 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, FAMILY (a, b))
-
-statement ok
-INSERT INTO t129145 VALUES (1, 1)
-
-statement ok
-GRANT SELECT ON t129145 TO testuser
-
-statement ok
-GRANT UPDATE ON t129145 TO testuser
-
-statement ok
-SET enable_durable_locking_for_serializable = true
-
-statement ok
-BEGIN; SELECT * FROM t129145 WHERE a = 1 FOR UPDATE
-
-user testuser
-
-statement ok
-SET optimizer_use_lock_op_for_serializable = on
-
-statement ok
-SET enable_durable_locking_for_serializable = true
-
-query II
-SELECT * FROM t129145 WHERE b = 1 FOR UPDATE SKIP LOCKED
-----
-
-query error pgcode 55P03 could not obtain lock on row \(a\)=\(1\) in t129145@t129145_pkey
-SELECT * FROM t129145 WHERE b = 1 FOR UPDATE NOWAIT
-
-statement ok
-RESET optimizer_use_lock_op_for_serializable
-
-statement ok
-RESET enable_durable_locking_for_serializable
-
-user root
-
-statement ok
-ROLLBACK
-
-statement ok
-RESET enable_durable_locking_for_serializable
-
-# Ensure that we lock all column families of a multi-family table when using
-# durable locking.
-
-statement ok
-CREATE TABLE abc (
-  a INT NOT NULL,
-  b INT NOT NULL,
-  c INT NOT NULL,
-  PRIMARY KEY (a),
-  INDEX (b),
-  FAMILY f0 (a),
-  FAMILY f1 (b),
-  FAMILY f2 (c)
-)
-
-statement ok
-INSERT INTO abc VALUES (6, 7, 8)
-
-statement ok
-SET optimizer_use_lock_op_for_serializable = on
-
-statement ok
-SET enable_durable_locking_for_serializable = on
-
-statement ok
-SET distsql = off
-
-# A scan where we normally skip reading family 0.
-query T kvtrace
-SELECT * FROM abc WHERE a = 6
-----
-Scan /Table/113/1/6/{1/1-2/2}
-
-# But with FOR UPDATE we must read all families.
-query T kvtrace
-SELECT * FROM abc WHERE a = 6 FOR UPDATE
-----
-Scan /Table/113/1/{6-7} lock Exclusive (Block, Replicated)
-
-# An index join where we normally skip reading family 0.
-query T kvtrace
-SELECT * FROM abc WHERE b = 7
-----
-Scan /Table/113/2/{7-8}
-Scan /Table/113/1/6/{1/1-2/2}
-
-# But with FOR UPDATE we must read all families.
-query T kvtrace
-SELECT * FROM abc WHERE b = 7 FOR UPDATE
-----
-Scan /Table/113/2/{7-8}
-Scan /Table/113/1/{6-7} lock Exclusive (Block, Replicated)
-
-statement ok
-INSERT INTO t129145 VALUES (6, 7)
-
-# A lookup join where we normally skip reading family 0.
-query T kvtrace
-SELECT * FROM t129145 INNER LOOKUP JOIN abc ON abc.a = t129145.a
-----
-Scan /Table/112/{1-2}
-Scan /Table/113/1/1/{1/1-2/2}, /Table/113/1/6/{1/1-2/2}
-
-# But with FOR UPDATE we must read all families.
-query T kvtrace
-SELECT * FROM t129145 INNER LOOKUP JOIN abc ON abc.a = t129145.a FOR UPDATE OF abc
-----
-Scan /Table/112/{1-2}
-Scan /Table/113/1/{1-2}, /Table/113/1/{6-7} lock Exclusive (Block, Replicated)
-
-statement ok
-RESET distsql
-
-statement ok
-RESET enable_durable_locking_for_serializable
-
-statement ok
-RESET optimizer_use_lock_op_for_serializable

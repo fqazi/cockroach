@@ -45,7 +45,7 @@ type Metrics struct {
 }
 
 // MakeMetrics returns a new instance of Metrics.
-func MakeMetrics(cidrLookup *cidr.Lookup) metric.Struct {
+func MakeMetrics(cidrLookup *cidr.Lookup) *Metrics {
 	cloudReaders := metric.Metadata{
 		Name:        "cloud.readers_opened",
 		Help:        "Readers opened by all cloud operations",
@@ -63,8 +63,8 @@ func MakeMetrics(cidrLookup *cidr.Lookup) metric.Struct {
 	cloudWriters := metric.Metadata{
 		Name:        "cloud.writers_opened",
 		Help:        "Writers opened by all cloud operations",
-		Measurement: "files",
-		Unit:        metric.Unit_BYTES,
+		Measurement: "Files",
+		Unit:        metric.Unit_COUNT,
 		MetricType:  io_prometheus_client.MetricType_COUNTER,
 	}
 	cloudWriteBytes := metric.Metadata{

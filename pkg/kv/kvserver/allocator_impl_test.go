@@ -14,9 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/allocatorimpl"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
-	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/gossiputil"
@@ -24,6 +21,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/tracker"
 )
 
 const firstRangeID = roachpb.RangeID(1)
@@ -294,19 +293,23 @@ func TestAllocatorRebalanceTarget(t *testing.T) {
 		{NodeID: 5, StoreID: 5, ReplicaID: 5},
 	}
 	repl := &Replica{RangeID: firstRangeID}
-	repl.shMu.state.Stats = &enginepb.MVCCStats{}
+
+	repl.mu.Lock()
+	repl.mu.state.Stats = &enginepb.MVCCStats{}
+	repl.mu.Unlock()
+
 	repl.loadStats = load.NewReplicaLoad(clock, nil)
 
 	var rangeUsageInfo allocator.RangeUsageInfo
 
 	status := &raft.Status{
-		Progress: make(map[raftpb.PeerID]tracker.Progress),
+		Progress: make(map[uint64]tracker.Progress),
 	}
 	status.Lead = 1
-	status.RaftState = raftpb.StateLeader
+	status.RaftState = raft.StateLeader
 	status.Commit = 10
 	for _, replica := range replicas {
-		status.Progress[raftpb.PeerID(replica.ReplicaID)] = tracker.Progress{
+		status.Progress[uint64(replica.ReplicaID)] = tracker.Progress{
 			Match: 10,
 			State: tracker.StateReplicate,
 		}
@@ -406,13 +409,13 @@ func TestAllocatorThrottled(t *testing.T) {
 
 	// Finally, set that store to be throttled and ensure we don't send the
 	// replica to purgatory.
-	storeDetail, ok := sp.Details.StoreDetails.Load(singleStore[0].StoreID)
+	sp.DetailsMu.Lock()
+	storeDetail, ok := sp.DetailsMu.StoreDetails[singleStore[0].StoreID]
 	if !ok {
 		t.Fatalf("store:%d was not found in the store pool", singleStore[0].StoreID)
 	}
-	storeDetail.Lock()
 	storeDetail.ThrottledUntil = hlc.Timestamp{WallTime: timeutil.Now().Add(24 * time.Hour).UnixNano()}
-	storeDetail.Unlock()
+	sp.DetailsMu.Unlock()
 	_, _, err = a.AllocateVoter(ctx, sp, simpleSpanConfig, []roachpb.ReplicaDescriptor{}, nil, nil, allocatorimpl.Dead)
 	if _, ok := IsPurgatoryError(err); ok {
 		t.Fatalf("expected a non purgatory error, got: %+v", err)

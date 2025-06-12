@@ -52,6 +52,4 @@ type DatumVec interface {
 	Size(startIdx int) int64
 	// SetEvalCtx updates the vector with the provided *eval.Context.
 	SetEvalCtx(evalCtx interface{})
-	// SetType updates the vector with its type.
-	SetType(t interface{})
 }

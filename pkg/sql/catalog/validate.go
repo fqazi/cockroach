@@ -118,20 +118,6 @@ type ValidationDescGetter interface {
 	GetDescriptor(id descpb.ID) (Descriptor, error)
 }
 
-// ValidateOutboundFunctionRef validates outbound reference to a function descriptor
-// depID.
-func ValidateOutboundFunctionRef(depID descpb.ID, vdg ValidationDescGetter) error {
-	referencedFunction, err := vdg.GetFunctionDescriptor(depID)
-	if err != nil {
-		return errors.NewAssertionErrorWithWrappedErrf(err, "invalid depends-on function reference")
-	}
-	if referencedFunction.Dropped() {
-		return errors.AssertionFailedf("depends-on function %q (%d) is dropped",
-			referencedFunction.GetName(), referencedFunction.GetID())
-	}
-	return nil
-}
-
 // ValidateOutboundTableRef validates outbound reference to relation descriptor
 // depID from descriptor selfID.
 func ValidateOutboundTableRef(depID descpb.ID, vdg ValidationDescGetter) error {
@@ -198,18 +184,6 @@ func ValidateOutboundTypeRefBackReference(selfID descpb.ID, typ TypeDescriptor) 
 func ValidateRolesInDescriptor(
 	descriptor Descriptor, RoleExists func(username username.SQLUsername) (bool, error),
 ) error {
-	// Validate the owner.
-	exists, err := RoleExists(descriptor.GetPrivileges().Owner())
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return errors.AssertionFailedf(
-			"descriptor %q (%d) is owned by a role %q that doesn't exist",
-			descriptor.GetName(), descriptor.GetID(), descriptor.GetPrivileges().Owner(),
-		)
-	}
-	// Validate the privileges.
 	for _, priv := range descriptor.GetPrivileges().Users {
 		exists, err := RoleExists(priv.User())
 		if err != nil {
@@ -220,21 +194,6 @@ func ValidateRolesInDescriptor(
 				descriptor.GetName(),
 				descriptor.GetID(),
 				priv.User())
-		}
-	}
-	// If a table descriptor, validate the roles that are stored in the policies.
-	if tbDesc, isTable := descriptor.(TableDescriptor); isTable {
-		for _, p := range tbDesc.GetPolicies() {
-			for _, r := range p.RoleNames {
-				exists, err := RoleExists(username.MakeSQLUsernameFromPreNormalizedString(r))
-				if err != nil {
-					return err
-				}
-				if !exists {
-					return errors.AssertionFailedf("policy %q on table %q has a role %q that doesn't exist",
-						p.Name, tbDesc.GetName(), r)
-				}
-			}
 		}
 	}
 	return nil

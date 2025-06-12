@@ -104,14 +104,14 @@ func (os *optSteps) Next() error {
 		panic("iteration already complete")
 	}
 
-	fo, err := newForcingOptimizer(os.tester, os.steps, false /* ignoreNormRules */)
+	fo, err := newForcingOptimizer(os.tester, os.steps, false /* ignoreNormRules */, true /* disableCheckExpr */)
 	if err != nil {
 		return err
 	}
 
 	os.fo = fo
 	os.expr = fo.Optimize()
-	text := fo.o.Memo().String()
+	text := os.expr.String()
 
 	// If the expression text changes, then it must have gotten better.
 	os.better = text != os.best
@@ -120,7 +120,7 @@ func (os *optSteps) Next() error {
 	} else if !os.Done() {
 		// The expression is not better, so suppress the lowest cost expressions
 		// so that the changed portions of the tree will be part of the output.
-		fo2, err := newForcingOptimizer(os.tester, os.steps, false /* ignoreNormRules */)
+		fo2, err := newForcingOptimizer(os.tester, os.steps, false /* ignoreNormRules */, true /* disableCheckExpr */)
 		if err != nil {
 			return err
 		}

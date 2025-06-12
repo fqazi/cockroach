@@ -25,13 +25,10 @@ go_test(
         "main_test.go",
         "rangelog_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":rangelog"],
     embedsrcs = ["testdata/rangelog.bin"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"test.Pool": "heavy"},
-        "//conditions:default": {"test.Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/kv",

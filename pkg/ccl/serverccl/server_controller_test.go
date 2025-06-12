@@ -18,7 +18,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/authserver"
@@ -44,8 +44,6 @@ func TestSharedProcessTenantNodeLocalAccess(t *testing.T) {
 
 	ctx := context.Background()
 	nodeCount := 3
-
-	skip.UnderDuress(t, "slow test")
 
 	dirs := make([]string, nodeCount)
 	dirCleanups := make([]func(), nodeCount)
@@ -84,13 +82,13 @@ func TestSharedProcessTenantNodeLocalAccess(t *testing.T) {
 
 	db := sqlutils.MakeSQLRunner(tc.ServerConn(0))
 	db.Exec(t, `CREATE TENANT application;
-ALTER TENANT application GRANT CAPABILITY can_use_nodelocal_storage`)
-	db.Exec(t, `ALTER TENANT application START SERVICE SHARED`)
+ALTER TENANT application GRANT CAPABILITY can_use_nodelocal_storage;
+ALTER TENANT application START SERVICE SHARED`)
 
 	var tenantID uint64
 	db.QueryRow(t, "SELECT id FROM [SHOW TENANT application]").Scan(&tenantID)
-	tc.WaitForTenantCapabilities(t, roachpb.MustMakeTenantID(tenantID), map[tenantcapabilitiespb.ID]string{
-		tenantcapabilitiespb.CanUseNodelocalStorage: "true",
+	tc.WaitForTenantCapabilities(t, roachpb.MustMakeTenantID(tenantID), map[tenantcapabilities.ID]string{
+		tenantcapabilities.CanUseNodelocalStorage: "true",
 	})
 
 	// Wait for tenant to start up on all nodes.
@@ -388,7 +386,7 @@ func TestServerControllerMultiNodeTenantStartup(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	skip.UnderDuress(t, "slow test")
+	skip.UnderDeadlock(t, "slow under deadlock")
 	t.Logf("starting test cluster")
 	numNodes := 3
 	tc := serverutils.StartCluster(t, numNodes, base.TestClusterArgs{
@@ -405,9 +403,7 @@ func TestServerControllerMultiNodeTenantStartup(t *testing.T) {
 
 	t.Logf("starting tenant servers")
 	db := tc.ServerConn(0)
-	_, err := db.Exec("CREATE TENANT hello")
-	require.NoError(t, err)
-	_, err = db.Exec("ALTER TENANT hello START SERVICE SHARED")
+	_, err := db.Exec("CREATE TENANT hello; ALTER TENANT hello START SERVICE SHARED")
 	require.NoError(t, err)
 
 	// Pick a random node, try to run some SQL inside that tenant.
@@ -531,50 +527,22 @@ func TestServerStartStop(t *testing.T) {
 	s.Stopper().Stop(ctx)
 }
 
-func TestServerControllerSystemTenantHTTPFallback(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-
-	srv, db, _ := serverutils.StartServer(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestControlsTenantsExplicitly,
-	})
-	defer srv.Stopper().Stop(ctx)
-
-	_, err := db.Exec("CREATE VIRTUAL CLUSTER 'demo'")
-	require.NoError(t, err)
-	_, err = db.Exec("SET CLUSTER SETTING server.controller.default_target_cluster = 'demo'")
-	require.NoError(t, err)
-
-	s := srv.ApplicationLayer()
-	c, err := s.GetUnauthenticatedHTTPClient()
-	require.NoError(t, err)
-
-	resp, err := c.Get(s.AdminURL().String())
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, 200, resp.StatusCode)
-}
-
 func TestServerControllerLoginLogout(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
 
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	srv := serverutils.StartServerOnly(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(110002),
+	})
 	defer srv.Stopper().Stop(ctx)
 	s := srv.ApplicationLayer()
-	isExternal := srv.DeploymentMode().IsExternal()
 
-	sessionType := serverutils.SingleTenantSession
-	client, err := s.GetAuthenticatedHTTPClient(false, sessionType)
+	client, err := s.GetAuthenticatedHTTPClient(false, serverutils.SingleTenantSession)
 	require.NoError(t, err)
 
-	// Using `Get` here instead of `Post` because in external process mode, the
-	// server returns a `StatusMethodNotAllowed` error when using `Post`.
-	resp, err := client.Get(s.AdminURL().WithPath("/logout").String())
+	resp, err := client.Post(s.AdminURL().WithPath("/logout").String(), "", nil)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -584,33 +552,18 @@ func TestServerControllerLoginLogout(t *testing.T) {
 	for i, c := range resp.Cookies() {
 		cookieNames[i] = c.Name
 		cookieValues[i] = c.Value
-		// Secure isn't set in external-mode but it is set in other modes.
-		// See https://github.com/cockroachdb/cockroach/pull/143354#pullrequestreview-2751413632.
-		if !isExternal {
-			require.True(t, c.Secure)
-		}
+		require.True(t, c.Secure)
 		if c.Name == "session" {
 			require.True(t, c.HttpOnly)
 		}
 	}
-	expectedCookies := []string{"session"}
-	expectedValues := []string{""}
-	if !isExternal {
-		expectedCookies = append(expectedCookies, "tenant")
-		expectedValues = append(expectedValues, "")
-	}
-	require.ElementsMatch(t, expectedCookies, cookieNames)
-	require.ElementsMatch(t, expectedValues, cookieValues)
+	require.ElementsMatch(t, []string{"session", "tenant"}, cookieNames)
+	require.ElementsMatch(t, []string{"", ""}, cookieValues)
 
-	// This part of the test doesn't run in external-process mode since we can't
-	// set a session cookie with name `tenant`—that's only supported by HTTP
-	// servers in the system tenant, which also handle routing for secondary
-	// tenants.
-	if isExternal {
-		return
-	}
 	// Need a new server because the HTTP Client is memoized.
-	srv2 := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	srv2 := serverutils.StartServerOnly(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(110002),
+	})
 	defer srv2.Stopper().Stop(ctx)
 	s2 := srv2.ApplicationLayer()
 
@@ -640,7 +593,7 @@ func TestServerControllerLoginLogout(t *testing.T) {
 	require.NoError(t, err)
 	cookieJar.SetCookies(s2.AdminURL().URL, []*http.Cookie{
 		{
-			Name:  "tenant",
+			Name:  "multitenant-session",
 			Value: "abc-123",
 		},
 	})
@@ -663,4 +616,38 @@ func TestServerControllerLoginLogout(t *testing.T) {
 	}
 	require.ElementsMatch(t, []string{"session", "tenant"}, cookieNames)
 	require.ElementsMatch(t, []string{"", ""}, cookieValues)
+}
+
+func TestServiceShutdownUsesGracefulDrain(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+
+	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestControlsTenantsExplicitly,
+	})
+	defer s.Stopper().Stop(ctx)
+
+	drainCh := make(chan struct{})
+
+	// Start a shared process server.
+	_, _, err := s.TenantController().StartSharedProcessTenant(ctx,
+		base.TestSharedProcessTenantArgs{
+			TenantName: "hello",
+			Knobs: base.TestingKnobs{
+				Server: &server.TestingKnobs{
+					RequireGracefulDrain: true,
+					DrainReportCh:        drainCh,
+				},
+			},
+		})
+	require.NoError(t, err)
+
+	_, err = db.Exec("ALTER TENANT hello STOP SERVICE")
+	require.NoError(t, err)
+
+	// Wait for the server to shut down. This also asserts that the
+	// graceful drain has occurred.
+	<-drainCh
 }

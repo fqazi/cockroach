@@ -52,8 +52,6 @@ type testAuthAccessor struct {
 	// set of all usernames who are admins
 	admins map[string]struct{}
 
-	members map[username.SQLUsername]bool
-
 	rand *rand.Rand
 }
 
@@ -93,16 +91,6 @@ func (a *testAuthAccessor) HasPrivilege(
 	return false, nil
 }
 
-func (a *testAuthAccessor) UserHasRoleOption(
-	_ context.Context, user username.SQLUsername, roleOption roleoption.Option,
-) (bool, error) {
-	if user != a.user {
-		panic(fmt.Sprintf("testAuthAccessor does not implement UserHasRoleOption for user %s", user))
-	}
-	_, ok := a.roleOptions[roleOption]
-	return ok, nil
-}
-
 func (a *testAuthAccessor) HasRoleOption(
 	_ context.Context, roleOption roleoption.Option,
 ) (bool, error) {
@@ -137,12 +125,6 @@ func (a *testAuthAccessor) HasGlobalPrivilegeOrRoleOption(
 		return a.HasRoleOption(ctx, roleOption)
 	}
 	return false, nil
-}
-
-func (a *testAuthAccessor) MemberOfWithAdminOption(
-	ctx context.Context, member username.SQLUsername,
-) (map[username.SQLUsername]bool, error) {
-	return a.members, nil
 }
 
 func (a *testAuthAccessor) User() username.SQLUsername {
@@ -180,7 +162,6 @@ func TestAuthorization(t *testing.T) {
 
 		user                 username.SQLUsername
 		roleOptions          map[roleoption.Option]struct{}
-		members              map[username.SQLUsername]bool
 		userPrivileges       map[userPrivilege]struct{}
 		changeFeedPrivileges map[descpb.ID]struct{}
 		droppedDescriptors   map[descpb.ID]struct{}
@@ -220,23 +201,13 @@ func TestAuthorization(t *testing.T) {
 			accessLevel: jobsauth.ViewAccess,
 		},
 		{
-			name:        "users-can-control-their-own-jobs",
+			name:        "users-cannot-control-their-own-jobs",
 			user:        username.MakeSQLUsernameFromPreNormalizedString("user1"),
 			roleOptions: map[roleoption.Option]struct{}{},
 			admins:      map[string]struct{}{},
 			payload:     makeBackupPayload("user1"),
 			accessLevel: jobsauth.ControlAccess,
-		},
-		{
-			name:        "users-can-control-their-roles-jobs",
-			user:        username.MakeSQLUsernameFromPreNormalizedString("user1"),
-			roleOptions: map[roleoption.Option]struct{}{},
-			admins:      map[string]struct{}{},
-			payload:     makeBackupPayload("role1"),
-			accessLevel: jobsauth.ControlAccess,
-			members: map[username.SQLUsername]bool{
-				username.MakeSQLUsernameFromPreNormalizedString("role1"): false,
-			},
+			userErr:     pgerror.New(pgcode.InsufficientPrivilege, "foo"),
 		},
 		{
 			name:        "admins-control-admin-jobs",
@@ -327,17 +298,6 @@ func TestAuthorization(t *testing.T) {
 			payload:     makeBackupPayload("user2"),
 			accessLevel: jobsauth.ViewAccess,
 		},
-		{
-			name: "controljob-system-privilege-insufficient-to-control-admin-jobs",
-			user: username.MakeSQLUsernameFromPreNormalizedString("user1"),
-			userPrivileges: map[userPrivilege]struct{}{
-				controlJobGlobalPrivilege: {},
-			},
-			admins:      map[string]struct{}{"user2": {}},
-			payload:     makeBackupPayload("user2"),
-			accessLevel: jobsauth.ControlAccess,
-			userErr:     pgerror.New(pgcode.InsufficientPrivilege, "admin"),
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			testAuth := &testAuthAccessor{
@@ -347,18 +307,11 @@ func TestAuthorization(t *testing.T) {
 				changeFeedPrivileges: tc.changeFeedPrivileges,
 				droppedDescriptors:   tc.droppedDescriptors,
 				admins:               tc.admins,
-				members:              tc.members,
 				rand:                 rng,
 			}
 
 			ctx := context.Background()
-			globalPrivileges, err := jobsauth.GetGlobalJobPrivileges(ctx, testAuth)
-			assert.NoError(t, err)
-			err = jobsauth.AuthorizeAllowLegacyAuth(
-				ctx, testAuth, 0,
-				func(ctx context.Context) (*jobspb.Payload, error) { return tc.payload, nil },
-				tc.payload.UsernameProto.Decode(), tc.payload.Type(), tc.accessLevel, globalPrivileges,
-			)
+			err := jobsauth.Authorize(ctx, testAuth, 0, tc.payload, tc.accessLevel)
 			assert.Equal(t, pgerror.GetPGCode(tc.userErr), pgerror.GetPGCode(err))
 		})
 	}

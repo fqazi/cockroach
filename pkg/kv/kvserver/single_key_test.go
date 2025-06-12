@@ -7,7 +7,6 @@ package kvserver_test
 
 import (
 	"context"
-	"math"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,13 +37,6 @@ func TestSingleKey(t *testing.T) {
 		})
 	defer tc.Stopper().Stop(context.Background())
 	ctx := context.Background()
-
-	// Increase the kv.transaction.internal.max_auto_retries setting to
-	// avoid transaction retry limit exceeded errors under heavy stress.
-	for i := 0; i < num; i++ {
-		sv := tc.Servers[i].DB().SettingsValues()
-		kv.MaxInternalTxnAutoRetries.Override(ctx, sv, math.MaxInt64)
-	}
 
 	// Initialize the value for our test key to zero.
 	const key = "test-key"

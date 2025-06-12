@@ -30,8 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/security/certnames"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
-	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logflags"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -59,21 +57,17 @@ const (
 )
 
 // DefaultTCP is the default SQL/RPC port specification.
-const (
-	DefaultTCP  nat.Port = base.DefaultPort + "/tcp"
-	defaultHTTP nat.Port = base.DefaultHTTPPort + "/tcp"
-)
+const DefaultTCP nat.Port = base.DefaultPort + "/tcp"
+const defaultHTTP nat.Port = base.DefaultHTTPPort + "/tcp"
 
 // CockroachBinaryInContainer is the container-side path to the CockroachDB
 // binary.
 const CockroachBinaryInContainer = "/cockroach/cockroach"
 
-var (
-	cockroachImage = flag.String("i", defaultImage, "the docker image to run")
-	cockroachEntry = flag.String("e", "", "the entry point for the image")
-	waitOnStop     = flag.Bool("w", false, "wait for the user to interrupt before tearing down the cluster")
-	maxRangeBytes  = *zonepb.DefaultZoneConfig().RangeMaxBytes
-)
+var cockroachImage = flag.String("i", defaultImage, "the docker image to run")
+var cockroachEntry = flag.String("e", "", "the entry point for the image")
+var waitOnStop = flag.Bool("w", false, "wait for the user to interrupt before tearing down the cluster")
+var maxRangeBytes = *zonepb.DefaultZoneConfig().RangeMaxBytes
 
 // CockroachBinary is the path to the host-side binary to use.
 var CockroachBinary = flag.String("b", "", "the host-side binary to run")
@@ -167,10 +161,10 @@ func CreateDocker(
 	cli.NegotiateAPIVersion(ctx)
 
 	clusterID := uuid.MakeV4()
-	clusterIDS := clusterID.Short().String()
+	clusterIDS := clusterID.Short()
 
 	if volumesDir == "" {
-		volumesDir, err = os.MkdirTemp(datapathutils.DebuggableTempDir(), fmt.Sprintf("cockroach-acceptance-%s", clusterIDS))
+		volumesDir, err = os.MkdirTemp("", fmt.Sprintf("cockroach-acceptance-%s", clusterIDS))
 		maybePanic(err)
 	} else {
 		volumesDir = filepath.Join(volumesDir, clusterIDS)
@@ -485,7 +479,7 @@ func (l *DockerCluster) startNode(ctx context.Context, node *testNode, singleNod
 	for _, store := range node.stores {
 		storeSpec := base.StoreSpec{
 			Path: store.dir,
-			Size: storageconfig.SizeSpec{Capacity: int64(store.config.MaxRanges) * maxRangeBytes},
+			Size: base.SizeSpec{InBytes: int64(store.config.MaxRanges) * maxRangeBytes},
 		}
 		cmd = append(cmd, fmt.Sprintf("--store=%s", storeSpec))
 	}
@@ -772,12 +766,10 @@ func (l *DockerCluster) stop(ctx context.Context) {
 			fmt.Sprintf("stderr.%s.log", strings.Replace(
 				timeutil.Now().Format(time.RFC3339), ":", "_", -1)))
 		maybePanic(os.MkdirAll(filepath.Dir(file), 0755))
-		func() {
-			w, err := os.Create(file)
-			maybePanic(err)
-			defer w.Close()
-			maybePanic(n.Logs(ctx, w))
-		}()
+		w, err := os.Create(file)
+		maybePanic(err)
+		defer w.Close()
+		maybePanic(n.Logs(ctx, w))
 		log.Infof(ctx, "node %d: stderr at %s", i, file)
 		if crashed {
 			log.Infof(ctx, "~~~ node %d CRASHED ~~~~", i)

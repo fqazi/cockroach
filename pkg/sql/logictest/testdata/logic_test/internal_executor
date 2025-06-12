@@ -14,7 +14,4 @@ statement ok
 SET avoid_buffering = true;
 
 statement ok
-CREATE TABLE t (i INT PRIMARY KEY);
-
-statement ok
-SELECT has_table_privilege('testuser', 't', 'SELECT');
+SELECT crdb_internal.has_role_option('VIEWACTIVITY')

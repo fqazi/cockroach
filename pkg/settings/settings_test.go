@@ -38,14 +38,7 @@ func init() {
 
 var _ settings.ClusterVersionImpl = &dummyVersion{}
 
-// Encode is part of the ClusterVersionImpl interface.
-func (d *dummyVersion) Encode() []byte {
-	encoded, err := d.Marshal()
-	if err != nil {
-		panic(err)
-	}
-	return encoded
-}
+func (d *dummyVersion) ClusterVersionImpl() {}
 
 // Unmarshal is part of the protoutil.Message interface.
 func (d *dummyVersion) Unmarshal(data []byte) error {
@@ -163,7 +156,7 @@ var i1A = settings.RegisterIntSetting(settings.ApplicationLevel, "i.1", "desc", 
 var i2A = settings.RegisterIntSetting(settings.ApplicationLevel, "i.2", "desc", 5)
 var fA = settings.RegisterFloatSetting(settings.SystemVisible, "f", "desc", 5.4)
 var dA = settings.RegisterDurationSetting(settings.ApplicationLevel, "d", "desc", time.Second)
-var duA = settings.RegisterDurationSettingWithExplicitUnit(settings.ApplicationLevel, "d_with_explicit_unit", "desc", time.Second, settings.WithPublic)
+var duA = settings.RegisterDurationSettingWithExplicitUnit(settings.ApplicationLevel, "d_with_explicit_unit", "desc", time.Second, settings.NonNegativeDuration, settings.WithPublic)
 var pA = settings.RegisterProtobufSetting(settings.ApplicationLevel, "p", "desc", &dummyVersion{msg1: "foo"})
 var _ = settings.RegisterDurationSetting(settings.ApplicationLevel, "d_with_maximum", "desc", time.Second, settings.NonNegativeDurationWithMaximum(time.Hour))
 var eA = settings.RegisterEnumSetting(settings.SystemOnly, "e", "desc", "foo", map[int64]string{1: "foo", 2: "bar", 3: "baz"})
@@ -188,7 +181,7 @@ var strVal = settings.RegisterStringSetting(settings.SystemOnly,
 		}
 		return nil
 	}))
-var dVal = settings.RegisterDurationSetting(settings.SystemOnly, "dVal", "desc", time.Second)
+var dVal = settings.RegisterDurationSetting(settings.SystemOnly, "dVal", "desc", time.Second, settings.NonNegativeDuration)
 var fVal = settings.RegisterFloatSetting(settings.SystemOnly, "fVal", "desc", 5.4, settings.NonNegativeFloat)
 var byteSizeVal = settings.RegisterByteSizeSetting(settings.SystemOnly, "byteSize.Val", "desc", mb)
 var iVal = settings.RegisterIntSetting(settings.SystemOnly,
@@ -889,8 +882,12 @@ func TestSystemOnlyDisallowedOnVirtualCluster(t *testing.T) {
 func setDummyVersion(dv dummyVersion, vs *settings.VersionSetting, sv *settings.Values) error {
 	// This is a bit round about because the VersionSetting doesn't get updated
 	// through the updater, like most other settings. In order to set it, we set
-	// the internal state by hand.
-	vs.SetInternal(context.Background(), sv, &dv)
+	// the internal encoded state by hand.
+	encoded, err := protoutil.Marshal(&dv)
+	if err != nil {
+		return err
+	}
+	vs.SetInternal(context.Background(), sv, encoded)
 	return nil
 }
 

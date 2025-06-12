@@ -141,7 +141,7 @@ func TestCmdClearRange(t *testing.T) {
 				for _, rk := range rangeTombstones {
 					localTS := hlc.ClockTimestamp{WallTime: rk.Timestamp.WallTime - 1e9} // give range key a value if > 0
 					require.NoError(t, storage.MVCCDeleteRangeUsingTombstone(
-						ctx, eng, nil, rk.StartKey, rk.EndKey, rk.Timestamp, localTS, nil, nil, false, 0, 0, nil))
+						ctx, eng, nil, rk.StartKey, rk.EndKey, rk.Timestamp, localTS, nil, nil, false, 0, nil))
 				}
 
 				// Write some random point keys within the cleared span, above the range tombstones.
@@ -203,7 +203,7 @@ func TestCmdClearRange(t *testing.T) {
 				require.Equal(t, tc.expClearIter, batch.clearIterCount == 1)
 
 				// Ensure that the data is gone.
-				iter, err := eng.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
+				iter, err := eng.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
 					KeyTypes:   storage.IterKeyTypePointsAndRanges,
 					LowerBound: startKey,
 					UpperBound: endKey,

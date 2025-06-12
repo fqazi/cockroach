@@ -27,16 +27,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
-	slpb "github.com/cockroachdb/cockroach/pkg/kv/kvserver/storeliveness/storelivenesspb"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/bootstrap"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/listenerutil"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
@@ -44,98 +39,22 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
+	raft "go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/tracker"
 )
 
-// TestStoreRangeLeas verifies that regular ranges (not special ones
-// at the start of the kye space) acquire leader leases once things settle. It's
-// the Leader Leasee variant for TestStoreRangeLeaseEpochLeases.
+// TestStoreRangeLease verifies that regular ranges (not some special ones at
+// the start of the key space) get epoch-based range leases if enabled and
+// expiration-based otherwise.
 func TestStoreRangeLease(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
 	st := cluster.MakeTestingClusterSettings()
-
-	kvserver.OverrideDefaultLeaseType(ctx, &st.SV, roachpb.LeaseLeader)
-	manualClock := hlc.NewHybridManualClock()
-	tc := testcluster.StartTestCluster(t, 3,
-		base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings: st,
-				Knobs: base.TestingKnobs{
-					Server: &server.TestingKnobs{
-						WallClock: manualClock,
-					},
-					Store: &kvserver.StoreTestingKnobs{
-						DisableMergeQueue: true,
-					},
-				},
-			},
-		},
-	)
-	defer tc.Stopper().Stop(ctx)
-	store := tc.GetFirstStoreFromServer(t, 0)
-	// NodeLivenessKeyMax is a static split point, so this is always
-	// the start key of the first range that uses epoch-based
-	// leases. Splitting on it here is redundant, but we want to include
-	// it in our tests of lease types below.
-	splitKeys := []roachpb.Key{
-		keys.NodeLivenessKeyMax, roachpb.Key("a"), roachpb.Key("b"), roachpb.Key("c"),
-	}
-	for _, splitKey := range splitKeys {
-		// NB: Splitting requires acquiring a lease, which is what establishes a
-		// leader. If there's no leader, the proposed lease acquisition will be for
-		// an expiration based lease, even if we're configured to use leader leases.
-		tc.SplitRangeOrFatal(t, splitKey)
-	}
-
-	// Expire all leases and send a write request to trigger a lease acquisitions.
-	// At this point, we have a leader, so the lease acquisition should be for a
-	// leader lease.
-	manualClock.Increment(tc.Servers[0].RaftConfig().RangeLeaseDuration.Nanoseconds())
-	for _, key := range splitKeys {
-		incArgs := incrementArgs(key, int64(5))
-
-		testutils.SucceedsSoon(t, func() error {
-			_, err := kv.SendWrapped(ctx, store.TestSender(), incArgs)
-			return err.GoError()
-		})
-	}
-
-	// The beginning of the keyspace always uses expiration-based leases.
-	rLeft := store.LookupReplica(roachpb.RKeyMin)
-	lease, _ := rLeft.GetLease()
-	if lt := lease.Type(); lt != roachpb.LeaseExpiration {
-		t.Fatalf("expected lease type expiration; got %d", lt)
-	}
-
-	// After the expiration based lease, expect the lease type that the test has
-	// enabled for all ranges.
-	for _, key := range splitKeys {
-		repl := store.LookupReplica(roachpb.RKey(key))
-		desc := tc.LookupRangeOrFatal(t, key)
-		t.Logf("desc: %v", desc)
-		lease, _ = repl.GetLease()
-		if lt := lease.Type(); lt != roachpb.LeaseLeader {
-			t.Errorf("expected lease type %s; got %s for key %v", roachpb.LeaseLeader, lease, key)
-		}
-	}
-}
-
-// TestStoreRangeLeaseEpochLeases verifies that regular ranges (not some special
-// ones at the start of the key space) get epoch-based range leases if enabled
-// and expiration-based otherwise.
-func TestStoreRangeLeaseEpochLeases(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	st := cluster.MakeTestingClusterSettings()
-	kvserver.OverrideDefaultLeaseType(ctx, &st.SV, roachpb.LeaseEpoch) // override metamorphism
+	kvserver.ExpirationLeasesOnly.Override(ctx, &st.SV, false) // override metamorphism
 
 	tc := testcluster.StartTestCluster(t, 1,
 		base.TestClusterArgs{
@@ -510,10 +429,10 @@ func TestTransferLeaseDuringJointConfigWithDeadIncomingVoter(t *testing.T) {
 		require.NoError(t, repl0.RaftReportUnreachable(4))
 		// Check the Raft progress.
 		s := repl0.RaftStatus()
-		require.Equal(t, raftpb.StateLeader, s.RaftState)
+		require.Equal(t, raft.StateLeader, s.RaftState)
 		p := s.Progress
 		require.Len(t, p, 4)
-		require.Contains(t, p, raftpb.PeerID(4))
+		require.Contains(t, p, uint64(4))
 		if p[4].State != tracker.StateProbe {
 			return errors.Errorf("dead replica not state probe")
 		}
@@ -521,12 +440,11 @@ func TestTransferLeaseDuringJointConfigWithDeadIncomingVoter(t *testing.T) {
 	})
 
 	// Run the range through the replicate queue on n1.
-	traceCtx, rec := tracing.ContextWithRecordingSpan(ctx, store0.GetStoreConfig().Tracer(), "trace-enqueue")
-	processErr, err := store0.Enqueue(
-		traceCtx, "replicate", repl0, true /* skipShouldQueue */, false /* async */)
+	trace, processErr, err := store0.Enqueue(
+		ctx, "replicate", repl0, true /* skipShouldQueue */, false /* async */)
 	require.NoError(t, err)
 	require.NoError(t, processErr)
-	formattedTrace := rec().String()
+	formattedTrace := trace.String()
 	expectedMessages := []string{
 		`transitioning out of joint configuration`,
 		`leaseholder .* is being removed through an atomic replication change, transferring lease to`,
@@ -631,7 +549,7 @@ func internalTransferLeaseFailureDuringJointConfig(t *testing.T, isManual bool) 
 	atomic.StoreInt64(&scratchRangeID, 0)
 	store := tc.GetFirstStoreFromServer(t, 0)
 	repl := store.LookupReplica(roachpb.RKey(scratchStartKey))
-	_, err = store.Enqueue(
+	_, _, err = store.Enqueue(
 		ctx, "replicate", repl, true /* skipShouldQueue */, false, /* async */
 	)
 	require.NoError(t, err)
@@ -699,7 +617,7 @@ func TestStoreLeaseTransferTimestampCacheRead(t *testing.T) {
 		// Determine when to read.
 		readTS := tc.Servers[0].Clock().Now()
 		if futureRead {
-			readTS = readTS.Add(500*time.Millisecond.Nanoseconds(), 0)
+			readTS = readTS.Add(500*time.Millisecond.Nanoseconds(), 0).WithSynthetic(true)
 		}
 
 		// Read the key at readTS.
@@ -729,76 +647,38 @@ func TestStoreLeaseTransferTimestampCacheRead(t *testing.T) {
 		require.Nil(t, pErr)
 		require.NotEqual(t, readTS, br.Timestamp)
 		require.True(t, readTS.Less(br.Timestamp))
+		require.Equal(t, readTS.Synthetic, br.Timestamp.Synthetic)
 	})
 }
 
-// TestStoreLeaseTransferTimestampCacheTxnRecord checks whether an error is
-// returned by an attempt to create a txn record after a lease transfer.
-//
-// If the local read summary is given a sufficient size budget then information
-// about individual transaction tombstone markers can be passed from the old
-// leaseholder to the new leaseholder. This allows the new leaseholder to
-// conclusively determine that a transaction tombstone marker did not exist for
-// the transaction, avoiding any error when the transaction creates its record.
-//
-// However, if the local read summary is compressed due to an insufficient size
-// budget then the new leaseholder must assume that a transaction tombstone
-// marker may have existed for the transaction. As a result, an error is thrown
-// when the transaction creates its record.
+// TestStoreLeaseTransferTimestampCacheTxnRecord checks the error returned by
+// attempts to create a txn record after a lease transfer.
 func TestStoreLeaseTransferTimestampCacheTxnRecord(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	ctx := context.Background()
+	tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{})
+	defer tc.Stopper().Stop(ctx)
 
-	testutils.RunTrueAndFalse(t, "sufficient-budget", func(t *testing.T, budget bool) {
-		ctx := context.Background()
-		st := cluster.MakeTestingClusterSettings()
-		if !budget {
-			kvserver.ReadSummaryLocalBudget.Override(ctx, &st.SV, 0)
-		}
-		tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
-			ServerArgs: base.TestServerArgs{
-				Settings: st,
-			},
-		})
-		defer tc.Stopper().Stop(ctx)
+	key := []byte("a")
+	rangeDesc, err := tc.LookupRange(key)
+	require.NoError(t, err)
 
-		key := []byte("a")
-		rangeDesc, err := tc.LookupRange(key)
-		require.NoError(t, err)
+	// Transfer the lease to Servers[0] so we start in a known state. Otherwise,
+	// there might be already a lease owned by a random node.
+	require.NoError(t, tc.TransferRangeLease(rangeDesc, tc.Target(0)))
 
-		// Transfer the lease to server 0, so we start in a known state. Otherwise,
-		// there might be already a lease owned by a random node.
-		require.NoError(t, tc.TransferRangeLease(rangeDesc, tc.Target(0)))
+	// Start a txn and perform a write, so that a txn record has to be created by
+	// the EndTxn.
+	txn := tc.Servers[0].DB().NewTxn(ctx, "test")
+	require.NoError(t, txn.Put(ctx, "a", "val"))
+	// After starting the transaction, transfer the lease. This will wipe the
+	// timestamp cache, which means that the txn record will not be able to be
+	// created (because someone might have already aborted the txn).
+	require.NoError(t, tc.TransferRangeLease(rangeDesc, tc.Target(1)))
 
-		// Start a txn and perform a write, so that a txn record has to be created by
-		// the EndTxn when it eventually commits. Don't commit yet.
-		txn1 := tc.Servers[0].DB().NewTxn(ctx, "test")
-		require.NoError(t, txn1.Put(ctx, "a", "val"))
-
-		// Start another txn and commit. This writes a txn tombstone marker into
-		// server 0's timestamp cache at a higher timestamp than the first txn's
-		// tombstone marker will eventually be. Doing so prevents the test from
-		// fooling itself and passing if only the high water mark of the timestamp
-		// cache is passed in a read summary during the lease transfer.
-		txn2 := tc.Servers[0].DB().NewTxn(ctx, "test 2")
-		require.NoError(t, txn2.Put(ctx, "b", "val"))
-		require.NoError(t, txn2.Commit(ctx))
-
-		// After starting the transaction, transfer the lease. The lease transfer will
-		// carry over a sufficiently high resolution summary of the old leaseholder's
-		// timestamp cache so that the new leaseholder can still create a txn record
-		// for the first txn with certainty that it is not permitting a replay.
-		require.NoError(t, tc.TransferRangeLease(rangeDesc, tc.Target(1)))
-
-		// Try to commit the first txn.
-		err = txn1.Commit(ctx)
-		if budget {
-			require.NoError(t, err)
-		} else {
-			require.Error(t, err)
-			require.Regexp(t, `TransactionAbortedError\(ABORT_REASON_TIMESTAMP_CACHE_REJECTED\)`, err)
-		}
-	})
+	err = txn.Commit(ctx)
+	require.Regexp(t, `TransactionAbortedError\(ABORT_REASON_NEW_LEASE_PREVENTS_TXN\)`, err)
 }
 
 // This test verifies that when a lease is moved to a node that does not match the
@@ -877,10 +757,8 @@ func TestLeasePreferencesRebalance(t *testing.T) {
 		return nil
 	})
 
-	tc.GetFirstStoreFromServer(t, 1).TestingSetReplicateQueueActive(true)
-	tc.GetFirstStoreFromServer(t, 1).TestingSetLeaseQueueActive(true)
+	tc.GetFirstStoreFromServer(t, 1).SetReplicateQueueActive(true)
 	require.NoError(t, tc.GetFirstStoreFromServer(t, 1).ForceReplicationScanAndProcess())
-	require.NoError(t, tc.GetFirstStoreFromServer(t, 1).ForceLeaseQueueProcess())
 
 	// The lease should be moved back by the rebalance queue to us-west.
 	testutils.SucceedsSoon(t, func() error {
@@ -899,8 +777,7 @@ func TestLeasePreferencesRebalance(t *testing.T) {
 func TestLeaseholderRelocate(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	stickyRegistry := fs.NewStickyRegistry()
+	stickyRegistry := server.NewStickyVFSRegistry()
 	ctx := context.Background()
 	manualClock := hlc.NewHybridManualClock()
 
@@ -920,10 +797,8 @@ func TestLeaseholderRelocate(t *testing.T) {
 	}
 
 	const numNodes = 4
-	st := cluster.MakeTestingClusterSettings()
 	for i := 0; i < numNodes; i++ {
 		serverArgs[i] = base.TestServerArgs{
-			Settings: st,
 			Locality: localities[i],
 			Knobs: base.TestingKnobs{
 				Server: &server.TestingKnobs{
@@ -954,21 +829,10 @@ func TestLeaseholderRelocate(t *testing.T) {
 	// Make sure the lease is on 3 and is fully upgraded.
 	tc.TransferRangeLeaseOrFatal(t, rhsDesc, tc.Target(2))
 
-	var err error
-	var leaseHolder roachpb.ReplicationTarget
-	testutils.SucceedsSoon(t, func() error {
-		leaseHolder, err = tc.FindRangeLeaseHolder(rhsDesc, nil)
-		if err != nil {
-			return err
-		}
-
-		// Check that the lease moved to 3.
-		if !leaseHolder.Equal(tc.Target(2)) {
-			return errors.Errorf("Leaseholder didn't move.")
-		}
-
-		return nil
-	})
+	// Check that the lease moved to 3.
+	leaseHolder, err := tc.FindRangeLeaseHolder(rhsDesc, nil)
+	require.NoError(t, err)
+	require.Equal(t, tc.Target(2), leaseHolder)
 
 	gossipLiveness(t, tc)
 
@@ -992,16 +856,9 @@ func TestLeaseholderRelocate(t *testing.T) {
 	})
 
 	// Make sure lease moved to the preferred region.
-	testutils.SucceedsSoon(t, func() error {
-		leaseHolder, err = tc.FindRangeLeaseHolder(rhsDesc, nil)
-		if err != nil {
-			return err
-		}
-		if !leaseHolder.Equal(tc.Target(3)) {
-			return errors.Errorf("Leaseholder didn't move.")
-		}
-		return nil
-	})
+	leaseHolder, err = tc.FindRangeLeaseHolder(rhsDesc, nil)
+	require.NoError(t, err)
+	require.Equal(t, tc.Target(3), leaseHolder)
 
 	// Double check that lease moved directly. The tail of the lease history
 	// should all be on leaseHolder.NodeID. We may metamorphically enable
@@ -1048,8 +905,12 @@ func gossipLiveness(t *testing.T, tc *testcluster.TestCluster) {
 // This test replicates the behavior observed in
 // https://github.com/cockroachdb/cockroach/issues/62485. We verify that when a
 // dc with the leaseholder is lost, a node in a dc that does not have the lease
-// preference, can steal the lease and transfer it to a preferred locality in a
-// short period of time.
+// preference, can steal the lease, upreplicate the range and then give up the
+// lease in a short period of time. Previously, the replicate queue would
+// reprocess, instead of requeue replicas. This behavior changed in #85219, to
+// prevent queue priority inversion. Subsequently, this test only asserts that
+// the lease preferences are satisfied quickly, rather than in a single
+// replicate queue process() call.
 func TestLeasePreferencesDuringOutage(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1058,9 +919,9 @@ func TestLeasePreferencesDuringOutage(t *testing.T) {
 	skip.UnderShort(t)
 	// The test has 5 nodes. Its possible in stress-race for nodes to be starved
 	// out heartbeating their liveness.
-	skip.UnderDuressWithIssue(t, 144457)
+	skip.UnderStressRace(t)
 
-	stickyRegistry := fs.NewStickyRegistry()
+	stickyRegistry := server.NewStickyVFSRegistry()
 	ctx := context.Background()
 	manualClock := hlc.NewHybridManualClock()
 	// Place all the leases in the us.
@@ -1112,11 +973,7 @@ func TestLeasePreferencesDuringOutage(t *testing.T) {
 	// clock jumps. Disable the suspect timer to prevent them becoming suspect
 	// when we bump the clocks.
 	liveness.TimeAfterNodeSuspect.Override(ctx, sv, 0)
-
 	timeUntilNodeDead := liveness.TimeUntilNodeDead.Get(sv)
-	// We'll jump the clock forward and don't accidentally want the watcher to
-	// fire.
-	kvserver.ReplicaLeaderlessUnavailableThreshold.Override(ctx, sv, 5*timeUntilNodeDead)
 
 	for i := 0; i < numNodes; i++ {
 		serverArgs[i] = base.TestServerArgs{
@@ -1182,17 +1039,7 @@ func TestLeasePreferencesDuringOutage(t *testing.T) {
 			// allocator on server 0 may see everyone as temporarily dead due to the
 			// clock move above.
 			for _, i := range []int{0, 3, 4} {
-				testutils.SucceedsSoon(t, func() error {
-					err := tc.Servers[i].HeartbeatNodeLiveness()
-					if err != nil {
-						if errors.Is(err, liveness.ErrEpochIncremented) {
-							t.Logf("retrying heartbeat after err %s", err)
-							return err
-						}
-						t.Fatalf("unexpected error heartbeating liveness record for server %d: %s", i, err)
-					}
-					return nil
-				})
+				require.NoError(t, tc.Servers[i].HeartbeatNodeLiveness())
 				require.NoError(t, tc.GetFirstStoreFromServer(t, i).GossipStore(ctx, true))
 			}
 		}
@@ -1236,12 +1083,29 @@ func TestLeasePreferencesDuringOutage(t *testing.T) {
 	ba := &kvpb.BatchRequest{}
 	ba.Add(getArgs(key))
 	_, pErr := tc.Servers[0].DistSenderI().(kv.Sender).Send(ctx, ba)
-	require.NoError(t, pErr.GoError())
+	require.Nil(t, pErr)
 
 	testutils.SucceedsSoon(t, func() error {
-		// Validate that the lease transferred to a preferred locality. n4 (us) and
-		// n5 (us) are the only valid stores to be leaseholders during the outage.
-		// n1 is the original leaseholder, expect it to not be the leaseholder now.
+		// Validate that we upreplicated outside of SF. NB: This will occur prior
+		// to the lease preference being satisfied.
+		require.Equal(t, 3, len(repl.Desc().Replicas().Voters().VoterDescriptors()))
+		for _, replDesc := range repl.Desc().Replicas().Voters().VoterDescriptors() {
+			serv, err := tc.FindMemberServer(replDesc.StoreID)
+			require.NoError(t, err)
+			servLocality := serv.Locality()
+			dc, ok := servLocality.Find("dc")
+			require.True(t, ok)
+			if dc == "sf" {
+				return errors.Errorf(
+					"expected no replicas in dc=sf, but found replica in "+
+						"dc=%s node_id=%v desc=%v",
+					dc, replDesc.NodeID, repl.Desc())
+			}
+		}
+		// Validate that the lease also transferred to a preferred locality. n4
+		// (us) and n5 (us) are the only valid stores to be leaseholders during the
+		// outage. n1 is the original leaseholder, expect it to not be the
+		// leaseholder now.
 		if !repl.OwnsValidLease(ctx, tc.Servers[0].Clock().NowAsClockTimestamp()) {
 			return nil
 		}
@@ -1295,7 +1159,7 @@ func TestLeasesDontThrashWhenNodeBecomesSuspect(t *testing.T) {
 	kvserver.ExpirationLeasesOnly.Override(ctx, &st.SV, false) // override metamorphism
 
 	// Speed up lease transfers.
-	stickyRegistry := fs.NewStickyRegistry()
+	stickyRegistry := server.NewStickyVFSRegistry()
 	manualClock := hlc.NewHybridManualClock()
 	serverArgs := make(map[int]base.TestServerArgs)
 	numNodes := 4
@@ -1421,20 +1285,20 @@ func TestLeasesDontThrashWhenNodeBecomesSuspect(t *testing.T) {
 		return nil
 	})
 
-	runThroughTheLeaseQueue := func(key roachpb.Key) {
+	runThroughTheReplicateQueue := func(key roachpb.Key) {
 		for _, i := range []int{2, 3} {
 			repl := tc.GetFirstStoreFromServer(t, i).LookupReplica(roachpb.RKey(key))
 			require.NotNil(t, repl)
 			// We don't know who the leaseholder might be, so ignore errors.
-			_, _ = tc.GetFirstStoreFromServer(t, i).Enqueue(
-				ctx, "lease", repl, true /* skipShouldQueue */, false, /* async */
+			_, _, _ = tc.GetFirstStoreFromServer(t, i).Enqueue(
+				ctx, "replicate", repl, true /* skipShouldQueue */, false, /* async */
 			)
 		}
 	}
 
 	for _, key := range startKeys {
 		testutils.SucceedsSoon(t, func() error {
-			runThroughTheLeaseQueue(key)
+			runThroughTheReplicateQueue(key)
 			return leaseOnNonSuspectStores(key)
 		})
 	}
@@ -1446,7 +1310,7 @@ func TestLeasesDontThrashWhenNodeBecomesSuspect(t *testing.T) {
 	}
 	// Force all the replication queues, server 1 is still suspect so it should not pick up any leases.
 	for _, key := range startKeys {
-		runThroughTheLeaseQueue(key)
+		runThroughTheReplicateQueue(key)
 	}
 	testutils.SucceedsSoon(t, allLeasesOnNonSuspectStores)
 	// Wait out the suspect time.
@@ -1459,7 +1323,7 @@ func TestLeasesDontThrashWhenNodeBecomesSuspect(t *testing.T) {
 	testutils.SucceedsSoon(t, func() error {
 		// Server 1 should get some leases back as it's no longer suspect.
 		for _, key := range startKeys {
-			runThroughTheLeaseQueue(key)
+			runThroughTheReplicateQueue(key)
 		}
 		for _, key := range startKeys {
 			repl := tc.GetFirstStoreFromServer(t, 1).LookupReplica(roachpb.RKey(key))
@@ -1627,98 +1491,74 @@ func TestAcquireLeaseTimeout(t *testing.T) {
 	}
 }
 
-// TestLeaseTransfersUseExpirationLeaseAndPromoteCorrectly ensures that lease
-// transfers use expiration based leases which are eventually promoted to either
-// an epoch based lease or a leader lease, depending on cluster settings.
-func TestLeaseTransfersUseExpirationLeasesAndPromoteCorrectly(t *testing.T) {
+// TestLeaseTransfersUseExpirationLeasesAndBumpToEpochBasedOnes does what it
+// says on the tin.
+func TestLeaseTransfersUseExpirationLeasesAndBumpToEpochBasedOnes(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "lease-type", roachpb.EpochAndLeaderLeaseType(), func(t *testing.T, leaseType roachpb.LeaseType) {
-		mu := struct {
-			syncutil.Mutex
-			lease   *roachpb.Lease
-			rangeID roachpb.RangeID
-		}{}
+	mu := struct {
+		syncutil.Mutex
+		lease *roachpb.Lease
+	}{}
 
-		ctx := context.Background()
-		st := cluster.MakeTestingClusterSettings()
+	ctx := context.Background()
+	st := cluster.MakeTestingClusterSettings()
+	kvserver.ExpirationLeasesOnly.Override(ctx, &st.SV, false) // override metamorphism
 
-		kvserver.OverrideDefaultLeaseType(ctx, &st.SV, leaseType)
-		manualClock := hlc.NewHybridManualClock()
-		// Disable proactive renewal of expiration based leases. Lease
-		// upgrades happen immediately after applying without needing active
-		// renewal. However, with leader leases, lease promotion won't happen
-		// immediately after applying the lease transfer because the new leaseholder
-		// is unlikely to be the leader.
-		// TODO(ibrahim): add comments about leader lease promotion and how that
-		//  it's not immediate in the normal case of cooperative transfer.
-		disableAutomaticLeaseRenewal := leaseType != roachpb.LeaseLeader
-		tci := serverutils.StartCluster(t, 2, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings: st,
-				Knobs: base.TestingKnobs{
-					Server: &server.TestingKnobs{
-						// Never ticked -- demonstrating that we're not relying on
-						// internal timers to upgrade leases.
-						WallClock: manualClock,
-					},
-					Store: &kvserver.StoreTestingKnobs{
-						DisableAutomaticLeaseRenewal: disableAutomaticLeaseRenewal,
-						// Make sure that the test doesn't implicitly rely on the
-						// consistency queue to upgrade the lease just before running the
-						// replica through the queue.
-						DisableConsistencyQueue: true,
-						LeaseUpgradeInterceptor: func(rangeID roachpb.RangeID, lease *roachpb.Lease) {
-							mu.Lock()
-							defer mu.Unlock()
-							if mu.rangeID == rangeID {
-								mu.lease = lease
-							}
-						},
+	manualClock := hlc.NewHybridManualClock()
+	tci := serverutils.StartCluster(t, 2, base.TestClusterArgs{
+		ReplicationMode: base.ReplicationManual,
+		ServerArgs: base.TestServerArgs{
+			Settings: st,
+			Knobs: base.TestingKnobs{
+				Server: &server.TestingKnobs{
+					// Never ticked -- demonstrating that we're not relying on
+					// internal timers to upgrade leases.
+					WallClock: manualClock,
+				},
+				Store: &kvserver.StoreTestingKnobs{
+					// Disable proactive renewal of expiration based leases. Lease
+					// upgrades happen immediately after applying without needing active
+					// renewal.
+					DisableAutomaticLeaseRenewal: true,
+					LeaseUpgradeInterceptor: func(lease *roachpb.Lease) {
+						mu.Lock()
+						defer mu.Unlock()
+						mu.lease = lease
 					},
 				},
 			},
-		})
-		tc := tci.(*testcluster.TestCluster)
-		defer tc.Stopper().Stop(ctx)
-
-		scratchKey := tc.ScratchRange(t)
-		// Add a replica; we're going to move the lease to it below.
-		desc := tc.AddVotersOrFatal(t, scratchKey, tc.Target(1))
-		mu.Lock()
-		mu.rangeID = desc.RangeID
-		mu.Unlock()
-
-		n2 := tc.Server(1)
-		n2Target := tc.Target(1)
-
-		// Transfer the lease from n1 to n2.
-		tc.TransferRangeLeaseOrFatal(t, desc, n2Target)
-		testutils.SucceedsSoon(t, func() error {
-			li, _, err := tc.FindRangeLeaseEx(ctx, desc, nil)
-			require.NoError(t, err)
-			if !li.Current().OwnedBy(n2.GetFirstStoreID()) {
-				return errors.New("lease still owned by n1")
-			}
-			return nil
-		})
-
-		// Expect it to be upgraded to an epoch based lease or leader lease, based
-		// on the version of the test we're running.
-		upgradedL, _ := tc.WaitForLeaseUpgrade(ctx, t, desc)
-		require.Equal(t, leaseType, upgradedL.Type())
-
-		// Expect it to have been upgraded from an expiration based lease.
-		mu.Lock()
-		expirationL := mu.lease
-		mu.Unlock()
-		require.Equal(t, roachpb.LeaseExpiration, expirationL.Type())
-
-		// Expect the two leases to have the same sequence number.
-		require.Equal(t, expirationL.Sequence, upgradedL.Sequence, "expiration %s; upgraded %s", expirationL, upgradedL)
+		},
 	})
+	tc := tci.(*testcluster.TestCluster)
+	defer tc.Stopper().Stop(ctx)
+
+	scratchKey := tc.ScratchRange(t)
+	// Add a replica; we're going to move the lease to it below.
+	desc := tc.AddVotersOrFatal(t, scratchKey, tc.Target(1))
+
+	n2 := tc.Server(1)
+	n2Target := tc.Target(1)
+
+	// Transfer the lease from n1 to n2.
+	tc.TransferRangeLeaseOrFatal(t, desc, n2Target)
+	testutils.SucceedsSoon(t, func() error {
+		li, _, err := tc.FindRangeLeaseEx(ctx, desc, nil)
+		require.NoError(t, err)
+		if !li.Current().OwnedBy(n2.GetFirstStoreID()) {
+			return errors.New("lease still owned by n1")
+		}
+		return nil
+	})
+
+	// Expect it to be upgraded to an epoch based lease.
+	tc.WaitForLeaseUpgrade(ctx, t, desc)
+
+	// Expect it to have been upgraded from an expiration based lease.
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, roachpb.LeaseExpiration, mu.lease.Type())
 }
 
 // TestLeaseRequestBumpsEpoch tests that a non-cooperative lease acquisition of
@@ -1728,10 +1568,11 @@ func TestLeaseRequestBumpsEpoch(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "lease-type", roachpb.TestingAllLeaseTypes(), func(t *testing.T, leaseType roachpb.LeaseType) {
+	testutils.RunTrueAndFalse(t, "expLease", func(t *testing.T, expLease bool) {
 		ctx := context.Background()
 		st := cluster.MakeTestingClusterSettings()
-		kvserver.OverrideDefaultLeaseType(ctx, &st.SV, roachpb.LeaseEpoch)
+		kvserver.ExpirationLeasesOnly.Override(ctx, &st.SV, false)
+
 		manual := hlc.NewHybridManualClock()
 		args := base.TestClusterArgs{
 			ReplicationMode: base.ReplicationManual,
@@ -1749,12 +1590,12 @@ func TestLeaseRequestBumpsEpoch(t *testing.T) {
 				},
 			},
 		}
-		tc := testcluster.StartTestCluster(t, 3, args)
+		tc := testcluster.StartTestCluster(t, 2, args)
 		defer tc.Stopper().Stop(ctx)
 
 		// Create range and upreplicate.
 		key := tc.ScratchRange(t)
-		tc.AddVotersOrFatal(t, key, tc.Target(1), tc.Target(2))
+		tc.AddVotersOrFatal(t, key, tc.Target(1))
 		desc := tc.LookupRangeOrFatal(t, key)
 
 		// Make sure n1 has an epoch lease.
@@ -1764,30 +1605,17 @@ func TestLeaseRequestBumpsEpoch(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, roachpb.LeaseEpoch, prevLease.Type())
 
-		// For the leader leases variant of the test, create a partition such that
-		// the leadership moves, and only acquire the lease on the newly elected
-		// leader.
-		newLeaseHolderNodeIdx := 1
-		if leaseType == roachpb.LeaseLeader {
-			dropRaftMessagesFrom(t, tc.Servers[1], desc, []roachpb.ReplicaID{1}, nil)
-			dropRaftMessagesFrom(t, tc.Servers[2], desc, []roachpb.ReplicaID{1}, nil)
-			dropRaftMessagesFrom(t, tc.Servers[0], desc, []roachpb.ReplicaID{2, 3}, nil)
-
-			leaderID := waitForPartitionedLeaderStepDownAndNewLeaderToStepUp(t, tc, desc, 0 /* partitionedNodeIdx */, 1 /* otherNodeIdx */)
-			leaderReplDesc, found := desc.Replicas().GetReplicaDescriptorByID(leaderID)
-			require.True(t, found)
-			newLeaseHolderNodeIdx = int(leaderReplDesc.NodeID - 1)
-		}
-
-		for _, s := range tc.Servers {
-			// Non-cooperatively move the lease to n2.
-			kvserver.OverrideDefaultLeaseType(ctx, &s.ClusterSettings().SV, leaseType)
-		}
-		t1 := tc.Target(newLeaseHolderNodeIdx)
-		newLease, err := tc.MoveRangeLeaseNonCooperatively(t, ctx, desc, t1, manual)
+		// Non-cooperatively move the lease to n2.
+		kvserver.ExpirationLeasesOnly.Override(ctx, &st.SV, expLease)
+		t1 := tc.Target(1)
+		newLease, err := tc.MoveRangeLeaseNonCooperatively(ctx, desc, t1, manual)
 		require.NoError(t, err)
 		require.NotNil(t, newLease)
-		require.Equal(t, leaseType, newLease.Type())
+		if expLease {
+			require.Equal(t, roachpb.LeaseExpiration, newLease.Type())
+		} else {
+			require.Equal(t, roachpb.LeaseEpoch, newLease.Type())
+		}
 
 		// Check that n1's liveness epoch was bumped.
 		l0 := tc.Server(0).NodeLiveness().(*liveness.NodeLiveness)
@@ -1805,205 +1633,83 @@ func TestLeaseRequestBumpsEpoch(t *testing.T) {
 	})
 }
 
-// TestLeaseRequestFromExpirationToEpochOrLeaderDoesNotRegressExpiration tests
-// that a promotion from an expiration-based lease to an epoch-based lease or
-// leader lease does not permit the expiration time of the lease to regress.
-// This is enforced using the min_expiration field.
-func TestLeaseRequestFromExpirationToEpochOrLeaderDoesNotRegressExpiration(t *testing.T) {
+// TestLeaseRequestFromExpirationToEpochDoesNotRegressExpiration tests that a
+// promotion from an expiration-based lease to an epoch-based lease does not
+// permit the expiration time of the lease to regress. This is enforced by
+// detecting cases where the leaseholder's liveness record's expiration trails
+// its expiration-based lease's expiration and synchronously heartbeating the
+// leaseholder's liveness record before promoting the lease.
+func TestLeaseRequestFromExpirationToEpochDoesNotRegressExpiration(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "lease-type", roachpb.EpochAndLeaderLeaseType(),
-		func(t *testing.T, leaseType roachpb.LeaseType) {
-			ctx := context.Background()
-			st := cluster.MakeTestingClusterSettings()
-			kvserver.ExpirationLeasesOnly.Override(ctx, &st.SV, true) // override metamorphism
+	ctx := context.Background()
+	st := cluster.MakeTestingClusterSettings()
+	kvserver.ExpirationLeasesOnly.Override(ctx, &st.SV, true) // override metamorphism
 
-			tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{
-				ReplicationMode: base.ReplicationManual,
-				ServerArgs: base.TestServerArgs{
-					Settings: st,
-				},
-			})
-			defer tc.Stopper().Stop(ctx)
+	tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{
+		ReplicationMode: base.ReplicationManual,
+		ServerArgs: base.TestServerArgs{
+			Settings: st,
+		},
+	})
+	defer tc.Stopper().Stop(ctx)
 
-			// Create scratch range.
-			key := tc.ScratchRange(t)
-			desc := tc.LookupRangeOrFatal(t, key)
+	// Create scratch range.
+	key := tc.ScratchRange(t)
+	desc := tc.LookupRangeOrFatal(t, key)
 
-			var ts hlc.Timestamp
-			if leaseType == roachpb.LeaseEpoch {
-				// Pause n1's node liveness heartbeats, to allow its liveness expiration to
-				// fall behind.
-				l0 := tc.Server(0).NodeLiveness().(*liveness.NodeLiveness)
+	// Pause n1's node liveness heartbeats, to allow its liveness expiration to
+	// fall behind.
+	l0 := tc.Server(0).NodeLiveness().(*liveness.NodeLiveness)
+	l0.PauseHeartbeatLoopForTest()
+	l, ok := l0.GetLiveness(tc.Server(0).NodeID())
+	require.True(t, ok)
 
-				// Wait for the node liveness record to have an epoch set. Otherwise,
-				// the test might fail later when attempting to acquire an epoch-based
-				// lease with this error: unable to get liveness record. This can happen
-				// if we pause the node liveness heartbeat before the record is even
-				// created.
-				testutils.SucceedsSoon(t, func() error {
-					l, ok := l0.GetLiveness(tc.Server(0).NodeID())
-					if !ok {
-						return errors.New("liveness not found")
-					}
-					if l.Epoch == 0 {
-						return errors.New("liveness epoch not set")
-					}
-					return nil
-				})
+	// Make sure n1 has an expiration-based lease.
+	s0 := tc.GetFirstStoreFromServer(t, 0)
+	repl := s0.LookupReplica(desc.StartKey)
+	require.NotNil(t, repl)
+	expLease := repl.CurrentLeaseStatus(ctx)
+	require.True(t, expLease.IsValid())
+	require.Equal(t, roachpb.LeaseExpiration, expLease.Lease.Type())
 
-				l0.PauseHeartbeatLoopForTest()
-				l, ok := l0.GetLiveness(tc.Server(0).NodeID())
-				require.True(t, ok)
-				ts = l.Expiration.ToTimestamp()
-			} else if leaseType == roachpb.LeaseLeader {
-				// Pause n1's store liveness heartbeats, to allow its liveness
-				// expiration to fall behind.
-				store, err := tc.Servers[0].GetStores().(*kvserver.Stores).
-					GetStore(tc.Servers[0].GetFirstStoreID())
-				require.NoError(t, err)
-				s1Ident := slpb.StoreIdent{NodeID: roachpb.NodeID(1), StoreID: store.StoreID()}
-				_, ts = store.TestingStoreLivenessSupportManager().SupportFrom(s1Ident)
+	// Wait for the expiration-based lease to have a later expiration than the
+	// expiration timestamp in n1's liveness record.
+	testutils.SucceedsSoon(t, func() error {
+		expLease = repl.CurrentLeaseStatus(ctx)
+		if expLease.Expiration().Less(l.Expiration.ToTimestamp()) {
+			return errors.Errorf("lease %v not extended beyond liveness %v", expLease, l)
+		}
+		return nil
+	})
 
-				// Stop store liveness heartbeats.
-				dropStoreLivenessHeartbeatsFrom(t, tc.Servers[0], desc, []roachpb.ReplicaID{1}, nil)
-			}
+	// Enable epoch-based leases. This will cause automatic lease renewal to try
+	// to promote the expiration-based lease to an epoch-based lease.
+	//
+	// Since we have disabled the background node liveness heartbeat loop, it is
+	// critical that this lease promotion synchronously heartbeats node liveness
+	// before acquiring the epoch-based lease.
+	kvserver.ExpirationLeasesOnly.Override(ctx, &s0.ClusterSettings().SV, false)
 
-			// Make sure n1 has an expiration-based lease.
-			s0 := tc.GetFirstStoreFromServer(t, 0)
-			repl := s0.LookupReplica(desc.StartKey)
-			require.NotNil(t, repl)
-			expLease := repl.CurrentLeaseStatus(ctx)
-			require.True(t, expLease.IsValid())
-			require.Equal(t, roachpb.LeaseExpiration, expLease.Lease.Type())
+	// Wait for that lease promotion to occur.
+	var epochLease kvserverpb.LeaseStatus
+	testutils.SucceedsSoon(t, func() error {
+		epochLease = repl.CurrentLeaseStatus(ctx)
+		if epochLease.Lease.Type() != roachpb.LeaseEpoch {
+			return errors.Errorf("lease %v not upgraded to epoch-based", epochLease)
+		}
+		return nil
+	})
 
-			// Wait for the expiration-based lease to have a later expiration than the
-			// expiration timestamp in n1's liveness record.
-			testutils.SucceedsSoon(t, func() error {
-				expLease = repl.CurrentLeaseStatus(ctx)
-				if expLease.Expiration().Less(ts) {
-					return errors.Errorf("lease %v not extended beyond liveness %v", expLease, ts)
-				}
-				return nil
-			})
-
-			// Enable the specified lease type. This will cause automatic lease
-			// renewal to try to promote the expiration-based.
-			//
-			// For epoch based leases, since we have disabled the background node
-			// liveness heartbeat loop, it is critical that this lease promotion
-			// synchronously heartbeats node liveness before acquiring the
-			// epoch-based lease.
-			kvserver.OverrideDefaultLeaseType(ctx, &s0.ClusterSettings().SV, leaseType)
-
-			// Wait for that lease promotion to occur.
-			_, curLeaseStatus := tc.WaitForLeaseUpgrade(ctx, t, desc)
-			require.Equal(t, leaseType, curLeaseStatus.Lease.Type())
-
-			// Once the lease has been promoted to an epoch-based/leader lease, the
-			// effective expiration (maintained for epoch leases indirectly in the
-			// liveness record and directly in the lease through its min_expiration
-			// field, and for leader lease indirectly in the leadSupportUntil and
-			// directly in the lease through its min_expiration) must be greater than
-			// or equal to that in the preceding expiration-based lease. If this were
-			// to regress, a non-cooperative lease failover to a third lease held by a
-			// different node could overlap in MVCC time with the first lease (i.e.
-			// its start time could precede expLease.Expiration), violating the lease
-			// disjointness property.
-			//
-			// If we disable the `expPromo` and branch in leases/build.go, this
-			// assertion fails.
-			require.True(t, expLease.Expiration().LessEq(curLeaseStatus.Expiration()))
-		})
-}
-
-// TestLeaseStartTimeIsLargerThanPrevLeaseEndTimeAfterRestart tests that if a
-// node gets restarted, it will reacquire the lease but the start time of the
-// new lease will be larger than the end time of the previous lease. This is
-// important to avoid situations where we might accept a write operation that
-// violates a previously served future read before the restart (We lose the
-// timestamp cache after restarts).
-func TestLeaseStartTimeIsLargerThanPrevLeaseEndTimeAfterRestart(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	testutils.RunValues(t, "lease-type", roachpb.TestingAllLeaseTypes(),
-		func(t *testing.T, leaseType roachpb.LeaseType) {
-			if leaseType == roachpb.LeaseEpoch {
-				// Doesn't work for epoch leases since the liveness record might not be
-				// found in cache.
-				skip.WithIssue(t, 59874)
-			}
-			storeReg := fs.NewStickyRegistry()
-			listenerReg := listenerutil.NewListenerRegistry()
-			defer listenerReg.Close()
-
-			ctx := context.Background()
-			st := cluster.MakeTestingClusterSettings()
-			kvserver.OverrideDefaultLeaseType(ctx, &st.SV, leaseType)
-
-			manualClock := hlc.NewHybridManualClock()
-			tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{
-				ReplicationMode:     base.ReplicationManual,
-				ReusableListenerReg: listenerReg,
-				ServerArgs: base.TestServerArgs{
-					Settings: st,
-					RaftConfig: base.RaftConfig{
-						RaftTickInterval: 100 * time.Millisecond, // speed up the test
-					},
-					Knobs: base.TestingKnobs{
-						Server: &server.TestingKnobs{
-							StickyVFSRegistry: storeReg,
-							WallClock:         manualClock,
-						},
-					},
-					StoreSpecs: []base.StoreSpec{
-						{
-							InMemory:    true,
-							StickyVFSID: "test",
-						},
-					},
-				},
-			})
-			defer tc.Stopper().Stop(ctx)
-
-			// Split off a scratch range.
-			key := tc.ScratchRange(t)
-			desc := tc.LookupRangeOrFatal(t, key)
-			repl := tc.GetFirstStoreFromServer(t, 0).GetReplicaIfExists(desc.RangeID)
-			require.NotNil(t, repl)
-
-			// Wait for lease upgrade if it's needed.
-			tc.MaybeWaitForLeaseUpgrade(ctx, t, desc)
-
-			// Get current lease start and end times.
-			lease, _ := repl.GetLease()
-			leaseStartTime := lease.Start
-			leaseEndTime := repl.CurrentLeaseStatus(ctx).Expiration()
-
-			// Sanity check that the lease end time is after the lease start time.
-			require.True(t, leaseStartTime.ToTimestamp().Less(leaseEndTime))
-
-			// Restart the server and make sure that the lease start time is larger than
-			// the support end time.
-			tc.StopServer(0)
-			require.NoError(t, tc.RestartServer(0))
-
-			// Make sure that the lease is valid.
-			var curLease roachpb.Lease
-			testutils.SucceedsSoon(t, func() error {
-				repl = tc.GetFirstStoreFromServer(t, 0).GetReplicaIfExists(desc.RangeID)
-				if repl.CurrentLeaseStatus(ctx).State != kvserverpb.LeaseState_VALID {
-					return errors.Errorf("lease not valid")
-				}
-				return nil
-			})
-
-			// Make sure that the lease start time is larger than the prev lease end
-			// time.
-			curLease, _ = repl.GetLease()
-			newLeaseStart := curLease.Start
-			require.True(t, leaseEndTime.Less(newLeaseStart.ToTimestamp()))
-		})
+	// Once the lease has been promoted to an epoch-based lease, the effective
+	// expiration (maintained indirectly in the liveness record) must be greater
+	// than that in the preceding expiration-based lease. If this were to regress,
+	// a non-cooperative lease failover to a third lease held by a different node
+	// could overlap in MVCC time with the first lease (i.e. its start time could
+	// precede expLease.Expiration), violating the lease disjointness property.
+	//
+	// If we disable the `expToEpochPromo` branch in replica_range_lease.go, this
+	// assertion fails.
+	require.True(t, expLease.Expiration().Less(epochLease.Expiration()))
 }

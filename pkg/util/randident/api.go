@@ -19,9 +19,9 @@ type NameGeneratorConfig = randidentcfg.Config
 type NameGenerator interface {
 	// GenerateOne generates one name.
 	//
-	// The specified suffix is included in the name if Suffix is true
+	// The specified number is included in the name if Number is true
 	// in the attached NameGeneratorConfig.
-	GenerateOne(suffix string) string
+	GenerateOne(number int) string
 
 	// GenerateMultiple generates count names, guaranteed to not be
 	// present in the conflictNames map.
@@ -42,7 +42,7 @@ func DefaultNameGeneratorConfig() NameGeneratorConfig {
 		DiacriticDepth: 1,
 
 		// Number the objects by default and add some noise.
-		Suffix: true,
+		Number: true,
 		Noise:  true,
 	}
 }

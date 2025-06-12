@@ -8,6 +8,7 @@ package rowexec
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -35,17 +36,21 @@ func TestWindowerAccountingForResults(t *testing.T) {
 
 	ctx := context.Background()
 	st := cluster.MakeTestingClusterSettings()
-	monitor := mon.NewMonitor(mon.Options{
-		Name:      mon.MakeName("test-monitor"),
-		Limit:     100000,
-		Increment: 5000,
-		Settings:  st,
-	})
+	monitor := mon.NewMonitorWithLimit(
+		"test-monitor",
+		mon.MemoryResource,
+		100000,        /* limit */
+		nil,           /* curCount */
+		nil,           /* maxHist */
+		5000,          /* increment */
+		math.MaxInt64, /* noteworthy */
+		st,
+	)
 	evalCtx := eval.MakeTestingEvalContextWithMon(st, monitor)
 	defer evalCtx.Stop(ctx)
 	diskMonitor := execinfra.NewTestDiskMonitor(ctx, st)
 	defer diskMonitor.Stop(ctx)
-	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec, nil /* statsCollector */)
+	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec)
 	if err != nil {
 		t.Fatal(err)
 	}

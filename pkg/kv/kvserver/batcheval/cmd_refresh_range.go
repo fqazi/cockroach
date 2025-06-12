@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -77,14 +76,13 @@ func refreshRange(
 	// Construct an incremental iterator with the desired time bounds. Incremental
 	// iterators will emit MVCC tombstones by default and will emit intents when
 	// configured to do so (see IntentPolicy).
-	iter, err := storage.NewMVCCIncrementalIterator(ctx, reader, storage.MVCCIncrementalIterOptions{
+	iter, err := storage.NewMVCCIncrementalIterator(reader, storage.MVCCIncrementalIterOptions{
 		KeyTypes:     storage.IterKeyTypePointsAndRanges,
 		StartKey:     span.Key,
 		EndKey:       span.EndKey,
 		StartTime:    refreshFrom, // exclusive
 		EndTime:      refreshTo,   // inclusive
 		IntentPolicy: storage.MVCCIncrementalIterIntentPolicyEmit,
-		ReadCategory: fs.BatchEvalReadCategory,
 	})
 	if err != nil {
 		return err
@@ -130,7 +128,7 @@ func refreshRange(
 				} else if !ok {
 					return errors.Errorf("expected provisional value for intent")
 				}
-				if meta.Timestamp.ToTimestamp() != iter.UnsafeKey().Timestamp {
+				if !meta.Timestamp.ToTimestamp().EqOrdering(iter.UnsafeKey().Timestamp) {
 					return errors.Errorf("expected provisional value for intent with ts %s, found %s",
 						meta.Timestamp, iter.UnsafeKey().Timestamp)
 				}

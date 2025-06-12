@@ -25,9 +25,6 @@ var _ catalog.TableDescriptor = (*Mutable)(nil)
 var _ catalog.MutableDescriptor = (*Mutable)(nil)
 var _ catalog.TableDescriptor = (*wrapper)(nil)
 
-// OfflineReasonImporting hard codes the Offline Reason for Importing Tables
-const OfflineReasonImporting = "importing"
-
 // wrapper is the base implementation of the catalog.Descriptor
 // interface, which is overloaded by immutable and Mutable.
 type wrapper struct {
@@ -201,15 +198,7 @@ func (desc *Mutable) SetPublicNonPrimaryIndex(indexOrdinal int, index descpb.Ind
 	desc.Indexes[indexOrdinal-1] = index
 }
 
-// OfflineForImport sets the descriptor offline in advance of an
-// import, bumping the ImportEpoch.
-func (desc *Mutable) OfflineForImport() {
-	desc.SetOffline(OfflineReasonImporting)
-	desc.ImportType = descpb.ImportType_IMPORT_WITH_IMPORT_EPOCH
-	desc.ImportEpoch++
-}
-
-// InitializeImport binds the import start time to the table descriptor.
+// InitializeImport binds the import start time to the table descriptor
 func (desc *Mutable) InitializeImport(startWallTime int64) error {
 	if desc.ImportStartWallTime != 0 {
 		return errors.AssertionFailedf("Import in progress with start time %v", desc.ImportStartWallTime)
@@ -218,9 +207,8 @@ func (desc *Mutable) InitializeImport(startWallTime int64) error {
 	return nil
 }
 
-// FinalizeImport removes in progress import metadata from the descriptor
+// FinalizeImport removes the ImportStartTime
 func (desc *Mutable) FinalizeImport() {
-	desc.ImportType = 0
 	desc.ImportStartWallTime = 0
 }
 
@@ -287,22 +275,6 @@ func UpdateIndexPartitioning(
 	return true
 }
 
-// NewPartitioning creates a new catalog.paritioning from the given
-// partitioning descriptor. If the partitioning descriptor is nil, the resulting
-// partitioning will have the default value for each entry.
-func NewPartitioning(partDesc *catpb.PartitioningDescriptor) catalog.Partitioning {
-	if partDesc != nil {
-		return &partitioning{desc: partDesc}
-	}
-	partDesc = &catpb.PartitioningDescriptor{
-		NumColumns:         0,
-		NumImplicitColumns: 0,
-		List:               nil,
-		Range:              nil,
-	}
-	return partitioning{desc: partDesc}
-}
-
 // GetPrimaryIndex implements the TableDescriptor interface.
 func (desc *wrapper) GetPrimaryIndex() catalog.UniqueWithIndexConstraint {
 	return desc.getExistingOrNewIndexCache().primary
@@ -350,24 +322,11 @@ func (desc *wrapper) NonDropIndexes() []catalog.Index {
 	return desc.getExistingOrNewIndexCache().nonDrop
 }
 
-// PartialIndexes returns a slice of all partial indexes in the underlying
+// NonDropIndexes returns a slice of all partial indexes in the underlying
 // proto, in their canonical order. This is equivalent to taking the slice
-// produced by DeletableNonPrimaryIndexes and filtering indexes with non-empty
-// expressions.
-//
-// Backfilling indexes are excluded.
+// produced by AllIndexes and filtering indexes with non-empty expressions.
 func (desc *wrapper) PartialIndexes() []catalog.Index {
 	return desc.getExistingOrNewIndexCache().partial
-}
-
-// VectorIndexes returns a slice of all vector indexes in the underlying
-// proto, in their canonical order. This is equivalent to taking the slice
-// produced by DeletableNonPrimaryIndexes and filtering indexes that are not
-// vector indexes.
-//
-// Backfilling indexes are excluded.
-func (desc *wrapper) VectorIndexes() []catalog.Index {
-	return desc.getExistingOrNewIndexCache().vector
 }
 
 // NonPrimaryIndexes returns a slice of all non-primary indexes, in
@@ -651,11 +610,6 @@ func (desc *wrapper) GetObjectType() privilege.ObjectType {
 
 // GetObjectTypeString implements the Object interface.
 func (desc *wrapper) GetObjectTypeString() string {
-	// Special handling for views since GetObjectType does not distinguish between
-	// views and regular tables.
-	if desc.IsView() {
-		return "view"
-	}
 	return string(desc.GetObjectType())
 }
 
@@ -672,11 +626,6 @@ func (desc *wrapper) ForEachUDTDependentForHydration(fn func(t *types.T) error) 
 		}
 	}
 	return nil
-}
-
-// MaybeRequiresTypeHydration implements the catalog.Descriptor interface.
-func (desc *wrapper) MaybeRequiresTypeHydration() bool {
-	return len(desc.UserDefinedTypeColumns()) > 0
 }
 
 // IsSchemaLocked implements the TableDescriptor interface.
@@ -724,19 +673,4 @@ func (desc *wrapper) IsPrimaryKeySwapMutation(m *descpb.DescriptorMutation) bool
 		}
 	}
 	return false
-}
-
-// ExternalRowData implements the TableDescriptor interface.
-func (desc *wrapper) ExternalRowData() *descpb.ExternalRowData {
-	return desc.External
-}
-
-// IsRowLevelSecurityEnabled implements the TableDescriptor interface.
-func (desc *wrapper) IsRowLevelSecurityEnabled() bool {
-	return desc.RowLevelSecurityEnabled
-}
-
-// IsRowLevelSecurityForced implements the TableDescriptor interface.
-func (desc *wrapper) IsRowLevelSecurityForced() bool {
-	return desc.RowLevelSecurityForced
 }

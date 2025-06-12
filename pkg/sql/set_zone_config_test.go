@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/status/statuspb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -53,7 +52,7 @@ func TestValidateNoRepeatKeysInZone(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = zonepb.ValidateNoRepeatKeysInZone(&zone)
+		err = validateNoRepeatKeysInZone(&zone)
 		if err != nil && expectSuccess {
 			t.Errorf("expected success for %q; got %v", constraint, err)
 		} else if err == nil && !expectSuccess {
@@ -146,7 +145,7 @@ func TestValidateZoneAttrsAndLocalitiesForSecondaryTenants(t *testing.T) {
 	}
 
 	for _, anyConstraintAllowed := range []bool{false, true} {
-		sqlclustersettings.SecondaryTenantsAllZoneConfigsEnabled.Override(ctx, &settings.SV, anyConstraintAllowed)
+		secondaryTenantsAllZoneConfigsEnabled.Override(ctx, &settings.SV, anyConstraintAllowed)
 		for _, tc := range testCases {
 			var zone zonepb.ZoneConfig
 			err := yaml.UnmarshalStrict([]byte(tc.cfg), &zone)

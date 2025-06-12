@@ -69,7 +69,7 @@ func clearExpectedValues(c *Config) {
 		if *f.MaxGroupSize == ByteSize(100<<20) {
 			f.MaxGroupSize = nil
 		}
-		if *f.FilePermissions == DefaultFilePerms {
+		if *f.FilePermissions == FilePermissions(0644) {
 			f.FilePermissions = nil
 		}
 		if *f.BufferedWrites == true {

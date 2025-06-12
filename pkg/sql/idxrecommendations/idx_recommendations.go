@@ -6,6 +6,8 @@
 package idxrecommendations
 
 import (
+	"fmt"
+
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/indexrec"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 )
@@ -22,9 +24,9 @@ type IdxRecommendations interface {
 		database string,
 		stmtType tree.StatementType,
 		isInternal bool,
-		recommendations []indexrec.Rec,
+		recommendations []string,
 		reset bool,
-	) []indexrec.Rec
+	) []string
 }
 
 // FormatIdxRecommendations formats a list of index recommendations. The output
@@ -49,7 +51,7 @@ func FormatIdxRecommendations(recs []indexrec.Rec) []string {
 		case indexrec.TypeAlterIndex:
 			recType = "alteration"
 		}
-		recommendations[i] = recType + " : " + recs[i].SQL
+		recommendations[i] = fmt.Sprintf("%s : %s", recType, recs[i].SQL)
 	}
 
 	return recommendations

@@ -33,7 +33,7 @@ func init() {
 				),
 				from.TargetStatus(scpb.ToAbsent),
 				from.CurrentStatus(scpb.Status_VALIDATED),
-				to.TargetStatus(scpb.ToPublic, scpb.TransientAbsent),
+				to.TargetStatus(scpb.ToPublic, scpb.Transient),
 				to.CurrentStatus(scpb.Status_PUBLIC),
 			}
 		},
@@ -53,9 +53,9 @@ func init() {
 					to, screl.SourceIndexID,
 					"old-index-id",
 				),
-				from.TargetStatus(scpb.TransientAbsent),
+				from.TargetStatus(scpb.Transient),
 				from.CurrentStatus(scpb.Status_TRANSIENT_VALIDATED),
-				to.TargetStatus(scpb.ToPublic, scpb.TransientAbsent),
+				to.TargetStatus(scpb.ToPublic, scpb.Transient),
 				to.CurrentStatus(scpb.Status_PUBLIC),
 			}
 		},
@@ -137,10 +137,42 @@ func init() {
 			// PRIMARY KEY, and require that the new index should be public,
 			// before the old index can be hidden (i.e. they are swapped
 			// an atomic manner).
-			return append(IsPotentialSecondaryIndexSwap("index-id", "table-id"),
+			return append(isPotentialSecondaryIndexSwap("index-id", "table-id"),
 				from.CurrentStatus(scpb.Status_PUBLIC),
 				to.CurrentStatus(scpb.Status_VALIDATED),
 			)
 		},
 	)
+}
+
+// isNotPotentialSecondaryIndexSwap determines if no secondary index recreation
+// is happening because of a primary key alter.
+var isNotPotentialSecondaryIndexSwap = screl.Schema.DefNotJoin2("no secondary index swap is on going",
+	"table-id", "index-id", func(a, b rel.Var) rel.Clauses {
+		return isPotentialSecondaryIndexSwap(b, a)
+	})
+
+// isPotentialSecondaryIndexSwap determines if a secondary index recreate is
+// occurring because of a primary key alter.
+func isPotentialSecondaryIndexSwap(indexIdVar rel.Var, tableIDVar rel.Var) rel.Clauses {
+	oldIndex := MkNodeVars("old-index")
+	newIndex := MkNodeVars("new-index")
+	// This rule detects secondary indexes recreated during a primary index swap,
+	// by doing the following. It will check if the re-create source index
+	// and index ID matches up between an old and new index
+	return rel.Clauses{
+		oldIndex.Type((*scpb.SecondaryIndex)(nil)),
+		newIndex.Type((*scpb.SecondaryIndex)(nil)),
+		oldIndex.TargetStatus(scpb.ToAbsent),
+		newIndex.TargetStatus(scpb.ToPublic, scpb.Transient),
+		JoinOnDescID(oldIndex, newIndex, tableIDVar),
+		newIndex.El.AttrEqVar(screl.IndexID, indexIdVar),
+		JoinOn(oldIndex,
+			screl.IndexID,
+			newIndex,
+			screl.RecreateSourceIndexID,
+			"old-index-id"),
+		oldIndex.JoinTargetNode(),
+		newIndex.JoinTargetNode(),
+	}
 }

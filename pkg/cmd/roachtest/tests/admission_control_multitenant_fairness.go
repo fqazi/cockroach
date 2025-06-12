@@ -92,7 +92,7 @@ func registerMultiTenantFairness(r registry.Registry) {
 			Owner:            registry.OwnerAdmissionControl,
 			Benchmark:        true,
 			Leases:           registry.MetamorphicLeases,
-			CompatibleClouds: registry.CloudsWithServiceRegistration,
+			CompatibleClouds: registry.AllExceptAWS,
 			Suites:           registry.Suites(registry.Weekly),
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 				runMultiTenantFairness(ctx, t, c, s)
@@ -181,7 +181,7 @@ func runMultiTenantFairness(
 
 		t.L().Printf("virtual cluster %q started on n%d", name, node[0])
 		_, err := systemConn.ExecContext(
-			ctx, fmt.Sprintf("SELECT crdb_internal.update_tenant_resource_limits('%s', 1000000000, 10000, 1000000)", name),
+			ctx, fmt.Sprintf("SELECT crdb_internal.update_tenant_resource_limits('%s', 1000000000, 10000, 1000000, now(), 0)", name),
 		)
 		require.NoError(t, err)
 
@@ -203,7 +203,7 @@ func runMultiTenantFairness(
 			test.DefaultCockroachPath, node[0], name,
 		)
 
-		c.Run(ctx, option.WithNodes(node), initKV)
+		c.Run(ctx, node, initKV)
 	}
 
 	t.L().Printf("setting up prometheus/grafana (<%s)", 2*time.Minute)
@@ -236,9 +236,9 @@ func runMultiTenantFairness(
 				Flag("batch", s.batch).
 				Flag("max-ops", s.maxOps).
 				Flag("concurrency", 25).
-				Arg("%s", pgurl)
+				Arg(pgurl)
 
-			if err := c.RunE(ctx, option.WithNodes(node), cmd.String()); err != nil {
+			if err := c.RunE(ctx, node, cmd.String()); err != nil {
 				return err
 			}
 
@@ -271,9 +271,9 @@ func runMultiTenantFairness(
 				Flag("duration", s.duration).
 				Flag("read-percent", s.readPercent).
 				Flag("concurrency", s.concurrency(n)).
-				Arg("%s", pgurl)
+				Arg(pgurl)
 
-			if err := c.RunE(ctx, option.WithNodes(node), cmd.String()); err != nil {
+			if err := c.RunE(ctx, node, cmd.String()); err != nil {
 				return err
 			}
 
@@ -299,24 +299,17 @@ func runMultiTenantFairness(
 		node := virtualClusters[name]
 
 		vcdb := c.Conn(ctx, t.L(), node[0], option.VirtualClusterName(name))
+		defer vcdb.Close()
 
 		_, err := vcdb.ExecContext(ctx, "USE kv")
-		// Retry once, since this can fail sometimes due the cluster running hot.
-		if err != nil {
-			_, err = vcdb.ExecContext(ctx, "USE kv")
-		}
 		require.NoError(t, err)
 
-		// TODO(aaditya): We no longer have the ability to filter for stats by
-		// successful queries, and include ones for failed queries. Maybe consider
-		// finding a way to do this?
-		// See https://github.com/cockroachdb/cockroach/pull/121120.
 		rows, err := vcdb.QueryContext(ctx, `
 			SELECT
 				sum((statistics -> 'statistics' -> 'cnt')::INT),
 				avg((statistics -> 'statistics' -> 'runLat' -> 'mean')::FLOAT)
 			FROM crdb_internal.statement_statistics
-			WHERE metadata @> '{"db":"kv"}' AND metadata @> $1`,
+			WHERE metadata @> '{"db":"kv","failed":false}' AND metadata @> $1`,
 			fmt.Sprintf(`{"querySummary": "%s"}`, s.query))
 		require.NoError(t, err)
 
@@ -329,8 +322,8 @@ func runMultiTenantFairness(
 		} else {
 			t.Fatal("no query results")
 		}
+
 		require.NoError(t, rows.Err())
-		vcdb.Close()
 	}
 
 	failThreshold := .3
@@ -354,10 +347,10 @@ func runMultiTenantFairness(
 		t.L().Printf("latency not within expectations: %f > %f %v", maxLatencyDelta, failThreshold, meanLatencies)
 	}
 
-	c.Run(ctx, option.WithNodes(crdbNode), "mkdir", "-p", t.PerfArtifactsDir())
+	c.Run(ctx, crdbNode, "mkdir", "-p", t.PerfArtifactsDir())
 	results := fmt.Sprintf(`{ "max_tput_delta": %f, "max_tput": %f, "min_tput": %f, "max_latency": %f, "min_latency": %f}`,
 		maxThroughputDelta, maxFloat(throughput), minFloat(throughput), maxFloat(meanLatencies), minFloat(meanLatencies))
-	c.Run(ctx, option.WithNodes(crdbNode), fmt.Sprintf(`echo '%s' > %s/stats.json`, results, t.PerfArtifactsDir()))
+	c.Run(ctx, crdbNode, fmt.Sprintf(`echo '%s' > %s/stats.json`, results, t.PerfArtifactsDir()))
 }
 
 func averageFloat(values []float64) float64 {

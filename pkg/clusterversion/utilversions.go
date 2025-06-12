@@ -6,4 +6,4 @@
 package clusterversion
 
 // DoctorBinaryVersion level used by the debug doctor when validating any files.
-var DoctorBinaryVersion = Latest.Version()
+var DoctorBinaryVersion = binaryVersion

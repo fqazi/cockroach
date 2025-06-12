@@ -71,7 +71,7 @@ func (t schemaTelemetryResumer) Resume(ctx context.Context, execCtx interface{})
 	if knobs.AOSTDuration != nil {
 		aostDuration = *knobs.AOSTDuration
 	} else if fn := builtins.EvalFollowerReadOffset; fn != nil {
-		if d, err := fn(p.ExecCfg().Settings); err == nil {
+		if d, err := fn(p.ExtendedEvalContext().ClusterID, p.ExecCfg().Settings); err == nil {
 			aostDuration = d
 		}
 	}
@@ -84,7 +84,7 @@ func (t schemaTelemetryResumer) Resume(ctx context.Context, execCtx interface{})
 		return err
 	}
 
-	events, err := CollectClusterSchemaForTelemetry(ctx, p.ExecCfg(), asOf, uuid.MakeV4(), maxRecords)
+	events, err := CollectClusterSchemaForTelemetry(ctx, p.ExecCfg(), asOf, uuid.FastMakeV4(), maxRecords)
 	if err != nil || len(events) == 0 {
 		return err
 	}

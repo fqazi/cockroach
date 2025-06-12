@@ -1,20 +1,30 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_test")
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "compose",
+    srcs = ["empty.go"],
+    importpath = "github.com/cockroachdb/cockroach/pkg/compose",
+    visibility = ["//visibility:public"],
+)
 
 go_test(
     name = "compose_test",
     size = "enormous",
     srcs = ["compose_test.go"],
+    args = select({
+        "//build/toolchains:use_ci_timeouts": ["-test.timeout=895s"],
+        "//conditions:default": ["-test.timeout=3595s"],
+    }),
     data = [
         "//c-deps:libgeos",
         "//pkg/compose:compare/docker-compose.yml",
     ],
-    tags = [
-        "integration",
-        "no-remote-exec",
-    ],
+    embed = [":compose"],
+    exec_properties = {"Pool": "large"},
+    gotags = ["compose"],
+    tags = ["integration"],
     deps = [
         "//pkg/build/bazel",
-        "//pkg/testutils/skip",
         "//pkg/util/envutil",
     ],
 )

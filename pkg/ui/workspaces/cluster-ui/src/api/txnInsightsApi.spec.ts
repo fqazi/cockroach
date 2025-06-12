@@ -3,25 +3,40 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import moment from "moment-timezone";
-
+import {
+  TxnStmtFingerprintsResponseColumns,
+  FingerprintStmtsResponseColumns,
+} from "./txnInsightsApi";
+import * as sqlApi from "./sqlApi";
+import { SqlExecutionResponse } from "./sqlApi";
 import {
   InsightExecEnum,
   InsightNameEnum,
   TxnContentionInsightDetails,
 } from "../insights";
-import { MockSqlResponse } from "../util/testing";
-
 import {
   ContentionResponseColumns,
   getTxnInsightsContentionDetailsApi,
 } from "./contentionApi";
-import * as sqlApi from "./sqlApi";
-import { SqlExecutionResponse } from "./sqlApi";
-import {
-  TxnStmtFingerprintsResponseColumns,
-  FingerprintStmtsResponseColumns,
-} from "./txnInsightsApi";
+import moment from "moment-timezone";
+
+function mockSqlResponse<T>(rows: T[]): SqlExecutionResponse<T> {
+  return {
+    execution: {
+      retries: 0,
+      txn_results: [
+        {
+          tag: "",
+          start: "",
+          end: "",
+          rows_affected: 0,
+          statement: 1,
+          rows: [...rows],
+        },
+      ],
+    },
+  };
+}
 
 type TxnContentionDetailsTests = {
   name: string;
@@ -58,16 +73,16 @@ describe("test txn insights api functions", () => {
   test.each([
     {
       name: "all api responses empty",
-      contentionResp: MockSqlResponse([]),
-      txnFingerprintsResp: MockSqlResponse([]),
-      stmtsFingerprintsResp: MockSqlResponse([]),
+      contentionResp: mockSqlResponse([]),
+      txnFingerprintsResp: mockSqlResponse([]),
+      stmtsFingerprintsResp: mockSqlResponse([]),
       expected: null,
     },
     {
       name: "no fingerprints available",
-      contentionResp: MockSqlResponse([contentionDetailsMock]),
-      txnFingerprintsResp: MockSqlResponse([]),
-      stmtsFingerprintsResp: MockSqlResponse([]),
+      contentionResp: mockSqlResponse([contentionDetailsMock]),
+      txnFingerprintsResp: mockSqlResponse([]),
+      stmtsFingerprintsResp: mockSqlResponse([]),
       expected: {
         transactionExecutionID: contentionDetailsMock.waiting_txn_id,
         application: undefined,
@@ -96,13 +111,13 @@ describe("test txn insights api functions", () => {
           },
         ],
         execType: InsightExecEnum.TRANSACTION,
-        insightName: InsightNameEnum.HIGH_CONTENTION,
+        insightName: InsightNameEnum.highContention,
       },
     },
     {
       name: "no stmt fingerprints available",
-      contentionResp: MockSqlResponse([contentionDetailsMock]),
-      txnFingerprintsResp: MockSqlResponse<TxnStmtFingerprintsResponseColumns>([
+      contentionResp: mockSqlResponse([contentionDetailsMock]),
+      txnFingerprintsResp: mockSqlResponse<TxnStmtFingerprintsResponseColumns>([
         {
           transaction_fingerprint_id:
             contentionDetailsMock.blocking_txn_fingerprint_id,
@@ -110,7 +125,7 @@ describe("test txn insights api functions", () => {
           app_name: undefined,
         },
       ]),
-      stmtsFingerprintsResp: MockSqlResponse([]),
+      stmtsFingerprintsResp: mockSqlResponse([]),
       expected: {
         transactionExecutionID: contentionDetailsMock.waiting_txn_id,
         application: undefined,
@@ -143,13 +158,13 @@ describe("test txn insights api functions", () => {
           },
         ],
         execType: InsightExecEnum.TRANSACTION,
-        insightName: InsightNameEnum.HIGH_CONTENTION,
+        insightName: InsightNameEnum.highContention,
       },
     },
     {
       name: "all info available",
-      contentionResp: MockSqlResponse([contentionDetailsMock]),
-      txnFingerprintsResp: MockSqlResponse<TxnStmtFingerprintsResponseColumns>([
+      contentionResp: mockSqlResponse([contentionDetailsMock]),
+      txnFingerprintsResp: mockSqlResponse<TxnStmtFingerprintsResponseColumns>([
         {
           transaction_fingerprint_id:
             contentionDetailsMock.blocking_txn_fingerprint_id,
@@ -157,7 +172,7 @@ describe("test txn insights api functions", () => {
           app_name: undefined,
         },
       ]),
-      stmtsFingerprintsResp: MockSqlResponse<FingerprintStmtsResponseColumns>([
+      stmtsFingerprintsResp: mockSqlResponse<FingerprintStmtsResponseColumns>([
         {
           statement_fingerprint_id: "a",
           query: "select 1",
@@ -199,7 +214,7 @@ describe("test txn insights api functions", () => {
           },
         ],
         execType: InsightExecEnum.TRANSACTION,
-        insightName: InsightNameEnum.HIGH_CONTENTION,
+        insightName: InsightNameEnum.highContention,
       },
     },
   ] as TxnContentionDetailsTests[])(

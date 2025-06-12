@@ -7,19 +7,14 @@ package kvserver
 
 import (
 	"context"
-	"path"
 	"reflect"
-	"strconv"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/gossip"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/disk"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -27,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/pebble/vfs"
 	"github.com/stretchr/testify/require"
 )
 
@@ -133,7 +127,7 @@ func TestStoresGetReplicaForRangeID(t *testing.T) {
 		stopper.AddCloser(memEngine)
 
 		cfg := TestStoreConfig(clock)
-		cfg.Transport = NewDummyRaftTransport(cfg.AmbientCtx, cfg.Settings, cfg.Clock)
+		cfg.Transport = NewDummyRaftTransport(cfg.Settings, cfg.AmbientCtx.Tracer)
 
 		store := NewStore(ctx, cfg, memEngine, &roachpb.NodeDescriptor{NodeID: 1})
 		// Fake-set an ident. This is usually read from the engine on store.Start()
@@ -154,7 +148,8 @@ func TestStoresGetReplicaForRangeID(t *testing.T) {
 			},
 		}
 
-		require.NoError(t, stateloader.Make(desc.RangeID).SetRaftReplicaID(ctx, store.TODOEngine(), replicaID))
+		require.NoError(t,
+			logstore.NewStateLoader(desc.RangeID).SetRaftReplicaID(ctx, store.TODOEngine(), replicaID))
 		replica, err := loadInitializedReplicaForTesting(ctx, store, desc, replicaID)
 		if err != nil {
 			t.Fatalf("unexpected error when creating replica: %+v", err)
@@ -225,7 +220,7 @@ func createStores(count int) (*timeutil.ManualTime, []*Store, *Stores, *stop.Sto
 	// Create two stores with ranges we care about.
 	stores := []*Store{}
 	for i := 0; i < count; i++ {
-		cfg.Transport = NewDummyRaftTransport(cfg.AmbientCtx, cfg.Settings, cfg.Clock)
+		cfg.Transport = NewDummyRaftTransport(cfg.Settings, cfg.AmbientCtx.Tracer)
 		eng := storage.NewDefaultInMemForTesting()
 		stopper.AddCloser(eng)
 		s := NewStore(context.Background(), cfg, eng, &roachpb.NodeDescriptor{NodeID: 1})
@@ -337,41 +332,5 @@ func TestStoresGossipStorageReadLatest(t *testing.T) {
 	}
 	if !reflect.DeepEqual(bi, verifyBI) {
 		t.Errorf("bootstrap info %+v not equal to expected %+v", verifyBI, bi)
-	}
-}
-
-func TestRegisterDiskMonitors(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	dir, dirCleanupFn := testutils.TempDir(t)
-	defer dirCleanupFn()
-
-	_, stores, ls, stopper := createStores(2)
-	defer stopper.Stop(context.Background())
-	defer ls.CloseDiskMonitors()
-
-	ls.AddStore(stores[0])
-	ls.AddStore(stores[1])
-
-	defaultFS := vfs.Default
-	diskManager := disk.NewMonitorManager(defaultFS)
-	diskMonitors := make(map[roachpb.StoreID]DiskStatsMonitor, len(stores))
-	for i, store := range stores {
-		storePath := path.Join(dir, strconv.Itoa(i))
-		_, err := defaultFS.Create(storePath, fs.UnspecifiedWriteCategory)
-		require.NoError(t, err)
-		require.Nil(t, store.diskMonitor)
-
-		monitor, err := diskManager.Monitor(storePath)
-		require.NoError(t, err)
-		defer monitor.Close()
-		diskMonitors[store.StoreID()] = monitor
-	}
-
-	err := ls.RegisterDiskMonitors(diskMonitors)
-	require.NoError(t, err)
-	for _, store := range stores {
-		require.NotNil(t, store.diskMonitor)
 	}
 }

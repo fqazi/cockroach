@@ -47,7 +47,6 @@ func TestTxnCommitterElideEndTxn(t *testing.T) {
 
 	txn := makeTxnProto()
 	keyA := roachpb.Key("a")
-	keyB := roachpb.Key("b")
 
 	// Test with both commits and rollbacks.
 	testutils.RunTrueAndFalse(t, "commit", func(t *testing.T, commit bool) {
@@ -61,13 +60,13 @@ func TestTxnCommitterElideEndTxn(t *testing.T) {
 		ba := &kvpb.BatchRequest{}
 		ba.Header = kvpb.Header{Txn: &txn}
 		ba.Add(&kvpb.GetRequest{RequestHeader: kvpb.RequestHeader{Key: keyA}})
-		ba.Add(&kvpb.ScanRequest{RequestHeader: kvpb.RequestHeader{Key: keyA, EndKey: keyB}})
+		ba.Add(&kvpb.PutRequest{RequestHeader: kvpb.RequestHeader{Key: keyA}})
 		ba.Add(&kvpb.EndTxnRequest{Commit: commit, LockSpans: nil})
 
 		mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
 			require.Len(t, ba.Requests, 2)
 			require.IsType(t, &kvpb.GetRequest{}, ba.Requests[0].GetInner())
-			require.IsType(t, &kvpb.ScanRequest{}, ba.Requests[1].GetInner())
+			require.IsType(t, &kvpb.PutRequest{}, ba.Requests[1].GetInner())
 
 			br := ba.CreateReply()
 			br.Txn = ba.Txn
@@ -231,35 +230,6 @@ func TestTxnCommitterStripsInFlightWrites(t *testing.T) {
 		br = ba.CreateReply()
 		br.Txn = ba.Txn
 		br.Txn.Status = roachpb.COMMITTED
-		return br, nil
-	})
-
-	br, pErr = tc.SendLocked(ctx, ba)
-	require.Nil(t, pErr)
-	require.NotNil(t, br)
-
-	// Send the same batch but with an EndTxn with the Prepare flag set. In-flight
-	// writes should not be attached because the XA two-phase commit protocol
-	// disables parallel commits.
-	ba.Requests = nil
-	etArgsPrepare := etArgs
-	etArgsPrepare.Prepare = true
-	ba.Add(&putArgs, &qiArgs, &etArgsPrepare)
-
-	mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
-		require.Len(t, ba.Requests, 3)
-		require.IsType(t, &kvpb.EndTxnRequest{}, ba.Requests[2].GetInner())
-
-		et := ba.Requests[2].GetInner().(*kvpb.EndTxnRequest)
-		require.True(t, et.Commit)
-		require.True(t, et.Prepare)
-		require.Len(t, et.LockSpans, 2)
-		require.Equal(t, []roachpb.Span{{Key: keyA}, {Key: keyB}}, et.LockSpans)
-		require.Len(t, et.InFlightWrites, 0)
-
-		br = ba.CreateReply()
-		br.Txn = ba.Txn
-		br.Txn.Status = roachpb.PREPARED
 		return br, nil
 	})
 

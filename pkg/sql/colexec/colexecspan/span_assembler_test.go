@@ -90,9 +90,9 @@ func TestSpanAssembler(t *testing.T) {
 									}
 									neededColumns := intsets.MakeFast(1, 2, 3, 4)
 
-									cols := make([]*coldata.Vec, len(typs))
+									cols := make([]coldata.Vec, len(typs))
 									for i, typ := range typs {
-										cols[i] = testAllocator.NewVec(typ, nTuples)
+										cols[i] = testAllocator.NewMemColumn(typ, nTuples)
 									}
 									for i := range typs {
 										coldatatestutils.RandomVec(coldatatestutils.RandomVecArgs{
@@ -109,9 +109,7 @@ func TestSpanAssembler(t *testing.T) {
 									converter := colconv.NewAllVecToDatumConverter(len(typs))
 
 									var builder span.Builder
-									builder.InitAllowingExternalRowData(
-										&evalCtx, codec, testTable, testTable.GetPrimaryIndex(),
-									)
+									builder.Init(&evalCtx, codec, testTable, testTable.GetPrimaryIndex())
 									splitter := span.MakeSplitter(testTable, testTable.GetPrimaryIndex(), neededColumns)
 
 									var fetchSpec fetchpb.IndexFetchSpec

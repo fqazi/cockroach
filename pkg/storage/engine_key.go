@@ -12,8 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 )
@@ -28,7 +26,7 @@ import (
 // should consider changing all the legacy code).
 //
 // The version can have the following lengths in addition to 0 length.
-// - Timestamp of MVCC keys: 8, 12, or 13 bytes.
+// - Timestamp of MVCC keys: 8 or 12 bytes.
 // - Lock table key: 17 bytes.
 type EngineKey struct {
 	Key     roachpb.Key
@@ -59,7 +57,7 @@ func (k EngineKey) Format(f fmt.State, c rune) {
 // The motivation for the sentinel is that we configure the underlying storage
 // engine (Pebble) with a Split function that can be used for constructing
 // Bloom filters over just the Key field. However, the encoded Key must also
-// look like an encoded EngineKey. By splitting at Key + \x00, the Key looks
+// look like an encoded EngineKey. By splitting, at Key + \x00, the Key looks
 // like an EngineKey with no Version.
 const (
 	sentinel               = '\x00'
@@ -150,11 +148,13 @@ func (k EngineKey) ToMVCCKey() (MVCCKey, error) {
 		// No-op.
 	case engineKeyVersionWallTimeLen:
 		key.Timestamp.WallTime = int64(binary.BigEndian.Uint64(k.Version[0:8]))
-	case engineKeyVersionWallAndLogicalTimeLen, engineKeyVersionWallLogicalAndSyntheticTimeLen:
+	case engineKeyVersionWallAndLogicalTimeLen:
 		key.Timestamp.WallTime = int64(binary.BigEndian.Uint64(k.Version[0:8]))
 		key.Timestamp.Logical = int32(binary.BigEndian.Uint32(k.Version[8:12]))
-		// NOTE: byte 13 used to store the timestamp's synthetic bit, but this is no
-		// longer consulted and can be ignored during decoding.
+	case engineKeyVersionWallLogicalAndSyntheticTimeLen:
+		key.Timestamp.WallTime = int64(binary.BigEndian.Uint64(k.Version[0:8]))
+		key.Timestamp.Logical = int32(binary.BigEndian.Uint32(k.Version[8:12]))
+		key.Timestamp.Synthetic = k.Version[12] != 0
 	default:
 		return MVCCKey{}, errors.Errorf("version is not an encoded timestamp %x", k.Version)
 	}
@@ -208,10 +208,6 @@ func DecodeEngineKey(b []byte) (key EngineKey, ok bool) {
 	// Last byte is the version length + 1 when there is a version,
 	// else it is 0.
 	versionLen := int(b[len(b)-1])
-	if versionLen == 1 {
-		// The key encodes an empty version, which is not valid.
-		return EngineKey{}, false
-	}
 	// keyPartEnd points to the sentinel byte.
 	keyPartEnd := len(b) - 1 - versionLen
 	if keyPartEnd < 0 || b[keyPartEnd] != 0x00 {
@@ -363,57 +359,6 @@ func (lk LockTableKey) EncodedSize() int64 {
 type EngineRangeKeyValue struct {
 	Version []byte
 	Value   []byte
-}
-
-// Verify ensures the checksum of the current batch entry matches the data.
-// Returns an error on checksum mismatch.
-func (key *EngineKey) Verify(value []byte) error {
-	if key.IsMVCCKey() {
-		mvccKey, err := key.ToMVCCKey()
-		if err != nil {
-			return err
-		}
-		if mvccKey.IsValue() {
-			return decodeMVCCValueAndVerify(mvccKey.Key, value)
-		} else {
-			return decodeMVCCMetaAndVerify(mvccKey.Key, value)
-		}
-	} else if key.IsLockTableKey() {
-		lockTableKey, err := key.ToLockTableKey()
-		if err != nil {
-			return err
-		}
-		return decodeMVCCMetaAndVerify(lockTableKey.Key, value)
-	}
-	return decodeMVCCMetaAndVerify(key.Key, value)
-}
-
-// decodeMVCCValueAndVerify will try to decode the value as
-// MVCCValue and then verify the checksum.
-func decodeMVCCValueAndVerify(key roachpb.Key, value []byte) error {
-	mvccValue, err := decodeMVCCValueIgnoringHeader(value)
-	if err != nil {
-		return err
-	}
-	return mvccValue.Value.Verify(key)
-}
-
-// decodeMVCCMetaAndVerify will try to decode the value as
-// enginepb.MVCCMetadata and then try to  convert the rawbytes
-// as MVCCValue then verify the checksum.
-func decodeMVCCMetaAndVerify(key roachpb.Key, value []byte) error {
-	// TODO(lyang24): refactor to avoid allocation for MVCCMetadata
-	// per each call.
-	var meta enginepb.MVCCMetadata
-	// Time series data might fail the decoding i.e.
-	// key 61
-	// value 0262000917bba16e0aea5ca80900
-	// N.B. we skip checksum checking in this case.
-	// nolint:returnerrcheck
-	if err := protoutil.Unmarshal(value, &meta); err != nil {
-		return nil
-	}
-	return decodeMVCCValueAndVerify(key, meta.RawBytes)
 }
 
 // EngineKeyRange is a key range composed of EngineKeys.

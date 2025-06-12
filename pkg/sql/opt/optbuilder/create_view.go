@@ -19,22 +19,6 @@ func (b *Builder) buildCreateView(cv *tree.CreateView, inScope *scope) (outScope
 	preFuncResolver := b.semaCtx.FunctionResolver
 	b.semaCtx.FunctionResolver = nil
 
-	isTemp := resolveTemporaryStatus(cv.Name.ObjectNamePrefix, cv.Persistence)
-	if isTemp {
-		// Postgres allows using `pg_temp` as an alias for the session specific temp
-		// schema. In PG, the following are equivalent:
-		// CREATE TEMP TABLE t <=> CREATE TABLE pg_temp.t <=> CREATE TEMP TABLE pg_temp.t
-		//
-		// The temporary schema is created the first time a session creates a
-		// temporary object, so it is possible to use `pg_temp` in a fully qualified
-		// name when the temporary schema does not exist. To allow the name to be
-		// resolved, we unset the explicitly named schema and set the Persistence to
-		// temporary.
-		cv.Name.ObjectNamePrefix.SchemaName = ""
-		cv.Name.ObjectNamePrefix.ExplicitSchema = false
-		cv.Persistence = tree.PersistenceTemporary
-	}
-
 	// We build the select statement to:
 	//  - check the statement semantically,
 	//  - get the fully resolved names into the AST, and
@@ -117,20 +101,12 @@ func (b *Builder) buildCreateView(cv *tree.CreateView, inScope *scope) (outScope
 		}
 	}
 
-	// We need the view query to include user-defined types as a 3-part name to
-	// properly detect cross-database type access.
-	fmtFlags := tree.FmtParsable | tree.FmtAlwaysQualifyUserDefinedTypeNames
-	if cv.Materialized {
-		// Don't include any AS OF SYSTEM TIME clauses here: our materialized view
-		// shouldn't get refreshed as of a particular time.
-		fmtFlags = fmtFlags | tree.FmtSkipAsOfSystemTimeClauses
-	}
 	outScope = b.allocScope()
 	outScope.expr = b.factory.ConstructCreateView(
 		&memo.CreateViewPrivate{
 			Syntax:    cv,
 			Schema:    schID,
-			ViewQuery: tree.AsStringWithFlags(cv.AsSource, fmtFlags),
+			ViewQuery: tree.AsStringWithFlags(cv.AsSource, tree.FmtParsable),
 			Columns:   p,
 			Deps:      b.schemaDeps,
 			TypeDeps:  b.schemaTypeDeps,

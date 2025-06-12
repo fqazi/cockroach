@@ -36,7 +36,9 @@ go_test(
         "private_endpoints_test.go",
         "watcher_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":acl"],
+    tags = ["ccl_test"],
     deps = [
         "//pkg/ccl/sqlproxyccl/tenant",
         "//pkg/ccl/sqlproxyccl/tenantdirsvr",
@@ -48,6 +50,7 @@ go_test(
         "//pkg/util/stop",
         "//pkg/util/timeutil",
         "@com_github_cockroachdb_errors//:errors",
+        "@com_github_google_btree//:btree",
         "@com_github_pires_go_proxyproto//:go-proxyproto",
         "@com_github_pires_go_proxyproto//tlvparse",
         "@com_github_stretchr_testify//require",

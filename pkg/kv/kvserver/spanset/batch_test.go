@@ -6,7 +6,6 @@
 package spanset_test
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
@@ -15,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/stretchr/testify/require"
 )
@@ -76,10 +74,8 @@ func TestReadWriterDeclareLockTable(t *testing.T) {
 					defer b.Close()
 					rw := fn(ss, b)
 
-					require.NoError(t, rw.MVCCIterate(context.Background(), ltStartKey, ltEndKey,
-						storage.MVCCKeyIterKind, storage.IterKeyTypePointsOnly, fs.UnknownReadCategory, nil))
-					require.Error(t, rw.MVCCIterate(context.Background(), ltEndKey, ltEndKey.Next(),
-						storage.MVCCKeyIterKind, storage.IterKeyTypePointsOnly, fs.UnknownReadCategory, nil))
+					require.NoError(t, rw.MVCCIterate(ltStartKey, ltEndKey, storage.MVCCKeyIterKind, storage.IterKeyTypePointsOnly, nil))
+					require.Error(t, rw.MVCCIterate(ltEndKey, ltEndKey.Next(), storage.MVCCKeyIterKind, storage.IterKeyTypePointsOnly, nil))
 
 					err := rw.PutUnversioned(ltStartKey, []byte("value"))
 					if str == lock.None {

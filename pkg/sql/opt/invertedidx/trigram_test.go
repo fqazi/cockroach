@@ -20,10 +20,9 @@ import (
 )
 
 func TestTryFilterTrigram(t *testing.T) {
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.NewTestingEvalContext(st)
-	evalCtx.SessionData().TrigramSimilarityThreshold = 0.3
 
 	tc := testcat.New()
 	if _, err := tc.ExecuteDDL(
@@ -91,7 +90,7 @@ func TestTryFilterTrigram(t *testing.T) {
 		// Equality queries.
 		{filters: "s = 'lkjsdlkj'", ok: true, unique: false},
 		{filters: "s = 'lkj'", ok: true, unique: true},
-		{filters: "s = 'lkj' OR s LIKE 'blah'", ok: true, unique: true},
+		{filters: "s = 'lkj' OR s LIKE 'blah'", ok: true, unique: false},
 	}
 
 	for _, tc := range testCases {

@@ -153,8 +153,7 @@ sql.schema.schema_changer_mode.legacy
 feature-usage
 CREATE SCHEMA a
 ----
-sql.schema.create_schema
-sql.schema.schema_changer_mode.declarative
+sql.schema.schema_changer_mode.legacy
 
 feature-usage
 CREATE INDEX ON t(b)
@@ -176,7 +175,6 @@ sql.schema.schema_changer_mode.legacy
 
 exec
 BEGIN;
-SET LOCAL autocommit_before_ddl = false;
 SELECT 1;
 DROP INDEX t_b_idx;
 SELECT 1/0;
@@ -187,10 +185,6 @@ feature-usage
 ROLLBACK;
 ----
 sql.schema.transaction.mixed_ddl_dml.failure
-
-exec
-SET autocommit_before_ddl = false;
-----
 
 exec
 BEGIN;
@@ -222,7 +216,3 @@ sql.schema.change_in_explicit_txn
 sql.schema.create_index
 sql.schema.schema_changer_mode.legacy
 sql.schema.transaction.ddl_only.success
-
-exec
-RESET autocommit_before_ddl;
-----

@@ -19,22 +19,18 @@ type Owner string
 
 // The allowable values of Owner.
 const (
-	OwnerCDC                Owner = `cdc`
-	OwnerDisasterRecovery   Owner = `disaster-recovery`
-	OwnerKV                 Owner = `kv`
-	OwnerAdmissionControl   Owner = `admission-control`
-	OwnerObservability      Owner = `obs-prs`
-	OwnerObservabilityIndia Owner = `obs-india-prs`
-	OwnerServer             Owner = `server`
-	OwnerSQLFoundations     Owner = `sql-foundations`
-	OwnerMigrations         Owner = `migrations`
-	OwnerProductSecurity    Owner = `product-security`
-	OwnerReleaseEng         Owner = `release-eng`
-	OwnerSQLQueries         Owner = `sql-queries`
-	OwnerStorage            Owner = `storage`
-	OwnerTestEng            Owner = `test-eng`
-	OwnerDevInf             Owner = `dev-inf`
-	OwnerFieldEng           Owner = `field-engineering`
+	OwnerCDC              Owner = `cdc`
+	OwnerDisasterRecovery Owner = `disaster-recovery`
+	OwnerKV               Owner = `kv`
+	OwnerAdmissionControl Owner = `admission-control`
+	OwnerObservability    Owner = `obs-prs`
+	OwnerServer           Owner = `server`
+	OwnerSQLFoundations   Owner = `sql-foundations`
+	OwnerMigrations       Owner = `migrations`
+	OwnerSQLQueries       Owner = `sql-queries`
+	OwnerStorage          Owner = `storage`
+	OwnerTestEng          Owner = `test-eng`
+	OwnerDevInf           Owner = `dev-inf`
 )
 
 // IsValid returns true if the owner is valid, i.e. it has a corresponding team

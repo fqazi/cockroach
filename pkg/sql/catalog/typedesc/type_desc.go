@@ -10,7 +10,7 @@ package typedesc
 import (
 	"bytes"
 	"context"
-	"slices"
+	"sort"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -257,11 +257,6 @@ func (desc *immutable) DescriptorType() catalog.DescriptorType {
 	return catalog.Type
 }
 
-// GetReplicatedPCRVersion is a part of the catalog.Descriptor
-func (desc *immutable) GetReplicatedPCRVersion() descpb.DescriptorVersion {
-	return desc.ReplicatedPCRVersion
-}
-
 // MaybeIncrementVersion implements the MutableDescriptor interface.
 func (desc *Mutable) MaybeIncrementVersion() {
 	// Already incremented, no-op.
@@ -444,6 +439,16 @@ func (desc *Mutable) SetName(name string) {
 	desc.Name = name
 }
 
+// EnumMembers is a sortable list of TypeDescriptor_EnumMember, sorted by the
+// physical representation.
+type EnumMembers []descpb.TypeDescriptor_EnumMember
+
+func (e EnumMembers) Len() int { return len(e) }
+func (e EnumMembers) Less(i, j int) bool {
+	return bytes.Compare(e[i].PhysicalRepresentation, e[j].PhysicalRepresentation) < 0
+}
+func (e EnumMembers) Swap(i, j int) { e[i], e[j] = e[j], e[i] }
+
 // ValidateSelf performs validation on the catalog.TypeDescriptor.
 func (desc *immutable) ValidateSelf(vea catalog.ValidationErrorAccumulator) {
 	// Validate local properties of the descriptor.
@@ -513,9 +518,7 @@ func (desc *immutable) ValidateSelf(vea catalog.ValidationErrorAccumulator) {
 // Returns true iff the enums are sorted.
 func (desc *immutable) validateEnumMembers(vea catalog.ValidationErrorAccumulator) (isSorted bool) {
 	// All of the enum members should be in sorted order.
-	isSorted = slices.IsSortedFunc(desc.EnumMembers, func(a, b descpb.TypeDescriptor_EnumMember) int {
-		return bytes.Compare(a.PhysicalRepresentation, b.PhysicalRepresentation)
-	})
+	isSorted = sort.IsSorted(EnumMembers(desc.EnumMembers))
 	if !isSorted {
 		vea.Report(errors.AssertionFailedf("enum members are not sorted %v", desc.EnumMembers))
 	}
@@ -555,9 +558,7 @@ func (desc *immutable) validateEnumMembers(vea catalog.ValidationErrorAccumulato
 
 // GetReferencedDescIDs returns the IDs of all descriptors referenced by
 // this descriptor, including itself.
-func (desc *immutable) GetReferencedDescIDs(
-	catalog.ValidationLevel,
-) (catalog.DescriptorIDSet, error) {
+func (desc *immutable) GetReferencedDescIDs() (catalog.DescriptorIDSet, error) {
 	ids := catalog.MakeDescriptorIDSet(desc.GetReferencingDescriptorIDs()...)
 	ids.Add(desc.GetParentID())
 	// TODO(richardjcai): Remove logic for keys.PublicSchemaID in 22.2.
@@ -706,12 +707,7 @@ func validateMultiRegion(
 		regionNames = append(regionNames, name)
 		return nil
 	})
-
-	// The system database can be configured to be SURVIVE REGION without enough
-	// regions. This would just mean that it will behave as SURVIVE ZONE until
-	// enough regions are added by the user.
-	if dbDesc.GetRegionConfig().SurvivalGoal == descpb.SurvivalGoal_REGION_FAILURE &&
-		dbDesc.GetID() != keys.SystemDatabaseID {
+	if dbDesc.GetRegionConfig().SurvivalGoal == descpb.SurvivalGoal_REGION_FAILURE {
 		if len(regionNames) < 3 {
 			vea.Report(
 				errors.AssertionFailedf(
@@ -757,12 +753,12 @@ func (desc *immutable) AsTypesT() *types.T {
 	case descpb.TypeDescriptor_ENUM, descpb.TypeDescriptor_MULTIREGION_ENUM:
 		return types.MakeEnum(catid.TypeIDToOID(desc.GetID()), catid.TypeIDToOID(desc.ArrayTypeID))
 	case descpb.TypeDescriptor_ALIAS:
-		return desc.Alias.CopyForHydrate()
+		return desc.Alias
 	case descpb.TypeDescriptor_COMPOSITE:
 		contents := make([]*types.T, len(desc.Composite.Elements))
 		labels := make([]string, len(desc.Composite.Elements))
 		for i, e := range desc.Composite.Elements {
-			contents[i] = e.ElementType.CopyForHydrate()
+			contents[i] = e.ElementType
 			labels[i] = e.ElementLabel
 		}
 		return types.NewCompositeType(
@@ -920,22 +916,6 @@ func (desc *immutable) ForEachUDTDependentForHydration(fn func(t *types.T) error
 		}
 	}
 	return nil
-}
-
-// MaybeRequiresTypeHydration implements the catalog.Descriptor interface.
-func (desc *immutable) MaybeRequiresTypeHydration() bool {
-	if desc.Alias != nil && catid.IsOIDUserDefined(desc.Alias.Oid()) {
-		return true
-	}
-	if desc.Composite == nil {
-		return false
-	}
-	for _, e := range desc.Composite.Elements {
-		if catid.IsOIDUserDefined(e.ElementType.Oid()) {
-			return true
-		}
-	}
-	return false
 }
 
 // GetIDClosure implements the TypeDescriptor interface.

@@ -29,7 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestParseDataDriven verifies that we can parse the supplied SQL and regenerate the SQL
+// TestParseDatadriven verifies that we can parse the supplied SQL and regenerate the SQL
 // string from the syntax tree.
 //
 // The follow commands are allowed:
@@ -48,32 +48,26 @@ import (
 //
 //     Parses a statement and expects an error. The error is printed as test
 //     output.
-func TestParseDataDriven(t *testing.T) {
+func TestParseDatadriven(t *testing.T) {
 	datadriven.Walk(t, datapathutils.TestDataPath(t), func(t *testing.T, path string) {
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
 			switch d.Cmd {
 			case "parse":
-				reparseWithoutLiterals := true
-				for _, arg := range d.CmdArgs {
-					if arg.Key == "no-parse-without-literals" {
-						reparseWithoutLiterals = false
-					}
-				}
-				return sqlutils.VerifyParseFormat(t, d.Input, d.Pos, sqlutils.SQL, reparseWithoutLiterals)
+				return sqlutils.VerifyParseFormat(t, d.Input, false /* plpgsql */)
 			case "parse-no-verify":
 				_, err := parser.Parse(d.Input)
 				if err != nil {
-					d.Fatalf(t, "%s\nunexpected error: %s", d.Pos, err)
+					d.Fatalf(t, "unexpected error: %s", err)
 				}
 				return ""
 			case "error":
 				_, err := parser.Parse(d.Input)
 				if err == nil {
-					d.Fatalf(t, "%s\nexpected error, found none", d.Pos)
+					d.Fatalf(t, "expected error, found none")
 				}
 				return sqlutils.VerifyParseError(err)
 			}
-			d.Fatalf(t, "%s\nunsupported command: %s", d.Pos, d.Cmd)
+			d.Fatalf(t, "unsupported command: %s", d.Cmd)
 			return ""
 		})
 	})
@@ -375,11 +369,13 @@ func TestUnimplementedSyntax(t *testing.T) {
 
 		{`COPY t FROM STDIN OIDS`, 41608, `oids`, ``},
 		{`COPY t FROM STDIN FREEZE`, 41608, `freeze`, ``},
+		{`COPY t FROM STDIN ENCODING 'utf-8'`, 41608, `encoding`, ``},
 		{`COPY t FROM STDIN FORCE QUOTE *`, 41608, `quote`, ``},
 		{`COPY t FROM STDIN FORCE NULL *`, 41608, `force_null`, ``},
 		{`COPY t FROM STDIN FORCE NOT NULL *`, 41608, `force_not_null`, ``},
 		{`COPY t FROM STDIN WITH (OIDS)`, 41608, `oids`, ``},
 		{`COPY t FROM STDIN (FREEZE)`, 41608, `freeze`, ``},
+		{`COPY t FROM STDIN WITH (ESCAPE ',', ENCODING 'utf-8')`, 41608, `encoding`, ``},
 		{`COPY t FROM STDIN WITH (FORCE_QUOTE) *`, 41608, `quote`, ``},
 		{`COPY t FROM STDIN (FORCE_NULL) *`, 41608, `force_null`, ``},
 		{`COPY t FROM STDIN (HEADER, FORCE_NOT_NULL) *`, 41608, `force_not_null`, ``},
@@ -404,6 +400,7 @@ func TestUnimplementedSyntax(t *testing.T) {
 		{`CREATE SUBSCRIPTION a`, 0, `create subscription`, ``},
 		{`CREATE TABLESPACE a`, 54113, `create tablespace`, ``},
 		{`CREATE TEXT SEARCH a`, 7821, `create text`, ``},
+		{`CREATE TRIGGER a`, 28296, `create`, ``},
 
 		{`DROP ACCESS METHOD a`, 0, `drop access method`, ``},
 		{`DROP AGGREGATE a`, 74775, `drop aggregate`, ``},
@@ -422,6 +419,7 @@ func TestUnimplementedSyntax(t *testing.T) {
 		{`DROP SERVER a`, 0, `drop server`, ``},
 		{`DROP SUBSCRIPTION a`, 0, `drop subscription`, ``},
 		{`DROP TEXT SEARCH a`, 7821, `drop text`, ``},
+		{`DROP TRIGGER a`, 28296, `drop`, ``},
 
 		{`DISCARD PLANS`, 0, `discard plans`, ``},
 
@@ -509,6 +507,7 @@ func TestUnimplementedSyntax(t *testing.T) {
 		{`CREATE TABLE a(b BOX)`, 21286, `box`, ``},
 		{`CREATE TABLE a(b CIDR)`, 18846, `cidr`, ``},
 		{`CREATE TABLE a(b CIRCLE)`, 21286, `circle`, ``},
+		{`CREATE TABLE a(b JSONPATH)`, 22513, `jsonpath`, ``},
 		{`CREATE TABLE a(b LINE)`, 21286, `line`, ``},
 		{`CREATE TABLE a(b LSEG)`, 21286, `lseg`, ``},
 		{`CREATE TABLE a(b MACADDR)`, 45813, `macaddr`, ``},
@@ -634,27 +633,6 @@ func TestParseSQL(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestParse_RetainComments(t *testing.T) {
-	sql := `SELECT 1 -- my comment`
-	var p parser.Parser
-
-	testutils.RunTrueAndFalse(t, "RetainComments", func(t *testing.T, retainComments bool) {
-		options := parser.DefaultParseOptions
-		if retainComments {
-			options = options.RetainComments()
-		}
-		stmts, err := p.ParseWithOptions(sql, options)
-		require.NoError(t, err)
-		require.Len(t, stmts, 1)
-		if retainComments {
-			require.Len(t, stmts[0].Comments, 1)
-			require.Equal(t, `-- my comment`, stmts[0].Comments[0])
-		} else {
-			require.Len(t, stmts[0].Comments, 0)
-		}
-	})
 }
 
 // TestParseNumPlaceholders verifies that Statement.NumPlaceholders is set

@@ -32,6 +32,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// WaitForNoRunningSchemaChanges schema changes waits for no schema changes
+// to exist.
+func WaitForNoRunningSchemaChanges(t *testing.T, tdb *sqlutils.SQLRunner) {
+	tdb.CheckQueryResultsRetry(t, `
+SELECT count(*) 
+FROM [SHOW JOBS] 
+WHERE job_type = 'SCHEMA CHANGE' 
+  AND status NOT IN ('succeeded', 'failed', 'aborted')`,
+		[][]string{{"0"}})
+}
+
 // ReadDescriptorsFromDB reads the set of descriptors from tdb.
 func ReadDescriptorsFromDB(
 	ctx context.Context, t *testing.T, tdb *sqlutils.SQLRunner,
@@ -58,6 +69,9 @@ ORDER BY id`)
 			t.Fatal(err)
 		}
 		desc := b.BuildCreatedMutable()
+		if desc.GetID() == keys.SystemDatabaseID || desc.GetParentID() == keys.SystemDatabaseID {
+			continue
+		}
 
 		// Redact time-dependent fields.
 		switch t := desc.(type) {
@@ -153,9 +167,7 @@ func ReadCurrentDatabaseFromDB(t *testing.T, tdb *sqlutils.SQLRunner) (db string
 // ReadSessionDataFromDB reads the session data out of tdb and then
 // allows the caller to modify it with the passed function.
 func ReadSessionDataFromDB(
-	t *testing.T,
-	tdb *sqlutils.SQLRunner,
-	override func(sd *sessiondata.SessionData, localData sessiondatapb.LocalOnlySessionData),
+	t *testing.T, tdb *sqlutils.SQLRunner, override func(sd *sessiondata.SessionData),
 ) sessiondata.SessionData {
 	hexSessionData := tdb.QueryStr(t, `SELECT encode(crdb_internal.serialize_session(), 'hex')`)
 	if len(hexSessionData) == 0 {
@@ -175,7 +187,7 @@ func ReadSessionDataFromDB(
 		t.Fatal(err)
 	}
 	sd.SessionData = m.SessionData
-	override(sd, m.LocalOnlySessionData)
+	override(sd)
 	return *sd
 }
 

@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/ring"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/lib/pq/oid"
 )
@@ -135,11 +134,11 @@ type ExecStmt struct {
 
 	// TimeReceived is the time at which the exec message was received
 	// from the client. Used to compute the service latency.
-	TimeReceived crtime.Mono
+	TimeReceived time.Time
 	// ParseStart/ParseEnd are the timing info for parsing of the query. Used for
 	// stats reporting.
-	ParseStart crtime.Mono
-	ParseEnd   crtime.Mono
+	ParseStart time.Time
+	ParseEnd   time.Time
 
 	// LastInBatch indicates if this command contains the last query in a
 	// simple protocol Query message that contains a batch of 1 or more queries.
@@ -182,7 +181,7 @@ type ExecPortal struct {
 	Limit int
 	// TimeReceived is the time at which the exec message was received
 	// from the client. Used to compute the service latency.
-	TimeReceived crtime.Mono
+	TimeReceived time.Time
 	// FollowedBySync is true if the next command after this is a Sync. This is
 	// used to enable the 1PC txn fast path in the extended protocol.
 	FollowedBySync bool
@@ -214,8 +213,8 @@ type PrepareStmt struct {
 	// RawTypeHints is the representation of type hints exactly as specified by
 	// the client.
 	RawTypeHints []oid.Oid
-	ParseStart   crtime.Mono
-	ParseEnd     crtime.Mono
+	ParseStart   time.Time
+	ParseEnd     time.Time
 }
 
 // command implements the Command interface.
@@ -378,11 +377,11 @@ type CopyIn struct {
 	}
 	// TimeReceived is the time at which the message was received
 	// from the client. Used to compute the service latency.
-	TimeReceived crtime.Mono
+	TimeReceived time.Time
 	// ParseStart/ParseEnd are the timing info for parsing of the query. Used for
 	// stats reporting.
-	ParseStart crtime.Mono
-	ParseEnd   crtime.Mono
+	ParseStart time.Time
+	ParseEnd   time.Time
 }
 
 // command implements the Command interface.
@@ -407,11 +406,11 @@ type CopyOut struct {
 	Stmt       *tree.CopyTo
 	// TimeReceived is the time at which the message was received
 	// from the client. Used to compute the service latency.
-	TimeReceived crtime.Mono
+	TimeReceived time.Time
 	// ParseStart/ParseEnd are the timing info for parsing of the query. Used for
 	// stats reporting.
-	ParseStart crtime.Mono
-	ParseEnd   crtime.Mono
+	ParseStart time.Time
+	ParseEnd   time.Time
 }
 
 // command implements the Command interface.
@@ -469,14 +468,9 @@ func (s SendError) String() string {
 var _ Command = SendError{}
 
 // NewStmtBuf creates a StmtBuf.
-// - toReserve, if positive, indicates the initial capacity of the command
-// buffer.
-func NewStmtBuf(toReserve int) *StmtBuf {
+func NewStmtBuf() *StmtBuf {
 	var buf StmtBuf
 	buf.Init()
-	if toReserve > 0 {
-		buf.mu.data.Reserve(toReserve)
-	}
 	return &buf
 }
 
@@ -838,9 +832,8 @@ type RestrictedCommandResult interface {
 	// This gets flushed only when the CommandResult is closed.
 	BufferNotice(notice pgnotice.Notice)
 
-	// SendNotice sends a notice to the client, which can optionally be flushed
-	// immediately.
-	SendNotice(ctx context.Context, notice pgnotice.Notice, immediateFlush bool) error
+	// SendNotice immediately flushes a notice to the client.
+	SendNotice(ctx context.Context, notice pgnotice.Notice) error
 
 	// SetColumns informs the client about the schema of the result. The columns
 	// can be nil.
@@ -852,10 +845,6 @@ type RestrictedCommandResult interface {
 	// result, from the original one set when the result was created trough
 	// ClientComm.createStatementResult.
 	ResetStmtType(stmt tree.Statement)
-
-	// GetFormatCode returns the format code that will be used to serialize the
-	// data in the provided column when sending messages to the client.
-	GetFormatCode(colIdx int) (pgwirebase.FormatCode, error)
 
 	// AddRow accumulates a result row.
 	//
@@ -1115,9 +1104,7 @@ func (r *streamingCommandResult) BufferNotice(notice pgnotice.Notice) {
 }
 
 // SendNotice is part of the RestrictedCommandResult interface.
-func (r *streamingCommandResult) SendNotice(
-	ctx context.Context, notice pgnotice.Notice, immediateFlush bool,
-) error {
+func (r *streamingCommandResult) SendNotice(ctx context.Context, notice pgnotice.Notice) error {
 	// Unimplemented: the internal executor does not support notices.
 	return nil
 }
@@ -1126,13 +1113,6 @@ func (r *streamingCommandResult) SendNotice(
 func (r *streamingCommandResult) ResetStmtType(stmt tree.Statement) {
 	// This command result doesn't care about the stmt type since it doesn't
 	// produce pgwire messages.
-}
-
-// GetFormatCode is part of the sql.RestrictedCommandResult interface.
-func (r *streamingCommandResult) GetFormatCode(colIdx int) (pgwirebase.FormatCode, error) {
-	// Rows aren't serialized in the streamingCommandResult, so this format code
-	// doesn't really matter - return the default.
-	return pgwirebase.FormatText, nil
 }
 
 // AddRow is part of the RestrictedCommandResult interface.

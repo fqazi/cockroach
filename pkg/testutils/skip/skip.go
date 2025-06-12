@@ -8,7 +8,6 @@ package skip
 import (
 	"flag"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -16,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic/metamorphicutil"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 )
 
@@ -86,14 +84,6 @@ func UnderRace(t SkippableTest, args ...interface{}) {
 	}
 }
 
-// UnlessUnderRace skips this test if the race detector is not enabled.
-func UnlessUnderRace(t SkippableTest, args ...interface{}) {
-	t.Helper()
-	if !util.RaceEnabled {
-		maybeSkip(t, "disabled unless under race", args...)
-	}
-}
-
 // UnderRaceWithIssue skips this test if the race detector is enabled,
 // logging the given issue ID as the reason.
 func UnderRaceWithIssue(t SkippableTest, githubIssueID int, args ...interface{}) {
@@ -140,11 +130,20 @@ func UnderStressWithIssue(t SkippableTest, githubIssueID int, args ...interface{
 	}
 }
 
+// UnderStressRace skips this test during stressrace runs, which are tests
+// run under stress with the -race flag.
+func UnderStressRace(t SkippableTest, args ...interface{}) {
+	t.Helper()
+	if Stress() && util.RaceEnabled {
+		maybeSkip(t, "disabled under stressrace", args...)
+	}
+}
+
 // UnderMetamorphic skips this test during metamorphic runs, which are tests
 // run with the metamorphic build tag.
 func UnderMetamorphic(t SkippableTest, args ...interface{}) {
 	t.Helper()
-	if metamorphicutil.IsMetamorphicBuild {
+	if util.IsMetamorphicBuild() {
 		maybeSkip(t, "disabled under metamorphic", args...)
 	}
 }
@@ -154,7 +153,7 @@ func UnderMetamorphic(t SkippableTest, args ...interface{}) {
 // reason.
 func UnderMetamorphicWithIssue(t SkippableTest, githubIssueID int, args ...interface{}) {
 	t.Helper()
-	if metamorphicutil.IsMetamorphicBuild {
+	if util.IsMetamorphicBuild() {
 		maybeSkip(t, withIssue("disabled under metamorphic", githubIssueID), args...)
 	}
 }
@@ -202,16 +201,6 @@ func UnderBench() bool {
 	// test executable with `-test.bench 1`.
 	f := flag.Lookup("test.bench")
 	return f != nil && f.Value.String() != ""
-}
-
-// UnderRemoteExecution skips the given test under remote test execution.
-func UnderRemoteExecutionWithIssue(t SkippableTest, githubIssueID int, args ...interface{}) {
-	t.Helper()
-	isRemote := os.Getenv("REMOTE_EXEC")
-	if len(isRemote) > 0 {
-		maybeSkip(t, withIssue("disabled under race", githubIssueID), args...)
-	}
-
 }
 
 func testConfig() string {

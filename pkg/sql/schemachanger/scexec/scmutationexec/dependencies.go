@@ -9,7 +9,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
@@ -78,29 +77,9 @@ type ImmediateMutationStateUpdater interface {
 	// InitSequence initializes a sequence.
 	InitSequence(id descpb.ID, startVal int64)
 
-	// UpdateZoneConfig upserts a zone config.
-	UpdateZoneConfig(id descpb.ID, zc *zonepb.ZoneConfig)
-
-	// UpdateSubzoneConfig upserts a subzone config.
-	UpdateSubzoneConfig(tableID descpb.ID, subzone zonepb.Subzone, subzoneSpans []zonepb.SubzoneSpan, idxRefToDelete int32)
-
-	// DeleteZoneConfig deletes the zone config for the given ID.
-	DeleteZoneConfig(id descpb.ID)
-
-	// DeleteSubzoneConfig deletes the given subzone config for the given table
-	// ID.
-	DeleteSubzoneConfig(tableID descpb.ID, subzone zonepb.Subzone, subzoneSpans []zonepb.SubzoneSpan)
-
 	// Reset schedules a reset of the in-txn catalog state
 	// to undo the modifications from earlier stages.
 	Reset()
-
-	// AddTemporarySchema adds the temporary schema in the current session.
-	AddTemporarySchema(id descpb.ID)
-
-	// AddTemporarySchemaParent registers the parent database for an added
-	// temporary schema.
-	AddTemporarySchemaParent(id descpb.ID, databaseID descpb.ID)
 }
 
 type DeferredMutationStateUpdater interface {
@@ -137,7 +116,7 @@ type DeferredMutationStateUpdater interface {
 	) error
 
 	// DeleteSchedule deletes a scheduled job.
-	DeleteSchedule(scheduleID jobspb.ScheduleID)
+	DeleteSchedule(scheduleID int64)
 
 	// RefreshStats refresh stats for a given descriptor.
 	RefreshStats(id descpb.ID)

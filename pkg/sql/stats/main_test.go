@@ -19,15 +19,15 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 )
 
-func init() {
-	stats.RandType = randgen.RandType
-	stats.RandDatum = randgen.RandDatum
-}
-
 func TestMain(m *testing.M) {
 	securityassets.SetLoader(securitytest.EmbeddedAssets)
 	randutil.SeedForTests()
 	serverutils.InitTestServerFactory(server.TestServerFactory)
 	serverutils.InitTestClusterFactory(testcluster.TestClusterFactory)
 	os.Exit(m.Run())
+}
+
+func init() {
+	stats.RandType = randgen.RandType
+	stats.RandDatum = randgen.RandDatum
 }

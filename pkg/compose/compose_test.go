@@ -3,6 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+// "make test" would normally test this file, but it should only be tested
+// during nightlies or when invoked by "make compose".
+
+//go:build compose
+// +build compose
+
 // Package compose contains nightly tests that need docker-compose.
 package compose
 
@@ -18,7 +24,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/build/bazel"
-	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 )
 
@@ -49,9 +54,6 @@ func copyBin(src, dst string) error {
 }
 
 func TestComposeCompare(t *testing.T) {
-	if os.Getenv("COCKROACH_RUN_COMPOSE") == "" {
-		skip.IgnoreLint(t, "COCKROACH_RUN_COMPOSE not set")
-	}
 	var cockroachBin, libGeosDir, compareDir, dockerComposeYml string
 	if bazel.BuiltWithBazel() {
 		var err error
@@ -151,7 +153,6 @@ func TestComposeCompare(t *testing.T) {
 		fmt.Sprintf("ARTIFACTS=%s", *flagArtifacts),
 		fmt.Sprintf("COCKROACH_DEV_LICENSE=%s", envutil.EnvOrDefaultString("COCKROACH_DEV_LICENSE", "")),
 		fmt.Sprintf("PATH=%s", os.Getenv("PATH")),
-		"COCKROACH_RUN_COMPOSE_COMPARE=true",
 	}
 	t.Logf("running: %s", cmd)
 	out, err := cmd.CombinedOutput()

@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/settingswatcher"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -26,10 +25,6 @@ import (
 func TestVersionGuard(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	if clusterversion.MinSupported == clusterversion.PreviousRelease {
-		skip.IgnoreLint(t, "MinSupported = PreviousRelease")
-	}
 
 	ctx := context.Background()
 	srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
@@ -44,9 +39,9 @@ func TestVersionGuard(t *testing.T) {
 		checkVersions   map[clusterversion.Key]bool
 	}
 
-	initialVersion := clusterversion.MinSupported
-	startVersion := clusterversion.MinSupported + 1
-	maxVersion := clusterversion.PreviousRelease
+	initialVersion := clusterversion.V22_2
+	startVersion := clusterversion.V23_1Start
+	maxVersion := clusterversion.V23_1
 
 	tests := []testCase{
 		{
@@ -109,9 +104,9 @@ func TestVersionGuard(t *testing.T) {
 			storageVersion:  &initialVersion,
 			settingsVersion: maxVersion,
 			checkVersions: map[clusterversion.Key]bool{
-				initialVersion: true,
-				startVersion:   true,
-				maxVersion:     true,
+				initialVersion:            true,
+				maxVersion:                true,
+				clusterversion.V23_1Start: true,
 			},
 		},
 	}
@@ -119,18 +114,18 @@ func TestVersionGuard(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			settings := cluster.MakeTestingClusterSettingsWithVersions(
-				maxVersion.Version(),
-				initialVersion.Version(),
+				clusterversion.ByKey(maxVersion),
+				clusterversion.ByKey(initialVersion),
 				false,
 			)
-			require.NoError(t, clusterversion.Initialize(ctx, test.settingsVersion.Version(), &settings.SV))
-			settingVersion := clusterversion.ClusterVersion{Version: test.settingsVersion.Version()}
+			require.NoError(t, clusterversion.Initialize(ctx, clusterversion.ByKey(test.settingsVersion), &settings.SV))
+			settingVersion := clusterversion.ClusterVersion{Version: clusterversion.ByKey(test.settingsVersion)}
 			require.NoError(t, settings.Version.SetActiveVersion(ctx, settingVersion))
 
 			if test.storageVersion == nil {
 				tDB.Exec(t, `DELETE FROM system.settings WHERE name = 'version'`)
 			} else {
-				storageVersion := clusterversion.ClusterVersion{Version: test.storageVersion.Version()}
+				storageVersion := clusterversion.ClusterVersion{Version: clusterversion.ByKey(*test.storageVersion)}
 				marshaledVersion, err := protoutil.Marshal(&storageVersion)
 				require.NoError(t, err)
 				tDB.Exec(t, `

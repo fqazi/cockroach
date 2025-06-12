@@ -16,11 +16,6 @@ type ZoneSpecifier struct {
 
 	// Partition is only respected when Table is set.
 	Partition Name
-
-	// StarIndex is true if the special `table@*` specifier is used. It indicates
-	// that the zone configuration should be applied across all of a table's
-	// indexes. (e.g., ALTER PARTITION ... OF INDEX <tablename>@*)
-	StarIndex bool
 }
 
 // TelemetryName returns a name fitting for telemetry purposes.
@@ -51,7 +46,7 @@ func (node ZoneSpecifier) TargetsTable() bool {
 
 // TargetsIndex returns whether the zone specifier targets an index.
 func (node ZoneSpecifier) TargetsIndex() bool {
-	return node.TargetsTable() && (node.TableOrIndex.Index != "" || node.StarIndex)
+	return node.TargetsTable() && node.TableOrIndex.Index != ""
 }
 
 // TargetsPartition returns whether the zone specifier targets a partition.
@@ -79,9 +74,6 @@ func (node *ZoneSpecifier) Format(ctx *FmtCtx) {
 			ctx.WriteString("TABLE ")
 		}
 		ctx.FormatNode(&node.TableOrIndex)
-		if node.StarIndex {
-			ctx.WriteString("@*")
-		}
 	}
 }
 
@@ -107,6 +99,9 @@ func (node *ShowZoneConfig) Format(ctx *FmtCtx) {
 // statement.
 type SetZoneConfig struct {
 	ZoneSpecifier
+	// AllIndexes indicates that the zone configuration should be applied across
+	// all of a tables indexes. (ALTER PARTITION ... OF INDEX <tablename>@*)
+	AllIndexes bool
 	ZoneConfigSettings
 }
 
@@ -118,15 +113,11 @@ func (node *SetZoneConfig) Format(ctx *FmtCtx) {
 	node.ZoneConfigSettings.Format(ctx)
 }
 
-// modifiesSchema implements the canModifySchema interface.
-func (*SetZoneConfig) modifiesSchema() bool { return true }
-
 // ZoneConfigSettings represents info needed for zone config setting.
 type ZoneConfigSettings struct {
-	Discard    bool      // True for `CONFIGURE ZONE DISCARD` stmt
-	SetDefault bool      // True for `CONFIGURE ZONE USING DEFAULT` stmt
-	YAMLConfig Expr      // (Deprecated) Non-empty for `CONFIGURE ZONE = '<...yaml...>'` or `CONFIGURE ZONE = NULL` stmt
-	Options    KVOptions // Non-empty for `CONFIGURE ZONE USING var_set_list` stmt
+	SetDefault bool
+	YAMLConfig Expr
+	Options    KVOptions
 }
 
 // Format implements the NodeFormatter interface.

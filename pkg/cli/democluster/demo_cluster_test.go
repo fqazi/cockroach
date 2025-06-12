@@ -17,13 +17,12 @@ import (
 	_ "github.com/cockroachdb/cockroach/pkg/ccl/kvccl/kvtenantccl"
 	"github.com/cockroachdb/cockroach/pkg/cli/clisqlclient"
 	"github.com/cockroachdb/cockroach/pkg/cli/clisqlexec"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/securityassets"
 	"github.com/cockroachdb/cockroach/pkg/security/securitytest"
 	"github.com/cockroachdb/cockroach/pkg/server"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
+	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils/regionlatency"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -50,7 +49,7 @@ func TestTestServerArgsForTransientCluster(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	stickyVFSRegistry := fs.NewStickyRegistry()
+	stickyVFSRegistry := server.NewStickyVFSRegistry()
 
 	testCases := []struct {
 		serverIdx         int
@@ -66,8 +65,7 @@ func TestTestServerArgsForTransientCluster(t *testing.T) {
 			sqlPoolMemorySize: 2 << 10,
 			cacheSize:         1 << 10,
 			expected: base.TestServerArgs{
-				DefaultTenantName:             "demoapp",
-				DefaultTestTenant:             base.TestControlsTenantsExplicitly,
+				DefaultTestTenant:             base.TODOTestTenantDisabled,
 				PartOfCluster:                 true,
 				JoinAddr:                      "127.0.0.1",
 				DisableTLSForHTTP:             true,
@@ -85,7 +83,6 @@ func TestTestServerArgsForTransientCluster(t *testing.T) {
 						StickyVFSRegistry: stickyVFSRegistry,
 					},
 				},
-				ExternalIODir: "nodelocal/n1",
 			},
 		},
 		{
@@ -94,8 +91,7 @@ func TestTestServerArgsForTransientCluster(t *testing.T) {
 			sqlPoolMemorySize: 4 << 10,
 			cacheSize:         4 << 10,
 			expected: base.TestServerArgs{
-				DefaultTenantName:             "demoapp",
-				DefaultTestTenant:             base.TestControlsTenantsExplicitly,
+				DefaultTestTenant:             base.TODOTestTenantDisabled,
 				PartOfCluster:                 true,
 				JoinAddr:                      "127.0.0.1",
 				Addr:                          "127.0.0.1:1336",
@@ -113,7 +109,6 @@ func TestTestServerArgsForTransientCluster(t *testing.T) {
 						StickyVFSRegistry: stickyVFSRegistry,
 					},
 				},
-				ExternalIODir: "nodelocal/n3",
 			},
 		},
 	}
@@ -178,7 +173,7 @@ func TestTransientClusterSimulateLatencies(t *testing.T) {
 		demoCtx:           demoCtx,
 		stopper:           stop.NewStopper(),
 		demoDir:           certsDir,
-		stickyVFSRegistry: fs.NewStickyRegistry(),
+		stickyVFSRegistry: server.NewStickyVFSRegistry(),
 		infoLog:           log.Infof,
 		warnLog:           log.Warningf,
 		shoutLog:          log.Ops.Shoutf,
@@ -290,7 +285,7 @@ func TestTransientClusterMultitenant(t *testing.T) {
 		demoCtx:           demoCtx,
 		stopper:           stop.NewStopper(),
 		demoDir:           certsDir,
-		stickyVFSRegistry: fs.NewStickyRegistry(),
+		stickyVFSRegistry: server.NewStickyVFSRegistry(),
 		infoLog:           log.Infof,
 		warnLog:           log.Warningf,
 		shoutLog:          log.Ops.Shoutf,
@@ -310,7 +305,7 @@ func TestTransientClusterMultitenant(t *testing.T) {
 	defer cancel()
 
 	// Ensure CREATE TABLE below works properly.
-	sqlclustersettings.RestrictAccessToSystemInterface.Override(ctx, &c.firstServer.SystemLayer().ClusterSettings().SV, false)
+	sql.RestrictAccessToSystemInterface.Override(ctx, &c.firstServer.SystemLayer().ClusterSettings().SV, false)
 
 	testutils.RunTrueAndFalse(t, "forSecondaryTenant", func(t *testing.T, forSecondaryTenant bool) {
 		url, err := c.getNetworkURLForServer(ctx, 0,
@@ -354,7 +349,7 @@ func TestTenantCapabilities(t *testing.T) {
 		demoCtx:           demoCtx,
 		stopper:           stop.NewStopper(),
 		demoDir:           certsDir,
-		stickyVFSRegistry: fs.NewStickyRegistry(),
+		stickyVFSRegistry: server.NewStickyVFSRegistry(),
 		infoLog:           log.Infof,
 		warnLog:           log.Warningf,
 		shoutLog:          log.Ops.Shoutf,
@@ -403,12 +398,12 @@ func TestTenantCapabilities(t *testing.T) {
 	}
 
 	var expectedRows [][]string
-	for _, cap := range tenantcapabilitiespb.IDs {
+	for _, cap := range tenantcapabilities.IDs {
 		capValue := `true`
-		if cap == tenantcapabilitiespb.TenantSpanConfigBounds {
+		if cap == tenantcapabilities.TenantSpanConfigBounds {
 			capValue = `{}`
 		}
-		expectedRows = append(expectedRows, []string{`3`, demoTenantName, `ready`, `shared`, cap.String(), capValue})
+		expectedRows = append(expectedRows, []string{`2`, demoTenantName, `ready`, `shared`, cap.String(), capValue})
 	}
 	if !reflect.DeepEqual(expectedRows, rows) {
 		t.Fatalf("expected:\n%v\ngot:\n%v", expectedRows, rows)

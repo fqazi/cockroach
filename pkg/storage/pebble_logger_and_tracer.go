@@ -27,10 +27,6 @@ func (l pebbleLogger) Fatalf(format string, args ...interface{}) {
 	log.Storage.FatalfDepth(l.ctx, l.depth, format, args...)
 }
 
-func (l pebbleLogger) Errorf(format string, args ...interface{}) {
-	log.Storage.ErrorfDepth(l.ctx, l.depth, format, args...)
-}
-
 // pebble.LoggerAndTracer does not expose verbosity levels in its logging
 // interface, and Pebble logs go to a separate STORAGE channel.
 //
@@ -41,9 +37,9 @@ func (l pebbleLogger) Errorf(format string, args ...interface{}) {
 const eventAlsoLogVerbosityLevel = 2
 
 func (l pebbleLogger) Eventf(ctx context.Context, format string, args ...interface{}) {
-	log.VEventfDepth(ctx, l.depth, eventAlsoLogVerbosityLevel, format, args...)
+	log.VEventf(ctx, eventAlsoLogVerbosityLevel, format, args...)
 }
 
 func (l pebbleLogger) IsTracingEnabled(ctx context.Context) bool {
-	return log.HasSpan(ctx) || log.ExpensiveLogEnabledVDepth(ctx, l.depth, eventAlsoLogVerbosityLevel)
+	return log.HasSpanOrEvent(ctx) || log.ExpensiveLogEnabled(ctx, eventAlsoLogVerbosityLevel)
 }

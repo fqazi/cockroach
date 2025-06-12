@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -29,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/limit"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/stretchr/testify/require"
 )
@@ -49,19 +47,19 @@ func TestDuplicateHandling(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 
-	mem := mon.NewUnlimitedMonitor(ctx, mon.Options{Name: mon.MakeName("lots")})
+	mem := mon.NewUnlimitedMonitor(ctx, "lots", mon.MemoryResource, nil, nil, 0, nil)
 	reqs := limit.MakeConcurrentRequestLimiter("reqs", 1000)
 	s, _, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
 	defer s.Stopper().Stop(ctx)
 
-	expectRevisionCount := func(startKey roachpb.Key, endKey roachpb.Key, count int, exportStartTime hlc.Timestamp) {
+	expectRevisionCount := func(startKey roachpb.Key, endKey roachpb.Key, count int) {
 		req := &kvpb.ExportRequest{
 			RequestHeader: kvpb.RequestHeader{
 				Key:    startKey,
 				EndKey: endKey,
 			},
 			MVCCFilter: kvpb.MVCCFilter_All,
-			StartTime:  exportStartTime,
+			StartTime:  hlc.Timestamp{},
 		}
 		header := kvpb.Header{Timestamp: s.Clock().Now()}
 		resp, err := kv.SendWrappedWith(ctx,
@@ -89,20 +87,18 @@ func TestDuplicateHandling(t *testing.T) {
 		require.Equal(t, count, keyCount)
 	}
 
-	// Set a start time that's well within the gc threshold.
-	tsStart := timeutil.Now().Add(-time.Minute).UnixNano()
+	tsStart := 1000
 	keyCount := 10
 	value := storageutils.StringValueRaw("value")
 
-	type keyBuilder func(i int, ts int64) storage.MVCCKey
+	type keyBuilder func(i int, ts int) storage.MVCCKey
 
 	type testCase struct {
-		name            string
-		skipDuplicates  bool
-		ingestAll       bool
-		addKeys         func(*testing.T, *bulk.SSTBatcher, keyBuilder) storage.MVCCKey
-		expectedCount   int
-		exportStartTime hlc.Timestamp
+		name           string
+		skipDuplicates bool
+		ingestAll      bool
+		addKeys        func(*testing.T, *bulk.SSTBatcher, keyBuilder) storage.MVCCKey
+		expectedCount  int
 	}
 	testCases := []testCase{
 		{
@@ -121,9 +117,6 @@ func TestDuplicateHandling(t *testing.T) {
 		{
 			name:      "ingestAll does not error on key-value matches at different timestamps",
 			ingestAll: true,
-			// Set the export startTime to ensure all revisions are read, or fail if
-			// the gc threshold has advance past the start time
-			exportStartTime: hlc.Timestamp{WallTime: tsStart - 1},
 			addKeys: func(t *testing.T, b *bulk.SSTBatcher, k keyBuilder) storage.MVCCKey {
 				for i := 0; i < keyCount; i++ {
 					require.NoError(t, b.AddMVCCKey(ctx, k(i+1, tsStart+1), value))
@@ -136,9 +129,6 @@ func TestDuplicateHandling(t *testing.T) {
 		{
 			name:      "ingestAll does not error on key matches at different timestamps",
 			ingestAll: true,
-			// Set the export startTime to ensure all revisions are read, or fail if
-			// the gc threshold has advance past the start time
-			exportStartTime: hlc.Timestamp{WallTime: tsStart - 1},
 			addKeys: func(t *testing.T, b *bulk.SSTBatcher, k keyBuilder) storage.MVCCKey {
 				for i := 0; i < keyCount; i++ {
 					require.NoError(t, b.AddMVCCKey(ctx, k(i+1, tsStart+1), value))
@@ -207,13 +197,13 @@ func TestDuplicateHandling(t *testing.T) {
 				tc.skipDuplicates, tc.ingestAll, mem.MakeConcurrentBoundAccount(), reqs)
 			require.NoError(t, err)
 			defer b.Close(ctx)
-			k := func(i int, ts int64) storage.MVCCKey {
-				return storageutils.PointKey(fmt.Sprintf("bulk-test-%s-%04d", tc.name, i+1), int(ts))
+			k := func(i int, ts int) storage.MVCCKey {
+				return storageutils.PointKey(fmt.Sprintf("bulk-test-%s-%04d", tc.name, i+1), ts)
 			}
 			endKey := tc.addKeys(t, b, k)
 			if tc.expectedCount > 0 {
 				require.NoError(t, b.Flush(ctx))
-				expectRevisionCount(k(0, tsStart).Key, endKey.Key, tc.expectedCount, tc.exportStartTime)
+				expectRevisionCount(k(0, tsStart).Key, endKey.Key, tc.expectedCount)
 			}
 		})
 	}
@@ -299,7 +289,7 @@ func runTestImport(t *testing.T, batchSizeValue int64) {
 			for _, k := range []int{0, split1} {
 				ent, err := ds.RangeDescriptorCache().Lookup(ctx, keys.MustAddr(key(k)))
 				require.NoError(t, err)
-				mockCache.Insert(ctx, ent)
+				mockCache.Insert(ctx, roachpb.RangeInfo{Desc: *ent.Desc()})
 			}
 
 			t.Logf("splitting at %s", key(split2))
@@ -310,11 +300,10 @@ func runTestImport(t *testing.T, batchSizeValue int64) {
 			))
 
 			ts := hlc.Timestamp{WallTime: 100}
-			mem := mon.NewUnlimitedMonitor(ctx, mon.Options{Name: mon.MakeName("lots")})
+			mem := mon.NewUnlimitedMonitor(ctx, "lots", mon.MemoryResource, nil, nil, 0, nil)
 			reqs := limit.MakeConcurrentRequestLimiter("reqs", 1000)
 			b, err := bulk.MakeBulkAdder(
-				ctx, kvDB, mockCache, s.ClusterSettings(), ts,
-				kvserverbase.BulkAdderOptions{MaxBufferSize: batchSize}, mem, reqs,
+				ctx, kvDB, mockCache, s.ClusterSettings(), ts, kvserverbase.BulkAdderOptions{MaxBufferSize: batchSize}, mem, reqs,
 			)
 			require.NoError(t, err)
 
@@ -366,78 +355,4 @@ func runTestImport(t *testing.T, batchSizeValue int64) {
 			require.Equal(t, expected, got)
 		})
 	}
-}
-
-var DummyImportEpoch uint32 = 3
-
-func TestImportEpochIngestion(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	defer log.Scope(t).Close(t)
-	ctx := context.Background()
-
-	mem := mon.NewUnlimitedMonitor(ctx, mon.Options{Name: mon.MakeName("lots")})
-	reqs := limit.MakeConcurrentRequestLimiter("reqs", 1000)
-	s, _, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
-	defer s.Stopper().Stop(ctx)
-
-	b, err := bulk.MakeTestingSSTBatcher(ctx, kvDB, s.ClusterSettings(),
-		false, true, mem.MakeConcurrentBoundAccount(), reqs)
-	require.NoError(t, err)
-	defer b.Close(ctx)
-
-	startKey := storageutils.PointKey("a", 1)
-	endKey := storageutils.PointKey("b", 1)
-	value := storageutils.StringValueRaw("myHumbleValue")
-	mvccValue, err := storage.DecodeMVCCValue(value)
-	require.NoError(t, err)
-
-	require.NoError(t, b.AddMVCCKeyWithImportEpoch(ctx, startKey, value, DummyImportEpoch))
-	require.NoError(t, b.AddMVCCKeyWithImportEpoch(ctx, endKey, value, DummyImportEpoch))
-	require.NoError(t, b.Flush(ctx))
-
-	// Check that ingested key contains the dummy job ID
-	req := &kvpb.ExportRequest{
-		RequestHeader: kvpb.RequestHeader{
-			Key:    startKey.Key,
-			EndKey: endKey.Key,
-		},
-		MVCCFilter:             kvpb.MVCCFilter_All,
-		StartTime:              hlc.Timestamp{},
-		IncludeMVCCValueHeader: true,
-	}
-
-	header := kvpb.Header{Timestamp: s.Clock().Now()}
-	resp, roachErr := kv.SendWrappedWith(ctx,
-		kvDB.NonTransactionalSender(), header, req)
-	require.NoError(t, roachErr.GoError())
-	iterOpts := storage.IterOptions{
-		KeyTypes:   storage.IterKeyTypePointsOnly,
-		LowerBound: startKey.Key,
-		UpperBound: endKey.Key,
-	}
-
-	checkedJobId := false
-	for _, file := range resp.(*kvpb.ExportResponse).Files {
-		it, err := storage.NewMemSSTIterator(file.SST, false /* verify */, iterOpts)
-		require.NoError(t, err)
-		defer it.Close()
-		for it.SeekGE(storage.NilKey); ; it.Next() {
-			ok, err := it.Valid()
-			require.NoError(t, err)
-			if !ok {
-				break
-			}
-			rawVal, err := it.UnsafeValue()
-			require.NoError(t, err)
-			val, err := storage.DecodeMVCCValue(rawVal)
-			require.NoError(t, err)
-			require.Equal(t, startKey, it.UnsafeKey())
-			require.Equal(t, mvccValue.Value, val.Value)
-			require.Equal(t, DummyImportEpoch, val.ImportEpoch)
-			require.Equal(t, hlc.ClockTimestamp{}, val.LocalTimestamp)
-			checkedJobId = true
-		}
-	}
-	require.Equal(t, true, checkedJobId)
 }

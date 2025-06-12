@@ -30,28 +30,17 @@ import (
 // engine because all datum-backed types have the same backing datumVec which
 // would occur disproportionally often without adjusting the weights.
 func getRandomTypeFavorNative(rng *rand.Rand) *types.T {
-	randTyp := func() *types.T {
-		for {
-			typ := randgen.RandType(rng)
-			switch typ.Family() {
-			case types.OidFamily:
-				// Skip the Oid family since casts to Oid type are handled by
-				// falling back to the row-by-row engine, and we don't set
-				// ProcessorConstructor in projection tests.
-			case types.VoidFamily:
-				// Skip the void family because it doesn't have some basic
-				// comparison operators defined.
-			default:
-				return typ
-			}
-		}
-	}
-	typ := randTyp()
+	typ := randgen.RandType(rng)
 	for retry := 0; retry < 3; retry++ {
 		if typeconv.TypeFamilyToCanonicalTypeFamily(typ.Family()) != typeconv.DatumVecCanonicalTypeFamily {
 			break
 		}
-		typ = randTyp()
+		typ = randgen.RandType(rng)
+		if typ.Family() == types.VoidFamily {
+			// Skip the void family because it doesn't have some basic
+			// comparison operators defined.
+			retry--
+		}
 	}
 	return typ
 }
@@ -82,7 +71,7 @@ func assertProjOpAgainstRowByRow(
 	// column of the projection operator.
 	op := colexecbase.NewSimpleProjectOp(projOp, len(inputTypes)+1, []uint32{uint32(len(inputTypes))})
 	materializer := NewMaterializer(
-		nil, /* streamingMemAcc */
+		nil, /* allocator */
 		flowCtx,
 		1, /* processorID */
 		colexecargs.OpWithMetaInfo{Root: op},
@@ -95,7 +84,7 @@ func assertProjOpAgainstRowByRow(
 		actualRow, meta := materializer.Next()
 		require.Nil(t, meta)
 		require.Equal(t, 1, len(actualRow))
-		cmp, err := expectedDatum.Compare(ctx, outputType, &da, evalCtx, &actualRow[0])
+		cmp, err := expectedDatum.Compare(outputType, &da, evalCtx, &actualRow[0])
 		require.NoError(t, err)
 		require.Equal(t, 0, cmp)
 	}

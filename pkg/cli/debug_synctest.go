@@ -19,7 +19,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/errors"
@@ -117,13 +116,13 @@ func runSyncer(
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
 
-	db, err := OpenEngine(dir, stopper, fs.ReadWrite)
+	db, err := OpenEngine(dir, stopper)
 	if err != nil {
 		if expSeq == 0 {
 			// Failed on first open, before we tried to corrupt anything. Hard stop.
 			return 0, err
 		}
-		fmt.Fprintln(stderr, "store directory", dir, "corrupted:", err)
+		fmt.Fprintln(stderr, "RocksDB directory", dir, "corrupted:", err)
 		return 0, nil // trigger reset
 	}
 
@@ -145,8 +144,8 @@ func runSyncer(
 	}
 
 	fmt.Fprintf(stderr, "verifying existing sequence numbers...")
-	err = db.MVCCIterate(ctx, roachpb.KeyMin, roachpb.KeyMax, storage.MVCCKeyAndIntentsIterKind,
-		storage.IterKeyTypePointsOnly, fs.UnknownReadCategory, check)
+	err = db.MVCCIterate(roachpb.KeyMin, roachpb.KeyMax, storage.MVCCKeyAndIntentsIterKind,
+		storage.IterKeyTypePointsOnly, check)
 	if err != nil {
 		return 0, err
 	}

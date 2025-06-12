@@ -89,6 +89,7 @@ webpack_bin.webpack_cli(
         "db-console-ccl/assets/login-background.png",
         "db-console-ccl/assets/not-found.svg",
         "db-console-ccl/assets/questionMap.svg",
+        "db-console-ccl/assets/spinner.gif",
     ],
     args = [
         "--config webpack.config.js",
@@ -139,6 +140,7 @@ webpack_bin.webpack_cli(
         "db-console-oss/assets/heroBannerLp.png",
         "db-console-oss/assets/login-background.png",
         "db-console-oss/assets/not-found.svg",
+        "db-console-oss/assets/spinner.gif",
     ],
     args = [
         "--config webpack.config.js",
@@ -178,8 +180,8 @@ eslint_bin.eslint_test(
         "--ext .ts",
         "--ext .js",
         "--ext .tsx",
-        "-c .eslintrc.json",
-        "--format=codeframe",
+        "-c",
+        ".eslintrc.json",
         "src",
         "ccl",
     ],
@@ -188,25 +190,11 @@ eslint_bin.eslint_test(
     data = [
         ".eslintrc.json",
         ".prettierignore",
-        "eslint-local-rules.js",
+        "node_modules",
         "prettier.config.js",
-        "tsconfig.json",
-        ":node_modules/@cockroachlabs/eslint-config",
-        ":node_modules/@typescript-eslint/eslint-plugin",
-        ":node_modules/@typescript-eslint/parser",
-        ":node_modules/eslint-config-prettier",
-        ":node_modules/eslint-formatter-codeframe",
-        ":node_modules/eslint-plugin-import",
-        ":node_modules/eslint-plugin-local-rules",
-        ":node_modules/eslint-plugin-prettier",
-        ":node_modules/eslint-plugin-react",
-        ":node_modules/eslint-plugin-react-hooks",
-        ":node_modules/prettier",
-        ":node_modules/typescript",
     ] + glob([
         "ccl/**",
         "src/**",
-        "build/eslint/**",
     ]),
 )
 
@@ -262,9 +250,6 @@ jest_test(
     ]),
     env = {
         "BAZEL_TARGET": "1",
-    },
-    exec_properties = {
-        "test.Pool": "large",
     },
     node_modules = ":node_modules",
     shard_count = 4,

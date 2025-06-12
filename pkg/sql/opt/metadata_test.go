@@ -106,7 +106,6 @@ func TestMetadata(t *testing.T) {
 	udfName := tree.MakeQualifiedRoutineName("t", "public", "udf")
 	md.AddUserDefinedRoutine(
 		&tree.Overload{Oid: catid.FuncIDToOID(1111)},
-		types.OneIntCol,
 		udfName.ToUnresolvedObjectName(),
 	)
 

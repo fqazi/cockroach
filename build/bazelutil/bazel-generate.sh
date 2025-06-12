@@ -60,40 +60,45 @@ if files_unchanged_from_upstream go.mod go.sum DEPS.bzl $(find_relevant ./pkg/cm
   echo "Skipping //pkg/cmd/mirror/go:mirror (relevant files are unchanged from upstream)."
   echo "Skipping //pkg/cmd/generate-staticcheck (relevant files are unchanged from upstream)."
 else
-  CONTENTS=$(bazel run //pkg/cmd/mirror/go:mirror ${EXTRA_BAZEL_ARGS:-})
+  CONTENTS=$(bazel run //pkg/cmd/mirror/go:mirror)
   echo "$CONTENTS" > DEPS.bzl
-  bazel run pkg/cmd/generate-staticcheck --run_under="cd $PWD && " ${EXTRA_BAZEL_ARGS:-}
+  bazel run pkg/cmd/generate-staticcheck --run_under="cd $PWD && "
 fi
 
-bazel run //:gazelle ${EXTRA_BAZEL_ARGS:-}
+bazel run //:gazelle
 
-if files_unchanged_from_upstream WORKSPACE $(find_relevant ./pkg/sql/logictest/logictestbase -name BUILD.bazel -or -name '*.go') $(find_relevant ./pkg/sql/logictest/testdata -name '*') $(find_relevant ./pkg/sql/sqlitelogictest -name BUILD.bazel -or -name '*.go') $(find_relevant ./pkg/ccl/logictestccl/testdata -name '*') $(find_relevant pkg/sql/opt/exec/execbuilder/testdata -name '*') $(find_relevant ./pkg/cmd/generate-logictest -name BUILD.bazel -or -name '*.go'); then
+if files_unchanged_from_upstream WORKSPACE $(find_relevant ./pkg/sql/logictest/logictestbase -name BUILD.bazel -or -name '*.go') $(find_relevant ./pkg/sql/logictest/testdata -name '*') $(find_relevant ./pkg/sql/sqlitelogictest -name BUILD.bazel -or -name '*.go') $(find_relevant ./pkg/ccl/logictestccl/testdata -name '*') $(find_relevant pkg/sql/opt/exec/execbuilder/testdata -name '*'); then
   echo "Skipping //pkg/cmd/generate-logictest (relevant files are unchanged from upstream)"
 else
-  bazel run pkg/cmd/generate-logictest ${EXTRA_BAZEL_ARGS:-} -- -out-dir="$PWD"
+  bazel run pkg/cmd/generate-logictest -- -out-dir="$PWD"
 fi
 
 if files_unchanged_from_upstream WORKSPACE $(find_relevant ./pkg/acceptance -name '*') $(find_relevant ./pkg/cli/interactive_tests -name '*') $(find_relevant ./pkg/cmd/generate-acceptance-tests -name '*'); then
   echo "Skipping //pkg/cmd/generate-acceptance-tests (relevant files are unchanged from upstream)"
 else
-  bazel run pkg/cmd/generate-acceptance-tests ${EXTRA_BAZEL_ARGS:-} -- -out-dir="$PWD"
+  bazel run pkg/cmd/generate-acceptance-tests -- -out-dir="$PWD"
 fi
 
 if files_unchanged_from_upstream c-deps/archived.bzl c-deps/REPOSITORIES.bzl DEPS.bzl WORKSPACE $(find_relevant ./pkg/cmd/generate-distdir -name BUILD.bazel -or -name '*.go') $(find_relevant ./pkg/build/bazel -name BUILD.bazel -or -name '*.go') $(find_relevant pkg/build/starlarkutil -name BUILD.bazel -or -name '*.go'); then
     echo "Skipping //pkg/cmd/generate-distdir (relevant files are unchanged from upstream)."
 else
-    CONTENTS=$(bazel run //pkg/cmd/generate-distdir ${EXTRA_BAZEL_ARGS:-})
+    CONTENTS=$(bazel run //pkg/cmd/generate-distdir)
     echo "$CONTENTS" > build/bazelutil/distdir_files.bzl
 fi
 
 if files_unchanged_from_upstream $(find_relevant ./pkg -name '*.proto') $(find_relevant ./pkg -name BUILD.bazel) $(find_relevant ./pkg -name '*.bzl') $(find_relevant ./docs -name 'BUILD.bazel') $(find_relevant ./docs -name '*.bzl') $(find_relevant ./pkg/gen/genbzl -name '*.go'); then
   echo "Skipping //pkg/gen/genbzl (relevant files are unchanged from upstream)."
 else
-  bazel run pkg/gen/genbzl --run_under="cd $PWD && " ${EXTRA_BAZEL_ARGS:-} -- --out-dir pkg/gen
+  bazel run pkg/gen/genbzl --run_under="cd $PWD && " -- --out-dir pkg/gen
 fi
 
-if files_unchanged_from_upstream $(find_relevant ./pkg -name BUILD.bazel) $(find_relevant ./pkg/cmd/generate-bazel-extra -name BUILD.bazel -or -name '*.go'); then
+if ! (files_unchanged_from_upstream $(find_relevant ./pkg -name BUILD.bazel) $(find_relevant ./pkg/cmd/generate-bazel-extra -name BUILD.bazel -or -name '*.go')); then
+  bazel build @com_github_bazelbuild_buildtools//buildozer:buildozer
+  bazel run //pkg/cmd/generate-bazel-extra --run_under="cd $PWD && " -- -gen_test_suites -gen_tests_timeouts
+elif files_unchanged_from_upstream $(find_relevant ./pkg -name '*.bzl'); then
   echo "Skipping //pkg/cmd/generate-bazel-extra (relevant files are unchanged from upstream)."
 else
-  bazel run //pkg/cmd/generate-bazel-extra --run_under="cd $PWD && " ${EXTRA_BAZEL_ARGS:-}
+  echo "Skipping `generate tests timeouts` from //pkg/cmd/generate-bazel-extra (relevant files are unchanged from upstream)."
+  bazel build @com_github_bazelbuild_buildtools//buildozer:buildozer
+  bazel run //pkg/cmd/generate-bazel-extra --run_under="cd $PWD && " -- -gen_test_suites
 fi

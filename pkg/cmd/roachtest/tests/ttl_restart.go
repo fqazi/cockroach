@@ -28,15 +28,16 @@ import (
 // restart if a node goes down or a new one comes online.
 func registerTTLRestart(r registry.Registry) {
 	for numRestartNodes := 1; numRestartNodes <= 2; numRestartNodes++ {
+		n := numRestartNodes
 		r.Add(registry.TestSpec{
-			Name:             fmt.Sprintf("ttl-restart/num-restart-nodes=%d", numRestartNodes),
+			Name:             fmt.Sprintf("ttl-restart/num-restart-nodes=%d", n),
 			Owner:            registry.OwnerSQLFoundations,
 			Cluster:          r.MakeClusterSpec(3),
 			Leases:           registry.MetamorphicLeases,
 			CompatibleClouds: registry.AllClouds,
 			Suites:           registry.Suites(registry.Nightly),
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-				runTTLRestart(ctx, t, c, numRestartNodes)
+				runTTLRestart(ctx, t, c, n)
 			},
 		})
 	}
@@ -81,9 +82,9 @@ func runTTLRestart(ctx context.Context, t test.Test, c cluster.Cluster, numResta
 
 	startOpts := option.NewStartOpts()
 	settings := install.MakeClusterSettings()
-	c.Start(ctx, t.L(), startOpts, settings, c.CRDBNodes())
+	c.Start(ctx, t.L(), startOpts, settings, c.All())
 
-	m := c.NewMonitor(ctx, c.CRDBNodes())
+	m := c.NewMonitor(ctx, c.All())
 	m.Go(func(ctx context.Context) error {
 		db := c.Conn(ctx, t.L(), 1)
 		defer db.Close()
@@ -423,7 +424,7 @@ func findRunningJob(
 	// Count the number of job resumes by looking in the logs on each node.
 	const ttlResumeLogMarker = "ROW LEVEL TTL job %d: stepping through state running"
 	cmd := fmt.Sprintf("grep -c '"+ttlResumeLogMarker+"' {log-dir}/cockroach.log", newJobInfo.JobID)
-	results, err := c.RunWithDetails(ctx, nil, option.WithNodes(c.CRDBNodes()), cmd)
+	results, err := c.RunWithDetails(ctx, nil, c.All(), cmd)
 	if err != nil {
 		return newJobInfo, errors.Wrapf(err, "error running command: %s", cmd)
 	}
@@ -475,7 +476,7 @@ func findNodesWithJobLogs(
 	cmd := fmt.Sprintf("grep -q '"+ttlLogMarker+"' {log-dir}/cockroach.log", jobID)
 
 	// Run grep command across all nodes
-	results, err := c.RunWithDetails(ctx, nil, option.WithNodes(c.CRDBNodes()), cmd)
+	results, err := c.RunWithDetails(ctx, nil, c.All(), cmd)
 	if err != nil && !testutils.IsError(err, "exit status") {
 		// Only fail on non-grep errors (exit status from grep is expected if pattern not found)
 		return nil, errors.Wrapf(err, "error running grep command for job %d", jobID)

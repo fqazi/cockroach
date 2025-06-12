@@ -17,6 +17,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/docs"
 	"github.com/cockroachdb/cockroach/pkg/kv"
+	"github.com/cockroachdb/cockroach/pkg/multitenant"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/settingswatcher"
@@ -53,7 +55,6 @@ import (
 
 // setClusterSettingNode represents a SET CLUSTER SETTING statement.
 type setClusterSettingNode struct {
-	zeroInputPlanNode
 	name    settings.SettingName
 	st      *cluster.Settings
 	setting settings.NonMaskedSetting
@@ -225,7 +226,7 @@ func (p *planner) SetClusterSetting(
 	}
 
 	if st.OverridesInformer != nil && st.OverridesInformer.IsOverridden(setting.InternalKey()) {
-		return nil, errors.Wrapf(cluster.SettingOverrideErr, "cluster setting '%s' cannot be set", name)
+		return nil, errors.Errorf("cluster setting '%s' is currently overridden by the operator", name)
 	}
 
 	value, err := p.getAndValidateTypedClusterSetting(ctx, name, n.Value, setting)
@@ -279,16 +280,15 @@ func (p *planner) getAndValidateTypedClusterSetting(
 				requiredType = types.Int
 			case *settings.FloatSetting:
 				requiredType = types.Float
-			case settings.AnyEnumSetting:
-				// EnumSettings can be set with either strings or integers.
-				requiredType = types.AnyElement
+			case *settings.EnumSetting:
+				requiredType = types.Any
 			case *settings.DurationSetting:
 				requiredType = types.Interval
 			case *settings.DurationSettingWithExplicitUnit:
 				requiredType = types.Interval
 				// Ensure that the expression contains a unit (i.e can't be a float)
 				_, err := p.analyzeExpr(
-					ctx, expr, dummyHelper, types.Float, false, "SET CLUSTER SETTING "+string(name),
+					ctx, expr, nil, dummyHelper, types.Float, false, "SET CLUSTER SETTING "+string(name),
 				)
 				// An interval with a unit (valid) will return an
 				// "InvalidTextRepresentation" error when trying to parse it as a float.
@@ -304,7 +304,7 @@ func (p *planner) getAndValidateTypedClusterSetting(
 			}
 
 			typed, err := p.analyzeExpr(
-				ctx, expr, dummyHelper, requiredType, true, "SET CLUSTER SETTING "+string(name))
+				ctx, expr, nil, dummyHelper, requiredType, true, "SET CLUSTER SETTING "+string(name))
 			if err != nil {
 				hasHint, hint := setting.ErrorHint()
 				if hasHint {
@@ -345,6 +345,7 @@ func (n *setClusterSettingNode) startExec(params runParams) error {
 		n.st,
 		n.value,
 		params.p.EvalContext(),
+		params.extendedEvalCtx.Codec.ForSystemTenant(),
 		params.p.logEvent,
 		params.p.descCollection.ReleaseLeases,
 		params.p.makeUnsafeSettingInterlockInfo(),
@@ -369,6 +370,17 @@ func (n *setClusterSettingNode) startExec(params runParams) error {
 	// Report tracked cluster settings via telemetry.
 	// TODO(justin): implement a more general mechanism for tracking these.
 	switch n.name {
+	case multitenant.DefaultClusterSelectSettingName:
+		if multitenant.VerifyTenantService.Get(&n.st.SV) && expectedEncodedValue != "" {
+			tr, err := GetTenantRecordByName(params.ctx, n.st, params.p.InternalSQLTxn(), roachpb.TenantName(expectedEncodedValue))
+			if err != nil {
+				return errors.Wrapf(err, "failed to lookup tenant %q", expectedEncodedValue)
+			}
+			if tr.ServiceMode != mtinfopb.ServiceModeShared {
+				return pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
+					"shared service not enabled for tenant %q", expectedEncodedValue)
+			}
+		}
 	case catpb.AutoStatsEnabledSettingName:
 		switch expectedEncodedValue {
 		case "true":
@@ -429,6 +441,7 @@ func writeSettingInternal(
 	st *cluster.Settings,
 	value tree.TypedExpr,
 	evalCtx *eval.Context,
+	forSystemTenant bool,
 	logFn func(context.Context, descpb.ID, logpb.EventPayload) error,
 	releaseLeases func(context.Context),
 	interlockInfo unsafeSettingInterlockInfo,
@@ -449,7 +462,10 @@ func writeSettingInternal(
 				return err
 			}
 			reportedValue, expectedEncodedValue, err = writeNonDefaultSettingValue(
-				ctx, hook, db, setting, user, st, value, releaseLeases, interlockInfo,
+				ctx, hook, db,
+				setting, user, st, value, forSystemTenant,
+				releaseLeases,
+				interlockInfo,
 			)
 			if err != nil {
 				return err
@@ -484,7 +500,7 @@ func writeDefaultSettingValue(
 	expectedEncodedValue = setting.EncodedDefault()
 	_, err = db.Executor().ExecEx(
 		ctx, "reset-setting", nil,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		"DELETE FROM system.settings WHERE name = $1", setting.InternalKey(),
 	)
 	return reportedValue, expectedEncodedValue, err
@@ -500,6 +516,7 @@ func writeNonDefaultSettingValue(
 	user username.SQLUsername,
 	st *cluster.Settings,
 	value tree.Datum,
+	forSystemTenant bool,
 	releaseLeases func(context.Context),
 	interlockInfo unsafeSettingInterlockInfo,
 ) (reportedValue string, expectedEncodedValue string, err error) {
@@ -516,7 +533,8 @@ func writeNonDefaultSettingValue(
 	verSetting, isSetVersion := setting.(*settings.VersionSetting)
 	if isSetVersion {
 		if err := setVersionSetting(
-			ctx, hook, verSetting, db, user, st, value, encoded, releaseLeases,
+			ctx, hook, verSetting, db, user, st, value, encoded,
+			forSystemTenant, releaseLeases,
 		); err != nil {
 			return reportedValue, expectedEncodedValue, err
 		}
@@ -530,7 +548,7 @@ func writeNonDefaultSettingValue(
 
 		if _, err = db.Executor().ExecEx(
 			ctx, "update-setting", nil,
-			sessiondata.NodeUserSessionDataOverride,
+			sessiondata.RootUserSessionDataOverride,
 			`UPSERT INTO system.settings (name, value, "lastUpdated", "valueType") VALUES ($1, $2, now(), $3)`,
 			setting.InternalKey(), encoded, setting.Typ(),
 		); err != nil {
@@ -552,6 +570,7 @@ func setVersionSetting(
 	st *cluster.Settings,
 	value tree.Datum,
 	encoded string,
+	forSystemTenant bool,
 	releaseLeases func(context.Context),
 ) error {
 	// In the special case of the 'version' cluster setting,
@@ -559,7 +578,7 @@ func setVersionSetting(
 	// value change is valid.
 	datums, err := db.Executor().QueryRowEx(
 		ctx, "retrieve-prev-setting", nil,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		"SELECT value FROM system.settings WHERE name = $1", setting.InternalKey(),
 	)
 	if err != nil {
@@ -571,7 +590,23 @@ func setVersionSetting(
 		// hasn't run yet, we can't update the version as we don't
 		// have good enough information about the current cluster
 		// version.
-		return errors.New("no persisted cluster version found, please retry later")
+		if forSystemTenant {
+			return errors.New("no persisted cluster version found, please retry later")
+		}
+		// The tenant cluster in 20.2 did not ever initialize this value and
+		// utilized this hard-coded value instead. In 21.1, the builtin
+		// which creates tenants sets up the cluster version state. It also
+		// is set when the version is upgraded.
+		tenantDefaultVersion := clusterversion.ClusterVersion{
+			Version: roachpb.Version{Major: 20, Minor: 2},
+		}
+		// Pretend that the expected value was already there to allow us to
+		// run migrations.
+		prevEncoded, err := protoutil.Marshal(&tenantDefaultVersion)
+		if err != nil {
+			return errors.WithAssertionFailure(err)
+		}
+		prev = tree.NewDString(string(prevEncoded))
 	} else {
 		prev = datums[0]
 	}
@@ -794,9 +829,6 @@ func toSettingString(
 		return "", errors.Errorf("cannot use %s %T value for string setting", d.ResolvedType(), d)
 	case *settings.BoolSetting:
 		if b, ok := d.(*tree.DBool); ok {
-			if err := setting.Validate(&st.SV, bool(*b)); err != nil {
-				return "", err
-			}
 			return settings.EncodeBool(bool(*b)), nil
 		}
 		return "", errors.Errorf("cannot use %s %T value for bool setting", d.ResolvedType(), d)
@@ -816,20 +848,20 @@ func toSettingString(
 			return settings.EncodeFloat(float64(*f)), nil
 		}
 		return "", errors.Errorf("cannot use %s %T value for float setting", d.ResolvedType(), d)
-	case settings.AnyEnumSetting:
+	case *settings.EnumSetting:
 		if i, intOK := d.(*tree.DInt); intOK {
 			v, ok := setting.ParseEnum(settings.EncodeInt(int64(*i)))
 			if ok {
 				return settings.EncodeInt(v), nil
 			}
-			return "", errors.WithHint(errors.Errorf("invalid integer value '%d' for enum setting", *i), setting.GetAvailableValuesAsHint())
+			return "", errors.WithHintf(errors.Errorf("invalid integer value '%d' for enum setting", *i), setting.GetAvailableValuesAsHint())
 		} else if s, ok := d.(*tree.DString); ok {
 			str := string(*s)
 			v, ok := setting.ParseEnum(str)
 			if ok {
 				return settings.EncodeInt(v), nil
 			}
-			return "", errors.WithHint(errors.Errorf("invalid string value '%s' for enum setting", str), setting.GetAvailableValuesAsHint())
+			return "", errors.WithHintf(errors.Errorf("invalid string value '%s' for enum setting", str), setting.GetAvailableValuesAsHint())
 		}
 		return "", errors.Errorf("cannot use %s %T value for enum setting, must be int or string", d.ResolvedType(), d)
 	case *settings.ByteSizeSetting:

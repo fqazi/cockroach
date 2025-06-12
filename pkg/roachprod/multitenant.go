@@ -39,7 +39,7 @@ func StartServiceForVirtualCluster(
 	if startOpts.Target == install.StartServiceForVirtualCluster {
 		l.Printf("Starting SQL/HTTP instances for the virtual cluster")
 		// If we are starting a service in external process mode, `Start`
-		// is called on the nodes where the SQL server processed should be
+		// is called on the nodes where the SQL server procesed should be
 		// created.
 		ec, err := newCluster(l, startOpts.VirtualClusterLocation, clusterSettingsOpts...)
 		if err != nil {

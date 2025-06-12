@@ -69,7 +69,7 @@ func (s schemaTelemetryExecutor) ExecuteJob(
 	p, cleanup := cfg.PlanHookMaker(ctx, "invoke-schema-telemetry", txn.KV(), username.NodeUserName())
 	defer cleanup()
 	jr := p.(sql.PlanHookState).ExecCfg().JobRegistry
-	r := schematelemetrycontroller.CreateSchemaTelemetryJobRecord(jobs.CreatedByScheduledJobs, int64(sj.ScheduleID()))
+	r := schematelemetrycontroller.CreateSchemaTelemetryJobRecord(jobs.CreatedByScheduledJobs, sj.ScheduleID())
 	_, err = jr.CreateAdoptableJobWithTxn(ctx, r, jr.MakeJobID(), txn)
 	return err
 }
@@ -79,17 +79,17 @@ func (s schemaTelemetryExecutor) NotifyJobTermination(
 	ctx context.Context,
 	txn isql.Txn,
 	jobID jobspb.JobID,
-	jobStatus jobs.State,
+	jobStatus jobs.Status,
 	details jobspb.Details,
 	env scheduledjobs.JobSchedulerEnv,
 	sj *jobs.ScheduledJob,
 ) error {
 	switch jobStatus {
-	case jobs.StateFailed:
+	case jobs.StatusFailed:
 		jobs.DefaultHandleFailedRun(sj, "SQL schema telemetry job failed")
 		s.metrics.NumFailed.Inc(1)
 		return nil
-	case jobs.StateSucceeded:
+	case jobs.StatusSucceeded:
 		s.metrics.NumSucceeded.Inc(1)
 	}
 	sj.SetScheduleStatus(string(jobStatus))

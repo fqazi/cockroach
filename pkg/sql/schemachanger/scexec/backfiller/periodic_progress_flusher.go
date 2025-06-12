@@ -12,7 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/backfill"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"golang.org/x/sync/errgroup"
 )
@@ -55,7 +54,7 @@ type periodicProgressFlusher struct {
 
 func (p *periodicProgressFlusher) StartPeriodicUpdates(
 	ctx context.Context, tracker scexec.BackfillerProgressFlusher,
-) (stop func()) {
+) (stop func() error) {
 	stopCh := make(chan struct{})
 	runPeriodicWrite := func(
 		ctx context.Context,
@@ -72,8 +71,9 @@ func (p *periodicProgressFlusher) StartPeriodicUpdates(
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-timer.Ch():
+				timer.MarkRead()
 				if err := write(ctx); err != nil {
-					log.Warningf(ctx, "could not flush progress: %v", err)
+					return err
 				}
 			}
 		}
@@ -88,13 +88,11 @@ func (p *periodicProgressFlusher) StartPeriodicUpdates(
 			ctx, tracker.FlushCheckpoint, p.checkpointInterval)
 	})
 	toClose := stopCh // make the returned function idempotent
-	return func() {
+	return func() error {
 		if toClose != nil {
 			close(toClose)
 			toClose = nil
 		}
-		if err := g.Wait(); err != nil {
-			log.Warningf(ctx, "waiting for progress flushing goroutines: %v", err)
-		}
+		return g.Wait()
 	}
 }

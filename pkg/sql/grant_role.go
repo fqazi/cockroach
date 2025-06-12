@@ -9,6 +9,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/decodeusername"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -27,7 +28,6 @@ import (
 // GrantRoleNode creates entries in the system.role_members table.
 // This is called from GRANT <ROLE>
 type GrantRoleNode struct {
-	zeroInputPlanNode
 	roles       []username.SQLUsername
 	members     []username.SQLUsername
 	adminOption bool
@@ -171,16 +171,20 @@ func (p *planner) GrantRoleNode(ctx context.Context, n *tree.GrantRole) (*GrantR
 
 func (n *GrantRoleNode) startExec(params runParams) error {
 	var rowsAffected int
+	roleMembersHasIDs := params.p.ExecCfg().Settings.Version.IsActive(params.ctx, clusterversion.V23_1RoleMembersTableHasIDColumns)
 
 	// Add memberships. Existing memberships are allowed.
 	// If admin option is false, we do not remove it from existing memberships.
-	memberStmt := `
+	memberStmt := `INSERT INTO system.role_members ("role", "member", "isAdmin") VALUES ($1, $2, $3) ON CONFLICT ("role", "member")`
+	if roleMembersHasIDs {
+		memberStmt = `
 INSERT INTO system.role_members ("role", "member", "isAdmin", role_id, member_id)
 VALUES ($1, $2, $3, (SELECT user_id FROM system.users WHERE username = $1), (SELECT user_id FROM system.users WHERE username = $2))
 ON CONFLICT ("role", "member")`
+	}
 	if n.adminOption {
 		// admin option: true, set "isAdmin" even if the membership exists.
-		memberStmt += ` DO UPDATE SET "isAdmin" = true WHERE role_members."isAdmin" IS NOT true`
+		memberStmt += ` DO UPDATE SET "isAdmin" = true`
 	} else {
 		// admin option: false, do not clear it from existing memberships.
 		memberStmt += ` DO NOTHING`
@@ -190,7 +194,7 @@ ON CONFLICT ("role", "member")`
 		for _, m := range n.members {
 			memberStmtRowsAffected, err := params.p.InternalSQLTxn().ExecEx(
 				params.ctx, "grant-role", params.p.Txn(),
-				sessiondata.NodeUserSessionDataOverride,
+				sessiondata.RootUserSessionDataOverride,
 				memberStmt,
 				r.Normalized(),
 				m.Normalized(),

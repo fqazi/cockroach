@@ -28,7 +28,6 @@ func (i *immediateVisitor) CreateSequenceDescriptor(
 		Privileges:    &catpb.PrivilegeDescriptor{Version: catpb.Version23_2}, // Populated by `UserPrivileges` elements and `Owner` element
 		Version:       1,
 		FormatVersion: descpb.InterleavedFormatVersion,
-		Temporary:     op.Temporary,
 	}).BuildCreatedMutable()
 	tabledDesc := mut.(*tabledesc.Mutable)
 	tabledDesc.State = descpb.DescriptorState_ADD
@@ -78,7 +77,6 @@ func (i *immediateVisitor) SetSequenceOptions(
 		tree.SeqOptMaxValue:  {SetFunc: setIntValue(&sc.SequenceOpts.MaxValue)},
 		tree.SeqOptStart:     {SetFunc: setIntValue(&sc.SequenceOpts.Start)},
 		tree.SeqOptCache:     {SetFunc: setIntValue(&sc.SequenceOpts.CacheSize)},
-		tree.SeqOptCacheNode: {SetFunc: setIntValue(&sc.SequenceOpts.NodeCacheSize)},
 		tree.SeqOptVirtual:   {SetFunc: setBoolValue(&sc.SequenceOpts.Virtual)},
 		tree.SeqOptAs: {SetFunc: func(Value string) error {
 			sc.SequenceOpts.AsIntegerType = Value

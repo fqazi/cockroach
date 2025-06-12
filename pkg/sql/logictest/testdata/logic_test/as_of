@@ -37,29 +37,24 @@ SELECT pg_sleep(5) -- we need to sleep so that the 4.8s elapses and the SELECT *
 
 # Notices print twice -- once during planning and once during execution.
 # There's no nice way of reducing this to once without some hacks -- so left as is.
-skipif config enterprise-configs
+skipif config 3node-tenant-default-configs
 query T noticetrace,nosort
 SELECT * FROM t AS OF SYSTEM TIME follower_read_timestamp()
 ----
 NOTICE: follower reads disabled because you are running a non-CCL distribution
 NOTICE: follower reads disabled because you are running a non-CCL distribution
 
-statement error pq: unknown signature: follower_read_timestamp\(string\) \(returning <timestamptz>\)
+statement error pq: unknown signature: follower_read_timestamp\(string\) \(desired <timestamptz>\)
 SELECT * FROM t AS OF SYSTEM TIME follower_read_timestamp('boom')
 
 statement error pq: AS OF SYSTEM TIME: only constant expressions, with_min_timestamp, with_max_staleness, or follower_read_timestamp are allowed
 SELECT * FROM t AS OF SYSTEM TIME now()
 
-statement error pq: AS OF SYSTEM TIME: interval value '10s' is in the future
+statement error pq: AS OF SYSTEM TIME: interval value '10s' too large, AS OF interval must be <= -1µs
 SELECT * FROM t AS OF SYSTEM TIME '10s'
 
-statement error pq: AS OF SYSTEM TIME: interval value '00:00:00.000001' is in the future
+statement error pq: AS OF SYSTEM TIME: interval value '00:00:00.000001' too large, AS OF interval must be <= -1µs
 SELECT * FROM t AS OF SYSTEM TIME interval '1 microsecond'
-
-query I
-SELECT * FROM t AS OF SYSTEM TIME '-1μs'
-----
-2
 
 # Verify that the TxnTimestamp used to generate now() and current_timestamp() is
 # set to the historical timestamp.
@@ -100,32 +95,32 @@ skipif config 3node-tenant-default-configs
 statement error pq: no value provided for placeholder: \$1
 SELECT * FROM t AS OF SYSTEM TIME $1
 
-skipif config enterprise-configs
+skipif config 3node-tenant-default-configs
 statement error pgcode XXC01 with_min_timestamp can only be used with a CCL distribution
 SELECT with_min_timestamp('2020-01-15 15:16:17')
 
-skipif config enterprise-configs
+skipif config 3node-tenant-default-configs
 statement error pgcode XXC01 with_min_timestamp can only be used with a CCL distribution
 SELECT with_min_timestamp(statement_timestamp())
 
-skipif config enterprise-configs
+skipif config 3node-tenant-default-configs
 statement error pgcode XXC01 with_max_staleness can only be used with a CCL distribution
 SELECT with_max_staleness('1s')
 
-skipif config enterprise-configs
+skipif config 3node-tenant-default-configs
 statement error pgcode XXC01 with_min_timestamp can only be used with a CCL distribution
 SELECT * FROM t AS OF SYSTEM TIME with_min_timestamp('2020-01-15 15:16:17')
 
-skipif config enterprise-configs
+skipif config 3node-tenant-default-configs
 statement error pgcode XXC01 with_min_timestamp can only be used with a CCL distribution
 SELECT * FROM t AS OF SYSTEM TIME with_min_timestamp(statement_timestamp())
 
-skipif config enterprise-configs
+skipif config 3node-tenant-default-configs
 statement error pgcode XXC01 with_max_staleness can only be used with a CCL distribution
 SELECT * FROM t AS OF SYSTEM TIME with_max_staleness('1s'::interval)
 
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE
+BEGIN
 
 statement ok
 SELECT * from t
@@ -137,10 +132,7 @@ statement ok
 ROLLBACK
 
 statement ok
-SET kv_transaction_buffered_writes_enabled = false;
-
-statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE
+BEGIN
 
 statement ok
 INSERT INTO t VALUES(1)
@@ -150,24 +142,6 @@ SET TRANSACTION AS OF system time '-1s'
 
 statement ok
 ROLLBACK
-
-statement ok
-SET kv_transaction_buffered_writes_enabled = true;
-
-statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE
-
-statement ok
-INSERT INTO t VALUES(1)
-
-statement error cannot set fixed timestamp, .* already performed reads
-SET TRANSACTION AS OF system time '-1s'
-
-statement ok
-ROLLBACK
-
-statement ok
-RESET kv_transaction_buffered_writes_enabled;
 
 # Verify that an expression that requires normalization does not result in an
 # internal error.
@@ -191,34 +165,3 @@ WITH x AS (UPDATE t SET i = 3 WHERE i = 2 RETURNING i) SELECT * FROM x AS OF SYS
 
 statement error cannot execute SELECT FOR UPDATE in a read-only transaction
 SELECT * FROM t AS OF SYSTEM TIME '-1ms' FOR UPDATE
-
-subtest as_of_future
-
-statement error pq: AS OF SYSTEM TIME: interval value '1 microsecond' is in the future
-REFRESH MATERIALIZED VIEW nonexistent AS OF SYSTEM TIME ('1 microsecond')
-
-statement error pq: AS OF SYSTEM TIME: interval value '00:00:00.000001' is in the future
-REFRESH MATERIALIZED VIEW nonexistent AS OF SYSTEM TIME (INTERVAL '1 microsecond')
-
-statement error pq: AS OF SYSTEM TIME: timestamp '2090-05-08 12:00:00' is in the future
-REFRESH MATERIALIZED VIEW nonexistent AS OF SYSTEM TIME '2090-05-08 12:00:00'
-
-statement error pq: AS OF SYSTEM TIME: interval value '1 microsecond' is in the future
-CREATE TABLE wontcreate AS SELECT * FROM nonexistent AS OF SYSTEM TIME ('1 microsecond')
-
-statement error pq: AS OF SYSTEM TIME: interval value '00:00:00.000001' is in the future
-CREATE TABLE wontcreate AS SELECT * FROM nonexistent AS OF SYSTEM TIME (INTERVAL '1 microsecond')
-
-statement error pq: AS OF SYSTEM TIME: timestamp '2090-05-08 12:00:00' is in the future
-CREATE TABLE wontcreate AS SELECT * FROM nonexistent AS OF SYSTEM TIME '2090-05-08 12:00:00'
-
-statement error pq: AS OF SYSTEM TIME: interval value '1 microsecond' is in the future
-CREATE VIEW wontcreate AS SELECT * FROM nonexistent AS OF SYSTEM TIME ('1 microsecond')
-
-statement error pq: AS OF SYSTEM TIME: interval value '00:00:00.000001' is in the future
-CREATE VIEW wontcreate AS SELECT * FROM nonexistent AS OF SYSTEM TIME (INTERVAL '1 microsecond')
-
-statement error pq: AS OF SYSTEM TIME: timestamp '2090-05-08 12:00:00' is in the future
-CREATE VIEW wontcreate AS SELECT * FROM nonexistent AS OF SYSTEM TIME '2090-05-08 12:00:00'
-
-subtest end

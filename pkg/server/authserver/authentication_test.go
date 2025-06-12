@@ -26,7 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/ctpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/security"
@@ -94,11 +94,15 @@ func TestSSLEnforcement(t *testing.T) {
 	})
 	defer srv.Stopper().Stop(ctx)
 
-	if srv.DeploymentMode().IsExternal() {
+	if srv.TenantController().StartedDefaultTestTenant() {
 		// Enable access to the nodes endpoint for the test tenant.
-		require.NoError(t, srv.GrantTenantCapabilities(
-			ctx, serverutils.TestTenantID(),
-			map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanViewNodeInfo: "true"}))
+		_, err := srv.SystemLayer().SQLConn(t).Exec(
+			`ALTER TENANT [$1] GRANT CAPABILITY can_view_node_info=true`, serverutils.TestTenantID().ToUint64())
+		require.NoError(t, err)
+
+		serverutils.WaitForTenantCapabilities(t, srv, serverutils.TestTenantID(), map[tenantcapabilities.ID]string{
+			tenantcapabilities.CanViewNodeInfo: "true",
+		}, "")
 	}
 
 	s := srv.ApplicationLayer()
@@ -167,6 +171,12 @@ func TestSSLEnforcement(t *testing.T) {
 		{ts.URLPrefix, insecureContext, http.StatusTemporaryRedirect},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
+			if tc.path == apiconstants.StatusPrefix+"nodes" && srv.TenantController().StartedDefaultTestTenant() {
+				// TODO(multitenant): The /_status/nodes endpoint should be
+				// available subject to a tenant capability.
+				skip.WithIssue(t, 110009)
+			}
+
 			client, err := tc.ctx.GetHTTPClient()
 			if err != nil {
 				t.Fatal(err)
@@ -293,40 +303,23 @@ func TestVerifyPasswordDBConsole(t *testing.T) {
 		t.Run(tc.testName, func(t *testing.T) {
 			username := username.MakeSQLUsernameFromPreNormalizedString(tc.username)
 			authServer := ts.HTTPAuthServer().(authserver.Server)
-			verified, pwRetrieveFn, err := authServer.VerifyUserSessionDBConsole(context.Background(), username)
+			valid, expired, err := authServer.VerifyPasswordDBConsole(context.Background(), username, tc.password)
 			if err != nil {
-				t.Fatalf(
-					"user session verification failed, credentials %s/%s failed with error %s, wanted no error",
+				t.Errorf(
+					"credentials %s/%s failed with error %s, wanted no error",
 					tc.username,
 					tc.password,
 					err,
 				)
 			}
-			if !verified && tc.shouldAuthenticate {
-				t.Fatalf("unexpected user %s for DB console login, verified: %t, expected shouldAuthenticate: %t",
-					tc.username, verified, tc.shouldAuthenticate)
-			} else if verified {
-				valid, expired, err := authServer.VerifyPasswordDBConsole(context.Background(), username, tc.password, pwRetrieveFn)
-				if err != nil {
-					t.Errorf(
-						"credentials %s/%s failed with error %s, wanted no error",
-						tc.username,
-						tc.password,
-						err,
-					)
-				}
-				if !valid && tc.shouldAuthenticate {
-					t.Fatalf("unexpected credentials %s/%s for DB console login, valid: %t, expected shouldAuthenticate: %t",
-						tc.username, tc.password, valid, tc.shouldAuthenticate)
-				} else if valid && !expired != tc.shouldAuthenticate {
-					t.Errorf(
-						"credentials %s/%s valid = %t, wanted %t",
-						tc.username,
-						tc.password,
-						valid,
-						tc.shouldAuthenticate,
-					)
-				}
+			if valid && !expired != tc.shouldAuthenticate {
+				t.Errorf(
+					"credentials %s/%s valid = %t, wanted %t",
+					tc.username,
+					tc.password,
+					valid,
+					tc.shouldAuthenticate,
+				)
 			}
 		})
 	}

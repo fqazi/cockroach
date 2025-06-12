@@ -1220,22 +1220,6 @@ func BenchmarkWideTable(b *testing.B) {
 	})
 }
 
-func BenchmarkScanWideTable(b *testing.B) {
-	skip.UnderShort(b)
-	defer log.Scope(b).Close(b)
-	ForEachDB(b, func(b *testing.B, db *sqlutils.SQLRunner) {
-		db.Exec(b, wideTableSchema)
-		var buf bytes.Buffer
-		s := rand.New(rand.NewSource(5432))
-		insertIntoWideTable(b, buf, 0, 10000, 10, s, db)
-
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			db.Exec(b, "SELECT * FROM bench.widetable WHERE f4 < 10")
-		}
-	})
-}
-
 func BenchmarkWideTableIgnoreColumns(b *testing.B) {
 	skip.UnderShort(b)
 	defer log.Scope(b).Close(b)
@@ -1246,6 +1230,7 @@ func BenchmarkWideTableIgnoreColumns(b *testing.B) {
 		insertIntoWideTable(b, buf, 0, 10000, 10, s, db)
 
 		b.ResetTimer()
+
 		for i := 0; i < b.N; i++ {
 			db.Exec(b, "SELECT count(*) FROM bench.widetable WHERE f4 < 10")
 		}
@@ -1520,7 +1505,7 @@ func BenchmarkFuncExprTypeCheck(b *testing.B) {
 	p, cleanup := sql.NewInternalPlanner(
 		"type-check-benchmark",
 		kvDB.NewTxn(ctx, "type-check-benchmark-planner"),
-		username.NodeUserName(),
+		username.RootUserName(),
 		&sql.MemoryMetrics{},
 		&execCfg,
 		sd,
@@ -1587,7 +1572,7 @@ func BenchmarkFuncExprTypeCheck(b *testing.B) {
 			require.NoError(b, err)
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_, err := tree.TypeCheck(ctx, expr, semaCtx, types.AnyElement)
+				_, err := tree.TypeCheck(ctx, expr, semaCtx, types.Any)
 				require.NoError(b, err)
 			}
 		})

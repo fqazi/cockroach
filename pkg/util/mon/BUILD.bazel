@@ -14,7 +14,6 @@ go_library(
         "//pkg/sql/pgwire/pgcode",
         "//pkg/sql/pgwire/pgerror",
         "//pkg/util",
-        "//pkg/util/buildutil",
         "//pkg/util/envutil",
         "//pkg/util/humanizeutil",
         "//pkg/util/ioctx",
@@ -22,10 +21,8 @@ go_library(
         "//pkg/util/log/logcrash",
         "//pkg/util/metric",
         "//pkg/util/syncutil",
-        "//pkg/util/uuid",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_redact//:redact",
-        "@com_github_dustin_go_humanize//:go-humanize",
     ],
 )
 
@@ -33,6 +30,7 @@ go_test(
     name = "mon_test",
     size = "small",
     srcs = ["bytes_usage_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":mon"],
     deps = [
         "//pkg/settings/cluster",

@@ -13,13 +13,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/keyvisualizer"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfo"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
-	"github.com/cockroachdb/cockroach/pkg/upgrade/upgradebase"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/logtags"
@@ -115,15 +113,13 @@ type Cluster interface {
 // SystemDeps are the dependencies of upgrades which perform actions at the
 // KV layer on behalf of the system tenant.
 type SystemDeps struct {
-	Cluster            Cluster
-	DB                 descs.DB
-	Settings           *cluster.Settings
-	JobRegistry        *jobs.Registry
-	Stopper            *stop.Stopper
-	KeyVisKnobs        *keyvisualizer.TestingKnobs
-	SQLStatsKnobs      *sqlstats.TestingKnobs
-	TenantInfoAccessor mtinfo.ReadFromTenantInfoAccessor
-	TestingKnobs       *upgradebase.TestingKnobs
+	Cluster       Cluster
+	DB            descs.DB
+	Settings      *cluster.Settings
+	JobRegistry   *jobs.Registry
+	Stopper       *stop.Stopper
+	KeyVisKnobs   *keyvisualizer.TestingKnobs
+	SQLStatsKnobs *sqlstats.TestingKnobs
 }
 
 // SystemUpgrade is an implementation of Upgrade for system-level
@@ -139,14 +135,28 @@ type SystemUpgrade struct {
 type SystemUpgradeFunc func(context.Context, clusterversion.ClusterVersion, SystemDeps) error
 
 // NewSystemUpgrade constructs a SystemUpgrade.
-func NewSystemUpgrade(
-	description string, v roachpb.Version, fn SystemUpgradeFunc, restore RestoreBehavior,
-) *SystemUpgrade {
+func NewSystemUpgrade(description string, v roachpb.Version, fn SystemUpgradeFunc) *SystemUpgrade {
 	return &SystemUpgrade{
 		upgrade: upgrade{
 			description: description,
 			v:           v,
-			restore:     restore,
+		},
+		fn: fn,
+	}
+}
+
+// NewPermanentSystemUpgrade constructs a SystemUpgrade that is marked as
+// "permanent": an upgrade that will run regardless of the cluster's bootstrap
+// version. Note however that the upgrade will still run at most once.
+func NewPermanentSystemUpgrade(
+	description string, v roachpb.Version, fn SystemUpgradeFunc, v22_2StartupMigrationName string,
+) *SystemUpgrade {
+	return &SystemUpgrade{
+		upgrade: upgrade{
+			description:               description,
+			v:                         v,
+			permanent:                 true,
+			v22_2StartupMigrationName: v22_2StartupMigrationName,
 		},
 		fn: fn,
 	}

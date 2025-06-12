@@ -3,7 +3,6 @@
 statement ok
 CREATE TABLE t (c INT);
 
-retry
 statement ok
 ALTER TABLE t EXPERIMENTAL_RELOCATE VALUES (ARRAY[2], 2)
 

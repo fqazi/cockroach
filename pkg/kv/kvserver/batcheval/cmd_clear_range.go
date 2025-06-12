@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -113,8 +112,7 @@ func ClearRange(
 	// consider the txn incomplete, uncommitting it and its writes (even those
 	// outside of the cleared range).
 	maxLockConflicts := storage.MaxConflictsPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV)
-	targetLockConflictBytes := storage.TargetBytesPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV)
-	locks, err := storage.ScanLocks(ctx, readWriter, from, to, maxLockConflicts, targetLockConflictBytes)
+	locks, err := storage.ScanLocks(ctx, readWriter, from, to, maxLockConflicts, 0)
 	if err != nil {
 		return result.Result{}, err
 	} else if len(locks) > 0 {
@@ -150,9 +148,9 @@ func ClearRange(
 	// If we're writing Pebble range tombstones, use ClearRangeWithHeuristic to
 	// avoid writing tombstones across empty spans -- in particular, across the
 	// range key span, since we expect range keys to be rare.
-	const pointKeyThreshold = 2
+	const pointKeyThreshold, rangeKeyThreshold = 2, 2
 	if err := storage.ClearRangeWithHeuristic(
-		ctx, readWriter, readWriter, from, to, pointKeyThreshold,
+		readWriter, readWriter, from, to, pointKeyThreshold, rangeKeyThreshold,
 	); err != nil {
 		return result.Result{}, err
 	}
@@ -189,7 +187,7 @@ func computeStatsDelta(
 	// If we can't use the fast stats path, or race test is enabled, compute stats
 	// across the key span to be cleared.
 	if !entireRange || util.RaceEnabled {
-		computed, err := storage.ComputeStats(ctx, readWriter, from, to, delta.LastUpdateNanos)
+		computed, err := storage.ComputeStats(readWriter, from, to, delta.LastUpdateNanos)
 		if err != nil {
 			return enginepb.MVCCStats{}, err
 		}
@@ -214,11 +212,10 @@ func computeStatsDelta(
 		if !entireRange {
 			leftPeekBound, rightPeekBound := rangeTombstonePeekBounds(
 				from, to, desc.StartKey.AsRawKey(), desc.EndKey.AsRawKey())
-			rkIter, err := readWriter.NewMVCCIterator(ctx, storage.MVCCKeyIterKind, storage.IterOptions{
-				KeyTypes:     storage.IterKeyTypeRangesOnly,
-				LowerBound:   leftPeekBound,
-				UpperBound:   rightPeekBound,
-				ReadCategory: fs.BatchEvalReadCategory,
+			rkIter, err := readWriter.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
+				KeyTypes:   storage.IterKeyTypeRangesOnly,
+				LowerBound: leftPeekBound,
+				UpperBound: rightPeekBound,
 			})
 			if err != nil {
 				return enginepb.MVCCStats{}, err

@@ -1,3 +1,5 @@
+# LogicTest: !local-mixed-23.1
+
 statement ok
 CREATE SEQUENCE seq;
 
@@ -91,34 +93,6 @@ SELECT get_body_str('f_rewrite');
 statement ok
 DROP FUNCTION f_rewrite();
 
-statement ok
-CREATE FUNCTION f_rewrite(OUT weekday) AS
-$$
-  SELECT 'thursday'::weekday;
-$$ LANGUAGE SQL
-
-query T
-SELECT get_body_str('f_rewrite');
-----
-"SELECT b'\\xa0':::@100107;"
-
-statement ok
-DROP FUNCTION f_rewrite();
-
-statement ok
-CREATE FUNCTION f_rewrite(INOUT a weekday) AS
-$$
-  SELECT 'thursday'::weekday;
-$$ LANGUAGE SQL
-
-query T
-SELECT get_body_str('f_rewrite');
-----
-"SELECT b'\\xa0':::@100107;"
-
-statement ok
-DROP FUNCTION f_rewrite;
-
 subtest end
 
 subtest rewrite_proc
@@ -150,78 +124,5 @@ SELECT get_body_str('p_rewrite');
 
 statement ok
 DROP PROCEDURE p_rewrite();
-
-statement ok
-CREATE PROCEDURE p_rewrite(OUT weekday) AS
-$$
-  SELECT 'thursday'::weekday;
-$$ LANGUAGE SQL
-
-query T
-SELECT get_body_str('p_rewrite');
-----
-"SELECT b'\\xa0':::@100107;"
-
-statement ok
-DROP PROCEDURE p_rewrite();
-
-statement ok
-CREATE PROCEDURE p_rewrite(INOUT a weekday) AS
-$$
-  SELECT 'thursday'::weekday;
-$$ LANGUAGE SQL
-
-query T
-SELECT get_body_str('p_rewrite');
-----
-"SELECT b'\\xa0':::@100107;"
-
-statement ok
-DROP PROCEDURE p_rewrite;
-
-subtest end
-
-subtest rewrite_udf_calling_udf
-
-statement ok
-CREATE FUNCTION nested_func() RETURNS INT AS $$
-  SELECT 1;
-$$ LANGUAGE SQL
-
-statement ok
-CREATE PROCEDURE p_rewrite() AS $$
-  SELECT nested_func();
-  SELECT * FROM nested_func();
-$$ LANGUAGE SQL
-
-# TODO(fqazi): Renaming function calls will break today until #120351 is completed.
-query T
-SELECT get_body_str('p_rewrite');
-----
-"SELECT public.nested_func();\nSELECT nested_func FROM ROWS FROM (public.nested_func());"
-
-subtest end
-
-subtest rewrite_udf_do_block
-
-statement ok
-CREATE OR REPLACE FUNCTION f_rewrite() RETURNS INT AS $$
-  DO $foo$
-    BEGIN
-      INSERT INTO t_rewrite(v) VALUES (nextval('seq')) RETURNING v;
-      DO $bar$
-        BEGIN
-          INSERT INTO t_rewrite(v) VALUES (nextval('seq')) RETURNING v;
-        END;
-      $bar$;
-    END
-  $foo$;
-  SELECT 1;
-$$ LANGUAGE SQL
-
-query T
-SELECT get_body_str('f_rewrite');
-----
-"DO $funcbody$\nBEGIN\nINSERT INTO test.public.t_rewrite(v) VALUES (nextval(106:::REGCLASS)) RETURNING v;\nDO $$\nBEGIN\nINSERT INTO test.public.t_rewrite(v) VALUES (nextval(106:::REGCLASS)) RETURNING v;\nEND;\n$$;\nEND;\n$funcbody$;\n;\nSELECT 1;"
 
 subtest end

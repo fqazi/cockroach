@@ -11,6 +11,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
+	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 )
 
 // StoresIterator is able to iterate over all stores on a given node.
@@ -29,14 +30,13 @@ type Store interface {
 		queue string,
 		rangeID roachpb.RangeID,
 		skipShouldQueue bool,
-	) error
+	) (tracingpb.Recording, error)
 
 	// SetQueueActive disables/enables the named queue.
 	SetQueueActive(active bool, queue string) error
 
 	// GetReplicaMutexForTesting returns the mutex of the replica with the given
 	// range ID, or nil if no replica was found. This is used for testing.
-	// Returns a syncutil.RWMutex rather than ReplicaMutex to avoid import cycles.
 	GetReplicaMutexForTesting(rangeID roachpb.RangeID) *syncutil.RWMutex
 }
 

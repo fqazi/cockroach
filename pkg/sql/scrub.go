@@ -22,7 +22,6 @@ import (
 )
 
 type scrubNode struct {
-	zeroInputPlanNode
 	optColumnsSlot
 
 	n *tree.Scrub
@@ -67,7 +66,7 @@ type checkOperation interface {
 // Scrub checks the database.
 // Privileges: superuser.
 func (p *planner) Scrub(ctx context.Context, n *tree.Scrub) (planNode, error) {
-	if err := p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER); err != nil {
+	if err := p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTERMETADATA); err != nil {
 		return nil, err
 	}
 	return &scrubNode{n: n}, nil

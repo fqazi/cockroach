@@ -39,29 +39,23 @@ func TestInOrderResultsBuffer(t *testing.T) {
 		ctx,
 		base.DefaultTestTempStorageConfig(st),
 		base.DefaultTestStoreSpec,
-		nil, /* statsCollector */
 	)
 	require.NoError(t, err)
 	defer tempEngine.Close()
-	memMonitor := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("test-mem"),
-		Res:      mon.MemoryResource,
-		Settings: st,
-	})
-	memMonitor.Start(ctx, nil, mon.NewStandaloneBudget(math.MaxInt64))
-	defer memMonitor.Stop(ctx)
-	memAcc := memMonitor.MakeBoundAccount()
-	diskMonitor := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("test-disk"),
-		Res:      mon.DiskResource,
-		Settings: st,
-	})
+	diskMonitor := mon.NewMonitor(
+		"test-disk",
+		mon.DiskResource,
+		nil,           /* curCount */
+		nil,           /* maxHist */
+		-1,            /* increment */
+		math.MaxInt64, /* noteworthy */
+		st,
+	)
 	diskMonitor.Start(ctx, nil, mon.NewStandaloneBudget(math.MaxInt64))
 	defer diskMonitor.Stop(ctx)
 
-	reverse := rng.Float64() > 0.5
-	budget := newBudget(mon.NewStandaloneUnlimitedAccount(), math.MaxInt /* limitBytes */)
-	diskBuffer := TestResultDiskBufferConstructor(tempEngine, memAcc, diskMonitor, reverse)
+	budget := newBudget(nil /* acc */, math.MaxInt /* limitBytes */)
+	diskBuffer := TestResultDiskBufferConstructor(tempEngine, diskMonitor)
 	b := newInOrderResultsBuffer(budget, diskBuffer)
 	defer b.close(ctx)
 
@@ -86,7 +80,7 @@ func TestInOrderResultsBuffer(t *testing.T) {
 					numRanges = rng.Intn(10) + 1
 				}
 				for j := 0; j < numRanges; j++ {
-					scan := makeResultWithScanResp(rng, reverse)
+					scan := makeResultWithScanResp(rng)
 					scan.scanComplete = j+1 == numRanges
 					scan.memoryTok.toRelease = rng.Int63n(100)
 					scan.Position = i
@@ -119,9 +113,7 @@ func TestInOrderResultsBuffer(t *testing.T) {
 			b.Lock()
 			numToAdd := rng.Intn(len(addOrder)) + 1
 			for i := 0; i < numToAdd; i++ {
-				r := results[addOrder[0]]
-				require.NoError(t, budget.consumeLocked(ctx, r.memoryTok.toRelease, false /* allowDebt */))
-				b.addLocked(r)
+				b.addLocked(results[addOrder[0]])
 				addOrder = addOrder[1:]
 			}
 			b.doneAddingLocked(ctx)
@@ -176,15 +168,16 @@ func makeResultWithGetResp(rng *rand.Rand, empty bool) Result {
 		r.GetResp.Value = &roachpb.Value{
 			RawBytes: rawBytes,
 			Timestamp: hlc.Timestamp{
-				WallTime: rng.Int63(),
-				Logical:  rng.Int31(),
+				WallTime:  rng.Int63(),
+				Logical:   rng.Int31(),
+				Synthetic: rng.Float64() < 0.5,
 			},
 		}
 	}
 	return r
 }
 
-func makeResultWithScanResp(rng *rand.Rand, reverse bool) Result {
+func makeResultWithScanResp(rng *rand.Rand) Result {
 	var r Result
 	// Sometimes generate zero-length batchResponses.
 	batchResponses := make([][]byte, rng.Intn(20))
@@ -193,14 +186,8 @@ func makeResultWithScanResp(rng *rand.Rand, reverse bool) Result {
 		rng.Read(batchResponse)
 		batchResponses[i] = batchResponse
 	}
-	if reverse {
-		r.ScanResp = &kvpb.ReverseScanResponse{
-			BatchResponses: batchResponses,
-		}
-	} else {
-		r.ScanResp = &kvpb.ScanResponse{
-			BatchResponses: batchResponses,
-		}
+	r.ScanResp = &kvpb.ScanResponse{
+		BatchResponses: batchResponses,
 	}
 	return r
 }

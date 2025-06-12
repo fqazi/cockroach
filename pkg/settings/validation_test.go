@@ -15,49 +15,32 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 )
 
-var cantBeTrue = settings.WithValidateBool(func(sv *settings.Values, b bool) error {
-	if b {
-		return fmt.Errorf("it cant be true")
-	}
-	return nil
-})
-
-var cantBeFalse = settings.WithValidateBool(func(sv *settings.Values, b bool) error {
-	if !b {
-		return fmt.Errorf("it cant be false")
-	}
-	return nil
-})
-
 func TestValidationOptions(t *testing.T) {
 	type subTest struct {
 		val         interface{}
 		opt         settings.SettingOption
-		omitOpt     bool
 		expectedErr string
 	}
 	type testCase struct {
 		testLabel string
-		settingFn func(n int, val interface{}, opt ...settings.SettingOption) settings.Setting
+		settingFn func(n int, val interface{}, opt settings.SettingOption) settings.Setting
 		subTests  []subTest
 	}
 	testCases := []testCase{
 		{
 			testLabel: "duration",
-			settingFn: func(n int, dval interface{}, opt ...settings.SettingOption) settings.Setting {
+			settingFn: func(n int, dval interface{}, opt settings.SettingOption) settings.Setting {
 				val := dval.(time.Duration)
-				return settings.RegisterDurationSetting(
-					settings.SystemOnly, settings.InternalKey(fmt.Sprintf("test-%d", n)),
-					"desc", val, opt...,
-				)
+				return settings.RegisterDurationSetting(settings.SystemOnly, settings.InternalKey(fmt.Sprintf("test-%d", n)), "desc",
+					val, opt)
 			},
 			subTests: []subTest{
 				{val: time.Duration(-1), opt: settings.PositiveDuration, expectedErr: "cannot be set to a non-positive duration: -1ns"},
 				{val: time.Duration(0), opt: settings.PositiveDuration, expectedErr: "cannot be set to a non-positive duration: 0s"},
 				{val: time.Duration(1), opt: settings.PositiveDuration, expectedErr: ""},
-				{val: time.Duration(-1), omitOpt: true, expectedErr: "cannot be set to a negative duration: -1ns"},
-				{val: time.Duration(0), omitOpt: true, expectedErr: ""},
-				{val: time.Duration(1), omitOpt: true, expectedErr: ""},
+				{val: time.Duration(-1), opt: settings.NonNegativeDuration, expectedErr: "cannot be set to a negative duration: -1ns"},
+				{val: time.Duration(0), opt: settings.NonNegativeDuration, expectedErr: ""},
+				{val: time.Duration(1), opt: settings.NonNegativeDuration, expectedErr: ""},
 				{val: time.Duration(-1), opt: settings.DurationWithMinimum(10), expectedErr: "cannot be set to a negative duration: -1ns"},
 				{val: time.Duration(1), opt: settings.DurationWithMinimum(10), expectedErr: "cannot be set to a value smaller than 10ns"},
 				{val: time.Duration(10), opt: settings.DurationWithMinimum(10), expectedErr: ""},
@@ -85,12 +68,10 @@ func TestValidationOptions(t *testing.T) {
 		},
 		{
 			testLabel: "float",
-			settingFn: func(n int, fval interface{}, opt ...settings.SettingOption) settings.Setting {
+			settingFn: func(n int, fval interface{}, opt settings.SettingOption) settings.Setting {
 				val := fval.(float64)
-				return settings.RegisterFloatSetting(
-					settings.SystemOnly, settings.InternalKey(fmt.Sprintf("test-%d", n)),
-					"desc", val, opt...,
-				)
+				return settings.RegisterFloatSetting(settings.SystemOnly, settings.InternalKey(fmt.Sprintf("test-%d", n)), "desc",
+					val, opt)
 			},
 			subTests: []subTest{
 				{val: -1.0, opt: settings.PositiveFloat, expectedErr: "cannot set to a non-positive value: -1.000000"},
@@ -144,12 +125,10 @@ func TestValidationOptions(t *testing.T) {
 		},
 		{
 			testLabel: "int",
-			settingFn: func(n int, ival interface{}, opt ...settings.SettingOption) settings.Setting {
+			settingFn: func(n int, ival interface{}, opt settings.SettingOption) settings.Setting {
 				val := ival.(int)
-				return settings.RegisterIntSetting(
-					settings.SystemOnly, settings.InternalKey(fmt.Sprintf("test-%d", n)),
-					"desc", int64(val), opt...,
-				)
+				return settings.RegisterIntSetting(settings.SystemOnly, settings.InternalKey(fmt.Sprintf("test-%d", n)), "desc",
+					int64(val), opt)
 			},
 			subTests: []subTest{
 				{val: -1, opt: settings.PositiveInt, expectedErr: "cannot be set to a non-positive value: -1"},
@@ -186,40 +165,16 @@ func TestValidationOptions(t *testing.T) {
 		},
 		{
 			testLabel: "bytesize",
-			settingFn: func(n int, ival interface{}, opt ...settings.SettingOption) settings.Setting {
+			settingFn: func(n int, ival interface{}, opt settings.SettingOption) settings.Setting {
 				val := ival.(int)
-				return settings.RegisterByteSizeSetting(
-					settings.SystemOnly, settings.InternalKey(fmt.Sprintf("test-%d", n)),
-					"desc", int64(val), opt...,
-				)
+				return settings.RegisterByteSizeSetting(settings.SystemOnly, settings.InternalKey(fmt.Sprintf("test-%d", n)), "desc",
+					int64(val), opt)
 			},
 			subTests: []subTest{
 				{val: -1, opt: settings.ByteSizeWithMinimum(10), expectedErr: "cannot be set to a value lower than 10 B"},
 				{val: 1, opt: settings.ByteSizeWithMinimum(10), expectedErr: "cannot be set to a value lower than 10 B"},
 				{val: 10, opt: settings.ByteSizeWithMinimum(10), expectedErr: ""},
 				{val: 11, opt: settings.ByteSizeWithMinimum(10), expectedErr: ""},
-			},
-		},
-		{
-			testLabel: "bool",
-			settingFn: func(n int, bval interface{}, opt ...settings.SettingOption) settings.Setting {
-				val := bval.(bool)
-				b := settings.RegisterBoolSetting(
-					settings.SystemOnly, settings.InternalKey(fmt.Sprintf("test-%d", n)),
-					"desc", val, opt...,
-				)
-				// We explicitly check here to test validation which does not happen on initialization.
-				err := b.Validate(&settings.Values{}, val)
-				if err != nil {
-					panic(err)
-				}
-				return b
-			},
-			subTests: []subTest{
-				{val: true, opt: cantBeTrue, expectedErr: "it cant be true"},
-				{val: false, opt: cantBeTrue, expectedErr: ""},
-				{val: true, opt: cantBeFalse, expectedErr: ""},
-				{val: false, opt: cantBeFalse, expectedErr: "it cant be false"},
 			},
 		},
 	}
@@ -240,11 +195,7 @@ func TestValidationOptions(t *testing.T) {
 								panic(r)
 							}
 						}()
-						if subTest.omitOpt {
-							_ = tc.settingFn(i, subTest.val)
-						} else {
-							_ = tc.settingFn(i, subTest.val, subTest.opt)
-						}
+						_ = tc.settingFn(i, subTest.val, subTest.opt)
 						return nil
 					}()
 					if err != nil {

@@ -7,15 +7,13 @@ package storage
 
 import (
 	"bytes"
-	"context"
 	"sync"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
@@ -85,9 +83,6 @@ type LockTableIteratorOptions struct {
 	// If set, return locks held by any transaction with this strength or
 	// stronger.
 	MatchMinStr lock.Strength
-	// ReadCategory is used to map to a user-understandable category string, for
-	// stats aggregation and metrics, and a Pebble-understandable QoS.
-	ReadCategory fs.ReadCategory
 }
 
 // validate validates the LockTableIteratorOptions.
@@ -122,12 +117,12 @@ var lockTableIteratorPool = sync.Pool{
 
 // NewLockTableIterator creates a new LockTableIterator.
 func NewLockTableIterator(
-	ctx context.Context, reader Reader, opts LockTableIteratorOptions,
+	reader Reader, opts LockTableIteratorOptions,
 ) (*LockTableIterator, error) {
 	if err := opts.validate(); err != nil {
 		return nil, err
 	}
-	iter, err := reader.NewEngineIterator(ctx, opts.toIterOptions())
+	iter, err := reader.NewEngineIterator(opts.toIterOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -510,7 +505,7 @@ const defaultLockTableItersBeforeSeek = 5
 // shared locks on a single user key before seeking past them. This is used to
 // avoid iterating over all shared locks on a key when not necessary, given the
 // filtering criteria.
-var lockTableItersBeforeSeek = metamorphic.ConstantWithTestRange(
+var lockTableItersBeforeSeek = util.ConstantWithMetamorphicTestRange(
 	"lock-table-iters-before-seek",
 	defaultLockTableItersBeforeSeek, /* defaultValue */
 	0,                               /* min */

@@ -36,7 +36,7 @@ func TestStartSpan(t *testing.T) {
 	tr := NewTracerWithOpt(context.Background(), WithTracingMode(TracingModeOnDemand))
 	sp := tr.StartSpan("test")
 	defer sp.Finish()
-	require.Equal(t, "<nil>", sp.OperationName())
+	require.Equal(t, "noop", sp.OperationName())
 
 	sp2 := tr.StartSpan("test", WithRecording(tracingpb.RecordingStructured))
 	defer sp2.Finish()
@@ -289,7 +289,7 @@ func TestSpanRecordStructured(t *testing.T) {
 		`))
 	checkRecording(t, rec, `
 		=== operation:root
-structured:‹{"@type":"type.googleapis.com/cockroach.util.tracing.tracingpb.OperationMetadata","duration":"3s"}›
+structured:‹{"@type":"type.googleapis.com/cockroach.util.tracing.tracingpb.OperationMetadata","duration":"3s","count":"0","containsUnfinished":false}›
 structured:‹{"@type":"type.googleapis.com/google.protobuf.Int32Value","value":4}›`)
 }
 
@@ -935,7 +935,11 @@ func TestSpan_UseAfterFinish(t *testing.T) {
 				// below.
 				for i := 0; i < 20; i++ {
 					t.Run("invoke", func(t *testing.T) {
-						f.Func.Call(args)
+						if i == 9 {
+							f.Func.Call(args)
+						} else {
+							f.Func.Call(args)
+						}
 					})
 				}
 			})

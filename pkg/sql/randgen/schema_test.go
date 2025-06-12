@@ -45,9 +45,9 @@ func TestPopulateTableWithRandData(t *testing.T) {
 	tablePrefix := "table"
 	numTables := 10
 
-	stmts := randgen.RandCreateTables(
-		ctx, rng, tablePrefix, numTables, randgen.TableOptNone,
-		randgen.PartialIndexMutator, randgen.ForeignKeyMutator,
+	stmts := randgen.RandCreateTables(rng, tablePrefix, numTables, false, /* isMultiRegion */
+		randgen.PartialIndexMutator,
+		randgen.ForeignKeyMutator,
 	)
 
 	var sb strings.Builder
@@ -63,7 +63,7 @@ func TestPopulateTableWithRandData(t *testing.T) {
 	for i := 0; i < numTables; i++ {
 		tableName := string(stmts[i].(*tree.CreateTable).Table.ObjectName)
 		numRows := 30
-		numRowsInserted, err := randgen.PopulateTableWithRandData(rng, dbConn, tableName, numRows, nil)
+		numRowsInserted, err := randgen.PopulateTableWithRandData(rng, dbConn, tableName, numRows)
 		require.NoError(t, err)
 		res := sqlDB.QueryStr(t, fmt.Sprintf("SELECT count(*) FROM %s", tree.NameString(tableName)))
 		require.Equal(t, fmt.Sprint(numRowsInserted), res[0][0])

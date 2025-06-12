@@ -10,6 +10,7 @@ import (
 	gosql "database/sql"
 	"fmt"
 	"math/rand"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -139,16 +140,15 @@ func TestStorage(t *testing.T) {
 
 		equalInstance := func(t *testing.T, expect sqlinstance.InstanceInfo, actual sqlinstance.InstanceInfo) {
 			require.Equal(t, expect.InstanceID, actual.InstanceID)
-			require.Equal(t, expect.SessionID, actual.SessionID)
-			require.Equal(t, expect.InstanceRPCAddr, actual.InstanceRPCAddr)
-			require.Equal(t, expect.InstanceSQLAddr, actual.InstanceSQLAddr)
-			require.Equal(t, expect.Locality, actual.Locality)
-			require.Equal(t, expect.BinaryVersion, actual.BinaryVersion)
-			require.Equal(t, expect.IsDraining, actual.IsDraining)
+			require.Equal(t, actual.SessionID, actual.SessionID)
+			require.Equal(t, actual.InstanceRPCAddr, actual.InstanceRPCAddr)
+			require.Equal(t, actual.InstanceSQLAddr, actual.InstanceSQLAddr)
+			require.Equal(t, actual.Locality, actual.Locality)
+			require.Equal(t, actual.BinaryVersion, actual.BinaryVersion)
 		}
 
 		isAvailable := func(t *testing.T, instance sqlinstance.InstanceInfo, id base.SQLInstanceID) {
-			require.Equal(t, sqlinstance.InstanceInfo{InstanceID: id, Region: enum.One}, instance)
+			require.Equal(t, sqlinstance.InstanceInfo{InstanceID: id}, instance)
 		}
 
 		var initialInstances []sqlinstance.InstanceInfo
@@ -164,7 +164,7 @@ func TestStorage(t *testing.T) {
 		// Verify all instances are returned by GetAllInstancesDataForTest.
 		{
 			instances, err := storage.GetAllInstancesDataForTest(ctx)
-			instancestorage.SortInstances(instances)
+			sortInstances(instances)
 			require.NoError(t, err)
 			require.Equal(t, preallocatedCount, len(instances))
 			for _, i := range []int{0, 1, 2} {
@@ -183,7 +183,7 @@ func TestStorage(t *testing.T) {
 		// Verify all instances are returned by GetAllInstancesDataForTest.
 		{
 			instances, err := storage.GetAllInstancesDataForTest(ctx)
-			instancestorage.SortInstances(instances)
+			sortInstances(instances)
 			require.NoError(t, err)
 			require.Equal(t, preallocatedCount, len(instances))
 			for i := range instances {
@@ -202,7 +202,7 @@ func TestStorage(t *testing.T) {
 			instances, err := storage.GetAllInstancesDataForTest(ctx)
 			require.NoError(t, err)
 			require.Equal(t, preallocatedCount, len(instances))
-			instancestorage.SortInstances(instances)
+			sortInstances(instances)
 
 			for i, instance := range instances {
 				if i == 0 {
@@ -226,7 +226,7 @@ func TestStorage(t *testing.T) {
 
 			instances, err := storage.GetAllInstancesDataForTest(ctx)
 			require.NoError(t, err)
-			instancestorage.SortInstances(instances)
+			sortInstances(instances)
 
 			require.Equal(t, len(initialInstances), len(instances))
 			for index, instance := range instances {
@@ -431,7 +431,7 @@ func TestConcurrentCreateAndRelease(t *testing.T) {
 			state.Lock()
 			defer state.Unlock()
 			session.ExpTS = clock.Now().Add(expiration.Nanoseconds(), 0)
-			_, _, err = slStorage.Update(ctx, session.ID(), session.Expiration())
+			_, err = slStorage.Update(ctx, session.ID(), session.Expiration())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -562,13 +562,12 @@ func TestReclaimLoop(t *testing.T) {
 
 	// Expiration < ReclaimLoopInterval.
 	const expiration = 5 * time.Hour
-	sessionStart := clock.Now()
-	sessionExpiry := sessionStart.Add(expiration.Nanoseconds(), 0)
+	session := makeSession()
+	session.StartTS = clock.Now()
+	session.ExpTS = session.StartTS.Add(expiration.Nanoseconds(), 0)
 
 	db := s.InternalDB().(descs.DB)
-	err := storage.RunInstanceIDReclaimLoop(ctx, s.AppStopper(), ts, db, func() hlc.Timestamp {
-		return sessionExpiry
-	})
+	err := storage.RunInstanceIDReclaimLoop(ctx, s.AppStopper(), ts, db, session)
 	require.NoError(t, err)
 
 	reclaimGroupInterval := instancestorage.ReclaimLoopInterval.Get(&s.ClusterSettings().SV)
@@ -593,7 +592,7 @@ func TestReclaimLoop(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		instancestorage.SortInstances(instances)
+		sortInstances(instances)
 		if len(instances) == 0 {
 			return errors.New("instances have not been generated yet")
 		}
@@ -617,8 +616,8 @@ func TestReclaimLoop(t *testing.T) {
 	sqlAddresses := [...]string{"addr3", "addr4"}
 	sessionIDs := [...]*sqllivenesstestutils.FakeSession{makeSession(), makeSession()}
 	for _, id := range sessionIDs {
-		id.StartTS = sessionStart
-		id.ExpTS = sessionExpiry
+		id.StartTS = session.StartTS
+		id.ExpTS = session.ExpTS
 	}
 	localities := [...]roachpb.Locality{
 		{Tiers: []roachpb.Tier{{Key: "region", Value: "region1"}}},
@@ -629,7 +628,7 @@ func TestReclaimLoop(t *testing.T) {
 	}
 
 	for i, id := range instanceIDs {
-		require.NoError(t, slStorage.Insert(ctx, sessionIDs[i].ID(), sessionExpiry))
+		require.NoError(t, slStorage.Insert(ctx, sessionIDs[i].ID(), session.Expiration()))
 		require.NoError(t, storage.CreateInstanceDataForTest(
 			ctx,
 			region,
@@ -637,11 +636,9 @@ func TestReclaimLoop(t *testing.T) {
 			rpcAddresses[i],
 			sqlAddresses[i],
 			sessionIDs[i].ID(),
-			sessionExpiry,
+			session.Expiration(),
 			localities[i],
 			binaryVersions[i],
-			/* encodeIsDraining */ true,
-			/* isDraining */ false,
 		))
 	}
 
@@ -660,7 +657,7 @@ func TestReclaimLoop(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		instancestorage.SortInstances(instances)
+		sortInstances(instances)
 		if len(instances) == preallocatedCount {
 			return errors.New("new instances have not been generated yet")
 		}
@@ -685,4 +682,10 @@ func TestReclaimLoop(t *testing.T) {
 			require.Empty(t, instance.BinaryVersion)
 		}
 	}
+}
+
+func sortInstances(instances []sqlinstance.InstanceInfo) {
+	sort.SliceStable(instances, func(idx1, idx2 int) bool {
+		return instances[idx1].InstanceID < instances[idx2].InstanceID
+	})
 }

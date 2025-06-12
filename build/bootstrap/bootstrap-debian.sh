@@ -6,8 +6,8 @@
 # included in the /LICENSE file.
 
 #
-# On a Debian/Ubuntu system, bootstraps all the required dependencies for the
-# cockroach & managed-service repos.
+# On a Debian/Ubuntu system, bootstraps a docker install and the cockroach
+# repo.
 
 set -euxo pipefail
 
@@ -31,13 +31,17 @@ sudo apt-get install -y --no-install-recommends \
 
 # pnpm doesn't provide a Debian repository, and supports either `curl | sh` or `npm install -g` installations.
 curl -fsSL https://get.pnpm.io/install.sh | env PNPM_VERSION=8.6.6 sh -
-echo >> ~/.bashrc
 
 sudo adduser "${USER}" docker
 
+# Configure environment variables.
+echo 'export PATH="${PATH}:$HOME/go/src/github.com/cockroachdb/cockroach/bin:/usr/local/go/bin"' >> ~/.bashrc_bootstrap
+echo '. ~/.bashrc_bootstrap' >> ~/.bashrc
+. ~/.bashrc_bootstrap
+
 # Upgrade cmake.
 trap 'rm -f /tmp/cmake.tgz' EXIT
-curl -fsSL https://github.com/Kitware/CMake/releases/download/v3.20.3/cmake-3.20.3-Linux-x86_64.tar.gz >/tmp/cmake.tgz
+curl -fsSL https://github.com/Kitware/CMake/releases/download/v3.20.3/cmake-3.20.3-Linux-x86_64.tar.gz > /tmp/cmake.tgz
 sha256sum -c - <<EOF
 97bf730372f9900b2dfb9206fccbcf92f5c7f3b502148b832e77451aa0f9e0e6  /tmp/cmake.tgz
 EOF
@@ -45,21 +49,15 @@ sudo tar -C /usr --strip-components=1 -zxf /tmp/cmake.tgz && rm /tmp/cmake.tgz
 
 # Install Go.
 trap 'rm -f /tmp/go.tgz' EXIT
-curl -fsSL https://dl.google.com/go/go1.23.7.linux-amd64.tar.gz >/tmp/go.tgz
+curl -fsSL https://dl.google.com/go/go1.21.12.linux-amd64.tar.gz > /tmp/go.tgz
 sha256sum -c - <<EOF
-4741525e69841f2e22f9992af25df0c1112b07501f61f741c12c6389fcb119f3  /tmp/go.tgz
+121ab58632787e18ae0caa8ae285b581f9470d0f6b3defde9e1600e211f583c5  /tmp/go.tgz
 EOF
 sudo tar -C /usr/local -zxf /tmp/go.tgz && rm /tmp/go.tgz
 
-# Install Docker compose.
-sudo curl -L "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64" -o /usr/local/bin/docker-compose
-sudo chmod +x /usr/local/bin/docker-compose
-docker-compose --version
-
-# Install NVM.
-# Note: you still required to run `nvm install <version>` to install a specific version of Node.js.
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-echo >> ~/.bashrc
+# Clone CockroachDB.
+git clone https://github.com/cockroachdb/cockroach "$(go env GOPATH)/src/github.com/cockroachdb/cockroach"
+git -C "$(go env GOPATH)/src/github.com/cockroachdb/cockroach" submodule update --init
 
 # Install Bazelisk as Bazel.
 # NOTE: you should keep this in sync with build/packer/teamcity-agent.sh and build/bazelbuilder/Dockerfile -- if
@@ -72,13 +70,3 @@ sudo mv /tmp/bazelisk /usr/bin/bazel
 
 # Install the Unison file-syncer.
 . bootstrap/bootstrap-unison.sh
-
-# Configure environment variables for CockroachDB
-echo 'export PATH="${PATH}:${HOME}/go/src/github.com/cockroachdb/cockroach/bin:/usr/local/go/bin"' >> ~/.bashrc_bootstrap
-echo >> ~/.bashrc
-echo '. ~/.bashrc_bootstrap' >> ~/.bashrc
-. ~/.bashrc_bootstrap
-
-git clone https://github.com/cockroachdb/cockroach "$(go env GOPATH)/src/github.com/cockroachdb/cockroach"
-git -C "$(go env GOPATH)/src/github.com/cockroachdb/cockroach" submodule update --init
-

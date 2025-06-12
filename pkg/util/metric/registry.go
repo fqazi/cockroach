@@ -11,31 +11,13 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
-	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/gogo/protobuf/proto"
 	prometheusgo "github.com/prometheus/client_model/go"
 )
-
-var AppNameLabelEnabled = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"sql.metrics.application_name.enabled",
-	"when enabled, SQL metrics would export application name as and additional label as part of child metrics."+
-		" The number of unique label combinations is limited to 5000 by default.",
-	false, /* default */
-	settings.WithPublic)
-
-var DBNameLabelEnabled = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"sql.metrics.database_name.enabled",
-	"when enabled, SQL metrics would export database name as and additional label as part of child metrics."+
-		" The number of unique label combinations is limited to 5000 by default.",
-	false, /* default */
-	settings.WithPublic)
 
 // A Registry is a list of metrics. It provides a simple way of iterating over
 // them, can marshal into JSON, and generate a prometheus format.
@@ -95,24 +77,10 @@ func (r *Registry) GetLabels() []*prometheusgo.LabelPair {
 func (r *Registry) AddMetric(metric Iterable) {
 	r.Lock()
 	defer r.Unlock()
-	r.tracked[metric.GetName(false /* useStaticLabels */)] = metric
+	r.tracked[metric.GetName()] = metric
 	if log.V(2) {
-		log.Infof(context.TODO(), "added metric: %s (%T)", metric.GetName(false /* useStaticLabels */), metric)
+		log.Infof(context.TODO(), "added metric: %s (%T)", metric.GetName(), metric)
 	}
-}
-
-// Contains returns true if the given metric name is registered in this
-// registry. The method will automatically trim `cr.store` and
-// `cr.node` prefixes if they're present in the name, otherwise leaving
-// the input unchanged.
-func (r *Registry) Contains(name string) bool {
-	r.Lock()
-	defer r.Unlock()
-
-	name = strings.TrimPrefix(name, "cr.store.")
-	name = strings.TrimPrefix(name, "cr.node.")
-	_, ok := r.tracked[name]
-	return ok
 }
 
 // RemoveMetric removes the passed-in metric from the registry. If the metric
@@ -120,9 +88,9 @@ func (r *Registry) Contains(name string) bool {
 func (r *Registry) RemoveMetric(metric Iterable) {
 	r.Lock()
 	defer r.Unlock()
-	delete(r.tracked, metric.GetName(false /* useStaticLabels */))
+	delete(r.tracked, metric.GetName())
 	if log.V(2) {
-		log.Infof(context.TODO(), "removed metric: %s (%T)", metric.GetName(false /* useStaticLabels */), metric)
+		log.Infof(context.TODO(), "removed metric: %s (%T)", metric.GetName(), metric)
 	}
 }
 
@@ -140,8 +108,6 @@ func (r *Registry) AddMetricStruct(metricStruct interface{}) {
 	}
 	t := v.Type()
 
-	const allowNil = true
-	const disallowNil = false
 	for i := 0; i < v.NumField(); i++ {
 		vfield, tfield := v.Field(i), t.Field(i)
 		tname := tfield.Name
@@ -156,18 +122,14 @@ func (r *Registry) AddMetricStruct(metricStruct interface{}) {
 			for i := 0; i < vfield.Len(); i++ {
 				velem := vfield.Index(i)
 				telemName := fmt.Sprintf("%s[%d]", tname, i)
-				r.addMetricValue(ctx, velem, telemName, allowNil, t)
-			}
-		case reflect.Map:
-			iter := vfield.MapRange()
-			for iter.Next() {
-				// telemName is only used for assertion errors.
-				telemName := iter.Key().String()
-				r.addMetricValue(ctx, iter.Value(), telemName, allowNil, t)
+				// Permit elements in the array to be nil.
+				const skipNil = true
+				r.addMetricValue(ctx, velem, telemName, skipNil, t)
 			}
 		default:
 			// No metric fields should be nil.
-			r.addMetricValue(ctx, vfield, tname, disallowNil, t)
+			const skipNil = false
+			r.addMetricValue(ctx, vfield, tname, skipNil, t)
 		}
 	}
 }
@@ -201,7 +163,7 @@ func (r *Registry) WriteMetricsMetadata(dest map[string]Metadata) {
 	r.Lock()
 	defer r.Unlock()
 	for _, v := range r.tracked {
-		dest[v.GetName(false /* useStaticLabels */)] = v.GetMetadata()
+		dest[v.GetName()] = v.GetMetadata()
 	}
 }
 
@@ -211,7 +173,7 @@ func (r *Registry) Each(f func(name string, val interface{})) {
 	defer r.Unlock()
 	for _, metric := range r.tracked {
 		metric.Inspect(func(v interface{}) {
-			f(metric.GetName(false /* useStaticLabels */), v)
+			f(metric.GetName(), v)
 		})
 	}
 }
@@ -237,37 +199,10 @@ func (r *Registry) MarshalJSON() ([]byte, error) {
 	m := make(map[string]interface{})
 	for _, metric := range r.tracked {
 		metric.Inspect(func(v interface{}) {
-			m[metric.GetName(false /* useStaticLabels */)] = v
+			m[metric.GetName()] = v
 		})
 	}
 	return json.Marshal(m)
-}
-
-// ReinitialiseChildMetrics reinitialize childSet of tracked agg metrics with updated label values.
-// This is used when the cluster settings are updated and, we need to reinitialise
-// child metrics with StorageTypeCache.
-func (r *Registry) ReinitialiseChildMetrics(isDBNameEnabled, isAppNameEnabled bool) {
-	r.Lock()
-	defer r.Unlock()
-
-	labelConfig := LabelConfigDisabled
-
-	if isDBNameEnabled && isAppNameEnabled {
-		labelConfig = LabelConfigAppAndDB
-	} else if isAppNameEnabled {
-		labelConfig = LabelConfigApp
-	} else if isDBNameEnabled {
-		labelConfig = LabelConfigDB
-	}
-
-	for _, metric := range r.tracked {
-		// Check if the metric implements the metric.PrometheusReinitialisable interface as we want to
-		// reinitialise the child metrics.
-		if m, ok := metric.(PrometheusReinitialisable); ok {
-			m.ReinitialiseChildMetrics(labelConfig)
-		}
-	}
-
 }
 
 var (
@@ -278,8 +213,8 @@ var (
 	prometheusLabelReplaceRE = regexp.MustCompile("^[^a-zA-Z_]|[^a-zA-Z0-9_]")
 )
 
-// ExportedName takes a metric name and generates a valid prometheus name.
-func ExportedName(name string) string {
+// exportedName takes a metric name and generates a valid prometheus name.
+func exportedName(name string) string {
 	return prometheusNameReplaceRE.ReplaceAllString(name, "_")
 }
 
@@ -324,7 +259,7 @@ func checkFieldCanBeSkipped(
 	}
 
 	switch fieldType.Kind() {
-	case reflect.Array, reflect.Slice, reflect.Map:
+	case reflect.Array, reflect.Slice:
 		checkFieldCanBeSkipped(skipReason, fieldName, fieldType.Elem(), parentType)
 	case reflect.Struct:
 		containsMetrics := false
@@ -367,7 +302,7 @@ func containsMetricType(ft reflect.Type) bool {
 	}
 
 	switch ft.Kind() {
-	case reflect.Slice, reflect.Array, reflect.Map:
+	case reflect.Slice, reflect.Array:
 		return containsMetricType(ft.Elem())
 	case reflect.Struct:
 		for i := 0; i < ft.NumField(); i++ {

@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -33,33 +32,33 @@ func registerNIndexes(r registry.Registry, secondaryIndexes int) {
 		Cluster: r.MakeClusterSpec(
 			nodes+1,
 			spec.CPU(16),
-			spec.WorkloadNode(),
-			spec.WorkloadNodeCPU(16),
 			spec.Geo(),
 			spec.GCEZones(strings.Join(gceGeoZones, ",")),
 			spec.AWSZones(strings.Join(awsGeoZones, ",")),
 		),
 		// TODO(radu): enable this test on AWS.
-		CompatibleClouds:           registry.OnlyGCE,
-		Suites:                     registry.Suites(registry.Nightly),
-		RequiresDeprecatedWorkload: true, // uses indexes
+		CompatibleClouds: registry.AllExceptAWS,
+		Suites:           registry.Suites(registry.Nightly),
 		// Uses CONFIGURE ZONE USING ... COPY FROM PARENT syntax.
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			firstAZ := gceGeoZones[0]
 			if c.Cloud() == spec.AWS {
 				firstAZ = awsGeoZones[0]
 			}
+			roachNodes := c.Range(1, nodes)
 			gatewayNodes := c.Range(1, nodes/3)
+			loadNode := c.Node(nodes + 1)
 
-			c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.CRDBNodes())
+			c.Put(ctx, t.DeprecatedWorkload(), "./workload", loadNode)
+			c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), roachNodes)
 			conn := c.Conn(ctx, t.L(), 1)
 
 			t.Status("running workload")
-			m := c.NewMonitor(ctx, c.CRDBNodes())
+			m := c.NewMonitor(ctx, roachNodes)
 			m.Go(func(ctx context.Context) error {
 				secondary := " --secondary-indexes=" + strconv.Itoa(secondaryIndexes)
 				initCmd := "./workload init indexes" + secondary + " {pgurl:1}"
-				c.Run(ctx, option.WithNodes(c.WorkloadNode()), initCmd)
+				c.Run(ctx, loadNode, initCmd)
 
 				// Set lease preferences so that all leases for the table are
 				// located in the availability zone with the load generator.
@@ -79,7 +78,7 @@ func registerNIndexes(r registry.Registry, secondaryIndexes int) {
 					t.L().Printf("checking replica balance")
 					retryOpts := retry.Options{MaxBackoff: 15 * time.Second}
 					for r := retry.StartWithCtx(ctx, retryOpts); r.Next(); {
-						roachtestutil.WaitForUpdatedReplicationReport(ctx, t, conn)
+						WaitForUpdatedReplicationReport(ctx, t, conn)
 
 						var ok bool
 						if err := conn.QueryRowContext(ctx, `
@@ -128,14 +127,11 @@ func registerNIndexes(r registry.Registry, secondaryIndexes int) {
 				}
 
 				payload := " --payload=64"
-				concurrency := roachtestutil.IfLocal(c, "", " --concurrency="+strconv.Itoa(conc))
-				duration := " --duration=" + roachtestutil.IfLocal(c, "10s", "10m")
-				labels := map[string]string{
-					"concurrency":     fmt.Sprintf("%d", conc),
-					"parallel_writes": fmt.Sprintf("%d", parallelWrites),
-				}
-				runCmd := fmt.Sprintf("./workload run indexes %s %s %s %s {pgurl%s}", roachtestutil.GetWorkloadHistogramArgs(t, c, labels), payload, concurrency, duration, gatewayNodes)
-				c.Run(ctx, option.WithNodes(c.WorkloadNode()), runCmd)
+				concurrency := ifLocal(c, "", " --concurrency="+strconv.Itoa(conc))
+				duration := " --duration=" + ifLocal(c, "10s", "10m")
+				runCmd := fmt.Sprintf("./workload run indexes --histograms="+t.PerfArtifactsDir()+"/stats.json"+
+					payload+concurrency+duration+" {pgurl%s}", gatewayNodes)
+				c.Run(ctx, loadNode, runCmd)
 				return nil
 			})
 			m.Wait()

@@ -13,13 +13,14 @@ go_library(
         "//pkg/sql/pgwire/pgerror",
         "//pkg/sql/privilege",
         "//pkg/sql/roleoption",
-        "@com_github_cockroachdb_errors//:errors",
+        "//pkg/sql/syntheticprivilege",
     ],
 )
 
 go_test(
     name = "jobsauth_test",
     srcs = ["authorization_test.go"],
+    args = ["-test.timeout=295s"],
     deps = [
         ":jobsauth",
         "//pkg/ccl/changefeedccl",

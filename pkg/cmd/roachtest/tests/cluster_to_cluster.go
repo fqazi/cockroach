@@ -14,10 +14,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	apd "github.com/cockroachdb/apd/v3"
+	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/replicationutils"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/clusterstats"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
@@ -25,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
-	"github.com/cockroachdb/cockroach/pkg/crosscluster/replicationutils"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -54,7 +55,7 @@ type clusterInfo struct {
 	ID int
 
 	// pgurl is a connection string to the system tenant
-	pgURL *url.URL
+	pgURL string
 
 	// db provides a connection to the system tenant
 	db *gosql.DB
@@ -67,12 +68,6 @@ type clusterInfo struct {
 
 	// nodes indicates the roachprod nodes running the cluster's nodes
 	nodes option.NodeListOption
-}
-
-func (i *clusterInfo) PgURLForDatabase(database string) string {
-	uri := *i.pgURL
-	uri.Path = database
-	return uri.String()
 }
 
 type c2cSetup struct {
@@ -93,6 +88,9 @@ var c2cPromMetrics = map[string]clusterstats.ClusterStat{
 	"LogicalMegabytes": {
 		LabelName: "node",
 		Query:     "physical_replication_logical_bytes / 1e6"},
+	"PhysicalMegabytes": {
+		LabelName: "node",
+		Query:     "physical_replication_sst_bytes / 1e6"},
 	"PhysicalReplicatedMegabytes": {
 		LabelName: "node",
 		Query:     "capacity_used / 1e6"},
@@ -209,36 +207,22 @@ type streamingWorkload interface {
 func defaultWorkloadDriver(
 	workloadCtx context.Context, setup *c2cSetup, c cluster.Cluster, workload streamingWorkload,
 ) error {
-	return c.RunE(workloadCtx, option.WithNodes(setup.workloadNode), workload.sourceRunCmd(setup.src.name, setup.src.gatewayNodes))
+	return c.RunE(workloadCtx, setup.workloadNode, workload.sourceRunCmd(setup.src.name, setup.src.gatewayNodes))
 }
 
 type replicateTPCC struct {
-	warehouses     int
-	duration       time.Duration
-	repairOrderIDs bool
-	tolerateErrors bool
-	readOnly       bool
+	warehouses int
 }
 
 func (tpcc replicateTPCC) sourceInitCmd(tenantName string, nodes option.NodeListOption) string {
-	cmd := roachtestutil.NewCommand(`./cockroach workload init tpcc`).
-		Flag("data-loader", "import").
-		Flag("warehouses", tpcc.warehouses).
-		Arg("{pgurl%s:%s}", nodes, tenantName)
-	return cmd.String()
+	return fmt.Sprintf(`./workload init tpcc --data-loader import --warehouses %d {pgurl%s:%s}`,
+		tpcc.warehouses, nodes, tenantName)
 }
 
 func (tpcc replicateTPCC) sourceRunCmd(tenantName string, nodes option.NodeListOption) string {
-	cmd := roachtestutil.NewCommand(`./cockroach workload run tpcc`).
-		Flag("warehouses", tpcc.warehouses).
-		Flag("ramp", "2m").
-		MaybeFlag(tpcc.duration > 0, "duration", tpcc.duration).
-		MaybeOption(tpcc.tolerateErrors, "tolerate-errors").
-		MaybeOption(tpcc.repairOrderIDs, "repair-order-ids").
-		MaybeFlag(tpcc.readOnly, "mix", "newOrder=0,payment=0,orderStatus=1,delivery=0,stockLevel=1").
-		Arg("{pgurl%s:%s}", nodes, tenantName).
-		WithEqualsSyntax()
-	return cmd.String()
+	// added --tolerate-errors flags to prevent test from flaking due to a transaction retry error
+	return fmt.Sprintf(`./workload run tpcc --warehouses %d --tolerate-errors {pgurl%s:%s}`,
+		tpcc.warehouses, nodes, tenantName)
 }
 
 func (tpcc replicateTPCC) runDriver(
@@ -247,34 +231,8 @@ func (tpcc replicateTPCC) runDriver(
 	return defaultWorkloadDriver(workloadCtx, setup, c, tpcc)
 }
 
-// replicateImportKV is a kv workload that runs the kv init step after the
-// replication stream has started, inducing a bulk import catchup scan workload.
-type replicateImportKV struct {
-	replicateKV
-	replicateSplits bool
-}
-
-func (ikv replicateImportKV) sourceInitCmd(tenantName string, nodes option.NodeListOption) string {
-	return ""
-}
-
-func (ikv replicateImportKV) sourceRunCmd(tenantName string, nodes option.NodeListOption) string {
-	return ikv.replicateKV.sourceInitCmd(tenantName, nodes)
-}
-
-func (ikv replicateImportKV) runDriver(
-	workloadCtx context.Context, c cluster.Cluster, t test.Test, setup *c2cSetup,
-) error {
-	if ikv.replicateSplits {
-		setup.dst.sysSQL.Exec(t, "SET CLUSTER SETTING physical_replication.consumer.ingest_split_event.enabled = true")
-	}
-	return defaultWorkloadDriver(workloadCtx, setup, c, ikv)
-}
-
 type replicateKV struct {
 	readPercent int
-
-	tolerateErrors bool
 
 	// This field is merely used to debug the c2c framework for finite workloads.
 	debugRunDuration time.Duration
@@ -314,36 +272,28 @@ type replicateKV struct {
 	// antiRegion is the region we do not expect any kv data to reside in if
 	// partitionKVDatabaseInRegion is set.
 	antiRegion string
-
-	// readOnly sets the prepare-read-only flag in the kv workload, which elides
-	// preparing writing statements. This is necessary to get the workload running
-	// properly on a read only standby tenant.
-	readOnly bool
 }
 
 func (kv replicateKV) sourceInitCmd(tenantName string, nodes option.NodeListOption) string {
-	cmd := roachtestutil.NewCommand(`./cockroach workload init kv`).
+	cmd := roachtestutil.NewCommand(`./workload init kv`).
 		MaybeFlag(kv.initRows > 0, "insert-count", kv.initRows).
 		// Only set the max block byte values for the init command if we
 		// actually need to insert rows.
 		MaybeFlag(kv.initRows > 0, "max-block-bytes", kv.maxBlockBytes).
 		MaybeFlag(kv.initWithSplitAndScatter, "splits", 100).
 		MaybeOption(kv.initWithSplitAndScatter, "scatter").
-		Arg("{pgurl%s:%s}", nodes, tenantName).
-		WithEqualsSyntax()
+		Arg("{pgurl%s:%s}", nodes, tenantName)
 	return cmd.String()
 }
 
 func (kv replicateKV) sourceRunCmd(tenantName string, nodes option.NodeListOption) string {
-	cmd := roachtestutil.NewCommand(`./cockroach workload run kv`).
-		MaybeOption(kv.tolerateErrors, "tolerate-errors").
-		MaybeFlag(kv.maxBlockBytes > 0, "max-block-bytes", kv.maxBlockBytes).
+	cmd := roachtestutil.NewCommand(`./workload run kv`).
+		Option("tolerate-errors").
+		Flag("max-block-bytes", kv.maxBlockBytes).
 		Flag("read-percent", kv.readPercent).
 		MaybeFlag(kv.debugRunDuration > 0, "duration", kv.debugRunDuration).
 		MaybeFlag(kv.maxQPS > 0, "max-rate", kv.maxQPS).
-		MaybeFlag(kv.readOnly, "prepare-read-only", true).
-		Arg("{pgurl%s:%s}", nodes, tenantName).
-		WithEqualsSyntax()
+		Arg("{pgurl%s:%s}", nodes, tenantName)
 	return cmd.String()
 }
 
@@ -446,13 +396,6 @@ type replicationSpec struct {
 	// multiregion specifies multiregion cluster specs
 	multiregion multiRegionSpecs
 
-	// withReaderOnlyWorkload creates a reader tenant that runs the given workload.
-	withReaderWorkload streamingWorkload
-
-	// overrideTenantTTL specifies the TTL that will be applied by the system tenant on
-	// both the source and destination tenant range.
-	overrideTenantTTL time.Duration
-
 	// additionalDuration specifies how long the workload will run after the initial scan
 	//completes. If the time out is set to 0, it will run until completion.
 	additionalDuration time.Duration
@@ -470,6 +413,11 @@ type replicationSpec struct {
 
 	// maxLatency override the maxAcceptedLatencyDefault.
 	maxAcceptedLatency time.Duration
+
+	// TODO(msbutler): this knob only exists because the revision history
+	// fingerprint can encounter a gc ttl error for large fingerprints. Delete
+	// this knob once we lay a pts during fingerprinting.
+	nonRevisionHistoryFingerprint bool
 
 	// skipNodeDistributionCheck removes the requirement that multiple source and
 	// destination nodes must participate in the replication stream. This should
@@ -504,7 +452,7 @@ type replicationDriver struct {
 	rs replicationSpec
 
 	// beforeWorkloadHook is called before the main workload begins.
-	beforeWorkloadHook func(ctx context.Context) error
+	beforeWorkloadHook func()
 
 	// cutoverStarted closes once the driver issues a cutover commmand.
 	cutoverStarted chan struct{}
@@ -517,8 +465,6 @@ type replicationDriver struct {
 	c       cluster.Cluster
 	metrics *c2cMetrics
 	rng     *rand.Rand
-
-	shutdownNode int
 }
 
 func makeReplicationDriver(t test.Test, c cluster.Cluster, rs replicationSpec) *replicationDriver {
@@ -544,10 +490,12 @@ func (rd *replicationDriver) setupC2C(
 
 	srcCluster := c.Range(1, rd.rs.srcNodes)
 	dstCluster := c.Range(rd.rs.srcNodes+1, rd.rs.srcNodes+rd.rs.dstNodes)
-	workloadNode := c.WorkloadNode()
+	workloadNode := c.Node(rd.rs.srcNodes + rd.rs.dstNodes + 1)
+	c.Put(ctx, t.DeprecatedWorkload(), "./workload", workloadNode)
 
 	// TODO(msbutler): allow for backups once this test stabilizes a bit more.
-	srcStartOps := option.NewStartOpts(option.NoBackupSchedule, option.WithInitTarget(1))
+	srcStartOps := option.NewStartOpts(option.NoBackupSchedule)
+	srcStartOps.RoachprodOpts.InitTarget = 1
 
 	roachtestutil.SetDefaultAdminUIPort(c, &srcStartOps.RoachprodOpts)
 	srcClusterSetting := install.MakeClusterSettings()
@@ -577,14 +525,14 @@ func (rd *replicationDriver) setupC2C(
 	srcClusterSettings(t, srcSQL)
 	destClusterSettings(t, destSQL, rd.rs.additionalDuration)
 
-	overrideSrcAndDestTenantTTL(t, srcSQL, destSQL, rd.rs.overrideTenantTTL)
+	createTenantAdminRole(t, "src-system", srcSQL)
+	createTenantAdminRole(t, "dst-system", destSQL)
 
-	srcTenantID, destTenantID := 3, 3
+	srcTenantID, destTenantID := 2, 2
 	srcTenantName := "src-tenant"
 	destTenantName := "destination-tenant"
 
-	startOpts := option.StartSharedVirtualClusterOpts(srcTenantName, option.StorageCluster(srcCluster), option.NoBackupSchedule)
-	c.StartServiceForVirtualCluster(ctx, t.L(), startOpts, srcClusterSetting)
+	createInMemoryTenant(ctx, t, c, srcTenantName, srcCluster, true)
 
 	pgURL, err := copyPGCertsAndMakeURL(ctx, t, c, srcNode, srcClusterSetting.PGUrlCertsDir, addr[0])
 	require.NoError(t, err)
@@ -615,7 +563,7 @@ func (rd *replicationDriver) setupC2C(
 	rd.c = c
 	rd.metrics = &c2cMetrics{}
 	rd.replicationStartHook = func(ctx context.Context, sp *replicationDriver) {}
-	rd.beforeWorkloadHook = func(_ context.Context) error { return nil }
+	rd.beforeWorkloadHook = func() {}
 	rd.cutoverStarted = make(chan struct{})
 
 	if !c.IsLocal() {
@@ -703,7 +651,7 @@ func (rd *replicationDriver) preStreamingWorkload(ctx context.Context) {
 	if initCmd := rd.rs.workload.sourceInitCmd(rd.setup.src.name, rd.setup.src.nodes); initCmd != "" {
 		rd.t.Status("populating source cluster before replication")
 		initStart := timeutil.Now()
-		rd.c.Run(ctx, option.WithNodes(rd.setup.workloadNode), initCmd)
+		rd.c.Run(ctx, rd.setup.workloadNode, initCmd)
 		rd.t.L().Printf("src cluster workload initialization took %s",
 			timeutil.Since(initStart))
 	}
@@ -711,24 +659,28 @@ func (rd *replicationDriver) preStreamingWorkload(ctx context.Context) {
 
 func (rd *replicationDriver) startReplicationStream(ctx context.Context) int {
 	streamReplStmt := fmt.Sprintf("CREATE TENANT %q FROM REPLICATION OF %q ON '%s'",
-		rd.setup.dst.name, rd.setup.src.name, rd.setup.src.pgURL.String())
-	if rd.rs.withReaderWorkload != nil {
-		streamReplStmt += " WITH READ VIRTUAL CLUSTER"
-	}
+		rd.setup.dst.name, rd.setup.src.name, rd.setup.src.pgURL)
 	rd.setup.dst.sysSQL.Exec(rd.t, streamReplStmt)
 	rd.replicationStartHook(ctx, rd)
 	return getIngestionJobID(rd.t, rd.setup.dst.sysSQL, rd.setup.dst.name)
 }
 
 func (rd *replicationDriver) runWorkload(ctx context.Context) error {
-	if err := rd.beforeWorkloadHook(ctx); err != nil {
-		return err
-	}
+	rd.beforeWorkloadHook()
 	return rd.rs.workload.runDriver(ctx, rd.c, rd.t, rd.setup)
 }
 
 func (rd *replicationDriver) waitForReplicatedTime(ingestionJobID int, wait time.Duration) {
-	waitForReplicatedTime(rd.t, ingestionJobID, rd.setup.dst.db, getStreamIngestionJobInfo, wait)
+	testutils.SucceedsWithin(rd.t, func() error {
+		info, err := getStreamIngestionJobInfo(rd.setup.dst.db, ingestionJobID)
+		if err != nil {
+			return err
+		}
+		if info.GetHighWater().IsZero() {
+			return errors.New("no replicated time")
+		}
+		return nil
+	}, wait)
 }
 
 func (rd *replicationDriver) getWorkloadTimeout() time.Duration {
@@ -779,14 +731,14 @@ func (rd *replicationDriver) stopReplicationStream(
 			return res.Err()
 		}
 		require.NoError(rd.t, res.Scan(&status, &payloadBytes))
-		if jobs.State(status) == jobs.StateFailed {
+		if jobs.Status(status) == jobs.StatusFailed {
 			payload := &jobspb.Payload{}
 			if err := protoutil.Unmarshal(payloadBytes, payload); err == nil {
 				rd.t.Fatalf("job failed: %s", payload.Error)
 			}
 			rd.t.Fatalf("job failed")
 		}
-		if e, a := jobs.StateSucceeded, jobs.State(status); e != a {
+		if e, a := jobs.StatusSucceeded, jobs.Status(status); e != a {
 			return errors.Errorf("expected job status %s, but got %s", e, a)
 		}
 		return nil
@@ -801,13 +753,21 @@ func (rd *replicationDriver) compareTenantFingerprintsAtTimestamp(
 	rd.t.Status(fmt.Sprintf("comparing tenant fingerprints between start time %s and end time %s",
 		startTime, endTime))
 	fingerprintQuery := fmt.Sprintf(`
-SELECT fingerprint FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER $1 WITH START TIMESTAMP = '%s'] AS OF SYSTEM TIME '%s'`,
-		startTime.AsOfSystemTime(), endTime.AsOfSystemTime())
+SELECT *
+FROM crdb_internal.fingerprint(crdb_internal.tenant_span($1::INT), '%s'::DECIMAL, true)
+AS OF SYSTEM TIME '%s'`, startTime.AsOfSystemTime(), endTime.AsOfSystemTime())
+
+	if rd.rs.nonRevisionHistoryFingerprint {
+		fingerprintQuery = fmt.Sprintf(`
+SELECT *
+FROM crdb_internal.fingerprint(crdb_internal.tenant_span($1::INT), 0::DECIMAL, false)
+AS OF SYSTEM TIME '%s'`, endTime.AsOfSystemTime())
+	}
 
 	var srcFingerprint int64
 	fingerPrintMonitor := rd.newMonitor(ctx)
 	fingerPrintMonitor.Go(func(ctx context.Context) error {
-		rd.setup.src.sysSQL.QueryRow(rd.t, fingerprintQuery, rd.setup.src.name).Scan(&srcFingerprint)
+		rd.setup.src.sysSQL.QueryRow(rd.t, fingerprintQuery, rd.setup.src.ID).Scan(&srcFingerprint)
 		rd.t.L().Printf("finished fingerprinting source tenant")
 		return nil
 	})
@@ -815,7 +775,7 @@ SELECT fingerprint FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER $1 
 	fingerPrintMonitor.Go(func(ctx context.Context) error {
 		// TODO(adityamaru): Measure and record fingerprinting throughput.
 		rd.metrics.fingerprintingStart = timeutil.Now()
-		rd.setup.dst.sysSQL.QueryRow(rd.t, fingerprintQuery, rd.setup.dst.name).Scan(&destFingerprint)
+		rd.setup.dst.sysSQL.QueryRow(rd.t, fingerprintQuery, rd.setup.dst.ID).Scan(&destFingerprint)
 		rd.metrics.fingerprintingEnd = timeutil.Now()
 		fingerprintingDuration := rd.metrics.fingerprintingEnd.Sub(rd.metrics.fingerprintingStart).String()
 		rd.t.L().Printf("fingerprinting the destination tenant took %s", fingerprintingDuration)
@@ -870,20 +830,10 @@ func (rd *replicationDriver) backupAfterFingerprintMismatch(
 		rd.t.L().Printf("skip taking backups of tenants on local roachtest run")
 		return nil
 	}
-	if rd.c.Cloud() == spec.Azure {
-		rd.t.L().Printf("skip taking backups of tenants on azure, bucket not configured yet")
-		return nil
+	prefix := "gs"
+	if rd.c.Cloud() == spec.AWS {
+		prefix = "s3"
 	}
-	cloudPrefixes := map[spec.Cloud]string{
-		spec.GCE:   "gs",
-		spec.AWS:   "s3",
-		spec.Azure: "azure",
-	}
-	if _, ok := cloudPrefixes[rd.c.Cloud()]; !ok {
-		return errors.Errorf("backupAfterFingerprintMismatch: unsupported cloud")
-	}
-	prefix := cloudPrefixes[rd.c.Cloud()]
-
 	collection := fmt.Sprintf("%s://%s/c2c-fingerprint-mismatch/%s/%s/%s?AUTH=implicit", prefix, testutils.BackupTestingBucketLongTTL(), rd.rs.name, rd.c.Name(), tenantName)
 	fullBackupQuery := fmt.Sprintf("BACKUP INTO '%s' AS OF SYSTEM TIME '%s' with revision_history", collection, startTime.AsOfSystemTime())
 	_, err := conn.ExecContext(ctx, fullBackupQuery)
@@ -899,57 +849,29 @@ func (rd *replicationDriver) backupAfterFingerprintMismatch(
 	return nil
 }
 
-func (rd *replicationDriver) maybeRunReaderTenantWorkload(
-	ctx context.Context, workloadMonitor cluster.Monitor,
-) {
-	if rd.rs.withReaderWorkload != nil {
-		rd.t.Status("running reader tenant workload")
-		readerTenantName := fmt.Sprintf("%s-readonly", rd.setup.dst.name)
-		workloadMonitor.Go(func(ctx context.Context) error {
-			err := rd.c.RunE(ctx, option.WithNodes(rd.setup.workloadNode), rd.rs.withReaderWorkload.sourceRunCmd(readerTenantName, rd.setup.dst.gatewayNodes))
-			// The workload should only return an error if the roachtest driver cancels the
-			// ctx after the rd.additionalDuration has elapsed after the initial scan completes.
-			if err != nil && ctx.Err() == nil {
-				// Implies the workload context was not cancelled and the workload cmd returned a
-				// different error.
-				return errors.Wrapf(err, `Workload context was not cancelled. Error returned by workload cmd`)
-			}
-			return nil
-		})
-	}
-}
-
 // checkParticipatingNodes asserts that multiple nodes in the source and dest cluster are
 // participating in the replication stream.
 //
 // Note: this isn't a strict requirement of all physical replication streams,
 // rather we check this here because we expect a distributed physical
 // replication stream in a healthy pair of multinode clusters.
-func (rd *replicationDriver) checkParticipatingNodes(ctx context.Context, ingestionJobId int) {
+func (rd *replicationDriver) checkParticipatingNodes(ingestionJobId int) {
 	if rd.rs.skipNodeDistributionCheck {
 		return
 	}
+	progress := getJobProgress(rd.t, rd.setup.dst.sysSQL, jobspb.JobID(ingestionJobId)).GetStreamIngest()
+	require.Greater(rd.t, len(progress.StreamAddresses), 1, "only 1 src node participating")
 
+	var destNodeCount int
 	destNodes := make(map[int]struct{})
-	for _, src := range rd.setup.src.nodes {
-		if rd.shutdownNode == src {
-			continue
+	for _, dstNode := range progress.PartitionProgress {
+		dstNodeID := int(dstNode.DestSQLInstanceID)
+		if _, ok := destNodes[dstNodeID]; !ok {
+			destNodes[dstNodeID] = struct{}{}
+			destNodeCount++
 		}
-		srcTenantSQL := sqlutils.MakeSQLRunner(rd.c.Conn(ctx, rd.t.L(), src))
-		var dstNode int
-		rows := srcTenantSQL.Query(rd.t, `select distinct split_part(consumer, '[', 1) from crdb_internal.cluster_replication_node_streams`)
-		var streams int
-		for rows.Next() {
-			require.NoError(rd.t, rows.Scan(&dstNode))
-			rd.t.L().Printf("stream on %d to %d", src, dstNode)
-			streams++
-			destNodes[dstNode] = struct{}{}
-		}
-		rd.t.L().Printf("%d streams on %d", streams, src)
-		require.NoError(rd.t, rows.Err())
 	}
-
-	require.Greater(rd.t, len(destNodes), 1, "only 1 dst node participating")
+	require.Greater(rd.t, destNodeCount, 1, "only 1 dst node participating")
 }
 
 func (rd *replicationDriver) main(ctx context.Context) {
@@ -960,7 +882,7 @@ func (rd *replicationDriver) main(ctx context.Context) {
 	// the probability that the producer returns a topology with more than one node in it,
 	// else the node shutdown tests can flake.
 	if rd.rs.srcNodes >= 3 {
-		require.NoError(rd.t, roachtestutil.WaitFor3XReplication(ctx, rd.t.L(), rd.setup.src.db))
+		require.NoError(rd.t, WaitFor3XReplication(ctx, rd.t, rd.setup.src.db))
 	}
 
 	rd.t.L().Printf("begin workload on src cluster")
@@ -975,7 +897,6 @@ func (rd *replicationDriver) main(ctx context.Context) {
 	}()
 
 	workloadDoneCh := make(chan struct{})
-	workloadErrCh := make(chan error, 1)
 	workloadMonitor.Go(func(ctx context.Context) error {
 		defer close(workloadDoneCh)
 		err := rd.runWorkload(ctx)
@@ -984,11 +905,8 @@ func (rd *replicationDriver) main(ctx context.Context) {
 		if err != nil && ctx.Err() == nil {
 			// Implies the workload context was not cancelled and the workload cmd returned a
 			// different error.
-			rd.t.L().Printf("Workload context was not cancelled. Error returned by workload cmd: %s", err)
-			workloadErrCh <- err
 			return errors.Wrapf(err, `Workload context was not cancelled. Error returned by workload cmd`)
 		}
-		workloadErrCh <- nil
 		rd.t.L().Printf("workload successfully finished")
 		return nil
 	})
@@ -996,11 +914,7 @@ func (rd *replicationDriver) main(ctx context.Context) {
 	rd.t.Status("starting replication stream")
 	rd.metrics.initalScanStart = newMetricSnapshot(metricSnapper, timeutil.Now())
 	ingestionJobID := rd.startReplicationStream(ctx)
-	rd.setup.dst.sysSQL.Exec(
-		rd.t,
-		`ALTER TENANT $1 GRANT CAPABILITY exempt_from_rate_limiting=true`,
-		rd.setup.dst.name,
-	)
+	removeTenantRateLimiters(rd.t, rd.setup.dst.sysSQL, rd.setup.dst.name)
 
 	// latency verifier queries may error during a node shutdown event; therefore
 	// tolerate errors if we anticipate node deaths.
@@ -1019,14 +933,7 @@ func (rd *replicationDriver) main(ctx context.Context) {
 
 	latencyMonitor := rd.newMonitor(ctx)
 	latencyMonitor.Go(func(ctx context.Context) error {
-		if err := lv.pollLatencyUntilJobSucceeds(ctx, rd.setup.dst.db, ingestionJobID, time.Second, workloadDoneCh); err != nil {
-			// The latency poller may have failed because latency got too high. Grab a
-			// debug zip before the replication jobs spin down.
-			rd.fetchDebugZip(ctx, rd.setup.src.nodes, "latency_source_debug.zip")
-			rd.fetchDebugZip(ctx, rd.setup.dst.nodes, "latency_dest_debug.zip")
-			return err
-		}
-		return nil
+		return lv.pollLatencyUntilJobSucceeds(ctx, rd.setup.dst.db, ingestionJobID, time.Second, workloadDoneCh)
 	})
 	defer latencyMonitor.Wait()
 
@@ -1036,14 +943,9 @@ func (rd *replicationDriver) main(ctx context.Context) {
 	rd.t.Status(fmt.Sprintf(`initial scan complete. run workload and repl. stream for another %s minutes`,
 		rd.rs.additionalDuration))
 
-	rd.maybeRunReaderTenantWorkload(ctx, workloadMonitor)
-
 	select {
 	case <-workloadDoneCh:
 		rd.t.L().Printf("workload finished on its own")
-		if err := <-workloadErrCh; err != nil {
-			rd.t.Fatal(err)
-		}
 	case <-time.After(rd.getWorkloadTimeout()):
 		workloadCancel()
 		rd.t.L().Printf("workload was cancelled after %s", rd.rs.additionalDuration)
@@ -1052,7 +954,7 @@ func (rd *replicationDriver) main(ctx context.Context) {
 		return
 	}
 
-	rd.checkParticipatingNodes(ctx, ingestionJobID)
+	rd.checkParticipatingNodes(ingestionJobID)
 
 	retainedTime := rd.getReplicationRetainedTime()
 	var cutoverTime time.Time
@@ -1076,12 +978,8 @@ func (rd *replicationDriver) main(ctx context.Context) {
 	rd.metrics.cutoverEnd = newMetricSnapshot(metricSnapper, timeutil.Now())
 
 	rd.t.L().Printf("starting the destination tenant")
-	startOpts := option.StartSharedVirtualClusterOpts(
-		rd.setup.dst.name,
-		option.StorageCluster(rd.setup.dst.gatewayNodes),
-		option.WithInitTarget(rd.setup.dst.gatewayNodes[0]),
-	)
-	rd.c.StartServiceForVirtualCluster(ctx, rd.t.L(), startOpts, install.MakeClusterSettings())
+	conn := startInMemoryTenant(ctx, rd.t, rd.c, rd.setup.dst.name, rd.setup.dst.gatewayNodes)
+	conn.Close()
 
 	rd.metrics.export(rd.t, len(rd.setup.src.nodes))
 
@@ -1111,7 +1009,6 @@ func c2cRegisterWrapper(
 	if sp.pdSize != 0 {
 		clusterOps = append(clusterOps, spec.VolumeSize(sp.pdSize))
 	}
-	clusterOps = append(clusterOps, spec.WorkloadNode(), spec.WorkloadNodeCPU(sp.cpus))
 
 	if len(sp.multiregion.srcLocalities) > 0 {
 		allZones := make([]string, 0, sp.srcNodes+sp.dstNodes+1)
@@ -1133,20 +1030,25 @@ func c2cRegisterWrapper(
 		CompatibleClouds:          sp.clouds,
 		Suites:                    sp.suites,
 		TestSelectionOptOutSuites: sp.suites,
+		RequiresLicense:           true,
 		Run:                       run,
 	})
 }
 
 func runAcceptanceClusterReplication(ctx context.Context, t test.Test, c cluster.Cluster) {
+	if !c.IsLocal() {
+		t.Skip("c2c/acceptance is only meant to run on a local cluster")
+	}
 	sp := replicationSpec{
 		srcNodes: 1,
 		dstNodes: 1,
 		// The timeout field ensures the c2c roachtest driver behaves properly.
 		timeout:                   10 * time.Minute,
-		workload:                  replicateKV{readPercent: 0, debugRunDuration: 1 * time.Minute, maxBlockBytes: 1, initWithSplitAndScatter: true, tolerateErrors: true},
+		workload:                  replicateKV{readPercent: 0, debugRunDuration: 1 * time.Minute, maxBlockBytes: 1, initWithSplitAndScatter: true},
 		additionalDuration:        0 * time.Minute,
 		cutover:                   30 * time.Second,
 		skipNodeDistributionCheck: true,
+		clouds:                    registry.AllExceptAWS,
 		suites:                    registry.Suites(registry.Nightly),
 	}
 	rd := makeReplicationDriver(t, c, sp)
@@ -1165,19 +1067,40 @@ func runAcceptanceClusterReplication(ctx context.Context, t test.Test, c cluster
 func registerClusterToCluster(r registry.Registry) {
 	for _, sp := range []replicationSpec{
 		{
+			// Cutover TO LATEST:
+			name:      "c2c/tpcc/warehouses=500/duration=10/cutover=0",
+			benchmark: true,
+			srcNodes:  4,
+			dstNodes:  4,
+			cpus:      8,
+			pdSize:    1000,
+			// 500 warehouses adds 30 GB to source
+			//
+			// TODO(msbutler): increase default test to 1000 warehouses once fingerprinting
+			// job speeds up.
+			workload:           replicateTPCC{warehouses: 500},
+			timeout:            1 * time.Hour,
+			additionalDuration: 10 * time.Minute,
+			cutover:            0,
+			clouds:             registry.AllExceptAWS,
+			suites:             registry.Suites(registry.Nightly),
+		},
+		{
 			name:      "c2c/tpcc/warehouses=1000/duration=60/cutover=30",
 			benchmark: true,
 			srcNodes:  4,
 			dstNodes:  4,
 			cpus:      8,
 			pdSize:    1000,
-
-			workload:           replicateTPCC{warehouses: 1000, tolerateErrors: true},
-			withReaderWorkload: replicateTPCC{warehouses: 500, readOnly: true, tolerateErrors: true},
+			// 500 warehouses adds 30 GB to source
+			//
+			// TODO(msbutler): increase default test to 1000 warehouses once fingerprinting
+			// job speeds up.
+			workload:           replicateTPCC{warehouses: 1000},
 			timeout:            3 * time.Hour,
 			additionalDuration: 60 * time.Minute,
 			cutover:            30 * time.Minute,
-			clouds:             registry.OnlyGCE,
+			clouds:             registry.AllExceptAWS,
 			suites:             registry.Suites(registry.Nightly),
 		},
 		{
@@ -1195,9 +1118,8 @@ func registerClusterToCluster(r registry.Registry) {
 			timeout:                              1 * time.Hour,
 			additionalDuration:                   10 * time.Minute,
 			cutover:                              5 * time.Minute,
-			withReaderWorkload:                   replicateKV{readPercent: 100, readOnly: true, tolerateErrors: true},
 			sometimesTestFingerprintMismatchCode: true,
-			clouds:                               registry.OnlyGCE,
+			clouds:                               registry.AllClouds,
 			suites:                               registry.Suites(registry.Nightly),
 		},
 		{
@@ -1211,98 +1133,34 @@ func registerClusterToCluster(r registry.Registry) {
 			// gives us max write BW of 800MB/s.
 			pdSize: 1667,
 			// Write ~50GB total (~12.5GB per node).
-			workload:           replicateKV{readPercent: 0, initRows: 50000000, maxBlockBytes: 2048, tolerateErrors: true},
+			workload:           replicateKV{readPercent: 0, initRows: 50000000, maxBlockBytes: 2048},
 			timeout:            1 * time.Hour,
 			additionalDuration: 5 * time.Minute,
 			cutover:            0,
-			clouds:             registry.OnlyGCE,
+			clouds:             registry.AllExceptAWS,
 			suites:             registry.Suites(registry.Nightly),
 		},
 		{
-			// Catchup scan perf test on 7tb bulk import.
-			name:      "c2c/import/7tb/kv0",
-			benchmark: true,
-			srcNodes:  10,
-			dstNodes:  10,
-			cpus:      8,
-			pdSize:    2000,
-			// Write ~7TB data to disk via Import -- takes a little over 1 hour.
-			workload: replicateImportKV{
-				replicateSplits: true,
-				replicateKV:     replicateKV{readPercent: 0, initRows: 5000000000, maxBlockBytes: 1024, tolerateErrors: true}},
-			timeout: 3 * time.Hour,
-			// While replicating a bulk op, expect the max latency to be the runtime
-			// of the bulk op.
-			maxAcceptedLatency: 2 * time.Hour,
-			// Cutover to one second after the import completes.
-			cutover: -1 * time.Second,
-			// After the cutover command begins, the destination cluster still needs
-			// to catch up. Since we allow a max lag of 2 hours, it may take some time
-			// to actually catch up after the bulk op succeeds. That being said, once
-			// the import completes, we expect the replication stream to catch up
-			// fairly quickly.
-			cutoverTimeout: 30 * time.Minute,
-			// Because PCR begins on a nearly empty cluster, skip the node distribution check.
-			skipNodeDistributionCheck: true,
-			clouds:                    registry.OnlyGCE,
-			suites:                    registry.Suites(registry.Weekly),
-		},
-		{
-			// Catchup scan perf test on bulk import.
-			name:      "c2c/import/kv0",
-			benchmark: true,
-			srcNodes:  5,
-			dstNodes:  5,
-			cpus:      8,
-			pdSize:    500,
-			// Write ~1.2TB data to disk,takes a about 40 minutes.
-			workload: replicateImportKV{
-				replicateSplits: true,
-				replicateKV:     replicateKV{readPercent: 0, initRows: 1000000000, maxBlockBytes: 1024}},
-			timeout: 90 * time.Minute,
-			// While replicating a bulk op, expect the max latency to be the runtime
-			// of the bulk op.
-			maxAcceptedLatency: 1 * time.Hour,
-			// Cutover to one second after the import completes.
-			cutover: -1 * time.Second,
-			// After the cutover command begins, the destination cluster still needs
-			// to catch up. Since we allow a max lag of 1 hour, it may take some time
-			// to actually catch up after the bulk op succeeds. That being said, once
-			// the import completes, we expect the replication stream to catch up
-			// fairly quickly.
-			cutoverTimeout: 20 * time.Minute,
-			// Because PCR begins on a nearly empty cluster, skip the node
-			// distribution check.
-			skipNodeDistributionCheck: true,
-			clouds:                    registry.OnlyGCE,
-			suites:                    registry.Suites(registry.Weekly),
-		},
-		{
 			// Large workload to test our 23.2 perf goals.
-			name:      "c2c/weekly/kv50",
-			benchmark: true,
-			srcNodes:  8,
-			dstNodes:  8,
-			cpus:      8,
-			pdSize:    1000,
+			name:                          "c2c/weekly/kv50",
+			benchmark:                     true,
+			srcNodes:                      8,
+			dstNodes:                      8,
+			cpus:                          8,
+			pdSize:                        1000,
+			nonRevisionHistoryFingerprint: true,
 
 			workload: replicateKV{
 				// Write a ~2TB initial scan.
-				initRows:       350000000,
-				readPercent:    50,
-				maxBlockBytes:  4096,
-				maxQPS:         2000,
-				tolerateErrors: true,
+				initRows:      350000000,
+				readPercent:   50,
+				maxBlockBytes: 4096,
+				maxQPS:        2000,
 			},
-			maxAcceptedLatency: time.Minute * 5,
 			timeout:            12 * time.Hour,
-			// We bump the TTL on the source and destination tenants to 12h to give
-			// the fingerprinting post cutover adequate time to complete before GC
-			// kicks in.
-			overrideTenantTTL:  12 * time.Hour,
 			additionalDuration: 2 * time.Hour,
 			cutover:            0,
-			clouds:             registry.OnlyGCE,
+			clouds:             registry.AllClouds,
 			suites:             registry.Suites(registry.Weekly),
 		},
 		{
@@ -1318,7 +1176,6 @@ func registerClusterToCluster(r registry.Registry) {
 				initWithSplitAndScatter:     true,
 				partitionKVDatabaseInRegion: "us-west1",
 				antiRegion:                  "us-central1",
-				tolerateErrors:              true,
 			},
 			timeout:            1 * time.Hour,
 			additionalDuration: 10 * time.Minute,
@@ -1339,20 +1196,20 @@ func registerClusterToCluster(r registry.Registry) {
 			cpus:     4,
 			pdSize:   10,
 			workload: replicateKV{
-				readPercent:             50,
-				debugRunDuration:        10 * time.Minute,
+				readPercent:             0,
+				debugRunDuration:        1 * time.Minute,
 				initWithSplitAndScatter: true,
 				maxBlockBytes:           1024},
-			timeout:                   30 * time.Minute,
+			timeout:                   5 * time.Minute,
 			additionalDuration:        0 * time.Minute,
 			cutover:                   30 * time.Second,
 			skipNodeDistributionCheck: true,
 			skip:                      "for local ad hoc testing",
-			clouds:                    registry.OnlyGCE,
+			clouds:                    registry.AllExceptAWS,
 			suites:                    registry.Suites(registry.Nightly),
 		},
 		{
-			name:               "c2c/BulkOps",
+			name:               "c2c/BulkOps/full",
 			srcNodes:           4,
 			dstNodes:           4,
 			cpus:               8,
@@ -1364,39 +1221,39 @@ func registerClusterToCluster(r registry.Registry) {
 			// revert 10 GB of replicated data.
 			//
 			// TODO(msbutler): investigate further if cutover can be sped up.
-			cutoverTimeout: 20 * time.Minute,
+			cutoverTimeout: 10 * time.Minute,
 			cutover:        5 * time.Minute,
 			// In a few ad hoc runs, the max latency hikes up to 27 minutes before lag
 			// replanning and distributed catch up scans fix the poor initial plan. If
 			// max accepted latency doubles, then there's likely a regression.
 			maxAcceptedLatency: 1 * time.Hour,
-			// Skipping node distribution check because there is little data on the
-			// source when the replication stream begins.
-			skipNodeDistributionCheck: true,
-			clouds:                    registry.OnlyGCE,
-			suites:                    registry.Suites(registry.Nightly),
+			clouds:             registry.AllExceptAWS,
+			suites:             registry.Suites(registry.Nightly),
+			skip:               "flakes on 23.2. known limitation",
 		},
 		{
-			name:               "c2c/BulkOps/singleImport",
-			srcNodes:           4,
-			dstNodes:           4,
-			cpus:               8,
-			pdSize:             100,
-			workload:           replicateBulkOps{short: true, debugSkipRollback: true},
-			timeout:            2 * time.Hour,
-			cutoverTimeout:     1 * time.Hour,
+			name:     "c2c/BulkOps/short",
+			srcNodes: 4,
+			dstNodes: 4,
+			cpus:     8,
+			pdSize:   100,
+			workload: replicateBulkOps{short: true},
+			timeout:  2 * time.Hour,
+			// Give the cluster plenty of time to catch up after the cutover command is issued.
+			cutoverTimeout:     30 * time.Minute,
 			additionalDuration: 0,
-			cutover:            1 * time.Minute,
+			cutover:            5 * time.Minute,
 			maxAcceptedLatency: 1 * time.Hour,
 
 			// skipNodeDistributionCheck is set to true because the roachtest
 			// completes before the automatic replanner can run.
 			skipNodeDistributionCheck: true,
-			clouds:                    registry.OnlyGCE,
+			clouds:                    registry.AllExceptAWS,
 			suites:                    registry.Suites(registry.Nightly),
 			skip:                      "used for debugging when the full test fails",
 		},
 	} {
+		sp := sp
 		c2cRegisterWrapper(r, sp,
 			func(ctx context.Context, t test.Test, c cluster.Cluster) {
 				rd := makeReplicationDriver(t, c, sp)
@@ -1470,9 +1327,10 @@ type replShutdownDriver struct {
 	phase c2cPhase
 
 	// the fields below are gathered after the replication stream has started
-	srcJobID    jobspb.JobID
-	dstJobID    jobspb.JobID
-	watcherNode int
+	srcJobID     jobspb.JobID
+	dstJobID     jobspb.JobID
+	shutdownNode int
+	watcherNode  int
 }
 
 func makeReplShutdownDriver(
@@ -1551,14 +1409,14 @@ func (rrd *replShutdownDriver) getTargetAndWatcherNodes(ctx context.Context) {
 
 func getPhase(rd *replicationDriver, dstJobID jobspb.JobID) c2cPhase {
 	var jobStatus string
-	rd.setup.dst.sysSQL.QueryRow(rd.t, `SELECT status FROM [SHOW JOB $1]`,
+	rd.setup.dst.sysSQL.QueryRow(rd.t, `SELECT status FROM [SHOW JOBS] WHERE job_id=$1`,
 		dstJobID).Scan(&jobStatus)
-	require.Equal(rd.t, jobs.StateRunning, jobs.State(jobStatus))
+	require.Equal(rd.t, jobs.StatusRunning, jobs.Status(jobStatus))
 
 	streamIngestProgress := getJobProgress(rd.t, rd.setup.dst.sysSQL, dstJobID).GetStreamIngest()
 
 	if streamIngestProgress.ReplicatedTime.IsEmpty() {
-		if len(streamIngestProgress.PartitionConnUris) == 0 {
+		if len(streamIngestProgress.StreamAddresses) == 0 {
 			return phaseNotReady
 		}
 		// Only return phaseInitialScan once all available stream addresses from the
@@ -1614,6 +1472,23 @@ func sleepBeforeResiliencyEvent(rd *replicationDriver, phase c2cPhase) {
 	time.Sleep(randomSleep)
 }
 
+// getSrcDestNodePairs return list of src-dest node pairs that are directly connected to each
+// other for the replication stream.
+func getSrcDestNodePairs(rd *replicationDriver, progress *jobspb.StreamIngestionProgress) [][]int {
+	nodePairs := make([][]int, 0)
+	for srcID, progress := range progress.PartitionProgress {
+		srcNode, err := strconv.Atoi(srcID)
+		require.NoError(rd.t, err)
+
+		// The destination cluster indexes nodes starting at 1,
+		// but we need to record the roachprod node.
+		dstNode := int(progress.DestSQLInstanceID) + rd.rs.srcNodes
+		rd.t.L().Printf("Node Pair: Src %d; Dst %d ", srcNode, dstNode)
+		nodePairs = append(nodePairs, []int{srcNode, dstNode})
+	}
+	return nodePairs
+}
+
 func registerClusterReplicationResilience(r registry.Registry) {
 	for _, rsp := range []replShutdownSpec{
 		{
@@ -1640,18 +1515,14 @@ func registerClusterReplicationResilience(r registry.Registry) {
 			srcNodes:                             4,
 			dstNodes:                             4,
 			cpus:                                 8,
-			workload:                             replicateKV{readPercent: 0, initRows: 5000000, maxBlockBytes: 1024, initWithSplitAndScatter: true, tolerateErrors: true},
+			workload:                             replicateKV{readPercent: 0, initRows: 5000000, maxBlockBytes: 1024, initWithSplitAndScatter: true},
 			timeout:                              20 * time.Minute,
 			additionalDuration:                   6 * time.Minute,
 			cutover:                              3 * time.Minute,
 			expectedNodeDeaths:                   1,
 			sometimesTestFingerprintMismatchCode: true,
-			// The job system can take up to 2 minutes to reclaim a job if the
-			// coordinator dies, so increase the max expected latency to account for
-			// our lovely job system.
-			maxAcceptedLatency: 4 * time.Minute,
-			clouds:             registry.OnlyGCE,
-			suites:             registry.Suites(registry.Nightly),
+			clouds:                               registry.AllExceptAWS,
+			suites:                               registry.Suites(registry.Nightly),
 		}
 
 		c2cRegisterWrapper(r, rsp.replicationSpec,
@@ -1664,15 +1535,9 @@ func registerClusterReplicationResilience(r registry.Registry) {
 
 				shutdownSetupDone := make(chan struct{})
 
-				rrd.beforeWorkloadHook = func(ctx context.Context) error {
-					// Ensure the workload begins after c2c jobs have been set up, or
-					// return early if context was cancelled.
-					select {
-					case <-ctx.Done():
-						return ctx.Err()
-					case <-shutdownSetupDone:
-						return nil
-					}
+				rrd.beforeWorkloadHook = func() {
+					// Ensure the workload begins after c2c jobs have been set up.
+					<-shutdownSetupDone
 				}
 
 				rrd.replicationStartHook = func(ctx context.Context, rd *replicationDriver) {
@@ -1712,14 +1577,10 @@ func registerClusterReplicationResilience(r registry.Registry) {
 				defer mainMonitor.Wait()
 
 				// Don't begin shutdown process until c2c job is set up.
-				select {
-				case <-shutdownSetupDone:
-				case <-ctx.Done():
-					return
-				}
+				<-shutdownSetupDone
 
 				// Eagerly listen to cutover signal to exercise node shutdown during actual cutover.
-				rrd.setup.dst.sysSQL.Exec(t, `SET CLUSTER SETTING bulkio.stream_ingestion.failover_signal_poll_interval='5s'`)
+				rrd.setup.dst.sysSQL.Exec(t, `SET CLUSTER SETTING bulkio.stream_ingestion.cutover_signal_poll_interval='5s'`)
 
 				// While executing a node shutdown on either the src or destination
 				// cluster, ensure the destination cluster's stream ingestion job
@@ -1770,12 +1631,12 @@ func registerClusterReplicationDisconnect(r registry.Registry) {
 		srcNodes:           3,
 		dstNodes:           3,
 		cpus:               4,
-		workload:           replicateKV{readPercent: 0, initRows: 1000000, maxBlockBytes: 1024, initWithSplitAndScatter: true, tolerateErrors: true},
+		workload:           replicateKV{readPercent: 0, initRows: 1000000, maxBlockBytes: 1024, initWithSplitAndScatter: true},
 		timeout:            20 * time.Minute,
 		additionalDuration: 10 * time.Minute,
 		cutover:            2 * time.Minute,
 		maxAcceptedLatency: 12 * time.Minute,
-		clouds:             registry.OnlyGCE,
+		clouds:             registry.AllExceptAWS,
 		suites:             registry.Suites(registry.Nightly),
 	}
 	c2cRegisterWrapper(r, sp, func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -1802,16 +1663,13 @@ func registerClusterReplicationDisconnect(r registry.Registry) {
 		// TODO(msbutler): disconnect nodes during a random phase
 		require.NoError(t, waitForTargetPhase(ctx, rd, dstJobID, phaseSteadyState))
 		sleepBeforeResiliencyEvent(rd, phaseSteadyState)
+		ingestionProgress := getJobProgress(t, rd.setup.dst.sysSQL, dstJobID).GetStreamIngest()
 
-		srcNode := rd.setup.src.nodes.RandNode()[0]
-		srcTenantSQL := sqlutils.MakeSQLRunner(c.Conn(ctx, t.L(), srcNode))
-
-		var dstNode int
-		srcTenantSQL.QueryRow(t, `select split_part(consumer, '[', 1) from crdb_internal.cluster_replication_node_streams order by random() limit 1`).Scan(&dstNode)
-
+		srcDestConnections := getSrcDestNodePairs(rd, ingestionProgress)
+		randomNodePair := srcDestConnections[rd.rng.Intn(len(srcDestConnections))]
 		disconnectDuration := sp.additionalDuration
-		rd.t.L().Printf("Disconnecting Src %d, Dest %d for %.2f minutes", srcNode,
-			dstNode, disconnectDuration.Minutes())
+		rd.t.L().Printf("Disconnecting Src %d, Dest %d for %.2f minutes", randomNodePair[0],
+			randomNodePair[1], disconnectDuration.Minutes())
 
 		// Normally, the blackholeFailer is accessed through the failer interface,
 		// at least in the failover tests. Because this test shouldn't use all the
@@ -1819,10 +1677,13 @@ func registerClusterReplicationDisconnect(r registry.Registry) {
 		// blakholeFailer struct directly. In other words, in this test, we
 		// shouldn't treat the blackholeFailer as an abstracted api.
 		blackholeFailer := &blackholeFailer{t: rd.t, c: rd.c, input: true, output: true}
-		blackholeFailer.FailPartial(ctx, srcNode, []int{dstNode})
+		blackholeFailer.FailPartial(ctx, randomNodePair[0], []int{randomNodePair[1]})
 
 		time.Sleep(disconnectDuration)
+		ingestionProgressUpdate := getJobProgress(t, rd.setup.dst.sysSQL, dstJobID).GetStreamIngest()
+
 		// Calling this will log the latest topology.
+		getSrcDestNodePairs(rd, ingestionProgressUpdate)
 		blackholeFailer.Cleanup(ctx)
 		rd.t.L().Printf("Nodes reconnected. C2C Job should eventually complete")
 	})
@@ -1837,96 +1698,68 @@ func getIngestionJobID(t test.Test, dstSQL *sqlutils.SQLRunner, dstTenantName st
 	return int(tenantInfo.PhysicalReplicationConsumerJobID)
 }
 
-type streamIngestionJobInfo struct {
-	*jobRecord
+type streamIngesitonJobInfo struct {
+	status         string
+	errMsg         string
+	replicatedTime hlc.Timestamp
+	finishedTime   time.Time
 }
 
 // GetHighWater returns the replicated time. The GetHighWater name is
 // retained here as this is implementing the jobInfo interface used by
 // the latency verifier.
-func (c *streamIngestionJobInfo) GetHighWater() time.Time {
-	replicatedTime := replicationutils.ReplicatedTimeFromProgress(&c.progress)
-	if replicatedTime.IsEmpty() {
+func (c *streamIngesitonJobInfo) GetHighWater() time.Time {
+	if c.replicatedTime.IsEmpty() {
 		return time.Time{}
 	}
-	return replicatedTime.GoTime()
+	return c.replicatedTime.GoTime()
 }
+func (c *streamIngesitonJobInfo) GetFinishedTime() time.Time { return c.finishedTime }
+func (c *streamIngesitonJobInfo) GetStatus() string          { return c.status }
+func (c *streamIngesitonJobInfo) GetError() string           { return c.status }
 
-var _ jobInfo = (*streamIngestionJobInfo)(nil)
+var _ jobInfo = (*streamIngesitonJobInfo)(nil)
 
 func getStreamIngestionJobInfo(db *gosql.DB, jobID int) (jobInfo, error) {
-	jr, err := getJobRecord(db, jobID)
-	if err != nil {
+	var status string
+	var payloadBytes []byte
+	var progressBytes []byte
+	if err := db.QueryRow(
+		`SELECT status, payload, progress FROM crdb_internal.system_jobs WHERE id = $1`, jobID,
+	).Scan(&status, &payloadBytes, &progressBytes); err != nil {
 		return nil, err
 	}
-	return &streamIngestionJobInfo{jr}, nil
+	var payload jobspb.Payload
+	if err := protoutil.Unmarshal(payloadBytes, &payload); err != nil {
+		return nil, err
+	}
+	var progress jobspb.Progress
+	if err := protoutil.Unmarshal(progressBytes, &progress); err != nil {
+		return nil, err
+	}
+	return &streamIngesitonJobInfo{
+		status:         status,
+		errMsg:         payload.Error,
+		replicatedTime: replicationutils.ReplicatedTimeFromProgress(&progress),
+		finishedTime:   time.UnixMicro(payload.FinishedMicros),
+	}, nil
 }
 
 func srcClusterSettings(t test.Test, db *sqlutils.SQLRunner) {
-	db.ExecMultiple(t,
-		`SET CLUSTER SETTING kv.rangefeed.enabled = true;`,
-		`SET CLUSTER SETTING kv.lease.reject_on_leader_unknown.enabled = true;`,
-	)
+	db.ExecMultiple(t, `SET CLUSTER SETTING kv.rangefeed.enabled = true;`)
 }
 
 func destClusterSettings(t test.Test, db *sqlutils.SQLRunner, additionalDuration time.Duration) {
-	db.ExecMultiple(t,
+	db.ExecMultiple(t, `SET CLUSTER SETTING cross_cluster_replication.enabled = true;`,
 		`SET CLUSTER SETTING kv.rangefeed.enabled = true;`,
-		`SET CLUSTER SETTING kv.lease.reject_on_leader_unknown.enabled = true;`,
 		`SET CLUSTER SETTING stream_replication.replan_flow_threshold = 0.1;`,
-	)
+		`SET CLUSTER SETTING physical_replication.consumer.node_lag_replanning_threshold = '5m';`)
 
 	if additionalDuration != 0 {
 		replanFrequency := additionalDuration / 2
 		db.Exec(t, fmt.Sprintf(`SET CLUSTER SETTING stream_replication.replan_flow_frequency = '%s'`,
 			replanFrequency))
 	}
-}
-
-func overrideSrcAndDestTenantTTL(
-	t test.Test, srcSQL *sqlutils.SQLRunner, destSQL *sqlutils.SQLRunner, overrideTTL time.Duration,
-) {
-	if overrideTTL == 0 {
-		return
-	}
-	t.L().Printf("overriding dest and src tenant TTL to %s", overrideTTL)
-	srcSQL.Exec(t, `ALTER RANGE tenants CONFIGURE ZONE USING gc.ttlseconds = $1`, overrideTTL.Seconds())
-	destSQL.Exec(t, `ALTER RANGE tenants CONFIGURE ZONE USING gc.ttlseconds = $1`, overrideTTL.Seconds())
-}
-
-func waitForReplicatedTimeToReachTimestamp(
-	t testutils.TestFataler,
-	jobID int,
-	db *gosql.DB,
-	jf jobFetcher,
-	wait time.Duration,
-	target time.Time,
-) {
-	testutils.SucceedsWithin(t, func() error {
-		info, err := jf(db, jobID)
-		if err != nil {
-			return err
-		}
-		if info.GetHighWater().Compare(target) < 0 {
-			return errors.Newf("replicated time %s not yet at %s", info.GetHighWater(), target)
-		}
-		return nil
-	}, wait)
-}
-
-func waitForReplicatedTime(
-	t testutils.TestFataler, jobID int, db *gosql.DB, jf jobFetcher, wait time.Duration,
-) {
-	testutils.SucceedsWithin(t, func() error {
-		info, err := jf(db, jobID)
-		if err != nil {
-			return err
-		}
-		if info.GetHighWater().IsZero() {
-			return errors.New("no replicated time")
-		}
-		return nil
-	}, wait)
 }
 
 func copyPGCertsAndMakeURL(
@@ -1936,33 +1769,33 @@ func copyPGCertsAndMakeURL(
 	srcNode option.NodeListOption,
 	pgURLDir string,
 	urlString string,
-) (*url.URL, error) {
+) (string, error) {
 	pgURL, err := url.Parse(urlString)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	tmpDir, err := os.MkdirTemp("", install.CockroachNodeCertsDir)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	func() { _ = os.RemoveAll(tmpDir) }()
 
 	if err := c.Get(ctx, t.L(), pgURLDir, tmpDir, srcNode); err != nil {
-		return nil, err
+		return "", err
 	}
 
 	sslRootCert, err := os.ReadFile(filepath.Join(tmpDir, "ca.crt"))
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	sslClientCert, err := os.ReadFile(filepath.Join(tmpDir, fmt.Sprintf("client.%s.crt", install.DefaultUser)))
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	sslClientKey, err := os.ReadFile(filepath.Join(tmpDir, fmt.Sprintf("client.%s.key", install.DefaultUser)))
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	options := pgURL.Query()
@@ -1972,5 +1805,5 @@ func copyPGCertsAndMakeURL(
 	options.Set("sslcert", string(sslClientCert))
 	options.Set("sslkey", string(sslClientKey))
 	pgURL.RawQuery = options.Encode()
-	return pgURL, nil
+	return pgURL.String(), nil
 }

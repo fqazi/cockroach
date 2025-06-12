@@ -7,10 +7,9 @@ package execbuilder
 
 import (
 	"context"
-	"slices"
-	"strconv"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/exec"
@@ -19,8 +18,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -29,21 +28,14 @@ import (
 // maximum number of results returned by a scan is known, the scan disables
 // batch limits in the dist sender. This results in the parallelization of these
 // scans.
-var parallelScanResultThreshold = uint64(metamorphic.ConstantWithTestRange(
+var parallelScanResultThreshold = uint64(util.ConstantWithMetamorphicTestRange(
 	"parallel-scan-result-threshold",
 	parallelScanResultThresholdProductionValue, /* defaultValue */
 	1, /* min */
 	parallelScanResultThresholdProductionValue, /* max */
 ))
 
-const (
-	parallelScanResultThresholdProductionValue = 10000
-
-	// NumRecordedJoinTypes includes all join types except for
-	// descpb.RightSemiJoin and descpb.RightAntiJoin, which are recorded as left
-	// joins.
-	NumRecordedJoinTypes = 8
-)
+const parallelScanResultThresholdProductionValue = 10000
 
 func getParallelScanResultThreshold(forceProductionValue bool) uint64 {
 	if forceProductionValue {
@@ -64,7 +56,6 @@ type Builder struct {
 	disableTelemetry bool
 	semaCtx          *tree.SemaContext
 	evalCtx          *eval.Context
-	colOrdsAlloc     colOrdMapAllocator
 
 	// subqueries accumulates information about subqueries that are part of scalar
 	// expressions we built. Each entry is associated with a tree.Subquery
@@ -73,11 +64,7 @@ type Builder struct {
 
 	// cascades accumulates cascades that run after the main query but before
 	// checks.
-	cascades []exec.PostQuery
-
-	// triggers accumulates triggers that run after the main query and after
-	// checks and cascades.
-	triggers []exec.PostQuery
+	cascades []exec.Cascade
 
 	// checks accumulates check queries that are run after the main query and
 	// any cascades.
@@ -94,10 +81,6 @@ type Builder struct {
 	// rather than scans.
 	withExprs []builtWithExpr
 
-	// routineResultBuffers allows expressions within the body of a set-returning
-	// PL/pgSQL function to add to the result set during execution.
-	routineResultBuffers map[memo.RoutineResultBufferID]tree.RoutineResultWriter
-
 	// allowAutoCommit is passed through to factory methods for mutation
 	// operators. It allows execution to commit the transaction as part of the
 	// mutation itself. See canAutoCommit().
@@ -107,16 +90,13 @@ type Builder struct {
 	// for EXPLAIN.
 	initialAllowAutoCommit bool
 
-	allowInsertFastPath      bool
-	allowDeleteRangeFastPath bool
+	allowInsertFastPath bool
 
-	// forceForUpdateLocking, if set, is the table ID of the table being mutated
-	// that should be locked using forUpdateLocking in mutation's input
-	// operators to reduce query retries. In other words, it allows us to apply
-	// the implicit locking during the initial scan of the mutation. It will
-	// only be set if we are guaranteed to never scan data that won't be
-	// mutated.
-	forceForUpdateLocking opt.TableID
+	// forceForUpdateLocking is conditionally passed through to factory methods
+	// for scan operators that serve as the input for mutation operators. When
+	// set to true, it ensures that a FOR UPDATE row-level locking mode is used
+	// by scans. See forUpdateLocking.
+	forceForUpdateLocking bool
 
 	// planLazySubqueries is true if the builder should plan subqueries that are
 	// lazily evaluated as routines instead of a subquery which is evaluated
@@ -124,15 +104,6 @@ type Builder struct {
 	// handled by the subquery execution machinery, e.g., when building
 	// subqueries for statements inside a UDF.
 	planLazySubqueries bool
-
-	// tailCalls is used when building the last body statement of a routine. It
-	// identifies nested routines that are in tail-call position. This information
-	// is used to determine whether tail-call optimization is applicable.
-	//
-	// tailCalls uses opt.ScalarExpr as the key to allow both UDFCall and Subquery
-	// expressions to be considered. Note that subqueries within a routine's body
-	// are planned as nested routines, and therefore it is useful to apply TCO.
-	tailCalls map[opt.ScalarExpr]struct{}
 
 	// -- output --
 
@@ -167,12 +138,12 @@ type Builder struct {
 	NanosSinceStatsForecasted time.Duration
 
 	// JoinTypeCounts records the number of times each type of logical join was
-	// used in the query, up to 255.
-	JoinTypeCounts [NumRecordedJoinTypes]uint8
+	// used in the query.
+	JoinTypeCounts map[descpb.JoinType]int
 
-	// JoinAlgorithmCounts records the number of times each type of join
-	// algorithm was used in the query, up to 255.
-	JoinAlgorithmCounts [exec.NumJoinAlgorithms]uint8
+	// JoinAlgorithmCounts records the number of times each type of join algorithm
+	// was used in the query.
+	JoinAlgorithmCounts map[exec.JoinAlgorithm]int
 
 	// ScanCounts records the number of times scans were used in the query.
 	ScanCounts [exec.NumScanCountTypes]int
@@ -191,41 +162,7 @@ type Builder struct {
 	IsANSIDML bool
 
 	// IndexesUsed list the indexes used in query with the format tableID@indexID.
-	IndexesUsed
-}
-
-// IndexesUsed is a list of indexes used in a query.
-type IndexesUsed struct {
-	indexes []struct {
-		tableID cat.StableID
-		indexID cat.StableID
-	}
-}
-
-// add adds the given index to the list, if it is not already present.
-func (iu *IndexesUsed) add(tableID, indexID cat.StableID) {
-	s := struct {
-		tableID cat.StableID
-		indexID cat.StableID
-	}{tableID, indexID}
-	if !slices.Contains(iu.indexes, s) {
-		iu.indexes = append(iu.indexes, s)
-	}
-}
-
-// Strings returns a slice of strings with the format tableID@indexID for each
-// index in the list.
-//
-// TODO(mgartner): Use a slice of struct{uint64, uint64} instead of converting
-// to strings.
-func (iu *IndexesUsed) Strings() []string {
-	res := make([]string, len(iu.indexes))
-	const base = 10
-	for i, u := range iu.indexes {
-		res[i] = strconv.FormatUint(uint64(u.tableID), base) + "@" +
-			strconv.FormatUint(uint64(u.indexID), base)
-	}
-	return res
+	IndexesUsed []string
 }
 
 // New constructs an instance of the execution node builder using the
@@ -263,7 +200,6 @@ func New(
 		initialAllowAutoCommit: allowAutoCommit,
 		IsANSIDML:              isANSIDML,
 	}
-	b.colOrdsAlloc.Init(mem.Metadata().MaxColumn())
 	if evalCtx != nil {
 		sd := evalCtx.SessionData()
 		if sd.SaveTablesPrefix != "" {
@@ -282,38 +218,28 @@ func New(
 		b.allowAutoCommit = b.allowAutoCommit && !prohibitAutoCommit
 		b.initialAllowAutoCommit = b.allowAutoCommit
 		b.allowInsertFastPath = sd.InsertFastPath
-		b.allowDeleteRangeFastPath = sd.OptimizerUseDeleteRangeFastPath
 	}
 	return b
-}
-
-// DisableTelemetry disables telemetry on this Builder.
-func (b *Builder) DisableTelemetry() {
-	b.disableTelemetry = true
 }
 
 // Build constructs the execution node tree and returns its root node if no
 // error occurred.
 func (b *Builder) Build() (_ exec.Plan, err error) {
-	plan, _, err := b.build(b.e)
+	plan, err := b.build(b.e)
 	if err != nil {
 		return nil, err
 	}
 
 	rootRowCount := int64(b.e.(memo.RelExpr).Relational().Statistics().RowCountIfAvailable())
 	return b.factory.ConstructPlan(
-		plan.root, b.subqueries, b.cascades, b.triggers, b.checks, rootRowCount, b.flags,
+		plan.root, b.subqueries, b.cascades, b.checks, rootRowCount, b.flags,
 	)
 }
 
-type functionLookupHelper func(context.Context, tree.UnresolvedRoutineName, tree.SearchPath) (*tree.ResolvedFunctionDefinition, error)
-
-func (b *Builder) wrapFunctionImpl(
-	fnName string, lookup functionLookupHelper,
-) (tree.ResolvableFunctionReference, error) {
-	if lookup != nil {
+func (b *Builder) wrapFunction(fnName string) (tree.ResolvableFunctionReference, error) {
+	if b.evalCtx != nil && b.catalog != nil { // Some tests leave those unset.
 		unresolved := tree.MakeUnresolvedName(fnName)
-		fnDef, err := lookup(
+		fnDef, err := b.catalog.ResolveFunction(
 			context.Background(),
 			tree.MakeUnresolvedFunctionName(&unresolved),
 			&b.evalCtx.SessionData().SearchPath,
@@ -326,27 +252,7 @@ func (b *Builder) wrapFunctionImpl(
 	return tree.WrapFunction(fnName), nil
 }
 
-func (b *Builder) wrapBuiltinFunction(fnName string) (tree.ResolvableFunctionReference, error) {
-	lookup := func(_ context.Context, fn tree.UnresolvedRoutineName, path tree.SearchPath) (*tree.ResolvedFunctionDefinition, error) {
-		uname, err := fn.UnresolvedName().ToRoutineName()
-		if err != nil {
-			return nil, err
-		}
-		return tree.GetBuiltinFuncDefinitionOrFail(uname, path)
-	}
-	return b.wrapFunctionImpl(fnName, lookup)
-}
-
-func (b *Builder) wrapFunction(fnName string) (tree.ResolvableFunctionReference, error) {
-	var lookup functionLookupHelper = nil
-	// Some tests leave those unset.
-	if b.evalCtx != nil && b.catalog != nil {
-		lookup = b.catalog.ResolveFunction
-	}
-	return b.wrapFunctionImpl(fnName, lookup)
-}
-
-func (b *Builder) build(e opt.Expr) (_ execPlan, outputCols colOrdMap, err error) {
+func (b *Builder) build(e opt.Expr) (_ execPlan, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			// This code allows us to propagate errors without adding lots of checks
@@ -363,7 +269,7 @@ func (b *Builder) build(e opt.Expr) (_ execPlan, outputCols colOrdMap, err error
 
 	rel, ok := e.(memo.RelExpr)
 	if !ok {
-		return execPlan{}, colOrdMap{}, errors.AssertionFailedf(
+		return execPlan{}, errors.AssertionFailedf(
 			"building execution for non-relational operator %s", redact.Safe(e.Op()),
 		)
 	}
@@ -386,12 +292,12 @@ func (b *Builder) BuildScalar() (tree.TypedExpr, error) {
 	if !ok {
 		return nil, errors.AssertionFailedf("BuildScalar cannot be called for non-scalar operator %s", redact.Safe(b.e.Op()))
 	}
+	var ctx buildScalarCtx
 	md := b.mem.Metadata()
-	cols := b.colOrdsAlloc.Alloc()
+	ctx.ivh = tree.MakeIndexedVarHelper(&mdVarContainer{md: md}, md.NumColumns())
 	for i := 0; i < md.NumColumns(); i++ {
-		cols.Set(opt.ColumnID(i+1), i)
+		ctx.ivarMap.Set(i+1, i)
 	}
-	ctx := makeBuildScalarCtx(cols)
 	return b.buildScalar(&ctx, scalar)
 }
 
@@ -409,11 +315,11 @@ type builtWithExpr struct {
 	id opt.WithID
 	// outputCols maps the output ColumnIDs of the With expression to the ordinal
 	// positions they are output to. See execPlan.outputCols for more details.
-	outputCols colOrdMap
+	outputCols opt.ColMap
 	bufferNode exec.Node
 }
 
-func (b *Builder) addBuiltWithExpr(id opt.WithID, outputCols colOrdMap, bufferNode exec.Node) {
+func (b *Builder) addBuiltWithExpr(id opt.WithID, outputCols opt.ColMap, bufferNode exec.Node) {
 	b.withExprs = append(b.withExprs, builtWithExpr{
 		id:         id,
 		outputCols: outputCols,
@@ -441,9 +347,21 @@ type mdVarContainer struct {
 	md *opt.Metadata
 }
 
-var _ tree.IndexedVarContainer = &mdVarContainer{}
+var _ eval.IndexedVarContainer = &mdVarContainer{}
+
+// IndexedVarEval is part of the eval.IndexedVarContainer interface.
+func (c *mdVarContainer) IndexedVarEval(
+	ctx context.Context, idx int, e tree.ExprEvaluator,
+) (tree.Datum, error) {
+	return nil, errors.AssertionFailedf("no eval allowed in mdVarContainer")
+}
 
 // IndexedVarResolvedType is part of the IndexedVarContainer interface.
 func (c *mdVarContainer) IndexedVarResolvedType(idx int) *types.T {
 	return c.md.ColumnMeta(opt.ColumnID(idx + 1)).Type
+}
+
+// IndexedVarNodeFormatter is part of the IndexedVarContainer interface.
+func (c *mdVarContainer) IndexedVarNodeFormatter(idx int) tree.NodeFormatter {
+	return nil
 }

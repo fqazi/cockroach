@@ -15,30 +15,24 @@ import (
 // VerifyStatementPrettyRoundtrip verifies that the SQL statements in s
 // correctly round trip through the pretty printer.
 func VerifyStatementPrettyRoundtrip(t *testing.T, sql string) {
+	t.Helper()
+
 	stmts, err := parser.Parse(sql)
 	if err != nil {
 		t.Fatalf("%s: %s", err, sql)
 	}
 	for i := range stmts {
 		origStmt := stmts[i].AST
-		verifyStatementPrettyRoundTrip(t, sql, origStmt, SQL)
-
-		// Verify that the AST can be walked.
-		if _, err := tree.SimpleStmtVisit(
-			origStmt,
-			func(expr tree.Expr) (recurse bool, newExpr tree.Expr, err error) { return },
-		); err != nil {
-			t.Fatalf("cannot walk stmt %s %v", stmts[i].SQL, err)
-		}
-
+		verifyStatementPrettyRoundTrip(t, sql, origStmt, false /* plpgsql */)
 	}
 }
 
 // verifyStatementPrettyRoundTrip verifies that a SQL or PL/pgSQL statement
 // correctly round trips through the pretty printer.
 func verifyStatementPrettyRoundTrip(
-	t *testing.T, sql string, origStmt tree.NodeFormatter, p Parser,
+	t *testing.T, sql string, origStmt tree.NodeFormatter, plpgsql bool,
 ) {
+	t.Helper()
 	// Dataflow of the statement through these checks:
 	//
 	//             sql (from test file)
@@ -80,7 +74,7 @@ func verifyStatementPrettyRoundTrip(
 	if err != nil {
 		t.Fatalf("%s: %s", err, prettyStmt)
 	}
-	parsedPretty, err := parseOne(t, prettyStmt, p)
+	parsedPretty, err := parseOne(t, prettyStmt, plpgsql)
 	if err != nil {
 		t.Fatalf("%s: %s", err, prettyStmt)
 	}
@@ -90,7 +84,7 @@ func verifyStatementPrettyRoundTrip(
 		// Type annotations and unicode strings don't round trip well. Sometimes we
 		// need to reparse the original formatted output and format that for these
 		// to match.
-		reparsedStmt, err := parseOne(t, origFormatted, p)
+		reparsedStmt, err := parseOne(t, origFormatted, plpgsql)
 		if err != nil {
 			t.Fatal(err)
 		}

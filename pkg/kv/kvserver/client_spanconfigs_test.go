@@ -50,7 +50,7 @@ func TestSpanConfigUpdateAppliedToReplica(t *testing.T) {
 				DisableGCQueue:    true,
 			},
 			SpanConfig: &spanconfig.TestingKnobs{
-				StoreKVSubscriberOverride: func(spanconfig.KVSubscriber) spanconfig.KVSubscriber { return mockSubscriber },
+				StoreKVSubscriberOverride: mockSubscriber,
 			},
 		},
 	}
@@ -69,6 +69,7 @@ func TestSpanConfigUpdateAppliedToReplica(t *testing.T) {
 	require.NoError(t, err)
 	deleted, added := spanConfigStore.Apply(
 		ctx,
+		false, /* dryrun */
 		add,
 	)
 	require.Empty(t, deleted)
@@ -114,7 +115,7 @@ func TestFallbackSpanConfigOverride(t *testing.T) {
 				DisableGCQueue:    true,
 			},
 			SpanConfig: &spanconfig.TestingKnobs{
-				StoreKVSubscriberOverride: func(spanconfig.KVSubscriber) spanconfig.KVSubscriber { return mockSubscriber },
+				StoreKVSubscriberOverride: mockSubscriber,
 			},
 		},
 	}
@@ -175,7 +176,7 @@ func (m *mockSpanConfigSubscriber) ComputeSplitKey(
 
 func (m *mockSpanConfigSubscriber) GetSpanConfigForKey(
 	ctx context.Context, key roachpb.RKey,
-) (roachpb.SpanConfig, roachpb.Span, error) {
+) (roachpb.SpanConfig, error) {
 	return m.Store.GetSpanConfigForKey(ctx, key)
 }
 

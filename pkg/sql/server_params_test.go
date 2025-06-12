@@ -13,14 +13,17 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/tests"
 )
 
-// createTestServerParamsAllowTenants creates a set of params suitable for SQL tests. It
+// createTestServerParams creates a set of params suitable for SQL tests. It
 // enables some EndTxn sanity checking and installs a flexible
 // TestingEvalFilter.
-// TODO(andrei): this function is not used consistently by SQL tests.
-// TODO(ssd,shubham): Rename this to `createTestServerParams`
-func createTestServerParamsAllowTenants() (base.TestServerArgs, *tests.CommandFilters) {
+// TODO(andrei): this function is not used consistently by SQL tests. Figure out
+// if the EndTxn checks are important.
+func createTestServerParams() (base.TestServerArgs, *tests.CommandFilters) {
 	var cmdFilters tests.CommandFilters
 	params := base.TestServerArgs{}
+	// Disable the default test tenant as limits to the number of spans in a
+	// secondary tenant cause this test to fail. Tracked with #76378.
+	params.DefaultTestTenant = base.TODOTestTenantDisabled
 	params.Knobs.SQLStatsKnobs = sqlstats.CreateTestingKnobs()
 	params.Knobs.Store = &kvserver.StoreTestingKnobs{
 		EvalKnobs: kvserverbase.BatchEvalTestingKnobs{

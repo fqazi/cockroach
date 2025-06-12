@@ -99,9 +99,7 @@ CREATE TABLE u (
 		require.NoError(t, err)
 		require.Equal(t, 1, len(primaryIndexEntry))
 		secondaryIndexEntry, err := rowenc.EncodeSecondaryIndex(
-			context.Background(), keys.SystemSQLCodec, tableDesc, secondaryIndex,
-			colIDtoRowIndex, values, rowenc.EmptyVectorIndexEncodingHelper, true, /* includeEmpty */
-		)
+			keys.SystemSQLCodec, tableDesc, secondaryIndex, colIDtoRowIndex, values, true /* includeEmpty */)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(secondaryIndexEntry))
 

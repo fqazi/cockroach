@@ -222,78 +222,17 @@ var retiredSettings = map[InternalKey]struct{}{
 	"trace.jaeger.agent":                                       {},
 	"bulkio.restore.use_simple_import_spans":                   {},
 	"bulkio.restore.remove_regions.enabled":                    {},
-
-	// removed as of 24.1
-	"storage.mvcc.range_tombstones.enabled":                  {},
-	"changefeed.balance_range_distribution.enable":           {},
-	"changefeed.mux_rangefeed.enabled":                       {},
-	"kv.rangefeed.catchup_scan_concurrency":                  {},
-	"physical_replication.producer.mux_rangefeeds.enabled":   {},
-	"kv.rangefeed.use_dedicated_connection_class.enabled":    {},
-	"sql.trace.session_eventlog.enabled":                     {},
-	"sql.show_ranges_deprecated_behavior.enabled":            {},
-	"sql.drop_virtual_cluster.enabled":                       {},
-	"cross_cluster_replication.enabled":                      {},
-	"server.controller.default_tenant.check_service.enabled": {},
-
-	// removed as of 24.2
-	"storage.value_blocks.enabled":       {},
-	"kv.gc.sticky_hint.enabled":          {},
-	"kv.rangefeed.range_stuck_threshold": {},
-
-	// removed as of 24.3
-	"bulkio.backup.split_keys_on_timestamps":           {},
-	"sql.create_tenant.default_template":               {},
-	"kvadmission.low_pri_read_elastic_control.enabled": {},
-
-	// removed as of 25.1
-	"sql.auth.resolve_membership_single_scan.enabled":            {},
-	"storage.single_delete.crash_on_invariant_violation.enabled": {},
-	"storage.single_delete.crash_on_ineffectual.enabled":         {},
-	"bulkio.backup.elide_common_prefix.enabled":                  {},
-	"kv.bulkio.write_metadata_sst.enabled":                       {},
-	"jobs.execution_errors.max_entries":                          {},
-	"jobs.execution_errors.max_entry_size":                       {},
-	"sql.metrics.statement_details.plan_collection.enabled":      {},
-	"sql.metrics.statement_details.plan_collection.period":       {},
-
-	// removed as of 25.2
-	"kv.snapshot_receiver.excise.enabled":                    {},
-	"kv.mvcc_gc.queue_kv_admission_control.enabled":          {},
-	"sql.catalog.experimental_use_session_based_leasing":     {},
-	"bulkio.backup.merge_file_buffer_size":                   {},
-	"changefeed.new_webhook_sink_enabled":                    {},
-	"changefeed.new_webhook_sink.enabled":                    {},
-	"changefeed.new_pubsub_sink_enabled":                     {},
-	"changefeed.new_pubsub_sink.enabled":                     {},
-	"logical_replication.consumer.use_implicit_txns.enabled": {},
-
-	// removed as of 25.3
-	"sql.metrics.max_stmt_fingerprints_per_explicit_txn": {},
 }
 
-// grandfatheredDefaultSettings is the list of "grandfathered" existing sql.defaults
+// sqlDefaultSettings is the list of "grandfathered" existing sql.defaults
 // cluster settings. In 22.2 and later, new session settings do not need an
-// associated sql.defaults cluster setting (see the `vector_search_beam_size`
-// setting in vars.go for an example). A session setting can have its default
-// changed with ALTER ROLE ... SET, similar to this (the example assumes that
-// all roles should use the new default):
-//
-//	ALTER ROLE ALL SET vector_search_beam_size=128;
-//
-// Caveat: in some cases, we may still add new sql.defaults cluster settings,
-// but the new ones *must* be marked as non-public. Undocumented settings are
-// excluded from the check that prevents new sql.defaults settings. The
-// reason for this is that the rollout automation framework used in
-// CockroachCloud works by using cluster settings. If we want to slowly roll out
-// a feature that is gated behind a session setting, using a non-public
-// sql.defaults cluster setting is the recommended way to do so.
-var grandfatheredDefaultSettings = map[InternalKey]struct{}{
+// associated sql.defaults cluster setting. Instead they can have their default
+// changed with ALTER ROLE ... SET.
+var sqlDefaultSettings = map[InternalKey]struct{}{
 	// PLEASE DO NOT ADD NEW SETTINGS TO THIS MAP. THANK YOU.
 	"sql.defaults.cost_scans_with_default_col_size.enabled":                     {},
 	"sql.defaults.datestyle":                                                    {},
 	"sql.defaults.datestyle.enabled":                                            {},
-	"sql.defaults.deadlock_timeout":                                             {},
 	"sql.defaults.default_hash_sharded_index_bucket_count":                      {},
 	"sql.defaults.default_int_size":                                             {},
 	"sql.defaults.disallow_full_table_scans.enabled":                            {},
@@ -352,19 +291,18 @@ func checkNameFound(keyOrName string) {
 	if a, ok := aliasRegistry[SettingName(keyOrName)]; ok {
 		panic(fmt.Sprintf("setting already defined: %s (with key %s)", keyOrName, a.key))
 	}
+	if strings.Contains(keyOrName, "sql.defaults") {
+		if _, ok := sqlDefaultSettings[InternalKey(keyOrName)]; !ok {
+			panic(fmt.Sprintf(
+				"new sql.defaults cluster settings: %s is not needed now that `ALTER ROLE ... SET` syntax "+
+					"is supported; please remove the new sql.defaults cluster setting", keyOrName))
+		}
+	}
 }
 
 // register adds a setting to the registry.
 func register(class Class, key InternalKey, desc string, s internalSetting) {
 	checkNameFound(string(key))
-	if strings.Contains(string(key), "sql.defaults") {
-		_, grandfathered := grandfatheredDefaultSettings[key]
-		if !grandfathered && s.Visibility() != Reserved {
-			panic(fmt.Sprintf(
-				"new sql.defaults cluster settings: %s is not needed now that `ALTER ROLE ... SET` syntax "+
-					"is supported; please remove the new sql.defaults cluster setting or make it non-public", key))
-		}
-	}
 
 	slot := slotIdx(len(registry))
 	s.init(class, key, desc, slot)
@@ -417,6 +355,7 @@ func ConsoleKeys() (res []InternalKey) {
 }
 
 var allConsoleKeys = []InternalKey{
+	"cross_cluster_replication.enabled",
 	"keyvisualizer.enabled",
 	"keyvisualizer.sample_interval",
 	"sql.index_recommendation.drop_unused_duration",

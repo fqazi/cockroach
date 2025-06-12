@@ -5,8 +5,8 @@
 
 import React from "react";
 
-import { Anchor } from "src/components";
 import * as docsURL from "src/util/docs";
+import { Anchor } from "src/components";
 
 export const CapacityGraphTooltip: React.FC<{ tooltipSelection?: string }> = ({
   tooltipSelection,
@@ -159,6 +159,10 @@ export const CircuitBreakerTrippedEventsTooltip: React.ReactNode = (
     The number of circuit breaker events occurred per aggregated interval of
     time across all nodes since the process started.
   </div>
+);
+
+export const PausedFollowersTooltip: React.ReactNode = (
+  <div>The number of nonessential followers that have replication paused.</div>
 );
 
 export const ReceiverSnapshotsQueuedTooltip: React.ReactNode = (

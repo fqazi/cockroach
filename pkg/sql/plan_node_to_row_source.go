@@ -9,7 +9,6 @@ import (
 	"context"
 	"sync"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/colexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execopnode"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execreleasable"
@@ -115,7 +114,11 @@ func (p *planNodeToRowSource) Init(
 		post,
 		p.outputTypes,
 		flowCtx,
-		flowCtx.EvalCtx,
+		// Note that we have already created a copy of the extendedEvalContext
+		// (which made a copy of the EvalContext) right before calling
+		// newPlanNodeToRowSource, so we can just use the eval context from the
+		// params.
+		p.params.EvalContext(),
 		processorID,
 		nil, /* memMonitor */
 		execinfra.ProcStateOpts{
@@ -126,9 +129,6 @@ func (p *planNodeToRowSource) Init(
 		return err
 	}
 	if execstats.ShouldCollectStats(ctx, flowCtx.CollectStats) {
-		if txn := p.params.p.Txn(); txn != nil {
-			p.contentionEventsListener.Init(txn.ID())
-		}
 		p.ExecStatsForTrace = p.execStatsForTrace
 	}
 	return nil
@@ -153,25 +153,14 @@ func (p *planNodeToRowSource) SetInput(ctx context.Context, input execinfra.RowS
 	// Search the plan we're wrapping for firstNotWrapped, which is the planNode
 	// that DistSQL planning resumed in. Replace that planNode with input,
 	// wrapped as a planNode.
-	// NB: The root planNode is never replaced.
-	var replaceFirstNotWrapped func(parent planNode) error
-	replaceFirstNotWrapped = func(parent planNode) error {
-		for i, n := 0, parent.InputCount(); i < n; i++ {
-			child, err := parent.Input(i)
-			if err != nil {
-				return err
+	return walkPlan(ctx, p.node, planObserver{
+		replaceNode: func(ctx context.Context, nodeName string, plan planNode) (planNode, error) {
+			if plan == p.firstNotWrapped {
+				return newRowSourceToPlanNode(input, p, planColumns(p.firstNotWrapped), p.firstNotWrapped), nil
 			}
-			if child == p.firstNotWrapped {
-				newChild := newRowSourceToPlanNode(input, p, planColumns(p.firstNotWrapped), p.firstNotWrapped)
-				return parent.SetInput(i, newChild)
-			}
-			if err := replaceFirstNotWrapped(child); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	return replaceFirstNotWrapped(p.node)
+			return nil, nil
+		},
+	})
 }
 
 func (p *planNodeToRowSource) Start(ctx context.Context) {
@@ -180,13 +169,6 @@ func (p *planNodeToRowSource) Start(ctx context.Context) {
 	// This starts all of the nodes below this node.
 	if err := startExec(p.params, p.node); err != nil {
 		p.MoveToDraining(err)
-	}
-}
-
-func init() {
-	colexec.IsFastPathNode = func(rs execinfra.RowSource) bool {
-		p, ok := rs.(*planNodeToRowSource)
-		return ok && p.fastPath
 	}
 }
 
@@ -275,20 +257,15 @@ func (p *planNodeToRowSource) trailingMetaCallback() []execinfrapb.ProducerMetad
 // execStatsForTrace implements ProcessorBase.ExecStatsForTrace.
 func (p *planNodeToRowSource) execStatsForTrace() *execinfrapb.ComponentStats {
 	// Propagate contention time and RUs from IO requests.
-	if p.contentionEventsListener.GetContentionTime() == 0 &&
-		p.contentionEventsListener.GetLockWaitTime() == 0 &&
-		p.contentionEventsListener.GetLatchWaitTime() == 0 &&
-		p.tenantConsumptionListener.GetConsumedRU() == 0 {
+	if p.contentionEventsListener.CumulativeContentionTime == 0 && p.tenantConsumptionListener.ConsumedRU == 0 {
 		return nil
 	}
 	return &execinfrapb.ComponentStats{
 		KV: execinfrapb.KVStats{
-			ContentionTime: optional.MakeTimeValue(p.contentionEventsListener.GetContentionTime()),
-			LockWaitTime:   optional.MakeTimeValue(p.contentionEventsListener.GetLockWaitTime()),
-			LatchWaitTime:  optional.MakeTimeValue(p.contentionEventsListener.GetLatchWaitTime()),
+			ContentionTime: optional.MakeTimeValue(p.contentionEventsListener.CumulativeContentionTime),
 		},
 		Exec: execinfrapb.ExecStats{
-			ConsumedRU: optional.MakeUint(p.tenantConsumptionListener.GetConsumedRU()),
+			ConsumedRU: optional.MakeUint(p.tenantConsumptionListener.ConsumedRU),
 		},
 	}
 }

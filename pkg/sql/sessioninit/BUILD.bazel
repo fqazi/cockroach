@@ -9,7 +9,6 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/sessioninit",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/keys",
         "//pkg/security/password",
         "//pkg/security/username",
         "//pkg/settings",
@@ -17,13 +16,13 @@ go_library(
         "//pkg/sql/catalog",
         "//pkg/sql/catalog/descpb",
         "//pkg/sql/catalog/descs",
+        "//pkg/sql/sem/catconstants",
         "//pkg/sql/sem/tree",
         "//pkg/util/log",
         "//pkg/util/mon",
         "//pkg/util/stop",
         "//pkg/util/syncutil",
         "//pkg/util/syncutil/singleflight",
-        "@com_github_go_ldap_ldap_v3//:ldap",
     ],
 )
 
@@ -33,6 +32,7 @@ go_test(
         "cache_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=295s"],
     deps = [
         ":sessioninit",
         "//pkg/base",

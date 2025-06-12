@@ -37,7 +37,7 @@ type Watcher struct {
 	mu  struct {
 		syncutil.Mutex
 		kvs             *Engine
-		frontier        span.Frontier
+		frontier        *span.Frontier
 		frontierWaiters map[hlc.Timestamp][]chan error
 	}
 	cancel func()
@@ -82,7 +82,7 @@ func Watch(ctx context.Context, env *Env, dbs []*kv.DB, dataSpan roachpb.Span) (
 			w.mu.Unlock()
 
 			ds := dss[i]
-			err := ds.RangeFeed(ctx, []kvcoord.SpanTimePair{{Span: dataSpan, StartAfter: ts}}, eventC, kvcoord.WithDiff())
+			err := ds.RangeFeed(ctx, []roachpb.Span{dataSpan}, ts, eventC, kvcoord.WithDiff())
 			if isRetryableRangeFeedErr(err) {
 				log.Infof(ctx, "got retryable RangeFeed error: %+v", err)
 				continue
@@ -119,8 +119,6 @@ func (w *Watcher) Finish() *Engine {
 		// Finish was already called.
 		return w.mu.kvs
 	}
-	defer w.mu.frontier.Release()
-
 	w.cancel()
 	w.cancel = nil
 	// Only WaitForFrontier cares about errors.

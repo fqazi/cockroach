@@ -3,15 +3,15 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { util } from "@cockroachlabs/cluster-ui";
-import * as protosccl from "@cockroachlabs/crdb-protobuf-client-ccl";
-import isEmpty from "lodash/isEmpty";
+import React from "react";
+import _ from "lodash";
 import Long from "long";
 import moment from "moment-timezone";
-import React from "react";
 
-import { EncryptionStatusProps } from "oss/src/views/reports/containers/stores/encryption";
 import * as protos from "src/js/protos";
+import * as protosccl from "@cockroachlabs/crdb-protobuf-client-ccl";
+import { EncryptionStatusProps } from "oss/src/views/reports/containers/stores/encryption";
+import { util } from "@cockroachlabs/cluster-ui";
 import { FixLong } from "src/util/fixLong";
 
 const dateFormat = "Y-MM-DD HH:mm:ss";
@@ -49,10 +49,14 @@ export default class EncryptionStatus {
     );
   }
 
-  renderStoreKey(key: protosccl.cockroach.storage.enginepb.IKeyInfo) {
+  renderStoreKey(
+    key: protosccl.cockroach.ccl.storageccl.engineccl.enginepbccl.IKeyInfo,
+  ) {
     // Get the enum name from its value (eg: "AES128_CTR" for 1).
     const encryptionType =
-      protosccl.cockroach.storage.enginepb.EncryptionType[key.encryption_type];
+      protosccl.cockroach.ccl.storageccl.engineccl.enginepbccl.EncryptionType[
+        key.encryption_type
+      ];
     const createdAt = moment
       .unix(FixLong(key.creation_time).toNumber())
       .utc()
@@ -67,10 +71,14 @@ export default class EncryptionStatus {
     ];
   }
 
-  renderDataKey(key: protosccl.cockroach.storage.enginepb.IKeyInfo) {
+  renderDataKey(
+    key: protosccl.cockroach.ccl.storageccl.engineccl.enginepbccl.IKeyInfo,
+  ) {
     // Get the enum name from its value (eg: "AES128_CTR" for 1).
     const encryptionType =
-      protosccl.cockroach.storage.enginepb.EncryptionType[key.encryption_type];
+      protosccl.cockroach.ccl.storageccl.engineccl.enginepbccl.EncryptionType[
+        key.encryption_type
+      ];
     const createdAt = moment
       .unix(key.creation_time.toNumber())
       .utc()
@@ -128,7 +136,7 @@ export default class EncryptionStatus {
   getEncryptionRows() {
     const { store } = this.props;
     const rawStatus = store.encryption_status;
-    if (isEmpty(rawStatus)) {
+    if (_.isEmpty(rawStatus)) {
       return [this.renderSimpleRow("Encryption status", "Not encrypted")];
     }
 
@@ -137,7 +145,9 @@ export default class EncryptionStatus {
     // Attempt to decode protobuf.
     try {
       decodedStatus =
-        protosccl.cockroach.storage.enginepb.EncryptionStatus.decode(rawStatus);
+        protosccl.cockroach.ccl.storageccl.engineccl.enginepbccl.EncryptionStatus.decode(
+          rawStatus,
+        );
     } catch (e) {
       return [
         this.renderSimpleRow(

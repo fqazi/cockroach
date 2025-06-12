@@ -20,7 +20,7 @@ type latchManagerImpl struct {
 }
 
 func (m *latchManagerImpl) Acquire(ctx context.Context, req Request) (latchGuard, *Error) {
-	lg, err := m.m.Acquire(ctx, req.LatchSpans, req.PoisonPolicy, req.Batch)
+	lg, err := m.m.Acquire(ctx, req.LatchSpans, req.PoisonPolicy)
 	if err != nil {
 		return nil, kvpb.NewError(err)
 	}
@@ -28,7 +28,7 @@ func (m *latchManagerImpl) Acquire(ctx context.Context, req Request) (latchGuard
 }
 
 func (m *latchManagerImpl) AcquireOptimistic(req Request) latchGuard {
-	lg := m.m.AcquireOptimistic(req.LatchSpans, req.PoisonPolicy, req.Batch)
+	lg := m.m.AcquireOptimistic(req.LatchSpans, req.PoisonPolicy)
 	return lg
 }
 
@@ -47,9 +47,9 @@ func (m *latchManagerImpl) WaitUntilAcquired(
 }
 
 func (m *latchManagerImpl) WaitFor(
-	ctx context.Context, ss *spanset.SpanSet, pp poison.Policy, ba *kvpb.BatchRequest,
+	ctx context.Context, ss *spanset.SpanSet, pp poison.Policy,
 ) *Error {
-	err := m.m.WaitFor(ctx, ss, pp, ba)
+	err := m.m.WaitFor(ctx, ss, pp)
 	if err != nil {
 		return kvpb.NewError(err)
 	}
@@ -60,8 +60,8 @@ func (m *latchManagerImpl) Poison(lg latchGuard) {
 	m.m.Poison(lg.(*spanlatch.Guard))
 }
 
-func (m *latchManagerImpl) Release(ctx context.Context, lg latchGuard) {
-	m.m.Release(ctx, lg.(*spanlatch.Guard))
+func (m *latchManagerImpl) Release(lg latchGuard) {
+	m.m.Release(lg.(*spanlatch.Guard))
 }
 
 func (m *latchManagerImpl) Metrics() LatchMetrics {

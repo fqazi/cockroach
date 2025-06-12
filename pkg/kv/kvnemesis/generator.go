@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"slices"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -34,8 +33,6 @@ import (
 type GeneratorConfig struct {
 	Ops                   OperationConfig
 	NumNodes, NumReplicas int
-
-	BufferedWritesProb float64
 }
 
 // OperationConfig configures the relative probabilities of producing various
@@ -53,7 +50,6 @@ type OperationConfig struct {
 	Merge          MergeConfig
 	ChangeReplicas ChangeReplicasConfig
 	ChangeLease    ChangeLeaseConfig
-	ChangeSetting  ChangeSettingConfig
 	ChangeZone     ChangeZoneConfig
 }
 
@@ -94,7 +90,6 @@ type ClosureTxnConfig struct {
 	// When CommitInBatch is selected, CommitBatchOps controls the composition of
 	// the kv.Batch used.
 	CommitBatchOps ClientOperationConfig
-	SavepointOps   SavepointConfig
 }
 
 // ClientOperationConfig configures the relative probabilities of the
@@ -300,24 +295,13 @@ type MergeConfig struct {
 // ChangeReplicasConfig configures the relative probability of generating a
 // ChangeReplicas operation.
 type ChangeReplicasConfig struct {
-	// AddVotingReplica adds a single voting replica.
-	AddVotingReplica int
-	// RemoveVotingReplica removes a single voting replica.
-	RemoveVotingReplica int
-	// AtomicSwapVotingReplica adds 1 voting replica and removes 1 voting replica
-	// in a single ChangeReplicas call.
-	AtomicSwapVotingReplica int
-	// AddNonVotingReplica adds a single non-voting replica.
-	AddNonVotingReplica int
-	// RemoveNonVotingReplica removes a single non-voting replica.
-	RemoveNonVotingReplica int
-	// AtomicSwapNonVotingReplica adds 1 non-voting replica and removes 1 non-voting
-	// replica in a single ChangeReplicas call.
-	AtomicSwapNonVotingReplica int
-	// PromoteReplica promotes a non-voting replica to voting.
-	PromoteReplica int
-	// DemoteReplica demotes a voting replica to non-voting.
-	DemoteReplica int
+	// AddReplica adds a single replica.
+	AddReplica int
+	// RemoveReplica removes a single replica.
+	RemoveReplica int
+	// AtomicSwapReplica adds 1 replica and removes 1 replica in a single
+	// ChangeReplicas call.
+	AtomicSwapReplica int
 }
 
 // ChangeLeaseConfig configures the relative probability of generating an
@@ -327,27 +311,11 @@ type ChangeLeaseConfig struct {
 	TransferLease int
 }
 
-// ChangeSettingConfig configures the relative probability of generating a
-// cluster setting change operation.
-type ChangeSettingConfig struct {
-	// SetLeaseType changes the default range lease type.
-	SetLeaseType int
-}
-
 // ChangeZoneConfig configures the relative probability of generating a zone
 // configuration change operation.
 type ChangeZoneConfig struct {
 	// ToggleGlobalReads sets global_reads to a new value.
 	ToggleGlobalReads int
-}
-
-type SavepointConfig struct {
-	// SavepointCreate is an operation that creates a new savepoint with a given id.
-	SavepointCreate int
-	// SavepointRelease is an operation that releases a savepoint with a given id.
-	SavepointRelease int
-	// SavepointRollback is an operation that rolls back a savepoint with a given id.
-	SavepointRollback int
 }
 
 // newAllOperationsConfig returns a GeneratorConfig that exercises *all*
@@ -408,12 +376,6 @@ func newAllOperationsConfig() GeneratorConfig {
 		Batch: 4,
 		Ops:   clientOpConfig,
 	}
-	// SavepointConfig is only relevant in ClosureTxnConfig.
-	savepointConfig := SavepointConfig{
-		SavepointCreate:   1,
-		SavepointRelease:  1,
-		SavepointRollback: 1,
-	}
 	return GeneratorConfig{Ops: OperationConfig{
 		DB:    clientOpConfig,
 		Batch: batchOpConfig,
@@ -430,7 +392,6 @@ func newAllOperationsConfig() GeneratorConfig {
 			TxnClientOps:               clientOpConfig,
 			TxnBatchOps:                batchOpConfig,
 			CommitBatchOps:             clientOpConfig,
-			SavepointOps:               savepointConfig,
 		},
 		Split: SplitConfig{
 			SplitNew:   1,
@@ -441,20 +402,12 @@ func newAllOperationsConfig() GeneratorConfig {
 			MergeIsSplit:  1,
 		},
 		ChangeReplicas: ChangeReplicasConfig{
-			AddVotingReplica:           1,
-			RemoveVotingReplica:        1,
-			AtomicSwapVotingReplica:    1,
-			AddNonVotingReplica:        1,
-			RemoveNonVotingReplica:     1,
-			AtomicSwapNonVotingReplica: 1,
-			PromoteReplica:             1,
-			DemoteReplica:              1,
+			AddReplica:        1,
+			RemoveReplica:     1,
+			AtomicSwapReplica: 1,
 		},
 		ChangeLease: ChangeLeaseConfig{
 			TransferLease: 1,
-		},
-		ChangeSetting: ChangeSettingConfig{
-			SetLeaseType: 1,
 		},
 		ChangeZone: ChangeZoneConfig{
 			ToggleGlobalReads: 1,
@@ -497,6 +450,10 @@ func NewDefaultConfig() GeneratorConfig {
 	// #46081 has long been fixed. Then file an issue about generating
 	// non-self-overlapping operations for batches.
 	config.Ops.Batch = BatchOperationConfig{}
+	// TODO(tbg): should be able to remove the two lines below, since
+	// #45586 has already been addressed.
+	config.Ops.ClosureTxn.CommitBatchOps.GetExisting = 0
+	config.Ops.ClosureTxn.CommitBatchOps.GetMissing = 0
 	// SkipLocked is a batch-level attribute, not an operation-level attribute. To
 	// avoid mixing skip locked and non-skip locked requests, we disable these ops
 	// in the batchOpConfig.
@@ -554,9 +511,9 @@ func GeneratorDataSpan() roachpb.Span {
 	}
 }
 
-// GetReplicasFn is a function that returns the current voting and non-voting
-// replicas, respectively, for the range containing a key.
-type GetReplicasFn func(roachpb.Key) ([]roachpb.ReplicationTarget, []roachpb.ReplicationTarget)
+// GetReplicasFn is a function that returns the current replicas for the range
+// containing a key.
+type GetReplicasFn func(roachpb.Key) []roachpb.ReplicationTarget
 
 // Generator incrementally constructs KV traffic designed to maximally test edge
 // cases.
@@ -660,43 +617,22 @@ func (g *generator) RandStep(rng *rand.Rand) Step {
 	}
 
 	key := randKey(rng)
-	voters, nonVoters := g.replicasFn(roachpb.Key(key))
-	numVoters, numNonVoters := len(voters), len(nonVoters)
-	numReplicas := numVoters + numNonVoters
-	if numReplicas < g.Config.NumNodes {
-		addVoterFn := makeAddReplicaFn(key, voters, false /* atomicSwap */, true /* voter */)
-		addOpGen(&allowed, addVoterFn, g.Config.Ops.ChangeReplicas.AddVotingReplica)
-		addNonVoterFn := makeAddReplicaFn(key, nonVoters, false /* atomicSwap */, false /* voter */)
-		addOpGen(&allowed, addNonVoterFn, g.Config.Ops.ChangeReplicas.AddNonVotingReplica)
+	current := g.replicasFn(roachpb.Key(key))
+	if len(current) < g.Config.NumNodes {
+		addReplicaFn := makeAddReplicaFn(key, current, false /* atomicSwap */)
+		addOpGen(&allowed, addReplicaFn, g.Config.Ops.ChangeReplicas.AddReplica)
 	}
-	if numReplicas == g.Config.NumReplicas && numReplicas < g.Config.NumNodes {
-		atomicSwapVoterFn := makeAddReplicaFn(key, voters, true /* atomicSwap */, true /* voter */)
-		addOpGen(&allowed, atomicSwapVoterFn, g.Config.Ops.ChangeReplicas.AtomicSwapVotingReplica)
-		if numNonVoters > 0 {
-			atomicSwapNonVoterFn := makeAddReplicaFn(key, nonVoters, true /* atomicSwap */, false /* voter */)
-			addOpGen(&allowed, atomicSwapNonVoterFn, g.Config.Ops.ChangeReplicas.AtomicSwapNonVotingReplica)
-		}
+	if len(current) == g.Config.NumReplicas && len(current) < g.Config.NumNodes {
+		atomicSwapReplicaFn := makeAddReplicaFn(key, current, true /* atomicSwap */)
+		addOpGen(&allowed, atomicSwapReplicaFn, g.Config.Ops.ChangeReplicas.AtomicSwapReplica)
 	}
-	if numReplicas > g.Config.NumReplicas {
-		removeVoterFn := makeRemoveReplicaFn(key, voters, true /* voter */)
-		addOpGen(&allowed, removeVoterFn, g.Config.Ops.ChangeReplicas.RemoveVotingReplica)
-		if numNonVoters > 0 {
-			removeNonVoterFn := makeRemoveReplicaFn(key, nonVoters, false /* voter */)
-			addOpGen(&allowed, removeNonVoterFn, g.Config.Ops.ChangeReplicas.RemoveNonVotingReplica)
-		}
+	if len(current) > g.Config.NumReplicas {
+		removeReplicaFn := makeRemoveReplicaFn(key, current)
+		addOpGen(&allowed, removeReplicaFn, g.Config.Ops.ChangeReplicas.RemoveReplica)
 	}
-	if numVoters > 0 {
-		demoteVoterFn := makeDemoteReplicaFn(key, voters)
-		addOpGen(&allowed, demoteVoterFn, g.Config.Ops.ChangeReplicas.DemoteReplica)
-	}
-	if numNonVoters > 0 {
-		promoteNonVoterFn := makePromoteReplicaFn(key, nonVoters)
-		addOpGen(&allowed, promoteNonVoterFn, g.Config.Ops.ChangeReplicas.PromoteReplica)
-	}
-	transferLeaseFn := makeTransferLeaseFn(key, append(voters, nonVoters...))
+	transferLeaseFn := makeTransferLeaseFn(key, current)
 	addOpGen(&allowed, transferLeaseFn, g.Config.Ops.ChangeLease.TransferLease)
 
-	addOpGen(&allowed, setLeaseType, g.Config.Ops.ChangeSetting.SetLeaseType)
 	addOpGen(&allowed, toggleGlobalReads, g.Config.Ops.ChangeZone.ToggleGlobalReads)
 
 	return step(g.selectOp(rng, allowed))
@@ -1372,25 +1308,17 @@ func randMergeIsSplit(g *generator, rng *rand.Rand) Operation {
 	return merge(key)
 }
 
-func makeRemoveReplicaFn(key string, current []roachpb.ReplicationTarget, voter bool) opGenFunc {
+func makeRemoveReplicaFn(key string, current []roachpb.ReplicationTarget) opGenFunc {
 	return func(g *generator, rng *rand.Rand) Operation {
-		var changeType roachpb.ReplicaChangeType
-		if voter {
-			changeType = roachpb.REMOVE_VOTER
-		} else {
-			changeType = roachpb.REMOVE_NON_VOTER
-		}
 		change := kvpb.ReplicationChange{
-			ChangeType: changeType,
+			ChangeType: roachpb.REMOVE_VOTER,
 			Target:     current[rng.Intn(len(current))],
 		}
 		return changeReplicas(key, change)
 	}
 }
 
-func makeAddReplicaFn(
-	key string, current []roachpb.ReplicationTarget, atomicSwap bool, voter bool,
-) opGenFunc {
+func makeAddReplicaFn(key string, current []roachpb.ReplicationTarget, atomicSwap bool) opGenFunc {
 	return func(g *generator, rng *rand.Rand) Operation {
 		candidatesMap := make(map[roachpb.ReplicationTarget]struct{})
 		for i := 0; i < g.Config.NumNodes; i++ {
@@ -1405,55 +1333,15 @@ func makeAddReplicaFn(
 			candidates = append(candidates, candidate)
 		}
 		candidate := candidates[rng.Intn(len(candidates))]
-		var addType, removeType roachpb.ReplicaChangeType
-		if voter {
-			addType, removeType = roachpb.ADD_VOTER, roachpb.REMOVE_VOTER
-		} else {
-			addType, removeType = roachpb.ADD_NON_VOTER, roachpb.REMOVE_NON_VOTER
-		}
 		changes := []kvpb.ReplicationChange{{
-			ChangeType: addType,
+			ChangeType: roachpb.ADD_VOTER,
 			Target:     candidate,
 		}}
 		if atomicSwap {
 			changes = append(changes, kvpb.ReplicationChange{
-				ChangeType: removeType,
+				ChangeType: roachpb.REMOVE_VOTER,
 				Target:     current[rng.Intn(len(current))],
 			})
-		}
-		return changeReplicas(key, changes...)
-	}
-}
-
-func makePromoteReplicaFn(key string, nonVoters []roachpb.ReplicationTarget) opGenFunc {
-	return func(g *generator, rng *rand.Rand) Operation {
-		target := nonVoters[rng.Intn(len(nonVoters))]
-		changes := []kvpb.ReplicationChange{
-			{
-				ChangeType: roachpb.REMOVE_NON_VOTER,
-				Target:     target,
-			},
-			{
-				ChangeType: roachpb.ADD_VOTER,
-				Target:     target,
-			},
-		}
-		return changeReplicas(key, changes...)
-	}
-}
-
-func makeDemoteReplicaFn(key string, voters []roachpb.ReplicationTarget) opGenFunc {
-	return func(g *generator, rng *rand.Rand) Operation {
-		target := voters[rng.Intn(len(voters))]
-		changes := []kvpb.ReplicationChange{
-			{
-				ChangeType: roachpb.REMOVE_VOTER,
-				Target:     target,
-			},
-			{
-				ChangeType: roachpb.ADD_NON_VOTER,
-				Target:     target,
-			},
 		}
 		return changeReplicas(key, changes...)
 	}
@@ -1464,14 +1352,6 @@ func makeTransferLeaseFn(key string, current []roachpb.ReplicationTarget) opGenF
 		target := current[rng.Intn(len(current))]
 		return transferLease(key, target.StoreID)
 	}
-}
-
-func setLeaseType(_ *generator, rng *rand.Rand) Operation {
-	leaseTypes := roachpb.TestingAllLeaseTypes()
-	leaseType := leaseTypes[rng.Intn(len(leaseTypes))]
-	op := changeSetting(ChangeSettingType_SetLeaseType)
-	op.ChangeSetting.LeaseType = leaseType
-	return op
 }
 
 func toggleGlobalReads(_ *generator, _ *rand.Rand) Operation {
@@ -1495,64 +1375,43 @@ func (g *generator) registerClosureTxnOps(allowed *[]opGen, c *ClosureTxnConfig)
 	const Commit, Rollback = ClosureTxnType_Commit, ClosureTxnType_Rollback
 	const SSI, SI, RC = isolation.Serializable, isolation.Snapshot, isolation.ReadCommitted
 	addOpGen(allowed,
-		makeClosureTxn(Commit, SSI, g.Config.BufferedWritesProb, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.CommitSerializable)
+		makeClosureTxn(Commit, SSI, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/), c.CommitSerializable)
 	addOpGen(allowed,
-		makeClosureTxn(Commit, SI, 0 /* bufferedWritesProb */, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.CommitSnapshot)
+		makeClosureTxn(Commit, SI, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/), c.CommitSnapshot)
 	addOpGen(allowed,
-		makeClosureTxn(Commit, RC, 0 /* bufferedWritesProb */, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.CommitReadCommitted)
-
+		makeClosureTxn(Commit, RC, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/), c.CommitReadCommitted)
 	addOpGen(allowed,
-		makeClosureTxn(Rollback, SSI, g.Config.BufferedWritesProb, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.RollbackSerializable)
+		makeClosureTxn(Rollback, SSI, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/), c.RollbackSerializable)
 	addOpGen(allowed,
-		makeClosureTxn(Rollback, SI, 0 /* bufferedWritesProb */, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.RollbackSnapshot)
+		makeClosureTxn(Rollback, SI, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/), c.RollbackSnapshot)
 	addOpGen(allowed,
-		makeClosureTxn(Rollback, RC, 0 /* bufferedWritesProb */, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.RollbackReadCommitted)
-
+		makeClosureTxn(Rollback, RC, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/), c.RollbackReadCommitted)
 	addOpGen(allowed,
-		makeClosureTxn(Commit, SSI, g.Config.BufferedWritesProb, &c.TxnClientOps, &c.TxnBatchOps, &c.CommitBatchOps, &c.SavepointOps), c.CommitSerializableInBatch)
+		makeClosureTxn(Commit, SSI, &c.TxnClientOps, &c.TxnBatchOps, &c.CommitBatchOps), c.CommitSerializableInBatch)
 	addOpGen(allowed,
-		makeClosureTxn(Commit, SI, 0 /* bufferedWritesProb */, &c.TxnClientOps, &c.TxnBatchOps, &c.CommitBatchOps, &c.SavepointOps), c.CommitSnapshotInBatch)
+		makeClosureTxn(Commit, SI, &c.TxnClientOps, &c.TxnBatchOps, &c.CommitBatchOps), c.CommitSnapshotInBatch)
 	addOpGen(allowed,
-		makeClosureTxn(Commit, RC, 0 /* bufferedWritesProb */, &c.TxnClientOps, &c.TxnBatchOps, &c.CommitBatchOps, &c.SavepointOps), c.CommitReadCommittedInBatch)
+		makeClosureTxn(Commit, RC, &c.TxnClientOps, &c.TxnBatchOps, &c.CommitBatchOps), c.CommitReadCommittedInBatch)
 }
 
 func makeClosureTxn(
 	txnType ClosureTxnType,
 	iso isolation.Level,
-	bufferedWritesProb float64,
 	txnClientOps *ClientOperationConfig,
 	txnBatchOps *BatchOperationConfig,
 	commitInBatch *ClientOperationConfig,
-	savepointOps *SavepointConfig,
 ) opGenFunc {
 	return func(g *generator, rng *rand.Rand) Operation {
-		// All allowed non-savepoint ops. These don't change as we iteratively
-		// select ops in the loop below.
 		var allowed []opGen
 		g.registerClientOps(&allowed, txnClientOps)
 		g.registerBatchOps(&allowed, txnBatchOps)
-		const maxOps = 20
+		const maxOps = 5
 		numOps := rng.Intn(maxOps + 1)
 		ops := make([]Operation, numOps)
-		// Stack of savepoint indexes/ids.
-		// The last element of the slice is the top of the stack.
-		var spIDs []int
 		for i := range ops {
-			// In each iteration, we start with the allowed non-savepoint ops,
-			// and we add the valid savepoint ops in registerSavepointOps.
-			allowedIncludingSavepointOps := allowed
-			// Savepoints are registered on each iteration of the loop (unlike other
-			// ops that are registered once at the start) because depending on what
-			// savepoint ops are randomly selected in selectOp below, the set of
-			// allowed savepoint ops changes. See registerSavepointOps.
-			g.registerSavepointOps(&allowedIncludingSavepointOps, savepointOps, spIDs, i)
-			ops[i] = g.selectOp(rng, allowedIncludingSavepointOps)
-			// Now that a random op is selected, we may need to update the stack of
-			// existing savepoints. See maybeUpdateSavepoints.
-			maybeUpdateSavepoints(&spIDs, ops[i])
+			ops[i] = g.selectOp(rng, allowed)
 		}
 		op := closureTxn(txnType, iso, ops...)
-		op.ClosureTxn.BufferedWrites = rng.Float64() < bufferedWritesProb
 		if commitInBatch != nil {
 			if txnType != ClosureTxnType_Commit {
 				panic(errors.AssertionFailedf(`CommitInBatch must commit got: %s`, txnType))
@@ -1560,79 +1419,6 @@ func makeClosureTxn(
 			op.ClosureTxn.CommitInBatch = makeRandBatch(commitInBatch)(g, rng).Batch
 		}
 		return op
-	}
-}
-
-// registerSavepointOps assumes existingSp is the current stack of savepoints
-// and uses it to register only valid savepoint ops. I.e. releasing or rolling
-// back a savepoint that hasn't been created or has already been released or
-// rolled back is not allowed.
-func (g *generator) registerSavepointOps(
-	allowed *[]opGen, s *SavepointConfig, existingSp []int, idx int,
-) {
-	// A savepoint creation is always a valid. The index of the op in the txn is
-	// used as its id.
-	addOpGen(allowed, makeSavepointCreate(idx), s.SavepointCreate)
-	// For each existing savepoint, a rollback and a release op are valid.
-	for _, id := range existingSp {
-		addOpGen(allowed, makeSavepointRelease(id), s.SavepointRelease)
-		addOpGen(allowed, makeSavepointRollback(id), s.SavepointRollback)
-	}
-}
-
-func makeSavepointCreate(id int) opGenFunc {
-	return func(_ *generator, _ *rand.Rand) Operation {
-		return createSavepoint(id)
-	}
-}
-
-func makeSavepointRelease(id int) opGenFunc {
-	return func(_ *generator, _ *rand.Rand) Operation {
-		return releaseSavepoint(id)
-	}
-}
-
-func makeSavepointRollback(id int) opGenFunc {
-	return func(_ *generator, _ *rand.Rand) Operation {
-		return rollbackSavepoint(id)
-	}
-}
-
-// maybeUpdateSavepoints modifies the slice of existing savepoints based on the
-// previously selected op to either: (1) add a new savepoint if the previous op
-// was SavepointCreateOperation, or (2) remove a suffix of savepoints if the
-// previous op was SavepointReleaseOperation or SavepointRollbackOperation.
-func maybeUpdateSavepoints(existingSp *[]int, prevOp Operation) {
-	switch op := prevOp.GetValue().(type) {
-	case *SavepointCreateOperation:
-		// If the previous selected op was a savepoint creation, add it to the stack
-		// of existing savepoints.
-		if slices.Index(*existingSp, int(op.ID)) != -1 {
-			panic(errors.AssertionFailedf(`generating a savepoint create op: ID %d already exists`, int(op.ID)))
-		}
-		*existingSp = append(*existingSp, int(op.ID))
-	case *SavepointReleaseOperation:
-		// If the previous selected op was a savepoint release, remove it from the
-		// stack of existing savepoints, together with all other savepoint above it
-		// on the stack. E.g. if the existing savepoints are [1, 2, 3], releasing
-		// savepoint 2 means savepoint 3 also needs to be released.
-		index := slices.Index(*existingSp, int(op.ID))
-		if index == -1 {
-			panic(errors.AssertionFailedf(`generating a savepoint release op: ID %d does not exist`, int(op.ID)))
-		}
-		*existingSp = (*existingSp)[:index]
-	case *SavepointRollbackOperation:
-		// If the previous selected op was a savepoint rollback, remove it from the
-		// stack of existing savepoints, together with all other savepoint above it
-		// on the stack. E.g. if the existing savepoints are [1, 2, 3], rolling back
-		// savepoint 2 means savepoint 3 also needs to be rolled back.
-		index := slices.Index(*existingSp, int(op.ID))
-		if index == -1 {
-			panic(errors.AssertionFailedf(`generating a savepoint rollback op: ID %d does not exist`, int(op.ID)))
-		}
-		*existingSp = (*existingSp)[:index]
-	default:
-		// prevOp is not a savepoint operation, no need to adjust existingSp.
 	}
 }
 
@@ -1954,10 +1740,6 @@ func transferLease(key string, target roachpb.StoreID) Operation {
 	return Operation{TransferLease: &TransferLeaseOperation{Key: []byte(key), Target: target}}
 }
 
-func changeSetting(changeType ChangeSettingType) Operation {
-	return Operation{ChangeSetting: &ChangeSettingOperation{Type: changeType}}
-}
-
 func changeZone(changeType ChangeZoneType) Operation {
 	return Operation{ChangeZone: &ChangeZoneOperation{Type: changeType}}
 }
@@ -1980,16 +1762,4 @@ func barrier(key, endKey string, withLAI bool) Operation {
 		EndKey:                []byte(endKey),
 		WithLeaseAppliedIndex: withLAI,
 	}}
-}
-
-func createSavepoint(id int) Operation {
-	return Operation{SavepointCreate: &SavepointCreateOperation{ID: int32(id)}}
-}
-
-func releaseSavepoint(id int) Operation {
-	return Operation{SavepointRelease: &SavepointReleaseOperation{ID: int32(id)}}
-}
-
-func rollbackSavepoint(id int) Operation {
-	return Operation{SavepointRollback: &SavepointRollbackOperation{ID: int32(id)}}
 }

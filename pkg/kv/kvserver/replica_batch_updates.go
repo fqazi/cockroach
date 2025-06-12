@@ -73,8 +73,8 @@ func maybeStripInFlightWrites(ba *kvpb.BatchRequest) (*kvpb.BatchRequest, error)
 		for _, ru := range otherReqs {
 			req := ru.GetInner()
 			switch {
-			case kvpb.CanParallelCommit(req):
-				// Concurrent point write being committed in parallel.
+			case kvpb.IsIntentWrite(req) && !kvpb.IsRange(req):
+				// Concurrent point write.
 				writes++
 			case req.Method() == kvpb.QueryIntent:
 				// Earlier pipelined point write that hasn't been proven yet.
@@ -104,8 +104,8 @@ func maybeStripInFlightWrites(ba *kvpb.BatchRequest) (*kvpb.BatchRequest, error)
 		req := ru.GetInner()
 		seq := req.Header().Sequence
 		switch {
-		case kvpb.CanParallelCommit(req):
-			// Concurrent point write being committed in parallel.
+		case kvpb.IsIntentWrite(req) && !kvpb.IsRange(req):
+			// Concurrent point write.
 		case req.Method() == kvpb.QueryIntent:
 			// Earlier pipelined point write that hasn't been proven yet. We
 			// could remove from the in-flight writes set when we see these,
@@ -174,31 +174,30 @@ func maybeStripInFlightWrites(ba *kvpb.BatchRequest) (*kvpb.BatchRequest, error)
 // diverged and where bumping is possible. When possible, this allows the
 // transaction to commit without having to retry.
 //
-// Returns true if the timestamp was bumped. Also returns the possibly updated
-// batch request, which is shallow-copied on write.
+// Returns true if the timestamp was bumped.
 //
 // Note that this, like all the server-side bumping of the read timestamp, only
 // works for batches that exclusively contain writes; reads cannot be bumped
 // like this because they've already acquired timestamp-aware latches.
 func maybeBumpReadTimestampToWriteTimestamp(
 	ctx context.Context, ba *kvpb.BatchRequest, g *concurrency.Guard,
-) (*kvpb.BatchRequest, bool) {
+) bool {
 	if ba.Txn == nil {
-		return ba, false
+		return false
 	}
 	if !ba.CanForwardReadTimestamp {
-		return ba, false
+		return false
 	}
 	if ba.Txn.ReadTimestamp == ba.Txn.WriteTimestamp {
-		return ba, false
+		return false
 	}
 	arg, ok := ba.GetArg(kvpb.EndTxn)
 	if !ok {
-		return ba, false
+		return false
 	}
 	et := arg.(*kvpb.EndTxnRequest)
 	if batcheval.IsEndTxnExceedingDeadline(ba.Txn.WriteTimestamp, et.Deadline) {
-		return ba, false
+		return false
 	}
 	return tryBumpBatchTimestamp(ctx, ba, g, ba.Txn.WriteTimestamp)
 }
@@ -213,23 +212,21 @@ func maybeBumpReadTimestampToWriteTimestamp(
 // more freely adjust its timestamp because it will re-acquire latches at
 // whatever timestamp the batch is bumped to.
 //
-// Returns true if the timestamp was bumped. Returns false if the timestamp
-// could not be bumped. Also returns the possibly updated batch request, which
-// is shallow-copied on write.
+// Returns true if the timestamp was bumped. Returns false if the timestamp could
+// not be bumped.
 func tryBumpBatchTimestamp(
 	ctx context.Context, ba *kvpb.BatchRequest, g *concurrency.Guard, ts hlc.Timestamp,
-) (*kvpb.BatchRequest, bool) {
+) bool {
 	if g != nil && !g.IsolatedAtLaterTimestamps() {
-		return ba, false
+		return false
 	}
 	if ts.Less(ba.Timestamp) {
 		log.Fatalf(ctx, "trying to bump to %s <= ba.Timestamp: %s", ts, ba.Timestamp)
 	}
 	if ba.Txn == nil {
 		log.VEventf(ctx, 2, "bumping batch timestamp to %s from %s", ts, ba.Timestamp)
-		ba = ba.ShallowCopy()
 		ba.Timestamp = ts
-		return ba, true
+		return true
 	}
 	if ts.Less(ba.Txn.ReadTimestamp) || ts.Less(ba.Txn.WriteTimestamp) {
 		log.Fatalf(ctx, "trying to bump to %s inconsistent with ba.Txn.ReadTimestamp: %s, "+
@@ -237,9 +234,8 @@ func tryBumpBatchTimestamp(
 	}
 	log.VEventf(ctx, 2, "bumping batch timestamp to: %s from read: %s, write: %s",
 		ts, ba.Txn.ReadTimestamp, ba.Txn.WriteTimestamp)
-	ba = ba.ShallowCopy()
 	ba.Txn = ba.Txn.Clone()
 	ba.Txn.BumpReadTimestamp(ts)
 	ba.Timestamp = ba.Txn.ReadTimestamp // Refresh just updated ReadTimestamp
-	return ba, true
+	return true
 }

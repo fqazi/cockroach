@@ -53,7 +53,7 @@ func TestTxnWithExecutorDataDriven(t *testing.T) {
 				d.ScanArgs(t, "error", &expErr)
 			}
 			var sd sessiondata.InternalExecutorOverride
-			sd.User = username.NodeUserName()
+			sd.User = username.RootUserName()
 			d.ScanArgs(t, "db", &sd.Database)
 			searchPath := sessiondata.DefaultSearchPath
 			if d.HasArg("search_path") {

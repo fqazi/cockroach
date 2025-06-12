@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IBM/sarama"
+	"github.com/Shopify/sarama"
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdcevent"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
@@ -24,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -262,7 +261,7 @@ func makeTestKafkaSink(
 ) (s *kafkaSink, cleanup func()) {
 	targets := makeChangefeedTargets(targetNames...)
 	topics, err := MakeTopicNamer(targets,
-		WithPrefix(topicPrefix), WithSingleName(topicNameOverride), WithSanitizeFn(changefeedbase.SQLNameToKafkaName))
+		WithPrefix(topicPrefix), WithSingleName(topicNameOverride), WithSanitizeFn(SQLNameToKafkaName))
 	require.NoError(t, err)
 
 	s = &kafkaSink{
@@ -275,8 +274,7 @@ func makeTestKafkaSink(
 				return p, nil
 			},
 			OverrideClientInit: func(config *sarama.Config) (kafkaClient, error) {
-				client := &fakeKafkaClient{config}
-				return client, nil
+				return nil, nil
 			},
 		},
 	}
@@ -314,7 +312,7 @@ func TestKafkaSink(t *testing.T) {
 
 	// Timeout
 	require.NoError(t,
-		sink.EmitRow(ctx, topic(`t`), []byte(`1`), nil, zeroTS, zeroTS, zeroAlloc, nil))
+		sink.EmitRow(ctx, topic(`t`), []byte(`1`), nil, zeroTS, zeroTS, zeroAlloc))
 
 	m1 := <-p.inputCh
 	for i := 0; i < 2; i++ {
@@ -331,14 +329,14 @@ func TestKafkaSink(t *testing.T) {
 	// Mixed success and error.
 	var pool testAllocPool
 	require.NoError(t, sink.EmitRow(ctx,
-		topic(`t`), []byte(`2`), nil, zeroTS, zeroTS, pool.alloc(), nil))
+		topic(`t`), []byte(`2`), nil, zeroTS, zeroTS, pool.alloc()))
 	m2 := <-p.inputCh
 	require.NoError(t, sink.EmitRow(
-		ctx, topic(`t`), []byte(`3`), nil, zeroTS, zeroTS, pool.alloc(), nil))
+		ctx, topic(`t`), []byte(`3`), nil, zeroTS, zeroTS, pool.alloc()))
 
 	m3 := <-p.inputCh
 	require.NoError(t, sink.EmitRow(
-		ctx, topic(`t`), []byte(`4`), nil, zeroTS, zeroTS, pool.alloc(), nil))
+		ctx, topic(`t`), []byte(`4`), nil, zeroTS, zeroTS, pool.alloc()))
 
 	m4 := <-p.inputCh
 	go func() { p.successesCh <- m2 }()
@@ -353,7 +351,7 @@ func TestKafkaSink(t *testing.T) {
 
 	// Check simple success again after error
 	require.NoError(t, sink.EmitRow(
-		ctx, topic(`t`), []byte(`5`), nil, zeroTS, zeroTS, pool.alloc(), nil))
+		ctx, topic(`t`), []byte(`5`), nil, zeroTS, zeroTS, pool.alloc()))
 
 	m5 := <-p.inputCh
 	go func() { p.successesCh <- m5 }()
@@ -371,7 +369,7 @@ func TestKafkaSinkEscaping(t *testing.T) {
 	sink, cleanup := makeTestKafkaSink(t, noTopicPrefix, defaultTopicName, p, `☃`)
 	defer cleanup()
 
-	if err := sink.EmitRow(ctx, topic(`☃`), []byte(`k☃`), []byte(`v☃`), zeroTS, zeroTS, zeroAlloc, nil); err != nil {
+	if err := sink.EmitRow(ctx, topic(`☃`), []byte(`k☃`), []byte(`v☃`), zeroTS, zeroTS, zeroAlloc); err != nil {
 		t.Fatal(err)
 	}
 	m := <-p.inputCh
@@ -392,7 +390,7 @@ func TestKafkaTopicNameProvided(t *testing.T) {
 	defer cleanup()
 
 	//all messages go to the general topic
-	require.NoError(t, sink.EmitRow(ctx, topic("particular0"), []byte(`k☃`), []byte(`v☃`), zeroTS, zeroTS, zeroAlloc, nil))
+	require.NoError(t, sink.EmitRow(ctx, topic("particular0"), []byte(`k☃`), []byte(`v☃`), zeroTS, zeroTS, zeroAlloc))
 	m := <-p.inputCh
 	require.Equal(t, topicOverride, m.Topic)
 }
@@ -410,7 +408,7 @@ func TestKafkaTopicNameWithPrefix(t *testing.T) {
 	defer clenaup()
 
 	//the prefix is applied and the name is escaped
-	require.NoError(t, sink.EmitRow(ctx, topic("particular0"), []byte(`k☃`), []byte(`v☃`), zeroTS, zeroTS, zeroAlloc, nil))
+	require.NoError(t, sink.EmitRow(ctx, topic("particular0"), []byte(`k☃`), []byte(`v☃`), zeroTS, zeroTS, zeroAlloc))
 	m := <-p.inputCh
 	require.Equal(t, `prefix-_u2603_`, m.Topic)
 }
@@ -437,7 +435,7 @@ func BenchmarkEmitRow(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		require.NoError(b, sink.EmitRow(ctx, topic, []byte(`k☃`), []byte(`v☃`), hlc.Timestamp{}, zeroTS, zeroAlloc, nil))
+		require.NoError(b, sink.EmitRow(ctx, topic, []byte(`k☃`), []byte(`v☃`), hlc.Timestamp{}, zeroTS, zeroAlloc))
 	}
 
 	b.ReportAllocs()
@@ -488,7 +486,7 @@ func TestSQLSink(t *testing.T) {
 	// TODO(herko): When the issue relating to this test is fixed, update this
 	// to use PGUrl on the server interface instead.
 	// See: https://github.com/cockroachdb/cockroach/issues/112863
-	pgURL, cleanup := pgurlutils.PGUrl(t, s.ApplicationLayer().AdvSQLAddr(), t.Name(), url.User(username.RootUser))
+	pgURL, cleanup := sqlutils.PGUrl(t, s.ApplicationLayer().AdvSQLAddr(), t.Name(), url.User(username.RootUser))
 	defer cleanup()
 	pgURL.Path = `d`
 
@@ -502,7 +500,7 @@ func TestSQLSink(t *testing.T) {
 	// TODO(herko): `makeSQLSink` does not expect "options" to be present in the URL, find out if
 	// this is a bug, or if we should add it to to `consumeParam` in the `makeSQLSink` function.
 	// See: https://github.com/cockroachdb/cockroach/issues/112863.
-	sink, err := makeSQLSink(&changefeedbase.SinkURL{URL: &pgURL}, testTableName, targets, nilMetricsRecorderBuilder)
+	sink, err := makeSQLSink(sinkURL{URL: &pgURL}, testTableName, targets, nilMetricsRecorderBuilder)
 	require.NoError(t, err)
 	require.NoError(t, sink.(*sqlSink).Dial())
 	defer func() { require.NoError(t, sink.Close()) }()
@@ -511,7 +509,7 @@ func TestSQLSink(t *testing.T) {
 	require.NoError(t, sink.Flush(ctx))
 
 	// With one row, nothing flushes until Flush is called.
-	require.NoError(t, sink.EmitRow(ctx, fooTopic, []byte(`k1`), []byte(`v0`), zeroTS, zeroTS, zeroAlloc, nil))
+	require.NoError(t, sink.EmitRow(ctx, fooTopic, []byte(`k1`), []byte(`v0`), zeroTS, zeroTS, zeroAlloc))
 	sqlDB.CheckQueryResults(t, `SELECT key, value FROM sink ORDER BY PRIMARY KEY sink`,
 		[][]string{},
 	)
@@ -525,7 +523,7 @@ func TestSQLSink(t *testing.T) {
 	sqlDB.CheckQueryResults(t, `SELECT count(*) FROM sink`, [][]string{{`0`}})
 	for i := 0; i < sqlSinkRowBatchSize+1; i++ {
 		require.NoError(t,
-			sink.EmitRow(ctx, fooTopic, []byte(`k1`), []byte(`v`+strconv.Itoa(i)), zeroTS, zeroTS, zeroAlloc, nil))
+			sink.EmitRow(ctx, fooTopic, []byte(`k1`), []byte(`v`+strconv.Itoa(i)), zeroTS, zeroTS, zeroAlloc))
 	}
 	// Should have auto flushed after sqlSinkRowBatchSize
 	sqlDB.CheckQueryResults(t, `SELECT count(*) FROM sink`, [][]string{{`3`}})
@@ -535,9 +533,9 @@ func TestSQLSink(t *testing.T) {
 
 	// Two tables interleaved in time
 	var pool testAllocPool
-	require.NoError(t, sink.EmitRow(ctx, fooTopic, []byte(`kfoo`), []byte(`v0`), zeroTS, zeroTS, pool.alloc(), nil))
-	require.NoError(t, sink.EmitRow(ctx, barTopic, []byte(`kbar`), []byte(`v0`), zeroTS, zeroTS, pool.alloc(), nil))
-	require.NoError(t, sink.EmitRow(ctx, fooTopic, []byte(`kfoo`), []byte(`v1`), zeroTS, zeroTS, pool.alloc(), nil))
+	require.NoError(t, sink.EmitRow(ctx, fooTopic, []byte(`kfoo`), []byte(`v0`), zeroTS, zeroTS, pool.alloc()))
+	require.NoError(t, sink.EmitRow(ctx, barTopic, []byte(`kbar`), []byte(`v0`), zeroTS, zeroTS, pool.alloc()))
+	require.NoError(t, sink.EmitRow(ctx, fooTopic, []byte(`kfoo`), []byte(`v1`), zeroTS, zeroTS, pool.alloc()))
 	require.NoError(t, sink.Flush(ctx))
 	require.EqualValues(t, 0, pool.used())
 	sqlDB.CheckQueryResults(t, `SELECT topic, key, value FROM sink ORDER BY PRIMARY KEY sink`,
@@ -549,11 +547,11 @@ func TestSQLSink(t *testing.T) {
 	// guarantee that at lease two of them end up in the same partition.
 	for i := 0; i < sqlSinkNumPartitions+1; i++ {
 		require.NoError(t,
-			sink.EmitRow(ctx, fooTopic, []byte(`v`+strconv.Itoa(i)), []byte(`v0`), zeroTS, zeroTS, zeroAlloc, nil))
+			sink.EmitRow(ctx, fooTopic, []byte(`v`+strconv.Itoa(i)), []byte(`v0`), zeroTS, zeroTS, zeroAlloc))
 	}
 	for i := 0; i < sqlSinkNumPartitions+1; i++ {
 		require.NoError(t,
-			sink.EmitRow(ctx, fooTopic, []byte(`v`+strconv.Itoa(i)), []byte(`v1`), zeroTS, zeroTS, zeroAlloc, nil))
+			sink.EmitRow(ctx, fooTopic, []byte(`v`+strconv.Itoa(i)), []byte(`v1`), zeroTS, zeroTS, zeroAlloc))
 	}
 	require.NoError(t, sink.Flush(ctx))
 	sqlDB.CheckQueryResults(t, `SELECT partition, key, value FROM sink ORDER BY PRIMARY KEY sink`,
@@ -573,7 +571,7 @@ func TestSQLSink(t *testing.T) {
 	// Emit resolved
 	var e testEncoder
 	require.NoError(t, sink.EmitResolvedTimestamp(ctx, e, zeroTS))
-	require.NoError(t, sink.EmitRow(ctx, fooTopic, []byte(`foo0`), []byte(`v0`), zeroTS, zeroTS, zeroAlloc, nil))
+	require.NoError(t, sink.EmitRow(ctx, fooTopic, []byte(`foo0`), []byte(`v0`), zeroTS, zeroTS, zeroAlloc))
 	require.NoError(t, sink.EmitResolvedTimestamp(ctx, e, hlc.Timestamp{WallTime: 1}))
 	require.NoError(t, sink.Flush(ctx))
 	sqlDB.CheckQueryResults(t,
@@ -631,22 +629,6 @@ func TestSaramaConfigOptionParsing(t *testing.T) {
 		cfg, err = getSaramaConfig(opts)
 		require.NoError(t, err)
 		require.NoError(t, cfg.Validate())
-
-		saramaCfg := sarama.NewConfig()
-		opts = `{"ClientID": "clientID1"}`
-		cfg, _ = getSaramaConfig(opts)
-		err = cfg.Apply(saramaCfg)
-		require.NoError(t, err)
-		require.NoError(t, cfg.Validate())
-		require.NoError(t, saramaCfg.Validate())
-
-		opts = `{"Flush": {"Messages": 1000, "Frequency": "1s"}, "ClientID": "clientID1"}`
-		cfg, _ = getSaramaConfig(opts)
-		err = cfg.Apply(saramaCfg)
-		require.NoError(t, err)
-		require.NoError(t, cfg.Validate())
-		require.NoError(t, saramaCfg.Validate())
-		require.Equal(t, "clientID1", cfg.ClientID)
 	})
 	t.Run("validate returns error for bad flush configuration", func(t *testing.T) {
 		opts := changefeedbase.SinkSpecificJSONConfig(`{"Flush": {"Messages": 1000}}`)
@@ -659,14 +641,6 @@ func TestSaramaConfigOptionParsing(t *testing.T) {
 		cfg, err = getSaramaConfig(opts)
 		require.NoError(t, err)
 		require.Error(t, cfg.Validate())
-
-		opts = `{"Version": "0.8.2.0", "ClientID": "bad_client_id*"}`
-		saramaCfg := sarama.NewConfig()
-		cfg, _ = getSaramaConfig(opts)
-		err = cfg.Apply(saramaCfg)
-		require.NoError(t, err)
-		require.NoError(t, cfg.Validate())
-		require.Error(t, saramaCfg.Validate())
 	})
 	t.Run("apply parses valid version", func(t *testing.T) {
 		opts := changefeedbase.SinkSpecificJSONConfig(`{"version": "0.8.2.0"}`)
@@ -722,7 +696,7 @@ func TestSaramaConfigOptionParsing(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, sarama.WaitForAll, saramaCfg.Producer.RequiredAcks)
 
-		opts = `{"RequiredAcks": "-1"}`
+		opts = changefeedbase.SinkSpecificJSONConfig(`{"RequiredAcks": "-1"}`)
 
 		cfg, err = getSaramaConfig(opts)
 		require.NoError(t, err)
@@ -782,69 +756,6 @@ func TestSaramaConfigOptionParsing(t *testing.T) {
 		_, err := getSaramaConfig(opts)
 		require.Error(t, err)
 	})
-	t.Run("validate returns nil for valid compression codec and level", func(t *testing.T) {
-		tests := []struct {
-			give      changefeedbase.SinkSpecificJSONConfig
-			wantCodec sarama.CompressionCodec
-			wantLevel int
-		}{
-			{
-				give:      `{"Compression": "GZIP"}`,
-				wantCodec: sarama.CompressionGZIP,
-				wantLevel: sarama.CompressionLevelDefault,
-			},
-			{
-				give:      `{"CompressionLevel": 1}`,
-				wantCodec: sarama.CompressionNone,
-				wantLevel: 1,
-			},
-			{
-				give:      `{"Compression": "GZIP", "CompressionLevel": 1}`,
-				wantCodec: sarama.CompressionGZIP,
-				wantLevel: 1,
-			},
-			{
-				give:      `{"Compression": "ZSTD", "CompressionLevel": 1}`,
-				wantCodec: sarama.CompressionZSTD,
-				wantLevel: 1,
-			},
-			{
-				// The maximum supported zstd compression level is 10,
-				// so all higher values are valid and limited by it.
-				give:      `{"Compression": "ZSTD", "CompressionLevel": 11}`,
-				wantCodec: sarama.CompressionZSTD,
-				wantLevel: 11,
-			},
-		}
-
-		for _, tt := range tests {
-			t.Run(string(tt.give), func(t *testing.T) {
-				cfg, err := getSaramaConfig(tt.give)
-				require.NoError(t, err)
-
-				saramaCfg := sarama.NewConfig()
-				require.NoError(t, cfg.Apply(saramaCfg))
-				require.NoError(t, saramaCfg.Validate())
-				require.Equal(t, tt.wantCodec, saramaCfg.Producer.Compression)
-				require.Equal(t, tt.wantLevel, saramaCfg.Producer.CompressionLevel)
-			})
-		}
-	})
-	t.Run("validate returns err for bad compression level", func(t *testing.T) {
-		opts := changefeedbase.SinkSpecificJSONConfig(`{"Compression": "GZIP", "CompressionLevel": "invalid"}`)
-		_, err := getSaramaConfig(opts)
-		require.ErrorContains(t, err, "field saramaConfig.CompressionLevel of type int")
-
-		// The maximum gzip compression level is gzip.BestCompression,
-		// so use gzip.BestCompression + 1.
-		opts = `{"Compression": "GZIP", "CompressionLevel": 10}`
-		cfg, err := getSaramaConfig(opts)
-		require.NoError(t, err)
-
-		saramaCfg := sarama.NewConfig()
-		require.NoError(t, cfg.Apply(saramaCfg))
-		require.ErrorContains(t, saramaCfg.Validate(), "gzip: invalid compression level: 10")
-	})
 }
 
 func TestKafkaSinkTracksMemory(t *testing.T) {
@@ -876,7 +787,7 @@ func TestKafkaSinkTracksMemory(t *testing.T) {
 	testTopic := topic(`t`)
 	var pool testAllocPool
 	for i := 0; i < 10; i++ {
-		require.NoError(t, sink.EmitRow(ctx, testTopic, key, val, zeroTS, zeroTS, pool.alloc(), nil))
+		require.NoError(t, sink.EmitRow(ctx, testTopic, key, val, zeroTS, zeroTS, pool.alloc()))
 	}
 	require.EqualValues(t, 10, pool.used())
 

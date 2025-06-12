@@ -6,17 +6,19 @@
 package debug
 
 import (
+	"context"
 	"expvar"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/pprof"
 	"strconv"
-	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/base/serverident"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/sidetransport"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/debug/goroutineui"
@@ -31,7 +33,6 @@ import (
 	"github.com/cockroachdb/pebble"
 	pebbletool "github.com/cockroachdb/pebble/tool"
 	"github.com/cockroachdb/pebble/vfs"
-	"github.com/felixge/fgprof"
 	metrics "github.com/rcrowley/go-metrics"
 	"github.com/rcrowley/go-metrics/exp"
 	"github.com/spf13/cobra"
@@ -99,6 +100,7 @@ func setupProcessWideRoutes(
 	// Cribbed straight from trace's `init()` method. See:
 	// https://github.com/golang/net/blob/master/trace/trace.go
 	mux.HandleFunc("/debug/requests", authzFunc(trace.Traces))
+	mux.HandleFunc("/debug/events", authzFunc(trace.Events))
 
 	// This registers a superset of the variables exposed through the
 	// /debug/vars endpoint onto the /debug/metrics endpoint. It includes all
@@ -133,12 +135,6 @@ func setupProcessWideRoutes(
 		_ = dump.HTML(w)
 	}))
 
-	// WARNING: The /debug/pprof/fgprof endpoint provides wall-clock profiling for
-	// both On-CPU and Off-CPU time. While it is safe to use in production, note
-	// that profiling can introduce performance overhead, especially in
-	// applications with a large number of goroutines (>10k). Use this endpoint
-	// judiciously and monitor its impact on system performance.
-	mux.HandleFunc("/debug/pprof/fgprof", authzFunc(fgprof.Handler().ServeHTTP))
 }
 
 // NewServer sets up a debug server.
@@ -198,11 +194,7 @@ func analyzeLSM(dir string, writer io.Writer) error {
 		return err
 	}
 
-	t := pebbletool.New(
-		pebbletool.Comparers(&storage.EngineComparer),
-		pebbletool.KeySchema(storage.DefaultKeySchema),
-		pebbletool.KeySchemas(storage.KeySchemas...),
-	)
+	t := pebbletool.New(pebbletool.Comparers(storage.EngineComparer))
 
 	// TODO(yevgeniy): Consider exposing LSM tool directly.
 	var lsm *cobra.Command
@@ -225,53 +217,38 @@ func (ds *Server) RegisterWorkloadCollector(stores *kvserver.Stores) error {
 	return nil
 }
 
-// GetLSMStats creates a mapping between store IDs and LSM stats for all of the
-// provided storage engines.
-func GetLSMStats(engines []storage.Engine) (map[roachpb.StoreID]string, error) {
-	stats := make(map[roachpb.StoreID]string)
-	for _, eng := range engines {
-		storeID, err := eng.GetStoreID()
-		if err != nil {
-			return nil, err
-		}
-		stats[roachpb.StoreID(storeID)] = eng.GetMetrics().String()
-	}
-
-	return stats, nil
-}
-
-// FormatLSMStats combines LSM stats from multiple stores into a single string.
-func FormatLSMStats(stats map[roachpb.StoreID]string) string {
-	var sb strings.Builder
-	for storeID, stat := range stats {
-		sb.WriteString(fmt.Sprintf("Store %d:\n%s\n\n", storeID, stat))
-	}
-	return sb.String()
-}
-
 // RegisterEngines setups up debug engine endpoints for the known storage engines.
-func (ds *Server) RegisterEngines(engines []storage.Engine) error {
-	ds.mux.HandleFunc("/debug/lsm", func(w http.ResponseWriter, req *http.Request) {
-		stats, err := GetLSMStats(engines)
+func (ds *Server) RegisterEngines(specs []base.StoreSpec, engines []storage.Engine) error {
+	if len(specs) != len(engines) {
+		// TODO(yevgeniy): Consider adding accessors to storage.Engine to get their path.
+		return errors.New("number of store specs must match number of engines")
+	}
+
+	storeIDs := make([]roachpb.StoreIdent, len(engines))
+	for i := range engines {
+		id, err := kvstorage.ReadStoreIdent(context.Background(), engines[i])
 		if err != nil {
-			fmt.Fprintf(w, "error retrieving LSM stats: %v", err)
+			return err
 		}
-		fmt.Fprint(w, FormatLSMStats(stats))
+		storeIDs[i] = id
+	}
+
+	ds.mux.HandleFunc("/debug/lsm", func(w http.ResponseWriter, req *http.Request) {
+		for i := range engines {
+			fmt.Fprintf(w, "Store %d:\n", storeIDs[i].StoreID)
+			_, _ = io.WriteString(w, engines[i].GetMetrics().String())
+			fmt.Fprintln(w)
+		}
 	})
 
-	for _, eng := range engines {
-		dir := eng.Env().Dir
-		if dir == "" {
+	for i := 0; i < len(specs); i++ {
+		if specs[i].InMemory {
 			// TODO(yevgeniy): Add plumbing to support LSM visualization for in memory engines.
 			continue
 		}
 
-		storeID, err := eng.GetStoreID()
-		if err != nil {
-			return err
-		}
-
-		ds.mux.HandleFunc(fmt.Sprintf("/debug/lsm-viz/%d", storeID),
+		dir := specs[i].Path
+		ds.mux.HandleFunc(fmt.Sprintf("/debug/lsm-viz/%d", storeIDs[i].StoreID),
 			func(w http.ResponseWriter, req *http.Request) {
 				if err := analyzeLSM(dir, w); err != nil {
 					fmt.Fprintf(w, "error analyzing LSM at %s: %v", dir, err)

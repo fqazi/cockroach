@@ -3,18 +3,16 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
-import moment from "moment-timezone";
 import React from "react";
-
+import { statisticsClasses } from "../transactionsPage/transactionsPageClasses";
+import { ISortedTablePagination } from "../sortedtable";
 import { Button } from "src/button";
 import { ResultsPerPageLabel } from "src/pagination";
-import { TimeScale } from "src/timeScaleDropdown";
-import { TimeScaleLabel } from "src/timeScaleDropdown/timeScaleLabel";
-
-import { ISortedTablePagination } from "../sortedtable";
+import classNames from "classnames/bind";
 import timeScaleStyles from "../timeScaleDropdown/timeScale.module.scss";
-import { statisticsClasses } from "../transactionsPage/transactionsPageClasses";
+import { TimeScaleLabel } from "src/timeScaleDropdown/timeScaleLabel";
+import { TimeScale } from "src/timeScaleDropdown";
+import moment from "moment-timezone";
 
 const { statistic, countTitle } = statisticsClasses;
 const timeScaleStylesCx = classNames.bind(timeScaleStyles);

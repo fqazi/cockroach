@@ -6,6 +6,7 @@
 package opgen
 
 import (
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scop"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 )
@@ -14,12 +15,9 @@ func init() {
 	opRegistry.register((*scpb.Database)(nil),
 		toPublic(
 			scpb.Status_ABSENT,
-			equiv(scpb.Status_DROPPED),
-			to(scpb.Status_DESCRIPTOR_ADDED,
-				emit(func(this *scpb.Database) *scop.CreateDatabaseDescriptor {
-					return &scop.CreateDatabaseDescriptor{
-						DatabaseID: this.DatabaseID,
-					}
+			to(scpb.Status_DROPPED,
+				emit(func(this *scpb.Database) *scop.NotImplemented {
+					return notImplemented(this)
 				}),
 			),
 			to(scpb.Status_PUBLIC,
@@ -33,7 +31,6 @@ func init() {
 		),
 		toAbsent(
 			scpb.Status_PUBLIC,
-			equiv(scpb.Status_DESCRIPTOR_ADDED),
 			to(scpb.Status_DROPPED,
 				revertible(false),
 				emit(func(this *scpb.Database) *scop.MarkDescriptorAsDropped {
@@ -44,6 +41,12 @@ func init() {
 			),
 			to(scpb.Status_ABSENT,
 				emit(func(this *scpb.Database, md *opGenContext) *scop.CreateGCJobForDatabase {
+					if !md.ActiveVersion.IsActive(clusterversion.V23_1) {
+						return &scop.CreateGCJobForDatabase{
+							DatabaseID:          this.DatabaseID,
+							StatementForDropJob: statementForDropJob(this, md),
+						}
+					}
 					return nil
 				}),
 				emit(func(this *scpb.Database) *scop.DeleteDescriptor {

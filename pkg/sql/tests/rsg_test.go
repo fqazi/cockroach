@@ -201,10 +201,6 @@ func (db *verifyFormatDB) execWithResettableTimeout(
 
 	defer db.Incr(sql)()
 
-	var cancel context.CancelCauseFunc
-	ctx, cancel = context.WithCancelCause(ctx)
-	defer cancel(nil)
-
 	funcdone := make(chan error, 1)
 	go func() {
 		_, err := db.db.ExecContext(ctx, sql)
@@ -268,8 +264,7 @@ func (db *verifyFormatDB) execWithResettableTimeout(
 						// 2 minute wait and miss potential hangs (if the test times out first).
 						// Whereas this approach will wait 2 minutes after the completion of
 						// (1), only waiting an extra second more.
-						remainingDurationSinceLastStmt := db.mu.lastCompletedStmt.Add(duration).Sub(timeutil.Now())
-						targetDuration = duration - remainingDurationSinceLastStmt
+						targetDuration = duration - db.mu.lastCompletedStmt.Add(duration).Sub(timeutil.Now())
 						// Avoid having super tight spins, wait at least a second.
 						if targetDuration <= time.Second {
 							targetDuration = time.Second
@@ -278,13 +273,6 @@ func (db *verifyFormatDB) execWithResettableTimeout(
 						maxResets -= 1
 						return nil
 					}
-				}
-				cancel(errors.Newf("cancelling query after %v", duration))
-				select {
-				case <-funcdone:
-					return nil
-				case <-time.After(5 * time.Second):
-					t.Logf("didn't respect context cancellation within 5 seconds: %s", sql)
 				}
 				b := allstacks.GetWithBuf(make([]byte, 1024*1024))
 				t.Logf("%s\n", b)
@@ -426,9 +414,7 @@ func TestRandomSyntaxFunctions(t *testing.T) {
 					"crdb_internal.request_statement_bundle",
 					"crdb_internal.reset_activity_tables",
 					"crdb_internal.revalidate_unique_constraints_in_all_tables",
-					"crdb_internal.scan_storage_internal_keys",
-					"crdb_internal.validate_ttl_scheduled_jobs",
-					"crdb_internal.fingerprint":
+					"crdb_internal.validate_ttl_scheduled_jobs":
 					// Skipped due to long execution time.
 					continue
 				}
@@ -621,6 +607,7 @@ var ignoredErrorPatterns = []string{
 	"index .* in the middle of being added",
 	"could not mark job .* as succeeded",
 	"failed to read backup descriptor",
+	"AS OF SYSTEM TIME: cannot specify timestamp in the future",
 	"AS OF SYSTEM TIME: timestamp before 1970-01-01T00:00:00Z is invalid",
 	"BACKUP for requested time  needs option 'revision_history'",
 	"RESTORE timestamp: supplied backups do not cover requested time",
@@ -679,6 +666,7 @@ var ignoredErrorPatterns = []string{
 	"cannot call json_object_keys on an array",
 	"cannot set path in scalar",
 	"cannot delete path in scalar",
+	"unable to encode table key: \\*tree\\.DJSON",
 	"path element at position .* is null",
 	"path element is not an integer",
 	"cannot delete from object using integer index",
@@ -824,7 +812,7 @@ func TestRandomDatumRoundtrip(t *testing.T) {
 		}
 		serializedGen := tree.Serialize(generated)
 
-		sema := tree.MakeSemaContext(nil /* resolver */)
+		sema := tree.MakeSemaContext()
 		// We don't care about errors below because they are often
 		// caused by sqlsmith generating bogus queries. We're just
 		// looking for datums that don't match.
@@ -859,9 +847,7 @@ func TestRandomDatumRoundtrip(t *testing.T) {
 		if serialized1 != serialized2 {
 			panic(errors.Errorf("serialized didn't match:\nexpr: %s\nfirst: %s\nsecond: %s", generated, serialized1, serialized2))
 		}
-		if cmp, err := datum1.Compare(ctx, &ec, datum2); err != nil {
-			panic(err)
-		} else if cmp != 0 {
+		if datum1.Compare(&ec, datum2) != 0 {
 			panic(errors.Errorf("%s [%[1]T] != %s [%[2]T] (original expr: %s)", serialized1, serialized2, serializedGen))
 		}
 		return nil

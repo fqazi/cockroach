@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 )
 
@@ -45,7 +46,6 @@ var EnterpriseLicense = settings.RegisterStringSetting(
 				return errors.WithHint(errors.Newf("a trial license has previously been installed on this cluster"),
 					"Please install a non-trial license to continue")
 			}
-
 			return nil
 		},
 	),
@@ -85,7 +85,7 @@ func TestingDisableEnterprise() func() {
 // remove any usage of this function.
 //
 // Deprecated
-func CheckEnterpriseEnabled(*cluster.Settings, string) error {
+func CheckEnterpriseEnabled(*cluster.Settings, uuid.UUID, string) error {
 	return nil
 }
 
@@ -94,7 +94,7 @@ func CheckEnterpriseEnabled(*cluster.Settings, string) error {
 // should remove usage of this function.
 //
 // Deprecated
-func IsEnterpriseEnabled(*cluster.Settings, string) bool {
+func IsEnterpriseEnabled(*cluster.Settings, uuid.UUID, string) bool {
 	return true
 }
 
@@ -128,14 +128,13 @@ func GetLicense(st *cluster.Settings) (*licenseccl.License, error) {
 	}
 	cacheKey := licenseCacheKey(str)
 	if cachedLicense, ok := st.Cache.Load(cacheKey); ok {
-		return (*cachedLicense).(*licenseccl.License), nil
+		return cachedLicense.(*licenseccl.License), nil
 	}
 	license, err := decode(str)
 	if err != nil {
 		return nil, err
 	}
-	licenseBox := any(license)
-	st.Cache.Store(cacheKey, &licenseBox)
+	st.Cache.Store(cacheKey, license)
 	return license, nil
 }
 

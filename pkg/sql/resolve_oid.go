@@ -25,9 +25,10 @@ import (
 func (p *planner) ResolveOIDFromString(
 	ctx context.Context, resultType *types.T, toResolve *tree.DString,
 ) (_ *tree.DOid, errSafeToIgnore bool, _ error) {
+	ie := p.ExecCfg().InternalDB.NewInternalExecutor(p.SessionData())
 	return resolveOID(
 		ctx, p.Txn(),
-		p.InternalSQLTxn(),
+		ie,
 		resultType, toResolve,
 	)
 }
@@ -36,9 +37,10 @@ func (p *planner) ResolveOIDFromString(
 func (p *planner) ResolveOIDFromOID(
 	ctx context.Context, resultType *types.T, toResolve *tree.DOid,
 ) (_ *tree.DOid, errSafeToIgnore bool, _ error) {
+	ie := p.ExecCfg().InternalDB.NewInternalExecutor(p.SessionData())
 	return resolveOID(
 		ctx, p.Txn(),
-		p.InternalSQLTxn(),
+		ie,
 		resultType, toResolve,
 	)
 }
@@ -82,7 +84,7 @@ func resolveOID(
 		return nil, true, pgerror.Newf(info.errType,
 			"%s %s does not exist", info.objName, toResolve)
 	}
-	return tree.NewDOidWithTypeAndName(
+	return tree.NewDOidWithName(
 		results[0].(*tree.DOid).Oid,
 		resultType,
 		tree.AsStringWithFlags(results[1], tree.FmtBareStrings),

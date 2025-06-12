@@ -28,6 +28,7 @@ go_test(
         "resolver_bench_test.go",
         "resolver_test.go",
     ],
+    args = ["-test.timeout=295s"],
     deps = [
         ":resolver",
         "//pkg/base",
@@ -50,7 +51,6 @@ go_test(
         "//pkg/sql/sem/tree",
         "//pkg/sql/sessiondata",
         "//pkg/sql/sessiondatapb",
-        "//pkg/sql/sqltestutils",
         "//pkg/testutils",
         "//pkg/testutils/serverutils",
         "//pkg/testutils/sqlutils",

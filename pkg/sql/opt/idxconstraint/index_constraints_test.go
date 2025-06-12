@@ -14,7 +14,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
-	"github.com/cockroachdb/cockroach/pkg/sql/opt/constraint"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/exec/execbuilder"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/idxconstraint"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
@@ -57,8 +56,7 @@ func TestIndexConstraints(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
 	datadriven.Walk(t, tu.TestDataPath(t), func(t *testing.T, path string) {
-		ctx := context.Background()
-		semaCtx := tree.MakeSemaContext(nil /* resolver */)
+		semaCtx := tree.MakeSemaContext()
 		evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
 
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
@@ -67,7 +65,7 @@ func TestIndexConstraints(t *testing.T) {
 			var err error
 
 			var f norm.Factory
-			f.Init(ctx, &evalCtx, nil /* catalog */)
+			f.Init(context.Background(), &evalCtx, nil /* catalog */)
 			md := f.Metadata()
 
 			evalCtx.SessionData().OptimizerUseImprovedComputedColumnFiltersDerivation = true
@@ -130,13 +128,12 @@ func TestIndexConstraints(t *testing.T) {
 
 				var ic idxconstraint.Instance
 				ic.Init(
-					ctx, filters, optionalFilters, indexCols, sv.NotNullCols(), computedCols,
+					filters, optionalFilters, indexCols, sv.NotNullCols(), computedCols,
 					colsInComputedColsExpressions,
 					true /* consolidate */, &evalCtx, &f, partition.PrefixSorter{},
 					func() {}, /* checkCancellation */
 				)
-				var result constraint.Constraint
-				ic.Constraint(&result)
+				result := ic.Constraint()
 				var buf bytes.Buffer
 				for i := 0; i < result.Spans.Count(); i++ {
 					fmt.Fprintf(&buf, "%s\n", result.Spans.Get(i))
@@ -225,14 +222,13 @@ func BenchmarkIndexConstraints(b *testing.B) {
 		testCases = append(testCases, tc)
 	}
 
-	ctx := context.Background()
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
 
 	for _, tc := range testCases {
 		b.Run(tc.name, func(b *testing.B) {
 			var f norm.Factory
-			f.Init(ctx, &evalCtx, nil /* catalog */)
+			f.Init(context.Background(), &evalCtx, nil /* catalog */)
 			md := f.Metadata()
 			var sv testutils.ScalarVars
 			err := sv.Init(md, strings.Split(tc.vars, ", "))
@@ -250,14 +246,13 @@ func BenchmarkIndexConstraints(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				var ic idxconstraint.Instance
 				ic.Init(
-					ctx, filters, nil /* optionalFilters */, indexCols, sv.NotNullCols(),
+					filters, nil /* optionalFilters */, indexCols, sv.NotNullCols(),
 					nil /* computedCols */, opt.ColSet{}, /* colsInComputedColsExpressions */
 					true, /* consolidate */
 					&evalCtx, &f, partition.PrefixSorter{},
 					func() {}, /* checkCancellation */
 				)
-				var result constraint.Constraint
-				ic.Constraint(&result)
+				_ = ic.Constraint()
 				_ = ic.RemainingFilters()
 			}
 		})

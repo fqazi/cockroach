@@ -39,18 +39,15 @@ func installGolang(
 		t.Fatal(err)
 	}
 
-	binary := "go1.21.3.linux-amd64.tar.gz"
-	sha := "1241381b2843fae5a9707eec1f8fb2ef94d827990582c7c7c32f5bdfbfd420c8"
+	binary := "go1.21.12.linux-amd64.tar.gz"
+	sha := "121ab58632787e18ae0caa8ae285b581f9470d0f6b3defde9e1600e211f583c5"
 	if c.Architecture() == vm.ArchARM64 {
-		binary = "go1.21.3.linux-arm64.tar.gz"
-		sha = "fc90fa48ae97ba6368eecb914343590bbb61b388089510d0c56c2dde52987ef3"
-	} else if c.Architecture() == vm.ArchS390x {
-		binary = "go1.21.3.linux-s390x.tar.gz"
-		sha = "4c78e2e6f4c684a3d5a9bdc97202729053f44eb7be188206f0627ef3e18716b6"
+		binary = "go1.21.12.linux-arm64.tar.gz"
+		sha = "94cb3ec4a1e08a00da55c33e63f725be91f10ba743907b5615ef34e54675ba2e"
 	}
 
 	if err := repeatRunE(
-		ctx, t, c, node, "download go", fmt.Sprintf(`curl -fsSL https://go.dev/dl/%s > /tmp/go.tgz`, binary),
+		ctx, t, c, node, "download go", fmt.Sprintf(`curl -fsSL https://dl.google.com/go/%s > /tmp/go.tgz`, binary),
 	); err != nil {
 		t.Fatal(err)
 	}

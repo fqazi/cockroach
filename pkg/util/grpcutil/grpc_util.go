@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/util/ctxutil"
 	"github.com/cockroachdb/cockroach/pkg/util/netutil"
 	"github.com/cockroachdb/errors"
 	"google.golang.org/grpc/codes"
@@ -25,19 +24,19 @@ var ErrConnectionInterrupted = errors.New(errConnectionInterruptedMsg)
 
 const errConnectionInterruptedMsg = "connection interrupted (did the remote node shut down or are there networking issues?)"
 
-var localRequestKey = ctxutil.RegisterFastValueKey()
+type localRequestKey struct{}
 
 // NewLocalRequestContext returns a Context that can be used for local
 // (in-process) RPC requests performed by the InternalClientAdapter. The ctx
 // carries information about what tenant (if any) is the client of the RPC. The
 // auth interceptor uses this information to authorize the tenant.
 func NewLocalRequestContext(ctx context.Context, tenantID roachpb.TenantID) context.Context {
-	return ctxutil.WithFastValue(ctx, localRequestKey, tenantID)
+	return context.WithValue(ctx, localRequestKey{}, tenantID)
 }
 
 // IsLocalRequestContext returns true if this context is marked for local (in-process) use.
 func IsLocalRequestContext(ctx context.Context) (roachpb.TenantID, bool) {
-	val := ctxutil.FastValue(ctx, localRequestKey)
+	val := ctx.Value(localRequestKey{})
 	if val == nil {
 		return roachpb.TenantID{}, false
 	}
@@ -119,27 +118,15 @@ func IsConnectionRejected(err error) bool {
 	return false
 }
 
-// IsAuthError returns true if err's Cause is an authentication or authorization
-// error for the operation.
+// IsAuthError returns true if err's Cause is an error produced by
+// gRPC due to an authentication or authorization error for the operation.
+// AuthErrors should generally be considered non-retriable. They indicate
+// that the operation would not succeed even if directed at another node
+// in the cluster.
 //
-// AuthErrors can be due to a problem on either the client or the server. An
-// AuthError received from multiple different servers can be used an indication
-// that the issue is most likely on the client should not be retried.
-//
-// A non-exhaustive list of reasons from the client side are:
-// 1) The client has a bad TLS certificate.
-// 2) The client does not have permission to run this batch request.
-// 3) The client has been decommissioned.
-// 4) The client is in the process of terminating.
-//
-// A non-exhaustive list of reasons fro the server side is:
-// 1) The server has a bad TLS certificate.
-// 2) The server has stale liveness information for this node.
-// 3) The server has stale tenant authorization information.
-// 4) The server sent the request as a proxy and returned a ProxyFailedError
-// 5) The server was removed from the cluster and can't validate our auth info.
-// TODO(baptist): Validate uses of this check. Prior code assumed an auth error
-// from one sever should always be treated as terminal.
+// As a special case, an AuthError (PermissionDenied) is returned on outbound
+// dialing when the source node is in the process of terminating (see
+// rpc.errDialRejected).
 func IsAuthError(err error) bool {
 	if s, ok := status.FromError(errors.UnwrapAll(err)); ok {
 		switch s.Code() {

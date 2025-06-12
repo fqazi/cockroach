@@ -177,7 +177,7 @@ func parseClientProvidedSessionParameters(
 						return args, pgerror.Newf(pgcode.InvalidParameterValue,
 							"cannot specify system identity via options")
 					}
-					args.SystemIdentity = optvalue
+					args.SystemIdentity, _ = username.MakeSQLUsernameFromUserInput(optvalue, username.PurposeValidation)
 					continue
 
 				case "cluster":
@@ -250,6 +250,7 @@ func parseClientProvidedSessionParameters(
 			telemetry.Inc(sqltelemetry.CockroachShellCounter)
 		}
 	}
+
 	return args, nil
 }
 
@@ -290,14 +291,14 @@ var trustClientProvidedRemoteAddrOverride = envutil.EnvOrDefaultBool("COCKROACH_
 
 // TestingSetTrustClientProvidedRemoteAddr is used in tests.
 func (s *PreServeConnHandler) TestingSetTrustClientProvidedRemoteAddr(b bool) func() {
-	prev := s.trustClientProvidedRemoteAddr.Load()
-	s.trustClientProvidedRemoteAddr.Store(b)
-	return func() { s.trustClientProvidedRemoteAddr.Store(prev) }
+	prev := s.trustClientProvidedRemoteAddr.Get()
+	s.trustClientProvidedRemoteAddr.Set(b)
+	return func() { s.trustClientProvidedRemoteAddr.Set(prev) }
 }
 
 // TestingAcceptSystemIdentityOption is used in tests.
 func (s *PreServeConnHandler) TestingAcceptSystemIdentityOption(b bool) func() {
-	prev := s.acceptSystemIdentityOption.Load()
-	s.acceptSystemIdentityOption.Store(b)
-	return func() { s.acceptSystemIdentityOption.Store(prev) }
+	prev := s.acceptSystemIdentityOption.Get()
+	s.acceptSystemIdentityOption.Set(b)
+	return func() { s.acceptSystemIdentityOption.Set(prev) }
 }

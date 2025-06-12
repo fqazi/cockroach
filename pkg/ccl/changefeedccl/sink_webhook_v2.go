@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/cidr"
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
@@ -29,17 +28,14 @@ import (
 )
 
 const (
-	applicationTypeJSON   = `application/json`
-	applicationTypeCSV    = `text/csv`
-	authorizationHeader   = `Authorization`
-	contentEncodingHeader = `Content-Encoding`
-	acceptEncodingHeader  = `Accept-Encoding`
-	contentTypeHeader     = `Content-Type`
+	applicationTypeJSON = `application/json`
+	applicationTypeCSV  = `text/csv`
+	authorizationHeader = `Authorization`
 )
 
 func isWebhookSink(u *url.URL) bool {
 	switch u.Scheme {
-	// Allow HTTP here but throw an error later to make it clear HTTPS is required.
+	// allow HTTP here but throw an error later to make it clear HTTPS is required
 	case changefeedbase.SinkSchemeWebhookHTTP, changefeedbase.SinkSchemeWebhookHTTPS:
 		return true
 	default:
@@ -48,14 +44,12 @@ func isWebhookSink(u *url.URL) bool {
 }
 
 type webhookSinkClient struct {
-	ctx         context.Context
-	format      changefeedbase.FormatType
-	url         *changefeedbase.SinkURL
-	authHeader  string
-	batchCfg    sinkBatchConfig
-	client      *httputil.Client
-	settings    *cluster.Settings
-	compression compressionAlgo
+	ctx        context.Context
+	format     changefeedbase.FormatType
+	url        sinkURL
+	authHeader string
+	batchCfg   sinkBatchConfig
+	client     *httputil.Client
 }
 
 var _ SinkClient = (*webhookSinkClient)(nil)
@@ -63,38 +57,25 @@ var _ SinkPayload = (*http.Request)(nil)
 
 func makeWebhookSinkClient(
 	ctx context.Context,
-	u *changefeedbase.SinkURL,
+	u sinkURL,
 	encodingOpts changefeedbase.EncodingOptions,
 	opts changefeedbase.WebhookSinkOptions,
 	batchCfg sinkBatchConfig,
 	parallelism int,
 	m metricsRecorder,
-	settings *cluster.Settings,
 ) (SinkClient, error) {
 	err := validateWebhookOpts(u, encodingOpts, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	var compression compressionAlgo
-	if opts.Compression != "" {
-		cType := strings.ToLower(opts.Compression)
-		algo, _, err := compressionFromString(cType)
-		if err != nil {
-			return nil, errors.Wrapf(err, `unsupported compression type "%s"`, cType)
-		}
-		compression = algo
-	}
-
 	u.Scheme = strings.TrimPrefix(u.Scheme, `webhook-`)
 
 	sinkClient := &webhookSinkClient{
-		ctx:         ctx,
-		authHeader:  opts.AuthHeader,
-		format:      encodingOpts.Format,
-		batchCfg:    batchCfg,
-		settings:    settings,
-		compression: compression,
+		ctx:        ctx,
+		authHeader: opts.AuthHeader,
+		format:     encodingOpts.Format,
+		batchCfg:   batchCfg,
 	}
 
 	var connTimeout time.Duration
@@ -106,7 +87,7 @@ func makeWebhookSinkClient(
 		return nil, err
 	}
 
-	// Remove known query params from sink URL before setting in sink config.
+	// remove known query params from sink URL before setting in sink config
 	sinkURLParsed, err := url.Parse(u.String())
 	if err != nil {
 		return nil, err
@@ -117,13 +98,13 @@ func makeWebhookSinkClient(
 	params.Del(changefeedbase.SinkParamClientCert)
 	params.Del(changefeedbase.SinkParamClientKey)
 	sinkURLParsed.RawQuery = params.Encode()
-	sinkClient.url = &changefeedbase.SinkURL{URL: sinkURLParsed}
+	sinkClient.url = sinkURL{URL: sinkURLParsed}
 
 	return sinkClient, nil
 }
 
 func makeWebhookClient(
-	u *changefeedbase.SinkURL, timeout time.Duration, parallelism int, nm *cidr.NetMetrics,
+	u sinkURL, timeout time.Duration, parallelism int, nm *cidr.NetMetrics,
 ) (*httputil.Client, error) {
 	client := &httputil.Client{
 		Client: &http.Client{
@@ -147,16 +128,16 @@ func makeWebhookClient(
 
 	transport := client.Transport.(*http.Transport)
 
-	if _, err := u.ConsumeBool(changefeedbase.SinkParamSkipTLSVerify, &dialConfig.tlsSkipVerify); err != nil {
+	if _, err := u.consumeBool(changefeedbase.SinkParamSkipTLSVerify, &dialConfig.tlsSkipVerify); err != nil {
 		return nil, err
 	}
-	if err := u.DecodeBase64(changefeedbase.SinkParamCACert, &dialConfig.caCert); err != nil {
+	if err := u.decodeBase64(changefeedbase.SinkParamCACert, &dialConfig.caCert); err != nil {
 		return nil, err
 	}
-	if err := u.DecodeBase64(changefeedbase.SinkParamClientCert, &dialConfig.clientCert); err != nil {
+	if err := u.decodeBase64(changefeedbase.SinkParamClientCert, &dialConfig.clientCert); err != nil {
 		return nil, err
 	}
-	if err := u.DecodeBase64(changefeedbase.SinkParamClientKey, &dialConfig.clientKey); err != nil {
+	if err := u.decodeBase64(changefeedbase.SinkParamClientKey, &dialConfig.clientKey); err != nil {
 		return nil, err
 	}
 
@@ -196,34 +177,25 @@ func makeWebhookClient(
 }
 
 func (sc *webhookSinkClient) makePayloadForBytes(body []byte) (SinkPayload, error) {
-	finalBytes := body
-	if sc.compression.enabled() {
-		var buf bytes.Buffer
-		codec, err := newCompressionCodec(sc.compression, &sc.settings.SV, &buf)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to create compression codec")
-		}
-		if _, err := codec.Write(body); err != nil {
-			return nil, errors.Wrap(err, "failed to compress payload")
-		}
-		if err := codec.Close(); err != nil {
-			return nil, errors.Wrap(err, "failed to close compression codec")
-		}
-
-		finalBytes = buf.Bytes()
-	}
-
-	req, err := http.NewRequestWithContext(sc.ctx, http.MethodPost, sc.url.String(), bytes.NewReader(finalBytes))
+	req, err := http.NewRequestWithContext(sc.ctx, http.MethodPost, sc.url.String(), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
+	switch sc.format {
+	case changefeedbase.OptFormatJSON:
+		req.Header.Set("Content-Type", applicationTypeJSON)
+	case changefeedbase.OptFormatCSV:
+		req.Header.Set("Content-Type", applicationTypeCSV)
+	}
 
-	sc.setRequestHeaders(req)
+	if sc.authHeader != "" {
+		req.Header.Set(authorizationHeader, sc.authHeader)
+	}
 
 	return req, nil
 }
 
-// FlushResolvedPayload implements the SinkClient interface.
+// FlushResolvedPayload implements the SinkClient interface
 func (sc *webhookSinkClient) FlushResolvedPayload(
 	ctx context.Context, body []byte, _ func(func(topic string) error) error, retryOpts retry.Options,
 ) error {
@@ -236,31 +208,7 @@ func (sc *webhookSinkClient) FlushResolvedPayload(
 	})
 }
 
-// readResponseBody handles response body reading and decompression if needed.
-func (sc *webhookSinkClient) readResponseBody(res *http.Response) ([]byte, error) {
-	encoding := res.Header.Get(contentEncodingHeader)
-	if encoding == "" {
-		return io.ReadAll(res.Body)
-	}
-
-	// Convert the content-encoding header to our internal compression algorithm type.
-	algo, _, err := compressionFromString(encoding)
-	if err != nil {
-		return nil, errors.Wrapf(err,
-			"webhook endpoint returned unsupported content encoding: %s", encoding)
-	}
-
-	reader, err := newDecompressionReader(algo, res.Body)
-	if err != nil {
-		return nil, errors.Wrapf(err,
-			"failed to create decompression reader for algorithm %s", algo)
-	}
-	defer reader.Close()
-
-	return io.ReadAll(reader)
-}
-
-// Flush implements the SinkClient interface.
+// Flush implements the SinkClient interface
 func (sc *webhookSinkClient) Flush(ctx context.Context, batch SinkPayload) error {
 	req := batch.(*http.Request)
 	b, err := req.GetBody()
@@ -275,8 +223,7 @@ func (sc *webhookSinkClient) Flush(ctx context.Context, batch SinkPayload) error
 	defer res.Body.Close()
 
 	if !(res.StatusCode >= http.StatusOK && res.StatusCode < http.StatusMultipleChoices) {
-		// Response body may be compressed, so we need to use our reader with decompression support.
-		resBody, err := sc.readResponseBody(res)
+		resBody, err := io.ReadAll(res.Body)
 		if err != nil {
 			return errors.Wrapf(err, "failed to read body for HTTP response with status: %d", res.StatusCode)
 		}
@@ -285,7 +232,7 @@ func (sc *webhookSinkClient) Flush(ctx context.Context, batch SinkPayload) error
 	return nil
 }
 
-// Close implements the SinkClient interface.
+// Close implements the SinkClient interface
 func (sc *webhookSinkClient) Close() error {
 	sc.client.CloseIdleConnections()
 	return nil
@@ -295,29 +242,8 @@ func (sc *webhookSinkClient) CheckConnection(ctx context.Context) error {
 	return nil
 }
 
-func (sc *webhookSinkClient) setRequestHeaders(req *http.Request) {
-	switch sc.format {
-	case changefeedbase.OptFormatJSON:
-		req.Header.Set(contentTypeHeader, applicationTypeJSON)
-	case changefeedbase.OptFormatCSV:
-		req.Header.Set(contentTypeHeader, applicationTypeCSV)
-	}
-
-	if sc.compression.enabled() {
-		compression := string(sc.compression)
-		req.Header.Set(acceptEncodingHeader, compression)
-		req.Header.Set(contentEncodingHeader, compression)
-	}
-
-	if sc.authHeader != "" {
-		req.Header.Set(authorizationHeader, sc.authHeader)
-	}
-}
-
 func validateWebhookOpts(
-	u *changefeedbase.SinkURL,
-	encodingOpts changefeedbase.EncodingOptions,
-	opts changefeedbase.WebhookSinkOptions,
+	u sinkURL, encodingOpts changefeedbase.EncodingOptions, opts changefeedbase.WebhookSinkOptions,
 ) error {
 	if u.Scheme != changefeedbase.SinkSchemeWebhookHTTPS {
 		return errors.Errorf(`this sink requires %s`, changefeedbase.SinkSchemeWebhookHTTPS)
@@ -332,7 +258,7 @@ func validateWebhookOpts(
 	}
 
 	switch encodingOpts.Envelope {
-	case changefeedbase.OptEnvelopeWrapped, changefeedbase.OptEnvelopeBare, changefeedbase.OptEnvelopeEnriched:
+	case changefeedbase.OptEnvelopeWrapped, changefeedbase.OptEnvelopeBare:
 	default:
 		return errors.Errorf(`this sink is incompatible with %s=%s`,
 			changefeedbase.OptEnvelope, encodingOpts.Envelope)
@@ -355,18 +281,18 @@ type webhookCSVBuffer struct {
 
 var _ BatchBuffer = (*webhookCSVBuffer)(nil)
 
-// Append implements the BatchBuffer interface.
-func (cb *webhookCSVBuffer) Append(ctx context.Context, key []byte, value []byte, _ attributes) {
+// Append implements the BatchBuffer interface
+func (cb *webhookCSVBuffer) Append(key []byte, value []byte, _ attributes) {
 	cb.bytes = append(cb.bytes, value...)
 	cb.messageCount += 1
 }
 
-// ShouldFlush implements the BatchBuffer interface.
+// ShouldFlush implements the BatchBuffer interface
 func (cb *webhookCSVBuffer) ShouldFlush() bool {
 	return shouldFlushBatch(len(cb.bytes), cb.messageCount, cb.sc.batchCfg)
 }
 
-// Close implements the BatchBuffer interface.
+// Close implements the BatchBuffer interface
 func (cb *webhookCSVBuffer) Close() (SinkPayload, error) {
 	return cb.sc.makePayloadForBytes(cb.bytes)
 }
@@ -379,24 +305,24 @@ type webhookJSONBuffer struct {
 
 var _ BatchBuffer = (*webhookJSONBuffer)(nil)
 
-// Append implements the BatchBuffer interface.
-func (jb *webhookJSONBuffer) Append(ctx context.Context, key []byte, value []byte, _ attributes) {
+// Append implements the BatchBuffer interface
+func (jb *webhookJSONBuffer) Append(key []byte, value []byte, _ attributes) {
 	jb.messages = append(jb.messages, value)
 	jb.numBytes += len(value)
 }
 
-// ShouldFlush implements the BatchBuffer interface.
+// ShouldFlush implements the BatchBuffer interface
 func (jb *webhookJSONBuffer) ShouldFlush() bool {
 	return shouldFlushBatch(jb.numBytes, len(jb.messages), jb.sc.batchCfg)
 }
 
-// Close implements the BatchBuffer interface.
+// Close implements the BatchBuffer interface
 func (jb *webhookJSONBuffer) Close() (SinkPayload, error) {
 	var buffer bytes.Buffer
 	prefix := "{\"payload\":["
 	suffix := fmt.Sprintf("],\"length\":%d}", len(jb.messages))
 
-	// Grow all at once to avoid reallocations.
+	// Grow all at once to avoid reallocations
 	buffer.Grow(len(prefix) + jb.numBytes /* msgs */ + len(jb.messages) /* commas */ + len(suffix))
 
 	buffer.WriteString(prefix)
@@ -410,7 +336,7 @@ func (jb *webhookJSONBuffer) Close() (SinkPayload, error) {
 	return jb.sc.makePayloadForBytes(buffer.Bytes())
 }
 
-// MakeBatchBuffer implements the SinkClient interface.
+// MakeBatchBuffer implements the SinkClient interface
 func (sc *webhookSinkClient) MakeBatchBuffer(topic string) BatchBuffer {
 	if sc.format == changefeedbase.OptFormatCSV {
 		return &webhookCSVBuffer{sc: sc}
@@ -424,14 +350,13 @@ func (sc *webhookSinkClient) MakeBatchBuffer(topic string) BatchBuffer {
 
 func makeWebhookSink(
 	ctx context.Context,
-	u *changefeedbase.SinkURL,
+	u sinkURL,
 	encodingOpts changefeedbase.EncodingOptions,
 	opts changefeedbase.WebhookSinkOptions,
 	parallelism int,
 	pacerFactory func() *admission.Pacer,
 	source timeutil.TimeSource,
 	mb metricsRecorderBuilder,
-	settings *cluster.Settings,
 ) (Sink, error) {
 	m := mb(requiresResourceAccounting)
 
@@ -440,7 +365,7 @@ func makeWebhookSink(
 		return nil, err
 	}
 
-	sinkClient, err := makeWebhookSinkClient(ctx, u, encodingOpts, opts, batchCfg, parallelism, m, settings)
+	sinkClient, err := makeWebhookSinkClient(ctx, u, encodingOpts, opts, batchCfg, parallelism, m)
 	if err != nil {
 		return nil, err
 	}
@@ -455,7 +380,6 @@ func makeWebhookSink(
 		nil,
 		pacerFactory,
 		source,
-		m,
-		settings,
+		mb(requiresResourceAccounting),
 	), nil
 }

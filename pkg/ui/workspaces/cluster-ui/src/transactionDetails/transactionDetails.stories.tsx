@@ -3,13 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import { storiesOf } from "@storybook/react";
-import noop from "lodash/noop";
-import moment from "moment-timezone";
 import React from "react";
+import { storiesOf } from "@storybook/react";
 import { MemoryRouter } from "react-router-dom";
-
+import { noop } from "lodash";
 import {
   nodeRegions,
   requestTime,
@@ -20,7 +17,8 @@ import {
 } from "./transactionDetails.fixture";
 
 import { TransactionDetails } from ".";
-
+import moment from "moment-timezone";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import StatsSortOptions = cockroach.server.serverpb.StatsSortOptions;
 
 storiesOf("Transactions Details", module)

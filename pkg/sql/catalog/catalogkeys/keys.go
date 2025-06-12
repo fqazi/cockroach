@@ -58,11 +58,10 @@ const (
 	ConstraintCommentType CommentType = 5
 	// FunctionCommentType comment on a function.
 	FunctionCommentType CommentType = 6
-	// TypeCommentType comment on a type
-	TypeCommentType CommentType = 7
+
 	// MaxCommentTypeValue is the max possible integer of CommentType type.
 	// Update this whenever a new comment type is added.
-	MaxCommentTypeValue = TypeCommentType
+	MaxCommentTypeValue = FunctionCommentType
 )
 
 // AllCommentTypes is a slice of all valid schema comment types.
@@ -74,7 +73,6 @@ var AllCommentTypes = []CommentType{
 	SchemaCommentType,
 	ConstraintCommentType,
 	FunctionCommentType,
-	TypeCommentType,
 }
 
 // IsValidCommentType checks if a given comment type is in the valid value
@@ -118,14 +116,6 @@ func MakeCommentKey(objID uint32, subID uint32, cmtType CommentType) CommentKey 
 		SubID:       subID,
 		CommentType: cmtType,
 	}
-}
-
-// Validate returns if a comment key is valid.
-func (k CommentKey) Validate() error {
-	if !IsValidCommentType(k.CommentType) {
-		return errors.Errorf("invalid comment type: %d on object ID: %d", k.CommentType, k.ObjectID)
-	}
-	return nil
 }
 
 // IndexColumnEncodingDirection converts a direction from the proto to an
@@ -301,6 +291,14 @@ func MakeObjectCommentsMetadataPrefix(
 	k := CommentsMetadataPrefix(codec)
 	k = encoding.EncodeUvarintAscending(k, uint64(cmtKey))
 	return encoding.EncodeUvarintAscending(k, uint64(descID))
+}
+
+// MakeSubObjectCommentsMetadataPrefix returns the key
+func MakeSubObjectCommentsMetadataPrefix(
+	codec keys.SQLCodec, cmtKey CommentType, descID descpb.ID, subID uint32,
+) roachpb.Key {
+	k := MakeObjectCommentsMetadataPrefix(codec, cmtKey, descID)
+	return encoding.EncodeUvarintAscending(k, uint64(subID))
 }
 
 // DecodeCommentMetadataID decodes a CommentKey from comments metadata key.

@@ -55,15 +55,14 @@ func (a tenantAuthorizer) authorize(
 	req interface{},
 ) error {
 	switch fullMethod {
-	case "/cockroach.roachpb.Internal/Batch", "/cockroach.roachpb.Internal/BatchStream":
+	case "/cockroach.roachpb.Internal/Batch":
 		return a.authBatch(ctx, sv, tenID, req.(*kvpb.BatchRequest))
 
 	case "/cockroach.roachpb.Internal/RangeLookup":
-		return a.authRangeLookup(ctx, tenID, req.(*kvpb.RangeLookupRequest))
+		return a.authRangeLookup(tenID, req.(*kvpb.RangeLookupRequest))
 
 	case "/cockroach.roachpb.Internal/RangeFeed", "/cockroach.roachpb.Internal/MuxRangeFeed":
 		return a.authRangeFeed(tenID, req.(*kvpb.RangeFeedRequest))
-
 	case "/cockroach.roachpb.Internal/GossipSubscription":
 		return a.authGossipSubscription(tenID, req.(*kvpb.GossipSubscriptionRequest))
 
@@ -109,41 +108,38 @@ func (a tenantAuthorizer) authorize(
 	case "/cockroach.server.serverpb.Status/CancelSession":
 		return a.authTenant(tenID)
 
+	case "/cockroach.server.serverpb.Status/CancelLocalSession":
+		return a.authTenant(tenID)
+
 	case "/cockroach.server.serverpb.Status/CancelQuery":
 		return a.authTenant(tenID)
 
 	case "/cockroach.server.serverpb.Status/TenantRanges":
 		return a.authTenantRanges(tenID)
 
-	case "/cockroach.server.serverpb.Status/Ranges":
-		return a.authRanges(tenID)
-
-	case "/cockroach.server.serverpb.Status/NetworkConnectivity":
-		return a.capabilitiesAuthorizer.HasProcessDebugCapability(ctx, tenID)
-
-	case "/cockroach.server.serverpb.Status/Gossip", "/cockroach.server.serverpb.Status/EngineStats":
-		return a.capabilitiesAuthorizer.HasNodeStatusCapability(ctx, tenID)
+	case "/cockroach.server.serverpb.Status/CancelLocalQuery":
+		return a.authTenant(tenID)
 
 	case "/cockroach.server.serverpb.Status/TransactionContentionEvents":
 		return a.authTenant(tenID)
 
 	case "/cockroach.server.serverpb.Status/SpanStats":
-		return a.authSpanStats(ctx, tenID, req.(*roachpb.SpanStatsRequest))
+		return a.authSpanStats(tenID, req.(*roachpb.SpanStatsRequest))
 
 	case "/cockroach.roachpb.Internal/GetSpanConfigs":
-		return a.authGetSpanConfigs(ctx, tenID, req.(*roachpb.GetSpanConfigsRequest))
+		return a.authGetSpanConfigs(tenID, req.(*roachpb.GetSpanConfigsRequest))
 
 	case "/cockroach.roachpb.Internal/SpanConfigConformance":
-		return a.authSpanConfigConformance(ctx, tenID, req.(*roachpb.SpanConfigConformanceRequest))
+		return a.authSpanConfigConformance(tenID, req.(*roachpb.SpanConfigConformanceRequest))
 
 	case "/cockroach.roachpb.Internal/GetAllSystemSpanConfigsThatApply":
 		return a.authGetAllSystemSpanConfigsThatApply(tenID, req.(*roachpb.GetAllSystemSpanConfigsThatApplyRequest))
 
 	case "/cockroach.roachpb.Internal/UpdateSpanConfigs":
-		return a.authUpdateSpanConfigs(ctx, tenID, req.(*roachpb.UpdateSpanConfigsRequest))
+		return a.authUpdateSpanConfigs(tenID, req.(*roachpb.UpdateSpanConfigsRequest))
 
 	case "/cockroach.roachpb.Internal/GetRangeDescriptors":
-		return a.authGetRangeDescriptors(ctx, tenID, req.(*kvpb.GetRangeDescriptorsRequest))
+		return a.authGetRangeDescriptors(tenID, req.(*kvpb.GetRangeDescriptorsRequest))
 
 	case "/cockroach.server.serverpb.Status/HotRangesV2":
 		return a.authHotRangesV2(tenID)
@@ -164,30 +160,16 @@ func (a tenantAuthorizer) authorize(
 		"/cockroach.blobs.Blob/PutStream":
 		return a.capabilitiesAuthorizer.HasNodelocalStorageCapability(ctx, tenID)
 
-	case "/cockroach.server.serverpb.Admin/ReadFromTenantInfo":
-		// NB: we don't check anything here as every tenant, even those who do not
-		// have HasCrossTenantRead, will call this even if only to learn that they
-		// are not a reader tenant.
-		return nil
-
 	default:
 		return authErrorf("unknown method %q", fullMethod)
 	}
 }
 
 func checkSpanBounds(rSpan, tenSpan roachpb.RSpan) error {
-	if outsideTenant(rSpan, tenSpan) {
-		return spanErr(rSpan, tenSpan)
+	if !tenSpan.ContainsKeyRange(rSpan.Key, rSpan.EndKey) {
+		return authErrorf("requested key span %s not fully contained in tenant keyspace %s", rSpan, tenSpan)
 	}
 	return nil
-}
-
-func outsideTenant(rSpan, tenSpan roachpb.RSpan) bool {
-	return !tenSpan.ContainsKeyRange(rSpan.Key, rSpan.EndKey)
-}
-
-func spanErr(rSpan, tenSpan roachpb.RSpan) error {
-	return authErrorf("requested key span %s not fully contained in tenant keyspace %s", rSpan, tenSpan)
 }
 
 // authBatch authorizes the provided tenant to invoke the Batch RPC with the
@@ -208,27 +190,20 @@ func (a tenantAuthorizer) authBatch(
 		return authError(err.Error())
 	}
 	tenSpan := tenantPrefix(tenID)
-
-	if outsideTenant(rSpan, tenSpan) {
-		if args.IsReadOnly() && a.capabilitiesAuthorizer.HasCrossTenantRead(ctx, tenID) {
-			return nil
-		}
-		return spanErr(rSpan, tenSpan)
-	}
-	return nil
+	return checkSpanBounds(rSpan, tenSpan)
 }
 
 func (a tenantAuthorizer) authGetRangeDescriptors(
-	ctx context.Context, tenID roachpb.TenantID, args *kvpb.GetRangeDescriptorsRequest,
+	tenID roachpb.TenantID, args *kvpb.GetRangeDescriptorsRequest,
 ) error {
-	return validateSpan(ctx, tenID, args.Span, true, a)
+	return validateSpan(tenID, args.Span)
 }
 
 func (a tenantAuthorizer) authSpanStats(
-	ctx context.Context, tenID roachpb.TenantID, args *roachpb.SpanStatsRequest,
+	tenID roachpb.TenantID, args *roachpb.SpanStatsRequest,
 ) error {
 	for _, span := range args.Spans {
-		err := validateSpan(ctx, tenID, span, true, a)
+		err := validateSpan(tenID, span)
 		if err != nil {
 			return err
 		}
@@ -239,14 +214,10 @@ func (a tenantAuthorizer) authSpanStats(
 // authRangeLookup authorizes the provided tenant to invoke the RangeLookup RPC
 // with the provided args.
 func (a tenantAuthorizer) authRangeLookup(
-	ctx context.Context, tenID roachpb.TenantID, args *kvpb.RangeLookupRequest,
+	tenID roachpb.TenantID, args *kvpb.RangeLookupRequest,
 ) error {
 	tenSpan := tenantPrefix(tenID)
 	if !tenSpan.ContainsKey(args.Key) {
-		// Allow it anyway if the tenant can read other tenants.
-		if a.capabilitiesAuthorizer.HasCrossTenantRead(ctx, tenID) {
-			return nil
-		}
 		return authErrorf("requested key %s not fully contained in tenant keyspace %s", args.Key, tenSpan)
 	}
 	return nil
@@ -300,8 +271,6 @@ var gossipSubscriptionPatternAllowlist = []string{
 	"cluster-id",
 	"node:.*",
 	"store:.*",
-	// This "system-db" exception can be removed once we fully remove
-	// gossip.KeyDeprecatedSystemConfig from the gossip network.
 	"system-db",
 }
 
@@ -311,15 +280,6 @@ var gossipSubscriptionPatternAllowlist = []string{
 func (a tenantAuthorizer) authTenantRanges(tenID roachpb.TenantID) error {
 	if !tenID.IsSet() {
 		return authErrorf("tenant ranges request with unspecified tenant not permitted.")
-	}
-	return nil
-}
-
-// authRanges authorizes the provided tenant to invoke the Ranges RPC with the
-// provided args. It requires that an authorized tenantID has been set.
-func (a tenantAuthorizer) authRanges(tenID roachpb.TenantID) error {
-	if !tenID.IsSet() {
-		return authErrorf("ranges request with unspecified tenant not permitted.")
 	}
 	return nil
 }
@@ -373,10 +333,10 @@ func (a tenantAuthorizer) authGetAllSystemSpanConfigsThatApply(
 // authGetSpanConfigs authorizes the provided tenant to invoke the
 // GetSpanConfigs RPC with the provided args.
 func (a tenantAuthorizer) authGetSpanConfigs(
-	ctx context.Context, tenID roachpb.TenantID, args *roachpb.GetSpanConfigsRequest,
+	tenID roachpb.TenantID, args *roachpb.GetSpanConfigsRequest,
 ) error {
 	for _, target := range args.Targets {
-		if err := validateSpanConfigTarget(ctx, tenID, target, true, a); err != nil {
+		if err := validateSpanConfigTarget(tenID, target); err != nil {
 			return err
 		}
 	}
@@ -386,15 +346,15 @@ func (a tenantAuthorizer) authGetSpanConfigs(
 // authUpdateSpanConfigs authorizes the provided tenant to invoke the
 // UpdateSpanConfigs RPC with the provided args.
 func (a tenantAuthorizer) authUpdateSpanConfigs(
-	ctx context.Context, tenID roachpb.TenantID, args *roachpb.UpdateSpanConfigsRequest,
+	tenID roachpb.TenantID, args *roachpb.UpdateSpanConfigsRequest,
 ) error {
 	for _, entry := range args.ToUpsert {
-		if err := validateSpanConfigTarget(ctx, tenID, entry.Target, false, a); err != nil {
+		if err := validateSpanConfigTarget(tenID, entry.Target); err != nil {
 			return err
 		}
 	}
 	for _, target := range args.ToDelete {
-		if err := validateSpanConfigTarget(ctx, tenID, target, false, a); err != nil {
+		if err := validateSpanConfigTarget(tenID, target); err != nil {
 			return err
 		}
 	}
@@ -415,33 +375,27 @@ func (a tenantAuthorizer) authHotRangesV2(tenID roachpb.TenantID) error {
 // authSpanConfigConformance authorizes the provided tenant to invoke the
 // SpanConfigConformance RPC with the provided args.
 func (a tenantAuthorizer) authSpanConfigConformance(
-	ctx context.Context, tenID roachpb.TenantID, args *roachpb.SpanConfigConformanceRequest,
+	tenID roachpb.TenantID, args *roachpb.SpanConfigConformanceRequest,
 ) error {
 	for _, sp := range args.Spans {
-		if err := validateSpan(ctx, tenID, sp, false, a); err != nil {
+		if err := validateSpan(tenID, sp); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// authTSDBQuery authorizes the provided tenant to invoke the TSDB
-// Query RPC with the provided args. A non-system tenant is allowed to
-// query metric names in its registry as long as the TenantID is set on
-// the query. System-level queries are permitted without a TenantID.
+// authTSDBQuery authorizes the provided tenant to invoke the TSDB Query RPC
+// with the provided args. A non-system tenant is only allowed to query its own
+// time series.
 func (a tenantAuthorizer) authTSDBQuery(
 	ctx context.Context, id roachpb.TenantID, request *tspb.TimeSeriesQueryRequest,
 ) error {
 	for _, query := range request.Queries {
 		if !query.TenantID.IsSet() {
-			// If tenantID is unset, we make sure the tenant has permission
-			// to query all metrics.
-			if err := a.capabilitiesAuthorizer.HasTSDBAllMetricsCapability(ctx, id); err != nil {
-				return authError(err.Error())
-			}
-		} else if !query.TenantID.Equal(id) {
-			// Regardless of permissions, if you set a tenantID it should still
-			// only be this one.
+			return authError("tsdb query with unspecified tenant not permitted")
+		}
+		if !query.TenantID.Equal(id) {
 			return authErrorf("tsdb query with invalid tenant not permitted")
 		}
 	}
@@ -456,11 +410,7 @@ func (a tenantAuthorizer) authTSDBQuery(
 // wholly contained within the tenant keyspace and system span config targets
 // must be well-formed.
 func validateSpanConfigTarget(
-	ctx context.Context,
-	tenID roachpb.TenantID,
-	spanConfigTarget roachpb.SpanConfigTarget,
-	read bool,
-	a tenantAuthorizer,
+	tenID roachpb.TenantID, spanConfigTarget roachpb.SpanConfigTarget,
 ) error {
 	validateSystemTarget := func(target roachpb.SystemSpanConfigTarget) error {
 		if target.SourceTenantID != tenID {
@@ -489,7 +439,7 @@ func validateSpanConfigTarget(
 
 	switch spanConfigTarget.Union.(type) {
 	case *roachpb.SpanConfigTarget_Span:
-		return validateSpan(ctx, tenID, *spanConfigTarget.GetSpan(), read, a)
+		return validateSpan(tenID, *spanConfigTarget.GetSpan())
 	case *roachpb.SpanConfigTarget_SystemSpanConfigTarget:
 		return validateSystemTarget(*spanConfigTarget.GetSystemSpanConfigTarget())
 	default:
@@ -497,22 +447,13 @@ func validateSpanConfigTarget(
 	}
 }
 
-func validateSpan(
-	ctx context.Context, tenID roachpb.TenantID, sp roachpb.Span, isRead bool, a tenantAuthorizer,
-) error {
+func validateSpan(tenID roachpb.TenantID, sp roachpb.Span) error {
 	tenSpan := tenantPrefix(tenID)
 	rSpan, err := keys.SpanAddr(sp)
 	if err != nil {
 		return authError(err.Error())
 	}
-	if outsideTenant(rSpan, tenSpan) {
-		// Allow it anyway if the tenant can read other tenants.
-		if isRead && a.capabilitiesAuthorizer.HasCrossTenantRead(ctx, tenID) {
-			return nil
-		}
-		return spanErr(rSpan, tenSpan)
-	}
-	return nil
+	return checkSpanBounds(rSpan, tenSpan)
 }
 
 const tenantLoggingTag = "client-tenant"

@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -63,7 +62,7 @@ func TestCachedSettingsServerRestart(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	stickyVFSRegistry := fs.NewStickyRegistry()
+	stickyVFSRegistry := NewStickyVFSRegistry()
 
 	serverArgs := base.TestServerArgs{
 		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
@@ -76,12 +75,11 @@ func TestCachedSettingsServerRestart(t *testing.T) {
 			},
 		},
 	}
-	var expectedSettingsCache []roachpb.KeyValue
+	var settingsCache []roachpb.KeyValue
 	ts := serverutils.StartServerOnly(t, serverArgs)
 	closedts.TargetDuration.Override(ctx, &ts.ClusterSettings().SV, 10*time.Millisecond)
 	closedts.SideTransportCloseInterval.Override(ctx, &ts.ClusterSettings().SV, 10*time.Millisecond)
 	kvserver.RangeFeedRefreshInterval.Override(ctx, &ts.ClusterSettings().SV, 10*time.Millisecond)
-	const expectedSettingsCount = 3
 	testutils.SucceedsSoon(t, func() error {
 		store, err := ts.GetStores().(*kvserver.Stores).GetStore(1)
 		if err != nil {
@@ -91,18 +89,10 @@ func TestCachedSettingsServerRestart(t *testing.T) {
 		if err != nil {
 			return err
 		}
-
-		// Previously, we checked if len(settings) > 0, which led to a race
-		// condition where, in rare cases (under --race), the settings watcher
-		// had not yet received some settings through rangefeed. If we exit this
-		// function and assign expectedSettingsCount with those incomplete
-		// settings, the settings watcher may receive the remaining settings
-		// before we stop the server. See issue #124419 for more details.
-		if len(settings) < expectedSettingsCount {
-			return errors.Newf("unexpected count of settings: expected %d, found %d",
-				expectedSettingsCount, len(settings))
+		if len(settings) == 0 {
+			return errors.New("empty settings loaded from store")
 		}
-		expectedSettingsCache = settings
+		settingsCache = settings
 		return nil
 	})
 	ts.Stopper().Stop(context.Background())
@@ -122,8 +112,8 @@ func TestCachedSettingsServerRestart(t *testing.T) {
 		inspectState, err := inspectEngines(
 			context.Background(),
 			s.Engines(),
-			s.ClusterSettings().Version.LatestVersion(),
-			s.ClusterSettings().Version.MinSupportedVersion(),
+			s.ClusterSettings().Version.BinaryVersion(),
+			s.ClusterSettings().Version.BinaryMinSupportedVersion(),
 		)
 		require.NoError(t, err)
 
@@ -145,11 +135,11 @@ func TestCachedSettingsServerRestart(t *testing.T) {
 		if initialBoot {
 			return errors.New("server should not require initialization")
 		}
-		if !assert.ObjectsAreEqual(expectedSettingsCache, state.initialSettingsKVs) {
+		if !assert.ObjectsAreEqual(state.initialSettingsKVs, settingsCache) {
 			return errors.Newf(`initial state settings KVs does not match expected settings
 Expected: %+v
 Actual:   %+v
-`, expectedSettingsCache, state.initialSettingsKVs)
+`, settingsCache, state.initialSettingsKVs)
 		}
 		return nil
 	})

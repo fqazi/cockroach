@@ -122,17 +122,9 @@ func countLoadedCertificates(certsDir string) (int, error) {
 	return len(cl.Certificates()), nil
 }
 
-func defaultExpiration() time.Time {
-	return timeutil.Now().Add(time.Hour)
-}
-
 // Generate a x509 cert with specific fields.
 func makeTestCert(
-	t *testing.T,
-	commonName string,
-	keyUsage x509.KeyUsage,
-	extUsages []x509.ExtKeyUsage,
-	expiration time.Time,
+	t *testing.T, commonName string, keyUsage x509.KeyUsage, extUsages []x509.ExtKeyUsage,
 ) (*x509.Certificate, []byte) {
 	// Make smallest rsa key possible: not saved.
 	key, err := rsa.GenerateKey(rand.Reader, 512)
@@ -147,7 +139,7 @@ func makeTestCert(
 			CommonName: commonName,
 		},
 		NotBefore: timeutil.Now().Add(-time.Hour),
-		NotAfter:  expiration,
+		NotAfter:  timeutil.Now().Add(time.Hour),
 		KeyUsage:  keyUsage,
 	}
 
@@ -190,13 +182,13 @@ func TestNamingScheme(t *testing.T) {
 	fullKeyUsage := x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature
 	// Build a few certificates. These are barebones since we only need to check our custom validation,
 	// not chain verification.
-	parsedCACert, caCert := makeTestCert(t, "", 0, nil, defaultExpiration())
+	parsedCACert, caCert := makeTestCert(t, "", 0, nil)
 
-	parsedGoodNodeCert, goodNodeCert := makeTestCert(t, "node", fullKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}, defaultExpiration())
-	_, badUserNodeCert := makeTestCert(t, "notnode", fullKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}, defaultExpiration())
+	parsedGoodNodeCert, goodNodeCert := makeTestCert(t, "node", fullKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth})
+	_, badUserNodeCert := makeTestCert(t, "notnode", fullKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth})
 
-	parsedGoodRootCert, goodRootCert := makeTestCert(t, "root", fullKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, defaultExpiration())
-	_, notRootCert := makeTestCert(t, "notroot", fullKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, defaultExpiration())
+	parsedGoodRootCert, goodRootCert := makeTestCert(t, "root", fullKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
+	_, notRootCert := makeTestCert(t, "notroot", fullKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
 
 	// Do not use embedded certs.
 	securityassets.ResetLoader()

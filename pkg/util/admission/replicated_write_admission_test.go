@@ -37,12 +37,12 @@ import (
 //     {regular,elastic} tokens.
 //
 //   - "admit" tenant=t<int> pri=<string> create-time=<duration> \
-//     size=<bytes> range=r<int> log-position=<int>/<int> \
+//     size=<bytes> range=r<int> log-position=<int>/<int> origin=n<int> \
 //     [ingested=<bool>]
 //     Admit a replicated write request from the given tenant, of the given
 //     priority/size/create-time, writing to the given log position for the
-//     specified raft group. Also specified is whether this request was
-//     ingested (i.e. as sstables).
+//     specified raft group. Also specified is the node where this request
+//     originated and whether it was ingested (i.e. as sstables).
 //
 //   - "granter" [class={regular,elastic}] adjust-tokens={-,+}<bytes>
 //     Adjust the available {regular,elastic} tokens. If no class is specified,
@@ -86,9 +86,7 @@ func TestReplicatedWriteAdmission(t *testing.T) {
 					admissionpb.ElasticWorkClass: newTestReplicatedWriteGranter(t, admissionpb.ElasticWorkClass, &buf),
 				}
 				registry := metric.NewRegistry()
-				regMetrics := makeWorkQueueMetrics("regular", registry)
-				elasticMetrics := makeWorkQueueMetrics("elastic", registry)
-				workQueueMetrics := [admissionpb.NumWorkClasses]*WorkQueueMetrics{regMetrics, elasticMetrics}
+				metrics := makeWorkQueueMetrics("", registry)
 				opts := makeWorkQueueOptions(KVWork)
 				opts.usesTokens = true
 				opts.timeSource = timeutil.NewManualTime(tzero)
@@ -105,9 +103,9 @@ func TestReplicatedWriteAdmission(t *testing.T) {
 						if rwi.Ingested {
 							ingested = " ingested"
 						}
-						buf.printf("admitted [tenant=t%d pri=%s create-time=%s size=%s range=r%s log-position=%s%s]",
+						buf.printf("admitted [tenant=t%d pri=%s create-time=%s size=%s range=r%s origin=n%s log-position=%s%s]",
 							tenantID.ToUint64(), pri, timeutil.FromUnixNanos(createTime).Sub(tzero),
-							printTrimmedBytes(originalTokens), rwi.RangeID, rwi.LogPosition, ingested)
+							printTrimmedBytes(originalTokens), rwi.RangeID, rwi.Origin, rwi.LogPosition, ingested)
 					},
 				}
 				var mockCoordMu syncutil.Mutex
@@ -118,7 +116,7 @@ func TestReplicatedWriteAdmission(t *testing.T) {
 						tg[admissionpb.RegularWorkClass],
 						tg[admissionpb.ElasticWorkClass],
 					},
-					st, workQueueMetrics, opts, knobs, &noopOnLogEntryAdmitted{}, metric.NewCounter(metric.Metadata{}), &mockCoordMu,
+					st, metrics, opts, knobs, &noopOnLogEntryAdmitted{}, metric.NewCounter(metric.Metadata{}), &mockCoordMu,
 				).(*StoreWorkQueue)
 				tg[admissionpb.RegularWorkClass].r = storeWorkQueue.getRequesters()[admissionpb.RegularWorkClass]
 				tg[admissionpb.ElasticWorkClass].r = storeWorkQueue.getRequesters()[admissionpb.ElasticWorkClass]
@@ -150,6 +148,12 @@ func TestReplicatedWriteAdmission(t *testing.T) {
 				require.NoError(t, err)
 				rangeID := roachpb.RangeID(ri)
 
+				// Parse origin=n<int>.
+				d.ScanArgs(t, "origin", &arg)
+				ni, err := strconv.Atoi(strings.TrimPrefix(arg, "n"))
+				require.NoError(t, err)
+				nodeID := roachpb.NodeID(ni)
+
 				// Parse log-position=<int>/<int>.
 				logPosition := parseLogPosition(t, d)
 
@@ -176,6 +180,7 @@ func TestReplicatedWriteAdmission(t *testing.T) {
 						ReplicatedWorkInfo: ReplicatedWorkInfo{
 							Enabled:     true,
 							RangeID:     rangeID,
+							Origin:      nodeID,
 							LogPosition: logPosition,
 							Ingested:    ingested,
 						},
@@ -342,11 +347,12 @@ func printWorkQueue(q *WorkQueue) string {
 					ingested = " ingested "
 				}
 
-				buf.WriteString(fmt.Sprintf("  [%d: pri=%s create-time=%s size=%s range=r%d log-position=%s%s]", i,
+				buf.WriteString(fmt.Sprintf("  [%d: pri=%s create-time=%s size=%s range=r%d origin=n%d log-position=%s%s]", i,
 					w.priority,
 					timeutil.FromUnixNanos(w.createTime).Sub(tzero),
 					printTrimmedBytes(w.requestedCount),
 					w.replicated.RangeID,
+					w.replicated.Origin,
 					w.replicated.LogPosition,
 					ingested,
 				))

@@ -33,7 +33,6 @@ message ClosureTxnOperation {
   cockroach.kv.kvserver.concurrency.isolation.Level iso_level = 7;
   Result result = 5 [(gogoproto.nullable) = false];
   roachpb.Transaction txn = 6;
-  bool buffered_writes = 8;
 }
 
 message GetOperation {
@@ -120,37 +119,12 @@ message TransferLeaseOperation {
   Result result = 3 [(gogoproto.nullable) = false];
 }
 
-enum ChangeSettingType {
-  SetLeaseType = 0;
-}
-
-message ChangeSettingOperation {
-  ChangeSettingType type = 1;
-  int32 lease_type = 2 [(gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.LeaseType"];
-  Result result = 3 [(gogoproto.nullable) = false];
-}
-
 enum ChangeZoneType {
   ToggleGlobalReads = 0;
 }
 
 message ChangeZoneOperation {
   ChangeZoneType type = 1;
-  Result result = 2 [(gogoproto.nullable) = false];
-}
-
-message SavepointCreateOperation {
-  int32 id = 1 [(gogoproto.customname) = "ID"];
-  Result result = 2 [(gogoproto.nullable) = false];
-}
-
-message SavepointReleaseOperation {
-  int32 id = 1 [(gogoproto.customname) = "ID"];
-  Result result = 2 [(gogoproto.nullable) = false];
-}
-
-message SavepointRollbackOperation {
-  int32 id = 1 [(gogoproto.customname) = "ID"];
   Result result = 2 [(gogoproto.nullable) = false];
 }
 
@@ -176,13 +150,9 @@ message Operation {
   MergeOperation merge = 14;
   ChangeReplicasOperation change_replicas = 15;
   TransferLeaseOperation transfer_lease = 16;
-  ChangeSettingOperation change_setting = 17;
-  ChangeZoneOperation change_zone = 18;
-  AddSSTableOperation add_sstable = 19 [(gogoproto.customname) = "AddSSTable"];
-  SavepointCreateOperation savepoint_create = 20;
-  SavepointReleaseOperation savepoint_release = 21;
-  SavepointRollbackOperation savepoint_rollback = 22;
-  BarrierOperation barrier = 23;
+  ChangeZoneOperation change_zone = 17;
+  AddSSTableOperation add_sstable = 18 [(gogoproto.customname) = "AddSSTable"];
+  BarrierOperation barrier = 22;
 }
 
 enum ResultType {

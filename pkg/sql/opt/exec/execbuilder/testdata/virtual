@@ -143,12 +143,12 @@ vectorized: true
         └── • virtual table lookup join
             │ table: pg_attribute@pg_attribute_attrelid_idx
             │ equality: (oid) = (attrelid)
-            │ pred: column158 = attnum
+            │ pred: column156 = attnum
             │
             └── • render
                 │
                 └── • hash join
-                    │ equality: (attrelid, attnum) = (oid, column130)
+                    │ equality: (attrelid, attnum) = (oid, column129)
                     │
                     ├── • filter
                     │   │ filter: attrelid = 'b'::REGCLASS
@@ -228,7 +228,7 @@ vectorized: true
 └── • subquery
     │ id: @S1
     │ original sql: SELECT * FROM (SELECT database_name, 'database' AS object_type, grantee, privilege_type, is_grantable::BOOL FROM "".crdb_internal.cluster_database_privileges) WHERE database_name IN ('t',)
-    │ exec mode: discard all rows
+    │ exec mode: all rows
     │
     └── • buffer
         │ label: buffer 1 (r)
@@ -500,6 +500,7 @@ RESET testing_optimizer_disable_rule_probability
 # table when disallow_full_table_scans is set (#122708).
 statement ok
 SET disallow_full_table_scans = true;
+SET optimizer_apply_full_scan_penalty_to_virtual_tables = false;
 
 # Don't penalize for each full scan, so we use hash joins.
 query T
@@ -528,16 +529,28 @@ vectorized: true
               table: pg_class@primary
 
 statement ok
-RESET disallow_full_table_scans;
+SET optimizer_apply_full_scan_penalty_to_virtual_tables = true;
 
-# Verify that we're not fooling ourselves by showing that we can use a virtual
-# index when we actually can't (#108317).
+# Penalize for each full scan, so we use virtual table lookup joins.
 query T
-EXPLAIN SELECT * FROM crdb_internal.system_jobs WHERE id > 100;
+EXPLAIN SELECT i.relname, ix.indisprimary FROM pg_class AS t, pg_class AS i, pg_index AS ix
+        WHERE t.oid = ix.indrelid AND i.oid = ix.indexrelid AND t.relkind = 'r';
 ----
 distribution: local
 vectorized: true
 ·
-• virtual table
-  table: system_jobs@primary
-  virtual table filter
+• virtual table lookup join
+│ table: pg_class@pg_class_oid_idx
+│ equality: (indrelid) = (oid)
+│ pred: relkind = 'r'
+│
+└── • virtual table lookup join
+    │ table: pg_class@pg_class_oid_idx
+    │ equality: (indexrelid) = (oid)
+    │
+    └── • virtual table
+          table: pg_index@primary
+
+statement ok
+RESET disallow_full_table_scans;
+RESET optimizer_apply_full_scan_penalty_to_virtual_tables;

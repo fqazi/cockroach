@@ -57,7 +57,6 @@ type CopyOptions struct {
 	Escape      *StrVal
 	Header      bool
 	Quote       *StrVal
-	Encoding    *StrVal
 
 	// Additional flags are needed to keep track of whether explicit default
 	// values were already set.
@@ -111,12 +110,6 @@ func (o *CopyOptions) Format(ctx *FmtCtx) {
 		maybeAddSep()
 		ctx.WriteString("DELIMITER ")
 		ctx.FormatNode(o.Delimiter)
-		addSep = true
-	}
-	if o.Encoding != nil {
-		maybeAddSep()
-		ctx.WriteString("ENCODING ")
-		ctx.FormatNode(o.Encoding)
 		addSep = true
 	}
 	if o.Null != nil {
@@ -182,12 +175,6 @@ func (o *CopyOptions) CombineWith(other *CopyOptions) error {
 			return pgerror.Newf(pgcode.Syntax, "delimiter option specified multiple times")
 		}
 		o.Delimiter = other.Delimiter
-	}
-	if other.Encoding != nil {
-		if o.Encoding != nil {
-			return pgerror.Newf(pgcode.Syntax, "encoding option specified multiple times")
-		}
-		o.Encoding = other.Encoding
 	}
 	if other.Null != nil {
 		if o.Null != nil {

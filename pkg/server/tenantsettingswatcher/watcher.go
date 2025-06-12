@@ -59,7 +59,7 @@ type Watcher struct {
 
 	// rfc provides access to the underlying rangefeedcache.Watcher for
 	// testing.
-	rfc *rangefeedcache.Watcher[rangefeedbuffer.Event]
+	rfc *rangefeedcache.Watcher
 	mu  struct {
 		syncutil.Mutex
 		// Used by TestingRestart.
@@ -129,30 +129,30 @@ func (w *Watcher) startRangeFeed(
 
 	allOverrides := make(map[roachpb.TenantID][]kvpb.TenantSetting)
 
-	translateEvent := func(ctx context.Context, kv *kvpb.RangeFeedValue) (rangefeedbuffer.Event, bool) {
+	translateEvent := func(ctx context.Context, kv *kvpb.RangeFeedValue) rangefeedbuffer.Event {
 		tenantID, setting, tombstone, err := w.dec.DecodeRow(roachpb.KeyValue{
 			Key:   kv.Key,
 			Value: kv.Value,
 		})
 		if err != nil {
 			log.Warningf(ctx, "failed to decode settings row %v: %v", kv.Key, err)
-			return nil, false
+			return nil
 		}
 		if allOverrides != nil {
 			// We are in the process of doing a full table scan
 			if tombstone {
 				log.Warning(ctx, "unexpected empty value during rangefeed scan")
-				return nil, false
+				return nil
 			}
 			allOverrides[tenantID] = append(allOverrides[tenantID], setting)
 		} else {
 			// We are processing incremental changes.
 			w.store.setTenantOverride(ctx, tenantID, setting)
 		}
-		return nil, false
+		return nil
 	}
 
-	onUpdate := func(ctx context.Context, update rangefeedcache.Update[rangefeedbuffer.Event]) {
+	onUpdate := func(ctx context.Context, update rangefeedcache.Update) {
 		if update.Type == rangefeedcache.CompleteUpdate {
 			// The CompleteUpdate indicates that the table scan is complete.
 			// Henceforth, all calls to translateEvent will be incremental changes,

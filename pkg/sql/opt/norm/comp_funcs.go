@@ -33,8 +33,6 @@ func (c *CustomFuncs) CommuteInequality(
 // given types will cause an error when the value overflows or underflows.
 func (c *CustomFuncs) ArithmeticErrorsOnOverflow(left, right *types.T) bool {
 	switch left.Family() {
-	case types.TimestampFamily, types.TimestampTZFamily:
-		return right.Family() == types.IntervalFamily
 	case types.IntFamily, types.FloatFamily, types.DecimalFamily:
 	default:
 		return false

@@ -8,30 +8,26 @@ package storage
 import (
 	"context"
 	"path/filepath"
-	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/elastic/gosigar"
 )
 
-func computeStoreProperties(ctx context.Context, cfg engineConfig) roachpb.StoreProperties {
+func computeStoreProperties(
+	ctx context.Context, dir string, readonly bool, encryptionEnabled bool,
+) roachpb.StoreProperties {
 	props := roachpb.StoreProperties{
-		Dir:       cfg.env.Dir,
-		ReadOnly:  cfg.env.IsReadOnly(),
-		Encrypted: cfg.env.Encryption != nil,
-	}
-	if cfg.opts.WALFailover != nil {
-		props.WalFailoverPath = new(string)
-		*props.WalFailoverPath = cfg.opts.WALFailover.Secondary.Dirname
+		ReadOnly:  readonly,
+		Encrypted: encryptionEnabled,
 	}
 
 	// In-memory store?
-	if cfg.env.Dir == "" {
+	if dir == "" {
 		return props
 	}
 
-	fsprops := getFileSystemProperties(ctx, cfg.env.Dir)
+	fsprops := getFileSystemProperties(ctx, dir)
 	props.FileStoreProperties = &fsprops
 	return props
 }
@@ -76,7 +72,10 @@ func getFileSystemProperties(ctx context.Context, dir string) roachpb.FileStoreP
 	// is typically being deployed are well-behaved in that regard:
 	// Kubernetes mirrors /proc/mount in /etc/mtab.
 	for i := len(fslist.List) - 1; i >= 0; i-- {
-		if pathIsInside(fslist.List[i].DirName, absPath) {
+		// filepath.Rel can reliably tell us if a path is relative to
+		// another: if it is not, an error is returned.
+		_, err := filepath.Rel(fslist.List[i].DirName, absPath)
+		if err == nil {
 			fsInfo = &fslist.List[i]
 			break
 		}
@@ -92,21 +91,4 @@ func getFileSystemProperties(ctx context.Context, dir string) roachpb.FileStoreP
 	fsprops.MountPoint = fsInfo.DirName
 	fsprops.MountOptions = fsInfo.Options
 	return fsprops
-}
-
-// pathIsInside returns true if the absolute target path is inside a base path.
-func pathIsInside(basePath string, absTargetPath string) bool {
-	// filepath.Rel can reliably tell us if a path is relative to
-	// another: if it is not, an error is returned.
-	relPath, err := filepath.Rel(basePath, absTargetPath)
-	if err != nil {
-		return false
-	}
-	if strings.HasPrefix(relPath, "..") {
-		// This check is consistent with internal filepath code (like isLocal).
-		if len(relPath) == 2 || relPath[2] == filepath.Separator {
-			return false
-		}
-	}
-	return true
 }

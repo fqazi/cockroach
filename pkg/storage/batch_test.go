@@ -12,15 +12,12 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -28,8 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/vfs"
-	"github.com/cockroachdb/pebble/vfs/errorfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -112,7 +107,7 @@ func testBatchBasics(t *testing.T, writeOnly bool, commit func(e Engine, b Write
 		{Key: mvccKey("d"), Value: []byte("before")},
 		{Key: keyF, Value: encodedValueF},
 	}
-	kvs, err := Scan(context.Background(), e, localMax, roachpb.KeyMax, 0)
+	kvs, err := Scan(e, localMax, roachpb.KeyMax, 0)
 	require.NoError(t, err)
 	require.Equal(t, expValues, kvs)
 
@@ -124,14 +119,14 @@ func testBatchBasics(t *testing.T, writeOnly bool, commit func(e Engine, b Write
 	}
 	if r, ok := b.(Reader); !writeOnly && ok {
 		// Scan values from batch directly.
-		kvs, err = Scan(context.Background(), r, localMax, roachpb.KeyMax, 0)
+		kvs, err = Scan(r, localMax, roachpb.KeyMax, 0)
 		require.NoError(t, err)
 		require.Equal(t, expValues, kvs)
 	}
 
 	// Commit batch and verify direct engine scan yields correct values.
 	require.NoError(t, commit(e, b))
-	kvs, err = Scan(context.Background(), e, localMax, roachpb.KeyMax, 0)
+	kvs, err = Scan(e, localMax, roachpb.KeyMax, 0)
 	require.NoError(t, err)
 	require.Equal(t, expValues, kvs)
 }
@@ -183,16 +178,15 @@ func TestReadOnlyBasics(t *testing.T) {
 	a := mvccKey("a")
 	successTestCases := []func(){
 		func() {
-			_ = ro.MVCCIterate(context.Background(), a.Key, a.Key, MVCCKeyIterKind, IterKeyTypePointsOnly,
-				fs.UnknownReadCategory,
+			_ = ro.MVCCIterate(a.Key, a.Key, MVCCKeyIterKind, IterKeyTypePointsOnly,
 				func(MVCCKeyValue, MVCCRangeKeyStack) error { return iterutil.StopIteration() })
 		},
 		func() {
-			iter, _ := ro.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{UpperBound: roachpb.KeyMax})
+			iter, _ := ro.NewMVCCIterator(MVCCKeyIterKind, IterOptions{UpperBound: roachpb.KeyMax})
 			iter.Close()
 		},
 		func() {
-			iter, _ := ro.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{
+			iter, _ := ro.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 				MinTimestamp: hlc.MinTimestamp,
 				MaxTimestamp: hlc.MaxTimestamp,
 				UpperBound:   roachpb.KeyMax,
@@ -256,7 +250,7 @@ func TestReadOnlyBasics(t *testing.T) {
 		{Key: mvccKey("c"), Value: appender("foobar")},
 	}
 
-	kvs, err := Scan(context.Background(), e, localMax, roachpb.KeyMax, 0)
+	kvs, err := Scan(e, localMax, roachpb.KeyMax, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,7 +561,7 @@ func TestBatchScan(t *testing.T) {
 	// Scan each case using the batch and store the results.
 	results := map[int][]MVCCKeyValue{}
 	for i, scan := range scans {
-		kvs, err := Scan(context.Background(), b, scan.start, scan.end, scan.max)
+		kvs, err := Scan(b, scan.start, scan.end, scan.max)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -579,7 +573,7 @@ func TestBatchScan(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, scan := range scans {
-		kvs, err := Scan(context.Background(), e, scan.start, scan.end, scan.max)
+		kvs, err := Scan(e, scan.start, scan.end, scan.max)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -611,7 +605,7 @@ func TestBatchScanWithDelete(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	kvs, err := Scan(context.Background(), b, localMax, roachpb.KeyMax, 0)
+	kvs, err := Scan(b, localMax, roachpb.KeyMax, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +642,7 @@ func TestBatchScanMaxWithDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A scan with max=1 should scan "b".
-	kvs, err := Scan(context.Background(), b, localMax, roachpb.KeyMax, 1)
+	kvs, err := Scan(b, localMax, roachpb.KeyMax, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -703,7 +697,7 @@ func TestUnindexedBatchThatSupportsReader(t *testing.T) {
 
 	// Verify that reads on the distinct batch go to the underlying engine, not
 	// to the unindexed batch.
-	iter, err := b.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{UpperBound: roachpb.KeyMax})
+	iter, err := b.NewMVCCIterator(MVCCKeyIterKind, IterOptions{UpperBound: roachpb.KeyMax})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -721,7 +715,7 @@ func TestUnindexedBatchThatSupportsReader(t *testing.T) {
 	require.Equal(t, []byte("c"), mvccGetRaw(t, e, mvccKey("b")))
 }
 
-func TestWriteBatchCoerceAsReader(t *testing.T) {
+func TestWriteBatchPanicsAsReader(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
@@ -731,9 +725,29 @@ func TestWriteBatchCoerceAsReader(t *testing.T) {
 	batch := e.NewWriteBatch()
 	defer batch.Close()
 
-	// The underlying type returned by NewWriteBatch does NOT implement Reader.
-	_, ok := batch.(Reader)
-	require.False(t, ok)
+	// The underlying type returned by NewWriteBatch does implement Reader.
+	// Ensure that if a user coerces the WriteBatch into a Reader, it panics.
+	r := batch.(Reader)
+
+	// The various Reader methods on the batch should panic.
+	a := mvccKey("a")
+	b := mvccKey("b")
+	testCases := []func(){
+		func() { _ = r.MVCCIterate(a.Key, b.Key, MVCCKeyIterKind, IterKeyTypePointsOnly, nil) },
+		func() { _, _ = r.NewMVCCIterator(MVCCKeyIterKind, IterOptions{UpperBound: roachpb.KeyMax}) },
+	}
+	for i, f := range testCases {
+		func() {
+			defer func(i int) {
+				if r := recover(); r == nil {
+					t.Fatalf("%d: test did not panic", i)
+				} else if r != "write-only batch" {
+					t.Fatalf("%d: unexpected panic: %v", i, r)
+				}
+			}(i)
+			f()
+		}()
+	}
 }
 
 func TestBatchIteration(t *testing.T) {
@@ -763,7 +777,7 @@ func TestBatchIteration(t *testing.T) {
 	}
 
 	iterOpts := IterOptions{UpperBound: k3.Key}
-	iter, err := b.NewMVCCIterator(context.Background(), MVCCKeyIterKind, iterOpts)
+	iter, err := b.NewMVCCIterator(MVCCKeyIterKind, iterOpts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -890,6 +904,7 @@ func TestDecodeKey(t *testing.T) {
 		{Key: []byte("foo")},
 		{Key: []byte("foo"), Timestamp: hlc.Timestamp{WallTime: 1}},
 		{Key: []byte("foo"), Timestamp: hlc.Timestamp{WallTime: 1, Logical: 1}},
+		{Key: []byte("foo"), Timestamp: hlc.Timestamp{WallTime: 1, Logical: 1, Synthetic: true}},
 	}
 	for _, test := range tests {
 		t.Run(test.String(), func(t *testing.T) {
@@ -965,7 +980,7 @@ func TestBatchReader(t *testing.T) {
 
 		{pebble.InternalKeyKindDelete, "mvccKey", 9, "", nil, nil},
 		{pebble.InternalKeyKindRangeKeyUnset, "rangeFrom", 0, "rangeTo", nil, []EngineRangeKeyValue{
-			{Version: mvccencoding.EncodeMVCCTimestampSuffix(wallTS(9)), Value: nil},
+			{Version: EncodeMVCCTimestampSuffix(wallTS(9)), Value: nil},
 		}},
 		{pebble.InternalKeyKindRangeDelete, "clearFrom", 0, "clearTo", []byte("clearTo\000"), nil},
 		{pebble.InternalKeyKindRangeKeyDelete, "clearFrom", 0, "clearTo", []byte("clearTo\000"), nil},
@@ -1012,62 +1027,4 @@ func TestBatchReader(t *testing.T) {
 
 	require.False(t, r.Next())
 	require.NoError(t, r.Error())
-}
-
-// TestBatchCommitDoesntTouchSST tests that committing a writeBatch doesn't
-// touch SST files.
-func TestBatchCommitDoesntTouchSST(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	// Create an atomic variable that will cause an error when SST operations are
-	// performed.
-	var failSSTOps atomic.Bool
-
-	// Create a custom injector that blocks SST operations when failSSTOps is
-	// true.
-	injector := errorfs.InjectorFunc(func(op errorfs.Op) error {
-		if strings.Contains(op.Path, ".sst") && failSSTOps.Load() {
-			return errors.Newf("blocking SST operation: %+v", op)
-		}
-		return nil
-	})
-
-	// Create the wrapped filesystem, and create a db.
-	memFS := vfs.NewMem()
-	wrappedFS := errorfs.Wrap(memFS, injector)
-	env := mustInitTestEnv(t, wrappedFS, "")
-	db, err := Open(context.Background(), env, cluster.MakeClusterSettings())
-	require.NoError(t, err)
-	defer db.Close()
-
-	// Initialize the db with some data.
-	initBatch := db.NewBatch()
-	defer initBatch.Close()
-
-	// Perform some operations.
-	require.NoError(t, initBatch.PutUnversioned(mvccKey("key1").Key, []byte("val1")))
-	require.NoError(t, initBatch.PutUnversioned(mvccKey("key2").Key, []byte("val2")))
-	require.NoError(t, initBatch.PutUnversioned(mvccKey("key3").Key, []byte("val3")))
-	require.NoError(t, initBatch.PutUnversioned(mvccKey("key4").Key, []byte("val4")))
-	require.NoError(t, initBatch.Commit(true /* sync */))
-
-	// Force a flush to create an SST file.
-	require.NoError(t, db.Flush())
-
-	// Create a new batch for testing.
-	testingBatch := db.NewBatch()
-	defer testingBatch.Close()
-
-	// Perform some operations.
-	require.Equal(t, []byte("val1"), mvccGetRaw(t, testingBatch, mvccKey("key1")))
-	require.Equal(t, []byte(nil), mvccGetRaw(t, testingBatch, mvccKey("non-existent-key")))
-	_, err = Scan(context.Background(), testingBatch, localMax, roachpb.KeyMax, 0)
-	require.NoError(t, err)
-	require.NoError(t, testingBatch.ClearUnversioned(mvccKey("key4").Key, ClearOptions{}))
-
-	// Before committing, enable SST operation errors and make sure the commit
-	// succeeds.
-	failSSTOps.Store(true)
-	require.NoError(t, testingBatch.Commit(true /* sync */))
 }

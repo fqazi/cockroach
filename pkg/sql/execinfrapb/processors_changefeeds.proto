@@ -17,6 +17,7 @@ option go_package = "github.com/cockroachdb/cockroach/pkg/sql/execinfrapb";
 import "jobs/jobspb/jobs.proto";
 import "roachpb/data.proto";
 import "sql/execinfrapb/data.proto";
+import "sql/sessiondatapb/session_data.proto";
 import "util/hlc/timestamp.proto";
 import "gogoproto/gogo.proto";
 
@@ -24,24 +25,19 @@ import "gogoproto/gogo.proto";
 // changes in a set of spans. Each span may cross multiple ranges.
 message ChangeAggregatorSpec {
   message Watch {
-    optional util.hlc.Timestamp initial_resolved = 1 [(gogoproto.nullable) = false, deprecated=true];
+    optional util.hlc.Timestamp initial_resolved = 1 [(gogoproto.nullable) = false];
     optional roachpb.Span span = 2 [(gogoproto.nullable) = false];
   }
   repeated Watch watches = 1 [(gogoproto.nullable) = false];
 
   // Checkpoint enables change aggregators to resume faster on restart.
-  // TODO(#139734): Delete this nested message type.
   message Checkpoint {
-    option deprecated = true;
     repeated roachpb.Span spans = 1 [(gogoproto.nullable) = false];
     optional util.hlc.Timestamp timestamp = 2 [(gogoproto.nullable) = false];
-
-    // NOTE: When adding fields to this message, make sure to also update IsEmpty.
   }
 
   // Change aggregator checkpoint
-  // TODO(#139734): Delete this field and mark field number as reserved.
-  optional Checkpoint checkpoint = 5 [(gogoproto.nullable) = false, deprecated=true];
+  optional Checkpoint checkpoint = 5 [(gogoproto.nullable) = false];
 
   // Feed is the specification for this changefeed.
   optional cockroach.sql.jobs.jobspb.ChangefeedDetails feed = 2 [(gogoproto.nullable) = false];
@@ -59,19 +55,6 @@ message ChangeAggregatorSpec {
 
   // select is the "select clause" for predicate changefeed.
   optional Expression select = 6 [(gogoproto.nullable) = false];
-
-  // Description is the description of the changefeed. Used for structured logging.
-  optional string description = 7 [(gogoproto.nullable) = false];
-
-  // InitialHighWater represents a point in time where all data is known to have
-  // been seen for this changefeed job. It is safe to initialize frontier spans
-  // at this timestamp upon resuming.
-  optional util.hlc.Timestamp initial_high_water = 8;
-
-  // SpanLevelCheckpoint is a map from timestamps to lists of spans. These spans
-  // have been resolved to the given timestamp, so it is safe to forward these
-  // spans to its corresponding timestamps upon resuming.
-  optional cockroach.sql.jobs.jobspb.TimestampSpansMap span_level_checkpoint = 9;
 }
 
 // ChangeFrontierSpec is the specification for a processor that receives
@@ -96,11 +79,4 @@ message ChangeFrontierSpec {
   // User who initiated the changefeed. This is used to check access privileges
   // when using FileTable ExternalStorage.
   optional string user_proto = 4 [(gogoproto.nullable) = false, (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/security/username.SQLUsernameProto"];
-
-  // Description is the description of the changefeed. Used for structured logging.
-  optional string description = 5 [(gogoproto.nullable) = false];
-
-  // SpanLevelCheckpoint is a map from timestamps to lists of spans that captures
-  // the changefeed progress and is used to initialize the frontier on resume.
-  optional cockroach.sql.jobs.jobspb.TimestampSpansMap span_level_checkpoint = 6;
 }

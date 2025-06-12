@@ -118,16 +118,7 @@ SELECT ARRAY(VALUES (1),(2),(1))
 ----
 {1,2,1}
 
-# This query works in local config but fails in distributed config since the
-# support for nested arrays is incomplete.
-onlyif config #32252 local
-query T
-SELECT ARRAY(VALUES (ARRAY[1]))
-----
-{"{1}"}
-
-onlyif config #32252 fakedist
-query error unimplemented: nested arrays are not fully supported.*\nHINT.*\n.*32552
+statement error arrays cannot have arrays as element type
 SELECT ARRAY(VALUES (ARRAY[1]))
 
 query T
@@ -135,10 +126,12 @@ SELECT ARRAY(VALUES ('a'),('b'),('c'))
 ----
 {a,b,c}
 
-query T
-SELECT ARRAY(SELECT (1,2))
-----
-{"(1,2)"}
+
+# TODO(justin): uncomment when #32715 is fixed.
+# query T
+# SELECT ARRAY(SELECT (1,2))
+# ----
+# {"(1,2)"}
 
 query error subquery must return only one column, found 2
 SELECT ARRAY(SELECT 1, 2)
@@ -450,16 +443,9 @@ DROP TABLE boundedtable
 statement error .*unimplemented.*\nHINT.*\n.*32552
 CREATE TABLE badtable (b INT[][])
 
-# This query works in local config but fails in distributed config since the
-# support for nested arrays is incomplete.
-onlyif config #32252 local
-query T
-SELECT ARRAY[ARRAY[1,2,3]]
-----
-{"{1,2,3}"}
+# Nested arrays should be disallowed
 
-onlyif config #32552 fakedist
-query error unimplemented: nested arrays are not fully supported.*\nHINT.*\n.*32552
+query error unimplemented: arrays cannot have arrays as element type.*\nHINT.*\n.*32552
 SELECT ARRAY[ARRAY[1,2,3]]
 
 # The postgres-compat aliases should be disallowed.
@@ -480,7 +466,6 @@ SELECT ARRAY[ROW()] FROM ident
 statement ok
 CREATE TABLE a (b INT ARRAY)
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE a
 ----
@@ -488,17 +473,7 @@ a  CREATE TABLE public.a (
      b INT8[] NULL,
      rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
      CONSTRAINT a_pkey PRIMARY KEY (rowid ASC)
-   );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE a
-----
-a  CREATE TABLE public.a (
-     b INT8[] NULL,
-     rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-     CONSTRAINT a_pkey PRIMARY KEY (rowid ASC)
-   ) WITH (schema_locked = true);
+   )
 
 statement ok
 DROP TABLE a
@@ -551,7 +526,6 @@ SELECT * FROM a
 ----
 {1,2,3}
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE a
 ----
@@ -559,17 +533,7 @@ a  CREATE TABLE public.a (
      b INT8[] NULL,
      rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
      CONSTRAINT a_pkey PRIMARY KEY (rowid ASC)
-   );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE a
-----
-a  CREATE TABLE public.a (
-     b INT8[] NULL,
-     rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-     CONSTRAINT a_pkey PRIMARY KEY (rowid ASC)
-   ) WITH (schema_locked = true);
+   )
 
 statement error could not parse "foo" as type int
 INSERT INTO a VALUES (ARRAY['foo'])
@@ -634,7 +598,6 @@ DROP TABLE a
 statement ok
 CREATE TABLE a (b SMALLINT[])
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE a
 ----
@@ -642,17 +605,7 @@ a  CREATE TABLE public.a (
      b INT2[] NULL,
      rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
      CONSTRAINT a_pkey PRIMARY KEY (rowid ASC)
-   );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE a
-----
-a  CREATE TABLE public.a (
-     b INT2[] NULL,
-     rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-     CONSTRAINT a_pkey PRIMARY KEY (rowid ASC)
-   ) WITH (schema_locked = true);
+   )
 
 statement error integer out of range for type int2
 INSERT INTO a VALUES (ARRAY[100000])
@@ -1151,15 +1104,6 @@ SELECT array_replace(ARRAY[1,2,NULL,4], NULL::INT, 3), array_replace(NULL::INT[]
 
 # ARRAY_POSITION function
 
-query error unknown signature: array_position\(int, string\)
-SELECT array_position(2, 'wed'::text)
-
-query error unknown signature: array_position\(string, string\)
-SELECT array_position('1,wed', 'wed'::text)
-
-query error unknown signature: array_position\(string\[\], int\)
-SELECT array_position(ARRAY['sun','mon','tue','wed','thu','fri','sat','mon'], 1);
-
 query I
 SELECT array_position(ARRAY['sun','mon','tue','wed','thu','fri','sat','mon'], 'mon')
 ----
@@ -1172,53 +1116,6 @@ NULL
 
 query I
 SELECT array_position(NULL::STRING[], 'abc')
-----
-NULL
-
-query error initial position must not be null
-SELECT array_position(ARRAY['sun','mon','tue','wed','thu','fri','sat','mon'], 'mon', null)
-
-query error unknown signature: array_position\(int, string, int\)
-SELECT array_position(2, 'wed'::text, 2)
-
-query error unknown signature: array_position\(string, string, int\)
-SELECT array_position('1,wed', 'wed'::text, 1)
-
-query error unknown signature: array_position\(string\[\], int, int\)
-SELECT array_position(ARRAY['sun','mon','tue','wed','thu','fri','sat','mon'], 1, 1);
-
-query I
-SELECT array_position('{sun,mon,tue,wed,thu,fri,sat,mon}', 'mon'::TEXT, 2)
-----
-2
-
-query I
-SELECT array_position(ARRAY['sun','mon','tue','wed','thu','fri','sat','mon'], 'mon', 3)
-----
-8
-
-query I
-SELECT array_position(ARRAY['sun','mon','tue','wed','thu','fri','sat','mon'], 'tue', 4)
-----
-NULL
-
-query I
-SELECT array_position(ARRAY['sun','mon','tue','wed','thu','fri','sat','mon'], 'abc', 1)
-----
-NULL
-
-query I
-SELECT array_position(ARRAY['sun','mon','tue','wed','thu','fri','sat','mon'], 'wed', 9)
-----
-NULL
-
-query I
-SELECT array_position(ARRAY['sun','mon','tue','wed','thu','fri','sat','mon'], 'wed', 0)
-----
-4
-
-query I
-SELECT array_position(NULL::STRING[], 'abc', 1)
 ----
 NULL
 
@@ -1726,7 +1623,7 @@ statement error duplicate key value violates unique constraint
 CREATE UNIQUE INDEX ON unique_array(b)
 
 # Create an indexes on a bad type.
-statement error column x has type geography\[\], which is not indexable in a non-inverted index\nHINT: you may want to create an inverted index instead. See the documentation for inverted indexes: https://www.cockroachlabs.com/docs/v25.3/inverted-indexes.html
+statement error pq: unimplemented: column x is of type geography\[\] and thus is not indexable
 CREATE TABLE tbad (x GEOGRAPHY[] PRIMARY KEY)
 
 # Test arrays of composite types.

@@ -7,11 +7,9 @@ package changefeedccl
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdcevent"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/errors"
 )
@@ -41,19 +39,17 @@ type Encoder interface {
 }
 
 func getEncoder(
-	ctx context.Context,
 	opts changefeedbase.EncodingOptions,
 	targets changefeedbase.Targets,
 	encodeForQuery bool,
 	p externalConnectionProvider,
 	sliMetrics *sliMetrics,
-	sourceProvider *enrichedSourceProvider,
 ) (Encoder, error) {
 	switch opts.Format {
 	case changefeedbase.OptFormatJSON:
-		return makeJSONEncoder(ctx, jsonEncoderOptions{EncodingOptions: opts, encodeForQuery: encodeForQuery}, sourceProvider, targets)
+		return makeJSONEncoder(jsonEncoderOptions{EncodingOptions: opts, encodeForQuery: encodeForQuery})
 	case changefeedbase.OptFormatAvro, changefeedbase.DeprecatedOptFormatAvro:
-		return newConfluentAvroEncoder(opts, targets, p, sliMetrics, sourceProvider)
+		return newConfluentAvroEncoder(opts, targets, p, sliMetrics)
 	case changefeedbase.OptFormatCSV:
 		return newCSVEncoder(opts), nil
 	case changefeedbase.OptFormatParquet:
@@ -67,22 +63,9 @@ func getEncoder(
 	}
 }
 
-// Get the raw SQL-formatted string for a table name
-func getTableName(
-	targets changefeedbase.Targets, schemaPrefix string, eventMeta cdcevent.Metadata,
-) (string, error) {
-	target, found := targets.FindByTableIDAndFamilyName(eventMeta.TableID, eventMeta.FamilyName)
-	if !found {
-		return eventMeta.TableName, errors.Newf("Could not find Target for %s", eventMeta)
-	}
-	switch target.Type {
-	case jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY:
-		return schemaPrefix + string(target.StatementTimeName), nil
-	case jobspb.ChangefeedTargetSpecification_EACH_FAMILY:
-		return fmt.Sprintf("%s%s.%s", schemaPrefix, target.StatementTimeName, eventMeta.FamilyName), nil
-	case jobspb.ChangefeedTargetSpecification_COLUMN_FAMILY:
-		return fmt.Sprintf("%s%s.%s", schemaPrefix, target.StatementTimeName, target.FamilyName), nil
-	default:
-		return "", errors.AssertionFailedf("Found a matching target with unimplemented type %s", target.Type)
-	}
+// timestampToString converts an internal timestamp to the string form used in
+// all encoders. This could be made more efficient. And/or it could be configurable
+// to include the Synthetic flag when present, but that's unlikely to be needed.
+func timestampToString(t hlc.Timestamp) string {
+	return t.WithSynthetic(false).AsOfSystemTime()
 }

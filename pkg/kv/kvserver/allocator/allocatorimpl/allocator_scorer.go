@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/redact"
 )
 
 const (
@@ -70,7 +69,7 @@ const (
 	// DefaultReplicaIOOverloadThreshold is used to avoid allocating to stores with an
 	// IO overload score greater than what's set. This is typically used in
 	// conjunction with IOOverloadMeanThreshold below.
-	DefaultReplicaIOOverloadThreshold = 0.3
+	DefaultReplicaIOOverloadThreshold = 0.4
 
 	// DefaultLeaseIOOverloadThreshold is used to block lease transfers to stores
 	// with an IO overload score greater than this threshold. This is typically
@@ -80,25 +79,12 @@ const (
 	// DefaultLeaseIOOverloadShedThreshold is used to shed leases from stores
 	// with an IO overload score greater than the this threshold. This is
 	// typically used in conjunction with IOOverloadMeanThreshold below.
-	DefaultLeaseIOOverloadShedThreshold = 0.4
+	DefaultLeaseIOOverloadShedThreshold = 0.9
 
 	// IOOverloadMeanThreshold is the percentage above the mean after which a
-	// store could be considered IO overload if also exceeding the absolute IO
+	// store could be conisdered IO overload if also exceeding the absolute IO
 	// threshold.
 	IOOverloadMeanThreshold = 1.1
-
-	// IOOverloadMeanShedThreshold is the percentage above the mean after which a
-	// store could be considered IO overload if also exceeding the absolute IO
-	// threshold and looking to shed the lease. Typical clusters are not
-	// under-provisioned as a whole for the workload, and we observe the mean to
-	// be 0.1 or less, when a tiny minority of the stores (typically one store)
-	// are overloaded. In such cases, the DefaultLeaseIOOverloadThreshold of 0.4
-	// would be > 400% of the mean. So setting the value here to 175% will still
-	// allow shedding in such typical scenarios. We atypically observe clusters
-	// where the mean is high, i.e., above DefaultLeaseIOOverloadShedThreshold --
-	// in such cases setting this value to 175% prevents chronic cyclical
-	// sloshing of leases from one store to another.
-	IOOverloadMeanShedThreshold = 1.75
 
 	// L0SublevelTrackerRetention is the tracking period for statistics on the
 	// number of L0 sublevels within a store. The L0-sublevels are tracked by
@@ -175,10 +161,10 @@ var ReplicaIOOverloadThresholdEnforcement = settings.RegisterEnumSetting(
 		"targets of rebalance actions, `block_all` will exclude candidate stores "+
 		"from being targets of both allocation and rebalancing",
 	"block_rebalance_to",
-	map[IOOverloadEnforcementLevel]string{
-		IOOverloadThresholdIgnore:         "ignore",
-		IOOverloadThresholdBlockTransfers: "block_rebalance_to",
-		IOOverloadThresholdBlockAll:       "block_all",
+	map[int64]string{
+		int64(IOOverloadThresholdIgnore):         "ignore",
+		int64(IOOverloadThresholdBlockTransfers): "block_rebalance_to",
+		int64(IOOverloadThresholdBlockAll):       "block_all",
 	},
 )
 
@@ -190,7 +176,7 @@ var LeaseIOOverloadThreshold = settings.RegisterFloatSetting(
 	settings.SystemOnly,
 	"kv.allocator.lease_io_overload_threshold",
 	"a store will not receive new leases when its IO overload score is above this "+
-		"value and `kv.allocator.io_overload_threshold` is "+
+		"value and `kv.allocator.io_overload_threshold_enforcement_leases` is "+
 		"`shed` or `block_transfer_to`",
 	DefaultLeaseIOOverloadThreshold,
 )
@@ -204,7 +190,7 @@ var LeaseIOOverloadShedThreshold = settings.RegisterFloatSetting(
 	"kv.allocator.lease_shed_io_overload_threshold",
 	"a store will shed its leases and receive no new leases when its "+
 		"IO overload score is above this value and "+
-		"`kv.allocator.lease_io_overload_threshold_enforcement` is `shed`",
+		"`kv.allocator.io_overload_threshold_enforcement_leases` is `shed`",
 	DefaultLeaseIOOverloadShedThreshold,
 )
 
@@ -221,11 +207,11 @@ var LeaseIOOverloadThresholdEnforcement = settings.RegisterEnumSetting(
 		"`block_transfer_to` a store will receive no new leases but won't lose existing leases,"+
 		"`shed`: a store will receive no new leases and shed existing leases to "+
 		"non io-overloaded stores, this is a superset of block_transfer_to",
-	"shed",
-	map[IOOverloadEnforcementLevel]string{
-		IOOverloadThresholdIgnore:         "ignore",
-		IOOverloadThresholdBlockTransfers: "block_transfer_to",
-		IOOverloadThresholdShed:           "shed",
+	"block_transfer_to",
+	map[int64]string{
+		int64(IOOverloadThresholdIgnore):         "ignore",
+		int64(IOOverloadThresholdBlockTransfers): "block_transfer_to",
+		int64(IOOverloadThresholdShed):           "shed",
 	},
 )
 
@@ -714,24 +700,18 @@ type candidate struct {
 }
 
 func (c candidate) String() string {
-	return redact.StringWithoutMarkers(c)
-}
-
-// SafeFormat implements the redact.SafeFormatter interface.
-func (c candidate) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Printf("s%d, valid:%t, fulldisk:%t, necessary:%t, "+
+	str := fmt.Sprintf("s%d, valid:%t, fulldisk:%t, necessary:%t, "+
 		"voterNecessary:%t, diversity:%.2f, ioOverloaded: %t, ioOverload: %.2f, "+
 		"converges:%d, balance:%d, hasNonVoter:%t, rangeCount:%d, queriesPerSecond:%.2f",
 		c.store.StoreID, c.valid, c.fullDisk, c.necessary, c.voterNecessary,
 		c.diversityScore, c.ioOverloaded, c.ioOverloadScore, c.convergesScore,
 		c.balanceScore, c.hasNonVoter, c.rangeCount, c.store.Capacity.QueriesPerSecond)
 	if c.details != "" {
-		w.Printf(", details:(%s)", c.details)
+		return fmt.Sprintf("%s, details:(%s)", str, c.details)
 	}
+	return str
 }
 
-// compactString returns a compact represntation of the candidate. Note this
-// method is currently only used to populate the range log via details.
 func (c candidate) compactString() string {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "s%d", c.store.StoreID)
@@ -852,23 +832,17 @@ func (c candidate) compare(o candidate) float64 {
 type candidateList []candidate
 
 func (cl candidateList) String() string {
-	return redact.StringWithoutMarkers(cl)
-}
-
-// SafeFormat implements the redact.SafeFormatter interface.
-func (cl candidateList) SafeFormat(w redact.SafePrinter, r rune) {
 	if len(cl) == 0 {
-		w.Printf("[]")
-		return
+		return "[]"
 	}
-	var buf redact.StringBuilder
-	buf.SafeRune('[')
+	var buffer bytes.Buffer
+	buffer.WriteRune('[')
 	for _, c := range cl {
-		buf.SafeRune('\n')
-		buf.Print(c)
+		buffer.WriteRune('\n')
+		buffer.WriteString(c.String())
 	}
-	buf.SafeRune(']')
-	w.Print(buf)
+	buffer.WriteRune(']')
+	return buffer.String()
 }
 
 // byScore implements sort.Interface to sort by scores.
@@ -1119,7 +1093,7 @@ func rankedCandidateListForAllocation(
 			!options.getIOOverloadOptions().allocateReplicaToCheck(
 				ctx,
 				s,
-				candidateStores,
+				candidateStores.CandidateIOOverloadScores.Mean,
 			) {
 			continue
 		}
@@ -1769,7 +1743,7 @@ func rankedCandidateListForRebalancing(
 				s,
 				// We only wish to compare the IO overload to the
 				// comparable stores average and not the cluster.
-				comparable.candidateSL,
+				comparable.candidateSL.CandidateIOOverloadScores.Mean,
 			)
 			cand.balanceScore = options.balanceScore(comparable.candidateSL, s.Capacity)
 			cand.convergesScore = options.rebalanceToConvergesScore(comparable, s)
@@ -2389,11 +2363,6 @@ type IOOverloadOptions struct {
 	ReplicaEnforcementLevel IOOverloadEnforcementLevel
 	LeaseEnforcementLevel   IOOverloadEnforcementLevel
 
-	// TODO(kvoli): Remove this max protection check after 25.1. In mixed version
-	// clusters, the max IO score is not populated on pre v24.1 nodes. Use the
-	// instantaneous value.
-	UseIOThresholdMax bool
-
 	ReplicaIOOverloadThreshold   float64
 	LeaseIOOverloadThreshold     float64
 	LeaseIOOverloadShedThreshold float64
@@ -2424,32 +2393,13 @@ func ioOverloadCheck(
 	return true, ""
 }
 
-func (o IOOverloadOptions) storeScore(store roachpb.StoreDescriptor) float64 {
-	var score float64
-	if o.UseIOThresholdMax {
-		score, _ = store.Capacity.IOThresholdMax.Score()
-	} else {
-		score, _ = store.Capacity.IOThreshold.Score()
-	}
-
-	return score
-}
-
-func (o IOOverloadOptions) storeListAvgScore(storeList storepool.StoreList) float64 {
-	if o.UseIOThresholdMax {
-		return storeList.CandidateMaxIOOverloadScores.Mean
-	}
-	return storeList.CandidateIOOverloadScores.Mean
-}
-
 // allocateReplicaToCheck returns true if the store IO overload does not exceed
 // the cluster threshold and mean, or the enforcement level does not prevent
 // replica allocation to IO overloaded stores.
 func (o IOOverloadOptions) allocateReplicaToCheck(
-	ctx context.Context, store roachpb.StoreDescriptor, storeList storepool.StoreList,
+	ctx context.Context, store roachpb.StoreDescriptor, avg float64,
 ) bool {
-	score := o.storeScore(store)
-	avg := o.storeListAvgScore(storeList)
+	score, _ := store.Capacity.IOThreshold.Score()
 
 	if ok, reason := ioOverloadCheck(score, avg,
 		o.ReplicaIOOverloadThreshold, IOOverloadMeanThreshold,
@@ -2467,10 +2417,9 @@ func (o IOOverloadOptions) allocateReplicaToCheck(
 // exceed the cluster threshold and mean, or the enforcement level does not
 // prevent replica rebalancing to IO overloaded stores.
 func (o IOOverloadOptions) rebalanceReplicaToCheck(
-	ctx context.Context, store roachpb.StoreDescriptor, storeList storepool.StoreList,
+	ctx context.Context, store roachpb.StoreDescriptor, avg float64,
 ) bool {
-	score := o.storeScore(store)
-	avg := o.storeListAvgScore(storeList)
+	score, _ := store.Capacity.IOThreshold.Score()
 
 	if ok, reason := ioOverloadCheck(score, avg,
 		o.ReplicaIOOverloadThreshold, IOOverloadMeanThreshold,
@@ -2487,10 +2436,9 @@ func (o IOOverloadOptions) rebalanceReplicaToCheck(
 // the cluster threshold and mean, or the enforcement level does not prevent
 // lease transfers to IO overloaded stores.
 func (o IOOverloadOptions) transferLeaseToCheck(
-	ctx context.Context, store roachpb.StoreDescriptor, storeList storepool.StoreList,
+	ctx context.Context, store roachpb.StoreDescriptor, avg float64,
 ) bool {
-	score := o.storeScore(store)
-	avg := o.storeListAvgScore(storeList)
+	score, _ := store.Capacity.IOThreshold.Score()
 
 	if ok, reason := ioOverloadCheck(score, avg,
 		o.LeaseIOOverloadThreshold, IOOverloadMeanThreshold,
@@ -2504,17 +2452,16 @@ func (o IOOverloadOptions) transferLeaseToCheck(
 	return true
 }
 
-// ExistingLeaseCheck returns true if the store IO overload does not exceed the
-// cluster threshold and mean, or the enforcement level does not prevent
-// existing stores from holding leases whilst being IO overloaded.
-func (o IOOverloadOptions) ExistingLeaseCheck(
-	ctx context.Context, store roachpb.StoreDescriptor, storeList storepool.StoreList,
+// transferLeaseToCheck returns true if the store IO overload does not exceed
+// the cluster threshold and mean, or the enforcement level does not prevent
+// existing stores from holidng leases whilst being IO overloaded.
+func (o IOOverloadOptions) existingLeaseCheck(
+	ctx context.Context, store roachpb.StoreDescriptor, avg float64,
 ) bool {
-	score := o.storeScore(store)
-	avg := o.storeListAvgScore(storeList)
+	score, _ := store.Capacity.IOThreshold.Score()
 
 	if ok, reason := ioOverloadCheck(score, avg,
-		o.LeaseIOOverloadShedThreshold, IOOverloadMeanShedThreshold,
+		o.LeaseIOOverloadShedThreshold, IOOverloadMeanThreshold,
 		o.LeaseEnforcementLevel,
 		IOOverloadThresholdShed,
 	); !ok {

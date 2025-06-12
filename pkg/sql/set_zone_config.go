@@ -8,12 +8,16 @@ package sql
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/config"
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
+	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -24,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
@@ -33,19 +36,141 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
+	"github.com/gogo/protobuf/proto"
 	yaml "gopkg.in/yaml.v2"
 )
 
+type optionValue struct {
+	inheritValue  bool
+	explicitValue tree.TypedExpr
+}
+
 type setZoneConfigNode struct {
-	zeroInputPlanNode
-	stmt          *tree.SetZoneConfig
 	zoneSpecifier tree.ZoneSpecifier
 	allIndexes    bool
 	yamlConfig    tree.TypedExpr
-	options       map[tree.Name]zone.OptionValue
+	options       map[tree.Name]optionValue
 	setDefault    bool
 
 	run setZoneConfigRun
+}
+
+// zoneConfigOption describes a field one can set on a ZoneConfig.
+type zoneConfigOption struct {
+	field        config.Field
+	requiredType *types.T
+	setter       func(*zonepb.ZoneConfig, tree.Datum)
+	checkAllowed func(context.Context, *ExecutorConfig, tree.Datum) error
+}
+
+// supportedZoneConfigOptions indicates how to translate SQL variable
+// assignments in ALTER CONFIGURE ZONE to assignments to the member
+// fields of zonepb.ZoneConfig.
+var supportedZoneConfigOptions map[tree.Name]zoneConfigOption
+
+// zoneOptionKeys contains the keys from suportedZoneConfigOptions in
+// deterministic order. Needed to make the event log output
+// deterministic.
+var zoneOptionKeys []string
+
+func init() {
+	opts := []zoneConfigOption{
+		{
+			field:        config.RangeMinBytes,
+			requiredType: types.Int,
+			setter:       func(c *zonepb.ZoneConfig, d tree.Datum) { c.RangeMinBytes = proto.Int64(int64(tree.MustBeDInt(d))) },
+		},
+		{
+			field:        config.RangeMaxBytes,
+			requiredType: types.Int,
+			setter:       func(c *zonepb.ZoneConfig, d tree.Datum) { c.RangeMaxBytes = proto.Int64(int64(tree.MustBeDInt(d))) },
+		},
+		{
+			field:        config.GlobalReads,
+			requiredType: types.Bool,
+			setter:       func(c *zonepb.ZoneConfig, d tree.Datum) { c.GlobalReads = proto.Bool(bool(tree.MustBeDBool(d))) },
+			checkAllowed: func(ctx context.Context, execCfg *ExecutorConfig, d tree.Datum) error {
+				if !tree.MustBeDBool(d) {
+					// Always allow the value to be unset.
+					return nil
+				}
+				return base.CheckEnterpriseEnabled(
+					execCfg.Settings,
+					execCfg.NodeInfo.LogicalClusterID(),
+					"global_reads",
+				)
+			},
+		},
+		{
+			field:        config.NumReplicas,
+			requiredType: types.Int,
+			setter:       func(c *zonepb.ZoneConfig, d tree.Datum) { c.NumReplicas = proto.Int32(int32(tree.MustBeDInt(d))) },
+		},
+		{
+			field:        config.NumVoters,
+			requiredType: types.Int,
+			setter:       func(c *zonepb.ZoneConfig, d tree.Datum) { c.NumVoters = proto.Int32(int32(tree.MustBeDInt(d))) },
+		},
+		{
+			field:        config.GCTTL,
+			requiredType: types.Int,
+			setter: func(c *zonepb.ZoneConfig, d tree.Datum) {
+				c.GC = &zonepb.GCPolicy{TTLSeconds: int32(tree.MustBeDInt(d))}
+			},
+		},
+		{
+			field:        config.Constraints,
+			requiredType: types.String,
+			setter: func(c *zonepb.ZoneConfig, d tree.Datum) {
+				constraintsList := zonepb.ConstraintsList{
+					Constraints: c.Constraints,
+					Inherited:   c.InheritedConstraints,
+				}
+				loadYAML(&constraintsList, string(tree.MustBeDString(d)))
+				c.Constraints = constraintsList.Constraints
+				c.InheritedConstraints = false
+			},
+		},
+		{
+			field:        config.VoterConstraints,
+			requiredType: types.String,
+			setter: func(c *zonepb.ZoneConfig, d tree.Datum) {
+				voterConstraintsList := zonepb.ConstraintsList{
+					Constraints: c.VoterConstraints,
+					Inherited:   c.InheritedVoterConstraints(),
+				}
+				loadYAML(&voterConstraintsList, string(tree.MustBeDString(d)))
+				c.VoterConstraints = voterConstraintsList.Constraints
+				c.NullVoterConstraintsIsEmpty = true
+			},
+		},
+		{
+			field:        config.LeasePreferences,
+			requiredType: types.String,
+			setter: func(c *zonepb.ZoneConfig, d tree.Datum) {
+				loadYAML(&c.LeasePreferences, string(tree.MustBeDString(d)))
+				c.InheritedLeasePreferences = false
+			},
+		},
+	}
+	supportedZoneConfigOptions = make(map[tree.Name]zoneConfigOption, len(opts))
+	zoneOptionKeys = make([]string, len(opts))
+	for i, opt := range opts {
+		name := opt.field.String()
+		key := tree.Name(name)
+		if _, exists := supportedZoneConfigOptions[key]; exists {
+			panic(errors.AssertionFailedf("duplicate entry for key %s", name))
+		}
+		supportedZoneConfigOptions[key] = opt
+		zoneOptionKeys[i] = name
+	}
+	sort.Strings(zoneOptionKeys)
+}
+
+func loadYAML(dst interface{}, yamlString string) {
+	if err := yaml.UnmarshalStrict([]byte(yamlString), dst); err != nil {
+		panic(err)
+	}
 }
 
 func (p *planner) getUpdatedZoneConfigYamlConfig(
@@ -61,7 +186,7 @@ func (p *planner) getUpdatedZoneConfigYamlConfig(
 
 		var err error
 		yamlConfig, err = p.analyzeExpr(
-			ctx, n, tree.IndexedVarHelper{}, types.String, false /*requireType*/, "configure zone")
+			ctx, n, nil, tree.IndexedVarHelper{}, types.String, false /*requireType*/, "configure zone")
 		if err != nil {
 			return nil, err
 		}
@@ -81,21 +206,21 @@ func (p *planner) getUpdatedZoneConfigYamlConfig(
 
 func (p *planner) getUpdatedZoneConfigOptions(
 	ctx context.Context, n tree.KVOptions, telemetryName string,
-) (map[tree.Name]zone.OptionValue, error) {
+) (map[tree.Name]optionValue, error) {
 
-	var options map[tree.Name]zone.OptionValue
+	var options map[tree.Name]optionValue
 	if n != nil {
 		// We have a CONFIGURE ZONE USING ... assignment.
 		// Here we are constrained by the supported ZoneConfig fields,
 		// as described by supportedZoneConfigOptions above.
 
-		options = make(map[tree.Name]zone.OptionValue)
+		options = make(map[tree.Name]optionValue)
 		for _, opt := range n {
 			if _, alreadyExists := options[opt.Key]; alreadyExists {
 				return nil, pgerror.Newf(pgcode.InvalidParameterValue,
 					"duplicate zone config parameter: %q", tree.ErrString(&opt.Key))
 			}
-			req, ok := zone.SupportedZoneConfigOptions[opt.Key]
+			req, ok := supportedZoneConfigOptions[opt.Key]
 			if !ok {
 				return nil, pgerror.Newf(pgcode.InvalidParameterValue,
 					"unsupported zone config parameter: %q", tree.ErrString(&opt.Key))
@@ -107,15 +232,15 @@ func (p *planner) getUpdatedZoneConfigOptions(
 				),
 			)
 			if opt.Value == nil {
-				options[opt.Key] = zone.OptionValue{InheritValue: true, ExplicitValue: nil}
+				options[opt.Key] = optionValue{inheritValue: true, explicitValue: nil}
 				continue
 			}
 			valExpr, err := p.analyzeExpr(
-				ctx, opt.Value, tree.IndexedVarHelper{}, req.RequiredType, true /*requireType*/, string(opt.Key))
+				ctx, opt.Value, nil, tree.IndexedVarHelper{}, req.requiredType, true /*requireType*/, string(opt.Key))
 			if err != nil {
 				return nil, err
 			}
-			options[opt.Key] = zone.OptionValue{InheritValue: false, ExplicitValue: valExpr}
+			options[opt.Key] = optionValue{inheritValue: false, explicitValue: valExpr}
 		}
 	}
 	return options, nil
@@ -132,7 +257,7 @@ func (p *planner) SetZoneConfig(ctx context.Context, n *tree.SetZoneConfig) (pla
 		return nil, err
 	}
 
-	if err := sqlclustersettings.RequireSystemTenantOrClusterSetting(execCfg.Codec, execCfg.Settings, sqlclustersettings.SecondaryTenantZoneConfigsEnabled); err != nil {
+	if err := requireSystemTenantOrClusterSetting(execCfg.Codec, execCfg.Settings, SecondaryTenantZoneConfigsEnabled); err != nil {
 		return nil, err
 	}
 
@@ -159,9 +284,8 @@ func (p *planner) SetZoneConfig(ctx context.Context, n *tree.SetZoneConfig) (pla
 	}
 
 	return &setZoneConfigNode{
-		stmt:          n,
 		zoneSpecifier: n.ZoneSpecifier,
-		allIndexes:    n.ZoneSpecifier.StarIndex,
+		allIndexes:    n.AllIndexes,
 		yamlConfig:    yamlConfig,
 		options:       options,
 		setDefault:    n.SetDefault,
@@ -173,24 +297,11 @@ func checkPrivilegeForSetZoneConfig(ctx context.Context, p *planner, zs tree.Zon
 	// an admin. Otherwise we require CREATE privileges on the database or table
 	// in question.
 	if zs.NamedZone != "" {
-		// Only block privileges for non-root users if this is the default range
-		// for a secondary tenant with
-		// sql.zone_configs.default_range_modifiable_by_non_root.enabled set to
-		// false; other ranges just need the REPAIRCLUSTER privilege.
-		if zonepb.NamedZone(zs.NamedZone.String()) == zonepb.DefaultZoneName && !p.execCfg.Codec.ForSystemTenant() &&
-			!zonepb.DefaultRangeModifiableByNonRoot.Get(&p.execCfg.Settings.SV) {
-			if !p.EvalContext().SessionData().User().IsRootUser() {
-				return pgerror.New(
-					pgcode.InsufficientPrivilege,
-					"only root users are allowed to modify the default range",
-				)
-			}
-		}
-		return p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER)
+		return p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTERMETADATA)
 	}
 	if zs.Database != "" {
 		if zs.Database == "system" {
-			return p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER)
+			return p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTERMETADATA)
 		}
 		dbDesc, err := p.Descriptors().ByNameWithLeased(p.txn).Get().Database(ctx, string(zs.Database))
 		if err != nil {
@@ -204,8 +315,9 @@ func checkPrivilegeForSetZoneConfig(ctx context.Context, p *planner, zs tree.Zon
 			return nil
 		}
 
-		return sqlerrors.NewInsufficientPrivilegeOnDescriptorError(p.SessionData().User(),
-			[]privilege.Kind{privilege.ZONECONFIG, privilege.CREATE}, string(dbDesc.DescriptorType()), dbDesc.GetName())
+		return pgerror.Newf(pgcode.InsufficientPrivilege,
+			"user %s does not have %s or %s privilege on %s %s",
+			p.SessionData().User(), privilege.ZONECONFIG, privilege.CREATE, dbDesc.DescriptorType(), dbDesc.GetName())
 	}
 	tableDesc, err := p.resolveTableForZone(ctx, &zs)
 	if err != nil {
@@ -215,7 +327,7 @@ func checkPrivilegeForSetZoneConfig(ctx context.Context, p *planner, zs tree.Zon
 		return err
 	}
 	if tableDesc.GetParentID() == keys.SystemDatabaseID {
-		return p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER)
+		return p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTERMETADATA)
 	}
 
 	// Can set ZoneConfig if user has either CREATE privilege or ZONECONFIG privilege at the Table level
@@ -226,8 +338,9 @@ func checkPrivilegeForSetZoneConfig(ctx context.Context, p *planner, zs tree.Zon
 		return nil
 	}
 
-	return sqlerrors.NewInsufficientPrivilegeOnDescriptorError(p.SessionData().User(),
-		[]privilege.Kind{privilege.ZONECONFIG, privilege.CREATE}, string(tableDesc.DescriptorType()), tableDesc.GetName())
+	return pgerror.Newf(pgcode.InsufficientPrivilege,
+		"user %s does not have %s or %s privilege on %s %s",
+		p.SessionData().User(), privilege.ZONECONFIG, privilege.CREATE, tableDesc.DescriptorType(), tableDesc.GetName())
 }
 
 // setZoneConfigRun contains the run-time state of setZoneConfigNode during local execution.
@@ -264,7 +377,7 @@ func evaluateYAMLConfig(expr tree.TypedExpr, params runParams) (string, bool, er
 }
 
 func evaluateZoneOptions(
-	options map[tree.Name]zone.OptionValue, params runParams,
+	options map[tree.Name]optionValue, params runParams,
 ) (
 	optionsStr []string,
 	copyFromParentList []tree.Name,
@@ -277,8 +390,8 @@ func evaluateZoneOptions(
 		// We iterate over zoneOptionKeys instead of iterating over
 		// n.options directly so that the optionStr string constructed for
 		// the event log remains deterministic.
-		for i := range zone.ZoneOptionKeys {
-			name := (*tree.Name)(&zone.ZoneOptionKeys[i])
+		for i := range zoneOptionKeys {
+			name := (*tree.Name)(&zoneOptionKeys[i])
 			val, ok := options[*name]
 			if !ok {
 				continue
@@ -288,7 +401,7 @@ func evaluateZoneOptions(
 			// value would apply to the zone and setting that value explicitly.
 			// Instead we add the fields to a list that we use at a later time
 			// to copy values over.
-			inheritVal, expr := val.InheritValue, val.ExplicitValue
+			inheritVal, expr := val.inheritValue, val.explicitValue
 			if inheritVal {
 				copyFromParentList = append(copyFromParentList, *name)
 				optionsStr = append(optionsStr, fmt.Sprintf("%s = COPY FROM PARENT", name))
@@ -302,13 +415,13 @@ func evaluateZoneOptions(
 				return nil, nil, nil, pgerror.Newf(pgcode.InvalidParameterValue,
 					"unsupported NULL value for %q", tree.ErrString(name))
 			}
-			opt := zone.SupportedZoneConfigOptions[*name]
-			if opt.CheckAllowed != nil {
-				if err := opt.CheckAllowed(params.ctx, params.ExecCfg().Settings, datum); err != nil {
+			opt := supportedZoneConfigOptions[*name]
+			if opt.checkAllowed != nil {
+				if err := opt.checkAllowed(params.ctx, params.ExecCfg(), datum); err != nil {
 					return nil, nil, nil, err
 				}
 			}
-			setter := opt.Setter
+			setter := opt.setter
 			setters = append(setters, func(c *zonepb.ZoneConfig) { setter(c, datum) })
 			optionsStr = append(optionsStr, fmt.Sprintf("%s = %s", name, datum))
 		}
@@ -347,7 +460,7 @@ func (n *setZoneConfigNode) startExec(params runParams) error {
 	}
 
 	// Disallow schema changes if it's a table and its schema is locked.
-	if err = params.p.checkSchemaChangeIsAllowed(params.ctx, table, n.stmt); err != nil {
+	if err = checkTableSchemaUnlocked(table); err != nil {
 		return err
 	}
 
@@ -478,16 +591,16 @@ func (n *setZoneConfigNode) startExec(params runParams) error {
 		// default (whichever applies -- a database if targetID is a table,
 		// default if targetID is a database, etc.). For this, we use the last
 		// parameter getInheritedDefault to GetZoneConfigInTxn().
-		// These zones are only used for validations. The merged zone will
+		// These zones are only used for validations. The merged zone is will
 		// not be written.
 		_, completeZone, completeSubzone, err := GetZoneConfigInTxn(
 			params.ctx, params.p.txn, params.p.Descriptors(), targetID, index, partition, n.setDefault,
 		)
 
-		if errors.Is(err, sqlerrors.ErrNoZoneConfigApplies) {
+		if errors.Is(err, errNoZoneConfigApplies) {
 			// No zone config yet.
 			//
-			// GetZoneConfigInTxn will fail with ErrNoZoneConfigApplies when
+			// GetZoneConfigInTxn will fail with errNoZoneConfigApplies when
 			// the target ID is not a database object, i.e. one of the system
 			// ranges (liveness, meta, etc.), and did not have a zone config
 			// already.
@@ -632,7 +745,7 @@ func (n *setZoneConfigNode) startExec(params runParams) error {
 			}
 
 			// Validate that there are no conflicts in the zone setup.
-			if err := zonepb.ValidateNoRepeatKeysInZone(&newZone); err != nil {
+			if err := validateNoRepeatKeysInZone(&newZone); err != nil {
 				return err
 			}
 
@@ -801,6 +914,64 @@ func (n *setZoneConfigNode) FastPathResults() (int, bool) { return n.run.numAffe
 type nodeGetter func(context.Context, *serverpb.NodesRequest) (*serverpb.NodesResponse, error)
 type regionsGetter func(context.Context) (*serverpb.RegionsResponse, error)
 
+// Check that there are not duplicated values for a particular
+// constraint. For example, constraints [+region=us-east1,+region=us-east2]
+// will be rejected. Additionally, invalid constraints such as
+// [+region=us-east1, -region=us-east1] will also be rejected.
+func validateNoRepeatKeysInZone(zone *zonepb.ZoneConfig) error {
+	for _, leasePreference := range zone.LeasePreferences {
+		if err := validateNoRepeatKeysInConstraints(leasePreference.Constraints); err != nil {
+			return err
+		}
+	}
+	if err := validateNoRepeatKeysInConjunction(zone.Constraints); err != nil {
+		return err
+	}
+	return validateNoRepeatKeysInConjunction(zone.VoterConstraints)
+}
+
+func validateNoRepeatKeysInConjunction(conjunctions []zonepb.ConstraintsConjunction) error {
+	for _, constraints := range conjunctions {
+		if err := validateNoRepeatKeysInConstraints(constraints.Constraints); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNoRepeatKeysInConstraints(constraints []zonepb.Constraint) error {
+	// Because we expect to have a small number of constraints, a nested
+	// loop is probably better than allocating a map.
+	for i, curr := range constraints {
+		for _, other := range constraints[i+1:] {
+			// We don't want to enter the other validation logic if both of the constraints
+			// are attributes, due to the keys being the same for attributes.
+			if curr.Key == "" && other.Key == "" {
+				if curr.Value == other.Value {
+					return pgerror.Newf(pgcode.CheckViolation,
+						"incompatible zone constraints: %q and %q", curr, other)
+				}
+			} else {
+				if curr.Type == zonepb.Constraint_REQUIRED {
+					if other.Type == zonepb.Constraint_REQUIRED && other.Key == curr.Key ||
+						other.Type == zonepb.Constraint_PROHIBITED && other.Key == curr.Key && other.Value == curr.Value {
+						return pgerror.Newf(pgcode.CheckViolation,
+							"incompatible zone constraints: %q and %q", curr, other)
+					}
+				} else if curr.Type == zonepb.Constraint_PROHIBITED {
+					// If we have a -k=v pair, verify that there are not any
+					// +k=v pairs in the constraints.
+					if other.Type == zonepb.Constraint_REQUIRED && other.Key == curr.Key && other.Value == curr.Value {
+						return pgerror.Newf(pgcode.CheckViolation,
+							"incompatible zone constraints: %q and %q", curr, other)
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // accumulateNewUniqueConstraints returns a list of unique constraints in the
 // given newZone config proto that are not in the currentZone
 func accumulateNewUniqueConstraints(currentZone, newZone *zonepb.ZoneConfig) []zonepb.Constraint {
@@ -935,9 +1106,19 @@ func validateZoneAttrsAndLocalitiesForSystemTenant(
 	return nil
 }
 
+// secondaryTenantsAllZoneConfigsEnabled is an extension of
+// SecondaryTenantZoneConfigsEnabled that allows virtual clusters to modify all
+// type of constraints in zone configs (i.e. not only zones and regions).
+var secondaryTenantsAllZoneConfigsEnabled = settings.RegisterBoolSetting(
+	settings.SystemVisible,
+	"sql.virtual_cluster.feature_access.zone_configs_unrestricted.enabled",
+	"enable unrestricted usage of ALTER CONFIGURE ZONE in virtual clusters",
+	false,
+)
+
 // validateZoneLocalitiesForSecondaryTenants performs constraint/lease
 // preferences validation for secondary tenants. Only newly added constraints
-// are validated. Unless SecondaryTenantsAllZoneConfigsEnabled is set to 'true',
+// are validated. Unless secondaryTenantsAllZoneConfigsEnabled is set to 'true',
 // secondary tenants are only allowed to reference locality attributes as they
 // only have access to region information via the serverpb.TenantStatusServer.
 // In that case they're only allowed to reference the "region" and "zone" tiers.
@@ -954,9 +1135,6 @@ func validateZoneLocalitiesForSecondaryTenants(
 	settings *cluster.Settings,
 ) error {
 	toValidate := accumulateNewUniqueConstraints(currentZone, newZone)
-	if err := zonepb.ValidateNewUniqueConstraintsForSecondaryTenants(&settings.SV, currentZone, newZone); err != nil {
-		return err
-	}
 
 	// rs and zs will be lazily populated with regions and zones, respectively.
 	// These should not be accessed directly - use getRegionsAndZones helper
@@ -1009,8 +1187,8 @@ func validateZoneLocalitiesForSecondaryTenants(
 				)
 			}
 		default:
-			if err := sqlclustersettings.RequireSystemTenantOrClusterSetting(
-				codec, settings, sqlclustersettings.SecondaryTenantsAllZoneConfigsEnabled,
+			if err := requireSystemTenantOrClusterSetting(
+				codec, settings, secondaryTenantsAllZoneConfigsEnabled,
 			); err != nil {
 				return err
 			}
@@ -1034,7 +1212,9 @@ func prepareZoneConfigWrites(
 	hasNewSubzones bool,
 ) (_ *zoneConfigUpdate, err error) {
 	if len(z.Subzones) > 0 {
-		z.SubzoneSpans, err = GenerateSubzoneSpans(execCfg.Codec, table, z.Subzones)
+		st := execCfg.Settings
+		z.SubzoneSpans, err = GenerateSubzoneSpans(
+			st, execCfg.NodeInfo.LogicalClusterID(), execCfg.Codec, table, z.Subzones, hasNewSubzones)
 		if err != nil {
 			return nil, err
 		}

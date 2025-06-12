@@ -70,11 +70,10 @@ func TestRandStep(t *testing.T) {
 
 	const minEachType = 5
 	config := newAllOperationsConfig()
-	config.NumNodes, config.NumReplicas = 3, 2
+	config.NumNodes, config.NumReplicas = 2, 1
 	rng, _ := randutil.NewTestRand()
-	getReplicasFn := func(_ roachpb.Key) ([]roachpb.ReplicationTarget, []roachpb.ReplicationTarget) {
-		return make([]roachpb.ReplicationTarget, rng.Intn(config.NumNodes)+1),
-			make([]roachpb.ReplicationTarget, rng.Intn(config.NumNodes)+1)
+	getReplicasFn := func(_ roachpb.Key) []roachpb.ReplicationTarget {
+		return make([]roachpb.ReplicationTarget, rng.Intn(2)+1)
 	}
 	g, err := MakeGenerator(config, getReplicasFn)
 	require.NoError(t, err)
@@ -251,23 +250,8 @@ func TestRandStep(t *testing.T) {
 			case *BatchOperation:
 				batch.Batch++
 				countClientOps(&batch.Ops, nil, o.Ops...)
-			case *SavepointCreateOperation, *SavepointRollbackOperation, *SavepointReleaseOperation:
-				// We'll count these separately.
 			default:
 				t.Fatalf("%T", o)
-			}
-		}
-	}
-
-	countSavepointOps := func(savepoint *SavepointConfig, ops ...Operation) {
-		for _, op := range ops {
-			switch op.GetValue().(type) {
-			case *SavepointCreateOperation:
-				savepoint.SavepointCreate++
-			case *SavepointReleaseOperation:
-				savepoint.SavepointRelease++
-			case *SavepointRollbackOperation:
-				savepoint.SavepointRollback++
 			}
 		}
 	}
@@ -288,7 +272,6 @@ func TestRandStep(t *testing.T) {
 			countClientOps(&counts.DB, &counts.Batch, step.Op)
 		case *ClosureTxnOperation:
 			countClientOps(&counts.ClosureTxn.TxnClientOps, &counts.ClosureTxn.TxnBatchOps, o.Ops...)
-			countSavepointOps(&counts.ClosureTxn.SavepointOps, o.Ops...)
 			if o.CommitInBatch != nil {
 				switch o.IsoLevel {
 				case isolation.Serializable:
@@ -338,43 +321,24 @@ func TestRandStep(t *testing.T) {
 				counts.Merge.MergeNotSplit++
 			}
 		case *ChangeReplicasOperation:
-			var voterAdds, voterRemoves, nonVoterAdds, nonVoterRemoves int
+			var adds, removes int
 			for _, change := range o.Changes {
 				switch change.ChangeType {
 				case roachpb.ADD_VOTER:
-					voterAdds++
+					adds++
 				case roachpb.REMOVE_VOTER:
-					voterRemoves++
-				case roachpb.ADD_NON_VOTER:
-					nonVoterAdds++
-				case roachpb.REMOVE_NON_VOTER:
-					nonVoterRemoves++
+					removes++
 				}
 			}
-			if voterAdds == 1 && voterRemoves == 0 && nonVoterRemoves == 0 {
-				counts.ChangeReplicas.AddVotingReplica++
-			} else if voterAdds == 0 && voterRemoves == 1 && nonVoterAdds == 0 {
-				counts.ChangeReplicas.RemoveVotingReplica++
-			} else if voterAdds == 1 && voterRemoves == 1 {
-				counts.ChangeReplicas.AtomicSwapVotingReplica++
-			} else if nonVoterAdds == 1 && nonVoterRemoves == 0 && voterRemoves == 0 {
-				counts.ChangeReplicas.AddNonVotingReplica++
-			} else if nonVoterAdds == 0 && nonVoterRemoves == 1 && voterAdds == 0 {
-				counts.ChangeReplicas.RemoveNonVotingReplica++
-			} else if nonVoterAdds == 1 && nonVoterRemoves == 1 {
-				counts.ChangeReplicas.AtomicSwapNonVotingReplica++
-			} else if voterAdds == 1 && nonVoterRemoves == 1 {
-				counts.ChangeReplicas.PromoteReplica++
-			} else if voterRemoves == 1 && nonVoterAdds == 1 {
-				counts.ChangeReplicas.DemoteReplica++
+			if adds == 1 && removes == 0 {
+				counts.ChangeReplicas.AddReplica++
+			} else if adds == 0 && removes == 1 {
+				counts.ChangeReplicas.RemoveReplica++
+			} else if adds == 1 && removes == 1 {
+				counts.ChangeReplicas.AtomicSwapReplica++
 			}
 		case *TransferLeaseOperation:
 			counts.ChangeLease.TransferLease++
-		case *ChangeSettingOperation:
-			switch o.Type {
-			case ChangeSettingType_SetLeaseType:
-				counts.ChangeSetting.SetLeaseType++
-			}
 		case *ChangeZoneOperation:
 			switch o.Type {
 			case ChangeZoneType_ToggleGlobalReads:
@@ -515,91 +479,4 @@ func TestRandDelRangeUsingTombstone(t *testing.T) {
 	fmt.Fprintf(&buf, "------------------\ntotal         %.3f", fracSingleRange+fracPoint+fracCrossRange)
 
 	echotest.Require(t, buf.String(), datapathutils.TestDataPath(t, t.Name()+".txt"))
-}
-
-func TestUpdateSavepoints(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	tests := []struct {
-		name        string
-		savepoints  []int
-		prevOp      Operation
-		expectedSp  []int
-		expectedErr string
-	}{
-		{
-			name:       "no savepoints (nil)",
-			savepoints: nil,
-			prevOp:     get(k1),
-			expectedSp: nil,
-		},
-		{
-			name:       "no savepoints (empty)",
-			savepoints: []int{},
-			prevOp:     get(k1),
-			expectedSp: []int{},
-		},
-		{
-			name:       "prevOp is not a savepoint",
-			savepoints: []int{0},
-			prevOp:     get(k1),
-			expectedSp: []int{0},
-		},
-		{
-			name:       "prevOp is a savepoint create",
-			savepoints: nil,
-			prevOp:     createSavepoint(2),
-			expectedSp: []int{2},
-		},
-		{
-			name:       "prevOp is a savepoint release",
-			savepoints: []int{1},
-			prevOp:     releaseSavepoint(1),
-			expectedSp: []int{},
-		},
-		{
-			name:       "prevOp is a savepoint rollback",
-			savepoints: []int{1},
-			prevOp:     rollbackSavepoint(1),
-			expectedSp: []int{},
-		},
-		{
-			name:       "nested rollbacks",
-			savepoints: []int{1, 2, 3, 4},
-			prevOp:     rollbackSavepoint(2),
-			expectedSp: []int{1},
-		},
-		{
-			name:       "nested releases",
-			savepoints: []int{1, 2, 3, 4},
-			prevOp:     releaseSavepoint(2),
-			expectedSp: []int{1},
-		},
-		{
-			name:        "re-create existing savepoint",
-			savepoints:  []int{1, 2, 3, 4},
-			prevOp:      createSavepoint(1),
-			expectedErr: "generating a savepoint create op: ID 1 already exists",
-		},
-		{
-			name:        "release non-existent savepoint",
-			savepoints:  []int{1, 2, 3, 4},
-			prevOp:      releaseSavepoint(5),
-			expectedErr: "generating a savepoint release op: ID 5 does not exist",
-		},
-		{
-			name:        "roll back non-existent savepoint",
-			savepoints:  []int{1, 2, 3, 4},
-			prevOp:      rollbackSavepoint(5),
-			expectedErr: "generating a savepoint rollback op: ID 5 does not exist",
-		},
-	}
-	for _, test := range tests {
-		if test.expectedErr != "" {
-			require.PanicsWithError(t, test.expectedErr, func() { maybeUpdateSavepoints(&test.savepoints, test.prevOp) })
-		} else {
-			maybeUpdateSavepoints(&test.savepoints, test.prevOp)
-			require.Equal(t, test.expectedSp, test.savepoints)
-		}
-	}
 }

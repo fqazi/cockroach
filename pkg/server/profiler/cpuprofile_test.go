@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/server/dumpstore"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -19,8 +20,10 @@ import (
 func TestCPUProfiler(t *testing.T) {
 	ctx := context.Background()
 	dumpStore := dumpstore.NewStore(t.TempDir(), nil, nil)
-	s := cluster.MakeClusterSettings()
+	s := &cluster.Settings{}
 	sv := &s.SV
+	s.Version = clusterversion.MakeVersionHandle(sv)
+	sv.Init(ctx, s.Version)
 	cpuProfileInterval.Override(ctx, sv, time.Hour)
 	cpuUsageCombined.Override(ctx, sv, 80)
 	pastTime := time.Date(2023, 1, 1, 1, 1, 1, 1, time.UTC)

@@ -191,7 +191,7 @@ func doParseDTupleFromString(
 	if t.TupleContents() == nil {
 		return nil, false, errors.AssertionFailedf("not a tuple type %s", t.SQLStringForError())
 	}
-	if t.Identical(types.AnyTuple) {
+	if t == types.AnyTuple {
 		return nil, false, unsupportedRecordError
 	}
 	parser := tupleParseState{

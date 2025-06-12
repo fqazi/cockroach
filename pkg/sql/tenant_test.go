@@ -45,7 +45,7 @@ func TestDropTenantSynchronous(t *testing.T) {
 				Knobs: base.TestingKnobs{
 					Server: &server.TestingKnobs{
 						DisableAutomaticVersionUpgrade: make(chan struct{}),
-						ClusterVersionOverride:         clusterversion.MinSupported.Version(),
+						BinaryVersionOverride:          clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey),
 					},
 				},
 			},
@@ -107,8 +107,8 @@ func TestGetTenantIds(t *testing.T) {
 	}))
 	expectedIds := []roachpb.TenantID{
 		roachpb.MustMakeTenantID(1),
+		roachpb.MustMakeTenantID(2),
 		roachpb.MustMakeTenantID(3),
-		roachpb.MustMakeTenantID(4),
 	}
 	require.Equal(t, expectedIds, ids)
 
@@ -121,7 +121,7 @@ func TestGetTenantIds(t *testing.T) {
 	}))
 	expectedIds = []roachpb.TenantID{
 		roachpb.MustMakeTenantID(1),
-		roachpb.MustMakeTenantID(4),
+		roachpb.MustMakeTenantID(3),
 	}
 	require.Equal(t, expectedIds, ids)
 }

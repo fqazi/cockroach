@@ -120,23 +120,7 @@ including fewer. For example:
 <PRE>
 
   --locality=cloud=gce,region=us-west1,zone=us-west-1b
-  --locality=cloud=aws,region=us-east,zone=us-east-2
-
-</PRE>
-This flag is incompatible with --locality-file.`,
-	}
-
-	LocalityFile = FlagInfo{
-		Name: "locality-file",
-		Description: `
-File name to read locality data from. Using this flag has the same effect as
-providing the file's contents directly via the --locality flag. Any leading or
-trailing whitespace characters, as defined by Unicode, will be automatically
-trimmed.
-<PRE>
-
-</PRE>
-This flag is incompatible with --locality.`,
+  --locality=cloud=aws,region=us-east,zone=us-east-2</PRE>`,
 	}
 
 	Background = FlagInfo{
@@ -200,18 +184,6 @@ individual nodes have very limited memory available. This can constrain
 the ability of the DB Console to process time-series queries used to render
 metrics for the entire cluster. This capacity constraint does not affect
 SQL query execution.`,
-	}
-
-	GoGCPercent = FlagInfo{
-		Name: "go-gc-percent",
-		Description: `
-Garbage collection target percentage set on the Go runtime (which is also
-configurable via the GOGC environment variable, but --go-gc-percent has higher
-precedence if both are set). A garbage collection is triggered when the ratio of
-freshly allocated data to live data remaining after the previous collection
-reaches this percentage. If left unspecified, defaults to 300%. If set to a
-negative value, disables the target percentage garbage collection heuristic,
-leaving only the soft memory limit heuristic to trigger garbage collection.`,
 	}
 
 	SQLTempStorage = FlagInfo{
@@ -689,21 +661,6 @@ apply. This flag is experimental.
 `,
 	}
 
-	AcceptProxyProtocolHeaders = FlagInfo{
-		Name: "accept-proxy-protocol-headers",
-		Description: `
-Allows CockroachDB to parse proxy protocol headers. Proxy protocol is used by
-some proxies to retain the original client IP information after the proxy has
-rewritten the source IP address of forwarded packets.
-<PRE>
-
-</PRE>
-When using this flag, ensure all traffic to CockroachDB flows through a proxy
-which adds proxy protocol headers, to prevent spoofing of client IP address
-information.
-`,
-	}
-
 	LocalityAdvertiseAddr = FlagInfo{
 		Name: "locality-advertise-addr",
 		Description: `
@@ -853,14 +810,6 @@ This flag is optional. When omitted, the certificate is not scoped; i.e.
 it can be used with all tenants.`,
 	}
 
-	TenantScopeByNames = FlagInfo{
-		Name: "tenant-name-scope",
-		Description: `Assign a tenant scope using tenant names to the certificate.
-This will restrict the certificate to only be valid for the specified tenants.
-This flag is optional. When omitted, the certificate is not scoped; i.e.
-it can be used with all tenants.`,
-	}
-
 	GeneratePKCS8Key = FlagInfo{
 		Name:        "also-generate-pkcs8-key",
 		Description: `Also write the key in pkcs8 format to <certs-dir>/client.<username>.key.pk8.`,
@@ -876,6 +825,36 @@ certificate can only be used if an identity map has been configured server-side.
 	Password = FlagInfo{
 		Name:        "password",
 		Description: `Prompt for the new user's password.`,
+	}
+
+	InitToken = FlagInfo{
+		Name: "init-token",
+		Description: `Shared token for initialization of node TLS certificates.
+
+This flag is optional for the 'start' command. When omitted, the 'start'
+command expects the operator to prepare TLS certificates beforehand using
+the 'cert' command.
+
+This flag must be combined with --num-expected-initial-nodes.`,
+	}
+
+	NumExpectedInitialNodes = FlagInfo{
+		Name: "num-expected-initial-nodes",
+		Description: `Number of expected nodes during TLS certificate creation,
+including the node where the connect command is run.
+
+This flag must be combined with --init-token.`,
+	}
+
+	SingleNode = FlagInfo{
+		Name: "single-node",
+		Description: `Prepare the certificates for a subsequent 'start-single-node'
+command. The 'connect' command only runs cursory checks on the network
+configuration and does not wait for peers to auto-negotiate a common
+set of credentials.
+
+The --single-node flag is exclusive with the --init-num-peers and --init-token
+flags.`,
 	}
 
 	CertsDir = FlagInfo{
@@ -904,37 +883,6 @@ principal not specified in the map is passed through as-is via the identity
 function. A cert is allowed to authenticate a DB principal if the DB principal
 name is contained in the mapped CommonName or DNS-type SubjectAlternateName
 fields. It is permissible for the <cert-principal> string to contain colons.
-`,
-	}
-
-	RootCertDistinguishedName = FlagInfo{
-		Name: "root-cert-distinguished-name",
-		Description: `
-A string of comma separated list of distinguished-name
-<attribute-type>=<attribute-value> mappings in accordance with RFC4514 for the root
-user. This strictly needs to match the DN subject in the client certificate
-provided for root user if this flag is set.
-`,
-	}
-
-	NodeCertDistinguishedName = FlagInfo{
-		Name: "node-cert-distinguished-name",
-		Description: `
-A string of comma separated list of distinguished-name
-<attribute-type>=<attribute-value> mappings in accordance with RFC4514 for the node
-user. This strictly needs to match the DN subject in the client certificate
-provided for node user if this flag is set.
-`,
-	}
-
-	TLSCipherSuites = FlagInfo{
-		Name: "tls-cipher-suites",
-		Description: `
-A string of comma separated list of cipher suites to be used for all incoming
-TLS connections to the node. For TLS 1.2, this should strictly be a subset of
-suites defined in security/tls_ciphersuites.go as RecommendedCipherSuites or
-OldCipherSuites. For TLS 1.3, this should be configured to a subset of ciphers
-in crypto/tls/cipher_suites.go, e.g. TLS_AES_256_GCM_SHA384.
 `,
 	}
 
@@ -1066,45 +1014,12 @@ which use 'cockroach-data-tenant-X' for tenant 'X')
 `,
 	}
 
-	WALFailover = FlagInfo{
-		Name:   "wal-failover",
-		EnvVar: "COCKROACH_WAL_FAILOVER",
-		Description: `
-Configures the use and behavior of WAL failover. WAL failover enables
-automatic failover to another directory if a WAL write does not complete
-within the configured threshold. Defaults to "disabled". Possible values
-depend on the number of stores a node is configured to use.
-
-If a node has multiple stores, the value "among-stores" enables automatic
-failover to another store's data directory. CockroachDB will automatically
-assign each store a secondary to serve as its WAL failover destination.
-For example:
-<PRE>
-
-  --wal-failover=among-stores
-
-</PRE>
-
-If a node has a single store, the value "path=<path>" enables automatic
-failover to the provided path. After this setting is used, changing the
-configuration to a new path or disabling requires providing the previous
-path as ",prev_path=<path>". For example:
-
-<PRE>
-
-    --wal-failover=path=/mnt/data2
-    --wal-failover=path=/mnt/data3,prev_path=/mnt/data2
-    --wal-failover=disabled,prev_path=/mnt/data3
-
-</PRE>
-
-See the storage.wal_failover.unhealthy_op_threshold cluster setting.
-`,
-	}
-
 	StorageEngine = FlagInfo{
-		Name:        "storage-engine",
-		Description: "Deprecated: only present for backward compatibility.",
+		Name: "storage-engine",
+		Description: `
+Storage engine to use for all stores on this cockroach node. The only option is pebble. Deprecated;
+only present for backward compatibility.
+`,
 	}
 
 	SecondaryCache = FlagInfo{
@@ -1288,6 +1203,13 @@ File containing the JSON output from a node's /_status/gossip/ endpoint.
 If specified, takes priority over host/port flags.`,
 	}
 
+	PrintSystemConfig = FlagInfo{
+		Name: "print-system-config",
+		Description: `
+If specified, print the system config contents. Beware that the output will be
+long and not particularly human-readable.`,
+	}
+
 	DecodeAsTable = FlagInfo{
 		Name: "decode-as-table",
 		Description: `
@@ -1387,12 +1309,7 @@ status, without actually decommissioning the node.`,
 	NodeDrainSelf = FlagInfo{
 		Name: "self",
 		Description: `Use the node ID of the node connected to via --host
-as target of the drain command.`,
-	}
-
-	NodeDrainShutdown = FlagInfo{
-		Name:        "shutdown",
-		Description: `Shutdown the target node after it is drained.`,
+as target of the drain or quit command.`,
 	}
 
 	SQLFmtLen = FlagInfo{
@@ -1551,6 +1468,12 @@ If set to false, overrides the default demo behavior of enabling rangefeeds.`,
 		Description: `
 Disable the creation of a default dataset in the demo shell.
 This makes 'cockroach demo' faster to start.`,
+	}
+
+	ConfigProfile = FlagInfo{
+		Name:        "config-profile",
+		EnvVar:      "COCKROACH_CONFIG_PROFILE",
+		Description: `Select a configuration profile to apply.`,
 	}
 
 	GeoLibsDir = FlagInfo{
@@ -1792,14 +1715,6 @@ The zip command will block for the duration specified. Zero disables this featur
 		Description: `
 The maximum number of nodes to request data from simultaneously.
 Can be set to 1 to ensure only one node is polled for data at a time.
-`,
-	}
-
-	ZipValidateFile = FlagInfo{
-		Name: "validate-zip-file",
-		Description: `
-Validate debug zip file after generation. This is a quick check to validate
-whether the generated zip file is valid and not corrupted.
 `,
 	}
 
@@ -2068,31 +1983,5 @@ from node to node and previous application or staging attempt failed.
 		Description: `
 Maximum number of characters in printed keys and spans. If key representation
 exceeds this value, it is truncated. Set to 0 to disable truncation.`,
-	}
-	// Attrs and others store the static information for CLI flags.
-
-	EnterpriseEncryption = FlagInfo{
-		Name: "enterprise-encryption",
-		Description: `
-<PRE>Specify encryption options for one of the stores on a node. If multiple
-stores exist, the flag must be specified for each store.
-
-A valid enterprise license is required to use this functionality.
-
-Key files should be generated by "cockroach gen encryption-key".
-
-Valid fields:
-
-* path    (required): must match the path of one of the stores, or the special
-                      value "*" to match all stores
-* key     (required): path to the current key file, or "plain"
-* old-key (required): path to the previous key file, or "plain"
-* rotation-period   : amount of time after which data keys should be rotated
-
-</PRE>
-example:
-<PRE>
-  --enterprise-encryption=path=cockroach-data,key=/keys/aes-128.key,old-key=plain</PRE>
-`,
 	}
 )

@@ -9,6 +9,7 @@ option go_package = "github.com/cockroachdb/cockroach/pkg/roachpb";
 
 import "storage/enginepb/mvcc.proto";
 import "gogoproto/gogo.proto";
+import "google/api/annotations.proto";
 import "roachpb/data.proto";
 
 // SpanStatsRequest is used to request a SpanStatsResponse for the given key
@@ -27,8 +28,6 @@ message SpanStatsRequest {
   bytes end_key = 3 [(gogoproto.casttype) = "RKey"];
 
   repeated Span spans = 4 [(gogoproto.nullable) = false];
-
-  bool skip_mvcc_stats = 5;
 }
 
 message SpanStats {
@@ -64,15 +63,7 @@ message SpanStats {
   // stale.
   cockroach.storage.enginepb.MVCCStats approximate_total_stats = 7 [(gogoproto.nullable) = false];
 
-
-  // Unique store ids for the requested span.
-  repeated int32 store_ids = 8 [(gogoproto.customname) = "StoreIDs", (gogoproto.casttype) = "StoreID"];
-
-  // ReplicaCount is the total number of `voting_replicas` and `non_voting_replicas`
-  // for the span's ranges. It does not include `learner_replicas`.
-  int32 replica_count = 9;
-
-  // NEXT ID: 10.
+  // NEXT ID: 8.
 }
 
 message SpanStatsResponse {

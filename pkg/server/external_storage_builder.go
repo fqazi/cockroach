@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
+	"github.com/cockroachdb/cockroach/pkg/util/cidr"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/errors"
 )
@@ -35,11 +36,11 @@ type externalStorageBuilder struct {
 	db                isql.DB
 	limiters          cloud.Limiters
 	recorder          multitenant.TenantSideExternalIORecorder
-	metrics           metric.Struct
+	metrics           *cloud.Metrics
 }
 
 func (e *externalStorageBuilder) init(
-	esAccessor *cloud.EarlyBootExternalStorageAccessor,
+	ctx context.Context,
 	conf base.ExternalIODirConfig,
 	settings *cluster.Settings,
 	nodeIDContainer *base.SQLIDContainer,
@@ -49,26 +50,26 @@ func (e *externalStorageBuilder) init(
 	db isql.DB,
 	recorder multitenant.TenantSideExternalIORecorder,
 	registry *metric.Registry,
-	externalIODir string,
+	cidr *cidr.Lookup,
 ) {
 	var blobClientFactory blobs.BlobClientFactory
 	if p, ok := testingKnobs.Server.(*TestingKnobs); ok && p.BlobClientFactory != nil {
 		blobClientFactory = p.BlobClientFactory
 	}
 	if blobClientFactory == nil {
-		blobClientFactory = blobs.NewBlobClientFactory(nodeIDContainer, nodeDialer, externalIODir, allowLocalFastpath)
+		blobClientFactory = blobs.NewBlobClientFactory(nodeIDContainer, nodeDialer, settings.ExternalIODir, allowLocalFastpath)
 	}
 	e.conf = conf
 	e.settings = settings
 	e.blobClientFactory = blobClientFactory
 	e.initCalled = true
 	e.db = db
-	e.limiters = esAccessor.Limiters()
+	e.limiters = cloud.MakeLimiters(ctx, &settings.SV)
 	e.recorder = recorder
 
 	// Register the metrics that track interactions with external storage
 	// providers.
-	e.metrics = esAccessor.Metrics()
+	e.metrics = cloud.MakeMetrics(cidr)
 	registry.AddMetricStruct(e.metrics)
 }
 

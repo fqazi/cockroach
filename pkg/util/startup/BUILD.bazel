@@ -24,6 +24,7 @@ go_test(
         "retry_test.go",
         "startup_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":startup"],
     deps = [
         "//pkg/base",
@@ -36,7 +37,6 @@ go_test(
         "//pkg/server",
         "//pkg/settings/cluster",
         "//pkg/spanconfig",
-        "//pkg/storage/fs",
         "//pkg/testutils/listenerutil",
         "//pkg/testutils/serverutils",
         "//pkg/testutils/skip",

@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/errors"
 )
@@ -30,6 +29,7 @@ var QueryResolvedTimestampIntentCleanupAge = settings.RegisterDurationSetting(
 	"kv.query_resolved_timestamp.intent_cleanup_age",
 	"minimum intent age that QueryResolvedTimestamp requests will consider for async intent cleanup",
 	10*time.Second,
+	settings.NonNegativeDuration,
 )
 
 func init() {
@@ -69,7 +69,7 @@ func QueryResolvedTimestamp(
 	intentCleanupAge := QueryResolvedTimestampIntentCleanupAge.Get(&st.SV)
 	intentCleanupThresh := cArgs.EvalCtx.Clock().Now().Add(-intentCleanupAge.Nanoseconds(), 0)
 	minIntentTS, encounteredIntents, err := computeMinIntentTimestamp(
-		ctx, reader, args.Span(), maxEncounteredIntents, maxEncounteredIntentKeyBytes, intentCleanupThresh,
+		reader, args.Span(), maxEncounteredIntents, maxEncounteredIntentKeyBytes, intentCleanupThresh,
 	)
 	if err != nil {
 		return result.Result{}, errors.Wrapf(err, "computing minimum intent timestamp")
@@ -91,7 +91,6 @@ func QueryResolvedTimestamp(
 // minimum timestamp of any intent. While doing so, it also collects and returns
 // up to maxEncounteredIntents intents that are older than intentCleanupThresh.
 func computeMinIntentTimestamp(
-	ctx context.Context,
 	reader storage.Reader,
 	span roachpb.Span,
 	maxEncounteredIntents int64,
@@ -104,10 +103,9 @@ func computeMinIntentTimestamp(
 		LowerBound: ltStart,
 		UpperBound: ltEnd,
 		// Ignore Exclusive and Shared locks. We only care about intents.
-		MatchMinStr:  lock.Intent,
-		ReadCategory: fs.BatchEvalReadCategory,
+		MatchMinStr: lock.Intent,
 	}
-	iter, err := storage.NewLockTableIterator(ctx, reader, opts)
+	iter, err := storage.NewLockTableIterator(reader, opts)
 	if err != nil {
 		return hlc.Timestamp{}, nil, err
 	}

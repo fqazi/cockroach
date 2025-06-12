@@ -9,9 +9,7 @@ import (
 	"context"
 	gosql "database/sql"
 	"os"
-	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachprod/grafana"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/roachprod"
@@ -30,11 +28,9 @@ type Cluster interface {
 	// Selecting nodes.
 
 	All() option.NodeListOption
-	CRDBNodes() option.NodeListOption
 	Range(begin, end int) option.NodeListOption
 	Nodes(ns ...int) option.NodeListOption
 	Node(i int) option.NodeListOption
-	WorkloadNode() option.NodeListOption
 
 	// Uploading and downloading from/to nodes.
 
@@ -52,10 +48,6 @@ type Cluster interface {
 	// SetRandomSeed allows tests to set their own random seed to be
 	// used by builds with runtime assertions enabled.
 	SetRandomSeed(seed int64)
-
-	// SetDefaultVirtualCluster changes the virtual cluster tests
-	// connect to by default.
-	SetDefaultVirtualCluster(string)
 
 	// Starting and stopping CockroachDB.
 
@@ -92,51 +84,42 @@ type Cluster interface {
 
 	// SQL clients to nodes.
 
-	Conn(ctx context.Context, l *logger.Logger, node int, opts ...option.OptionFunc) *gosql.DB
-	ConnE(ctx context.Context, l *logger.Logger, node int, opts ...option.OptionFunc) (*gosql.DB, error)
+	Conn(ctx context.Context, l *logger.Logger, node int, opts ...func(*option.ConnOption)) *gosql.DB
+	ConnE(ctx context.Context, l *logger.Logger, node int, opts ...func(*option.ConnOption)) (*gosql.DB, error)
 
 	// URLs and Ports for the Admin UI.
 
-	InternalAdminUIAddr(ctx context.Context, l *logger.Logger, node option.NodeListOption, opts ...option.OptionFunc) ([]string, error)
-	ExternalAdminUIAddr(ctx context.Context, l *logger.Logger, node option.NodeListOption, opts ...option.OptionFunc) ([]string, error)
+	InternalAdminUIAddr(ctx context.Context, l *logger.Logger, node option.NodeListOption) ([]string, error)
+	ExternalAdminUIAddr(ctx context.Context, l *logger.Logger, node option.NodeListOption) ([]string, error)
 	AdminUIPorts(ctx context.Context, l *logger.Logger, node option.NodeListOption, tenant string, sqlInstance int) ([]int, error)
 
 	// Running commands on nodes.
 
-	// RunWithDetails runs a command on the specified nodes (option.WithNodes) and
-	// returns results details and an error. The returned error is only for a
-	// major failure in roachprod run command so the caller needs to check for
-	// individual node errors in `[]install.RunResultDetails`.
+	// RunWithDetails runs a command on the specified nodes and returns results details and an error.
+	// The returned error is only for a major failure in roachprod run command so the caller needs
+	// to check for individual node errors in `[]install.RunResultDetails`.
 	// Use it when you need output details such as stdout or stderr, or remote exit status.
-	// See install.RunOptions for more details on available options.
-	RunWithDetails(ctx context.Context, testLogger *logger.Logger, options install.RunOptions, args ...string) ([]install.RunResultDetails, error)
+	RunWithDetails(ctx context.Context, testLogger *logger.Logger, nodes option.NodeListOption, args ...string) ([]install.RunResultDetails, error)
 
-	// Run is just like RunE, except it is fatal on errors.
+	// Run is fatal on errors.
 	// Use it when an error means the test should fail.
-	// See RunE for more details on the options and specifying nodes to run on.
-	Run(ctx context.Context, options install.RunOptions, args ...string)
+	Run(ctx context.Context, node option.NodeListOption, args ...string)
 
-	// RunE runs a command on the given nodes, specified via `RunOptions.Nodes`,
-	// and returns an error. Use it when you need to run a command and only care
-	// if it ran successfully or not. With default options, it will run the
-	// command on all nodes.
-	//
-	// If a subset of nodes is desired, use the `option.WithNodes` function to
-	// specify the nodes. See `install.RunOptions` for more details on the
-	// options.
-	RunE(ctx context.Context, options install.RunOptions, args ...string) error
+	// RunE runs a command on the specified nodes and returns an error.
+	// Use it when you need to run a command and only care if it ran successfully or not.
+	RunE(ctx context.Context, node option.NodeListOption, args ...string) error
 
 	// RunWithDetailsSingleNode is just like RunWithDetails but used when 1) operating
 	// on a single node AND 2) an error from roachprod itself would be treated the same way
 	// you treat an error from the command. This makes error checking easier / friendlier
 	// and helps us avoid code replication.
-	RunWithDetailsSingleNode(ctx context.Context, testLogger *logger.Logger, options install.RunOptions, args ...string) (install.RunResultDetails, error)
+	RunWithDetailsSingleNode(ctx context.Context, testLogger *logger.Logger, nodes option.NodeListOption, args ...string) (install.RunResultDetails, error)
 
 	// Metadata about the provisioned nodes.
 
 	Spec() spec.ClusterSpec
 	Name() string
-	Cloud() spec.Cloud
+	Cloud() string
 	IsLocal() bool
 	// IsSecure returns true iff the cluster uses TLS.
 	IsSecure() bool
@@ -158,7 +141,6 @@ type Cluster interface {
 	Install(
 		ctx context.Context, l *logger.Logger, nodes option.NodeListOption, software ...string,
 	) error
-	PopulateEtcHosts(ctx context.Context, l *logger.Logger) error
 
 	// Methods whose inclusion on this interface is purely historical.
 	// These should be removed over time.
@@ -174,8 +156,6 @@ type Cluster interface {
 
 	StartGrafana(ctx context.Context, l *logger.Logger, promCfg *prometheus.Config) error
 	StopGrafana(ctx context.Context, l *logger.Logger, dumpDir string) error
-	AddGrafanaAnnotation(ctx context.Context, l *logger.Logger, req grafana.AddAnnotationRequest) error
-	AddInternalGrafanaAnnotation(ctx context.Context, l *logger.Logger, req grafana.AddAnnotationRequest) error
 
 	// Volume snapshot related APIs.
 	//
@@ -206,9 +186,4 @@ type Cluster interface {
 	// per-node, but this could be changed. Another assumption is that all
 	// volumes are created identically.
 	ApplySnapshots(ctx context.Context, snapshots []vm.VolumeSnapshot) error
-
-	// GetPreemptedVMs gets any VMs that were part of the cluster but preempted by cloud vendor.
-	GetPreemptedVMs(ctx context.Context, l *logger.Logger) ([]vm.PreemptedVM, error)
-
-	RegisterClusterHook(hookName string, hookType option.ClusterHookType, timeout time.Duration, hook func(context.Context) error)
 }

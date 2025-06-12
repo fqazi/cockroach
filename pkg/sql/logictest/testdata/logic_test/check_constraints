@@ -57,7 +57,7 @@ statement ok
 INSERT INTO t2 (a, c) VALUES (2, -1)
 
 statement ok
-CREATE TABLE t3 (a INT, b INT CHECK (b < a), FAMILY f1 (a), FAMILY f2 (b))
+CREATE TABLE t3 (a INT, b INT CHECK (b < a))
 
 statement ok
 INSERT INTO t3 (a, b) VALUES (3, 2)
@@ -106,12 +106,7 @@ statement error pgcode 42703 column "b" does not exist, referenced in "a < b"
 CREATE TABLE t4 (a INT, CHECK (a < b), CHECK (a+b+c+d < 20))
 
 statement ok
-CREATE TABLE t4 (
-  a INT, b INT DEFAULT 5, c INT, d INT,
-  CHECK (a < b),
-  CONSTRAINT "all" CHECK (a+b+c+d < 20),
-  FAMILY f1 (a, b, c, d)
-)
+CREATE TABLE t4 (a INT, b INT DEFAULT 5, c INT, d INT, CHECK (a < b), CONSTRAINT "all" CHECK (a+b+c+d < 20))
 
 statement ok
 INSERT INTO t4 (a, b) VALUES (2, 3)
@@ -133,15 +128,9 @@ SELECT * from t3
 ----
 3 2
 
-skipif config #112488 weak-iso-level-configs
 statement error pgcode 23514 failed to satisfy CHECK constraint
 UPDATE t3 SET b = 3 WHERE a = 3
 
-onlyif config #112488 weak-iso-level-configs
-statement error multi-column-family check constraints are not yet supported under read committed isolation
-UPDATE t3 SET b = 3 WHERE a = 3
-
-skipif config #112488 weak-iso-level-configs
 statement ok
 UPDATE t3 SET b = 1 WHERE a = 3
 
@@ -152,12 +141,7 @@ statement ok
 UPDATE t4 SET a = 0 WHERE c = 3
 
 statement ok
-CREATE TABLE t5 (
-  k INT PRIMARY KEY,
-  a INT,
-  b int CHECK (a > b),
-  FAMILY f1 (k, a, b)
-)
+CREATE TABLE t5 (k INT PRIMARY KEY, a INT, b int CHECK (a > b))
 
 statement error pgcode 23514 failed to satisfy CHECK constraint
 INSERT INTO t5 VALUES (1, 10, 20) ON CONFLICT (k) DO NOTHING
@@ -228,7 +212,6 @@ CREATE TABLE t7 (
   FAMILY "primary" (x, y, z, rowid)
 )
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE t7
 ----
@@ -243,26 +226,8 @@ t7  CREATE TABLE public.t7 (
       CONSTRAINT check_y_z CHECK ((y + z) > 0:::INT8),
       CONSTRAINT check_y_z1 CHECK ((y + z) = 0:::INT8),
       CONSTRAINT named_constraint CHECK (z = 1:::INT8)
-    );
+    )
 
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE t7
-----
-t7  CREATE TABLE public.t7 (
-      x INT8 NULL,
-      y INT8 NULL,
-      z INT8 NULL,
-      rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-      CONSTRAINT t7_pkey PRIMARY KEY (rowid ASC),
-      CONSTRAINT check_x CHECK (x > 0:::INT8),
-      CONSTRAINT check_x_y CHECK ((x + y) > 0:::INT8),
-      CONSTRAINT check_y_z CHECK ((y + z) > 0:::INT8),
-      CONSTRAINT check_y_z1 CHECK ((y + z) = 0:::INT8),
-      CONSTRAINT named_constraint CHECK (z = 1:::INT8)
-    ) WITH (schema_locked = true);
-
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE t7 WITH REDACT
 ----
@@ -277,24 +242,7 @@ t7  CREATE TABLE public.t7 (
       CONSTRAINT check_y_z CHECK ((y + z) > ‹×›:::INT8),
       CONSTRAINT check_y_z1 CHECK ((y + z) = ‹×›:::INT8),
       CONSTRAINT named_constraint CHECK (z = ‹×›:::INT8)
-    );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE t7 WITH REDACT
-----
-t7  CREATE TABLE public.t7 (
-      x INT8 NULL,
-      y INT8 NULL,
-      z INT8 NULL,
-      rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-      CONSTRAINT t7_pkey PRIMARY KEY (rowid ASC),
-      CONSTRAINT check_x CHECK (x > ‹×›:::INT8),
-      CONSTRAINT check_x_y CHECK ((x + y) > ‹×›:::INT8),
-      CONSTRAINT check_y_z CHECK ((y + z) > ‹×›:::INT8),
-      CONSTRAINT check_y_z1 CHECK ((y + z) = ‹×›:::INT8),
-      CONSTRAINT named_constraint CHECK (z = ‹×›:::INT8)
-    ) WITH (schema_locked = true);
+    )
 
 # Check that table references are dequalified in their stored representation.
 
@@ -318,7 +266,6 @@ CREATE TABLE t8 (
   CHECK (test.t8.a > 0)
 )
 
-skipif config local-schema-locked
 query TT
 SHOW CREATE TABLE t8
 ----
@@ -329,20 +276,7 @@ t8  CREATE TABLE public.t8 (
       CONSTRAINT check_a CHECK (a > 0:::INT8),
       CONSTRAINT check_a1 CHECK (a > 0:::INT8),
       CONSTRAINT check_a2 CHECK (a > 0:::INT8)
-    );
-
-onlyif config local-schema-locked
-query TT
-SHOW CREATE TABLE t8
-----
-t8  CREATE TABLE public.t8 (
-      a INT8 NULL,
-      rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-      CONSTRAINT t8_pkey PRIMARY KEY (rowid ASC),
-      CONSTRAINT check_a CHECK (a > 0:::INT8),
-      CONSTRAINT check_a1 CHECK (a > 0:::INT8),
-      CONSTRAINT check_a2 CHECK (a > 0:::INT8)
-    ) WITH (schema_locked = true);
+    )
 
 statement ok
 CREATE DATABASE test2
@@ -378,25 +312,17 @@ INSERT INTO t9 VALUES (5, 3)
 statement error pgcode 23514 failed to satisfy CHECK constraint \(a > b\)
 INSERT INTO t9 VALUES (6, 7)
 
-skipif config #112488 weak-iso-level-configs
 statement ok
 UPDATE t9 SET b = 4 WHERE a = 5
 
-skipif config #112488 weak-iso-level-configs
 statement error pgcode 23514 failed to satisfy CHECK constraint \(a > b\)
 UPDATE t9 SET b = 6 WHERE a = 5
 
-skipif config #112488 weak-iso-level-configs
 statement ok
 UPDATE t9 SET a = 7 WHERE a = 4
 
-skipif config #112488 weak-iso-level-configs
 statement error pgcode 23514 failed to satisfy CHECK constraint \(a > b\)
 UPDATE t9 SET a = 2 WHERE a = 5
-
-onlyif config #112488 weak-iso-level-configs
-statement error multi-column-family check constraints are not yet supported under read committed isolation
-UPDATE t9 SET b = 4 WHERE a = 5
 
 # Check constraints on computed columns.
 

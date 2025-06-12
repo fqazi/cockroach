@@ -82,7 +82,9 @@ func (d *dev) compose(cmd *cobra.Command, _ []string) error {
 
 	var args []string
 	args = append(args, "test", "//pkg/compose:compose_test")
-	addCommonBazelArguments(&args)
+	if numCPUs != 0 {
+		args = append(args, fmt.Sprintf("--local_cpu_resources=%d", numCPUs))
+	}
 	if filter != "" {
 		args = append(args, fmt.Sprintf("--test_filter=%s", filter))
 	}
@@ -102,8 +104,6 @@ func (d *dev) compose(cmd *cobra.Command, _ []string) error {
 	args = append(args, "--test_arg", "-test.v")
 	args = append(args, "--test_output", "all")
 	args = append(args, "--test_env", "COCKROACH_DEV_LICENSE")
-	args = append(args, "--test_env", "COCKROACH_RUN_COMPOSE=true")
-	args = append(args, "--sandbox_add_mount_pair", os.TempDir())
 
 	logCommand("bazel", args...)
 	return d.exec.CommandContextInheritingStdStreams(ctx, "bazel", args...)

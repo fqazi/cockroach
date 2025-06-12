@@ -9,7 +9,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -24,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/loqrecovery/loqrecoverypb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -38,6 +37,7 @@ import (
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/vfs"
+	"go.etcd.io/raft/v3/raftpb"
 	"gopkg.in/yaml.v2"
 )
 
@@ -213,10 +213,10 @@ func (*seqUUIDGen) NewV3(uuid.UUID, string) uuid.UUID {
 	panic("not implemented")
 }
 
-func (g *seqUUIDGen) NewV4() uuid.UUID {
+func (g *seqUUIDGen) NewV4() (uuid.UUID, error) {
 	nextV4 := g.next()
 	nextV4.SetVersion(uuid.V4)
-	return nextV4
+	return nextV4, nil
 }
 
 func (*seqUUIDGen) NewV5(uuid.UUID, string) uuid.UUID {
@@ -318,7 +318,7 @@ func (e *quorumRecoveryEnv) handleReplicationData(t *testing.T, d datadriven.Tes
 			replica.NodeID = roachpb.NodeID(replica.StoreID)
 		}
 
-		replicaID, key, desc, replicaState, truncState, hardState, raftLog :=
+		replicaID, key, desc, replicaState, hardState, raftLog :=
 			buildReplicaDescriptorFromTestData(t, replica)
 
 		eng := e.getOrCreateStore(ctx, t, replica.StoreID, replica.NodeID)
@@ -331,9 +331,6 @@ func (e *quorumRecoveryEnv) handleReplicationData(t *testing.T, d datadriven.Tes
 		sl := stateloader.Make(replica.RangeID)
 		if _, err := sl.Save(ctx, eng, replicaState); err != nil {
 			t.Fatalf("failed to save raft replica state into store: %v", err)
-		}
-		if err := sl.SetRaftTruncatedState(ctx, eng, &truncState); err != nil {
-			t.Fatalf("failed to save raft truncated state: %v", err)
 		}
 		if err := sl.SetHardState(ctx, eng, hardState); err != nil {
 			t.Fatalf("failed to save raft hard state: %v", err)
@@ -362,7 +359,6 @@ func buildReplicaDescriptorFromTestData(
 	roachpb.Key,
 	roachpb.RangeDescriptor,
 	kvserverpb.ReplicaState,
-	kvserverpb.RaftTruncatedState,
 	raftpb.HardState,
 	[]enginepb.MVCCMetadata,
 ) {
@@ -402,25 +398,25 @@ func buildReplicaDescriptorFromTestData(
 		Start:           clock.Now().Add(5*time.Minute.Nanoseconds(), 0).UnsafeToClockTimestamp(),
 		Expiration:      nil,
 		Replica:         desc.InternalReplicas[lhIndex],
-		ProposedTS:      hlc.ClockTimestamp{},
+		ProposedTS:      nil,
 		Epoch:           0,
 		Sequence:        0,
 		AcquisitionType: 0,
 	}
 	replicaState := kvserverpb.ReplicaState{
-		RaftAppliedIndex:    replica.RangeAppliedIndex,
-		LeaseAppliedIndex:   0,
-		Desc:                &desc,
-		Lease:               &lease,
+		RaftAppliedIndex:  replica.RangeAppliedIndex,
+		LeaseAppliedIndex: 0,
+		Desc:              &desc,
+		Lease:             &lease,
+		TruncatedState: &kvserverpb.RaftTruncatedState{
+			Index: 1,
+			Term:  1,
+		},
 		GCThreshold:         &hlc.Timestamp{},
 		GCHint:              &roachpb.GCHint{},
 		Version:             nil,
 		Stats:               &enginepb.MVCCStats{},
 		RaftClosedTimestamp: clock.Now().Add(-30*time.Second.Nanoseconds(), 0),
-	}
-	truncState := kvserverpb.RaftTruncatedState{
-		Index: 1,
-		Term:  1,
 	}
 	hardState := raftpb.HardState{
 		Term:   0,
@@ -432,7 +428,7 @@ func buildReplicaDescriptorFromTestData(
 		entry := raftLogFromPendingDescriptorUpdate(t, replica, u, desc, kvpb.RaftIndex(i))
 		raftLog = append(raftLog, enginepb.MVCCMetadata{RawBytes: entry.RawBytes})
 	}
-	return replicaID, key, desc, replicaState, truncState, hardState, raftLog
+	return replicaID, key, desc, replicaState, hardState, raftLog
 }
 
 func raftLogFromPendingDescriptorUpdate(
@@ -488,8 +484,7 @@ func raftLogFromPendingDescriptorUpdate(
 		t.Fatalf("failed to serialize raftCommand: %v", err)
 	}
 	data := raftlog.EncodeCommandBytes(
-		raftlog.EntryEncodingStandardWithoutAC,
-		kvserverbase.CmdIDKey(fmt.Sprintf("%08d", entryIndex)), out, 0 /* pri */)
+		raftlog.EntryEncodingStandardWithoutAC, kvserverbase.CmdIDKey(fmt.Sprintf("%08d", entryIndex)), out)
 	ent := raftpb.Entry{
 		Term:  1,
 		Index: uint64(replica.RaftCommittedIndex + entryIndex),
@@ -626,7 +621,7 @@ func (e *quorumRecoveryEnv) getOrCreateStore(
 		); err != nil {
 			t.Fatalf("failed to populate test store ident: %v", err)
 		}
-		v := clusterversion.Latest.Version()
+		v := clusterversion.ByKey(clusterversion.BinaryVersionKey)
 		if err := kvstorage.WriteClusterVersionToEngines(ctx, []storage.Engine{eng}, clusterversion.ClusterVersion{Version: v}); err != nil {
 			t.Fatalf("failed to populate test store cluster version: %v", err)
 		}
@@ -658,7 +653,7 @@ func (e *quorumRecoveryEnv) handleCollectReplicas(
 		// This is unrealistic as we don't have metadata. We need to fake it here
 		// to pass planner checks.
 		e.replicas.ClusterID = e.clusterID.String()
-		e.replicas.Version = clusterversion.Latest.Version()
+		e.replicas.Version = clusterversion.ByKey(clusterversion.BinaryVersionKey)
 	}
 	e.replicas.Descriptors = e.meta
 	return "ok", nil
@@ -735,7 +730,7 @@ func (e *quorumRecoveryEnv) parseStoresArg(
 			stores = []roachpb.StoreID{}
 		}
 	}
-	slices.Sort(stores)
+	sort.Sort(roachpb.StoreIDSlice(stores))
 	return stores
 }
 
@@ -757,7 +752,7 @@ func (e *quorumRecoveryEnv) parseNodesArg(t *testing.T, d datadriven.TestData) [
 		}
 	}
 	if len(nodes) > 0 {
-		slices.Sort(nodes)
+		sort.Sort(roachpb.NodeIDSlice(nodes))
 	}
 	return nodes
 }

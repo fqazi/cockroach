@@ -3,28 +3,27 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Col, Row } from "antd";
-import classNames from "classnames/bind";
 import React from "react";
+import classNames from "classnames/bind";
 import { Link } from "react-router-dom";
-
-import "antd/lib/col/style";
-import "antd/lib/row/style";
+import { Col, Row } from "antd";
+import { SummaryCard, SummaryCardItem } from "src/summaryCard";
 import {
   ActiveStatement,
   ExecutionContentionDetails,
 } from "src/activeExecutions";
-import { StatusIcon } from "src/activeExecutions/statusIcon";
 import { WaitTimeInsightsPanel } from "src/detailsPanels/waitTimeInsightsPanel";
-import { SummaryCard, SummaryCardItem } from "src/summaryCard";
-import summaryCardStyles from "src/summaryCard/summaryCard.module.scss";
+import { StatusIcon } from "src/activeExecutions/statusIcon";
 import { DATE_FORMAT_24_TZ, Duration } from "src/util";
 
-import { Timestamp } from "../timestamp";
-
-import styles from "./statementDetails.module.scss";
+import "antd/lib/col/style";
+import "antd/lib/row/style";
+import summaryCardStyles from "src/summaryCard/summaryCard.module.scss";
 
 const summaryCardStylesCx = classNames.bind(summaryCardStyles);
+
+import styles from "./statementDetails.module.scss";
+import { Timestamp } from "../timestamp";
 const cx = classNames.bind(styles);
 
 type Props = {
@@ -41,7 +40,7 @@ export const ActiveStatementDetailsOverviewTab = ({
   return (
     <>
       <section className={cx("section", "section--container")}>
-        <Row gutter={24}>
+        <Row gutter={24} type="flex">
           <Col className="gutter-row" span={12}>
             <SummaryCard className={cx("summary-card")}>
               <SummaryCardItem

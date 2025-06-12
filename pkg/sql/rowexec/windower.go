@@ -56,20 +56,17 @@ const memRequiredByWindower = 100 * 1024
 type windower struct {
 	execinfra.ProcessorBase
 
-	evalCtx *eval.Context
-
 	// runningState represents the state of the windower. This is in addition to
 	// ProcessorBase.State - the runningState is only relevant when
 	// ProcessorBase.State == StateRunning.
-	runningState        windowerState
-	input               execinfra.RowSource
-	inputDone           bool
-	inputTypes          []*types.T
-	outputTypes         []*types.T
-	datumAlloc          tree.DatumAlloc
-	acc                 mon.BoundAccount
-	unlimitedMemMonitor *mon.BytesMonitor
-	diskMonitor         *mon.BytesMonitor
+	runningState windowerState
+	input        execinfra.RowSource
+	inputDone    bool
+	inputTypes   []*types.T
+	outputTypes  []*types.T
+	datumAlloc   tree.DatumAlloc
+	acc          mon.BoundAccount
+	diskMonitor  *mon.BytesMonitor
 
 	scratch       []byte
 	cancelChecker cancelchecker.CancelChecker
@@ -105,9 +102,9 @@ func newWindower(
 	post *execinfrapb.PostProcessSpec,
 ) (*windower, error) {
 	w := &windower{
-		evalCtx: flowCtx.NewEvalCtx(),
-		input:   input,
+		input: input,
 	}
+	evalCtx := flowCtx.NewEvalCtx()
 	w.inputTypes = input.OutputTypes()
 
 	// Limit the memory use by creating a child monitor with a hard limit.
@@ -120,7 +117,7 @@ func newWindower(
 	// them to reuse the same shared memory account with the windower. Notably,
 	// we need to update the eval context before constructing the window
 	// builtins.
-	w.evalCtx.SingleDatumAggMemAccount = &w.acc
+	evalCtx.SingleDatumAggMemAccount = &w.acc
 
 	w.partitionBy = spec.PartitionBy
 	windowFns := spec.WindowFns
@@ -142,7 +139,7 @@ func newWindower(
 		}
 		w.outputTypes[windowFn.OutputColIdx] = outputType
 
-		w.builtins = append(w.builtins, windowConstructor(w.evalCtx))
+		w.builtins = append(w.builtins, windowConstructor(evalCtx))
 		wf := &windowFunc{
 			ordering:     windowFn.Ordering,
 			argsIdxs:     windowFn.ArgsIdxs,
@@ -161,7 +158,7 @@ func newWindower(
 		post,
 		w.outputTypes,
 		flowCtx,
-		w.evalCtx,
+		evalCtx,
 		processorID,
 		limitedMon,
 		execinfra.ProcStateOpts{InputsToDrain: []execinfra.RowSource{w.input},
@@ -173,11 +170,9 @@ func newWindower(
 		return nil, err
 	}
 
-	mn := mon.MakeName("windower")
-	w.unlimitedMemMonitor = execinfra.NewMonitor(ctx, flowCtx.Mon, mn.Unlimited())
-	w.diskMonitor = execinfra.NewMonitor(ctx, flowCtx.DiskMonitor, mn.Disk())
+	w.diskMonitor = execinfra.NewMonitor(ctx, flowCtx.DiskMonitor, "windower-disk")
 	w.allRowsPartitioned = rowcontainer.NewHashDiskBackedRowContainer(
-		w.evalCtx, w.MemMonitor, w.unlimitedMemMonitor, w.diskMonitor, flowCtx.Cfg.TempStorage,
+		evalCtx, w.MemMonitor, w.diskMonitor, flowCtx.Cfg.TempStorage,
 	)
 	if err := w.allRowsPartitioned.Init(
 		ctx,
@@ -243,11 +238,10 @@ func (w *windower) close() {
 			w.partition.Close(w.Ctx())
 		}
 		for _, builtin := range w.builtins {
-			builtin.Close(w.Ctx(), w.evalCtx)
+			builtin.Close(w.Ctx(), w.EvalCtx)
 		}
 		w.acc.Close(w.Ctx())
 		w.MemMonitor.Stop(w.Ctx())
-		w.unlimitedMemMonitor.Stop(w.Ctx())
 		w.diskMonitor.Stop(w.Ctx())
 	}
 }
@@ -305,7 +299,7 @@ func (w *windower) emitRow() (windowerState, rowenc.EncDatumRow, *execinfrapb.Pr
 				return windowerStateUnknown, nil, w.DrainHelper()
 			}
 
-			if err := w.computeWindowFunctions(w.Ctx(), w.evalCtx); err != nil {
+			if err := w.computeWindowFunctions(w.Ctx(), w.EvalCtx); err != nil {
 				w.MoveToDraining(err)
 				return windowerStateUnknown, nil, w.DrainHelper()
 			}
@@ -616,10 +610,9 @@ func (w *windower) computeWindowFunctions(ctx context.Context, evalCtx *eval.Con
 	w.partition = rowcontainer.NewDiskBackedIndexedRowContainer(
 		ordering,
 		w.inputTypes,
-		w.FlowCtx.EvalCtx,
+		w.EvalCtx,
 		w.FlowCtx.Cfg.TempStorage,
 		w.MemMonitor,
-		w.unlimitedMemMonitor,
 		w.diskMonitor,
 	)
 	i, err := w.allRowsPartitioned.NewAllRowsIterator(ctx)
@@ -784,7 +777,7 @@ func (n *partitionPeerGrouper) InSameGroup(i, j int) (bool, error) {
 			n.err = err
 			return false, n.err
 		}
-		if c, err := da.Compare(n.ctx, n.evalCtx, db); err != nil {
+		if c, err := da.CompareError(n.evalCtx, db); err != nil {
 			n.err = err
 			return false, n.err
 		} else if c != 0 {
@@ -820,7 +813,7 @@ func (w *windower) execStatsForTrace() *execinfrapb.ComponentStats {
 	return &execinfrapb.ComponentStats{
 		Inputs: []execinfrapb.InputStats{is},
 		Exec: execinfrapb.ExecStats{
-			MaxAllocatedMem:  optional.MakeUint(uint64(w.MemMonitor.MaximumBytes() + w.unlimitedMemMonitor.MaximumBytes())),
+			MaxAllocatedMem:  optional.MakeUint(uint64(w.MemMonitor.MaximumBytes())),
 			MaxAllocatedDisk: optional.MakeUint(uint64(w.diskMonitor.MaximumBytes())),
 		},
 		Output: w.OutputHelper.Stats(),

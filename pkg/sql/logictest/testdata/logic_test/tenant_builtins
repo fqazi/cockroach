@@ -1,4 +1,4 @@
-# LogicTest: !enterprise-configs
+# LogicTest: !3node-tenant-default-configs !local-mixed-23.1
 
 query IBIT colnames
 SELECT id, active, length(info), name FROM system.tenants ORDER BY id
@@ -111,6 +111,11 @@ id  active  name
 5   true    my-new-tenant-name
 10  true    tenant-number-ten
 11  true    tenant-number-eleven
+
+# Garbage collect a non-drop tenant fails.
+
+query error tenant 5 is not in data state DROP
+SELECT crdb_internal.gc_tenant(5)
 
 # Note this just marks the tenant as dropped but does not call GC.
 
@@ -255,7 +260,7 @@ query error tenant resource limits require a CCL binary
 SELECT crdb_internal.update_tenant_resource_limits(10, 1000, 100, 0, now(), 0)
 
 query error tenant resource limits require a CCL binary
-SELECT crdb_internal.update_tenant_resource_limits('tenant-number-ten', 1000, 100, 0)
+SELECT crdb_internal.update_tenant_resource_limits('tenant-number-ten', 1000, 100, 0, now(), 0)
 
 user testuser
 
@@ -267,6 +272,9 @@ SELECT crdb_internal.create_tenant('not-allowed')
 
 statement error user testuser does not have MANAGEVIRTUALCLUSTER system privilege
 DROP TENANT [1]
+
+statement error crdb_internal.gc_tenant\(\): user testuser does not have REPAIRCLUSTERMETADATA system privilege
+SELECT crdb_internal.gc_tenant(314)
 
 user root
 

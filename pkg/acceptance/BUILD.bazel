@@ -5,7 +5,7 @@ go_library(
     testonly = 1,
     srcs = [
         "flags.go",
-        "test_acceptance.go",
+        "test_acceptance.go",  # keep
         "util_cluster.go",
         "util_docker.go",
     ],
@@ -15,17 +15,16 @@ go_library(
         "//pkg/acceptance/cluster",
         "//pkg/base",
         "//pkg/build/bazel",
-        "//pkg/security/securityassets",
-        "//pkg/security/securitytest",
+        "//pkg/security/securityassets",  # keep
+        "//pkg/security/securitytest",  # keep
         "//pkg/security/username",
-        "//pkg/server",
+        "//pkg/server",  # keep
         "//pkg/testutils",
-        "//pkg/testutils/serverutils",
+        "//pkg/testutils/serverutils",  # keep
         "//pkg/testutils/skip",
-        "//pkg/testutils/testcluster",
-        "//pkg/util/envutil",
+        "//pkg/testutils/testcluster",  # keep
         "//pkg/util/log",
-        "//pkg/util/randutil",
+        "//pkg/util/randutil",  # keep
         "//pkg/util/stop",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_containerd_containerd//platforms",
@@ -43,7 +42,10 @@ go_test(
         "compose_test.go",
         "debug_remote_test.go",
         "generated_cli_test.go",
+        "main_test.go",
     ],
+    # Note: we overide bazel timeout to 1800s using test_timeout.
+    args = ["-test.timeout=1795s"],
     data = glob([
         "testdata/**",
         "compose/**",
@@ -51,14 +53,14 @@ go_test(
         "//pkg/cli:interactive_tests",
     ],
     embed = [":acceptance"],
+    exec_properties = {"Pool": "large"},
+    gotags = ["acceptance"],
     shard_count = 16,
-    tags = [
-        "integration",
-        "no-remote-exec",
-    ],
+    tags = ["integration"],
     deps = [
         "//pkg/acceptance/cluster",
         "//pkg/build/bazel",
+        "//pkg/security",  # keep
         "//pkg/security/username",
         "//pkg/testutils/skip",
         "//pkg/util/log",

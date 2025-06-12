@@ -234,7 +234,7 @@ ALTER TABLE abc INJECT STATISTICS '[
 
 # Check that we can call colStatScan with a virtual column, even without the
 # usual project in place.
-norm colstat=2
+norm colstat=2 set=optimizer_use_virtual_computed_column_stats=true
 SELECT a FROM abc
 ----
 scan abc
@@ -249,7 +249,7 @@ scan abc
  └── key: (1)
 
 # It should also work with the usual project on top.
-norm colstat=2
+norm colstat=2 set=optimizer_use_virtual_computed_column_stats=true
 SELECT b FROM abc
 ----
 project
@@ -271,18 +271,18 @@ project
       └── a:1 % 10 [as=b:2, type=int, outer=(1), immutable]
 
 # Push a select below the project.
-norm colstat=1 colstat=2 expect=PushSelectIntoProject
+norm colstat=1 colstat=2 expect=PushSelectIntoProject set=optimizer_use_virtual_computed_column_stats=true
 SELECT b FROM abc WHERE a % 2 = 0
 ----
 project
  ├── columns: b:2(int!null)
  ├── immutable
- ├── stats: [rows=6.66667, distinct(1)=6.66667, null(1)=0, distinct(2)=5.55556, null(2)=0]
+ ├── stats: [rows=6.666667, distinct(1)=6.66667, null(1)=0, distinct(2)=5.55556, null(2)=0]
  │   virtcolstats: (2)
  ├── select
  │    ├── columns: a:1(int!null)
  │    ├── immutable
- │    ├── stats: [rows=6.66667, distinct(1)=6.66667, null(1)=0, distinct(2)=5.55556, null(2)=0]
+ │    ├── stats: [rows=6.666667, distinct(1)=6.66667, null(1)=0, distinct(2)=5.55556, null(2)=0]
  │    │   virtcolstats: (2)
  │    ├── key: (1)
  │    ├── scan abc
@@ -303,7 +303,7 @@ project
       └── a:1 % 10 [as=b:2, type=int, outer=(1), immutable]
 
 # Push a select on the virtual column below the project.
-norm colstat=1 colstat=2
+norm colstat=1 colstat=2 set=optimizer_use_virtual_computed_column_stats=true
 SELECT * FROM abc WHERE b > 3
 ----
 project
@@ -341,7 +341,7 @@ project
       └── a:1 % 10 [as=b:2, type=int, outer=(1), immutable]
 
 # Again, with placeholders.
-assign-placeholders-norm query-args=(3)
+assign-placeholders-norm query-args=(3) set=optimizer_use_virtual_computed_column_stats=true
 SELECT * FROM abc WHERE b > $1
 ----
 project
@@ -379,7 +379,7 @@ project
       └── a:1 % 10 [as=b:2, type=int, outer=(1), immutable]
 
 # Push a select on the virtual column expression below the project.
-norm colstat=1 colstat=2
+norm colstat=1 colstat=2 set=optimizer_use_virtual_computed_column_stats=true
 SELECT * FROM abc WHERE a % 10 > 3
 ----
 project
@@ -417,7 +417,7 @@ project
       └── a:1 % 10 [as=b:2, type=int, outer=(1), immutable]
 
 # Again, with placeholders.
-assign-placeholders-norm query-args=(3)
+assign-placeholders-norm query-args=(3) set=optimizer_use_virtual_computed_column_stats=true
 SELECT * FROM abc WHERE a % 10 > $1
 ----
 project
@@ -455,7 +455,7 @@ project
       └── a:1 % 10 [as=b:2, type=int, outer=(1), immutable]
 
 # Push a select on the virtual column expression below the project.
-norm colstat=1 colstat=2
+norm colstat=1 colstat=2 set=optimizer_use_virtual_computed_column_stats=true
 SELECT * FROM (SELECT a FROM abc) WHERE a % 10 > 3
 ----
 select
@@ -482,7 +482,7 @@ select
       └── (a:1 % 10) > 3 [type=bool, outer=(1), immutable]
 
 # Again, with placeholders.
-assign-placeholders-norm query-args=(3)
+assign-placeholders-norm query-args=(3) set=optimizer_use_virtual_computed_column_stats=true
 SELECT * FROM (SELECT a FROM abc) WHERE a % 10 > $1
 ----
 select
@@ -509,7 +509,7 @@ select
       └── (a:1 % 10) > 3 [type=bool, outer=(1), immutable]
 
 # Select using an IN set.
-norm colstat=1 colstat=2
+norm colstat=1 colstat=2 set=optimizer_use_virtual_computed_column_stats=true
 SELECT * FROM abc WHERE a % 10 IN (2, 4, 6)
 ----
 project
@@ -547,7 +547,7 @@ project
       └── a:1 % 10 [as=b:2, type=int, outer=(1), immutable]
 
 # Again, with placeholders.
-assign-placeholders-norm query-args=(2, 4, 6)
+assign-placeholders-norm query-args=(2, 4, 6) set=optimizer_use_virtual_computed_column_stats=true
 SELECT * FROM abc WHERE a % 10 IN ($1, $2, $3)
 ----
 project
@@ -585,7 +585,7 @@ project
       └── a:1 % 10 [as=b:2, type=int, outer=(1), immutable]
 
 # Distinct on top of the project.
-norm
+norm set=optimizer_use_virtual_computed_column_stats=true
 SELECT DISTINCT b FROM abc
 ----
 distinct-on
@@ -614,7 +614,7 @@ distinct-on
            └── a:1 % 10 [as=b:2, type=int, outer=(1), immutable]
 
 # Distinct on top of the project using just the virtual column expression.
-norm
+norm set=optimizer_use_virtual_computed_column_stats=true
 SELECT DISTINCT a % 10 FROM abc
 ----
 distinct-on
@@ -643,7 +643,7 @@ distinct-on
            └── a:1 % 10 [as="?column?":6, type=int, outer=(1), immutable]
 
 # Distinct on top of the project using just the virtual column expression.
-norm
+norm set=optimizer_use_virtual_computed_column_stats=true
 SELECT DISTINCT a % 10 FROM abc WHERE a % 10 > 3
 ----
 distinct-on
@@ -684,7 +684,7 @@ distinct-on
            └── a:1 % 10 [as="?column?":6, type=int, outer=(1), immutable]
 
 # Push a join below the project.
-opt colstat=1 colstat=2 colstat=6 colstat=7
+opt colstat=1 colstat=2 colstat=6 colstat=7 set=optimizer_use_virtual_computed_column_stats=true
 SELECT x.b FROM abc x JOIN abc y ON x.a = y.a + 1 WHERE y.a < 5
 ----
 project
@@ -726,7 +726,7 @@ project
            └── a:1 % 10 [as=b:2, type=int, outer=(1), immutable]
 
 # Push an index join below the project.
-opt colstat=1 colstat=2 colstat=3
+opt colstat=1 colstat=2 colstat=3 set=optimizer_use_virtual_computed_column_stats=true
 SELECT * FROM abc@abc_b_idx
 ----
 project
@@ -756,7 +756,7 @@ project
       └── a:1 % 10 [as=b:2, type=int, outer=(1), immutable]
 
 # Push a limit below the project.
-norm colstat=1 colstat=2
+norm colstat=1 colstat=2 set=optimizer_use_virtual_computed_column_stats=true
 SELECT a, b FROM abc ORDER BY a LIMIT 5
 ----
 project
@@ -797,7 +797,7 @@ project
 # Set operations currently act as barriers for virtual column stats. Make sure
 # we don't panic, though stats will be less accurate. (Only columns 11 and 12
 # matter for these stats, the others are to check that we don't panic.)
-norm colstat=1 colstat=2 colstat=6 colstat=7 colstat=11 colstat=12
+norm colstat=1 colstat=2 colstat=6 colstat=7 colstat=11 colstat=12 set=optimizer_use_virtual_computed_column_stats=true
 SELECT a % 10 FROM (SELECT a FROM abc UNION ALL SELECT a FROM abc)
 ----
 project
@@ -835,7 +835,7 @@ project
 # With-scans currently act as barriers for virtual column stats. Make sure we
 # don't panic, though stats will be less accurate. (Only columns 6 and 7 matter
 # for these stats, the others are to check that we don't panic.)
-norm colstat=1 colstat=2 colstat=6 colstat=7
+norm colstat=1 colstat=2 colstat=6 colstat=7 set=optimizer_use_virtual_computed_column_stats=true
 WITH w AS MATERIALIZED (SELECT a FROM abc) SELECT a % 10 FROM w
 ----
 with &1 (w)

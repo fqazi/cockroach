@@ -12,11 +12,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/asim/state"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/rac2"
-	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/errors"
+	"go.etcd.io/raft/v3"
 )
 
 // simulatorReplica is a replica that is being tracked as a potential candidate
@@ -65,17 +64,18 @@ func (sr *simulatorReplica) RaftStatus() *raft.Status {
 	return sr.state.RaftStatus(sr.rng.RangeID(), sr.repl.StoreID())
 }
 
-// GetCompactedIndex returns the compacted index of the raft log.
-func (sr *simulatorReplica) GetCompactedIndex() kvpb.RaftIndex {
-	// TODO(kvoli): We always return 1 here as RaftStatus is unimplemented.
+// GetFirstIndex returns the index of the first entry in the replica's Raft
+// log.
+func (sr *simulatorReplica) GetFirstIndex() kvpb.RaftIndex {
+	// TODO(kvoli): We always return 2 here as RaftStatus is unimplemented.
 	// When it is implmeneted, this may become variable.
-	return 1
+	return 2
 }
 
-// LoadSpanConfig returns the authoritative range descriptor as well
+// DescAndSpanConfig returns the authoritative range descriptor as well
 // as the span config for the replica.
-func (sr *simulatorReplica) LoadSpanConfig(ctx context.Context) (*roachpb.SpanConfig, error) {
-	return sr.rng.SpanConfig(), nil
+func (sr *simulatorReplica) DescAndSpanConfig() (*roachpb.RangeDescriptor, *roachpb.SpanConfig) {
+	return sr.rng.Descriptor(), sr.rng.SpanConfig()
 }
 
 // Desc returns the authoritative range descriptor, acquiring a replica lock in
@@ -108,8 +108,6 @@ func (sr *simulatorReplica) AdminTransferLease(
 
 	return nil
 }
-
-func (sr *simulatorReplica) SendStreamStats(stats *rac2.RangeSendStreamStats) {}
 
 // Replica returns the underlying kvserver replica, however when called from
 // the simulator it only returns nil.

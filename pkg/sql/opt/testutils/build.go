@@ -30,9 +30,12 @@ func BuildQuery(
 	}
 
 	ctx := context.Background()
-	semaCtx := tree.MakeSemaContext(catalog)
+	semaCtx := tree.MakeSemaContext()
+	semaCtx.FunctionResolver = catalog
 	semaCtx.SearchPath = &evalCtx.SessionData().SearchPath
-	semaCtx.Placeholders.Init(stmt.NumPlaceholders, nil /* typeHints */)
+	if err := semaCtx.Placeholders.Init(stmt.NumPlaceholders, nil /* typeHints */); err != nil {
+		t.Fatalf("%+v", err)
+	}
 	semaCtx.Annotations = tree.MakeAnnotations(stmt.NumAnnotations)
 	o.Init(ctx, evalCtx, catalog)
 	err = optbuilder.New(ctx, &semaCtx, evalCtx, catalog, o.Factory(), stmt.AST).Build()

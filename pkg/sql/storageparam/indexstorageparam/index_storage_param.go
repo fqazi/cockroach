@@ -10,13 +10,12 @@ package indexstorageparam
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/paramparse"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/storageparam"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
@@ -30,8 +29,8 @@ type Setter struct {
 
 var _ storageparam.Setter = (*Setter)(nil)
 
-func getS2ConfigFromIndex(indexDesc *descpb.IndexDescriptor) *geopb.S2Config {
-	var s2Config *geopb.S2Config
+func getS2ConfigFromIndex(indexDesc *descpb.IndexDescriptor) *geoindex.S2Config {
+	var s2Config *geoindex.S2Config
 	if indexDesc.GeoConfig.S2Geometry != nil {
 		s2Config = indexDesc.GeoConfig.S2Geometry.S2Config
 	}
@@ -103,34 +102,6 @@ func (po *Setter) applyGeometryIndexSetting(
 	return nil
 }
 
-func (po *Setter) applyVectorIndexSetting(
-	ctx context.Context, evalCtx *eval.Context, key string, expr tree.Datum, min int64, max int64,
-) error {
-	val, err := paramparse.DatumAsInt(ctx, evalCtx, key, expr)
-	if err != nil {
-		return errors.Wrapf(err, "error decoding %q", key)
-	}
-	if val < min || val > max {
-		return pgerror.Newf(
-			pgcode.InvalidParameterValue,
-			"%q value must be between %d and %d inclusive",
-			key,
-			min,
-			max,
-		)
-	}
-	switch key {
-	case `build_beam_size`:
-		po.IndexDesc.VecConfig.BuildBeamSize = int32(val)
-	case `min_partition_size`:
-		po.IndexDesc.VecConfig.MinPartitionSize = int32(val)
-	case `max_partition_size`:
-		po.IndexDesc.VecConfig.MaxPartitionSize = int32(val)
-	}
-
-	return nil
-}
-
 // Set implements the Setter interface.
 func (po *Setter) Set(
 	ctx context.Context,
@@ -154,12 +125,6 @@ func (po *Setter) Set(
 	// indexes.
 	case `bucket_count`:
 		return nil
-	case `build_beam_size`:
-		return po.applyVectorIndexSetting(ctx, evalCtx, key, expr, 1, 512)
-	case `min_partition_size`:
-		return po.applyVectorIndexSetting(ctx, evalCtx, key, expr, 1, 1024)
-	case `max_partition_size`:
-		return po.applyVectorIndexSetting(ctx, evalCtx, key, expr, 4, 4096)
 	case `vacuum_cleanup_index_scale_factor`,
 		`buffering`,
 		`fastupdate`,
@@ -208,24 +173,5 @@ func (po *Setter) RunPostChecks() error {
 			)
 		}
 	}
-
-	if po.IndexDesc.Type == idxtype.VECTOR {
-		cfg := &po.IndexDesc.VecConfig
-		if cfg.MaxPartitionSize < cfg.MinPartitionSize*4 {
-			return pgerror.Newf(
-				pgcode.InvalidParameterValue,
-				"max_partition_size (%d) must be at least four times the value of min_partition_size (%d)",
-				cfg.MaxPartitionSize,
-				cfg.MinPartitionSize,
-			)
-		}
-	}
-
 	return nil
-}
-
-// IsNewTableObject implements the Setter interface.
-func (po *Setter) IsNewTableObject() bool {
-	//Not applicable to indexes.
-	panic(errors.AssertionFailedf("not-implemented for indexes"))
 }

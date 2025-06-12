@@ -402,7 +402,7 @@ func newUsageFixtureWithMockTSS(
 ) *UsageFixture {
 	changefeedccl.EnableCloudBillingAccounting = true
 
-	ts := timeutil.NewManualTime(time.Now())
+	ts := timeutil.NewManualTime(timeutil.Now())
 
 	knobs := base.TestingKnobs{
 		JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),

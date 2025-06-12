@@ -141,14 +141,10 @@ func MakeColumnDefDescs(
 			return nil, errors.AssertionFailedf(
 				"column %s is of invalid generated as identity type (neither ALWAYS nor BY DEFAULT)", string(d.Name))
 		}
-		// GeneratedAsIdentitySequenceOption is used to populate the sequence options for the column information schema.
-		// An empty string will populate default values and null will generate null values.
-		s := ""
 		if genSeqOpt := d.GeneratedIdentity.SeqOptions; genSeqOpt != nil {
-			// Override GeneratedAsIdentitySequenceOption default values with specified SeqOptions.
-			s = tree.Serialize(&d.GeneratedIdentity.SeqOptions)
+			s := tree.Serialize(&d.GeneratedIdentity.SeqOptions)
+			col.GeneratedAsIdentitySequenceOption = &s
 		}
-		col.GeneratedAsIdentitySequenceOption = &s
 	}
 
 	// Validate and assign column type.
@@ -156,7 +152,7 @@ func MakeColumnDefDescs(
 	if err != nil {
 		return nil, err
 	}
-	if err = colinfo.ValidateColumnDefType(ctx, evalCtx.Settings, resType); err != nil {
+	if err = colinfo.ValidateColumnDefType(ctx, evalCtx.Settings.Version, resType); err != nil {
 		return nil, err
 	}
 	col.Type = resType
@@ -356,10 +352,6 @@ func (desc *wrapper) EnforcedCheckConstraints() []catalog.CheckConstraint {
 	return desc.getExistingOrNewConstraintCache().checksEnforced
 }
 
-func (desc *wrapper) EnforcedCheckValidators() []catalog.CheckConstraintValidator {
-	return desc.getExistingOrNewConstraintCache().checkValidators
-}
-
 // OutboundForeignKeys implements the catalog.TableDescriptor interface.
 func (desc *wrapper) OutboundForeignKeys() []catalog.ForeignKeyConstraint {
 	return desc.getExistingOrNewConstraintCache().fks
@@ -426,6 +418,35 @@ func InitTableDescriptor(
 	}
 }
 
+// PrimaryKeyString returns the pretty-printed primary key declaration for a
+// table descriptor.
+func PrimaryKeyString(desc catalog.TableDescriptor) string {
+	primaryIdx := desc.GetPrimaryIndex()
+	f := tree.NewFmtCtx(tree.FmtSimple)
+	f.WriteString("PRIMARY KEY (")
+	startIdx := primaryIdx.ExplicitColumnStartIdx()
+	for i, n := startIdx, primaryIdx.NumKeyColumns(); i < n; i++ {
+		if i > startIdx {
+			f.WriteString(", ")
+		}
+		// Primary key columns cannot be inaccessible computed columns, so it is
+		// safe to always print the column name. For secondary indexes, we have
+		// to print inaccessible computed column expressions. See
+		// catformat.FormatIndexElements.
+		name := primaryIdx.GetKeyColumnName(i)
+		f.FormatNameP(&name)
+		f.WriteByte(' ')
+		f.WriteString(primaryIdx.GetKeyColumnDirection(i).String())
+	}
+	f.WriteByte(')')
+	if primaryIdx.IsSharded() {
+		f.WriteString(
+			fmt.Sprintf(" USING HASH WITH (bucket_count=%v)", primaryIdx.GetSharded().ShardBuckets),
+		)
+	}
+	return f.CloseAndGetString()
+}
+
 // ColumnNamePlaceholder constructs a placeholder name for a column based on its
 // id.
 func ColumnNamePlaceholder(id descpb.ColumnID) string {
@@ -442,12 +463,6 @@ func IndexNamePlaceholder(id descpb.IndexID) string {
 // on its id.
 func ConstraintNamePlaceholder(id descpb.ConstraintID) string {
 	return fmt.Sprintf("crdb_internal_constraint_%d_name_placeholder", id)
-}
-
-// PolicyNamePlaceholder constructs a placeholder name for a policy based
-// on its id.
-func PolicyNamePlaceholder(id descpb.PolicyID) string {
-	return fmt.Sprintf("crdb_internal_policy_%d_name_placeholder", id)
 }
 
 // RenameColumnInTable will rename the column in tableDesc from oldName to
@@ -505,25 +520,8 @@ func RenameColumnInTable(
 		}
 	}
 
-	// Rename the column in any policy expressions.
-	for i := range tableDesc.GetPolicies() {
-		p := &tableDesc.GetPolicies()[i]
-		if p.WithCheckExpr != "" {
-			if err := renameInExpr(&p.WithCheckExpr); err != nil {
-				return err
-			}
-		}
-		if p.UsingExpr != "" {
-			if err := renameInExpr(&p.UsingExpr); err != nil {
-				return err
-			}
-		}
-	}
-
 	// Do all of the above renames inside check constraints, computed expressions,
-	// idx predicates that are in mutations. Policies are excluded here,
-	// as they cannot be modified using the legacy schema changer. Therefore,
-	// no mutations exist for policies.
+	// and idx predicates that are in mutations.
 	for i := range tableDesc.Mutations {
 		m := &tableDesc.Mutations[i]
 		if constraint := m.GetConstraint(); constraint != nil {

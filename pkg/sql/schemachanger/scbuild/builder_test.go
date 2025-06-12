@@ -51,8 +51,6 @@ func TestBuildDataDriven(t *testing.T) {
 
 	ctx := context.Background()
 
-	skip.UnderRace(t, "expensive and can easily extend past test timeout")
-
 	datadriven.Walk(t, datapathutils.TestDataPath(t), func(t *testing.T, path string) {
 		for _, depsType := range []struct {
 			name                string
@@ -91,13 +89,12 @@ func TestBuildDataDriven(t *testing.T) {
 								sctestdeps.ReadSessionDataFromDB(
 									t,
 									tdb,
-									func(sd *sessiondata.SessionData, localData sessiondatapb.LocalOnlySessionData) {
+									func(sd *sessiondata.SessionData) {
 										// For setting up a builder inside tests we will ensure that the new schema
 										// changer will allow non-fully implemented operations.
-										sd.NewSchemaChangerMode = sessiondatapb.UseNewSchemaChangerUnsafeAlways
+										sd.NewSchemaChangerMode = sessiondatapb.UseNewSchemaChangerUnsafe
 										sd.ApplicationName = ""
 										sd.EnableUniqueWithoutIndexConstraints = true
-										sd.SerialNormalizationMode = localData.SerialNormalizationMode
 									},
 								),
 							),
@@ -164,14 +161,12 @@ func run(
 			}
 		}
 		var output scpb.CurrentState
-		var logSchemaChangesFn scbuild.LogSchemaChangerEventsFn
 		withDependencies(t, s, nodeID, tdb, func(deps scbuild.Dependencies) {
 			stmts, err := parser.Parse(d.Input)
 			require.NoError(t, err)
 			for i := range stmts {
-				output, logSchemaChangesFn, err = scbuild.Build(ctx, deps, output, stmts[i].AST, mon.NewStandaloneUnlimitedAccount())
+				output, err = scbuild.Build(ctx, deps, output, stmts[i].AST, nil /* memAcc */)
 				require.NoErrorf(t, err, "%s: %s", d.Pos, stmts[i].SQL)
-				require.NoError(t, logSchemaChangesFn(ctx))
 			}
 		})
 		return marshalState(t, output)
@@ -183,7 +178,7 @@ func run(
 			require.NotEmpty(t, stmts)
 
 			for _, stmt := range stmts {
-				_, _, err = scbuild.Build(ctx, deps, scpb.CurrentState{}, stmt.AST, mon.NewStandaloneUnlimitedAccount())
+				_, err = scbuild.Build(ctx, deps, scpb.CurrentState{}, stmt.AST, nil /* memAcc */)
 				expected := scerrors.NotImplementedError(nil)
 				require.Errorf(t, err, "%s: expected %T instead of success for", stmt.SQL, expected)
 				require.Truef(t, scerrors.HasNotImplemented(err), "%s: expected %T instead of %v", stmt.SQL, expected, err)
@@ -292,7 +287,7 @@ func TestBuildIsMemoryMonitored(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderDuress(t, "takes too long; creates thousands of tables")
+	skip.UnderDeadlock(t, "takes too long")
 
 	ctx := context.Background()
 	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
@@ -311,16 +306,21 @@ func TestBuildIsMemoryMonitored(t *testing.T) {
 	tdb.Exec(t, `select crdb_internal.generate_test_objects('test',  5000);`)
 	tdb.Exec(t, `use system;`)
 
-	monitor := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("test-sc-build-mon"),
-		Settings: s.ClusterSettings(),
-	})
+	monitor := mon.NewMonitor(
+		"test-sc-build-mon",
+		mon.MemoryResource,
+		nil,           /* curCount */
+		nil,           /* maxHist */
+		-1,            /* increment */
+		math.MaxInt64, /* noteworthy */
+		s.ClusterSettings(),
+	)
 	monitor.Start(ctx, nil, mon.NewStandaloneBudget(5*1024*1024 /* 5MiB */))
 	memAcc := monitor.MakeBoundAccount()
 	sctestutils.WithBuilderDependenciesFromTestServer(s.ApplicationLayer(), s.NodeID(), func(dependencies scbuild.Dependencies) {
 		stmt, err := parser.ParseOne(`DROP DATABASE defaultdb CASCADE`)
 		require.NoError(t, err)
-		_, _, err = scbuild.Build(ctx, dependencies, scpb.CurrentState{}, stmt.AST, &memAcc)
+		_, err = scbuild.Build(ctx, dependencies, scpb.CurrentState{}, stmt.AST, &memAcc)
 		require.ErrorContainsf(t, err, `test-sc-build-mon: memory budget exceeded:`, "got a memory usage of: %d", memAcc.Allocated())
 	})
 }

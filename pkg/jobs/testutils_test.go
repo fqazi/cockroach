@@ -78,7 +78,6 @@ func newTestHelperForTables(
 	s, db, _ := serverutils.StartServer(t, args)
 
 	sqlDB := sqlutils.MakeSQLRunner(db)
-	sqlDB.Exec(t, "CREATE USER testuser")
 
 	if envTableType == jobstest.UseTestTables {
 		sqlDB.Exec(t, jobstest.GetScheduledJobsTableSchema(env))
@@ -130,11 +129,11 @@ func (h *testHelper) newScheduledJobForExecutor(
 }
 
 // loadSchedule loads  all columns for the specified scheduled job.
-func (h *testHelper) loadSchedule(t *testing.T, id jobspb.ScheduleID) *ScheduledJob {
+func (h *testHelper) loadSchedule(t *testing.T, id int64) *ScheduledJob {
 	j := NewScheduledJob(h.env)
 	row, cols, err := h.cfg.DB.Executor().QueryRowExWithCols(
 		context.Background(), "sched-load", nil,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		fmt.Sprintf(
 			"SELECT * FROM %s WHERE schedule_id = %d",
 			h.env.ScheduledJobsTableName(), id),
@@ -164,17 +163,18 @@ func registerScopedScheduledJobExecutor(name string, ex ScheduledJobExecutor) fu
 // addFakeJob adds a fake job associated with the specified scheduleID.
 // Returns the id of the newly created job.
 func addFakeJob(
-	t *testing.T, h *testHelper, scheduleID jobspb.ScheduleID, state State, txn isql.Txn,
+	t *testing.T, h *testHelper, scheduleID int64, status Status, txn isql.Txn,
 ) jobspb.JobID {
+	payload := []byte("fake payload")
 	datums, err := txn.QueryRowEx(context.Background(), "fake-job", txn.KV(),
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		fmt.Sprintf(`
-INSERT INTO %s (created_by_type, created_by_id, status)
-VALUES ($1, $2, $3)
+INSERT INTO %s (created_by_type, created_by_id, status, payload)
+VALUES ($1, $2, $3, $4)
 RETURNING id`,
 			h.env.SystemJobsTableName(),
 		),
-		CreatedByScheduledJobs, scheduleID, state,
+		CreatedByScheduledJobs, scheduleID, status, payload,
 	)
 	require.NoError(t, err)
 	require.NotNil(t, datums)

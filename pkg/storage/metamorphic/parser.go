@@ -58,20 +58,18 @@ func parseOutputPreamble(f io.Reader) (cfg engineConfig, seed int64, err error) 
 		optsBuf.Write(b)
 	}
 	cfg.opts = storage.DefaultPebbleOptions()
-	err = cfg.opts.Parse(optsBuf.String(), parseHooks)
-	return cfg, seed, err
-}
-
-var parseHooks = &pebble.ParseHooks{
-	NewFilterPolicy: func(name string) (pebble.FilterPolicy, error) {
-		switch name {
-		case "none":
+	err = cfg.opts.Parse(optsBuf.String(), &pebble.ParseHooks{
+		NewFilterPolicy: func(name string) (pebble.FilterPolicy, error) {
+			switch name {
+			case "none":
+				return nil, nil
+			case "rocksdb.BuiltinBloomFilter":
+				return bloom.FilterPolicy(10), nil
+			}
 			return nil, nil
-		case "rocksdb.BuiltinBloomFilter":
-			return bloom.FilterPolicy(10), nil
-		}
-		return nil, nil
-	},
+		},
+	})
+	return cfg, seed, err
 }
 
 func readCommentString(r *bufio.Reader, prefix string) (string, error) {

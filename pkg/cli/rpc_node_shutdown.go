@@ -69,6 +69,7 @@ func doDrain(
 				string(server.QueryShutdownTimeout.InternalKey()),
 				string(kvserver.LeaseTransferPerIterationTimeout.InternalKey()),
 			},
+			UnredactedValues: true,
 		})
 		if err != nil {
 			return err

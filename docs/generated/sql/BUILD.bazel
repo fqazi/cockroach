@@ -9,7 +9,7 @@ genrule(
     cmd = """
 $(location //pkg/cmd/docgen) functions $(RULEDIR) --quiet
 """,
-    tools = ["//pkg/cmd/docgen"],
+    exec_tools = ["//pkg/cmd/docgen"],
     visibility = [
         ":__pkg__",
         "//pkg/gen:__pkg__",

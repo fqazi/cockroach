@@ -55,7 +55,7 @@ func (s *Smither) canRecurseScalar(isPredicate bool, typ *types.T) bool {
 // Smither option is `true`, the desired expression type is boolean, and the
 // expression is being generated for use in a query predicate.
 func (s *Smither) avoidConstantBooleanExpressions(isPredicate bool, typ *types.T) bool {
-	if isPredicate && s.unlikelyConstantPredicate && typ.Identical(types.Bool) {
+	if isPredicate && s.unlikelyConstantPredicate && typ == types.Bool {
 		return true
 	}
 	return false

@@ -204,13 +204,6 @@ CREATE TABLE a (b JSONB) -- fully parenthesized
 CREATE TABLE a (b JSONB) -- literals removed
 CREATE TABLE _ (_ JSONB) -- identifiers removed
 
-parse
-CREATE TABLE a (b JSONPATH)
-----
-CREATE TABLE a (b JSONPATH)
-CREATE TABLE a (b JSONPATH) -- fully parenthesized
-CREATE TABLE a (b JSONPATH) -- literals removed
-CREATE TABLE _ (_ JSONPATH) -- identifiers removed
 
 parse
 CREATE TABLE a (b FLOAT4)
@@ -555,35 +548,35 @@ CREATE TABLE _ (_ INT8 UNIQUE) -- identifiers removed
 parse
 CREATE TABLE a (b INT, UNIQUE INDEX foo (b))
 ----
-CREATE TABLE a (b INT8, UNIQUE INDEX foo (b)) -- normalized!
-CREATE TABLE a (b INT8, UNIQUE INDEX foo (b)) -- fully parenthesized
-CREATE TABLE a (b INT8, UNIQUE INDEX foo (b)) -- literals removed
-CREATE TABLE _ (_ INT8, UNIQUE INDEX _ (_)) -- identifiers removed
+CREATE TABLE a (b INT8, CONSTRAINT foo UNIQUE (b)) -- normalized!
+CREATE TABLE a (b INT8, CONSTRAINT foo UNIQUE (b)) -- fully parenthesized
+CREATE TABLE a (b INT8, CONSTRAINT foo UNIQUE (b)) -- literals removed
+CREATE TABLE _ (_ INT8, CONSTRAINT _ UNIQUE (_)) -- identifiers removed
 
 parse
 CREATE TABLE a (b INT, UNIQUE INDEX foo (b) WHERE c > 3)
 ----
-CREATE TABLE a (b INT8, UNIQUE INDEX foo (b) WHERE c > 3) -- normalized!
-CREATE TABLE a (b INT8, UNIQUE INDEX foo (b) WHERE ((c) > (3))) -- fully parenthesized
-CREATE TABLE a (b INT8, UNIQUE INDEX foo (b) WHERE c > _) -- literals removed
-CREATE TABLE _ (_ INT8, UNIQUE INDEX _ (_) WHERE _ > 3) -- identifiers removed
+CREATE TABLE a (b INT8, CONSTRAINT foo UNIQUE (b) WHERE c > 3) -- normalized!
+CREATE TABLE a (b INT8, CONSTRAINT foo UNIQUE (b) WHERE ((c) > (3))) -- fully parenthesized
+CREATE TABLE a (b INT8, CONSTRAINT foo UNIQUE (b) WHERE c > _) -- literals removed
+CREATE TABLE _ (_ INT8, CONSTRAINT _ UNIQUE (_) WHERE _ > 3) -- identifiers removed
 
 parse
 CREATE TABLE a (UNIQUE INDEX (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (1)))
 ----
-CREATE TABLE a (UNIQUE INDEX (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (1)))
-CREATE TABLE a (UNIQUE INDEX (b) PARTITION BY LIST (c) (PARTITION d VALUES IN ((1)))) -- fully parenthesized
-CREATE TABLE a (UNIQUE INDEX (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (_))) -- literals removed
-CREATE TABLE _ (UNIQUE INDEX (_) PARTITION BY LIST (_) (PARTITION _ VALUES IN (1))) -- identifiers removed
+CREATE TABLE a (UNIQUE (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (1))) -- normalized!
+CREATE TABLE a (UNIQUE (b) PARTITION BY LIST (c) (PARTITION d VALUES IN ((1)))) -- fully parenthesized
+CREATE TABLE a (UNIQUE (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (_))) -- literals removed
+CREATE TABLE _ (UNIQUE (_) PARTITION BY LIST (_) (PARTITION _ VALUES IN (1))) -- identifiers removed
 
 # Regression test for #95238
 parse
 CREATE TABLE a (UNIQUE INDEX (b) PARTITION BY LIST ("c d") (PARTITION "e f" VALUES IN (1)))
 ----
-CREATE TABLE a (UNIQUE INDEX (b) PARTITION BY LIST ("c d") (PARTITION "e f" VALUES IN (1)))
-CREATE TABLE a (UNIQUE INDEX (b) PARTITION BY LIST ("c d") (PARTITION "e f" VALUES IN ((1)))) -- fully parenthesized
-CREATE TABLE a (UNIQUE INDEX (b) PARTITION BY LIST ("c d") (PARTITION "e f" VALUES IN (_))) -- literals removed
-CREATE TABLE _ (UNIQUE INDEX (_) PARTITION BY LIST (_) (PARTITION _ VALUES IN (1))) -- identifiers removed
+CREATE TABLE a (UNIQUE (b) PARTITION BY LIST ("c d") (PARTITION "e f" VALUES IN (1))) -- normalized!
+CREATE TABLE a (UNIQUE (b) PARTITION BY LIST ("c d") (PARTITION "e f" VALUES IN ((1)))) -- fully parenthesized
+CREATE TABLE a (UNIQUE (b) PARTITION BY LIST ("c d") (PARTITION "e f" VALUES IN (_))) -- literals removed
+CREATE TABLE _ (UNIQUE (_) PARTITION BY LIST (_) (PARTITION _ VALUES IN (1))) -- identifiers removed
 
 parse
 CREATE TABLE a (b INT8 UNIQUE WITHOUT INDEX)
@@ -1377,31 +1370,6 @@ CREATE TABLE a (b INT8, INVERTED INDEX (b)) -- literals removed
 CREATE TABLE _ (_ INT8, INVERTED INDEX (_)) -- identifiers removed
 
 parse
-CREATE TABLE a (b INT8, VECTOR INDEX (b))
-----
-CREATE TABLE a (b INT8, VECTOR INDEX (b))
-CREATE TABLE a (b INT8, VECTOR INDEX (b)) -- fully parenthesized
-CREATE TABLE a (b INT8, VECTOR INDEX (b)) -- literals removed
-CREATE TABLE _ (_ INT8, VECTOR INDEX (_)) -- identifiers removed
-
-# Explicitly name the index.
-parse
-CREATE TABLE a (b INT8, INVERTED INDEX i (b))
-----
-CREATE TABLE a (b INT8, INVERTED INDEX i (b))
-CREATE TABLE a (b INT8, INVERTED INDEX i (b)) -- fully parenthesized
-CREATE TABLE a (b INT8, INVERTED INDEX i (b)) -- literals removed
-CREATE TABLE _ (_ INT8, INVERTED INDEX _ (_)) -- identifiers removed
-
-parse
-CREATE TABLE a (b INT8, VECTOR INDEX i (b))
-----
-CREATE TABLE a (b INT8, VECTOR INDEX i (b))
-CREATE TABLE a (b INT8, VECTOR INDEX i (b)) -- fully parenthesized
-CREATE TABLE a (b INT8, VECTOR INDEX i (b)) -- literals removed
-CREATE TABLE _ (_ INT8, VECTOR INDEX _ (_)) -- identifiers removed
-
-parse
 CREATE TABLE a (b INT8, c INT8 REFERENCES foo)
 ----
 CREATE TABLE a (b INT8, c INT8 REFERENCES foo)
@@ -1634,14 +1602,6 @@ CREATE TABLE a (b INT8, INVERTED INDEX (b) WHERE b > _) -- literals removed
 CREATE TABLE _ (_ INT8, INVERTED INDEX (_) WHERE _ > 3) -- identifiers removed
 
 parse
-CREATE TABLE a (b INT8, VECTOR INDEX (b) WHERE b > 3)
-----
-CREATE TABLE a (b INT8, VECTOR INDEX (b) WHERE b > 3)
-CREATE TABLE a (b INT8, VECTOR INDEX (b) WHERE ((b) > (3))) -- fully parenthesized
-CREATE TABLE a (b INT8, VECTOR INDEX (b) WHERE b > _) -- literals removed
-CREATE TABLE _ (_ INT8, VECTOR INDEX (_) WHERE _ > 3) -- identifiers removed
-
-parse
 CREATE TABLE a (b INT8, c STRING, INDEX (b ASC, c DESC) STORING (c))
 ----
 CREATE TABLE a (b INT8, c STRING, INDEX (b ASC, c DESC) STORING (c))
@@ -1872,14 +1832,6 @@ CREATE TABLE a (INVERTED INDEX (b) PARTITION BY LIST (c) (PARTITION d VALUES IN 
 CREATE TABLE _ (INVERTED INDEX (_) PARTITION BY LIST (_) (PARTITION _ VALUES IN (1))) -- identifiers removed
 
 parse
-CREATE TABLE a (VECTOR INDEX (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (1)))
-----
-CREATE TABLE a (VECTOR INDEX (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (1)))
-CREATE TABLE a (VECTOR INDEX (b) PARTITION BY LIST (c) (PARTITION d VALUES IN ((1)))) -- fully parenthesized
-CREATE TABLE a (VECTOR INDEX (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (_))) -- literals removed
-CREATE TABLE _ (VECTOR INDEX (_) PARTITION BY LIST (_) (PARTITION _ VALUES IN (1))) -- identifiers removed
-
-parse
 CREATE TABLE a (UNIQUE (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (1)))
 ----
 CREATE TABLE a (UNIQUE (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (1)))
@@ -1902,14 +1854,6 @@ CREATE INVERTED INDEX ON a (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (1))
 CREATE INVERTED INDEX ON a (b) PARTITION BY LIST (c) (PARTITION d VALUES IN ((1))) -- fully parenthesized
 CREATE INVERTED INDEX ON a (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (_)) -- literals removed
 CREATE INVERTED INDEX ON _ (_) PARTITION BY LIST (_) (PARTITION _ VALUES IN (1)) -- identifiers removed
-
-parse
-CREATE VECTOR INDEX ON a (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (1))
-----
-CREATE VECTOR INDEX ON a (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (1))
-CREATE VECTOR INDEX ON a (b) PARTITION BY LIST (c) (PARTITION d VALUES IN ((1))) -- fully parenthesized
-CREATE VECTOR INDEX ON a (b) PARTITION BY LIST (c) (PARTITION d VALUES IN (_)) -- literals removed
-CREATE VECTOR INDEX ON _ (_) PARTITION BY LIST (_) (PARTITION _ VALUES IN (1)) -- identifiers removed
 
 parse
 CREATE INDEX IF NOT EXISTS a ON b (c) PARTITION BY LIST (d) (PARTITION e VALUES IN (1))
@@ -1982,22 +1926,6 @@ CREATE TABLE a AS SELECT * FROM b LIMIT 3
 CREATE TABLE a AS SELECT (*) FROM b LIMIT (3) -- fully parenthesized
 CREATE TABLE a AS SELECT * FROM b LIMIT _ -- literals removed
 CREATE TABLE _ AS SELECT * FROM _ LIMIT 3 -- identifiers removed
-
-parse
-CREATE TABLE a AS SELECT * FROM b AS OF SYSTEM TIME '-20s' ORDER BY c
-----
-CREATE TABLE a AS SELECT * FROM b AS OF SYSTEM TIME '-20s' ORDER BY c
-CREATE TABLE a AS SELECT (*) FROM b AS OF SYSTEM TIME ('-20s') ORDER BY (c) -- fully parenthesized
-CREATE TABLE a AS SELECT * FROM b AS OF SYSTEM TIME '_' ORDER BY c -- literals removed
-CREATE TABLE _ AS SELECT * FROM _ AS OF SYSTEM TIME '-20s' ORDER BY _ -- identifiers removed
-
-parse
-CREATE TABLE IF NOT EXISTS a AS SELECT * FROM b AS OF SYSTEM TIME '-20s' ORDER BY c
-----
-CREATE TABLE IF NOT EXISTS a AS SELECT * FROM b AS OF SYSTEM TIME '-20s' ORDER BY c
-CREATE TABLE IF NOT EXISTS a AS SELECT (*) FROM b AS OF SYSTEM TIME ('-20s') ORDER BY (c) -- fully parenthesized
-CREATE TABLE IF NOT EXISTS a AS SELECT * FROM b AS OF SYSTEM TIME '_' ORDER BY c -- literals removed
-CREATE TABLE IF NOT EXISTS _ AS SELECT * FROM _ AS OF SYSTEM TIME '-20s' ORDER BY _ -- identifiers removed
 
 parse
 CREATE TABLE IF NOT EXISTS a AS SELECT * FROM b LIMIT 3
@@ -2533,14 +2461,6 @@ CREATE TABLE a (b INT8, c STRING, INVERTED INDEX (b ASC, c DESC) WHERE c > _ NOT
 CREATE TABLE _ (_ INT8, _ STRING, INVERTED INDEX (_ ASC, _ DESC) WHERE _ > 3 NOT VISIBLE) -- identifiers removed
 
 parse
-CREATE TABLE a (b INT8, c STRING, VECTOR INDEX (b ASC, c DESC) WHERE c > 3 NOT VISIBLE)
-----
-CREATE TABLE a (b INT8, c STRING, VECTOR INDEX (b ASC, c DESC) WHERE c > 3 NOT VISIBLE)
-CREATE TABLE a (b INT8, c STRING, VECTOR INDEX (b ASC, c DESC) WHERE ((c) > (3)) NOT VISIBLE) -- fully parenthesized
-CREATE TABLE a (b INT8, c STRING, VECTOR INDEX (b ASC, c DESC) WHERE c > _ NOT VISIBLE) -- literals removed
-CREATE TABLE _ (_ INT8, _ STRING, VECTOR INDEX (_ ASC, _ DESC) WHERE _ > 3 NOT VISIBLE) -- identifiers removed
-
-parse
 CREATE TABLE a (b INT8, c STRING, INDEX (b ASC, c DESC) STORING (c) VISIBILITY 0.2)
 ----
 CREATE TABLE a (b INT8, c STRING, INDEX (b ASC, c DESC) STORING (c) VISIBILITY 0.20) -- normalized!
@@ -2574,8 +2494,12 @@ parse-no-verify
 CREATE TABLE a (b INT, UNIQUE INDEX foo (b) WHERE c > 3 NOT VISIBLE)
 ----
 
-# The following test case makes sure that creating an invisible primary index is
+# The following test cases make sure that creating an invisible primary index is
 # not supported by the parser.
+parse-no-verify
+CREATE TABLE a (b INT8 PRIMARY KEY NOT VISIBLE)
+----
+
 error
 CREATE TABLE a (b INT8, c STRING, PRIMARY KEY (b, c, "0") NOT VISIBLE)
 ----
@@ -2605,16 +2529,6 @@ CREATE TABLE a (b INT8, c STRING, CONSTRAINT d UNIQUE WITHOUT INDEX (b, c) NOT V
                                                                                ^
 HINT: try \h CREATE TABLE
 
-# NOT VISIBLE here applies to the column, not the primary index, so it is
-# allowed.
-parse
-CREATE TABLE a (b INT8 PRIMARY KEY NOT VISIBLE)
-----
-CREATE TABLE a (b INT8 NOT VISIBLE PRIMARY KEY) -- normalized!
-CREATE TABLE a (b INT8 NOT VISIBLE PRIMARY KEY) -- fully parenthesized
-CREATE TABLE a (b INT8 NOT VISIBLE PRIMARY KEY) -- literals removed
-CREATE TABLE _ (_ INT8 NOT VISIBLE PRIMARY KEY) -- identifiers removed
-
 # Regression test for #95238
 parse
 ALTER TABLE a PARTITION ALL BY LIST ("a b", "c.d") (PARTITION "e.f" VALUES IN (1))
@@ -2623,51 +2537,3 @@ ALTER TABLE a PARTITION ALL BY LIST ("a b", "c.d") (PARTITION "e.f" VALUES IN (1
 ALTER TABLE a PARTITION ALL BY LIST ("a b", "c.d") (PARTITION "e.f" VALUES IN ((1))) -- fully parenthesized
 ALTER TABLE a PARTITION ALL BY LIST ("a b", "c.d") (PARTITION "e.f" VALUES IN (_)) -- literals removed
 ALTER TABLE _ PARTITION ALL BY LIST (_, _) (PARTITION _ VALUES IN (1)) -- identifiers removed
-
-parse
-CREATE TABLE a (a VECTOR(3))
-----
-CREATE TABLE a (a VECTOR(3))
-CREATE TABLE a (a VECTOR(3)) -- fully parenthesized
-CREATE TABLE a (a VECTOR(3)) -- literals removed
-CREATE TABLE _ (_ VECTOR(3)) -- identifiers removed
-
-parse
-CREATE TABLE a (a VECTOR)
-----
-CREATE TABLE a (a VECTOR)
-CREATE TABLE a (a VECTOR) -- fully parenthesized
-CREATE TABLE a (a VECTOR) -- literals removed
-CREATE TABLE _ (_ VECTOR) -- identifiers removed
-
-parse
-CREATE TABLE t (a INT PRIMARY KEY, b INT, UNIQUE INDEX ( b NULLS FIRST ) USING HASH WITH ( 'foo' = 'bar' ))
-----
-CREATE TABLE t (a INT8 PRIMARY KEY, b INT8, UNIQUE INDEX (b NULLS FIRST) USING HASH WITH ('foo' = 'bar')) -- normalized!
-CREATE TABLE t (a INT8 PRIMARY KEY, b INT8, UNIQUE INDEX (b NULLS FIRST) USING HASH WITH ('foo' = ('bar'))) -- fully parenthesized
-CREATE TABLE t (a INT8 PRIMARY KEY, b INT8, UNIQUE INDEX (b NULLS FIRST) USING HASH WITH ('foo' = '_')) -- literals removed
-CREATE TABLE _ (_ INT8 PRIMARY KEY, _ INT8, UNIQUE INDEX (_ NULLS FIRST) USING HASH WITH ('foo' = 'bar')) -- identifiers removed
-
-parse
-CREATE TABLE t (a INT PRIMARY KEY, b INT, UNIQUE INDEX ( b NULLS FIRST ) USING HASH WITH BUCKET_COUNT = 10 WITH ( 'foo' = 'bar' ))
-----
-CREATE TABLE t (a INT8 PRIMARY KEY, b INT8, UNIQUE INDEX (b NULLS FIRST) USING HASH WITH BUCKET_COUNT = 10 WITH ('foo' = 'bar')) -- normalized!
-CREATE TABLE t (a INT8 PRIMARY KEY, b INT8, UNIQUE INDEX (b NULLS FIRST) USING HASH WITH BUCKET_COUNT = (10) WITH ('foo' = ('bar'))) -- fully parenthesized
-CREATE TABLE t (a INT8 PRIMARY KEY, b INT8, UNIQUE INDEX (b NULLS FIRST) USING HASH WITH BUCKET_COUNT = _ WITH ('foo' = '_')) -- literals removed
-CREATE TABLE _ (_ INT8 PRIMARY KEY, _ INT8, UNIQUE INDEX (_ NULLS FIRST) USING HASH WITH BUCKET_COUNT = 10 WITH ('foo' = 'bar')) -- identifiers removed
-
-parse
-CREATE TABLE t (a INT PRIMARY KEY, b INT, UNIQUE INDEX (b) USING HASH)
-----
-CREATE TABLE t (a INT8 PRIMARY KEY, b INT8, UNIQUE INDEX (b) USING HASH) -- normalized!
-CREATE TABLE t (a INT8 PRIMARY KEY, b INT8, UNIQUE INDEX (b) USING HASH) -- fully parenthesized
-CREATE TABLE t (a INT8 PRIMARY KEY, b INT8, UNIQUE INDEX (b) USING HASH) -- literals removed
-CREATE TABLE _ (_ INT8 PRIMARY KEY, _ INT8, UNIQUE INDEX (_) USING HASH) -- identifiers removed
-
-parse
-CREATE TABLE t (a INT PRIMARY KEY, b INT, UNIQUE INDEX idx (b) WITH ( 'foo' = 'bar' ))
-----
-CREATE TABLE t (a INT8 PRIMARY KEY, b INT8, UNIQUE INDEX idx (b) WITH ('foo' = 'bar')) -- normalized!
-CREATE TABLE t (a INT8 PRIMARY KEY, b INT8, UNIQUE INDEX idx (b) WITH ('foo' = ('bar'))) -- fully parenthesized
-CREATE TABLE t (a INT8 PRIMARY KEY, b INT8, UNIQUE INDEX idx (b) WITH ('foo' = '_')) -- literals removed
-CREATE TABLE _ (_ INT8 PRIMARY KEY, _ INT8, UNIQUE INDEX _ (_) WITH ('foo' = 'bar')) -- identifiers removed

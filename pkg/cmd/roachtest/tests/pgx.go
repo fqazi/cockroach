@@ -19,9 +19,6 @@ import (
 )
 
 var pgxReleaseTagRegex = regexp.MustCompile(`^v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<point>\d+)$`)
-
-// WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
-// This is used by docs automation to produce a list of supported versions for ORM's.
 var supportedPGXTag = "v5.3.1"
 
 // This test runs pgx's full test suite against a single cockroach node.
@@ -77,23 +74,10 @@ func registerPgx(r registry.Registry) {
 		); err != nil {
 			t.Fatal(err)
 		}
-
-		for original, replacement := range map[string]string{
-			"create type fruit": "drop type if exists public.fruit; create type fruit",
-			"t.Parallel()":      "", // SAFE FOR TESTING
-		} {
-			if err := repeatRunE(
-				ctx, t, c, node, "patch test to workaround flaky cleanup logic",
-				fmt.Sprintf(`find /mnt/data1/pgx/ -name "query_test.go" | xargs sed -i -e "s/%s/%s/g"`, original, replacement),
-			); err != nil {
-				t.Fatal(err)
-			}
-		}
-
 		// It's safer to clean up dependencies this way than it is to give the cluster
 		// wipe root access.
 		defer func() {
-			c.Run(ctx, option.WithNodes(c.All()), "go clean -modcache")
+			c.Run(ctx, c.All(), "go clean -modcache")
 		}()
 
 		RunningStatus := fmt.Sprintf("Running cockroach version %s, using blocklist %s, using ignorelist %s",

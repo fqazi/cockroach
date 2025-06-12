@@ -134,20 +134,8 @@ func prev(version roachpb.Version) roachpb.Version {
 		if version.Minor > 1 {
 			return roachpb.Version{Major: version.Major, Minor: version.Minor - 1}
 		}
-
-		// version is the first release of that year, e.g. MM.1
-
-		v25_1 := roachpb.Version{Major: 25, Minor: 1}
-		if v25_1.Equal(version) {
-			// For 2024, we had 3 releases that year.
-			return roachpb.Version{Major: 24, Minor: 3}
-		}
-		if v25_1.Less(version) {
-			// 2025 onwards, we had 4 releases per year.
-			return roachpb.Version{Major: version.Major - 1, Minor: 4}
-		}
-
-		// Prior to 2024, we had 2 releases per year.
+		// Here we assume that there's going to only be 2 releases per year.
+		// Otherwise we'd need to keep some history of what releases we've had.
 		return roachpb.Version{Major: version.Major - 1, Minor: 2}
 	}
 
@@ -169,55 +157,11 @@ func prev(version roachpb.Version) roachpb.Version {
 	}
 }
 
-func TestPrev(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	tests := []struct {
-		this, prev roachpb.Version
-	}{
-		// releases 2025+: 4 releases per year.
-		{
-			this: roachpb.Version{Major: 28, Minor: 4},
-			prev: roachpb.Version{Major: 28, Minor: 3},
-		},
-		{
-			this: roachpb.Version{Major: 28, Minor: 1},
-			prev: roachpb.Version{Major: 27, Minor: 4},
-		},
-		{
-			this: roachpb.Version{Major: 26, Minor: 1},
-			prev: roachpb.Version{Major: 25, Minor: 4},
-		},
-		// releases 2024: 3 releases per year.
-		{
-			this: roachpb.Version{Major: 25, Minor: 1},
-			prev: roachpb.Version{Major: 24, Minor: 3},
-		},
-		// releases 2019-2023: Calendar versioning, with 2 releases per year
-		{
-			this: roachpb.Version{Major: 24, Minor: 1},
-			prev: roachpb.Version{Major: 23, Minor: 2},
-		},
-		{
-			this: roachpb.Version{Major: 21, Minor: 1},
-			prev: roachpb.Version{Major: 20, Minor: 2},
-		},
-	}
-	for _, test := range tests {
-		t.Run("", func(t *testing.T) {
-			if p := prev(test.this); p != test.prev {
-				t.Errorf("expected %s, got %s", test.prev, p)
-			}
-		})
-	}
-}
-
 func TestClusterVersionPersistedOnJoin(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var newVersion = clusterversion.Latest.Version()
+	var newVersion = clusterversion.TestingBinaryVersion
 	var oldVersion = prev(newVersion)
 
 	// Starts 3 nodes that have cluster versions set to be oldVersion and
@@ -263,7 +207,7 @@ func TestClusterVersionUpgrade(t *testing.T) {
 
 	ctx := context.Background()
 
-	var newVersion = clusterversion.Latest.Version()
+	var newVersion = clusterversion.TestingBinaryVersion
 	var oldVersion = prev(newVersion)
 
 	disableUpgradeCh := make(chan struct{})
@@ -272,7 +216,7 @@ func TestClusterVersionUpgrade(t *testing.T) {
 		ServerArgs: base.TestServerArgs{
 			Knobs: base.TestingKnobs{
 				Server: &server.TestingKnobs{
-					ClusterVersionOverride:         oldVersion,
+					BinaryVersionOverride:          oldVersion,
 					DisableAutomaticVersionUpgrade: disableUpgradeCh,
 				},
 			},
@@ -401,7 +345,7 @@ func TestAllVersionsAgree(t *testing.T) {
 		TestCluster: tcRaw,
 	}
 
-	exp := clusterversion.Latest.String()
+	exp := clusterversion.TestingBinaryVersion.String()
 
 	// The node bootstrapping the cluster starts at TestingBinaryVersion, the
 	// others start at TestingMinimumSupportedVersion and it takes them a gossip
@@ -423,6 +367,20 @@ func TestAllVersionsAgree(t *testing.T) {
 	})
 }
 
+// Returns two versions v0 and v1 which correspond to adjacent releases. v1 will
+// equal the TestingBinaryMinSupportedVersion to avoid rot in tests using this
+// (as we retire old versions).
+func v0v1() (roachpb.Version, roachpb.Version) {
+	v1 := clusterversion.TestingBinaryMinSupportedVersion
+	v0 := clusterversion.TestingBinaryMinSupportedVersion
+	if v0.Minor > 0 {
+		v0.Minor--
+	} else {
+		v0.Major--
+	}
+	return v0, v1
+}
+
 // TestClusterVersionMixedVersionTooOld verifies that we're unable to bump a
 // cluster version in a mixed node cluster where one of the nodes is running a
 // binary that cannot support the targeted cluster version.
@@ -435,8 +393,7 @@ func TestClusterVersionMixedVersionTooOld(t *testing.T) {
 	// GOTRACEBACK=all, as it is on CI.
 	defer log.DisableTracebacks()()
 
-	v0 := clusterversion.MinSupported.Version()
-	v1 := clusterversion.Latest.Version()
+	v0, v1 := v0v1()
 	v0s := v0.String()
 	v1s := v1.String()
 
@@ -452,7 +409,7 @@ func TestClusterVersionMixedVersionTooOld(t *testing.T) {
 	knobs := base.TestingKnobs{
 		Server: &server.TestingKnobs{
 			DisableAutomaticVersionUpgrade: make(chan struct{}),
-			ClusterVersionOverride:         v0,
+			BinaryVersionOverride:          v0,
 		},
 		// Inject an upgrade which would run to upgrade the cluster.
 		// We'll validate that we never create a job for this upgrade.
@@ -467,11 +424,11 @@ func TestClusterVersionMixedVersionTooOld(t *testing.T) {
 				return upgrade.NewTenantUpgrade("testing",
 					v1,
 					upgrade.NoPrecondition,
-					func(ctx context.Context, version clusterversion.ClusterVersion, deps upgrade.TenantDeps) error {
+					func(
+						ctx context.Context, version clusterversion.ClusterVersion, deps upgrade.TenantDeps,
+					) error {
 						return nil
-					},
-					upgrade.RestoreActionNotRequired("test"),
-				), true
+					}), true
 			},
 		},
 	}

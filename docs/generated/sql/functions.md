@@ -105,147 +105,99 @@
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: <a href="bool.html">bool</a>[], elem: <a href="bool.html">bool</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: <a href="bool.html">bool</a>[], elem: <a href="bool.html">bool</a>, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: <a href="bytes.html">bytes</a>[], elem: <a href="bytes.html">bytes</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: <a href="bytes.html">bytes</a>[], elem: <a href="bytes.html">bytes</a>, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: <a href="date.html">date</a>[], elem: <a href="date.html">date</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: <a href="date.html">date</a>[], elem: <a href="date.html">date</a>, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: <a href="decimal.html">decimal</a>[], elem: <a href="decimal.html">decimal</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: <a href="decimal.html">decimal</a>[], elem: <a href="decimal.html">decimal</a>, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: <a href="float.html">float</a>[], elem: <a href="float.html">float</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: <a href="float.html">float</a>[], elem: <a href="float.html">float</a>, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: <a href="inet.html">inet</a>[], elem: <a href="inet.html">inet</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: <a href="inet.html">inet</a>[], elem: <a href="inet.html">inet</a>, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: <a href="int.html">int</a>[], elem: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: <a href="int.html">int</a>[], elem: <a href="int.html">int</a>, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: <a href="interval.html">interval</a>[], elem: <a href="interval.html">interval</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: <a href="interval.html">interval</a>[], elem: <a href="interval.html">interval</a>, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: <a href="string.html">string</a>[], elem: <a href="string.html">string</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: <a href="string.html">string</a>[], elem: <a href="string.html">string</a>, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: <a href="time.html">time</a>[], elem: <a href="time.html">time</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: <a href="time.html">time</a>[], elem: <a href="time.html">time</a>, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: <a href="timestamp.html">timestamp</a>[], elem: <a href="timestamp.html">timestamp</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: <a href="timestamp.html">timestamp</a>[], elem: <a href="timestamp.html">timestamp</a>, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: <a href="timestamp.html">timestamptz</a>[], elem: <a href="timestamp.html">timestamptz</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: <a href="timestamp.html">timestamptz</a>[], elem: <a href="timestamp.html">timestamptz</a>, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: <a href="uuid.html">uuid</a>[], elem: <a href="uuid.html">uuid</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: <a href="uuid.html">uuid</a>[], elem: <a href="uuid.html">uuid</a>, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: anyenum[], elem: anyenum) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: anyenum[], elem: anyenum, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: box2d[], elem: box2d) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: box2d[], elem: box2d, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: geography[], elem: geography) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: geography[], elem: geography, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: geometry[], elem: geometry) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: geometry[], elem: geometry, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: jsonb[], elem: jsonb) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: jsonb[], elem: jsonb, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: oid[], elem: oid) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: oid[], elem: oid, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: pg_lsn[], elem: pg_lsn) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: pg_lsn[], elem: pg_lsn, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: refcursor[], elem: refcursor) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: refcursor[], elem: refcursor, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: timetz[], elem: timetz) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: timetz[], elem: timetz, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: tuple[], elem: tuple) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: tuple[], elem: tuple, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: varbit[], elem: varbit) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_position"></a><code>array_position(array: varbit[], elem: varbit, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="bool.html">bool</a>[], elem: <a href="bool.html">bool</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="bool.html">bool</a>[], elem: <a href="bool.html">bool</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="bytes.html">bytes</a>[], elem: <a href="bytes.html">bytes</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="bytes.html">bytes</a>[], elem: <a href="bytes.html">bytes</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="date.html">date</a>[], elem: <a href="date.html">date</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="date.html">date</a>[], elem: <a href="date.html">date</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="decimal.html">decimal</a>[], elem: <a href="decimal.html">decimal</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="decimal.html">decimal</a>[], elem: <a href="decimal.html">decimal</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="float.html">float</a>[], elem: <a href="float.html">float</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="float.html">float</a>[], elem: <a href="float.html">float</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="inet.html">inet</a>[], elem: <a href="inet.html">inet</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="inet.html">inet</a>[], elem: <a href="inet.html">inet</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="int.html">int</a>[], elem: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="int.html">int</a>[], elem: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="interval.html">interval</a>[], elem: <a href="interval.html">interval</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="interval.html">interval</a>[], elem: <a href="interval.html">interval</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="string.html">string</a>[], elem: <a href="string.html">string</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="string.html">string</a>[], elem: <a href="string.html">string</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="time.html">time</a>[], elem: <a href="time.html">time</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="time.html">time</a>[], elem: <a href="time.html">time</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="timestamp.html">timestamp</a>[], elem: <a href="timestamp.html">timestamp</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="timestamp.html">timestamp</a>[], elem: <a href="timestamp.html">timestamp</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="timestamp.html">timestamptz</a>[], elem: <a href="timestamp.html">timestamptz</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="timestamp.html">timestamptz</a>[], elem: <a href="timestamp.html">timestamptz</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="uuid.html">uuid</a>[], elem: <a href="uuid.html">uuid</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="uuid.html">uuid</a>[], elem: <a href="uuid.html">uuid</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: anyenum[], elem: anyenum) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: anyenum[], elem: anyenum) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: box2d[], elem: box2d) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: box2d[], elem: box2d) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: geography[], elem: geography) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: geography[], elem: geography) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: geometry[], elem: geometry) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: geometry[], elem: geometry) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: jsonb[], elem: jsonb) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: jsonb[], elem: jsonb) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: oid[], elem: oid) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: oid[], elem: oid) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: pg_lsn[], elem: pg_lsn) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: pg_lsn[], elem: pg_lsn) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: refcursor[], elem: refcursor) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: refcursor[], elem: refcursor) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: timetz[], elem: timetz) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: timetz[], elem: timetz) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: tuple[], elem: tuple) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: tuple[], elem: tuple) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: varbit[], elem: varbit) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: varbit[], elem: varbit) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_prepend"></a><code>array_prepend(elem: <a href="bool.html">bool</a>, array: <a href="bool.html">bool</a>[]) &rarr; <a href="bool.html">bool</a>[]</code></td><td><span class="funcdesc"><p>Prepends <code>elem</code> to <code>array</code>, returning the result.</p>
 </span></td><td>Immutable</td></tr>
@@ -439,9 +391,9 @@
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="least"></a><code>least(anyelement...) &rarr; anyelement</code></td><td><span class="funcdesc"><p>Returns the element with the lowest value.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="num_nonnulls"></a><code>num_nonnulls(any...) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Returns the number of nonnull arguments.</p>
+<tr><td><a name="num_nonnulls"></a><code>num_nonnulls(anyelement...) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Returns the number of nonnull arguments.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="num_nulls"></a><code>num_nulls(any...) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Returns the number of null arguments.</p>
+<tr><td><a name="num_nulls"></a><code>num_nulls(anyelement...) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Returns the number of null arguments.</p>
 </span></td><td>Immutable</td></tr></tbody>
 </table>
 
@@ -978,8 +930,6 @@ available replica will error.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="round"></a><code>round(val: <a href="float.html">float</a>) &rarr; <a href="float.html">float</a></code></td><td><span class="funcdesc"><p>Rounds <code>val</code> to the nearest integer using half to even (banker’s) rounding.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="setseed"></a><code>setseed(seed: <a href="float.html">float</a>) &rarr; void</code></td><td><span class="funcdesc"><p>Sets the seed for subsequent random() calls in this session (value between -1.0 and 1.0, inclusive). There are no guarantees as to how this affects the seed of random() calls that appear in the same query as setseed().</p>
-</span></td><td>Volatile</td></tr>
 <tr><td><a name="sign"></a><code>sign(val: <a href="decimal.html">decimal</a>) &rarr; <a href="decimal.html">decimal</a></code></td><td><span class="funcdesc"><p>Determines the sign of <code>val</code>: <strong>1</strong> for positive; <strong>0</strong> for 0 values; <strong>-1</strong> for negative.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="sign"></a><code>sign(val: <a href="float.html">float</a>) &rarr; <a href="float.html">float</a></code></td><td><span class="funcdesc"><p>Determines the sign of <code>val</code>: <strong>1</strong> for positive; <strong>0</strong> for 0 values; <strong>-1</strong> for negative.</p>
@@ -1051,8 +1001,6 @@ available replica will error.</p>
 <tr><td><a name="levenshtein"></a><code>levenshtein(source: <a href="string.html">string</a>, target: <a href="string.html">string</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Calculates the Levenshtein distance between two strings. Maximum input length is 255 characters.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="levenshtein"></a><code>levenshtein(source: <a href="string.html">string</a>, target: <a href="string.html">string</a>, ins_cost: <a href="int.html">int</a>, del_cost: <a href="int.html">int</a>, sub_cost: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Calculates the Levenshtein distance between two strings. The cost parameters specify how much to charge for each edit operation. Maximum input length is 255 characters.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="metaphone"></a><code>metaphone(source: <a href="string.html">string</a>, max_output_length: <a href="int.html">int</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Convert a string to its Metaphone code. Maximum input length is 255 characters</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="soundex"></a><code>soundex(source: <a href="string.html">string</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Convert a string to its Soundex code.</p>
 </span></td><td>Immutable</td></tr></tbody>
@@ -1157,7 +1105,7 @@ available replica will error.</p>
 </span></td><td>Leakproof</td></tr>
 <tr><td><a name="fnv64a"></a><code>fnv64a(<a href="string.html">string</a>...) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Calculates the 64-bit FNV-1a hash value of a set of values.</p>
 </span></td><td>Leakproof</td></tr>
-<tr><td><a name="width_bucket"></a><code>width_bucket(operand: <a href="decimal.html">decimal</a>, b1: <a href="decimal.html">decimal</a>, b2: <a href="decimal.html">decimal</a>, count: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>return the bucket number to which operand would be assigned in a histogram having count equal-width buckets spanning the range b1 to b2. Returns 0 or count+1 for an input outside that range.</p>
+<tr><td><a name="width_bucket"></a><code>width_bucket(operand: <a href="decimal.html">decimal</a>, b1: <a href="decimal.html">decimal</a>, b2: <a href="decimal.html">decimal</a>, count: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>return the bucket number to which operand would be assigned in a histogram having count equal-width buckets spanning the range b1 to b2.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="width_bucket"></a><code>width_bucket(operand: <a href="int.html">int</a>, b1: <a href="int.html">int</a>, b2: <a href="int.html">int</a>, count: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>return the bucket number to which operand would be assigned in a histogram having count equal-width buckets spanning the range b1 to b2.</p>
 </span></td><td>Immutable</td></tr>
@@ -1180,9 +1128,9 @@ available replica will error.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="json_array_length"></a><code>json_array_length(json: jsonb) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Returns the number of elements in the outermost JSON or JSONB array.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="json_build_array"></a><code>json_build_array(any...) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Builds a possibly-heterogeneously-typed JSON or JSONB array out of a variadic argument list.</p>
+<tr><td><a name="json_build_array"></a><code>json_build_array(anyelement...) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Builds a possibly-heterogeneously-typed JSON or JSONB array out of a variadic argument list.</p>
 </span></td><td>Stable</td></tr>
-<tr><td><a name="json_build_object"></a><code>json_build_object(any...) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Builds a JSON object out of a variadic argument list.</p>
+<tr><td><a name="json_build_object"></a><code>json_build_object(anyelement...) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Builds a JSON object out of a variadic argument list.</p>
 </span></td><td>Stable</td></tr>
 <tr><td><a name="json_each"></a><code>json_each(input: jsonb) &rarr; tuple{string AS key, jsonb AS value}</code></td><td><span class="funcdesc"><p>Expands the outermost JSON or JSONB object into a set of key/value pairs.</p>
 </span></td><td>Immutable</td></tr>
@@ -1218,9 +1166,9 @@ available replica will error.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="jsonb_array_length"></a><code>jsonb_array_length(json: jsonb) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Returns the number of elements in the outermost JSON or JSONB array.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_build_array"></a><code>jsonb_build_array(any...) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Builds a possibly-heterogeneously-typed JSON or JSONB array out of a variadic argument list.</p>
+<tr><td><a name="jsonb_build_array"></a><code>jsonb_build_array(anyelement...) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Builds a possibly-heterogeneously-typed JSON or JSONB array out of a variadic argument list.</p>
 </span></td><td>Stable</td></tr>
-<tr><td><a name="jsonb_build_object"></a><code>jsonb_build_object(any...) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Builds a JSON object out of a variadic argument list.</p>
+<tr><td><a name="jsonb_build_object"></a><code>jsonb_build_object(anyelement...) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Builds a JSON object out of a variadic argument list.</p>
 </span></td><td>Stable</td></tr>
 <tr><td><a name="jsonb_each"></a><code>jsonb_each(input: jsonb) &rarr; tuple{string AS key, jsonb AS value}</code></td><td><span class="funcdesc"><p>Expands the outermost JSON or JSONB object into a set of key/value pairs.</p>
 </span></td><td>Immutable</td></tr>
@@ -1262,91 +1210,6 @@ available replica will error.</p>
 </span></td><td>Stable</td></tr></tbody>
 </table>
 
-### Jsonpath functions
-
-<table>
-<thead><tr><th>Function &rarr; Returns</th><th>Description</th><th>Volatility</th></tr></thead>
-<tbody>
-<tr><td><a name="jsonb_path_exists"></a><code>jsonb_path_exists(target: jsonb, path: jsonpath) &rarr; <a href="bool.html">bool</a></code></td><td><span class="funcdesc"><p>Checks whether the JSON path returns any item for the specified JSON value.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_exists"></a><code>jsonb_path_exists(target: jsonb, path: jsonpath, vars: jsonb) &rarr; <a href="bool.html">bool</a></code></td><td><span class="funcdesc"><p>Checks whether the JSON path returns any item for the specified JSON value.
-The vars argument must be a JSON object, and its fields provide named
-values to be substituted into the jsonpath expression.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_exists"></a><code>jsonb_path_exists(target: jsonb, path: jsonpath, vars: jsonb, silent: <a href="bool.html">bool</a>) &rarr; <a href="bool.html">bool</a></code></td><td><span class="funcdesc"><p>Checks whether the JSON path returns any item for the specified JSON value.
-The vars argument must be a JSON object, and its fields provide named
-values to be substituted into the jsonpath expression. If the silent
-argument is true, the function suppresses the following errors:
-missing object field or array element, unexpected JSON item type,
-datetime and numeric errors.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_match"></a><code>jsonb_path_match(target: jsonb, path: jsonpath) &rarr; <a href="bool.html">bool</a></code></td><td><span class="funcdesc"><p>Returns the SQL boolean result of a JSON path predicate check
-for the specified JSON value. (This is useful only with predicate check
-expressions, not SQL-standard JSON path expressions, since it will
-either fail or return NULL if the path result is not a single boolean
-value.)</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_match"></a><code>jsonb_path_match(target: jsonb, path: jsonpath, vars: jsonb) &rarr; <a href="bool.html">bool</a></code></td><td><span class="funcdesc"><p>Returns the SQL boolean result of a JSON path predicate check
-for the specified JSON value. (This is useful only with predicate check
-expressions, not SQL-standard JSON path expressions, since it will
-either fail or return NULL if the path result is not a single boolean
-value.) The vars argument must be a JSON object, and its fields provide
-named values to be substituted into the jsonpath expression.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_match"></a><code>jsonb_path_match(target: jsonb, path: jsonpath, vars: jsonb, silent: <a href="bool.html">bool</a>) &rarr; <a href="bool.html">bool</a></code></td><td><span class="funcdesc"><p>Returns the SQL boolean result of a JSON path predicate check
-for the specified JSON value. (This is useful only with predicate check
-expressions, not SQL-standard JSON path expressions, since it will
-either fail or return NULL if the path result is not a single boolean
-value.) The vars argument must be a JSON object, and its fields provide
-named values to be substituted into the jsonpath expression. If the
-silent argument is true, the function suppresses the following errors:
-missing object field or array element, unexpected JSON item type,
-datetime and numeric errors.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_query"></a><code>jsonb_path_query(target: jsonb, path: jsonpath) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Returns all JSON items returned by the JSON path for the specified JSON value.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_query"></a><code>jsonb_path_query(target: jsonb, path: jsonpath, vars: jsonb) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Returns all JSON items returned by the JSON path for the specified JSON value.
-The vars argument must be a JSON object, and its fields provide named values
-to be substituted into the jsonpath expression.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_query"></a><code>jsonb_path_query(target: jsonb, path: jsonpath, vars: jsonb, silent: <a href="bool.html">bool</a>) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Returns all JSON items returned by the JSON path for the specified JSON value.
-The vars argument must be a JSON object, and its fields provide named values
-to be substituted into the jsonpath expression. If the silent argument is true,
-the function suppresses the following errors: missing object field or array
-element, unexpected JSON item type, datetime and numeric errors.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_query_array"></a><code>jsonb_path_query_array(target: jsonb, path: jsonpath) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Returns all JSON items returned by the JSON path for the
-specified JSON value, as a JSON array.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_query_array"></a><code>jsonb_path_query_array(target: jsonb, path: jsonpath, vars: jsonb) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Returns all JSON items returned by the JSON path for the
-specified JSON value, as a JSON array. The vars argument must be a
-JSON object, and its fields provide named values to be substituted
-into the jsonpath expression.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_query_array"></a><code>jsonb_path_query_array(target: jsonb, path: jsonpath, vars: jsonb, silent: <a href="bool.html">bool</a>) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Returns all JSON items returned by the JSON path for the
-specified JSON value, as a JSON array. The vars argument must be a
-JSON object, and its fields provide named values to be substituted
-into the jsonpath expression. If the silent argument is true, the
-function suppresses the following errors: missing object field or
-array element, unexpected JSON item type, datetime and numeric errors.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_query_first"></a><code>jsonb_path_query_first(target: jsonb, path: jsonpath) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Returns the first JSON item returned by the JSON path for the
-specified JSON value, or NULL if there are no results.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_query_first"></a><code>jsonb_path_query_first(target: jsonb, path: jsonpath, vars: jsonb) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Returns the first JSON item returned by the JSON path for the
-specified JSON value, or NULL if there are no results. The vars
-argument must be a JSON object, and its fields provide named values
-to be substituted into the jsonpath expression.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="jsonb_path_query_first"></a><code>jsonb_path_query_first(target: jsonb, path: jsonpath, vars: jsonb, silent: <a href="bool.html">bool</a>) &rarr; jsonb</code></td><td><span class="funcdesc"><p>Returns the first JSON item returned by the JSON path for the
-specified JSON value, or NULL if there are no results. The vars
-argument must be a JSON object, and its fields provide named values
-to be substituted into the jsonpath expression. If the silent argument is true, the
-function suppresses the following errors: missing object field or
-array element, unexpected JSON item type, datetime and numeric errors.</p>
-</span></td><td>Immutable</td></tr></tbody>
-</table>
-
 ### Multi-region functions
 
 <table>
@@ -1362,25 +1225,6 @@ the locality flag on node startup. Returns an error if no region is set.</p>
 <tr><td><a name="rehome_row"></a><code>rehome_row() &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Returns the region of the connection’s current node as defined by
 the locality flag on node startup. Returns an error if no region is set.</p>
 </span></td><td>Stable</td></tr></tbody>
-</table>
-
-### PGVector functions
-
-<table>
-<thead><tr><th>Function &rarr; Returns</th><th>Description</th><th>Volatility</th></tr></thead>
-<tbody>
-<tr><td><a name="cosine_distance"></a><code>cosine_distance(v1: vector, v2: vector) &rarr; <a href="float.html">float</a></code></td><td><span class="funcdesc"><p>Returns the cosine distance between the two vectors.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="inner_product"></a><code>inner_product(v1: vector, v2: vector) &rarr; <a href="float.html">float</a></code></td><td><span class="funcdesc"><p>Returns the inner product between the two vectors.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="l1_distance"></a><code>l1_distance(v1: vector, v2: vector) &rarr; <a href="float.html">float</a></code></td><td><span class="funcdesc"><p>Returns the Manhattan distance between the two vectors.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="l2_distance"></a><code>l2_distance(v1: vector, v2: vector) &rarr; <a href="float.html">float</a></code></td><td><span class="funcdesc"><p>Returns the Euclidean distance between the two vectors.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="vector_dims"></a><code>vector_dims(vector: vector) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Returns the number of the dimensions in the vector.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="vector_norm"></a><code>vector_norm(vector: vector) &rarr; <a href="float.html">float</a></code></td><td><span class="funcdesc"><p>Returns the Euclidean norm of the vector.</p>
-</span></td><td>Immutable</td></tr></tbody>
 </table>
 
 ### STRING[] functions
@@ -1607,9 +1451,9 @@ the locality flag on node startup. Returns an error if no region is set.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="unnest"></a><code>unnest(input: anyelement[]) &rarr; anyelement</code></td><td><span class="funcdesc"><p>Returns the input array as a set of rows</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="workload_index_recs"></a><code>workload_index_recs() &rarr; tuple{string AS index_rec, bytes[] AS fingerprint_ids}</code></td><td><span class="funcdesc"><p>Returns index recommendations and the fingerprint ids that the indexes will impact</p>
+<tr><td><a name="workload_index_recs"></a><code>workload_index_recs() &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Returns set of index recommendations</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="workload_index_recs"></a><code>workload_index_recs(timestamptz: <a href="timestamp.html">timestamptz</a>) &rarr; tuple{string AS index_rec, bytes[] AS fingerprint_ids}</code></td><td><span class="funcdesc"><p>Returns index recommendations and the fingerprint ids that the indexes will impact</p>
+<tr><td><a name="workload_index_recs"></a><code>workload_index_recs(timestamptz: <a href="timestamp.html">timestamptz</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Returns set of index recommendations</p>
 </span></td><td>Immutable</td></tr></tbody>
 </table>
 
@@ -1763,11 +1607,6 @@ the locality flag on node startup. Returns an error if no region is set.</p>
 <tr><td><a name="postgis_version"></a><code>postgis_version() &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Compatibility placeholder function with PostGIS. Returns a fixed string based on PostGIS 3.0.1, with minor edits.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="postgis_wagyu_version"></a><code>postgis_wagyu_version() &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Compatibility placeholder function with PostGIS. Returns a fixed string based on PostGIS 3.0.1, with minor edits.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="st_3dlength"></a><code>st_3dlength(geometry: geometry) &rarr; <a href="float.html">float</a></code></td><td><span class="funcdesc"><p>Returns the 3-dimensional or 2-dimensional length of the geometry.</p>
-<p>Note ST_3DLength is only valid for LineString or MultiLineString.
-For 2-D lines it will return the 2-D length (same as ST_Length and ST_Length2D)</p>
-<p>This function utilizes the GEOS module.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="st_addmeasure"></a><code>st_addmeasure(geometry: geometry, start: <a href="float.html">float</a>, end: <a href="float.html">float</a>) &rarr; geometry</code></td><td><span class="funcdesc"><p>Returns a copy of a LineString or MultiLineString with measure coordinates linearly interpolated between the specified start and end values. Any existing M coordinates will be overwritten.</p>
 </span></td><td>Immutable</td></tr>
@@ -2830,18 +2669,6 @@ The swap_ordinate_string parameter is a 2-character string naming the ordinates 
 <tr><td><a name="st_symmetricdifference"></a><code>st_symmetricdifference(geometry_a: geometry, geometry_b: geometry) &rarr; geometry</code></td><td><span class="funcdesc"><p>Returns the symmetric difference of both geometries.</p>
 <p>This function utilizes the GEOS module.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="st_tileenvelope"></a><code>st_tileenvelope(tileZoom: int4, tileX: int4, tileY: int4) &rarr; geometry</code></td><td><span class="funcdesc"><p>Creates a rectangular Polygon giving the extent of a tile in the XYZ tile system.
-The tile is specifed by the zoom level Z and the XY index of the tile in the grid at that level.
-Can be used to define the tile bounds required by ST_AsMVTGeom to convert geometry into the MVT tile coordinate space.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="st_tileenvelope"></a><code>st_tileenvelope(tileZoom: int4, tileX: int4, tileY: int4, bounds: geometry) &rarr; geometry</code></td><td><span class="funcdesc"><p>Creates a rectangular Polygon giving the extent of a tile in the XYZ tile system.
-The tile is specifed by the zoom level Z and the XY index of the tile in the grid at that level.
-Can be used to define the tile bounds required by ST_AsMVTGeom to convert geometry into the MVT tile coordinate space.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="st_tileenvelope"></a><code>st_tileenvelope(tileZoom: int4, tileX: int4, tileY: int4, bounds: geometry, margin: <a href="float.html">float</a>) &rarr; geometry</code></td><td><span class="funcdesc"><p>Creates a rectangular Polygon giving the extent of a tile in the XYZ tile system.
-The tile is specifed by the zoom level Z and the XY index of the tile in the grid at that level.
-Can be used to define the tile bounds required by ST_AsMVTGeom to convert geometry into the MVT tile coordinate space.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="st_touches"></a><code>st_touches(geometry_a: geometry, geometry_b: geometry) &rarr; <a href="bool.html">bool</a></code></td><td><span class="funcdesc"><p>Returns true if the only points in common between geometry_a and geometry_b are on the boundary. Note points do not touch other points.</p>
 <p>This function utilizes the GEOS module.</p>
 <p>This function variant will attempt to utilize any available spatial index.</p>
@@ -2919,10 +2746,6 @@ Can be used to define the tile bounds required by ST_AsMVTGeom to convert geomet
 <tbody>
 <tr><td><a name="ascii"></a><code>ascii(val: <a href="string.html">string</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Returns the character code of the first character in <code>val</code>. Despite the name, the function supports Unicode too.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="bit_count"></a><code>bit_count(val: <a href="bytes.html">bytes</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Calculates the number of bits set used to represent <code>val</code>.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="bit_count"></a><code>bit_count(val: varbit) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Calculates the number of bits set used to represent <code>val</code>.</p>
-</span></td><td>Immutable</td></tr>
 <tr><td><a name="bit_length"></a><code>bit_length(val: <a href="bytes.html">bytes</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Calculates the number of bits used to represent <code>val</code>.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="bit_length"></a><code>bit_length(val: <a href="string.html">string</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Calculates the number of bits used to represent <code>val</code>.</p>
@@ -2970,9 +2793,9 @@ Can be used to define the tile bounds required by ST_AsMVTGeom to convert geomet
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="compress"></a><code>compress(data: <a href="bytes.html">bytes</a>, codec: <a href="string.html">string</a>) &rarr; <a href="bytes.html">bytes</a></code></td><td><span class="funcdesc"><p>Compress <code>data</code> with the specified <code>codec</code> (<code>gzip</code>, ‘lz4’, ‘snappy’, 'zstd).</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="concat"></a><code>concat(any...) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Concatenates a comma-separated list of strings.</p>
+<tr><td><a name="concat"></a><code>concat(<a href="string.html">string</a>...) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Concatenates a comma-separated list of strings.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="concat_ws"></a><code>concat_ws(<a href="string.html">string</a>, any...) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Uses the first argument as a separator between the concatenation of the subsequent arguments.</p>
+<tr><td><a name="concat_ws"></a><code>concat_ws(<a href="string.html">string</a>...) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Uses the first argument as a separator between the concatenation of the subsequent arguments.</p>
 <p>For example <code>concat_ws('!','wow','great')</code> returns <code>wow!great</code>.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="convert_from"></a><code>convert_from(str: <a href="bytes.html">bytes</a>, enc: <a href="string.html">string</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Decode the bytes in <code>str</code> into a string using encoding <code>enc</code>. Supports encodings ‘UTF8’ and ‘LATIN1’.</p>
@@ -2983,11 +2806,11 @@ Can be used to define the tile bounds required by ST_AsMVTGeom to convert geomet
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="decompress"></a><code>decompress(data: <a href="bytes.html">bytes</a>, codec: <a href="string.html">string</a>) &rarr; <a href="bytes.html">bytes</a></code></td><td><span class="funcdesc"><p>Decompress <code>data</code> with the specified <code>codec</code> (<code>gzip</code>, ‘lz4’, ‘snappy’, 'zstd).</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="difference"></a><code>difference(source: <a href="string.html">string</a>, target: <a href="string.html">string</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Convert two strings to their Soundex codes and report the number of matching code positions.</p>
+<tr><td><a name="difference"></a><code>difference(source: <a href="string.html">string</a>, target: <a href="string.html">string</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Convert two strings to their Soundex codes and then reports the number of matching code positions.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="encode"></a><code>encode(data: <a href="bytes.html">bytes</a>, format: <a href="string.html">string</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Encodes <code>data</code> using <code>format</code> (<code>hex</code> / <code>escape</code> / <code>base64</code>).</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="format"></a><code>format(<a href="string.html">string</a>, any...) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Interprets the first argument as a format string similar to C sprintf and interpolates the remaining arguments.</p>
+<tr><td><a name="format"></a><code>format(<a href="string.html">string</a>, anyelement...) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Interprets the first argument as a format string similar to C sprintf and interpolates the remaining arguments.</p>
 </span></td><td>Stable</td></tr>
 <tr><td><a name="from_ip"></a><code>from_ip(val: <a href="bytes.html">bytes</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Converts the byte string representation of an IP to its character string representation.</p>
 </span></td><td>Immutable</td></tr>
@@ -3209,8 +3032,8 @@ Case mode values range between 0 - 1, representing lower casing and upper casing
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="similar_to_escape"></a><code>similar_to_escape(unescaped: <a href="string.html">string</a>, pattern: <a href="string.html">string</a>, escape: <a href="string.html">string</a>) &rarr; <a href="bool.html">bool</a></code></td><td><span class="funcdesc"><p>Matches <code>unescaped</code> with <code>pattern</code> using <code>escape</code> as an escape token.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="split_part"></a><code>split_part(input: <a href="string.html">string</a>, delimiter: <a href="string.html">string</a>, return_index_pos: <a href="int.html">int</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Splits <code>input</code> using <code>delimiter</code> and returns the field at <code>return_index_pos</code> (starting from 1). If <code>return_index_pos</code> is negative, it returns the |<code>return_index_pos</code>|'th field from the end.</p>
-<p>For example, <code>split_part('123.456.789.0', '.', 3)</code> returns <code>789</code>.</p>
+<tr><td><a name="split_part"></a><code>split_part(input: <a href="string.html">string</a>, delimiter: <a href="string.html">string</a>, return_index_pos: <a href="int.html">int</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Splits <code>input</code> on <code>delimiter</code> and return the value in the <code>return_index_pos</code>  position (starting at 1).</p>
+<p>For example, <code>split_part('123.456.789.0','.',3)</code>returns <code>789</code>.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="strpos"></a><code>strpos(input: <a href="bytes.html">bytes</a>, find: <a href="bytes.html">bytes</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Calculates the position where the byte subarray <code>find</code> begins in <code>input</code>.</p>
 </span></td><td>Immutable</td></tr>
@@ -3250,9 +3073,6 @@ Case mode values range between 0 - 1, representing lower casing and upper casing
 <tr><td><a name="substring"></a><code>substring(input: varbit, start_pos: <a href="int.html">int</a>) &rarr; varbit</code></td><td><span class="funcdesc"><p>Returns a bit subarray of <code>input</code> starting at <code>start_pos</code> (count starts at 1).</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="substring"></a><code>substring(input: varbit, start_pos: <a href="int.html">int</a>, length: <a href="int.html">int</a>) &rarr; varbit</code></td><td><span class="funcdesc"><p>Returns a bit subarray of <code>input</code> starting at <code>start_pos</code> (count starts at 1) and including up to <code>length</code> characters.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="substring_index"></a><code>substring_index(input: <a href="string.html">string</a>, delim: <a href="string.html">string</a>, count: <a href="int.html">int</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Returns a substring of <code>input</code> before <code>count</code> occurrences of <code>delim</code>.
-If <code>count</code> is positive, the leftmost part is returned. If <code>count</code> is negative, the rightmost part is returned.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="to_char_with_style"></a><code>to_char_with_style(date: <a href="date.html">date</a>, datestyle: <a href="string.html">string</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Convert an date to a string assuming the string is formatted using the given DateStyle.</p>
 </span></td><td>Immutable</td></tr>
@@ -3558,8 +3378,8 @@ may increase either contention or retry errors, or both.</p>
 </span></td><td>Stable</td></tr>
 <tr><td><a name="pg_column_is_updatable"></a><code>pg_column_is_updatable(reloid: oid, attnum: int2, include_triggers: <a href="bool.html">bool</a>) &rarr; <a href="bool.html">bool</a></code></td><td><span class="funcdesc"><p>Returns whether the given column can be updated.</p>
 </span></td><td>Stable</td></tr>
-<tr><td><a name="pg_column_size"></a><code>pg_column_size(any...) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return size in bytes of the column provided as an argument</p>
-</span></td><td>Stable</td></tr>
+<tr><td><a name="pg_column_size"></a><code>pg_column_size(anyelement...) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return size in bytes of the column provided as an argument</p>
+</span></td><td>Immutable</td></tr>
 <tr><td><a name="pg_function_is_visible"></a><code>pg_function_is_visible(oid: oid) &rarr; <a href="bool.html">bool</a></code></td><td><span class="funcdesc"><p>Returns whether the function with the given OID belongs to one of the schemas on the search path.</p>
 </span></td><td>Stable</td></tr>
 <tr><td><a name="pg_get_function_arg_default"></a><code>pg_get_function_arg_default(func_oid: oid, arg_num: int4) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Get textual representation of a function argument’s default value. The second argument of this function is the argument number among all arguments (i.e. proallargtypes, <em>not</em> proargtypes), starting with 1, because that’s how information_schema.sql uses it. Currently, this always returns NULL, since CockroachDB does not support default values.</p>

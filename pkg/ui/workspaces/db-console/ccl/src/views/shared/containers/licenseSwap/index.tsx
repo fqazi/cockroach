@@ -3,7 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import omit from "lodash/omit";
+import _ from "lodash";
 import React from "react";
 import { connect } from "react-redux";
 
@@ -43,13 +43,9 @@ function mapStateToProps(state: AdminUIState): OwnProps {
  * LicenseSwap is a higher-order component that swaps out two components based
  * on the current license status.
  */
-export default function swapByLicense<
-  OSSProps,
-  CCLProps,
-  TProps = OSSProps | CCLProps,
->(
-  OSSComponent: React.ComponentClass<OSSProps>,
-  CCLComponent: React.ComponentClass<CCLProps>,
+export default function swapByLicense<TProps>(
+  OSSComponent: React.ComponentClass<TProps>,
+  CCLComponent: React.ComponentClass<TProps>,
 ) {
   const ossName = getComponentName(OSSComponent);
   const cclName = getComponentName(CCLComponent);
@@ -62,12 +58,12 @@ export default function swapByLicense<
       )})`;
 
       render() {
-        const props = omit(this.props, ["enterpriseEnabled"]);
+        const props = _.omit(this.props, ["enterpriseEnabled"]);
 
         if (!this.props.enterpriseEnabled) {
-          return <OSSComponent {...(props as OSSProps)} />;
+          return <OSSComponent {...(props as TProps)} />;
         }
-        return <CCLComponent {...(props as CCLProps)} />;
+        return <CCLComponent {...(props as TProps)} />;
       }
     },
   );

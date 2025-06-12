@@ -24,7 +24,7 @@ EXPLAIN (DDL) DROP FUNCTION f;
 Schema change plan for DROP FUNCTION ‹""›.‹""›.‹f›;
  ├── StatementPhase
  │    └── Stage 1 of 1 in StatementPhase
- │         ├── 12 elements transitioning toward ABSENT
+ │         ├── 11 elements transitioning toward ABSENT
  │         │    ├── PUBLIC → ABSENT  Owner:{DescID: 109 (f-)}
  │         │    ├── PUBLIC → ABSENT  UserPrivileges:{DescID: 109 (f-), Name: "admin"}
  │         │    ├── PUBLIC → ABSENT  UserPrivileges:{DescID: 109 (f-), Name: "public"}
@@ -35,26 +35,23 @@ Schema change plan for DROP FUNCTION ‹""›.‹""›.‹f›;
  │         │    ├── PUBLIC → ABSENT  FunctionVolatility:{DescID: 109 (f-)}
  │         │    ├── PUBLIC → ABSENT  FunctionLeakProof:{DescID: 109 (f-)}
  │         │    ├── PUBLIC → ABSENT  FunctionNullInputBehavior:{DescID: 109 (f-)}
- │         │    ├── PUBLIC → ABSENT  FunctionSecurity:{DescID: 109 (f-)}
  │         │    └── PUBLIC → ABSENT  FunctionBody:{DescID: 109 (f-)}
- │         └── 14 Mutation operations
+ │         └── 12 Mutation operations
  │              ├── MarkDescriptorAsDropped {"DescriptorID":109}
  │              ├── RemoveObjectParent {"ObjectID":109,"ParentSchemaID":101}
  │              ├── NotImplementedForPublicObjects {"DescID":109,"ElementType":"scpb.FunctionNam..."}
  │              ├── NotImplementedForPublicObjects {"DescID":109,"ElementType":"scpb.FunctionVol..."}
  │              ├── NotImplementedForPublicObjects {"DescID":109,"ElementType":"scpb.FunctionLea..."}
  │              ├── NotImplementedForPublicObjects {"DescID":109,"ElementType":"scpb.FunctionNul..."}
- │              ├── NotImplementedForPublicObjects {"DescID":109,"ElementType":"scpb.FunctionSec..."}
  │              ├── RemoveBackReferenceInTypes {"BackReferencedDescriptorID":109}
  │              ├── RemoveBackReferencesInRelations {"BackReferencedID":109}
- │              ├── RemoveBackReferenceInFunctions {"BackReferencedDescriptorID":109}
  │              ├── NotImplementedForPublicObjects {"DescID":109,"ElementType":"scpb.Owner"}
  │              ├── RemoveUserPrivileges {"DescriptorID":109,"User":"admin"}
  │              ├── RemoveUserPrivileges {"DescriptorID":109,"User":"public"}
  │              └── RemoveUserPrivileges {"DescriptorID":109,"User":"root"}
  ├── PreCommitPhase
  │    ├── Stage 1 of 2 in PreCommitPhase
- │    │    ├── 12 elements transitioning toward ABSENT
+ │    │    ├── 11 elements transitioning toward ABSENT
  │    │    │    ├── ABSENT  → PUBLIC Owner:{DescID: 109 (f-)}
  │    │    │    ├── ABSENT  → PUBLIC UserPrivileges:{DescID: 109 (f-), Name: "admin"}
  │    │    │    ├── ABSENT  → PUBLIC UserPrivileges:{DescID: 109 (f-), Name: "public"}
@@ -65,12 +62,11 @@ Schema change plan for DROP FUNCTION ‹""›.‹""›.‹f›;
  │    │    │    ├── ABSENT  → PUBLIC FunctionVolatility:{DescID: 109 (f-)}
  │    │    │    ├── ABSENT  → PUBLIC FunctionLeakProof:{DescID: 109 (f-)}
  │    │    │    ├── ABSENT  → PUBLIC FunctionNullInputBehavior:{DescID: 109 (f-)}
- │    │    │    ├── ABSENT  → PUBLIC FunctionSecurity:{DescID: 109 (f-)}
  │    │    │    └── ABSENT  → PUBLIC FunctionBody:{DescID: 109 (f-)}
  │    │    └── 1 Mutation operation
  │    │         └── UndoAllInTxnImmediateMutationOpSideEffects
  │    └── Stage 2 of 2 in PreCommitPhase
- │         ├── 12 elements transitioning toward ABSENT
+ │         ├── 11 elements transitioning toward ABSENT
  │         │    ├── PUBLIC → ABSENT  Owner:{DescID: 109 (f-)}
  │         │    ├── PUBLIC → ABSENT  UserPrivileges:{DescID: 109 (f-), Name: "admin"}
  │         │    ├── PUBLIC → ABSENT  UserPrivileges:{DescID: 109 (f-), Name: "public"}
@@ -81,19 +77,16 @@ Schema change plan for DROP FUNCTION ‹""›.‹""›.‹f›;
  │         │    ├── PUBLIC → ABSENT  FunctionVolatility:{DescID: 109 (f-)}
  │         │    ├── PUBLIC → ABSENT  FunctionLeakProof:{DescID: 109 (f-)}
  │         │    ├── PUBLIC → ABSENT  FunctionNullInputBehavior:{DescID: 109 (f-)}
- │         │    ├── PUBLIC → ABSENT  FunctionSecurity:{DescID: 109 (f-)}
  │         │    └── PUBLIC → ABSENT  FunctionBody:{DescID: 109 (f-)}
- │         └── 21 Mutation operations
+ │         └── 19 Mutation operations
  │              ├── MarkDescriptorAsDropped {"DescriptorID":109}
  │              ├── RemoveObjectParent {"ObjectID":109,"ParentSchemaID":101}
  │              ├── NotImplementedForPublicObjects {"DescID":109,"ElementType":"scpb.FunctionNam..."}
  │              ├── NotImplementedForPublicObjects {"DescID":109,"ElementType":"scpb.FunctionVol..."}
  │              ├── NotImplementedForPublicObjects {"DescID":109,"ElementType":"scpb.FunctionLea..."}
  │              ├── NotImplementedForPublicObjects {"DescID":109,"ElementType":"scpb.FunctionNul..."}
- │              ├── NotImplementedForPublicObjects {"DescID":109,"ElementType":"scpb.FunctionSec..."}
  │              ├── RemoveBackReferenceInTypes {"BackReferencedDescriptorID":109}
  │              ├── RemoveBackReferencesInRelations {"BackReferencedID":109}
- │              ├── RemoveBackReferenceInFunctions {"BackReferencedDescriptorID":109}
  │              ├── NotImplementedForPublicObjects {"DescID":109,"ElementType":"scpb.Owner"}
  │              ├── RemoveUserPrivileges {"DescriptorID":109,"User":"admin"}
  │              ├── RemoveUserPrivileges {"DescriptorID":109,"User":"public"}

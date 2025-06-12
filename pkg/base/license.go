@@ -12,6 +12,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 )
 
@@ -22,15 +23,15 @@ var errEnterpriseNotEnabled = errors.New("OSS binaries do not include enterprise
 // enable it.
 //
 // This function is overridden by an init hook in CCL builds.
-var CheckEnterpriseEnabled = func(_ *cluster.Settings, feature string) error {
+var CheckEnterpriseEnabled = func(_ *cluster.Settings, _ uuid.UUID, feature string) error {
 	return errEnterpriseNotEnabled // nb: this is squarely in the hot path on OSS builds
 }
 
 // CCLDistributionAndEnterpriseEnabled is a simpler version of
 // CheckEnterpriseEnabled which doesn't take in feature-related info and doesn't
 // return an error with a nice message.
-var CCLDistributionAndEnterpriseEnabled = func(st *cluster.Settings) bool {
-	return CheckEnterpriseEnabled(st, "" /* feature */) == nil
+var CCLDistributionAndEnterpriseEnabled = func(st *cluster.Settings, clusterID uuid.UUID) bool {
+	return CheckEnterpriseEnabled(st, clusterID, "" /* feature */) == nil
 }
 
 var LicenseTTLMetadata = metric.Metadata{
@@ -41,9 +42,6 @@ var LicenseTTLMetadata = metric.Metadata{
 	Help:        "Seconds until license expiry (0 if no license present)",
 	Measurement: "Seconds",
 	Unit:        metric.Unit_SECONDS,
-	Essential:   true,
-	Category:    metric.Metadata_EXPIRATIONS,
-	HowToUse:    "See Description.",
 }
 
 var AdditionalLicenseTTLMetadata = metric.Metadata{
@@ -51,9 +49,6 @@ var AdditionalLicenseTTLMetadata = metric.Metadata{
 	Help:        "Seconds until license expiry (0 if no license present)",
 	Measurement: "Seconds",
 	Unit:        metric.Unit_SECONDS,
-	Essential:   true,
-	Category:    metric.Metadata_EXPIRATIONS,
-	HowToUse:    "See Description.",
 }
 
 // GetLicenseTTL is a function which returns the TTL for the active cluster.

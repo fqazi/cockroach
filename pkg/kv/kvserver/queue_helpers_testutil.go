@@ -8,7 +8,6 @@ package kvserver
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
@@ -35,7 +34,7 @@ func forceScanAndProcess(ctx context.Context, s *Store, q *baseQueue) error {
 		return true
 	})
 
-	q.DrainQueue(ctx, s.stopper)
+	q.DrainQueue(s.stopper)
 	return nil
 }
 
@@ -92,71 +91,42 @@ func (s *Store) ForceRaftSnapshotQueueProcess() error {
 // ForceConsistencyQueueProcess runs all the ranges through the consistency
 // queue.
 func (s *Store) ForceConsistencyQueueProcess() error {
-	var errorResettingTimestamp error
-	// Reset the consistency checker last processed timestamp. This is to ensure
-	// that the consistency checker actually runs on all replicas. This is
-	// especially important now that new replicas start with their consistency
-	// checker last processed timestamp set to "now".
-	newStoreReplicaVisitor(s).Visit(func(repl *Replica) bool {
-		if err := repl.setQueueLastProcessed(
-			context.Background(), "consistencyChecker", hlc.Timestamp{}); err != nil {
-			errorResettingTimestamp = err
-		}
-		return true
-	})
-
-	if errorResettingTimestamp != nil {
-		return errorResettingTimestamp
-	}
-
 	return forceScanAndProcess(context.TODO(), s, s.consistencyQueue.baseQueue)
-}
-
-// ForceLeaseQueueScanAndProcess iterates over all ranges and
-// enqueues any that need to have leases transfered.
-func (s *Store) ForceLeaseQueueProcess() error {
-	return forceScanAndProcess(context.TODO(), s, s.leaseQueue.baseQueue)
 }
 
 // The methods below can be used to control a store's queues. Stopping a queue
 // is only meant to happen in tests.
 
-func (s *Store) testingSetGCQueueActive(active bool) {
+func (s *Store) setGCQueueActive(active bool) {
 	s.mvccGCQueue.SetDisabled(!active)
 }
-
-// TestingSetLeaseQueueActive controls activating the lease queue. Only intended for
-// tests.
-func (s *Store) TestingSetLeaseQueueActive(active bool) {
-	s.leaseQueue.SetDisabled(!active)
-}
-func (s *Store) testingSetMergeQueueActive(active bool) {
+func (s *Store) setMergeQueueActive(active bool) {
 	s.mergeQueue.SetDisabled(!active)
 }
-func (s *Store) testingSetRaftLogQueueActive(active bool) {
+func (s *Store) setRaftLogQueueActive(active bool) {
 	s.raftLogQueue.SetDisabled(!active)
 }
-func (s *Store) testingSetReplicaGCQueueActive(active bool) {
+func (s *Store) setReplicaGCQueueActive(active bool) {
 	s.replicaGCQueue.SetDisabled(!active)
 }
 
-// TestingSetReplicateQueueActive controls the replication queue. Only
+// SetReplicateQueueActive controls the replication queue. Only
 // intended for tests.
-func (s *Store) TestingSetReplicateQueueActive(active bool) {
+func (s *Store) SetReplicateQueueActive(active bool) {
 	s.replicateQueue.SetDisabled(!active)
 }
-func (s *Store) TestingSetSplitQueueActive(active bool) {
+func (s *Store) setSplitQueueActive(active bool) {
 	s.splitQueue.SetDisabled(!active)
 }
-func (s *Store) testingSetTimeSeriesMaintenanceQueueActive(active bool) {
+func (s *Store) setTimeSeriesMaintenanceQueueActive(active bool) {
 	s.tsMaintenanceQueue.SetDisabled(!active)
 }
-func (s *Store) testingSetRaftSnapshotQueueActive(active bool) {
+func (s *Store) setRaftSnapshotQueueActive(active bool) {
 	s.raftSnapshotQueue.SetDisabled(!active)
 }
-func (s *Store) testingSetConsistencyQueueActive(active bool) {
+func (s *Store) setConsistencyQueueActive(active bool) {
 	s.consistencyQueue.SetDisabled(!active)
 }
-func (s *Store) testingSetScannerActive(active bool) {
+func (s *Store) setScannerActive(active bool) {
 	s.scanner.SetDisabled(!active)
 }

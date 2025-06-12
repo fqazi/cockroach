@@ -10,11 +10,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"runtime"
 
 	"github.com/cockroachdb/cockroach/pkg/server/dumpstore"
 	"github.com/cockroachdb/cockroach/pkg/server/status"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -39,13 +37,6 @@ const statsFileNamePrefix = "memstats"
 // statsFileNameSuffix is the suffix of memory stats dumps.
 const statsFileNameSuffix = ".txt"
 
-var memStatsCombinedFileSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"server.mem_stats.total_dump_size_limit",
-	"maximum combined disk size of preserved memstats profiles",
-	32<<20, // 32MiB
-)
-
 // NewStatsProfiler creates a StatsProfiler. dir is the
 // directory in which profiles are to be stored.
 func NewStatsProfiler(
@@ -55,7 +46,7 @@ func NewStatsProfiler(
 		return nil, errors.AssertionFailedf("need to specify dir for NewStatsProfiler")
 	}
 
-	dumpStore := dumpstore.NewStore(dir, memStatsCombinedFileSize, st)
+	dumpStore := dumpstore.NewStore(dir, maxCombinedFileSize, st)
 
 	hp := &StatsProfiler{
 		profiler: makeProfiler(
@@ -72,21 +63,21 @@ func NewStatsProfiler(
 
 // MaybeTakeProfile takes a profile if the non-go size is big enough.
 func (o *StatsProfiler) MaybeTakeProfile(
-	ctx context.Context, curRSS int64, cs *status.CGoMemStats,
+	ctx context.Context, curRSS int64, ms *status.GoMemStats, cs *status.CGoMemStats,
 ) {
-	o.maybeTakeProfile(ctx, curRSS, func(ctx context.Context, path string, _ ...interface{}) bool { return saveStats(ctx, path, cs) })
+	o.maybeTakeProfile(ctx, curRSS, func(ctx context.Context, path string, _ ...interface{}) bool { return saveStats(ctx, path, ms, cs) })
 }
 
-func saveStats(ctx context.Context, path string, cs *status.CGoMemStats) bool {
+func saveStats(
+	ctx context.Context, path string, ms *status.GoMemStats, cs *status.CGoMemStats,
+) bool {
 	f, err := os.Create(path)
 	if err != nil {
 		log.Warningf(ctx, "error creating stats profile %s: %v", path, err)
 		return false
 	}
 	defer f.Close()
-	ms := &runtime.MemStats{}
-	runtime.ReadMemStats(ms)
-	msJ, err := json.MarshalIndent(ms, "", "  ")
+	msJ, err := json.MarshalIndent(&ms.MemStats, "", "  ")
 	if err != nil {
 		log.Warningf(ctx, "error marshaling stats profile %s: %v", path, err)
 		return false

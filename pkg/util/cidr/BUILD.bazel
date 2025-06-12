@@ -21,6 +21,7 @@ go_library(
 go_test(
     name = "cidr_test",
     srcs = ["cidr_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":cidr"],
     deps = [
         "//pkg/settings/cluster",

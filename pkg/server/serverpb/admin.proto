@@ -19,7 +19,6 @@ import "kv/kvpb/api.proto";
 import "roachpb/metadata.proto";
 import "roachpb/data.proto";
 import "ts/catalog/chart_catalog.proto";
-import "util/hlc/timestamp.proto";
 import "util/metric/metric.proto";
 import "util/tracing/tracingpb/recorded_span.proto";
 import "gogoproto/gogo.proto";
@@ -596,7 +595,13 @@ message SettingsRequest {
   // The array of setting keys or names to retrieve.
   // An empty keys array means "all".
   repeated string keys = 1;
-  reserved 2;
+
+  // Indicate whether to see unredacted setting values.
+  // This is opt-in so that a previous version `cockroach zip`
+  // does not start reporting values when this becomes active.
+  // For good security, the server only obeys this after it checks
+  // that the logger-in user has admin privilege.
+  bool unredacted_values = 2;
 }
 
 // SettingsResponse is the response to SettingsRequest.
@@ -681,12 +686,6 @@ message JobRequest {
   int64 job_id = 1;
 }
 
-message JobMessage {
-  string kind = 1;
-  google.protobuf.Timestamp timestamp = 2 [(gogoproto.nullable)=false, (gogoproto.stdtime) = true];
-  string message = 3;
-}
-
 // JobResponse contains the job record for a job.
 message JobResponse {
   int64 id = 1 [(gogoproto.customname) = "ID"];
@@ -737,8 +736,6 @@ message JobResponse {
   // coordinator_id identifies the node coordinating the job. This value will
   // only be present for jobs that are currently running or recently ran.
   int64 coordinator_id = 21 [(gogoproto.customname) = "CoordinatorID"];
-
-  repeated JobMessage messages = 22 [(gogoproto.nullable)=false];
 }
 
 // LocationsRequest requests system locality location information.
@@ -822,8 +819,7 @@ message DataDistributionResponse {
   message TableInfo {
     map<int32, int64> replica_count_by_node_id = 1 [(gogoproto.castkey) = "github.com/cockroachdb/cockroach/pkg/roachpb.NodeID"];
 
-    reserved 2;
-
+    int64 zone_config_id = 2;
     google.protobuf.Timestamp dropped_at = 3 [(gogoproto.stdtime) = true];
   }
 
@@ -848,8 +844,6 @@ message MetricMetadataRequest {
 // MetricMetadataResponse contains the metadata for all metrics.
 message MetricMetadataResponse {
   map<string, cockroach.util.metric.Metadata> metadata = 1 [(gogoproto.nullable) = false];
-  // Maps of metric metadata names to the tsdb recorded metric names
-  map<string, string> recordedNames = 2 [(gogoproto.nullable) = false];
 }
 
 message EnqueueRangeRequest {
@@ -887,6 +881,29 @@ message ChartCatalogRequest {
 // ChartCatalogResponse returns a catalog of Admin UI charts useful for debugging.
 message ChartCatalogResponse {
   repeated cockroach.ts.catalog.ChartSection catalog = 1 [(gogoproto.nullable) = false];
+}
+
+// CARequest requests the CA cert anchoring this service.
+message CARequest {
+}
+
+// CAResponse contains a PEM encoded copy of the CA cert for this service.
+message CAResponse {
+  bytes ca_cert = 1;
+}
+
+// CertBundleRequest requests the bundle of initialization CAs for a new node.
+// It provides authentication in the form of a joinToken containing a
+// sharedSecret.
+message CertBundleRequest {
+    string token_id = 1 [(gogoproto.customname) = "TokenID"];
+    bytes shared_secret = 2;
+ }
+
+// CertBundleResponse contains a copy of all CAs needed to initialize TLS for
+// a new node.
+message CertBundleResponse {
+  bytes bundle = 1;
 }
 
 message RecoveryCollectReplicaInfoRequest {
@@ -1004,6 +1021,18 @@ message RecoveryVerifyResponse {
 // Admin is the gRPC API for the admin UI. Through grpc-gateway, we offer
 // REST-style HTTP endpoints that locally proxy to the gRPC endpoints.
 service Admin {
+  rpc RequestCA(CARequest) returns (CAResponse) {
+    option (google.api.http) = {
+      get : "/_join/v1/ca"
+    };
+  }
+
+  rpc RequestCertBundle(CertBundleRequest) returns (CertBundleResponse) {
+    option (google.api.http) = {
+      get : "/_join/v1/requestbundle"
+    };
+  }
+
   // URL: /_admin/v1/users
   rpc Users(UsersRequest) returns (UsersResponse) {
     option (google.api.http) = {
@@ -1308,10 +1337,6 @@ service Admin {
       get: "/_admin/v1/tenants"
     };
   }
-
-  // ReadFromTenantInfo returns the tenant from which the requesting tenant
-  // should read, if any.
-  rpc ReadFromTenantInfo(ReadFromTenantInfoRequest) returns (ReadFromTenantInfoResponse) {}
 }
 
 message ListTenantsRequest{}
@@ -1325,24 +1350,6 @@ message Tenant {
   string tenant_name = 2;
   string sql_addr = 3;
   string rpc_addr = 4;
-}
-
-// ReadFromTenantInfoRequest requests info, if any, on which tenant the caller
-// should read from.
-message ReadFromTenantInfoRequest {
-  // TenantID should always be the ID of the tenant making the request. This
-  // duplicates the ID in the auth context that is added implicitly, and must
-  // always match that ID when that ID is present, however that ID is absent in
-  // insecure test clusters which is why we also specify it explicitly here.
-  roachpb.TenantID tenant_id = 1 [(gogoproto.nullable)=false, (gogoproto.customname) = "TenantID"];
-}
-
-// ReadFromTenantInfoResponse instructs a tenant as to which tenant, if any, it
-// should configure itself to read from and the timestamp at which it should do
-// so.
-message ReadFromTenantInfoResponse {
-  roachpb.TenantID read_from = 1 [(gogoproto.nullable)=false];
-  util.hlc.Timestamp read_at = 2 [(gogoproto.nullable)=false];
 }
 
 message ListTracingSnapshotsRequest {}

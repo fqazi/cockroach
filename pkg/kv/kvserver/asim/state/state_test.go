@@ -84,9 +84,7 @@ func TestRangeMap(t *testing.T) {
 	// Assert that the first range is correctly initialized upon creation of a
 	// new state.
 	require.Len(t, s.ranges.rangeMap, 1)
-	maxRes, _ := s.ranges.rangeTree.Max()
-	minRes, _ := s.ranges.rangeTree.Min()
-	require.Equal(t, maxRes, minRes)
+	require.Equal(t, s.ranges.rangeTree.Max(), s.ranges.rangeTree.Min())
 	firstRange := s.ranges.rangeMap[1]
 	require.Equal(t, s.rangeFor(MinKey), firstRange)
 	require.Equal(t, firstRange.startKey, MinKey)

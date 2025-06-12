@@ -7,24 +7,18 @@ package cli
 
 import (
 	"bytes"
-	"compress/gzip"
 	"fmt"
 	"io"
 	"math/rand"
 	"net"
-	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/ts/tspb"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/datadriven"
 	"github.com/stretchr/testify/require"
 )
 
@@ -112,146 +106,4 @@ func makeTS(name, source string, dataPointsNum int) *tspb.TimeSeriesData {
 		Source:     source,
 		Datapoints: dps,
 	}
-}
-
-func parseTSInput(t *testing.T, input string, w tsWriter) {
-	var data *tspb.TimeSeriesData
-	for _, s := range strings.Split(input, "\n") {
-		nameValueTimestamp := strings.Split(s, " ")
-		// Advance to a new struct anytime name or source changes
-		if data == nil ||
-			(data != nil && data.Name != nameValueTimestamp[0]) ||
-			(data != nil && data.Source != nameValueTimestamp[1]) {
-			if data != nil {
-				err := w.Emit(data)
-				require.NoError(t, err)
-			}
-			data = &tspb.TimeSeriesData{
-				Name:   nameValueTimestamp[0],
-				Source: nameValueTimestamp[1],
-			}
-		}
-		value, err := strconv.ParseFloat(nameValueTimestamp[2], 64)
-		require.NoError(t, err)
-		ts, err := strconv.ParseInt(nameValueTimestamp[3], 10, 64)
-		require.NoError(t, err)
-		data.Datapoints = append(data.Datapoints, tspb.TimeSeriesDatapoint{
-			Value:          value,
-			TimestampNanos: ts * 10_000_000,
-		})
-	}
-	err := w.Emit(data)
-	require.NoError(t, err)
-}
-
-func parseDDInput(t *testing.T, input string, w *datadogWriter) {
-	var data *DatadogSeries
-	var source, storeNodeKey string
-
-	for _, s := range strings.Split(input, "\n") {
-		nameValueTimestamp := strings.Split(s, " ")
-		sl := reCrStoreNode.FindStringSubmatch(nameValueTimestamp[0])
-		if len(sl) != 0 {
-			storeNodeKey = sl[1]
-			if storeNodeKey == "node" {
-				storeNodeKey += "_id"
-			}
-		}
-		metricName := sl[2]
-
-		// Advance to a new struct anytime name or source changes
-		if data == nil ||
-			(data != nil && data.Metric != metricName ||
-				(data != nil && source != nameValueTimestamp[1])) {
-			if data != nil {
-				_, err := w.emitDataDogMetrics([]DatadogSeries{*data})
-				require.NoError(t, err)
-			}
-			data = &DatadogSeries{
-				Metric: metricName,
-				Type:   w.resolveMetricType(metricName),
-			}
-			source = nameValueTimestamp[1]
-			data.Tags = append(data.Tags, fmt.Sprintf("%s:%s", storeNodeKey, nameValueTimestamp[1]))
-		}
-		value, err := strconv.ParseFloat(nameValueTimestamp[2], 64)
-		require.NoError(t, err)
-		ts, err := strconv.ParseInt(nameValueTimestamp[3], 10, 64)
-		require.NoError(t, err)
-		data.Points = append(data.Points, DatadogPoint{
-			Value:     value,
-			Timestamp: ts,
-		})
-	}
-	_, err := w.emitDataDogMetrics([]DatadogSeries{*data})
-	require.NoError(t, err)
-}
-
-func TestTsDumpFormatsDataDriven(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	defer testutils.TestingHook(&getCurrentTime, func() time.Time {
-		return time.Date(2024, 11, 14, 0, 0, 0, 0, time.UTC)
-	})()
-
-	datadriven.Walk(t, "testdata/tsdump", func(t *testing.T, path string) {
-		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
-			var w tsWriter
-			switch d.Cmd {
-			case "format-datadog", "format-datadog-init":
-				debugTimeSeriesDumpOpts.clusterLabel = "test-cluster"
-				debugTimeSeriesDumpOpts.clusterID = "test-cluster-id"
-				debugTimeSeriesDumpOpts.zendeskTicket = "zd-test"
-				debugTimeSeriesDumpOpts.organizationName = "test-org"
-				debugTimeSeriesDumpOpts.userName = "test-user"
-				var testReqs []*http.Request
-				var series int
-				d.ScanArgs(t, "series-threshold", &series)
-				var ddwriter = makeDatadogWriter(
-					"https://example.com/data", d.Cmd == "format-datadog-init", "api-key", series, func(req *http.Request,
-					) error {
-						testReqs = append(testReqs, req)
-						return nil
-					})
-
-				parseDDInput(t, d.Input, ddwriter)
-
-				out := strings.Builder{}
-				for _, tr := range testReqs {
-					rc, err := tr.GetBody()
-					require.NoError(t, err)
-					zipR, err := gzip.NewReader(rc)
-					require.NoError(t, err)
-					body, err := io.ReadAll(zipR)
-					require.NoError(t, err)
-					out.WriteString(fmt.Sprintf("%s: %s\nDD-API-KEY: %s\nBody: %s", tr.Method, tr.URL, tr.Header.Get("DD-API-KEY"), body))
-				}
-				return out.String()
-			case "format-json":
-				debugTimeSeriesDumpOpts.clusterLabel = "test-cluster"
-				var testReqs []*http.Request
-				var bytes int
-				d.ScanArgs(t, "bytes-threshold", &bytes)
-				w = makeJSONWriter("https://example.com/data", "test-token", bytes, func(req *http.Request) error {
-					testReqs = append(testReqs, req)
-					return nil
-				})
-
-				parseTSInput(t, d.Input, w)
-
-				out := strings.Builder{}
-				for _, tr := range testReqs {
-					rc, err := tr.GetBody()
-					require.NoError(t, err)
-					body, err := io.ReadAll(rc)
-					require.NoError(t, err)
-					out.WriteString(fmt.Sprintf("%s: %s\nX-Crl-Token: %s\nBody: %v", tr.Method, tr.URL, tr.Header.Get("X-CRL-TOKEN"), string(body)))
-				}
-				return out.String()
-			default:
-				t.Fatalf("unknown command: %s", d.Cmd)
-				return ""
-			}
-		})
-	})
 }

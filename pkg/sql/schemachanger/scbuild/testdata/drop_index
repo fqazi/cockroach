@@ -43,10 +43,8 @@ DROP INDEX idx2 CASCADE
   {columnId: 4, isInaccessible: true, tableId: 104}
 - [[ColumnName:{DescID: 104, Name: crdb_internal_idx_expr, ColumnID: 4}, ABSENT], PUBLIC]
   {columnId: 4, name: crdb_internal_idx_expr, tableId: 104}
-- [[ColumnComputeExpression:{DescID: 104, ColumnID: 4, Usage: REGULAR}, ABSENT], PUBLIC]
-  {columnId: 4, expr: lower(j), referencedColumnIds: [2], tableId: 104}
-- [[ColumnType:{DescID: 104, ColumnFamilyID: 0, ColumnID: 4, TypeName: STRING}, ABSENT], PUBLIC]
-  {columnId: 4, elementCreationMetadata: {in231OrLater: true, in243OrLater: true}, isNullable: true, isVirtual: true, tableId: 104, type: {family: StringFamily, oid: 25}, typeName: STRING}
+- [[ColumnType:{DescID: 104, ColumnFamilyID: 0, ColumnID: 4}, ABSENT], PUBLIC]
+  {columnId: 4, computeExpr: {expr: lower(j), referencedColumnIds: [2]}, elementCreationMetadata: {in231OrLater: true}, isNullable: true, isVirtual: true, tableId: 104, type: {family: StringFamily, oid: 25}}
 - [[IndexData:{DescID: 104, IndexID: 1}, PUBLIC], PUBLIC]
   {indexId: 1, tableId: 104}
 - [[IndexData:{DescID: 104, IndexID: 2}, PUBLIC], PUBLIC]
@@ -73,10 +71,8 @@ DROP INDEX idx3 CASCADE
   {columnId: 5, isHidden: true, tableId: 104}
 - [[ColumnName:{DescID: 104, Name: crdb_internal_i_shard_16, ColumnID: 5}, ABSENT], PUBLIC]
   {columnId: 5, name: crdb_internal_i_shard_16, tableId: 104}
-- [[ColumnComputeExpression:{DescID: 104, ColumnID: 5, Usage: REGULAR}, ABSENT], PUBLIC]
-  {columnId: 5, expr: 'mod(fnv32(md5(crdb_internal.datums_to_bytes(i))), 16:::INT8)', referencedColumnIds: [1], tableId: 104}
-- [[ColumnType:{DescID: 104, ColumnFamilyID: 0, ColumnID: 5, TypeName: INT8}, ABSENT], PUBLIC]
-  {columnId: 5, elementCreationMetadata: {in231OrLater: true, in243OrLater: true}, isVirtual: true, tableId: 104, type: {family: IntFamily, oid: 20, width: 64}, typeName: INT8}
+- [[ColumnType:{DescID: 104, ColumnFamilyID: 0, ColumnID: 5}, ABSENT], PUBLIC]
+  {columnId: 5, computeExpr: {expr: 'mod(fnv32(md5(crdb_internal.datums_to_bytes(i))), 16:::INT8)', referencedColumnIds: [1]}, elementCreationMetadata: {in231OrLater: true}, isVirtual: true, tableId: 104, type: {family: IntFamily, oid: 20, width: 64}}
 - [[ColumnNotNull:{DescID: 104, ColumnID: 5, IndexID: 0}, ABSENT], PUBLIC]
   {columnId: 5, tableId: 104}
 - [[IndexData:{DescID: 104, IndexID: 1}, PUBLIC], PUBLIC]
@@ -97,10 +93,10 @@ DROP INDEX idx3 CASCADE
   {indexId: 6, name: idx3, tableId: 104}
 - [[IndexData:{DescID: 104, IndexID: 6}, ABSENT], PUBLIC]
   {indexId: 6, tableId: 104}
-- [[CheckConstraint:{DescID: 104, IndexID: 0, ConstraintID: 3, ReferencedColumnIDs: [5]}, ABSENT], PUBLIC]
-  {columnIds: [5], constraintId: 3, expr: 'crdb_internal_i_shard_16 IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15)', fromHashShardedColumn: true, referencedColumnIds: [5], tableId: 104}
-- [[ConstraintWithoutIndexName:{DescID: 104, Name: check_crdb_internal_i_shard_16, ConstraintID: 3}, ABSENT], PUBLIC]
-  {constraintId: 3, name: check_crdb_internal_i_shard_16, tableId: 104}
+- [[CheckConstraint:{DescID: 104, IndexID: 0, ConstraintID: 2, ReferencedColumnIDs: [5]}, ABSENT], PUBLIC]
+  {columnIds: [5], constraintId: 2, expr: 'crdb_internal_i_shard_16 IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15)', fromHashShardedColumn: true, referencedColumnIds: [5], tableId: 104}
+- [[ConstraintWithoutIndexName:{DescID: 104, Name: check_crdb_internal_i_shard_16, ConstraintID: 2}, ABSENT], PUBLIC]
+  {constraintId: 2, name: check_crdb_internal_i_shard_16, tableId: 104}
 - [[TableData:{DescID: 104, ReferencedDescID: 100}, PUBLIC], PUBLIC]
   {databaseId: 100, tableId: 104}
 - [[Namespace:{DescID: 105, Name: v, ReferencedDescID: 100}, ABSENT], PUBLIC]
@@ -119,32 +115,20 @@ DROP INDEX idx3 CASCADE
   {columnId: 1, tableId: 105}
 - [[ColumnName:{DescID: 105, Name: count, ColumnID: 1}, ABSENT], PUBLIC]
   {columnId: 1, name: count, tableId: 105}
-- [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: INT8}, ABSENT], PUBLIC]
-  {columnId: 1, elementCreationMetadata: {in231OrLater: true, in243OrLater: true}, isNullable: true, tableId: 105, type: {family: IntFamily, oid: 20, width: 64}, typeName: INT8}
+- [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC]
+  {columnId: 1, elementCreationMetadata: {in231OrLater: true}, isNullable: true, tableId: 105, type: {family: IntFamily, oid: 20, width: 64}}
 - [[Column:{DescID: 105, ColumnID: 4294967295}, ABSENT], PUBLIC]
   {columnId: 4.294967295e+09, isHidden: true, isSystemColumn: true, tableId: 105}
 - [[ColumnName:{DescID: 105, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC]
   {columnId: 4.294967295e+09, name: crdb_internal_mvcc_timestamp, tableId: 105}
-- [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC]
-  {columnId: 4.294967295e+09, elementCreationMetadata: {in231OrLater: true, in243OrLater: true}, isNullable: true, tableId: 105, type: {family: DecimalFamily, oid: 1700}, typeName: DECIMAL}
+- [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC]
+  {columnId: 4.294967295e+09, elementCreationMetadata: {in231OrLater: true}, isNullable: true, tableId: 105, type: {family: DecimalFamily, oid: 1700}}
 - [[Column:{DescID: 105, ColumnID: 4294967294}, ABSENT], PUBLIC]
   {columnId: 4.294967294e+09, isHidden: true, isSystemColumn: true, tableId: 105}
 - [[ColumnName:{DescID: 105, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC]
   {columnId: 4.294967294e+09, name: tableoid, tableId: 105}
-- [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC]
-  {columnId: 4.294967294e+09, elementCreationMetadata: {in231OrLater: true, in243OrLater: true}, isNullable: true, tableId: 105, type: {family: OidFamily, oid: 26}, typeName: OID}
-- [[Column:{DescID: 105, ColumnID: 4294967293}, ABSENT], PUBLIC]
-  {columnId: 4.294967293e+09, isHidden: true, isSystemColumn: true, tableId: 105}
-- [[ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC]
-  {columnId: 4.294967293e+09, name: crdb_internal_origin_id, tableId: 105}
-- [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC]
-  {columnId: 4.294967293e+09, elementCreationMetadata: {in231OrLater: true, in243OrLater: true}, isNullable: true, tableId: 105, type: {family: IntFamily, oid: 23, width: 32}, typeName: INT4}
-- [[Column:{DescID: 105, ColumnID: 4294967292}, ABSENT], PUBLIC]
-  {columnId: 4.294967292e+09, isHidden: true, isSystemColumn: true, tableId: 105}
-- [[ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC]
-  {columnId: 4.294967292e+09, name: crdb_internal_origin_timestamp, tableId: 105}
-- [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC]
-  {columnId: 4.294967292e+09, elementCreationMetadata: {in231OrLater: true, in243OrLater: true}, isNullable: true, tableId: 105, type: {family: DecimalFamily, oid: 1700}, typeName: DECIMAL}
+- [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC]
+  {columnId: 4.294967294e+09, elementCreationMetadata: {in231OrLater: true}, isNullable: true, tableId: 105, type: {family: OidFamily, oid: 26}}
 
 build
 DROP INDEX v2@idx CASCADE
@@ -181,42 +165,30 @@ DROP INDEX v2@idx CASCADE
   {columnId: 1, tableId: 107}
 - [[ColumnName:{DescID: 107, Name: j, ColumnID: 1}, ABSENT], PUBLIC]
   {columnId: 1, name: j, tableId: 107}
-- [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1, TypeName: STRING}, ABSENT], PUBLIC]
-  {columnId: 1, elementCreationMetadata: {in231OrLater: true, in243OrLater: true}, isNullable: true, tableId: 107, type: {family: StringFamily, oid: 25}, typeName: STRING}
+- [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC]
+  {columnId: 1, elementCreationMetadata: {in231OrLater: true}, isNullable: true, tableId: 107, type: {family: StringFamily, oid: 25}}
 - [[Column:{DescID: 107, ColumnID: 2}, ABSENT], PUBLIC]
   {columnId: 2, isHidden: true, tableId: 107}
 - [[ColumnName:{DescID: 107, Name: rowid, ColumnID: 2}, ABSENT], PUBLIC]
   {columnId: 2, name: rowid, tableId: 107}
-- [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2, TypeName: INT8}, ABSENT], PUBLIC]
-  {columnId: 2, elementCreationMetadata: {in231OrLater: true, in243OrLater: true}, tableId: 107, type: {family: IntFamily, oid: 20, width: 64}, typeName: INT8}
+- [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2}, ABSENT], PUBLIC]
+  {columnId: 2, elementCreationMetadata: {in231OrLater: true}, tableId: 107, type: {family: IntFamily, oid: 20, width: 64}}
 - [[ColumnNotNull:{DescID: 107, ColumnID: 2, IndexID: 0}, ABSENT], PUBLIC]
   {columnId: 2, tableId: 107}
-- [[ColumnDefaultExpression:{DescID: 107, ColumnID: 2, Expr: unique_rowid()}, ABSENT], PUBLIC]
+- [[ColumnDefaultExpression:{DescID: 107, ColumnID: 2}, ABSENT], PUBLIC]
   {columnId: 2, expr: unique_rowid(), tableId: 107}
 - [[Column:{DescID: 107, ColumnID: 4294967295}, ABSENT], PUBLIC]
   {columnId: 4.294967295e+09, isHidden: true, isSystemColumn: true, tableId: 107}
 - [[ColumnName:{DescID: 107, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC]
   {columnId: 4.294967295e+09, name: crdb_internal_mvcc_timestamp, tableId: 107}
-- [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC]
-  {columnId: 4.294967295e+09, elementCreationMetadata: {in231OrLater: true, in243OrLater: true}, isNullable: true, tableId: 107, type: {family: DecimalFamily, oid: 1700}, typeName: DECIMAL}
+- [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC]
+  {columnId: 4.294967295e+09, elementCreationMetadata: {in231OrLater: true}, isNullable: true, tableId: 107, type: {family: DecimalFamily, oid: 1700}}
 - [[Column:{DescID: 107, ColumnID: 4294967294}, ABSENT], PUBLIC]
   {columnId: 4.294967294e+09, isHidden: true, isSystemColumn: true, tableId: 107}
 - [[ColumnName:{DescID: 107, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC]
   {columnId: 4.294967294e+09, name: tableoid, tableId: 107}
-- [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC]
-  {columnId: 4.294967294e+09, elementCreationMetadata: {in231OrLater: true, in243OrLater: true}, isNullable: true, tableId: 107, type: {family: OidFamily, oid: 26}, typeName: OID}
-- [[Column:{DescID: 107, ColumnID: 4294967293}, ABSENT], PUBLIC]
-  {columnId: 4.294967293e+09, isHidden: true, isSystemColumn: true, tableId: 107}
-- [[ColumnName:{DescID: 107, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC]
-  {columnId: 4.294967293e+09, name: crdb_internal_origin_id, tableId: 107}
-- [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC]
-  {columnId: 4.294967293e+09, elementCreationMetadata: {in231OrLater: true, in243OrLater: true}, isNullable: true, tableId: 107, type: {family: IntFamily, oid: 23, width: 32}, typeName: INT4}
-- [[Column:{DescID: 107, ColumnID: 4294967292}, ABSENT], PUBLIC]
-  {columnId: 4.294967292e+09, isHidden: true, isSystemColumn: true, tableId: 107}
-- [[ColumnName:{DescID: 107, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC]
-  {columnId: 4.294967292e+09, name: crdb_internal_origin_timestamp, tableId: 107}
-- [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC]
-  {columnId: 4.294967292e+09, elementCreationMetadata: {in231OrLater: true, in243OrLater: true}, isNullable: true, tableId: 107, type: {family: DecimalFamily, oid: 1700}, typeName: DECIMAL}
+- [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC]
+  {columnId: 4.294967294e+09, elementCreationMetadata: {in231OrLater: true}, isNullable: true, tableId: 107, type: {family: OidFamily, oid: 26}}
 - [[IndexColumn:{DescID: 107, ColumnID: 2, IndexID: 1}, ABSENT], PUBLIC]
   {columnId: 2, indexId: 1, tableId: 107}
 - [[IndexColumn:{DescID: 107, ColumnID: 1, IndexID: 1}, ABSENT], PUBLIC]

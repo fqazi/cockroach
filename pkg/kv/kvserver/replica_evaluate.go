@@ -9,9 +9,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"runtime/trace"
 
-	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvnemesis/kvnemesisutil"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
@@ -24,14 +22,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/pebble"
 	"github.com/kr/pretty"
 )
 
@@ -45,7 +41,7 @@ import (
 // the input slice, or has been shallow-copied appropriately to avoid
 // mutating the original requests).
 func optimizePuts(
-	ctx context.Context, reader storage.Reader, origReqs []kvpb.RequestUnion, distinctSpans bool,
+	reader storage.Reader, origReqs []kvpb.RequestUnion, distinctSpans bool,
 ) ([]kvpb.RequestUnion, error) {
 	var minKey, maxKey roachpb.Key
 	var unique map[string]struct{}
@@ -84,6 +80,10 @@ func optimizePuts(
 			if maybeAddPut(t.Key) {
 				continue
 			}
+		case *kvpb.InitPutRequest:
+			if maybeAddPut(t.Key) {
+				continue
+			}
 		}
 		firstUnoptimizedIndex = i
 		break
@@ -95,12 +95,11 @@ func optimizePuts(
 	// iter is being used to find the parts of the key range that is empty. We
 	// don't need to see intents for this purpose since intents also have
 	// provisional values that we will see.
-	iter, err := reader.NewMVCCIterator(ctx, storage.MVCCKeyIterKind, storage.IterOptions{
+	iter, err := reader.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		KeyTypes: storage.IterKeyTypePointsAndRanges,
 		// We want to include maxKey in our scan. Since UpperBound is exclusive, we
 		// need to set it to the key after maxKey.
-		UpperBound:   maxKey.Next(),
-		ReadCategory: fs.BatchEvalReadCategory,
+		UpperBound: maxKey.Next(),
 	})
 	if err != nil {
 		return nil, err
@@ -116,59 +115,11 @@ func optimizePuts(
 	if ok, err := iter.Valid(); err != nil {
 		// TODO(bdarnell): return an error here instead of silently
 		// running without the optimization?
-		log.Errorf(ctx, "Seek returned error; disabling blind-put optimization: %+v", err)
+		log.Errorf(context.TODO(), "Seek returned error; disabling blind-put optimization: %+v", err)
 		return origReqs, nil
 	} else if ok && bytes.Compare(iter.UnsafeKey().Key, maxKey) <= 0 {
 		iterKey = iter.UnsafeKey().Key.Clone()
 	}
-
-	if lock.LockNonExistentKeys {
-		ltStart, _ := keys.LockTableSingleKey(minKey, nil)
-
-		// If we already have an iterKey, we only need to know if there is an even
-		// earlier key that is locked,
-		var ltEnd roachpb.Key
-		if iterKey != nil {
-			ltEnd, _ = keys.LockTableSingleKey(iterKey.Next(), nil)
-		} else {
-			ltEnd, _ = keys.LockTableSingleKey(maxKey.Next(), nil)
-		}
-
-		ltIter, err := storage.NewLockTableIterator(ctx, reader,
-			storage.LockTableIteratorOptions{
-				LowerBound:  ltStart,
-				UpperBound:  ltEnd,
-				MatchMinStr: lock.Exclusive,
-			})
-		if err != nil {
-			return nil, err
-		}
-		defer ltIter.Close()
-
-		if valid, err := ltIter.SeekEngineKeyGE(storage.EngineKey{Key: ltStart}); err != nil {
-			log.Errorf(ctx, "SeekEngineKeyGE error; disabling blind-put optimization: %+v", err)
-			return origReqs, nil
-		} else if valid {
-			engineKey, err := ltIter.EngineKey()
-			if err != nil {
-				log.Errorf(ctx, "EngineKey error; disabling blind-put optimization: %+v", err)
-				return origReqs, nil
-			}
-			ltKey, err := engineKey.ToLockTableKey()
-			if err != nil {
-				log.Errorf(ctx, "ToLockTableKey error; disabling blind-put optimization: %+v", err)
-				return origReqs, nil
-			}
-			if bytes.Compare(ltKey.Key, maxKey) <= 0 &&
-				(iterKey == nil || bytes.Compare(ltKey.Key, iterKey) < 0) {
-				iterKey = ltKey.Key.Clone()
-			}
-		}
-		// If !valid, we know there are existing locks in the lock table for iterKey
-		// (or any key before it), so it is still the correct key to stop blind
-		// writing at.
-	}
-
 	// Set the prefix of the run which is being written to virgin
 	// keyspace to "blindly" put values.
 	reqs := append([]kvpb.RequestUnion(nil), origReqs...)
@@ -184,8 +135,12 @@ func optimizePuts(
 				shallow := *t
 				shallow.Blind = true
 				reqs[i].MustSetInner(&shallow)
+			case *kvpb.InitPutRequest:
+				shallow := *t
+				shallow.Blind = true
+				reqs[i].MustSetInner(&shallow)
 			default:
-				log.Fatalf(ctx, "unexpected non-put request: %s", t)
+				log.Fatalf(context.TODO(), "unexpected non-put request: %s", t)
 			}
 		}
 	}
@@ -208,6 +163,15 @@ func evaluateBatch(
 	evalPath batchEvalPath,
 	omitInRangefeeds bool, // only relevant for transactional writes
 ) (_ *kvpb.BatchResponse, _ result.Result, retErr *kvpb.Error) {
+	defer func() {
+		// Ensure that errors don't carry the WriteTooOld flag set. The client
+		// handles non-error responses with the WriteTooOld flag set, and errors
+		// with this flag set confuse it.
+		if retErr != nil && retErr.GetTxn() != nil {
+			retErr.GetTxn().WriteTooOld = false
+		}
+	}()
+
 	// NB: Don't mutate BatchRequest directly.
 	baReqs := ba.Requests
 
@@ -222,7 +186,7 @@ func evaluateBatch(
 
 	// Optimize any contiguous sequences of put and conditional put ops.
 	if len(baReqs) >= optimizePutThreshold && evalPath == readWrite {
-		baReqs, err = optimizePuts(ctx, readWriter, baReqs, baHeader.DistinctSpans)
+		baReqs, err = optimizePuts(readWriter, baReqs, baHeader.DistinctSpans)
 	}
 	if err != nil {
 		pErr := kvpb.NewErrorWithTxn(err, baHeader.Txn)
@@ -272,9 +236,6 @@ func evaluateBatch(
 		defer func() {
 			if ss.NumGets != 0 || ss.NumScans != 0 || ss.NumReverseScans != 0 {
 				// Only record non-empty ScanStats.
-				ss.NodeID = rec.NodeID()
-				locality := rec.GetNodeLocality()
-				ss.Region, _ = locality.Find("region")
 				sp.RecordStructured(ss)
 			}
 		}()
@@ -309,14 +270,13 @@ func evaluateBatch(
 		// If a unittest filter was installed, check for an injected error; otherwise, continue.
 		if filter := rec.EvalKnobs().TestingEvalFilter; filter != nil {
 			filterArgs := kvserverbase.FilterArgs{
-				Ctx:          ctx,
-				CmdID:        idKey,
-				Index:        index,
-				Sid:          rec.StoreID(),
-				Req:          args,
-				Version:      rec.ClusterSettings().Version.ActiveVersionOrEmpty(ctx).Version,
-				Hdr:          baHeader,
-				AdmissionHdr: ba.AdmissionHeader,
+				Ctx:     ctx,
+				CmdID:   idKey,
+				Index:   index,
+				Sid:     rec.StoreID(),
+				Req:     args,
+				Version: rec.ClusterSettings().Version.ActiveVersionOrEmpty(ctx).Version,
+				Hdr:     baHeader,
 			}
 			if pErr := filter(filterArgs); pErr != nil {
 				if pErr.GetTxn() == nil {
@@ -336,28 +296,19 @@ func evaluateBatch(
 		// Note that `reply` is populated even when an error is returned: it
 		// may carry a response transaction and in the case of WriteTooOldError
 		// (which is sometimes deferred) it is fully populated.
-		var reg *trace.Region
-		if trace.IsEnabled() {
-			regName := args.Method().String() // NB: this is cheap, no allocs
-			reg = trace.StartRegion(ctx, regName)
-		}
 		curResult, err := evaluateCommand(
 			ctx, readWriter, rec, ms, ss, baHeader, args, reply, g, st, ui, evalPath, omitInRangefeeds,
 		)
-		if reg != nil {
-			reg.End()
-		}
 
 		if filter := rec.EvalKnobs().TestingPostEvalFilter; filter != nil {
 			filterArgs := kvserverbase.FilterArgs{
-				Ctx:          ctx,
-				CmdID:        idKey,
-				Index:        index,
-				Sid:          rec.StoreID(),
-				Req:          args,
-				Hdr:          baHeader,
-				AdmissionHdr: ba.AdmissionHeader,
-				Err:          err,
+				Ctx:   ctx,
+				CmdID: idKey,
+				Index: index,
+				Sid:   rec.StoreID(),
+				Req:   args,
+				Hdr:   baHeader,
+				Err:   err,
 			}
 			if pErr := filter(filterArgs); pErr != nil {
 				if pErr.GetTxn() == nil {
@@ -555,15 +506,6 @@ func evaluateCommand(
 		log.VEventf(ctx, 2, "evaluated %s command %s, txn=%v : resp=%s, err=%v",
 			args.Method(), trunc(args.String()), h.Txn, resp, err)
 	}
-
-	// If there is a pebble data corruption error, we want to serialize it by
-	// returning the KV error PebbleCorruptionError. This way, the error can be
-	// extracted by KV clients.
-	if err != nil {
-		if info := pebble.ExtractDataCorruptionInfo(err); info != nil {
-			err = kvpb.NewPebbleCorruptionError(rec.StoreID(), info)
-		}
-	}
 	return pd, err
 }
 
@@ -595,13 +537,13 @@ func canDoServersideRetry(
 	ba *kvpb.BatchRequest,
 	g *concurrency.Guard,
 	deadline hlc.Timestamp,
-) (*kvpb.BatchRequest, bool) {
+) bool {
 	if pErr == nil {
 		log.Fatalf(ctx, "canDoServersideRetry called without error")
 	}
 	if ba.Txn != nil {
 		if !ba.CanForwardReadTimestamp {
-			return ba, false
+			return false
 		}
 		if !deadline.IsEmpty() {
 			log.Fatal(ctx, "deadline passed for transactional request")
@@ -617,7 +559,7 @@ func canDoServersideRetry(
 		var ok bool
 		ok, newTimestamp = kvpb.TransactionRefreshTimestamp(pErr)
 		if !ok {
-			return ba, false
+			return false
 		}
 	} else {
 		switch tErr := pErr.GetDetail().(type) {
@@ -628,12 +570,12 @@ func canDoServersideRetry(
 			newTimestamp = tErr.RetryTimestamp()
 
 		default:
-			return ba, false
+			return false
 		}
 	}
 
 	if batcheval.IsEndTxnExceedingDeadline(newTimestamp, deadline) {
-		return ba, false
+		return false
 	}
 	return tryBumpBatchTimestamp(ctx, ba, g, newTimestamp)
 }

@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,16 +57,12 @@ func (desc *Mutable) TestingSetClusterVersion(d descpb.TableDescriptor) {
 
 func TestStripDanglingBackReferencesAndRoles(t *testing.T) {
 	type testCase struct {
-		name                           string
-		input, expectedOutput          descpb.TableDescriptor
-		validDescIDs                   catalog.DescriptorIDSet
-		validJobIDs                    map[jobspb.JobID]struct{}
-		strippedDanglingBackReferences bool
-		strippedNonExistentRoles       bool
+		name                  string
+		input, expectedOutput descpb.TableDescriptor
+		validDescIDs          catalog.DescriptorIDSet
+		validJobIDs           map[jobspb.JobID]struct{}
 	}
 
-	badOwnerPrivilege := catpb.NewBaseDatabasePrivilegeDescriptor(username.MakeSQLUsernameFromPreNormalizedString("dropped_user"))
-	goodOwnerPrivilege := catpb.NewBaseDatabasePrivilegeDescriptor(username.AdminRoleName())
 	badPrivilege := catpb.NewBaseDatabasePrivilegeDescriptor(username.RootUserName())
 	goodPrivilege := catpb.NewBaseDatabasePrivilegeDescriptor(username.RootUserName())
 	badPrivilege.Users = append(badPrivilege.Users, catpb.UserPrivileges{
@@ -107,10 +102,8 @@ func TestStripDanglingBackReferencesAndRoles(t *testing.T) {
 				},
 				Privileges: goodPrivilege,
 			},
-			validDescIDs:                   catalog.MakeDescriptorIDSet(100, 101, 104, 105),
-			validJobIDs:                    map[jobspb.JobID]struct{}{},
-			strippedDanglingBackReferences: true,
-			strippedNonExistentRoles:       true,
+			validDescIDs: catalog.MakeDescriptorIDSet(100, 101, 104, 105),
+			validJobIDs:  map[jobspb.JobID]struct{}{},
 		},
 		{
 			name: "job IDs",
@@ -141,73 +134,8 @@ func TestStripDanglingBackReferencesAndRoles(t *testing.T) {
 				},
 				Privileges: goodPrivilege,
 			},
-			validDescIDs:                   catalog.MakeDescriptorIDSet(100, 101, 104, 105),
-			validJobIDs:                    map[jobspb.JobID]struct{}{111222333444: {}},
-			strippedDanglingBackReferences: true,
-			strippedNonExistentRoles:       true,
-		},
-		{
-			name: "LDR job IDs",
-			input: descpb.TableDescriptor{
-				Name: "foo",
-				ID:   104,
-				MutationJobs: []descpb.TableDescriptor_MutationJob{
-					{JobID: 111222333444, MutationID: 1},
-				},
-				Mutations: []descpb.DescriptorMutation{
-					{MutationID: 1},
-					{MutationID: 2},
-				},
-				LDRJobIDs:  []catpb.JobID{1, 2, 3},
-				Privileges: goodPrivilege,
-			},
-			expectedOutput: descpb.TableDescriptor{
-				Name: "foo",
-				ID:   104,
-				MutationJobs: []descpb.TableDescriptor_MutationJob{
-					{JobID: 111222333444, MutationID: 1},
-				},
-				Mutations: []descpb.DescriptorMutation{
-					{MutationID: 1},
-					{MutationID: 2},
-				},
-				LDRJobIDs:  []catpb.JobID{},
-				Privileges: goodPrivilege,
-			},
-			validDescIDs:                   catalog.MakeDescriptorIDSet(100, 101, 104, 105),
-			validJobIDs:                    map[jobspb.JobID]struct{}{111222333444: {}},
-			strippedDanglingBackReferences: true,
-			strippedNonExistentRoles:       false,
-		},
-		{
-			name: "missing owner",
-			input: descpb.TableDescriptor{
-				Name: "foo",
-				ID:   104,
-				MutationJobs: []descpb.TableDescriptor_MutationJob{
-					{JobID: 111222333444, MutationID: 1},
-				},
-				Mutations: []descpb.DescriptorMutation{
-					{MutationID: 1},
-					{MutationID: 2},
-				},
-				Privileges: badOwnerPrivilege,
-			},
-			expectedOutput: descpb.TableDescriptor{
-				Name: "foo",
-				ID:   104,
-				MutationJobs: []descpb.TableDescriptor_MutationJob{
-					{JobID: 111222333444, MutationID: 1},
-				},
-				Mutations: []descpb.DescriptorMutation{
-					{MutationID: 1},
-					{MutationID: 2},
-				},
-				Privileges: goodOwnerPrivilege,
-			},
-			validDescIDs:             catalog.MakeDescriptorIDSet(100, 101, 104, 105),
-			validJobIDs:              map[jobspb.JobID]struct{}{111222333444: {}},
-			strippedNonExistentRoles: true,
+			validDescIDs: catalog.MakeDescriptorIDSet(100, 101, 104, 105),
+			validJobIDs:  map[jobspb.JobID]struct{}{111222333444: {}},
 		},
 	}
 
@@ -225,8 +153,8 @@ func TestStripDanglingBackReferencesAndRoles(t *testing.T) {
 				return role.IsAdminRole() || role.IsPublicRole() || role.IsRootUser()
 			}))
 			desc := b.BuildCreatedMutableTable()
-			require.Equal(t, test.strippedDanglingBackReferences, desc.GetPostDeserializationChanges().Contains(catalog.StrippedDanglingBackReferences))
-			require.Equal(t, test.strippedNonExistentRoles, desc.GetPostDeserializationChanges().Contains(catalog.StrippedNonExistentRoles))
+			require.True(t, desc.GetPostDeserializationChanges().Contains(catalog.StrippedDanglingBackReferences))
+			require.True(t, desc.GetPostDeserializationChanges().Contains(catalog.StrippedNonExistentRoles))
 			require.Equal(t, out.BuildCreatedMutableTable().TableDesc(), desc.TableDesc())
 		})
 	}
@@ -276,60 +204,6 @@ func TestFixIncorrectFKOriginTableID(t *testing.T) {
 			desc := b.BuildCreatedMutableTable()
 			require.True(t, desc.GetPostDeserializationChanges().Contains(catalog.FixedIncorrectForeignKeyOrigins))
 			require.False(t, out.BuildCreatedMutableTable().GetPostDeserializationChanges().Contains(catalog.FixedIncorrectForeignKeyOrigins))
-			require.Equal(t, out.BuildCreatedMutableTable().TableDesc(), desc.TableDesc())
-		})
-	}
-}
-
-func TestFixMissingSequenceIdentityRefs(t *testing.T) {
-	type testCase struct {
-		name                  string
-		input, expectedOutput descpb.TableDescriptor
-	}
-	defaultExpr := "nextval('sq1')"
-	testData := []testCase{
-		{
-			name: "missing sequence references for identity",
-			input: descpb.TableDescriptor{
-				Name: "foo",
-				ID:   104,
-				Columns: []descpb.ColumnDescriptor{{
-					Name:                    "blah",
-					ID:                      1,
-					Type:                    types.Int,
-					GeneratedAsIdentityType: catpb.GeneratedAsIdentityType_GENERATED_ALWAYS,
-					DefaultExpr:             &defaultExpr,
-					OwnsSequenceIds:         []descpb.ID{23},
-					UsesSequenceIds:         nil,
-				},
-				},
-			},
-			expectedOutput: descpb.TableDescriptor{
-				Name: "foo",
-				ID:   104,
-				Columns: []descpb.ColumnDescriptor{{
-					Name:                    "blah",
-					ID:                      1,
-					Type:                    types.Int,
-					GeneratedAsIdentityType: catpb.GeneratedAsIdentityType_GENERATED_ALWAYS,
-					DefaultExpr:             &defaultExpr,
-					OwnsSequenceIds:         []descpb.ID{23},
-					UsesSequenceIds:         []descpb.ID{23},
-				},
-				},
-			},
-		},
-	}
-
-	for _, test := range testData {
-		t.Run(test.name, func(t *testing.T) {
-			b := NewBuilder(&test.input)
-			require.NoError(t, b.RunPostDeserializationChanges())
-			out := NewBuilder(&test.expectedOutput)
-			require.NoError(t, out.RunPostDeserializationChanges())
-			desc := b.BuildCreatedMutableTable()
-			require.True(t, desc.GetPostDeserializationChanges().Contains(catalog.FixedUsesSequencesIDForIdentityColumns))
-			require.False(t, out.BuildCreatedMutableTable().GetPostDeserializationChanges().Contains(catalog.FixedUsesSequencesIDForIdentityColumns))
 			require.Equal(t, out.BuildCreatedMutableTable().TableDesc(), desc.TableDesc())
 		})
 	}

@@ -15,13 +15,13 @@ go_library(
         "//pkg/sql/types",
         "//pkg/util/intsets",
         "@com_github_cockroachdb_errors//:errors",
-        "@com_github_lib_pq//oid",
     ],
 )
 
 go_test(
     name = "partition_test",
     srcs = ["locality_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":partition"],
     deps = [
         "//pkg/settings/cluster",

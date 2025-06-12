@@ -53,8 +53,8 @@ func TestMergeKVs(t *testing.T) {
 		}
 		return kvs
 	}
-	toBuffer := func(t *testing.T, rows []row) *Buffer[*kvpb.RangeFeedValue] {
-		buf := New[*kvpb.RangeFeedValue](len(rows))
+	toBuffer := func(t *testing.T, rows []row) *Buffer {
+		buf := New(len(rows))
 		for _, r := range rows {
 			require.NoError(t, buf.Add(toRangeFeedEvent(r)))
 		}

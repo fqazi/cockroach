@@ -7,7 +7,6 @@ package lease
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"sort"
 
@@ -35,7 +34,7 @@ func (l *descriptorSet) String() string {
 		if i > 0 {
 			buf.WriteString(" ")
 		}
-		buf.WriteString(fmt.Sprintf("%d:%d", s.GetVersion(), s.getExpiration(context.TODO()).WallTime))
+		buf.WriteString(fmt.Sprintf("%d:%d", s.GetVersion(), s.getExpiration().WallTime))
 	}
 	return buf.String()
 }
@@ -88,31 +87,6 @@ func (l *descriptorSet) findNewest() *descriptorVersionState {
 		return nil
 	}
 	return l.data[len(l.data)-1]
-}
-
-func (l *descriptorSet) findPreviousToExpire(dropped bool) *descriptorVersionState {
-	// If there are no versions, then no previous version exists.
-	if len(l.data) == 0 {
-		return nil
-	}
-	// The latest version will be the previous version
-	// if the descriptor is dropped.
-	exp := l.data[len(l.data)-1]
-	if len(l.data) > 1 && !dropped {
-		// Otherwise, the second last element will be the previous version.
-		exp = l.data[len(l.data)-2]
-	} else if !dropped {
-		// Otherwise, there is a single non-dropped element
-		// avoid expiring.
-		return nil
-	}
-	// If the refcount has hit zero then this version will be cleaned up
-	// automatically. The expiration time is non-nil only if a version has
-	// been expired or is considered stale.
-	if exp.refcount.Load() == 0 || (exp.expiration.Load() != nil) {
-		return nil
-	}
-	return exp
 }
 
 func (l *descriptorSet) findVersion(version descpb.DescriptorVersion) *descriptorVersionState {

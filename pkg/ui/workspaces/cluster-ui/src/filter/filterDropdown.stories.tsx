@@ -3,12 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { storiesOf } from "@storybook/react";
-import noop from "lodash/noop";
 import React from "react";
-
-import { FilterCheckboxOption } from "./filterCheckboxOption";
+import { storiesOf } from "@storybook/react";
+import { noop } from "lodash";
 import { FilterDropdown } from "./filterDropdown";
+import { FilterCheckboxOption } from "./filterCheckboxOption";
 import { FilterSearchOption } from "./filterSearchOption";
 
 storiesOf("FilterDropdown", module)
@@ -28,6 +27,6 @@ storiesOf("FilterDropdown", module)
         ]}
         placeholder="Select"
       />
-      <FilterSearchOption label="Store ID" onSubmit={noop} />
+      <FilterSearchOption label="Store ID" />
     </FilterDropdown>
   ));

@@ -86,7 +86,7 @@ func BenchmarkResolveExistingObject(b *testing.B) {
 
 			execCfg := s.ExecutorConfig().(sql.ExecutorConfig)
 			txn := kvDB.NewTxn(ctx, "test")
-			p, cleanup := sql.NewInternalPlanner("asdf", txn, username.NodeUserName(), &sql.MemoryMetrics{}, &execCfg, sd)
+			p, cleanup := sql.NewInternalPlanner("asdf", txn, username.RootUserName(), &sql.MemoryMetrics{}, &execCfg, sd)
 			defer cleanup()
 
 			// The internal planner overrides the database to "system", here we
@@ -113,7 +113,6 @@ func BenchmarkResolveExistingObject(b *testing.B) {
 				require.NoError(b, err)
 				require.NotNil(b, desc)
 			}
-			b.StopTimer()
 		})
 	}
 }
@@ -178,7 +177,7 @@ func BenchmarkResolveFunction(b *testing.B) {
 
 			execCfg := s.ExecutorConfig().(sql.ExecutorConfig)
 			txn := kvDB.NewTxn(ctx, "test")
-			p, cleanup := sql.NewInternalPlanner("asdf", txn, username.NodeUserName(), &sql.MemoryMetrics{}, &execCfg, sd)
+			p, cleanup := sql.NewInternalPlanner("asdf", txn, username.RootUserName(), &sql.MemoryMetrics{}, &execCfg, sd)
 			defer cleanup()
 
 			// The internal planner overrides the database to "system", here we
@@ -205,7 +204,6 @@ func BenchmarkResolveFunction(b *testing.B) {
 				require.NoError(b, err)
 				require.NotNil(b, fd)
 			}
-			b.StopTimer()
 		})
 	}
 }

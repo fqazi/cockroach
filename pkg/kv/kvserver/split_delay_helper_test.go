@@ -10,13 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/stretchr/testify/assert"
+	"go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/tracker"
 )
 
 type testSplitDelayHelper struct {
@@ -64,11 +63,11 @@ func TestSplitDelayToAvoidSnapshot(t *testing.T) {
 			raftStatus:  nil,
 		}
 		s := maybeDelaySplitToAvoidSnapshot(ctx, h)
-		assert.EqualValues(t, "", s)
+		assert.Equal(t, "", s)
 		assert.EqualValues(t, 0, h.slept)
 	})
 
-	statusWithState := func(status raftpb.StateType) *raft.Status {
+	statusWithState := func(status raft.StateType) *raft.Status {
 		return &raft.Status{
 			BasicStatus: raft.BasicStatus{
 				SoftState: raft.SoftState{
@@ -86,7 +85,7 @@ func TestSplitDelayToAvoidSnapshot(t *testing.T) {
 			raftStatus:  nil,
 		}
 		s := maybeDelaySplitToAvoidSnapshot(ctx, h)
-		assert.EqualValues(t, "; delayed by 0.0s to resolve: replica is raft follower (without success)", s)
+		assert.Equal(t, "; delayed by 0.0s to resolve: replica is raft follower (without success)", s)
 		assert.EqualValues(t, 0, h.slept)
 	})
 
@@ -95,14 +94,14 @@ func TestSplitDelayToAvoidSnapshot(t *testing.T) {
 		h := &testSplitDelayHelper{
 			numAttempts: 5,
 			rangeID:     1,
-			raftStatus:  statusWithState(raftpb.StateFollower),
+			raftStatus:  statusWithState(raft.StateFollower),
 		}
 		s := maybeDelaySplitToAvoidSnapshot(ctx, h)
-		assert.EqualValues(t, "; delayed by 0.0s to resolve: replica is raft follower (without success)", s)
+		assert.Equal(t, "; delayed by 0.0s to resolve: replica is raft follower (without success)", s)
 		assert.EqualValues(t, 0, h.slept)
 	})
 
-	for _, state := range []raftpb.StateType{raftpb.StatePreCandidate, raftpb.StateCandidate} {
+	for _, state := range []raft.StateType{raft.StatePreCandidate, raft.StateCandidate} {
 		t.Run(state.String(), func(t *testing.T) {
 			h := &testSplitDelayHelper{
 				numAttempts: 5,
@@ -110,13 +109,13 @@ func TestSplitDelayToAvoidSnapshot(t *testing.T) {
 				raftStatus:  statusWithState(state),
 			}
 			s := maybeDelaySplitToAvoidSnapshot(ctx, h)
-			assert.EqualValues(t, "; delayed by 5.5s to resolve: not leader ("+state.String()+") (without success)", s)
+			assert.Equal(t, "; delayed by 5.5s to resolve: not leader ("+state.String()+") (without success)", s)
 		})
 	}
 
 	t.Run("inactive", func(t *testing.T) {
-		st := statusWithState(raftpb.StateLeader)
-		st.Progress = map[raftpb.PeerID]tracker.Progress{
+		st := statusWithState(raft.StateLeader)
+		st.Progress = map[uint64]tracker.Progress{
 			2: {State: tracker.StateProbe},
 		}
 		h := &testSplitDelayHelper{
@@ -126,19 +125,19 @@ func TestSplitDelayToAvoidSnapshot(t *testing.T) {
 		}
 		s := maybeDelaySplitToAvoidSnapshot(ctx, h)
 		// We try to wake up the follower once, but then give up on it.
-		assert.EqualValues(t, "; delayed by 1.3s to resolve: r1/2 inactive", s)
+		assert.Equal(t, "; delayed by 1.3s to resolve: r1/2 inactive", s)
 		assert.Less(t, int64(h.slept), int64(2*h.TickDuration()))
 	})
 
 	for _, state := range []tracker.StateType{tracker.StateProbe, tracker.StateSnapshot} {
 		t.Run(state.String(), func(t *testing.T) {
-			st := statusWithState(raftpb.StateLeader)
-			st.Progress = map[raftpb.PeerID]tracker.Progress{
+			st := statusWithState(raft.StateLeader)
+			st.Progress = map[uint64]tracker.Progress{
 				2: {
-					State:              state,
-					RecentActive:       true,
-					MsgAppProbesPaused: true, // Unifies string output below.
-					Inflights:          &tracker.Inflights{},
+					State:            state,
+					RecentActive:     true,
+					MsgAppFlowPaused: true, // Unifies string output below.
+					Inflights:        &tracker.Inflights{},
 				},
 				// Healthy follower just for kicks.
 				3: {State: tracker.StateReplicate},
@@ -149,14 +148,14 @@ func TestSplitDelayToAvoidSnapshot(t *testing.T) {
 				raftStatus:  st,
 			}
 			s := maybeDelaySplitToAvoidSnapshot(ctx, h)
-			assert.EqualValues(t, "; delayed by 5.5s to resolve: replica r1/2 not caught up: "+
-				state.String()+" match=0 next=0 sentCommit=0 matchCommit=0 paused (without success)", s)
+			assert.Equal(t, "; delayed by 5.5s to resolve: replica r1/2 not caught up: "+
+				state.String()+" match=0 next=0 paused (without success)", s)
 		})
 	}
 
 	t.Run("immediately-replicating", func(t *testing.T) {
-		st := statusWithState(raftpb.StateLeader)
-		st.Progress = map[raftpb.PeerID]tracker.Progress{
+		st := statusWithState(raft.StateLeader)
+		st.Progress = map[uint64]tracker.Progress{
 			2: {State: tracker.StateReplicate}, // intentionally not recently active
 		}
 		h := &testSplitDelayHelper{
@@ -165,13 +164,13 @@ func TestSplitDelayToAvoidSnapshot(t *testing.T) {
 			raftStatus:  st,
 		}
 		s := maybeDelaySplitToAvoidSnapshot(ctx, h)
-		assert.EqualValues(t, "", s)
+		assert.Equal(t, "", s)
 		assert.EqualValues(t, 0, h.slept)
 	})
 
 	t.Run("becomes-replicating", func(t *testing.T) {
-		st := statusWithState(raftpb.StateLeader)
-		st.Progress = map[raftpb.PeerID]tracker.Progress{
+		st := statusWithState(raft.StateLeader)
+		st.Progress = map[uint64]tracker.Progress{
 			2: {State: tracker.StateProbe, RecentActive: true, Inflights: &tracker.Inflights{}},
 		}
 		h := &testSplitDelayHelper{
@@ -188,7 +187,6 @@ func TestSplitDelayToAvoidSnapshot(t *testing.T) {
 			}
 		}
 		s := maybeDelaySplitToAvoidSnapshot(ctx, h)
-		assert.EqualValues(t, "; delayed by 2.5s to resolve: replica r1/2 not caught up: "+
-			"StateProbe match=0 next=0 sentCommit=0 matchCommit=0", s)
+		assert.Equal(t, "; delayed by 2.5s to resolve: replica r1/2 not caught up: StateProbe match=0 next=0", s)
 	})
 }

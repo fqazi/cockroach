@@ -10,7 +10,6 @@ import (
 	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/jobs"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/scheduledjobs"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
@@ -25,7 +24,7 @@ import (
 )
 
 type controlSchedulesNode struct {
-	singleInputPlanNode
+	rows    planNode
 	command tree.ScheduleCommand
 	numRows int
 }
@@ -90,14 +89,14 @@ func loadSchedule(params runParams, scheduleID tree.Datum) (*jobs.ScheduledJob, 
 
 // DeleteSchedule deletes specified schedule.
 func DeleteSchedule(
-	ctx context.Context, execCfg *ExecutorConfig, txn isql.Txn, scheduleID jobspb.ScheduleID,
+	ctx context.Context, execCfg *ExecutorConfig, txn isql.Txn, scheduleID int64,
 ) error {
 	env := JobSchedulerEnv(execCfg.JobsKnobs())
 	_, err := txn.ExecEx(
 		ctx,
 		"delete-schedule",
 		txn.KV(),
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		fmt.Sprintf(
 			"DELETE FROM %s WHERE schedule_id = $1",
 			env.ScheduledJobsTableName(),
@@ -110,7 +109,7 @@ func DeleteSchedule(
 // startExec implements planNode interface.
 func (n *controlSchedulesNode) startExec(params runParams) error {
 	for {
-		ok, err := n.input.Next(params)
+		ok, err := n.rows.Next(params)
 		if err != nil {
 			return err
 		}
@@ -118,7 +117,7 @@ func (n *controlSchedulesNode) startExec(params runParams) error {
 			break
 		}
 
-		schedule, err := loadSchedule(params, n.input.Values()[0])
+		schedule, err := loadSchedule(params, n.rows.Values()[0])
 		if err != nil {
 			return err
 		}
@@ -129,7 +128,7 @@ func (n *controlSchedulesNode) startExec(params runParams) error {
 
 		// Check that the user has privileges or is the owner of the schedules being altered.
 		hasPriv, err := params.p.HasPrivilege(
-			params.ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER, params.p.User(),
+			params.ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTERMETADATA, params.p.User(),
 		)
 		if err != nil {
 			return err
@@ -137,7 +136,7 @@ func (n *controlSchedulesNode) startExec(params runParams) error {
 		isOwner := schedule.Owner() == params.p.User()
 		if !hasPriv && !isOwner {
 			return pgerror.Newf(pgcode.InsufficientPrivilege, "must have %s privilege or be owner of the "+
-				"schedule %d to %s it", privilege.REPAIRCLUSTER, schedule.ScheduleID(), n.command.String())
+				"schedule %d to %s it", privilege.REPAIRCLUSTERMETADATA, schedule.ScheduleID(), n.command.String())
 		}
 
 		switch n.command {
@@ -203,5 +202,5 @@ func (*controlSchedulesNode) Values() tree.Datums { return nil }
 
 // Close implements planNode interface.
 func (n *controlSchedulesNode) Close(ctx context.Context) {
-	n.input.Close(ctx)
+	n.rows.Close(ctx)
 }

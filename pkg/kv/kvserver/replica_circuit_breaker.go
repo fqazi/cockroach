@@ -12,7 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
-	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/settings"
@@ -25,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
+	"go.etcd.io/raft/v3"
 )
 
 type replicaInCircuitBreaker interface {
@@ -34,7 +34,6 @@ type replicaInCircuitBreaker interface {
 	slowReplicationThreshold(ba *kvpb.BatchRequest) (time.Duration, bool)
 	replicaUnavailableError(err error) error
 	poisonInflightLatches(err error)
-	IsDestroyed() (DestroyReason, error)
 }
 
 var defaultReplicaCircuitBreakerSlowReplicationThreshold = envutil.EnvOrDefaultDuration(
@@ -163,9 +162,9 @@ func (r replicaCircuitBreakerLogger) OnTrip(b *circuit.Breaker, prev, cur error)
 	log.Errorf(r.ambientCtx.AnnotateCtx(context.Background()), "%s", buf)
 }
 
-func (r replicaCircuitBreakerLogger) OnReset(br *circuit.Breaker, prev error) {
+func (r replicaCircuitBreakerLogger) OnReset(br *circuit.Breaker) {
 	r.onReset()
-	r.EventHandler.OnReset(br, prev)
+	r.EventHandler.OnReset(br)
 }
 
 func (br *replicaCircuitBreaker) asyncProbe(report func(error), done func()) {
@@ -205,8 +204,7 @@ func sendProbe(ctx context.Context, r replicaInCircuitBreaker) error {
 	// enhance the probe, we may need to allow any additional requests we send to
 	// chose to bypass the circuit breaker explicitly.
 	desc := r.Desc()
-	// Untrip the breaker if the replica is destroyed or not initialized.
-	if reason, _ := r.IsDestroyed(); !desc.IsInitialized() || reason == destroyReasonRemoved {
+	if !desc.IsInitialized() {
 		return nil
 	}
 	ba := &kvpb.BatchRequest{}
@@ -268,25 +266,11 @@ func replicaUnavailableError(
 	return kvpb.NewReplicaUnavailableError(errors.Wrapf(err, "%s", buf), desc, replDesc)
 }
 
-// replicaUnavailableError returns a new ReplicaUnavailableError that wraps the
-// provided error.
 func (r *Replica) replicaUnavailableError(err error) error {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	return r.replicaUnavailableErrorRLocked(err)
-}
-
-// replicaUnavailableLocked is like replicaUnavailableError, except it requires
-// r.mu to be RLocked.
-func (r *Replica) replicaUnavailableErrorRLocked(err error) error {
-	desc := r.shMu.state.Desc
+	desc := r.Desc()
 	replDesc, _ := desc.GetReplicaDescriptor(r.store.StoreID())
 
 	isLiveMap, _ := r.store.livenessMap.Load().(livenesspb.IsLiveMap)
-	ct := r.getCurrentClosedTimestamp(context.Background(), hlc.Timestamp{}, /* sufficient */
-		r.shMu.state.LeaseAppliedIndex, r.shMu.state.Lease.Replica.NodeID,
-		r.shMu.state.RaftClosedTimestamp)
-
-	return replicaUnavailableError(err, desc, replDesc, isLiveMap, r.raftStatusRLocked(), ct)
+	ct := r.GetCurrentClosedTimestamp(context.Background())
+	return replicaUnavailableError(err, desc, replDesc, isLiveMap, r.RaftStatus(), ct)
 }

@@ -23,10 +23,6 @@ type (
 		Err        error
 	}
 
-	NonReportableError struct {
-		Err error
-	}
-
 	errorOption func(*ErrorWithOwnership)
 )
 
@@ -36,10 +32,6 @@ func (ewo ErrorWithOwnership) Error() string {
 
 func (ewo ErrorWithOwnership) Is(target error) bool {
 	return errors.Is(ewo.Err, target)
-}
-
-func (ewo ErrorWithOwnership) Unwrap() error {
-	return ewo.Err
 }
 
 func (ewo ErrorWithOwnership) As(reference interface{}) bool {
@@ -56,22 +48,6 @@ func InfraFlake(ewo *ErrorWithOwnership) {
 	ewo.InfraFlake = true
 }
 
-func (nre NonReportableError) Error() string {
-	return fmt.Sprintf("non-reportable: %s", nre.Err)
-}
-
-func (nre NonReportableError) Is(target error) bool {
-	return errors.Is(nre.Err, target)
-}
-
-func (nre NonReportableError) Unwrap() error {
-	return nre.Err
-}
-
-func (nre NonReportableError) As(reference interface{}) bool {
-	return errors.As(nre.Err, reference)
-}
-
 // ErrorWithOwner allows the caller to associate `err` with
 // `owner`. When `t.Fatal` is called with an error of this type, the
 // resulting GitHub issue is created and assigned to the team
@@ -83,11 +59,4 @@ func ErrorWithOwner(owner Owner, err error, opts ...errorOption) ErrorWithOwners
 	}
 
 	return result
-}
-
-// NonReportable wraps the given error and makes it non-reportable --
-// i.e., if it happens during a run, the error is logged in the runner
-// logs, but not reported in a GitHub issue.
-func NonReportable(err error) NonReportableError {
-	return NonReportableError{err}
 }

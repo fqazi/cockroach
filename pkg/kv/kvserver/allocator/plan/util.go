@@ -6,15 +6,15 @@
 package plan
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/allocatorimpl"
-	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
+	"go.etcd.io/raft/v3"
 )
 
 // ReplicationChangesForRebalance returns a list of ReplicationChanges to
@@ -88,30 +88,28 @@ func ReplicationChangesForRebalance(
 
 // rangeRaftStatus pretty-prints the Raft progress (i.e. Raft log position) of
 // the replicas.
-func rangeRaftProgress(
-	raftStatus *raft.Status, replicas []roachpb.ReplicaDescriptor,
-) redact.RedactableString {
+func rangeRaftProgress(raftStatus *raft.Status, replicas []roachpb.ReplicaDescriptor) string {
 	if raftStatus == nil {
 		return "[no raft status]"
 	} else if len(raftStatus.Progress) == 0 {
 		return "[no raft progress]"
 	}
-	var buf redact.StringBuilder
-	buf.SafeRune('[')
+	var buf bytes.Buffer
+	buf.WriteString("[")
 	for i, r := range replicas {
 		if i > 0 {
-			buf.Printf(", ")
+			buf.WriteString(", ")
 		}
-		buf.Print(r.ReplicaID)
-		if raftpb.PeerID(r.ReplicaID) == raftStatus.Lead {
-			buf.SafeRune('*')
+		fmt.Fprintf(&buf, "%d", r.ReplicaID)
+		if uint64(r.ReplicaID) == raftStatus.Lead {
+			buf.WriteString("*")
 		}
-		if progress, ok := raftStatus.Progress[raftpb.PeerID(r.ReplicaID)]; ok {
-			buf.Printf(":%d", progress.Match)
+		if progress, ok := raftStatus.Progress[uint64(r.ReplicaID)]; ok {
+			fmt.Fprintf(&buf, ":%d", progress.Match)
 		} else {
-			buf.Printf(":?")
+			buf.WriteString(":?")
 		}
 	}
-	buf.SafeRune(']')
-	return buf.RedactableString()
+	buf.WriteString("]")
+	return buf.String()
 }

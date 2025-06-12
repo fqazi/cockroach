@@ -45,12 +45,12 @@ labels("outs",  filter("-stringer$", kind("genrule rule", {{ .All }})))`,
 		query: `
 let genrules = kind("genrule rule",  {{ .All }})
 in labels("outs",  attr("tools", "execgen", $genrules)
-  + attr("tools", "execgen", $genrules))`,
+  + attr("exec_tools", "execgen", $genrules))`,
 	},
 	{
 		target: "optgen",
 		query: `
-let targets = attr("tools", "(opt|lang)gen",  kind("genrule rule",  {{ .All }}))
+let targets = attr("exec_tools", "(opt|lang)gen",  kind("genrule rule",  {{ .All }}))
 in let og = labels("outs",  $targets)
 in $og - filter(".*:.*(-gen|gen-).*", $og)`,
 	},
@@ -74,7 +74,7 @@ in $og - filter(".*:.*(-gen|gen-).*", $og)`,
 		target: "schemachanger",
 		query: `
 kind("generated file", //pkg/sql/schemachanger/...:*)
-  + kind("generated file", //pkg/ccl/schemachangerccl/...:*)
+  + kind("generated file", //pkg/ccl/schemachangerccl:*)
   - labels("out", kind("_gomock_prog_gen rule", //pkg/sql/schemachanger/...:*))
 `,
 	},

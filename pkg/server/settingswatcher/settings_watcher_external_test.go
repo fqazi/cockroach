@@ -25,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
+	"github.com/cockroachdb/cockroach/pkg/sql/deprecatedshowranges"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -148,6 +149,13 @@ func TestSettingWatcherOnTenant(t *testing.T) {
 
 	tenantSettings := cluster.MakeTestingClusterSettings()
 	tenantSettings.SV.SpecializeForVirtualCluster()
+
+	// Needed for backward-compat on crdb_internal.ranges{_no_leases}.
+	// Remove in v23.2.
+	deprecatedshowranges.ShowRangesDeprecatedBehaviorSetting.Override(
+		ctx, &tenantSettings.SV,
+		// In unit tests, we exercise the new behavior.
+		false)
 
 	storage := &fakeStorage{}
 	sw := settingswatcher.New(s0.Clock(), fakeCodec, tenantSettings,
@@ -402,6 +410,13 @@ func TestOverflowRestart(t *testing.T) {
 
 	sideSettings := cluster.MakeTestingClusterSettings()
 
+	// Needed for backward-compat on crdb_internal.ranges{_no_leases}.
+	// Remove in v23.2.
+	deprecatedshowranges.ShowRangesDeprecatedBehaviorSetting.Override(
+		ctx, &sideSettings.SV,
+		// In unit tests, we exercise the new behavior.
+		false)
+
 	w := settingswatcher.New(
 		s.Clock(),
 		s.ExecutorConfig().(sql.ExecutorConfig).Codec,
@@ -596,15 +611,15 @@ func TestStaleRowsDoNotCauseSettingsToRegress(t *testing.T) {
 	tombstone := setting1KV
 	tombstone.Value.RawBytes = nil
 
-	require.NoError(t, stream.SendUnbuffered(newRangeFeedEvent(setting1KV, ts1)))
+	require.NoError(t, stream.Send(newRangeFeedEvent(setting1KV, ts1)))
 	settingIsSoon(t, newSettingValue)
 
-	require.NoError(t, stream.SendUnbuffered(newRangeFeedEvent(tombstone, ts0)))
+	require.NoError(t, stream.Send(newRangeFeedEvent(tombstone, ts0)))
 	settingStillHasValueAfterAShortWhile(t, newSettingValue)
 
-	require.NoError(t, stream.SendUnbuffered(newRangeFeedEvent(tombstone, ts2)))
+	require.NoError(t, stream.Send(newRangeFeedEvent(tombstone, ts2)))
 	settingIsSoon(t, defaultFakeSettingValue)
-	require.NoError(t, stream.SendUnbuffered(newRangeFeedEvent(setting1KV, ts1)))
+	require.NoError(t, stream.Send(newRangeFeedEvent(setting1KV, ts1)))
 	settingStillHasValueAfterAShortWhile(t, defaultFakeSettingValue)
 }
 
@@ -699,7 +714,7 @@ func TestNotifyCalledUponReadOnlySettingChanges(t *testing.T) {
 			if !seen {
 				return errors.New("version not seen yet")
 			}
-			require.Equal(t, clusterversion.Latest.Version().String(), v)
+			require.Equal(t, clusterversion.ByKey(clusterversion.BinaryVersionKey).String(), v)
 
 			// The rangefeed event for str.baz was delivered after those for
 			// str.foo and str.yay. If we had incorrectly notified an update

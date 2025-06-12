@@ -15,7 +15,6 @@ option go_package = "github.com/cockroachdb/cockroach/pkg/sql/execinfrapb";
 import "gogoproto/gogo.proto";
 import "google/protobuf/timestamp.proto";
 
-import "kv/kvpb/api.proto";
 import "roachpb/data.proto";
 import "sql/execinfrapb/data.proto";
 import "sql/execinfrapb/processors.proto";
@@ -26,9 +25,7 @@ message SetupFlowRequest {
   reserved 1, 2;
 
   optional util.tracing.tracingpb.TraceInfo trace_info = 11;
-  // JobTag is only populated in distributed flows.
-  optional string job_tag = 13 [(gogoproto.nullable) = false,
-    (gogoproto.casttype) = "github.com/cockroachdb/redact.SafeString"];
+  optional string job_tag = 13 [(gogoproto.nullable) = false];
 
   // LeafTxnInputState is the input parameter for the *kv.Txn needed for
   // executing the flow.
@@ -37,19 +34,13 @@ message SetupFlowRequest {
   // flows expect to run in a txn, but some, like backfills, don't.
   optional roachpb.LeafTxnInputState leaf_txn_input_state = 7;
 
-  // LeafTxnAdmissionHeader is used to initialize the admission control
-  // header for the flow's txn, if LeafTxnInputState is set.
-  optional roachpb.AdmissionHeader leaf_txn_admission_header = 12 [(gogoproto.nullable) = false];
-
   // Version of distsqlrun protocol; a server accepts a certain range of
   // versions, up to its own version. See server.go for more details.
   optional uint32 version = 5 [(gogoproto.nullable) = false,
-    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/execversion.V"];
+    (gogoproto.casttype) = "DistSQLVersion"];
 
   optional FlowSpec flow = 3 [(gogoproto.nullable) = false];
 
-  // EvalContext contains a subset of the eval.Context that needs to be sent to
-  // remote nodes for proper execution.
   optional EvalContext eval_context = 6 [(gogoproto.nullable) = false];
 
   optional bool trace_kv = 8 [(gogoproto.nullable) = false,
@@ -131,7 +122,11 @@ message ConsumerHandshake {
   // dealine, this stream will be disconnected by the server-side.
   optional google.protobuf.Timestamp consumer_schedule_deadline = 2 [(gogoproto.stdtime) = true];
 
-  reserved 3, 4;
+  // The server's DistSQL version range.
+  optional uint32 version = 3 [(gogoproto.nullable) = false,
+    (gogoproto.casttype) = "DistSQLVersion"];
+  optional uint32 min_accepted_version = 4 [(gogoproto.nullable) = false,
+    (gogoproto.casttype) = "DistSQLVersion"];
 }
 
 // CancelDeadFlowsRequest is a request to cancel some flows that are running on

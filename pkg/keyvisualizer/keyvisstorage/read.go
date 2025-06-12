@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -25,7 +26,7 @@ func MostRecentSampleTime(ctx context.Context, ie *sql.InternalExecutor) (time.T
 		ctx,
 		"query-samples",
 		nil,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.InternalExecutorOverride{User: username.RootUserName()},
 		"SELECT max(sample_time) FROM system.span_stats_samples",
 	)
 
@@ -54,7 +55,7 @@ func ReadSamples(
 		ctx,
 		"query-samples",
 		nil,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.InternalExecutorOverride{User: username.RootUserName()},
 		"SELECT * FROM system.span_stats_samples",
 	)
 	if err != nil {
@@ -75,7 +76,7 @@ func ReadSamples(
 		ctx,
 		"query-samples",
 		nil,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.InternalExecutorOverride{User: username.RootUserName()},
 		"SELECT * FROM system.span_stats_buckets",
 	)
 	if err != nil {
@@ -114,7 +115,7 @@ func ReadKeys(ctx context.Context, ie *sql.InternalExecutor) (map[string]roachpb
 		ctx,
 		"query-unique-keys",
 		nil,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.InternalExecutorOverride{User: username.RootUserName()},
 		"SELECT * FROM system.span_stats_unique_keys",
 	)
 

@@ -9,17 +9,14 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/config"
 	"github.com/cockroachdb/cockroach/pkg/gossip"
 	"github.com/cockroachdb/cockroach/pkg/keys"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/allocatorimpl"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
@@ -241,7 +238,7 @@ type StoreGossip struct {
 	cachedCapacity *cachedCapacity
 	// gossipOngoing indicates whether there is currently a triggered gossip,
 	// to avoid recursively re-triggering gossip.
-	gossipOngoing atomic.Bool
+	gossipOngoing syncutil.AtomicBool
 	// gossiper is used for adding information to gossip.
 	gossiper InfoGossiper
 	// descriptorGetter is used for getting an up to date or cached store
@@ -371,8 +368,8 @@ func (s *StoreGossip) GossipStore(ctx context.Context, useCached bool) error {
 	// recursively triggering a gossip of the store capacity. This doesn't
 	// block direct calls to GossipStore, rather capacity triggered gossip
 	// outlined in the methods below.
-	s.gossipOngoing.Store(true)
-	defer s.gossipOngoing.Store(false)
+	s.gossipOngoing.Set(true)
+	defer s.gossipOngoing.Set(false)
 
 	storeDesc, err := s.descriptorGetter.Descriptor(ctx, useCached)
 	if err != nil {
@@ -462,20 +459,6 @@ func (s *StoreGossip) RecordNewPerSecondStats(newQPS, newWPS float64) {
 	}
 }
 
-// RecordNewIOThreshold takes new values for the IO threshold and recent
-// maximum IO threshold and decides whether the score has changed enough to
-// justify re-gossiping the store's capacity.
-func (s *StoreGossip) RecordNewIOThreshold(threshold, thresholdMax admissionpb.IOThreshold) {
-	s.cachedCapacity.Lock()
-	s.cachedCapacity.cached.IOThreshold = threshold
-	s.cachedCapacity.cached.IOThresholdMax = thresholdMax
-	s.cachedCapacity.Unlock()
-
-	if shouldGossip, reason := s.shouldGossipOnCapacityDelta(); shouldGossip {
-		s.asyncGossipStore(context.TODO(), reason, true /* useCached */)
-	}
-}
-
 // shouldGossipOnCapacityDelta determines whether the difference between the
 // last gossiped store capacity and the currently cached capacity is large
 // enough that gossiping immediately is required to avoid poor allocation
@@ -486,7 +469,7 @@ func (s *StoreGossip) shouldGossipOnCapacityDelta() (should bool, reason string)
 	// immediately as we will already be gossiping an up to date (cached)
 	// capacity. If we have recently gossiped the store descriptor, avoid
 	// re-gossiping too soon, to avoid overloading the receivers of store gossip.
-	if s.gossipOngoing.Load() || !s.canEagerlyGossipNow() {
+	if s.gossipOngoing.Get() || !s.canEagerlyGossipNow() {
 		return
 	}
 
@@ -494,8 +477,6 @@ func (s *StoreGossip) shouldGossipOnCapacityDelta() (should bool, reason string)
 	if overrideCapacityDeltaFraction := s.knobs.OverrideGossipWhenCapacityDeltaExceedsFraction; overrideCapacityDeltaFraction > 0 {
 		gossipWhenCapacityDeltaExceedsFraction = overrideCapacityDeltaFraction
 	}
-
-	gossipMinMaxIOOverloadScore := allocatorimpl.LeaseIOOverloadThreshold.Get(s.sv)
 
 	s.cachedCapacity.Lock()
 	updateForQPS, deltaQPS := deltaExceedsThreshold(
@@ -510,10 +491,6 @@ func (s *StoreGossip) shouldGossipOnCapacityDelta() (should bool, reason string)
 	updateForLeaseCount, deltaLeaseCount := deltaExceedsThreshold(
 		float64(s.cachedCapacity.lastGossiped.LeaseCount), float64(s.cachedCapacity.cached.LeaseCount),
 		gossipWhenLeaseCountDeltaExceeds, gossipWhenCapacityDeltaExceedsFraction)
-	cachedMaxIOScore, _ := s.cachedCapacity.cached.IOThresholdMax.Score()
-	lastGossipMaxIOScore, _ := s.cachedCapacity.lastGossiped.IOThresholdMax.Score()
-	updateForMaxIOOverloadScore := cachedMaxIOScore >= gossipMinMaxIOOverloadScore &&
-		cachedMaxIOScore > lastGossipMaxIOScore
 	s.cachedCapacity.Unlock()
 
 	if s.knobs.DisableLeaseCapacityGossip {
@@ -531,9 +508,6 @@ func (s *StoreGossip) shouldGossipOnCapacityDelta() (should bool, reason string)
 	}
 	if updateForLeaseCount {
 		reason += fmt.Sprintf("lease-count(%.1f) ", deltaLeaseCount)
-	}
-	if updateForMaxIOOverloadScore {
-		reason += fmt.Sprintf("io-overload(%.1f) ", cachedMaxIOScore)
 	}
 	if reason != "" {
 		should = true

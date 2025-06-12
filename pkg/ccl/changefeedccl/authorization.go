@@ -28,19 +28,22 @@ func checkPrivilegesForDescriptor(
 	ctx context.Context, p sql.PlanHookState, desc catalog.Descriptor,
 ) (hasSelect bool, hasChangefeed bool, err error) {
 	if desc.GetObjectType() != privilege.Table {
-		return false, false, errors.AssertionFailedf("expected descriptor %d to be a table descriptor, found: %s ", desc.GetID(), desc.GetObjectType())
+		return false, false, errors.AssertionFailedf("expected descriptor %d to be a table descriptor. instead found: %s ", desc.GetID(), desc.GetObjectType())
 	}
 
-	hasSelect, err = p.HasPrivilege(ctx, desc, privilege.SELECT, p.User())
-	if err != nil {
-		return false, false, err
+	hasSelect, hasChangefeed = true, true
+	if err = p.CheckPrivilege(ctx, desc, privilege.SELECT); err != nil {
+		if !sql.IsInsufficientPrivilegeError(err) {
+			return false, false, err
+		}
+		hasSelect = false
 	}
-
-	hasChangefeed, err = p.HasPrivilege(ctx, desc, privilege.CHANGEFEED, p.User())
-	if err != nil {
-		return false, false, err
+	if err = p.CheckPrivilege(ctx, desc, privilege.CHANGEFEED); err != nil {
+		if !sql.IsInsufficientPrivilegeError(err) {
+			return false, false, err
+		}
+		hasChangefeed = false
 	}
-
 	return hasSelect, hasChangefeed, nil
 }
 
@@ -142,19 +145,11 @@ func AuthorizeChangefeedJobAccess(
 	ctx context.Context,
 	a jobsauth.AuthorizationAccessor,
 	jobID jobspb.JobID,
-	getLegacyPayload func(ctx context.Context) (*jobspb.Payload, error),
+	payload *jobspb.Payload,
 ) error {
-	payload, err := getLegacyPayload(ctx)
-	if err != nil {
-		return err
-	}
 	specs, ok := payload.UnwrapDetails().(jobspb.ChangefeedDetails)
 	if !ok {
 		return errors.Newf("could not unwrap details from the payload of job %d", jobID)
-	}
-
-	if len(specs.TargetSpecifications) == 0 {
-		return pgerror.Newf(pgcode.InsufficientPrivilege, "job contains no tables on which the user has %s privilege", privilege.CHANGEFEED)
 	}
 
 	for _, spec := range specs.TargetSpecifications {

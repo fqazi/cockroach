@@ -28,11 +28,7 @@ type channelOrchestrator struct {
 	serverFactory serverFactoryForOrchestration
 }
 
-// serverFactoryForOrchestration provides the method that instantiates tenant servers.
-type serverFactoryForOrchestration interface {
-	// newServerForOrchestrator returns a new tenant server.
-	newServerForOrchestrator(ctx context.Context, nc *roachpb.TenantNameContainer, tenantStopper *stop.Stopper) (orchestratedServer, error)
-}
+var _ serverOrchestrator = (*channelOrchestrator)(nil)
 
 func newChannelOrchestrator(
 	parentStopper *stop.Stopper, serverFactory serverFactoryForOrchestration,
@@ -43,9 +39,8 @@ func newChannelOrchestrator(
 	}
 }
 
-// serverState coordinates the lifecycle of a tenant server. It
-// ensures sane concurrent behavior between:
-//
+// serverStateUsingChannels coordinates the lifecycle of a tenant
+// server. It ensures sane concurrent behavior between:
 // - requests to start a server manually, e.g. via testServer;
 // - async changes to the tenant service mode;
 // - quiescence of the outer stopper;
@@ -67,7 +62,7 @@ func newChannelOrchestrator(
 //
 // The async task is also responsible for reporting the server
 // start/stop events in the event log.
-type serverState struct {
+type serverStateUsingChannels struct {
 	// nc holds a shared reference to the current name of the
 	// tenant. If the tenant's name is updated, the `Set` method on
 	// nameContainer should be called in order to update any subscribers
@@ -105,49 +100,51 @@ type serverState struct {
 	stoppedCh <-chan struct{}
 }
 
+var _ serverState = (*serverStateUsingChannels)(nil)
+
 // getServer is part of the serverState interface.
-func (s *serverState) getServer() (orchestratedServer, bool) {
+func (s *serverStateUsingChannels) getServer() (orchestratedServer, bool) {
 	s.startedMu.Lock()
 	defer s.startedMu.Unlock()
 	return s.startedMu.server, s.startedMu.server != nil
 }
 
 // nameContainer is part of the serverState interface.
-func (s *serverState) nameContainer() *roachpb.TenantNameContainer {
+func (s *serverStateUsingChannels) nameContainer() *roachpb.TenantNameContainer {
 	return s.nc
 }
 
 // getLastStartupError is part of the serverState interface.
-func (s *serverState) getLastStartupError() error {
+func (s *serverStateUsingChannels) getLastStartupError() error {
 	return s.startErr
 }
 
 // requestGracefulShutdown is part of the serverState interface.
-func (s *serverState) requestGracefulShutdown(ctx context.Context) {
+func (s *serverStateUsingChannels) requestGracefulShutdown(ctx context.Context) {
 	// TODO(knz): this is incorrect because it does not obey the
 	// incoming context's cancellation.
 	s.requestGracefulStop()
 }
 
 // requestImmediateShutdown is part of the serverState interface.
-func (s *serverState) requestImmediateShutdown(ctx context.Context) {
+func (s *serverStateUsingChannels) requestImmediateShutdown(ctx context.Context) {
 	s.requestImmediateStop()
 }
 
 // stopped is part of the serverState interface.
-func (s *serverState) stopped() <-chan struct{} {
+func (s *serverStateUsingChannels) stopped() <-chan struct{} {
 	return s.stoppedCh
 }
 
 // startedOrStopped is part of the serverState interface.
-func (s *serverState) startedOrStopped() <-chan struct{} {
+func (s *serverStateUsingChannels) startedOrStopped() <-chan struct{} {
 	return s.startedOrStoppedCh
 }
 
 // makeServerStateForSystemTenant is part of the orchestrator interface.
 func (o *channelOrchestrator) makeServerStateForSystemTenant(
 	nc *roachpb.TenantNameContainer, systemSrv orchestratedServer,
-) *serverState {
+) serverState {
 	// We make the serverState for the system mock the regular
 	// lifecycle. It starts with an already-closed `startedOrStopped`
 	// channel; and it properly reacts to a call to requestStop()
@@ -155,7 +152,7 @@ func (o *channelOrchestrator) makeServerStateForSystemTenant(
 	closedChan := make(chan struct{})
 	close(closedChan)
 	closeCtx, cancelFn := context.WithCancel(context.Background())
-	st := &serverState{
+	st := &serverStateUsingChannels{
 		nc:                   nc,
 		startedOrStoppedCh:   closedChan,
 		requestImmediateStop: cancelFn,
@@ -190,7 +187,7 @@ func (o *channelOrchestrator) startControlledServer(
 	// synchronize on the server's state, use the resulting
 	// serverState instead.
 	serverStoppingFn func(ctx context.Context, tenantName roachpb.TenantName, tid roachpb.TenantID, sid base.SQLInstanceID),
-) (*serverState, error) {
+) (serverState, error) {
 	var immediateStopRequest sync.Once
 	immediateStopRequestCh := make(chan struct{})
 	immediateStopFn := func() {
@@ -209,7 +206,7 @@ func (o *channelOrchestrator) startControlledServer(
 	stoppedCh := make(chan struct{})
 	startedOrStoppedCh := make(chan struct{})
 
-	state := &serverState{
+	state := &serverStateUsingChannels{
 		nc:                   roachpb.NewTenantNameContainer(tenantName),
 		startedOrStoppedCh:   startedOrStoppedCh,
 		requestImmediateStop: immediateStopFn,

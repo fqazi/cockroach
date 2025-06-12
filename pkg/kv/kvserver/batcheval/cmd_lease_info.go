@@ -9,6 +9,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/lockspanset"
@@ -22,19 +23,14 @@ func init() {
 }
 
 func declareKeysLeaseInfo(
-	_ ImmutableRangeState,
+	rs ImmutableRangeState,
 	_ *kvpb.Header,
 	_ kvpb.Request,
-	_ *spanset.SpanSet,
+	latchSpans *spanset.SpanSet,
 	_ *lockspanset.LockSpanSet,
 	_ time.Duration,
 ) error {
-	// We don't take out a latch on the range lease key, since lease requests
-	// bypass latches anyway (they're evaluated on the proposer). The lease is
-	// read from the replica's in-memory state.
-	//
-	// Being latchless allows using this as a simple replica health probe without
-	// worrying about latch latency.
+	latchSpans.AddNonMVCC(spanset.SpanReadOnly, roachpb.Span{Key: keys.RangeLeaseKey(rs.GetRangeID())})
 	return nil
 }
 

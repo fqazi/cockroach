@@ -21,9 +21,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 )
@@ -52,33 +50,21 @@ func newTxnKVFetcher(
 	txn *kv.Txn,
 	bsHeader *kvpb.BoundedStalenessHeader,
 	reverse bool,
-	rawMVCCValues bool,
 	lockStrength descpb.ScanLockingStrength,
 	lockWaitPolicy descpb.ScanLockingWaitPolicy,
 	lockDurability descpb.ScanLockingDurability,
 	lockTimeout time.Duration,
-	deadlockTimeout time.Duration,
 	acc *mon.BoundAccount,
 	forceProductionKVBatchSize bool,
-	ext *fetchpb.IndexFetchSpec_ExternalRowData,
 ) *txnKVFetcher {
-	alloc := new(struct {
-		batchRequestsIssued int64
-		kvPairsRead         int64
-	})
 	var sendFn sendFunc
+	var batchRequestsIssued int64
+	// Avoid the heap allocation by allocating sendFn specifically in the if.
 	if bsHeader == nil {
-		sendFn = makeSendFunc(txn, ext, &alloc.batchRequestsIssued)
+		sendFn = makeTxnKVFetcherDefaultSendFunc(txn, &batchRequestsIssued)
 	} else {
 		negotiated := false
 		sendFn = func(ctx context.Context, ba *kvpb.BatchRequest) (br *kvpb.BatchResponse, _ error) {
-			if ext != nil {
-				return nil, unimplemented.New(
-					"bounded-staleness-on-stand-by",                                     /* feature */
-					"bounded staleness reads on ExternalRowData is not implemented yet", /* msg */
-				)
-			}
-			log.VEventf(ctx, 2, "kv fetcher (bounded staleness): sending a batch with %d requests", len(ba.Requests))
 			ba.RoutingPolicy = kvpb.RoutingPolicy_NEAREST
 			var pErr *kvpb.Error
 			// Only use NegotiateAndSend if we have not yet negotiated a timestamp.
@@ -94,7 +80,7 @@ func newTxnKVFetcher(
 			if pErr != nil {
 				return nil, pErr.GoError()
 			}
-			alloc.batchRequestsIssued++
+			batchRequestsIssued++
 			return br, nil
 		}
 	}
@@ -102,21 +88,19 @@ func newTxnKVFetcher(
 	fetcherArgs := newTxnKVFetcherArgs{
 		sendFn:                     sendFn,
 		reverse:                    reverse,
-		rawMVCCValues:              rawMVCCValues,
 		lockStrength:               lockStrength,
 		lockWaitPolicy:             lockWaitPolicy,
 		lockDurability:             lockDurability,
 		lockTimeout:                lockTimeout,
-		deadlockTimeout:            deadlockTimeout,
 		acc:                        acc,
 		forceProductionKVBatchSize: forceProductionKVBatchSize,
-		kvPairsRead:                &alloc.kvPairsRead,
-		batchRequestsIssued:        &alloc.batchRequestsIssued,
+		kvPairsRead:                new(int64),
+		batchRequestsIssued:        &batchRequestsIssued,
 	}
 	fetcherArgs.admission.requestHeader = txn.AdmissionHeader()
 	fetcherArgs.admission.responseQ = txn.DB().SQLKVResponseAdmissionQ
 	fetcherArgs.admission.pacerFactory = txn.DB().AdmissionPacerFactory
-	fetcherArgs.admission.settingsValues = txn.DB().SettingsValues()
+	fetcherArgs.admission.settingsValues = txn.DB().SettingsValues
 
 	return newTxnKVFetcherInternal(fetcherArgs)
 }
@@ -134,19 +118,16 @@ func NewDirectKVBatchFetcher(
 	bsHeader *kvpb.BoundedStalenessHeader,
 	spec *fetchpb.IndexFetchSpec,
 	reverse bool,
-	rawMVCCValues bool,
 	lockStrength descpb.ScanLockingStrength,
 	lockWaitPolicy descpb.ScanLockingWaitPolicy,
 	lockDurability descpb.ScanLockingDurability,
 	lockTimeout time.Duration,
-	deadlockTimeout time.Duration,
 	acc *mon.BoundAccount,
 	forceProductionKVBatchSize bool,
-	ext *fetchpb.IndexFetchSpec_ExternalRowData,
 ) KVBatchFetcher {
 	f := newTxnKVFetcher(
-		txn, bsHeader, reverse, rawMVCCValues, lockStrength, lockWaitPolicy, lockDurability,
-		lockTimeout, deadlockTimeout, acc, forceProductionKVBatchSize, ext,
+		txn, bsHeader, reverse, lockStrength, lockWaitPolicy, lockDurability,
+		lockTimeout, acc, forceProductionKVBatchSize,
 	)
 	f.scanFormat = kvpb.COL_BATCH_RESPONSE
 	f.indexFetchSpec = spec
@@ -163,19 +144,16 @@ func NewKVFetcher(
 	txn *kv.Txn,
 	bsHeader *kvpb.BoundedStalenessHeader,
 	reverse bool,
-	rawMVCCValues bool,
 	lockStrength descpb.ScanLockingStrength,
 	lockWaitPolicy descpb.ScanLockingWaitPolicy,
 	lockDurability descpb.ScanLockingDurability,
 	lockTimeout time.Duration,
-	deadlockTimeout time.Duration,
 	acc *mon.BoundAccount,
 	forceProductionKVBatchSize bool,
-	ext *fetchpb.IndexFetchSpec_ExternalRowData,
 ) *KVFetcher {
 	return newKVFetcher(newTxnKVFetcher(
-		txn, bsHeader, reverse, rawMVCCValues, lockStrength, lockWaitPolicy, lockDurability,
-		lockTimeout, deadlockTimeout, acc, forceProductionKVBatchSize, ext,
+		txn, bsHeader, reverse, lockStrength, lockWaitPolicy, lockDurability,
+		lockTimeout, acc, forceProductionKVBatchSize,
 	))
 }
 
@@ -185,7 +163,6 @@ func NewKVFetcher(
 // If maintainOrdering is true, then diskBuffer must be non-nil.
 func NewStreamingKVFetcher(
 	distSender *kvcoord.DistSender,
-	metrics *kvstreamer.Metrics,
 	stopper *stop.Stopper,
 	txn *kv.Txn,
 	st *cluster.Settings,
@@ -198,30 +175,24 @@ func NewStreamingKVFetcher(
 	maintainOrdering bool,
 	singleRowLookup bool,
 	maxKeysPerRow int,
-	reverse bool,
 	diskBuffer kvstreamer.ResultDiskBuffer,
 	kvFetcherMemAcc *mon.BoundAccount,
-	ext *fetchpb.IndexFetchSpec_ExternalRowData,
-	rawMVCCValues bool,
 ) *KVFetcher {
 	var kvPairsRead int64
 	var batchRequestsIssued int64
-	sendFn := makeSendFunc(txn, ext, &batchRequestsIssued)
 	streamer := kvstreamer.NewStreamer(
 		distSender,
-		metrics,
 		stopper,
 		txn,
-		sendFn,
 		st,
 		sd,
 		GetWaitPolicy(lockWaitPolicy),
 		streamerBudgetLimit,
 		streamerBudgetAcc,
 		&kvPairsRead,
+		&batchRequestsIssued,
 		GetKeyLockingStrength(lockStrength),
 		GetKeyLockingDurability(lockDurability),
-		reverse,
 	)
 	mode := kvstreamer.OutOfOrder
 	if maintainOrdering {
@@ -236,10 +207,7 @@ func NewStreamingKVFetcher(
 		maxKeysPerRow,
 		diskBuffer,
 	)
-	return newKVFetcher(newTxnKVStreamer(
-		streamer, lockStrength, lockDurability, kvFetcherMemAcc,
-		&kvPairsRead, &batchRequestsIssued, rawMVCCValues, reverse,
-	))
+	return newKVFetcher(newTxnKVStreamer(streamer, lockStrength, lockDurability, kvFetcherMemAcc, &kvPairsRead, &batchRequestsIssued))
 }
 
 func newKVFetcher(batchFetcher KVBatchFetcher) *KVFetcher {
@@ -300,12 +268,9 @@ func (f *KVFetcher) nextKV(
 				// If we've made it to the very last key in the batch, copy out
 				// the key so that the GC can reclaim the large backing slice
 				// before nextKV() is called again.
-				//
-				// Combine two allocations into one.
-				buf := make([]byte, len(key)+len(rawBytes))
-				f.kv.Key = buf[:len(key):len(key)]
+				f.kv.Key = make(roachpb.Key, len(key))
 				copy(f.kv.Key, key)
-				f.kv.Value.RawBytes = buf[len(key):]
+				f.kv.Value.RawBytes = make([]byte, len(rawBytes))
 				copy(f.kv.Value.RawBytes, rawBytes)
 			}
 			return true, f.kv, f.spanID, nil

@@ -15,6 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts/ptpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/scheduledjobs"
+	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -28,7 +29,7 @@ import (
 const pausedJobsCountQuery = string(`
 	SELECT job_type, count(*)
 	FROM system.jobs
-	WHERE status = '` + jobs.StatePaused + `'
+	WHERE status = '` + jobs.StatusPaused + `' 
   GROUP BY job_type`)
 
 // updatePausedMetrics counts the number of paused jobs per job type.
@@ -44,7 +45,7 @@ func updatePausedMetrics(ctx context.Context, execCtx sql.JobExecContext) error 
 			return err
 		}
 		rows, err := txn.QueryBufferedEx(
-			ctx, "poll-jobs-metrics-job", txn.KV(), sessiondata.NodeUserSessionDataOverride,
+			ctx, "poll-jobs-metrics-job", txn.KV(), sessiondata.InternalExecutorOverride{User: username.NodeUserName()},
 			pausedJobsCountQuery,
 		)
 		if err != nil {
@@ -72,48 +73,6 @@ func updatePausedMetrics(ctx context.Context, execCtx sql.JobExecContext) error 
 		if metrics.JobMetrics[v] != nil {
 			metrics.JobMetrics[v].CurrentlyPaused.Update(int64(metricUpdates[jobspb.Type(v)]))
 		}
-	}
-	return nil
-}
-
-// lowTSForTypeQuery finds the lowest non-null ts for all jobs of a given type.
-// min() ignores nulls; jobs of the type that do not have a ts are not included
-// in the result, e.g. a new changefeed that is still in initial scan would not
-// change the result of the query, but if after its initial scan it was several
-// minutes behind and was the most lagged changefeed, that would be reflected.
-const lowTSForTypeQuery = `SELECT min(high_water_timestamp) FROM crdb_internal.jobs WHERE job_type = $1 AND status IN ` + jobs.NonTerminalStateTupleString
-
-// updateTSMetrics updates the metrics for jobs that have registered for ts
-// tracking.
-func updateTSMetrics(ctx context.Context, execCtx sql.JobExecContext) error {
-	for _, typ := range jobspb.Type_value {
-		m := execCtx.ExecCfg().JobRegistry.MetricsStruct().ResolvedMetrics[typ]
-		// If this job type does not register a resolved TS metric, skip it.
-		if m == nil {
-			continue
-		}
-
-		var ts hlc.Timestamp
-		if err := execCtx.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-			if err := txn.KV().SetUserPriority(roachpb.MinUserPriority); err != nil {
-				return err
-			}
-			row, err := txn.QueryRowEx(
-				ctx, "poll-jobs-metrics-ts", txn.KV(), sessiondata.NodeUserSessionDataOverride,
-				lowTSForTypeQuery, jobspb.Type(typ).String(),
-			)
-			// Feeding zero non-null rows to min() returns null; return and record
-			// a zero ts (i.e. no data.) in this case or an error case.
-			if err != nil || row == nil || row[0] == tree.DNull {
-				return err
-			}
-			d := *row[0].(*tree.DDecimal)
-			ts, err = hlc.DecimalToHLC(&d.Decimal)
-			return err
-		}); err != nil {
-			return errors.Wrap(err, "could not query jobs table")
-		}
-		m.Update(ts.GoTime().Unix())
 	}
 	return nil
 }
@@ -172,7 +131,7 @@ func manageProtectedTimestamps(ctx context.Context, execCtx sql.JobExecContext) 
 						return err
 					}
 				case jobsprotectedts.GetMetaType(jobsprotectedts.Schedules):
-					if err := processSchedulePTSRecord(ctx, jobspb.ScheduleID(id), rec, schedulePtsStats, txn); err != nil {
+					if err := processSchedulePTSRecord(ctx, id, rec, schedulePtsStats, txn); err != nil {
 						return err
 					}
 				}
@@ -200,50 +159,42 @@ func processJobPTSRecord(
 	ptsStats map[jobspb.Type]*ptsStat,
 	txn isql.Txn,
 ) error {
-	var stats *ptsStat
-	defer func() {
-		if stats != nil {
-			stats.numRecords++
-			if stats.oldest.IsEmpty() || rec.Timestamp.Less(stats.oldest) {
-				stats.oldest = rec.Timestamp
-			}
-		}
-	}()
-
-	err := execCfg.JobRegistry.UpdateJobWithTxn(ctx, jobspb.JobID(jobID), txn,
-		func(txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
-			p := md.Payload
-			jobType, err := p.CheckType()
-			if err != nil {
-				return err
-			}
-			stats = ptsStats[jobType]
-			if stats == nil {
-				stats = &ptsStat{}
-				ptsStats[jobType] = stats
-			}
-
-			// If MaximumPTSAge is set on the job payload, verify if PTS record
-			// timestamp is fresh enough.
-			if p.MaximumPTSAge > 0 &&
-				rec.Timestamp.GoTime().Add(p.MaximumPTSAge).Before(timeutil.Now()) {
-				stats.expired++
-				ptsExpired := errors.Newf(
-					"protected timestamp records %s as of %s (age %s) exceeds job configured limit of %s",
-					rec.ID, rec.Timestamp, timeutil.Since(rec.Timestamp.GoTime()), p.MaximumPTSAge)
-				log.Warningf(ctx, "job %d canceled due to %s", jobID, ptsExpired)
-				return ju.CancelRequestedWithReason(ctx, md, ptsExpired)
-			}
-			return nil
-		})
+	j, err := execCfg.JobRegistry.LoadJobWithTxn(ctx, jobspb.JobID(jobID), txn)
 	if err != nil {
 		if jobs.HasJobNotFoundError(err) {
 			return nil // nolint:returnerrcheck -- job maybe deleted when we run; just keep going.
 		}
 		return err
 	}
-	return nil
+	p := j.Payload()
+	jobType, err := p.CheckType()
+	if err != nil {
+		return err
+	}
+	stats := ptsStats[jobType]
+	if stats == nil {
+		stats = &ptsStat{}
+		ptsStats[jobType] = stats
+	}
+	stats.numRecords++
+	if stats.oldest.IsEmpty() || rec.Timestamp.Less(stats.oldest) {
+		stats.oldest = rec.Timestamp
+	}
 
+	// If MaximumPTSAge is set on the job payload, verify if PTS record
+	// timestamp is fresh enough.
+	if p.MaximumPTSAge > 0 &&
+		rec.Timestamp.GoTime().Add(p.MaximumPTSAge).Before(timeutil.Now()) {
+		stats.expired++
+		ptsExpired := errors.Newf(
+			"protected timestamp records %s as of %s (age %s) exceeds job configured limit of %s",
+			rec.ID, rec.Timestamp, timeutil.Since(rec.Timestamp.GoTime()), p.MaximumPTSAge)
+		if err := j.WithTxn(txn).CancelRequestedWithReason(ctx, ptsExpired); err != nil {
+			return err
+		}
+		log.Warningf(ctx, "job %d canceled due to %s", jobID, ptsExpired)
+	}
+	return nil
 }
 
 func updateJobPTSMetrics(
@@ -274,7 +225,7 @@ func updateJobPTSMetrics(
 
 func processSchedulePTSRecord(
 	ctx context.Context,
-	scheduleID jobspb.ScheduleID,
+	scheduleID int64,
 	rec *ptpb.Record,
 	ptsStats map[string]*schedulePTSStat,
 	txn isql.Txn,

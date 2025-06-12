@@ -7,7 +7,6 @@ package storage
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"math/rand"
 	"reflect"
@@ -262,7 +261,7 @@ func TestLockTableIterator(t *testing.T) {
 				if d.HasArg("match-min-str") {
 					opts.MatchMinStr = scanLockStrength(t, d, "match-min-str")
 				}
-				iter, err := NewLockTableIterator(context.Background(), eng, opts)
+				iter, err := NewLockTableIterator(eng, opts)
 				if err != nil {
 					return fmt.Sprintf("error constructing new iter: %s", err)
 				}
@@ -626,7 +625,7 @@ func TestLockTableIteratorEquivalence(t *testing.T) {
 		}
 
 		// Then use a LockTableIterator with an appropriate filter config.
-		iter, err := NewLockTableIterator(context.Background(), eng, LockTableIteratorOptions{
+		iter, err := NewLockTableIterator(eng, LockTableIteratorOptions{
 			Prefix:      prefix,
 			UpperBound:  keys.LockTableSingleKeyEnd,
 			MatchTxnID:  f.matchTxnID.toUUID(),
@@ -658,7 +657,7 @@ func TestLockTableIteratorEquivalence(t *testing.T) {
 		}
 
 		// Then use a raw engine iterator.
-		iter, err := eng.NewEngineIterator(context.Background(), IterOptions{
+		iter, err := eng.NewEngineIterator(IterOptions{
 			Prefix:     prefix,
 			UpperBound: keys.LockTableSingleKeyEnd,
 		})

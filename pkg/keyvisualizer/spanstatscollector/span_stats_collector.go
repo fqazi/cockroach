@@ -82,8 +82,7 @@ func (s *SpanStatsCollector) Start(ctx context.Context, stopper *stop.Stopper) {
 	if err := stopper.RunAsyncTask(ctx, "span-stats-collector",
 		func(ctx context.Context) {
 			s.reset()
-			var t timeutil.Timer
-			defer t.Stop()
+			t := timeutil.NewTimer()
 			for {
 				samplePeriod := keyvissettings.SampleInterval.Get(&s.settings.SV)
 				now := timeutil.Now()
@@ -94,6 +93,7 @@ func (s *SpanStatsCollector) Start(ctx context.Context, stopper *stop.Stopper) {
 				t.Reset(nextTick.Sub(now))
 				select {
 				case <-t.C:
+					t.Read = true
 					s.rolloverSample(nextTick)
 					s.reset()
 				case <-stopper.ShouldQuiesce():

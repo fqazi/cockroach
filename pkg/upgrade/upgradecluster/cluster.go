@@ -13,7 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -22,6 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
+	"google.golang.org/grpc"
 )
 
 // Cluster mediates interacting with a cockroach cluster.
@@ -36,7 +37,7 @@ type ClusterConfig struct {
 	NodeLiveness livenesspb.NodeVitalityInterface
 
 	// Dialer constructs connections to other nodes.
-	Dialer rpcbase.NodeDialer
+	Dialer NodeDialer
 
 	// RangeDescScanner paginates through all range descriptors.
 	RangeDescScanner rangedesc.Scanner
@@ -47,6 +48,12 @@ type ClusterConfig struct {
 	// to expose only relevant, vetted bits of kv.DB. It'll make our tests less
 	// "integration-ey".
 	DB *kv.DB
+}
+
+// NodeDialer abstracts connecting to other nodes in the cluster.
+type NodeDialer interface {
+	// Dial returns a grpc connection to the given node.
+	Dial(context.Context, roachpb.NodeID, rpc.ConnectionClass) (*grpc.ClientConn, error)
 }
 
 // New constructs a new Cluster with the provided dependencies.
@@ -124,6 +131,7 @@ func (c *Cluster) ForEveryNodeOrServer(
 	grp := ctxgroup.WithContext(ctx)
 
 	for _, node := range live {
+		id := node.ID // copy out of the loop variable
 		alloc, err := qp.Acquire(ctx, 1)
 		if err != nil {
 			return err
@@ -132,10 +140,11 @@ func (c *Cluster) ForEveryNodeOrServer(
 		grp.GoCtx(func(ctx context.Context) error {
 			defer alloc.Release()
 
-			client, err := serverpb.DialMigrationClient(c.c.Dialer, ctx, node.ID, rpcbase.DefaultClass)
+			conn, err := c.c.Dialer.Dial(ctx, id, rpc.DefaultClass)
 			if err != nil {
 				return err
 			}
+			client := serverpb.NewMigrationClient(conn)
 			return fn(ctx, client)
 		})
 	}

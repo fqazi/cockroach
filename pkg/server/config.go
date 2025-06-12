@@ -28,14 +28,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
+	"github.com/cockroachdb/cockroach/pkg/server/autoconfig/acprovider"
 	"github.com/cockroachdb/cockroach/pkg/server/license"
 	"github.com/cockroachdb/cockroach/pkg/server/status"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/disk"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
+	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/ts"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/cidr"
@@ -127,9 +126,8 @@ func (mo *MaxOffsetType) String() string {
 // BaseConfig holds parameters that are needed to setup either a KV or a SQL
 // server.
 type BaseConfig struct {
-	*base.Config
-
 	Settings *cluster.Settings
+	*base.Config
 
 	Tracer *tracing.Tracer
 
@@ -195,6 +193,10 @@ type BaseConfig struct {
 	// Locality is a description of the topography of the server.
 	Locality roachpb.Locality
 
+	// StorageEngine specifies the engine type (eg. rocksdb, pebble) to use to
+	// instantiate stores.
+	StorageEngine enginepb.EngineType
+
 	// TestingKnobs is used for internal test controls only.
 	TestingKnobs base.TestingKnobs
 
@@ -222,14 +224,13 @@ type BaseConfig struct {
 	// Stores is specified to enable durable key-value storage.
 	Stores base.StoreSpecList
 
-	// StorageConfig is the configuration of storage based on the Stores,
-	// WALFailover and SharedStorage and BootstrapMount.
-	StorageConfig storageconfig.Node
+	// SharedStorage is specified to enable disaggregated shared storage.
+	SharedStorage string
+	*cloud.ExternalStorageAccessor
 
-	EarlyBootExternalStorageAccessor *cloud.EarlyBootExternalStorageAccessor
-	// ExternalIODirConfig is used to configure external storage
-	// access (http://, nodelocal://, etc)
-	ExternalIODirConfig base.ExternalIODirConfig
+	// SecondaryCache is the size of the secondary cache used for each store, to
+	// store blocks from disaggregated shared storage. For use with SharedStorage.
+	SecondaryCache base.SizeSpec
 
 	// StartDiagnosticsReporting starts the asynchronous goroutine that
 	// checks for CockroachDB upgrades and periodically reports
@@ -255,25 +256,18 @@ type BaseConfig struct {
 	// route SQL connections instead.
 	DisableSQLListener bool
 
+	// AutoConfigProvider provides auto-configuration tasks to apply on
+	// the cluster during server initialization.
+	AutoConfigProvider acprovider.Provider
+
 	// RPCListenerFactory provides an alternate implementation of
 	// ListenAndUpdateAddrs for use when creating gPRC
 	// listeners. This is set by in-memory tenants if the user has
 	// specified port range preferences.
 	RPCListenerFactory RPCListenerFactory
 
-	// DiskMonitorManager provides metrics for individual disks.
-	DiskMonitorManager *disk.MonitorManager
-
-	// DiskWriteStats is used to categorically track disk write metrics.
-	DiskWriteStats disk.WriteStatsManager
-
 	// CidrLookup is used to look up the tag name for a given IP address.
 	CidrLookup *cidr.Lookup
-
-	// ExternalIODir is the local file path under which remotely-initiated
-	// operations that can specify node-local I/O paths (such as BACKUP, RESTORE
-	// or IMPORT) can access files.
-	ExternalIODir string
 }
 
 // MakeBaseConfig returns a BaseConfig with default values.
@@ -309,11 +303,12 @@ func (cfg *BaseConfig) SetDefaults(
 	cfg.MaxOffset = MaxOffsetType(base.DefaultMaxClockOffset)
 	cfg.DisableMaxOffsetCheck = false
 	cfg.DefaultZoneConfig = zonepb.DefaultZoneConfig()
-	cfg.StorageConfig.WALFailover = storageconfig.WALFailover{}
+	cfg.StorageEngine = storage.DefaultStorageEngine
 	cfg.TestingInsecureWebAccess = disableWebLogin
 	cfg.Stores = base.StoreSpecList{
 		Specs: []base.StoreSpec{storeSpec},
 	}
+	cfg.AutoConfigProvider = acprovider.NoTaskProvider{}
 	// We use the tag "n" here for both KV nodes and SQL instances,
 	// using the knowledge that the value part of a SQL instance ID
 	// container will prefix the value with the string "sql", resulting
@@ -322,9 +317,7 @@ func (cfg *BaseConfig) SetDefaults(
 	cfg.Config.InitDefaults()
 	cfg.InitTestingKnobs()
 	cfg.CidrLookup = cidr.NewLookup(&st.SV)
-	cfg.EarlyBootExternalStorageAccessor = cloud.NewEarlyBootExternalStorageAccessor(st, cfg.ExternalIODirConfig, cfg.CidrLookup)
-	cfg.DiskMonitorManager = disk.NewMonitorManager(vfs.Default)
-	cfg.DiskWriteStats = disk.NewWriteStatsManager(vfs.Default)
+	cfg.ExternalStorageAccessor = cloud.NewExternalStorageAccessor()
 }
 
 // InitTestingKnobs sets up any testing knobs based on e.g. envvars.
@@ -343,6 +336,7 @@ func (cfg *BaseConfig) InitTestingKnobs() {
 		}
 		storeKnobs := cfg.TestingKnobs.Store.(*kvserver.StoreTestingKnobs)
 		storeKnobs.GlobalMVCCRangeTombstone = true
+		storeKnobs.EvalKnobs.DisableInitPutFailOnTombstones = true
 		cfg.TestingKnobs.RangeFeed.(*rangefeed.TestingKnobs).IgnoreOnDeleteRangeError = true
 	}
 
@@ -455,6 +449,19 @@ type KVConfig struct {
 	DelayedBootstrapFn func()
 
 	enginesCreated bool
+
+	// SnapshotSendLimit is the number of concurrent snapshots a store will send.
+	SnapshotSendLimit int64
+
+	// SnapshotApplyLimit is the number of concurrent snapshots a store will
+	// apply. The send limit is typically higher than the apply limit for a few
+	// reasons. One is that it keeps "pipelining" of requests in the case where
+	// there is only a single sender and single receiver. As soon as a receiver
+	// finishes a request, there will be another one to start. The performance
+	// impact of sending snapshots is lower than applying. Finally, snapshots are
+	// not sent until the receiver is ready to apply, so the cost of sending is
+	// low until the receiver is ready.
+	SnapshotApplyLimit int64
 }
 
 // MakeKVConfig returns a KVConfig with default values.
@@ -475,22 +482,26 @@ func (kvCfg *KVConfig) SetDefaults() {
 	kvCfg.ScanMinIdleTime = defaultScanMinIdleTime
 	kvCfg.ScanMaxIdleTime = defaultScanMaxIdleTime
 	kvCfg.EventLogEnabled = defaultEventLogEnabled
+	kvCfg.SnapshotSendLimit = kvserver.DefaultSnapshotSendLimit
+	kvCfg.SnapshotApplyLimit = kvserver.DefaultSnapshotApplyLimit
 }
 
 // SQLConfig holds the parameters that (together with a BaseConfig) allow
 // setting up a SQL server.
 type SQLConfig struct {
 	// The tenant that the SQL server runs on the behalf of.
-	TenantID   roachpb.TenantID
-	TenantName roachpb.TenantName
+	TenantID roachpb.TenantID
 
-	// If set, will to be called at server startup to obtain the tenant id and
-	// locality.
-	DelayedSetTenantID func(context.Context) (roachpb.TenantID, roachpb.Locality, error)
+	// If set, will to be called at server startup to obtain the tenant id.
+	DelayedSetTenantID func(context.Context) (roachpb.TenantID, error)
 
 	// TempStorageConfig is used to configure temp storage, which stores
 	// ephemeral data when processing large queries.
 	TempStorageConfig base.TempStorageConfig
+
+	// ExternalIODirConfig is used to configure external storage
+	// access (http://, nodelocal://, etc)
+	ExternalIODirConfig base.ExternalIODirConfig
 
 	// MemoryPoolSize is the amount of memory in bytes that can be
 	// used by SQL clients to store row data in server RAM.
@@ -547,12 +558,9 @@ type LocalKVServerInfo struct {
 }
 
 // MakeSQLConfig returns a SQLConfig with default values.
-func MakeSQLConfig(
-	tenID roachpb.TenantID, tenName roachpb.TenantName, tempStorageCfg base.TempStorageConfig,
-) SQLConfig {
+func MakeSQLConfig(tenID roachpb.TenantID, tempStorageCfg base.TempStorageConfig) SQLConfig {
 	sqlCfg := SQLConfig{
-		TenantID:   tenID,
-		TenantName: tenName,
+		TenantID: tenID,
 	}
 	sqlCfg.SetDefaults(tempStorageCfg)
 	return sqlCfg
@@ -562,8 +570,7 @@ func MakeSQLConfig(
 // multiple times.
 func (sqlCfg *SQLConfig) SetDefaults(tempStorageCfg base.TempStorageConfig) {
 	tenID := sqlCfg.TenantID
-	tenName := sqlCfg.TenantName
-	*sqlCfg = SQLConfig{TenantID: tenID, TenantName: tenName}
+	*sqlCfg = SQLConfig{TenantID: tenID}
 	sqlCfg.MemoryPoolSize = defaultSQLMemoryPoolSize
 	sqlCfg.TableStatCacheSize = defaultSQLTableStatCacheSize
 	sqlCfg.QueryCacheSize = defaultSQLQueryCacheSize
@@ -602,8 +609,7 @@ func SetOpenFileLimitForOneStore() (uint64, error) {
 // MakeConfig returns a Config for the system tenant with default values.
 func MakeConfig(ctx context.Context, st *cluster.Settings) Config {
 	storeSpec, tempStorageCfg := makeStorageCfg(ctx, st)
-	sqlCfg := MakeSQLConfig(roachpb.SystemTenantID,
-		roachpb.TenantName(roachpb.SystemTenantID.String()), tempStorageCfg)
+	sqlCfg := MakeSQLConfig(roachpb.SystemTenantID, tempStorageCfg)
 	tr := tracing.NewTracerWithOpt(ctx, tracing.WithClusterSettings(&st.SV))
 	baseCfg := MakeBaseConfig(st, tr, storeSpec)
 	kvCfg := MakeKVConfig()
@@ -642,10 +648,6 @@ func makeStorageCfg(
 
 // String implements the fmt.Stringer interface.
 func (cfg *Config) String() string {
-	return redact.StringWithoutMarkers(cfg)
-}
-
-func (cfg *Config) SafeFormat(sp redact.SafePrinter, _ rune) {
 	var buf bytes.Buffer
 
 	w := tabwriter.NewWriter(&buf, 2, 1, 2, ' ', 0)
@@ -661,7 +663,7 @@ func (cfg *Config) SafeFormat(sp redact.SafePrinter, _ rune) {
 	}
 	_ = w.Flush()
 
-	sp.Print(redact.SafeString(buf.String()))
+	return buf.String()
 }
 
 // Report logs an overview of the server configuration parameters via
@@ -672,7 +674,7 @@ func (cfg *Config) Report(ctx context.Context) {
 	} else {
 		log.Infof(ctx, "system total memory: %s", humanizeutil.IBytes(memSize))
 	}
-	log.Infof(ctx, "server configuration:\n%s", cfg)
+	log.Infof(ctx, "server configuration:\n%s", log.SafeManaged(cfg))
 }
 
 // Engines is a container of engines, allowing convenient closing.
@@ -714,11 +716,11 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 	defer pebbleCache.Unref()
 
 	var sharedStorage cloud.ExternalStorage
-	if cfg.StorageConfig.SharedStorage.URI != "" {
+	if cfg.SharedStorage != "" {
 		var err error
 		// Note that we don't pass an io interceptor here. Instead, we record shared
 		// storage metrics on a per-store basis; see storage.Metrics.
-		sharedStorage, err = cloud.ExternalStorageFromURI(ctx, cfg.StorageConfig.SharedStorage.URI,
+		sharedStorage, err = cloud.ExternalStorageFromURI(ctx, cfg.SharedStorage,
 			base.ExternalIODirConfig{}, cfg.Settings, nil, cfg.User, nil,
 			nil, cloud.NilMetrics)
 		if err != nil {
@@ -739,38 +741,25 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 
 	log.Event(ctx, "initializing engines")
 
-	var fileCache *pebble.FileCache
-	// TODO(radu): use the fileCache for in-memory stores as well.
+	var tableCache *pebble.TableCache
+	// TODO(radu): use the tableCache for in-memory stores as well.
 	if physicalStores > 0 {
-		perStoreLimit := pebble.FileCacheSize(int(openFileLimitPerStore))
+		perStoreLimit := pebble.TableCacheSize(int(openFileLimitPerStore))
 		totalFileLimit := perStoreLimit * physicalStores
-		fileCache = pebble.NewFileCache(runtime.GOMAXPROCS(0), totalFileLimit)
+		tableCache = pebble.NewTableCache(pebbleCache, runtime.GOMAXPROCS(0), totalFileLimit)
 	}
 
 	var storeKnobs kvserver.StoreTestingKnobs
-	var stickyRegistry fs.StickyRegistry
 	if s := cfg.TestingKnobs.Store; s != nil {
 		storeKnobs = *s.(*kvserver.StoreTestingKnobs)
 	}
-	if cfg.TestingKnobs.Server != nil {
-		serverKnobs := cfg.TestingKnobs.Server.(*TestingKnobs)
-		stickyRegistry = serverKnobs.StickyVFSRegistry
-	}
-
-	storeEnvs, err := fs.InitEnvsFromStoreSpecs(ctx, cfg.Stores.Specs, fs.ReadWrite, stickyRegistry, cfg.DiskWriteStats)
-	if err != nil {
-		return Engines{}, err
-	}
-	defer storeEnvs.CloseAll()
-
-	walFailoverConfig := storage.WALFailover(cfg.StorageConfig.WALFailover, storeEnvs, vfs.Default, cfg.DiskWriteStats)
 
 	for i, spec := range cfg.Stores.Specs {
 		log.Eventf(ctx, "initializing %+v", spec)
 
 		storageConfigOpts := []storage.ConfigOption{
-			walFailoverConfig,
 			storage.Attributes(spec.Attributes),
+			storage.EncryptionAtRest(spec.EncryptionOptions),
 			storage.If(storeKnobs.SmallEngineBlocks, storage.BlockSize(1)),
 			storage.BlockConcurrencyLimitDivisor(len(cfg.Stores.Specs)),
 		}
@@ -781,8 +770,26 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 			storageConfigOpts = append(storageConfigOpts, opt)
 		}
 
+		var location storage.Location
 		if spec.InMemory {
-			var sizeInBytes = spec.Size.Capacity
+			if spec.StickyVFSID == "" {
+				location = storage.InMemory()
+			} else {
+				if cfg.TestingKnobs.Server == nil {
+					return Engines{}, errors.AssertionFailedf("Could not create a sticky " +
+						"engine no server knobs available to get a registry. " +
+						"Please use Knobs.Server.StickyVFSRegistry to provide one.")
+				}
+				knobs := cfg.TestingKnobs.Server.(*TestingKnobs)
+				if knobs.StickyVFSRegistry == nil {
+					return Engines{}, errors.Errorf("Could not create a sticky " +
+						"engine no registry available. Please use " +
+						"Knobs.Server.StickyVFSRegistry to provide one.")
+				}
+				location = storage.MakeLocation("", knobs.StickyVFSRegistry.Get(spec.StickyVFSID))
+			}
+
+			var sizeInBytes = spec.Size.InBytes
 			if spec.Size.Percent > 0 {
 				sysMem, err := status.GetTotalMemory(ctx)
 				if err != nil {
@@ -796,18 +803,18 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 			}
 			addCfgOpt(storage.MaxSizeBytes(sizeInBytes))
 			addCfgOpt(storage.CacheSize(cfg.CacheSize))
-			addCfgOpt(storage.RemoteStorageFactory(cfg.EarlyBootExternalStorageAccessor))
 
 			detail(redact.Sprintf("store %d: in-memory, size %s", i, humanizeutil.IBytes(sizeInBytes)))
 		} else {
-			// NB: We've already initialized an *fs.Env backed by the real
-			// physical filesystem. This initialization will create the
-			// data directory if it didn't already exist.
-			du, err := storeEnvs[i].UnencryptedFS.GetDiskUsage(spec.Path)
+			location = storage.Filesystem(spec.Path)
+			if err := vfs.Default.MkdirAll(spec.Path, 0755); err != nil {
+				return Engines{}, errors.Wrap(err, "creating store directory")
+			}
+			du, err := vfs.Default.GetDiskUsage(spec.Path)
 			if err != nil {
 				return Engines{}, errors.Wrap(err, "retrieving disk usage")
 			}
-			var sizeInBytes = spec.Size.Capacity
+			var sizeInBytes = spec.Size.InBytes
 			if spec.Size.Percent > 0 {
 				sizeInBytes = int64(float64(du.TotalBytes) * spec.Size.Percent / 100)
 			}
@@ -815,17 +822,6 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 				return Engines{}, errors.Errorf("%f%% of %s's total free space is only %s bytes, which is below the minimum requirement of %s",
 					spec.Size.Percent, spec.Path, humanizeutil.IBytes(sizeInBytes), humanizeutil.IBytes(base.MinimumStoreSize))
 			}
-			monitor, err := cfg.DiskMonitorManager.Monitor(spec.Path)
-			if err != nil {
-				return Engines{}, errors.Wrap(err, "creating disk monitor")
-			}
-			detail(redact.Sprintf("store %d: disk deviceID: %s", i, monitor.DeviceID()))
-
-			statsCollector, err := cfg.DiskWriteStats.GetOrCreateCollector(spec.Path)
-			if err != nil {
-				return Engines{}, errors.Wrap(err, "retrieving stats collector")
-			}
-			addCfgOpt(storage.DiskWriteStatsCollector(statsCollector))
 
 			if spec.Size.Percent > 0 {
 				detail(redact.Sprintf("store %d: max size %s (calculated from %.2f percent of total), max open file limit %d", i, humanizeutil.IBytes(sizeInBytes), spec.Size.Percent, openFileLimitPerStore))
@@ -835,15 +831,15 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 				addCfgOpt(storage.MaxSizeBytes(sizeInBytes))
 			}
 			addCfgOpt(storage.BallastSize(storage.BallastSizeBytes(spec, du)))
-			addCfgOpt(storage.Caches(pebbleCache, fileCache))
+			addCfgOpt(storage.Caches(pebbleCache, tableCache))
 			// TODO(radu): move up all remaining settings below so they apply to in-memory stores as well.
 			addCfgOpt(storage.MaxOpenFiles(int(openFileLimitPerStore)))
-			addCfgOpt(storage.RemoteStorageFactory(cfg.EarlyBootExternalStorageAccessor))
+			addCfgOpt(storage.MaxWriterConcurrency(2))
+			addCfgOpt(storage.RemoteStorageFactory(cfg.ExternalStorageAccessor))
 			if sharedStorage != nil {
 				addCfgOpt(storage.SharedStorage(sharedStorage))
-				addCfgOpt(storage.SecondaryCache(storage.SecondaryCacheBytes(cfg.StorageConfig.SharedStorage.Cache, du)))
 			}
-			addCfgOpt(storage.DiskMonitor(monitor))
+			addCfgOpt(storage.SecondaryCache(storage.SecondaryCacheBytes(cfg.SecondaryCache, du)))
 			// If the spec contains Pebble options, set those too.
 			if spec.PebbleOptions != "" {
 				addCfgOpt(storage.PebbleOptions(spec.PebbleOptions, &pebble.ParseHooks{
@@ -858,23 +854,23 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 					},
 				}))
 			}
+			if len(spec.RocksDBOptions) > 0 {
+				return nil, errors.Errorf("store %d: using Pebble storage engine but StoreSpec provides RocksDB options", i)
+			}
 		}
-		eng, err := storage.Open(ctx, storeEnvs[i], cfg.Settings, storageConfigOpts...)
+		eng, err := storage.Open(ctx, location, cfg.Settings, storageConfigOpts...)
 		if err != nil {
 			return Engines{}, err
 		}
-		// Nil out the store env; the engine has taken responsibility for Closing
-		// it.
-		// TODO(jackson): Refactor to either reference count references to the env,
-		// or leave ownership with the caller of Open.
-		storeEnvs[i] = nil
-		detail(redact.Sprintf("store %d: %s", i, eng.Properties()))
+		detail(redact.Sprintf("store %d: %+v", i, eng.Properties()))
 		engines = append(engines, eng)
 	}
 
-	if fileCache != nil {
+	if tableCache != nil {
 		// Unref the table cache now that the engines hold references to it.
-		fileCache.Unref()
+		if err := tableCache.Unref(); err != nil {
+			return nil, err
+		}
 	}
 
 	log.Infof(ctx, "%d storage engine%s initialized",
@@ -963,6 +959,8 @@ func (cfg *Config) readEnvironmentVariables() {
 	cfg.ScanInterval = envutil.EnvOrDefaultDuration("COCKROACH_SCAN_INTERVAL", cfg.ScanInterval)
 	cfg.ScanMinIdleTime = envutil.EnvOrDefaultDuration("COCKROACH_SCAN_MIN_IDLE_TIME", cfg.ScanMinIdleTime)
 	cfg.ScanMaxIdleTime = envutil.EnvOrDefaultDuration("COCKROACH_SCAN_MAX_IDLE_TIME", cfg.ScanMaxIdleTime)
+	cfg.SnapshotSendLimit = envutil.EnvOrDefaultInt64("COCKROACH_CONCURRENT_SNAPSHOT_SEND_LIMIT", cfg.SnapshotSendLimit)
+	cfg.SnapshotApplyLimit = envutil.EnvOrDefaultInt64("COCKROACH_CONCURRENT_SNAPSHOT_APPLY_LIMIT", cfg.SnapshotApplyLimit)
 }
 
 // parseGossipBootstrapAddresses parses list of gossip bootstrap addresses.

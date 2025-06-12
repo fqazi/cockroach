@@ -22,6 +22,7 @@ import (
 func checkBoundedStalenessEnabled(evalCtx *eval.Context) error {
 	return utilccl.CheckEnterpriseEnabled(
 		evalCtx.Settings,
+		evalCtx.ClusterID,
 		"bounded staleness",
 	)
 }

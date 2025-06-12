@@ -2,31 +2,32 @@
 //
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
-import * as protos from "@cockroachlabs/crdb-protobuf-client";
-import { ArrowLeft } from "@cockroachlabs/icons";
-import {
-  InlineAlert,
-  Tooltip,
-  Text,
-  Heading,
-} from "@cockroachlabs/ui-components";
-import { Col, Row } from "antd";
-import classNames from "classnames/bind";
-import get from "lodash/get";
-import Long from "long";
-import moment from "moment-timezone";
-import React, { useContext } from "react";
-import { Helmet } from "react-helmet";
-import { RouteComponentProps } from "react-router-dom";
 
-import { SqlStatsSortType } from "src/api/statementsApi";
-import { PageConfig, PageConfigItem } from "src/pageConfig";
+import React, { useContext } from "react";
+import * as protos from "@cockroachlabs/crdb-protobuf-client";
+import classNames from "classnames/bind";
+import _ from "lodash";
+import { RouteComponentProps } from "react-router-dom";
+import { Helmet } from "react-helmet";
+import moment from "moment-timezone";
+
+import statementsStyles from "../statementsPage/statementsPage.module.scss";
 import {
-  populateRegionNodeForStatements,
-  makeStatementsColumns,
-} from "src/statementsTable/statementsTable";
-import { TimeScaleLabel } from "src/timeScaleDropdown/timeScaleLabel";
-import { Transaction } from "src/transactionsTable";
+  SortedTable,
+  ISortedTablePagination,
+  SortSetting,
+} from "../sortedtable";
+import { PageConfig, PageConfigItem } from "src/pageConfig";
+import { InlineAlert, Tooltip } from "@cockroachlabs/ui-components";
+import { Pagination } from "../pagination";
+import { TableStatistics } from "../tableStatistics";
+import { baseHeadingClasses } from "../transactionsPage/transactionsPageClasses";
+import { Button } from "../button";
+import { tableClasses } from "../transactionsTable/transactionsTableClasses";
+import { SqlBox } from "../sql";
+import { aggregateStatements } from "../transactionsPage/utils";
+import { Loading } from "../loading";
+import { SummaryCard, SummaryCardItem } from "../summaryCard";
 import {
   Bytes,
   calculateTotalWorkload,
@@ -35,9 +36,24 @@ import {
   formatNumberForDisplay,
   queryByName,
   appNamesAttr,
-  unset,
 } from "src/util";
+import { UIConfigState } from "../store";
+import LoadingError from "../sqlActivity/errorComponent";
 
+import summaryCardStyles from "../summaryCard/summaryCard.module.scss";
+import transactionDetailsStyles from "./transactionDetails.modules.scss";
+import { Col, Row } from "antd";
+import "antd/lib/col/style";
+import "antd/lib/row/style";
+import { Text, Heading } from "@cockroachlabs/ui-components";
+import { formatTwoPlaces } from "../barCharts";
+import { ArrowLeft } from "@cockroachlabs/icons";
+import {
+  populateRegionNodeForStatements,
+  makeStatementsColumns,
+} from "src/statementsTable/statementsTable";
+import { Transaction } from "src/transactionsTable";
+import Long from "long";
 import {
   createCombinedStmtsRequest,
   InsightRecommendation,
@@ -46,57 +62,39 @@ import {
   StatementsRequest,
   TxnInsightsRequest,
 } from "../api";
-import { formatTwoPlaces } from "../barCharts";
-import { Button } from "../button";
-import { CockroachCloudContext } from "../contexts";
 import {
   getTxnInsightRecommendations,
   InsightType,
   TxnInsightEvent,
 } from "../insights";
 import {
-  InsightsSortedTable,
-  makeInsightsColumns,
-} from "../insightsTable/insightsTable";
-import insightTableStyles from "../insightsTable/insightsTable.module.scss";
-import { Loading } from "../loading";
-import { Pagination } from "../pagination";
-import {
-  SortedTable,
-  ISortedTablePagination,
-  SortSetting,
-} from "../sortedtable";
-import { SqlBox } from "../sql";
-import LoadingError from "../sqlActivity/errorComponent";
-import statementsStyles from "../statementsPage/statementsPage.module.scss";
-import { UIConfigState } from "../store";
-import { SummaryCard, SummaryCardItem } from "../summaryCard";
-import summaryCardStyles from "../summaryCard/summaryCard.module.scss";
-import { TableStatistics } from "../tableStatistics";
-import {
   getValidOption,
   TimeScale,
   timeScale1hMinOptions,
   TimeScaleDropdown,
   timeScaleRangeToObj,
-  toDateRange,
+  toRoundedDateRange,
 } from "../timeScaleDropdown";
-import timeScaleStyles from "../timeScaleDropdown/timeScale.module.scss";
-import { baseHeadingClasses } from "../transactionsPage/transactionsPageClasses";
-import { aggregateStatements } from "../transactionsPage/utils";
-import { tableClasses } from "../transactionsTable/transactionsTableClasses";
 
-import transactionDetailsStyles from "./transactionDetails.modules.scss";
+import timeScaleStyles from "../timeScaleDropdown/timeScale.module.scss";
+import insightTableStyles from "../insightsTable/insightsTable.module.scss";
+import {
+  InsightsSortedTable,
+  makeInsightsColumns,
+} from "../insightsTable/insightsTable";
+import { CockroachCloudContext } from "../contexts";
+import { SqlStatsSortType } from "src/api/statementsApi";
 import {
   getStatementsForTransaction,
   getTxnFromSqlStatsMemoized,
   getTxnQueryString,
 } from "./transactionDetailsUtils";
-
+import { TimeScaleLabel } from "src/timeScaleDropdown/timeScaleLabel";
 const { containerClass } = tableClasses;
 const cx = classNames.bind(statementsStyles);
 const timeScaleStylesCx = classNames.bind(timeScaleStyles);
 const insightsTableCx = classNames.bind(insightTableStyles);
+import { unset } from "src/util";
 
 type Statement =
   protos.cockroach.server.serverpb.StatementsResponse.ICollectedStatementStatistics;
@@ -143,7 +141,7 @@ interface TState {
 function statementsRequestFromProps(
   props: TransactionDetailsProps,
 ): StatementsRequest {
-  const [start, end] = toDateRange(props.timeScale);
+  const [start, end] = toRoundedDateRange(props.timeScale);
   return createCombinedStmtsRequest({
     start,
     end,
@@ -282,9 +280,9 @@ export class TransactionDetails extends React.Component<
     });
   };
 
-  onChangePage = (current: number, pageSize: number): void => {
+  onChangePage = (current: number): void => {
     const { pagination } = this.state;
-    this.setState({ pagination: { ...pagination, current, pageSize } });
+    this.setState({ pagination: { ...pagination, current } });
   };
 
   backToTransactionsClick = (): void => {
@@ -394,21 +392,15 @@ export class TransactionDetails extends React.Component<
                 <span className={cx("tooltip-info")}>unavailable</span>
               </Tooltip>
             );
-            const meanIdleLatency = (
+            const meanIdleLatency = transactionSampled ? (
               <Text>
                 {formatNumberForDisplay(
-                  get(transactionStats, "idle_lat.mean", 0),
+                  _.get(transactionStats, "idle_lat.mean", 0),
                   duration,
                 )}
               </Text>
-            );
-            const meanCommitLatency = (
-              <Text>
-                {formatNumberForDisplay(
-                  get(transactionStats, "commit_lat.mean", 0),
-                  duration,
-                )}
-              </Text>
+            ) : (
+              unavailableTooltip
             );
             const meansRows = `${formatNumberForDisplay(
               transactionStats.rows_read.mean,
@@ -438,7 +430,7 @@ export class TransactionDetails extends React.Component<
             const maxDisc = transactionSampled ? (
               <Text>
                 {formatNumberForDisplay(
-                  get(transactionStats, "exec_stats.max_disk_usage.mean", 0),
+                  _.get(transactionStats, "exec_stats.max_disk_usage.mean", 0),
                   Bytes,
                 )}
               </Text>
@@ -519,10 +511,6 @@ export class TransactionDetails extends React.Component<
                         <SummaryCardItem
                           label="Idle latency"
                           value={meanIdleLatency}
-                        />
-                        <SummaryCardItem
-                          label="Commit latency"
-                          value={meanCommitLatency}
                         />
                         <SummaryCardItem
                           label="Mean rows/bytes read"
@@ -606,7 +594,6 @@ export class TransactionDetails extends React.Component<
                   current={pagination.current}
                   total={aggregatedStatements.length}
                   onChange={this.onChangePage}
-                  onShowSizeChange={this.onChangePage}
                 />
               </React.Fragment>
             );

@@ -76,9 +76,9 @@ func (c *CustomFuncs) BoolType() *types.T {
 	return types.Bool
 }
 
-// AnyType returns the wildcard AnyElement type.
+// AnyType returns the wildcard Any type.
 func (c *CustomFuncs) AnyType() *types.T {
-	return types.AnyElement
+	return types.Any
 }
 
 // CanConstructBinary returns true if (op left right) has a valid binary op
@@ -769,17 +769,6 @@ func (c *CustomFuncs) RemoveFiltersItem(
 	return filters.RemoveFiltersItem(search)
 }
 
-// AppendFiltersItem returns a new list that is a copy of the given list, except
-// that the given item has been appended to the end of the list.
-func (c *CustomFuncs) AppendFiltersItem(
-	filters memo.FiltersExpr, toAppend opt.ScalarExpr,
-) memo.FiltersExpr {
-	newFilters := make(memo.FiltersExpr, len(filters)+1)
-	copy(newFilters, filters)
-	newFilters[len(filters)] = c.f.ConstructFiltersItem(toAppend)
-	return newFilters
-}
-
 // ReplaceFiltersItem returns a new list that is a copy of the given list,
 // except that the given search item has been replaced by the given replace
 // item. If the list contains the search item multiple times, then only the
@@ -980,7 +969,7 @@ func (c *CustomFuncs) findConstantFilterCols(
 			colTyp := tab.Column(scanPrivate.Table.ColumnOrdinal(colID)).DatumType()
 
 			span := cons.Spans.Get(0)
-			if !span.HasSingleKey(c.f.ctx, c.f.evalCtx) {
+			if !span.HasSingleKey(c.f.evalCtx) {
 				continue
 			}
 
@@ -1027,7 +1016,7 @@ func (c *CustomFuncs) tryFoldComputedCol(
 	}
 
 	computedCol := ComputedCols[computedColID]
-	if memo.CanBeCompositeSensitive(computedCol) {
+	if memo.CanBeCompositeSensitive(c.f.mem.Metadata(), computedCol) {
 		// The computed column expression can return different values for logically
 		// equal outer columns (e.g. d::STRING where d is a DECIMAL).
 		return false
@@ -1116,7 +1105,7 @@ func CombineComputedColFilters(
 	}
 	for k := 0; k < cons.Spans.Count(); k++ {
 		span := cons.Spans.Get(k)
-		if !span.HasSingleKey(f.ctx, f.evalCtx) {
+		if !span.HasSingleKey(f.evalCtx) {
 			// If we don't have a single value, or combination of single values
 			// to use in folding the computed column expression, don't use this
 			// constraint.
@@ -1514,20 +1503,12 @@ func (c *CustomFuncs) IntConst(d *tree.DInt) opt.ScalarExpr {
 // IsGreaterThan returns true if the first datum compares as greater than the
 // second.
 func (c *CustomFuncs) IsGreaterThan(first, second tree.Datum) bool {
-	cmp, err := first.Compare(c.f.ctx, c.f.evalCtx, second)
-	if err != nil {
-		panic(err)
-	}
-	return cmp == 1
+	return first.Compare(c.f.evalCtx, second) == 1
 }
 
 // DatumsEqual returns true if the first datum compares as equal to the second.
 func (c *CustomFuncs) DatumsEqual(first, second tree.Datum) bool {
-	cmp, err := first.Compare(c.f.ctx, c.f.evalCtx, second)
-	if err != nil {
-		panic(err)
-	}
-	return cmp == 0
+	return first.Compare(c.f.evalCtx, second) == 0
 }
 
 // ----------------------------------------------------------------------

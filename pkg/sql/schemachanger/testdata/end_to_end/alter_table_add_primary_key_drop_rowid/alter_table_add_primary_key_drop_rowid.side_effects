@@ -20,28 +20,58 @@ write *eventpb.AlterTable to event log:
     tag: ALTER TABLE
     user: root
   tableName: defaultdb.public.t
-## StatementPhase stage 1 of 1 with 10 MutationType ops
+## StatementPhase stage 1 of 1 with 11 MutationType ops
 upsert descriptor #104
    table:
   +  checks:
   +  - columnIds:
   +    - 2
-  +    expr: rowid IS NOT NULL
+  +    expr: crdb_internal_column_2_name_placeholder IS NOT NULL
   +    isNonNullConstraint: true
   +    name: rowid_auto_not_null
   +    validity: Dropping
      columns:
      - id: 1
   ...
-       id: 2
-       name: rowid
-  +    nullable: true
-       type:
-         family: IntFamily
+         oid: 20
+         width: 64
+  -  - defaultExpr: unique_rowid()
+  -    hidden: true
+  -    id: 2
+  -    name: rowid
+  -    type:
+  -      family: IntFamily
+  -      oid: 20
+  -      width: 64
+     createAsOfTime:
+       wallTime: "1640995200000000000"
+  ...
+       columnNames:
+       - a
+  -    - rowid
+  +    - crdb_internal_column_2_name_placeholder
+       defaultColumnId: 1
+       name: primary
   ...
      id: 104
      modificationTime: {}
   +  mutations:
+  +  - constraint:
+  +      check:
+  +        columnIds:
+  +        - 2
+  +        expr: crdb_internal_column_2_name_placeholder IS NOT NULL
+  +        isNonNullConstraint: true
+  +        name: rowid_auto_not_null
+  +        validity: Dropping
+  +      constraintType: NOT_NULL
+  +      foreignKey: {}
+  +      name: rowid_auto_not_null
+  +      notNullColumn: 2
+  +      uniqueWithoutIndexConstraint: {}
+  +    direction: DROP
+  +    mutationId: 1
+  +    state: WRITE_ONLY
   +  - direction: ADD
   +    index:
   +      constraintId: 2
@@ -63,9 +93,8 @@ upsert descriptor #104
   +      storeColumnIds:
   +      - 2
   +      storeColumnNames:
-  +      - rowid
+  +      - crdb_internal_column_2_name_placeholder
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -90,10 +119,9 @@ upsert descriptor #104
   +      storeColumnIds:
   +      - 2
   +      storeColumnNames:
-  +      - rowid
+  +      - crdb_internal_column_2_name_placeholder
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -117,23 +145,19 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
-  +  - constraint:
-  +      check:
-  +        columnIds:
-  +        - 2
-  +        expr: rowid IS NOT NULL
-  +        isNonNullConstraint: true
-  +        name: rowid_auto_not_null
-  +        validity: Dropping
-  +      constraintType: NOT_NULL
-  +      foreignKey: {}
-  +      name: rowid_auto_not_null
-  +      notNullColumn: 2
-  +      uniqueWithoutIndexConstraint: {}
+  +  - column:
+  +      defaultExpr: unique_rowid()
+  +      hidden: true
+  +      id: 2
+  +      name: crdb_internal_column_2_name_placeholder
+  +      nullable: true
+  +      type:
+  +        family: IntFamily
+  +        oid: 20
+  +        width: 64
   +    direction: DROP
   +    mutationId: 1
   +    state: WRITE_ONLY
@@ -147,9 +171,14 @@ upsert descriptor #104
      nextMutationId: 1
      parentId: 100
   ...
-     replacementOf:
+       - 2
+       keyColumnNames:
+  -    - rowid
+  +    - crdb_internal_column_2_name_placeholder
+       name: t_pkey
+       partitioning: {}
+  ...
        time: {}
-  -  schemaLocked: true
      unexposedParentSchemaId: 101
   -  version: "1"
   +  version: "2"
@@ -158,25 +187,29 @@ upsert descriptor #104
 ## PreCommitPhase stage 1 of 2 with 1 MutationType op
 undo all catalog changes within txn #1
 persist all catalog changes to storage
-## PreCommitPhase stage 2 of 2 with 15 MutationType ops
+## PreCommitPhase stage 2 of 2 with 16 MutationType ops
 upsert descriptor #104
    table:
   +  checks:
   +  - columnIds:
   +    - 2
-  +    expr: rowid IS NOT NULL
+  +    expr: crdb_internal_column_2_name_placeholder IS NOT NULL
   +    isNonNullConstraint: true
   +    name: rowid_auto_not_null
   +    validity: Dropping
      columns:
      - id: 1
   ...
-       id: 2
-       name: rowid
-  +    nullable: true
-       type:
-         family: IntFamily
-  ...
+         oid: 20
+         width: 64
+  -  - defaultExpr: unique_rowid()
+  -    hidden: true
+  -    id: 2
+  -    name: rowid
+  -    type:
+  -      family: IntFamily
+  -      oid: 20
+  -      width: 64
      createAsOfTime:
        wallTime: "1640995200000000000"
   +  declarativeSchemaChangerState:
@@ -187,8 +220,6 @@ upsert descriptor #104
   +    nameMapping:
   +      columns:
   +        "1": a
-  +        "4294967292": crdb_internal_origin_timestamp
-  +        "4294967293": crdb_internal_origin_id
   +        "4294967294": tableoid
   +        "4294967295": crdb_internal_mvcc_timestamp
   +      families:
@@ -208,9 +239,32 @@ upsert descriptor #104
      families:
      - columnIds:
   ...
+       columnNames:
+       - a
+  -    - rowid
+  +    - crdb_internal_column_2_name_placeholder
+       defaultColumnId: 1
+       name: primary
+  ...
      id: 104
      modificationTime: {}
   +  mutations:
+  +  - constraint:
+  +      check:
+  +        columnIds:
+  +        - 2
+  +        expr: crdb_internal_column_2_name_placeholder IS NOT NULL
+  +        isNonNullConstraint: true
+  +        name: rowid_auto_not_null
+  +        validity: Dropping
+  +      constraintType: NOT_NULL
+  +      foreignKey: {}
+  +      name: rowid_auto_not_null
+  +      notNullColumn: 2
+  +      uniqueWithoutIndexConstraint: {}
+  +    direction: DROP
+  +    mutationId: 1
+  +    state: WRITE_ONLY
   +  - direction: ADD
   +    index:
   +      constraintId: 2
@@ -232,9 +286,8 @@ upsert descriptor #104
   +      storeColumnIds:
   +      - 2
   +      storeColumnNames:
-  +      - rowid
+  +      - crdb_internal_column_2_name_placeholder
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -259,10 +312,9 @@ upsert descriptor #104
   +      storeColumnIds:
   +      - 2
   +      storeColumnNames:
-  +      - rowid
+  +      - crdb_internal_column_2_name_placeholder
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -286,23 +338,19 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
-  +  - constraint:
-  +      check:
-  +        columnIds:
-  +        - 2
-  +        expr: rowid IS NOT NULL
-  +        isNonNullConstraint: true
-  +        name: rowid_auto_not_null
-  +        validity: Dropping
-  +      constraintType: NOT_NULL
-  +      foreignKey: {}
-  +      name: rowid_auto_not_null
-  +      notNullColumn: 2
-  +      uniqueWithoutIndexConstraint: {}
+  +  - column:
+  +      defaultExpr: unique_rowid()
+  +      hidden: true
+  +      id: 2
+  +      name: crdb_internal_column_2_name_placeholder
+  +      nullable: true
+  +      type:
+  +        family: IntFamily
+  +        oid: 20
+  +        width: 64
   +    direction: DROP
   +    mutationId: 1
   +    state: WRITE_ONLY
@@ -316,9 +364,14 @@ upsert descriptor #104
      nextMutationId: 1
      parentId: 100
   ...
-     replacementOf:
+       - 2
+       keyColumnNames:
+  -    - rowid
+  +    - crdb_internal_column_2_name_placeholder
+       name: t_pkey
+       partitioning: {}
+  ...
        time: {}
-  -  schemaLocked: true
      unexposedParentSchemaId: 101
   -  version: "1"
   +  version: "2"
@@ -428,8 +481,8 @@ begin transaction #10
 ## PostCommitPhase stage 8 of 15 with 9 MutationType ops
 upsert descriptor #104
   ...
-     modificationTime: {}
-     mutations:
+       mutationId: 1
+       state: WRITE_ONLY
   -  - direction: ADD
   -    index:
   -      constraintId: 2
@@ -451,9 +504,8 @@ upsert descriptor #104
   -      storeColumnIds:
   -      - 2
   -      storeColumnNames:
-  -      - rowid
+  -      - crdb_internal_column_2_name_placeholder
   -      unique: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: WRITE_ONLY
@@ -476,7 +528,7 @@ upsert descriptor #104
   +      keyColumnIds:
   +      - 2
   +      keyColumnNames:
-  +      - rowid
+  +      - crdb_internal_column_2_name_placeholder
   +      name: crdb_internal_index_1_name_placeholder
   +      partitioning: {}
   +      sharded: {}
@@ -485,7 +537,6 @@ upsert descriptor #104
   +      storeColumnNames:
   +      - a
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: WRITE_ONLY
@@ -510,7 +561,6 @@ upsert descriptor #104
   +      storeColumnNames: []
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -540,7 +590,7 @@ upsert descriptor #104
   -    - 2
   +    - 1
        keyColumnNames:
-  -    - rowid
+  -    - crdb_internal_column_2_name_placeholder
   +    - a
        name: t_pkey
        partitioning: {}
@@ -550,9 +600,9 @@ upsert descriptor #104
   +    - 2
        storeColumnNames:
   -    - a
-  +    - rowid
+  +    - crdb_internal_column_2_name_placeholder
        unique: true
-       vecConfig: {}
+       version: 4
   ...
        time: {}
      unexposedParentSchemaId: 101
@@ -591,8 +641,8 @@ upsert descriptor #104
        mutationId: 1
   -    state: BACKFILLING
   +    state: DELETE_ONLY
-     - constraint:
-         check:
+     - column:
+         defaultExpr: unique_rowid()
   ...
        time: {}
      unexposedParentSchemaId: 101
@@ -609,8 +659,8 @@ upsert descriptor #104
        mutationId: 1
   -    state: DELETE_ONLY
   +    state: MERGING
-     - constraint:
-         check:
+     - column:
+         defaultExpr: unique_rowid()
   ...
        time: {}
      unexposedParentSchemaId: 101
@@ -631,8 +681,8 @@ upsert descriptor #104
        mutationId: 1
   -    state: MERGING
   +    state: WRITE_ONLY
-     - constraint:
-         check:
+     - column:
+         defaultExpr: unique_rowid()
   ...
        mutationId: 1
        state: WRITE_ONLY
@@ -660,13 +710,13 @@ begin transaction #17
 validate forward indexes [4] in table #104
 commit transaction #17
 begin transaction #18
-## PostCommitNonRevertiblePhase stage 1 of 5 with 13 MutationType ops
+## PostCommitNonRevertiblePhase stage 1 of 4 with 12 MutationType ops
 upsert descriptor #104
    table:
   -  checks:
   -  - columnIds:
   -    - 2
-  -    expr: rowid IS NOT NULL
+  -    expr: crdb_internal_column_2_name_placeholder IS NOT NULL
   -    isNonNullConstraint: true
   -    name: rowid_auto_not_null
   -    validity: Dropping
@@ -674,35 +724,30 @@ upsert descriptor #104
      columns:
      - id: 1
   ...
-         oid: 20
-         width: 64
-  -  - defaultExpr: unique_rowid()
-  -    hidden: true
-  -    id: 2
-  -    name: rowid
-  -    nullable: true
-  -    type:
-  -      family: IntFamily
-  -      oid: 20
-  -      width: 64
-     createAsOfTime:
-       wallTime: "1640995200000000000"
-  ...
            statement: ALTER TABLE t ADD PRIMARY KEY (a)
            statementTag: ALTER TABLE
   -    revertible: true
        targetRanks: <redacted>
        targets: <redacted>
   ...
-       columnNames:
-       - a
-  -    - rowid
-  +    - crdb_internal_column_2_name_placeholder
-       defaultColumnId: 1
-       name: primary
-  ...
      modificationTime: {}
      mutations:
+  -  - constraint:
+  -      check:
+  -        columnIds:
+  -        - 2
+  -        expr: crdb_internal_column_2_name_placeholder IS NOT NULL
+  -        isNonNullConstraint: true
+  -        name: rowid_auto_not_null
+  -        validity: Dropping
+  -      constraintType: NOT_NULL
+  -      foreignKey: {}
+  -      name: rowid_auto_not_null
+  -      notNullColumn: 2
+  -      uniqueWithoutIndexConstraint: {}
+  -    direction: DROP
+  -    mutationId: 1
+  -    state: WRITE_ONLY
   -  - direction: DROP
   -    index:
   -      constraintId: 3
@@ -724,43 +769,21 @@ upsert descriptor #104
   -      storeColumnIds:
   -      - 2
   -      storeColumnNames:
-  -      - rowid
+  -      - crdb_internal_column_2_name_placeholder
   -      unique: true
   -      useDeletePreservingEncoding: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY
      - direction: ADD
        index:
   ...
+       direction: DROP
        mutationId: 1
-       state: WRITE_ONLY
-  -  - constraint:
-  -      check:
-  -        columnIds:
-  -        - 2
-  -        expr: rowid IS NOT NULL
-  -        isNonNullConstraint: true
-  -        name: rowid_auto_not_null
-  -        validity: Dropping
-  -      constraintType: NOT_NULL
-  -      foreignKey: {}
-  -      name: rowid_auto_not_null
-  -      notNullColumn: 2
-  -      uniqueWithoutIndexConstraint: {}
-  -    direction: DROP
-  -    mutationId: 1
   -    state: WRITE_ONLY
+  +    state: DELETE_ONLY
      - direction: DROP
        index:
-  ...
-         - 2
-         keyColumnNames:
-  -      - rowid
-  +      - crdb_internal_column_2_name_placeholder
-         name: crdb_internal_index_1_name_placeholder
-         partitioning: {}
   ...
          version: 4
        mutationId: 1
@@ -786,104 +809,75 @@ upsert descriptor #104
   -      storeColumnNames: []
   -      unique: true
   -      useDeletePreservingEncoding: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
        state: DELETE_ONLY
-  +  - column:
-  +      defaultExpr: unique_rowid()
-  +      hidden: true
-  +      id: 2
-  +      name: crdb_internal_column_2_name_placeholder
-  +      nullable: true
-  +      type:
-  +        family: IntFamily
-  +        oid: 20
-  +        width: 64
-  +    direction: DROP
-  +    mutationId: 1
-  +    state: WRITE_ONLY
      name: t
-     nextColumnId: 3
-  ...
-       - 2
-       storeColumnNames:
-  -    - rowid
-  +    - crdb_internal_column_2_name_placeholder
-       unique: true
-       vecConfig: {}
   ...
        time: {}
      unexposedParentSchemaId: 101
   -  version: "11"
   +  version: "12"
 persist all catalog changes to storage
-update progress of schema change job #1: "PostCommitNonRevertiblePhase stage 2 of 5 with 6 MutationType ops pending"
+update progress of schema change job #1: "PostCommitNonRevertiblePhase stage 2 of 4 with 5 MutationType ops pending"
 set schema change job #1 to non-cancellable
 commit transaction #18
 begin transaction #19
-## PostCommitNonRevertiblePhase stage 2 of 5 with 8 MutationType ops
+## PostCommitNonRevertiblePhase stage 2 of 4 with 7 MutationType ops
 upsert descriptor #104
   ...
      modificationTime: {}
      mutations:
   -  - direction: ADD
-  +  - column:
-  +      defaultExpr: unique_rowid()
-  +      hidden: true
-  +      id: 2
-  +      name: crdb_internal_column_2_name_placeholder
-  +      nullable: true
-  +      type:
-  +        family: IntFamily
-  +        oid: 20
-  +        width: 64
-  +    direction: DROP
-  +    mutationId: 1
-  +    state: DELETE_ONLY
-  +  - direction: DROP
-       index:
-  -      constraintId: 4
-  +      constraintId: 2
-         createdExplicitly: true
-         encodingType: 1
-         foreignKey: {}
-         geoConfig: {}
-  -      id: 4
-  +      id: 2
-         interleave: {}
-         keyColumnDirections:
-  ...
-         keyColumnNames:
-         - a
-  -      name: crdb_internal_index_4_name_placeholder
-  +      name: crdb_internal_index_2_name_placeholder
-         partitioning: {}
-         sharded: {}
-  -      storeColumnNames: []
-  -      unique: true
-  -      vecConfig: {}
-  -      version: 4
-  -    mutationId: 1
-  -    state: WRITE_ONLY
-  -  - direction: DROP
   -    index:
-  -      constraintId: 1
-  -      createdAtNanos: "1640995200000000000"
+  -      constraintId: 4
+  -      createdExplicitly: true
   -      encodingType: 1
   -      foreignKey: {}
   -      geoConfig: {}
-  -      id: 1
+  -      id: 4
   -      interleave: {}
   -      keyColumnDirections:
   -      - ASC
   -      keyColumnIds:
-  -      - 2
+  -      - 1
   -      keyColumnNames:
-  -      - crdb_internal_column_2_name_placeholder
-  -      name: crdb_internal_index_1_name_placeholder
+  -      - a
+  -      name: crdb_internal_index_4_name_placeholder
   -      partitioning: {}
   -      sharded: {}
+  -      storeColumnNames: []
+  -      unique: true
+  -      version: 4
+  -    mutationId: 1
+  -    state: WRITE_ONLY
+     - column:
+         defaultExpr: unique_rowid()
+  ...
+     - direction: DROP
+       index:
+  -      constraintId: 1
+  -      createdAtNanos: "1640995200000000000"
+  +      constraintId: 2
+  +      createdExplicitly: true
+         encodingType: 1
+         foreignKey: {}
+         geoConfig: {}
+  -      id: 1
+  +      id: 2
+         interleave: {}
+         keyColumnDirections:
+         - ASC
+         keyColumnIds:
+  -      - 2
+  +      - 1
+         keyColumnNames:
+  -      - crdb_internal_column_2_name_placeholder
+  -      name: crdb_internal_index_1_name_placeholder
+  +      - a
+  +      name: crdb_internal_index_2_name_placeholder
+         partitioning: {}
+         sharded: {}
          storeColumnIds:
   -      - 1
   +      - 2
@@ -891,24 +885,12 @@ upsert descriptor #104
   -      - a
   +      - crdb_internal_column_2_name_placeholder
          unique: true
-         vecConfig: {}
          version: 4
        mutationId: 1
   -    state: DELETE_ONLY
-  -  - column:
-  -      defaultExpr: unique_rowid()
-  -      hidden: true
-  -      id: 2
-  -      name: crdb_internal_column_2_name_placeholder
-  -      nullable: true
-  -      type:
-  -        family: IntFamily
-  -        oid: 20
-  -        width: 64
-  -    direction: DROP
-  -    mutationId: 1
-       state: WRITE_ONLY
+  +    state: WRITE_ONLY
      name: t
+     nextColumnId: 3
   ...
      parentId: 100
      primaryIndex:
@@ -931,17 +913,17 @@ upsert descriptor #104
   -    - crdb_internal_column_2_name_placeholder
   +    storeColumnNames: []
        unique: true
-       vecConfig: {}
+       version: 4
   ...
        time: {}
      unexposedParentSchemaId: 101
   -  version: "12"
   +  version: "13"
 persist all catalog changes to storage
-update progress of schema change job #1: "PostCommitNonRevertiblePhase stage 3 of 5 with 3 MutationType ops pending"
+update progress of schema change job #1: "PostCommitNonRevertiblePhase stage 3 of 4 with 3 MutationType ops pending"
 commit transaction #19
 begin transaction #20
-## PostCommitNonRevertiblePhase stage 3 of 5 with 5 MutationType ops
+## PostCommitNonRevertiblePhase stage 3 of 4 with 5 MutationType ops
 upsert descriptor #104
   ...
          version: 4
@@ -956,12 +938,38 @@ upsert descriptor #104
   -  version: "13"
   +  version: "14"
 persist all catalog changes to storage
-update progress of schema change job #1: "PostCommitNonRevertiblePhase stage 4 of 5 with 7 MutationType ops pending"
+update progress of schema change job #1: "PostCommitNonRevertiblePhase stage 4 of 4 with 7 MutationType ops pending"
 commit transaction #20
 begin transaction #21
-## PostCommitNonRevertiblePhase stage 4 of 5 with 9 MutationType ops
+## PostCommitNonRevertiblePhase stage 4 of 4 with 9 MutationType ops
 upsert descriptor #104
   ...
+     createAsOfTime:
+       wallTime: "1640995200000000000"
+  -  declarativeSchemaChangerState:
+  -    authorization:
+  -      userName: root
+  -    currentStatuses: <redacted>
+  -    jobId: "1"
+  -    nameMapping:
+  -      columns:
+  -        "1": a
+  -        "4294967294": tableoid
+  -        "4294967295": crdb_internal_mvcc_timestamp
+  -      families:
+  -        "0": primary
+  -      id: 104
+  -      indexes:
+  -        "4": t_pkey
+  -      name: t
+  -    relevantStatements:
+  -    - statement:
+  -        redactedStatement: ALTER TABLE ‹defaultdb›.‹public›.‹t› ADD PRIMARY KEY (‹a›)
+  -        statement: ALTER TABLE t ADD PRIMARY KEY (a)
+  -        statementTag: ALTER TABLE
+  -    targetRanks: <redacted>
+  -    targets: <redacted>
+     families:
      - columnIds:
        - 1
   -    - 2
@@ -1010,7 +1018,6 @@ upsert descriptor #104
   -      storeColumnNames:
   -      - crdb_internal_column_2_name_placeholder
   -      unique: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -1025,55 +1032,12 @@ upsert descriptor #104
 persist all catalog changes to storage
 create job #2 (non-cancelable: true): "GC for ALTER TABLE defaultdb.public.t ADD PRIMARY KEY (a)"
   descriptor IDs: [104]
-update progress of schema change job #1: "PostCommitNonRevertiblePhase stage 5 of 5 with 1 MutationType op pending"
-commit transaction #21
-notified job registry to adopt jobs: [2]
-begin transaction #22
-## PostCommitNonRevertiblePhase stage 5 of 5 with 3 MutationType ops
-upsert descriptor #104
-  ...
-     createAsOfTime:
-       wallTime: "1640995200000000000"
-  -  declarativeSchemaChangerState:
-  -    authorization:
-  -      userName: root
-  -    currentStatuses: <redacted>
-  -    jobId: "1"
-  -    nameMapping:
-  -      columns:
-  -        "1": a
-  -        "4294967292": crdb_internal_origin_timestamp
-  -        "4294967293": crdb_internal_origin_id
-  -        "4294967294": tableoid
-  -        "4294967295": crdb_internal_mvcc_timestamp
-  -      families:
-  -        "0": primary
-  -      id: 104
-  -      indexes:
-  -        "4": t_pkey
-  -      name: t
-  -    relevantStatements:
-  -    - statement:
-  -        redactedStatement: ALTER TABLE ‹defaultdb›.‹public›.‹t› ADD PRIMARY KEY (‹a›)
-  -        statement: ALTER TABLE t ADD PRIMARY KEY (a)
-  -        statementTag: ALTER TABLE
-  -    targetRanks: <redacted>
-  -    targets: <redacted>
-     families:
-     - columnIds:
-  ...
-     replacementOf:
-       time: {}
-  +  schemaLocked: true
-     unexposedParentSchemaId: 101
-  -  version: "15"
-  +  version: "16"
-persist all catalog changes to storage
 update progress of schema change job #1: "all stages completed"
 set schema change job #1 to non-cancellable
 updated schema change job #1 descriptor IDs to []
 write *eventpb.FinishSchemaChange to event log:
   sc:
     descriptorId: 104
-commit transaction #22
+commit transaction #21
+notified job registry to adopt jobs: [2]
 # end PostCommitPhase

@@ -195,43 +195,6 @@ func (c *ElementCollection[E]) FilterColumnComment() *ElementCollection[*ColumnC
 	return (*ElementCollection[*ColumnComment])(ret)
 }
 
-func (e ColumnComputeExpression) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_ColumnComputeExpression) Element() Element {
-	return e.ColumnComputeExpression
-}
-
-// ForEachColumnComputeExpression iterates over elements of type ColumnComputeExpression.
-// Deprecated
-func ForEachColumnComputeExpression(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *ColumnComputeExpression),
-) {
-  c.FilterColumnComputeExpression().ForEach(fn)
-}
-
-// FindColumnComputeExpression finds the first element of type ColumnComputeExpression.
-// Deprecated
-func FindColumnComputeExpression(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *ColumnComputeExpression) {
-	if tc := c.FilterColumnComputeExpression(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*ColumnComputeExpression)
-	}
-	return current, target, element
-}
-
-// ColumnComputeExpressionElements filters elements of type ColumnComputeExpression.
-func (c *ElementCollection[E]) FilterColumnComputeExpression() *ElementCollection[*ColumnComputeExpression] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*ColumnComputeExpression)
-		return ok
-	})
-	return (*ElementCollection[*ColumnComputeExpression])(ret)
-}
-
 func (e ColumnDefaultExpression) element() {}
 
 // Element implements ElementGetter.
@@ -824,43 +787,6 @@ func (c *ElementCollection[E]) FilterDatabaseRoleSetting() *ElementCollection[*D
 	return (*ElementCollection[*DatabaseRoleSetting])(ret)
 }
 
-func (e DatabaseZoneConfig) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_DatabaseZoneConfig) Element() Element {
-	return e.DatabaseZoneConfig
-}
-
-// ForEachDatabaseZoneConfig iterates over elements of type DatabaseZoneConfig.
-// Deprecated
-func ForEachDatabaseZoneConfig(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *DatabaseZoneConfig),
-) {
-  c.FilterDatabaseZoneConfig().ForEach(fn)
-}
-
-// FindDatabaseZoneConfig finds the first element of type DatabaseZoneConfig.
-// Deprecated
-func FindDatabaseZoneConfig(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *DatabaseZoneConfig) {
-	if tc := c.FilterDatabaseZoneConfig(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*DatabaseZoneConfig)
-	}
-	return current, target, element
-}
-
-// DatabaseZoneConfigElements filters elements of type DatabaseZoneConfig.
-func (c *ElementCollection[E]) FilterDatabaseZoneConfig() *ElementCollection[*DatabaseZoneConfig] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*DatabaseZoneConfig)
-		return ok
-	})
-	return (*ElementCollection[*DatabaseZoneConfig])(ret)
-}
-
 func (e EnumType) element() {}
 
 // Element implements ElementGetter.
@@ -1194,41 +1120,41 @@ func (c *ElementCollection[E]) FilterFunctionNullInputBehavior() *ElementCollect
 	return (*ElementCollection[*FunctionNullInputBehavior])(ret)
 }
 
-func (e FunctionSecurity) element() {}
+func (e FunctionParamDefaultExpression) element() {}
 
 // Element implements ElementGetter.
-func (e * ElementProto_FunctionSecurity) Element() Element {
-	return e.FunctionSecurity
+func (e * ElementProto_FunctionParamDefaultExpression) Element() Element {
+	return e.FunctionParamDefaultExpression
 }
 
-// ForEachFunctionSecurity iterates over elements of type FunctionSecurity.
+// ForEachFunctionParamDefaultExpression iterates over elements of type FunctionParamDefaultExpression.
 // Deprecated
-func ForEachFunctionSecurity(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *FunctionSecurity),
+func ForEachFunctionParamDefaultExpression(
+	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *FunctionParamDefaultExpression),
 ) {
-  c.FilterFunctionSecurity().ForEach(fn)
+  c.FilterFunctionParamDefaultExpression().ForEach(fn)
 }
 
-// FindFunctionSecurity finds the first element of type FunctionSecurity.
+// FindFunctionParamDefaultExpression finds the first element of type FunctionParamDefaultExpression.
 // Deprecated
-func FindFunctionSecurity(
+func FindFunctionParamDefaultExpression(
 	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *FunctionSecurity) {
-	if tc := c.FilterFunctionSecurity(); !tc.IsEmpty() {
+) (current Status, target TargetStatus, element *FunctionParamDefaultExpression) {
+	if tc := c.FilterFunctionParamDefaultExpression(); !tc.IsEmpty() {
 		var e Element
 		current, target, e = tc.Get(0)
-		element = e.(*FunctionSecurity)
+		element = e.(*FunctionParamDefaultExpression)
 	}
 	return current, target, element
 }
 
-// FunctionSecurityElements filters elements of type FunctionSecurity.
-func (c *ElementCollection[E]) FilterFunctionSecurity() *ElementCollection[*FunctionSecurity] {
+// FunctionParamDefaultExpressionElements filters elements of type FunctionParamDefaultExpression.
+func (c *ElementCollection[E]) FilterFunctionParamDefaultExpression() *ElementCollection[*FunctionParamDefaultExpression] {
 	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*FunctionSecurity)
+		_, ok := e.(*FunctionParamDefaultExpression)
 		return ok
 	})
-	return (*ElementCollection[*FunctionSecurity])(ret)
+	return (*ElementCollection[*FunctionParamDefaultExpression])(ret)
 }
 
 func (e FunctionVolatility) element() {}
@@ -1490,80 +1416,6 @@ func (c *ElementCollection[E]) FilterIndexZoneConfig() *ElementCollection[*Index
 	return (*ElementCollection[*IndexZoneConfig])(ret)
 }
 
-func (e LDRJobIDs) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_LDRJobIDs) Element() Element {
-	return e.LDRJobIDs
-}
-
-// ForEachLDRJobIDs iterates over elements of type LDRJobIDs.
-// Deprecated
-func ForEachLDRJobIDs(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *LDRJobIDs),
-) {
-  c.FilterLDRJobIDs().ForEach(fn)
-}
-
-// FindLDRJobIDs finds the first element of type LDRJobIDs.
-// Deprecated
-func FindLDRJobIDs(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *LDRJobIDs) {
-	if tc := c.FilterLDRJobIDs(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*LDRJobIDs)
-	}
-	return current, target, element
-}
-
-// LDRJobIDsElements filters elements of type LDRJobIDs.
-func (c *ElementCollection[E]) FilterLDRJobIDs() *ElementCollection[*LDRJobIDs] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*LDRJobIDs)
-		return ok
-	})
-	return (*ElementCollection[*LDRJobIDs])(ret)
-}
-
-func (e NamedRangeZoneConfig) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_NamedRangeZoneConfig) Element() Element {
-	return e.NamedRangeZoneConfig
-}
-
-// ForEachNamedRangeZoneConfig iterates over elements of type NamedRangeZoneConfig.
-// Deprecated
-func ForEachNamedRangeZoneConfig(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *NamedRangeZoneConfig),
-) {
-  c.FilterNamedRangeZoneConfig().ForEach(fn)
-}
-
-// FindNamedRangeZoneConfig finds the first element of type NamedRangeZoneConfig.
-// Deprecated
-func FindNamedRangeZoneConfig(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *NamedRangeZoneConfig) {
-	if tc := c.FilterNamedRangeZoneConfig(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*NamedRangeZoneConfig)
-	}
-	return current, target, element
-}
-
-// NamedRangeZoneConfigElements filters elements of type NamedRangeZoneConfig.
-func (c *ElementCollection[E]) FilterNamedRangeZoneConfig() *ElementCollection[*NamedRangeZoneConfig] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*NamedRangeZoneConfig)
-		return ok
-	})
-	return (*ElementCollection[*NamedRangeZoneConfig])(ret)
-}
-
 func (e Namespace) element() {}
 
 // Element implements ElementGetter.
@@ -1638,265 +1490,6 @@ func (c *ElementCollection[E]) FilterOwner() *ElementCollection[*Owner] {
 	return (*ElementCollection[*Owner])(ret)
 }
 
-func (e PartitionZoneConfig) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_PartitionZoneConfig) Element() Element {
-	return e.PartitionZoneConfig
-}
-
-// ForEachPartitionZoneConfig iterates over elements of type PartitionZoneConfig.
-// Deprecated
-func ForEachPartitionZoneConfig(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *PartitionZoneConfig),
-) {
-  c.FilterPartitionZoneConfig().ForEach(fn)
-}
-
-// FindPartitionZoneConfig finds the first element of type PartitionZoneConfig.
-// Deprecated
-func FindPartitionZoneConfig(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *PartitionZoneConfig) {
-	if tc := c.FilterPartitionZoneConfig(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*PartitionZoneConfig)
-	}
-	return current, target, element
-}
-
-// PartitionZoneConfigElements filters elements of type PartitionZoneConfig.
-func (c *ElementCollection[E]) FilterPartitionZoneConfig() *ElementCollection[*PartitionZoneConfig] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*PartitionZoneConfig)
-		return ok
-	})
-	return (*ElementCollection[*PartitionZoneConfig])(ret)
-}
-
-func (e Policy) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_Policy) Element() Element {
-	return e.Policy
-}
-
-// ForEachPolicy iterates over elements of type Policy.
-// Deprecated
-func ForEachPolicy(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *Policy),
-) {
-  c.FilterPolicy().ForEach(fn)
-}
-
-// FindPolicy finds the first element of type Policy.
-// Deprecated
-func FindPolicy(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *Policy) {
-	if tc := c.FilterPolicy(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*Policy)
-	}
-	return current, target, element
-}
-
-// PolicyElements filters elements of type Policy.
-func (c *ElementCollection[E]) FilterPolicy() *ElementCollection[*Policy] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*Policy)
-		return ok
-	})
-	return (*ElementCollection[*Policy])(ret)
-}
-
-func (e PolicyDeps) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_PolicyDeps) Element() Element {
-	return e.PolicyDeps
-}
-
-// ForEachPolicyDeps iterates over elements of type PolicyDeps.
-// Deprecated
-func ForEachPolicyDeps(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *PolicyDeps),
-) {
-  c.FilterPolicyDeps().ForEach(fn)
-}
-
-// FindPolicyDeps finds the first element of type PolicyDeps.
-// Deprecated
-func FindPolicyDeps(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *PolicyDeps) {
-	if tc := c.FilterPolicyDeps(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*PolicyDeps)
-	}
-	return current, target, element
-}
-
-// PolicyDepsElements filters elements of type PolicyDeps.
-func (c *ElementCollection[E]) FilterPolicyDeps() *ElementCollection[*PolicyDeps] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*PolicyDeps)
-		return ok
-	})
-	return (*ElementCollection[*PolicyDeps])(ret)
-}
-
-func (e PolicyName) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_PolicyName) Element() Element {
-	return e.PolicyName
-}
-
-// ForEachPolicyName iterates over elements of type PolicyName.
-// Deprecated
-func ForEachPolicyName(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *PolicyName),
-) {
-  c.FilterPolicyName().ForEach(fn)
-}
-
-// FindPolicyName finds the first element of type PolicyName.
-// Deprecated
-func FindPolicyName(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *PolicyName) {
-	if tc := c.FilterPolicyName(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*PolicyName)
-	}
-	return current, target, element
-}
-
-// PolicyNameElements filters elements of type PolicyName.
-func (c *ElementCollection[E]) FilterPolicyName() *ElementCollection[*PolicyName] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*PolicyName)
-		return ok
-	})
-	return (*ElementCollection[*PolicyName])(ret)
-}
-
-func (e PolicyRole) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_PolicyRole) Element() Element {
-	return e.PolicyRole
-}
-
-// ForEachPolicyRole iterates over elements of type PolicyRole.
-// Deprecated
-func ForEachPolicyRole(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *PolicyRole),
-) {
-  c.FilterPolicyRole().ForEach(fn)
-}
-
-// FindPolicyRole finds the first element of type PolicyRole.
-// Deprecated
-func FindPolicyRole(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *PolicyRole) {
-	if tc := c.FilterPolicyRole(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*PolicyRole)
-	}
-	return current, target, element
-}
-
-// PolicyRoleElements filters elements of type PolicyRole.
-func (c *ElementCollection[E]) FilterPolicyRole() *ElementCollection[*PolicyRole] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*PolicyRole)
-		return ok
-	})
-	return (*ElementCollection[*PolicyRole])(ret)
-}
-
-func (e PolicyUsingExpr) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_PolicyUsingExpr) Element() Element {
-	return e.PolicyUsingExpr
-}
-
-// ForEachPolicyUsingExpr iterates over elements of type PolicyUsingExpr.
-// Deprecated
-func ForEachPolicyUsingExpr(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *PolicyUsingExpr),
-) {
-  c.FilterPolicyUsingExpr().ForEach(fn)
-}
-
-// FindPolicyUsingExpr finds the first element of type PolicyUsingExpr.
-// Deprecated
-func FindPolicyUsingExpr(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *PolicyUsingExpr) {
-	if tc := c.FilterPolicyUsingExpr(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*PolicyUsingExpr)
-	}
-	return current, target, element
-}
-
-// PolicyUsingExprElements filters elements of type PolicyUsingExpr.
-func (c *ElementCollection[E]) FilterPolicyUsingExpr() *ElementCollection[*PolicyUsingExpr] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*PolicyUsingExpr)
-		return ok
-	})
-	return (*ElementCollection[*PolicyUsingExpr])(ret)
-}
-
-func (e PolicyWithCheckExpr) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_PolicyWithCheckExpr) Element() Element {
-	return e.PolicyWithCheckExpr
-}
-
-// ForEachPolicyWithCheckExpr iterates over elements of type PolicyWithCheckExpr.
-// Deprecated
-func ForEachPolicyWithCheckExpr(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *PolicyWithCheckExpr),
-) {
-  c.FilterPolicyWithCheckExpr().ForEach(fn)
-}
-
-// FindPolicyWithCheckExpr finds the first element of type PolicyWithCheckExpr.
-// Deprecated
-func FindPolicyWithCheckExpr(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *PolicyWithCheckExpr) {
-	if tc := c.FilterPolicyWithCheckExpr(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*PolicyWithCheckExpr)
-	}
-	return current, target, element
-}
-
-// PolicyWithCheckExprElements filters elements of type PolicyWithCheckExpr.
-func (c *ElementCollection[E]) FilterPolicyWithCheckExpr() *ElementCollection[*PolicyWithCheckExpr] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*PolicyWithCheckExpr)
-		return ok
-	})
-	return (*ElementCollection[*PolicyWithCheckExpr])(ret)
-}
-
 func (e PrimaryIndex) element() {}
 
 // Element implements ElementGetter.
@@ -1932,80 +1525,6 @@ func (c *ElementCollection[E]) FilterPrimaryIndex() *ElementCollection[*PrimaryI
 		return ok
 	})
 	return (*ElementCollection[*PrimaryIndex])(ret)
-}
-
-func (e RowLevelSecurityEnabled) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_RowLevelSecurityEnabled) Element() Element {
-	return e.RowLevelSecurityEnabled
-}
-
-// ForEachRowLevelSecurityEnabled iterates over elements of type RowLevelSecurityEnabled.
-// Deprecated
-func ForEachRowLevelSecurityEnabled(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *RowLevelSecurityEnabled),
-) {
-  c.FilterRowLevelSecurityEnabled().ForEach(fn)
-}
-
-// FindRowLevelSecurityEnabled finds the first element of type RowLevelSecurityEnabled.
-// Deprecated
-func FindRowLevelSecurityEnabled(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *RowLevelSecurityEnabled) {
-	if tc := c.FilterRowLevelSecurityEnabled(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*RowLevelSecurityEnabled)
-	}
-	return current, target, element
-}
-
-// RowLevelSecurityEnabledElements filters elements of type RowLevelSecurityEnabled.
-func (c *ElementCollection[E]) FilterRowLevelSecurityEnabled() *ElementCollection[*RowLevelSecurityEnabled] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*RowLevelSecurityEnabled)
-		return ok
-	})
-	return (*ElementCollection[*RowLevelSecurityEnabled])(ret)
-}
-
-func (e RowLevelSecurityForced) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_RowLevelSecurityForced) Element() Element {
-	return e.RowLevelSecurityForced
-}
-
-// ForEachRowLevelSecurityForced iterates over elements of type RowLevelSecurityForced.
-// Deprecated
-func ForEachRowLevelSecurityForced(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *RowLevelSecurityForced),
-) {
-  c.FilterRowLevelSecurityForced().ForEach(fn)
-}
-
-// FindRowLevelSecurityForced finds the first element of type RowLevelSecurityForced.
-// Deprecated
-func FindRowLevelSecurityForced(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *RowLevelSecurityForced) {
-	if tc := c.FilterRowLevelSecurityForced(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*RowLevelSecurityForced)
-	}
-	return current, target, element
-}
-
-// RowLevelSecurityForcedElements filters elements of type RowLevelSecurityForced.
-func (c *ElementCollection[E]) FilterRowLevelSecurityForced() *ElementCollection[*RowLevelSecurityForced] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*RowLevelSecurityForced)
-		return ok
-	})
-	return (*ElementCollection[*RowLevelSecurityForced])(ret)
 }
 
 func (e RowLevelTTL) element() {}
@@ -2785,376 +2304,6 @@ func (c *ElementCollection[E]) FilterTemporaryIndex() *ElementCollection[*Tempor
 	return (*ElementCollection[*TemporaryIndex])(ret)
 }
 
-func (e Trigger) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_Trigger) Element() Element {
-	return e.Trigger
-}
-
-// ForEachTrigger iterates over elements of type Trigger.
-// Deprecated
-func ForEachTrigger(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *Trigger),
-) {
-  c.FilterTrigger().ForEach(fn)
-}
-
-// FindTrigger finds the first element of type Trigger.
-// Deprecated
-func FindTrigger(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *Trigger) {
-	if tc := c.FilterTrigger(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*Trigger)
-	}
-	return current, target, element
-}
-
-// TriggerElements filters elements of type Trigger.
-func (c *ElementCollection[E]) FilterTrigger() *ElementCollection[*Trigger] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*Trigger)
-		return ok
-	})
-	return (*ElementCollection[*Trigger])(ret)
-}
-
-func (e TriggerDeps) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_TriggerDeps) Element() Element {
-	return e.TriggerDeps
-}
-
-// ForEachTriggerDeps iterates over elements of type TriggerDeps.
-// Deprecated
-func ForEachTriggerDeps(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *TriggerDeps),
-) {
-  c.FilterTriggerDeps().ForEach(fn)
-}
-
-// FindTriggerDeps finds the first element of type TriggerDeps.
-// Deprecated
-func FindTriggerDeps(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *TriggerDeps) {
-	if tc := c.FilterTriggerDeps(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*TriggerDeps)
-	}
-	return current, target, element
-}
-
-// TriggerDepsElements filters elements of type TriggerDeps.
-func (c *ElementCollection[E]) FilterTriggerDeps() *ElementCollection[*TriggerDeps] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*TriggerDeps)
-		return ok
-	})
-	return (*ElementCollection[*TriggerDeps])(ret)
-}
-
-func (e TriggerEnabled) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_TriggerEnabled) Element() Element {
-	return e.TriggerEnabled
-}
-
-// ForEachTriggerEnabled iterates over elements of type TriggerEnabled.
-// Deprecated
-func ForEachTriggerEnabled(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *TriggerEnabled),
-) {
-  c.FilterTriggerEnabled().ForEach(fn)
-}
-
-// FindTriggerEnabled finds the first element of type TriggerEnabled.
-// Deprecated
-func FindTriggerEnabled(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *TriggerEnabled) {
-	if tc := c.FilterTriggerEnabled(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*TriggerEnabled)
-	}
-	return current, target, element
-}
-
-// TriggerEnabledElements filters elements of type TriggerEnabled.
-func (c *ElementCollection[E]) FilterTriggerEnabled() *ElementCollection[*TriggerEnabled] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*TriggerEnabled)
-		return ok
-	})
-	return (*ElementCollection[*TriggerEnabled])(ret)
-}
-
-func (e TriggerEvents) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_TriggerEvents) Element() Element {
-	return e.TriggerEvents
-}
-
-// ForEachTriggerEvents iterates over elements of type TriggerEvents.
-// Deprecated
-func ForEachTriggerEvents(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *TriggerEvents),
-) {
-  c.FilterTriggerEvents().ForEach(fn)
-}
-
-// FindTriggerEvents finds the first element of type TriggerEvents.
-// Deprecated
-func FindTriggerEvents(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *TriggerEvents) {
-	if tc := c.FilterTriggerEvents(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*TriggerEvents)
-	}
-	return current, target, element
-}
-
-// TriggerEventsElements filters elements of type TriggerEvents.
-func (c *ElementCollection[E]) FilterTriggerEvents() *ElementCollection[*TriggerEvents] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*TriggerEvents)
-		return ok
-	})
-	return (*ElementCollection[*TriggerEvents])(ret)
-}
-
-func (e TriggerFunctionCall) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_TriggerFunctionCall) Element() Element {
-	return e.TriggerFunctionCall
-}
-
-// ForEachTriggerFunctionCall iterates over elements of type TriggerFunctionCall.
-// Deprecated
-func ForEachTriggerFunctionCall(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *TriggerFunctionCall),
-) {
-  c.FilterTriggerFunctionCall().ForEach(fn)
-}
-
-// FindTriggerFunctionCall finds the first element of type TriggerFunctionCall.
-// Deprecated
-func FindTriggerFunctionCall(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *TriggerFunctionCall) {
-	if tc := c.FilterTriggerFunctionCall(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*TriggerFunctionCall)
-	}
-	return current, target, element
-}
-
-// TriggerFunctionCallElements filters elements of type TriggerFunctionCall.
-func (c *ElementCollection[E]) FilterTriggerFunctionCall() *ElementCollection[*TriggerFunctionCall] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*TriggerFunctionCall)
-		return ok
-	})
-	return (*ElementCollection[*TriggerFunctionCall])(ret)
-}
-
-func (e TriggerName) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_TriggerName) Element() Element {
-	return e.TriggerName
-}
-
-// ForEachTriggerName iterates over elements of type TriggerName.
-// Deprecated
-func ForEachTriggerName(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *TriggerName),
-) {
-  c.FilterTriggerName().ForEach(fn)
-}
-
-// FindTriggerName finds the first element of type TriggerName.
-// Deprecated
-func FindTriggerName(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *TriggerName) {
-	if tc := c.FilterTriggerName(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*TriggerName)
-	}
-	return current, target, element
-}
-
-// TriggerNameElements filters elements of type TriggerName.
-func (c *ElementCollection[E]) FilterTriggerName() *ElementCollection[*TriggerName] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*TriggerName)
-		return ok
-	})
-	return (*ElementCollection[*TriggerName])(ret)
-}
-
-func (e TriggerTiming) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_TriggerTiming) Element() Element {
-	return e.TriggerTiming
-}
-
-// ForEachTriggerTiming iterates over elements of type TriggerTiming.
-// Deprecated
-func ForEachTriggerTiming(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *TriggerTiming),
-) {
-  c.FilterTriggerTiming().ForEach(fn)
-}
-
-// FindTriggerTiming finds the first element of type TriggerTiming.
-// Deprecated
-func FindTriggerTiming(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *TriggerTiming) {
-	if tc := c.FilterTriggerTiming(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*TriggerTiming)
-	}
-	return current, target, element
-}
-
-// TriggerTimingElements filters elements of type TriggerTiming.
-func (c *ElementCollection[E]) FilterTriggerTiming() *ElementCollection[*TriggerTiming] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*TriggerTiming)
-		return ok
-	})
-	return (*ElementCollection[*TriggerTiming])(ret)
-}
-
-func (e TriggerTransition) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_TriggerTransition) Element() Element {
-	return e.TriggerTransition
-}
-
-// ForEachTriggerTransition iterates over elements of type TriggerTransition.
-// Deprecated
-func ForEachTriggerTransition(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *TriggerTransition),
-) {
-  c.FilterTriggerTransition().ForEach(fn)
-}
-
-// FindTriggerTransition finds the first element of type TriggerTransition.
-// Deprecated
-func FindTriggerTransition(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *TriggerTransition) {
-	if tc := c.FilterTriggerTransition(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*TriggerTransition)
-	}
-	return current, target, element
-}
-
-// TriggerTransitionElements filters elements of type TriggerTransition.
-func (c *ElementCollection[E]) FilterTriggerTransition() *ElementCollection[*TriggerTransition] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*TriggerTransition)
-		return ok
-	})
-	return (*ElementCollection[*TriggerTransition])(ret)
-}
-
-func (e TriggerWhen) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_TriggerWhen) Element() Element {
-	return e.TriggerWhen
-}
-
-// ForEachTriggerWhen iterates over elements of type TriggerWhen.
-// Deprecated
-func ForEachTriggerWhen(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *TriggerWhen),
-) {
-  c.FilterTriggerWhen().ForEach(fn)
-}
-
-// FindTriggerWhen finds the first element of type TriggerWhen.
-// Deprecated
-func FindTriggerWhen(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *TriggerWhen) {
-	if tc := c.FilterTriggerWhen(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*TriggerWhen)
-	}
-	return current, target, element
-}
-
-// TriggerWhenElements filters elements of type TriggerWhen.
-func (c *ElementCollection[E]) FilterTriggerWhen() *ElementCollection[*TriggerWhen] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*TriggerWhen)
-		return ok
-	})
-	return (*ElementCollection[*TriggerWhen])(ret)
-}
-
-func (e TypeComment) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_TypeComment) Element() Element {
-	return e.TypeComment
-}
-
-// ForEachTypeComment iterates over elements of type TypeComment.
-// Deprecated
-func ForEachTypeComment(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *TypeComment),
-) {
-  c.FilterTypeComment().ForEach(fn)
-}
-
-// FindTypeComment finds the first element of type TypeComment.
-// Deprecated
-func FindTypeComment(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *TypeComment) {
-	if tc := c.FilterTypeComment(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*TypeComment)
-	}
-	return current, target, element
-}
-
-// TypeCommentElements filters elements of type TypeComment.
-func (c *ElementCollection[E]) FilterTypeComment() *ElementCollection[*TypeComment] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*TypeComment)
-		return ok
-	})
-	return (*ElementCollection[*TypeComment])(ret)
-}
-
 func (e UniqueWithoutIndexConstraint) element() {}
 
 // Element implements ElementGetter.
@@ -3318,8 +2467,6 @@ func (e* ElementProto) SetElement(element Element) {
 			e.ElementOneOf = &ElementProto_Column{ Column: t}
 		case *ColumnComment:
 			e.ElementOneOf = &ElementProto_ColumnComment{ ColumnComment: t}
-		case *ColumnComputeExpression:
-			e.ElementOneOf = &ElementProto_ColumnComputeExpression{ ColumnComputeExpression: t}
 		case *ColumnDefaultExpression:
 			e.ElementOneOf = &ElementProto_ColumnDefaultExpression{ ColumnDefaultExpression: t}
 		case *ColumnFamily:
@@ -3352,8 +2499,6 @@ func (e* ElementProto) SetElement(element Element) {
 			e.ElementOneOf = &ElementProto_DatabaseRegionConfig{ DatabaseRegionConfig: t}
 		case *DatabaseRoleSetting:
 			e.ElementOneOf = &ElementProto_DatabaseRoleSetting{ DatabaseRoleSetting: t}
-		case *DatabaseZoneConfig:
-			e.ElementOneOf = &ElementProto_DatabaseZoneConfig{ DatabaseZoneConfig: t}
 		case *EnumType:
 			e.ElementOneOf = &ElementProto_EnumType{ EnumType: t}
 		case *EnumTypeValue:
@@ -3372,8 +2517,8 @@ func (e* ElementProto) SetElement(element Element) {
 			e.ElementOneOf = &ElementProto_FunctionName{ FunctionName: t}
 		case *FunctionNullInputBehavior:
 			e.ElementOneOf = &ElementProto_FunctionNullInputBehavior{ FunctionNullInputBehavior: t}
-		case *FunctionSecurity:
-			e.ElementOneOf = &ElementProto_FunctionSecurity{ FunctionSecurity: t}
+		case *FunctionParamDefaultExpression:
+			e.ElementOneOf = &ElementProto_FunctionParamDefaultExpression{ FunctionParamDefaultExpression: t}
 		case *FunctionVolatility:
 			e.ElementOneOf = &ElementProto_FunctionVolatility{ FunctionVolatility: t}
 		case *IndexColumn:
@@ -3388,34 +2533,12 @@ func (e* ElementProto) SetElement(element Element) {
 			e.ElementOneOf = &ElementProto_IndexPartitioning{ IndexPartitioning: t}
 		case *IndexZoneConfig:
 			e.ElementOneOf = &ElementProto_IndexZoneConfig{ IndexZoneConfig: t}
-		case *LDRJobIDs:
-			e.ElementOneOf = &ElementProto_LDRJobIDs{ LDRJobIDs: t}
-		case *NamedRangeZoneConfig:
-			e.ElementOneOf = &ElementProto_NamedRangeZoneConfig{ NamedRangeZoneConfig: t}
 		case *Namespace:
 			e.ElementOneOf = &ElementProto_Namespace{ Namespace: t}
 		case *Owner:
 			e.ElementOneOf = &ElementProto_Owner{ Owner: t}
-		case *PartitionZoneConfig:
-			e.ElementOneOf = &ElementProto_PartitionZoneConfig{ PartitionZoneConfig: t}
-		case *Policy:
-			e.ElementOneOf = &ElementProto_Policy{ Policy: t}
-		case *PolicyDeps:
-			e.ElementOneOf = &ElementProto_PolicyDeps{ PolicyDeps: t}
-		case *PolicyName:
-			e.ElementOneOf = &ElementProto_PolicyName{ PolicyName: t}
-		case *PolicyRole:
-			e.ElementOneOf = &ElementProto_PolicyRole{ PolicyRole: t}
-		case *PolicyUsingExpr:
-			e.ElementOneOf = &ElementProto_PolicyUsingExpr{ PolicyUsingExpr: t}
-		case *PolicyWithCheckExpr:
-			e.ElementOneOf = &ElementProto_PolicyWithCheckExpr{ PolicyWithCheckExpr: t}
 		case *PrimaryIndex:
 			e.ElementOneOf = &ElementProto_PrimaryIndex{ PrimaryIndex: t}
-		case *RowLevelSecurityEnabled:
-			e.ElementOneOf = &ElementProto_RowLevelSecurityEnabled{ RowLevelSecurityEnabled: t}
-		case *RowLevelSecurityForced:
-			e.ElementOneOf = &ElementProto_RowLevelSecurityForced{ RowLevelSecurityForced: t}
 		case *RowLevelTTL:
 			e.ElementOneOf = &ElementProto_RowLevelTTL{ RowLevelTTL: t}
 		case *Schema:
@@ -3458,26 +2581,6 @@ func (e* ElementProto) SetElement(element Element) {
 			e.ElementOneOf = &ElementProto_TableZoneConfig{ TableZoneConfig: t}
 		case *TemporaryIndex:
 			e.ElementOneOf = &ElementProto_TemporaryIndex{ TemporaryIndex: t}
-		case *Trigger:
-			e.ElementOneOf = &ElementProto_Trigger{ Trigger: t}
-		case *TriggerDeps:
-			e.ElementOneOf = &ElementProto_TriggerDeps{ TriggerDeps: t}
-		case *TriggerEnabled:
-			e.ElementOneOf = &ElementProto_TriggerEnabled{ TriggerEnabled: t}
-		case *TriggerEvents:
-			e.ElementOneOf = &ElementProto_TriggerEvents{ TriggerEvents: t}
-		case *TriggerFunctionCall:
-			e.ElementOneOf = &ElementProto_TriggerFunctionCall{ TriggerFunctionCall: t}
-		case *TriggerName:
-			e.ElementOneOf = &ElementProto_TriggerName{ TriggerName: t}
-		case *TriggerTiming:
-			e.ElementOneOf = &ElementProto_TriggerTiming{ TriggerTiming: t}
-		case *TriggerTransition:
-			e.ElementOneOf = &ElementProto_TriggerTransition{ TriggerTransition: t}
-		case *TriggerWhen:
-			e.ElementOneOf = &ElementProto_TriggerWhen{ TriggerWhen: t}
-		case *TypeComment:
-			e.ElementOneOf = &ElementProto_TypeComment{ TypeComment: t}
 		case *UniqueWithoutIndexConstraint:
 			e.ElementOneOf = &ElementProto_UniqueWithoutIndexConstraint{ UniqueWithoutIndexConstraint: t}
 		case *UniqueWithoutIndexConstraintUnvalidated:
@@ -3497,7 +2600,6 @@ func GetElementOneOfProtos() []interface{} {
 	((*ElementProto_CheckConstraintUnvalidated)(nil)),
 	((*ElementProto_Column)(nil)),
 	((*ElementProto_ColumnComment)(nil)),
-	((*ElementProto_ColumnComputeExpression)(nil)),
 	((*ElementProto_ColumnDefaultExpression)(nil)),
 	((*ElementProto_ColumnFamily)(nil)),
 	((*ElementProto_ColumnName)(nil)),
@@ -3514,7 +2616,6 @@ func GetElementOneOfProtos() []interface{} {
 	((*ElementProto_DatabaseData)(nil)),
 	((*ElementProto_DatabaseRegionConfig)(nil)),
 	((*ElementProto_DatabaseRoleSetting)(nil)),
-	((*ElementProto_DatabaseZoneConfig)(nil)),
 	((*ElementProto_EnumType)(nil)),
 	((*ElementProto_EnumTypeValue)(nil)),
 	((*ElementProto_ForeignKeyConstraint)(nil)),
@@ -3524,7 +2625,7 @@ func GetElementOneOfProtos() []interface{} {
 	((*ElementProto_FunctionLeakProof)(nil)),
 	((*ElementProto_FunctionName)(nil)),
 	((*ElementProto_FunctionNullInputBehavior)(nil)),
-	((*ElementProto_FunctionSecurity)(nil)),
+	((*ElementProto_FunctionParamDefaultExpression)(nil)),
 	((*ElementProto_FunctionVolatility)(nil)),
 	((*ElementProto_IndexColumn)(nil)),
 	((*ElementProto_IndexComment)(nil)),
@@ -3532,20 +2633,9 @@ func GetElementOneOfProtos() []interface{} {
 	((*ElementProto_IndexName)(nil)),
 	((*ElementProto_IndexPartitioning)(nil)),
 	((*ElementProto_IndexZoneConfig)(nil)),
-	((*ElementProto_LDRJobIDs)(nil)),
-	((*ElementProto_NamedRangeZoneConfig)(nil)),
 	((*ElementProto_Namespace)(nil)),
 	((*ElementProto_Owner)(nil)),
-	((*ElementProto_PartitionZoneConfig)(nil)),
-	((*ElementProto_Policy)(nil)),
-	((*ElementProto_PolicyDeps)(nil)),
-	((*ElementProto_PolicyName)(nil)),
-	((*ElementProto_PolicyRole)(nil)),
-	((*ElementProto_PolicyUsingExpr)(nil)),
-	((*ElementProto_PolicyWithCheckExpr)(nil)),
 	((*ElementProto_PrimaryIndex)(nil)),
-	((*ElementProto_RowLevelSecurityEnabled)(nil)),
-	((*ElementProto_RowLevelSecurityForced)(nil)),
 	((*ElementProto_RowLevelTTL)(nil)),
 	((*ElementProto_Schema)(nil)),
 	((*ElementProto_SchemaChild)(nil)),
@@ -3567,16 +2657,6 @@ func GetElementOneOfProtos() []interface{} {
 	((*ElementProto_TableSchemaLocked)(nil)),
 	((*ElementProto_TableZoneConfig)(nil)),
 	((*ElementProto_TemporaryIndex)(nil)),
-	((*ElementProto_Trigger)(nil)),
-	((*ElementProto_TriggerDeps)(nil)),
-	((*ElementProto_TriggerEnabled)(nil)),
-	((*ElementProto_TriggerEvents)(nil)),
-	((*ElementProto_TriggerFunctionCall)(nil)),
-	((*ElementProto_TriggerName)(nil)),
-	((*ElementProto_TriggerTiming)(nil)),
-	((*ElementProto_TriggerTransition)(nil)),
-	((*ElementProto_TriggerWhen)(nil)),
-	((*ElementProto_TypeComment)(nil)),
 	((*ElementProto_UniqueWithoutIndexConstraint)(nil)),
 	((*ElementProto_UniqueWithoutIndexConstraintUnvalidated)(nil)),
 	((*ElementProto_UserPrivileges)(nil)),
@@ -3593,7 +2673,6 @@ func GetElementTypes() []interface{} {
 	((*CheckConstraintUnvalidated)(nil)),
 	((*Column)(nil)),
 	((*ColumnComment)(nil)),
-	((*ColumnComputeExpression)(nil)),
 	((*ColumnDefaultExpression)(nil)),
 	((*ColumnFamily)(nil)),
 	((*ColumnName)(nil)),
@@ -3610,7 +2689,6 @@ func GetElementTypes() []interface{} {
 	((*DatabaseData)(nil)),
 	((*DatabaseRegionConfig)(nil)),
 	((*DatabaseRoleSetting)(nil)),
-	((*DatabaseZoneConfig)(nil)),
 	((*EnumType)(nil)),
 	((*EnumTypeValue)(nil)),
 	((*ForeignKeyConstraint)(nil)),
@@ -3620,7 +2698,7 @@ func GetElementTypes() []interface{} {
 	((*FunctionLeakProof)(nil)),
 	((*FunctionName)(nil)),
 	((*FunctionNullInputBehavior)(nil)),
-	((*FunctionSecurity)(nil)),
+	((*FunctionParamDefaultExpression)(nil)),
 	((*FunctionVolatility)(nil)),
 	((*IndexColumn)(nil)),
 	((*IndexComment)(nil)),
@@ -3628,20 +2706,9 @@ func GetElementTypes() []interface{} {
 	((*IndexName)(nil)),
 	((*IndexPartitioning)(nil)),
 	((*IndexZoneConfig)(nil)),
-	((*LDRJobIDs)(nil)),
-	((*NamedRangeZoneConfig)(nil)),
 	((*Namespace)(nil)),
 	((*Owner)(nil)),
-	((*PartitionZoneConfig)(nil)),
-	((*Policy)(nil)),
-	((*PolicyDeps)(nil)),
-	((*PolicyName)(nil)),
-	((*PolicyRole)(nil)),
-	((*PolicyUsingExpr)(nil)),
-	((*PolicyWithCheckExpr)(nil)),
 	((*PrimaryIndex)(nil)),
-	((*RowLevelSecurityEnabled)(nil)),
-	((*RowLevelSecurityForced)(nil)),
 	((*RowLevelTTL)(nil)),
 	((*Schema)(nil)),
 	((*SchemaChild)(nil)),
@@ -3663,16 +2730,6 @@ func GetElementTypes() []interface{} {
 	((*TableSchemaLocked)(nil)),
 	((*TableZoneConfig)(nil)),
 	((*TemporaryIndex)(nil)),
-	((*Trigger)(nil)),
-	((*TriggerDeps)(nil)),
-	((*TriggerEnabled)(nil)),
-	((*TriggerEvents)(nil)),
-	((*TriggerFunctionCall)(nil)),
-	((*TriggerName)(nil)),
-	((*TriggerTiming)(nil)),
-	((*TriggerTransition)(nil)),
-	((*TriggerWhen)(nil)),
-	((*TypeComment)(nil)),
 	((*UniqueWithoutIndexConstraint)(nil)),
 	((*UniqueWithoutIndexConstraintUnvalidated)(nil)),
 	((*UserPrivileges)(nil)),

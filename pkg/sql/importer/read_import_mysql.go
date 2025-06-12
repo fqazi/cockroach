@@ -33,6 +33,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -88,6 +89,9 @@ func newMysqldumpReader(
 	}
 	res.tables = converters
 	return res, nil
+}
+
+func (m *mysqldumpReader) start(ctx ctxgroup.Group) {
 }
 
 func (m *mysqldumpReader) readFiles(
@@ -517,13 +521,11 @@ func mysqlTableToCockroach(
 		stmt.Defs = append(stmt.Defs, c)
 	}
 
-	var semaCtxPtr *tree.SemaContext
+	semaCtx := tree.MakeSemaContext()
+	semaCtxPtr := &semaCtx
 	// p is nil in some tests.
 	if p != nil && p.SemaCtx() != nil {
 		semaCtxPtr = p.SemaCtx()
-	} else {
-		semaCtx := tree.MakeSemaContext(nil /* resolver */)
-		semaCtxPtr = &semaCtx
 	}
 
 	// Bundle imports do not support user defined types, and so we nil out the

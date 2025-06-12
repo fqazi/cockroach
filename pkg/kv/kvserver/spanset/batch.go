@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/pebble"
@@ -444,12 +443,11 @@ func (s spanSetReader) ScanInternal(
 	ctx context.Context,
 	lower, upper roachpb.Key,
 	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum) error,
+	visitRangeDel func(start []byte, end []byte, seqNum uint64) error,
 	visitRangeKey func(start []byte, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
-	visitExternalFile func(sst *pebble.ExternalFile) error,
 ) error {
-	return s.r.ScanInternal(ctx, lower, upper, visitPointKey, visitRangeDel, visitRangeKey, visitSharedFile, visitExternalFile)
+	return s.r.ScanInternal(ctx, lower, upper, visitPointKey, visitRangeDel, visitRangeKey, visitSharedFile)
 }
 
 func (s spanSetReader) Close() {
@@ -461,11 +459,9 @@ func (s spanSetReader) Closed() bool {
 }
 
 func (s spanSetReader) MVCCIterate(
-	ctx context.Context,
 	start, end roachpb.Key,
 	iterKind storage.MVCCIterKind,
 	keyTypes storage.IterKeyType,
-	readCategory fs.ReadCategory,
 	f func(storage.MVCCKeyValue, storage.MVCCRangeKeyStack) error,
 ) error {
 	if s.spansOnly {
@@ -477,13 +473,13 @@ func (s spanSetReader) MVCCIterate(
 			return err
 		}
 	}
-	return s.r.MVCCIterate(ctx, start, end, iterKind, keyTypes, readCategory, f)
+	return s.r.MVCCIterate(start, end, iterKind, keyTypes, f)
 }
 
 func (s spanSetReader) NewMVCCIterator(
-	ctx context.Context, iterKind storage.MVCCIterKind, opts storage.IterOptions,
+	iterKind storage.MVCCIterKind, opts storage.IterOptions,
 ) (storage.MVCCIterator, error) {
-	mvccIter, err := s.r.NewMVCCIterator(ctx, iterKind, opts)
+	mvccIter, err := s.r.NewMVCCIterator(iterKind, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -493,10 +489,8 @@ func (s spanSetReader) NewMVCCIterator(
 	return NewIteratorAt(mvccIter, s.spans, s.ts), nil
 }
 
-func (s spanSetReader) NewEngineIterator(
-	ctx context.Context, opts storage.IterOptions,
-) (storage.EngineIterator, error) {
-	engineIter, err := s.r.NewEngineIterator(ctx, opts)
+func (s spanSetReader) NewEngineIterator(opts storage.IterOptions) (storage.EngineIterator, error) {
+	engineIter, err := s.r.NewEngineIterator(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -514,8 +508,8 @@ func (s spanSetReader) ConsistentIterators() bool {
 }
 
 // PinEngineStateForIterators implements the storage.Reader interface.
-func (s spanSetReader) PinEngineStateForIterators(readCategory fs.ReadCategory) error {
-	return s.r.PinEngineStateForIterators(readCategory)
+func (s spanSetReader) PinEngineStateForIterators() error {
+	return s.r.PinEngineStateForIterators()
 }
 
 type spanSetWriter struct {
@@ -745,21 +739,9 @@ func makeSpanSetReadWriterAt(rw storage.ReadWriter, spans *SpanSet, ts hlc.Times
 	}
 }
 
-// NewReader returns a storage.Reader that asserts access of the underlying
-// Reader against the given SpanSet at a given timestamp. If zero timestamp is
-// provided, accesses are considered non-MVCC.
-//
-// NewReader clones and does not retain the provided span set.
-func NewReader(r storage.Reader, spans *SpanSet, ts hlc.Timestamp) storage.Reader {
-	spans = addLockTableSpans(spans)
-	return spanSetReader{r: r, spans: spans, ts: ts}
-}
-
 // NewReadWriterAt returns a storage.ReadWriter that asserts access of the
 // underlying ReadWriter against the given SpanSet at a given timestamp.
 // If zero timestamp is provided, accesses are considered non-MVCC.
-//
-// NewReadWriterAt clones and does not retain the provided span set.
 func NewReadWriterAt(rw storage.ReadWriter, spans *SpanSet, ts hlc.Timestamp) storage.ReadWriter {
 	return makeSpanSetReadWriterAt(rw, spans, ts)
 }
@@ -775,20 +757,13 @@ type spanSetBatch struct {
 
 var _ storage.Batch = spanSetBatch{}
 
-func (s spanSetBatch) NewBatchOnlyMVCCIterator(
-	ctx context.Context, opts storage.IterOptions,
-) (storage.MVCCIterator, error) {
-	panic("unimplemented")
-}
-
 func (s spanSetBatch) ScanInternal(
 	ctx context.Context,
 	lower, upper roachpb.Key,
 	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum) error,
+	visitRangeDel func(start []byte, end []byte, seqNum uint64) error,
 	visitRangeKey func(start []byte, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
-	visitExternalFile func(sst *pebble.ExternalFile) error,
 ) error {
 	// Only used on Engine.
 	panic("unimplemented")
@@ -927,4 +902,27 @@ func addLockTableSpans(spans *SpanSet) *SpanSet {
 		withLocks.AddNonMVCC(sa, roachpb.Span{Key: ltKey, EndKey: ltEndKey})
 	})
 	return withLocks
+}
+
+type spanSetEFOS struct {
+	spanSetReader
+	efos storage.EventuallyFileOnlyReader
+}
+
+// NewEventuallyFileOnlySnapshot returns a storage.EventuallyFileOnlyReader that
+// asserts access of the underlying EFOS against the given SpanSet. We only
+// consider span boundaries, associated timestamps are not considered.
+func NewEventuallyFileOnlySnapshot(
+	e storage.EventuallyFileOnlyReader, spans *SpanSet,
+) storage.EventuallyFileOnlyReader {
+	spans = addLockTableSpans(spans)
+	return &spanSetEFOS{
+		spanSetReader: spanSetReader{r: e, spans: spans, spansOnly: true},
+		efos:          e,
+	}
+}
+
+// WaitForFileOnly implements the storage.EventuallyFileOnlyReader interface.
+func (e *spanSetEFOS) WaitForFileOnly(ctx context.Context) error {
+	return e.efos.WaitForFileOnly(ctx)
 }

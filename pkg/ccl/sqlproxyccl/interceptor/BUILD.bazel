@@ -29,7 +29,9 @@ go_test(
         "interceptor_test.go",
         "pg_conn_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":interceptor"],
+    tags = ["ccl_test"],
     deps = [
         "//pkg/ccl/testutilsccl",
         "//pkg/sql/pgwire/pgwirebase",

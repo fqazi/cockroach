@@ -11,7 +11,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/keysbase",
-        "//pkg/util/encoding",
         "//pkg/util/treeprinter",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_redact//:redact",
@@ -22,6 +21,7 @@ go_test(
     name = "inverted_test",
     size = "small",
     srcs = ["expression_test.go"],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
     embed = [":inverted"],
     deps = [

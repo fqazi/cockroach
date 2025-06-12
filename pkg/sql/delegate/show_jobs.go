@@ -15,26 +15,14 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 )
 
-const ageFilter = `(finished IS NULL OR finished > now() - '12h':::interval)`
-
 func constructSelectQuery(n *tree.ShowJobs) string {
 	var baseQuery strings.Builder
-	baseQuery.WriteString(`SELECT job_id, job_type, `)
-	if n.Jobs == nil {
-		baseQuery.WriteString(`CASE WHEN length(description) > 70 THEN `)
-		baseQuery.WriteString(`concat(substr(description, 0, 60)||' … '||right(description, 7)) `)
-		baseQuery.WriteString(`ELSE description END as description, `)
-	} else {
-		baseQuery.WriteString(`description, statement, `)
-	}
-	baseQuery.WriteString(`user_name, status, running_status, `)
-	baseQuery.WriteString(`date_trunc('second', created) as created, date_trunc('second', started) as started, `)
-	baseQuery.WriteString(`date_trunc('second', finished) as finished, date_trunc('second', modified) as modified, `)
-	baseQuery.WriteString(`fraction_completed, error, coordinator_id`)
-
-	if n.Jobs != nil {
-		baseQuery.WriteString(`, trace_id, execution_errors`)
-	}
+	baseQuery.WriteString(`
+SELECT job_id, job_type, description, statement, user_name, status,
+       running_status, created, started, finished, modified,
+       fraction_completed, error, coordinator_id, trace_id, last_run,
+       next_run, num_runs, execution_errors
+`)
 
 	// Check if there are any SHOW JOBS options that we need to add columns for.
 	if n.Options != nil {
@@ -72,9 +60,9 @@ func constructSelectQuery(n *tree.ShowJobs) string {
 
 		// The query intends to present:
 		// - first all the running jobs sorted in order of start time,
-		// - then all completed jobs sorted in order of completion time (no more than 12 hours).
+		// - then all completed jobs sorted in order of completion time.
 		whereClause = fmt.Sprintf(
-			`WHERE %s AND %s`, typePredicate, ageFilter)
+			`WHERE %s AND (finished IS NULL OR finished > now() - '12h':::interval)`, typePredicate)
 		// The "ORDER BY" clause below exploits the fact that all
 		// running jobs have finished = NULL.
 		orderbyClause = `ORDER BY COALESCE(finished, now()) DESC, started DESC`

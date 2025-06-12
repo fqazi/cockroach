@@ -20,10 +20,10 @@ go_library(
         "//pkg/col/typeconv",
         "//pkg/sql/colexecerror",
         "//pkg/sql/types",
+        "//pkg/util",
         "//pkg/util/buildutil",
         "//pkg/util/duration",
         "//pkg/util/json",
-        "//pkg/util/metamorphic",
         "@com_github_cockroachdb_apd_v3//:apd",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_stretchr_testify//require",
@@ -40,9 +40,9 @@ go_test(
         "nulls_test.go",
         "vec_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":coldata"],
     deps = [
-        "//pkg/col/coldataext",
         "//pkg/col/coldatatestutils",
         "//pkg/sql/colconv",
         "//pkg/sql/types",
@@ -70,12 +70,12 @@ $(location //pkg/sql/colexec/execgen/cmd/execgen) \
     -fmt=false pkg/col/coldata/$@ > $@
 $(location @com_github_cockroachdb_gostdlib//x/tools/cmd/goimports) -w $@
 """,
-    tags = ["no-remote-exec"],  # keep
-    tools = [
+    exec_tools = [
         "//pkg/sql/colexec/execgen/cmd/execgen",
         "@com_github_cockroachdb_gostdlib//x/tools/cmd/goimports",
         "@go_sdk//:bin/go",
     ],
+    tags = ["no-remote-exec"],  # keep
     visibility = [
         ":__pkg__",
         "//pkg/gen:__pkg__",

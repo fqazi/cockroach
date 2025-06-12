@@ -82,7 +82,7 @@ func redactTableDescriptor(d *descpb.TableDescriptor) (errs []error) {
 	if scs := d.DeclarativeSchemaChangerState; scs != nil {
 		for i := range scs.RelevantStatements {
 			stmt := &scs.RelevantStatements[i]
-			stmt.Statement.Statement = stmt.Statement.RedactedStatement.StripMarkers()
+			stmt.Statement.Statement = stmt.Statement.RedactedStatement
 		}
 		for i := range scs.Targets {
 			t := &scs.Targets[i]
@@ -163,8 +163,6 @@ func redactElement(element scpb.Element) error {
 		if e.ComputeExpr != nil {
 			return redactExpr(&e.ComputeExpr.Expr)
 		}
-	case *scpb.ColumnComputeExpression:
-		return redactExpr(&e.Expression.Expr)
 	case *scpb.FunctionBody:
 		return redactFunctionBodyStr(e.Lang.Lang, &e.Body)
 	}
@@ -221,7 +219,7 @@ func redactFunctionDescriptor(desc *descpb.FunctionDescriptor) (errs []error) {
 	if scs := desc.DeclarativeSchemaChangerState; scs != nil {
 		for i := range scs.RelevantStatements {
 			stmt := &scs.RelevantStatements[i]
-			stmt.Statement.Statement = stmt.Statement.RedactedStatement.StripMarkers()
+			stmt.Statement.Statement = stmt.Statement.RedactedStatement
 		}
 		for i := range scs.Targets {
 			t := &scs.Targets[i]

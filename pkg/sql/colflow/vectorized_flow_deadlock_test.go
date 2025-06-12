@@ -14,8 +14,8 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
+	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/cancelchecker"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -31,7 +31,7 @@ func TestVectorizedFlowDeadlocksWhenSpilling(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderDuress(t, "the query might take longer than timeout under duress making the test flaky")
+	skip.UnderStress(t, "the query might take longer than timeout under stress making the test flaky")
 
 	vecFDsLimit := 8
 	envutil.TestSetEnv(t, "COCKROACH_VEC_MAX_OPEN_FDS", strconv.Itoa(vecFDsLimit))
@@ -42,9 +42,10 @@ func TestVectorizedFlowDeadlocksWhenSpilling(t *testing.T) {
 			VecFDsToAcquire: vecFDsLimit,
 		}},
 	}
+	tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{ServerArgs: serverArgs})
 	ctx := context.Background()
-	s, conn, _ := serverutils.StartServer(t, serverArgs)
-	defer s.Stopper().Stop(ctx)
+	defer tc.Stopper().Stop(ctx)
+	conn := tc.Conns[0]
 
 	_, err := conn.ExecContext(ctx, "CREATE TABLE t (a, b) AS SELECT i, i FROM generate_series(1, 10000) AS g(i)")
 	require.NoError(t, err)
@@ -56,7 +57,7 @@ func TestVectorizedFlowDeadlocksWhenSpilling(t *testing.T) {
 	_, err = conn.ExecContext(ctx, "SET CLUSTER SETTING sql.distsql.acquire_vec_fds.max_retries = 1")
 	require.NoError(t, err)
 
-	queryCtx, queryCtxCancel := context.WithDeadline(ctx, timeutil.Now().Add(time.Minute))
+	queryCtx, queryCtxCancel := context.WithDeadline(ctx, timeutil.Now().Add(10*time.Second))
 	defer queryCtxCancel()
 	// Run a query with a hash joiner feeding into a hash aggregator, with both
 	// operators spilling to disk. We expect that the hash aggregator won't be
@@ -68,5 +69,5 @@ func TestVectorizedFlowDeadlocksWhenSpilling(t *testing.T) {
 	// We expect an error that is different from the query cancellation (which
 	// is what SQL layer returns on a context cancellation).
 	require.NotNil(t, err)
-	require.False(t, strings.Contains(err.Error(), cancelchecker.QueryCanceledError.Error()), err)
+	require.False(t, strings.Contains(err.Error(), cancelchecker.QueryCanceledError.Error()))
 }

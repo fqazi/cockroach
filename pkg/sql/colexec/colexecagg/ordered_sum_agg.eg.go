@@ -11,7 +11,6 @@ import (
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
-	"github.com/cockroachdb/cockroach/pkg/col/typeconv"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/colmem"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -26,59 +25,7 @@ var (
 	_ tree.AggType
 	_ apd.Context
 	_ duration.Duration
-	_ = typeconv.TypeFamilyToCanonicalTypeFamily
 )
-
-const sumNumOverloads = 6
-
-func init() {
-	// Sanity check the hard-coded number of overloads.
-	var numOverloads int
-	numOverloads++
-	numOverloads++
-	numOverloads++
-	numOverloads++
-	numOverloads++
-	numOverloads++
-	if numOverloads != sumNumOverloads {
-		colexecerror.InternalError(errors.AssertionFailedf(
-			"sumNumOverloads should be updated: expected %d, found %d", numOverloads, sumNumOverloads,
-		))
-	}
-}
-
-// sumOverloadOffset returns the offset for this particular type overload
-// within contiguous slice of allocators for this aggregate function.
-func sumOverloadOffset(t *types.T) int {
-	var offset int
-	canonicalTypeFamily := typeconv.TypeFamilyToCanonicalTypeFamily(t.Family())
-	if canonicalTypeFamily == types.IntFamily {
-		if t.Width() == 16 {
-			return offset
-		}
-		offset++
-		if t.Width() == 32 {
-			return offset
-		}
-		offset++
-		return offset
-	}
-	offset += 3
-	if canonicalTypeFamily == types.DecimalFamily {
-		return offset
-	}
-	offset += 1
-	if canonicalTypeFamily == types.FloatFamily {
-		return offset
-	}
-	offset += 1
-	if canonicalTypeFamily == types.IntervalFamily {
-		return offset
-	}
-	offset += 1
-	colexecerror.InternalError(errors.AssertionFailedf("didn't find overload offset for %s", t.SQLStringForError()))
-	return 0
-}
 
 func newSumOrderedAggAlloc(
 	allocator *colmem.Allocator, t *types.T, allocSize int64,
@@ -114,7 +61,7 @@ func newSumOrderedAggAlloc(
 			return &sumIntervalOrderedAggAlloc{aggAllocBase: allocBase}, nil
 		}
 	}
-	return nil, errors.AssertionFailedf("unsupported sum agg type %s", t.Name())
+	return nil, errors.Errorf("unsupported sum agg type %s", t.Name())
 }
 
 type sumInt16OrderedAgg struct {
@@ -131,18 +78,18 @@ type sumInt16OrderedAgg struct {
 
 var _ AggregateFunc = &sumInt16OrderedAgg{}
 
-func (a *sumInt16OrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *sumInt16OrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Decimal()
 }
 
 func (a *sumInt16OrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	oldCurAggSize := a.curAgg.Size()
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Int16(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -370,18 +317,18 @@ type sumInt32OrderedAgg struct {
 
 var _ AggregateFunc = &sumInt32OrderedAgg{}
 
-func (a *sumInt32OrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *sumInt32OrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Decimal()
 }
 
 func (a *sumInt32OrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	oldCurAggSize := a.curAgg.Size()
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Int32(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -609,18 +556,18 @@ type sumInt64OrderedAgg struct {
 
 var _ AggregateFunc = &sumInt64OrderedAgg{}
 
-func (a *sumInt64OrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *sumInt64OrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Decimal()
 }
 
 func (a *sumInt64OrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	oldCurAggSize := a.curAgg.Size()
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Int64(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -848,18 +795,18 @@ type sumDecimalOrderedAgg struct {
 
 var _ AggregateFunc = &sumDecimalOrderedAgg{}
 
-func (a *sumDecimalOrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *sumDecimalOrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Decimal()
 }
 
 func (a *sumDecimalOrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	oldCurAggSize := a.curAgg.Size()
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Decimal(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -1087,18 +1034,18 @@ type sumFloat64OrderedAgg struct {
 
 var _ AggregateFunc = &sumFloat64OrderedAgg{}
 
-func (a *sumFloat64OrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *sumFloat64OrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Float64()
 }
 
 func (a *sumFloat64OrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Float64(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups
@@ -1310,18 +1257,18 @@ type sumIntervalOrderedAgg struct {
 
 var _ AggregateFunc = &sumIntervalOrderedAgg{}
 
-func (a *sumIntervalOrderedAgg) SetOutput(vec *coldata.Vec) {
+func (a *sumIntervalOrderedAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Interval()
 }
 
 func (a *sumIntervalOrderedAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Interval(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
 		groups := a.groups

@@ -2,16 +2,6 @@
 # but there's no way to encapsulate that in logictests.
 skip_on_retry
 
-# This test file is focused specifically on testing schema changes in
-# transactions, so we disable autocommit behavior.
-statement ok
-SET autocommit_before_ddl = false
-
-# Also disable schema locked by default for these tests, since only
-# declarative can auto unset it.
-statement ok
-SET create_table_with_schema_locked = 'off';
-
 subtest create_and_add_fk_in_same_txn
 
 statement ok
@@ -288,7 +278,7 @@ b  CREATE TABLE public.b (
      CONSTRAINT b_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.parent(id),
      INDEX foo (parent_id ASC),
      UNIQUE INDEX bar (parent_id ASC)
-   );
+   )
 
 # table b is not visible to the transaction #17949
 statement error pgcode 55000 table "b" is being added
@@ -729,10 +719,10 @@ statement ok
 CREATE UNIQUE INDEX n_idx ON customers (n)
 
 # Validate that pending jobs show within a transactions before its committed.
-query TT
-SELECT status, job_type FROM crdb_internal.jobs WHERE status='pending'
+query TTT
+SELECT status, started, job_type FROM crdb_internal.jobs WHERE status='pending'
 ----
-pending    SCHEMA CHANGE
+pending    NULL                                    SCHEMA CHANGE
 
 statement error pgcode XXA00 violates unique constraint
 COMMIT
@@ -750,14 +740,14 @@ SELECT status,
        regexp_replace(description, 'ROLL BACK JOB \d+.*', 'ROLL BACK JOB') as desc
   FROM [SHOW JOBS] WHERE job_type = 'SCHEMA CHANGE' ORDER BY job_id DESC LIMIT 1
 ----
-failed  ALTER TABLE test.public.customers ADD COLUMN i INT8 DEFAULT … ers (n)
+failed  ALTER TABLE test.public.customers ADD COLUMN i INT8 DEFAULT 5; ALTER TABLE test.public.customers ADD COLUMN j INT8 DEFAULT 4; ALTER TABLE test.public.customers ADD COLUMN l INT8 DEFAULT 3; ALTER TABLE test.public.customers ADD COLUMN m CHAR; ALTER TABLE test.public.customers ADD COLUMN n CHAR DEFAULT 'a'; CREATE INDEX j_idx ON test.public.customers (j); CREATE INDEX l_idx ON test.public.customers (l); CREATE INDEX m_idx ON test.public.customers (m); CREATE UNIQUE INDEX i_idx ON test.public.customers (i); CREATE UNIQUE INDEX n_idx ON test.public.customers (n)
 
 query BT
 SELECT status ~ '(running)|(succeeded)',
        regexp_replace(description, 'ROLL BACK JOB \d+.*', 'ROLL BACK JOB') as descr
   FROM [SHOW JOBS] WHERE job_type = 'SCHEMA CHANGE GC' AND description LIKE 'GC for ROLL%' ORDER BY job_id DESC LIMIT 1
 ----
-true  GC for ROLLBACK of ALTER TABLE test.public.customers ADD CO … ers (n)
+true  GC for ROLLBACK of ALTER TABLE test.public.customers ADD COLUMN i INT8 DEFAULT 5; ALTER TABLE test.public.customers ADD COLUMN j INT8 DEFAULT 4; ALTER TABLE test.public.customers ADD COLUMN l INT8 DEFAULT 3; ALTER TABLE test.public.customers ADD COLUMN m CHAR; ALTER TABLE test.public.customers ADD COLUMN n CHAR DEFAULT 'a'; CREATE INDEX j_idx ON test.public.customers (j); CREATE INDEX l_idx ON test.public.customers (l); CREATE INDEX m_idx ON test.public.customers (m); CREATE UNIQUE INDEX i_idx ON test.public.customers (i); CREATE UNIQUE INDEX n_idx ON test.public.customers (n)
 
 subtest add_multiple_computed_elements
 
@@ -787,7 +777,7 @@ query TT
 SELECT status, description FROM [SHOW JOBS]
 WHERE job_type = 'SCHEMA CHANGE' ORDER BY job_id DESC LIMIT 1
 ----
-succeeded  ALTER TABLE test.public.customers ADD COLUMN i INT8 DEFAULT …  STORED
+succeeded  ALTER TABLE test.public.customers ADD COLUMN i INT8 DEFAULT 5; ALTER TABLE test.public.customers ADD COLUMN j INT8 AS (i - 1) STORED; ALTER TABLE test.public.customers ADD COLUMN d INT8 DEFAULT 15, ADD COLUMN e INT8 AS (d + (i - 1)) STORED
 
 # VALIDATE CONSTRAINT will not hang when executed in the same txn as
 # a schema change in the same txn #32118
@@ -1613,9 +1603,11 @@ BEGIN
 statement ok
 ALTER TABLE t ALTER COLUMN a DROP NOT NULL
 
-# Since the non-null constraint is dropped with in the txn, it will no
-# long be enforced now.
-statement ok
+# Since the non-null constraint is dropped in the schema changer after the
+# transaction commits, it's still enforced during the rest of the transaction.
+# The error is about a check constraint because we generate a check constraint
+# when dropping not-null constraints in the schema changer.
+statement error failed to satisfy CHECK constraint \(a IS NOT NULL\)
 INSERT INTO t VALUES (NULL)
 
 statement ok
@@ -1972,7 +1964,7 @@ CREATE TABLE t2 (id STRING PRIMARY KEY);
 ALTER TABLE t1 ADD CONSTRAINT fk FOREIGN KEY (other_id) REFERENCES t2(id) NOT VALID;
 
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN;
 SET TRANSACTION PRIORITY HIGH;
 ALTER TABLE t2 RENAME TO t3;
 ALTER TABLE t1 VALIDATE CONSTRAINT fk;
@@ -1987,7 +1979,7 @@ CREATE TABLE t2 (id STRING PRIMARY KEY);
 ALTER TABLE t1 ADD CONSTRAINT fk FOREIGN KEY (other_id) REFERENCES t2(id) NOT VALID;
 
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN;
 SET TRANSACTION PRIORITY HIGH;
 ALTER TABLE t1 RENAME TO t3;
 ALTER TABLE t3 VALIDATE CONSTRAINT fk;
@@ -1997,7 +1989,7 @@ statement ok
 DROP TABLE t2, t3 CASCADE
 
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN;
 SET TRANSACTION PRIORITY HIGH;
 CREATE TABLE t1 (id STRING PRIMARY KEY, other_id STRING NOT NULL);
 CREATE TABLE t2 (id STRING PRIMARY KEY);
@@ -2007,123 +1999,3 @@ COMMIT;
 
 statement ok
 DROP TABLE t1, t2 CASCADE
-
-statement ok
-SET autocommit_before_ddl = true
-
-statement ok
-CREATE TABLE t1 (id STRING PRIMARY KEY, other_id STRING NOT NULL);
-
-statement ok
-BEGIN;
-SELECT 1;
-
-skipif config weak-iso-level-configs
-query T noticetrace
-ALTER TABLE t1 ADD COLUMN c INT DEFAULT 1
-----
-NOTICE: auto-committing transaction before processing DDL due to autocommit_before_ddl setting
-
-onlyif config weak-iso-level-configs
-query T noticetrace
-ALTER TABLE t1 ADD COLUMN c INT DEFAULT 1
-----
-NOTICE: auto-committing transaction before processing DDL due to autocommit_before_ddl setting
-NOTICE: setting transaction isolation level to SERIALIZABLE due to schema change
-
-query T noticetrace
-COMMIT
-----
-WARNING: there is no transaction in progress
-SQLSTATE: 25P01
-
-statement ok
-DROP TABLE t1
-
-# Test to confirm that with 'autocommit_before_ddl' enabled, all DDL operations
-# utilize the DSC where applicable.
-subtest drop_with_autocommit
-
-let $autocommit_orig
-SHOW autocommit_before_ddl
-
-statement ok
-set autocommit_before_ddl=on
-
-statement ok
-CREATE TABLE dropme_1();
-
-statement ok
-CREATE TABLE dropme_2();
-
-# This test must default to serializable isolation. Otherwise, with weaker
-# isolation levels, an extra NOTICE will appear, indicating that the
-# transaction isolation was upgraded due to the schema change.
-let $iso
-SHOW default_transaction_isolation;
-
-statement ok
-SET default_transaction_isolation = 'serializable';
-
-statement ok
-BEGIN
-
-# Drop the table. This will cause an autocommit because we are in an explicit transaction.
-query T noticetrace
-DROP TABLE dropme_1;
-----
-NOTICE: auto-committing transaction before processing DDL due to autocommit_before_ddl setting
-
-# Drop another table. This will be in an implicit transaction, so it doesn't need an autocommit.
-query T noticetrace
-DROP TABLE dropme_2;
-----
-
-# If not legacy schema changer, verify that the DSC was used for both drops.
-skipif config local-legacy-schema-changer
-query TT
-select job_type, description from [show jobs] where description like 'DROP TABLE%dropme%' ORDER BY description LIMIT 2
-----
-NEW SCHEMA CHANGE  DROP TABLE db_87672.public.dropme_1
-NEW SCHEMA CHANGE  DROP TABLE db_87672.public.dropme_2
-
-statement ok
-set autocommit_before_ddl = $autocommit_orig;
-
-statement ok
-set default_transaction_isolation = '$iso';
-
-# Redo the test with 'autocommit_before_ddl' disabled to ensure that we stick
-# with the legacy schema changer.
-statement ok
-CREATE TABLE dropme_3();
-
-statement ok
-CREATE TABLE dropme_4();
-
-statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
-
-# Only turn off autocommit for the current transaction.
-statement ok
-SET LOCAL autocommit_before_ddl = false;
-
-query T noticetrace
-DROP TABLE dropme_3;
-----
-
-query T noticetrace
-DROP TABLE dropme_4;
-----
-
-# If not legacy schema changer, verify that the DSC was used for both drops.
-skipif config local-legacy-schema-changer
-query TT
-select job_type, description from [show jobs] where description like 'DROP TABLE%dropme%' ORDER BY description LIMIT 4
-----
-NEW SCHEMA CHANGE  DROP TABLE db_87672.public.dropme_1
-NEW SCHEMA CHANGE  DROP TABLE db_87672.public.dropme_2
-SCHEMA CHANGE      DROP TABLE db_87672.public.dropme_3
-SCHEMA CHANGE      DROP TABLE db_87672.public.dropme_4
-
-subtest end

@@ -50,11 +50,11 @@ func (ot *OptTester) ReorderJoins() (string, error) {
 			if treeNum > 1 {
 				// This isn't the first Reorder call. Output the number of joins added to
 				// the memo by the last call to Reorder.
-				ot.output("Joins Considered: %v\n", joinsConsidered)
+				ot.output(fmt.Sprintf("Joins Considered: %v\n", joinsConsidered))
 				joinsConsidered = 0
 			}
 			ot.separator("-")
-			ot.output("Join Tree #%d\n", treeNum)
+			ot.output(fmt.Sprintf("Join Tree #%d\n", treeNum))
 			ot.separator("-")
 			ot.indent(o.FormatExpr(join, memo.ExprFmtHideAll, false /* redactableValues */))
 			ot.output("Vertexes\n")
@@ -73,7 +73,7 @@ func (ot *OptTester) ReorderJoins() (string, error) {
 		func(left, right, all, joinRefs, selRefs []memo.RelExpr, op opt.Operator) {
 			relsToJoin := jof.formatVertexSet(all)
 			if relsToJoin != relsJoinedLast {
-				ot.output("Joining %s\n", relsToJoin)
+				ot.output(fmt.Sprintf("Joining %s\n", relsToJoin))
 				relsJoinedLast = relsToJoin
 			}
 			var selString string
@@ -97,11 +97,11 @@ func (ot *OptTester) ReorderJoins() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ot.output("Joins Considered: %d\n", joinsConsidered)
+	ot.output(fmt.Sprintf("Joins Considered: %d\n", joinsConsidered))
 	ot.separator("=")
 	ot.output("Final Plan\n")
 	ot.separator("=")
-	ot.output("%s", ot.FormatExpr(expr))
+	ot.output(ot.FormatExpr(expr))
 	return ot.builder.String(), err
 }
 

@@ -24,13 +24,6 @@ func NewAllowEverythingAuthorizer() *AllowEverythingAuthorizer {
 	return &AllowEverythingAuthorizer{}
 }
 
-// HasCrossTenantRead returns true if a tenant can read from other tenants.
-func (n *AllowEverythingAuthorizer) HasCrossTenantRead(
-	ctx context.Context, tenID roachpb.TenantID,
-) bool {
-	return true
-}
-
 // HasCapabilityForBatch implements the tenantcapabilities.Authorizer interface.
 func (n *AllowEverythingAuthorizer) HasCapabilityForBatch(
 	context.Context, roachpb.TenantID, *kvpb.BatchRequest,
@@ -71,13 +64,6 @@ func (n *AllowEverythingAuthorizer) IsExemptFromRateLimiting(
 
 // HasProcessDebugCapability implements the tenantcapabilities.Authorizer interface.
 func (n *AllowEverythingAuthorizer) HasProcessDebugCapability(
-	ctx context.Context, tenID roachpb.TenantID,
-) error {
-	return nil
-}
-
-// HasTSDBAllMetricsCapability implements the tenantcapabilities.Authorizer interface.
-func (n *AllowEverythingAuthorizer) HasTSDBAllMetricsCapability(
 	ctx context.Context, tenID roachpb.TenantID,
 ) error {
 	return nil

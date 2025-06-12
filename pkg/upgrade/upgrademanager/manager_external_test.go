@@ -51,13 +51,6 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-func init() {
-	// We're going to be migrating from the Latest to newer, fake versions in
-	// several tests in this package of tests so we need to remove the typical
-	// guardrails against versions beyond latest.
-	clusterversion.TestingExtraVersions = true
-}
-
 // TestAlreadyRunningJobsAreHandledProperly is a relatively low-level test to
 // ensure that the behavior to detect running jobs is sane. The test intercepts
 // and blocks an upgrade that it first runs. It then duplicates the job to
@@ -69,11 +62,8 @@ func TestAlreadyRunningJobsAreHandledProperly(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	endCV := clusterversion.Latest + 1
-	if endCV.Version().Internal == 2 {
-		skip.IgnoreLint(t, "test cannot run until there is a new version key")
-	}
-	startCV := endCV - 1
+	startCV := clusterversion.VCurrent_Start
+	endCV := startCV + 1
 
 	ch := make(chan chan error)
 
@@ -82,16 +72,12 @@ func TestAlreadyRunningJobsAreHandledProperly(t *testing.T) {
 		ReplicationMode: base.ReplicationManual,
 		ServerArgs: base.TestServerArgs{
 			DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(107396),
-			Settings: cluster.MakeTestingClusterSettingsWithVersions(
-				endCV.Version(),
-				startCV.Version(),
-				false,
-			),
 
 			Knobs: base.TestingKnobs{
 				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 				Server: &server.TestingKnobs{
-					ClusterVersionOverride:         startCV.Version(),
+					BootstrapVersionKeyOverride:    clusterversion.BinaryMinSupportedVersionKey,
+					BinaryVersionOverride:          clusterversion.ByKey(startCV),
 					DisableAutomaticVersionUpgrade: make(chan struct{}),
 				},
 				DistSQL: &execinfra.TestingKnobs{
@@ -99,11 +85,8 @@ func TestAlreadyRunningJobsAreHandledProperly(t *testing.T) {
 					ProcessorNoTracingSpan: true,
 				},
 				UpgradeManager: &upgradebase.TestingKnobs{
-					ListBetweenOverride: func(from, to roachpb.Version) []roachpb.Version {
-						return []roachpb.Version{to}
-					},
 					RegistryOverride: func(v roachpb.Version) (upgradebase.Upgrade, bool) {
-						if v != endCV.Version() {
+						if v != clusterversion.ByKey(endCV) {
 							return nil, false
 						}
 						return upgrade.NewTenantUpgrade("test", v, upgrade.NoPrecondition, func(
@@ -121,7 +104,7 @@ func TestAlreadyRunningJobsAreHandledProperly(t *testing.T) {
 							case <-ctx.Done():
 								return ctx.Err()
 							}
-						}, upgrade.RestoreActionNotRequired("test")), true
+						}), true
 					},
 				},
 			},
@@ -160,6 +143,8 @@ func TestAlreadyRunningJobsAreHandledProperly(t *testing.T) {
                     unique_rowid(),
                     status,
                     created,
+                    NULL,
+                    NULL,
                     created_by_type,
                     created_by_id,
                     claim_session_id,
@@ -257,25 +242,25 @@ func TestPostJobInfoTableQueryDuplicateJobInfo(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	targetCV := clusterversion.PreviousRelease + 1
-	targetCVJSON, err := protoreflect.MessageToJSON(&clusterversion.ClusterVersion{Version: targetCV.Version()},
+	targetCV := clusterversion.V23_2Start + 1
+	targetCVJSON, err := protoreflect.MessageToJSON(&clusterversion.ClusterVersion{Version: clusterversion.ByKey(targetCV)},
 		protoreflect.FmtFlags{EmitDefaults: false})
 	require.NoError(t, err)
 
 	settingsForUpgrade := func() *cluster.Settings {
 		settings := cluster.MakeTestingClusterSettingsWithVersions(
-			clusterversion.Latest.Version(),
-			clusterversion.MinSupported.Version(),
+			clusterversion.TestingBinaryVersion,
+			clusterversion.TestingBinaryMinSupportedVersion,
 			false, // initializeVersion
 		)
 		require.NoError(t, clusterversion.Initialize(ctx,
-			clusterversion.MinSupported.Version(), &settings.SV))
+			clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey), &settings.SV))
 		return settings
 	}
 
 	upgradeStarted := make(chan chan struct{})
 	registryOverrideHook := func(v roachpb.Version) (upgradebase.Upgrade, bool) {
-		if v != targetCV.Version() {
+		if v != clusterversion.ByKey(targetCV) {
 			return nil, false
 		}
 		return upgrade.NewTenantUpgrade("test", v, upgrade.NoPrecondition, func(
@@ -289,7 +274,7 @@ func TestPostJobInfoTableQueryDuplicateJobInfo(t *testing.T) {
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-		}, upgrade.RestoreActionNotRequired("test")), true
+		}), true
 	}
 
 	ts, systemSQLDB, _ := serverutils.StartServer(t, base.TestServerArgs{
@@ -298,7 +283,7 @@ func TestPostJobInfoTableQueryDuplicateJobInfo(t *testing.T) {
 		Knobs: base.TestingKnobs{
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			Server: &server.TestingKnobs{
-				ClusterVersionOverride:         clusterversion.MinSupported.Version(),
+				BinaryVersionOverride:          clusterversion.TestingBinaryMinSupportedVersion,
 				DisableAutomaticVersionUpgrade: make(chan struct{}),
 			},
 			UpgradeManager: &upgradebase.TestingKnobs{
@@ -307,23 +292,6 @@ func TestPostJobInfoTableQueryDuplicateJobInfo(t *testing.T) {
 		},
 	})
 	defer ts.Stopper().Stop(ctx)
-
-	tenant, err := ts.TenantController().StartTenant(ctx, base.TestTenantArgs{
-		TenantID: roachpb.MustMakeTenantID(10),
-		TestingKnobs: base.TestingKnobs{
-			Server: &server.TestingKnobs{
-				ClusterVersionOverride:         clusterversion.MinSupported.Version(),
-				DisableAutomaticVersionUpgrade: make(chan struct{}),
-			},
-			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
-			UpgradeManager: &upgradebase.TestingKnobs{
-				RegistryOverride: registryOverrideHook,
-			},
-		},
-		Settings: settingsForUpgrade(),
-	})
-	require.NoError(t, err)
-	defer tenant.AppStopper().Stop(ctx)
 
 	runTestForDB := func(t *testing.T, sqlDB *gosql.DB) {
 		upgradeErr := make(chan error, 1)
@@ -370,6 +338,21 @@ FROM system.job_info WHERE job_id = $1 AND info_key = 'legacy_payload')`, jobID)
 		runTestForDB(t, systemSQLDB)
 	})
 	t.Run("tenant", func(t *testing.T) {
+		tenant, err := ts.TenantController().StartTenant(ctx, base.TestTenantArgs{
+			TenantID: roachpb.MustMakeTenantID(10),
+			TestingKnobs: base.TestingKnobs{
+				Server: &server.TestingKnobs{
+					BinaryVersionOverride:          clusterversion.TestingBinaryMinSupportedVersion,
+					DisableAutomaticVersionUpgrade: make(chan struct{}),
+				},
+				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
+				UpgradeManager: &upgradebase.TestingKnobs{
+					RegistryOverride: registryOverrideHook,
+				},
+			},
+			Settings: settingsForUpgrade(),
+		})
+		require.NoError(t, err)
 		tenantSQLDB := tenant.SQLConn(t)
 		runTestForDB(t, tenantSQLDB)
 	})
@@ -380,10 +363,10 @@ func TestMigrateUpdatesReplicaVersion(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	// We're going to be migrating from startCV to endCV.
-	startCVKey := clusterversion.MinSupported
-	startCV := startCVKey.Version()
+	startCVKey := clusterversion.V23_1
+	startCV := clusterversion.ByKey(startCVKey)
 	endCVKey := startCVKey + 1
-	endCV := endCVKey.Version()
+	endCV := clusterversion.ByKey(endCVKey)
 
 	var desc roachpb.RangeDescriptor
 	ctx := context.Background()
@@ -394,12 +377,13 @@ func TestMigrateUpdatesReplicaVersion(t *testing.T) {
 
 			Knobs: base.TestingKnobs{
 				Server: &server.TestingKnobs{
-					ClusterVersionOverride:         startCV,
+					BootstrapVersionKeyOverride:    clusterversion.BinaryMinSupportedVersionKey,
+					BinaryVersionOverride:          startCV,
 					DisableAutomaticVersionUpgrade: make(chan struct{}),
 				},
 				UpgradeManager: &upgradebase.TestingKnobs{
 					ListBetweenOverride: func(from, to roachpb.Version) []roachpb.Version {
-						return []roachpb.Version{to}
+						return []roachpb.Version{from, to}
 					},
 					RegistryOverride: func(cv roachpb.Version) (upgradebase.Upgrade, bool) {
 						if cv != endCV {
@@ -409,7 +393,7 @@ func TestMigrateUpdatesReplicaVersion(t *testing.T) {
 							ctx context.Context, version clusterversion.ClusterVersion, d upgrade.SystemDeps,
 						) error {
 							return d.DB.KV().Migrate(ctx, desc.StartKey, desc.EndKey, cv)
-						}, upgrade.RestoreActionNotRequired("test")), true
+						}), true
 					},
 				},
 			},
@@ -475,9 +459,13 @@ func TestConcurrentMigrationAttempts(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var versions []roachpb.Version
-	for i := clusterversion.Latest; i < clusterversion.Latest+4; i++ {
-		versions = append(versions, i.Version())
+	// We're going to be migrating from the BinaryMinSupportedVersion to imaginary future versions.
+	current := clusterversion.TestingBinaryMinSupportedVersion
+	versions := []roachpb.Version{current}
+	for i := int32(1); i <= 4; i++ {
+		v := current
+		v.Internal += i * 2
+		versions = append(versions, v)
 	}
 
 	// RegisterKVMigration the upgrades to update the map with run counts.
@@ -499,18 +487,12 @@ func TestConcurrentMigrationAttempts(t *testing.T) {
 			),
 			Knobs: base.TestingKnobs{
 				Server: &server.TestingKnobs{
-					ClusterVersionOverride:         versions[0],
+					BinaryVersionOverride:          versions[0],
 					DisableAutomaticVersionUpgrade: make(chan struct{}),
 				},
 				UpgradeManager: &upgradebase.TestingKnobs{
 					ListBetweenOverride: func(from, to roachpb.Version) []roachpb.Version {
-						var res []roachpb.Version
-						for _, v := range versions {
-							if from.Less(v) && v.LessEq(to) {
-								res = append(res, v)
-							}
-						}
-						return res
+						return versions
 					},
 					RegistryOverride: func(cv roachpb.Version) (upgradebase.Upgrade, bool) {
 						return upgrade.NewSystemUpgrade("test", cv, func(
@@ -523,9 +505,7 @@ func TestConcurrentMigrationAttempts(t *testing.T) {
 							atomic.AddInt32(&active, -1)
 							migrationRunCounts[version]++
 							return nil
-						},
-							upgrade.RestoreActionNotRequired("test"),
-						), true
+						}), true
 					},
 				},
 			},
@@ -562,7 +542,7 @@ func TestConcurrentMigrationAttempts(t *testing.T) {
 	for k, c := range migrationRunCounts {
 		require.Equalf(t, 1, c, "version: %v", k)
 	}
-	require.Len(t, migrationRunCounts, len(versions)-1)
+	require.Len(t, migrationRunCounts, len(versions))
 }
 
 // TestPauseMigration ensures that upgrades can indeed be paused and that
@@ -572,8 +552,8 @@ func TestPauseMigration(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	endCV := clusterversion.Latest + 1
-	startCV := clusterversion.Latest
+	startCV := clusterversion.VCurrent_Start
+	endCV := startCV + 1
 
 	type migrationEvent struct {
 		unblock  chan<- error
@@ -585,29 +565,17 @@ func TestPauseMigration(t *testing.T) {
 		ReplicationMode: base.ReplicationManual,
 		ServerArgs: base.TestServerArgs{
 			DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(107393),
-			Settings: cluster.MakeTestingClusterSettingsWithVersions(
-				endCV.Version(),
-				startCV.Version(),
-				false,
-			),
+
 			Knobs: base.TestingKnobs{
 				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 				Server: &server.TestingKnobs{
-					ClusterVersionOverride:         startCV.Version(),
+					BinaryVersionOverride:          clusterversion.ByKey(startCV),
+					BootstrapVersionKeyOverride:    clusterversion.BinaryMinSupportedVersionKey,
 					DisableAutomaticVersionUpgrade: make(chan struct{}),
 				},
 				UpgradeManager: &upgradebase.TestingKnobs{
-					ListBetweenOverride: func(from, to roachpb.Version) []roachpb.Version {
-						// We expect calls to ListBetween to be made for (0.0, startCV] and (startCV, endCV].
-						if to != startCV.Version() {
-							if from != startCV.Version() || to != endCV.Version() {
-								panic(fmt.Sprintf("unexpected versions %v, %v\n", from, to))
-							}
-						}
-						return []roachpb.Version{to}
-					},
 					RegistryOverride: func(cv roachpb.Version) (upgradebase.Upgrade, bool) {
-						if cv != endCV.Version() {
+						if cv != clusterversion.ByKey(endCV) {
 							return nil, false
 						}
 						return upgrade.NewTenantUpgrade("test", cv, upgrade.NoPrecondition, func(
@@ -624,7 +592,7 @@ func TestPauseMigration(t *testing.T) {
 							case err := <-canResume:
 								return err
 							}
-						}, upgrade.RestoreActionNotRequired("test")), true
+						}), true
 					},
 				},
 			},
@@ -692,7 +660,6 @@ func TestPrecondition(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	skip.UnderStress(t, "flaky")
-	skip.UnderRace(t, "flaky")
 
 	// Start by running v0. We want the precondition of v1 to prevent
 	// us from reaching v1 (or v2). We want the precondition to not be
@@ -708,7 +675,7 @@ func TestPrecondition(t *testing.T) {
 		version.Internal += 1
 		return version
 	}
-	v0 := clusterversion.Latest.Version()
+	v0 := clusterversion.TestingBinaryMinSupportedVersion
 	v0_fence := fence(v0)
 	v1 := next(v0)
 	v1_fence := fence(v1)
@@ -732,7 +699,7 @@ func TestPrecondition(t *testing.T) {
 	knobs := base.TestingKnobs{
 		Server: &server.TestingKnobs{
 			DisableAutomaticVersionUpgrade: make(chan struct{}),
-			ClusterVersionOverride:         v0,
+			BinaryVersionOverride:          v0,
 		},
 		// Inject an upgrade which would run to upgrade the cluster.
 		// We'll validate that we never create a job for this upgrade.
@@ -752,13 +719,11 @@ func TestPrecondition(t *testing.T) {
 							return cf(&preconditionRun, &preconditionErr)(ctx, cv, td)
 						}),
 						cf(&migrationRun, &migrationErr),
-						upgrade.RestoreActionNotRequired("test"),
 					), true
 				case v2:
 					return upgrade.NewTenantUpgrade("v2", cv,
 						upgrade.NoPrecondition,
 						cf(&migrationRun, &migrationErr),
-						upgrade.RestoreActionNotRequired("test"),
 					), true
 				default:
 					return nil, false
@@ -846,19 +811,19 @@ func TestMigrationFailure(t *testing.T) {
 	ctx := context.Background()
 
 	// Configure the range of versions used by the test
-	startVersionKey := clusterversion.MinSupported
-	startVersion := startVersionKey.Version()
-	endVersionKey := clusterversion.Latest
-	endVersion := endVersionKey.Version()
+	startVersionKey := clusterversion.BinaryMinSupportedVersionKey
+	startVersion := clusterversion.ByKey(startVersionKey)
+	endVersionKey := clusterversion.BinaryVersionKey
+	endVersion := clusterversion.ByKey(endVersionKey)
 
 	// Pick a random version in to fail at
 	versions := clusterversion.ListBetween(startVersion, endVersion)
 	failVersion := versions[rand.Intn(len(versions))]
-	fenceVersion := failVersion.FenceVersion()
+	fenceVersion := upgrade.FenceVersionFor(ctx, clusterversion.ClusterVersion{Version: failVersion}).Version
 	t.Logf("test will fail at version: %s", failVersion.String())
 
 	// Create a storage cluster for the tenant.
-	s := serverutils.StartServerOnly(t, base.TestServerArgs{
+	s, goDB, _ := serverutils.StartServer(t, base.TestServerArgs{
 		DefaultTestTenant: base.TestControlsTenantsExplicitly,
 		Knobs: base.TestingKnobs{
 			SQLEvalContext: &eval.TestingKnobs{
@@ -867,6 +832,12 @@ func TestMigrationFailure(t *testing.T) {
 		},
 	})
 	defer s.Stopper().Stop(ctx)
+
+	// Set the version override so that the tenant is able to upgrade. If this is
+	// not set, the tenant treats the storage cluster as if it had the oldest
+	// supported binary version.
+	_, err := goDB.Exec(`ALTER TENANT ALL SET CLUSTER SETTING version = $1`, endVersion.String())
+	require.NoError(t, err)
 
 	// setting failUpgrade to false disables the upgrade error logic.
 	var failUpgrade atomic.Bool
@@ -886,7 +857,8 @@ func TestMigrationFailure(t *testing.T) {
 		TestingKnobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
 				DisableAutomaticVersionUpgrade: make(chan struct{}),
-				ClusterVersionOverride:         startVersion,
+				BootstrapVersionKeyOverride:    startVersionKey,
+				BinaryVersionOverride:          startVersion,
 			},
 			UpgradeManager: &upgradebase.TestingKnobs{
 				DontUseJobs: true,
@@ -895,7 +867,7 @@ func TestMigrationFailure(t *testing.T) {
 						errorUpgrade := func(ctx context.Context, version clusterversion.ClusterVersion, deps upgrade.TenantDeps) error {
 							return errors.New("the upgrade failed with some error!")
 						}
-						return upgrade.NewTenantUpgrade("test", cv, nil, errorUpgrade, upgrade.RestoreActionNotRequired("test")), true
+						return upgrade.NewTenantUpgrade("test", cv, nil, errorUpgrade), true
 					}
 					return upgrades.GetUpgrade(cv)
 				},
@@ -931,7 +903,7 @@ func TestMigrationFailure(t *testing.T) {
 	checkSettingVersion(t, startVersion)
 
 	// Try to finalize.
-	_, err := db.Exec(`SET CLUSTER SETTING version = $1`, endVersion.String())
+	_, err = db.Exec(`SET CLUSTER SETTING version = $1`, endVersion.String())
 	require.Error(t, err)
 	checkActiveVersion(t, fenceVersion)
 	// Note: we don't check the setting version here because the fence setting

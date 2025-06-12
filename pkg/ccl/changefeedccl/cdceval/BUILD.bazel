@@ -60,7 +60,9 @@ go_test(
         "plan_test.go",
         "validation_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":cdceval"],
+    tags = ["ccl_test"],
     deps = [
         "//pkg/base",
         "//pkg/ccl/changefeedccl/cdcevent",

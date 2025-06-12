@@ -24,7 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/lease"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlinstance/instancestorage"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slbase"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slinstance"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -55,13 +55,13 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 	defer close(resumeChannel)
 	defer close(completedChannel)
 
-	bv := clusterversion.Latest.Version()
-	msv := clusterversion.MinSupported.Version()
+	bv := clusterversion.TestingBinaryVersion
+	msv := clusterversion.TestingBinaryMinSupportedVersion
 
 	// If there are any non-empty errors expected on the upgrade, then we're
 	// expecting it to fail.
 	expectingUpgradeToFail := test.ExpUpgradeErr[variant][0] != ""
-	finalUpgradeVersion := clusterversion.Latest.Version()
+	finalUpgradeVersion := clusterversion.TestingBinaryVersion
 	if expectingUpgradeToFail {
 		finalUpgradeVersion = msv
 	}
@@ -78,7 +78,7 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 		stats.AutomaticStatisticsClusterMode.Override(ctx, &s.SV, false)
 		stats.UseStatisticsOnSystemTables.Override(ctx, &s.SV, false)
 		stats.AutomaticStatisticsOnSystemTables.Override(ctx, &s.SV, false)
-		sql.DistSQLClusterExecMode.Override(ctx, &s.SV, sessiondatapb.DistSQLOff)
+		sql.DistSQLClusterExecMode.Override(ctx, &s.SV, int64(sessiondatapb.DistSQLOff))
 	}
 
 	reduceLeaseDurationAndReclaimLoopInterval := func(s *cluster.Settings) {
@@ -111,12 +111,12 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 			ttlOverride *= 10
 		}
 		heartbeatOverride := ttlOverride / 10
-		slbase.DefaultTTL.Override(ctx, &s.SV, ttlOverride)
-		slbase.DefaultHeartBeat.Override(ctx, &s.SV, heartbeatOverride)
+		slinstance.DefaultTTL.Override(ctx, &s.SV, ttlOverride)
+		slinstance.DefaultHeartBeat.Override(ctx, &s.SV, heartbeatOverride)
 	}
 
-	// Initialize the version to the MinSupportedVersion so that we can perform
-	// upgrades.
+	// Initialize the version to the BinaryMinSupportedVersion so that
+	// we can perform upgrades.
 	settings := cluster.MakeTestingClusterSettingsWithVersions(bv, msv, false /* initializeVersion */)
 	disableBackgroundTasks(settings)
 	require.NoError(t, clusterversion.Initialize(ctx, msv, &settings.SV))
@@ -136,7 +136,7 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 					DisableAutomaticVersionUpgrade: make(chan struct{}),
 					// Initialize to the minimum supported version
 					// so that we can perform the upgrade below.
-					ClusterVersionOverride: msv,
+					BinaryVersionOverride: msv,
 				},
 			},
 		},

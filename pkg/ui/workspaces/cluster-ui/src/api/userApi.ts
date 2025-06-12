@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-
 import { fetchData } from "src/api";
 
 export type UserSQLRolesRequestMessage =

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/sql/deprecatedshowranges"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
@@ -29,7 +30,7 @@ func addPlanningErrorHints(
 		// Changes introduced in v23.1.
 		extraRangeDoc := false
 		switch {
-		case strings.Contains(resolvedSQL, "SHOW RANGES"):
+		case strings.Contains(resolvedSQL, "SHOW RANGES") && !deprecatedshowranges.EnableDeprecatedBehavior(ctx, st, ns):
 			errS := err.Error()
 
 			// The following columns are not available when using SHOW
@@ -40,7 +41,8 @@ func addPlanningErrorHints(
 				extraRangeDoc = true
 			}
 
-		case strings.Contains(resolvedSQL, "crdb_internal.ranges" /* also matches ranges_no_leases */):
+		case strings.Contains(resolvedSQL, "crdb_internal.ranges" /* also matches ranges_no_leases */) &&
+			!deprecatedshowranges.EnableDeprecatedBehavior(ctx, st, ns):
 			errS := err.Error()
 
 			// The following columns are not available when using SHOW

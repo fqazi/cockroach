@@ -12,7 +12,6 @@ go_library(
     deps = [
         "//pkg/sql/pgwire/pgcode",
         "//pkg/sql/pgwire/pgerror",
-        "//pkg/util/collatedstring",
         "@com_github_cockroachdb_errors//:errors",
         "@org_golang_x_text//language",
     ],
@@ -21,6 +20,7 @@ go_library(
 go_test(
     name = "lex_test",
     srcs = ["encode_test.go"],
+    args = ["-test.timeout=295s"],
     deps = [":lex"],
 )
 

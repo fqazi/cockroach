@@ -21,19 +21,22 @@ type Statement interface {
 	GetLineNo() int
 	GetStmtID() uint
 	plpgsqlStmt()
-	WalkStmt(StatementVisitor) Statement
+	WalkStmt(StatementVisitor) (newStmt Statement, changed bool)
+}
+
+type TaggedStatement interface {
 	PlpgSQLStatementTag() string
 }
 
 type StatementImpl struct {
-	// TODO(drewk): figure out how to get line number from scanner.
+	// TODO(Chengxiong): figure out how to get line number from scanner.
 	LineNo int
 	/*
 	 * Unique statement ID in this function (starting at 1; 0 is invalid/not
 	 * set).  This can be used by a profiler as the index for an array of
 	 * per-statement metrics.
 	 */
-	// TODO(drewk): figure out how to get statement id from parser.
+	// TODO(Chengxiong): figure out how to get statement id from parser.
 	StmtID uint
 }
 
@@ -64,12 +67,8 @@ func (s *Block) CopyNode() *Block {
 	return &copyNode
 }
 
+// TODO(drewk): format Label and Exceptions fields.
 func (s *Block) Format(ctx *tree.FmtCtx) {
-	if s.Label != "" {
-		ctx.WriteString("<<")
-		ctx.FormatNameP(&s.Label)
-		ctx.WriteString(">>\n")
-	}
 	if s.Decls != nil {
 		ctx.WriteString("DECLARE\n")
 		for _, dec := range s.Decls {
@@ -88,51 +87,46 @@ func (s *Block) Format(ctx *tree.FmtCtx) {
 			ctx.FormatNode(&e)
 		}
 	}
-	ctx.WriteString("END")
-	if s.Label != "" {
-		ctx.WriteString(" ")
-		ctx.FormatNameP(&s.Label)
-	}
-	ctx.WriteString(";\n")
+	ctx.WriteString("END\n")
 }
 
 func (s *Block) PlpgSQLStatementTag() string {
 	return "stmt_block"
 }
 
-func (s *Block) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, recurse := visitor.Visit(s)
-	if recurse {
-		for i, decl := range s.Decls {
-			newDecl := decl.WalkStmt(visitor)
-			if newDecl != decl {
-				if newStmt == s {
-					newStmt = s.CopyNode()
-				}
-				newStmt.(*Block).Decls[i] = newDecl
+func (s *Block) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	for i, stmt := range s.Decls {
+		ns, ch := stmt.WalkStmt(visitor)
+		if ch {
+			changed = true
+			if newStmt == s {
+				newStmt = s.CopyNode()
 			}
-		}
-		for i, bodyStmt := range s.Body {
-			newBodyStmt := bodyStmt.WalkStmt(visitor)
-			if newBodyStmt != bodyStmt {
-				if newStmt == s {
-					newStmt = s.CopyNode()
-				}
-				newStmt.(*Block).Body[i] = newBodyStmt
-			}
-		}
-		for i := range s.Exceptions {
-			exception := &s.Exceptions[i]
-			newException := exception.WalkStmt(visitor)
-			if newException != exception {
-				if newStmt == s {
-					newStmt = s.CopyNode()
-				}
-				newStmt.(*Block).Exceptions[i] = *(newException.(*Exception))
-			}
+			newStmt.(*Block).Decls[i] = ns
 		}
 	}
-	return newStmt
+	for i, stmt := range s.Body {
+		ns, ch := stmt.WalkStmt(visitor)
+		if ch {
+			changed = true
+			if newStmt == s {
+				newStmt = s.CopyNode()
+			}
+			newStmt.(*Block).Body[i] = ns
+		}
+	}
+	for i, stmt := range s.Exceptions {
+		ns, ch := stmt.WalkStmt(visitor)
+		if ch {
+			changed = true
+			if newStmt == s {
+				newStmt = s.CopyNode()
+			}
+			newStmt.(*Block).Exceptions[i] = *(ns.(*Exception))
+		}
+	}
+	return newStmt, changed
 }
 
 // decl_stmt
@@ -152,7 +146,7 @@ func (s *Declaration) CopyNode() *Declaration {
 }
 
 func (s *Declaration) Format(ctx *tree.FmtCtx) {
-	ctx.FormatNode(&s.Var)
+	ctx.WriteString(string(s.Var))
 	if s.Constant {
 		ctx.WriteString(" CONSTANT")
 	}
@@ -176,17 +170,16 @@ func (s *Declaration) PlpgSQLStatementTag() string {
 	return "decl_stmt"
 }
 
-func (s *Declaration) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *Declaration) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 type CursorDeclaration struct {
 	StatementImpl
-	Name        Variable
-	Scroll      tree.CursorScrollOption
-	Query       tree.Statement
-	Annotations *tree.Annotations
+	Name   Variable
+	Scroll tree.CursorScrollOption
+	Query  tree.Statement
 }
 
 func (s *CursorDeclaration) CopyNode() *CursorDeclaration {
@@ -195,38 +188,32 @@ func (s *CursorDeclaration) CopyNode() *CursorDeclaration {
 }
 
 func (s *CursorDeclaration) Format(ctx *tree.FmtCtx) {
-	ctx.WithAnnotations(s.Annotations, func() {
-		ctx.FormatNode(&s.Name)
-		switch s.Scroll {
-		case tree.Scroll:
-			ctx.WriteString(" SCROLL")
-		case tree.NoScroll:
-			ctx.WriteString(" NO SCROLL")
-		}
-		ctx.WriteString(" CURSOR FOR ")
-		ctx.FormatNode(s.Query)
-		ctx.WriteString(";\n")
-	})
+	ctx.WriteString(string(s.Name))
+	switch s.Scroll {
+	case tree.Scroll:
+		ctx.WriteString(" SCROLL")
+	case tree.NoScroll:
+		ctx.WriteString(" NO SCROLL")
+	}
+	ctx.WriteString(" CURSOR FOR ")
+	ctx.FormatNode(s.Query)
+	ctx.WriteString(";\n")
 }
 
 func (s *CursorDeclaration) PlpgSQLStatementTag() string {
 	return "decl_cursor_stmt"
 }
 
-func (s *CursorDeclaration) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *CursorDeclaration) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // stmt_assign
 type Assignment struct {
-	StatementImpl
+	Statement
 	Var   Variable
 	Value Expr
-
-	// Indirection is the optional name of a field in a composite variable. For
-	// example, in the assignment "foo.bar := 1", Indirection would be "bar".
-	Indirection tree.Name
 }
 
 func (s *Assignment) CopyNode() *Assignment {
@@ -240,18 +227,14 @@ func (s *Assignment) PlpgSQLStatementTag() string {
 
 func (s *Assignment) Format(ctx *tree.FmtCtx) {
 	ctx.FormatNode(&s.Var)
-	if s.Indirection != "" {
-		ctx.WriteByte('.')
-		ctx.FormatNode(&s.Indirection)
-	}
 	ctx.WriteString(" := ")
 	ctx.FormatNode(s.Value)
 	ctx.WriteString(";\n")
 }
 
-func (s *Assignment) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *Assignment) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // stmt_if
@@ -301,40 +284,43 @@ func (s *If) PlpgSQLStatementTag() string {
 	return "stmt_if"
 }
 
-func (s *If) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, recurse := visitor.Visit(s)
+func (s *If) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
 
-	if recurse {
-		for i, thenStmt := range s.ThenBody {
-			newThenStmt := thenStmt.WalkStmt(visitor)
-			if newThenStmt != thenStmt {
-				if newStmt == s {
-					newStmt = s.CopyNode()
-				}
-				newStmt.(*If).ThenBody[i] = newThenStmt
+	for i, thenStmt := range s.ThenBody {
+		ns, ch := thenStmt.WalkStmt(visitor)
+		if ch {
+			changed = true
+			if newStmt == s {
+				newStmt = s.CopyNode()
 			}
-		}
-		for i := range s.ElseIfList {
-			elseIf := &s.ElseIfList[i]
-			newElseIf := elseIf.WalkStmt(visitor)
-			if newElseIf != elseIf {
-				if newStmt == s {
-					newStmt = s.CopyNode()
-				}
-				newStmt.(*If).ElseIfList[i] = *newElseIf.(*ElseIf)
-			}
-		}
-		for i, elseStmt := range s.ElseBody {
-			newElseStmt := elseStmt.WalkStmt(visitor)
-			if newElseStmt != elseStmt {
-				if newStmt == s {
-					newStmt = s.CopyNode()
-				}
-				newStmt.(*If).ElseBody[i] = newElseStmt
-			}
+			newStmt.(*If).ThenBody[i] = ns
 		}
 	}
-	return newStmt
+
+	for i, elseIf := range s.ElseIfList {
+		ns, ch := elseIf.WalkStmt(visitor)
+		if ch {
+			changed = true
+			if newStmt == s {
+				newStmt = s.CopyNode()
+			}
+			newStmt.(*If).ElseIfList[i] = *ns.(*ElseIf)
+		}
+	}
+
+	for i, elseStmt := range s.ElseBody {
+		ns, ch := elseStmt.WalkStmt(visitor)
+		if ch {
+			changed = true
+			if newStmt == s {
+				newStmt = s.CopyNode()
+			}
+			newStmt.(*If).ElseBody[i] = ns
+		}
+	}
+
+	return newStmt, changed
 }
 
 type ElseIf struct {
@@ -363,21 +349,20 @@ func (s *ElseIf) PlpgSQLStatementTag() string {
 	return "stmt_if_else_if"
 }
 
-func (s *ElseIf) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, recurse := visitor.Visit(s)
+func (s *ElseIf) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
 
-	if recurse {
-		for i, bodyStmt := range s.Stmts {
-			newBodyStmt := bodyStmt.WalkStmt(visitor)
-			if newBodyStmt != bodyStmt {
-				if newStmt == s {
-					newStmt = s.CopyNode()
-				}
-				newStmt.(*ElseIf).Stmts[i] = newBodyStmt
+	for i, stmt := range s.Stmts {
+		ns, ch := stmt.WalkStmt(visitor)
+		if ch {
+			changed = true
+			if newStmt == s {
+				newStmt = s.CopyNode()
 			}
+			newStmt.(*ElseIf).Stmts[i] = ns
 		}
 	}
-	return newStmt
+	return newStmt, changed
 }
 
 // stmt_case
@@ -428,32 +413,33 @@ func (s *Case) PlpgSQLStatementTag() string {
 	return "stmt_case"
 }
 
-func (s *Case) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, recurse := visitor.Visit(s)
+func (s *Case) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
 
-	if recurse {
-		for i, when := range s.CaseWhenList {
-			newWhen := when.WalkStmt(visitor)
-			if newWhen != when {
+	for i, when := range s.CaseWhenList {
+		ns, ch := when.WalkStmt(visitor)
+		if ch {
+			changed = true
+			if newStmt == s {
+				newStmt = s.CopyNode()
+			}
+			newStmt.(*Case).CaseWhenList[i] = ns.(*CaseWhen)
+		}
+	}
+
+	if s.HaveElse {
+		for i, stmt := range s.ElseStmts {
+			ns, ch := stmt.WalkStmt(visitor)
+			if ch {
+				changed = true
 				if newStmt == s {
 					newStmt = s.CopyNode()
 				}
-				newStmt.(*Case).CaseWhenList[i] = newWhen.(*CaseWhen)
-			}
-		}
-		if s.HaveElse {
-			for i, elseStmt := range s.ElseStmts {
-				newElseStmt := elseStmt.WalkStmt(visitor)
-				if newElseStmt != elseStmt {
-					if newStmt == s {
-						newStmt = s.CopyNode()
-					}
-					newStmt.(*Case).ElseStmts[i] = newElseStmt
-				}
+				newStmt.(*Case).ElseStmts[i] = ns
 			}
 		}
 	}
-	return newStmt
+	return newStmt, changed
 }
 
 type CaseWhen struct {
@@ -484,21 +470,20 @@ func (s *CaseWhen) PlpgSQLStatementTag() string {
 	return "stmt_when"
 }
 
-func (s *CaseWhen) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, recurse := visitor.Visit(s)
+func (s *CaseWhen) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
 
-	if recurse {
-		for i, bodyStmt := range s.Stmts {
-			newBodyStmt := bodyStmt.WalkStmt(visitor)
-			if newBodyStmt != bodyStmt {
-				if newStmt == s {
-					newStmt = s.CopyNode()
-				}
-				newStmt.(*CaseWhen).Stmts[i] = newBodyStmt
+	for i, stmt := range s.Stmts {
+		ns, ch := stmt.WalkStmt(visitor)
+		if ch {
+			changed = true
+			if newStmt == s {
+				newStmt = s.CopyNode()
 			}
+			newStmt.(*CaseWhen).Stmts[i] = ns
 		}
 	}
-	return newStmt
+	return newStmt, changed
 }
 
 // stmt_loop
@@ -536,21 +521,19 @@ func (s *Loop) Format(ctx *tree.FmtCtx) {
 	ctx.WriteString(";\n")
 }
 
-func (s *Loop) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, recurse := visitor.Visit(s)
-
-	if recurse {
-		for i, bodyStmt := range s.Body {
-			newBodyStmt := bodyStmt.WalkStmt(visitor)
-			if newBodyStmt != bodyStmt {
-				if newStmt == s {
-					newStmt = s.CopyNode()
-				}
-				newStmt.(*Loop).Body[i] = newBodyStmt
+func (s *Loop) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	for i, stmt := range s.Body {
+		ns, ch := stmt.WalkStmt(visitor)
+		if ch {
+			changed = true
+			if newStmt == s {
+				newStmt = s.CopyNode()
 			}
+			newStmt.(*Loop).Body[i] = ns
 		}
 	}
-	return newStmt
+	return newStmt, changed
 }
 
 // stmt_while
@@ -591,119 +574,110 @@ func (s *While) PlpgSQLStatementTag() string {
 	return "stmt_while"
 }
 
-func (s *While) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, recurse := visitor.Visit(s)
-
-	if recurse {
-		for i, bodyStmt := range s.Body {
-			newBodyStmt := bodyStmt.WalkStmt(visitor)
-			if newBodyStmt != bodyStmt {
-				if newStmt == s {
-					newStmt = s.CopyNode()
-				}
-				newStmt.(*While).Body[i] = newBodyStmt
+func (s *While) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	for i, stmt := range s.Body {
+		ns, ch := stmt.WalkStmt(visitor)
+		if ch {
+			changed = true
+			if newStmt == s {
+				newStmt = s.CopyNode()
 			}
+			newStmt.(*While).Body[i] = ns
 		}
 	}
-	return newStmt
-}
-
-// ForLoopControl is an interface covering the loop control structures for the
-// integer range, query, and cursor FOR loops.
-type ForLoopControl interface {
-	isForLoopControl()
-	Format(ctx *tree.FmtCtx)
-}
-
-type IntForLoopControl struct {
-	Reverse bool
-	Lower   Expr
-	Upper   Expr
-	Step    Expr
-}
-
-var _ ForLoopControl = &IntForLoopControl{}
-
-func (c *IntForLoopControl) isForLoopControl() {}
-
-func (c *IntForLoopControl) Format(ctx *tree.FmtCtx) {
-	if c.Reverse {
-		ctx.WriteString("REVERSE ")
-	}
-	ctx.FormatNode(c.Lower)
-	ctx.WriteString("..")
-	ctx.FormatNode(c.Upper)
-	if c.Step != nil {
-		ctx.WriteString(" BY ")
-		ctx.FormatNode(c.Step)
-	}
+	return newStmt, changed
 }
 
 // stmt_for
-type ForLoop struct {
+type ForInt struct {
 	StatementImpl
 	Label   string
-	Target  []Variable
-	Control ForLoopControl
+	Var     Variable
+	Lower   Expr
+	Upper   Expr
+	Step    Expr
+	Reverse int
 	Body    []Statement
 }
 
-func (s *ForLoop) CopyNode() *ForLoop {
-	copyNode := *s
-	copyNode.Body = append([]Statement(nil), copyNode.Body...)
-	return &copyNode
+func (s *ForInt) Format(ctx *tree.FmtCtx) {
 }
 
-func (s *ForLoop) Format(ctx *tree.FmtCtx) {
-	if s.Label != "" {
-		ctx.WriteString("<<")
-		ctx.FormatNameP(&s.Label)
-		ctx.WriteString(">>\n")
-	}
-	ctx.WriteString("FOR ")
-	for i, target := range s.Target {
-		if i > 0 {
-			ctx.WriteString(", ")
-		}
-		ctx.FormatName(string(target))
-	}
-	ctx.WriteString(" IN ")
-	ctx.FormatNode(s.Control)
-	ctx.WriteString(" LOOP\n")
-	for _, stmt := range s.Body {
-		ctx.FormatNode(stmt)
-	}
-	ctx.WriteString("END LOOP")
-	if s.Label != "" {
-		ctx.WriteString(" ")
-		ctx.FormatNameP(&s.Label)
-	}
-	ctx.WriteString(";\n")
+func (s *ForInt) PlpgSQLStatementTag() string {
+	return "stmt_for_int_loop"
 }
 
-func (s *ForLoop) PlpgSQLStatementTag() string {
-	switch s.Control.(type) {
-	case *IntForLoopControl:
-		return "stmt_for_int_loop"
-	}
-	return "stmt_for_unknown"
+func (s *ForInt) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	panic(unimplemented.New("plpgsql visitor", "Unimplemented PLpgSQL visitor pattern"))
 }
 
-func (s *ForLoop) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, recurse := visitor.Visit(s)
+type ForQuery struct {
+	StatementImpl
+	Label string
+	Var   Variable
+	Body  []Statement
+}
 
-	if recurse {
-		for i, bodyStmt := range s.Body {
-			newBodyStmt := bodyStmt.WalkStmt(visitor)
-			if newBodyStmt != bodyStmt {
-				if newStmt == s {
-					newStmt = s.CopyNode()
-				}
-				newStmt.(*ForLoop).Body[i] = newBodyStmt
-			}
-		}
-	}
-	return newStmt
+func (s *ForQuery) Format(ctx *tree.FmtCtx) {
+}
+
+func (s *ForQuery) PlpgSQLStatementTag() string {
+	return "stmt_for_query_loop"
+}
+
+func (s *ForQuery) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	panic(unimplemented.New("plpgsql visitor", "Unimplemented PLpgSQL visitor pattern"))
+}
+
+type ForSelect struct {
+	ForQuery
+	Query Expr
+}
+
+func (s *ForSelect) Format(ctx *tree.FmtCtx) {
+}
+
+func (s *ForSelect) PlpgSQLStatementTag() string {
+	return "stmt_query_select_loop"
+}
+
+func (s *ForSelect) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	panic(unimplemented.New("plpgsql visitor", "Unimplemented PLpgSQL visitor pattern"))
+}
+
+type ForCursor struct {
+	ForQuery
+	CurVar   int // TODO(drewk): is this CursorVariable?
+	ArgQuery Expr
+}
+
+func (s *ForCursor) Format(ctx *tree.FmtCtx) {
+}
+
+func (s *ForCursor) PlpgSQLStatementTag() string {
+	return "stmt_for_query_cursor_loop"
+}
+
+func (s *ForCursor) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	panic(unimplemented.New("plpgsql visitor", "Unimplemented PLpgSQL visitor pattern"))
+}
+
+type ForDynamic struct {
+	ForQuery
+	Query  Expr
+	Params []Expr
+}
+
+func (s *ForDynamic) Format(ctx *tree.FmtCtx) {
+}
+
+func (s *ForDynamic) PlpgSQLStatementTag() string {
+	return "stmt_for_dyn_loop"
+}
+
+func (s *ForDynamic) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	panic(unimplemented.New("plpgsql visitor", "Unimplemented PLpgSQL visitor pattern"))
 }
 
 // stmt_foreach_a
@@ -723,7 +697,7 @@ func (s *ForEachArray) PlpgSQLStatementTag() string {
 	return "stmt_for_each_a"
 }
 
-func (s *ForEachArray) WalkStmt(visitor StatementVisitor) Statement {
+func (s *ForEachArray) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
 	panic(unimplemented.New("plpgsql visitor", "Unimplemented PLpgSQL visitor pattern"))
 }
 
@@ -757,9 +731,9 @@ func (s *Exit) PlpgSQLStatementTag() string {
 	return "stmt_exit"
 }
 
-func (s *Exit) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *Exit) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // stmt_continue
@@ -791,15 +765,16 @@ func (s *Continue) PlpgSQLStatementTag() string {
 	return "stmt_continue"
 }
 
-func (s *Continue) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *Continue) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // stmt_return
 type Return struct {
 	StatementImpl
-	Expr Expr
+	Expr   Expr
+	RetVar Variable
 }
 
 func (s *Return) CopyNode() *Return {
@@ -808,9 +783,10 @@ func (s *Return) CopyNode() *Return {
 }
 
 func (s *Return) Format(ctx *tree.FmtCtx) {
-	ctx.WriteString("RETURN")
-	if s.Expr != nil {
-		ctx.WriteByte(' ')
+	ctx.WriteString("RETURN ")
+	if s.Expr == nil {
+		ctx.FormatNode(&s.RetVar)
+	} else {
 		ctx.FormatNode(s.Expr)
 	}
 	ctx.WriteString(";\n")
@@ -820,68 +796,44 @@ func (s *Return) PlpgSQLStatementTag() string {
 	return "stmt_return"
 }
 
-func (s *Return) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *Return) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 type ReturnNext struct {
 	StatementImpl
-	Expr Expr
-}
-
-func (s *ReturnNext) CopyNode() *ReturnNext {
-	copyNode := *s
-	return &copyNode
+	Expr   Expr
+	RetVar Variable
 }
 
 func (s *ReturnNext) Format(ctx *tree.FmtCtx) {
-	ctx.WriteString("RETURN NEXT")
-	if s.Expr != nil {
-		ctx.WriteByte(' ')
-		ctx.FormatNode(s.Expr)
-	}
-	ctx.WriteString(";\n")
 }
 
 func (s *ReturnNext) PlpgSQLStatementTag() string {
 	return "stmt_return_next"
 }
 
-func (s *ReturnNext) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *ReturnNext) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	panic(unimplemented.New("plpgsql visitor", "Unimplemented PLpgSQL visitor pattern"))
 }
 
 type ReturnQuery struct {
 	StatementImpl
-	SqlStmt     tree.Statement
-	Annotations *tree.Annotations
-}
-
-func (s *ReturnQuery) CopyNode() *ReturnQuery {
-	copyNode := *s
-	return &copyNode
+	Query        Expr
+	DynamicQuery Expr
+	Params       []Expr
 }
 
 func (s *ReturnQuery) Format(ctx *tree.FmtCtx) {
-	ctx.WithAnnotations(s.Annotations, func() {
-		ctx.WriteString("RETURN QUERY")
-		if s.SqlStmt != nil {
-			ctx.WriteByte(' ')
-			ctx.FormatNode(s.SqlStmt)
-		}
-		ctx.WriteString(";\n")
-	})
 }
 
 func (s *ReturnQuery) PlpgSQLStatementTag() string {
 	return "stmt_return_query"
 }
 
-func (s *ReturnQuery) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *ReturnQuery) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	panic(unimplemented.New("plpgsql visitor", "Unimplemented PLpgSQL visitor pattern"))
 }
 
 // stmt_raise
@@ -906,7 +858,7 @@ func (s *Raise) Format(ctx *tree.FmtCtx) {
 	ctx.WriteString("RAISE")
 	if s.LogLevel != "" {
 		ctx.WriteString(" ")
-		ctx.WriteString(strings.ToUpper(s.LogLevel))
+		ctx.WriteString(s.LogLevel)
 	}
 	if s.Code != "" {
 		ctx.WriteString(" SQLSTATE ")
@@ -949,9 +901,9 @@ func (s *Raise) PlpgSQLStatementTag() string {
 	return "stmt_raise"
 }
 
-func (s *Raise) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *Raise) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // stmt_assert
@@ -975,18 +927,17 @@ func (s *Assert) PlpgSQLStatementTag() string {
 	return "stmt_assert"
 }
 
-func (s *Assert) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *Assert) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // stmt_execsql
 type Execute struct {
 	StatementImpl
-	SqlStmt     tree.Statement
-	Strict      bool // INTO STRICT flag
-	Target      []Variable
-	Annotations *tree.Annotations
+	SqlStmt tree.Statement
+	Strict  bool // INTO STRICT flag
+	Target  []Variable
 }
 
 func (s *Execute) CopyNode() *Execute {
@@ -996,31 +947,29 @@ func (s *Execute) CopyNode() *Execute {
 }
 
 func (s *Execute) Format(ctx *tree.FmtCtx) {
-	ctx.WithAnnotations(s.Annotations, func() {
-		ctx.FormatNode(s.SqlStmt)
-		if s.Target != nil {
-			ctx.WriteString(" INTO ")
-			if s.Strict {
-				ctx.WriteString("STRICT ")
-			}
-			for i := range s.Target {
-				if i > 0 {
-					ctx.WriteString(", ")
-				}
-				ctx.FormatNode(&s.Target[i])
-			}
+	ctx.FormatNode(s.SqlStmt)
+	if s.Target != nil {
+		ctx.WriteString(" INTO ")
+		if s.Strict {
+			ctx.WriteString("STRICT ")
 		}
-		ctx.WriteString(";\n")
-	})
+		for i := range s.Target {
+			if i > 0 {
+				ctx.WriteString(", ")
+			}
+			ctx.FormatNode(&s.Target[i])
+		}
+	}
+	ctx.WriteString(";\n")
 }
 
 func (s *Execute) PlpgSQLStatementTag() string {
 	return "stmt_exec_sql"
 }
 
-func (s *Execute) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *Execute) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // stmt_dynexecute
@@ -1059,9 +1008,9 @@ func (s *DynamicExecute) PlpgSQLStatementTag() string {
 	return "stmt_dyn_exec"
 }
 
-func (s *DynamicExecute) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *DynamicExecute) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // stmt_perform
@@ -1077,14 +1026,16 @@ func (s *Perform) PlpgSQLStatementTag() string {
 	return "stmt_perform"
 }
 
-func (s *Perform) WalkStmt(visitor StatementVisitor) Statement {
+func (s *Perform) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
 	panic(unimplemented.New("plpgsql visitor", "Unimplemented PLpgSQL visitor pattern"))
 }
 
 // stmt_call
 type Call struct {
 	StatementImpl
-	Proc *tree.FuncExpr
+	Expr   Expr
+	IsCall bool
+	Target Variable
 }
 
 func (s *Call) CopyNode() *Call {
@@ -1093,79 +1044,21 @@ func (s *Call) CopyNode() *Call {
 }
 
 func (s *Call) Format(ctx *tree.FmtCtx) {
-	ctx.WriteString("CALL ")
-	ctx.FormatNode(s.Proc)
-	ctx.WriteString(";\n")
+	// TODO(drewk): Correct the Call field and print the Expr and Target.
+	if s.IsCall {
+		ctx.WriteString("CALL a function/procedure\n")
+	} else {
+		ctx.WriteString("DO a code block\n")
+	}
 }
 
 func (s *Call) PlpgSQLStatementTag() string {
 	return "stmt_call"
 }
 
-func (s *Call) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
-}
-
-// stmt_do
-type DoBlock struct {
-	StatementImpl
-
-	// Block is the code block that defines the logic of the DO statement.
-	Block *Block
-}
-
-var _ Statement = (*DoBlock)(nil)
-var _ tree.DoBlockBody = (*DoBlock)(nil)
-
-func (s *DoBlock) Format(ctx *tree.FmtCtx) {
-	ctx.WriteString("DO ")
-
-	// Format the body of the DO block separately so that FormatStringDollarQuotes
-	// can examine the resulting string and determine how to quote the block.
-	bodyCtx := ctx.Clone()
-	bodyCtx.FormatNode(s.Block)
-	bodyStr := "\n" + bodyCtx.CloseAndGetString()
-
-	// Avoid replacing the entire formatted string with '_' if any redaction flags
-	// are set. They will have already been applied when the body was formatted.
-	ctx.WithoutConstantRedaction(func() {
-		ctx.FormatStringDollarQuotes(bodyStr)
-	})
-	ctx.WriteString(";\n")
-}
-
-func (s *DoBlock) IsDoBlockBody() {}
-
-func (s *DoBlock) VisitBody(v tree.Visitor) tree.DoBlockBody {
-	plVisitor := SQLStmtVisitor{Visitor: v}
-	newBlock := Walk(&plVisitor, s.Block)
-	if newBlock != s.Block {
-		return &DoBlock{Block: newBlock.(*Block)}
-	}
-	return s
-}
-
-func (s *DoBlock) CopyNode() *DoBlock {
-	copyNode := *s
-	copyNode.Block = s.Block.CopyNode()
-	return &copyNode
-}
-
-func (s *DoBlock) PlpgSQLStatementTag() string {
-	return "stmt_do"
-}
-
-func (s *DoBlock) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	newBlock := s.Block.WalkStmt(visitor)
-	if newBlock != s.Block {
-		if newStmt == s {
-			newStmt = s.CopyNode()
-		}
-		newStmt.(*DoBlock).Block = newBlock.(*Block)
-	}
-	return newStmt
+func (s *Call) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // stmt_getdiag
@@ -1192,7 +1085,7 @@ func (s *GetDiagnostics) Format(ctx *tree.FmtCtx) {
 
 type GetDiagnosticsItem struct {
 	Kind GetDiagnosticsKind
-	// TODO(drewk): TargetName is temporary -- should be removed and use Target.
+	// TODO(jane): TargetName is temporary -- should be removed and use Target.
 	TargetName string
 	Target     int // where to assign it?
 }
@@ -1207,18 +1100,17 @@ func (s *GetDiagnostics) PlpgSQLStatementTag() string {
 	return "stmt_get_diag"
 }
 
-func (s *GetDiagnostics) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *GetDiagnostics) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // stmt_open
 type Open struct {
 	StatementImpl
-	CurVar      Variable
-	Scroll      tree.CursorScrollOption
-	Query       tree.Statement
-	Annotations *tree.Annotations
+	CurVar Variable
+	Scroll tree.CursorScrollOption
+	Query  tree.Statement
 }
 
 func (s *Open) CopyNode() *Open {
@@ -1227,70 +1119,65 @@ func (s *Open) CopyNode() *Open {
 }
 
 func (s *Open) Format(ctx *tree.FmtCtx) {
-	ctx.WithAnnotations(s.Annotations, func() {
-		ctx.WriteString("OPEN ")
-		ctx.FormatNode(&s.CurVar)
-		switch s.Scroll {
-		case tree.Scroll:
-			ctx.WriteString(" SCROLL")
-		case tree.NoScroll:
-			ctx.WriteString(" NO SCROLL")
-		}
-		if s.Query != nil {
-			ctx.WriteString(" FOR ")
-			ctx.FormatNode(s.Query)
-		}
-		ctx.WriteString(";\n")
-	})
+	ctx.WriteString("OPEN ")
+	ctx.FormatNode(&s.CurVar)
+	switch s.Scroll {
+	case tree.Scroll:
+		ctx.WriteString(" SCROLL")
+	case tree.NoScroll:
+		ctx.WriteString(" NO SCROLL")
+	}
+	if s.Query != nil {
+		ctx.WriteString(" FOR ")
+		ctx.FormatNode(s.Query)
+	}
+	ctx.WriteString(";\n")
 }
 
 func (s *Open) PlpgSQLStatementTag() string {
 	return "stmt_open"
 }
 
-func (s *Open) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *Open) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // stmt_fetch
 // stmt_move (where IsMove = true)
 type Fetch struct {
 	StatementImpl
-	Cursor      tree.CursorStmt
-	Target      []Variable
-	IsMove      bool
-	Annotations *tree.Annotations
+	Cursor tree.CursorStmt
+	Target []Variable
+	IsMove bool
 }
 
 func (s *Fetch) Format(ctx *tree.FmtCtx) {
-	ctx.WithAnnotations(s.Annotations, func() {
-		if s.IsMove {
-			ctx.WriteString("MOVE ")
-		} else {
-			ctx.WriteString("FETCH ")
-		}
-		if dir := s.Cursor.FetchType.String(); dir != "" {
-			ctx.WriteString(dir)
-			ctx.WriteString(" ")
-		}
-		if s.Cursor.FetchType.HasCount() {
-			ctx.WriteString(strconv.Itoa(int(s.Cursor.Count)))
-			ctx.WriteString(" ")
-		}
-		ctx.WriteString("FROM ")
-		ctx.FormatName(string(s.Cursor.Name))
-		if s.Target != nil {
-			ctx.WriteString(" INTO ")
-			for i := range s.Target {
-				if i > 0 {
-					ctx.WriteString(", ")
-				}
-				ctx.FormatNode(&s.Target[i])
+	if s.IsMove {
+		ctx.WriteString("MOVE ")
+	} else {
+		ctx.WriteString("FETCH ")
+	}
+	if dir := s.Cursor.FetchType.String(); dir != "" {
+		ctx.WriteString(dir)
+		ctx.WriteString(" ")
+	}
+	if s.Cursor.FetchType.HasCount() {
+		ctx.WriteString(strconv.Itoa(int(s.Cursor.Count)))
+		ctx.WriteString(" ")
+	}
+	ctx.WriteString("FROM ")
+	ctx.FormatName(string(s.Cursor.Name))
+	if s.Target != nil {
+		ctx.WriteString(" INTO ")
+		for i := range s.Target {
+			if i > 0 {
+				ctx.WriteString(", ")
 			}
+			ctx.FormatNode(&s.Target[i])
 		}
-		ctx.WriteString(";\n")
-	})
+	}
+	ctx.WriteString(";\n")
 }
 
 func (s *Fetch) PlpgSQLStatementTag() string {
@@ -1300,9 +1187,9 @@ func (s *Fetch) PlpgSQLStatementTag() string {
 	return "stmt_fetch"
 }
 
-func (s *Fetch) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *Fetch) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // stmt_close
@@ -1321,40 +1208,45 @@ func (s *Close) PlpgSQLStatementTag() string {
 	return "stmt_close"
 }
 
-func (s *Close) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *Close) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
-// stmt_commit and stmt_rollback
-type TransactionControl struct {
+// stmt_commit
+type Commit struct {
 	StatementImpl
-	Rollback bool
-	Chain    bool
+	Chain bool
 }
 
-func (s *TransactionControl) Format(ctx *tree.FmtCtx) {
-	if s.Rollback {
-		ctx.WriteString("ROLLBACK")
-	} else {
-		ctx.WriteString("COMMIT")
-	}
-	if s.Chain {
-		ctx.WriteString(" AND CHAIN")
-	}
-	ctx.WriteString(";\n")
+func (s *Commit) Format(ctx *tree.FmtCtx) {
 }
 
-func (s *TransactionControl) PlpgSQLStatementTag() string {
-	if s.Rollback {
-		return "stmt_rollback"
-	}
+func (s *Commit) PlpgSQLStatementTag() string {
 	return "stmt_commit"
 }
 
-func (s *TransactionControl) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *Commit) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
+}
+
+// stmt_rollback
+type Rollback struct {
+	StatementImpl
+	Chain bool
+}
+
+func (s *Rollback) Format(ctx *tree.FmtCtx) {
+}
+
+func (s *Rollback) PlpgSQLStatementTag() string {
+	return "stmt_rollback"
+}
+
+func (s *Rollback) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // stmt_null
@@ -1370,9 +1262,9 @@ func (s *Null) PlpgSQLStatementTag() string {
 	return "stmt_null"
 }
 
-func (s *Null) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+func (s *Null) WalkStmt(visitor StatementVisitor) (newStmt Statement, changed bool) {
+	newStmt, changed = visitor.Visit(s)
+	return newStmt, changed
 }
 
 // formatString is a helper function that prints "_" if FmtHideConstants is set,

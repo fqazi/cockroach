@@ -225,10 +225,7 @@ SELECT now() - transaction_timestamp() = interval '0s'
 true
 
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE
-
-statement ok
-SET LOCAL autocommit_before_ddl=off;
+BEGIN TRANSACTION
 
 statement ok
 CREATE TABLE kv (
@@ -371,7 +368,7 @@ CREATE TABLE kv (
 # Test that cluster_logical_timestamp() is consistent in transactions
 # spanning multiple batches of statements.
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN;
 INSERT INTO kv (k,v) VALUES (1, cluster_logical_timestamp());
 SELECT * FROM kv
 
@@ -381,7 +378,7 @@ SELECT * FROM kv;
 COMMIT
 
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN;
 SELECT * FROM kv;
 INSERT INTO kv (k,v) VALUES (3, cluster_logical_timestamp());
 COMMIT
@@ -393,12 +390,6 @@ SELECT count(DISTINCT (v)) FROM kv
 
 statement ok
 DELETE FROM kv
-
-let $old_default_transaction_isolation
-SHOW default_transaction_isolation
-
-statement ok
-SET default_transaction_isolation = 'serializable'
 
 statement ok
 CREATE TABLE m (mints DECIMAL)
@@ -430,9 +421,6 @@ SELECT * FROM kv
 statement ok
 INSERT INTO kv (k,v) VALUES (6, cluster_logical_timestamp()-(select mints from m));
 SELECT * FROM kv
-
-statement ok
-SET default_transaction_isolation = '$old_default_transaction_isolation'
 
 query I
 SELECT k FROM kv ORDER BY v
@@ -567,7 +555,7 @@ SELECT k, extract(element, input::timestamp) = extract_result, date_part(element
 51  true  true  0
 52  true  true  2.457429823996599e+06
 
-query error unsupported timespan: nansecond
+query error extract\(\): unsupported timespan: nansecond
 SELECT extract(nansecond from '2001-04-10 12:04:59.34565423'::timestamp)
 
 query error unknown unit "nanosecond"
@@ -632,7 +620,7 @@ SELECT k, extract(element, input::timestamptz) = extract_result, extract(element
 51  true  0
 52  true  2.457429823996599e+06
 
-query error unsupported timespan: nansecond
+query error extract\(\): unsupported timespan: nansecond
 SELECT extract(nansecond from '2001-04-10 12:04:59.34565423'::timestamptz)
 
 query R
@@ -1710,16 +1698,17 @@ SET TIME ZONE 0
 
 subtest infinity_time
 
+# TODO(#41564): this should display "infinity", "-infinity".
 query TT
 SELECT 'infinity'::timestamp, '-infinity'::timestamptz
 ----
-infinity  -infinity
+294276-12-31 23:59:59.999999 +0000 +0000  -4713-11-24 00:00:00 +0000 +0000
 
 # Verify that parse_timestamp can be used in computed column expressions.
 statement ok
 CREATE TABLE timestamps (s STRING, ts TIMESTAMP AS (parse_timestamp(s)) STORED)
 
-query error relative timestamps are not supported
+query error parse_timestamp\(\): relative timestamps are not supported
 INSERT INTO timestamps VALUES ('tomorrow')
 
 statement ok
@@ -1887,13 +1876,13 @@ SELECT parse_timestamp('01-02-2020 01:02:03', 'postgres')
 query error could not parse
 SELECT parse_timestamp('foo')
 
-query error relative timestamps are not supported
+query error parse_timestamp\(\): relative timestamps are not supported
 SELECT parse_timestamp('now')
 
-query error relative timestamps are not supported
+query error parse_timestamp\(\): relative timestamps are not supported
 SELECT parse_timestamp('tomorrow')
 
-query error relative timestamps are not supported
+query error parse_timestamp\(\): relative timestamps are not supported
 SELECT parse_timestamp('now', 'mdy')
 
 statement error only ISO style is supported
@@ -1929,10 +1918,10 @@ ORDER BY pk
 statement error only ISO style is supported
 SELECT parse_date('01-02-2020 01:02:03', 'postgres')
 
-query error relative dates are not supported
+query error parse_date\(\): relative dates are not supported
 SELECT parse_date('now')
 
-query error relative dates are not supported
+query error parse_date\(\): relative dates are not supported
 SELECT parse_date('tomorrow', 'iso,mdy')
 
 query TTTT
@@ -2000,8 +1989,6 @@ ORDER BY pk
 
 statement ok
 SET intervalstyle = iso_8601;
-
-statement ok
 CREATE TABLE table_71776 (interval_col interval DEFAULT 'P3Y')
 
 query TTT
@@ -2042,7 +2029,7 @@ SELECT make_date(-2013, 7, 15)
 make_date
 -2013-07-15 00:00:00 +0000 +0000
 
-statement error pgcode 22008 pq: year value of 0 is not valid
+statement error pgcode 22008 pq: make_date\(\): year value of 0 is not valid
 SELECT make_date(0, 11, 11)
 
 subtest end
@@ -2067,19 +2054,7 @@ SELECT make_timestamp(2013, 7, 15, 8, 15, 23.5231231244234)::string
 make_timestamp
 2013-07-15 08:15:23.523123
 
-# Test with seconds < 1.
-
-query T
-select make_timestamp(1, 1, 1, 0, 0, 0);
-----
-0001-01-01 00:00:00 +0000 +0000
-
-query T
-select make_timestamp(1, 1, 1, 0, 0, 0.1234);
-----
-0001-01-01 00:00:00.1234 +0000 +0000
-
-statement error pgcode 22008 pq: year value of 0 is not valid
+statement error pgcode 22008 pq: make_timestamp\(\): year value of 0 is not valid
 SELECT make_timestamp(0, 7, 15, 8, 15, 23.5);
 
 subtest end
@@ -2113,25 +2088,13 @@ SELECT make_timestamptz(2013, 7, 15, 8, 15, 23.5, 'America/New_York')
 make_timestamptz
 2013-07-15 07:15:23.5 -0500 EST
 
-# Test with seconds < 1.
-
-query T
-select make_timestamptz(2020, 1, 1, 0, 0, 0, 'America/New_York');
-----
-2020-01-01 00:00:00 -0500 EST
-
-query T
-select make_timestamptz(2020, 1, 1, 0, 0, 0.1234, 'America/New_York');
-----
-2020-01-01 00:00:00.1234 -0500 EST
-
-statement error pgcode 22008 pq: year value of 0 is not valid
+statement error pgcode 22008 pq: make_timestamptz\(\): year value of 0 is not valid
 SELECT make_timestamptz(0, 7, 15, 8, 15, 23.5);
 
-statement error pgcode 22008 pq: year value of 0 is not valid
+statement error pgcode 22008 pq: make_timestamptz\(\): year value of 0 is not valid
 SELECT make_timestamptz(0, 7, 15, 8, 15, 23.5, 'America/New_York');
 
-statement error pgcode 22023 pq: could not parse "No" as time zone
+statement error pgcode 22023 pq: make_timestamptz\(\): could not parse "No" as time zone
 SELECT make_timestamptz(0, 7, 15, 8, 15, 23.5, 'No');
 
 subtest end
@@ -2146,18 +2109,7 @@ SELECT date_trunc('day', '2001-02-16 20:38:40+00'::timestamptz, 'Australia/Sydne
 statement error pgcode 22008 pq: date_trunc\(\): parsing as type timestamp: field month value 0 is out of range
 SELECT date_trunc('day', '0-02-16 20:38:40+00'::timestamptz, 'Australia/Sydney');
 
-statement error pgcode 22023 pq: could not parse "No" as time zone
+statement error pgcode 22023 pq: date_trunc\(\): could not parse "No" as time zone
 SELECT date_trunc('day', '4-02-16 20:38:40+00'::timestamptz, 'No');
 
 subtest end
-
-# Regression test for using empty eval.Context in formatting expressions
-# (#97643).
-statement ok
-CREATE TABLE t97643 (c1 STRING, CHECK (parse_time('abc') = parse_time('abc')));
-
-query T rowsort
-SELECT details FROM [SHOW CONSTRAINTS FROM t97643];
-----
-PRIMARY KEY (rowid ASC)
-CHECK ((parse_time('abc'::STRING) = parse_time('abc'::STRING)))

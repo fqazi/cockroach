@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
-	"github.com/cockroachdb/errors"
 	"github.com/spf13/pflag"
 )
 
@@ -20,7 +18,6 @@ type cmdID int
 const (
 	listCmdID cmdID = iota
 	runCmdID
-	runOpsCmdID
 	numCmdIDs
 )
 
@@ -72,8 +69,6 @@ func (m *manager) AddFlagsToCommand(cmd cmdID, cmdFlags *pflag.FlagSet) {
 			cmdFlags.StringVarP(p, f.Name, f.Shorthand, *p, usage)
 		case *map[string]string:
 			cmdFlags.StringToStringVarP(p, f.Name, f.Shorthand, *p, usage)
-		case *spec.Cloud:
-			cmdFlags.VarP(&cloudValue{val: p}, f.Name, f.Shorthand, usage)
 		default:
 			panic(fmt.Sprintf("unsupported pointer type %T", p))
 		}
@@ -87,20 +82,20 @@ func (m *manager) AddFlagsToCommand(cmd cmdID, cmdFlags *pflag.FlagSet) {
 	}
 }
 
-// Changed returns non-nil FlagInfo iff a flag associated with the given value was passed.
-func (m *manager) Changed(valPtr interface{}) *FlagInfo {
+// Changed returns true if a flag associated with the given value was passed.
+func (m *manager) Changed(valPtr interface{}) bool {
 	// We don't know which command we're running, but we'll only run one per
 	// program invocation; so check all of them.
 	for cmd := cmdID(0); cmd < numCmdIDs; cmd++ {
 		if f, ok := m.flags[cmd][valPtr]; ok {
 			for _, flagSet := range f.flagSets {
 				if flagSet.Changed(f.Name) {
-					return &f.FlagInfo
+					return true
 				}
 			}
 		}
 	}
-	return nil
+	return false
 }
 
 // cleanupString converts a multi-line string into a single-line string,
@@ -118,31 +113,4 @@ func cleanupString(s string) string {
 		l = l[:len(l)-1]
 	}
 	return strings.Join(l, " ")
-}
-
-type cloudValue struct {
-	val *spec.Cloud
-}
-
-var _ pflag.Value = (*cloudValue)(nil)
-
-func (cv *cloudValue) String() string {
-	return cv.val.String()
-}
-
-func (cv *cloudValue) Type() string {
-	return "string"
-}
-
-func (cv *cloudValue) Set(str string) error {
-	if strings.ToLower(str) == "all" {
-		*cv.val = spec.AnyCloud
-		return nil
-	}
-	val, ok := spec.TryCloudFromString(str)
-	if !ok {
-		return errors.Errorf("invalid cloud %q", str)
-	}
-	*cv.val = val
-	return nil
 }

@@ -8,7 +8,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -16,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"text/template"
+
+	"github.com/cockroachdb/errors"
 )
 
 type target string
@@ -42,7 +43,8 @@ func (t target) execQuery(qd *queryData) (results []string, _ error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to run %s (%w): (stderr)\n%s", cmd, err, &stderr)
+		return nil, errors.Wrapf(err,
+			"failed to run %s: (stderr)\n%s", cmd, &stderr)
 	}
 	for sc := bufio.NewScanner(&stdout); sc.Scan(); {
 		results = append(results, sc.Text())
@@ -65,17 +67,17 @@ func (t target) write(outDir string, out []string) error {
 		Variable: t.variable(),
 		Targets:  out,
 	}); err != nil {
-		return fmt.Errorf("failed to execute template for %s (%w)", t, err)
+		return errors.Wrapf(err, "failed to execute template for %s", t)
 	}
 	f, err := os.Create(filepath.Join(outDir, t.filename()))
 	if err != nil {
-		return fmt.Errorf("failed to open file for %s (%w)", t, err)
+		return errors.Wrapf(err, "failed to open file for %s", t)
 	}
 	if _, err := io.Copy(f, &buf); err != nil {
-		return fmt.Errorf("failed to write file for %s (%w)", t, err)
+		return errors.Wrapf(err, "failed to write file for %s", t)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("failed to write file for %s (%w)", t, err)
+		return errors.Wrapf(err, "failed to write file for %s", t)
 	}
 	return nil
 }

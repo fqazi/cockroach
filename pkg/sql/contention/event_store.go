@@ -203,7 +203,7 @@ func (s *eventStore) startResolver(ctx context.Context, stopper *stop.Stopper) {
 	_ = stopper.RunAsyncTask(ctx, "contention-event-resolver", func(ctx context.Context) {
 
 		initialDelay := s.resolutionIntervalWithJitter()
-		var timer timeutil.Timer
+		timer := timeutil.NewTimer()
 		defer timer.Stop()
 
 		timer.Reset(initialDelay)
@@ -214,6 +214,7 @@ func (s *eventStore) startResolver(ctx context.Context, stopper *stop.Stopper) {
 
 			select {
 			case <-timer.C:
+				timer.Read = true
 				if err := s.flushAndResolve(ctx); err != nil {
 					if log.V(1) {
 						log.Warningf(ctx, "unexpected error encountered when performing "+

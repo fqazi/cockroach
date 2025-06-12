@@ -23,6 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/bootstrap"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -201,9 +202,6 @@ type interceptorTestConfig struct {
 	// Incremented atomically by concurrent operations holding the read lock.
 	lastInterceptedOpID int64
 
-	// modifyReq defines a function that can modify the intercepted BatchRequest.
-	modifyReq func(req *interceptedReq) (modified bool)
-
 	// filter defines a function that should return true for requests the test
 	// cares about - this includes logging, blocking, or overriding responses. All
 	// requests that return true should be logged.
@@ -270,7 +268,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 	// This test depends on an intricate sequencing of events that can take
 	// several seconds, and requires maintaining expected leases.
 	skip.UnderShort(t)
-	skip.UnderRace(t)
+	skip.UnderStressRace(t)
 
 	succeedsSoonDuration := testutils.DefaultSucceedsSoonDuration
 	if util.RaceEnabled {
@@ -290,52 +288,46 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 			T: t,
 		},
 	}
-	getInterceptingTransportFactory := func(nID roachpb.NodeID) func(kvcoord.TransportFactory) kvcoord.TransportFactory {
-		return func(factory kvcoord.TransportFactory) kvcoord.TransportFactory {
-			return func(options kvcoord.SendOptions, slice kvcoord.ReplicaSlice) kvcoord.Transport {
-				transport := factory(options, slice)
-				interceptor := &interceptingTransport{
-					Transport: transport,
-					nID:       nID,
-					beforeSend: func(ctx context.Context, req *interceptedReq) (overrideResp *interceptedResp) {
-						tMu.RLock()
-						defer tMu.RUnlock()
+	getInterceptingTransportFactory := func(nID roachpb.NodeID) kvcoord.TransportFactory {
+		return func(options kvcoord.SendOptions, dialer *nodedialer.Dialer, slice kvcoord.ReplicaSlice) (kvcoord.Transport, error) {
+			transport, tErr := kvcoord.GRPCTransportFactory(options, dialer, slice)
+			interceptor := &interceptingTransport{
+				Transport: transport,
+				nID:       nID,
+				beforeSend: func(ctx context.Context, req *interceptedReq) (overrideResp *interceptedResp) {
+					tMu.RLock()
+					defer tMu.RUnlock()
 
-						if tMu.filter != nil && tMu.filter(req) {
-							opID := atomic.AddInt64(&tMu.lastInterceptedOpID, 1)
-							req.prefix = fmt.Sprintf("[op %d] ", opID)
-							tMu.Logf("%s batchReq={%s}, meta={%s}", req, req.ba, req.txnMeta)
+					if tMu.filter != nil && tMu.filter(req) {
+						opID := atomic.AddInt64(&tMu.lastInterceptedOpID, 1)
+						req.prefix = fmt.Sprintf("[op %d] ", opID)
+						tMu.Logf("%s batchReq={%s}, meta={%s}", req, req.ba, req.txnMeta)
 
-							if tMu.maybeWait != nil {
-								err := tMu.maybeWait(BeforeSending, req, nil)
-								if err != nil {
-									return &interceptedResp{err: err}
-								}
-							}
-						}
-
-						if tMu.modifyReq != nil && tMu.modifyReq(req) {
-							tMu.Logf("%s modified", req)
-						}
-
-						return nil
-					},
-					afterSend: func(ctx context.Context, req *interceptedReq, resp *interceptedResp) (overrideResp *interceptedResp) {
-						tMu.RLock()
-						defer tMu.RUnlock()
-
-						if tMu.filter != nil && tMu.filter(req) && tMu.maybeWait != nil {
-							err := tMu.maybeWait(AfterSending, req, resp)
+						if tMu.maybeWait != nil {
+							err := tMu.maybeWait(BeforeSending, req, nil)
 							if err != nil {
 								return &interceptedResp{err: err}
 							}
 						}
+					}
 
-						return nil
-					},
-				}
-				return interceptor
+					return nil
+				},
+				afterSend: func(ctx context.Context, req *interceptedReq, resp *interceptedResp) (overrideResp *interceptedResp) {
+					tMu.RLock()
+					defer tMu.RUnlock()
+
+					if tMu.filter != nil && tMu.filter(req) && tMu.maybeWait != nil {
+						err := tMu.maybeWait(AfterSending, req, resp)
+						if err != nil {
+							return &interceptedResp{err: err}
+						}
+					}
+
+					return nil
+				},
 			}
+			return interceptor, tErr
 		}
 	}
 
@@ -356,10 +348,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 				Insecure: true,
 				Knobs: base.TestingKnobs{
 					KVClient: &kvcoord.ClientTestingKnobs{
-						TransportFactory: getInterceptingTransportFactory(1),
-						// This test makes tight assumptions about which key a transaction's
-						// record is anchored on.
-						DisableTxnAnchorKeyRandomization: true,
+						TransportFactory: getInterceptingTransportFactory(roachpb.NodeID(1)),
 					},
 					Store: &kvserver.StoreTestingKnobs{
 						EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
@@ -374,7 +363,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 	})
 	defer tc.Stopper().Stop(ctx)
 
-	requireLeaseUpgrade := func(t *testing.T, desc roachpb.RangeDescriptor, serverIdx int) {
+	requireRangeLease := func(t *testing.T, desc roachpb.RangeDescriptor, serverIdx int) {
 		t.Helper()
 		testutils.SucceedsSoon(t, func() error {
 			hint := tc.Target(serverIdx)
@@ -395,7 +384,10 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 			if curLease.Speculative() {
 				return errors.Errorf("only had speculative lease for %s", desc)
 			}
-			tc.MaybeWaitForLeaseUpgrade(ctx, t, desc)
+			if !kvserver.ExpirationLeasesOnly.Get(&tc.Server(0).ClusterSettings().SV) &&
+				curLease.Type() != roachpb.LeaseEpoch {
+				return errors.Errorf("awaiting upgrade to epoch-based lease for %s", desc)
+			}
 			t.Logf("valid lease info for r%d: %v", desc.RangeID, curLease)
 			return nil
 		})
@@ -436,9 +428,9 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 		firstRange := tc.LookupRangeOrFatal(t, keyA)
 		secondRange := tc.LookupRangeOrFatal(t, keyB)
 		tc.TransferRangeLeaseOrFatal(t, firstRange, tc.Target(0))
-		requireLeaseUpgrade(t, firstRange, 0)
+		requireRangeLease(t, firstRange, 0)
 		tc.TransferRangeLeaseOrFatal(t, secondRange, tc.Target(1))
-		requireLeaseUpgrade(t, secondRange, 1)
+		requireRangeLease(t, secondRange, 1)
 
 		return func() {
 			defer restoreAfterSubTest()
@@ -512,7 +504,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 	execLeaseMover := func(t *testing.T, name string) error {
 		desc, err := tc.LookupRange(keyB)
 		assert.NoError(t, err)
-		t.Logf("Transferring r%d lease to n%d", desc.RangeID, 1)
+		t.Logf("Transferring r%d lease to n%d", desc.RangeID, tc.Target(0).NodeID)
 		assert.NoError(t, tc.TransferRangeLease(desc, tc.Target(0)))
 		return nil
 	}
@@ -580,7 +572,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 			// 3. txn1->n1: Put(a), EndTxn(parallel commit) -- Puts txn1 in STAGING.
 			// 4. txn1->n2: Put(b) -- Send the request, but pause before returning
 			// the response so we can inject network failure.
-			if req.txnName == "txn1" && hasPut && req.toNodeID == 2 && cp == AfterSending {
+			if req.txnName == "txn1" && hasPut && req.toNodeID == tc.Server(1).NodeID() && cp == AfterSending {
 				// Once we have seen the write on txn1 to n2 that we will fail, txn2
 				// can start.
 				close(txn2Ready)
@@ -602,7 +594,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 			// <transfer b's lease to n1>
 			// <inject a network failure and finally allow (4) txn1->n2: Put(b) to
 			// return with error>
-			if req.txnName == "txn1" && hasPut && req.toNodeID == 2 && cp == AfterSending {
+			if req.txnName == "txn1" && hasPut && req.toNodeID == tc.Server(1).NodeID() && cp == AfterSending {
 				// Hold the operation open until we are ready to retry on the new
 				// replica, after which we will return the injected failure.
 				req.pauseUntil(t, leaseMoveComplete, cp)
@@ -723,152 +715,6 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 
 	// Test cases with custom request scheduling.
 
-	// NB: This test can be removed for versions >=24.1.
-	t.Run("mixed version", func(t *testing.T) {
-		defer initSubTest(t)()
-
-		// Checkpoints in test.
-		txn1Ready := make(chan struct{})
-		txn2Ready := make(chan struct{})
-		leaseMoveReady := make(chan struct{})
-		leaseMoveComplete := make(chan struct{})
-		receivedFinalET := make(chan struct{})
-		recoverComplete := make(chan struct{})
-		txn1Done := make(chan struct{})
-
-		// Final result.
-		txn1ResultCh := make(chan error, 1)
-
-		// Concurrent transactions.
-		var wg sync.WaitGroup
-		wg.Add(3)
-		go runConcurrentOp(t, "txn1", execWorkloadTxn, &wg, txn1Ready, txn1Done, txn1ResultCh)
-		go runConcurrentOp(t, "txn2", execWorkloadTxn, &wg, txn2Ready, nil /* doneCh */, nil /* resultCh */)
-		go runConcurrentOp(t, "lease mover", execLeaseMover, &wg, leaseMoveReady, leaseMoveComplete, nil /* resultCh */)
-
-		// KV Request sequencing.
-		tMu.Lock()
-		tMu.modifyReq = func(req *interceptedReq) (modified bool) {
-			// In order to simulate a "mixed version" scenario, let's simply drop the
-			// AmbiguousReplayProtection flag from the batch request, as if the
-			// coordinator never sent it.
-			if req.ba.AmbiguousReplayProtection {
-				req.ba.AmbiguousReplayProtection = false
-				return true
-			}
-			return false
-		}
-		tMu.maybeWait = func(cp InterceptPoint, req *interceptedReq, resp *interceptedResp) (override error) {
-			_, hasPut := req.ba.GetArg(kvpb.Put)
-
-			// These conditions are checked in order of expected operations of the
-			// test.
-
-			// 1. txn1->n1: Get(a)
-			// 2. txn1->n2: Get(b)
-			// 3. txn1->n1: Put(a), EndTxn(parallel commit) -- Puts txn1 in STAGING.
-			// 4. txn1->n2: Put(b) -- Send the request, but pause before returning
-			// the response so we can inject network failure.
-			if req.txnName == "txn1" && hasPut && req.toNodeID == 2 && cp == AfterSending {
-				// Once we have seen the write on txn1 to n2 that we will fail, txn2
-				// can start.
-				close(txn2Ready)
-			}
-
-			// 5. txn2->n1: Get(a) OR Put(a) -- Discovers txn1's locks, issues push request.
-			// 6. txn2->n2: Get(b) OR Put(b)
-			// 7. _->n1: PushTxn(txn2->txn1) -- Discovers txn1 in STAGING and starts
-			// recovery.
-			// 8. _->n1: RecoverTxn(txn1) -- Before sending, pause the request so we
-			// can ensure it gets evaluated after txn1 retries (and refreshes), but
-			// before its final EndTxn.
-			if req.ba.IsSingleRecoverTxnRequest() && cp == BeforeSending {
-				// Once the RecoverTxn request is issued, as part of txn2's PushTxn
-				// request, the lease can be moved.
-				close(leaseMoveReady)
-			}
-
-			// <transfer b's lease to n1>
-			// <inject a network failure and finally allow (4) txn1->n2: Put(b) to
-			// return with error>
-			if req.txnName == "txn1" && hasPut && req.toNodeID == 2 && cp == AfterSending {
-				// Hold the operation open until we are ready to retry on the new
-				// replica, after which we will return the injected failure.
-				req.pauseUntil(t, leaseMoveComplete, cp)
-				t.Logf("%s - injected RPC error", req.prefix)
-				return grpcstatus.Errorf(codes.Unavailable, "response jammed on n%d<-n%d", req.fromNodeID, req.toNodeID)
-			}
-
-			// 9. txn1->n1: Put(b) -- Retry on new leaseholder sees new lease start
-			// timestamp, and attempts to evaluate it as an idempotent replay, but at
-			// a higher timestamp, which breaks idempotency due to being on commit.
-
-			// -- NB: With ambiguous replay protection, txn1 should end here.
-			// -- NB: Without ambiguous replay protection, txn1 would continue with:
-
-			// 10. txn1->n1: Refresh(a)
-			// 11. txn1->n1: Refresh(b)
-			// 12. txn1->n1: EndTxn(commit) -- Before sending, pause the request so
-			// that we can allow (8) RecoverTxn(txn1) to proceed, simulating a race
-			// in which the recovery wins.
-			if req.txnName == "txn1" && req.ba.IsSingleEndTxnRequest() && cp == BeforeSending {
-				close(receivedFinalET)
-			}
-
-			// <allow (8) RecoverTxn(txn1) to proceed and finish> -- because txn1
-			// is in STAGING and has all of its writes, it is implicitly committed,
-			// so the recovery will succeed in marking it explicitly committed.
-			if req.ba.IsSingleRecoverTxnRequest() && cp == BeforeSending {
-				// The RecoverTxn operation is evaluated after txn1's Refreshes,
-				// or after txn1 completes with error.
-				req.pauseUntilFirst(t, receivedFinalET, txn1Done, cp)
-			}
-			if req.ba.IsSingleRecoverTxnRequest() && cp == AfterSending {
-				t.Logf("%s - complete, resp={%s}", req.prefix, resp)
-				close(recoverComplete)
-			}
-
-			// <allow (12) EndTxn(commit) to proceed and execute> -- Results in
-			// "transaction unexpectedly committed" due to the recovery completing
-			// first.
-			if req.txnName == "txn1" && req.ba.IsSingleEndTxnRequest() && cp == BeforeSending {
-				req.pauseUntil(t, recoverComplete, cp)
-			}
-
-			// <allow txn2's Puts to execute>
-			if req.txnName == "txn2" && hasPut && cp == BeforeSending {
-				// While txn2's Puts can only occur after txn1 is marked as explicitly
-				// committed, if the Recovery and the subsequent txn2 Put(b) operations
-				// happen before txn1 retries its Put(b) on n1, it will encounter txn2's
-				// intent and get a WriteTooOld error instead of potentially being an
-				// idempotent replay.
-				<-txn1Done
-			}
-
-			return nil
-		}
-		tMu.Unlock()
-
-		// Start test, await concurrent operations and validate results.
-		close(txn1Ready)
-		err := <-txn1ResultCh
-		t.Logf("txn1 completed with err: %v", err)
-		wg.Wait()
-
-		// While we expect an AmbiguousResultError if the AmbiguousReplayProtection
-		// flag is sent/received, in the interests of ensuring that the client not
-		// sending the flag does not produce unexpected behavior, we expect the
-		// previous, incorrect TransactionStatusError with REASON_TXN_COMMITTED
-		// to be returned.
-		tErr := (*kvpb.TransactionStatusError)(nil)
-		require.ErrorAsf(t, err, &tErr,
-			"expected TransactionStatusError due to being already committed")
-		require.Equalf(t, kvpb.TransactionStatusError_REASON_TXN_COMMITTED, tErr.Reason,
-			"expected TransactionStatusError due to being already committed")
-		require.Truef(t, errors.HasAssertionFailure(err),
-			"expected AssertionFailedError due to sanity check on transaction already committed")
-	})
-
 	// The txn coordinator shouldn't respond with an incorrect retryable failure
 	// based on a refresh as the transaction may have already been committed.
 	t.Run("recovery before refresh fails", func(t *testing.T) {
@@ -932,7 +778,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 			// 3. txn1->n1: Put(a), EndTxn(parallel commit) -- Puts txn1 in STAGING.
 			// 4. txn1->n2: Put(b) -- Send the request, but pause before returning
 			// the response so we can inject network failure.
-			if req.txnName == "txn1" && hasPut && req.toNodeID == 2 && cp == AfterSending {
+			if req.txnName == "txn1" && hasPut && req.toNodeID == tc.Server(1).NodeID() && cp == AfterSending {
 				// Once we have seen the write on txn1 to n2 that we will fail, we can
 				// move the lease.
 				close(txn2Ready)
@@ -953,7 +799,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 			// <transfer b's lease to n1>
 			// <inject a network failure and finally allow (4) txn1->n2: Put(b) to
 			// return with error>
-			if req.txnName == "txn1" && hasPut && req.toNodeID == 2 && cp == AfterSending {
+			if req.txnName == "txn1" && hasPut && req.toNodeID == tc.Server(1).NodeID() && cp == AfterSending {
 				// Hold the operation open until we are ready to retry on the new
 				// replica, after which we will return the injected failure.
 				req.pauseUntil(t, leaseMoveComplete, cp)
@@ -1068,7 +914,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 			// 3. txn1->n1: Put(a), EndTxn(parallel commit) -- Puts txn1 in STAGING.
 			// 4. txn1->n2: Put(b) -- Send the request, but pause before returning the
 			// response so we can inject network failure.
-			if req.txnName == "txn1" && hasPut && req.toNodeID == 2 && cp == AfterSending {
+			if req.txnName == "txn1" && hasPut && req.toNodeID == tc.Server(1).NodeID() && cp == AfterSending {
 				// Once we have seen the write on txn1 to n2 that we will fail, txn2/txn3 can start.
 				close(otherTxnsReady)
 			}
@@ -1090,7 +936,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 			// <transfer b's lease to n1>
 			// <inject a network failure and finally allow (4) txn1->n2: Put(b) to
 			// return with error>
-			if req.txnName == "txn1" && hasPut && req.toNodeID == 2 && cp == AfterSending {
+			if req.txnName == "txn1" && hasPut && req.toNodeID == tc.Server(1).NodeID() && cp == AfterSending {
 				// Hold the operation open until we are ready to retry on the new
 				// replica, after which we will return the injected failure.
 				req.pauseUntil(t, leaseMoveComplete, cp)
@@ -1187,7 +1033,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 			// 4. txn1->n2: Put(b) -- Send the request, but pause before returning the
 			// response so we can inject network failure.
 			// <transfer b's lease to n1>
-			if req.txnName == "txn1" && hasPut && req.toNodeID == 2 && cp == AfterSending {
+			if req.txnName == "txn1" && hasPut && req.toNodeID == tc.Server(1).NodeID() && cp == AfterSending {
 				close(leaseMoveReady)
 				req.pauseUntil(t, leaseMoveComplete, cp)
 				close(txn2Ready)
@@ -1205,7 +1051,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 
 			// <inject a network failure and finally allow (4) txn1->n2: Put(b) to
 			// return with error>
-			if req.txnName == "txn1" && hasPut && req.toNodeID == 2 && cp == AfterSending {
+			if req.txnName == "txn1" && hasPut && req.toNodeID == tc.Server(1).NodeID() && cp == AfterSending {
 				// Hold the operation open until we are ready to retry on the new
 				// replica, after which we will return the injected failure.
 				req.pauseUntil(t, recoverComplete, cp)
@@ -1290,7 +1136,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 			// 4. txn1->n2: Put(b) -- Send the request, but pause before returning the
 			// response so we can inject network failure.
 			// <transfer b's lease to n1>
-			if req.txnName == "txn1" && hasPut && req.toNodeID == 2 && cp == AfterSending {
+			if req.txnName == "txn1" && hasPut && req.toNodeID == tc.Server(1).NodeID() && cp == AfterSending {
 				close(leaseMoveReady)
 				req.pauseUntil(t, leaseMoveComplete, cp)
 				close(txn2Ready)
@@ -1312,7 +1158,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 
 			// <inject a network failure and finally allow (4) txn1->n2: Put(b) to
 			// return with error>
-			if req.txnName == "txn1" && hasPut && req.toNodeID == 2 && cp == AfterSending {
+			if req.txnName == "txn1" && hasPut && req.toNodeID == tc.Server(1).NodeID() && cp == AfterSending {
 				// Hold the operation open until we are ready to retry on the new
 				// replica, after which we will return the injected failure.
 				req.pauseUntil(t, txn2ETReady, cp)
@@ -1366,7 +1212,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 		// Place second range on n1 (same as first).
 		secondRange := tc.LookupRangeOrFatal(t, keyB)
 		tc.TransferRangeLeaseOrFatal(t, secondRange, tc.Target(0))
-		requireLeaseUpgrade(t, secondRange, 0)
+		requireRangeLease(t, secondRange, 0)
 
 		// Operation functions.
 		execTxn2 := func(t *testing.T, name string) error {
@@ -1484,7 +1330,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 		// Place second range on n1 (same as first).
 		secondRange := tc.LookupRangeOrFatal(t, keyB)
 		tc.TransferRangeLeaseOrFatal(t, secondRange, tc.Target(0))
-		requireLeaseUpgrade(t, secondRange, 0)
+		requireRangeLease(t, secondRange, 0)
 
 		// Operation functions.
 		execTxn2 := func(t *testing.T, name string) error {
@@ -1615,7 +1461,7 @@ func TestTransactionUnexpectedlyCommitted(t *testing.T) {
 		// Place second range on n1 (same as first).
 		secondRange := tc.LookupRangeOrFatal(t, keyB)
 		tc.TransferRangeLeaseOrFatal(t, secondRange, tc.Target(0))
-		requireLeaseUpgrade(t, secondRange, 0)
+		requireRangeLease(t, secondRange, 0)
 
 		// Operation functions.
 		execTxn1 := func(t *testing.T, name string) error {

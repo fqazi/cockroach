@@ -14,23 +14,18 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
-	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/systemschema"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/upgrade/upgradebase"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/pebble/vfs"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,53 +33,42 @@ func TestValidateTargetClusterVersion(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
+	v := func(major, minor int32) roachpb.Version {
+		return roachpb.Version{Major: major, Minor: minor}
+	}
+	cv := func(major, minor int32) clusterversion.ClusterVersion {
+		return clusterversion.ClusterVersion{Version: v(major, minor)}
+	}
+
 	var tests = []struct {
-		latestVersion        roachpb.Version
-		minSupportedVersion  roachpb.Version
-		targetClusterVersion roachpb.Version
-		expErrMatch          string // empty if expecting a nil error
+		binaryVersion             roachpb.Version
+		binaryMinSupportedVersion roachpb.Version
+		targetClusterVersion      clusterversion.ClusterVersion
+		expErrMatch               string // empty if expecting a nil error
 	}{
 		{
-			latestVersion:        clusterversion.PreviousRelease.Version(),
-			minSupportedVersion:  clusterversion.MinSupported.Version(),
-			targetClusterVersion: clusterversion.MinSupported.Version(),
-			expErrMatch:          "",
+			binaryVersion:             v(20, 2),
+			binaryMinSupportedVersion: v(20, 1),
+			targetClusterVersion:      cv(20, 1),
+			expErrMatch:               "",
 		},
 		{
-			latestVersion:        clusterversion.PreviousRelease.Version(),
-			minSupportedVersion:  clusterversion.MinSupported.Version(),
-			targetClusterVersion: clusterversion.PreviousRelease.Version(),
-			expErrMatch:          "",
+			binaryVersion:             v(20, 2),
+			binaryMinSupportedVersion: v(20, 1),
+			targetClusterVersion:      cv(20, 2),
+			expErrMatch:               "",
 		},
 		{
-			latestVersion:        clusterversion.Latest.Version(),
-			minSupportedVersion:  clusterversion.MinSupported.Version(),
-			targetClusterVersion: clusterversion.Latest.Version(),
-			expErrMatch:          "",
+			binaryVersion:             v(20, 2),
+			binaryMinSupportedVersion: v(20, 1),
+			targetClusterVersion:      cv(21, 1),
+			expErrMatch:               "binary version.*less than target cluster version",
 		},
 		{
-			latestVersion:        clusterversion.Latest.Version(),
-			minSupportedVersion:  clusterversion.MinSupported.Version(),
-			targetClusterVersion: clusterversion.PreviousRelease.Version(),
-			expErrMatch:          "",
-		},
-		{
-			latestVersion:        clusterversion.Latest.Version(),
-			minSupportedVersion:  clusterversion.PreviousRelease.Version(),
-			targetClusterVersion: clusterversion.Latest.Version(),
-			expErrMatch:          "",
-		},
-		{
-			latestVersion:        clusterversion.PreviousRelease.Version(),
-			minSupportedVersion:  clusterversion.MinSupported.Version(),
-			targetClusterVersion: clusterversion.Latest.Version(),
-			expErrMatch:          "binary version.*less than target cluster version",
-		},
-		{
-			latestVersion:        clusterversion.Latest.Version(),
-			minSupportedVersion:  clusterversion.Latest.Version(),
-			targetClusterVersion: clusterversion.PreviousRelease.Version(),
-			expErrMatch:          "target cluster version.*less than binary's min supported version",
+			binaryVersion:             v(20, 2),
+			binaryMinSupportedVersion: v(20, 1),
+			targetClusterVersion:      cv(19, 2),
+			expErrMatch:               "target cluster version.*less than binary's min supported version",
 		},
 	}
 
@@ -92,8 +76,8 @@ func TestValidateTargetClusterVersion(t *testing.T) {
 
 	for i, test := range tests {
 		st := cluster.MakeTestingClusterSettingsWithVersions(
-			test.latestVersion,
-			test.minSupportedVersion,
+			test.binaryVersion,
+			test.binaryMinSupportedVersion,
 			false, /* initializeVersion */
 		)
 
@@ -101,16 +85,14 @@ func TestValidateTargetClusterVersion(t *testing.T) {
 			Settings: st,
 			Knobs: base.TestingKnobs{
 				Server: &TestingKnobs{
-					ClusterVersionOverride: test.latestVersion,
+					BinaryVersionOverride: test.binaryVersion,
 				},
 			},
 		})
 
 		migrationServer := s.MigrationServer().(*migrationServer)
 		req := &serverpb.ValidateTargetClusterVersionRequest{
-			ClusterVersion: &clusterversion.ClusterVersion{
-				Version: test.targetClusterVersion,
-			},
+			ClusterVersion: &test.targetClusterVersion,
 		}
 		_, err := migrationServer.ValidateTargetClusterVersion(context.Background(), req)
 		if !testutils.IsError(err, test.expErrMatch) {
@@ -125,20 +107,20 @@ func TestSyncAllEngines(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	vfsRegistry := fs.NewStickyRegistry(fs.UseStrictMemFS)
+	vfsRegistry := NewStickyVFSRegistry(UseStrictMemFS)
 	storeSpec := base.DefaultTestStoreSpec
 	storeSpec.StickyVFSID = "sync-all-engines"
 	testServerArgs := base.TestServerArgs{
 		Settings: cluster.MakeTestingClusterSettingsWithVersions(
-			clusterversion.PreviousRelease.Version(),
-			clusterversion.MinSupported.Version(),
+			roachpb.Version{Major: 23, Minor: 2},
+			roachpb.Version{Major: 23, Minor: 1},
 			false, /* initializeVersion */
 		),
 		StoreSpecs: []base.StoreSpec{storeSpec},
 		Knobs: base.TestingKnobs{
 			Server: &TestingKnobs{
-				ClusterVersionOverride: clusterversion.PreviousRelease.Version(),
-				StickyVFSRegistry:      vfsRegistry,
+				BinaryVersionOverride: roachpb.Version{Major: 23, Minor: 2},
+				StickyVFSRegistry:     vfsRegistry,
 			},
 		},
 	}
@@ -165,9 +147,9 @@ func TestSyncAllEngines(t *testing.T) {
 	// will have been lost.
 	{
 		memFS := vfsRegistry.Get(storeSpec.StickyVFSID)
-		crashFS := memFS.CrashClone(vfs.CrashCloneCfg{})
+		memFS.SetIgnoreSyncs(true)
 		s.Stopper().Stop(ctx)
-		vfsRegistry.Set(storeSpec.StickyVFSID, crashFS)
+		memFS.ResetToSyncedState()
 	}
 
 	// Restart the server.
@@ -177,7 +159,7 @@ func TestSyncAllEngines(t *testing.T) {
 	require.NoError(t, err)
 	// Verify that the restarted engine has the key "a".
 	{
-		engIter, err := store.StateEngine().NewEngineIterator(ctx, storage.IterOptions{
+		engIter, err := store.StateEngine().NewEngineIterator(storage.IterOptions{
 			LowerBound: roachpb.Key([]byte("a")),
 			UpperBound: roachpb.Key([]byte("b")),
 		})
@@ -199,41 +181,36 @@ func TestBumpClusterVersion(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
+	v := func(major, minor int32) roachpb.Version {
+		return roachpb.Version{Major: major, Minor: minor}
+	}
+	cv := func(major, minor int32) clusterversion.ClusterVersion {
+		return clusterversion.ClusterVersion{Version: v(major, minor)}
+	}
+
 	var tests = []struct {
 		binaryVersion        roachpb.Version
-		activeClusterVersion roachpb.Version // akin to min supported binary version
-		bumpClusterVersion   roachpb.Version
-		expClusterVersion    roachpb.Version
+		activeClusterVersion clusterversion.ClusterVersion // akin to min supported binary version
+		bumpClusterVersion   clusterversion.ClusterVersion
+		expClusterVersion    clusterversion.ClusterVersion
 	}{
 		{
-			binaryVersion:        clusterversion.Latest.Version(),
-			activeClusterVersion: clusterversion.PreviousRelease.Version(),
-			bumpClusterVersion:   clusterversion.PreviousRelease.Version(),
-			expClusterVersion:    clusterversion.PreviousRelease.Version(),
+			binaryVersion:        v(21, 1),
+			activeClusterVersion: cv(20, 2),
+			bumpClusterVersion:   cv(20, 2),
+			expClusterVersion:    cv(20, 2),
 		},
 		{
-			binaryVersion:        clusterversion.Latest.Version(),
-			activeClusterVersion: clusterversion.MinSupported.Version(),
-			bumpClusterVersion:   clusterversion.Latest.Version(),
-			expClusterVersion:    clusterversion.Latest.Version(),
+			binaryVersion:        v(21, 1),
+			activeClusterVersion: cv(20, 2),
+			bumpClusterVersion:   cv(21, 1),
+			expClusterVersion:    cv(21, 1),
 		},
 		{
-			binaryVersion:        clusterversion.Latest.Version(),
-			activeClusterVersion: clusterversion.MinSupported.Version(),
-			bumpClusterVersion:   clusterversion.PreviousRelease.Version(),
-			expClusterVersion:    clusterversion.PreviousRelease.Version(),
-		},
-		{
-			binaryVersion:        clusterversion.Latest.Version(),
-			activeClusterVersion: clusterversion.Latest.Version(),
-			bumpClusterVersion:   clusterversion.PreviousRelease.Version(),
-			expClusterVersion:    clusterversion.Latest.Version(),
-		},
-		{
-			binaryVersion:        clusterversion.Latest.Version(),
-			activeClusterVersion: clusterversion.PreviousRelease.Version(),
-			bumpClusterVersion:   clusterversion.MinSupported.Version(),
-			expClusterVersion:    clusterversion.PreviousRelease.Version(),
+			binaryVersion:        v(21, 1),
+			activeClusterVersion: cv(21, 1),
+			bumpClusterVersion:   cv(20, 2),
+			expClusterVersion:    cv(21, 1),
 		},
 	}
 
@@ -242,7 +219,7 @@ func TestBumpClusterVersion(t *testing.T) {
 		t.Run(fmt.Sprintf("config=%d", i), func(t *testing.T) {
 			st := cluster.MakeTestingClusterSettingsWithVersions(
 				test.binaryVersion,
-				test.activeClusterVersion,
+				test.activeClusterVersion.Version,
 				false, /* initializeVersion */
 			)
 
@@ -254,7 +231,7 @@ func TestBumpClusterVersion(t *testing.T) {
 						// cluster version, so we can actually bump the cluster
 						// version to the binary version. Think a cluster with
 						// active cluster version v20.1, but running v20.2 binaries.
-						ClusterVersionOverride: test.activeClusterVersion,
+						BinaryVersionOverride: test.activeClusterVersion.Version,
 						// We're bumping cluster versions manually ourselves. We
 						// want avoid racing with the auto-upgrade process.
 						DisableAutomaticVersionUpgrade: make(chan struct{}),
@@ -264,13 +241,13 @@ func TestBumpClusterVersion(t *testing.T) {
 			defer s.Stopper().Stop(context.Background())
 
 			// Check to see our pre-bump active cluster version is what we expect.
-			if got := s.ClusterSettings().Version.ActiveVersion(ctx); got.Version != test.activeClusterVersion {
-				t.Fatalf("expected active cluster version %s, got %s", test.activeClusterVersion, got.Version)
+			if got := s.ClusterSettings().Version.ActiveVersion(ctx); got != test.activeClusterVersion {
+				t.Fatalf("expected active cluster version %s, got %s", test.activeClusterVersion, got)
 			}
 
 			migrationServer := s.MigrationServer().(*migrationServer)
 			req := &serverpb.BumpClusterVersionRequest{
-				ClusterVersion: &clusterversion.ClusterVersion{Version: test.bumpClusterVersion},
+				ClusterVersion: &test.bumpClusterVersion,
 			}
 			if _, err := migrationServer.BumpClusterVersion(ctx, req); err != nil {
 				t.Fatal(err)
@@ -278,19 +255,19 @@ func TestBumpClusterVersion(t *testing.T) {
 
 			// Check to see if our post-bump active cluster version is what we
 			// expect.
-			if got := s.ClusterSettings().Version.ActiveVersion(ctx); got.Version != test.expClusterVersion {
-				t.Fatalf("expected active cluster version %s, got %s", test.expClusterVersion, got.Version)
+			if got := s.ClusterSettings().Version.ActiveVersion(ctx); got != test.expClusterVersion {
+				t.Fatalf("expected active cluster version %s, got %s", test.expClusterVersion, got)
 			}
 
 			// Check to see that our bumped cluster version was persisted to disk.
 			synthesizedCV, err := kvstorage.SynthesizeClusterVersionFromEngines(
 				ctx, s.Engines(), test.binaryVersion,
-				test.activeClusterVersion,
+				test.activeClusterVersion.Version,
 			)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if synthesizedCV.Version != test.expClusterVersion {
+			if synthesizedCV != test.expClusterVersion {
 				t.Fatalf("expected synthesized cluster version %s, got %s", test.expClusterVersion, synthesizedCV)
 			}
 		})
@@ -321,9 +298,8 @@ func TestMigrationPurgeOutdatedReplicas(t *testing.T) {
 	defer s.Stopper().Stop(context.Background())
 
 	migrationServer := s.MigrationServer().(*migrationServer)
-	version := clusterversion.Latest.Version()
 	if _, err := migrationServer.PurgeOutdatedReplicas(context.Background(), &serverpb.PurgeOutdatedReplicasRequest{
-		Version: &version,
+		Version: &clusterversion.TestingBinaryVersion,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -335,17 +311,15 @@ func TestMigrationPurgeOutdatedReplicas(t *testing.T) {
 
 // TestUpgradeHappensAfterMigration is a regression test to ensure that
 // upgrades run prior to attempting to upgrade the cluster to the current
-// version. It will also verify that any migrations that modify the system
-// database schema properly update the SystemDatabaseSchemaVersion on the
-// system database descriptor.
+// version.
 func TestUpgradeHappensAfterMigrations(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
 	st := cluster.MakeTestingClusterSettingsWithVersions(
-		clusterversion.Latest.Version(),
-		clusterversion.MinSupported.Version(),
+		clusterversion.TestingBinaryVersion,
+		clusterversion.TestingBinaryMinSupportedVersion,
 		false, /* initializeVersion */
 	)
 	automaticUpgrade := make(chan struct{})
@@ -354,7 +328,7 @@ func TestUpgradeHappensAfterMigrations(t *testing.T) {
 		Knobs: base.TestingKnobs{
 			Server: &TestingKnobs{
 				DisableAutomaticVersionUpgrade: automaticUpgrade,
-				ClusterVersionOverride:         clusterversion.MinSupported.Version(),
+				BinaryVersionOverride:          clusterversion.TestingBinaryMinSupportedVersion,
 			},
 			UpgradeManager: &upgradebase.TestingKnobs{
 				AfterRunPermanentUpgrades: func() {
@@ -363,32 +337,11 @@ func TestUpgradeHappensAfterMigrations(t *testing.T) {
 					for i := 0; i < N; i++ {
 						runtime.Gosched()
 					}
-					require.True(t, st.Version.ActiveVersion(ctx).Less(clusterversion.Latest.Version()))
+					require.True(t, st.Version.ActiveVersion(ctx).Less(clusterversion.TestingBinaryVersion))
 				},
 			},
 		},
 	})
-
-	internalDB := s.ApplicationLayer().InternalDB().(descs.DB)
-	err := internalDB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
-		systemDBDesc, err := txn.Descriptors().ByIDWithoutLeased(txn.KV()).Get().Database(ctx, keys.SystemDatabaseID)
-		if err != nil {
-			return err
-		}
-		systemDBVersion := systemDBDesc.DatabaseDesc().GetSystemDatabaseSchemaVersion()
-		// NB: When MinSupported is changed to 24_2, this check can change to
-		// an equality check. This is because 24.2 is the first release where
-		// https://github.com/cockroachdb/cockroach/issues/121914 has been
-		// resolved.
-		require.False(
-			t, clusterversion.MinSupported.Version().Less(*systemDBVersion),
-			"before upgrade, expected system database version (%v) to be less than or equal to clusterversion.MinSupported (%v)",
-			*systemDBVersion, clusterversion.MinSupported.Version(),
-		)
-		return nil
-	})
-	require.NoError(t, err)
-
 	close(automaticUpgrade)
 	sr := sqlutils.MakeSQLRunner(db)
 
@@ -399,25 +352,5 @@ func TestUpgradeHappensAfterMigrations(t *testing.T) {
 SELECT version = crdb_internal.node_executable_version()
   FROM [SHOW CLUSTER SETTING version]`,
 		[][]string{{"true"}})
-
-	// After the upgrade, make sure the new system database version is equal to
-	// the SystemDatabaseSchemaBootstrapVersion. This serves two purposes:
-	// - reminder to bump SystemDatabaseSchemaBootstrapVersion.
-	// - ensure that upgrades have run and updated the system database version.
-	err = internalDB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
-		systemDBDesc, err := txn.Descriptors().ByIDWithoutLeased(txn.KV()).Get().Database(ctx, keys.SystemDatabaseID)
-		if err != nil {
-			return err
-		}
-		systemDBVersion := systemDBDesc.DatabaseDesc().GetSystemDatabaseSchemaVersion()
-		require.Equalf(
-			t, systemschema.SystemDatabaseSchemaBootstrapVersion, *systemDBVersion,
-			"after upgrade, expected system database version (%v) to be equal to systemschema.SystemDatabaseSchemaBootstrapVersion (%v)",
-			*systemDBVersion, systemschema.SystemDatabaseSchemaBootstrapVersion,
-		)
-		return nil
-	})
-	require.NoError(t, err)
-
 	s.Stopper().Stop(context.Background())
 }

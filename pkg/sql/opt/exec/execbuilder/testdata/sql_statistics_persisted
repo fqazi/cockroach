@@ -484,12 +484,12 @@ vectorized: true
 │   │   │   │   │       │
 │   │   │   │   │       └── • sort
 │   │   │   │   │           │ columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │   │           │ estimated row count: 3
+│   │   │   │   │           │ estimated row count: 7
 │   │   │   │   │           │ order: -execution_count
 │   │   │   │   │           │
 │   │   │   │   │           └── • scan
 │   │   │   │   │                 columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │   │                 estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │   │   │   │                 estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │   │   │   │                 table: statement_statistics@primary
 │   │   │   │   │                 spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │   │   │   │
@@ -505,12 +505,12 @@ vectorized: true
 │   │   │   │           │
 │   │   │   │           └── • sort
 │   │   │   │               │ columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │               │ estimated row count: 3
+│   │   │   │               │ estimated row count: 7
 │   │   │   │               │ order: -service_latency
 │   │   │   │               │
 │   │   │   │               └── • scan
 │   │   │   │                     columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │   │   │                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │   │   │                     table: statement_statistics@primary
 │   │   │   │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │   │   │
@@ -526,12 +526,12 @@ vectorized: true
 │   │   │           │
 │   │   │           └── • sort
 │   │   │               │ columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │               │ estimated row count: 3
+│   │   │               │ estimated row count: 7
 │   │   │               │ order: -cpu_sql_nanos
 │   │   │               │
 │   │   │               └── • scan
 │   │   │                     columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │   │                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │   │                     table: statement_statistics@primary
 │   │   │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │   │
@@ -547,12 +547,12 @@ vectorized: true
 │   │           │
 │   │           └── • sort
 │   │               │ columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │               │ estimated row count: 3
+│   │               │ estimated row count: 7
 │   │               │ order: -contention_time
 │   │               │
 │   │               └── • scan
 │   │                     columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │                     table: statement_statistics@primary
 │   │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │
@@ -568,12 +568,12 @@ vectorized: true
 │           │
 │           └── • sort
 │               │ columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│               │ estimated row count: 3
+│               │ estimated row count: 7
 │               │ order: -total_estimated_execution_time
 │               │
 │               └── • scan
 │                     columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │                     table: statement_statistics@primary
 │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │
@@ -589,12 +589,12 @@ vectorized: true
         │
         └── • sort
             │ columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-            │ estimated row count: 3
+            │ estimated row count: 7
             │ order: -p99_latency
             │
             └── • scan
                   columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-                  estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+                  estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
                   table: statement_statistics@primary
                   spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 
@@ -732,12 +732,12 @@ vectorized: true
 │   │   │   │   │       │
 │   │   │   │   │       └── • sort
 │   │   │   │   │           │ columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │   │           │ estimated row count: 3
+│   │   │   │   │           │ estimated row count: 7
 │   │   │   │   │           │ order: -execution_count
 │   │   │   │   │           │
 │   │   │   │   │           └── • scan
 │   │   │   │   │                 columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │   │                 estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │   │   │   │                 estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │   │   │   │                 table: statement_statistics@primary
 │   │   │   │   │                 spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │   │   │   │
@@ -753,12 +753,12 @@ vectorized: true
 │   │   │   │           │
 │   │   │   │           └── • sort
 │   │   │   │               │ columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │               │ estimated row count: 3
+│   │   │   │               │ estimated row count: 7
 │   │   │   │               │ order: -service_latency
 │   │   │   │               │
 │   │   │   │               └── • scan
 │   │   │   │                     columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │   │   │                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │   │   │                     table: statement_statistics@primary
 │   │   │   │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │   │   │
@@ -774,12 +774,12 @@ vectorized: true
 │   │   │           │
 │   │   │           └── • sort
 │   │   │               │ columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │               │ estimated row count: 3
+│   │   │               │ estimated row count: 7
 │   │   │               │ order: -cpu_sql_nanos
 │   │   │               │
 │   │   │               └── • scan
 │   │   │                     columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │   │                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │   │                     table: statement_statistics@primary
 │   │   │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │   │
@@ -795,12 +795,12 @@ vectorized: true
 │   │           │
 │   │           └── • sort
 │   │               │ columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │               │ estimated row count: 3
+│   │               │ estimated row count: 7
 │   │               │ order: -contention_time
 │   │               │
 │   │               └── • scan
 │   │                     columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │                     table: statement_statistics@primary
 │   │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │
@@ -816,12 +816,12 @@ vectorized: true
 │           │
 │           └── • sort
 │               │ columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│               │ estimated row count: 3
+│               │ estimated row count: 7
 │               │ order: -total_estimated_execution_time
 │               │
 │               └── • scan
 │                     columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │                     table: statement_statistics@primary
 │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │
@@ -837,12 +837,12 @@ vectorized: true
         │
         └── • sort
             │ columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-            │ estimated row count: 3
+            │ estimated row count: 7
             │ order: -p99_latency
             │
             └── • scan
                   columns: (aggregated_ts, fingerprint_id, transaction_fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-                  estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+                  estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
                   table: statement_statistics@primary
                   spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 
@@ -1238,12 +1238,12 @@ vectorized: true
 │   │   │   │   │       │
 │   │   │   │   │       └── • sort
 │   │   │   │   │           │ columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │   │           │ estimated row count: 3
+│   │   │   │   │           │ estimated row count: 7
 │   │   │   │   │           │ order: -execution_count
 │   │   │   │   │           │
 │   │   │   │   │           └── • scan
 │   │   │   │   │                 columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │   │                 estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │   │   │   │                 estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │   │   │   │                 table: transaction_statistics@primary
 │   │   │   │   │                 spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │   │   │   │
@@ -1259,12 +1259,12 @@ vectorized: true
 │   │   │   │           │
 │   │   │   │           └── • sort
 │   │   │   │               │ columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │               │ estimated row count: 3
+│   │   │   │               │ estimated row count: 7
 │   │   │   │               │ order: -service_latency
 │   │   │   │               │
 │   │   │   │               └── • scan
 │   │   │   │                     columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │   │   │                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │   │   │                     table: transaction_statistics@primary
 │   │   │   │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │   │   │
@@ -1280,12 +1280,12 @@ vectorized: true
 │   │   │           │
 │   │   │           └── • sort
 │   │   │               │ columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │               │ estimated row count: 3
+│   │   │               │ estimated row count: 7
 │   │   │               │ order: -cpu_sql_nanos
 │   │   │               │
 │   │   │               └── • scan
 │   │   │                     columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │   │                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │   │                     table: transaction_statistics@primary
 │   │   │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │   │
@@ -1301,12 +1301,12 @@ vectorized: true
 │   │           │
 │   │           └── • sort
 │   │               │ columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │               │ estimated row count: 3
+│   │               │ estimated row count: 7
 │   │               │ order: -contention_time
 │   │               │
 │   │               └── • scan
 │   │                     columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │                     table: transaction_statistics@primary
 │   │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │
@@ -1322,12 +1322,12 @@ vectorized: true
 │           │
 │           └── • sort
 │               │ columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│               │ estimated row count: 3
+│               │ estimated row count: 7
 │               │ order: -total_estimated_execution_time
 │               │
 │               └── • scan
 │                     columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │                     table: transaction_statistics@primary
 │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │
@@ -1343,12 +1343,12 @@ vectorized: true
         │
         └── • sort
             │ columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-            │ estimated row count: 3
+            │ estimated row count: 7
             │ order: -p99_latency
             │
             └── • scan
                   columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-                  estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+                  estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
                   table: transaction_statistics@primary
                   spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 
@@ -1480,12 +1480,12 @@ vectorized: true
 │   │   │   │   │       │
 │   │   │   │   │       └── • sort
 │   │   │   │   │           │ columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │   │           │ estimated row count: 3
+│   │   │   │   │           │ estimated row count: 7
 │   │   │   │   │           │ order: -execution_count
 │   │   │   │   │           │
 │   │   │   │   │           └── • scan
 │   │   │   │   │                 columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │   │                 estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │   │   │   │                 estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │   │   │   │                 table: transaction_statistics@primary
 │   │   │   │   │                 spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │   │   │   │
@@ -1501,12 +1501,12 @@ vectorized: true
 │   │   │   │           │
 │   │   │   │           └── • sort
 │   │   │   │               │ columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │               │ estimated row count: 3
+│   │   │   │               │ estimated row count: 7
 │   │   │   │               │ order: -service_latency
 │   │   │   │               │
 │   │   │   │               └── • scan
 │   │   │   │                     columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │   │                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │   │   │                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │   │   │                     table: transaction_statistics@primary
 │   │   │   │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │   │   │
@@ -1522,12 +1522,12 @@ vectorized: true
 │   │   │           │
 │   │   │           └── • sort
 │   │   │               │ columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │               │ estimated row count: 3
+│   │   │               │ estimated row count: 7
 │   │   │               │ order: -cpu_sql_nanos
 │   │   │               │
 │   │   │               └── • scan
 │   │   │                     columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │   │                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │   │                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │   │                     table: transaction_statistics@primary
 │   │   │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │   │
@@ -1543,12 +1543,12 @@ vectorized: true
 │   │           │
 │   │           └── • sort
 │   │               │ columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │               │ estimated row count: 3
+│   │               │ estimated row count: 7
 │   │               │ order: -contention_time
 │   │               │
 │   │               └── • scan
 │   │                     columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│   │                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│   │                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │   │                     table: transaction_statistics@primary
 │   │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │   │
@@ -1564,12 +1564,12 @@ vectorized: true
 │           │
 │           └── • sort
 │               │ columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│               │ estimated row count: 3
+│               │ estimated row count: 7
 │               │ order: -total_estimated_execution_time
 │               │
 │               └── • scan
 │                     columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-│                     estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+│                     estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
 │                     table: transaction_statistics@primary
 │                     spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8
 │
@@ -1585,11 +1585,11 @@ vectorized: true
         │
         └── • sort
             │ columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-            │ estimated row count: 3
+            │ estimated row count: 7
             │ order: -p99_latency
             │
             └── • scan
                   columns: (aggregated_ts, fingerprint_id, app_name, metadata, statistics, execution_count, service_latency, cpu_sql_nanos, contention_time, total_estimated_execution_time, p99_latency)
-                  estimated row count: 3 (<0.01% of the table; stats collected <hidden> ago)
+                  estimated row count: 7 (<0.01% of the table; stats collected <hidden> ago)
                   table: transaction_statistics@primary
                   spans: /0/2023-03-21T14:05:00.000001Z-/1 /1/2023-03-21T14:05:00.000001Z-/2 /2/2023-03-21T14:05:00.000001Z-/3 /3/2023-03-21T14:05:00.000001Z-/4 /4/2023-03-21T14:05:00.000001Z-/5 /5/2023-03-21T14:05:00.000001Z-/6 /6/2023-03-21T14:05:00.000001Z-/7 /7/2023-03-21T14:05:00.000001Z-/8

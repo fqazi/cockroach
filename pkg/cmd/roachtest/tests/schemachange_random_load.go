@@ -9,17 +9,14 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
-	"math/rand/v2"
 	"path/filepath"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
-	"github.com/cockroachdb/cockroach/pkg/workload/schemachange"
 )
 
 const (
@@ -38,11 +35,10 @@ func registerSchemaChangeRandomLoad(r registry.Registry) {
 			spec.AWSZones("us-east-2b,us-west-1a,eu-west-1a"),
 		),
 		// TODO(radu): enable this test on AWS.
-		CompatibleClouds:           registry.AllExceptAWS,
-		Suites:                     registry.Suites(registry.Nightly),
-		Leases:                     registry.MetamorphicLeases,
-		NativeLibs:                 registry.LibGEOS,
-		RequiresDeprecatedWorkload: true, // uses schemachange
+		CompatibleClouds: registry.AllExceptAWS,
+		Suites:           registry.Suites(registry.Nightly),
+		Leases:           registry.MetamorphicLeases,
+		NativeLibs:       registry.LibGEOS,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			maxOps := 5000
 			concurrency := 20
@@ -59,36 +55,46 @@ func runSchemaChangeRandomLoad(
 	ctx context.Context, t test.Test, c cluster.Cluster, maxOps, concurrency int,
 ) {
 	validate := func(db *gosql.DB) {
-		invalidObjects, err := schemachange.ValidateInvalidObjects(ctx, db)
+		var (
+			id           int
+			databaseName string
+			schemaName   string
+			objName      string
+			objError     string
+		)
+		numInvalidObjects := 0
+		rows, err := db.QueryContext(ctx, `SELECT id, database_name, schema_name, obj_name, error FROM crdb_internal.invalid_objects`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, obj := range invalidObjects {
+		for rows.Next() {
+			numInvalidObjects++
+			if err := rows.Scan(&id, &databaseName, &schemaName, &objName, &objError); err != nil {
+				t.Fatal(err)
+			}
 			t.L().Errorf(
-				"invalid object found: id: %d, database_name: %s, schema_name: %s, obj_name: %s, error: %v",
-				obj.ID, obj.DatabaseName, obj.SchemaName, obj.ObjName, obj.Error,
+				"invalid object found: id: %d, database_name: %s, schema_name: %s, obj_name: %s, error: %s",
+				id, databaseName, schemaName, objName, objError,
 			)
 		}
-		if len(invalidObjects) > 0 {
-			t.Fatalf("found %d invalid objects", len(invalidObjects))
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if numInvalidObjects > 0 {
+			t.Fatalf("found %d invalid objects", numInvalidObjects)
 		}
 	}
+
 	loadNode := c.Node(1)
 	roachNodes := c.Range(1, c.Spec().NodeCount)
 	t.Status("copying binaries")
 	c.Put(ctx, t.DeprecatedWorkload(), "./workload", loadNode)
 
 	t.Status("starting cockroach nodes")
+	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), roachNodes)
+	c.Run(ctx, loadNode, "./workload init schemachange {pgurl:1}")
 
-	settings := install.MakeClusterSettings(install.ClusterSettingsOption{
-		"sql.log.all_statements.enabled": "true",
-	})
-
-	c.Start(ctx, t.L(), option.DefaultStartOpts(), settings, roachNodes)
-
-	c.Run(ctx, option.WithNodes(loadNode), "./workload init schemachange {pgurl:1}")
-
-	result, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(c.Node(1)), "echo", "-n", "{store-dir}")
+	result, err := c.RunWithDetailsSingleNode(ctx, t.L(), c.Node(1), "echo", "-n", "{store-dir}")
 	if err != nil {
 		t.L().Printf("Failed to retrieve store directory from node 1: %v\n", err.Error())
 	}
@@ -97,20 +103,15 @@ func runSchemaChangeRandomLoad(
 	runCmd := []string{
 		"./workload run schemachange --verbose=1",
 		"--tolerate-errors=false",
+		// Save the histograms so that they can be reported to https://roachperf.crdb.dev/.
+		" --histograms=" + t.PerfArtifactsDir() + "/stats.json",
 		fmt.Sprintf("--max-ops %d", maxOps),
 		fmt.Sprintf("--concurrency %d", concurrency),
 		fmt.Sprintf("--txn-log %s", filepath.Join(storeDirectory, txnLogFile)),
 		fmt.Sprintf("{pgurl%s}", loadNode),
 	}
-
-	extraLabels := map[string]string{
-		"concurrency": fmt.Sprintf("%d", concurrency),
-		"max-ops":     fmt.Sprintf("%d", maxOps),
-	}
-
-	runCmd = append(runCmd, roachtestutil.GetWorkloadHistogramArgs(t, c, extraLabels))
 	t.Status("running schemachange workload")
-	err = c.RunE(ctx, option.WithNodes(loadNode), runCmd...)
+	err = c.RunE(ctx, loadNode, runCmd...)
 	if err != nil {
 		saveArtifacts(ctx, t, c, storeDirectory)
 		t.Fatal(err)
@@ -129,16 +130,8 @@ func runSchemaChangeRandomLoad(
 
 	t.Status("performing validation after workload")
 	validate(db)
-	schemaChangerSetting := "on"
-	if rand.Float32() < 0.5 {
-		schemaChangerSetting = "off"
-	}
-	t.Status(fmt.Sprintf("dropping database with use_declarative_schema_changer = %s", schemaChangerSetting))
-	_, err = db.ExecContext(ctx, "SET use_declarative_schema_changer = $1", schemaChangerSetting)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.ExecContext(ctx, "DROP DATABASE schemachange CASCADE")
+	t.Status("dropping database")
+	_, err = db.ExecContext(ctx, `USE defaultdb; DROP DATABASE schemachange CASCADE;`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,15 +145,12 @@ func saveArtifacts(ctx context.Context, t test.Test, c cluster.Cluster, storeDir
 	defer db.Close()
 
 	// Save a backup file called schemachange to the store directory.
-	_, err := db.Exec("BACKUP DATABASE schemachange INTO 'nodelocal://1/schemachange'")
+	_, err := db.Exec("BACKUP DATABASE schemachange to 'nodelocal://1/schemachange'")
 	if err != nil {
 		t.L().Printf("Failed execute backup command on node 1: %v\n", err.Error())
 	}
-	var backupPath string
-	if err := db.QueryRow("SELECT path FROM [SHOW BACKUPS IN 'nodelocal://1/schemachange']").Scan(&backupPath); err != nil {
-		t.L().Printf("Failed to get backup path from node 1: %v\n", err.Error())
-	}
-	remoteBackupFilePath := filepath.Join(storeDirectory, "extern", "schemachange", backupPath)
+
+	remoteBackupFilePath := filepath.Join(storeDirectory, "extern", "schemachange")
 	localBackupFilePath := filepath.Join(t.ArtifactsDir(), "backup")
 	remoteTransactionsFilePath := filepath.Join(storeDirectory, txnLogFile)
 	localTransactionsFilePath := filepath.Join(t.ArtifactsDir(), txnLogFile)

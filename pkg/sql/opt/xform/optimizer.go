@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/norm"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/ordering"
-	"github.com/cockroachdb/cockroach/pkg/sql/opt/props"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/props/physical"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/util/cancelchecker"
@@ -300,7 +299,7 @@ func (o *Optimizer) optimizeExpr(
 		// Short-circuit traversal of scalar expressions with no nested subquery,
 		// since there's only one possible tree.
 		if !t.ScalarProps().HasSubquery {
-			return memo.Cost{C: 0}, true
+			return 0, true
 		}
 		return o.optimizeScalarExpr(t)
 
@@ -505,32 +504,6 @@ func (o *Optimizer) optimizeGroup(grp memo.RelExpr, required *physical.Required)
 		))
 	}
 
-	// deriveLCP is a closure that returns the longest common prefix between the
-	// interesting orderings of the group and the required ordering.
-	//
-	// Interesting orderings are shared by all members of a group (see
-	// ordering.DeriveInterestingOrderings), so the longest common prefix
-	// between the interesting ordering and a specific required ordering is also
-	// the same for all members.
-	//
-	// Caching and reusing the result in lcp reduces the expensive computation
-	// of the deriving the longest common prefix. The closure allows lazily
-	// deriving the longest common prefix only when needed.
-	var cachedLCP struct {
-		lcp    props.OrderingChoice
-		ok     bool
-		exists bool
-	}
-	deriveLCP := func() (_ props.OrderingChoice, ok bool) {
-		if cachedLCP.exists {
-			return cachedLCP.lcp, cachedLCP.ok
-		}
-		interestingOrderings := ordering.DeriveInterestingOrderings(o.mem, grp)
-		cachedLCP.lcp, cachedLCP.ok = interestingOrderings.LongestCommonPrefix(&required.Ordering)
-		cachedLCP.exists = true
-		return cachedLCP.lcp, cachedLCP.ok
-	}
-
 	// Iterate until the group has been fully optimized.
 	for {
 		fullyOptimized := true
@@ -543,7 +516,7 @@ func (o *Optimizer) optimizeGroup(grp memo.RelExpr, required *physical.Required)
 			}
 
 			// Optimize the group member with respect to the required properties.
-			memberOptimized := o.optimizeGroupMember(state, member, required, deriveLCP)
+			memberOptimized := o.optimizeGroupMember(state, member, required)
 
 			// If any of the group members have not yet been fully optimized, then
 			// the group is not yet fully optimized.
@@ -576,24 +549,21 @@ func (o *Optimizer) optimizeGroup(grp memo.RelExpr, required *physical.Required)
 // can provide the required properties at a lower cost. The lowest cost
 // expression is saved to groupState.
 func (o *Optimizer) optimizeGroupMember(
-	state *groupState,
-	member memo.RelExpr,
-	required *physical.Required,
-	deriveLCP func() (_ props.OrderingChoice, ok bool),
+	state *groupState, member memo.RelExpr, required *physical.Required,
 ) (fullyOptimized bool) {
 	// Compute the cost for enforcers to provide the required properties. This
 	// may be lower than the expression providing the properties itself. For
 	// example, it might be better to sort the results of a hash join than to
 	// use the results of a merge join that are already sorted, but at the cost
 	// of requiring one of the merge join children to be sorted.
-	fullyOptimized = o.enforceProps(state, member, required, deriveLCP)
+	fullyOptimized = o.enforceProps(state, member, required)
 
 	// If the expression cannot provide the required properties, then don't
 	// continue. But what if the expression is able to provide a subset of the
 	// properties? That case is taken care of by enforceProps, which will
 	// recursively optimize the group with property subsets and then add
 	// enforcers to provide the remainder.
-	if CanProvidePhysicalProps(o.ctx, o.evalCtx, o.mem, member, required) {
+	if CanProvidePhysicalProps(o.ctx, o.evalCtx, member, required) {
 		var cost memo.Cost
 		for i, n := 0, member.ChildCount(); i < n; i++ {
 			// Given required parent properties, get the properties required from
@@ -614,10 +584,9 @@ func (o *Optimizer) optimizeGroupMember(
 				//               remote branch, e.g., compare the size of the limit hint
 				//               with the expected row count of the local branch.
 				//               Is there a better approach?
-				childCost.C /= 10
-				cost.Add(childCost)
+				cost += childCost / 10
 			} else {
-				cost.Add(childCost)
+				cost += childCost
 			}
 
 			// If any child expression is not fully optimized, then the parent
@@ -628,7 +597,7 @@ func (o *Optimizer) optimizeGroupMember(
 		}
 
 		// Check whether this is the new lowest cost expression.
-		cost.Add(o.coster.ComputeCost(member, required))
+		cost += o.coster.ComputeCost(member, required)
 		o.ratchetCost(state, member, cost)
 	}
 
@@ -648,7 +617,7 @@ func (o *Optimizer) optimizeScalarExpr(
 		childCost, childOptimized := o.optimizeExpr(scalar.Child(i), childProps)
 
 		// Accumulate cost of children.
-		cost.Add(childCost)
+		cost += childCost
 
 		// If any child expression is not fully optimized, then the parent
 		// expression is also not fully optimized.
@@ -681,10 +650,7 @@ func (o *Optimizer) optimizeScalarExpr(
 // update shouldExplore, which should return true if enforceProps will explore
 // the group by recursively calling optimizeGroup (by way of optimizeEnforcer).
 func (o *Optimizer) enforceProps(
-	state *groupState,
-	member memo.RelExpr,
-	required *physical.Required,
-	deriveLCP func() (_ props.OrderingChoice, ok bool),
+	state *groupState, member memo.RelExpr, required *physical.Required,
 ) (fullyOptimized bool) {
 	// Strip off one property that can be enforced. Other properties will be
 	// stripped by recursively optimizing the group with successively fewer
@@ -712,7 +678,8 @@ func (o *Optimizer) enforceProps(
 		// with the required ordering. We do not need to add the enforcer if
 		// there is no common prefix or if the required ordering is implied by
 		// the input ordering.
-		if lcp, ok := deriveLCP(); ok {
+		interestingOrderings := ordering.DeriveInterestingOrderings(member)
+		if lcp, ok := interestingOrderings.LongestCommonPrefix(&required.Ordering); ok {
 			getEnforcer = func() memo.RelExpr {
 				enforcer := o.getScratchSort()
 				enforcer.Input = state.best
@@ -749,8 +716,7 @@ func (o *Optimizer) optimizeEnforcer(
 
 	// Check whether this is the new lowest cost expression with the enforcer
 	// added.
-	cost := innerState.cost
-	cost.Add(o.coster.ComputeCost(enforcer, enforcerProps))
+	cost := innerState.cost + o.coster.ComputeCost(enforcer, enforcerProps)
 	if o.ratchetCost(state, enforcer, cost) {
 		if _, ok := enforcer.(*memo.SortExpr); ok {
 			// The expression was added to the memo, so lose the reference.
@@ -843,10 +809,8 @@ func (o *Optimizer) setLowestCostTree(parent opt.Expr, parentProps *physical.Req
 		var provided physical.Provided
 		// BuildProvided relies on ProvidedPhysical() being set in the children, so
 		// it must run after the recursive calls on the children.
-		provided.Ordering = ordering.BuildProvided(o.evalCtx, o.mem, relParent, &parentProps.Ordering)
-		provided.Distribution = distribution.BuildProvided(
-			o.ctx, o.evalCtx, o.mem, relParent, &parentProps.Distribution,
-		)
+		provided.Ordering = ordering.BuildProvided(o.evalCtx, relParent, &parentProps.Ordering)
+		provided.Distribution = distribution.BuildProvided(o.ctx, o.evalCtx, relParent, &parentProps.Distribution)
 		o.mem.SetBestProps(relParent, parentProps, &provided, relCost)
 	}
 
@@ -1166,7 +1130,7 @@ func (o *Optimizer) RecomputeCost() {
 func (o *Optimizer) recomputeCostImpl(
 	parent opt.Expr, parentProps *physical.Required, c Coster,
 ) memo.Cost {
-	cost := memo.Cost{C: 0}
+	cost := memo.Cost(0)
 	for i, n := 0, parent.ChildCount(); i < n; i++ {
 		child := parent.Child(i)
 		childProps := physical.MinRequired
@@ -1174,12 +1138,12 @@ func (o *Optimizer) recomputeCostImpl(
 		case memo.RelExpr:
 			childProps = t.RequiredPhysical()
 		}
-		cost.Add(o.recomputeCostImpl(child, childProps, c))
+		cost += o.recomputeCostImpl(child, childProps, c)
 	}
 
 	switch t := parent.(type) {
 	case memo.RelExpr:
-		cost.Add(c.ComputeCost(t, parentProps))
+		cost += c.ComputeCost(t, parentProps)
 		o.mem.ResetCost(t, cost)
 	}
 

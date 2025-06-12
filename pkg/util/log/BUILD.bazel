@@ -1,4 +1,5 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test", "gomock")
+load("@bazel_gomock//:gomock.bzl", "gomock")
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "log",
@@ -43,8 +44,6 @@ go_library(
         "stderr_redirect_windows.go",
         "stderr_sink.go",
         "structured.go",
-        "structured_processor.go",
-        "structured_v2.go",
         "test_log_scope.go",
         "trace.go",
         "tracebacks.go",
@@ -62,8 +61,6 @@ go_library(
         "//pkg/util",
         "//pkg/util/allstacks",
         "//pkg/util/caller",
-        "//pkg/util/ctxutil",
-        "//pkg/util/debugutil",
         "//pkg/util/encoding/encodingtype",
         "//pkg/util/envutil",
         "//pkg/util/fileutil",
@@ -85,6 +82,7 @@ go_library(
         "@com_github_cockroachdb_redact//interfaces",
         "@com_github_cockroachdb_ttycolor//:ttycolor",
         "@com_github_petermattis_goid//:goid",
+        "@org_golang_x_net//trace",
     ] + select({
         "@io_bazel_rules_go//go/platform:aix": [
             "@org_golang_x_sys//unix",
@@ -119,13 +117,7 @@ go_library(
         "@io_bazel_rules_go//go/platform:openbsd": [
             "@org_golang_x_sys//unix",
         ],
-        "@io_bazel_rules_go//go/platform:osx": [
-            "@org_golang_x_sys//unix",
-        ],
         "@io_bazel_rules_go//go/platform:plan9": [
-            "@org_golang_x_sys//unix",
-        ],
-        "@io_bazel_rules_go//go/platform:qnx": [
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:solaris": [
@@ -170,6 +162,7 @@ go_test(
         "trace_test.go",
         ":mock_logsink",  # keep
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":log"],
     deps = [
@@ -179,7 +172,7 @@ go_test(
         "//pkg/settings/cluster",
         "//pkg/util/caller",
         "//pkg/util/ctxgroup",
-        "//pkg/util/encoding",
+        "//pkg/util/envutil",
         "//pkg/util/leaktest",
         "//pkg/util/log/channel",
         "//pkg/util/log/logconfig",
@@ -199,6 +192,7 @@ go_test(
         "@com_github_pmezard_go_difflib//difflib",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
+        "@org_golang_x_net//trace",
         "@org_golang_x_sys//unix",
     ],
 )
@@ -213,7 +207,7 @@ genrule(
         $(location //pkg/util/log/gen) $(location //pkg/util/log/logpb:log.proto) \
           log_channels.go $(location log_channels_generated.go)
        """,
-    tools = [
+    exec_tools = [
         "//pkg/util/log/gen",
     ],
     visibility = [

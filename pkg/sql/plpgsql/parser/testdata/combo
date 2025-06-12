@@ -35,7 +35,7 @@ IF i >= n THEN
 END IF;
 END LOOP;
 RETURN res;
-END;
+END
  -- normalized!
 DECLARE
 i INT8;
@@ -55,7 +55,7 @@ IF ((i) >= (n)) THEN
 END IF;
 END LOOP;
 RETURN (res);
-END;
+END
  -- fully parenthesized
 DECLARE
 i INT8;
@@ -75,12 +75,12 @@ IF i >= n THEN
 END IF;
 END LOOP;
 RETURN res;
-END;
+END
  -- literals removed
 DECLARE
-_ INT8;
-_ INT8 := _(_, 1);
-_ INT8[] := ARRAY[]::INT8[];
+i INT8;
+n INT8 := _(_, 1);
+res INT8[] := ARRAY[]::INT8[];
 BEGIN
 _ := 0;
 LOOP
@@ -95,5 +95,5 @@ IF _ >= _ THEN
 END IF;
 END LOOP;
 RETURN _;
-END;
+END
  -- identifiers removed

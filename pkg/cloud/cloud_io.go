@@ -49,7 +49,7 @@ var WriteChunkSize = settings.RegisterByteSizeSetting(
 	settings.ApplicationLevel,
 	"cloudstorage.write_chunk.size",
 	"controls the size of each file chunk uploaded by the cloud storage client",
-	5<<20,
+	8<<20,
 )
 
 var retryConnectionTimedOut = settings.RegisterBoolSetting(
@@ -117,9 +117,6 @@ func MakeTransport(
 
 	// Add our custom CA.
 	t.TLSClientConfig = tlsConf
-	// Bump up the default idle conn pool size as we have many parallel workers in
-	// most bulk jobs.
-	t.MaxIdleConnsPerHost = 64
 	if metrics != nil {
 		t.DialContext = metrics.NetMetrics.Wrap(t.DialContext, cloud, bucket, client)
 	}

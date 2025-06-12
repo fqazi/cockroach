@@ -10,19 +10,13 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"slices"
 	"sort"
 	"text/tabwriter"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/promhelperclient"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/ui"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/gce"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"golang.org/x/sync/errgroup"
 )
@@ -41,8 +35,6 @@ const (
 	// Provisional models that are used for printing VM details.
 	spotProvisionModel     = "spot"
 	onDemandProvisionModel = "ondemand"
-
-	errNoVMsCreated = "No VMs were created by the providers"
 )
 
 // printDetailsColumnHeaders are the headers to be printed in the defined sequence.
@@ -237,16 +229,15 @@ func ListCloud(l *logger.Logger, options vm.ListOptions) (*Cloud, error) {
 	}
 
 	providerNames := vm.AllProviderNames()
-	if len(options.IncludeProviders) > 0 {
-		providerNames = options.IncludeProviders
-	}
 	providerVMs := make([]vm.List, len(providerNames))
 	var g errgroup.Group
 	for i, providerName := range providerNames {
+		// Capture loop variable.
+		index := i
 		provider := vm.Providers[providerName]
 		g.Go(func() error {
 			var err error
-			providerVMs[i], err = provider.List(l, options)
+			providerVMs[index], err = provider.List(l, options)
 			return errors.Wrapf(err, "provider %s", provider.Name())
 		})
 	}
@@ -263,11 +254,11 @@ func ListCloud(l *logger.Logger, options vm.ListOptions) (*Cloud, error) {
 			// Parse cluster/user from VM name, but only for non-local VMs
 			userName, err := v.UserName()
 			if err != nil {
-				v.Errors = append(v.Errors, vm.ErrInvalidUserName)
+				v.Errors = append(v.Errors, vm.ErrInvalidName)
 			}
 			clusterName, err := v.ClusterName()
 			if err != nil {
-				v.Errors = append(v.Errors, vm.ErrInvalidClusterName)
+				v.Errors = append(v.Errors, vm.ErrInvalidName)
 			}
 
 			// Anything with an error gets tossed into the BadInstances slice, and we'll correct
@@ -307,245 +298,46 @@ func ListCloud(l *logger.Logger, options vm.ListOptions) (*Cloud, error) {
 		if len(c.VMs) == 0 {
 			l.Printf("WARNING: found no VMs in cluster %s\n", c.Name)
 		}
-
-		// `roachprod.Start` expects nodes/vms to be in sorted order
-		// see https://github.com/cockroachdb/cockroach/pull/133647 for more details
 		sort.Sort(c.VMs)
 	}
 
 	return cloud, providerErr
 }
 
-type ClusterCreateOpts struct {
-	// Nodes indicates how many nodes in the cluster should be created with the
-	// respective CreateOpts and ProviderOpts.
-	Nodes                 int
-	CreateOpts            vm.CreateOpts
-	ProviderOptsContainer vm.ProviderOptionsContainer
-}
-
-// Extracts o.CreateOpts.VMProviders from the provided opts.
-func Providers(opts ...*ClusterCreateOpts) []string {
-	providers := []string{}
-	for _, o := range opts {
-		providers = append(providers, o.CreateOpts.VMProviders...)
-	}
-	// Remove dupes, if any.
-	slices.Sort(providers)
-	return slices.Compact(providers)
-}
-
 // CreateCluster TODO(peter): document
-// opts is a slice of all node VM specs to be provisioned for the cluster. Generally,
-// non uniform VM specs are not supported for a CRDB cluster, but we often want to provision
-// an additional "workload node". This node often times does not need the same CPU count as
-// the rest of the cluster. i.e. it is overkill for a 3 node 32 CPU cluster to have a 32 CPU
-// workload node, but a 50 node 8 CPU cluster might find a 8 CPU workload node inadequate.
-func CreateCluster(l *logger.Logger, opts []*ClusterCreateOpts) (*Cluster, error) {
-
-	c := &Cluster{
-		Name:      opts[0].CreateOpts.ClusterName,
-		CreatedAt: timeutil.Now(),
-		Lifetime:  opts[0].CreateOpts.Lifetime,
+func CreateCluster(
+	l *logger.Logger,
+	nodes int,
+	opts vm.CreateOpts,
+	providerOptsContainer vm.ProviderOptionsContainer,
+) error {
+	providerCount := len(opts.VMProviders)
+	if providerCount == 0 {
+		return errors.New("no VMProviders configured")
 	}
 
-	// Keep track of the total number of nodes created, as we append all cluster names
-	// with the node count.
-	var nodesCreated int
-	vmName := func(name string) string {
-		nodesCreated++
-		return vm.Name(name, nodesCreated)
-	}
-	for _, o := range opts {
-		providerCount := len(o.CreateOpts.VMProviders)
-		if providerCount == 0 {
-			return nil, errors.New("no VMProviders configured")
-		}
+	// Allocate vm names over the configured providers
+	vmLocations := map[string][]string{}
+	for i, p := 1, 0; i <= nodes; i++ {
+		pName := opts.VMProviders[p]
+		vmName := vm.Name(opts.ClusterName, i)
+		vmLocations[pName] = append(vmLocations[pName], vmName)
 
-		// Allocate vm names over the configured providers
-		// N.B., nodeIdx starts at 1 as nodes are one-based, i.e. n1, n2, ...
-		vmLocations := map[string][]string{}
-		for nodeIdx, p := 1, 0; nodeIdx <= o.Nodes; nodeIdx++ {
-			pName := o.CreateOpts.VMProviders[p]
-			vmLocations[pName] = append(vmLocations[pName], vmName(o.CreateOpts.ClusterName))
-			p = (p + 1) % providerCount
-		}
-
-		var vmList vm.List
-		var vmListLock syncutil.Mutex
-		// Create VMs in parallel across all providers.
-		// Each provider will return the list of VMs it created, and we append
-		// them to the cached Cluster.
-		if err := vm.ProvidersParallel(o.CreateOpts.VMProviders, func(p vm.Provider) error {
-			providerVmList, err := p.Create(
-				l, vmLocations[p.Name()], o.CreateOpts, o.ProviderOptsContainer[p.Name()],
-			)
-			if err != nil {
-				return err
-			}
-			vmListLock.Lock()
-			defer vmListLock.Unlock()
-			vmList = append(vmList, providerVmList...)
-			return nil
-		}); err != nil {
-			return nil, err
-		}
-
-		c.VMs = append(c.VMs, vmList...)
+		p = (p + 1) % providerCount
 	}
 
-	// Clusters can end up being empty (due to Azure or GCE dangling resources),
-	// but can't be created with no VMs.
-	if len(c.VMs) == 0 {
-		return nil, errors.New(errNoVMsCreated)
-	}
-
-	// Set the cluster user to the user of the first VM.
-	// This is the method also used in ListCloud() above.
-	var err error
-	c.User, err = c.VMs[0].UserName()
-	if err != nil {
-		return nil, err
-	}
-
-	// `roachprod.Start` expects nodes/vms to be in sorted order
-	sort.Sort(c.VMs)
-
-	return c, nil
-}
-
-// GrowCluster adds new nodes to an existing cluster.
-func GrowCluster(l *logger.Logger, c *Cluster, numNodes int) error {
-	names := make([]string, 0, numNodes)
-	offset := len(c.VMs) + 1
-	for i := offset; i < offset+numNodes; i++ {
-		vmName := vm.Name(c.Name, i)
-		names = append(names, vmName)
-	}
-
-	provider := c.VMs[0].Provider
-	if !c.IsLocal() {
-		providers := c.Clouds()
-		// Only GCE supports expanding a cluster.
-		if len(providers) != 1 || provider != gce.ProviderName {
-			return errors.Errorf("cannot grow cluster %s, growing a cluster is currently only supported on %s",
-				c.Name, gce.ProviderName)
-		}
-	}
-
-	err := vm.ForProvider(provider, func(p vm.Provider) error {
-		addedVms, err := p.Grow(l, c.VMs, c.Name, names)
-		if err != nil {
-			return err
-		}
-
-		// Update the list of VMs in the cluster.
-		c.VMs = append(c.VMs, addedVms...)
-
-		return nil
+	return vm.ProvidersParallel(opts.VMProviders, func(p vm.Provider) error {
+		return p.Create(l, vmLocations[p.Name()], opts, providerOptsContainer[p.Name()])
 	})
-	if err != nil {
-		return err
-	}
-
-	// `roachprod.Start` expects nodes/vms to be in sorted order
-	sort.Sort(c.VMs)
-
-	return nil
-}
-
-// ShrinkCluster removes tail nodes from an existing cluster.
-func ShrinkCluster(l *logger.Logger, c *Cluster, numNodes int) error {
-	provider := c.VMs[0].Provider
-	if !c.IsLocal() {
-		providers := c.Clouds()
-		// Only GCE supports shrinking a cluster.
-		if len(providers) != 1 || provider != gce.ProviderName {
-			return errors.Errorf("cannot shrink cluster %s, shrinking a cluster is currently only supported on %s",
-				c.Name, gce.ProviderName)
-		}
-	}
-
-	if numNodes >= len(c.VMs) {
-		return errors.Errorf("cannot shrink cluster %s by %d nodes, only %d nodes in cluster",
-			c.Name, numNodes, len(c.VMs))
-	}
-	// Always delete from the tail.
-	vmsToDelete := c.VMs[len(c.VMs)-numNodes:]
-
-	err := vm.ForProvider(provider, func(p vm.Provider) error {
-		return p.Shrink(l, vmsToDelete, c.Name)
-	})
-	if err != nil {
-		return err
-	}
-
-	// Update the list of VMs in the cluster.
-	c.VMs = c.VMs[:len(c.VMs)-numNodes]
-	return nil
-}
-
-func (c *Cluster) DeletePrometheusConfig(ctx context.Context, l *logger.Logger) error {
-
-	cl := promhelperclient.NewPromClient()
-
-	stopSpinner := ui.NewDefaultSpinner(l, "Destroying Prometheus configs").Start()
-	defer stopSpinner()
-
-	for _, node := range c.VMs {
-
-		reachability := promhelperclient.ProviderReachability(
-			node.Provider,
-			promhelperclient.CloudEnvironment(node.Project),
-		)
-		if reachability == promhelperclient.None {
-			continue
-		}
-
-		err := cl.DeleteClusterConfig(ctx, c.Name, false, false /* insecure */, l)
-		if err != nil {
-
-			if !promhelperclient.IsNotFoundError(err) {
-				return errors.Wrapf(
-					err,
-					"failed to delete the cluster config with cluster as secure",
-				)
-			}
-
-			// TODO(bhaskar): Obtain secure cluster information.
-			// Cluster does not have the information on secure or not.
-			// So, we retry as insecure  if delete fails with cluster as secure.
-			if err = cl.DeleteClusterConfig(ctx, c.Name, false, true /* insecure */, l); err != nil {
-				return errors.Wrapf(
-					err,
-					"failed to delete the cluster config with cluster as insecure and secure",
-				)
-			}
-
-		}
-		break
-
-	}
-
-	return nil
 }
 
 // DestroyCluster TODO(peter): document
 func DestroyCluster(l *logger.Logger, c *Cluster) error {
-
-	if err := c.DeletePrometheusConfig(context.Background(), l); err != nil {
-		l.Printf("WARNING: failed to delete the prometheus config (already wiped?): %s", err)
-	}
-
 	// DNS entries are destroyed first to ensure that the GC job will not try
 	// and clean-up entries prematurely.
-	stopSpinner := ui.NewDefaultSpinner(l, "Destroying DNS entries").Start()
 	dnsErr := vm.FanOutDNS(c.VMs, func(p vm.DNSProvider, vms vm.List) error {
 		return p.DeleteRecordsBySubdomain(context.Background(), c.Name)
 	})
-	stopSpinner()
-
-	stopSpinner = ui.NewDefaultSpinner(l, "Destroying VMs").Start()
 	// Allow both DNS and VM operations to run before returning any errors.
 	clusterErr := vm.FanOut(c.VMs, func(p vm.Provider, vms vm.List) error {
 		// Enable a fast-path for providers that can destroy a cluster in one shot.
@@ -554,7 +346,6 @@ func DestroyCluster(l *logger.Logger, c *Cluster) error {
 		}
 		return p.Delete(l, vms)
 	})
-	stopSpinner()
 	return errors.CombineErrors(dnsErr, clusterErr)
 }
 
@@ -562,12 +353,7 @@ func DestroyCluster(l *logger.Logger, c *Cluster) error {
 func ExtendCluster(l *logger.Logger, c *Cluster, extension time.Duration) error {
 	// Round new lifetime to nearest second.
 	newLifetime := (c.Lifetime + extension).Round(time.Second)
-	err := vm.FanOut(c.VMs, func(p vm.Provider, vms vm.List) error {
+	return vm.FanOut(c.VMs, func(p vm.Provider, vms vm.List) error {
 		return p.Extend(l, vms, newLifetime)
 	})
-	if err != nil {
-		return err
-	}
-	c.Lifetime = newLifetime
-	return nil
 }

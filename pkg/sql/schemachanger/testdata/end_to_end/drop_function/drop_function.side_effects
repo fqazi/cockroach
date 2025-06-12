@@ -40,7 +40,7 @@ write *eventpb.DropFunction to event log:
     statement: DROP FUNCTION ‹""›.‹""›.‹f›
     tag: DROP FUNCTION
     user: root
-## StatementPhase stage 1 of 1 with 14 MutationType ops
+## StatementPhase stage 1 of 1 with 12 MutationType ops
 upsert descriptor #101
    schema:
   -  functions:
@@ -81,7 +81,7 @@ upsert descriptor #104
      families:
      - columnIds:
   ...
-     schemaLocked: true
+       time: {}
      unexposedParentSchemaId: 101
   -  version: "3"
   +  version: "4"
@@ -92,8 +92,8 @@ upsert descriptor #105
   -  dependedOnBy:
   -  - byId: true
   -    id: 109
-     formatVersion: 3
-     id: 105
+     families:
+     - columnIds:
   ...
        start: "1"
      unexposedParentSchemaId: 101
@@ -144,7 +144,7 @@ upsert descriptor #109
 ## PreCommitPhase stage 1 of 2 with 1 MutationType op
 undo all catalog changes within txn #1
 persist all catalog changes to storage
-## PreCommitPhase stage 2 of 2 with 21 MutationType ops
+## PreCommitPhase stage 2 of 2 with 19 MutationType ops
 upsert descriptor #101
    schema:
   -  functions:
@@ -180,8 +180,6 @@ upsert descriptor #104
   +        "1": a
   +        "2": b
   +        "3": c
-  +        "4294967292": crdb_internal_origin_timestamp
-  +        "4294967293": crdb_internal_origin_id
   +        "4294967294": tableoid
   +        "4294967295": crdb_internal_mvcc_timestamp
   +      families:
@@ -210,7 +208,7 @@ upsert descriptor #104
      families:
      - columnIds:
   ...
-     schemaLocked: true
+       time: {}
      unexposedParentSchemaId: 101
   -  version: "3"
   +  version: "4"
@@ -228,8 +226,8 @@ upsert descriptor #105
   +    nameMapping:
   +      id: 105
   +      name: sq1
-     formatVersion: 3
-     id: 105
+     families:
+     - columnIds:
   ...
        start: "1"
      unexposedParentSchemaId: 101
@@ -250,8 +248,6 @@ upsert descriptor #106
   +    nameMapping:
   +      columns:
   +        "1": a
-  +        "4294967292": crdb_internal_origin_timestamp
-  +        "4294967293": crdb_internal_origin_id
   +        "4294967294": tableoid
   +        "4294967295": crdb_internal_mvcc_timestamp
   +      id: 106
@@ -353,8 +349,6 @@ upsert descriptor #104
   -        "1": a
   -        "2": b
   -        "3": c
-  -        "4294967292": crdb_internal_origin_timestamp
-  -        "4294967293": crdb_internal_origin_id
   -        "4294967294": tableoid
   -        "4294967295": crdb_internal_mvcc_timestamp
   -      families:
@@ -368,7 +362,7 @@ upsert descriptor #104
      dependedOnBy:
      - columnIds:
   ...
-     schemaLocked: true
+       time: {}
      unexposedParentSchemaId: 101
   -  version: "4"
   +  version: "5"
@@ -383,8 +377,8 @@ upsert descriptor #105
   -    nameMapping:
   -      id: 105
   -      name: sq1
-     formatVersion: 3
-     id: 105
+     families:
+     - columnIds:
   ...
        start: "1"
      unexposedParentSchemaId: 101
@@ -401,8 +395,6 @@ upsert descriptor #106
   -    nameMapping:
   -      columns:
   -        "1": a
-  -        "4294967292": crdb_internal_origin_timestamp
-  -        "4294967293": crdb_internal_origin_id
   -        "4294967294": tableoid
   -        "4294967295": crdb_internal_mvcc_timestamp
   -      id: 106

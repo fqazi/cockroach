@@ -21,7 +21,6 @@ import (
 
 var alphaRangeDescriptors []roachpb.RangeDescriptor
 var alphaRangeDescriptorDB MockRangeDescriptorDB
-var tf TransportFactory
 
 func init() {
 	lastKey := testMetaEndKey
@@ -43,9 +42,6 @@ func init() {
 	alphaRangeDescriptorDB = mockRangeDescriptorDBForDescs(
 		append(alphaRangeDescriptors, TestMetaRangeDescriptor)...,
 	)
-	tf = func(options SendOptions, slice ReplicaSlice) Transport {
-		panic("transport not set up for use")
-	}
 }
 
 func TestRangeIterForward(t *testing.T) {
@@ -62,10 +58,9 @@ func TestRangeIterForward(t *testing.T) {
 		AmbientCtx:        log.MakeTestingAmbientCtxWithNewTracer(),
 		Clock:             clock,
 		NodeDescs:         g,
-		Stopper:           stopper,
+		RPCContext:        rpcContext,
 		RangeDescriptorDB: alphaRangeDescriptorDB,
 		Settings:          cluster.MakeTestingClusterSettings(),
-		TransportFactory:  tf,
 	})
 
 	ri := MakeRangeIterator(ds)
@@ -99,10 +94,9 @@ func TestRangeIterSeekForward(t *testing.T) {
 		AmbientCtx:        log.MakeTestingAmbientCtxWithNewTracer(),
 		Clock:             clock,
 		NodeDescs:         g,
-		Stopper:           stopper,
+		RPCContext:        rpcContext,
 		RangeDescriptorDB: alphaRangeDescriptorDB,
 		Settings:          cluster.MakeTestingClusterSettings(),
-		TransportFactory:  tf,
 	})
 
 	ri := MakeRangeIterator(ds)
@@ -139,10 +133,9 @@ func TestRangeIterReverse(t *testing.T) {
 		AmbientCtx:        log.MakeTestingAmbientCtxWithNewTracer(),
 		Clock:             clock,
 		NodeDescs:         g,
-		Stopper:           stopper,
+		RPCContext:        rpcContext,
 		RangeDescriptorDB: alphaRangeDescriptorDB,
 		Settings:          cluster.MakeTestingClusterSettings(),
-		TransportFactory:  tf,
 	})
 
 	ri := MakeRangeIterator(ds)
@@ -176,10 +169,9 @@ func TestRangeIterSeekReverse(t *testing.T) {
 		AmbientCtx:        log.MakeTestingAmbientCtxWithNewTracer(),
 		Clock:             clock,
 		NodeDescs:         g,
-		Stopper:           stopper,
+		RPCContext:        rpcContext,
 		RangeDescriptorDB: alphaRangeDescriptorDB,
 		Settings:          cluster.MakeTestingClusterSettings(),
-		TransportFactory:  tf,
 	})
 
 	ri := MakeRangeIterator(ds)

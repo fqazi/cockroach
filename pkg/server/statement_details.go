@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/server/authserver"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/srverrors"
@@ -26,11 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
-)
-
-const (
-	mergeAggStmtMetadataColumnLatest = "merge_aggregated_stmt_metadata(metadata)"
-	mergeAggStmtMetadata_V23_2       = "crdb_internal.merge_aggregated_stmt_metadata(array_agg(metadata))"
 )
 
 func (s *statusServer) StatementDetails(
@@ -51,22 +47,6 @@ func (s *statusServer) StatementDetails(
 		s.sqlServer.execCfg.SQLStatsTestingKnobs)
 }
 
-// statementDetailsRespBuilder stores values needed to build queries
-// to retrieve the statement details.
-// We'll pursue a larger refactor later, but this struct will
-// suffice in the short term to allow us to stop sending the
-// same values across multiple functions.
-// We will not refactor the repetitive logic occurring in choosing the
-// source table just yet.
-type statementDetailsRespBuilder struct {
-	ie                          *sql.InternalExecutor
-	mergeAggStmtMetadataColExpr string
-	whereClause                 string
-	qargs                       []interface{}
-	limit                       int64
-	activityHasData             bool
-}
-
 func getStatementDetails(
 	ctx context.Context,
 	req *serverpb.StatementDetailsRequest,
@@ -81,43 +61,52 @@ func getStatementDetails(
 		return nil, srverrors.ServerError(ctx, err)
 	}
 
+	// Used for mixed cluster version, where we need to use the persisted view with _v22_2.
+	tableSuffix := ""
+	if !settings.Version.IsActive(ctx, clusterversion.V23_1AddSQLStatsComputedIndexes) {
+		tableSuffix = "_v22_2"
+	}
 	// Check if the activity tables have data within the selected period.
+	activityHasData := false
 	reqStartTime := getTimeFromSeconds(req.Start)
-	activityHasData, err := activityTablesHaveFullData(
+	if settings.Version.IsActive(ctx, clusterversion.V23_1AddSystemActivityTables) {
+		activityHasData, err = activityTablesHaveFullData(
+			ctx,
+			ie,
+			settings,
+			testingKnobs,
+			reqStartTime,
+			1,
+			serverpb.StatsSortOptions_SERVICE_LAT, //Order is not used on this endpoint, so any value can be passed here.
+		)
+		if err != nil {
+			log.Errorf(ctx, "Error on getStatementDetails: %s", err)
+		}
+	}
+
+	statementTotal, err := getTotalStatementDetails(ctx, ie, whereClause, args, activityHasData, tableSuffix)
+	if err != nil {
+		return nil, srverrors.ServerError(ctx, err)
+	}
+	statementStatisticsPerAggregatedTs, err := getStatementDetailsPerAggregatedTs(
 		ctx,
 		ie,
-		settings,
-		testingKnobs,
-		reqStartTime,
-		1,
-		serverpb.StatsSortOptions_SERVICE_LAT, //Order is not used on this endpoint, so any value can be passed here.
-	)
-	if err != nil {
-		log.Errorf(ctx, "Error on getStatementDetails: %s", err)
-	}
-
-	// This expression is used to merge the metadata column from statement
-	// activity table.
-	mergeAggStmtMetadataColExpr := mergeAggStmtMetadataColumnLatest
-
-	rb := statementDetailsRespBuilder{
-		ie:                          ie,
-		mergeAggStmtMetadataColExpr: mergeAggStmtMetadataColExpr,
-		whereClause:                 whereClause,
-		qargs:                       args,
-		limit:                       limit,
-		activityHasData:             activityHasData,
-	}
-
-	statementTotal, err := rb.getTotalStatementDetails(ctx)
+		whereClause,
+		args,
+		limit,
+		activityHasData,
+		tableSuffix)
 	if err != nil {
 		return nil, srverrors.ServerError(ctx, err)
 	}
-	statementStatisticsPerAggregatedTs, err := rb.getStatementDetailsPerAggregatedTs(ctx)
-	if err != nil {
-		return nil, srverrors.ServerError(ctx, err)
-	}
-	statementStatisticsPerPlanHash, err := rb.getStatementDetailsPerPlanHash(ctx)
+	statementStatisticsPerPlanHash, err := getStatementDetailsPerPlanHash(
+		ctx,
+		ie,
+		whereClause,
+		args,
+		limit,
+		activityHasData,
+		tableSuffix)
 	if err != nil {
 		return nil, srverrors.ServerError(ctx, err)
 	}
@@ -128,11 +117,13 @@ func getStatementDetails(
 	// since the metadata is unique per plan hash.
 	// Update the statementTotal.Metadata.*Count with the counts from statementStatisticsPerPlanHash.keyData.
 	statementTotal.Metadata.DistSQLCount = 0
+	statementTotal.Metadata.FailedCount = 0
 	statementTotal.Metadata.FullScanCount = 0
 	statementTotal.Metadata.VecCount = 0
 	statementTotal.Metadata.TotalCount = 0
 	for _, planStats := range statementStatisticsPerPlanHash {
 		statementTotal.Metadata.DistSQLCount += planStats.Metadata.DistSQLCount
+		statementTotal.Metadata.FailedCount += planStats.Metadata.FailedCount
 		statementTotal.Metadata.FullScanCount += planStats.Metadata.FullScanCount
 		statementTotal.Metadata.VecCount += planStats.Metadata.VecCount
 		statementTotal.Metadata.TotalCount += planStats.Metadata.TotalCount
@@ -214,16 +205,21 @@ func getStatementDetailsQueryClausesAndArgs(
 }
 
 // getTotalStatementDetails return all the statistics for the selected statement combined.
-func (rb *statementDetailsRespBuilder) getTotalStatementDetails(
+func getTotalStatementDetails(
 	ctx context.Context,
+	ie *sql.InternalExecutor,
+	whereClause string,
+	args []interface{},
+	activityTableHasAllData bool,
+	tableSuffix string,
 ) (serverpb.StatementDetailsResponse_CollectedStatementSummary, error) {
 	const expectedNumDatums = 4
 	var statement serverpb.StatementDetailsResponse_CollectedStatementSummary
 	const queryFormat = `
-SELECT merge_stats_metadata(metadata)    AS metadata,
-       array_agg(app_name)               AS app_names,
-       merge_statement_stats(statistics) AS statistics,
-       encode(fingerprint_id, 'hex')     AS fingerprint_id
+SELECT crdb_internal.merge_stats_metadata(array_agg(metadata))    AS metadata,
+       array_agg(app_name)                                        AS app_names,
+       crdb_internal.merge_statement_stats(array_agg(statistics)) AS statistics,
+       encode(fingerprint_id, 'hex')                              AS fingerprint_id
 FROM %s %s
 GROUP BY
     fingerprint_id
@@ -232,29 +228,29 @@ LIMIT 1`
 	var row tree.Datums
 	var err error
 
-	if rb.activityHasData {
-		row, err = rb.ie.QueryRowEx(ctx, "combined-stmts-activity-details-total", nil,
+	if activityTableHasAllData {
+		row, err = ie.QueryRowEx(ctx, "combined-stmts-activity-details-total", nil,
 			sessiondata.NodeUserSessionDataOverride, fmt.Sprintf(`
-SELECT %s                                  AS metadata,
-       array_agg(app_name)                 AS app_names,
-       merge_statement_stats(statistics)   AS statistics,
-       encode(fingerprint_id, 'hex')       AS fingerprint_id
+SELECT crdb_internal.merge_aggregated_stmt_metadata(array_agg(metadata)) AS metadata,
+       array_agg(app_name)                                               AS app_names,
+       crdb_internal.merge_statement_stats(array_agg(statistics))        AS statistics,
+       encode(fingerprint_id, 'hex')                                     AS fingerprint_id
 FROM crdb_internal.statement_activity %s
 GROUP BY
     fingerprint_id
-LIMIT 1`, rb.mergeAggStmtMetadataColExpr, rb.whereClause), rb.qargs...)
+LIMIT 1`, whereClause), args...)
 		if err != nil {
 			return statement, srverrors.ServerError(ctx, err)
 		}
 	}
 	// If there are no results from the activity table, retrieve the data from the persisted table.
 	if row == nil || row.Len() == 0 {
-		row, err = rb.ie.QueryRowEx(ctx, "combined-stmts-persisted-details-total", nil,
+		row, err = ie.QueryRowEx(ctx, "combined-stmts-persisted-details-total", nil,
 			sessiondata.NodeUserSessionDataOverride,
 			fmt.Sprintf(
 				queryFormat,
-				CrdbInternalStmtStatsPersisted,
-				rb.whereClause), rb.qargs...)
+				CrdbInternalStmtStatsPersisted+tableSuffix,
+				whereClause), args...)
 		if err != nil {
 			return statement, srverrors.ServerError(ctx, err)
 		}
@@ -263,9 +259,9 @@ LIMIT 1`, rb.mergeAggStmtMetadataColExpr, rb.whereClause), rb.qargs...)
 	// If there are no results from the persisted table, retrieve the data from the combined view
 	// with data in-memory.
 	if row.Len() == 0 {
-		row, err = rb.ie.QueryRowEx(ctx, "combined-stmts-details-total-with-memory", nil,
+		row, err = ie.QueryRowEx(ctx, "combined-stmts-details-total-with-memory", nil,
 			sessiondata.NodeUserSessionDataOverride,
-			fmt.Sprintf(queryFormat, CrdbInternalStmtStatsCombined, rb.whereClause), rb.qargs...)
+			fmt.Sprintf(queryFormat, CrdbInternalStmtStatsCombined, whereClause), args...)
 		if err != nil {
 			return statement, srverrors.ServerError(ctx, err)
 		}
@@ -314,14 +310,20 @@ LIMIT 1`, rb.mergeAggStmtMetadataColExpr, rb.whereClause), rb.qargs...)
 // getStatementDetailsPerAggregatedTs returns the list of statements
 // per aggregated timestamp, not using the columns plan hash as
 // part of the key on the grouping.
-func (rb *statementDetailsRespBuilder) getStatementDetailsPerAggregatedTs(
+func getStatementDetailsPerAggregatedTs(
 	ctx context.Context,
+	ie *sql.InternalExecutor,
+	whereClause string,
+	args []interface{},
+	limit int64,
+	activityTableHasAllData bool,
+	tableSuffix string,
 ) ([]serverpb.StatementDetailsResponse_CollectedStatementGroupedByAggregatedTs, error) {
 	const expectedNumDatums = 3
 	const queryFormat = `
 SELECT aggregated_ts,
-       merge_stats_metadata(metadata)    AS metadata,
-       merge_statement_stats(statistics) AS statistics
+       crdb_internal.merge_stats_metadata(array_agg(metadata))    AS metadata,
+       crdb_internal.merge_statement_stats(array_agg(statistics)) AS statistics
 FROM %s %s
 GROUP BY
     aggregated_ts
@@ -332,21 +334,20 @@ LIMIT $%d`
 	defer func() {
 		err = closeIterator(it, err)
 	}()
-	args := rb.qargs[:]
-	args = append(args, rb.limit)
+	args = append(args, limit)
 
-	if rb.activityHasData {
-		it, err = rb.ie.QueryIteratorEx(ctx, "console-combined-stmts-activity-details-by-aggregated-timestamp", nil,
+	if activityTableHasAllData {
+		it, err = ie.QueryIteratorEx(ctx, "console-combined-stmts-activity-details-by-aggregated-timestamp", nil,
 			sessiondata.NodeUserSessionDataOverride,
 			fmt.Sprintf(`
 SELECT aggregated_ts,
-       %s                                  AS metadata,
-       merge_statement_stats(statistics)   AS statistics
+       crdb_internal.merge_aggregated_stmt_metadata(array_agg(metadata)) AS metadata,
+       crdb_internal.merge_statement_stats(array_agg(statistics)) AS statistics
 FROM crdb_internal.statement_activity %s
 GROUP BY
     aggregated_ts
 ORDER BY aggregated_ts ASC
-LIMIT $%d`, rb.mergeAggStmtMetadataColExpr, rb.whereClause, len(args)),
+LIMIT $%d`, whereClause, len(args)),
 			args...)
 
 		if err != nil {
@@ -362,11 +363,11 @@ LIMIT $%d`, rb.mergeAggStmtMetadataColExpr, rb.whereClause, len(args)),
 		}
 		query = fmt.Sprintf(
 			queryFormat,
-			CrdbInternalStmtStatsPersisted,
-			rb.whereClause,
+			CrdbInternalStmtStatsPersisted+tableSuffix,
+			whereClause,
 			len(args))
 
-		it, err = rb.ie.QueryIteratorEx(ctx, "console-combined-stmts-persisted-details-by-aggregated-timestamp", nil,
+		it, err = ie.QueryIteratorEx(ctx, "console-combined-stmts-persisted-details-by-aggregated-timestamp", nil,
 			sessiondata.NodeUserSessionDataOverride, query, args...)
 
 		if err != nil {
@@ -378,8 +379,8 @@ LIMIT $%d`, rb.mergeAggStmtMetadataColExpr, rb.whereClause, len(args)),
 	// with data in-memory.
 	if !it.HasResults() {
 		err = closeIterator(it, err)
-		query = fmt.Sprintf(queryFormat, CrdbInternalStmtStatsCombined, rb.whereClause, len(args))
-		it, err = rb.ie.QueryIteratorEx(ctx, "console-combined-stmts-details-by-aggregated-timestamp-with-memory", nil,
+		query = fmt.Sprintf(queryFormat, CrdbInternalStmtStatsCombined, whereClause, len(args))
+		it, err = ie.QueryIteratorEx(ctx, "console-combined-stmts-details-by-aggregated-timestamp-with-memory", nil,
 			sessiondata.NodeUserSessionDataOverride, query, args...)
 		if err != nil {
 			return nil, srverrors.ServerError(ctx, err)
@@ -497,15 +498,21 @@ func getIdxAndTableName(ctx context.Context, ie *sql.InternalExecutor, indexInfo
 // getStatementDetailsPerPlanHash returns the list of statements
 // per plan hash, not using the columns aggregated timestamp as
 // part of the key on the grouping.
-func (rb *statementDetailsRespBuilder) getStatementDetailsPerPlanHash(
+func getStatementDetailsPerPlanHash(
 	ctx context.Context,
+	ie *sql.InternalExecutor,
+	whereClause string,
+	args []interface{},
+	limit int64,
+	activityTableHasAllData bool,
+	tableSuffix string,
 ) ([]serverpb.StatementDetailsResponse_CollectedStatementGroupedByPlanHash, error) {
 	expectedNumDatums := 5
 	const queryFormat = `
 SELECT plan_hash,
-       (statistics -> 'statistics' -> 'planGists' ->> 0)   AS plan_gist,
-       merge_stats_metadata(metadata)                      AS metadata,
-       merge_statement_stats(statistics)                   AS statistics,
+       (statistics -> 'statistics' -> 'planGists' ->> 0)          AS plan_gist,
+       crdb_internal.merge_stats_metadata(array_agg(metadata))    AS metadata,
+       crdb_internal.merge_statement_stats(array_agg(statistics)) AS statistics,
        index_recommendations
 FROM %s %s
 GROUP BY
@@ -514,8 +521,7 @@ GROUP BY
     index_recommendations
 LIMIT $%d`
 
-	args := rb.qargs[:]
-	args = append(args, rb.limit)
+	args = append(args, limit)
 	var err error
 	// We will have 1 open iterator at a time. For the deferred close operation, we will
 	// only close the iterator if there were no errors creating the iterator. Closing an
@@ -528,20 +534,20 @@ LIMIT $%d`
 		}
 	}()
 
-	if rb.activityHasData {
-		it, iterErr = rb.ie.QueryIteratorEx(ctx, "console-combined-stmts-activity-details-by-plan-hash", nil,
+	if activityTableHasAllData {
+		it, iterErr = ie.QueryIteratorEx(ctx, "console-combined-stmts-activity-details-by-plan-hash", nil,
 			sessiondata.NodeUserSessionDataOverride, fmt.Sprintf(`
 SELECT plan_hash,
-       (statistics -> 'statistics' -> 'planGists' ->> 0)   AS plan_gist,
-       %s                                                  AS metadata,
-       merge_statement_stats(statistics)                   AS statistics,
+       (statistics -> 'statistics' -> 'planGists' ->> 0)                 AS plan_gist,
+       crdb_internal.merge_aggregated_stmt_metadata(array_agg(metadata)) AS metadata,
+       crdb_internal.merge_statement_stats(array_agg(statistics))        AS statistics,
        index_recommendations
 FROM crdb_internal.statement_activity %s
 GROUP BY
     plan_hash,
     plan_gist,
     index_recommendations
-LIMIT $%d`, rb.mergeAggStmtMetadataColExpr, rb.whereClause, len(args)), args...)
+LIMIT $%d`, whereClause, len(args)), args...)
 		if iterErr != nil {
 			return nil, srverrors.ServerError(ctx, err)
 		}
@@ -555,10 +561,10 @@ LIMIT $%d`, rb.mergeAggStmtMetadataColExpr, rb.whereClause, len(args)), args...)
 		}
 		query = fmt.Sprintf(
 			queryFormat,
-			"crdb_internal.statement_statistics_persisted",
-			rb.whereClause,
+			"crdb_internal.statement_statistics_persisted"+tableSuffix,
+			whereClause,
 			len(args))
-		it, iterErr = rb.ie.QueryIteratorEx(ctx, "console-combined-stmts-persisted-details-by-plan-hash", nil,
+		it, iterErr = ie.QueryIteratorEx(ctx, "console-combined-stmts-persisted-details-by-plan-hash", nil,
 			sessiondata.NodeUserSessionDataOverride, query, args...)
 		if iterErr != nil {
 			return nil, srverrors.ServerError(ctx, err)
@@ -569,8 +575,8 @@ LIMIT $%d`, rb.mergeAggStmtMetadataColExpr, rb.whereClause, len(args)), args...)
 	// with data in-memory.
 	if !it.HasResults() {
 		err = closeIterator(it, err)
-		query = fmt.Sprintf(queryFormat, CrdbInternalStmtStatsCombined, rb.whereClause, len(args))
-		it, iterErr = rb.ie.QueryIteratorEx(ctx, "console-combined-stmts-details-by-plan-hash-with-memory", nil,
+		query = fmt.Sprintf(queryFormat, CrdbInternalStmtStatsCombined, whereClause, len(args))
+		it, iterErr = ie.QueryIteratorEx(ctx, "console-combined-stmts-details-by-plan-hash-with-memory", nil,
 			sessiondata.NodeUserSessionDataOverride, query, args...)
 		if iterErr != nil {
 			return nil, srverrors.ServerError(ctx, err)
@@ -596,7 +602,7 @@ LIMIT $%d`, rb.mergeAggStmtMetadataColExpr, rb.whereClause, len(args)), args...)
 		planGist := string(tree.MustBeDStringOrDNull(row[1]))
 		var explainPlan string
 		if planGist != "" {
-			explainPlan = getExplainPlanFromGist(ctx, rb.ie, planGist)
+			explainPlan = getExplainPlanFromGist(ctx, ie, planGist)
 		}
 
 		var metadata appstatspb.CollectedStatementStatistics
@@ -623,6 +629,9 @@ LIMIT $%d`, rb.mergeAggStmtMetadataColExpr, rb.whereClause, len(args)), args...)
 		if aggregatedMetadata.DistSQLCount > 0 {
 			aggregatedMetadata.DistSQLCount = metadata.Stats.Count
 		}
+		if aggregatedMetadata.FailedCount > 0 {
+			aggregatedMetadata.FailedCount = metadata.Stats.Count
+		}
 		if aggregatedMetadata.FullScanCount > 0 {
 			aggregatedMetadata.FullScanCount = metadata.Stats.Count
 		}
@@ -633,7 +642,7 @@ LIMIT $%d`, rb.mergeAggStmtMetadataColExpr, rb.whereClause, len(args)), args...)
 
 		var indexes []string
 		for _, idx := range metadata.Stats.Indexes {
-			indexes = append(indexes, getIdxAndTableName(ctx, rb.ie, idx))
+			indexes = append(indexes, getIdxAndTableName(ctx, ie, idx))
 		}
 		metadata.Stats.Indexes = indexes
 

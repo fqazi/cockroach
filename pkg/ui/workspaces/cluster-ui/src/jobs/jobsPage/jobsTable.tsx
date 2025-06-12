@@ -4,9 +4,7 @@
 // included in the /LICENSE file.
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { Tooltip } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
 import React from "react";
-
 import { Anchor } from "src/anchor";
 import { EmptyTable } from "src/empty";
 import {
@@ -23,13 +21,14 @@ import {
   pauseJob,
   resumeJob,
 } from "src/util/docs";
-import { DATE_WITH_SECONDS_FORMAT } from "src/util/format";
+import { DATE_WITH_SECONDS_AND_MILLISECONDS_FORMAT } from "src/util/format";
 
-import { Timestamp, Timezone } from "../../timestamp";
-import styles from "../jobs.module.scss";
 import { HighwaterTimestamp, JobStatusCell } from "../util";
-
 import { JobDescriptionCell } from "./jobDescriptionCell";
+
+import styles from "../jobs.module.scss";
+import classNames from "classnames/bind";
+import { Timestamp, Timezone } from "../../timestamp";
 const cx = classNames.bind(styles);
 
 type Job = cockroach.server.serverpb.IJobResponse;
@@ -44,14 +43,16 @@ interface JobsTableProps {
   visibleColumns: ColumnDescriptor<Job>[];
 }
 
-export const jobsColumnLabels: { [key: string]: string } = {
+export const jobsColumnLabels: any = {
   description: "Description",
   status: "Status",
   jobId: "Job ID",
   users: "User Name",
   creationTime: "Creation Time",
   lastModifiedTime: "Last Modified Time",
+  lastExecutionTime: "Last Execution Time",
   finishedTime: "Completed Time",
+  executionCount: "Execution Count",
   highWaterTimestamp: "High-water Timestamp",
   coordinatorID: "Coordinator Node",
 };
@@ -167,7 +168,7 @@ export function makeJobsColumns(): ColumnDescriptor<Job>[] {
       cell: job => (
         <Timestamp
           time={TimestampToMoment(job?.created, null)}
-          format={DATE_WITH_SECONDS_FORMAT}
+          format={DATE_WITH_SECONDS_AND_MILLISECONDS_FORMAT}
         />
       ),
       sort: job => TimestampToMoment(job?.created).valueOf(),
@@ -189,7 +190,7 @@ export function makeJobsColumns(): ColumnDescriptor<Job>[] {
       cell: job => (
         <Timestamp
           time={TimestampToMoment(job?.modified, null)}
-          format={DATE_WITH_SECONDS_FORMAT}
+          format={DATE_WITH_SECONDS_AND_MILLISECONDS_FORMAT}
         />
       ),
       sort: job => TimestampToMoment(job?.modified).valueOf(),
@@ -215,10 +216,47 @@ export function makeJobsColumns(): ColumnDescriptor<Job>[] {
       cell: job => (
         <Timestamp
           time={TimestampToMoment(job?.finished, null)}
-          format={DATE_WITH_SECONDS_FORMAT}
+          format={DATE_WITH_SECONDS_AND_MILLISECONDS_FORMAT}
         />
       ),
       sort: job => TimestampToMoment(job?.finished).valueOf(),
+      showByDefault: true,
+    },
+    {
+      name: "lastExecutionTime",
+      title: (
+        <Tooltip
+          placement="bottom"
+          style="tableTitle"
+          content={<p>Date and time of the last attempted job execution.</p>}
+        >
+          <>
+            {jobsColumnLabels.lastExecutionTime} <Timezone />
+          </>
+        </Tooltip>
+      ),
+      cell: job => (
+        <Timestamp
+          time={TimestampToMoment(job?.last_run, null)}
+          format={DATE_WITH_SECONDS_AND_MILLISECONDS_FORMAT}
+        />
+      ),
+      sort: job => TimestampToMoment(job?.last_run).valueOf(),
+      showByDefault: true,
+    },
+    {
+      name: "executionCount",
+      title: (
+        <Tooltip
+          placement="bottom"
+          style="tableTitle"
+          content={<p>Number of times the job was executed.</p>}
+        >
+          {jobsColumnLabels.executionCount}
+        </Tooltip>
+      ),
+      cell: job => String(job.num_runs),
+      sort: job => job.num_runs?.toNumber(),
       showByDefault: true,
     },
     {

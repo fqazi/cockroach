@@ -6,12 +6,10 @@
 package randgen
 
 import (
-	"context"
 	gosql "database/sql"
 	"fmt"
 	"math"
 	"math/rand"
-	"strconv"
 	"strings"
 
 	apd "github.com/cockroachdb/apd/v3"
@@ -22,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util"
@@ -45,15 +42,15 @@ func MakeSchemaName(ifNotExists bool, schema string, authRole tree.RoleSpec) *tr
 	}
 }
 
-// RandCreateEnumType creates a random CREATE TYPE <type_name> AS ENUM statement.
-// The resulting type's name will be name, the enum members will
+// RandCreateType creates a random CREATE TYPE statement. The resulting
+// type's name will be name, and if the type is an enum, the members will
 // be random strings generated from alphabet.
-func RandCreateEnumType(rng *rand.Rand, name, alphabet string) tree.Statement {
+func RandCreateType(rng *rand.Rand, name, alphabet string) tree.Statement {
 	numLabels := rng.Intn(6) + 1
 	labels := make(tree.EnumValueList, numLabels)
 	labelsMap := make(map[string]struct{})
-
-	for i := 0; i < numLabels; {
+	i := 0
+	for i < numLabels {
 		s := util.RandString(rng, rng.Intn(6)+1, alphabet)
 		if _, ok := labelsMap[s]; !ok {
 			labels[i] = tree.EnumValue(s)
@@ -61,7 +58,6 @@ func RandCreateEnumType(rng *rand.Rand, name, alphabet string) tree.Statement {
 			i++
 		}
 	}
-
 	un, err := tree.NewUnresolvedObjectName(1, [3]string{name}, 0)
 	if err != nil {
 		panic(err)
@@ -73,53 +69,9 @@ func RandCreateEnumType(rng *rand.Rand, name, alphabet string) tree.Statement {
 	}
 }
 
-// RandCreateCompositeType creates a random composite type statement.
-func RandCreateCompositeType(rng *rand.Rand, name, alphabet string) tree.Statement {
-	var compositeTypeList []tree.CompositeTypeElem
-
-	numTypes := rng.Intn(6) + 1
-	uniqueNames := make(map[string]struct{})
-
-	for i := 0; i < numTypes; {
-		randomName := util.RandString(rng, rng.Intn(6)+1, alphabet)
-		randomType := RandTypeFromSlice(rng, types.Scalar)
-
-		if _, ok := uniqueNames[randomName]; !ok {
-			compositeTypeList = append(compositeTypeList, tree.CompositeTypeElem{Label: tree.Name(randomName), Type: randomType})
-			uniqueNames[randomName] = struct{}{}
-			i++
-		}
-	}
-
-	un, err := tree.NewUnresolvedObjectName(1, [3]string{name}, 0)
-	if err != nil {
-		panic(err)
-	}
-	return &tree.CreateType{
-		TypeName:          un,
-		Variety:           tree.Composite,
-		CompositeTypeList: compositeTypeList,
-	}
-}
-
-type TableOpt uint8
-
-const (
-	TableOptNone                 TableOpt = 0
-	TableOptPrimaryIndexRequired TableOpt = 1 << (iota - 1)
-	TableOptSkipColumnFamilyMutations
-	TableOptMultiRegion
-	TableOptAllowPartiallyVisibleIndex
-	TableOptCrazyNames
-)
-
-func (t TableOpt) IsSet(o TableOpt) bool {
-	return t&o == o
-}
-
 // RandCreateTables creates random table definitions.
 func RandCreateTables(
-	ctx context.Context, rng *rand.Rand, prefix string, num int, opt TableOpt, mutators ...Mutator,
+	rng *rand.Rand, prefix string, num int, isMultiRegion bool, mutators ...Mutator,
 ) []tree.Statement {
 	if num < 1 {
 		panic("at least one table required")
@@ -128,7 +80,7 @@ func RandCreateTables(
 	// Make some random tables.
 	tables := make([]tree.Statement, num)
 	for i := 0; i < num; i++ {
-		t := RandCreateTable(ctx, rng, prefix, i+1, opt)
+		t := RandCreateTable(rng, prefix, i+1, isMultiRegion)
 		tables[i] = t
 	}
 
@@ -141,11 +93,10 @@ func RandCreateTables(
 
 // RandCreateTable creates a random CreateTable definition.
 func RandCreateTable(
-	ctx context.Context, rng *rand.Rand, prefix string, tableIdx int, opt TableOpt,
+	rng *rand.Rand, prefix string, tableIdx int, isMultiRegion bool,
 ) *tree.CreateTable {
-	return RandCreateTableWithColumnIndexNumberGenerator(
-		ctx, rng, prefix, tableIdx, opt, nil, /* generateColumnIndexNumber */
-	)
+	return RandCreateTableWithColumnIndexNumberGenerator(rng, prefix, tableIdx,
+		isMultiRegion, true /* allowPartiallyVisibleIndex */, nil /* generateColumnIndexNumber */)
 }
 
 var nameGenCfg = func() randidentcfg.Config {
@@ -157,40 +108,35 @@ var nameGenCfg = func() randidentcfg.Config {
 // RandCreateTableWithColumnIndexNumberGenerator creates a random CreateTable definition
 // using the passed function to generate column index numbers for column names.
 func RandCreateTableWithColumnIndexNumberGenerator(
-	ctx context.Context,
 	rng *rand.Rand,
 	prefix string,
 	tableIdx int,
-	opt TableOpt,
-	generateColumnIndexSuffix func() string,
+	isMultiRegion bool,
+	allowPartiallyVisibleIndex bool,
+	generateColumnIndexNumber func() int64,
 ) *tree.CreateTable {
-	var name string
-	if opt.IsSet(TableOptCrazyNames) {
-		g := randident.NewNameGenerator(&nameGenCfg, rng, prefix)
-		name = g.GenerateOne(strconv.Itoa(tableIdx))
-	} else {
-		name = fmt.Sprintf("%s%d", prefix, tableIdx)
-	}
-	return randCreateTableWithColumnIndexNumberGeneratorAndName(
-		ctx, rng, name, tableIdx, opt, generateColumnIndexSuffix,
+	g := randident.NewNameGenerator(&nameGenCfg, rng, prefix)
+	name := g.GenerateOne(tableIdx)
+	return RandCreateTableWithColumnIndexNumberGeneratorAndName(
+		rng, name, tableIdx, isMultiRegion, allowPartiallyVisibleIndex, generateColumnIndexNumber,
 	)
 }
 
 func RandCreateTableWithName(
-	ctx context.Context, rng *rand.Rand, tableName string, tableIdx int, opt TableOpt,
+	rng *rand.Rand, tableName string, tableIdx int, isMultiRegion bool,
 ) *tree.CreateTable {
-	return randCreateTableWithColumnIndexNumberGeneratorAndName(
-		ctx, rng, tableName, tableIdx, opt, nil, /* generateColumnIndexSuffix */
+	return RandCreateTableWithColumnIndexNumberGeneratorAndName(
+		rng, tableName, tableIdx, isMultiRegion, true /* allowPartiallyVisibleIndex */, nil,
 	)
 }
 
-func randCreateTableWithColumnIndexNumberGeneratorAndName(
-	ctx context.Context,
+func RandCreateTableWithColumnIndexNumberGeneratorAndName(
 	rng *rand.Rand,
 	tableName string,
 	tableIdx int,
-	opt TableOpt,
-	generateColumnIndexSuffix func() string,
+	isMultiRegion bool,
+	allowPartiallyVisibleIndex bool,
+	generateColumnIndexNumber func() int64,
 ) *tree.CreateTable {
 	// columnDefs contains the list of Columns we'll add to our table.
 	nColumns := randutil.RandIntInRange(rng, 1, 20)
@@ -200,18 +146,18 @@ func randCreateTableWithColumnIndexNumberGeneratorAndName(
 	defs := make(tree.TableDefs, 0, len(columnDefs))
 
 	// colIdx generates numbers that are incorporated into column names.
-	colSuffix := func(ordinal int) string {
-		if generateColumnIndexSuffix != nil {
-			return generateColumnIndexSuffix()
+	colIdx := func(ordinal int) int {
+		if generateColumnIndexNumber != nil {
+			return int(generateColumnIndexNumber())
 		}
-		return strconv.Itoa(ordinal)
+		return ordinal
 	}
 
 	// Make new defs from scratch.
 	nComputedColumns := randutil.RandIntInRange(rng, 0, (nColumns+1)/2)
 	nNormalColumns := nColumns - nComputedColumns
 	for i := 0; i < nNormalColumns; i++ {
-		columnDef := randColumnTableDef(rng, tableIdx, colSuffix(i), opt)
+		columnDef := randColumnTableDef(rng, tableIdx, colIdx(i))
 		columnDefs = append(columnDefs, columnDef)
 		defs = append(defs, columnDef)
 	}
@@ -219,37 +165,33 @@ func randCreateTableWithColumnIndexNumberGeneratorAndName(
 	// Make defs for computed columns.
 	normalColDefs := columnDefs
 	for i := nNormalColumns; i < nColumns; i++ {
-		columnDef := randComputedColumnTableDef(rng, normalColDefs, tableIdx, colSuffix(i), opt)
+		columnDef := randComputedColumnTableDef(rng, normalColDefs, tableIdx, colIdx(i))
 		columnDefs = append(columnDefs, columnDef)
 		defs = append(defs, columnDef)
 	}
 
 	// Make a random primary key with high likelihood.
 	var pk *tree.IndexTableDef
-	if opt.IsSet(TableOptPrimaryIndexRequired) || (rng.Intn(8) != 0) {
-		for {
-			indexDef, ok := randIndexTableDefFromCols(ctx, rng, columnDefs, tableName, true /* isPrimaryIndex */, opt)
-			canUseIndex := ok && indexDef.Type.CanBePrimary()
-			if canUseIndex {
-				// Although not necessary for Cockroach to function correctly,
-				// but for ease of use for any code that introspects on the
-				// AST data structure (instead of the descriptor which doesn't
-				// exist yet), explicitly set all PK cols as NOT NULL.
-				for _, col := range columnDefs {
-					for _, elem := range indexDef.Columns {
-						if col.Name == elem.Column {
-							col.Nullable.Nullability = tree.NotNull
-						}
-					}
+	if rng.Intn(8) != 0 {
+		indexDef, ok := randIndexTableDefFromCols(rng, columnDefs, tableName, true /* isPrimaryIndex */, isMultiRegion)
+		if ok {
+			pk = &indexDef
+		}
+		if ok && !indexDef.Inverted {
+			defs = append(defs, &tree.UniqueConstraintTableDef{
+				PrimaryKey:    true,
+				IndexTableDef: indexDef,
+			})
+		}
+		// Although not necessary for Cockroach to function correctly,
+		// but for ease of use for any code that introspects on the
+		// AST data structure (instead of the descriptor which doesn't
+		// exist yet), explicitly set all PK cols as NOT NULL.
+		for _, col := range columnDefs {
+			for _, elem := range indexDef.Columns {
+				if col.Name == elem.Column {
+					col.Nullable.Nullability = tree.NotNull
 				}
-				pk = &indexDef
-				defs = append(defs, &tree.UniqueConstraintTableDef{
-					PrimaryKey:    true,
-					IndexTableDef: indexDef,
-				})
-			}
-			if canUseIndex || !opt.IsSet(TableOptPrimaryIndexRequired) {
-				break
 			}
 		}
 	}
@@ -257,13 +199,12 @@ func randCreateTableWithColumnIndexNumberGeneratorAndName(
 	// Make indexes.
 	nIdxs := rng.Intn(10)
 	for i := 0; i < nIdxs; i++ {
-		indexDef, ok := randIndexTableDefFromCols(ctx, rng, columnDefs, tableName, false /* isPrimaryIndex */, opt)
+		indexDef, ok := randIndexTableDefFromCols(rng, columnDefs, tableName, false /* isPrimaryIndex */, isMultiRegion)
 		if !ok {
 			continue
 		}
-		if !indexDef.Type.CanBePrimary() && pk != nil {
-			// Inverted/vector indexes aren't permitted to be created on primary
-			// key columns.
+		if indexDef.Inverted && pk != nil {
+			// Inverted indexes aren't permitted to be created on primary key columns.
 			col := indexDef.Columns[len(indexDef.Columns)-1]
 			foundOverlap := false
 			for _, pkCol := range pk.Columns {
@@ -276,9 +217,9 @@ func randCreateTableWithColumnIndexNumberGeneratorAndName(
 				continue
 			}
 		}
-		// Make forward indexes unique 50% of the time. Other index types cannot
+		// Make forward indexes unique 50% of the time. Inverted indexes cannot
 		// be unique.
-		unique := indexDef.Type.CanBeUnique() && rng.Intn(2) == 0
+		unique := !indexDef.Inverted && rng.Intn(2) == 0
 		if unique {
 			defs = append(defs, &tree.UniqueConstraintTableDef{
 				IndexTableDef: indexDef,
@@ -291,7 +232,7 @@ func randCreateTableWithColumnIndexNumberGeneratorAndName(
 			indexDef.Invisibility.Value = 0.0
 			if notvisible := rng.Intn(6) == 0; notvisible {
 				indexDef.Invisibility.Value = 1.0
-				if opt.IsSet(TableOptAllowPartiallyVisibleIndex) {
+				if allowPartiallyVisibleIndex {
 					if rng.Intn(2) == 0 {
 						indexDef.Invisibility.Value = 1 - rng.Float64()
 						indexDef.Invisibility.FloatProvided = true
@@ -309,7 +250,7 @@ func randCreateTableWithColumnIndexNumberGeneratorAndName(
 	}
 
 	// Create some random column families.
-	if !opt.IsSet(TableOptSkipColumnFamilyMutations) && rng.Intn(2) == 0 {
+	if rng.Intn(2) == 0 {
 		ColumnFamilyMutator(rng, ret)
 	}
 
@@ -372,14 +313,11 @@ func generateInsertStmtVals(rng *rand.Rand, colTypes []*types.T, nullable []bool
 //   - UNIQUE or CHECK constraint violation. RandDatum is naive to these constraints.
 //   - Out of range error for a computed INT2 or INT4 column.
 //
-// If a non-nil inserts is provided, it will be populated with the successful
-// insert statements.
-//
 // If numRowsInserted == 0, PopulateTableWithRandomData or RandDatum couldn't
 // handle this table's schema. Consider increasing numInserts or filing a bug.
 // TODO(harding): Populate data in partitions.
 func PopulateTableWithRandData(
-	rng *rand.Rand, db *gosql.DB, tableName string, numInserts int, inserts *[]string,
+	rng *rand.Rand, db *gosql.DB, tableName string, numInserts int,
 ) (numRowsInserted int, err error) {
 	var createStmtSQL string
 	res := db.QueryRow(fmt.Sprintf("SELECT create_statement FROM [SHOW CREATE TABLE %s]", tree.NameString(tableName)))
@@ -452,30 +390,80 @@ func PopulateTableWithRandData(
 		_, err := db.Exec(insertStmt)
 		if err == nil {
 			numRowsInserted++
-			if inserts != nil {
-				*inserts = append(*inserts, insertStmt)
-			}
 		}
 	}
 	return numRowsInserted, nil
 }
 
+// GenerateRandInterestingTable takes a gosql.DB connection and creates
+// a table with all the types in randInterestingDatums and rows of the
+// interesting datums.
+func GenerateRandInterestingTable(db *gosql.DB, dbName, tableName string) error {
+	var (
+		randTypes []*types.T
+		colNames  []string
+	)
+	numRows := 0
+	for _, v := range randInterestingDatums {
+		colTyp := v[0].ResolvedType()
+		randTypes = append(randTypes, colTyp)
+		colNames = append(colNames, colTyp.Name())
+		if len(v) > numRows {
+			numRows = len(v)
+		}
+	}
+
+	var columns strings.Builder
+	comma := ""
+	for i, typ := range randTypes {
+		columns.WriteString(comma)
+		columns.WriteString(colNames[i])
+		columns.WriteString(" ")
+		columns.WriteString(typ.SQLString())
+		comma = ", "
+	}
+
+	createStatement := fmt.Sprintf("CREATE TABLE %s.%s (%s)", tree.NameString(dbName), tree.NameString(tableName), columns.String())
+	if _, err := db.Exec(createStatement); err != nil {
+		return err
+	}
+
+	row := make([]string, len(randTypes))
+	for i := 0; i < numRows; i++ {
+		for j, typ := range randTypes {
+			datums := randInterestingDatums[typ.Family()]
+			var d tree.Datum
+			if i < len(datums) {
+				d = datums[i]
+			} else {
+				d = tree.DNull
+			}
+			row[j] = tree.AsStringWithFlags(d, tree.FmtParsable)
+		}
+		var builder strings.Builder
+		comma := ""
+		for _, d := range row {
+			builder.WriteString(comma)
+			builder.WriteString(d)
+			comma = ", "
+		}
+		insertStmt := fmt.Sprintf("INSERT INTO %s.%s VALUES (%s)", tree.NameString(dbName), tree.NameString(tableName), builder.String())
+		if _, err := db.Exec(insertStmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // randColumnTableDef produces a random ColumnTableDef for a non-computed
 // column, with a random type and nullability.
-func randColumnTableDef(
-	rng *rand.Rand, tableIdx int, colSuffix string, opt TableOpt,
-) *tree.ColumnTableDef {
-	var colName tree.Name
-	if opt.IsSet(TableOptCrazyNames) {
-		g := randident.NewNameGenerator(&nameGenCfg, rng, fmt.Sprintf("col%d", tableIdx))
-		colName = tree.Name(g.GenerateOne(colSuffix))
-	} else {
-		colName = tree.Name(fmt.Sprintf("col%d_%s", tableIdx, colSuffix))
-	}
+func randColumnTableDef(rng *rand.Rand, tableIdx int, colIdx int) *tree.ColumnTableDef {
+	g := randident.NewNameGenerator(&nameGenCfg, rng, fmt.Sprintf("col%d_", tableIdx))
+	colName := g.GenerateOne(colIdx)
 	columnDef := &tree.ColumnTableDef{
 		// We make a unique name for all columns by prefixing them with the table
 		// index to make it easier to reference columns from different tables.
-		Name: colName,
+		Name: tree.Name(colName),
 		Type: RandColumnType(rng),
 	}
 	// Slightly prefer non-nullable columns
@@ -497,13 +485,9 @@ func randColumnTableDef(
 // column (either STORED or VIRTUAL). The computed expressions refer to columns
 // in normalColDefs.
 func randComputedColumnTableDef(
-	rng *rand.Rand,
-	normalColDefs []*tree.ColumnTableDef,
-	tableIdx int,
-	colSuffix string,
-	opt TableOpt,
+	rng *rand.Rand, normalColDefs []*tree.ColumnTableDef, tableIdx int, colIdx int,
 ) *tree.ColumnTableDef {
-	newDef := randColumnTableDef(rng, tableIdx, colSuffix, opt)
+	newDef := randColumnTableDef(rng, tableIdx, colIdx)
 	newDef.Computed.Computed = true
 	newDef.Computed.Virtual = rng.Intn(2) == 0
 
@@ -519,12 +503,11 @@ func randComputedColumnTableDef(
 // subset of the given columns and a random direction. If unsuccessful, ok=false
 // is returned.
 func randIndexTableDefFromCols(
-	ctx context.Context,
 	rng *rand.Rand,
 	columnTableDefs []*tree.ColumnTableDef,
 	tableName string,
 	isPrimaryIndex bool,
-	opt TableOpt,
+	isMultiRegion bool,
 ) (def tree.IndexTableDef, ok bool) {
 	cpy := make([]*tree.ColumnTableDef, len(columnTableDefs))
 	copy(cpy, columnTableDefs)
@@ -618,13 +601,13 @@ func randIndexTableDefFromCols(
 		// The last index column can be inverted-indexable, which makes the
 		// index an inverted index.
 		if colinfo.ColumnTypeIsOnlyInvertedIndexable(semType) {
-			def.Type = idxtype.INVERTED
+			def.Inverted = true
 			stopPrefix = true
 		} else if isLastCol && !stopPrefix && invertedIndexable {
 			// With 1/4 probability, choose to use an inverted index for a column type
 			// that is both inverted indexable and forward indexable.
 			if rng.Intn(4) == 0 {
-				def.Type = idxtype.INVERTED
+				def.Inverted = true
 				stopPrefix = true
 				if semType.Family() == types.StringFamily {
 					elem.OpClass = "gin_trgm_ops"
@@ -633,7 +616,7 @@ func randIndexTableDefFromCols(
 		}
 
 		// Last column for inverted indexes must always be ascending.
-		if i == nCols-1 && def.Type == idxtype.INVERTED {
+		if i == nCols-1 && def.Inverted {
 			elem.Direction = tree.Ascending
 		}
 
@@ -646,7 +629,7 @@ func randIndexTableDefFromCols(
 
 	// An inverted index column cannot be DESC, so use either the default
 	// direction or ASC.
-	if def.Type == idxtype.INVERTED {
+	if def.Inverted {
 		dir := tree.Direction(rng.Intn(int(tree.Ascending) + 1))
 		def.Columns[len(def.Columns)-1].Direction = dir
 	}
@@ -655,7 +638,7 @@ func randIndexTableDefFromCols(
 	// not support partitioning.
 	// TODO(harding): Allow partitioning the primary index. This will require
 	// massaging the syntax.
-	if !opt.IsSet(TableOptMultiRegion) && !isPrimaryIndex && !partitioningNotSupported && len(prefix) > 0 && rng.Intn(10) == 0 {
+	if !isMultiRegion && !isPrimaryIndex && !partitioningNotSupported && len(prefix) > 0 && rng.Intn(10) == 0 {
 		def.PartitionByIndex = &tree.PartitionByIndex{PartitionBy: &tree.PartitionBy{}}
 		prefixLen := 1 + rng.Intn(len(prefix))
 		def.PartitionByIndex.Fields = prefix[:prefixLen]
@@ -666,11 +649,7 @@ func randIndexTableDefFromCols(
 		numExpressions := rng.Intn(10) + 1
 		for i := 0; i < numPartitions; i++ {
 			var partition tree.ListPartition
-			if opt.IsSet(TableOptCrazyNames) {
-				partition.Name = tree.Name(g.GenerateOne(strconv.Itoa(i)))
-			} else {
-				partition.Name = tree.Name(fmt.Sprintf("%s_part_%d", tableName, i))
-			}
+			partition.Name = tree.Name(g.GenerateOne(i))
 			// Add up to 10 expressions in each partition.
 			for j := 0; j < numExpressions; j++ {
 				// Use a tuple to contain the expressions in case there are multiple
@@ -703,7 +682,7 @@ func randIndexTableDefFromCols(
 				// Don't include the partition if it matches previous partition values.
 				// Include the expressions from this partition, so we also check for
 				// duplicates there.
-				isDup, err := isDuplicateExpr(ctx, t.Exprs, append(def.PartitionByIndex.List, partition))
+				isDup, err := isDuplicateExpr(t.Exprs, append(def.PartitionByIndex.List, partition))
 				if err != nil {
 					return def, false
 				}
@@ -734,7 +713,7 @@ func randIndexTableDefFromCols(
 	return def, true
 }
 
-func isDuplicateExpr(ctx context.Context, e tree.Exprs, list []tree.ListPartition) (bool, error) {
+func isDuplicateExpr(e tree.Exprs, list []tree.ListPartition) (bool, error) {
 	// Iterate over the partitions.
 	for _, p := range list {
 		// Iterate over the tuples of expressions in the partition.
@@ -746,7 +725,7 @@ func isDuplicateExpr(ctx context.Context, e tree.Exprs, list []tree.ListPartitio
 			n := 0
 			// Check each expression in the tuple.
 			for ; n < len(tp.Exprs); n++ {
-				cmp, err := tp.Exprs[n].(tree.Datum).Compare(ctx, &eval.Context{}, e[n].(tree.Datum))
+				cmp, err := tp.Exprs[n].(tree.Datum).CompareError(&eval.Context{}, e[n].(tree.Datum))
 				if err != nil {
 					return false, err
 				}

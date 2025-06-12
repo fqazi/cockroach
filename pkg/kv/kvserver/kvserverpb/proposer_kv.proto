@@ -12,7 +12,6 @@ import "roachpb/data.proto";
 import "roachpb/metadata.proto";
 import "storage/enginepb/mvcc.proto";
 import "storage/enginepb/mvcc3.proto";
-import "kv/kvserver/kvserverpb/internal_raft.proto";
 import "kv/kvserver/kvserverpb/state.proto";
 import "kv/kvserver/readsummary/rspb/summary.proto";
 import "util/hlc/timestamp.proto";
@@ -119,28 +118,6 @@ message ReplicatedEvalResult {
   Merge merge = 4;
   ComputeChecksum compute_checksum = 21;
   bool is_lease_request = 6;
-  // Set to true for lease requests in v24.1 clusters, where new behavior in
-  // Lease.Equivalent is supported which allows for expiration-based leases to
-  // be promoted to epoch-based leases under the same lease sequence.
-  //
-  // The field is used to avoid divergence between replicas of a range that
-  // apply lease requests while running different versions of the binary.
-  //
-  // Deprecation notes:
-  // - in v24.1, we introduced this field and set it to true for lease requests
-  //   when the cluster version is detected to be v24.1 or higher. This ensures
-  //   that all replicas who may apply the lease request will correctly handle
-  //   the field.
-  // - in v24.2, we can set this field to true unconditionally for lease request
-  //   proposals. It must still be consulted during lease application, because
-  //   the raft proposal may have been performed by an older node.
-  // - in v24.2 or later, we run a Barrier migration to flush out old raft
-  //   entries from all replica's raft logs. This ensures that no replica will
-  //   ever apply a lease request with this field set to false.
-  // - in v25.1, we stop consulting this field below raft but keep setting it
-  //   to true above raft for mixed-version compatibility with v24.2 nodes.
-  // - in v25.2, we delete the field.
-  bool is_lease_request_with_expiration_to_epoch_equivalent = 26;
   bool is_probe = 23;
   // The timestamp at which this command is writing. Used to verify the validity
   // of the command against the GC threshold and to update the followers'
@@ -152,11 +129,6 @@ message ReplicatedEvalResult {
   storage.enginepb.MVCCStatsDelta delta = 18 [(gogoproto.nullable) = false];
   ChangeReplicas change_replicas = 12;
 
-  // RaftTruncatedState contains the new raft log truncated state when
-  // evaluating a TruncateLogRequest.
-  //
-  // Introduced in v25.1 to replace state.RaftTruncatedState.
-  RaftTruncatedState raft_truncated_state = 28;
   // RaftLogDelta is the delta in bytes caused by truncation of the raft log.
   // It is only populated when evaluating a TruncateLogRequest. The inclusive
   // index for the truncation is specified in State.TruncatedState. This delta
@@ -171,15 +143,9 @@ message ReplicatedEvalResult {
   // Sideloaded entries are not expected to be common enough that it is worth
   // the optimization to calculate the delta once (at the leaseholder).
   int64 raft_log_delta = 13;
-  // RaftExpectedFirstIndex is the first index of the raft log used for
-  // computing the RaftLogDelta. It is populated only when evaluating a
-  // TruncateLogRequest.
-  //
-  // Introduced in v22.1. There can be historical truncation proposals with this
-  // field being zero.
-  // TODO(pav-kv): the likelihood of this is low, but to err on the safe side we
-  // should wait for the next below-raft migration, at which point we'll be able
-  // to say that this field is always populated.
+  // RaftExpectedFirstIndex is populated starting at cluster version
+  // LooselyCoupledRaftLogTruncation. When this is not populated, the replica
+  // should not delay enacting the truncation.
   uint64 raft_expected_first_index = 25  [(gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/kv/kvpb.RaftIndex"];
 
   // MVCCHistoryMutation describes mutations of MVCC history that may violate
@@ -210,7 +176,8 @@ message ReplicatedEvalResult {
     uint32 crc32 = 2 [(gogoproto.customname) = "CRC32"];
     roachpb.Span span = 3 [(gogoproto.nullable) = false];
     // If true, all SST MVCC timestamps equal the WriteTimestamp. This is given
-    // by the SSTTimestampToRequestTimestamp request parameter.
+    // by the SSTTimestampToRequestTimestamp request parameter, which was
+    // introduced in 22.1 and only used with the MVCCAddSSTable cluster version.
     //
     // TODO(erikgrinaker): This field currently controls whether to emit an
     // AddSSTable event across the rangefeed. We could equivalently check
@@ -222,17 +189,13 @@ message ReplicatedEvalResult {
     // older have been applied on all replicas.
     bool at_write_timestamp = 4;
 
-    reserved 5, 6, 7, 8, 9, 10;
+    // TODO(msbutler,dt): bikeshed the name of these fields.
+    string remote_file_loc = 5;
+    string remote_file_path = 6;
+    uint64 backing_file_size = 7;
   }
   AddSSTable add_sstable = 17 [(gogoproto.customname) = "AddSSTable"];
 
-  // See ExciseRequest.
-  message Excise {
-    roachpb.Span span = 1 [(gogoproto.nullable) = false];
-    roachpb.Span lock_table_span = 2 [(gogoproto.nullable) = false];
-  }
-  Excise excise = 30 [(gogoproto.customname) = "Excise"];
-  
   // This is the proposal timestamp for the active lease while evaluating a lease request.
   // It will be used to make sure we know if a lease was extended after we sent out the request
   // but before we tried to apply it.
@@ -250,8 +213,8 @@ message ReplicatedEvalResult {
   // 1. it can transfer a higher-resolution snapshot of the reads on the range
   //    through a lease transfer, to make the lease transfers less disruptive to
   //    writes because the timestamp cache won't be bumped as high.
-  // 2. it can transfer information about reads with future-time timestamps,
-  //    which are not otherwise captured by the new lease's start time.
+  // 2. it can transfer information about reads with synthetic timestamps, which
+  //    are not otherwise captured by the new lease's start time.
   //
   // When a ReadSummary is set in a ReplicatedEvalResult, there is always also a
   // write to the RangePriorReadSummaryKey in the RaftCommand.WriteBatch. The
@@ -265,31 +228,6 @@ message ReplicatedEvalResult {
   // application while ensuring correctness in the case where the lease transfer
   // is applied on the new leaseholder through a Raft snapshot.
   kv.kvserver.readsummary.ReadSummary prior_read_summary = 22;
-  
-  // LinkExternalSSTable adds an ExternalSST to the raft log. Unlike AddSStable,
-  // the ExternalSSTable is not sideloaded into the storage engine because it
-  // has empty payload.
-  message LinkExternalSSTable {
-    roachpb.Span span = 1 [(gogoproto.nullable) = false];
-    string remote_file_loc = 2;
-    string remote_file_path = 3;
-    uint64 backing_file_size = 4;
-    uint64 approximate_physical_size = 5;
-    util.hlc.Timestamp remote_rewrite_timestamp = 6 [(gogoproto.nullable) = false];
-    bytes remote_synthetic_prefix = 7;
-  }
-
-  LinkExternalSSTable link_external_sstable = 27 [(gogoproto.customname) = "LinkExternalSSTable"];
-
-  // DoTimelyApplicationToAllReplicas is set to true when this proposal needs
-  // to be applied on all replicas in a timely manner for various reasons
-  // (currently for certain proposals during a split or merge or below-raft
-  // migration).
-  //
-  // Must only be set to true when the cluster version is
-  // V25_1_AddRangeForceFlushKey, since it causes below Raft code to write a
-  // replicated range-id local key.
-  bool do_timely_application_to_all_replicas = 29;
 
   reserved 1, 5, 7, 9, 10, 14, 15, 16, 19, 10001 to 10013;
 }
@@ -299,7 +237,6 @@ message ReplicatedEvalResult {
 // can be distinguished from a zero-length batch, and so structs
 // containing pointers to it can be compared with the == operator.
 message WriteBatch {
-  option (gogoproto.goproto_getters) = true;
   bytes data = 1;
 }
 

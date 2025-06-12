@@ -18,7 +18,7 @@ genrule(
           $(location pgrepl.go) $(location @org_golang_x_tools//cmd/goyacc)
 
     """,
-    tools = [
+    exec_tools = [
         ":pgrepl-gen",
         "@org_golang_x_tools//cmd/goyacc",
     ],
@@ -62,6 +62,7 @@ go_test(
         "lexer_test.go",
         "parser_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":pgreplparser"],
     deps = [

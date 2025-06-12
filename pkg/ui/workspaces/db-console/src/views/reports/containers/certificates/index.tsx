@@ -3,13 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Loading, util } from "@cockroachlabs/cluster-ui";
-import isEmpty from "lodash/isEmpty";
-import isEqual from "lodash/isEqual";
-import isNaN from "lodash/isNaN";
-import join from "lodash/join";
-import map from "lodash/map";
-import sortBy from "lodash/sortBy";
+import _ from "lodash";
 import React, { Fragment } from "react";
 import { Helmet } from "react-helmet";
 import { connect } from "react-redux";
@@ -22,6 +16,7 @@ import {
 } from "src/redux/apiReducers";
 import { AdminUIState } from "src/redux/state";
 import { nodeIDAttr } from "src/util/constants";
+import { Loading, util } from "@cockroachlabs/cluster-ui";
 import { getMatchParamByName } from "src/util/query";
 import { BackToAdvanceDebug } from "src/views/reports/containers/util";
 
@@ -62,14 +57,14 @@ export class Certificates extends React.Component<CertificatesProps, {}> {
   }
 
   componentDidUpdate(prevProps: CertificatesProps) {
-    if (!isEqual(this.props.location, prevProps.location)) {
+    if (!_.isEqual(this.props.location, prevProps.location)) {
       this.refresh(this.props);
     }
   }
 
-  renderSimpleRow(header: string, value: string, title = "") {
+  renderSimpleRow(header: string, value: string, title: string = "") {
     let realTitle = title;
-    if (isEmpty(realTitle)) {
+    if (_.isEmpty(realTitle)) {
       realTitle = value;
     }
     return (
@@ -90,11 +85,12 @@ export class Certificates extends React.Component<CertificatesProps, {}> {
         <th className="certs-table__cell certs-table__cell--header">
           {header}
         </th>
-        <td className="certs-table__cell" title={join(values, "\n")}>
+        <td className="certs-table__cell" title={_.join(values, "\n")}>
           <ul className="certs-entries-list">
-            {sortBy(values).map((value, key) => (
-              <li key={key}>{value}</li>
-            ))}
+            {_.chain(values)
+              .sort()
+              .map((value, key) => <li key={key}>{value}</li>)
+              .value()}
           </ul>
         </td>
       </tr>
@@ -162,7 +158,7 @@ export class Certificates extends React.Component<CertificatesProps, {}> {
       <table key={key} className="certs-table">
         <tbody>
           {this.renderSimpleRow("Type", certType)}
-          {map(cert.fields, (fields, id) => {
+          {_.map(cert.fields, (fields, id) => {
             const result = this.renderFields(fields, id);
             if (id > 0) {
               result.unshift(emptyRow);
@@ -178,7 +174,7 @@ export class Certificates extends React.Component<CertificatesProps, {}> {
     const { certificates, match } = this.props;
     const nodeId = getMatchParamByName(match, nodeIDAttr);
 
-    if (isEmpty(certificates.certificates)) {
+    if (_.isEmpty(certificates.certificates)) {
       return (
         <h2 className="base-heading">
           No certificates were found on node {nodeId}.
@@ -187,7 +183,7 @@ export class Certificates extends React.Component<CertificatesProps, {}> {
     }
 
     let header: string = null;
-    if (isNaN(parseInt(nodeId, 10))) {
+    if (_.isNaN(parseInt(nodeId, 10))) {
       header = "Local Node";
     } else {
       header = `Node ${nodeId}`;
@@ -196,7 +192,7 @@ export class Certificates extends React.Component<CertificatesProps, {}> {
     return (
       <Fragment>
         <h2 className="base-heading">{header} certificates</h2>
-        {map(certificates.certificates, (cert, key) =>
+        {_.map(certificates.certificates, (cert, key) =>
           this.renderCert(cert, key),
         )}
       </Fragment>

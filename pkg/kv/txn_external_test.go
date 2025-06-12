@@ -14,12 +14,10 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvtestutils"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -350,19 +348,9 @@ func testTxnNegotiateAndSendDoesNotBlock(t *testing.T, multiRange, strict, route
 	const testTime = 1 * time.Second
 	ctx := context.Background()
 
-	tc := testcluster.StartTestCluster(t, 3,
-		base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Knobs: base.TestingKnobs{
-					// This test is setting specific routing policies and
-					// looking at the traces to determine what nodes were
-					// part of the routing.
-					KVClient: &kvcoord.ClientTestingKnobs{RouteToLeaseholderFirst: true},
-				},
-			},
-		},
-	)
+	tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
+		ReplicationMode: base.ReplicationManual,
+	})
 	defer tc.Stopper().Stop(ctx)
 
 	// Create a scratch range. Then add one voting follower and one non-voting
@@ -505,7 +493,7 @@ func testTxnNegotiateAndSendDoesNotBlock(t *testing.T, multiRange, strict, route
 					// assertion.
 					rec := collectAndFinish()
 					expFollowerRead := store.StoreID() != lh.StoreID && strict && routeNearest
-					wasFollowerRead := kvtestutils.OnlyFollowerReads(rec)
+					wasFollowerRead := kv.OnlyFollowerReads(rec)
 					ambiguous := !strict && routeNearest
 					if expFollowerRead != wasFollowerRead && !ambiguous {
 						if expFollowerRead {
@@ -1100,7 +1088,7 @@ func TestUpdateRootWithLeafFinalStateReadsBelowRefreshTimestamp(t *testing.T) {
 		// Fork off a leaf transaction before the root is refreshed.
 		leafInputState, err := txn.GetLeafTxnInputState(ctx)
 		require.NoError(t, err)
-		leafTxn := kv.NewLeafTxn(ctx, db, 0, leafInputState, nil /* header */)
+		leafTxn := kv.NewLeafTxn(ctx, db, 0, leafInputState)
 
 		writeTS, err := performConflictingWrite(ctx, keyB)
 		require.NoError(t, err)

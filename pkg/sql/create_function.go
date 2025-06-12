@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
@@ -32,17 +31,13 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-type functionDependencies map[catid.DescID]struct{}
-
 type createFunctionNode struct {
-	zeroInputPlanNode
 	cf *tree.CreateRoutine
 
-	dbDesc       catalog.DatabaseDescriptor
-	scDesc       catalog.SchemaDescriptor
-	planDeps     planDependencies
-	typeDeps     typeDependencies
-	functionDeps functionDependencies
+	dbDesc   catalog.DatabaseDescriptor
+	scDesc   catalog.SchemaDescriptor
+	planDeps planDependencies
+	typeDeps typeDependencies
 }
 
 func (n *createFunctionNode) ReadingOwnWrites() {}
@@ -60,19 +55,7 @@ func (n *createFunctionNode) startExec(params runParams) error {
 
 	for _, dep := range n.planDeps {
 		if dbID := dep.desc.GetParentID(); dbID != n.dbDesc.GetID() && dbID != keys.SystemDatabaseID {
-			return pgerror.Newf(pgcode.FeatureNotSupported, "dependent relation %s cannot be from another database",
-				dep.desc.GetName())
-		}
-	}
-
-	for funcRef := range n.functionDeps {
-		funcDesc, err := params.p.Descriptors().ByIDWithLeased(params.p.Txn()).Get().Function(params.ctx, funcRef)
-		if err != nil {
-			return err
-		}
-		if dbID := funcDesc.GetParentID(); dbID != n.dbDesc.GetID() && dbID != keys.SystemDatabaseID {
-			return pgerror.Newf(pgcode.FeatureNotSupported, "dependent function %s cannot be from another database",
-				funcDesc.GetName())
+			return pgerror.Newf(pgcode.FeatureNotSupported, "the function cannot refer to other databases")
 		}
 	}
 
@@ -81,7 +64,7 @@ func (n *createFunctionNode) startExec(params runParams) error {
 		return err
 	}
 	if scDesc.SchemaKind() == catalog.SchemaTemporary {
-		return unimplemented.NewWithIssue(104687, "cannot create user-defined functions under a temporary schema")
+		return unimplemented.NewWithIssue(104687, "cannot create UDFs under a temporary schema")
 	}
 
 	telemetry.Inc(sqltelemetry.SchemaChangeCreateCounter("function"))
@@ -94,7 +77,7 @@ func (n *createFunctionNode) startExec(params runParams) error {
 	var retErr error
 	params.p.runWithOptions(resolveFlags{contextDatabaseID: n.dbDesc.GetID()}, func() {
 		retErr = func() error {
-			udfMutableDesc, existing, err := n.getMutableFuncDesc(mutScDesc, params)
+			udfMutableDesc, isNew, err := n.getMutableFuncDesc(mutScDesc, params)
 			if err != nil {
 				return err
 			}
@@ -102,12 +85,12 @@ func (n *createFunctionNode) startExec(params runParams) error {
 			fnName := tree.MakeQualifiedRoutineName(n.dbDesc.GetName(), n.scDesc.GetName(), n.cf.Name.String())
 			event := eventpb.CreateFunction{
 				FunctionName: fnName.FQString(),
-				IsReplace:    existing != nil,
+				IsReplace:    !isNew,
 			}
-			if existing == nil {
+			if isNew {
 				err = n.createNewFunction(udfMutableDesc, mutScDesc, params)
 			} else {
-				err = n.replaceFunction(udfMutableDesc, mutScDesc, params, existing)
+				err = n.replaceFunction(udfMutableDesc, params)
 			}
 			if err != nil {
 				return err
@@ -151,34 +134,18 @@ func (n *createFunctionNode) createNewFunction(
 	if err != nil {
 		return err
 	}
-	signatureTypes := make([]*types.T, 0, len(udfDesc.Params))
-	var outParamOrdinals []int32
-	var outParamTypes []*types.T
-	var defaultExprs []string
-	for paramIdx, param := range udfDesc.Params {
-		class := funcdesc.ToTreeRoutineParamClass(param.Class)
-		if tree.IsInParamClass(class) {
-			signatureTypes = append(signatureTypes, param.Type)
-		}
-		if class == tree.RoutineParamOut {
-			outParamOrdinals = append(outParamOrdinals, int32(paramIdx))
-			outParamTypes = append(outParamTypes, param.Type)
-		}
-		if param.DefaultExpr != nil {
-			defaultExprs = append(defaultExprs, *param.DefaultExpr)
-		}
+	paramTypes := make([]*types.T, len(udfDesc.Params))
+	for i, param := range udfDesc.Params {
+		paramTypes[i] = param.Type
 	}
 	scDesc.AddFunction(
 		udfDesc.GetName(),
 		descpb.SchemaDescriptor_FunctionSignature{
-			ID:               udfDesc.GetID(),
-			ArgTypes:         signatureTypes,
-			ReturnType:       returnType,
-			ReturnSet:        udfDesc.ReturnType.ReturnSet,
-			IsProcedure:      udfDesc.IsProcedure(),
-			OutParamOrdinals: outParamOrdinals,
-			OutParamTypes:    outParamTypes,
-			DefaultExprs:     defaultExprs,
+			ID:          udfDesc.GetID(),
+			ArgTypes:    paramTypes,
+			ReturnType:  returnType,
+			ReturnSet:   udfDesc.ReturnType.ReturnSet,
+			IsProcedure: udfDesc.IsProcedure(),
 		},
 	)
 	if err := params.p.writeSchemaDescChange(params.ctx, scDesc, "Create Function"); err != nil {
@@ -188,28 +155,38 @@ func (n *createFunctionNode) createNewFunction(
 	return nil
 }
 
-func (n *createFunctionNode) replaceFunction(
-	udfDesc *funcdesc.Mutable,
-	scDesc *schemadesc.Mutable,
-	params runParams,
-	existing *tree.QualifiedOverload,
-) error {
+func (n *createFunctionNode) replaceFunction(udfDesc *funcdesc.Mutable, params runParams) error {
+	// TODO(chengxiong): add validation that the function is not referenced. This
+	// is needed when we start allowing function references from other objects.
 
-	if n.cf.IsProcedure != udfDesc.IsProcedure() {
-		formatStr := "%q is a function"
-		if udfDesc.IsProcedure() {
-			formatStr = "%q is a procedure"
-		}
+	if n.cf.IsProcedure && !udfDesc.IsProcedure() {
 		return errors.WithDetailf(
 			pgerror.Newf(pgcode.WrongObjectType, "cannot change routine kind"),
-			formatStr,
+			"%q is a function",
 			udfDesc.Name,
 		)
 	}
 
-	// Make sure return type is the same. The signature of user-defined types
-	// may change, as long as the same type is referenced. If this is the case,
-	// we must update the return type.
+	if !n.cf.IsProcedure && udfDesc.IsProcedure() {
+		return errors.WithDetailf(
+			pgerror.Newf(pgcode.WrongObjectType, "cannot change routine kind"),
+			"%q is a procedure",
+			udfDesc.Name,
+		)
+	}
+
+	// Make sure parameter names are not changed.
+	for i := range n.cf.Params {
+		if string(n.cf.Params[i].Name) != udfDesc.Params[i].Name {
+			return pgerror.Newf(
+				pgcode.InvalidFunctionDefinition, "cannot change name of input parameter %q", udfDesc.Params[i].Name,
+			)
+		}
+	}
+
+	// Make sure return type is the same. The signature of user-defined types may
+	// change, as long as the same type is referenced. If this is the case, we
+	// must update the return type.
 	retType, err := tree.ResolveType(params.ctx, n.cf.ReturnType.Type, params.p)
 	if err != nil {
 		return err
@@ -217,52 +194,10 @@ func (n *createFunctionNode) replaceFunction(
 	isSameUDT := types.IsOIDUserDefinedType(retType.Oid()) && retType.Oid() ==
 		udfDesc.ReturnType.Type.Oid()
 	if n.cf.ReturnType.SetOf != udfDesc.ReturnType.ReturnSet || (!retType.Equal(udfDesc.ReturnType.Type) && !isSameUDT) {
-		if udfDesc.IsProcedure() && (retType.Family() == types.VoidFamily || udfDesc.ReturnType.Type.Family() == types.VoidFamily) {
-			return pgerror.Newf(pgcode.InvalidFunctionDefinition, "cannot change whether a procedure has output parameters")
-		}
 		return pgerror.Newf(pgcode.InvalidFunctionDefinition, "cannot change return type of existing function")
 	}
 	if isSameUDT {
 		udfDesc.ReturnType.Type = retType
-	}
-
-	// Make sure that a trigger function is not replaced.
-	if retType.Identical(types.Trigger) && len(udfDesc.DependedOnBy) > 0 {
-		return errors.WithHint(
-			unimplemented.NewWithIssue(134555,
-				"cannot replace a trigger function with an active trigger"),
-			"consider dropping and recreating the trigger",
-		)
-	}
-
-	// Verify whether changes, if any, to the parameter names and classes are
-	// allowed. This needs to happen after the return type has already been
-	// checked.
-	if err = n.validateParameters(udfDesc); err != nil {
-		return err
-	}
-	// All parameter changes, if any, are allowed, so update the descriptor
-	// accordingly.
-	if cap(udfDesc.Params) >= len(n.cf.Params) {
-		udfDesc.Params = udfDesc.Params[:len(n.cf.Params)]
-	} else {
-		udfDesc.Params = make([]descpb.FunctionDescriptor_Parameter, len(n.cf.Params))
-	}
-	var outParamOrdinals []int32
-	var outParamTypes []*types.T
-	var defaultExprs []string
-	for i, p := range n.cf.Params {
-		udfDesc.Params[i], err = makeFunctionParam(params.ctx, params.p.SemaCtx(), p, params.p)
-		if err != nil {
-			return err
-		}
-		if p.Class == tree.RoutineParamOut {
-			outParamOrdinals = append(outParamOrdinals, int32(i))
-			outParamTypes = append(outParamTypes, udfDesc.Params[i].Type)
-		}
-		if udfDesc.Params[i].DefaultExpr != nil {
-			defaultExprs = append(defaultExprs, *udfDesc.Params[i].DefaultExpr)
-		}
 	}
 
 	resetFuncOption(udfDesc)
@@ -292,59 +227,9 @@ func (n *createFunctionNode) replaceFunction(
 	if err := params.p.removeTypeBackReferences(params.ctx, udfDesc.DependsOnTypes, udfDesc.ID, jobDesc); err != nil {
 		return err
 	}
-	for _, id := range udfDesc.DependsOnFunctions {
-		backRefMutable, err := params.p.Descriptors().MutableByID(params.p.txn).Function(params.ctx, id)
-		if err != nil {
-			return err
-		}
-		if err := backRefMutable.RemoveFunctionReference(udfDesc.ID); err != nil {
-			return err
-		}
-		if err := params.p.writeFuncSchemaChange(params.ctx, backRefMutable); err != nil {
-			return err
-		}
-	}
 	// Add all new references.
 	if err := n.addUDFReferences(udfDesc, params); err != nil {
 		return err
-	}
-
-	signatureChanged := len(existing.OutParamOrdinals) != len(outParamOrdinals) ||
-		len(existing.DefaultExprs) != len(defaultExprs)
-	for i := 0; !signatureChanged && i < len(outParamOrdinals); i++ {
-		signatureChanged = existing.OutParamOrdinals[i] != outParamOrdinals[i] ||
-			!existing.OutParamTypes.GetAt(i).Equivalent(outParamTypes[i])
-	}
-	for i := 0; !signatureChanged && i < len(defaultExprs); i++ {
-		typ := existing.Types.GetAt(i + existing.Types.Length() - len(defaultExprs))
-		// Update the overload to store the type-checked expression since this
-		// is what is stored in the FunctionSignature proto.
-		existing.DefaultExprs[i], err = tree.TypeCheck(params.ctx, existing.DefaultExprs[i], params.p.SemaCtx(), typ)
-		if err != nil {
-			return err
-		}
-		signatureChanged = tree.Serialize(existing.DefaultExprs[i]) != defaultExprs[i]
-	}
-	if signatureChanged {
-		if err = scDesc.ReplaceOverload(
-			udfDesc.GetName(),
-			existing,
-			descpb.SchemaDescriptor_FunctionSignature{
-				ID:               udfDesc.GetID(),
-				ArgTypes:         existing.Types.Types(),
-				ReturnType:       retType,
-				ReturnSet:        udfDesc.ReturnType.ReturnSet,
-				IsProcedure:      n.cf.IsProcedure,
-				OutParamOrdinals: outParamOrdinals,
-				OutParamTypes:    outParamTypes,
-				DefaultExprs:     defaultExprs,
-			},
-		); err != nil {
-			return err
-		}
-		if err = params.p.writeSchemaDescChange(params.ctx, scDesc, "Replace Function"); err != nil {
-			return err
-		}
 	}
 
 	return params.p.writeFuncSchemaChange(params.ctx, udfDesc)
@@ -352,14 +237,27 @@ func (n *createFunctionNode) replaceFunction(
 
 func (n *createFunctionNode) getMutableFuncDesc(
 	scDesc catalog.SchemaDescriptor, params runParams,
-) (fnDesc *funcdesc.Mutable, existing *tree.QualifiedOverload, err error) {
+) (fnDesc *funcdesc.Mutable, isNew bool, err error) {
+	// Resolve parameter types.
+	paramTypes := make([]*types.T, len(n.cf.Params))
 	pbParams := make([]descpb.FunctionDescriptor_Parameter, len(n.cf.Params))
+	paramNameSeen := make(map[tree.Name]struct{})
 	for i, param := range n.cf.Params {
-		pbParam, err := makeFunctionParam(params.ctx, params.p.SemaCtx(), param, params.p)
+		if param.Name != "" {
+			if _, ok := paramNameSeen[param.Name]; ok {
+				// Argument names cannot be used more than once.
+				return nil, false, pgerror.Newf(
+					pgcode.InvalidFunctionDefinition, "parameter name %q used more than once", param.Name,
+				)
+			}
+			paramNameSeen[param.Name] = struct{}{}
+		}
+		pbParam, err := makeFunctionParam(params.ctx, param, params.p)
 		if err != nil {
-			return nil, nil, err
+			return nil, false, err
 		}
 		pbParams[i] = pbParam
+		paramTypes[i] = pbParam.Type
 	}
 
 	// Try to look up an existing function.
@@ -367,18 +265,16 @@ func (n *createFunctionNode) getMutableFuncDesc(
 		FuncName: n.cf.Name,
 		Params:   n.cf.Params,
 	}
-	existing, err = params.p.matchRoutine(
-		params.ctx, &routineObj, false, /* required */
-		tree.UDFRoutine|tree.ProcedureRoutine, false, /* inDropContext */
-	)
+	existing, err := params.p.matchRoutine(params.ctx, &routineObj,
+		false /* required */, tree.UDFRoutine|tree.ProcedureRoutine)
 	if err != nil {
-		return nil, nil, err
+		return nil, false, err
 	}
 
 	if existing != nil {
 		// Return an error if there is an existing match but not a replacement.
 		if !n.cf.Replace {
-			return nil, nil, pgerror.Newf(
+			return nil, false, pgerror.Newf(
 				pgcode.DuplicateFunction,
 				"function %q already exists with same argument types",
 				n.cf.Name.Object(),
@@ -387,19 +283,19 @@ func (n *createFunctionNode) getMutableFuncDesc(
 		fnID := funcdesc.UserDefinedFunctionOIDToID(existing.Oid)
 		fnDesc, err = params.p.checkPrivilegesForDropFunction(params.ctx, fnID)
 		if err != nil {
-			return nil, nil, err
+			return nil, false, err
 		}
-		return fnDesc, existing, nil
+		return fnDesc, false, nil
 	}
 
 	funcDescID, err := params.EvalContext().DescIDGenerator.GenerateUniqueDescID(params.ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, false, err
 	}
 
 	returnType, err := tree.ResolveType(params.ctx, n.cf.ReturnType.Type, params.p)
 	if err != nil {
-		return nil, nil, err
+		return nil, false, err
 	}
 
 	privileges, err := catprivilege.CreatePrivilegesFromDefaultPrivileges(
@@ -410,7 +306,7 @@ func (n *createFunctionNode) getMutableFuncDesc(
 		privilege.Routines,
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, false, err
 	}
 
 	newUdfDesc := funcdesc.NewMutableFunctionDescriptor(
@@ -425,7 +321,7 @@ func (n *createFunctionNode) getMutableFuncDesc(
 		privileges,
 	)
 
-	return &newUdfDesc, nil, nil
+	return &newUdfDesc, true, nil
 }
 
 func (n *createFunctionNode) addUDFReferences(udfDesc *funcdesc.Mutable, params runParams) error {
@@ -506,26 +402,6 @@ func (n *createFunctionNode) addUDFReferences(udfDesc *funcdesc.Mutable, params 
 		}
 	}
 
-	udfDesc.DependsOnFunctions = make([]descpb.ID, 0, len(n.functionDeps))
-	for id := range n.functionDeps {
-		// Add a reference to the dependency in here. Note that we need to add
-		// this dep before updating the back reference in case it's a
-		// self-dependent function (so that we get a proper error from
-		// AddFunctionReference).
-		udfDesc.DependsOnFunctions = append(udfDesc.DependsOnFunctions, id)
-		// Add a back reference.
-		backRefDesc, err := params.p.Descriptors().MutableByID(params.p.Txn()).Function(params.ctx, id)
-		if err != nil {
-			return err
-		}
-		if err := backRefDesc.AddFunctionReference(udfDesc.ID); err != nil {
-			return err
-		}
-		if err := params.p.writeFuncSchemaChange(params.ctx, backRefDesc); err != nil {
-			return err
-		}
-	}
-
 	// Add forward references to UDF descriptor.
 	udfDesc.DependsOn = backrefTblIDs.Ordered()
 
@@ -569,37 +445,23 @@ func setFuncOptions(
 			// Handle the body after the loop, since we don't yet know what language
 			// it is.
 			body = string(t)
-		case tree.RoutineSecurity:
-			sec, err := funcinfo.SecurityToProto(t)
-			if err != nil {
-				return err
-			}
-			udfDesc.SetSecurity(sec)
 		default:
 			return pgerror.Newf(pgcode.InvalidParameterValue, "Unknown function option %q", t)
 		}
 	}
 
 	if lang != catpb.Function_UNKNOWN_LANGUAGE && body != "" {
-		// Trigger functions do not analyze SQL statements beyond parsing, so type
-		// and sequence names should not be replaced during trigger-function
-		// creation.
-		returnType := udfDesc.ReturnType.Type
-		lazilyEvalSQL := returnType != nil && returnType.Identical(types.Trigger)
-		if !lazilyEvalSQL {
-			// Replace any sequence names in the function body with IDs.
-			body, err = replaceSeqNamesWithIDsLang(params.ctx, params.p, body, true, lang)
-			if err != nil {
-				return err
-			}
-			// Replace any UDT names in the function body with IDs.
-			body, err = serializeUserDefinedTypesLang(
-				params.ctx, params.p.SemaCtx(), body, true /* multiStmt */, "UDFs", lang)
-			if err != nil {
-				return err
-			}
+		// Replace any sequence names in the function body with IDs.
+		seqReplacedFuncBody, err := replaceSeqNamesWithIDsLang(params.ctx, params.p, body, true, lang)
+		if err != nil {
+			return err
 		}
-		udfDesc.SetFuncBody(body)
+		typeReplacedFuncBody, err := serializeUserDefinedTypesLang(
+			params.ctx, params.p.SemaCtx(), seqReplacedFuncBody, true /* multiStmt */, "UDFs", lang)
+		if err != nil {
+			return err
+		}
+		udfDesc.SetFuncBody(typeReplacedFuncBody)
 	}
 	return nil
 }
@@ -612,10 +474,7 @@ func resetFuncOption(udfDesc *funcdesc.Mutable) {
 }
 
 func makeFunctionParam(
-	ctx context.Context,
-	semaCtx *tree.SemaContext,
-	param tree.RoutineParam,
-	typeResolver tree.TypeReferenceResolver,
+	ctx context.Context, param tree.RoutineParam, typeResolver tree.TypeReferenceResolver,
 ) (descpb.FunctionDescriptor_Parameter, error) {
 	pbParam := descpb.FunctionDescriptor_Parameter{
 		Name: string(param.Name),
@@ -632,12 +491,7 @@ func makeFunctionParam(
 	}
 
 	if param.DefaultVal != nil {
-		texpr, err := tree.TypeCheck(ctx, param.DefaultVal, semaCtx, pbParam.Type)
-		if err != nil {
-			return descpb.FunctionDescriptor_Parameter{}, err
-		}
-		s := tree.Serialize(texpr)
-		pbParam.DefaultExpr = &s
+		return descpb.FunctionDescriptor_Parameter{}, unimplemented.NewWithIssue(100962, "default value")
 	}
 
 	return pbParam, nil
@@ -662,110 +516,6 @@ func validateVolatilityInOptions(
 	}
 	if err := vp.Validate(); err != nil {
 		return sqlerrors.NewInvalidVolatilityError(err)
-	}
-	return nil
-}
-
-// validateParameters checks that changes to the parameters, if any, are
-// allowed. This method expects that the return type equality has already been
-// checked.
-func (n *createFunctionNode) validateParameters(udfDesc *funcdesc.Mutable) error {
-	// Note that parameter ordering between different "namespaces" (i.e. IN vs
-	// OUT) can change (i.e. going from (IN INT, OUT INT) to (OUT INT, IN INT)
-	// is allowed), so we need to process each "namespace" separately.
-	var origInParams, origOutParams []descpb.FunctionDescriptor_Parameter
-	for _, p := range udfDesc.Params {
-		class := funcdesc.ToTreeRoutineParamClass(p.Class)
-		if tree.IsInParamClass(class) {
-			origInParams = append(origInParams, p)
-		}
-		if tree.IsOutParamClass(class) {
-			origOutParams = append(origOutParams, p)
-		}
-	}
-	var newInParams, newOutParams tree.RoutineParams
-	for _, p := range n.cf.Params {
-		if p.IsInParam() {
-			newInParams = append(newInParams, p)
-		}
-		if p.IsOutParam() {
-			newOutParams = append(newOutParams, p)
-		}
-	}
-	// We expect that the number of IN parameters didn't change (this would be
-	// a bug in function resolution).
-	if len(origInParams) != len(newInParams) {
-		return errors.AssertionFailedf(
-			"different number of IN parameters: old %d, new %d", len(origInParams), len(newInParams),
-		)
-	}
-	// Verify that the names of IN parameters are not changed.
-	for i := range origInParams {
-		if origInParams[i].Name != string(newInParams[i].Name) && origInParams[i].Name != "" {
-			// The only allowed change is if the original parameter name was
-			// omitted.
-			return pgerror.Newf(
-				pgcode.InvalidFunctionDefinition, "cannot change name of input parameter %q", origInParams[i].Name,
-			)
-		}
-	}
-	// The number of OUT parameters can only differ if a single OUT parameter is
-	// added or omitted (if we have multiple OUT parameters, then the return
-	// type is a RECORD, so parameter names become contents of the return type,
-	// which isn't allowed to change - this should have been caught via the
-	// equality check of the return types).
-	if len(origOutParams) > 1 || len(newOutParams) > 1 {
-		// When we have at most one OUT parameter on each side, we don't need to
-		// check anything. Consider each possible case:
-		// - len(origOutParams) == 0 && len(newOutParams) == 0:
-		//     Nothing to check / rename.
-		// - len(origOutParams) == 0 && len(newOutParams) == 1:
-		//     Introducing a single OUT parameter effectively gives the name to
-		//     the RETURNS-based output.
-		// - len(origOutParams) == 1 && len(newOutParams) == 0:
-		//     Removing the single OUT parameter effectively gives
-		//     function-based name to the output column.
-		// - len(origOutParams) == 1 && len(newOutParams) == 1:
-		//     This is a special case - renaming single OUT parameter is allowed
-		//     without restrictions.
-		//
-		// With multiple OUT parameters on at least one side we expect that
-		// there are no differences.
-		mismatch := len(origOutParams) != len(newOutParams)
-		if !mismatch {
-			for i := range origOutParams {
-				if origOutParams[i].Name != string(newOutParams[i].Name) {
-					// There are a couple of allowed exceptions:
-					// - originally the OUT name was omitted, or
-					// - it becomes omitted now.
-					// Note that the non-empty name must match the default name
-					// ("column" || i) and it was already checked when verifying
-					// the return type.
-					if origOutParams[i].Name != "" && newOutParams[i].Name != "" {
-						mismatch = true
-						break
-					}
-				}
-			}
-		}
-		if mismatch {
-			return errors.AssertionFailedf(
-				"different return types should've been caught earlier: old %v, new %v",
-				origOutParams, newOutParams,
-			)
-		}
-	}
-	// Verify that no DEFAULT expressions have been removed (adding new ones is
-	// ok). Note that other validity checks (like that the expressions are
-	// coercible to the parameter types and that all "default" parameters form
-	// contiguous parameter "suffix") have already been performed in the
-	// optbuilder.
-	for i := range origInParams {
-		if origInParams[i].DefaultExpr != nil && newInParams[i].DefaultVal == nil {
-			return pgerror.Newf(
-				pgcode.InvalidFunctionDefinition, "cannot remove parameter defaults from existing function",
-			)
-		}
 	}
 	return nil
 }

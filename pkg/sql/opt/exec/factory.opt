@@ -100,8 +100,6 @@ define HashJoin {
     LeftEqColsAreKey bool
     RightEqColsAreKey bool
     ExtraOnCond tree.TypedExpr
-    EstimatedLeftRowCount uint64
-    EstimatedRightRowCount uint64
 }
 
 # MergeJoin runs a merge join.
@@ -120,8 +118,6 @@ define MergeJoin {
     ReqOrdering exec.OutputOrdering
     LeftEqColsAreKey bool
     RightEqColsAreKey bool
-    EstimatedLeftRowCount uint64
-    EstimatedRightRowCount uint64
 }
 
 # GroupBy runs an aggregation. A set of aggregations is performed for each group
@@ -146,14 +142,6 @@ define GroupBy {
     # The grouping column order type (Streaming, PartialStreaming, or
     # NoStreaming).
     groupingOrderType exec.GroupingOrderType
-
-    # If set, the estimated number of rows that this GroupBy will output
-    # (rounded up).
-    estimatedRowCount uint64
-
-    # If set, the estimated number of rows that this GroupBy will read from its
-    # input (rounded up).
-    estimatedInputRowCount uint64
 }
 
 # ScalarGroupBy runs a scalar aggregation, i.e.  one which performs a set of
@@ -163,10 +151,6 @@ define GroupBy {
 define ScalarGroupBy {
     Input exec.Node
     Aggregations []exec.AggInfo
-
-    # If set, the estimated number of rows that this GroupBy will read from its
-    # input (rounded up).
-    estimatedInputRowCount uint64
 }
 
 # Distinct filters out rows such that only the first row is kept for each set of
@@ -202,9 +186,6 @@ define HashSetOp {
 # or the DISTINCT version). The left and right nodes must have the same number
 # of columns. Note that UNION ALL is special and is implemented by UnionAll.
 #
-# LeftOrdering and RightOrdering specify the output orderings for the left and
-# right inputs respectively. They are only set if StreamingOrdering is also set.
-#
 # ReqOrdering specifies the required output ordering, and it is guaranteed to be
 # a prefix of StreamingOrdering. Both inputs are already ordered according to
 # StreamingOrdering. StreamingOrdering is guaranteed to include all columns
@@ -218,17 +199,12 @@ define StreamingSetOp {
     All bool
     Left exec.Node
     Right exec.Node
-    LeftOrdering colinfo.ColumnOrdering
-    RightOrdering colinfo.ColumnOrdering
     StreamingOrdering colinfo.ColumnOrdering
     ReqOrdering exec.OutputOrdering
 }
 
 # UnionAll performs a UNION ALL. The left and right nodes must have the same
 # number of columns.
-#
-# LeftOrdering and RightOrdering specify the output orderings for the left and
-# right inputs respectively. They are only set if ReqOrdering is also set.
 #
 # ReqOrdering specifies the required output ordering, and if not empty, both
 # inputs are already ordered according to it. If ReqOrdering is set, the
@@ -247,8 +223,6 @@ define StreamingSetOp {
 define UnionAll {
     Left exec.Node
     Right exec.Node
-    LeftOrdering colinfo.ColumnOrdering
-    RightOrdering colinfo.ColumnOrdering
     ReqOrdering exec.OutputOrdering
     HardLimit uint64
     EnforceHomeRegion bool
@@ -263,10 +237,6 @@ define Sort {
     Input exec.Node
     Ordering exec.OutputOrdering
     AlreadyOrderedPrefix int
-
-    # If set, the estimated number of rows that this sorter will read from its
-    # input (rounded up).
-    estimatedInputRowCount uint64
 }
 
 # Ordinality appends an ordinality column to each row in the input node.
@@ -325,7 +295,6 @@ define LookupJoin {
     Locking opt.Locking
     LimitHint int64
     RemoteOnlyLookups bool
-    ReverseScans bool
 }
 
 # InvertedJoin performs a lookup join into an inverted index.
@@ -417,10 +386,6 @@ define TopK {
     K int64
     Ordering exec.OutputOrdering
     AlreadyOrderedPrefix int
-
-    # If set, the estimated number of rows that this TopK sorter will read from
-    # its input (rounded up).
-    estimatedInputRowCount uint64
 }
 
 # Max1Row permits at most one row from the given input node, causing an error
@@ -483,18 +448,12 @@ define Insert {
     InsertCols exec.TableColumnOrdinalSet
     ReturnCols exec.TableColumnOrdinalSet
     CheckCols exec.CheckOrdinalSet
-    UniqueWithTombstonesIndexes cat.IndexOrdinals
 
     # If set, the operator will commit the transaction as part of its execution.
     # This is false when executing inside an explicit transaction, or there are
     # multiple mutations in a statement, or the output of the mutation is
     # processed through side-effecting expressions.
     AutoCommit bool
-
-    # If set, the operator will use a specialized vectorized implementation.
-    # This is currently only used for inserts performed on behalf of COPY
-    # statements.
-    VectorInsert bool
 }
 
 # InsertFastPath implements a special (but very common) case of insert,
@@ -520,7 +479,6 @@ define InsertFastPath {
     CheckCols exec.CheckOrdinalSet
     FkChecks []exec.InsertFastPathCheck
     UniqChecks []exec.InsertFastPathCheck
-    UniqueWithTombstonesIndexes cat.IndexOrdinals
 
     # If set, the operator will commit the transaction as part of its execution.
     # This is false when executing inside an explicit transaction.
@@ -556,11 +514,6 @@ define Update {
     ReturnCols exec.TableColumnOrdinalSet
     Checks exec.CheckOrdinalSet
     Passthrough colinfo.ResultColumns
-    UniqueWithTombstonesIndexes cat.IndexOrdinals
-
-    # If set, the input has already acquired the locks during the initial scan
-    # of the Update (i.e. on the "old" KVs within these indexes).
-    LockedIndexes cat.IndexOrdinals
 
     # If set, the operator will commit the transaction as part of its execution.
     AutoCommit bool
@@ -601,11 +554,6 @@ define Upsert {
     UpdateCols exec.TableColumnOrdinalSet
     ReturnCols exec.TableColumnOrdinalSet
     Checks exec.CheckOrdinalSet
-    UniqueWithTombstonesIndexes cat.IndexOrdinals
-
-    # If set, the input has already acquired the locks during the initial scan
-    # of the Upsert (i.e. on the "old" KVs within these indexes).
-    LockedIndexes cat.IndexOrdinals
 
     # If set, the operator will commit the transaction as part of its execution.
     # This is false when executing inside an explicit transaction, or there are
@@ -631,10 +579,6 @@ define Delete {
     FetchCols exec.TableColumnOrdinalSet
     ReturnCols exec.TableColumnOrdinalSet
     Passthrough colinfo.ResultColumns
-
-    # If set, the input has already acquired the locks on the specified indexes
-    # on all keys that might be deleted from that index.
-    LockedIndexes cat.IndexOrdinals
 
     # If set, the operator will commit the transaction as part of its execution.
     # This is false when executing inside an explicit transaction, or there are
@@ -827,7 +771,6 @@ define CreateFunction {
     Cr *tree.CreateRoutine
     Deps opt.SchemaDeps
     TypeDeps opt.SchemaTypeDeps
-    FunctionDeps opt.SchemaFunctionDeps
 }
 
 # LiteralValues allows datums to be planned directly that are type checked
@@ -845,44 +788,4 @@ define ShowCompletions {
 # Call implements CALL for invoking a procedure.
 define Call {
     Proc *tree.RoutineExpr
-}
-
-# CreateTrigger implements CREATE TRIGGER.
-define CreateTrigger {
-    Ct *tree.CreateTrigger
-}
-
-# VectorSearch is used to perform an approximate K-nearest-neighbor search for a
-# single query vector on a vector index. It returns a set of candidate primary
-# keys which should be used in a re-ranking step that computes the exact
-# distances to the query vector, and applies the NN limit.
-define VectorSearch {
-    Table cat.Table
-    Index cat.Index
-    OutCols exec.TableColumnOrdinalSet
-    PrefixConstraint *constraint.Constraint
-    QueryVector tree.TypedExpr
-    TargetNeighborCount uint64
-}
-
-# VectorMutationSearch is used to determine the vector-index partition that
-# contains (or should contain) each vector from the input. It is used in the
-# input of mutation operators. It always produces exactly one row for each
-# input row, containing the partition key and optionally the quantized vector.
-# If the input query vector is NULL, no vector search is performed, and the
-# projected output columns are NULL.
-define VectorMutationSearch {
-    Input exec.Node
-    Table cat.Table
-    Index cat.Index
-    PrefixKeyCols []exec.NodeColumnOrdinal
-    QueryVectorCol exec.NodeColumnOrdinal
-
-    # Only set for index deletes, which need to find the specific index entry
-    # for the deleted row.
-    SuffixKeyCols []exec.NodeColumnOrdinal
-
-    # Indicates whether the search operation is for an index put or del. If set,
-    # the search must return the quantized vector.
-    IsIndexPut bool
 }

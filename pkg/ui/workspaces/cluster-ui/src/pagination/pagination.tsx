@@ -3,18 +3,21 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import {
-  Pagination as AntPagination,
-  PaginationProps as AntPaginationProps,
-} from "antd";
-import classNames from "classnames/bind";
 import React from "react";
-
+import { Pagination as AntPagination } from "antd";
+import "antd/lib/pagination/style";
+import type { PaginationProps as AntPaginationProps } from "antd/lib/pagination";
+import classNames from "classnames/bind";
 import styles from "./pagination.module.scss";
 
 const cx = classNames.bind(styles);
 
-export const Pagination: React.FC<AntPaginationProps> = props => {
+export type PaginationProps = Pick<
+  AntPaginationProps,
+  "pageSize" | "current" | "total" | "onChange"
+>;
+
+export const Pagination: React.FC<PaginationProps> = props => {
   const itemRenderer = React.useCallback(
     (
       _page: number,
@@ -41,6 +44,7 @@ export const Pagination: React.FC<AntPaginationProps> = props => {
       {...props}
       size="small"
       itemRender={itemRenderer}
+      hideOnSinglePage
       className={cx("root")}
     />
   );

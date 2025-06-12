@@ -144,6 +144,9 @@ SELECT 1::pg_catalog.special_int
 query error pq: type "crdb_internal.mytype" does not exist
 SELECT 1::crdb_internal.mytype
 
+statement ok
+SET legacy_varchar_typing = off
+
 # Untyped string literals in binary operators assume the type of the other
 # argument, if an overload exists with exactly matching parameter types. The
 # values are adjusted as necessary, e.g., trailing spaces are trimmed from
@@ -284,6 +287,9 @@ SELECT bp = c FROM
   (VALUES ('foo  ')) v2(c)
 ----
 false
+
+statement ok
+SET legacy_varchar_typing = on
 
 # Regression tests for #15050
 
@@ -513,59 +519,3 @@ FROM t131346v, t131346b
 WHERE v = (CASE WHEN v < b THEN b ELSE v END)
 ----
 11
-
-# Static analysis types should never make it to execution.
-statement ok
-CREATE TABLE t83496 (
-  a STRING,
-  b STRING
-);
-CREATE TYPE typ83496 AS ENUM ('foo', 'bar');
-
-statement ok
-SELECT * FROM t83496
-WHERE (
-  (SELECT 'bar':::typ83496 FROM t83496 WHERE false)
-  IS NOT DISTINCT FROM CASE WHEN NULL THEN NULL ELSE NULL END
-);
-
-# Issue #115054: ignore trailing whitespace in varchar
-statement ok
-CREATE TABLE t115054_1 (v varchar(2));
-
-statement ok
-INSERT INTO t115054_1 (v) VALUES ('c     ');
-
-statement ok
-INSERT INTO t115054_1 (v) VALUES (' c    ');
-
-statement ok
-INSERT INTO t115054_1 (v) VALUES ('cc    ');
-
-statement error pq: value too long for type VARCHAR\(2\)
-INSERT INTO t115054_1 (v) VALUES ('ccc   ');
-
-query T nosort
-SELECT json_agg(v ORDER BY v) FROM t115054_1
-----
-[" c", "c ", "cc"]
-
-statement ok
-CREATE TABLE t115054_2 (v varchar);
-
-statement ok
-INSERT INTO t115054_2 (v) VALUES ('c     ');
-
-statement ok
-INSERT INTO t115054_2 (v) VALUES (' c    ');
-
-statement ok
-INSERT INTO t115054_2 (v) VALUES ('cc    ');
-
-statement ok
-INSERT INTO t115054_2 (v) VALUES ('ccc   ');
-
-query T nosort
-SELECT json_agg(v ORDER BY v) FROM t115054_2
-----
-[" c    ", "c     ", "cc    ", "ccc   "]

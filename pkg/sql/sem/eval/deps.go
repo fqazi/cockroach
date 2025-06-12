@@ -16,6 +16,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
+	"github.com/cockroachdb/cockroach/pkg/sql/roleoption"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
@@ -26,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/rangedesc"
-	"github.com/cockroachdb/redact"
 	"github.com/lib/pq/oid"
 )
 
@@ -213,7 +213,7 @@ type Planner interface {
 	// GetTypeFromValidSQLSyntax parses a column type when the input
 	// string uses the parseable SQL representation of a type name, e.g.
 	// `INT(13)`, `mytype`, `"mytype"`, `pg_catalog.int4` or `"public".mytype`.
-	GetTypeFromValidSQLSyntax(ctx context.Context, sql string) (*types.T, error)
+	GetTypeFromValidSQLSyntax(sql string) (*types.T, error)
 
 	// EvalSubquery returns the Datum for the given subquery node.
 	EvalSubquery(expr *tree.Subquery) (tree.Datum, error)
@@ -229,13 +229,6 @@ type Planner interface {
 	RoutineExprGenerator(
 		ctx context.Context, expr *tree.RoutineExpr, args tree.Datums,
 	) ValueGenerator
-
-	// EvalTxnControlExpr produces the side effects of a COMMIT or ROLLBACK
-	// statement within a PL/pgSQL stored procedure. See the sql.planner
-	// implementation for details.
-	EvalTxnControlExpr(
-		ctx context.Context, expr *tree.TxnControlExpr, args tree.Datums,
-	) (tree.Datum, error)
 
 	// GenerateTestObjects is used to generate a large number of
 	// objets quickly.
@@ -363,7 +356,12 @@ type Planner interface {
 	//
 	// The fields set in session that are set override the respective fields if
 	// they have previously been set through SetSessionData().
-	QueryRowEx(ctx context.Context, opName redact.RedactableString, override sessiondata.InternalExecutorOverride, stmt string, qargs ...interface{}) (tree.Datums, error)
+	QueryRowEx(
+		ctx context.Context,
+		opName string,
+		override sessiondata.InternalExecutorOverride,
+		stmt string,
+		qargs ...interface{}) (tree.Datums, error)
 
 	// QueryIteratorEx executes the query, returning an iterator that can be used
 	// to get the results. If the call is successful, the returned iterator
@@ -371,7 +369,7 @@ type Planner interface {
 	//
 	// The fields set in session that are set override the respective fields if they
 	// have previously been set through SetSessionData().
-	QueryIteratorEx(ctx context.Context, opName redact.RedactableString, override sessiondata.InternalExecutorOverride, stmt string, qargs ...interface{}) (InternalRows, error)
+	QueryIteratorEx(ctx context.Context, opName string, override sessiondata.InternalExecutorOverride, stmt string, qargs ...interface{}) (InternalRows, error)
 
 	// IsActive returns if the version specified by key is active.
 	IsActive(ctx context.Context, key clusterversion.Key) bool
@@ -428,29 +426,6 @@ type Planner interface {
 	// AutoCommit indicates whether the Planner has flagged the current statement
 	// as eligible for transaction auto-commit.
 	AutoCommit() bool
-
-	// StartHistoryRetentionJob creates a cluster-level protected timestamp
-	// and a job that owns it.
-	StartHistoryRetentionJob(ctx context.Context, desc string, protectTS hlc.Timestamp, expiration time.Duration) (jobspb.JobID, error)
-
-	// ExtendHistoryRetention extends the lifetime of a a cluster-level
-	// protected timestamp.
-	ExtendHistoryRetention(ctx context.Context, id jobspb.JobID) error
-
-	// InsertTemporarySchema inserts a temporary schema into the current session
-	// data.
-	InsertTemporarySchema(
-		tempSchemaName string, databaseID descpb.ID, schemaID descpb.ID,
-	)
-
-	// ClearQueryPlanCache removes all entries from the node's query plan cache.
-	ClearQueryPlanCache()
-
-	// ClearTableStatsCache removes all entries from the node's table stats cache.
-	ClearTableStatsCache()
-
-	// RetryCounter is the number of times this statement has been retried.
-	RetryCounter() int
 }
 
 // InternalRows is an iterator interface that's exposed by the internal
@@ -524,6 +499,13 @@ type SessionAccessor interface {
 	// given global privilege, or the equivalent role option if one exists.
 	HasGlobalPrivilegeOrRoleOption(ctx context.Context, privilege privilege.Kind) (bool, error)
 
+	// HasAdminRole returns true iff the current session user has the admin role.
+	HasAdminRole(ctx context.Context) (bool, error)
+
+	// HasRoleOption returns nil iff the current session user has the specified
+	// role option.
+	HasRoleOption(ctx context.Context, roleOption roleoption.Option) (bool, error)
+
 	// CheckPrivilege verifies that the current user has `privilege` on `descriptor`.
 	CheckPrivilege(ctx context.Context, privilegeObject privilege.Object, privilege privilege.Kind) error
 
@@ -538,7 +520,7 @@ type PreparedStatementState interface {
 	// HasActivePortals returns true if there are portals in the session.
 	HasActivePortals() bool
 	// MigratablePreparedStatements returns a mapping of all prepared statements.
-	MigratablePreparedStatements() ([]sessiondatapb.MigratableSession_PreparedStatement, error)
+	MigratablePreparedStatements() []sessiondatapb.MigratableSession_PreparedStatement
 	// HasPortal returns true if there exists a given named portal in the session.
 	HasPortal(s string) bool
 }
@@ -550,29 +532,22 @@ type PreparedStatementState interface {
 // interface only work on the gateway node (i.e. not from
 // distributed processors).
 type ClientNoticeSender interface {
-	// BufferClientNotice buffers the notice in the command result to send to the
-	// client. This is flushed before the connection is closed.
+	// BufferClientNotice buffers the notice to send to the client.
+	// This is flushed before the connection is closed.
 	BufferClientNotice(ctx context.Context, notice pgnotice.Notice)
-	// SendClientNotice immediately flushes the notice to the client.
-	// SendNotice sends the given notice to the client. The notice will be in
-	// the client communication buffer until it is flushed. Flushing can be forced
-	// to occur immediately by setting immediateFlush to true.
-	// This is used to implement PLpgSQL RAISE statements; most cases should use
+	// SendClientNotice immediately flushes the notice to the client. This is used
+	// to implement PLpgSQL RAISE statements; most cases should use
 	// BufferClientNotice.
-	SendClientNotice(ctx context.Context, notice pgnotice.Notice, immediateFlush bool) error
+	SendClientNotice(ctx context.Context, notice pgnotice.Notice) error
 }
 
 // DeferredRoutineSender allows a nested routine to send the information needed
 // for its own evaluation to a parent routine. This is used to defer execution
 // for tail-call optimization. It can only be used during local execution.
 type DeferredRoutineSender interface {
-	// CanOptimizeTailCall determines whether a nested routine in tail-call
-	// position can be executed in its parent's context.
-	CanOptimizeTailCall(nestedRoutine *tree.RoutineExpr) bool
-
 	// SendDeferredRoutine sends a local nested routine and its arguments to its
 	// parent routine.
-	SendDeferredRoutine(nestedRoutine *tree.RoutineExpr, args tree.Datums)
+	SendDeferredRoutine(expr *tree.RoutineExpr, args tree.Datums)
 }
 
 // PrivilegedAccessor gives access to certain queries that would otherwise
@@ -613,7 +588,7 @@ type RegionOperator interface {
 
 	// ResetMultiRegionZoneConfigsForTable resets the given table's zone
 	// configuration to its multi-region default.
-	ResetMultiRegionZoneConfigsForTable(ctx context.Context, id int64, forceZoneSurvival bool) error
+	ResetMultiRegionZoneConfigsForTable(ctx context.Context, id int64) error
 
 	// ResetMultiRegionZoneConfigsForDatabase resets the given database's zone
 	// configuration to its multi-region default.
@@ -660,7 +635,7 @@ type ChangefeedState interface {
 	SetHighwater(frontier hlc.Timestamp)
 
 	// SetCheckpoint sets the checkpoint for the changefeed.
-	SetCheckpoint(checkpoint *jobspb.TimestampSpansMap)
+	SetCheckpoint(spans []roachpb.Span, timestamp hlc.Timestamp)
 }
 
 // TenantOperator is capable of interacting with tenant state, allowing SQL
@@ -675,6 +650,11 @@ type TenantOperator interface {
 	// the gc job will not wait for a GC ttl.
 	DropTenantByID(ctx context.Context, tenantID uint64, synchronous, ignoreServiceMode bool) error
 
+	// GCTenant attempts to garbage collect a DROP tenant from the system. Upon
+	// success it also removes the tenant record.
+	// It returns an error if the tenant does not exist.
+	GCTenant(ctx context.Context, tenantID uint64) error
+
 	// LookupTenantID returns the ID for the given tenant name.o
 	LookupTenantID(ctx context.Context, tenantName roachpb.TenantName) (roachpb.TenantID, error)
 
@@ -683,9 +663,11 @@ type TenantOperator interface {
 	UpdateTenantResourceLimits(
 		ctx context.Context,
 		tenantID uint64,
-		availableTokens float64,
+		availableRU float64,
 		refillRate float64,
-		maxBurstTokens float64,
+		maxBurstRU float64,
+		asOf time.Time,
+		asOfConsumedRequestUnits float64,
 	) error
 }
 
@@ -714,6 +696,7 @@ type GossipOperator interface {
 type SQLStatsController interface {
 	ResetClusterSQLStats(ctx context.Context) error
 	ResetActivityTables(ctx context.Context) error
+	ResetInsightsTables(ctx context.Context) error
 	CreateSQLStatsCompactionSchedule(ctx context.Context) error
 }
 
@@ -742,8 +725,6 @@ type StmtDiagnosticsRequestInsertFunc func(
 	samplingProbability float64,
 	minExecutionLatency time.Duration,
 	expiresAfter time.Duration,
-	redacted bool,
-	username string,
 ) error
 
 // AsOfSystemTime represents the result from the evaluation of AS OF SYSTEM TIME
@@ -765,8 +746,4 @@ type AsOfSystemTime struct {
 	// This is be zero if there is no maximum bound.
 	// In non-zero, we want a read t where Timestamp <= t < MaxTimestampBound.
 	MaxTimestampBound hlc.Timestamp
-
-	// ForBackfill indicates if this AOST expression was added to an operation
-	// that requires a backfill, like CREATE TABLE AS.
-	ForBackfill bool
 }

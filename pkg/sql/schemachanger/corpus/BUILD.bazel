@@ -4,6 +4,7 @@ go_library(
     name = "corpus",
     srcs = ["corpus.go"],
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/schemachanger/corpus",
+    tags = ["integration"],
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/sql/schemachanger/scop",
@@ -20,6 +21,7 @@ go_library(
 go_test(
     name = "corpus_test",
     srcs = ["corpus_test.go"],
+    args = ["-test.timeout=295s"],
     deps = [
         ":corpus",
         "//pkg/clusterversion",
@@ -28,7 +30,6 @@ go_test(
         "//pkg/sql/schemachanger/scpb",
         "//pkg/sql/schemachanger/scplan",
         "//pkg/testutils/skip",
-        "//pkg/util/mon",
         "@com_github_stretchr_testify//require",
     ],
 )

@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execopnode"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
@@ -26,14 +25,14 @@ import (
 type projectSetProcessor struct {
 	execinfra.ProcessorBase
 
-	evalCtx *eval.Context
-	input   execinfra.RowSource
-	spec    *execinfrapb.ProjectSetSpec
+	input execinfra.RowSource
+	spec  *execinfrapb.ProjectSetSpec
 
-	// eh contains the type-checked expression specified in the ROWS FROM
-	// syntax. It can contain many kinds of expressions (anything that is
-	// "function-like" including COALESCE, NULLIF), not just SRFs.
-	eh execexpr.MultiHelper
+	// exprHelpers are the constant-folded, type checked expressions specified
+	// in the ROWS FROM syntax. This can contain many kinds of expressions
+	// (anything that is "function-like" including COALESCE, NULLIF) not just
+	// SRFs.
+	exprHelpers []*execinfrapb.ExprHelper
 
 	// funcs contains a valid pointer to a SRF FuncExpr for every entry
 	// in `exprHelpers` that is actually a SRF function application.
@@ -51,7 +50,7 @@ type projectSetProcessor struct {
 	// RowBuffer will contain the current row of results.
 	rowBuffer rowenc.EncDatumRow
 
-	// gens contains the current "active" eval.ValueGenerators for each entry
+	// gens contains the current "active" ValueGenerators for each entry
 	// in `funcs`. They are initialized anew for every new row in the source.
 	gens []eval.ValueGenerator
 
@@ -79,22 +78,20 @@ func newProjectSetProcessor(
 ) (*projectSetProcessor, error) {
 	outputTypes := append(input.OutputTypes(), spec.GeneratedColumns...)
 	ps := &projectSetProcessor{
-		// We'll be mutating the eval context, so we always need a copy.
-		evalCtx:   flowCtx.NewEvalCtx(),
-		input:     input,
-		spec:      spec,
-		funcs:     make([]tree.TypedExpr, len(spec.Exprs)),
-		rowBuffer: make(rowenc.EncDatumRow, len(outputTypes)),
-		gens:      make([]eval.ValueGenerator, len(spec.Exprs)),
-		done:      make([]bool, len(spec.Exprs)),
+		input:       input,
+		spec:        spec,
+		exprHelpers: make([]*execinfrapb.ExprHelper, len(spec.Exprs)),
+		funcs:       make([]tree.TypedExpr, len(spec.Exprs)),
+		rowBuffer:   make(rowenc.EncDatumRow, len(outputTypes)),
+		gens:        make([]eval.ValueGenerator, len(spec.Exprs)),
+		done:        make([]bool, len(spec.Exprs)),
 	}
-	if err := ps.InitWithEvalCtx(
+	if err := ps.Init(
 		ctx,
 		ps,
 		post,
 		outputTypes,
 		flowCtx,
-		ps.evalCtx,
 		processorID,
 		nil, /* memMonitor */
 		execinfra.ProcStateOpts{
@@ -108,27 +105,25 @@ func newProjectSetProcessor(
 		return nil, err
 	}
 
-	// Initialize exprHelper.
+	// Initialize exprHelpers.
 	semaCtx := ps.FlowCtx.NewSemaContext(ps.FlowCtx.Txn)
-	err := ps.eh.Init(ctx, len(ps.spec.Exprs), ps.input.OutputTypes(), semaCtx, ps.evalCtx)
-	if err != nil {
-		return nil, err
-	}
 	for i, expr := range ps.spec.Exprs {
-		if err = ps.eh.AddExpr(ctx, expr, i); err != nil {
+		var helper execinfrapb.ExprHelper
+		err := helper.Init(ctx, expr, ps.input.OutputTypes(), semaCtx, ps.EvalCtx)
+		if err != nil {
 			return nil, err
 		}
-		texpr := ps.eh.Expr(i)
-		if tFunc, ok := texpr.(*tree.FuncExpr); ok && tFunc.IsGeneratorClass() {
+		if tFunc, ok := helper.Expr.(*tree.FuncExpr); ok && tFunc.IsGeneratorClass() {
 			// Expr is a set-generating function.
 			ps.funcs[i] = tFunc
 			ps.mustBeStreaming = ps.mustBeStreaming || tFunc.IsVectorizeStreaming()
 		}
-		if tRoutine, ok := texpr.(*tree.RoutineExpr); ok {
+		if tRoutine, ok := helper.Expr.(*tree.RoutineExpr); ok {
 			// A routine in the context of a project-set is a set-returning
 			// routine.
 			ps.funcs[i] = tRoutine
 		}
+		ps.exprHelpers[i] = &helper
 	}
 	return ps, nil
 }
@@ -156,30 +151,31 @@ func (ps *projectSetProcessor) nextInputRow() (
 	if row == nil {
 		return nil, meta, nil
 	}
-	// Set expression helper row so that we can use it as an
-	// IndexedVarContainer.
-	ps.eh.SetRow(row)
-	ps.evalCtx.IVarContainer = ps.eh.IVarContainer()
 
 	// Initialize a round of SRF generators or scalar values.
-	for i, n := 0, ps.eh.ExprCount(); i < n; i++ {
+	for i := range ps.exprHelpers {
 		if fn := ps.funcs[i]; fn != nil {
-			// A set-generating function. Prepare its eval.ValueGenerator.
+			// A set-generating function. Prepare its ValueGenerator.
 
-			// First, make sure to close its eval.ValueGenerator from the
-			// previous input row (if it exists).
+			// First, make sure to close its ValueGenerator from the previous
+			// input row (if it exists).
 			if ps.gens[i] != nil {
 				ps.gens[i].Close(ps.Ctx())
 				ps.gens[i] = nil
 			}
 
+			// Set ExprHelper.row so that we can use it as an IndexedVarContainer.
+			ps.exprHelpers[i].Row = row
+
+			ps.EvalCtx.IVarContainer = ps.exprHelpers[i]
+
 			var gen eval.ValueGenerator
 			var err error
 			switch t := fn.(type) {
 			case *tree.FuncExpr:
-				gen, err = eval.GetFuncGenerator(ps.Ctx(), ps.evalCtx, t)
+				gen, err = eval.GetFuncGenerator(ps.Ctx(), ps.EvalCtx, t)
 			case *tree.RoutineExpr:
-				gen, err = eval.GetRoutineGenerator(ps.Ctx(), ps.evalCtx, t)
+				gen, err = eval.GetRoutineGenerator(ps.Ctx(), ps.EvalCtx, t)
 				if err == nil && gen == nil && t.MultiColOutput && !t.Generator {
 					// If the routine will return multiple output columns, we expect the
 					// routine to return nulls for each column type instead of no rows, so
@@ -219,7 +215,7 @@ func (ps *projectSetProcessor) nextInputRow() (
 // values. It returns true if any of the generators produce new values.
 func (ps *projectSetProcessor) nextGeneratorValues() (newValAvail bool, err error) {
 	colIdx := len(ps.input.OutputTypes())
-	for i, n := 0, ps.eh.ExprCount(); i < n; i++ {
+	for i := range ps.exprHelpers {
 		// Do we have a SRF?
 		if gen := ps.gens[i]; gen != nil {
 			// Yes. Is there still work to do for the current row?
@@ -264,7 +260,7 @@ func (ps *projectSetProcessor) nextGeneratorValues() (newValAvail bool, err erro
 			// Do we still need to produce the scalar value? (first row)
 			if !ps.done[i] {
 				// Yes. Produce it once, then indicate it's "done".
-				value, err := ps.eh.EvalExpr(ps.Ctx(), i, ps.rowBuffer)
+				value, err := ps.exprHelpers[i].Eval(ps.Ctx(), ps.rowBuffer)
 				if err != nil {
 					return false, err
 				}

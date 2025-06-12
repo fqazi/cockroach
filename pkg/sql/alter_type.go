@@ -25,7 +25,6 @@ import (
 )
 
 type alterTypeNode struct {
-	zeroInputPlanNode
 	n      *tree.AlterType
 	prefix catalog.ResolvedObjectPrefix
 	desc   *typedesc.Mutable
@@ -479,6 +478,14 @@ func (n *alterTypeNode) Close(ctx context.Context)           {}
 func (n *alterTypeNode) ReadingOwnWrites()                   {}
 
 func (p *planner) canModifyType(ctx context.Context, desc *typedesc.Mutable) error {
+	hasAdmin, err := p.HasAdminRole(ctx)
+	if err != nil {
+		return err
+	}
+	if hasAdmin {
+		return nil
+	}
+
 	hasOwnership, err := p.HasOwnership(ctx, desc)
 	if err != nil {
 		return err

@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
@@ -38,6 +39,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
+	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/cgroups"
@@ -228,6 +230,11 @@ func initTempStorageConfig(
 	}
 	useStore := stores.Specs[specIdx]
 
+	var recordPath string
+	if !useStore.InMemory {
+		recordPath = filepath.Join(useStore.Path, server.TempDirsRecordFilename)
+	}
+
 	// The temp store size can depend on the location of the first regular store
 	// (if it's expressed as a percentage), so we resolve that flag here.
 	var tempStorePercentageResolver percentResolverFunc
@@ -279,23 +286,17 @@ func initTempStorageConfig(
 	if tempDir == "" && !tempStorageConfig.InMemory {
 		tempDir = useStore.Path
 	}
-
-	tmpPath, unlockDirFn, err := fs.CreateTempDir(tempDir, server.TempDirPrefix)
-	if err != nil {
-		return base.TempStorageConfig{}, errors.Wrap(err, "could not create temporary directory for temp storage")
+	// Create the temporary subdirectory for the temp engine.
+	{
+		var err error
+		if tempStorageConfig.Path, err = fs.CreateTempDir(tempDir, server.TempDirPrefix, stopper); err != nil {
+			return base.TempStorageConfig{}, errors.Wrap(err, "could not create temporary directory for temp storage")
+		}
 	}
-	tempStorageConfig.Path = tmpPath
 
-	if useStore.InMemory {
-		stopper.AddCloser(stop.CloserFn(func() {
-			unlockDirFn()
-			// Remove the temp directory directly since there is no record file.
-			if err := os.RemoveAll(tempStorageConfig.Path); err != nil {
-				log.Errorf(ctx, "could not remove temporary store directory: %v", err.Error())
-			}
-		}))
-	} else {
-		recordPath := filepath.Join(useStore.Path, server.TempDirsRecordFilename)
+	// We record the new temporary directory in the record file (if it
+	// exists) for cleanup in case the node crashes.
+	if recordPath != "" {
 		if err := fs.RecordTempDir(recordPath, tempStorageConfig.Path); err != nil {
 			return base.TempStorageConfig{}, errors.Wrapf(
 				err,
@@ -303,14 +304,8 @@ func initTempStorageConfig(
 				recordPath,
 			)
 		}
-		// Remove temporary directory on shutdown.
-		stopper.AddCloser(stop.CloserFn(func() {
-			unlockDirFn()
-			if err := fs.CleanupTempDirs(recordPath); err != nil {
-				log.Errorf(ctx, "could not remove temporary store directory: %v", err.Error())
-			}
-		}))
 	}
+
 	return tempStorageConfig, nil
 }
 
@@ -489,10 +484,8 @@ func runStartInternal(
 	// GOMAXPROCS(0) by now.
 	cgroups.AdjustMaxProcs(ctx)
 
-	fs := cliflagcfg.FlagSetForCmd(cmd)
-
 	// Check the --join flag.
-	if fl := fs.Lookup(cliflags.Join.Name); fl != nil && !fl.Changed {
+	if fl := cliflagcfg.FlagSetForCmd(cmd).Lookup(cliflags.Join.Name); fl != nil && !fl.Changed {
 		err := errors.WithHint(
 			errors.New("no --join flags provided to 'cockroach start'"),
 			"Consider using 'cockroach init' or 'cockroach start-single-node' instead")
@@ -500,19 +493,10 @@ func runStartInternal(
 	}
 
 	// Check the --tenant-id-file flag.
-	if fl := fs.Lookup(cliflags.TenantIDFile.Name); fl != nil && fl.Changed {
+	if fl := cliflagcfg.FlagSetForCmd(cmd).Lookup(cliflags.TenantIDFile.Name); fl != nil && fl.Changed {
 		fileName := fl.Value.String()
-		serverCfg.DelayedSetTenantID = func(
-			ctx context.Context,
-		) (roachpb.TenantID, roachpb.Locality, error) {
-			tenantID, err := tenantIDFromFile(ctx, fileName, nil, nil, nil)
-			if err != nil {
-				return roachpb.TenantID{}, roachpb.Locality{}, err
-			}
-			if err := tryReadLocalityFileFlag(fs); err != nil {
-				return roachpb.TenantID{}, roachpb.Locality{}, err
-			}
-			return tenantID, serverCfg.Locality, nil
+		serverCfg.DelayedSetTenantID = func(ctx context.Context) (roachpb.TenantID, error) {
+			return tenantIDFromFile(ctx, fileName, nil, nil, nil)
 		}
 	}
 
@@ -566,42 +550,6 @@ func runStartInternal(
 		return err
 	}
 
-	// Set the GC target percent on the Go runtime.
-	if err := func() error {
-		var goGCPercent int
-		if fs.Changed(cliflags.GoGCPercent.Name) {
-			goGCPercent = startCtx.goGCPercent
-		} else {
-			if _, envVarSet := envutil.ExternalEnvString("GOGC", 1); envVarSet {
-				// When --go-gc-percent is not specified but the env var is, we defer to
-				// the env var.
-				return nil
-			}
-			// When neither the --go-gc-percent flag nor the GOGC env var is set,
-			// increase the GC target percent to 300% (default 100%) to reduce the
-			// frequency of GC cycles. However, only do so if a soft memory limit is
-			// also configured, to avoid introducing OOMs.
-			goMemLimit := debug.SetMemoryLimit(-1 /* get without adjusting */)
-			if goMemLimit == math.MaxInt64 {
-				// If the soft memory limit is disabled, don't adjust the GC percent.
-				// Leave it at the default 100%.
-				return nil
-			}
-			goGCPercent = 300
-		}
-		var goGCPercentStr redact.RedactableString
-		if goGCPercent < 0 {
-			goGCPercentStr = `"off"`
-		} else {
-			goGCPercentStr = redact.Sprintf("%d%%", goGCPercent)
-		}
-		log.Ops.Infof(ctx, "GC target percentage of Go runtime is set to %s", goGCPercentStr)
-		debug.SetGCPercent(goGCPercent)
-		return nil
-	}(); err != nil {
-		return err
-	}
-
 	// Initialize the node's configuration from startup parameters.
 	// This also reads the part of the configuration that comes from
 	// environment variables.
@@ -609,14 +557,20 @@ func runStartInternal(
 		return errors.Wrapf(err, "failed to initialize %s", serverType)
 	}
 
-	// Derive temporary/auxiliary directory specifications.
-	serverCfg.ExternalIODir = startCtx.externalIODir
-
 	st := serverCfg.BaseConfig.Settings
+
+	// Derive temporary/auxiliary directory specifications.
+	st.ExternalIODir = startCtx.externalIODir
+
 	if serverCfg.SQLConfig.TempStorageConfig, err = initTempStorageConfig(
 		ctx, st, stopper, serverCfg.Stores,
 	); err != nil {
 		return err
+	}
+
+	// Configure the default storage engine.
+	if serverCfg.StorageEngine == enginepb.EngineTypeDefault {
+		serverCfg.StorageEngine = enginepb.EngineTypePebble
 	}
 
 	// The configuration is now ready to report to the user and the log
@@ -738,11 +692,8 @@ func getDefaultGoMemLimit(ctx context.Context) int64 {
 		log.Ops.Shoutf(
 			ctx, severity.WARNING, "recommended default value of "+
 				"--max-go-memory (%s) was truncated to %s, consider reducing "+
-				"--max-sql-memory (%s) and / or --cache (%s); total system/cgroup memory: %s.",
+				"--max-sql-memory and / or --cache",
 			humanizeutil.IBytes(limit), humanizeutil.IBytes(maxGoMemLimit),
-			humanizeutil.IBytes(serverCfg.MemoryPoolSize),
-			humanizeutil.IBytes(serverCfg.CacheSize),
-			humanizeutil.IBytes(sysMem),
 		)
 		limit = maxGoMemLimit
 	}
@@ -868,7 +819,7 @@ func createAndStartServerAsync(
 			// Now inform the user that the server is running and tell the
 			// user about its run-time derived parameters.
 			return reportServerInfo(ctx, tBegin, serverCfg, s.ClusterSettings(),
-				serverType, s.InitialStart(), s.LogicalClusterID(), startCtx.externalIODir)
+				serverType, s.InitialStart(), s.LogicalClusterID())
 		}(); err != nil {
 			shutdownReqC <- serverctl.MakeShutdownRequest(
 				serverctl.ShutdownReasonServerStartupError, errors.Wrapf(err, "server startup failed"))
@@ -1186,7 +1137,6 @@ func reportServerInfo(
 	serverType redact.SafeString,
 	initialStart bool,
 	tenantClusterID uuid.UUID,
-	externalIODir string,
 ) error {
 	var buf redact.StringBuilder
 	info := build.GetInfo()
@@ -1234,14 +1184,15 @@ func reportServerInfo(
 	if tmpDir := serverCfg.SQLConfig.TempStorageConfig.Path; tmpDir != "" {
 		buf.Printf("temp dir:\t%s\n", log.SafeManaged(tmpDir))
 	}
-	if externalIODir != "" {
-		buf.Printf("external I/O path: \t%s\n", log.SafeManaged(externalIODir))
+	if ext := st.ExternalIODir; ext != "" {
+		buf.Printf("external I/O path: \t%s\n", log.SafeManaged(ext))
 	} else {
 		buf.Printf("external I/O path: \t<disabled>\n")
 	}
 	for i, spec := range serverCfg.Stores.Specs {
 		buf.Printf("store[%d]:\t%s\n", i, log.SafeManaged(spec))
 	}
+	buf.Printf("storage engine: \t%s\n", &serverCfg.StorageEngine)
 
 	// Print the commong server identifiers.
 	if baseCfg.ClusterName != "" {
@@ -1355,16 +1306,16 @@ func reportConfiguration(ctx context.Context) {
 func maybeWarnMemorySizes(ctx context.Context) {
 	// Is the cache configuration OK?
 	if !startCtx.cacheSizeValue.IsSet() {
-		var buf redact.StringBuilder
-		buf.Printf("Using the default setting for --cache (%s).\n", &startCtx.cacheSizeValue)
-		buf.Printf("  A significantly larger value is usually needed for good performance.\n")
+		var buf bytes.Buffer
+		fmt.Fprintf(&buf, "Using the default setting for --cache (%s).\n", &startCtx.cacheSizeValue)
+		fmt.Fprintf(&buf, "  A significantly larger value is usually needed for good performance.\n")
 		if size, err := status.GetTotalMemory(ctx); err == nil {
-			buf.Printf("  If you have a dedicated server a reasonable setting is --cache=.25 (%s).",
+			fmt.Fprintf(&buf, "  If you have a dedicated server a reasonable setting is --cache=.25 (%s).",
 				humanizeutil.IBytes(size/4))
 		} else {
-			buf.Printf("  If you have a dedicated server a reasonable setting is 25%% of physical memory.")
+			fmt.Fprintf(&buf, "  If you have a dedicated server a reasonable setting is 25%% of physical memory.")
 		}
-		log.Ops.Warningf(ctx, "%s", buf.RedactableString())
+		log.Ops.Warningf(ctx, "%s", redact.Safe(buf.String()))
 	}
 
 	// Check that the total suggested "max" memory is well below the available memory.
@@ -1457,8 +1408,8 @@ func setupAndInitializeLoggingAndProfiling(
 				"consider --accept-sql-without-tls instead. For other options, see:\n\n"+
 				"- %s\n"+
 				"- %s",
-			redact.SafeString(build.MakeIssueURL(53404)),
-			redact.SafeString(docs.URL("secure-a-cluster.html")),
+			redact.Safe(build.MakeIssueURL(53404)),
+			redact.Safe(docs.URL("secure-a-cluster.html")),
 		)
 	}
 
@@ -1481,7 +1432,7 @@ func setupAndInitializeLoggingAndProfiling(
 	// We log build information to stdout (for the short summary), but also
 	// to stderr to coincide with the full logs.
 	info := build.GetInfo()
-	log.Ops.Infof(ctx, "%s", info.Short())
+	log.Ops.Infof(ctx, "%s", log.SafeManaged(info.Short()))
 
 	// Disable Stopper task tracking as performing that call site tracking is
 	// moderately expensive (certainly outweighing the infrequent benefit it
@@ -1561,15 +1512,14 @@ func reportReadinessExternally(ctx context.Context, cmd *cobra.Command, waitForI
 				"Check the log file(s) for progress. ")
 	}
 
-	// Try to signal readiness. This unblocks the process when running under
-	// systemd. Otherwise, it will be a no-op.
-	if err := sdnotify.Ready(func() {
-		// Ensure the configuration logging is written to disk in case a
-		// process is waiting for the sdnotify readiness to read important
-		// information from there. Given that this blocks and is only used for
-		// the sdnotify readiness, we will only run it conditionally.
-		log.FlushAllSync()
-	}); err != nil {
+	// Ensure the configuration logging is written to disk in case a
+	// process is waiting for the sdnotify readiness to read important
+	// information from there.
+	log.FlushAllSync()
+
+	// Signal readiness. This unblocks the process when running with
+	// --background or under systemd.
+	if err := sdnotify.Ready(); err != nil {
 		log.Ops.Errorf(ctx, "failed to signal readiness using systemd protocol: %s", err)
 	}
 }

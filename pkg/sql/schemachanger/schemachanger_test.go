@@ -33,6 +33,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scop"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan"
+	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/sctest"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -67,9 +68,9 @@ func TestSchemaChangerJobRunningStatus(t *testing.T) {
 				require.NoError(t, err)
 				switch stageIdx {
 				case 0:
-					runningStatus0.Store(job.Progress().StatusMessage)
+					runningStatus0.Store(job.Progress().RunningStatus)
 				case 1:
-					runningStatus1.Store(job.Progress().StatusMessage)
+					runningStatus1.Store(job.Progress().RunningStatus)
 				}
 				return nil
 			},
@@ -129,6 +130,11 @@ func TestSchemaChangerJobErrorDetails(t *testing.T) {
 	tdb.ExpectErr(t, `boom`, `ALTER TABLE db.t ADD COLUMN b INT NOT NULL DEFAULT (123)`)
 	jobID := jobspb.JobID(atomic.LoadInt64(&jobIDValue))
 
+	// Check that the error is featured in the jobs table.
+	results := tdb.QueryStr(t, `SELECT execution_errors FROM crdb_internal.jobs WHERE job_id = $1`, jobID)
+	require.Len(t, results, 1)
+	require.Regexp(t, `^\{\"reverting execution from .* on 1 failed: boom\"\}$`, results[0][0])
+
 	// Check that the error details are also featured in the jobs table.
 	checkErrWithDetails := func(ee *errorspb.EncodedError) {
 		require.NotNil(t, ee)
@@ -141,7 +147,7 @@ func TestSchemaChangerJobErrorDetails(t *testing.T) {
 		require.Regexp(t, "^stages graphviz: https.*", ed[1])
 		require.Regexp(t, "^dependencies graphviz: https.*", ed[2])
 	}
-	results := tdb.QueryStr(t, `SELECT encode(payload, 'hex') FROM crdb_internal.system_jobs WHERE id = $1`, jobID)
+	results = tdb.QueryStr(t, `SELECT encode(payload, 'hex') FROM crdb_internal.system_jobs WHERE id = $1`, jobID)
 	require.Len(t, results, 1)
 	b, err := hex.DecodeString(results[0][0])
 	require.NoError(t, err)
@@ -149,6 +155,8 @@ func TestSchemaChangerJobErrorDetails(t *testing.T) {
 	err = protoutil.Unmarshal(b, &p)
 	require.NoError(t, err)
 	checkErrWithDetails(p.FinalResumeError)
+	require.LessOrEqual(t, 1, len(p.RetriableExecutionFailureLog))
+	checkErrWithDetails(p.RetriableExecutionFailureLog[0].Error)
 
 	// Check that the error is featured in the event log.
 	const eventLogCountQuery = `SELECT count(*) FROM system.eventlog WHERE "eventType" = $1`
@@ -160,9 +168,7 @@ func TestSchemaChangerJobErrorDetails(t *testing.T) {
 	require.EqualValues(t, [][]string{{"1"}}, results)
 	const eventLogErrorQuery = `SELECT (info::JSONB)->>'Error' FROM system.eventlog WHERE "eventType" = 'reverse_schema_change'`
 	results = tdb.QueryStr(t, eventLogErrorQuery)
-	require.Equal(t, 1, len(results))
-	require.Equal(t, 1, len(results[0]))
-	require.Regexp(t, `^boom`, results[0][0])
+	require.EqualValues(t, [][]string{{"boom"}}, results)
 }
 
 func TestInsertDuringAddColumnNotWritingToCurrentPrimaryIndex(t *testing.T) {
@@ -303,17 +309,17 @@ func TestDropJobCancelable(t *testing.T) {
 	}{
 		{
 			"simple drop sequence",
-			"BEGIN; SET LOCAL autocommit_before_ddl = false; DROP SEQUENCE db.sq1; END;",
+			"BEGIN;DROP SEQUENCE db.sq1; END;",
 			false,
 		},
 		{
 			"simple drop view",
-			"BEGIN; SET LOCAL autocommit_before_ddl = false; DROP VIEW db.v1; END;",
+			"BEGIN;DROP VIEW db.v1; END;",
 			false,
 		},
 		{
 			"simple drop table",
-			"BEGIN; SET LOCAL autocommit_before_ddl = false; DROP TABLE db.t1 CASCADE; END;",
+			"BEGIN;DROP TABLE db.t1 CASCADE; END;",
 			false,
 		},
 	}
@@ -376,7 +382,7 @@ CREATE SEQUENCE db.sq1;
 SELECT job_id FROM [SHOW JOBS]
 WHERE 
 	job_type = 'SCHEMA CHANGE' AND 
-	status = $1`, jobs.StateRunning)
+	status = $1`, jobs.StatusRunning)
 			if err != nil {
 				t.Fatalf("unexpected error querying rows %s", err)
 			}
@@ -918,6 +924,113 @@ func isPQErrWithCode(err error, codes ...pgcode.Code) bool {
 	return false
 }
 
+// TestCompareLegacyAndDeclarative tests that when processing a sequence of
+// DDL statements, legacy and declarative schema change should transition the
+// descriptors into the same final state.
+func TestCompareLegacyAndDeclarative(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	skip.UnderStressRace(t, "too slow under stress race")
+
+	ss := &staticSQLStmtLineProvider{
+		stmts: []string{
+			// Statements expected to succeed.
+			"SET sql_safe_updates = false;",
+			"CREATE DATABASE testdb1; SET DATABASE = testdb1",
+			"CREATE TABLE testdb1.t1 (i INT PRIMARY KEY); CREATE TABLE testdb1.t2 (i INT PRIMARY KEY REFERENCES testdb1.t1(i));",
+			"DROP DATABASE testdb1 CASCADE  -- current db is dropped; expect no post-execution checks",
+			"USE defaultdb",
+			"CREATE TABLE t2 (i INT PRIMARY KEY, j INT NOT NULL);",
+			"CREATE TABLE t1 (i INT PRIMARY KEY, j INT REFERENCES t2(i));",
+			"INSERT INTO t2 SELECT k, k+1 FROM generate_series(1,1000) AS tmp(k);",
+			"INSERT INTO t1 SELECT k-1, k FROM generate_series(1,1000) AS tmp(k);",
+			"CREATE INDEX t1_idx_1 ON t1(j);",
+			"CREATE INDEX t2_idx_1 ON t2(j);",
+			"ALTER TABLE t1 ADD COLUMN k INT DEFAULT 34;",
+			"ALTER TABLE t2 ADD COLUMN p INT DEFAULT 50;",
+			"ALTER TABLE t2 DROP COLUMN p;",
+			"ALTER TABLE t2 ALTER PRIMARY KEY USING COLUMNS (j);",
+			"DROP TABLE IF EXISTS t1, t2;",
+			"CREATE TABLE t1 (rowid INT NOT NULL);",
+			"ALTER TABLE t1 ALTER PRIMARY KEY USING COLUMNS (rowid); -- special case where column name `rowid` is used",
+			"CREATE TABLE t8 (i INT PRIMARY KEY, j STRING);",
+			"CREATE INVERTED INDEX ON t8 (j gin_trgm_ops);",
+
+			// Statements expected to fail.
+			"CREATE TABLE t1 (); -- expect a DuplicateRelation error",
+			"ALTER TABLE t1 DROP COLUMN xyz; -- expect a rejected (sql_safe_updates = true) warning",
+			"ALTER TABLE t1 DROP COLUMN xyz; -- expect a UndefinedColumn error",
+			"ALTER TABLE txyz ADD COLUMN i INT DEFAULT 30; -- expect a UndefinedTable error",
+			"SELECT (*) FROM t1; -- expect a Syntax error",
+			"FROM t1 SELECT *; -- ditto",
+			"sdfsd  -- ditto",
+			"CREATE VIEW v AS (SELECT (*,1) FROM t);  -- ditto",
+			"CREATE MATERIALIZED VIEW v AS (xlsd);  -- ditto",
+			"CREATE FUNCTION f1() RETURNS INT LANGUAGE SQL AS $$ SELECT $$vsd $$;  -- ditto",
+			"CREATE FUNCTION f1() RETURNS INT LANGUAGE SQL AS $funcTag$ SELECT $$vsd $funcTag$;  -- ditto",
+			"CREATE TABLE t9 (i INT PRIMARY KEY);",
+			"BEGIN;",
+			"ALTER TABLE t9 DROP CONSTRAINT t9_pkey;",
+			"COMMIT; -- expect a FeatureNotSupported error but should be executed on both clusters",
+			"ALTER t9 ADD COLUMN j INT DEFAULT 30;  -- ensure we did not silently skip COMMIT on DSC cluster",
+
+			// Statements with TCL commands or empty content.
+			"",
+			"BEGIN;",
+			"INSERT INTO t2 VALUES (1001, 1002); INSERT INTO t1 VALUES (1000, 1001);",
+			"COMMIT;",
+			"CREATE TABLE t3 (i INT NOT NULL); INSERT INTO t3 SELECT generate_series(1,1000);",
+			"BEGIN; ALTER TABLE t3 ALTER PRIMARY KEY USING COLUMNS (i); INSERT INTO t3 VALUES (1001); COMMIT;",
+			"DROP TABLE IF EXISTS t3; CREATE TABLE t3 (i INT NOT NULL); BEGIN;",
+			"ALTER TABLE t3 ADD PRIMARY KEY (i);",
+			"COMMIT;",
+			"BEGIN;",
+			"SELECT 1/0;  -- move txn into ERROR state",
+			"DROP TABLE IF EXISTS t2;  -- expect to be ignored",
+			"INSERT INTO t2 VALUES (1002, 1003); INSERT INTO t1 VALUES (1001, 1002);  -- expect to be ignored",
+			"ROLLBACK;",
+			"DROP TABLE IF EXISTS t3; CREATE TABLE t3 (i INT PRIMARY KEY);",
+			"BEGIN;",
+			"ALTER TABLE t3 DROP CONSTRAINT t3_pkey;",
+			"DELETE FROM t3 WHERE i = 1;  -- expect to result in an error",
+			"ROLLBACK;",
+			"BEGIN; ALTER TABLE t3 ADD COLUMN j INT CREATE FAMILY;",
+			"ROLLBACK;",
+			"BEGIN; SAVEPOINT cockroach_restart;",
+			"RELEASE SAVEPOINT cockroach_restart;  -- move txn into DONE state",
+			"SELECT 1;  -- expect to be ignored",
+			"COMMIT;",
+			"CREATE TABLE t11 (i INT NOT NULL); ALTER TABLE t11 ALTER PRIMARY KEY USING COLUMNS (i); -- multi-statement implicit txn",
+
+			// statements that will be altered due to known behavioral differences in LSC vs DSC.
+			"ALTER TABLE t1 ADD COLUMN xyz INT DEFAULT 30, ALTER PRIMARY KEY USING COLUMNS (j), DROP COLUMN i; -- unimplemented in legacy schema changer; expect to skip this line",
+			"CREATE SEQUENCE s;",
+			`CREATE TABLE t4 (i INT CHECK (i > nextval('s')) CHECK (i > 0), CONSTRAINT "ck_i" CHECK (i > nextval('s'::REGCLASS)), CONSTRAINT "ck_i2" CHECK (i > 0)); -- expect to rewrite expressions that reference sequences to just (True)`,
+			"ALTER TABLE t4 ADD CHECK (i > nextval('s')); -- ditto",
+			"ALTER TABLE t4 ADD COLUMN j INT CHECK (j > 0) CHECK (i+j > nextval('s'));  -- ditto",
+			"CREATE TABLE t5 (i INT NOT NULL);",
+			"ALTER TABLE t5 ALTER PRIMARY KEY USING COLUMNS (i);",
+			"SET use_DEClarative_sChema_changer = off; -- expect to skip this line",
+			`SET CLUSTER SETTING sql.scHEma.fOrce_declarative_statements="-CREATE SCHEMA, +CREATE SEQUENCE"  -- expect to skip this line`,
+			"CREATE TABLE t6 (i INT PRIMARY KEY, j INT NOT NULL, k INT NOT NULL);",
+			"ALTER TABLE t6 DROP COLUMN i; -- unimplemented in legacy schema changer; expect to skip this line",
+			"ALTER TABLE t6 ALTER PRIMARY KEY USING COLUMNS (j), DROP COLUMN i; -- ditto",
+			"ALTER TABLE t6 ALTER PRIMARY KEY USING COLUMNS (j), DROP COLUMN k; -- ditto",
+			"ALTER TABLE t6 ADD COLUMN p INT DEFAULT 30, DROP COLUMN p; -- ditto",
+			"SET experimental_enable_temp_tables = true;",
+			"CREATE TEMPORARY TABLE t7 (i INT);  -- expect to skip this line",
+			"CREATE TEMP TABLE t7 (i INT);  -- ditto",
+			"CREATE TABLE t10 (i INT NOT NULL, j INT NOT NULL, k INT NOT NULL, PRIMARY KEY (i, k) USING HASH WITH (bucket_count=3));",
+			"INSERT INTO t10 VALUES (0, 1, 2);",
+			"ALTER TABLE t10 ALTER PRIMARY KEY USING COLUMNS (i, k) USING HASH;  -- expect to be rewritten to have `DROP COLUMN IF EXISTS old-shard-col` appended to it",
+			"ALTER TABLE t10 ALTER PRIMARY KEY USING COLUMNS (i, k); -- ditto",
+			"ALTER TABLE t10 ALTER PRIMARY KEY USING COLUMNS (j) USING HASH;  -- expect to not be rewritten because old-shard-col is used",
+		},
+	}
+
+	sctest.CompareLegacyAndDeclarative(t, ss)
+}
+
 func TestSchemaChangerFailsOnMissingDesc(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -947,202 +1060,6 @@ func TestSchemaChangerFailsOnMissingDesc(t *testing.T) {
 	tdb.Exec(t, `SET use_declarative_schema_changer = 'unsafe'`)
 	tdb.ExpectErr(t, "descriptor not found", `ALTER TABLE db.t ADD COLUMN b INT NOT NULL DEFAULT (123)`)
 	// Validate the job has hit a terminal state.
-	tdb.CheckQueryResults(t, "SELECT status FROM crdb_internal.jobs WHERE statement LIKE '%ADD COLUMN%' AND job_type='NEW SCHEMA CHANGE'",
+	tdb.CheckQueryResults(t, "SELECT status FROM crdb_internal.jobs WHERE statement LIKE '%ADD COLUMN%'",
 		[][]string{{"failed"}})
-}
-
-// TestCreateObjectConcurrency validates that concurrent create object with
-// independent references never hit txn retry errors. All objects are created
-// under the same schema.
-func TestCreateObjectConcurrency(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	// Validate concurrency behaviour for objects under a schema
-	tests := []struct {
-		name       string
-		setupStmt  string
-		firstStmt  string
-		secondStmt string
-	}{
-		{
-			name: "create table with function references",
-			setupStmt: `
-CREATE FUNCTION public.fn1 (input INT) RETURNS INT8
-                                LANGUAGE SQL
-                                AS $$
-                                SELECT input::INT8;
-                                $$;
-CREATE FUNCTION public.wrap(input INT) RETURNS INT8
-                                LANGUAGE SQL
-                                AS $$
-                                SELECT public.fn1(input);
-                                $$;
-CREATE FUNCTION public.wrap2(input INT) RETURNS INT8
-                                LANGUAGE SQL
-                                AS $$
-                                SELECT public.fn1(input);
-                                $$;
-`,
-			firstStmt:  "CREATE TABLE t1(n int default public.wrap(10))",
-			secondStmt: "CREATE TABLE t2(n int default public.wrap2(10))",
-		},
-		{
-			name: "create table with type reference",
-			setupStmt: `
-CREATE TYPE status AS ENUM ('open', 'closed', 'inactive');
-CREATE TYPE status1 AS ENUM ('open', 'closed', 'inactive');
-`,
-			firstStmt:  "CREATE TABLE t1(n status)",
-			secondStmt: "CREATE TABLE t2(n status1)",
-		},
-		{
-			name: "create view with type references",
-			setupStmt: `
-CREATE TYPE status AS ENUM ('open', 'closed', 'inactive');
-CREATE TYPE status1 AS ENUM ('open', 'closed', 'inactive');
-CREATE FUNCTION public.fn1 (input INT) RETURNS INT8
-                                LANGUAGE SQL
-                                AS $$
-                                SELECT input::INT8;
-                                $$;
-CREATE FUNCTION public.wrap(input INT) RETURNS INT8
-                                LANGUAGE SQL
-                                AS $$
-                                SELECT public.fn1(input);
-                                $$;
-CREATE FUNCTION public.wrap2(input INT) RETURNS INT8
-                                LANGUAGE SQL
-                                AS $$
-                                SELECT public.fn1(input);
-                                $$;
-CREATE TABLE t1(n int default public.wrap(10));
-CREATE TABLE t2(n int default public.wrap2(10));
-`,
-			// Note: Views cannot invoke UDFs directly yet.
-			firstStmt:  "CREATE VIEW v1 AS (SELECT n, 'open'::status FROM public.t1)",
-			secondStmt: "CREATE VIEW v2 AS (SELECT n, 'open'::status1 FROM public.t2)",
-		},
-		{
-			name: "create sequence with ownership",
-			setupStmt: `
-CREATE TABLE t1(n int);
-CREATE TABLE t2(n int);
-`,
-			firstStmt:  "CREATE SEQUENCE sq1 OWNED BY t1.n",
-			secondStmt: "CREATE SEQUENCE sq2 OWNED BY t2.n",
-		},
-		{
-			name:       "create type",
-			firstStmt:  "CREATE TYPE status AS ENUM ('open', 'closed', 'inactive');",
-			secondStmt: "CREATE TYPE status1 AS ENUM ('open', 'closed', 'inactive');",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			ctx := context.Background()
-			s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
-				// This would work with secondary tenants as well, but the span config
-				// limited logic can hit transaction retries on the span_count table.
-				DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(138733),
-			})
-			defer s.Stopper().Stop(ctx)
-
-			runner := sqlutils.MakeSQLRunner(sqlDB)
-
-			// Ensure we don't commit any DDLs in a transaction.
-			runner.Exec(t, `SET CLUSTER SETTING sql.defaults.autocommit_before_ddl.enabled = 'false'`)
-			runner.Exec(t, "SET autocommit_before_ddl = false")
-
-			firstConn, err := sqlDB.Conn(ctx)
-			require.NoError(t, err)
-			defer func() {
-				require.NoError(t, firstConn.Close())
-			}()
-			secondConn, err := sqlDB.Conn(ctx)
-			require.NoError(t, err)
-			defer func() {
-				require.NoError(t, secondConn.Close())
-			}()
-
-			firstConnReady := make(chan struct{})
-			secondConnReady := make(chan struct{})
-
-			runner.Exec(t, test.setupStmt)
-
-			grp := ctxgroup.WithContext(ctx)
-
-			grp.Go(func() error {
-				defer close(firstConnReady)
-				tx, err := firstConn.BeginTx(ctx, nil)
-				if err != nil {
-					return err
-				}
-				_, err = tx.Exec(test.firstStmt)
-				if err != nil {
-					return err
-				}
-				firstConnReady <- struct{}{}
-				<-secondConnReady
-				return tx.Commit()
-			})
-			grp.Go(func() error {
-				defer close(secondConnReady)
-				tx, err := secondConn.BeginTx(ctx, nil)
-				if err != nil {
-					return err
-				}
-				_, err = tx.Exec(test.secondStmt)
-				if err != nil {
-					return err
-				}
-				<-firstConnReady
-				secondConnReady <- struct{}{}
-				return tx.Commit()
-			})
-			require.NoError(t, grp.Wait())
-		})
-	}
-}
-
-// TestPreventCreateDropConcurrently confirms that objects cannot be
-// created under a schema that is being dropped.
-func TestPreventCreateDropConcurrently(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
-		// This would work with secondary tenants as well, but the span config
-		// limited logic can hit transaction retries on the span_count table.
-		DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(138733),
-	})
-	defer s.Stopper().Stop(ctx)
-
-	runner := sqlutils.MakeSQLRunner(sqlDB)
-
-	runner.Exec(t, `
-CREATE SCHEMA other_schema;
-CREATE SCHEMA complex_drop_schema;
-CREATE TABLE complex_drop_schema.t1(n int UNIQUE);
-CREATE TABLE other_schema.t1(n int REFERENCES complex_drop_schema.t1(n));
-`)
-
-	runner.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = 'newschemachanger.before.exec';`)
-	runner.ExpectErr(t, " \\d+ was paused before it completed with reason: pause point \"newschemachanger.before.exec\" hit",
-		"DROP SCHEMA complex_drop_schema CASCADE;")
-
-	grp := ctxgroup.WithContext(ctx)
-	grp.GoCtx(func(ctx context.Context) error {
-		_, err := sqlDB.Exec("CREATE SEQUENCE  complex_drop_schema.sc1")
-		return err
-	})
-
-	runner.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = ''`)
-	runner.Exec(t,
-		`RESUME JOB (SELECT job_id FROM crdb_internal.jobs WHERE description LIKE 'DROP SCHEMA%' AND status='paused' FETCH FIRST 1 ROWS ONLY);`)
-	require.Error(t,
-		grp.Wait(),
-		`cannot create "complex_drop_schema.sc1" because the target database or schema does not exist`)
 }

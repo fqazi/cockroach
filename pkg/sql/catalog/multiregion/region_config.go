@@ -8,8 +8,7 @@
 package multiregion
 
 import (
-	"cmp"
-	"slices"
+	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
@@ -72,13 +71,9 @@ func (r *RegionConfig) WithPrimaryRegion(primaryRegion catpb.RegionName) RegionC
 	return cpy
 }
 
-// IsMemberOfSuperRegion returns true if the region is either:
-// - an explicit member of a super region; or
-// - the survival goal is SURVIVE_REGION_FAILURE and we have 3 regions configured.
-//
-// The reason for this is to make sure that when using SURVIVE_REGION_FAILURE
-// replicas are not placed outside of the known regions.
-func (r *RegionConfig) IsMemberOfSuperRegion(region catpb.RegionName) bool {
+// IsMemberOfExplicitSuperRegion returns whether t the region is an explicit
+// member of a super region.
+func (r *RegionConfig) IsMemberOfExplicitSuperRegion(region catpb.RegionName) bool {
 	for _, superRegion := range r.SuperRegions() {
 		for _, regionOfSuperRegion := range superRegion.Regions {
 			if region == regionOfSuperRegion {
@@ -86,18 +81,13 @@ func (r *RegionConfig) IsMemberOfSuperRegion(region catpb.RegionName) bool {
 			}
 		}
 	}
-
-	if len(r.regions) == 3 && r.survivalGoal == descpb.SurvivalGoal_REGION_FAILURE {
-		return true
-	}
-
 	return false
 }
 
 // GetSuperRegionRegionsForRegion returns the members of the super region the
-// specified region is part of. Note that if SURVIVE_REGION_FAILURE is being used
-// then we compute an implicit super region. If the region is not a member of any
-// explicit or implicit super regions, the function returns false.
+// specified region is part of.
+// If the region is not a member of any super regions, the function returns an
+// error.
 func (r *RegionConfig) GetSuperRegionRegionsForRegion(
 	region catpb.RegionName,
 ) (catpb.RegionNames, bool) {
@@ -108,12 +98,6 @@ func (r *RegionConfig) GetSuperRegionRegionsForRegion(
 			}
 		}
 	}
-
-	// Compute implicit super region if SURVIVE REGION FAILURE is set and we have 3 regions.
-	if len(r.regions) == 3 && r.survivalGoal == descpb.SurvivalGoal_REGION_FAILURE {
-		return r.regions, true
-	}
-
 	return nil, false
 }
 
@@ -385,7 +369,7 @@ func CanSatisfySurvivalGoal(survivalGoal descpb.SurvivalGoal, numRegions int) er
 }
 
 // ValidateRegionConfig validates that the given RegionConfig is valid.
-func ValidateRegionConfig(config RegionConfig, isSystemDatabase bool) error {
+func ValidateRegionConfig(config RegionConfig) error {
 	if config.regionEnumID == descpb.InvalidID {
 		return errors.AssertionFailedf("expected a valid multi-region enum ID to be initialized")
 	}
@@ -417,13 +401,7 @@ func ValidateRegionConfig(config RegionConfig, isSystemDatabase bool) error {
 		return err
 	}
 
-	// The system database can be configured to be SURVIVE REGION without enough
-	// regions. This would just mean that it will behave as SURVIVE ZONE until
-	// enough regions are added by the user.
-	if !isSystemDatabase {
-		return CanSatisfySurvivalGoal(config.survivalGoal, len(config.regions))
-	}
-	return nil
+	return CanSatisfySurvivalGoal(config.survivalGoal, len(config.regions))
 }
 
 // ValidateSuperRegions validates that:
@@ -441,8 +419,8 @@ func ValidateSuperRegions(
 	superRegionNames := make(map[string]struct{})
 
 	// Ensure that the super region names are in sorted order.
-	if !slices.IsSortedFunc(superRegions, func(a, b descpb.SuperRegion) int {
-		return cmp.Compare(a.SuperRegionName, b.SuperRegionName)
+	if !sort.SliceIsSorted(superRegions, func(i, j int) bool {
+		return superRegions[i].SuperRegionName < superRegions[j].SuperRegionName
 	}) {
 		err := errors.AssertionFailedf("super regions are not in sorted order based on the super region name %v", superRegions)
 		errorHandler(err)
@@ -467,7 +445,9 @@ func ValidateSuperRegions(
 		superRegionNames[superRegion.SuperRegionName] = struct{}{}
 
 		// Ensure that regions within a super region are sorted.
-		if !slices.IsSorted(superRegion.Regions) {
+		if !sort.SliceIsSorted(superRegion.Regions, func(i, j int) bool {
+			return superRegion.Regions[i] < superRegion.Regions[j]
+		}) {
 			err := errors.AssertionFailedf("the regions within super region %s were not in a sorted order", superRegion.SuperRegionName)
 			errorHandler(err)
 		}
@@ -547,7 +527,7 @@ func IsMemberOfSuperRegion(name catpb.RegionName, config RegionConfig) (bool, st
 
 // CanDropRegion returns an error if the survival goal doesn't allow for
 // removing regions or if the region is part of a super region.
-func CanDropRegion(name catpb.RegionName, config RegionConfig, isSystemDatabase bool) error {
+func CanDropRegion(name catpb.RegionName, config RegionConfig) error {
 	isMember, superRegion := IsMemberOfSuperRegion(name, config)
 	if isMember {
 		return errors.WithHintf(
@@ -555,10 +535,7 @@ func CanDropRegion(name catpb.RegionName, config RegionConfig, isSystemDatabase 
 			"you must first drop super region %s before you can drop the region %s", superRegion, name,
 		)
 	}
-	if !isSystemDatabase {
-		return CanSatisfySurvivalGoal(config.survivalGoal, len(config.regions)-1)
-	}
-	return nil
+	return CanSatisfySurvivalGoal(config.survivalGoal, len(config.regions)-1)
 }
 
 // getHomeRegionConstraintConjunction returns the ConstraintsConjunction from

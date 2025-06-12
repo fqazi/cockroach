@@ -18,10 +18,7 @@ import (
 )
 
 var pgjdbcReleaseTagRegex = regexp.MustCompile(`^REL(?P<major>\d+)\.(?P<minor>\d+)\.(?P<point>\d+)$`)
-
-// WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
-// This is used by docs automation to produce a list of supported versions for ORM's.
-var supportedPGJDBCTag = "REL42.7.3"
+var supportedPGJDBCTag = "REL42.3.3"
 
 // This test runs pgjdbc's full test suite against a single cockroach node.
 
@@ -47,6 +44,36 @@ func registerPgjdbc(r registry.Registry) {
 			t.Fatal(err)
 		}
 
+		t.Status("create admin user for tests")
+		db, err := c.ConnE(ctx, t.L(), node[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		stmts := []string{
+			"CREATE USER test_admin WITH PASSWORD 'testpw'",
+			"GRANT admin TO test_admin",
+			"ALTER ROLE ALL SET serial_normalization = 'sql_sequence_cached'",
+			"ALTER ROLE ALL SET statement_timeout = '60s'",
+		}
+		for _, stmt := range stmts {
+			_, err = db.ExecContext(ctx, stmt)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		if UsingRuntimeAssertions(t) {
+			// This test assumes that multiple_active_portals_enabled is false, but through
+			// metamorphic constants, it is possible for them to be enabled.
+			if _, err = db.ExecContext(ctx, "SET multiple_active_portals_enabled=false"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = db.ExecContext(ctx, "ALTER DATABASE defaultdb SET multiple_active_portals_enabled=false"); err != nil {
+				t.Fatal(err)
+			}
+		}
+
 		t.Status("cloning pgjdbc and installing prerequisites")
 		// Report the latest tag, but do not use it. The newest versions produces output that breaks our xml parser,
 		// and we want to pin to the working version for now.
@@ -65,13 +92,14 @@ func registerPgjdbc(r registry.Registry) {
 			t.Fatal(err)
 		}
 
+		// TODO(rafi): use openjdk-11-jdk-headless once we are off of Ubuntu 16.
 		if err := repeatRunE(
 			ctx,
 			t,
 			c,
 			node,
 			"install dependencies",
-			`sudo apt-get -qq install default-jre openjdk-17-jdk-headless gradle`,
+			`sudo apt-get -qq install default-jre openjdk-8-jdk-headless gradle`,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -109,21 +137,6 @@ func registerPgjdbc(r registry.Registry) {
 			t.Fatal(err)
 		}
 
-		// Remove an unsupported deferrable qualifier (#31632) from the XA test
-		// suite setup. This prevents XADataSourceTest.mappingOfConstraintViolations
-		// from running properly (it fails either way), but it allows the rest of
-		// the XA tests to run.
-		if err := repeatRunE(
-			ctx,
-			t,
-			c,
-			node,
-			"removing unsupported deferrable qualifier from test",
-			"sed -i 's/ deferrable//' /mnt/data1/pgjdbc/pgjdbc/src/test/java/org/postgresql/test/xa/XADataSourceTest.java",
-		); err != nil {
-			t.Fatal(err)
-		}
-
 		t.Status("building pgjdbc (without tests)")
 		// Build pgjdbc and run a single test, this step involves some
 		// downloading, so it needs a retry loop as well. Just building was not
@@ -140,7 +153,7 @@ func registerPgjdbc(r registry.Registry) {
 			t.Fatal(err)
 		}
 
-		const blocklistName = "pgjdbcBlockList"
+		const blocklistName = "pgjdbcBlocklist"
 		const ignorelistName = "pgjdbcIgnorelist"
 		expectedFailures := pgjdbcBlockList
 		ignorelist := pgjdbcIgnoreList
@@ -153,11 +166,11 @@ func registerPgjdbc(r registry.Registry) {
 		t.Status("running pgjdbc test suite")
 		// Note that this is expected to return an error, since the test suite
 		// will fail. And it is safe to swallow it here.
-		_ = c.RunE(ctx, option.WithNodes(node),
+		_ = c.RunE(ctx, node,
 			`cd /mnt/data1/pgjdbc/pgjdbc/ && ../gradlew test`,
 		)
 
-		_ = c.RunE(ctx, option.WithNodes(node),
+		_ = c.RunE(ctx, node,
 			`mkdir -p ~/logs/report/pgjdbc-results`,
 		)
 
@@ -202,6 +215,8 @@ func registerPgjdbc(r registry.Registry) {
 	}
 
 	r.Add(registry.TestSpec{
+		Skip:             `https://github.com/cockroachdb/cockroach/issues/127209#issuecomment-2233446488`,
+		SkipDetails:      `a test dependency was pulled from the upstream package repository`,
 		Name:             "pgjdbc",
 		Owner:            registry.OwnerSQLFoundations,
 		Cluster:          r.MakeClusterSpec(1),

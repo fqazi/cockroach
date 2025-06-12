@@ -19,15 +19,14 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cli/clisqlexec"
 	"github.com/cockroachdb/cockroach/pkg/cli/clisqlshell"
 	"github.com/cockroachdb/cockroach/pkg/cli/democluster"
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/clientsecopts"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server"
+	"github.com/cockroachdb/cockroach/pkg/server/autoconfig/acprovider"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/ts"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
@@ -86,21 +85,18 @@ func clearFlagChanges(cmd *cobra.Command) {
 //
 // See below for defaults.
 var serverCfg = func() server.Config {
-	st := makeClusterSettings()
-	return server.MakeConfig(context.Background(), st)
-}()
-
-func makeClusterSettings() *cluster.Settings {
 	st := cluster.MakeClusterSettings()
 	logcrash.SetGlobalSettings(&st.SV)
-	return st
-}
+
+	return server.MakeConfig(context.Background(), st)
+}()
 
 // setServerContextDefaults set the default values in serverCfg.  This
 // function is called by initCLIDefaults() and thus re-called in every
 // test that exercises command-line parsing.
 func setServerContextDefaults() {
-	st := makeClusterSettings()
+	st := cluster.MakeClusterSettings()
+	logcrash.SetGlobalSettings(&st.SV)
 	serverCfg.SetDefaults(context.Background(), st)
 
 	serverCfg.TenantKVAddrs = []string{"127.0.0.1:26257"}
@@ -246,12 +242,9 @@ var certCtx struct {
 	certPrincipalMap []string
 	// tenantScope indicates a tenantID(s) that a certificate is being
 	// scoped to. By creating a tenant-scoped certicate, the usage of that certificate
-	// is restricted to a specific tenant(s).
+	// is restricted to a specific tenant.
 	tenantScope []roachpb.TenantID
-	// tenantNameScope indicates a tenantName(s) that a certificate is being scoped to.
-	// By creating a tenant-scoped certificate, the usage of that certificate is
-	// restricted to a specific tenant(s).
-	tenantNameScope []roachpb.TenantName
+
 	// disableUsernameValidation removes the username syntax check on
 	// the input.
 	disableUsernameValidation bool
@@ -268,9 +261,9 @@ func setCertContextDefaults() {
 	certCtx.generatePKCS8Key = false
 	certCtx.disableUsernameValidation = false
 	certCtx.certPrincipalMap = nil
-	// Note: we set tenantScope and tenantNameScope to nil so that by default,
-	// client certs are not scoped to a specific tenant and can be used to
-	// connect to any tenant.
+	// Note: we set tenantScope to nil so that by default, client certs
+	// are not scoped to a specific tenant and can be used to connect to
+	// any tenant.
 	//
 	// Note that the scoping is generally useful for security, and it is
 	// used in CockroachCloud. However, CockroachCloud does not use our
@@ -282,7 +275,6 @@ func setCertContextDefaults() {
 	// other, defaulting to certs that are valid on every tenant is a
 	// good choice.
 	certCtx.tenantScope = nil
-	certCtx.tenantNameScope = nil
 }
 
 var sqlExecCtx = clisqlexec.Context{
@@ -372,10 +364,6 @@ type zipContext struct {
 
 	// The log/heap/etc files to include.
 	files fileSelection
-
-	// validateZipFile indicates whether the generated zip file should be validated
-	// post debug zip file generation.
-	validateZipFile bool
 }
 
 // setZipContextDefaults set the default values in zipCtx.  This
@@ -398,7 +386,6 @@ func setZipContextDefaults() {
 	zipCtx.includeRunningJobTraces = true
 	zipCtx.cpuProfDuration = 5 * time.Second
 	zipCtx.concurrency = 15
-	zipCtx.validateZipFile = true
 
 	// File selection covers the last 48 hours by default.
 	// We add 24 hours to now for the end timestamp to ensure
@@ -454,7 +441,8 @@ var debugCtx struct {
 	sizes             bool
 	replicated        bool
 	inputFile         string
-	ballastSize       storageconfig.SizeSpec
+	ballastSize       base.SizeSpec
+	printSystemConfig bool
 	maxResults        int
 	decodeAsTableDesc string
 	verbose           bool
@@ -471,8 +459,9 @@ func setDebugContextDefaults() {
 	debugCtx.sizes = false
 	debugCtx.replicated = false
 	debugCtx.inputFile = ""
-	debugCtx.ballastSize = storageconfig.SizeSpec{Capacity: 1000000000}
+	debugCtx.ballastSize = base.SizeSpec{InBytes: 1000000000}
 	debugCtx.maxResults = 0
+	debugCtx.printSystemConfig = false
 	debugCtx.decodeAsTableDesc = ""
 	debugCtx.verbose = false
 	debugCtx.keyTypes = showAll
@@ -486,9 +475,6 @@ var startCtx struct {
 	serverSSLCertsDir      string
 	serverCertPrincipalMap []string
 	serverListenAddr       string
-	serverRootCertDN       string
-	serverNodeCertDN       string
-	serverTLSCipherSuites  []string
 
 	// The TLS auto-handshake parameters.
 	initToken             string
@@ -529,10 +515,6 @@ var startCtx struct {
 	goMemLimitValue          bytesOrPercentageValue
 	diskTempStorageSizeValue bytesOrPercentageValue
 	tsdbSizeValue            bytesOrPercentageValue
-
-	// goGCPercent is used to specify the runtime garbage collection target
-	// percentage. Also configurable with the GOGC environment variable.
-	goGCPercent int
 }
 
 // setStartContextDefaults set the default values in startCtx.  This
@@ -542,9 +524,10 @@ func setStartContextDefaults() {
 	startCtx.serverInsecure = baseCfg.Insecure
 	startCtx.serverSSLCertsDir = base.DefaultCertsDirectory
 	startCtx.serverCertPrincipalMap = nil
-	startCtx.serverRootCertDN = ""
-	startCtx.serverNodeCertDN = ""
 	startCtx.serverListenAddr = ""
+	startCtx.initToken = ""
+	startCtx.numExpectedNodes = 0
+	startCtx.genCertsForSingleNode = false
 	startCtx.unencryptedLocalhostHTTP = false
 	startCtx.tempDir = ""
 	startCtx.externalIODir = ""
@@ -557,7 +540,6 @@ func setStartContextDefaults() {
 	startCtx.goMemLimitValue = makeBytesOrPercentageValue(&goMemLimit, memoryPercentResolver)
 	startCtx.diskTempStorageSizeValue = makeBytesOrPercentageValue(nil /* v */, nil /* percentResolver */)
 	startCtx.tsdbSizeValue = makeBytesOrPercentageValue(&serverCfg.TimeSeriesServerConfig.QueryMemoryMax, memoryPercentResolver)
-	startCtx.goGCPercent = 0
 }
 
 // drainCtx captures the command-line parameters of the `node drain`
@@ -570,8 +552,6 @@ var drainCtx struct {
 	// nodeDrainSelf indicates that the command should target
 	// the node we're connected to (this is the default behavior).
 	nodeDrainSelf bool
-	// shutdown is true if the node should be shutdown after draining.
-	shutdown bool
 }
 
 // setDrainContextDefaults set the default values in drainCtx.  This
@@ -580,7 +560,6 @@ var drainCtx struct {
 func setDrainContextDefaults() {
 	drainCtx.drainWait = 10 * time.Minute
 	drainCtx.nodeDrainSelf = false
-	drainCtx.shutdown = false
 }
 
 // nodeCtx captures the command-line parameters of the `node` command.
@@ -679,9 +658,10 @@ func setDemoContextDefaults() {
 	demoCtx.SQLPort, _ = strconv.Atoi(base.DefaultPort)
 	demoCtx.HTTPPort, _ = strconv.Atoi(base.DefaultHTTPPort)
 	demoCtx.WorkloadMaxQPS = 25
-	demoCtx.Multitenant = clusterversion.DevelopmentBranch
+	demoCtx.Multitenant = false
 	demoCtx.DisableServerController = false
 	demoCtx.DefaultEnableRangefeeds = true
+	demoCtx.AutoConfigProvider = acprovider.NoTaskProvider{}
 
 	demoCtx.pidFile = ""
 	demoCtx.disableEnterpriseFeatures = false
@@ -747,14 +727,4 @@ func setUserfileContextDefaults() {
 // parsing, you probably should not be using this.
 func GetServerCfgStores() base.StoreSpecList {
 	return serverCfg.Stores
-}
-
-// GetWALFailoverConfig provides direct public access to the WALFailoverConfig
-// inside serverCfg. This is used by CCL code to populate some fields.
-//
-// WARNING: consider very carefully whether you should be using this.
-// If you are not writing CCL code that performs command-line flag
-// parsing, you probably should not be using this.
-func GetWALFailoverConfig() *storageconfig.WALFailover {
-	return &serverCfg.StorageConfig.WALFailover
 }

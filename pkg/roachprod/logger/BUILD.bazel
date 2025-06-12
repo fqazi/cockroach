@@ -9,6 +9,7 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/roachprod/logger",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/cli/exit",
         "//pkg/util/log",
         "//pkg/util/log/logconfig",
         "//pkg/util/log/logpb",
@@ -19,6 +20,7 @@ go_library(
 go_test(
     name = "logger_test",
     srcs = ["log_redirect_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":logger"],
     deps = [
         "//pkg/util/log",

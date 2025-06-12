@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 	"github.com/lib/pq/oid"
@@ -370,9 +369,7 @@ func (c *CustomFuncs) foldOIDFamilyCast(
 			}
 
 			c.mem.Metadata().AddDependency(opt.DepByName(&resName), ds, privilege.SELECT)
-			dOid = tree.NewDOidWithTypeAndName(
-				oid.Oid(ds.PostgresDescriptorID()), types.RegClass, string(tn.ObjectName),
-			)
+			dOid = tree.NewDOidWithName(oid.Oid(ds.PostgresDescriptorID()), types.RegClass, string(tn.ObjectName))
 
 		default:
 			return nil, false, nil
@@ -672,8 +669,7 @@ func (c *CustomFuncs) FoldFunction(
 			context.Background(), tree.MakeUnresolvedFunctionName(&unresolved),
 			&c.f.evalCtx.SessionData().SearchPath)
 		if err != nil {
-			log.Warningf(c.f.ctx, "function %s() not defined: %v", redact.Safe(private.Name), err)
-			return nil, false
+			panic(errors.AssertionFailedf("function %s() not defined", redact.Safe(private.Name)))
 		}
 		funcRef = tree.ResolvableFunctionReference{FunctionReference: def}
 	} else {

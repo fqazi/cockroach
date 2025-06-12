@@ -29,8 +29,6 @@ PGPORT={pgport:1} PGHOST=localhost PGUSER=%s PGPASSWORD=%s PGSSLROOTCERT=$HOME/%
 
 var asyncpgReleaseTagRegex = regexp.MustCompile(`^(?P<major>v\d+)\.(?P<minor>\d+)\.(?P<point>\d+)$`)
 
-// WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
-// This is used by docs automation to produce a list of supported versions for ORM's.
 var asyncpgSupportedTag = "v0.24.0"
 
 func registerAsyncpg(r registry.Registry) {
@@ -45,6 +43,14 @@ func registerAsyncpg(r registry.Registry) {
 		node := c.Node(1)
 		t.Status("setting up cockroach")
 
+		// This test assumes that multiple_active_portals_enabled is false, but through
+		// metamorphic constants, it is possible for them to be enabled. We disable
+		// metamorphic testing to avoid this. Note the asyncpg test suite drops the
+		// database so we can't set the session variable like we do in pgjdbc.
+		// TODO(DarrylWong): Use a metamorphic constants exclusion list instead.
+		// See: https://github.com/cockroachdb/cockroach/issues/113164
+		settings := install.MakeClusterSettings()
+		settings.Env = append(settings.Env, "COCKROACH_INTERNAL_DISABLE_METAMORPHIC_TESTING=true")
 		c.Start(ctx, t.L(), option.NewStartOpts(sqlClientsInMemoryDB), install.MakeClusterSettings(), c.All())
 
 		version, err := fetchCockroachVersion(ctx, t.L(), c, node[0])
@@ -76,13 +82,6 @@ func registerAsyncpg(r registry.Registry) {
 			"/mnt/data1/asyncpg",
 			asyncpgSupportedTag,
 			node,
-		); err != nil {
-			t.Fatal(err)
-		}
-
-		if err := repeatRunE(
-			ctx, t, c, node, "patch test to workaround flaky cleanup logic",
-			`sed -e "s/CREATE TYPE enum_t AS ENUM ('abc', 'def', 'ghi');/CREATE TYPE IF NOT EXISTS enum_t AS ENUM ('abc', 'def', 'ghi');/g" -i /mnt/data1/asyncpg/tests/test_codecs.py`,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -146,14 +145,14 @@ func registerAsyncpg(r registry.Registry) {
 
 		t.Status("Running asyncpg tests ")
 		result, err := c.RunWithDetailsSingleNode(
-			ctx, t.L(), option.WithNodes(node), asyncpgRunTestCmd)
+			ctx, t.L(), node, asyncpgRunTestCmd)
 		if err != nil {
 			t.L().Printf("error during asyncpg run (may be ok): %v\n", err)
 		}
 		t.L().Printf("Test results for asyncpg: %s", result.Stdout+result.Stderr)
 		t.L().Printf("Test stdout for asyncpg")
 		if err := c.RunE(
-			ctx, option.WithNodes(node), "cd /mnt/data1/asyncpg && cat asyncpg.stdout",
+			ctx, node, "cd /mnt/data1/asyncpg && cat asyncpg.stdout",
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -171,7 +170,7 @@ func registerAsyncpg(r registry.Registry) {
 		Name:             "asyncpg",
 		Owner:            registry.OwnerSQLFoundations,
 		Cluster:          r.MakeClusterSpec(1, spec.CPU(16)),
-		CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly, registry.ORM),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {

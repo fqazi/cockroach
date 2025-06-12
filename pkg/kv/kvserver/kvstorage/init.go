@@ -7,25 +7,25 @@ package kvstorage
 
 import (
 	"bytes"
-	"cmp"
 	"context"
-	"slices"
+	"sort"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/redact"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 // FirstNodeID is the NodeID assigned to the node bootstrapping a new cluster.
@@ -96,7 +96,7 @@ func checkCanInitializeEngine(ctx context.Context, eng storage.Engine) error {
 	//
 	// We use an EngineIterator to ensure that there are no keys that cannot be
 	// parsed as MVCCKeys (e.g. lock table keys) in the engine.
-	iter, err := eng.NewEngineIterator(ctx, storage.IterOptions{
+	iter, err := eng.NewEngineIterator(storage.IterOptions{
 		KeyTypes:   storage.IterKeyTypePointsAndRanges,
 		UpperBound: roachpb.KeyMax,
 	})
@@ -161,7 +161,7 @@ func IterateIDPrefixKeys(
 ) error {
 	rangeID := roachpb.RangeID(1)
 	// NB: Range-ID local keys have no versions and no intents.
-	iter, err := reader.NewMVCCIterator(ctx, storage.MVCCKeyIterKind, storage.IterOptions{
+	iter, err := reader.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		UpperBound: keys.LocalRangeIDPrefix.PrefixEnd().AsRawKey(),
 	})
 	if err != nil {
@@ -241,139 +241,76 @@ func ReadStoreIdent(ctx context.Context, eng storage.Engine) (roachpb.StoreIdent
 }
 
 // IterateRangeDescriptorsFromDisk discovers the initialized replicas and calls
-// the provided function with each such descriptor from the provided Engine. If
-// the function returns an error, IterateRangeDescriptorsFromDisk fails with
-// that error.
+// the provided function with each such descriptor from the provided Engine. The
+// return values of this method and fn have semantics similar to
+// storage.MVCCIterate.
 func IterateRangeDescriptorsFromDisk(
 	ctx context.Context, reader storage.Reader, fn func(desc roachpb.RangeDescriptor) error,
 ) error {
 	log.Info(ctx, "beginning range descriptor iteration")
+	// MVCCIterator over all range-local key-based data.
+	start := keys.RangeDescriptorKey(roachpb.RKeyMin)
+	end := keys.RangeDescriptorKey(roachpb.RKeyMax)
 
-	// We are going to find all range descriptor keys. This code is equivalent to
-	// using MVCCIterate on all range-local keys in Inconsistent mode and with
-	// hlc.MaxTimestamp, but is faster in that it completely skips over areas with
-	// transaction records (these areas can contain large numbers of LSM
-	// tombstones).
-	iter, err := reader.NewMVCCIterator(ctx, storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
-		UpperBound: keys.LocalRangeMax,
-	})
-	if err != nil {
-		return err
+	allCount := 0
+	matchCount := 0
+	bySuffix := make(map[redact.RedactableString]int)
+
+	var scanStats kvpb.ScanStats
+	opts := storage.MVCCScanOptions{
+		Inconsistent: true,
+		ScanStats:    &scanStats,
 	}
-	defer iter.Close()
-
-	var descriptorCount, intentCount, tombstoneCount int
 	lastReportTime := timeutil.Now()
-
-	iter.SeekGE(storage.MVCCKey{Key: keys.LocalRangePrefix})
-	var keyBuf []byte
-	for {
-		if valid, err := iter.Valid(); err != nil {
-			return err
-		} else if !valid {
-			break
-		}
-
-		const reportPeriod = 10 * time.Second
+	kvToDesc := func(kv roachpb.KeyValue) error {
+		const reportPeriod = 15 * time.Second
 		if timeutil.Since(lastReportTime) >= reportPeriod {
-			stats := iter.Stats().Stats
-			log.Infof(ctx, "range descriptor iteration in progress: %d range descriptors, %d intents, %d tombstones; stats: %s",
-				descriptorCount, intentCount, tombstoneCount, stats.String())
+			// Note: MVCCIterate scans and buffers 1000 keys at a time which could
+			// make the scan stats confusing. However, because this callback can't
+			// take a long time, it's very unlikely that we will log twice for the
+			// same batch of keys.
+			log.Infof(ctx, "range descriptor iteration in progress: %d keys, %d range descriptors (by suffix: %v); %v",
+				allCount, matchCount, bySuffix, &scanStats)
+			lastReportTime = timeutil.Now()
 		}
 
-		key := iter.UnsafeKey()
-		startKey, suffix, _, err := keys.DecodeRangeKey(key.Key)
+		allCount++
+		// Only consider range metadata entries; ignore others.
+		startKey, suffix, _, err := keys.DecodeRangeKey(kv.Key)
 		if err != nil {
 			return err
 		}
-
-		if suffixCmp := bytes.Compare(suffix, keys.LocalRangeDescriptorSuffix); suffixCmp != 0 {
-			if suffixCmp < 0 {
-				// Seek to the range descriptor key for this range.
-				//
-				// Note that inside Pebble, SeekGE will try to iterate through the next
-				// few keys so it's ok to seek even if there are very few keys before the
-				// descriptor.
-				iter.SeekGE(storage.MVCCKey{Key: keys.RangeDescriptorKey(keys.MustAddr(startKey))})
-			} else {
-				// This case shouldn't happen in practice: we have a key that isn't
-				// associated with any range descriptor.
-				if buildutil.CrdbTestBuild {
-					panic(errors.AssertionFailedf("range local key %s outside of a known range", key.Key))
-				}
-				iter.NextKey()
-			}
-			continue
+		bySuffix[redact.RedactableString(suffix)]++
+		if !bytes.Equal(suffix, keys.LocalRangeDescriptorSuffix) {
+			return nil
 		}
-
-		// We are at a descriptor key.
-		rawValue, err := iter.UnsafeValue()
-		if err != nil {
-			return err
-		}
-
-		if key.Timestamp.IsEmpty() {
-			// This is an intent. We want to get its timestamp and read the latest
-			// version before that timestamp. This is consistent with what MVCCIterate
-			// does in Inconsistent mode.
-			intentCount++
-			var meta enginepb.MVCCMetadata
-			if err := protoutil.Unmarshal(rawValue, &meta); err != nil {
-				return err
-			}
-			metaTS := meta.Timestamp.ToTimestamp()
-			if metaTS.IsEmpty() {
-				return errors.AssertionFailedf("range key has intent with no timestamp")
-			}
-			// Seek to the latest value below the intent timestamp.
-			// We cannot pass to SeekGE a key that was returned to us from the iterator; make a copy.
-			keyBuf = append(keyBuf[:0], key.Key...)
-			iter.SeekGE(storage.MVCCKey{Key: keyBuf, Timestamp: metaTS.Prev()})
-			continue
-		}
-
-		value, err := storage.DecodeValueFromMVCCValue(rawValue)
-		if err != nil {
-			return errors.Wrap(err, "decoding range descriptor MVCC value")
-		}
-		if len(value.RawBytes) == 0 {
-			// This is a tombstone, so this key no longer exists; skip over any older
-			// versions of this key.
-			tombstoneCount++
-			iter.NextKey()
-			continue
-		}
-
-		// This is what we are looking for: the latest version of a range
-		// descriptor key.
 		var desc roachpb.RangeDescriptor
-		if err := value.GetProto(&desc); err != nil {
-			return errors.Wrap(err, "decoding range descriptor proto")
+		if err := kv.Value.GetProto(&desc); err != nil {
+			return err
 		}
 		// Descriptor for range `[a,z)` must be found at `/Local/Range/a/RangeDescriptor`.
 		if !startKey.Equal(desc.StartKey.AsRawKey()) {
-			return errors.AssertionFailedf("descriptor stored at %q but has StartKey %q",
-				key.Key, desc.StartKey)
+			return errors.AssertionFailedf("descriptor stored at %s but has StartKey %s",
+				kv.Key, desc.StartKey)
 		}
-		// We should never be writing out uninitialized descriptors.
 		if !desc.IsInitialized() {
 			return errors.AssertionFailedf("uninitialized descriptor: %s", desc)
 		}
-
-		descriptorCount++
-		nextRangeDescKey := keys.RangeDescriptorKey(desc.EndKey)
-		if err := fn(desc); err != nil {
-			return err
+		matchCount++
+		err = fn(desc)
+		if err == nil {
+			return nil
 		}
-		// Seek to the next possible descriptor key. This seek is important as it
-		// can skip over a large amount of txn record keys or tombstones.
-		iter.SeekGE(storage.MVCCKey{Key: nextRangeDescKey})
+		if iterutil.Map(err) == nil {
+			return iterutil.StopIteration()
+		}
+		return err
 	}
 
-	stats := iter.Stats().Stats
-	log.Infof(ctx, "range descriptor iteration done: %d range descriptors, %d intents, %d tombstones; stats: %s",
-		descriptorCount, intentCount, tombstoneCount, stats.String())
-	return nil
+	_, err := storage.MVCCIterate(ctx, reader, start, end, hlc.MaxTimestamp, opts, kvToDesc)
+	log.Infof(ctx, "range descriptor iteration done: %d keys, %d range descriptors (by suffix: %v); %s",
+		allCount, matchCount, bySuffix, &scanStats)
+	return err
 }
 
 // A Replica references a CockroachDB Replica. The data in this struct does not
@@ -405,10 +342,7 @@ func (r Replica) Load(
 	}
 	sl := stateloader.Make(r.Desc.RangeID)
 	var err error
-	if ls.TruncState, err = sl.LoadRaftTruncatedState(ctx, eng); err != nil {
-		return LoadedReplicaState{}, err
-	}
-	if ls.LastEntryID, err = sl.LoadLastEntryID(ctx, eng, ls.TruncState); err != nil {
+	if ls.LastIndex, err = sl.LoadLastIndex(ctx, eng); err != nil {
 		return LoadedReplicaState{}, err
 	}
 	if ls.ReplState, err = sl.Load(ctx, eng, r.Desc); err != nil {
@@ -475,54 +409,51 @@ func loadReplicas(ctx context.Context, eng storage.Engine) ([]Replica, error) {
 		}
 	}
 
-	// Load replicas from disk based on their RaftReplicaID and HardState.
-	//
 	// INVARIANT: all replicas have a persisted full ReplicaID (i.e. a "ReplicaID from disk").
+	//
+	// This invariant is true for replicas created in 22.1. Without further action, it
+	// would be violated for clusters that originated before 22.1. In this method, we
+	// backfill the ReplicaID (for initialized replicas) and we remove uninitialized
+	// replicas lacking a ReplicaID (see below for rationale).
+	//
+	// The migration can be removed when the KV host cluster MinSupportedVersion
+	// matches or exceeds 23.1 (i.e. once we know that a store has definitely
+	// started up on >=23.1 at least once).
+
+	// Collect all the RangeIDs that either have a RaftReplicaID or HardState. For
+	// unmigrated replicas we see only the HardState - that is how we detect
+	// replicas that still need to be migrated.
 	//
 	// TODO(tbg): tighten up the case where we see a RaftReplicaID but no HardState.
 	// This leads to the general desire to validate the internal consistency of the
 	// entire raft state (i.e. HardState, TruncatedState, Log).
 	{
-		logEvery := log.Every(10 * time.Second)
-		var i int
 		var msg kvserverpb.RaftReplicaID
 		if err := IterateIDPrefixKeys(ctx, eng, func(rangeID roachpb.RangeID) roachpb.Key {
 			return keys.RaftReplicaIDKey(rangeID)
 		}, &msg, func(rangeID roachpb.RangeID) error {
-			if logEvery.ShouldLog() && i > 0 { // only log if slow
-				log.Infof(ctx, "loaded replica ID for %d/%d replicas", i, len(s))
-			}
-			i++
 			s.setReplicaID(rangeID, msg.ReplicaID)
 			return nil
 		}); err != nil {
 			return nil, err
 		}
-		log.Infof(ctx, "loaded replica ID for %d/%d replicas", len(s), len(s))
 
-		logEvery = log.Every(10 * time.Second)
-		i = 0
 		var hs raftpb.HardState
 		if err := IterateIDPrefixKeys(ctx, eng, func(rangeID roachpb.RangeID) roachpb.Key {
 			return keys.RaftHardStateKey(rangeID)
 		}, &hs, func(rangeID roachpb.RangeID) error {
-			if logEvery.ShouldLog() && i > 0 { // only log if slow
-				log.Infof(ctx, "loaded Raft state for %d/%d replicas", i, len(s))
-			}
-			i++
 			s.setHardState(rangeID, hs)
 			return nil
 		}); err != nil {
 			return nil, err
 		}
-		log.Infof(ctx, "loaded Raft state for %d/%d replicas", len(s), len(s))
 	}
 	sl := make([]Replica, 0, len(s))
 	for _, repl := range s {
 		sl = append(sl, repl)
 	}
-	slices.SortFunc(sl, func(a, b Replica) int {
-		return cmp.Compare(a.RangeID, b.RangeID)
+	sort.Slice(sl, func(i, j int) bool {
+		return sl[i].RangeID < sl[j].RangeID
 	})
 	return sl, nil
 }
@@ -542,24 +473,13 @@ func LoadAndReconcileReplicas(ctx context.Context, eng storage.Engine) ([]Replic
 	if err != nil {
 		return nil, err
 	}
-	log.Infof(ctx, "loaded %d replicas", len(sl))
 
 	// Check invariants.
 	//
-	// TODO(erikgrinaker): consider moving this logic into loadReplicas.
-	logEvery := log.Every(10 * time.Second)
-	for i, repl := range sl {
-		// Log progress regularly, but not for the first replica (we only want to
-		// log when this is slow). The last replica is logged after iteration.
-		if logEvery.ShouldLog() && i > 0 {
-			log.Infof(ctx, "verified %d/%d replicas", i, len(sl))
-		}
-
-		// INVARIANT: a Replica always has a replica ID.
-		if repl.ReplicaID == 0 {
-			return nil, errors.AssertionFailedf("no RaftReplicaID for %s", repl.Desc)
-		}
-
+	// Migrate into RaftReplicaID for all replicas that need it.
+	var newIdx int
+	for _, repl := range sl {
+		var descReplicaID roachpb.ReplicaID
 		if repl.Desc != nil {
 			// INVARIANT: a Replica's RangeDescriptor always contains the local Store,
 			// i.e. a Store is a member of all of its local initialized Replicas.
@@ -567,15 +487,51 @@ func LoadAndReconcileReplicas(ctx context.Context, eng storage.Engine) ([]Replic
 			if !found {
 				return nil, errors.AssertionFailedf("s%d not found in %s", ident.StoreID, repl.Desc)
 			}
-			// INVARIANT: a Replica's ID always matches the descriptor.
-			if replDesc.ReplicaID != repl.ReplicaID {
+			if repl.ReplicaID != 0 && replDesc.ReplicaID != repl.ReplicaID {
 				return nil, errors.AssertionFailedf("conflicting RaftReplicaID %d for %s", repl.ReplicaID, repl.Desc)
 			}
+			descReplicaID = replDesc.ReplicaID
+		}
+
+		if repl.ReplicaID != 0 {
+			sl[newIdx] = repl
+			newIdx++
+			// RaftReplicaID present, no need to migrate.
+			continue
+		}
+
+		// Migrate into RaftReplicaID. This migration can be removed once the
+		// BinaryMinSupportedVersion is >= 23.1, and we can assert that
+		// repl.ReplicaID != 0 always holds.
+
+		if descReplicaID != 0 {
+			// Backfill RaftReplicaID for an initialized Replica.
+			if err := logstore.NewStateLoader(repl.RangeID).SetRaftReplicaID(ctx, eng, descReplicaID); err != nil {
+				return nil, errors.Wrapf(err, "backfilling ReplicaID for r%d", repl.RangeID)
+			}
+			repl.ReplicaID = descReplicaID
+			sl[newIdx] = repl
+			newIdx++
+			log.Eventf(ctx, "backfilled replicaID for initialized replica %s", repl.ID())
+		} else {
+			// We found an uninitialized replica that did not have a persisted
+			// ReplicaID. We can't determine the ReplicaID now, so we migrate by
+			// removing this uninitialized replica. This technically violates raft
+			// invariants if this replica has cast a vote, but the conditions under
+			// which this matters are extremely unlikely.
+			//
+			// TODO(tbg): if clearRangeData were in this package we could destroy more
+			// effectively even if for some reason we had in the past written state
+			// other than the HardState here (not supposed to happen, but still).
+			if err := eng.ClearUnversioned(logstore.NewStateLoader(repl.RangeID).RaftHardStateKey(), storage.ClearOptions{}); err != nil {
+				return nil, errors.Wrapf(err, "removing HardState for r%d", repl.RangeID)
+			}
+			log.Eventf(ctx, "removed legacy uninitialized replica for r%s", repl.RangeID)
+			// NB: removed from `sl` since we're not incrementing `newIdx`.
 		}
 	}
-	log.Infof(ctx, "verified %d/%d replicas", len(sl), len(sl))
 
-	return sl, nil
+	return sl[:newIdx], nil
 }
 
 // A NotBootstrappedError indicates that an engine has not yet been

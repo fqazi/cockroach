@@ -8,13 +8,14 @@ package server
 import (
 	"context"
 	"os"
+	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/server/goroutinedumper"
 	"github.com/cockroachdb/cockroach/pkg/server/profiler"
 	"github.com/cockroachdb/cockroach/pkg/server/status"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -22,21 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-)
-
-var jemallocPurgeOverhead = settings.RegisterIntSetting(
-	settings.SystemVisible,
-	"server.jemalloc_purge_overhead_percent",
-	"a purge of jemalloc dirty pages is issued once the overhead exceeds this percent (0 disables purging)",
-	20,
-	settings.NonNegativeInt,
-)
-
-var jemallocPurgePeriod = settings.RegisterDurationSettingWithExplicitUnit(
-	settings.SystemVisible,
-	"server.jemalloc_purge_period",
-	"minimum amount of time that must pass between two jemalloc dirty page purges (0 disables purging)",
-	2*time.Minute,
 )
 
 type sampleEnvironmentCfg struct {
@@ -49,37 +35,36 @@ type sampleEnvironmentCfg struct {
 	runtime              *status.RuntimeStatSampler
 	sessionRegistry      *sql.SessionRegistry
 	rootMemMonitor       *mon.BytesMonitor
-	cgoMemTarget         uint64
 }
 
 // startSampleEnvironment starts a periodic loop that samples the environment and,
 // when appropriate, creates goroutine and/or heap dumps.
-//
-// The pebbleCacheSize is used to determine a target for CGO memory allocation.
 func startSampleEnvironment(
 	ctx context.Context,
-	srvCfg *BaseConfig,
-	pebbleCacheSize int64,
+	settings *cluster.Settings,
 	stopper *stop.Stopper,
+	goroutineDumpDirName string,
+	heapProfileDirName string,
+	cpuProfileDirName string,
 	runtimeSampler *status.RuntimeStatSampler,
 	sessionRegistry *sql.SessionRegistry,
 	rootMemMonitor *mon.BytesMonitor,
+	testingKnobs base.TestingKnobs,
 ) error {
 	metricsSampleInterval := base.DefaultMetricsSampleInterval
-	if p, ok := srvCfg.TestingKnobs.Server.(*TestingKnobs); ok && p.EnvironmentSampleInterval != time.Duration(0) {
+	if p, ok := testingKnobs.Server.(*TestingKnobs); ok && p.EnvironmentSampleInterval != time.Duration(0) {
 		metricsSampleInterval = p.EnvironmentSampleInterval
 	}
 	cfg := sampleEnvironmentCfg{
-		st:                   srvCfg.Settings,
+		st:                   settings,
 		stopper:              stopper,
 		minSampleInterval:    metricsSampleInterval,
-		goroutineDumpDirName: srvCfg.GoroutineDumpDirName,
-		heapProfileDirName:   srvCfg.HeapProfileDirName,
-		cpuProfileDirName:    srvCfg.CPUProfileDirName,
+		goroutineDumpDirName: goroutineDumpDirName,
+		heapProfileDirName:   heapProfileDirName,
+		cpuProfileDirName:    cpuProfileDirName,
 		runtime:              runtimeSampler,
 		sessionRegistry:      sessionRegistry,
 		rootMemMonitor:       rootMemMonitor,
-		cgoMemTarget:         max(uint64(pebbleCacheSize), 128*1024*1024),
 	}
 	// Immediately record summaries once on server startup.
 
@@ -158,7 +143,11 @@ func startSampleEnvironment(
 	return cfg.stopper.RunAsyncTaskEx(ctx,
 		stop.TaskOpts{TaskName: "mem-logger", SpanOpt: stop.SterileRootSpan},
 		func(ctx context.Context) {
-			var timer timeutil.Timer
+			var goMemStats atomic.Value // *status.GoMemStats
+			goMemStats.Store(&status.GoMemStats{})
+			var collectingMemStats int32 // atomic, 1 when stats call is ongoing
+
+			timer := timeutil.NewTimer()
 			defer timer.Stop()
 			timer.Reset(cfg.minSampleInterval)
 
@@ -167,15 +156,43 @@ func startSampleEnvironment(
 				case <-cfg.stopper.ShouldQuiesce():
 					return
 				case <-timer.C:
+					timer.Read = true
 					timer.Reset(cfg.minSampleInterval)
 
-					cgoStats := status.GetCGoMemStats(ctx)
-					cfg.runtime.SampleEnvironment(ctx, cgoStats)
+					// We read the heap stats on another goroutine and give up after 1s.
+					// This is necessary because as of Go 1.12, runtime.ReadMemStats()
+					// "stops the world" and that requires first waiting for any current GC
+					// run to finish. With a large heap and under extreme conditions, a
+					// single GC run may take longer than the default sampling period of
+					// 10s. Under normal operations and with more recent versions of Go,
+					// this hasn't been observed to be a problem.
+					statsCollected := make(chan struct{})
+					if atomic.CompareAndSwapInt32(&collectingMemStats, 0, 1) {
+						if err := cfg.stopper.RunAsyncTaskEx(ctx,
+							stop.TaskOpts{TaskName: "get-mem-stats"},
+							func(ctx context.Context) {
+								var ms status.GoMemStats
+								runtime.ReadMemStats(&ms.MemStats)
+								ms.Collected = timeutil.Now()
+								log.VEventf(ctx, 2, "memstats: %+v", ms)
 
-					// Maybe purge jemalloc dirty pages.
-					if overhead, period := jemallocPurgeOverhead.Get(&cfg.st.SV), jemallocPurgePeriod.Get(&cfg.st.SV); overhead > 0 && period > 0 {
-						status.CGoMemMaybePurge(ctx, cgoStats.CGoAllocatedBytes, cgoStats.CGoTotalBytes, cfg.cgoMemTarget, int(overhead), period)
+								goMemStats.Store(&ms)
+								atomic.StoreInt32(&collectingMemStats, 0)
+								close(statsCollected)
+							}); err != nil {
+							close(statsCollected)
+						}
 					}
+
+					select {
+					case <-statsCollected:
+						// Good; we managed to read the Go memory stats quickly enough.
+					case <-time.After(time.Second):
+					}
+
+					curStats := goMemStats.Load().(*status.GoMemStats)
+					cgoStats := status.GetCGoMemStats(ctx)
+					cfg.runtime.SampleEnvironment(ctx, curStats, cgoStats)
 
 					if goroutineDumper != nil {
 						goroutineDumper.MaybeDump(ctx, cfg.st, cfg.runtime.Goroutines.Value())
@@ -184,7 +201,7 @@ func startSampleEnvironment(
 						heapProfiler.MaybeTakeProfile(ctx, cfg.runtime.GoAllocBytes.Value())
 						memMonitoringProfiler.MaybeTakeMemoryMonitoringDump(ctx, cfg.runtime.GoAllocBytes.Value(), cfg.rootMemMonitor, cfg.st)
 						nonGoAllocProfiler.MaybeTakeProfile(ctx, cfg.runtime.CgoTotalBytes.Value())
-						statsProfiler.MaybeTakeProfile(ctx, cfg.runtime.RSSBytes.Value(), cgoStats)
+						statsProfiler.MaybeTakeProfile(ctx, cfg.runtime.RSSBytes.Value(), curStats, cgoStats)
 					}
 					if queryProfiler != nil {
 						queryProfiler.MaybeDumpQueries(ctx, cfg.sessionRegistry, cfg.st)

@@ -87,7 +87,7 @@ func (is Server) WaitForApplication(
 				return err
 			}
 			repl.mu.RLock()
-			leaseAppliedIndex := repl.shMu.state.LeaseAppliedIndex
+			leaseAppliedIndex := repl.mu.state.LeaseAppliedIndex
 			repl.mu.RUnlock()
 			if leaseAppliedIndex >= req.LeaseIndex {
 				// For performance reasons, we don't sync to disk when
@@ -145,7 +145,7 @@ func (is Server) CompactEngineSpan(
 	resp := &CompactEngineSpanResponse{}
 	err := is.execStoreCommand(ctx, req.StoreRequestHeader,
 		func(ctx context.Context, s *Store) error {
-			return s.TODOEngine().CompactRange(ctx, req.Span.Key, req.Span.EndKey)
+			return s.TODOEngine().CompactRange(req.Span.Key, req.Span.EndKey)
 		})
 	return resp, err
 }
@@ -191,21 +191,19 @@ func (is Server) ScanStorageInternalKeys(
 // SetCompactionConcurrency implements PerStoreServer. It changes the compaction
 // concurrency of a store. While SetCompactionConcurrency is safe for concurrent
 // use, it adds uncertainty about the compaction concurrency actually set on
-// the store. We do guarantee that once all SetCompactionConcurrency requests
-// are finished (cancelled), the override is removed and the original
-// concurrency is restored.
+// the store. It also adds uncertainty about the compaction concurrency set on
+// the store once the request is cancelled.
 func (is Server) SetCompactionConcurrency(
 	ctx context.Context, req *CompactionConcurrencyRequest,
 ) (*CompactionConcurrencyResponse, error) {
 	resp := &CompactionConcurrencyResponse{}
 	err := is.execStoreCommand(ctx, req.StoreRequestHeader,
 		func(ctx context.Context, s *Store) error {
-			s.TODOEngine().SetCompactionConcurrency(req.CompactionConcurrency)
+			prevConcurrency := s.TODOEngine().SetCompactionConcurrency(req.CompactionConcurrency)
 
-			// Wait for cancellation, and once cancelled, reset the compaction
-			// concurrency.
+			// Wait for cancellation, and once cancelled, reset the compaction concurrency.
 			<-ctx.Done()
-			s.TODOEngine().SetCompactionConcurrency(0)
+			s.TODOEngine().SetCompactionConcurrency(prevConcurrency)
 			return nil
 		})
 	return resp, err

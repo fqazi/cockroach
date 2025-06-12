@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -121,6 +122,11 @@ type SchedulerConfig struct {
 	HistogramFrequency int64
 }
 
+// priorityIDsValue is a placeholder value for Scheduler.priorityIDs. IntMap
+// requires an unsafe.Pointer value, but we don't care about the value (only the
+// key), so we can reuse the same allocation.
+var priorityIDsValue = unsafe.Pointer(new(bool))
+
 // shardIndex returns the shard index of the given processor ID based on the
 // shard count and processor priority. Priority processors are assigned to the
 // reserved shard 0, other ranges are modulo ID (ignoring shard 0). numShards
@@ -149,7 +155,7 @@ type Scheduler struct {
 	// separate shards to reduce mutex contention. Allocation is modulo
 	// processors, with shard 0 reserved for priority processors.
 	shards      []*schedulerShard // 1 + id%(len(shards)-1)
-	priorityIDs syncutil.Set[int64]
+	priorityIDs syncutil.IntMap
 	wg          sync.WaitGroup
 }
 
@@ -237,8 +243,11 @@ func newSchedulerShard(
 func (s *Scheduler) Start(ctx context.Context, stopper *stop.Stopper) error {
 	// Start each shard.
 	for shardID, shard := range s.shards {
+		shardID, shard := shardID, shard // pin loop variables
+
 		// Start the shard's workers.
 		for workerID := 0; workerID < shard.numWorkers; workerID++ {
+			workerID := workerID // pin loop variable
 			s.wg.Add(1)
 
 			if err := stopper.RunAsyncTask(ctx,
@@ -277,10 +286,10 @@ func (s *Scheduler) register(id int64, f Callback, priority bool) error {
 	// Make sure we register the priority ID before registering the callback,
 	// since we can otherwise race with enqueues, using the wrong shard.
 	if priority {
-		s.priorityIDs.Add(id)
+		s.priorityIDs.Store(id, priorityIDsValue)
 	}
 	if err := s.shards[shardIndex(id, len(s.shards), priority)].register(id, f); err != nil {
-		s.priorityIDs.Remove(id)
+		s.priorityIDs.Delete(id)
 		return err
 	}
 	return nil
@@ -295,9 +304,9 @@ func (s *Scheduler) register(id int64, f Callback, priority bool) error {
 // Any attempts to enqueue events for processor after this call will return an
 // error.
 func (s *Scheduler) unregister(id int64) {
-	priority := s.priorityIDs.Contains(id)
+	_, priority := s.priorityIDs.Load(id)
 	s.shards[shardIndex(id, len(s.shards), priority)].unregister(id)
-	s.priorityIDs.Remove(id)
+	s.priorityIDs.Delete(id)
 }
 
 func (s *Scheduler) Stop() {
@@ -323,7 +332,7 @@ func (s *Scheduler) stopProcessor(id int64) {
 // Enqueue event for existing callback. The event is ignored if the processor
 // does not exist.
 func (s *Scheduler) enqueue(id int64, evt processorEventType) {
-	priority := s.priorityIDs.Contains(id)
+	_, priority := s.priorityIDs.Load(id)
 	s.shards[shardIndex(id, len(s.shards), priority)].enqueue(id, evt)
 }
 
@@ -578,7 +587,7 @@ type SchedulerBatch struct {
 	priorityIDs map[int64]bool
 }
 
-func newSchedulerBatch(numShards int, priorityIDs *syncutil.Set[int64]) *SchedulerBatch {
+func newSchedulerBatch(numShards int, priorityIDs *syncutil.IntMap) *SchedulerBatch {
 	b := schedulerBatchPool.Get().(*SchedulerBatch)
 	if cap(b.ids) >= numShards {
 		b.ids = b.ids[:numShards]
@@ -590,7 +599,7 @@ func newSchedulerBatch(numShards int, priorityIDs *syncutil.Set[int64]) *Schedul
 	}
 	// Cache the priority range IDs in an owned map, since we expect this to be
 	// very small or empty and we do a lookup for every Add() call.
-	priorityIDs.Range(func(id int64) bool {
+	priorityIDs.Range(func(id int64, _ unsafe.Pointer) bool {
 		b.priorityIDs[id] = true
 		return true
 	})

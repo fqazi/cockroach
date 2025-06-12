@@ -16,9 +16,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/util"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
@@ -30,7 +28,7 @@ import (
 // more replicas, depending on error conditions and how many successful
 // responses are required.
 type SendOptions struct {
-	class   rpcbase.ConnectionClass
+	class   rpc.ConnectionClass
 	metrics *DistSenderMetrics
 	// dontConsiderConnHealth, if set, makes the transport not take into
 	// consideration the connection health when deciding the ordering for
@@ -46,7 +44,9 @@ type SendOptions struct {
 //
 // The caller is responsible for ordering the replicas in the slice according to
 // the order in which the should be tried.
-type TransportFactory func(SendOptions, ReplicaSlice) Transport
+type TransportFactory func(
+	SendOptions, *nodedialer.Dialer, ReplicaSlice,
+) (Transport, error)
 
 // Transport objects can send RPCs to one or more replicas of a range.
 // All calls to Transport methods are made from a single thread, so
@@ -82,11 +82,6 @@ type Transport interface {
 	// transport.
 	MoveToFront(roachpb.ReplicaDescriptor) bool
 
-	// Reset moves back to the first replica in the transport, according to the
-	// current ordering. This may not be the same replica as MoveToFront if it was
-	// called prior, which places the replica at the next rather than first index.
-	Reset()
-
 	// Release releases any resources held by this Transport.
 	Release()
 }
@@ -104,7 +99,7 @@ const (
 // requests in a tight loop, exposing data races; see transport_race.go.
 func grpcTransportFactoryImpl(
 	opts SendOptions, nodeDialer *nodedialer.Dialer, rs ReplicaSlice,
-) Transport {
+) (Transport, error) {
 	transport := grpcTransportPool.Get().(*grpcTransport)
 	// Grab the saved slice memory from grpcTransport.
 	replicas := transport.replicas
@@ -142,13 +137,13 @@ func grpcTransportFactoryImpl(
 		transport.splitHealthy()
 	}
 
-	return transport
+	return transport, nil
 }
 
 type grpcTransport struct {
 	opts       SendOptions
 	nodeDialer *nodedialer.Dialer
-	class      rpcbase.ConnectionClass
+	class      rpc.ConnectionClass
 
 	replicas []roachpb.ReplicaDescriptor
 	// replicaHealth maps replica index within the replicas slice to healthHealthy
@@ -210,23 +205,14 @@ func (gt *grpcTransport) sendBatch(
 	log.VEvent(ctx, 2, "sending batch request")
 	reply, err := iface.Batch(ctx, ba)
 	log.VEvent(ctx, 2, "received batch response")
-
-	// We don't have any strong reason to keep verifying the checksum of the
-	// response. However, since this check has historically caught some bugs, we
-	// are keeping it in Test builds for not.
-	// TODO(ibrahim): There is a path to remove Value checksum computations and
-	// verifications. More details are available in:
-	// https://github.com/cockroachdb/cockroach/issues/145541#issuecomment-2917225539
-	if buildutil.CrdbTestBuild {
-		// If we queried a remote node, perform extra validation.
-		if reply != nil && !rpc.IsLocal(iface) {
-			if err == nil {
-				for i := range reply.Responses {
-					err = reply.Responses[i].GetInner().Verify(ba.Requests[i].GetInner())
-					if err != nil {
-						log.Errorf(ctx, "verification of response for %s failed: %v", ba.Requests[i].GetInner(), err)
-						break
-					}
+	// If we queried a remote node, perform extra validation.
+	if reply != nil && !rpc.IsLocal(iface) {
+		if err == nil {
+			for i := range reply.Responses {
+				err = reply.Responses[i].GetInner().Verify(ba.Requests[i].GetInner())
+				if err != nil {
+					log.Errorf(ctx, "verification of response for %s failed: %v", ba.Requests[i].GetInner(), err)
+					break
 				}
 			}
 		}
@@ -246,9 +232,6 @@ func (gt *grpcTransport) sendBatch(
 				"trying to ingest remote spans but there is no recording span set up")
 		}
 		span.ImportRemoteRecording(reply.CollectedSpans)
-		// The field is cleared by the sender because if the spans are re-imported
-		// by accident, duplicate spans may occur.
-		reply.CollectedSpans = nil
 	}
 	if err != nil {
 		return nil, errors.Wrapf(err, "ba: %s RPC error", ba.String())
@@ -297,10 +280,6 @@ func (gt *grpcTransport) MoveToFront(replica roachpb.ReplicaDescriptor) bool {
 	return false
 }
 
-func (gt *grpcTransport) Reset() {
-	gt.nextReplicaIdx = 0
-}
-
 // splitHealthy splits the grpcTransport's replica slice into healthy replica
 // and unhealthy replica, based on their connection state. Healthy replicas will
 // be rearranged first in the replicas slice, and unhealthy replicas will be
@@ -335,10 +314,12 @@ func (h *byHealth) Less(i, j int) bool {
 // Transport. This is useful for tests that want to use DistSender
 // without a full RPC stack.
 func SenderTransportFactory(tracer *tracing.Tracer, sender kv.Sender) TransportFactory {
-	return func(_ SendOptions, replicas ReplicaSlice) Transport {
+	return func(
+		_ SendOptions, _ *nodedialer.Dialer, replicas ReplicaSlice,
+	) (Transport, error) {
 		// Always send to the first replica.
 		replica := replicas[0].ReplicaDescriptor
-		return &senderTransport{tracer, sender, replica, false}
+		return &senderTransport{tracer, sender, replica, false}, nil
 	}
 }
 
@@ -385,9 +366,6 @@ func (s *senderTransport) SendNext(
 			panic("trying to ingest remote spans but there is no recording span set up")
 		}
 		span.ImportRemoteRecording(br.CollectedSpans)
-		// The field is cleared by the sender because if the spans are re-imported
-		// by accident, duplicate spans may occur.
-		br.CollectedSpans = nil
 	}
 
 	return br, nil
@@ -414,7 +392,5 @@ func (s *senderTransport) SkipReplica() {
 func (s *senderTransport) MoveToFront(replica roachpb.ReplicaDescriptor) bool {
 	return true
 }
-
-func (s *senderTransport) Reset() {}
 
 func (s *senderTransport) Release() {}

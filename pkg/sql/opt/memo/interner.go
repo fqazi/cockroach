@@ -250,9 +250,13 @@ func (c *internCache) Add(item interface{}) {
 // interner. To use, first call the init method, then a series of hash methods.
 // The final value is stored in the hash field.
 type hasher struct {
-	// bytes, bytes2, and bytes3 are scratch byte arrays used to serialize
-	// certain types of values during hashing and equality testing.
-	bytes, bytes2, bytes3 []byte
+	// bytes is a scratch byte array used to serialize certain types of values
+	// during hashing and equality testing.
+	bytes []byte
+
+	// bytes2 is a scratch byte array used to serialize certain types of values
+	// during equality testing.
+	bytes2 []byte
 
 	// hash stores the hash value as it is incrementally computed.
 	hash internHash
@@ -264,7 +268,6 @@ func (h *hasher) Init() {
 	*h = hasher{
 		bytes:  h.bytes,
 		bytes2: h.bytes2,
-		bytes3: h.bytes3,
 		hash:   offset64,
 	}
 }
@@ -358,6 +361,8 @@ func (h *hasher) HashDatum(val tree.Datum) {
 		h.HashUint64(uint64(t.PGEpochDays()))
 	case *tree.DTime:
 		h.HashUint64(uint64(*t))
+	case *tree.DJSON:
+		h.HashString(t.String())
 	case *tree.DTuple:
 		// If labels are present, then hash of tuple's static type is needed to
 		// disambiguate when everything is the same except labels.
@@ -371,11 +376,8 @@ func (h *hasher) HashDatum(val tree.Datum) {
 	case *tree.DCollatedString:
 		h.HashString(t.Locale)
 		h.HashString(t.Contents)
-	case *tree.DJsonpath:
-		// TODO(#22513): Workaround until we allow jsonpath encoding.
-		h.HashString(t.String())
 	default:
-		h.bytes, h.bytes3 = encodeDatum(h.bytes[:0], val, h.bytes3[:0])
+		h.bytes = encodeDatum(h.bytes[:0], val)
 		h.HashBytes(h.bytes)
 	}
 }
@@ -418,10 +420,6 @@ func (h *hasher) HashType(val *types.T) {
 		h.HashInt(int(geo.SRID))
 		h.HashInt(int(geo.ShapeType))
 	}
-}
-
-func (h *hasher) HashExpr(val tree.Expr) {
-	h.HashUint64(uint64(reflect.ValueOf(val).Pointer()))
 }
 
 func (h *hasher) HashTypedExpr(val tree.TypedExpr) {
@@ -512,7 +510,6 @@ func (h *hasher) HashScanFlags(val ScanFlags) {
 	h.HashBool(val.NoIndexJoin)
 	h.HashBool(val.NoZigzagJoin)
 	h.HashBool(val.NoFullScan)
-	h.HashBool(val.AvoidFullScan)
 	h.HashBool(val.ForceIndex)
 	h.HashBool(val.ForceInvertedIndex)
 	h.HashBool(val.ForceZigzag)
@@ -533,12 +530,6 @@ func (h *hasher) HashJoinFlags(val JoinFlags) {
 func (h *hasher) HashFKCascades(val FKCascades) {
 	for i := range val {
 		h.HashUint64(uint64(reflect.ValueOf(val[i].Builder).Pointer()))
-	}
-}
-
-func (h *hasher) HashAfterTriggers(val *AfterTriggers) {
-	if val != nil {
-		h.HashUint64(uint64(reflect.ValueOf(val.Builder).Pointer()))
 	}
 }
 
@@ -593,15 +584,6 @@ func (h *hasher) HashUniqueOrdinals(val cat.UniqueOrdinals) {
 		hash ^= internHash(ord)
 		hash *= prime64
 	}
-	h.hash = hash
-}
-
-func (h *hasher) HashSchemaFunctionDeps(val opt.SchemaFunctionDeps) {
-	hash := h.hash
-	val.ForEach(func(i int) {
-		hash ^= internHash(i)
-		hash *= prime64
-	})
 	h.hash = hash
 }
 
@@ -791,20 +773,6 @@ func (h *hasher) HashUDFDefinition(val *UDFDefinition) {
 	h.HashUint64(uint64(reflect.ValueOf(val).Pointer()))
 }
 
-func (h *hasher) HashStoredProcTxnOp(val tree.StoredProcTxnOp) {
-	h.HashUint64(uint64(val))
-}
-
-func (h *hasher) HashTransactionModes(val tree.TransactionModes) {
-	h.HashUint64(uint64(val.Isolation))
-	h.HashUint64(uint64(val.UserPriority))
-	h.HashUint64(uint64(val.ReadWriteMode))
-	if val.AsOf.Expr != nil {
-		h.HashExpr(val.AsOf.Expr)
-	}
-	h.HashUint64(uint64(val.Deferrable))
-}
-
 // ----------------------------------------------------------------------
 //
 // Equality functions
@@ -890,6 +858,9 @@ func (h *hasher) IsDatumEqual(l, r tree.Datum) bool {
 	case *tree.DTime:
 		rt := r.(*tree.DTime)
 		return uint64(*lt) == uint64(*rt)
+	case *tree.DJSON:
+		rt := r.(*tree.DJSON)
+		return h.IsStringEqual(lt.String(), rt.String())
 	case *tree.DTuple:
 		rt := r.(*tree.DTuple)
 		// Compare datums and then compare static types if nulls or labels
@@ -910,13 +881,9 @@ func (h *hasher) IsDatumEqual(l, r tree.Datum) bool {
 			return false
 		}
 		return len(lt.Array) != 0 || h.IsTypeEqual(ltyp, rtyp)
-	case *tree.DJsonpath:
-		// TODO(#22513): Workaround until we allow jsonpath encoding.
-		rt := r.(*tree.DJsonpath)
-		return h.IsStringEqual(lt.String(), rt.String())
 	default:
-		h.bytes, h.bytes3 = encodeDatum(h.bytes[:0], l, h.bytes3[:0])
-		h.bytes2, h.bytes3 = encodeDatum(h.bytes2[:0], r, h.bytes3[:0])
+		h.bytes = encodeDatum(h.bytes[:0], l)
+		h.bytes2 = encodeDatum(h.bytes2[:0], r)
 		return bytes.Equal(h.bytes, h.bytes2)
 	}
 }
@@ -940,10 +907,6 @@ func (h *hasher) areDatumsWithTypeEqual(ldatums, rdatums tree.Datums, ltyp, rtyp
 		return h.IsTypeEqual(ltyp, rtyp)
 	}
 	return true
-}
-
-func (h *hasher) IsExprEqual(l, r tree.Expr) bool {
-	return l == r
 }
 
 func (h *hasher) IsTypedExprEqual(l, r tree.TypedExpr) bool {
@@ -1023,17 +986,6 @@ func (h *hasher) IsFKCascadesEqual(l, r FKCascades) bool {
 	return true
 }
 
-func (h *hasher) IsAfterTriggersEqual(l, r *AfterTriggers) bool {
-	if l == r {
-		return true
-	}
-	if l == nil || r == nil {
-		return false
-	}
-	// It's sufficient to compare the TriggerBuilder instances.
-	return l.Builder == r.Builder
-}
-
 func (h *hasher) IsExplainOptionsEqual(l, r tree.ExplainOptions) bool {
 	return l == r
 }
@@ -1084,10 +1036,6 @@ func (h *hasher) IsUniqueOrdinalsEqual(l, r cat.UniqueOrdinals) bool {
 		}
 	}
 	return true
-}
-
-func (h *hasher) IsSchemaFunctionDepsEqual(l, r opt.SchemaFunctionDeps) bool {
-	return l.Equals(r)
 }
 
 func (h *hasher) IsSchemaDepsEqual(l, r opt.SchemaDeps) bool {
@@ -1344,34 +1292,19 @@ func (h *hasher) IsUDFDefinitionEqual(l, r *UDFDefinition) bool {
 	} else if r.ExceptionBlock != nil {
 		return false
 	}
-	leftCursDec := l.FirstStmtOutput.CursorDeclaration
-	rightCursDec := r.FirstStmtOutput.CursorDeclaration
-	if leftCursDec != nil {
-		if rightCursDec == nil {
+	if l.CursorDeclaration != nil {
+		if r.CursorDeclaration == nil {
 			return false
 		}
-		if leftCursDec.NameArgIdx != rightCursDec.NameArgIdx ||
-			leftCursDec.Scroll != rightCursDec.Scroll ||
-			leftCursDec.CursorSQL != rightCursDec.CursorSQL {
+		if l.CursorDeclaration.NameArgIdx != r.CursorDeclaration.NameArgIdx ||
+			l.CursorDeclaration.Scroll != r.CursorDeclaration.Scroll ||
+			l.CursorDeclaration.CursorSQL != r.CursorDeclaration.CursorSQL {
 			return false
 		}
-	} else if rightCursDec != nil {
-		return false
-	}
-	if l.FirstStmtOutput.TargetBufferID != r.FirstStmtOutput.TargetBufferID {
+	} else if r.CursorDeclaration != nil {
 		return false
 	}
 	return h.IsColListEqual(l.Params, r.Params) && l.IsRecursive == r.IsRecursive
-}
-
-func (h *hasher) IsStoredProcTxnOpEqual(l, r tree.StoredProcTxnOp) bool {
-	return l == r
-}
-
-func (h *hasher) IsTransactionModesEqual(l, r tree.TransactionModes) bool {
-	return l.Isolation == r.Isolation && l.UserPriority == r.UserPriority &&
-		l.ReadWriteMode == r.ReadWriteMode && l.AsOf.Expr == r.AsOf.Expr &&
-		l.Deferrable == r.Deferrable
 }
 
 // encodeDatum turns the given datum into an encoded string of bytes. If two
@@ -1379,7 +1312,7 @@ func (h *hasher) IsTransactionModesEqual(l, r tree.TransactionModes) bool {
 // Conversely, if two datums are not equivalent, then their encoded bytes will
 // differ. This will panic if the datum cannot be encoded.
 // Notice: DCollatedString does not encode its collation and won't work here.
-func encodeDatum(b []byte, val tree.Datum, scratch []byte) (res []byte, newScratch []byte) {
+func encodeDatum(b []byte, val tree.Datum) []byte {
 	var err error
 
 	// Fast path: encode the datum using table key encoding. This does not always
@@ -1389,13 +1322,13 @@ func encodeDatum(b []byte, val tree.Datum, scratch []byte) (res []byte, newScrat
 	if !colinfo.CanHaveCompositeKeyEncoding(val.ResolvedType()) {
 		b, err = keyside.Encode(b, val, encoding.Ascending)
 		if err == nil {
-			return b, newScratch
+			return b
 		}
 	}
 
-	b, scratch, err = valueside.EncodeWithScratch(b, valueside.NoColumnID, val, scratch)
+	b, err = valueside.Encode(b, valueside.NoColumnID, val, nil /* scratch */)
 	if err != nil {
 		panic(err)
 	}
-	return b, scratch
+	return b
 }

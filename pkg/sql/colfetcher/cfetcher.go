@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/keys"
-	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
@@ -94,22 +93,6 @@ type cTableInfo struct {
 	// oidOutputIdx controls at what column ordinal in the output batch to write
 	// the value for the tableoid system column.
 	oidOutputIdx int
-
-	// originIDOutputIdx controls at what column ordinal in the output batch
-	// to write the value for the OriginID system column.
-	originIDOutputIdx int
-	rowLastOriginID   int
-
-	// originIDOutputIdx controls at what column ordinal in the output batch
-	// to write the value for the OriginTimestamp system column.
-	originTimestampOutputIdx int
-	rowLastOriginTimestamp   hlc.Timestamp
-	// rowLastModifiedWithoutOriginTimestamp is the largest MVCC
-	// timestamp seen for any column family that _doesn't_ have an
-	// OriginTimestamp set. If this is greater than the
-	// rowLastOriginTimestamp field, we output NULL for origin
-	// timestamp.
-	rowLastModifiedWithoutOriginTimestamp hlc.Timestamp
 
 	da tree.DatumAlloc
 }
@@ -203,8 +186,6 @@ type cFetcherArgs struct {
 	// the last one returned on the NextBatch calls if the caller wishes to keep
 	// multiple batches at the same time.
 	alwaysReallocate bool
-	// Txn is the txn for the fetch. It might be nil.
-	txn *kv.Txn
 }
 
 // noOutputColumn is a sentinel value to denote that a system column is not
@@ -311,11 +292,6 @@ type cFetcher struct {
 		timestampCol []apd.Decimal
 		// tableoidCol is the same as timestampCol but for the tableoid system column.
 		tableoidCol coldata.DatumVec
-		// originIDCol is the same as timestampCol but for the OriginID system column.
-		originIDCol coldata.Int32s
-		// originTimetampCol is the same as timestapCol but for the
-		// OriginTimestamp system column.
-		originTimestampCol []apd.Decimal
 	}
 
 	scratch struct {
@@ -363,16 +339,9 @@ func (cf *cFetcher) resetBatch() {
 		if cf.table.oidOutputIdx != noOutputColumn {
 			cf.machine.tableoidCol = cf.machine.colvecs.DatumCols[cf.machine.colvecs.ColsMap[cf.table.oidOutputIdx]]
 		}
-		if cf.table.originIDOutputIdx != noOutputColumn {
-			cf.machine.originIDCol = cf.machine.colvecs.Int32Cols[cf.machine.colvecs.ColsMap[cf.table.originIDOutputIdx]]
-		}
-		if cf.table.originTimestampOutputIdx != noOutputColumn {
-			cf.machine.originTimestampCol = cf.machine.colvecs.DecimalCols[cf.machine.colvecs.ColsMap[cf.table.originTimestampOutputIdx]]
-		}
-
 		// Change the allocation size to be the same as the capacity of the
 		// batch we allocated above.
-		cf.table.da.DefaultAllocSize = cf.machine.batch.Capacity()
+		cf.table.da.AllocSize = cf.machine.batch.Capacity()
 	}
 }
 
@@ -384,7 +353,7 @@ func (cf *cFetcher) Init(
 	allocator *colmem.Allocator, nextKVer storage.NextKVer, tableArgs *cFetcherTableArgs,
 ) error {
 	if tableArgs.spec.Version != fetchpb.IndexFetchSpecVersionInitial {
-		return errors.AssertionFailedf("unsupported IndexFetchSpec version %d", tableArgs.spec.Version)
+		return errors.Newf("unsupported IndexFetchSpec version %d", tableArgs.spec.Version)
 	}
 	table := newCTableInfo()
 	nCols := tableArgs.ColIdxMap.Len()
@@ -399,14 +368,12 @@ func (cf *cFetcher) Init(
 	}
 	sort.Sort(table.orderedColIdxMap)
 	*table = cTableInfo{
-		cFetcherTableArgs:        tableArgs,
-		orderedColIdxMap:         table.orderedColIdxMap,
-		indexColOrdinals:         table.indexColOrdinals[:0],
-		extraValColOrdinals:      table.extraValColOrdinals[:0],
-		timestampOutputIdx:       noOutputColumn,
-		oidOutputIdx:             noOutputColumn,
-		originIDOutputIdx:        noOutputColumn,
-		originTimestampOutputIdx: noOutputColumn,
+		cFetcherTableArgs:   tableArgs,
+		orderedColIdxMap:    table.orderedColIdxMap,
+		indexColOrdinals:    table.indexColOrdinals[:0],
+		extraValColOrdinals: table.extraValColOrdinals[:0],
+		timestampOutputIdx:  noOutputColumn,
+		oidOutputIdx:        noOutputColumn,
 	}
 
 	if nCols > 0 {
@@ -428,26 +395,10 @@ func (cf *cFetcher) Init(
 				table.timestampOutputIdx = idx
 				cf.mvccDecodeStrategy = storage.MVCCDecodingRequired
 				table.neededValueColsByIdx.Remove(idx)
-			case catpb.SystemColumnKind_ORIGINID:
-				table.originIDOutputIdx = idx
-				cf.mvccDecodeStrategy = storage.MVCCDecodingRequired
-				table.neededValueColsByIdx.Remove(idx)
-			case catpb.SystemColumnKind_ORIGINTIMESTAMP:
-				table.originTimestampOutputIdx = idx
-				cf.mvccDecodeStrategy = storage.MVCCDecodingRequired
-				table.neededValueColsByIdx.Remove(idx)
 			case catpb.SystemColumnKind_TABLEOID:
 				table.oidOutputIdx = idx
 				table.neededValueColsByIdx.Remove(idx)
 			}
-		}
-	}
-
-	// Disable buffered writes if any system columns are needed that require
-	// MVCC decoding.
-	if cf.mvccDecodeStrategy == storage.MVCCDecodingRequired {
-		if cf.txn != nil && cf.txn.BufferedWritesEnabled() {
-			cf.txn.SetBufferedWritesEnabled(false /* enabled */)
 		}
 	}
 
@@ -727,7 +678,7 @@ func (cf *cFetcher) NextBatch(ctx context.Context) (coldata.Batch, error) {
 		}
 		switch cf.machine.state[0] {
 		case stateInvalid:
-			return nil, errors.AssertionFailedf("invalid fetcher state")
+			return nil, errors.New("invalid fetcher state")
 		case stateInitFetch:
 			cf.machine.firstKeyOfRow = nil
 			cf.cpuStopWatch.Start()
@@ -774,9 +725,6 @@ func (cf *cFetcher) NextBatch(ctx context.Context) (coldata.Batch, error) {
 		case stateDecodeFirstKVOfRow:
 			// Reset MVCC metadata for the table, since this is the first KV of a row.
 			cf.table.rowLastModified = hlc.Timestamp{}
-			cf.table.rowLastOriginID = 0
-			cf.table.rowLastOriginTimestamp = hlc.Timestamp{}
-			cf.table.rowLastModifiedWithoutOriginTimestamp = hlc.Timestamp{}
 			cf.machine.firstKeyOfRow = cf.machine.nextKV.Key
 
 			// foundNull is set when decoding a new index key for a row finds a NULL value
@@ -877,17 +825,6 @@ func (cf *cFetcher) NextBatch(ctx context.Context) (coldata.Batch, error) {
 			if cf.table.rowLastModified.Less(cf.machine.nextKV.Value.Timestamp) {
 				cf.table.rowLastModified = cf.machine.nextKV.Value.Timestamp
 			}
-
-			if vh, err := cf.machine.nextKV.Value.GetMVCCValueHeader(); err == nil {
-				if cf.table.rowLastOriginTimestamp.LessEq(vh.OriginTimestamp) {
-					cf.table.rowLastOriginID = int(vh.OriginID)
-					cf.table.rowLastOriginTimestamp = vh.OriginTimestamp
-				}
-				if vh.OriginTimestamp.IsEmpty() && cf.table.rowLastModifiedWithoutOriginTimestamp.Less(cf.machine.nextKV.Value.Timestamp) {
-					cf.table.rowLastModifiedWithoutOriginTimestamp = cf.machine.nextKV.Value.Timestamp
-				}
-			}
-
 			// If the index has only one column family, then the next KV will
 			// always belong to a different row than the current KV.
 			if cf.table.spec.MaxKeysPerRow == 1 {
@@ -956,16 +893,6 @@ func (cf *cFetcher) NextBatch(ctx context.Context) (coldata.Batch, error) {
 				cf.table.rowLastModified = cf.machine.nextKV.Value.Timestamp
 			}
 
-			if vh, err := kv.Value.GetMVCCValueHeader(); err == nil {
-				if cf.table.rowLastOriginTimestamp.LessEq(vh.OriginTimestamp) {
-					cf.table.rowLastOriginID = int(vh.OriginID)
-					cf.table.rowLastOriginTimestamp = vh.OriginTimestamp
-				}
-				if vh.OriginTimestamp.IsEmpty() && cf.table.rowLastModifiedWithoutOriginTimestamp.Less(cf.machine.nextKV.Value.Timestamp) {
-					cf.table.rowLastModifiedWithoutOriginTimestamp = cf.machine.nextKV.Value.Timestamp
-				}
-			}
-
 			if familyID == cf.table.spec.MaxFamilyID {
 				// We know the row can't have any more keys, so finalize the row.
 				cf.machine.state[0] = stateFinalizeRow
@@ -981,16 +908,6 @@ func (cf *cFetcher) NextBatch(ctx context.Context) (coldata.Batch, error) {
 			// time.
 			if cf.table.timestampOutputIdx != noOutputColumn {
 				cf.machine.timestampCol[cf.machine.rowIdx] = eval.TimestampToDecimal(cf.table.rowLastModified)
-			}
-			if cf.table.originIDOutputIdx != noOutputColumn {
-				cf.machine.originIDCol.Set(cf.machine.rowIdx, int32(cf.table.rowLastOriginID))
-			}
-			if cf.table.originTimestampOutputIdx != noOutputColumn {
-				if cf.table.rowLastOriginTimestamp.IsSet() && cf.table.rowLastModifiedWithoutOriginTimestamp.Less(cf.table.rowLastOriginTimestamp) {
-					cf.machine.originTimestampCol[cf.machine.rowIdx] = eval.TimestampToDecimal(cf.table.rowLastOriginTimestamp)
-				} else {
-					cf.machine.colvecs.Nulls[cf.table.originTimestampOutputIdx].SetNull(cf.machine.rowIdx)
-				}
 			}
 
 			// We're finished with a row. Fill the row in with nulls if
@@ -1096,11 +1013,6 @@ func (cf *cFetcher) processValue(ctx context.Context, familyID descpb.FamilyID) 
 	if cf.traceKV {
 		defer func() {
 			if err == nil {
-				if cf.table.spec.MaxKeysPerRow > 1 {
-					// If the index has more than one column family, then
-					// include the column family ID.
-					prettyKey = fmt.Sprintf("%s:cf=%d", prettyKey, familyID)
-				}
 				log.VEventf(ctx, 2, "fetched: %s -> %s", prettyKey, prettyValue)
 			}
 		}()
@@ -1142,7 +1054,7 @@ func (cf *cFetcher) processValue(ctx context.Context, familyID descpb.FamilyID) 
 			if err != nil {
 				break
 			}
-			prettyKey, prettyValue, err = cf.processValueBytes(table, tupleBytes, prettyKey)
+			prettyKey, prettyValue, err = cf.processValueBytes(ctx, table, tupleBytes, prettyKey)
 
 		default:
 			// If familyID is 0, this is the row sentinel (in the legacy pre-family format),
@@ -1161,10 +1073,10 @@ func (cf *cFetcher) processValue(ctx context.Context, familyID descpb.FamilyID) 
 			if defaultColumnID == 0 {
 				return scrub.WrapError(
 					scrub.IndexKeyDecodingError,
-					errors.AssertionFailedf("single entry value with no default column id"),
+					errors.Errorf("single entry value with no default column id"),
 				)
 			}
-			prettyKey, prettyValue, err = cf.processValueSingle(table, defaultColumnID, prettyKey)
+			prettyKey, prettyValue, err = cf.processValueSingle(ctx, table, defaultColumnID, prettyKey)
 		}
 		if err != nil {
 			return scrub.WrapError(scrub.IndexValueDecodingError, err)
@@ -1214,7 +1126,9 @@ func (cf *cFetcher) processValue(ctx context.Context, familyID descpb.FamilyID) 
 		}
 
 		if len(valueBytes) > 0 {
-			prettyKey, prettyValue, err = cf.processValueBytes(table, valueBytes, prettyKey)
+			prettyKey, prettyValue, err = cf.processValueBytes(
+				ctx, table, valueBytes, prettyKey,
+			)
 			if err != nil {
 				return scrub.WrapError(scrub.IndexValueDecodingError, err)
 			}
@@ -1232,7 +1146,7 @@ func (cf *cFetcher) processValue(ctx context.Context, familyID descpb.FamilyID) 
 // value in cf.machine.colvecs accordingly.
 // The key is only used for logging.
 func (cf *cFetcher) processValueSingle(
-	table *cTableInfo, colID descpb.ColumnID, prettyKeyPrefix string,
+	ctx context.Context, table *cTableInfo, colID descpb.ColumnID, prettyKeyPrefix string,
 ) (prettyKey string, prettyValue string, err error) {
 	prettyKey = prettyKeyPrefix
 
@@ -1241,7 +1155,7 @@ func (cf *cFetcher) processValueSingle(
 			prettyKey = fmt.Sprintf("%s/%s", prettyKey, table.spec.FetchedColumns[idx].Name)
 		}
 		val := cf.machine.nextKV.Value
-		if !val.IsPresent() {
+		if len(val.RawBytes) == 0 {
 			return prettyKey, "", nil
 		}
 		typ := cf.table.spec.FetchedColumns[idx].Type
@@ -1256,16 +1170,22 @@ func (cf *cFetcher) processValueSingle(
 		if cf.traceKV {
 			prettyValue = cf.getDatumAt(idx, cf.machine.rowIdx).String()
 		}
+		if row.DebugRowFetch {
+			log.Infof(ctx, "Scan %s -> %v", cf.machine.nextKV.Key, "?")
+		}
 		return prettyKey, prettyValue, nil
 	}
 
 	// No need to unmarshal the column value. Either the column was part of
 	// the index key or it isn't needed.
+	if row.DebugRowFetch {
+		log.Infof(ctx, "Scan %s -> [%d] (skipped)", cf.machine.nextKV.Key, colID)
+	}
 	return prettyKey, prettyValue, nil
 }
 
 func (cf *cFetcher) processValueBytes(
-	table *cTableInfo, valueBytes []byte, prettyKeyPrefix string,
+	ctx context.Context, table *cTableInfo, valueBytes []byte, prettyKeyPrefix string,
 ) (prettyKey string, prettyValue string, err error) {
 	prettyKey = prettyKeyPrefix
 	if cf.traceKV {
@@ -1282,7 +1202,7 @@ func (cf *cFetcher) processValueBytes(
 	cf.machine.remainingValueColsByIdx.UnionWith(cf.table.compositeIndexColOrdinals)
 
 	var (
-		colIDDelta     uint32
+		colIDDiff      uint32
 		lastColID      descpb.ColumnID
 		dataOffset     int
 		typ            encoding.Type
@@ -1294,11 +1214,11 @@ func (cf *cFetcher) processValueBytes(
 	// it's expensive to keep calling .Len() in the loop.
 	remainingValueCols := cf.machine.remainingValueColsByIdx.Len()
 	for len(valueBytes) > 0 && remainingValueCols > 0 {
-		_, dataOffset, colIDDelta, typ, err = encoding.DecodeValueTag(valueBytes)
+		_, dataOffset, colIDDiff, typ, err = encoding.DecodeValueTag(valueBytes)
 		if err != nil {
 			return "", "", err
 		}
-		colID := lastColID + descpb.ColumnID(colIDDelta)
+		colID := lastColID + descpb.ColumnID(colIDDiff)
 		lastColID = colID
 		vecIdx := -1
 		// Find the ordinal into table.cols for the column ID we just decoded,
@@ -1323,6 +1243,9 @@ func (cf *cFetcher) processValueBytes(
 				return "", "", err
 			}
 			valueBytes = valueBytes[len:]
+			if row.DebugRowFetch {
+				log.Infof(ctx, "Scan %s -> [%d] (skipped)", cf.machine.nextKV.Key, colID)
+			}
 			continue
 		}
 
@@ -1370,7 +1293,7 @@ func (cf *cFetcher) fillNulls() error {
 			for i := range table.spec.KeyFullColumns() {
 				indexColNames = append(indexColNames, table.spec.KeyAndSuffixColumns[i].Name)
 			}
-			return scrub.WrapError(scrub.UnexpectedNullValueError, errors.AssertionFailedf(
+			return scrub.WrapError(scrub.UnexpectedNullValueError, errors.Errorf(
 				"non-nullable column \"%s:%s\" with no value! Index scanned was %q with the index key columns (%s) and the values (%s)",
 				table.spec.TableName, table.spec.FetchedColumns[i].Name, table.spec.IndexName,
 				strings.Join(indexColNames, ","), indexColValues.String()))

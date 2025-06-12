@@ -8,6 +8,7 @@ package pgwire
 import (
 	"testing"
 
+	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/hba"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -21,7 +22,7 @@ func createAuthPipe() *authPipe {
 		authOptions{
 			connType: hba.ConnLocal,
 		},
-		"",
+		username.SQLUsername{},
 	)
 }
 

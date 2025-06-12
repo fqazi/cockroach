@@ -42,7 +42,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/datadriven"
 	"github.com/stretchr/testify/require"
@@ -132,15 +131,13 @@ func EndToEndSideEffects(t *testing.T, relTestCaseDir string, factory TestServer
 					sctestdeps.WithNamespace(sctestdeps.ReadNamespaceFromDB(t, tdb).Catalog),
 					sctestdeps.WithCurrentDatabase(sctestdeps.ReadCurrentDatabaseFromDB(t, tdb)),
 					sctestdeps.WithSessionData(sctestdeps.ReadSessionDataFromDB(t, tdb, func(
-						sd *sessiondata.SessionData, localData sessiondatapb.LocalOnlySessionData,
+						sd *sessiondata.SessionData,
 					) {
 						// For setting up a builder inside tests we will ensure that the new schema
 						// changer will allow non-fully implemented operations.
-						sd.NewSchemaChangerMode = sessiondatapb.UseNewSchemaChangerUnsafeAlways
-						sd.TempTablesEnabled = true
+						sd.NewSchemaChangerMode = sessiondatapb.UseNewSchemaChangerUnsafe
 						sd.ApplicationName = ""
 						sd.EnableUniqueWithoutIndexConstraints = true // this allows `ADD UNIQUE WITHOUT INDEX` in the testing suite.
-						sd.SerialNormalizationMode = localData.SerialNormalizationMode
 					})),
 					sctestdeps.WithTestingKnobs(&scexec.TestingKnobs{
 						BeforeStage: func(p scplan.Plan, stageIdx int) error {
@@ -169,8 +166,6 @@ func EndToEndSideEffects(t *testing.T, relTestCaseDir string, factory TestServer
 			}
 			return d.Expected
 		})
-		require.Equalf(t, 1, numTestStatementsObserved,
-			"one test should exist")
 	})
 }
 
@@ -277,7 +272,6 @@ func checkExplainDiagrams(
 		ActiveVersion:              clusterversion.TestingClusterVersion,
 		ExecutionPhase:             scop.StatementPhase,
 		SchemaChangerJobIDSupplier: func() jobspb.JobID { return 1 },
-		MemAcc:                     mon.NewStandaloneUnlimitedAccount(),
 	}
 	if inRollback {
 		params.InRollback = true
@@ -313,7 +307,6 @@ func execStatementWithTestDeps(
 ) (stateAfterBuildingEachStatement []scpb.CurrentState) {
 	var jobID jobspb.JobID
 	var state scpb.CurrentState
-	var logSchemaChangesFn scbuild.LogSchemaChangerEventsFn
 	var err error
 	startTime := timeutil.Now()
 
@@ -322,9 +315,8 @@ func execStatementWithTestDeps(
 		deps.IncrementPhase()
 		deps.LogSideEffectf("# begin %s", deps.Phase())
 		for _, stmt := range stmts {
-			state, logSchemaChangesFn, err = scbuild.Build(ctx, deps, state, stmt.AST, mon.NewStandaloneUnlimitedAccount())
+			state, err = scbuild.Build(ctx, deps, state, stmt.AST, nil /* memAcc */)
 			require.NoError(t, err, "error in builder")
-			require.NoError(t, logSchemaChangesFn(ctx), "error generating event log entries")
 			stateAfterBuildingEachStatement = append(stateAfterBuildingEachStatement, state)
 			state, _, err = scrun.RunStatementPhase(ctx, s.TestingKnobs(), s, state)
 			require.NoError(t, err, "error in %s", s.Phase())

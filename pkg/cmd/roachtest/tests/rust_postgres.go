@@ -129,7 +129,7 @@ func registerRustPostgres(r registry.Registry) {
 		result, err := c.RunWithDetailsSingleNode(
 			ctx,
 			t.L(),
-			option.WithNodes(node),
+			node,
 			`cd /mnt/data1/rust-postgres && /home/ubuntu/.cargo/bin/cargo test 2>&1 > rustpostgres.stdout --no-fail-fast`)
 		if err != nil {
 			t.L().Printf("error during rust postgres run (may be ok): %v\n", err)
@@ -137,7 +137,7 @@ func registerRustPostgres(r registry.Registry) {
 
 		t.L().Printf("Test stdout for rust-postgres")
 		result, err = c.RunWithDetailsSingleNode(
-			ctx, t.L(), option.WithNodes(node), "cd /mnt/data1/rust-postgres && cat rustpostgres.stdout",
+			ctx, t.L(), node, "cd /mnt/data1/rust-postgres && cat rustpostgres.stdout",
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -156,13 +156,11 @@ func registerRustPostgres(r registry.Registry) {
 	}
 
 	r.Add(registry.TestSpec{
-		Name:    "rust-postgres",
-		Owner:   registry.OwnerSQLFoundations,
-		Cluster: r.MakeClusterSpec(1, spec.CPU(16)),
-		Leases:  registry.MetamorphicLeases,
-		// This test requires custom ports but service registration is
-		// currently only supported on GCE.
-		CompatibleClouds: registry.OnlyGCE,
+		Name:             "rust-postgres",
+		Owner:            registry.OwnerSQLFoundations,
+		Cluster:          r.MakeClusterSpec(1, spec.CPU(16)),
+		Leases:           registry.MetamorphicLeases,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly, registry.ORM),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runRustPostgres(ctx, t, c)

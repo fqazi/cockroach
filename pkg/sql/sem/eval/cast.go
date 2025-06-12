@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/geo"
 	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
 	"github.com/cockroachdb/cockroach/pkg/sql/lex"
@@ -29,7 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil/pgdate"
 	"github.com/cockroachdb/cockroach/pkg/util/tsearch"
-	"github.com/cockroachdb/cockroach/pkg/util/vector"
 	"github.com/cockroachdb/errors"
 	"github.com/lib/pq/oid"
 )
@@ -215,7 +215,7 @@ func performCastWithoutPrecisionTruncation(
 			if math.IsNaN(f) || f <= float64(math.MinInt64) || f >= float64(math.MaxInt64) {
 				return nil, tree.ErrIntOutOfRange
 			}
-			res = tree.NewDInt(tree.DInt(math.RoundToEven(f)))
+			res = tree.NewDInt(tree.DInt(f))
 		case *tree.DDecimal:
 			i, err := roundDecimalToInt(&v.Decimal)
 			if err != nil {
@@ -494,14 +494,10 @@ func performCastWithoutPrecisionTruncation(
 			s = tree.AsStringWithFlags(t, tree.FmtPgwireText)
 		case *tree.DJSON:
 			s = t.JSON.String()
-		case *tree.DJsonpath:
-			s = t.Jsonpath.String()
 		case *tree.DTSQuery:
 			s = t.TSQuery.String()
 		case *tree.DTSVector:
 			s = t.TSVector.String()
-		case *tree.DPGVector:
-			s = t.T.String()
 		case *tree.DEnum:
 			s = t.LogicalRep
 		case *tree.DVoid:
@@ -592,6 +588,11 @@ func performCastWithoutPrecisionTruncation(
 		}
 
 	case types.PGLSNFamily:
+		if !evalCtx.Settings.Version.IsActive(ctx, clusterversion.V23_2) {
+			return nil, pgerror.Newf(pgcode.FeatureNotSupported,
+				"version %v must be finalized to use pg_lsn",
+				clusterversion.ByKey(clusterversion.V23_2))
+		}
 		switch d := d.(type) {
 		case *tree.DString:
 			return tree.ParseDPGLSN(string(*d))
@@ -601,34 +602,12 @@ func performCastWithoutPrecisionTruncation(
 			return d, nil
 		}
 
-	case types.PGVectorFamily:
-		switch d := d.(type) {
-		case *tree.DString:
-			return tree.ParseDPGVector(string(*d))
-		case *tree.DCollatedString:
-			return tree.ParseDPGVector(d.Contents)
-		case *tree.DArray:
-			switch d.ParamTyp.Family() {
-			case types.FloatFamily, types.IntFamily, types.DecimalFamily:
-				v := make(vector.T, len(d.Array))
-				for i, elem := range d.Array {
-					if elem == tree.DNull {
-						return nil, pgerror.Newf(pgcode.NullValueNotAllowed,
-							"array must not contain nulls")
-					}
-					datum, err := performCast(ctx, evalCtx, elem, types.Float4, false)
-					if err != nil {
-						return nil, err
-					}
-					v[i] = float32(*datum.(*tree.DFloat))
-				}
-				return tree.NewDPGVector(v), nil
-			}
-		case *tree.DPGVector:
-			return d, nil
-		}
-
 	case types.RefCursorFamily:
+		if !evalCtx.Settings.Version.IsActive(ctx, clusterversion.V23_2) {
+			return nil, pgerror.Newf(pgcode.FeatureNotSupported,
+				"version %v must be finalized to use refcursor",
+				clusterversion.ByKey(clusterversion.V23_2))
+		}
 		switch d := d.(type) {
 		case *tree.DString:
 			return tree.NewDRefCursor(string(*d)), nil
@@ -909,12 +888,12 @@ func performCastWithoutPrecisionTruncation(
 			}
 			return tree.ParseDJSON(string(j))
 		}
-	case types.JsonpathFamily:
-		switch v := d.(type) {
-		case *tree.DString:
-			return tree.ParseDJsonpath(string(*v))
-		}
 	case types.TSQueryFamily:
+		if !evalCtx.Settings.Version.IsActive(ctx, clusterversion.V23_1) {
+			return nil, pgerror.Newf(pgcode.FeatureNotSupported,
+				"version %v must be finalized to use TSVector",
+				clusterversion.ByKey(clusterversion.V23_1))
+		}
 		switch v := d.(type) {
 		case *tree.DString:
 			q, err := tsearch.ParseTSQuery(string(*v))
@@ -922,10 +901,13 @@ func performCastWithoutPrecisionTruncation(
 				return nil, err
 			}
 			return &tree.DTSQuery{TSQuery: q}, nil
-		case *tree.DTSQuery:
-			return d, nil
 		}
 	case types.TSVectorFamily:
+		if !evalCtx.Settings.Version.IsActive(ctx, clusterversion.V23_1) {
+			return nil, pgerror.Newf(pgcode.FeatureNotSupported,
+				"version %v must be finalized to use TSVector",
+				clusterversion.ByKey(clusterversion.V23_1))
+		}
 		switch v := d.(type) {
 		case *tree.DString:
 			vec, err := tsearch.ParseTSVector(string(*v))
@@ -933,8 +915,6 @@ func performCastWithoutPrecisionTruncation(
 				return nil, err
 			}
 			return &tree.DTSVector{TSVector: vec}, nil
-		case *tree.DTSVector:
-			return d, nil
 		}
 	case types.ArrayFamily:
 		switch v := d.(type) {
@@ -961,14 +941,6 @@ func performCastWithoutPrecisionTruncation(
 				}
 			}
 			return dcast, nil
-		case *tree.DPGVector:
-			dcast := tree.NewDArray(t.ArrayContents())
-			for i := range v.T {
-				if err := dcast.Append(tree.NewDFloat(tree.DFloat(v.T[i]))); err != nil {
-					return nil, err
-				}
-			}
-			return dcast, nil
 		}
 	case types.OidFamily:
 		switch v := d.(type) {
@@ -982,7 +954,7 @@ func performCastWithoutPrecisionTruncation(
 	case types.TupleFamily:
 		switch v := d.(type) {
 		case *tree.DTuple:
-			if t.Identical(types.AnyTuple) {
+			if t == types.AnyTuple {
 				// If AnyTuple is the target type, we can just use the input tuple.
 				return v, nil
 			}
@@ -1029,10 +1001,11 @@ func performIntToOidCast(
 	// OIDs are always unsigned 32-bit integers. Some languages, like Java,
 	// store OIDs as signed 32-bit integers, so we implement the cast
 	// by converting to a uint32 first. This matches Postgres behavior.
-	o, err := tree.IntToOid(v)
+	dOid, err := tree.IntToOid(v)
 	if err != nil {
 		return nil, err
 	}
+	o := dOid.Oid
 	switch t.Oid() {
 	case oid.T_oid:
 		return tree.NewDOidWithType(o, t), nil

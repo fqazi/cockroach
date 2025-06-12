@@ -7,18 +7,14 @@ package sqlsmith
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/randgen"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree/treecmp"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util"
-	"github.com/lib/pq/oid"
 )
 
 func (s *Smither) makeStmt() (stmt tree.Statement, ok bool) {
@@ -100,16 +96,15 @@ var (
 		{10, makeInsert},
 		{10, makeDelete},
 		{10, makeUpdate},
-		{2, makeAlter},
+		{1, makeAlter},
 		{1, makeBegin},
-		{1, makeRollback},
-		{2, makeCommit},
+		{2, makeRollback},
+		{6, makeCommit},
 		{1, makeBackup},
 		{1, makeRestore},
 		{1, makeExport},
 		{1, makeImport},
-		{1, makeCreateStats},
-		{1, makeSetSessionCharacteristics},
+		{1, makeCreateFunc},
 	}
 	nonMutatingStatements = []statementWeight{
 		{10, makeSelect},
@@ -356,31 +351,16 @@ func makeMergeJoinExpr(s *Smither, _ colRefs, forJoin bool) (tree.TableExpr, col
 	rightAliasName := tree.NewUnqualifiedTableName(rightAlias)
 
 	// Now look for one that satisfies our constraints (some shared prefix
-	// of type + direction), might end up being the same one.
+	// of type + direction), might end up being the same one. We rely on
+	// Go's non-deterministic map iteration ordering for randomness.
 	rightTableName, cols, ok := func() (*tree.TableIndexName, [][2]colRef, bool) {
 		s.lock.RLock()
 		defer s.lock.RUnlock()
-		if len(s.tables) == 0 {
-			return nil, nil, false
-		}
-		// Iterate in deterministic but random order over all tables.
-		tableNames := make([]tree.TableName, 0, len(s.tables))
-		for t := range s.indexes {
-			tableNames = append(tableNames, t)
-		}
-		sort.Slice(tableNames, func(i, j int) bool {
-			return strings.Compare(tableNames[i].String(), tableNames[j].String()) < 0
-		})
-		s.rnd.Shuffle(len(tableNames), func(i, j int) {
-			tableNames[i], tableNames[j] = tableNames[j], tableNames[i]
-		})
-		for _, tbl := range tableNames {
-			// Iterate in deterministic but random order over all indexes.
-			idxs := s.getAllIndexesForTableRLocked(tbl)
-			for _, idx := range idxs {
+		for tbl, idxs := range s.indexes {
+			for idxName, idx := range idxs {
 				rightTableName := &tree.TableIndexName{
 					Table: tbl,
-					Index: tree.UnrestrictedName(idx.Name),
+					Index: tree.UnrestrictedName(idxName),
 				}
 				// cols keeps track of matching column pairs.
 				var cols [][2]colRef
@@ -568,14 +548,6 @@ var dropBehaviors = []tree.DropBehavior{
 
 func (s *Smither) randDropBehavior() tree.DropBehavior {
 	return dropBehaviors[s.rnd.Intn(len(dropBehaviors))]
-}
-
-func (s *Smither) randDropBehaviorNoCascade() tree.DropBehavior {
-	if s.d6() < 3 {
-		// Make RESTRICT twice less likely than DEFAULT.
-		return tree.DropRestrict
-	}
-	return tree.DropDefault
 }
 
 var stringComparisons = []treecmp.ComparisonOperatorSymbol{
@@ -911,84 +883,72 @@ func (s *Smither) makeSelectList(
 }
 
 func makeCreateFunc(s *Smither) (tree.Statement, bool) {
-	if s.disableUDFCreation {
+	if s.disableUDFs {
 		return nil, false
 	}
 	return s.makeCreateFunc()
 }
 
-func makeDropFunc(s *Smither) (tree.Statement, bool) {
-	if s.disableUDFCreation {
-		return nil, false
-	}
-	functions.Lock()
-	defer functions.Unlock()
-	class := tree.NormalClass
-	if s.d6() < 3 {
-		class = tree.GeneratorClass
-	}
-	// fns is a map from return type OID to the list of function overloads.
-	fns := functions.fns[class]
-	if len(fns) == 0 {
-		return nil, false
-	}
-	retOIDs := make([]oid.Oid, 0, len(fns))
-	for oid := range fns {
-		retOIDs = append(retOIDs, oid)
-	}
-	// Sort the slice since iterating over fns is non-deterministic.
-	sort.Slice(retOIDs, func(i, j int) bool {
-		return retOIDs[i] < retOIDs[j]
-	})
-	// Pick a random starting point within the list of OIDs.
-	oidShift := s.rnd.Intn(len(retOIDs))
-	for i := 0; i < len(retOIDs); i++ {
-		oidPos := (i + oidShift) % len(retOIDs)
-		overloads := fns[retOIDs[oidPos]]
-		// Pick a random starting point within the list of overloads.
-		ovShift := s.rnd.Intn(len(overloads))
-		for j := 0; j < len(overloads); j++ {
-			fn := overloads[(j+ovShift)%len(overloads)]
-			if fn.overload.Type == tree.UDFRoutine {
-				routineObj := tree.RoutineObj{
-					FuncName: tree.MakeRoutineNameFromPrefix(tree.ObjectNamePrefix{}, tree.Name(fn.def.Name)),
-				}
-				if s.coin() {
-					// Sometimes simulate omitting the parameter specification,
-					// sometimes specify all parameters.
-					routineObj.Params = fn.overload.RoutineParams
-				}
-				return &tree.DropRoutine{
-					IfExists:  s.d6() < 3,
-					Procedure: false,
-					Routines:  tree.RoutineObjs{routineObj},
-					// TODO(#101380): use s.randDropBehavior() once DROP
-					// FUNCTION CASCADE is implemented.
-					DropBehavior: s.randDropBehaviorNoCascade(),
-				}, true
-			}
-		}
-	}
-	return nil, false
-}
-
 func (s *Smither) makeCreateFunc() (cf *tree.CreateRoutine, ok bool) {
 	fname := s.name("func")
 	name := tree.MakeRoutineNameFromPrefix(tree.ObjectNamePrefix{}, fname)
+	// Return a record 50% of the time, which means the UDF can return any number
+	// or type in its final SQL statement. Otherwise, pick a random type from
+	// this smither's available types.
+	rtyp := types.AnyTuple
+	if s.coin() {
+		// Do not allow collated string types. These are not supported in UDFs.
+		rtyp = s.randType()
+		for rtyp.Family() == types.CollatedStringFamily {
+			rtyp = s.randType()
+		}
+	}
+	// Return multiple rows with the SETOF option about 33% of the time.
+	setof := false
+	if s.d6() < 3 {
+		setof = true
+	}
+	rtype := tree.RoutineReturnType{
+		Type:  rtyp,
+		SetOf: setof,
+	}
+
+	paramCnt := s.rnd.Intn(10)
+	if s.types == nil || len(s.types.scalarTypes) == 0 {
+		paramCnt = 0
+	}
+	// TODO(100405): Add support for non-default param classes. Currently, only IN
+	// parameters are supported.
+	// TODO(100962): Set a param default value sometimes.
+	params := make(tree.RoutineParams, paramCnt)
+	paramTypes := make(tree.ParamTypes, paramCnt)
+	refs := make(colRefs, paramCnt)
+	for i := 0; i < paramCnt; i++ {
+		// Do not allow collated string types. These are not supported in UDFs.
+		ptyp := s.randType()
+		for ptyp.Family() == types.CollatedStringFamily {
+			ptyp = s.randType()
+		}
+		pname := fmt.Sprintf("p%d", i)
+		params[i] = tree.RoutineParam{
+			Name: tree.Name(pname),
+			Type: ptyp,
+		}
+		paramTypes[i] = tree.ParamType{
+			Name: pname,
+			Typ:  ptyp,
+		}
+		refs[i] = &colRef{
+			typ: ptyp,
+			item: &tree.ColumnItem{
+				ColumnName: tree.Name(pname),
+			},
+		}
+	}
 
 	// There are up to 5 function options that may be applied to UDFs.
 	var opts tree.RoutineOptions
 	opts = make(tree.RoutineOptions, 0, 5)
-
-	// RoutineLanguage
-	lang := tree.RoutineLangSQL
-	// Simulate RETURNS TABLE syntax of SQL UDFs in 10% cases.
-	returnsTable := s.rnd.Float64() < 0.1
-	if s.coin() {
-		lang = tree.RoutineLangPLpgSQL
-		returnsTable = false
-	}
-	opts = append(opts, lang)
 
 	// RoutineNullInputBehavior
 	// 50%: Do not specify behavior (default is RoutineCalledOnNullInput).
@@ -1038,138 +998,96 @@ func (s *Smither) makeCreateFunc() (cf *tree.CreateRoutine, ok bool) {
 		opts = append(opts, tree.RoutineLeakproof(leakproof))
 	}
 
-	// Determine the parameters before the RoutineBody, but after the language.
-	paramCnt := s.rnd.Intn(10)
-	if s.types == nil || len(s.types.scalarTypes) == 0 {
-		paramCnt = 0
-	}
-	var usedDefaultExpr bool
-	params := make(tree.RoutineParams, paramCnt)
-	paramTypes := make(tree.ParamTypes, paramCnt)
-	refs := make(colRefs, paramCnt)
-	for i := 0; i < paramCnt; i++ {
-		// Do not allow collated string types. These are not supported in UDFs.
-		// Do not allow RECORD-type parameters for SQL routines.
-		// TODO(#105713): lift the RECORD-type restriction for PL/pgSQL.
-		ptyp, ptypResolvable := s.randType()
-		for ptyp.Family() == types.CollatedStringFamily || ptyp.Identical(types.AnyTuple) {
-			ptyp, ptypResolvable = s.randType()
-		}
-		pname := fmt.Sprintf("p%d", i)
-		// TODO(88947): choose VARIADIC once supported too.
-		var numAllowedParamClasses = 4
-		if returnsTable {
-			// We cannot use explicit OUT and INOUT parameters when simulating
-			// RETURNS TABLE syntax.
-			numAllowedParamClasses = 2
-		}
-		params[i] = tree.RoutineParam{
-			Name:  tree.Name(pname),
-			Type:  ptypResolvable,
-			Class: tree.RoutineParamClass(s.rnd.Intn(numAllowedParamClasses)),
-		}
-		if params[i].Class != tree.RoutineParamOut {
-			// OUT parameters aren't allowed to have DEFAULT expressions.
-			//
-			// If we already used a DEFAULT expression, then we must add one for
-			// this input parameter too. If we haven't already started using
-			// DEFAULT expressions, start with this parameter in 33% cases.
-			if usedDefaultExpr || s.d6() < 3 {
-				params[i].DefaultVal = makeScalar(s, ptyp, nil /* colRefs */)
-				usedDefaultExpr = true
-			}
-		}
-		paramTypes[i] = tree.ParamType{
-			Name: pname,
-			Typ:  ptyp,
-		}
-		refs[i] = &colRef{
-			typ: ptyp,
-			item: &tree.ColumnItem{
-				ColumnName: tree.Name(pname),
-			},
-		}
-	}
-
-	// Return a record 50% of the time, which means the UDF can return any number
-	// or type in its final SQL statement. Otherwise, pick a random type from
-	// this smither's available types.
-	rTyp, rTypResolvable := types.AnyTuple, tree.ResolvableTypeReference(types.AnyTuple)
-	if s.coin() {
-		// Do not allow collated string types. These are not supported in UDFs.
-		rTyp, rTypResolvable = s.randType()
-		for rTyp.Family() == types.CollatedStringFamily {
-			rTyp, rTypResolvable = s.randType()
-		}
-	}
-	if returnsTable {
-		// Try to pick an existing tuple type for some time. If that doesn't
-		// happen, create a new one.
-		for i := 0; rTyp.Family() != types.TupleFamily && i < 10; i++ {
-			rTyp, rTypResolvable = s.randType()
-		}
-		if rTyp.Family() != types.TupleFamily {
-			rTyp = s.makeRandTupleType()
-			rTypResolvable = rTyp
-		}
-	}
-
-	// TODO(93049): Allow UDFs to create other UDFs.
-	oldDisableMutations := s.disableMutations
-	defer func() {
-		s.disableUDFCreation = false
-		s.disableMutations = oldDisableMutations
-	}()
-	s.disableUDFCreation = true
-	s.disableMutations = (funcVol != tree.RoutineVolatile) || s.disableMutations
+	// RoutineLanguage
+	// Currently only SQL is supported.
+	opts = append(opts, tree.RoutineLangSQL)
 
 	// RoutineBodyStr
-	var body string
-	if lang == tree.RoutineLangSQL {
-		var stmtRefs colRefs
-		body, stmtRefs, ok = s.makeRoutineBodySQL(funcVol, refs, rTyp)
-		if !ok {
-			return nil, false
-		}
-		// If the rTyp isn't a RECORD, change it to stmtRefs or RECORD depending
-		// on how many columns there are to avoid return type mismatch errors.
-		if !rTyp.Equivalent(types.AnyTuple) {
-			if len(stmtRefs) == 1 && s.coin() && stmtRefs[0].typ.Family() != types.CollatedStringFamily {
-				rTyp, rTypResolvable = stmtRefs[0].typ, stmtRefs[0].typ
+	// Generate SQL statements for the function body. More than one may be
+	// generated, but only the result of the final statement will matter for
+	// the function return type. Use the RoutineBodyStr option so the statements
+	// are formatted correctly.
+	stmtCnt := s.rnd.Intn(11)
+	stmts := make([]string, 0, stmtCnt)
+	// Disable CTEs temporarily, since they are not currently supported in UDFs.
+	// TODO(92961): Allow CTEs in generated statements in UDF bodies.
+	// TODO(93049): Allow UDFs to call other UDFs, as well as create other UDFs.
+	oldDisableWith := s.disableWith
+	oldDisableMutations := s.disableMutations
+	defer func() {
+		s.disableWith = oldDisableWith
+		s.disableUDFs = false
+		s.disableMutations = oldDisableMutations
+	}()
+	s.disableWith = true
+	s.disableUDFs = true
+	s.disableMutations = (funcVol != tree.RoutineVolatile) || s.disableMutations
+	for i := 0; i < stmtCnt; i++ {
+		var stmt tree.Statement
+		if i == stmtCnt-1 {
+			// The return type of the last statement should match the function return
+			// type.
+			// If mutations are enabled, also use anything from mutatingTableExprs -- needs returning
+			if s.disableMutations || funcVol != tree.RoutineVolatile || s.coin() {
+				if stmt, _, ok = s.makeSelect([]*types.T{rtyp}, refs); !ok {
+					return nil, false
+				}
 			} else {
-				rTyp, rTypResolvable = types.AnyTuple, types.AnyTuple
+				var expr tree.TableExpr
+				var rrefs colRefs
+				switch s.d6() {
+				case 1, 2:
+					expr, rrefs, ok = s.makeInsertReturning(refs)
+				case 3, 4:
+					expr, rrefs, ok = s.makeDeleteReturning(refs)
+				case 5, 6:
+					expr, rrefs, ok = s.makeUpdateReturning(refs)
+				}
+				if !ok {
+					return nil, false
+				}
+				stmt = expr.(*tree.StatementSource).Statement
+				// If the rtype isn't a RECORD, change it to rrefs or RECORD depending
+				// how many columns there are to avoid return type mismatch errors.
+				if rtyp != types.AnyTuple {
+					if len(rrefs) == 1 && s.coin() && rrefs[0].typ.Family() != types.CollatedStringFamily {
+						rtyp = rrefs[0].typ
+					} else {
+						rtyp = types.AnyTuple
+					}
+					rtype.Type = rtyp
+				}
+			}
+		} else {
+			if s.disableMutations || funcVol != tree.RoutineVolatile || s.coin() {
+				if stmt, _, ok = s.makeSelect(nil /* desiredTypes */, refs); !ok {
+					continue
+				}
+			} else {
+				switch s.d6() {
+				case 1, 2:
+					stmt, _, ok = s.makeInsert(refs)
+				case 3, 4:
+					stmt, _, ok = s.makeDelete(refs)
+				case 5, 6:
+					stmt, _, ok = s.makeUpdate(refs)
+				}
+				if !ok {
+					continue
+				}
 			}
 		}
-	} else {
-		plpgsqlRTyp := rTyp
-		if plpgsqlRTyp.Identical(types.AnyTuple) {
-			// If the return type is RECORD, choose a concrete type for generating
-			// RETURN statements.
-			plpgsqlRTyp = s.makeRandTupleType()
-		}
-		body = s.makeRoutineBodyPLpgSQL(paramTypes, plpgsqlRTyp, funcVol)
+		stmts = append(stmts, tree.AsStringWithFlags(stmt, tree.FmtParsable))
 	}
-	opts = append(opts, tree.RoutineBodyStr(body))
-
-	// Return multiple rows with the SETOF option about 33% of the time.
-	// PL/pgSQL functions do not currently support SETOF.
-	setof := returnsTable
-	if lang == tree.RoutineLangSQL && s.d6() < 3 {
-		setof = true
+	if len(stmts) > 0 {
+		opts = append(opts, tree.RoutineBodyStr(strings.Join(stmts, ";\n")))
 	}
 
 	stmt := &tree.CreateRoutine{
-		// TODO(yuzefovich): once we start generating procedures, we'll need to
-		// ensure that no OUT parameters are added after the first parameter
-		// with the DEFAULT expression.
-		Replace: s.coin(),
-		Name:    name,
-		Params:  params,
-		Options: opts,
-		ReturnType: &tree.RoutineReturnType{
-			Type:  rTypResolvable,
-			SetOf: setof,
-		},
+		Name:       name,
+		ReturnType: rtype,
+		Params:     params,
+		Options:    opts,
 	}
 
 	// Add this function to the functions list so that we can use it in future
@@ -1189,92 +1107,12 @@ func (s *Smither) makeCreateFunc() (cf *tree.CreateRoutine, ok bool) {
 	}
 
 	functions.Lock()
-	functions.fns[class][rTyp.Oid()] = append(functions.fns[class][rTyp.Oid()], function{
+	functions.fns[class][rtyp.Oid()] = append(functions.fns[class][rtyp.Oid()], function{
 		def:      tree.NewFunctionDefinition(name.String(), &tree.FunctionProperties{}, nil /* def */),
 		overload: ov,
 	})
 	functions.Unlock()
 	return stmt, true
-}
-
-func (s *Smither) makeRoutineBodySQL(
-	vol tree.RoutineVolatility, refs colRefs, rTyp *types.T,
-) (body string, lastStmtRefs colRefs, ok bool) {
-	// Generate SQL statements for the function body. More than one may be
-	// generated, but only the result of the final statement will matter for
-	// the function return type. Use the RoutineBodyStr option so the statements
-	// are formatted correctly.
-	stmtCnt := s.rnd.Intn(11)
-	stmts := make([]string, 0, stmtCnt)
-	var stmt tree.Statement
-	for i := 0; i < stmtCnt-1; i++ {
-		stmt, ok = s.makeSQLStmtForRoutine(vol, refs, nil /* desiredTypes */)
-		if !ok {
-			continue
-		}
-		stmts = append(stmts, tree.AsStringWithFlags(stmt, tree.FmtParsable))
-	}
-	// The return type of the last statement should match the function return
-	// type.
-	// If mutations are enabled, also use anything from mutatingTableExprs -- needs returning
-	desiredTypes := []*types.T{rTyp}
-	if s.disableMutations || vol != tree.RoutineVolatile || s.coin() {
-		stmt, lastStmtRefs, ok = s.makeSelect(desiredTypes, refs)
-		if !ok {
-			return "", nil, false
-		}
-	} else {
-		switch s.d6() {
-		case 1, 2:
-			stmt, lastStmtRefs, ok = s.makeInsertReturning(desiredTypes, refs)
-		case 3, 4:
-			stmt, lastStmtRefs, ok = s.makeDeleteReturning(desiredTypes, refs)
-		case 5, 6:
-			stmt, lastStmtRefs, ok = s.makeUpdateReturning(desiredTypes, refs)
-		}
-		if !ok {
-			return "", nil, false
-		}
-	}
-	stmts = append(stmts, tree.AsStringWithFlags(stmt, tree.FmtParsable))
-	return "\n" + strings.Join(stmts, ";\n") + "\n", lastStmtRefs, true
-}
-
-func (s *Smither) makeSQLStmtForRoutine(
-	vol tree.RoutineVolatility, refs colRefs, desiredTypes []*types.T,
-) (stmt tree.Statement, ok bool) {
-	const numRetries = 5
-	for i := 0; i < numRetries; i++ {
-		if s.disableMutations || vol != tree.RoutineVolatile || s.coin() {
-			stmt, _, ok = s.makeSelect(desiredTypes, refs)
-		} else {
-			if len(desiredTypes) == 0 && s.coin() {
-				// If the caller didn't request particular result types, in 50%
-				// cases use the "vanilla" mutation stmts.
-				switch s.d6() {
-				case 1, 2:
-					stmt, _, ok = s.makeInsert(refs)
-				case 3, 4:
-					stmt, _, ok = s.makeDelete(refs)
-				case 5, 6:
-					stmt, _, ok = s.makeUpdate(refs)
-				}
-			} else {
-				switch s.d6() {
-				case 1, 2:
-					stmt, _, ok = s.makeInsertReturning(desiredTypes, refs)
-				case 3, 4:
-					stmt, _, ok = s.makeDeleteReturning(desiredTypes, refs)
-				case 5, 6:
-					stmt, _, ok = s.makeUpdateReturning(desiredTypes, refs)
-				}
-			}
-		}
-		if ok {
-			return stmt, true
-		}
-	}
-	return nil, false
 }
 
 func makeDelete(s *Smither) (tree.Statement, bool) {
@@ -1335,23 +1173,19 @@ func makeDeleteReturning(s *Smither, refs colRefs, forJoin bool) (tree.TableExpr
 	if forJoin {
 		return nil, nil, false
 	}
-	del, returningRefs, ok := s.makeDeleteReturning(nil /* desiredTypes */, refs)
-	if !ok {
-		return nil, nil, false
-	}
-	return &tree.StatementSource{Statement: del}, returningRefs, true
+	return s.makeDeleteReturning(refs)
 }
 
-func (s *Smither) makeDeleteReturning(
-	desiredTypes []*types.T, refs colRefs,
-) (*tree.Delete, colRefs, bool) {
+func (s *Smither) makeDeleteReturning(refs colRefs) (tree.TableExpr, colRefs, bool) {
 	del, delRef, ok := s.makeDelete(refs)
 	if !ok {
 		return nil, nil, false
 	}
 	var returningRefs colRefs
-	del.Returning, returningRefs = s.makeReturning(desiredTypes, delRef)
-	return del, returningRefs, true
+	del.Returning, returningRefs = s.makeReturning(delRef)
+	return &tree.StatementSource{
+		Statement: del,
+	}, returningRefs, true
 }
 
 func makeUpdate(s *Smither) (tree.Statement, bool) {
@@ -1447,23 +1281,19 @@ func makeUpdateReturning(s *Smither, refs colRefs, forJoin bool) (tree.TableExpr
 	if forJoin {
 		return nil, nil, false
 	}
-	update, returningRefs, ok := s.makeUpdateReturning(nil /* desiredTypes */, refs)
-	if !ok {
-		return nil, nil, false
-	}
-	return &tree.StatementSource{Statement: update}, returningRefs, true
+	return s.makeUpdateReturning(refs)
 }
 
-func (s *Smither) makeUpdateReturning(
-	desiredTypes []*types.T, refs colRefs,
-) (*tree.Update, colRefs, bool) {
+func (s *Smither) makeUpdateReturning(refs colRefs) (tree.TableExpr, colRefs, bool) {
 	update, updateRef, ok := s.makeUpdate(refs)
 	if !ok {
 		return nil, nil, false
 	}
 	var returningRefs colRefs
-	update.Returning, returningRefs = s.makeReturning(desiredTypes, updateRef)
-	return update, returningRefs, true
+	update.Returning, returningRefs = s.makeReturning(updateRef)
+	return &tree.StatementSource{
+		Statement: update,
+	}, returningRefs, true
 }
 
 func makeInsert(s *Smither) (tree.Statement, bool) {
@@ -1471,21 +1301,8 @@ func makeInsert(s *Smither) (tree.Statement, bool) {
 	return stmt, ok
 }
 
-func makeTransactionModes(s *Smither) tree.TransactionModes {
-	levels := []tree.IsolationLevel{
-		tree.UnspecifiedIsolation,
-		tree.ReadUncommittedIsolation,
-		tree.ReadCommittedIsolation,
-		tree.RepeatableReadIsolation,
-		tree.SnapshotIsolation,
-		tree.SerializableIsolation,
-	}
-	return tree.TransactionModes{Isolation: levels[s.rnd.Intn(len(levels))]}
-}
-
 func makeBegin(s *Smither) (tree.Statement, bool) {
-	modes := makeTransactionModes(s)
-	return &tree.BeginTransaction{Modes: modes}, true
+	return &tree.BeginTransaction{}, true
 }
 
 const letters = "abcdefghijklmnopqrstuvwxyz"
@@ -1524,21 +1341,6 @@ func makeCommit(s *Smither) (tree.Statement, bool) {
 
 func makeRollback(s *Smither) (tree.Statement, bool) {
 	return &tree.RollbackTransaction{}, true
-}
-
-func makeSetSessionCharacteristics(s *Smither) (tree.Statement, bool) {
-	if s.disableIsolationChange {
-		return nil, false
-	}
-	modes := makeTransactionModes(s)
-	fmtCtx := tree.NewFmtCtx(tree.FmtSimple)
-	modes.Format(fmtCtx)
-	if fmtCtx.String() == "" {
-		// If no options are specified, then we would get an invalid SET SESSION
-		// CHARACTERISTICS statement.
-		return nil, false
-	}
-	return &tree.SetSessionCharacteristics{Modes: modes}, true
 }
 
 // makeInsert has only one valid reference: its table source, which can be
@@ -1652,23 +1454,19 @@ func makeInsertReturning(s *Smither, refs colRefs, forJoin bool) (tree.TableExpr
 	if forJoin {
 		return nil, nil, false
 	}
-	insert, returningRefs, ok := s.makeInsertReturning(nil /* desiredTypes */, refs)
-	if !ok {
-		return nil, nil, false
-	}
-	return &tree.StatementSource{Statement: insert}, returningRefs, true
+	return s.makeInsertReturning(refs)
 }
 
-func (s *Smither) makeInsertReturning(
-	desiredTypes []*types.T, refs colRefs,
-) (*tree.Insert, colRefs, bool) {
+func (s *Smither) makeInsertReturning(refs colRefs) (tree.TableExpr, colRefs, bool) {
 	insert, insertRef, ok := s.makeInsert(refs)
 	if !ok {
 		return nil, nil, false
 	}
 	var returningRefs colRefs
-	insert.Returning, returningRefs = s.makeReturning(desiredTypes, []*tableRef{insertRef})
-	return insert, returningRefs, true
+	insert.Returning, returningRefs = s.makeReturning([]*tableRef{insertRef})
+	return &tree.StatementSource{
+		Statement: insert,
+	}, returningRefs, true
 }
 
 func makeValuesTable(s *Smither, refs colRefs, forJoin bool) (tree.TableExpr, colRefs, bool) {
@@ -1866,12 +1664,8 @@ func makeLimit(s *Smither) *tree.Limit {
 	return nil
 }
 
-func (s *Smither) makeReturning(
-	desiredTypes []*types.T, tables []*tableRef,
-) (*tree.ReturningExprs, colRefs) {
-	if len(desiredTypes) == 0 {
-		desiredTypes = s.makeDesiredTypes()
-	}
+func (s *Smither) makeReturning(tables []*tableRef) (*tree.ReturningExprs, colRefs) {
+	desiredTypes := s.makeDesiredTypes()
 
 	var refs colRefs
 	for _, table := range tables {
@@ -1897,76 +1691,4 @@ func (s *Smither) makeReturning(
 		}
 	}
 	return &returning, returningRefs
-}
-
-func makeCreateStats(s *Smither) (tree.Statement, bool) {
-	table, ok := s.getRandTable()
-	if !ok {
-		return nil, false
-	}
-
-	// Names slightly change behavior of statistics, so pick randomly between:
-	// ~50%: __auto__ (simulating auto stats)
-	// ~17%: __auto_partial__ (simulating auto partial stats)
-	// ~17%: random (simulating manual CREATE STATISTICS statements)
-	// ~17%: blank (simulating manual ANALYZE statements)
-	var name tree.Name
-	switch s.d6() {
-	case 1, 2, 3:
-		name = jobspb.AutoStatsName
-	case 4:
-		name = jobspb.AutoPartialStatsName
-	case 5:
-		name = s.name("stats")
-	}
-
-	// Pick specific columns ~8% of the time. We only do this for simulated
-	// manual CREATE STATISTICS statements because neither auto stats nor ANALYZE
-	// allow column selection.
-	var columns tree.NameList
-	if name != jobspb.AutoStatsName && name != jobspb.AutoPartialStatsName && name != "" && s.coin() {
-		for _, col := range table.Columns {
-			if !colinfo.IsSystemColumnName(string(col.Name)) {
-				columns = append(columns, col.Name)
-			}
-		}
-		s.rnd.Shuffle(len(columns), func(i, j int) {
-			columns[i], columns[j] = columns[j], columns[i]
-		})
-		columns = columns[0:s.rnd.Intn(len(columns))]
-	}
-
-	var options tree.CreateStatsOptions
-	if name == jobspb.AutoStatsName || name == jobspb.AutoPartialStatsName {
-		// For auto stats we always set throttling and AOST.
-		options.Throttling = 0.9
-		// For auto stats we use AOST -30s by default, but this will make things
-		// non-deterministic, so we use the smallest legal AOST instead.
-		options.AsOf = tree.AsOfClause{Expr: tree.NewStrVal("-0.001ms")}
-		// For auto partial stats we always set UsingExtremes.
-		options.UsingExtremes = name == jobspb.AutoPartialStatsName
-	} else if name == "" {
-		// ANALYZE only sets AOST.
-		options.AsOf = tree.AsOfClause{Expr: tree.NewStrVal("-0.001ms")}
-	} else {
-		// For CREATE STATISTICS we randomly set options.
-		// Set throttling ~17% of the time.
-		if s.coin() {
-			options.Throttling = s.rnd.Float64()
-		}
-		// Set AOST ~17% of the time.
-		if s.coin() {
-			options.AsOf = tree.AsOfClause{Expr: tree.NewStrVal("-0.001ms")}
-		}
-		// Set USING EXTREMES ~17% of the time.
-		options.UsingExtremes = s.coin()
-		// TODO(93998): Add random predicate when we support WHERE.
-	}
-
-	return &tree.CreateStats{
-		Name:        name,
-		ColumnNames: columns,
-		Table:       table.TableName,
-		Options:     options,
-	}, true
 }

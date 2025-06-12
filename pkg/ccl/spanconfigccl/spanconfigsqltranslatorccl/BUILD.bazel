@@ -2,13 +2,14 @@ load("@io_bazel_rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "spanconfigsqltranslatorccl_test",
-    size = "large",
     srcs = [
         "datadriven_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
-    exec_properties = {"test.Pool": "large"},
+    exec_properties = {"Pool": "medium"},
+    tags = ["ccl_test"],
     deps = [
         "//pkg/base",
         "//pkg/ccl",

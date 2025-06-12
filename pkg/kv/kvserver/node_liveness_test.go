@@ -8,10 +8,10 @@ package kvserver_test
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"reflect"
 	"sort"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -28,12 +28,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 	"github.com/cockroachdb/cockroach/pkg/server"
-	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/listenerutil"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -53,10 +50,9 @@ func verifyLiveness(t *testing.T, tc *testcluster.TestCluster) {
 		return nil
 	})
 }
-
 func verifyLivenessServer(s serverutils.TestServerInterface, numServers int64) error {
 	nl := s.NodeLiveness().(*liveness.NodeLiveness)
-	if !nl.GetNodeVitalityFromCache(s.NodeID()).IsLive(livenesspb.TestingIsAliveAndHasHeartbeated) {
+	if !nl.GetNodeVitalityFromCache(s.NodeID()).IsLive(livenesspb.IsAliveNotification) {
 		return errors.Errorf("node %d not live", s.NodeID())
 	}
 	if a, e := nl.Metrics().LiveNodes.Value(), numServers; a != e {
@@ -150,7 +146,7 @@ func TestNodeLivenessInitialIncrement(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	stickyVFSRegistry := fs.NewStickyRegistry()
+	stickyVFSRegistry := server.NewStickyVFSRegistry()
 	lisReg := listenerutil.NewListenerRegistry()
 	defer lisReg.Close()
 
@@ -181,7 +177,7 @@ func TestNodeLivenessInitialIncrement(t *testing.T) {
 	nl, ok := tc.Servers[0].NodeLiveness().(*liveness.NodeLiveness).GetLiveness(tc.Servers[0].NodeID())
 	assert.True(t, ok)
 	if nl.Epoch != 1 {
-		t.Fatalf("expected epoch to be set to 1 initially; got %d; liveness %s", nl.Epoch, nl)
+		t.Errorf("expected epoch to be set to 1 initially; got %d", nl.Epoch)
 	}
 
 	// Restart the node and verify the epoch is incremented with initial heartbeat.
@@ -286,7 +282,7 @@ func TestNodeIsLiveCallback(t *testing.T) {
 
 	ctx := context.Background()
 	manualClock := hlc.NewHybridManualClock()
-	var started atomic.Bool
+	var started syncutil.AtomicBool
 	var cbMu syncutil.Mutex
 	cbs := map[roachpb.NodeID]struct{}{}
 	tc := testcluster.StartTestCluster(t, 3,
@@ -300,7 +296,7 @@ func TestNodeIsLiveCallback(t *testing.T) {
 					},
 					NodeLiveness: kvserver.NodeLivenessTestingKnobs{
 						IsLiveCallback: func(l livenesspb.Liveness) {
-							if started.Load() {
+							if started.Get() {
 								cbMu.Lock()
 								defer cbMu.Unlock()
 								cbs[l.NodeID] = struct{}{}
@@ -317,7 +313,7 @@ func TestNodeIsLiveCallback(t *testing.T) {
 	pauseNodeLivenessHeartbeatLoops(tc)
 	// Only record entires after we have paused the normal heartbeat loop to make
 	// sure they come from the Heartbeat below.
-	started.Store(true)
+	started.Set(true)
 
 	// Advance clock past the liveness threshold.
 	manualClock.Increment(tc.Servers[0].NodeLiveness().(*liveness.NodeLiveness).TestingGetLivenessThreshold().Nanoseconds() + 1)
@@ -462,7 +458,7 @@ func TestNodeLivenessRestart(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	stickyVFSRegistry := fs.NewStickyRegistry()
+	stickyVFSRegistry := server.NewStickyVFSRegistry()
 
 	const numServers int = 2
 	stickyServerArgs := make(map[int]base.TestServerArgs)
@@ -830,7 +826,7 @@ func TestNodeLivenessSetDraining(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	stickyVFSRegistry := fs.NewStickyRegistry()
+	stickyVFSRegistry := server.NewStickyVFSRegistry()
 	lisReg := listenerutil.NewListenerRegistry()
 	defer lisReg.Close()
 
@@ -1002,13 +998,8 @@ func TestNodeLivenessRetryAmbiguousResultError(t *testing.T) {
 	assert.True(t, ok)
 	require.NoError(t, nl.Heartbeat(context.Background(), l))
 
-	// TODO(baptist): Once we remove epoch leases, we should remove the manual
-	// Heartbeat call on node liveness and remove the manual heartbeat from this
-	// test.
-	// Verify that the error was injected twice (or fewer times).
-	// We mostly expect exactly twice but it's been tricky to actually make this
-	// be true in all cases (see #126040, which didn't manage).
-	require.LessOrEqual(t, injectedErrorCount.Load(), int32(2))
+	// Verify that the error was injected exactly twice.
+	require.Equal(t, int32(2), injectedErrorCount.Load())
 }
 
 // This tests the create code path for node liveness, for that we need to create
@@ -1028,7 +1019,7 @@ func TestNodeLivenessRetryAmbiguousResultOnCreateError(t *testing.T) {
 		t.Run(tc.err.Error(), func(t *testing.T) {
 
 			// Keeps track of node IDs that have errored.
-			var errored syncutil.Set[roachpb.NodeID]
+			var errored sync.Map
 
 			testingEvalFilter := func(args kvserverbase.FilterArgs) *kvpb.Error {
 				if req, ok := args.Req.(*kvpb.ConditionalPutRequest); ok {
@@ -1037,7 +1028,7 @@ func TestNodeLivenessRetryAmbiguousResultOnCreateError(t *testing.T) {
 					}
 					var liveness livenesspb.Liveness
 					assert.NoError(t, req.Value.GetProto(&liveness))
-					if errored.Add(liveness.NodeID) {
+					if _, ok := errored.LoadOrStore(liveness.NodeID, true); !ok {
 						if liveness.NodeID != 1 {
 							// We expect this to come from the create code path on all nodes
 							// except the first. Make sure that is actually true.
@@ -1072,7 +1063,7 @@ func TestNodeLivenessRetryAmbiguousResultOnCreateError(t *testing.T) {
 				})
 				_, ok := s.NodeLiveness().(*liveness.NodeLiveness).Self()
 				require.True(t, ok)
-				ok = errored.Contains(s.NodeID())
+				_, ok = errored.Load(s.NodeID())
 				require.True(t, ok)
 			}
 		})
@@ -1125,17 +1116,13 @@ func TestNodeLivenessNoRetryOnAmbiguousResultCausedByCancellation(t *testing.T) 
 	defer s.Stopper().Stop(ctx)
 	nl := s.NodeLiveness().(*liveness.NodeLiveness)
 
-	testutils.SucceedsSoon(t, func() error {
-		return verifyLivenessServer(s, 1)
-	})
-
 	// We want to control the heartbeats.
 	nl.PauseHeartbeatLoopForTest()
 
 	sem = make(chan struct{})
 
 	l, ok := nl.Self()
-	require.True(t, ok)
+	assert.True(t, ok)
 
 	hbCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1171,7 +1158,7 @@ func verifyNodeIsDecommissioning(t *testing.T, tc *testcluster.TestCluster, node
 }
 
 func testNodeLivenessSetDecommissioning(t *testing.T, decommissionNodeIdx int) {
-	stickyVFSRegistry := fs.NewStickyRegistry()
+	stickyVFSRegistry := server.NewStickyVFSRegistry()
 	lisReg := listenerutil.NewListenerRegistry()
 	defer lisReg.Close()
 
@@ -1309,148 +1296,4 @@ func TestNodeLivenessDecommissionAbsent(t *testing.T) {
 	setMembershipStatus(nl1, livenesspb.MembershipStatus_DECOMMISSIONING, true)
 	// Recommission from third node.
 	setMembershipStatus(nl2, livenesspb.MembershipStatus_ACTIVE, true)
-}
-
-func BenchmarkNodeLivenessScanStorage(b *testing.B) {
-	skip.UnderShort(b)
-	defer log.Scope(b).Close(b)
-
-	ctx := context.Background()
-	const numNodes = 100
-	setupEng := func(b *testing.B, numLiveVersions int, haveFullyDeadKeys bool) storage.Engine {
-		eng := storage.NewDefaultInMemForTesting(storage.DisableAutomaticCompactions)
-		// 20 per minute, so 1000 represents 50 min of liveness writes in a level.
-		// This is unusual, but we can have such accumulation if flushes and
-		// compactions are rare.
-		const numVersionsPerLevel = 1000
-		// All versions in level l will be deleted in level l+1. The versions
-		// written at the highest level are not deleted and the number of these
-		// per node is controlled by numLiveVersions. Additionally, if
-		// haveFullyDeadKeys is true, the highest level only has live versions for
-		// alternating nodes.
-		//
-		// NB: haveFullyDeadKeys=true is not representative of NodeLiveness, since
-		// we don't remove decommissioned entries. It is included here just to
-		// understand the effect on the NextPrefix optimization.
-		const numLevels = 7
-		tsFunc := func(l int, v int) int64 {
-			return int64(l*numVersionsPerLevel + v + 10)
-		}
-		for l := 0; l < numLevels; l++ {
-			for v := 0; v < numVersionsPerLevel; v++ {
-				ts := tsFunc(l, v)
-				for n := roachpb.NodeID(0); n < numNodes; n++ {
-					lKey := keys.NodeLivenessKey(n)
-					// Always write a version if not at the highest level. If at the
-					// highest level, only write if v < numLiveVersions. Additionally,
-					// either haveFullyDeadKeys must be false or this node is one that
-					// has live versions.
-					if l < numLevels-1 || (v < numLiveVersions && (!haveFullyDeadKeys || n%2 == 0)) {
-						liveness := livenesspb.Liveness{
-							NodeID:     n,
-							Epoch:      100,
-							Expiration: hlc.LegacyTimestamp{WallTime: ts},
-							Draining:   false,
-							Membership: livenesspb.MembershipStatus_ACTIVE,
-						}
-
-						require.NoError(b, storage.MVCCPutProto(
-							ctx, eng, lKey, hlc.Timestamp{WallTime: ts}, &liveness,
-							storage.MVCCWriteOptions{}))
-					}
-					// Else most recent level and the other conditions for writing a
-					// version are not satisfied.
-
-					if l != 0 {
-						// Clear the key from the next older level.
-						require.NoError(b, eng.ClearMVCC(storage.MVCCKey{
-							Key:       lKey,
-							Timestamp: hlc.Timestamp{WallTime: tsFunc(l-1, v)},
-						}, storage.ClearOptions{}))
-					}
-				}
-				if l == 0 && v < 10 {
-					// Flush to grow the memtable size.
-					require.NoError(b, eng.Flush())
-				}
-			}
-			if l == 0 {
-				// Since did many flushes, compact everything down.
-				require.NoError(b, eng.Compact(ctx))
-			} else {
-				// Flush the next level. This will become a L0 sub-level.
-				require.NoError(b, eng.Flush())
-			}
-		}
-		return eng
-	}
-	scanLiveness := func(b *testing.B, eng storage.Engine, expectedCount int) (blockBytes uint64) {
-		ss := &kvpb.ScanStats{}
-		opts := storage.MVCCScanOptions{
-			ScanStats: ss,
-		}
-		scanRes, err := storage.MVCCScan(
-			ctx, eng.NewReader(storage.StandardDurability), keys.NodeLivenessPrefix,
-			keys.NodeLivenessKeyMax, hlc.MaxTimestamp, opts)
-		if err != nil {
-			b.Fatal(err.Error())
-		}
-		if expectedCount != len(scanRes.KVs) {
-			b.Fatalf("expected %d != actual %d", expectedCount, len(scanRes.KVs))
-		}
-		return ss.BlockBytes
-	}
-
-	// We expect active nodes to have 100s of live versions since liveness is
-	// written every 3s, and GC is configured to happen after 10min. But GC can
-	// be delayed, and decommissioned nodes will only have 1 version, so we
-	// explore those extremes.
-	//
-	// Results on M1 macbook with dead-keys=false and compacted=true:
-	// NodeLivenessScanStorage/num-live=2/compacted=true-10   26.80µ ± 9%
-	// NodeLivenessScanStorage/num-live=5/compacted=true-10   30.34µ ± 3%
-	// NodeLivenessScanStorage/num-live=10/compacted=true-10   38.88µ ± 8%
-	// NodeLivenessScanStorage/num-live=1000/compacted=true-10 861.5µ ± 3%
-	//
-	// When compacted=false the scan takes ~10ms, which is > 100x slower, but
-	// probably acceptable for this workload.
-	// NodeLivenessScanStorage/num-live=2/compacted=false-10     9.430m ± 5%
-	// NodeLivenessScanStorage/num-live=5/compacted=false-10     9.534m ± 4%
-	// NodeLivenessScanStorage/num-live=10/compacted=false-10    9.456m ± 2%
-	// NodeLivenessScanStorage/num-live=1000/compacted=false-10 10.34m ± 7%
-	//
-	// dead-keys=true (and compacted=false) defeats the NextPrefix optimization,
-	// since the next prefix can have all its keys deleted and the iterator has
-	// to step through all of them (it can't be sure that all the keys for that
-	// next prefix are deleted). This case should not occur in the liveness
-	// range, as discussed earlier.
-	//
-	// NodeLivenessScanStorage/num-live=2/dead-keys=true/compacted=false-10 58.33m
-	for _, numLiveVersions := range []int{2, 5, 10, 1000} {
-		b.Run(fmt.Sprintf("num-live=%d", numLiveVersions), func(b *testing.B) {
-			for _, haveDeadKeys := range []bool{false, true} {
-				b.Run(fmt.Sprintf("dead-keys=%t", haveDeadKeys), func(b *testing.B) {
-					for _, compacted := range []bool{false, true} {
-						b.Run(fmt.Sprintf("compacted=%t", compacted), func(b *testing.B) {
-							eng := setupEng(b, numLiveVersions, haveDeadKeys)
-							defer eng.Close()
-							if compacted {
-								require.NoError(b, eng.Compact(ctx))
-							}
-							b.ResetTimer()
-							blockBytes := uint64(0)
-							for i := 0; i < b.N; i++ {
-								expectedCount := numNodes
-								if haveDeadKeys {
-									expectedCount /= 2
-								}
-								blockBytes += scanLiveness(b, eng, expectedCount)
-							}
-							b.ReportMetric(float64(blockBytes)/float64(b.N), "block-bytes/op")
-						})
-					}
-				})
-			}
-		})
-	}
 }

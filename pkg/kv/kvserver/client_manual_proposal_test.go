@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -19,22 +20,23 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftentry"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/uncertainty"
-	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 // TestCreateManyUnappliedProbes is a (by default skipped) test that writes
@@ -104,38 +106,34 @@ LIMIT
 	}
 
 	st := cluster.MakeTestingClusterSettings()
-	eng, err := storage.Open(ctx, fs.MustInitPhysicalTestingEnv(p), st)
+	eng, err := storage.Open(ctx, storage.Filesystem(p), st)
 	require.NoError(t, err)
 	defer eng.Close()
 
 	// Determine LastIndex, LastTerm, and next MaxLeaseIndex by scanning
 	// existing log.
-	it, err := raftlog.NewIterator(ctx, rangeID, eng, raftlog.IterOptions{})
+	it, err := raftlog.NewIterator(rangeID, eng, raftlog.IterOptions{})
 	require.NoError(t, err)
 	defer it.Close()
 	rsl := logstore.NewStateLoader(rangeID)
-	ts, err := rsl.LoadRaftTruncatedState(ctx, eng)
+	lastIndex, err := rsl.LoadLastIndex(ctx, eng)
 	require.NoError(t, err)
-	lastEntryID, err := rsl.LoadLastEntryID(ctx, eng, ts)
-	require.NoError(t, err)
-	t.Logf("loaded LastEntryID: %+v", lastEntryID)
-	lastIndex := lastEntryID.Index
+	t.Logf("loaded LastIndex: %d", lastIndex)
 	ok, err := it.SeekGE(lastIndex)
 	require.NoError(t, err)
 	require.True(t, ok)
 
 	var lai kvpb.LeaseAppliedIndex
 	var lastTerm uint64
-	require.NoError(t, raftlog.Visit(
-		ctx, eng, rangeID, lastIndex, math.MaxUint64, func(entry raftpb.Entry) error {
-			ent, err := raftlog.NewEntry(it.Entry())
-			require.NoError(t, err)
-			if lai < ent.Cmd.MaxLeaseIndex {
-				lai = ent.Cmd.MaxLeaseIndex
-			}
-			lastTerm = ent.Term
-			return nil
-		}))
+	require.NoError(t, raftlog.Visit(eng, rangeID, lastIndex, math.MaxUint64, func(entry raftpb.Entry) error {
+		ent, err := raftlog.NewEntry(it.Entry())
+		require.NoError(t, err)
+		if lai < ent.Cmd.MaxLeaseIndex {
+			lai = ent.Cmd.MaxLeaseIndex
+		}
+		lastTerm = ent.Term
+		return nil
+	}))
 
 	sl := stateloader.Make(rangeID)
 	lease, err := sl.LoadLease(ctx, eng)
@@ -190,7 +188,7 @@ LIMIT
 			}
 
 			idKey := raftlog.MakeCmdIDKey()
-			payload, err := raftlog.EncodeCommand(ctx, &raftCmd, idKey, raftlog.EncodeOptions{})
+			payload, err := raftlog.EncodeCommand(ctx, &raftCmd, idKey, nil)
 			require.NoError(t, err)
 			ents = append(ents, raftpb.Entry{
 				Term:  lastTerm,
@@ -202,16 +200,20 @@ LIMIT
 
 		stats := &logstore.AppendStats{}
 
-		app := raft.StorageAppend{
-			HardState: raftpb.HardState{
-				Term:   lastTerm,
-				Commit: uint64(lastIndex) + uint64(len(ents)),
-			},
+		msgApp := raftpb.Message{
+			Type:      raftpb.MsgStorageAppend,
+			To:        raft.LocalAppendThread,
+			Term:      lastTerm,
+			LogTerm:   lastTerm,
+			Index:     uint64(lastIndex),
 			Entries:   ents,
-			LeadTerm:  lastTerm,
+			Commit:    uint64(lastIndex) + uint64(len(ents)),
 			Responses: []raftpb.Message{{}}, // need >0 responses so StoreEntries will sync
 		}
 
+		fakeMeta := metric.Metadata{
+			Name: "fake.meta",
+		}
 		swl := logstore.NewSyncWaiterLoop()
 		stopper := stop.NewStopper()
 		defer stopper.Stop(ctx)
@@ -222,7 +224,16 @@ LIMIT
 			Sideload:    nil,
 			StateLoader: rsl,
 			SyncWaiter:  swl,
+			EntryCache:  raftentry.NewCache(1024),
 			Settings:    st,
+			Metrics: logstore.Metrics{
+				RaftLogCommitLatency: metric.NewHistogram(metric.HistogramOptions{
+					Mode:         metric.HistogramModePrometheus,
+					Metadata:     fakeMeta,
+					Duration:     time.Millisecond,
+					BucketConfig: metric.IOLatencyBuckets,
+				}),
+			},
 		}
 
 		wg := &sync.WaitGroup{}
@@ -230,7 +241,7 @@ LIMIT
 		_, err = ls.StoreEntries(ctx, logstore.RaftState{
 			LastIndex: lastIndex,
 			LastTerm:  kvpb.RaftTerm(lastTerm),
-		}, app, (*wgSyncCallback)(wg), stats)
+		}, logstore.MakeMsgStorageAppend(msgApp), (*wgSyncCallback)(wg), stats)
 		require.NoError(t, err)
 		wg.Wait()
 
@@ -242,6 +253,8 @@ LIMIT
 
 type wgSyncCallback sync.WaitGroup
 
-func (w *wgSyncCallback) OnLogSync(context.Context, raft.StorageAppendAck, logstore.WriteStats) {
+func (w *wgSyncCallback) OnLogSync(
+	ctx context.Context, messages []raftpb.Message, stats storage.BatchCommitStats,
+) {
 	(*sync.WaitGroup)(w).Done()
 }

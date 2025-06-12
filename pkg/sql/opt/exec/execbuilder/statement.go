@@ -22,35 +22,31 @@ import (
 	"github.com/cockroachdb/redact"
 )
 
-func (b *Builder) buildCreateTable(
-	ct *memo.CreateTableExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
+func (b *Builder) buildCreateTable(ct *memo.CreateTableExpr) (execPlan, error) {
 
 	schema := b.mem.Metadata().Schema(ct.Schema)
 	if !ct.Syntax.As() {
 		root, err := b.factory.ConstructCreateTable(schema, ct.Syntax)
-		return execPlan{root: root}, colOrdMap{}, err
+		return execPlan{root: root}, err
 	}
 
 	// Construct AS input to CREATE TABLE.
-	input, inputCols, err := b.buildRelational(ct.Input)
+	input, err := b.buildRelational(ct.Input)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	// Impose ordering and naming on input columns, so that they match the
 	// order and names of the table columns into which values will be
 	// inserted.
-	input, _, err = b.applyPresentation(input, inputCols, ct.InputCols)
+	input, err = b.applyPresentation(input, ct.InputCols)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	root, err := b.factory.ConstructCreateTableAs(input.root, schema, ct.Syntax)
-	return execPlan{root: root}, colOrdMap{}, err
+	return execPlan{root: root}, err
 }
 
-func (b *Builder) buildCreateView(
-	cv *memo.CreateViewExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
+func (b *Builder) buildCreateView(cv *memo.CreateViewExpr) (execPlan, error) {
 	md := b.mem.Metadata()
 	schema := md.Schema(cv.Schema)
 	cols := make(colinfo.ResultColumns, len(cv.Columns))
@@ -66,12 +62,10 @@ func (b *Builder) buildCreateView(
 		cv.Deps,
 		cv.TypeDeps,
 	)
-	return execPlan{root: root}, colOrdMap{}, err
+	return execPlan{root: root}, err
 }
 
-func (b *Builder) buildCreateFunction(
-	cf *memo.CreateFunctionExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
+func (b *Builder) buildCreateFunction(cf *memo.CreateFunctionExpr) (execPlan, error) {
 	md := b.mem.Metadata()
 	schema := md.Schema(cf.Schema)
 	root, err := b.factory.ConstructCreateFunction(
@@ -79,21 +73,11 @@ func (b *Builder) buildCreateFunction(
 		cf.Syntax,
 		cf.Deps,
 		cf.TypeDeps,
-		cf.FuncDeps,
 	)
-	return execPlan{root: root}, colOrdMap{}, err
+	return execPlan{root: root}, err
 }
 
-func (b *Builder) buildCreateTrigger(
-	ct *memo.CreateTriggerExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	root, err := b.factory.ConstructCreateTrigger(ct.Syntax)
-	return execPlan{root: root}, colOrdMap{}, err
-}
-
-func (b *Builder) buildExplainOpt(
-	explain *memo.ExplainExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
+func (b *Builder) buildExplainOpt(explain *memo.ExplainExpr) (execPlan, error) {
 	fmtFlags := memo.ExprFmtHideAll
 	switch {
 	case explain.Options.Flags[tree.ExplainFlagVerbose]:
@@ -113,7 +97,7 @@ func (b *Builder) buildExplainOpt(
 	if explain.Options.Flags[tree.ExplainFlagCatalog] {
 		for _, t := range b.mem.Metadata().AllTables() {
 			tp := treeprinter.New()
-			cat.FormatTable(b.ctx, b.catalog, t.Table, tp, redactValues)
+			cat.FormatTable(b.catalog, t.Table, tp, redactValues)
 			catStr := tp.String()
 			if redactValues {
 				catStr = string(redact.RedactableString(catStr).Redact())
@@ -148,27 +132,23 @@ func (b *Builder) buildExplainOpt(
 		var err error
 		envOpts, err = b.getEnvData()
 		if err != nil {
-			return execPlan{}, colOrdMap{}, err
+			return execPlan{}, err
 		}
 	}
 
-	var ep execPlan
-	ep.root, err = b.factory.ConstructExplainOpt(planText.String(), envOpts)
+	node, err := b.factory.ConstructExplainOpt(planText.String(), envOpts)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
-	return ep, b.outputColsFromList(explain.ColList), nil
+	return planWithColumns(node, explain.ColList), nil
 }
 
-func (b *Builder) buildExplain(
-	explainExpr *memo.ExplainExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
+func (b *Builder) buildExplain(explainExpr *memo.ExplainExpr) (execPlan, error) {
 	if explainExpr.Options.Mode == tree.ExplainOpt {
 		return b.buildExplainOpt(explainExpr)
 	}
 
-	var ep execPlan
-	ep.root, err = b.factory.ConstructExplain(
+	node, err := b.factory.ConstructExplain(
 		&explainExpr.Options,
 		explainExpr.StmtType,
 		func(f exec.Factory) (exec.Plan, error) {
@@ -176,9 +156,8 @@ func (b *Builder) buildExplain(
 			// annotates nodes with extra information when the factory is an
 			// exec.ExplainFactory so it must be the outer factory and the gist
 			// factory must be the inner factory.
-			var gf explain.PlanGistFactory
-			gf.Init(f)
-			ef := explain.NewFactory(&gf, b.semaCtx, b.evalCtx)
+			gf := explain.NewPlanGistFactory(f)
+			ef := explain.NewFactory(gf, b.semaCtx, b.evalCtx)
 
 			explainBld := New(
 				b.ctx, ef, b.optimizer, b.mem, b.catalog, explainExpr.Input,
@@ -195,247 +174,213 @@ func (b *Builder) buildExplain(
 		},
 	)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 
-	return ep, b.outputColsFromList(explainExpr.ColList), nil
+	return planWithColumns(node, explainExpr.ColList), nil
 }
 
-func (b *Builder) buildShowTrace(
-	show *memo.ShowTraceForSessionExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	var ep execPlan
-	ep.root, err = b.factory.ConstructShowTrace(show.TraceType, show.Compact)
+func (b *Builder) buildShowTrace(show *memo.ShowTraceForSessionExpr) (execPlan, error) {
+	node, err := b.factory.ConstructShowTrace(show.TraceType, show.Compact)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
-	return ep, b.outputColsFromList(show.ColList), nil
+	return planWithColumns(node, show.ColList), nil
 }
 
-func (b *Builder) buildAlterTableSplit(
-	split *memo.AlterTableSplitExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	input, _, err := b.buildRelational(split.Input)
+func (b *Builder) buildAlterTableSplit(split *memo.AlterTableSplitExpr) (execPlan, error) {
+	input, err := b.buildRelational(split.Input)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	scalarCtx := buildScalarCtx{}
 	expiration, err := b.buildScalar(&scalarCtx, split.Expiration)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	table := b.mem.Metadata().Table(split.Table)
-	var ep execPlan
-	ep.root, err = b.factory.ConstructAlterTableSplit(
+	node, err := b.factory.ConstructAlterTableSplit(
 		table.Index(split.Index),
 		input.root,
 		expiration,
 	)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
-	return ep, b.outputColsFromList(split.Columns), nil
+	return planWithColumns(node, split.Columns), nil
 }
 
-func (b *Builder) buildAlterTableUnsplit(
-	unsplit *memo.AlterTableUnsplitExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	input, _, err := b.buildRelational(unsplit.Input)
+func (b *Builder) buildAlterTableUnsplit(unsplit *memo.AlterTableUnsplitExpr) (execPlan, error) {
+	input, err := b.buildRelational(unsplit.Input)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	table := b.mem.Metadata().Table(unsplit.Table)
-	var ep execPlan
-	ep.root, err = b.factory.ConstructAlterTableUnsplit(
+	node, err := b.factory.ConstructAlterTableUnsplit(
 		table.Index(unsplit.Index),
 		input.root,
 	)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
-	return ep, b.outputColsFromList(unsplit.Columns), nil
+	return planWithColumns(node, unsplit.Columns), nil
 }
 
 func (b *Builder) buildAlterTableUnsplitAll(
 	unsplitAll *memo.AlterTableUnsplitAllExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
+) (execPlan, error) {
 	table := b.mem.Metadata().Table(unsplitAll.Table)
-	var ep execPlan
-	ep.root, err = b.factory.ConstructAlterTableUnsplitAll(table.Index(unsplitAll.Index))
+	node, err := b.factory.ConstructAlterTableUnsplitAll(table.Index(unsplitAll.Index))
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
-	return ep, b.outputColsFromList(unsplitAll.Columns), nil
+	return planWithColumns(node, unsplitAll.Columns), nil
 }
 
-func (b *Builder) buildAlterTableRelocate(
-	relocate *memo.AlterTableRelocateExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	input, _, err := b.buildRelational(relocate.Input)
+func (b *Builder) buildAlterTableRelocate(relocate *memo.AlterTableRelocateExpr) (execPlan, error) {
+	input, err := b.buildRelational(relocate.Input)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	table := b.mem.Metadata().Table(relocate.Table)
-	var ep execPlan
-	ep.root, err = b.factory.ConstructAlterTableRelocate(
+	node, err := b.factory.ConstructAlterTableRelocate(
 		table.Index(relocate.Index),
 		input.root,
 		relocate.SubjectReplicas,
 	)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
-	return ep, b.outputColsFromList(relocate.Columns), nil
+	return planWithColumns(node, relocate.Columns), nil
 }
 
-func (b *Builder) buildAlterRangeRelocate(
-	relocate *memo.AlterRangeRelocateExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	input, _, err := b.buildRelational(relocate.Input)
+func (b *Builder) buildAlterRangeRelocate(relocate *memo.AlterRangeRelocateExpr) (execPlan, error) {
+	input, err := b.buildRelational(relocate.Input)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	scalarCtx := buildScalarCtx{}
 	toStoreID, err := b.buildScalar(&scalarCtx, relocate.ToStoreID)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	fromStoreID, err := b.buildScalar(&scalarCtx, relocate.FromStoreID)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
-	var ep execPlan
-	ep.root, err = b.factory.ConstructAlterRangeRelocate(
+	node, err := b.factory.ConstructAlterRangeRelocate(
 		input.root,
 		relocate.SubjectReplicas,
 		toStoreID,
 		fromStoreID,
 	)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
-	return ep, b.outputColsFromList(relocate.Columns), nil
+	return planWithColumns(node, relocate.Columns), nil
 }
 
-func (b *Builder) buildControlJobs(
-	ctl *memo.ControlJobsExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	input, _, err := b.buildRelational(ctl.Input)
+func (b *Builder) buildControlJobs(ctl *memo.ControlJobsExpr) (execPlan, error) {
+	input, err := b.buildRelational(ctl.Input)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 
 	scalarCtx := buildScalarCtx{}
 	reason, err := b.buildScalar(&scalarCtx, ctl.Reason)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 
-	var ep execPlan
-	ep.root, err = b.factory.ConstructControlJobs(
+	node, err := b.factory.ConstructControlJobs(
 		ctl.Command,
 		input.root,
 		reason,
 	)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	// ControlJobs returns no columns.
-	return ep, colOrdMap{}, nil
+	return execPlan{root: node}, nil
 }
 
-func (b *Builder) buildControlSchedules(
-	ctl *memo.ControlSchedulesExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	input, _, err := b.buildRelational(ctl.Input)
+func (b *Builder) buildControlSchedules(ctl *memo.ControlSchedulesExpr) (execPlan, error) {
+	input, err := b.buildRelational(ctl.Input)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
-	var ep execPlan
-	ep.root, err = b.factory.ConstructControlSchedules(
+	node, err := b.factory.ConstructControlSchedules(
 		ctl.Command,
 		input.root,
 	)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	// ControlSchedules returns no columns.
-	return ep, colOrdMap{}, nil
+	return execPlan{root: node}, nil
 }
 
-func (b *Builder) buildShowCompletions(
-	ctl *memo.ShowCompletionsExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	var ep execPlan
-	ep.root, err = b.factory.ConstructShowCompletions(
+func (b *Builder) buildShowCompletions(ctl *memo.ShowCompletionsExpr) (execPlan, error) {
+	node, err := b.factory.ConstructShowCompletions(
 		ctl.Command,
 	)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
-	return ep, b.outputColsFromList(ctl.Columns), nil
+	return planWithColumns(node, ctl.Columns), nil
 }
 
-func (b *Builder) buildCancelQueries(
-	cancel *memo.CancelQueriesExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	input, _, err := b.buildRelational(cancel.Input)
+func (b *Builder) buildCancelQueries(cancel *memo.CancelQueriesExpr) (execPlan, error) {
+	input, err := b.buildRelational(cancel.Input)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
-	var ep execPlan
-	ep.root, err = b.factory.ConstructCancelQueries(input.root, cancel.IfExists)
+	node, err := b.factory.ConstructCancelQueries(input.root, cancel.IfExists)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	if !b.disableTelemetry {
 		telemetry.Inc(sqltelemetry.CancelQueriesUseCounter)
 	}
 	// CancelQueries returns no columns.
-	return ep, colOrdMap{}, nil
+	return execPlan{root: node}, nil
 }
 
-func (b *Builder) buildCancelSessions(
-	cancel *memo.CancelSessionsExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	input, _, err := b.buildRelational(cancel.Input)
+func (b *Builder) buildCancelSessions(cancel *memo.CancelSessionsExpr) (execPlan, error) {
+	input, err := b.buildRelational(cancel.Input)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	node, err := b.factory.ConstructCancelSessions(input.root, cancel.IfExists)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	if !b.disableTelemetry {
 		telemetry.Inc(sqltelemetry.CancelSessionsUseCounter)
 	}
 	// CancelSessions returns no columns.
-	return execPlan{root: node}, colOrdMap{}, nil
+	return execPlan{root: node}, nil
 }
 
-func (b *Builder) buildCreateStatistics(
-	c *memo.CreateStatisticsExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
+func (b *Builder) buildCreateStatistics(c *memo.CreateStatisticsExpr) (execPlan, error) {
 	node, err := b.factory.ConstructCreateStatistics(c.Syntax)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 	// CreateStatistics returns no columns.
-	return execPlan{root: node}, colOrdMap{}, nil
+	return execPlan{root: node}, nil
 }
 
-func (b *Builder) buildExport(
-	export *memo.ExportExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	input, inputCols, err := b.buildRelational(export.Input)
+func (b *Builder) buildExport(export *memo.ExportExpr) (execPlan, error) {
+	input, err := b.buildRelational(export.Input)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 
 	scalarCtx := buildScalarCtx{}
 	fileName, err := b.buildScalar(&scalarCtx, export.FileName)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
 
 	opts := make([]exec.KVOption, len(export.Options))
@@ -444,7 +389,7 @@ func (b *Builder) buildExport(
 		var err error
 		opts[i].Value, err = b.buildScalar(&scalarCtx, o.Value)
 		if err != nil {
-			return execPlan{}, colOrdMap{}, err
+			return execPlan{}, err
 		}
 	}
 
@@ -457,13 +402,12 @@ func (b *Builder) buildExport(
 		// expression must output a column it orders by, but that column must be
 		// projected-away after the sort if the presentation does not require
 		// the column.
-		if ord, ok := inputCols.Get(col); ok {
+		if ord, ok := input.outputCols.Get(int(col)); ok {
 			notNullOrds.Add(ord)
 		}
 	}
 
-	var ep execPlan
-	ep.root, err = b.factory.ConstructExport(
+	node, err := b.factory.ConstructExport(
 		input.root,
 		fileName,
 		export.FileFormat,
@@ -471,17 +415,17 @@ func (b *Builder) buildExport(
 		notNullOrds,
 	)
 	if err != nil {
-		return execPlan{}, colOrdMap{}, err
+		return execPlan{}, err
 	}
-	return ep, b.outputColsFromList(export.Columns), nil
+	return planWithColumns(node, export.Columns), nil
 }
 
 // planWithColumns creates an execPlan for a node which has a fixed output
 // schema.
-func (b *Builder) outputColsFromList(cols opt.ColList) colOrdMap {
-	outputCols := b.colOrdsAlloc.Alloc()
+func planWithColumns(node exec.Node, cols opt.ColList) execPlan {
+	ep := execPlan{root: node}
 	for i, c := range cols {
-		outputCols.Set(c, i)
+		ep.outputCols.Set(int(c), i)
 	}
-	return outputCols
+	return ep
 }

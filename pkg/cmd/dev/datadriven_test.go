@@ -54,12 +54,11 @@ func TestDataDriven(t *testing.T) {
 			exec.WithDryrun(),
 			exec.WithIntercept(workspaceCmd(), crdbCheckoutPlaceholder),
 			exec.WithIntercept(bazelbinCmd(), sandboxPlaceholder),
-			exec.WithIntercept(bazelbinPgoCmd(), sandboxPlaceholder),
 		}
 		osOpts := []os.Option{
 			os.WithLogger(log.New(logger, "", 0)),
 			os.WithDryrun(),
-			os.WithIntercept("echo $HOME/.cache", testFixturesDirPlaceholder),
+			os.WithIntercept("echo $HOME", testFixturesDirPlaceholder),
 		}
 
 		if !verbose { // suppress all internal output unless told otherwise
@@ -79,6 +78,8 @@ func TestDataDriven(t *testing.T) {
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
 			dev := makeDevCmd()
 			dev.exec, dev.os = devExec, devOS
+			dev.knobs.skipDoctorCheck = true
+			dev.knobs.skipCacheCheckDuringBuild = true
 			dev.knobs.devBinOverride = "dev"
 			dev.log = log.New(logger, "", 0)
 
@@ -111,8 +112,4 @@ func workspaceCmd() string {
 
 func bazelbinCmd() string {
 	return fmt.Sprintf("bazel %s", shellescape.QuoteCommand([]string{"info", "bazel-bin", "--color=no"}))
-}
-
-func bazelbinPgoCmd() string {
-	return fmt.Sprintf("bazel %s", shellescape.QuoteCommand([]string{"info", "bazel-bin", "--color=no", "--config=pgo"}))
 }

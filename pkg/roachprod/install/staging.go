@@ -21,9 +21,8 @@ import (
 )
 
 const (
-	edgeBinaryServer       = "https://storage.googleapis.com/cockroach-edge-artifacts-prod/"
-	releaseBinaryServer    = "https://storage.googleapis.com/cockroach-release-artifacts-prod/"
-	customizedBinaryServer = "https://storage.googleapis.com/cockroach-customized-builds-artifacts-prod/"
+	edgeBinaryServer    = "https://storage.googleapis.com/cockroach-edge-artifacts-prod/"
+	releaseBinaryServer = "https://storage.googleapis.com/cockroach-release-artifacts-prod/"
 )
 
 type archInfo struct {
@@ -66,13 +65,6 @@ var (
 		ExecutableExtension:     "",
 		ReleaseArchiveExtension: "tgz",
 	}
-	linux_s390x_ArchInfo = archInfo{
-		DebugArchitecture:       "linux-gnu-s390x",
-		ReleaseArchitecture:     "linux-s390x",
-		LibraryExtension:        ".so",
-		ExecutableExtension:     "",
-		ReleaseArchiveExtension: "tgz",
-	}
 	linux_arm64_ArchInfo = archInfo{
 		DebugArchitecture:       "linux-gnu-arm64",
 		ReleaseArchitecture:     "linux-arm64",
@@ -107,7 +99,7 @@ var (
 
 // ArchInfoForOS returns an ArchInfo for the given OS and Architecture if currently supported.
 func ArchInfoForOS(os string, arch vm.CPUArch) (archInfo, error) {
-	if arch != "" && arch != vm.ArchAMD64 && arch != vm.ArchARM64 && arch != vm.ArchFIPS && arch != vm.ArchS390x {
+	if arch != "" && arch != vm.ArchAMD64 && arch != vm.ArchARM64 && arch != vm.ArchFIPS {
 		return archInfo{}, errors.Errorf("unsupported architecture %q", arch)
 	}
 
@@ -118,9 +110,6 @@ func ArchInfoForOS(os string, arch vm.CPUArch) (archInfo, error) {
 		}
 		if arch == vm.ArchFIPS {
 			return linux_x86_64_fips_ArchInfo, nil
-		}
-		if arch == vm.ArchS390x {
-			return linux_s390x_ArchInfo, nil
 		}
 		return linux_x86_64_ArchInfo, nil
 	case "darwin":
@@ -167,26 +156,8 @@ func getEdgeURL(urlPathBase, SHA, arch string, ext string) (*url.URL, error) {
 	return edgeBinaryLocation, nil
 }
 
-type releaseType int
-
-const (
-	releaseTypeRelease releaseType = iota
-	releaseTypeCustomized
-)
-
-func cockroachReleaseURL(
-	relType releaseType, version string, arch string, archiveExtension string,
-) (*url.URL, error) {
-	var binServer string
-	switch relType {
-	case releaseTypeRelease:
-		binServer = releaseBinaryServer
-	case releaseTypeCustomized:
-		binServer = customizedBinaryServer
-	default:
-		return nil, fmt.Errorf("unsupported release type")
-	}
-	binURL, err := url.Parse(binServer)
+func cockroachReleaseURL(version string, arch string, archiveExtension string) (*url.URL, error) {
+	binURL, err := url.Parse(releaseBinaryServer)
 	if err != nil {
 		return nil, err
 	}
@@ -251,9 +222,7 @@ func StageApplication(
 		)
 		return err
 	case "release":
-		return StageCockroachRelease(ctx, l, c, releaseTypeRelease, version, archInfo.ReleaseArchitecture, archInfo.ReleaseArchiveExtension, destDir)
-	case "customized":
-		return StageCockroachRelease(ctx, l, c, releaseTypeCustomized, version, archInfo.ReleaseArchitecture, archInfo.ReleaseArchiveExtension, destDir)
+		return StageCockroachRelease(ctx, l, c, version, archInfo.ReleaseArchitecture, archInfo.ReleaseArchiveExtension, destDir)
 	default:
 		return fmt.Errorf("unknown application %s", applicationName)
 	}
@@ -303,13 +272,7 @@ func URLsForApplication(
 		}
 		return []*url.URL{u}, nil
 	case "release":
-		u, err := cockroachReleaseURL(releaseTypeRelease, version, archInfo.ReleaseArchitecture, archInfo.ReleaseArchiveExtension)
-		if err != nil {
-			return nil, err
-		}
-		return []*url.URL{u}, nil
-	case "customized":
-		u, err := cockroachReleaseURL(releaseTypeCustomized, version, archInfo.ReleaseArchitecture, archInfo.ReleaseArchiveExtension)
+		u, err := cockroachReleaseURL(version, archInfo.ReleaseArchitecture, archInfo.ReleaseArchiveExtension)
 		if err != nil {
 			return nil, err
 		}
@@ -343,7 +306,7 @@ func stageRemoteBinary(
 	var stderr bytes.Buffer
 
 	err = c.Run(
-		ctx, l, &stdout, &stderr, WithNodes(c.Nodes), fmt.Sprintf("staging binary (%s)", applicationName), cmdStr,
+		ctx, l, &stdout, &stderr, OnNodes(c.Nodes), fmt.Sprintf("staging binary (%s)", applicationName), cmdStr,
 	)
 
 	combinedOut := strings.Join([]string{stdout.String(), stderr.String()}, "\n")
@@ -378,7 +341,7 @@ curl -sfSL -o "%s" "%s" 2>/dev/null || echo 'optional library %s not found; cont
 		libraryName+ext,
 	)
 	return c.Run(
-		ctx, l, l.Stdout, l.Stderr, WithNodes(c.Nodes), fmt.Sprintf("staging library (%s)", libraryName), cmdStr,
+		ctx, l, l.Stdout, l.Stderr, OnNodes(c.Nodes), fmt.Sprintf("staging library (%s)", libraryName), cmdStr,
 	)
 }
 
@@ -388,7 +351,6 @@ func StageCockroachRelease(
 	ctx context.Context,
 	l *logger.Logger,
 	c *SyncedCluster,
-	relType releaseType,
 	version, arch, archiveExtension, dir string,
 ) error {
 	if len(version) == 0 {
@@ -396,7 +358,8 @@ func StageCockroachRelease(
 			"release application cannot be staged without specifying a specific version",
 		)
 	}
-	binURL, err := cockroachReleaseURL(relType, version, arch, archiveExtension)
+
+	binURL, err := cockroachReleaseURL(version, arch, archiveExtension)
 	if err != nil {
 		return err
 	}
@@ -421,7 +384,7 @@ chmod 755 ${dir}/cockroach
 `, dir, binURL)
 
 	err = c.Run(
-		ctx, l, &stdout, &stderr, WithNodes(c.Nodes), "staging cockroach release binary", cmdStr,
+		ctx, l, &stdout, &stderr, OnNodes(c.Nodes), "staging cockroach release binary", cmdStr,
 	)
 
 	combinedOut := strings.Join([]string{stdout.String(), stderr.String()}, "\n")

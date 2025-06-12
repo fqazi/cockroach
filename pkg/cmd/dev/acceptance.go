@@ -72,7 +72,9 @@ func (d *dev) acceptance(cmd *cobra.Command, commandLine []string) error {
 
 	var args []string
 	args = append(args, "test", "//pkg/acceptance:acceptance_test")
-	addCommonBazelArguments(&args)
+	if numCPUs != 0 {
+		args = append(args, fmt.Sprintf("--local_cpu_resources=%d", numCPUs))
+	}
 	if filter != "" {
 		args = append(args, fmt.Sprintf("--test_filter=%s", filter))
 	}
@@ -88,7 +90,6 @@ func (d *dev) acceptance(cmd *cobra.Command, commandLine []string) error {
 	args = append(args, fmt.Sprintf("--test_arg=-l=%s", logDir))
 	args = append(args, fmt.Sprintf("--sandbox_writable_path=%s", logDir))
 	args = append(args, "--test_env=TZ=America/New_York")
-	args = append(args, "--test_env=COCKROACH_RUN_ACCEPTANCE=true")
 	args = append(args, fmt.Sprintf("--test_arg=-b=%s", cockroachBin))
 	args = append(args, additionalBazelArgs...)
 

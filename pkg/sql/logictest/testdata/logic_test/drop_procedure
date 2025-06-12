@@ -1,3 +1,5 @@
+# LogicTest: !local-mixed-23.1
+
 statement ok
 CREATE PROCEDURE p_test_drop() LANGUAGE SQL AS 'SELECT 1'
 
@@ -18,13 +20,11 @@ SELECT create_statement FROM [SHOW CREATE PROCEDURE public.p_test_drop] ORDER BY
 ----
 CREATE PROCEDURE public.p_test_drop()
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
-CREATE PROCEDURE public.p_test_drop(INT8)
+CREATE PROCEDURE public.p_test_drop(IN INT8)
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -32,9 +32,8 @@ $$
 query T
 SELECT create_statement FROM [SHOW CREATE PROCEDURE sc1.p_test_drop]
 ----
-CREATE PROCEDURE sc1.p_test_drop(INT8)
+CREATE PROCEDURE sc1.p_test_drop(IN INT8)
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -51,21 +50,15 @@ DROP PROCEDURE IF EXISTS p_not_existing
 statement error pgcode 42883 pq: unknown procedure: p_not_existing\(\)
 DROP PROCEDURE p_not_existing
 
-statement ok
-SET autocommit_before_ddl = false
-
 # Dropping a procedure twice should fail.
 statement error pgcode 42883 pq: procedure p_test_drop\(\) does not exist
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN;
 DROP PROCEDURE p_test_drop();
 DROP PROCEDURE p_test_drop();
 COMMIT;
 
 statement ok
 ROLLBACK
-
-statement ok
-RESET autocommit_before_ddl
 
 statement error pgcode 42883 function p_test_drop\(\) does not exist
 DROP FUNCTION p_test_drop
@@ -82,15 +75,15 @@ DROP FUNCTION IF EXISTS p_test_drop()
 statement ok
 DROP PROCEDURE IF EXISTS p_test_drop()
 
-statement error pgcode 42883 procedure p_test_drop\(\) does not exist
+# TODO(mgartner): This error message could be improved.
+statement error pgcode 42883 unknown signature: p_test_drop\(\)
 CALL p_test_drop()
 
 query T
 SELECT create_statement FROM [SHOW CREATE PROCEDURE public.p_test_drop]
 ----
-CREATE PROCEDURE public.p_test_drop(INT8)
+CREATE PROCEDURE public.p_test_drop(IN INT8)
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -98,9 +91,8 @@ $$
 query T
 SELECT create_statement FROM [SHOW CREATE PROCEDURE sc1.p_test_drop]
 ----
-CREATE PROCEDURE sc1.p_test_drop(INT8)
+CREATE PROCEDURE sc1.p_test_drop(IN INT8)
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -119,9 +111,8 @@ SELECT create_statement FROM [SHOW CREATE PROCEDURE public.p_test_drop]
 query T
 SELECT create_statement FROM [SHOW CREATE PROCEDURE sc1.p_test_drop]
 ----
-CREATE PROCEDURE sc1.p_test_drop(INT8)
+CREATE PROCEDURE sc1.p_test_drop(IN INT8)
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -146,7 +137,6 @@ SELECT create_statement FROM [SHOW CREATE PROCEDURE public.p_test_drop]
 ----
 CREATE PROCEDURE public.p_test_drop()
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -156,7 +146,6 @@ SELECT create_statement FROM [SHOW CREATE PROCEDURE sc1.p_test_drop]
 ----
 CREATE PROCEDURE sc1.p_test_drop()
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -193,11 +182,3 @@ statement ok
 DROP PROCEDURE p114677(t114677);
 
 subtest end
-
-# Regression test for #142886 - we should be able to drop a procedure by
-# specifying the input type but without type width.
-statement ok
-CREATE PROCEDURE p142886(p VARCHAR(10)) LANGUAGE SQL AS $$ SELECT 0; $$;
-
-statement ok
-DROP PROCEDURE p142886(VARCHAR);

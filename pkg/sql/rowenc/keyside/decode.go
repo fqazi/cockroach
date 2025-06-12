@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/bitarray"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/ipaddr"
@@ -300,10 +299,7 @@ func Decode(
 		rkey := key[len:]
 		return a.NewDEncodedKey(tree.DEncodedKey(key[:len])), rkey, nil
 	default:
-		if buildutil.CrdbTestBuild {
-			return nil, nil, errors.AssertionFailedf("unable to decode table key: %s", valType.SQLStringForError())
-		}
-		return nil, nil, errors.Errorf("unable to decode table key: %s", valType.SQLStringForError())
+		return nil, nil, errors.Errorf("unable to decode table key: %s", valType)
 	}
 }
 

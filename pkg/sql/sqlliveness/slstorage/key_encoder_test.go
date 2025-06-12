@@ -12,6 +12,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/enum"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -44,11 +45,20 @@ func TestKeyEncoder(t *testing.T) {
 		id, err := MakeSessionID(enum.One, uuid.MakeV4())
 		require.NoError(t, err)
 
-		key, region, err := codec.encode(id)
+		key, err := codec.encode(id)
 		require.NoError(t, err)
 		require.True(t, bytes.HasPrefix(key, codec.indexPrefix()))
-		require.Equal(t, region, string(enum.One))
 
+		decodedID, err := codec.decode(key)
+		require.NoError(t, err)
+		require.Equal(t, id, decodedID)
+	})
+
+	t.Run("EncodeLegacySession", func(t *testing.T) {
+		id := sqlliveness.SessionID(uuid.MakeV4().GetBytes())
+
+		key, err := codec.encode(id)
+		require.NoError(t, err)
 		decodedID, err := codec.decode(key)
 		require.NoError(t, err)
 		require.Equal(t, id, decodedID)

@@ -15,8 +15,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/echotest"
@@ -27,6 +25,7 @@ import (
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/redact"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/raft/v3/tracker"
 )
 
 func TestReplicaRaftOverload_computeExpendableOverloadedFollowers(t *testing.T) {
@@ -104,12 +103,12 @@ func TestReplicaRaftOverload_computeExpendableOverloadedFollowers(t *testing.T) 
 				}
 			}
 
-			getProgressMap := func(ctx context.Context) map[raftpb.PeerID]tracker.Progress {
+			getProgressMap := func(ctx context.Context) map[uint64]tracker.Progress {
 				log.Eventf(ctx, "getProgressMap was called")
 
 				// First, set up a progress map in which all replicas are tracked and are live.
-				m := map[raftpb.PeerID]tracker.Progress{}
-				for _, replDesc := range replDescs.Descriptors() {
+				m := map[uint64]tracker.Progress{}
+				for _, replDesc := range replDescs.AsProto() {
 					pr := tracker.Progress{
 						State:        tracker.StateReplicate,
 						Match:        match[replDesc.ReplicaID],
@@ -117,17 +116,17 @@ func TestReplicaRaftOverload_computeExpendableOverloadedFollowers(t *testing.T) 
 						IsLearner:    replDesc.Type == roachpb.LEARNER || replDesc.Type == roachpb.NON_VOTER,
 						Inflights:    tracker.NewInflights(1, 0), // avoid NPE
 					}
-					m[raftpb.PeerID(replDesc.ReplicaID)] = pr
+					m[uint64(replDesc.ReplicaID)] = pr
 				}
 				// Mark replicas as down or needing snapshot as configured.
 				for replicaID := range downMap {
-					id := raftpb.PeerID(replicaID)
+					id := uint64(replicaID)
 					pr := m[id]
 					pr.RecentActive = false
 					m[id] = pr
 				}
 				for replicaID := range snapshotMap {
-					id := raftpb.PeerID(replicaID)
+					id := uint64(replicaID)
 					pr := m[id]
 					pr.State = tracker.StateSnapshot
 					m[id] = pr

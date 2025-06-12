@@ -26,8 +26,6 @@ statement ok
 CREATE DATABASE d;
 CREATE TABLE d.t (x int)
 
-# Weak isolation levels emit extra notices, so skip them.
-skipif config weak-iso-level-configs
 query T noticetrace
 ALTER TABLE d.t RENAME TO d.t2
 ----
@@ -41,8 +39,6 @@ CREATE TYPE color AS ENUM ()
 statement ok
 ALTER TYPE color ADD VALUE 'black'
 
-# Weak isolation levels emit extra notices, so skip them.
-skipif config weak-iso-level-configs
 query T noticetrace
 ALTER TYPE color ADD VALUE IF NOT EXISTS 'black'
 ----
@@ -51,8 +47,6 @@ NOTICE: enum value "black" already exists, skipping
 statement ok
 CREATE MATERIALIZED VIEW v AS SELECT 1
 
-# Weak isolation levels emit extra notices, so skip them.
-skipif config weak-iso-level-configs
 query T noticetrace
 REFRESH MATERIALIZED VIEW CONCURRENTLY v
 ----
@@ -63,5 +57,5 @@ UNLISTEN temp
 ----
 NOTICE: unimplemented: CRDB does not support LISTEN, making UNLISTEN a no-op
 HINT: You have attempted to use a feature that is not yet implemented.
-See: https://go.crdb.dev/issue-v/41522/v25.3
+See: https://go.crdb.dev/issue-v/41522/v23.2
 SQLSTATE: 0A000

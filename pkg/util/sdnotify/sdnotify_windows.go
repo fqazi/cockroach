@@ -11,7 +11,7 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-func ready(preNotify func()) error {
+func ready() error {
 	return nil
 }
 

@@ -15,16 +15,26 @@ import (
 	"github.com/cockroachdb/redact"
 )
 
-// IndexedVarContainer provides type-checking for an IndexedVar.
+// IndexedVarContainer provides the implementation of TypeCheck, Eval, and
+// String for IndexedVars.
 type IndexedVarContainer interface {
 	IndexedVarResolvedType(idx int) *types.T
+	// IndexedVarNodeFormatter returns a NodeFormatter; if an object that
+	// wishes to implement this interface has lost the textual name that an
+	// IndexedVar originates from, this function can return nil (and the
+	// ordinal syntax "@1, @2, .." will be used).
+	IndexedVarNodeFormatter(idx int) NodeFormatter
 }
 
 // IndexedVar is a VariableExpr that can be used as a leaf in expressions; it
-// represents a dynamic value. It defers calls to TypeCheck and Format to an
+// represents a dynamic value. It defers calls to TypeCheck, Eval, String to an
 // IndexedVarContainer.
 type IndexedVar struct {
-	Idx int
+	Idx  int
+	Used bool
+
+	col NodeFormatter
+
 	typeAnnotation
 }
 
@@ -66,10 +76,13 @@ func (v *IndexedVar) ResolvedType() *types.T {
 
 // Format implements the NodeFormatter interface.
 func (v *IndexedVar) Format(ctx *FmtCtx) {
+	f := ctx.flags
 	if ctx.indexedVarFormat != nil {
 		ctx.indexedVarFormat(ctx, v.Idx)
-	} else {
+	} else if f.HasFlags(fmtSymbolicVars) || v.col == nil {
 		ctx.Printf("@%d", v.Idx+1)
+	} else {
+		ctx.FormatNode(v.col)
 	}
 }
 
@@ -101,6 +114,26 @@ func (h *IndexedVarHelper) Container() IndexedVarContainer {
 	return h.container
 }
 
+// BindIfUnbound ensures the IndexedVar is attached to this helper's container.
+// - for freshly created IndexedVars (with a nil container) this will bind in-place.
+// - for already bound IndexedVar, bound to this container, this will return the same ivar unchanged.
+// - for ordinal references (with an explicit unboundContainer) this will return a new var.
+// - for already bound IndexedVars, bound to another container, this will error out.
+func (h *IndexedVarHelper) BindIfUnbound(ivar *IndexedVar) (*IndexedVar, error) {
+	// We perform the range check always, even if the ivar is already
+	// bound, as a form of safety assertion against misreuse of ivars
+	// across containers.
+	if ivar.Idx < 0 || ivar.Idx >= len(h.vars) {
+		return ivar, pgerror.Newf(
+			pgcode.UndefinedColumn, "invalid column ordinal: @%d", ivar.Idx+1)
+	}
+
+	if !ivar.Used {
+		return h.IndexedVar(ivar.Idx), nil
+	}
+	return ivar, nil
+}
+
 // MakeIndexedVarHelper initializes an IndexedVarHelper structure.
 func MakeIndexedVarHelper(container IndexedVarContainer, numVars int) IndexedVarHelper {
 	return IndexedVarHelper{
@@ -129,7 +162,9 @@ func (h *IndexedVarHelper) IndexedVar(idx int) *IndexedVar {
 	h.checkIndex(idx)
 	v := &h.vars[idx]
 	v.Idx = idx
+	v.Used = true
 	v.typ = h.container.IndexedVarResolvedType(idx)
+	v.col = h.container.IndexedVarNodeFormatter(idx)
 	return v
 }
 
@@ -141,9 +176,47 @@ func (h *IndexedVarHelper) IndexedVarWithType(idx int, typ *types.T) *IndexedVar
 	h.checkIndex(idx)
 	v := &h.vars[idx]
 	v.Idx = idx
+	v.Used = true
 	v.typ = typ
 	return v
 }
+
+// IndexedVarUsed returns true if IndexedVar() was called for the given index.
+// The index must be valid.
+func (h *IndexedVarHelper) IndexedVarUsed(idx int) bool {
+	h.checkIndex(idx)
+	return h.vars[idx].Used
+}
+
+// GetIndexedVars returns the indexed var array of this helper.
+// IndexedVars to the caller; unused vars are guaranteed to have
+// a false Used field.
+func (h *IndexedVarHelper) GetIndexedVars() []IndexedVar {
+	return h.vars
+}
+
+// Rebind collects all the IndexedVars in the given expression and re-binds them
+// to this helper.
+func (h *IndexedVarHelper) Rebind(expr TypedExpr) TypedExpr {
+	if expr == nil {
+		return nil
+	}
+	ret, _ := WalkExpr(h, expr)
+	return ret.(TypedExpr)
+}
+
+var _ Visitor = &IndexedVarHelper{}
+
+// VisitPre implements the Visitor interface.
+func (h *IndexedVarHelper) VisitPre(expr Expr) (recurse bool, newExpr Expr) {
+	if iv, ok := expr.(*IndexedVar); ok {
+		return false, h.IndexedVar(iv.Idx)
+	}
+	return true, expr
+}
+
+// VisitPost implements the Visitor interface.
+func (*IndexedVarHelper) VisitPost(expr Expr) Expr { return expr }
 
 type typeContainer struct {
 	types []*types.T
@@ -156,9 +229,15 @@ func (tc *typeContainer) IndexedVarResolvedType(idx int) *types.T {
 	return tc.types[idx]
 }
 
-// MakeIndexedVarHelperWithTypes creates an IndexedVarHelper which provides
-// the given types for indexed vars.
-func MakeIndexedVarHelperWithTypes(types []*types.T) IndexedVarHelper {
+// IndexedVarNodeFormatter is part of the IndexedVarContainer interface.
+func (tc *typeContainer) IndexedVarNodeFormatter(idx int) NodeFormatter {
+	return nil
+}
+
+// MakeTypesOnlyIndexedVarHelper creates an IndexedVarHelper which provides
+// the given types for indexed vars. It does not support evaluation, unless
+// Rebind is used with another container which supports evaluation.
+func MakeTypesOnlyIndexedVarHelper(types []*types.T) IndexedVarHelper {
 	c := &typeContainer{types: types}
 	return MakeIndexedVarHelper(c, len(types))
 }

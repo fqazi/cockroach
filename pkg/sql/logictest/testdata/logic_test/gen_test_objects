@@ -49,15 +49,15 @@ SELECT quote_ident(database_name), quote_ident(schema_name), quote_ident(name)
 FROM "".crdb_internal.tables WHERE database_name LIKE '%z%z%'
 ORDER BY database_name, schema_name, name
 ----
-"""z z_1"  b_1      c_1
-"""z z_1"  b_1      c_2
-"""z z_1"  b̷_2     c_1
-"""z z_1"  b̷_2     c_2
-"zz%q_2"   "b%p_2"  "%c'_2"
-"zz%q_2"   "b%p_2"  "c""
-_1"
-"zz%q_2"  b_1  c_1
-"zz%q_2"  b_1  c̕_2
+"""z z1"  b1      c1
+"""z z1"  b1      c2
+"""z z1"  b̷2     c1
+"""z z1"  b̷2     c2
+"zz%q2"   "b%p2"  "%c'2"
+"zz%q2"   "b%p2"  "c""
+1"
+"zz%q2"  b1  c1
+"zz%q2"  b1  c̕2
 
 # Show number placement inside the output identifier, without added noise.
 query T
@@ -69,14 +69,14 @@ query TTT rowsort
 SELECT quote_ident(database_name), quote_ident(schema_name), quote_ident(name)
 FROM "".crdb_internal.tables WHERE database_name LIKE '%z%y%'
 ----
-z1y  b_1  c_1
-z1y  b_1  c_2
-z1y  b_2  c_1
-z1y  b_2  c_2
-z2y  b_1  c_1
-z2y  b_1  c_2
-z2y  b_2  c_1
-z2y  b_2  c_2
+z1y  b1  c1
+z1y  b1  c2
+z1y  b2  c1
+z1y  b2  c2
+z2y  b1  c1
+z2y  b1  c2
+z2y  b2  c1
+z2y  b2  c2
 
 subtest randomize_columns
 
@@ -90,15 +90,15 @@ SELECT quote_ident(descriptor_name), quote_ident(column_name) FROM crdb_internal
 WHERE descriptor_name ILIKE '%t%e%s%t%'
 ORDER BY descriptor_name, column_name
 ----
-"test(_3"  address
-"test(_3"  name
-"test(_3"  rowid
-test_1     "ad""dress%"
-test_1     name😤
-test_1     rowid
-test_2     address
-test_2     "name%80"
-test_2     rowid
+"test(3"  address
+"test(3"  name
+"test(3"  rowid
+test1     "ad""dress%"
+test1     name😤
+test1     rowid
+test2     address
+test2     "name%80"
+test2     rowid
 
 subtest templates/more_tables_generated_than_templates
 
@@ -119,26 +119,26 @@ SELECT quote_ident(table_name), quote_ident(column_name), data_type FROM "".info
 WHERE table_catalog = 'newdb' AND table_schema = 'public'
 ORDER BY table_name, column_name
 ----
-"                 u_3"     rowid    bigint
-"                 u_3"     y        text
-"*t""_1"          "%56x"   numeric
-"*t""_1"          rowid    bigint
-"\\U00051024u_4"  rowid    bigint
-"\\U00051024u_4"  "y "     text
-"t%q_3"           rowid    bigint
-"t%q_3"           x        numeric
-t_2               rowid    bigint
-t_2               "x""%q"  numeric
-t_4               """%vx"  numeric
-t_4               rowid    bigint
-t̷_5              "%vx"    numeric
-t̷_5              rowid    bigint
-u_1               rowid    bigint
-u_1               y        text
-u_2               rowid    bigint
-u_2               "|y"     text
-u_5               rowid    bigint
-u_5               y        text
+"                u3"      rowid    bigint
+"                u3"      y        text
+"*t""1"          "%56x"   numeric
+"*t""1"          rowid    bigint
+"\\U00051024u4"  rowid    bigint
+"\\U00051024u4"  "y "     text
+"t%q3"           rowid    bigint
+"t%q3"           x        numeric
+t2               rowid    bigint
+t2               "x""%q"  numeric
+t4               """%vx"  numeric
+t4               rowid    bigint
+t̷5              "%vx"    numeric
+t̷5              rowid    bigint
+u1               rowid    bigint
+u1               y        text
+u2               rowid    bigint
+u2               "|y"     text
+u5               rowid    bigint
+u5               y        text
 
 # As well as index names.
 query TT
@@ -146,16 +146,16 @@ SELECT quote_ident(table_name), quote_ident(constraint_name) FROM "".information
 WHERE table_catalog = 'newdb' AND table_schema = 'public' AND constraint_type = 'PRIMARY KEY'
 ORDER BY table_name, constraint_name
 ----
-"                 u_3"         pr̫imary
-"*t""_1"          "PrimaRy̧"
-"\\U00051024u_4"  "primary"
-"t%q_3"           "primary"
-t_2               "primary"
-t_4               "primar'y"
-t̷_5              primary̕
-u_1               "primary"
-u_2               "primary"
-u_5               "primar%vy"
+"                u3"          pr̫imary
+"*t""1"          "PrimaRy̧"
+"\\U00051024u4"  "primary"
+"t%q3"           "primary"
+t2               "primary"
+t4               "primar'y"
+t̷5              primary̕
+u1               "primary"
+u2               "primary"
+u5               "primar%vy"
 
 subtest templates/fewer_tables_generated_than_templates
 
@@ -179,17 +179,18 @@ query T
 SELECT table_name FROM [SHOW TABLES]
 ORDER BY table_name
 ----
-prepared_transactions
-protected_ts_reco"rds
-ro😪l|e_options
-set                             tings
-span_stats'_bucke ts
-statement_diagnostics_requests
-statement_statisti😍cs
+mig%prations
+privileges
+replication_constraint_stats
+replication_critical_localities
+s
+t̾atement_diagnostics
+schedulEd_jobs
+statement_execution_insights
+sta͌temenṭ_bundlẻ_chunks
 sta😣tement_statistics
-tenant_tasks
-tran\\u9A2Esaction_statistics
-us ers
+table_statistics
+tenant_id_seq
 
 # Again, the column names are randomized.
 query TTT
@@ -198,26 +199,26 @@ WHERE table_catalog = 'newdb2' AND table_schema = 'public'
 ORDER BY table_name, column_name
 LIMIT 20
 ----
-prepared_transactions     database         text
-prepared_transactions     global_id        text
-prepared_transactions     heuristic        text
-prepared_transactions     prepared         timestamp with time zone
-prepared_transactions     rowid            bigint
-prepared_transactions     transaction_id_  uuid
-prepared_transactions     transaction_key  bytea
-prepared_transactions     "😠owne\gr"       text
-"protected_ts_reco""rds"  "*meta"          bytea
-"protected_ts_reco""rds"  id               uuid
-"protected_ts_reco""rds"  "meta_typ%ve"    text
-"protected_ts_reco""rds"  num_spans        bigint
-"protected_ts_reco""rds"  rowid            bigint
-"protected_ts_reco""rds"  spans            bytea
-"protected_ts_reco""rds"  target           bytea
-"protected_ts_reco""rds"  ts               numeric
-"protected_ts_reco""rds"  "veri!fied"      boolean
-"ro😪l|e_options"          "opti}o& n"      text
-"ro😪l|e_options"          rowid            bigint
-"ro😪l|e_options"          "us'er_id"       oid
+"mig%prations"                "%qm,inor"          bigint
+"mig%prations"                completed_at        timestamp with time zone
+"mig%prations"                internal            bigint
+"mig%prations"                "major'"            bigint
+"mig%prations"                patch               bigint
+"mig%prations"                rowid               bigint
+privileges                    "gran t_options"    ARRAY
+privileges                    path😀               text
+privileges                    privileges          ARRAY
+privileges                    rowid               bigint
+privileges                    "user%q_%qid"       oid
+privileges                    username            text
+replication_constraint_stats  "  ty*pe"           text
+replication_constraint_stats  config              text
+replication_constraint_stats  report_id           bigint
+replication_constraint_stats  rowid               bigint
+replication_constraint_stats  subzone_id          bigint
+replication_constraint_stats  "viola!tion_start"  timestamp with time zone
+replication_constraint_stats  violating_ranges    bigint
+replication_constraint_stats  zon😂e_id            bigint
 
 subtest templates/different_templates_in_each_db
 
@@ -235,15 +236,15 @@ SELECT quote_ident(database_name), quote_ident(schema_name), quote_ident(name)
 FROM "".crdb_internal.tables WHERE database_name ILIKE '%d%b%t%'
 ORDER BY database_name, schema_name, name
 ----
-"d%qbt_1"  public  "external_connect ions"
-"d%qbt_1"  public  reports_meta
-"d%qbt_1"  public  "sta""tement_bundle_chunks"
-"d%qbt_2"  public  "job_progres s"
-"d%qbt_2"  public  web_sessions
-"d%qbt_2"  public  zones
-dbt_3      public  "namespa ce"
-dbt_3      public  "rolE_members"
-dbt_3      public  span_stats_tenant_boundaries
+"d%qbt1"  public  span_stats_samples
+"d%qbt1"  public  "t abLe_statistics"
+"d%qbt1"  public  "transaction_execut%ion_insights"
+"d%qbt2"  public  "r\\x0fegion_liveness"
+"d%qbt2"  public  span_stats_buckets
+"d%qbt2"  public  "transaction_statisTics"
+dbt3      public  "extern'al_connections"
+dbt3      public  "te\\x64nant_i""d_se q"
+dbt3      public  "tenant_setting%vs"
 
 
 statement ok
@@ -258,46 +259,46 @@ subtest show_config
 query T
 SELECT crdb_internal.generate_test_objects('{"dry_run":true}'::JSONB)#-array['seed']
 ----
-{"batch_size": 1000, "counts": [10], "dry_run": true, "generated_counts": {"databases": 0, "schemas": 0, "tables": 10}, "name_gen": {"capitals": 0.08, "diacritic_depth": 1, "diacritics": 0.08, "emote": 0.08, "escapes": 0.08, "fmt": 0.08, "noise": true, "punctuate": 0.08, "quote": 0.08, "space": 0.08, "suffix": true, "whitespace": 0.08}, "names": "_", "randomize_columns": true}
+{"batch_size": 1000, "counts": [10], "dry_run": true, "generated_counts": {"databases": 0, "schemas": 0, "tables": 10}, "name_gen": {"capitals": 0.08, "diacritic_depth": 1, "diacritics": 0.08, "emote": 0.08, "escapes": 0.08, "fmt": 0.08, "noise": true, "number": true, "punctuate": 0.08, "quote": 0.08, "space": 0.08, "whitespace": 0.08}, "names": "_", "randomize_columns": true}
 
 # Manual seed.
 query T
 SELECT crdb_internal.generate_test_objects('{"dry_run":true,"seed":123}'::JSONB)#-array['generated_counts']
 ----
-{"batch_size": 1000, "counts": [10], "dry_run": true, "name_gen": {"capitals": 0.08, "diacritic_depth": 1, "diacritics": 0.08, "emote": 0.08, "escapes": 0.08, "fmt": 0.08, "noise": true, "punctuate": 0.08, "quote": 0.08, "space": 0.08, "suffix": true, "whitespace": 0.08}, "names": "_", "randomize_columns": true, "seed": 123}
+{"batch_size": 1000, "counts": [10], "dry_run": true, "name_gen": {"capitals": 0.08, "diacritic_depth": 1, "diacritics": 0.08, "emote": 0.08, "escapes": 0.08, "fmt": 0.08, "noise": true, "number": true, "punctuate": 0.08, "quote": 0.08, "space": 0.08, "whitespace": 0.08}, "names": "_", "randomize_columns": true, "seed": 123}
 
 # Noise disabled.
 query T
 SELECT crdb_internal.generate_test_objects('{"dry_run":true,"seed":123,"name_gen":{"noise":false}}'::JSONB)#-array['generated_counts']
 ----
-{"batch_size": 1000, "counts": [10], "dry_run": true, "name_gen": {"noise": false, "suffix": true}, "names": "_", "randomize_columns": true, "seed": 123}
+{"batch_size": 1000, "counts": [10], "dry_run": true, "name_gen": {"noise": false, "number": true}, "names": "_", "randomize_columns": true, "seed": 123}
 
 # Numbers disabled.
 query T
-SELECT crdb_internal.generate_test_objects('{"dry_run":true,"seed":123,"name_gen":{"suffix":false}}'::JSONB)#-array['generated_counts']
+SELECT crdb_internal.generate_test_objects('{"dry_run":true,"seed":123,"name_gen":{"number":false}}'::JSONB)#-array['generated_counts']
 ----
-{"batch_size": 1000, "counts": [10], "dry_run": true, "name_gen": {"capitals": 0.08, "diacritic_depth": 1, "diacritics": 0.08, "emote": 0.08, "escapes": 0.08, "fmt": 0.08, "noise": true, "punctuate": 0.08, "quote": 0.08, "space": 0.08, "suffix": false, "whitespace": 0.08}, "names": "_", "randomize_columns": true, "seed": 123}
+{"batch_size": 1000, "counts": [10], "dry_run": true, "name_gen": {"capitals": 0.08, "diacritic_depth": 1, "diacritics": 0.08, "emote": 0.08, "escapes": 0.08, "fmt": 0.08, "noise": true, "number": false, "punctuate": 0.08, "quote": 0.08, "space": 0.08, "whitespace": 0.08}, "names": "_", "randomize_columns": true, "seed": 123}
 
 # Numbers and noise disabled.
 query error name generation needs variability to generate objects
-SELECT crdb_internal.generate_test_objects('{"dry_run":true,"seed":123,"name_gen":{"suffix":false,"noise":false}}'::JSONB)#-array['generated_counts']
+SELECT crdb_internal.generate_test_objects('{"dry_run":true,"seed":123,"name_gen":{"number":false,"noise":false}}'::JSONB)#-array['generated_counts']
 
 # Numbers and noise disabled, but some extra variability.
 query T
-SELECT crdb_internal.generate_test_objects('{"dry_run":true,"seed":123,"name_gen":{"suffix":false,"noise":false,"quote":1}}'::JSONB)#-array['generated_counts']
+SELECT crdb_internal.generate_test_objects('{"dry_run":true,"seed":123,"name_gen":{"number":false,"noise":false,"quote":1}}'::JSONB)#-array['generated_counts']
 ----
-{"batch_size": 1000, "counts": [10], "dry_run": true, "name_gen": {"noise": false, "quote": 1, "suffix": false}, "names": "_", "randomize_columns": true, "seed": 123}
+{"batch_size": 1000, "counts": [10], "dry_run": true, "name_gen": {"noise": false, "number": false, "quote": 1}, "names": "_", "randomize_columns": true, "seed": 123}
 
 # Zalgo mode enabled.
 query T
 SELECT crdb_internal.generate_test_objects('{"dry_run":true,"seed":123,"name_gen":{"noise":false,"zalgo":true}}'::JSONB)#-array['generated_counts']
 ----
-{"batch_size": 1000, "counts": [10], "dry_run": true, "name_gen": {"diacritic_depth": 20, "diacritics": 1000, "noise": false, "suffix": true, "zalgo": true}, "names": "_", "randomize_columns": true, "seed": 123}
+{"batch_size": 1000, "counts": [10], "dry_run": true, "name_gen": {"diacritic_depth": 20, "diacritics": 1000, "noise": false, "number": true, "zalgo": true}, "names": "_", "randomize_columns": true, "seed": 123}
 
 query T
 SELECT crdb_internal.generate_test_objects('{"dry_run":true,"seed":123,"name_gen":{"noise":true,"zalgo":true}}'::JSONB)#-array['generated_counts']
 ----
-{"batch_size": 1000, "counts": [10], "dry_run": true, "name_gen": {"capitals": 0.08, "diacritic_depth": 20, "diacritics": 1000, "emote": 0.08, "escapes": 0.08, "fmt": 0.08, "noise": true, "punctuate": 0.08, "quote": 0.08, "space": 0.08, "suffix": true, "whitespace": 0.08, "zalgo": true}, "names": "_", "randomize_columns": true, "seed": 123}
+{"batch_size": 1000, "counts": [10], "dry_run": true, "name_gen": {"capitals": 0.08, "diacritic_depth": 20, "diacritics": 1000, "emote": 0.08, "escapes": 0.08, "fmt": 0.08, "noise": true, "number": true, "punctuate": 0.08, "quote": 0.08, "space": 0.08, "whitespace": 0.08, "zalgo": true}, "names": "_", "randomize_columns": true, "seed": 123}
 
 subtest zero_dbs
 
@@ -319,12 +320,12 @@ SELECT crdb_internal.generate_test_objects('{"names":"dba.bar.baz", "counts":[2,
 {"databases": 2, "schemas": 2, "tables": 0}
 
 query I
-SELECT count(*) FROM [SHOW TABLES FROM dba_1]
+SELECT count(*) FROM [SHOW TABLES FROM dba1]
 ----
 0
 
 query I
-SELECT count(*) FROM [SHOW TABLES FROM dba_2]
+SELECT count(*) FROM [SHOW TABLES FROM dba2]
 ----
 0
 
@@ -340,9 +341,9 @@ SELECT crdb_internal.generate_test_objects('{"names":"dbb.bar.baz", "counts":[1,
 {"databases": 1, "schemas": 2, "tables": 0}
 
 query T rowsort
-SELECT schema_name FROM [SHOW SCHEMAS FROM dbb_1]
+SELECT schema_name FROM [SHOW SCHEMAS FROM dbb1]
 ----
-bar_1
+bar1
 public
 crdb_internal
 information_schema
@@ -350,7 +351,7 @@ pg_catalog
 pg_extension
 
 query I
-SELECT count(*) FROM [SHOW TABLES FROM dbb_1.bar_1]
+SELECT count(*) FROM [SHOW TABLES FROM dbb1.bar1]
 ----
 0
 
@@ -370,8 +371,8 @@ SELECT crdb_internal.generate_test_objects('{"names":"myschema.foo", "counts":[2
 query TT rowsort
 SELECT schema_name, table_name FROM [SHOW TABLES FROM test.myschema]
 ----
-myschema  foo_1
-myschema  foo_2
+myschema  foo1
+myschema  foo2
 
 subtest implicit_db/zero_schemas
 
@@ -397,16 +398,16 @@ SELECT crdb_internal.generate_test_objects('{"names":"scgen.foo", "counts":[2,0]
 query T rowsort
 SELECT schema_name FROM [SHOW SCHEMAS] WHERE schema_name LIKE 'scgen%'
 ----
-scgen_1
-scgen_2
+scgen1
+scgen2
 
 query I
-SELECT count(*) FROM [SHOW TABLES FROM scgen_1]
+SELECT count(*) FROM [SHOW TABLES FROM scgen1]
 ----
 0
 
 query I
-SELECT count(*) FROM [SHOW TABLES FROM scgen_2]
+SELECT count(*) FROM [SHOW TABLES FROM scgen2]
 ----
 0
 
@@ -427,8 +428,8 @@ SELECT crdb_internal.generate_test_objects('{"names":"foo", "counts":[2], "name_
 query TT rowsort
 SELECT schema_name, table_name FROM [SHOW TABLES FROM test.otherschema]
 ----
-otherschema  foo_1
-otherschema  foo_2
+otherschema  foo2
+otherschema  foo1
 
 statement ok
 RESET search_path
@@ -445,10 +446,10 @@ SELECT crdb_internal.generate_test_objects('{"names":"dbfoo.baz", "counts":[1,0,
 {"databases": 1, "schemas": 1, "tables": 2}
 
 query TT rowsort
-SELECT schema_name, table_name FROM [SHOW TABLES FROM dbfoo_1]
+SELECT schema_name, table_name FROM [SHOW TABLES FROM dbfoo1]
 ----
-public  baz_1
-public  baz_2
+public  baz1
+public  baz2
 
 subtest missing_pattern
 
@@ -599,7 +600,7 @@ SELECT crdb_internal.generate_test_objects('{"names":"pg_temp.foo", "counts":[3]
 query T rowsort
 SELECT table_name FROM [SHOW TABLES FROM pg_temp]
 ----
+foo1
+foo2
+foo3
 test
-foo_1
-foo_2
-foo_3

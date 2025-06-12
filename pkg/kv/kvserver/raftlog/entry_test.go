@@ -9,8 +9,8 @@ package raftlog
 import (
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 func TestNewEntry(t *testing.T) {
@@ -24,13 +24,11 @@ func TestNewEntry(t *testing.T) {
 		"empty entry": {data: nil, expectEmpty: true},
 		// Proposed by CRDB on unquiescence.
 		"empty payload": {
-			data: EncodeCommandBytes(
-				EntryEncodingStandardWithoutAC, "00000000", nil, 0 /* pri */),
+			data:        EncodeCommandBytes(EntryEncodingStandardWithoutAC, "00000000", nil),
 			expectEmpty: true,
 		},
 		"invalid": {
-			data: EncodeCommandBytes(
-				EntryEncodingStandardWithAC, "00000000", []byte("not a protobuf"), 0 /* pri */),
+			data:      EncodeCommandBytes(EntryEncodingStandardWithAC, "00000000", []byte("not a protobuf")),
 			expectErr: true,
 		},
 	}

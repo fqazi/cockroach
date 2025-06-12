@@ -17,17 +17,17 @@ import (
 
 func TestExtendedContentionEventHash(t *testing.T) {
 	event1 := ExtendedContentionEvent{}
-	event1.BlockingEvent.TxnMeta.ID = uuid.MakeV4()
-	event1.WaitingTxnID = uuid.MakeV4()
+	event1.BlockingEvent.TxnMeta.ID = uuid.FastMakeV4()
+	event1.WaitingTxnID = uuid.FastMakeV4()
 	event1.WaitingStmtID = clusterunique.ID{Uint128: uint128.Uint128{Lo: 12, Hi: 987}}
 
 	eventWithDifferentBlockingTxnID := event1
-	eventWithDifferentBlockingTxnID.BlockingEvent.TxnMeta.ID = uuid.MakeV4()
+	eventWithDifferentBlockingTxnID.BlockingEvent.TxnMeta.ID = uuid.FastMakeV4()
 
 	require.NotEqual(t, eventWithDifferentBlockingTxnID.Hash(), event1.Hash())
 
 	eventWithDifferentWaitingTxnID := event1
-	eventWithDifferentWaitingTxnID.WaitingTxnID = uuid.MakeV4()
+	eventWithDifferentWaitingTxnID.WaitingTxnID = uuid.FastMakeV4()
 	require.NotEqual(t, eventWithDifferentWaitingTxnID.Hash(), event1.Hash())
 
 	eventWithDifferentStmtId := event1

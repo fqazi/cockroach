@@ -37,8 +37,6 @@ type Locking struct {
 	//   SKIP LOCKED
 	//   NOWAIT
 	//
-	// Note that SKIP LOCKED can be requested without a locking strength, which
-	// signifies skipping over locks without taking any additional locks.
 	WaitPolicy tree.LockingWaitPolicy
 
 	// The third property is the form of locking, either record locking or
@@ -77,35 +75,8 @@ func (l Locking) Max(l2 Locking) Locking {
 	}
 }
 
-// IsLocking returns whether the receiver is configured to use row-level
-// locking.
+// IsLocking returns whether the receiver is configured to use a row-level
+// locking mode.
 func (l Locking) IsLocking() bool {
 	return l.Strength != tree.ForNone
-}
-
-// IsNoOp returns true if none of the locking properties are set. It differs
-// from IsLocking in that it considers all of the locking properties, instead of
-// only Strength. Currently, the only locking property that can be set when
-// Strength=ForNone is WaitPolicy=LockWaitSkipLocked or
-// WaitPolicy=LockWaitError. So we can say: IsNoOp returns false if IsLocking
-// returns true OR the SKIP LOCKED wait policy is in effect OR the NOWAIT wait
-// policy is in effect.
-func (l Locking) IsNoOp() bool {
-	return l == Locking{}
-}
-
-// MustLockAllRequestedColumnFamilies returns true if the locking semantics
-// require actually acquiring locks on all requested column families. If this
-// returns false, then locking is best-effort, and it's ok to skip over some
-// requested column families.
-func (l Locking) MustLockAllRequestedColumnFamilies() bool {
-	// If durability = guaranteed, then we've promised that locks will be held
-	// until transaction commit. It's important in this case to actually acquire
-	// all the requested locks.
-	return (l.Strength != tree.ForNone && l.Durability == tree.LockDurabilityGuaranteed) ||
-		// If this read is using SKIP LOCKED or NOWAIT then we want to be sure to
-		// check all requested column families for locks. Otherwise we might assume
-		// there are no locks and subsequently hit an unexpected write-write
-		// conflict later in the same transaction.
-		l.WaitPolicy != tree.LockWaitBlock
 }

@@ -43,7 +43,7 @@ func (p *planner) planTenantSpec(
 	if !ts.IsName {
 		// By-ID reference.
 		typedTenantID, err := p.analyzeExpr(
-			ctx, ts.Expr, dummyHelper, types.Int, true, op)
+			ctx, ts.Expr, nil, dummyHelper, types.Int, true, op)
 		if err != nil {
 			return nil, err
 		}
@@ -61,7 +61,7 @@ func (p *planner) planTenantSpec(
 	}
 
 	typedTenantName, err := p.analyzeExpr(
-		ctx, e, dummyHelper, types.String, true, op)
+		ctx, e, nil, dummyHelper, types.String, true, op)
 	if err != nil {
 		return nil, err
 	}

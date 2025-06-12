@@ -183,11 +183,7 @@ GRANT testrole TO testuser WITH ADMIN OPTION
 
 statement ok
 CREATE ROLE child_role;
-
-statement ok
 GRANT testrole to child_role;
-
-statement ok
 GRANT testuser TO child_role;
 
 query TTB colnames,rowsort
@@ -260,6 +256,12 @@ user root
 
 statement ok
 GRANT admin TO testuser
+
+# Verify that is_admin reports the right value.
+query B
+SELECT crdb_internal.is_admin()
+----
+true
 
 # Dropping users/roles deletes all their memberships.
 query TTB colnames,rowsort
@@ -1861,18 +1863,6 @@ REVOKE SYSTEM CREATEDB FROM creator_of_databases
 
 statement ok
 DROP ROLE creator_of_databases
-
-subtest end
-
-subtest subject
-
-skipif config 3node-tenant
-statement error OSS binaries do not include enterprise features
-CREATE ROLE role_with_subject SUBJECT 'foo'
-
-skipif config 3node-tenant
-statement error OSS binaries do not include enterprise features
-ALTER ROLE testuser SUBJECT 'foo'
 
 subtest end
 

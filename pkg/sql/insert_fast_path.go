@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/span"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -40,7 +39,6 @@ var insertFastPathNodePool = sync.Pool{
 // performed via a direct lookup in an index, and when the input is VALUES of
 // limited size (at most mutations.MaxBatchSize).
 type insertFastPathNode struct {
-	zeroInputPlanNode
 	// input values, similar to a valuesNode.
 	input [][]tree.TypedExpr
 
@@ -111,15 +109,8 @@ func (c *insertFastPathCheck) init(params runParams) error {
 
 	codec := params.ExecCfg().Codec
 	c.keyPrefix = rowenc.MakeIndexKeyPrefix(codec, c.tabDesc.GetID(), c.idx.GetID())
-	c.spanBuilder.InitAllowingExternalRowData(params.EvalContext(), codec, c.tabDesc, c.idx)
-
-	if c.Locking.MustLockAllRequestedColumnFamilies() {
-		c.spanSplitter = span.MakeSplitterForSideEffect(
-			c.tabDesc, c.idx, intsets.Fast{}, /* neededColOrdinals */
-		)
-	} else {
-		c.spanSplitter = span.MakeSplitter(c.tabDesc, c.idx, intsets.Fast{} /* neededColOrdinals */)
-	}
+	c.spanBuilder.Init(params.EvalContext(), codec, c.tabDesc, c.idx)
+	c.spanSplitter = span.MakeSplitter(c.tabDesc, c.idx, intsets.Fast{} /* neededColOrdinals */)
 
 	if len(c.InsertCols) > idx.numLaxKeyCols {
 		return errors.AssertionFailedf(
@@ -214,10 +205,10 @@ func (r *insertFastPathRun) addUniqChecks(
 				if err != nil {
 					return nil, err
 				}
-				reqIdx := len(r.uniqBatch.Requests)
 				if r.traceKV {
 					log.VEventf(ctx, 2, "UniqScan %s", span)
 				}
+				reqIdx := len(r.uniqBatch.Requests)
 				r.uniqBatch.Requests = append(r.uniqBatch.Requests, kvpb.RequestUnion{})
 				// TODO(msirek): Batch-allocate the kvpb.ScanRequests outside the loop.
 				r.uniqBatch.Requests[reqIdx].MustSetInner(&kvpb.ScanRequest{
@@ -308,7 +299,6 @@ func (n *insertFastPathNode) runUniqChecks(params runParams) error {
 
 	// Run the uniqueness checks batch.
 	ba := n.run.uniqBatch.ShallowCopy()
-	log.VEventf(params.ctx, 2, "uniqueness check: sending a batch with %d requests", len(ba.Requests))
 	br, err := params.p.txn.Send(params.ctx, ba)
 	if err != nil {
 		return err.GoError()
@@ -336,7 +326,6 @@ func (n *insertFastPathNode) runFKChecks(params runParams) error {
 
 	// Run the FK checks batch.
 	ba := n.run.fkBatch.ShallowCopy()
-	log.VEventf(params.ctx, 2, "fk check: sending a batch with %d requests", len(ba.Requests))
 	br, err := params.p.txn.Send(params.ctx, ba)
 	if err != nil {
 		return err.GoError()
@@ -368,7 +357,6 @@ func (n *insertFastPathNode) runFKUniqChecks(params runParams) error {
 
 	// Run the combined uniqueness and FK checks batch.
 	ba := n.run.uniqBatch.ShallowCopy()
-	log.VEventf(params.ctx, 2, "fk / uniqueness check: sending a batch with %d requests", len(ba.Requests))
 	br, err := params.p.txn.Send(params.ctx, ba)
 	if err != nil {
 		return err.GoError()
@@ -398,7 +386,7 @@ func (n *insertFastPathNode) startExec(params runParams) error {
 	// Cache traceKV during execution, to avoid re-evaluating it for every row.
 	n.run.traceKV = params.p.ExtendedEvalContext().Tracing.KVTracingEnabled()
 
-	n.run.init(params, n.columns)
+	n.run.initRowContainer(params, n.columns)
 
 	n.run.numInputCols = len(n.input[0])
 	n.run.inputBuf = make(tree.Datums, len(n.input)*n.run.numInputCols)
@@ -438,7 +426,7 @@ func (n *insertFastPathNode) startExec(params runParams) error {
 		n.run.uniqSpanInfo = make([]insertFastPathFKUniqSpanInfo, 0, maxSpans)
 	}
 
-	return n.run.ti.init(params.ctx, params.p.txn, params.EvalContext())
+	return n.run.ti.init(params.ctx, params.p.txn, params.EvalContext(), &params.EvalContext().Settings.SV)
 }
 
 // Next is required because batchedPlanNode inherits from planNode, but
@@ -472,14 +460,6 @@ func (n *insertFastPathNode) BatchedNext(params runParams) (bool, error) {
 				return false, err
 			}
 		}
-
-		if buildutil.CrdbTestBuild {
-			// This testing knob allows us to suspend execution to force a race condition.
-			if fn := params.ExecCfg().TestingKnobs.AfterArbiterRead; fn != nil {
-				fn()
-			}
-		}
-
 		// Process the insertion for the current source row, potentially
 		// accumulating the result row for later.
 		if err := n.run.processSourceRow(params, inputRow); err != nil {

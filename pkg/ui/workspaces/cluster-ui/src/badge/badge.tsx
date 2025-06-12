@@ -3,8 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
 import * as React from "react";
+import classNames from "classnames/bind";
 
 import styles from "./badge.module.scss";
 

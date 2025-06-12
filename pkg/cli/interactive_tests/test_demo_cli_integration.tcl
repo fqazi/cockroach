@@ -28,9 +28,9 @@ spawn $argv sql --no-line-editor -u demo
 eexpect "Welcome"
 eexpect demo@
 eexpect "defaultdb>"
-send "show tenants;\r"
+send "table system.tenants;\r"
 eexpect "ERROR"
-eexpect "only the system tenant"
+eexpect "does not exist"
 eexpect "defaultdb>"
 send "\\q\r"
 eexpect eof
@@ -44,9 +44,9 @@ expect {
     root@ {}
 }
 eexpect "defaultdb>"
-send "show tenants;\r"
+send "table system.tenants;\r"
 eexpect "ERROR"
-eexpect "only the system tenant"
+eexpect "does not exist"
 eexpect "defaultdb>"
 send "\\q\r"
 eexpect eof
@@ -68,7 +68,7 @@ eexpect "Welcome"
 eexpect "ATTENTION: YOU ARE CONNECTED TO THE SYSTEM TENANT"
 eexpect demo@
 eexpect "system/defaultdb>"
-send "show tenants;\r"
+send "table system.tenants;\r"
 eexpect "2 rows"
 eexpect "system/defaultdb>"
 send "\\q\r"
@@ -81,7 +81,7 @@ eexpect "Welcome"
 eexpect "ATTENTION: YOU ARE CONNECTED TO THE SYSTEM TENANT"
 eexpect root@
 eexpect "system/defaultdb>"
-send "show tenants;\r"
+send "table system.tenants;\r"
 eexpect "2 rows"
 eexpect "system/defaultdb>"
 send "\\q\r"
@@ -127,9 +127,9 @@ expect {
     root@ {}
 }
 eexpect "defaultdb>"
-send "show tenants;\r"
+send "table system.tenants;\r"
 eexpect "ERROR"
-eexpect "only the system tenant"
+eexpect "does not exist"
 eexpect "defaultdb>"
 send "\\q\r"
 eexpect eof
@@ -143,7 +143,7 @@ eexpect "Welcome"
 eexpect "ATTENTION: YOU ARE CONNECTED TO THE SYSTEM TENANT"
 eexpect root@
 eexpect "system/defaultdb>"
-send "show tenants;\r"
+send "table system.tenants;\r"
 eexpect "2 rows"
 eexpect "system/defaultdb>"
 send "\\q\r"

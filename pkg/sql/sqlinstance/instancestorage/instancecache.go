@@ -7,21 +7,21 @@ package instancestorage
 
 import (
 	"context"
+	"strings"
+	"sync"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/kv"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangefeed"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/regionliveness"
-	"github.com/cockroachdb/cockroach/pkg/sql/rowenc/keyside"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/util/encoding"
+	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/logtags"
 )
 
 // instanceCache represents a cache over the contents of sql_instances table.
@@ -97,8 +97,9 @@ var _ instanceCache = &rangeFeedCache{}
 // sql_instances table. newRangeFeedCache will block until the initial scan is
 // complete.
 func newRangeFeedCache(
-	ctx context.Context, rowCodec rowCodec, clock *hlc.Clock, f *rangefeed.Factory, storage *Storage,
+	ctx context.Context, rowCodec rowCodec, clock *hlc.Clock, f *rangefeed.Factory,
 ) (resultFeed instanceCache, err error) {
+	done := make(chan error, 1)
 
 	feed := &rangeFeedCache{}
 	feed.mu.instances = map[base.SQLInstanceID]instancerow{}
@@ -113,88 +114,64 @@ func newRangeFeedCache(
 		}
 		feed.updateInstanceMap(instance, !keyVal.Value.IsPresent())
 	}
-	// Instead of relying on the change feed to do the initial scan, which would
-	// be across all regions, we are going to do it ourselves in a region aware
-	// manner. Any regions labeled as unavailable will be skipped in the process.
-	initialScan := func() (hlc.Timestamp, error) {
-		ts := hlc.Timestamp{}
-		livenessProber := regionliveness.NewLivenessProber(storage.db, storage.codec, nil, storage.settings)
-		return ts, storage.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-			// Determine regions known by the system database and figure out if
-			// any of them are unavailable.
-			regions, err := storage.readRegionsFromSystemDatabase(ctx, txn)
-			if err != nil {
-				return err
-			}
-			deadRegions, err := livenessProber.QueryUnavailablePhysicalRegions(ctx, txn, true /*filterAvailable*/)
-			if err != nil {
-				return err
-			}
-			for _, region := range regions {
-				// Region is toast, no need for an initial scan.
-				if deadRegions.ContainsPhysicalRepresentation(string(region)) {
-					continue
-				}
-				instanceKey := rowCodec.makeIndexPrefix()
-				instanceKeyWithRegionBytes, err := keyside.Encode(instanceKey, tree.NewDBytes(tree.DBytes(region)), encoding.Ascending)
-				if err != nil {
-					return err
-				}
-				instanceKeyWithRegion := roachpb.Key(instanceKeyWithRegionBytes)
-				var rows []kv.KeyValue
-				scanFunc := func(ctx context.Context) error {
-					var err error
-					rows, err = txn.Scan(ctx, instanceKeyWithRegion, instanceKeyWithRegion.PrefixEnd(), 0)
-					return err
-				}
-				if hasTimeout, timeout := livenessProber.GetProbeTimeout(); hasTimeout {
-					err = timeutil.RunWithTimeout(ctx, "get-instance-cache-scan", timeout, scanFunc)
-				} else {
-					err = scanFunc(ctx)
-				}
-				if err != nil {
-					if regionliveness.IsQueryTimeoutErr(err) {
-						// Probe and mark the region potentially.
-						probeErr := livenessProber.ProbeLivenessWithPhysicalRegion(ctx, region)
-						if probeErr != nil {
-							err = errors.WithSecondaryError(err, probeErr)
-							return err
-						}
-						return errors.Wrapf(err, "get-instance-rows timed out reading from a region")
-					}
-					return err
-				}
-				for _, row := range rows {
-					keyVal := kvpb.RangeFeedValue{
-						Key:   row.Key,
-						Value: *row.Value,
-					}
-					updateCacheFn(ctx, &keyVal)
-				}
-			}
-			ts, err = txn.CommitTimestamp()
-			return err
-		})
+	initialScanDoneFn := func(_ context.Context) {
+		select {
+		case done <- nil:
+			// success reported to the caller
+		default:
+			// something is already in the done channel
+		}
 	}
+	initialScanErrFn := func(_ context.Context, err error) (shouldFail bool) {
+		if grpcutil.IsAuthError(err) ||
+			// This is a hack around the fact that we do not get properly structured
+			// errors out of gRPC. See #56208.
+			strings.Contains(err.Error(), "rpc error: code = Unauthenticated") {
+			shouldFail = true
+			select {
+			case done <- err:
+				// err reported to the caller
+			default:
+				// something is already in the done channel
+			}
+		}
+		return shouldFail
+	}
+
 	instancesTablePrefix := rowCodec.makeIndexPrefix()
 	instancesTableSpan := roachpb.Span{
 		Key:    instancesTablePrefix,
 		EndKey: instancesTablePrefix.PrefixEnd(),
 	}
-	initialTS, err := initialScan()
-	if err != nil {
-		return nil, err
-	}
-
 	feed.feed, err = f.RangeFeed(ctx,
 		"sql_instances",
 		[]roachpb.Span{instancesTableSpan},
-		// Start collecting updates to the table after our initial scan.
-		initialTS,
+		clock.Now(),
 		updateCacheFn,
 		rangefeed.WithSystemTablePriority(),
+		rangefeed.WithInitialScan(initialScanDoneFn),
+		rangefeed.WithOnInitialScanError(initialScanErrFn),
+		rangefeed.WithRowTimestampInInitialScan(true),
 	)
-	return feed, err
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		// Ensure the feed is cleaned up if there is an error
+		if resultFeed == nil {
+			feed.Close()
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case err := <-done:
+		if err != nil {
+			return nil, err
+		}
+		return feed, nil
+	}
 }
 
 func (s *rangeFeedCache) getInstance(instanceID base.SQLInstanceID) (instancerow, bool) {
@@ -233,6 +210,118 @@ type migrationCache struct {
 		syncutil.Mutex
 		cache instanceCache
 	}
+}
+
+// onVersionReached installs a callback that runs once the version is reached.
+// If the version was reached before installing the callback, the callback is run
+// synchronously.
+func onVersionReached(
+	ctx context.Context, settings *cluster.Settings, expect clusterversion.Key, do func(),
+) {
+	var once sync.Once
+
+	onVersionChanged := func(rpcContext context.Context, version clusterversion.ClusterVersion) {
+		if !version.IsActive(expect) {
+			return
+		}
+		once.Do(do)
+	}
+
+	settings.Version.SetOnChange(onVersionChanged)
+
+	onVersionChanged(ctx, settings.Version.ActiveVersion(ctx))
+}
+
+// newMigrationCache uses the oldCache and newCache functions to construct
+// instanceCaches. The cache registers a hook with the setting and switches
+// from the old implementation to the new implementation when the version
+// changes to V23_1_SystemRbrReadNew.
+func newMigrationCache(
+	ctx context.Context,
+	stopper *stop.Stopper,
+	settings *cluster.Settings,
+	oldCache, newCache func(ctx context.Context) (instanceCache, error),
+) (instanceCache, error) {
+	c := &migrationCache{}
+
+	// oldReady is signaled when the old cache finishes starting.
+	oldReady := make(chan error, 1)
+	err := stopper.RunAsyncTask(ctx, "start-old-cache-implementation", func(ctx context.Context) {
+		cache, err := oldCache(ctx)
+		if err != nil {
+			oldReady <- err
+		}
+
+		onVersionReached(ctx, settings, clusterversion.V23_1_SystemRbrReadNew, func() {
+			// Once the read new version gate is reached, close the original
+			// cache in order to clean up resources and prevent reading updates
+			// when the original index is deleted.
+			cache.Close()
+		})
+
+		// If the old cache is already stale, do not return it.
+		if settings.Version.IsActive(ctx, clusterversion.V23_1_SystemRbrReadNew) {
+			return
+		}
+
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
+		// In the case of a race condition, if the new cache initialized first,
+		// do not ovewrwrite it.
+		if c.mu.cache != nil {
+			return
+		}
+
+		c.mu.cache = cache
+		oldReady <- nil
+	})
+	if err != nil {
+		oldReady <- err
+	}
+
+	// newReady is signaled when the new cache finishes starting.
+	newReady := make(chan error, 1)
+	newCacheCtx := logtags.AddTags(context.Background(), logtags.FromContext(ctx))
+	onVersionReached(ctx, settings, clusterversion.V23_1_SystemRbrReadNew, func() {
+		err := stopper.RunAsyncTask(newCacheCtx, "start-new-cache-implementation", func(ctx context.Context) {
+			// Rebuild the cancel signal since the goroutine has a  background
+			// context.
+			ctx, cancel := stopper.WithCancelOnQuiesce(ctx)
+			defer cancel()
+
+			log.Ops.Info(ctx, "starting new system.sql_instance cache")
+
+			cache, err := newCache(ctx)
+			if err != nil {
+				log.Ops.Errorf(ctx, "error starting the new system.sql_instance cache: %s", err)
+				newReady <- err
+				return
+			}
+
+			log.Ops.Info(ctx, "new system.sql_instance cache is ready")
+
+			c.mu.Lock()
+			defer c.mu.Unlock()
+
+			c.mu.cache = cache
+			newReady <- nil
+		})
+		if err != nil {
+			log.Ops.Errorf(ctx, "unable to start new system.sql_instance cache: %s", err)
+			newReady <- err
+		}
+	})
+
+	// Wait for one of the caches to be ready or fail to start.
+	select {
+	case err = <-newReady:
+	case err = <-oldReady:
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func (c *migrationCache) Close() {

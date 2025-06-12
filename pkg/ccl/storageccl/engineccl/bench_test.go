@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testfixtures"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
@@ -50,12 +49,12 @@ func loadTestData(
 ) storage.Engine {
 	ctx := context.Background()
 
-	verStr := fmt.Sprintf("v%s", clusterversion.Latest.String())
+	verStr := fmt.Sprintf("v%s", clusterversion.TestingBinaryVersion.String())
 	name := fmt.Sprintf("%s_v%s_%d_%d_%d_%d", dirPrefix, verStr, numKeys, numBatches, batchTimeSpan, valueBytes)
 	dir := testfixtures.ReuseOrGenerate(tb, name, func(dir string) {
 		eng, err := storage.Open(
 			ctx,
-			fs.MustInitPhysicalTestingEnv(dir),
+			storage.Filesystem(dir),
 			cluster.MakeTestingClusterSettings())
 		if err != nil {
 			tb.Fatal(err)
@@ -94,9 +93,6 @@ func loadTestData(
 				minWallTime = minSStableTimestamps[i/scaled]
 			}
 			timestamp := hlc.Timestamp{WallTime: minWallTime + rand.Int63n(int64(batchTimeSpan))}
-			if timestamp.Less(hlc.MinTimestamp) {
-				timestamp = hlc.MinTimestamp
-			}
 			value := roachpb.MakeValueFromBytes(randutil.RandBytes(rng, valueBytes))
 			value.InitChecksum(key)
 			if _, err := storage.MVCCPut(ctx, batch, key, timestamp, value, storage.MVCCWriteOptions{}); err != nil {
@@ -116,7 +112,7 @@ func loadTestData(
 	log.Infof(context.Background(), "using test data: %s", dir)
 	eng, err := storage.Open(
 		ctx,
-		fs.MustInitPhysicalTestingEnv(dir),
+		storage.Filesystem(dir),
 		cluster.MakeTestingClusterSettings(),
 		storage.MustExist,
 	)
@@ -142,7 +138,7 @@ func runIterate(
 
 	// Store the database in this directory so we don't have to regenerate it on
 	// each benchmark run.
-	eng := loadTestData(b, "mvcc_data_v3", numKeys, numBatches, batchTimeSpan, valueBytes)
+	eng := loadTestData(b, "mvcc_data_v2", numKeys, numBatches, batchTimeSpan, valueBytes)
 	defer eng.Close()
 
 	b.SetBytes(int64(numKeys * valueBytes))
@@ -182,12 +178,12 @@ func BenchmarkTimeBoundIterate(b *testing.B) {
 		b.Run(fmt.Sprintf("LoadFactor=%.2f", loadFactor), func(b *testing.B) {
 			b.Run("NormalIterator", func(b *testing.B) {
 				runIterate(b, loadFactor, func(e storage.Engine, _, _ hlc.Timestamp) (storage.MVCCIterator, error) {
-					return e.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{UpperBound: roachpb.KeyMax})
+					return e.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{UpperBound: roachpb.KeyMax})
 				})
 			})
 			b.Run("TimeBoundIterator", func(b *testing.B) {
 				runIterate(b, loadFactor, func(e storage.Engine, startTime, endTime hlc.Timestamp) (storage.MVCCIterator, error) {
-					return e.NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
+					return e.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 						MinTimestamp: startTime,
 						MaxTimestamp: endTime,
 						UpperBound:   roachpb.KeyMax,

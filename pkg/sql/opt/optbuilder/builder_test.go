@@ -71,15 +71,12 @@ func TestBuilder(t *testing.T) {
 				tester.Flags.ExprFormat &= ^(memo.ExprFmtHideScalars | memo.ExprFmtHideTypes)
 
 				ctx := context.Background()
-				semaCtx := tree.MakeSemaContext(nil /* resolver */)
+				semaCtx := tree.MakeSemaContext()
 				evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
 				evalCtx.SessionData().OptimizerUseForecasts = true
 				evalCtx.SessionData().OptimizerUseHistograms = true
 				evalCtx.SessionData().OptimizerUseMultiColStats = true
 				evalCtx.SessionData().LocalityOptimizedSearch = true
-				evalCtx.SessionData().OptimizerUseVirtualComputedColumnStats = true
-				evalCtx.SessionData().OptimizerUseImprovedZigzagJoinCosting = true
-				evalCtx.SessionData().OptimizerUseImprovedMultiColumnSelectivityEstimate = true
 
 				var o xform.Optimizer
 				o.Init(ctx, &evalCtx, catalog)

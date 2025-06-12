@@ -45,6 +45,10 @@ const (
 	// UpgradedFormatVersion indicates that the FormatVersion was upgraded.
 	UpgradedFormatVersion PostDeserializationChangeType = iota
 
+	// FixedIndexEncodingType indicates that the encoding type of a public index
+	// was fixed.
+	FixedIndexEncodingType
+
 	// UpgradedIndexFormatVersion indicates that the format version of at least
 	// one index descriptor was upgraded.
 	UpgradedIndexFormatVersion
@@ -53,8 +57,20 @@ const (
 	// representation was upgraded.
 	UpgradedForeignKeyRepresentation
 
+	// UpgradedNamespaceName indicates that the table was system.namespace
+	// and it had its name upgraded from "namespace2".
+	//
+	// TODO(ajwerner): Remove this and the associated migration in 22.1 as
+	// this will never be true due to the corresponding long-running migration.
+	UpgradedNamespaceName
+
 	// UpgradedPrivileges indicates that the PrivilegeDescriptor version was upgraded.
 	UpgradedPrivileges
+
+	// RemovedDefaultExprFromComputedColumn indicates that the table had at least
+	// one computed column which also had a DEFAULT expression, which therefore
+	// had to be removed. See issue #72881 for details.
+	RemovedDefaultExprFromComputedColumn
 
 	// RemovedDuplicateIDsInRefs indicates that the table
 	// has redundant IDs in its DependsOn, DependsOnTypes and DependedOnBy
@@ -79,9 +95,17 @@ const (
 	// field was unset and that the MVCC timestamp value was assigned to it.
 	SetModTimeToMVCCTimestamp
 
+	// SetCreateAsOfTimeUsingModTime indicates that a table's CreateAsOfTime field
+	// was unset and the ModificationTime value was assigned to it.
+	SetCreateAsOfTimeUsingModTime
+
 	// SetSystemDatabaseDescriptorVersion indicates that the system database
 	// descriptor did not have its version set.
 	SetSystemDatabaseDescriptorVersion
+
+	// SetCheckConstraintColumnIDs indicates that a table's check constraint's
+	// ColumnIDs slice hadn't been set yet, and was set to a non-empty slice.
+	SetCheckConstraintColumnIDs
 
 	// UpgradedDeclarativeSchemaChangerState indicates the declarative schema changer
 	// state was modified.
@@ -108,15 +132,11 @@ const (
 	// to the public role for a function.
 	GrantExecuteOnFunctionToPublicRole
 
-	// StrippedNonExistentRoles indicates that at least one role identified did
-	// not exist.
-	StrippedNonExistentRoles
-
 	// FixedIncorrectForeignKeyOrigins indicates that foreign key origin /
 	// reference IDs that should point to the current descriptor were fixed.
 	FixedIncorrectForeignKeyOrigins
 
-	// FixedUsesSequencesIDForIdentityColumns indicates sequence ID references
-	// are fixed for identity / serial columns.
-	FixedUsesSequencesIDForIdentityColumns
+	// StrippedNonExistentRoles indicates that at least one role identified did
+	// not exist.
+	StrippedNonExistentRoles
 )

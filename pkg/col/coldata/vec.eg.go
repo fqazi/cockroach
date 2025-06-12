@@ -36,7 +36,7 @@ var (
 // they are working with can then access the typed column directly, avoiding
 // expensive type casts.
 type TypedVecs struct {
-	Vecs  []*Vec
+	Vecs  []Vec
 	Nulls []*Nulls
 
 	// Fields below need to be accessed by an index mapped via ColsMap.
@@ -207,22 +207,14 @@ func (v *TypedVecs) Reset() {
 	}
 }
 
-// Append uses SliceArgs to append elements of a source Vec into this Vec.
-// It is logically equivalent to:
-// destVec = append(destVec[:args.DestIdx], args.Src[args.SrcStartIdx:args.SrcEndIdx])
-// An optional Sel slice can also be provided to apply a filter on the source
-// Vec.
-// Refer to the SliceArgs comment for specifics and TestAppend for examples.
-//
-// Note: Append()'ing from a Vector into itself is not supported.
-func (v *Vec) Append(args SliceArgs) {
-	switch v.CanonicalTypeFamily() {
+func (m *memColumn) Append(args SliceArgs) {
+	switch m.CanonicalTypeFamily() {
 	case types.BoolFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Bool()
-			toCol := v.Bool()
+			toCol := m.Bool()
 			// NOTE: it is unfortunate that we always append whole slice without paying
 			// attention to whether the values are NULL. However, if we do start paying
 			// attention, the performance suffers dramatically, so we choose to copy
@@ -237,15 +229,15 @@ func (v *Vec) Append(args SliceArgs) {
 					toCol = append(toCol, val)
 				}
 			}
-			v.nulls.set(args)
-			v.col = toCol
+			m.nulls.set(args)
+			m.col = toCol
 		}
 	case types.BytesFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Bytes()
-			toCol := v.Bytes()
+			toCol := m.Bytes()
 			// NOTE: it is unfortunate that we always append whole slice without paying
 			// attention to whether the values are NULL. However, if we do start paying
 			// attention, the performance suffers dramatically, so we choose to copy
@@ -256,15 +248,15 @@ func (v *Vec) Append(args SliceArgs) {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				toCol.appendSliceWithSel(fromCol, args.DestIdx, sel)
 			}
-			v.nulls.set(args)
-			v.col = toCol
+			m.nulls.set(args)
+			m.col = toCol
 		}
 	case types.DecimalFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Decimal()
-			toCol := v.Decimal()
+			toCol := m.Decimal()
 			// NOTE: it is unfortunate that we always append whole slice without paying
 			// attention to whether the values are NULL. However, if we do start paying
 			// attention, the performance suffers dramatically, so we choose to copy
@@ -301,14 +293,14 @@ func (v *Vec) Append(args SliceArgs) {
 					toCol[len(toCol)-1].Set(&val)
 				}
 			}
-			v.nulls.set(args)
-			v.col = toCol
+			m.nulls.set(args)
+			m.col = toCol
 		}
 	case types.IntFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case 16:
 			fromCol := args.Src.Int16()
-			toCol := v.Int16()
+			toCol := m.Int16()
 			// NOTE: it is unfortunate that we always append whole slice without paying
 			// attention to whether the values are NULL. However, if we do start paying
 			// attention, the performance suffers dramatically, so we choose to copy
@@ -323,11 +315,11 @@ func (v *Vec) Append(args SliceArgs) {
 					toCol = append(toCol, val)
 				}
 			}
-			v.nulls.set(args)
-			v.col = toCol
+			m.nulls.set(args)
+			m.col = toCol
 		case 32:
 			fromCol := args.Src.Int32()
-			toCol := v.Int32()
+			toCol := m.Int32()
 			// NOTE: it is unfortunate that we always append whole slice without paying
 			// attention to whether the values are NULL. However, if we do start paying
 			// attention, the performance suffers dramatically, so we choose to copy
@@ -342,12 +334,12 @@ func (v *Vec) Append(args SliceArgs) {
 					toCol = append(toCol, val)
 				}
 			}
-			v.nulls.set(args)
-			v.col = toCol
+			m.nulls.set(args)
+			m.col = toCol
 		case -1:
 		default:
 			fromCol := args.Src.Int64()
-			toCol := v.Int64()
+			toCol := m.Int64()
 			// NOTE: it is unfortunate that we always append whole slice without paying
 			// attention to whether the values are NULL. However, if we do start paying
 			// attention, the performance suffers dramatically, so we choose to copy
@@ -362,15 +354,15 @@ func (v *Vec) Append(args SliceArgs) {
 					toCol = append(toCol, val)
 				}
 			}
-			v.nulls.set(args)
-			v.col = toCol
+			m.nulls.set(args)
+			m.col = toCol
 		}
 	case types.FloatFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Float64()
-			toCol := v.Float64()
+			toCol := m.Float64()
 			// NOTE: it is unfortunate that we always append whole slice without paying
 			// attention to whether the values are NULL. However, if we do start paying
 			// attention, the performance suffers dramatically, so we choose to copy
@@ -385,15 +377,15 @@ func (v *Vec) Append(args SliceArgs) {
 					toCol = append(toCol, val)
 				}
 			}
-			v.nulls.set(args)
-			v.col = toCol
+			m.nulls.set(args)
+			m.col = toCol
 		}
 	case types.TimestampTZFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Timestamp()
-			toCol := v.Timestamp()
+			toCol := m.Timestamp()
 			// NOTE: it is unfortunate that we always append whole slice without paying
 			// attention to whether the values are NULL. However, if we do start paying
 			// attention, the performance suffers dramatically, so we choose to copy
@@ -408,15 +400,15 @@ func (v *Vec) Append(args SliceArgs) {
 					toCol = append(toCol, val)
 				}
 			}
-			v.nulls.set(args)
-			v.col = toCol
+			m.nulls.set(args)
+			m.col = toCol
 		}
 	case types.IntervalFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Interval()
-			toCol := v.Interval()
+			toCol := m.Interval()
 			// NOTE: it is unfortunate that we always append whole slice without paying
 			// attention to whether the values are NULL. However, if we do start paying
 			// attention, the performance suffers dramatically, so we choose to copy
@@ -431,15 +423,15 @@ func (v *Vec) Append(args SliceArgs) {
 					toCol = append(toCol, val)
 				}
 			}
-			v.nulls.set(args)
-			v.col = toCol
+			m.nulls.set(args)
+			m.col = toCol
 		}
 	case types.JsonFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.JSON()
-			toCol := v.JSON()
+			toCol := m.JSON()
 			// NOTE: it is unfortunate that we always append whole slice without paying
 			// attention to whether the values are NULL. However, if we do start paying
 			// attention, the performance suffers dramatically, so we choose to copy
@@ -450,15 +442,15 @@ func (v *Vec) Append(args SliceArgs) {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				toCol.appendSliceWithSel(fromCol, args.DestIdx, sel)
 			}
-			v.nulls.set(args)
-			v.col = toCol
+			m.nulls.set(args)
+			m.col = toCol
 		}
 	case typeconv.DatumVecCanonicalTypeFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Datum()
-			toCol := v.Datum()
+			toCol := m.Datum()
 			// NOTE: it is unfortunate that we always append whole slice without paying
 			// attention to whether the values are NULL. However, if we do start paying
 			// attention, the performance suffers dramatically, so we choose to copy
@@ -473,37 +465,31 @@ func (v *Vec) Append(args SliceArgs) {
 					toCol.AppendVal(val)
 				}
 			}
-			v.nulls.set(args)
-			v.col = toCol
+			m.nulls.set(args)
+			m.col = toCol
 		}
 	default:
-		panic(fmt.Sprintf("unhandled type %s", v.t))
+		panic(fmt.Sprintf("unhandled type %s", m.t))
 	}
 }
 
-// Copy uses SliceArgs to copy elements of a source Vec into this Vec. It is
-// logically equivalent to:
-// copy(destVec[args.DestIdx:], args.Src[args.SrcStartIdx:args.SrcEndIdx])
-// An optional Sel slice can also be provided to apply a filter on the source
-// Vec.
-// Refer to the SliceArgs comment for specifics and TestCopy for examples.
-func (v *Vec) Copy(args SliceArgs) {
+func (m *memColumn) Copy(args SliceArgs) {
 	if args.SrcStartIdx == args.SrcEndIdx {
 		// Nothing to copy, so return early.
 		return
 	}
-	if v.Nulls().MaybeHasNulls() {
+	if m.Nulls().MaybeHasNulls() {
 		// We're about to overwrite this entire range, so unset all the nulls.
-		v.Nulls().UnsetNullRange(args.DestIdx, args.DestIdx+(args.SrcEndIdx-args.SrcStartIdx))
+		m.Nulls().UnsetNullRange(args.DestIdx, args.DestIdx+(args.SrcEndIdx-args.SrcStartIdx))
 	}
 
-	switch v.CanonicalTypeFamily() {
+	switch m.CanonicalTypeFamily() {
 	case types.BoolFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Bool()
-			toCol := v.Bool()
+			toCol := m.Bool()
 			if args.Sel != nil {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				n := len(sel)
@@ -515,7 +501,7 @@ func (v *Vec) Copy(args SliceArgs) {
 						//gcassert:bce
 						selIdx := sel[i]
 						if nulls.NullAt(selIdx) {
-							v.nulls.SetNull(i + args.DestIdx)
+							m.nulls.SetNull(i + args.DestIdx)
 						} else {
 							v := fromCol.Get(selIdx)
 							//gcassert:bce
@@ -536,14 +522,14 @@ func (v *Vec) Copy(args SliceArgs) {
 			}
 			// No Sel.
 			toCol.CopySlice(fromCol, args.DestIdx, args.SrcStartIdx, args.SrcEndIdx)
-			v.nulls.set(args)
+			m.nulls.set(args)
 		}
 	case types.BytesFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Bytes()
-			toCol := v.Bytes()
+			toCol := m.Bytes()
 			if args.Sel != nil {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				n := len(sel)
@@ -553,7 +539,7 @@ func (v *Vec) Copy(args SliceArgs) {
 						//gcassert:bce
 						selIdx := sel[i]
 						if nulls.NullAt(selIdx) {
-							v.nulls.SetNull(i + args.DestIdx)
+							m.nulls.SetNull(i + args.DestIdx)
 						} else {
 							toCol.Copy(fromCol, i+args.DestIdx, selIdx)
 						}
@@ -570,14 +556,14 @@ func (v *Vec) Copy(args SliceArgs) {
 			}
 			// No Sel.
 			toCol.CopySlice(fromCol, args.DestIdx, args.SrcStartIdx, args.SrcEndIdx)
-			v.nulls.set(args)
+			m.nulls.set(args)
 		}
 	case types.DecimalFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Decimal()
-			toCol := v.Decimal()
+			toCol := m.Decimal()
 			if args.Sel != nil {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				n := len(sel)
@@ -589,7 +575,7 @@ func (v *Vec) Copy(args SliceArgs) {
 						//gcassert:bce
 						selIdx := sel[i]
 						if nulls.NullAt(selIdx) {
-							v.nulls.SetNull(i + args.DestIdx)
+							m.nulls.SetNull(i + args.DestIdx)
 						} else {
 							v := fromCol.Get(selIdx)
 							//gcassert:bce
@@ -610,13 +596,13 @@ func (v *Vec) Copy(args SliceArgs) {
 			}
 			// No Sel.
 			toCol.CopySlice(fromCol, args.DestIdx, args.SrcStartIdx, args.SrcEndIdx)
-			v.nulls.set(args)
+			m.nulls.set(args)
 		}
 	case types.IntFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case 16:
 			fromCol := args.Src.Int16()
-			toCol := v.Int16()
+			toCol := m.Int16()
 			if args.Sel != nil {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				n := len(sel)
@@ -628,7 +614,7 @@ func (v *Vec) Copy(args SliceArgs) {
 						//gcassert:bce
 						selIdx := sel[i]
 						if nulls.NullAt(selIdx) {
-							v.nulls.SetNull(i + args.DestIdx)
+							m.nulls.SetNull(i + args.DestIdx)
 						} else {
 							v := fromCol.Get(selIdx)
 							//gcassert:bce
@@ -649,10 +635,10 @@ func (v *Vec) Copy(args SliceArgs) {
 			}
 			// No Sel.
 			toCol.CopySlice(fromCol, args.DestIdx, args.SrcStartIdx, args.SrcEndIdx)
-			v.nulls.set(args)
+			m.nulls.set(args)
 		case 32:
 			fromCol := args.Src.Int32()
-			toCol := v.Int32()
+			toCol := m.Int32()
 			if args.Sel != nil {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				n := len(sel)
@@ -664,7 +650,7 @@ func (v *Vec) Copy(args SliceArgs) {
 						//gcassert:bce
 						selIdx := sel[i]
 						if nulls.NullAt(selIdx) {
-							v.nulls.SetNull(i + args.DestIdx)
+							m.nulls.SetNull(i + args.DestIdx)
 						} else {
 							v := fromCol.Get(selIdx)
 							//gcassert:bce
@@ -685,11 +671,11 @@ func (v *Vec) Copy(args SliceArgs) {
 			}
 			// No Sel.
 			toCol.CopySlice(fromCol, args.DestIdx, args.SrcStartIdx, args.SrcEndIdx)
-			v.nulls.set(args)
+			m.nulls.set(args)
 		case -1:
 		default:
 			fromCol := args.Src.Int64()
-			toCol := v.Int64()
+			toCol := m.Int64()
 			if args.Sel != nil {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				n := len(sel)
@@ -701,7 +687,7 @@ func (v *Vec) Copy(args SliceArgs) {
 						//gcassert:bce
 						selIdx := sel[i]
 						if nulls.NullAt(selIdx) {
-							v.nulls.SetNull(i + args.DestIdx)
+							m.nulls.SetNull(i + args.DestIdx)
 						} else {
 							v := fromCol.Get(selIdx)
 							//gcassert:bce
@@ -722,14 +708,14 @@ func (v *Vec) Copy(args SliceArgs) {
 			}
 			// No Sel.
 			toCol.CopySlice(fromCol, args.DestIdx, args.SrcStartIdx, args.SrcEndIdx)
-			v.nulls.set(args)
+			m.nulls.set(args)
 		}
 	case types.FloatFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Float64()
-			toCol := v.Float64()
+			toCol := m.Float64()
 			if args.Sel != nil {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				n := len(sel)
@@ -741,7 +727,7 @@ func (v *Vec) Copy(args SliceArgs) {
 						//gcassert:bce
 						selIdx := sel[i]
 						if nulls.NullAt(selIdx) {
-							v.nulls.SetNull(i + args.DestIdx)
+							m.nulls.SetNull(i + args.DestIdx)
 						} else {
 							v := fromCol.Get(selIdx)
 							//gcassert:bce
@@ -762,14 +748,14 @@ func (v *Vec) Copy(args SliceArgs) {
 			}
 			// No Sel.
 			toCol.CopySlice(fromCol, args.DestIdx, args.SrcStartIdx, args.SrcEndIdx)
-			v.nulls.set(args)
+			m.nulls.set(args)
 		}
 	case types.TimestampTZFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Timestamp()
-			toCol := v.Timestamp()
+			toCol := m.Timestamp()
 			if args.Sel != nil {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				n := len(sel)
@@ -781,7 +767,7 @@ func (v *Vec) Copy(args SliceArgs) {
 						//gcassert:bce
 						selIdx := sel[i]
 						if nulls.NullAt(selIdx) {
-							v.nulls.SetNull(i + args.DestIdx)
+							m.nulls.SetNull(i + args.DestIdx)
 						} else {
 							v := fromCol.Get(selIdx)
 							//gcassert:bce
@@ -802,14 +788,14 @@ func (v *Vec) Copy(args SliceArgs) {
 			}
 			// No Sel.
 			toCol.CopySlice(fromCol, args.DestIdx, args.SrcStartIdx, args.SrcEndIdx)
-			v.nulls.set(args)
+			m.nulls.set(args)
 		}
 	case types.IntervalFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Interval()
-			toCol := v.Interval()
+			toCol := m.Interval()
 			if args.Sel != nil {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				n := len(sel)
@@ -821,7 +807,7 @@ func (v *Vec) Copy(args SliceArgs) {
 						//gcassert:bce
 						selIdx := sel[i]
 						if nulls.NullAt(selIdx) {
-							v.nulls.SetNull(i + args.DestIdx)
+							m.nulls.SetNull(i + args.DestIdx)
 						} else {
 							v := fromCol.Get(selIdx)
 							//gcassert:bce
@@ -842,14 +828,14 @@ func (v *Vec) Copy(args SliceArgs) {
 			}
 			// No Sel.
 			toCol.CopySlice(fromCol, args.DestIdx, args.SrcStartIdx, args.SrcEndIdx)
-			v.nulls.set(args)
+			m.nulls.set(args)
 		}
 	case types.JsonFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.JSON()
-			toCol := v.JSON()
+			toCol := m.JSON()
 			if args.Sel != nil {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				n := len(sel)
@@ -859,7 +845,7 @@ func (v *Vec) Copy(args SliceArgs) {
 						//gcassert:bce
 						selIdx := sel[i]
 						if nulls.NullAt(selIdx) {
-							v.nulls.SetNull(i + args.DestIdx)
+							m.nulls.SetNull(i + args.DestIdx)
 						} else {
 							toCol.Copy(fromCol, i+args.DestIdx, selIdx)
 						}
@@ -876,14 +862,14 @@ func (v *Vec) Copy(args SliceArgs) {
 			}
 			// No Sel.
 			toCol.CopySlice(fromCol, args.DestIdx, args.SrcStartIdx, args.SrcEndIdx)
-			v.nulls.set(args)
+			m.nulls.set(args)
 		}
 	case typeconv.DatumVecCanonicalTypeFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := args.Src.Datum()
-			toCol := v.Datum()
+			toCol := m.Datum()
 			if args.Sel != nil {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				n := len(sel)
@@ -893,7 +879,7 @@ func (v *Vec) Copy(args SliceArgs) {
 						//gcassert:bce
 						selIdx := sel[i]
 						if nulls.NullAt(selIdx) {
-							v.nulls.SetNull(i + args.DestIdx)
+							m.nulls.SetNull(i + args.DestIdx)
 						} else {
 							v := fromCol.Get(selIdx)
 							toCol.Set(i+args.DestIdx, v)
@@ -912,31 +898,27 @@ func (v *Vec) Copy(args SliceArgs) {
 			}
 			// No Sel.
 			toCol.CopySlice(fromCol, args.DestIdx, args.SrcStartIdx, args.SrcEndIdx)
-			v.nulls.set(args)
+			m.nulls.set(args)
 		}
 	default:
-		panic(fmt.Sprintf("unhandled type %s", v.t))
+		panic(fmt.Sprintf("unhandled type %s", m.t))
 	}
 }
 
-// CopyWithReorderedSource copies a value at position order[sel[i]] in src
-// into the receiver at position sel[i]. len(sel) elements are copied.
-// Resulting values of elements not mentioned in sel are undefined after
-// this function.
-func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
+func (m *memColumn) CopyWithReorderedSource(src Vec, sel, order []int) {
 	if len(sel) == 0 {
 		return
 	}
-	if v.nulls.MaybeHasNulls() {
-		v.nulls.UnsetNulls()
+	if m.nulls.MaybeHasNulls() {
+		m.nulls.UnsetNulls()
 	}
-	switch v.CanonicalTypeFamily() {
+	switch m.CanonicalTypeFamily() {
 	case types.BoolFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := src.Bool()
-			toCol := v.Bool()
+			toCol := m.Bool()
 			n := len(sel)
 			_ = sel[n-1]
 			if src.MaybeHasNulls() {
@@ -946,7 +928,7 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 					destIdx := sel[i]
 					srcIdx := order[destIdx]
 					if nulls.NullAt(srcIdx) {
-						v.nulls.SetNull(destIdx)
+						m.nulls.SetNull(destIdx)
 					} else {
 						v := fromCol.Get(srcIdx)
 						toCol.Set(destIdx, v)
@@ -965,11 +947,11 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 			}
 		}
 	case types.BytesFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := src.Bytes()
-			toCol := v.Bytes()
+			toCol := m.Bytes()
 			n := len(sel)
 			_ = sel[n-1]
 			if src.MaybeHasNulls() {
@@ -979,7 +961,7 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 					destIdx := sel[i]
 					srcIdx := order[destIdx]
 					if nulls.NullAt(srcIdx) {
-						v.nulls.SetNull(destIdx)
+						m.nulls.SetNull(destIdx)
 					} else {
 						toCol.Copy(fromCol, destIdx, srcIdx)
 					}
@@ -996,11 +978,11 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 			}
 		}
 	case types.DecimalFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := src.Decimal()
-			toCol := v.Decimal()
+			toCol := m.Decimal()
 			n := len(sel)
 			_ = sel[n-1]
 			if src.MaybeHasNulls() {
@@ -1010,7 +992,7 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 					destIdx := sel[i]
 					srcIdx := order[destIdx]
 					if nulls.NullAt(srcIdx) {
-						v.nulls.SetNull(destIdx)
+						m.nulls.SetNull(destIdx)
 					} else {
 						v := fromCol.Get(srcIdx)
 						toCol.Set(destIdx, v)
@@ -1029,10 +1011,10 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 			}
 		}
 	case types.IntFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case 16:
 			fromCol := src.Int16()
-			toCol := v.Int16()
+			toCol := m.Int16()
 			n := len(sel)
 			_ = sel[n-1]
 			if src.MaybeHasNulls() {
@@ -1042,7 +1024,7 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 					destIdx := sel[i]
 					srcIdx := order[destIdx]
 					if nulls.NullAt(srcIdx) {
-						v.nulls.SetNull(destIdx)
+						m.nulls.SetNull(destIdx)
 					} else {
 						v := fromCol.Get(srcIdx)
 						toCol.Set(destIdx, v)
@@ -1061,7 +1043,7 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 			}
 		case 32:
 			fromCol := src.Int32()
-			toCol := v.Int32()
+			toCol := m.Int32()
 			n := len(sel)
 			_ = sel[n-1]
 			if src.MaybeHasNulls() {
@@ -1071,7 +1053,7 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 					destIdx := sel[i]
 					srcIdx := order[destIdx]
 					if nulls.NullAt(srcIdx) {
-						v.nulls.SetNull(destIdx)
+						m.nulls.SetNull(destIdx)
 					} else {
 						v := fromCol.Get(srcIdx)
 						toCol.Set(destIdx, v)
@@ -1091,7 +1073,7 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 		case -1:
 		default:
 			fromCol := src.Int64()
-			toCol := v.Int64()
+			toCol := m.Int64()
 			n := len(sel)
 			_ = sel[n-1]
 			if src.MaybeHasNulls() {
@@ -1101,7 +1083,7 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 					destIdx := sel[i]
 					srcIdx := order[destIdx]
 					if nulls.NullAt(srcIdx) {
-						v.nulls.SetNull(destIdx)
+						m.nulls.SetNull(destIdx)
 					} else {
 						v := fromCol.Get(srcIdx)
 						toCol.Set(destIdx, v)
@@ -1120,11 +1102,11 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 			}
 		}
 	case types.FloatFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := src.Float64()
-			toCol := v.Float64()
+			toCol := m.Float64()
 			n := len(sel)
 			_ = sel[n-1]
 			if src.MaybeHasNulls() {
@@ -1134,7 +1116,7 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 					destIdx := sel[i]
 					srcIdx := order[destIdx]
 					if nulls.NullAt(srcIdx) {
-						v.nulls.SetNull(destIdx)
+						m.nulls.SetNull(destIdx)
 					} else {
 						v := fromCol.Get(srcIdx)
 						toCol.Set(destIdx, v)
@@ -1153,11 +1135,11 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 			}
 		}
 	case types.TimestampTZFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := src.Timestamp()
-			toCol := v.Timestamp()
+			toCol := m.Timestamp()
 			n := len(sel)
 			_ = sel[n-1]
 			if src.MaybeHasNulls() {
@@ -1167,7 +1149,7 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 					destIdx := sel[i]
 					srcIdx := order[destIdx]
 					if nulls.NullAt(srcIdx) {
-						v.nulls.SetNull(destIdx)
+						m.nulls.SetNull(destIdx)
 					} else {
 						v := fromCol.Get(srcIdx)
 						toCol.Set(destIdx, v)
@@ -1186,11 +1168,11 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 			}
 		}
 	case types.IntervalFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := src.Interval()
-			toCol := v.Interval()
+			toCol := m.Interval()
 			n := len(sel)
 			_ = sel[n-1]
 			if src.MaybeHasNulls() {
@@ -1200,7 +1182,7 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 					destIdx := sel[i]
 					srcIdx := order[destIdx]
 					if nulls.NullAt(srcIdx) {
-						v.nulls.SetNull(destIdx)
+						m.nulls.SetNull(destIdx)
 					} else {
 						v := fromCol.Get(srcIdx)
 						toCol.Set(destIdx, v)
@@ -1219,11 +1201,11 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 			}
 		}
 	case types.JsonFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := src.JSON()
-			toCol := v.JSON()
+			toCol := m.JSON()
 			n := len(sel)
 			_ = sel[n-1]
 			if src.MaybeHasNulls() {
@@ -1233,7 +1215,7 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 					destIdx := sel[i]
 					srcIdx := order[destIdx]
 					if nulls.NullAt(srcIdx) {
-						v.nulls.SetNull(destIdx)
+						m.nulls.SetNull(destIdx)
 					} else {
 						toCol.Copy(fromCol, destIdx, srcIdx)
 					}
@@ -1250,11 +1232,11 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 			}
 		}
 	case typeconv.DatumVecCanonicalTypeFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
 			fromCol := src.Datum()
-			toCol := v.Datum()
+			toCol := m.Datum()
 			n := len(sel)
 			_ = sel[n-1]
 			if src.MaybeHasNulls() {
@@ -1264,7 +1246,7 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 					destIdx := sel[i]
 					srcIdx := order[destIdx]
 					if nulls.NullAt(srcIdx) {
-						v.nulls.SetNull(destIdx)
+						m.nulls.SetNull(destIdx)
 					} else {
 						v := fromCol.Get(srcIdx)
 						toCol.Set(destIdx, v)
@@ -1283,147 +1265,143 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 			}
 		}
 	default:
-		panic(fmt.Sprintf("unhandled type %s", v.t))
+		panic(fmt.Sprintf("unhandled type %s", m.t))
 	}
 }
 
-// Window returns a "window" into the Vec. A "window" is similar to Golang's
-// slice of the current Vec from [start, end), but the returned object is NOT
-// allowed to be modified (the modification might result in an undefined
-// behavior).
-func (v *Vec) Window(start int, end int) *Vec {
-	switch v.CanonicalTypeFamily() {
+func (m *memColumn) Window(start int, end int) Vec {
+	switch m.CanonicalTypeFamily() {
 	case types.BoolFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
-			col := v.Bool()
-			return &Vec{
-				t:                   v.t,
-				canonicalTypeFamily: v.canonicalTypeFamily,
+			col := m.Bool()
+			return &memColumn{
+				t:                   m.t,
+				canonicalTypeFamily: m.canonicalTypeFamily,
 				col:                 col.Window(start, end),
-				nulls:               v.nulls.Slice(start, end),
+				nulls:               m.nulls.Slice(start, end),
 			}
 		}
 	case types.BytesFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
-			col := v.Bytes()
-			return &Vec{
-				t:                   v.t,
-				canonicalTypeFamily: v.canonicalTypeFamily,
+			col := m.Bytes()
+			return &memColumn{
+				t:                   m.t,
+				canonicalTypeFamily: m.canonicalTypeFamily,
 				col:                 col.Window(start, end),
-				nulls:               v.nulls.Slice(start, end),
+				nulls:               m.nulls.Slice(start, end),
 			}
 		}
 	case types.DecimalFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
-			col := v.Decimal()
-			return &Vec{
-				t:                   v.t,
-				canonicalTypeFamily: v.canonicalTypeFamily,
+			col := m.Decimal()
+			return &memColumn{
+				t:                   m.t,
+				canonicalTypeFamily: m.canonicalTypeFamily,
 				col:                 col.Window(start, end),
-				nulls:               v.nulls.Slice(start, end),
+				nulls:               m.nulls.Slice(start, end),
 			}
 		}
 	case types.IntFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case 16:
-			col := v.Int16()
-			return &Vec{
-				t:                   v.t,
-				canonicalTypeFamily: v.canonicalTypeFamily,
+			col := m.Int16()
+			return &memColumn{
+				t:                   m.t,
+				canonicalTypeFamily: m.canonicalTypeFamily,
 				col:                 col.Window(start, end),
-				nulls:               v.nulls.Slice(start, end),
+				nulls:               m.nulls.Slice(start, end),
 			}
 		case 32:
-			col := v.Int32()
-			return &Vec{
-				t:                   v.t,
-				canonicalTypeFamily: v.canonicalTypeFamily,
+			col := m.Int32()
+			return &memColumn{
+				t:                   m.t,
+				canonicalTypeFamily: m.canonicalTypeFamily,
 				col:                 col.Window(start, end),
-				nulls:               v.nulls.Slice(start, end),
+				nulls:               m.nulls.Slice(start, end),
 			}
 		case -1:
 		default:
-			col := v.Int64()
-			return &Vec{
-				t:                   v.t,
-				canonicalTypeFamily: v.canonicalTypeFamily,
+			col := m.Int64()
+			return &memColumn{
+				t:                   m.t,
+				canonicalTypeFamily: m.canonicalTypeFamily,
 				col:                 col.Window(start, end),
-				nulls:               v.nulls.Slice(start, end),
+				nulls:               m.nulls.Slice(start, end),
 			}
 		}
 	case types.FloatFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
-			col := v.Float64()
-			return &Vec{
-				t:                   v.t,
-				canonicalTypeFamily: v.canonicalTypeFamily,
+			col := m.Float64()
+			return &memColumn{
+				t:                   m.t,
+				canonicalTypeFamily: m.canonicalTypeFamily,
 				col:                 col.Window(start, end),
-				nulls:               v.nulls.Slice(start, end),
+				nulls:               m.nulls.Slice(start, end),
 			}
 		}
 	case types.TimestampTZFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
-			col := v.Timestamp()
-			return &Vec{
-				t:                   v.t,
-				canonicalTypeFamily: v.canonicalTypeFamily,
+			col := m.Timestamp()
+			return &memColumn{
+				t:                   m.t,
+				canonicalTypeFamily: m.canonicalTypeFamily,
 				col:                 col.Window(start, end),
-				nulls:               v.nulls.Slice(start, end),
+				nulls:               m.nulls.Slice(start, end),
 			}
 		}
 	case types.IntervalFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
-			col := v.Interval()
-			return &Vec{
-				t:                   v.t,
-				canonicalTypeFamily: v.canonicalTypeFamily,
+			col := m.Interval()
+			return &memColumn{
+				t:                   m.t,
+				canonicalTypeFamily: m.canonicalTypeFamily,
 				col:                 col.Window(start, end),
-				nulls:               v.nulls.Slice(start, end),
+				nulls:               m.nulls.Slice(start, end),
 			}
 		}
 	case types.JsonFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
-			col := v.JSON()
-			return &Vec{
-				t:                   v.t,
-				canonicalTypeFamily: v.canonicalTypeFamily,
+			col := m.JSON()
+			return &memColumn{
+				t:                   m.t,
+				canonicalTypeFamily: m.canonicalTypeFamily,
 				col:                 col.Window(start, end),
-				nulls:               v.nulls.Slice(start, end),
+				nulls:               m.nulls.Slice(start, end),
 			}
 		}
 	case typeconv.DatumVecCanonicalTypeFamily:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		case -1:
 		default:
-			col := v.Datum()
-			return &Vec{
-				t:                   v.t,
-				canonicalTypeFamily: v.canonicalTypeFamily,
+			col := m.Datum()
+			return &memColumn{
+				t:                   m.t,
+				canonicalTypeFamily: m.canonicalTypeFamily,
 				col:                 col.Window(start, end),
-				nulls:               v.nulls.Slice(start, end),
+				nulls:               m.nulls.Slice(start, end),
 			}
 		}
 	}
-	panic(fmt.Sprintf("unhandled type %s", v.t))
+	panic(fmt.Sprintf("unhandled type %s", m.t))
 }
 
 // SetValueAt is an inefficient helper to set the value in a Vec when the type
 // is unknown.
-func SetValueAt(v *Vec, elem interface{}, rowIdx int) {
+func SetValueAt(v Vec, elem interface{}, rowIdx int) {
 	switch t := v.Type(); v.CanonicalTypeFamily() {
 	case types.BoolFamily:
 		switch t.Width() {
@@ -1512,7 +1490,7 @@ func SetValueAt(v *Vec, elem interface{}, rowIdx int) {
 
 // GetValueAt is an inefficient helper to get the value in a Vec when the type
 // is unknown.
-func GetValueAt(v *Vec, rowIdx int) interface{} {
+func GetValueAt(v Vec, rowIdx int) interface{} {
 	if v.Nulls().NullAt(rowIdx) {
 		return nil
 	}

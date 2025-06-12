@@ -7,19 +7,19 @@ package sslocal
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/insights"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/ssmemstorage"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 )
-
-var _ sqlstats.SSDrainer = &SQLStats{}
 
 // SQLStats carries per-application in-memory statistics for all applications.
 type SQLStats struct {
@@ -45,6 +45,9 @@ type SQLStats struct {
 	flushTarget Sink
 
 	knobs *sqlstats.TestingKnobs
+
+	insights           insights.WriterProvider
+	latencyInformation insights.LatencyInformation
 }
 
 func newSQLStats(
@@ -53,21 +56,27 @@ func newSQLStats(
 	uniqueTxnFingerprintLimit *settings.IntSetting,
 	curMemBytesCount *metric.Gauge,
 	maxMemBytesHist metric.IHistogram,
+	insightsWriter insights.WriterProvider,
 	parentMon *mon.BytesMonitor,
 	flushTarget Sink,
 	knobs *sqlstats.TestingKnobs,
+	latencyInformation insights.LatencyInformation,
 ) *SQLStats {
-	monitor := mon.NewMonitor(mon.Options{
-		Name:       mon.MakeName("SQLStats"),
-		CurCount:   curMemBytesCount,
-		MaxHist:    maxMemBytesHist,
-		Settings:   st,
-		LongLiving: true,
-	})
+	monitor := mon.NewMonitor(
+		"SQLStats",
+		mon.MemoryResource,
+		curMemBytesCount,
+		maxMemBytesHist,
+		-1, /* increment */
+		math.MaxInt64,
+		st,
+	)
 	s := &SQLStats{
-		st:          st,
-		flushTarget: flushTarget,
-		knobs:       knobs,
+		st:                 st,
+		flushTarget:        flushTarget,
+		knobs:              knobs,
+		insights:           insightsWriter,
+		latencyInformation: latencyInformation,
 	}
 	s.atomic = ssmemstorage.NewSQLStatsAtomicCounters(
 		st,
@@ -110,6 +119,8 @@ func (s *SQLStats) getStatsForApplication(appName string) *ssmemstorage.Containe
 		s.mu.mon,
 		appName,
 		s.knobs,
+		s.insights(false /* internal */),
+		s.latencyInformation,
 	)
 	s.mu.apps[appName] = a
 	return a
@@ -139,38 +150,30 @@ func (s *SQLStats) resetAndMaybeDumpStats(ctx context.Context, target Sink) (err
 	// accumulate data using that until it closes (or changes its
 	// application_name).
 	for appName, statsContainer := range s.mu.apps {
-		lastErr := s.MaybeDumpStatsToLog(ctx, appName, statsContainer, target)
+		// Save the existing data to logs.
+		// TODO(knz/dt): instead of dumping the stats to the log, save
+		// them in a SQL table so they can be inspected by the DBA and/or
+		// the UI.
+		if sqlstats.DumpStmtStatsToLogBeforeReset.Get(&s.st.SV) {
+			statsContainer.SaveToLog(ctx, appName)
+		}
+
+		if target != nil {
+			lastErr := target.AddAppStats(ctx, appName, statsContainer)
+			// If we run out of memory budget, Container.Add() will merge stats in
+			// statsContainer with all the existing stats. However it will discard
+			// rest of the stats in statsContainer that requires memory allocation.
+			// We do not wish to short circuit here because we want to still try our
+			// best to merge all the stats that we can.
+			if lastErr != nil {
+				err = lastErr
+			}
+		}
+
 		statsContainer.Clear(ctx)
-		err = lastErr
 	}
 	s.mu.lastReset = timeutil.Now()
 
-	return err
-}
-
-// MaybeDumpStatsToLog flushes stats into target If it is not nil.
-func (s *SQLStats) MaybeDumpStatsToLog(
-	ctx context.Context, appName string, container *ssmemstorage.Container, target Sink,
-) (err error) {
-	// Save the existing data to logs.
-	// TODO(knz/dt): instead of dumping the stats to the log, save
-	// them in a SQL table so they can be inspected by the DBA and/or
-	// the UI.
-	if sqlstats.DumpStmtStatsToLogBeforeReset.Get(&s.st.SV) {
-		container.SaveToLog(ctx, appName)
-	}
-
-	if target != nil {
-		lastErr := target.AddAppStats(ctx, appName, container)
-		// If we run out of memory budget, Container.Add() will merge stats in
-		// statsContainer with all the existing stats. However it will discard
-		// rest of the stats in statsContainer that requires memory allocation.
-		// We do not wish to short circuit here because we want to still try our
-		// best to merge all the stats that we can.
-		if lastErr != nil {
-			err = lastErr
-		}
-	}
 	return err
 }
 

@@ -100,8 +100,7 @@ func TestValidateSchemaChangerState(t *testing.T) {
 				RelevantStatements: []scpb.DescriptorState_Statement{
 					{
 						Statement: scpb.Statement{
-							Statement:         "ALTER TABLE a RENAME TO b",
-							RedactedStatement: "ALTER TABLE a RENAME TO b",
+							Statement: "ALTER TABLE a RENAME TO b",
 						},
 						StatementRank: 0,
 					},

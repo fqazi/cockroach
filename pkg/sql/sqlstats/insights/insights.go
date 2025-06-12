@@ -6,11 +6,15 @@
 package insights
 
 import (
+	"context"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
+	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
+	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	prometheus "github.com/prometheus/client_model/go"
 )
 
@@ -56,6 +60,7 @@ var AnomalyDetectionLatencyThreshold = settings.RegisterDurationSetting(
 	"sql.insights.anomaly_detection.latency_threshold",
 	"statements must surpass this threshold to trigger anomaly detection and identification",
 	50*time.Millisecond,
+	settings.NonNegativeDuration,
 	settings.WithPublic)
 
 // AnomalyDetectionMemoryLimit restricts the overall memory available for
@@ -125,23 +130,67 @@ func NewMetrics() Metrics {
 	}
 }
 
+// Writer observes statement and transaction executions.
+type Writer interface {
+	// ObserveStatement notifies the registry of a statement execution.
+	ObserveStatement(sessionID clusterunique.ID, statement *Statement)
+
+	// ObserveTransaction notifies the registry of the end of a transaction.
+	ObserveTransaction(sessionID clusterunique.ID, transaction *Transaction)
+}
+
+// WriterProvider offers a Writer.
+// Pass true for internal when called by the internal executor.
+type WriterProvider func(internal bool) Writer
+
+// Reader offers access to the currently retained set of insights.
+type Reader interface {
+	// IterateInsights calls visitor with each of the currently retained set of insights.
+	IterateInsights(context.Context, func(context.Context, *Insight))
+}
+
+type LatencyInformation interface {
+	GetPercentileValues(fingerprintID appstatspb.StmtFingerprintID, shouldFlush bool) PercentileValues
+}
+
 type PercentileValues struct {
 	P50 float64
 	P90 float64
 	P99 float64
 }
 
+// Provider offers access to the insights subsystem.
+type Provider interface {
+	// Start launches the background tasks necessary for processing insights.
+	Start(ctx context.Context, stopper *stop.Stopper)
+
+	// Writer returns an object that observes statement and transaction executions.
+	// Pass true for internal when called by the internal executor.
+	Writer(internal bool) Writer
+
+	// Reader returns an object that offers read access to any detected insights.
+	Reader() Reader
+
+	// LatencyInformation returns an object that offers read access to latency information,
+	// such as percentiles.
+	LatencyInformation() LatencyInformation
+}
+
 // New builds a new Provider.
-func New(st *cluster.Settings, metrics Metrics) *Provider {
+func New(st *cluster.Settings, metrics Metrics) Provider {
 	store := newStore(st)
 	anomalyDetector := newAnomalyDetector(st, metrics)
 
-	return &Provider{
+	return &defaultProvider{
 		store: store,
-		registry: newRegistry(st, &compositeDetector{detectors: []detector{
-			&latencyThresholdDetector{st: st},
-			anomalyDetector,
-		}}, store),
+		ingester: newConcurrentBufferIngester(
+			newRegistry(st, &compositeDetector{detectors: []detector{
+				&latencyThresholdDetector{st: st},
+				anomalyDetector,
+			}}, &compositeSink{sinks: []sink{
+				store,
+			}}),
+		),
 		anomalyDetector: anomalyDetector,
 	}
 }

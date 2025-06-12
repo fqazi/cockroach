@@ -18,8 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"github.com/lib/pq/oid"
 )
 
@@ -72,8 +70,7 @@ func (w *walkCtx) newExpression(expr string) (*scpb.Expression, error) {
 		for _, si := range seqIdents {
 			if !si.IsByID() {
 				panic(scerrors.NotImplementedErrorf(nil, /* n */
-					redact.Sprintf("sequence %q referenced by name", si.SeqName),
-				))
+					"sequence %q referenced by name", si.SeqName))
 			}
 			seqIDs.Add(descpb.ID(si.SeqID))
 		}
@@ -99,19 +96,11 @@ func (w *walkCtx) newExpression(expr string) (*scpb.Expression, error) {
 		}
 	}
 
-	var referencedColumns catalog.TableColSet
-	switch t := w.desc.(type) {
-	case catalog.TableDescriptor:
-		referencedColumns, err = schemaexpr.ExtractColumnIDs(t, e)
-		if err != nil {
-			return nil, err
-		}
-	case catalog.FunctionDescriptor:
-		// newExpression is called only for DEFAULT expressions of function
-		// parameters which cannot have column references. Column references
-		// from the function body are handled in WrapFunctionBody.
-	default:
-		return nil, errors.AssertionFailedf("expected either TableDescriptor of FunctionDescriptor, found %T", t)
+	referencedColumns, err := schemaexpr.ExtractColumnIDs(
+		w.desc.(catalog.TableDescriptor), e,
+	)
+	if err != nil {
+		return nil, err
 	}
 	referencedFnIDs, err := schemaexpr.GetUDFIDs(e)
 	if err != nil {
@@ -130,7 +119,6 @@ func newTypeT(t *types.T) *scpb.TypeT {
 	return &scpb.TypeT{
 		Type:          t,
 		ClosedTypeIDs: typedesc.GetTypeDescriptorClosure(t).Ordered(),
-		TypeName:      t.SQLString(),
 	}
 }
 
@@ -140,7 +128,6 @@ func NewElementCreationMetadata(
 	clusterVersion clusterversion.ClusterVersion,
 ) *scpb.ElementCreationMetadata {
 	return &scpb.ElementCreationMetadata{
-		In_23_1OrLater: true,
-		In_24_3OrLater: true,
+		In_23_1OrLater: clusterVersion.IsActive(clusterversion.V23_1),
 	}
 }

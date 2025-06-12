@@ -7,17 +7,14 @@ package mon
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"math"
-	"strconv"
-	"strings"
+	"math/bits"
 	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/ioctx"
@@ -25,10 +22,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
-	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
-	"github.com/dustin/go-humanize"
 )
 
 // BoundAccount and BytesMonitor together form the mechanism by which
@@ -209,32 +204,6 @@ type BytesMonitor struct {
 
 		// stopped indicates whether this monitor has been stopped.
 		stopped bool
-
-		// relinquishAllOnReleaseBytes, if true, indicates that the monitor should
-		// relinquish all bytes on releaseBytes() call.
-		// NB: this field doesn't need mutex protection but is inside of mu
-		// struct in order to reduce the struct size.
-		relinquishAllOnReleaseBytes bool
-
-		// tracksDisk indicates whether this monitor is for tracking disk
-		// resources.
-		// NB: this field doesn't need mutex protection but is inside of mu
-		// struct in order to reduce the struct size.
-		tracksDisk bool
-
-		// rootSQLMonitor indicates whether this monitor is the root SQL memory
-		// monitor (in which case, memory budget exceeded errors should have a
-		// hint to increase --max-sql-memory parameter).
-		// NB: this field doesn't need mutex protection but is inside of mu
-		// struct in order to reduce the struct size.
-		rootSQLMonitor bool
-
-		// longLiving indicates whether lifetime of this monitor matches the
-		// server's life, and as such, this monitor is exempted from having to
-		// be stopped when its ancestor monitor is stopped.
-		// NB: this field doesn't need mutex protection but is inside of mu
-		// struct in order to reduce the struct size.
-		longLiving bool
 	}
 
 	// parentMu encompasses the fields that must be accessed while holding the
@@ -247,7 +216,12 @@ type BytesMonitor struct {
 	}
 
 	// name identifies this monitor in logging messages.
-	name Name
+	name redact.RedactableString
+
+	// resource specifies what kind of resource the monitor is tracking
+	// allocations for. Specific behavior is delegated to this resource (e.g.
+	// budget exceeded errors).
+	resource Resource
 
 	// reserved indicates how many bytes were already reserved for this
 	// monitor before it was instantiated. Allocations registered to
@@ -275,158 +249,16 @@ type BytesMonitor struct {
 	// pool.
 	poolAllocationSize int64
 
+	// relinquishAllOnReleaseBytes, if true, indicates that the monitor should
+	// relinquish all bytes on releaseBytes() call.
+	relinquishAllOnReleaseBytes bool
+
+	// noteworthyUsageBytes is the size beyond which total allocations start to
+	// become reported in the logs.
+	noteworthyUsageBytes int64
+
 	settings *cluster.Settings
 }
-
-// Name is used to identify monitors in logging messages and populate the
-// crdb_internal.node_memory_monitors virtual table. It consists of:
-//
-//   - a string prefix
-//   - an optional int32 id or uuid.Short
-//   - an optional suffix
-//   - an optional uint16
-//
-// When printed, the fields are separated by "-", if present.
-type Name struct {
-	prefix redact.SafeString
-	// id contains either an int32 or a uuid.Short, depending on the value of
-	// the uuid boolean.
-	id     int32
-	uuid   bool
-	suffix nameSuffix
-	i      uint16
-}
-
-// EmptyName is an empty, uninitialized Name.
-var EmptyName Name
-
-// nameSuffix is an enum the represents one of a finite list of possible
-// monitor name suffixes.
-type nameSuffix uint8
-
-const (
-	nameSuffixNone nameSuffix = iota
-	nameSuffixLimited
-	nameSuffixUnlimited
-	nameSuffixDisk
-)
-
-func (mns nameSuffix) safeString() redact.SafeString {
-	switch mns {
-	case nameSuffixLimited:
-		return "limited"
-	case nameSuffixUnlimited:
-		return "unlimited"
-	case nameSuffixDisk:
-		return "disk"
-	default:
-		return "unknown-suffix"
-	}
-}
-
-// MakeName constructs a Name with the given prefix.
-func MakeName(prefix redact.SafeString) Name {
-	return Name{prefix: prefix}
-}
-
-// WithID returns a new Name with the given ID attached. A previously set
-// UUID is cleared.
-func (mn Name) WithID(id int32) Name {
-	mn.id = id
-	mn.uuid = false
-	return mn
-}
-
-// WithUUID returns a new Name with the given uuid.Short attached.
-// A previously set ID is cleared.
-func (mn Name) WithUUID(uuid uuid.Short) Name {
-	mn.id = uuid.ToInt32()
-	mn.uuid = true
-	return mn
-}
-
-// Limited sets the suffix to "limited".
-func (mn Name) Limited() Name {
-	mn.suffix = nameSuffixLimited
-	return mn
-}
-
-// Unlimited sets the suffix to "unlimited".
-func (mn Name) Unlimited() Name {
-	mn.suffix = nameSuffixUnlimited
-	return mn
-}
-
-// Disk sets the suffix to "disk".
-func (mn Name) Disk() Name {
-	mn.suffix = nameSuffixDisk
-	return mn
-}
-
-// WithSuffix returns a new Name with the given suffix attached.
-func (mn Name) WithSuffix(suffix nameSuffix) Name {
-	mn.suffix = suffix
-	return mn
-}
-
-// WithInt returns a new Name with the given integer attached.
-func (mn Name) WithInt(i uint16) Name {
-	mn.i = i
-	return mn
-}
-
-// Empty returns true if the name is empty, i.e., uninitialized.
-func (mn Name) Empty() bool {
-	return mn == Name{}
-}
-
-// String returns the monitor prefix as a string.
-func (mn Name) String() string {
-	return redact.StringWithoutMarkers(mn)
-}
-
-// SafeFormat implements the redact.SafeFormatter interface.
-func (mn Name) SafeFormat(w redact.SafePrinter, r rune) {
-	w.SafeString(mn.prefix)
-	if mn.id != 0 {
-		w.SafeString("-")
-		if mn.uuid {
-			var u uuid.Short
-			u.FromInt32(mn.id)
-			w.SafeString(redact.SafeString(u.String()))
-		} else {
-			w.SafeString(redact.SafeString(strconv.Itoa(int(mn.id))))
-		}
-	}
-	if mn.suffix != nameSuffixNone {
-		w.SafeString("-")
-		w.SafeString(mn.suffix.safeString())
-	}
-	if mn.i != 0 {
-		w.SafeString("-")
-		w.SafeString(redact.SafeString(strconv.Itoa(int(mn.i))))
-	}
-}
-
-const (
-	// Consult with SQL Queries before increasing these values.
-	expectedMonitorSize = 168
-	expectedAccountSize = 24
-)
-
-// Unlike size of BoundAccount, the size of BytesMonitor differs in race builds
-// (because it embeds syncutil.Mutex which has an extra field under race), so we
-// need to have init-time check as opposed to a compile-time one.
-func init() {
-	if !util.RaceEnabled {
-		monitorSize := unsafe.Sizeof(BytesMonitor{})
-		if monitorSize != expectedMonitorSize {
-			panic(errors.AssertionFailedf("expected monitor size to be %d, found %d", expectedMonitorSize, monitorSize))
-		}
-	}
-}
-
-var _ [0]struct{} = [expectedAccountSize - unsafe.Sizeof(BoundAccount{})]struct{}{}
 
 // enableMonitorTreeTrackingEnvVar indicates whether tracking of all children of
 // a BytesMonitor (which is what powers TraverseTree) is enabled.
@@ -448,7 +280,7 @@ type MonitorState struct {
 	// root.
 	Level int
 	// Name is the name of the monitor.
-	Name Name
+	Name string
 	// ID is the "id" of the monitor (its address converted to int64).
 	ID int64
 	// ParentID is the "id" of the parent monitor (parent's address converted to
@@ -466,8 +298,6 @@ type MonitorState struct {
 	ReservedReserved int64
 	// Stopped indicates whether the monitor has been stopped.
 	Stopped bool
-	// LongLiving indicates whether the monitor is a long-living one.
-	LongLiving bool
 }
 
 // TraverseTree traverses the tree of monitors rooted in the BytesMonitor. The
@@ -498,14 +328,13 @@ func (mm *BytesMonitor) traverseTree(level int, monitorStateCb func(MonitorState
 	}
 	monitorState := MonitorState{
 		Level:            level,
-		Name:             mm.name,
+		Name:             string(mm.name),
 		ID:               int64(id),
 		ParentID:         int64(parentID),
 		Used:             mm.mu.curAllocated,
 		ReservedUsed:     reservedUsed,
 		ReservedReserved: reservedReserved,
 		Stopped:          mm.mu.stopped,
-		LongLiving:       mm.mu.longLiving,
 	}
 	// Note that we cannot call traverseTree on the children while holding mm's
 	// lock since it could lead to deadlocks. Instead, we store all children as
@@ -542,46 +371,67 @@ var maxAllocatedButUnusedBlocks = envutil.EnvOrDefaultInt("COCKROACH_MAX_ALLOCAT
 // to reserve and release bytes to a pool.
 var DefaultPoolAllocationSize = envutil.EnvOrDefaultInt64("COCKROACH_ALLOCATION_CHUNK_SIZE", 10*1024)
 
-// Options encompasses all arguments to the NewMonitor and NewUnlimitedMonitor
-// calls. If a particular option is not set, then a reasonable default will be
-// used.
-type Options struct {
-	// Name is used to annotate log messages, can be used to distinguish
-	// monitors.
-	Name Name
-	// Res specifies what kind of resource the monitor is tracking allocations
-	// for (e.g. memory or disk). If unset, MemoryResource is assumed.
-	Res   Resource
-	Limit int64
-	// CurCount and MaxHist are the metric objects to update with usage
-	// statistics.
-	CurCount *metric.Gauge
-	MaxHist  metric.IHistogram
-	// Increment is the block size used for upstream allocations from the pool.
-	Increment  int64
-	Settings   *cluster.Settings
-	LongLiving bool
+// NewMonitor creates a new monitor.
+// Arguments:
+//
+//   - name is used to annotate log messages, can be used to distinguish
+//     monitors.
+//
+//   - resource specifies what kind of resource the monitor is tracking
+//     allocations for (e.g. memory or disk).
+//
+//   - curCount and maxHist are the metric objects to update with usage
+//     statistics. Can be nil.
+//
+//   - increment is the block size used for upstream allocations from
+//     the pool. Note: if set to 0 or lower, the default pool allocation
+//     size is used.
+//
+//   - noteworthy determines the minimum total allocated size beyond
+//     which the monitor starts to log increases. Use 0 to always log
+//     or math.MaxInt64 to never log.
+func NewMonitor(
+	name redact.RedactableString,
+	res Resource,
+	curCount *metric.Gauge,
+	maxHist metric.IHistogram,
+	increment int64,
+	noteworthy int64,
+	settings *cluster.Settings,
+) *BytesMonitor {
+	return NewMonitorWithLimit(
+		name, res, math.MaxInt64, curCount, maxHist, increment, noteworthy, settings)
 }
 
-// NewMonitor creates a new monitor.
-func NewMonitor(args Options) *BytesMonitor {
-	if args.Limit <= 0 {
-		args.Limit = math.MaxInt64
+// NewMonitorWithLimit creates a new monitor with a limit local to this
+// monitor.
+func NewMonitorWithLimit(
+	name redact.RedactableString,
+	res Resource,
+	limit int64,
+	curCount *metric.Gauge,
+	maxHist metric.IHistogram,
+	increment int64,
+	noteworthy int64,
+	settings *cluster.Settings,
+) *BytesMonitor {
+	if increment <= 0 {
+		increment = DefaultPoolAllocationSize
 	}
-	if args.Increment <= 0 {
-		args.Increment = DefaultPoolAllocationSize
+	if limit <= 0 {
+		limit = math.MaxInt64
 	}
 	m := &BytesMonitor{
-		name:               args.Name,
-		configLimit:        args.Limit,
-		limit:              args.Limit,
-		poolAllocationSize: args.Increment,
-		settings:           args.Settings,
+		name:                 name,
+		resource:             res,
+		configLimit:          limit,
+		limit:                limit,
+		noteworthyUsageBytes: noteworthy,
+		poolAllocationSize:   increment,
+		settings:             settings,
 	}
-	m.mu.curBytesCount = args.CurCount
-	m.mu.maxBytesHist = args.MaxHist
-	m.mu.tracksDisk = args.Res == DiskResource
-	m.mu.longLiving = args.LongLiving
+	m.mu.curBytesCount = curCount
+	m.mu.maxBytesHist = maxHist
 	return m
 }
 
@@ -596,29 +446,18 @@ func NewMonitor(args Options) *BytesMonitor {
 // those chunks would be reported as used by pool while downstream monitors will
 // not.
 func NewMonitorInheritWithLimit(
-	name Name, limit int64, m *BytesMonitor, longLiving bool,
+	name redact.RedactableString, limit int64, m *BytesMonitor,
 ) *BytesMonitor {
-	res := MemoryResource
-	if m.mu.tracksDisk {
-		res = DiskResource
-	}
-	return NewMonitor(Options{
-		Name:       name,
-		Res:        res,
-		Limit:      limit,
-		CurCount:   nil, // CurCount is not inherited as we don't want to double count allocations
-		MaxHist:    nil, // MaxHist is not inherited as we don't want to double count allocations
-		Increment:  m.poolAllocationSize,
-		Settings:   m.settings,
-		LongLiving: longLiving,
-	})
-}
-
-func (mm *BytesMonitor) MarkAsRootSQLMonitor() {
-	if mm.mu.tracksDisk {
-		panic(errors.AssertionFailedf("root SQL memory monitor cannot track disk resources"))
-	}
-	mm.mu.rootSQLMonitor = true
+	return NewMonitorWithLimit(
+		name,
+		m.resource,
+		limit,
+		nil, // curCount is not inherited as we don't want to double count allocations
+		nil, // maxHist is not inherited as we don't want to double count allocations
+		m.poolAllocationSize,
+		m.noteworthyUsageBytes,
+		m.settings,
+	)
 }
 
 // noReserved is safe to be used by multiple monitors as the "reserved" account
@@ -650,9 +489,9 @@ func (mm *BytesMonitor) Start(ctx context.Context, pool *BytesMonitor, reserved 
 	mm.mu.stopped = false
 	mm.reserved = reserved
 	if log.V(2) {
-		poolname := redact.SafeString("(none)")
+		poolname := redact.RedactableString("(none)")
 		if pool != nil {
-			poolname = redact.SafeString(pool.name.String())
+			poolname = pool.name
 		}
 		log.InfofDepth(ctx, 1, "%s: starting monitor, reserved %s, pool %s",
 			mm.name,
@@ -699,14 +538,29 @@ func (mm *BytesMonitor) Start(ctx context.Context, pool *BytesMonitor, reserved 
 
 // NewUnlimitedMonitor creates a new monitor and starts the monitor in
 // "detached" mode without a pool and without a maximum budget.
-func NewUnlimitedMonitor(ctx context.Context, args Options) *BytesMonitor {
+func NewUnlimitedMonitor(
+	ctx context.Context,
+	name redact.RedactableString,
+	res Resource,
+	curCount *metric.Gauge,
+	maxHist metric.IHistogram,
+	noteworthy int64,
+	settings *cluster.Settings,
+) *BytesMonitor {
 	if log.V(2) {
-		log.InfofDepth(ctx, 1, "%s: starting unlimited monitor", args.Name)
+		log.InfofDepth(ctx, 1, "%s: starting unlimited monitor", name)
 	}
-	// The limit is expected to not be set, but let's be conservative.
-	args.Limit = math.MaxInt64
-	m := NewMonitor(args)
-	m.reserved = NewStandaloneBudget(math.MaxInt64)
+	m := &BytesMonitor{
+		name:                 name,
+		resource:             res,
+		limit:                math.MaxInt64,
+		noteworthyUsageBytes: noteworthy,
+		poolAllocationSize:   DefaultPoolAllocationSize,
+		reserved:             NewStandaloneBudget(math.MaxInt64),
+		settings:             settings,
+	}
+	m.mu.curBytesCount = curCount
+	m.mu.maxBytesHist = maxHist
 	return m
 }
 
@@ -722,40 +576,14 @@ func (mm *BytesMonitor) Stop(ctx context.Context) {
 	mm.doStop(ctx, true)
 }
 
-// Name returns the prefix of the monitor.
-func (mm *BytesMonitor) Name() Name {
-	return mm.name
+// Name returns the name of the monitor.
+func (mm *BytesMonitor) Name() string {
+	return string(mm.name)
 }
 
 // Limit returns the memory limit of the monitor.
 func (mm *BytesMonitor) Limit() int64 {
 	return mm.limit
-}
-
-// MarkLongLiving marks the monitor as a long-living. Such monitors are allowed
-// to not be stopped because their lifetime matches the server's lifetime.
-func (mm *BytesMonitor) MarkLongLiving() {
-	mm.mu.Lock()
-	defer mm.mu.Unlock()
-	mm.mu.longLiving = true
-}
-
-func findShortLivingCb(f io.Writer, numShortLiving *int) func(state MonitorState) error {
-	return func(s MonitorState) error {
-		if s.LongLiving {
-			return nil
-		}
-		*numShortLiving++
-		info := fmt.Sprintf("%s%s %s", strings.Repeat(" ", 4*s.Level), s.Name, humanize.IBytes(uint64(s.Used)))
-		if s.ReservedUsed != 0 || s.ReservedReserved != 0 {
-			info += fmt.Sprintf(" (%s / %s)", humanize.IBytes(uint64(s.ReservedUsed)), humanize.IBytes(uint64(s.ReservedReserved)))
-		}
-		if _, err := f.Write([]byte(info)); err != nil {
-			return err
-		}
-		_, err := f.Write([]byte{'\n'})
-		return err
-	}
 }
 
 const bytesMaxUsageLoggingThreshold = 100 * 1024
@@ -764,27 +592,6 @@ func (mm *BytesMonitor) doStop(ctx context.Context, check bool) {
 	mm.mu.Lock()
 	defer mm.mu.Unlock()
 	mm.mu.stopped = true
-	if buildutil.CrdbTestBuild {
-		// We expect that all short-living descendants of this monitor have been
-		// stopped.
-		if mm.mu.head != nil {
-			mm.mu.Unlock()
-			var sb strings.Builder
-			var numShortLiving int
-			_ = mm.TraverseTree(findShortLivingCb(&sb, &numShortLiving))
-			mm.mu.Lock()
-			if !mm.mu.longLiving {
-				// Ignore mm itself if it is short-living.
-				numShortLiving--
-			}
-			if numShortLiving > 0 {
-				panic(errors.AssertionFailedf(
-					"found %d short-living non-stopped monitors in %s\n%s",
-					numShortLiving, mm.name, sb.String(),
-				))
-			}
-		}
-	}
 
 	if log.V(1) && mm.mu.maxAllocated >= bytesMaxUsageLoggingThreshold {
 		log.InfofDepth(ctx, 1, "%s, bytes usage max %s",
@@ -848,7 +655,7 @@ func (mm *BytesMonitor) doStop(ctx context.Context, check bool) {
 	mm.mu.curBudget.mon = nil
 
 	// Release the reserved budget to its original pool, if any.
-	if mm.reserved != &noReserved && mm.reserved != nil {
+	if mm.reserved != &noReserved {
 		mm.reserved.Clear(ctx)
 		// Make sure to lose reference to the reserved account because it has a
 		// pointer to the parent monitor.
@@ -881,10 +688,7 @@ func (mm *BytesMonitor) SetMetrics(curCount *metric.Gauge, maxHist metric.IHisto
 
 // Resource returns the type of the resource the monitor is tracking.
 func (mm *BytesMonitor) Resource() Resource {
-	if mm.mu.tracksDisk {
-		return DiskResource
-	}
-	return MemoryResource
+	return mm.resource
 }
 
 // BoundAccount tracks the cumulated allocations for one client of a pool or
@@ -907,12 +711,7 @@ type BoundAccount struct {
 	// decreases as used increases (and vice-versa).
 	reserved int64
 	mon      *BytesMonitor
-}
 
-// EarmarkedBoundAccount extends BoundAccount to pre-reserve large allocations
-// up front.
-type EarmarkedBoundAccount struct {
-	BoundAccount
 	earmark int64
 }
 
@@ -924,13 +723,29 @@ type ConcurrentBoundAccount struct {
 
 // Used wraps BoundAccount.Used().
 func (c *ConcurrentBoundAccount) Used() int64 {
+	if c == nil {
+		return 0
+	}
 	c.Lock()
 	defer c.Unlock()
 	return c.wrapped.Used()
 }
 
+// Reserve wraps BoundAccount.Reserve().
+func (c *ConcurrentBoundAccount) Reserve(ctx context.Context, x int64) error {
+	if c == nil {
+		return nil
+	}
+	c.Lock()
+	defer c.Unlock()
+	return c.wrapped.Reserve(ctx, x)
+}
+
 // Close wraps BoundAccount.Close().
 func (c *ConcurrentBoundAccount) Close(ctx context.Context) {
+	if c == nil {
+		return
+	}
 	c.Lock()
 	defer c.Unlock()
 	c.wrapped.Close(ctx)
@@ -938,6 +753,9 @@ func (c *ConcurrentBoundAccount) Close(ctx context.Context) {
 
 // Resize wraps BoundAccount.Resize().
 func (c *ConcurrentBoundAccount) Resize(ctx context.Context, oldSz, newSz int64) error {
+	if c == nil {
+		return nil
+	}
 	c.Lock()
 	defer c.Unlock()
 	return c.wrapped.Resize(ctx, oldSz, newSz)
@@ -945,6 +763,9 @@ func (c *ConcurrentBoundAccount) Resize(ctx context.Context, oldSz, newSz int64)
 
 // ResizeTo wraps BoundAccount.ResizeTo().
 func (c *ConcurrentBoundAccount) ResizeTo(ctx context.Context, newSz int64) error {
+	if c == nil {
+		return nil
+	}
 	c.Lock()
 	defer c.Unlock()
 	return c.wrapped.ResizeTo(ctx, newSz)
@@ -952,6 +773,9 @@ func (c *ConcurrentBoundAccount) ResizeTo(ctx context.Context, newSz int64) erro
 
 // Grow wraps BoundAccount.Grow().
 func (c *ConcurrentBoundAccount) Grow(ctx context.Context, x int64) error {
+	if c == nil {
+		return nil
+	}
 	c.Lock()
 	defer c.Unlock()
 	return c.wrapped.Grow(ctx, x)
@@ -959,7 +783,7 @@ func (c *ConcurrentBoundAccount) Grow(ctx context.Context, x int64) error {
 
 // Shrink wraps BoundAccount.Shrink().
 func (c *ConcurrentBoundAccount) Shrink(ctx context.Context, delta int64) {
-	if delta == 0 {
+	if c == nil || delta == 0 {
 		return
 	}
 	c.Lock()
@@ -967,51 +791,32 @@ func (c *ConcurrentBoundAccount) Shrink(ctx context.Context, delta int64) {
 	c.wrapped.Shrink(ctx, delta)
 }
 
-// Clear wraps BoundAccount.Clear()
-func (c *ConcurrentBoundAccount) Clear(ctx context.Context) {
-	c.Lock()
-	defer c.Unlock()
-	c.wrapped.Clear(ctx)
-}
-
 // NewStandaloneBudget creates a BoundAccount suitable for root monitors.
 func NewStandaloneBudget(capacity int64) *BoundAccount {
 	return &BoundAccount{used: capacity}
 }
 
-// standaloneUnlimited is a special "marker" BytesMonitor that is used by
-// standalone unlimited accounts.
-var standaloneUnlimited = &BytesMonitor{}
-
-// NewStandaloneUnlimitedAccount returns a BoundAccount that is actually not
-// bound to any BytesMonitor. Use this only when memory allocations shouldn't
-// be tracked by the memory accounting system.
-func NewStandaloneUnlimitedAccount() *BoundAccount {
-	return &BoundAccount{mon: standaloneUnlimited}
-}
-
-// standaloneUnlimited returns whether this BoundAccount is actually not bound
-// to any BytesMonitor and acts as a "standalone unlimited" one.
-func (b *BoundAccount) standaloneUnlimited() bool {
-	return b.mon == standaloneUnlimited
-}
-
 // Used returns the number of bytes currently allocated through this account.
 func (b *BoundAccount) Used() int64 {
+	if b == nil {
+		return 0
+	}
 	return b.used
 }
 
 // Monitor returns the BytesMonitor to which this account is bound. The return
 // value can be nil.
 func (b *BoundAccount) Monitor() *BytesMonitor {
-	if b.standaloneUnlimited() {
-		// We don't want to expose access to the standaloneUnlimited monitor.
+	if b == nil {
 		return nil
 	}
 	return b.mon
 }
 
 func (b *BoundAccount) Allocated() int64 {
+	if b == nil {
+		return 0
+	}
 	return b.used + b.reserved
 }
 
@@ -1020,24 +825,10 @@ func (mm *BytesMonitor) MakeBoundAccount() BoundAccount {
 	return BoundAccount{mon: mm}
 }
 
-// MakeEarmarkedBoundAccount creates an EarmarkedBoundAccount connected to the
-// given monitor.
-func (mm *BytesMonitor) MakeEarmarkedBoundAccount() EarmarkedBoundAccount {
-	return EarmarkedBoundAccount{BoundAccount: BoundAccount{mon: mm}}
-}
-
 // MakeConcurrentBoundAccount creates ConcurrentBoundAccount, which is a thread
 // safe wrapper around BoundAccount.
 func (mm *BytesMonitor) MakeConcurrentBoundAccount() *ConcurrentBoundAccount {
 	return &ConcurrentBoundAccount{wrapped: mm.MakeBoundAccount()}
-}
-
-// NewStandaloneUnlimitedConcurrentAccount creates ConcurrentBoundAccount, which
-// is a thread safe wrapper around the standalone-unlimited BoundAccount. Use
-// this only when memory allocations shouldn't be tracked by the memory
-// accounting system.
-func NewStandaloneUnlimitedConcurrentAccount() *ConcurrentBoundAccount {
-	return &ConcurrentBoundAccount{wrapped: BoundAccount{mon: standaloneUnlimited}}
 }
 
 // TransferAccount creates a new account with the budget
@@ -1068,12 +859,29 @@ func (b *BoundAccount) Init(ctx context.Context, mon *BytesMonitor) {
 	b.mon = mon
 }
 
+// Reserve requests an allocation of some amount from the monitor just like Grow
+// but does not mark it as used immediately, instead keeping it in the local
+// reservation by use by future Grow() calls, and configuring the account to
+// consider that amount "earmarked" for this account, meaning that that Shrink()
+// calls will not release it back to the parent monitor.
+func (b *BoundAccount) Reserve(ctx context.Context, x int64) error {
+	if b == nil {
+		return nil
+	}
+	minExtra := b.mon.roundSize(x)
+	if err := b.mon.reserveBytes(ctx, minExtra); err != nil {
+		return err
+	}
+	b.reserved += minExtra
+	b.earmark += x
+	return nil
+}
+
 // Empty shrinks the account to use 0 bytes. Previously used memory is returned
 // to the reserved buffer, which is subsequently released such that at most
 // poolAllocationSize is reserved.
 func (b *BoundAccount) Empty(ctx context.Context) {
-	if b.standaloneUnlimited() {
-		b.used = 0
+	if b == nil {
 		return
 	}
 	b.reserved += b.used
@@ -1087,8 +895,14 @@ func (b *BoundAccount) Empty(ctx context.Context) {
 // Clear releases all the cumulated allocations of an account at once and
 // primes it for reuse.
 func (b *BoundAccount) Clear(ctx context.Context) {
-	// It's ok to call Close even if b.mon is nil or is the standaloneUnlimited
-	// one.
+	if b == nil {
+		return
+	}
+	if b.mon == nil {
+		// An account created by NewStandaloneBudget is disconnected from any
+		// monitor -- "bytes out of the aether". This needs not be closed.
+		return
+	}
 	b.Close(ctx)
 	b.used = 0
 	b.reserved = 0
@@ -1097,10 +911,12 @@ func (b *BoundAccount) Clear(ctx context.Context) {
 // Close releases all the cumulated allocations of an account at once.
 // TODO(yuzefovich): consider removing this method in favor of Clear.
 func (b *BoundAccount) Close(ctx context.Context) {
-	if b.mon == nil || b.standaloneUnlimited() {
-		// Either an account created by NewStandaloneBudget or by
-		// NewStandaloneUnlimited. In both cases it is disconnected from any
-		// monitor -- "bytes out of the aether", so there is nothing to release.
+	if b == nil {
+		return
+	}
+	if b.mon == nil {
+		// An account created by NewStandaloneBudget is disconnected from any
+		// monitor -- "bytes out of the aether". This needs not be closed.
 		return
 	}
 	if a := b.Allocated(); a > 0 {
@@ -1119,6 +935,9 @@ func (b *BoundAccount) Close(ctx context.Context) {
 // opposed to resizing one object among many in the account), ResizeTo() should
 // be used.
 func (b *BoundAccount) Resize(ctx context.Context, oldSz, newSz int64) error {
+	if b == nil {
+		return nil
+	}
 	delta := newSz - oldSz
 	switch {
 	case delta > 0:
@@ -1131,6 +950,9 @@ func (b *BoundAccount) Resize(ctx context.Context, oldSz, newSz int64) error {
 
 // ResizeTo resizes (grows or shrinks) the account to a specified size.
 func (b *BoundAccount) ResizeTo(ctx context.Context, newSz int64) error {
+	if b == nil {
+		return nil
+	}
 	if newSz == b.used {
 		// Performance optimization to avoid an unnecessary dispatch.
 		return nil
@@ -1140,8 +962,7 @@ func (b *BoundAccount) ResizeTo(ctx context.Context, newSz int64) error {
 
 // Grow is an accessor for b.mon.GrowAccount.
 func (b *BoundAccount) Grow(ctx context.Context, x int64) error {
-	if b.standaloneUnlimited() {
-		b.used += x
+	if b == nil {
 		return nil
 	}
 	if b.reserved < x {
@@ -1158,51 +979,7 @@ func (b *BoundAccount) Grow(ctx context.Context, x int64) error {
 
 // Shrink releases part of the cumulated allocations by the specified size.
 func (b *BoundAccount) Shrink(ctx context.Context, delta int64) {
-	if delta == 0 {
-		return
-	}
-	if b.standaloneUnlimited() {
-		if b.used < delta {
-			logcrash.ReportOrPanic(ctx, nil, /* sv */
-				"standalone unlimited: no bytes in account to release, current %d, free %d",
-				b.used, delta)
-			delta = b.used
-		}
-		b.used -= delta
-		return
-	}
-	if b.used < delta {
-		logcrash.ReportOrPanic(ctx, &b.mon.settings.SV,
-			"%s: no bytes in account to release, current %d, free %d",
-			b.mon.name, b.used, delta)
-		delta = b.used
-	}
-	b.used -= delta
-	b.reserved += delta
-	if b.reserved > b.mon.poolAllocationSize {
-		b.mon.releaseBytes(ctx, b.reserved-b.mon.poolAllocationSize)
-		b.reserved = b.mon.poolAllocationSize
-	}
-}
-
-// Reserve requests an allocation of some amount from the monitor just like Grow
-// but does not mark it as used immediately, instead keeping it in the local
-// reservation by use by future Grow() calls, and configuring the account to
-// consider that amount "earmarked" for this account, meaning that that Shrink()
-// calls will not release it back to the parent monitor.
-func (b *EarmarkedBoundAccount) Reserve(ctx context.Context, x int64) error {
-	minExtra := b.mon.roundSize(x)
-	if err := b.mon.reserveBytes(ctx, minExtra); err != nil {
-		return err
-	}
-	b.reserved += minExtra
-	b.earmark += x
-	return nil
-}
-
-// Shrink releases part of the cumulated allocations by the specified size.
-func (b *EarmarkedBoundAccount) Shrink(ctx context.Context, delta int64) {
-	if delta == 0 {
+	if b == nil || delta == 0 {
 		return
 	}
 	if b.used < delta {
@@ -1219,19 +996,6 @@ func (b *EarmarkedBoundAccount) Shrink(ctx context.Context, delta int64) {
 	}
 }
 
-func (mm *BytesMonitor) makeBudgetExceededError(minExtra int64) error {
-	errConstructor := NewMemoryBudgetExceededError
-	if mm.mu.tracksDisk {
-		errConstructor = newDiskBudgetExceededError
-	}
-	if mm.mu.rootSQLMonitor {
-		errConstructor = newRootSQLMemoryMonitorBudgetExceededError
-	}
-	return errors.Wrapf(errConstructor(
-		minExtra, mm.mu.curAllocated, mm.reserved.used), "%s", mm.name,
-	)
-}
-
 // reserveBytes declares an allocation to this monitor. An error is returned if
 // the allocation is denied.
 // x must be a multiple of `poolAllocationSize`.
@@ -1241,8 +1005,13 @@ func (mm *BytesMonitor) reserveBytes(ctx context.Context, x int64) error {
 	// Check the local limit first. NB: The condition is written in this manner
 	// so that it handles overflow correctly. Consider what happens if
 	// x==math.MaxInt64. mm.limit-x will be a large negative number.
+	//
+	// TODO(knz): make the monitor name reportable in telemetry, after checking
+	// that the name is never constructed from user data.
 	if mm.mu.curAllocated > mm.limit-x {
-		return mm.makeBudgetExceededError(x)
+		return errors.Wrapf(
+			mm.resource.NewBudgetExceededError(x, mm.mu.curAllocated, mm.limit), "%s", mm.name,
+		)
 	}
 	// Check whether we need to request an increase of our budget.
 	if mm.mu.curAllocated > mm.mu.curBudget.used+mm.reserved.used-x {
@@ -1256,6 +1025,20 @@ func (mm *BytesMonitor) reserveBytes(ctx context.Context, x int64) error {
 	}
 	if mm.mu.maxAllocated < mm.mu.curAllocated {
 		mm.mu.maxAllocated = mm.mu.curAllocated
+	}
+
+	// Report "large" queries to the log for further investigation.
+	if log.V(1) {
+		if mm.mu.curAllocated > mm.noteworthyUsageBytes {
+			// We only report changes in binary magnitude of the size. This is to
+			// limit the amount of log messages when a size blowup is caused by
+			// many small allocations.
+			if bits.Len64(uint64(mm.mu.curAllocated)) != bits.Len64(uint64(mm.mu.curAllocated-x)) {
+				log.Infof(ctx, "%s: bytes usage increases to %s (+%d)",
+					mm.name,
+					humanizeutil.IBytes(mm.mu.curAllocated), x)
+			}
+		}
 	}
 
 	if log.V(2) {
@@ -1304,7 +1087,11 @@ func (mm *BytesMonitor) releaseBytesLocked(ctx context.Context, sz int64) {
 func (mm *BytesMonitor) increaseBudget(ctx context.Context, minExtra int64) error {
 	// NB: mm.mu Already locked by reserveBytes().
 	if mm.mu.curBudget.mon == nil {
-		return mm.makeBudgetExceededError(minExtra)
+		// TODO(knz): make the monitor name reportable in telemetry, after checking
+		// that the name is never constructed from user data.
+		return errors.Wrapf(mm.resource.NewBudgetExceededError(
+			minExtra, mm.mu.curAllocated, mm.reserved.used), "%s", mm.name,
+		)
 	}
 	if log.V(2) {
 		log.Infof(ctx, "%s: requesting %d bytes from the pool", mm.name, minExtra)
@@ -1339,7 +1126,7 @@ func (mm *BytesMonitor) releaseBudget(ctx context.Context) {
 // RelinquishAllOnReleaseBytes makes it so that the monitor doesn't keep any
 // margin bytes when the bytes are released from it.
 func (mm *BytesMonitor) RelinquishAllOnReleaseBytes() {
-	mm.mu.relinquishAllOnReleaseBytes = true
+	mm.relinquishAllOnReleaseBytes = true
 }
 
 // adjustBudget ensures that the monitor does not keep many more bytes reserved
@@ -1349,7 +1136,7 @@ func (mm *BytesMonitor) RelinquishAllOnReleaseBytes() {
 func (mm *BytesMonitor) adjustBudget(ctx context.Context) {
 	// NB: mm.mu Already locked by releaseBytes().
 	var margin int64
-	if !mm.mu.relinquishAllOnReleaseBytes {
+	if !mm.relinquishAllOnReleaseBytes {
 		margin = mm.poolAllocationSize * int64(maxAllocatedButUnusedBlocks)
 	}
 
@@ -1364,11 +1151,15 @@ func (mm *BytesMonitor) adjustBudget(ctx context.Context) {
 	}
 }
 
-// ReadAll is like ioctx.ReadAll except it additionally asks the BoundAccount
-// acct permission if it grows its buffer while reading. When the caller
-// releases the returned slice, it shrinks the bound account by its cap (unless
-// it provided a standalone unlimited account).
+// ReadAll is like ioctx.ReadAll except it additionally asks the BoundAccount acct
+// permission, if it is non-nil, it grows its buffer while reading. When the
+// caller releases the returned slice it shrink the bound account by its cap.
 func ReadAll(ctx context.Context, r ioctx.ReaderCtx, acct *BoundAccount) ([]byte, error) {
+	if acct == nil {
+		b, err := ioctx.ReadAll(ctx, r)
+		return b, err
+	}
+
 	const starting, maxIncrease = 1024, 8 << 20
 	if err := acct.Grow(ctx, starting); err != nil {
 		return nil, err

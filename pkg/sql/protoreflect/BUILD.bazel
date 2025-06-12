@@ -16,10 +16,6 @@ go_library(
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_gogo_protobuf//jsonpb",
         "@com_github_gogo_protobuf//proto",
-        "@org_golang_google_protobuf//encoding/protojson",
-        "@org_golang_google_protobuf//reflect/protodesc",
-        "@org_golang_google_protobuf//reflect/protoreflect",
-        "@org_golang_google_protobuf//types/dynamicpb",
     ],
 )
 
@@ -30,14 +26,14 @@ go_test(
         "main_test.go",
         "utils_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":protoreflect"],
     deps = [
-        "//pkg/geo/geopb",
+        "//pkg/geo/geoindex",
         "//pkg/security/securityassets",
         "//pkg/security/securitytest",
         "//pkg/sql/catalog/catenumpb",
         "//pkg/sql/catalog/descpb",
-        "//pkg/sql/protoreflect/gprototest",
         "//pkg/sql/protoreflect/test",
         "//pkg/sql/types",
         "//pkg/util/json",

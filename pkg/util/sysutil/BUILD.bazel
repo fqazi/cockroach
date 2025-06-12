@@ -9,10 +9,6 @@ go_library(
         "large_file.go",
         "large_file_linux.go",
         "large_file_nonlinux.go",
-        "socket.go",
-        "socket_darwin.go",
-        "socket_linux.go",
-        "socket_stub.go",
         "sysutil.go",
         "sysutil_unix.go",
         "sysutil_windows.go",
@@ -23,63 +19,42 @@ go_library(
         "@com_github_cockroachdb_errors//:errors",
     ] + select({
         "@io_bazel_rules_go//go/platform:aix": [
-            "@com_github_cockroachdb_redact//:redact",
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:android": [
-            "@com_github_cockroachdb_redact//:redact",
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:darwin": [
-            "@com_github_cockroachdb_redact//:redact",
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:dragonfly": [
-            "@com_github_cockroachdb_redact//:redact",
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:freebsd": [
-            "@com_github_cockroachdb_redact//:redact",
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:illumos": [
-            "@com_github_cockroachdb_redact//:redact",
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:ios": [
-            "@com_github_cockroachdb_redact//:redact",
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:js": [
-            "@com_github_cockroachdb_redact//:redact",
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:linux": [
-            "@com_github_cockroachdb_redact//:redact",
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:netbsd": [
-            "@com_github_cockroachdb_redact//:redact",
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:openbsd": [
-            "@com_github_cockroachdb_redact//:redact",
-            "@org_golang_x_sys//unix",
-        ],
-        "@io_bazel_rules_go//go/platform:osx": [
-            "@com_github_cockroachdb_redact//:redact",
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:plan9": [
-            "@com_github_cockroachdb_redact//:redact",
-            "@org_golang_x_sys//unix",
-        ],
-        "@io_bazel_rules_go//go/platform:qnx": [
-            "@com_github_cockroachdb_redact//:redact",
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:solaris": [
-            "@com_github_cockroachdb_redact//:redact",
             "@org_golang_x_sys//unix",
         ],
         "//conditions:default": [],
@@ -95,6 +70,7 @@ go_test(
         "sysutil_test.go",
         "sysutil_unix_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":sysutil"],
     deps = [
         "@com_github_cockroachdb_errors//:errors",
@@ -144,15 +120,7 @@ go_test(
             "@com_github_stretchr_testify//assert",
             "@org_golang_x_sys//unix",
         ],
-        "@io_bazel_rules_go//go/platform:osx": [
-            "@com_github_stretchr_testify//assert",
-            "@org_golang_x_sys//unix",
-        ],
         "@io_bazel_rules_go//go/platform:plan9": [
-            "@org_golang_x_sys//unix",
-        ],
-        "@io_bazel_rules_go//go/platform:qnx": [
-            "@com_github_stretchr_testify//assert",
             "@org_golang_x_sys//unix",
         ],
         "@io_bazel_rules_go//go/platform:solaris": [

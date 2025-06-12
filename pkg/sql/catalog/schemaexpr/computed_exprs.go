@@ -6,6 +6,8 @@
 package schemaexpr
 
 import (
+	"context"
+
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
@@ -28,7 +30,9 @@ type RowIndexedVarContainer struct {
 var _ eval.IndexedVarContainer = &RowIndexedVarContainer{}
 
 // IndexedVarEval implements eval.IndexedVarContainer.
-func (r *RowIndexedVarContainer) IndexedVarEval(idx int) (tree.Datum, error) {
+func (r *RowIndexedVarContainer) IndexedVarEval(
+	ctx context.Context, idx int, e tree.ExprEvaluator,
+) (tree.Datum, error) {
 	rowIdx, ok := r.Mapping.Get(r.Cols[idx].GetID())
 	if !ok {
 		return tree.DNull, nil
@@ -39,6 +43,11 @@ func (r *RowIndexedVarContainer) IndexedVarEval(idx int) (tree.Datum, error) {
 // IndexedVarResolvedType implements tree.IndexedVarContainer.
 func (*RowIndexedVarContainer) IndexedVarResolvedType(idx int) *types.T {
 	panic("unsupported")
+}
+
+// IndexedVarNodeFormatter implements tree.IndexedVarContainer.
+func (*RowIndexedVarContainer) IndexedVarNodeFormatter(idx int) tree.NodeFormatter {
+	return nil
 }
 
 // CannotWriteToComputedColError constructs a write error for a computed column.

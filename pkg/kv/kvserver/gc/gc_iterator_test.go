@@ -6,7 +6,6 @@
 package gc
 
 import (
-	"context"
 	"math/rand"
 	"testing"
 	"time"
@@ -159,7 +158,7 @@ func TestGCIterator(t *testing.T) {
 			ds.setupTest(t, eng, desc)
 			snap := eng.NewSnapshot()
 			defer snap.Close()
-			mvccIt, err := snap.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
+			mvccIt, err := snap.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
 				LowerBound: desc.StartKey.AsRawKey(),
 				UpperBound: desc.EndKey.AsRawKey(),
 				KeyTypes:   storage.IterKeyTypePointsAndRanges,

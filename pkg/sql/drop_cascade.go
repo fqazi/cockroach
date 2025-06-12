@@ -7,7 +7,6 @@ package sql
 
 import (
 	"context"
-	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -85,9 +84,7 @@ func (d *dropCascadeState) collectObjectsInSchema(
 // This resolves objects for DROP SCHEMA and DROP DATABASE ops.
 // db is used to generate a useful error message in the case
 // of DROP DATABASE; otherwise, db is nil.
-func (d *dropCascadeState) resolveCollectedObjects(
-	ctx context.Context, dropDatabase bool, p *planner,
-) error {
+func (d *dropCascadeState) resolveCollectedObjects(ctx context.Context, p *planner) error {
 	d.td = make([]toDelete, 0, len(d.objectNamesToDelete))
 	// Resolve each of the collected names.
 	for i := range d.objectNamesToDelete {
@@ -189,37 +186,6 @@ func (d *dropCascadeState) resolveCollectedObjects(
 		}
 	}
 
-	// Validate dropping any function will not break other objects.
-	if !dropDatabase {
-		for _, fn := range d.functionsToDelete {
-			// If any of the dependencies are in a different schema (non-dropped) our
-			// cascade support will lead to broken / inaccessible tables. If we are in the
-			// legacy schema changer world return an error. The declarative schema changer
-			// knows how to handle function cascades.
-			var idsInOtherSchemas []descpb.ID
-			for _, dependedOnBy := range fn.DependedOnBy {
-				dependedOnByDesc, err := p.Descriptors().ByIDWithoutLeased(p.Txn()).Get().Desc(ctx, dependedOnBy.ID)
-				if err != nil {
-					return err
-				}
-				if dependedOnByDesc.GetParentSchemaID() != fn.ParentSchemaID {
-					idsInOtherSchemas = append(idsInOtherSchemas, dependedOnBy.ID)
-				}
-			}
-
-			if len(idsInOtherSchemas) > 0 {
-				fullyQualifiedNames, err := p.getFullyQualifiedNamesFromIDs(ctx, idsInOtherSchemas)
-				if err != nil {
-					return err
-				}
-				return pgerror.Newf(
-					pgcode.DependentObjectsStillExist,
-					"cannot drop function %q because other object ([%v]) still depend on it",
-					fn.Name, strings.Join(fullyQualifiedNames, ", "))
-			}
-		}
-	}
-
 	allObjectsToDelete, implicitDeleteMap, err := p.accumulateAllObjectsToDelete(ctx, d.td)
 	if err != nil {
 		return err
@@ -243,9 +209,7 @@ func (d *dropCascadeState) dropAllCollectedObjects(ctx context.Context, p *plann
 		if err := p.canDropFunction(ctx, fn); err != nil {
 			return err
 		}
-		// We use DropRestrict here since we've already collected all the functions
-		// in the schema so they will be dropped explicitly.
-		if err := p.dropFunctionImpl(ctx, fn, tree.DropRestrict); err != nil {
+		if err := p.dropFunctionImpl(ctx, fn); err != nil {
 			return err
 		}
 	}

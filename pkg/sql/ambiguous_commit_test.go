@@ -17,6 +17,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/mutations"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -87,40 +88,40 @@ func TestAmbiguousCommit(t *testing.T) {
 		}
 
 		params.Knobs.KVClient = &kvcoord.ClientTestingKnobs{
-			TransportFactory: func(factory kvcoord.TransportFactory) kvcoord.TransportFactory {
-				return func(options kvcoord.SendOptions, slice kvcoord.ReplicaSlice) kvcoord.Transport {
-					transport := factory(options, slice)
-					return &interceptingTransport{
-						Transport: transport,
-						sendNext: func(ctx context.Context, ba *kvpb.BatchRequest) (*kvpb.BatchResponse, error) {
-							if ambiguousSuccess {
-								br, err := transport.SendNext(ctx, ba)
-								// During shutdown, we may get responses that
-								// have call.Err set and all we have to do is
-								// not crash on those.
-								//
-								// For the rest, compare and perhaps inject an
-								// RPC error ourselves.
-								if err == nil && br.Error != nil && strings.Contains(br.Error.GoError().Error(), errMarker) {
-									// Translate the injected error into an RPC
-									// error to simulate an ambiguous result.
-									return nil, br.Error.GoError()
-								}
-								return br, err
-							} else {
-								if req, ok := ba.GetArg(kvpb.ConditionalPut); ok {
-									if pErr := maybeRPCError(req.(*kvpb.ConditionalPutRequest)); pErr != nil {
-										// Blackhole the RPC and return an
-										// error to simulate an ambiguous
-										// result.
-										return nil, pErr.GoError()
-									}
-								}
-								return transport.SendNext(ctx, ba)
+			TransportFactory: func(
+				opts kvcoord.SendOptions, nodeDialer *nodedialer.Dialer, replicas kvcoord.ReplicaSlice,
+			) (kvcoord.Transport, error) {
+				transport, err := kvcoord.GRPCTransportFactory(opts, nodeDialer, replicas)
+				return &interceptingTransport{
+					Transport: transport,
+					sendNext: func(ctx context.Context, ba *kvpb.BatchRequest) (*kvpb.BatchResponse, error) {
+						if ambiguousSuccess {
+							br, err := transport.SendNext(ctx, ba)
+							// During shutdown, we may get responses that
+							// have call.Err set and all we have to do is
+							// not crash on those.
+							//
+							// For the rest, compare and perhaps inject an
+							// RPC error ourselves.
+							if err == nil && br.Error != nil && strings.Contains(br.Error.GoError().Error(), errMarker) {
+								// Translate the injected error into an RPC
+								// error to simulate an ambiguous result.
+								return nil, br.Error.GoError()
 							}
-						},
-					}
-				}
+							return br, err
+						} else {
+							if req, ok := ba.GetArg(kvpb.ConditionalPut); ok {
+								if pErr := maybeRPCError(req.(*kvpb.ConditionalPutRequest)); pErr != nil {
+									// Blackhole the RPC and return an
+									// error to simulate an ambiguous
+									// result.
+									return nil, pErr.GoError()
+								}
+							}
+							return transport.SendNext(ctx, ba)
+						}
+					},
+				}, err
 			},
 		}
 
@@ -151,7 +152,7 @@ func TestAmbiguousCommit(t *testing.T) {
 		for _, server := range tc.Servers {
 			st := server.ClusterSettings()
 			st.Manual.Store(true)
-			sql.DistSQLClusterExecMode.Override(ctx, &st.SV, sessiondatapb.DistSQLOff)
+			sql.DistSQLClusterExecMode.Override(ctx, &st.SV, int64(sessiondatapb.DistSQLOff))
 		}
 
 		sqlDB := tc.Conns[0]

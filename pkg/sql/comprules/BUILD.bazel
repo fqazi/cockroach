@@ -18,12 +18,12 @@ go_library(
 go_test(
     name = "comprules_test",
     srcs = ["rules_test.go"],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":comprules"],
     deps = [
         "//pkg/sql/compengine",
         "//pkg/util/leaktest",
         "@com_github_cockroachdb_datadriven//:datadriven",
-        "@com_github_cockroachdb_redact//:redact",
     ],
 )

@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for avg_agg.eg.go. It's formatted in a
@@ -20,7 +21,6 @@ import (
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
-	"github.com/cockroachdb/cockroach/pkg/col/typeconv"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexec/execgen"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/colmem"
@@ -36,7 +36,6 @@ var (
 	_ tree.AggType
 	_ apd.Context
 	_ duration.Duration
-	_ = typeconv.TypeFamilyToCanonicalTypeFamily
 )
 
 // {{/*
@@ -61,19 +60,7 @@ func _ASSIGN_SUBTRACT(_, _, _, _, _, _ string) {
 	colexecerror.InternalError(errors.AssertionFailedf(""))
 }
 
-// _ALLOC_CODE is the template variable that is replaced in agg_gen_util.go by
-// the template code for sharing allocator objects.
-const _ALLOC_CODE = 0
-
 // */}}
-
-// {{if eq "_AGGKIND" "Ordered"}}
-
-const avgNumOverloads = 6
-
-// {{end}}
-
-var _ = _ALLOC_CODE
 
 func newAvg_AGGKINDAggAlloc(
 	allocator *colmem.Allocator, t *types.T, allocSize int64,
@@ -81,7 +68,7 @@ func newAvg_AGGKINDAggAlloc(
 	allocBase := aggAllocBase{allocator: allocator, allocSize: allocSize}
 	switch t.Family() {
 	// {{range .}}
-	case _CANONICAL_TYPE_FAMILY:
+	case _TYPE_FAMILY:
 		switch t.Width() {
 		// {{range .WidthOverloads}}
 		case _TYPE_WIDTH:
@@ -92,7 +79,7 @@ func newAvg_AGGKINDAggAlloc(
 		}
 		// {{end}}
 	}
-	return nil, errors.AssertionFailedf("unsupported avg agg type %s", t.Name())
+	return nil, errors.Errorf("unsupported avg agg type %s", t.Name())
 }
 
 // {{range .}}
@@ -119,7 +106,7 @@ type avg_TYPE_AGGKINDAgg struct {
 var _ AggregateFunc = &avg_TYPE_AGGKINDAgg{}
 
 // {{if eq "_AGGKIND" "Ordered"}}
-func (a *avg_TYPE_AGGKINDAgg) SetOutput(vec *coldata.Vec) {
+func (a *avg_TYPE_AGGKINDAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec._RET_TYPE()
 }
@@ -127,13 +114,13 @@ func (a *avg_TYPE_AGGKINDAgg) SetOutput(vec *coldata.Vec) {
 // {{end}}
 
 func (a *avg_TYPE_AGGKINDAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	execgen.SETVARIABLESIZE(oldCurSumSize, a.curSum)
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.TemplateType(), vec.Nulls()
 	// {{if not (eq "_AGGKIND" "Window")}}
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// {{if eq "_AGGKIND" "Ordered"}}
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756
@@ -246,9 +233,7 @@ func (a *avg_TYPE_AGGKINDAggAlloc) newAggFunc() AggregateFunc {
 
 // Remove implements the slidingWindowAggregateFunc interface (see
 // window_aggregator_tmpl.go).
-func (a *avg_TYPE_AGGKINDAgg) Remove(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int,
-) {
+func (a *avg_TYPE_AGGKINDAgg) Remove(vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int) {
 	execgen.SETVARIABLESIZE(oldCurSumSize, a.curSum)
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.TemplateType(), vec.Nulls()

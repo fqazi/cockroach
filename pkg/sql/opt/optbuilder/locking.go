@@ -6,6 +6,7 @@
 package optbuilder
 
 import (
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
@@ -137,9 +138,7 @@ func (lm lockingSpec) get() opt.Locking {
 	return l
 }
 
-// lockingContext holds the locking information for the current scope. It is
-// passed down into subexpressions by value so that it automatically "pops" back
-// to its previous value on return.
+// lockingContext holds the locking information for the current scope.
 type lockingContext struct {
 	// lockScope is the stack of locking items that are currently in scope. This
 	// might include locking items that do not currently apply because they have
@@ -156,12 +155,6 @@ type lockingContext struct {
 	// return an error if the locking is set when we are building a table scan and
 	// isNullExtended is true.
 	isNullExtended bool
-
-	// safeUpdate is set to true if this lockingContext is being passed down from
-	// a select statement with either a WHERE clause or a LIMIT clause. This is
-	// needed so that we can return an error if we're locking without a WHERE
-	// clause or LIMIT clause and sql_safe_updates is true.
-	safeUpdate bool
 }
 
 // noLocking indicates that no row-level locking has been specified.
@@ -360,52 +353,17 @@ func (item *lockingItem) validate() {
 // guaranteed-durable locking for SELECT FOR UPDATE, SELECT FOR SHARE, or
 // constraint checks.
 func (b *Builder) shouldUseGuaranteedDurability() bool {
-	return b.evalCtx.TxnIsoLevel != isolation.Serializable ||
-		b.evalCtx.SessionData().DurableLockingForSerializable
+	return b.evalCtx.Settings.Version.IsActive(b.ctx, clusterversion.V23_2) &&
+		(b.evalCtx.TxnIsoLevel != isolation.Serializable ||
+			b.evalCtx.SessionData().DurableLockingForSerializable)
 }
 
 // shouldBuildLockOp returns whether we should use the Lock operator for SELECT
 // FOR UPDATE or SELECT FOR SHARE.
 func (b *Builder) shouldBuildLockOp() bool {
-	return b.evalCtx.TxnIsoLevel != isolation.Serializable ||
-		b.evalCtx.SessionData().OptimizerUseLockOpForSerializable
-}
-
-// lockingSpecForTableScan adjusts the lockingSpec for a Scan depending on
-// whether locking will be implemented by a Lock operator, and also creates
-// lockBuilders as a side-effect.
-func (b *Builder) lockingSpecForTableScan(locking lockingSpec, tabMeta *opt.TableMeta) lockingSpec {
-	if locking.isSet() {
-		lb := newLockBuilder(tabMeta)
-		for _, item := range locking {
-			item.builders = append(item.builders, lb)
-		}
-	}
-	if b.shouldBuildLockOp() {
-		// If we're implementing FOR UPDATE / FOR SHARE with a Lock operator on top
-		// of the plan, then this can be an unlocked scan. But if the locking uses
-		// SKIP LOCKED or NOWAIT then we still need this unlocked scan to use SKIP
-		// LOCKED or NOWAIT behavior, respectively, even if it does not take any
-		// locks itself.
-		if waitPolicy := locking.get().WaitPolicy; waitPolicy != tree.LockWaitBlock &&
-			// In isolation levels weaker than Serializable, unlocked scans read
-			// underneath locks without blocking. For these weaker isolation levels we
-			// do not strictly need unlocked scans to use SKIP LOCKED or NOWAIT
-			// behavior. We keep the SKIP LOCKED behavior anyway as an optimization,
-			// but avoid NOWAIT in order to prevent false positive locking errors.
-			(b.evalCtx.TxnIsoLevel == isolation.Serializable ||
-				waitPolicy == tree.LockWaitSkipLocked) {
-			// Create a dummy lockingSpec to get just the lock wait behavior.
-			locking = lockingSpec{&lockingItem{
-				item: &tree.LockingItem{
-					WaitPolicy: waitPolicy,
-				},
-			}}
-		} else {
-			locking = nil
-		}
-	}
-	return locking
+	return b.evalCtx.Settings.Version.IsActive(b.ctx, clusterversion.V23_2) &&
+		(b.evalCtx.TxnIsoLevel != isolation.Serializable ||
+			b.evalCtx.SessionData().OptimizerUseLockOpForSerializable)
 }
 
 // buildLocking constructs one Lock operator for each data source that this

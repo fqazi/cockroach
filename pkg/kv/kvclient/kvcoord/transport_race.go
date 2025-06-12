@@ -4,6 +4,7 @@
 // included in the /LICENSE file.
 
 //go:build race
+// +build race
 
 package kvcoord
 
@@ -73,7 +74,7 @@ func (tr raceTransport) SendNext(
 // GRPCTransportFactory during race builds wraps the implementation and
 // intercepts all BatchRequests, reading them asynchronously in a tight loop.
 // This allows the race detector to catch any mutations of a batch passed to the
-// transport. The dealio is that batches passed to these transport are immutable -
+// transport. The dealio is that batches passed to the transport are immutable -
 // the server is not allowed to mutate anything and this transport makes sure
 // they don't. See client.Sender() for more.
 //
@@ -85,63 +86,66 @@ func (tr raceTransport) SendNext(
 // Instead of this transport, we should find other mechanisms ensuring that:
 // a) the server doesn't hold on to any memory, and
 // b) the server doesn't mutate the request
-func GRPCTransportFactory(nodeDialer *nodedialer.Dialer) TransportFactory {
-	return func(opts SendOptions, replicas ReplicaSlice) Transport {
-		if atomic.AddInt32(&running, 1) <= 1 {
-			if err := nodeDialer.Stopper().RunAsyncTask(
-				context.TODO(), "transport racer", func(ctx context.Context) {
-					var iters int
-					var curIdx int
-					defer func() {
-						atomic.StoreInt32(&running, 0)
-						log.Infof(
-							ctx,
-							"transport race promotion: ran %d iterations on up to %d requests",
-							iters, curIdx+1,
-						)
-					}()
-					// Make a fixed-size slice of *BatchRequest. When full, entries
-					// are evicted in FIFO order.
-					const size = 1000
-					bas := make([]*kvpb.BatchRequest, size)
-					encoder := json.NewEncoder(io.Discard)
-					for {
-						iters++
-						start := timeutil.Now()
-						for _, ba := range bas {
-							if ba != nil {
-								if err := encoder.Encode(ba); err != nil {
-									panic(err)
-								}
+func GRPCTransportFactory(
+	opts SendOptions, nodeDialer *nodedialer.Dialer, replicas ReplicaSlice,
+) (Transport, error) {
+	if atomic.AddInt32(&running, 1) <= 1 {
+		if err := nodeDialer.Stopper().RunAsyncTask(
+			context.TODO(), "transport racer", func(ctx context.Context) {
+				var iters int
+				var curIdx int
+				defer func() {
+					atomic.StoreInt32(&running, 0)
+					log.Infof(
+						ctx,
+						"transport race promotion: ran %d iterations on up to %d requests",
+						iters, curIdx+1,
+					)
+				}()
+				// Make a fixed-size slice of *BatchRequest. When full, entries
+				// are evicted in FIFO order.
+				const size = 1000
+				bas := make([]*kvpb.BatchRequest, size)
+				encoder := json.NewEncoder(io.Discard)
+				for {
+					iters++
+					start := timeutil.Now()
+					for _, ba := range bas {
+						if ba != nil {
+							if err := encoder.Encode(ba); err != nil {
+								panic(err)
 							}
-						}
-						// Prevent the goroutine from spinning too hot as this lets CI
-						// times skyrocket. Sleep on average for as long as we worked
-						// on the last iteration so we spend no more than half our CPU
-						// time on this task.
-						jittered := time.After(jitter(timeutil.Since(start)))
-						// Collect incoming requests until the jittered timer fires,
-						// then access everything we have.
-						for {
-							select {
-							case <-nodeDialer.Stopper().ShouldQuiesce():
-								return
-							case ba := <-incoming:
-								bas[curIdx%size] = ba
-								curIdx++
-								continue
-							case <-jittered:
-							}
-							break
 						}
 					}
-				}); err != nil {
-				// Failed to start async task, reset our state.
-				atomic.StoreInt32(&running, 0)
-			}
+					// Prevent the goroutine from spinning too hot as this lets CI
+					// times skyrocket. Sleep on average for as long as we worked
+					// on the last iteration so we spend no more than half our CPU
+					// time on this task.
+					jittered := time.After(jitter(timeutil.Since(start)))
+					// Collect incoming requests until the jittered timer fires,
+					// then access everything we have.
+					for {
+						select {
+						case <-nodeDialer.Stopper().ShouldQuiesce():
+							return
+						case ba := <-incoming:
+							bas[curIdx%size] = ba
+							curIdx++
+							continue
+						case <-jittered:
+						}
+						break
+					}
+				}
+			}); err != nil {
+			// Failed to start async task, reset our state.
+			atomic.StoreInt32(&running, 0)
 		}
-
-		t := grpcTransportFactoryImpl(opts, nodeDialer, replicas)
-		return &raceTransport{Transport: t}
 	}
+
+	t, err := grpcTransportFactoryImpl(opts, nodeDialer, replicas)
+	if err != nil {
+		return nil, err
+	}
+	return &raceTransport{Transport: t}, nil
 }

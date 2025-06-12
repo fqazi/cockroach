@@ -18,7 +18,6 @@ disallowed_imports_test(
     "cockroach_lib",
     [
         "//pkg/sql/randgen",
-        "//pkg/testutils",
         "//pkg/testutils/testcluster",
     ],
 )
@@ -26,6 +25,5 @@ disallowed_imports_test(
 go_binary(
     name = "cockroach",
     embed = [":cockroach_lib"],
-    exec_properties = {"Pool": "large"},
     visibility = ["//visibility:public"],
 )

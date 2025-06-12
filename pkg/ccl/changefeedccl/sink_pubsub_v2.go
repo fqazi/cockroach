@@ -8,7 +8,6 @@ package changefeedccl
 import (
 	"bytes"
 	"context"
-	encjson "encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -18,7 +17,6 @@ import (
 	pb "cloud.google.com/go/pubsub/apiv1/pubsubpb"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/cidr"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
@@ -44,12 +42,6 @@ const GcpScheme = "gcpubsub"
 const gcpScope = "https://www.googleapis.com/auth/pubsub"
 const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 const globalGCPEndpoint = "pubsub.googleapis.com:443"
-
-type jsonPayload struct {
-	Key   encjson.RawMessage `json:"key"`
-	Value encjson.RawMessage `json:"value"`
-	Topic string             `json:"topic"`
-}
 
 // isPubsubSink returns true if url contains scheme with valid pubsub sink
 func isPubsubSink(u *url.URL) bool {
@@ -106,13 +98,13 @@ func makePubsubSinkClient(
 	}
 
 	switch encodingOpts.Envelope {
-	case changefeedbase.OptEnvelopeWrapped, changefeedbase.OptEnvelopeBare, changefeedbase.OptEnvelopeEnriched:
+	case changefeedbase.OptEnvelopeWrapped, changefeedbase.OptEnvelopeBare:
 	default:
 		return nil, errors.Errorf(`this sink is incompatible with %s=%s`,
 			changefeedbase.OptEnvelope, encodingOpts.Envelope)
 	}
 
-	pubsubURL := &changefeedbase.SinkURL{URL: u}
+	pubsubURL := sinkURL{URL: u, q: u.Query()}
 
 	projectID := pubsubURL.Host
 	if projectID == "" {
@@ -228,19 +220,16 @@ type pubsubBuffer struct {
 	topicEncoded []byte
 	messages     []*pb.PubsubMessage
 	numBytes     int
-	// Cache for attributes which are sent along with each message. This lets us
-	// re-use expensive map allocs for messages in the batch with the same
-	// attributes. This does not include headers, as they are per-row. In fact,
-	// it's just the table name.
-	attributesCache map[string]map[string]string
+	// Cache for attributes which are sent along with each message.
+	// This lets us re-use expensive map allocs for messages in the batch
+	// with the same attributes.
+	attributesCache map[attributes]map[string]string
 }
 
 var _ BatchBuffer = (*pubsubBuffer)(nil)
 
 // Append implements the BatchBuffer interface
-func (psb *pubsubBuffer) Append(
-	ctx context.Context, key []byte, value []byte, attributes attributes,
-) {
+func (psb *pubsubBuffer) Append(key []byte, value []byte, attributes attributes) {
 	var content []byte
 	switch psb.sc.format {
 	case changefeedbase.OptFormatJSON:
@@ -261,11 +250,10 @@ func (psb *pubsubBuffer) Append(
 
 	msg := &pb.PubsubMessage{Data: content}
 	if psb.sc.withTableNameAttribute {
-		attrKey := attributes.tableName
-		if _, ok := psb.attributesCache[attrKey]; !ok {
-			psb.attributesCache[attrKey] = map[string]string{"TABLE_NAME": attributes.tableName}
+		if _, ok := psb.attributesCache[attributes]; !ok {
+			psb.attributesCache[attributes] = map[string]string{"TABLE_NAME": attributes.tableName}
 		}
-		msg.Attributes = psb.attributesCache[attrKey]
+		msg.Attributes = psb.attributesCache[attributes]
 	}
 
 	psb.messages = append(psb.messages, msg)
@@ -296,7 +284,7 @@ func (sc *pubsubSinkClient) MakeBatchBuffer(topic string) BatchBuffer {
 		messages:     make([]*pb.PubsubMessage, 0, sc.batchCfg.Messages),
 	}
 	if sc.withTableNameAttribute {
-		psb.attributesCache = make(map[string]map[string]string)
+		psb.attributesCache = make(map[attributes]map[string]string)
 	}
 	return psb
 }
@@ -307,10 +295,10 @@ func (pe *pubsubSinkClient) Close() error {
 }
 
 func makePublisherClient(
-	ctx context.Context, url *changefeedbase.SinkURL, unordered bool, nm *cidr.NetMetrics,
+	ctx context.Context, url sinkURL, unordered bool, nm *cidr.NetMetrics,
 ) (*pubsub.PublisherClient, error) {
 	const regionParam = "region"
-	region := url.ConsumeParam(regionParam)
+	region := url.consumeParam(regionParam)
 	var endpoint string
 	if region == "" {
 		if unordered {
@@ -363,9 +351,7 @@ func gcpEndpointForRegion(region string) string {
 
 // TODO: unify gcp credentials code with gcp cloud storage credentials code
 // getGCPCredentials returns gcp credentials parsed out from url
-func getGCPCredentials(
-	ctx context.Context, u *changefeedbase.SinkURL,
-) (option.ClientOption, error) {
+func getGCPCredentials(ctx context.Context, u sinkURL) (option.ClientOption, error) {
 	const authParam = "AUTH"
 	const assumeRoleParam = "ASSUME_ROLE"
 	const authSpecified = "specified"
@@ -375,8 +361,8 @@ func getGCPCredentials(
 	var credsJSON []byte
 	var creds *google.Credentials
 	var err error
-	authOption := u.ConsumeParam(authParam)
-	assumeRoleOption := u.ConsumeParam(assumeRoleParam)
+	authOption := u.consumeParam(authParam)
+	assumeRoleOption := u.consumeParam(assumeRoleParam)
 	authScope := gcpScope
 	if assumeRoleOption != "" {
 		// If we need to assume a role, the credentials need to have the scope to
@@ -396,10 +382,10 @@ func getGCPCredentials(
 	case authDefault:
 		fallthrough
 	default:
-		if u.PeekParam(credentialsParam) == "" {
+		if u.q.Get(credentialsParam) == "" {
 			return nil, errors.New("missing credentials parameter")
 		}
-		err := u.DecodeBase64(credentialsParam, &credsJSON)
+		err := u.decodeBase64(credentialsParam, &credsJSON)
 		if err != nil {
 			return nil, errors.Wrap(err, "decoding credentials json")
 		}
@@ -443,7 +429,6 @@ func makePubsubSink(
 	pacerFactory func() *admission.Pacer,
 	source timeutil.TimeSource,
 	mb metricsRecorderBuilder,
-	settings *cluster.Settings,
 	knobs *TestingKnobs,
 ) (Sink, error) {
 	m := mb(requiresResourceAccounting)
@@ -460,9 +445,9 @@ func makePubsubSink(
 		return nil, err
 	}
 
-	pubsubURL := &changefeedbase.SinkURL{URL: u}
+	pubsubURL := sinkURL{URL: u, q: u.Query()}
 	var includeTableNameAttribute bool
-	_, err = pubsubURL.ConsumeBool(changefeedbase.SinkParamTableNameAttribute, &includeTableNameAttribute)
+	_, err = pubsubURL.consumeBool(changefeedbase.SinkParamTableNameAttribute, &includeTableNameAttribute)
 	if err != nil {
 		return nil, err
 	}
@@ -472,7 +457,7 @@ func makePubsubSink(
 		return nil, err
 	}
 
-	pubsubTopicName := pubsubURL.ConsumeParam(changefeedbase.SinkParamTopicName)
+	pubsubTopicName := pubsubURL.consumeParam(changefeedbase.SinkParamTopicName)
 	topicNamer, err := MakeTopicNamer(targets, WithSingleName(pubsubTopicName))
 	if err != nil {
 		return nil, err
@@ -488,7 +473,6 @@ func makePubsubSink(
 		topicNamer,
 		pacerFactory,
 		source,
-		m,
-		settings,
+		mb(requiresResourceAccounting),
 	), nil
 }

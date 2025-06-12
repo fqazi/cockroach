@@ -9,12 +9,15 @@ import (
 	"bytes"
 	"context"
 	"math"
+	"runtime/debug"
 	"sort"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/internal/client/requestbatcher"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangecache"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
@@ -23,7 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/util/debugutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -158,8 +160,8 @@ type Config struct {
 
 // RangeCache is a simplified interface to the rngcache.RangeCache.
 type RangeCache interface {
-	// LookupRangeID looks up range ID for the range containing key.
-	LookupRangeID(ctx context.Context, key roachpb.RKey) (roachpb.RangeID, error)
+	// Lookup looks up range information for the range containing key.
+	Lookup(ctx context.Context, key roachpb.RKey) (rangecache.CacheEntry, error)
 }
 
 // IntentResolver manages the process of pushing transactions and
@@ -221,10 +223,10 @@ func setConfigDefaults(c *Config) {
 
 type nopRangeDescriptorCache struct{}
 
-func (nrdc nopRangeDescriptorCache) LookupRangeID(
+func (nrdc nopRangeDescriptorCache) Lookup(
 	ctx context.Context, key roachpb.RKey,
-) (roachpb.RangeID, error) {
-	return 0, nil
+) (rangecache.CacheEntry, error) {
+	return rangecache.CacheEntry{}, nil
 }
 
 // New creates an new IntentResolver.
@@ -469,6 +471,10 @@ func (ir *IntentResolver) MaybePushTransactions(
 		return nil, false, b.MustPErr()
 	}
 
+	// TODO(nvanbenschoten): if we succeed because the transaction has already
+	// been pushed _past_ where we were pushing, we need to set the synthetic
+	// bit. This is part of #36431.
+
 	br := b.RawResponse()
 	pushedTxns := make(map[uuid.UUID]*roachpb.Transaction, len(br.Responses))
 	for _, resp := range br.Responses {
@@ -489,12 +495,12 @@ func (ir *IntentResolver) MaybePushTransactions(
 // run asynchronously; otherwise, it's run synchronously if
 // allowSyncProcessing is true; if false, an error is returned.
 func (ir *IntentResolver) runAsyncTask(
-	origCtx context.Context, allowSyncProcessing bool, taskFn func(context.Context),
+	ctx context.Context, allowSyncProcessing bool, taskFn func(context.Context),
 ) error {
 	if ir.testingKnobs.DisableAsyncIntentResolution {
 		return errors.New("intents not processed as async resolution is disabled")
 	}
-	ctx, hdl, err := ir.stopper.GetHandle(
+	err := ir.stopper.RunAsyncTaskEx(
 		// If we've successfully launched a background task, dissociate
 		// this work from our caller's context and timeout.
 		ir.ambientCtx.AnnotateCtx(context.Background()),
@@ -502,23 +508,21 @@ func (ir *IntentResolver) runAsyncTask(
 			TaskName:   "storage.IntentResolver: processing intents",
 			Sem:        ir.sem,
 			WaitForSem: false,
-		})
+		},
+		taskFn,
+	)
 	if err != nil {
 		if errors.Is(err, stop.ErrThrottled) {
 			ir.Metrics.IntentResolverAsyncThrottled.Inc(1)
 			if allowSyncProcessing {
 				// A limited task was not available. Rather than waiting for
 				// one, we reuse the current goroutine.
-				taskFn(origCtx)
+				taskFn(ctx)
 				return nil
 			}
 		}
 		return errors.Wrapf(err, "during async intent resolution")
 	}
-	go func(ctx context.Context) {
-		defer hdl.Activate(ctx).Release(ctx)
-		taskFn(ctx)
-	}(ctx)
 	return nil
 }
 
@@ -704,13 +708,14 @@ func (ir *IntentResolver) lockInFlightTxnCleanup(
 // of async task with the intention that it be used as a hook to update metrics.
 // It will not be called if an error is returned.
 func (ir *IntentResolver) CleanupTxnIntentsOnGCAsync(
+	ctx context.Context,
 	admissionHeader kvpb.AdmissionHeader,
 	rangeID roachpb.RangeID,
 	txn *roachpb.Transaction,
 	now hlc.Timestamp,
 	onComplete func(pushed, succeeded bool),
 ) error {
-	ctx, hdl, err := ir.stopper.GetHandle(
+	return ir.stopper.RunAsyncTaskEx(
 		// If we've successfully launched a background task,
 		// dissociate this work from our caller's context and
 		// timeout.
@@ -725,70 +730,66 @@ func (ir *IntentResolver) CleanupTxnIntentsOnGCAsync(
 			// them. Not much harm in having old txn records lying around in
 			// the meantime.
 			WaitForSem: false,
-		})
-	if err != nil {
-		return err
-	}
-	go func(ctx context.Context) {
-		defer hdl.Activate(ctx).Release(ctx)
-		var pushed, succeeded bool
-		defer func() {
+		},
+		func(ctx context.Context) {
+			var pushed, succeeded bool
+			defer func() {
+				if onComplete != nil {
+					onComplete(pushed, succeeded)
+				}
+			}()
+			locked, release := ir.lockInFlightTxnCleanup(ctx, txn.ID)
+			if !locked {
+				return
+			}
+			defer release()
+			// If the transaction is not yet finalized, but expired, push it
+			// before resolving the intents.
+			if !txn.Status.IsFinalized() {
+				if !txnwait.IsExpired(now, txn) {
+					log.VErrEventf(ctx, 3, "cannot push a %s transaction which is not expired: %s", txn.Status, txn)
+					return
+				}
+				b := &kv.Batch{}
+				b.Header.Timestamp = now
+				b.AddRawRequest(&kvpb.PushTxnRequest{
+					RequestHeader: kvpb.RequestHeader{Key: txn.Key},
+					PusherTxn: roachpb.Transaction{
+						TxnMeta: enginepb.TxnMeta{Priority: enginepb.MaxTxnPriority},
+					},
+					PusheeTxn: txn.TxnMeta,
+					PushType:  kvpb.PUSH_ABORT,
+				})
+				pushed = true
+				if err := ir.db.Run(ctx, b); err != nil {
+					log.VErrEventf(ctx, 2, "failed to push %s, expired txn (%s): %s", txn.Status, txn, err)
+					return
+				}
+				// Update the txn with the result of the push, such that the intents we're about
+				// to resolve get a final status.
+				finalizedTxn := &b.RawResponse().Responses[0].GetInner().(*kvpb.PushTxnResponse).PusheeTxn
+				txn = txn.Clone()
+				txn.Update(finalizedTxn)
+			}
+			var onCleanupComplete func(error)
 			if onComplete != nil {
-				onComplete(pushed, succeeded)
+				onCompleteCopy := onComplete // copy onComplete for use in onCleanupComplete
+				onCleanupComplete = func(err error) {
+					onCompleteCopy(pushed, err == nil)
+				}
 			}
-		}()
-		locked, release := ir.lockInFlightTxnCleanup(ctx, txn.ID)
-		if !locked {
-			return
-		}
-		defer release()
-		// If the transaction is not yet finalized, but expired, push it
-		// before resolving the intents.
-		if !txn.Status.IsFinalized() {
-			if !txnwait.IsExpired(now, txn) {
-				log.VErrEventf(ctx, 3, "cannot push a %s transaction which is not expired: %s", txn.Status, txn)
-				return
+			// Set onComplete to nil to disable the deferred call as the call has now
+			// been delegated to the callback passed to cleanupFinishedTxnIntents.
+			onComplete = nil
+			err := ir.cleanupFinishedTxnIntents(
+				ctx, admissionHeader, rangeID, txn, false /* poison */, onCleanupComplete)
+			if err != nil {
+				if ir.every.ShouldLog() {
+					log.Warningf(ctx, "failed to cleanup transaction intents: %+v", err)
+				}
 			}
-			b := &kv.Batch{}
-			b.Header.Timestamp = now
-			b.AddRawRequest(&kvpb.PushTxnRequest{
-				RequestHeader: kvpb.RequestHeader{Key: txn.Key},
-				PusherTxn: roachpb.Transaction{
-					TxnMeta: enginepb.TxnMeta{Priority: enginepb.MaxTxnPriority},
-				},
-				PusheeTxn: txn.TxnMeta,
-				PushType:  kvpb.PUSH_ABORT,
-			})
-			pushed = true
-			if err := ir.db.Run(ctx, b); err != nil {
-				log.VErrEventf(ctx, 2, "failed to push %s, expired txn (%s): %s", txn.Status, txn, err)
-				return
-			}
-			// Update the txn with the result of the push, such that the intents we're about
-			// to resolve get a final status.
-			finalizedTxn := &b.RawResponse().Responses[0].GetInner().(*kvpb.PushTxnResponse).PusheeTxn
-			txn = txn.Clone()
-			txn.Update(finalizedTxn)
-		}
-		var onCleanupComplete func(error)
-		if onComplete != nil {
-			onCompleteCopy := onComplete // copy onComplete for use in onCleanupComplete
-			onCleanupComplete = func(err error) {
-				onCompleteCopy(pushed, err == nil)
-			}
-		}
-		// Set onComplete to nil to disable the deferred call as the call has now
-		// been delegated to the callback passed to cleanupFinishedTxnIntents.
-		onComplete = nil
-		err := ir.cleanupFinishedTxnIntents(
-			ctx, admissionHeader, rangeID, txn, false /* poison */, onCleanupComplete)
-		if err != nil {
-			if ir.every.ShouldLog() {
-				log.Warningf(ctx, "failed to cleanup transaction intents: %+v", err)
-			}
-		}
-	}(ctx)
-	return nil
+		},
+	)
 }
 
 func (ir *IntentResolver) gcTxnRecord(
@@ -870,28 +871,23 @@ func (ir *IntentResolver) cleanupFinishedTxnIntents(
 	// gcTxnRecord completes, which may cancel the context and abort the cleanup
 	// either due to a defer cancel() or client disconnection. We give it a timeout
 	// as well, to avoid goroutine leakage.
-	ctx, hdl, err := ir.stopper.GetHandle(ir.ambientCtx.AnnotateCtx(context.Background()), stop.TaskOpts{
-		TaskName: "storage.IntentResolver: cleanup txn records",
-	})
-	if err != nil {
-		return err
-	}
-	go func(ctx context.Context) {
-		defer hdl.Activate(ctx).Release(ctx)
-		err := timeutil.RunWithTimeout(ctx, "cleanup txn record",
-			gcTxnRecordTimeout, func(ctx context.Context) error {
-				return ir.gcTxnRecord(ctx, rangeID, txn)
-			})
-		if onComplete != nil {
-			onComplete(err)
-		}
-		if err != nil {
-			if ir.every.ShouldLog() {
-				log.Warningf(ctx, "failed to gc transaction record: %v", err)
+	return ir.stopper.RunAsyncTask(
+		ir.ambientCtx.AnnotateCtx(context.Background()),
+		"storage.IntentResolver: cleanup txn records",
+		func(ctx context.Context) {
+			err := timeutil.RunWithTimeout(ctx, "cleanup txn record",
+				gcTxnRecordTimeout, func(ctx context.Context) error {
+					return ir.gcTxnRecord(ctx, rangeID, txn)
+				})
+			if onComplete != nil {
+				onComplete(err)
 			}
-		}
-	}(ctx)
-	return nil
+			if err != nil {
+				if ir.every.ShouldLog() {
+					log.Warningf(ctx, "failed to gc transaction record: %v", err)
+				}
+			}
+		})
 }
 
 // ResolveOptions is used during intent resolution.
@@ -941,14 +937,14 @@ func (ir *IntentResolver) lookupRangeID(ctx context.Context, key roachpb.Key) ro
 		}
 		return 0
 	}
-	rangeID, err := ir.rdc.LookupRangeID(ctx, rKey)
+	rInfo, err := ir.rdc.Lookup(ctx, rKey)
 	if err != nil {
 		if ir.every.ShouldLog() {
 			log.Warningf(ctx, "failed to look up range descriptor for key %q: %+v", key, err)
 		}
 		return 0
 	}
-	return rangeID
+	return rInfo.Desc().RangeID
 }
 
 // lockUpdates allows for eager or lazy translation of lock spans to lock updates.
@@ -1062,14 +1058,10 @@ func (ir *IntentResolver) resolveIntents(
 	reqs := resolveIntentReqs(intents, opts, singleReq[:])
 	h := opts.AdmissionHeader
 	// We skip the warning for release builds to avoid printing out verbose stack traces.
-	// NB: this was disabled in general since there's a large backlog of reported warnings
-	// that yet have to be resolved, and in the meantime it's not worth  more engineering
-	// time making additional reports.
 	// TODO(aaditya): reconsider this once #112680 is resolved.
-	// if !build.IsRelease() && h == (kvpb.AdmissionHeader{}) && ir.everyAdmissionHeaderMissing.ShouldLog() {
-	if false {
+	if !build.IsRelease() && h == (kvpb.AdmissionHeader{}) && ir.everyAdmissionHeaderMissing.ShouldLog() {
 		log.Warningf(ctx,
-			"test-only warning: if you see this, please report to https://github.com/cockroachdb/cockroach/issues/112680. empty admission header provided by %s", debugutil.Stack())
+			"test-only warning: if you see this, please report to https://github.com/cockroachdb/cockroach/issues/112680. empty admission header provided by %s", string(debug.Stack()))
 	}
 	// Send the requests ...
 	if opts.sendImmediately {

@@ -15,7 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangefeed/rangefeedcache"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -60,7 +60,7 @@ type Watcher struct {
 
 	// rfc provides access to the underlying
 	// rangefeedcache.Watcher for testing.
-	rfc *rangefeedcache.Watcher[rangefeedbuffer.Event]
+	rfc *rangefeedcache.Watcher
 
 	// initialScan is used to synchronize the Start() method with the
 	// reception of the initial batch of values from the rangefeed
@@ -277,9 +277,7 @@ func (w *Watcher) onError(err error) {
 	}
 }
 
-func (w *Watcher) handleRangefeedCacheEvent(
-	ctx context.Context, u rangefeedcache.Update[rangefeedbuffer.Event],
-) {
+func (w *Watcher) handleRangefeedCacheEvent(ctx context.Context, u rangefeedcache.Update) {
 	switch u.Type {
 	case rangefeedcache.CompleteUpdate:
 		log.Info(ctx, "received results of a full table scan for tenant capabilities")
@@ -332,10 +330,10 @@ func (w *Watcher) onAnyChangeLocked() {
 // callback.
 func (w *Watcher) handleIncrementalUpdate(
 	ctx context.Context, ev *kvpb.RangeFeedValue,
-) (rangefeedbuffer.Event, bool) {
+) rangefeedbuffer.Event {
 	hasEvent, update := w.decoder.translateEvent(ctx, ev)
 	if !hasEvent {
-		return nil, false
+		return nil
 	}
 
 	if fn := w.knobs.WatcherUpdatesInterceptor; fn != nil {
@@ -349,7 +347,7 @@ func (w *Watcher) handleIncrementalUpdate(
 	if prevTs, ok := w.mu.lastUpdate[tid]; ok && ts.Less(prevTs) {
 		// Skip updates which have an earlier timestamp to avoid
 		// regressing on the contents of an entry.
-		return nil, false
+		return nil
 	}
 	w.mu.lastUpdate[tid] = ts
 
@@ -373,7 +371,7 @@ func (w *Watcher) handleIncrementalUpdate(
 		}
 	}
 	w.onAnyChangeLocked()
-	return nil, false
+	return nil
 }
 
 func (w *Watcher) removeEntriesBeforeTimestamp(ctx context.Context, ts hlc.Timestamp) {

@@ -8,7 +8,6 @@ package build
 import (
 	"testing"
 
-	"github.com/cockroachdb/version"
 	"github.com/stretchr/testify/require"
 )
 
@@ -70,63 +69,11 @@ func TestComputeBinaryVersion(t *testing.T) {
 			defer func() { typ = oldBuildType }()
 
 			if tc.panicExpected {
-				require.Panics(t, func() { parseCockroachVersion(tc.versionTxt) })
+				require.Panics(t, func() { computeBinaryVersion(tc.versionTxt, tc.revision) })
 			} else {
-				v := parseCockroachVersion(tc.versionTxt)
-				actualVersion := computeBinaryVersion("" /* buildTagOverride */, v, tc.revision)
+				actualVersion := computeBinaryVersion(tc.versionTxt, tc.revision)
 				require.Equal(t, tc.expectedVersion, actualVersion)
 			}
-		})
-	}
-}
-
-func TestVersionForURLs(t *testing.T) {
-	testCases := []struct {
-		versionTxt string
-		want       string
-	}{
-		{
-			versionTxt: "v25.2.0",
-			want:       "v25.2",
-		},
-		{
-			versionTxt: "v25.2.0-alpha.000000",
-			want:       "dev",
-		},
-		{
-			versionTxt: "v25.2.0-alpha.1",
-			want:       "dev",
-		},
-		{
-			versionTxt: "v25.2.0-alpha.2",
-			want:       "v25.2",
-		},
-		{
-			versionTxt: "v25.2.0-beta.1",
-			want:       "v25.2",
-		},
-		{
-			versionTxt: "v25.2.0-rc.2",
-			want:       "v25.2",
-		},
-		{
-			versionTxt: "v25.2.0-cloudonly.1",
-			want:       "v25.2",
-		},
-		{
-			versionTxt: "v25.2.0-12-gabcdef01234",
-			want:       "dev",
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.versionTxt, func(t *testing.T) {
-			oldParsedVersionTxt := parsedVersionTxt
-			defer func() { parsedVersionTxt = oldParsedVersionTxt }()
-			v := version.MustParse(tc.versionTxt)
-			parsedVersionTxt = &v
-
-			require.Equal(t, tc.want, VersionForURLs())
 		})
 	}
 }

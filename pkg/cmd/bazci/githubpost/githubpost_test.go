@@ -7,13 +7,11 @@ package githubpost
 
 import (
 	"context"
-	"encoding/xml"
 	"os"
 	"strings"
 	"testing"
 
-	bazelutil "github.com/cockroachdb/cockroach/pkg/build/util"
-	"github.com/cockroachdb/cockroach/pkg/cmd/bazci/githubpost/issues"
+	"github.com/cockroachdb/cockroach/pkg/cmd/internal/issues"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,7 +99,7 @@ func TestListFailuresFromJSON(t *testing.T) {
 				testName:   "TestStopperWithCancelConcurrent",
 				title:      "util/stop: TestStopperWithCancelConcurrent failed",
 				message:    "this is just a testing issue",
-				mention:    []string{"@cockroachdb/kv-triage"},
+				mention:    []string{"@cockroachdb/kv"},
 				labels:     []string{"C-test-failure", "release-blocker", "T-kv"},
 				hasProject: true,
 			}},
@@ -117,7 +115,7 @@ func TestListFailuresFromJSON(t *testing.T) {
 				testName:   "TestStopperWithCancelConcurrent",
 				title:      "util/stop: TestStopperWithCancelConcurrent failed",
 				message:    "this is just a testing issue",
-				mention:    []string{"@cockroachdb/kv-triage"},
+				mention:    []string{"@cockroachdb/kv"},
 				labels:     []string{"T-kv"},
 				hasProject: true,
 			}},
@@ -131,7 +129,7 @@ func TestListFailuresFromJSON(t *testing.T) {
 				testName:   "TestReplicateQueueRebalance",
 				title:      "kv/kvserver: TestReplicateQueueRebalance failed",
 				message:    "replicate_queue_test.go:88: condition failed to evaluate within 45s: not balanced: [10 1 10 1 8]",
-				mention:    []string{"@cockroachdb/kv-triage"},
+				mention:    []string{"@cockroachdb/kv"},
 				labels:     []string{"C-test-failure", "release-blocker", "T-kv"},
 				hasProject: true,
 			}},
@@ -145,7 +143,7 @@ func TestListFailuresFromJSON(t *testing.T) {
 				testName:   "TestGossipHandlesReplacedNode",
 				title:      "kv/kvserver: TestGossipHandlesReplacedNode failed",
 				message:    "F180711 20:13:15.826193 83 storage/replica.go:1877  [n?,s1,r1/1:/M{in-ax}] on-disk and in-memory state diverged:",
-				mention:    []string{"@cockroachdb/kv-triage"},
+				mention:    []string{"@cockroachdb/kv"},
 				labels:     []string{"C-test-failure", "release-blocker", "T-kv"},
 				hasProject: true,
 			}},
@@ -175,7 +173,8 @@ func TestListFailuresFromJSON(t *testing.T) {
 				message: `=== RUN   TestPretty/["hello",_["world"]]
     --- FAIL: TestPretty/["hello",_["world"]] (0.00s)
     	json_test.go:1656: injected failure`,
-				labels: []string{"C-test-failure", "release-blocker", "T-sql-queries"},
+				mention: []string{"@cockroachdb/unowned"},
+				labels:  []string{"C-test-failure", "release-blocker"},
 			}},
 			formatter: DefaultFormatter,
 		},
@@ -191,7 +190,7 @@ func TestListFailuresFromJSON(t *testing.T) {
 					testName:   "TestTxnCoordSenderPipelining",
 					title:      "kv/kvclient/kvcoord: TestTxnCoordSenderPipelining failed",
 					message:    `injected failure`,
-					mention:    []string{"@cockroachdb/kv-triage"},
+					mention:    []string{"@cockroachdb/kv"},
 					labels:     []string{"C-test-failure", "release-blocker", "T-kv"},
 					hasProject: true,
 				},
@@ -205,7 +204,7 @@ TestTxnCoordSenderPipelining - 1.00s
 Slow passing tests:
 TestAnchorKey - 1.01s
 `,
-					mention:    []string{"@cockroachdb/kv-triage"},
+					mention:    []string{"@cockroachdb/kv"},
 					labels:     []string{"C-test-failure", "release-blocker", "T-kv"},
 					hasProject: true,
 				},
@@ -328,7 +327,7 @@ TestXXA - 1.00s
 					testName: "TestMeta",
 					title:    "internal/metamorphic: TestMeta failed",
 					message:  "panic: induced panic",
-					expRepro: `go test -tags 'invariants' -exec 'stress -p 1' -timeout 0 -test.v -run 'TestMeta$' ./internal/metamorphic -seed 1600209371838097000 -ops "uniform:5000-10000"`,
+					expRepro: `go test -tags 'invariants' -exec 'stress -p 1' -timeout 0 -test.v -run TestMeta$ ./internal/metamorphic -seed 1600209371838097000 -ops "uniform:5000-10000"`,
 					labels:   []string{"metamorphic-failure", "C-test-failure", "release-blocker"},
 				},
 			},
@@ -413,6 +412,7 @@ func TestListFailuresFromTestXML(t *testing.T) {
 		fileName  string
 		expPkg    string
 		expIssues []issue
+		formatter Formatter
 	}{
 		{
 			fileName: "basic.xml",
@@ -427,19 +427,17 @@ func TestListFailuresFromTestXML(t *testing.T) {
     --- FAIL: TestJSONErrors/frues (0.00s)`,
 				mention: []string{"@cockroachdb/unowned"},
 			}},
+			formatter: DefaultFormatter,
 		},
 	}
 
 	for _, c := range testCases {
 		t.Run(c.fileName, func(t *testing.T) {
-			content, err := os.ReadFile(datapathutils.TestDataPath(t, c.fileName))
+			file, err := os.Open(datapathutils.TestDataPath(t, c.fileName))
 			if err != nil {
 				t.Fatal(err)
 			}
-			var testXml bazelutil.TestSuites
-			if err := xml.Unmarshal(content, &testXml); err != nil {
-				t.Fatal(err)
-			}
+			defer file.Close()
 			curIssue := 0
 
 			f := func(ctx context.Context, f Failure) error {
@@ -464,7 +462,7 @@ func TestListFailuresFromTestXML(t *testing.T) {
 				curIssue++
 				return nil
 			}
-			if err := listFailuresFromTestXML(context.Background(), testXml, f); err != nil {
+			if err := listFailuresFromTestXML(context.Background(), file, f); err != nil {
 				t.Fatal(err)
 			}
 			if curIssue != len(c.expIssues) {
@@ -478,6 +476,7 @@ func TestPostGeneralFailure(t *testing.T) {
 	testCases := []struct {
 		fileName  string
 		expIssues []issue
+		formatter Formatter
 	}{
 		{
 			fileName: "failed-build-output.txt",
@@ -486,6 +485,7 @@ func TestPostGeneralFailure(t *testing.T) {
 				mention: []string{"@cockroachdb/unowned"},
 				labels:  []string{"C-test-failure", "release-blocker", "T-testeng"},
 			}},
+			formatter: DefaultFormatter,
 		},
 	}
 

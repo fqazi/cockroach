@@ -80,7 +80,7 @@ CREATE DATABASE d2
 statement ok
 CREATE TABLE d1.t1 (k STRING PRIMARY KEY, v STRING)
 
-statement ok
+statement OK
 CREATE TABLE d2.t1 (k STRING PRIMARY KEY, v STRING)
 
 statement ok
@@ -222,20 +222,19 @@ statement ok
 DROP DATABASE constraint_db CASCADE
 
 skipif config local-legacy-schema-changer
-query TT
+query TTT
 WITH cte AS (
-  SELECT job_type, description
+  SELECT job_type, description, status
   FROM crdb_internal.jobs
-  WHERE (job_type = 'SCHEMA CHANGE' OR job_type = 'SCHEMA CHANGE GC')
-  AND (status = 'succeeded' OR status = 'running')
+  WHERE job_type = 'SCHEMA CHANGE' OR job_type = 'SCHEMA CHANGE GC'
   ORDER BY created DESC
   LIMIT 4
 ) SELECT * FROM cte ORDER BY job_type, description
 ----
-SCHEMA CHANGE     CREATE TABLE constraint_db.public.t2 (t1_id INT8, CONSTRAINT fk FOREIGN KEY (t1_id) REFERENCES constraint_db.public.t1 (a), INDEX (t1_id))
-SCHEMA CHANGE     updating referenced FK table t1(125) for table t2(126)
-SCHEMA CHANGE GC  GC for DROP DATABASE constraint_db CASCADE
-SCHEMA CHANGE GC  GC for DROP DATABASE d2 CASCADE
+SCHEMA CHANGE     CREATE TABLE constraint_db.public.t2 (t1_id INT8, CONSTRAINT fk FOREIGN KEY (t1_id) REFERENCES constraint_db.public.t1 (a), INDEX (t1_id))  succeeded
+SCHEMA CHANGE     updating referenced FK table t1(125) for table t2(126)                                                                                      succeeded
+SCHEMA CHANGE GC  GC for DROP DATABASE constraint_db CASCADE                                                                                                  running
+SCHEMA CHANGE GC  GC for DROP DATABASE d2 CASCADE                                                                                                             running
 
 query TTTTTT rowsort
 SHOW DATABASES
@@ -263,22 +262,19 @@ statement error DROP DATABASE on non-empty database without explicit CASCADE
 DROP DATABASE foo
 
 statement ok
-SET sql_safe_updates = FALSE
-
-statement ok
-DROP DATABASE foo
+SET sql_safe_updates = FALSE; DROP DATABASE foo
 
 # Check that the default databases can be dropped and re-created like any other.
-statement ok
+statement OK
 DROP DATABASE defaultdb;
 
-statement ok
+statement OK
 DROP DATABASE postgres
 
 statement ok
 CREATE DATABASE defaultdb;
 
-statement ok
+statement OK
 CREATE DATABASE postgres
 
 # Test that an empty database doesn't get a GC job.

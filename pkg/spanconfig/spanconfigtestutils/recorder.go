@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
-	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 )
@@ -98,11 +97,6 @@ func (r *KVAccessorRecorder) GetAllSystemSpanConfigsThatApply(
 
 // WithTxn is part of the KVAccessor interface.
 func (r *KVAccessorRecorder) WithTxn(context.Context, *kv.Txn) spanconfig.KVAccessor {
-	panic("unimplemented")
-}
-
-// WithISQLTxn is part of the KVAccessor interface.
-func (k *KVAccessorRecorder) WithISQLTxn(context.Context, isql.Txn) spanconfig.KVAccessor {
 	panic("unimplemented")
 }
 

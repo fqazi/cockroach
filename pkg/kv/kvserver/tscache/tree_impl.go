@@ -6,11 +6,9 @@
 package tscache
 
 import (
-	"context"
 	"fmt"
 	"unsafe"
 
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/readsummary/rspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/cache"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -104,9 +102,7 @@ func (tc *treeImpl) len() int {
 }
 
 // Add implements the Cache interface.
-func (tc *treeImpl) Add(
-	_ context.Context, start, end roachpb.Key, ts hlc.Timestamp, txnID uuid.UUID,
-) {
+func (tc *treeImpl) Add(start, end roachpb.Key, ts hlc.Timestamp, txnID uuid.UUID) {
 	// This gives us a memory-efficient end key if end is empty.
 	if len(end) == 0 {
 		end = start.Next()
@@ -454,7 +450,7 @@ func (tc *treeImpl) getLowWater() hlc.Timestamp {
 }
 
 // GetMax implements the Cache interface.
-func (tc *treeImpl) GetMax(_ context.Context, start, end roachpb.Key) (hlc.Timestamp, uuid.UUID) {
+func (tc *treeImpl) GetMax(start, end roachpb.Key) (hlc.Timestamp, uuid.UUID) {
 	return tc.getMax(start, end)
 }
 
@@ -476,44 +472,6 @@ func (tc *treeImpl) getMax(start, end roachpb.Key) (hlc.Timestamp, uuid.UUID) {
 		}
 	}
 	return maxTS, maxTxnID
-}
-
-// Serialize implements the Cache interface.
-func (tc *treeImpl) Serialize(_ context.Context, start, end roachpb.Key) rspb.Segment {
-	tc.Lock()
-	defer tc.Unlock()
-	if len(end) == 0 {
-		end = start.Next()
-	}
-	bounds := roachpb.Span{Key: start, EndKey: end}
-
-	var seg rspb.Segment
-	for _, o := range tc.cache.GetOverlaps(start, end) {
-		cv := o.Value.(*cacheValue)
-		ck := o.Key.(*cache.IntervalKey)
-		startKey := roachpb.Key(ck.Start)
-		endKey := roachpb.Key(ck.End)
-		if startKey.IsPrev(endKey) {
-			// cache.IntervalKey does not follow the roachpb.Span convention of having
-			// the end key be nil for single keys. Fix that here. Doing so is not
-			// necessary for correctness (they're equivalent representations), but it
-			// makes comparing this implementation to sklImpl easier in tests.
-			endKey = nil
-		}
-		span := roachpb.Span{Key: startKey, EndKey: endKey}
-		// Intersect the bounds with the span to ensure that we don't return spans
-		// that are outside of the requested range.
-		intersect := bounds.Intersect(span)
-		// Construct the read span and add it to the segment.
-		seg.AddReadSpan(rspb.ReadSpan{
-			Key:       intersect.Key,
-			EndKey:    intersect.EndKey,
-			Timestamp: cv.ts,
-			TxnID:     cv.txnID,
-		})
-	}
-	seg.LowWater = tc.lowWater
-	return seg
 }
 
 // shouldEvict returns true if the cache entry's timestamp is no

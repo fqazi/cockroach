@@ -255,10 +255,6 @@ func TestAddUncommittedDescriptorAndMutableResolution(t *testing.T) {
 			require.NoError(t, err)
 			require.Same(t, immByNameAfter, immByIDAfter)
 
-			// The name must be non-empty.
-			_, err = descriptors.ByNameWithLeased(txn.KV()).Get().Database(ctx, "")
-			require.Equal(t, sqlerrors.ErrEmptyDatabaseName, err)
-
 			return nil
 		}))
 	})
@@ -533,7 +529,7 @@ func TestCollectionPreservesPostDeserializationChanges(t *testing.T) {
 	require.NoError(t, sql.DescsTxn(ctx, &execCfg, func(
 		ctx context.Context, txn isql.Txn, col *descs.Collection,
 	) error {
-		immuts, err := col.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Descs(ctx, []descpb.ID{dbID, scID, typID, tabID})
+		immuts, err := col.ByID(txn.KV()).WithoutNonPublic().Get().Descs(ctx, []descpb.ID{dbID, scID, typID, tabID})
 		if err != nil {
 			return err
 		}
@@ -597,10 +593,8 @@ func TestCollectionProperlyUsesMemoryMonitoring(t *testing.T) {
 	}
 
 	// Create a monitor to be used to track memory usage in a Collection.
-	monitor := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("test_monitor"),
-		Settings: cluster.MakeTestingClusterSettings(),
-	})
+	monitor := mon.NewMonitor("test_monitor", mon.MemoryResource,
+		nil, nil, -1, 0, cluster.MakeTestingClusterSettings())
 
 	// Start the monitor with unlimited budget.
 	monitor.Start(ctx, nil, mon.NewStandaloneBudget(math.MaxInt64))
@@ -1238,10 +1232,8 @@ func TestDescriptorErrorWrap(t *testing.T) {
 	tdb.Exec(t, `CREATE SCHEMA schema`)
 	tdb.Exec(t, `CREATE TABLE db.schema.table()`)
 
-	monitor := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("test_monitor"),
-		Settings: cluster.MakeTestingClusterSettings(),
-	})
+	monitor := mon.NewMonitor("test_monitor", mon.MemoryResource,
+		nil, nil, -1, 0, cluster.MakeTestingClusterSettings())
 	monitor.Start(ctx, nil, mon.NewStandaloneBudget(1))
 	ba := monitor.MakeBoundAccount()
 
@@ -1253,7 +1245,7 @@ func TestDescriptorErrorWrap(t *testing.T) {
 	}{
 		{"bare error", errors.New("bare error is treated as an assertion"), true},
 		{"out of memory", ba.Grow(ctx, monitor.Limit()), false},
-		{"pgcode error", sqlerrors.NewAlterColTypeInCombinationNotSupportedError(), false},
+		{"pgcode error", sqlerrors.NewTransactionCommittedError(), false},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
 			require.NoError(t, sql.DescsTxn(ctx, &execCfg, func(

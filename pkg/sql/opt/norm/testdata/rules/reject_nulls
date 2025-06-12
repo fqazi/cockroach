@@ -557,26 +557,37 @@ project
  │    │    ├── columns: exists:22!null
  │    │    ├── outer: (4)
  │    │    ├── group-by (hash)
- │    │    │    ├── columns: ref_1.k:7!null canary_agg:21
+ │    │    │    ├── columns: ref_1.k:7!null true_agg:21
  │    │    │    ├── grouping columns: ref_1.k:7!null
  │    │    │    ├── outer: (4)
  │    │    │    ├── key: (7)
  │    │    │    ├── fd: (7)-->(21)
  │    │    │    ├── left-join (cross)
- │    │    │    │    ├── columns: ref_1.k:7!null a.s:16
+ │    │    │    │    ├── columns: ref_1.k:7!null true:20
  │    │    │    │    ├── outer: (4)
  │    │    │    │    ├── scan a [as=ref_1]
  │    │    │    │    │    ├── columns: ref_1.k:7!null
  │    │    │    │    │    └── key: (7)
- │    │    │    │    ├── scan a
- │    │    │    │    │    └── columns: a.s:16
- │    │    │    │    └── filters
- │    │    │    │         └── a.s:16 = ref_0.s:4 [outer=(4,16), constraints=(/4: (/NULL - ]; /16: (/NULL - ]), fd=(4)==(16), (16)==(4)]
+ │    │    │    │    ├── project
+ │    │    │    │    │    ├── columns: true:20!null
+ │    │    │    │    │    ├── outer: (4)
+ │    │    │    │    │    ├── fd: ()-->(20)
+ │    │    │    │    │    ├── select
+ │    │    │    │    │    │    ├── columns: a.s:16!null
+ │    │    │    │    │    │    ├── outer: (4)
+ │    │    │    │    │    │    ├── fd: ()-->(16)
+ │    │    │    │    │    │    ├── scan a
+ │    │    │    │    │    │    │    └── columns: a.s:16
+ │    │    │    │    │    │    └── filters
+ │    │    │    │    │    │         └── a.s:16 = ref_0.s:4 [outer=(4,16), constraints=(/4: (/NULL - ]; /16: (/NULL - ]), fd=(4)==(16), (16)==(4)]
+ │    │    │    │    │    └── projections
+ │    │    │    │    │         └── true [as=true:20]
+ │    │    │    │    └── filters (true)
  │    │    │    └── aggregations
- │    │    │         └── const-not-null-agg [as=canary_agg:21, outer=(16)]
- │    │    │              └── a.s:16
+ │    │    │         └── const-not-null-agg [as=true_agg:21, outer=(20)]
+ │    │    │              └── true:20
  │    │    └── projections
- │    │         └── canary_agg:21 IS NOT NULL [as=exists:22, outer=(21)]
+ │    │         └── true_agg:21 IS NOT NULL [as=exists:22, outer=(21)]
  │    └── filters
  │         └── exists:22 [outer=(22), constraints=(/22: [/true - /true]; tight), fd=()-->(22)]
  └── projections
@@ -767,7 +778,7 @@ inner-join (hash)
  ├── columns: k:1!null i:2 f:3 s:4 x:7!null y:8!null u:11!null v:12
  ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-more)
  ├── key: (7)
- ├── fd: (1)-->(2-4), (7)-->(8), (11)-->(12), (1)==(7), (7)==(1), (8)==(11), (11)==(8)
+ ├── fd: (1)-->(2-4), (7)-->(8), (1)==(7), (7)==(1), (11)-->(12), (8)==(11), (11)==(8)
  ├── inner-join (hash)
  │    ├── columns: k:1!null i:2 f:3 s:4 x:7!null y:8!null
  │    ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-one)
@@ -849,7 +860,7 @@ inner-join (hash)
  ├── columns: k:1!null i:2 f:3 s:4 x:7!null y:8!null u:11!null v:12
  ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-more)
  ├── key: (7)
- ├── fd: (1)-->(2-4), (7)-->(8), (11)-->(12), (1)==(7), (7)==(1), (8)==(11), (11)==(8)
+ ├── fd: (1)-->(2-4), (7)-->(8), (1)==(7), (7)==(1), (11)-->(12), (8)==(11), (11)==(8)
  ├── inner-join (hash)
  │    ├── columns: k:1!null i:2 f:3 s:4 x:7!null y:8
  │    ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-one)
@@ -974,7 +985,7 @@ inner-join-apply
  │    ├── cardinality: [0 - 1]
  │    ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-one)
  │    ├── key: ()
- │    ├── fd: ()-->(5-9), (5)==(6), (6)==(5)
+ │    ├── fd: ()-->(5-9), (6)==(5), (5)==(6)
  │    ├── values
  │    │    ├── columns: column1:5
  │    │    ├── outer: (2)
@@ -1136,7 +1147,7 @@ left-join-apply
  │    ├── cardinality: [0 - 1]
  │    ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-one)
  │    ├── key: ()
- │    ├── fd: ()-->(5-7), (5)==(6), (6)==(5)
+ │    ├── fd: ()-->(5-7), (6)==(5), (5)==(6)
  │    ├── values
  │    │    ├── columns: column1:5
  │    │    ├── outer: (1)
@@ -1667,9 +1678,9 @@ SELECT tab_3663.col2_3,
  ORDER BY tab_3663.crdb_internal_mvcc_timestamp DESC, tab_3663.tableoid DESC, tab_3663.col2_5
 ----
 project
- ├── columns: col2_3:2 "?column?":67!null "?column?":68!null col_12038:69!null col2_6:5!null "?column?":67!null  [hidden: tab_3663.col2_5:4 tab_3663.crdb_internal_mvcc_timestamp:11 tab_3663.tableoid:12]
- ├── fd: ()-->(67-69)
- ├── ordering: -11,-12,+4 opt(67-69) [actual: -11,-12,+4]
+ ├── columns: col2_3:2 "?column?":66!null "?column?":67!null col_12038:68!null col2_6:5!null "?column?":66!null  [hidden: tab_3663.col2_5:4 tab_3663.crdb_internal_mvcc_timestamp:11 tab_3663.tableoid:12]
+ ├── fd: ()-->(66-68)
+ ├── ordering: -11,-12,+4 opt(66-68) [actual: -11,-12,+4]
  ├── sort
  │    ├── columns: tab_3663.col2_3:2 tab_3663.col2_5:4 tab_3663.col2_6:5!null tab_3663.col2_9:6 tab_3663.crdb_internal_mvcc_timestamp:11 tab_3663.tableoid:12
  │    ├── ordering: -11,-12,+4
@@ -1713,9 +1724,9 @@ project
  │         │         └── tab_3664.col2_12:21 = col1_3:28 [outer=(21,28), constraints=(/21: (/NULL - ]; /28: (/NULL - ]), fd=(21)==(28), (28)==(21)]
  │         └── filters (true)
  └── projections
-      ├── 0 [as="?column?":67]
-      ├── '23:43:20-08:00:00' [as="?column?":68]
-      └── '2026-09-17 11:54:13.000946' [as=col_12038:69]
+      ├── 0 [as="?column?":66]
+      ├── '23:43:20-08:00:00' [as="?column?":67]
+      └── '2026-09-17 11:54:13.000946' [as=col_12038:68]
 
 # Regression test for #100559 - don't panic when exploration uncovers possible
 # null-rejection that normalization failed to find.

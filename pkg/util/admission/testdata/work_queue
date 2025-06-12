@@ -18,7 +18,8 @@ closed epoch: 0 tenantHeap len: 0
 set-try-get-return-value v=false
 ----
 
-admit id=2 tenant=53 priority=0 create-time-millis=3 bypass=false
+# bypass=true is ignored since not system tenant.
+admit id=2 tenant=53 priority=0 create-time-millis=3 bypass=true
 ----
 tryGet: returning false
 
@@ -63,7 +64,7 @@ granted: returned 1
 # favor of tenant 71.
 print
 ----
-closed epoch: 0 tenantHeap len: 2 top tenant: 53
+closed epoch: 0 tenantHeap len: 2 top tenant: 71
  tenant-id: 53 used: 1, w: 1, fifo: -128 waiting work heap: [0: pri: normal-pri, ct: 2, epoch: 0, qt: 100] [1: pri: normal-pri, ct: 3, epoch: 0, qt: 100]
  tenant-id: 71 used: 1, w: 1, fifo: -128 waiting work heap: [0: pri: low-pri, ct: 4, epoch: 0, qt: 100]
 
@@ -74,7 +75,7 @@ id 3: admit failed
 
 print
 ----
-closed epoch: 0 tenantHeap len: 2 top tenant: 53
+closed epoch: 0 tenantHeap len: 2 top tenant: 71
  tenant-id: 53 used: 1, w: 1, fifo: -128 waiting work heap: [0: pri: normal-pri, ct: 3, epoch: 0, qt: 100]
  tenant-id: 71 used: 1, w: 1, fifo: -128 waiting work heap: [0: pri: low-pri, ct: 4, epoch: 0, qt: 100]
 
@@ -90,31 +91,22 @@ closed epoch: 0 tenantHeap len: 2 top tenant: 53
  tenant-id: 53 used: 0, w: 1, fifo: -128 waiting work heap: [0: pri: normal-pri, ct: 3, epoch: 0, qt: 100]
  tenant-id: 71 used: 1, w: 1, fifo: -128 waiting work heap: [0: pri: low-pri, ct: 4, epoch: 0, qt: 100]
 
-# Requests from a system and application tenant bypass admission control,
-# but are reflected in the WorkQueue state.
+# A request from the system tenant bypasses admission control, but is
+# reflected in the WorkQueue state.
 admit id=6 tenant=1 priority=0 create-time-millis=6 bypass=true
 ----
 tookWithoutPermission 1
 id 6: admit succeeded
-
-admit id=9 tenant=71 priority=0 create-time-millis=7 bypass=true
-----
-tookWithoutPermission 1
-id 9: admit succeeded
 
 print
 ----
 closed epoch: 0 tenantHeap len: 2 top tenant: 53
  tenant-id: 1 used: 1, w: 1, fifo: -128
  tenant-id: 53 used: 0, w: 1, fifo: -128 waiting work heap: [0: pri: normal-pri, ct: 3, epoch: 0, qt: 100]
- tenant-id: 71 used: 2, w: 1, fifo: -128 waiting work heap: [0: pri: low-pri, ct: 4, epoch: 0, qt: 100]
+ tenant-id: 71 used: 1, w: 1, fifo: -128 waiting work heap: [0: pri: low-pri, ct: 4, epoch: 0, qt: 100]
 
-# The bypass work is done and consumed 10 and 0 cpu nanos respectively.
+# The system tenant work is done and consumed 10 cpu nanos.
 work-done id=6 cpu-time=10
-----
-returnGrant 1
-
-work-done id=9 cpu-time=0
 ----
 returnGrant 1
 
@@ -551,20 +543,20 @@ admit id=2 tenant=10 priority=0 create-time-millis=1 bypass=false
 
 print
 ----
-closed epoch: 0 tenantHeap len: 2 top tenant: 10
+closed epoch: 0 tenantHeap len: 2 top tenant: 5
  tenant-id: 5 used: 0, w: 6, fifo: -128 waiting work heap: [0: pri: normal-pri, ct: 1, epoch: 0, qt: 100]
  tenant-id: 10 used: 0, w: 11, fifo: -128 waiting work heap: [0: pri: normal-pri, ct: 1, epoch: 0, qt: 100]
 
 granted chain-id=1
 ----
 continueGrantChain 1
-id 2: admit succeeded
+id 1: admit succeeded
 granted: returned 1
 
 granted chain-id=2
 ----
 continueGrantChain 2
-id 1: admit succeeded
+id 2: admit succeeded
 granted: returned 1
 
 # Both tenants are using 1 slot.
@@ -721,7 +713,7 @@ closed epoch: 0 tenantHeap len: 8 top tenant: 1
 # Set weights for 7 out of the 8 tenants.
 set-tenant-weights weights=1:2,2:3,3:4,4:5,5:6,7:8,8:9
 ----
-closed epoch: 0 tenantHeap len: 8 top tenant: 8
+closed epoch: 0 tenantHeap len: 8 top tenant: 1
  tenant-id: 1 used: 0, w: 2, fifo: -128 waiting work heap: [0: pri: normal-pri, ct: 1, epoch: 0, qt: 100]
  tenant-id: 2 used: 0, w: 3, fifo: -128 waiting work heap: [0: pri: normal-pri, ct: 1, epoch: 0, qt: 100]
  tenant-id: 3 used: 0, w: 4, fifo: -128 waiting work heap: [0: pri: normal-pri, ct: 1, epoch: 0, qt: 100]
@@ -734,49 +726,49 @@ closed epoch: 0 tenantHeap len: 8 top tenant: 8
 granted chain-id=1
 ----
 continueGrantChain 1
-id 8: admit succeeded
+id 1: admit succeeded
 granted: returned 1
 
 granted chain-id=2
 ----
 continueGrantChain 2
-id 7: admit succeeded
+id 8: admit succeeded
 granted: returned 1
 
 granted chain-id=3
 ----
 continueGrantChain 3
-id 5: admit succeeded
+id 7: admit succeeded
 granted: returned 1
 
 granted chain-id=4
 ----
 continueGrantChain 4
-id 4: admit succeeded
+id 6: admit succeeded
 granted: returned 1
 
 granted chain-id=5
 ----
 continueGrantChain 5
-id 3: admit succeeded
+id 5: admit succeeded
 granted: returned 1
 
 granted chain-id=6
 ----
 continueGrantChain 6
-id 2: admit succeeded
+id 4: admit succeeded
 granted: returned 1
 
 granted chain-id=7
 ----
 continueGrantChain 7
-id 1: admit succeeded
+id 3: admit succeeded
 granted: returned 1
 
 granted chain-id=8
 ----
 continueGrantChain 8
-id 6: admit succeeded
+id 2: admit succeeded
 granted: returned 1
 
 print

@@ -66,6 +66,10 @@ func (s destroyStatus) Removed() bool {
 const mergedTombstoneReplicaID roachpb.ReplicaID = math.MaxInt32
 
 func (r *Replica) postDestroyRaftMuLocked(ctx context.Context, ms enginepb.MVCCStats) error {
+	// NB: we need the nil check below because it's possible that we're GC'ing a
+	// Replica without a replicaID, in which case it does not have a sideloaded
+	// storage.
+	//
 	// TODO(tschottdorf): at node startup, we should remove all on-disk
 	// directories belonging to replicas which aren't present. A crash before a
 	// call to postDestroyRaftMuLocked will currently leave the files around
@@ -79,8 +83,10 @@ func (r *Replica) postDestroyRaftMuLocked(ctx context.Context, ms enginepb.MVCCS
 	// TODO(pavelkalinnikov): coming back in 2023, the above may still happen if:
 	// (1) state machine syncs, (2) OS crashes before (3) sideloaded was able to
 	// sync the files removal. The files should be cleaned up on restart.
-	if err := r.logStorage.ls.Sideload.Clear(ctx); err != nil {
-		return err
+	if r.raftMu.sideloaded != nil {
+		if err := r.raftMu.sideloaded.Clear(ctx); err != nil {
+			return err
+		}
 	}
 
 	// Release the reference to this tenant in metrics, we know the tenant ID is
@@ -158,7 +164,6 @@ func (r *Replica) destroyRaftMuLocked(ctx context.Context, nextReplicaID roachpb
 // is one, releases all held flow tokens, and removes the in-memory raft state.
 func (r *Replica) disconnectReplicationRaftMuLocked(ctx context.Context) {
 	r.raftMu.AssertHeld()
-	r.flowControlV2.OnDestroyRaftMuLocked(ctx)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// NB: In the very rare scenario that we're being removed but currently
@@ -168,6 +173,7 @@ func (r *Replica) disconnectReplicationRaftMuLocked(ctx context.Context) {
 	if pq := r.mu.proposalQuota; pq != nil {
 		pq.Close("destroyed")
 	}
+	r.mu.replicaFlowControlIntegration.onDestroyed(ctx)
 	r.mu.proposalBuf.FlushLockedWithoutProposing(ctx)
 	for _, p := range r.mu.proposals {
 		r.cleanupFailedProposalLocked(p)
@@ -180,5 +186,4 @@ func (r *Replica) disconnectReplicationRaftMuLocked(ctx context.Context) {
 		log.Fatalf(ctx, "removing raft group before destroying replica %s", r)
 	}
 	r.mu.internalRaftGroup = nil
-	r.mu.raftTracer.Close()
 }

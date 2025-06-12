@@ -3,15 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { CaretDownOutlined } from "@ant-design/icons";
-import cn from "classnames";
 import React from "react";
-
-import { Button } from "src/components/button";
+import cn from "classnames";
 
 import { OutsideEventHandler } from "../outsideEventHandler";
-
 import "./dropdown.styl";
+import { Icon } from "antd";
+import "antd/lib/icon/style";
+import { Button } from "src/components/button";
 
 export interface Item {
   value: string;
@@ -45,7 +44,7 @@ function DropdownButton(props: DropdownButtonProps) {
       type="flat"
       size="small"
       iconPosition="right"
-      icon={() => <CaretDownOutlined className="collapse-toggle__icon" />}
+      icon={() => <Icon className="collapse-toggle__icon" type="caret-down" />}
     >
       {children}
     </Button>

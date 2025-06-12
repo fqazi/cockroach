@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -84,9 +83,6 @@ func makeAsOf(s *Smither) tree.AsOfClause {
 }
 
 func makeBackup(s *Smither) (tree.Statement, bool) {
-	if !s.bulkIOEnabled() {
-		return nil, false
-	}
 	name := fmt.Sprintf("%s/%s", s.bulkSrv.URL, s.name("backup"))
 	var targets tree.BackupTargetList
 	seen := map[tree.TableName]bool{}
@@ -124,7 +120,6 @@ func makeRestore(s *Smither) (tree.Statement, bool) {
 	func() {
 		s.lock.Lock()
 		defer s.lock.Unlock()
-		// TODO(yuzefovich): picking a backup target here is non-deterministic.
 		for name, targets = range s.bulkBackups {
 			break
 		}
@@ -148,8 +143,7 @@ func makeRestore(s *Smither) (tree.Statement, bool) {
 
 	return &tree.Restore{
 		Targets: targets,
-		Subdir:  tree.NewStrVal("LATEST"),
-		From:    tree.StringOrPlaceholderOptList{tree.NewStrVal(name)},
+		From:    []tree.StringOrPlaceholderOptList{{tree.NewStrVal(name)}},
 		AsOf:    makeAsOf(s),
 		Options: tree.RestoreOptions{
 			IntoDB: tree.NewStrVal("into_db"),
@@ -220,16 +214,11 @@ func makeImport(s *Smither) (tree.Statement, bool) {
 		}
 		expr := s.bulkExports[0]
 		s.bulkExports = s.bulkExports[1:]
-		var fileNames []string
+		var f tree.Exprs
 		for name := range s.bulkFiles {
 			if strings.Contains(name, expr+"/") && !strings.HasSuffix(name, exportSchema) {
-				fileNames = append(fileNames, name)
+				f = append(f, tree.NewStrVal(s.bulkSrv.URL+name))
 			}
-		}
-		sort.Strings(fileNames)
-		var f tree.Exprs
-		for _, name := range fileNames {
-			f = append(f, tree.NewStrVal(s.bulkSrv.URL+name))
 		}
 		return f, expr
 	}()

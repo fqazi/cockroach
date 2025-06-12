@@ -3,14 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import * as protos from "@cockroachlabs/crdb-protobuf-client";
 import { createMemoryHistory } from "history";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import Long from "long";
 import moment from "moment-timezone";
-
-import { Filters } from "../queryFilter";
+import * as protos from "@cockroachlabs/crdb-protobuf-client";
 import { SortSetting } from "../sortedtable";
+import { Filters } from "../queryFilter";
 import { TimeScale } from "../timeScaleDropdown";
 
 const history = createMemoryHistory({ initialEntries: ["/transactions"] });
@@ -75,6 +74,7 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
             "UPDATE sqlliveness SET expiration = $1 WHERE session_id = $2 RETURNING session_id",
           app: "$ internal-update-session",
           distSQL: false,
+          failed: false,
           implicit_txn: false,
           vec: false,
         },
@@ -83,7 +83,6 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
       },
       stats: {
         count: Long.fromInt(557),
-        failure_count: Long.fromInt(0),
         nodes: [Long.fromNumber(1), Long.fromNumber(2)],
         regions: ["gcp-us-east1"],
         first_attempt_count: Long.fromInt(557),
@@ -155,6 +154,7 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
           query: "SELECT expiration FROM sqlliveness WHERE session_id = $1",
           app: "$ internal-fetch-single-session",
           distSQL: false,
+          failed: false,
           implicit_txn: false,
           vec: false,
         },
@@ -163,7 +163,6 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
       },
       stats: {
         count: Long.fromInt(70),
-        failure_count: Long.fromInt(3),
         nodes: [Long.fromNumber(1), Long.fromNumber(3)],
         regions: ["gcp-us-east1", "gcp-us-west1"],
         first_attempt_count: Long.fromInt(70),
@@ -222,6 +221,7 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
             'SELECT "descID", version, expiration FROM system.public.lease AS OF SYSTEM TIME _ WHERE "nodeID" = _',
           app: "$ internal-read orphaned leases",
           distSQL: false,
+          failed: false,
           implicit_txn: true,
           vec: false,
         },
@@ -230,7 +230,6 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
       },
       stats: {
         count: Long.fromInt(1),
-        failure_count: Long.fromInt(17),
         nodes: [Long.fromNumber(1), Long.fromNumber(3)],
         regions: ["gcp-us-east1", "gcp-us-west1"],
         first_attempt_count: Long.fromInt(1),
@@ -280,6 +279,7 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
             "UPDATE system.jobs SET claim_session_id = _ WHERE (claim_session_id != $1) AND (NOT crdb_internal.sql_liveness_is_alive(claim_session_id))",
           app: "$ internal-expire-sessions",
           distSQL: false,
+          failed: false,
           implicit_txn: true,
           vec: false,
         },
@@ -288,7 +288,6 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
       },
       stats: {
         count: Long.fromInt(280),
-        failure_count: Long.fromInt(4),
         nodes: [Long.fromNumber(3), Long.fromNumber(4)],
         regions: ["gcp-us-west1", "gcp-europe-west1"],
         first_attempt_count: Long.fromInt(280),
@@ -382,6 +381,7 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
           query: "INSERT INTO sqlliveness VALUES ($1, $2)",
           app: "$ internal-insert-session",
           distSQL: false,
+          failed: false,
           implicit_txn: false,
           vec: false,
         },
@@ -390,7 +390,6 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
       },
       stats: {
         count: Long.fromInt(1),
-        failure_count: Long.fromInt(0),
         nodes: [Long.fromNumber(2), Long.fromNumber(4)],
         regions: ["gcp-us-east1", "gcp-europe-west1"],
         first_attempt_count: Long.fromInt(1),
@@ -434,6 +433,7 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
           query: "SHOW CLUSTER SETTING version",
           app: "$ internal-show-version",
           distSQL: false,
+          failed: false,
           implicit_txn: true,
           vec: false,
         },
@@ -442,7 +442,6 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
       },
       stats: {
         count: Long.fromInt(1),
-        failure_count: Long.fromInt(3),
         nodes: [Long.fromNumber(1)],
         regions: ["gcp-us-east1"],
         first_attempt_count: Long.fromInt(1),
@@ -475,6 +474,7 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
           query: "SELECT value FROM system.settings WHERE name = $1",
           app: "$ internal-read-setting",
           distSQL: false,
+          failed: false,
           implicit_txn: false,
           vec: false,
         },
@@ -483,7 +483,6 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
       },
       stats: {
         count: Long.fromInt(1),
-        failure_count: Long.fromInt(7),
         nodes: [Long.fromNumber(3), Long.fromNumber(4)],
         regions: ["gcp-us-west1", "gcp-europe-west1"],
         first_attempt_count: Long.fromInt(1),
@@ -527,6 +526,7 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
             "WITH current_meta AS (SELECT version, num_records, num_spans, total_bytes FROM system.protected_ts_meta UNION ALL SELECT _ AS version, _ AS num_records, _ AS num_spans, _ AS total_bytes ORDER BY version DESC LIMIT _) SELECT version, num_records, num_spans, total_bytes FROM current_meta",
           app: "$ internal-protectedts-GetMetadata",
           distSQL: false,
+          failed: false,
           implicit_txn: false,
           vec: false,
         },
@@ -535,7 +535,6 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
       },
       stats: {
         count: Long.fromInt(24),
-        failure_count: Long.fromInt(0),
         nodes: [Long.fromNumber(2), Long.fromNumber(3)],
         regions: ["gcp-us-east1", "gcp-us-west1"],
         first_attempt_count: Long.fromInt(24),
@@ -617,6 +616,7 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
             "WITH deleted_sessions AS (DELETE FROM sqlliveness WHERE expiration < $1 RETURNING session_id) SELECT count(*) FROM deleted_sessions",
           app: "$ internal-delete-sessions",
           distSQL: false,
+          failed: false,
           implicit_txn: true,
           vec: false,
         },
@@ -625,7 +625,6 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
       },
       stats: {
         count: Long.fromInt(141),
-        failure_count: Long.fromInt(9),
         nodes: [Long.fromNumber(1), Long.fromNumber(2), Long.fromNumber(3)],
         regions: ["gcp-us-east1", "gcp-us-west1"],
         first_attempt_count: Long.fromInt(141),
@@ -731,6 +730,7 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
             'INSERT INTO system.eventlog("timestamp", "eventType", "targetID", "reportingID", info) VALUES (now(), $1, $2, $3, $4)',
           app: "$ internal-log-event",
           distSQL: false,
+          failed: false,
           implicit_txn: false,
           vec: false,
         },
@@ -739,7 +739,6 @@ export const data: cockroach.server.serverpb.IStatementsResponse = {
       },
       stats: {
         count: Long.fromInt(1),
-        failure_count: Long.fromInt(1),
         nodes: [
           Long.fromNumber(1),
           Long.fromNumber(2),

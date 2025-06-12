@@ -416,7 +416,7 @@ WHERE stat->>'name' = '__forecast__'
         }
     ],
     "histo_col_type": "INT8",
-    "histo_version": 3,
+    "histo_version": 2,
     "name": "__forecast__",
     "null_count": 0,
     "row_count": 1
@@ -1497,7 +1497,7 @@ WHERE stat->>'name' = '__forecast__'
         }
     ],
     "histo_col_type": "INT8",
-    "histo_version": 3,
+    "histo_version": 2,
     "name": "__forecast__",
     "null_count": 0,
     "row_count": 100
@@ -1531,7 +1531,7 @@ WHERE stat->>'name' = '__forecast__'
         }
     ],
     "histo_col_type": "INT8",
-    "histo_version": 3,
+    "histo_version": 2,
     "name": "__forecast__",
     "null_count": 0,
     "row_count": 100
@@ -2355,7 +2355,7 @@ vectorized: true
 └── • render
     │
     └── • filter
-        │ estimated row count: 1
+        │ estimated row count: 9
         │ filter: t IS NULL
         │
         └── • index join

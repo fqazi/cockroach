@@ -57,7 +57,7 @@ type txnSeqNumAllocator struct {
 
 	// writeSeq is the current write seqnum, i.e. the value last assigned
 	// to a write operation in a batch. It remains at 0 until the first
-	// write or savepoint operation is encountered.
+	// write operation is encountered.
 	writeSeq enginepb.TxnSeq
 
 	// readSeq is the sequence number at which to perform read-only operations.
@@ -78,10 +78,6 @@ type txnSeqNumAllocator struct {
 func (s *txnSeqNumAllocator) SendLocked(
 	ctx context.Context, ba *kvpb.BatchRequest,
 ) (*kvpb.BatchResponse, *kvpb.Error) {
-	if err := s.checkReadSeqNotIgnoredLocked(ba); err != nil {
-		return nil, kvpb.NewError(err)
-	}
-
 	for _, ru := range ba.Requests {
 		req := ru.GetInner()
 		oldHeader := req.Header()
@@ -98,7 +94,8 @@ func (s *txnSeqNumAllocator) SendLocked(
 		// Notably, this includes Get/Scan/ReverseScan requests that acquire
 		// replicated locks, even though they go through raft.
 		if kvpb.IsIntentWrite(req) || req.Method() == kvpb.EndTxn {
-			if err := s.stepWriteSeqLocked(ctx); err != nil {
+			s.writeSeq++
+			if err := s.maybeAutoStepReadSeqLocked(ctx); err != nil {
 				return nil, kvpb.NewError(err)
 			}
 			oldHeader.Sequence = s.writeSeq
@@ -122,7 +119,7 @@ func (s *txnSeqNumAllocator) populateLeafInputState(tis *roachpb.LeafTxnInputSta
 	tis.ReadSeqNum = s.readSeq
 }
 
-// initializeLeaf is part of the txnInterceptor interface.
+// initializeLeaf loads the read seqnum for a leaf transaction.
 func (s *txnSeqNumAllocator) initializeLeaf(tis *roachpb.LeafTxnInputState) {
 	s.steppingMode = kv.SteppingMode(tis.SteppingModeEnabled)
 	s.readSeq = tis.ReadSeqNum
@@ -169,23 +166,6 @@ func (s *txnSeqNumAllocator) stepReadSeqLocked(ctx context.Context) error {
 	return nil
 }
 
-// stepWriteSeqLocked increments the write seqnum.
-func (s *txnSeqNumAllocator) stepWriteSeqLocked(ctx context.Context) error {
-	s.writeSeq++
-	return s.maybeAutoStepReadSeqLocked(ctx)
-}
-
-// checkReadSeqNotIgnoredLocked verifies that the read seqnum is not in the
-// ignored seqnum list of the provided batch request.
-func (s *txnSeqNumAllocator) checkReadSeqNotIgnoredLocked(ba *kvpb.BatchRequest) error {
-	if enginepb.TxnSeqIsIgnored(s.readSeq, ba.Txn.IgnoredSeqNums) {
-		return errors.AssertionFailedf(
-			"read sequence number %d but sequence number is ignored %v after savepoint rollback",
-			s.readSeq, ba.Txn.IgnoredSeqNums)
-	}
-	return nil
-}
-
 // configureSteppingLocked configures the stepping mode.
 //
 // When enabling stepping from the non-enabled state, the read seqnum
@@ -220,11 +200,9 @@ func (s *txnSeqNumAllocator) createSavepointLocked(ctx context.Context, sp *save
 }
 
 // rollbackToSavepointLocked is part of the txnInterceptor interface.
-func (s *txnSeqNumAllocator) rollbackToSavepointLocked(context.Context, savepoint) {
+func (*txnSeqNumAllocator) rollbackToSavepointLocked(context.Context, savepoint) {
 	// Nothing to restore. The seq nums keep increasing. The TxnCoordSender has
-	// added a range of sequence numbers to the ignored list. It may have also
-	// manually stepped the write seqnum to distinguish the ignored range from
-	// any future operations.
+	// added a range of sequence numbers to the ignored list.
 }
 
 // closeLocked is part of the txnInterceptor interface.

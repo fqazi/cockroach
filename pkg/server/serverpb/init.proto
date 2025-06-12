@@ -7,16 +7,7 @@ syntax = "proto3";
 package cockroach.server.serverpb;
 option go_package = "github.com/cockroachdb/cockroach/pkg/server/serverpb";
 
-message BootstrapRequest {
-    InitType init_type = 1;
-}
-
-enum InitType {
-    DEFAULT = 0;
-    NONE = 1;
-    VIRTUALIZED_EMPTY = 2;
-    VIRTUALIZED = 3;
-}
+message BootstrapRequest { }
 message BootstrapResponse { }
 
 service Init {

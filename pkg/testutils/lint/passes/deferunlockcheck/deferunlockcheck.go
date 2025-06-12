@@ -11,6 +11,7 @@ import (
 	"go/token"
 	"go/types"
 
+	"github.com/cockroachdb/cockroach/pkg/testutils/lint/passes/loopvarcapture"
 	"github.com/cockroachdb/cockroach/pkg/testutils/lint/passes/passesutil"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
@@ -34,15 +35,7 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-// Function defines the location of a function (package-level or
-// method on a type).
-type Function struct {
-	Pkg  string
-	Type string // empty for package-level functions
-	Name string
-}
-
-var mutexFunctions = []Function{
+var mutexFunctions = []loopvarcapture.Function{
 	{Pkg: "github.com/cockroachdb/cockroach/pkg/util/syncutil", Type: "Mutex", Name: "Lock"},
 	{Pkg: "github.com/cockroachdb/cockroach/pkg/util/syncutil", Type: "Mutex", Name: "Unlock"},
 	{Pkg: "github.com/cockroachdb/cockroach/pkg/util/syncutil", Type: "RWMutex", Name: "Lock"},
@@ -242,7 +235,7 @@ func (lt *LockTracker) addLock(call *ast.CallExpr, isRead bool) {
 
 // maybeReportUnlock tries to find a matching lock for a given unlock by
 // iterating backwards in the locks slice. If one is found, it checks if the
-// distance between is greater than maxLineDistance and also has no nolint
+// distance between is greater than maxLineDistance and also has no nlint
 // comment and reports on that if both are true.
 func (lt *LockTracker) maybeReportUnlock(call *ast.CallExpr, isRead bool) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)

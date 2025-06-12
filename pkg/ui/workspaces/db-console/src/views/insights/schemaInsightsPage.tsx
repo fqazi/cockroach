@@ -3,6 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import { connect } from "react-redux";
+import { RouteComponentProps, withRouter } from "react-router-dom";
+import {
+  refreshSchemaInsights,
+  refreshUserSQLRoles,
+} from "src/redux/apiReducers";
+import { AdminUIState } from "src/redux/state";
 import {
   SchemaInsightEventFilters,
   SchemaInsightsView,
@@ -10,16 +17,6 @@ import {
   SchemaInsightsViewStateProps,
   SortSetting,
 } from "@cockroachlabs/cluster-ui";
-import { connect } from "react-redux";
-import { RouteComponentProps, withRouter } from "react-router-dom";
-
-import {
-  refreshSchemaInsights,
-  refreshUserSQLRoles,
-} from "src/redux/apiReducers";
-import { selectDropUnusedIndexDuration } from "src/redux/clusterSettings";
-import { AdminUIState } from "src/redux/state";
-import { selectHasAdminRole } from "src/redux/user";
 import {
   schemaInsightsFiltersLocalSetting,
   schemaInsightsSortLocalSetting,
@@ -28,6 +25,8 @@ import {
   selectSchemaInsightsMaxApiReached,
   selectSchemaInsightsTypes,
 } from "src/views/insights/insightsSelectors";
+import { selectHasAdminRole } from "src/redux/user";
+import { selectDropUnusedIndexDuration } from "src/redux/clusterSettings";
 
 const mapStateToProps = (
   state: AdminUIState,
@@ -58,8 +57,7 @@ const SchemaInsightsPage = withRouter(
   connect<
     SchemaInsightsViewStateProps,
     SchemaInsightsViewDispatchProps,
-    RouteComponentProps,
-    AdminUIState
+    RouteComponentProps
   >(
     mapStateToProps,
     mapDispatchToProps,

@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/stretchr/testify/assert"
@@ -27,17 +27,17 @@ func TestVirtualTableGenCancel(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{})
+	defer tc.Stopper().Stop(ctx)
 
 	const workers = 10
 	const iterations = 10
 	var wg sync.WaitGroup
 	wg.Add(workers)
 	for i := 0; i < workers; i++ {
-		conn := s.SQLConn(t)
-		_, err := conn.ExecContext(ctx, "SET statement_timeout='100us'")
+		conn, err := tc.ServerConn(0).Conn(ctx)
+		require.NoError(t, err)
+		_, err = conn.ExecContext(ctx, "SET statement_timeout='100us'")
 		require.NoError(t, err)
 		go func() {
 			defer wg.Done()

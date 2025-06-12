@@ -211,29 +211,6 @@ func (r *commandResult) SetError(err error) {
 	r.err = err
 }
 
-// GetFormatCode is part of the sql.RestrictedCommandResult interface.
-func (r *commandResult) GetFormatCode(colIdx int) (pgwirebase.FormatCode, error) {
-	fmtCode := pgwirebase.FormatText
-	if r.formatCodes != nil {
-		if colIdx >= len(r.formatCodes) {
-			if len(r.formatCodes) == 1 && r.cmdCompleteTag == "EXPLAIN" {
-				// For EXPLAIN ANALYZE statements the format codes describe how
-				// to serialize the EXPLAIN ANALYZE output (which has just one
-				// column) and not the result of the query being executed (which
-				// can have any number of columns). In such a scenario we won't
-				// serialize the data rows (since we will produce stringified
-				// EXPLAIN ANALYZE output and the rows will be actually
-				// discarded by the DistSQLReceiver), so the format code here
-				// doesn't matter.
-				return fmtCode, nil
-			}
-			return 0, errors.AssertionFailedf("could not find format code for column %d in %v", colIdx, r.formatCodes)
-		}
-		fmtCode = r.formatCodes[colIdx]
-	}
-	return fmtCode, nil
-}
-
 // beforeAdd should be called before rows are buffered.
 func (r *commandResult) beforeAdd() error {
 	r.assertNotReleased()
@@ -328,18 +305,11 @@ func (r *commandResult) BufferNotice(notice pgnotice.Notice) {
 }
 
 // SendNotice is part of the sql.RestrictedCommandResult interface.
-func (r *commandResult) SendNotice(
-	ctx context.Context, notice pgnotice.Notice, immediateFlush bool,
-) error {
+func (r *commandResult) SendNotice(ctx context.Context, notice pgnotice.Notice) error {
 	if err := r.conn.bufferNotice(ctx, notice); err != nil {
 		return err
 	}
-	if immediateFlush {
-		if err := r.conn.Flush(r.pos); err != nil {
-			return err
-		}
-	}
-	return nil
+	return r.conn.Flush(r.pos)
 }
 
 // SetColumns is part of the sql.RestrictedCommandResult interface.

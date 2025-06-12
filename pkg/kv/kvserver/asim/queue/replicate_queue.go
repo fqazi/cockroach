@@ -50,8 +50,14 @@ func NewReplicateQueue(
 			allocator, storePool, plan.ReplicaPlannerTestingKnobs{}),
 		clock: storePool.Clock(),
 	}
-	rq.AddLogTag("replica", nil)
+	rq.AddLogTag("rq", nil)
 	return &rq
+}
+
+func simCanTransferleaseFrom(
+	ctx context.Context, repl plan.LeaseCheckReplica, conf *roachpb.SpanConfig,
+) bool {
+	return true
 }
 
 // MaybeAdd proposes a replica for inclusion into the ReplicateQueue, if it
@@ -75,7 +81,7 @@ func (rq *replicateQueue) MaybeAdd(ctx context.Context, replica state.Replica, s
 		repl,
 		desc,
 		conf,
-		plan.PlannerOptions{},
+		simCanTransferleaseFrom,
 	)
 
 	if !shouldPlanChange {
@@ -129,30 +135,30 @@ func (rq *replicateQueue) Tick(ctx context.Context, tick time.Time, s state.Stat
 		if err != nil {
 			panic(err)
 		}
-		// The replica needs to hold a valid lease.
-		if !repl.OwnsValidLease(ctx, hlc.ClockTimestamp{}) {
-			continue
-		}
-		change, err := rq.planner.PlanOneChange(ctx, repl, desc, conf, plan.PlannerOptions{})
+		change, err := rq.planner.PlanOneChange(ctx, repl, desc, conf, simCanTransferleaseFrom, false /* scatter */)
 		if err != nil {
 			log.Errorf(ctx, "error planning change %s", err.Error())
 			continue
 		}
 
-		pushReplicateChange(
-			ctx, change, rng, tick, rq.settings.ReplicaChangeDelayFn(), rq.baseQueue)
+		log.VEventf(ctx, 1, "conf=%+v", rng.SpanConfig())
+
+		rq.applyChange(ctx, change, rng, tick)
 	}
 
 	rq.lastTick = tick
 }
 
-func pushReplicateChange(
-	ctx context.Context,
-	change plan.ReplicateChange,
-	rng state.Range,
-	tick time.Time,
-	delayFn func(int64, bool) time.Duration,
-	queue baseQueue,
+// applyChange applies a range allocation change. It is responsible only for
+// application and returns an error if unsuccessful.
+//
+// TODO(kvoli): Currently applyChange is only called by the replicate queue. It
+// is desirable to funnel all allocation changes via one function. Move this
+// application phase onto a separate struct that will be used by both the
+// replicate queue and the store rebalancer and specifically for operations
+// rather than changes.
+func (rq *replicateQueue) applyChange(
+	ctx context.Context, change plan.ReplicateChange, rng state.Range, tick time.Time,
 ) {
 	var stateChange state.Change
 	switch op := change.Op.(type) {
@@ -165,23 +171,23 @@ func pushReplicateChange(
 		stateChange = &state.LeaseTransferChange{
 			RangeID:        state.RangeID(change.Replica.GetRangeID()),
 			TransferTarget: state.StoreID(op.Target),
-			Author:         state.StoreID(op.Source),
-			Wait:           delayFn(rng.Size(), true),
+			Author:         rq.storeID,
+			Wait:           rq.settings.ReplicaChangeDelayFn()(0, false),
 		}
 	case plan.AllocationChangeReplicasOp:
 		log.VEventf(ctx, 1, "pushing state change for range=%s, details=%s", rng, op.Details)
 		stateChange = &state.ReplicaChange{
 			RangeID: state.RangeID(change.Replica.GetRangeID()),
 			Changes: op.Chgs,
-			Author:  state.StoreID(op.LeaseholderStore),
-			Wait:    delayFn(rng.Size(), true),
+			Author:  rq.storeID,
+			Wait:    rq.settings.ReplicaChangeDelayFn()(rng.Size(), true),
 		}
 	default:
-		panic(fmt.Sprintf("Unknown operation %+v, unable to create state change", op))
+		panic(fmt.Sprintf("Unknown operation %+v, unable to apply replicate queue change", op))
 	}
 
-	if completeAt, ok := queue.stateChanger.Push(tick, stateChange); ok {
-		queue.next = completeAt
+	if completeAt, ok := rq.stateChanger.Push(tick, stateChange); ok {
+		rq.next = completeAt
 		log.VEventf(ctx, 1, "pushing state change succeeded, complete at %s (cur %s)", completeAt, tick)
 	} else {
 		log.VEventf(ctx, 1, "pushing state change failed")

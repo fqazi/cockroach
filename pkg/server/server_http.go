@@ -9,16 +9,13 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
-	"net"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/NYTimes/gziphandler"
 	"github.com/cockroachdb/cmux"
 	"github.com/cockroachdb/cockroach/pkg/inspectz"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/server/apiconstants"
 	"github.com/cockroachdb/cockroach/pkg/server/authserver"
 	"github.com/cockroachdb/cockroach/pkg/server/debug"
@@ -216,9 +213,8 @@ func (s *httpServer) setupRoutes(
 	// Exempt the 2nd health check endpoint from authentication.
 	// (This simply mirrors /health and exists for backward compatibility.)
 	s.mux.Handle(apiconstants.AdminHealth, handleRequestsUnauthenticated)
-	// The /_status/vars and /metrics endpoint is not authenticated either. Useful for monitoring.
-	s.mux.Handle(apiconstants.StatusVars, http.HandlerFunc(varsHandler{metricSource, s.cfg.Settings, false /* useStaticLabels */}.handleVars))
-	s.mux.Handle(apiconstants.MetricsPath, http.HandlerFunc(varsHandler{metricSource, s.cfg.Settings, true /* useStaticLabels */}.handleVars))
+	// The /_status/vars endpoint is not authenticated either. Useful for monitoring.
+	s.mux.Handle(apiconstants.StatusVars, http.HandlerFunc(varsHandler{metricSource, s.cfg.Settings}.handleVars))
 	// Same for /_status/load.
 	le, err := newLoadEndpoint(runtimeStatSampler, metricSource)
 	if err != nil {
@@ -278,7 +274,7 @@ func startHTTPService(
 	stopper *stop.Stopper,
 	handler http.HandlerFunc,
 ) error {
-	httpLn, err := ListenAndUpdateAddrs(ctx, &cfg.HTTPAddr, &cfg.HTTPAdvertiseAddr, "http", cfg.AcceptProxyProtocolHeaders)
+	httpLn, err := ListenAndUpdateAddrs(ctx, &cfg.HTTPAddr, &cfg.HTTPAdvertiseAddr, "http")
 	if err != nil {
 		return err
 	}
@@ -302,7 +298,7 @@ func startHTTPService(
 	}
 
 	if uiTLSConfig != nil {
-		httpMux := cmux.NewWithTimeout(httpLn, time.Minute)
+		httpMux := cmux.New(httpLn)
 		clearL := httpMux.Match(cmux.HTTP1())
 		tlsL := httpMux.Match(cmux.Any())
 
@@ -334,7 +330,7 @@ func startHTTPService(
 			return err
 		}
 
-		httpLn = newTLSRestrictLn(tlsL, uiTLSConfig)
+		httpLn = tls.NewListener(tlsL, uiTLSConfig)
 	}
 
 	// The connManager is responsible for tearing down the net.Conn
@@ -350,28 +346,6 @@ func startHTTPService(
 	})
 }
 
-type tlsRestrictLn struct {
-	net.Listener
-}
-
-// Accept wraps the net.Listener Accept method to apply http based tls
-// constraints on the incoming connection.
-func (l tlsRestrictLn) Accept() (c net.Conn, err error) {
-	if c, err = l.Listener.Accept(); err == nil {
-		if err = security.TLSCipherRestrict(c); err != nil {
-			_ = c.Close()
-			return
-		}
-	}
-	return
-}
-
-func newTLSRestrictLn(ln net.Listener, config *tls.Config) tlsRestrictLn {
-	return tlsRestrictLn{
-		Listener: tls.NewListener(ln, config),
-	}
-}
-
 // baseHandler is the top-level HTTP handler for all HTTP traffic, before
 // authentication and authorization.
 //
@@ -379,7 +353,7 @@ func newTLSRestrictLn(ln net.Listener, config *tls.Config) tlsRestrictLn {
 // gzip middleware, then delegates to the mux for handling the request.
 func (s *httpServer) baseHandler(w http.ResponseWriter, r *http.Request) {
 	// Disable caching of responses.
-	w.Header().Set("Cache-control", "no-store")
+	w.Header().Set("Cache-control", "no-cache")
 
 	if HSTSEnabled.Get(&s.cfg.Settings.SV) {
 		w.Header().Set("Strict-Transport-Security", hstsHeaderValue)

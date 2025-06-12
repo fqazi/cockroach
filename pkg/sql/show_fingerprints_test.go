@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,11 +21,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/spanconfig/spanconfigptsreader"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -95,37 +94,6 @@ func TestShowFingerprintsColumnNames(t *testing.T) {
 	}
 }
 
-func TestShowFingerprintInvertedIndex(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	tc := serverutils.StartCluster(t, 1, base.TestClusterArgs{})
-	defer tc.Stopper().Stop(ctx)
-
-	sqlDB := sqlutils.MakeSQLRunner(tc.ServerConn(0))
-	sqlDB.Exec(t, `CREATE DATABASE d`)
-	sqlDB.Exec(t, `CREATE TABLE d.t (
-		a INT PRIMARY KEY,
-		b INT,
-		c INT,
-		d JSONB,
-		INDEX b_idx (b),
-		INDEX c_partial_idx (c) WHERE c > 0,
-		INVERTED INDEX d_inverted_idx (d)
-	)`)
-
-	sqlDB.Exec(t, `INSERT INTO d.t VALUES (1, 2, 3, '{"a": 4}'), (2, 3, 0, '{"a": 5}')`)
-
-	// Get fingerprints for the table.
-	rows := sqlDB.QueryStr(t, `SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE d.t`)
-	require.Len(t, rows, 3, "expected only primary, b_idx, c_partial_idx to be fingerprinted")
-	require.Equal(t, rows[0][0], "t_pkey")
-	require.Equal(t, rows[1][0], "b_idx")
-	require.Equal(t, rows[2][0], "c_partial_idx")
-	// NOTE: no d_inverted_idx
-}
-
 // TestShowFingerprintsDuringSchemaChange is a regression test that asserts that
 // fingerprinting does not fail when done in the middle of a schema change using
 // an AOST query. In the middle of a schema change such as `ADD COLUMN ...
@@ -167,20 +135,16 @@ func TestShowTenantFingerprintsProtectsTimestamp(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	// Under deadlock there isn't enough time for the CREATE TENANT txn to commit
-	// due to the intervals we lower to speed up this test. There is no difference
-	// otherwise when running this test under deadlock
-	skip.UnderDeadlock(t, 121445, "Deadlock makes txns take too long to commit")
-
 	ctx := context.Background()
 
-	var exportStartedClosed atomic.Bool
+	exportStartedClosed := syncutil.AtomicBool(0)
 	exportsStarted := make(chan struct{})
 	exportsResume := make(chan struct{})
 	testingRequestFilter := func(_ context.Context, ba *kvpb.BatchRequest) *kvpb.Error {
 		for _, req := range ba.Requests {
 			if expReq := req.GetExport(); expReq != nil {
-				if expReq.ExportFingerprint && exportStartedClosed.CompareAndSwap(false, true) {
+				if expReq.ExportFingerprint && !exportStartedClosed.Get() {
+					exportStartedClosed.Set(true)
 					close(exportsStarted)
 					<-exportsResume
 				}
@@ -200,6 +164,8 @@ func TestShowTenantFingerprintsProtectsTimestamp(t *testing.T) {
 	defer s.Stopper().Stop(ctx)
 
 	systemSQL := sqlutils.MakeSQLRunner(db)
+	systemSQL.Exec(t, "ALTER VIRTUAL CLUSTER ALL SET CLUSTER SETTING sql.virtual_cluster.feature_access.zone_configs.enabled = true")
+	systemSQL.Exec(t, "ALTER VIRTUAL CLUSTER ALL SET CLUSTER SETTING sql.virtual_cluster.feature_access.manual_range_split.enabled=true")
 	systemSQL.Exec(t, "SET CLUSTER SETTING kv.closed_timestamp.target_duration = '100ms'")
 	systemSQL.Exec(t, "SET CLUSTER SETTING kv.closed_timestamp.side_transport_interval ='100ms'")
 	systemSQL.Exec(t, "SET CLUSTER SETTING kv.rangefeed.closed_timestamp_refresh_interval ='100ms'")
@@ -233,7 +199,7 @@ func TestShowTenantFingerprintsProtectsTimestamp(t *testing.T) {
 		t.Logf("udating PTS reader cache to %s", asOf)
 		require.NoError(
 			t,
-			spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, asOf),
+			spanconfigptsreader.TestingRefreshPTSState(ctx, t, ptsReader, asOf),
 		)
 		require.NoError(t, repl.ReadProtectedTimestampsForTesting(ctx))
 	}

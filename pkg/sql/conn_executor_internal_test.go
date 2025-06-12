@@ -6,6 +6,7 @@ package sql
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -280,16 +281,16 @@ func startConnExecutor(
 	nodeID := base.TestingIDContainer
 	distSQLMetrics := execinfra.MakeDistSQLMetrics(time.Hour /* histogramWindow */)
 	gw := gossip.MakeOptionalGossip(nil)
-	tempEngine, tempFS, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec, nil /* statsCollector */)
+	tempEngine, tempFS, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
 	defer tempEngine.Close()
 	ambientCtx := log.MakeTestingAmbientCtxWithNewTracer()
-	pool := mon.NewUnlimitedMonitor(ctx, mon.Options{
-		Name:     mon.MakeName("test"),
-		Settings: st,
-	})
+	pool := mon.NewUnlimitedMonitor(
+		context.Background(), "test", mon.MemoryResource,
+		nil /* curCount */, nil /* maxHist */, math.MaxInt64, st,
+	)
 	// This pool should never be Stop()ed because, if the test is failing, memory
 	// is not properly released.
 	collectionFactory := descs.NewBareBonesCollectionFactory(st, keys.SystemSQLCodec)
@@ -309,7 +310,7 @@ func startConnExecutor(
 		},
 		Codec: keys.SystemSQLCodec,
 		DistSQLPlanner: NewDistSQLPlanner(
-			ctx, st, 1, /* sqlInstanceID */
+			ctx, execinfra.Version, st, 1, /* sqlInstanceID */
 			nil, /* rpcCtx */
 			distsql.NewServer(
 				ctx,
@@ -331,7 +332,6 @@ func startConnExecutor(
 			stopper,
 			func(base.SQLInstanceID) bool { return true }, // everybody is available
 			nil, /* connHealthCheckerSystem */
-			nil, /* instanceConnHealthChecker */
 			nil, /* sqlInstanceDialer */
 			keys.SystemSQLCodec,
 			nil, /* sqlAddressResolver */
@@ -346,7 +346,7 @@ func startConnExecutor(
 	}
 
 	s := NewServer(cfg, pool)
-	buf := NewStmtBuf(0 /* toReserve */)
+	buf := NewStmtBuf()
 	syncResults := make(chan []*streamingCommandResult, 1)
 	resultChannel := newAsyncIEResultChannel()
 	var cc ClientComm = &internalClientComm{
@@ -399,7 +399,7 @@ func TestSessionCloseWithPendingTempTableInTxn(t *testing.T) {
 	defer s.Stopper().Stop(ctx)
 
 	srv := s.SQLServer().(*Server)
-	stmtBuf := NewStmtBuf(0 /* toReserve */)
+	stmtBuf := NewStmtBuf()
 	flushed := make(chan []*streamingCommandResult)
 	clientComm := &internalClientComm{
 		sync: func(res []*streamingCommandResult) {

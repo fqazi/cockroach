@@ -11,25 +11,19 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/clusterupgrade"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/cockroach/pkg/testutils/release"
+	"github.com/cockroachdb/cockroach/pkg/util/version"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/version"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v2"
 )
 
 // testPredecessorMapping is a test-only artificial mapping from
 // release series to an arbitrary release in the previous series.
-//
-// TODO(radu): we use this mapping starting with the current version, so we need
-// to keep updating it. Ideally, all unit tests would use a fixed "current"
-// version so this doesn't need to change.
 var testPredecessorMapping = map[string]*clusterupgrade.Version{
 	"19.2": clusterupgrade.MustParseVersion("v19.1.8"),
 	"21.1": clusterupgrade.MustParseVersion("v19.2.16"),
@@ -41,7 +35,6 @@ var testPredecessorMapping = map[string]*clusterupgrade.Version{
 	"24.1": clusterupgrade.MustParseVersion("v23.2.4"),
 	"24.2": clusterupgrade.MustParseVersion("v24.1.1"),
 	"24.3": clusterupgrade.MustParseVersion("v24.2.2"),
-	"25.2": clusterupgrade.MustParseVersion("v24.3.0"),
 }
 
 //go:embed testdata/test_releases.yaml
@@ -59,47 +52,6 @@ var testReleaseData = func() map[string]release.Series {
 
 	return result
 }()
-
-func Test_validDeploymentModesForCloud(t *testing.T) {
-	testCases := []struct {
-		name          string
-		cloud         spec.Cloud
-		modes         []DeploymentMode
-		expectedModes []DeploymentMode
-	}{
-		{
-			name:          "locally, all modes are allowed",
-			cloud:         spec.Local,
-			modes:         allDeploymentModes,
-			expectedModes: allDeploymentModes,
-		},
-		{
-			name:          "on gce, all modes are allowed",
-			cloud:         spec.GCE,
-			modes:         allDeploymentModes,
-			expectedModes: allDeploymentModes,
-		},
-		{
-			name:          "on aws, we can't run separate process deployments",
-			cloud:         spec.AWS,
-			modes:         allDeploymentModes,
-			expectedModes: []DeploymentMode{SystemOnlyDeployment, SharedProcessDeployment},
-		},
-		{
-			name:          "on azure, we can't run separate process deployments",
-			cloud:         spec.Azure,
-			modes:         allDeploymentModes,
-			expectedModes: []DeploymentMode{SystemOnlyDeployment, SharedProcessDeployment},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			actual := validDeploymentModesForCloud(tc.cloud, tc.modes)
-			require.Equal(t, tc.expectedModes, actual)
-		})
-	}
-}
 
 func Test_assertValidTest(t *testing.T) {
 	var fatalErr error
@@ -137,7 +89,7 @@ func Test_assertValidTest(t *testing.T) {
 	mvt := newTest(MinUpgrades(10))
 	assertValidTest(mvt, fatalFunc())
 	require.Error(t, fatalErr)
-	require.Contains(t, fatalErr.Error(), "mixedversion.NewTest: invalid test options: maxUpgrades (4) must be greater than minUpgrades (10)")
+	require.Contains(t, fatalErr.Error(), "mixedversion.NewTest: invalid test options: maxUpgrades (2) must be greater than minUpgrades (10)")
 
 	mvt = newTest(MaxUpgrades(0))
 	assertValidTest(mvt, fatalFunc())
@@ -183,56 +135,9 @@ func Test_assertValidTest(t *testing.T) {
 		fatalErr.Error(),
 	)
 
-	// simulate a NewTest call with an actual `cluster` implementation
-	mvt = newTest(EnabledDeploymentModes(SeparateProcessDeployment))
-	mvt.options.enabledDeploymentModes = validDeploymentModesForCloud(spec.AWS, mvt.options.enabledDeploymentModes)
-	assertValidTest(mvt, fatalFunc())
-	require.Error(t, fatalErr)
-	require.Equal(t,
-		`mixedversion.NewTest: invalid test options: no deployment modes enabled`,
-		fatalErr.Error(),
-	)
-
-	// separate-process deployments requires cluster validation
-	mvt = newTest(NeverUseFixtures, EnabledDeploymentModes(allDeploymentModes...))
-	mvt.crdbNodes = option.NodeListOption{1}
-	assertValidTest(mvt, fatalFunc())
-	require.Error(t, fatalErr)
-	require.Equal(t,
-		`mixedversion.NewTest: invalid test options: separate-process deployments require cluster with at least 3 nodes`,
-		fatalErr.Error(),
-	)
-
 	mvt = newTest(MinimumSupportedVersion("v22.2.0"))
 	assertValidTest(mvt, fatalFunc())
 	require.NoError(t, fatalErr)
-
-	// Test that if there are fewer upgrades possible between the minimum
-	// bootstrap version and the current version than MaxUpgrades, maxUpgrades
-	// is overridden to the former.
-	mvt = newTest(MinimumBootstrapVersion("v21.2.0"), MaxUpgrades(10))
-	assertValidTest(mvt, fatalFunc())
-	require.NoError(t, fatalErr)
-	require.Equal(t, 3, mvt.options.maxUpgrades)
-
-	// Test that if there are fewer upgrades possible between the minimum
-	// bootstrap version and the current version than MinUpgrades, the test
-	// is invalid.
-	mvt = newTest(MinimumBootstrapVersion("v21.2.0"), MinUpgrades(10))
-	assertValidTest(mvt, fatalFunc())
-	require.Error(t, fatalErr)
-	require.Equal(t,
-		`mixedversion.NewTest: invalid test options: minimum bootstrap version (v21.2.0) does not allow for min 10 upgrades`,
-		fatalErr.Error(),
-	)
-
-	mvt = newTest(MinimumBootstrapVersion("v24.2.0"))
-	assertValidTest(mvt, fatalFunc())
-	require.Error(t, fatalErr)
-	require.Equal(t,
-		`mixedversion.NewTest: invalid test options: minimum bootstrap version (v24.2.0) should be from an older release series than current version (v23.1.2)`,
-		fatalErr.Error(),
-	)
 }
 
 func Test_choosePreviousReleases(t *testing.T) {
@@ -290,19 +195,18 @@ func Test_choosePreviousReleases(t *testing.T) {
 			}
 
 			mvt := newTest(opts...)
-			mvt.options.predecessorFunc = func(_ *rand.Rand, v, _ *clusterupgrade.Version) (*clusterupgrade.Version, error) {
+			mvt.predecessorFunc = func(_ *rand.Rand, v, _ *clusterupgrade.Version) (*clusterupgrade.Version, error) {
 				return testPredecessorMapping[v.Series()], tc.predecessorErr
 			}
 			mvt._arch = &tc.arch
 
-			releases, err := mvt.chooseUpgradePath()
+			releases, err := mvt.choosePreviousReleases()
 			if tc.expectedErr == "" {
 				require.NoError(t, err)
 				var expectedVersions []*clusterupgrade.Version
 				for _, er := range tc.expectedReleases {
 					expectedVersions = append(expectedVersions, clusterupgrade.MustParseVersion(er))
 				}
-				expectedVersions = append(expectedVersions, clusterupgrade.CurrentVersion())
 				require.Equal(t, expectedVersions, releases)
 			} else {
 				require.Error(t, err)
@@ -399,28 +303,6 @@ func Test_randomPredecessor(t *testing.T) {
 // "current version". Returns a function that resets that variable.
 func withTestBuildVersion(v string) func() {
 	testBuildVersion := version.MustParse(v)
-	clusterupgrade.TestBuildVersion = &testBuildVersion
-	return func() { clusterupgrade.TestBuildVersion = &buildVersion }
-}
-
-func TestSupportsSkipUpgradeTo(t *testing.T) {
-	expect := func(verStr string, expected bool) {
-		t.Helper()
-		v := clusterupgrade.MustParseVersion(verStr)
-		r := clusterversion.Latest.ReleaseSeries()
-		currentMajor := version.MajorVersion{Year: int(r.Major), Ordinal: int(r.Minor)}
-		if currentMajor.Equals(v.Version.Major()) {
-			// We have to special case the current series, to allow for bumping the
-			// min supported version separately from the current version.
-			expected = len(clusterversion.SupportedPreviousReleases()) > 1
-		}
-		require.Equal(t, expected, supportsSkipUpgradeTo(v))
-	}
-	for _, v := range []string{"v24.3.0", "v24.3.0-beta.1", "v25.2.1", "v25.2.0-rc.1"} {
-		expect(v, true)
-	}
-
-	for _, v := range []string{"v25.1.0", "v25.1.0-beta.1", "v25.3.1", "v25.3.0-rc.1"} {
-		expect(v, false)
-	}
+	clusterupgrade.TestBuildVersion = testBuildVersion
+	return func() { clusterupgrade.TestBuildVersion = nil }
 }

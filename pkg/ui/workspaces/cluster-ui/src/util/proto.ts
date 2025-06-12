@@ -2,9 +2,10 @@
 //
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
+
+import _ from "lodash";
+
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import has from "lodash/has";
-import sumBy from "lodash/sumBy";
 
 export type INodeStatus = cockroach.server.status.statuspb.INodeStatus;
 const nodeStatus: INodeStatus = null;
@@ -22,7 +23,7 @@ export function rollupStoreMetrics(ns: INodeStatus): StatusMetrics {
     .map(ss => ss.metrics)
     .reduce((acc, i) => {
       for (const k in i) {
-        acc[k] = has(acc, k) ? acc[k] + i[k] : i[k];
+        acc[k] = _.has(acc, k) ? acc[k] + i[k] : i[k];
       }
       return acc;
     }, ns.metrics);
@@ -97,7 +98,7 @@ export function BytesUsed(s: INodeStatus): number {
   if (usedCapacity !== 0) {
     return usedCapacity;
   }
-  return sumBy(aggregateByteKeys, (key: string) => {
+  return _.sumBy(aggregateByteKeys, (key: string) => {
     return s.metrics[key];
   });
 }

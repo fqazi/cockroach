@@ -14,7 +14,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -94,22 +94,18 @@ func TestSplitQueueShouldQueue(t *testing.T) {
 		cpy.EndKey = test.end
 		replicaID := cpy.Replicas().VoterDescriptors()[0].ReplicaID
 		require.NoError(t,
-			stateloader.Make(cpy.RangeID).SetRaftReplicaID(ctx, tc.store.TODOEngine(), replicaID))
+			logstore.NewStateLoader(cpy.RangeID).SetRaftReplicaID(ctx, tc.store.TODOEngine(), replicaID))
 		repl, err := loadInitializedReplicaForTesting(ctx, tc.store, &cpy, replicaID)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		repl.mu.Lock()
-		repl.shMu.state.Stats = &enginepb.MVCCStats{KeyBytes: test.bytes}
+		repl.mu.state.Stats = &enginepb.MVCCStats{KeyBytes: test.bytes}
 		repl.mu.Unlock()
 		conf := roachpb.TestingDefaultSpanConfig()
 		conf.RangeMaxBytes = test.maxBytes
-		sp := roachpb.Span{
-			Key:    cpy.StartKey.AsRawKey().Clone(),
-			EndKey: cpy.EndKey.AsRawKey().Clone(),
-		}
-		repl.SetSpanConfig(conf, sp)
+		repl.SetSpanConfig(conf)
 
 		// Testing using shouldSplitRange instead of shouldQueue to avoid using the splitFinder
 		// This tests the merge queue behavior too as a result. For splitFinder tests,

@@ -7,17 +7,15 @@ package storage
 
 import (
 	"context"
-	"io"
 	"os"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/stretchr/testify/require"
 )
@@ -93,16 +91,18 @@ func TestSetMinVersion(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
+	st := cluster.MakeClusterSettings()
 	p, err := Open(context.Background(), InMemory(), cluster.MakeClusterSettings(), CacheSize(0))
 	require.NoError(t, err)
 	defer p.Close()
-	require.Equal(t, MinimumSupportedFormatVersion, p.db.FormatMajorVersion())
+	require.Equal(t, pebble.FormatFlushableIngest, p.db.FormatMajorVersion())
 
+	ValueBlocksEnabled.Override(context.Background(), &st.SV, true)
 	// Advancing the store cluster version to one that supports a new feature
 	// should also advance the store's format major version.
-	err = p.SetMinVersion(clusterversion.Latest.Version())
+	err = p.SetMinVersion(clusterversion.ByKey(clusterversion.V23_2_PebbleFormatDeleteSizedAndObsolete))
 	require.NoError(t, err)
-	require.Equal(t, pebbleFormatVersion(clusterversion.Latest.Version()), p.db.FormatMajorVersion())
+	require.Equal(t, pebble.FormatDeleteSizedAndObsolete, p.db.FormatMajorVersion())
 }
 
 func TestMinVersion_IsNotEncrypted(t *testing.T) {
@@ -112,41 +112,35 @@ func TestMinVersion_IsNotEncrypted(t *testing.T) {
 	// Replace the NewEncryptedEnvFunc global for the duration of this
 	// test. We'll use it to initialize a test caesar cipher
 	// encryption-at-rest implementation.
-	oldNewEncryptedEnvFunc := fs.NewEncryptedEnvFunc
-	defer func() { fs.NewEncryptedEnvFunc = oldNewEncryptedEnvFunc }()
-	fs.NewEncryptedEnvFunc = fauxNewEncryptedEnvFunc
+	oldNewEncryptedEnvFunc := NewEncryptedEnvFunc
+	defer func() { NewEncryptedEnvFunc = oldNewEncryptedEnvFunc }()
+	NewEncryptedEnvFunc = fauxNewEncryptedEnvFunc
 
-	ctx := context.Background()
 	st := cluster.MakeClusterSettings()
-	baseFS := vfs.NewMem()
-	env, err := fs.InitEnv(ctx, baseFS, "", fs.EnvConfig{
-		EncryptionOptions: &storageconfig.EncryptionOptions{},
-	}, nil /* statsCollector */)
-	require.NoError(t, err)
-
-	p, err := Open(ctx, env, st)
+	fs := vfs.NewMem()
+	p, err := Open(
+		context.Background(),
+		Location{dir: "", fs: fs},
+		st,
+		EncryptionAtRest(nil))
 	require.NoError(t, err)
 	defer p.Close()
-	require.NoError(t, p.SetMinVersion(st.Version.LatestVersion()))
+	require.NoError(t, p.SetMinVersion(st.Version.BinaryVersion()))
 
 	// Reading the file directly through the unencrypted MemFS should
 	// succeed and yield the correct version.
-	v, ok, err := getMinVersion(env.UnencryptedFS, "")
+	v, ok, err := getMinVersion(fs, "")
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, st.Version.LatestVersion(), v)
+	require.Equal(t, st.Version.BinaryVersion(), v)
 }
 
 func fauxNewEncryptedEnvFunc(
-	unencryptedFS vfs.FS,
-	fr *fs.FileRegistry,
-	dbDir string,
-	readOnly bool,
-	_ *storageconfig.EncryptionOptions,
-) (*fs.EncryptionEnv, error) {
-	return &fs.EncryptionEnv{
+	fs vfs.FS, fr *PebbleFileRegistry, dbDir string, readOnly bool, optionBytes []byte,
+) (*EncryptionEnv, error) {
+	return &EncryptionEnv{
 		Closer: nopCloser{},
-		FS:     fauxEncryptedFS{FS: unencryptedFS},
+		FS:     fauxEncryptedFS{FS: fs},
 	}, nil
 }
 
@@ -158,8 +152,8 @@ type fauxEncryptedFS struct {
 	vfs.FS
 }
 
-func (fs fauxEncryptedFS) Create(path string, category vfs.DiskWriteCategory) (vfs.File, error) {
-	f, err := fs.FS.Create(path, category)
+func (fs fauxEncryptedFS) Create(path string) (vfs.File, error) {
+	f, err := fs.FS.Create(path)
 	if err != nil {
 		return nil, err
 	}
@@ -199,48 +193,4 @@ func (f fauxEncryptedFile) ReadAt(p []byte, off int64) (int, error) {
 		p[i] = p[i] - 1
 	}
 	return n, err
-}
-
-func TestSafeWriteToFile(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	// Use an in-memory FS that strictly enforces syncs.
-	mem := vfs.NewCrashableMem()
-	syncDir := func(dir string) {
-		fdir, err := mem.OpenDir(dir)
-		require.NoError(t, err)
-		require.NoError(t, fdir.Sync())
-		require.NoError(t, fdir.Close())
-	}
-	readFile := func(mem *vfs.MemFS, filename string) []byte {
-		f, err := mem.Open("foo/bar")
-		require.NoError(t, err)
-		b, err := io.ReadAll(f)
-		require.NoError(t, err)
-		require.NoError(t, f.Close())
-		return b
-	}
-
-	require.NoError(t, mem.MkdirAll("foo", os.ModePerm))
-	syncDir("")
-	f, err := mem.Create("foo/bar", fs.UnspecifiedWriteCategory)
-	require.NoError(t, err)
-	_, err = io.WriteString(f, "Hello world")
-	require.NoError(t, err)
-	require.NoError(t, f.Sync())
-	require.NoError(t, f.Close())
-	syncDir("foo")
-
-	// Discard any unsynced writes to make sure we set up the test
-	// preconditions correctly.
-	crashFS := mem.CrashClone(vfs.CrashCloneCfg{})
-	require.Equal(t, []byte("Hello world"), readFile(crashFS, "foo/bar"))
-
-	// Use SafeWriteToFile to atomically, durably change the contents of the
-	// file.
-	require.NoError(t, safeWriteToUnencryptedFile(crashFS, "foo", "foo/bar", []byte("Hello everyone"), fs.UnspecifiedWriteCategory))
-
-	// Discard any unsynced writes.
-	crashFS = crashFS.CrashClone(vfs.CrashCloneCfg{})
-	require.Equal(t, []byte("Hello everyone"), readFile(crashFS, "foo/bar"))
 }

@@ -7,19 +7,15 @@ package cli
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/gob"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cli/clierrorplus"
@@ -37,19 +33,10 @@ import (
 // TODO(knz): this struct belongs elsewhere.
 // See: https://github.com/cockroachdb/cockroach/issues/49509
 var debugTimeSeriesDumpOpts = struct {
-	format                 tsDumpFormat
-	from, to               timestampValue
-	clusterLabel           string
-	yaml                   string
-	targetURL              string
-	ddApiKey               string
-	ddSite                 string
-	httpToken              string
-	clusterID              string
-	zendeskTicket          string
-	organizationName       string
-	userName               string
-	storeToNodeMapYAMLFile string
+	format       tsDumpFormat
+	from, to     timestampValue
+	clusterLabel string
+	yaml         string
 }{
 	format:       tsDumpText,
 	from:         timestampValue{},
@@ -62,11 +49,10 @@ var debugTimeSeriesDumpCmd = &cobra.Command{
 	Use:   "tsdump",
 	Short: "dump all the raw timeseries values in a cluster",
 	Long: `
-Dumps all of the raw timeseries values in a cluster. If the supplied time range
-is within the 'timeseries.storage.resolution_10s.ttl', metrics will be dumped
-as it is with 10s resolution. If the time range extends outside of the TTL, the
-timeseries downsampled to 30m resolution will be dumped for the time beyond
-the TTL.
+Dumps all of the raw timeseries values in a cluster. Only the default resolution
+is retrieved, i.e. typically datapoints older than the value of the
+'timeseries.storage.resolution_10s.ttl' cluster setting will be absent from the
+output.
 
 When an input file is provided instead (as an argument), this input file
 must previously have been created with the --format=raw switch. The command
@@ -83,7 +69,7 @@ will then convert it to the --format requested in the current invocation.
 		}
 
 		var w tsWriter
-		switch cmd := debugTimeSeriesDumpOpts.format; cmd {
+		switch debugTimeSeriesDumpOpts.format {
 		case tsDumpRaw:
 			if convertFile != "" {
 				return errors.Errorf("input file is already in raw format")
@@ -98,38 +84,8 @@ will then convert it to the --format requested in the current invocation.
 			w = cw
 		case tsDumpText:
 			w = defaultTSWriter{w: os.Stdout}
-		case tsDumpJSON:
-			w = makeJSONWriter(
-				debugTimeSeriesDumpOpts.targetURL,
-				debugTimeSeriesDumpOpts.httpToken,
-				10_000_000, /* threshold */
-				doRequest,
-			)
-		case tsDumpDatadogInit, tsDumpDatadog:
-			if len(args) < 1 {
-				return errors.New("no input file provided")
-			}
-
-			targetURL, err := getDatadogTargetURL(debugTimeSeriesDumpOpts.ddSite)
-			if err != nil {
-				return err
-			}
-
-			var datadogWriter = makeDatadogWriter(
-				targetURL,
-				cmd == tsDumpDatadogInit,
-				debugTimeSeriesDumpOpts.ddApiKey,
-				100,
-				doDDRequest,
-			)
-			return datadogWriter.upload(args[0])
 		case tsDumpOpenMetrics:
-			if debugTimeSeriesDumpOpts.targetURL != "" {
-				write := beginHttpRequestWithWritePipe(debugTimeSeriesDumpOpts.targetURL)
-				w = makeOpenMetricsWriter(write)
-			} else {
-				w = makeOpenMetricsWriter(os.Stdout)
-			}
+			w = makeOpenMetricsWriter(os.Stdout)
 		default:
 			return errors.Newf("unknown output format: %v", debugTimeSeriesDumpOpts.format)
 		}
@@ -152,21 +108,18 @@ will then convert it to the --format requested in the current invocation.
 				StartNanos: time.Time(debugTimeSeriesDumpOpts.from).UnixNano(),
 				EndNanos:   time.Time(debugTimeSeriesDumpOpts.to).UnixNano(),
 				Names:      names,
-				Resolutions: []tspb.TimeSeriesResolution{
-					tspb.TimeSeriesResolution_RESOLUTION_30M, tspb.TimeSeriesResolution_RESOLUTION_10S,
-				},
 			}
 			tsClient := tspb.NewTimeSeriesClient(conn)
 
 			if debugTimeSeriesDumpOpts.format == tsDumpRaw {
 				stream, err := tsClient.DumpRaw(context.Background(), req)
 				if err != nil {
-					return errors.Wrapf(err, "connecting to %s", conn.Target())
+					return err
 				}
 
 				// Buffer the writes to os.Stdout since we're going to
 				// be writing potentially a lot of data to it.
-				w := bufio.NewWriterSize(os.Stdout, 1024*1024)
+				w := bufio.NewWriter(os.Stdout)
 				if err := tsutil.DumpRawTo(stream, w); err != nil {
 					return err
 				}
@@ -191,7 +144,7 @@ will then convert it to the --format requested in the current invocation.
 			}
 			stream, err := tsClient.Dump(context.Background(), req)
 			if err != nil {
-				return errors.Wrapf(err, "connecting to %s", conn.Target())
+				return err
 			}
 			recv = stream.Recv
 		} else {
@@ -205,6 +158,7 @@ will then convert it to the --format requested in the current invocation.
 			}
 
 			dec := gob.NewDecoder(f)
+			gob.Register(&roachpb.KeyValue{})
 			decodeOne := func() (*tspb.TimeSeriesData, error) {
 				var v roachpb.KeyValue
 				err := dec.Decode(&v)
@@ -246,7 +200,7 @@ will then convert it to the --format requested in the current invocation.
 				return w.Flush()
 			}
 			if err != nil {
-				return errors.Wrapf(err, "connecting to %s", serverCfg.AdvertiseAddr)
+				return err
 			}
 			if err := w.Emit(data); err != nil {
 				return err
@@ -255,186 +209,9 @@ will then convert it to the --format requested in the current invocation.
 	}),
 }
 
-func getDatadogTargetURL(site string) (string, error) {
-	host, ok := ddSiteToHostMap[site]
-	if !ok {
-		return "", fmt.Errorf("unsupported datadog site '%s'", site)
-	}
-	targetURL := fmt.Sprintf(targetURLFormat, host)
-	return targetURL, nil
-}
-
-func doRequest(req *http.Request) error {
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode > 299 {
-		return errors.Newf("tsdump: bad response status: %+v", resp)
-	}
-	return nil
-}
-
-// beginHttpRequestWithWritePipe initiates an HTTP request to the
-// `targetURL` argument and returns an `io.Writer` that pipes to the
-// request body. This function will return while the request runs
-// async.
-func beginHttpRequestWithWritePipe(targetURL string) io.Writer {
-	read, write := io.Pipe()
-	req, err := http.NewRequest("POST", targetURL, read)
-	if err != nil {
-		panic(err)
-	}
-	// Start request async while we stream data to the body.
-	go func() {
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			fmt.Printf("tsdump: openmetrics: http request error: %s", err)
-			panic(err)
-		}
-		defer resp.Body.Close()
-		fmt.Printf("tsdump: openmetrics: http response: %v", resp)
-	}()
-
-	return bufio.NewWriterSize(write, 1024*1024)
-}
-
 type tsWriter interface {
 	Emit(*tspb.TimeSeriesData) error
 	Flush() error
-}
-
-type jsonWriter struct {
-	sync.Once
-	targetURL string
-	buffer    bytes.Buffer
-	timestamp int64
-	httpToken string
-	doRequest func(req *http.Request) error
-	threshold int
-}
-
-// Format via https://docs.victoriametrics.com/#json-line-format
-// {
-// // metric contans metric name plus labels for a particular time series
-// "metric":{
-// "__name__": "metric_name",  // <- this is metric name
-//
-// // Other labels for the time series
-//
-// "label1": "value1",
-// "label2": "value2",
-// ...
-// "labelN": "valueN"
-// },
-//
-// // values contains raw sample values for the given time series
-// "values": [1, 2.345, -678],
-//
-// // timestamps contains raw sample UNIX timestamps in milliseconds for the given time series
-// // every timestamp is associated with the value at the corresponding position
-// "timestamps": [1549891472010,1549891487724,1549891503438]
-// }
-type victoriaMetricsJSON struct {
-	Metric     map[string]string `json:"metric"`
-	Values     []float64         `json:"values"`
-	Timestamps []int64           `json:"timestamps"`
-}
-
-func (o *jsonWriter) Emit(data *tspb.TimeSeriesData) error {
-	if o.targetURL == "" {
-		return errors.New("No targetURL selected")
-	}
-	out := &victoriaMetricsJSON{
-		Metric:     make(map[string]string, 1),
-		Values:     make([]float64, len(data.Datapoints)),
-		Timestamps: make([]int64, len(data.Datapoints)),
-	}
-
-	name := data.Name
-
-	// Hardcoded values
-	out.Metric["cluster_type"] = "SELF_HOSTED"
-	out.Metric["job"] = "cockroachdb"
-	out.Metric["region"] = "local"
-	// Command values
-	if debugTimeSeriesDumpOpts.clusterLabel != "" {
-		out.Metric["cluster"] = debugTimeSeriesDumpOpts.clusterLabel
-	} else if serverCfg.ClusterName != "" {
-		out.Metric["cluster"] = serverCfg.ClusterName
-	} else {
-		out.Metric["cluster"] = fmt.Sprintf("cluster-debug-%d", o.timestamp)
-	}
-	o.Do(func() {
-		fmt.Printf("Cluster label is set to: %s\n", out.Metric["cluster"])
-	})
-
-	sl := reCrStoreNode.FindStringSubmatch(data.Name)
-	out.Metric["node_id"] = "0"
-	if len(sl) != 0 {
-		storeNodeKey := sl[1]
-		if storeNodeKey == "node" {
-			storeNodeKey += "_id"
-		}
-		out.Metric[storeNodeKey] = data.Source
-		// `instance` is used in dashboards to split data by node.
-		out.Metric["instance"] = data.Source
-		name = sl[2]
-	}
-
-	name = rePromTSName.ReplaceAllLiteralString(name, `_`)
-	out.Metric["__name__"] = name
-
-	for i, ts := range data.Datapoints {
-		out.Values[i] = ts.Value
-		out.Timestamps[i] = ts.TimestampNanos / 1_000_000
-	}
-
-	err := json.NewEncoder(&o.buffer).Encode(out)
-	if err != nil {
-		return err
-	}
-
-	if o.buffer.Len() > o.threshold {
-		fmt.Printf(
-			"tsdump json upload: sending payload with %d bytes\n",
-			o.buffer.Len(),
-		)
-		return o.Flush()
-	}
-	return nil
-}
-
-func (o *jsonWriter) Flush() error {
-	req, err := http.NewRequest("POST", o.targetURL, &o.buffer)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("X-CRL-TOKEN", o.httpToken)
-	err = o.doRequest(req)
-	if err != nil {
-		return err
-	}
-
-	o.buffer = bytes.Buffer{}
-	return nil
-}
-
-var _ tsWriter = &jsonWriter{}
-
-func makeJSONWriter(
-	targetURL string, httpToken string, threshold int, doRequest func(req *http.Request) error,
-) tsWriter {
-	return &jsonWriter{
-		targetURL: targetURL,
-		timestamp: timeutil.Now().Unix(),
-		httpToken: httpToken,
-		threshold: threshold,
-		doRequest: doRequest,
-	}
 }
 
 type openMetricsWriter struct {
@@ -596,16 +373,6 @@ const (
 	tsDumpTSV
 	tsDumpRaw
 	tsDumpOpenMetrics
-	tsDumpJSON
-	// tsDumpDatadog format will send metrics to the public Datadog HTTP
-	// endpoint in batches.
-	tsDumpDatadog
-	// tsDumpDatadogInit will send zero values for all metrics with the
-	// current timestamp to Datadog. This pre-populates the custom
-	// metrics and lets you enable historical ingestion if you're going
-	// to push older timestamps. There's no way to enable historical
-	// ingestion if DD doesn't already know your metric name.
-	tsDumpDatadogInit
 )
 
 // Type implements the pflag.Value interface.
@@ -624,12 +391,6 @@ func (m *tsDumpFormat) String() string {
 		return "raw"
 	case tsDumpOpenMetrics:
 		return "openmetrics"
-	case tsDumpJSON:
-		return "json"
-	case tsDumpDatadog:
-		return "datadog"
-	case tsDumpDatadogInit:
-		return "datadoginit"
 	}
 	return ""
 }
@@ -647,13 +408,6 @@ func (m *tsDumpFormat) Set(s string) error {
 		*m = tsDumpRaw
 	case "openmetrics":
 		*m = tsDumpOpenMetrics
-	case "json":
-		*m = tsDumpJSON
-	case "datadog":
-		*m = tsDumpDatadog
-	case "datadoginit":
-		*m = tsDumpDatadogInit
-
 	default:
 		return fmt.Errorf("invalid value for --format: %s", s)
 	}

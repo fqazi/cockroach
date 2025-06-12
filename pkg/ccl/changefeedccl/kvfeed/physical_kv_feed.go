@@ -7,7 +7,6 @@ package kvfeed
 
 import (
 	"context"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvevent"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/timers"
@@ -16,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 )
 
@@ -26,46 +24,33 @@ type physicalFeedFactory interface {
 	Run(ctx context.Context, sink kvevent.Writer, cfg rangeFeedConfig) error
 }
 
-// rangeFeedConfig contains configuration options for creating a rangefeed.
-// It provides an abstraction over the actual rangefeed API.
 type rangeFeedConfig struct {
-	Frontier             hlc.Timestamp
-	Spans                []kvcoord.SpanTimePair
-	WithDiff             bool
-	WithFiltering        bool
-	WithFrontierQuantize time.Duration
-	ConsumerID           int64
-	RangeObserver        kvcoord.RangeObserver
-	Knobs                TestingKnobs
-	Timers               *timers.ScopedTimers
+	Frontier      hlc.Timestamp
+	Spans         []kvcoord.SpanTimePair
+	WithDiff      bool
+	WithFiltering bool
+	RangeObserver kvcoord.RangeObserver
+	Knobs         TestingKnobs
+	UseMux        bool
+	Timers        *timers.ScopedTimers
 }
 
-// rangefeedFactory is a function that creates and runs a rangefeed.
 type rangefeedFactory func(
 	ctx context.Context,
 	spans []kvcoord.SpanTimePair,
-	eventCh chan<- kvcoord.RangeFeedMessage,
+	eventC chan<- kvcoord.RangeFeedMessage,
 	opts ...kvcoord.RangeFeedOption,
 ) error
 
-// rangefeed tracks a running rangefeed and facilitates conversion from
-// kvcoord.RangeFeedMessage's to kvevent.Event's.
 type rangefeed struct {
-	// memBuf is the buffer that converted kvevent.Event's will be written to.
 	memBuf kvevent.Writer
 	cfg    rangeFeedConfig
-	// eventCh is a receive-only channel corresponding to the send-only channel
-	// that the rangefeed uses to send event messages to.
-	eventCh <-chan kvcoord.RangeFeedMessage
-	knobs   TestingKnobs
-	st      *timers.ScopedTimers
+	eventC chan kvcoord.RangeFeedMessage
+	knobs  TestingKnobs
+	st     *timers.ScopedTimers
 }
 
-// Run implements the physicalFeedFactory interface.
 func (p rangefeedFactory) Run(ctx context.Context, sink kvevent.Writer, cfg rangeFeedConfig) error {
-	ctx, sp := tracing.ChildSpan(ctx, "changefeed.physical_kv_feed.run")
-	defer sp.Finish()
-
 	// To avoid blocking raft, RangeFeed puts all entries in a server side
 	// buffer. But to keep things simple, it's a small fixed-sized buffer. This
 	// means we need to ingest everything we get back as quickly as possible, so
@@ -83,17 +68,19 @@ func (p rangefeedFactory) Run(ctx context.Context, sink kvevent.Writer, cfg rang
 	// `SchemaFeed` is responsible for detecting and enforcing these , but the
 	// after-KVFeed buffer doesn't have access to any of this state. A cleanup is
 	// in order.
-	eventCh := make(chan kvcoord.RangeFeedMessage, 128)
 	feed := rangefeed{
-		memBuf:  sink,
-		cfg:     cfg,
-		eventCh: eventCh,
-		knobs:   cfg.Knobs,
-		st:      cfg.Timers,
+		memBuf: sink,
+		cfg:    cfg,
+		eventC: make(chan kvcoord.RangeFeedMessage, 128),
+		knobs:  cfg.Knobs,
+		st:     cfg.Timers,
 	}
 	g := ctxgroup.WithContext(ctx)
 	g.GoCtx(feed.addEventsToBuffer)
 	var rfOpts []kvcoord.RangeFeedOption
+	if cfg.UseMux {
+		rfOpts = append(rfOpts, kvcoord.WithMuxRangeFeed())
+	}
 	if cfg.WithDiff {
 		rfOpts = append(rfOpts, kvcoord.WithDiff())
 	}
@@ -103,50 +90,33 @@ func (p rangefeedFactory) Run(ctx context.Context, sink kvevent.Writer, cfg rang
 	if cfg.RangeObserver != nil {
 		rfOpts = append(rfOpts, kvcoord.WithRangeObserver(cfg.RangeObserver))
 	}
-	if cfg.ConsumerID != 0 {
-		rfOpts = append(rfOpts, kvcoord.WithConsumerID(cfg.ConsumerID))
-	}
 	if len(cfg.Knobs.RangefeedOptions) != 0 {
 		rfOpts = append(rfOpts, cfg.Knobs.RangefeedOptions...)
 	}
 
 	g.GoCtx(func(ctx context.Context) error {
-		if cfg.Knobs.OnRangeFeedStart != nil {
-			cfg.Knobs.OnRangeFeedStart(cfg.Spans)
-		}
-		return p(ctx, cfg.Spans, eventCh, rfOpts...)
+		return p(ctx, cfg.Spans, feed.eventC, rfOpts...)
 	})
 	return g.Wait()
 }
 
-// quantizeTS returns a new timestamp with the walltime rounded down to the
-// nearest multiple of the quantization granularity. If the granularity is 0, it
-// returns the original timestamp.
-func quantizeTS(ts hlc.Timestamp, granularity time.Duration) hlc.Timestamp {
-	if granularity == 0 {
-		return ts
-	}
-	return hlc.Timestamp{
-		WallTime: ts.WallTime - ts.WallTime%int64(granularity),
-		Logical:  0,
-	}
-}
-
-// addEventsToBuffer consumes rangefeed events from `p.eventCh`, transforms
-// them to kvevent.Event's, and pushes them into `p.memBuf`.
+// addEventsToBuffer consumes rangefeed events from `p.eventC`, transforms
+// them to changfeed events and push onto `p.memBuf`.
+// `p.memBuf`.
 func (p *rangefeed) addEventsToBuffer(ctx context.Context) error {
-	ctx, sp := tracing.ChildSpan(ctx, "changefeed.physical_kv_feed.add_events_to_buffer")
-	defer sp.Finish()
-
 	for {
 		select {
-		case e := <-p.eventCh:
+		case e := <-p.eventC:
 			switch t := e.GetValue().(type) {
 			case *kvpb.RangeFeedValue:
 				if p.cfg.Knobs.OnRangeFeedValue != nil {
 					if err := p.cfg.Knobs.OnRangeFeedValue(); err != nil {
 						return err
 					}
+				}
+				if p.knobs.ModifyTimestamps != nil {
+					e = kvcoord.RangeFeedMessage{RangeFeedEvent: e.ShallowCopy(), RegisteredSpan: e.RegisteredSpan}
+					p.knobs.ModifyTimestamps(&e.Val.Value.Timestamp)
 				}
 				stop := p.st.RangefeedBufferValue.Start()
 				if err := p.memBuf.Add(
@@ -156,9 +126,11 @@ func (p *rangefeed) addEventsToBuffer(ctx context.Context) error {
 				}
 				stop()
 			case *kvpb.RangeFeedCheckpoint:
-				ev := e.ShallowCopy()
-				ev.Checkpoint.ResolvedTS = quantizeTS(ev.Checkpoint.ResolvedTS, p.cfg.WithFrontierQuantize)
-				if resolvedTs := ev.Checkpoint.ResolvedTS; !resolvedTs.IsEmpty() && resolvedTs.Less(p.cfg.Frontier) {
+				if p.knobs.ModifyTimestamps != nil {
+					e = kvcoord.RangeFeedMessage{RangeFeedEvent: e.ShallowCopy(), RegisteredSpan: e.RegisteredSpan}
+					p.knobs.ModifyTimestamps(&e.Checkpoint.ResolvedTS)
+				}
+				if !t.ResolvedTS.IsEmpty() && t.ResolvedTS.Less(p.cfg.Frontier) {
 					// RangeFeed happily forwards any closed timestamps it receives as
 					// soon as there are no outstanding intents under them.
 					// Changefeeds don't care about these at all, so throw them out.
@@ -169,7 +141,7 @@ func (p *rangefeed) addEventsToBuffer(ctx context.Context) error {
 				}
 				stop := p.st.RangefeedBufferCheckpoint.Start()
 				if err := p.memBuf.Add(
-					ctx, kvevent.MakeResolvedEvent(ev, jobspb.ResolvedSpan_NONE),
+					ctx, kvevent.MakeResolvedEvent(e.RangeFeedEvent, jobspb.ResolvedSpan_NONE),
 				); err != nil {
 					return err
 				}

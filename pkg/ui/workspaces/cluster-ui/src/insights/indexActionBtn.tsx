@@ -3,40 +3,36 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import CopyOutlined from "@ant-design/icons/CopyOutlined";
-import { InlineAlert } from "@cockroachlabs/ui-components";
-import { message } from "antd";
-import classNames from "classnames/bind";
-import copy from "copy-to-clipboard";
 import React, { useCallback, useState } from "react";
-
-import { Anchor } from "../anchor";
-import {
-  executeIndexRecAction,
-  IndexActionResponse,
-} from "../api/indexActionsApi";
-import { Button } from "../button";
+import copy from "copy-to-clipboard";
+import { message, Icon } from "antd";
+import "antd/lib/message/style";
+import "antd/lib/icon/style";
 import { Modal } from "../modal";
 import { Text, TextTypes } from "../text";
+import { Button } from "../button";
+import { executeIndexRecAction, IndexActionResponse } from "../api";
 import {
   alterIndex,
   createIndex,
   dropIndex,
   onlineSchemaChanges,
 } from "../util";
-
+import { Anchor } from "../anchor";
+import { InlineAlert } from "@cockroachlabs/ui-components";
+import classNames from "classnames/bind";
 import styles from "./indexActionBtn.module.scss";
 import { InsightType } from "./types";
 
 const cx = classNames.bind(styles);
 
-interface IdxRecProps {
+interface idxRecProps {
   actionQuery: string;
   actionType: InsightType;
   database: string;
 }
 
-const IdxRecAction = (props: IdxRecProps): React.ReactElement => {
+const IdxRecAction = (props: idxRecProps): React.ReactElement => {
   const [visible, setVisible] = useState(false);
   const [applying, setApplying] = useState(false);
   const [btnOkLabel, setBtnOkLabel] = useState("Apply");
@@ -108,23 +104,19 @@ const IdxRecAction = (props: IdxRecProps): React.ReactElement => {
       );
       break;
     case "ReplaceIndex":
-      title = "create a replacement index";
-      btnLAbel = "Create Replacement Index";
+      title = "replace the index";
+      btnLAbel = "Replace Index";
       descriptionDocs = (
         <>
-          {"a "}
+          {" "}
           <Anchor href={createIndex} target="_blank">
             CREATE INDEX
-          </Anchor>
-          {" statement. The commented-out "}
-          <Anchor href={alterIndex} target="_blank">
-            ALTER INDEX
           </Anchor>
           {" and "}
           <Anchor href={dropIndex} target="_blank">
             DROP INDEX
           </Anchor>
-          {" statements should be copied and run manually afterward"}
+          {" statements"}
         </>
       );
       break;
@@ -171,7 +163,7 @@ const IdxRecAction = (props: IdxRecProps): React.ReactElement => {
             type={"unstyled-link"}
             size={"small"}
             className={cx("bottom-corner")}
-            icon={<CopyOutlined className={cx("copy-icon")} />}
+            icon={<Icon type="copy" className={cx("copy-icon")} />}
             onClick={onCopyClick}
           >
             Copy

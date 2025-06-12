@@ -20,6 +20,7 @@ go_test(
         "errors_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=295s"],
     deps = [
         ":srverrors",
         "//pkg/sql/pgwire/pgcode",

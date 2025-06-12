@@ -112,7 +112,7 @@ functions along with the number of arguments and the return type of the overload
    SELECT p.proname, p.pronargs, t.typname
    FROM pg_proc p, pg_type t
    WHERE p.provolatile='s' and p.prorettype = t.oid and
-         p.prokind='f' and p.proretset=false
+         p.proiswindow=false and p.proisagg=false and p.proretset=false
    ORDER BY proname
 
                             proname                            | pronargs |   typname
@@ -131,6 +131,8 @@ functions along with the number of arguments and the return type of the overload
   crdb_internal.get_namespace_id                               |        2 | int8
   crdb_internal.get_namespace_id                               |        3 | int8
   crdb_internal.get_zone_config                                |        1 | bytea
+  crdb_internal.has_role_option                                |        1 | bool
+  crdb_internal.is_admin                                       |        0 | bool
   crdb_internal.locality_value                                 |        1 | text
   crdb_internal.node_id                                        |        0 | int8
   crdb_internal.num_geo_inverted_index_entries                 |        3 | int8

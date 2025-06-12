@@ -27,13 +27,13 @@ go_test(
         "exchange_test.go",
         "gossip_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":gossip"],
     deps = [
         "//pkg/kv/kvserver/allocator/storepool",
         "//pkg/kv/kvserver/asim/config",
         "//pkg/kv/kvserver/asim/state",
         "//pkg/roachpb",
-        "//pkg/util/syncutil",
         "@com_github_stretchr_testify//require",
     ],
 )

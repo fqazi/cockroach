@@ -22,23 +22,21 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/securitytest"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
+	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/errors"
 )
-
-const defaultTestTenantName = roachpb.TenantName("test-tenant")
 
 // defaultTestTenantMessage is a message that is printed when a test is run
 // under cluster virtualization. This is useful for debugging test failures.
@@ -106,6 +104,8 @@ func ShouldStartDefaultTestTenant(
 	}
 
 	// Determine if the default test tenant should be run as a shared process.
+	// TODO(herko): We should add an environment variable override for this.
+	// See also: https://github.com/cockroachdb/cockroach/issues/113294
 	var shared bool
 	switch {
 	case baseArg.SharedProcessMode():
@@ -149,7 +149,7 @@ func ShouldStartDefaultTestTenant(
 	// Note: we ask the metamorphic framework for a "disable" value, instead
 	// of an "enable" value, because it probabilistically returns its default value
 	// more often than not and that is what we want.
-	enabled := !metamorphic.ConstantWithTestBoolWithoutLogging("disable-test-tenant", false)
+	enabled := !util.ConstantWithMetamorphicTestBoolWithoutLogging("disable-test-tenant", false)
 	if enabled && t != nil {
 		t.Log(defaultTestTenantMessage(shared))
 	}
@@ -293,24 +293,6 @@ func StartServerOnly(t TestFataler, params base.TestServerArgs) TestServerInterf
 	return s
 }
 
-var ConfigureSlimTestServer func(params base.TestServerArgs) base.TestServerArgs
-
-func StartSlimServerOnly(
-	t TestFataler, params base.TestServerArgs, slimOpts ...base.SlimServerOption,
-) TestServerInterface {
-	params.SlimServerConfig(slimOpts...)
-	return StartServerOnly(t, params)
-}
-
-func StartSlimServer(
-	t TestFataler, params base.TestServerArgs, slimOpts ...base.SlimServerOption,
-) (TestServerInterface, *gosql.DB, *kv.DB) {
-	s := StartSlimServerOnly(t, params, slimOpts...)
-	goDB := s.ApplicationLayer().SQLConn(t, DBName(params.UseDatabase))
-	kvDB := s.ApplicationLayer().DB()
-	return s, goDB, kvDB
-}
-
 // StartServer creates and starts a test server.
 // The returned server should be stopped by calling
 // server.Stopper().Stop().
@@ -339,10 +321,6 @@ func NewServer(params base.TestServerArgs) (TestServerInterface, error) {
 		return nil, errors.AssertionFailedf("programming error: DefaultTestTenant does not contain a decision\n(maybe call ShouldStartDefaultTestTenant?)")
 	}
 
-	if params.DefaultTenantName == "" {
-		params.DefaultTenantName = defaultTestTenantName
-	}
-
 	srv, err := srvFactoryImpl.New(params)
 	if err != nil {
 		return nil, err
@@ -356,7 +334,7 @@ func NewServer(params base.TestServerArgs) (TestServerInterface, error) {
 func OpenDBConnE(
 	sqlAddr string, useDatabase string, insecure bool, stopper *stop.Stopper,
 ) (*gosql.DB, error) {
-	pgURL, cleanupGoDB, err := pgurlutils.PGUrlE(
+	pgURL, cleanupGoDB, err := sqlutils.PGUrlE(
 		sqlAddr, "StartServer" /* prefix */, url.User(username.RootUser))
 	if err != nil {
 		return nil, err
@@ -511,7 +489,7 @@ func WaitForTenantCapabilities(
 	t TestFataler,
 	s TestServerInterface,
 	tenID roachpb.TenantID,
-	targetCaps map[tenantcapabilitiespb.ID]string,
+	targetCaps map[tenantcapabilities.ID]string,
 	errPrefix string,
 ) {
 	err := s.TenantController().WaitForTenantCapabilities(context.Background(), tenID, targetCaps, errPrefix)

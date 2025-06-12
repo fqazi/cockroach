@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
-	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -30,21 +29,18 @@ import (
 
 func TestTxnFingerprintIDCacheDataDriven(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-
-	ctx := context.Background()
-	st := cluster.MakeTestingClusterSettings()
-	memMonitor := execinfra.NewTestMemMonitor(ctx, st)
-	memAccount := memMonitor.MakeBoundAccount()
 	var txnFingerprintIDCache *TxnFingerprintIDCache
 
 	datadriven.Walk(t, datapathutils.TestDataPath(t, "txn_fingerprint_id_cache"), func(t *testing.T, path string) {
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
+			ctx := context.Background()
 			switch d.Cmd {
 			case "init":
 				var capacity int
 				d.ScanArgs(t, "capacity", &capacity)
 
-				txnFingerprintIDCache = NewTxnFingerprintIDCache(ctx, st, &memAccount)
+				st := cluster.MakeTestingClusterSettings()
+				txnFingerprintIDCache = NewTxnFingerprintIDCache(st)
 
 				TxnFingerprintIDCacheCapacity.Override(ctx, &st.SV, int64(capacity))
 
@@ -65,20 +61,16 @@ func TestTxnFingerprintIDCacheDataDriven(t *testing.T) {
 				require.NoError(t, err)
 				txnFingerprintID := appstatspb.TransactionFingerprintID(id)
 
-				err = txnFingerprintIDCache.Add(ctx, txnFingerprintID)
-				require.NoError(t, err)
-
+				txnFingerprintIDCache.Add(txnFingerprintID)
 				return fmt.Sprintf("size: %d", txnFingerprintIDCache.size())
 
 			case "show":
 				return printTxnFingerprintIDCache(txnFingerprintIDCache)
 
-			case "accounting":
-				return fmt.Sprintf("%d bytes", memAccount.Used())
-
 			default:
-				return ""
 			}
+			return ""
+
 		})
 	})
 }

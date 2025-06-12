@@ -28,13 +28,21 @@ type MockTypeContext struct {
 var _ eval.IndexedVarContainer = &MockTypeContext{}
 
 // IndexedVarEval implements the eval.IndexedVarContainer interface.
-func (p *MockTypeContext) IndexedVarEval(idx int) (tree.Datum, error) {
-	return tree.DNull, nil
+func (p *MockTypeContext) IndexedVarEval(
+	ctx context.Context, idx int, e tree.ExprEvaluator,
+) (tree.Datum, error) {
+	return tree.DNull.Eval(ctx, e)
 }
 
 // IndexedVarResolvedType implements the tree.IndexedVarContainer interface.
 func (p *MockTypeContext) IndexedVarResolvedType(idx int) *types.T {
 	return p.Typs[idx]
+}
+
+// IndexedVarNodeFormatter implements the tree.IndexedVarContainer interface.
+func (p *MockTypeContext) IndexedVarNodeFormatter(idx int) tree.NodeFormatter {
+	n := tree.Name(fmt.Sprintf("$%d", idx))
+	return &n
 }
 
 // CreateTestProjectingOperator creates a projecting operator that performs
@@ -59,9 +67,9 @@ func CreateTestProjectingOperator(
 		return nil, err
 	}
 	p := &MockTypeContext{Typs: inputTypes}
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	semaCtx.IVarContainer = p
-	typedExpr, err := tree.TypeCheck(ctx, expr, &semaCtx, types.AnyElement)
+	typedExpr, err := tree.TypeCheck(ctx, expr, &semaCtx, types.Any)
 	if err != nil {
 		return nil, err
 	}

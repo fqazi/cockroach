@@ -31,6 +31,7 @@ type variantInfo struct {
 	msgType string
 }
 
+var errVariants []variantInfo
 var reqVariants []variantInfo
 var resVariants []variantInfo
 var reqResVariantMapping map[variantInfo]variantInfo
@@ -45,6 +46,12 @@ func initVariant(ins *inspector.Inspector, varName string) variantInfo {
 }
 
 func initVariants(ins *inspector.Inspector) {
+	errVars := findVariantTypes(ins, "ErrorDetail")
+	for _, v := range errVars {
+		errInfo := initVariant(ins, v)
+		errVariants = append(errVariants, errInfo)
+	}
+
 	resVars := findVariantTypes(ins, "ResponseUnion")
 	resVarInfos := make(map[string]variantInfo, len(resVars))
 	for _, v := range resVars {
@@ -248,10 +255,12 @@ import (
 `)
 
 	// Generate GetInner methods.
+	genGetInner(f, "ErrorDetail", "error", errVariants)
 	genGetInner(f, "RequestUnion", "Request", reqVariants)
 	genGetInner(f, "ResponseUnion", "Response", resVariants)
 
 	// Generate MustSetInner methods.
+	genMustSetInner(f, "ErrorDetail", "error", errVariants)
 	genMustSetInner(f, "RequestUnion", "Request", reqVariants)
 	genMustSetInner(f, "ResponseUnion", "Response", resVariants)
 
@@ -367,48 +376,12 @@ func (ba *BatchRequest) WriteSummary(b *strings.Builder) {
 	}
 
 	fmt.Fprint(f, `
-func allocBatchResponse(nResps int) *BatchResponse {
-	if nResps <= 1 {
-		alloc := new(struct {
-			br    BatchResponse
-			resps [1]ResponseUnion
-		})
-		alloc.br.Responses = alloc.resps[:nResps]
-		return &alloc.br
-	} else if nResps <= 2 {
-		alloc := new(struct {
-			br    BatchResponse
-			resps [2]ResponseUnion
-		})
-		alloc.br.Responses = alloc.resps[:nResps]
-		return &alloc.br
-	} else if nResps <= 4 {
-		alloc := new(struct {
-			br    BatchResponse
-			resps [4]ResponseUnion
-		})
-		alloc.br.Responses = alloc.resps[:nResps]
-		return &alloc.br
-	} else if nResps <= 8 {
-		alloc := new(struct {
-			br    BatchResponse
-			resps [8]ResponseUnion
-		})
-		alloc.br.Responses = alloc.resps[:nResps]
-		return &alloc.br
-	}
-	br := &BatchResponse{}
-	br.Responses = make([]ResponseUnion, nResps)
-	return br
-}
-`)
-
-	fmt.Fprint(f, `
 // CreateReply creates replies for each of the contained requests, wrapped in a
 // BatchResponse. The response objects are batch allocated to minimize
 // allocation overhead.
 func (ba *BatchRequest) CreateReply() *BatchResponse {
-	br := allocBatchResponse(len(ba.Requests))
+	br := &BatchResponse{}
+	br.Responses = make([]ResponseUnion, len(ba.Requests))
 
 	counts := ba.getReqCounts()
 

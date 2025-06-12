@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -20,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/systemschema"
-	"github.com/cockroachdb/cockroach/pkg/sql/regionliveness"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
@@ -43,6 +43,7 @@ var GCInterval = settings.RegisterDurationSetting(
 	"server.sqlliveness.gc_interval",
 	"duration between attempts to delete extant sessions that have expired",
 	time.Hour,
+	settings.NonNegativeDuration,
 )
 
 // GCJitter specifies the jitter fraction on the interval between attempts to
@@ -72,18 +73,17 @@ var CacheSize = settings.RegisterIntSetting(
 // Storage deals with reading and writing session records. It implements the
 // sqlliveness.Storage interface, and the slinstace.Writer interface.
 type Storage struct {
-	settings           *cluster.Settings
-	settingsWatcher    *settingswatcher.SettingsWatcher
-	livenessProber     regionliveness.Prober
-	stopper            *stop.Stopper
-	clock              *hlc.Clock
-	db                 *kv.DB
-	codec              keys.SQLCodec
-	metrics            Metrics
-	gcInterval         func() time.Duration
-	newTimer           func() timeutil.TimerI
-	keyCodec           keyCodec
-	withSyntheticClock bool
+	settings        *cluster.Settings
+	settingsWatcher *settingswatcher.SettingsWatcher
+	stopper         *stop.Stopper
+	clock           *hlc.Clock
+	db              *kv.DB
+	codec           keys.SQLCodec
+	metrics         Metrics
+	gcInterval      func() time.Duration
+	newTimer        func() timeutil.TimerI
+	newKeyCodec     keyCodec
+	oldKeyCodec     keyCodec
 
 	mu struct {
 		syncutil.Mutex
@@ -116,8 +116,8 @@ func NewTestingStorage(
 	settingsWatcher *settingswatcher.SettingsWatcher,
 	table catalog.TableDescriptor,
 	newTimer func() timeutil.TimerI,
-	withSyntheticClock bool,
 ) *Storage {
+	const rbtIndexID = 1
 	s := &Storage{
 		settings:        settings,
 		settingsWatcher: settingsWatcher,
@@ -125,17 +125,16 @@ func NewTestingStorage(
 		clock:           clock,
 		db:              db,
 		codec:           codec,
-		keyCodec:        &rbrEncoder{codec.IndexPrefix(uint32(table.GetID()), uint32(table.GetPrimaryIndexID()))},
+		newKeyCodec:     &rbrEncoder{codec.IndexPrefix(uint32(table.GetID()), uint32(table.GetPrimaryIndexID()))},
+		oldKeyCodec:     &rbtEncoder{codec.IndexPrefix(uint32(table.GetID()), rbtIndexID)},
 		newTimer:        newTimer,
-		livenessProber:  regionliveness.NewLivenessProber(db, codec, nil, settings),
 		gcInterval: func() time.Duration {
 			baseInterval := GCInterval.Get(&settings.SV)
 			jitter := GCJitter.Get(&settings.SV)
 			frac := 1 + (2*rand.Float64()-1)*jitter
 			return time.Duration(frac * float64(baseInterval.Nanoseconds()))
 		},
-		withSyntheticClock: withSyntheticClock,
-		metrics:            makeMetrics(),
+		metrics: makeMetrics(),
 	}
 	cacheConfig := cache.Config{
 		Policy: cache.CacheLRU,
@@ -163,7 +162,6 @@ func NewStorage(
 		ambientCtx, stopper, clock, db, codec, settings, settingsWatcher,
 		systemschema.SqllivenessTable(),
 		timeutil.DefaultTimeSource{}.NewTimer,
-		false, /*withSynthticClock*/
 	)
 }
 
@@ -194,15 +192,7 @@ const (
 func (s *Storage) isAlive(
 	ctx context.Context, sid sqlliveness.SessionID, syncOrAsync readType,
 ) (alive bool, _ error) {
-	// Confirm the session ID has the correct format, and if it
-	// doesn't then we can consider it as dead without any extra
-	// work.
-	if err := s.keyCodec.validate(sid); err != nil {
-		// This SessionID may be invalid because of the wrong format
-		// so consider it as dead.
-		//nolint:returnerrcheck
-		return false, nil
-	}
+
 	// If wait is false, alive is set and future is unset.
 	// If wait is true, alive is unset and future is set.
 	alive, wait, future, err := func() (bool, bool, singleflight.Future, error) {
@@ -212,12 +202,11 @@ func (s *Storage) isAlive(
 		if !s.mu.started {
 			return false, false, singleflight.Future{}, sqlliveness.NotStartedError
 		}
-		sidKey := any(sid)
-		if _, ok := s.mu.deadSessions.Get(sidKey); ok {
+		if _, ok := s.mu.deadSessions.Get(sid); ok {
 			s.metrics.IsAliveCacheHits.Inc(1)
 			return false, false, singleflight.Future{}, nil
 		}
-		if expiration, ok := s.mu.liveSessions.Get(sidKey); ok {
+		if expiration, ok := s.mu.liveSessions.Get(sid); ok {
 			expiration := expiration.(hlc.Timestamp)
 			// The record exists and is valid.
 			if s.clock.Now().Less(expiration) {
@@ -250,6 +239,32 @@ func (s *Storage) isAlive(
 		return false, res.Err
 	}
 	return res.Val.(bool), nil
+}
+
+func (s *Storage) getReadCodec(version *settingswatcher.VersionGuard) keyCodec {
+	if version.IsActive(clusterversion.V23_1_SystemRbrReadNew) {
+		return s.newKeyCodec
+	}
+	return s.oldKeyCodec
+}
+
+func (s *Storage) getDualWriteCodec(version *settingswatcher.VersionGuard) keyCodec {
+	switch {
+	case version.IsActive(clusterversion.V23_1_SystemRbrSingleWrite):
+		return nil
+	case version.IsActive(clusterversion.V23_1_SystemRbrReadNew):
+		return s.oldKeyCodec
+	case version.IsActive(clusterversion.V23_1_SystemRbrDualWrite):
+		return s.newKeyCodec
+	default:
+		return nil
+	}
+}
+
+func (s *Storage) versionGuard(
+	ctx context.Context, txn *kv.Txn,
+) (settingswatcher.VersionGuard, error) {
+	return s.settingsWatcher.MakeVersionGuard(ctx, txn, clusterversion.V23_1_SystemRbrCleanup)
 }
 
 // This function will launch a singleflight goroutine for the session which
@@ -319,38 +334,21 @@ func (s *Storage) deleteOrFetchSession(
 	var deleted bool
 	var prevExpiration hlc.Timestamp
 	ctx = multitenant.WithTenantCostControlExemption(ctx)
-	livenessProber := regionliveness.NewLivenessProber(s.db, s.codec, nil, s.settings)
-	k, regionPhysicalRep, err := s.keyCodec.encode(sid)
-	if err != nil {
-		return false, hlc.Timestamp{}, err
-	}
 	if err := s.txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
 		// Reset captured variable in case of retry.
 		deleted, expiration, prevExpiration = false, hlc.Timestamp{}, hlc.Timestamp{}
+
+		version, err := s.versionGuard(ctx, txn)
 		if err != nil {
 			return err
 		}
-		if unavailableAtRegions, err := s.livenessProber.QueryUnavailablePhysicalRegions(ctx, txn, true /*filterAvailable*/); err != nil ||
-			unavailableAtRegions.ContainsPhysicalRepresentation(regionPhysicalRep) {
+
+		readCodec := s.getReadCodec(&version)
+		k, err := readCodec.encode(sid)
+		if err != nil {
 			return err
 		}
-		execWithTimeout, timeout := s.livenessProber.GetProbeTimeout()
-		var kv kv.KeyValue
-		if execWithTimeout {
-			// Detect if we fail to a region and force a probe in that
-			// case.
-			err = timeutil.RunWithTimeout(ctx, "fetch-session", timeout, func(ctx context.Context) error {
-				kvInner, err := txn.Get(ctx, k)
-				kv = kvInner
-				return err
-			})
-
-			if err != nil {
-				return err
-			}
-		} else {
-			kv, err = txn.Get(ctx, k)
-		}
+		kv, err := txn.Get(ctx, k)
 		if err != nil {
 			return err
 		}
@@ -373,15 +371,16 @@ func (s *Storage) deleteOrFetchSession(
 		deleted, expiration = true, hlc.Timestamp{}
 		ba := txn.NewBatch()
 		ba.Del(k)
+		if dualCodec := s.getDualWriteCodec(&version); dualCodec != nil {
+			dualKey, err := dualCodec.encode(sid)
+			if err != nil {
+				return err
+			}
+			ba.Del(dualKey)
+		}
 
 		return txn.CommitInBatch(ctx, ba)
 	}); err != nil {
-		if regionliveness.IsQueryTimeoutErr(err) {
-			probeErr := livenessProber.ProbeLivenessWithPhysicalRegion(ctx, encoding.UnsafeConvertStringToBytes(regionPhysicalRep))
-			if probeErr != nil {
-				err = errors.WithSecondaryError(err, probeErr)
-			}
-		}
 		return false, hlc.Timestamp{}, errors.Wrapf(err,
 			"could not query session id: %s", sid)
 	}
@@ -403,6 +402,7 @@ func (s *Storage) deleteSessionsLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.Ch():
+			t.MarkRead()
 			s.deleteExpiredSessions(ctx)
 			t.Reset(s.gcInterval())
 		}
@@ -485,8 +485,11 @@ func (s *Storage) fetchExpiredSessionIDs(ctx context.Context) ([]sqlliveness.Ses
 
 	var result []sqlliveness.SessionID
 	if err := s.txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-		var err error
-		result, err = findRows(ctx, txn, s.keyCodec)
+		version, err := s.versionGuard(ctx, txn)
+		if err != nil {
+			return err
+		}
+		result, err = findRows(ctx, txn, s.getReadCodec(&version))
 		return err
 	}); err != nil {
 		return nil, err
@@ -506,29 +509,26 @@ func (s *Storage) Insert(
 	if err := s.txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
 		batch := txn.NewBatch()
 
-		k, region, err := s.keyCodec.encode(sid)
+		version, err := s.versionGuard(ctx, txn)
 		if err != nil {
 			return err
 		}
-		unavailableRegions, err := s.livenessProber.QueryUnavailablePhysicalRegions(ctx, txn, true /*filterAvailable*/)
+		readCodec := s.getReadCodec(&version)
+		k, err := readCodec.encode(sid)
 		if err != nil {
 			return err
-		}
-		if unavailableRegions.ContainsPhysicalRepresentation(region) {
-			// Delete all rows for the region in system.sqlliveness, system.sql_instances,
-			// system.leases.
-			if err := regionliveness.CleanupSystemTableForRegion(ctx,
-				s.codec, region, txn); err != nil {
-				return err
-			}
-			// Make the region as available again.
-			if err := s.livenessProber.MarkPhysicalRegionAsAvailable(ctx, txn, region, unavailableRegions[region]); err != nil {
-				return err
-			}
-
 		}
 		v := encodeValue(expiration)
-		batch.CPut(k, &v, nil /* expValue */)
+		batch.InitPut(k, &v, true)
+
+		if dualCodec := s.getDualWriteCodec(&version); dualCodec != nil {
+			dualKey, err := dualCodec.encode(sid)
+			if err != nil {
+				return err
+			}
+			dualValue := encodeValue(expiration)
+			batch.InitPut(dualKey, &dualValue, true)
+		}
 
 		return txn.CommitInBatch(ctx, batch)
 	}); err != nil {
@@ -544,14 +544,20 @@ func (s *Storage) Insert(
 // if the row exists and in that case returns true. Otherwise it returns false.
 func (s *Storage) Update(
 	ctx context.Context, sid sqlliveness.SessionID, expiration hlc.Timestamp,
-) (sessionExists bool, newExpiry hlc.Timestamp, err error) {
+) (sessionExists bool, err error) {
 	ctx = multitenant.WithTenantCostControlExemption(ctx)
-	resetUnavailableAtTime := false
-	k, region, err := s.keyCodec.encode(sid)
-	if err != nil {
-		return false, hlc.Timestamp{}, err
-	}
 	err = s.txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
+		version, err := s.versionGuard(ctx, txn)
+		if err != nil {
+			return err
+		}
+
+		readCodec := s.getReadCodec(&version)
+
+		k, err := readCodec.encode(sid)
+		if err != nil {
+			return err
+		}
 		kv, err := txn.Get(ctx, k)
 		if err != nil {
 			return err
@@ -559,74 +565,27 @@ func (s *Storage) Update(
 		if sessionExists = kv.Value != nil; !sessionExists {
 			return nil
 		}
-		unavailableRegions, err := s.livenessProber.QueryUnavailablePhysicalRegions(ctx, txn, false /*filterAvailable*/)
-		if err != nil {
-			return err
-		}
-		if unavailableRegions.ContainsPhysicalRepresentation(region) {
-			ts := unavailableRegions[region].Time
-			// If the read timestamp is past the expiration, then we cannot allow
-			// this session to renew.
-			if txn.ReadTimestamp().GoTime().After(ts) {
-				return errors.New("region is unavailable, so unable to renew session")
-			}
-			// Clamp the expiration time to the unavailable_at time, if its
-			// after.
-			expirationTS := expiration.GoTime()
-			if expirationTS.After(ts) {
-				// Since the unavailable_at time is stored as a time.Time, we will
-				// need to apply a delta hlc.Timestamp to get clamped timestamp.
-				timeDelta := ts.Sub(expirationTS)
-				expiration = expiration.AddDuration(timeDelta)
-			}
-			// If we aren't past the number yet then attempt a recovery.
-			resetUnavailableAtTime = true
-		}
 		v := encodeValue(expiration)
 		ba := txn.NewBatch()
 		ba.Put(k, &v)
+		if dualCodec := s.getDualWriteCodec(&version); dualCodec != nil {
+			dualKey, err := dualCodec.encode(sid)
+			if err != nil {
+				return err
+			}
+			dualValue := encodeValue(expiration)
+			ba.Put(dualKey, &dualValue)
+		}
 		return txn.CommitInBatch(ctx, ba)
 	})
 	if err != nil || !sessionExists {
 		s.metrics.WriteFailures.Inc(1)
 	}
 	if err != nil {
-		return false, hlc.Timestamp{}, errors.Wrapf(err, "could not update session %s", sid)
+		return false, errors.Wrapf(err, "could not update session %s", sid)
 	}
 	s.metrics.WriteSuccesses.Inc(1)
-	// If we were able to write to the sqlliveness table, then region communication
-	// may be restored. At this point lets attempt to clean up any unavailable
-	// region liveness time if it was set.
-	if resetUnavailableAtTime {
-		if err := s.txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-			// Check if this region has an unavailable_at time set.
-			unavailableRegions, err := s.livenessProber.QueryUnavailablePhysicalRegions(ctx, txn, false /*filterAvailable*/)
-			if err != nil {
-				return err
-			}
-			readTS := txn.ReadTimestamp()
-			ts, exists := unavailableRegions[region]
-			if !exists {
-				return nil
-			}
-			// If it took us longer then the unavailable_at to recover, then fail
-			// at this point. This could happen if the deadline is hit while
-			// recovering, and we are forced to retry.
-			if ts.Before(txn.ReadTimestamp().GoTime()) {
-				return errors.New("region is unavailable, so unable to recover session")
-			}
-
-			// Set a transaction deadline before clearing it.
-			deadLineTS := readTS.AddDuration(ts.Time.Sub(readTS.GoTime()))
-			if err := txn.UpdateDeadline(ctx, deadLineTS); err != nil {
-				return err
-			}
-			return s.livenessProber.MarkPhysicalRegionAsAvailable(ctx, txn, region, ts)
-		}); err != nil {
-			return false, hlc.Timestamp{}, err
-		}
-	}
-	return sessionExists, expiration, nil
+	return sessionExists, nil
 }
 
 // Delete removes the session from the sqlliveness table without checking the
@@ -634,14 +593,27 @@ func (s *Storage) Update(
 // tasks using the session have stopped.
 func (s *Storage) Delete(ctx context.Context, session sqlliveness.SessionID) error {
 	return s.txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
+		version, err := s.versionGuard(ctx, txn)
+		if err != nil {
+			return err
+		}
+
 		batch := txn.NewBatch()
 
-		key, _, err := s.keyCodec.encode(session)
+		readCodec := s.getReadCodec(&version)
+		key, err := readCodec.encode(session)
 		if err != nil {
 			return err
 		}
 		batch.Del(key)
 
+		if dualCodec := s.getDualWriteCodec(&version); dualCodec != nil {
+			dualKey, err := dualCodec.encode(session)
+			if err != nil {
+				return err
+			}
+			batch.Del(dualKey)
+		}
 		return txn.CommitInBatch(ctx, batch)
 	})
 }

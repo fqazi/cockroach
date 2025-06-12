@@ -20,7 +20,6 @@ import (
 )
 
 type alterSequenceNode struct {
-	zeroInputPlanNode
 	n       *tree.AlterSequence
 	seqDesc *tabledesc.Mutable
 }
@@ -59,37 +58,14 @@ func (n *alterSequenceNode) ReadingOwnWrites() {}
 
 func (n *alterSequenceNode) startExec(params runParams) error {
 	telemetry.Inc(sqltelemetry.SchemaChangeAlterCounter("sequence"))
+	desc := n.seqDesc
 
-	// Alter sequence with specified options.
-	// Does not override existing values if not specified.
-	if err := alterSequenceImpl(params, n.seqDesc, n.n.Options, n.n); err != nil {
-		return err
-	}
-
-	// Record this sequence alteration in the event log. This is an auditable log
-	// event and is recorded in the same transaction as the table descriptor
-	// update.
-	return params.p.logEvent(params.ctx,
-		n.seqDesc.ID,
-		&eventpb.AlterSequence{
-			SequenceName: params.p.ResolvedName(n.n.Name).FQString(),
-		})
-}
-
-// alterSequenceImpl applies given tree.SequenceOptions to the specified sequence descriptor.
-// Exisiting sequence options are not overridden with default values.
-func alterSequenceImpl(
-	params runParams,
-	seqDesc *tabledesc.Mutable,
-	seqOptions tree.SequenceOptions,
-	formatter tree.NodeFormatter,
-) error {
-	oldMinValue := seqDesc.SequenceOpts.MinValue
-	oldMaxValue := seqDesc.SequenceOpts.MaxValue
+	oldMinValue := desc.SequenceOpts.MinValue
+	oldMaxValue := desc.SequenceOpts.MaxValue
 
 	existingType := types.Int
-	if seqDesc.GetSequenceOpts().AsIntegerType != "" {
-		switch seqDesc.GetSequenceOpts().AsIntegerType {
+	if desc.GetSequenceOpts().AsIntegerType != "" {
+		switch desc.GetSequenceOpts().AsIntegerType {
 		case types.Int2.SQLString():
 			existingType = types.Int2
 		case types.Int4.SQLString():
@@ -97,23 +73,23 @@ func alterSequenceImpl(
 		case types.Int.SQLString():
 			// Already set.
 		default:
-			return errors.AssertionFailedf("sequence has unexpected type %s", seqDesc.GetSequenceOpts().AsIntegerType)
+			return errors.AssertionFailedf("sequence has unexpected type %s", desc.GetSequenceOpts().AsIntegerType)
 		}
 	}
 	if err := assignSequenceOptions(
 		params.ctx,
 		params.p,
-		seqDesc.SequenceOpts,
-		seqOptions,
+		desc.SequenceOpts,
+		n.n.Options,
 		false, /* setDefaults */
-		seqDesc.GetID(),
-		seqDesc.ParentID,
+		desc.GetID(),
+		desc.ParentID,
 		existingType,
 	); err != nil {
 		return err
 	}
-	opts := seqDesc.SequenceOpts
-	seqValueKey := params.p.ExecCfg().Codec.SequenceKey(uint32(seqDesc.ID))
+	opts := desc.SequenceOpts
+	seqValueKey := params.p.ExecCfg().Codec.SequenceKey(uint32(desc.ID))
 
 	getSequenceValue := func() (int64, error) {
 		kv, err := params.p.txn.Get(params.ctx, seqValueKey)
@@ -133,7 +109,7 @@ func alterSequenceImpl(
 	// The code below handles the second case.
 
 	// The sequence is decreasing and the minvalue is being decreased.
-	if opts.Increment < 0 && seqDesc.SequenceOpts.MinValue < oldMinValue {
+	if opts.Increment < 0 && desc.SequenceOpts.MinValue < oldMinValue {
 		sequenceVal, err := getSequenceValue()
 		if err != nil {
 			return err
@@ -146,7 +122,7 @@ func alterSequenceImpl(
 				return err
 			}
 		}
-	} else if opts.Increment > 0 && seqDesc.SequenceOpts.MaxValue > oldMaxValue {
+	} else if opts.Increment > 0 && desc.SequenceOpts.MaxValue > oldMaxValue {
 		sequenceVal, err := getSequenceValue()
 		if err != nil {
 			return err
@@ -160,7 +136,7 @@ func alterSequenceImpl(
 		}
 	}
 	var restartVal *int64
-	for _, option := range seqOptions {
+	for _, option := range n.n.Options {
 		if option.Name == tree.SeqOptRestart {
 			// If the RESTART option is present but without a value, then use the
 			// START WITH value.
@@ -175,20 +151,28 @@ func alterSequenceImpl(
 		// Using RESTART on a sequence should always cause the operation to run
 		// in the current transaction. This is achieved by treating the sequence
 		// as if it were just created.
-		if err := params.p.createdSequences.addCreatedSequence(seqDesc.ID); err != nil {
+		if err := params.p.createdSequences.addCreatedSequence(desc.ID); err != nil {
 			return err
 		}
-		if err := params.p.SetSequenceValueByID(params.ctx, uint32(seqDesc.ID), *restartVal, false); err != nil {
+		if err := params.p.SetSequenceValueByID(params.ctx, uint32(desc.ID), *restartVal, false); err != nil {
 			return err
 		}
 	}
 
 	if err := params.p.writeSchemaChange(
-		params.ctx, seqDesc, descpb.InvalidMutationID, tree.AsStringWithFQNames(formatter, params.Ann()),
+		params.ctx, n.seqDesc, descpb.InvalidMutationID, tree.AsStringWithFQNames(n.n, params.Ann()),
 	); err != nil {
 		return err
 	}
-	return nil
+
+	// Record this sequence alteration in the event log. This is an auditable log
+	// event and is recorded in the same transaction as the table descriptor
+	// update.
+	return params.p.logEvent(params.ctx,
+		n.seqDesc.ID,
+		&eventpb.AlterSequence{
+			SequenceName: params.p.ResolvedName(n.n.Name).FQString(),
+		})
 }
 
 func (n *alterSequenceNode) Next(runParams) (bool, error) { return false, nil }

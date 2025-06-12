@@ -11,21 +11,140 @@ import (
 	"reflect"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/gossip"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangecache"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
+	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/netutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
+
+var _ kvpb.InternalServer = Node(0)
+
+type Node time.Duration
+
+func (n Node) Batch(ctx context.Context, args *kvpb.BatchRequest) (*kvpb.BatchResponse, error) {
+	if n > 0 {
+		time.Sleep(time.Duration(n))
+	}
+	return &kvpb.BatchResponse{}, nil
+}
+
+func (n Node) RangeLookup(
+	_ context.Context, _ *kvpb.RangeLookupRequest,
+) (*kvpb.RangeLookupResponse, error) {
+	panic("unimplemented")
+}
+
+func (n Node) RangeFeed(_ *kvpb.RangeFeedRequest, _ kvpb.Internal_RangeFeedServer) error {
+	panic("unimplemented")
+}
+
+func (n Node) MuxRangeFeed(server kvpb.Internal_MuxRangeFeedServer) error {
+	panic("unimplemented")
+}
+
+func (n Node) GossipSubscription(
+	_ *kvpb.GossipSubscriptionRequest, _ kvpb.Internal_GossipSubscriptionServer,
+) error {
+	panic("unimplemented")
+}
+
+func (n Node) Join(context.Context, *kvpb.JoinNodeRequest) (*kvpb.JoinNodeResponse, error) {
+	panic("unimplemented")
+}
+
+func (n Node) ResetQuorum(
+	context.Context, *kvpb.ResetQuorumRequest,
+) (*kvpb.ResetQuorumResponse, error) {
+	panic("unimplemented")
+}
+
+func (n Node) TokenBucket(
+	ctx context.Context, in *kvpb.TokenBucketRequest,
+) (*kvpb.TokenBucketResponse, error) {
+	panic("unimplemented")
+}
+
+func (n Node) GetSpanConfigs(
+	_ context.Context, _ *roachpb.GetSpanConfigsRequest,
+) (*roachpb.GetSpanConfigsResponse, error) {
+	panic("unimplemented")
+}
+
+func (n Node) GetAllSystemSpanConfigsThatApply(
+	_ context.Context, _ *roachpb.GetAllSystemSpanConfigsThatApplyRequest,
+) (*roachpb.GetAllSystemSpanConfigsThatApplyResponse, error) {
+	panic("unimplemented")
+}
+
+func (n Node) UpdateSpanConfigs(
+	_ context.Context, _ *roachpb.UpdateSpanConfigsRequest,
+) (*roachpb.UpdateSpanConfigsResponse, error) {
+	panic("unimplemented")
+}
+
+func (n Node) SpanConfigConformance(
+	context.Context, *roachpb.SpanConfigConformanceRequest,
+) (*roachpb.SpanConfigConformanceResponse, error) {
+	panic("unimplemented")
+}
+
+func (n Node) TenantSettings(
+	*kvpb.TenantSettingsRequest, kvpb.Internal_TenantSettingsServer,
+) error {
+	panic("unimplemented")
+}
+
+func (n Node) GetRangeDescriptors(
+	*kvpb.GetRangeDescriptorsRequest, kvpb.Internal_GetRangeDescriptorsServer,
+) error {
+	panic("unimplemented")
+}
+
+// TestSendToOneClient verifies that Send correctly sends a request
+// to one server using the heartbeat RPC.
+func TestSendToOneClient(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	stopper := stop.NewStopper()
+	defer stopper.Stop(ctx)
+
+	clock := hlc.NewClockForTesting(nil)
+	rpcContext := rpc.NewInsecureTestingContext(ctx, clock, stopper)
+	// This test uses the testing function sendBatch() which does not
+	// support setting the node ID on GRPCDialNode(). Disable Node ID
+	// checks to avoid log.Fatal.
+	rpcContext.TestingAllowNamedRPCToAnonymousServer = true
+
+	s, err := rpc.NewServer(ctx, rpcContext)
+	require.NoError(t, err)
+	kvpb.RegisterInternalServer(s, Node(0))
+	ln, err := netutil.ListenAndServeGRPC(rpcContext.Stopper, s, util.TestAddr)
+	require.NoError(t, err)
+	nodeDialer := nodedialer.New(rpcContext, func(roachpb.NodeID) (net.Addr, roachpb.Locality, error) {
+		return ln.Addr(), roachpb.Locality{}, nil
+	})
+
+	reply, err := sendBatch(ctx, t, nil, []net.Addr{ln.Addr()}, rpcContext, nodeDialer)
+	require.NoError(t, err)
+	if reply == nil {
+		t.Errorf("expected reply")
+	}
+}
 
 // firstNErrorTransport is a mock transport that sends an error on
 // requests to the first N addresses, then succeeds.
@@ -70,10 +189,6 @@ func (*firstNErrorTransport) MoveToFront(roachpb.ReplicaDescriptor) bool {
 	return true
 }
 
-func (f *firstNErrorTransport) Reset() {
-	f.numSent = 0
-}
-
 // TestComplexScenarios verifies various complex success/failure scenarios by
 // mocking sendOne.
 func TestComplexScenarios(t *testing.T) {
@@ -89,6 +204,7 @@ func TestComplexScenarios(t *testing.T) {
 	// We're going to serve multiple node IDs with that one
 	// context. Disable node ID checks.
 	rpcContext.TestingAllowNamedRPCToAnonymousServer = true
+	nodeDialer := nodedialer.New(rpcContext, nil)
 
 	// TODO(bdarnell): the retryable flag is no longer used for RPC errors.
 	// Rework this test to incorporate application-level errors carried in
@@ -122,15 +238,17 @@ func TestComplexScenarios(t *testing.T) {
 			t,
 			func(
 				_ SendOptions,
+				_ *nodedialer.Dialer,
 				replicas ReplicaSlice,
-			) Transport {
+			) (Transport, error) {
 				return &firstNErrorTransport{
 					replicas:  replicas,
 					numErrors: test.numErrors,
-				}
+				}, nil
 			},
 			serverAddrs,
 			rpcContext,
+			nodeDialer,
 		)
 		if test.success {
 			if err != nil {
@@ -220,6 +338,7 @@ func sendBatch(
 	transportFactory TransportFactory,
 	addrs []net.Addr,
 	rpcContext *rpc.Context,
+	nodeDialer *nodedialer.Dialer,
 ) (*kvpb.BatchResponse, error) {
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
@@ -248,9 +367,12 @@ func sendBatch(
 		AmbientCtx:         log.MakeTestingAmbientCtxWithNewTracer(),
 		Settings:           cluster.MakeTestingClusterSettings(),
 		NodeDescs:          g,
-		Stopper:            stopper,
-		TransportFactory:   transportFactory,
+		RPCContext:         rpcContext,
+		NodeDialer:         nodeDialer,
 		FirstRangeProvider: g,
+		TestingKnobs: ClientTestingKnobs{
+			TransportFactory: transportFactory,
+		},
 	})
 	ds.rangeCache.Insert(ctx, roachpb.RangeInfo{
 		Desc:  *desc,

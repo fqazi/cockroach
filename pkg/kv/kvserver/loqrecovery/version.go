@@ -52,12 +52,17 @@ Application will verify that plan version equal to active cluster version upon
 restart.
 */
 
+// legacyInfoFormatVersion is a version used internally when processing data
+// loaded from legacy format files which contained no version info or collected
+// from old clusters.
+var legacyInfoFormatVersion = clusterversion.ByKey(clusterversion.V22_2)
+
 // checkVersionAllowedByBinary checks if binary could handle data version. Data
 // could be either loaded from files or received from cluster.
 func checkVersionAllowedByBinary(version roachpb.Version) error {
 	return checkVersionAllowedImpl(version,
-		clusterversion.MinSupported.Version(),
-		clusterversion.Latest.Version())
+		clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey),
+		clusterversion.ByKey(clusterversion.BinaryVersionKey))
 }
 
 func checkVersionAllowedImpl(version, minSupported, binaryVersion roachpb.Version) error {

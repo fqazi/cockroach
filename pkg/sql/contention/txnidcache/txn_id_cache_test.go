@@ -29,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,7 +38,7 @@ func TestTransactionIDCache(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	var appName redact.RedactableString = "txnIDCacheTest"
+	appName := "txnIDCacheTest"
 	expectedTxnIDToUUIDMapping := make(map[uuid.UUID]appstatspb.TransactionFingerprintID)
 	injector := runtimeHookInjector{}
 
@@ -48,7 +47,7 @@ func TestTransactionIDCache(t *testing.T) {
 		txnID uuid.UUID,
 		txnFingerprintID appstatspb.TransactionFingerprintID,
 	) {
-		if strings.Contains(sessionData.ApplicationName, appName.StripMarkers()) {
+		if strings.Contains(sessionData.ApplicationName, appName) {
 			expectedTxnIDToUUIDMapping[txnID] = txnFingerprintID
 		}
 	})
@@ -141,7 +140,7 @@ func TestTransactionIDCache(t *testing.T) {
 				ctx,
 				appName,
 				txn,
-				sessiondata.NodeUserSessionDataOverride,
+				sessiondata.RootUserSessionDataOverride,
 				stmt,
 			)
 			require.NoError(t, err)
@@ -209,7 +208,7 @@ func TestTransactionIDCache(t *testing.T) {
 			sessionData *sessiondata.SessionData,
 			txnID uuid.UUID,
 			txnFingerprintID appstatspb.TransactionFingerprintID) {
-			if strings.Contains(sessionData.ApplicationName, appName.StripMarkers()) {
+			if strings.Contains(sessionData.ApplicationName, appName) {
 				if txnFingerprintID != appstatspb.InvalidTransactionFingerprintID {
 					txnIDCache.DrainWriteBuffer()
 
@@ -259,11 +258,11 @@ func TestInvalidTxnID(t *testing.T) {
 
 	inputData := []contentionpb.ResolvedTxnID{
 		{
-			TxnID:            uuid.MakeV4(),
+			TxnID:            uuid.FastMakeV4(),
 			TxnFingerprintID: appstatspb.TransactionFingerprintID(1),
 		},
 		{
-			TxnID:            uuid.MakeV4(),
+			TxnID:            uuid.FastMakeV4(),
 			TxnFingerprintID: appstatspb.TransactionFingerprintID(2),
 		},
 	}

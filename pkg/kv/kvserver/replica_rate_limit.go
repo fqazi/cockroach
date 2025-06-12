@@ -27,20 +27,8 @@ func (r *Replica) maybeRateLimitBatch(ctx context.Context, ba *kvpb.BatchRequest
 		return nil
 	}
 
-	var info tenantcostmodel.BatchInfo
-	for i := range ba.Requests {
-		req := ba.Requests[i].GetInner()
-		if !kvpb.IsReadOnly(req) {
-			info.WriteCount++
-			if swr, isSizedWrite := req.(kvpb.SizedWriteRequest); isSizedWrite {
-				info.WriteBytes += swr.WriteBytes()
-			}
-		}
-	}
-
-	// Request object only needs to account for writeCount and writeBytes. All
-	// the others are only used to calculate usage, and not for rate limiting.
-	err := r.tenantLimiter.Wait(ctx, info)
+	// writeMultiplier isn't needed here since it's only used to calculate RUs.
+	err := r.tenantLimiter.Wait(ctx, tenantcostmodel.MakeRequestInfo(ba, 1, 1))
 
 	// For performance reasons, we do not hold any Replica's mutexes while waiting
 	// on the tenantLimiter, and so we are racing with the Replica lifecycle. The
@@ -65,13 +53,6 @@ func (r *Replica) recordImpactOnRateLimiter(
 	if r.tenantLimiter == nil || br == nil || !isReadOnly {
 		return
 	}
-
-	var info tenantcostmodel.BatchInfo
-	for i := range br.Responses {
-		resp := br.Responses[i].GetInner()
-		info.ReadCount++
-		info.ReadBytes += resp.Header().NumBytes
-	}
-
-	r.tenantLimiter.RecordRead(ctx, info)
+	// readMultiplier isn't needed here since it's only used to calculate RUs.
+	r.tenantLimiter.RecordRead(ctx, tenantcostmodel.MakeResponseInfo(br, isReadOnly, 1))
 }

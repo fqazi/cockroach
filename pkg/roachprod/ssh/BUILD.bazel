@@ -13,5 +13,6 @@ go_library(
 go_test(
     name = "ssh_test",
     srcs = ["io_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":ssh"],
 )

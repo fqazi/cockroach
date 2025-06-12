@@ -17,7 +17,6 @@ import (
 	"sync/atomic"
 
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -54,7 +53,7 @@ func l(ctx context.Context, basename string, format string, args ...interface{})
 	var logger Logger
 	logger, _ = ctx.Value(loggerKey{}).(Logger)
 	if logger == nil {
-		logger = &logLogger{dir: datapathutils.DebuggableTempDir()}
+		logger = &logLogger{dir: os.TempDir()}
 	}
 	logger.Helper()
 

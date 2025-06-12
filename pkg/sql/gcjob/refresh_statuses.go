@@ -12,7 +12,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/config"
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
-	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts"
@@ -42,7 +41,7 @@ func refreshTables(
 	tableIDs []descpb.ID,
 	tableDropTimes map[descpb.ID]int64,
 	indexDropTimes map[descpb.IndexID]int64,
-	job *jobs.Job,
+	jobID jobspb.JobID,
 	progress *jobspb.SchemaChangeGCProgress,
 ) (expired bool, earliestDeadline time.Time) {
 	earliestDeadline = maxDeadline
@@ -51,7 +50,7 @@ func refreshTables(
 		tableHasExpiredElem, tableIsMissing, deadline := updateStatusForGCElements(
 			ctx,
 			execCfg,
-			job.ID(),
+			jobID,
 			tableID,
 			tableDropTimes, indexDropTimes,
 			progress,
@@ -64,7 +63,7 @@ func refreshTables(
 	}
 
 	if expired || haveAnyMissing {
-		persistProgress(ctx, execCfg, job, progress, sql.StatusWaitingGC)
+		persistProgress(ctx, execCfg, jobID, progress, sql.RunningStatusWaitingGC)
 	}
 
 	return expired, earliestDeadline
@@ -100,7 +99,7 @@ func updateStatusForGCElements(
 	earliestDeadline := timeutil.Unix(0, int64(math.MaxInt64))
 
 	if err := sql.DescsTxn(ctx, execCfg, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
-		table, err := col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, tableID)
+		table, err := col.ByID(txn.KV()).Get().Table(ctx, tableID)
 		if err != nil {
 			return err
 		}

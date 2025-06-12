@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for any_not_null_agg.eg.go. It's formatted
@@ -54,19 +55,7 @@ const _CANONICAL_TYPE_FAMILY = types.UnknownFamily
 // _TYPE_WIDTH is the template variable.
 const _TYPE_WIDTH = 0
 
-// _ALLOC_CODE is the template variable that is replaced in agg_gen_util.go by
-// the template code for sharing allocator objects.
-const _ALLOC_CODE = 0
-
 // */}}
-
-// {{if eq "_AGGKIND" "Ordered"}}
-
-const anyNotNullNumOverloads = 11
-
-// {{end}}
-
-var _ = _ALLOC_CODE
 
 func newAnyNotNull_AGGKINDAggAlloc(
 	allocator *colmem.Allocator, t *types.T, allocSize int64,
@@ -83,7 +72,7 @@ func newAnyNotNull_AGGKINDAggAlloc(
 		}
 		// {{end}}
 	}
-	return nil, errors.AssertionFailedf("unsupported any not null agg type %s", t.Name())
+	return nil, errors.Errorf("unsupported any not null agg type %s", t.Name())
 }
 
 // {{range .}}
@@ -105,7 +94,7 @@ type anyNotNull_TYPE_AGGKINDAgg struct {
 var _ AggregateFunc = &anyNotNull_TYPE_AGGKINDAgg{}
 
 // {{if eq "_AGGKIND" "Ordered"}}
-func (a *anyNotNull_TYPE_AGGKINDAgg) SetOutput(vec *coldata.Vec) {
+func (a *anyNotNull_TYPE_AGGKINDAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.TemplateType()
 }
@@ -113,7 +102,7 @@ func (a *anyNotNull_TYPE_AGGKINDAgg) SetOutput(vec *coldata.Vec) {
 // {{end}}
 
 func (a *anyNotNull_TYPE_AGGKINDAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	// {{if eq "_AGGKIND" "Hash"}}
 	if a.foundNonNullForCurrentGroup {
@@ -127,7 +116,7 @@ func (a *anyNotNull_TYPE_AGGKINDAgg) Compute(
 	execgen.SETVARIABLESIZE(oldCurAggSize, a.curAgg)
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.TemplateType(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// {{if eq "_AGGKIND" "Ordered"}}
 		// Capture groups and col to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756

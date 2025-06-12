@@ -24,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/upgrade"
 	"github.com/cockroachdb/cockroach/pkg/upgrade/migrationstable"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 func init() {
@@ -62,7 +61,7 @@ func (r resumer) Resume(ctx context.Context, execCtxI interface{}) error {
 	db := execCtx.ExecCfg().InternalDB
 	ex := db.Executor()
 	enterpriseEnabled := base.CCLDistributionAndEnterpriseEnabled(
-		execCtx.ExecCfg().Settings)
+		execCtx.ExecCfg().Settings, execCtx.ExecCfg().NodeInfo.LogicalClusterID())
 	alreadyCompleted, err := migrationstable.CheckIfMigrationCompleted(
 		ctx, v, nil /* txn */, ex,
 		enterpriseEnabled, migrationstable.ConsistentRead,
@@ -83,25 +82,22 @@ func (r resumer) Resume(ctx context.Context, execCtxI interface{}) error {
 		err = m.Run(ctx, v, mc.SystemDeps())
 	case *upgrade.TenantUpgrade:
 		tenantDeps := upgrade.TenantDeps{
-			Codec:              execCtx.ExecCfg().Codec,
-			Settings:           execCtx.ExecCfg().Settings,
-			DB:                 execCtx.ExecCfg().InternalDB,
-			KVDB:               execCtx.ExecCfg().DB,
-			LeaseManager:       execCtx.ExecCfg().LeaseManager,
-			LicenseEnforcer:    execCtx.ExecCfg().LicenseEnforcer,
-			InternalExecutor:   ex,
-			JobRegistry:        execCtx.ExecCfg().JobRegistry,
-			TestingKnobs:       execCtx.ExecCfg().UpgradeTestingKnobs,
-			SessionData:        execCtx.SessionData(),
-			ClusterID:          execCtx.ExtendedEvalContext().ClusterID,
-			TenantInfoAccessor: mc.SystemDeps().TenantInfoAccessor,
-			OptionalJobID:      r.j.ID(),
+			Codec:            execCtx.ExecCfg().Codec,
+			Settings:         execCtx.ExecCfg().Settings,
+			DB:               execCtx.ExecCfg().InternalDB,
+			KVDB:             execCtx.ExecCfg().DB,
+			LeaseManager:     execCtx.ExecCfg().LeaseManager,
+			InternalExecutor: ex,
+			JobRegistry:      execCtx.ExecCfg().JobRegistry,
+			TestingKnobs:     execCtx.ExecCfg().UpgradeTestingKnobs,
+			SessionData:      execCtx.SessionData(),
+			ClusterID:        execCtx.ExtendedEvalContext().ClusterID,
 		}
 
 		tenantDeps.SchemaResolverConstructor = func(
 			txn *kv.Txn, descriptors *descs.Collection, currDb string,
 		) (resolver.SchemaResolver, func(), error) {
-			opName := redact.SafeString("internal-planner-for-upgrades")
+			opName := "internal-planner-for-upgrades"
 			sd := execCtx.SessionData().Clone()
 			sd.Database = currDb
 			internalPlanner, cleanup := sql.NewInternalPlanner(
@@ -127,14 +123,6 @@ func (r resumer) Resume(ctx context.Context, execCtxI interface{}) error {
 	}
 	if err != nil {
 		return errors.Wrapf(err, "running migration for %v", v)
-	}
-
-	// Bump the version of the system database schema whenever we run a
-	// non-permanent migration.
-	if !m.Permanent() {
-		if err := upgrade.BumpSystemDatabaseSchemaVersion(ctx, v, db); err != nil {
-			return err
-		}
 	}
 
 	// Mark the upgrade as having been completed so that subsequent iterations

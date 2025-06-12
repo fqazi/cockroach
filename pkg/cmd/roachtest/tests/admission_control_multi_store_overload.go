@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -21,9 +20,11 @@ import (
 
 func registerMultiStoreOverload(r registry.Registry) {
 	runKV := func(ctx context.Context, t test.Test, c cluster.Cluster) {
+		nodes := c.Spec().NodeCount - 1
+		c.Put(ctx, t.DeprecatedWorkload(), "./workload", c.Node(nodes+1))
 		startOpts := option.NewStartOpts(option.NoBackupSchedule)
 		startOpts.RoachprodOpts.StoreCount = 2
-		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.CRDBNodes())
+		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.Range(1, nodes))
 
 		db := c.Conn(ctx, t.L(), 1)
 		defer db.Close()
@@ -46,41 +47,38 @@ func registerMultiStoreOverload(r registry.Registry) {
 		}
 		// Defensive, since admission control is enabled by default. This test can
 		// fail if admission control is disabled.
-		roachtestutil.SetAdmissionControl(ctx, t, c, true)
+		setAdmissionControl(ctx, t, c, true)
 		if _, err := db.ExecContext(ctx,
 			"SET CLUSTER SETTING kv.range_split.by_load_enabled = 'false'"); err != nil {
 			t.Fatalf("failed to disable load based splitting: %v", err)
 		}
 		t.Status("running workload")
 		dur := 20 * time.Minute
-		duration := " --duration=" + roachtestutil.IfLocal(c, "10s", dur.String())
-		labels := map[string]string{
-			"duration": dur.String(),
-		}
-		histograms := " " + roachtestutil.GetWorkloadHistogramArgs(t, c, labels)
-		m1 := c.NewMonitor(ctx, c.CRDBNodes())
+		duration := " --duration=" + ifLocal(c, "10s", dur.String())
+		histograms := " --histograms=" + t.PerfArtifactsDir() + "/stats.json"
+		m1 := c.NewMonitor(ctx, c.Range(1, nodes))
 		m1.Go(func(ctx context.Context) error {
 			dbRegular := " --db=db1"
-			concurrencyRegular := roachtestutil.IfLocal(c, "", " --concurrency=8")
+			concurrencyRegular := ifLocal(c, "", " --concurrency=8")
 			readPercentRegular := " --read-percent=95"
-			cmdRegular := fmt.Sprintf("./cockroach workload run kv --init"+
+			cmdRegular := fmt.Sprintf("./workload run kv --init"+
 				dbRegular+histograms+concurrencyRegular+duration+readPercentRegular+
-				" {pgurl%s}", c.CRDBNodes())
-			c.Run(ctx, option.WithNodes(c.WorkloadNode()), cmdRegular)
+				" {pgurl:1-%d}", nodes)
+			c.Run(ctx, c.Node(nodes+1), cmdRegular)
 			return nil
 		})
-		m2 := c.NewMonitor(ctx, c.CRDBNodes())
+		m2 := c.NewMonitor(ctx, c.Range(1, nodes))
 		m2.Go(func(ctx context.Context) error {
 			dbOverload := " --db=db2"
-			concurrencyOverload := roachtestutil.IfLocal(c, "", " --concurrency=64")
+			concurrencyOverload := ifLocal(c, "", " --concurrency=64")
 			readPercentOverload := " --read-percent=0"
 			bs := 1 << 16 /* 64KB */
 			blockSizeOverload := fmt.Sprintf(" --min-block-bytes=%d --max-block-bytes=%d",
 				bs, bs)
-			cmdOverload := fmt.Sprintf("./cockroach workload run kv --init"+
+			cmdOverload := fmt.Sprintf("./workload run kv --init"+
 				dbOverload+histograms+concurrencyOverload+duration+readPercentOverload+blockSizeOverload+
-				" {pgurl%s}", c.CRDBNodes())
-			c.Run(ctx, option.WithNodes(c.WorkloadNode()), cmdOverload)
+				" {pgurl:1-%d}", nodes)
+			c.Run(ctx, c.Node(nodes+1), cmdOverload)
 			return nil
 		})
 		m1.Wait()
@@ -93,7 +91,7 @@ func registerMultiStoreOverload(r registry.Registry) {
 		Benchmark:        true,
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Weekly),
-		Cluster:          r.MakeClusterSpec(2, spec.CPU(8), spec.WorkloadNode(), spec.SSD(2)),
+		Cluster:          r.MakeClusterSpec(2, spec.CPU(8), spec.SSD(2)),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runKV(ctx, t, c)

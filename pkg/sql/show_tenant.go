@@ -7,12 +7,10 @@ package sql
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
@@ -20,8 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
-	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -41,19 +37,16 @@ type showTenantNodeCapability struct {
 }
 
 type showTenantNode struct {
-	zeroInputPlanNode
-	tenantSpec           tenantSpec
-	withReplication      bool
-	withPriorReplication bool
-	withCapabilities     bool
-	columns              colinfo.ResultColumns
-	tenantIDIndex        int
-	tenantIds            []roachpb.TenantID
-	initTenantValues     bool
-	values               *tenantValues
-	capabilityIndex      int
-	capability           showTenantNodeCapability
-	statementTime        time.Time
+	tenantSpec       tenantSpec
+	withReplication  bool
+	withCapabilities bool
+	columns          colinfo.ResultColumns
+	tenantIDIndex    int
+	tenantIds        []roachpb.TenantID
+	initTenantValues bool
+	values           *tenantValues
+	capabilityIndex  int
+	capability       showTenantNodeCapability
 }
 
 // ShowTenant constructs a showTenantNode.
@@ -70,22 +63,17 @@ func (p *planner) ShowTenant(ctx context.Context, n *tree.ShowTenant) (planNode,
 	if err != nil {
 		return nil, err
 	}
+
 	node := &showTenantNode{
-		tenantSpec:           tspec,
-		withReplication:      n.WithReplication,
-		withPriorReplication: n.WithPriorReplication,
-		withCapabilities:     n.WithCapabilities,
-		initTenantValues:     true,
+		tenantSpec:       tspec,
+		withReplication:  n.WithReplication,
+		withCapabilities: n.WithCapabilities,
+		initTenantValues: true,
 	}
 
 	node.columns = colinfo.TenantColumns
 	if n.WithReplication {
 		node.columns = append(node.columns, colinfo.TenantColumnsWithReplication...)
-	} else {
-		node.columns = append(node.columns, colinfo.TenantColumnsNoReplication...)
-	}
-	if n.WithPriorReplication {
-		node.columns = append(node.columns, colinfo.TenantColumnsWithPriorReplication...)
 	}
 	if n.WithCapabilities {
 		node.columns = append(node.columns, colinfo.TenantColumnsWithCapabilities...)
@@ -95,11 +83,18 @@ func (p *planner) ShowTenant(ctx context.Context, n *tree.ShowTenant) (planNode,
 }
 
 func CanManageTenant(ctx context.Context, p AuthorizationAccessor) error {
+	isAdmin, err := p.HasAdminRole(ctx)
+	if err != nil {
+		return err
+	}
+	if isAdmin {
+		return nil
+	}
+
 	return p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.MANAGEVIRTUALCLUSTER)
 }
 
 func (n *showTenantNode) startExec(params runParams) error {
-	n.statementTime = params.extendedEvalCtx.GetStmtTimestamp()
 	if _, ok := n.tenantSpec.(tenantSpecAll); ok {
 		ids, err := GetAllNonDropTenantIDs(params.ctx, params.p.InternalSQLTxn(), params.p.ExecCfg().Settings)
 		if err != nil {
@@ -125,8 +120,8 @@ func (n *showTenantNode) getTenantValues(
 
 	// Add capabilities if requested.
 	if n.withCapabilities {
-		showTenantNodeCapabilities := make([]showTenantNodeCapability, 0, len(tenantcapabilitiespb.IDs))
-		for _, id := range tenantcapabilitiespb.IDs {
+		showTenantNodeCapabilities := make([]showTenantNodeCapability, 0, len(tenantcapabilities.IDs))
+		for _, id := range tenantcapabilities.IDs {
 			value := tenantcapabilities.MustGetValueByID(&tenantInfo.Capabilities, id)
 			showTenantNodeCapabilities = append(showTenantNodeCapabilities, showTenantNodeCapability{
 				name:  id.String(),
@@ -219,27 +214,24 @@ func (n *showTenantNode) Values() tree.Datums {
 	result := tree.Datums{
 		tree.NewDInt(tree.DInt(tenantInfo.ID)),
 		tree.NewDString(string(tenantInfo.Name)),
+		tree.NewDString(v.dataState),
+		tree.NewDString(tenantInfo.ServiceMode.String()),
 	}
-	if !n.withReplication {
-		result = append(result,
-			tree.NewDString(v.dataState),
-			tree.NewDString(tenantInfo.ServiceMode.String()),
-		)
-	} else {
+
+	if n.withReplication {
 		// This is a 'SHOW VIRTUAL CLUSTER name WITH REPLICATION STATUS' command.
-		replicationJobID := tree.DNull
 		sourceTenantName := tree.DNull
 		sourceClusterUri := tree.DNull
+		replicationJobId := tree.DNull
 		replicatedTimestamp := tree.DNull
 		retainedTimestamp := tree.DNull
 		cutoverTimestamp := tree.DNull
-		replicationLag := tree.DNull
 
 		replicationInfo := v.replicationInfo
 		if replicationInfo != nil {
-			replicationJobID = tree.NewDInt(tree.DInt(v.tenantInfo.PhysicalReplicationConsumerJobID))
+			replicationJobId = tree.NewDInt(tree.DInt(tenantInfo.PhysicalReplicationConsumerJobID))
 			sourceTenantName = tree.NewDString(string(replicationInfo.IngestionDetails.SourceTenantName))
-			sourceClusterUri = tree.NewDString(replicationInfo.IngestionDetails.SourceClusterConnUri)
+			sourceClusterUri = tree.NewDString(replicationInfo.IngestionDetails.StreamAddress)
 			if replicationInfo.ReplicationLagInfo != nil {
 				minIngested := replicationInfo.ReplicationLagInfo.MinIngestedTimestamp
 				// The latest fully replicated time. Truncating to the nearest microsecond
@@ -247,12 +239,7 @@ func (n *showTenantNode) Values() tree.Datums {
 				// microsecond. In that case a user may want to cutover to a rounded-up
 				// time, which is a time that we may never replicate to. Instead, we show
 				// a time that we know we replicated to.
-				minIngestedMicro := minIngested.GoTime().Truncate(time.Microsecond)
-				replicatedTimestamp, _ = tree.MakeDTimestampTZ(minIngestedMicro, time.Nanosecond)
-
-				nowMicro := n.statementTime.Truncate(time.Microsecond)
-				replicationLagDuration := duration.MakeDuration(nowMicro.Sub(minIngestedMicro).Nanoseconds(), 0, 0)
-				replicationLag = tree.NewDInterval(replicationLagDuration, types.DefaultIntervalTypeMetadata)
+				replicatedTimestamp, _ = tree.MakeDTimestampTZ(minIngested.GoTime().Truncate(time.Microsecond), time.Nanosecond)
 			}
 			// The protected timestamp on the destination cluster. Same as with the
 			// replicatedTimestamp, we want to show a retained time that is within the
@@ -268,24 +255,13 @@ func (n *showTenantNode) Values() tree.Datums {
 		}
 
 		result = append(result,
-			replicationJobID,
 			sourceTenantName,
 			sourceClusterUri,
-			retainedTimestamp,
+			replicationJobId,
 			replicatedTimestamp,
-			replicationLag,
+			retainedTimestamp,
 			cutoverTimestamp,
-			tree.NewDString(v.dataState),
 		)
-	}
-	if n.withPriorReplication {
-		sourceID := tree.DNull
-		activationTimestamp := tree.DNull
-		if prior := v.tenantInfo.PreviousSourceTenant; prior != nil {
-			sourceID = tree.NewDString(fmt.Sprintf("%s:%s", prior.ClusterID, prior.TenantID.String()))
-			activationTimestamp = eval.TimestampToDecimalDatum(prior.CutoverTimestamp)
-		}
-		result = append(result, sourceID, activationTimestamp)
 	}
 
 	if n.withCapabilities {

@@ -15,7 +15,7 @@ with t=A
 ----
 put: lock acquisition = {k2 id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0 Replicated Intent []}
 >> at end:
-txn: "A" meta={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=10.000000000,0 gul=0,0
+txn: "A" meta={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=10.000000000,0 wto=false gul=0,0
 data: "k1"/10.000000000,0 -> /BYTES/v
 meta: "k2"/0,0 -> txn={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} ts=10.000000000,0 del=false klen=12 vlen=6 mergeTs=<nil> txnDidNotUpdateMeta=true
 data: "k2"/10.000000000,0 -> /BYTES/v
@@ -242,13 +242,13 @@ run error
 scan k=a end=b_next ts=9,0 failOnMoreRecent
 ----
 scan: "a"-"b_next" -> <no data>
-error: (*kvpb.WriteTooOldError:) WriteTooOldError: write for key "b" at timestamp 9.000000000,0 too old; must write at or above 13.000000000,1
+error: (*kvpb.WriteTooOldError:) WriteTooOldError: write for key "a" at timestamp 9.000000000,0 too old; must write at or above 13.000000000,1
 
 run error
 scan k=a end=c_next ts=9,0 failOnMoreRecent
 ----
 scan: "a"-"c_next" -> <no data>
-error: (*kvpb.WriteTooOldError:) WriteTooOldError: write for key "b" at timestamp 9.000000000,0 too old; must write at or above 13.000000000,1
+error: (*kvpb.WriteTooOldError:) WriteTooOldError: write for key "a" at timestamp 9.000000000,0 too old; must write at or above 13.000000000,1
 
 run error
 scan k=b end=c_next ts=9,0 failOnMoreRecent

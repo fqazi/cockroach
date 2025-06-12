@@ -3,19 +3,21 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Gear } from "@cockroachlabs/icons";
-import classNames from "classnames/bind";
+import Select, { components, OptionsType } from "react-select";
 import React from "react";
-import Select, { components, OptionsType, ActionMeta } from "react-select";
-
+import classNames from "classnames/bind";
+import styles from "./columnsSelector.module.scss";
 import { Button } from "../button";
 import {
   dropdown,
   dropdownContentWrapper,
   hidden,
 } from "../queryFilter/filterClasses";
-
-import styles from "./columnsSelector.module.scss";
+import { Gear } from "@cockroachlabs/icons";
+import {
+  DeselectOptionActionMeta,
+  SelectOptionActionMeta,
+} from "react-select/src/types";
 
 const cx = classNames.bind(styles);
 
@@ -64,6 +66,7 @@ const customStyles = {
   container: (provided: any) => ({
     ...provided,
     border: "none",
+    height: "fit-content",
   }),
   control: (provided: any) => ({
     ...provided,
@@ -134,20 +137,18 @@ export default class ColumnsSelector extends React.Component<
   outsideClick = () => {
     this.setState({ hide: true });
   };
-  insideClick: React.MouseEventHandler<HTMLDivElement> = event => {
+  insideClick = (event: any) => {
     event.stopPropagation();
   };
 
   handleChange = (
     _selectedOptions: OptionsType<SelectOption>,
     // get actual selection of specific option and action type from "actionMeta"
-    actionMeta: ActionMeta<SelectOption>,
+    actionMeta:
+      | SelectOptionActionMeta<SelectOption>
+      | DeselectOptionActionMeta<SelectOption>,
   ): void => {
-    const { action } = actionMeta;
-    if (action !== "select-option" && action !== "deselect-option") {
-      return;
-    }
-    const option = actionMeta.option;
+    const { option, action } = actionMeta;
     const selectionState = new Map(this.state.selectionState);
     // true - if option was selected, false - otherwise
     const isSelectedOption = action === "select-option";
@@ -235,7 +236,7 @@ export default class ColumnsSelector extends React.Component<
         <div className={dropdownArea}>
           <div className={dropdownContentWrapper}>
             <div className={cx("label")}>Hide/show columns</div>
-            <Select<SelectOption, true>
+            <Select
               isMulti
               menuIsOpen={true}
               options={options}

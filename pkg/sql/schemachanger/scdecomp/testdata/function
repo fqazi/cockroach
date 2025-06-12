@@ -29,8 +29,7 @@ ElementState:
     isProcedure: false
     params:
     - class:
-        class: DEFAULT
-      defaultExpr: ""
+        class: IN
       name: a
       type:
         closedTypeIds:
@@ -53,7 +52,6 @@ ElementState:
             arrayTypeOid: 100109
           visibleType: 0
           width: 0
-        typeName: public.notmyworkday
     returnSet: false
     returnType:
       closedTypeIds: []
@@ -73,7 +71,6 @@ ElementState:
         udtMetadata: null
         visibleType: 0
         width: 64
-      typeName: INT8
   Status: PUBLIC
 - FunctionBody:
     body: |-
@@ -85,7 +82,6 @@ ElementState:
     functionId: 110
     lang:
       lang: SQL
-    usesFunctionIds: []
     usesSequenceIds:
     - 105
     usesTables:
@@ -121,11 +117,6 @@ ElementState:
     functionId: 110
     nullInputBehavior:
       nullInputBehavior: CALLED_ON_NULL_INPUT
-  Status: PUBLIC
-- FunctionSecurity:
-    functionId: 110
-    security:
-      security: INVOKER
   Status: PUBLIC
 - FunctionVolatility:
     functionId: 110

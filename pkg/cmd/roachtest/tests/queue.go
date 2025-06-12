@@ -14,8 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -25,14 +23,13 @@ func registerQueue(r registry.Registry) {
 	// One node runs the workload generator, all other nodes host CockroachDB.
 	const numNodes = 2
 	r.Add(registry.TestSpec{
-		Skip:                       "https://github.com/cockroachdb/cockroach/issues/17229",
-		Name:                       fmt.Sprintf("queue/nodes=%d", numNodes-1),
-		Owner:                      registry.OwnerKV,
-		Cluster:                    r.MakeClusterSpec(numNodes, spec.WorkloadNode()),
-		CompatibleClouds:           registry.AllExceptAWS,
-		Suites:                     registry.Suites(registry.Nightly),
-		Leases:                     registry.MetamorphicLeases,
-		RequiresDeprecatedWorkload: true, // uses queue
+		Skip:             "https://github.com/cockroachdb/cockroach/issues/17229",
+		Name:             fmt.Sprintf("queue/nodes=%d", numNodes-1),
+		Owner:            registry.OwnerKV,
+		Cluster:          r.MakeClusterSpec(numNodes),
+		CompatibleClouds: registry.AllExceptAWS,
+		Suites:           registry.Suites(registry.Nightly),
+		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runQueue(ctx, t, c)
 		},
@@ -41,34 +38,32 @@ func registerQueue(r registry.Registry) {
 
 func runQueue(ctx context.Context, t test.Test, c cluster.Cluster) {
 	dbNodeCount := c.Spec().NodeCount - 1
+	workloadNode := c.Spec().NodeCount
+
 	// Distribute programs to the correct nodes and start CockroachDB.
-	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.CRDBNodes())
+	c.Put(ctx, t.DeprecatedWorkload(), "./workload", c.Node(workloadNode))
+	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.Range(1, dbNodeCount))
 
 	runQueueWorkload := func(duration time.Duration, initTables bool) {
-		m := c.NewMonitor(ctx, c.CRDBNodes())
+		m := c.NewMonitor(ctx, c.Range(1, dbNodeCount))
 		m.Go(func(ctx context.Context) error {
-			concurrency := roachtestutil.IfLocal(c, "", " --concurrency="+fmt.Sprint(dbNodeCount*64))
+			concurrency := ifLocal(c, "", " --concurrency="+fmt.Sprint(dbNodeCount*64))
 			duration := fmt.Sprintf(" --duration=%s", duration.String())
 			batch := " --batch 100"
 			init := ""
 			if initTables {
 				init = " --init"
 			}
-			labels := map[string]string{
-				"batch":       "100",
-				"concurrency": roachtestutil.IfLocal(c, "", fmt.Sprint(dbNodeCount*64)),
-				"duration":    duration,
-			}
 			cmd := fmt.Sprintf(
-				"./workload run queue %s %s %s %s %s  {pgurl%s}",
-				roachtestutil.GetWorkloadHistogramArgs(t, c, labels),
-				init,
-				concurrency,
-				duration,
-				batch,
-				c.CRDBNodes(),
+				"./workload run queue --histograms="+t.PerfArtifactsDir()+"/stats.json"+
+					init+
+					concurrency+
+					duration+
+					batch+
+					" {pgurl:1-%d}",
+				dbNodeCount,
 			)
-			c.Run(ctx, option.WithNodes(c.WorkloadNode()), cmd)
+			c.Run(ctx, c.Node(workloadNode), cmd)
 			return nil
 		})
 		m.Wait()

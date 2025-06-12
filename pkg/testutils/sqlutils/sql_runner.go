@@ -27,7 +27,7 @@ import (
 // convenience functions to run SQL statements and fail the test on any errors.
 type SQLRunner struct {
 	DB                   DBHandle
-	SucceedsSoonDuration time.Duration // defaults to testutils.DefaultSucceedsSoonDuration or testutils.RaceSucceedsSoonDuration
+	SucceedsSoonDuration time.Duration // defaults to testutils.DefaultSucceedsSoonDuration
 	MaxTxnRetries        int           // defaults to 0 for unlimited retries
 }
 
@@ -80,7 +80,6 @@ func fmtMessage(message string) string {
 
 // Exec is a wrapper around gosql.Exec that kills the test on error.
 func (sr *SQLRunner) Exec(t Fataler, query string, args ...interface{}) gosql.Result {
-	helperOrNoop(t)()
 	return sr.ExecWithMessage(t, "", query, args...)
 }
 
@@ -92,7 +91,7 @@ func (sr *SQLRunner) ExecWithMessage(
 	helperOrNoop(t)()
 	r, err := sr.DB.ExecContext(context.Background(), query, args...)
 	if err != nil {
-		t.Fatalf("%serror executing query=%q args=%q: %s", fmtMessage(message), query, args, pgerror.FullError(err))
+		t.Fatalf("%serror executing query=%q args=%q: %s", fmtMessage(message), query, args, err)
 	}
 	return r
 }
@@ -104,7 +103,7 @@ func (sr *SQLRunner) ExecMultiple(t Fataler, queries ...string) {
 	for _, query := range queries {
 		_, err := sr.DB.ExecContext(context.Background(), query)
 		if err != nil {
-			t.Fatalf("error executing '%s': %s", query, pgerror.FullError(err))
+			t.Fatalf("error executing '%s': %s", query, err)
 		}
 	}
 }
@@ -125,7 +124,7 @@ func (sr *SQLRunner) succeedsWithin(t Fataler, f func() error) {
 	helperOrNoop(t)()
 	d := sr.SucceedsSoonDuration
 	if d == 0 {
-		d = testutils.SucceedsSoonDuration()
+		d = testutils.DefaultSucceedsSoonDuration
 	}
 	require.NoError(requireT{t}, testutils.SucceedsWithinError(f, d))
 }
@@ -224,14 +223,14 @@ func (sr *SQLRunner) ExpectErrSucceedsSoon(
 	})
 }
 
-// ExpectErrWithTimeout wraps ExpectErr with a timeout.
+// ExpectErrWithTimeout wraps ExpectErr with a timeout..
 func (sr *SQLRunner) ExpectErrWithTimeout(
 	t Fataler, errRE string, query string, args ...interface{},
 ) {
 	helperOrNoop(t)()
 	d := sr.SucceedsSoonDuration
 	if d == 0 {
-		d = testutils.SucceedsSoonDuration()
+		d = testutils.DefaultSucceedsSoonDuration
 	}
 	err := timeutil.RunWithTimeout(context.Background(), "expect-err", d, func(ctx context.Context) error {
 		_, err := sr.DB.ExecContext(ctx, query, args...)
@@ -293,28 +292,16 @@ func (sr *SQLRunner) QueryRow(t Fataler, query string, args ...interface{}) *Row
 	return &Row{t, sr.DB.QueryRowContext(context.Background(), query, args...)}
 }
 
-// QueryStrMeta runs a Query and converts the result using RowsToStrMatrix. Kills
-// the test on errors, including meta string in error message.
-func (sr *SQLRunner) QueryStrMeta(
-	t Fataler, meta string, query string, args ...interface{},
-) [][]string {
+// QueryStr runs a Query and converts the result using RowsToStrMatrix. Kills
+// the test on errors.
+func (sr *SQLRunner) QueryStr(t Fataler, query string, args ...interface{}) [][]string {
 	helperOrNoop(t)()
 	rows := sr.Query(t, query, args...)
 	r, err := RowsToStrMatrix(rows)
 	if err != nil {
-		if meta == "" {
-			t.Fatalf("%v", err)
-		} else {
-			t.Fatalf("%s: %v", meta, err)
-		}
+		t.Fatalf("%v", err)
 	}
 	return r
-}
-
-// QueryStr runs a Query and converts the result using RowsToStrMatrix. Kills
-// the test on errors.
-func (sr *SQLRunner) QueryStr(t Fataler, query string, args ...interface{}) [][]string {
-	return sr.QueryStrMeta(t, "", query, args...)
 }
 
 // RowsToStrMatrix converts the given result rows to a string matrix; nulls are

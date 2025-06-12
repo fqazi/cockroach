@@ -12,43 +12,38 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobsauth"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
-	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/errors"
 )
 
 type controlJobsNode struct {
-	singleInputPlanNode
-	desiredStatus jobs.State
+	rows          planNode
+	desiredStatus jobs.Status
 	numRows       int
 	reason        string
 }
 
-var jobCommandToDesiredStatus = map[tree.JobCommand]jobs.State{
-	tree.CancelJob: jobs.StateCanceled,
-	tree.ResumeJob: jobs.StateRunning,
-	tree.PauseJob:  jobs.StatePaused,
+var jobCommandToDesiredStatus = map[tree.JobCommand]jobs.Status{
+	tree.CancelJob: jobs.StatusCanceled,
+	tree.ResumeJob: jobs.StatusRunning,
+	tree.PauseJob:  jobs.StatusPaused,
 }
 
-// FastPathResults implements the planNodeFastPath interface.
+// FastPathResults implements the planNodeFastPath inteface.
 func (n *controlJobsNode) FastPathResults() (int, bool) {
 	return n.numRows, true
 }
 
 func (n *controlJobsNode) startExec(params runParams) error {
-	if n.desiredStatus != jobs.StatePaused && len(n.reason) > 0 {
+	if n.desiredStatus != jobs.StatusPaused && len(n.reason) > 0 {
 		return errors.AssertionFailedf("status %v is not %v and thus does not support a reason %v",
-			n.desiredStatus, jobs.StatePaused, n.reason)
+			n.desiredStatus, jobs.StatusPaused, n.reason)
 	}
 
 	reg := params.p.ExecCfg().JobRegistry
-	globalPrivileges, err := jobsauth.GetGlobalJobPrivileges(params.ctx, params.p)
-	if err != nil {
-		return err
-	}
 	for {
-		ok, err := n.input.Next(params)
+		ok, err := n.rows.Next(params)
 		if err != nil {
 			return err
 		}
@@ -56,7 +51,7 @@ func (n *controlJobsNode) startExec(params runParams) error {
 			break
 		}
 
-		jobIDDatum := n.input.Values()[0]
+		jobIDDatum := n.rows.Values()[0]
 		if jobIDDatum == tree.DNull {
 			continue
 		}
@@ -66,37 +61,38 @@ func (n *controlJobsNode) startExec(params runParams) error {
 			return errors.AssertionFailedf("%q: expected *DInt, found %T", jobIDDatum, jobIDDatum)
 		}
 
-		if err := reg.UpdateJobWithTxn(params.ctx, jobspb.JobID(jobID), params.p.InternalSQLTxn(),
-			func(txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
-				getLegacyPayload := func(ctx context.Context) (*jobspb.Payload, error) {
-					return md.Payload, nil
-				}
-				if err := jobsauth.AuthorizeAllowLegacyAuth(params.ctx, params.p,
-					md.ID, getLegacyPayload, md.Payload.UsernameProto.Decode(), md.Payload.Type(), jobsauth.ControlAccess, globalPrivileges); err != nil {
-					return err
-				}
-				switch n.desiredStatus {
-				case jobs.StatePaused:
-					return ju.PauseRequested(params.ctx, txn, md, n.reason)
-				case jobs.StateRunning:
-					return ju.Unpaused(params.ctx, md)
-				case jobs.StateCanceled:
-					return ju.CancelRequested(params.ctx, md)
-				default:
-					return errors.AssertionFailedf("unhandled status %v", n.desiredStatus)
-				}
-			}); err != nil {
+		job, err := reg.LoadJobWithTxn(params.ctx, jobspb.JobID(jobID), params.p.InternalSQLTxn())
+		if err != nil {
 			return err
 		}
 
+		payload := job.Payload()
+		if err := jobsauth.Authorize(params.ctx, params.p,
+			job.ID(), &payload, jobsauth.ControlAccess); err != nil {
+			return err
+		}
+		ctrl := job.WithTxn(params.p.InternalSQLTxn())
+		switch n.desiredStatus {
+		case jobs.StatusPaused:
+			err = ctrl.PauseRequested(params.ctx, n.reason)
+		case jobs.StatusRunning:
+			err = ctrl.Unpaused(params.ctx)
+		case jobs.StatusCanceled:
+			err = ctrl.CancelRequested(params.ctx)
+		default:
+			err = errors.AssertionFailedf("unhandled status %v", n.desiredStatus)
+		}
+		if err != nil {
+			return err
+		}
 		n.numRows++
 	}
 	switch n.desiredStatus {
-	case jobs.StatePaused:
+	case jobs.StatusPaused:
 		telemetry.Inc(sqltelemetry.SchemaJobControlCounter("pause"))
-	case jobs.StateRunning:
+	case jobs.StatusRunning:
 		telemetry.Inc(sqltelemetry.SchemaJobControlCounter("resume"))
-	case jobs.StateCanceled:
+	case jobs.StatusCanceled:
 		telemetry.Inc(sqltelemetry.SchemaJobControlCounter("cancel"))
 	}
 	return nil
@@ -107,5 +103,5 @@ func (*controlJobsNode) Next(runParams) (bool, error) { return false, nil }
 func (*controlJobsNode) Values() tree.Datums { return nil }
 
 func (n *controlJobsNode) Close(ctx context.Context) {
-	n.input.Close(ctx)
+	n.rows.Close(ctx)
 }

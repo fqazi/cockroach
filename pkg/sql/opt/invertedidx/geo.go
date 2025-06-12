@@ -60,7 +60,7 @@ func GetGeoIndexRelationship(expr opt.ScalarExpr) (_ geoindex.RelationshipType, 
 // geospatial relationship. It is implemented by getSpanExprForGeographyIndex
 // and getSpanExprForGeometryIndex and used in extractGeoFilterCondition.
 type getSpanExprForGeoIndexFn func(
-	context.Context, tree.Datum, []tree.Datum, geoindex.RelationshipType, geopb.Config,
+	context.Context, tree.Datum, []tree.Datum, geoindex.RelationshipType, geoindex.Config,
 ) inverted.Expression
 
 // getSpanExprForGeographyIndex gets a SpanExpression that constrains the given
@@ -70,7 +70,7 @@ func getSpanExprForGeographyIndex(
 	d tree.Datum,
 	additionalParams []tree.Datum,
 	relationship geoindex.RelationshipType,
-	indexConfig geopb.Config,
+	indexConfig geoindex.Config,
 ) inverted.Expression {
 	geogIdx := geoindex.NewS2GeographyIndex(*indexConfig.S2Geography)
 	geog := d.(*tree.DGeography).Geography
@@ -157,7 +157,7 @@ func getSpanExprForGeometryIndex(
 	d tree.Datum,
 	additionalParams []tree.Datum,
 	relationship geoindex.RelationshipType,
-	indexConfig geopb.Config,
+	indexConfig geoindex.Config,
 ) inverted.Expression {
 	geomIdx := geoindex.NewS2GeometryIndex(*indexConfig.S2Geometry)
 	geom := d.(*tree.DGeometry).Geometry
@@ -924,7 +924,7 @@ type geoDatumsToInvertedExpr struct {
 	evalCtx      *eval.Context
 	colTypes     []*types.T
 	invertedExpr tree.TypedExpr
-	indexConfig  geopb.Config
+	indexConfig  geoindex.Config
 	typ          *types.T
 	getSpanExpr  getSpanExprForGeoIndexFn
 
@@ -939,17 +939,25 @@ var _ invertedexpr.DatumsToInvertedExpr = &geoDatumsToInvertedExpr{}
 var _ eval.IndexedVarContainer = &geoDatumsToInvertedExpr{}
 
 // IndexedVarEval is part of the eval.IndexedVarContainer interface.
-func (g *geoDatumsToInvertedExpr) IndexedVarEval(idx int) (tree.Datum, error) {
+func (g *geoDatumsToInvertedExpr) IndexedVarEval(
+	ctx context.Context, idx int, e tree.ExprEvaluator,
+) (tree.Datum, error) {
 	err := g.row[idx].EnsureDecoded(g.colTypes[idx], &g.alloc)
 	if err != nil {
 		return nil, err
 	}
-	return g.row[idx].Datum, nil
+	return g.row[idx].Datum.Eval(ctx, e)
 }
 
 // IndexedVarResolvedType is part of the IndexedVarContainer interface.
 func (g *geoDatumsToInvertedExpr) IndexedVarResolvedType(idx int) *types.T {
 	return g.colTypes[idx]
+}
+
+// IndexedVarNodeFormatter is part of the IndexedVarContainer interface.
+func (g *geoDatumsToInvertedExpr) IndexedVarNodeFormatter(idx int) tree.NodeFormatter {
+	n := tree.Name(fmt.Sprintf("$%d", idx))
+	return &n
 }
 
 // NewGeoDatumsToInvertedExpr returns a new geoDatumsToInvertedExpr.
@@ -958,7 +966,7 @@ func NewGeoDatumsToInvertedExpr(
 	evalCtx *eval.Context,
 	colTypes []*types.T,
 	expr tree.TypedExpr,
-	config geopb.Config,
+	config geoindex.Config,
 ) (invertedexpr.DatumsToInvertedExpr, error) {
 	if config.IsEmpty() {
 		return nil, fmt.Errorf("inverted joins are currently only supported for geospatial indexes")

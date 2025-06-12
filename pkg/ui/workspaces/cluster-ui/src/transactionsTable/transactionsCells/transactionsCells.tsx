@@ -3,18 +3,15 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
 import React from "react";
 import { Link } from "react-router-dom";
-
 import { getHighlightedText } from "src/highlightedText";
+import { Tooltip } from "@cockroachlabs/ui-components";
 import { limitText } from "src/util";
-
+import classNames from "classnames/bind";
 import statementsStyles from "../../statementsTable/statementsTableContent.module.scss";
-import { TransactionLinkTarget } from "../transactionsTable";
-
 import transactionsCellsStyles from "./transactionsCells.module.scss";
+import { TransactionLinkTarget } from "../transactionsTable";
 
 const statementsCx = classNames.bind(statementsStyles);
 const ownCellStyles = classNames.bind(transactionsCellsStyles);

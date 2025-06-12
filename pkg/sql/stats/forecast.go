@@ -7,19 +7,23 @@ package stats
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/json"
+	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/sentryutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -97,7 +101,7 @@ var maxDecrease = settings.RegisterFloatSetting(
 // ForecastTableStatistics is deterministic: given the same observations it will
 // return the same forecasts.
 func ForecastTableStatistics(
-	ctx context.Context, st *cluster.Settings, observed []*TableStatistic,
+	ctx context.Context, sv *settings.Values, observed []*TableStatistic,
 ) []*TableStatistic {
 	// Group observed statistics by column set, skipping over partial statistics
 	// and statistics with inverted histograms.
@@ -139,9 +143,8 @@ func ForecastTableStatistics(
 		// latest collection time.
 		latest := observedByCols[colKey][0].CreatedAt
 		at := latest.Add(avgRefresh)
-
 		forecast, err := forecastColumnStatistics(
-			ctx, st, observedByCols[colKey], at, minGoodnessOfFit.Get(&st.SV),
+			ctx, sv, observedByCols[colKey], at, minGoodnessOfFit.Get(sv),
 		)
 		if err != nil {
 			log.VEventf(
@@ -175,12 +178,12 @@ func ForecastTableStatistics(
 // forecast time, it will return the same forecast.
 func forecastColumnStatistics(
 	ctx context.Context,
-	st *cluster.Settings,
+	sv *settings.Values,
 	observed []*TableStatistic,
 	at time.Time,
 	minRequiredFit float64,
 ) (forecast *TableStatistic, err error) {
-	if len(observed) < int(minObservationsForForecast.Get(&st.SV)) {
+	if len(observed) < int(minObservationsForForecast.Get(sv)) {
 		return nil, errors.New("not enough observations to forecast statistics")
 	}
 
@@ -232,7 +235,7 @@ func forecastColumnStatistics(
 		// over-estimate counts, so we pick a very conservative lowerBound of the
 		// prior lowest observation times maxDecrease to avoid prematurely
 		// estimating zero rows for downward-trending statistics.
-		lowerBound := math.Round(slices.Min(y) * maxDecrease.Get(&st.SV))
+		lowerBound := math.Round(slices.Min(y) * maxDecrease.Get(sv))
 		lowerBound = math.Max(0, lowerBound)
 		if yₙ < lowerBound {
 			return lowerBound, nil
@@ -308,7 +311,7 @@ func forecastColumnStatistics(
 	// histogram. NOTE: If any of the observed histograms were for inverted
 	// indexes this will produce an incorrect histogram.
 	if observed[0].HistogramData != nil && observed[0].HistogramData.ColumnType != nil {
-		hist, err := predictHistogram(ctx, st, observed, forecastAt, minRequiredFit, nonNullRowCount)
+		hist, err := predictHistogram(ctx, sv, observed, forecastAt, minRequiredFit, nonNullRowCount)
 		if err != nil {
 			// If we did not successfully predict a histogram then copy the latest
 			// histogram so we can adjust it.
@@ -322,10 +325,10 @@ func forecastColumnStatistics(
 		// Now adjust for consistency. We don't use any session data for operations
 		// on upper bounds, so a nil *eval.Context works as our tree.CompareContext.
 		var compareCtx *eval.Context
-		hist.adjustCounts(ctx, compareCtx, observed[0].HistogramData.ColumnType, nonNullRowCount, nonNullDistinctCount)
+		hist.adjustCounts(compareCtx, observed[0].HistogramData.ColumnType, nonNullRowCount, nonNullDistinctCount)
 
 		// Finally, convert back to HistogramData.
-		histData, err := hist.toHistogramData(ctx, observed[0].HistogramData.ColumnType, st)
+		histData, err := hist.toHistogramData(observed[0].HistogramData.ColumnType)
 		if err != nil {
 			return nil, err
 		}
@@ -334,14 +337,51 @@ func forecastColumnStatistics(
 
 		// Verify that the first two buckets (the initial NULL bucket and the first
 		// non-NULL bucket) both have NumRange=0 and DistinctRange=0. (We must check
-		// this after calling setHistogramBuckets to account for rounding.)
+		// this after calling setHistogramBuckets to account for rounding.) See
+		// #93892.
 		for _, bucket := range forecast.Histogram {
 			if bucket.NumRange != 0 || bucket.DistinctRange != 0 {
+				// Build a JSON representation of the first several buckets in each
+				// observed histogram so that we can figure out what happened.
+				const debugBucketCount = 5
+				jsonStats := make([]*JSONStatistic, 0, len(observed))
+
+				addStat := func(stat *TableStatistic) {
+					jsonStat := &JSONStatistic{
+						Name:          stat.Name,
+						CreatedAt:     stat.CreatedAt.String(),
+						Columns:       []string{strconv.FormatInt(int64(stat.ColumnIDs[0]), 10)},
+						RowCount:      stat.RowCount,
+						DistinctCount: stat.DistinctCount,
+						NullCount:     stat.NullCount,
+						AvgSize:       stat.AvgSize,
+					}
+					if err := jsonStat.SetHistogram(stat.HistogramData); err == nil &&
+						len(jsonStat.HistogramBuckets) > debugBucketCount {
+						// Limit the histogram to the first several buckets.
+						jsonStat.HistogramBuckets = jsonStat.HistogramBuckets[0:debugBucketCount]
+					}
+					// Replace UpperBounds with a hash.
+					for i := range jsonStat.HistogramBuckets {
+						hash := md5.Sum([]byte(jsonStat.HistogramBuckets[i].UpperBound))
+						jsonStat.HistogramBuckets[i].UpperBound = fmt.Sprintf("_%x", hash)
+					}
+					jsonStats = append(jsonStats, jsonStat)
+				}
+				addStat(forecast)
+				for i := range observed {
+					addStat(observed[i])
+				}
+				var debugging redact.SafeString
+				if j, err := json.Marshal(jsonStats); err == nil {
+					debugging = redact.SafeString(j)
+				}
 				err := errorutil.UnexpectedWithIssueErrorf(
-					93892, "forecasted histogram for table %v had first bucket with non-zero NumRange or "+
-						"DistinctRange", tableID,
+					93892,
+					"forecasted histogram had first bucket with non-zero NumRange or DistinctRange: %s",
+					debugging,
 				)
-				log.Warningf(ctx, "%v", err)
+				sentryutil.SendReport(ctx, sv, err)
 				return nil, err
 			}
 			if bucket.UpperBound != tree.DNull {
@@ -357,7 +397,7 @@ func forecastColumnStatistics(
 // predictHistogram tries to predict the histogram at forecast time.
 func predictHistogram(
 	ctx context.Context,
-	st *cluster.Settings,
+	sv *settings.Values,
 	observed []*TableStatistic,
 	forecastAt float64,
 	minRequiredFit float64,
@@ -403,7 +443,7 @@ func predictHistogram(
 		quantiles = append(quantiles, q)
 	}
 
-	if len(quantiles) < int(minObservationsForForecast.Get(&st.SV)) {
+	if len(quantiles) < int(minObservationsForForecast.Get(sv)) {
 		return histogram{}, errors.New("not enough observations to forecast histogram")
 	}
 
@@ -425,5 +465,5 @@ func predictHistogram(
 	}
 
 	// Finally, convert the predicted quantile function back to a histogram.
-	return yₙ.toHistogram(ctx, colType, nonNullRowCount)
+	return yₙ.toHistogram(colType, nonNullRowCount)
 }

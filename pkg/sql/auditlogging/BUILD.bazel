@@ -20,6 +20,7 @@ go_library(
         "//pkg/util/log/eventpb",
         "//pkg/util/log/logpb",
         "//pkg/util/syncutil",
+        "//pkg/util/uuid",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_olekukonko_tablewriter//:tablewriter",
     ],
@@ -28,6 +29,7 @@ go_library(
 go_test(
     name = "auditlogging_test",
     srcs = ["audit_log_test.go"],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":auditlogging"],
     deps = [

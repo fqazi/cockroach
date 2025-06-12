@@ -17,13 +17,13 @@ go_library(
         "//pkg/util/log",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_logtags//:logtags",
-        "@com_github_cockroachdb_redact//:redact",
     ],
 )
 
 go_test(
     name = "compengine_test",
     srcs = ["sketch_test.go"],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":compengine"],
     deps = [

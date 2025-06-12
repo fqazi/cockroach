@@ -13,14 +13,12 @@ package kvserver
 import (
 	"context"
 	"fmt"
-	"maps"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/plan"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
@@ -32,11 +30,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rangefeed"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/split"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/storeliveness"
-	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
@@ -47,20 +42,14 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/raft/v3"
 )
 
 func (s *Store) Transport() *RaftTransport {
 	return s.cfg.Transport
-}
-
-func (s *Store) StoreLivenessTransport() *storeliveness.Transport {
-	return s.cfg.StoreLiveness.Transport
-}
-
-func (s *Store) StorePool() *storepool.StorePool {
-	return s.cfg.StorePool
 }
 
 func (s *Store) FindTargetAndTransferLease(
@@ -96,7 +85,7 @@ func (s *Store) ComputeMVCCStats(reader storage.Reader) (enginepb.MVCCStats, err
 	now := s.Clock().PhysicalNow()
 	newStoreReplicaVisitor(s).Visit(func(r *Replica) bool {
 		var stats enginepb.MVCCStats
-		stats, err = rditer.ComputeStatsForRange(context.Background(), r.Desc(), reader, now)
+		stats, err = rditer.ComputeStatsForRange(r.Desc(), reader, now)
 		if err != nil {
 			return false
 		}
@@ -164,40 +153,35 @@ func (s *Store) SplitQueuePurgatoryLength() int {
 	return s.splitQueue.PurgatoryLength()
 }
 
-// LeaseQueuePurgatory returns a map of RangeIDs representing the purgatory.
-func (s *Store) LeaseQueuePurgatory() map[roachpb.RangeID]struct{} {
-	defer s.leaseQueue.baseQueue.lockProcessing()()
-	m := make(map[roachpb.RangeID]struct{}, len(s.leaseQueue.baseQueue.mu.purgatory))
-	for k := range s.leaseQueue.baseQueue.mu.purgatory {
-		m[k] = struct{}{}
-	}
-	return m
-}
-
 // SetRaftLogQueueActive enables or disables the raft log queue.
 func (s *Store) SetRaftLogQueueActive(active bool) {
-	s.testingSetRaftLogQueueActive(active)
+	s.setRaftLogQueueActive(active)
 }
 
 // SetReplicaGCQueueActive enables or disables the replica GC queue.
 func (s *Store) SetReplicaGCQueueActive(active bool) {
-	s.testingSetReplicaGCQueueActive(active)
+	s.setReplicaGCQueueActive(active)
+}
+
+// SetSplitQueueActive enables or disables the split queue.
+func (s *Store) SetSplitQueueActive(active bool) {
+	s.setSplitQueueActive(active)
 }
 
 // SetMergeQueueActive enables or disables the merge queue.
 func (s *Store) SetMergeQueueActive(active bool) {
-	s.testingSetMergeQueueActive(active)
+	s.setMergeQueueActive(active)
 }
 
 // SetRaftSnapshotQueueActive enables or disables the raft snapshot queue.
 func (s *Store) SetRaftSnapshotQueueActive(active bool) {
-	s.testingSetRaftSnapshotQueueActive(active)
+	s.setRaftSnapshotQueueActive(active)
 }
 
 // SetReplicaScannerActive enables or disables the scanner. Note that while
 // inactive, removals are still processed.
 func (s *Store) SetReplicaScannerActive(active bool) {
-	s.testingSetScannerActive(active)
+	s.setScannerActive(active)
 }
 
 // EnqueueRaftUpdateCheck enqueues the replica for a Raft update check, forcing
@@ -236,7 +220,7 @@ func (s *Store) ManualRaftSnapshot(repl *Replica, target roachpb.ReplicaID) erro
 // ReservationCount counts the number of outstanding reservations that are not
 // running.
 func (s *Store) ReservationCount() int {
-	return s.snapshotApplyQueue.MaxConcurrency() - s.snapshotApplyQueue.AvailableLen()
+	return int(s.cfg.SnapshotApplyLimit) - s.snapshotApplyQueue.AvailableLen()
 }
 
 // RaftSchedulerPriorityID returns the Raft scheduler's prioritized ranges.
@@ -333,7 +317,7 @@ func (r *Replica) RaftUnlock() {
 
 func (r *Replica) RaftReportUnreachable(id roachpb.ReplicaID) error {
 	return r.withRaftGroup(func(raftGroup *raft.RawNode) (bool, error) {
-		raftGroup.ReportUnreachable(raftpb.PeerID(id))
+		raftGroup.ReportUnreachable(uint64(id))
 		return false /* unquiesceAndWakeLeader */, nil
 	})
 }
@@ -353,10 +337,10 @@ func (r *Replica) Campaign(ctx context.Context) {
 }
 
 // ForceCampaign force-campaigns the replica.
-func (r *Replica) ForceCampaign(ctx context.Context, raftStatus raft.BasicStatus) {
+func (r *Replica) ForceCampaign(ctx context.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.forceCampaignLocked(ctx, raftStatus)
+	r.forceCampaignLocked(ctx)
 }
 
 // LastAssignedLeaseIndexRLocked is like LastAssignedLeaseIndex, but requires
@@ -419,18 +403,12 @@ func (r *Replica) NumPendingProposals() int64 {
 	return r.numPendingProposalsRLocked()
 }
 
-func (r *Replica) LastUpdateTimes() map[roachpb.ReplicaID]time.Time {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return maps.Clone(r.mu.lastUpdateTimes)
-}
-
 func (r *Replica) IsFollowerActiveSince(
-	followerID roachpb.ReplicaID, now time.Time, threshold time.Duration,
+	ctx context.Context, followerID roachpb.ReplicaID, threshold time.Duration,
 ) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.mu.lastUpdateTimes.isFollowerActiveSince(followerID, now, threshold)
+	return r.mu.lastUpdateTimes.isFollowerActiveSince(followerID, timeutil.Now(), threshold)
 }
 
 // GetTSCacheHighWater returns the high water mark of the replica's timestamp
@@ -438,7 +416,7 @@ func (r *Replica) IsFollowerActiveSince(
 func (r *Replica) GetTSCacheHighWater() hlc.Timestamp {
 	start := roachpb.Key(r.Desc().StartKey)
 	end := roachpb.Key(r.Desc().EndKey)
-	t, _ := r.store.tsCache.GetMax(context.Background(), start, end)
+	t, _ := r.store.tsCache.GetMax(start, end)
 	return t
 }
 
@@ -449,25 +427,25 @@ func (r *Replica) ShouldBackpressureWrites(_ context.Context) bool {
 }
 
 // GetRaftLogSize returns the approximate raft log size and whether it is
-// trustworthy. See replicaLogStorage.shMu.size for details.
+// trustworthy.. See r.mu.raftLogSize for details.
 func (r *Replica) GetRaftLogSize() (int64, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	ls := r.asLogStorage()
-	return ls.shMu.size, ls.shMu.sizeTrusted
+	return r.mu.raftLogSize, r.mu.raftLogSizeTrusted
 }
 
-// GetCachedLastTerm returns the term of the last log entry.
+// GetCachedLastTerm returns the cached last term value. May return
+// invalidLastTerm if the cache is not set.
 func (r *Replica) GetCachedLastTerm() kvpb.RaftTerm {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.asLogStorage().shMu.last.Term
+	return r.mu.lastTermNotDurable
 }
 
 // SideloadedRaftMuLocked returns r.raftMu.sideloaded. Requires a previous call
 // to RaftLock() or some other guarantee that r.raftMu is held.
 func (r *Replica) SideloadedRaftMuLocked() logstore.SideloadStorage {
-	return r.logStorage.ls.Sideload
+	return r.raftMu.sideloaded
 }
 
 // LargestPreviousMaxRangeSizeBytes returns the in-memory value used to mitigate
@@ -482,13 +460,6 @@ func (r *Replica) LargestPreviousMaxRangeSizeBytes() int64 {
 // assist load-based split (and merge) decisions.
 func (r *Replica) LoadBasedSplitter() *split.Decider {
 	return &r.loadBasedSplitter
-}
-
-// AllocatorToken returns the replica's allocator token, which should be
-// acquired before planning and executing allocator lease transfers or replica
-// changes for the range on the leaseholder.
-func (r *Replica) AllocatorToken() *plan.AllocatorToken {
-	return r.allocatorToken
 }
 
 func MakeSSTable(
@@ -571,8 +542,7 @@ func (r *Replica) GetQueueLastProcessed(ctx context.Context, queue string) (hlc.
 }
 
 func (r *Replica) MaybeUnquiesce() bool {
-	ctx := context.Background()
-	return r.maybeUnquiesce(ctx, true /* wakeLeader */, true /* mayCampaign */)
+	return r.maybeUnquiesce(true /* wakeLeader */, true /* mayCampaign */)
 }
 
 // MaybeUnquiesceAndPropose will unquiesce the range and submit a noop proposal.
@@ -603,8 +573,7 @@ func (r *Replica) ReadCachedProtectedTS() (readAt, earliestProtectionTimestamp h
 func (r *Replica) ClosedTimestampPolicy() roachpb.RangeClosedTimestampPolicy {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return toClientClosedTsPolicy(closedTimestampPolicy(r.descRLocked(),
-		*r.cachedClosedTimestampPolicy.Load()))
+	return r.closedTimestampPolicyRLocked()
 }
 
 // TripBreaker synchronously trips the breaker.
@@ -615,7 +584,7 @@ func (r *Replica) TripBreaker() {
 // GetCircuitBreaker returns the circuit breaker controlling
 // connection attempts to the specified node.
 func (t *RaftTransport) GetCircuitBreaker(
-	nodeID roachpb.NodeID, class rpcbase.ConnectionClass,
+	nodeID roachpb.NodeID, class rpc.ConnectionClass,
 ) (*circuit.Breaker, bool) {
 	return t.dialer.GetCircuitBreaker(nodeID, class)
 }
@@ -666,9 +635,8 @@ func WatchForDisappearingReplicas(t testing.TB, store *Store) {
 		default:
 		}
 
-		store.mu.replicasByRangeID.Range(func(rangeID roachpb.RangeID, _ *Replica) bool {
-			m[rangeID] = struct{}{}
-			return true
+		store.mu.replicasByRangeID.Range(func(repl *Replica) {
+			m[repl.RangeID] = struct{}{}
 		})
 
 		for k := range m {
@@ -700,20 +668,4 @@ func NewRangefeedTxnPusher(
 		r:    r,
 		span: span,
 	}
-}
-
-// descRLocked exports (*Replica).descRLocked() for testing purposes.
-func (r *Replica) DescRLocked() *roachpb.RangeDescriptor {
-	return r.descRLocked()
-}
-
-// RaftFortificationEnabledForRangeID exports raftFortificationEnabledForRangeID
-// for use in tests.
-func RaftFortificationEnabledForRangeID(fracEnabled float64, rangeID roachpb.RangeID) bool {
-	return raftFortificationEnabledForRangeID(fracEnabled, rangeID)
-}
-
-// ProcessTick exports processTick for use in tests.
-func (s *Store) ProcessTick(ctx context.Context, rangeID roachpb.RangeID) {
-	s.processTick(ctx, rangeID)
 }

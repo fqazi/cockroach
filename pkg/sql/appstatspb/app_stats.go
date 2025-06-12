@@ -20,11 +20,11 @@ func (s StmtFingerprintID) String() string {
 }
 
 // ConstructStatementFingerprintID constructs an ID by hashing query with
-// constants redacted, its database, and if it was part of an
+// constants redacted, its database and failure status, and if it was part of an
 // implicit txn. At the time of writing, these are the axis' we use to bucket
 // queries for stats collection (see stmtKey).
 var ConstructStatementFingerprintID = func(
-	stmtNoConstants string, implicitTxn bool, database string,
+	stmtNoConstants string, failed bool, implicitTxn bool, database string,
 ) StmtFingerprintID {
 	fnv := util.MakeFNV64()
 	for _, c := range stmtNoConstants {
@@ -32,6 +32,11 @@ var ConstructStatementFingerprintID = func(
 	}
 	for _, c := range database {
 		fnv.Add(uint64(c))
+	}
+	if failed {
+		fnv.Add('F')
+	} else {
+		fnv.Add('S')
 	}
 	if implicitTxn {
 		fnv.Add('I')
@@ -155,6 +160,9 @@ func (s *AggregatedStatementMetadata) Add(other *CollectedStatementStatistics) {
 	if other.Key.DistSQL {
 		s.DistSQLCount++
 	}
+	if other.Key.Failed {
+		s.FailedCount++
+	}
 	if other.Key.FullScan {
 		s.FullScanCount++
 	}
@@ -182,13 +190,11 @@ func (s *StatementStatistics) Add(other *StatementStatistics) {
 	s.RowsRead.Add(other.RowsRead, s.Count, other.Count)
 	s.RowsWritten.Add(other.RowsWritten, s.Count, other.Count)
 	s.Nodes = util.CombineUnique(s.Nodes, other.Nodes)
-	s.KVNodeIDs = util.CombineUnique(s.KVNodeIDs, other.KVNodeIDs)
 	s.Regions = util.CombineUnique(s.Regions, other.Regions)
-	s.UsedFollowerRead = s.UsedFollowerRead || other.UsedFollowerRead
 	s.PlanGists = util.CombineUnique(s.PlanGists, other.PlanGists)
 	s.Indexes = util.CombineUnique(s.Indexes, other.Indexes)
 	s.ExecStats.Add(other.ExecStats)
-	s.LatencyInfo.MergeMaxMin(other.LatencyInfo)
+	s.LatencyInfo.Add(other.LatencyInfo)
 
 	if s.SensitiveInfo.MostRecentPlanTimestamp.Before(other.SensitiveInfo.MostRecentPlanTimestamp) {
 		s.SensitiveInfo = other.SensitiveInfo
@@ -212,8 +218,6 @@ func (s *StatementStatistics) Add(other *StatementStatistics) {
 	}
 
 	s.Count += other.Count
-	s.FailureCount += other.FailureCount
-	s.GenericCount += other.GenericCount
 }
 
 // AlmostEqual compares two StatementStatistics and their contained NumericStats
@@ -271,8 +275,15 @@ func (s *ExecStats) Add(other ExecStats) {
 	s.Count += other.Count
 }
 
-// MergeMaxMin combines the max and min only into this LatencyInfo.
-func (s *LatencyInfo) MergeMaxMin(other LatencyInfo) {
+// Add combines other into this LatencyInfo.
+func (s *LatencyInfo) Add(other LatencyInfo) {
+	// Use the latest non-zero value.
+	if other.P50 != 0 {
+		s.P50 = other.P50
+		s.P90 = other.P90
+		s.P99 = other.P99
+	}
+
 	if s.Min == 0 || other.Min < s.Min {
 		s.Min = other.Min
 	}

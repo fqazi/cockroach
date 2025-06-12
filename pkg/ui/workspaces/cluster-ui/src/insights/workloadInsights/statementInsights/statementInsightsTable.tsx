@@ -3,17 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
 import React from "react";
-import { Link } from "react-router-dom";
-
-import { Badge } from "src/badge";
-import {
-  InsightExecEnum,
-  StatementStatus,
-  StmtInsightEvent,
-} from "src/insights";
 import {
   ColumnDescriptor,
   ISortedTablePagination,
@@ -27,14 +17,22 @@ import {
   limitText,
   NO_SAMPLES_FOUND,
 } from "src/util";
-
-import { Timestamp } from "../../../timestamp";
+import {
+  InsightExecEnum,
+  StatementStatus,
+  StmtInsightEvent,
+} from "src/insights";
 import {
   InsightCell,
   insightsTableTitles,
   StatementDetailsLink,
 } from "../util";
+import { Tooltip } from "@cockroachlabs/ui-components";
+import { Link } from "react-router-dom";
+import classNames from "classnames/bind";
 import styles from "../util/workloadInsights.module.scss";
+import { Badge } from "src/badge";
+import { Timestamp } from "../../../timestamp";
 
 const cx = classNames.bind(styles);
 
@@ -147,33 +145,11 @@ export function makeStatementInsightsColumns(): ColumnDescriptor<StmtInsightEven
       showByDefault: true,
     },
     {
-      name: "queryTags",
-      title: insightsTableTitles.queryTags(execType),
-      cell: (item: StmtInsightEvent) => {
-        if (!item.queryTags || item.queryTags.length === 0) {
-          return "N/A";
-        }
-        const tagsStr = item.queryTags
-          .map(tag => `${tag.name}=${tag.value}`)
-          .join(", ");
-        return (
-          <Tooltip placement="bottom" content={tagsStr}>
-            <span className={cx("queries-row")}>{limitText(tagsStr, 30)}</span>
-          </Tooltip>
-        );
-      },
-      sort: (item: StmtInsightEvent) =>
-        item.queryTags
-          ? item.queryTags.map(tag => `${tag.name}=${tag.value}`).join(", ")
-          : "",
-      showByDefault: false,
-    },
-    {
       name: "rowsProcessed",
       title: insightsTableTitles.rowsProcessed(execType),
       className: cx("statements-table__col-rows-read"),
       cell: (item: StmtInsightEvent) =>
-        `${Count(item.rowsRead)} Reads / ${Count(item.rowsWritten)} Writes`,
+        `${Count(item.rowsRead)} Reads / ${Count(item.rowsRead)} Writes`,
       sort: (item: StmtInsightEvent) => item.rowsRead + item.rowsWritten,
       showByDefault: true,
     },

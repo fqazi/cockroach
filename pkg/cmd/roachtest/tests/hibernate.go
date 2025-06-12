@@ -23,7 +23,7 @@ var hibernateReleaseTagRegex = regexp.MustCompile(`^(?P<major>\d+)\.(?P<minor>\d
 
 // WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
 // This is used by docs automation to produce a list of supported versions for ORM's.
-var supportedHibernateTag = "6.6.0"
+var supportedHibernateTag = "6.3.1"
 
 type hibernateOptions struct {
 	testName string
@@ -189,7 +189,7 @@ func registerHibernate(r registry.Registry, opt hibernateOptions) {
 		// Note that this will take upwards of 3 hours.
 		// Also note that this is expected to return an error, since the test suite
 		// will fail. And it is safe to swallow it here.
-		_ = c.RunE(ctx, option.WithNodes(node), opt.testCmd)
+		_ = c.RunE(ctx, node, opt.testCmd)
 
 		t.Status("collecting the test results")
 		// Copy all of the test results to the cockroach logs directory to be
@@ -244,6 +244,8 @@ func registerHibernate(r registry.Registry, opt hibernateOptions) {
 	}
 
 	r.Add(registry.TestSpec{
+		Skip:             `https://github.com/cockroachdb/cockroach/issues/127206#issuecomment-2234146075`,
+		SkipDetails:      `a test dependency was pulled from the upstream package repository`,
 		Name:             opt.testName,
 		Owner:            registry.OwnerSQLFoundations,
 		Cluster:          r.MakeClusterSpec(1),

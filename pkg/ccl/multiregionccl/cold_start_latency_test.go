@@ -18,12 +18,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/server"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils/regionlatency"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -35,7 +32,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -46,7 +43,9 @@ import (
 func TestColdStartLatency(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	skip.UnderDuress(t, "too slow")
+	skip.UnderRace(t, "too slow")
+	skip.UnderStress(t, "too slow")
+
 	// We'll need to make some per-node args to assign the different
 	// KV nodes to different regions and AZs. We'll want to do it to
 	// look somewhat like the real cluster topologies we have in mind.
@@ -69,8 +68,8 @@ func TestColdStartLatency(t *testing.T) {
 	}
 	pauseAfter := make(chan struct{})
 	signalAfter := make([]chan struct{}, numNodes)
-	var latencyEnabled atomic.Bool
-	var addrsToNodeIDs syncutil.Map[string, int]
+	var latencyEnabled syncutil.AtomicBool
+	var addrsToNodeIDs sync.Map
 
 	// Set up the host cluster.
 	perServerArgs := make(map[int]base.TestServerArgs, numNodes)
@@ -85,9 +84,9 @@ func TestColdStartLatency(t *testing.T) {
 			SignalAfterGettingRPCAddress: signalAfter[i],
 			ContextTestingKnobs: rpc.ContextTestingKnobs{
 				InjectedLatencyOracle:  regionlatency.MakeAddrMap(),
-				InjectedLatencyEnabled: latencyEnabled.Load,
+				InjectedLatencyEnabled: latencyEnabled.Get,
 				UnaryClientInterceptor: func(
-					target string, class rpcbase.ConnectionClass,
+					target string, class rpc.ConnectionClass,
 				) grpc.UnaryClientInterceptor {
 					return func(
 						ctx context.Context, method string, req, reply interface{},
@@ -97,10 +96,8 @@ func TestColdStartLatency(t *testing.T) {
 						if !log.ExpensiveLogEnabled(ctx, 2) {
 							return invoker(ctx, method, req, reply, cc, opts...)
 						}
-						var nodeID int
-						if nodeIDPtr, ok := addrsToNodeIDs.Load(target); ok {
-							nodeID = *nodeIDPtr
-						}
+						nodeIDi, _ := addrsToNodeIDs.Load(target)
+						nodeID, _ := nodeIDi.(int)
 						start := timeutil.Now()
 						defer func() {
 							log.VEventf(ctx, 2, "%d->%d (%v->%v) %s %v %v took %v",
@@ -116,13 +113,11 @@ func TestColdStartLatency(t *testing.T) {
 		args.Knobs.Server = serverKnobs
 		perServerArgs[i] = args
 	}
-	cs := cluster.MakeTestingClusterSettings()
 	tc := testcluster.NewTestCluster(t, numNodes, base.TestClusterArgs{
 		ParallelStart:     true,
 		ServerArgsPerNode: perServerArgs,
 		ServerArgs: base.TestServerArgs{
 			DefaultTestTenant: base.TODOTestTenantDisabled,
-			Settings:          cs,
 		},
 	})
 	go func() {
@@ -136,15 +131,14 @@ func TestColdStartLatency(t *testing.T) {
 	ctx := context.Background()
 	defer tc.Stopper().Stop(ctx)
 	enableLatency := func() {
-		latencyEnabled.Store(true)
+		latencyEnabled.Set(true)
 		for i := 0; i < numNodes; i++ {
 			tc.Server(i).RPCContext().RemoteClocks.TestingResetLatencyInfos()
 		}
 	}
 
 	for i := 0; i < numNodes; i++ {
-		nodeID := i
-		addrsToNodeIDs.Store(tc.Server(i).RPCAddr(), &nodeID)
+		addrsToNodeIDs.Store(tc.Server(i).RPCAddr(), i)
 	}
 	tdb := sqlutils.MakeSQLRunner(tc.ServerConn(1))
 
@@ -173,7 +167,6 @@ func TestColdStartLatency(t *testing.T) {
 		} else {
 			stmts = []string{`
 BEGIN;
-SET LOCAL autocommit_before_ddl = false;
 ALTER DATABASE system PRIMARY REGION "us-east1";
 ALTER DATABASE system ADD REGION "us-west1";
 ALTER DATABASE system ADD REGION "europe-west1";
@@ -199,18 +192,16 @@ COMMIT;`}
 				InjectedLatencyOracle: tc.Server(i).TestingKnobs().
 					Server.(*server.TestingKnobs).ContextTestingKnobs.
 					InjectedLatencyOracle,
-				InjectedLatencyEnabled: latencyEnabled.Load,
+				InjectedLatencyEnabled: latencyEnabled.Get,
 				StreamClientInterceptor: func(
-					target string, class rpcbase.ConnectionClass,
+					target string, class rpc.ConnectionClass,
 				) grpc.StreamClientInterceptor {
 					return func(
 						ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn,
 						method string, streamer grpc.Streamer, opts ...grpc.CallOption,
 					) (grpc.ClientStream, error) {
-						var nodeID int
-						if nodeIDPtr, ok := addrsToNodeIDs.Load(target); ok {
-							nodeID = *nodeIDPtr
-						}
+						nodeIDi, _ := addrsToNodeIDs.Load(target)
+						nodeID, _ := nodeIDi.(int)
 						start := timeutil.Now()
 						maybeWait(ctx, i, nodeID)
 						defer func() {
@@ -232,11 +223,9 @@ COMMIT;`}
 						}, nil
 					}
 				},
-				UnaryClientInterceptor: func(target string, class rpcbase.ConnectionClass) grpc.UnaryClientInterceptor {
-					var nodeID int
-					if nodeIDPtr, ok := addrsToNodeIDs.Load(target); ok {
-						nodeID = *nodeIDPtr
-					}
+				UnaryClientInterceptor: func(target string, class rpc.ConnectionClass) grpc.UnaryClientInterceptor {
+					nodeIDi, _ := addrsToNodeIDs.Load(target)
+					nodeID, _ := nodeIDi.(int)
 					return func(
 						ctx context.Context, method string, req, reply interface{},
 						cc *grpc.ClientConn, invoker grpc.UnaryInvoker,
@@ -260,7 +249,6 @@ COMMIT;`}
 	const password = "asdf"
 	{
 		tenant, tenantDB := serverutils.StartTenant(t, tc.Server(0), base.TestTenantArgs{
-			Settings: cs,
 			TenantID: serverutils.TestTenantID(),
 			TestingKnobs: base.TestingKnobs{
 				Server: tenantServerKnobs(0),
@@ -275,7 +263,24 @@ COMMIT;`}
 		// Wait for the span configs to propagate. After we know they have
 		// propagated, we'll shut down the tenant and wait for them to get
 		// applied.
-		sqlutils.WaitForSpanConfigReconciliation(t, tdb)
+		tdb.Exec(t, "CREATE TABLE after AS SELECT now() AS after")
+		tdb.CheckQueryResultsRetry(t, `
+  WITH progress AS (
+                    SELECT crdb_internal.pb_to_json(
+                            'progress',
+                            progress
+                           )->'AutoSpanConfigReconciliation' AS p
+                      FROM crdb_internal.system_jobs
+                     WHERE status = 'running'
+                ),
+       checkpoint AS (
+                    SELECT (p->'checkpoint'->>'wallTime')::FLOAT8 / 1e9 AS checkpoint
+                      FROM progress
+                     WHERE p IS NOT NULL
+                  )
+SELECT checkpoint > extract(epoch from after)
+  FROM checkpoint, after`,
+			[][]string{{"true"}})
 		tenant.AppStopper().Stop(ctx)
 	}
 
@@ -309,7 +314,6 @@ COMMIT;`}
 		start := timeutil.Now()
 		sn := tenantServerKnobs(i)
 		tenant, err := tc.Server(i).TenantController().StartTenant(ctx, base.TestTenantArgs{
-			Settings:            cs,
 			TenantID:            serverutils.TestTenantID(),
 			DisableCreateTenant: true,
 			SkipTenantCheck:     true,
@@ -320,7 +324,7 @@ COMMIT;`}
 		})
 		require.NoError(t, err)
 		defer tenant.AppStopper().Stop(ctx)
-		pgURL, cleanup, err := pgurlutils.PGUrlWithOptionalClientCertsE(
+		pgURL, cleanup, err := sqlutils.PGUrlWithOptionalClientCertsE(
 			tenant.AdvSQLAddr(), "tenantdata", url.UserPassword("foo", password),
 			false, "", // withClientCerts
 		)

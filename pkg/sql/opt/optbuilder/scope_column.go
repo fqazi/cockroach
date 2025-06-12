@@ -70,11 +70,6 @@ type scopeColumn struct {
 	// exprStr contains a stringified representation of expr, or the original
 	// column name if expr is nil. It is populated lazily inside getExprStr().
 	exprStr string
-
-	// resolveErr, if non-nil, is the error to be returned when the column is
-	// successfully resolved. This is used to provide a helpful error message for
-	// a column that is not allowed to be referenced.
-	resolveErr error
 }
 
 // columnVisibility is an extension of cat.ColumnVisibility.
@@ -145,14 +140,15 @@ func (c *scopeColumn) getParamOrd() int {
 }
 
 // funcParamReferencedBy returns true if the scopeColumn is a function parameter
-// column that can be referenced by the given 0-based ordinal.
-func (c *scopeColumn) funcParamReferencedBy(ord int) bool {
-	return c.paramOrd > 0 && int(c.paramOrd-1) == ord
+// column that can be referenced by the given placeholder.
+func (c *scopeColumn) funcParamReferencedBy(idx tree.PlaceholderIdx) bool {
+	return c.paramOrd > 0 && tree.PlaceholderIdx(c.paramOrd-1) == idx
 }
 
 // clearName sets the empty table and column name. This is used to make the
 // column anonymous so that it cannot be referenced, but will still be
 // projected.
+// TODO(mgartner): Do we still need this?
 func (c *scopeColumn) clearName() {
 	c.name.Anonymize()
 	c.table = tree.TableName{}
@@ -288,9 +284,6 @@ func scopeColName(name tree.Name) scopeColumnName {
 // is not empty. If the given name is empty, the returned scopeColumnName
 // represents an anonymous function argument that cannot be referenced, and it
 // will be added to the metadata with the descriptive name "arg<ord>".
-// TODO(119502): unnamed parameters can be referenced via $i notation (for SQL
-// routines only IN / INOUT parameters can be referenced this way, for PLpgSQL
-// routines all parameters can).
 func funcParamColName(name tree.Name, ord int) scopeColumnName {
 	alias := string(name)
 	if alias == "" {

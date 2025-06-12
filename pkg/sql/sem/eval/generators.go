@@ -39,7 +39,7 @@ func GetFuncGenerator(
 func GetRoutineGenerator(
 	ctx context.Context, evalCtx *Context, expr *tree.RoutineExpr,
 ) (ValueGenerator, error) {
-	args, err := (*evaluator)(evalCtx).evalRoutineArgs(ctx, expr.Args)
+	args, err := (*evaluator)(evalCtx).evalRoutineArgs(ctx, expr)
 	if err != nil {
 		return nil, err
 	}

@@ -7,7 +7,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/util/allstacks",
-        "@com_github_cockroachdb_errors//:errors",
         "@com_github_maruel_panicparse_v2//stack",
     ],
 )
@@ -16,6 +15,7 @@ go_test(
     name = "goroutineui_test",
     size = "small",
     srcs = ["dump_test.go"],
+    args = ["-test.timeout=55s"],
     data = ["@go_sdk//:files"],
     embed = [":goroutineui"],
     deps = [

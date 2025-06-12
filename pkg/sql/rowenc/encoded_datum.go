@@ -139,7 +139,7 @@ func EncDatumFromEncoded(enc catenumpb.DatumEncoding, encoded []byte) EncDatum {
 // slice for the rest of the buffer.
 func EncDatumFromBuffer(enc catenumpb.DatumEncoding, buf []byte) (EncDatum, []byte, error) {
 	if len(buf) == 0 {
-		return EncDatum{}, nil, errors.AssertionFailedf("empty encoded value")
+		return EncDatum{}, nil, errors.New("empty encoded value")
 	}
 	switch enc {
 	case catenumpb.DatumEncoding_ASCENDING_KEY, catenumpb.DatumEncoding_DESCENDING_KEY:
@@ -202,11 +202,6 @@ func DatumToEncDatumEx(ctyp *types.T, d tree.Datum) (EncDatum, error) {
 		return EncDatum{}, errors.AssertionFailedf("invalid datum type given: %s, expected %s", dTyp.SQLStringForError(), ctyp.SQLStringForError())
 	}
 	return EncDatum{Datum: d}, nil
-}
-
-// NullEncDatum initializes an EncDatum with the NULL value.
-func NullEncDatum() EncDatum {
-	return EncDatum{Datum: tree.DNull}
 }
 
 // UnsetDatum ensures subsequent IsUnset() calls return false.
@@ -307,7 +302,7 @@ func (ed *EncDatum) Encode(
 	case catenumpb.DatumEncoding_DESCENDING_KEY:
 		return keyside.Encode(appendTo, ed.Datum, encoding.Descending)
 	case catenumpb.DatumEncoding_VALUE:
-		return valueside.Encode(appendTo, valueside.NoColumnID, ed.Datum)
+		return valueside.Encode(appendTo, valueside.NoColumnID, ed.Datum, nil /* scratch */)
 	default:
 		panic(errors.AssertionFailedf("unknown encoding requested %s", enc))
 	}
@@ -320,12 +315,12 @@ func mustUseValueEncodingForFingerprinting(t *types.T) bool {
 	// available, but for historical reasons we will keep on using the
 	// value-encoding (Fingerprint is used by hash routers, so changing its
 	// behavior can result in incorrect results in mixed version clusters).
-	case types.JsonFamily, types.TSQueryFamily, types.TSVectorFamily, types.PGVectorFamily:
+	case types.JsonFamily, types.TSQueryFamily, types.TSVectorFamily:
 		return true
 	case types.ArrayFamily:
 		// Note that at time of this writing we don't support arrays of JSON
-		// (tracked via #23468) nor of TSQuery / TSVector / PGVector types (tracked by
-		// #90886, #121432), so technically we don't need to do a recursive call here,
+		// (tracked via #23468) nor of TSQuery / TSVector types (tracked by
+		// #90886), so technically we don't need to do a recursive call here,
 		// but we choose to be on the safe side, so we do it anyway.
 		return mustUseValueEncodingForFingerprinting(t.ArrayContents())
 	case types.TupleFamily:
@@ -366,7 +361,7 @@ func (ed *EncDatum) Fingerprint(
 		}
 		// We must use value encodings without a column ID even if the EncDatum already
 		// is encoded with the value encoding so that the hashes are indeed unique.
-		fingerprint, err = valueside.Encode(appendTo, valueside.NoColumnID, ed.Datum)
+		fingerprint, err = valueside.Encode(appendTo, valueside.NoColumnID, ed.Datum, nil /* scratch */)
 	} else {
 		// For values that are key encodable, using the ascending key.
 		// Note that using a value encoding will not easily work in case when
@@ -390,21 +385,16 @@ func (ed *EncDatum) Fingerprint(
 //	0  if the receiver is equal to rhs,
 //	+1 if the receiver is greater than rhs.
 func (ed *EncDatum) Compare(
-	ctx context.Context, typ *types.T, a *tree.DatumAlloc, evalCtx *eval.Context, rhs *EncDatum,
+	typ *types.T, a *tree.DatumAlloc, evalCtx *eval.Context, rhs *EncDatum,
 ) (int, error) {
-	return ed.CompareEx(ctx, typ, a, evalCtx, rhs, typ)
+	return ed.CompareEx(typ, a, evalCtx, rhs, typ)
 }
 
 // CompareEx is the same as Compare but allows specifying the type of RHS
 // EncDatum in case it's different from ed (e.g. we might be comparing Oid
 // family types with different Oids).
 func (ed *EncDatum) CompareEx(
-	ctx context.Context,
-	typ *types.T,
-	a *tree.DatumAlloc,
-	evalCtx *eval.Context,
-	rhs *EncDatum,
-	rhsTyp *types.T,
+	typ *types.T, a *tree.DatumAlloc, evalCtx *eval.Context, rhs *EncDatum, rhsTyp *types.T,
 ) (int, error) {
 	// TODO(radu): if we have both the Datum and a key encoding available, which
 	// one would be faster to use?
@@ -422,10 +412,8 @@ func (ed *EncDatum) CompareEx(
 	if err := rhs.EnsureDecoded(rhsTyp, a); err != nil {
 		return 0, err
 	}
-	return ed.Datum.Compare(ctx, evalCtx, rhs.Datum)
+	return ed.Datum.CompareError(evalCtx, rhs.Datum)
 }
-
-var errNullInt = errors.New("NULL INT value")
 
 // GetInt decodes an EncDatum that is known to be of integer type and returns
 // the integer value. It is a more convenient and more efficient alternative to
@@ -433,7 +421,7 @@ var errNullInt = errors.New("NULL INT value")
 func (ed *EncDatum) GetInt() (int64, error) {
 	if ed.Datum != nil {
 		if ed.Datum == tree.DNull {
-			return 0, errNullInt
+			return 0, errors.Errorf("NULL INT value")
 		}
 		return int64(*ed.Datum.(*tree.DInt)), nil
 	}
@@ -441,14 +429,14 @@ func (ed *EncDatum) GetInt() (int64, error) {
 	switch ed.encoding {
 	case catenumpb.DatumEncoding_ASCENDING_KEY:
 		if _, isNull := encoding.DecodeIfNull(ed.encoded); isNull {
-			return 0, errNullInt
+			return 0, errors.Errorf("NULL INT value")
 		}
 		_, val, err := encoding.DecodeVarintAscending(ed.encoded)
 		return val, err
 
 	case catenumpb.DatumEncoding_DESCENDING_KEY:
 		if _, isNull := encoding.DecodeIfNull(ed.encoded); isNull {
-			return 0, errNullInt
+			return 0, errors.Errorf("NULL INT value")
 		}
 		_, val, err := encoding.DecodeVarintDescending(ed.encoded)
 		return val, err
@@ -460,7 +448,7 @@ func (ed *EncDatum) GetInt() (int64, error) {
 		}
 		// NULL, true, and false are special, because their values are fully encoded by their value tag.
 		if typ == encoding.Null {
-			return 0, errNullInt
+			return 0, errors.Errorf("NULL INT value")
 		}
 
 		_, val, err := encoding.DecodeUntaggedIntValue(ed.encoded[dataOffset:])
@@ -558,20 +546,18 @@ func EncDatumRowToDatums(
 // {{0, asc}, {1, asc}} (i.e. ordered by first column and then by second
 // column).
 func (r EncDatumRow) Compare(
-	ctx context.Context,
 	types []*types.T,
 	a *tree.DatumAlloc,
 	ordering colinfo.ColumnOrdering,
 	evalCtx *eval.Context,
 	rhs EncDatumRow,
 ) (int, error) {
-	return r.CompareEx(ctx, types, a, ordering, evalCtx, rhs, types)
+	return r.CompareEx(types, a, ordering, evalCtx, rhs, types)
 }
 
 // CompareEx is the same as Compare but allows specifying a different type
 // schema for RHS row.
 func (r EncDatumRow) CompareEx(
-	ctx context.Context,
 	types []*types.T,
 	a *tree.DatumAlloc,
 	ordering colinfo.ColumnOrdering,
@@ -586,7 +572,7 @@ func (r EncDatumRow) CompareEx(
 		))
 	}
 	for _, c := range ordering {
-		cmp, err := r[c.ColIdx].CompareEx(ctx, types[c.ColIdx], a, evalCtx, &rhs[c.ColIdx], rhsTypes[c.ColIdx])
+		cmp, err := r[c.ColIdx].CompareEx(types[c.ColIdx], a, evalCtx, &rhs[c.ColIdx], rhsTypes[c.ColIdx])
 		if err != nil {
 			return 0, err
 		}
@@ -602,7 +588,6 @@ func (r EncDatumRow) CompareEx(
 
 // CompareToDatums is a version of Compare which compares against decoded Datums.
 func (r EncDatumRow) CompareToDatums(
-	ctx context.Context,
 	types []*types.T,
 	a *tree.DatumAlloc,
 	ordering colinfo.ColumnOrdering,
@@ -613,7 +598,7 @@ func (r EncDatumRow) CompareToDatums(
 		if err := r[c.ColIdx].EnsureDecoded(types[c.ColIdx], a); err != nil {
 			return 0, err
 		}
-		cmp, err := r[c.ColIdx].Datum.Compare(ctx, evalCtx, rhs[c.ColIdx])
+		cmp, err := r[c.ColIdx].Datum.CompareError(evalCtx, rhs[c.ColIdx])
 		if err != nil {
 			return 0, err
 		}

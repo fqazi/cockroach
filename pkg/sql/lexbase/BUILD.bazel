@@ -23,6 +23,7 @@ go_test(
     name = "lexbase_test",
     size = "small",
     srcs = ["encode_test.go"],
+    args = ["-test.timeout=55s"],
     deps = [
         ":lexbase",
         "//pkg/sql/parser",
@@ -39,7 +40,7 @@ genrule(
     cmd = """
         $(location //pkg/sql/lexbase/allkeywords) < $(location //pkg/sql/parser:sql.y) > $@
     """,
-    tools = [
+    exec_tools = [
         "//pkg/sql/lexbase/allkeywords",
     ],
     visibility = [
@@ -60,7 +61,7 @@ genrule(
      echo; \
      grep '^const [A-Z][_A-Z0-9]* ' $(location //pkg/sql/parser:sql-goyacc)) > $@
     """,
-    tools = [
+    exec_tools = [
         "//pkg/sql/parser:sql-goyacc",
     ],
     visibility = [

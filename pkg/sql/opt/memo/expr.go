@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/props/physical"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree/treewindow"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
@@ -47,6 +46,9 @@ import (
 // has been optimized.
 type RelExpr interface {
 	opt.Expr
+
+	// Memo is the memo which contains this relational expression.
+	Memo() *Memo
 
 	// Relational is the set of logical properties that describe the content and
 	// characteristics of this expression's behavior and results.
@@ -407,15 +409,14 @@ type ScanFlags struct {
 	// NoFullScan disallows use of a full scan for scanning this table.
 	NoFullScan bool
 
-	// AvoidFullScan avoids use of a full scan for scanning this table.
-	AvoidFullScan bool
-
 	// ForceIndex forces the use of a specific index (specified in Index).
 	// ForceIndex and NoIndexJoin cannot both be set at the same time.
 	ForceIndex bool
 	// ForceInvertedIndex forces the use of an inverted index.
 	ForceInvertedIndex bool
 	ForceZigzag        bool
+	Direction          tree.Direction
+	Index              int
 
 	// When the optimizer is performing unique constraint or foreign key
 	// constraint check, we will temporarily disable the not visible index feature
@@ -427,9 +428,6 @@ type ScanFlags struct {
 	// true, optimizer will also generate equivalent memo group using the
 	// invisible index. Otherwise, optimizer will ignore the invisible indexes.
 	DisableNotVisibleIndex bool
-
-	Direction tree.Direction
-	Index     int
 
 	// ZigzagIndexes makes planner prefer a zigzag with particular indexes.
 	// ForceZigzag must also be true.
@@ -458,12 +456,14 @@ type JoinFlags uint16
 
 // Each flag indicates if a certain type of join is disallowed.
 const (
-	// DisallowHashJoinStoreLeft corresponds to a hash join where the left side
-	// is stored into the hashtable.
+	// DisallowHashJoinStoreLeft corresponds to a hash join where the left side is
+	// stored into the hashtable. Note that execution can override the stored side
+	// if it finds that the other side is smaller (up to a certain size).
 	DisallowHashJoinStoreLeft JoinFlags = 1 << iota
 
-	// DisallowHashJoinStoreRight corresponds to a hash join where the right
-	// side is stored into the hashtable.
+	// DisallowHashJoinStoreRight corresponds to a hash join where the right side
+	// is stored into the hashtable. Note that execution can override the stored
+	// side if it finds that the other side is smaller (up to a certain size).
 	DisallowHashJoinStoreRight
 
 	// DisallowMergeJoin corresponds to a merge join.
@@ -517,11 +517,6 @@ const (
 
 	// AllowOnlyMergeJoin has all "disallow" flags set except DisallowMergeJoin.
 	AllowOnlyMergeJoin = disallowAll ^ DisallowMergeJoin
-
-	// AllowAllJoinsIntoRight has all "disallow" flags set except
-	// DisallowHashJoinStoreRight, DisallowLookupJoinIntoRight,
-	// DisallowInvertedJoinIntoRight, and DisallowMergeJoin.
-	AllowAllJoinsIntoRight = disallowAll ^ DisallowHashJoinStoreRight ^ DisallowLookupJoinIntoRight ^ DisallowInvertedJoinIntoRight ^ DisallowMergeJoin
 )
 
 var joinFlagStr = map[JoinFlags]string{
@@ -543,9 +538,9 @@ func (jf JoinFlags) Empty() bool {
 	return jf == 0
 }
 
-// Has returns true if all of the given flags are set in the receiver.
-func (jf JoinFlags) Has(flags JoinFlags) bool {
-	return jf&flags == flags
+// Has returns true if the given flag is set.
+func (jf JoinFlags) Has(flag JoinFlags) bool {
+	return jf&flag != 0
 }
 
 func (jf JoinFlags) String() string {
@@ -594,19 +589,19 @@ func (jf JoinFlags) String() string {
 }
 
 func (ij *InnerJoinExpr) initUnexportedFields(mem *Memo) {
-	initJoinMultiplicity(mem, ij)
+	initJoinMultiplicity(ij)
 }
 
 func (lj *LeftJoinExpr) initUnexportedFields(mem *Memo) {
-	initJoinMultiplicity(mem, lj)
+	initJoinMultiplicity(lj)
 }
 
 func (fj *FullJoinExpr) initUnexportedFields(mem *Memo) {
-	initJoinMultiplicity(mem, fj)
+	initJoinMultiplicity(fj)
 }
 
 func (sj *SemiJoinExpr) initUnexportedFields(mem *Memo) {
-	initJoinMultiplicity(mem, sj)
+	initJoinMultiplicity(sj)
 }
 
 func (lj *LookupJoinExpr) initUnexportedFields(mem *Memo) {
@@ -701,31 +696,17 @@ type UDFDefinition struct {
 	CalledOnNullInput bool
 
 	// MultiColDataSource is true if the function may return multiple columns.
-	// This is only the case if the UDF returns a composite type and is used as a
+	// This is only the case if the UDF returns a RECORD type and is used as a
 	// data source.
 	MultiColDataSource bool
 
-	// IsRecursive indicates whether the routine recursively calls itself. This
+	// IsRecursive indicates whether the UDF recursively calls itself. This
 	// applies to direct as well as indirect recursive calls (mutual recursion).
 	IsRecursive bool
-
-	// TriggerFunc indicates whether the routine is a trigger function. It is only
-	// set for the outermost routine, and not for any sub-routines that implement
-	// the PL/pgSQL body.
-	TriggerFunc bool
-
-	// BlockStart indicates whether the routine marks the start of a PL/pgSQL
-	// block with an exception handler. This is used to determine when to
-	// initialize the common state held between sub-routines within the same
-	// block.
-	BlockStart bool
 
 	// RoutineType indicates whether this routine is a UDF, stored procedure, or
 	// builtin function.
 	RoutineType tree.RoutineType
-
-	// RoutineLang indicates the language of the routine (SQL or PL/pgSQL).
-	RoutineLang tree.RoutineLanguage
 
 	// Params is the list of columns representing parameters of the function. The
 	// i-th column in the list corresponds to the i-th parameter of the function.
@@ -742,17 +723,6 @@ type UDFDefinition struct {
 	// at the same position in Body.
 	BodyProps []*physical.Required
 
-	// BodyStmts, if set, is the string representation of each statement in
-	// Body. It is only populated when verbose tracing is enabled.
-	BodyStmts []string
-
-	// FirstStmtOutput allows the result of the first body statement to be
-	// redirected. Only one of the options can be set. If one is set, there will
-	// be at least two body statements - the first with redirected output, and the
-	// last to produce the result of the routine. This invariant is enforced when
-	// the routine is built.
-	FirstStmtOutput RoutineStmtOutput
-
 	// ExceptionBlock contains information needed for exception-handling when the
 	// body of this routine returns an error. It can be unset.
 	ExceptionBlock *ExceptionBlock
@@ -762,12 +732,12 @@ type UDFDefinition struct {
 	// handling.
 	BlockState *tree.BlockState
 
-	// ResultBufferID, if set, identifies the buffer that stores the result for
-	// the set-returning PL/pgSQL function that this UDFDefinition represents.
-	// Sub-routines within the body statements may use this ID to add their
-	// results to the same buffer. This is used to implement the PL/pgsql
-	// RETURN NEXT and RETURN QUERY statements.
-	ResultBufferID RoutineResultBufferID
+	// CursorDeclaration contains the information needed to open a SQL cursor with
+	// the result of the *first* body statement. If it is set, there will be at
+	// least two body statements - one to open the cursor, and one to evaluate the
+	// result of the routine. This invariant is enforced when the PLpgSQL routine
+	// is built. CursorDeclaration may be unset.
+	CursorDeclaration *tree.RoutineOpenCursor
 }
 
 // ExceptionBlock contains the information needed to match and handle errors in
@@ -783,27 +753,6 @@ type ExceptionBlock struct {
 	// each code in the Codes slice.
 	Actions []*UDFDefinition
 }
-
-// RoutineStmtOutput allows the result of a statement in a PL/pgSQL function to
-// be redirected from the default output buffer. This is used to open cursors
-// and implement the RETURN NEXT and RETURN QUERY statements.
-//
-// Only one of the members can be set.
-type RoutineStmtOutput struct {
-	// CursorDeclaration contains the information needed to open a SQL cursor
-	// with the result of the *first* body statement.
-	CursorDeclaration *tree.RoutineOpenCursor
-
-	// TargetBufferID identifies the result buffer of an ancestor set-returning
-	// PL/pgSQL function. The result of the *first* body statement will be added
-	// to this buffer.
-	TargetBufferID RoutineResultBufferID
-}
-
-// RoutineResultBufferID identifies a buffer that is used to store the result of
-// a set-returning PL/pgSQL function. The RoutineBufferID is unique within the
-// scope of a single query.
-type RoutineResultBufferID uint64
 
 // WindowFrame denotes the definition of a window frame for an individual
 // window function, excluding the OFFSET expressions, if present.
@@ -879,7 +828,7 @@ func (s *ScanPrivate) IsUnfiltered(md *opt.Metadata) bool {
 
 // IsFullIndexScan returns true if the ScanPrivate will produce all rows in the
 // index.
-func (s *ScanPrivate) IsFullIndexScan() bool {
+func (s *ScanPrivate) IsFullIndexScan(md *opt.Metadata) bool {
 	return (s.Constraint == nil || s.Constraint.IsUnconstrained()) &&
 		s.InvertedConstraint == nil &&
 		s.HardLimit == 0
@@ -888,7 +837,7 @@ func (s *ScanPrivate) IsFullIndexScan() bool {
 // IsInvertedScan returns true if the index being scanned is an inverted
 // index.
 func (s *ScanPrivate) IsInvertedScan(md *opt.Metadata) bool {
-	return md.Table(s.Table).Index(s.Index).Type() == idxtype.INVERTED
+	return md.Table(s.Table).Index(s.Index).IsInverted()
 }
 
 // IsVirtualTable returns true if the table being scanned is a virtual table.
@@ -950,14 +899,12 @@ func (s *ScanPrivate) PartialIndexPredicate(md *opt.Metadata) FiltersExpr {
 // SetConstraint sets the constraint in the ScanPrivate and caches the exact
 // prefix. This function should always be used instead of modifying the
 // constraint directly.
-func (s *ScanPrivate) SetConstraint(
-	ctx context.Context, evalCtx *eval.Context, c *constraint.Constraint,
-) {
+func (s *ScanPrivate) SetConstraint(evalCtx *eval.Context, c *constraint.Constraint) {
 	s.Constraint = c
 	if c == nil {
 		s.ExactPrefix = 0
 	} else {
-		s.ExactPrefix = c.ExactPrefix(ctx, evalCtx)
+		s.ExactPrefix = c.ExactPrefix(evalCtx)
 	}
 }
 
@@ -1143,7 +1090,7 @@ func (prj *ProjectExpr) initUnexportedFields(mem *Memo) {
 			// This does not necessarily hold for "composite" types like decimals or
 			// collated strings. For example if d is a decimal, d::TEXT can have
 			// different values for equal values of d, like 1 and 1.0.
-			if !CanBeCompositeSensitive(item.Element) {
+			if !CanBeCompositeSensitive(mem.Metadata(), item.Element) {
 				prj.internalFuncDeps.AddSynthesizedCol(from, item.Col)
 			}
 		}
@@ -1369,55 +1316,45 @@ type FKCascades []FKCascade
 type FKCascade struct {
 	FKConstraint cat.ForeignKeyConstraint
 
-	// HasBeforeTriggers is true if the mutation that is planned for the cascade
-	// will have BEFORE triggers.
-	HasBeforeTriggers bool
-
 	// Builder is an object that can be used as the "optbuilder" for the cascading
 	// query.
-	Builder PostQueryBuilder
+	Builder CascadeBuilder
 
 	// WithID identifies the buffer for the mutation input in the original
 	// expression tree. 0 if the cascade does not require input.
 	WithID opt.WithID
+
+	// OldValues are column IDs from the mutation input that correspond to the
+	// old values of the modified rows. The list maps 1-to-1 to foreign key
+	// columns. Empty if the cascade does not require input.
+	OldValues opt.ColList
+
+	// NewValues are column IDs from the mutation input that correspond to the
+	// new values of the modified rows. The list maps 1-to-1 to foreign key columns.
+	// It is empty if the mutation is a deletion. Empty if the cascade does not
+	// require input.
+	NewValues opt.ColList
 }
 
-// AfterTriggers stores metadata necessary for building a set of AFTER triggers.
-// AFTER triggers are built as needed, after the original query is executed.
-type AfterTriggers struct {
-	Triggers []cat.Trigger
-
-	// Builder is an object that can be used as the "optbuilder" for the cascading
-	// query.
-	Builder PostQueryBuilder
-
-	// WithID identifies the buffer for the mutation input in the original
-	// expression tree. It is always nonzero.
-	WithID opt.WithID
-}
-
-// PostQueryBuilder is an interface used to construct either a cascading query
-// for a specific FK relation, or an AFTER trigger action. For example: if we
-// are deleting rows from a parent table, after deleting the rows from the
-// parent table this interface will be used to build the corresponding deletion
-// in the child table.
-type PostQueryBuilder interface {
-	// Build constructs the plan for the cascading query or AFTER trigger action.
-	// The input is scanned using WithScan with the given WithID; colMap is
-	// provided to map from columns in the original memo to those in the new memo
-	// that is used for the With binding.
+// CascadeBuilder is an interface used to construct a cascading query for a
+// specific FK relation. For example: if we are deleting rows from a parent
+// table, after deleting the rows from the parent table this interface will be
+// used to build the corresponding deletion in the child table.
+type CascadeBuilder interface {
+	// Build constructs a cascading query that mutates the child table. The input
+	// is scanned using WithScan with the given WithID; oldValues and newValues
+	// columns correspond 1-to-1 to foreign key columns. For deletes, newValues is
+	// empty.
 	//
 	// The query does not need to be built in the same memo as the original query;
 	// the only requirement is that the mutation input columns
-	// (oldValues/newValues, canaryCol) are valid in the metadata and have entries
-	// in the ColMap.
+	// (oldValues/newValues) are valid in the metadata.
 	//
 	// The method does not mutate any captured state; it is ok to call Build
 	// concurrently (e.g. if the plan it originates from is cached and reused).
 	//
 	// Some cascades (delete fast path) don't require an input binding. In that
-	// case binding is 0, bindingProps is nil, and colMap is empty. Triggers
-	// always require an input binding.
+	// case binding is 0, bindingProps is nil, and oldValues/newValues are empty.
 	//
 	// Note: factory is always *norm.Factory; it is an interface{} only to avoid
 	// circular package dependencies.
@@ -1429,7 +1366,7 @@ type PostQueryBuilder interface {
 		factory interface{},
 		binding opt.WithID,
 		bindingProps *props.Relational,
-		colMap opt.ColMap,
+		oldValues, newValues opt.ColList,
 	) (RelExpr, error)
 }
 
@@ -1441,35 +1378,35 @@ const (
 	// NoStreaming means that the grouping columns have no useful order, so a
 	// hash aggregator should be used.
 	NoStreaming GroupingOrderType = iota
-	// PartialStreaming means that the grouping columns are partially ordered,
-	// so some optimizations can be done during aggregation.
+	// PartialStreaming means that the grouping columns are partially ordered, so
+	// some optimizations can be done during aggregation.
 	PartialStreaming
 	// Streaming means that the grouping columns are fully ordered.
 	Streaming
 )
 
-// GroupingOrderType calculates how many ordered columns that the grouping and
-// input columns have in common and returns NoStreaming if there are none,
-// Streaming if all columns match, and PartialStreaming if only some match. It
-// is similar to StreamingGroupingColOrdering, but does not build an ordering.
+// GroupingOrderType calculates how many ordered columns that the grouping
+// and input columns have in common and returns NoStreaming if there are none, Streaming if
+// all columns match, and PartialStreaming if only some match. It is similar to
+// StreamingGroupingColOrdering, but does not build an ordering.
 func (g *GroupingPrivate) GroupingOrderType(required *props.OrderingChoice) GroupingOrderType {
 	inputOrdering := required.Intersection(&g.Ordering)
-	var orderedGroupingCols opt.ColSet
+	count := 0
 	for i := range inputOrdering.Columns {
 		// Get any grouping column from the set. Normally there would be at most one
 		// because we have rules that remove redundant grouping columns.
 		cols := inputOrdering.Group(i).Intersection(g.GroupingCols)
-		c, ok := cols.Next(0)
+		_, ok := cols.Next(0)
 		if !ok {
 			// This group refers to a column that is not a grouping column.
 			// The rest of the ordering is not useful.
 			break
 		}
-		orderedGroupingCols.Add(c)
+		count++
 	}
-	if orderedGroupingCols.Len() == g.GroupingCols.Len() || g.GroupingCols.Len() == 0 {
+	if count == g.GroupingCols.Len() || g.GroupingCols.Len() == 0 {
 		return Streaming
-	} else if orderedGroupingCols.Len() == 0 {
+	} else if count == 0 {
 		return NoStreaming
 	}
 	return PartialStreaming

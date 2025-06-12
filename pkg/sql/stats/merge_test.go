@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 )
 
@@ -44,11 +43,11 @@ func TestMergeStatistics(t *testing.T) {
 		{
 			// Multiple buckets at extremes.
 			initial: &testStat{
-				at: 1, row: 5, dist: 5, null: 0, size: 2,
+				at: 1, row: 5, dist: 3, null: 0, size: 2,
 				hist: testHistogram{
 					{1, 0, 0, 2},
-					{1, 1, 1, 4},
-					{1, 1, 1, 6},
+					{1, 1, 0, 4},
+					{1, 1, 0, 6},
 				},
 			},
 			partial: &testStat{
@@ -61,13 +60,13 @@ func TestMergeStatistics(t *testing.T) {
 				},
 			},
 			expected: &testStat{
-				at: 2, row: 13, dist: 9, null: 0, size: 2,
+				at: 2, row: 13, dist: 7, null: 0, size: 2,
 				hist: testHistogram{
 					{2, 0, 0, 0},
 					{2, 0, 0, 1},
 					{1, 0, 0, 2},
-					{1, 1, 1, 4},
-					{1, 1, 1, 6},
+					{1, 1, 0, 4},
+					{1, 1, 0, 6},
 					{2, 0, 0, 7},
 					{2, 0, 0, 8},
 				},
@@ -172,14 +171,12 @@ func TestMergeStatistics(t *testing.T) {
 			},
 		},
 	}
-	ctx := context.Background()
-	st := cluster.MakeTestingClusterSettings()
 	for i, tc := range testCases {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			initial := tc.initial.toTableStatistic(ctx, "stat", i, descpb.ColumnIDs{1}, 1 /* statID */, 0 /* fullStatID */, st)
-			partial := tc.partial.toTableStatistic(ctx, "stat", i, descpb.ColumnIDs{1}, 0 /* statID */, 1 /* fullStatID */, st)
-			expected := tc.expected.toTableStatistic(ctx, "__merged__", i, descpb.ColumnIDs{1}, 0 /* statID */, 0 /* fullStatID */, st)
-			merged, err := mergeExtremesStatistic(ctx, initial, partial, st)
+			initial := tc.initial.toTableStatistic("stat", i, descpb.ColumnIDs{1}, 1 /* statID */, 0 /* fullStatID */)
+			partial := tc.partial.toTableStatistic("stat", i, descpb.ColumnIDs{1}, 0 /* statID */, 1 /* fullStatID */)
+			expected := tc.expected.toTableStatistic("__merged__", i, descpb.ColumnIDs{1}, 0 /* statID */, 0 /* fullStatID */)
+			merged, err := mergeExtremesStatistic(initial, partial)
 			if err != nil {
 				if !tc.err {
 					t.Errorf("test case %d unexpected mergeStatistics err: %v", i, err)
@@ -197,9 +194,9 @@ func TestMergeStatistics(t *testing.T) {
 
 	}
 	t.Run("mismatched full and partial stat error", func(t *testing.T) {
-		initial := testCases[0].initial.toTableStatistic(ctx, "stat", 1, descpb.ColumnIDs{1}, 2 /* statID */, 0 /* fullStatID */, st)
-		partial := testCases[0].partial.toTableStatistic(ctx, "stat", 1, descpb.ColumnIDs{1}, 0 /* statID */, 1 /* fullStatID */, st)
-		_, err := mergeExtremesStatistic(ctx, initial, partial, st)
+		initial := testCases[0].initial.toTableStatistic("stat", 1, descpb.ColumnIDs{1}, 2 /* statID */, 0 /* fullStatID */)
+		partial := testCases[0].partial.toTableStatistic("stat", 1, descpb.ColumnIDs{1}, 0 /* statID */, 1 /* fullStatID */)
+		_, err := mergeExtremesStatistic(initial, partial)
 		if err == nil {
 			t.Errorf("error test case failed -- expected partial stat to have a different fullStatID than the statID of the full statistics")
 		}
@@ -211,7 +208,6 @@ func TestMergeStatistics(t *testing.T) {
 func TestMergedStatistics(t *testing.T) {
 
 	ctx := context.Background()
-	st := cluster.MakeTestingClusterSettings()
 	// Array of one or more full statistics and one or more partial
 	// statistics for different column sets.
 	testCases := []struct {
@@ -223,7 +219,7 @@ func TestMergedStatistics(t *testing.T) {
 			// Simplest case, one newer partial stat for each new full stat.
 			full: []*testStat{
 				{
-					at: 5, row: 18, dist: 13, null: 4, size: 1, colID: 1,
+					at: 5, row: 14, dist: 13, null: 4, size: 1, colID: 1,
 					hist: testHistogram{{1, 3, 3, 30}, {1, 9, 7, 40}},
 				},
 				{
@@ -347,8 +343,8 @@ func TestMergedStatistics(t *testing.T) {
 			predicates := make(map[uint64]string, len(tc.full))
 			for _, s := range tc.full {
 				stats := s.toTableStatistic(
-					ctx, "full", i, descpb.ColumnIDs{descpb.ColumnID(s.colID)},
-					uint64(s.colID) /* statID */, 0 /* fullStatID */, st,
+					"full", i, descpb.ColumnIDs{descpb.ColumnID(s.colID)}, uint64(s.colID), /* statID */
+					0, /* fullStatID */
 				)
 				statsList = append(statsList, stats)
 				predicates[uint64(s.colID)] = fmt.Sprintf(
@@ -358,8 +354,8 @@ func TestMergedStatistics(t *testing.T) {
 			}
 			for _, s := range tc.partial {
 				stats := s.toTableStatistic(
-					ctx, "partial", i, descpb.ColumnIDs{descpb.ColumnID(s.colID)},
-					0 /* statID */, uint64(s.colID) /* fullStatID */, st,
+					"partial", i, descpb.ColumnIDs{descpb.ColumnID(s.colID)}, 0, /* statID */
+					uint64(s.colID), /* fullStatID */
 				)
 				stats.PartialPredicate = predicates[uint64(s.colID)]
 				statsList = append(statsList, stats)
@@ -370,12 +366,12 @@ func TestMergedStatistics(t *testing.T) {
 			expected := make([]*TableStatistic, 0, len(tc.expected))
 			for _, s := range tc.expected {
 				stats := s.toTableStatistic(
-					ctx, "__merged__", i, descpb.ColumnIDs{descpb.ColumnID(s.colID)},
-					0 /* statID */, 0 /* fullStatID */, st,
+					"__merged__", i, descpb.ColumnIDs{descpb.ColumnID(s.colID)}, 0, /* statID */
+					0, /* fullStatID */
 				)
 				expected = append(expected, stats)
 			}
-			merged := MergedStatistics(ctx, statsList, st)
+			merged := MergedStatistics(ctx, statsList)
 			if !reflect.DeepEqual(merged, expected) {
 				t.Errorf("test case %d incorrect, merged:\n%s\nexpected:\n%s", i, merged, expected)
 			}

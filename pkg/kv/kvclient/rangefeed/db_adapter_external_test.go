@@ -7,7 +7,6 @@ package rangefeed_test
 
 import (
 	"context"
-	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -33,12 +32,11 @@ import (
 )
 
 func startMonitorWithBudget(budget int64) *mon.BytesMonitor {
-	mm := mon.NewMonitor(mon.Options{
-		Name:      mon.MakeName("test-mm"),
-		Limit:     budget,
-		Increment: 128, /* small allocation increment */
-		Settings:  cluster.MakeTestingClusterSettings(),
-	})
+	mm := mon.NewMonitorWithLimit(
+		"test-mm", mon.MemoryResource, budget,
+		nil, nil,
+		128 /* small allocation increment */, 100,
+		cluster.MakeTestingClusterSettings())
 	mm.Start(context.Background(), nil, mon.NewStandaloneBudget(budget))
 	return mm
 }
@@ -57,7 +55,7 @@ func TestDBClientScan(t *testing.T) {
 
 	beforeAny := db.Clock().Now()
 
-	scratchKey := slices.Clip(append(ts.Codec().TenantPrefix(), keys.ScratchRangeMin...))
+	scratchKey := append(ts.Codec().TenantPrefix(), keys.ScratchRangeMin...)
 	_, _, err := srv.StorageLayer().SplitRange(scratchKey)
 	require.NoError(t, err)
 
@@ -234,6 +232,7 @@ func TestDBClientScan(t *testing.T) {
 		feed, err := f.RangeFeed(ctx, "foo-feed", []roachpb.Span{fooSpan}, db.Clock().Now(),
 			func(ctx context.Context, value *kvpb.RangeFeedValue) {},
 
+			rangefeed.WithScanRetryBehavior(rangefeed.ScanRetryRemaining),
 			rangefeed.WithInitialScanParallelismFn(func() int { return parallelism }),
 
 			rangefeed.WithInitialScan(func(ctx context.Context) {

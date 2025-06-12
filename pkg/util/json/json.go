@@ -10,10 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"math/big"
 	"reflect"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,14 +19,16 @@ import (
 	"unsafe"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/cockroachdb/cockroach/pkg/geo"
+	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
 	"github.com/cockroachdb/cockroach/pkg/keysbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/inverted"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
-	"github.com/cockroachdb/cockroach/pkg/util/deduplicate"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
+	uniq "github.com/cockroachdb/cockroach/pkg/util/unique"
 	"github.com/cockroachdb/errors"
 )
 
@@ -187,6 +187,11 @@ type JSON interface {
 	// and a boolean indicating if this JSON value is a array type.
 	AsArray() ([]JSON, bool)
 
+	// AreKeysSorted returns if the keys in a JSON Object are sorted by
+	// increasing order. It returns false if the underlying JSON value
+	// is not a JSON object.
+	AreKeysSorted() bool
+
 	// Exists implements the `?` operator: does the string exist as a top-level
 	// key within the JSON value?
 	//
@@ -235,8 +240,6 @@ type JSON interface {
 	// either the empty array or the empty object.
 	HasContainerLeaf() (bool, error)
 }
-
-var EmptyJSONValue = NewObjectBuilder(0).Build()
 
 type jsonTrue struct{}
 
@@ -458,78 +461,6 @@ func (b *FixedKeysObjectBuilder) Build() (JSON, error) {
 	b.updated = intsets.Fast{}
 	// Must copy b.pairs in case builder is reused.
 	return jsonObject(append([]jsonKeyValuePair(nil), b.pairs...)), nil
-}
-
-// PartialObject is a JSON object builder that builds an object using a set of
-// fixed key-values (supplied at construction) and a set of keys which are
-// settable when building the final JSON object.
-type PartialObject struct {
-	basePairs      []jsonKeyValuePair
-	keyOrd         map[string]int
-	allowedNewKeys map[string]struct{}
-}
-
-// NewPartialObject creates a PartialObject with the specified base key-value
-// pairs, and allows for setting the values of newKeys when building the final
-// JSON object.
-func NewPartialObject(base map[string]JSON, newKeys []string) (*PartialObject, error) {
-	// Check that newKeys are unique and disjoint from base keys.
-	newKeySet := make(map[string]struct{}, len(newKeys))
-	for _, k := range newKeys {
-		if _, ok := newKeySet[k]; ok {
-			return nil, errors.AssertionFailedf("expected unique keys, found %v", newKeys)
-		}
-		if _, ok := base[k]; ok {
-			return nil, errors.AssertionFailedf("expected new keys to be disjoint from base keys, found %v in both", k)
-		}
-		newKeySet[k] = struct{}{}
-	}
-
-	keys := slices.Collect(maps.Keys(base))
-	keys = append(keys, newKeys...)
-	sort.Strings(keys)
-
-	pairs := make([]jsonKeyValuePair, 0, len(base))
-	keyOrd := make(map[string]int, len(keys))
-
-	for i, k := range keys {
-		keyOrd[k] = i
-		if _, ok := base[k]; !ok {
-			continue
-		}
-		pairs = append(pairs, jsonKeyValuePair{k: jsonString(k), v: base[k]})
-	}
-
-	return &PartialObject{basePairs: pairs, keyOrd: keyOrd, allowedNewKeys: newKeySet}, nil
-}
-
-// NewObject creates a new JSON object with the specified new key-values. The
-// keys of newData must be exactly the same as the newKeys supplied to the
-// constructor.
-func (po *PartialObject) NewObject(newData map[string]JSON) (JSON, error) {
-	if len(newData) != len(po.allowedNewKeys) {
-		return nil, errors.AssertionFailedf(
-			"expected all %d keys to be updated, %d updated",
-			len(po.allowedNewKeys), len(newData))
-	}
-
-	pairs := make([]jsonKeyValuePair, len(po.basePairs)+len(newData))
-
-	for _, p := range po.basePairs {
-		pairs[po.keyOrd[string(p.k)]] = p
-	}
-
-	for k, v := range newData {
-		if _, ok := po.allowedNewKeys[k]; !ok {
-			return nil, errors.AssertionFailedf("unknown new key %s", k)
-		}
-		if _, ok := po.keyOrd[k]; !ok {
-			return nil, errors.AssertionFailedf("unknown key %s", k)
-		}
-		pairs[po.keyOrd[k]] = jsonKeyValuePair{k: jsonString(k), v: v}
-	}
-
-	return jsonObject(pairs), nil
 }
 
 // pairSorter sorts and uniqueifies JSON pairs. In order to keep
@@ -992,6 +923,38 @@ func (j jsonNumber) AsArray() ([]JSON, bool) {
 	return nil, false
 }
 
+func (j jsonNull) AreKeysSorted() bool {
+	return false
+}
+
+func (j jsonString) AreKeysSorted() bool {
+	return false
+}
+
+func (j jsonFalse) AreKeysSorted() bool {
+	return false
+}
+
+func (j jsonTrue) AreKeysSorted() bool {
+	return false
+}
+
+func (j jsonNumber) AreKeysSorted() bool {
+	return false
+}
+
+func (j jsonArray) AreKeysSorted() bool {
+	return false
+}
+
+func (j jsonObject) AreKeysSorted() bool {
+	keys := make([]string, 0, j.Len())
+	for _, a := range j {
+		keys = append(keys, string(a.k))
+	}
+	return sort.StringsAreSorted(keys)
+}
+
 // parseJSONGoStd parses json using encoding/json library.
 // TODO(yevgeniy): Remove this code once we get more confidence in lexer implementation.
 func parseJSONGoStd(s string, _ parseConfig) (JSON, error) {
@@ -1041,19 +1004,6 @@ func ParseJSON(s string, opts ...ParseOption) (JSON, error) {
 		o.apply(&cfg)
 	}
 	return cfg.parseJSON(s)
-}
-
-func init() {
-	encoding.PrettyPrintJSONValueEncoded = func(b []byte) (string, error) {
-		rem, j, err := DecodeJSON(b)
-		if err != nil {
-			return "", err
-		}
-		if len(rem) != 0 {
-			return "", errors.Newf("unexpected remainder after decoding JSON: %v", rem)
-		}
-		return j.String(), nil
-	}
 }
 
 // EncodeInvertedIndexKeys takes in a key prefix and returns a slice of inverted index keys,
@@ -1275,7 +1225,7 @@ func (j jsonArray) encodeInvertedIndexKeys(b []byte) ([][]byte, error) {
 	// to emit duplicate keys from this method, as it's more expensive to
 	// deduplicate keys via KV (which will actually write the keys) than to do
 	// it now (just an in-memory sort and distinct).
-	outKeys = deduplicate.ByteSlices(outKeys)
+	outKeys = uniq.UniquifyByteSlices(outKeys)
 	return outKeys, nil
 }
 
@@ -1850,6 +1800,15 @@ func (j jsonObject) allPaths() ([]JSON, error) {
 	return ret, nil
 }
 
+// FromSpatialObject transforms a SpatialObject into the json.JSON type.
+func FromSpatialObject(so geopb.SpatialObject, numDecimalDigits int) (JSON, error) {
+	j, err := geo.SpatialObjectToGeoJSON(so, numDecimalDigits, geo.SpatialObjectToGeoJSONFlagZero)
+	if err != nil {
+		return nil, err
+	}
+	return ParseJSON(string(j))
+}
+
 // FromDecimal returns a JSON value given a apd.Decimal.
 func FromDecimal(v apd.Decimal) JSON {
 	return jsonNumber(v)
@@ -2070,11 +2029,7 @@ func (j jsonObject) EncodeForwardIndex(buf []byte, dir encoding.Direction) ([]by
 	buf = encoding.EncodeJSONValueLength(buf, dir, int64(len(j)))
 
 	if buildutil.CrdbTestBuild {
-		keys := make([]string, 0, j.Len())
-		for _, a := range j {
-			keys = append(keys, string(a.k))
-		}
-		if !sort.StringsAreSorted(keys) {
+		if ordered := j.AreKeysSorted(); !ordered {
 			return nil, errors.AssertionFailedf("unexpectedly unordered keys in jsonObject %s", j)
 		}
 	}

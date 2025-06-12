@@ -33,6 +33,7 @@ var CTASPlanResultTypes = []*types.T{
 
 type bulkRowWriter struct {
 	execinfra.ProcessorBase
+	flowCtx        *execinfra.FlowCtx
 	processorID    int32
 	batchIdxAtomic int64
 	tableDesc      catalog.TableDescriptor
@@ -52,6 +53,7 @@ func newBulkRowWriterProcessor(
 	input execinfra.RowSource,
 ) (execinfra.Processor, error) {
 	c := &bulkRowWriter{
+		flowCtx:        flowCtx,
 		processorID:    processorID,
 		batchIdxAtomic: 0,
 		tableDesc:      flowCtx.TableDescriptor(ctx, &spec.Table),
@@ -95,10 +97,10 @@ func (sp *bulkRowWriter) work(ctx context.Context) error {
 	kvCh := make(chan row.KVBatch, 10)
 	var g ctxgroup.Group
 
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	conv, err := row.NewDatumRowConverter(
-		ctx, &semaCtx, sp.tableDesc, nil /* targetColNames */, sp.FlowCtx.EvalCtx,
-		kvCh, nil /* seqChunkProvider */, sp.FlowCtx.GetRowMetrics(), sp.FlowCtx.Cfg.DB.KV(),
+		ctx, &semaCtx, sp.tableDesc, nil /* targetColNames */, sp.EvalCtx, kvCh, nil,
+		/* seqChunkProvider */ sp.flowCtx.GetRowMetrics(), sp.flowCtx.Cfg.DB.KV(),
 	)
 	if err != nil {
 		return err
@@ -135,8 +137,8 @@ func (sp *bulkRowWriter) maybeWrapAsPGError(ctx context.Context, orig error) err
 func (sp *bulkRowWriter) ingestLoop(ctx context.Context, kvCh chan row.KVBatch) error {
 	writeTS := sp.spec.Table.CreateAsOfTime
 	const bufferSize = 64 << 20
-	adder, err := sp.FlowCtx.Cfg.BulkAdder(
-		ctx, sp.FlowCtx.Cfg.DB.KV(), writeTS, kvserverbase.BulkAdderOptions{
+	adder, err := sp.flowCtx.Cfg.BulkAdder(
+		ctx, sp.flowCtx.Cfg.DB.KV(), writeTS, kvserverbase.BulkAdderOptions{
 			Name:          sp.tableDesc.GetName(),
 			MinBufferSize: bufferSize,
 			// We disallow shadowing here to ensure that we report errors when builds

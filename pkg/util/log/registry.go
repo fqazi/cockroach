@@ -76,12 +76,8 @@ func (r *sinkInfoRegistry) iter(fn func(l *sinkInfo) error) error {
 func (r *sinkInfoRegistry) iterFileSinks(fn func(l *fileSink) error) error {
 	return r.iter(func(si *sinkInfo) error {
 		if fs, ok := si.sink.(*fileSink); ok {
-			return fn(fs)
-		}
-
-		if bs, ok := si.sink.(*bufferedSink); ok {
-			if fs, ok := bs.child.(*fileSink); ok {
-				return fn(fs)
+			if err := fn(fs); err != nil {
+				return err
 			}
 		}
 		return nil

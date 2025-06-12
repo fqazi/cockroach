@@ -4,6 +4,7 @@
 // included in the /LICENSE file.
 
 //go:build bazel
+// +build bazel
 
 package main
 
@@ -341,20 +342,17 @@ func bazciImpl(cmd *cobra.Command, args []string) error {
 	}
 	args = append(args, fmt.Sprintf("--build_event_binary_file=%s", bepLoc))
 	args = append(args, fmt.Sprintf("--bes_backend=grpc://127.0.0.1:%d", port))
-	// Insert `--config=ci` if it's not already in the args list,
-	// specifically for tests.
-	if args[0] == testSubcmd || args[0] == coverageSubcmd {
-		hasCiConfig := false
-		for idx, arg := range args {
-			if arg == "--config=ci" || arg == "--config=cinolint" ||
-				(arg == "--config" && idx < len(args)-1 && (args[idx+1] == "ci" || args[idx+1] == "cinolint")) {
-				hasCiConfig = true
-				break
-			}
+	// Insert `--config ci` if it's not already in the args list.
+	hasCiConfig := false
+	for idx, arg := range args {
+		if arg == "--config=ci" || arg == "--config=cinolint" ||
+			(arg == "--config" && idx < len(args)-1 && (args[idx+1] == "ci" || args[idx+1] == "cinolint")) {
+			hasCiConfig = true
+			break
 		}
-		if !hasCiConfig {
-			args = append(args, "--config", "ci")
-		}
+	}
+	if !hasCiConfig {
+		args = append(args, "--config", "ci")
 	}
 	fmt.Println("running bazel w/ args: ", shellescape.QuoteCommand(args))
 	bazelCmd := exec.Command("bazel", args...)
@@ -477,19 +475,17 @@ func processTestXmls(testXmls []string) error {
 	if doPost() {
 		var postErrors []string
 		for _, testXml := range testXmls {
-			xmlFile, err := os.ReadFile(testXml)
+			xmlFile, err := os.Open(testXml)
 			if err != nil {
-				postErrors = append(postErrors, fmt.Sprintf("Failed to read %s with the following error: %v", testXml, err))
+				postErrors = append(postErrors, fmt.Sprintf("Failed to open %s with the following error: %v", testXml, err))
 				continue
 			}
-			var testSuites bazelutil.TestSuites
-			err = xml.Unmarshal(xmlFile, &testSuites)
-			if err != nil {
-				postErrors = append(postErrors, fmt.Sprintf("Failed to parse test.xml file with the following error: %+v", err))
-				continue
-			}
-			if err := githubpost.PostFromTestXMLWithFormatterName(githubPostFormatterName, testSuites); err != nil {
+			if err := githubpost.PostFromTestXMLWithFormatterName(githubPostFormatterName, xmlFile); err != nil {
 				postErrors = append(postErrors, fmt.Sprintf("Failed to process %s with the following error: %+v", testXml, err))
+				continue
+			}
+			if err := xmlFile.Close(); err != nil {
+				postErrors = append(postErrors, fmt.Sprintf("Failed to close %s with error: %v\n", testXml, err))
 				continue
 			}
 		}

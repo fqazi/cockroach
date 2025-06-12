@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/upgrade"
-	"github.com/cockroachdb/redact"
 )
 
 // plannerJobExecContext is a wrapper to implement JobExecContext with a planner
@@ -29,7 +28,7 @@ type plannerJobExecContext struct {
 // MakeJobExecContext makes a JobExecContext.
 func MakeJobExecContext(
 	ctx context.Context,
-	opName redact.SafeString,
+	opName string,
 	user username.SQLUsername,
 	memMetrics *MemoryMetrics,
 	execCfg *ExecutorConfig,
@@ -72,7 +71,7 @@ func (e *plannerJobExecContext) SpanStatsConsumer() keyvisualizer.SpanStatsConsu
 }
 
 // JobExecContext provides the execution environment for a job. It is what is
-// passed to the Resume/OnFailOrCancel methods of a jobs's
+// passed to the Resume/OnFailOrCancel/OnPauseRequested methods of a jobs's
 // Resumer to give that resumer access to things like ExecutorCfg, LeaseMgr,
 // etc -- the kinds of things that would usually be on planner or similar during
 // a non-job SQL statement's execution. Unlike a planner however, or planner-ish

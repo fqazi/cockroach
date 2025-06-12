@@ -50,7 +50,7 @@ func (c DataConversionConfig) GetFloatPrec(typ *types.T) int {
 }
 
 func (m VectorizeExecMode) String() string {
-	if m == VectorizeUnset || m == DeprecatedVectorize201Auto {
+	if m == VectorizeUnset {
 		m = VectorizeOn
 	}
 	name, ok := VectorizeExecMode_name[int32(m)]
@@ -71,9 +71,6 @@ func VectorizeExecModeFromString(val string) (VectorizeExecMode, bool) {
 	m := VectorizeExecMode(mInt)
 	if m == VectorizeUnset {
 		return 0, false
-	}
-	if m == DeprecatedVectorize201Auto {
-		m = VectorizeOn
 	}
 	return m, true
 }
@@ -104,6 +101,6 @@ func (s *SessionData) User() username.SQLUsername {
 
 // SystemIdentity retrieves the session's system identity.
 // (Identity presented by the client prior to identity mapping.)
-func (s *LocalOnlySessionData) SystemIdentity() string {
-	return s.SystemIdentityProto
+func (s *LocalOnlySessionData) SystemIdentity() username.SQLUsername {
+	return s.SystemIdentityProto.Decode()
 }

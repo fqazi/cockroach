@@ -29,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -244,7 +243,7 @@ func TestCheckConsistencyInconsistent(t *testing.T) {
 	// Test uses sticky registry to have persistent pebble state that could
 	// be analyzed for existence of snapshots and to verify snapshot content
 	// after failures.
-	stickyVFSRegistry := fs.NewStickyRegistry()
+	stickyVFSRegistry := server.NewStickyVFSRegistry()
 
 	// The cluster has 3 nodes, one store per node. The test writes a few KVs to a
 	// range, which gets replicated to all 3 stores. Then it manually replaces an
@@ -383,15 +382,9 @@ func TestCheckConsistencyInconsistent(t *testing.T) {
 
 		// Create a new store on top of checkpoint location inside existing in-mem
 		// VFS to verify its contents.
-		ctx := context.Background()
-		memFS := stickyVFSRegistry.Get(strconv.FormatInt(int64(i), 10))
-		env, err := fs.InitEnv(ctx, memFS, cps[0], fs.EnvConfig{RW: fs.ReadOnly}, nil /* statsCollector */)
-		require.NoError(t, err)
-		cpEng, err := storage.Open(ctx, env, cluster.MakeClusterSettings(),
-			storage.ForTesting, storage.MustExist, storage.CacheSize(1<<20))
-		if err != nil {
-			require.NoError(t, err)
-		}
+		fs := stickyVFSRegistry.Get(strconv.FormatInt(int64(i), 10))
+		cpEng := storage.InMemFromFS(context.Background(), fs, cps[0], cluster.MakeClusterSettings(),
+			storage.ForTesting, storage.MustExist, storage.ReadOnly, storage.CacheSize(1<<20))
 		defer cpEng.Close()
 
 		// Find the problematic range in the storage.
@@ -407,7 +400,7 @@ func TestCheckConsistencyInconsistent(t *testing.T) {
 
 		// Compute a checksum over the content of the problematic range.
 		rd, err := kvserver.CalcReplicaDigest(context.Background(), *desc, cpEng,
-			kvpb.ChecksumMode_CHECK_FULL, quotapool.NewRateLimiter("test", quotapool.Inf(), 0), nil /* settings */)
+			kvpb.ChecksumMode_CHECK_FULL, quotapool.NewRateLimiter("test", quotapool.Inf(), 0))
 		require.NoError(t, err)
 		hashes[i] = rd.SHA512[:]
 	}
@@ -441,6 +434,14 @@ func TestCheckConsistencyInconsistent(t *testing.T) {
 func TestConsistencyQueueRecomputeStats(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	// This test relies on repeated sequential storage.EventuallyFileOnlySnapshot
+	// acquisitions. Reduce the max wait time for each acquisition to speed up
+	// this test.
+	origEFOSWait := storage.MaxEFOSWait
+	storage.MaxEFOSWait = 30 * time.Millisecond
+	defer func() {
+		storage.MaxEFOSWait = origEFOSWait
+	}()
 	testutils.RunTrueAndFalse(t, "hadEstimates", testConsistencyQueueRecomputeStatsImpl)
 }
 
@@ -529,7 +530,7 @@ func testConsistencyQueueRecomputeStatsImpl(t *testing.T, hadEstimates bool) {
 
 	func() {
 		eng, err := storage.Open(ctx,
-			fs.MustInitPhysicalTestingEnv(path),
+			storage.Filesystem(path),
 			cluster.MakeClusterSettings(),
 			storage.CacheSize(1<<20 /* 1 MiB */),
 			storage.MustExist)
@@ -606,25 +607,18 @@ func testConsistencyQueueRecomputeStatsImpl(t *testing.T, hadEstimates bool) {
 		t.Fatal(err)
 	}
 
-	// When running with leader leases, it might take an extra election interval
-	// for a lease to be established after adding the voters above because the
-	// leader needs to get store liveness support from the followers. The stats
-	// re-computation runs on the leaseholder and will fail if there isn't one.
-	testutils.SucceedsSoon(t, func() error {
-		// Force a run of the consistency queue, otherwise it might take a while.
-		store := tc.GetFirstStoreFromServer(t, 0)
-		require.NoError(t, store.ForceConsistencyQueueProcess())
+	// Force a run of the consistency queue, otherwise it might take a while.
+	store := tc.GetFirstStoreFromServer(t, 0)
+	require.NoError(t, store.ForceConsistencyQueueProcess())
 
-		// The stats should magically repair themselves. We'll first do a quick check
-		// and then a full recomputation.
-		repl, _, err := tc.Servers[0].GetStores().(*kvserver.Stores).GetReplicaForRangeID(ctx, rangeID)
-		require.NoError(t, err)
-		ms := repl.GetMVCCStats()
-		if ms.SysCount >= sysCountGarbage {
-			return errors.Newf("still have a SysCount of %d", ms.SysCount)
-		}
-		return nil
-	})
+	// The stats should magically repair themselves. We'll first do a quick check
+	// and then a full recomputation.
+	repl, _, err := tc.Servers[0].GetStores().(*kvserver.Stores).GetReplicaForRangeID(ctx, rangeID)
+	require.NoError(t, err)
+	ms := repl.GetMVCCStats()
+	if ms.SysCount >= sysCountGarbage {
+		t.Fatalf("still have a SysCount of %d", ms.SysCount)
+	}
 
 	if delta := computeDelta(db0); delta != (enginepb.MVCCStats{}) {
 		t.Fatalf("stats still in need of adjustment: %+v", delta)

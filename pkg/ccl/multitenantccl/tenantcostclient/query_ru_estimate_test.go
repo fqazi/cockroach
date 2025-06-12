@@ -72,6 +72,7 @@ func TestEstimateQueryRUConsumption(t *testing.T) {
 	tenantID := serverutils.TestTenantID()
 	tenant1, tenantDB1 := serverutils.StartTenant(t, s, base.TestTenantArgs{
 		TenantID: tenantID,
+		Settings: st,
 		TestingKnobs: base.TestingKnobs{
 			SQLEvalContext: &eval.TestingKnobs{
 				// We disable the randomization of some batch sizes because with
@@ -134,11 +135,11 @@ func TestEstimateQueryRUConsumption(t *testing.T) {
 	}
 
 	var err error
-	var tenantEstimatedRUs float64
+	var tenantEstimatedRUs int
 	for _, tc := range testCases {
 		for i := 0; i < tc.count; i++ {
 			output := tdb.QueryStr(t, "EXPLAIN ANALYZE "+tc.sql)
-			var estimatedRU float64
+			var estimatedRU int
 			for _, row := range output {
 				if len(row) != 1 {
 					t.Fatalf("expected one column")
@@ -148,7 +149,7 @@ func TestEstimateQueryRUConsumption(t *testing.T) {
 					substr := strings.Split(val, " ")
 					require.Equalf(t, 4, len(substr), "expected RU consumption message to have four words")
 					ruCountStr := strings.Replace(strings.TrimSpace(substr[3]), ",", "", -1)
-					estimatedRU, err = strconv.ParseFloat(ruCountStr, 64)
+					estimatedRU, err = strconv.Atoi(ruCountStr)
 					require.NoError(t, err, "failed to retrieve estimated RUs")
 					break
 				}
@@ -195,7 +196,7 @@ func TestEstimateQueryRUConsumption(t *testing.T) {
 	const deltaFraction = 0.25
 	allowedDelta := tenantMeasuredRUs * deltaFraction
 	require.InDeltaf(t, tenantMeasuredRUs, tenantEstimatedRUs, allowedDelta,
-		"estimated RUs (%.2f) were not within %.2f RUs of the expected value (%.2f)",
+		"estimated RUs (%d) were not within %f RUs of the expected value (%f)",
 		tenantEstimatedRUs,
 		allowedDelta,
 		tenantMeasuredRUs,

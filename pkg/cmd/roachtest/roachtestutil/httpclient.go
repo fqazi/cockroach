@@ -9,11 +9,9 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -46,7 +44,6 @@ type RoachtestHTTPClient struct {
 	cluster            cluster.Cluster
 	l                  *logger.Logger
 	virtualClusterName string
-	headers            map[string]string
 	// Used for safely adding to the cookie jar.
 	mu syncutil.Mutex
 }
@@ -54,7 +51,6 @@ type RoachtestHTTPClient struct {
 type RoachtestHTTPOptions struct {
 	Timeout            time.Duration
 	VirtualClusterName string
-	Headers            map[string]string
 }
 
 func HTTPTimeout(timeout time.Duration) func(options *RoachtestHTTPOptions) {
@@ -66,12 +62,6 @@ func HTTPTimeout(timeout time.Duration) func(options *RoachtestHTTPOptions) {
 func VirtualCluster(name string) func(*RoachtestHTTPOptions) {
 	return func(options *RoachtestHTTPOptions) {
 		options.VirtualClusterName = name
-	}
-}
-
-func WithHeaders(headers map[string]string) func(*RoachtestHTTPOptions) {
-	return func(options *RoachtestHTTPOptions) {
-		options.Headers = headers
 	}
 }
 
@@ -101,7 +91,6 @@ func DefaultHTTPClient(
 		roachtestHTTP.client.Timeout = httpOptions.Timeout
 	}
 	roachtestHTTP.virtualClusterName = httpOptions.VirtualClusterName
-	roachtestHTTP.headers = httpOptions.Headers
 
 	return &roachtestHTTP
 }
@@ -110,36 +99,16 @@ func (r *RoachtestHTTPClient) Get(ctx context.Context, url string) (*http.Respon
 	if err := r.addCookies(ctx, url); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	r.addHeaders(req)
-	return r.client.Do(req)
+	return r.client.Get(ctx, url)
 }
 
 func (r *RoachtestHTTPClient) GetJSON(
-	ctx context.Context, path string, response protoutil.Message, opts ...httputil.JSONOption,
+	ctx context.Context, path string, response protoutil.Message,
 ) error {
 	if err := r.addCookies(ctx, path); err != nil {
 		return err
 	}
-	return httputil.GetJSONWithOptions(*r.client.Client, path, response, opts...)
-}
-
-func (r *RoachtestHTTPClient) Post(
-	ctx context.Context, url string, contentType string, body io.Reader,
-) (*http.Response, error) {
-	if err := r.addCookies(ctx, url); err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", contentType)
-	r.addHeaders(req)
-	return r.client.Do(req)
+	return httputil.GetJSON(*r.client.Client, path, response)
 }
 
 func (r *RoachtestHTTPClient) PostProtobuf(
@@ -163,9 +132,6 @@ func (r *RoachtestHTTPClient) addCookies(ctx context.Context, cookieUrl string) 
 	if !r.cluster.IsSecure() {
 		return nil
 	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	// If we haven't extracted the sessionID yet, do so.
 	if r.sessionID == "" {
 		id, err := getSessionID(ctx, r.cluster, r.l, r.cluster.All(), r.virtualClusterName)
@@ -201,6 +167,8 @@ func (r *RoachtestHTTPClient) addCookies(ctx context.Context, cookieUrl string) 
 // SetCookies is a helper that checks if a client.CookieJar exists and creates
 // one if it doesn't. It then sets the provided cookies through CookieJar.SetCookies.
 func (r *RoachtestHTTPClient) SetCookies(u *url.URL, cookies []*http.Cookie) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.client.Jar == nil {
 		jar, err := cookiejar.New(nil)
 		if err != nil {
@@ -228,7 +196,7 @@ func getSessionIDOnSingleNode(
 		"%s auth-session login root --url={pgurl%s%s} --certs-dir ./certs --only-cookie",
 		test.DefaultCockroachPath, node, virtualClusterSelector,
 	)
-	res, err := c.RunWithDetailsSingleNode(ctx, l, option.WithNodes(node), loginCmd)
+	res, err := c.RunWithDetailsSingleNode(ctx, l, node, loginCmd)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to authenticate")
 	}
@@ -259,30 +227,4 @@ func getSessionID(
 	}
 	sessionID := strings.Split(cookie, ";")[0]
 	return sessionID, nil
-}
-
-// Download downloads the file at the given url and saves it to filename.
-func (r *RoachtestHTTPClient) Download(ctx context.Context, url string, filename string) error {
-	out, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	resp, err := r.Get(ctx, url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if _, err := io.Copy(out, resp.Body); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (r *RoachtestHTTPClient) addHeaders(req *http.Request) {
-	for key, value := range r.headers {
-		req.Header.Set(key, value)
-	}
 }

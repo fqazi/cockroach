@@ -27,14 +27,7 @@ func registerDatabaseDrop(r registry.Registry) {
 	clusterSpec := r.MakeClusterSpec(
 		10, /* nodeCount */
 		spec.CPU(8),
-		spec.WorkloadNode(),
-		spec.WorkloadNodeCPU(8),
-		// The dataset uses above 4TiB of data, and if we have to create the dataset
-		// via IMPORT we need some buffer. 500GiB per node (4.5TiB total) has been
-		// found to fail regularly in the past since the IMPORT job fails when any
-		// node falls below 5% available capacity. 800GiB (7.2TiB) ought to be more
-		// than enough.
-		spec.VolumeSize(800),
+		spec.VolumeSize(500),
 		spec.GCEVolumeType("pd-ssd"),
 		spec.GCEMachineType("n2-standard-8"),
 		spec.GCEZones("us-east1-b"),
@@ -42,14 +35,18 @@ func registerDatabaseDrop(r registry.Registry) {
 
 	r.Add(registry.TestSpec{
 		Name:             "admission-control/database-drop",
-		Timeout:          15 * time.Hour,
+		Timeout:          10 * time.Hour,
 		Owner:            registry.OwnerAdmissionControl,
 		Benchmark:        true,
 		CompatibleClouds: registry.OnlyGCE,
 		Suites:           registry.Suites(registry.Weekly),
 		Cluster:          clusterSpec,
+		RequiresLicense:  true,
 		SnapshotPrefix:   "droppable-database-tpce-100k",
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
+			crdbNodes := c.Spec().NodeCount - 1
+			workloadNode := c.Spec().NodeCount
+
 			snapshots, err := c.ListSnapshots(ctx, vm.VolumeSnapshotListOpts{
 				NamePrefix: t.SnapshotPrefix(),
 			})
@@ -78,7 +75,7 @@ func registerDatabaseDrop(r registry.Registry) {
 				//
 				// TODO(irfansharif): Make this versioning business a bit more
 				// explicit throughout. It works, but too tacitly.
-				c.Run(ctx, option.WithNodes(c.All()), fmt.Sprintf("cp %s ./cockroach", path))
+				c.Run(ctx, c.All(), fmt.Sprintf("cp %s ./cockroach", path))
 
 				// Set up TPC-E with 100k customers.
 				//
@@ -91,10 +88,10 @@ func registerDatabaseDrop(r registry.Registry) {
 
 				runTPCE(ctx, t, c, tpceOptions{
 					start: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-						settings := install.MakeClusterSettings(install.NumRacksOption(len(c.CRDBNodes())))
+						settings := install.MakeClusterSettings(install.NumRacksOption(crdbNodes))
 						startOpts := option.NewStartOpts(option.NoBackupSchedule)
 						roachtestutil.SetDefaultSQLPort(c, &startOpts.RoachprodOpts)
-						if err := c.StartE(ctx, t.L(), startOpts, settings, c.CRDBNodes()); err != nil {
+						if err := c.StartE(ctx, t.L(), startOpts, settings, c.Range(1, crdbNodes)); err != nil {
 							t.Fatal(err)
 						}
 					},
@@ -102,7 +99,7 @@ func registerDatabaseDrop(r registry.Registry) {
 					disablePrometheus:  true,
 					setupType:          usingTPCEInit,
 					estimatedSetupTime: 4 * time.Hour,
-					nodes:              len(c.CRDBNodes()),
+					nodes:              crdbNodes,
 					cpus:               clusterSpec.CPUs,
 					ssds:               1,
 					onlySetup:          true,
@@ -137,7 +134,7 @@ func registerDatabaseDrop(r registry.Registry) {
 					disablePrometheus:  true,
 					setupType:          usingTPCEInit,
 					estimatedSetupTime: 4 * time.Hour,
-					nodes:              len(c.CRDBNodes()),
+					nodes:              crdbNodes,
 					cpus:               clusterSpec.CPUs,
 					ssds:               1,
 					onlySetup:          true,
@@ -168,15 +165,15 @@ func registerDatabaseDrop(r registry.Registry) {
 			}
 
 			promCfg := &prometheus.Config{}
-			promCfg.WithPrometheusNode(c.WorkloadNode().InstallNodes()[0]).
-				WithNodeExporter(c.CRDBNodes().InstallNodes()).
-				WithCluster(c.CRDBNodes().InstallNodes()).
+			promCfg.WithPrometheusNode(c.Node(workloadNode).InstallNodes()[0]).
+				WithNodeExporter(c.Range(1, crdbNodes).InstallNodes()).
+				WithCluster(c.Range(1, crdbNodes).InstallNodes()).
 				WithGrafanaDashboard("https://go.crdb.dev/p/index-admission-control-grafana").
 				WithScrapeConfigs(
 					prometheus.MakeWorkloadScrapeConfig("workload", "/",
 						makeWorkloadScrapeNodes(
-							c.WorkloadNode().InstallNodes()[0],
-							[]workloadInstance{{nodes: c.WorkloadNode()}},
+							c.Node(workloadNode).InstallNodes()[0],
+							[]workloadInstance{{nodes: c.Node(workloadNode)}},
 						),
 					),
 				)
@@ -198,8 +195,8 @@ func registerDatabaseDrop(r registry.Registry) {
 					startOpts := option.NewStartOpts(option.NoBackupSchedule)
 					roachtestutil.SetDefaultSQLPort(c, &startOpts.RoachprodOpts)
 					roachtestutil.SetDefaultAdminUIPort(c, &startOpts.RoachprodOpts)
-					settings := install.MakeClusterSettings(install.NumRacksOption(len(c.CRDBNodes())))
-					if err := c.StartE(ctx, t.L(), startOpts, settings, c.CRDBNodes()); err != nil {
+					settings := install.MakeClusterSettings(install.NumRacksOption(crdbNodes))
+					if err := c.StartE(ctx, t.L(), startOpts, settings, c.Range(1, crdbNodes)); err != nil {
 						t.Fatal(err)
 					}
 				},

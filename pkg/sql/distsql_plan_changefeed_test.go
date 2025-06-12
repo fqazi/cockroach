@@ -80,7 +80,7 @@ CREATE TABLE foo (
 	sd.Database = "defaultdb"
 
 	p, cleanup := NewInternalPlanner("test", kv.NewTxn(ctx, kvDB, s.NodeID()),
-		username.NodeUserName(), &MemoryMetrics{}, &execCfg, sd,
+		username.RootUserName(), &MemoryMetrics{}, &execCfg, sd,
 	)
 	defer cleanup()
 
@@ -427,11 +427,11 @@ CREATE TABLE foo (
 			plan, err := PlanCDCExpression(ctx, p, expr, tc.opts...)
 			require.NoError(t, err)
 			collected := make(map[uint32]string)
-			err = plan.CollectPlanColumns(func(c colinfo.ResultColumn) bool {
-				collected[c.PGAttributeNum] = c.Name
-				return false
-			})
-			require.NoError(t, err)
+			plan.CollectPlanColumns(
+				func(c colinfo.ResultColumn) bool {
+					collected[c.PGAttributeNum] = c.Name
+					return false
+				})
 			collectedNames := make([]string, 0, len(collected))
 			for _, v := range collected {
 				collectedNames = append(collectedNames, v)
@@ -460,7 +460,7 @@ func TestChangefeedStreamsResults(t *testing.T) {
 	sd := NewInternalSessionData(ctx, execCfg.Settings, "test")
 	sd.Database = "defaultdb"
 	p, cleanup := NewInternalPlanner("test", kv.NewTxn(ctx, kvDB, s.NodeID()),
-		username.NodeUserName(), &MemoryMetrics{}, &execCfg, sd,
+		username.RootUserName(), &MemoryMetrics{}, &execCfg, sd,
 	)
 	defer cleanup()
 	stmt, err := parser.ParseOne("SELECT * FROM foo WHERE a < 10")
@@ -506,7 +506,7 @@ FAMILY extra (extra)
 	sd := NewInternalSessionData(ctx, execCfg.Settings, "test")
 	sd.Database = "defaultdb"
 	p, cleanup := NewInternalPlanner("test", kv.NewTxn(ctx, kvDB, s.NodeID()),
-		username.NodeUserName(), &MemoryMetrics{}, &execCfg, sd,
+		username.RootUserName(), &MemoryMetrics{}, &execCfg, sd,
 	)
 	defer cleanup()
 	planner := p.(*planner)

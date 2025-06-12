@@ -29,6 +29,7 @@ go_test(
         "unweighted_finder_test.go",
         "weighted_finder_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":split"],
     deps = [
@@ -40,10 +41,10 @@ go_test(
         "//pkg/util/metric",
         "//pkg/util/stop",
         "//pkg/util/timeutil",
-        "//pkg/workload/workloadimpl",
         "//pkg/workload/ycsb",
         "@com_github_cockroachdb_datadriven//:datadriven",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
+        "@org_golang_x_exp//rand",
     ],
 )

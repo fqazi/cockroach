@@ -6,7 +6,6 @@
 package tree
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/lib/pq/oid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -132,22 +130,21 @@ func TestCompareTimestamps(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
 	for _, tc := range testCases {
 		t.Run(
 			tc.desc,
 			func(t *testing.T) {
-				cmpCtx := &testTimestampCompareContext{loc: tc.location}
-				res, err := compareTimestamps(ctx, cmpCtx, tc.left, tc.right)
+				ctx := &testTimestampCompareContext{loc: tc.location}
+				res, err := compareTimestamps(ctx, tc.left, tc.right)
 				assert.NoError(t, err)
 				assert.Equal(t, tc.expected, res)
-				res, err = compareTimestamps(ctx, cmpCtx, tc.right, tc.left)
+				res, err = compareTimestamps(ctx, tc.right, tc.left)
 				assert.NoError(t, err)
 				assert.Equal(t, -tc.expected, res)
 			},
 		)
 	}
-	_, err = compareTimestamps(ctx, nil /* ctx */, dMaxDate, dMinDate)
+	_, err = compareTimestamps(nil /* ctx */, dMaxDate, dMinDate)
 	assert.Error(t, err, "should not be able to compare infinite timestamps")
 }
 
@@ -155,9 +152,7 @@ type testTimestampCompareContext struct {
 	loc *time.Location
 }
 
-func (fcc *testTimestampCompareContext) MustGetPlaceholderValue(
-	ctx context.Context, p *Placeholder,
-) Datum {
+func (fcc *testTimestampCompareContext) MustGetPlaceholderValue(p *Placeholder) Datum {
 	panic("not implemented")
 }
 
@@ -177,23 +172,6 @@ func (fcc *testTimestampCompareContext) GetLocation() *time.Location {
 	return time.UTC
 }
 
-func (fcc *testTimestampCompareContext) UnwrapDatum(ctx context.Context, d Datum) Datum {
+func (fcc *testTimestampCompareContext) UnwrapDatum(d Datum) Datum {
 	return d
-}
-
-func BenchmarkDatumCompare(b *testing.B) {
-	ctx := context.Background()
-	compareCtx := &testTimestampCompareContext{}
-	for _, tc := range []struct {
-		name     string
-		d, other Datum
-	}{
-		{name: "DIntToDOid", d: DZero, other: NewDOid(oid.Oid(0))},
-	} {
-		b.Run(tc.name, func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
-				_, _ = tc.d.Compare(ctx, compareCtx, tc.other)
-			}
-		})
-	}
 }

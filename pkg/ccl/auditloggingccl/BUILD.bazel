@@ -11,6 +11,7 @@ go_library(
         "//pkg/settings/cluster",
         "//pkg/sql/auditlogging",
         "//pkg/util/log",
+        "//pkg/util/uuid",
         "@com_github_cockroachdb_errors//:errors",
     ],
 )
@@ -21,7 +22,9 @@ go_test(
         "audit_logging_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":auditloggingccl"],
+    tags = ["ccl_test"],
     deps = [
         "//pkg/base",
         "//pkg/ccl",

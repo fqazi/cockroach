@@ -27,6 +27,15 @@ func GetDescID(e scpb.Element) catid.DescID {
 	return id.(catid.DescID)
 }
 
+// GetIndexID retrieves the index ID from the element if it has one.
+func GetIndexID(e scpb.Element) (catid.IndexID, bool) {
+	v, err := Schema.GetAttribute(IndexID, e)
+	if err != nil {
+		return 0, false
+	}
+	return v.(catid.IndexID), true
+}
+
 // AllTargetStateDescIDs applies AllTargetDescIDs to the whole target state.
 func AllTargetStateDescIDs(s scpb.TargetState) (ids catalog.DescriptorIDSet) {
 	for i := range s.Targets {
@@ -108,32 +117,16 @@ func VersionSupportsElementUse(el scpb.Element, version clusterversion.ClusterVe
 		// These elements need v22.1 so they can be used without checking any version gates.
 		return true
 	case *scpb.IndexColumn, *scpb.EnumTypeValue, *scpb.TableZoneConfig:
-		// These elements need v22.2 so they can be used without checking any version gates.
-		return true
+		return version.IsActive(clusterversion.V22_2)
 	case *scpb.DatabaseData, *scpb.TableData, *scpb.IndexData, *scpb.TablePartitioning,
 		*scpb.Function, *scpb.FunctionName, *scpb.FunctionVolatility, *scpb.FunctionLeakProof,
-		*scpb.FunctionNullInputBehavior, *scpb.FunctionBody,
+		*scpb.FunctionNullInputBehavior, *scpb.FunctionBody, *scpb.FunctionParamDefaultExpression,
 		*scpb.ColumnNotNull, *scpb.CheckConstraintUnvalidated, *scpb.UniqueWithoutIndexConstraintUnvalidated,
 		*scpb.ForeignKeyConstraintUnvalidated, *scpb.IndexZoneConfig, *scpb.TableSchemaLocked, *scpb.CompositeType,
 		*scpb.CompositeTypeAttrType, *scpb.CompositeTypeAttrName:
-		// These elements need v23.1 so they can be used without checking any version gates.
-		return true
+		return version.IsActive(clusterversion.V23_1)
 	case *scpb.SequenceOption:
-		// These elements need v23.2 so they can be used without checking any version gates.
-		return true
-	case *scpb.TypeComment, *scpb.DatabaseZoneConfig:
-		// These elements need v24.2 so they can be used without checking any version gates.
-		return true
-	case *scpb.ColumnComputeExpression, *scpb.FunctionSecurity, *scpb.LDRJobIDs,
-		*scpb.PartitionZoneConfig, *scpb.Trigger, *scpb.TriggerName,
-		*scpb.TriggerEnabled, *scpb.TriggerTiming, *scpb.TriggerEvents, *scpb.TriggerTransition,
-		*scpb.TriggerWhen, *scpb.TriggerFunctionCall, *scpb.TriggerDeps:
-		// These elements need v24.3 so they can be used without checking any version gates.
-		return true
-	case *scpb.NamedRangeZoneConfig, *scpb.Policy, *scpb.PolicyName:
-		return version.IsActive(clusterversion.V25_1)
-	case *scpb.PolicyRole, *scpb.PolicyUsingExpr, *scpb.PolicyWithCheckExpr, *scpb.PolicyDeps, *scpb.RowLevelSecurityEnabled, *scpb.RowLevelSecurityForced:
-		return version.IsActive(clusterversion.V25_2)
+		return version.IsActive(clusterversion.V23_2)
 	default:
 		panic(errors.AssertionFailedf("unknown element %T", el))
 	}
@@ -142,5 +135,9 @@ func VersionSupportsElementUse(el scpb.Element, version clusterversion.ClusterVe
 // MaxElementVersion returns the maximum cluster version at which an element
 // may be used.
 func MaxElementVersion(el scpb.Element) (version clusterversion.Key, exists bool) {
-	return 0, false /* exists */
+	switch el.(type) {
+	case *scpb.SecondaryIndexPartial:
+		return clusterversion.V23_1_SchemaChangerDeprecatedIndexPredicates, true /* exists */
+	}
+	return version, false /* exists */
 }

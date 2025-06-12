@@ -80,7 +80,7 @@ func (s scheduledJobStorageTxn) loadCandidateScheduleForExecution(
 	row, cols, err := s.txn.QueryRowExWithCols(
 		ctx, "find-scheduled-jobs-exec",
 		s.txn.KV(),
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		lookupStmt)
 	if err != nil {
 		return nil, err
@@ -99,18 +99,15 @@ func (s scheduledJobStorageTxn) loadCandidateScheduleForExecution(
 
 // lookupNumRunningJobs returns the number of running jobs for the specified schedule.
 func lookupNumRunningJobs(
-	ctx context.Context,
-	scheduleID jobspb.ScheduleID,
-	env scheduledjobs.JobSchedulerEnv,
-	txn isql.Txn,
+	ctx context.Context, scheduleID int64, env scheduledjobs.JobSchedulerEnv, txn isql.Txn,
 ) (int64, error) {
 	lookupStmt := fmt.Sprintf(
 		"SELECT count(*) FROM %s WHERE created_by_type = '%s' AND created_by_id = %d AND status IN %s",
-		env.SystemJobsTableName(), CreatedByScheduledJobs, scheduleID, NonTerminalStateTupleString)
+		env.SystemJobsTableName(), CreatedByScheduledJobs, scheduleID, NonTerminalStatusTupleString)
 	row, err := txn.QueryRowEx(
 		ctx, "lookup-num-running",
 		txn.KV(),
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		lookupStmt)
 	if err != nil {
 		return 0, err
@@ -131,14 +128,14 @@ func (s *jobScheduler) processSchedule(
 			// In particular, it'd be nice to add more time when repeatedly rescheduling
 			// a job.  It would also be nice not to log each event.
 			schedule.SetNextRun(s.env.Now().Add(recheckRunningAfter))
-			schedule.SetScheduleStatusf("delayed due to %d already running", numRunning)
+			schedule.SetScheduleStatus("delayed due to %d already running", numRunning)
 			s.metrics.RescheduleWait.Inc(1)
 			return scheduleStorage.Update(ctx, schedule)
 		case jobspb.ScheduleDetails_SKIP:
 			if err := schedule.ScheduleNextRun(); err != nil {
 				return err
 			}
-			schedule.SetScheduleStatusf("rescheduled due to %d already running", numRunning)
+			schedule.SetScheduleStatus("rescheduled due to %d already running", numRunning)
 			s.metrics.RescheduleSkip.Inc(1)
 			return scheduleStorage.Update(ctx, schedule)
 		}
@@ -322,7 +319,7 @@ func (s *jobScheduler) executeSchedules(ctx context.Context, maxSchedules int64)
 	it, err := s.DB.Executor().QueryIteratorEx(
 		ctx, "find-scheduled-jobs",
 		/*txn=*/ nil,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		findSchedulesStmt)
 
 	if err != nil {
@@ -427,7 +424,7 @@ func (s *jobScheduler) runDaemon(ctx context.Context, stopper *stop.Stopper) {
 				if err := whenDisabled.withCancelOnDisabled(ctx, &s.Settings.SV, func(ctx context.Context) error {
 					return s.executeSchedules(ctx, maxSchedules)
 				}); err != nil {
-					log.Errorf(ctx, "error executing schedules: %v", err)
+					log.Errorf(ctx, "error executing schedules: %+v", err)
 				}
 			}
 		}
@@ -446,7 +443,6 @@ var schedulerPaceSetting = settings.RegisterDurationSetting(
 	"jobs.scheduler.pace",
 	"how often to scan system.scheduled_jobs table",
 	time.Minute,
-	settings.PositiveDuration,
 )
 
 var schedulerMaxJobsPerIterationSetting = settings.RegisterIntSetting(

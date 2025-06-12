@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cli"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/stretchr/testify/require"
@@ -27,7 +26,7 @@ func runCLINodeStatus(ctx context.Context, t test.Test, c cluster.Cluster) {
 	db := c.Conn(ctx, t.L(), 1)
 	defer db.Close()
 
-	err := roachtestutil.WaitFor3XReplication(ctx, t.L(), db)
+	err := WaitFor3XReplication(ctx, t, db)
 	require.NoError(t, err)
 
 	lastWords := func(s string) []string {
@@ -44,7 +43,7 @@ func runCLINodeStatus(ctx context.Context, t test.Test, c cluster.Cluster) {
 	}
 
 	nodeStatus := func() (_ string, _ []string, err error) {
-		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(c.Node(1)), fmt.Sprintf("./cockroach node status --certs-dir=%s -p {pgport:1}", install.CockroachNodeCertsDir))
+		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), c.Node(1), fmt.Sprintf("./cockroach node status --certs-dir=%s -p {pgport:1}", install.CockroachNodeCertsDir))
 		if err != nil {
 			return "", nil, err
 		}

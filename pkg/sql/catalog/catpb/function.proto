@@ -34,17 +34,12 @@ message Function {
 
   message Param {
     enum Class {
-      DEFAULT = 0;
+      UNKNOWN_ARG_CLASS = 0;
       IN = 1;
       OUT = 2;
       IN_OUT = 3;
       VARIADIC = 4;
     }
-  }
-
-  enum Security {
-    INVOKER = 0;
-    DEFINER = 1;
   }
 }
 
@@ -68,10 +63,4 @@ message FunctionLanguage {
 message FunctionParamClass {
   option (gogoproto.equal) = true;
   optional Function.Param.Class class = 1 [(gogoproto.nullable) = false];
-}
-
-message FunctionSecurity {
-  option (gogoproto.equal) = true;
-  // If security is not explicitly set, the default security mode is INVOKER.
-  optional Function.Security security = 1 [(gogoproto.nullable) = false];
 }

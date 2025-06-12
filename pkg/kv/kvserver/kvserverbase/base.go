@@ -14,20 +14,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
 	"github.com/cockroachdb/redact"
-)
-
-// LeaseQueueEnabled is a setting that controls whether the lease queue
-// is enabled.
-var LeaseQueueEnabled = settings.RegisterBoolSetting(
-	settings.SystemOnly,
-	"kv.lease_queue.enabled",
-	"whether the lease queue is enabled",
-	true,
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 // MergeQueueEnabled is a setting that controls whether the merge queue is
@@ -132,15 +123,14 @@ var _ redact.SafeFormatter = CmdIDKey("")
 
 // FilterArgs groups the arguments to a ReplicaCommandFilter.
 type FilterArgs struct {
-	Ctx          context.Context
-	CmdID        CmdIDKey
-	Index        int
-	Sid          roachpb.StoreID
-	Req          kvpb.Request
-	Hdr          kvpb.Header
-	AdmissionHdr kvpb.AdmissionHeader
-	Version      roachpb.Version
-	Err          error // only used for TestingPostEvalFilter
+	Ctx     context.Context
+	CmdID   CmdIDKey
+	Index   int
+	Sid     roachpb.StoreID
+	Req     kvpb.Request
+	Hdr     kvpb.Header
+	Version roachpb.Version
+	Err     error // only used for TestingPostEvalFilter
 }
 
 // ProposalFilterArgs groups the arguments to ReplicaProposalFilter.
@@ -153,7 +143,7 @@ type ProposalFilterArgs struct {
 	QuotaAlloc *quotapool.IntAlloc
 	CmdID      CmdIDKey
 	SeedID     CmdIDKey
-	Req        *kvpb.BatchRequest
+	Req        kvpb.BatchRequest
 }
 
 // ApplyFilterArgs groups the arguments to a ReplicaApplyFilter.

@@ -80,15 +80,6 @@ var L0SubLevelCountOverloadThreshold = settings.RegisterIntSetting(
 	"when the L0 sub-level count exceeds this threshold, the store is considered overloaded",
 	l0SubLevelCountOverloadThreshold, settings.PositiveInt)
 
-// ElasticBandwidthMaxUtil sets the max utilization for disk bandwidth for elastic traffic.
-var ElasticBandwidthMaxUtil = settings.RegisterFloatSetting(
-	settings.SystemOnly, "kvadmission.store.elastic_disk_bandwidth_max_util",
-	"sets the max utilization for disk bandwidth for elastic traffic",
-	0.8,
-	settings.NonNegativeFloatWithMaximum(1.0),
-	settings.FloatWithMinimum(0.05),
-)
-
 // L0MinimumSizePerSubLevel is a minimum size threshold per sub-level, to
 // avoid over reliance on the sub-level count as a signal of overload. Pebble
 // sometimes has to do frequent flushes of the memtable due to ingesting
@@ -113,22 +104,7 @@ var L0MinimumSizePerSubLevel = settings.RegisterIntSetting(
 	"when non-zero, this indicates the minimum size that is needed to count towards one sub-level",
 	5<<20, settings.NonNegativeInt)
 
-// This flag was introduced before any experience with WAL failover. It turns
-// out that WAL failover can sometimes be triggered because the disk is
-// overloaded, and allowing unlimited tokens is going to make it worse. So do
-// not set this to true without consulting with an expert.
-var walFailoverUnlimitedTokens = settings.RegisterBoolSetting(
-	settings.SystemOnly,
-	"admission.wal.failover.unlimited_tokens.enabled",
-	"when true, during WAL failover, unlimited admission tokens are allocated",
-	false)
-
-// The following experimental observations were used to guide the initial
-// implementation, which aimed to maintain a sub-level count of 20 with token
-// calculation every 60s. Since then, the code has evolved to calculate tokens
-// every 15s and to aim for regular work maintaining a sub-level count of
-// l0SubLevelCountOverloadThreshold/2. So this commentary should be
-// interpreted in that context:
+// Experimental observations:
 //   - Sub-level count of ~40 caused a node heartbeat latency p90, p99 of 2.5s,
 //     4s. With a setting that limits sub-level count to 10, before the system
 //     is considered overloaded, and adjustmentInterval = 60, we see the actual
@@ -142,35 +118,9 @@ var walFailoverUnlimitedTokens = settings.RegisterBoolSetting(
 //     then we run the risk of having 100+ sub-levels when we hit a file count
 //     of 1000. Instead we use a sub-level overload threshold of 20.
 //
-// A sub-level count of l0SubLevelCountOverloadThreshold results in the same
-// score as a file count of l0FileCountOverloadThreshold. Exceptions: a small
-// L0 in terms of bytes (see IOThreshold.Score); these constants being
-// overridden in the cluster settings
-// admission.l0_sub_level_count_overload_threshold and
-// admission.l0_file_count_overload_threshold. We ignore these exceptions in
-// the discussion here. Hence, 20 sub-levels is equivalent in score to 4000 L0
-// files, i.e., 1 sub-level is equivalent to 200 files.
-//
-// Ideally, equivalence here should match equivalence in how L0 is scored for
-// compactions. CockroachDB sets Pebble's L0CompactionThreshold to a constant
-// value of 2, which results in a compaction score of 1.0 with 1 sub-level.
-// CockroachDB does not override Pebble's L0CompactionFileThreshold, which
-// defaults to 500, so 500 files cause a compaction score of 1.0. So in
-// Pebble's compaction scoring logic, 1 sub-level is equivalent to 500 L0
-// files.
-//
-// So admission control is more sensitive to higher file count than Pebble's
-// compaction scoring. l0FileCountOverloadThreshold used to be 1000 up to
-// v24.3, and increasing it to 4000 was considered significant enough --
-// increasing to 10000, to make Pebble's compaction logic and admission
-// control equivalent was considered too risky. Note that admission control
-// tries to maintain a score of 0.5 when admitting regular work, which if
-// caused by file count represent 2000 files. With 2000 files, the L0
-// compaction score is 2000/500 = 4.0, which is significantly above the
-// compaction threshold of 1.0 (at which a level is eligible for compaction).
-// So one could argue that this inconsistency between admission control and
-// Pebble is potentially harmless.
-const l0FileCountOverloadThreshold = 4000
+// We've set these overload thresholds in a way that allows the system to
+// absorb short durations (say a few minutes) of heavy write load.
+const l0FileCountOverloadThreshold = 1000
 const l0SubLevelCountOverloadThreshold = 20
 
 // ioLoadListener adjusts tokens in kvStoreTokenGranter for IO, specifically due to
@@ -233,7 +183,7 @@ type ioLoadListener struct {
 	statsInitialized bool
 	adjustTokensResult
 	perWorkTokenEstimator storePerWorkTokenEstimator
-	diskBandwidthLimiter  *diskBandwidthLimiter
+	diskBandwidthLimiter  diskBandwidthLimiter
 
 	l0CompactedBytes *metric.Counter
 	l0TokensProduced *metric.Counter
@@ -249,12 +199,11 @@ type ioLoadListenerState struct {
 	cumFlushWriteThroughput pebble.ThroughputMetric
 	diskBW                  struct {
 		// Cumulative
-		bytesRead    uint64
-		bytesWritten uint64
+		bytesRead        uint64
+		bytesWritten     uint64
+		incomingLSMBytes uint64
 	}
-	cumCompactionStats           cumStoreCompactionStats
-	cumWALSecondaryWriteDuration time.Duration
-	unflushedMemTableTooLarge    bool
+	cumCompactionStats cumStoreCompactionStats
 
 	// Exponentially smoothed per interval values.
 
@@ -283,16 +232,11 @@ type ioLoadListenerState struct {
 	totalNumElasticByteTokens  int64
 	elasticByteTokensAllocated int64
 
-	// diskWriteTokens represents the tokens to give out until the next
-	// call to adjustTokens. They are parceled out in small intervals.
-	// diskWriteTokensAllocated represents what has been given out.
-	diskWriteTokens          int64
-	diskWriteTokensAllocated int64
-	// diskReadTokens are tokens that were already deducted during token
-	// estimation. These tokens are used for read error accounting
-	// adjustDiskTokenErrorLocked.
-	diskReadTokens          int64
-	diskReadTokensAllocated int64
+	// elasticDiskBWTokens represents the tokens to give out until the next call
+	// to adjustTokens. They are parceled out in small intervals.
+	// elasticDiskTokensAllocated represents what has been given out.
+	elasticDiskBWTokens          int64
+	elasticDiskBWTokensAllocated int64
 }
 
 type cumStoreCompactionStats struct {
@@ -306,8 +250,8 @@ func computeCumStoreCompactionStats(m *pebble.Metrics) cumStoreCompactionStats {
 	var compactedWriteBytes uint64
 	baseLevel := -1
 	for i := range m.Levels {
-		compactedWriteBytes += m.Levels[i].TableBytesCompacted + m.Levels[i].BlobBytesCompacted
-		if i > 0 && m.Levels[i].TablesSize > 0 && baseLevel < 0 {
+		compactedWriteBytes += m.Levels[i].BytesCompacted
+		if i > 0 && m.Levels[i].Size > 0 && baseLevel < 0 {
 			baseLevel = i
 		}
 	}
@@ -432,12 +376,6 @@ func (t tickDuration) ticksInAdjustmentInterval() int64 {
 const unloadedDuration = tickDuration(250 * time.Millisecond)
 const loadedDuration = tickDuration(1 * time.Millisecond)
 
-// TODO(aaditya): Consider lowering this threshold. It was picked arbitrarily
-// and seems to work well enough. Would it be better to do error accounting at
-// an even higher frequency?
-const errorAdjustmentInterval = 1
-const errorTicksInAdjustmentInterval = int64(adjustmentInterval / errorAdjustmentInterval)
-
 // tokenAllocationTicker wraps a time.Ticker, and also computes the remaining
 // ticks in the adjustment interval, given an expected tick rate. If every tick
 // from the ticker was always equal to the expected tick rate, then we could
@@ -446,7 +384,6 @@ const errorTicksInAdjustmentInterval = int64(adjustmentInterval / errorAdjustmen
 type tokenAllocationTicker struct {
 	expectedTickDuration        time.Duration
 	adjustmentIntervalStartTime time.Time
-	lastErrorAdjustmentTick     uint64
 	ticker                      *time.Ticker
 }
 
@@ -459,17 +396,21 @@ func (t *tokenAllocationTicker) adjustmentStart(loaded bool) {
 	// load. If the system is unloaded, we tick at a 250ms rate, and if the system
 	// is loaded, we tick at a 1ms rate. See the comment above the
 	// adjustmentInterval definition to see why we tick at different rates.
-	tickDur := unloadedDuration
+	tickDuration := unloadedDuration
 	if loaded {
-		tickDur = loadedDuration
+		tickDuration = loadedDuration
 	}
-	t.expectedTickDuration = time.Duration(tickDur)
+	t.expectedTickDuration = time.Duration(tickDuration)
 	if t.ticker == nil {
 		t.ticker = time.NewTicker(t.expectedTickDuration)
 	} else {
 		t.ticker.Reset(t.expectedTickDuration)
 	}
 	t.adjustmentIntervalStartTime = timeutil.Now()
+}
+
+func (t *tokenAllocationTicker) tick() {
+	<-t.ticker.C
 }
 
 // remainingTicks will return the remaining ticks before the next adjustment
@@ -485,49 +426,19 @@ func (t *tokenAllocationTicker) remainingTicks() uint64 {
 	return uint64((remainingTime + t.expectedTickDuration - 1) / t.expectedTickDuration)
 }
 
-// shouldAdjustForError returns true if we should additionally adjust for read
-// and write error based on the number of remainingTicks and
-// errorAdjustmentInterval.
-func (t *tokenAllocationTicker) shouldAdjustForError(remainingTicks uint64, loaded bool) bool {
-	tickDur := unloadedDuration
-	if loaded {
-		tickDur = loadedDuration
-	}
-	if t.lastErrorAdjustmentTick == 0 {
-		// If this is the first tick of a new adjustment period, reset the 0 value
-		// to the total number of ticks (equivalent values for the purpose of error
-		// accounting).
-		t.lastErrorAdjustmentTick = uint64(tickDur.ticksInAdjustmentInterval())
-	}
-	// We calculate the number of ticks in the errorAdjustmentDuration.
-	errorTickThreshold := uint64(tickDur.ticksInAdjustmentInterval() / errorTicksInAdjustmentInterval)
-	// We adjust for error when either we have passed the errorAdjustmentInterval
-	// threshold or it is the last tick before the new adjustment interval.
-	shouldAdjust := t.lastErrorAdjustmentTick-remainingTicks >= errorTickThreshold || remainingTicks == 0
-	if !shouldAdjust {
-		return false
-	}
-	// Since lastErrorAdjustmentTick uses the remainingTicks in the previous
-	// iteration, it is expected to be a decreasing value over time. The expected
-	// range is [ticksInAdjustmentInterval, 0].
-	t.lastErrorAdjustmentTick = remainingTicks
-	return true
-}
-
 func (t *tokenAllocationTicker) stop() {
 	t.ticker.Stop()
 	*t = tokenAllocationTicker{}
 }
 
-func cumLSMIngestedBytes(m *pebble.Metrics) (ingestedBytes uint64) {
+func cumLSMWriteAndIngestedBytes(
+	m *pebble.Metrics,
+) (writeAndIngestedBytes uint64, ingestedBytes uint64) {
 	for i := range m.Levels {
-		ingestedBytes += m.Levels[i].TableBytesIngested
+		writeAndIngestedBytes += m.Levels[i].BytesIngested + m.Levels[i].BytesFlushed
+		ingestedBytes += m.Levels[i].BytesIngested
 	}
-	return ingestedBytes
-}
-
-func replaceFlushThroughputBytesBySSTableWriteThroughput(m *pebble.Metrics) {
-	m.Flush.WriteThroughput.Bytes = int64(m.Levels[0].TableBytesFlushed + m.Levels[0].BlobBytesFlushed)
+	return writeAndIngestedBytes, ingestedBytes
 }
 
 // pebbleMetricsTicks is called every adjustmentInterval seconds, and decides
@@ -536,43 +447,36 @@ func replaceFlushThroughputBytesBySSTableWriteThroughput(m *pebble.Metrics) {
 func (io *ioLoadListener) pebbleMetricsTick(ctx context.Context, metrics StoreMetrics) bool {
 	ctx = logtags.AddTag(ctx, "s", io.storeID)
 	m := metrics.Metrics
-	replaceFlushThroughputBytesBySSTableWriteThroughput(m)
 	if !io.statsInitialized {
 		io.statsInitialized = true
 		sas := io.kvRequester.getStoreAdmissionStats()
-		cumIngestBytes := cumLSMIngestedBytes(metrics.Metrics)
-		io.perWorkTokenEstimator.updateEstimates(
-			metrics.Levels[0], cumIngestBytes, metrics.DiskStats.BytesWritten, sas, false)
+		cumLSMIncomingBytes, cumLSMIngestedBytes := cumLSMWriteAndIngestedBytes(metrics.Metrics)
+		io.perWorkTokenEstimator.updateEstimates(metrics.Levels[0], cumLSMIngestedBytes, sas)
 		io.adjustTokensResult = adjustTokensResult{
 			ioLoadListenerState: ioLoadListenerState{
-				cumL0AddedBytes:              m.Levels[0].TableBytesFlushed + m.Levels[0].BlobBytesFlushed + m.Levels[0].TableBytesIngested,
-				curL0Bytes:                   m.Levels[0].TablesSize,
-				cumWriteStallCount:           metrics.WriteStallCount,
-				cumFlushWriteThroughput:      m.Flush.WriteThroughput,
-				cumCompactionStats:           computeCumStoreCompactionStats(m),
-				cumWALSecondaryWriteDuration: m.WAL.Failover.SecondaryWriteDuration,
+				cumL0AddedBytes:         m.Levels[0].BytesFlushed + m.Levels[0].BytesIngested,
+				curL0Bytes:              m.Levels[0].Size,
+				cumWriteStallCount:      metrics.WriteStallCount,
+				cumFlushWriteThroughput: metrics.Flush.WriteThroughput,
+				cumCompactionStats:      computeCumStoreCompactionStats(metrics.Metrics),
 				// No initial limit, i.e, the first interval is unlimited.
 				totalNumByteTokens:        unlimitedTokens,
 				totalNumElasticByteTokens: unlimitedTokens,
-				diskWriteTokens:           unlimitedTokens,
-				// Currently, disk read tokens are only used to assess how many tokens
-				// were deducted from the writes bucket to account for future reads. A 0
-				// value here represents that.
-				diskReadTokens: 0,
+				elasticDiskBWTokens:       unlimitedTokens,
 			},
 			aux: adjustTokensAuxComputations{},
 			ioThreshold: &admissionpb.IOThreshold{
 				L0NumSubLevels:           int64(m.Levels[0].Sublevels),
 				L0NumSubLevelsThreshold:  math.MaxInt64,
-				L0NumFiles:               m.Levels[0].TablesCount,
+				L0NumFiles:               m.Levels[0].NumFiles,
 				L0NumFilesThreshold:      math.MaxInt64,
-				L0Size:                   m.Levels[0].TablesSize,
+				L0Size:                   m.Levels[0].Size,
 				L0MinimumSizePerSubLevel: 0,
 			},
 		}
 		io.diskBW.bytesRead = metrics.DiskStats.BytesRead
 		io.diskBW.bytesWritten = metrics.DiskStats.BytesWritten
-		io.diskBandwidthLimiter.unlimitedTokensOverride = true
+		io.diskBW.incomingLSMBytes = cumLSMIncomingBytes
 		io.copyAuxEtcFromPerWorkEstimator()
 
 		// Assume system starts off unloaded.
@@ -629,30 +533,16 @@ func (io *ioLoadListener) allocateTokensTick(remainingTicks int64) {
 		panic(errors.AssertionFailedf("toAllocateElasticByteTokens is negative %d",
 			toAllocateElasticByteTokens))
 	}
-	toAllocateDiskWriteTokens :=
+	toAllocateElasticDiskBWTokens :=
 		allocateFunc(
-			io.diskWriteTokens,
-			io.diskWriteTokensAllocated,
+			io.elasticDiskBWTokens,
+			io.elasticDiskBWTokensAllocated,
 			remainingTicks,
 		)
-	if toAllocateDiskWriteTokens < 0 {
-		panic(errors.AssertionFailedf("toAllocateDiskWriteTokens is negative %d",
-			toAllocateDiskWriteTokens))
+	if toAllocateElasticDiskBWTokens < 0 {
+		panic(errors.AssertionFailedf("toAllocateElasticDiskBWTokens is negative %d",
+			toAllocateElasticDiskBWTokens))
 	}
-	io.diskWriteTokensAllocated += toAllocateDiskWriteTokens
-
-	toAllocateDiskReadTokens :=
-		allocateFunc(
-			io.diskReadTokens,
-			io.diskReadTokensAllocated,
-			remainingTicks,
-		)
-	if toAllocateDiskReadTokens < 0 {
-		panic(errors.AssertionFailedf("toAllocateDiskReadTokens is negative %d",
-			toAllocateDiskReadTokens))
-	}
-	io.diskReadTokensAllocated += toAllocateDiskReadTokens
-
 	// INVARIANT: toAllocate >= 0.
 	io.byteTokensAllocated += toAllocateByteTokens
 	if io.byteTokensAllocated < 0 {
@@ -663,25 +553,23 @@ func (io *ioLoadListener) allocateTokensTick(remainingTicks int64) {
 		panic(errors.AssertionFailedf(
 			"tokens allocated is negative %d", io.elasticByteTokensAllocated))
 	}
+	io.elasticDiskBWTokensAllocated += toAllocateElasticDiskBWTokens
 
 	tokensMaxCapacity := allocateFunc(
 		io.totalNumByteTokens, 0, unloadedDuration.ticksInAdjustmentInterval(),
 	)
 	elasticTokensMaxCapacity := allocateFunc(
-		io.totalNumElasticByteTokens, 0, unloadedDuration.ticksInAdjustmentInterval(),
+		io.totalNumElasticByteTokens, 0, unloadedDuration.ticksInAdjustmentInterval())
+	diskBWTokenMaxCapacity := allocateFunc(
+		io.elasticDiskBWTokens, 0, unloadedDuration.ticksInAdjustmentInterval(),
 	)
-	diskWriteTokenMaxCapacity := allocateFunc(
-		io.diskWriteTokens, 0, unloadedDuration.ticksInAdjustmentInterval(),
-	)
-
 	tokensUsed, tokensUsedByElasticWork := io.kvGranter.setAvailableTokens(
 		toAllocateByteTokens,
 		toAllocateElasticByteTokens,
-		toAllocateDiskWriteTokens,
-		toAllocateDiskReadTokens,
+		toAllocateElasticDiskBWTokens,
 		tokensMaxCapacity,
 		elasticTokensMaxCapacity,
-		diskWriteTokenMaxCapacity,
+		diskBWTokenMaxCapacity,
 		remainingTicks == 1,
 	)
 	io.byteTokensUsed += tokensUsed
@@ -689,13 +577,12 @@ func (io *ioLoadListener) allocateTokensTick(remainingTicks int64) {
 }
 
 func computeIntervalDiskLoadInfo(
-	prevCumBytesRead uint64, prevCumBytesWritten uint64, diskStats DiskStats, elasticBWUtil float64,
+	prevCumBytesRead uint64, prevCumBytesWritten uint64, diskStats DiskStats,
 ) intervalDiskLoadInfo {
 	return intervalDiskLoadInfo{
-		intReadBytes:            int64(diskStats.BytesRead - prevCumBytesRead),
-		intWriteBytes:           int64(diskStats.BytesWritten - prevCumBytesWritten),
-		intProvisionedDiskBytes: diskStats.ProvisionedBandwidth * adjustmentInterval,
-		elasticBandwidthMaxUtil: elasticBWUtil,
+		readBandwidth:        int64((diskStats.BytesRead - prevCumBytesRead) / adjustmentInterval),
+		writeBandwidth:       int64((diskStats.BytesWritten - prevCumBytesWritten) / adjustmentInterval),
+		provisionedBandwidth: diskStats.ProvisionedBandwidth,
 	}
 }
 
@@ -711,71 +598,51 @@ func computeIntervalDiskLoadInfo(
 func (io *ioLoadListener) adjustTokens(ctx context.Context, metrics StoreMetrics) {
 	sas := io.kvRequester.getStoreAdmissionStats()
 	// Copy the cumulative disk bandwidth values for later use.
-	cumDiskBW := io.diskBW
+	cumDiskBW := io.ioLoadListenerState.diskBW
 	wt := metrics.Flush.WriteThroughput
 	wt.Subtract(io.cumFlushWriteThroughput)
-	if wt.Bytes < 0 {
-		// Ignore wrong stats. Can happen in tests.
-		wt.Bytes = 0
-	}
 	cumCompactionStats := computeCumStoreCompactionStats(metrics.Metrics)
 
-	prevDoLogFlush := io.aux.doLogFlush
 	res := io.adjustTokensInner(ctx, io.ioLoadListenerState,
-		metrics.Levels[0], metrics.WriteStallCount, cumCompactionStats,
-		metrics.WAL.Failover.SecondaryWriteDuration, wt,
+		metrics.Levels[0], metrics.WriteStallCount, cumCompactionStats, wt,
 		L0FileCountOverloadThreshold.Get(&io.settings.SV),
 		L0SubLevelCountOverloadThreshold.Get(&io.settings.SV),
 		L0MinimumSizePerSubLevel.Get(&io.settings.SV),
 		MinFlushUtilizationFraction.Get(&io.settings.SV),
-		metrics.MemTable.Size,
-		metrics.MemTableSizeForStopWrites,
 	)
 	io.adjustTokensResult = res
-	cumIngestedBytes := cumLSMIngestedBytes(metrics.Metrics)
-
-	// Disk Bandwidth tokens.
-	elasticBWMaxUtil := ElasticBandwidthMaxUtil.Get(&io.settings.SV)
-	intDiskLoadInfo := computeIntervalDiskLoadInfo(
-		cumDiskBW.bytesRead, cumDiskBW.bytesWritten, metrics.DiskStats, elasticBWMaxUtil)
-	diskTokensUsed := io.kvGranter.getDiskTokensUsedAndReset()
-	if metrics.DiskStats.ProvisionedBandwidth > 0 {
-		tokens := io.diskBandwidthLimiter.computeElasticTokens(
-			intDiskLoadInfo, diskTokensUsed)
-		io.diskWriteTokens = tokens.writeByteTokens
-		io.diskWriteTokensAllocated = 0
-		io.diskReadTokens = tokens.readByteTokens
-		io.diskWriteTokensAllocated = 0
+	cumLSMIncomingBytes, cumLSMIngestedBytes := cumLSMWriteAndIngestedBytes(metrics.Metrics)
+	{
+		// Disk Bandwidth tokens.
+		io.aux.diskBW.intervalDiskLoadInfo = computeIntervalDiskLoadInfo(
+			cumDiskBW.bytesRead, cumDiskBW.bytesWritten, metrics.DiskStats)
+		diskTokensUsed := io.kvGranter.getDiskTokensUsedAndReset()
+		io.aux.diskBW.intervalLSMInfo = intervalLSMInfo{
+			incomingBytes:     int64(cumLSMIncomingBytes) - int64(cumDiskBW.incomingLSMBytes),
+			regularTokensUsed: diskTokensUsed[admissionpb.RegularWorkClass],
+			elasticTokensUsed: diskTokensUsed[admissionpb.ElasticWorkClass],
+		}
+		if metrics.DiskStats.ProvisionedBandwidth > 0 {
+			io.elasticDiskBWTokens = io.diskBandwidthLimiter.computeElasticTokens(ctx,
+				io.aux.diskBW.intervalDiskLoadInfo, io.aux.diskBW.intervalLSMInfo)
+			io.elasticDiskBWTokensAllocated = 0
+		}
+		if metrics.DiskStats.ProvisionedBandwidth == 0 ||
+			!DiskBandwidthTokensForElasticEnabled.Get(&io.settings.SV) {
+			io.elasticDiskBWTokens = unlimitedTokens
+		}
+		io.diskBW.bytesRead = metrics.DiskStats.BytesRead
+		io.diskBW.bytesWritten = metrics.DiskStats.BytesWritten
+		io.diskBW.incomingLSMBytes = cumLSMIncomingBytes
 	}
-	io.diskBandwidthLimiter.unlimitedTokensOverride = false
-	if metrics.DiskStats.ProvisionedBandwidth == 0 ||
-		!DiskBandwidthTokensForElasticEnabled.Get(&io.settings.SV) ||
-		// Disk stats are not available, so fail open.
-		(metrics.DiskStats.BytesWritten == 0 && metrics.DiskStats.BytesRead == 0) {
-		io.diskWriteTokens = unlimitedTokens
-		io.diskBandwidthLimiter.unlimitedTokensOverride = true
-		// Currently, disk read tokens are only used to assess how many tokens were
-		// deducted from the writes bucket to account for future reads. A 0 value
-		// here represents that.
-		io.diskReadTokens = 0
-	}
-	io.diskBW.bytesRead = metrics.DiskStats.BytesRead
-	io.diskBW.bytesWritten = metrics.DiskStats.BytesWritten
-
-	io.perWorkTokenEstimator.updateEstimates(
-		metrics.Levels[0], cumIngestedBytes, metrics.DiskStats.BytesWritten, sas,
-		io.aux.recentUnflushedMemTableTooLarge)
+	io.perWorkTokenEstimator.updateEstimates(metrics.Levels[0], cumLSMIngestedBytes, sas)
 	io.copyAuxEtcFromPerWorkEstimator()
 	requestEstimates := io.perWorkTokenEstimator.getStoreRequestEstimatesAtAdmission()
 	io.kvRequester.setStoreRequestEstimates(requestEstimates)
-	l0WriteLM, l0IngestLM, ingestLM, writeAmpLM := io.perWorkTokenEstimator.getModelsAtDone()
-	io.kvGranter.setLinearModels(l0WriteLM, l0IngestLM, ingestLM, writeAmpLM)
-	// NB: we also log if prevDoLogFlush is true, since we often see a single
-	// interval of no overload sandwiched between intervals of overload and we
-	// want to know what happened in that interval.
-	if prevDoLogFlush || io.aux.doLogFlush || io.diskBandwidthLimiter.state.diskBWUtil > 0.8 ||
-		log.V(1) {
-		log.Infof(ctx, "IO overload: %s; %s", io.adjustTokensResult, io.diskBandwidthLimiter)
+	l0WriteLM, l0IngestLM, ingestLM := io.perWorkTokenEstimator.getModelsAtDone()
+	io.kvGranter.setLinearModels(l0WriteLM, l0IngestLM, ingestLM)
+	if io.aux.doLogFlush || io.elasticDiskBWTokens != unlimitedTokens || log.V(1) {
+		log.Infof(ctx, "IO overload: %s", io.adjustTokensResult)
 	}
 }
 
@@ -788,11 +655,10 @@ func (io *ioLoadListener) copyAuxEtcFromPerWorkEstimator() {
 	io.adjustTokensResult.aux.perWorkTokensAux = io.perWorkTokenEstimator.aux
 	requestEstimates := io.perWorkTokenEstimator.getStoreRequestEstimatesAtAdmission()
 	io.adjustTokensResult.requestEstimates = requestEstimates
-	l0WriteLM, l0IngestLM, ingestLM, writeAmpLM := io.perWorkTokenEstimator.getModelsAtDone()
+	l0WriteLM, l0IngestLM, ingestLM := io.perWorkTokenEstimator.getModelsAtDone()
 	io.adjustTokensResult.l0WriteLM = l0WriteLM
 	io.adjustTokensResult.l0IngestLM = l0IngestLM
 	io.adjustTokensResult.ingestLM = ingestLM
-	io.adjustTokensResult.writeAmpLM = writeAmpLM
 }
 
 type tokenKind int8
@@ -812,16 +678,18 @@ type adjustTokensAuxComputations struct {
 	intFlushUtilization float64
 	intWriteStalls      int64
 
-	intWALFailover bool
-
-	prevTokensUsed                  int64
-	prevTokensUsedByElasticWork     int64
-	tokenKind                       tokenKind
-	usedCompactionTokensLowerBound  bool
-	recentUnflushedMemTableTooLarge bool
+	prevTokensUsed                 int64
+	prevTokensUsedByElasticWork    int64
+	tokenKind                      tokenKind
+	usedCompactionTokensLowerBound bool
 
 	perWorkTokensAux perWorkTokensAux
 	doLogFlush       bool
+
+	diskBW struct {
+		intervalDiskLoadInfo intervalDiskLoadInfo
+		intervalLSMInfo      intervalLSMInfo
+	}
 }
 
 // adjustTokensInner is used for computing tokens based on compaction and
@@ -832,31 +700,22 @@ func (io *ioLoadListener) adjustTokensInner(
 	l0Metrics pebble.LevelMetrics,
 	cumWriteStallCount int64,
 	cumCompactionStats cumStoreCompactionStats,
-	cumWALSecondaryWriteDuration time.Duration,
 	flushWriteThroughput pebble.ThroughputMetric,
 	threshNumFiles, threshNumSublevels int64,
 	l0MinSizePerSubLevel int64,
 	minFlushUtilTargetFraction float64,
-	memTableSize uint64,
-	memTableSizeForStopWrites uint64,
 ) adjustTokensResult {
 	ioThreshold := &admissionpb.IOThreshold{
-		L0NumFiles:               l0Metrics.TablesCount,
+		L0NumFiles:               l0Metrics.NumFiles,
 		L0NumFilesThreshold:      threshNumFiles,
 		L0NumSubLevels:           int64(l0Metrics.Sublevels),
 		L0NumSubLevelsThreshold:  threshNumSublevels,
-		L0Size:                   l0Metrics.TablesSize,
+		L0Size:                   l0Metrics.Size,
 		L0MinimumSizePerSubLevel: l0MinSizePerSubLevel,
 	}
-	unflushedMemTableTooLarge := memTableSize > memTableSizeForStopWrites
-	// If it was too large in the last sample 15s ago, and is not large now, the
-	// stats will still be skewed towards showing disproportionate L0 bytes
-	// added compared to incoming writes to Pebble. So we include this limited
-	// history.
-	recentUnflushedMemTableTooLarge := unflushedMemTableTooLarge || io.unflushedMemTableTooLarge
 
-	curL0Bytes := l0Metrics.TablesSize
-	cumL0AddedBytes := l0Metrics.TableBytesFlushed + l0Metrics.BlobBytesFlushed + l0Metrics.TableBytesIngested
+	curL0Bytes := l0Metrics.Size
+	cumL0AddedBytes := l0Metrics.BytesFlushed + l0Metrics.BytesIngested
 	// L0 growth over the last interval.
 	intL0AddedBytes := int64(cumL0AddedBytes) - int64(prev.cumL0AddedBytes)
 	if intL0AddedBytes < 0 {
@@ -879,51 +738,9 @@ func (io *ioLoadListener) adjustTokensInner(
 
 	const alpha = 0.5
 
-	// intWALFailover captures whether there were any writes to the secondary
-	// WAL location in the last interval. WAL failover indicates that the
-	// primary WAL location, which is also the location to which the store
-	// flushes and compacts, may be unhealthy. If it is unhealthy, flushes and
-	// compactions can stall, which can result in artificially low token counts
-	// for flushes and compactions, which can unnecessarily throttle work. It is
-	// also possible that the primary WAL location was transiently observed to
-	// be slow, and flushes and compactions are mostly unaffected, and may even
-	// be increasing in their rate, during WAL failover, if the workload is
-	// increasing its write rate.
-	//
-	// We make the assumption that failover will be very aggressive compared to
-	// the interval at which this token computation is happening (15s). An
-	// UnhealthyOperationLatencyThreshold of 100ms (the default) means that an
-	// interval in which intWALFailover was false could at worst have had its
-	// last 100ms have stalled flushes/compactions. So the throughput observed
-	// here will be 99.3% of what would have been possible with a healthy
-	// primary, which is considered acceptable.
-	//
-	// We also make the assumption that failback will be reasonably aggressive
-	// once the primary is considered healthy (HealthyInterval uses the default
-	// of 15s). So a disk stall in the primary that lasts 30s, will cause WAL
-	// failover for ~45s, and a disk stall for 1s will cause failover for ~16s.
-	// The latter (16s) is short enough that we could potentially allow
-	// unlimited tokens during failover. The concern is the former case, where
-	// unlimited tokens could result in excessive admission into L0. So the
-	// default behavior when intWALFailover is true is to (a) continue using the
-	// compaction tokens from before the failover, unless the compaction rate is
-	// increasing (b) not constrain flush tokens, (c) constrain elastic traffic
-	// to effectively 0 tokens. We allow this behavior to be overridden to have
-	// unlimited tokens.
-	intWALFailover := cumWALSecondaryWriteDuration-io.cumWALSecondaryWriteDuration > 0
-	var smoothedIntL0CompactedBytes int64
-	var updatedSmoothedIntL0CompactedBytes bool
-	if intWALFailover && intL0CompactedBytes < prev.smoothedIntL0CompactedBytes {
-		// Reuse previous smoothed value since the decrease in compaction bytes
-		// could be due to an unhealthy primary WAL location.
-		smoothedIntL0CompactedBytes = prev.smoothedIntL0CompactedBytes
-	} else {
-		// Compaction scheduling can be uneven in prioritizing L0 for compactions,
-		// so smooth out what is being removed by compactions.
-		smoothedIntL0CompactedBytes = int64(alpha*float64(intL0CompactedBytes) +
-			(1-alpha)*float64(prev.smoothedIntL0CompactedBytes))
-		updatedSmoothedIntL0CompactedBytes = true
-	}
+	// Compaction scheduling can be uneven in prioritizing L0 for compactions,
+	// so smooth out what is being removed by compactions.
+	smoothedIntL0CompactedBytes := int64(alpha*float64(intL0CompactedBytes) + (1-alpha)*float64(prev.smoothedIntL0CompactedBytes))
 
 	// Flush tokens:
 	//
@@ -1036,14 +853,10 @@ func (io *ioLoadListener) adjustTokensInner(
 	const maxFlushUtilTargetFraction = 1.5
 	flushUtilTargetFraction := prev.flushUtilTargetFraction
 	if flushUtilTargetFraction == 0 {
-		// Initialization: use the init configured fraction.
+		// Initialization: use the maximum configured fraction.
 		flushUtilTargetFraction = minFlushUtilTargetFraction
-		// 1.0 is a high enough value -- we've observed write stalls at ~0.65 when
-		// running kv0. Which is why we don't use maxFlushUtilTargetFraction as
-		// the initial value.
-		const initFlushUtilTargetFraction = 1.0
-		if flushUtilTargetFraction < initFlushUtilTargetFraction {
-			flushUtilTargetFraction = initFlushUtilTargetFraction
+		if flushUtilTargetFraction < maxFlushUtilTargetFraction {
+			flushUtilTargetFraction = maxFlushUtilTargetFraction
 		}
 	} else if flushUtilTargetFraction < minFlushUtilTargetFraction {
 		// The min can be changed in a running system, so we bump up to conform to
@@ -1054,8 +867,8 @@ func (io *ioLoadListener) adjustTokensInner(
 	// doLogFlush becomes true if something interesting is done here.
 	doLogFlush := false
 	smoothedNumFlushTokens := prev.smoothedNumFlushTokens
-	const flushUtilIgnoreThreshold = 0.1
-	if intFlushUtilization > flushUtilIgnoreThreshold && !intWALFailover {
+	const flushUtilIgnoreThreshold = 0.05
+	if intFlushUtilization > flushUtilIgnoreThreshold {
 		if smoothedNumFlushTokens == 0 {
 			// Initialization.
 			smoothedNumFlushTokens = intFlushTokens
@@ -1096,15 +909,14 @@ func (io *ioLoadListener) adjustTokensInner(
 			doLogFlush = true
 		}
 		flushTokensFloat := flushUtilTargetFraction * smoothedNumFlushTokens
-		if flushTokensFloat < float64(unlimitedTokens) {
+		if flushTokensFloat < float64(math.MaxInt64) {
 			numFlushTokens = int64(flushTokensFloat)
 		}
 		// Else avoid overflow by using the previously set unlimitedTokens. This
 		// should not really happen.
 	}
-	// Else intFlushUtilization is too low or WAL failover is active. We
-	// don't want to make token determination based on a very low utilization,
-	// or when flushes are stalled, so we hand out unlimited
+	// Else intFlushUtilization is too low. We don't want to make token
+	// determination based on a very low utilization, so we hand out unlimited
 	// tokens. Note that flush utilization has been observed to fluctuate from
 	// 0.16 to 0.9 in a single interval, when compaction tokens are not limited,
 	// hence we have set flushUtilIgnoreThreshold to a very low value. If we've
@@ -1137,54 +949,47 @@ func (io *ioLoadListener) adjustTokensInner(
 	// Overload: Score is >= 2. We limit compaction tokens, and limit tokens to
 	// at most C/2 tokens.
 	if score < 0.5 {
-		if !updatedSmoothedIntL0CompactedBytes {
-			smoothedCompactionByteTokens = prev.smoothedCompactionByteTokens
-		} else {
-			// Underload. Maintain a smoothedCompactionByteTokens based on what was
-			// removed, so that when we go over the threshold we have some history.
-			// This is also useful when we temporarily dip below the threshold --
-			// we've seen extreme situations with alternating 15s intervals of above
-			// and below the threshold.
-			numTokens := intL0CompactedBytes
-			// Smooth it. Unlike the else block below, we smooth using
-			// intL0CompactedBytes, to be more responsive.
-			smoothedCompactionByteTokens = alpha*float64(numTokens) + (1-alpha)*prev.smoothedCompactionByteTokens
-		}
+		// Underload. Maintain a smoothedCompactionByteTokens based on what was
+		// removed, so that when we go over the threshold we have some history.
+		// This is also useful when we temporarily dip below the threshold --
+		// we've seen extreme situations with alternating 15s intervals of above
+		// and below the threshold.
+		numTokens := intL0CompactedBytes
+		// Smooth it. This may seem peculiar since we are already using
+		// smoothedIntL0CompactedBytes, but the clauses below use different
+		// computations so we also want the history of smoothedCompactionByteTokens.
+		smoothedCompactionByteTokens = alpha*float64(numTokens) + (1-alpha)*prev.smoothedCompactionByteTokens
 		totalNumByteTokens = unlimitedTokens
 	} else {
 		doLogFlush = true
-		if !updatedSmoothedIntL0CompactedBytes {
-			smoothedCompactionByteTokens = prev.smoothedCompactionByteTokens
-		} else {
-			var fTotalNumByteTokens float64
-			if score >= 2 {
-				// Overload.
-				//
-				// Don't admit more byte work than we can remove via compactions.
-				// totalNumByteTokens tracks our goal for admission. Scale down
-				// since we want to get under the thresholds over time.
-				fTotalNumByteTokens = float64(smoothedIntL0CompactedBytes / 2.0)
-			} else if score >= 0.5 && score < 1 {
-				// Low load. Score in [0.5, 1). Tokens should be
-				// smoothedIntL0CompactedBytes at 1, and 2 * smoothedIntL0CompactedBytes
-				// at 0.5.
-				fTotalNumByteTokens = -score*(2*float64(smoothedIntL0CompactedBytes)) + 3*float64(smoothedIntL0CompactedBytes)
-				if fTotalNumByteTokens < float64(l0CompactionTokensLowerBound) {
-					fTotalNumByteTokens = float64(l0CompactionTokensLowerBound)
-					usedCompactionTokensLowerBound = true
-				}
-			} else {
-				// Medium load. Score in [1, 2). We use linear interpolation from
-				// medium load to overload, to slowly give out fewer tokens as we
-				// move towards overload.
-				halfSmoothedBytes := float64(smoothedIntL0CompactedBytes / 2.0)
-				fTotalNumByteTokens = -score*halfSmoothedBytes + 3*halfSmoothedBytes
+		var fTotalNumByteTokens float64
+		if score >= 2 {
+			// Overload.
+			//
+			// Don't admit more byte work than we can remove via compactions.
+			// totalNumByteTokens tracks our goal for admission. Scale down
+			// since we want to get under the thresholds over time.
+			fTotalNumByteTokens = float64(smoothedIntL0CompactedBytes / 2.0)
+		} else if score >= 0.5 && score < 1 {
+			// Low load. Score in [0.5, 1). Tokens should be
+			// smoothedIntL0CompactedBytes at 1, and 2 * smoothedIntL0CompactedBytes
+			// at 0.5.
+			fTotalNumByteTokens = -score*(2*float64(smoothedIntL0CompactedBytes)) + 3*float64(smoothedIntL0CompactedBytes)
+			if fTotalNumByteTokens < float64(l0CompactionTokensLowerBound) {
+				fTotalNumByteTokens = float64(l0CompactionTokensLowerBound)
+				usedCompactionTokensLowerBound = true
 			}
-			smoothedCompactionByteTokens = alpha*fTotalNumByteTokens + (1-alpha)*prev.smoothedCompactionByteTokens
+		} else {
+			// Medium load. Score in [1, 2). We use linear interpolation from
+			// medium load to overload, to slowly give out fewer tokens as we
+			// move towards overload.
+			halfSmoothedBytes := float64(smoothedIntL0CompactedBytes / 2.0)
+			fTotalNumByteTokens = -score*halfSmoothedBytes + 3*halfSmoothedBytes
 		}
-		if float64(unlimitedTokens) < smoothedCompactionByteTokens {
+		smoothedCompactionByteTokens = alpha*fTotalNumByteTokens + (1-alpha)*prev.smoothedCompactionByteTokens
+		if float64(math.MaxInt64) < smoothedCompactionByteTokens {
 			// Avoid overflow. This should not really happen.
-			totalNumByteTokens = unlimitedTokens
+			totalNumByteTokens = math.MaxInt64
 		} else {
 			totalNumByteTokens = int64(smoothedCompactionByteTokens)
 		}
@@ -1196,64 +1001,32 @@ func (io *ioLoadListener) adjustTokensInner(
 	// means that we start shaping when there are 2 sublevels.
 	if score >= 0.2 {
 		doLogFlush = true
-		if intWALFailover {
-			totalNumElasticByteTokens = 1
-		} else {
-			// Use a linear function with slope of -1.25 and compaction tokens of
-			// 1.25*compaction-bandwidth at score of 0.2. At a score of 0.6 (6
-			// sublevels) the tokens will be 0.75*compaction-bandwidth. Experimental
-			// results show the sublevels hovering around 4, as expected.
-			//
-			// NB: at score >= 1.2 (12 sublevels), there are 0 elastic tokens.
-			//
-			// NB: we are not using l0CompactionTokensLowerBound at all for elastic
-			// tokens. This is because that lower bound is useful primarily when L0 is
-			// not seeing compactions because a compaction backlog has accumulated in
-			// other levels. For elastic work, we would rather clear that compaction
-			// backlog than admit some elastic work.
-			totalNumElasticByteTokens = int64(float64(smoothedIntL0CompactedBytes) *
-				(1.25 - 1.25*(score-0.2)))
-		}
+		// Use a linear function with slope of -1.25 and compaction tokens of
+		// 1.25*compaction-bandwidth at score of 0.2. At a score of 0.6 (6
+		// sublevels) the tokens will be 0.75*compaction-bandwidth. Experimental
+		// results show the sublevels hovering around 4, as expected.
+		//
+		// NB: at score >= 1.2 (12 sublevels), there are 0 elastic tokens.
+		//
+		// NB: we are not using l0CompactionTokensLowerBound at all for elastic
+		// tokens. This is because that lower bound is useful primarily when L0 is
+		// not seeing compactions because a compaction backlog has accumulated in
+		// other levels. For elastic work, we would rather clear that compaction
+		// backlog than admit some elastic work.
+		totalNumElasticByteTokens = int64(float64(smoothedIntL0CompactedBytes) *
+			(1.25 - 1.25*(score-0.2)))
+
 		totalNumElasticByteTokens = max(totalNumElasticByteTokens, 1)
-	}
-	if recentUnflushedMemTableTooLarge {
-		// There is a large flush backlog -- this will typically happen during or
-		// immediately after WAL failover. Don't allow elastic work to get more
-		// than the bytes we compacted out of L0. There are other choices we could
-		// have made here (a) give 1 token to elastic work, effectively throttling
-		// it down to zero, (b) chosen some other fraction of intL0CompactedBytes.
-		// With (a), we run the risk of rapidly switching back and forth between
-		// giving elastic work 1 token and unlimitedTokens, which could be worse
-		// than staying in this mode of a flush backlog. With (b), we don't have a
-		// good idea of what fraction would be appropriate. Note that this is
-		// mainly a way to avoid overloading the disk. If disk bandwidth based
-		// tokens are enabled, those should be observing the cost of large ongoing
-		// flushes and throttling elastic work, and there should be less need of
-		// this mechanism.
-		if totalNumElasticByteTokens > intL0CompactedBytes {
-			doLogFlush = true
-			totalNumElasticByteTokens = intL0CompactedBytes
-		}
 	}
 	// Use the minimum of the token count calculated using compactions and
 	// flushes.
 	tokenKind := compactionTokenKind
 	if totalNumByteTokens > numFlushTokens {
 		totalNumByteTokens = numFlushTokens
-		// Reduce the flush tokens for elastic traffic, since write stalls can be
-		// dangerous. 0.8 was chosen somewhat arbitrarily.
-		numElasticFlushTokens := int64(0.8 * float64(numFlushTokens))
-		if numElasticFlushTokens < totalNumElasticByteTokens {
-			totalNumElasticByteTokens = numElasticFlushTokens
-		}
 		tokenKind = flushTokenKind
 	}
 	if totalNumElasticByteTokens > totalNumByteTokens {
 		totalNumElasticByteTokens = totalNumByteTokens
-	}
-	if intWALFailover && walFailoverUnlimitedTokens.Get(&io.settings.SV) {
-		totalNumByteTokens = unlimitedTokens
-		totalNumElasticByteTokens = unlimitedTokens
 	}
 
 	io.l0TokensProduced.Inc(totalNumByteTokens)
@@ -1265,8 +1038,6 @@ func (io *ioLoadListener) adjustTokensInner(
 			curL0Bytes:                   curL0Bytes,
 			cumWriteStallCount:           cumWriteStallCount,
 			cumCompactionStats:           cumCompactionStats,
-			cumWALSecondaryWriteDuration: cumWALSecondaryWriteDuration,
-			unflushedMemTableTooLarge:    unflushedMemTableTooLarge,
 			smoothedIntL0CompactedBytes:  smoothedIntL0CompactedBytes,
 			smoothedCompactionByteTokens: smoothedCompactionByteTokens,
 			smoothedNumFlushTokens:       smoothedNumFlushTokens,
@@ -1279,18 +1050,16 @@ func (io *ioLoadListener) adjustTokensInner(
 			elasticByteTokensAllocated:   0,
 		},
 		aux: adjustTokensAuxComputations{
-			intL0AddedBytes:                 intL0AddedBytes,
-			intL0CompactedBytes:             intL0CompactedBytes,
-			intFlushTokens:                  intFlushTokens,
-			intFlushUtilization:             intFlushUtilization,
-			intWriteStalls:                  intWriteStalls,
-			intWALFailover:                  intWALFailover,
-			prevTokensUsed:                  prev.byteTokensUsed,
-			prevTokensUsedByElasticWork:     prev.byteTokensUsedByElasticWork,
-			tokenKind:                       tokenKind,
-			usedCompactionTokensLowerBound:  usedCompactionTokensLowerBound,
-			recentUnflushedMemTableTooLarge: recentUnflushedMemTableTooLarge,
-			doLogFlush:                      doLogFlush,
+			intL0AddedBytes:                intL0AddedBytes,
+			intL0CompactedBytes:            intL0CompactedBytes,
+			intFlushTokens:                 intFlushTokens,
+			intFlushUtilization:            intFlushUtilization,
+			intWriteStalls:                 intWriteStalls,
+			prevTokensUsed:                 prev.byteTokensUsed,
+			prevTokensUsedByElasticWork:    prev.byteTokensUsedByElasticWork,
+			tokenKind:                      tokenKind,
+			usedCompactionTokensLowerBound: usedCompactionTokensLowerBound,
+			doLogFlush:                     doLogFlush,
 		},
 		ioThreshold: ioThreshold,
 	}
@@ -1303,7 +1072,6 @@ type adjustTokensResult struct {
 	l0WriteLM        tokensLinearModel
 	l0IngestLM       tokensLinearModel
 	ingestLM         tokensLinearModel
-	writeAmpLM       tokensLinearModel
 	aux              adjustTokensAuxComputations
 	ioThreshold      *admissionpb.IOThreshold // never nil
 }
@@ -1312,13 +1080,8 @@ func (res adjustTokensResult) SafeFormat(p redact.SafePrinter, _ rune) {
 	ib := humanizeutil.IBytes
 	// NB: "≈" indicates smoothed quantities.
 	p.Printf("compaction score %v (%d ssts, %d sub-levels), ", res.ioThreshold, res.ioThreshold.L0NumFiles, res.ioThreshold.L0NumSubLevels)
-	var recentFlushBackogStr string
-	if res.aux.recentUnflushedMemTableTooLarge {
-		recentFlushBackogStr = " (flush-backlog) "
-	}
-	p.Printf("L0 growth %s%s (write %s (ignored %s) ingest %s (ignored %s)): ",
+	p.Printf("L0 growth %s (write %s (ignored %s) ingest %s (ignored %s)): ",
 		ib(res.aux.intL0AddedBytes),
-		redact.SafeString(recentFlushBackogStr),
 		ib(res.aux.perWorkTokensAux.intL0WriteBytes),
 		ib(res.aux.perWorkTokensAux.intL0IgnoredWriteBytes),
 		ib(res.aux.perWorkTokensAux.intL0IngestedBytes),
@@ -1336,28 +1099,16 @@ func (res adjustTokensResult) SafeFormat(p redact.SafePrinter, _ rune) {
 	p.Printf("%s acc-ingest (%s bypassed) + ",
 		ib(res.aux.perWorkTokensAux.intIngestedAccountedBytes),
 		ib(res.aux.perWorkTokensAux.intIngestedBypassedAccountedBytes))
-	// Adjusted LSM writes and disk writes that were used for w-amp estimation.
-	p.Printf("%s adjusted-LSM-writes + %s adjusted-disk-writes + ",
-		ib(res.aux.perWorkTokensAux.intAdjustedLSMWrites),
-		ib(res.aux.perWorkTokensAux.intAdjustedDiskWriteBytes))
 	// The models we are fitting to compute tokens based on the reported size of
 	// the write and ingest.
 	p.Printf("write-model %.2fx+%s (smoothed %.2fx+%s) + ",
 		res.aux.perWorkTokensAux.intL0WriteLinearModel.multiplier,
 		ib(res.aux.perWorkTokensAux.intL0WriteLinearModel.constant),
 		res.l0WriteLM.multiplier, ib(res.l0WriteLM.constant))
-	p.Printf("l0-ingest-model %.2fx+%s (smoothed %.2fx+%s) + ",
+	p.Printf("ingested-model %.2fx+%s (smoothed %.2fx+%s) + ",
 		res.aux.perWorkTokensAux.intL0IngestedLinearModel.multiplier,
 		ib(res.aux.perWorkTokensAux.intL0IngestedLinearModel.constant),
 		res.l0IngestLM.multiplier, ib(res.l0IngestLM.constant))
-	p.Printf("ingest-model %.2fx+%s (smoothed %.2fx+%s) + ",
-		res.aux.perWorkTokensAux.intIngestedLinearModel.multiplier,
-		ib(res.aux.perWorkTokensAux.intIngestedLinearModel.constant),
-		res.ingestLM.multiplier, ib(res.ingestLM.constant))
-	p.Printf("write-amp-model %.2fx+%s (smoothed %.2fx+%s) + ",
-		res.aux.perWorkTokensAux.intWriteAmpLinearModel.multiplier,
-		ib(res.aux.perWorkTokensAux.intWriteAmpLinearModel.constant),
-		res.writeAmpLM.multiplier, ib(res.writeAmpLM.constant))
 	// The tokens used per request at admission time, when no size information
 	// is known.
 	p.Printf("at-admission-tokens %s, ", ib(res.requestEstimates.writeTokens))
@@ -1365,12 +1116,9 @@ func (res adjustTokensResult) SafeFormat(p redact.SafePrinter, _ rune) {
 	p.Printf("compacted %s [≈%s], ", ib(res.aux.intL0CompactedBytes), ib(res.smoothedIntL0CompactedBytes))
 	// The tokens computed for flush, based on observed flush throughput and
 	// utilization.
-	p.Printf("flushed %s [≈%s] (mult %.2f); ", ib(int64(res.aux.intFlushTokens)),
-		ib(int64(res.smoothedNumFlushTokens)), res.flushUtilTargetFraction)
+	p.Printf("flushed %s [≈%s]; ", ib(int64(res.aux.intFlushTokens)),
+		ib(int64(res.smoothedNumFlushTokens)))
 	p.Printf("admitting ")
-	if res.aux.intWALFailover {
-		p.Printf("(WAL failover) ")
-	}
 	if n, m := res.ioLoadListenerState.totalNumByteTokens,
 		res.ioLoadListenerState.totalNumElasticByteTokens; n < unlimitedTokens {
 		p.Printf("%s (rate %s/s) (elastic %s rate %s/s)", ib(n), ib(n/adjustmentInterval), ib(m),
@@ -1388,13 +1136,25 @@ func (res adjustTokensResult) SafeFormat(p redact.SafePrinter, _ rune) {
 		case flushTokenKind:
 			p.Printf(" due to memtable flush (multiplier %.3f)", res.flushUtilTargetFraction)
 		}
+		p.Printf(" (used total: %s elastic %s)", ib(res.aux.prevTokensUsed),
+			ib(res.aux.prevTokensUsedByElasticWork))
 	} else if m < unlimitedTokens {
 		p.Printf("elastic %s (rate %s/s) due to L0 growth", ib(m), ib(m/adjustmentInterval))
 	} else {
 		p.SafeString("all")
 	}
-	p.Printf(" (used total: %s elastic %s)", ib(res.aux.prevTokensUsed),
-		ib(res.aux.prevTokensUsedByElasticWork))
+	if res.elasticDiskBWTokens != unlimitedTokens {
+		p.Printf("; elastic-disk-bw tokens %s (used %s, regular used %s): "+
+			"write model %.2fx+%s ingest model %.2fx+%s, ",
+			ib(res.elasticDiskBWTokens), ib(res.aux.diskBW.intervalLSMInfo.elasticTokensUsed),
+			ib(res.aux.diskBW.intervalLSMInfo.regularTokensUsed),
+			res.l0WriteLM.multiplier, ib(res.l0WriteLM.constant),
+			res.ingestLM.multiplier, ib(res.ingestLM.constant))
+		p.Printf("disk bw read %s write %s provisioned %s",
+			ib(res.aux.diskBW.intervalDiskLoadInfo.readBandwidth),
+			ib(res.aux.diskBW.intervalDiskLoadInfo.writeBandwidth),
+			ib(res.aux.diskBW.intervalDiskLoadInfo.provisionedBandwidth))
+	}
 	p.Printf("; write stalls %d", res.aux.intWriteStalls)
 }
 

@@ -27,22 +27,11 @@ type testFileTemplateConfig struct {
 	CockroachGoTestserverTest     bool
 	Ccl                           bool
 	ForceProductionValues         bool
-	SkipUnderRace                 bool
-	UseHeavyPool                  useHeavyPoolCondition
 	Package, TestRuleName, RelDir string
 	ConfigIdx                     int
 	TestCount                     int
 	NumCPU                        int
 }
-
-type useHeavyPoolCondition int
-
-const (
-	useHeavyPoolNever useHeavyPoolCondition = iota
-	// useHeavyPoolForExpensiveConfig is used for tests running under deadlock or race.
-	useHeavyPoolForExpensiveConfig
-	useHeavyPoolAlways
-)
 
 var outDir = flag.String("out-dir", "", "path to the root of the cockroach workspace")
 
@@ -128,122 +117,103 @@ var tmpRegexp = regexp.MustCompile(`/_(\w|\-)+$`)
 
 func (t *testdir) dump() error {
 	for configIdx := range logictestbase.LogicTestConfigs {
-		if err := t.dumpConfig(configIdx); err != nil {
+		tplCfg := testFileTemplateConfig{
+			Ccl:                   strings.Contains(t.dir, "pkg/ccl"),
+			ForceProductionValues: strings.HasSuffix(t.dir, "pkg/sql/opt/exec/execbuilder/tests"),
+		}
+		var testCount int
+		nonTmpCount := func(paths []string) int {
+			n := 0
+			for i := range paths {
+				if !tmpRegexp.MatchString(paths[i]) {
+					n++
+				}
+			}
+			return n
+		}
+		for _, configPaths := range t.logicTestsConfigPaths {
+			paths := configPaths.configPaths[configIdx]
+			testCount += nonTmpCount(paths)
+			if len(paths) > 0 {
+				tplCfg.LogicTest = true
+			}
+		}
+		for _, configPaths := range t.cclLogicTestsConfigPaths {
+			paths := configPaths.configPaths[configIdx]
+			testCount += nonTmpCount(paths)
+			if len(paths) > 0 {
+				tplCfg.CclLogicTest = true
+			}
+		}
+		for _, configPaths := range t.execBuildLogicTestsConfigPaths {
+			paths := configPaths.configPaths[configIdx]
+			testCount += nonTmpCount(paths)
+			if len(paths) > 0 {
+				tplCfg.ExecBuildLogicTest = true
+			}
+		}
+		for _, configPaths := range t.sqliteLogicTestsConfigPaths {
+			paths := configPaths.configPaths[configIdx]
+			testCount += nonTmpCount(paths)
+			if len(paths) > 0 {
+				tplCfg.SqliteLogicTest = true
+			}
+		}
+		if testCount == 0 {
+			continue
+		}
+		cfg := logictestbase.LogicTestConfigs[configIdx]
+		tplCfg.ConfigIdx = configIdx
+		tplCfg.TestRuleName = strings.ReplaceAll(cfg.Name, ".", "_")
+		tplCfg.Package = strings.ReplaceAll(strings.ReplaceAll(cfg.Name, "-", "_"), ".", "")
+		tplCfg.RelDir = t.relPathToParent
+		tplCfg.TestCount = testCount
+		tplCfg.CockroachGoTestserverTest = cfg.UseCockroachGoTestserver
+		// The NumCPU calculation is a guess pulled out of thin air to
+		// allocate the tests which use 3-node clusters 2 vCPUs, and
+		// the ones which use more a bit more.
+		tplCfg.NumCPU = (cfg.NumNodes / 2) + 1
+		subdir := filepath.Join(t.dir, cfg.Name)
+		f, buildF, cleanup, err := openTestSubdir(subdir)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		err = testFileTpl.Execute(f, tplCfg)
+		if err != nil {
+			return err
+		}
+		for _, configPaths := range t.logicTestsConfigPaths {
+			paths := configPaths.configPaths[configIdx]
+			for _, file := range paths {
+				dumpTestForFile(f, configPaths.testPrefix, filepath.Base(file), "runLogicTest")
+			}
+		}
+		for _, configPaths := range t.cclLogicTestsConfigPaths {
+			paths := configPaths.configPaths[configIdx]
+			for _, file := range paths {
+				dumpTestForFile(f, configPaths.testPrefix, filepath.Base(file), "runCCLLogicTest")
+			}
+		}
+		for _, configPaths := range t.execBuildLogicTestsConfigPaths {
+			paths := configPaths.configPaths[configIdx]
+			for _, file := range paths {
+				dumpTestForFile(f, configPaths.testPrefix, filepath.Base(file), "runExecBuildLogicTest")
+			}
+		}
+		for _, configPaths := range t.sqliteLogicTestsConfigPaths {
+			paths := configPaths.configPaths[configIdx]
+			for _, file := range paths {
+				dumpTestForFile(f, configPaths.testPrefix, strings.TrimPrefix(file, t.g.sqliteLogicTestsPath), "runSqliteLogicTest")
+			}
+		}
+
+		err = buildFileTpl.Execute(buildF, tplCfg)
+		if err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func (t *testdir) dumpConfig(configIdx int) error {
-	tplCfg := testFileTemplateConfig{
-		Ccl:                   strings.Contains(t.dir, "pkg/ccl"),
-		ForceProductionValues: strings.HasSuffix(t.dir, "pkg/sql/opt/exec/execbuilder/tests"),
-	}
-	var testCount int
-	nonTmpCount := func(paths []string) int {
-		n := 0
-		for i := range paths {
-			if !tmpRegexp.MatchString(paths[i]) {
-				n++
-			}
-		}
-		return n
-	}
-	for _, configPaths := range t.logicTestsConfigPaths {
-		paths := configPaths.configPaths[configIdx]
-		testCount += nonTmpCount(paths)
-		if len(paths) > 0 {
-			tplCfg.LogicTest = true
-		}
-	}
-	for _, configPaths := range t.cclLogicTestsConfigPaths {
-		paths := configPaths.configPaths[configIdx]
-		testCount += nonTmpCount(paths)
-		if len(paths) > 0 {
-			tplCfg.CclLogicTest = true
-		}
-	}
-	for _, configPaths := range t.execBuildLogicTestsConfigPaths {
-		paths := configPaths.configPaths[configIdx]
-		testCount += nonTmpCount(paths)
-		if len(paths) > 0 {
-			tplCfg.ExecBuildLogicTest = true
-		}
-	}
-	for _, configPaths := range t.sqliteLogicTestsConfigPaths {
-		paths := configPaths.configPaths[configIdx]
-		testCount += nonTmpCount(paths)
-		if len(paths) > 0 {
-			tplCfg.SqliteLogicTest = true
-		}
-	}
-	if testCount == 0 {
-		return nil
-	}
-	cfg := logictestbase.LogicTestConfigs[configIdx]
-	tplCfg.ConfigIdx = configIdx
-	tplCfg.TestRuleName = strings.ReplaceAll(cfg.Name, ".", "_")
-	tplCfg.Package = strings.ReplaceAll(strings.ReplaceAll(cfg.Name, "-", "_"), ".", "")
-	tplCfg.RelDir = t.relPathToParent
-	tplCfg.TestCount = testCount
-	tplCfg.CockroachGoTestserverTest = cfg.UseCockroachGoTestserver
-	// The NumCPU calculation is a guess pulled out of thin air to
-	// allocate the tests which use 3-node clusters 2 vCPUs, and
-	// the ones which use more a bit more.
-	tplCfg.NumCPU = (cfg.NumNodes / 2) + 1
-	if strings.Contains(cfg.Name, "cockroach-go-testserver") {
-		tplCfg.NumCPU = 3
-	}
-	if cfg.Name == "3node-tenant" || strings.HasPrefix(cfg.Name, "multiregion-") {
-		tplCfg.SkipUnderRace = true
-	}
-	tplCfg.UseHeavyPool = useHeavyPoolNever
-	if strings.Contains(cfg.Name, "5node") ||
-		strings.Contains(cfg.Name, "fakedist") ||
-		(strings.HasPrefix(cfg.Name, "local-") && !tplCfg.Ccl) ||
-		(cfg.Name == "local" && !tplCfg.Ccl) {
-		tplCfg.UseHeavyPool = useHeavyPoolForExpensiveConfig
-	} else if strings.Contains(cfg.Name, "cockroach-go-testserver") ||
-		strings.Contains(cfg.Name, "3node-tenant") {
-		tplCfg.UseHeavyPool = useHeavyPoolAlways
-	}
-	subdir := filepath.Join(t.dir, cfg.Name)
-	f, buildF, cleanup, err := openTestSubdir(subdir)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-	err = testFileTpl.Execute(f, tplCfg)
-	if err != nil {
-		return err
-	}
-	for _, configPaths := range t.logicTestsConfigPaths {
-		paths := configPaths.configPaths[configIdx]
-		for _, file := range paths {
-			dumpTestForFile(f, configPaths.testPrefix, filepath.Base(file), "runLogicTest")
-		}
-	}
-	for _, configPaths := range t.cclLogicTestsConfigPaths {
-		paths := configPaths.configPaths[configIdx]
-		for _, file := range paths {
-			dumpTestForFile(f, configPaths.testPrefix, filepath.Base(file), "runCCLLogicTest")
-		}
-	}
-	for _, configPaths := range t.execBuildLogicTestsConfigPaths {
-		paths := configPaths.configPaths[configIdx]
-		for _, file := range paths {
-			dumpTestForFile(f, configPaths.testPrefix, filepath.Base(file), "runExecBuildLogicTest")
-		}
-	}
-	for _, configPaths := range t.sqliteLogicTestsConfigPaths {
-		paths := configPaths.configPaths[configIdx]
-		for _, file := range paths {
-			dumpTestForFile(f, configPaths.testPrefix, strings.TrimPrefix(file, t.g.sqliteLogicTestsPath), "runSqliteLogicTest")
-		}
-	}
-
-	return buildFileTpl.Execute(buildF, tplCfg)
 }
 
 func dumpTestForFile(f io.Writer, prefix, file string, whichFunc string) {
@@ -372,30 +342,6 @@ func generate() error {
 		if err != nil {
 			return err
 		}
-		readCommittedCalc := logictestbase.ConfigCalculator{
-			ConfigOverrides: []string{"local-read-committed"},
-			RunCCLConfigs:   true,
-		}
-		err = t.addCclLogicTests("TestReadCommittedLogicCCL", readCommittedCalc)
-		if err != nil {
-			return err
-		}
-		err = t.addLogicTests("TestReadCommittedLogic", readCommittedCalc)
-		if err != nil {
-			return err
-		}
-		repeatableReadCalc := logictestbase.ConfigCalculator{
-			ConfigOverrides: []string{"local-repeatable-read"},
-			RunCCLConfigs:   true,
-		}
-		err = t.addCclLogicTests("TestRepeatableReadLogicCCL", repeatableReadCalc)
-		if err != nil {
-			return err
-		}
-		err = t.addLogicTests("TestRepeatableReadLogic", repeatableReadCalc)
-		if err != nil {
-			return err
-		}
 		tenantCalc := logictestbase.ConfigCalculator{
 			ConfigOverrides:       []string{"3node-tenant"},
 			ConfigFilterOverrides: []string{"3node-tenant-multiregion"},
@@ -406,14 +352,6 @@ func generate() error {
 			return err
 		}
 		err = t.addLogicTests("TestTenantLogic", tenantCalc)
-		if err != nil {
-			return err
-		}
-		err = t.addExecBuildLogicTests("TestReadCommittedExecBuild", readCommittedCalc)
-		if err != nil {
-			return err
-		}
-		err = t.addExecBuildLogicTests("TestRepeatableReadExecBuild", repeatableReadCalc)
 		if err != nil {
 			return err
 		}

@@ -15,6 +15,7 @@ go_library(
     deps = [
         "//pkg/sql/pgwire/pgcode",
         "//pkg/sql/pgwire/pgerror",
+        "//pkg/util/log",
         "//pkg/util/syncutil",
         "//pkg/util/timeutil",
         "//pkg/util/tracing",
@@ -31,11 +32,13 @@ go_test(
         "hlc_test.go",
         "timestamp_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":hlc"],
     deps = [
+        "//pkg/cli/exit",
         "//pkg/testutils/zerofields",
-        "//pkg/util/hlc/logger",
         "//pkg/util/leaktest",
+        "//pkg/util/log",
         "//pkg/util/protoutil",
         "//pkg/util/randutil",
         "//pkg/util/timeutil",

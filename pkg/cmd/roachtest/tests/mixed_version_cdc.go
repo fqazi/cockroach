@@ -14,13 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IBM/sarama"
+	"github.com/Shopify/sarama"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdctest"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/clusterupgrade"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/mixedversion"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
@@ -41,24 +40,18 @@ const (
 	// when creating the changefeed
 	resolvedInterval = "5s"
 
-	// minCheckpointFrequency is the value to use for `min_checkpoint_frequency`
-	// when creating changefeeds.
-	minCheckpointFrequency = "1s"
-
 	// kafkaBufferMessageSize is the number of messages from kafka
 	// we allow to be buffered in memory before validating them.
 	kafkaBufferMessageSize = 1 << 16 // 64 KiB
+
+	v222CV = "22.2"
 )
 
-const (
+var (
 	// the CDC target, DB and table. We're running the bank workload in
 	// this test.
-	// NB: We increase the number of ranges/rows from the defaults to
-	// allow for more interesting DistSQL plans.
-	targetDB          = "bank"
-	targetTable       = "bank"
-	targetTableRanges = 100
-	targetTableRows   = 10_000
+	targetDB    = "bank"
+	targetTable = "bank"
 
 	// teamcityAgentZone is the zone used in this test. Since this test
 	// runs a lot of queries from the TeamCity agent to CRDB nodes, we
@@ -71,27 +64,17 @@ const (
 
 func registerCDCMixedVersions(r registry.Registry) {
 	r.Add(registry.TestSpec{
-		Name:             "cdc/mixed-versions",
-		Owner:            registry.OwnerCDC,
-		Cluster:          r.MakeClusterSpec(5, spec.WorkloadNode(), spec.GCEZones(teamcityAgentZone), spec.Arch(vm.ArchAMD64)),
+		Name:  "cdc/mixed-versions",
+		Owner: registry.OwnerCDC,
+		// N.B. ARM64 is not yet supported, see https://github.com/cockroachdb/cockroach/issues/103888.
+		Cluster:          r.MakeClusterSpec(5, spec.GCEZones(teamcityAgentZone), spec.Arch(vm.ArchAMD64)),
 		Timeout:          3 * time.Hour,
 		CompatibleClouds: registry.OnlyGCE,
-		Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
+		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
 		Randomized:       true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runCDCMixedVersions(ctx, t, c)
-		},
-	})
-	r.Add(registry.TestSpec{
-		Name:             "cdc/mixed-version/checkpointing",
-		Owner:            registry.OwnerCDC,
-		Cluster:          r.MakeClusterSpec(5, spec.WorkloadNode(), spec.GCEZones(teamcityAgentZone), spec.Arch(vm.ArchAMD64)),
-		Timeout:          3 * time.Hour,
-		CompatibleClouds: registry.OnlyGCE,
-		Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
-		Randomized:       true,
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			runCDCMixedVersionCheckpointing(ctx, t, c)
 		},
 	})
 }
@@ -140,13 +123,20 @@ type cdcMixedVersionTester struct {
 	fprintV   *cdctest.FingerprintValidator
 }
 
-func newCDCMixedVersionTester(ctx context.Context, c cluster.Cluster) cdcMixedVersionTester {
+func newCDCMixedVersionTester(
+	ctx context.Context, t test.Test, c cluster.Cluster,
+) cdcMixedVersionTester {
+	crdbNodes := c.Range(1, c.Spec().NodeCount-1)
+	lastNode := c.Node(c.Spec().NodeCount)
+
+	c.Put(ctx, t.DeprecatedWorkload(), "./workload", lastNode)
+
 	return cdcMixedVersionTester{
 		ctx:           ctx,
 		c:             c,
-		crdbNodes:     c.CRDBNodes(),
-		workloadNodes: c.WorkloadNode(),
-		kafkaNodes:    c.WorkloadNode(),
+		crdbNodes:     crdbNodes,
+		workloadNodes: lastNode,
+		kafkaNodes:    lastNode,
 		workloadInit:  make(chan struct{}),
 	}
 }
@@ -163,7 +153,7 @@ func (cmvt *cdcMixedVersionTester) StartKafka(t test.Test, c cluster.Cluster) (c
 	}
 	cmvt.kafka.manager = manager
 
-	consumer, err := cmvt.kafka.manager.newConsumer(cmvt.ctx, targetTable, nil /* stopper */)
+	consumer, err := cmvt.kafka.manager.newConsumer(cmvt.ctx, targetTable)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +163,7 @@ func (cmvt *cdcMixedVersionTester) StartKafka(t test.Test, c cluster.Cluster) (c
 	cmvt.kafka.consumer = consumer
 
 	return func() {
-		consumer.close()
+		cmvt.kafka.consumer.Close()
 		tearDown()
 	}
 }
@@ -248,7 +238,7 @@ func (cmvt *cdcMixedVersionTester) setupValidator(
 		fprintV,
 	}
 
-	cmvt.validator = cdctest.NewCountValidator(validators)
+	cmvt.validator = cdctest.MakeCountValidator(validators)
 	cmvt.fprintV = fprintV
 	return nil
 }
@@ -265,9 +255,15 @@ func (cmvt *cdcMixedVersionTester) runKafkaConsumer(
 	// context cancellation. We rely on consumer.Next() to check
 	// the context.
 	for {
-		m, err := cmvt.kafka.consumer.next(ctx)
-		if err != nil {
-			return err
+		m := cmvt.kafka.consumer.Next(ctx)
+		if m == nil {
+			// this is expected to happen once the test has finished and
+			// Kafka is being shut down. If it happens in the middle of
+			// the test, it will eventually time out, and this message
+			// should allow us to see that the validator finished
+			// earlier than it should have
+			l.Printf("end of changefeed")
+			return nil
 		}
 
 		// Forward resolved timetsamps to "heartbeat" that the changefeed is running.
@@ -321,7 +317,7 @@ func (cmvt *cdcMixedVersionTester) validate(
 
 		partitionStr := strconv.Itoa(int(m.Partition))
 		if len(m.Key) > 0 {
-			if err := cmvt.validator.NoteRow(partitionStr, string(m.Key), string(m.Value), updated, m.Topic); err != nil {
+			if err := cmvt.validator.NoteRow(partitionStr, string(m.Key), string(m.Value), updated); err != nil {
 				return err
 			}
 		} else {
@@ -367,33 +363,31 @@ func (cmvt *cdcMixedVersionTester) createChangeFeed(
 	case <-cmvt.workloadInit:
 	}
 	node, db := h.RandomDB(r)
-	systemNode, systemDB := h.System.RandomDB(r)
-	l.Printf("starting changefeed on node %d (updating system settings via node %d)", node, systemNode)
+	l.Printf("starting changefeed on node %d", node)
 
 	options := map[string]string{
-		"updated":                  "",
-		"resolved":                 fmt.Sprintf("'%s'", resolvedInterval),
-		"min_checkpoint_frequency": fmt.Sprintf("'%s'", minCheckpointFrequency),
+		"updated":  "",
+		"resolved": fmt.Sprintf("'%s'", resolvedInterval),
 	}
 
 	var ff cdcFeatureFlags
-	rangefeedSchedulerSupported, err := cmvt.rangefeedSchedulerSupported(r, h)
+	muxSupported, err := cmvt.muxRangeFeedSupported(r, h)
 	if err != nil {
 		return err
 	}
-	if !rangefeedSchedulerSupported {
+	if !muxSupported {
+		ff.MuxRangefeed.v = &featureUnset
+	}
+
+	schedulerSupported, err := cmvt.rangefeedSchedulerSupported(r, h)
+	if err != nil {
+		return err
+	}
+	if !schedulerSupported {
 		ff.RangeFeedScheduler.v = &featureUnset
 	}
 
-	distributionStrategySupported, err := cmvt.distributionStrategySupported(r, h)
-	if err != nil {
-		return err
-	}
-	if !distributionStrategySupported {
-		ff.DistributionStrategy.v = &featureUnset
-	}
-
-	jobID, err := newChangefeedCreator(db, systemDB, l, r, fmt.Sprintf("%s.%s", targetDB, targetTable),
+	jobID, err := newChangefeedCreator(db, l, r, fmt.Sprintf("%s.%s", targetDB, targetTable),
 		cmvt.kafka.manager.sinkURL(ctx), ff).
 		With(options).
 		Create()
@@ -407,8 +401,6 @@ func (cmvt *cdcMixedVersionTester) createChangeFeed(
 // runWorkloadCmd returns the command that runs the workload.
 func (cmvt *cdcMixedVersionTester) runWorkloadCmd(r *rand.Rand) *roachtestutil.Command {
 	return roachtestutil.NewCommand("%s workload run bank", test.DefaultCockroachPath).
-		Flag("ranges", targetTableRanges).
-		Flag("rows", targetTableRows).
 		// Since all rows are placed in a buffer, setting a low rate of 2 operations / sec
 		// helps ensure that we don't exceed the buffer capacity.
 		Flag("max-rate", 2).
@@ -421,18 +413,12 @@ func (cmvt *cdcMixedVersionTester) runWorkloadCmd(r *rand.Rand) *roachtestutil.C
 func (cmvt *cdcMixedVersionTester) initWorkload(
 	ctx context.Context, l *logger.Logger, r *rand.Rand, h *mixedversion.Helper,
 ) error {
-	if err := enableTenantSplitScatter(l, r, h); err != nil {
-		return err
-	}
-
 	bankInit := roachtestutil.NewCommand("%s workload init bank", test.DefaultCockroachPath).
-		Flag("ranges", targetTableRanges).
-		Flag("rows", targetTableRows).
 		Flag("seed", r.Int63()).
 		Arg("{pgurl%s}", cmvt.crdbNodes)
 
 	initNode := cmvt.workloadNodes[r.Intn(len(cmvt.workloadNodes))]
-	if err := cmvt.c.RunE(ctx, option.WithNodes(option.NodeListOption{initNode}), bankInit.String()); err != nil {
+	if err := cmvt.c.RunE(ctx, option.NodeListOption{initNode}, bankInit.String()); err != nil {
 		return err
 	}
 	close(cmvt.workloadInit)
@@ -440,94 +426,26 @@ func (cmvt *cdcMixedVersionTester) initWorkload(
 }
 
 func (cmvt *cdcMixedVersionTester) muxRangeFeedSupported(
-	h *mixedversion.Helper,
-) (bool, option.NodeListOption, error) {
-	// changefeed.mux_rangefeed.enabled was added in 22.2 and deleted in 24.1.
-	return canMixedVersionUseDeletedClusterSetting(h,
-		clusterupgrade.MustParseVersion("v22.2.0"),
-		clusterupgrade.MustParseVersion("v24.1.0"),
-	)
+	r *rand.Rand, h *mixedversion.Helper,
+) (bool, error) {
+	return h.ClusterVersionAtLeast(r, v222CV)
 }
 
 const v232CV = "23.2"
-const v241CV = "24.1"
 
 func (cmvt *cdcMixedVersionTester) rangefeedSchedulerSupported(
 	r *rand.Rand, h *mixedversion.Helper,
 ) (bool, error) {
-	// kv.rangefeed.scheduler.enabled only exists since 23.2.
 	return h.ClusterVersionAtLeast(r, v232CV)
 }
 
-func (cmvt *cdcMixedVersionTester) distributionStrategySupported(
-	r *rand.Rand, h *mixedversion.Helper,
-) (bool, error) {
-	return h.ClusterVersionAtLeast(r, v241CV)
-}
-
-// canMixedVersionUseDeletedClusterSetting returns whether a
-// mixed-version cluster can use a deleted (system) cluster
-// setting. If it returns true, it will also return the subset of
-// nodes that understand the setting.
-func canMixedVersionUseDeletedClusterSetting(
-	h *mixedversion.Helper,
-	addedVersion *clusterupgrade.Version,
-	deletedVersion *clusterupgrade.Version,
-) (bool, option.NodeListOption, error) {
-	fromVersion := h.System.FromVersion
-	toVersion := h.System.ToVersion
-
-	// Cluster setting was deleted at or before the from version so no nodes
-	// know about the setting.
-	if fromVersion.AtLeast(deletedVersion) {
-		return false, nil, nil
-	}
-
-	// Cluster setting was deleted later than the from version but at or before
-	// the to version, so if the from version is at least the added version,
-	// all the nodes on that version will know about the setting.
-	if toVersion.AtLeast(deletedVersion) {
-		if fromVersion.AtLeast(addedVersion) {
-			fromVersionNodes := h.System.NodesInPreviousVersion()
-			if len(fromVersionNodes) > 0 {
-				return true, fromVersionNodes, nil
-			}
-		}
-		return false, nil, nil
-	}
-
-	// Cluster setting was deleted later than to version, so any nodes that are
-	// at least the added version will know about the setting.
-
-	if fromVersion.AtLeast(addedVersion) {
-		return true, h.System.Descriptor.Nodes, nil
-	}
-
-	if toVersion.AtLeast(addedVersion) {
-		toVersionNodes := h.System.NodesInNextVersion()
-		if len(toVersionNodes) > 0 {
-			return true, toVersionNodes, nil
-		}
-		return false, nil, nil
-	}
-
-	return false, nil, nil
-}
-
 func runCDCMixedVersions(ctx context.Context, t test.Test, c cluster.Cluster) {
-	tester := newCDCMixedVersionTester(ctx, c)
+	tester := newCDCMixedVersionTester(ctx, t, c)
 
 	mvt := mixedversion.NewTest(
 		ctx, t, t.L(), c, tester.crdbNodes,
-		// We set the minimum supported version to 23.2 in this test as it
-		// relies on the `kv.rangefeed.enabled` cluster setting. This
-		// setting is, confusingly, labeled as `TenantWritable` in
-		// 23.1. That mistake was then fixed (#110676) but, to simplify
-		// this test, we only create changefeeds in more recent versions.
-		mixedversion.MinimumSupportedVersion("v23.2.0"),
-		// We limit the total number of plan steps to 80, which is roughly 60% of all plan lengths.
-		// See https://github.com/cockroachdb/cockroach/pull/137963#discussion_r1906256740 for more details.
-		mixedversion.MaxNumPlanSteps(80),
+		// Multi-tenant deployments are currently unsupported. See #127378.
+		mixedversion.EnabledDeploymentModes(mixedversion.SystemOnlyDeployment),
 	)
 
 	cleanupKafka := tester.StartKafka(t, c)
@@ -535,16 +453,14 @@ func runCDCMixedVersions(ctx context.Context, t test.Test, c cluster.Cluster) {
 
 	// MuxRangefeed in various forms is available starting from v22.2.
 	setMuxRangeFeedEnabled := func(ctx context.Context, l *logger.Logger, r *rand.Rand, h *mixedversion.Helper) error {
-		supported, gatewayNodes, err := tester.muxRangeFeedSupported(h)
+		supported, err := tester.muxRangeFeedSupported(r, h)
 		if err != nil {
 			return err
 		}
 		if supported {
 			coin := r.Int()%2 == 0
 			l.PrintfCtx(ctx, "Setting changefeed.mux_rangefeed.enabled=%t ", coin)
-			return h.System.ExecWithGateway(
-				r, gatewayNodes, "SET CLUSTER SETTING changefeed.mux_rangefeed.enabled=$1", coin,
-			)
+			return h.Exec(r, "SET CLUSTER SETTING changefeed.mux_rangefeed.enabled=$1", coin)
 		}
 		return nil
 	}
@@ -555,11 +471,10 @@ func runCDCMixedVersions(ctx context.Context, t test.Test, c cluster.Cluster) {
 		if err != nil {
 			return err
 		}
-		l.Printf("kv.rangefeed.scheduler.enabled=%t", supported)
 		if supported {
 			coin := r.Int()%2 == 0
 			l.PrintfCtx(ctx, "Setting kv.rangefeed.scheduler.enabled=%t", coin)
-			return h.System.Exec(r, "SET CLUSTER SETTING kv.rangefeed.scheduler.enabled=$1", coin)
+			return h.Exec(r, "SET CLUSTER SETTING kv.rangefeed.scheduler.enabled=$1", coin)
 		}
 		return nil
 	}
@@ -584,69 +499,5 @@ func runCDCMixedVersions(ctx context.Context, t test.Test, c cluster.Cluster) {
 	mvt.AfterUpgradeFinalized("use mux", setMuxRangeFeedEnabled)
 	mvt.AfterUpgradeFinalized("use scheduler", setRangeFeedSchedulerEnabled)
 	mvt.AfterUpgradeFinalized("wait and validate", tester.waitAndValidate)
-	mvt.Run()
-}
-
-// runCDCMixedVersionCheckpointing tests that the new span-level checkpoint
-// code added in 25.2 works correctly in mixed-version states.
-//
-// Writing the checkpoint is explicitly forced with cluster settings and
-// restoring the checkpoint implicitly happens following each of the rolling
-// restarts during the mixed-version test run.
-func runCDCMixedVersionCheckpointing(ctx context.Context, t test.Test, c cluster.Cluster) {
-	tester := newCDCMixedVersionTester(ctx, c)
-
-	mvt := mixedversion.NewTest(
-		ctx, t, t.L(), c, tester.crdbNodes,
-		// We're only concerned with mixed-version compatibility starting at
-		// versions that can upgrade to 25.2 (only 24.3 and 25.1), since that's
-		// the first version with the new span-level checkpoint format.
-		mixedversion.MinimumSupportedVersion("v24.3.0"),
-	)
-
-	cleanupKafka := tester.StartKafka(t, c)
-	defer cleanupKafka()
-
-	forceCheckpointing := func(
-		ctx context.Context, l *logger.Logger, r *rand.Rand, h *mixedversion.Helper,
-	) error {
-		// NB: We use the 24.3 names for the cluster settings so that the cluster
-		// can understand them at startup time.
-		for _, stmt := range []string{
-			`SET CLUSTER SETTING changefeed.frontier_checkpoint_frequency = '1s'`,
-			`SET CLUSTER SETTING changefeed.frontier_highwater_lag_checkpoint_threshold = '1us'`,
-		} {
-			if err := h.Exec(r, stmt); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	scatter := func(
-		ctx context.Context, l *logger.Logger, r *rand.Rand, h *mixedversion.Helper,
-	) error {
-		return h.Exec(r, `ALTER TABLE bank.bank SCATTER`)
-	}
-
-	// Test setup.
-	mvt.OnStartup("start changefeed", tester.createChangeFeed)
-	mvt.OnStartup("create validator", tester.setupValidator)
-	mvt.OnStartup("init workload", tester.initWorkload)
-	mvt.OnStartup("set checkpointing settings", forceCheckpointing)
-
-	// Run workload and kafka consumer.
-	runWorkloadCmd := tester.runWorkloadCmd(mvt.RNG())
-	_ = mvt.BackgroundCommand("run workload", tester.workloadNodes, runWorkloadCmd)
-	_ = mvt.BackgroundFunc("run kafka consumer", tester.runKafkaConsumer)
-
-	// Scatter the ranges throughout the test to make it more likely that every
-	// node will participate in the changefeed.
-	mvt.InMixedVersion("scatter ranges", scatter)
-
-	// Validate the changefeed's output both during and after any upgrades.
-	mvt.InMixedVersion("wait and validate", tester.waitAndValidate)
-	mvt.AfterUpgradeFinalized("wait and validate", tester.waitAndValidate)
-
 	mvt.Run()
 }

@@ -123,6 +123,10 @@ const (
 	// CheckConsistency verifies the consistency of all ranges falling within a
 	// key span.
 	CheckConsistency
+	// InitPut sets the value for a key if the key doesn't exist. It returns
+	// an error if the key exists and the existing value is different from the
+	// supplied one.
+	InitPut
 	// WriteBatch applies the operations encoded in a BatchRepr.
 	WriteBatch
 	// Export dumps a keyrange into files.
@@ -130,10 +134,8 @@ const (
 	// AdminScatter moves replicas and leaseholders for a selection of ranges.
 	// Best-effort.
 	AdminScatter
-	// AddSSTable links a file into pebble.
+	// AddSSTable links a file into the RocksDB log-structured merge-tree.
 	AddSSTable
-	// LinkExternallSSTable links an external sst into pebble.
-	LinkExternalSSTable
 	// Migrate updates the range state to conform to a specified cluster
 	// version. It is our main mechanism for phasing out legacy code below Raft.
 	Migrate
@@ -151,6 +153,9 @@ const (
 	Subsume
 	// RangeStats returns the MVCC statistics for a range.
 	RangeStats
+	// AdminVerifyProtectedTimestamp determines whether the specified protection
+	// record will be respected by this Range.
+	AdminVerifyProtectedTimestamp
 	// QueryResolvedTimestamp requests the resolved timestamp of the key span it
 	// is issued over.
 	QueryResolvedTimestamp
@@ -164,9 +169,6 @@ const (
 	// IsSpanEmpty is a non-transaction read request used to determine whether
 	// a span contains any keys whatsoever (garbage or otherwise).
 	IsSpanEmpty
-	// Excise is a non-MVCC command that destroys all data in a user MVCC key
-	// span. See ExciseRequest for details.
-	Excise
 	// MaxMethod is the maximum method.
 	MaxMethod Method = iota - 1
 	// NumMethods represents the total number of API methods.

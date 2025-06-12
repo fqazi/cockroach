@@ -88,10 +88,6 @@ type MultiConnPoolCfg struct {
 
 	// Duration between refreshes of the DNS cache
 	DNSRefreshInterval time.Duration
-
-	// QueryTracer is an optional tracer to attach to the pgx connections from
-	// this pool. See [pgx.ConnConfig] for details.
-	QueryTracer pgx.QueryTracer
 }
 
 // NewMultiConnPoolCfgFromFlags constructs a new MultiConnPoolCfg object based
@@ -238,9 +234,6 @@ func NewMultiConnPool(
 				}
 				return true
 			}
-
-			// Attach the supplied tracer to the ConnConfig.
-			poolCfg.ConnConfig.Tracer = cfg.QueryTracer
 
 			connCfg := poolCfg.ConnConfig
 			if m.resolver != nil {

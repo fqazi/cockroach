@@ -85,7 +85,7 @@ func (p *planner) addColumnImpl(
 			if err := params.p.checkNoRegionChangeUnderway(
 				params.ctx,
 				n.tableDesc.GetParentID(),
-				"add a UNIQUE COLUMN on a REGIONAL BY ROW table",
+				"add an UNIQUE COLUMN on a REGIONAL BY ROW table",
 			); err != nil {
 				return err
 			}
@@ -232,7 +232,7 @@ func checkColumnDoesNotExist(
 			col.GetName())
 	}
 	if col.Public() {
-		return true, sqlerrors.NewColumnAlreadyExistsInRelationError(tree.ErrString(&name), tableDesc.GetName())
+		return true, sqlerrors.NewColumnAlreadyExistsError(tree.ErrString(&name), tableDesc.GetName())
 	}
 	if col.Adding() {
 		return false, pgerror.Newf(pgcode.DuplicateColumn,

@@ -11,16 +11,13 @@ import (
 	"strconv"
 
 	"github.com/cockroachdb/cockroach/pkg/security/certnames"
-	"github.com/cockroachdb/cockroach/pkg/security/clientcert"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
-	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
+	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/sysutil"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 )
 
@@ -46,17 +43,16 @@ import (
 //     fall back on 'node.crt'.
 type CertificateManager struct {
 	tenantIdentifier uint64
-	timeSource       timeutil.TimeSource
 	certnames.Locator
 
 	tlsSettings TLSSettings
 
 	// The metrics struct is initialized at init time and metrics do their
 	// own locking.
-	certMetrics *Metrics
+	certMetrics Metrics
 
 	// Client cert expiration cache.
-	clientCertExpirationCache *clientcert.Cache
+	clientCertExpirationCache *ClientCertExpirationCache
 
 	// mu protects all remaining fields.
 	mu syncutil.RWMutex
@@ -96,23 +92,18 @@ func makeCertificateManager(
 		fn(&o)
 	}
 
-	cm := &CertificateManager{
+	return &CertificateManager{
 		Locator:          certnames.MakeLocator(certsDir),
 		tenantIdentifier: o.tenantIdentifier,
-		timeSource:       o.timeSource,
 		tlsSettings:      tlsSettings,
+		certMetrics:      makeMetrics(),
 	}
-	cm.certMetrics = createMetricsLocked(cm)
-	return cm
 }
 
 type cmOptions struct {
 	// tenantIdentifier, if set, specifies the tenant to use for loading tenant
 	// client certs.
 	tenantIdentifier uint64
-
-	// timeSource, if set, specifies the time source with which the metrics are set.
-	timeSource timeutil.TimeSource
 }
 
 // Option is an option to NewCertificateManager.
@@ -124,14 +115,6 @@ type Option func(*cmOptions)
 func ForTenant(tenantIdentifier uint64) Option {
 	return func(opts *cmOptions) {
 		opts.tenantIdentifier = tenantIdentifier
-	}
-}
-
-// WithTimeSource allows the caller to pass a time source to be used
-// by the Metrics struct (mostly for testing).
-func WithTimeSource(ts timeutil.TimeSource) Option {
-	return func(opts *cmOptions) {
-		opts.timeSource = ts
 	}
 }
 
@@ -165,7 +148,7 @@ func (cm *CertificateManager) IsForTenant() bool {
 }
 
 // Metrics returns the metrics struct.
-func (cm *CertificateManager) Metrics() *Metrics {
+func (cm *CertificateManager) Metrics() Metrics {
 	return cm.certMetrics
 }
 
@@ -187,9 +170,9 @@ func (cm *CertificateManager) RegisterSignalHandler(
 				}
 				if err := cm.LoadCertificates(); err != nil {
 					log.Ops.Warningf(ctx, "could not reload certificates: %v", err)
-					log.StructuredEvent(ctx, severity.INFO, &eventpb.CertsReload{Success: false, ErrorMessage: err.Error()})
+					log.StructuredEvent(ctx, &eventpb.CertsReload{Success: false, ErrorMessage: err.Error()})
 				} else {
-					log.StructuredEvent(ctx, severity.INFO, &eventpb.CertsReload{Success: true})
+					log.StructuredEvent(ctx, &eventpb.CertsReload{Success: true})
 				}
 			}
 		}
@@ -198,31 +181,21 @@ func (cm *CertificateManager) RegisterSignalHandler(
 
 // RegisterExpirationCache registers a cache for client certificate expiration.
 // It is called during server startup.
-func (cm *CertificateManager) RegisterExpirationCache(
-	ctx context.Context,
-	stopper *stop.Stopper,
-	timeSrc timeutil.TimeSource,
-	parentMon *mon.BytesMonitor,
-) error {
-	m := mon.NewMonitorInheritWithLimit(mon.MakeName("client-expiration-caches"), 0 /* limit */, parentMon, true /* longLiving */)
-	acc := m.MakeConcurrentBoundAccount()
-	m.StartNoReserved(ctx, parentMon)
-
-	cm.clientCertExpirationCache = clientcert.NewCache(timeSrc, acc, cm.certMetrics.ClientExpiration, cm.certMetrics.ClientTTL)
-	return cm.clientCertExpirationCache.StartPurgeJob(ctx, stopper)
+func (cm *CertificateManager) RegisterExpirationCache(cache *ClientCertExpirationCache) {
+	cm.clientCertExpirationCache = cache
 }
 
 // MaybeUpsertClientExpiration updates or inserts the expiration time for the
 // given client certificate. An update is contingent on whether the old
 // expiration is after the new expiration.
 func (cm *CertificateManager) MaybeUpsertClientExpiration(
-	ctx context.Context, identity string, serial string, expiration int64,
+	ctx context.Context, identity username.SQLUsername, expiration int64,
 ) {
 	if cache := cm.clientCertExpirationCache; cache != nil {
-		cache.Upsert(ctx,
-			identity,
-			serial,
+		cache.MaybeUpsert(ctx,
+			identity.Normalized(),
 			expiration,
+			cm.certMetrics.ClientExpiration,
 		)
 	}
 }
@@ -418,7 +391,46 @@ func (cm *CertificateManager) LoadCertificates() error {
 	cm.tenantCert = tenantCert
 	cm.tenantSigningCert = tenantSigningCert
 
+	cm.updateMetricsLocked()
 	return nil
+}
+
+// updateMetricsLocked updates the values on the certificate metrics.
+// The metrics may not exist (eg: in tests that build their own CertificateManager).
+// If the corresponding certificate is missing or invalid (Error != nil), we reset the
+// metric to zero.
+// cm.mu must be held to protect the certificates. Metrics do their own atomicity.
+func (cm *CertificateManager) updateMetricsLocked() {
+	maybeSetMetric := func(m *metric.Gauge, ci *CertInfo) {
+		if m == nil {
+			return
+		}
+		if ci != nil && ci.Error == nil {
+			m.Update(ci.ExpirationTime.Unix())
+		} else {
+			m.Update(0)
+		}
+	}
+
+	// CA certificate expiration.
+	maybeSetMetric(cm.certMetrics.CAExpiration, cm.caCert)
+
+	// Client CA certificate expiration.
+	maybeSetMetric(cm.certMetrics.ClientCAExpiration, cm.clientCACert)
+
+	// UI CA certificate expiration.
+	maybeSetMetric(cm.certMetrics.UICAExpiration, cm.uiCACert)
+
+	// Node certificate expiration.
+	// TODO(marc): we need to examine the entire certificate chain here, if the CA cert
+	// used to sign the node cert expires sooner, then that is the expiration time to report.
+	maybeSetMetric(cm.certMetrics.NodeExpiration, cm.nodeCert)
+
+	// Node client certificate expiration.
+	maybeSetMetric(cm.certMetrics.NodeClientExpiration, cm.nodeClientCert)
+
+	// UI certificate expiration.
+	maybeSetMetric(cm.certMetrics.UIExpiration, cm.uiCert)
 }
 
 // GetServerTLSConfig returns a server TLS config with a callback to fetch the

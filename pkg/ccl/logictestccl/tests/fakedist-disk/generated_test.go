@@ -26,7 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 )
 
-const configIdx = 7
+const configIdx = 5
 
 var cclLogicTestDir string
 
@@ -82,27 +82,6 @@ func TestCCLLogic_fips_ready(
 	runCCLLogicTest(t, "fips_ready")
 }
 
-func TestCCLLogic_fk_read_committed(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "fk_read_committed")
-}
-
-func TestCCLLogic_hash_sharded_index_read_committed(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "hash_sharded_index_read_committed")
-}
-
-func TestCCLLogic_nested_routines(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "nested_routines")
-}
-
 func TestCCLLogic_new_schema_changer(
 	t *testing.T,
 ) {
@@ -124,46 +103,11 @@ func TestCCLLogic_pgcrypto_builtins(
 	runCCLLogicTest(t, "pgcrypto_builtins")
 }
 
-func TestCCLLogic_plpgsql_assign(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_assign")
-}
-
-func TestCCLLogic_plpgsql_block(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_block")
-}
-
-func TestCCLLogic_plpgsql_call(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_call")
-}
-
-func TestCCLLogic_plpgsql_cte(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_cte")
-}
-
 func TestCCLLogic_plpgsql_cursor(
 	t *testing.T,
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "plpgsql_cursor")
-}
-
-func TestCCLLogic_plpgsql_into(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_into")
 }
 
 func TestCCLLogic_plpgsql_record(
@@ -173,32 +117,11 @@ func TestCCLLogic_plpgsql_record(
 	runCCLLogicTest(t, "plpgsql_record")
 }
 
-func TestCCLLogic_plpgsql_srf(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_srf")
-}
-
-func TestCCLLogic_plpgsql_txn(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_txn")
-}
-
 func TestCCLLogic_plpgsql_unsupported(
 	t *testing.T,
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "plpgsql_unsupported")
-}
-
-func TestCCLLogic_procedure_params(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "procedure_params")
 }
 
 func TestCCLLogic_procedure_plpgsql(
@@ -236,46 +159,11 @@ func TestCCLLogic_schema_change_in_txn(
 	runCCLLogicTest(t, "schema_change_in_txn")
 }
 
-func TestCCLLogic_select_for_update_read_committed(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "select_for_update_read_committed")
-}
-
 func TestCCLLogic_show_create(
 	t *testing.T,
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "show_create")
-}
-
-func TestCCLLogic_subject(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "subject")
-}
-
-func TestCCLLogic_triggers(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "triggers")
-}
-
-func TestCCLLogic_txn_retry(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "txn_retry")
-}
-
-func TestCCLLogic_udf_params(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "udf_params")
 }
 
 func TestCCLLogic_udf_plpgsql(
@@ -297,18 +185,4 @@ func TestCCLLogic_udf_volatility_check(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "udf_volatility_check")
-}
-
-func TestCCLLogic_unique_read_committed(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "unique_read_committed")
-}
-
-func TestCCLLogic_vector(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "vector")
 }

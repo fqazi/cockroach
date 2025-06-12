@@ -31,7 +31,7 @@ func NewCountRowsOperator(
 	colsToStore := framer.getColsToStore(nil /* oldColsToStore */)
 	buffer := colexecutils.NewSpillingBuffer(
 		args.BufferAllocator, bufferMemLimit, args.QueueCfg, args.FdSemaphore,
-		args.InputTypes, args.DiskAcc, args.DiskQueueMemAcc, colsToStore...,
+		args.InputTypes, args.DiskAcc, args.ConverterMemAcc, colsToStore...,
 	)
 	windower := &countRowsWindowAggregator{
 		partitionSeekerBase: partitionSeekerBase{
@@ -87,7 +87,7 @@ func (a *countRowsWindowAggregator) processBatch(batch coldata.Batch, startIdx, 
 		return
 	}
 	outVec := batch.ColVec(a.outputColIdx)
-	a.allocator.PerformOperation([]*coldata.Vec{outVec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{outVec}, func() {
 		outCol := outVec.Int64()
 		_, _ = outCol[startIdx], outCol[endIdx-1]
 		for i := startIdx; i < endIdx; i++ {

@@ -6,10 +6,11 @@
 package main
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"log"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,7 +18,76 @@ import (
 	"github.com/Masterminds/semver/v3"
 )
 
-const remoteOrigin = "origin"
+type releaseInfo struct {
+	prevReleaseVersion string
+	nextReleaseVersion string
+	buildInfo          buildInfo
+	// candidateCommits contains all merge commits that can be considered as release candidates
+	candidateCommits []string
+	// releaseSeries represents the major release prefix, e.g. 21.2
+	releaseSeries string
+}
+
+// findNextVersion returns the next release version for given releaseSeries.
+func findNextVersion(releaseSeries string) (string, error) {
+	prevReleaseVersion, err := findPreviousRelease(releaseSeries, false)
+	if err != nil {
+		return "", fmt.Errorf("cannot find previous release: %w", err)
+	}
+	nextReleaseVersion, err := bumpVersion(prevReleaseVersion)
+	if err != nil {
+		return "", fmt.Errorf("cannot bump version: %w", err)
+	}
+	return nextReleaseVersion, nil
+}
+
+// findNextRelease finds all required information for the next release.
+func findNextRelease(releaseSeries string) (releaseInfo, error) {
+	prevReleaseVersion, err := findPreviousRelease(releaseSeries, false)
+	if err != nil {
+		return releaseInfo{}, fmt.Errorf("cannot find previous release: %w", err)
+	}
+	nextReleaseVersion, err := bumpVersion(prevReleaseVersion)
+	if err != nil {
+		return releaseInfo{}, fmt.Errorf("cannot bump version: %w", err)
+	}
+	candidateCommits, err := findCandidateCommits(prevReleaseVersion, releaseSeries)
+	if err != nil {
+		return releaseInfo{}, fmt.Errorf("cannot find candidate commits: %w", err)
+	}
+	info, err := findHealthyBuild(candidateCommits)
+	if err != nil {
+		return releaseInfo{}, fmt.Errorf("cannot find healthy build: %w", err)
+	}
+	releasedVersions, err := getVersionsContainingRef(info.SHA)
+	if err != nil {
+		return releaseInfo{}, fmt.Errorf("cannot check if the candidate sha was released: %w", err)
+	}
+	if len(releasedVersions) > 0 {
+		return releaseInfo{}, fmt.Errorf("%s has been already released as a part of the following tags: %s",
+			info.SHA, strings.Join(releasedVersions, ", "))
+	}
+	return releaseInfo{
+		prevReleaseVersion: prevReleaseVersion,
+		nextReleaseVersion: nextReleaseVersion,
+		buildInfo:          info,
+		candidateCommits:   candidateCommits,
+		releaseSeries:      releaseSeries,
+	}, nil
+}
+
+func getVersionsContainingRef(ref string) ([]string, error) {
+	cmd := exec.Command("git", "tag", "--contains", ref)
+	out, err := cmd.Output()
+	if err != nil {
+		return []string{}, fmt.Errorf("cannot list tags containing %s: %w", ref, err)
+	}
+	var versions []string
+	for _, v := range findVersions(string(out)) {
+		versions = append(versions, v.Original())
+	}
+	return versions, nil
+}
 
 func findVersions(text string) []*semver.Version {
 	var versions []*semver.Version
@@ -107,14 +177,82 @@ func bumpVersion(version string) (string, error) {
 	return nextVersion.Original(), nil
 }
 
+// filterPullRequests finds commits with a particular merge pattern in the commit message.
+// GitHub uses "Merge pull request #NNN" and Bors uses "Merge #NNN" in the generated commit messages.
+func filterPullRequests(text string) []string {
+	var shas []string
+	matchMerge := regexp.MustCompile(`Merge (#|pull request)`)
+	for _, line := range strings.Split(text, "\n") {
+		if !matchMerge.MatchString(line) {
+			continue
+		}
+		sha := strings.Fields(line)[0]
+		shas = append(shas, sha)
+	}
+	return shas
+}
+
+// getMergeCommits lists all merge commits within a range of two refs.
+func getMergeCommits(fromRef, toRef string) ([]string, error) {
+	cmd := exec.Command("git", "log", "--merges", "--format=format:%H %s", "--ancestry-path",
+		fmt.Sprintf("%s..%s", fromRef, toRef))
+	out, err := cmd.Output()
+	if err != nil {
+		return []string{}, fmt.Errorf("cannot read git log output: %w", err)
+	}
+	return filterPullRequests(string(out)), nil
+}
+
+func getCommonBaseRef(fromRef, toRef string) (string, error) {
+	cmd := exec.Command("git", "merge-base", fromRef, toRef)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// findCandidateCommits finds all potential merge commits that can be used for the current release.
+// It includes all merge commits since previous release.
+func findCandidateCommits(prevRelease string, releaseSeries string) ([]string, error) {
+	releaseBranch := fmt.Sprintf("origin/release-%s", releaseSeries)
+	commonBaseRef, err := getCommonBaseRef(prevRelease, releaseBranch)
+	if err != nil {
+		return []string{}, fmt.Errorf("cannot find common base ref: %w", err)
+	}
+	refs, err := getMergeCommits(commonBaseRef, releaseBranch)
+	if err != nil {
+		return []string{}, fmt.Errorf("cannot get merge commits: %w", err)
+	}
+	return refs, nil
+}
+
+// findHealthyBuild walks all potentials merge commits in reverse order and tries to find the latest healthy build.
+// The assumption is that every healthy build has a corresponding metadata file published to the release
+// qualification bucket.
+func findHealthyBuild(potentialRefs []string) (buildInfo, error) {
+	for _, ref := range potentialRefs {
+		fmt.Println("Fetching release qualification metadata for", ref)
+		meta, err := getBuildInfo(context.Background(), pickSHAFlags.qualifyBucket,
+			fmt.Sprintf("%s/%s.json", pickSHAFlags.qualifyObjectPrefix, ref))
+		if err != nil {
+			// TODO: retry if error is not 404
+			fmt.Println("no metadata qualification for", ref, err)
+			continue
+		}
+		return meta, nil
+	}
+	return buildInfo{}, fmt.Errorf("no ref found")
+}
+
 // listRemoteBranches retrieves a list of remote branches using a pattern, assuming the remote name is `origin`.
 func listRemoteBranches(pattern string) ([]string, error) {
-	cmd := exec.Command("git", "ls-remote", "--refs", remoteOrigin, "refs/heads/"+pattern)
+	cmd := exec.Command("git", "ls-remote", "--refs", "origin", "refs/heads/"+pattern)
 	out, err := cmd.Output()
 	if err != nil {
 		return []string{}, fmt.Errorf("git ls-remote: %w", err)
 	}
-	log.Printf("git ls-remote for %s returned: %s", pattern, out)
+	log.Printf("git ls-remote returned: %s", out)
 	var remoteBranches []string
 	// Example output:
 	// $ git ls-remote origin "refs/heads/release-23.1*"
@@ -131,6 +269,20 @@ func listRemoteBranches(pattern string) ([]string, error) {
 		remoteBranches = append(remoteBranches, strings.TrimPrefix(fields[1], "refs/heads/"))
 	}
 	return remoteBranches, nil
+
+}
+
+// fileExistsInGit checks if a file exists in a local repository, assuming the remote name is `origin`.
+func fileExistsInGit(branch string, f string) (bool, error) {
+	cmd := exec.Command("git", "ls-tree", "origin/"+branch, f)
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git ls-tree: %w, `%s`", err, out)
+	}
+	if len(out) == 0 {
+		return false, nil
+	}
+	return true, nil
 }
 
 // fileContent uses `git cat-file -p ref:file` to get to the file contents without `git checkout`.
@@ -138,89 +290,7 @@ func fileContent(ref string, f string) (string, error) {
 	cmd := exec.Command("git", "cat-file", "-p", ref+":"+f)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git cat-file %s:%s: %w, `%s`", ref, f, err, out)
+		return "", fmt.Errorf("git cat-file: %w", err)
 	}
 	return string(out), nil
-}
-
-// isAncestor checks if ref1 is an ancestor of ref2.
-// Returns true if ref1 is an ancestor of ref2, false if not, and error if the command fails.
-func isAncestor(ref1, ref2 string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", remoteOrigin+"/"+ref1, remoteOrigin+"/"+ref2)
-	err := cmd.Run()
-	if err != nil {
-		// Treat exit code 1 as false, as it means that ref1 is not an ancestor of ref2.
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return false, nil
-		}
-		return false, fmt.Errorf("checking ancestry relationship between %s and %s: %w", ref1, ref2, err)
-	}
-	return true, nil
-}
-
-// mergeCreatesContentChanges checks if a merge commit introduces changes to the branch.
-// Returns true if the merge commit introduces changes, false if not, and error if the command fails.
-func mergeCreatesContentChanges(branch, intoBranch string, ignoredPatterns []string) (bool, error) {
-	// Make sure the working directory is clean
-	if err := exec.Command("git", "clean", "-fd").Run(); err != nil {
-		return false, fmt.Errorf("cleaning working directory: %w", err)
-	}
-	// Get the current branch name before we start
-	currentBranchCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-	currentBranch, err := currentBranchCmd.Output()
-	if err != nil {
-		return false, fmt.Errorf("getting current branch: %w", err)
-	}
-	originalBranch := strings.TrimSpace(string(currentBranch))
-
-	// Checkout the branch to merge into. Use a temporary branch to avoid
-	// conflicts with the current branch name.
-	tmpIntoBranch := intoBranch + "-tmp"
-	checkoutCmd := exec.Command("git", "checkout", "-b", tmpIntoBranch, remoteOrigin+"/"+intoBranch)
-	if err := checkoutCmd.Run(); err != nil {
-		return false, fmt.Errorf("running checkout: %w", err)
-	}
-
-	// Run the merge command without committing and without fast-forward. If
-	// fast-forward is allowed and the current branch can fast forward, there
-	// will be no merge commit, so the --no-commit option won't work.
-	// We need to use the ours strategy to avoid conflicts. In the next step we
-	// will checkout the ignored files from the current branch (like version.txt).
-	mergeCmd := exec.Command("git", "merge", "--no-commit", "--no-ff", "--strategy=recursive", "-X", "ours", remoteOrigin+"/"+branch)
-	if err := mergeCmd.Run(); err != nil {
-		return false, fmt.Errorf("running merge: %w", err)
-	}
-	if len(ignoredPatterns) > 0 {
-		coCmd := exec.Command("git", "checkout", tmpIntoBranch, "--")
-		coCmd.Args = append(coCmd.Args, ignoredPatterns...)
-
-		if err := coCmd.Run(); err != nil {
-			return false, fmt.Errorf("running checkout: %w", err)
-		}
-	}
-
-	// Check if there are any content changes. The exit code will be analyzed to
-	// determine if there are changes after we clean up the current repo.
-	diffCmd := exec.Command("git", "diff", "--staged", "--quiet")
-	diffErr := diffCmd.Run()
-
-	// Always abort the merge attempt to clean up
-	if err := exec.Command("git", "merge", "--abort").Run(); err != nil {
-		return false, fmt.Errorf("aborting merge: %w", err)
-	}
-	if err := exec.Command("git", "checkout", originalBranch).Run(); err != nil {
-		return false, fmt.Errorf("running original branch checkout: %w", err)
-	}
-	// If diff returns no error (exit code 0), there are no changes
-	// If diff returns error with exit code 1, there are changes
-	// Any other error is unexpected
-	if diffErr == nil {
-		return false, nil // No changes
-	}
-	var exitErr *exec.ExitError
-	if errors.As(diffErr, &exitErr) && exitErr.ExitCode() == 1 {
-		return true, nil // Has changes
-	}
-	return false, fmt.Errorf("checking diff: %w", diffErr)
 }

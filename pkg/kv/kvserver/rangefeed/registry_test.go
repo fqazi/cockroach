@@ -8,17 +8,147 @@ package rangefeed
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 
 	_ "github.com/cockroachdb/cockroach/pkg/keys" // hook up pretty printer
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
+	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
+	"github.com/cockroachdb/cockroach/pkg/util/future"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
+	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/stretchr/testify/require"
 )
+
+var (
+	keyA, keyB = roachpb.Key("a"), roachpb.Key("b")
+	keyC, keyD = roachpb.Key("c"), roachpb.Key("d")
+	keyX, keyY = roachpb.Key("x"), roachpb.Key("y")
+
+	spAB = roachpb.Span{Key: keyA, EndKey: keyB}
+	spBC = roachpb.Span{Key: keyB, EndKey: keyC}
+	spCD = roachpb.Span{Key: keyC, EndKey: keyD}
+	spAC = roachpb.Span{Key: keyA, EndKey: keyC}
+	spXY = roachpb.Span{Key: keyX, EndKey: keyY}
+)
+
+type testStream struct {
+	ctx     context.Context
+	ctxDone func()
+	mu      struct {
+		syncutil.Mutex
+		sendErr error
+		events  []*kvpb.RangeFeedEvent
+	}
+}
+
+func newTestStream() *testStream {
+	ctx, done := context.WithCancel(context.Background())
+	return &testStream{ctx: ctx, ctxDone: done}
+}
+
+func (s *testStream) Context() context.Context {
+	return s.ctx
+}
+
+func (s *testStream) Cancel() {
+	s.ctxDone()
+}
+
+func (s *testStream) Send(e *kvpb.RangeFeedEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mu.sendErr != nil {
+		return s.mu.sendErr
+	}
+	s.mu.events = append(s.mu.events, e)
+	return nil
+}
+
+func (s *testStream) SetSendErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mu.sendErr = err
+}
+
+func (s *testStream) Events() []*kvpb.RangeFeedEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	es := s.mu.events
+	s.mu.events = nil
+	return es
+}
+
+func (s *testStream) BlockSend() func() {
+	s.mu.Lock()
+	var once sync.Once
+	return func() {
+		once.Do(s.mu.Unlock) // safe to call multiple times, e.g. defer and explicit
+	}
+}
+
+type testRegistration struct {
+	registration
+	stream *testStream
+}
+
+func makeCatchUpIterator(
+	iter storage.SimpleMVCCIterator, span roachpb.Span, startTime hlc.Timestamp,
+) *CatchUpIterator {
+	if iter == nil {
+		return nil
+	}
+	return &CatchUpIterator{
+		simpleCatchupIter: simpleCatchupIterAdapter{iter},
+		span:              span,
+		startTime:         startTime,
+	}
+}
+
+func newTestRegistration(
+	span roachpb.Span,
+	ts hlc.Timestamp,
+	catchup storage.SimpleMVCCIterator,
+	withDiff bool,
+	withFiltering bool,
+) *testRegistration {
+	s := newTestStream()
+	r := newRegistration(
+		span,
+		ts,
+		makeCatchUpIterator(catchup, span, ts),
+		withDiff,
+		withFiltering,
+		5,
+		false, /* blockWhenFull */
+		NewMetrics(),
+		s,
+		func() {},
+		&future.ErrorFuture{},
+	)
+	return &testRegistration{
+		registration: r,
+		stream:       s,
+	}
+}
+
+func (r *testRegistration) Events() []*kvpb.RangeFeedEvent {
+	return r.stream.Events()
+}
+
+func (r *testRegistration) Err() error {
+	err, _ := future.Wait(context.Background(), r.done)
+	return err
+}
+
+func (r *testRegistration) TryErr() error {
+	return future.MakeAwaitableFuture(r.done).Get()
+}
 
 func TestRegistrationBasic(t *testing.T) {
 	defer leaktest.AfterTest(t)()
@@ -29,205 +159,205 @@ func TestRegistrationBasic(t *testing.T) {
 	ev1.MustSetValue(&kvpb.RangeFeedValue{Key: keyA, Value: val})
 	ev2.MustSetValue(&kvpb.RangeFeedValue{Key: keyB, Value: val})
 
-	testutils.RunValues(t, "registration type=", registrationTestTypes, func(t *testing.T, rt registrationType) {
-		t.Run("registration with no catchup scan specified", func(t *testing.T) {
-			s := newTestStream()
-			noCatchupReg := newTestRegistration(s, withRSpan(spAB), withRegistrationType(rt))
-			noCatchupReg.publish(ctx, ev1, nil /* alloc */)
-			noCatchupReg.publish(ctx, ev2, nil /* alloc */)
-			eventSent := len(noCatchupReg.getBuf())
-			switch rt {
-			case unbuffered:
-				eventSent += len(s.GetEvents())
-				require.Nil(t, noCatchupReg.getBuf())
-			}
-			go noCatchupReg.runOutputLoop(ctx, 0)
-			require.NoError(t, noCatchupReg.waitForCaughtUp(ctx))
-			require.Equal(t, []*kvpb.RangeFeedEvent{ev1, ev2}, s.GetAndClearEvents())
-			noCatchupReg.Disconnect(nil)
-			require.Nil(t, s.GetAndClearEvents())
-		})
-		t.Run("registration with catchup scan", func(t *testing.T) {
-			s := newTestStream()
-			catchupReg := newTestRegistration(s, withRSpan(spBC),
-				withStartTs(hlc.Timestamp{WallTime: 1}),
-				withCatchUpIter(newTestIterator([]storage.MVCCKeyValue{
-					makeKV("b", "val1", 10),
-					makeKV("bc", "val3", 11),
-					makeKV("bd", "val4", 9),
-				}, nil)), withRegistrationType(rt))
-			catchupReg.publish(ctx, ev1, nil /* alloc */)
-			catchupReg.publish(ctx, ev2, nil /* alloc */)
-			require.Equal(t, 2, len(catchupReg.getBuf()))
-			go catchupReg.runOutputLoop(ctx, 0)
-			require.NoError(t, catchupReg.waitForCaughtUp(ctx))
-			events := s.GetAndClearEvents()
-			require.Equal(t, 5, len(events))
-			require.Equal(t, []*kvpb.RangeFeedEvent{ev1, ev2}, events[3:])
-			catchupReg.Disconnect(nil)
-			require.Nil(t, s.GetAndClearEvents())
-		})
-		t.Run("external disconnect after output loop", func(t *testing.T) {
-			s := newTestStream()
-			disconnectReg := newTestRegistration(s, withRSpan(spAB), withRegistrationType(rt))
-			disconnectReg.publish(ctx, ev1, nil /* alloc */)
-			disconnectReg.publish(ctx, ev2, nil /* alloc */)
-			go disconnectReg.runOutputLoop(ctx, 0)
-			require.NoError(t, disconnectReg.waitForCaughtUp(ctx))
-			discErr := kvpb.NewError(fmt.Errorf("disconnection error"))
-			disconnectReg.Disconnect(discErr)
-			require.Equal(t, discErr.GoError(), s.WaitForError(t))
-			require.Equal(t, 2, len(s.GetAndClearEvents()))
-			disconnectReg.publish(ctx, ev1, nil /* alloc */)
-			require.Equal(t, 0, len(s.GetAndClearEvents()))
-		})
-		t.Run("external disconnect before output loop without catch up iter", func(t *testing.T) {
-			s := newTestStream()
-			disconnectEarlyReg := newTestRegistration(s, withRSpan(spAB), withRegistrationType(rt))
-			disconnectEarlyReg.publish(ctx, ev1, nil /* alloc */)
-			disconnectEarlyReg.publish(ctx, ev2, nil /* alloc */)
-			discErr := kvpb.NewError(fmt.Errorf("disconnection error"))
-			disconnectEarlyReg.Disconnect(discErr)
-			go disconnectEarlyReg.runOutputLoop(ctx, 0)
-			require.Equal(t, discErr.GoError(), s.WaitForError(t))
-			// This is the main behaviour change between buffered and unbuffered
-			// registration. For buffered registration, events buffered are
-			// discarded after disconnection. For unbuffered registration,
-			// events buffered already are still sent to the stream after
-			// disconnection.
-			if rt == buffered {
-				require.Equal(t, 0, len(s.GetAndClearEvents()))
-			} else {
-				require.Equal(t, []*kvpb.RangeFeedEvent{ev1, ev2}, s.GetAndClearEvents())
-			}
-			// Repeatedly disconnect should be idempotent.
-			disconnectEarlyReg.Disconnect(kvpb.NewError(nil))
-			require.Nil(t, s.GetAndClearEvents())
-		})
-		t.Run("external disconnect before output loop with catch up iter", func(t *testing.T) {
-			s := newTestStream()
-			iter := newTestIterator(keyValues, roachpb.Key("w"))
-			disconnectEarlyReg := newTestRegistration(s, withRSpan(spAB), withRegistrationType(rt), withCatchUpIter(iter))
-			disconnectEarlyReg.publish(ctx, ev1, nil /* alloc */)
-			disconnectEarlyReg.publish(ctx, ev2, nil /* alloc */)
-			discErr := kvpb.NewError(fmt.Errorf("disconnection error"))
-			disconnectEarlyReg.Disconnect(discErr)
-			require.Equal(t, discErr.GoError(), s.WaitForError(t))
-			disconnectEarlyReg.runOutputLoop(ctx, 0)
-			// If there is a catch up iterator, the buffered events should not
-			// be sent to the stream.
-			// Test the effects rather than the implementation
-			require.Nil(t, s.GetAndClearEvents())
-		})
-		t.Run("overflow", func(t *testing.T) {
-			s := newTestStream()
-			// Unbuffered registration can only overflow during a catch up scan,
-			// so we initialize a catch up scan.
-			overflowReg := newTestRegistration(s,
-				withRegistrationType(rt),
-				withRSpan(spBC),
-				withStartTs(hlc.Timestamp{WallTime: 1}),
-				withCatchUpIter(newTestIterator([]storage.MVCCKeyValue{}, nil)),
-				withRegistrationType(rt))
-			capOfBuf := cap(overflowReg.getBuf())
-			for i := 0; i < capOfBuf+3; i++ {
-				overflowReg.publish(ctx, ev1, nil /* alloc */)
-			}
-			go overflowReg.runOutputLoop(ctx, 0)
-			require.Equal(t, kvpb.NewRangeFeedRetryError(kvpb.RangeFeedRetryError_REASON_SLOW_CONSUMER), s.WaitForError(t))
-			require.Equal(t, capOfBuf, len(s.GetAndClearEvents()))
-			require.NoError(t, overflowReg.waitForCaughtUp(ctx))
-			require.True(t, overflowReg.getOverflowed())
-		})
-		t.Run("stream error", func(t *testing.T) {
-			s := newTestStream()
-			streamErrReg := newTestRegistration(s, withRSpan(spAB), withRegistrationType(rt))
-			streamErr := fmt.Errorf("stream error")
-			s.SetSendErr(streamErr)
-			go streamErrReg.runOutputLoop(ctx, 0)
-			streamErrReg.publish(ctx, ev1, nil /* alloc */)
-			require.Equal(t, streamErr, s.WaitForError(t))
-		})
-		t.Run("stream context canceled", func(t *testing.T) {
-			s := newTestStream()
-			streamCancelReg := newTestRegistration(s, withRSpan(spAB), withRegistrationType(rt))
-			streamCancelReg.Disconnect(kvpb.NewError(context.Canceled))
-			go streamCancelReg.runOutputLoop(ctx, 0)
-			require.NoError(t, streamCancelReg.waitForCaughtUp(ctx))
-			require.Equal(t, context.Canceled, s.WaitForError(t))
-		})
-	})
+	// Registration with no catchup scan specified.
+	noCatchupReg := newTestRegistration(spAB, hlc.Timestamp{}, nil, /* catchup */
+		false /* withDiff */, false /* withFiltering */)
+	noCatchupReg.publish(ctx, ev1, nil /* alloc */)
+	noCatchupReg.publish(ctx, ev2, nil /* alloc */)
+	require.Equal(t, len(noCatchupReg.buf), 2)
+	go noCatchupReg.runOutputLoop(context.Background(), 0)
+	require.NoError(t, noCatchupReg.waitForCaughtUp())
+	require.Equal(t, []*kvpb.RangeFeedEvent{ev1, ev2}, noCatchupReg.stream.Events())
+	noCatchupReg.disconnect(nil)
+
+	// Registration with catchup scan.
+	catchupReg := newTestRegistration(spBC, hlc.Timestamp{WallTime: 1},
+		newTestIterator([]storage.MVCCKeyValue{
+			makeKV("b", "val1", 10),
+			makeKV("bc", "val3", 11),
+			makeKV("bd", "val4", 9),
+		}, nil),
+		false /* withDiff */, false /* withFiltering */)
+	catchupReg.publish(ctx, ev1, nil /* alloc */)
+	catchupReg.publish(ctx, ev2, nil /* alloc */)
+	require.Equal(t, len(catchupReg.buf), 2)
+	go catchupReg.runOutputLoop(context.Background(), 0)
+	require.NoError(t, catchupReg.waitForCaughtUp())
+	events := catchupReg.stream.Events()
+	require.Equal(t, 5, len(events))
+	require.Equal(t, []*kvpb.RangeFeedEvent{ev1, ev2}, events[3:])
+	catchupReg.disconnect(nil)
+
+	// EXIT CONDITIONS
+	// External Disconnect.
+	disconnectReg := newTestRegistration(spAB, hlc.Timestamp{}, nil, /* catchup */
+		false /* withDiff */, false /* withFiltering */)
+	disconnectReg.publish(ctx, ev1, nil /* alloc */)
+	disconnectReg.publish(ctx, ev2, nil /* alloc */)
+	go disconnectReg.runOutputLoop(context.Background(), 0)
+	require.NoError(t, disconnectReg.waitForCaughtUp())
+	discErr := kvpb.NewError(fmt.Errorf("disconnection error"))
+	disconnectReg.disconnect(discErr)
+	require.Equal(t, discErr.GoError(), disconnectReg.Err())
+	require.Equal(t, 2, len(disconnectReg.stream.Events()))
+
+	// External Disconnect before output loop.
+	disconnectEarlyReg := newTestRegistration(spAB, hlc.Timestamp{}, nil, /* catchup */
+		false /* withDiff */, false /* withFiltering */)
+	disconnectEarlyReg.publish(ctx, ev1, nil /* alloc */)
+	disconnectEarlyReg.publish(ctx, ev2, nil /* alloc */)
+	disconnectEarlyReg.disconnect(discErr)
+	go disconnectEarlyReg.runOutputLoop(context.Background(), 0)
+	require.Equal(t, discErr.GoError(), disconnectEarlyReg.Err())
+	require.Equal(t, 0, len(disconnectEarlyReg.stream.Events()))
+
+	// Overflow.
+	overflowReg := newTestRegistration(spAB, hlc.Timestamp{}, nil, /* catchup */
+		false /* withDiff */, false /* withFiltering */)
+	for i := 0; i < cap(overflowReg.buf)+3; i++ {
+		overflowReg.publish(ctx, ev1, nil /* alloc */)
+	}
+	go overflowReg.runOutputLoop(context.Background(), 0)
+	require.Equal(t, newErrBufferCapacityExceeded().GoError(), overflowReg.Err())
+	require.Equal(t, cap(overflowReg.buf), len(overflowReg.Events()))
+
+	// Stream Error.
+	streamErrReg := newTestRegistration(spAB, hlc.Timestamp{}, nil, /* catchup */
+		false /* withDiff */, false /* withFiltering */)
+	streamErr := fmt.Errorf("stream error")
+	streamErrReg.stream.SetSendErr(streamErr)
+	go streamErrReg.runOutputLoop(context.Background(), 0)
+	streamErrReg.publish(ctx, ev1, nil /* alloc */)
+	require.Equal(t, streamErr.Error(), streamErrReg.Err().Error())
+
+	// Stream Context Canceled.
+	streamCancelReg := newTestRegistration(spAB, hlc.Timestamp{}, nil, /* catchup */
+		false /* withDiff */, false /* withFiltering */)
+	streamCancelReg.stream.Cancel()
+	go streamCancelReg.runOutputLoop(context.Background(), 0)
+	require.NoError(t, streamCancelReg.waitForCaughtUp())
+	require.Equal(t, streamCancelReg.stream.Context().Err(), streamCancelReg.Err())
 }
 
 func TestRegistrationCatchUpScan(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	testutils.RunValues(t, "registration type=", registrationTestTypes, func(t *testing.T, rt registrationType) {
-		testutils.RunTrueAndFalse(t, "filtering", func(t *testing.T, filtering bool) {
-			// Run a catch-up scan for a registration over a test
-			// iterator with the following keys.
-			iter := newTestIterator(keyValues, roachpb.Key("w"))
-			metrics := NewMetrics()
-			s := newTestStream()
-			r := newTestRegistration(s, withRSpan(roachpb.Span{
-				Key:    roachpb.Key("d"),
-				EndKey: roachpb.Key("w"),
-			}), withStartTs(hlc.Timestamp{WallTime: 4}), withCatchUpIter(iter), withDiff(true),
-				withFiltering(filtering), withRMetrics(metrics), withRegistrationType(rt))
-			require.Zero(t, metrics.RangeFeedCatchUpScanNanos.Count())
-			require.NoError(t, r.maybeRunCatchUpScan(context.Background()))
-			require.True(t, iter.closed)
-			require.NotZero(t, metrics.RangeFeedCatchUpScanNanos.Count())
-			// Compare the events sent on the registration's Stream to the
-			// expected events.
-			require.Equal(t, expEvents(filtering), s.GetAndClearEvents())
-		})
-	})
-}
 
-// TestRegistryWithOmitOrigin verifies that when a registration is created with
-// withOmitRemote = true, it will not publish values with originID != 0.
-func TestRegistryWithOmitOrigin(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	ctx := context.Background()
+	testutils.RunTrueAndFalse(t, "withFiltering", func(t *testing.T, withFiltering bool) {
+		// Run a catch-up scan for a registration over a test
+		// iterator with the following keys.
+		txn1, txn2 := uuid.MakeV4(), uuid.MakeV4()
+		iter := newTestIterator([]storage.MVCCKeyValue{
+			makeKV("a", "valA1", 10),
+			makeIntent("c", txn1, "txnKeyC", 15),
+			makeProvisionalKV("c", "txnKeyC", 15),
+			makeKV("c", "valC2", 11),
+			makeKV("c", "valC1", 9),
+			makeIntent("d", txn2, "txnKeyD", 21),
+			makeProvisionalKV("d", "txnKeyD", 21),
+			makeKV("d", "valD5", 20),
+			makeKV("d", "valD4", 19),
+			makeKV("d", "valD3", 16),
+			makeKV("d", "valD2", 3),
+			makeKV("d", "valD1", 1),
+			makeKV("e", "valE3", 6),
+			makeKV("e", "valE2", 5),
+			makeKV("e", "valE1", 4),
+			makeKV("f", "valF3", 7),
+			makeKV("f", "valF2", 6),
+			makeKV("f", "valF1", 5),
+			makeKV("h", "valH1", 15),
+			makeKV("m", "valM1", 1),
+			makeIntent("n", txn1, "txnKeyN", 12),
+			makeProvisionalKV("n", "txnKeyN", 12),
+			makeIntent("r", txn1, "txnKeyR", 19),
+			makeProvisionalKV("r", "txnKeyR", 19),
+			makeKV("r", "valR1", 4),
+			makeKV("s", "valS3", 21),
+			makeKVWithHeader("s", "valS2", 20, enginepb.MVCCValueHeader{OmitInRangefeeds: true}),
+			makeKV("s", "valS1", 19),
+			makeIntent("w", txn1, "txnKeyW", 3),
+			makeProvisionalKV("w", "txnKeyW", 3),
+			makeIntent("z", txn2, "txnKeyZ", 21),
+			makeProvisionalKV("z", "txnKeyZ", 21),
+			makeKV("z", "valZ1", 4),
+		}, roachpb.Key("w"))
 
-	testutils.RunValues(t, "registration type=", registrationTestTypes, func(t *testing.T, rt registrationType) {
-		noPrev := func(ev *kvpb.RangeFeedEvent) *kvpb.RangeFeedEvent {
-			ev = ev.ShallowCopy()
-			ev.GetValue().(*kvpb.RangeFeedValue).PrevValue = roachpb.Value{}
-			return ev
+		r := newTestRegistration(roachpb.Span{
+			Key:    roachpb.Key("d"),
+			EndKey: roachpb.Key("w"),
+		}, hlc.Timestamp{WallTime: 4}, iter, true /* withDiff */, withFiltering)
+
+		require.Zero(t, r.metrics.RangeFeedCatchUpScanNanos.Count())
+		require.NoError(t, r.maybeRunCatchUpScan(context.Background()))
+		require.True(t, iter.closed)
+		require.NotZero(t, r.metrics.RangeFeedCatchUpScanNanos.Count())
+
+		// Compare the events sent on the registration's Stream to the expected events.
+		expEvents := []*kvpb.RangeFeedEvent{
+			rangeFeedValueWithPrev(
+				roachpb.Key("d"),
+				makeValWithTs("valD3", 16),
+				makeVal("valD2"),
+			),
+			rangeFeedValueWithPrev(
+				roachpb.Key("d"),
+				makeValWithTs("valD4", 19),
+				makeVal("valD3"),
+			),
+			rangeFeedValueWithPrev(
+				roachpb.Key("d"),
+				makeValWithTs("valD5", 20),
+				makeVal("valD4"),
+			),
+			rangeFeedValueWithPrev(
+				roachpb.Key("e"),
+				makeValWithTs("valE2", 5),
+				makeVal("valE1"),
+			),
+			rangeFeedValueWithPrev(
+				roachpb.Key("e"),
+				makeValWithTs("valE3", 6),
+				makeVal("valE2"),
+			),
+			rangeFeedValue(
+				roachpb.Key("f"),
+				makeValWithTs("valF1", 5),
+			),
+			rangeFeedValueWithPrev(
+				roachpb.Key("f"),
+				makeValWithTs("valF2", 6),
+				makeVal("valF1"),
+			),
+			rangeFeedValueWithPrev(
+				roachpb.Key("f"),
+				makeValWithTs("valF3", 7),
+				makeVal("valF2"),
+			),
+			rangeFeedValue(
+				roachpb.Key("h"),
+				makeValWithTs("valH1", 15),
+			),
+			rangeFeedValue(
+				roachpb.Key("s"),
+				makeValWithTs("valS1", 19),
+			),
 		}
-
-		val := roachpb.Value{RawBytes: []byte("val"), Timestamp: hlc.Timestamp{WallTime: 1}}
-		ev1, ev2 := new(kvpb.RangeFeedEvent), new(kvpb.RangeFeedEvent)
-		ev1.MustSetValue(&kvpb.RangeFeedValue{Key: keyA, Value: val, PrevValue: val})
-		ev2.MustSetValue(&kvpb.RangeFeedValue{Key: keyB, Value: val, PrevValue: val})
-
-		reg := makeRegistry(NewMetrics())
-
-		sAC := newTestStream()
-		rAC := newTestRegistration(sAC, withRSpan(spAC), withRegistrationType(rt))
-		originFilteringStream := newTestStream()
-		originFiltering := newTestRegistration(originFilteringStream, withRSpan(spAC),
-			withOmitRemote(true), withRegistrationType(rt))
-
-		go rAC.runOutputLoop(ctx, 0)
-		go originFiltering.runOutputLoop(ctx, 0)
-
-		defer rAC.Disconnect(nil)
-		defer originFiltering.Disconnect(nil)
-
-		reg.Register(ctx, rAC)
-		reg.Register(ctx, originFiltering)
-
-		reg.PublishToOverlapping(ctx, spAC, ev1, logicalOpMetadata{}, nil /* alloc */)
-		reg.PublishToOverlapping(ctx, spAC, ev2, logicalOpMetadata{originID: 1}, nil /* alloc */)
-
-		require.NoError(t, reg.waitForCaughtUp(ctx, all))
-
-		require.Equal(t, []*kvpb.RangeFeedEvent{noPrev(ev1), noPrev(ev2)}, sAC.GetAndClearEvents())
-		require.Equal(t, []*kvpb.RangeFeedEvent{noPrev(ev1)}, originFilteringStream.GetAndClearEvents())
-		require.Nil(t, sAC.Error())
-		require.Nil(t, originFilteringStream.Error())
+		if !withFiltering {
+			expEvents = append(expEvents,
+				rangeFeedValueWithPrev(
+					roachpb.Key("s"),
+					makeValWithTs("valS2", 20),
+					makeVal("valS1"),
+				))
+		}
+		expEvents = append(expEvents, rangeFeedValueWithPrev(
+			roachpb.Key("s"),
+			makeValWithTs("valS3", 21),
+			// Even though the event that wrote val2 is filtered out, we want to keep
+			// val2 as a previous value of the next event.
+			makeVal("valS2"),
+		))
+		require.Equal(t, expEvents, r.Events())
 	})
 }
 
@@ -235,225 +365,265 @@ func TestRegistryBasic(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	ctx := context.Background()
 
-	testutils.RunValues(t, "registration type=", registrationTestTypes, func(t *testing.T, rt registrationType) {
-		val := roachpb.Value{RawBytes: []byte("val"), Timestamp: hlc.Timestamp{WallTime: 1}}
-		ev1, ev2 := new(kvpb.RangeFeedEvent), new(kvpb.RangeFeedEvent)
-		ev3, ev4, ev5 := new(kvpb.RangeFeedEvent), new(kvpb.RangeFeedEvent), new(kvpb.RangeFeedEvent)
-		ev1.MustSetValue(&kvpb.RangeFeedValue{Key: keyA, Value: val, PrevValue: val})
-		ev2.MustSetValue(&kvpb.RangeFeedValue{Key: keyB, Value: val, PrevValue: val})
-		ev3.MustSetValue(&kvpb.RangeFeedValue{Key: keyC, Value: val, PrevValue: val})
-		ev4.MustSetValue(&kvpb.RangeFeedValue{Key: keyD, Value: val, PrevValue: val})
-		ev5.MustSetValue(&kvpb.RangeFeedValue{Key: keyD, Value: val, PrevValue: val})
-		err1 := kvpb.NewErrorf("error1")
-		noPrev := func(ev *kvpb.RangeFeedEvent) *kvpb.RangeFeedEvent {
-			ev = ev.ShallowCopy()
-			ev.GetValue().(*kvpb.RangeFeedValue).PrevValue = roachpb.Value{}
-			return ev
-		}
+	val := roachpb.Value{RawBytes: []byte("val"), Timestamp: hlc.Timestamp{WallTime: 1}}
+	ev1, ev2 := new(kvpb.RangeFeedEvent), new(kvpb.RangeFeedEvent)
+	ev3, ev4, ev5 := new(kvpb.RangeFeedEvent), new(kvpb.RangeFeedEvent), new(kvpb.RangeFeedEvent)
+	ev1.MustSetValue(&kvpb.RangeFeedValue{Key: keyA, Value: val, PrevValue: val})
+	ev2.MustSetValue(&kvpb.RangeFeedValue{Key: keyB, Value: val, PrevValue: val})
+	ev3.MustSetValue(&kvpb.RangeFeedValue{Key: keyC, Value: val, PrevValue: val})
+	ev4.MustSetValue(&kvpb.RangeFeedValue{Key: keyD, Value: val, PrevValue: val})
+	ev5.MustSetValue(&kvpb.RangeFeedValue{Key: keyD, Value: val, PrevValue: val})
+	err1 := kvpb.NewErrorf("error1")
+	noPrev := func(ev *kvpb.RangeFeedEvent) *kvpb.RangeFeedEvent {
+		ev = ev.ShallowCopy()
+		ev.GetValue().(*kvpb.RangeFeedValue).PrevValue = roachpb.Value{}
+		return ev
+	}
 
-		reg := makeRegistry(NewMetrics())
-		require.Equal(t, 0, reg.Len())
-		reg.PublishToOverlapping(ctx, spAB, ev1, logicalOpMetadata{}, nil /* alloc */)
-		reg.DisconnectWithErr(ctx, spAB, err1)
+	reg := makeRegistry(NewMetrics())
+	require.Equal(t, 0, reg.Len())
+	require.NotPanics(t, func() { reg.PublishToOverlapping(ctx, spAB, ev1, false /* omitInRangefeeds */, nil /* alloc */) })
+	require.NotPanics(t, func() { reg.Disconnect(spAB) })
+	require.NotPanics(t, func() { reg.DisconnectWithErr(spAB, err1) })
 
-		sAB := newTestStream()
-		rAB := newTestRegistration(sAB, withRSpan(spAB), withRegistrationType(rt))
-		sBC := newTestStream()
-		rBC := newTestRegistration(sBC, withRSpan(spBC), withDiff(true), withRegistrationType(rt))
-		sCD := newTestStream()
-		rCD := newTestRegistration(sCD, withRSpan(spCD), withDiff(true), withRegistrationType(rt))
-		sAC := newTestStream()
-		rAC := newTestRegistration(sAC, withRSpan(spAC), withRegistrationType(rt))
-		sACFiltering := newTestStream()
-		rACFiltering := newTestRegistration(sACFiltering, withRSpan(spAC), withFiltering(true), withRegistrationType(rt))
-		go rAB.runOutputLoop(ctx, 0)
-		go rBC.runOutputLoop(ctx, 0)
-		go rCD.runOutputLoop(ctx, 0)
-		go rAC.runOutputLoop(ctx, 0)
-		go rACFiltering.runOutputLoop(ctx, 0)
-		defer rAB.Disconnect(nil)
-		defer rBC.Disconnect(nil)
-		defer rCD.Disconnect(nil)
-		defer rAC.Disconnect(nil)
-		defer rACFiltering.Disconnect(nil)
+	rAB := newTestRegistration(spAB, hlc.Timestamp{}, nil, false /* withDiff */, false /* withFiltering */)
+	rBC := newTestRegistration(spBC, hlc.Timestamp{}, nil, true /* withDiff */, false /* withFiltering */)
+	rCD := newTestRegistration(spCD, hlc.Timestamp{}, nil, true /* withDiff */, false /* withFiltering */)
+	rAC := newTestRegistration(spAC, hlc.Timestamp{}, nil, false /* withDiff */, false /* withFiltering */)
+	rACFiltering := newTestRegistration(spAC, hlc.Timestamp{}, nil, false /* withDiff */, true /* withFiltering */)
+	go rAB.runOutputLoop(context.Background(), 0)
+	go rBC.runOutputLoop(context.Background(), 0)
+	go rCD.runOutputLoop(context.Background(), 0)
+	go rAC.runOutputLoop(context.Background(), 0)
+	go rACFiltering.runOutputLoop(context.Background(), 0)
+	defer rAB.disconnect(nil)
+	defer rBC.disconnect(nil)
+	defer rCD.disconnect(nil)
+	defer rAC.disconnect(nil)
+	defer rACFiltering.disconnect(nil)
 
-		// Register 6 registrations.
-		reg.Register(ctx, rAB)
-		require.Equal(t, 1, reg.Len())
-		reg.Register(ctx, rBC)
-		require.Equal(t, 2, reg.Len())
-		reg.Register(ctx, rCD)
-		require.Equal(t, 3, reg.Len())
-		reg.Register(ctx, rAC)
-		require.Equal(t, 4, reg.Len())
-		reg.Register(ctx, rACFiltering)
-		require.Equal(t, 5, reg.Len())
+	// Register 4 registrations.
+	reg.Register(&rAB.registration)
+	require.Equal(t, 1, reg.Len())
+	reg.Register(&rBC.registration)
+	require.Equal(t, 2, reg.Len())
+	reg.Register(&rCD.registration)
+	require.Equal(t, 3, reg.Len())
+	reg.Register(&rAC.registration)
+	require.Equal(t, 4, reg.Len())
+	reg.Register(&rACFiltering.registration)
+	require.Equal(t, 5, reg.Len())
 
-		// Publish to different spans.
-		reg.PublishToOverlapping(ctx, spAB, ev1, logicalOpMetadata{}, nil /* alloc */)
-		reg.PublishToOverlapping(ctx, spBC, ev2, logicalOpMetadata{}, nil /* alloc */)
-		reg.PublishToOverlapping(ctx, spCD, ev3, logicalOpMetadata{}, nil /* alloc */)
-		reg.PublishToOverlapping(ctx, spAC, ev4, logicalOpMetadata{}, nil /* alloc */)
-		reg.PublishToOverlapping(ctx, spAC, ev5, logicalOpMetadata{omitInRangefeeds: true}, nil /* alloc */)
+	// Publish to different spans.
+	reg.PublishToOverlapping(ctx, spAB, ev1, false /* omitInRangefeeds */, nil /* alloc */)
+	reg.PublishToOverlapping(ctx, spBC, ev2, false /* omitInRangefeeds */, nil /* alloc */)
+	reg.PublishToOverlapping(ctx, spCD, ev3, false /* omitInRangefeeds */, nil /* alloc */)
+	reg.PublishToOverlapping(ctx, spAC, ev4, false /* omitInRangefeeds */, nil /* alloc */)
+	reg.PublishToOverlapping(ctx, spAC, ev5, true /* omitInRangefeeds */, nil /* alloc */)
+	require.NoError(t, reg.waitForCaughtUp(all))
+	require.Equal(t, []*kvpb.RangeFeedEvent{noPrev(ev1), noPrev(ev4), noPrev(ev5)}, rAB.Events())
+	require.Equal(t, []*kvpb.RangeFeedEvent{ev2, ev4, ev5}, rBC.Events())
+	require.Equal(t, []*kvpb.RangeFeedEvent{ev3}, rCD.Events())
+	require.Equal(t, []*kvpb.RangeFeedEvent{noPrev(ev1), noPrev(ev2), noPrev(ev4), noPrev(ev5)}, rAC.Events())
+	// Registration rACFiltering doesn't receive ev5 because both withFiltering
+	// (for the registration) and OmitInRangefeeds (for the event) are true.
+	require.Equal(t, []*kvpb.RangeFeedEvent{noPrev(ev1), noPrev(ev2), noPrev(ev4)}, rACFiltering.Events())
+	require.Nil(t, rAB.TryErr())
+	require.Nil(t, rBC.TryErr())
+	require.Nil(t, rCD.TryErr())
+	require.Nil(t, rAC.TryErr())
+	require.Nil(t, rACFiltering.TryErr())
 
-		require.NoError(t, reg.waitForCaughtUp(ctx, all))
-		require.Equal(t, []*kvpb.RangeFeedEvent{noPrev(ev1), noPrev(ev4), noPrev(ev5)}, sAB.GetAndClearEvents())
-		require.Equal(t, []*kvpb.RangeFeedEvent{ev2, ev4, ev5}, sBC.GetAndClearEvents())
-		require.Equal(t, []*kvpb.RangeFeedEvent{ev3}, sCD.GetAndClearEvents())
-		require.Equal(t, []*kvpb.RangeFeedEvent{noPrev(ev1), noPrev(ev2), noPrev(ev4), noPrev(ev5)}, sAC.GetAndClearEvents())
-		// Registration rACFiltering doesn't receive ev5 because both withFiltering
-		// (for the registration) and OmitInRangefeeds (for the event) are true.
-		require.Equal(t, []*kvpb.RangeFeedEvent{noPrev(ev1), noPrev(ev2), noPrev(ev4)}, sACFiltering.GetAndClearEvents())
-		require.Nil(t, sAB.Error())
-		require.Nil(t, sBC.Error())
-		require.Nil(t, sCD.Error())
-		require.Nil(t, sAC.Error())
-		require.Nil(t, sACFiltering.Error())
+	// Check the registry's operation filter.
+	f := reg.NewFilter()
+	// Testing NeedVal.
+	require.True(t, f.NeedVal(spAB))
+	require.True(t, f.NeedVal(spBC))
+	require.True(t, f.NeedVal(spCD))
+	require.True(t, f.NeedVal(spAC))
+	require.False(t, f.NeedVal(spXY))
+	require.True(t, f.NeedVal(roachpb.Span{Key: keyA}))
+	require.True(t, f.NeedVal(roachpb.Span{Key: keyB}))
+	require.True(t, f.NeedVal(roachpb.Span{Key: keyC}))
+	require.False(t, f.NeedVal(roachpb.Span{Key: keyX}))
+	// Testing NeedPrevVal.
+	require.False(t, f.NeedPrevVal(spAB))
+	require.True(t, f.NeedPrevVal(spBC))
+	require.True(t, f.NeedPrevVal(spCD))
+	require.True(t, f.NeedPrevVal(spAC))
+	require.False(t, f.NeedPrevVal(spXY))
+	require.False(t, f.NeedPrevVal(roachpb.Span{Key: keyA}))
+	require.True(t, f.NeedPrevVal(roachpb.Span{Key: keyB}))
+	require.True(t, f.NeedPrevVal(roachpb.Span{Key: keyC}))
+	require.False(t, f.NeedPrevVal(roachpb.Span{Key: keyX}))
 
-		// Check the registry's operation filter.
-		f := reg.NewFilter()
-		// Testing NeedVal.
-		require.True(t, f.NeedVal(spAB))
-		require.True(t, f.NeedVal(spBC))
-		require.True(t, f.NeedVal(spCD))
-		require.True(t, f.NeedVal(spAC))
-		require.False(t, f.NeedVal(spXY))
-		require.True(t, f.NeedVal(roachpb.Span{Key: keyA}))
-		require.True(t, f.NeedVal(roachpb.Span{Key: keyB}))
-		require.True(t, f.NeedVal(roachpb.Span{Key: keyC}))
-		require.False(t, f.NeedVal(roachpb.Span{Key: keyX}))
-		// Testing NeedPrevVal.
-		require.False(t, f.NeedPrevVal(spAB))
-		require.True(t, f.NeedPrevVal(spBC))
-		require.True(t, f.NeedPrevVal(spCD))
-		require.True(t, f.NeedPrevVal(spAC))
-		require.False(t, f.NeedPrevVal(spXY))
-		require.False(t, f.NeedPrevVal(roachpb.Span{Key: keyA}))
-		require.True(t, f.NeedPrevVal(roachpb.Span{Key: keyB}))
-		require.True(t, f.NeedPrevVal(roachpb.Span{Key: keyC}))
-		require.False(t, f.NeedPrevVal(roachpb.Span{Key: keyX}))
+	// Disconnect span that overlaps with rCD.
+	reg.DisconnectWithErr(spCD, err1)
+	require.Equal(t, 4, reg.Len())
+	require.Equal(t, err1.GoError(), rCD.Err())
 
-		// Disconnect span that overlaps with rCD.
-		reg.DisconnectWithErr(ctx, spCD, err1)
-		require.Equal(t, 4, reg.Len())
-		require.Equal(t, err1.GoError(), sCD.WaitForError(t))
+	// Can still publish to rAB.
+	reg.PublishToOverlapping(ctx, spAB, ev4, false /* omitInRangefeeds */, nil /* alloc */)
+	reg.PublishToOverlapping(ctx, spBC, ev3, false /* omitInRangefeeds */, nil /* alloc */)
+	reg.PublishToOverlapping(ctx, spCD, ev2, false /* omitInRangefeeds */, nil /* alloc */)
+	reg.PublishToOverlapping(ctx, spAC, ev1, false /* omitInRangefeeds */, nil /* alloc */)
+	require.NoError(t, reg.waitForCaughtUp(all))
+	require.Equal(t, []*kvpb.RangeFeedEvent{noPrev(ev4), noPrev(ev1)}, rAB.Events())
 
-		// Can still publish to rAB.
-		reg.PublishToOverlapping(ctx, spAB, ev4, logicalOpMetadata{}, nil /* alloc */)
-		reg.PublishToOverlapping(ctx, spBC, ev3, logicalOpMetadata{}, nil /* alloc */)
-		reg.PublishToOverlapping(ctx, spCD, ev2, logicalOpMetadata{}, nil /* alloc */)
-		reg.PublishToOverlapping(ctx, spAC, ev1, logicalOpMetadata{}, nil /* alloc */)
-		require.NoError(t, reg.waitForCaughtUp(ctx, all))
-		require.Equal(t, []*kvpb.RangeFeedEvent{noPrev(ev4), noPrev(ev1)}, sAB.GetAndClearEvents())
+	// Disconnect from rAB without error.
+	reg.Disconnect(spAB)
+	require.Nil(t, rAC.Err())
+	require.Nil(t, rAB.Err())
+	require.Equal(t, 1, reg.Len())
 
-		// Disconnect from rAB without error.
-		reg.DisconnectWithErr(ctx, spAB, nil)
-		require.Nil(t, sAC.WaitForError(t))
-		require.Nil(t, sAB.WaitForError(t))
-		require.Equal(t, 1, reg.Len())
+	// Check the registry's operation filter again.
+	f = reg.NewFilter()
+	// Testing NeedVal.
+	require.False(t, f.NeedVal(spAB))
+	require.True(t, f.NeedVal(spBC))
+	require.False(t, f.NeedVal(spCD))
+	require.True(t, f.NeedVal(spAC))
+	require.False(t, f.NeedVal(spXY))
+	require.False(t, f.NeedVal(roachpb.Span{Key: keyA}))
+	require.True(t, f.NeedVal(roachpb.Span{Key: keyB}))
+	require.False(t, f.NeedVal(roachpb.Span{Key: keyC}))
+	require.False(t, f.NeedVal(roachpb.Span{Key: keyX}))
+	// Testing NeedPrevVal.
+	require.False(t, f.NeedPrevVal(spAB))
+	require.True(t, f.NeedPrevVal(spBC))
+	require.False(t, f.NeedPrevVal(spCD))
+	require.True(t, f.NeedPrevVal(spAC))
+	require.False(t, f.NeedPrevVal(spXY))
+	require.False(t, f.NeedPrevVal(roachpb.Span{Key: keyA}))
+	require.True(t, f.NeedPrevVal(roachpb.Span{Key: keyB}))
+	require.False(t, f.NeedPrevVal(roachpb.Span{Key: keyC}))
+	require.False(t, f.NeedPrevVal(roachpb.Span{Key: keyX}))
 
-		// Check the registry's operation filter again.
-		f = reg.NewFilter()
-		// Testing NeedVal.
-		require.False(t, f.NeedVal(spAB))
-		require.True(t, f.NeedVal(spBC))
-		require.False(t, f.NeedVal(spCD))
-		require.True(t, f.NeedVal(spAC))
-		require.False(t, f.NeedVal(spXY))
-		require.False(t, f.NeedVal(roachpb.Span{Key: keyA}))
-		require.True(t, f.NeedVal(roachpb.Span{Key: keyB}))
-		require.False(t, f.NeedVal(roachpb.Span{Key: keyC}))
-		require.False(t, f.NeedVal(roachpb.Span{Key: keyX}))
-		// Testing NeedPrevVal.
-		require.False(t, f.NeedPrevVal(spAB))
-		require.True(t, f.NeedPrevVal(spBC))
-		require.False(t, f.NeedPrevVal(spCD))
-		require.True(t, f.NeedPrevVal(spAC))
-		require.False(t, f.NeedPrevVal(spXY))
-		require.False(t, f.NeedPrevVal(roachpb.Span{Key: keyA}))
-		require.True(t, f.NeedPrevVal(roachpb.Span{Key: keyB}))
-		require.False(t, f.NeedPrevVal(roachpb.Span{Key: keyC}))
-		require.False(t, f.NeedPrevVal(roachpb.Span{Key: keyX}))
+	// Unregister the rBC registration.
+	reg.Unregister(ctx, &rBC.registration)
+	require.Equal(t, 0, reg.Len())
+}
 
-		// Unregister the rBC registration as if it was being unregistered via the
-		// processor.
-		rBC.setShouldUnregister()
-		reg.unregisterMarkedRegistrations(ctx)
-		require.Equal(t, 0, reg.Len())
-		require.Equal(t, 0, int(reg.metrics.RangeFeedRegistrations.Value()),
-			"RangefeedRegistrations metric not zero after all registrations have been removed")
+func TestRegistryPublishAssertsPopulatedInformation(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	ctx := context.Background()
+	reg := makeRegistry(NewMetrics())
+
+	rNoDiff := newTestRegistration(spAB, hlc.Timestamp{}, nil, false /* withDiff */, false /* withFiltering */)
+	go rNoDiff.runOutputLoop(context.Background(), 0)
+	reg.Register(&rNoDiff.registration)
+
+	rWithDiff := newTestRegistration(spCD, hlc.Timestamp{}, nil, true /* withDiff */, false /* withFiltering */)
+	go rWithDiff.runOutputLoop(context.Background(), 0)
+	reg.Register(&rWithDiff.registration)
+
+	key := roachpb.Key("a")
+	val := roachpb.Value{RawBytes: []byte("val"), Timestamp: hlc.Timestamp{WallTime: 1}}
+	noVal := roachpb.Value{Timestamp: hlc.Timestamp{WallTime: 1}}
+	ev := new(kvpb.RangeFeedEvent)
+
+	// Both registrations require RangeFeedValue events to have a Key.
+	ev.MustSetValue(&kvpb.RangeFeedValue{
+		Key:       nil,
+		Value:     val,
+		PrevValue: val,
 	})
+	require.Panics(t, func() { reg.PublishToOverlapping(ctx, spAB, ev, false /* omitInRangefeeds */, nil /* alloc */) })
+	require.Panics(t, func() { reg.PublishToOverlapping(ctx, spCD, ev, false /* omitInRangefeeds */, nil /* alloc */) })
+	require.NoError(t, reg.waitForCaughtUp(all))
+
+	// Both registrations require RangeFeedValue events to have a Value.
+	ev.MustSetValue(&kvpb.RangeFeedValue{
+		Key:       key,
+		Value:     noVal,
+		PrevValue: val,
+	})
+	require.Panics(t, func() { reg.PublishToOverlapping(ctx, spAB, ev, false /* omitInRangefeeds */, nil /* alloc */) })
+	require.Panics(t, func() { reg.PublishToOverlapping(ctx, spCD, ev, false /* omitInRangefeeds */, nil /* alloc */) })
+	require.NoError(t, reg.waitForCaughtUp(all))
+
+	// Neither registrations require RangeFeedValue events to have a PrevValue.
+	// Even when they are requested, the previous value can always be nil.
+	ev.MustSetValue(&kvpb.RangeFeedValue{
+		Key:       key,
+		Value:     val,
+		PrevValue: roachpb.Value{},
+	})
+	require.NotPanics(t, func() { reg.PublishToOverlapping(ctx, spAB, ev, false /* omitInRangefeeds */, nil /* alloc */) })
+	require.NotPanics(t, func() { reg.PublishToOverlapping(ctx, spCD, ev, false /* omitInRangefeeds */, nil /* alloc */) })
+	require.NoError(t, reg.waitForCaughtUp(all))
+
+	rNoDiff.disconnect(nil)
+	rWithDiff.disconnect(nil)
 }
 
 func TestRegistryPublishBeneathStartTimestamp(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	ctx := context.Background()
+	reg := makeRegistry(NewMetrics())
 
-	testutils.RunValues(t, "registration type=", registrationTestTypes, func(t *testing.T, rt registrationType) {
-		reg := makeRegistry(NewMetrics())
-		s := newTestStream()
-		r := newTestRegistration(s, withRSpan(spAB), withStartTs(hlc.Timestamp{WallTime: 10}), withRegistrationType(rt))
-		go r.runOutputLoop(ctx, 0)
-		reg.Register(ctx, r)
+	r := newTestRegistration(spAB, hlc.Timestamp{WallTime: 10}, nil, /* catchup */
+		false /* withDiff */, false /* withFiltering */)
+	go r.runOutputLoop(context.Background(), 0)
+	reg.Register(&r.registration)
 
-		// Publish a value with a timestamp beneath the registration's start
-		// timestamp. Should be ignored.
-		ev := new(kvpb.RangeFeedEvent)
-		ev.MustSetValue(&kvpb.RangeFeedValue{
-			Value: roachpb.Value{Timestamp: hlc.Timestamp{WallTime: 5}},
-		})
-		reg.PublishToOverlapping(ctx, spAB, ev, logicalOpMetadata{}, nil /* alloc */)
-		require.NoError(t, reg.waitForCaughtUp(ctx, all))
-		require.Nil(t, s.GetAndClearEvents())
-
-		// Publish a value with a timestamp equal to the registration's start
-		// timestamp. Should be ignored.
-		ev.MustSetValue(&kvpb.RangeFeedValue{
-			Value: roachpb.Value{Timestamp: hlc.Timestamp{WallTime: 10}},
-		})
-		reg.PublishToOverlapping(ctx, spAB, ev, logicalOpMetadata{}, nil /* alloc */)
-		require.NoError(t, reg.waitForCaughtUp(ctx, all))
-		require.Nil(t, s.GetAndClearEvents())
-
-		// Publish a checkpoint with a timestamp beneath the registration's. Should
-		// be delivered.
-		ev.MustSetValue(&kvpb.RangeFeedCheckpoint{
-			Span: spAB, ResolvedTS: hlc.Timestamp{WallTime: 5},
-		})
-		reg.PublishToOverlapping(ctx, spAB, ev, logicalOpMetadata{}, nil /* alloc */)
-		require.NoError(t, reg.waitForCaughtUp(ctx, all))
-		require.Equal(t, []*kvpb.RangeFeedEvent{ev}, s.GetAndClearEvents())
-
-		r.Disconnect(nil)
+	// Publish a value with a timestamp beneath the registration's start
+	// timestamp. Should be ignored.
+	ev := new(kvpb.RangeFeedEvent)
+	ev.MustSetValue(&kvpb.RangeFeedValue{
+		Value: roachpb.Value{Timestamp: hlc.Timestamp{WallTime: 5}},
 	})
+	reg.PublishToOverlapping(ctx, spAB, ev, false /* omitInRangefeeds */, nil /* alloc */)
+	require.NoError(t, reg.waitForCaughtUp(all))
+	require.Nil(t, r.Events())
+
+	// Publish a value with a timestamp equal to the registration's start
+	// timestamp. Should be ignored.
+	ev.MustSetValue(&kvpb.RangeFeedValue{
+		Value: roachpb.Value{Timestamp: hlc.Timestamp{WallTime: 10}},
+	})
+	reg.PublishToOverlapping(ctx, spAB, ev, false /* omitInRangefeeds */, nil /* alloc */)
+	require.NoError(t, reg.waitForCaughtUp(all))
+	require.Nil(t, r.Events())
+
+	// Publish a checkpoint with a timestamp beneath the registration's. Should
+	// be delivered.
+	ev.MustSetValue(&kvpb.RangeFeedCheckpoint{
+		Span: spAB, ResolvedTS: hlc.Timestamp{WallTime: 5},
+	})
+	reg.PublishToOverlapping(ctx, spAB, ev, false /* omitInRangefeeds */, nil /* alloc */)
+	require.NoError(t, reg.waitForCaughtUp(all))
+	require.Equal(t, []*kvpb.RangeFeedEvent{ev}, r.Events())
+
+	r.disconnect(nil)
 }
 
 func TestRegistrationString(t *testing.T) {
 	testCases := []struct {
-		r   *baseRegistration
+		r   registration
 		exp string
 	}{
 		{
-			r: &baseRegistration{
+			r: registration{
 				span: roachpb.Span{Key: roachpb.Key("a")},
 			},
 			exp: `[a @ 0,0+]`,
 		},
 		{
-			r: &baseRegistration{span: roachpb.Span{
+			r: registration{span: roachpb.Span{
 				Key: roachpb.Key("a"), EndKey: roachpb.Key("c")},
 			},
 			exp: `[{a-c} @ 0,0+]`,
 		},
 		{
-			r: &baseRegistration{
+			r: registration{
 				span:             roachpb.Span{Key: roachpb.Key("d")},
 				catchUpTimestamp: hlc.Timestamp{WallTime: 10, Logical: 1},
 			},
 			exp: `[d @ 0.000000010,1+]`,
 		},
 		{
-			r: &baseRegistration{span: roachpb.Span{
+			r: registration{span: roachpb.Span{
 				Key: roachpb.Key("d"), EndKey: roachpb.Key("z")},
 				catchUpTimestamp: hlc.Timestamp{WallTime: 40, Logical: 9},
 			},
@@ -470,64 +640,18 @@ func TestRegistrationString(t *testing.T) {
 // implicitly.
 func TestRegistryShutdownMetrics(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	ctx := context.Background()
+	reg := makeRegistry(NewMetrics())
 
-	testutils.RunValues(t, "registration type=", registrationTestTypes, func(t *testing.T, rt registrationType) {
-		reg := makeRegistry(NewMetrics())
-		regDoneC := make(chan interface{})
-		r := newTestRegistration(newTestStream(), withRSpan(spAB),
-			withStartTs(hlc.Timestamp{WallTime: 10}), withRegistrationType(rt))
-		go func() {
-			r.runOutputLoop(ctx, 0)
-			close(regDoneC)
-		}()
-		reg.Register(ctx, r)
+	regDoneC := make(chan interface{})
+	r := newTestRegistration(spAB, hlc.Timestamp{WallTime: 10}, nil, /*catchup */
+		false /* withDiff */, false /* withFiltering */)
+	go func() {
+		r.runOutputLoop(context.Background(), 0)
+		close(regDoneC)
+	}()
+	reg.Register(&r.registration)
 
-		reg.DisconnectAllOnShutdown(ctx, nil)
-		<-regDoneC
-		require.Zero(t, reg.metrics.RangeFeedRegistrations.Value(), "metric is not zero on stop")
-	})
-}
-
-// TestBaseRegistration tests base registration implementation methods.
-func TestBaseRegistration(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	r := newTestRegistration(newTestStream(), withRSpan(spAB), withStartTs(hlc.Timestamp{WallTime: 10}), withDiff(true), withFiltering(true))
-	require.Equal(t, spAB, r.getSpan())
-	require.Equal(t, hlc.Timestamp{WallTime: 10}, r.getCatchUpTimestamp())
-	r.setSpanAsKeys()
-	require.Equal(t, r.Range(), spAB.AsRange())
-	require.Equal(t, r.Range(), r.Range())
-	r.setID(10)
-	require.Equal(t, uintptr(10), r.ID())
-	require.True(t, r.getWithDiff())
-	require.True(t, r.getWithFiltering())
-	require.False(t, r.getWithOmitRemote())
-}
-
-// TODO(wenyihu6): Should catch up events also get stripped events? They current'y don't.
-func TestPublishStrippedEvents(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	ctx := context.Background()
-
-	val := roachpb.Value{RawBytes: []byte("val"), Timestamp: hlc.Timestamp{WallTime: 1}}
-	prevVal := roachpb.Value{RawBytes: []byte("prevVal"), Timestamp: hlc.Timestamp{WallTime: 1}}
-	ev1 := new(kvpb.RangeFeedEvent)
-	ev1.MustSetValue(&kvpb.RangeFeedValue{Key: keyA, Value: val, PrevValue: prevVal})
-	expectedEv := new(kvpb.RangeFeedEvent)
-	// maybeStripEvent should strip the PrevValue from the event since withDiff is
-	// false.
-	expectedEv.MustSetValue(&kvpb.RangeFeedValue{Key: keyA, Value: val})
-
-	err := kvpb.NewError(kvpb.NewRangeFeedRetryError(kvpb.RangeFeedRetryError_REASON_NO_LEASEHOLDER))
-	testutils.RunValues(t, "registration type=", registrationTestTypes, func(t *testing.T, rt registrationType) {
-		s := newTestStream()
-		noCatchupReg := newTestRegistration(s, withRSpan(spAB), withRegistrationType(rt), withDiff(false))
-		noCatchupReg.publish(ctx, ev1, nil /* alloc */)
-		go noCatchupReg.runOutputLoop(ctx, 0)
-		require.NoError(t, noCatchupReg.waitForCaughtUp(ctx))
-		require.Equal(t, []*kvpb.RangeFeedEvent{expectedEv}, s.GetAndClearEvents())
-		noCatchupReg.Disconnect(err)
-		require.Equal(t, err, kvpb.NewError(s.Error()))
-	})
+	reg.DisconnectAllOnShutdown(nil)
+	<-regDoneC
+	require.Zero(t, reg.metrics.RangeFeedRegistrations.Value(), "metric is not zero on stop")
 }

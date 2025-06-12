@@ -17,7 +17,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/cli/clierror"
@@ -29,11 +28,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/certnames"
 	"github.com/cockroachdb/cockroach/pkg/security/securitytest"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
+	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/errors"
 	"github.com/kr/pretty"
 )
@@ -147,7 +146,7 @@ func newCLITestWithArgs(params TestCLIParams, argsFn func(args *base.TestServerA
 
 	c.cleanupFunc = func() error { return nil }
 
-	settings := makeClusterSettings()
+	settings := cluster.MakeClusterSettings()
 	if params.DisableAutoStats {
 		stats.AutomaticStatisticsClusterMode.Override(context.Background(), &settings.SV, false)
 	}
@@ -184,15 +183,6 @@ func newCLITestWithArgs(params TestCLIParams, argsFn func(args *base.TestServerA
 
 		log.Infof(context.Background(), "server started at %s", c.Server.AdvRPCAddr())
 		log.Infof(context.Background(), "SQL listener at %s", c.Server.AdvSQLAddr())
-
-		// When run under leader leases, requests will not heartbeat NodeLiveness on
-		// the lease acquisition codepath. This may then cause CLI commands
-		// (such as status or ls) which require a NodeLiveness record to fail. Explicitly
-		// heartbeat the NodeLiveness record to prevent tests from flaking.
-		err = retry.ForDuration(200*time.Second, c.Server.HeartbeatNodeLiveness)
-		if err != nil {
-			log.Fatalf(context.Background(), "Couldn't heartbeat node liveness: %s", err)
-		}
 	}
 
 	if params.TenantArgs != nil && params.SharedProcessTenantArgs != nil {
@@ -363,14 +353,6 @@ func captureOutput(f func()) (out string, err error) {
 		if x := recover(); x != nil {
 			err = errors.Errorf("panic: %v", x)
 		}
-		// Replace any series of 'retrieving SQL data for ...' messages with a
-		// single '<dumping SQL tables>' message so that these tests are agnostic to
-		// both specific names and total number of system and internal tables that
-		// are exported. The regex matches the rest of the line after the prefix
-		// unless the line contains an uppercase E to avoid trimming "ERROR" message
-		// lines, which are expected (and tested) for certain tables.
-		out = regexp.MustCompile(`(.*retrieving SQL data for ([^E\n])*\n)+`).
-			ReplaceAllString(out, "<dumping SQL tables>\n")
 	}()
 
 	// Run the command. The output will be returned in the defer block.

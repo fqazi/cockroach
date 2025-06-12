@@ -63,7 +63,7 @@ start-waiting: true
 
 guard-state r=req2
 ----
-new: state=waitFor txn=txn1 key="a" held=true guard-strength=None
+new: state=waitForDistinguished txn=txn1 key="a" held=true guard-strength=None
 
 scan r=req3
 ----
@@ -100,12 +100,14 @@ num=1
    queued locking requests:
     active: true req: 3, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
     active: true req: 5, strength: Intent, txn: none
+   distinguished req: 2
 
 metrics
 ----
 locks: 1
 locksheld: 1
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 1
 waiters: 4
 waitingreaders: 2
@@ -205,6 +207,7 @@ num=1
    queued locking requests:
     active: true req: 3, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
     active: true req: 5, strength: Intent, txn: none
+   distinguished req: 2
 
 # -------------------------------------------------------------
 # Update lock timestamp to 13,1 - the transactional read at
@@ -222,6 +225,7 @@ num=1
    queued locking requests:
     active: true req: 3, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
     active: true req: 5, strength: Intent, txn: none
+   distinguished req: 4
 
 guard-state r=req2
 ----
@@ -241,6 +245,7 @@ num=1
    queued locking requests:
     active: true req: 3, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
     active: true req: 5, strength: Intent, txn: none
+   distinguished req: 4
 
 # -------------------------------------------------------------
 # Update lock timestamp to 10,1 - noop since lock is already at
@@ -257,6 +262,7 @@ num=1
    queued locking requests:
     active: true req: 3, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
     active: true req: 5, strength: Intent, txn: none
+   distinguished req: 4
 
 # -------------------------------------------------------------
 # Update lock timestamp to 15,1 - nothing moves
@@ -272,6 +278,7 @@ num=1
    queued locking requests:
     active: true req: 3, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
     active: true req: 5, strength: Intent, txn: none
+   distinguished req: 4
 
 # -------------------------------------------------------------
 # Update lock timestamp to 17,1 - the transactional read at
@@ -287,6 +294,7 @@ num=1
    queued locking requests:
     active: true req: 3, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
     active: true req: 5, strength: Intent, txn: none
+   distinguished req: 3
 
 guard-state r=req4
 ----
@@ -304,6 +312,7 @@ num=1
    queued locking requests:
     active: true req: 3, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
     active: true req: 5, strength: Intent, txn: none
+   distinguished req: 3
 
 # -------------------------------------------------------------
 # Update lock timestamp to 19,1 - nothing moves
@@ -317,6 +326,7 @@ num=1
    queued locking requests:
     active: true req: 3, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
     active: true req: 5, strength: Intent, txn: none
+   distinguished req: 3
 
 # -------------------------------------------------------------
 # Update lock epoch to 1 - the lock is dropped and the transactional
@@ -332,6 +342,7 @@ num=1
    queued locking requests:
     active: false req: 3, strength: Intent, txn: 00000000-0000-0000-0000-000000000003
     active: true req: 5, strength: Intent, txn: none
+   distinguished req: 5
 
 guard-state r=req3
 ----
@@ -343,7 +354,7 @@ start-waiting: false
 
 guard-state r=req5
 ----
-new: state=waitFor txn=txn3 key="a" held=false guard-strength=Intent
+new: state=waitForDistinguished txn=txn3 key="a" held=false guard-strength=Intent
 
 dequeue r=req3
 ----
@@ -432,27 +443,27 @@ update txn=txn1 ts=10 epoch=1 span=a ignored-seqs=3,8-9
 ----
 num=1
  lock: "a"
-  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 10.000000000,0, info: unrepl [(str: Exclusive seq: 1)] ign seq: [{3 3} {8 9}]
+  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 10.000000000,0, info: unrepl [(str: Exclusive seq: 1)]
 
 # No change since update is using older epoch.
 
-update txn=txn1 ts=10 epoch=0 span=a ignored-seqs=3,8-9
+update txn=txn1 ts=10 epoch=0 span=a ignored-seqs=3,5-7
 ----
 num=1
  lock: "a"
-  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 10.000000000,0, info: unrepl [(str: Exclusive seq: 1)] ign seq: [{3 3} {8 9}]
+  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 10.000000000,0, info: unrepl [(str: Exclusive seq: 1)]
 
-update txn=txn1 ts=10 epoch=1 span=a ignored-seqs=3,8-9
+update txn=txn1 ts=10 epoch=1 span=a ignored-seqs=3,5-7
 ----
 num=1
  lock: "a"
-  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 10.000000000,0, info: unrepl [(str: Exclusive seq: 1)] ign seq: [{3 3} {8 9}]
+  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 10.000000000,0, info: unrepl [(str: Exclusive seq: 1)]
 
-update txn=txn1 ts=10 epoch=1 span=a ignored-seqs=3,8-11
+update txn=txn1 ts=10 epoch=1 span=a ignored-seqs=9-11
 ----
 num=1
  lock: "a"
-  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 10.000000000,0, info: unrepl [(str: Exclusive seq: 1)] ign seq: [{3 3} {8 11}]
+  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 10.000000000,0, info: unrepl [(str: Exclusive seq: 1)]
 
 # No seqnum change since update is using older epoch. But since the update is using
 # a higher timestamp, the ts is advanced.
@@ -461,7 +472,7 @@ update txn=txn1 ts=15 epoch=0 span=a ignored-seqs=1
 ----
 num=1
  lock: "a"
-  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 15.000000000,0, info: unrepl [(str: Exclusive seq: 1)] ign seq: [{3 3} {8 11}]
+  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 15.000000000,0, info: unrepl [(str: Exclusive seq: 1)]
 
 # No change, since seqnum 3 is not held. Note that the ts is not updated.
 
@@ -469,14 +480,14 @@ update txn=txn1 ts=10 epoch=1 span=a ignored-seqs=3
 ----
 num=1
  lock: "a"
-  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 15.000000000,0, info: unrepl [(str: Exclusive seq: 1)] ign seq: [{3 3} {8 11}]
+  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 15.000000000,0, info: unrepl [(str: Exclusive seq: 1)]
 
 # Timestamp is updated again.
 update txn=txn1 ts=16 epoch=1 span=a
 ----
 num=1
  lock: "a"
-  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 16.000000000,0, info: unrepl [(str: Exclusive seq: 1)] ign seq: [{3 3} {8 11}]
+  holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 16.000000000,0, info: unrepl [(str: Exclusive seq: 1)]
 
 # Seqnum 1 is also ignored, so the lock is released. Note that it does not
 # matter that the update is using an older timestamp.
@@ -522,6 +533,7 @@ num=1
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 10.000000000,0, info: repl [Intent], unrepl [(str: Exclusive seq: 10)]
    waiting readers:
     req: 2, txn: 00000000-0000-0000-0000-000000000002
+   distinguished req: 2
 
 new-request r=req7 txn=txn3 ts=10 spans=shared@a
 ----
@@ -539,6 +551,7 @@ num=1
     req: 2, txn: 00000000-0000-0000-0000-000000000002
    queued locking requests:
     active: true req: 3, strength: Shared, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 2
 
 update txn=txn1 ts=11,0 epoch=0 span=a
 ----
@@ -547,3 +560,4 @@ num=1
   holder: txn: 00000000-0000-0000-0000-000000000001 epoch: 1, iso: Serializable, ts: 11.000000000,0, info: unrepl [(str: Exclusive seq: 10)]
    queued locking requests:
     active: true req: 3, strength: Shared, txn: 00000000-0000-0000-0000-000000000003
+   distinguished req: 3

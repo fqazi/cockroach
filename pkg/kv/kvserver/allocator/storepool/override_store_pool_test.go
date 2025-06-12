@@ -91,12 +91,11 @@ func TestOverrideStorePoolStatusString(t *testing.T) {
 	// Mark node 5 as draining.
 	mnl.SetNodeStatus(5, livenesspb.NodeLivenessStatus_DRAINING)
 
-	require.Equal(t,
-		"1: range-count=0 fraction-used=0.00\n"+
-			"2 (status=dead): range-count=0 fraction-used=0.00\n"+
-			"3 (status=decommissioning): range-count=0 fraction-used=0.00\n"+
-			"4: range-count=0 fraction-used=0.00\n"+
-			"5 (status=draining): range-count=0 fraction-used=0.00\n",
+	require.Equal(t, "1: range-count=0 fraction-used=0.00\n"+
+		"2 (status=1): range-count=0 fraction-used=0.00\n"+
+		"3 (status=5): range-count=0 fraction-used=0.00\n"+
+		"4: range-count=0 fraction-used=0.00\n"+
+		"5 (status=7): range-count=0 fraction-used=0.00\n",
 		sp.String(),
 	)
 }
@@ -330,11 +329,9 @@ func TestOverrideStorePoolGetStoreList(t *testing.T) {
 	livenessOverrides[decommissioningStore.Node.NodeID] = livenesspb.NodeLivenessStatus_DECOMMISSIONING
 
 	// Set suspectedStore as suspected.
-	val, ok := testStorePool.Details.StoreDetails.Load(suspectedStore.StoreID)
-	require.True(t, ok)
-	val.Lock()
-	val.LastUnavailable = testStorePool.clock.Now()
-	val.Unlock()
+	testStorePool.DetailsMu.Lock()
+	testStorePool.DetailsMu.StoreDetails[suspectedStore.StoreID].LastUnavailable = testStorePool.clock.Now()
+	testStorePool.DetailsMu.Unlock()
 
 	// No filter or limited set of store IDs.
 	require.NoError(t, verifyStoreList(

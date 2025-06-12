@@ -10,7 +10,6 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
-	"io"
 	"math"
 	"net"
 	"net/http"
@@ -26,8 +25,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl/jwtauthccl"
-	"github.com/cockroachdb/cockroach/pkg/ccl/ldapccl"
-	"github.com/cockroachdb/cockroach/pkg/security/distinguishedname"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/apiconstants"
 	"github.com/cockroachdb/cockroach/pkg/server/authserver"
@@ -45,13 +42,12 @@ import (
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/errors/stdstrings"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgconn"
+	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/require"
 )
 
 // The code in this file takes inspiration from pgwire/auth_test.go
-
 // TestAuthenticationAndHBARules exercises the authentication code
 // using datadriven testing.
 //
@@ -112,9 +108,8 @@ import (
 func TestAuthenticationAndHBARules(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	skip.UnderRace(t, "takes >1min under race")
-
 	testutils.RunTrueAndFalse(t, "insecure", func(t *testing.T, insecure bool) {
-		authCCLRunTest(t, insecure)
+		jwtRunTest(t, insecure)
 	})
 }
 
@@ -149,19 +144,17 @@ func makeSocketFile(t *testing.T) (socketDir, socketFile string, cleanupFn func(
 		func() { _ = os.RemoveAll(tempDir) }
 }
 
-func authCCLRunTest(t *testing.T, insecure bool) {
+func jwtRunTest(t *testing.T, insecure bool) {
 	ctx := context.Background()
 	datadriven.Walk(t, datapathutils.TestDataPath(t), func(t *testing.T, path string) {
 		defer leaktest.AfterTest(t)()
 
 		maybeSocketDir, maybeSocketFile, cleanup := makeSocketFile(t)
 		defer cleanup()
-
 		// We really need to have the logs go to files, so that -show-logs
 		// does not break the "authlog" directives.
 		sc := log.ScopeWithoutShowLogs(t)
 		defer sc.Close(t)
-
 		// Enable logging channels.
 		log.TestingResetActive()
 		cfg := logconfig.DefaultConfig()
@@ -178,17 +171,11 @@ func authCCLRunTest(t *testing.T, insecure bool) {
 		if err := cfg.Validate(&dir); err != nil {
 			t.Fatal(err)
 		}
-		cleanup, err := log.ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+		cleanup, err := log.ApplyConfig(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer cleanup()
-
-		// Intercept the call to NewLDAPUtil and return the mocked NewLDAPUtil function
-		mockLDAP, newMockLDAPUtil := ldapccl.LDAPMocks()
-		if strings.Contains(path, "ldap") {
-			defer testutils.TestingHook(&ldapccl.NewLDAPUtil, newMockLDAPUtil)()
-		}
 
 		srv := serverutils.StartServerOnly(t,
 			base.TestServerArgs{
@@ -209,17 +196,9 @@ func authCCLRunTest(t *testing.T, insecure bool) {
 		defer func() { _ = rootConn.Close(ctx) }()
 
 		s := srv.ApplicationLayer()
-		pgServer := s.PGServer().(*pgwire.Server)
-		pgServer.TestingEnableConnLogging()
-		pgServer.TestingEnableAuthLogging()
-		s.PGPreServer().(*pgwire.PreServeConnHandler).TestingAcceptSystemIdentityOption(true)
-		httpClient, err := s.GetAdminHTTPClient()
-		if err != nil {
-			t.Fatal(err)
-		}
 
-		httpHBAUrl := s.AdminURL().WithPath("/debug/hba_conf").String()
 		sv := &s.ClusterSettings().SV
+
 		if _, err := rootConn.Exec(ctx, fmt.Sprintf(`CREATE USER %s`, username.TestUser)); err != nil {
 			t.Fatal(err)
 		}
@@ -301,31 +280,23 @@ func authCCLRunTest(t *testing.T, insecure bool) {
 					_, err := rootConn.Exec(ctx, td.Input)
 					return "ok", err
 
-				case "query_row":
-					var query_output interface{}
-					err := rootConn.QueryRow(ctx, td.Input).Scan(&query_output)
-					return fmt.Sprintf("%v", query_output), err
-
 				case "connect", "connect_unix":
 					if td.Cmd == "connect_unix" && runtime.GOOS == "windows" {
 						// Unix sockets not supported; assume the test succeeded.
 						return td.Expected, nil
 					}
-
 					// Prepare a connection string using the server's default.
 					// What is the user requested by the test?
 					user := username.RootUser
 					if td.HasArg("user") {
 						td.ScanArgs(t, "user", &user)
 					}
-
 					// Allow connections for non-root, non-testuser to force the
 					// use of client certificates.
 					forceCerts := false
 					if td.HasArg("force_certs") {
 						forceCerts = true
 					}
-
 					// We want the certs to be present in the filesystem for this test.
 					// However, certs are only generated for users "root" and "testuser" specifically.
 					sqlURL, cleanupFn := s.PGUrl(
@@ -333,7 +304,6 @@ func authCCLRunTest(t *testing.T, insecure bool) {
 						serverutils.ClientCerts(forceCerts || user == username.RootUser || user == username.TestUser),
 					)
 					defer cleanupFn()
-
 					var host, port string
 					if td.Cmd == "connect" {
 						host, port, err = net.SplitHostPort(s.AdvSQLAddr())
@@ -348,7 +318,6 @@ func authCCLRunTest(t *testing.T, insecure bool) {
 					if err != nil {
 						t.Fatal(err)
 					}
-
 					// Here we make use of the fact that pq accepts connection
 					// strings using the alternate postgres configuration format,
 					// consisting of k=v pairs separated by spaces.
@@ -406,14 +375,6 @@ func authCCLRunTest(t *testing.T, insecure bool) {
 						defer func() { _ = dbSQL.Close(ctx) }()
 					}
 					if err != nil {
-						// If the error is a PgError, return that directly instead of the
-						// wrapped error. The wrapped error includes additional contextual
-						// information that complicates checking for the expected error
-						// string in tests.
-						pgErr := new(pgconn.PgError)
-						if errors.As(err, &pgErr) {
-							return "", pgErr
-						}
 						return "", err
 					}
 					row := dbSQL.QueryRow(ctx, "SELECT current_catalog")
@@ -464,67 +425,6 @@ func authCCLRunTest(t *testing.T, insecure bool) {
 					}
 					defer resp.Body.Close()
 					return strconv.Itoa(resp.StatusCode), nil
-
-				case "set_hba":
-					_, err := rootConn.Exec(ctx,
-						`SET CLUSTER SETTING server.host_based_authentication.configuration = $1`, td.Input)
-					if err != nil {
-						return "", err
-					}
-
-					// Wait until the configuration has propagated back to the
-					// test client. We need to wait because the cluster setting
-					// change propagates asynchronously.
-					expConf := pgwire.DefaultHBAConfig
-					if td.Input != "" {
-						expConf, err = pgwire.ParseAndNormalize(td.Input)
-						if err != nil {
-							// The SET above succeeded so we don't expect a problem here.
-							t.Fatal(err)
-						}
-					}
-					testutils.SucceedsSoon(t, func() error {
-						curConf, _ := pgServer.GetAuthenticationConfiguration()
-						if expConf.String() != curConf.String() {
-							return errors.Newf(
-								"HBA config not yet loaded\ngot:\n%s\nexpected:\n%s",
-								curConf, expConf)
-						}
-						return nil
-					})
-
-					// Verify the HBA configuration was processed properly by
-					// reporting the resulting cached configuration.
-					resp, err := httpClient.Get(httpHBAUrl)
-					if err != nil {
-						return "", err
-					}
-					defer resp.Body.Close()
-					body, err := io.ReadAll(resp.Body)
-					if err != nil {
-						return "", err
-					}
-					return string(body), nil
-
-				case "ldap_mock":
-					for _, a := range td.CmdArgs {
-						switch a.Key {
-						case "set_groups":
-							if len(a.Vals) < 2 {
-								t.Fatalf("too few argumenets to ldap_mock set_groups: %d", len(a.Vals))
-							}
-							user := a.Vals[0]
-							groups := a.Vals[1:]
-							for idx := range groups {
-								if _, err := distinguishedname.ParseDN(groups[idx]); err != nil {
-									t.Fatalf("invalid ldap group provided to ldap_mock set_groups: %s", groups[idx])
-								}
-							}
-							mockLDAP.SetGroups(mockLDAP.GetLdapDN(user), groups)
-						default:
-							t.Fatalf("unknown ldap_mock operation: %s", a.Key)
-						}
-					}
 
 				default:
 					td.Fatalf(t, "unknown command: %s", td.Cmd)

@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,8 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/listenerutil"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -90,7 +87,7 @@ func TestCollectInfoFromMultipleStores(t *testing.T) {
 		stores[r.StoreID] = struct{}{}
 	}
 	require.Equal(t, 2, len(stores), "collected replicas from stores")
-	require.Equal(t, clusterversion.Latest.Version(), replicas.Version,
+	require.Equal(t, clusterversion.ByKey(clusterversion.BinaryVersionKey), replicas.Version,
 		"collected version info from stores")
 }
 
@@ -155,7 +152,7 @@ func TestCollectInfoFromOnlineCluster(t *testing.T) {
 	require.Equal(t, totalRanges*2, totalReplicas, "number of collected replicas")
 	require.Equal(t, totalRanges, len(replicas.Descriptors),
 		"number of collected descriptors from metadata")
-	require.Equal(t, clusterversion.Latest.Version(), replicas.Version,
+	require.Equal(t, clusterversion.ByKey(clusterversion.BinaryVersionKey), replicas.Version,
 		"collected version info from stores")
 }
 
@@ -168,7 +165,6 @@ func TestLossOfQuorumRecovery(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	skip.UnderDeadlock(t, "slow under deadlock")
-	skip.UnderStress(t, "slow under stress")
 
 	ctx := context.Background()
 	dir, cleanupFn := testutils.TempDir(t)
@@ -282,7 +278,7 @@ func TestLossOfQuorumRecovery(t *testing.T) {
 
 	for i := 0; i < len(tcAfter.Servers); i++ {
 		require.NoError(t, tcAfter.Servers[i].GetStores().(*kvserver.Stores).VisitStores(func(store *kvserver.Store) error {
-			store.TestingSetReplicateQueueActive(true)
+			store.SetReplicateQueueActive(true)
 			return nil
 		}), "Failed to activate replication queue")
 	}
@@ -347,7 +343,7 @@ func TestStageVersionCheck(t *testing.T) {
 	listenerReg := listenerutil.NewListenerRegistry()
 	defer listenerReg.Close()
 
-	storeReg := fs.NewStickyRegistry()
+	storeReg := server.NewStickyVFSRegistry()
 	tc := testcluster.NewTestCluster(t, 4, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			// This logic is specific to the storage layer.
@@ -373,12 +369,12 @@ func TestStageVersionCheck(t *testing.T) {
 	tc.StopServer(3)
 
 	adminClient := tc.Server(0).GetAdminClient(t)
-	v := clusterversion.Latest.Version()
+	v := clusterversion.ByKey(clusterversion.BinaryVersionKey)
 	v.Internal++
 	// To avoid crafting real replicas we use StaleLeaseholderNodeIDs to force
 	// node to stage plan for verification.
 	p := loqrecoverypb.ReplicaUpdatePlan{
-		PlanID:                  uuid.MakeV4(),
+		PlanID:                  uuid.FastMakeV4(),
 		Version:                 v,
 		ClusterID:               tc.Server(0).StorageClusterID().String(),
 		DecommissionedNodeIDs:   []roachpb.NodeID{4},
@@ -407,7 +403,7 @@ func TestStageVersionCheck(t *testing.T) {
 	p, ok, err := ps.LoadPlan()
 	require.NoError(t, err, "failed to read node 0 plan")
 	require.True(t, ok, "plan was not staged")
-	require.Equal(t, clusterversion.Latest.Version(), p.Version,
+	require.Equal(t, clusterversion.ByKey(clusterversion.BinaryVersionKey), p.Version,
 		"plan version was not updated")
 }
 
@@ -444,7 +440,6 @@ func TestHalfOnlineLossOfQuorumRecovery(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	skip.UnderDeadlock(t, "slow under deadlock")
-	skip.UnderStress(t, "fails under stress and leader leases")
 
 	ctx := context.Background()
 	dir, cleanupFn := testutils.TempDir(t)
@@ -458,7 +453,6 @@ func TestHalfOnlineLossOfQuorumRecovery(t *testing.T) {
 	listenerReg := listenerutil.NewListenerRegistry()
 	defer listenerReg.Close()
 
-	st := cluster.MakeTestingClusterSettings()
 	// Test cluster contains 3 nodes that we would turn into a single node
 	// cluster using loss of quorum recovery. To do that, we will terminate
 	// two nodes and run recovery on remaining one. Restarting node should
@@ -469,31 +463,12 @@ func TestHalfOnlineLossOfQuorumRecovery(t *testing.T) {
 	// TODO(oleg): Make test run with 7 nodes to exercise cases where multiple
 	// replicas survive. Current startup and allocator behaviour would make
 	// this test flaky.
-	var failCount atomic.Int64
 	sa := make(map[int]base.TestServerArgs)
 	for i := 0; i < 3; i++ {
 		sa[i] = base.TestServerArgs{
-			Settings: st,
 			Knobs: base.TestingKnobs{
 				Server: &server.TestingKnobs{
-					StickyVFSRegistry: fs.NewStickyRegistry(),
-				},
-				LOQRecovery: &loqrecovery.TestingKnobs{
-					MetadataScanTimeout: 15 * time.Second,
-					ForwardReplicaFilter: func(
-						response *serverpb.RecoveryCollectLocalReplicaInfoResponse,
-					) error {
-						// Artificially add an error that would cause the server to retry
-						// the replica info for node 1. Note that we only add an error after
-						// we return the first replica info for that node.
-						// This helps in verifying that the replica info get discarded and
-						// the node is revisited (based on the logs).
-						if response != nil && response.ReplicaInfo.NodeID == 1 &&
-							failCount.Add(1) < 3 && failCount.Load() > 1 {
-							return errors.New("rpc stream stopped")
-						}
-						return nil
-					},
+					StickyVFSRegistry: server.NewStickyVFSRegistry(),
 				},
 			},
 			StoreSpecs: []base.StoreSpec{
@@ -551,10 +526,6 @@ func TestHalfOnlineLossOfQuorumRecovery(t *testing.T) {
 			"--plan=" + planFile,
 		})
 	require.NoError(t, err, "failed to run make-plan")
-	require.Contains(t, out, "Started getting replica info for node_id:1",
-		"planner didn't log the visited nodes properly")
-	require.Contains(t, out, "Discarding replica info for node_id:1",
-		"planner didn't log the discarded nodes properly")
 	require.Contains(t, out, fmt.Sprintf("- node n%d", node1ID),
 		"planner didn't provide correct apply instructions")
 	require.FileExists(t, planFile, "generated plan file")

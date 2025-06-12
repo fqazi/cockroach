@@ -11,12 +11,9 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfo"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/server/license"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/lease"
@@ -31,28 +28,22 @@ import (
 // TenantDeps are the dependencies of upgrades which perform actions at the
 // SQL layer.
 type TenantDeps struct {
-	KVDB            *kv.DB
-	Codec           keys.SQLCodec
-	Settings        *cluster.Settings
-	DB              descs.DB
-	LeaseManager    *lease.Manager
-	JobRegistry     *jobs.Registry
-	SessionData     *sessiondata.SessionData
-	ClusterID       uuid.UUID
-	LicenseEnforcer *license.Enforcer
+	KVDB         *kv.DB
+	Codec        keys.SQLCodec
+	Settings     *cluster.Settings
+	DB           descs.DB
+	LeaseManager *lease.Manager
+	JobRegistry  *jobs.Registry
+	SessionData  *sessiondata.SessionData
+	ClusterID    uuid.UUID
 
 	// TODO(ajwerner): Remove this in favor of the descs.DB above.
 	InternalExecutor isql.Executor
-
-	TenantInfoAccessor mtinfo.ReadFromTenantInfoAccessor
 
 	TestingKnobs              *upgradebase.TestingKnobs
 	SchemaResolverConstructor func( // A constructor that returns a schema resolver for `descriptors` in `currDb`.
 		txn *kv.Txn, descriptors *descs.Collection, currDb string,
 	) (resolver.SchemaResolver, func(), error)
-
-	// OptionalJobID is the job ID for this upgrade if it is running inside a job.
-	OptionalJobID jobspb.JobID
 }
 
 // TenantUpgradeFunc is used to perform sql-level upgrades. It may be run from
@@ -91,20 +82,35 @@ var NoPrecondition PreconditionFunc = nil
 
 // NewTenantUpgrade constructs a TenantUpgrade.
 func NewTenantUpgrade(
-	description string,
-	v roachpb.Version,
-	precondition PreconditionFunc,
-	fn TenantUpgradeFunc,
-	restore RestoreBehavior,
+	description string, v roachpb.Version, precondition PreconditionFunc, fn TenantUpgradeFunc,
 ) *TenantUpgrade {
 	m := &TenantUpgrade{
 		upgrade: upgrade{
 			description: description,
 			v:           v,
-			restore:     restore,
+			permanent:   false,
 		},
 		fn:           fn,
 		precondition: precondition,
+	}
+	return m
+}
+
+// NewPermanentTenantUpgrade constructs a TenantUpgrade marked as "permanent":
+// an upgrade that will run regardless of the cluster's bootstrap version.
+// Note however that the upgrade will still run at most once.
+func NewPermanentTenantUpgrade(
+	description string, v roachpb.Version, fn TenantUpgradeFunc, v22_2StartupMigrationName string,
+) *TenantUpgrade {
+	m := &TenantUpgrade{
+		upgrade: upgrade{
+			description:               description,
+			v:                         v,
+			permanent:                 true,
+			v22_2StartupMigrationName: v22_2StartupMigrationName,
+		},
+		fn:           fn,
+		precondition: nil,
 	}
 	return m
 }

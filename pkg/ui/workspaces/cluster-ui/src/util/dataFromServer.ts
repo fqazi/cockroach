@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-
 import FeatureFlags = cockroach.server.serverpb.FeatureFlags;
 
 export interface DataFromServer {
@@ -20,7 +19,6 @@ export interface DataFromServer {
   FeatureFlags: FeatureFlags;
   LicenseType: string;
   SecondsUntilLicenseExpiry: number;
-  IsManaged: boolean;
 }
 
 // Tell TypeScript about `window.dataFromServer`, which is set in a script

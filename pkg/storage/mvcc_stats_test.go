@@ -65,8 +65,7 @@ func assertEqImpl(
 		}
 		// NOTE: we use ComputeStats for the lock table stats because it is not
 		// supported by ComputeStatsForIter.
-		compLockMS, err := ComputeStats(
-			context.Background(), rw, lockKeyMin, lockKeyMax, ms.LastUpdateNanos)
+		compLockMS, err := ComputeStats(rw, lockKeyMin, lockKeyMax, ms.LastUpdateNanos)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1740,13 +1739,13 @@ var mvccStatsTests = []struct {
 	{
 		name: "ComputeStats",
 		fn: func(r Reader, start, end roachpb.Key, nowNanos int64) (enginepb.MVCCStats, error) {
-			return ComputeStats(context.Background(), r, start, end, nowNanos)
+			return ComputeStats(r, start, end, nowNanos)
 		},
 	},
 	{
 		name: "ComputeStatsForIter",
 		fn: func(r Reader, start, end roachpb.Key, nowNanos int64) (enginepb.MVCCStats, error) {
-			iter, err := r.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{
+			iter, err := r.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
 				KeyTypes:   IterKeyTypePointsAndRanges,
 				LowerBound: start,
 				UpperBound: end,
@@ -1934,6 +1933,18 @@ func TestMVCCStatsRandomized(t *testing.T) {
 		}
 		return true, ""
 	}
+	actions["InitPut"] = func(s *state) (bool, string) {
+		opts := MVCCWriteOptions{
+			Txn:   s.Txn,
+			Stats: s.MSDelta,
+		}
+		failOnTombstones := s.rng.Intn(2) == 0
+		desc := fmt.Sprintf("failOnTombstones=%t", failOnTombstones)
+		if _, err := MVCCInitPut(ctx, s.batch, s.key, s.TS, s.rngVal(), failOnTombstones, opts); err != nil {
+			return false, desc + ": " + err.Error()
+		}
+		return true, desc
+	}
 	actions["Del"] = func(s *state) (bool, string) {
 		opts := MVCCWriteOptions{
 			Txn:   s.Txn,
@@ -1992,22 +2003,20 @@ func TestMVCCStatsRandomized(t *testing.T) {
 			desc = fmt.Sprintf("mvccDeleteRangeUsingTombstone=%s",
 				roachpb.Span{Key: mvccRangeDelKey, EndKey: mvccRangeDelEndKey})
 			const idempotent = false
-			const maxLockConflicts = 0        // unlimited
-			const targetLockConflictBytes = 0 // unlimited
+			const maxLockConflicts = 0 // unlimited
 			msCovered := (*enginepb.MVCCStats)(nil)
 			err = MVCCDeleteRangeUsingTombstone(
 				ctx, s.batch, s.MSDelta, mvccRangeDelKey, mvccRangeDelEndKey, s.TS, hlc.ClockTimestamp{}, nil, /* leftPeekBound */
-				nil /* rightPeekBound */, idempotent, maxLockConflicts, targetLockConflictBytes, msCovered,
+				nil /* rightPeekBound */, idempotent, maxLockConflicts, msCovered,
 			)
 		} else {
 			rangeTombstoneThreshold := s.rng.Int63n(5)
-			desc = fmt.Sprintf("mvccPredicateDeleteRange=%s, predicates=%#v rangeTombstoneThreshold=%d",
+			desc = fmt.Sprintf("mvccPredicateDeleteRange=%s, predicates=%s, rangeTombstoneThreshold=%d",
 				roachpb.Span{Key: mvccRangeDelKey, EndKey: mvccRangeDelEndKey}, predicates, rangeTombstoneThreshold)
-			const maxLockConflicts = 0        // unlimited
-			const targetLockConflictBytes = 0 // unlimited
+			const maxLockConflicts = 0 // unlimited
 			_, err = MVCCPredicateDeleteRange(ctx, s.batch, s.MSDelta, mvccRangeDelKey, mvccRangeDelEndKey,
 				s.TS, hlc.ClockTimestamp{}, nil /* leftPeekBound */, nil, /* rightPeekBound */
-				predicates, 0, 0, rangeTombstoneThreshold, maxLockConflicts, targetLockConflictBytes)
+				predicates, 0, 0, rangeTombstoneThreshold, maxLockConflicts)
 		}
 		if err != nil {
 			return false, desc + ": " + err.Error()
@@ -2028,9 +2037,19 @@ func TestMVCCStatsRandomized(t *testing.T) {
 		endTime := hlc.MaxTimestamp
 		clearRangeThreshold := int(s.rng.Int63n(5))
 
+		// TODO(nvanbenschoten): this should be pushed into MVCCClearTimeRange, which
+		// does not currently handle replicated locks correctly.
+		locks, err := ScanLocks(ctx, s.batch, keySpan.Key, keySpan.EndKey, 1, 0)
+		if err == nil && len(locks) > 0 {
+			err = &kvpb.LockConflictError{Locks: locks}
+		}
+		if err != nil {
+			return false, err.Error()
+		}
+
 		desc := fmt.Sprintf("mvccClearTimeRange=%s, startTime=%s, endTime=%s", keySpan, startTime, endTime)
-		_, err := MVCCClearTimeRange(ctx, s.batch, s.MSDelta, keySpan.Key, keySpan.EndKey,
-			startTime, endTime, nil /* leftPeekBound */, nil /* rightPeekBound */, clearRangeThreshold, 0, 0, 0)
+		_, err = MVCCClearTimeRange(ctx, s.batch, s.MSDelta, keySpan.Key, keySpan.EndKey,
+			startTime, endTime, nil /* leftPeekBound */, nil /* rightPeekBound */, clearRangeThreshold, 0, 0)
 		if err != nil {
 			desc += " " + err.Error()
 			return false, desc + ": " + err.Error()
@@ -2043,13 +2062,7 @@ func TestMVCCStatsRandomized(t *testing.T) {
 		if s.rng.Intn(2) != 0 {
 			str = lock.Exclusive
 		}
-		var txnMeta *enginepb.TxnMeta
-		var ignoredSeq []enginepb.IgnoredSeqNumRange
-		if s.Txn != nil {
-			txnMeta = &s.Txn.TxnMeta
-			ignoredSeq = s.Txn.IgnoredSeqNums
-		}
-		if err := MVCCAcquireLock(ctx, s.batch, txnMeta, ignoredSeq, str, s.key, s.MSDelta, 0, 0); err != nil {
+		if err := MVCCAcquireLock(ctx, s.batch, s.Txn, str, s.key, s.MSDelta, 0); err != nil {
 			return false, err.Error()
 		}
 		return true, ""

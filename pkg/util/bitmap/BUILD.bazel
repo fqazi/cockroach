@@ -10,6 +10,7 @@ go_library(
 go_test(
     name = "bitmap_test",
     srcs = ["bitmap_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":bitmap"],
     deps = [
         "//pkg/util/randutil",

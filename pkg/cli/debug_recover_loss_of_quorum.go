@@ -13,18 +13,17 @@ import (
 	"os"
 	"path"
 	"runtime"
-	"slices"
 	"sort"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/loqrecovery"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/loqrecovery/loqrecoverypb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/strutil"
@@ -313,8 +312,7 @@ func runDebugDeadReplicaCollect(cmd *cobra.Command, args []string) error {
 			return errors.Wrapf(err, "failed to get admin connection to cluster")
 		}
 		defer finish()
-		replicaInfo, stats, err = loqrecovery.CollectRemoteReplicaInfo(ctx, c,
-			debugRecoverCollectInfoOpts.maxConcurrency, stderr /* logOutput */)
+		replicaInfo, stats, err = loqrecovery.CollectRemoteReplicaInfo(ctx, c, debugRecoverCollectInfoOpts.maxConcurrency)
 		if err != nil {
 			return errors.WithHint(errors.Wrap(err,
 				"failed to retrieve replica info from cluster"),
@@ -323,7 +321,7 @@ func runDebugDeadReplicaCollect(cmd *cobra.Command, args []string) error {
 	} else {
 		var stores []storage.Engine
 		for _, storeSpec := range debugRecoverCollectInfoOpts.Stores.Specs {
-			db, err := OpenEngine(storeSpec.Path, stopper, fs.ReadOnly, storage.MustExist)
+			db, err := OpenEngine(storeSpec.Path, stopper, storage.MustExist, storage.ReadOnly)
 			if err != nil {
 				return errors.WithHint(errors.Wrapf(err,
 					"failed to open store at path %q", storeSpec.Path),
@@ -431,8 +429,7 @@ func runDebugPlanReplicaRemoval(cmd *cobra.Command, args []string) error {
 			return errors.Wrapf(err, "failed to get admin connection to cluster")
 		}
 		defer finish()
-		replicas, stats, err = loqrecovery.CollectRemoteReplicaInfo(ctx, c,
-			debugRecoverPlanOpts.maxConcurrency, stderr /* logOutput */)
+		replicas, stats, err = loqrecovery.CollectRemoteReplicaInfo(ctx, c, debugRecoverPlanOpts.maxConcurrency)
 		if err != nil {
 			return errors.Wrapf(err, "failed to retrieve replica info from cluster")
 		}
@@ -572,20 +569,29 @@ Discarded live replicas: %d
 		return errors.Wrap(err, "failed to write recovery plan")
 	}
 
-	// No args means we collected connection info from cluster and need to
-	// preserve flags for subsequent invocation.
-	remoteArgs := getCLIClusterFlags(len(args) == 0, cmd, func(flag string) bool {
-		_, filter := planSpecificFlags[flag]
-		return filter
-	})
+	v := clusterversion.ClusterVersion{
+		Version: plan.Version,
+	}
+	if v.IsActive(clusterversion.V23_1) {
+		// No args means we collected connection info from cluster and need to
+		// preserve flags for subsequent invocation.
+		remoteArgs := getCLIClusterFlags(len(args) == 0, cmd, func(flag string) bool {
+			_, filter := planSpecificFlags[flag]
+			return filter
+		})
 
-	_, _ = fmt.Fprintf(stderr, `Plan created.
+		_, _ = fmt.Fprintf(stderr, `Plan created.
 To stage recovery application in half-online mode invoke:
 
 cockroach debug recover apply-plan %s %s
 
 Alternatively distribute plan to below nodes and invoke 'debug recover apply-plan --store=<store-dir> %s' on:
 `, remoteArgs, planFile, planFile)
+	} else {
+		_, _ = fmt.Fprintf(stderr, `Plan created.
+To complete recovery, distribute plan to below nodes and invoke 'debug recover apply-plan --store=<store-dir> %s' on:
+`, planFile)
+	}
 	for _, node := range report.UpdatedNodes {
 		_, _ = fmt.Fprintf(stderr, "- node n%d, store(s) %s\n", node.NodeID,
 			strutil.JoinIDs("s", node.StoreIDs))
@@ -812,15 +818,15 @@ func applyRecoveryToLocalStore(
 	batches := make(map[roachpb.StoreID]storage.Batch)
 	stores := make([]storage.Engine, len(debugRecoverExecuteOpts.Stores.Specs))
 	for i, storeSpec := range debugRecoverExecuteOpts.Stores.Specs {
-		store, err := OpenEngine(storeSpec.Path, stopper, fs.ReadWrite, storage.MustExist)
+		store, err := OpenEngine(storeSpec.Path, stopper, storage.MustExist)
 		if err != nil {
 			return errors.Wrapf(err, "failed to open store at path %q. ensure that store path is "+
 				"correct and that it is not used by another process", storeSpec.Path)
 		}
 		stores[i] = store
 		batch := store.NewBatch()
-		defer store.Close() //nolint:deferloop
-		defer batch.Close() //nolint:deferloop
+		defer store.Close()
+		defer batch.Close()
 
 		storeIdent, err := kvstorage.ReadStoreIdent(ctx, store)
 		if err != nil {
@@ -1096,7 +1102,7 @@ func diffPlanWithNodeStatus(
 		for k := range nodesWithPlan {
 			missing = append(missing, k)
 		}
-		slices.Sort(missing)
+		sort.Sort(roachpb.NodeIDSlice(missing))
 		for _, id := range missing {
 			result.appendError(fmt.Sprintf(" failed to find node n%d where plan must be staged", id))
 		}

@@ -20,16 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 )
 
-const MaxRetainedDSPDiagramsPerJob = 5
-const MaxDiagSize = 512 << 10
-
-// dspDiagMaxCulledPerWrite limits how many old diagrams writing a new one will
-// cull to try to maintain the limit of 5; typically it would cull no more than
-// one in the steady-state but an upgrading cluster that has accumulated many
-// old rows might try to cull more, so we bound how many are eligible at a time
-// to some large but finite upper-bound.
-const dspDiagMaxCulledPerWrite = 100
-
 // StorePlanDiagram stores the DistSQL diagram generated from p in the job info
 // table. The generation of the plan diagram and persistence to the info table
 // are done asynchronously and this method does not block on their completion.
@@ -41,41 +31,24 @@ func StorePlanDiagram(
 		ctx, cancel = stopper.WithCancelOnQuiesce(ctx)
 		defer cancel()
 
-		flowSpecs, cleanup := p.GenerateFlowSpecs()
-		defer cleanup(flowSpecs)
-		_, diagURL, err := execinfrapb.GeneratePlanDiagramURL(fmt.Sprintf("job:%d", jobID), flowSpecs,
-			execinfrapb.DiagramFlags{})
-		if err != nil {
-			log.Warningf(ctx, "plan diagram failed to generate: %v", err)
-			return
-		}
-		diagString := diagURL.String()
-		if len(diagString) > MaxDiagSize {
-			log.Warningf(ctx, "plan diagram is too large (%dk) to store", len(diagString)/1024)
-			return
-		}
-		if err := db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-			dspKey := profilerconstants.MakeDSPDiagramInfoKey(timeutil.Now().UnixNano())
-			infoStorage := jobs.InfoStorageForJob(txn, jobID)
-
-			// Limit total retained diagrams by culling older ones as needed.
-			count, err := infoStorage.Count(ctx, profilerconstants.DSPDiagramInfoKeyPrefix, profilerconstants.DSPDiagramInfoKeyMax)
+		err := db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+			flowSpecs := p.GenerateFlowSpecs()
+			_, diagURL, err := execinfrapb.GeneratePlanDiagramURL(fmt.Sprintf("job:%d", jobID), flowSpecs,
+				execinfrapb.DiagramFlags{})
 			if err != nil {
 				return err
 			}
-			const keep = MaxRetainedDSPDiagramsPerJob - 1
-			if toCull := min(count-keep, dspDiagMaxCulledPerWrite); toCull > 0 {
-				if err := infoStorage.DeleteRange(
-					ctx, profilerconstants.DSPDiagramInfoKeyPrefix, profilerconstants.DSPDiagramInfoKeyMax, toCull,
-				); err != nil {
-					return err
-				}
-			}
 
-			// Write the new diagram.
-			return infoStorage.Write(ctx, dspKey, []byte(diagString))
-		}); err != nil && ctx.Err() == nil {
-			log.Warningf(ctx, "failed to write DistSQL diagram for job %d: %v", jobID, err.Error())
+			dspKey := profilerconstants.MakeDSPDiagramInfoKey(timeutil.Now().UnixNano())
+			infoStorage := jobs.InfoStorageForJob(txn, jobID)
+			return infoStorage.Write(ctx, dspKey, []byte(diagURL.String()))
+		})
+		// Don't log the error if the context has been canceled. This will likely be
+		// when the node is shutting down and so it doesn't add value to spam the
+		// logs with the error.
+		if err != nil && ctx.Err() == nil {
+			log.Warningf(ctx, "failed to generate and write DistSQL diagram for job %d: %v",
+				jobID, err.Error())
 		}
 	}); err != nil {
 		log.Warningf(ctx, "failed to spawn task to generate DistSQL plan diagram for job %d: %v",

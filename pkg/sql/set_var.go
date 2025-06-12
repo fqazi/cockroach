@@ -30,7 +30,6 @@ import (
 
 // setVarNode represents a SET {SESSION | LOCAL} statement.
 type setVarNode struct {
-	zeroInputPlanNode
 	name  string
 	local bool
 	v     sessionVar
@@ -39,9 +38,7 @@ type setVarNode struct {
 }
 
 // resetAllNode represents a RESET ALL statement.
-type resetAllNode struct {
-	zeroInputPlanNode
-}
+type resetAllNode struct{}
 
 // SetVar sets session variables.
 // Privileges: None.
@@ -92,7 +89,7 @@ func (p *planner) SetVar(ctx context.Context, n *tree.SetVar) (planNode, error) 
 
 				var dummyHelper tree.IndexedVarHelper
 				typedValue, err := p.analyzeExpr(
-					ctx, expr, dummyHelper, types.String, false, "SET SESSION "+name)
+					ctx, expr, nil, dummyHelper, types.String, false, "SET SESSION "+name)
 				if err != nil {
 					return nil, wrapSetVarError(err, name, expr.String())
 				}
@@ -362,7 +359,7 @@ func makeTimeoutVarGetter(
 		case *tree.DString:
 			return string(*v), nil
 		case *tree.DInterval:
-			timeout, err = durationToTotalNanos(v.Duration)
+			timeout, err = intervalToDuration(v)
 			if err != nil {
 				return "", wrapSetVarError(err, varName, values[0].String())
 			}
@@ -376,7 +373,7 @@ func makeTimeoutVarGetter(
 func validateTimeoutVar(
 	style duration.IntervalStyle, timeString string, varName string,
 ) (time.Duration, error) {
-	interval, err := tree.ParseIntervalWithTypeMetadata(
+	interval, err := tree.ParseDIntervalWithTypeMetadata(
 		style,
 		timeString,
 		types.IntervalTypeMetadata{
@@ -388,7 +385,7 @@ func validateTimeoutVar(
 	if err != nil {
 		return 0, wrapSetVarError(err, varName, timeString)
 	}
-	timeout, err := durationToTotalNanos(interval)
+	timeout, err := intervalToDuration(interval)
 	if err != nil {
 		return 0, wrapSetVarError(err, varName, timeString)
 	}
@@ -425,20 +422,6 @@ func lockTimeoutVarSet(ctx context.Context, m sessionDataMutator, s string) erro
 	}
 
 	m.SetLockTimeout(timeout)
-	return nil
-}
-
-func deadlockTimeoutVarSet(ctx context.Context, m sessionDataMutator, s string) error {
-	timeout, err := validateTimeoutVar(
-		m.data.GetIntervalStyle(),
-		s,
-		"deadlock_timeout",
-	)
-	if err != nil {
-		return err
-	}
-
-	m.SetDeadlockTimeout(timeout)
 	return nil
 }
 
@@ -486,8 +469,8 @@ func idleInTransactionSessionTimeoutVarSet(
 	return nil
 }
 
-func durationToTotalNanos(duration duration.Duration) (time.Duration, error) {
-	nanos, _, _, err := duration.Encode()
+func intervalToDuration(interval *tree.DInterval) (time.Duration, error) {
+	nanos, _, _, err := interval.Encode()
 	if err != nil {
 		return 0, err
 	}

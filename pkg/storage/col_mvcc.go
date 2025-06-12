@@ -397,11 +397,10 @@ func MVCCScanToCols(
 	st *cluster.Settings,
 ) (MVCCScanResult, error) {
 	iter, err := newMVCCIterator(
-		ctx, reader, timestamp, !opts.Tombstones, opts.DontInterleaveIntents, IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			LowerBound:   key,
-			UpperBound:   endKey,
-			ReadCategory: opts.ReadCategory,
+		reader, timestamp, !opts.Tombstones, opts.DontInterleaveIntents, IterOptions{
+			KeyTypes:   IterKeyTypePointsAndRanges,
+			LowerBound: key,
+			UpperBound: endKey,
 		},
 	)
 	if err != nil {
@@ -433,16 +432,19 @@ func mvccScanToCols(
 
 	// Try to use the same root monitor (from the store) if the account is
 	// provided.
-	var monitor *mon.BytesMonitor
-	if opts.MemoryAccount != nil {
-		monitor = opts.MemoryAccount.Monitor()
-	} else {
+	monitor := opts.MemoryAccount.Monitor()
+	if monitor == nil {
 		// If we don't have the monitor, then we create a "fake" one that is not
 		// connected to the memory accounting system.
-		monitor = mon.NewMonitor(mon.Options{
-			Name:     mon.MakeName("mvcc-scan-to-cols"),
-			Settings: st,
-		})
+		monitor = mon.NewMonitor(
+			"mvcc-scan-to-cols",
+			mon.MemoryResource,
+			nil,           /* curCount */
+			nil,           /* maxHist */
+			-1,            /* increment */
+			math.MaxInt64, /* noteworthy */
+			st,
+		)
 		monitor.Start(ctx, nil /* pool */, mon.NewStandaloneBudget(math.MaxInt64))
 		defer monitor.Stop(ctx)
 	}

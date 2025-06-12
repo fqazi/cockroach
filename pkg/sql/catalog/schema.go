@@ -6,8 +6,6 @@
 package catalog
 
 import (
-	"context"
-
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 )
@@ -37,7 +35,7 @@ type SchemaDescriptor interface {
 	// stores all the signatures of the functions created under it and this method
 	// returns a collection of overloads with the same function name, each
 	// overload is prefixed with the same schema name.
-	GetResolvedFuncDefinition(ctx context.Context, name string) (*tree.ResolvedFunctionDefinition, bool)
+	GetResolvedFuncDefinition(name string) (*tree.ResolvedFunctionDefinition, bool)
 
 	// ForEachFunctionSignature iterates through all function signatures within
 	// the schema and calls fn on each signature.

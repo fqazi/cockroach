@@ -393,23 +393,23 @@ query T
 SELECT create_statement FROM [SHOW CREATE TABLE regional_primary_region_table]
 ----
 CREATE TABLE public.regional_primary_region_table (
-  a INT8 NULL,
-  rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-  CONSTRAINT regional_primary_region_table_pkey PRIMARY KEY (rowid ASC)
-) LOCALITY REGIONAL BY TABLE IN PRIMARY REGION;
+                                                a INT8 NULL,
+                                                rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
+                                                CONSTRAINT regional_primary_region_table_pkey PRIMARY KEY (rowid ASC)
+) LOCALITY REGIONAL BY TABLE IN PRIMARY REGION
 
 query TT
 SHOW ZONE CONFIGURATION FOR TABLE regional_primary_region_table
 ----
-TABLE regional_primary_region_table  ALTER TABLE regional_primary_region_table CONFIGURE ZONE USING
-                                       range_min_bytes = 134217728,
-                                       range_max_bytes = 536870912,
-                                       gc.ttlseconds = 14400,
-                                       num_replicas = 5,
-                                       num_voters = 5,
-                                       constraints = '{+region=ap-southeast-2: 2, +region=ca-central-1: 1, +region=us-east-1: 1}',
-                                       voter_constraints = '{+region=ca-central-1: 2}',
-                                       lease_preferences = '[[+region=ca-central-1]]'
+DATABASE multi_region_test_db  ALTER DATABASE multi_region_test_db CONFIGURE ZONE USING
+                                 range_min_bytes = 134217728,
+                                 range_max_bytes = 536870912,
+                                 gc.ttlseconds = 14400,
+                                 num_replicas = 5,
+                                 num_voters = 5,
+                                 constraints = '{+region=ap-southeast-2: 1, +region=ca-central-1: 1, +region=us-east-1: 1}',
+                                 voter_constraints = '{+region=ca-central-1: 2}',
+                                 lease_preferences = '[[+region=ca-central-1]]'
 
 statement error cannot set PARTITION BY on a table in a multi-region enabled database
 ALTER TABLE regional_primary_region_table PARTITION BY LIST (id) (
@@ -428,23 +428,23 @@ query T
 SELECT create_statement FROM [SHOW CREATE TABLE regional_implicit_primary_region_table]
 ----
 CREATE TABLE public.regional_implicit_primary_region_table (
-  a INT8 NULL,
-  rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-  CONSTRAINT regional_implicit_primary_region_table_pkey PRIMARY KEY (rowid ASC)
-) LOCALITY REGIONAL BY TABLE IN PRIMARY REGION;
+                                                a INT8 NULL,
+                                                rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
+                                                CONSTRAINT regional_implicit_primary_region_table_pkey PRIMARY KEY (rowid ASC)
+) LOCALITY REGIONAL BY TABLE IN PRIMARY REGION
 
 query TT
 SHOW ZONE CONFIGURATION FOR TABLE regional_implicit_primary_region_table
 ----
-TABLE regional_implicit_primary_region_table  ALTER TABLE regional_implicit_primary_region_table CONFIGURE ZONE USING
-                                                range_min_bytes = 134217728,
-                                                range_max_bytes = 536870912,
-                                                gc.ttlseconds = 14400,
-                                                num_replicas = 5,
-                                                num_voters = 5,
-                                                constraints = '{+region=ap-southeast-2: 2, +region=ca-central-1: 1, +region=us-east-1: 1}',
-                                                voter_constraints = '{+region=ca-central-1: 2}',
-                                                lease_preferences = '[[+region=ca-central-1]]'
+DATABASE multi_region_test_db  ALTER DATABASE multi_region_test_db CONFIGURE ZONE USING
+                                 range_min_bytes = 134217728,
+                                 range_max_bytes = 536870912,
+                                 gc.ttlseconds = 14400,
+                                 num_replicas = 5,
+                                 num_voters = 5,
+                                 constraints = '{+region=ap-southeast-2: 1, +region=ca-central-1: 1, +region=us-east-1: 1}',
+                                 voter_constraints = '{+region=ca-central-1: 2}',
+                                 lease_preferences = '[[+region=ca-central-1]]'
 
 statement ok
 CREATE TABLE "regional_us-east-1_table" (a int) LOCALITY REGIONAL BY TABLE IN "us-east-1"
@@ -453,10 +453,10 @@ query T
 SELECT create_statement FROM [SHOW CREATE TABLE "regional_us-east-1_table"]
 ----
 CREATE TABLE public."regional_us-east-1_table" (
-  a INT8 NULL,
-  rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-  CONSTRAINT "regional_us-east-1_table_pkey" PRIMARY KEY (rowid ASC)
-) LOCALITY REGIONAL BY TABLE IN "us-east-1";
+                                             a INT8 NULL,
+                                             rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
+                                             CONSTRAINT "regional_us-east-1_table_pkey" PRIMARY KEY (rowid ASC)
+) LOCALITY REGIONAL BY TABLE IN "us-east-1"
 
 query TT
 SHOW ZONE CONFIGURATION FOR TABLE "regional_us-east-1_table"
@@ -467,7 +467,7 @@ TABLE "regional_us-east-1_table"  ALTER TABLE "regional_us-east-1_table" CONFIGU
                                     gc.ttlseconds = 14400,
                                     num_replicas = 5,
                                     num_voters = 5,
-                                    constraints = '{+region=ap-southeast-2: 2, +region=ca-central-1: 1, +region=us-east-1: 1}',
+                                    constraints = '{+region=ap-southeast-2: 1, +region=ca-central-1: 1, +region=us-east-1: 1}',
                                     voter_constraints = '{+region=us-east-1: 2}',
                                     lease_preferences = '[[+region=us-east-1]]'
 
@@ -481,10 +481,10 @@ query T
 SELECT create_statement FROM [SHOW CREATE TABLE global_table]
 ----
 CREATE TABLE public.global_table (
-  a INT8 NULL,
-  rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-  CONSTRAINT global_table_pkey PRIMARY KEY (rowid ASC)
-) LOCALITY GLOBAL;
+                   a INT8 NULL,
+                   rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
+                   CONSTRAINT global_table_pkey PRIMARY KEY (rowid ASC)
+) LOCALITY GLOBAL
 
 query TT
 SHOW ZONE CONFIGURATION FOR TABLE global_table
@@ -547,7 +547,7 @@ ALTER DATABASE system PRIMARY REGION "ap-southeast-2"
 # are in the system tenant. Hence the lack of error code checking and the
 # regex matching both possible outcomes.
 skipif config multiregion-9node-3region-3azs-tenant
-statement error (user testuser may not modify the system database|modifying the regions of system database is not supported)
+statement error user testuser may not modify the system database|modifying the regions of system database is not supported
 ALTER DATABASE system PRIMARY REGION "ap-southeast-2"
 
 user root
@@ -933,15 +933,15 @@ DATABASE alter_survive_db  ALTER DATABASE alter_survive_db CONFIGURE ZONE USING
 query TT
 SHOW ZONE CONFIGURATION FOR TABLE t_no_locality
 ----
-TABLE t_no_locality  ALTER TABLE t_no_locality CONFIGURE ZONE USING
-                       range_min_bytes = 134217728,
-                       range_max_bytes = 536870912,
-                       gc.ttlseconds = 14400,
-                       num_replicas = 5,
-                       num_voters = 5,
-                       constraints = '{+region=ap-southeast-2: 2, +region=ca-central-1: 1, +region=us-east-1: 1}',
-                       voter_constraints = '{+region=ca-central-1: 2}',
-                       lease_preferences = '[[+region=ca-central-1]]'
+DATABASE alter_survive_db  ALTER DATABASE alter_survive_db CONFIGURE ZONE USING
+                             range_min_bytes = 134217728,
+                             range_max_bytes = 536870912,
+                             gc.ttlseconds = 14400,
+                             num_replicas = 5,
+                             num_voters = 5,
+                             constraints = '{+region=ap-southeast-2: 1, +region=ca-central-1: 1, +region=us-east-1: 1}',
+                             voter_constraints = '{+region=ca-central-1: 2}',
+                             lease_preferences = '[[+region=ca-central-1]]'
 
 query TT
 SHOW ZONE CONFIGURATION FOR TABLE t_global
@@ -1068,10 +1068,10 @@ query T
 SELECT create_statement FROM [SHOW CREATE TABLE no_initial_region.t]
 ----
 CREATE TABLE public.t (
-  k INT8 NULL,
-  rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-  CONSTRAINT t_pkey PRIMARY KEY (rowid ASC)
-) LOCALITY REGIONAL BY TABLE IN PRIMARY REGION;
+                                                k INT8 NULL,
+                                                rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
+                                                CONSTRAINT t_pkey PRIMARY KEY (rowid ASC)
+) LOCALITY REGIONAL BY TABLE IN PRIMARY REGION
 
 statement ok
 CREATE DATABASE non_multi_region_db
@@ -1522,10 +1522,10 @@ SELECT create_statement from [SHOW CREATE TABLE t_as]
 create_statement
 CREATE TABLE public.t_as (
   i INT8 NULL,
-  crdb_region public.crdb_internal_region NULL,
+  crdb_region "mr-create-table-as".public.crdb_internal_region NULL,
   rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
   CONSTRAINT t_as_pkey PRIMARY KEY (rowid ASC)
-) LOCALITY REGIONAL BY TABLE IN PRIMARY REGION;
+) LOCALITY REGIONAL BY TABLE IN PRIMARY REGION
 
 
 statement error cannot use column crdb_region for REGIONAL BY ROW table as it may contain NULL values
@@ -1549,10 +1549,10 @@ SELECT create_statement from [SHOW CREATE TABLE t_as]
 create_statement
 CREATE TABLE public.t_as (
   i INT8 NULL,
-  crdb_region public.crdb_internal_region NOT VISIBLE NOT NULL DEFAULT default_to_database_primary_region(gateway_region())::public.crdb_internal_region,
+  crdb_region "mr-create-table-as".public.crdb_internal_region NOT VISIBLE NOT NULL DEFAULT default_to_database_primary_region(gateway_region())::"mr-create-table-as".public.crdb_internal_region,
   rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
   CONSTRAINT t_as_pkey PRIMARY KEY (rowid ASC)
-) LOCALITY REGIONAL BY ROW AS crdb_region;
+) LOCALITY REGIONAL BY ROW AS crdb_region
 
 query TI colnames,rowsort
 SELECT crdb_region, i FROM t_as
@@ -1592,9 +1592,9 @@ SELECT create_statement from [SHOW CREATE TABLE t_as]
 create_statement
 CREATE TABLE public.t_as (
   i INT8 NOT NULL,
-  crdb_region public.crdb_internal_region NOT VISIBLE NOT NULL DEFAULT default_to_database_primary_region(gateway_region())::public.crdb_internal_region,
+  crdb_region "mr-create-table-as".public.crdb_internal_region NOT VISIBLE NOT NULL DEFAULT default_to_database_primary_region(gateway_region())::"mr-create-table-as".public.crdb_internal_region,
   CONSTRAINT t_as_pkey PRIMARY KEY (i ASC)
-) LOCALITY REGIONAL BY ROW AS crdb_region;
+) LOCALITY REGIONAL BY ROW AS crdb_region
 
 query T colnames
 SELECT create_statement from [SHOW CREATE TABLE t]
@@ -1602,9 +1602,9 @@ SELECT create_statement from [SHOW CREATE TABLE t]
 create_statement
 CREATE TABLE public.t (
   i INT8 NOT NULL,
-  crdb_region public.crdb_internal_region NOT VISIBLE NOT NULL DEFAULT default_to_database_primary_region(gateway_region())::public.crdb_internal_region,
+  crdb_region "mr-create-table-as".public.crdb_internal_region NOT VISIBLE NOT NULL DEFAULT default_to_database_primary_region(gateway_region())::"mr-create-table-as".public.crdb_internal_region,
   CONSTRAINT t_pkey PRIMARY KEY (i ASC)
-) LOCALITY REGIONAL BY ROW;
+) LOCALITY REGIONAL BY ROW
 
 # Declare victory, as this is the closest we can get.
 statement ok
@@ -1627,36 +1627,5 @@ CREATE TABLE drop_region_126549.t1 (n string PRIMARY KEY, INDEX((lower(n)))) LOC
 statement ok
 ALTER DATABASE drop_region_126549 DROP REGION "us-east-1";
 
-subtest alter_type_mr
-
-statement ok
-USE region_test_db;
-
-statement ok
-CREATE TABLE chgme (C1 INT) LOCALITY REGIONAL BY ROW;
-
-statement ok
-INSERT INTO chgme VALUES (0),(1);
-
-let $sql_safe_updates_state
-SELECT value FROM information_schema.session_variables where variable='sql_safe_updates';
-
-statement ok
-SET sql_safe_updates = false;
-
-statement ok
-ALTER TABLE chgme ALTER COLUMN C1 SET DATA TYPE TEXT;
-
-statement ok
-SET sql_safe_updates = $sql_safe_updates_state;
-
-query T
-SELECT * FROM chgme ORDER BY C1;
-----
-0
-1
-
-statement ok
-DROP TABLE chgme;
-
 subtest end
+

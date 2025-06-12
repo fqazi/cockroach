@@ -26,7 +26,6 @@ go_library(
         "//pkg/kv/kvprober",
         "//pkg/kv/kvserver/liveness/livenesspb",
         "//pkg/multitenant/tenantcapabilities",
-        "//pkg/multitenant/tenantcapabilitiespb",
         "//pkg/roachpb",
         "//pkg/rpc",
         "//pkg/security/securitytest",
@@ -38,20 +37,20 @@ go_library(
         "//pkg/sql/catalog",
         "//pkg/sql/catalog/descpb",
         "//pkg/storage",
-        "//pkg/testutils/pgurlutils",
         "//pkg/testutils/skip",
+        "//pkg/testutils/sqlutils",
+        "//pkg/util",
         "//pkg/util/envutil",
         "//pkg/util/hlc",
         "//pkg/util/httputil",
         "//pkg/util/log",
-        "//pkg/util/metamorphic",
         "//pkg/util/protoutil",
         "//pkg/util/randutil",
         "//pkg/util/stop",
         "//pkg/util/tracing",
         "//pkg/util/uuid",
         "@com_github_cockroachdb_errors//:errors",
-        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//:go_default_library",
     ],
 )
 
@@ -65,8 +64,8 @@ genrule(
        ApplicationLayerInterface
 $(location @com_github_cockroachdb_gostdlib//x/tools/cmd/goimports) -w $@
 """,
-    tools = [
-        "//pkg/testutils/serverutils/fwgen",
+    exec_tools = [
+        "//pkg/testutils/serverutils/fwgen:fwgen",
         "@com_github_cockroachdb_gostdlib//x/tools/cmd/goimports",
     ],
     visibility = [
@@ -85,8 +84,8 @@ genrule(
        StorageLayerInterface
 $(location @com_github_cockroachdb_gostdlib//x/tools/cmd/goimports) -w $@
 """,
-    tools = [
-        "//pkg/testutils/serverutils/fwgen",
+    exec_tools = [
+        "//pkg/testutils/serverutils/fwgen:fwgen",
         "@com_github_cockroachdb_gostdlib//x/tools/cmd/goimports",
     ],
     visibility = [
@@ -105,8 +104,8 @@ genrule(
        TenantControlInterface
 $(location @com_github_cockroachdb_gostdlib//x/tools/cmd/goimports) -w $@
 """,
-    tools = [
-        "//pkg/testutils/serverutils/fwgen",
+    exec_tools = [
+        "//pkg/testutils/serverutils/fwgen:fwgen",
         "@com_github_cockroachdb_gostdlib//x/tools/cmd/goimports",
     ],
     visibility = [
@@ -125,8 +124,8 @@ genrule(
        TestServerController
 $(location @com_github_cockroachdb_gostdlib//x/tools/cmd/goimports) -w $@
 """,
-    tools = [
-        "//pkg/testutils/serverutils/fwgen",
+    exec_tools = [
+        "//pkg/testutils/serverutils/fwgen:fwgen",
         "@com_github_cockroachdb_gostdlib//x/tools/cmd/goimports",
     ],
     visibility = [
@@ -142,13 +141,16 @@ go_test(
         "conditional_wrap_test.go",
         "test_url_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":serverutils"],
     deps = [
+        "//pkg/base",
         "//pkg/security/securityassets",
         "//pkg/security/securitytest",
         "//pkg/server",
         "//pkg/testutils",
         "//pkg/util/leaktest",
+        "//pkg/util/log",
         "@com_github_stretchr_testify//require",
     ],
 )

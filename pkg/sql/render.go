@@ -11,6 +11,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util"
@@ -28,7 +29,15 @@ type renderNode struct {
 	// Enforce this using NoCopy.
 	_ util.NoCopy
 
-	singleInputPlanNode
+	// source describes where the data is coming from.
+	// populated initially by initFrom().
+	// potentially modified by index selection.
+	source planDataSource
+
+	// Helper for indexed vars. This holds the actual instances of
+	// IndexedVars replaced in Exprs. The indexed vars contain indices
+	// to the array of source columns.
+	ivarHelper tree.IndexedVarHelper
 
 	// Rendering expressions for rows and corresponding output columns.
 	render []tree.TypedExpr
@@ -44,11 +53,23 @@ type renderNode struct {
 	reqOrdering ReqOrdering
 }
 
-var _ tree.IndexedVarContainer = &renderNode{}
+var _ eval.IndexedVarContainer = &renderNode{}
+
+// IndexedVarEval implements the eval.IndexedVarContainer interface.
+func (r *renderNode) IndexedVarEval(
+	ctx context.Context, idx int, e tree.ExprEvaluator,
+) (tree.Datum, error) {
+	panic("renderNode can't be run in local mode")
+}
 
 // IndexedVarResolvedType implements the tree.IndexedVarContainer interface.
 func (r *renderNode) IndexedVarResolvedType(idx int) *types.T {
-	return r.columns[idx].Typ
+	return r.source.columns[idx].Typ
+}
+
+// IndexedVarNodeFormatter implements the tree.IndexedVarContainer interface.
+func (r *renderNode) IndexedVarNodeFormatter(idx int) tree.NodeFormatter {
+	return r.source.columns.Name(idx)
 }
 
 func (r *renderNode) startExec(runParams) error {
@@ -63,7 +84,7 @@ func (r *renderNode) Values() tree.Datums {
 	panic("renderNode can't be run in local mode")
 }
 
-func (r *renderNode) Close(ctx context.Context) { r.input.Close(ctx) }
+func (r *renderNode) Close(ctx context.Context) { r.source.plan.Close(ctx) }
 
 // getTimestamp will get the timestamp for an AS OF clause. It will also
 // verify the timestamp against the transaction. If AS OF SYSTEM TIME is

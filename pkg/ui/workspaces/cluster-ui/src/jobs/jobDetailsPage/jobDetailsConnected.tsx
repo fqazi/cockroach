@@ -3,32 +3,30 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import long from "long";
 import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
-import { Dispatch } from "redux";
 
-import {
-  ListJobProfilerExecutionDetailsRequest,
-  createInitialState,
-  getExecutionDetailFile,
-} from "src/api";
-import { JobRequest, JobResponse } from "src/api/jobsApi";
 import { AppState, uiConfigActions } from "src/store";
-import { actions as jobActions } from "src/store/jobDetails";
-import {
-  initialState,
-  actions as jobProfilerActions,
-} from "src/store/jobs/jobProfiler.reducer";
-import { selectHasAdminRole } from "src/store/uiConfig";
-
-import { selectID } from "../../selectors";
-
 import {
   JobDetailsStateProps,
   JobDetailsDispatchProps,
   JobDetails,
 } from "./jobDetails";
+import { JobRequest, JobResponse } from "src/api/jobsApi";
+import { actions as jobActions } from "src/store/jobDetails";
+import { selectID } from "../../selectors";
+import {
+  ListJobProfilerExecutionDetailsRequest,
+  createInitialState,
+  getExecutionDetailFile,
+} from "src/api";
+import {
+  initialState,
+  actions as jobProfilerActions,
+} from "src/store/jobs/jobProfiler.reducer";
+import { Dispatch } from "redux";
+import long from "long";
+import { selectHasAdminRole } from "src/store/uiConfig";
 
 const emptyState = createInitialState<JobResponse>();
 
@@ -59,12 +57,7 @@ const mapDispatchToProps = (dispatch: Dispatch): JobDetailsDispatchProps => ({
 });
 
 export const JobDetailsPageConnected = withRouter(
-  connect<
-    JobDetailsStateProps,
-    JobDetailsDispatchProps,
-    RouteComponentProps,
-    AppState
-  >(
+  connect<JobDetailsStateProps, JobDetailsDispatchProps, RouteComponentProps>(
     mapStateToProps,
     mapDispatchToProps,
   )(JobDetails),

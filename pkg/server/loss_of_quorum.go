@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/strutil"
@@ -65,7 +64,7 @@ func logPendingLossOfQuorumRecoveryEvents(ctx context.Context, stores *kvserver.
 			s.TODOEngine(),
 			func(ctx context.Context, record loqrecoverypb.ReplicaRecoveryRecord) (bool, error) {
 				event := record.AsStructuredLog()
-				log.StructuredEvent(ctx, severity.INFO, &event)
+				log.StructuredEvent(ctx, &event)
 				return false, nil
 			})
 		if eventCount > 0 {
@@ -98,7 +97,7 @@ func maybeRunLossOfQuorumRecoveryCleanup(
 				func(ctx context.Context, record loqrecoverypb.ReplicaRecoveryRecord) (bool, error) {
 					sqlExec := func(ctx context.Context, stmt string, args ...interface{}) (int, error) {
 						return ie.ExecEx(ctx, "", nil,
-							sessiondata.NodeUserSessionDataOverride, stmt, args...)
+							sessiondata.RootUserSessionDataOverride, stmt, args...)
 					}
 					if err := loqrecovery.UpdateRangeLogWithRecovery(ctx, sqlExec, record); err != nil {
 						return false, errors.Wrap(err,

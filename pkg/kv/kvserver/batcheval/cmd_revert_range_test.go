@@ -18,10 +18,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -32,9 +30,9 @@ import (
 func hashRange(t *testing.T, reader storage.Reader, start, end roachpb.Key) []byte {
 	t.Helper()
 	h := sha256.New()
-	require.NoError(t, reader.MVCCIterate(context.Background(), start, end,
-		storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypePointsOnly,
-		fs.UnknownReadCategory, func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
+	require.NoError(t, reader.MVCCIterate(
+		start, end, storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypePointsOnly,
+		func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
 			h.Write(kv.Key.Key)
 			h.Write(kv.Value)
 			return nil
@@ -112,14 +110,9 @@ func TestCmdRevertRange(t *testing.T) {
 		EndKey:   roachpb.RKey(endKey),
 	}
 	cArgs := batcheval.CommandArgs{Header: kvpb.Header{RangeID: desc.RangeID, Timestamp: tsReq, MaxSpanRequestKeys: 2}}
-	evalCtx := &batcheval.MockEvalCtx{
-		ClusterSettings: cluster.MakeTestingClusterSettings(),
-		Desc:            &desc,
-		Clock:           hlc.NewClockForTesting(nil),
-		Stats:           stats,
-	}
+	evalCtx := &batcheval.MockEvalCtx{Desc: &desc, Clock: hlc.NewClockForTesting(nil), Stats: stats}
 	cArgs.EvalCtx = evalCtx.EvalContext()
-	afterStats, err := storage.ComputeStats(ctx, eng, keys.LocalMax, keys.MaxKey, 0)
+	afterStats, err := storage.ComputeStats(eng, keys.LocalMax, keys.MaxKey, 0)
 	require.NoError(t, err)
 	for _, tc := range []struct {
 		name     string
@@ -174,7 +167,7 @@ func TestCmdRevertRange(t *testing.T) {
 			}
 			evalStats := afterStats
 			evalStats.Add(*cArgs.Stats)
-			realStats, err := storage.ComputeStats(ctx, batch, keys.LocalMax, keys.MaxKey, evalStats.LastUpdateNanos)
+			realStats, err := storage.ComputeStats(batch, keys.LocalMax, keys.MaxKey, evalStats.LastUpdateNanos)
 			require.NoError(t, err)
 			require.Equal(t, realStats, evalStats)
 		})
@@ -186,6 +179,7 @@ func TestCmdRevertRange(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	sumCIntent := hashRange(t, eng, startKey, endKey)
 
 	// Lay down more revisions (skipping even keys to avoid our intent on 0012).
 	for i := 7; i < keyCount+7; i += 2 {
@@ -202,12 +196,7 @@ func TestCmdRevertRange(t *testing.T) {
 	sumD := hashRange(t, eng, startKey, endKey)
 
 	// Re-set EvalCtx to pick up revised stats.
-	cArgs.EvalCtx = (&batcheval.MockEvalCtx{
-		ClusterSettings: cluster.MakeTestingClusterSettings(),
-		Desc:            &desc,
-		Clock:           hlc.NewClockForTesting(nil),
-		Stats:           stats,
-	}).EvalContext( /* maxOffset */ )
+	cArgs.EvalCtx = (&batcheval.MockEvalCtx{Desc: &desc, Clock: hlc.NewClockForTesting(nil), Stats: stats}).EvalContext( /* maxOffset */ )
 	for _, tc := range []struct {
 		name        string
 		ts          hlc.Timestamp
@@ -215,9 +204,9 @@ func TestCmdRevertRange(t *testing.T) {
 		expectedSum []byte
 		resumes     int
 	}{
-		{"hit intent", tsB, true, nil, 0},
-		{"hit intent exactly", tsC, true, nil, 0},
-		{"clear above intent", tsC.Add(0, 1), true, nil, 0},
+		{"hit intent", tsB, true, nil, 2},
+		{"hit intent exactly", tsC, false, sumCIntent, 2},
+		{"clear above intent", tsC.Add(0, 1), false, sumCIntent, 2},
 		{"clear nothing above intent", tsD, false, sumD, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -303,10 +292,9 @@ func TestCmdRevertRangeMVCCRangeTombstones(t *testing.T) {
 		var ms enginepb.MVCCStats
 		cArgs := batcheval.CommandArgs{
 			EvalCtx: (&batcheval.MockEvalCtx{
-				ClusterSettings: cluster.MakeTestingClusterSettings(),
-				Desc:            &desc,
-				Clock:           hlc.NewClockForTesting(nil),
-				Stats:           ms,
+				Desc:  &desc,
+				Clock: hlc.NewClockForTesting(nil),
+				Stats: ms,
 			}).EvalContext(),
 			Header: kvpb.Header{
 				RangeID:   desc.RangeID,

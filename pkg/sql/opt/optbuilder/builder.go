@@ -10,7 +10,6 @@ import (
 	"strconv"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
-	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/delegate"
@@ -90,14 +89,11 @@ type Builder struct {
 	factory *norm.Factory
 	stmt    tree.Statement
 
-	ctx context.Context
-	// verboseTracing is set if expensive logging is enabled on ctx. If false,
-	// then some work can be omitted.
-	verboseTracing bool
-	semaCtx        *tree.SemaContext
-	evalCtx        *eval.Context
-	catalog        cat.Catalog
-	scopeAlloc     []scope
+	ctx        context.Context
+	semaCtx    *tree.SemaContext
+	evalCtx    *eval.Context
+	catalog    cat.Catalog
+	scopeAlloc []scope
 
 	// stmtTree tracks the hierarchy of statements to ensure that multiple
 	// modifications to the same table cannot corrupt indexes (see #70731).
@@ -138,24 +134,16 @@ type Builder struct {
 	// are disabled and only statements whitelisted are allowed.
 	insideFuncDef bool
 
-	// If set, we are processing a trigger definition; in this case catalog caches
-	// are disabled.
-	insideTriggerDef bool
-
 	// insideUDF is true when the current expressions are being built within a
 	// UDF.
+	// TODO(mgartner): Once other UDFs can be referenced from within a UDF, a
+	// boolean will not be sufficient to track whether or not we are in a UDF.
+	// We'll need to track the depth of the UDFs we are building expressions
+	// within.
 	insideUDF bool
-
-	// insideSQLRoutine is true when the current expressions are being built
-	// within a SQL UDF or a SQL procedure.
-	insideSQLRoutine bool
 
 	// insideDataSource is true when we are processing a data source.
 	insideDataSource bool
-
-	// insideNestedPLpgSQLCall is true when we are processing a nested PLpgSQL
-	// CALL statement.
-	insideNestedPLpgSQLCall bool
 
 	// If set, we are collecting view dependencies in schemaDeps. This can only
 	// happen inside view/function definitions.
@@ -166,9 +154,8 @@ type Builder struct {
 	// inner view/function).
 	trackSchemaDeps bool
 
-	schemaDeps         opt.SchemaDeps
-	schemaTypeDeps     opt.SchemaTypeDeps
-	schemaFunctionDeps opt.SchemaFunctionDeps
+	schemaDeps     opt.SchemaDeps
+	schemaTypeDeps opt.SchemaTypeDeps
 
 	// If set, the data source names in the AST are rewritten to the fully
 	// qualified version (after resolution). Used to construct the strings for
@@ -184,23 +171,6 @@ type Builder struct {
 	// subqueryNameIdx helps generate unique subquery names during star
 	// expansion.
 	subqueryNameIdx int
-
-	// checkPrivilegeUser helps identify the username.SQLUsername for privilege
-	// checks performed. For routines that are specified with SECURITY
-	// DEFINER, the owner of the routine is checked. Otherwise, the check is
-	// against the user of the current session.
-	checkPrivilegeUser username.SQLUsername
-
-	// builtTriggerFuncs caches already-built trigger functions for a table. It is
-	// necessary to cache these functions since triggers can recursively reference
-	// one another.
-	//
-	// NOTE: Since we map from StableID, multiple mutations to the same table may
-	// reuse the same cached UDFDefinition to invoke a trigger function. This is
-	// ok because UDFDefinitions are independent of the context in which they are
-	// built, and can be safely reused across different call-sites within the same
-	// memo.
-	builtTriggerFuncs map[cat.StableID][]cachedTriggerFunc
 }
 
 // New creates a new Builder structure initialized with the given
@@ -218,14 +188,12 @@ func New(
 	// be repeated.
 	semaCtx.Properties.IgnoreUnpreferredOverloads = evalCtx.SessionData().LegacyVarcharTyping
 	return &Builder{
-		factory:            factory,
-		stmt:               stmt,
-		ctx:                ctx,
-		verboseTracing:     log.ExpensiveLogEnabled(ctx, 2),
-		semaCtx:            semaCtx,
-		evalCtx:            evalCtx,
-		catalog:            catalog,
-		checkPrivilegeUser: catalog.GetCurrentUser(),
+		factory: factory,
+		stmt:    stmt,
+		ctx:     ctx,
+		semaCtx: semaCtx,
+		evalCtx: evalCtx,
+		catalog: catalog,
 	}
 }
 
@@ -363,17 +331,11 @@ func (b *Builder) buildStmt(
 		switch stmt := stmt.(type) {
 		case *tree.Select, tree.SelectStatement:
 		case *tree.Insert, *tree.Update, *tree.Delete:
-		case *tree.Call:
-		case *tree.DoBlock:
-			if !b.evalCtx.Settings.Version.ActiveVersion(b.ctx).IsActive(clusterversion.V25_1) {
-				panic(doBlockVersionErr)
+			activeVersion := b.evalCtx.Settings.Version.ActiveVersion(b.ctx)
+			if !activeVersion.IsActive(clusterversion.V23_2) {
+				panic(unimplemented.Newf("user-defined functions", "%s usage inside a function definition is not supported until version 23.2", stmt.StatementTag()))
 			}
 		default:
-			if tree.CanModifySchema(stmt) {
-				panic(unimplemented.NewWithIssuef(110080,
-					"%s usage inside a function definition is not supported", stmt.StatementTag(),
-				))
-			}
 			panic(unimplemented.Newf("user-defined functions", "%s usage inside a function definition", stmt.StatementTag()))
 		}
 	}
@@ -409,14 +371,8 @@ func (b *Builder) buildStmt(
 	case *tree.CreateRoutine:
 		return b.buildCreateFunction(stmt, inScope)
 
-	case *tree.CreateTrigger:
-		return b.buildCreateTrigger(stmt, inScope)
-
 	case *tree.Call:
 		return b.buildProcedure(stmt, inScope)
-
-	case *tree.DoBlock:
-		return b.buildDo(stmt, inScope)
 
 	case *tree.Explain:
 		return b.buildExplain(stmt, inScope)
@@ -536,7 +492,7 @@ func (b *Builder) trackReferencedColumnForViews(col *scopeColumn) {
 
 func (b *Builder) maybeTrackRegclassDependenciesForViews(texpr tree.TypedExpr) {
 	if b.trackSchemaDeps {
-		if texpr != nil && texpr.ResolvedType().Identical(types.RegClass) {
+		if texpr.ResolvedType() == types.RegClass {
 			// We do not add a dependency if the RegClass Expr contains variables,
 			// we cannot resolve the variables in this context. This matches Postgres
 			// behavior.
@@ -570,7 +526,7 @@ func (b *Builder) maybeTrackRegclassDependenciesForViews(texpr tree.TypedExpr) {
 
 func (b *Builder) maybeTrackUserDefinedTypeDepsForViews(texpr tree.TypedExpr) {
 	if b.trackSchemaDeps {
-		if texpr != nil && texpr.ResolvedType().UserDefined() {
+		if texpr.ResolvedType().UserDefined() {
 			typedesc.GetTypeDescriptorClosure(texpr.ResolvedType()).ForEach(func(id descpb.ID) {
 				b.schemaTypeDeps.Add(int(id))
 			})

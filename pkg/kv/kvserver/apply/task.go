@@ -8,8 +8,8 @@ package apply
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/errors"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 // StateMachine represents an instance of a replicated state machine being

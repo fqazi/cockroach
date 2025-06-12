@@ -33,30 +33,6 @@ func CPU(n int) Option {
 	}
 }
 
-// WorkloadNodeCount indicates the count of last nodes in cluster to be treated
-// as workload node. Defaults to a VM with 4 CPUs if not specified by
-// WorkloadNodeCPUs.
-func WorkloadNodeCount(n int) Option {
-	return func(spec *ClusterSpec) {
-		spec.WorkloadNodeCount = n
-		spec.WorkloadNode = true
-	}
-}
-
-// TODO(GouravKumar): remove use of WorkloadNode, use WorkloadNodeCount instead
-func WorkloadNode() Option {
-	return func(spec *ClusterSpec) {
-		spec.WorkloadNode = true
-		spec.WorkloadNodeCount = 1
-	}
-}
-
-func WorkloadNodeCPU(n int) Option {
-	return func(spec *ClusterSpec) {
-		spec.WorkloadNodeCPUs = n
-	}
-}
-
 // Mem requests nodes with low/standard/high ratio of memory per CPU.
 func Mem(level MemPerCPU) Option {
 	return func(spec *ClusterSpec) {
@@ -197,19 +173,6 @@ func TerminateOnMigration() Option {
 	}
 }
 
-// UseSpotVMs creates a spot vm or equivalent of a cloud provider.
-// Using this option creates SpotVMs instead of on demand VMS. SpotVMS are
-// cheaper but can be terminated at any time by the cloud provider.
-// This option is only supported by GCE for now.
-// See https://cloud.google.com/compute/docs/instances/spot,
-// https://azure.microsoft.com/en-in/products/virtual-machines/spot
-// and https://aws.amazon.com/ec2/spot/ for more details.
-func UseSpotVMs() Option {
-	return func(spec *ClusterSpec) {
-		spec.UseSpotVMs = true
-	}
-}
-
 // SetFileSystem is an Option which can be used to set
 // the underlying file system to be used.
 func SetFileSystem(fs fileSystemType) Option {
@@ -246,13 +209,6 @@ func GCEMinCPUPlatform(platform string) Option {
 func GCEVolumeType(volumeType string) Option {
 	return func(spec *ClusterSpec) {
 		spec.GCE.VolumeType = volumeType
-	}
-}
-
-// GCEVolumeCount sets the volume count when the cluster is on GCE.
-func GCEVolumeCount(volumeCount int) Option {
-	return func(spec *ClusterSpec) {
-		spec.GCE.VolumeCount = volumeCount
 	}
 }
 
@@ -293,56 +249,9 @@ func AWSZones(zones string) Option {
 	}
 }
 
-// AzureZones is a node option which requests Geo-distributed nodes; only applies
-// when the test runs on Azure.
-//
-// Note that this overrides the --zones flag and is useful for tests that
-// require running on specific zones.
-//
-// TODO(darrylwong): Something is not quite right when creating
-// zones that have overlapping address spaces, i.e. eastus and westus.
-// See: https://github.com/cockroachdb/cockroach/issues/124612
-func AzureZones(zones string) Option {
+// UbuntuVersion controls what Ubuntu Version is used to create the cluster.
+func UbuntuVersion(version vm.UbuntuVersion) Option {
 	return func(spec *ClusterSpec) {
-		spec.Azure.Zones = zones
-	}
-}
-
-// IBMMachineType sets the machine (instance) type when the cluster is on IBM.
-func IBMMachineType(machineType string) Option {
-	return func(spec *ClusterSpec) {
-		spec.IBM.MachineType = machineType
-	}
-}
-
-// IBMVolumeType sets the volume type when the cluster is on IBM.
-func IBMVolumeType(volumeType string) Option {
-	return func(spec *ClusterSpec) {
-		spec.IBM.VolumeType = volumeType
-	}
-}
-
-// IBMVolumeIOPS sets the IOPS when the cluster is on IBM.
-func IBMVolumeIOPS(iops int) Option {
-	return func(spec *ClusterSpec) {
-		spec.IBM.VolumeIOPS = iops
-	}
-}
-
-// IBMVolumeCount sets the volume count when the cluster is on IBM.
-func IBMVolumeCount(count int) Option {
-	return func(spec *ClusterSpec) {
-		spec.IBM.VolumeCount = count
-	}
-}
-
-// IBMZones is a node option which requests Geo-distributed nodes; only applies
-// when the test runs on IBM.
-//
-// Note that this overrides the --zones flag and is useful for tests that
-// require running on specific zones.
-func IBMZones(zones string) Option {
-	return func(spec *ClusterSpec) {
-		spec.IBM.Zones = zones
+		spec.UbuntuVersion = version
 	}
 }

@@ -1,16 +1,20 @@
 # Invalid filters.
 
+filter cloud=badcloud
+----
+error: invalid cloud "badcloud"; valid clouds are local,gce,aws,azure
+
 filter owner=badowner
 ----
 error: invalid owner "badowner"
 
 filter suite=badsuite
 ----
-error: invalid suite "badsuite"; valid suites are nightly,weekly,release_qualification,orm,driver,tool,quick,fixtures,pebble,pebble_nightly_write,pebble_nightly_ycsb,pebble_nightly_ycsb_race,roachtest,acceptance,perturbation,mixedversion
+error: invalid suite "badsuite"; valid suites are nightly,weekly,release_qualification,orm,driver,tool,smoketest,quick,fixtures,pebble,pebble_nightly_write,pebble_nightly_ycsb,pebble_nightly_ycsb_race,roachtest
 
-filter owner=badowner suite=badsuite
+filter cloud=badcloud owner=badowner suite=badsuite
 ----
-error: invalid suite "badsuite"; valid suites are nightly,weekly,release_qualification,orm,driver,tool,quick,fixtures,pebble,pebble_nightly_write,pebble_nightly_ycsb,pebble_nightly_ycsb_race,roachtest,acceptance,perturbation,mixedversion
+error: invalid cloud "badcloud"; valid clouds are local,gce,aws,azure
 
 # Filters with one field leading to no matches.
 

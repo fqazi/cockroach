@@ -8,7 +8,6 @@ go_library(
     deps = [
         "//pkg/settings/cluster",
         "//pkg/storage",
-        "//pkg/storage/fs",
         "//pkg/util/encoding",
         "//pkg/util/log",
         "//pkg/util/syncutil",

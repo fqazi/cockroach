@@ -54,7 +54,7 @@ func (s *ColBatchDirectScan) Init(ctx context.Context) {
 	}
 	s.Ctx, s.tracingSpan = execinfra.ProcessorSpan(
 		s.Ctx, s.flowCtx, "colbatchdirectscan", s.processorID,
-		&s.ContentionEventsListener, &s.ScanStatsListener, &s.TenantConsumptionListener,
+		&s.contentionEventsListener, &s.scanStatsListener, &s.tenantConsumptionListener,
 	)
 	firstBatchLimit := cFetcherFirstBatchLimit(s.limitHint, s.spec.MaxKeysPerRow)
 	err := s.fetcher.SetupNextFetch(
@@ -208,15 +208,12 @@ func NewColBatchDirectScan(
 		bsHeader,
 		&fetchSpec,
 		spec.Reverse,
-		tableArgs.RequiresRawMVCCValues(),
 		spec.LockingStrength,
 		spec.LockingWaitPolicy,
 		spec.LockingDurability,
 		flowCtx.EvalCtx.SessionData().LockTimeout,
-		flowCtx.EvalCtx.SessionData().DeadlockTimeout,
 		kvFetcherMemAcc,
 		flowCtx.EvalCtx.TestingKnobs.ForceProductionValues,
-		spec.FetchSpec.External,
 	)
 	var hasDatumVec bool
 	for _, t := range tableArgs.typs {

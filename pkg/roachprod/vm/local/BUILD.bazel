@@ -25,6 +25,7 @@ go_library(
 go_test(
     name = "local_test",
     srcs = ["dns_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":local"],
     deps = [
         "//pkg/roachprod/vm",

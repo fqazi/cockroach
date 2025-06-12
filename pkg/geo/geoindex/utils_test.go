@@ -22,12 +22,12 @@ func nameArg(t *testing.T, d *datadriven.TestData) string {
 	return name
 }
 
-func s2Config(t *testing.T, d *datadriven.TestData) geopb.S2Config {
+func s2Config(t *testing.T, d *datadriven.TestData) S2Config {
 	var minLevel, maxLevel, maxCells int
 	d.ScanArgs(t, "minlevel", &minLevel)
 	d.ScanArgs(t, "maxlevel", &maxLevel)
 	d.ScanArgs(t, "maxcells", &maxCells)
-	return geopb.S2Config{
+	return S2Config{
 		MinLevel: int32(minLevel),
 		MaxLevel: int32(maxLevel),
 		LevelMod: 1,

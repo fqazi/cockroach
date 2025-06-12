@@ -3,19 +3,16 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
-import moment from "moment-timezone";
 import React from "react";
-
-import { isRequestError, RequestError } from "../util";
-
+import classNames from "classnames/bind";
 import styles from "./sqlActivity.module.scss";
+import moment from "moment-timezone";
 
 const cx = classNames.bind(styles);
 
 interface SQLActivityErrorProps {
   statsType: string;
-  error: Error | RequestError;
+  error: Error;
   sourceTables?: string[];
 }
 
@@ -79,12 +76,8 @@ const LoadingError: React.FC<SQLActivityErrorProps> = props => {
     props.sourceTables?.length === 1
       ? `Source Table: ${props.sourceTables[0]}`
       : props.sourceTables?.length > 1
-        ? `Source Tables: ${props.sourceTables.join(", ")}`
-        : "";
-
-  const respCode = isRequestError(props?.error)
-    ? props?.error?.status
-    : undefined;
+      ? `Source Tables: ${props.sourceTables.join(", ")}`
+      : "";
 
   return (
     <div>
@@ -107,12 +100,6 @@ const LoadingError: React.FC<SQLActivityErrorProps> = props => {
             .utc()
             .format("YYYY.MM.DD HH:mm:ss")} utc;`}
           <br />
-          {respCode && (
-            <>
-              {`Response code: ${respCode};`}
-              <br />
-            </>
-          )}
           {`Error message: ${props?.error?.message};`}
           <br />
           {`URL: ${url};`}

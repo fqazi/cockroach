@@ -126,7 +126,7 @@ func (j *mvccStatisticsUpdateJob) runTenantGlobalMetricsExporter(
 		return nil
 	}
 
-	var timer timeutil.Timer
+	timer := timeutil.NewTimer()
 	defer timer.Stop()
 
 	// Fire the timer immediately to start the initial update.
@@ -137,6 +137,7 @@ func (j *mvccStatisticsUpdateJob) runTenantGlobalMetricsExporter(
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timer.C:
+			timer.Read = true
 			if err := runTask(); err != nil {
 				log.Errorf(ctx, "mvcc statistics update job error: %v", err)
 			}

@@ -325,10 +325,9 @@ func getActiveNodes(nl *liveness.NodeLiveness) []roachpb.NodeID {
 func TestGetActiveNodes(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	// This test starts a 5 node cluster and is prone to overload remote execution
-	// during race and deadlock builds.
-	skip.UnderRace(t)
-	skip.UnderDeadlock(t)
+	// This test starts a 5 node cluster and is prone to timeouts during stress
+	// race builds.
+	skip.UnderStressRace(t)
 
 	numNodes := 5
 	ctx := context.Background()
@@ -340,12 +339,9 @@ func TestGetActiveNodes(t *testing.T) {
 	require.Equal(t, []roachpb.NodeID{1, 2, 3, 4, 5}, getActiveNodes(nl1))
 
 	// Mark n5 as decommissioning, which should reduce node count.
-	_, err := nl1.SetMembershipStatus(ctx, 5, livenesspb.MembershipStatus_DECOMMISSIONING)
+	chg, err := nl1.SetMembershipStatus(ctx, 5, livenesspb.MembershipStatus_DECOMMISSIONING)
 	require.NoError(t, err)
-	// Since we are already checking the expected membership status below, there
-	// is no benefit to additionally checking the returned statusChanged flag, as
-	// it can be inaccurate if the write experiences an AmbiguousResultError.
-	// Checking for nil error and the expected status is sufficient.
+	require.True(t, chg)
 	testutils.SucceedsSoon(t, func() error {
 		l, ok := nl1.GetLiveness(5)
 		if !ok || !l.Membership.Decommissioning() {
@@ -357,8 +353,9 @@ func TestGetActiveNodes(t *testing.T) {
 	require.Equal(t, []roachpb.NodeID{1, 2, 3, 4}, getActiveNodes(nl1))
 
 	// Mark n5 as decommissioning -> decommissioned, which should not change node count.
-	_, err = nl1.SetMembershipStatus(ctx, 5, livenesspb.MembershipStatus_DECOMMISSIONED)
+	chg, err = nl1.SetMembershipStatus(ctx, 5, livenesspb.MembershipStatus_DECOMMISSIONED)
 	require.NoError(t, err)
+	require.True(t, chg)
 	testutils.SucceedsSoon(t, func() error {
 		l, ok := nl1.GetLiveness(5)
 		if !ok || !l.Membership.Decommissioned() {
@@ -416,42 +413,4 @@ func TestLivenessRangeGetsPeriodicallyCompacted(t *testing.T) {
 		}
 		return nil
 	})
-}
-
-// TestNodeConnectionStatusIsConnected verifies that NodeConnectionStatus caches
-// the connection status after the first IsConnected() call.
-func TestNodeConnectionStatusIsConnected(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	testCases := []struct {
-		name             string
-		initialConnected bool
-	}{
-		{
-			name:             "initially connected",
-			initialConnected: true,
-		},
-		{
-			name:             "initially disconnected",
-			initialConnected: false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Create a mock node dialer with the initial connection state.
-			connHealth := livenesspb.NewMockNodeConnectionHealth(tc.initialConnected)
-			ncs := livenesspb.NewNodeConnectionStatus(roachpb.NodeID(1), connHealth)
-
-			// First call should calculate and cache the connection status.
-			require.Equal(t, tc.initialConnected, ncs.IsConnected())
-
-			// Modify the mock to simulate a connection state change.
-			connHealth.SetConnected(!tc.initialConnected)
-
-			// Subsequent calls should use the cached value (still the initial state).
-			require.Equal(t, tc.initialConnected, ncs.IsConnected())
-		})
-	}
 }

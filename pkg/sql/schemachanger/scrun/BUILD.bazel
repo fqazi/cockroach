@@ -27,7 +27,6 @@ go_library(
         "//pkg/util/buildutil",
         "//pkg/util/log/eventpb",
         "//pkg/util/log/logpb",
-        "//pkg/util/mon",
         "//pkg/util/protoutil",
         "//pkg/util/timeutil",
         "@com_github_cockroachdb_errors//:errors",
@@ -39,6 +38,7 @@ go_test(
     name = "scrun_test",
     size = "small",
     srcs = ["make_state_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":scrun"],
     deps = [
         "//pkg/clusterversion",

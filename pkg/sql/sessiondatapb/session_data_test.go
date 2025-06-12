@@ -23,13 +23,3 @@ func TestSessionDataJsonCompat(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, expectedSessionData, actualSessionData)
 }
-
-func TestSerialNormalizationRoundTrip(t *testing.T) {
-	for s := range maxSerialNormalizationMode {
-		expectedVal := SerialNormalizationMode(s)
-		str := expectedVal.String()
-		actualVal, ok := SerialNormalizationModeFromString(str)
-		require.True(t, ok)
-		require.Equal(t, expectedVal, actualVal)
-	}
-}

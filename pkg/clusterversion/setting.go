@@ -12,6 +12,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
+	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 )
@@ -34,12 +35,13 @@ const KeyVersionSetting = "version"
 // This dance is necessary because we cannot determine a safe default value for
 // the version setting without looking at what's been persisted: The setting
 // specifies the minimum binary version we have to expect to be in a mixed
-// cluster with. We can't assume it is this binary's minSupportedVersion as the
-// cluster could've started up earlier and enabled features that are no longer
-// compatible it; we can't assume it's our latestVersion as that would enable
-// features that may trip up older versions running in the same cluster. Hence,
-// only once we get word of the "safe" version to use can we allow moving parts
-// that actually need to know what's going on.
+// cluster with. We can't assume it is this binary's
+// binaryMinSupportedVersion as the cluster could've started up earlier and
+// enabled features that are no longer compatible it; we can't assume it's our
+// binaryVersion as that would enable features that may trip up older versions
+// running in the same cluster. Hence, only once we get word of the "safe"
+// version to use can we allow moving parts that actually need to know what's
+// going on.
 var version = registerClusterVersionSetting()
 
 // clusterVersionSetting is the implementation of the 'version' setting. Like all
@@ -80,8 +82,8 @@ func (cv *clusterVersionSetting) initialize(
 		// initializes it once more.
 		//
 		// It's also used in production code during bootstrap, where the version
-		// is first initialized to MinSupportedVersion and then re-initialized to
-		// BootstrapVersion (=LatestVersion).
+		// is first initialized to BinaryMinSupportedVersion and then
+		// re-initialized to BootstrapVersion (=BinaryVersion).
 		if version.Less(ver.Version) {
 			return errors.AssertionFailedf("cannot initialize version to %s because already set to: %s",
 				version, ver)
@@ -98,7 +100,11 @@ func (cv *clusterVersionSetting) initialize(
 
 	// Return the serialized form of the new version.
 	newV := ClusterVersion{Version: version}
-	cv.SetInternal(ctx, sv, newV)
+	encoded, err := protoutil.Marshal(&newV)
+	if err != nil {
+		return err
+	}
+	cv.SetInternal(ctx, sv, encoded)
 	return nil
 }
 
@@ -121,11 +127,18 @@ func (cv *clusterVersionSetting) activeVersion(
 func (cv *clusterVersionSetting) activeVersionOrEmpty(
 	ctx context.Context, sv *settings.Values,
 ) ClusterVersion {
-	curVer := cv.GetInternal(sv)
-	if curVer == nil {
+	encoded := cv.GetInternal(sv)
+	if encoded == nil {
 		return ClusterVersion{}
 	}
-	return curVer.(ClusterVersion)
+	var curVer ClusterVersion
+	// NB: our linter requires using protoutil.Unmarshal here, but it causes an
+	// unnecessary allocation. This and other uses in this file are exceptions.
+	// TODO(pavelkalinnikov): don't parse proto on each time reading this setting.
+	if err := curVer.Unmarshal(encoded.([]byte)); err != nil {
+		log.Fatalf(ctx, "%v", err)
+	}
+	return curVer
 }
 
 // isActive returns true if the features of the supplied version key are active
@@ -203,24 +216,24 @@ func (cv *clusterVersionSetting) ValidateBinaryVersions(
 
 // SettingsListDefault is part of the VersionSettingImpl interface.
 func (cv *clusterVersionSetting) SettingsListDefault() string {
-	return Latest.String()
+	return binaryVersion.String()
 }
 
 func (cv *clusterVersionSetting) validateBinaryVersions(
 	ver roachpb.Version, sv *settings.Values,
 ) error {
 	vh := sv.Opaque().(Handle)
-	if vh.MinSupportedVersion() == (roachpb.Version{}) {
-		panic("MinSupportedVersion not set")
+	if vh.BinaryMinSupportedVersion() == (roachpb.Version{}) {
+		panic("BinaryMinSupportedVersion not set")
 	}
-	if vh.LatestVersion().Less(ver) {
+	if vh.BinaryVersion().Less(ver) {
 		// TODO(tschottdorf): also ask gossip about other nodes.
 		return errors.Errorf("cannot upgrade to %s: node running %s",
-			ver, vh.LatestVersion())
+			ver, vh.BinaryVersion())
 	}
-	if ver.Less(vh.MinSupportedVersion()) {
+	if ver.Less(vh.BinaryMinSupportedVersion()) {
 		return errors.Errorf("node at %s cannot run %s (minimum version is %s)",
-			vh.LatestVersion(), ver, vh.MinSupportedVersion())
+			vh.BinaryVersion(), ver, vh.BinaryMinSupportedVersion())
 	}
 	return nil
 }

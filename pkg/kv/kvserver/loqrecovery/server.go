@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/gossip"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
@@ -22,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/loqrecovery/loqrecoverypb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
@@ -151,6 +151,14 @@ func (s Server) ServeClusterReplicas(
 	outStream serverpb.Admin_RecoveryCollectReplicaInfoServer,
 	kvDB *kv.DB,
 ) (err error) {
+	// Block requests that require fan-out to other nodes until upgrade is finalized.
+	// We can't assume that caller is up-to-date with cluster version and process
+	// regardless of version known by current node as recommended for RPC
+	// requests because caller is a CLI which that only knows its binary version.
+	if !s.settings.Version.IsActive(ctx, clusterversion.V23_1) {
+		return errors.Newf("loss of quorum recovery service requires cluster upgraded to 23.1")
+	}
+
 	var descriptors, nodes, replicas atomic.Int64
 	defer func() {
 		if err == nil {
@@ -277,6 +285,14 @@ func serveClusterReplicasParallelFn(
 func (s Server) StagePlan(
 	ctx context.Context, req *serverpb.RecoveryStagePlanRequest,
 ) (*serverpb.RecoveryStagePlanResponse, error) {
+	// Block requests that require fan-out to other nodes until upgrade is finalized.
+	// We can't assume that caller is up-to-date with cluster version and process
+	// regardless of version known by current node as recommended for RPC
+	// requests because caller is a CLI which that only knows its binary version.
+	if !s.settings.Version.IsActive(ctx, clusterversion.V23_1) {
+		return nil, errors.Newf("loss of quorum recovery service requires cluster upgraded to 23.1")
+	}
+
 	if !req.ForcePlan && req.Plan == nil {
 		return nil, errors.New("stage plan request can't be used with empty plan without force flag")
 	}
@@ -499,6 +515,11 @@ func (s Server) NodeStatus(
 func (s Server) Verify(
 	ctx context.Context, req *serverpb.RecoveryVerifyRequest, nl *liveness.NodeLiveness, db *kv.DB,
 ) (*serverpb.RecoveryVerifyResponse, error) {
+	// Block requests that require fan-out to other nodes until upgrade is finalized.
+	if !s.settings.Version.IsActive(ctx, clusterversion.V23_1) {
+		return nil, errors.Newf("loss of quorum recovery service requires cluster upgraded to 23.1")
+	}
+
 	var nss threadSafeSlice[loqrecoverypb.NodeRecoveryStatus]
 	err := s.visitAdminNodes(
 		ctx,
@@ -751,7 +772,7 @@ func visitNodeWithRetry(
 		// Note that we use ConnectNoBreaker here to avoid any race with probe
 		// running on current node and target node restarting. Errors from circuit
 		// breaker probes could confuse us and present node as unavailable.
-		conn, _, err = rpcCtx.GRPCDialNode(addr.String(), node.NodeID, node.Locality, rpcbase.DefaultClass).ConnectNoBreaker(ctx)
+		conn, err = rpcCtx.GRPCDialNode(addr.String(), node.NodeID, node.Locality, rpc.DefaultClass).ConnectNoBreaker(ctx)
 		// Nodes would contain dead nodes that we don't need to visit. We can skip
 		// them and let caller handle incomplete info.
 		if err != nil {
@@ -804,7 +825,7 @@ func makeVisitNode(g *gossip.Gossip, loc roachpb.Locality, rpcCtx *rpc.Context) 
 			// Note that we use ConnectNoBreaker here to avoid any race with probe
 			// running on current node and target node restarting. Errors from circuit
 			// breaker probes could confuse us and present node as unavailable.
-			conn, _, err = rpcCtx.GRPCDialNode(addr.String(), node.NodeID, node.Locality, rpcbase.DefaultClass).ConnectNoBreaker(ctx)
+			conn, err = rpcCtx.GRPCDialNode(addr.String(), node.NodeID, node.Locality, rpc.DefaultClass).ConnectNoBreaker(ctx)
 			if err != nil {
 				if grpcutil.IsClosedConnection(err) {
 					log.Infof(ctx, "can't dial node n%d because connection is permanently closed: %s",

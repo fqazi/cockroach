@@ -29,7 +29,6 @@ services:
     image: us-east1-docker.pkg.dev/crl-docker-sync/docker-io/library/ubuntu:xenial-20170214
     environment:
       - COCKROACH_DEV_LICENSE=$COCKROACH_DEV_LICENSE
-      - COCKROACH_RUN_COMPOSE_COMPARE=${COCKROACH_RUN_COMPOSE_COMPARE}
     # compare.test is a binary built by the pkg/compose/prepare.sh in non-bazel builds
     command: /compare/compare.test -test.v -each ${EACH} -test.run ${TESTS} -artifacts ${ARTIFACTS}
     depends_on:

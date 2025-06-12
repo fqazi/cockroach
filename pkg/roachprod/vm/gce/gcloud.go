@@ -23,10 +23,8 @@ import (
 	"github.com/Masterminds/semver/v3"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/ui"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/flagstub"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/spf13/pflag"
@@ -36,66 +34,27 @@ import (
 )
 
 const (
-	ProviderName = "gce"
-	DefaultImage = "ubuntu-2204-jammy-v20240319"
-	ARM64Image   = "ubuntu-2204-jammy-arm64-v20240319"
+	defaultProject = "cockroach-ephemeral"
+	ProviderName   = "gce"
+	DefaultImage   = "ubuntu-2204-jammy-v20230727"
+	ARM64Image     = "ubuntu-2204-jammy-arm64-v20230727"
 	// TODO(DarrylWong): Upgrade FIPS to Ubuntu 22 when it is available.
 	FIPSImage           = "ubuntu-pro-fips-2004-focal-v20230811"
 	defaultImageProject = "ubuntu-os-cloud"
 	FIPSImageProject    = "ubuntu-os-pro-cloud"
 	ManagedLabel        = "managed"
-	MaxConcurrentVMOps  = 16
 )
 
-type VolumeType string
+// providerInstance is the instance to be registered into vm.Providers by Init.
+var providerInstance = &Provider{}
 
-const (
-	// VolumeTypeUnknown represents an unknown volume type.
-	VolumeTypeUnknown VolumeType = ""
-	// VolumeTypeLocalSSD represents a local solid-state drive.
-	VolumeTypeLocalSSD VolumeType = "local-ssd"
-	// VolumeTypePremium represents a boot disk.
-	VolumeTypeBoot VolumeType = "boot"
-	// VolumeTypeStandard represents an attached persistent disk.
-	VolumeTypePersistent VolumeType = "persistent"
-)
-
-var (
-	defaultDefaultProject, defaultMetadataProject, defaultDNSProject, defaultDefaultServiceAccount string
-	// projects for which a cron GC job exists.
-	projectsWithGC []string
-)
-
-func initGCEProjectDefaults() {
-	defaultDefaultProject = config.EnvOrDefaultString(
-		"ROACHPROD_GCE_DEFAULT_PROJECT", "cockroach-ephemeral",
-	)
-	defaultMetadataProject = config.EnvOrDefaultString(
-		"ROACHPROD_GCE_METADATA_PROJECT",
-		defaultDefaultProject,
-	)
-	defaultDNSProject = config.EnvOrDefaultString(
-		"ROACHPROD_GCE_DNS_PROJECT", "cockroach-shared",
-	)
-
-	// Service account to use if the default project is in use.
-	defaultDefaultServiceAccount = config.EnvOrDefaultString(
-		"ROACHPROD_GCE_DEFAULT_SERVICE_ACCOUNT",
-		"21965078311-compute@developer.gserviceaccount.com",
-	)
-	projectsWithGC = []string{defaultDefaultProject}
-}
-
-// DefaultProject returns the default GCE project. This is used to determine whether
-// certain features, such as DNS names are enabled.
+// DefaultProject returns the default GCE project.
 func DefaultProject() string {
-	// If the provider was already initialized, read the default project from the
-	// provider.
-	if p, ok := vm.Providers[ProviderName].(*Provider); ok {
-		return p.defaultProject
-	}
-	return defaultDefaultProject
+	return defaultProject
 }
+
+// projects for which a cron GC job exists.
+var projectsWithGC = []string{defaultProject}
 
 // Denotes if this provider was successfully initialized.
 var initialized = false
@@ -104,34 +63,21 @@ var initialized = false
 //
 // If the gcloud tool is not available on the local path, the provider is a
 // stub.
-//
-// Note that, when roachprod is used as a binary, the defaults for
-// providerInstance properties initialized here can be overriden by flags.
 func Init() error {
-	initGCEProjectDefaults()
-	initDNSDefault()
-
-	providerInstance := &Provider{}
-	providerInstance.Projects = []string{defaultDefaultProject}
+	providerInstance.Projects = []string{defaultProject}
 	projectFromEnv := os.Getenv("GCE_PROJECT")
 	if projectFromEnv != "" {
-		fmt.Printf("WARNING: `GCE_PROJECT` is deprecated; please, use `ROACHPROD_GCE_DEFAULT_PROJECT` instead")
 		providerInstance.Projects = []string{projectFromEnv}
 	}
+	providerInstance.ServiceAccount = os.Getenv("GCE_SERVICE_ACCOUNT")
 	if _, err := exec.LookPath("gcloud"); err != nil {
 		vm.Providers[ProviderName] = flagstub.New(&Provider{}, "please install the gcloud CLI utilities "+
 			"(https://cloud.google.com/sdk/downloads)")
 		return errors.New("gcloud not found")
 	}
-	providerInstance.dnsProvider = NewDNSProvider()
-
-	providerInstance.defaultProject = defaultDefaultProject
-	providerInstance.metadataProject = defaultMetadataProject
-
+	providerInstance.DNSProvider = NewDNSProvider()
 	initialized = true
 	vm.Providers[ProviderName] = providerInstance
-	Infrastructure = providerInstance
-
 	return nil
 }
 
@@ -188,21 +134,21 @@ type jsonVM struct {
 	MachineType string
 	// CPU platform corresponding to machine type; see https://cloud.google.com/compute/docs/cpu-platforms
 	CPUPlatform string
-	// Of the form  "https://www.googleapis.com/compute/v1/projects/cockroach-workers/zones/us-central1-a/instances/...".
-	// N.B. The self-link contains the name of the GCE project.
-	SelfLink string
-	Zone     string
+	SelfLink    string
+	Zone        string
 	instanceDisksResponse
 }
 
-// Convert the JSON VM data into our common VM type.
-func (jsonVM *jsonVM) toVM(project string, dnsDomain string) (ret *vm.VM) {
+// Convert the JSON VM data into our common VM type
+func (jsonVM *jsonVM) toVM(
+	project string, disks []describeVolumeCommandResponse, opts *ProviderOpts,
+) (ret *vm.VM) {
 	var vmErrors []error
 	var err error
 
 	// Check "lifetime" label.
 	var lifetime time.Duration
-	if lifetimeStr, ok := jsonVM.Labels[vm.TagLifetime]; ok {
+	if lifetimeStr, ok := jsonVM.Labels["lifetime"]; ok {
 		if lifetime, err = time.ParseDuration(lifetimeStr); err != nil {
 			vmErrors = append(vmErrors, vm.ErrNoExpiration)
 		}
@@ -233,7 +179,7 @@ func (jsonVM *jsonVM) toVM(project string, dnsDomain string) (ret *vm.VM) {
 	cpuPlatform := jsonVM.CPUPlatform
 	zone := lastComponent(jsonVM.Zone)
 	remoteUser := config.SharedUser
-	if !config.UseSharedUser {
+	if !opts.useSharedUser {
 		// N.B. gcloud uses the local username to log into instances rather
 		// than the username on the authenticated Google account but we set
 		// up the shared user at cluster creation time. Allow use of the
@@ -245,32 +191,45 @@ func (jsonVM *jsonVM) toVM(project string, dnsDomain string) (ret *vm.VM) {
 	var localDisks []vm.Volume
 	var bootVolume vm.Volume
 
-	for _, jsonVMDisk := range jsonVM.Disks {
+	parseDiskSize := func(size string) int {
+		if val, err := strconv.Atoi(size); err == nil {
+			return val
+		} else {
+			vmErrors = append(vmErrors, errors.Newf("invalid disk size: %q", size))
+		}
+		return 0
+	}
 
-		vol, volType, err := jsonVMDisk.toVolume()
-		if err != nil {
-			vmErrors = append(vmErrors, err)
+	for _, jsonVMDisk := range jsonVM.Disks {
+		if jsonVMDisk.Source == "" && jsonVMDisk.Type == "SCRATCH" {
+			// This is a scratch disk.
+			localDisks = append(localDisks, vm.Volume{
+				Size:               parseDiskSize(jsonVMDisk.DiskSizeGB),
+				ProviderVolumeType: "local-ssd",
+			})
 			continue
 		}
-
-		switch volType {
-		case VolumeTypeBoot:
-			bootVolume = *vol
-		case VolumeTypeLocalSSD:
-			localDisks = append(localDisks, *vol)
-		default:
-			volumes = append(volumes, *vol)
-		}
-
-	}
-	// Parse jsonVM.SelfLink to extract the project name.
-	// N.B. The self-link contains the name of the GCE project. E.g.,
-	// "https://www.googleapis.com/compute/v1/projects/cockroach-workers/zones/us-central1-a/instances/..."
-	projectName := ""
-	if idx := strings.Index(jsonVM.SelfLink, "/projects/"); idx != -1 {
-		projectName = jsonVM.SelfLink[idx+len("/projects/"):]
-		if idx := strings.Index(projectName, "/"); idx != -1 {
-			projectName = projectName[:idx]
+		// Find a persistent volume (detailedDisk) matching the attached non-boot disk.
+		for _, detailedDisk := range disks {
+			if detailedDisk.SelfLink == jsonVMDisk.Source {
+				vol := vm.Volume{
+					// NB: See TODO in toDescribeVolumeCommandResponse. We
+					// should be able to "just" use detailedDisk.Name here,
+					// but we're abusing that field elsewhere, and
+					// incorrectly. Using SelfLink is correct.
+					ProviderResourceID: lastComponent(detailedDisk.SelfLink),
+					ProviderVolumeType: detailedDisk.Type,
+					Zone:               lastComponent(detailedDisk.Zone),
+					Name:               detailedDisk.Name,
+					Labels:             detailedDisk.Labels,
+					Size:               parseDiskSize(detailedDisk.SizeGB),
+				}
+				if !jsonVMDisk.Boot {
+					volumes = append(volumes, vol)
+				} else {
+					bootVolume = vol
+				}
+			}
 		}
 	}
 
@@ -286,9 +245,8 @@ func (jsonVM *jsonVM) toVM(project string, dnsDomain string) (ret *vm.VM) {
 		Provider:               ProviderName,
 		DNSProvider:            ProviderName,
 		ProviderID:             jsonVM.Name,
-		ProviderAccountID:      projectName,
 		PublicIP:               publicIP,
-		PublicDNS:              fmt.Sprintf("%s.%s", jsonVM.Name, dnsDomain),
+		PublicDNS:              fmt.Sprintf("%s.%s", jsonVM.Name, Subdomain),
 		RemoteUser:             remoteUser,
 		VPC:                    vpc,
 		MachineType:            machineType,
@@ -319,13 +277,10 @@ func DefaultProviderOpts() *ProviderOpts {
 		SSDCount:             1,
 		PDVolumeType:         "pd-ssd",
 		PDVolumeSize:         500,
-		PDVolumeCount:        1,
 		TerminateOnMigration: false,
-		UseSpot:              false,
+		useSharedUser:        true,
 		preemptible:          false,
-
-		defaultServiceAccount: defaultDefaultServiceAccount,
-		ServiceAccount:        os.Getenv("GCE_SERVICE_ACCOUNT"),
+		useSpot:              false,
 	}
 }
 
@@ -341,217 +296,38 @@ type ProviderOpts struct {
 	// multiple projects or a single one.
 	MachineType      string
 	MinCPUPlatform   string
-	BootDiskType     string
 	Zones            []string
 	Image            string
 	SSDCount         int
 	PDVolumeType     string
 	PDVolumeSize     int
-	PDVolumeCount    int
 	UseMultipleDisks bool
-	// use spot instances (i.e., latest version of preemptibles which can run > 24 hours)
-	UseSpot bool
 	// Use an instance template and a managed instance group to create VMs. This
 	// enables cluster resizing, load balancing, and health monitoring.
 	Managed bool
-	// Enable turbo mode for the instance. Only supported on C4 VM families.
-	// See: https://cloud.google.com/sdk/docs/release-notes#compute_engine_23
-	TurboMode string
-	// The number of visible threads per physical core.
-	// See: https://cloud.google.com/compute/docs/instances/configuring-simultaneous-multithreading.
-	ThreadsPerCore int
-	// This specifies a subset of the Zones above that will run on spot instances.
-	// VMs running in Zones not in this list will be provisioned on-demand. This
-	// is only used by managed instance groups.
-	ManagedSpotZones []string
-	// Enable the cron service. It is disabled by default.
-	EnableCron bool
 
 	// GCE allows two availability policies in case of a maintenance event (see --maintenance-policy via gcloud),
 	// 'TERMINATE' or 'MIGRATE'. The default is 'MIGRATE' which we denote by 'TerminateOnMigration == false'.
 	TerminateOnMigration bool
+
+	// useSharedUser indicates that the shared user rather than the personal
+	// user should be used to ssh into the remote machines.
+	useSharedUser bool
 	// use preemptible instances
 	preemptible bool
-
-	ServiceAccount string
-
-	// The service account to use if the default project is in use and no
-	// ServiceAccount was specified.
-	defaultServiceAccount string
+	// use spot instances (i.e., latest version of preemptibles which can run > 24 hours)
+	useSpot bool
 }
 
 // Provider is the GCE implementation of the vm.Provider interface.
 type Provider struct {
-	*dnsProvider
-	Projects []string
-
-	// The project to use for looking up metadata. In particular, this includes
-	// user keys.
-	metadataProject string
-
-	// The project that provides the core roachprod services.
-	defaultProject string
-}
-
-// LogEntry represents a single log entry from the gcloud logging(stack driver)
-type LogEntry struct {
-	LogName  string `json:"logName"`
-	Resource struct {
-		Labels struct {
-			InstanceID string `json:"instance_id"`
-		} `json:"labels"`
-	} `json:"resource"`
-	Timestamp    string `json:"timestamp"`
-	ProtoPayload struct {
-		ResourceName string `json:"resourceName"`
-	} `json:"protoPayload"`
-}
-
-func (p *Provider) SupportsSpotVMs() bool {
-	return true
-}
-
-// GetPreemptedSpotVMs checks the preemption status of the given VMs, by querying the GCP logging service.
-func (p *Provider) GetPreemptedSpotVMs(
-	l *logger.Logger, vms vm.List, since time.Time,
-) ([]vm.PreemptedVM, error) {
-	args, err := buildFilterPreemptionCliArgs(vms, p.GetProject(), since)
-	if err != nil {
-		l.Printf("Error building gcloud cli command: %v\n", err)
-		return nil, err
-	}
-	var logEntries []LogEntry
-	if err := runJSONCommand(args, &logEntries); err != nil {
-		l.Printf("Error running gcloud cli command: %v\n", err)
-		return nil, err
-	}
-	// Extract the VM name and the time of preemption from logs.
-	var preemptedVMs []vm.PreemptedVM
-	for _, logEntry := range logEntries {
-		timestamp, err := time.Parse(time.RFC3339, logEntry.Timestamp)
-		if err != nil {
-			l.Printf("Error parsing gcp log timestamp, Preemption time not available: %v", err)
-			preemptedVMs = append(preemptedVMs, vm.PreemptedVM{Name: logEntry.ProtoPayload.ResourceName})
-			continue
-		}
-		preemptedVMs = append(preemptedVMs, vm.PreemptedVM{Name: logEntry.ProtoPayload.ResourceName, PreemptedAt: timestamp})
-	}
-	return preemptedVMs, nil
-}
-
-// GetHostErrorVMs checks the host error status of the given VMs, by querying the GCP logging service.
-func (p *Provider) GetHostErrorVMs(
-	l *logger.Logger, vms vm.List, since time.Time,
-) ([]string, error) {
-	args, err := buildFilterHostErrorCliArgs(vms, since, p.GetProject())
-	if err != nil {
-		l.Printf("Error building gcloud cli command: %v\n", err)
-		return nil, err
-	}
-	var logEntries []LogEntry
-	if err := runJSONCommand(args, &logEntries); err != nil {
-		l.Printf("Error running gcloud cli command: %v\n", err)
-		return nil, err
-	}
-	// Extract the name of the VM with host error from logs.
-	var hostErrorVMs []string
-	for _, logEntry := range logEntries {
-		hostErrorVMs = append(hostErrorVMs, logEntry.ProtoPayload.ResourceName)
-	}
-	return hostErrorVMs, nil
-}
-
-func (p *Provider) GetLiveMigrationVMs(
-	l *logger.Logger, vms vm.List, since time.Time,
-) ([]string, error) {
-	return nil, nil
-}
-
-// GetVMSpecs returns a map from VM.Name to a map of VM attributes, provided by GCE
-func (p *Provider) GetVMSpecs(
-	l *logger.Logger, vms vm.List,
-) (map[string]map[string]interface{}, error) {
-	if p.GetProject() == "" {
-		return nil, errors.New("project name cannot be empty")
-	}
-	if vms == nil {
-		return nil, errors.New("vms cannot be nil")
-	}
-	// Extract the spec of all VMs and create a map from VM name to spec.
-	vmSpecs := make(map[string]map[string]interface{})
-	for _, vmInstance := range vms {
-		var vmSpec map[string]interface{}
-		vmFullResourceName := "projects/" + p.GetProject() + "/zones/" + vmInstance.Zone + "/instances/" + vmInstance.Name
-		args := []string{"compute", "instances", "describe", vmFullResourceName, "--format=json"}
-
-		if err := runJSONCommand(args, &vmSpec); err != nil {
-			return nil, errors.Wrapf(err, "error describing instance %s in zone %s", vmInstance.Name, vmInstance.Zone)
-		}
-		name, ok := vmSpec["name"].(string)
-		if !ok {
-			l.Errorf("failed to create spec files for VM\n%v", vmSpec)
-			continue
-		}
-		vmSpecs[name] = vmSpec
-	}
-	return vmSpecs, nil
-}
-
-func buildFilterCliArgs(
-	vms vm.List, projectName string, since time.Time, filter string,
-) ([]string, error) {
-	if projectName == "" {
-		return nil, errors.New("project name cannot be empty")
-	}
-	if since.After(timeutil.Now()) {
-		return nil, errors.New("since cannot be in the future")
-	}
-	if vms == nil {
-		return nil, errors.New("vms cannot be nil")
-	}
-	// construct full resource names
-	vmFullResourceNames := make([]string, len(vms))
-	for i, vmNode := range vms {
-		// example format : projects/cockroach-ephemeral/zones/us-east1-b/instances/test-name
-		vmFullResourceNames[i] = "projects/" + projectName + "/zones/" + vmNode.Zone + "/instances/" + vmNode.Name
-	}
-	// Prepend vmFullResourceNames with "protoPayload.resourceName=" to help with filter construction.
-	vmIDFilter := make([]string, len(vms))
-	for i, vmID := range vmFullResourceNames {
-		vmIDFilter[i] = fmt.Sprintf("protoPayload.resourceName=%s", vmID)
-	}
-	filter += fmt.Sprintf(` AND (%s)`, strings.Join(vmIDFilter, " OR "))
-	args := []string{
-		"logging",
-		"read",
-		"--project=" + projectName,
-		"--format=json",
-		fmt.Sprintf("--freshness=%dh", int(timeutil.Since(since).Hours()+1)), // only look at logs from the "since" specified
-		filter,
-	}
-	return args, nil
-}
-
-// buildFilterPreemptionCliArgs returns the arguments to be passed to gcloud cli to query the logs for preemption events.
-func buildFilterPreemptionCliArgs(
-	vms vm.List, projectName string, since time.Time,
-) ([]string, error) {
-	// Create a filter to match preemption events
-	filter := `resource.type=gce_instance AND (protoPayload.methodName=compute.instances.preempted)`
-	return buildFilterCliArgs(vms, projectName, since, filter)
-}
-
-// buildFilterHostErrorCliArgs returns the arguments to be passed to gcloud cli to query the logs for host error events.
-func buildFilterHostErrorCliArgs(
-	vms vm.List, since time.Time, projectName string,
-) ([]string, error) {
-	// Create a filter to match hostError events for the specified projectName
-	filter := fmt.Sprintf(`resource.type=gce_instance AND protoPayload.methodName=compute.instances.hostError
-		AND logName=projects/%s/logs/cloudaudit.googleapis.com%%2Fsystem_event`, projectName)
-	return buildFilterCliArgs(vms, projectName, since, filter)
+	vm.DNSProvider
+	Projects       []string
+	ServiceAccount string
 }
 
 type snapshotJson struct {
+	CreationSizeBytes  string    `json:"creationSizeBytes"`
 	CreationTimestamp  time.Time `json:"creationTimestamp"`
 	Description        string    `json:"description"`
 	DiskSizeGb         string    `json:"diskSizeGb"`
@@ -909,41 +685,6 @@ type attachDiskCmdDisk struct {
 	Type       string `json:"type"`
 }
 
-// toVolume converts an attachedDisk struct (disks returned by `instances list`)
-// to a vm.Volume struct.
-func (d *attachDiskCmdDisk) toVolume() (*vm.Volume, VolumeType, error) {
-	diskSize, err := strconv.Atoi(d.DiskSizeGB)
-	if err != nil {
-		return nil, VolumeTypeUnknown, err
-	}
-
-	// This is a scratch disk.
-	if d.Source == "" && d.Type == "SCRATCH" {
-		return &vm.Volume{
-			Size:               diskSize,
-			ProviderVolumeType: "local-ssd",
-		}, VolumeTypeLocalSSD, nil
-	}
-
-	volType := VolumeTypePersistent
-	if d.Boot {
-		volType = VolumeTypeBoot
-	}
-
-	vol := &vm.Volume{
-		Name:               lastComponent(d.Source),
-		Zone:               zoneFromSelfLink(d.Source),
-		Size:               diskSize,
-		ProviderResourceID: lastComponent(d.Source),
-		// Unfortunately, the attachedDisk struct does not return the actual type
-		// (standard or ssd) of the persistent disk. We assume `pd_ssd` as those
-		// are common and is a worst case scenario for cost computation.
-		ProviderVolumeType: "pd-ssd",
-	}
-
-	return vol, volType, nil
-}
-
 func (p *Provider) AttachVolume(l *logger.Logger, volume vm.Volume, vm *vm.VM) (string, error) {
 	// Volume attach.
 	args := []string{
@@ -1009,10 +750,9 @@ func (p *Provider) AttachVolume(l *logger.Logger, volume vm.Volume, vm *vm.VM) (
 // (Provider.Projects).
 type ProjectsVal struct {
 	AcceptMultipleProjects bool
-	Provider               *Provider
 }
 
-// DefaultZones is the list of  zones used by default for cluster creation.
+// defaultZones is the list of  zones used by default for cluster creation.
 // If the geo flag is specified, nodes are distributed between zones.
 // These are GCP zones available according to this page:
 // https://cloud.google.com/compute/docs/regions-zones#available
@@ -1022,7 +762,7 @@ type ProjectsVal struct {
 // ARM64 builds), but we randomize the specific zone. This is to avoid
 // "zone exhausted" errors in one particular zone, especially during
 // nightly roachtest runs.
-func DefaultZones(arch string, geoDistributed bool) []string {
+func defaultZones(arch string) []string {
 	zones := []string{"us-east1-b", "us-east1-c", "us-east1-d"}
 	if vm.ParseArch(arch) == vm.ArchARM64 {
 		// T2A instances are only available in us-central1 in NA.
@@ -1030,21 +770,17 @@ func DefaultZones(arch string, geoDistributed bool) []string {
 	}
 	rand.Shuffle(len(zones), func(i, j int) { zones[i], zones[j] = zones[j], zones[i] })
 
-	if geoDistributed {
-		return []string{
-			zones[0],
-			"us-west1-b",
-			"europe-west2-b",
-			zones[1],
-			"us-west1-c",
-			"europe-west2-c",
-			zones[2],
-			"us-west1-a",
-			"europe-west2-a",
-		}
+	return []string{
+		zones[0],
+		"us-west1-b",
+		"europe-west2-b",
+		zones[1],
+		"us-west1-c",
+		"europe-west2-c",
+		zones[2],
+		"us-west1-a",
+		"europe-west2-a",
 	}
-
-	return []string{zones[0]}
 }
 
 // Set is part of the pflag.Value interface.
@@ -1056,7 +792,7 @@ func (v ProjectsVal) Set(projects string) error {
 	if !v.AcceptMultipleProjects && len(prj) > 1 {
 		return fmt.Errorf("multiple GCE projects not supported for command")
 	}
-	v.Provider.Projects = prj
+	providerInstance.Projects = prj
 	return nil
 }
 
@@ -1070,7 +806,7 @@ func (v ProjectsVal) Type() string {
 
 // String is part of the pflag.Value interface.
 func (v ProjectsVal) String() string {
-	return strings.Join(v.Provider.Projects, ",")
+	return strings.Join(providerInstance.Projects, ",")
 }
 
 // GetProject returns the GCE project on which we're configured to operate.
@@ -1095,20 +831,12 @@ func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 	_ = flags.MarkDeprecated("machine-type", "use "+ProviderName+"-machine-type instead")
 	flags.StringSliceVar(&o.Zones, "zones", nil, "DEPRECATED")
 	_ = flags.MarkDeprecated("zones", "use "+ProviderName+"-zones instead")
-	flags.StringSliceVar(&o.ManagedSpotZones, ProviderName+"-managed-spot-zones", nil,
-		"subset of zones in managed instance groups that will use spot instances")
 
-	flags.StringVar(&o.ServiceAccount, ProviderName+"-service-account",
-		o.ServiceAccount, "Service account to use")
-	flags.StringVar(&o.defaultServiceAccount,
-		ProviderName+"-default-service-account", defaultDefaultServiceAccount,
-		"Service account to use if the default project is in use and no "+
-			"--gce-service-account was specified")
+	flags.StringVar(&providerInstance.ServiceAccount, ProviderName+"-service-account",
+		providerInstance.ServiceAccount, "Service account to use")
 
 	flags.StringVar(&o.MachineType, ProviderName+"-machine-type", "n2-standard-4",
 		"Machine type (see https://cloud.google.com/compute/docs/machine-types)")
-	flags.StringVar(&o.BootDiskType, ProviderName+"-boot-disk-type", "pd-ssd",
-		"Type of the boot disk volume")
 	flags.StringVar(&o.MinCPUPlatform, ProviderName+"-min-cpu-platform", "Intel Ice Lake",
 		"Minimum CPU platform (see https://cloud.google.com/compute/docs/instances/specify-min-cpu-platform)")
 	flags.StringVar(&o.Image, ProviderName+"-image", DefaultImage,
@@ -1122,8 +850,6 @@ func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 		"Type of the persistent disk volume, only used if local-ssd=false")
 	flags.IntVar(&o.PDVolumeSize, ProviderName+"-pd-volume-size", 500,
 		"Size in GB of persistent disk volume, only used if local-ssd=false")
-	flags.IntVar(&o.PDVolumeCount, ProviderName+"-pd-volume-count", 1,
-		"Number of persistent disk volumes, only used if local-ssd=false")
 	flags.BoolVar(&o.UseMultipleDisks, ProviderName+"-enable-multiple-stores",
 		false, "Enable the use of multiple stores by creating one store directory per disk. "+
 			"Default is to raid0 stripe all disks.")
@@ -1132,25 +858,19 @@ func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 		fmt.Sprintf("Zones for cluster. If zones are formatted as AZ:N where N is an integer, the zone\n"+
 			"will be repeated N times. If > 1 zone specified, nodes will be geo-distributed\n"+
 			"regardless of geo (default [%s])",
-			strings.Join(DefaultZones(string(vm.ArchAMD64), true), ",")))
+			strings.Join(defaultZones(string(vm.ArchAMD64)), ",")))
 	flags.BoolVar(&o.preemptible, ProviderName+"-preemptible", false,
 		"use preemptible GCE instances (lifetime cannot exceed 24h)")
-	flags.BoolVar(&o.UseSpot, ProviderName+"-use-spot", false,
+	flags.BoolVar(&o.useSpot, ProviderName+"-use-spot", false,
 		"use spot GCE instances (like preemptible but lifetime can exceed 24h)")
 	flags.BoolVar(&o.TerminateOnMigration, ProviderName+"-terminateOnMigration", false,
 		"use 'TERMINATE' maintenance policy (for GCE live migrations)")
 	flags.BoolVar(&o.Managed, ProviderName+"-managed", false,
 		"use a managed instance group (enables resizing, load balancing, and health monitoring)")
-	flags.BoolVar(&o.EnableCron, ProviderName+"-enable-cron",
-		false, "Enables the cron service (it is disabled by default)")
-	flags.StringVar(&o.TurboMode, ProviderName+"-turbo-mode", "",
-		"enable turbo mode for the instance (only supported on C4 VM families, valid value: 'ALL_CORE_MAX')")
-	flags.IntVar(&o.ThreadsPerCore, ProviderName+"-threads-per-core", 0,
-		"the number of visible threads per physical core (valid values: 1 or 2), default is 0 (auto)")
 }
 
-// ConfigureProviderFlags implements Provider
-func (p *Provider) ConfigureProviderFlags(flags *pflag.FlagSet, opt vm.MultipleProjectsOption) {
+// ConfigureClusterFlags implements vm.ProviderFlags.
+func (o *ProviderOpts) ConfigureClusterFlags(flags *pflag.FlagSet, opt vm.MultipleProjectsOption) {
 	var usage string
 	if opt == vm.SingleProject {
 		usage = "GCE project to manage"
@@ -1161,65 +881,19 @@ func (p *Provider) ConfigureProviderFlags(flags *pflag.FlagSet, opt vm.MultipleP
 	flags.Var(
 		ProjectsVal{
 			AcceptMultipleProjects: opt == vm.AcceptMultipleProjects,
-			Provider:               p,
 		},
 		ProviderName+"-project", /* name */
 		usage)
 
-	// Flags about DNS override the default values in
-	// dnsProvider.
-	dnsProviderInstance := p.dnsProvider
-	flags.StringVar(
-		&dnsProviderInstance.dnsProject, ProviderName+"-dns-project",
-		dnsProviderInstance.dnsProject,
-		"project to use to set up DNS",
-	)
-	flags.StringVar(
-		&dnsProviderInstance.publicZone,
-		ProviderName+"-dns-zone",
-		dnsProviderInstance.publicZone,
-		"zone file in gcloud project to use to set up public DNS records",
-	)
-	flags.StringVar(
-		&dnsProviderInstance.publicDomain,
-		ProviderName+"-dns-domain",
-		dnsProviderInstance.publicDomain,
-		"zone domian in gcloud project to use to set up public DNS records",
-	)
-	flags.StringVar(
-		&dnsProviderInstance.managedZone,
-		ProviderName+"managed-dns-zone",
-		dnsProviderInstance.managedZone,
-		"zone file in gcloud project to use to set up DNS SRV records",
-	)
-	flags.StringVar(
-		&dnsProviderInstance.managedDomain,
-		ProviderName+"managed-dns-domain",
-		dnsProviderInstance.managedDomain,
-		"zone file in gcloud project to use to set up DNS SRV records",
-	)
-
-	// Flags about the GCE project to use override the defaults in
-	// the provider.
-	flags.StringVar(
-		&p.metadataProject, ProviderName+"-metadata-project",
-		p.metadataProject,
-		"google cloud project to use to store and fetch SSH keys",
-	)
-	flags.StringVar(
-		&p.defaultProject, ProviderName+"-default-project",
-		p.defaultProject,
-		"google cloud project to use to run core roachprod services",
-	)
+	flags.BoolVar(&o.useSharedUser,
+		ProviderName+"-use-shared-user", true,
+		fmt.Sprintf("use the shared user %q for ssh rather than your user %q",
+			config.SharedUser, config.OSUser.Username))
 }
 
 // useArmAMI returns true if the machine type is an arm64 machine type.
 func (o *ProviderOpts) useArmAMI() bool {
 	return strings.HasPrefix(strings.ToLower(o.MachineType), "t2a-")
-}
-
-// ConfigureClusterCleanupFlags is part of ProviderOpts. This implementation is a no-op.
-func (p *Provider) ConfigureClusterCleanupFlags(flags *pflag.FlagSet) {
 }
 
 // CleanSSH TODO(peter): document
@@ -1259,34 +933,27 @@ func (p *Provider) editLabels(
 		if remove {
 			tagArgs = append(tagArgs, key)
 		} else {
-			tagArgs = append(tagArgs, fmt.Sprintf("%s=%s", key, value))
+			tagArgs = append(tagArgs, fmt.Sprintf("%s=%s", key, vm.SanitizeLabel(value)))
 		}
 	}
 	tagArgsString := strings.Join(tagArgs, ",")
 	commonArgs := []string{"--project", p.GetProject(), fmt.Sprintf("--labels=%s", tagArgsString)}
 
-	var g errgroup.Group
-	g.SetLimit(MaxConcurrentVMOps)
 	for _, v := range vms {
 		vmArgs := make([]string, len(cmdArgs))
 		copy(vmArgs, cmdArgs)
 
 		vmArgs = append(vmArgs, v.Name, "--zone", v.Zone)
 		vmArgs = append(vmArgs, commonArgs...)
-
-		g.Go(func() error {
-			cmd := exec.Command("gcloud", vmArgs...)
-			if b, err := cmd.CombinedOutput(); err != nil {
-				return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", vmArgs, string(b))
-			}
-			return nil
-		})
+		cmd := exec.Command("gcloud", vmArgs...)
+		if b, err := cmd.CombinedOutput(); err != nil {
+			return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", vmArgs, string(b))
+		}
 	}
-	return g.Wait()
+	return nil
 }
 
-// AddLabels adds (or updates) the given labels to the given VMs.
-// N.B. If a VM contains a label with the same key, its value will be updated.
+// AddLabels adds the given labels to the given VMs.
 func (p *Provider) AddLabels(l *logger.Logger, vms vm.List, labels map[string]string) error {
 	return p.editLabels(l, vms, labels, false /* remove */)
 }
@@ -1317,8 +984,8 @@ func computeLabelsArg(opts vm.CreateOpts, providerOpts *ProviderOpts) (string, e
 		addLabel(ManagedLabel, "true")
 	}
 
-	if providerOpts.UseSpot {
-		addLabel(vm.TagSpotInstance, "true")
+	if providerOpts.useSpot {
+		m[vm.TagSpotInstance] = "true"
 	}
 
 	for key, value := range opts.CustomLabels {
@@ -1345,7 +1012,11 @@ func computeZones(opts vm.CreateOpts, providerOpts *ProviderOpts) ([]string, err
 		return nil, err
 	}
 	if len(zones) == 0 {
-		zones = DefaultZones(opts.Arch, opts.GeoDistributed)
+		if opts.GeoDistributed {
+			zones = defaultZones(opts.Arch)
+		} else {
+			zones = []string{defaultZones(opts.Arch)[0]}
+		}
 	}
 	if providerOpts.useArmAMI() {
 		if len(providerOpts.Zones) == 0 {
@@ -1373,10 +1044,6 @@ func (p *Provider) computeInstanceArgs(
 	image := providerOpts.Image
 	imageProject := defaultImageProject
 
-	if opts.Arch == string(vm.ArchARM64) && !providerOpts.useArmAMI() {
-		return nil, cleanUpFn, errors.Errorf("Requested arch is arm64, but machine type is %s. Do specify a t2a VM", providerOpts.MachineType)
-	}
-
 	if providerOpts.useArmAMI() && (opts.Arch != "" && opts.Arch != string(vm.ArchARM64)) {
 		return nil, cleanUpFn, errors.Errorf("machine type %s is arm64, but requested arch is %s", providerOpts.MachineType, opts.Arch)
 	}
@@ -1388,7 +1055,7 @@ func (p *Provider) computeInstanceArgs(
 			l.Printf("WARNING: --gce-min-cpu-platform is ignored for T2A instances")
 			providerOpts.MinCPUPlatform = ""
 		}
-		// TODO(srosenberg): remove this once we have a better way to detect ARM64 machines
+		//TODO(srosenberg): remove this once we have a better way to detect ARM64 machines
 		image = ARM64Image
 		l.Printf("Using ARM64 AMI: %s for machine type: %s", image, providerOpts.MachineType)
 	}
@@ -1398,25 +1065,27 @@ func (p *Provider) computeInstanceArgs(
 		imageProject = FIPSImageProject
 		l.Printf("Using FIPS-enabled AMI: %s for machine type: %s", image, providerOpts.MachineType)
 	}
-
+	// If a non default Ubuntu version was specified, we want to use that instead.
+	if opts.UbuntuVersion.IsOverridden() {
+		image, err = getUbuntuImage(opts.UbuntuVersion, opts.Arch)
+		if err != nil {
+			return nil, cleanUpFn, err
+		}
+		l.Printf("Overriding default Ubuntu image with %s", image)
+	}
 	args = []string{
 		"--scopes", "cloud-platform",
 		"--image", image,
 		"--image-project", imageProject,
-		"--boot-disk-type", providerOpts.BootDiskType,
+		"--boot-disk-type", "pd-ssd",
 	}
 
-	if project == p.defaultProject && providerOpts.ServiceAccount == "" {
-		providerOpts.ServiceAccount = providerOpts.defaultServiceAccount
+	if project == defaultProject && p.ServiceAccount == "" {
+		p.ServiceAccount = "21965078311-compute@developer.gserviceaccount.com"
+
 	}
-	if providerOpts.ServiceAccount != "" {
-		args = append(args, "--service-account", providerOpts.ServiceAccount)
-	}
-	if providerOpts.TurboMode != "" {
-		args = append(args, "--turbo-mode", providerOpts.TurboMode)
-	}
-	if providerOpts.ThreadsPerCore > 0 {
-		args = append(args, "--threads-per-core", fmt.Sprintf("%d", providerOpts.ThreadsPerCore))
+	if p.ServiceAccount != "" {
+		args = append(args, "--service-account", p.ServiceAccount)
 	}
 
 	if providerOpts.preemptible {
@@ -1431,7 +1100,7 @@ func (p *Provider) computeInstanceArgs(
 		// Preemptible instances require the following arguments set explicitly
 		args = append(args, "--maintenance-policy", "TERMINATE")
 		args = append(args, "--no-restart-on-failure")
-	} else if providerOpts.UseSpot {
+	} else if providerOpts.useSpot {
 		args = append(args, "--provisioning-model", "SPOT")
 	} else {
 		if providerOpts.TerminateOnMigration {
@@ -1457,36 +1126,26 @@ func (p *Provider) computeInstanceArgs(
 		for i := 0; i < providerOpts.SSDCount; i++ {
 			args = append(args, "--local-ssd", "interface=NVME")
 		}
-		// Add `discard` for Local SSDs on NVMe, as is advised in:
-		// https://cloud.google.com/compute/docs/disks/add-local-ssd
-		extraMountOpts = "discard"
 		if opts.SSDOpts.NoExt4Barrier {
-			extraMountOpts = fmt.Sprintf("%s,nobarrier", extraMountOpts)
+			extraMountOpts = "nobarrier"
 		}
 	} else {
-		// create the "PDVolumeCount" number of persistent disks with the same configuration
-		for i := 0; i < providerOpts.PDVolumeCount; i++ {
-			pdProps := []string{
-				fmt.Sprintf("type=%s", providerOpts.PDVolumeType),
-				fmt.Sprintf("size=%dGB", providerOpts.PDVolumeSize),
-				"auto-delete=yes",
-			}
-			// TODO(pavelkalinnikov): support disk types with "provisioned-throughput"
-			// option, such as Hyperdisk Throughput:
-			// https://cloud.google.com/compute/docs/disks/add-hyperdisk#hyperdisk-throughput.
-			args = append(args, "--create-disk", strings.Join(pdProps, ","))
+		pdProps := []string{
+			fmt.Sprintf("type=%s", providerOpts.PDVolumeType),
+			fmt.Sprintf("size=%dGB", providerOpts.PDVolumeSize),
+			"auto-delete=yes",
 		}
+		// TODO(pavelkalinnikov): support disk types with "provisioned-throughput"
+		// option, such as Hyperdisk Throughput:
+		// https://cloud.google.com/compute/docs/disks/add-hyperdisk#hyperdisk-throughput.
+		args = append(args, "--create-disk", strings.Join(pdProps, ","))
 		// Enable DISCARD commands for persistent disks, as is advised in:
 		// https://cloud.google.com/compute/docs/disks/optimizing-pd-performance#formatting_parameters.
 		extraMountOpts = "discard"
 	}
 
 	// Create GCE startup script file.
-	filename, err := writeStartupScript(
-		extraMountOpts, opts.SSDOpts.FileSystem,
-		providerOpts.UseMultipleDisks, opts.Arch == string(vm.ArchFIPS),
-		providerOpts.EnableCron,
-	)
+	filename, err := writeStartupScript(extraMountOpts, opts.SSDOpts.FileSystem, providerOpts.UseMultipleDisks, opts.Arch == string(vm.ArchFIPS), !shouldEnableRSAForSSH(opts.UbuntuVersion, opts.Arch))
 	if err != nil {
 		return nil, cleanUpFn, errors.Wrapf(err, "could not write GCE startup script to temp file")
 	}
@@ -1509,67 +1168,39 @@ func (p *Provider) computeInstanceArgs(
 	return args, cleanUpFn, nil
 }
 
-// instanceTemplateNamePrefix returns the prefix part of the instance template
-// (without the trailing zone).
-func instanceTemplateNamePrefix(clusterName string) string {
+func instanceTemplateName(clusterName string) string {
 	return fmt.Sprintf("%s-template", clusterName)
-}
-
-// instanceTemplateName returns the full instance template name (with the zone).
-func instanceTemplateName(clusterName string, zone string) string {
-	return fmt.Sprintf("%s-%s", instanceTemplateNamePrefix(clusterName), zone)
 }
 
 func instanceGroupName(clusterName string) string {
 	return fmt.Sprintf("%s-group", clusterName)
 }
 
-// createInstanceTemplates creates instance templates for a cluster for each
-// zone with the specified instance args for each template. This is currently
-// only used for managed instance group clusters.
-func createInstanceTemplates(
-	l *logger.Logger, clusterName string, zoneToInstanceArgs map[string][]string, labelsArg string,
-) (map[string]jsonInstanceTemplate, error) {
-	zonesInstanceTemplates := make(map[string]jsonInstanceTemplate)
-	var instanceTemplatesMu syncutil.Mutex
-	g := ui.NewDefaultSpinnerGroup(l, "creating instance templates", len(zoneToInstanceArgs))
-	for zone, args := range zoneToInstanceArgs {
-		templateName := instanceTemplateName(clusterName, zone)
-		createTemplateArgs := []string{"compute", "instance-templates", "create"}
-		createTemplateArgs = append(createTemplateArgs, args...)
-		createTemplateArgs = append(createTemplateArgs, "--labels", labelsArg)
-		createTemplateArgs = append(createTemplateArgs, templateName)
-		createTemplateArgs = append(createTemplateArgs, "--format", "json")
-		g.Go(func() error {
-			var j []jsonInstanceTemplate
-			err := runJSONCommand(createTemplateArgs, &j)
-			if err != nil {
-				return errors.Wrapf(err, "Command: gcloud %s\n", createTemplateArgs)
-			}
-			// We expect only one template to be created, gcloud returns a list.
-			if len(j) > 0 {
-				instanceTemplatesMu.Lock()
-				defer instanceTemplatesMu.Unlock()
-				zonesInstanceTemplates[zone] = j[0]
-			}
-			return nil
-		})
-	}
-	err := g.Wait()
+// createInstanceTemplate creates an instance template for the cluster. This is
+// currently only used for managed instance group clusters.
+func createInstanceTemplate(clusterName string, instanceArgs []string, labelsArg string) error {
+	templateName := instanceTemplateName(clusterName)
+	createTemplateArgs := []string{"compute", "instance-templates", "create"}
+	createTemplateArgs = append(createTemplateArgs, instanceArgs...)
+	createTemplateArgs = append(createTemplateArgs, "--labels", labelsArg)
+	createTemplateArgs = append(createTemplateArgs, templateName)
+
+	cmd := exec.Command("gcloud", createTemplateArgs...)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, err
+		return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", createTemplateArgs, output)
 	}
-	return zonesInstanceTemplates, nil
+	return nil
 }
 
 // createInstanceGroups creates an instance group in each zone, for the cluster
-func createInstanceGroups(
-	l *logger.Logger, project, clusterName string, zones []string, opts vm.CreateOpts,
-) error {
+func createInstanceGroups(project, clusterName string, zones []string, opts vm.CreateOpts) error {
 	groupName := instanceGroupName(clusterName)
+	templateName := instanceTemplateName(clusterName)
 	// Note that we set the IP addresses to be stateful, so that they remain the
 	// same when instances are auto-healed, updated, or recreated.
 	createGroupArgs := []string{"compute", "instance-groups", "managed", "create",
+		"--template", templateName,
 		"--size", "0",
 		"--stateful-external-ip", "enabled,auto-delete=on-permanent-instance-deletion",
 		"--stateful-internal-ip", "enabled,auto-delete=on-permanent-instance-deletion",
@@ -1594,13 +1225,9 @@ func createInstanceGroups(
 	}
 	createGroupArgs = append(createGroupArgs, statefulDiskArgs...)
 
-	g := ui.NewDefaultSpinnerGroup(l, "creating instance groups", len(zones))
+	var g errgroup.Group
 	for _, zone := range zones {
-		templateName := instanceTemplateName(clusterName, zone)
-		argsWithZone := make([]string, len(createGroupArgs))
-		copy(argsWithZone, createGroupArgs)
-		argsWithZone = append(argsWithZone, "--zone", zone)
-		argsWithZone = append(argsWithZone, "--template", templateName)
+		argsWithZone := append(createGroupArgs[:len(createGroupArgs):len(createGroupArgs)], "--zone", zone)
 		g.Go(func() error {
 			cmd := exec.Command("gcloud", argsWithZone...)
 			output, err := cmd.CombinedOutput()
@@ -1614,9 +1241,9 @@ func createInstanceGroups(
 }
 
 // waitForGroupStability waits for the instance groups, in the given zones, to become stable.
-func waitForGroupStability(l *logger.Logger, project, groupName string, zones []string) error {
+func waitForGroupStability(project, groupName string, zones []string) error {
 	// Wait for group to become stable // zone TBD
-	g := ui.NewDefaultSpinnerGroup(l, "waiting for instance groups to become stable", len(zones))
+	var g errgroup.Group
 	for _, zone := range zones {
 		groupStableArgs := []string{"compute", "instance-groups", "managed", "wait-until", "--stable",
 			"--zone", zone,
@@ -1639,7 +1266,7 @@ func waitForGroupStability(l *logger.Logger, project, groupName string, zones []
 // individual instances.
 func (p *Provider) Create(
 	l *logger.Logger, names []string, opts vm.CreateOpts, vmProviderOpts vm.ProviderOpts,
-) (vm.List, error) {
+) error {
 	providerOpts := vmProviderOpts.(*ProviderOpts)
 	project := p.GetProject()
 	var gcJob bool
@@ -1655,12 +1282,7 @@ func (p *Provider) Create(
 	}
 	if providerOpts.Managed {
 		if err := checkSDKVersion("450.0.0" /* minVersion */, "required by managed instance groups"); err != nil {
-			return nil, err
-		}
-	}
-	if providerOpts.TurboMode != "" {
-		if err := checkSDKVersion("492.0.0" /* minVersion */, "required for turbo-mode setting"); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
@@ -1669,15 +1291,15 @@ func (p *Provider) Create(
 		defer cleanUpFn()
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 	zones, err := computeZones(opts, providerOpts)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	labels, err := computeLabelsArg(opts, providerOpts)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// Work out in which zones VMs should be created.
@@ -1690,44 +1312,16 @@ func (p *Provider) Create(
 	}
 	usedZones := maps.Keys(zoneToHostNames)
 
-	var vmList vm.List
-	var vmListMutex syncutil.Mutex
 	switch {
 	case providerOpts.Managed:
-		zoneToInstanceArgs := make(map[string][]string)
-		for _, zone := range usedZones {
-			zoneToInstanceArgs[zone] = instanceArgs
-		}
-		// If spot instance are requested for specific zones, set the instance args
-		// for those zones to use spot instances.
-		if len(providerOpts.ManagedSpotZones) > 0 {
-			if providerOpts.UseSpot {
-				return nil, errors.Newf("Use either --%[1]s-use-spot or --%[1]s-managed-spot-zones, not both", ProviderName)
-			}
-			spotProviderOpts := *providerOpts
-			spotProviderOpts.UseSpot = true
-			spotInstanceArgs, spotCleanUpFn, err := p.computeInstanceArgs(l, opts, &spotProviderOpts)
-			if spotCleanUpFn != nil {
-				defer spotCleanUpFn()
-			}
-			if err != nil {
-				return nil, err
-			}
-			for _, zone := range providerOpts.ManagedSpotZones {
-				if _, ok := zoneToInstanceArgs[zone]; !ok {
-					return nil, errors.Newf("the managed spot zone %q is not in the list of zones for the cluster", zone)
-				}
-				zoneToInstanceArgs[zone] = spotInstanceArgs
-			}
-		}
-
-		zonesInstanceTemplates, err := createInstanceTemplates(l, opts.ClusterName, zoneToInstanceArgs, labels)
+		var g errgroup.Group
+		err = createInstanceTemplate(opts.ClusterName, instanceArgs, labels)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		err = createInstanceGroups(l, project, opts.ClusterName, usedZones, opts)
+		err = createInstanceGroups(project, opts.ClusterName, usedZones, opts)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		groupName := instanceGroupName(opts.ClusterName)
@@ -1735,8 +1329,7 @@ func (p *Provider) Create(
 			"--project", project,
 			groupName}
 
-		g := ui.NewDefaultSpinnerGroup(l, fmt.Sprintf("creating %d managed instances, distributed across [%s]",
-			len(names), strings.Join(usedZones, ", ")), len(names))
+		l.Printf("Creating %d managed instances, distributed across [%s]", len(names), strings.Join(usedZones, ", "))
 		for zone, zoneHosts := range zoneToHostNames {
 			argsWithZone := append(createArgs[:len(createArgs):len(createArgs)], "--zone", zone)
 			for _, host := range zoneHosts {
@@ -1753,43 +1346,27 @@ func (p *Provider) Create(
 		}
 		err = g.Wait()
 		if err != nil {
-			return nil, err
+			return err
 		}
-		err = waitForGroupStability(l, project, groupName, usedZones)
+		err = waitForGroupStability(project, groupName, usedZones)
 		if err != nil {
-			return nil, err
+			return err
 		}
-
-		// Now that the instance-group is stable,
-		// fetch the list of instances in the managed instance group.
-		vmList, err = getManagedInstanceGroupVMs(
-			l, project, groupName, zonesInstanceTemplates, p.publicDomain,
-		)
-		if err != nil {
-			return nil, err
-		}
-
 	default:
 		var g errgroup.Group
-		createArgs := []string{"compute", "instances", "create", "--subnet", "default", "--format", "json"}
+		createArgs := []string{"compute", "instances", "create", "--subnet", "default"}
 		createArgs = append(createArgs, "--labels", labels)
 		createArgs = append(createArgs, instanceArgs...)
 
 		l.Printf("Creating %d instances, distributed across [%s]", len(names), strings.Join(usedZones, ", "))
 		for zone, zoneHosts := range zoneToHostNames {
-			argsWithZone := append(createArgs, "--zone", zone)
+			argsWithZone := append(createArgs[:len(createArgs):len(createArgs)], "--zone", zone)
 			argsWithZone = append(argsWithZone, zoneHosts...)
 			g.Go(func() error {
-				var instances []jsonVM
-				err := runJSONCommand(argsWithZone, &instances)
+				cmd := exec.Command("gcloud", argsWithZone...)
+				output, err := cmd.CombinedOutput()
 				if err != nil {
-					return errors.Wrapf(err, "Command: gcloud %s", argsWithZone)
-				}
-				vmListMutex.Lock()
-				defer vmListMutex.Unlock()
-				for _, i := range instances {
-					v := i.toVM(project, p.publicDomain)
-					vmList = append(vmList, *v)
+					return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", argsWithZone, output)
 				}
 				return nil
 			})
@@ -1797,607 +1374,10 @@ func (p *Provider) Create(
 		}
 		err = g.Wait()
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return vmList, propagateDiskLabels(l, project, labels, zoneToHostNames, opts.SSDOpts.UseLocalSSD, providerOpts.PDVolumeCount)
-}
-
-// computeGrowDistribution computes the distribution of new nodes across the
-// existing instance groups. Groups must be sorted by size from smallest to
-// largest before passing to this function. The distribution is computed
-// naively, for simplicity, by growing the instance group with the smallest
-// size, and then the next smallest, and so on.
-func computeGrowDistribution(groups []jsonManagedInstanceGroup, newNodeCount int) []int {
-	addCount := make([]int, len(groups))
-	curIndex := 0
-	for i := 0; i < newNodeCount; i++ {
-		nextIndex := (curIndex + 1) % len(groups)
-		if groups[curIndex].Size+addCount[curIndex] >
-			groups[nextIndex].Size+addCount[nextIndex] {
-			curIndex = nextIndex
-		} else {
-			curIndex = 0
-		}
-		addCount[curIndex]++
-	}
-	return addCount
-}
-
-// computeHostNamesPerZone distributes VM hostnames across zones based on the required
-// node count. Groups must be sorted by size from smallest to largest before passing to
-// this function. It takes instance groups, available hostnames, and the number of new nodes,
-// then returns a mapping of zones to their assigned hostnames.
-func computeHostNamesPerZone(
-	groups []jsonManagedInstanceGroup, vmNames []string, newNodeCount int,
-) map[string][]string {
-	addCounts := computeGrowDistribution(groups, newNodeCount)
-	zoneToHostNames := make(map[string][]string)
-	nameIndex := 0
-	for idx, group := range groups {
-		addCount := addCounts[idx]
-		if addCount == 0 {
-			continue
-		}
-
-		vmNamesForZone := make([]string, addCount)
-		for i := 0; i < addCount; i++ {
-			vmNamesForZone[i] = vmNames[nameIndex]
-			nameIndex++
-		}
-
-		zoneToHostNames[group.Zone] = vmNamesForZone
-	}
-	return zoneToHostNames
-}
-
-// Shrink shrinks the cluster by deleting the given VMs. This is only supported
-// for managed instance groups. Currently, nodes should only be deleted from the
-// tail of the cluster, due to complexities thar arise when the node names are
-// not contiguous.
-func (p *Provider) Shrink(l *logger.Logger, vmsToDelete vm.List, clusterName string) error {
-	if !isManaged(vmsToDelete) {
-		return errors.New("shrinking is only supported for managed instance groups")
-	}
-
-	project := vmsToDelete[0].Project
-	groupName := instanceGroupName(clusterName)
-	vmZones := make(map[string]vm.List)
-	for _, cVM := range vmsToDelete {
-		vmZones[cVM.Zone] = append(vmZones[cVM.Zone], cVM)
-	}
-
-	g := errgroup.Group{}
-	for zone, vms := range vmZones {
-		instances := vms.Names()
-		args := []string{"compute", "instance-groups", "managed", "delete-instances",
-			groupName, "--project", project, "--zone", zone, "--instances", strings.Join(instances, ",")}
-		g.Go(func() error {
-			cmd := exec.Command("gcloud", args...)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", args, output)
-			}
-			return nil
-		})
-	}
-
-	err := g.Wait()
-	if err != nil {
-		return err
-	}
-
-	return waitForGroupStability(l, project, groupName, maps.Keys(vmZones))
-}
-
-func (p *Provider) Grow(
-	l *logger.Logger, vms vm.List, clusterName string, names []string,
-) (vm.List, error) {
-	if !isManaged(vms) {
-		return nil, errors.New("growing is only supported for managed instance groups")
-	}
-
-	project := vms[0].Project
-	groupName := instanceGroupName(clusterName)
-	groups, err := listManagedInstanceGroups(project, groupName)
-	if err != nil {
-		return nil, err
-	}
-
-	newNodeCount := len(names)
-	sort.Slice(groups, func(i, j int) bool {
-		return groups[i].Size < groups[j].Size
-	})
-	zoneToHostNames := computeHostNamesPerZone(groups, names, newNodeCount)
-
-	addedVms := make(map[string]bool)
-	var g errgroup.Group
-	for _, group := range groups {
-		createArgs := []string{"compute", "instance-groups", "managed", "create-instance", "--zone", group.Zone, groupName,
-			"--project", project}
-		for _, vmName := range zoneToHostNames[group.Zone] {
-			vmName := vmName
-			addedVms[vmName] = true
-			argsWithName := append(createArgs[:len(createArgs):len(createArgs)], []string{"--instance", vmName}...)
-			g.Go(func() error {
-				cmd := exec.Command("gcloud", argsWithName...)
-				output, err := cmd.CombinedOutput()
-				if err != nil {
-					return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", argsWithName, output)
-				}
-				return nil
-			})
-		}
-	}
-
-	err = g.Wait()
-	if err != nil {
-		return nil, err
-	}
-
-	err = waitForGroupStability(l, project, groupName, maps.Keys(zoneToHostNames))
-	if err != nil {
-		return nil, err
-	}
-
-	// Fetch instance templates for the cluster to get required information to build VMs list.
-	zoneToInstanceTemplates := make(map[string]jsonInstanceTemplate)
-	templates, err := listInstanceTemplates(project, clusterName)
-	if err != nil {
-		return nil, err
-	}
-	for _, t := range templates {
-		zoneToInstanceTemplates[t.getZone()] = t
-	}
-
-	// Fetch the list of instances in the managed instance group.
-	vmList, err := getManagedInstanceGroupVMs(l, project, groupName, zoneToInstanceTemplates, p.publicDomain)
-	if err != nil {
-		return nil, err
-	}
-
-	// We only want to return the new VMs.
-	var addedVmList vm.List
-	for _, v := range vmList {
-		if _, ok := addedVms[v.Name]; ok {
-			addedVmList = append(addedVmList, v)
-		}
-	}
-
-	var labelsJoined string
-	for key, value := range vms[0].Labels {
-		if labelsJoined != "" {
-			labelsJoined += ","
-		}
-		labelsJoined += fmt.Sprintf("%s=%s", key, value)
-	}
-	err = propagateDiskLabels(l, project, labelsJoined, zoneToHostNames, len(vms[0].LocalDisks) != 0,
-		len(vms[0].NonBootAttachedVolumes))
-	if err != nil {
-		return nil, err
-	}
-
-	return addedVmList, nil
-}
-
-type jsonBackendService struct {
-	Name     string `json:"name"`
-	Backends []struct {
-		Group string `json:"group"`
-	} `json:"backends"`
-	HealthChecks []string `json:"healthChecks"`
-	SelfLink     string   `json:"selfLink"`
-}
-
-func listBackendServices(project string) ([]jsonBackendService, error) {
-	args := []string{"compute", "backend-services", "list", "--project", project, "--format", "json"}
-	var backends []jsonBackendService
-	if err := runJSONCommand(args, &backends); err != nil {
-		return nil, err
-	}
-	return backends, nil
-}
-
-type jsonForwardingRule struct {
-	Name      string `json:"name"`
-	IPAddress string `json:"IPAddress"`
-	SelfLink  string `json:"selfLink"`
-	Target    string `json:"target"`
-}
-
-func listForwardingRules(project string) ([]jsonForwardingRule, error) {
-	args := []string{"compute", "forwarding-rules", "list", "--project", project, "--format", "json"}
-	var rules []jsonForwardingRule
-	if err := runJSONCommand(args, &rules); err != nil {
-		return nil, err
-	}
-	return rules, nil
-}
-
-type jsonTargetTCPProxy struct {
-	Name     string `json:"name"`
-	SelfLink string `json:"selfLink"`
-	Service  string `json:"service"`
-}
-
-func listTargetTCPProxies(project string) ([]jsonTargetTCPProxy, error) {
-	args := []string{"compute", "target-tcp-proxies", "list", "--project", project, "--format", "json"}
-	var proxies []jsonTargetTCPProxy
-	if err := runJSONCommand(args, &proxies); err != nil {
-		return nil, err
-	}
-	return proxies, nil
-}
-
-type jsonHealthCheck struct {
-	Name     string `json:"name"`
-	SelfLink string `json:"selfLink"`
-}
-
-func listHealthChecks(project string) ([]jsonHealthCheck, error) {
-	args := []string{"compute", "health-checks", "list", "--project", project, "--format", "json"}
-	var checks []jsonHealthCheck
-	if err := runJSONCommand(args, &checks); err != nil {
-		return nil, err
-	}
-	return checks, nil
-}
-
-// deleteLoadBalancerResources deletes all load balancer resources associated
-// with a given cluster and project. If a portFilter is specified only the load
-// balancer resources associated with the specified port will be deleted. This
-// function does not return an error if the resources do not exist. Multiple
-// load balancers can be associated with a single cluster, so we need to delete
-// all of them. Health checks associated with the cluster are also deleted.
-func deleteLoadBalancerResources(project, clusterName, portFilter string) error {
-	// List all the components of the load balancer resources tied to the project.
-	var g errgroup.Group
-	var services []jsonBackendService
-	var proxies []jsonTargetTCPProxy
-	var rules []jsonForwardingRule
-	var healthChecks []jsonHealthCheck
-	g.Go(func() (err error) {
-		services, err = listBackendServices(project)
-		return
-	})
-	g.Go(func() (err error) {
-		proxies, err = listTargetTCPProxies(project)
-		return
-	})
-	g.Go(func() (err error) {
-		rules, err = listForwardingRules(project)
-		return
-	})
-	g.Go(func() (err error) {
-		healthChecks, err = listHealthChecks(project)
-		return
-	})
-	if err := g.Wait(); err != nil {
-		return err
-	}
-
-	// Determine if a load balancer resource should be excluded from deletion. The
-	// gcloud commands support a filter flag, but since it does client side only
-	// filtering it makes more sense for us to filter the resources ourselves.
-	shouldExclude := func(name string, expectedResourceType string) bool {
-		cluster, resourceType, port, ok := loadBalancerNameParts(name)
-		if !ok || cluster != clusterName || resourceType != expectedResourceType {
-			return true
-		}
-		if portFilter != "" && strconv.Itoa(port) != portFilter {
-			return true
-		}
-		return false
-	}
-	filteredServices := make([]jsonBackendService, 0)
-	for _, service := range services {
-		if shouldExclude(service.Name, "load-balancer") {
-			continue
-		}
-		filteredServices = append(filteredServices, service)
-	}
-	filteredProxies := make([]jsonTargetTCPProxy, 0)
-	for _, proxy := range proxies {
-		if shouldExclude(proxy.Name, "proxy") {
-			continue
-		}
-		filteredProxies = append(filteredProxies, proxy)
-	}
-	filteredForwardingRules := make([]jsonForwardingRule, 0)
-	for _, rule := range rules {
-		if shouldExclude(rule.Name, "forwarding-rule") {
-			continue
-		}
-		filteredForwardingRules = append(filteredForwardingRules, rule)
-	}
-	filteredHealthChecks := make([]jsonHealthCheck, 0)
-	for _, healthCheck := range healthChecks {
-		if shouldExclude(healthCheck.Name, "health-check") {
-			continue
-		}
-		filteredHealthChecks = append(filteredHealthChecks, healthCheck)
-	}
-
-	// Delete all the components of the load balancer. Resources must be deleted
-	// in the correct order to avoid dependency errors.
-	g = errgroup.Group{}
-	for _, rule := range filteredForwardingRules {
-		args := []string{"compute", "forwarding-rules", "delete",
-			rule.Name,
-			"--global",
-			"--quiet",
-			"--project", project,
-		}
-		g.Go(func() error {
-			cmd := exec.Command("gcloud", args...)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", args, output)
-			}
-			return nil
-		})
-	}
-	if err := g.Wait(); err != nil {
-		return err
-	}
-	g = errgroup.Group{}
-	for _, proxy := range filteredProxies {
-		args := []string{"compute", "target-tcp-proxies", "delete",
-			proxy.Name,
-			"--quiet",
-			"--project", project,
-		}
-		g.Go(func() error {
-			cmd := exec.Command("gcloud", args...)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", args, output)
-			}
-			return nil
-		})
-	}
-	if err := g.Wait(); err != nil {
-		return err
-	}
-	g = errgroup.Group{}
-	for _, service := range filteredServices {
-		args := []string{"compute", "backend-services", "delete",
-			service.Name,
-			"--global",
-			"--quiet",
-			"--project", project,
-		}
-		g.Go(func() error {
-			cmd := exec.Command("gcloud", args...)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", args, output)
-			}
-			return nil
-		})
-	}
-	if err := g.Wait(); err != nil {
-		return err
-	}
-	g = errgroup.Group{}
-	for _, healthCheck := range filteredHealthChecks {
-		args := []string{"compute", "health-checks", "delete",
-			healthCheck.Name,
-			"--quiet",
-			"--project", project,
-		}
-		g.Go(func() error {
-			cmd := exec.Command("gcloud", args...)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", args, output)
-			}
-			return nil
-		})
-	}
-	return g.Wait()
-}
-
-// DeleteLoadBalancer implements the vm.Provider interface.
-func (p *Provider) DeleteLoadBalancer(_ *logger.Logger, vms vm.List, port int) error {
-	clusterName, err := vms[0].ClusterName()
-	if err != nil {
-		return err
-	}
-	return deleteLoadBalancerResources(vms[0].Project, clusterName, strconv.Itoa(port))
-}
-
-// loadBalancerNameParts returns the cluster name, resource type, and port of a
-// load balancer resource name. The resource type is the type of resource, e.g.
-// "health-check", "load-balancer", "proxy".
-func loadBalancerNameParts(name string) (cluster string, resourceType string, port int, ok bool) {
-	regex := regexp.MustCompile(`^([a-z0-9\-]+)-(\d+)-([a-z0-9\-]+)-roachprod$`)
-	match := regex.FindStringSubmatch(name)
-	if match != nil {
-		cluster = match[1]
-		port, _ = strconv.Atoi(match[2])
-		resourceType = match[3]
-		return cluster, resourceType, port, true
-	}
-	return "", "", 0, false
-}
-
-// loadBalancerResourceName returns the name of a load balancer resource. The
-// port is used instead of a service name in order to be able to identify
-// different parts of the name, since we have limited delimiter options.
-func loadBalancerResourceName(clusterName string, port int, resourceType string) string {
-	return fmt.Sprintf("%s-%d-%s-roachprod", clusterName, port, resourceType)
-}
-
-// CreateLoadBalancer creates a load balancer for the given cluster, derived
-// from the VM list, and port. The cluster has to be part of a managed instance
-// group. Additionally, a health check is created for the given port. A proxy is
-// used to support global load balancing. The different parts of the load
-// balancer are created sequentially, as they depend on each other.
-func (p *Provider) CreateLoadBalancer(l *logger.Logger, vms vm.List, port int) error {
-	if err := checkSDKVersion("450.0.0" /* minVersion */, "required by load balancers"); err != nil {
-		return err
-	}
-	if !isManaged(vms) {
-		return errors.New("load balancer creation is only supported for managed instance groups")
-	}
-	project := vms[0].Project
-	clusterName, err := vms[0].ClusterName()
-	if err != nil {
-		return err
-	}
-	groups, err := listManagedInstanceGroups(project, instanceGroupName(clusterName))
-	if err != nil {
-		return err
-	}
-	if len(groups) == 0 {
-		return errors.Errorf("no managed instance groups found for cluster %s", clusterName)
-	}
-
-	var args []string
-	healthCheckName := loadBalancerResourceName(clusterName, port, "health-check")
-	output, err := func() ([]byte, error) {
-		defer ui.NewDefaultSpinner(l, "create health check").Start()()
-		args = []string{"compute", "health-checks", "create", "tcp",
-			healthCheckName,
-			"--project", project,
-			"--port", strconv.Itoa(port),
-		}
-		cmd := exec.Command("gcloud", args...)
-		return cmd.CombinedOutput()
-	}()
-	if err != nil {
-		return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", args, output)
-	}
-
-	loadBalancerName := loadBalancerResourceName(clusterName, port, "load-balancer")
-	args = []string{"compute", "backend-services", "create", loadBalancerName,
-		"--project", project,
-		"--load-balancing-scheme", "EXTERNAL_MANAGED",
-		"--global-health-checks",
-		"--global",
-		"--protocol", "TCP",
-		"--health-checks", healthCheckName,
-		"--timeout", "5m",
-		"--port-name", "cockroach",
-	}
-	output, err = func() ([]byte, error) {
-		defer ui.NewDefaultSpinner(l, "creating load balancer backend").Start()()
-		cmd := exec.Command("gcloud", args...)
-		return cmd.CombinedOutput()
-	}()
-	if err != nil {
-		return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", args, output)
-	}
-
-	// Add the instance group to the backend service. This has to be done
-	// sequentially, and for each zone, because gcloud does not allow adding
-	// multiple instance groups in parallel.
-	output, err = func() ([]byte, error) {
-		spinner := ui.NewDefaultCountingSpinner(l, "adding backends to load balancer", len(groups))
-		defer spinner.Start()()
-		for n, group := range groups {
-			args = []string{"compute", "backend-services", "add-backend", loadBalancerName,
-				"--project", project,
-				"--global",
-				"--instance-group", group.Name,
-				"--instance-group-zone", group.Zone,
-				"--balancing-mode", "UTILIZATION",
-				"--max-utilization", "0.8",
-			}
-			cmd := exec.Command("gcloud", args...)
-			output, err = cmd.CombinedOutput()
-			if err != nil {
-				return output, err
-			}
-			spinner.CountStatus(n + 1)
-		}
-		return nil, nil
-	}()
-	if err != nil {
-		return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", args, output)
-	}
-
-	proxyName := loadBalancerResourceName(clusterName, port, "proxy")
-	output, err = func() ([]byte, error) {
-		defer ui.NewDefaultSpinner(l, "creating load balancer proxy").Start()()
-		args = []string{"compute", "target-tcp-proxies", "create", proxyName,
-			"--project", project,
-			"--backend-service", loadBalancerName,
-			"--proxy-header", "NONE",
-		}
-		cmd := exec.Command("gcloud", args...)
-		return cmd.CombinedOutput()
-	}()
-	if err != nil {
-		return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", args, output)
-	}
-
-	output, err = func() ([]byte, error) {
-		defer ui.NewDefaultSpinner(l, "creating load balancer forwarding rule").Start()()
-		args = []string{"compute", "forwarding-rules", "create",
-			loadBalancerResourceName(clusterName, port, "forwarding-rule"),
-			"--project", project,
-			"--global",
-			"--target-tcp-proxy", proxyName,
-			"--ports", strconv.Itoa(port),
-		}
-		cmd := exec.Command("gcloud", args...)
-		return cmd.CombinedOutput()
-	}()
-	if err != nil {
-		return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", args, output)
-	}
-
-	// Named ports can be set in parallel for all instance groups.
-	g := ui.NewDefaultSpinnerGroup(l, "setting named ports on instance groups", len(groups))
-	for _, group := range groups {
-		groupArgs := []string{"compute", "instance-groups", "set-named-ports", group.Name,
-			"--project", project,
-			"--zone", group.Zone,
-			"--named-ports", "cockroach:" + strconv.Itoa(port),
-		}
-		g.Go(func() error {
-			cmd := exec.Command("gcloud", groupArgs...)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", groupArgs, output)
-			}
-			return nil
-		})
-	}
-	return g.Wait()
-}
-
-// ListLoadBalancers returns the list of load balancers associated with the
-// given VMs. The VMs have to be part of a managed instance group. The load
-// balancers are returned as a list of service addresses.
-func (p *Provider) ListLoadBalancers(_ *logger.Logger, vms vm.List) ([]vm.ServiceAddress, error) {
-	// Only managed instance groups support load balancers.
-	if !isManaged(vms) {
-		return nil, nil
-	}
-	project := vms[0].Project
-	clusterName, err := vms[0].ClusterName()
-	if err != nil {
-		return nil, err
-	}
-	rules, err := listForwardingRules(project)
-	if err != nil {
-		return nil, err
-	}
-
-	addresses := make([]vm.ServiceAddress, 0)
-	for _, rule := range rules {
-		cluster, resourceType, port, ok := loadBalancerNameParts(rule.Name)
-		if !ok {
-			continue
-		}
-		if cluster == clusterName && resourceType == "forwarding-rule" {
-			addresses = append(addresses, vm.ServiceAddress{IP: rule.IPAddress, Port: port})
-		}
-	}
-	return addresses, nil
+	return propagateDiskLabels(l, project, labels, zoneToHostNames, &opts)
 }
 
 // Given a machine type, return the allowed number (> 0) of local SSDs, sorted in ascending order.
@@ -2459,8 +1439,7 @@ func propagateDiskLabels(
 	project string,
 	labels string,
 	zoneToHostNames map[string][]string,
-	useLocalSSD bool,
-	pdVolumeCount int,
+	opts *vm.CreateOpts,
 ) error {
 	var g errgroup.Group
 
@@ -2489,24 +1468,17 @@ func propagateDiskLabels(
 				return nil
 			})
 
-			if !useLocalSSD {
-				// The persistent disks are already created. The disks are suffixed with an offset
-				// which starts from 1. A total of "pdVolumeCount" disks are created.
+			if !opts.SSDOpts.UseLocalSSD {
 				g.Go(func() error {
-					// the loop is run inside the go-routine to ensure that we do not run all the gcloud commands.
-					// For a 150 node with 4 disks, we have seen that the gcloud command cannot handle so many concurrent
-					// commands.
-					for offset := 1; offset <= pdVolumeCount; offset++ {
-						persistentDiskArgs := append([]string(nil), argsPrefix...)
-						persistentDiskArgs = append(persistentDiskArgs, zoneArg...)
-						// N.B. additional persistent disks are suffixed with the offset, starting at 1.
-						persistentDiskArgs = append(persistentDiskArgs, fmt.Sprintf("%s-%d", hostName, offset))
-						cmd := exec.Command("gcloud", persistentDiskArgs...)
+					persistentDiskArgs := append([]string(nil), argsPrefix...)
+					persistentDiskArgs = append(persistentDiskArgs, zoneArg...)
+					// N.B. additional persistent disks are suffixed with the offset, starting at 1.
+					persistentDiskArgs = append(persistentDiskArgs, fmt.Sprintf("%s-1", hostName))
+					cmd := exec.Command("gcloud", persistentDiskArgs...)
 
-						output, err := cmd.CombinedOutput()
-						if err != nil {
-							return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", persistentDiskArgs, output)
-						}
+					output, err := cmd.CombinedOutput()
+					if err != nil {
+						return errors.Wrapf(err, "Command: gcloud %s\nOutput: %s", persistentDiskArgs, output)
 					}
 					return nil
 				})
@@ -2519,232 +1491,24 @@ func propagateDiskLabels(
 type jsonInstanceTemplate struct {
 	Name       string `json:"name"`
 	Properties struct {
-		Disks             []jsonInstanceTemplateDisk
-		Labels            map[string]string `json:"labels"`
-		MachineType       string            `json:"machineType"`
-		NetworkInterfaces []struct {
-			Name    string `json:"name"`
-			Network string `json:"network"`
-		} `json:"networkInterfaces"`
-		Scheduling struct {
-			AutomaticRestart  bool   `json:"automaticRestart"`
-			OnHostMaintenance string `json:"onHostMaintenance"`
-			Preemptible       bool   `json:"preemptible"`
-			ProvisioningModel string `json:"provisioningModel"`
-		}
+		Labels map[string]string `json:"labels"`
 	} `json:"properties"`
-}
-
-func (t *jsonInstanceTemplate) getZone() string {
-	namePrefix := fmt.Sprintf("%s-", instanceTemplateNamePrefix(t.Properties.Labels[vm.TagCluster]))
-	return strings.TrimPrefix(t.Name, namePrefix)
-}
-
-type jsonInstanceTemplateDisk struct {
-	AutoDelete       bool   `json:"autoDelete"`
-	Boot             bool   `json:"boot"`
-	DeviceName       string `json:"deviceName"`
-	Index            int    `json:"index"`
-	InitializeParams struct {
-		DiskSizeGb  string            `json:"diskSizeGb"`
-		DiskType    string            `json:"diskType"`
-		Labels      map[string]string `json:"labels"`
-		SourceImage string            `json:"sourceImage"`
-	} `json:"initializeParams"`
-	Mode string `json:"mode"`
-	Type string `json:"type"`
-}
-
-// toVolume converts a jsonInstanceTemplateDisk to a vm.Volume.
-// This function does a job very similar to &attachDiskCmdDisk{}.toVolume(),
-// but a lot of information are coming from a different place, which makes it
-// hard to unify the two functions.
-func (d *jsonInstanceTemplateDisk) toVolume(vmName, zone string) (*vm.Volume, VolumeType, error) {
-	// We fail silently here because the disk size is not always set
-	// (e.g. in case of scratch disks).
-	diskSize, _ := strconv.Atoi(d.InitializeParams.DiskSizeGb)
-
-	// This is a scratch disk.
-	if d.Type == "SCRATCH" {
-		return &vm.Volume{
-			Size:               diskSize,
-			ProviderVolumeType: "local-ssd",
-		}, VolumeTypeLocalSSD, nil
-	}
-
-	volType := VolumeTypePersistent
-	if d.Boot {
-		volType = VolumeTypeBoot
-	}
-
-	diskName := vmName
-	if d.Index > 0 {
-		diskName = fmt.Sprintf("%s-%d", vmName, d.Index)
-	}
-
-	vol := vm.Volume{
-		Name: diskName,
-		Zone: zone,
-		Size: diskSize,
-		// Unfortunately, the attachedDisk struct does not return the actual type
-		// (standard or ssd) of the persistent disk. We assume `pd_ssd` as those
-		// are common and is a worst case scenario for cost computation.
-		ProviderVolumeType: "pd-ssd",
-		ProviderResourceID: diskName,
-	}
-
-	return &vol, volType, nil
 }
 
 // listInstanceTemplates returns a list of instance templates for a given
 // project.
-func listInstanceTemplates(project, clusterFilter string) ([]jsonInstanceTemplate, error) {
+func listInstanceTemplates(project string) ([]jsonInstanceTemplate, error) {
 	args := []string{"compute", "instance-templates", "list", "--project", project, "--format", "json"}
 	var templates []jsonInstanceTemplate
 	if err := runJSONCommand(args, &templates); err != nil {
 		return nil, err
 	}
-
-	if clusterFilter == "" {
-		return templates, nil
-	}
-
-	var filteredTemplates []jsonInstanceTemplate
-	for _, t := range templates {
-		if t.Properties.Labels[vm.TagCluster] != clusterFilter {
-			continue
-		}
-
-		filteredTemplates = append(filteredTemplates, t)
-	}
-	return filteredTemplates, nil
+	return templates, nil
 }
 
 type jsonManagedInstanceGroup struct {
 	Name string `json:"name"`
 	Zone string `json:"zone"`
-	Size int    `json:"size"`
-}
-
-// managedInstanceGroupInstance represents the struct gcloud returns
-// when listing instances of a managed instance group.
-type managedInstanceGroupInstance struct {
-	CurrentAction                   string
-	Id                              string
-	Instance                        string
-	InstanceStatus                  string
-	Name                            string
-	PreservedStateFromConfig        PreservedState
-	PreservedStateFromPolicy        PreservedState
-	PropertiesFromFlexibilityPolicy struct {
-		MachineType string
-	}
-	Version struct {
-		InstanceTemplate string
-		Name             string
-	}
-}
-type PreservedState struct {
-	Disks       map[string]*PreservedStatePreservedDisk
-	ExternalIPs map[string]*PreservedStatePreservedNetworkIp
-	InternalIPs map[string]*PreservedStatePreservedNetworkIp
-	Metadata    map[string]string
-}
-type PreservedStatePreservedDisk struct {
-	AutoDelete string
-	Mode       string
-	Source     string
-}
-type PreservedStatePreservedNetworkIp struct {
-	AutoDelete string
-	IpAddress  struct {
-		Address string
-		Literal string
-	}
-}
-
-// toVM converts a managed instance group instance to a vm.VM struct
-// based on data found in both the instance and the instance template.
-// TODO(ludo): arch and CPU platform are not available at this time,
-// so arch is derived from the VM tags. They should be inferred from
-// the machine type instead.
-func (j *managedInstanceGroupInstance) toVM(
-	project, zone string, instanceTemplate jsonInstanceTemplate, dnsDomain string,
-) *vm.VM {
-
-	var err error
-	var vmErrors []error
-
-	remoteUser := config.SharedUser
-	if !config.UseSharedUser {
-		// N.B. gcloud uses the local username to log into instances rather
-		// than the username on the authenticated Google account but we set
-		// up the shared user at cluster creation time. Allow use of the
-		// local username if requested.
-		remoteUser = config.OSUser.Username
-	}
-
-	// Check "lifetime" label.
-	var lifetime time.Duration
-	if lifetimeStr, ok := instanceTemplate.Properties.Labels[vm.TagLifetime]; ok {
-		if lifetime, err = time.ParseDuration(lifetimeStr); err != nil {
-			vmErrors = append(vmErrors, vm.ErrNoExpiration)
-		}
-	} else {
-		vmErrors = append(vmErrors, vm.ErrNoExpiration)
-	}
-
-	var arch vm.CPUArch
-	var cpuPlatform string
-	if instanceTemplate.Properties.Labels[vm.TagArch] != "" {
-		arch = vm.CPUArch(instanceTemplate.Properties.Labels[vm.TagArch])
-	}
-
-	var volumes []vm.Volume
-	var bootVolume vm.Volume
-	var localDisks []vm.Volume
-	for _, disk := range instanceTemplate.Properties.Disks {
-		vol, volType, err := disk.toVolume(j.Name, zone)
-		if err != nil {
-			vmErrors = append(vmErrors, err)
-			continue
-		}
-
-		switch volType {
-		case VolumeTypeLocalSSD:
-			localDisks = append(localDisks, *vol)
-		case VolumeTypeBoot:
-			bootVolume = *vol
-		default:
-			volumes = append(volumes, *vol)
-		}
-	}
-
-	return &vm.VM{
-		Name:                   j.Name,
-		CreatedAt:              timeutil.Now(),
-		DNS:                    fmt.Sprintf("%s.%s.%s", j.Name, zone, project),
-		Lifetime:               lifetime,
-		Preemptible:            instanceTemplate.Properties.Scheduling.Preemptible,
-		Labels:                 instanceTemplate.Properties.Labels,
-		PrivateIP:              j.PreservedStateFromPolicy.InternalIPs["nic0"].IpAddress.Literal,
-		Provider:               ProviderName,
-		DNSProvider:            ProviderName,
-		ProviderID:             lastComponent(j.Instance),
-		PublicIP:               j.PreservedStateFromPolicy.ExternalIPs["nic0"].IpAddress.Literal,
-		PublicDNS:              fmt.Sprintf("%s.%s", j.Name, dnsDomain),
-		RemoteUser:             remoteUser,
-		VPC:                    lastComponent(instanceTemplate.Properties.NetworkInterfaces[0].Network),
-		MachineType:            instanceTemplate.Properties.MachineType,
-		Zone:                   zone,
-		Project:                project,
-		NonBootAttachedVolumes: volumes,
-		BootVolume:             bootVolume,
-		LocalDisks:             localDisks,
-		Errors:                 vmErrors,
-		CPUArch:                arch,
-		CPUFamily:              cpuPlatform,
-	}
 }
 
 // listManagedInstanceGroups returns a list of managed instance groups for a
@@ -2760,56 +1524,9 @@ func listManagedInstanceGroups(project, groupName string) ([]jsonManagedInstance
 	return groups, nil
 }
 
-// getManagedInstanceGroupVMs returns a list of VMs for a given instance group.
-// The instance group may exist in multiple zones with the same name, so the
-// function gathers instances across all zones. The instance templates are used
-// to determine the zones to query and the extra properties of the VMs.
-func getManagedInstanceGroupVMs(
-	l *logger.Logger,
-	project, groupName string,
-	instanceTemplates map[string]jsonInstanceTemplate,
-	dnsDomain string,
-) (vm.List, error) {
-
-	zones := maps.Keys(instanceTemplates)
-
-	var vmList vm.List
-	var vmListMutex syncutil.Mutex
-	listArgs := []string{
-		"compute", "instance-groups", "managed", "list-instances", groupName,
-		"--project", project, "--format", "json",
-	}
-	g := ui.NewDefaultSpinnerGroup(l,
-		fmt.Sprintf("gathering instances created across zones [%s]", strings.Join(zones, ", ")),
-		len(zones),
-	)
-	for _, zone := range zones {
-		g.Go(func() error {
-			var zoneInstances []managedInstanceGroupInstance
-			argsWithZone := append(listArgs, "--zone", zone)
-			err := runJSONCommand(argsWithZone, &zoneInstances)
-			if err != nil {
-				return err
-			}
-			vmListMutex.Lock()
-			defer vmListMutex.Unlock()
-			for _, i := range zoneInstances {
-				v := i.toVM(project, zone, instanceTemplates[zone], dnsDomain)
-				vmList = append(vmList, *v)
-			}
-			return nil
-		})
-	}
-	err := g.Wait()
-	if err != nil {
-		return nil, err
-	}
-
-	return vmList, nil
-}
-
 // deleteInstanceTemplate deletes the instance template for the cluster.
-func deleteInstanceTemplate(project, templateName string) error {
+func deleteInstanceTemplate(project, clusterName string) error {
+	templateName := instanceTemplateName(clusterName)
 	args := []string{"compute", "instance-templates", "delete", "--project", project, "--quiet", templateName}
 	cmd := exec.Command("gcloud", args...)
 	output, err := cmd.CombinedOutput()
@@ -2838,7 +1555,7 @@ func (p *Provider) Delete(l *logger.Logger, vms vm.List) error {
 
 // deleteManaged deletes the managed instance group for the given VMs. It also
 // deletes any instance templates that were used to create the managed instance
-// group and associated load balancers.
+// group.
 func (p *Provider) deleteManaged(l *logger.Logger, vms vm.List) error {
 	clusterProjectMap := make(map[string]string)
 	for _, v := range vms {
@@ -2851,13 +1568,6 @@ func (p *Provider) deleteManaged(l *logger.Logger, vms vm.List) error {
 
 	var g errgroup.Group
 	for cluster, project := range clusterProjectMap {
-		// Delete any load balancer resources associated with the cluster. Trying to
-		// delete the instance group before the load balancer resources will result
-		// in an error.
-		err := deleteLoadBalancerResources(project, cluster, "" /* portFilter */)
-		if err != nil {
-			return err
-		}
 		// Multiple instance groups can exist for a single cluster, one for each zone.
 		projectGroups, err := listManagedInstanceGroups(project, instanceGroupName(cluster))
 		if err != nil {
@@ -2887,17 +1597,19 @@ func (p *Provider) deleteManaged(l *logger.Logger, vms vm.List) error {
 	// deleted.
 	g = errgroup.Group{}
 	for cluster, project := range clusterProjectMap {
-		templates, err := listInstanceTemplates(project, cluster)
-		if err != nil {
-			return err
-		}
-		for _, template := range templates {
-			g.Go(func() error {
-				return deleteInstanceTemplate(project, template.Name)
-			})
-		}
+		cluster, project := cluster, project
+		g.Go(func() error {
+			return deleteInstanceTemplate(project /* project */, cluster /* cluster */)
+		})
 	}
 	return g.Wait()
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // deleteUnmanaged deletes the given VMs that are not part of a managed instance group.
@@ -2987,7 +1699,7 @@ func (p *Provider) Reset(l *logger.Logger, vms vm.List) error {
 // Extend TODO(peter): document
 func (p *Provider) Extend(l *logger.Logger, vms vm.List, lifetime time.Duration) error {
 	return p.AddLabels(l, vms, map[string]string{
-		vm.TagLifetime: lifetime.String(),
+		"lifetime": lifetime.String(),
 	})
 }
 
@@ -3016,6 +1728,9 @@ func (p *Provider) FindActiveAccount(l *logger.Logger) (string, error) {
 
 // List queries gcloud to produce a list of VM info objects.
 func (p *Provider) List(l *logger.Logger, opts vm.ListOptions) (vm.List, error) {
+	if opts.IncludeVolumes {
+		l.Printf("WARN: --include-volumes is disabled; attached disks info will be partial")
+	}
 
 	templatesInUse := make(map[string]map[string]struct{})
 	var vms vm.List
@@ -3023,16 +1738,36 @@ func (p *Provider) List(l *logger.Logger, opts vm.ListOptions) (vm.List, error) 
 		args := []string{"compute", "instances", "list", "--project", prj, "--format", "json"}
 
 		// Run the command, extracting the JSON payload
-		allVMS := make([]jsonVM, 0)
-		if err := runJSONCommand(args, &allVMS); err != nil {
+		jsonVMS := make([]jsonVM, 0)
+		if err := runJSONCommand(args, &jsonVMS); err != nil {
 			return nil, err
 		}
-		jsonVMS := make([]jsonVM, 0)
-		// Remove instances that weren't created by roachprod.
-		// N.B. The same filter is applied in other providers, i.e., aws and azure.
-		for _, v := range allVMS {
-			if v.Labels[vm.TagRoachprod] == "true" {
-				jsonVMS = append(jsonVMS, v)
+
+		userVMToDetailedDisk := make(map[string][]describeVolumeCommandResponse)
+		if opts.IncludeVolumes {
+			var jsonVMSelfLinks []string
+			for _, jsonVM := range jsonVMS {
+				jsonVMSelfLinks = append(jsonVMSelfLinks, jsonVM.SelfLink)
+			}
+
+			args = []string{
+				"compute",
+				"disks",
+				"list",
+				"--project", prj,
+				"--format", "json",
+				"--filter", "users:(" + strings.Join(jsonVMSelfLinks, ",") + ")",
+			}
+
+			var disks []describeVolumeCommandResponse
+			if err := runJSONCommand(args, &disks); err != nil {
+				return nil, err
+			}
+
+			for _, d := range disks {
+				for _, u := range d.Users {
+					userVMToDetailedDisk[u] = append(userVMToDetailedDisk[u], d)
+				}
 			}
 		}
 
@@ -3052,7 +1787,15 @@ func (p *Provider) List(l *logger.Logger, opts vm.ListOptions) (vm.List, error) 
 
 		// Now, convert the json payload into our common VM type
 		for _, jsonVM := range jsonVMS {
-			vms = append(vms, *jsonVM.toVM(prj, p.publicDomain))
+			defaultOpts := p.CreateProviderOpts().(*ProviderOpts)
+			disks := userVMToDetailedDisk[jsonVM.SelfLink]
+
+			if len(disks) == 0 {
+				// Since `--include-volumes` is disabled, we convert attachDiskCmdDisk to describeVolumeCommandResponse.
+				// The former is a subset of the latter. Some information like `Labels` will be missing.
+				disks = toDescribeVolumeCommandResponse(jsonVM.Disks, jsonVM.Zone)
+			}
+			vms = append(vms, *jsonVM.toVM(prj, disks, defaultOpts))
 		}
 	}
 
@@ -3061,13 +1804,12 @@ func (p *Provider) List(l *logger.Logger, opts vm.ListOptions) (vm.List, error) 
 		// Cluster (VM marked as empty) for it. This allows `Delete` to clean up
 		// any MIG or instance template resources when there are no VMs to
 		// derive it from.
-		clusterSeen := make(map[string]struct{})
 		for _, prj := range p.GetProjects() {
 			projTemplatesInUse := templatesInUse[prj]
 			if projTemplatesInUse == nil {
 				projTemplatesInUse = make(map[string]struct{})
 			}
-			templates, err := listInstanceTemplates(prj, "" /* clusterFilter */)
+			templates, err := listInstanceTemplates(prj)
 			if err != nil {
 				return nil, err
 			}
@@ -3076,20 +1818,10 @@ func (p *Provider) List(l *logger.Logger, opts vm.ListOptions) (vm.List, error) 
 				if managed, ok := template.Properties.Labels[ManagedLabel]; !(ok && managed == "true") {
 					continue
 				}
-				// There can be multiple dangling templates for the same cluster. We
-				// only need to create one `EmptyCluster` VM for each cluster.
-				clusterName := template.Properties.Labels[vm.TagCluster]
-				if clusterName == "" {
-					continue
-				}
-				if _, ok := clusterSeen[clusterName]; ok {
-					continue
-				}
-				clusterSeen[clusterName] = struct{}{}
 				// Create an `EmptyCluster` VM for templates that are not in use.
 				if _, ok := projTemplatesInUse[template.Name]; !ok {
 					vms = append(vms, vm.VM{
-						Name:         vm.Name(clusterName, 0),
+						Name:         template.Name,
 						Provider:     ProviderName,
 						Project:      prj,
 						Labels:       template.Properties.Labels,
@@ -3112,6 +1844,42 @@ func (p *Provider) List(l *logger.Logger, opts vm.ListOptions) (vm.List, error) 
 	}
 
 	return vms, nil
+}
+
+// Convert attachDiskCmdDisk to describeVolumeCommandResponse and link via SelfLink, Source.
+func toDescribeVolumeCommandResponse(
+	disks []attachDiskCmdDisk, zone string,
+) []describeVolumeCommandResponse {
+	res := make([]describeVolumeCommandResponse, 0, len(disks))
+
+	diskType := func(s string) string {
+		if s == "PERSISTENT" {
+			// Unfortunately, we don't know if it's a pd-ssd or pd-standard. We assume pd_ssd since those are common.
+			return "pd-ssd"
+		}
+		return "unknown"
+	}
+
+	for _, d := range disks {
+		if d.Source == "" && d.Type == "SCRATCH" {
+			// Skip scratch disks.
+			continue
+		}
+		res = append(res, describeVolumeCommandResponse{
+			// TODO(irfansharif): Use of the device name here is wrong -- it's
+			// ends up being things like "persistent-disk-1" but in other, more
+			// correct uses, it's "irfansharif-snapshot-0001-1". In fact, this
+			// whole transformation from attachDiskCmdDisk to
+			// describeVolumeCommandResponse if funky. Use something like
+			// (Provider).ListVolumes instead.
+			Name:     d.DeviceName,
+			SelfLink: d.Source,
+			SizeGB:   d.DiskSizeGB,
+			Type:     diskType(d.Type),
+			Zone:     zone,
+		})
+	}
+	return res
 }
 
 // populateCostPerHour adds an approximate cost per hour to each VM in the list,
@@ -3194,8 +1962,7 @@ func populateCostPerHour(l *logger.Logger, vms vm.List) error {
 				}
 				series, cpus, memory, err := decodeCustomType()
 				if err != nil {
-					l.Errorf("Error estimating VM costs, "+
-						"continuing without (consider ROACHPROD_NO_COST_ESTIMATES=true): %v", err)
+					l.Errorf("Error estimating VM costs (will continue without): %v", err)
 					continue
 				}
 				workload.ComputeVmWorkload.MachineType = &cloudbilling.MachineType{
@@ -3290,21 +2057,46 @@ func lastComponent(url string) string {
 	return s[len(s)-1]
 }
 
-// zoneFromSelfLink splits a GCE self link and returns the zone. This is used
-// because some fields in GCE APIs are defined using URLs like:
-//
-//	"https://www.googleapis.com/compute/v1/projects/cockroach-shared/zones/us-east1-b/machineTypes/n2-standard-16"
-//
-// We want to extract the "us-east1-b" part, which is the zone.
-func zoneFromSelfLink(selfLink string) string {
-	substr := "zones/"
-	idx := strings.Index(selfLink, substr)
-	if idx == -1 {
-		return ""
+var (
+	// We define the actual image here because it's different for every provider.
+	focalFossa = vm.UbuntuImages{
+		DefaultImage: "ubuntu-2004-focal-v20230817",
+		ARM64Image:   "ubuntu-2004-focal-arm64-v20230817",
+		FIPSImage:    "ubuntu-pro-fips-2004-focal-v20230811",
 	}
-	selfLink = selfLink[idx+len(substr):]
-	s := strings.Split(selfLink, "/")
-	return s[0]
+
+	gceUbuntuImages = map[vm.UbuntuVersion]vm.UbuntuImages{
+		vm.FocalFossa: focalFossa,
+	}
+)
+
+// getUbuntuImage returns the correct Ubuntu image for the specified Ubuntu version and architecture.
+func getUbuntuImage(version vm.UbuntuVersion, arch string) (string, error) {
+	image, ok := gceUbuntuImages[version]
+	if ok {
+		switch arch {
+		case string(vm.ArchAMD64):
+			return image.DefaultImage, nil
+		case string(vm.ArchARM64):
+			return image.ARM64Image, nil
+		case string(vm.ArchFIPS):
+			return image.FIPSImage, nil
+		default:
+			return "", errors.Errorf("Unknown architecture specified.")
+		}
+	}
+
+	return "", errors.Errorf("Unknown Ubuntu version specified.")
+}
+
+// Returns true if the current Ubuntu image is 22.04. RSA SHA1 is no longer supported
+// in 22.04, but is required by Jepsen tests so we enable it. However, some tests are
+// still on Ubuntu 20.04, which will break sshd if we try to enable.
+// TODO(DarrylWong): In the future, when all tests are run on Ubuntu 22.04, we can remove this check and default true.
+// See: https://github.com/cockroachdb/cockroach/issues/112112
+func shouldEnableRSAForSSH(version vm.UbuntuVersion, arch string) bool {
+	// FIPS is not yet available on 22.04, it's still using Ubuntu 20.04.
+	return version.IsOverridden() || arch == string(vm.ArchFIPS)
 }
 
 // checkSDKVersion checks that the gcloud SDK version is at least minVersion.

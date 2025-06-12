@@ -54,7 +54,7 @@ func (b *Builder) buildValuesClause(
 
 	colTypes := make([]*types.T, numCols)
 	for colIdx := range colTypes {
-		desired := types.AnyElement
+		desired := types.Any
 		if colIdx < len(desiredTypes) {
 			desired = desiredTypes[colIdx]
 		}
@@ -75,18 +75,6 @@ func (b *Builder) buildValuesClause(
 			// resolving the column types.
 			elems[elemPos] = b.buildScalar(texpr, inScope, nil, nil, nil)
 			elemPos += numCols
-			if texpr.ResolvedType().IsWildcardType() {
-				// Type-check the expression once again in order to update expressions
-				// that wrap a routine to reflect the modified type.
-				func() {
-					defer b.semaCtx.Properties.Restore(b.semaCtx.Properties)
-					b.semaCtx.Properties.RoutineUseResolvedType = true
-					texpr, err = tree.TypeCheck(b.ctx, texpr, b.semaCtx, desired)
-					if err != nil {
-						panic(err)
-					}
-				}()
-			}
 			if typ := texpr.ResolvedType(); typ.Family() != types.UnknownFamily {
 				if colTypes[colIdx].Family() == types.UnknownFamily {
 					colTypes[colIdx] = typ
@@ -162,9 +150,9 @@ func rightHasMoreSpecificTuple(left, right *types.T) (isMoreSpecific bool, isEqu
 		return rightHasMoreSpecificTuple(left.ArrayContents(), right.ArrayContents())
 	}
 	if left.Family() == types.TupleFamily && right.Family() == types.TupleFamily {
-		if right.Identical(types.AnyTuple) {
+		if right == types.AnyTuple {
 			return false, true
-		} else if left.Identical(types.AnyTuple) {
+		} else if left == types.AnyTuple {
 			return true, true
 		} else if len(left.TupleContents()) != len(right.TupleContents()) {
 			return false, false

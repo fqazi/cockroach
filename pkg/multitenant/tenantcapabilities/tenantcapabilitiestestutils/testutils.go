@@ -6,7 +6,6 @@
 package tenantcapabilitiestestutils
 
 import (
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,7 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig/spanconfigbounds"
 	"github.com/cockroachdb/cockroach/pkg/sql/protoreflect"
@@ -24,40 +23,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var reqWithParamRE = regexp.MustCompile(`(\w+)(?:{(\w+)})?`)
-
 // ParseBatchRequests is a helper function to parse datadriven input that
 // declares (empty) batch requests of supported types, for a particular tenant.
 // The constructed batch request is returned. The cmds are of the following
 // form:
 //
-// cmds=(AdminSplit, Scan, ConditionalPut, EndTxn{Prepare})
+// cmds=(split, scan, cput)
 func ParseBatchRequests(t *testing.T, d *datadriven.TestData) (ba kvpb.BatchRequest) {
 	for _, cmd := range d.CmdArgs {
 		if cmd.Key == "cmds" {
 			for _, z := range cmd.Vals {
-				reqWithParam := reqWithParamRE.FindStringSubmatch(z)
-				reqStr := reqWithParam[1]
-				paramStr := reqWithParam[2]
-				method, ok := kvpb.StringToMethodMap[reqStr]
+				method, ok := kvpb.StringToMethodMap[z]
 				if !ok {
 					t.Fatalf("unsupported request type: %s", z)
 				}
 				request := kvpb.CreateRequest(method)
-				if paramStr != "" {
-					ok = false
-					switch method {
-					case kvpb.EndTxn:
-						switch paramStr {
-						case "Prepare":
-							request.(*kvpb.EndTxnRequest).Prepare = true
-							ok = true
-						}
-					}
-					if !ok {
-						t.Fatalf("unsupported %s param: %s", method, paramStr)
-					}
-				}
 				ba.Add(request)
 			}
 		}
@@ -105,11 +85,8 @@ func ParseTenantInfo(
 // capability key and sets it on top of the default tenant capabilities.
 func ParseTenantCapabilityUpsert(
 	t *testing.T, d *datadriven.TestData,
-) (tenantcapabilities.Entry, error) {
-	entry := tenantcapabilities.Entry{
-		TenantID:    GetTenantID(t, d),
-		ServiceMode: GetServiceState(t, d),
-	}
+) (roachpb.TenantID, *tenantcapabilitiespb.TenantCapabilities, error) {
+	tID := GetTenantID(t, d)
 	caps := tenantcapabilitiespb.TenantCapabilities{}
 	for _, arg := range d.CmdArgs {
 		capability, ok := tenantcapabilities.FromName(arg.Key)
@@ -120,18 +97,18 @@ func ParseTenantCapabilityUpsert(
 		case tenantcapabilities.BoolCapability:
 			b, err := strconv.ParseBool(arg.Vals[0])
 			if err != nil {
-				return entry, err
+				return roachpb.TenantID{}, nil, err
 			}
 			c.Value(&caps).Set(b)
 
 		case tenantcapabilities.SpanConfigBoundsCapability:
 			jsonD, err := json.ParseJSON(arg.Vals[0])
 			if err != nil {
-				return entry, err
+				return roachpb.TenantID{}, nil, err
 			}
 			var v tenantcapabilitiespb.SpanConfigBounds
 			if _, err := protoreflect.JSONBMarshalToMessage(jsonD, &v); err != nil {
-				return entry, err
+				return roachpb.TenantID{}, nil, err
 			}
 			c.Value(&caps).Set(spanconfigbounds.New(&v))
 
@@ -139,8 +116,7 @@ func ParseTenantCapabilityUpsert(
 			t.Fatalf("unknown capability type %T for capability %s", c, arg.Key)
 		}
 	}
-	entry.TenantCapabilities = &caps
-	return entry, nil
+	return tID, &caps, nil
 }
 
 func ParseTenantCapabilityDelete(t *testing.T, d *datadriven.TestData) *tenantcapabilities.Update {
@@ -167,19 +143,6 @@ func GetTenantID(t *testing.T, d *datadriven.TestData) roachpb.TenantID {
 	return tID
 }
 
-func GetServiceState(t *testing.T, d *datadriven.TestData) mtinfopb.TenantServiceMode {
-	if d.HasArg("service") {
-		var state string
-		d.ScanArgs(t, "service", &state)
-		serviceState, ok := mtinfopb.TenantServiceModeValues[state]
-		if !ok {
-			t.Fatalf("invalid service state: %s", state)
-		}
-		return serviceState
-	}
-	return mtinfopb.ServiceModeExternal
-}
-
 // AlteredCapabilitiesString pretty-prints all altered capability
 // values that no longer match an empty protobuf.
 func AlteredCapabilitiesString(capabilities *tenantcapabilitiespb.TenantCapabilities) string {
@@ -187,7 +150,7 @@ func AlteredCapabilitiesString(capabilities *tenantcapabilitiespb.TenantCapabili
 	var builder strings.Builder
 	builder.WriteByte('{')
 	space := ""
-	for _, capID := range tenantcapabilitiespb.IDs {
+	for _, capID := range tenantcapabilities.IDs {
 		value := tenantcapabilities.MustGetValueByID(capabilities, capID)
 		defaultValue := tenantcapabilities.MustGetValueByID(defaultCapabilities, capID)
 		if value.String() != defaultValue.String() {

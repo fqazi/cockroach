@@ -31,13 +31,8 @@ const (
 	// This mode causes KV nodes to spontaneously start the SQL service
 	// for the tenant.
 	ServiceModeShared TenantServiceMode = 2
-
-	// ServiceModeStopping says that the service was previusly in
-	// ServiceModeShared but is in the process of stopping.
-	ServiceModeStopping TenantServiceMode = 3
-
 	// MaxServiceMode is a sentinel value.
-	MaxServiceMode TenantServiceMode = ServiceModeStopping
+	MaxServiceMode TenantServiceMode = ServiceModeShared
 )
 
 // String implements fmt.Stringer.
@@ -49,8 +44,6 @@ func (s TenantServiceMode) String() string {
 		return "external"
 	case ServiceModeShared:
 		return "shared"
-	case ServiceModeStopping:
-		return "stopping"
 	default:
 		return fmt.Sprintf("unimplemented-%d", int(s))
 	}
@@ -61,7 +54,6 @@ var TenantServiceModeValues = map[string]TenantServiceMode{
 	"none":     ServiceModeNone,
 	"external": ServiceModeExternal,
 	"shared":   ServiceModeShared,
-	"stopping": ServiceModeStopping,
 }
 
 // TenantDataState describes the state of a tenant's logical keyspace.

@@ -15,10 +15,8 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/server/authserver"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
@@ -80,7 +78,7 @@ func runClusterInit(ctx context.Context, t test.Test, c cluster.Cluster) {
 		var dbs []*gosql.DB
 		for i := 1; i <= c.Spec().NodeCount; i++ {
 			db := c.Conn(ctx, t.L(), i)
-			defer db.Close() //nolint:deferloop
+			defer db.Close()
 			dbs = append(dbs, db)
 		}
 
@@ -88,11 +86,11 @@ func runClusterInit(ctx context.Context, t test.Test, c cluster.Cluster) {
 		t.L().Printf("checking that the SQL conns are not failing immediately")
 		errCh := make(chan error, len(dbs))
 		for _, db := range dbs {
-			t.Go(func(taskCtx context.Context, _ *logger.Logger) error {
+			db := db
+			go func() {
 				var val int
-				errCh <- db.QueryRowContext(taskCtx, "SELECT 1").Scan(&val)
-				return nil
-			})
+				errCh <- db.QueryRow("SELECT 1").Scan(&val)
+			}()
 		}
 
 		// Give them time to get a "connection refused" or similar error if
@@ -135,33 +133,32 @@ func runClusterInit(ctx context.Context, t test.Test, c cluster.Cluster) {
 					}
 					req.AddCookie(cookie)
 				}
-				func() {
-					resp, err := http.DefaultClient.Do(req)
-					if err != nil {
-						t.Fatalf("unexpected error hitting %s endpoint: %v", tc.endpoint, err)
-					}
-					defer resp.Body.Close()
-					if resp.StatusCode != tc.expectedStatus {
-						bodyBytes, _ := io.ReadAll(resp.Body)
-						t.Fatalf("unexpected response code %d (expected %d) hitting %s endpoint: %v",
-							resp.StatusCode, tc.expectedStatus, tc.endpoint, string(bodyBytes))
-					}
-				}()
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatalf("unexpected error hitting %s endpoint: %v", tc.endpoint, err)
+				}
+				defer resp.Body.Close()
+				if resp.StatusCode != tc.expectedStatus {
+					bodyBytes, _ := io.ReadAll(resp.Body)
+					t.Fatalf("unexpected response code %d (expected %d) hitting %s endpoint: %v",
+						resp.StatusCode, tc.expectedStatus, tc.endpoint, string(bodyBytes))
+				}
 			}
+
 		}
 
 		t.L().Printf("sending init command to node %d", initNode)
-		c.Run(ctx, option.WithNodes(c.Node(initNode)), `./cockroach init --url={pgurl:1}`)
+		c.Run(ctx, c.Node(initNode), `./cockroach init --url={pgurl:1}`)
 
 		// This will only succeed if 3 nodes joined the cluster.
-		err = roachtestutil.WaitFor3XReplication(ctx, t.L(), dbs[0])
+		err = WaitFor3XReplication(ctx, t, dbs[0])
 		require.NoError(t, err)
 
 		execCLI := func(runNode int, extraArgs ...string) (string, error) {
 			args := []string{"./cockroach"}
 			args = append(args, extraArgs...)
 			args = append(args, "--url={pgurl:1}")
-			result, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(c.Node(runNode)), args...)
+			result, err := c.RunWithDetailsSingleNode(ctx, t.L(), c.Node(runNode), args...)
 			combinedOutput := result.Stdout + result.Stderr
 			t.L().Printf("%s\n", combinedOutput)
 			return combinedOutput, err

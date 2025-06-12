@@ -38,7 +38,7 @@ func (r *sqlStatsCompactionResumer) Resume(ctx context.Context, execCtx interfac
 	p := execCtx.(JobExecContext)
 
 	var (
-		scheduledJobID jobspb.ScheduleID
+		scheduledJobID int64
 		err            error
 	)
 
@@ -48,13 +48,13 @@ func (r *sqlStatsCompactionResumer) Resume(ctx context.Context, execCtx interfac
 			return err
 		}
 
-		if scheduledJobID != jobspb.InvalidScheduleID {
+		if scheduledJobID != jobs.InvalidScheduleID {
 			schedules := jobs.ScheduledJobTxn(txn)
 			r.sj, err = schedules.Load(ctx, scheduledjobs.ProdJobSchedulerEnv, scheduledJobID)
 			if err != nil {
 				return err
 			}
-			r.sj.SetScheduleStatus(string(jobs.StateRunning))
+			r.sj.SetScheduleStatus(string(jobs.StatusRunning))
 
 			return schedules.Update(ctx, r.sj)
 		}
@@ -76,7 +76,7 @@ func (r *sqlStatsCompactionResumer) Resume(ctx context.Context, execCtx interfac
 		ctx,
 		p.ExecCfg().InternalDB,
 		p.ExecCfg().JobsKnobs(),
-		jobs.StateSucceeded)
+		jobs.StatusSucceeded)
 }
 
 // OnFailOrCancel implements the jobs.Resumer interface.
@@ -85,7 +85,7 @@ func (r *sqlStatsCompactionResumer) OnFailOrCancel(
 ) error {
 	p := execCtx.(JobExecContext)
 	execCfg := p.ExecCfg()
-	return r.maybeNotifyJobTerminated(ctx, execCfg.InternalDB, execCfg.JobsKnobs(), jobs.StateFailed)
+	return r.maybeNotifyJobTerminated(ctx, execCfg.InternalDB, execCfg.JobsKnobs(), jobs.StatusFailed)
 }
 
 // CollectProfile implements the jobs.Resumer interface.
@@ -96,7 +96,7 @@ func (r *sqlStatsCompactionResumer) CollectProfile(_ context.Context, _ interfac
 // maybeNotifyJobTerminated will notify the job termination
 // (with termination status).
 func (r *sqlStatsCompactionResumer) maybeNotifyJobTerminated(
-	ctx context.Context, db isql.DB, jobKnobs *jobs.TestingKnobs, status jobs.State,
+	ctx context.Context, db isql.DB, jobKnobs *jobs.TestingKnobs, status jobs.Status,
 ) error {
 	log.Infof(ctx, "sql stats compaction job terminated with status = %s", status)
 	if r.sj == nil {
@@ -115,22 +115,22 @@ func (r *sqlStatsCompactionResumer) maybeNotifyJobTerminated(
 
 func (r *sqlStatsCompactionResumer) getScheduleID(
 	ctx context.Context, txn isql.Txn, env scheduledjobs.JobSchedulerEnv,
-) (scheduleID jobspb.ScheduleID, _ error) {
+) (scheduleID int64, _ error) {
 	row, err := txn.QueryRowEx(ctx, "lookup-sql-stats-schedule", txn.KV(),
 		sessiondata.NodeUserSessionDataOverride,
 		fmt.Sprintf("SELECT created_by_id FROM %s WHERE id=$1 AND created_by_type=$2", env.SystemJobsTableName()),
 		r.job.ID(), jobs.CreatedByScheduledJobs,
 	)
 	if err != nil {
-		return jobspb.InvalidScheduleID, errors.Wrap(err, "fail to look up scheduled information")
+		return jobs.InvalidScheduleID, errors.Wrap(err, "fail to look up scheduled information")
 	}
 
 	if row == nil {
 		// Compaction not triggered by a scheduled job.
-		return jobspb.InvalidScheduleID, nil
+		return jobs.InvalidScheduleID, nil
 	}
 
-	scheduleID = jobspb.ScheduleID(tree.MustBeDInt(row[0]))
+	scheduleID = int64(tree.MustBeDInt(row[0]))
 	return scheduleID, nil
 }
 
@@ -188,7 +188,7 @@ func (e *scheduledSQLStatsCompactionExecutor) createSQLStatsCompactionJob(
 
 	_, err :=
 		persistedsqlstats.CreateCompactionJob(ctx, &jobs.CreatedByInfo{
-			ID:   int64(sj.ScheduleID()),
+			ID:   sj.ScheduleID(),
 			Name: jobs.CreatedByScheduledJobs,
 		}, txn, p.(*planner).ExecCfg().JobRegistry)
 
@@ -204,18 +204,18 @@ func (e *scheduledSQLStatsCompactionExecutor) NotifyJobTermination(
 	ctx context.Context,
 	txn isql.Txn,
 	jobID jobspb.JobID,
-	jobStatus jobs.State,
+	jobStatus jobs.Status,
 	details jobspb.Details,
 	env scheduledjobs.JobSchedulerEnv,
 	sj *jobs.ScheduledJob,
 ) error {
-	if jobStatus == jobs.StateFailed {
+	if jobStatus == jobs.StatusFailed {
 		jobs.DefaultHandleFailedRun(sj, "sql stats compaction %d failed", jobID)
 		e.metrics.NumFailed.Inc(1)
 		return nil
 	}
 
-	if jobStatus == jobs.StateSucceeded {
+	if jobStatus == jobs.StatusSucceeded {
 		e.metrics.NumSucceeded.Inc(1)
 	}
 

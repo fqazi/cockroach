@@ -7,9 +7,7 @@ package kvserver
 
 import (
 	"context"
-	"fmt"
-	"slices"
-	"sync"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -21,28 +19,19 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/abortspan"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/allocatorimpl"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/plan"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/ctpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/gc"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/rac2"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/replica_rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rafttrace"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rangefeed"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/split"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/tenantrate"
-	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
-	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -62,6 +51,9 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 	"github.com/kr/pretty"
+	"go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/raftpb"
+	"go.etcd.io/raft/v3/tracker"
 )
 
 const (
@@ -128,7 +120,7 @@ func (d *atomicDescString) store(replicaID roachpb.ReplicaID, desc *roachpb.Rang
 		} else {
 			const maxRangeChars = 30
 			rngStr := keys.PrettyPrintRange(roachpb.Key(desc.StartKey), roachpb.Key(desc.EndKey), maxRangeChars)
-			w.Print(rngStr)
+			w.UnsafeString(rngStr)
 		}
 	})
 
@@ -169,138 +161,20 @@ func (d *atomicDescString) get() *atomicDescInfo {
 type atomicConnectionClass uint32
 
 // get reads the current value of the ConnectionClass.
-func (c *atomicConnectionClass) get() rpcbase.ConnectionClass {
-	return rpcbase.ConnectionClass(atomic.LoadUint32((*uint32)(c)))
+func (c *atomicConnectionClass) get() rpc.ConnectionClass {
+	return rpc.ConnectionClass(atomic.LoadUint32((*uint32)(c)))
 }
 
 // set updates the current value of the ConnectionClass.
-func (c *atomicConnectionClass) set(cc rpcbase.ConnectionClass) {
+func (c *atomicConnectionClass) set(cc rpc.ConnectionClass) {
 	atomic.StoreUint32((*uint32)(c), uint32(cc))
 }
 
-// leaderlessWatcher is a lightweight implementation of the signaller interface
-// that is used to signal when a replica doesn't know who the leader is for an
-// extended period of time. This is used to signal that the range in
-// unavailable.
-type leaderlessWatcher struct {
-	mu struct {
-		syncutil.RWMutex
-
-		// leaderlessTimestamp records the timestamp captured when the replica
-		// didn't know who the leader was. This is reset on every tick if the
-		// replica knows who the leader is.
-		leaderlessTimestamp time.Time
-
-		// unavailable is set to true if the replica is leaderless for a long time
-		// (longer than ReplicaLeaderlessUnavailableThreshold).
-		unavailable bool
-
-		// err is the error returned when the replica is leaderless for a long time.
-		err error
-	}
-
-	// closedChannel is an already closed channel. Requests will use it to know
-	// that the replica is leaderless, and can be considered unavailable. This
-	// is primarily due to implementation details of the request path, where
-	// the request grabs a signaller in signallerForBatch() and then checks if
-	// the channel is closed to determine if the replica is available.
-	closedChannel chan struct{}
-}
-
-// newLeaderlessWatcher constructs and returns a new leaderlessWatcher.
-func newLeaderlessWatcher() *leaderlessWatcher {
-	closedCh := make(chan struct{})
-	close(closedCh)
-	return &leaderlessWatcher{
-		closedChannel: closedCh,
-	}
-}
-
-// Err implements the signaller interface.
-func (lw *leaderlessWatcher) Err() error {
-	lw.mu.RLock()
-	defer lw.mu.RUnlock()
-
-	return lw.mu.err
-}
-
-// C implements the signaller interface.
-func (lw *leaderlessWatcher) C() <-chan struct{} {
-	return lw.closedChannel
-}
-
-// IsUnavailable returns true if the replica is considered unavailable.
-// Unavailability is defined as being leaderless for a long time, where long is
-// defined by the ReplicaUnavailableThreshold.
-func (lw *leaderlessWatcher) IsUnavailable() bool {
-	lw.mu.RLock()
-	defer lw.mu.RUnlock()
-
-	// The error is set iff the replica is unavailable. Sanity check.
-	if lw.mu.unavailable == (lw.mu.err == nil) {
-		panic("unavailable implies error is set")
-	}
-	return lw.mu.unavailable
-}
-
-// refreshUnavailableState refreshes the unavailable state on the leaderless
-// watcher. Replicas are considered unavailable if they have been leaderless for
-// a long time, where long is defined by the ReplicaUnavailableThreshold.
-func (lw *leaderlessWatcher) refreshUnavailableState(
-	ctx context.Context,
-	postTickLead raftpb.PeerID,
-	nowPhysicalTime time.Time,
-	st *cluster.Settings,
-	newReplicaUnavailableError func(error) error,
-) {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-
-	threshold := ReplicaLeaderlessUnavailableThreshold.Get(&st.SV)
-	if threshold == time.Duration(0) {
-		// The leaderless watcher is disabled. It's important to reset the
-		// leaderless watcher when it's disabled to reset any replica that was
-		// marked as unavailable before the watcher was disabled.
-		lw.resetLocked()
-		return
-	}
-
-	if postTickLead != raft.None {
-		// If we know about the leader, reset the leaderless timer, and mark the
-		// replica as available.
-		lw.resetLocked()
-	} else if lw.mu.leaderlessTimestamp.IsZero() {
-		// If we don't know about the leader, and we haven't been leaderless before,
-		// mark the time we became leaderless.
-		lw.mu.leaderlessTimestamp = nowPhysicalTime
-	} else if !lw.mu.unavailable {
-		// At this point we know that we have been leaderless for some time, and we
-		// haven't marked the replica as unavailable yet. Make sure we didn't exceed
-		// the threshold. Otherwise, mark the replica as unavailable.
-		durationSinceLeaderless := nowPhysicalTime.Sub(lw.mu.leaderlessTimestamp)
-		if durationSinceLeaderless >= threshold {
-			if log.ExpensiveLogEnabled(ctx, 1) {
-				err := errors.Errorf("have been leaderless for %.2fs, setting the "+
-					"leaderless watcher replica's state as unavailable",
-					durationSinceLeaderless.Seconds())
-				log.VEventf(ctx, 1, "%s", err)
-			}
-			// Transition to being unavailable.
-			lw.mu.unavailable = true
-			// Now that we're transitioning to being unavailable, construct and cache
-			// the associated error.
-			lw.mu.err = newReplicaUnavailableError(
-				errors.Errorf("replica has been leaderless for %s",
-					ReplicaLeaderlessUnavailableThreshold.Get(&st.SV)),
-			)
-		}
-	}
-}
-
-func (lw *leaderlessWatcher) resetLocked() {
-	lw.mu.leaderlessTimestamp = time.Time{}
-	lw.mu.unavailable = false
-	lw.mu.err = nil
+// raftSparseStatus is a variant of raft.Status without Config and
+// Progress.Inflights, which are expensive to copy.
+type raftSparseStatus struct {
+	raft.BasicStatus
+	Progress map[uint64]tracker.Progress
 }
 
 // ReplicaMutex is an RWMutex. It has its own type to make it easier to look for
@@ -311,20 +185,12 @@ func (mu *ReplicaMutex) Lock() {
 	(*syncutil.RWMutex)(mu).Lock()
 }
 
-func (mu *ReplicaMutex) TracedLock(ctx context.Context) {
-	(*syncutil.RWMutex)(mu).TracedLock(ctx)
-}
-
 func (mu *ReplicaMutex) Unlock() {
 	(*syncutil.RWMutex)(mu).Unlock()
 }
 
 func (mu *ReplicaMutex) RLock() {
 	(*syncutil.RWMutex)(mu).RLock()
-}
-
-func (mu *ReplicaMutex) TracedRLock(ctx context.Context) {
-	(*syncutil.RWMutex)(mu).TracedRLock(ctx)
 }
 
 func (mu *ReplicaMutex) AssertHeld() {
@@ -337,10 +203,6 @@ func (mu *ReplicaMutex) AssertRHeld() {
 
 func (mu *ReplicaMutex) RUnlock() {
 	(*syncutil.RWMutex)(mu).RUnlock()
-}
-
-func (mu *ReplicaMutex) RLocker() sync.Locker {
-	return (*syncutil.RWMutex)(mu).RLocker()
 }
 
 // A Replica is a contiguous keyspace with writes managed via an
@@ -406,7 +268,7 @@ type Replica struct {
 	// incoming message but we are waiting for our initial snapshot.
 	// The field can be accessed atomically without needing to acquire the
 	// replica.mu lock. All updates to state.Desc should be duplicated here.
-	isInitialized atomic.Bool
+	isInitialized syncutil.AtomicBool
 
 	// connectionClass controls the ConnectionClass used to send raft messages.
 	connectionClass atomicConnectionClass
@@ -428,56 +290,34 @@ type Replica struct {
 	// See replica_circuit_breaker.go for details.
 	breaker *replicaCircuitBreaker
 
-	// flowControlV2 integrates with RACv2. The value retrieved from
-	// GetEnabledWhenLeader is consistent with raftMu.flowControlLevel.
-	flowControlV2 replica_rac2.Processor
-
-	// logStorage encapsulates and provides access to the raft log storage, which
-	// includes its Pebble representation, the sideloaded storage for AddSSTable
-	// commands, and the raft entries cache.
-	//
-	// logStorage shares mu and raftMu mutexes with this Replica, which allows
-	// updating its state transactionally with other actions that the Replica
-	// needs to perform, such as updating the state machine.
-	logStorage *replicaLogStorage
-
 	// raftMu protects Raft processing the replica.
 	//
 	// Locking notes: Replica.raftMu < Replica.mu
 	raftMu struct {
 		syncutil.Mutex
 
+		// Note that there are two StateLoaders, in raftMu and mu,
+		// depending on which lock is being held.
 		stateLoader stateloader.StateLoader
-
+		// on-disk storage for sideloaded SSTables. Always non-nil.
+		// TODO(pavelkalinnikov): remove sideloaded == nil checks.
+		sideloaded logstore.SideloadStorage
 		// stateMachine is used to apply committed raft entries.
 		stateMachine replicaStateMachine
 		// decoder is used to decode committed raft entries.
 		decoder replicaDecoder
-
-		// Scratch for populating rac2.RaftEvent.MsgApps for flowControlV2.
-		msgAppScratchForFlowControl map[roachpb.ReplicaID][]raftpb.Message
-		// Scratch for populating rac2.RaftEvent.ReplicaSateInfo for flowControlV2.
-		replicaStateScratchForFlowControl map[roachpb.ReplicaID]rac2.ReplicaStateInfo
-
-		// rangefeedCTLagObserver is used to observe the closed timestamp lag of
-		// the replica and generate a signal to potentially nudge or cancel the
-		// rangefeed based on observed lag.
-		rangefeedCTLagObserver *rangeFeedCTLagObserver
 	}
 
-	// localMsgs contains StorageAppend acknowledgements to be delivered to the
-	// local RawNode. The delivery happens on the next handleRaftReady.
+	// localMsgs contains a collection of raftpb.Message that target the local
+	// RawNode. They are to be delivered on the next iteration of handleRaftReady.
 	//
 	// Locking notes:
 	// - Replica.localMsgs must be held to append messages to active.
 	// - Replica.raftMu and Replica.localMsgs must both be held to switch slices.
 	// - Replica.raftMu < Replica.localMsgs
-	//
-	// TODO(pav-kv): the acknowledgements can be merged into one. We are only
-	// interested in the latest LogMark. The Responses can be concatenated.
 	localMsgs struct {
 		syncutil.Mutex
-		active, recycled []raft.StorageAppendAck
+		active, recycled []raftpb.Message
 	}
 
 	// The last seen replica descriptors from incoming Raft messages. These are
@@ -568,24 +408,6 @@ type Replica struct {
 	// timestamp, independent of the source.
 	sideTransportClosedTimestamp sidetransportAccess
 
-	// shMu contains "shared" fields which are mutated while both raftMu and mu are
-	// held. They can be accessed when either of the two mutexes is held.
-	//
-	// TODO(pav-kv): audit all other fields and include here.
-	shMu struct {
-		// The state of the Raft state machine.
-		// Invariant: state.TruncatedState == nil. The field is being phased out in
-		// favour of the one contained in logStorage.
-		state kvserverpb.ReplicaState
-		// leaderID is the ID of the leader replica within the Raft group.
-		// NB: this is updated in a separate critical section from the Raft group,
-		// and can therefore briefly be out of sync with the Raft status.
-		leaderID roachpb.ReplicaID
-		// currentRACv2Mode is always in-sync with RawNode.
-		// MsgAppPull <=> LazyReplication.
-		currentRACv2Mode rac2.RaftMsgAppMode
-	}
-
 	mu struct {
 		// Protects all fields in the mu struct.
 		ReplicaMutex
@@ -613,19 +435,6 @@ type Replica struct {
 		// laggingFollowersOnQuiesce is the set of dead replicas that are not
 		// up-to-date with the rest of the quiescent Raft group. Nil if !quiescent.
 		laggingFollowersOnQuiesce laggingReplicaSet
-		// asleep is the same as quiescent but wrt store liveness quiescence.
-		// Similarly to regular quiescence, store liveness quiescense helps the
-		// replica not tick in Raft. Unlike regular quiescence, store liveness
-		// quiescence allows only followers to quiesce (not the leader), and as a
-		// result, uses much simpler rules to do so:
-		// - A follower quiesces if it supports a fortified leader and hasn't
-		//   received a Raft message in a given number of ticks.
-		// - A follower unquiesces if it receives any Raft message or if store
-		//   liveness has withdrawn support for the store on which the leader lives.
-		// To avoid confusion, we use the terms asleep and awake for store liveness
-		// quiescence, instead of quiesced and unquiesced, but otherwise, the
-		// concept is the same.
-		asleep bool
 		// mergeComplete is non-nil if a merge is in-progress, in which case any
 		// requests should be held until the completion of the merge is signaled by
 		// the closing of the channel.
@@ -633,6 +442,16 @@ type Replica struct {
 		// mergeTxnID contains the ID of the in-progress merge transaction, if a
 		// merge is currently in progress. Otherwise, the ID is empty.
 		mergeTxnID uuid.UUID
+		// The state of the Raft state machine. Updated only when raftMu and mu are
+		// both held.
+		state kvserverpb.ReplicaState
+		// Last index/term written to the raft log (not necessarily durable locally
+		// or committed by the group). Note that lastTermNotDurable may be 0 (and
+		// thus invalid) even when lastIndexNotDurable is known, in which case the
+		// term will have to be retrieved from the Raft log entry. Use the
+		// invalidLastTerm constant for this case.
+		lastIndexNotDurable kvpb.RaftIndex
+		lastTermNotDurable  kvpb.RaftTerm
 		// A map of raft log index of pending snapshots to deadlines.
 		// Used to prohibit raft log truncations that would leave a gap between
 		// the snapshot and the new first index. The map entry has a zero
@@ -646,6 +465,30 @@ type Replica struct {
 		// already finished snapshot "pending" for extended periods of time
 		// (preventing log truncation).
 		snapshotLogTruncationConstraints map[uuid.UUID]snapTruncationInfo
+		// raftLogSize is the approximate size in bytes of the persisted raft
+		// log, including sideloaded entries' payloads. The value itself is not
+		// persisted and is computed lazily, paced by the raft log truncation
+		// queue which will recompute the log size when it finds it
+		// uninitialized. This recomputation mechanism isn't relevant for ranges
+		// which see regular write activity (for those the log size will deviate
+		// from zero quickly, and so it won't be recomputed but will undercount
+		// until the first truncation is carried out), but it prevents a large
+		// dormant Raft log from sitting around forever, which has caused problems
+		// in the past.
+		//
+		// Note that both raftLogSize and raftLogSizeTrusted do not include the
+		// effect of pending log truncations (see Replica.pendingLogTruncations).
+		// Hence, they are fine for metrics etc., but not for deciding whether we
+		// should create another pending truncation. For the latter, we compute
+		// the post-pending-truncation size using pendingLogTruncations.
+		raftLogSize int64
+		// If raftLogSizeTrusted is false, don't trust the above raftLogSize until
+		// it has been recomputed.
+		raftLogSizeTrusted bool
+		// raftLogLastCheckSize is the value of raftLogSize the last time the Raft
+		// log was checked for truncation or at the time of the last Raft log
+		// truncation.
+		raftLogLastCheckSize int64
 		// pendingLeaseRequest is used to coalesce RequestLease requests.
 		pendingLeaseRequest pendingLeaseRequest
 		// minLeaseProposedTS is the minimum acceptable lease.ProposedTS; only
@@ -684,19 +527,7 @@ type Replica struct {
 		minValidObservedTimestamp hlc.ClockTimestamp
 
 		// The span config for this replica.
-		//
-		// NB: Span configuration is applied asyncronously. After a span
-		// configuration change but before the replica has been split
-		// based on the new span configuration, the span stored here may
-		// not represent the span configuration for the entire replica.
-		//
-		// Use of this span configuration that may affect correct
-		// responses should be guarded by a check to confSpan below.
 		conf roachpb.SpanConfig
-		// The bounds of the span configuration. This may not match the
-		// replica's bounds in the case where a span configuration was
-		// recently updated.
-		confSpan roachpb.Span
 		// spanConfigExplicitlySet tracks whether a span config was explicitly set
 		// on this replica (as opposed to it having initialized with the default
 		// span config).
@@ -885,6 +716,10 @@ type Replica struct {
 		// TODO(erikgrinaker): make this never be nil.
 		internalRaftGroup *raft.RawNode
 
+		// The ID of the leader replica within the Raft group. NB: this is updated
+		// in a separate critical section from the Raft group, and can therefore
+		// briefly be out of sync with the Raft status.
+		leaderID roachpb.ReplicaID
 		// The most recently added replica for the range and when it was added.
 		// Used to determine whether a replica is new enough that we shouldn't
 		// penalize it for being slightly behind. These field gets cleared out once
@@ -931,17 +766,17 @@ type Replica struct {
 		quotaReleaseQueue []*quotapool.IntAlloc
 
 		// Counts calls to Replica.tick()
-		ticks int64
+		ticks int
 
 		// lastProposalAtTicks tracks the time of the last proposal, in ticks.
-		lastProposalAtTicks int64
-
-		// lastMessageAtTicks tracks the time of the last received message, in
-		// ticks.
-		lastMessageAtTicks int64
+		lastProposalAtTicks int
 
 		// Counts Raft messages refused due to queue congestion.
 		droppedMessages int
+
+		// Note that there are two replicaStateLoaders, in raftMu and mu,
+		// depending on which lock is being held.
+		stateLoader stateloader.StateLoader
 
 		// cachedProtectedTS provides the state of the protected timestamp
 		// subsystem as used on the request serving path to determine the effective
@@ -994,18 +829,16 @@ type Replica struct {
 
 		slowProposalCount int64 // updated in refreshProposalsLocked
 
-		// raftTracer is used to trace raft messages that are sent with a
-		// tracing context.
-		raftTracer rafttrace.RaftTracer
-
-		// lastTickTimestamp records the timestamp captured before the last tick of
-		// this replica.
-		lastTickTimestamp hlc.ClockTimestamp
+		// replicaFlowControlIntegration is used to interface with replication flow
+		// control. It's backed by the node-level kvflowcontrol.Controller that
+		// manages flow tokens for on a per <tenant,work class> basis, which it
+		// interfaces through a replica-level kvflowcontrol.Handle. It's
+		// actively used on replicas initiating replication traffic, i.e. are
+		// both the leaseholder and raft leader.
+		//
+		// Accessing it requires Replica.mu to be held, exclusively.
+		replicaFlowControlIntegration replicaFlowControlIntegration
 	}
-
-	// LeaderlessWatcher is used to signal when a replica is leaderless for a long
-	// time.
-	LeaderlessWatcher *leaderlessWatcher
 
 	// The raft log truncations that are pending. Access is protected by its own
 	// mutex. All implementation details should be considered hidden except to
@@ -1023,9 +856,6 @@ type Replica struct {
 		// Requires Replica.raftMu be held when providing logical ops and
 		//  informing the processor of closed timestamp updates. This properly
 		//  synchronizes updates that are linearized and driven by the Raft log.
-		//
-		// proc should only be accessed via getRangefeedProcessorAndFilter or
-		// getRangefeedProcessor in nearly all cases.
 		proc rangefeed.Processor
 		// opFilter is a best-effort filter that informs the raft processing
 		// goroutine of which logical operations the rangefeed processor is
@@ -1053,10 +883,6 @@ type Replica struct {
 	// loadBasedSplitter keeps information about load-based splitting.
 	loadBasedSplitter split.Decider
 
-	// allocatorToken is acquired when planning and executing replica or lease
-	// changes for a range on the leaseholder.
-	allocatorToken *plan.AllocatorToken
-
 	// lastProblemRangeReplicateEnqueueTime is the last time this replica was
 	// eagerly enqueued into the replicate queue due to being underreplicated
 	// or having a decommissioning replica. This is used to throttle enqueue
@@ -1070,11 +896,21 @@ type Replica struct {
 		remotes map[roachpb.ReplicaID]struct{}
 	}
 
-	// cachedClosedTimestampPolicy is the cached closed timestamp policy of the
-	// range. It is updated asynchronously by listening on span configuration
-	// changes, leaseholder changes, and periodically at the interval of
-	// kv.closed_timestamp.policy_refresh_interval by PolicyRefresher.
-	cachedClosedTimestampPolicy atomic.Pointer[ctpb.RangeClosedTimestampPolicy]
+	// r.mu < r.protectedTimestampMu
+	protectedTimestampMu struct {
+		syncutil.Mutex
+
+		// minStateReadTimestamp is a lower bound on the timestamp of the cached
+		// protected timestamp state which may be used when updating
+		// pendingGCThreshold. This field acts to eliminate races between
+		// verification of protected timestamp records and the setting of a new
+		// GC threshold
+		minStateReadTimestamp hlc.Timestamp
+
+		// pendingGCThreshold holds a timestamp which is being proposed as a new
+		// GC threshold for the range.
+		pendingGCThreshold hlc.Timestamp
+	}
 }
 
 // String returns the string representation of the replica using an
@@ -1100,12 +936,6 @@ func (r *Replica) ReplicaID() roachpb.ReplicaID {
 // ID returns the FullReplicaID for the Replica.
 func (r *Replica) ID() storage.FullReplicaID {
 	return storage.FullReplicaID{RangeID: r.RangeID, ReplicaID: r.replicaID}
-}
-
-// LogStorageRaftMuLocked returns the Replica's log storage.
-// raftMu must be held when using the returned object.
-func (r *Replica) LogStorageRaftMuLocked() *logstore.LogStore {
-	return r.asLogStorage().ls
 }
 
 // cleanupFailedProposal cleans up after a proposal that has failed. It
@@ -1135,13 +965,13 @@ func (r *Replica) GetMaxBytes(_ context.Context) int64 {
 // to the span config was "significant". For significant changes, the caller
 // should queue up the span to all the relevant queues since they may not decide
 // to process this replica.
-func (r *Replica) SetSpanConfig(conf roachpb.SpanConfig, sp roachpb.Span) bool {
+func (r *Replica) SetSpanConfig(conf roachpb.SpanConfig) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	oldConf := r.mu.conf
 
 	if r.IsInitialized() && !r.mu.conf.IsEmpty() && !conf.IsEmpty() {
-		total := r.shMu.state.Stats.Total()
+		total := r.mu.state.Stats.Total()
 
 		// Set largestPreviousMaxRangeSizeBytes if the current range size is
 		// greater than the new limit, if the limit has decreased from what we
@@ -1163,10 +993,7 @@ func (r *Replica) SetSpanConfig(conf roachpb.SpanConfig, sp roachpb.Span) bool {
 	if knobs := r.store.TestingKnobs(); knobs != nil && knobs.SetSpanConfigInterceptor != nil {
 		conf = knobs.SetSpanConfigInterceptor(r.descRLocked(), conf)
 	}
-	r.mu.conf = conf
-	r.mu.spanConfigExplicitlySet = true
-	r.mu.confSpan = sp
-	r.store.policyRefresher.EnqueueReplicaForRefresh(r)
+	r.mu.conf, r.mu.spanConfigExplicitlySet = conf, true
 	return oldConf.HasConfigurationChange(conf)
 }
 
@@ -1185,9 +1012,6 @@ func (r *Replica) MaybeQueue(ctx context.Context, now hlc.ClockTimestamp) {
 			h.MaybeAdd(ctx, r, now)
 		})
 	}
-	r.store.leaseQueue.Async(ctx, "span config update", true /* wait */, func(ctx context.Context, h queueHelper) {
-		h.MaybeAdd(ctx, r, now)
-	})
 	// The replicate queue has a relatively more expensive queue check
 	// (shouldQueue), because it scales with the number of stores, and
 	// performs more checks.
@@ -1196,19 +1020,6 @@ func (r *Replica) MaybeQueue(ctx context.Context, now hlc.ClockTimestamp) {
 			h.MaybeAdd(ctx, r, now)
 		})
 	}
-}
-
-// HasExternalBytes returns true if the replica has a non-zero number
-// of external bytes in its underlying store. External bytes are bytes
-// in a pebble.ExternalFile. Such files can be added by AddSSTable.
-func (r *Replica) HasExternalBytes() (bool, error) {
-	desc := r.Desc()
-	sp := desc.KeySpan().AsRawSpanWithNoLocals()
-	_, _, externalBytes, err := r.store.StateEngine().ApproximateDiskBytes(sp.Key, sp.EndKey)
-	if err != nil {
-		return false, err
-	}
-	return externalBytes > 0, nil
 }
 
 // IsScratchRange returns true if this is range is a scratch range (i.e.
@@ -1250,13 +1061,6 @@ func (r *Replica) IsQuiescent() bool {
 	return r.mu.quiescent
 }
 
-// IsAsleep returns whether the replica is asleep or not.
-func (r *Replica) IsAsleep() bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.mu.asleep
-}
-
 // DescAndSpanConfig returns the authoritative range descriptor as well
 // as the span config for the replica.
 func (r *Replica) DescAndSpanConfig() (*roachpb.RangeDescriptor, *roachpb.SpanConfig) {
@@ -1265,7 +1069,7 @@ func (r *Replica) DescAndSpanConfig() (*roachpb.RangeDescriptor, *roachpb.SpanCo
 	// This method is being removed shortly. We can't pass out a pointer to the
 	// underlying replica's SpanConfig.
 	conf := r.mu.conf
-	return r.shMu.state.Desc, &conf
+	return r.mu.state.Desc, &conf
 }
 
 // LoadSpanConfig loads the authoritative span config for the replica.
@@ -1283,99 +1087,32 @@ func (r *Replica) LoadSpanConfig(_ context.Context) (*roachpb.SpanConfig, error)
 func (r *Replica) Desc() *roachpb.RangeDescriptor {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.shMu.state.Desc
+	return r.mu.state.Desc
 }
 
 func (r *Replica) descRLocked() *roachpb.RangeDescriptor {
 	r.mu.AssertRHeld()
-	return r.shMu.state.Desc
+	return r.mu.state.Desc
 }
 
-// toClientClosedTsPolicy converts a side-transport closed timestamp policy
-// (ctpb) to its client-facing equivalent (roachpb).
-func toClientClosedTsPolicy(
-	policy ctpb.RangeClosedTimestampPolicy,
-) roachpb.RangeClosedTimestampPolicy {
-	switch {
-	case policy == ctpb.LAG_BY_CLUSTER_SETTING:
-		return roachpb.LAG_BY_CLUSTER_SETTING
-	case policy >= ctpb.LEAD_FOR_GLOBAL_READS_WITH_NO_LATENCY_INFO &&
-		policy <= ctpb.LEAD_FOR_GLOBAL_READS_LATENCY_EQUAL_OR_GREATER_THAN_300MS:
-		return roachpb.LEAD_FOR_GLOBAL_READS
-	default:
-		panic(fmt.Sprintf("unknown policy locality %s", policy))
-	}
-}
-
-// closedTimestampPolicy returns the closed timestamp policy of the range, which
-// is updated asynchronously by listening on span configuration changes,
-// leaseholder changes, and periodically at the interval of
-// kv.closed_timestamp.policy_refresh_interval.
+// closedTimestampPolicyRLocked returns the closed timestamp policy of the
+// range, which is updated asynchronously by listening in on span configuration
+// changes.
 //
-// NOTE: an exported version of this method exists in helpers_test.go.
-func closedTimestampPolicy(
-	desc *roachpb.RangeDescriptor, policy ctpb.RangeClosedTimestampPolicy,
-) ctpb.RangeClosedTimestampPolicy {
-	if desc.ContainsKey(roachpb.RKey(keys.NodeLivenessPrefix)) {
-		return ctpb.LAG_BY_CLUSTER_SETTING
-	}
-	return policy
-}
-
-// RefreshPolicy updates the replica's cached closed timestamp policy based on
-// span configurations and provided node round-trip latencies.
-func (r *Replica) RefreshPolicy(latencies map[roachpb.NodeID]time.Duration) {
-	computeNewPolicy := func(oldPolicy ctpb.RangeClosedTimestampPolicy) ctpb.RangeClosedTimestampPolicy {
-		desc, conf := r.DescAndSpanConfig()
+// NOTE: an exported version of this method which does not require the replica
+// lock exists in helpers_test.go. Move here if needed.
+func (r *Replica) closedTimestampPolicyRLocked() roachpb.RangeClosedTimestampPolicy {
+	if r.mu.conf.GlobalReads {
+		if !r.mu.state.Desc.ContainsKey(roachpb.RKey(keys.NodeLivenessPrefix)) {
+			return roachpb.LEAD_FOR_GLOBAL_READS
+		}
 		// The node liveness range ignores zone configs and always uses a
 		// LAG_BY_CLUSTER_SETTING closed timestamp policy. If it was to begin
 		// closing timestamps in the future, it would break liveness updates,
 		// which perform a 1PC transaction with a commit trigger and can not
 		// tolerate being pushed into the future.
-		if desc.ContainsKey(roachpb.RKey(keys.NodeLivenessPrefix)) {
-			return ctpb.LAG_BY_CLUSTER_SETTING
-		}
-		if !conf.GlobalReads {
-			return ctpb.LAG_BY_CLUSTER_SETTING
-		}
-		// If the provided map is nil, the policy will be
-		// LEAD_FOR_GLOBAL_READS_WITH_NO_LATENCY_INFO. The latency will be hardcoded
-		// to closedts.DefaultMaxNetworkRTT in closed timestamp calculation.
-		if latencies == nil {
-			return ctpb.LEAD_FOR_GLOBAL_READS_WITH_NO_LATENCY_INFO
-		}
-
-		// For ranges serving global reads, determine the maximum
-		// leaseholder-to-peer replica using the provided map and set an appropriate
-		// policy bucket. This then controls how far in the future timestamps will
-		// be closed for the range.
-		maxLatency := time.Duration(-1)
-		replicaLatencyInfoMissing := false
-		for _, peer := range desc.InternalReplicas {
-			peerLatency := closedts.DefaultMaxNetworkRTT
-			if latency, ok := latencies[peer.NodeID]; ok {
-				peerLatency = latency
-			} else {
-				replicaLatencyInfoMissing = true
-			}
-			maxLatency = max(maxLatency, peerLatency)
-		}
-		if replicaLatencyInfoMissing {
-			r.store.metrics.ClosedTimestampLatencyInfoMissing.Inc(1)
-		}
-		return closedts.FindBucketBasedOnNetworkRTTWithDampening(
-			oldPolicy,
-			maxLatency,
-			closedts.PolicySwitchWhenLatencyExceedsBucketFraction.Get(&r.store.GetStoreConfig().Settings.SV),
-		)
 	}
-	oldPolicy := *r.cachedClosedTimestampPolicy.Load()
-	newPolicy := computeNewPolicy(oldPolicy)
-	if newPolicy != oldPolicy {
-		r.store.metrics.ClosedTimestampPolicyChange.Inc(1)
-		p := newPolicy
-		r.cachedClosedTimestampPolicy.Store(&p)
-	}
+	return roachpb.LAG_BY_CLUSTER_SETTING
 }
 
 // NodeID returns the ID of the node this replica belongs to.
@@ -1430,63 +1167,31 @@ func (r *Replica) GetRangeID() roachpb.RangeID {
 func (r *Replica) GetGCThreshold() hlc.Timestamp {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return *r.shMu.state.GCThreshold
+	return *r.mu.state.GCThreshold
 }
 
 // GetGCHint returns the GC hint.
 func (r *Replica) GetGCHint() roachpb.GCHint {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return *r.shMu.state.GCHint
+	return *r.mu.state.GCHint
 }
 
 // ExcludeDataFromBackup returns whether the replica is to be excluded from a
 // backup.
-func (r *Replica) ExcludeDataFromBackup(ctx context.Context, sp roachpb.Span) (bool, error) {
+func (r *Replica) ExcludeDataFromBackup(_ context.Context) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return entireSpanExcludedFromBackup(ctx, sp, r.mu.conf.ExcludeDataFromBackup, r.mu.confSpan)
+	return r.mu.conf.ExcludeDataFromBackup
 }
 
-func excludeReplicaFromBackup(
-	ctx context.Context, rspan roachpb.RSpan, excludeDataFromBackup bool, confSpan roachpb.Span,
-) bool {
-	// We ignore the error here to avoid failing requests that
-	// don't need to fail.
-	excluded, _ := entireSpanExcludedFromBackup(ctx, rspan.AsRawSpanWithNoLocals(),
-		excludeDataFromBackup, confSpan)
-	return excluded
-}
-
-// entireSpanExcludedFromBackup returns true if this replica
-// has ExcludeDataFromBackup set in its span configuration and that
-// span configuration covers the entire given span.
-func entireSpanExcludedFromBackup(
-	ctx context.Context, sp roachpb.Span, excludeDataFromBackup bool, confSpan roachpb.Span,
-) (bool, error) {
-	if excludeDataFromBackup {
-		// If ExcludeDataFromBackup is set, we also want to ensure that
-		// we only elide data if the span configuration we currently
-		// have actually contains the requested span.
-		if confSpan.Equal(roachpb.Span{}) {
-			return false, errors.Newf("replica's span configuration bounds not set")
-		}
-		if !confSpan.Contains(sp) {
-			log.Warningf(ctx, "ExcludeDataFromBackup set but span %q not containd by span config bounds %q",
-				sp,
-				confSpan)
-
-			return false, nil
-		}
-	}
-	return excludeDataFromBackup, nil
+func (r *Replica) excludeReplicaFromBackupRLocked() bool {
+	return r.mu.conf.ExcludeDataFromBackup
 }
 
 // Version returns the replica version.
 func (r *Replica) Version() roachpb.Version {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.shMu.state.Version == nil {
+	if r.mu.state.Version == nil {
 		// We introduced replica versions in v21.1 to service long-running
 		// migrations. For replicas that were instantiated pre-21.1, it's
 		// possible that the replica version is unset (but not for too long!).
@@ -1505,15 +1210,19 @@ func (r *Replica) Version() roachpb.Version {
 		// always have replica versions.
 		return roachpb.Version{}
 	}
-	return *r.shMu.state.Version
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return *r.mu.state.Version
 }
 
 // GetRangeInfo atomically reads the range's current range info.
 func (r *Replica) GetRangeInfo(ctx context.Context) roachpb.RangeInfo {
 	r.mu.RLock()
+	defer r.mu.RUnlock()
 	desc := r.descRLocked()
 	l, _ /* nextLease */ := r.getLeaseRLocked()
-	r.mu.RUnlock()
+	closedts := r.closedTimestampPolicyRLocked()
 
 	// Sanity check the lease.
 	if !l.Empty() {
@@ -1529,8 +1238,6 @@ func (r *Replica) GetRangeInfo(ctx context.Context) roachpb.RangeInfo {
 		}
 	}
 
-	closedts := toClientClosedTsPolicy(
-		closedTimestampPolicy(desc, *r.cachedClosedTimestampPolicy.Load()))
 	return roachpb.RangeInfo{
 		Desc:                  *desc,
 		Lease:                 l,
@@ -1538,25 +1245,19 @@ func (r *Replica) GetRangeInfo(ctx context.Context) roachpb.RangeInfo {
 	}
 }
 
-// getImpliedGCThreshold returns the gc threshold of the replica which
+// getImpliedGCThresholdRLocked returns the gc threshold of the replica which
 // should be used to determine the validity of commands. The returned timestamp
 // may be newer than the replica's true GC threshold if strict enforcement
 // is enabled and the TTL has passed. If this is an admin command or this range
 // opts out of strict GC enforcement (typically data outside the user keyspace),
 // we return the true GC threshold.
-func (r *Replica) getImpliedGCThreshold(
-	st kvserverpb.LeaseStatus,
-	isAdmin bool,
-	spanConfigExplicitlySet bool,
-	ignoreStrictEnforcement bool,
-	gcThreshold hlc.Timestamp,
-	cachedProtectedTS cachedProtectedTimestampState,
-	confTTL time.Duration,
+func (r *Replica) getImpliedGCThresholdRLocked(
+	st kvserverpb.LeaseStatus, isAdmin bool,
 ) hlc.Timestamp {
 	// The GC threshold is the oldest value we can return here.
 	if isAdmin || !StrictGCEnforcement.Get(&r.store.ClusterSettings().SV) ||
-		r.shouldIgnoreStrictGCEnforcement(spanConfigExplicitlySet, ignoreStrictEnforcement) {
-		return gcThreshold
+		r.shouldIgnoreStrictGCEnforcementRLocked() {
+		return *r.mu.state.GCThreshold
 	}
 
 	// In order to make this check inexpensive, we keep a copy of the reading of
@@ -1567,26 +1268,26 @@ func (r *Replica) getImpliedGCThreshold(
 	// has technically expired. Fortunately this strict enforcement is merely a
 	// user experience win; it's always safe to allow reads to continue so long
 	// as they are after the GC threshold.
-	if st.State != kvserverpb.LeaseState_VALID ||
-		cachedProtectedTS.readAt.Less(st.Lease.Start.ToTimestamp()) {
-		return gcThreshold
+	c := r.mu.cachedProtectedTS
+	if st.State != kvserverpb.LeaseState_VALID || c.readAt.Less(st.Lease.Start.ToTimestamp()) {
+		return *r.mu.state.GCThreshold
 	}
 
-	gcTTL := confTTL
-	newGCThreshold := gc.CalculateThreshold(cachedProtectedTS.readAt, gcTTL)
-	if !cachedProtectedTS.earliestProtectionTimestamp.IsEmpty() {
+	gcTTL := r.mu.conf.TTL()
+	gcThreshold := gc.CalculateThreshold(c.readAt, gcTTL)
+	if !c.earliestProtectionTimestamp.IsEmpty() {
 		// We want to allow GC up to the timestamp preceding the earliest valid
 		// protection timestamp.
-		impliedGCThreshold := cachedProtectedTS.earliestProtectionTimestamp.Prev()
+		impliedGCThreshold := c.earliestProtectionTimestamp.Prev()
 		// If we have a protected timestamp record which precedes the gcThreshold,
 		// use the threshold it implies instead.
-		if impliedGCThreshold.Less(newGCThreshold) {
-			newGCThreshold = impliedGCThreshold
+		if impliedGCThreshold.Less(gcThreshold) {
+			gcThreshold = impliedGCThreshold
 		}
 	}
-	newGCThreshold.Forward(gcThreshold)
+	gcThreshold.Forward(*r.mu.state.GCThreshold)
 
-	return newGCThreshold
+	return gcThreshold
 }
 
 func (r *Replica) isRangefeedEnabled() (ret bool) {
@@ -1603,10 +1304,8 @@ func (r *Replica) isRangefeedEnabledRLocked() (ret bool) {
 	return r.mu.conf.RangefeedEnabled
 }
 
-func (r *Replica) shouldIgnoreStrictGCEnforcement(
-	spanConfigExplicitlySet bool, ignoreStrictEnforcement bool,
-) (ret bool) {
-	if !spanConfigExplicitlySet {
+func (r *Replica) shouldIgnoreStrictGCEnforcementRLocked() (ret bool) {
+	if !r.mu.spanConfigExplicitlySet {
 		return true
 	}
 
@@ -1614,7 +1313,7 @@ func (r *Replica) shouldIgnoreStrictGCEnforcement(
 		return true
 	}
 
-	return ignoreStrictEnforcement
+	return r.mu.conf.GCPolicy.IgnoreStrictEnforcement
 }
 
 // maxReplicaIDOfAny returns the maximum ReplicaID of any replica, including
@@ -1652,20 +1351,11 @@ func (r *Replica) GetReplicaDescriptor() (roachpb.ReplicaDescriptor, error) {
 // getReplicaDescriptorRLocked is like getReplicaDescriptor, but assumes that
 // r.mu is held for either reading or writing.
 func (r *Replica) getReplicaDescriptorRLocked() (roachpb.ReplicaDescriptor, error) {
-	return getReplicaDescriptor(r.descRLocked(), r.RangeID, r.store.StoreID())
-}
-
-// getReplicaDescriptor is similar to getReplicaDescriptorRLocked but doesn't
-// require the caller to hold the replica mutex. It takes everything it needs
-// as a function argument.
-func getReplicaDescriptor(
-	desc *roachpb.RangeDescriptor, rangeID roachpb.RangeID, storeID roachpb.StoreID,
-) (roachpb.ReplicaDescriptor, error) {
-	repDesc, ok := desc.GetReplicaDescriptor(storeID)
+	repDesc, ok := r.mu.state.Desc.GetReplicaDescriptor(r.store.StoreID())
 	if ok {
 		return repDesc, nil
 	}
-	return roachpb.ReplicaDescriptor{}, kvpb.NewRangeNotFoundError(rangeID, storeID)
+	return roachpb.ReplicaDescriptor{}, kvpb.NewRangeNotFoundError(r.RangeID, r.store.StoreID())
 }
 
 func (r *Replica) getMergeCompleteCh() chan struct{} {
@@ -1708,17 +1398,15 @@ func (r *Replica) getLastReplicaDescriptors() (to, from roachpb.ReplicaDescripto
 func (r *Replica) GetMVCCStats() enginepb.MVCCStats {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return *r.shMu.state.Stats
+	return *r.mu.state.Stats
 }
 
 // SetMVCCStatsForTesting updates the MVCC stats on the repl object only, it does
 // not affect the on disk state and is only safe to use for testing purposes.
 func (r *Replica) SetMVCCStatsForTesting(stats *enginepb.MVCCStats) {
-	r.raftMu.Lock()
-	defer r.raftMu.Unlock()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.shMu.state.Stats = stats
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	r.mu.state.Stats = stats
 }
 
 // GetMaxSplitQPS returns the Replica's maximum queries/s request rate over a
@@ -1822,14 +1510,6 @@ func (r *Replica) RaftStatus() *raft.Status {
 	return r.raftStatusRLocked()
 }
 
-// RaftBasicStatus returns the current raft basic status of the replica. An empty
-// BasicStatus is returned if the Raft group hasn't been initialized.
-func (r *Replica) RaftBasicStatus() raft.BasicStatus {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.raftBasicStatusRLocked()
-}
-
 // raftStatusRLocked returns the current raft status of the replica, or
 // nil if the Raft group has not been initialized yet.
 //
@@ -1846,13 +1526,21 @@ func (r *Replica) raftStatusRLocked() *raft.Status {
 // raftSparseStatusRLocked returns a sparse Raft status without Config and
 // Progress.Inflights which are expensive to copy, or nil if the Raft group has
 // not been initialized yet. Progress is only populated on the leader.
-func (r *Replica) raftSparseStatusRLocked() *raft.SparseStatus {
+func (r *Replica) raftSparseStatusRLocked() *raftSparseStatus {
 	rg := r.mu.internalRaftGroup
 	if rg == nil {
 		return nil
 	}
-	status := rg.SparseStatus()
-	return &status
+	status := &raftSparseStatus{
+		BasicStatus: rg.BasicStatus(),
+	}
+	if status.RaftState == raft.StateLeader {
+		status.Progress = map[uint64]tracker.Progress{}
+		rg.WithProgress(func(id uint64, _ raft.ProgressType, pr tracker.Progress) {
+			status.Progress[id] = pr
+		})
+	}
+	return status
 }
 
 func (r *Replica) raftBasicStatusRLocked() raft.BasicStatus {
@@ -1860,22 +1548,6 @@ func (r *Replica) raftBasicStatusRLocked() raft.BasicStatus {
 		return rg.BasicStatus()
 	}
 	return raft.BasicStatus{}
-}
-
-func (r *Replica) raftSupportingFortifiedLeaderRLocked() bool {
-	if rg := r.mu.internalRaftGroup; rg != nil {
-		return rg.SupportingFortifiedLeader()
-	}
-	return false
-}
-
-// RACv2Status returns the status of the RACv2 range controller of this replica.
-// Returns an empty struct if there is no RACv2 range controller, i.e. this
-// replica is not the leader or is not running RACv2.
-func (r *Replica) RACv2Status() serverpb.RACStatus {
-	r.raftMu.Lock()
-	defer r.raftMu.Unlock()
-	return r.flowControlV2.StatusRaftMuLocked()
 }
 
 // State returns a copy of the internal state of the Replica, along with some
@@ -1894,18 +1566,12 @@ func (r *Replica) State(ctx context.Context) kvserverpb.RangeInfo {
 	ri.RangefeedRegistrations = int64(r.numRangefeedRegistrations())
 
 	r.mu.RLock()
-	ri.ReplicaState = *(protoutil.Clone(&r.shMu.state)).(*kvserverpb.ReplicaState)
-	// TODO(#97613): add a dedicated TruncatedState field to RangeInfo when the
-	// TruncatedState field is removed from ReplicaState. We can't do it right now
-	// because the ReplicaState is embedded into RangeInfo, and this confuses the
-	// proto compiler.
-	ls := r.asLogStorage()
-	ri.TruncatedState = (protoutil.Clone(&ls.shMu.trunc)).(*kvserverpb.RaftTruncatedState)
-
-	ri.LastIndex = ls.shMu.last.Index
+	defer r.mu.RUnlock()
+	ri.ReplicaState = *(protoutil.Clone(&r.mu.state)).(*kvserverpb.ReplicaState)
+	ri.LastIndex = r.mu.lastIndexNotDurable
 	ri.NumPending = uint64(r.numPendingProposalsRLocked())
-	ri.RaftLogSize = ls.shMu.size
-	ri.RaftLogSizeTrusted = ls.shMu.sizeTrusted
+	ri.RaftLogSize = r.mu.raftLogSize
+	ri.RaftLogSizeTrusted = r.mu.raftLogSizeTrusted
 	ri.NumDropped = uint64(r.mu.droppedMessages)
 	if r.mu.proposalQuota != nil {
 		ri.ApproximateProposalQuota = int64(r.mu.proposalQuota.ApproximateQuota())
@@ -1921,28 +1587,27 @@ func (r *Replica) State(ctx context.Context) kvserverpb.RangeInfo {
 	if r.mu.tenantID != (roachpb.TenantID{}) {
 		ri.TenantID = r.mu.tenantID.ToUint64()
 	}
-	ri.ClosedTimestampPolicy = toClientClosedTsPolicy(
-		closedTimestampPolicy(r.descRLocked(), *r.cachedClosedTimestampPolicy.Load()))
-	if m := r.mu.pausedFollowers; len(m) > 0 {
-		var sl []roachpb.ReplicaID
-		for id := range m {
-			sl = append(sl, id)
-		}
-		slices.Sort(sl)
-		ri.PausedReplicas = sl
-	}
-	nodeID := r.shMu.state.Lease.Replica.NodeID
-	r.mu.RUnlock()
+	ri.ClosedTimestampPolicy = r.closedTimestampPolicyRLocked()
 	r.sideTransportClosedTimestamp.mu.Lock()
 	ri.ClosedTimestampSideTransportInfo.ReplicaClosed = r.sideTransportClosedTimestamp.mu.cur.ts
 	ri.ClosedTimestampSideTransportInfo.ReplicaLAI = r.sideTransportClosedTimestamp.mu.cur.lai
 	r.sideTransportClosedTimestamp.mu.Unlock()
 	centralClosed, centralLAI := r.store.cfg.ClosedTimestampReceiver.GetClosedTimestamp(
-		ctx, r.RangeID, nodeID)
+		ctx, r.RangeID, r.mu.state.Lease.Replica.NodeID)
 	ri.ClosedTimestampSideTransportInfo.CentralClosed = centralClosed
 	ri.ClosedTimestampSideTransportInfo.CentralLAI = centralLAI
 	if err := r.breaker.Signal().Err(); err != nil {
 		ri.CircuitBreakerError = err.Error()
+	}
+	if m := r.mu.pausedFollowers; len(m) > 0 {
+		var sl []roachpb.ReplicaID
+		for id := range m {
+			sl = append(sl, id)
+		}
+		sort.Slice(sl, func(i, j int) bool {
+			return sl[i] < sl[j]
+		})
+		ri.PausedReplicas = sl
 	}
 	return ri
 }
@@ -1953,16 +1618,7 @@ func (r *Replica) State(ctx context.Context) kvserverpb.RangeInfo {
 func (r *Replica) assertStateRaftMuLockedReplicaMuRLocked(
 	ctx context.Context, reader storage.Reader,
 ) {
-	if ts := r.shMu.state.TruncatedState; ts != nil {
-		log.Fatalf(ctx, "non-empty RaftTruncatedState in ReplicaState: %+v", ts)
-	} else if loaded, err := r.raftMu.stateLoader.LoadRaftTruncatedState(ctx, reader); err != nil {
-		log.Fatalf(ctx, "%s", err)
-	} else if ts := r.asLogStorage().shMu.trunc; loaded != ts {
-		log.Fatalf(ctx, "on-disk and in-memory RaftTruncatedState diverged: %s",
-			redact.Safe(pretty.Diff(loaded, ts)))
-	}
-
-	diskState, err := r.raftMu.stateLoader.Load(ctx, reader, r.shMu.state.Desc)
+	diskState, err := r.mu.stateLoader.Load(ctx, reader, r.mu.state.Desc)
 	if err != nil {
 		log.Fatalf(ctx, "%v", err)
 	}
@@ -1970,21 +1626,20 @@ func (r *Replica) assertStateRaftMuLockedReplicaMuRLocked(
 	// We don't care about this field; see comment on
 	// DeprecatedUsingAppliedStateKey for more details. This can be removed once
 	// we stop loading the replica state from snapshot protos.
-	diskState.DeprecatedUsingAppliedStateKey = r.shMu.state.DeprecatedUsingAppliedStateKey
-	if !diskState.Equal(r.shMu.state) {
+	diskState.DeprecatedUsingAppliedStateKey = r.mu.state.DeprecatedUsingAppliedStateKey
+	if !diskState.Equal(r.mu.state) {
 		// The roundabout way of printing here is to expose this information in sentry.io.
 		//
 		// TODO(dt): expose properly once #15892 is addressed.
 		log.Errorf(ctx, "on-disk and in-memory state diverged:\n%s",
-			pretty.Diff(diskState, r.shMu.state))
-		r.shMu.state.Desc, diskState.Desc = nil, nil
+			pretty.Diff(diskState, r.mu.state))
+		r.mu.state.Desc, diskState.Desc = nil, nil
 		log.Fatalf(ctx, "on-disk and in-memory state diverged: %s",
-			redact.Safe(pretty.Diff(diskState, r.shMu.state)))
+			redact.Safe(pretty.Diff(diskState, r.mu.state)))
 	}
 	if r.IsInitialized() {
-		if !r.startKey.Equal(r.shMu.state.Desc.StartKey) {
-			log.Fatalf(ctx, "denormalized start key %s diverged from %s",
-				r.startKey, r.shMu.state.Desc.StartKey)
+		if !r.startKey.Equal(r.mu.state.Desc.StartKey) {
+			log.Fatalf(ctx, "denormalized start key %s diverged from %s", r.startKey, r.mu.state.Desc.StartKey)
 		}
 	}
 	// A replica is always contained in its descriptor. This is an invariant. When
@@ -2010,16 +1665,16 @@ func (r *Replica) assertStateRaftMuLockedReplicaMuRLocked(
 	//
 	// See:
 	// https://github.com/cockroachdb/cockroach/pull/40892
-	if !r.store.TestingKnobs().DisableEagerReplicaRemoval && r.shMu.state.Desc.IsInitialized() {
-		replDesc, ok := r.shMu.state.Desc.GetReplicaDescriptor(r.store.StoreID())
+	if !r.store.TestingKnobs().DisableEagerReplicaRemoval && r.mu.state.Desc.IsInitialized() {
+		replDesc, ok := r.mu.state.Desc.GetReplicaDescriptor(r.store.StoreID())
 		if !ok {
-			log.Fatalf(ctx, "%+v does not contain local store s%d", r.shMu.state.Desc, r.store.StoreID())
+			log.Fatalf(ctx, "%+v does not contain local store s%d", r.mu.state.Desc, r.store.StoreID())
 		}
 		if replDesc.ReplicaID != r.replicaID {
-			log.Fatalf(ctx, "replica's replicaID %d diverges from descriptor %+v", r.replicaID, r.shMu.state.Desc)
+			log.Fatalf(ctx, "replica's replicaID %d diverges from descriptor %+v", r.replicaID, r.mu.state.Desc)
 		}
 	}
-	diskReplID, err := r.raftMu.stateLoader.LoadRaftReplicaID(ctx, reader)
+	diskReplID, err := r.mu.stateLoader.LoadRaftReplicaID(ctx, reader)
 	if err != nil {
 		log.Fatalf(ctx, "%s", err)
 	}
@@ -2054,6 +1709,9 @@ func (r *Replica) checkExecutionCanProceedBeforeStorageSnapshot(
 		return kvserverpb.LeaseStatus{}, err
 	}
 
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	// Has the replica been initialized?
 	// NB: this should have already been checked in Store.Send, so we don't need
 	// to handle this case particularly well, but if we do reach here (as some
@@ -2063,38 +1721,21 @@ func (r *Replica) checkExecutionCanProceedBeforeStorageSnapshot(
 		return kvserverpb.LeaseStatus{}, errors.Errorf("%s not initialized", r)
 	}
 
-	r.mu.RLock()
 	// Is the replica destroyed?
 	if _, err := r.isDestroyedRLocked(); err != nil {
-		r.mu.RUnlock()
 		return kvserverpb.LeaseStatus{}, err
 	}
-
-	// In order to reduce replica mutex contention, we take everything we need
-	// from the replica while we hold the RLock and then release it.
-	desc := r.descRLocked()
-	mergeInProgress := r.mergeInProgressRLocked()
-	mergeTxnID := r.mu.mergeTxnID
-	minLeaseProposedTS := r.mu.minLeaseProposedTS
-	minValidObservedTimestamp := r.mu.minValidObservedTimestamp
-	raftBasicStatus := r.raftBasicStatusRLocked()
-	lease := r.shMu.state.Lease
-	lai := r.shMu.state.LeaseAppliedIndex
-	closedTS := r.shMu.state.RaftClosedTimestamp
-	r.mu.RUnlock()
 
 	// Is the request fully contained in the range?
 	// NB: we only need to check that the request is in the Range's key bounds
 	// at evaluation time, not at application time, because the spanlatch manager
 	// will synchronize all requests (notably EndTxn with SplitTrigger) that may
 	// cause this condition to change.
-	cachedClosedTimestampPolicy := *r.cachedClosedTimestampPolicy.Load()
-	if err := checkSpanInRange(ctx, rSpan, desc, lease, cachedClosedTimestampPolicy); err != nil {
+	if err := r.checkSpanInRangeRLocked(ctx, rSpan); err != nil {
 		return kvserverpb.LeaseStatus{}, err
 	}
 
-	st, err := r.checkLease(ctx, ba, desc, minLeaseProposedTS, minValidObservedTimestamp,
-		lease, raftBasicStatus, lai, closedTS)
+	st, err := r.checkLeaseRLocked(ctx, ba)
 	if err != nil {
 		return kvserverpb.LeaseStatus{}, err
 	}
@@ -2104,24 +1745,14 @@ func (r *Replica) checkExecutionCanProceedBeforeStorageSnapshot(
 	// Tests such as TestClosedTimestampFrozenAfterSubsumption also rely on this late-checking of
 	// merges by checking for a NotLeaseholderError on replicas in a critical phase for certain
 	// requests.
-	if mergeInProgress && g.HoldingLatches() {
+	if r.mergeInProgressRLocked() && g.HoldingLatches() {
 		// We only check for a merge if we are holding latches. In practice,
 		// this means that any request where concurrency.shouldAcquireLatches()
 		// is false (e.g. RequestLeaseRequests) will not wait for a pending
 		// merge before executing and, as such, can execute while a range is in
 		// a merge's critical phase (i.e. while the RHS of the merge is
 		// subsumed).
-		//
-		// Note that we are not relying on r.mu synchronization here. On the
-		// RHS leaseholder that originally sees the Subsume, we hold latches
-		// across all keys[1a] while calling WatchForMerge[1b].
-		// When a new leaseholder steps up, it installs the merge watcher channel in
-		// leasePostApply, before the lease can be used to serve requests.
-		//
-		// [1a]: see batcheval.declareKeysSubsume.
-		// [1b]: see batcheval.Subsume.
-		// [2]: see leasePostApply.
-		if err := shouldWaitForPendingMerge(ctx, ba, desc, mergeInProgress, mergeTxnID); err != nil {
+		if err := r.shouldWaitForPendingMergeRLocked(ctx, ba); err != nil {
 			// TODO(nvanbenschoten): we should still be able to serve reads
 			// below the closed timestamp in this case.
 			return kvserverpb.LeaseStatus{}, err
@@ -2145,16 +1776,7 @@ func (r *Replica) checkExecutionCanProceedAfterStorageSnapshot(
 	}
 
 	r.mu.RLock()
-	lease := r.shMu.state.Lease
-	spanConfExplicitlySet := r.mu.spanConfigExplicitlySet
-	ignoreStrictEnforcement := r.mu.conf.GCPolicy.IgnoreStrictEnforcement
-	gcThreshold := *r.shMu.state.GCThreshold
-	cachedProtectedTS := r.mu.cachedProtectedTS
-	confTTL := r.mu.conf.TTL()
-	desc := r.descRLocked()
-	confSpan := r.mu.confSpan
-	excludeDataFromBackup := r.mu.conf.ExcludeDataFromBackup
-	r.mu.RUnlock()
+	defer r.mu.RUnlock()
 
 	// Ensure the request is entirely contained within the range's key bounds
 	// (even) after the storage engine has been pinned by the iterator. Given we
@@ -2162,8 +1784,7 @@ func (r *Replica) checkExecutionCanProceedAfterStorageSnapshot(
 	// meaningful in the context of follower reads. This is because latches on
 	// followers don't provide the synchronization with concurrent splits like
 	// they do on leaseholders.
-	cachedClosedTimestampPolicy := *r.cachedClosedTimestampPolicy.Load()
-	if err := checkSpanInRange(ctx, rSpan, desc, lease, cachedClosedTimestampPolicy); err != nil {
+	if err := r.checkSpanInRangeRLocked(ctx, rSpan); err != nil {
 		return err
 	}
 
@@ -2180,9 +1801,7 @@ func (r *Replica) checkExecutionCanProceedAfterStorageSnapshot(
 	// TODO(aayush): The above description intentionally omits some details, as
 	// they are going to be changed as part of
 	// https://github.com/cockroachdb/cockroach/issues/55293.
-	return r.checkTSAboveGCThreshold(ctx, ba.EarliestActiveTimestamp(), st, ba.IsAdmin(), rSpan,
-		spanConfExplicitlySet, ignoreStrictEnforcement, gcThreshold, cachedProtectedTS, confTTL,
-		desc, confSpan, excludeDataFromBackup)
+	return r.checkTSAboveGCThresholdRLocked(ba.EarliestActiveTimestamp(), st, ba.IsAdmin())
 }
 
 // checkExecutionCanProceedRWOrAdmin returns an error if a batch request going
@@ -2200,20 +1819,12 @@ func (r *Replica) checkExecutionCanProceedRWOrAdmin(
 	return st, nil
 }
 
-// checkLease checks the provided batch against the GC threshold and lease. A
-// nil error indicates to go ahead with the batch, and is accompanied either by
-// a valid or zero lease status, the latter case indicating that the request was
-// permitted to bypass the lease check.
-func (r *Replica) checkLease(
-	ctx context.Context,
-	ba *kvpb.BatchRequest,
-	desc *roachpb.RangeDescriptor,
-	minLeaseProposedTS hlc.ClockTimestamp,
-	minValidObservedTimestamp hlc.ClockTimestamp,
-	lease *roachpb.Lease,
-	basicStatus raft.BasicStatus,
-	lai kvpb.LeaseAppliedIndex,
-	raftClosed hlc.Timestamp,
+// checkLeaseRLocked checks the provided batch against the GC
+// threshold and lease. A nil error indicates to go ahead with the batch, and
+// is accompanied either by a valid or zero lease status, the latter case
+// indicating that the request was permitted to bypass the lease check.
+func (r *Replica) checkLeaseRLocked(
+	ctx context.Context, ba *kvpb.BatchRequest,
 ) (kvserverpb.LeaseStatus, error) {
 	now := r.Clock().NowAsClockTimestamp()
 	// If the request is a write or a consistent read, it requires the
@@ -2224,8 +1835,7 @@ func (r *Replica) checkLease(
 	// For INCONSISTENT requests (which are always pure reads), this coincides
 	// with the read timestamp.
 	reqTS := ba.WriteTimestamp()
-	st := r.leaseStatusForRequest(ctx, now, reqTS, minLeaseProposedTS, minValidObservedTimestamp,
-		lease, basicStatus)
+	st := r.leaseStatusForRequestRLocked(ctx, now, reqTS)
 
 	// Write commands that skip the lease check in practice are exactly
 	// RequestLease and TransferLease. Both use the provided previous lease for
@@ -2237,11 +1847,11 @@ func (r *Replica) checkLease(
 	// doesn't check the lease.
 	if !ba.IsSingleSkipsLeaseCheckRequest() && ba.ReadConsistency != kvpb.INCONSISTENT {
 		// Check the lease.
-		err := r.leaseGoodToGoForStatus(ctx, now, reqTS, st, desc)
+		err := r.leaseGoodToGoForStatusRLocked(ctx, now, reqTS, st)
 		if err != nil {
 			// No valid lease, but if we can serve this request via follower reads,
 			// we may continue.
-			if !r.canServeFollowerRead(ctx, ba, desc, lai, lease.Replica.NodeID, raftClosed) {
+			if !r.canServeFollowerReadRLocked(ctx, ba) {
 				// If not, return the error.
 				return kvserverpb.LeaseStatus{}, err
 			}
@@ -2265,88 +1875,56 @@ func (r *Replica) checkExecutionCanProceedForRangeFeed(
 	now := r.Clock().NowAsClockTimestamp()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	status := r.leaseStatusForRequest(ctx, now, ts, r.mu.minLeaseProposedTS,
-		r.mu.minValidObservedTimestamp, r.shMu.state.Lease, r.raftBasicStatusRLocked())
+	status := r.leaseStatusForRequestRLocked(ctx, now, ts)
 	if _, err := r.isDestroyedRLocked(); err != nil {
 		return err
-	} else if err := checkSpanInRange(ctx, rSpan, r.descRLocked(), r.shMu.state.Lease,
-		*r.cachedClosedTimestampPolicy.Load()); err != nil {
+	} else if err := r.checkSpanInRangeRLocked(ctx, rSpan); err != nil {
 		return err
 	} else if !r.isRangefeedEnabledRLocked() && !RangefeedEnabled.Get(&r.store.cfg.Settings.SV) {
 		return errors.Errorf("[r%d] rangefeeds require the kv.rangefeed.enabled setting. See %s",
 			r.RangeID, docs.URL(`change-data-capture.html#enable-rangefeeds-to-reduce-latency`))
-	} else if err := r.checkTSAboveGCThreshold(ctx, ts, status, false /* isAdmin */, rSpan,
-		r.mu.spanConfigExplicitlySet, r.mu.conf.GCPolicy.IgnoreStrictEnforcement,
-		*r.shMu.state.GCThreshold, r.mu.cachedProtectedTS, r.mu.conf.TTL(), r.descRLocked(),
-		r.mu.confSpan, r.mu.conf.ExcludeDataFromBackup); err != nil {
+	} else if err := r.checkTSAboveGCThresholdRLocked(ts, status, false /* isAdmin */); err != nil {
 		return err
 	}
 	return nil
 }
 
-// checkSpanInRange returns an error if a request (identified by its key span)
-// can not be run on the replica.
-func checkSpanInRange(
-	ctx context.Context,
-	rspan roachpb.RSpan,
-	desc *roachpb.RangeDescriptor,
-	lease *roachpb.Lease,
-	cachedClosedTimestampPolicy ctpb.RangeClosedTimestampPolicy,
-) error {
+// checkSpanInRangeRLocked returns an error if a request (identified by its
+// key span) can not be run on the replica.
+func (r *Replica) checkSpanInRangeRLocked(ctx context.Context, rspan roachpb.RSpan) error {
+	desc := r.mu.state.Desc
 	if desc.ContainsKeyRange(rspan.Key, rspan.EndKey) {
 		return nil
 	}
 	return kvpb.NewRangeKeyMismatchErrorWithCTPolicy(
-		ctx, rspan.Key.AsRawKey(), rspan.EndKey.AsRawKey(), desc,
-		lease, toClientClosedTsPolicy(closedTimestampPolicy(
-			desc, cachedClosedTimestampPolicy)))
+		ctx, rspan.Key.AsRawKey(), rspan.EndKey.AsRawKey(), desc, r.mu.state.Lease, r.closedTimestampPolicyRLocked())
 }
 
-// checkTSAboveGCThreshold returns an error if a request (identified by
+// checkTSAboveGCThresholdRLocked returns an error if a request (identified by
 // its read timestamp) wants to read below the range's GC threshold.
-func (r *Replica) checkTSAboveGCThreshold(
-	ctx context.Context,
-	ts hlc.Timestamp,
-	st kvserverpb.LeaseStatus,
-	isAdmin bool,
-	rspan roachpb.RSpan,
-	spanConfigExplicitlySet bool,
-	ignoreStrictEnforcement bool,
-	gcThreshold hlc.Timestamp,
-	cachedProtectedTS cachedProtectedTimestampState,
-	confTTL time.Duration,
-	desc *roachpb.RangeDescriptor,
-	confSpan roachpb.Span,
-	excludeDataFromBackup bool,
+func (r *Replica) checkTSAboveGCThresholdRLocked(
+	ts hlc.Timestamp, st kvserverpb.LeaseStatus, isAdmin bool,
 ) error {
-	threshold := r.getImpliedGCThreshold(st, isAdmin, spanConfigExplicitlySet,
-		ignoreStrictEnforcement, gcThreshold, cachedProtectedTS, confTTL)
+	threshold := r.getImpliedGCThresholdRLocked(st, isAdmin)
 	if threshold.Less(ts) {
 		return nil
 	}
 	return &kvpb.BatchTimestampBeforeGCError{
 		Timestamp:              ts,
 		Threshold:              threshold,
-		DataExcludedFromBackup: excludeReplicaFromBackup(ctx, rspan, excludeDataFromBackup, confSpan),
-		RangeID:                desc.RangeID,
-		StartKey:               desc.StartKey.AsRawKey(),
-		EndKey:                 desc.EndKey.AsRawKey(),
+		DataExcludedFromBackup: r.excludeReplicaFromBackupRLocked(),
 	}
 }
 
-// shouldWaitForPendingMerge determines whether the given batch request
+// shouldWaitForPendingMergeRLocked determines whether the given batch request
 // should wait for an on-going merge to conclude before being allowed to proceed.
 // If not, an error is returned to prevent the request from proceeding until the
 // merge completes.
-func shouldWaitForPendingMerge(
-	ctx context.Context,
-	ba *kvpb.BatchRequest,
-	desc *roachpb.RangeDescriptor,
-	mergeInProgress bool,
-	mergeTxnID uuid.UUID,
+func (r *Replica) shouldWaitForPendingMergeRLocked(
+	ctx context.Context, ba *kvpb.BatchRequest,
 ) error {
-	if !mergeInProgress {
-		log.Fatal(ctx, "programming error: shouldWaitForPendingMerge should"+
+	if !r.mergeInProgressRLocked() {
+		log.Fatal(ctx, "programming error: shouldWaitForPendingMergeRLocked should"+
 			" only be called when a range merge is in progress")
 		return nil
 	}
@@ -2424,8 +2002,9 @@ func shouldWaitForPendingMerge(
 	// refresh. Such an improvement would eliminate the need for this special
 	// case, but until we generalize the mechanism to prune refresh spans based
 	// on intent spans, we're forced to live with this.
-	if ba.Txn != nil && ba.Txn.ID == mergeTxnID {
+	if ba.Txn != nil && ba.Txn.ID == r.mu.mergeTxnID {
 		if ba.IsSingleRefreshRequest() {
+			desc := r.descRLocked()
 			descKey := keys.RangeDescriptorKey(desc.StartKey)
 			if ba.Requests[0].GetRefresh().Key.Equal(descKey) {
 				return nil
@@ -2595,6 +2174,9 @@ func (r *Replica) maybeWatchForMergeLocked(ctx context.Context) (bool, error) {
 
 		var mergeCommitted bool
 		switch pushTxnRes.PusheeTxn.Status {
+		case roachpb.PENDING, roachpb.STAGING:
+			log.Fatalf(ctx, "PushTxn returned while merge transaction %s was still %s",
+				intentRes.Intent.Txn.ID.Short(), pushTxnRes.PusheeTxn.Status)
 		case roachpb.COMMITTED:
 			// If PushTxn claims that the transaction committed, then the transaction
 			// definitely committed.
@@ -2649,9 +2231,6 @@ func (r *Replica) maybeWatchForMergeLocked(ctx context.Context) (bool, error) {
 					mergeCommitted = true
 				}
 			}
-		default:
-			log.Fatalf(ctx, "PushTxn returned while merge transaction %s was still %s",
-				intentRes.Intent.Txn.ID.Short(), pushTxnRes.PusheeTxn.Status)
 		}
 		r.raftMu.Lock()
 		r.readOnlyCmdMu.Lock()
@@ -2683,10 +2262,44 @@ func (r *Replica) maybeWatchForMergeLocked(ctx context.Context) (bool, error) {
 	return true, err
 }
 
+// maybeTransferRaftLeadershipToLeaseholderLocked attempts to transfer the
+// leadership away from this node to the leaseholder, if this node is the
+// current raft leader but not the leaseholder. We don't attempt to transfer
+// leadership if the leaseholder is behind on applying the log.
+//
+// We like it when leases and raft leadership are collocated because that
+// facilitates quick command application (requests generally need to make it to
+// both the lease holder and the raft leader before being applied by other
+// replicas).
+func (r *Replica) maybeTransferRaftLeadershipToLeaseholderLocked(
+	ctx context.Context, status kvserverpb.LeaseStatus,
+) {
+	if r.store.TestingKnobs().DisableLeaderFollowsLeaseholder {
+		return
+	}
+	if !r.isRaftLeaderRLocked() { // fast path
+		return
+	}
+	if !status.IsValid() || status.OwnedBy(r.StoreID()) {
+		return
+	}
+	raftStatus := r.raftSparseStatusRLocked()
+	if raftStatus == nil || raftStatus.RaftState != raft.StateLeader {
+		return
+	}
+	lhReplicaID := uint64(status.Lease.Replica.ReplicaID)
+	lhProgress, ok := raftStatus.Progress[lhReplicaID]
+	if (ok && lhProgress.Match >= raftStatus.Commit) || r.store.IsDraining() {
+		log.VEventf(ctx, 1, "transferring raft leadership to replica ID %v", lhReplicaID)
+		r.store.metrics.RangeRaftLeaderTransfers.Inc(1)
+		r.mu.internalRaftGroup.TransferLeader(lhReplicaID)
+	}
+}
+
 func (r *Replica) getReplicaDescriptorByIDRLocked(
 	replicaID roachpb.ReplicaID, fallback roachpb.ReplicaDescriptor,
 ) (roachpb.ReplicaDescriptor, error) {
-	if repDesc, ok := r.shMu.state.Desc.GetReplicaDescriptorByID(replicaID); ok {
+	if repDesc, ok := r.mu.state.Desc.GetReplicaDescriptorByID(replicaID); ok {
 		return repDesc, nil
 	}
 	if fallback.ReplicaID == replicaID {
@@ -2694,7 +2307,7 @@ func (r *Replica) getReplicaDescriptorByIDRLocked(
 	}
 	return roachpb.ReplicaDescriptor{},
 		errors.Errorf("replica %d not present in %v, %v",
-			replicaID, fallback, r.shMu.state.Desc.Replicas())
+			replicaID, fallback, r.mu.state.Desc.Replicas())
 }
 
 // checkIfTxnAborted checks the txn AbortSpan for the given
@@ -2706,7 +2319,7 @@ func checkIfTxnAborted(
 	var entry roachpb.AbortSpanEntry
 	aborted, err := rec.AbortSpan().Get(ctx, reader, txn.ID, &entry)
 	if err != nil {
-		return kvpb.NewError(kvpb.MaybeWrapReplicaCorruptionError(ctx,
+		return kvpb.NewError(kvpb.NewReplicaCorruptionError(
 			errors.Wrap(err, "could not read from AbortSpan")))
 	}
 	if aborted {
@@ -2846,32 +2459,6 @@ func (r *Replica) GetMutexForTesting() *ReplicaMutex {
 	return &r.mu.ReplicaMutex
 }
 
-// TODO(wenyihu6): rename the *ForTesting functions to be Testing* (see
-// #144119 for more details).
-
-// SetCachedClosedTimestampPolicyForTesting sets the closed timestamp policy on r
-// to be the given policy. It is a test-only helper method.
-func (r *Replica) SetCachedClosedTimestampPolicyForTesting(policy ctpb.RangeClosedTimestampPolicy) {
-	r.cachedClosedTimestampPolicy.Store(&policy)
-}
-
-// GetCachedClosedTimestampPolicyForTesting returns the closed timestamp policy on r.
-// It is a test-only helper method.
-func (r *Replica) GetCachedClosedTimestampPolicyForTesting() ctpb.RangeClosedTimestampPolicy {
-	return *r.cachedClosedTimestampPolicy.Load()
-}
-
-// RefreshLeaderlessWatcherUnavailableStateForTesting refreshes the replica's
-// leaderlessWatcher's unavailable state. Intended for tests.
-func (r *Replica) RefreshLeaderlessWatcherUnavailableStateForTesting(
-	ctx context.Context, postTickLead raftpb.PeerID, nowPhysicalTime time.Time, st *cluster.Settings,
-) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.LeaderlessWatcher.refreshUnavailableState(ctx, postTickLead, nowPhysicalTime, st, r.replicaUnavailableErrorRLocked)
-}
-
 // maybeEnqueueProblemRange will enqueue the replica for processing into the
 // replicate queue iff:
 //
@@ -2924,19 +2511,4 @@ func (r *Replica) maybeEnqueueProblemRange(
 	}
 	r.store.replicateQueue.AddAsync(ctx, r,
 		allocatorimpl.AllocatorReplaceDecommissioningVoter.Priority())
-}
-
-// SendStreamStats sets the stats for the replica send streams that belong to
-// the range controller. It is only populated on the leader. The stats struct
-// is provided by the caller and should be empty, it is then populated before
-// returning.
-//
-// NOTE: The send queue size and count are populated but have bounded
-// staleness, up to sendQueueStatRefreshInterval (5s). On each call,
-// IsStateReplicate and HasSendQueue is recomputed for each
-// ReplicaSendStreamStats.
-func (r *Replica) SendStreamStats(stats *rac2.RangeSendStreamStats) {
-	if r.flowControlV2 != nil {
-		r.flowControlV2.SendStreamStats(stats)
-	}
 }

@@ -12,7 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 )
@@ -35,7 +34,7 @@ const (
 // RaceSucceedsSoonDuration if race is enabled).
 func SucceedsSoon(t TestFataler, fn func() error) {
 	t.Helper()
-	SucceedsWithin(t, fn, SucceedsSoonDuration())
+	SucceedsWithin(t, fn, succeedsSoonDuration())
 }
 
 // SucceedsSoonError returns an error unless the supplied function runs without
@@ -44,7 +43,7 @@ func SucceedsSoon(t TestFataler, fn func() error) {
 // and ending at DefaultSucceedsSoonDuration (or RaceSucceedsSoonDuration if
 // race is enabled).
 func SucceedsSoonError(fn func() error) error {
-	return SucceedsWithinError(fn, SucceedsSoonDuration())
+	return SucceedsWithinError(fn, succeedsSoonDuration())
 }
 
 // SucceedsWithin fails the test (with t.Fatal) unless the supplied
@@ -77,8 +76,8 @@ func SucceedsWithinError(fn func() error, duration time.Duration) error {
 	return retry.ForDuration(duration, wrappedFn)
 }
 
-func SucceedsSoonDuration() time.Duration {
-	if util.RaceEnabled || syncutil.DeadlockEnabled {
+func succeedsSoonDuration() time.Duration {
+	if util.RaceEnabled {
 		return RaceSucceedsSoonDuration
 	}
 	return DefaultSucceedsSoonDuration

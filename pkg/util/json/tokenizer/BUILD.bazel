@@ -18,6 +18,7 @@ go_test(
         "decoder_test.go",
         "scanner_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":tokenizer"],
     deps = ["@com_github_stretchr_testify//require"],

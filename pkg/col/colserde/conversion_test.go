@@ -31,7 +31,7 @@ func BenchmarkConversion(b *testing.B) {
 		"Serialize",
 		func(b *testing.B, batch coldata.Batch, typ *types.T) {
 			c, s := createSerializer(typ)
-			defer c.Close(ctx)
+			defer c.Release(ctx)
 			var buf bytes.Buffer
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -54,7 +54,7 @@ func BenchmarkConversion(b *testing.B) {
 			var serialized []byte
 			{
 				c, s := createSerializer(typ)
-				defer c.Close(ctx)
+				defer c.Release(ctx)
 				var buf bytes.Buffer
 				data, _ := c.BatchToArrow(ctx, batch)
 				if len(data) != 1 {

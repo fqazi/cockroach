@@ -44,7 +44,7 @@ func TestTenantGlobalAggregatedLivebytes(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderDuress(t, "too slow")
+	skip.UnderStressRace(t, "test is too slow to run under stressrace")
 
 	ctx := context.Background()
 	jobID := jobs.MVCCStatisticsJobID
@@ -79,6 +79,11 @@ func TestTenantGlobalAggregatedLivebytes(t *testing.T) {
 	tc.Start(t)
 	defer tc.Stopper().Stop(ctx)
 
+	// The release-23.2 branch does not support passing cluster settings well
+	// when creating tenants, so we will add an override in the KV layer.
+	sysDB := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+	sysDB.Exec(t, "ALTER TENANT ALL SET CLUSTER SETTING tenant_global_metrics_exporter_interval='50ms'")
+
 	type testTenant struct {
 		id   int
 		name string
@@ -96,7 +101,6 @@ func TestTenantGlobalAggregatedLivebytes(t *testing.T) {
 				base.TestTenantArgs{
 					TenantID:     roachpb.MustMakeTenantID(uint64(tenantID)),
 					TenantName:   roachpb.TenantName(tenantName),
-					Settings:     settings,
 					TestingKnobs: testingKnobs,
 				},
 			)
@@ -108,7 +112,6 @@ func TestTenantGlobalAggregatedLivebytes(t *testing.T) {
 			base.TestSharedProcessTenantArgs{
 				TenantID:   roachpb.MustMakeTenantID(uint64(tenantID)),
 				TenantName: roachpb.TenantName(tenantName),
-				Settings:   settings,
 				Knobs:      testingKnobs,
 			},
 		)
@@ -127,7 +130,7 @@ func TestTenantGlobalAggregatedLivebytes(t *testing.T) {
 			&in,
 			expfmt.FmtText,
 			func(ex *metric.PrometheusExporter) {
-				ex.ScrapeRegistry(r, metric.WithIncludeChildMetrics(true), metric.WithIncludeAggregateMetrics(true))
+				ex.ScrapeRegistry(r, true /* includeChildMetrics */)
 			},
 		)
 		require.NoError(t, err)
@@ -175,7 +178,7 @@ func TestTenantGlobalAggregatedLivebytes(t *testing.T) {
 		val, _ := scrapeMetric(t, r, "sql_aggregated_livebytes", tenant.name)
 
 		if math.Abs(float64(exp-val))/float64(exp) > confidenceLevel {
-			return errors.Newf("expected within +/-%.2f of %d, but got %d", confidenceLevel, exp, val)
+			return errors.Newf("expected within +/-%.2f of %d, but got %d, testVal=%d", exp, val)
 		}
 		if val <= 0 {
 			return errors.New("livebytes must be greater than 0")
@@ -193,13 +196,11 @@ func TestTenantGlobalAggregatedLivebytes(t *testing.T) {
 
 	tenantFoo := makeTenant(t, 10, true /* external */)
 	tenantBar := makeTenant(t, 11, true /* external */)
+	tenantInternal := makeTenant(t, 20, false /* external */)
 
 	// Metrics should be exported for out-of-process secondary tenants, and are
 	// correct, i.e. sql_aggregated_livebytes in SQL = sum(livebytes in KV).
 	t.Run("external secondary tenants", func(t *testing.T) {
-		// Flaky test.
-		skip.WithIssue(t, 120775)
-
 		// Exact match for non stress tests, and allow values to differ by up to
 		// 5% in stress situations.
 		confidenceLevel := 0.0
@@ -215,12 +216,6 @@ func TestTenantGlobalAggregatedLivebytes(t *testing.T) {
 	})
 
 	t.Run("internal secondary tenants", func(t *testing.T) {
-		// The test seems to hang when trying to start an in-process tenant.
-		// Skip the for now.
-		skip.WithIssue(t, 120775)
-
-		tenantInternal := makeTenant(t, 20, false /* external */)
-
 		jobutils.WaitForJobToRun(t, tenantInternal.db, jobID)
 
 		// We should never get the aggregated metric in the application layer.
@@ -229,7 +224,6 @@ func TestTenantGlobalAggregatedLivebytes(t *testing.T) {
 	})
 
 	t.Run("system tenant", func(t *testing.T) {
-		sysDB := sqlutils.MakeSQLRunner(tc.ServerConn(0))
 		jobutils.WaitForJobToRun(t, sysDB, jobID)
 
 		// Look for the node that runs the job.

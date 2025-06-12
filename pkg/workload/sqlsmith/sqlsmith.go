@@ -66,10 +66,6 @@ func (*sqlSmith) Meta() workload.Meta { return sqlSmithMeta }
 // Flags implements the Flagser interface.
 func (g *sqlSmith) Flags() workload.Flags { return g.flags }
 
-// ConnFlags implements the ConnFlagser interface.
-func (g *sqlSmith) ConnFlags() *workload.ConnFlags { return g.connFlags }
-
-// Hooks implements the Hookser interface.
 func (g *sqlSmith) Hooks() workload.Hooks {
 	return workload.Hooks{}
 }
@@ -79,7 +75,7 @@ func (g *sqlSmith) Tables() []workload.Table {
 	rng := rand.New(rand.NewSource(RandomSeed.Seed()))
 	var tables []workload.Table
 	for idx := 0; idx < g.tables; idx++ {
-		schema := randgen.RandCreateTable(context.Background(), rng, "table", idx, randgen.TableOptNone)
+		schema := randgen.RandCreateTable(rng, "table", idx, false /* isMultiRegion */)
 		// workload expects the schema to be missing the 'CREATE TABLE "name"', so
 		// we only want to format the schema, not the whole statement.
 		fmtCtx := tree.NewFmtCtx(tree.FmtSerializable)
@@ -129,6 +125,10 @@ func (g *sqlSmith) Ops(
 	if err := g.validateErrorSetting(); err != nil {
 		return workload.QueryLoad{}, err
 	}
+	sqlDatabase, err := workload.SanitizeUrls(g, g.connFlags.DBOverride, urls)
+	if err != nil {
+		return workload.QueryLoad{}, err
+	}
 	db, err := gosql.Open(`cockroach`, strings.Join(urls, ` `))
 	if err != nil {
 		return workload.QueryLoad{}, err
@@ -137,7 +137,7 @@ func (g *sqlSmith) Ops(
 	db.SetMaxOpenConns(g.connFlags.Concurrency + 1)
 	db.SetMaxIdleConns(g.connFlags.Concurrency + 1)
 
-	ql := workload.QueryLoad{}
+	ql := workload.QueryLoad{SQLDatabase: sqlDatabase}
 	for i := 0; i < g.connFlags.Concurrency; i++ {
 		rng := rand.New(rand.NewSource(RandomSeed.Seed() + int64(i)))
 		smither, err := sqlsmith.NewSmither(db, rng)

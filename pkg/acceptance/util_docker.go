@@ -9,7 +9,6 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -22,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/build/bazel"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
-	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/containerd/containerd/platforms"
 	"github.com/docker/docker/api/types"
@@ -69,7 +67,6 @@ const (
 func testDocker(
 	ctx context.Context, t *testing.T, num int, name string, containerConfig container.Config,
 ) error {
-	maybeSkipTest(t)
 	var err error
 	RunDocker(t, func(t *testing.T) {
 		var pwd string
@@ -171,7 +168,7 @@ func testDocker(
 // so the files can be used inside a docker container. The caller function is responsible for cleaning up.
 // This function doesn't copy the original file permissions and uses 755 for directories and files.
 func copyRunfiles(source, destination string) error {
-	return filepath.WalkDir(source, func(path string, dirEntry fs.DirEntry, walkErr error) error {
+	return filepath.WalkDir(source, func(path string, dirEntry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -219,7 +216,6 @@ func runTestDockerCLI(t *testing.T, testNameSuffix, testFilePath string) {
 	containerConfig.Env = []string{
 		"CI=1", // Disables the initial color query by the termenv library.
 		fmt.Sprintf("PGUSER=%s", username.RootUser),
-		fmt.Sprintf("COCKROACH_DEV_LICENSE=%s", envutil.EnvOrDefaultString("COCKROACH_DEV_LICENSE", "")),
 	}
 	ctx := context.Background()
 	if err := testDockerOneShot(ctx, t, "cli_test_"+testNameSuffix, containerConfig); err != nil {

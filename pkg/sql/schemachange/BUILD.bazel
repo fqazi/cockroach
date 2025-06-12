@@ -10,12 +10,9 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/schemachange",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/settings/cluster",
-        "//pkg/sql/catalog/colinfo",
         "//pkg/sql/pgwire/pgcode",
         "//pkg/sql/pgwire/pgerror",
         "//pkg/sql/sem/tree",
-        "//pkg/sql/sqlerrors",
         "//pkg/sql/types",
     ],
 )
@@ -27,6 +24,7 @@ go_test(
         "alter_column_type_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":schemachange"],
     deps = [
         "//pkg/base",
@@ -45,7 +43,6 @@ go_test(
         "//pkg/util/log",
         "//pkg/util/randutil",
         "//pkg/util/uuid",
-        "@com_github_stretchr_testify//require",
     ],
 )
 

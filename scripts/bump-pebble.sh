@@ -8,11 +8,9 @@
 
 # NOTE: After a new release has been cut, update this to the appropriate
 # Cockroach branch name (i.e. release-23.2, etc.), and corresponding Pebble
-# branch name (e.g. crl-release-23.2, etc.). Also update pebble nightly scripts
-# in build/teamcity/cockroach/nightlies to use `@crl-release-xy.z` instead of
-# `@master`.
-BRANCH=master
-PEBBLE_BRANCH=master
+# branch name (e.g. crl-release-23.2, etc.).
+BRANCH=release-23.2
+PEBBLE_BRANCH=crl-release-23.2
 
 # This script may be used to produce a branch bumping the Pebble version. The
 # storage team bumps CockroachDB's Pebble dependency frequently, and this script
@@ -70,7 +68,9 @@ if ! git merge-base --is-ancestor $OLD_SHA $NEW_SHA; then
   exit 1
 fi
 
-COMMITS=$(git log --no-merges --pretty='format: * [`%h`](https://github.com/cockroachdb/pebble/commit/%h) %s' "$OLD_SHA..$NEW_SHA")
+COMMITS=$(git log --pretty='format:%h %s' "$OLD_SHA..$NEW_SHA" |
+          grep -v 'Merge pull request' |
+          sed 's#^#https://github.com/cockroachdb/pebble/commit/#')
 popd
 
 echo
@@ -98,12 +98,10 @@ go mod tidy
 git add go.mod go.sum DEPS.bzl build/bazelutil/distdir_files.bzl
 git commit -m "go.mod: bump Pebble to ${NEW_SHA:0:12}
 
-Changes:
-
 $COMMITS
 
-Release note: none.
-Epic: none.
+Release note:
 "
 # Open an editor to allow the user to set the release note.
 git commit --amend
+popd

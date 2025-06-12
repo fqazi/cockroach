@@ -66,18 +66,18 @@ enum ProtectionMode {
 message Metadata {
 
    // Version is incremented whenever a Record is created or removed.
-   uint64 version = 1 [deprecated=true];
+   uint64 version = 1;
 
    // NumRecords is the number of records which exist in the subsystem.
-   uint64 num_records = 2 [deprecated=true];
+   uint64 num_records = 2;
 
    // NumSpans is the number of spans currently being protected by the
    // protectedts subsystem.
-   uint64 num_spans = 3 [deprecated=true];
+   uint64 num_spans = 3;
 
    // TotalBytes is the number of bytes currently in use by records
    // to store their spans and metadata.
-   uint64 total_bytes = 4 [deprecated=true];
+   uint64 total_bytes = 4;
 }
 
 // Record corresponds to a protected timestamp.

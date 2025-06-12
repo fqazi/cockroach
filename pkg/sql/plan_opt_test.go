@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -478,7 +477,7 @@ SELECT cte.x, cte.y FROM cte LEFT JOIN cte as cte2 on cte.y = cte2.x`, j)
 		})
 
 		// Verify the case where a PREPARE encounters a query cache entry that was
-		// created by a direct execution (and hence has no Metadata).
+		// created by a direct execution (and hence has no PrepareMetadata).
 		t.Run("exec-and-prepare", func(t *testing.T) {
 			parallel(t)
 			h := makeQueryCacheTestHelper(t, 1 /* numConns */)
@@ -625,7 +624,6 @@ func BenchmarkQueryCache(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
-		b.StopTimer()
 	}
 
 	for workload, workloadName := range workloads {
@@ -664,20 +662,19 @@ func TestPlanGistControl(t *testing.T) {
 	internalPlanner, cleanup := NewInternalPlanner(
 		"test",
 		kv.NewTxn(ctx, db, s.NodeID()),
-		username.NodeUserName(),
+		username.RootUserName(),
 		&MemoryMetrics{},
 		&execCfg,
 		sd,
 	)
 	defer cleanup()
 
-	fmtFingerprintMask := tree.FmtFlags(queryFormattingForFingerprintsMask.Get(&s.ClusterSettings().SV))
 	p := internalPlanner.(*planner)
 	stmt, err := parser.ParseOne("SELECT 1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.stmt = makeStatement(stmt, clusterunique.ID{}, fmtFingerprintMask)
+	p.stmt = makeStatement(stmt, clusterunique.ID{})
 	if err := p.makeOptimizerPlan(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -693,7 +690,7 @@ func TestPlanGistControl(t *testing.T) {
 	internalPlanner, cleanup = NewInternalPlanner(
 		"test",
 		kv.NewTxn(ctx, db, s.NodeID()),
-		username.NodeUserName(),
+		username.RootUserName(),
 		&MemoryMetrics{},
 		&execCfg,
 		sd,
@@ -703,7 +700,7 @@ func TestPlanGistControl(t *testing.T) {
 	p = internalPlanner.(*planner)
 	p.SessionData().DisablePlanGists = true
 
-	p.stmt = makeStatement(stmt, clusterunique.ID{}, fmtFingerprintMask)
+	p.stmt = makeStatement(stmt, clusterunique.ID{})
 	if err := p.makeOptimizerPlan(ctx); err != nil {
 		t.Fatal(err)
 	}

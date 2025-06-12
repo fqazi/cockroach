@@ -18,15 +18,17 @@ go_library(
         "//pkg/kv/kvserver/kvflowcontrol/kvflowcontrolpb",
         "//pkg/kv/kvserver/kvserverbase",
         "//pkg/kv/kvserver/kvserverpb",
-        "//pkg/raft/raftpb",
         "//pkg/roachpb",
         "//pkg/storage",
         "//pkg/storage/enginepb",
+        "//pkg/util/admission/admissionpb",
         "//pkg/util/buildutil",
         "//pkg/util/encoding",
         "//pkg/util/iterutil",
+        "//pkg/util/log",
         "//pkg/util/protoutil",
         "@com_github_cockroachdb_errors//:errors",
+        "@io_etcd_go_raft_v3//raftpb",
     ],
 )
 
@@ -39,6 +41,7 @@ go_test(
         "iter_bench_test.go",
         "iter_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":raftlog"],
     deps = [
         "//pkg/keys",
@@ -46,7 +49,6 @@ go_test(
         "//pkg/kv/kvserver/kvflowcontrol/kvflowcontrolpb",
         "//pkg/kv/kvserver/kvserverbase",
         "//pkg/kv/kvserver/kvserverpb",
-        "//pkg/raft/raftpb",
         "//pkg/roachpb",
         "//pkg/storage",
         "//pkg/storage/enginepb",
@@ -58,5 +60,6 @@ go_test(
         "//pkg/util/protoutil",
         "//pkg/util/randutil",
         "@com_github_stretchr_testify//require",
+        "@io_etcd_go_raft_v3//raftpb",
     ],
 )

@@ -4,13 +4,10 @@
 // included in the /LICENSE file.
 
 import { shallow } from "enzyme";
-import map from "lodash/map";
-import noop from "lodash/noop";
+import _ from "lodash";
 import Long from "long";
 import React, { Fragment } from "react";
-
 import * as protos from "src/js/protos";
-import { refreshSettings } from "src/redux/apiReducers";
 import { MetricsQuery, requestMetrics } from "src/redux/metrics";
 import {
   Axis,
@@ -19,6 +16,7 @@ import {
   QueryTimeInfo,
 } from "src/views/shared/components/metricQuery";
 import { MetricsDataProviderUnconnected as MetricsDataProvider } from "src/views/shared/containers/metricDataProvider";
+import { refreshSettings } from "src/redux/apiReducers";
 
 // TextGraph is a proof-of-concept component used to demonstrate that
 // MetricsDataProvider is working correctly. Used in tests.
@@ -39,7 +37,7 @@ function makeDataProvider(
   metrics: MetricsQuery,
   timeInfo: QueryTimeInfo,
   rm: typeof requestMetrics,
-  refreshNodeSettings: typeof refreshSettings = noop as typeof refreshSettings,
+  refreshNodeSettings: typeof refreshSettings = _.noop as typeof refreshSettings,
 ) {
   return shallow(
     <MetricsDataProvider
@@ -117,7 +115,7 @@ function makeMetricsQuery(
 ): MetricsQuery {
   const request = makeMetricsRequest(timeSpan, sources, tenantSource);
   const data = new protos.cockroach.ts.tspb.TimeSeriesQueryResponse({
-    results: map(request.queries, q => {
+    results: _.map(request.queries, q => {
       return {
         query: q,
         datapoints: [],
@@ -267,7 +265,7 @@ describe("<MetricsDataProvider>", function () {
             metrics={null}
             timeInfo={timespan1}
             requestMetrics={spy}
-            refreshNodeSettings={noop as typeof refreshSettings}
+            refreshNodeSettings={_.noop as typeof refreshSettings}
           >
             <Fragment>
               <TextGraph>

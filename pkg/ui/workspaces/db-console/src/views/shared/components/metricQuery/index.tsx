@@ -24,22 +24,17 @@
  * combine it with the result of a query to create some renderable output.
  */
 
-// We use the `Metric` and `Axis` classes data containers, not for rendering.
-/* eslint react/require-render-return: "off" */
-
-import { AxisUnits, TimeScale } from "@cockroachlabs/cluster-ui";
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client-ccl";
-import { History } from "history";
-import Long from "long";
 import React from "react";
-
-import { PayloadAction } from "src/interfaces/action";
 import * as protos from "src/js/protos";
-import { TimeWindow } from "src/redux/timeScale";
 
-import TimeSeriesQueryDerivative = protos.cockroach.ts.tspb.TimeSeriesQueryDerivative;
 type TSResponse = protos.cockroach.ts.tspb.TimeSeriesQueryResponse;
 import TimeSeriesQueryAggregator = protos.cockroach.ts.tspb.TimeSeriesQueryAggregator;
+import TimeSeriesQueryDerivative = protos.cockroach.ts.tspb.TimeSeriesQueryDerivative;
+import Long from "long";
+import { History } from "history";
+import { TimeWindow } from "src/redux/timeScale";
+import { PayloadAction } from "src/interfaces/action";
+import { AxisUnits, TimeScale } from "@cockroachlabs/cluster-ui";
 
 /**
  * AxisProps represents the properties of an Axis being specified as part of a
@@ -64,6 +59,7 @@ export class Axis extends React.Component<AxisProps, {}> {
     units: AxisUnits.Count,
   };
 
+  // eslint-disable-next-line react/require-render-return
   render(): React.ReactElement<any> {
     throw new Error("Component <Axis /> should never render.");
   }
@@ -96,12 +92,6 @@ export interface MetricProps {
   // to convert it to our Duration format which assumes Nanoseconds.
   scale?: number;
 
-  // Transform is a function that can be applied to the datapoints of the metric
-  // and applies BEFORE scaling
-  transform?: (
-    d: cockroach.ts.tspb.TimeSeriesQueryResponse.IResult["datapoints"],
-  ) => cockroach.ts.tspb.TimeSeriesQueryResponse.IResult["datapoints"];
-
   nonNegativeRate?: boolean;
   aggregateMax?: boolean;
   aggregateMin?: boolean;
@@ -121,6 +111,7 @@ export interface MetricProps {
  * without rendering them.
  */
 export class Metric extends React.Component<MetricProps> {
+  // eslint-disable-next-line react/require-render-return
   render(): React.ReactElement<any> {
     throw new Error("Component <Metric /> should never render.");
   }

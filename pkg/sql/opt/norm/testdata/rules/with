@@ -640,7 +640,6 @@ with &2 (cte)
  ├── volatile, mutations
  ├── stats: [rows=2, distinct(14)=2, null(14)=0]
  ├── cost: 1060.9075
- ├── cost-flags: full-scan-penalty
  ├── key: (14)
  ├── insert t.public.child
  │    ├── columns: t.public.child.c:1(int!null)
@@ -654,7 +653,6 @@ with &2 (cte)
  │    ├── volatile, mutations
  │    ├── stats: [rows=1, distinct(1)=1, null(1)=0]
  │    ├── cost: 1060.7975
- │    ├── cost-flags: full-scan-penalty
  │    ├── key: ()
  │    ├── fd: ()-->(1)
  │    ├── values
@@ -675,7 +673,6 @@ with &2 (cte)
  │                   ├── cardinality: [0 - 1]
  │                   ├── stats: [rows=1e-10]
  │                   ├── cost: 1060.7675
- │                   ├── cost-flags: full-scan-penalty
  │                   ├── key: ()
  │                   ├── fd: ()-->(7)
  │                   ├── cte-uses
@@ -694,10 +691,9 @@ with &2 (cte)
  │                   │         └── &1: count=1 used-columns=(6)
  │                   ├── scan t.public.parent
  │                   │    ├── columns: t.public.parent.p:8(int!null)
- │                   │    ├── flags: avoid-full-scan disabled not visible index feature
+ │                   │    ├── flags: disabled not visible index feature
  │                   │    ├── stats: [rows=1000, distinct(8)=1000, null(8)=0]
  │                   │    ├── cost: 1048.22
- │                   │    ├── cost-flags: full-scan-penalty
  │                   │    ├── key: (8)
  │                   │    ├── prune: (8)
  │                   │    ├── interesting orderings: (+8)
@@ -1860,7 +1856,7 @@ project
  │         │    ├── columns: i:5!null sum:7
  │         │    ├── cardinality: [0 - 1]
  │         │    ├── key: ()
- │         │    ├── fd: ()-->(5,7)
+ │         │    ├── fd: ()-->(5)
  │         │    ├── select
  │         │    │    ├── columns: i:5!null
  │         │    │    ├── cardinality: [0 - 1]
@@ -2051,7 +2047,7 @@ project
  │         │    ├── cardinality: [0 - 1]
  │         │    ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-one)
  │         │    ├── key: ()
- │         │    ├── fd: ()-->(5-8), (6)==(7), (7)==(6)
+ │         │    ├── fd: ()-->(5-8), (7)==(6), (6)==(7)
  │         │    ├── select
  │         │    │    ├── columns: i:5!null j:6
  │         │    │    ├── cardinality: [0 - 1]
@@ -2159,14 +2155,14 @@ WITH RECURSIVE cte (i) AS (
 SELECT i FROM cte;
 ----
 project
- ├── columns: i:10
+ ├── columns: i:9
  ├── cardinality: [1 - ]
  ├── immutable
  ├── recursive-c-t-e
  │    ├── columns: i:2
  │    ├── working table binding: &2
  │    ├── initial columns: "?column?":1
- │    ├── recursive columns: "?column?":9
+ │    ├── recursive columns: "?column?":8
  │    ├── cardinality: [1 - ]
  │    ├── immutable
  │    ├── fake-rel
@@ -2181,11 +2177,11 @@ project
  │    │    ├── fd: ()-->(1)
  │    │    └── (1,)
  │    └── project
- │         ├── columns: "?column?":9!null
+ │         ├── columns: "?column?":8!null
  │         ├── cardinality: [0 - 1]
  │         ├── immutable
  │         ├── key: ()
- │         ├── fd: ()-->(9)
+ │         ├── fd: ()-->(8)
  │         ├── semi-join (hash)
  │         │    ├── columns: i:3!null
  │         │    ├── cardinality: [0 - 1]
@@ -2216,9 +2212,9 @@ project
  │         │    └── filters
  │         │         └── i:3 = x:4 [outer=(3,4), constraints=(/3: (/NULL - ]; /4: (/NULL - ]), fd=(3)==(4), (4)==(3)]
  │         └── projections
- │              └── i:3 + 1 [as="?column?":9, outer=(3), immutable]
+ │              └── i:3 + 1 [as="?column?":8, outer=(3), immutable]
  └── projections
-      └── i:2 [as=i:10, outer=(2)]
+      └── i:2 [as=i:9, outer=(2)]
 
 # Case with AntiJoin.
 norm expect=TryAddLimitToRecursiveBranch
@@ -2230,14 +2226,14 @@ WITH RECURSIVE cte (i) AS (
 SELECT i FROM cte;
 ----
 project
- ├── columns: i:10
+ ├── columns: i:9
  ├── cardinality: [1 - ]
  ├── immutable
  ├── recursive-c-t-e
  │    ├── columns: i:2
  │    ├── working table binding: &2
  │    ├── initial columns: "?column?":1
- │    ├── recursive columns: "?column?":9
+ │    ├── recursive columns: "?column?":8
  │    ├── cardinality: [1 - ]
  │    ├── immutable
  │    ├── fake-rel
@@ -2252,11 +2248,11 @@ project
  │    │    ├── fd: ()-->(1)
  │    │    └── (1,)
  │    └── project
- │         ├── columns: "?column?":9!null
+ │         ├── columns: "?column?":8!null
  │         ├── cardinality: [0 - 1]
  │         ├── immutable
  │         ├── key: ()
- │         ├── fd: ()-->(9)
+ │         ├── fd: ()-->(8)
  │         ├── anti-join (hash)
  │         │    ├── columns: i:3!null
  │         │    ├── cardinality: [0 - 1]
@@ -2287,9 +2283,9 @@ project
  │         │    └── filters
  │         │         └── i:3 = x:4 [outer=(3,4), constraints=(/3: (/NULL - ]; /4: (/NULL - ]), fd=(3)==(4), (4)==(3)]
  │         └── projections
- │              └── i:3 + 1 [as="?column?":9, outer=(3), immutable]
+ │              └── i:3 + 1 [as="?column?":8, outer=(3), immutable]
  └── projections
-      └── i:2 [as=i:10, outer=(2)]
+      └── i:2 [as=i:9, outer=(2)]
 
 # Case with child CTE.
 norm expect=TryAddLimitToRecursiveBranch disable=InlineWith
@@ -2346,7 +2342,7 @@ with &2 (nested)
       │         │    ├── cardinality: [0 - 1]
       │         │    ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-one)
       │         │    ├── key: ()
-      │         │    ├── fd: ()-->(7,8), (7)==(8), (8)==(7)
+      │         │    ├── fd: ()-->(7,8), (8)==(7), (7)==(8)
       │         │    ├── select
       │         │    │    ├── columns: i:7!null
       │         │    │    ├── cardinality: [0 - 1]
@@ -2437,7 +2433,7 @@ with &1 (parent)
       │         │    ├── cardinality: [0 - 1]
       │         │    ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-one)
       │         │    ├── key: ()
-      │         │    ├── fd: ()-->(7,8), (7)==(8), (8)==(7)
+      │         │    ├── fd: ()-->(7,8), (8)==(7), (7)==(8)
       │         │    ├── select
       │         │    │    ├── columns: i:7!null
       │         │    │    ├── cardinality: [0 - 1]
@@ -2513,7 +2509,7 @@ project
  │         │    ├── columns: i:5!null j:6!null x:7!null y:8!null
  │         │    ├── cardinality: [0 - 1]
  │         │    ├── key: ()
- │         │    ├── fd: ()-->(5-8), (6)==(8), (8)==(6)
+ │         │    ├── fd: ()-->(5-8), (8)==(6), (6)==(8)
  │         │    ├── inner-join (hash)
  │         │    │    ├── columns: i:5!null j:6!null x:7!null y:8!null
  │         │    │    ├── multiplicity: left-rows(zero-or-more), right-rows(zero-or-one)

@@ -25,6 +25,8 @@ COMMIT;
 # Check that we block dropping the public schema of the system database, as
 # well as virtual schemas.
 
+user testuser
+
 statement error must be owner of schema public
 DROP SCHEMA system.public
 

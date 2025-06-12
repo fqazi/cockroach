@@ -1,10 +1,9 @@
 /* setup */
-CREATE USER foo WITH LOGIN PASSWORD 'bar';
 
 /* test */
-EXPLAIN (DDL) CREATE SCHEMA sc AUTHORIZATION foo;
+EXPLAIN (DDL) CREATE SCHEMA sc;
 ----
-Schema change plan for CREATE SCHEMA ‹defaultdb›.‹sc› AUTHORIZATION foo;
+Schema change plan for CREATE SCHEMA ‹defaultdb›.‹sc›;
  ├── StatementPhase
  │    └── Stage 1 of 1 in StatementPhase
  │         ├── 6 elements transitioning toward PUBLIC
@@ -19,7 +18,7 @@ Schema change plan for CREATE SCHEMA ‹defaultdb›.‹sc› AUTHORIZATION foo;
  │              ├── SetNameInDescriptor {"DescriptorID":104,"Name":"sc"}
  │              ├── AddDescriptorName {"Namespace":{"DatabaseID":100,"DescriptorID":104,"Name":"sc"}}
  │              ├── AddSchemaParent {"Parent":{"ParentDatabaseID":100,"SchemaID":104}}
- │              ├── UpdateOwner {"Owner":{"DescriptorID":104,"Owner":"foo"}}
+ │              ├── UpdateOwner {"Owner":{"DescriptorID":104,"Owner":"root"}}
  │              ├── UpdateUserPrivileges {"Privileges":{"DescriptorID":104,"Privileges":2,"UserName":"admin","WithGrantOption":2}}
  │              ├── UpdateUserPrivileges {"Privileges":{"DescriptorID":104,"Privileges":2,"UserName":"root","WithGrantOption":2}}
  │              └── MarkDescriptorAsPublic {"DescriptorID":104}
@@ -47,7 +46,7 @@ Schema change plan for CREATE SCHEMA ‹defaultdb›.‹sc› AUTHORIZATION foo;
                 ├── SetNameInDescriptor {"DescriptorID":104,"Name":"sc"}
                 ├── AddDescriptorName {"Namespace":{"DatabaseID":100,"DescriptorID":104,"Name":"sc"}}
                 ├── AddSchemaParent {"Parent":{"ParentDatabaseID":100,"SchemaID":104}}
-                ├── UpdateOwner {"Owner":{"DescriptorID":104,"Owner":"foo"}}
+                ├── UpdateOwner {"Owner":{"DescriptorID":104,"Owner":"root"}}
                 ├── UpdateUserPrivileges {"Privileges":{"DescriptorID":104,"Privileges":2,"UserName":"admin","WithGrantOption":2}}
                 ├── UpdateUserPrivileges {"Privileges":{"DescriptorID":104,"Privileges":2,"UserName":"root","WithGrantOption":2}}
                 └── MarkDescriptorAsPublic {"DescriptorID":104}

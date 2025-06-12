@@ -65,7 +65,7 @@ type avroLogicalInfo struct {
 }
 
 func logicalEncoder(datum tree.Datum, avroType string) (ans interface{}, err error) {
-	if datum.ResolvedType().Family() == types.UnknownFamily {
+	if datum.ResolvedType() == types.Unknown {
 		return nil, nil
 	}
 	switch datum.ResolvedType().Family() {
@@ -161,14 +161,6 @@ func (e logicalAvroExec) createAvroDataFromDatums(
 		}
 	}
 	return importer.CreateAvroData(t, e.name, avroField, avroRows), nil
-}
-
-// roundtripStringer pretty prints the datum's value as string, allowing the
-// parser in certain decoders to work.
-func roundtripStringer(d tree.Datum) string {
-	fmtCtx := tree.NewFmtCtx(tree.FmtBareStrings)
-	d.Format(fmtCtx)
-	return fmtCtx.CloseAndGetString()
 }
 
 // TestImportAvroLogicalType tests that an avro file with logical avro types
@@ -284,7 +276,7 @@ func TestImportAvroLogicalTypes(t *testing.T) {
 	rng, _ := randutil.NewTestRand()
 	success := false
 	for i := 1; i <= 5; i++ {
-		numRowsInserted, err := randgen.PopulateTableWithRandData(rng, db, origTableName, 30, nil)
+		numRowsInserted, err := randgen.PopulateTableWithRandData(rng, db, origTableName, 30)
 		require.NoError(t, err)
 		if numRowsInserted > 5 {
 			success = true
@@ -299,7 +291,7 @@ func TestImportAvroLogicalTypes(t *testing.T) {
 		"",
 		nil,
 		sessiondata.InternalExecutorOverride{
-			User:     username.NodeUserName(),
+			User:     username.RootUserName(),
 			Database: "log"},
 		fmt.Sprintf("SELECT * FROM %s", origTableName))
 	require.NoError(t, err, "failed to pull datums from table")
@@ -307,7 +299,7 @@ func TestImportAvroLogicalTypes(t *testing.T) {
 	execParams := []logicalAvroExec{{
 		name: "stringed",
 		encoder: func(datum tree.Datum, avroTypes string) (interface{}, error) {
-			val := roundtripStringer(datum)
+			val := importer.RoundtripStringer(datum)
 			if val == "NULL" {
 				return nil, nil
 			}

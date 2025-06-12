@@ -10,7 +10,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvevent"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvfeed"
-	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/resolvedspan"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
@@ -78,21 +77,9 @@ type TestingKnobs struct {
 	// OnDrain returns the channel to select on to detect node drain
 	OnDrain func() <-chan struct{}
 
-	// SpanPartitionsCallback is called with the span partition
-	// when the changefeed is planned.
-	SpanPartitionsCallback func([]sql.SpanPartition)
-
-	// PreserveDeprecatedPts is used to prevent a changefeed from upgrading
-	// its PTS record from the deprecated style to the new style.
-	PreserveDeprecatedPts func() bool
-
 	// PreservePTSTargets is used to prevent a changefeed from upgrading
 	// its PTS record to include all required targets.
 	PreservePTSTargets func() bool
-
-	// PulsarClientSkipCreation skips creating the sink client when
-	// dialing.
-	PulsarClientSkipCreation bool
 
 	// TimeSource is used to override the time source used by the changefeed (currently only used by the usage metric goroutine).
 	TimeSource timeutil.TimeSource
@@ -103,15 +90,8 @@ type TestingKnobs struct {
 	// AsyncFlushSync is called in async flush goroutines as a way to provide synchronization between them.
 	AsyncFlushSync func()
 
-	// AfterCoordinatorFrontierRestore is called on the start of the changefeed coordinator so we can
-	// make assertions about its frontier.
-	AfterCoordinatorFrontierRestore func(frontier *resolvedspan.CoordinatorFrontier)
-
 	// WrapTelemetryLogger is used to wrap the periodic telemetry logger in tests.
 	WrapTelemetryLogger func(logger telemetryLogger) telemetryLogger
-
-	// OverrideCursorAge is used to change how old a cursor is. Returns time in nanoseconds.
-	OverrideCursorAge func() int64
 
 	// MakeKVFeedToAggregatorBufferKnobs is used to make a fresh set of testing knobs
 	// to pass to the constructor of the kv feed to change aggregator buffer.

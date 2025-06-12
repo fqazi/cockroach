@@ -8,7 +8,7 @@ package evalcatalog
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
@@ -34,7 +34,7 @@ func (ec *Builtins) NumGeometryInvertedIndexEntries(
 			"index_id %d is not a geography inverted index", indexID,
 		)
 	}
-	keys, err := rowenc.EncodeGeoInvertedIndexTableKeys(ctx, g, nil, geoConfig)
+	keys, err := rowenc.EncodeGeoInvertedIndexTableKeys(g, nil, geoConfig)
 	if err != nil {
 		return 0, err
 	}
@@ -56,7 +56,7 @@ func (ec *Builtins) NumGeographyInvertedIndexEntries(
 			"index_id %d is not a geography inverted index", indexID,
 		)
 	}
-	keys, err := rowenc.EncodeGeoInvertedIndexTableKeys(ctx, g, nil, geoConfig)
+	keys, err := rowenc.EncodeGeoInvertedIndexTableKeys(g, nil, geoConfig)
 	if err != nil {
 		return 0, err
 	}
@@ -69,14 +69,14 @@ func getIndexGeoConfig(
 	txn *kv.Txn,
 	tableID catid.DescID,
 	indexID catid.IndexID,
-) (geopb.Config, error) {
+) (geoindex.Config, error) {
 	tableDesc, err := dc.ByIDWithLeased(txn).WithoutNonPublic().Get().Table(ctx, tableID)
 	if err != nil {
-		return geopb.Config{}, err
+		return geoindex.Config{}, err
 	}
 	index, err := catalog.MustFindIndexByID(tableDesc, indexID)
 	if err != nil {
-		return geopb.Config{}, err
+		return geoindex.Config{}, err
 	}
 	return index.GetGeoConfig(), nil
 }

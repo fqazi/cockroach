@@ -25,6 +25,7 @@ go_library(
 go_test(
     name = "schedulebase_test",
     srcs = ["util_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":schedulebase"],
     deps = [
         "//pkg/jobs/jobspb",

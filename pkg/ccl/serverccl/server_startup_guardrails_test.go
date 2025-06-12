@@ -29,12 +29,12 @@ func TestServerStartupGuardrails(t *testing.T) {
 
 	// The tests below will use the minimum supported version as the logical
 	// version.
-	logicalVersionKey := clusterversion.MinSupported
-	logicalVersion := logicalVersionKey.Version()
+	logicalVersionKey := clusterversion.BinaryMinSupportedVersionKey
+	logicalVersion := clusterversion.ByKey(logicalVersionKey)
 
 	prev := func(v roachpb.Version) roachpb.Version {
 		t.Helper()
-		if v.Minor < 1 || v.Minor > 4 || v.Patch != 0 || v.Internal != 0 {
+		if v.Minor < 1 || v.Minor > 2 || v.Patch != 0 || v.Internal != 0 {
 			t.Fatalf("invalid version %v", v)
 		}
 		if v.Minor > 1 {
@@ -94,7 +94,8 @@ func TestServerStartupGuardrails(t *testing.T) {
 				Settings:          storageSettings,
 				Knobs: base.TestingKnobs{
 					Server: &server.TestingKnobs{
-						ClusterVersionOverride:         test.storageBinaryVersion,
+						BinaryVersionOverride:          test.storageBinaryVersion,
+						BootstrapVersionKeyOverride:    logicalVersionKey,
 						DisableAutomaticVersionUpgrade: make(chan struct{}),
 					},
 					SQLEvalContext: &eval.TestingKnobs{
@@ -121,7 +122,7 @@ func TestServerStartupGuardrails(t *testing.T) {
 					TenantID: serverutils.TestTenantID(),
 					TestingKnobs: base.TestingKnobs{
 						Server: &server.TestingKnobs{
-							ClusterVersionOverride:         test.tenantBinaryVersion,
+							BinaryVersionOverride:          test.tenantBinaryVersion,
 							DisableAutomaticVersionUpgrade: make(chan struct{}),
 						},
 					},

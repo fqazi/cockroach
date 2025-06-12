@@ -151,20 +151,17 @@ func (ts *testState) tokenBucketRequest(t *testing.T, d *datadriven.TestData) st
 			WriteBatches           uint64  `yaml:"write_batches"`
 			WriteReq               uint64  `yaml:"write_req"`
 			WriteBytes             uint64  `yaml:"write_bytes"`
-			SQLPodsCPUSeconds      float64 `yaml:"sql_pods_cpu_seconds"`
+			SQLPodsCPUUsage        float64 `yaml:"sql_pods_cpu_usage"`
 			PGWireEgressBytes      uint64  `yaml:"pgwire_egress_bytes"`
 			ExternalIOIngressBytes uint64  `yaml:"external_io_ingress_bytes"`
 			ExternalIOEgressBytes  uint64  `yaml:"external_io_egress_bytes"`
 			CrossRegionNetworkRU   float64 `yaml:"cross_region_network_ru"`
-			EstimatedCPUSeconds    float64 `yaml:"estimated_cpu_seconds"`
 		}
-		ConsumptionPeriod string  `yaml:"consumption_period"`
-		Tokens            float64 `yaml:"tokens"`
-		RequestPeriod     string  `yaml:"request_period"`
+		RU     float64 `yaml:"ru"`
+		Period string  `yaml:"period"`
 	}
 	args.SeqNum = -1
-	args.ConsumptionPeriod = "10s"
-	args.RequestPeriod = "10s"
+	args.Period = "10s"
 	args.InstanceLease = "foo"
 	if err := yaml.UnmarshalStrict([]byte(d.Input), &args); err != nil {
 		d.Fatalf(t, "failed to parse request yaml: %v", err)
@@ -174,13 +171,9 @@ func (ts *testState) tokenBucketRequest(t *testing.T, d *datadriven.TestData) st
 		ts.autoSeqNum++
 		args.SeqNum = ts.autoSeqNum
 	}
-	consumptionPeriod, err := time.ParseDuration(args.ConsumptionPeriod)
+	period, err := time.ParseDuration(args.Period)
 	if err != nil {
-		d.Fatalf(t, "failed to parse duration: %v", args.ConsumptionPeriod)
-	}
-	requestPeriod, err := time.ParseDuration(args.RequestPeriod)
-	if err != nil {
-		d.Fatalf(t, "failed to parse duration: %v", args.RequestPeriod)
+		d.Fatalf(t, "failed to parse duration: %v", args.Period)
 	}
 	req := kvpb.TokenBucketRequest{
 		TenantID:           tenantID,
@@ -197,16 +190,14 @@ func (ts *testState) tokenBucketRequest(t *testing.T, d *datadriven.TestData) st
 			WriteBatches:           args.Consumption.WriteBatches,
 			WriteRequests:          args.Consumption.WriteReq,
 			WriteBytes:             args.Consumption.WriteBytes,
-			SQLPodsCPUSeconds:      args.Consumption.SQLPodsCPUSeconds,
+			SQLPodsCPUSeconds:      args.Consumption.SQLPodsCPUUsage,
 			PGWireEgressBytes:      args.Consumption.PGWireEgressBytes,
 			ExternalIOIngressBytes: args.Consumption.ExternalIOIngressBytes,
 			ExternalIOEgressBytes:  args.Consumption.ExternalIOEgressBytes,
 			CrossRegionNetworkRU:   args.Consumption.CrossRegionNetworkRU,
-			EstimatedCPUSeconds:    args.Consumption.EstimatedCPUSeconds,
 		},
-		ConsumptionPeriod:   consumptionPeriod,
-		RequestedTokens:     args.Tokens,
-		TargetRequestPeriod: requestPeriod,
+		RequestedRU:         args.RU,
+		TargetRequestPeriod: period,
 	}
 	res := ts.tenantUsage.TokenBucketRequest(
 		context.Background(), roachpb.MustMakeTenantID(tenantID), &req,
@@ -214,9 +205,9 @@ func (ts *testState) tokenBucketRequest(t *testing.T, d *datadriven.TestData) st
 	if res.Error != (errors.EncodedError{}) {
 		return fmt.Sprintf("error: %v", errors.DecodeError(context.Background(), res.Error))
 	}
-	if res.GrantedTokens == 0 {
+	if res.GrantedRU == 0 {
 		if res.TrickleDuration != 0 {
-			d.Fatalf(t, "trickle duration set with 0 granted tokens")
+			d.Fatalf(t, "trickle duration set with 0 granted RUs")
 		}
 		return ""
 	}
@@ -225,8 +216,8 @@ func (ts *testState) tokenBucketRequest(t *testing.T, d *datadriven.TestData) st
 		trickleStr = fmt.Sprintf("over %s", res.TrickleDuration)
 	}
 	return fmt.Sprintf(
-		"%.10g tokens granted %s. Fallback rate: %.10g tokens/s\n",
-		res.GrantedTokens, trickleStr, res.FallbackRate,
+		"%.10g RUs granted %s. Fallback rate: %.10g RU/s\n",
+		res.GrantedRU, trickleStr, res.FallbackRate,
 	)
 }
 
@@ -248,9 +239,10 @@ func (ts *testState) metrics(t *testing.T, d *datadriven.TestData) string {
 func (ts *testState) configure(t *testing.T, d *datadriven.TestData) string {
 	tenantID := ts.tenantID(t, d)
 	var args struct {
-		AvailableTokens float64 `yaml:"available_tokens"`
-		RefillRate      float64 `yaml:"refill_rate"`
-		MaxBurstTokens  float64 `yaml:"max_burst_tokens"`
+		AvailableRU float64 `yaml:"available_ru"`
+		RefillRate  float64 `yaml:"refill_rate"`
+		MaxBurstRU  float64 `yaml:"max_burst_ru"`
+		// TODO(radu): Add AsOf/AsOfConsumedRU.
 	}
 	if err := yaml.UnmarshalStrict([]byte(d.Input), &args); err != nil {
 		d.Fatalf(t, "failed to parse request yaml: %v", err)
@@ -263,9 +255,11 @@ func (ts *testState) configure(t *testing.T, d *datadriven.TestData) string {
 			ctx,
 			txn,
 			roachpb.MustMakeTenantID(tenantID),
-			args.AvailableTokens,
+			args.AvailableRU,
 			args.RefillRate,
-			args.MaxBurstTokens,
+			args.MaxBurstRU,
+			time.Time{},
+			0,
 		)
 	}); err != nil {
 		d.Fatalf(t, "reconfigure error: %v", err)

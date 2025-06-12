@@ -32,7 +32,6 @@ go_library(
         "//pkg/sql/execinfrapb",
         "//pkg/sql/sqlerrors",
         "//pkg/sql/types",
-        "//pkg/util/buildutil",
         "//pkg/util/humanizeutil",
         "//pkg/util/log",
         "//pkg/util/mon",
@@ -49,6 +48,7 @@ go_test(
         "inject_setup_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":colexecdisk"],
     deps = [
         "//pkg/col/coldata",

@@ -31,13 +31,14 @@ var checkReconciliationJobInterval = settings.RegisterDurationSetting(
 	"spanconfig.reconciliation_job.check_interval",
 	"the frequency at which to check if the span config reconciliation job exists (and to start it if not)",
 	10*time.Minute,
+	settings.NonNegativeDuration,
 )
 
 // jobEnabledSetting gates the activation of the span config reconciliation job.
 //
 // TODO(irfansharif): This should be a tenant read-only setting once the work
 // for #73349 is completed.
-var JobEnabledSetting = settings.RegisterBoolSetting(
+var jobEnabledSetting = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"spanconfig.reconciliation_job.enabled",
 	"enable the use of the kv accessor", true)
@@ -108,7 +109,7 @@ func (m *Manager) run(ctx context.Context) {
 	//   skip starting the reconciliation job, learning about the cluster
 	//   version shortly, and only checking the job after an interval has
 	//   passed.
-	JobEnabledSetting.SetOnChange(&m.settings.SV, func(ctx context.Context) {
+	jobEnabledSetting.SetOnChange(&m.settings.SV, func(ctx context.Context) {
 		triggerJobCheck()
 	})
 	checkReconciliationJobInterval.SetOnChange(&m.settings.SV, func(ctx context.Context) {
@@ -123,11 +124,11 @@ func (m *Manager) run(ctx context.Context) {
 			fn()
 		}
 
-		if !JobEnabledSetting.Get(&m.settings.SV) {
+		if !jobEnabledSetting.Get(&m.settings.SV) {
 			return
 		}
 
-		started, err := m.createAndStartJobIfNoneExists(ctx, m.settings)
+		started, err := m.createAndStartJobIfNoneExists(ctx)
 		if err != nil {
 			log.Errorf(ctx, "error starting auto span config reconciliation job: %v", err)
 		}
@@ -138,7 +139,7 @@ func (m *Manager) run(ctx context.Context) {
 
 	// Periodically check if the span config reconciliation job exists and start
 	// it if it doesn't.
-	var timer timeutil.Timer
+	timer := timeutil.NewTimer()
 	defer timer.Stop()
 
 	triggerJobCheck()
@@ -148,6 +149,7 @@ func (m *Manager) run(ctx context.Context) {
 		case <-jobCheckCh:
 			checkJob()
 		case <-timer.C:
+			timer.Read = true
 			checkJob()
 		case <-m.stopper.ShouldQuiesce():
 			return
@@ -160,9 +162,7 @@ func (m *Manager) run(ctx context.Context) {
 // createAndStartJobIfNoneExists creates span config reconciliation job iff it
 // hasn't been created already and notifies the jobs registry to adopt it.
 // Returns a boolean indicating if the job was created.
-func (m *Manager) createAndStartJobIfNoneExists(
-	ctx context.Context, cs *cluster.Settings,
-) (bool, error) {
+func (m *Manager) createAndStartJobIfNoneExists(ctx context.Context) (bool, error) {
 	if m.knobs.ManagerDisableJobCreation {
 		return false, nil
 	}
@@ -177,9 +177,8 @@ func (m *Manager) createAndStartJobIfNoneExists(
 
 	var job *jobs.Job
 	if err := m.db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		exists, err := jobs.RunningJobExists(
-			ctx, cs, jobspb.InvalidJobID, txn, jobspb.TypeAutoSpanConfigReconciliation,
-		)
+		exists, err := jobs.RunningJobExists(ctx, jobspb.InvalidJobID, txn, m.settings.Version,
+			jobspb.TypeAutoSpanConfigReconciliation)
 		if err != nil {
 			return err
 		}

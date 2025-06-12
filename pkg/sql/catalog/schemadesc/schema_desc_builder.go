@@ -147,12 +147,6 @@ func (sdb *schemaDescriptorBuilder) StripNonExistentRoles(
 		}
 	}
 
-	// If the owner doesn't exist, change the owner to admin.
-	if !roleExists(sdb.maybeModified.GetPrivileges().Owner()) {
-		sdb.maybeModified.Privileges.OwnerProto = username.AdminRoleName().EncodeProto()
-		sdb.changes.Add(catalog.StrippedNonExistentRoles)
-	}
-	// Remove any non-existent roles from the privileges.
 	newPrivs := make([]catpb.UserPrivileges, 0, len(sdb.maybeModified.Privileges.Users))
 	for _, priv := range sdb.maybeModified.Privileges.Users {
 		exists := roleExists(priv.UserProto.Decode())

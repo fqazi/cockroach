@@ -41,10 +41,6 @@ cockroachdb/sql-queries:
 cockroachdb/kv:
   aliases:
     cockroachdb/kv-triage: roachtest
-    # This is a hack - we can't have the same key twice,
-    # but it also doesn't seem worth rewriting the aliases
-    # into slice form for just this.
-    'cockroachdb/kv-triage ': unittest
     cockroachdb/kv-prs: other
   triage_column_id: 14242655
   label: T-kv
@@ -54,9 +50,6 @@ cockroachdb/spatial:
 cockroachdb/dev-inf:
   triage_column_id: 10210759
   label: T-dev-inf
-cockroachdb/drp-eng:
-  triage_column_id: 14041337
-  label: T-drpeng
 cockroachdb/multiregion:
   triage_column_id: 11926170
   label: T-multiregion
@@ -71,10 +64,10 @@ cockroachdb/test-eng:
 cockroachdb/test-eng-prs:
   triage_column_id: 14041337
   label: T-testeng
-cockroachdb/security-engineering:
-  label: T-security-engineering
-cockroachdb/product-security:
-  label: T-product-security
+cockroachdb/security:
+  label: T-cross-product-security
+cockroachdb/prodsec:
+  label: T-cross-product-security
 cockroachdb/disaster-recovery:
   triage_column_id: 3097123
   label: T-disaster-recovery
@@ -90,10 +83,6 @@ cockroachdb/server:
     cockroachdb/server-prs: other
   label: T-db-server
   triage_column_id: 2521812
-cockroachdb/obs-prs:
-  # The observability team uses Jira for managing issues. So there is no triage column ID.
-  label: T-observability
-cockroachdb/obs-india-prs:
 cockroachdb/jobs:
   aliases:
     cockroachdb/jobs-prs: other
@@ -115,6 +104,6 @@ cockroachdb/release-eng:
     cockroachdb/upgrade-prs: other
   label: T-release
   triage_column_id: 9149730
-cockroachdb/field-engineering:
-  # Field Eng isn't currently using github projects.
-  label: T-field-eng
+cockroachdb/obs-prs:
+  # The observability team uses Jira for managing issues. So there is no triage column ID.
+  label: T-observability

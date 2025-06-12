@@ -3,11 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { AxisUnits } from "@cockroachlabs/cluster-ui";
 import React from "react";
 
 import LineGraph from "src/views/cluster/components/linegraph";
 import { Metric, Axis } from "src/views/shared/components/metricQuery";
+import { AxisUnits } from "@cockroachlabs/cluster-ui";
 
 import { GraphDashboardProps, nodeDisplayName } from "./dashboardUtils";
 
@@ -41,11 +41,6 @@ export default function (props: GraphDashboardProps) {
         <Metric
           name="cr.store.queue.replicate.process.failure"
           title="Replication"
-          nonNegativeRate
-        />
-        <Metric
-          name="cr.store.queue.lease.process.failure"
-          title="Lease"
           nonNegativeRate
         />
         <Metric
@@ -101,11 +96,6 @@ export default function (props: GraphDashboardProps) {
         <Metric
           name="cr.store.queue.replicate.processingnanos"
           title="Replication"
-          nonNegativeRate
-        />
-        <Metric
-          name="cr.store.queue.lease.processingnanos"
-          title="Lease"
           nonNegativeRate
         />
         <Metric
@@ -224,31 +214,6 @@ export default function (props: GraphDashboardProps) {
     </LineGraph>,
 
     <LineGraph
-      title="Lease Queue"
-      sources={storeSources}
-      tenantSource={tenantSource}
-      showMetricsInTooltip={true}
-    >
-      <Axis units={AxisUnits.Count} label="actions">
-        <Metric
-          name="cr.store.queue.lease.process.success"
-          title="Successful Actions / sec"
-          nonNegativeRate
-        />
-        <Metric
-          name="cr.store.queue.lease.pending"
-          title="Pending Actions"
-          downsampleMax
-        />
-        <Metric
-          name="cr.store.queue.lease.purgatory"
-          title="Replicas in  Purgatory"
-          downsampleMax
-        />
-      </Axis>
-    </LineGraph>,
-
-    <LineGraph
       title="Split Queue"
       sources={storeSources}
       tenantSource={tenantSource}
@@ -333,10 +298,6 @@ export default function (props: GraphDashboardProps) {
       sources={storeSources}
       tenantSource={tenantSource}
       showMetricsInTooltip={true}
-      tooltip={`The Consistency Checker Queue periodically checks 
-      that all replicas in a given range are consistent. For large 
-      clusters, the queue is always expected to have a pending 
-      backlog.`}
     >
       <Axis units={AxisUnits.Count} label="actions">
         <Metric

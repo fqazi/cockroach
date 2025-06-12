@@ -5,13 +5,9 @@
 
 package xform
 
-import (
-	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
-	"github.com/cockroachdb/cockroach/pkg/sql/types"
-)
+import "github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
 
-// EmptyExistsPrivate returns an empty SubqueryPrivate.
-func (c *CustomFuncs) EmptyExistsPrivate() *memo.ExistsPrivate {
-	col := c.e.f.Metadata().AddColumn("exists", types.Bool)
-	return &memo.ExistsPrivate{LazyEvalProjectionCol: col}
+// EmptySubqueryPrivate returns an empty SubqueryPrivate.
+func (c *CustomFuncs) EmptySubqueryPrivate() *memo.SubqueryPrivate {
+	return &memo.SubqueryPrivate{}
 }

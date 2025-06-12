@@ -35,6 +35,7 @@ go_test(
         "helpers_test.go",
         "rand_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":tests"],
     deps = [

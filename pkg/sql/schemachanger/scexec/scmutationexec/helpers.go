@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/errors"
 )
 
@@ -122,36 +121,6 @@ func (i *immediateVisitor) checkOutFunction(
 	return mut, nil
 }
 
-func (i *immediateVisitor) checkOutTrigger(
-	ctx context.Context, tableID descpb.ID, triggerID catid.TriggerID,
-) (*descpb.TriggerDescriptor, error) {
-	tbl, err := i.checkOutTable(ctx, tableID)
-	if err != nil {
-		return nil, err
-	}
-	trigger := catalog.FindTriggerByID(tbl, triggerID)
-	if trigger != nil {
-		return trigger, nil
-	}
-	panic(errors.AssertionFailedf("failed to find trigger with ID %d in table %q (%d)",
-		triggerID, tbl.GetName(), tbl.GetID()))
-}
-
-func (i *immediateVisitor) checkOutPolicy(
-	ctx context.Context, tableID descpb.ID, policyID catid.PolicyID,
-) (*descpb.PolicyDescriptor, error) {
-	tbl, err := i.checkOutTable(ctx, tableID)
-	if err != nil {
-		return nil, err
-	}
-	policy := catalog.FindPolicyByID(tbl, policyID)
-	if policy != nil {
-		return policy, nil
-	}
-	panic(errors.AssertionFailedf("failed to find policy with ID %d in table %q (%d)",
-		policyID, tbl.GetName(), tbl.GetID()))
-}
-
 func mutationStateChange(
 	tbl *tabledesc.Mutable,
 	f MutationSelector,
@@ -239,6 +208,14 @@ func MakeColumnIDMutationSelector(columnID descpb.ColumnID) MutationSelector {
 	}
 }
 
+// MakeMutationIDMutationSelector returns a MutationSelector which matches the
+// first mutation with this ID.
+func MakeMutationIDMutationSelector(mutationID descpb.MutationID) MutationSelector {
+	return func(mut catalog.Mutation) bool {
+		return mut.MutationID() == mutationID
+	}
+}
+
 // enqueueNonIndexMutation enqueues a non-index mutation `m` (of generic type M)
 // with direction `dir` without increasing the next mutation ID.
 // The mutation state will be DELETE_ONLY if `dir=ADD` and WRITE_ONLY if `dir=DROP`.
@@ -280,7 +257,6 @@ func updateColumnExprSequenceUsage(d *descpb.ColumnDescriptor) error {
 		ids.ForEach(all.Add)
 	}
 	d.UsesSequenceIds = all.Ordered()
-	d.OwnsSequenceIds = all.Ordered()
 	return nil
 }
 
@@ -296,7 +272,7 @@ func updateColumnExprFunctionsUsage(d *descpb.ColumnDescriptor) error {
 		}
 		ids.ForEach(all.Add)
 	}
-	d.UsesFunctionIds = all.Ordered()
+	d.UsesSequenceIds = all.Ordered()
 	return nil
 }
 

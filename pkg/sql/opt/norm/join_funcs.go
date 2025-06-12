@@ -278,7 +278,7 @@ func (c *CustomFuncs) mapJoinOpEquivalenceGroup(
 //
 // If src has a correlated subquery, CanMapJoinOpFilter returns false.
 func (c *CustomFuncs) CanMapJoinOpFilter(
-	src *memo.FiltersItem, dstCols opt.ColSet, equivSet props.EquivGroups,
+	src *memo.FiltersItem, dstCols opt.ColSet, equivFD props.FuncDepSet,
 ) bool {
 	// Fast path if src is already bound by dst.
 	if c.IsBoundBy(src, dstCols) {
@@ -290,17 +290,12 @@ func (c *CustomFuncs) CanMapJoinOpFilter(
 		return false
 	}
 
-	allowCompositeEncoding := !memo.CanBeCompositeSensitive(src)
+	allowCompositeEncoding := !memo.CanBeCompositeSensitive(c.mem.Metadata(), src)
 
 	// For CanMapJoinOpFilter to be true, each column in src must map to at
 	// least one column in dst.
 	for i, ok := scalarProps.OuterCols.Next(0); ok; i, ok = scalarProps.OuterCols.Next(i + 1) {
-		if dstCols.Contains(i) {
-			// The column already exists in dstCols, so there is no need to map
-			// it.
-			continue
-		}
-		eqCols := c.GetEquivColsWithEquivTypeWithEquivGroups(i, equivSet, allowCompositeEncoding)
+		eqCols := c.GetEquivColsWithEquivType(i, equivFD, allowCompositeEncoding)
 		if !eqCols.Intersects(dstCols) {
 			return false
 		}
@@ -332,35 +327,34 @@ func (c *CustomFuncs) CanMapJoinOpFilter(
 // equality predicate a.x = b.x, because it would just return the tautology
 // b.x = b.x.
 func (c *CustomFuncs) MapJoinOpFilter(
-	src *memo.FiltersItem, dstCols opt.ColSet, equivSet props.EquivGroups,
+	src *memo.FiltersItem, dstCols opt.ColSet, equivFD props.FuncDepSet,
 ) opt.ScalarExpr {
 	// Fast path if src is already bound by dst.
 	if c.IsBoundBy(src, dstCols) {
 		return src.Condition
 	}
 
-	allowCompositeEncoding := !memo.CanBeCompositeSensitive(src)
+	allowCompositeEncoding := !memo.CanBeCompositeSensitive(c.mem.Metadata(), src)
 
 	// Map each column in src to one column in dst. We choose an arbitrary column
 	// (the one with the smallest ColumnID) if there are multiple choices.
 	var colMap util.FastIntMap
 	outerCols := src.ScalarProps().OuterCols
 	for srcCol, ok := outerCols.Next(0); ok; srcCol, ok = outerCols.Next(srcCol + 1) {
-		if dstCols.Contains(srcCol) {
-			// The column already exists in dstCols, so there is no need to map
-			// it.
-			continue
-		}
-		eqCols := c.GetEquivColsWithEquivTypeWithEquivGroups(srcCol, equivSet, allowCompositeEncoding)
+		eqCols := c.GetEquivColsWithEquivType(srcCol, equivFD, allowCompositeEncoding)
 		eqCols.IntersectionWith(dstCols)
-		dstCol, ok := eqCols.Next(0)
-		if !ok {
-			panic(errors.AssertionFailedf(
-				"MapJoinOpFilter called on src that cannot be mapped to dst. src:\n%s\ndst:\n%s",
-				src, dstCols,
-			))
+		if eqCols.Contains(srcCol) {
+			colMap.Set(int(srcCol), int(srcCol))
+		} else {
+			dstCol, ok := eqCols.Next(0)
+			if !ok {
+				panic(errors.AssertionFailedf(
+					"MapJoinOpFilter called on src that cannot be mapped to dst. src:\n%s\ndst:\n%s",
+					src, dstCols,
+				))
+			}
+			colMap.Set(int(srcCol), int(dstCol))
 		}
-		colMap.Set(int(srcCol), int(dstCol))
 	}
 
 	// Recursively walk the scalar sub-tree looking for references to columns
@@ -369,8 +363,8 @@ func (c *CustomFuncs) MapJoinOpFilter(
 	replace = func(nd opt.Expr) opt.Expr {
 		switch t := nd.(type) {
 		case *memo.VariableExpr:
-			outCol, ok := colMap.Get(int(t.Col))
-			if !ok {
+			outCol, _ := colMap.Get(int(t.Col))
+			if int(t.Col) == outCol {
 				// Avoid constructing a new variable if possible.
 				return nd
 			}
@@ -443,45 +437,17 @@ func (c *CustomFuncs) GetEquivColsWithEquivType(
 	return res
 }
 
-// GetEquivColsWithEquivTypeWithEquivGroups is identical to
-// GetEquivColsWithEquivType, but operates on EquivGroups instead of a
-// FuncDepSet.
-func (c *CustomFuncs) GetEquivColsWithEquivTypeWithEquivGroups(
-	col opt.ColumnID, equivSet props.EquivGroups, allowCompositeEncoding bool,
-) opt.ColSet {
-	var res opt.ColSet
-	colType := c.f.Metadata().ColumnMeta(col).Type
-
-	// Don't bother looking for equivalent columns if colType has a composite
-	// key encoding.
-	if !allowCompositeEncoding && colinfo.CanHaveCompositeKeyEncoding(colType) {
-		res.Add(col)
-		return res
-	}
-
-	// Compute all equivalent columns.
-	eqCols := equivSet.GroupForCol(col)
-
-	eqCols.ForEach(func(i opt.ColumnID) {
-		// Only include columns that have the same type as col.
-		eqColType := c.f.Metadata().ColumnMeta(i).Type
-		if colType.Equivalent(eqColType) {
-			res.Add(i)
-		}
-	})
-
-	return res
-}
-
-func (c *CustomFuncs) GetEquivGroups(
+// GetEquivFD gets a FuncDepSet with all equivalence dependencies from
+// filters, left and right.
+func (c *CustomFuncs) GetEquivFD(
 	filters memo.FiltersExpr, left, right memo.RelExpr,
-) (equivSet props.EquivGroups) {
+) (equivFD props.FuncDepSet) {
 	for i := range filters {
-		equivSet.AddFromFDs(&filters[i].ScalarProps().FuncDeps)
+		equivFD.AddEquivFrom(&filters[i].ScalarProps().FuncDeps)
 	}
-	equivSet.AddFromFDs(&left.Relational().FuncDeps)
-	equivSet.AddFromFDs(&right.Relational().FuncDeps)
-	return equivSet
+	equivFD.AddEquivFrom(&left.Relational().FuncDeps)
+	equivFD.AddEquivFrom(&right.Relational().FuncDeps)
+	return equivFD
 }
 
 // JoinFiltersMatchAllLeftRows returns true when each row in the given join's
@@ -490,7 +456,7 @@ func (c *CustomFuncs) GetEquivGroups(
 func (c *CustomFuncs) JoinFiltersMatchAllLeftRows(
 	left, right memo.RelExpr, on memo.FiltersExpr,
 ) bool {
-	multiplicity := memo.DeriveJoinMultiplicityFromInputs(c.mem, left, right, on)
+	multiplicity := memo.DeriveJoinMultiplicityFromInputs(left, right, on)
 	return multiplicity.JoinFiltersMatchAllLeftRows()
 }
 
@@ -918,18 +884,4 @@ func getJoinKeyAndEquijoinCols(
 		return tableKeyCols, reducedTableJoinCols, reducedInputRelJoinCols, true
 	}
 	return opt.ColSet{}, opt.ColList{}, opt.ColList{}, false
-}
-
-// MakeNullProjections creates a projection for each column in the right input,
-// producing NULL values for each column in the right input.
-func (c *CustomFuncs) MakeNullProjections(right memo.RelExpr) memo.ProjectionsExpr {
-	rightCols := right.Relational().OutputCols
-	projections := make(memo.ProjectionsExpr, 0, rightCols.Len())
-
-	for i, ok := rightCols.Next(0); ok; i, ok = rightCols.Next(i + 1) {
-		nullExpr := c.f.ConstructNull(c.mem.Metadata().ColumnMeta(i).Type)
-		projections = append(projections, c.f.ConstructProjectionsItem(nullExpr, i))
-	}
-
-	return projections
 }

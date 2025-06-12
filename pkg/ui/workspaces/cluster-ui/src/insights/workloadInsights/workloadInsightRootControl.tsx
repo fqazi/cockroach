@@ -4,22 +4,19 @@
 // included in the /LICENSE file.
 
 import React, { useState } from "react";
-import { useHistory, useLocation } from "react-router-dom";
-
 import { viewAttr } from "src/util";
+import { useHistory, useLocation } from "react-router-dom";
 import { queryByName } from "src/util/query";
-
 import { InsightExecEnum, InsightExecOptions } from "../types";
-
-import {
-  StatementInsightsView,
-  StatementInsightsViewProps,
-} from "./statementInsights";
+import { DropDownSelect } from "./util";
 import {
   TransactionInsightsView,
   TransactionInsightsViewProps,
 } from "./transactionInsights";
-import { DropDownSelect } from "./util";
+import {
+  StatementInsightsView,
+  StatementInsightsViewProps,
+} from "./statementInsights";
 
 export type WorkloadInsightsViewProps = {
   transactionInsightsViewProps: TransactionInsightsViewProps;

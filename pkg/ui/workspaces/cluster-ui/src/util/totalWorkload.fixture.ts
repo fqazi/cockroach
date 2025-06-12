@@ -3,10 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import Long from "long";
-
-import { ExecStats, StatementStatistics } from "./appStats";
+import { StatementStatistics } from "./appStats";
+import { ExecStats } from ".";
 
 interface AggregateStatistics {
   label: string;
@@ -43,8 +42,8 @@ const execStats: ExecStats = {
   },
 };
 
-const statementStats: cockroach.sql.IStatementStatistics = {
-  count: Long.fromNumber(36958),
+const statementStats: any = {
+  count: 36958,
   first_attempt_count: Long.fromNumber(36958),
   max_retries: Long.fromNumber(0),
   num_rows: {

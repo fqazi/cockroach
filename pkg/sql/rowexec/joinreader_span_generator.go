@@ -14,6 +14,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/fetchpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/memsize"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
@@ -378,7 +379,7 @@ func (g *multiSpanGenerator) init(
 	fetchSpec *fetchpb.IndexFetchSpec,
 	splitFamilyIDs []descpb.FamilyID,
 	numInputCols int,
-	expr tree.TypedExpr,
+	exprHelper *execinfrapb.ExprHelper,
 	fetchedOrdToIndexKeyOrd util.FastIntMap,
 	memAcc *mon.BoundAccount,
 ) (spansCanOverlap bool, _ error) {
@@ -397,7 +398,7 @@ func (g *multiSpanGenerator) init(
 	// Process the given expression to fill in g.indexColInfos with info from the
 	// join conditions. This info will be used later to generate the spans.
 	g.indexColInfos = make([]multiSpanGeneratorColInfo, 0, len(fetchSpec.KeyAndSuffixColumns))
-	if err := g.fillInIndexColInfos(expr); err != nil {
+	if err := g.fillInIndexColInfos(exprHelper.Expr); err != nil {
 		return false, err
 	}
 
@@ -456,7 +457,7 @@ func (g *multiSpanGenerator) init(
 	}
 
 	g.indexKeySpans = make(roachpb.Spans, 0, g.spansCount)
-	return lookupExprHasVarInequality(expr), nil
+	return lookupExprHasVarInequality(exprHelper.Expr), nil
 }
 
 // lookupExprHasVarInequality returns true if the given lookup expression
@@ -625,9 +626,7 @@ func (g *multiSpanGenerator) setResizeMemoryAccountFunc(f resizeMemoryAccountFun
 
 // generateNonNullSpans generates spans for a given row. It does not include
 // null values, since those values would not match the lookup condition anyway.
-func (g *multiSpanGenerator) generateNonNullSpans(
-	ctx context.Context, row rowenc.EncDatumRow,
-) (roachpb.Spans, error) {
+func (g *multiSpanGenerator) generateNonNullSpans(row rowenc.EncDatumRow) (roachpb.Spans, error) {
 	// Fill in the holes in g.indexKeyRows that correspond to input row values.
 	for i := 0; i < len(g.indexKeyRows); i++ {
 		for j, info := range g.indexColInfos {
@@ -655,7 +654,7 @@ func (g *multiSpanGenerator) generateNonNullSpans(
 			s, containsNull, err = g.spanBuilder.SpanFromEncDatums(indexKeyRow[:len(g.indexColInfos)])
 		} else {
 			s, containsNull, filterRow, err = g.spanBuilder.SpanFromEncDatumsWithRange(
-				ctx, indexKeyRow, len(g.indexColInfos), startBound, endBound,
+				indexKeyRow, len(g.indexColInfos), startBound, endBound,
 				g.inequalityInfo.startInclusive, g.inequalityInfo.endInclusive, g.inequalityInfo.colTyp)
 		}
 
@@ -683,7 +682,7 @@ func (g *multiSpanGenerator) generateSpans(
 	g.spanIDHelper.reset()
 	g.scratchSpans = g.scratchSpans[:0]
 	for i, inputRow := range rows {
-		generatedSpans, err := g.generateNonNullSpans(ctx, inputRow)
+		generatedSpans, err := g.generateNonNullSpans(inputRow)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -766,8 +765,8 @@ func (g *localityOptimizedSpanGenerator) init(
 	fetchSpec *fetchpb.IndexFetchSpec,
 	splitFamilyIDs []descpb.FamilyID,
 	numInputCols int,
-	localExpr tree.TypedExpr,
-	remoteExpr tree.TypedExpr,
+	localExprHelper *execinfrapb.ExprHelper,
+	remoteExprHelper *execinfrapb.ExprHelper,
 	fetchedOrdToIndexKeyOrd util.FastIntMap,
 	localSpanGenMemAcc *mon.BoundAccount,
 	remoteSpanGenMemAcc *mon.BoundAccount,
@@ -775,13 +774,13 @@ func (g *localityOptimizedSpanGenerator) init(
 	var localSpansCanOverlap, remoteSpansCanOverlap bool
 	if localSpansCanOverlap, err = g.localSpanGen.init(
 		evalCtx, codec, fetchSpec, splitFamilyIDs,
-		numInputCols, localExpr, fetchedOrdToIndexKeyOrd, localSpanGenMemAcc,
+		numInputCols, localExprHelper, fetchedOrdToIndexKeyOrd, localSpanGenMemAcc,
 	); err != nil {
 		return false, err
 	}
 	if remoteSpansCanOverlap, err = g.remoteSpanGen.init(
 		evalCtx, codec, fetchSpec, splitFamilyIDs,
-		numInputCols, remoteExpr, fetchedOrdToIndexKeyOrd, remoteSpanGenMemAcc,
+		numInputCols, remoteExprHelper, fetchedOrdToIndexKeyOrd, remoteSpanGenMemAcc,
 	); err != nil {
 		return false, err
 	}
