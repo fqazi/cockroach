@@ -11,10 +11,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc/valueside"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util"
-	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/errors"
 )
 
@@ -61,8 +61,10 @@ func ColMapping(fromCols, toCols []catalog.Column) []int {
 }
 
 // prepareInsertOrUpdateBatch constructs a KV batch that inserts or
-// updates a row in KV in the primary index.
+// updates a row in KV.
 //   - batch is the KV batch where commands should be appended.
+//   - putFn is the functions that can append Put/CPut commands to the batch.
+//     (must be adapted depending on whether 'overwrite' is set)
 //   - helper is the rowHelper that knows about the table being modified.
 //   - primaryIndexKey is the PK prefix for the current row.
 //   - fetchedCols is the list of schema columns that have been fetched
@@ -77,10 +79,7 @@ func ColMapping(fromCols, toCols []catalog.Column) []int {
 //   - rawValueBuf must be a scratch byte array. This must be reinitialized
 //     to an empty slice on each call but can be preserved at its current
 //     capacity to avoid allocations. The function returns the slice.
-//   - kvOp indicates which KV write operation should be used. If it is PutOp,
-//     it also indicates that the old keys have been locked.
-//   - mustValidateOldPKValues indicates whether the expected previous row must
-//     be verified (using CPut)
+//   - overwrite must be set to true for UPDATE and UPSERT.
 //   - traceKV is to be set to log the KV operations added to the batch.
 func prepareInsertOrUpdateBatch(
 	ctx context.Context,
@@ -94,38 +93,10 @@ func prepareInsertOrUpdateBatch(
 	kvKey *roachpb.Key,
 	kvValue *roachpb.Value,
 	rawValueBuf []byte,
-	oth OriginTimestampCPutHelper,
-	oldValues []tree.Datum,
-	kvOp KVInsertOp,
-	mustValidateOldPKValues bool,
-	traceKV bool,
+	putFn func(ctx context.Context, b Putter, key *roachpb.Key, value *roachpb.Value, traceKV bool),
+	overwrite, traceKV bool,
 ) ([]byte, error) {
 	families := helper.TableDesc.GetFamilies()
-	// TODO(ssd): We don't currently support multiple column
-	// families on the LDR write path. As a result, we don't have
-	// good end-to-end testing of multi-column family writes with
-	// the origin timestamp helper set. Until we write such tests,
-	// we error if we ever see such writes.
-	if oth.IsSet() && len(families) > 1 {
-		return nil, errors.AssertionFailedf("OriginTimestampCPutHelper is not yet testing with multi-column family writes")
-	}
-	var putFn func(context.Context, Putter, *roachpb.Key, *roachpb.Value, bool, []encoding.Direction)
-	var oldKeysLocked, overwrite bool
-	switch kvOp {
-	case CPutOp:
-		putFn = insertCPutFn
-		oldKeysLocked = false
-		overwrite = false
-	case PutOp:
-		putFn = insertPutFn
-		oldKeysLocked = true
-		overwrite = true
-	case PutMustAcquireExclusiveLockOp:
-		putFn = insertPutMustAcquireExclusiveLockFn
-		oldKeysLocked = false
-		overwrite = true
-	}
-
 	for i := range families {
 		family := &families[i]
 		update := false
@@ -184,35 +155,11 @@ func prepareInsertOrUpdateBatch(
 				}
 			}
 
-			var oldVal []byte
-			if (oth.IsSet() || mustValidateOldPKValues) && len(oldValues) > 0 {
-				// If the column could be composite, we only encode the old value if it
-				// was a composite value.
-				if !couldBeComposite || oldValues[idx].(tree.CompositeDatum).IsComposite() {
-					old, err := valueside.MarshalLegacy(typ, oldValues[idx])
-					if err != nil {
-						return nil, err
-					}
-					if old.IsPresent() {
-						oldVal = old.TagAndDataBytes()
-					}
-				}
-			}
-
-			if !marshaled.IsPresent() {
-				if oth.IsSet() {
-					// If using OriginTimestamp'd CPuts, we _always_ want to issue a Delete
-					// so that we can confirm our expected bytes were correct.
-					oth.DelWithCPut(ctx, batch, kvKey, oldVal, traceKV)
-				} else if overwrite {
+			if marshaled.RawBytes == nil {
+				if overwrite {
 					// If the new family contains a NULL value, then we must
 					// delete any pre-existing row.
-					if mustValidateOldPKValues {
-						delWithCPutFn(ctx, batch, kvKey, oldVal, traceKV, helper.primIndexValDirs)
-					} else {
-						needsLock := !oldKeysLocked
-						delFn(ctx, batch, kvKey, needsLock, traceKV, helper.primIndexValDirs)
-					}
+					insertDelFn(ctx, batch, kvKey, traceKV)
 				}
 			} else {
 				// We only output non-NULL values. Non-existent column keys are
@@ -221,77 +168,48 @@ func prepareInsertOrUpdateBatch(
 				if err := helper.CheckRowSize(ctx, kvKey, marshaled.RawBytes, family.ID); err != nil {
 					return nil, err
 				}
-
-				if oth.IsSet() {
-					oth.CPutFn(ctx, batch, kvKey, &marshaled, oldVal, traceKV)
-				} else if mustValidateOldPKValues {
-					updateCPutFn(ctx, batch, kvKey, &marshaled, oldVal, traceKV, helper.primIndexValDirs)
-				} else {
-					// TODO(yuzefovich): in case of multiple column families,
-					// whenever we locked the primary index during the initial
-					// scan, we might not have locked the key for a column
-					// family where all columns had NULL values (because the KV
-					// didn't exist) and now at least one becomes non-NULL. In
-					// this scenario we're inserting a new KV with non-locking
-					// Put, yet we don't have the lock.
-					//
-					// However, at the moment we disable the lock eliding
-					// optimization with multiple column families, so we'll use
-					// the locking Put because of that.
-					putFn(ctx, batch, kvKey, &marshaled, traceKV, helper.primIndexValDirs)
-				}
+				putFn(ctx, batch, kvKey, &marshaled, traceKV)
 			}
 
 			continue
 		}
 
+		rawValueBuf = rawValueBuf[:0]
+
+		var lastColID descpb.ColumnID
 		familySortedColumnIDs, ok := helper.SortedColumnFamily(family.ID)
 		if !ok {
 			return nil, errors.AssertionFailedf("invalid family sorted column id map")
 		}
+		for _, colID := range familySortedColumnIDs {
+			idx, ok := valColIDMapping.Get(colID)
+			if !ok || values[idx] == tree.DNull {
+				// Column not being updated or inserted.
+				continue
+			}
 
-		rawValueBuf = rawValueBuf[:0]
-		var err error
-		rawValueBuf, err = helper.encodePrimaryIndexValuesToBuf(values, valColIDMapping, familySortedColumnIDs, fetchedCols, rawValueBuf)
-		if err != nil {
-			return nil, err
-		}
+			if skip, _ := helper.SkipColumnNotInPrimaryIndexValue(colID, values[idx]); skip {
+				continue
+			}
 
-		// TODO(ssd): Here and below investigate reducing the number of
-		// allocations required to marshal the old value.
-		//
-		// If we are using OriginTimestamp ConditionalPuts, calculate the expected
-		// value.
-		var expBytes []byte
-		if (oth.IsSet() || mustValidateOldPKValues) && len(oldValues) > 0 {
-			var oldBytes []byte
-			oldBytes, err = helper.encodePrimaryIndexValuesToBuf(oldValues, valColIDMapping, familySortedColumnIDs, fetchedCols, oldBytes)
+			col := fetchedCols[idx]
+			if lastColID > col.GetID() {
+				return nil, errors.AssertionFailedf("cannot write column id %d after %d", col.GetID(), lastColID)
+			}
+			colIDDelta := valueside.MakeColumnIDDelta(lastColID, col.GetID())
+			lastColID = col.GetID()
+			var err error
+			rawValueBuf, err = valueside.Encode(rawValueBuf, colIDDelta, values[idx], nil)
 			if err != nil {
 				return nil, err
-			}
-			// For family 0, we expect a value even when
-			// no columns have been encoded to oldBytes.
-			if family.ID == 0 || len(oldBytes) > 0 {
-				old := &roachpb.Value{}
-				old.SetTuple(oldBytes)
-				expBytes = old.TagAndDataBytes()
 			}
 		}
 
 		if family.ID != 0 && len(rawValueBuf) == 0 {
-			if oth.IsSet() {
-				// If using OriginTimestamp'd CPuts, we _always_ want to issue a Delete
-				// so that we can confirm our expected bytes were correct.
-				oth.DelWithCPut(ctx, batch, kvKey, expBytes, traceKV)
-			} else if overwrite {
+			if overwrite {
 				// The family might have already existed but every column in it is being
 				// set to NULL, so delete it.
-				if mustValidateOldPKValues {
-					delWithCPutFn(ctx, batch, kvKey, expBytes, traceKV, helper.primIndexValDirs)
-				} else {
-					needsLock := !oldKeysLocked
-					delFn(ctx, batch, kvKey, needsLock, traceKV, helper.primIndexValDirs)
-				}
+				insertDelFn(ctx, batch, kvKey, traceKV)
 			}
 		} else {
 			// Copy the contents of rawValueBuf into the roachpb.Value. This is
@@ -301,13 +219,7 @@ func prepareInsertOrUpdateBatch(
 			if err := helper.CheckRowSize(ctx, kvKey, kvValue.RawBytes, family.ID); err != nil {
 				return nil, err
 			}
-			if oth.IsSet() {
-				oth.CPutFn(ctx, batch, kvKey, kvValue, expBytes, traceKV)
-			} else if mustValidateOldPKValues {
-				updateCPutFn(ctx, batch, kvKey, kvValue, expBytes, traceKV, helper.primIndexValDirs)
-			} else {
-				putFn(ctx, batch, kvKey, kvValue, traceKV, helper.primIndexValDirs)
-			}
+			putFn(ctx, batch, kvKey, kvValue, traceKV)
 		}
 
 		// Release reference to roachpb.Key.

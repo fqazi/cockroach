@@ -33,7 +33,7 @@ type InteractionOpts struct {
 
 	// SetRandomizedElectionTimeout is used to plumb this function down from the
 	// raft test package.
-	SetRandomizedElectionTimeout func(node *raft.RawNode, timeout int64)
+	SetRandomizedElectionTimeout func(node *raft.RawNode, timeout int)
 }
 
 // Node is a member of a raft group tested via an InteractionEnv.
@@ -41,21 +41,9 @@ type Node struct {
 	*raft.RawNode
 	Storage
 
-	Config *raft.Config
-	// asyncWrites configures this node to use async storage writes on Ready
-	// handling. All datadriven tests now use the async storage API, but most were
-	// written with the sync storage API in mind, and for those we still have
-	// asyncWrites == false.
-	//
-	// Once the legacy API is fully removed, we could convert all the tests to
-	// asyncWrites == true, though they would become verbose. For simple tests
-	// that don't need to create some kind of race between RawNode operation and
-	// storage writes, using asyncWrites == false is unnecessary.
-	asyncWrites bool
-
-	AppendWork []raft.StorageAppend
-	AppendAcks []raft.StorageAppendAck
-	ApplyWork  pb.LogSpan
+	Config     *raft.Config
+	AppendWork []pb.Message // []MsgStorageAppend
+	ApplyWork  []pb.Message // []MsgStorageApply
 	History    []pb.Snapshot
 }
 
@@ -65,7 +53,6 @@ type InteractionEnv struct {
 	Options  *InteractionOpts
 	Nodes    []Node
 	Messages []pb.Message // in-flight messages
-	Fabric   *livenessFabric
 
 	Output *RedirectLogger
 }
@@ -77,7 +64,6 @@ func NewInteractionEnv(opts *InteractionOpts) *InteractionEnv {
 	}
 	return &InteractionEnv{
 		Options: opts,
-		Fabric:  newLivenessFabric(),
 		Output: &RedirectLogger{
 			Builder: &strings.Builder{},
 		},
@@ -103,7 +89,7 @@ type Storage interface {
 	raft.Storage
 	SetHardState(state pb.HardState) error
 	ApplySnapshot(pb.Snapshot) error
-	Compact(index uint64) error
+	Compact(newFirstIndex uint64) error
 	Append([]pb.Entry) error
 }
 
@@ -112,14 +98,10 @@ type Storage interface {
 // must be set for each node using the stub as a template.
 func raftConfigStub() raft.Config {
 	return raft.Config{
-		ElectionTick:       3,
-		ElectionJitterTick: 3,
-		HeartbeatTick:      1,
-		MaxSizePerMsg:      math.MaxUint64,
-		MaxInflightMsgs:    math.MaxInt32,
-		TestingKnobs: &raft.TestingKnobs{
-			EnableApplyUnstableEntries: true,
-		},
+		ElectionTick:    3,
+		HeartbeatTick:   1,
+		MaxSizePerMsg:   math.MaxUint64,
+		MaxInflightMsgs: math.MaxInt32,
 	}
 }
 

@@ -203,7 +203,7 @@ func (s *SQLTranslator) generateSpanConfigurations(
 	}
 
 	// We're dealing with a SQL object.
-	desc, err := s.txn.Descriptors().ByIDWithoutLeased(s.txn.KV()).Get().Desc(ctx, id)
+	desc, err := s.txn.Descriptors().ByID(s.txn.KV()).Get().Desc(ctx, id)
 	if err != nil {
 		if errors.Is(err, catalog.ErrDescriptorNotFound) {
 			return nil, nil // the descriptor has been deleted; nothing to do here
@@ -332,9 +332,6 @@ func (s *SQLTranslator) generateSpanConfigurationsForTable(
 		// We exclude system tables from strict GC enforcement, it's only really
 		// applicable to user tables.
 		tableSpanConfig.GCPolicy.IgnoreStrictEnforcement = true
-	} else if !s.codec.ForSystemTenant() {
-		// Enable rangefeed on non-system spans of a secondary tenant.
-		tableSpanConfig.RangefeedEnabled = true
 	}
 
 	// Set the ProtectionPolicies on the table's SpanConfig to include protected
@@ -446,9 +443,6 @@ func (s *SQLTranslator) generateSpanConfigurationsForTable(
 		if isSystemDesc { // same as above
 			subzoneSpanConfig.RangefeedEnabled = true
 			subzoneSpanConfig.GCPolicy.IgnoreStrictEnforcement = true
-		} else if !s.codec.ForSystemTenant() {
-			// Enable rangefeed on non-system spans of a secondary tenant.
-			subzoneSpanConfig.RangefeedEnabled = true
 		}
 		record, err := spanconfig.MakeRecord(
 			spanconfig.MakeTargetFromSpan(roachpb.Span{Key: span.Key, EndKey: span.EndKey}), subzoneSpanConfig)
@@ -496,7 +490,7 @@ func (s *SQLTranslator) findDescendantLeafIDs(
 func (s *SQLTranslator) findDescendantLeafIDsForDescriptor(
 	ctx context.Context, id descpb.ID,
 ) (descpb.IDs, error) {
-	desc, err := s.txn.Descriptors().ByIDWithoutLeased(s.txn.KV()).Get().Desc(ctx, id)
+	desc, err := s.txn.Descriptors().ByID(s.txn.KV()).Get().Desc(ctx, id)
 	if err != nil {
 		if errors.Is(err, catalog.ErrDescriptorNotFound) {
 			return nil, nil // the descriptor has been deleted; nothing to do here

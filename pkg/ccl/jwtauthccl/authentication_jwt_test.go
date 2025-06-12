@@ -11,37 +11,30 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/security/certnames"
-	"github.com/cockroachdb/cockroach/pkg/security/securityassets"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/identmap"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
-	"github.com/cockroachdb/cockroach/pkg/util/httputil"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/errors/oserror"
 	"github.com/cockroachdb/redact"
-	"github.com/lestrrat-go/jwx/v2/jwa"
-	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/lestrrat-go/jwx/jwa"
+	"github.com/lestrrat-go/jwx/jwk"
+	"github.com/lestrrat-go/jwx/jwt"
 	"github.com/stretchr/testify/require"
 )
 
@@ -69,8 +62,8 @@ func createJWKS(t *testing.T) (jwk.Set, jwk.Key, jwk.Key) {
 	pubKey2, err := key2.PublicKey()
 	require.NoError(t, err)
 	set := jwk.NewSet()
-	require.NoError(t, set.AddKey(pubKey1))
-	require.NoError(t, set.AddKey(pubKey2))
+	set.Add(pubKey1)
+	set.Add(pubKey2)
 
 	return set, key1, key2
 }
@@ -78,7 +71,7 @@ func createJWKS(t *testing.T) (jwk.Set, jwk.Key, jwk.Key) {
 func createECDSAKey(t *testing.T, keyID string) jwk.Key {
 	raw, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	require.NoError(t, err)
-	key, err := jwk.FromRaw(raw)
+	key, err := jwk.New(raw)
 	require.NoError(t, err)
 	require.NoError(t, key.Set(jwk.KeyIDKey, keyID))
 	require.NoError(t, key.Set(jwk.AlgorithmKey, jwa.ES384))
@@ -88,7 +81,7 @@ func createECDSAKey(t *testing.T, keyID string) jwk.Key {
 func createRSAKey(t *testing.T, keyID string) jwk.Key {
 	raw, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
-	key, err := jwk.FromRaw(raw)
+	key, err := jwk.New(raw)
 	require.NoError(t, err)
 	require.NoError(t, key.Set(jwk.KeyIDKey, keyID))
 	require.NoError(t, key.Set(jwk.AlgorithmKey, jwa.RS256))
@@ -114,7 +107,7 @@ func createJWT(
 	if customClaimName != "" {
 		require.NoError(t, token.Set(customClaimName, customClaimValue))
 	}
-	signedTokenBytes, err := jwt.Sign(token, jwt.WithKey(algorithm, key))
+	signedTokenBytes, err := jwt.Sign(token, algorithm, key)
 	require.NoError(t, err)
 	return signedTokenBytes
 }
@@ -254,7 +247,7 @@ func TestJWTMultiKey(t *testing.T) {
 	publicKey, err := key.PublicKey()
 	require.NoError(t, err)
 	keySetWithOneKey := jwk.NewSet()
-	require.NoError(t, keySetWithOneKey.AddKey(publicKey))
+	keySetWithOneKey.Add(publicKey)
 	// Set the JWKS to only include jwk1.
 	JWTAuthJWKS.Override(ctx, &s.ClusterSettings().SV, serializePublicKeySet(t, keySetWithOneKey))
 
@@ -298,7 +291,7 @@ func TestExpiredToken(t *testing.T) {
 	// Validation fails with an invalid token error for tokens with an expiration date in the past.
 	_, err = verifier.ValidateJWTLogin(ctx, s.ClusterSettings(), username.MakeSQLUsernameFromPreNormalizedString(username1), token, identMap)
 	require.ErrorContains(t, err, "JWT authentication: invalid token")
-	require.EqualValues(t, "unable to parse token: \"exp\" not satisfied", errors.GetAllDetails(err)[0])
+	require.EqualValues(t, "unable to parse token: exp not satisfied", errors.GetAllDetails(err)[0])
 }
 
 func TestKeyIdMismatch(t *testing.T) {
@@ -719,7 +712,7 @@ func Test_JWKSFetchWorksWhenEnabled(t *testing.T) {
 	// Create key from a file. This key will be used to sign the token.
 	// Matching public key available in jwks URI is used to verify token.
 	keySet := createJWKSFromFile(t, "testdata/www.idp1apis.com_oauth2_v3_certs_private")
-	key, _ := keySet.Key(0)
+	key, _ := keySet.Get(0)
 	validIssuer := "https://accounts.idp1.com"
 	token := createJWT(t, username1, audience1, validIssuer, timeutil.Now().Add(time.Hour), key, jwa.RS256, "", "")
 
@@ -773,7 +766,7 @@ func Test_JWKSFetchWorksWhenEnabledIgnoresTheStaticJWKS(t *testing.T) {
 	// Create key from a file. This key will be used to sign the token.
 	// Matching public key available in jwks URI is used to verify token.
 	keySetUsedForSigning := createJWKSFromFile(t, "testdata/www.idp1apis.com_oauth2_v3_certs_private")
-	key, _ := keySetUsedForSigning.Key(0)
+	key, _ := keySetUsedForSigning.Get(0)
 	validIssuer := "https://accounts.idp1.com"
 	token := createJWT(t, username1, audience1, validIssuer, timeutil.Now().Add(time.Hour), key, jwa.RS256, "", "")
 
@@ -828,237 +821,9 @@ func TestJWTAuthCanUseHTTPProxy(t *testing.T) {
 		})()
 
 	authenticator := jwtAuthenticator{}
-	authenticator.mu.Lock()
-	defer authenticator.mu.Unlock()
-	authenticator.mu.conf.httpClient = httputil.NewClientWithTimeout(httputil.StandardHTTPTimeout)
-
 	res, err := getHttpResponse(ctx, "http://my-server/.well-known/openid-configuration", &authenticator)
 	require.NoError(t, err)
 	require.EqualValues(t, "proxied-http://my-server/.well-known/openid-configuration", string(res))
-}
-
-func TestJWTAuthWithCustomCACert(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-
-	// Initiate a test JWKS server locally over HTTPS.
-	testServer := httptest.NewUnstartedServer(nil)
-	testServerURL := "https://" + testServer.Listener.Addr().String()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc(
-		"GET /.well-known/openid-configuration",
-		func(w http.ResponseWriter, r *http.Request) {
-			// Serve the response locally from testdata.
-			dataBytes, err := os.ReadFile("testdata/accounts.idp1.com_.well-known_openid-configuration")
-			require.NoError(t, err)
-
-			type providerJSON struct {
-				Issuer      string   `json:"issuer"`
-				AuthURL     string   `json:"authorization_endpoint"`
-				TokenURL    string   `json:"token_endpoint"`
-				JWKSURI     string   `json:"jwks_uri"`
-				UserInfoURL string   `json:"userinfo_endpoint"`
-				Algorithms  []string `json:"id_token_signing_alg_values_supported"`
-			}
-
-			var p providerJSON
-			err = json.Unmarshal(dataBytes, &p)
-			require.NoError(t, err)
-
-			// We need to update the 'jwks_uri' to point to the local test server.
-			p.JWKSURI = testServerURL + "/jwks"
-
-			updatedBytes, err := json.Marshal(p)
-			require.NoError(t, err)
-			_, err = w.Write(updatedBytes)
-			require.NoError(t, err)
-		},
-	)
-	mux.HandleFunc(
-		"GET /jwks",
-		func(w http.ResponseWriter, r *http.Request) {
-			// Serve the JWKS response locally from testdata.
-			dataBytes, err := os.ReadFile("testdata/www.idp1apis.com_oauth2_v3_certs")
-			require.NoError(t, err)
-			_, err = w.Write(dataBytes)
-			require.NoError(t, err)
-		},
-	)
-
-	testServer.Config = &http.Server{
-		Handler: mux,
-	}
-
-	certPEMBlock, err := securityassets.GetLoader().ReadFile(
-		filepath.Join(certnames.EmbeddedCertsDir, certnames.EmbeddedNodeCert))
-	require.NoError(t, err)
-	keyPEMBlock, err := securityassets.GetLoader().ReadFile(
-		filepath.Join(certnames.EmbeddedCertsDir, certnames.EmbeddedNodeKey))
-	require.NoError(t, err)
-	tlsCert, err := tls.X509KeyPair(certPEMBlock, keyPEMBlock)
-	require.NoError(t, err)
-
-	testServer.TLS = &tls.Config{Certificates: []tls.Certificate{tlsCert}}
-	testServer.StartTLS()
-	defer testServer.Close()
-
-	s := serverutils.StartServerOnly(t, base.TestServerArgs{})
-	defer s.Stopper().Stop(ctx)
-
-	identMapString := ""
-	identMap, err := identmap.From(strings.NewReader(identMapString))
-	require.NoError(t, err)
-
-	// Create a key to sign the token using testdata.
-	// The same will be fetched through the JWKS URI to verify the token.
-	keySet := createJWKSFromFile(t, "testdata/www.idp1apis.com_oauth2_v3_certs_private")
-	key, _ := keySet.Key(0)
-	issuer := testServerURL
-	token := createJWT(
-		t, username1, audience1, issuer, timeutil.Now().Add(time.Hour), key, jwa.RS256, "", "")
-
-	JWTAuthEnabled.Override(ctx, &s.ClusterSettings().SV, true)
-	JWTAuthIssuersConfig.Override(ctx, &s.ClusterSettings().SV, issuer)
-	JWKSAutoFetchEnabled.Override(ctx, &s.ClusterSettings().SV, true)
-	JWTAuthAudience.Override(ctx, &s.ClusterSettings().SV, audience1)
-
-	verifier := ConfigureJWTAuth(ctx, s.AmbientCtx(), s.ClusterSettings(), s.StorageClusterID())
-
-	for _, testCase := range []struct {
-		testName string
-		// caCertName is the name of the certificate looked up within `test_certs`.
-		// Empty value is treated as no certificate.
-		caCertName string
-		assertFn   func(t require.TestingT, err error, msgAndArgs ...interface{})
-	}{
-		{
-			testName:   "fail if no CA certificate is provided",
-			caCertName: "",
-			assertFn:   require.Error,
-		},
-		{
-			testName:   "fail if an incorrect CA certificate is provided",
-			caCertName: certnames.EmbeddedTestUserCert,
-			assertFn:   require.Error,
-		},
-		{
-			testName:   "success if the correct CA certificate is provided",
-			caCertName: certnames.EmbeddedCACert,
-			assertFn:   require.NoError,
-		},
-	} {
-		t.Run(testCase.testName, func(t *testing.T) {
-			if testCase.caCertName != "" {
-				publicKeyPEM, err := securityassets.GetLoader().ReadFile(
-					filepath.Join(certnames.EmbeddedCertsDir, testCase.caCertName))
-				require.NoError(t, err)
-				JWTAuthIssuerCustomCA.Override(ctx, &s.ClusterSettings().SV, string(publicKeyPEM))
-			}
-
-			_, err = verifier.ValidateJWTLogin(
-				ctx,
-				s.ClusterSettings(),
-				username.MakeSQLUsernameFromPreNormalizedString(username1),
-				token,
-				identMap,
-			)
-			testCase.assertFn(t, err)
-		})
-	}
-}
-
-func TestJWTAuthClientTimeout(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-
-	// Initiate a test JWKS server locally.
-	testServer := httptest.NewUnstartedServer(nil)
-	waitChan := make(chan struct{}, 1)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc(
-		"GET /jwks",
-		func(w http.ResponseWriter, r *http.Request) {
-			// Hang the request handler to enforce HTTP client timeout.
-			<-waitChan
-		},
-	)
-
-	testServer.Config = &http.Server{
-		Handler: mux,
-	}
-	testServer.Start()
-	defer func() {
-		waitChan <- struct{}{}
-		close(waitChan)
-		testServer.Close()
-	}()
-
-	mockGetHttpResponse := func(ctx context.Context, url string, authenticator *jwtAuthenticator) ([]byte, error) {
-		if strings.Contains(url, "/.well-known/openid-configuration") {
-			return mockGetHttpResponseWithLocalFileContent(ctx, url, authenticator)
-		} else if strings.Contains(url, "/oauth2/v3/certs") {
-			// For fetching JWKS, point to the local test server.
-			resp, err := authenticator.mu.conf.httpClient.Get(
-				context.Background(),
-				testServer.URL+"/jwks",
-			)
-			if err != nil {
-				return nil, err
-			}
-			defer resp.Body.Close()
-
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return nil, err
-			}
-			return body, nil
-		}
-		return nil, errors.Newf("unsupported route: %s", url)
-	}
-	getHttpResponseTestHook := testutils.TestingHook(&getHttpResponse, mockGetHttpResponse)
-	defer getHttpResponseTestHook()
-
-	s := serverutils.StartServerOnly(t, base.TestServerArgs{})
-	defer s.Stopper().Stop(ctx)
-
-	identMapString := ""
-	identMap, err := identmap.From(strings.NewReader(identMapString))
-	require.NoError(t, err)
-
-	// Create a key to sign the token using testdata.
-	// The same will be fetched through the JWKS URI to verify the token.
-	keySet := createJWKSFromFile(t, "testdata/www.idp1apis.com_oauth2_v3_certs_private")
-	key, _ := keySet.Key(0)
-	validIssuer := "https://accounts.idp1.com"
-	token := createJWT(
-		t, username1, audience1, validIssuer, timeutil.Now().Add(time.Hour), key, jwa.RS256, "", "")
-
-	JWTAuthEnabled.Override(ctx, &s.ClusterSettings().SV, true)
-	JWTAuthIssuersConfig.Override(ctx, &s.ClusterSettings().SV, validIssuer)
-	JWKSAutoFetchEnabled.Override(ctx, &s.ClusterSettings().SV, true)
-	JWTAuthAudience.Override(ctx, &s.ClusterSettings().SV, audience1)
-	JWTAuthClientTimeout.Override(ctx, &s.ClusterSettings().SV, time.Millisecond)
-
-	verifier := ConfigureJWTAuth(ctx, s.AmbientCtx(), s.ClusterSettings(), s.StorageClusterID())
-	errMsg, err := verifier.ValidateJWTLogin(
-		ctx,
-		s.ClusterSettings(),
-		username.MakeSQLUsernameFromPreNormalizedString(username1),
-		token,
-		identMap,
-	)
-	require.Regexp(
-		t,
-		regexp.MustCompile(`unable to fetch jwks:.*\(Client.Timeout exceeded while awaiting headers\)`),
-		errMsg,
-	)
-	require.ErrorContains(t, err, "JWT authentication: unable to validate token")
 }
 
 func TestJWTAuthWithIssuerJWKSConfAutoFetchJWKS(t *testing.T) {
@@ -1073,7 +838,7 @@ func TestJWTAuthWithIssuerJWKSConfAutoFetchJWKS(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(
-		"GET /.well-known/openid-configuration",
+		"/.well-known/openid-configuration",
 		func(w http.ResponseWriter, r *http.Request) {
 			// Serve the response locally mocking openid config.
 			dataBytes := map[string]string{"invalid-key": "invalid-value"}
@@ -1083,7 +848,7 @@ func TestJWTAuthWithIssuerJWKSConfAutoFetchJWKS(t *testing.T) {
 		},
 	)
 	mux.HandleFunc(
-		"GET /jwks",
+		"/jwks",
 		func(w http.ResponseWriter, r *http.Request) {
 			// Serve the JWKS response locally from testdata.
 			dataBytes, err := os.ReadFile("testdata/www.idp1apis.com_oauth2_v3_certs")
@@ -1105,7 +870,7 @@ func TestJWTAuthWithIssuerJWKSConfAutoFetchJWKS(t *testing.T) {
 	// Create a key to sign the token using testdata.
 	// The same will be fetched through the JWKS URI to verify the token.
 	keySet := createJWKSFromFile(t, "testdata/www.idp1apis.com_oauth2_v3_certs_private")
-	key, _ := keySet.Key(0)
+	key, _ := keySet.Get(0)
 	issuer := testServerURL
 	token := createJWT(
 		t, username1, audience1, issuer, timeutil.Now().Add(time.Hour), key, jwa.RS256, "", "")
@@ -1157,11 +922,12 @@ func TestJWTAuthWithIssuerJWKSConfAutoFetchJWKS(t *testing.T) {
 				token,
 				identMap,
 			)
+
 			testCase.assertFn(t, err)
 			if err != nil {
 				require.Equal(t, testCase.expectedErr, err.Error())
 				require.Equal(t, testCase.expectedErrDetails, errors.FlattenDetails(err))
-				require.Equal(t, detailedErrMsg, redact.RedactableString(testCase.detailedErrMsg))
+				require.Equal(t, redact.RedactableString(testCase.detailedErrMsg), detailedErrMsg)
 			}
 		})
 	}

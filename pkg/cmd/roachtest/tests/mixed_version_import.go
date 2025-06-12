@@ -20,18 +20,11 @@ import (
 
 func registerImportMixedVersions(r registry.Registry) {
 	r.Add(registry.TestSpec{
-		// TODO(jeffswenson): re-enable mixed version import once #144818 is
-		// backported. This test is fragile because it expects the special
-		// 'workload://' fixtures to be deterministic across versions. A better
-		// version of this test would use actual CSV fixtures.
-		Skip:    "Issue #143870",
-		Name:    "import/mixed-versions",
-		Owner:   registry.OwnerSQLQueries,
-		Cluster: r.MakeClusterSpec(4),
-		// Disabled on IBM because s390x is only built on master and mixed-version
-		// is impossible to test as of 05/2025.
-		CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
-		Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
+		Name:             "import/mixed-versions",
+		Owner:            registry.OwnerSQLQueries,
+		Cluster:          r.MakeClusterSpec(4),
+		CompatibleClouds: registry.AllExceptAWS,
+		Suites:           registry.Suites(registry.Nightly),
 		Randomized:       true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			warehouses := 100
@@ -60,7 +53,7 @@ func runImportMixedVersions(ctx context.Context, t test.Test, c cluster.Cluster,
 			return err
 		}
 		node := c.All().SeededRandNode(r)[0]
-		cmd := tpccImportCmdWithCockroachBinary(test.DefaultCockroachPath, "", "tpcc", warehouses) + fmt.Sprintf(" {pgurl%s}", c.Node(node))
+		cmd := tpccImportCmdWithCockroachBinary(test.DefaultCockroachPath, "", warehouses) + fmt.Sprintf(" {pgurl%s}", c.Node(node))
 		l.Printf("executing %q on node %d", cmd, node)
 		return c.RunE(ctx, option.WithNodes(c.Node(node)), cmd)
 	}

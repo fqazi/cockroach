@@ -10,6 +10,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
@@ -196,11 +197,7 @@ func (w *lockTableWaiterImpl) WaitOn(
 				// transaction (one that's acquired a claim but not the lock).
 				delay := time.Duration(math.MaxInt64)
 				if deadlockOrLivenessPush {
-					if req.DeadlockTimeout == 0 {
-						delay = LockTableDeadlockOrLivenessDetectionPushDelay.Get(&w.st.SV)
-					} else {
-						delay = req.DeadlockTimeout
-					}
+					delay = LockTableDeadlockOrLivenessDetectionPushDelay.Get(&w.st.SV)
 				}
 				if timeoutPush {
 					// Only reset the lock timeout deadline if this is the first time
@@ -303,6 +300,7 @@ func (w *lockTableWaiterImpl) WaitOn(
 			// to its state for the entire delay, it should push. It may be the case
 			// that the transaction is part of a dependency cycle or that the lock
 			// holder's coordinator node has crashed.
+			timer.Read = true
 			timerC = nil
 			if w.onPushTimer != nil {
 				w.onPushTimer()
@@ -444,7 +442,20 @@ func (w *lockTableWaiterImpl) pushLockTxn(
 	h := w.pushHeader(req)
 	var pushType kvpb.PushTxnType
 	var beforePushObs roachpb.ObservedTimestamp
-	if ws.guardStrength == lock.None {
+	// For read-write conflicts, try to push the lock holder's timestamp forward
+	// so the read request can read under the lock. For write-write conflicts, try
+	// to abort the lock holder entirely so the write request can revoke and
+	// replace the lock with its own lock.
+	if req.WaitPolicy == lock.WaitPolicy_Error &&
+		!w.st.Version.IsActive(ctx, clusterversion.V23_2_RemoveLockTableWaiterTouchPush) {
+		// This wait policy signifies that the request wants to raise an error
+		// upon encountering a conflicting lock. We still need to push the lock
+		// holder to ensure that it is active and that this isn't an abandoned
+		// lock, but we push using a PUSH_TOUCH to immediately return an error
+		// if the lock hold is still active.
+		pushType = kvpb.PUSH_TOUCH
+		log.VEventf(ctx, 2, "pushing txn %s to check if abandoned", ws.txn.Short())
+	} else if ws.guardStrength == lock.None {
 		pushType = kvpb.PUSH_TIMESTAMP
 		beforePushObs = roachpb.ObservedTimestamp{
 			NodeID:    w.nodeDesc.NodeID,

@@ -35,11 +35,6 @@ type ConnTracker struct {
 		// tenants refer to a list of tenant entries.
 		tenants map[roachpb.TenantID]*tenantEntry
 	}
-
-	// verboseLogging indicates whether verbose logging is enabled for the
-	// connection tracker. We store it once here to avoid the vmodule mutex
-	// each time we call log.V.
-	verboseLogging bool
 }
 
 // NewConnTracker returns a new instance of the connection tracker. All exposed
@@ -54,7 +49,7 @@ func NewConnTracker(
 		timeSource = timeutil.DefaultTimeSource{}
 	}
 
-	t := &ConnTracker{timeSource: timeSource, verboseLogging: log.V(2)}
+	t := &ConnTracker{timeSource: timeSource}
 	t.mu.tenants = make(map[roachpb.TenantID]*tenantEntry)
 
 	if err := stopper.RunAsyncTask(
@@ -84,11 +79,7 @@ func (t *ConnTracker) GetConnsMap(tenantID roachpb.TenantID) map[string][]Connec
 func (t *ConnTracker) registerAssignment(tenantID roachpb.TenantID, sa *ServerAssignment) {
 	e := t.getEntry(tenantID, true /* allowCreate */)
 	if e.addAssignment(sa) {
-		// Explicitly use a separate `if` block to avoid unintentional short
-		// circuit bugs in the future. `a && b()` vs `b() && a` are not the same.
-		if t.verboseLogging {
-			logTrackerEvent("registerAssignment", sa)
-		}
+		logTrackerEvent("registerAssignment", sa)
 	}
 }
 
@@ -97,11 +88,7 @@ func (t *ConnTracker) registerAssignment(tenantID roachpb.TenantID, sa *ServerAs
 func (t *ConnTracker) unregisterAssignment(tenantID roachpb.TenantID, sa *ServerAssignment) {
 	e := t.getEntry(tenantID, false /* allowCreate */)
 	if e != nil && e.removeAssignment(sa) {
-		// Explicitly use a separate `if` block to avoid unintentional short
-		// circuit bugs in the future. `a && b()` vs `b() && a` are not the same.
-		if t.verboseLogging {
-			logTrackerEvent("unregisterAssignment", sa)
-		}
+		logTrackerEvent("unregisterAssignment", sa)
 	}
 }
 
@@ -176,6 +163,7 @@ func (t *ConnTracker) refreshPartitionsLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.Ch():
+			timer.MarkRead()
 			t.refreshPartitions()
 		}
 	}

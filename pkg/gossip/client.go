@@ -14,7 +14,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -36,7 +35,6 @@ type client struct {
 	addr                  net.Addr                 // Peer node network address
 	locality              roachpb.Locality         // Peer node locality (if known)
 	forwardAddr           *util.UnresolvedAddr     // Set if disconnected with an alternate addr
-	prevHighWaterStamps   map[roachpb.NodeID]int64 // Last high water timestamps sent to remote server
 	remoteHighWaterStamps map[roachpb.NodeID]int64 // Remote server's high water timestamps
 	closer                chan struct{}            // Client shutdown channel
 	clientMetrics         Metrics
@@ -104,9 +102,9 @@ func (c *client) startLocked(
 			// asynchronous from the caller's perspective, so the only effect of
 			// `WithBlock` here is blocking shutdown - at the time of this writing,
 			// that ends ups up making `kv` tests take twice as long.
-			var connection *rpc.GRPCConnection
+			var connection *rpc.Connection
 			if c.peerID != 0 {
-				connection = rpcCtx.GRPCDialNode(c.addr.String(), c.peerID, c.locality, rpcbase.SystemClass)
+				connection = rpcCtx.GRPCDialNode(c.addr.String(), c.peerID, c.locality, rpc.SystemClass)
 			} else {
 				// TODO(baptist): Use this as a temporary connection for getting
 				// onto gossip and then replace with a validated connection.
@@ -182,7 +180,6 @@ func (c *client) requestGossip(g *Gossip, stream Gossip_GossipClient) error {
 	bytesSent := int64(args.Size())
 	c.clientMetrics.BytesSent.Inc(bytesSent)
 	c.nodeMetrics.BytesSent.Inc(bytesSent)
-	c.prevHighWaterStamps = args.HighWaterStamps
 
 	return stream.Send(args)
 }
@@ -203,16 +200,11 @@ func (c *client) sendGossip(g *Gossip, stream Gossip_GossipClient, firstReq bool
 			ratchetHighWaterStamp(c.remoteHighWaterStamps, i.NodeID, i.OrigStamp)
 		}
 
-		// Only send the high water stamps that are different from the previously
-		// sent high water stamps.
-		var diffStamps map[roachpb.NodeID]int64
-		c.prevHighWaterStamps, diffStamps = g.mu.is.getHighWaterStampsWithDiff(c.prevHighWaterStamps)
-
 		args := Request{
 			NodeID:          g.NodeID.Get(),
 			Addr:            g.mu.is.NodeAddr,
 			Delta:           delta,
-			HighWaterStamps: diffStamps,
+			HighWaterStamps: g.mu.is.getHighWaterStamps(),
 			ClusterID:       g.clusterID.Get(),
 		}
 
@@ -220,10 +212,8 @@ func (c *client) sendGossip(g *Gossip, stream Gossip_GossipClient, firstReq bool
 		infosSent := int64(len(delta))
 		c.clientMetrics.BytesSent.Inc(bytesSent)
 		c.clientMetrics.InfosSent.Inc(infosSent)
-		c.clientMetrics.MessagesSent.Inc(1)
 		c.nodeMetrics.BytesSent.Inc(bytesSent)
 		c.nodeMetrics.InfosSent.Inc(infosSent)
-		c.nodeMetrics.MessagesSent.Inc(1)
 
 		if log.V(1) {
 			ctx := c.AnnotateCtx(stream.Context())
@@ -250,10 +240,8 @@ func (c *client) handleResponse(ctx context.Context, g *Gossip, reply *Response)
 	infosReceived := int64(len(reply.Delta))
 	c.clientMetrics.BytesReceived.Inc(bytesReceived)
 	c.clientMetrics.InfosReceived.Inc(infosReceived)
-	c.clientMetrics.MessagesReceived.Inc(1)
 	c.nodeMetrics.BytesReceived.Inc(bytesReceived)
 	c.nodeMetrics.InfosReceived.Inc(infosReceived)
-	c.nodeMetrics.MessagesReceived.Inc(1)
 
 	// Combine remote node's infostore delta with ours.
 	if reply.Delta != nil {
@@ -331,7 +319,6 @@ func (c *client) gossip(
 
 	errCh := make(chan error, 1)
 	initCh := make(chan struct{}, 1)
-
 	// This wait group is used to allow the caller to wait until gossip
 	// processing is terminated.
 	wg.Add(1)
@@ -396,9 +383,6 @@ func (c *client) gossip(
 		case <-initTimer.C:
 			maybeRegister()
 		case <-sendGossipChan:
-			// We need to send the gossip delta to the remote server. Wait a bit to
-			// batch the updates in one message.
-			batchAndConsume(sendGossipChan, infosBatchDelay)
 			if err := c.sendGossip(g, stream, count == 0); err != nil {
 				return err
 			}

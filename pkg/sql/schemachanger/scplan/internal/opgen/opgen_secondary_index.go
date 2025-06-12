@@ -6,6 +6,7 @@
 package opgen
 
 import (
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scop"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -125,19 +126,6 @@ func init() {
 				}),
 			),
 			to(scpb.Status_PUBLIC,
-				emit(func(this *scpb.SecondaryIndex) *scop.MarkRecreatedIndexAsInvisible {
-					// Recreated indexes are not visible until their final primary index
-					// is usable. While they maybe made public we need to make sure they
-					// are not accidentally used.
-					if this.RecreateTargetIndexID == 0 {
-						return nil
-					}
-					return &scop.MarkRecreatedIndexAsInvisible{
-						TableID:              this.TableID,
-						IndexID:              this.IndexID,
-						TargetPrimaryIndexID: this.RecreateTargetIndexID,
-					}
-				}),
 				emit(func(this *scpb.SecondaryIndex) *scop.MakeValidatedSecondaryIndexPublic {
 					return &scop.MakeValidatedSecondaryIndexPublic{
 						TableID: this.TableID,
@@ -197,6 +185,13 @@ func init() {
 			equiv(scpb.Status_BACKFILL_ONLY),
 			to(scpb.Status_ABSENT,
 				emit(func(this *scpb.SecondaryIndex, md *opGenContext) *scop.CreateGCJobForIndex {
+					if !md.ActiveVersion.IsActive(clusterversion.V23_1) {
+						return &scop.CreateGCJobForIndex{
+							TableID:             this.TableID,
+							IndexID:             this.IndexID,
+							StatementForDropJob: statementForDropJob(this, md),
+						}
+					}
 					return nil
 				}),
 				emit(func(this *scpb.SecondaryIndex) *scop.MakeIndexAbsent {

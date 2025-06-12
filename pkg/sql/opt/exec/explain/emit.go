@@ -18,11 +18,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/constraint"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/exec"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
-	"github.com/cockroachdb/cockroach/pkg/util/optional"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	humanize "github.com/dustin/go-humanize"
@@ -30,36 +28,8 @@ import (
 
 // Emit produces the EXPLAIN output against the given OutputBuilder. The
 // OutputBuilder flags are taken into account.
-func Emit(
-	ctx context.Context,
-	evalCtx *eval.Context,
-	plan *Plan,
-	ob *OutputBuilder,
-	spanFormatFn SpanFormatFn,
-	createPostQueryPlanIfMissing bool,
-) error {
-	return emitInternal(ctx, evalCtx, plan, ob, spanFormatFn, nil /* visitedFKsByCascades */, createPostQueryPlanIfMissing)
-}
-
-// MaybeAdjustVirtualIndexScan is injected from the sql package.
-//
-// This function clarifies usage of the virtual indexes for EXPLAIN purposes.
-var MaybeAdjustVirtualIndexScan func(
-	ctx context.Context, evalCtx *eval.Context, index cat.Index, params exec.ScanParams,
-) (_ cat.Index, _ exec.ScanParams, extraAttribute string)
-
-// joinIndexNames emits a string of index names on table 'table' as specified in
-// 'ords', with each name separated by 'sep'.
-func joinIndexNames(table cat.Table, ords cat.IndexOrdinals, sep string) string {
-	var sb strings.Builder
-	for i, idx := range ords {
-		index := table.Index(idx)
-		if i > 0 {
-			sb.WriteString(sep)
-		}
-		sb.WriteString(string(index.Name()))
-	}
-	return sb.String()
+func Emit(ctx context.Context, plan *Plan, ob *OutputBuilder, spanFormatFn SpanFormatFn) error {
+	return emitInternal(ctx, plan, ob, spanFormatFn, nil /* visitedFKsByCascades */)
 }
 
 // - visitedFKsByCascades is updated on recursive calls for each cascade plan.
@@ -67,12 +37,10 @@ func joinIndexNames(table cat.Table, ords cat.IndexOrdinals, sep string) string 
 // "id" of the FK constraint that we construct as OriginTableID || Name.
 func emitInternal(
 	ctx context.Context,
-	evalCtx *eval.Context,
 	plan *Plan,
 	ob *OutputBuilder,
 	spanFormatFn SpanFormatFn,
 	visitedFKsByCascades map[string]struct{},
-	createPostQueryPlanIfMissing bool,
 ) error {
 	e := makeEmitter(ob, spanFormatFn)
 	var walk func(n *Node) error
@@ -91,7 +59,7 @@ func emitInternal(
 			return err
 		}
 		ob.EnterNode(name, columns, ordering)
-		if err := e.emitNodeAttributes(ctx, evalCtx, n); err != nil {
+		if err := e.emitNodeAttributes(n); err != nil {
 			return err
 		}
 		for _, c := range n.children {
@@ -103,8 +71,7 @@ func emitInternal(
 		return nil
 	}
 
-	if len(plan.Subqueries) == 0 && len(plan.Cascades) == 0 &&
-		len(plan.Checks) == 0 && len(plan.Triggers) == 0 {
+	if len(plan.Subqueries) == 0 && len(plan.Cascades) == 0 && len(plan.Checks) == 0 {
 		return walk(plan.Root)
 	}
 	ob.EnterNode("root", plan.Root.Columns(), plan.Root.Ordering())
@@ -137,8 +104,6 @@ func emitInternal(
 			mode = "any rows"
 		case exec.SubqueryAllRows:
 			mode = "all rows"
-		case exec.SubqueryDiscardAllRows:
-			mode = "discard all rows"
 		default:
 			return errors.Errorf("invalid SubqueryMode %d", s.Mode)
 		}
@@ -149,62 +114,41 @@ func emitInternal(
 		}
 		ob.LeaveNode()
 	}
-	emitPostQuery := func(pq exec.PostQuery, pqPlan exec.Plan, alreadyEmitted bool) error {
-		if pqPlan != nil {
-			return emitInternal(ctx, evalCtx, pqPlan.(*Plan), ob, spanFormatFn, visitedFKsByCascades, createPostQueryPlanIfMissing)
-		}
-		if !alreadyEmitted {
-			// The plan wasn't produced which means its execution was
-			// short-circuited.
-			ob.Attr("short-circuited", "")
-		}
-		if buffer := pq.Buffer; buffer != nil {
-			ob.Attr("input", buffer.(*Node).args.(*bufferArgs).Label)
-		}
-		return nil
-	}
+
 	for _, cascade := range plan.Cascades {
 		ob.EnterMetaNode("fk-cascade")
 		ob.Attr("fk", cascade.FKConstraint.Name())
-		if visitedFKsByCascades == nil {
-			visitedFKsByCascades = make(map[string]struct{})
-		}
-		// Come up with a custom "id" for this FK.
-		fk := cascade.FKConstraint
-		fkID := fmt.Sprintf("%d%s", fk.OriginTableID(), fk.Name())
-		var err error
-		var cascadePlan exec.Plan
-		var alreadyEmitted bool
-		if _, alreadyEmitted = visitedFKsByCascades[fkID]; !alreadyEmitted {
-			cascadePlan, err = cascade.GetExplainPlan(ctx, createPostQueryPlanIfMissing)
-			if err != nil {
-				return err
-			}
-			visitedFKsByCascades[fkID] = struct{}{}
-			defer delete(visitedFKsByCascades, fkID) //nolint:deferloop
-		}
-		if err = emitPostQuery(cascade, cascadePlan, alreadyEmitted); err != nil {
+		// Here we do want to allow creation of the plans for the cascades to be
+		// able to include them into the EXPLAIN output.
+		const createPlanIfMissing = true
+		if cascadePlan, err := cascade.GetExplainPlan(ctx, createPlanIfMissing); err != nil {
 			return err
+		} else {
+			if visitedFKsByCascades == nil {
+				visitedFKsByCascades = make(map[string]struct{})
+			}
+			fk := cascade.FKConstraint
+			// Come up with a custom "id" for this FK.
+			fkID := fmt.Sprintf("%d%s", fk.OriginTableID(), fk.Name())
+			if _, visited := visitedFKsByCascades[fkID]; visited {
+				// If we have already visited this particular FK cascade, we
+				// don't recurse into it again to prevent infinite recursion.
+				if buffer := cascade.Buffer; buffer != nil {
+					ob.Attr("input", buffer.(*Node).args.(*bufferArgs).Label)
+				}
+			} else {
+				visitedFKsByCascades[fkID] = struct{}{}
+				defer delete(visitedFKsByCascades, fkID)
+				if err = emitInternal(ctx, cascadePlan.(*Plan), ob, spanFormatFn, visitedFKsByCascades); err != nil {
+					return err
+				}
+			}
 		}
 		ob.LeaveNode()
 	}
 	for _, n := range plan.Checks {
 		ob.EnterMetaNode("constraint-check")
 		if err := walk(n); err != nil {
-			return err
-		}
-		ob.LeaveNode()
-	}
-	for _, afterTriggers := range plan.Triggers {
-		ob.EnterMetaNode("after-triggers")
-		for _, trigger := range afterTriggers.Triggers {
-			ob.Attr("trigger", trigger.Name())
-		}
-		afterTriggersPlan, err := afterTriggers.GetExplainPlan(ctx, createPostQueryPlanIfMissing)
-		if err != nil {
-			return err
-		}
-		if err = emitPostQuery(afterTriggers, afterTriggersPlan, false /* alreadyEmitted */); err != nil {
 			return err
 		}
 		ob.LeaveNode()
@@ -391,7 +335,6 @@ var nodeNames = [...]string{
 	createFunctionOp:       "create function",
 	createTableOp:          "create table",
 	createTableAsOp:        "create table as",
-	createTriggerOp:        "create trigger",
 	createViewOp:           "create view",
 	deleteOp:               "delete",
 	deleteRangeOp:          "delete range",
@@ -434,8 +377,6 @@ var nodeNames = [...]string{
 	updateOp:               "update",
 	upsertOp:               "upsert",
 	valuesOp:               "", // This node does not have a fixed name.
-	vectorSearchOp:         "vector search",
-	vectorMutationSearchOp: "vector mutation search",
 	windowOp:               "window",
 	zigzagJoinOp:           "zigzag join",
 }
@@ -488,29 +429,16 @@ func omitStats(n *Node) bool {
 	return false
 }
 
-func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context, n *Node) error {
-	timeIfNonZero := func(d optional.Duration, key string) {
-		if d.HasValue() {
-			if t := string(humanizeutil.Duration(d.Value())); t != "0µs" {
-				e.ob.AddField(key, t)
-			}
-		}
-	}
+func (e *emitter) emitNodeAttributes(n *Node) error {
 	var actualRowCount uint64
 	var hasActualRowCount bool
 	if stats, ok := n.annotations[exec.ExecutionStatsID]; ok && !omitStats(n) {
 		s := stats.(*exec.ExecutionStats)
-		if len(s.SQLNodes) > 0 {
-			e.ob.AddFlakyField(DeflakeNodes, "sql nodes", strings.Join(s.SQLNodes, ", "))
-		}
-		if len(s.KVNodes) > 0 {
-			e.ob.AddFlakyField(DeflakeNodes, "kv nodes", strings.Join(s.KVNodes, ", "))
+		if len(s.Nodes) > 0 {
+			e.ob.AddFlakyField(DeflakeNodes, "nodes", strings.Join(s.Nodes, ", "))
 		}
 		if len(s.Regions) > 0 {
 			e.ob.AddFlakyField(DeflakeNodes, "regions", strings.Join(s.Regions, ", "))
-		}
-		if s.UsedFollowerRead {
-			e.ob.AddField("used follower read", "")
 		}
 		if s.RowCount.HasValue() {
 			actualRowCount = s.RowCount.Value()
@@ -527,9 +455,9 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 		if s.KVTime.HasValue() {
 			e.ob.AddField("KV time", string(humanizeutil.Duration(s.KVTime.Value())))
 		}
-		timeIfNonZero(s.KVContentionTime, "KV contention time")
-		timeIfNonZero(s.KVLockWaitTime, "KV lock wait time")
-		timeIfNonZero(s.KVLatchWaitTime, "KV latch wait time")
+		if s.KVContentionTime.HasValue() {
+			e.ob.AddField("KV contention time", string(humanizeutil.Duration(s.KVContentionTime.Value())))
+		}
 		if s.KVRowsRead.HasValue() {
 			e.ob.AddField("KV rows decoded", string(humanizeutil.Count(s.KVRowsRead.Value())))
 		}
@@ -548,9 +476,6 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 		}
 		if s.KVBatchRequestsIssued.HasValue() {
 			e.ob.AddField("KV gRPC calls", string(humanizeutil.Count(s.KVBatchRequestsIssued.Value())))
-		}
-		if s.ExecTime.HasValue() {
-			e.ob.AddField("execution time", string(humanizeutil.Duration(s.ExecTime.Value())))
 		}
 		if s.MaxAllocatedMem.HasValue() {
 			e.ob.AddField("estimated max memory allocated", humanize.IBytes(s.MaxAllocatedMem.Value()))
@@ -623,7 +548,7 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 					}
 
 					var duration string
-					if e.ob.flags.Deflake.HasAny(DeflakeVolatile) {
+					if e.ob.flags.Deflake.Has(DeflakeVolatile) {
 						duration = "<hidden>"
 					} else {
 						timeSinceStats := timeutil.Since(s.TableStatsCreatedAt)
@@ -635,7 +560,7 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 
 					var forecastStr string
 					if s.Forecast {
-						if e.ob.flags.Deflake.HasAny(DeflakeVolatile) {
+						if e.ob.flags.Deflake.Has(DeflakeVolatile) {
 							forecastStr = "; using stats forecast"
 						} else {
 							timeSinceStats := timeutil.Since(s.ForecastAt)
@@ -693,17 +618,10 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 					"consider running 'ANALYZE %[1]s'", a.Table.Name(),
 			))
 		}
-		var extraAttribute string
-		if a.Table.IsVirtualTable() && MaybeAdjustVirtualIndexScan != nil {
-			a.Index, a.Params, extraAttribute = MaybeAdjustVirtualIndexScan(ctx, evalCtx, a.Index, a.Params)
-		}
 		e.emitTableAndIndex("table", a.Table, a.Index, suffix)
 		// Omit spans for virtual tables, unless we actually have a constraint.
 		if a.Table != nil && !(a.Table.IsVirtualTable() && a.Params.IndexConstraint == nil) {
 			e.emitSpans("spans", a.Table, a.Index, a.Params)
-		}
-		if extraAttribute != "" {
-			ob.Attr(extraAttribute, "")
 		}
 
 		if a.Params.HardLimit > 0 {
@@ -716,15 +634,12 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 			ob.VAttr("parallel", "")
 		}
 		e.emitLockingPolicy(a.Params.Locking)
-		e.emitPolicies(ob, a.Table, n)
 
 	case valuesOp:
 		a := n.args.(*valuesArgs)
-		// Don't emit anything, except policy info, for the "norows" and "emptyrow" cases.
+		// Don't emit anything for the "norows" and "emptyrow" cases.
 		if len(a.Rows) > 0 && (len(a.Rows) > 1 || len(a.Columns) > 0) {
 			e.emitTuples(tree.RawRows(a.Rows), len(a.Columns))
-		} else if len(a.Rows) == 0 {
-			e.emitPolicies(ob, nil, n)
 		}
 
 	case filterOp:
@@ -740,8 +655,12 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 
 	case limitOp:
 		a := n.args.(*limitArgs)
-		ob.Expr("count", a.Limit, nil /* columns */)
-		ob.Expr("offset", a.Offset, nil /* columns */)
+		if a.Limit != nil {
+			ob.Expr("count", a.Limit, nil /* columns */)
+		}
+		if a.Offset != nil {
+			ob.Expr("offset", a.Offset, nil /* columns */)
+		}
 
 	case sortOp:
 		a := n.args.(*sortArgs)
@@ -844,7 +763,9 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 
 	case applyJoinOp:
 		a := n.args.(*applyJoinArgs)
-		ob.Expr("pred", a.OnCond, appendColumns(a.Left.Columns(), a.RightColumns...))
+		if a.OnCond != nil {
+			ob.Expr("pred", a.OnCond, appendColumns(a.Left.Columns(), a.RightColumns...))
+		}
 
 	case lookupJoinOp:
 		a := n.args.(*lookupJoinArgs)
@@ -863,9 +784,6 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 		}
 		if a.EqColsAreKey {
 			ob.Attr("equality cols are key", "")
-		}
-		if a.ReverseScans {
-			ob.Attr("reverse scans", "")
 		}
 		ob.Expr("lookup condition", a.LookupExpr, appendColumns(inputCols, tableColumns(a.Table, a.LookupCols)...))
 		ob.Expr("remote lookup condition", a.RemoteLookupExpr, appendColumns(inputCols, tableColumns(a.Table, a.LookupCols)...))
@@ -937,40 +855,6 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 		a := n.args.(*scanBufferArgs)
 		ob.Attr("label", a.Label)
 
-	case vectorSearchOp:
-		a := n.args.(*vectorSearchArgs)
-		e.emitTableAndIndex("table", a.Table, a.Index, "" /* suffix */)
-		ob.Attr("target count", a.TargetNeighborCount)
-		if a.PrefixConstraint != nil {
-			params := exec.ScanParams{
-				NeededCols:      a.OutCols,
-				IndexConstraint: a.PrefixConstraint,
-			}
-			e.emitSpans("prefix spans", a.Table, a.Index, params)
-		}
-		if ob.flags.Verbose {
-			// Vectors can have many dimensions, so don't print them unless verbose.
-			ob.Expr("query vector", a.QueryVector, nil /* varColumns */)
-		}
-
-	case vectorMutationSearchOp:
-		a := n.args.(*vectorMutationSearchArgs)
-		if a.IsIndexPut {
-			ob.Attr("mutation type", "put")
-		} else {
-			ob.Attr("mutation type", "del")
-		}
-		e.emitTableAndIndex("table", a.Table, a.Index, "" /* suffix */)
-		if ob.flags.Verbose {
-			if len(a.PrefixKeyCols) > 0 {
-				e.ob.Attr("prefix key cols", printColumnList(a.Input.Columns(), a.PrefixKeyCols))
-			}
-			e.ob.Attr("query vector col", a.Input.Columns()[a.QueryVectorCol].Name)
-			if len(a.SuffixKeyCols) > 0 {
-				e.ob.Attr("suffix key cols", printColumnList(a.Input.Columns(), a.SuffixKeyCols))
-			}
-		}
-
 	case insertOp:
 		a := n.args.(*insertArgs)
 		ob.Attrf(
@@ -981,8 +865,16 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 		if a.AutoCommit {
 			ob.Attr("auto commit", "")
 		}
-		if arbind := joinIndexNames(a.Table, a.ArbiterIndexes, ", "); arbind != "" {
-			ob.Attr("arbiter indexes", arbind)
+		if len(a.ArbiterIndexes) > 0 {
+			var sb strings.Builder
+			for i, idx := range a.ArbiterIndexes {
+				index := a.Table.Index(idx)
+				if i > 0 {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(string(index.Name()))
+			}
+			ob.Attr("arbiter indexes", sb.String())
 		}
 		if len(a.ArbiterConstraints) > 0 {
 			var sb strings.Builder
@@ -995,20 +887,6 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 			}
 			ob.Attr("arbiter constraints", sb.String())
 		}
-		if uniqWithTombstoneIndexes := joinIndexNames(a.Table, a.UniqueWithTombstonesIndexes, ", "); uniqWithTombstoneIndexes != "" {
-			ob.Attr("uniqueness checks (tombstones)", uniqWithTombstoneIndexes)
-		}
-		beforeTriggers := cat.GetRowLevelTriggers(
-			a.Table, tree.TriggerActionTimeBefore, tree.MakeTriggerEventTypeSet(tree.TriggerEventInsert),
-		)
-		if len(beforeTriggers) > 0 {
-			ob.EnterMetaNode("before-triggers")
-			for _, trigger := range beforeTriggers {
-				ob.Attrf("trigger", "%s", trigger.Name())
-			}
-			ob.LeaveNode()
-		}
-		e.emitPolicies(ob, a.Table, n)
 
 	case insertFastPathOp:
 		a := n.args.(*insertFastPathArgs)
@@ -1032,18 +910,9 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 			)
 			e.emitLockingPolicyWithPrefix("uniqueness check ", uniq.Locking)
 		}
-		if uniqWithTombstoneIndexes := joinIndexNames(a.Table, a.UniqueWithTombstonesIndexes, ", "); uniqWithTombstoneIndexes != "" {
-			ob.Attr("uniqueness checks (tombstones)", uniqWithTombstoneIndexes)
-		}
 		if len(a.Rows) > 0 {
 			e.emitTuples(tree.RawRows(a.Rows), len(a.Rows[0]))
 		}
-		if cat.HasRowLevelTriggers(a.Table, tree.TriggerActionTimeBefore, tree.TriggerEventInsert) {
-			// The insert fast path should not be planned if there are applicable
-			// triggers.
-			return errors.AssertionFailedf("insert fast path with before-triggers")
-		}
-		e.emitPolicies(ob, a.Table, n)
 
 	case upsertOp:
 		a := n.args.(*upsertArgs)
@@ -1055,8 +924,16 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 		if a.AutoCommit {
 			ob.Attr("auto commit", "")
 		}
-		if arbind := joinIndexNames(a.Table, a.ArbiterIndexes, ", "); arbind != "" {
-			ob.Attr("arbiter indexes", arbind)
+		if len(a.ArbiterIndexes) > 0 {
+			var sb strings.Builder
+			for i, idx := range a.ArbiterIndexes {
+				index := a.Table.Index(idx)
+				if i > 0 {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(string(index.Name()))
+			}
+			ob.Attr("arbiter indexes", sb.String())
 		}
 		if len(a.ArbiterConstraints) > 0 {
 			var sb strings.Builder
@@ -1069,59 +946,20 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 			}
 			ob.Attr("arbiter constraints", sb.String())
 		}
-		if uniqWithTombstoneIndexes := joinIndexNames(a.Table, a.UniqueWithTombstonesIndexes, ", "); uniqWithTombstoneIndexes != "" {
-			ob.Attr("uniqueness checks (tombstones)", uniqWithTombstoneIndexes)
-		}
-		beforeTriggers := cat.GetRowLevelTriggers(
-			a.Table, tree.TriggerActionTimeBefore,
-			tree.MakeTriggerEventTypeSet(tree.TriggerEventInsert, tree.TriggerEventUpdate),
-		)
-		if len(beforeTriggers) > 0 {
-			ob.EnterMetaNode("before-triggers")
-			for _, trigger := range beforeTriggers {
-				ob.Attrf("trigger", "%s", trigger.Name())
-			}
-			ob.LeaveNode()
-		}
-		e.emitPolicies(ob, a.Table, n)
 
 	case updateOp:
 		a := n.args.(*updateArgs)
 		ob.Attrf("table", "%s", a.Table.Name())
-		if uniqWithTombstoneIndexes := joinIndexNames(a.Table, a.UniqueWithTombstonesIndexes, ", "); uniqWithTombstoneIndexes != "" {
-			ob.Attr("uniqueness checks (tombstones)", uniqWithTombstoneIndexes)
-		}
 		ob.Attr("set", printColumns(tableColumns(a.Table, a.UpdateCols)))
 		if a.AutoCommit {
 			ob.Attr("auto commit", "")
 		}
-		beforeTriggers := cat.GetRowLevelTriggers(
-			a.Table, tree.TriggerActionTimeBefore, tree.MakeTriggerEventTypeSet(tree.TriggerEventUpdate),
-		)
-		if len(beforeTriggers) > 0 {
-			ob.EnterMetaNode("before-triggers")
-			for _, trigger := range beforeTriggers {
-				ob.Attrf("trigger", "%s", trigger.Name())
-			}
-			ob.LeaveNode()
-		}
-		e.emitPolicies(ob, a.Table, n)
 
 	case deleteOp:
 		a := n.args.(*deleteArgs)
 		ob.Attrf("from", "%s", a.Table.Name())
 		if a.AutoCommit {
 			ob.Attr("auto commit", "")
-		}
-		beforeTriggers := cat.GetRowLevelTriggers(
-			a.Table, tree.TriggerActionTimeBefore, tree.MakeTriggerEventTypeSet(tree.TriggerEventDelete),
-		)
-		if len(beforeTriggers) > 0 {
-			ob.EnterMetaNode("before-triggers")
-			for _, trigger := range beforeTriggers {
-				ob.Attrf("trigger", "%s", trigger.Name())
-			}
-			ob.LeaveNode()
 		}
 
 	case deleteRangeOp:
@@ -1136,11 +974,6 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 			IndexConstraint: a.IndexConstraint,
 		}
 		e.emitSpans("spans", a.Table, a.Table.Index(cat.PrimaryIndex), params)
-		if cat.HasRowLevelTriggers(a.Table, tree.TriggerActionTimeBefore, tree.TriggerEventDelete) {
-			// DeleteRange should not be planned if there are applicable triggers.
-			return errors.AssertionFailedf("delete range with before-triggers")
-		}
-		e.emitPolicies(ob, a.Table, n)
 
 	case showCompletionsOp:
 		a := n.args.(*showCompletionsArgs)
@@ -1203,7 +1036,6 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 		createFunctionOp,
 		createTableOp,
 		createTableAsOp,
-		createTriggerOp,
 		createViewOp,
 		sequenceSelectOp,
 		saveTableOp,
@@ -1315,43 +1147,11 @@ func (e *emitter) emitTuples(rows tree.ExprContainer, numColumns int) {
 		rows.NumRows(), util.Pluralize(int64(rows.NumRows())),
 	)
 	if e.ob.flags.Verbose {
-		const maxLines = 30
-		if rows.NumRows()*rows.NumCols() <= maxLines || rows.NumRows() <= 2 {
-			// Emit all rows fully when we'll use a handful of lines, or we have
-			// at most two rows.
-			e.emitTuplesRange(rows, 0 /* rowStartIdx */, rows.NumRows())
-		} else {
-			// We have at least three rows and need to collapse the output.
-			//
-			// Always emit the first and the last rows.
-			headEndIdx, tailStartIdx := 1, rows.NumRows()-1
-			// Split the remaining "line budget" evenly, favoring the "head" a
-			// bit, without exceeding the limit.
-			availableLines := (maxLines - 2*rows.NumCols()) / rows.NumCols()
-			extraHeadLength, extraTailLength := availableLines-availableLines/2, availableLines/2
-			headEndIdx += extraHeadLength
-			tailStartIdx -= extraTailLength
-			if headEndIdx >= tailStartIdx {
-				// This should never happen, but just to be safe we'll handle
-				// the case when "head" and "tail" combine, and we end up
-				// emitting all rows.
-				e.emitTuplesRange(rows, 0 /* rowStartIdx */, rows.NumRows())
-			} else {
-				e.emitTuplesRange(rows, 0 /* rowStartIdx */, headEndIdx)
-				e.ob.AddField("...", "")
-				e.emitTuplesRange(rows, tailStartIdx, rows.NumRows())
+		for i := 0; i < rows.NumRows(); i++ {
+			for j := 0; j < rows.NumCols(); j++ {
+				expr := rows.Get(i, j).(tree.TypedExpr)
+				e.ob.Expr(fmt.Sprintf("row %d, expr %d", i, j), expr, nil /* varColumns */)
 			}
-		}
-	}
-}
-
-// emitTuplesRange emits all tuples in the [rowStartIdx, rowEndIdx) range from
-// the given container.
-func (e *emitter) emitTuplesRange(rows tree.ExprContainer, rowStartIdx, rowEndIdx int) {
-	for i := rowStartIdx; i < rowEndIdx; i++ {
-		for j := 0; j < rows.NumCols(); j++ {
-			expr := rows.Get(i, j).(tree.TypedExpr)
-			e.ob.Expr(fmt.Sprintf("row %d, expr %d", i, j), expr, nil /* varColumns */)
 		}
 	}
 }
@@ -1402,39 +1202,6 @@ func (e *emitter) emitJoinAttributes(
 		}
 	}
 	e.ob.Expr("pred", extraOnCond, appendColumns(leftCols, rightCols...))
-}
-
-func (e *emitter) emitPolicies(ob *OutputBuilder, table cat.Table, n *Node) {
-	if !ob.flags.ShowPolicyInfo {
-		return
-	}
-	val, ok := n.annotations[exec.PolicyInfoID]
-	if !ok {
-		return
-	}
-	applied := val.(*exec.RLSPoliciesApplied)
-
-	if applied.PoliciesSkippedForRole {
-		ob.AddField("policies", "exempt for role")
-	} else if applied.PoliciesFilteredAllRows {
-		ob.AddField("policies", "applied (filtered all rows)")
-	} else if applied.Policies.Len() == 0 {
-		ob.AddField("policies", "row-level security enabled, no policies applied.")
-	} else {
-		var sb strings.Builder
-		policies := table.Policies()
-		for _, grp := range [][]cat.Policy{policies.Permissive, policies.Restrictive} {
-			for _, policy := range grp {
-				if applied.Policies.Contains(policy.ID) {
-					if sb.Len() > 0 {
-						sb.WriteString(", ")
-					}
-					sb.WriteString(policy.Name.Normalize())
-				}
-			}
-		}
-		ob.AddField("policies", sb.String())
-	}
 }
 
 func printColumns(inputCols colinfo.ResultColumns) string {

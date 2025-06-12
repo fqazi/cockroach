@@ -53,7 +53,6 @@ import (
 
 // setClusterSettingNode represents a SET CLUSTER SETTING statement.
 type setClusterSettingNode struct {
-	zeroInputPlanNode
 	name    settings.SettingName
 	st      *cluster.Settings
 	setting settings.NonMaskedSetting
@@ -225,7 +224,7 @@ func (p *planner) SetClusterSetting(
 	}
 
 	if st.OverridesInformer != nil && st.OverridesInformer.IsOverridden(setting.InternalKey()) {
-		return nil, errors.Wrapf(cluster.SettingOverrideErr, "cluster setting '%s' cannot be set", name)
+		return nil, errors.Errorf("cluster setting '%s' is currently overridden by the operator", name)
 	}
 
 	value, err := p.getAndValidateTypedClusterSetting(ctx, name, n.Value, setting)
@@ -279,9 +278,8 @@ func (p *planner) getAndValidateTypedClusterSetting(
 				requiredType = types.Int
 			case *settings.FloatSetting:
 				requiredType = types.Float
-			case settings.AnyEnumSetting:
-				// EnumSettings can be set with either strings or integers.
-				requiredType = types.AnyElement
+			case *settings.EnumSetting:
+				requiredType = types.Any
 			case *settings.DurationSetting:
 				requiredType = types.Interval
 			case *settings.DurationSettingWithExplicitUnit:
@@ -794,9 +792,6 @@ func toSettingString(
 		return "", errors.Errorf("cannot use %s %T value for string setting", d.ResolvedType(), d)
 	case *settings.BoolSetting:
 		if b, ok := d.(*tree.DBool); ok {
-			if err := setting.Validate(&st.SV, bool(*b)); err != nil {
-				return "", err
-			}
 			return settings.EncodeBool(bool(*b)), nil
 		}
 		return "", errors.Errorf("cannot use %s %T value for bool setting", d.ResolvedType(), d)
@@ -816,20 +811,20 @@ func toSettingString(
 			return settings.EncodeFloat(float64(*f)), nil
 		}
 		return "", errors.Errorf("cannot use %s %T value for float setting", d.ResolvedType(), d)
-	case settings.AnyEnumSetting:
+	case *settings.EnumSetting:
 		if i, intOK := d.(*tree.DInt); intOK {
 			v, ok := setting.ParseEnum(settings.EncodeInt(int64(*i)))
 			if ok {
 				return settings.EncodeInt(v), nil
 			}
-			return "", errors.WithHint(errors.Errorf("invalid integer value '%d' for enum setting", *i), setting.GetAvailableValuesAsHint())
+			return "", errors.WithHintf(errors.Errorf("invalid integer value '%d' for enum setting", *i), setting.GetAvailableValuesAsHint())
 		} else if s, ok := d.(*tree.DString); ok {
 			str := string(*s)
 			v, ok := setting.ParseEnum(str)
 			if ok {
 				return settings.EncodeInt(v), nil
 			}
-			return "", errors.WithHint(errors.Errorf("invalid string value '%s' for enum setting", str), setting.GetAvailableValuesAsHint())
+			return "", errors.WithHintf(errors.Errorf("invalid string value '%s' for enum setting", str), setting.GetAvailableValuesAsHint())
 		}
 		return "", errors.Errorf("cannot use %s %T value for enum setting, must be int or string", d.ResolvedType(), d)
 	case *settings.ByteSizeSetting:

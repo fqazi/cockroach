@@ -24,7 +24,7 @@ func constructPlan(
 	planner *planner,
 	root exec.Node,
 	subqueries []exec.Subquery,
-	cascades, triggers []exec.PostQuery,
+	cascades []exec.Cascade,
 	checks []exec.Node,
 	rootRowCount int64,
 	flags exec.PlanFlags,
@@ -57,8 +57,6 @@ func constructPlan(
 				out.execMode = rowexec.SubqueryExecModeAllRowsNormalized
 			case exec.SubqueryAllRows:
 				out.execMode = rowexec.SubqueryExecModeAllRows
-			case exec.SubqueryDiscardAllRows:
-				out.execMode = rowexec.SubqueryExecModeDiscardAllRows
 			default:
 				return nil, errors.Errorf("invalid SubqueryMode %d", in.Mode)
 			}
@@ -68,21 +66,15 @@ func constructPlan(
 		}
 	}
 	if len(cascades) > 0 {
-		res.cascades = make([]postQueryMetadata, len(cascades))
+		res.cascades = make([]cascadeMetadata, len(cascades))
 		for i := range cascades {
-			res.cascades[i].PostQuery = cascades[i]
+			res.cascades[i].Cascade = cascades[i]
 		}
 	}
 	if len(checks) > 0 {
 		res.checkPlans = make([]checkPlan, len(checks))
 		for i := range checks {
 			assignPlan(&res.checkPlans[i].plan, checks[i])
-		}
-	}
-	if len(triggers) > 0 {
-		res.triggers = make([]postQueryMetadata, len(triggers))
-		for i := range triggers {
-			res.triggers[i].PostQuery = triggers[i]
 		}
 	}
 	if flags.IsSet(exec.PlanFlagIsDDL) {
@@ -248,6 +240,16 @@ func getResultColumnsForGroupBy(
 	return columns
 }
 
+// convertNodeOrdinalsToInts converts a slice of exec.NodeColumnOrdinals to a slice
+// of ints.
+func convertNodeOrdinalsToInts(ordinals []exec.NodeColumnOrdinal) []int {
+	ints := make([]int, len(ordinals))
+	for i := range ordinals {
+		ints[i] = int(ordinals[i])
+	}
+	return ints
+}
+
 func constructVirtualScan(
 	ef exec.Factory,
 	p *planner,
@@ -269,12 +271,13 @@ func constructVirtualScan(
 	}
 	idx := index.(*optVirtualIndex).idx
 	columns, constructor := virtual.getPlanInfo(
-		table.(*optVirtualTable).desc, idx, params.IndexConstraint, p.execCfg.Stopper,
-	)
+		table.(*optVirtualTable).desc,
+		idx, params.IndexConstraint, p.execCfg.DistSQLPlanner.stopper)
 
 	n, err := delayedNodeCallback(&delayedNode{
-		name:    fmt.Sprintf("%s@%s", table.Name(), index.Name()),
-		columns: columns,
+		name:            fmt.Sprintf("%s@%s", table.Name(), index.Name()),
+		columns:         columns,
+		indexConstraint: params.IndexConstraint,
 		constructor: func(ctx context.Context, p *planner) (planNode, error) {
 			return constructor(ctx, p, tn.Catalog())
 		},
@@ -313,12 +316,21 @@ func constructVirtualScan(
 	// Virtual indexes never provide a legitimate ordering, so we have to make
 	// sure to sort if we have a required ordering.
 	if len(reqOrdering) != 0 {
-		n, err = ef.ConstructSort(n, reqOrdering, 0 /* alreadyOrderedPrefix */, 0 /* estimatedInputRowCount */)
+		n, err = ef.ConstructSort(n, reqOrdering, 0)
 		if err != nil {
 			return nil, err
 		}
 	}
 	return n, nil
+}
+
+func scanContainsSystemColumns(colCfg *scanColumnsConfig) bool {
+	for _, id := range colCfg.wantedColumns {
+		if colinfo.IsColIDSystemColumn(id) {
+			return true
+		}
+	}
+	return false
 }
 
 func constructOpaque(metadata opt.OpaqueMetadata) (planNode, error) {

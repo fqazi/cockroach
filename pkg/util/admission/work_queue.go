@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -130,30 +129,43 @@ var epochLIFOEpochDuration = settings.RegisterDurationSetting(
 	"admission.epoch_lifo.epoch_duration",
 	"the duration of an epoch, for epoch-LIFO admission control ordering",
 	epochLength,
-	settings.DurationWithMinimum(time.Millisecond),
-	settings.WithPublic)
+	settings.WithValidateDuration(func(v time.Duration) error {
+		if v < time.Millisecond {
+			return errors.Errorf("epoch-LIFO: epoch duration is too small")
+		}
+		return nil
+	}), settings.WithPublic)
 
 var epochLIFOEpochClosingDeltaDuration = settings.RegisterDurationSetting(
 	settings.ApplicationLevel,
 	"admission.epoch_lifo.epoch_closing_delta_duration",
 	"the delta duration before closing an epoch, for epoch-LIFO admission control ordering",
 	epochClosingDelta,
-	settings.DurationWithMinimum(time.Millisecond),
-	settings.WithPublic)
+	settings.WithValidateDuration(func(v time.Duration) error {
+		if v < time.Millisecond {
+			return errors.Errorf("epoch-LIFO: epoch closing delta is too small")
+		}
+		return nil
+	}), settings.WithPublic)
 
 var epochLIFOQueueDelayThresholdToSwitchToLIFO = settings.RegisterDurationSetting(
 	settings.ApplicationLevel,
 	"admission.epoch_lifo.queue_delay_threshold_to_switch_to_lifo",
 	"the queue delay encountered by a (tenant,priority) for switching to epoch-LIFO ordering",
 	maxQueueDelayToSwitchToLifo,
-	settings.DurationWithMinimum(time.Millisecond),
-	settings.WithPublic)
+	settings.WithValidateDuration(func(v time.Duration) error {
+		if v < time.Millisecond {
+			return errors.Errorf("epoch-LIFO: queue delay threshold is too small")
+		}
+		return nil
+	}), settings.WithPublic)
 
 var rangeSequencerGCThreshold = settings.RegisterDurationSetting(
 	settings.ApplicationLevel,
 	"admission.replication_control.range_sequencer_gc_threshold",
 	"the inactive duration for a range sequencer after it's garbage collected",
 	5*time.Minute,
+	settings.NonNegativeDuration,
 )
 
 // WorkInfo provides information that is used to order work within an WorkQueue.
@@ -198,15 +210,13 @@ type ReplicatedWorkInfo struct {
 	// RangeID identifies the raft group on behalf of which work is being
 	// admitted.
 	RangeID roachpb.RangeID
-	// Replica that asked for admission.
-	ReplicaID roachpb.ReplicaID
-	// LeaderTerm is the term of the leader that asked for this entry to be
-	// appended.
-	LeaderTerm uint64
+	// Origin is the node at which this work originated. It's used for
+	// replication admission control to inform the origin of admitted work
+	// (after which flow tokens are released, permitting more replicated
+	// writes).
+	Origin roachpb.NodeID
 	// LogPosition is the point on the raft log where the write was replicated.
 	LogPosition LogPosition
-	// RaftPri is the raft priority of the entry. Only populated for RACv2.
-	RaftPri raftpb.Priority
 	// Ingested captures whether the write work corresponds to an ingest
 	// (for sstables, for example). This is used alongside RequestedCount to
 	// maintain accurate linear models for L0 growth due to ingests and
@@ -328,6 +338,8 @@ func makeWorkQueueOptions(workKind WorkKind) workQueueOptions {
 		return workQueueOptions{usesTokens: false, tiedToRange: true}
 	case SQLKVResponseWork, SQLSQLResponseWork:
 		return workQueueOptions{usesTokens: true, tiedToRange: false}
+	case SQLStatementLeafStartWork, SQLStatementRootStartWork:
+		return workQueueOptions{usesTokens: false, tiedToRange: false}
 	default:
 		panic(errors.AssertionFailedf("unexpected workKind %d", workKind))
 	}
@@ -507,20 +519,7 @@ func (q *WorkQueue) tryCloseEpoch(timeNow time.Time) {
 		return
 	}
 	q.mu.closedEpochThreshold = epoch
-	initializedDoLog := false
-	doLog := false
-	// doLogFunc is called inside the for loop, whenever a caller has something
-	// interesting to log. It delays sampling logThreshold until it is actually
-	// needed. Once logThreshold is sampled, it is not sampled again.
-	doLogFunc := func() bool {
-		if initializedDoLog {
-			return doLog
-		}
-		initializedDoLog = true
-		// Log only if epochLIFOEnabled.
-		doLog = epochLIFOEnabled && q.logThreshold.ShouldLog()
-		return doLog
-	}
+	doLog := q.logThreshold.ShouldLog()
 	for _, tenant := range q.mu.tenants {
 		prevThreshold := tenant.fifoPriorityThreshold
 		tenant.fifoPriorityThreshold =
@@ -529,7 +528,7 @@ func (q *WorkQueue) tryCloseEpoch(timeNow time.Time) {
 		if !epochLIFOEnabled {
 			tenant.fifoPriorityThreshold = int(admissionpb.LowPri)
 		}
-		if tenant.fifoPriorityThreshold != prevThreshold && doLogFunc() {
+		if tenant.fifoPriorityThreshold != prevThreshold || doLog {
 			logVerb := redact.SafeString("is")
 			if tenant.fifoPriorityThreshold != prevThreshold {
 				logVerb = "changed to"
@@ -652,9 +651,10 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 				// fast path, or swapping this entry from the top-most one in
 				// the waiting heap (and fixing the heap).
 				if log.V(1) {
-					log.Infof(ctx, "fast-path: admitting t%d pri=%s r%s log-position=%s ingested=%t",
+					log.Infof(ctx, "fast-path: admitting t%d pri=%s r%s origin=n%s log-position=%s ingested=%t",
 						tenantID, info.Priority,
 						info.ReplicatedWorkInfo.RangeID,
+						info.ReplicatedWorkInfo.Origin,
 						info.ReplicatedWorkInfo.LogPosition.String(),
 						info.ReplicatedWorkInfo.Ingested,
 					)
@@ -748,9 +748,10 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 			queueLen := tenant.waitingWorkHeap.Len()
 			q.mu.Unlock()
 
-			log.Infof(ctx, "async-path: len(waiting-work)=%d: enqueued t%d pri=%s r%s log-position=%s ingested=%t",
+			log.Infof(ctx, "async-path: len(waiting-work)=%d: enqueued t%d pri=%s r%s origin=n%s log-position=%s ingested=%t",
 				queueLen, tenantID, info.Priority,
 				info.ReplicatedWorkInfo.RangeID,
+				info.ReplicatedWorkInfo.Origin,
 				info.ReplicatedWorkInfo.LogPosition,
 				info.ReplicatedWorkInfo.Ingested,
 			)
@@ -834,21 +835,19 @@ func recordAdmissionWorkQueueStats(
 	if span == nil {
 		return
 	}
-	var deadlineExceededCount int32
-	if deadlineExceeded {
-		deadlineExceededCount = 1
-	}
 	span.RecordStructured(&admissionpb.AdmissionWorkQueueStats{
-		WaitDurationNanos:     waitDur,
-		QueueKind:             string(queueKind),
-		DeadlineExceededCount: deadlineExceededCount,
-		WorkPriority:          int32(workPriority),
+		WaitDurationNanos: waitDur,
+		QueueKind:         string(queueKind),
+		DeadlineExceeded:  deadlineExceeded,
+		WorkPriority:      admissionpb.WorkPriorityDict[workPriority],
 	})
 }
 
 // AdmittedWorkDone is used to inform the WorkQueue that some admitted work is
 // finished. It must be called iff the WorkKind of this WorkQueue uses slots
-// (not tokens), i.e., KVWork.
+// (not tokens), i.e., KVWork, SQLStatementLeafStartWork,
+// SQLStatementRootStartWork. Note, there is no support for SQLStatementLeafStartWork,
+// SQLStatementRootStartWork in the code yet.
 func (q *WorkQueue) AdmittedWorkDone(tenantID roachpb.TenantID, cpuTime time.Duration) {
 	if q.usesTokens {
 		panic(errors.AssertionFailedf("tokens should not be returned"))
@@ -915,9 +914,10 @@ func (q *WorkQueue) granted(grantChainID grantChainID) int64 {
 			queueLen := tenant.waitingWorkHeap.Len()
 			q.mu.Unlock()
 
-			log.Infof(q.ambientCtx, "async-path: len(waiting-work)=%d dequeued t%d pri=%s r%s log-position=%s ingested=%t",
+			log.Infof(q.ambientCtx, "async-path: len(waiting-work)=%d dequeued t%d pri=%s r%s origin=n%s log-position=%s ingested=%t",
 				queueLen, tenantID, item.priority,
 				item.replicated.RangeID,
+				item.replicated.Origin,
 				item.replicated.LogPosition,
 				item.replicated.Ingested,
 			)
@@ -1728,24 +1728,6 @@ var (
 		Measurement: "Wait time Duration",
 		Unit:        metric.Unit_NANOSECONDS,
 	}
-	kvWaitDurationsMeta = metric.Metadata{
-		Name:        "admission.wait_durations.",
-		Help:        "Wait time durations for requests that waited",
-		Measurement: "Wait time Duration",
-		Unit:        metric.Unit_NANOSECONDS,
-		Essential:   true,
-		Category:    metric.Metadata_OVERLOAD,
-		HowToUse:    "This metric shows if CPU utilization-based admission control feature is working effectively or potentially overaggressive. This is a latency histogram of how much delay was added to the workload due to throttling. If observing over 100ms waits for over 5 seconds while there was excess capacity available, then the admission control is overly aggressive.",
-	}
-	kvStoresWaitDurationsMeta = metric.Metadata{
-		Name:        "admission.wait_durations.",
-		Help:        "Wait time durations for requests that waited",
-		Measurement: "Wait time Duration",
-		Unit:        metric.Unit_NANOSECONDS,
-		Essential:   true,
-		Category:    metric.Metadata_OVERLOAD,
-		HowToUse:    "This metric shows if I/O utilization-based admission control feature is working effectively or potentially overaggressive. This is a latency histogram of how much delay was added to the workload due to throttling. If observing over 100ms waits for over 5 seconds while there was excess capacity available, then the admission control is overly aggressive.",
-	}
 	waitQueueLengthMeta = metric.Metadata{
 		Name:        "admission.wait_queue_length.",
 		Help:        "Length of wait queue",
@@ -1765,8 +1747,8 @@ func addName(name string, meta metric.Metadata) metric.Metadata {
 // instead of by setting values.
 type WorkQueueMetrics struct {
 	name       string
-	total      *workQueueMetricsSingle
-	byPriority syncutil.Map[admissionpb.WorkPriority, workQueueMetricsSingle]
+	total      workQueueMetricsSingle
+	byPriority sync.Map
 	registry   *metric.Registry
 }
 
@@ -1775,7 +1757,7 @@ type WorkQueueMetrics struct {
 // TODO(abaptist): Until https://github.com/cockroachdb/cockroach/issues/88846
 // is fixed, this code is not useful since late registered metrics are not
 // visible.
-func (m *WorkQueueMetrics) getOrCreate(priority admissionpb.WorkPriority) *workQueueMetricsSingle {
+func (m *WorkQueueMetrics) getOrCreate(priority admissionpb.WorkPriority) workQueueMetricsSingle {
 	// Try loading from the map first.
 	val, ok := m.byPriority.Load(priority)
 	if !ok {
@@ -1790,7 +1772,7 @@ func (m *WorkQueueMetrics) getOrCreate(priority admissionpb.WorkPriority) *workQ
 			m.registry.AddMetricStruct(val)
 		}
 	}
-	return val
+	return val.(workQueueMetricsSingle)
 }
 
 type workQueueMetricsSingle struct {
@@ -1873,21 +1855,14 @@ func makeWorkQueueMetrics(
 	return wqm
 }
 
-func makeWorkQueueMetricsSingle(name string) *workQueueMetricsSingle {
-	wdm := waitDurationsMeta
-	if name == KVWork.String() {
-		wdm = kvWaitDurationsMeta
-	} else if name == fmt.Sprintf("%s-stores", KVWork.String()) {
-		wdm = kvStoresWaitDurationsMeta
-	}
-
-	return &workQueueMetricsSingle{
+func makeWorkQueueMetricsSingle(name string) workQueueMetricsSingle {
+	return workQueueMetricsSingle{
 		Requested: metric.NewCounter(addName(name, requestedMeta)),
 		Admitted:  metric.NewCounter(addName(name, admittedMeta)),
 		Errored:   metric.NewCounter(addName(name, erroredMeta)),
 		WaitDurations: metric.NewHistogram(metric.HistogramOptions{
 			Mode:         metric.HistogramModePreferHdrLatency,
-			Metadata:     addName(name, wdm),
+			Metadata:     addName(name, waitDurationsMeta),
 			Duration:     base.DefaultHistogramWindowInterval(),
 			BucketConfig: metric.IOLatencyBuckets,
 		}),
@@ -2107,49 +2082,29 @@ func (q *StoreWorkQueue) admittedReplicatedWork(
 	// revisit -- one possibility is to add this to a notification queue and
 	// have a separate goroutine invoke these callbacks (without holding
 	// coord.mu). We could directly invoke here too if not holding the lock.
-	cbState := LogEntryAdmittedCallbackState{
-		StoreID:    q.storeID,
-		RangeID:    rwi.RangeID,
-		ReplicaID:  rwi.ReplicaID,
-		LeaderTerm: rwi.LeaderTerm,
-		Pos:        rwi.LogPosition,
-		Pri:        pri,
-		RaftPri:    rwi.RaftPri,
-	}
-	q.onLogEntryAdmitted.AdmittedLogEntry(q.q[wc].ambientCtx, cbState)
+	q.onLogEntryAdmitted.AdmittedLogEntry(
+		q.q[wc].ambientCtx,
+		rwi.Origin,
+		pri,
+		q.storeID,
+		rwi.RangeID,
+		rwi.LogPosition,
+	)
 }
 
-// OnLogEntryAdmitted is used to observe the specific entries that were
-// admitted. Since admission control for log entries is
-// asynchronous/non-blocking, this allows callers to do requisite
+// OnLogEntryAdmitted is used to observe the specific entries (identified by
+// rangeID + log position) that were admitted. Since admission control for log
+// entries is asynchronous/non-blocking, this allows callers to do requisite
 // post-admission bookkeeping.
 type OnLogEntryAdmitted interface {
-	AdmittedLogEntry(ctx context.Context, cbState LogEntryAdmittedCallbackState)
-}
-
-// LogEntryAdmittedCallbackState is passed to AdmittedLogEntry.
-type LogEntryAdmittedCallbackState struct {
-	// Store on which the entry was admitted.
-	StoreID roachpb.StoreID
-	// Range that contained that entry.
-	RangeID roachpb.RangeID
-	// Replica that asked for admission.
-	ReplicaID roachpb.ReplicaID
-	// LeaderTerm is the term of the leader that asked for this entry to be
-	// appended.
-	LeaderTerm uint64
-	// Pos is the position of the entry in the log.
-	//
-	// TODO(sumeer): when the RACv1 protocol is deleted, drop the Term from this
-	// struct, and replace LeaderTerm/Pos.Index with a LogMark.
-	Pos LogPosition
-	// Pri is the admission priority used for admission.
-	Pri admissionpb.WorkPriority
-	// RaftPri is only populated for replication admission control v2 (RACv2).
-	// It is the raft priority for the entry. Technically, it could be derived
-	// from Pri, but we do not want the admission package to be aware of this
-	// translation.
-	RaftPri raftpb.Priority
+	AdmittedLogEntry(
+		ctx context.Context,
+		origin roachpb.NodeID, /* node where the entry originated */
+		pri admissionpb.WorkPriority, /* admission priority of the entry */
+		storeID roachpb.StoreID, /* store on which the entry was admitted */
+		rangeID roachpb.RangeID, /* identifying range for the log entry */
+		pos LogPosition, /* log position of the entry that was admitted*/
+	)
 }
 
 // AdmittedWorkDone indicates to the queue that the admitted work has completed.

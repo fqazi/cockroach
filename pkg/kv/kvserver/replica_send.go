@@ -9,9 +9,9 @@ import (
 	"context"
 	"reflect"
 	"runtime/pprof"
-	"runtime/trace"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
@@ -129,9 +129,6 @@ func (r *Replica) SendWithWriteBytes(
 		ctx = pprof.WithLabels(ctx, pprof.Labels("range_str", r.rangeStr.ID()))
 		pprof.SetGoroutineLabels(ctx)
 	}
-	if trace.IsEnabled() {
-		defer trace.StartRegion(ctx, r.rangeStr.String() /* cheap */).End()
-	}
 	// Add the range log tag.
 	ctx = r.AnnotateCtx(ctx)
 
@@ -139,6 +136,9 @@ func (r *Replica) SendWithWriteBytes(
 	// recorded regardless of errors that are encountered.
 	startCPU := grunning.Time()
 	defer r.MeasureReqCPUNanos(startCPU)
+
+	// If the internal Raft group is quiesced, wake it and the leader.
+	r.maybeUnquiesce(ctx, true /* wakeLeader */, true /* mayCampaign */)
 
 	isReadOnly := ba.IsReadOnly()
 	if err := r.checkBatchRequest(ba, isReadOnly); err != nil {
@@ -310,8 +310,14 @@ func (r *Replica) maybeAddRangeInfoToResponse(
 	// DistSender and never use ClientRangeInfo.
 	//
 	// From 23.2, all DistSenders ensure ExplicitlyRequested is set when otherwise
-	// empty.
-	if ba.ClientRangeInfo == (roachpb.ClientRangeInfo{}) {
+	// empty. Fall back to check for lease requests, to avoid 23.1 regressions.
+	if r.ClusterSettings().Version.IsActive(ctx, clusterversion.V23_2) {
+		if ba.ClientRangeInfo == (roachpb.ClientRangeInfo{}) {
+			return
+		}
+	} else if ba.IsSingleRequestLeaseRequest() {
+		// TODO(erikgrinaker): Remove this branch when 23.1 support is dropped.
+		_ = clusterversion.V23_1
 		return
 	}
 
@@ -461,13 +467,12 @@ func (r *Replica) executeBatchWithConcurrencyRetries(
 			ReadConsistency: ba.ReadConsistency,
 			WaitPolicy:      ba.WaitPolicy,
 			LockTimeout:     ba.LockTimeout,
-			DeadlockTimeout: ba.DeadlockTimeout,
 			AdmissionHeader: ba.AdmissionHeader,
 			PoisonPolicy:    pp,
 			Requests:        ba.Requests,
 			LatchSpans:      latchSpans, // nil if g != nil
 			LockSpans:       lockSpans,  // nil if g != nil
-			Batch:           ba,
+			BaFmt:           ba,
 		}, requestEvalKind)
 		if pErr != nil {
 			if poisonErr := (*poison.PoisonedError)(nil); errors.As(pErr.GoError(), &poisonErr) {
@@ -993,6 +998,11 @@ func (r *Replica) executeAdminBatch(
 		pErr = kvpb.NewError(err)
 		resp = &reply
 
+	case *kvpb.AdminVerifyProtectedTimestampRequest:
+		reply, err := r.adminVerifyProtectedTimestamp(ctx, *tArgs)
+		pErr = kvpb.NewError(err)
+		resp = &reply
+
 	default:
 		return nil, kvpb.NewErrorf("unrecognized admin command: %T", args)
 	}
@@ -1105,7 +1115,7 @@ func (r *Replica) collectSpans(
 	latchSpans, lockSpans = spanset.New(), lockspanset.New()
 	r.mu.RLock()
 	desc := r.descRLocked()
-	liveCount := r.shMu.state.Stats.LiveCount
+	liveCount := r.mu.state.Stats.LiveCount
 	r.mu.RUnlock()
 	// TODO(bdarnell): need to make this less global when local
 	// latches are used more heavily. For example, a split will

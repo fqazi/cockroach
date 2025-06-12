@@ -19,14 +19,12 @@ const plugins = [
   "@babel/proposal-object-rest-spread",
   // @babel/plugin-transform-runtime is required to support dynamic loading of cluster-ui package
   "@babel/plugin-transform-runtime",
+  ["import", { libraryName: "antd", style: true }],
 ];
 
 const env = {
   test: {
-    plugins: [
-      ["@babel/plugin-transform-runtime", { absoluteRuntime: true }],
-      "@babel/plugin-transform-modules-commonjs",
-    ],
+    plugins: ["@babel/plugin-transform-modules-commonjs"],
   },
 };
 

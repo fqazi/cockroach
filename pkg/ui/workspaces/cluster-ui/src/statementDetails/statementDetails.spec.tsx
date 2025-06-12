@@ -3,12 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { assert } from "chai";
-import React from "react";
-import { MemoryRouter as Router } from "react-router-dom";
 import { createSandbox } from "sinon";
-
+import { MemoryRouter as Router } from "react-router-dom";
 import { StatementDetails, StatementDetailsProps } from "./statementDetails";
 import { getStatementDetailsPropsFixture } from "./statementDetails.fixture";
 

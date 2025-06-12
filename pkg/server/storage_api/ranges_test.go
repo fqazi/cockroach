@@ -7,7 +7,6 @@ package storage_api_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
@@ -18,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/srvtestutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -29,16 +27,14 @@ func TestRangesResponse(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	defer kvserver.EnableLeaseHistoryForTesting(100)()
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	srv := serverutils.StartServerOnly(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(110019),
+	})
 	defer srv.Stopper().Stop(context.Background())
 	ts := srv.ApplicationLayer()
 
-	// Create few ranges
-	r := sqlutils.MakeSQLRunner(ts.SQLConn(t))
-	r.Exec(t, "CREATE TABLE t (x INT PRIMARY KEY, xsquared INT)")
-	for i := 0; i < 5; i++ {
-		r.Exec(t, fmt.Sprintf("ALTER TABLE t SPLIT AT VALUES (%d)", 100*i/5))
-	}
+	// TODO(#110019): grant a special capability to the secondary tenant
+	// before the endpoint can be accessed.
 
 	t.Run("test ranges response", func(t *testing.T) {
 		// Perform a scan to ensure that all the raft groups are initialized.
@@ -132,7 +128,9 @@ func TestRangeResponse(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	defer kvserver.EnableLeaseHistoryForTesting(100)()
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	srv := serverutils.StartServerOnly(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(110018),
+	})
 	defer srv.Stopper().Stop(context.Background())
 	ts := srv.ApplicationLayer()
 
@@ -141,54 +139,29 @@ func TestRangeResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Run("access range endpoint within current tenant's scope", func(t *testing.T) {
-		var currentTenantRangeId int64
-		// Create a new table in the current tenant.
-		r := sqlutils.MakeSQLRunner(ts.SQLConn(t))
-		r.Exec(t, "CREATE TABLE t (x INT PRIMARY KEY, xsquared INT)")
-		for i := 0; i < 5; i++ {
-			r.Exec(t, fmt.Sprintf("ALTER TABLE t SPLIT AT VALUES (%d)", 100*i/5))
-		}
-		// Get some ranges from the given table
-		r.QueryRow(t, "SELECT range_id FROM [SHOW RANGES FROM TABLE t WITH DETAILS] LIMIT 1;").Scan(&currentTenantRangeId)
-		t.Logf("Table 't' range: %d", currentTenantRangeId)
-		require.NoError(t, validateRangeBelongsToTenant(ts, currentTenantRangeId))
-	})
+	// TODO(#110018): grant a special capability to the secondary tenant
+	// before the endpoint can be accessed.
 
-	t.Run("access range endpoint within system tenant's scope", func(t *testing.T) {
-		if !srv.StartedDefaultTestTenant() {
-			require.NoError(t, validateRangeBelongsToTenant(ts, 1))
-		} else {
-			expectedError := fmt.Errorf("got the wrong number of ranges in the response, expected %d, actual %d", 1, 0)
-			actualError := validateRangeBelongsToTenant(ts, 1)
-			require.Error(t, actualError)
-			require.Equal(t, expectedError, actualError)
-		}
-
-	})
-}
-
-func validateRangeBelongsToTenant(ts serverutils.ApplicationLayerInterface, rangeId int64) error {
 	var response serverpb.RangeResponse
-	if err := srvtestutils.GetStatusJSONProto(ts, fmt.Sprintf("range/%d", rangeId), &response); err != nil {
-		return err
+	if err := srvtestutils.GetStatusJSONProto(ts, "range/1", &response); err != nil {
+		t.Fatal(err)
 	}
 
 	// This is a single node cluster, so only expect a single response.
 	if e, a := 1, len(response.ResponsesByNodeID); e != a {
-		return fmt.Errorf("got the wrong number of responses, expected %d, actual %d", e, a)
+		t.Errorf("got the wrong number of responses, expected %d, actual %d", e, a)
 	}
 
 	node1Response := response.ResponsesByNodeID[response.NodeID]
 
 	// The response should come back as valid.
 	if !node1Response.Response {
-		return fmt.Errorf("node1's response returned as false, expected true")
+		t.Errorf("node1's response returned as false, expected true")
 	}
 
 	// The response should include just the one range.
 	if e, a := 1, len(node1Response.Infos); e != a {
-		return fmt.Errorf("got the wrong number of ranges in the response, expected %d, actual %d", e, a)
+		t.Fatalf("got the wrong number of ranges in the response, expected %d, actual %d", e, a)
 	}
 
 	info := node1Response.Infos[0]
@@ -200,19 +173,18 @@ func validateRangeBelongsToTenant(ts serverutils.ApplicationLayerInterface, rang
 
 	// Check some other values.
 	if len(info.State.Desc.InternalReplicas) != 1 || info.State.Desc.InternalReplicas[0] != expReplica {
-		return fmt.Errorf("unexpected replica list %+v", info.State.Desc.InternalReplicas)
+		t.Errorf("unexpected replica list %+v", info.State.Desc.InternalReplicas)
 	}
 
 	if info.State.Lease == nil || info.State.Lease.Empty() {
-		return fmt.Errorf("expected a nontrivial Lease")
+		t.Error("expected a nontrivial Lease")
 	}
 
 	if info.State.LastIndex == 0 {
-		return fmt.Errorf("expected positive LastIndex")
+		t.Error("expected positive LastIndex")
 	}
 
 	if len(info.LeaseHistory) == 0 {
-		return fmt.Errorf("expected at least one lease history entry")
+		t.Error("expected at least one lease history entry")
 	}
-	return nil
 }

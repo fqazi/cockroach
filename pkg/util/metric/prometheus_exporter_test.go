@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gogo/protobuf/proto"
 	"github.com/prometheus/common/expfmt"
 	"github.com/stretchr/testify/require"
 )
@@ -38,19 +37,10 @@ func TestPrometheusExporter(t *testing.T) {
 	c2Dup := NewCounter(c2MetaDup)
 	r2.AddMetric(c2Dup)
 
-	multilineHelp := `This is a multiline
-      help message. With a second 
-      sentence.`
-	r1.AddMetric(NewGauge(Metadata{
-		Name: "help.multiline",
-		Help: multilineHelp,
-	}))
-
 	pe := MakePrometheusExporter()
 	const includeChildMetrics = false
-	const includeAggregateMetrics = true
-	pe.ScrapeRegistry(r1, WithIncludeChildMetrics(includeChildMetrics), WithIncludeAggregateMetrics(includeAggregateMetrics))
-	pe.ScrapeRegistry(r2, WithIncludeChildMetrics(includeChildMetrics), WithIncludeAggregateMetrics(includeAggregateMetrics))
+	pe.ScrapeRegistry(r1, includeChildMetrics)
+	pe.ScrapeRegistry(r2, includeChildMetrics)
 
 	type metricLabels map[string]string
 	type family struct {
@@ -76,9 +66,6 @@ func TestPrometheusExporter(t *testing.T) {
 		}},
 		"shared_counter_dup": {[]metricLabels{
 			{"counter": "two", "registry": "two"},
-		}},
-		"help_multiline": {[]metricLabels{
-			{},
 		}},
 	}
 
@@ -143,8 +130,8 @@ func TestPrometheusExporter(t *testing.T) {
 	// Remove a metric, followed by a call to scrape and Gather. Results should
 	// only include metrics with data points.
 	r2.RemoveMetric(c2Dup)
-	pe.ScrapeRegistry(r1, WithIncludeChildMetrics(includeChildMetrics), WithIncludeAggregateMetrics(includeAggregateMetrics))
-	pe.ScrapeRegistry(r2, WithIncludeChildMetrics(includeChildMetrics), WithIncludeAggregateMetrics(includeAggregateMetrics))
+	pe.ScrapeRegistry(r1, includeChildMetrics)
+	pe.ScrapeRegistry(r2, includeChildMetrics)
 	families, err = pe.Gather()
 	if err != nil {
 		t.Errorf("unexpected error from Gather(): %v", err)
@@ -159,29 +146,25 @@ func TestPrometheusExporter(t *testing.T) {
 	var buf bytes.Buffer
 	pe = MakePrometheusExporter()
 	err = pe.ScrapeAndPrintAsText(&buf, expfmt.FmtText, func(exporter *PrometheusExporter) {
-		exporter.ScrapeRegistry(r1, WithIncludeChildMetrics(true), WithIncludeAggregateMetrics(includeAggregateMetrics))
+		exporter.ScrapeRegistry(r1, true)
 	})
 	require.NoError(t, err)
 	output := buf.String()
 	require.Regexp(t, "one_gauge 0", output)
 	require.Regexp(t, "one_gauge_dup 0", output)
 	require.Regexp(t, "shared_counter{counter=\"one\"}", output)
-
-	require.Regexp(t, "This is a multiline help message", output)
-	require.NotRegexp(t, multilineHelp, output)
-
-	require.Len(t, strings.Split(output, "\n"), 13)
+	require.Len(t, strings.Split(output, "\n"), 10)
 
 	buf.Reset()
 	r1.RemoveMetric(g1Dup)
 	err = pe.ScrapeAndPrintAsText(&buf, expfmt.FmtText, func(exporter *PrometheusExporter) {
-		exporter.ScrapeRegistry(r1, WithIncludeChildMetrics(true), WithIncludeAggregateMetrics(includeAggregateMetrics))
+		exporter.ScrapeRegistry(r1, true)
 	})
 	require.NoError(t, err)
 	output = buf.String()
 	require.Regexp(t, "one_gauge 0", output)
 	require.NotRegexp(t, "one_gauge_dup 0", output)
-	require.Len(t, strings.Split(output, "\n"), 10)
+	require.Len(t, strings.Split(output, "\n"), 7)
 }
 
 func TestPrometheusExporterNativeHistogram(t *testing.T) {
@@ -211,7 +194,7 @@ func TestPrometheusExporterNativeHistogram(t *testing.T) {
 	// Print metrics as proto text, since native histograms aren't yet supported.
 	// in the prometheus text exposition format.
 	err := pe.ScrapeAndPrintAsText(&buf, expfmt.FmtProtoText, func(exporter *PrometheusExporter) {
-		exporter.ScrapeRegistry(r, WithIncludeChildMetrics(false), WithIncludeAggregateMetrics(true))
+		exporter.ScrapeRegistry(r, false)
 	})
 	require.NoError(t, err)
 	output := buf.String()
@@ -221,112 +204,9 @@ func TestPrometheusExporterNativeHistogram(t *testing.T) {
 	buf.Reset()
 	r.RemoveMetric(histogram)
 	err = pe.ScrapeAndPrintAsText(&buf, expfmt.FmtProtoText, func(exporter *PrometheusExporter) {
-		exporter.ScrapeRegistry(r, WithIncludeChildMetrics(false), WithIncludeAggregateMetrics(true))
+		exporter.ScrapeRegistry(r, false)
 	})
 	require.NoError(t, err)
 	output = buf.String()
 	require.Empty(t, output)
-}
-
-func TestPrometheusExporterStaticLabels(t *testing.T) {
-	tests := []struct {
-		name            string
-		useStaticLabels bool
-		metricMetadata  Metadata
-		expectedOutput  string
-	}{
-		{
-			name:            "no static labels requested",
-			useStaticLabels: false,
-			metricMetadata: Metadata{
-				Name:        "test.metric.static.value",
-				Help:        "Test metric",
-				LabeledName: "test.metric",
-				StaticLabels: []*LabelPair{
-					{Name: proto.String("static"), Value: proto.String("value")},
-				},
-			},
-			expectedOutput: "test_metric_static_value 0",
-		},
-		{
-			name:            "with static labels",
-			useStaticLabels: true,
-			metricMetadata: Metadata{
-				Name:        "test.metric.static.value",
-				Help:        "Test metric",
-				LabeledName: "test.metric",
-				StaticLabels: []*LabelPair{
-					{Name: proto.String("static"), Value: proto.String("value")},
-				},
-			},
-			expectedOutput: "test_metric{static=\"value\"} 0",
-		},
-		{
-			name:            "with both static and dynamic labels",
-			useStaticLabels: true,
-			metricMetadata: Metadata{
-				Name:        "test.metric.static.value",
-				Help:        "Test metric",
-				LabeledName: "test.metric",
-				StaticLabels: []*LabelPair{
-					{Name: proto.String("static"), Value: proto.String("value")},
-				},
-				Labels: []*LabelPair{
-					{Name: proto.String("dynamic"), Value: proto.String("value")},
-				},
-			},
-			expectedOutput: "test_metric{static=\"value\",dynamic=\"value\"} 0",
-		},
-		{
-			name:            "with both static and dynamic labels only output dynamic",
-			useStaticLabels: false,
-			metricMetadata: Metadata{
-				Name:        "test.metric.static.value",
-				Help:        "Test metric",
-				LabeledName: "test.metric",
-				StaticLabels: []*LabelPair{
-					{Name: proto.String("static"), Value: proto.String("value")},
-				},
-				Labels: []*LabelPair{
-					{Name: proto.String("dynamic"), Value: proto.String("value")},
-				},
-			},
-			expectedOutput: "test_metric_static_value{dynamic=\"value\"} 0",
-		},
-		{
-			name:            "legacy metric with static label output should remain the same",
-			useStaticLabels: true,
-			metricMetadata: Metadata{
-				Name: "test.metric.static.value",
-				Help: "Test metric",
-				Labels: []*LabelPair{
-					{Name: proto.String("dynamic"), Value: proto.String("value")},
-				},
-			},
-			expectedOutput: "test_metric_static_value{dynamic=\"value\"} 0",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			// Create a registry with a test metric
-			r := NewRegistry()
-			gauge := NewGauge(tc.metricMetadata)
-			r.AddMetric(gauge)
-
-			// Create exporter and scrape registry
-			pe := MakePrometheusExporter()
-
-			// Test the text output format
-			var buf bytes.Buffer
-			err := pe.ScrapeAndPrintAsText(&buf, expfmt.FmtText, func(exporter *PrometheusExporter) {
-				exporter.ScrapeRegistry(r, WithUseStaticLabels(tc.useStaticLabels))
-			})
-			require.NoError(t, err)
-
-			// Verify the text output matches expected format
-			output := buf.String()
-			require.Contains(t, output, tc.expectedOutput, "expected metric output not found")
-		})
-	}
 }

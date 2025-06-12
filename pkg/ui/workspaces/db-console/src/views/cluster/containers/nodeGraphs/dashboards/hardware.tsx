@@ -3,11 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { AxisUnits } from "@cockroachlabs/cluster-ui";
 import React from "react";
 
 import LineGraph from "src/views/cluster/components/linegraph";
-import { AvailableDiscCapacityGraphTooltip } from "src/views/cluster/containers/nodeGraphs/dashboards/graphTooltips";
 import { Metric, Axis } from "src/views/shared/components/metricQuery";
 
 import {
@@ -15,6 +13,8 @@ import {
   nodeDisplayName,
   storeIDsForNode,
 } from "./dashboardUtils";
+import { AvailableDiscCapacityGraphTooltip } from "src/views/cluster/containers/nodeGraphs/dashboards/graphTooltips";
+import { AxisUnits } from "@cockroachlabs/cluster-ui";
 
 // TODO(vilterp): tooltips
 
@@ -85,7 +85,7 @@ export default function (props: GraphDashboardProps) {
     </LineGraph>,
 
     <LineGraph
-      title="Disk Read Bytes/s"
+      title="Disk Read MiB/s"
       sources={nodeSources}
       tenantSource={tenantSource}
       showMetricsInTooltip={true}
@@ -103,7 +103,7 @@ export default function (props: GraphDashboardProps) {
     </LineGraph>,
 
     <LineGraph
-      title="Disk Write Bytes/s"
+      title="Disk Write MiB/s"
       sources={nodeSources}
       tenantSource={tenantSource}
       showMetricsInTooltip={true}

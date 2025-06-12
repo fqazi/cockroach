@@ -46,8 +46,6 @@ func (op Operation) Result() *Result {
 		return &o.Result
 	case *TransferLeaseOperation:
 		return &o.Result
-	case *ChangeSettingOperation:
-		return &o.Result
 	case *ChangeZoneOperation:
 		return &o.Result
 	case *BatchOperation:
@@ -146,8 +144,6 @@ func (op Operation) format(w *strings.Builder, fctx formatCtx) {
 		o.format(w, fctx)
 	case *TransferLeaseOperation:
 		o.format(w, fctx)
-	case *ChangeSettingOperation:
-		o.format(w, fctx)
 	case *ChangeZoneOperation:
 		o.format(w, fctx)
 	case *BatchOperation:
@@ -175,10 +171,6 @@ func (op Operation) format(w *strings.Builder, fctx formatCtx) {
 		w.WriteString(newFctx.indent)
 		w.WriteString(newFctx.receiver)
 		fmt.Fprintf(w, `.SetIsoLevel(isolation.%s)`, o.IsoLevel)
-		w.WriteString("\n")
-		w.WriteString(newFctx.indent)
-		w.WriteString(newFctx.receiver)
-		fmt.Fprintf(w, `.SetBufferedWritesEnabled(%v)`, o.BufferedWrites)
 		formatOps(w, newFctx, o.Ops)
 		if o.CommitInBatch != nil {
 			newFctx.receiver = `b`
@@ -304,8 +296,8 @@ func (op DeleteRangeUsingTombstoneOperation) format(w *strings.Builder, fctx for
 }
 
 func (op AddSSTableOperation) format(w *strings.Builder, fctx formatCtx) {
-	fmt.Fprintf(w, `%s.AddSSTable(%s%s, %s, ... /* @%s */)`,
-		fctx.receiver, fctx.maybeCtx(), fmtKey(op.Span.Key), fmtKey(op.Span.EndKey), op.Seq)
+	fmt.Fprintf(w, `%s.AddSSTable(%s%s, %s, ... /* @%s */) // %d bytes`,
+		fctx.receiver, fctx.maybeCtx(), fmtKey(op.Span.Key), fmtKey(op.Span.EndKey), op.Seq, len(op.Data))
 	if op.AsWrites {
 		fmt.Fprintf(w, ` (as writes)`)
 	}
@@ -398,16 +390,6 @@ func (op ChangeReplicasOperation) format(w *strings.Builder, fctx formatCtx) {
 
 func (op TransferLeaseOperation) format(w *strings.Builder, fctx formatCtx) {
 	fmt.Fprintf(w, `%s.AdminTransferLease(ctx, %s, %d)`, fctx.receiver, fmtKey(op.Key), op.Target)
-	op.Result.format(w)
-}
-
-func (op ChangeSettingOperation) format(w *strings.Builder, fctx formatCtx) {
-	switch op.Type {
-	case ChangeSettingType_SetLeaseType:
-		fmt.Fprintf(w, `env.SetClusterSetting(ctx, %s, %s)`, op.Type, op.LeaseType)
-	default:
-		panic(errors.AssertionFailedf(`unknown ChangeSettingType: %v`, op.Type))
-	}
 	op.Result.format(w)
 }
 

@@ -40,26 +40,6 @@ ElementState:
     tableId: 104
   Status: PUBLIC
 - Column:
-    columnId: 4.294967292e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
-    pgAttributeNum: 0
-    tableId: 104
-  Status: PUBLIC
-- Column:
-    columnId: 4.294967293e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
-    pgAttributeNum: 0
-    tableId: 104
-  Status: PUBLIC
-- Column:
     columnId: 4.294967294e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
@@ -90,16 +70,6 @@ ElementState:
     tableId: 104
   Status: PUBLIC
 - ColumnName:
-    columnId: 4.294967292e+09
-    name: crdb_internal_origin_timestamp
-    tableId: 104
-  Status: PUBLIC
-- ColumnName:
-    columnId: 4.294967293e+09
-    name: crdb_internal_origin_id
-    tableId: 104
-  Status: PUBLIC
-- ColumnName:
     columnId: 4.294967294e+09
     name: tableoid
     tableId: 104
@@ -116,12 +86,10 @@ ElementState:
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 1
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: false
     isVirtual: false
@@ -142,76 +110,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 64
-    typeName: INT8
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967292e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 104
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: DecimalFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 1700
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 0
-    typeName: DECIMAL
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967293e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 104
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: IntFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 23
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 32
-    typeName: INT4
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967294e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -232,16 +137,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: OID
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967295e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -262,7 +164,6 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: DECIMAL
   Status: PUBLIC
 - IndexColumn:
     columnId: 1
@@ -307,8 +208,6 @@ ElementState:
     sourceIndexId: 0
     tableId: 104
     temporaryIndexId: 0
-    type: FORWARD
-    vecConfig: null
   Status: PUBLIC
 - SchemaChild:
     childObjectId: 104
@@ -320,9 +219,6 @@ ElementState:
   Status: PUBLIC
 - TableData:
     databaseId: 100
-    tableId: 104
-  Status: PUBLIC
-- TableSchemaLocked:
     tableId: 104
   Status: PUBLIC
 - UserPrivileges:
@@ -415,26 +311,6 @@ ElementState:
     tableId: 105
   Status: PUBLIC
 - Column:
-    columnId: 4.294967292e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
-    pgAttributeNum: 0
-    tableId: 105
-  Status: PUBLIC
-- Column:
-    columnId: 4.294967293e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
-    pgAttributeNum: 0
-    tableId: 105
-  Status: PUBLIC
-- Column:
     columnId: 4.294967294e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
@@ -481,16 +357,6 @@ ElementState:
     tableId: 105
   Status: PUBLIC
 - ColumnName:
-    columnId: 4.294967292e+09
-    name: crdb_internal_origin_timestamp
-    tableId: 105
-  Status: PUBLIC
-- ColumnName:
-    columnId: 4.294967293e+09
-    name: crdb_internal_origin_id
-    tableId: 105
-  Status: PUBLIC
-- ColumnName:
     columnId: 4.294967294e+09
     name: tableoid
     tableId: 105
@@ -512,12 +378,10 @@ ElementState:
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 1
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: false
     isVirtual: false
@@ -538,16 +402,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 64
-    typeName: INT8
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 2
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: false
     isVirtual: false
@@ -568,16 +429,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: STRING
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 3
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -598,76 +456,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 2
-    typeName: DECIMAL(8,2)
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967292e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 105
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: DecimalFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 1700
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 0
-    typeName: DECIMAL
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967293e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 105
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: IntFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 23
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 32
-    typeName: INT4
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967294e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -688,16 +483,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: OID
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967295e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -718,7 +510,6 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: DECIMAL
   Status: PUBLIC
 - ConstraintComment:
     comment: must have a parent
@@ -897,8 +688,6 @@ ElementState:
     sourceIndexId: 0
     tableId: 105
     temporaryIndexId: 0
-    type: FORWARD
-    vecConfig: null
   Status: PUBLIC
 - SchemaChild:
     childObjectId: 105
@@ -916,18 +705,15 @@ ElementState:
     isNotVisible: false
     isUnique: false
     recreateSourceId: 0
-    recreateTargetId: 0
     referencedColumnIds:
     - 1
     sharding: null
     sourceIndexId: 0
     tableId: 105
     temporaryIndexId: 0
-    type: FORWARD
     usesFunctionIds: []
     usesSequenceIds: []
     usesTypeIds: []
-    vecConfig: null
   Status: PUBLIC
 - Table:
     isTemporary: false
@@ -941,28 +727,8 @@ ElementState:
     databaseId: 100
     tableId: 105
   Status: PUBLIC
-- TableSchemaLocked:
-    tableId: 105
-  Status: PUBLIC
 - TableZoneConfig:
-    seqNum: 0
     tableId: 105
-    zoneConfig:
-      constraints: []
-      gc:
-        ttlSeconds: 10
-      globalReads: null
-      inheritedConstraints: true
-      inheritedLeasePreferences: true
-      leasePreferences: []
-      nullVoterConstraintsIsEmpty: false
-      numReplicas: null
-      numVoters: null
-      rangeMaxBytes: null
-      rangeMinBytes: null
-      subzoneSpans: []
-      subzones: []
-      voterConstraints: []
   Status: PUBLIC
 - UniqueWithoutIndexConstraint:
     columnIds:
@@ -1023,26 +789,6 @@ ElementState:
     tableId: 104
   Status: PUBLIC
 - Column:
-    columnId: 4.294967292e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
-    pgAttributeNum: 0
-    tableId: 104
-  Status: PUBLIC
-- Column:
-    columnId: 4.294967293e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
-    pgAttributeNum: 0
-    tableId: 104
-  Status: PUBLIC
-- Column:
     columnId: 4.294967294e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
@@ -1083,16 +829,6 @@ ElementState:
     tableId: 104
   Status: PUBLIC
 - ColumnName:
-    columnId: 4.294967292e+09
-    name: crdb_internal_origin_timestamp
-    tableId: 104
-  Status: PUBLIC
-- ColumnName:
-    columnId: 4.294967293e+09
-    name: crdb_internal_origin_id
-    tableId: 104
-  Status: PUBLIC
-- ColumnName:
     columnId: 4.294967294e+09
     name: tableoid
     tableId: 104
@@ -1109,12 +845,10 @@ ElementState:
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 1
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: false
     isVirtual: false
@@ -1135,16 +869,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 64
-    typeName: INT8
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 2
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 1
     isNullable: true
     isVirtual: false
@@ -1165,76 +896,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 64
-    typeName: INT8
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967292e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 104
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: DecimalFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 1700
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 0
-    typeName: DECIMAL
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967293e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 104
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: IntFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 23
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 32
-    typeName: INT4
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967294e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -1255,16 +923,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: OID
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967295e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -1285,7 +950,6 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: DECIMAL
   Status: PUBLIC
 - IndexColumn:
     columnId: 1
@@ -1340,8 +1004,6 @@ ElementState:
     sourceIndexId: 0
     tableId: 104
     temporaryIndexId: 0
-    type: FORWARD
-    vecConfig: null
   Status: PUBLIC
 - SchemaChild:
     childObjectId: 104
@@ -1353,9 +1015,6 @@ ElementState:
   Status: PUBLIC
 - TableData:
     databaseId: 100
-    tableId: 104
-  Status: PUBLIC
-- TableSchemaLocked:
     tableId: 104
   Status: PUBLIC
 - UserPrivileges:
@@ -1402,26 +1061,6 @@ ElementState:
     tableId: 109
   Status: PUBLIC
 - Column:
-    columnId: 4.294967292e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
-    pgAttributeNum: 0
-    tableId: 109
-  Status: PUBLIC
-- Column:
-    columnId: 4.294967293e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
-    pgAttributeNum: 0
-    tableId: 109
-  Status: PUBLIC
-- Column:
     columnId: 4.294967294e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
@@ -1440,18 +1079,6 @@ ElementState:
     isSystemColumn: true
     pgAttributeNum: 0
     tableId: 109
-  Status: PUBLIC
-- ColumnComputeExpression:
-    columnId: 1
-    expr: x'80':::@100107::STRING
-    referencedColumnIds: []
-    tableId: 109
-    usage: REGULAR
-    usesFunctionIds: []
-    usesSequenceIds: []
-    usesTypeIds:
-    - 107
-    - 108
   Status: PUBLIC
 - ColumnDefaultExpression:
     columnId: 2
@@ -1478,16 +1105,6 @@ ElementState:
     tableId: 109
   Status: PUBLIC
 - ColumnName:
-    columnId: 4.294967292e+09
-    name: crdb_internal_origin_timestamp
-    tableId: 109
-  Status: PUBLIC
-- ColumnName:
-    columnId: 4.294967293e+09
-    name: crdb_internal_origin_id
-    tableId: 109
-  Status: PUBLIC
-- ColumnName:
     columnId: 4.294967294e+09
     name: tableoid
     tableId: 109
@@ -1504,12 +1121,17 @@ ElementState:
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 1
-    computeExpr: null
+    computeExpr:
+      expr: x'80':::@100107::STRING
+      referencedColumnIds: []
+      usesFunctionIds: []
+      usesSequenceIds: []
+      usesTypeIds:
+      - 107
+      - 108
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -1530,16 +1152,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: STRING
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 2
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: false
     isVirtual: false
@@ -1560,76 +1179,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 64
-    typeName: INT8
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967292e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 109
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: DecimalFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 1700
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 0
-    typeName: DECIMAL
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967293e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 109
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: IntFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 23
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 32
-    typeName: INT4
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967294e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -1650,16 +1206,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: OID
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967295e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -1680,7 +1233,6 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: DECIMAL
   Status: PUBLIC
 - IndexColumn:
     columnId: 1
@@ -1735,8 +1287,6 @@ ElementState:
     sourceIndexId: 0
     tableId: 109
     temporaryIndexId: 0
-    type: FORWARD
-    vecConfig: null
   Status: PUBLIC
 - SchemaChild:
     childObjectId: 109
@@ -1748,9 +1298,6 @@ ElementState:
   Status: PUBLIC
 - TableData:
     databaseId: 100
-    tableId: 109
-  Status: PUBLIC
-- TableSchemaLocked:
     tableId: 109
   Status: PUBLIC
 - UserPrivileges:

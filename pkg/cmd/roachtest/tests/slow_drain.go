@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -71,7 +70,7 @@ func runSlowDrain(ctx context.Context, t test.Test, c cluster.Cluster, duration 
 		run(db, fmt.Sprintf(`ALTER DATABASE system CONFIGURE ZONE USING num_replicas=%d`, replicationFactor))
 
 		// Wait for initial up-replication.
-		err := roachtestutil.WaitForReplication(ctx, t.L(), db, replicationFactor, roachtestutil.AtLeastReplicationFactor)
+		err := WaitForReplication(ctx, t, t.L(), db, replicationFactor, atLeastReplicationFactor)
 		require.NoError(t, err)
 
 		// Ensure that leases are sent away from pinned node to avoid situation

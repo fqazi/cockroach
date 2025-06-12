@@ -215,7 +215,6 @@ upsert descriptor #108
   +    sharded: {}
   +    storeColumnNames: []
   +    unique: true
-  +    vecConfig: {}
   +    version: 4
   +  privileges:
   +    ownerProto: root
@@ -382,7 +381,6 @@ upsert descriptor #108
   +    sharded: {}
   +    storeColumnNames: []
   +    unique: true
-  +    vecConfig: {}
   +    version: 4
   +  privileges:
   +    ownerProto: root

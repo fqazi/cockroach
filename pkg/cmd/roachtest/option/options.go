@@ -14,18 +14,15 @@ import (
 
 // StartOpts is a type that combines the start options needed by roachprod and roachtest.
 type StartOpts struct {
-	// StorageNodes is used when starting a virtual cluster, indicating
-	// the nodes that should be used as storage nodes. When not set, all
-	// nodes should be considered part of the storage cluster.
-	StorageNodes NodeListOption
+	// SeparateProcessStorageNodes is used when starting a virtual
+	// cluster, indicating the nodes that should be used as storage
+	// nodes. When not set, all nodes should be considered part of the
+	// storage cluster.
+	SeparateProcessStorageNodes NodeListOption
 	// SeparateProcessNode is used when starting a virtual cluster,
 	// indicating the nodes in which the virtual cluster should be
 	// started.
 	SeparateProcessNodes NodeListOption
-	// WaitForReplication indicates if we should wait for the
-	// corresponding replication factor after starting a cockroach
-	// process on a node.
-	WaitForReplicationFactor int
 
 	RoachprodOpts install.StartOpts
 	RoachtestOpts struct {
@@ -165,32 +162,10 @@ func InMemoryDB(size float64) StartStopOption {
 	}
 }
 
-// WaitForReplication tells the start process to wait for at least 3X
-// replication after starting a cockroach process.
-func WaitForReplication() StartStopOption {
-	return func(opts interface{}) {
-		switch opts := opts.(type) {
-		case *StartOpts:
-			opts.WaitForReplicationFactor = 3
-		}
-	}
-}
-
 func SkipInit(opts interface{}) {
 	switch opts := opts.(type) {
 	case *StartOpts:
 		opts.RoachprodOpts.SkipInit = true
-	}
-}
-
-// Tag sets a process tag when stopping processes. Useful if we want
-// to kill a cockroach process that was started with `settings.TagOption`.
-func Tag(tag string) func(opts interface{}) {
-	return func(opts interface{}) {
-		switch opts := opts.(type) {
-		case *StopOpts:
-			opts.RoachprodOpts.ProcessTag = tag
-		}
 	}
 }
 
@@ -229,29 +204,17 @@ func StorageCluster(nodes NodeListOption) StartStopOption {
 	return func(opts interface{}) {
 		switch opts := opts.(type) {
 		case *StartOpts:
-			opts.StorageNodes = nodes
+			opts.SeparateProcessStorageNodes = nodes
 		}
 	}
 }
 
 // NoBackupSchedule can be used to generate StartOpts that skip the
 // creation of the default backup schedule.
-//
-// Note that tests marked as Benchmarks will be opted out of backup
-// schedules automatically, even if scheduled backups remain enabled.
 func NoBackupSchedule(opts interface{}) {
 	switch opts := opts.(type) {
 	case *StartOpts:
 		opts.RoachprodOpts.ScheduleBackups = false
-	}
-}
-
-// DisableWALFailover can be used to generate StartOpts that disable use of WAL
-// failover.
-func DisableWALFailover(opts interface{}) {
-	switch opts := opts.(type) {
-	case *StartOpts:
-		opts.RoachprodOpts.WALFailover = ""
 	}
 }
 
@@ -271,15 +234,3 @@ func Graceful(gracePeriodSeconds int) func(interface{}) {
 func WithNodes(nodes NodeListOption) install.RunOptions {
 	return install.WithNodes(nodes.InstallNodes())
 }
-
-// ClusterHookType represents when an install.PreStartHook should be run.
-type ClusterHookType int
-
-const (
-	// PreStartHook is a func run after service registration occurs in StartE but before
-	// the cluster is actually started. This can be useful if we want to run some code
-	// during CRDB startup that is dependent on knowing the service registration info.
-	PreStartHook ClusterHookType = iota
-	// PreStartVirtualClusterHook is similar to preStartHook but for virtual clusters.
-	PreStartVirtualClusterHook
-)

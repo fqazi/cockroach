@@ -1,6 +1,3 @@
-// This code has been modified from its original form by The Cockroach Authors.
-// All modifications are Copyright 2024 The Cockroach Authors.
-//
 // Copyright 2019 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,28 +15,29 @@
 package quorum
 
 import (
-	"cmp"
 	"fmt"
 	"math"
 	"slices"
+	"sort"
 	"strings"
-
-	pb "github.com/cockroachdb/cockroach/pkg/raft/raftpb"
-	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"golang.org/x/exp/maps"
 )
 
 // MajorityConfig is a set of IDs that uses majority quorums to make decisions.
-type MajorityConfig map[pb.PeerID]struct{}
+type MajorityConfig map[uint64]struct{}
 
 func (c MajorityConfig) String() string {
+	sl := make([]uint64, 0, len(c))
+	for id := range c {
+		sl = append(sl, id)
+	}
+	sort.Slice(sl, func(i, j int) bool { return sl[i] < sl[j] })
 	var buf strings.Builder
 	buf.WriteByte('(')
-	for i, id := range c.Slice() {
+	for i := range sl {
 		if i > 0 {
 			buf.WriteByte(' ')
 		}
-		fmt.Fprint(&buf, id)
+		fmt.Fprint(&buf, sl[i])
 	}
 	buf.WriteByte(')')
 	return buf.String()
@@ -52,7 +50,7 @@ func (c MajorityConfig) Describe(l AckedIndexer) string {
 		return "<empty majority quorum>"
 	}
 	type tup struct {
-		id  pb.PeerID
+		id  uint64
 		idx Index
 		ok  bool // idx found?
 		bar int  // length of bar displayed for this tup
@@ -68,48 +66,52 @@ func (c MajorityConfig) Describe(l AckedIndexer) string {
 		idx, ok := l.AckedIndex(id)
 		info = append(info, tup{id: id, idx: idx, ok: ok})
 	}
-	// Sort by (index, ID).
-	slices.SortFunc(info, func(a, b tup) int {
-		return cmp.Or(cmp.Compare(a.idx, b.idx), cmp.Compare(a.id, b.id))
+
+	// Sort by index
+	sort.Slice(info, func(i, j int) bool {
+		if info[i].idx == info[j].idx {
+			return info[i].id < info[j].id
+		}
+		return info[i].idx < info[j].idx
 	})
+
 	// Populate .bar.
 	for i := range info {
 		if i > 0 && info[i-1].idx < info[i].idx {
 			info[i].bar = i
 		}
 	}
+
 	// Sort by ID.
-	slices.SortFunc(info, func(a, b tup) int { return cmp.Compare(a.id, b.id) })
+	sort.Slice(info, func(i, j int) bool {
+		return info[i].id < info[j].id
+	})
 
 	var buf strings.Builder
 
 	// Print.
 	fmt.Fprint(&buf, strings.Repeat(" ", n)+"    idx\n")
-	for _, t := range info {
-		if !t.ok {
+	for i := range info {
+		bar := info[i].bar
+		if !info[i].ok {
 			fmt.Fprint(&buf, "?"+strings.Repeat(" ", n))
 		} else {
-			fmt.Fprint(&buf, strings.Repeat("x", t.bar)+">"+strings.Repeat(" ", n-t.bar))
+			fmt.Fprint(&buf, strings.Repeat("x", bar)+">"+strings.Repeat(" ", n-bar))
 		}
-		fmt.Fprintf(&buf, " %5d    (id=%d)\n", t.idx, t.id)
+		fmt.Fprintf(&buf, " %5d    (id=%d)\n", info[i].idx, info[i].id)
 	}
 	return buf.String()
 }
 
 // Slice returns the MajorityConfig as a sorted slice.
-func (c MajorityConfig) Slice() []pb.PeerID {
-	if len(c) == 0 {
-		return nil
+func (c MajorityConfig) Slice() []uint64 {
+	var sl []uint64
+	for id := range c {
+		sl = append(sl, id)
 	}
-	peers := maps.Keys(c)
-	slices.Sort(peers)
-	return peers
+	sort.Slice(sl, func(i, j int) bool { return sl[i] < sl[j] })
+	return sl
 }
-
-// NB: A lot of logic in CommittedIndex, VoteResult, and LeadSupportExpiration
-// can be de-duplicated by using generics. This was attempted in
-// https://github.com/cockroachdb/cockroach/pull/128054, but eventually
-// abandoned because of microbenchmark regressions.
 
 // CommittedIndex computes the committed index from those supplied via the
 // provided AckedIndexer (for the active config).
@@ -162,7 +164,7 @@ func (c MajorityConfig) CommittedIndex(l AckedIndexer) Index {
 // a result indicating whether the vote is pending (i.e. neither a quorum of
 // yes/no has been reached), won (a quorum of yes has been reached), or lost (a
 // quorum of no has been reached).
-func (c MajorityConfig) VoteResult(votes map[pb.PeerID]bool) VoteResult {
+func (c MajorityConfig) VoteResult(votes map[uint64]bool) VoteResult {
 	if len(c) == 0 {
 		// By convention, the elections on an empty config win. This comes in
 		// handy with joint quorums because it'll make a half-populated joint
@@ -170,7 +172,7 @@ func (c MajorityConfig) VoteResult(votes map[pb.PeerID]bool) VoteResult {
 		return VoteWon
 	}
 
-	var votedCnt int // vote counts for yes.
+	var votedCnt int //vote counts for yes.
 	var missing int
 	for id := range c {
 		v, ok := votes[id]
@@ -191,32 +193,4 @@ func (c MajorityConfig) VoteResult(votes map[pb.PeerID]bool) VoteResult {
 		return VotePending
 	}
 	return VoteLost
-}
-
-// LeadSupportExpiration takes a slice of timestamps peers have promised a
-// fortified leader support until and returns the timestamp until which the
-// leader is guaranteed support until.
-func (c MajorityConfig) LeadSupportExpiration(support []hlc.Timestamp) hlc.Timestamp {
-	if len(c) == 0 {
-		// There are no peers in the config, and therefore no leader, so we return
-		// MaxTimestamp as a sentinel value. This also plays well with joint quorums
-		// when one half is the zero MajorityConfig. In such cases, the joint config
-		// should behave like the other half.
-		return hlc.MaxTimestamp
-	}
-
-	n := len(c)
-	slices.SortFunc(support, func(a hlc.Timestamp, b hlc.Timestamp) int {
-		return a.Compare(b)
-	})
-
-	// We want the maximum timestamp that's supported by the quorum. The
-	// assumption is that if a timestamp is supported by a peer, so are all
-	// timestamps less than that timestamp. For this, we can simply consider the
-	// quorum formed by picking the highest value elements and pick the minimum
-	// from this. In other words, from our sorted (in increasing order) array
-	// support, we want to move n/2 + 1 to the left from the end (accounting for
-	// zero-indexing).
-	pos := n - (n/2 + 1)
-	return support[pos]
 }

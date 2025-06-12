@@ -4,11 +4,11 @@
 // included in the /LICENSE file.
 
 import moment from "moment-timezone";
+
 import { channel } from "redux-saga";
 import { delay, call } from "redux-saga/effects";
 import { expectSaga, testSaga } from "redux-saga-test-plan";
 
-import { queryManagerReducer } from "./reducer";
 import {
   refresh,
   autoRefresh,
@@ -21,6 +21,8 @@ import {
   DEFAULT_REFRESH_INTERVAL,
   DEFAULT_RETRY_DELAY,
 } from "./saga";
+
+import { queryManagerReducer } from "./reducer";
 
 describe("Query Management Saga", function () {
   let queryCounterCalled = 0;
@@ -82,25 +84,21 @@ describe("Query Management Saga", function () {
           });
       });
       it("correctly records error (and does not retry).", function () {
-        return (
-          expectSaga(queryManagerSaga)
-            // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-            // @ts-ignore
-            .withReducer(queryManagerReducer)
-            .dispatch(refresh(testQueryError))
-            .silentRun()
-            .then(runResult => {
-              expect(typeof runResult.storeState[testQueryError.id]).toBe(
-                "object",
-              );
-              expect(runResult.storeState[testQueryError.id].lastError).toEqual(
-                sentinelError,
-              );
-              expect(runResult.storeState[testQueryError.id].isRunning).toBe(
-                false,
-              );
-            })
-        );
+        return expectSaga(queryManagerSaga)
+          .withReducer(queryManagerReducer)
+          .dispatch(refresh(testQueryError))
+          .silentRun()
+          .then(runResult => {
+            expect(typeof runResult.storeState[testQueryError.id]).toBe(
+              "object",
+            );
+            expect(runResult.storeState[testQueryError.id].lastError).toEqual(
+              sentinelError,
+            );
+            expect(runResult.storeState[testQueryError.id].isRunning).toBe(
+              false,
+            );
+          });
       });
       it("immediately runs a saga if refresh is called even if AUTO_REFRESH wait is active", function () {
         return expectSaga(queryManagerSaga)

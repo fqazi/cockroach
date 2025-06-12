@@ -57,8 +57,6 @@ func TestColBatchScanMeta(t *testing.T) {
 	defer evalCtx.Stop(ctx)
 	var monitorRegistry colexecargs.MonitorRegistry
 	defer monitorRegistry.Close(ctx)
-	var closerRegistry colexecargs.CloserRegistry
-	defer closerRegistry.Close(ctx)
 
 	rootTxn := kv.NewTxn(ctx, s.DB(), s.DistSQLPlanningNodeID())
 	leafInputState, err := rootTxn.GetLeafTxnInputState(ctx)
@@ -95,14 +93,15 @@ func TestColBatchScanMeta(t *testing.T) {
 	}
 
 	args := &colexecargs.NewColOperatorArgs{
-		Spec:            &spec,
-		MonitorRegistry: &monitorRegistry,
-		CloserRegistry:  &closerRegistry,
+		Spec:                &spec,
+		StreamingMemAccount: testMemAcc,
+		MonitorRegistry:     &monitorRegistry,
 	}
 	res, err := colbuilder.NewColOperator(ctx, &flowCtx, args)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer res.TestCleanupNoError(t)
 	tr := res.Root
 	tr.Init(ctx)
 	meta := res.MetadataSources[0].DrainMeta()
@@ -159,11 +158,7 @@ func BenchmarkColBatchScan(b *testing.B) {
 			evalCtx := eval.MakeTestingEvalContext(s.ClusterSettings())
 			defer evalCtx.Stop(ctx)
 			var monitorRegistry colexecargs.MonitorRegistry
-			var closerRegistry colexecargs.CloserRegistry
-			afterEachRun := func() {
-				closerRegistry.BenchmarkReset(ctx)
-				monitorRegistry.BenchmarkReset(ctx)
-			}
+			defer monitorRegistry.Close(ctx)
 
 			flowCtx := execinfra.FlowCtx{
 				EvalCtx: &evalCtx,
@@ -181,9 +176,9 @@ func BenchmarkColBatchScan(b *testing.B) {
 				// modifies it.
 				spec.Core.TableReader.Spans = []roachpb.Span{span}
 				args := &colexecargs.NewColOperatorArgs{
-					Spec:            &spec,
-					MonitorRegistry: &monitorRegistry,
-					CloserRegistry:  &closerRegistry,
+					Spec:                &spec,
+					StreamingMemAccount: testMemAcc,
+					MonitorRegistry:     &monitorRegistry,
 				}
 				res, err := colbuilder.NewColOperator(ctx, &flowCtx, args)
 				if err != nil {
@@ -199,7 +194,7 @@ func BenchmarkColBatchScan(b *testing.B) {
 					}
 				}
 				b.StopTimer()
-				afterEachRun()
+				res.TestCleanupNoError(b)
 			}
 		})
 	}

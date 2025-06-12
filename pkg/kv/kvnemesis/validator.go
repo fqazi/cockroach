@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 
@@ -20,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
@@ -63,7 +61,7 @@ func Validate(steps []Step, kvs *Engine, dt *SeqTracker) []error {
 	// by `After` timestamp is sufficient to get us the necessary ordering. This
 	// is because txns cannot be used concurrently, so none of the (Begin,After)
 	// timespans for a given transaction can overlap.
-	slices.SortFunc(steps, func(a, b Step) int { return a.After.Compare(b.After) })
+	sort.Slice(steps, func(i, j int) bool { return steps[i].After.Less(steps[j].After) })
 	for _, s := range steps {
 		v.processOp(s.Op)
 	}
@@ -810,7 +808,10 @@ func (v *validator) processOp(op Operation) {
 		//
 		// So we ignore the results of failIfError, calling it only for its side
 		// effect of perhaps registering a failure with the validator.
-		v.failIfError(op, t.Result, exceptRollback, exceptAmbiguous)
+		v.failIfError(
+			op, t.Result,
+			exceptRollback, exceptAmbiguous, exceptSharedLockPromotionError,
+		)
 
 		ops := t.Ops
 		if t.CommitInBatch != nil {
@@ -888,14 +889,6 @@ func (v *validator) processOp(op Operation) {
 		execTimestampStrictlyOptional = true
 		if !transferLeaseResultIsIgnorable(t.Result) {
 			v.failIfError(op, t.Result) // fail on all other errors
-		}
-	case *ChangeSettingOperation:
-		execTimestampStrictlyOptional = true
-		// It's possible that reading the modified setting times out. Ignore these
-		// errors for now, at least until we do some validation that depends on the
-		// cluster settings being fully propagated.
-		if !resultIsErrorStr(t.Result, `setting updated but timed out waiting to read new value`) {
-			v.failIfError(op, t.Result)
 		}
 	case *ChangeZoneOperation:
 		execTimestampStrictlyOptional = true
@@ -1038,8 +1031,8 @@ func (v *validator) checkAtomicCommitted(
 	// it, un-hiding each of them as we encounter each write, and using the
 	// current state of the view as we encounter each read. Luckily this is easy
 	// to do by with a pebble.Batch "view".
-	firstBatch := v.kvs.kvs.NewIndexedBatch()
-	defer func() { _ = firstBatch.Close() }()
+	batch := v.kvs.kvs.NewIndexedBatch()
+	defer func() { _ = batch.Close() }()
 
 	var failure string
 	// writeTS is populated with the timestamp of the materialized observed writes
@@ -1068,7 +1061,6 @@ func (v *validator) checkAtomicCommitted(
 	// rollbackSp = observedSavepoint{...} when the observedSavepoint object
 	// contains a rollback for which we haven't encountered a matching create yet.
 	var rollbackSp *observedSavepoint = nil
-	batch := firstBatch
 	for idx := len(txnObservations) - 1; idx >= 0; idx-- {
 		observation := txnObservations[idx]
 		switch o := observation.(type) {
@@ -1130,7 +1122,7 @@ func (v *validator) checkAtomicCommitted(
 			} else { // ranged write
 				key := storage.EngineKey{Key: o.Key}.Encode()
 				endKey := storage.EngineKey{Key: o.EndKey}.Encode()
-				suffix := mvccencoding.EncodeMVCCTimestampSuffix(o.Timestamp)
+				suffix := storage.EncodeMVCCTimestampSuffix(o.Timestamp)
 				if err := batch.RangeKeyUnset(key, endKey, suffix, nil); err != nil {
 					panic(err)
 				}
@@ -1207,7 +1199,7 @@ func (v *validator) checkAtomicCommitted(
 			} else {
 				key := storage.EngineKey{Key: o.Key}.Encode()
 				endKey := storage.EngineKey{Key: o.EndKey}.Encode()
-				suffix := mvccencoding.EncodeMVCCTimestampSuffix(writeTS)
+				suffix := storage.EncodeMVCCTimestampSuffix(writeTS)
 				if err := batch.RangeKeySet(key, endKey, suffix, o.Value.RawBytes, nil); err != nil {
 					panic(err)
 				}
@@ -1406,7 +1398,9 @@ func (v *validator) checkError(
 	op Operation, r Result, extraExceptions ...func(err error) bool,
 ) (ambiguous, hadError bool) {
 	sl := []func(error) bool{
-		exceptAmbiguous, exceptOmitted, exceptRetry, exceptDelRangeUsingTombstoneStraddlesRangeBoundary,
+		exceptAmbiguous, exceptOmitted, exceptRetry,
+		exceptDelRangeUsingTombstoneStraddlesRangeBoundary,
+		exceptSharedLockPromotionError,
 	}
 	sl = append(sl, extraExceptions...)
 	return v.failIfError(op, r, sl...)
@@ -1552,7 +1546,7 @@ func validReadTimes(
 			// Range key contains the key. Emit a point deletion on the key
 			// at the tombstone's timestamp for each active range key.
 			for _, rk := range iter.RangeKeys() {
-				ts, err := mvccencoding.DecodeMVCCTimestampSuffix(rk.Suffix)
+				ts, err := storage.DecodeMVCCTimestampSuffix(rk.Suffix)
 				if err != nil {
 					panic(err)
 				}
@@ -1588,8 +1582,8 @@ func validReadTimes(
 		hist = append(hist, v)
 	}
 	// The slice isn't sorted due to MVCC rangedels. Sort in descending order.
-	slices.SortFunc(hist, func(a, b storage.MVCCValue) int {
-		return -a.Value.Timestamp.Compare(b.Value.Timestamp)
+	sort.Slice(hist, func(i, j int) bool {
+		return hist[j].Value.Timestamp.Less(hist[i].Value.Timestamp)
 	})
 
 	sv := mustGetStringValue(value)

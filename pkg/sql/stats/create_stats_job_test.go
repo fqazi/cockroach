@@ -217,9 +217,6 @@ func TestCreateStatisticsCanBeCancelled(t *testing.T) {
 	require.ErrorContains(t, err, "pq: query execution canceled")
 }
 
-// TestAtMostOneRunningCreateStats tests that auto stat jobs (full or partial)
-// don't run when a full stats job is running. It also tests that manual stat
-// jobs (full or partial) are always allowed to run.
 func TestAtMostOneRunningCreateStats(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -248,52 +245,28 @@ func TestAtMostOneRunningCreateStats(t *testing.T) {
 	sqlDB.QueryRow(t, `SELECT 'd.t'::regclass::int`).Scan(&tID)
 	setTableID(tID)
 
-	autoFullStatsRunShouldFail := func() {
+	// Start a CREATE STATISTICS run and wait until it's done one scan.
+	allowRequest = make(chan struct{})
+	errCh := make(chan error)
+	go func() {
+		_, err := conn.Exec(`CREATE STATISTICS s1 FROM d.t`)
+		errCh <- err
+	}()
+	select {
+	case allowRequest <- struct{}{}:
+	case err := <-errCh:
+		t.Fatal(err)
+	}
+	autoStatsRunShouldFail := func() {
 		_, err := conn.Exec(`CREATE STATISTICS __auto__ FROM d.t`)
 		expected := "another CREATE STATISTICS job is already running"
 		if !testutils.IsError(err, expected) {
 			t.Fatalf("expected '%s' error, but got %v", expected, err)
 		}
 	}
-	autoPartialStatsRunShouldFail := func() {
-		_, err := conn.Exec(`CREATE STATISTICS __auto_partial__ FROM d.t USING EXTREMES`)
-		expected := "another CREATE STATISTICS job is already running"
-		if !testutils.IsError(err, expected) {
-			t.Fatalf("expected '%s' error, but got %v", expected, err)
-		}
-	}
 
-	// Start a full stat run and let it complete so that future partial stats can
-	// be collected
-	allowRequest = make(chan struct{})
-	initialFullStatErrCh := make(chan error)
-	go func() {
-		_, err := conn.Exec(`CREATE STATISTICS full_statistic FROM d.t`)
-		initialFullStatErrCh <- err
-	}()
-	close(allowRequest)
-	if err := <-initialFullStatErrCh; err != nil {
-		t.Fatalf("create stats job should have completed: %s", err)
-	}
-
-	// Start a manual full stat run and wait until it's done one scan. This will
-	// be the stat job that runs in the background as we test the behavior of new
-	// stat jobs.
-	allowRequest = make(chan struct{})
-	runningManualFullStatErrCh := make(chan error)
-	go func() {
-		_, err := conn.Exec(`CREATE STATISTICS s1 FROM d.t`)
-		runningManualFullStatErrCh <- err
-	}()
-	select {
-	case allowRequest <- struct{}{}:
-	case err := <-runningManualFullStatErrCh:
-		t.Fatal(err)
-	}
-
-	// Attempt to start automatic full and partial stats runs. Both should fail.
-	autoFullStatsRunShouldFail()
-	autoPartialStatsRunShouldFail()
+	// Attempt to start an automatic stats run. It should fail.
+	autoStatsRunShouldFail()
 
 	// PAUSE JOB does not block until the job is paused but only requests it.
 	// Wait until the job is set to paused.
@@ -319,181 +292,33 @@ func TestAtMostOneRunningCreateStats(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Starting automatic full and partial stats run should still fail.
-	autoFullStatsRunShouldFail()
-	autoPartialStatsRunShouldFail()
+	// Starting another automatic stats run should still fail.
+	autoStatsRunShouldFail()
 
-	// Attempt to start manual full and partial stat runs. Both should succeed.
-	manualFullStatErrCh := make(chan error)
+	// Attempt to start a regular stats run. It should succeed.
+	errCh2 := make(chan error)
 	go func() {
 		_, err := conn.Exec(`CREATE STATISTICS s2 FROM d.t`)
-		manualFullStatErrCh <- err
+		errCh2 <- err
 	}()
-	manualPartialStatErrCh := make(chan error)
-	go func() {
-		_, err := conn.Exec(`CREATE STATISTICS ps1 FROM d.t USING EXTREMES`)
-		manualPartialStatErrCh <- err
-	}()
-
 	select {
 	case allowRequest <- struct{}{}:
-	case err := <-runningManualFullStatErrCh:
+	case err := <-errCh:
 		t.Fatal(err)
-	case err := <-manualFullStatErrCh:
-		t.Fatal(err)
-	case err := <-manualPartialStatErrCh:
+	case err := <-errCh2:
 		t.Fatal(err)
 	}
-
-	// Allow the running full stat job and the new full and partial stat jobs to complete.
 	close(allowRequest)
 
-	// Verify that the manual full and partial stat jobs completed successfully.
-	if err := <-manualFullStatErrCh; err != nil {
+	// Verify that the second job completed successfully.
+	if err := <-errCh2; err != nil {
 		t.Fatalf("create stats job should have completed: %s", err)
 	}
-	if err := <-manualPartialStatErrCh; err != nil {
-		t.Fatalf("create partial stats job should have completed: %s", err)
-	}
 
-	// Verify that the running full stat job completed successfully.
+	// Verify that the first job completed successfully.
 	sqlDB.Exec(t, fmt.Sprintf("RESUME JOB %d", jobID))
 	jobutils.WaitForJobToSucceed(t, sqlDB, jobID)
-	<-runningManualFullStatErrCh
-}
-
-// TestBackgroundAutoPartialStats tests that a running auto partial stats job
-// doesn't prevent any new full or partial stat jobs from running, except for
-// auto partial stat jobs on the same table.
-func TestBackgroundAutoPartialStats(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	var allowRequest chan struct{}
-
-	filter, setTableID := createStatsRequestFilter(&allowRequest)
-	var params base.TestClusterArgs
-	params.ServerArgs.Knobs.JobsTestingKnobs = jobs.NewTestingKnobsWithShortIntervals()
-	params.ServerArgs.Knobs.Store = &kvserver.StoreTestingKnobs{
-		TestingRequestFilter: filter,
-	}
-	params.ServerArgs.DefaultTestTenant = base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(109379)
-
-	ctx := context.Background()
-	const nodes = 1
-	tc := testcluster.StartTestCluster(t, nodes, params)
-	defer tc.Stopper().Stop(ctx)
-	conn := tc.ApplicationLayer(0).SQLConn(t)
-	sqlDB := sqlutils.MakeSQLRunner(conn)
-
-	sqlDB.Exec(t, `CREATE DATABASE d`)
-	sqlDB.Exec(t, `CREATE TABLE d.t1 (x INT PRIMARY KEY)`)
-	sqlDB.Exec(t, `CREATE TABLE d.t2 (x INT PRIMARY KEY)`)
-	sqlDB.Exec(t, `INSERT INTO d.t1 SELECT generate_series(1,1000)`)
-	sqlDB.Exec(t, `INSERT INTO d.t2 SELECT generate_series(1,1000)`)
-	var t1ID descpb.ID
-	sqlDB.QueryRow(t, `SELECT 'd.t1'::regclass::int`).Scan(&t1ID)
-	setTableID(t1ID)
-
-	// Collect full stats on both tables so that future partial stats can be
-	// collected
-	allowRequest = make(chan struct{})
-	close(allowRequest)
-	if _, err := conn.Exec(`CREATE STATISTICS full_statistic FROM d.t1`); err != nil {
-		t.Fatalf("create stats job should have completed: %s", err)
-	}
-	if _, err := conn.Exec(`CREATE STATISTICS full_statistic FROM d.t2`); err != nil {
-		t.Fatalf("create stats job should have completed: %s", err)
-	}
-
-	// Start an auto partial stat run on t1 and wait until it's done one scan.
-	// This will be the stat job that runs in the background as we test the
-	// behavior of new stat jobs.
-	allowRequest = make(chan struct{})
-	runningAutoPartialStatErrCh := make(chan error)
-	go func() {
-		_, err := conn.Exec(`CREATE STATISTICS __auto_partial__ FROM d.t1 USING EXTREMES`)
-		runningAutoPartialStatErrCh <- err
-	}()
-	select {
-	case allowRequest <- struct{}{}:
-	case err := <-runningAutoPartialStatErrCh:
-		t.Fatal(err)
-	}
-
-	// Attempt to start a simultaneous auto full stat run. It should succeed.
-	autoFullStatErrCh := make(chan error)
-	go func() {
-		_, err := conn.Exec(`CREATE STATISTICS __auto__ FROM d.t1`)
-		autoFullStatErrCh <- err
-	}()
-
-	select {
-	case allowRequest <- struct{}{}:
-	case err := <-runningAutoPartialStatErrCh:
-		t.Fatal(err)
-	case err := <-autoFullStatErrCh:
-		t.Fatal(err)
-	}
-
-	// Allow both auto stat jobs to complete.
-	close(allowRequest)
-
-	// Verify that both jobs completed successfully.
-	if err := <-autoFullStatErrCh; err != nil {
-		t.Fatalf("create auto full stats job should have completed: %s", err)
-	}
-	if err := <-runningAutoPartialStatErrCh; err != nil {
-		t.Fatalf("create auto partial stats job should have completed: %s", err)
-	}
-
-	// Start another auto partial stat run and wait until it's done one scan.
-	allowRequest = make(chan struct{})
-	runningAutoPartialStatErrCh = make(chan error)
-	go func() {
-		_, err := conn.Exec(`CREATE STATISTICS __auto_partial__ FROM d.t1 USING EXTREMES`)
-		runningAutoPartialStatErrCh <- err
-	}()
-	select {
-	case allowRequest <- struct{}{}:
-	case err := <-runningAutoPartialStatErrCh:
-		t.Fatal(err)
-	}
-
-	// Attempt to start a simultaneous auto partial stat run on the same table.
-	// It should fail.
-	_, err := conn.Exec(`CREATE STATISTICS __auto_partial__ FROM d.t1 USING EXTREMES`)
-	expected := "another CREATE STATISTICS job is already running"
-	if !testutils.IsError(err, expected) {
-		t.Fatalf("expected '%s' error, but got %v", expected, err)
-	}
-
-	// Attempt to start a simultaneous auto partial stat run on a different table.
-	// It should succeed.
-	autoPartialStatErrCh := make(chan error)
-	go func() {
-		_, err := conn.Exec(`CREATE STATISTICS __auto_partial__ FROM d.t2 USING EXTREMES`)
-		autoPartialStatErrCh <- err
-	}()
-
-	select {
-	case allowRequest <- struct{}{}:
-	case err = <-runningAutoPartialStatErrCh:
-		t.Fatal(err)
-	case err = <-autoPartialStatErrCh:
-		t.Fatal(err)
-	}
-
-	// Allow both auto partial stat jobs to complete.
-	close(allowRequest)
-
-	// Verify that both jobs completed successfully.
-	if err = <-autoPartialStatErrCh; err != nil {
-		t.Fatalf("create auto partial stats job should have completed: %s", err)
-	}
-	if err = <-runningAutoPartialStatErrCh; err != nil {
-		t.Fatalf("create auto partial stats job should have completed: %s", err)
-	}
+	<-errCh
 }
 
 func TestDeleteFailedJob(t *testing.T) {
@@ -538,7 +363,7 @@ func TestDeleteFailedJob(t *testing.T) {
 	// Note: if this test fails, it will likely show up by using stressrace.
 	if res := sqlDB.QueryStr(t,
 		`SELECT job_id, status, error FROM [SHOW AUTOMATIC JOBS] WHERE status = $1`,
-		jobs.StateFailed,
+		jobs.StatusFailed,
 	); len(res) != 0 {
 		t.Fatalf("job should have been deleted but found: %v", res)
 	}
@@ -563,7 +388,22 @@ func TestCreateStatsProgress(t *testing.T) {
 	skip.UnderRace(t, "the test is too sensitive to overload")
 	skip.UnderDeadlock(t, "the test is too sensitive to overload")
 
+	getLastCreateStatsJobID := func(t testing.TB, db *sqlutils.SQLRunner) jobspb.JobID {
+		var jobID jobspb.JobID
+		db.QueryRow(t, "SELECT id FROM system.jobs WHERE status = 'running' AND "+
+			"job_type = 'CREATE STATS' ORDER BY created DESC LIMIT 1").Scan(&jobID)
+		return jobID
+	}
+
 	var allowRequest chan struct{}
+	var allowRequestClosed bool
+	// Make sure that we unblock the test server in all scenarios with test
+	// failures.
+	defer func() {
+		if !allowRequestClosed {
+			close(allowRequest)
+		}
+	}()
 	filter, setTableID := createStatsRequestFilter(&allowRequest)
 	var params base.TestServerArgs
 	params.Knobs.Store = &kvserver.StoreTestingKnobs{
@@ -581,15 +421,6 @@ func TestCreateStatsProgress(t *testing.T) {
 	s := srv.ApplicationLayer()
 	sqlDB := sqlutils.MakeSQLRunner(conn)
 
-	var allowRequestClosed bool
-	// Make sure that we unblock the test server in all scenarios with test
-	// failures.
-	defer func() {
-		if !allowRequestClosed {
-			close(allowRequest)
-		}
-	}()
-
 	sqlDB.Exec(t, `SET CLUSTER SETTING sql.stats.automatic_collection.enabled = false`)
 	sqlDB.Exec(t, `CREATE DATABASE d`)
 	sqlDB.Exec(t, `CREATE TABLE d.t (i INT8 PRIMARY KEY)`)
@@ -597,6 +428,18 @@ func TestCreateStatsProgress(t *testing.T) {
 	var tID descpb.ID
 	sqlDB.QueryRow(t, `SELECT 'd.t'::regclass::int`).Scan(&tID)
 	setTableID(tID)
+
+	getFractionCompleted := func(jobID jobspb.JobID) float32 {
+		var progress *jobspb.Progress
+		testutils.SucceedsSoon(t, func() error {
+			progress = jobutils.GetJobProgress(t, sqlDB, jobID)
+			if progress.Progress == nil {
+				return errors.Errorf("progress is nil. jobID: %d", jobID)
+			}
+			return nil
+		})
+		return progress.Progress.(*jobspb.Progress_FractionCompleted).FractionCompleted
+	}
 
 	const query = `CREATE STATISTICS s1 FROM d.t`
 
@@ -626,7 +469,7 @@ func TestCreateStatsProgress(t *testing.T) {
 
 	// Ensure that 0 progress has been recorded since there are no existing
 	// stats available to estimate progress.
-	fractionCompleted := getFractionCompleted(t, sqlDB, jobID)
+	fractionCompleted := getFractionCompleted(jobID)
 	if fractionCompleted != 0 {
 		t.Fatalf(
 			"create stats should not have recorded progress, but progress is %f",
@@ -643,7 +486,7 @@ func TestCreateStatsProgress(t *testing.T) {
 	}
 
 	// Verify that full progress is now recorded.
-	fractionCompleted = getFractionCompleted(t, sqlDB, jobID)
+	fractionCompleted = getFractionCompleted(jobID)
 	if fractionCompleted != 1 {
 		t.Fatalf(
 			"create stats should have recorded full progress, but progress is %f",
@@ -680,7 +523,7 @@ func TestCreateStatsProgress(t *testing.T) {
 
 	// Ensure that partial progress has been recorded since there are existing
 	// stats available.
-	fractionCompleted = getFractionCompleted(t, sqlDB, jobID)
+	fractionCompleted = getFractionCompleted(jobID)
 	if fractionCompleted <= 0 || fractionCompleted > 0.99 {
 		t.Fatalf(
 			"create stats should have recorded partial progress, but progress is %f",
@@ -697,148 +540,10 @@ func TestCreateStatsProgress(t *testing.T) {
 	}
 
 	// Verify that full progress is now recorded.
-	fractionCompleted = getFractionCompleted(t, sqlDB, jobID)
+	fractionCompleted = getFractionCompleted(jobID)
 	if fractionCompleted != 1 {
 		t.Fatalf(
 			"create stats should have recorded full progress, but progress is %f",
-			fractionCompleted,
-		)
-	}
-}
-
-func TestCreateStatsUsingExtremesProgress(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	defer func(oldProgressInterval time.Duration) {
-		rowexec.SampleAggregatorProgressInterval = oldProgressInterval
-	}(rowexec.SampleAggregatorProgressInterval)
-	rowexec.SampleAggregatorProgressInterval = time.Nanosecond
-
-	defer func(oldProgressInterval int) {
-		rowexec.SamplerProgressInterval = oldProgressInterval
-	}(rowexec.SamplerProgressInterval)
-	rowexec.SamplerProgressInterval = 1
-
-	skip.UnderRace(t, "the test is too sensitive to overload")
-	skip.UnderDeadlock(t, "the test is too sensitive to overload")
-
-	var allowRequest chan struct{}
-	filter, setTableID := createStatsRequestFilter(&allowRequest)
-	var params base.TestServerArgs
-	params.Knobs.Store = &kvserver.StoreTestingKnobs{
-		TestingRequestFilter: filter,
-	}
-	params.Knobs.DistSQL = &execinfra.TestingKnobs{
-		// Force the stats job to iterate through the input rows instead of reading
-		// them all at once.
-		TableReaderBatchBytesLimit: 100,
-	}
-
-	ctx := context.Background()
-	srv, conn, _ := serverutils.StartServer(t, params)
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
-	sqlDB := sqlutils.MakeSQLRunner(conn)
-
-	var allowRequestClosed bool
-	// Make sure that we unblock the test server in all scenarios with test
-	// failures.
-	defer func() {
-		if !allowRequestClosed {
-			close(allowRequest)
-		}
-	}()
-
-	sqlDB.Exec(t, `SET CLUSTER SETTING sql.stats.automatic_collection.enabled = false`)
-	sqlDB.Exec(t, `CREATE DATABASE d`)
-	sqlDB.Exec(t, `CREATE TABLE d.t (a INT8 PRIMARY KEY, b INT8, INDEX(b))`)
-	sqlDB.Exec(t, `INSERT INTO d.t SELECT x, x from generate_series(1, 100) as g(x)`)
-	var tID descpb.ID
-	sqlDB.QueryRow(t, `SELECT 'd.t'::regclass::int`).Scan(&tID)
-	setTableID(tID)
-
-	const fullStatQuery = `CREATE STATISTICS s1 FROM d.t`
-
-	// Start a CREATE STATISTICS run.
-	allowRequest = make(chan struct{})
-	errCh := make(chan error)
-	go func() {
-		_, err := conn.Exec(fullStatQuery)
-		errCh <- err
-	}()
-
-	// Allow the job to complete and verify that the client didn't see anything
-	// amiss.
-	close(allowRequest)
-	allowRequestClosed = true
-	if err := <-errCh; err != nil {
-		t.Fatalf("create stats job should have completed: %s", err)
-	}
-
-	// Invalidate the stats cache so that we can be sure to get the latest stats.
-	s.ExecutorConfig().(sql.ExecutorConfig).TableStatsCache.InvalidateTableStats(ctx, tID)
-
-	sqlDB.Exec(t, `INSERT INTO d.t SELECT x, x from generate_series(101, 1000) as g(x)`)
-
-	const partialStatQuery = `CREATE STATISTICS s2 FROM d.t USING EXTREMES`
-
-	// Start a CREATE STATISTICS USING EXTREMES run that will scan two indexes.
-	allowRequest = make(chan struct{})
-	allowRequestClosed = false
-	go func() {
-		_, err := conn.Exec(partialStatQuery)
-		errCh <- err
-	}()
-	// Ten iterations here allows us to read some of the rows but not all.
-	for i := 0; i < 10; i++ {
-		select {
-		case allowRequest <- struct{}{}:
-		case err := <-errCh:
-			if err == nil {
-				t.Fatalf("query unexpectedly finished")
-			} else {
-				t.Fatal(err)
-			}
-		}
-	}
-
-	// Fetch the new job ID since we know it's running now.
-	jobID := getLastCreateStatsJobID(t, sqlDB)
-
-	var fractionCompleted float32
-	prevFractionCompleted := getFractionCompleted(t, sqlDB, jobID)
-
-	// Allow the job to progress until it finishes scanning both indexes.
-Loop:
-	for {
-		select {
-		case allowRequest <- struct{}{}:
-			// Ensure that job progress never regresses throughout both index scans.
-			fractionCompleted = getFractionCompleted(t, sqlDB, jobID)
-			if fractionCompleted < prevFractionCompleted {
-				close(errCh)
-				t.Fatalf("create partial stats job should not regress progress between indexes: %f -> %f", prevFractionCompleted, fractionCompleted)
-			}
-			prevFractionCompleted = fractionCompleted
-		case err := <-errCh:
-			if err == nil {
-				// Create partial stats job is now completed
-				break Loop
-			} else {
-				t.Fatalf("create partial stats job should have completed: %s", err)
-			}
-		}
-	}
-
-	close(allowRequest)
-	allowRequestClosed = true
-
-	// Verify that full progress is now recorded.
-	fractionCompleted = getFractionCompleted(t, sqlDB, jobID)
-	if fractionCompleted != 1 {
-		t.Fatalf(
-			"create partial stats should have recorded full progress, but progress is %f",
 			fractionCompleted,
 		)
 	}
@@ -898,34 +603,12 @@ func createStatsRequestFilter(
 			_, tableID, _ := encoding.DecodeUvarintAscending(key)
 			// Ensure that the tableID is what we expect it to be.
 			if tableID > 0 && descpb.ID(tableID) == tableToBlock.Load() {
-				// Read from the channel twice to allow runCreateStatsJob to
-				// complete even though there is only one ScanRequest.
-				// TODO(yuzefovich): only some tests need this behavior.
-				// Consider asking the caller how many times we should receive
-				// from the channel.
+				// Read from the channel twice to allow jobutils.RunJob to complete
+				// even though there is only one ScanRequest.
 				<-*allowProgressIota
 				<-*allowProgressIota
 			}
 		}
 		return nil
 	}, func(id descpb.ID) { tableToBlock.Store(id) }
-}
-
-func getLastCreateStatsJobID(t testing.TB, db *sqlutils.SQLRunner) jobspb.JobID {
-	var jobID jobspb.JobID
-	db.QueryRow(t, "SELECT id FROM system.jobs WHERE status = 'running' AND "+
-		"job_type = 'CREATE STATS' ORDER BY created DESC LIMIT 1").Scan(&jobID)
-	return jobID
-}
-
-func getFractionCompleted(t testing.TB, sqlDB *sqlutils.SQLRunner, jobID jobspb.JobID) float32 {
-	var progress *jobspb.Progress
-	testutils.SucceedsSoon(t, func() error {
-		progress = jobutils.GetJobProgress(t, sqlDB, jobID)
-		if progress.Progress == nil {
-			return errors.Errorf("progress is nil. jobID: %d", jobID)
-		}
-		return nil
-	})
-	return progress.Progress.(*jobspb.Progress_FractionCompleted).FractionCompleted
 }

@@ -16,8 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/cli/exit"
 	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/storage/disk"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/errors"
@@ -60,16 +58,12 @@ var MaxSyncDurationFatalOnExceeded = settings.RegisterBoolSetting(
 
 // InitEnvsFromStoreSpecs constructs Envs for all the provided store specs.
 func InitEnvsFromStoreSpecs(
-	ctx context.Context,
-	specs []base.StoreSpec,
-	rw RWMode,
-	stickyRegistry StickyRegistry,
-	diskWriteStats disk.WriteStatsManager,
+	ctx context.Context, specs []base.StoreSpec, rw RWMode, stickyRegistry StickyRegistry,
 ) (Envs, error) {
 	envs := make(Envs, len(specs))
 	for i := range specs {
 		var err error
-		envs[i], err = InitEnvFromStoreSpec(ctx, specs[i], rw, stickyRegistry, diskWriteStats)
+		envs[i], err = InitEnvFromStoreSpec(ctx, specs[i], rw, stickyRegistry)
 		if err != nil {
 			envs.CloseAll()
 			return nil, err
@@ -95,11 +89,7 @@ func (e Envs) CloseAll() {
 //
 // stickyRegistry may be nil iff the spec's StickyVFSID field is unset.
 func InitEnvFromStoreSpec(
-	ctx context.Context,
-	spec base.StoreSpec,
-	rw RWMode,
-	stickyRegistry StickyRegistry,
-	diskWriteStats disk.WriteStatsManager,
+	ctx context.Context, spec base.StoreSpec, rw RWMode, stickyRegistry StickyRegistry,
 ) (*Env, error) {
 	fs := vfs.Default
 	dir := spec.Path
@@ -116,22 +106,20 @@ func InitEnvFromStoreSpec(
 	return InitEnv(ctx, fs, dir, EnvConfig{
 		RW:                rw,
 		EncryptionOptions: spec.EncryptionOptions,
-	}, diskWriteStats)
+	})
 }
 
 // EnvConfig provides additional configuration settings for Envs.
 type EnvConfig struct {
 	RW                RWMode
-	EncryptionOptions *storageconfig.EncryptionOptions
+	EncryptionOptions []byte
 }
 
 // InitEnv initializes a new virtual filesystem environment.
 //
 // If successful the returned Env is returned with 1 reference. It must be
 // closed to avoid leaking goroutines and other resources.
-func InitEnv(
-	ctx context.Context, fs vfs.FS, dir string, cfg EnvConfig, diskWriteStats disk.WriteStatsManager,
-) (*Env, error) {
+func InitEnv(ctx context.Context, fs vfs.FS, dir string, cfg EnvConfig) (*Env, error) {
 	e := &Env{Dir: dir, UnencryptedFS: fs, rw: cfg.RW}
 	e.refs.Store(1)
 	// Defer the Close(). The Close() will only actually release resources if we
@@ -162,6 +150,17 @@ func InitEnv(
 		diskHealthCheckInterval = maxSyncDurationDefault
 	}
 
+	// Instantiate a file system with disk health checking enabled. This FS
+	// wraps the filesystem with a layer that times all write-oriented
+	// operations. When a slow disk operation occurs, Env.onDiskSlow is invoked
+	// (which in turn will invoke Env.onDiskSlowFunc if set).
+	e.UnencryptedFS, e.diskHealthChecksCloser = vfs.WithDiskHealthChecks(
+		e.UnencryptedFS, diskHealthCheckInterval, nil /* statsCollector */, e.onDiskSlow)
+	// If we encounter ENOSPC, exit with an informative exit code.
+	e.UnencryptedFS = vfs.OnDiskFull(e.UnencryptedFS, func() {
+		exit.WithCode(exit.DiskFull())
+	})
+
 	// Create the directory if it doesn't already exist. We need to acquire a
 	// database lock down below, which requires the directory already exist.
 	if cfg.RW == ReadWrite {
@@ -170,31 +169,11 @@ func InitEnv(
 		}
 	}
 
-	// Create the stats collector. This has to be done after the directory has
-	// been created above.
-	var statsCollector *vfs.DiskWriteStatsCollector
-	var err error
-	if diskWriteStats != nil && dir != "" {
-		if statsCollector, err = diskWriteStats.GetOrCreateCollector(dir); err != nil {
-			return nil, errors.Wrap(err, "retrieving stats collector")
-		}
-	}
-
-	// Instantiate a file system with disk health checking enabled. This FS
-	// wraps the filesystem with a layer that times all write-oriented
-	// operations. When a slow disk operation occurs, Env.onDiskSlow is invoked
-	// (which in turn will invoke Env.onDiskSlowFunc if set).
-	e.UnencryptedFS, e.diskHealthChecksCloser = vfs.WithDiskHealthChecks(
-		e.UnencryptedFS, diskHealthCheckInterval, statsCollector, e.onDiskSlow)
-	// If we encounter ENOSPC, exit with an informative exit code.
-	e.UnencryptedFS = vfs.OnDiskFull(e.UnencryptedFS, func() {
-		exit.WithCode(exit.DiskFull())
-	})
-
 	// Acquire the database lock in the store directory to ensure that no other
 	// process is simultaneously accessing the same store. We manually acquire
 	// the database lock here (rather than allowing Pebble to acquire the lock)
 	// so that we hold the lock when we initialize encryption-at-rest subsystem.
+	var err error
 	e.DirectoryLock, err = pebble.LockDirectory(dir, e.UnencryptedFS)
 	if err != nil {
 		return nil, err
@@ -302,12 +281,6 @@ func (e *Env) Close() {
 	}
 }
 
-// Unwrap is part of the vfs.FS interface.
-func (e *Env) Unwrap() vfs.FS {
-	// We don't want to expose the unencrypted FS.
-	return nil
-}
-
 func (e *Env) onDiskSlow(info vfs.DiskSlowInfo) {
 	if fn := e.onDiskSlowFunc.Load(); fn != nil {
 		(*fn)(info)
@@ -316,7 +289,7 @@ func (e *Env) onDiskSlow(info vfs.DiskSlowInfo) {
 
 // InMemory constructs a new in-memory environment.
 func InMemory() *Env {
-	e, err := InitEnv(context.Background(), vfs.NewMem(), "" /* dir */, EnvConfig{}, nil /* diskWriteStats */)
+	e, err := InitEnv(context.Background(), vfs.NewMem(), "" /* dir */, EnvConfig{})
 	// In practice InitEnv is infallible with this configuration.
 	if err != nil {
 		panic(err)
@@ -329,7 +302,7 @@ func InMemory() *Env {
 // encryption-at-rest. Since this function ignores the possibility of
 // encryption-at-rest, it should only be used as a testing convenience.
 func MustInitPhysicalTestingEnv(dir string) *Env {
-	e, err := InitEnv(context.Background(), vfs.Default, dir, EnvConfig{}, nil /* diskWriteStats */)
+	e, err := InitEnv(context.Background(), vfs.Default, dir, EnvConfig{})
 	if err != nil {
 		panic(err)
 	}
@@ -343,11 +316,11 @@ func errReadOnly() error {
 // Create creates the named file for reading and writing. If a file
 // already exists at the provided name, it's removed first ensuring the
 // resulting file descriptor points to a new inode.
-func (e *Env) Create(name string, category vfs.DiskWriteCategory) (vfs.File, error) {
+func (e *Env) Create(name string) (vfs.File, error) {
 	if e.rw == ReadOnly {
 		return nil, errReadOnly()
 	}
-	return e.defaultFS.Create(name, category)
+	return e.defaultFS.Create(name)
 }
 
 // Link creates newname as a hard link to the oldname file.
@@ -365,13 +338,11 @@ func (e *Env) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
 
 // OpenReadWrite opens the named file for reading and writing. If the file
 // does not exist, it is created.
-func (e *Env) OpenReadWrite(
-	name string, category vfs.DiskWriteCategory, opts ...vfs.OpenOption,
-) (vfs.File, error) {
+func (e *Env) OpenReadWrite(name string, opts ...vfs.OpenOption) (vfs.File, error) {
 	if e.rw == ReadOnly {
 		return nil, errReadOnly()
 	}
-	return e.defaultFS.OpenReadWrite(name, category, opts...)
+	return e.defaultFS.OpenReadWrite(name, opts...)
 }
 
 // OpenDir opens the named directory for syncing.
@@ -412,13 +383,11 @@ func (e *Env) Rename(oldname, newname string) error {
 // to reuse oldname, and simply create the file with newname -- in this case the implementation
 // should delete oldname. If the caller calls this function with an oldname that does not exist,
 // the implementation may return an error.
-func (e *Env) ReuseForWrite(
-	oldname, newname string, category vfs.DiskWriteCategory,
-) (vfs.File, error) {
+func (e *Env) ReuseForWrite(oldname, newname string) (vfs.File, error) {
 	if e.rw == ReadOnly {
 		return nil, errReadOnly()
 	}
-	return e.defaultFS.ReuseForWrite(oldname, newname, category)
+	return e.defaultFS.ReuseForWrite(oldname, newname)
 }
 
 // MkdirAll creates a directory and all necessary parents. The permission
@@ -460,7 +429,7 @@ func (e *Env) List(dir string) ([]string, error) {
 }
 
 // Stat returns an os.FileInfo describing the named file.
-func (e *Env) Stat(name string) (vfs.FileInfo, error) {
+func (e *Env) Stat(name string) (os.FileInfo, error) {
 	return e.defaultFS.Stat(name)
 }
 
@@ -492,10 +461,8 @@ func (e *Env) GetDiskUsage(path string) (vfs.DiskUsage, error) {
 // CreateWithSync creates a file wrapped with logic to periodically sync
 // whenever more than bytesPerSync bytes accumulate. This syncing does not
 // provide any persistency guarantees, but can prevent latency spikes.
-func CreateWithSync(
-	fs vfs.FS, name string, bytesPerSync int, category vfs.DiskWriteCategory,
-) (vfs.File, error) {
-	f, err := fs.Create(name, category)
+func CreateWithSync(fs vfs.FS, name string, bytesPerSync int) (vfs.File, error) {
+	f, err := fs.Create(name)
 	if err != nil {
 		return nil, err
 	}
@@ -503,8 +470,8 @@ func CreateWithSync(
 }
 
 // WriteFile writes data to a file named by filename.
-func WriteFile(fs vfs.FS, filename string, data []byte, category vfs.DiskWriteCategory) error {
-	f, err := fs.Create(filename, category)
+func WriteFile(fs vfs.FS, filename string, data []byte) error {
+	f, err := fs.Create(filename)
 	if err != nil {
 		return err
 	}

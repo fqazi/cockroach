@@ -26,7 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -66,19 +66,6 @@ func registerDrain(r registry.Registry) {
 			SkipPostValidations: registry.PostValidationNoDeadNodes,
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 				runClusterNotAtQuorum(ctx, t, c)
-			},
-		})
-
-		r.Add(registry.TestSpec{
-			Name:                "drain/with-shutdown",
-			Owner:               registry.OwnerSQLFoundations,
-			Cluster:             r.MakeClusterSpec(3),
-			CompatibleClouds:    registry.AllExceptAWS,
-			Suites:              registry.Suites(registry.Nightly),
-			Leases:              registry.MetamorphicLeases,
-			SkipPostValidations: registry.PostValidationNoDeadNodes,
-			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-				runDrainAndShutdown(ctx, t, c)
 			},
 		})
 	}
@@ -336,7 +323,7 @@ func runClusterNotAtQuorum(ctx context.Context, t test.Test, c cluster.Cluster) 
 	db := c.Conn(ctx, t.L(), 1)
 	defer func() { _ = db.Close() }()
 
-	err := roachtestutil.WaitFor3XReplication(ctx, t.L(), db)
+	err := WaitFor3XReplication(ctx, t, t.L(), db)
 	require.NoError(t, err)
 
 	stopOpts := option.DefaultStopOpts()
@@ -351,34 +338,8 @@ func runClusterNotAtQuorum(ctx context.Context, t test.Test, c cluster.Cluster) 
 		ctx,
 		t.L(),
 		option.WithNodes(c.Node(3)), fmt.Sprintf("./cockroach node drain --self --drain-wait=10s --certs-dir=%s --port={pgport:3}", install.CockroachNodeCertsDir))
-	t.L().Printf("drain output:\n%s\n%s\n", results.Stderr, results.Stdout)
+	t.L().Printf("drain output:\n%s\n%s\n", results.Stdout, results.Stderr)
 	require.Regexp(t, "(cluster settings require a value of at least|could not check drain related cluster settings)", results.Stderr)
-}
-
-// runDrainAndShutdown is to verify that we can use the --shutdown flag so the
-// process quits after draining is complete.
-func runDrainAndShutdown(ctx context.Context, t test.Test, c cluster.Cluster) {
-	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.All())
-	db := c.Conn(ctx, t.L(), 1)
-	defer func() { _ = db.Close() }()
-
-	err := roachtestutil.WaitFor3XReplication(ctx, t.L(), db)
-	require.NoError(t, err)
-
-	t.Status("drain and shutdown on node 3")
-	results, err := c.RunWithDetailsSingleNode(
-		ctx,
-		t.L(),
-		option.WithNodes(c.Node(3)), fmt.Sprintf("./cockroach node drain --self --shutdown --drain-wait=600s --certs-dir=%s --port={pgport:3}", install.CockroachNodeCertsDir))
-	t.L().Printf("drain output:\n%s\n%s\n", results.Stderr, results.Stdout)
-	require.NoError(t, err)
-	require.Regexp(t, "shutdown ok", results.Stdout)
-
-	// Avoid sending a signal, but verify that the node is shutdown.
-	stopOpts := option.DefaultStopOpts()
-	stopOpts.RoachprodOpts.Sig = 0
-	stopOpts.RoachprodOpts.Wait = true
-	c.Stop(ctx, t.L(), stopOpts, c.Node(3))
 }
 
 // prepareCluster is to start the server on nodes in the given cluster, and set

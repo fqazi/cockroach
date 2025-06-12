@@ -27,7 +27,6 @@ import (
 )
 
 type dropIndexNode struct {
-	zeroInputPlanNode
 	n        *tree.DropIndex
 	idxNames []fullIndexName
 }
@@ -66,32 +65,13 @@ func (p *planner) DropIndex(ctx context.Context, n *tree.DropIndex) (planNode, e
 		}
 
 		// Disallow schema changes if this table's schema is locked.
-		if err = p.checkSchemaChangeIsAllowed(ctx, tableDesc, n); err != nil {
+		if err = checkTableSchemaUnlocked(tableDesc); err != nil {
 			return nil, err
 		}
 
 		idxNames = append(idxNames, fullIndexName{tn: tn, idxName: index.Index})
 	}
 	return &dropIndexNode{n: n, idxNames: idxNames}, nil
-}
-
-// failDropIndexIfSafeUpdates checks if the sql_safe_updates is present, and if so, it
-// will fail the operation.
-func failDropIndexIfSafeUpdates(params runParams) error {
-	if params.SessionData().SafeUpdates {
-		err := pgerror.WithCandidateCode(
-			errors.WithMessage(
-				errors.New(
-					"DROP INDEX"),
-				"rejected (sql_safe_updates = true)",
-			),
-			pgcode.Warning,
-		)
-
-		return err
-	}
-
-	return nil
 }
 
 // ReadingOwnWrites implements the planNodeReadingOwnWrites interface.
@@ -101,10 +81,6 @@ func (n *dropIndexNode) ReadingOwnWrites() {}
 
 func (n *dropIndexNode) startExec(params runParams) error {
 	telemetry.Inc(sqltelemetry.SchemaChangeDropCounter("index"))
-
-	if err := failDropIndexIfSafeUpdates(params); err != nil {
-		return err
-	}
 
 	if n.n.Concurrently {
 		params.p.BufferClientNotice(
@@ -198,7 +174,7 @@ func (n *dropIndexNode) startExec(params runParams) error {
 				// Only drop this shard column if it's not a physical column (as is the case for all hash-sharded index in 22.1
 				// and after), or, CASCADE is set.
 				if shardColDesc.IsVirtual() || n.n.DropBehavior == tree.DropCascade {
-					ok, err := n.maybeQueueDropShardColumn(params, index.tn, tableDesc, shardColDesc)
+					ok, err := n.maybeQueueDropShardColumn(tableDesc, shardColDesc)
 					if err != nil {
 						return err
 					}
@@ -246,7 +222,7 @@ func (n *dropIndexNode) queueDropColumn(tableDesc *tabledesc.Mutable, col catalo
 //
 // Assumes that the given index is sharded.
 func (n *dropIndexNode) maybeQueueDropShardColumn(
-	params runParams, tn *tree.TableName, tableDesc *tabledesc.Mutable, shardColDesc catalog.Column,
+	tableDesc *tabledesc.Mutable, shardColDesc catalog.Column,
 ) (bool, error) {
 	if catalog.FindNonDropIndex(tableDesc, func(otherIdx catalog.Index) bool {
 		colIDs := otherIdx.CollectKeyColumnIDs()
@@ -258,7 +234,7 @@ func (n *dropIndexNode) maybeQueueDropShardColumn(
 	}) != nil {
 		return false, nil
 	}
-	if err := n.dropShardColumnAndConstraint(params, tn, tableDesc, shardColDesc); err != nil {
+	if err := n.dropShardColumnAndConstraint(tableDesc, shardColDesc); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -267,7 +243,7 @@ func (n *dropIndexNode) maybeQueueDropShardColumn(
 // dropShardColumnAndConstraint drops the given shard column and its associated check
 // constraint.
 func (n *dropIndexNode) dropShardColumnAndConstraint(
-	params runParams, tn *tree.TableName, tableDesc *tabledesc.Mutable, shardCol catalog.Column,
+	tableDesc *tabledesc.Mutable, shardCol catalog.Column,
 ) error {
 	validChecks := tableDesc.Checks[:0]
 	for _, check := range tableDesc.CheckConstraints() {
@@ -284,14 +260,8 @@ func (n *dropIndexNode) dropShardColumnAndConstraint(
 	if len(validChecks) != len(tableDesc.Checks) {
 		tableDesc.Checks = validChecks
 	}
-	if _, err := dropColumnImpl(
-		params, tn, tableDesc, tableDesc.GetRowLevelTTL(),
-		&tree.AlterTableDropColumn{
-			Column:       shardCol.ColName(),
-			DropBehavior: n.n.DropBehavior},
-	); err != nil {
-		return err
-	}
+
+	n.queueDropColumn(tableDesc, shardCol)
 	return nil
 }
 
@@ -375,6 +345,32 @@ func (p *planner) dropIndexByName(
 		)
 	}
 
+	// Check if requires CCL binary for eventual zone config removal.
+	_, zone, _, err := GetZoneConfigInTxn(
+		ctx, p.txn, p.Descriptors(), tableDesc.ID, nil /* index */, "", false,
+	)
+	if err != nil {
+		return err
+	}
+
+	for _, s := range zone.Subzones {
+		if s.IndexID != uint32(idx.GetID()) {
+			_, err = GenerateSubzoneSpans(
+				p.ExecCfg().Settings,
+				p.ExecCfg().Codec,
+				tableDesc,
+				zone.Subzones,
+				false, /* newSubzones */
+			)
+			if sqlerrors.IsCCLRequiredError(err) {
+				return sqlerrors.NewCCLRequiredError(fmt.Errorf("schema change requires a CCL binary "+
+					"because table %q has at least one remaining index or partition with a zone config",
+					tableDesc.Name))
+			}
+			break
+		}
+	}
+
 	// Remove all foreign key references and backreferences from the index.
 	// TODO (lucy): This is incorrect for two reasons: The first is that FKs won't
 	// be restored if the DROP INDEX is rolled back, and the second is that
@@ -430,10 +426,9 @@ func (p *planner) dropIndexByName(
 	var depsToDrop catalog.DescriptorIDSet
 	for _, tableRef := range tableDesc.DependedOnBy {
 		if tableRef.IndexID == idx.GetID() {
-			// Ensure that we have DROP privilege on all dependent relations
+			// Ensure that we have DROP privilege on all dependent views
 			err := p.canRemoveDependent(
-				ctx, "index", idx.GetName(), tableDesc.ID, tableDesc.ParentID,
-				tableRef, behavior, true /* blockOnTriggerDependency */)
+				ctx, "index", idx.GetName(), tableDesc.ParentID, tableRef, behavior)
 			if err != nil {
 				return err
 			}
@@ -530,7 +525,7 @@ func (p *planner) removeDependents(
 ) (droppedViews []string, err error) {
 	for _, descId := range depsToDrop.Ordered() {
 		depDesc, err := p.getDescForCascade(
-			ctx, typeName, objName, tableDesc.ParentID, descId, tableDesc.ID, dropBehavior,
+			ctx, typeName, objName, tableDesc.ParentID, descId, dropBehavior,
 		)
 		if err != nil {
 			return nil, err
@@ -554,7 +549,7 @@ func (p *planner) removeDependents(
 			droppedViews = append(droppedViews, cascadedViews...)
 			droppedViews = append(droppedViews, qualifiedView.FQString())
 		case *funcdesc.Mutable:
-			if err := p.removeDependentFunction(ctx, tableDesc, t, dropBehavior); err != nil {
+			if err := p.removeDependentFunction(ctx, tableDesc, t); err != nil {
 				return nil, err
 			}
 		}

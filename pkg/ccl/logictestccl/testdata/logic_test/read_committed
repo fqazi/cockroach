@@ -1,4 +1,4 @@
-# LogicTest: !local-schema-locked
+# LogicTest: !local-mixed-23.1
 
 subtest cursor
 
@@ -86,12 +86,12 @@ SELECT aisle FROM supermarket WHERE person = 'matilda' FOR UPDATE
 statement ok
 ROLLBACK
 
-# Use SELECT FOR UPDATE under repeatable read isolation.
+# Use SELECT FOR UPDATE under snapshot isolation.
 statement ok
-SET CLUSTER SETTING sql.txn.repeatable_read_isolation.enabled = true
+SET CLUSTER SETTING sql.txn.snapshot_isolation.enabled = true
 
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ
+BEGIN TRANSACTION ISOLATION LEVEL SNAPSHOT
 
 query I
 SELECT aisle FROM supermarket WHERE person = 'matilda' FOR UPDATE
@@ -102,7 +102,7 @@ statement ok
 ROLLBACK
 
 statement ok
-RESET CLUSTER SETTING sql.txn.repeatable_read_isolation.enabled
+RESET CLUSTER SETTING sql.txn.snapshot_isolation.enabled
 
 # Use SELECT FOR UPDATE in a subquery under read committed isolation.
 statement ok
@@ -319,9 +319,6 @@ subtest schema_changes_multi-stmt
 # They are allowed in single-statement explicit transactions.
 
 statement ok
-SET autocommit_before_ddl = false
-
-statement ok
 BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;
 CREATE TABLE single_stmt_explicit (a INT PRIMARY KEY);
 COMMIT
@@ -479,9 +476,6 @@ ALTER SCHEMA s RENAME TO foo;
 statement ok
 ROLLBACK
 
-statement ok
-RESET autocommit_before_ddl
-
 subtest end
 
 statement ok
@@ -491,20 +485,10 @@ SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE
 
 statement ok
 CREATE USER testuser2 WITH VIEWACTIVITY;
-
-statement ok
 DROP TABLE IF EXISTS t;
-
-statement ok
 CREATE TABLE t(a INT PRIMARY KEY);
-
-statement ok
 INSERT INTO t VALUES(1), (2);
-
-statement ok
 GRANT ALL ON t TO testuser;
-
-statement ok
 GRANT ALL ON t TO testuser2;
 
 user testuser
@@ -555,8 +539,6 @@ user testuser
 statement ok
 COMMIT
 
-subtest end
-
 subtest regression_130661
 
 statement ok
@@ -579,57 +561,5 @@ SELECT * FROM t130661 WHERE id = 1 FOR UPDATE
 
 statement ok
 COMMIT
-
-subtest end
-
-subtest regression_141961
-
-statement ok
-BEGIN ISOLATION LEVEL READ COMMITTED;
-
-query I
-SELECT * FROM (WITH foo AS (SELECT * FROM t FOR UPDATE LIMIT 1) SELECT 1);
-----
-1
-
-statement ok
-ROLLBACK;
-
-subtest end
-
-subtest regression_143138
-
-statement ok
-CREATE TABLE usertable (
-  ycsb_key VARCHAR(255) NOT NULL,
-  field0 STRING NOT NULL,
-  field1 STRING NOT NULL,
-  CONSTRAINT usertable_pkey PRIMARY KEY (ycsb_key ASC),
-  FAMILY fam_0_ycsb_key (ycsb_key),
-  FAMILY fam_1_field0 (field0),
-  FAMILY fam_2_field1 (field1)
-)
-
-statement ok
-SET plan_cache_mode = force_generic_plan
-
-statement ok
-PREPARE p AS UPDATE usertable SET field1 = $2:::STRING WHERE ycsb_key = $1:::STRING;
-
-query T kvtrace
-EXECUTE p ('foo', 'bar')
-----
-Scan /Table/119/1/"foo"/2/1 lock Exclusive (Block, Unreplicated)
-
-statement ok
-BEGIN ISOLATION LEVEL READ COMMITTED;
-
-query T kvtrace
-EXECUTE p ('foo', 'bar')
-----
-Scan /Table/119/1/"foo"/2/1 lock Exclusive (Block, Unreplicated)
-
-statement ok
-ROLLBACK
 
 subtest end

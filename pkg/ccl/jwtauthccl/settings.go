@@ -7,29 +7,23 @@ package jwtauthccl
 
 import (
 	"bytes"
-	"crypto/x509"
 	"encoding/json"
-	"slices"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/errors"
-	"github.com/lestrrat-go/jwx/v2/jwk"
+	"github.com/lestrrat-go/jwx/jwk"
 	"golang.org/x/exp/maps"
 )
 
 // All cluster settings necessary for the JWT authentication feature.
 const (
-	baseJWTAuthSettingName           = "server.jwt_authentication."
-	JWTAuthAudienceSettingName       = baseJWTAuthSettingName + "audience"
-	JWTAuthEnabledSettingName        = baseJWTAuthSettingName + "enabled"
-	JWTAuthIssuersSettingName        = baseJWTAuthSettingName + "issuers"
-	JWTAuthJWKSSettingName           = baseJWTAuthSettingName + "jwks"
-	JWTAuthClaimSettingName          = baseJWTAuthSettingName + "claim"
-	JWKSAutoFetchEnabledSettingName  = baseJWTAuthSettingName + "jwks_auto_fetch.enabled"
-	jwtAuthIssuerCustomCASettingName = baseJWTAuthSettingName + "issuers.custom_ca"
-	jwtAuthClientTimeoutSettingName  = baseJWTAuthSettingName + "client.timeout"
-	jwtAuthIssuersConfigSettingName  = JWTAuthIssuersSettingName + ".configuration"
+	baseJWTAuthSettingName          = "server.jwt_authentication."
+	JWTAuthAudienceSettingName      = baseJWTAuthSettingName + "audience"
+	JWTAuthEnabledSettingName       = baseJWTAuthSettingName + "enabled"
+	JWTAuthIssuersSettingName       = baseJWTAuthSettingName + "issuers"
+	JWTAuthJWKSSettingName          = baseJWTAuthSettingName + "jwks"
+	JWTAuthClaimSettingName         = baseJWTAuthSettingName + "claim"
+	JWKSAutoFetchEnabledSettingName = baseJWTAuthSettingName + "jwks_auto_fetch.enabled"
 )
 
 // JWTAuthClaim sets the JWT claim that is parsed to get the username.
@@ -39,7 +33,6 @@ var JWTAuthClaim = settings.RegisterStringSetting(
 	"sets the JWT claim that is parsed to get the username",
 	"",
 	settings.WithReportable(true),
-	settings.WithPublic,
 )
 
 // JWTAuthAudience sets accepted audience values for JWT logins over the SQL interface.
@@ -49,7 +42,6 @@ var JWTAuthAudience = settings.RegisterStringSetting(
 	"sets accepted audience values for JWT logins over the SQL interface",
 	"",
 	settings.WithValidateString(validateJWTAuthAudiences),
-	settings.WithPublic,
 )
 
 // JWTAuthEnabled enables or disabled JWT login over the SQL interface.
@@ -59,7 +51,6 @@ var JWTAuthEnabled = settings.RegisterBoolSetting(
 	"enables or disables JWT login for the SQL interface",
 	false,
 	settings.WithReportable(true),
-	settings.WithPublic,
 )
 
 // JWTAuthJWKS is the public key set for JWT logins over the SQL interface.
@@ -69,7 +60,6 @@ var JWTAuthJWKS = settings.RegisterStringSetting(
 	"sets the public key set for JWT logins over the SQL interface (JWKS format)",
 	"{\"keys\":[]}",
 	settings.WithValidateString(validateJWTAuthJWKS),
-	settings.WithPublic,
 )
 
 // JWTAuthIssuersConfig contains the configuration of all JWT issuers  whose
@@ -102,27 +92,9 @@ var JWTAuthIssuersConfig = settings.RegisterStringSetting(
 		"issuer URLs or a JSON object containing map of issuer URLS to JWKS URIs",
 	"",
 	settings.WithValidateString(validateJWTAuthIssuersConf),
-	settings.WithName(jwtAuthIssuersConfigSettingName),
-	settings.WithPublic,
 )
 
-// JWTAuthIssuerCustomCA is the custom root CA for verifying certificates while
-// fetching JWKS from the JWT issuers.
-var JWTAuthIssuerCustomCA = settings.RegisterStringSetting(
-	settings.ApplicationLevel,
-	jwtAuthIssuerCustomCASettingName,
-	"sets the PEM encoded custom root CA for verifying certificates while fetching JWKS",
-	"",
-	settings.WithReportable(false),
-	settings.Sensitive,
-	settings.WithValidateString(validateJWTAuthIssuerCACert),
-	settings.WithPublic,
-)
-
-// JWKSAutoFetchEnabled enables or disables automatic fetching of JWKS either
-// from JWKS URI present in the issuer's well-known endpoint  or value set in
-// JWTAuthIssuersConfig for JWKS URI corresponding to the issuer from presented
-// JWT token for JWT login over SQL interface.
+// JWKSAutoFetchEnabled enables or disables automatic fetching of JWKs from the issuer's well-known endpoint.
 var JWKSAutoFetchEnabled = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	JWKSAutoFetchEnabledSettingName,
@@ -131,18 +103,6 @@ var JWKSAutoFetchEnabled = settings.RegisterBoolSetting(
 		"server.jwt_authentication.jwks will be ignored.",
 	false,
 	settings.WithReportable(true),
-	settings.WithPublic,
-)
-
-// JWTAuthClientTimeout is the client timeout for all the external calls made
-// during JWT authentication (e.g. fetching JWKS, etc.).
-var JWTAuthClientTimeout = settings.RegisterDurationSetting(
-	settings.ApplicationLevel,
-	jwtAuthClientTimeoutSettingName,
-	"sets the client timeout for external calls made during JWT authentication "+
-		"(e.g. fetching JWKS, etc.)",
-	15*time.Second,
-	settings.WithPublic,
 )
 
 // getJSONDecoder generates a new decoder from provided json string. This is
@@ -159,7 +119,14 @@ type issuerURLConf struct {
 }
 
 func (conf *issuerURLConf) checkIssuerConfigured(issuer string) error {
-	if !slices.Contains(conf.issuers, issuer) {
+	issuerMatch := false
+	for idx := range conf.issuers {
+		if issuer == conf.issuers[idx] {
+			issuerMatch = true
+			break
+		}
+	}
+	if !issuerMatch {
 		return errors.Newf("JWT authentication: invalid issuer")
 	}
 	return nil
@@ -281,13 +248,4 @@ func mustParseJWKS(jwks string) jwk.Set {
 		return jwk.NewSet()
 	}
 	return keySet
-}
-
-func validateJWTAuthIssuerCACert(values *settings.Values, s string) error {
-	if len(s) != 0 {
-		if ok := x509.NewCertPool().AppendCertsFromPEM([]byte(s)); !ok {
-			return errors.Newf("JWT authentication issuer custom CA certificate not valid")
-		}
-	}
-	return nil
 }

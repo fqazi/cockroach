@@ -4,14 +4,6 @@
 // included in the /LICENSE file.
 
 import {
-  InsightRecommendation,
-  InsightType,
-  recommendDropUnusedIndex,
-} from "../insights";
-import { HexStringToInt64String, indexUnusedDuration } from "../util";
-
-import { QuoteIdentifier } from "./safesql";
-import {
   SqlExecutionRequest,
   SqlTxnResult,
   executeInternalSql,
@@ -21,6 +13,13 @@ import {
   SqlApiResponse,
   formatApiResult,
 } from "./sqlApi";
+import {
+  InsightRecommendation,
+  InsightType,
+  recommendDropUnusedIndex,
+} from "../insights";
+import { HexStringToInt64String, indexUnusedDuration } from "../util";
+import { QuoteIdentifier } from "./safesql";
 
 // Export for db-console import from clusterUiApi.
 export type { InsightRecommendation } from "../insights";
@@ -61,11 +60,11 @@ type SchemaInsightQuery<RowType> = {
 };
 
 function clusterIndexUsageStatsToSchemaInsight(
-  txnResult: SqlTxnResult<ClusterIndexUsageStatistic>,
+  txn_result: SqlTxnResult<ClusterIndexUsageStatistic>,
 ): InsightRecommendation[] {
   const results: Record<string, InsightRecommendation> = {};
 
-  txnResult.rows.forEach(row => {
+  txn_result.rows.forEach(row => {
     const result = recommendDropUnusedIndex(row);
     if (result.recommend) {
       const key = row.table_id.toString() + row.index_id.toString();
@@ -94,11 +93,11 @@ function clusterIndexUsageStatsToSchemaInsight(
 }
 
 function createIndexRecommendationsToSchemaInsight(
-  txnResult: SqlTxnResult<CreateIndexRecommendationsResponse>,
+  txn_result: SqlTxnResult<CreateIndexRecommendationsResponse>,
 ): InsightRecommendation[] {
   const results: InsightRecommendation[] = [];
 
-  txnResult.rows.forEach(row => {
+  txn_result.rows.forEach(row => {
     row.index_recommendations.forEach(rec => {
       if (!rec.includes(" : ")) {
         return;
@@ -203,10 +202,10 @@ WHERE
     toSchemaInsight: createIndexRecommendationsToSchemaInsight,
   };
 
-const schemaInsightQueries: Array<
-  | SchemaInsightQuery<ClusterIndexUsageStatistic>
-  | SchemaInsightQuery<CreateIndexRecommendationsResponse>
-> = [dropUnusedIndexQuery, createIndexRecommendationsQuery];
+const schemaInsightQueries: SchemaInsightQuery<SchemaInsightResponse>[] = [
+  dropUnusedIndexQuery,
+  createIndexRecommendationsQuery,
+];
 
 function getQuery(
   csIndexUnusedDuration: string,
@@ -241,14 +240,12 @@ export async function getSchemaInsights(
       "retrieving insights information",
     );
   }
-  result.execution.txn_results.map(txnResult => {
+  result.execution.txn_results.map(txn_result => {
     // Note: txn_result.statement values begin at 1, not 0.
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
     const insightQuery: SchemaInsightQuery<SchemaInsightResponse> =
-      schemaInsightQueries[txnResult.statement - 1];
-    if (txnResult.rows) {
-      results.push(...insightQuery.toSchemaInsight(txnResult));
+      schemaInsightQueries[txn_result.statement - 1];
+    if (txn_result.rows) {
+      results.push(...insightQuery.toSchemaInsight(txn_result));
     }
   });
   return formatApiResult<InsightRecommendation[]>(

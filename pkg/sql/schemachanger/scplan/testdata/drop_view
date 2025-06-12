@@ -6,7 +6,7 @@ CREATE VIEW defaultdb.v1 AS (SELECT name FROM defaultdb.t1);
 ops
 DROP VIEW defaultdb.v1
 ----
-StatementPhase stage 1 of 1 with 27 MutationType ops
+StatementPhase stage 1 of 1 with 19 MutationType ops
   transitions:
     [[Namespace:{DescID: 105, Name: v1, ReferencedDescID: 100}, ABSENT], PUBLIC] -> ABSENT
     [[Owner:{DescID: 105}, ABSENT], PUBLIC] -> ABSENT
@@ -16,19 +16,13 @@ StatementPhase stage 1 of 1 with 27 MutationType ops
     [[SchemaChild:{DescID: 105, ReferencedDescID: 101}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 105, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 105, Name: name, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 105, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 105, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 105, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 105, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 105, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 105, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
   ops:
     *scop.MarkDescriptorAsDropped
       DescriptorID: 105
@@ -60,20 +54,6 @@ StatementPhase stage 1 of 1 with 27 MutationType ops
       ColumnID: 4294967294
       Name: crdb_internal_column_4294967294_name_placeholder
       TableID: 105
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967293
-      TableID: 105
-    *scop.SetColumnName
-      ColumnID: 4294967293
-      Name: crdb_internal_column_4294967293_name_placeholder
-      TableID: 105
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967292
-      TableID: 105
-    *scop.SetColumnName
-      ColumnID: 4294967292
-      Name: crdb_internal_column_4294967292_name_placeholder
-      TableID: 105
     *scop.DrainDescriptorName
       Namespace:
         DatabaseID: 100
@@ -98,12 +78,6 @@ StatementPhase stage 1 of 1 with 27 MutationType ops
     *scop.MakeWriteOnlyColumnDeleteOnly
       ColumnID: 4294967294
       TableID: 105
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967293
-      TableID: 105
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967292
-      TableID: 105
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 1
       TableID: 105
@@ -112,12 +86,6 @@ StatementPhase stage 1 of 1 with 27 MutationType ops
       TableID: 105
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 4294967294
-      TableID: 105
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967293
-      TableID: 105
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967292
       TableID: 105
 PreCommitPhase stage 1 of 2 with 1 MutationType op
   transitions:
@@ -129,23 +97,17 @@ PreCommitPhase stage 1 of 2 with 1 MutationType op
     [[SchemaChild:{DescID: 105, ReferencedDescID: 101}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 105, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 105, Name: name, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 105, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 105, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 105, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 105, Name: tableoid, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], ABSENT] -> PUBLIC
-    [[Column:{DescID: 105, ColumnID: 4294967293}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], ABSENT] -> PUBLIC
-    [[Column:{DescID: 105, ColumnID: 4294967292}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
   ops:
     *scop.UndoAllInTxnImmediateMutationOpSideEffects
       {}
-PreCommitPhase stage 2 of 2 with 30 MutationType ops
+PreCommitPhase stage 2 of 2 with 22 MutationType ops
   transitions:
     [[Namespace:{DescID: 105, Name: v1, ReferencedDescID: 100}, ABSENT], PUBLIC] -> ABSENT
     [[Owner:{DescID: 105}, ABSENT], PUBLIC] -> ABSENT
@@ -155,19 +117,13 @@ PreCommitPhase stage 2 of 2 with 30 MutationType ops
     [[SchemaChild:{DescID: 105, ReferencedDescID: 101}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 105, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 105, Name: name, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 105, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 105, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 105, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 105, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 105, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 105, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
   ops:
     *scop.MarkDescriptorAsDropped
       DescriptorID: 105
@@ -199,20 +155,6 @@ PreCommitPhase stage 2 of 2 with 30 MutationType ops
       ColumnID: 4294967294
       Name: crdb_internal_column_4294967294_name_placeholder
       TableID: 105
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967293
-      TableID: 105
-    *scop.SetColumnName
-      ColumnID: 4294967293
-      Name: crdb_internal_column_4294967293_name_placeholder
-      TableID: 105
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967292
-      TableID: 105
-    *scop.SetColumnName
-      ColumnID: 4294967292
-      Name: crdb_internal_column_4294967292_name_placeholder
-      TableID: 105
     *scop.DrainDescriptorName
       Namespace:
         DatabaseID: 100
@@ -237,12 +179,6 @@ PreCommitPhase stage 2 of 2 with 30 MutationType ops
     *scop.MakeWriteOnlyColumnDeleteOnly
       ColumnID: 4294967294
       TableID: 105
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967293
-      TableID: 105
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967292
-      TableID: 105
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 1
       TableID: 105
@@ -251,12 +187,6 @@ PreCommitPhase stage 2 of 2 with 30 MutationType ops
       TableID: 105
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 4294967294
-      TableID: 105
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967293
-      TableID: 105
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967292
       TableID: 105
     *scop.SetJobStateOnDescriptor
       DescriptorID: 104
@@ -276,7 +206,7 @@ PreCommitPhase stage 2 of 2 with 30 MutationType ops
       RunningStatus: PostCommitNonRevertiblePhase stage 1 of 1 with 1 MutationType op pending
       Statements:
       - statement: DROP VIEW defaultdb.v1
-        redactedstatement: DROP VIEW defaultdb.public.v1
+        redactedstatement: DROP VIEW ‹defaultdb›.public.‹v1›
         statementtag: DROP VIEW
 PostCommitNonRevertiblePhase stage 1 of 1 with 4 MutationType ops
   transitions:
@@ -309,31 +239,7 @@ DROP VIEW defaultdb.v1
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 105, ColumnID: 1}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 105, ColumnID: 4294967292}, ABSENT]
-  to:   [View:{DescID: 105}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [Column:{DescID: 105, ColumnID: 4294967292}, WRITE_ONLY]
-  to:   [ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 105, ColumnID: 4294967292}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 105, ColumnID: 4294967293}, ABSENT]
-  to:   [View:{DescID: 105}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [Column:{DescID: 105, ColumnID: 4294967293}, WRITE_ONLY]
-  to:   [ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 105, ColumnID: 4294967293}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
+  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 105, ColumnID: 4294967294}, ABSENT]
@@ -345,7 +251,7 @@ DROP VIEW defaultdb.v1
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 105, ColumnID: 4294967294}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 105, ColumnID: 4294967295}, ABSENT]
@@ -357,7 +263,7 @@ DROP VIEW defaultdb.v1
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 105, ColumnID: 4294967295}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [ColumnName:{DescID: 105, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT]
@@ -368,22 +274,6 @@ DROP VIEW defaultdb.v1
   to:   [View:{DescID: 105}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  to:   [Column:{DescID: 105, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  to:   [View:{DescID: 105}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  to:   [Column:{DescID: 105, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  to:   [View:{DescID: 105}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
 - from: [ColumnName:{DescID: 105, Name: name, ColumnID: 1}, ABSENT]
   to:   [Column:{DescID: 105, ColumnID: 1}, ABSENT]
   kind: Precedence
@@ -400,43 +290,27 @@ DROP VIEW defaultdb.v1
   to:   [View:{DescID: 105}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   to:   [Column:{DescID: 105, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   to:   [View:{DescID: 105}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  to:   [Column:{DescID: 105, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  to:   [View:{DescID: 105}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  to:   [Column:{DescID: 105, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  to:   [View:{DescID: 105}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   to:   [Column:{DescID: 105, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   to:   [View:{DescID: 105}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   to:   [Column:{DescID: 105, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   to:   [View:{DescID: 105}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
@@ -465,14 +339,6 @@ DROP VIEW defaultdb.v1
   kind: Precedence
   rule: relation dropped before dependent column
 - from: [View:{DescID: 105}, DROPPED]
-  to:   [Column:{DescID: 105, ColumnID: 4294967292}, WRITE_ONLY]
-  kind: Precedence
-  rule: relation dropped before dependent column
-- from: [View:{DescID: 105}, DROPPED]
-  to:   [Column:{DescID: 105, ColumnID: 4294967293}, WRITE_ONLY]
-  kind: Precedence
-  rule: relation dropped before dependent column
-- from: [View:{DescID: 105}, DROPPED]
   to:   [Column:{DescID: 105, ColumnID: 4294967294}, WRITE_ONLY]
   kind: Precedence
   rule: relation dropped before dependent column
@@ -485,14 +351,6 @@ DROP VIEW defaultdb.v1
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 105}, DROPPED]
   to:   [ColumnName:{DescID: 105, Name: name, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
@@ -501,23 +359,15 @@ DROP VIEW defaultdb.v1
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 105}, DROPPED]
@@ -556,7 +406,7 @@ CREATE VIEW v5 AS (SELECT 'a'::defaultdb.typ::string AS k, n2, n1 from defaultdb
 ops
 DROP VIEW defaultdb.v1 CASCADE
 ----
-StatementPhase stage 1 of 1 with 156 MutationType ops
+StatementPhase stage 1 of 1 with 116 MutationType ops
   transitions:
     [[Namespace:{DescID: 105, Name: v1, ReferencedDescID: 100}, ABSENT], PUBLIC] -> ABSENT
     [[Owner:{DescID: 105}, ABSENT], PUBLIC] -> ABSENT
@@ -566,19 +416,13 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
     [[SchemaChild:{DescID: 105, ReferencedDescID: 101}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 105, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 105, Name: name, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 105, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 105, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 105, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 105, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 105, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 105, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[Namespace:{DescID: 106, Name: v2, ReferencedDescID: 100}, ABSENT], PUBLIC] -> ABSENT
     [[Owner:{DescID: 106}, ABSENT], PUBLIC] -> ABSENT
     [[UserPrivileges:{DescID: 106, Name: admin}, ABSENT], PUBLIC] -> ABSENT
@@ -587,22 +431,16 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
     [[SchemaChild:{DescID: 106, ReferencedDescID: 101}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 106, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 106, Name: n1, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 106, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 106, Name: n2, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 106, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 106, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 106, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 106, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 106, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 106, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 106, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 106, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[Namespace:{DescID: 107, Name: v3, ReferencedDescID: 100}, ABSENT], PUBLIC] -> ABSENT
     [[Owner:{DescID: 107}, ABSENT], PUBLIC] -> ABSENT
     [[UserPrivileges:{DescID: 107, Name: admin}, ABSENT], PUBLIC] -> ABSENT
@@ -611,22 +449,16 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
     [[SchemaChild:{DescID: 107, ReferencedDescID: 101}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 107, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 107, Name: name, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 107, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 107, Name: n1, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 107, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 107, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 107, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 107, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 107, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 107, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 107, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 107, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[Namespace:{DescID: 108, Name: v4, ReferencedDescID: 100}, ABSENT], PUBLIC] -> ABSENT
     [[Owner:{DescID: 108}, ABSENT], PUBLIC] -> ABSENT
     [[UserPrivileges:{DescID: 108, Name: admin}, ABSENT], PUBLIC] -> ABSENT
@@ -635,22 +467,16 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
     [[SchemaChild:{DescID: 108, ReferencedDescID: 101}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 108, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 108, Name: n2, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 108, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 108, Name: n1, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 108, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 108, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 108, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 108, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 108, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 108, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 108, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 108, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[Namespace:{DescID: 111, Name: v5, ReferencedDescID: 100}, ABSENT], PUBLIC] -> ABSENT
     [[Owner:{DescID: 111}, ABSENT], PUBLIC] -> ABSENT
     [[UserPrivileges:{DescID: 111, Name: admin}, ABSENT], PUBLIC] -> ABSENT
@@ -659,25 +485,19 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
     [[SchemaChild:{DescID: 111, ReferencedDescID: 101}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 111, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 111, Name: k, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1, TypeName: STRING}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 111, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 111, Name: n2, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 111, ColumnID: 3}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 111, Name: n1, ColumnID: 3}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 111, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 111, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 111, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 111, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 111, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 111, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 111, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 111, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
   ops:
     *scop.MarkDescriptorAsDropped
       DescriptorID: 105
@@ -708,20 +528,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
     *scop.SetColumnName
       ColumnID: 4294967294
       Name: crdb_internal_column_4294967294_name_placeholder
-      TableID: 105
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967293
-      TableID: 105
-    *scop.SetColumnName
-      ColumnID: 4294967293
-      Name: crdb_internal_column_4294967293_name_placeholder
-      TableID: 105
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967292
-      TableID: 105
-    *scop.SetColumnName
-      ColumnID: 4294967292
-      Name: crdb_internal_column_4294967292_name_placeholder
       TableID: 105
     *scop.MarkDescriptorAsDropped
       DescriptorID: 106
@@ -759,20 +565,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
     *scop.SetColumnName
       ColumnID: 4294967294
       Name: crdb_internal_column_4294967294_name_placeholder
-      TableID: 106
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967293
-      TableID: 106
-    *scop.SetColumnName
-      ColumnID: 4294967293
-      Name: crdb_internal_column_4294967293_name_placeholder
-      TableID: 106
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967292
-      TableID: 106
-    *scop.SetColumnName
-      ColumnID: 4294967292
-      Name: crdb_internal_column_4294967292_name_placeholder
       TableID: 106
     *scop.MarkDescriptorAsDropped
       DescriptorID: 107
@@ -812,20 +604,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
       ColumnID: 4294967294
       Name: crdb_internal_column_4294967294_name_placeholder
       TableID: 107
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967293
-      TableID: 107
-    *scop.SetColumnName
-      ColumnID: 4294967293
-      Name: crdb_internal_column_4294967293_name_placeholder
-      TableID: 107
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967292
-      TableID: 107
-    *scop.SetColumnName
-      ColumnID: 4294967292
-      Name: crdb_internal_column_4294967292_name_placeholder
-      TableID: 107
     *scop.MarkDescriptorAsDropped
       DescriptorID: 108
     *scop.RemoveBackReferencesInRelations
@@ -862,20 +640,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
     *scop.SetColumnName
       ColumnID: 4294967294
       Name: crdb_internal_column_4294967294_name_placeholder
-      TableID: 108
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967293
-      TableID: 108
-    *scop.SetColumnName
-      ColumnID: 4294967293
-      Name: crdb_internal_column_4294967293_name_placeholder
-      TableID: 108
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967292
-      TableID: 108
-    *scop.SetColumnName
-      ColumnID: 4294967292
-      Name: crdb_internal_column_4294967292_name_placeholder
       TableID: 108
     *scop.MarkDescriptorAsDropped
       DescriptorID: 111
@@ -926,20 +690,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
       ColumnID: 4294967294
       Name: crdb_internal_column_4294967294_name_placeholder
       TableID: 111
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967293
-      TableID: 111
-    *scop.SetColumnName
-      ColumnID: 4294967293
-      Name: crdb_internal_column_4294967293_name_placeholder
-      TableID: 111
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967292
-      TableID: 111
-    *scop.SetColumnName
-      ColumnID: 4294967292
-      Name: crdb_internal_column_4294967292_name_placeholder
-      TableID: 111
     *scop.DrainDescriptorName
       Namespace:
         DatabaseID: 100
@@ -963,12 +713,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
       TableID: 105
     *scop.MakeWriteOnlyColumnDeleteOnly
       ColumnID: 4294967294
-      TableID: 105
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967293
-      TableID: 105
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967292
       TableID: 105
     *scop.DrainDescriptorName
       Namespace:
@@ -997,12 +741,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
     *scop.MakeWriteOnlyColumnDeleteOnly
       ColumnID: 4294967294
       TableID: 106
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967293
-      TableID: 106
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967292
-      TableID: 106
     *scop.DrainDescriptorName
       Namespace:
         DatabaseID: 100
@@ -1030,12 +768,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
     *scop.MakeWriteOnlyColumnDeleteOnly
       ColumnID: 4294967294
       TableID: 107
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967293
-      TableID: 107
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967292
-      TableID: 107
     *scop.DrainDescriptorName
       Namespace:
         DatabaseID: 100
@@ -1062,12 +794,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
       TableID: 108
     *scop.MakeWriteOnlyColumnDeleteOnly
       ColumnID: 4294967294
-      TableID: 108
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967293
-      TableID: 108
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967292
       TableID: 108
     *scop.DrainDescriptorName
       Namespace:
@@ -1099,12 +825,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
     *scop.MakeWriteOnlyColumnDeleteOnly
       ColumnID: 4294967294
       TableID: 111
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967293
-      TableID: 111
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967292
-      TableID: 111
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 1
       TableID: 105
@@ -1113,12 +833,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
       TableID: 105
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 4294967294
-      TableID: 105
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967293
-      TableID: 105
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967292
       TableID: 105
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 1
@@ -1133,12 +847,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
       ColumnID: 4294967294
       TableID: 106
     *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967293
-      TableID: 106
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967292
-      TableID: 106
-    *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 1
       TableID: 107
     *scop.MakeDeleteOnlyColumnAbsent
@@ -1151,12 +859,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
       ColumnID: 4294967294
       TableID: 107
     *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967293
-      TableID: 107
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967292
-      TableID: 107
-    *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 1
       TableID: 108
     *scop.MakeDeleteOnlyColumnAbsent
@@ -1167,12 +869,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
       TableID: 108
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 4294967294
-      TableID: 108
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967293
-      TableID: 108
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967292
       TableID: 108
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 1
@@ -1188,12 +884,6 @@ StatementPhase stage 1 of 1 with 156 MutationType ops
       TableID: 111
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 4294967294
-      TableID: 111
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967293
-      TableID: 111
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967292
       TableID: 111
 PreCommitPhase stage 1 of 2 with 1 MutationType op
   transitions:
@@ -1205,19 +895,13 @@ PreCommitPhase stage 1 of 2 with 1 MutationType op
     [[SchemaChild:{DescID: 105, ReferencedDescID: 101}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 105, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 105, Name: name, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 105, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 105, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 105, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 105, Name: tableoid, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], ABSENT] -> PUBLIC
-    [[Column:{DescID: 105, ColumnID: 4294967293}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], ABSENT] -> PUBLIC
-    [[Column:{DescID: 105, ColumnID: 4294967292}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
     [[Namespace:{DescID: 106, Name: v2, ReferencedDescID: 100}, ABSENT], ABSENT] -> PUBLIC
     [[Owner:{DescID: 106}, ABSENT], ABSENT] -> PUBLIC
     [[UserPrivileges:{DescID: 106, Name: admin}, ABSENT], ABSENT] -> PUBLIC
@@ -1226,22 +910,16 @@ PreCommitPhase stage 1 of 2 with 1 MutationType op
     [[SchemaChild:{DescID: 106, ReferencedDescID: 101}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 106, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 106, Name: n1, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 106, ColumnID: 2}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 106, Name: n2, ColumnID: 2}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 106, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 106, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 106, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 106, Name: tableoid, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], ABSENT] -> PUBLIC
-    [[Column:{DescID: 106, ColumnID: 4294967293}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnName:{DescID: 106, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], ABSENT] -> PUBLIC
-    [[Column:{DescID: 106, ColumnID: 4294967292}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnName:{DescID: 106, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
     [[Namespace:{DescID: 107, Name: v3, ReferencedDescID: 100}, ABSENT], ABSENT] -> PUBLIC
     [[Owner:{DescID: 107}, ABSENT], ABSENT] -> PUBLIC
     [[UserPrivileges:{DescID: 107, Name: admin}, ABSENT], ABSENT] -> PUBLIC
@@ -1250,22 +928,16 @@ PreCommitPhase stage 1 of 2 with 1 MutationType op
     [[SchemaChild:{DescID: 107, ReferencedDescID: 101}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 107, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 107, Name: name, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 107, ColumnID: 2}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 107, Name: n1, ColumnID: 2}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 107, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 107, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 107, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 107, Name: tableoid, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], ABSENT] -> PUBLIC
-    [[Column:{DescID: 107, ColumnID: 4294967293}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnName:{DescID: 107, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], ABSENT] -> PUBLIC
-    [[Column:{DescID: 107, ColumnID: 4294967292}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnName:{DescID: 107, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
     [[Namespace:{DescID: 108, Name: v4, ReferencedDescID: 100}, ABSENT], ABSENT] -> PUBLIC
     [[Owner:{DescID: 108}, ABSENT], ABSENT] -> PUBLIC
     [[UserPrivileges:{DescID: 108, Name: admin}, ABSENT], ABSENT] -> PUBLIC
@@ -1274,22 +946,16 @@ PreCommitPhase stage 1 of 2 with 1 MutationType op
     [[SchemaChild:{DescID: 108, ReferencedDescID: 101}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 108, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 108, Name: n2, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 108, ColumnID: 2}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 108, Name: n1, ColumnID: 2}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 108, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 108, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 108, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 108, Name: tableoid, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], ABSENT] -> PUBLIC
-    [[Column:{DescID: 108, ColumnID: 4294967293}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnName:{DescID: 108, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], ABSENT] -> PUBLIC
-    [[Column:{DescID: 108, ColumnID: 4294967292}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnName:{DescID: 108, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
     [[Namespace:{DescID: 111, Name: v5, ReferencedDescID: 100}, ABSENT], ABSENT] -> PUBLIC
     [[Owner:{DescID: 111}, ABSENT], ABSENT] -> PUBLIC
     [[UserPrivileges:{DescID: 111, Name: admin}, ABSENT], ABSENT] -> PUBLIC
@@ -1298,29 +964,23 @@ PreCommitPhase stage 1 of 2 with 1 MutationType op
     [[SchemaChild:{DescID: 111, ReferencedDescID: 101}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 111, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 111, Name: k, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1, TypeName: STRING}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 111, ColumnID: 2}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 111, Name: n2, ColumnID: 2}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 111, ColumnID: 3}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 111, Name: n1, ColumnID: 3}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3, TypeName: VARCHAR(256)}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 111, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 111, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], ABSENT] -> PUBLIC
     [[Column:{DescID: 111, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
     [[ColumnName:{DescID: 111, Name: tableoid, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], ABSENT] -> PUBLIC
-    [[Column:{DescID: 111, ColumnID: 4294967293}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnName:{DescID: 111, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], ABSENT] -> PUBLIC
-    [[Column:{DescID: 111, ColumnID: 4294967292}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnName:{DescID: 111, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], ABSENT] -> PUBLIC
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], ABSENT] -> PUBLIC
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], ABSENT] -> PUBLIC
   ops:
     *scop.UndoAllInTxnImmediateMutationOpSideEffects
       {}
-PreCommitPhase stage 2 of 2 with 165 MutationType ops
+PreCommitPhase stage 2 of 2 with 125 MutationType ops
   transitions:
     [[Namespace:{DescID: 105, Name: v1, ReferencedDescID: 100}, ABSENT], PUBLIC] -> ABSENT
     [[Owner:{DescID: 105}, ABSENT], PUBLIC] -> ABSENT
@@ -1330,19 +990,13 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
     [[SchemaChild:{DescID: 105, ReferencedDescID: 101}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 105, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 105, Name: name, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 105, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 105, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 105, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 105, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 105, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 105, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[Namespace:{DescID: 106, Name: v2, ReferencedDescID: 100}, ABSENT], PUBLIC] -> ABSENT
     [[Owner:{DescID: 106}, ABSENT], PUBLIC] -> ABSENT
     [[UserPrivileges:{DescID: 106, Name: admin}, ABSENT], PUBLIC] -> ABSENT
@@ -1351,22 +1005,16 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
     [[SchemaChild:{DescID: 106, ReferencedDescID: 101}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 106, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 106, Name: n1, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 106, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 106, Name: n2, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 106, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 106, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 106, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 106, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 106, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 106, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 106, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 106, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[Namespace:{DescID: 107, Name: v3, ReferencedDescID: 100}, ABSENT], PUBLIC] -> ABSENT
     [[Owner:{DescID: 107}, ABSENT], PUBLIC] -> ABSENT
     [[UserPrivileges:{DescID: 107, Name: admin}, ABSENT], PUBLIC] -> ABSENT
@@ -1375,22 +1023,16 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
     [[SchemaChild:{DescID: 107, ReferencedDescID: 101}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 107, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 107, Name: name, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 107, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 107, Name: n1, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 107, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 107, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 107, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 107, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 107, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 107, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 107, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 107, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[Namespace:{DescID: 108, Name: v4, ReferencedDescID: 100}, ABSENT], PUBLIC] -> ABSENT
     [[Owner:{DescID: 108}, ABSENT], PUBLIC] -> ABSENT
     [[UserPrivileges:{DescID: 108, Name: admin}, ABSENT], PUBLIC] -> ABSENT
@@ -1399,22 +1041,16 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
     [[SchemaChild:{DescID: 108, ReferencedDescID: 101}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 108, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 108, Name: n2, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 108, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 108, Name: n1, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 108, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 108, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 108, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 108, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 108, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 108, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 108, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 108, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[Namespace:{DescID: 111, Name: v5, ReferencedDescID: 100}, ABSENT], PUBLIC] -> ABSENT
     [[Owner:{DescID: 111}, ABSENT], PUBLIC] -> ABSENT
     [[UserPrivileges:{DescID: 111, Name: admin}, ABSENT], PUBLIC] -> ABSENT
@@ -1423,25 +1059,19 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
     [[SchemaChild:{DescID: 111, ReferencedDescID: 101}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 111, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 111, Name: k, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1, TypeName: STRING}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 111, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 111, Name: n2, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 111, ColumnID: 3}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 111, Name: n1, ColumnID: 3}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3, TypeName: VARCHAR(256)}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 111, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 111, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT], PUBLIC] -> ABSENT
     [[Column:{DescID: 111, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
     [[ColumnName:{DescID: 111, Name: tableoid, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 111, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 111, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT], PUBLIC] -> ABSENT
-    [[Column:{DescID: 111, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnName:{DescID: 111, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT], PUBLIC] -> ABSENT
-    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT], PUBLIC] -> ABSENT
+    [[ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT], PUBLIC] -> ABSENT
   ops:
     *scop.MarkDescriptorAsDropped
       DescriptorID: 105
@@ -1472,20 +1102,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
     *scop.SetColumnName
       ColumnID: 4294967294
       Name: crdb_internal_column_4294967294_name_placeholder
-      TableID: 105
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967293
-      TableID: 105
-    *scop.SetColumnName
-      ColumnID: 4294967293
-      Name: crdb_internal_column_4294967293_name_placeholder
-      TableID: 105
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967292
-      TableID: 105
-    *scop.SetColumnName
-      ColumnID: 4294967292
-      Name: crdb_internal_column_4294967292_name_placeholder
       TableID: 105
     *scop.MarkDescriptorAsDropped
       DescriptorID: 106
@@ -1523,20 +1139,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
     *scop.SetColumnName
       ColumnID: 4294967294
       Name: crdb_internal_column_4294967294_name_placeholder
-      TableID: 106
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967293
-      TableID: 106
-    *scop.SetColumnName
-      ColumnID: 4294967293
-      Name: crdb_internal_column_4294967293_name_placeholder
-      TableID: 106
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967292
-      TableID: 106
-    *scop.SetColumnName
-      ColumnID: 4294967292
-      Name: crdb_internal_column_4294967292_name_placeholder
       TableID: 106
     *scop.MarkDescriptorAsDropped
       DescriptorID: 107
@@ -1576,20 +1178,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
       ColumnID: 4294967294
       Name: crdb_internal_column_4294967294_name_placeholder
       TableID: 107
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967293
-      TableID: 107
-    *scop.SetColumnName
-      ColumnID: 4294967293
-      Name: crdb_internal_column_4294967293_name_placeholder
-      TableID: 107
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967292
-      TableID: 107
-    *scop.SetColumnName
-      ColumnID: 4294967292
-      Name: crdb_internal_column_4294967292_name_placeholder
-      TableID: 107
     *scop.MarkDescriptorAsDropped
       DescriptorID: 108
     *scop.RemoveBackReferencesInRelations
@@ -1626,20 +1214,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
     *scop.SetColumnName
       ColumnID: 4294967294
       Name: crdb_internal_column_4294967294_name_placeholder
-      TableID: 108
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967293
-      TableID: 108
-    *scop.SetColumnName
-      ColumnID: 4294967293
-      Name: crdb_internal_column_4294967293_name_placeholder
-      TableID: 108
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967292
-      TableID: 108
-    *scop.SetColumnName
-      ColumnID: 4294967292
-      Name: crdb_internal_column_4294967292_name_placeholder
       TableID: 108
     *scop.MarkDescriptorAsDropped
       DescriptorID: 111
@@ -1690,20 +1264,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
       ColumnID: 4294967294
       Name: crdb_internal_column_4294967294_name_placeholder
       TableID: 111
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967293
-      TableID: 111
-    *scop.SetColumnName
-      ColumnID: 4294967293
-      Name: crdb_internal_column_4294967293_name_placeholder
-      TableID: 111
-    *scop.MakePublicColumnWriteOnly
-      ColumnID: 4294967292
-      TableID: 111
-    *scop.SetColumnName
-      ColumnID: 4294967292
-      Name: crdb_internal_column_4294967292_name_placeholder
-      TableID: 111
     *scop.DrainDescriptorName
       Namespace:
         DatabaseID: 100
@@ -1727,12 +1287,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
       TableID: 105
     *scop.MakeWriteOnlyColumnDeleteOnly
       ColumnID: 4294967294
-      TableID: 105
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967293
-      TableID: 105
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967292
       TableID: 105
     *scop.DrainDescriptorName
       Namespace:
@@ -1761,12 +1315,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
     *scop.MakeWriteOnlyColumnDeleteOnly
       ColumnID: 4294967294
       TableID: 106
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967293
-      TableID: 106
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967292
-      TableID: 106
     *scop.DrainDescriptorName
       Namespace:
         DatabaseID: 100
@@ -1794,12 +1342,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
     *scop.MakeWriteOnlyColumnDeleteOnly
       ColumnID: 4294967294
       TableID: 107
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967293
-      TableID: 107
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967292
-      TableID: 107
     *scop.DrainDescriptorName
       Namespace:
         DatabaseID: 100
@@ -1826,12 +1368,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
       TableID: 108
     *scop.MakeWriteOnlyColumnDeleteOnly
       ColumnID: 4294967294
-      TableID: 108
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967293
-      TableID: 108
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967292
       TableID: 108
     *scop.DrainDescriptorName
       Namespace:
@@ -1863,12 +1399,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
     *scop.MakeWriteOnlyColumnDeleteOnly
       ColumnID: 4294967294
       TableID: 111
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967293
-      TableID: 111
-    *scop.MakeWriteOnlyColumnDeleteOnly
-      ColumnID: 4294967292
-      TableID: 111
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 1
       TableID: 105
@@ -1877,12 +1407,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
       TableID: 105
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 4294967294
-      TableID: 105
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967293
-      TableID: 105
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967292
       TableID: 105
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 1
@@ -1897,12 +1421,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
       ColumnID: 4294967294
       TableID: 106
     *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967293
-      TableID: 106
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967292
-      TableID: 106
-    *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 1
       TableID: 107
     *scop.MakeDeleteOnlyColumnAbsent
@@ -1915,12 +1433,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
       ColumnID: 4294967294
       TableID: 107
     *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967293
-      TableID: 107
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967292
-      TableID: 107
-    *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 1
       TableID: 108
     *scop.MakeDeleteOnlyColumnAbsent
@@ -1931,12 +1443,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
       TableID: 108
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 4294967294
-      TableID: 108
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967293
-      TableID: 108
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967292
       TableID: 108
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 1
@@ -1952,12 +1458,6 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
       TableID: 111
     *scop.MakeDeleteOnlyColumnAbsent
       ColumnID: 4294967294
-      TableID: 111
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967293
-      TableID: 111
-    *scop.MakeDeleteOnlyColumnAbsent
-      ColumnID: 4294967292
       TableID: 111
     *scop.SetJobStateOnDescriptor
       DescriptorID: 104
@@ -2001,7 +1501,7 @@ PreCommitPhase stage 2 of 2 with 165 MutationType ops
       RunningStatus: PostCommitNonRevertiblePhase stage 1 of 1 with 5 MutationType ops pending
       Statements:
       - statement: DROP VIEW defaultdb.v1 CASCADE
-        redactedstatement: DROP VIEW defaultdb.public.v1 CASCADE
+        redactedstatement: DROP VIEW ‹defaultdb›.public.‹v1› CASCADE
         statementtag: DROP VIEW
 PostCommitNonRevertiblePhase stage 1 of 1 with 14 MutationType ops
   transitions:
@@ -2070,31 +1570,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 105, ColumnID: 1}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 105, ColumnID: 4294967292}, ABSENT]
-  to:   [View:{DescID: 105}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [Column:{DescID: 105, ColumnID: 4294967292}, WRITE_ONLY]
-  to:   [ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 105, ColumnID: 4294967292}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 105, ColumnID: 4294967293}, ABSENT]
-  to:   [View:{DescID: 105}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [Column:{DescID: 105, ColumnID: 4294967293}, WRITE_ONLY]
-  to:   [ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 105, ColumnID: 4294967293}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
+  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 105, ColumnID: 4294967294}, ABSENT]
@@ -2106,7 +1582,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 105, ColumnID: 4294967294}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 105, ColumnID: 4294967295}, ABSENT]
@@ -2118,7 +1594,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 105, ColumnID: 4294967295}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 106, ColumnID: 1}, ABSENT]
@@ -2130,7 +1606,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 106, ColumnID: 1}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 106, ColumnID: 2}, ABSENT]
@@ -2142,31 +1618,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 106, ColumnID: 2}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 106, ColumnID: 4294967292}, ABSENT]
-  to:   [View:{DescID: 106}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [Column:{DescID: 106, ColumnID: 4294967292}, WRITE_ONLY]
-  to:   [ColumnName:{DescID: 106, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 106, ColumnID: 4294967292}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 106, ColumnID: 4294967293}, ABSENT]
-  to:   [View:{DescID: 106}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [Column:{DescID: 106, ColumnID: 4294967293}, WRITE_ONLY]
-  to:   [ColumnName:{DescID: 106, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 106, ColumnID: 4294967293}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
+  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 106, ColumnID: 4294967294}, ABSENT]
@@ -2178,7 +1630,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 106, ColumnID: 4294967294}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 106, ColumnID: 4294967295}, ABSENT]
@@ -2190,7 +1642,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 106, ColumnID: 4294967295}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 107, ColumnID: 1}, ABSENT]
@@ -2202,7 +1654,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 107, ColumnID: 1}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 107, ColumnID: 2}, ABSENT]
@@ -2214,31 +1666,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 107, ColumnID: 2}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 107, ColumnID: 4294967292}, ABSENT]
-  to:   [View:{DescID: 107}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [Column:{DescID: 107, ColumnID: 4294967292}, WRITE_ONLY]
-  to:   [ColumnName:{DescID: 107, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 107, ColumnID: 4294967292}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 107, ColumnID: 4294967293}, ABSENT]
-  to:   [View:{DescID: 107}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [Column:{DescID: 107, ColumnID: 4294967293}, WRITE_ONLY]
-  to:   [ColumnName:{DescID: 107, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 107, ColumnID: 4294967293}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
+  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 107, ColumnID: 4294967294}, ABSENT]
@@ -2250,7 +1678,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 107, ColumnID: 4294967294}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 107, ColumnID: 4294967295}, ABSENT]
@@ -2262,7 +1690,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 107, ColumnID: 4294967295}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 108, ColumnID: 1}, ABSENT]
@@ -2274,7 +1702,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 108, ColumnID: 1}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 108, ColumnID: 2}, ABSENT]
@@ -2286,31 +1714,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 108, ColumnID: 2}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 108, ColumnID: 4294967292}, ABSENT]
-  to:   [View:{DescID: 108}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [Column:{DescID: 108, ColumnID: 4294967292}, WRITE_ONLY]
-  to:   [ColumnName:{DescID: 108, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 108, ColumnID: 4294967292}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 108, ColumnID: 4294967293}, ABSENT]
-  to:   [View:{DescID: 108}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [Column:{DescID: 108, ColumnID: 4294967293}, WRITE_ONLY]
-  to:   [ColumnName:{DescID: 108, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 108, ColumnID: 4294967293}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
+  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 108, ColumnID: 4294967294}, ABSENT]
@@ -2322,7 +1726,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 108, ColumnID: 4294967294}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 108, ColumnID: 4294967295}, ABSENT]
@@ -2334,7 +1738,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 108, ColumnID: 4294967295}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 111, ColumnID: 1}, ABSENT]
@@ -2346,7 +1750,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 111, ColumnID: 1}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1, TypeName: STRING}, ABSENT]
+  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 111, ColumnID: 2}, ABSENT]
@@ -2358,7 +1762,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 111, ColumnID: 2}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 111, ColumnID: 3}, ABSENT]
@@ -2370,31 +1774,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 111, ColumnID: 3}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3, TypeName: VARCHAR(256)}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 111, ColumnID: 4294967292}, ABSENT]
-  to:   [View:{DescID: 111}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [Column:{DescID: 111, ColumnID: 4294967292}, WRITE_ONLY]
-  to:   [ColumnName:{DescID: 111, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 111, ColumnID: 4294967292}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 111, ColumnID: 4294967293}, ABSENT]
-  to:   [View:{DescID: 111}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [Column:{DescID: 111, ColumnID: 4294967293}, WRITE_ONLY]
-  to:   [ColumnName:{DescID: 111, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: column no longer public before dependents
-- from: [Column:{DescID: 111, ColumnID: 4294967293}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
+  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 111, ColumnID: 4294967294}, ABSENT]
@@ -2406,7 +1786,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 111, ColumnID: 4294967294}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 111, ColumnID: 4294967295}, ABSENT]
@@ -2418,7 +1798,7 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: column no longer public before dependents
 - from: [Column:{DescID: 111, ColumnID: 4294967295}, WRITE_ONLY]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: column no longer public before dependents
 - from: [ColumnName:{DescID: 105, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT]
@@ -2429,22 +1809,6 @@ DROP VIEW defaultdb.v1 CASCADE
   to:   [View:{DescID: 105}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  to:   [Column:{DescID: 105, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  to:   [View:{DescID: 105}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  to:   [Column:{DescID: 105, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  to:   [View:{DescID: 105}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
 - from: [ColumnName:{DescID: 105, Name: name, ColumnID: 1}, ABSENT]
   to:   [Column:{DescID: 105, ColumnID: 1}, ABSENT]
   kind: Precedence
@@ -2466,22 +1830,6 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: dependents removed before column
 - from: [ColumnName:{DescID: 106, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT]
-  to:   [View:{DescID: 106}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnName:{DescID: 106, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  to:   [Column:{DescID: 106, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnName:{DescID: 106, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  to:   [View:{DescID: 106}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnName:{DescID: 106, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  to:   [Column:{DescID: 106, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnName:{DescID: 106, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
   to:   [View:{DescID: 106}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
@@ -2517,22 +1865,6 @@ DROP VIEW defaultdb.v1 CASCADE
   to:   [View:{DescID: 107}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnName:{DescID: 107, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  to:   [Column:{DescID: 107, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnName:{DescID: 107, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  to:   [View:{DescID: 107}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnName:{DescID: 107, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  to:   [Column:{DescID: 107, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnName:{DescID: 107, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  to:   [View:{DescID: 107}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
 - from: [ColumnName:{DescID: 107, Name: n1, ColumnID: 2}, ABSENT]
   to:   [Column:{DescID: 107, ColumnID: 2}, ABSENT]
   kind: Precedence
@@ -2562,22 +1894,6 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: dependents removed before column
 - from: [ColumnName:{DescID: 108, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT]
-  to:   [View:{DescID: 108}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnName:{DescID: 108, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  to:   [Column:{DescID: 108, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnName:{DescID: 108, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  to:   [View:{DescID: 108}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnName:{DescID: 108, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  to:   [Column:{DescID: 108, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnName:{DescID: 108, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
   to:   [View:{DescID: 108}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
@@ -2613,22 +1929,6 @@ DROP VIEW defaultdb.v1 CASCADE
   to:   [View:{DescID: 111}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnName:{DescID: 111, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  to:   [Column:{DescID: 111, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnName:{DescID: 111, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  to:   [View:{DescID: 111}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnName:{DescID: 111, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  to:   [Column:{DescID: 111, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnName:{DescID: 111, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  to:   [View:{DescID: 111}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
 - from: [ColumnName:{DescID: 111, Name: k, ColumnID: 1}, ABSENT]
   to:   [Column:{DescID: 111, ColumnID: 1}, ABSENT]
   kind: Precedence
@@ -2661,243 +1961,163 @@ DROP VIEW defaultdb.v1 CASCADE
   to:   [View:{DescID: 111}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   to:   [Column:{DescID: 105, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   to:   [View:{DescID: 105}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  to:   [Column:{DescID: 105, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  to:   [View:{DescID: 105}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  to:   [Column:{DescID: 105, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  to:   [View:{DescID: 105}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   to:   [Column:{DescID: 105, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   to:   [View:{DescID: 105}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   to:   [Column:{DescID: 105, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+- from: [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   to:   [View:{DescID: 105}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   to:   [Column:{DescID: 106, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   to:   [View:{DescID: 106}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   to:   [Column:{DescID: 106, ColumnID: 2}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   to:   [View:{DescID: 106}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  to:   [Column:{DescID: 106, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  to:   [View:{DescID: 106}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  to:   [Column:{DescID: 106, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  to:   [View:{DescID: 106}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   to:   [Column:{DescID: 106, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   to:   [View:{DescID: 106}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   to:   [Column:{DescID: 106, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+- from: [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   to:   [View:{DescID: 106}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   to:   [Column:{DescID: 107, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   to:   [View:{DescID: 107}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   to:   [Column:{DescID: 107, ColumnID: 2}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   to:   [View:{DescID: 107}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  to:   [Column:{DescID: 107, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  to:   [View:{DescID: 107}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  to:   [Column:{DescID: 107, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  to:   [View:{DescID: 107}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   to:   [Column:{DescID: 107, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   to:   [View:{DescID: 107}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   to:   [Column:{DescID: 107, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+- from: [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   to:   [View:{DescID: 107}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   to:   [Column:{DescID: 108, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   to:   [View:{DescID: 108}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   to:   [Column:{DescID: 108, ColumnID: 2}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   to:   [View:{DescID: 108}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  to:   [Column:{DescID: 108, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  to:   [View:{DescID: 108}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  to:   [Column:{DescID: 108, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  to:   [View:{DescID: 108}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   to:   [Column:{DescID: 108, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   to:   [View:{DescID: 108}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   to:   [Column:{DescID: 108, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+- from: [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   to:   [View:{DescID: 108}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1, TypeName: STRING}, ABSENT]
+- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   to:   [Column:{DescID: 111, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1, TypeName: STRING}, ABSENT]
+- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   to:   [View:{DescID: 111}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   to:   [Column:{DescID: 111, ColumnID: 2}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   to:   [View:{DescID: 111}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3}, ABSENT]
   to:   [Column:{DescID: 111, ColumnID: 3}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3, TypeName: VARCHAR(256)}, ABSENT]
+- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3}, ABSENT]
   to:   [View:{DescID: 111}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  to:   [Column:{DescID: 111, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
-  to:   [View:{DescID: 111}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  to:   [Column:{DescID: 111, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: dependents removed before column
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  to:   [View:{DescID: 111}, ABSENT]
-  kind: Precedence
-  rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   to:   [Column:{DescID: 111, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
+- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   to:   [View:{DescID: 111}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   to:   [Column:{DescID: 111, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: dependents removed before column
-- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+- from: [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   to:   [View:{DescID: 111}, ABSENT]
   kind: Precedence
   rule: non-data dependents removed before descriptor
@@ -3006,14 +2226,6 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: relation dropped before dependent column
 - from: [View:{DescID: 105}, DROPPED]
-  to:   [Column:{DescID: 105, ColumnID: 4294967292}, WRITE_ONLY]
-  kind: Precedence
-  rule: relation dropped before dependent column
-- from: [View:{DescID: 105}, DROPPED]
-  to:   [Column:{DescID: 105, ColumnID: 4294967293}, WRITE_ONLY]
-  kind: Precedence
-  rule: relation dropped before dependent column
-- from: [View:{DescID: 105}, DROPPED]
   to:   [Column:{DescID: 105, ColumnID: 4294967294}, WRITE_ONLY]
   kind: Precedence
   rule: relation dropped before dependent column
@@ -3026,14 +2238,6 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnName:{DescID: 105, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnName:{DescID: 105, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 105}, DROPPED]
   to:   [ColumnName:{DescID: 105, Name: name, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
@@ -3042,23 +2246,15 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 105}, DROPPED]
-  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 105, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 105}, DROPPED]
@@ -3094,14 +2290,6 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: relation dropped before dependent column
 - from: [View:{DescID: 106}, DROPPED]
-  to:   [Column:{DescID: 106, ColumnID: 4294967292}, WRITE_ONLY]
-  kind: Precedence
-  rule: relation dropped before dependent column
-- from: [View:{DescID: 106}, DROPPED]
-  to:   [Column:{DescID: 106, ColumnID: 4294967293}, WRITE_ONLY]
-  kind: Precedence
-  rule: relation dropped before dependent column
-- from: [View:{DescID: 106}, DROPPED]
   to:   [Column:{DescID: 106, ColumnID: 4294967294}, WRITE_ONLY]
   kind: Precedence
   rule: relation dropped before dependent column
@@ -3111,14 +2299,6 @@ DROP VIEW defaultdb.v1 CASCADE
   rule: relation dropped before dependent column
 - from: [View:{DescID: 106}, DROPPED]
   to:   [ColumnName:{DescID: 106, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 106}, DROPPED]
-  to:   [ColumnName:{DescID: 106, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 106}, DROPPED]
-  to:   [ColumnName:{DescID: 106, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 106}, DROPPED]
@@ -3134,27 +2314,19 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 106}, DROPPED]
-  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 106}, DROPPED]
-  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 106}, DROPPED]
-  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 106}, DROPPED]
-  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 106}, DROPPED]
-  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 106}, DROPPED]
-  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 106, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 106}, DROPPED]
@@ -3190,14 +2362,6 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: relation dropped before dependent column
 - from: [View:{DescID: 107}, DROPPED]
-  to:   [Column:{DescID: 107, ColumnID: 4294967292}, WRITE_ONLY]
-  kind: Precedence
-  rule: relation dropped before dependent column
-- from: [View:{DescID: 107}, DROPPED]
-  to:   [Column:{DescID: 107, ColumnID: 4294967293}, WRITE_ONLY]
-  kind: Precedence
-  rule: relation dropped before dependent column
-- from: [View:{DescID: 107}, DROPPED]
   to:   [Column:{DescID: 107, ColumnID: 4294967294}, WRITE_ONLY]
   kind: Precedence
   rule: relation dropped before dependent column
@@ -3207,14 +2371,6 @@ DROP VIEW defaultdb.v1 CASCADE
   rule: relation dropped before dependent column
 - from: [View:{DescID: 107}, DROPPED]
   to:   [ColumnName:{DescID: 107, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 107}, DROPPED]
-  to:   [ColumnName:{DescID: 107, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 107}, DROPPED]
-  to:   [ColumnName:{DescID: 107, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 107}, DROPPED]
@@ -3230,27 +2386,19 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 107}, DROPPED]
-  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 107}, DROPPED]
-  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 107}, DROPPED]
-  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 107}, DROPPED]
-  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 107}, DROPPED]
-  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 107}, DROPPED]
-  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 107, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 107}, DROPPED]
@@ -3286,14 +2434,6 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: relation dropped before dependent column
 - from: [View:{DescID: 108}, DROPPED]
-  to:   [Column:{DescID: 108, ColumnID: 4294967292}, WRITE_ONLY]
-  kind: Precedence
-  rule: relation dropped before dependent column
-- from: [View:{DescID: 108}, DROPPED]
-  to:   [Column:{DescID: 108, ColumnID: 4294967293}, WRITE_ONLY]
-  kind: Precedence
-  rule: relation dropped before dependent column
-- from: [View:{DescID: 108}, DROPPED]
   to:   [Column:{DescID: 108, ColumnID: 4294967294}, WRITE_ONLY]
   kind: Precedence
   rule: relation dropped before dependent column
@@ -3303,14 +2443,6 @@ DROP VIEW defaultdb.v1 CASCADE
   rule: relation dropped before dependent column
 - from: [View:{DescID: 108}, DROPPED]
   to:   [ColumnName:{DescID: 108, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 108}, DROPPED]
-  to:   [ColumnName:{DescID: 108, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 108}, DROPPED]
-  to:   [ColumnName:{DescID: 108, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 108}, DROPPED]
@@ -3326,27 +2458,19 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 108}, DROPPED]
-  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 108}, DROPPED]
-  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 108}, DROPPED]
-  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 108}, DROPPED]
-  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 108}, DROPPED]
-  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 108}, DROPPED]
-  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 108, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 108}, DROPPED]
@@ -3386,14 +2510,6 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: relation dropped before dependent column
 - from: [View:{DescID: 111}, DROPPED]
-  to:   [Column:{DescID: 111, ColumnID: 4294967292}, WRITE_ONLY]
-  kind: Precedence
-  rule: relation dropped before dependent column
-- from: [View:{DescID: 111}, DROPPED]
-  to:   [Column:{DescID: 111, ColumnID: 4294967293}, WRITE_ONLY]
-  kind: Precedence
-  rule: relation dropped before dependent column
-- from: [View:{DescID: 111}, DROPPED]
   to:   [Column:{DescID: 111, ColumnID: 4294967294}, WRITE_ONLY]
   kind: Precedence
   rule: relation dropped before dependent column
@@ -3403,14 +2519,6 @@ DROP VIEW defaultdb.v1 CASCADE
   rule: relation dropped before dependent column
 - from: [View:{DescID: 111}, DROPPED]
   to:   [ColumnName:{DescID: 111, Name: crdb_internal_mvcc_timestamp, ColumnID: 4294967295}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 111}, DROPPED]
-  to:   [ColumnName:{DescID: 111, Name: crdb_internal_origin_id, ColumnID: 4294967293}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 111}, DROPPED]
-  to:   [ColumnName:{DescID: 111, Name: crdb_internal_origin_timestamp, ColumnID: 4294967292}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 111}, DROPPED]
@@ -3430,31 +2538,23 @@ DROP VIEW defaultdb.v1 CASCADE
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 111}, DROPPED]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1, TypeName: STRING}, ABSENT]
+  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 1}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 111}, DROPPED]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 2}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 111}, DROPPED]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3, TypeName: VARCHAR(256)}, ABSENT]
+  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 3}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 111}, DROPPED]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967292, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 111}, DROPPED]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967293, TypeName: INT4}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 111}, DROPPED]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967294, TypeName: OID}, ABSENT]
-  kind: Precedence
-  rule: descriptor dropped before dependent element removal
-- from: [View:{DescID: 111}, DROPPED]
-  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295, TypeName: DECIMAL}, ABSENT]
+  to:   [ColumnType:{DescID: 111, ColumnFamilyID: 0, ColumnID: 4294967295}, ABSENT]
   kind: Precedence
   rule: descriptor dropped before dependent element removal
 - from: [View:{DescID: 111}, DROPPED]

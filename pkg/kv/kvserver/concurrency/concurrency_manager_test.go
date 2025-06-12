@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
@@ -58,8 +59,7 @@ import (
 // The input files use the following DSL:
 //
 // new-txn      name=<txn-name> ts=<int>[,<int>] [epoch=<int>] [iso=<level>] [priority=<priority>] [uncertainty-limit=<int>[,<int>]]
-// new-request name=<req-name> txn=<txn-name>|none ts=<int>[,<int>] [priority=<priority>] [inconsistent] [wait-policy=<policy>] [lock-timeout]
-// [deadlock-timeout] [max-lock-wait-queue-length=<int>] [poison-policy=[err|wait]]
+// new-request  name=<req-name> txn=<txn-name>|none ts=<int>[,<int>] [priority=<priority>] [inconsistent] [wait-policy=<policy>] [lock-timeout] [max-lock-wait-queue-length=<int>] [poison-policy=[err|wait]]
 //
 //	<proto-name> [<field-name>=<field-value>...] (hint: see scanSingleRequest)
 //
@@ -90,13 +90,18 @@ import (
 // debug-set-discovered-locks-threshold-to-consult-txn-status-cache n=<count>
 // debug-set-batch-pushed-lock-resolution-enabled ok=<enabled>
 // debug-set-max-locks n=<count>
-// reset [namespace|force]
+// reset
 func TestConcurrencyManagerBasic(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
 	datadriven.Walk(t, datapathutils.TestDataPath(t, "concurrency_manager"), func(t *testing.T, path string) {
 		c := newCluster()
+		if strings.HasSuffix(path, "_v23_1") {
+			v := clusterversion.V23_1.Version()
+			st := clustersettings.MakeTestingClusterSettingsWithVersions(v, v, true)
+			c = newClusterWithSettings(st)
+		}
 		c.enableTxnPushes()
 		m := concurrency.NewManager(c.makeConfig())
 		m.OnRangeLeaseUpdated(1, true /* isLeaseholder */) // enable
@@ -186,12 +191,6 @@ func TestConcurrencyManagerBasic(t *testing.T) {
 				if d.HasArg("max-lock-wait-queue-length") {
 					d.ScanArgs(t, "max-lock-wait-queue-length", &maxLockWaitQueueLength)
 				}
-
-				var deadlockTimeout time.Duration
-				if d.HasArg("deadlock-timeout") {
-					d.ScanArgs(t, "deadlock-timeout", &deadlockTimeout)
-				}
-
 				ba := &kvpb.BatchRequest{}
 				pp := scanPoisonPolicy(t, d)
 
@@ -203,7 +202,6 @@ func TestConcurrencyManagerBasic(t *testing.T) {
 				ba.ReadConsistency = readConsistency
 				ba.WaitPolicy = waitPolicy
 				ba.LockTimeout = lockTimeout
-				ba.DeadlockTimeout = deadlockTimeout
 				ba.Requests = reqUnions
 				latchSpans, lockSpans := c.collectSpans(t, txn, ts, waitPolicy, reqs)
 
@@ -214,13 +212,12 @@ func TestConcurrencyManagerBasic(t *testing.T) {
 					ReadConsistency:        ba.ReadConsistency,
 					WaitPolicy:             ba.WaitPolicy,
 					LockTimeout:            ba.LockTimeout,
-					DeadlockTimeout:        ba.DeadlockTimeout,
 					Requests:               ba.Requests,
 					MaxLockWaitQueueLength: maxLockWaitQueueLength,
 					LatchSpans:             latchSpans,
 					LockSpans:              lockSpans,
 					PoisonPolicy:           pp,
-					Batch:                  ba,
+					BaFmt:                  ba,
 				}
 				return ""
 
@@ -538,16 +535,7 @@ func TestConcurrencyManagerBasic(t *testing.T) {
 				mon.runSync("update txn", func(ctx context.Context) {
 					log.Eventf(ctx, "%s %s", verb, redact.Safe(txnName))
 					if err := c.updateTxnRecord(txn.ID, status, ts); err != nil {
-						d.Fatalf(t, "%s", err)
-					}
-				})
-				return c.waitAndCollect(t, mon)
-
-			case "on-lease-transfer-eval":
-				mon.runSync("eval transfer lease", func(ctx context.Context) {
-					locksToWrite, _ := m.OnRangeLeaseTransferEval()
-					if len(locksToWrite) > 0 {
-						log.Eventf(ctx, "locks to propose as replicated: %d", len(locksToWrite))
+						d.Fatalf(t, err.Error())
 					}
 				})
 				return c.waitAndCollect(t, mon)
@@ -572,12 +560,7 @@ func TestConcurrencyManagerBasic(t *testing.T) {
 			case "on-split":
 				mon.runSync("split range", func(ctx context.Context) {
 					log.Event(ctx, "complete")
-					var endKeyStr string
-					d.ScanArgs(t, "key", &endKeyStr)
-					locks := m.OnRangeSplit(roachpb.Key(endKeyStr))
-					if len(locks) > 0 {
-						log.Eventf(ctx, "range split returned %d locks for re-acquistion", len(locks))
-					}
+					m.OnRangeSplit()
 				})
 				return c.waitAndCollect(t, mon)
 
@@ -646,13 +629,7 @@ func TestConcurrencyManagerBasic(t *testing.T) {
 
 			case "reset":
 				if n := mon.numMonitored(); n > 0 {
-					if d.HasArg("force") {
-						for gs := range mon.gs {
-							gs.ctxCancel()
-						}
-					} else {
-						d.Fatalf(t, "%d requests still in flight", n)
-					}
+					d.Fatalf(t, "%d requests still in flight", n)
 				}
 				mon.resetSeqNums()
 				if err := c.reset(); err != nil {
@@ -735,9 +712,6 @@ func newClusterWithSettings(st *clustersettings.Settings) *cluster {
 	// Set the latch manager's long latch threshold to infinity to disable
 	// logging, which could cause a test to erroneously fail.
 	spanlatch.LongLatchHoldThreshold.Override(context.Background(), &st.SV, math.MaxInt64)
-	concurrency.UnreplicatedLockReliabilitySplit.Override(context.Background(), &st.SV, true)
-	concurrency.UnreplicatedLockReliabilityMerge.Override(context.Background(), &st.SV, true)
-	concurrency.UnreplicatedLockReliabilityLeaseTransfer.Override(context.Background(), &st.SV, true)
 	manual := timeutil.NewManualTime(timeutil.Unix(123, 0))
 	return &cluster{
 		nodeDesc:  &roachpb.NodeDescriptor{NodeID: 1},
@@ -1011,7 +985,7 @@ func (c *cluster) detectDeadlocks() {
 						if i > 0 {
 							chainBuf.WriteString("->")
 						}
-						chainBuf.WriteString(id.Short().String())
+						chainBuf.WriteString(id.Short())
 					}
 					log.Eventf(origPush.ctx, "dependency cycle detected %s", redact.Safe(chainBuf.String()))
 				}
@@ -1134,7 +1108,6 @@ type monitoredGoroutine struct {
 	finished int32
 
 	ctx        context.Context
-	ctxCancel  func()
 	collect    func() tracingpb.Recording
 	cancel     func()
 	prevEvents int
@@ -1150,13 +1123,11 @@ func newMonitor() *monitor {
 }
 
 func (m *monitor) runSync(opName string, fn func(context.Context)) {
-	ctx, ctxCancel := context.WithCancel(context.Background())
-	ctx, sp := m.tr.StartSpanCtx(ctx, opName, tracing.WithRecording(tracingpb.RecordingVerbose))
+	ctx, sp := m.tr.StartSpanCtx(context.Background(), opName, tracing.WithRecording(tracingpb.RecordingVerbose))
 	g := &monitoredGoroutine{
-		opSeq:     0, // synchronous
-		opName:    opName,
-		ctx:       ctx,
-		ctxCancel: ctxCancel,
+		opSeq:  0, // synchronous
+		opName: opName,
+		ctx:    ctx,
 		collect: func() tracingpb.Recording {
 			return sp.GetConfiguredRecording()
 		},
@@ -1169,13 +1140,11 @@ func (m *monitor) runSync(opName string, fn func(context.Context)) {
 
 func (m *monitor) runAsync(opName string, fn func(context.Context)) (cancel func()) {
 	m.seq++
-	ctx, ctxCancel := context.WithCancel(context.Background())
-	ctx, sp := m.tr.StartSpanCtx(ctx, opName, tracing.WithRecording(tracingpb.RecordingVerbose))
+	ctx, sp := m.tr.StartSpanCtx(context.Background(), opName, tracing.WithRecording(tracingpb.RecordingVerbose))
 	g := &monitoredGoroutine{
-		opSeq:     m.seq,
-		opName:    opName,
-		ctx:       ctx,
-		ctxCancel: ctxCancel,
+		opSeq:  m.seq,
+		opName: opName,
+		ctx:    ctx,
 		collect: func() tracingpb.Recording {
 			return sp.GetConfiguredRecording()
 		},

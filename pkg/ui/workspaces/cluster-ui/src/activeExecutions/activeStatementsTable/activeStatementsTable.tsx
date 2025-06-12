@@ -3,13 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
 import React from "react";
 import { Link } from "react-router-dom";
-
 import { isSelectedColumn } from "../../columnsSelector/utils";
 import { ColumnDescriptor } from "../../sortedtable";
-import { limitText } from "../../util";
 import {
   activeStatementColumnsFromCommon,
   ExecutionsColumn,
@@ -17,6 +14,8 @@ import {
   getLabel,
 } from "../execTableCommon";
 import { ActiveStatement } from "../types";
+import { Tooltip } from "@cockroachlabs/ui-components";
+import { limitText } from "../../util";
 
 export function makeActiveStatementsColumns(
   isTenant: boolean,

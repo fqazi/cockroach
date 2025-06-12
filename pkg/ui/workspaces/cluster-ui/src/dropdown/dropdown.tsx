@@ -3,15 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { CaretDown } from "@cockroachlabs/icons";
-import classnames from "classnames/bind";
 import React from "react";
-
-import { Button, ButtonProps } from "src/button";
+import classnames from "classnames/bind";
 
 import { OutsideEventHandler } from "../outsideEventHandler";
-
 import styles from "./dropdown.module.scss";
+import { Button, ButtonProps } from "src/button";
+import { CaretDown } from "@cockroachlabs/icons";
 
 const cx = classnames.bind(styles);
 

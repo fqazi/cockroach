@@ -6,6 +6,7 @@
 package opgen
 
 import (
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scop"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 )
@@ -20,11 +21,11 @@ func init() {
 				emit(func(this *scpb.Sequence) *scop.CreateSequenceDescriptor {
 					return &scop.CreateSequenceDescriptor{
 						SequenceID: this.SequenceID,
-						Temporary:  this.IsTemporary,
 					}
 				}),
 			),
 			to(scpb.Status_PUBLIC,
+				revertible(false),
 				emit(func(this *scpb.Sequence) *scop.InitSequence {
 					return &scop.InitSequence{
 						SequenceID:     this.SequenceID,
@@ -51,6 +52,13 @@ func init() {
 			),
 			to(scpb.Status_ABSENT,
 				emit(func(this *scpb.Sequence, md *opGenContext) *scop.CreateGCJobForTable {
+					if !md.ActiveVersion.IsActive(clusterversion.V23_1) {
+						return &scop.CreateGCJobForTable{
+							TableID:             this.SequenceID,
+							DatabaseID:          databaseIDFromDroppedNamespaceTarget(md, this.SequenceID),
+							StatementForDropJob: statementForDropJob(this, md),
+						}
+					}
 					return nil
 				}),
 			),

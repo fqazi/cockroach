@@ -67,8 +67,8 @@ const (
 		schema_id,
 		tables.id AS table_id,
 		tables.name AS table_name,
-		tables.descriptor->'table' AS table_descriptor,
-		json_array_elements(descriptor->'table'->'columns') AS col
+		tables.descriptor AS table_descriptor,
+		json_array_elements(descriptor->'columns') AS column
 	FROM tables`
 
 	// enumDescsQuery returns the JSONified version of all enum descriptors in
@@ -167,13 +167,13 @@ func CollectOne[T any](
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		var zero T
-		return zero, errors.Wrapf(err, "CollectOne: Query: %s Args: %s ", query, args)
+		return zero, errors.Wrapf(err, "CollectOne: Query: %q %q", query, args)
 	}
 
 	result, err := pgx.CollectOneRow[T](rows, fn)
 	if err != nil {
 		var zero T
-		return zero, errors.Wrapf(err, "CollectOne: CollectOneRow: Query: %s Args: %s", query, args)
+		return zero, errors.Wrapf(err, "CollectOne: CollectOneRow: %q %q", query, args)
 	}
 
 	og.LogQueryResults(query, result, args...)
@@ -194,12 +194,12 @@ func Collect[T any](
 ) (result []T, err error) {
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
-		return nil, errors.Wrapf(err, "Collect: Query: %s Args: %s", query, args)
+		return nil, errors.Wrapf(err, "Collect: Query: %q %q", query, args)
 	}
 
 	results, err := pgx.CollectRows(rows, fn)
 	if err != nil {
-		return nil, errors.Wrapf(err, "Collect: CollectRows: Query: %s Args: %s", query, args)
+		return nil, errors.Wrapf(err, "Collect: CollectRows: %q %q", query, args)
 	}
 
 	og.LogQueryResults(query, results, args...)

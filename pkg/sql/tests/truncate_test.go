@@ -121,11 +121,6 @@ SET CLUSTER SETTING sql.defaults.use_declarative_schema_changer = 'off';
 			if err != nil {
 				return err
 			}
-			_, err = tx.Exec("SET LOCAL autocommit_before_ddl = false")
-			if err != nil {
-				_ = tx.Rollback()
-				return err
-			}
 			for _, stmt := range testC.stmts {
 				_, err = tx.Exec(stmt)
 				if err != nil {
@@ -345,6 +340,19 @@ SET CLUSTER SETTING sql.defaults.use_declarative_schema_changer = 'off';
 				`ALTER TABLE t DROP COLUMN j`,
 			},
 			validations: commonValidations,
+		},
+		{
+			name: "alter column type",
+			setupStmts: []string{
+				commonCreateTable,
+				commonPopulateData,
+				`SET enable_experimental_alter_column_type_general = true`,
+			},
+			truncateStmt: "TRUNCATE TABLE t",
+			stmts: []string{
+				`ALTER TABLE t ALTER COLUMN j TYPE STRING`,
+			},
+			expErrRE: `pq: unimplemented: cannot perform TRUNCATE on "t" which has an ongoing column type change`,
 		},
 	}
 	for _, tc := range cases {

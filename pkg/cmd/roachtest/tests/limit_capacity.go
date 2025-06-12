@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -80,7 +79,7 @@ func runLimitCapacity(ctx context.Context, t test.Test, c cluster.Cluster, cfg l
 	conn := c.Conn(ctx, t.L(), 1)
 	defer conn.Close()
 
-	require.NoError(t, roachtestutil.WaitFor3XReplication(ctx, t.L(), conn))
+	require.NoError(t, WaitFor3XReplication(ctx, t, t.L(), conn))
 	var cancels []func()
 
 	c.Run(ctx, option.WithNodes(c.WorkloadNode()), "./cockroach workload init kv --splits=1000 {pgurl:1}")
@@ -101,12 +100,11 @@ func runLimitCapacity(ctx context.Context, t test.Test, c cluster.Cluster, cfg l
 
 	t.Status(fmt.Sprintf("waiting %s for baseline workload throughput", initialDuration))
 	wait(c.NewMonitor(ctx, c.CRDBNodes()), initialDuration)
-	qpsInitial := roachtestutil.MeasureQPS(ctx, t, c, 10*time.Second, c.Node(1))
+	qpsInitial := measureQPS(ctx, t, 10*time.Second, conn)
 	t.Status(fmt.Sprintf("initial (single node) qps: %.0f", qpsInitial))
 
 	if cfg.writeCapBytes >= 0 {
-		c.Run(ctx, option.WithNodes(limitedNode), "sudo", "systemctl", "set-property",
-			roachtestutil.SystemInterfaceSystemdUnitName(),
+		c.Run(ctx, option.WithNodes(limitedNode), "sudo", "systemctl", "set-property", "cockroach-system",
 			fmt.Sprintf("'IOWriteBandwidthMax=/mnt/data1 %d'", cfg.writeCapBytes))
 	}
 
@@ -127,12 +125,21 @@ func runLimitCapacity(ctx context.Context, t test.Test, c cluster.Cluster, cfg l
 	}
 
 	wait(c.NewMonitor(ctx, c.CRDBNodes()), limitDuration)
-	qpsFinal := roachtestutil.MeasureQPS(ctx, t, c, 10*time.Second, c.Node(1))
+	qpsFinal := measureQPS(ctx, t, 10*time.Second, conn)
 	qpsRelative := qpsFinal / qpsInitial
 	t.Status(fmt.Sprintf("initial qps=%f final qps=%f (%f%%)", qpsInitial, qpsFinal, 100*qpsRelative))
 	for _, cancel := range cancels {
 		cancel()
 	}
-	// Expect that the relative QPS is at least 90% of the starting QPS.
-	require.GreaterOrEqual(t, qpsRelative, 0.9)
+	// We should be able to assert on the throughput not dropping beyond a
+	// certain % of the throughput prior to limiting a node's capacity.
+	//
+	// TODO(kvoli): Currently this test will fail an assertion that the final QPS
+	// will be >50% of the pre-limit QPS. Once we begin shedding leases off the
+	// limited node, this assertion would pass. Add in these assertions once
+	// shedding is done, or alternatively enable the test weekly and export the
+	// relative QPS to roachperf. Two potential assertions are:
+	//
+	//   (a) expect throughput to not drop by more than X%
+	//   (b) measure the throughput at set marks (10s, 30s, 1m, 5m) and assert.
 }

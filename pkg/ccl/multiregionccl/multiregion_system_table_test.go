@@ -8,7 +8,6 @@ package multiregionccl
 import (
 	"context"
 	gosql "database/sql"
-	"fmt"
 	"testing"
 	"time"
 
@@ -19,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/enum"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlinstance/instancestorage"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
@@ -50,7 +48,7 @@ func TestMrSystemDatabase(t *testing.T) {
 		return cs
 	}
 
-	cluster, systemSQL, cleanup := multiregionccltestutils.TestingCreateMultiRegionCluster(t, 3,
+	cluster, _, cleanup := multiregionccltestutils.TestingCreateMultiRegionCluster(t, 3,
 		base.TestingKnobs{},
 		multiregionccltestutils.WithSettings(makeSettings()))
 	defer cleanup()
@@ -83,244 +81,252 @@ func TestMrSystemDatabase(t *testing.T) {
 	// okay.
 	tDB.CheckQueryResults(t, `SELECT * FROM crdb_internal.invalid_objects`, [][]string{})
 
-	sDB := sqlutils.MakeSQLRunner(systemSQL)
+	t.Run("Sqlliveness", func(t *testing.T) {
+		// When optimizing the system database the ALTER DATABASE command will
+		// delete stats, but these are refreshed in memory using a range feed.
+		// Since there can be a delay in the new stats being picked up its possible
+		// for this query to fail with:
+		// "unsupported comparison: bytes to crdb_internal_region"
+		// querying table statistics. This is a transient condition that will
+		// clear up once the range feed catches up.
+		testutils.SucceedsSoon(t, func() error {
+			row := tDB.DB.QueryRowContext(ctx, `SELECT crdb_region, session_id, expiration FROM system.sqlliveness LIMIT 1`)
+			var sessionID string
+			var crdbRegion string
+			var rawExpiration apd.Decimal
+			err := row.Scan(&crdbRegion, &sessionID, &rawExpiration)
+			if err != nil {
+				return err
+			}
+			if crdbRegion != "us-east1" {
+				return errors.AssertionFailedf("unexpected region, got: %q expected: %q",
+					crdbRegion, "us-east1")
+			}
+			return nil
+		})
+	})
 
-	sDB.Exec(t, `ANALYZE system.sqlliveness;`)
-	sDB.Exec(t, `SET CLUSTER SETTING sql.multiregion.system_database_multiregion.enabled = true`)
-	sDB.Exec(t, `ALTER DATABASE system SET PRIMARY REGION "us-east1"`)
-	sDB.Exec(t, `ALTER DATABASE system ADD REGION "us-east2"`)
-	sDB.Exec(t, `ALTER DATABASE system ADD REGION "us-east3"`)
+	t.Run("Sqlinstances", func(t *testing.T) {
+		t.Run("InUse", func(t *testing.T) {
+			query := `
+                SELECT id, addr, session_id, locality, crdb_region
+                FROM system.sql_instances
+                WHERE session_id IS NOT NULL
+            `
+			rows := tDB.Query(t, query)
+			require.True(t, rows.Next())
+			for {
+				var id base.SQLInstanceID
+				var addr, locality string
+				var crdb_region string
+				var session sqlliveness.SessionID
 
-	testCases := []struct {
-		name     string
-		database *sqlutils.SQLRunner
-	}{
-		{
-			name:     "system database",
-			database: sDB,
-		},
-		{
-			name:     "tenant database",
-			database: tDB,
-		},
-	}
-	for _, testCase := range testCases {
-		t.Run(fmt.Sprintf("Sqlliveness %s", testCase.name), func(t *testing.T) {
-			// When optimizing the system database the ALTER DATABASE command will
-			// delete stats, but these are refreshed in memory using a range feed.
-			// Since there can be a delay in the new stats being picked up its possible
-			// for this query to fail with:
-			// "unsupported comparison: bytes to crdb_internal_region"
-			// querying table statistics. This is a transient condition that will
-			// clear up once the range feed catches up.
-			testutils.SucceedsSoon(t, func() error {
-				row := testCase.database.DB.QueryRowContext(ctx, `SELECT crdb_region, session_id, expiration FROM system.sqlliveness LIMIT 1`)
-				var sessionID string
-				var crdbRegion string
-				var rawExpiration apd.Decimal
-				err := row.Scan(&crdbRegion, &sessionID, &rawExpiration)
-				if err != nil {
-					return err
+				require.NoError(t, rows.Scan(&id, &addr, &session, &locality, &crdb_region))
+
+				require.True(t, 0 < id)
+				require.NotEmpty(t, addr)
+				require.NotEmpty(t, locality)
+				require.NotEmpty(t, session)
+				require.NotEmpty(t, crdb_region)
+
+				require.Equal(t, "us-east1", crdb_region)
+
+				if !rows.Next() {
+					break
 				}
-				if crdbRegion != "us-east1" {
-					return errors.AssertionFailedf("unexpected region, got: %q expected: %q",
-						crdbRegion, "us-east1")
+			}
+			require.NoError(t, rows.Close())
+		})
+
+		t.Run("Preallocated", func(t *testing.T) {
+			query := `
+                SELECT id, addr, session_id, locality, crdb_region
+                FROM system.sql_instances
+                WHERE session_id IS NULL
+            `
+			rows := tDB.Query(t, query)
+			require.True(t, rows.Next())
+			for {
+				var id base.SQLInstanceID
+				var addr, locality, session gosql.NullString
+				var crdb_region string
+
+				require.NoError(t, rows.Scan(&id, &addr, &session, &locality, &crdb_region))
+
+				require.True(t, 0 < id)
+				require.False(t, addr.Valid)
+				require.False(t, locality.Valid)
+				require.False(t, session.Valid)
+				require.NotEmpty(t, crdb_region)
+
+				if !rows.Next() {
+					break
+				}
+			}
+			require.NoError(t, rows.Close())
+
+			query = `
+				SELECT count(id), crdb_region
+				FROM system.sql_instances
+				WHERE session_id IS NULL GROUP BY crdb_region
+			`
+			preallocatedCount := instancestorage.PreallocatedCount.Get(&ts.ClusterSettings().SV)
+			testutils.SucceedsSoon(t, func() error {
+				rows := tDB.Query(t, query)
+				require.True(t, rows.Next())
+
+				countMap := map[string]int{}
+				for {
+					var count int
+					var crdb_region string
+
+					require.NoError(t, rows.Scan(&count, &crdb_region))
+					countMap[crdb_region] = count
+
+					if !rows.Next() {
+						break
+					}
+				}
+				require.NoError(t, rows.Close())
+				if len(countMap) != 3 {
+					return errors.New("some regions have not been preallocated")
+				}
+				for _, r := range []string{"us-east1", "us-east2", "us-east3"} {
+					c, ok := countMap[r]
+					require.True(t, ok)
+					if c != int(preallocatedCount) {
+						return errors.Newf("require %d, but got %d", preallocatedCount, c)
+					}
 				}
 				return nil
 			})
 		})
 
-		t.Run(fmt.Sprintf("Sqlinstances %s", testCase.name), func(t *testing.T) {
-			t.Run("InUse", func(t *testing.T) {
-				query := `
-                SELECT id, addr, session_id, locality, crdb_region
-                FROM system.sql_instances
-                WHERE session_id IS NOT NULL
-            `
-				rows := testCase.database.Query(t, query)
-				require.True(t, rows.Next())
-				for {
-					var id base.SQLInstanceID
-					var addr, locality string
-					var crdb_region string
-					var session sqlliveness.SessionID
+		t.Run("Reclaim", func(t *testing.T) {
+			id := uuid.MakeV4()
+			s1, err := slstorage.MakeSessionID(make([]byte, 100), id)
+			require.NoError(t, err)
+			s2, err := slstorage.MakeSessionID(make([]byte, 200), id)
+			require.NoError(t, err)
 
-					require.NoError(t, rows.Scan(&id, &addr, &session, &locality, &crdb_region))
-
-					require.True(t, 0 < id)
-					require.NotEmpty(t, addr)
-					require.NotEmpty(t, locality)
-					require.NotEmpty(t, session)
-					require.NotEmpty(t, crdb_region)
-
-					require.Equal(t, "us-east1", crdb_region)
-
-					if !rows.Next() {
-						break
-					}
-				}
-				require.NoError(t, rows.Close())
-			})
-
-			t.Run(fmt.Sprintf("Preallocated %s", testCase.name), func(t *testing.T) {
-				query := `
-                SELECT id, addr, session_id, locality, crdb_region
-                FROM system.sql_instances
-                WHERE session_id IS NULL
-            `
-				rows := testCase.database.Query(t, query)
-				require.True(t, rows.Next())
-				for {
-					var id base.SQLInstanceID
-					var addr, locality, session gosql.NullString
-					var crdb_region string
-
-					require.NoError(t, rows.Scan(&id, &addr, &session, &locality, &crdb_region))
-
-					require.True(t, 0 < id)
-					require.False(t, addr.Valid)
-					require.False(t, locality.Valid)
-					require.False(t, session.Valid)
-					require.NotEmpty(t, crdb_region)
-
-					if !rows.Next() {
-						break
-					}
-				}
-				require.NoError(t, rows.Close())
-
-				query = `
-				SELECT count(id), crdb_region
-				FROM system.sql_instances
-				WHERE session_id IS NULL GROUP BY crdb_region
-			`
-				preallocatedCount := instancestorage.PreallocatedCount.Get(&ts.ClusterSettings().SV)
-				testutils.SucceedsSoon(t, func() error {
-					rows := testCase.database.Query(t, query)
-					require.True(t, rows.Next())
-
-					countMap := map[string]int{}
-					for {
-						var count int
-						var crdb_region string
-
-						require.NoError(t, rows.Scan(&count, &crdb_region))
-						countMap[crdb_region] = count
-
-						if !rows.Next() {
-							break
-						}
-					}
-					require.NoError(t, rows.Close())
-					if len(countMap) != 3 {
-						return errors.New("some regions have not been preallocated")
-					}
-					for _, r := range []string{"us-east1", "us-east2", "us-east3"} {
-						c, ok := countMap[r]
-						require.True(t, ok)
-						if c != int(preallocatedCount) {
-							return errors.Newf("require %d, but got %d", preallocatedCount, c)
-						}
-					}
-					return nil
-				})
-			})
-
-			t.Run(fmt.Sprintf("Reclaim %s", testCase.name), func(t *testing.T) {
-				id := uuid.MakeV4()
-				s1, err := slstorage.MakeSessionID(make([]byte, 100), id)
-				require.NoError(t, err)
-				s2, err := slstorage.MakeSessionID(make([]byte, 200), id)
-				require.NoError(t, err)
-
-				// Insert expired entries into sql_instances.
-				testCase.database.Exec(t, `INSERT INTO system.sql_instances (id, addr, session_id, locality, crdb_region) VALUES
+			// Insert expired entries into sql_instances.
+			tDB.Exec(t, `INSERT INTO system.sql_instances (id, addr, session_id, locality, crdb_region) VALUES
 		   		(100, NULL, $1, NULL, 'us-east2'),
 		   		(200, NULL, $2, NULL, 'us-east3')`, s1.UnsafeBytes(), s2.UnsafeBytes())
 
-				query := `SELECT count(*) FROM system.sql_instances WHERE id = 42`
+			query := `SELECT count(*) FROM system.sql_instances WHERE id = 42`
 
-				// Wait until expired entries get removed.
-				testutils.SucceedsSoon(t, func() error {
-					var rowCount int
-					testCase.database.QueryRow(t, query).Scan(&rowCount)
-					if rowCount != 0 {
-						return errors.New("some regions have not been reclaimed")
-					}
-					return nil
-				})
+			// Wait until expired entries get removed.
+			testutils.SucceedsSoon(t, func() error {
+				var rowCount int
+				tDB.QueryRow(t, query).Scan(&rowCount)
+				if rowCount != 0 {
+					return errors.New("some regions have not been reclaimed")
+				}
+				return nil
 			})
 		})
+	})
 
-		t.Run(fmt.Sprintf("GlobalTables %s", testCase.name), func(t *testing.T) {
-			query := `
+	t.Run("GlobalTables", func(t *testing.T) {
+		query := `
 		    SELECT target
 			FROM [SHOW ALL ZONE CONFIGURATIONS]
 			WHERE target LIKE 'TABLE system.public.%'
 			    AND raw_config_sql LIKE '%global_reads = true%'
 			ORDER BY target;
 		`
-			testCase.database.CheckQueryResults(t, query, [][]string{
-				{"TABLE system.public.comments"},
-				{"TABLE system.public.database_role_settings"},
-				{"TABLE system.public.descriptor"},
-				{"TABLE system.public.namespace"},
-				{"TABLE system.public.privileges"},
-				{"TABLE system.public.region_liveness"},
-				{"TABLE system.public.role_members"},
-				{"TABLE system.public.role_options"},
-				{"TABLE system.public.settings"},
-				{"TABLE system.public.table_statistics"},
-				{"TABLE system.public.users"},
-				{"TABLE system.public.web_sessions"},
-				{"TABLE system.public.zones"},
-			})
+		tDB.CheckQueryResults(t, query, [][]string{
+			{"TABLE system.public.comments"},
+			{"TABLE system.public.database_role_settings"},
+			{"TABLE system.public.descriptor"},
+			{"TABLE system.public.namespace"},
+			{"TABLE system.public.privileges"},
+			{"TABLE system.public.region_liveness"},
+			{"TABLE system.public.role_members"},
+			{"TABLE system.public.role_options"},
+			{"TABLE system.public.settings"},
+			{"TABLE system.public.table_statistics"},
+			{"TABLE system.public.users"},
+			{"TABLE system.public.web_sessions"},
+			{"TABLE system.public.zones"},
 		})
+	})
 
-		t.Run("RegionTables", func(t *testing.T) {
-			query := `
+	t.Run("RegionTables", func(t *testing.T) {
+		query := `
 		    SELECT target
 			FROM [SHOW ALL ZONE CONFIGURATIONS]
 			WHERE target LIKE 'TABLE system.public.%'
 			    AND raw_config_sql NOT LIKE '%global_reads = true%'
-					AND target = 'TABLE system.public.locations'
 			ORDER BY target;
 		`
-			tDB.CheckQueryResults(t, query, [][]string{
-				{"TABLE system.public.locations"},
-			})
-
-			sDB.CheckQueryResults(t, query, [][]string{
-				{"TABLE system.public.locations"},
-			})
+		tDB.CheckQueryResults(t, query, [][]string{
+			{"TABLE system.public.eventlog"},
+			{"TABLE system.public.external_connections"},
+			{"TABLE system.public.job_info"},
+			{"TABLE system.public.jobs"},
+			{"TABLE system.public.join_tokens"},
+			{"TABLE system.public.locations"},
+			{"TABLE system.public.migrations"},
+			{"TABLE system.public.mvcc_statistics"},
+			{"TABLE system.public.protected_ts_meta"},
+			{"TABLE system.public.protected_ts_records"},
+			{"TABLE system.public.rangelog"},
+			{"TABLE system.public.replication_constraint_stats"},
+			{"TABLE system.public.replication_critical_localities"},
+			{"TABLE system.public.replication_stats"},
+			{"TABLE system.public.reports_meta"},
+			{"TABLE system.public.scheduled_jobs"},
+			{"TABLE system.public.span_configurations"},
+			{"TABLE system.public.span_count"},
+			{"TABLE system.public.span_stats_buckets"},
+			{"TABLE system.public.span_stats_samples"},
+			{"TABLE system.public.span_stats_tenant_boundaries"},
+			{"TABLE system.public.span_stats_unique_keys"},
+			{"TABLE system.public.statement_activity"},
+			{"TABLE system.public.statement_bundle_chunks"},
+			{"TABLE system.public.statement_diagnostics"},
+			{"TABLE system.public.statement_diagnostics_requests"},
+			{"TABLE system.public.statement_execution_insights"},
+			{"TABLE system.public.statement_statistics"},
+			{"TABLE system.public.task_payloads"},
+			{"TABLE system.public.tenant_settings"},
+			{"TABLE system.public.tenant_tasks"},
+			{"TABLE system.public.tenant_usage"},
+			{"TABLE system.public.tenants"},
+			{"TABLE system.public.transaction_activity"},
+			{"TABLE system.public.transaction_execution_insights"},
+			{"TABLE system.public.transaction_statistics"},
+			{"TABLE system.public.ui"},
 		})
+	})
 
-		t.Run(fmt.Sprintf("QueryByEnum %s", testCase.name), func(t *testing.T) {
-			// This is a regression test for a bug triggered by setting up the system
-			// database. If the operation to configure the does not clear table
-			// statistics, this query will fail in the optimizer, because the stats will
-			// have the wrong type for the crdb_region column. Since stats are generated
-			// asynchronously, we poll for the results until they are correct.
-			testutils.SucceedsSoon(t, func() error {
-				var sessionID string
-				var crdbRegion string
-				var rawExpiration apd.Decimal
-				err := tenantSQL.QueryRow(`
+	t.Run("QueryByEnum", func(t *testing.T) {
+		// This is a regression test for a bug triggered by setting up the system
+		// database. If the operation to configure the does not clear table
+		// statistics, this query will fail in the optimizer, because the stats will
+		// have the wrong type for the crdb_region column. Since stats are generated
+		// asynchronously, we poll for the results until they are correct.
+		testutils.SucceedsSoon(t, func() error {
+			var sessionID string
+			var crdbRegion string
+			var rawExpiration apd.Decimal
+			err := tenantSQL.QueryRow(`
 				SELECT crdb_region, session_id, expiration 
 				FROM system.sqlliveness 
 				WHERE crdb_region = 'us-east1'
 				LIMIT 1;`).Scan(&crdbRegion, &sessionID, &rawExpiration)
-				if err != nil {
-					return err
-				}
-				if crdbRegion != "us-east1" {
-					return errors.Newf("expected region to be us-east1; got %s", crdbRegion)
-				}
-				return nil
-			})
-
+			if err != nil {
+				return err
+			}
+			if crdbRegion != "us-east1" {
+				return errors.Newf("expected region to be us-east1; got %s", crdbRegion)
+			}
+			return nil
 		})
-	}
+
+	})
 }
 
 // TestMultiRegionTenantRegions tests the behavior of region-related
@@ -336,7 +342,7 @@ func TestMultiRegionTenantRegions(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	tenEast1, tenEast1SQL := serverutils.StartTenant(t, tc.Server(0), base.TestTenantArgs{
+	ten, tSQL := serverutils.StartTenant(t, tc.Server(0), base.TestTenantArgs{
 		TenantID: serverutils.TestTenantID(),
 		Locality: roachpb.Locality{
 			Tiers: []roachpb.Tier{
@@ -344,13 +350,9 @@ func TestMultiRegionTenantRegions(t *testing.T) {
 			},
 		},
 	})
-	defer tenEast1.AppStopper().Stop(ctx)
-	defer tenEast1SQL.Close()
-	tenEast1SQLDB := sqlutils.MakeSQLRunner(tenEast1SQL)
-
-	// Shorten the sqlliveness TTL to speed up the test.
-	tenEast1SQLDB.Exec(t, "SET CLUSTER SETTING server.sqlliveness.ttl = '5s'")
-	tenEast1SQLDB.Exec(t, "SET CLUSTER SETTING server.sqlliveness.heartbeat = '1s'")
+	defer ten.AppStopper().Stop(ctx)
+	defer tSQL.Close()
+	tenSQLDB := sqlutils.MakeSQLRunner(tSQL)
 
 	// Update system database with regions.
 	checkRegions := func(t *testing.T, regions ...string) {
@@ -358,86 +360,48 @@ func TestMultiRegionTenantRegions(t *testing.T) {
 		for _, r := range regions {
 			res = append(res, []string{r})
 		}
-		tenEast1SQLDB.CheckQueryResults(t, "SELECT region FROM [SHOW REGIONS] ORDER BY region ASC", res)
+		tenSQLDB.CheckQueryResults(t, "SELECT region FROM [SHOW REGIONS] ORDER BY region ASC", res)
 	}
 
 	// Note that before we've made this a multi-region tenant, because we've
 	// enabled the cluster setting, we can see all the host cluster regions,
 	// and we can create databases using them.
 	checkRegions(t, "us-east1", "us-east2", "us-east3")
-	tenEast1SQLDB.Exec(t, `CREATE DATABASE db PRIMARY REGION "us-east2"`)
-	tenEast1SQLDB.Exec(t, `ALTER DATABASE db ADD REGION "us-east1"`)
-	tenEast1SQLDB.Exec(t, `DROP DATABASE db`)
+	tenSQLDB.Exec(t, `CREATE DATABASE db PRIMARY REGION "us-east2"`)
+	tenSQLDB.Exec(t, `ALTER DATABASE db ADD REGION "us-east1"`)
+	tenSQLDB.Exec(t, `DROP DATABASE db`)
 
 	// Convert the tenant to a multi-region tenant by adding a primary region
 	// to the system database.  Ensure that the regions show up as they are added.
-	tenEast1SQLDB.Exec(t, `ALTER DATABASE system SET PRIMARY REGION "us-east1"`)
+	tenSQLDB.Exec(t, `ALTER DATABASE system SET PRIMARY REGION "us-east1"`)
 	checkRegions(t, "us-east1")
 
 	// Check that regions which are not part of the database cannot be used
 	// until they are added to the system database.
-	tenEast1SQLDB.ExpectErr(t, `region "us-east2" does not exist`,
+	tenSQLDB.ExpectErr(t, `region "us-east2" does not exist`,
 		`CREATE DATABASE db PRIMARY REGION "us-east2"`)
-	tenEast1SQLDB.Exec(t, `CREATE DATABASE db PRIMARY REGION "us-east1"`)
+	tenSQLDB.Exec(t, `CREATE DATABASE db PRIMARY REGION "us-east1"`)
 
-	tenEast1SQLDB.Exec(t, `ALTER DATABASE system ADD REGION "us-east2"`)
+	tenSQLDB.Exec(t, `ALTER DATABASE system ADD REGION "us-east2"`)
 	checkRegions(t, "us-east1", "us-east2")
-
-	tenEast1SQLDB.ExpectErr(t, `region "us-east3" does not exist`,
+	tenSQLDB.ExpectErr(t, `region "us-east3" does not exist`,
 		`CREATE DATABASE db2 PRIMARY REGION "us-east3"`)
-	tenEast1SQLDB.ExpectErr(t, `region "us-east3" does not exist`,
+	tenSQLDB.ExpectErr(t, `region "us-east3" does not exist`,
 		`ALTER DATABASE db ADD REGION "us-east3"`)
-	tenEast1SQLDB.Exec(t, `ALTER DATABASE db ADD REGION "us-east2"`)
-
-	// Start a tenant instance in us-east2. Starting it after adding us-east2 to
-	// the system database ensures that the tenant's sqlliveness session is
-	// tied to us-east2.
-	tenEast2, _ := serverutils.StartTenant(t, tc.Server(1), base.TestTenantArgs{
-		TenantID: serverutils.TestTenantID(),
-		Locality: roachpb.Locality{
-			Tiers: []roachpb.Tier{
-				{Key: "region", Value: "us-east2"},
-			},
-		},
-	})
-	defer tenEast2.AppStopper().Stop(ctx)
-	tenEast1SQLDB.CheckQueryResultsRetry(t,
-		"SELECT count(*) FROM system.sqlliveness WHERE crdb_region = 'us-east2' AND crdb_internal.sql_liveness_is_alive(session_id, true)",
-		[][]string{{"1"}},
-	)
+	tenSQLDB.Exec(t, `ALTER DATABASE db ADD REGION "us-east2"`)
 
 	// Check that a region cannot be dropped from the system database while
 	// it is in use in any database in that tenant.
-	tenEast1SQLDB.ExpectErr(t, `(?s)cannot drop region "us-east2" from the system `+
+	tenSQLDB.ExpectErr(t, `(?s)cannot drop region "us-east2" from the system `+
 		`database while that region is still in use\s+HINT: region is in use by `+
 		`databases: db`,
 		`ALTER DATABASE system DROP REGION "us-east2"`)
-	tenEast1SQLDB.Exec(t, `ALTER DATABASE db DROP REGION "us-east2"`)
+	tenSQLDB.Exec(t, `ALTER DATABASE db DROP REGION "us-east2"`)
+	tenSQLDB.Exec(t, `ALTER DATABASE system DROP REGION "us-east2"`)
 
-	// Check that region cannot be dropped from the system database while
-	// there are live sessions in that region.
-	tenEast1SQLDB.ExpectErr(t, `(?s)cannot drop region "us-east2" from the system `+
-		`database while there are live nodes in that region\s+HINT: You must not `+
-		`have any active sessions that are in this region.`,
-		`ALTER DATABASE system DROP REGION "us-east2"`)
-
-	// Stop the tenant, and make sure it's no longer alive.
-	tenEast2.AppStopper().Stop(ctx)
-	tenEast1SQLDB.CheckQueryResultsRetry(t,
-		"SELECT count(*) FROM system.sqlliveness WHERE crdb_region = 'us-east2' AND crdb_internal.sql_liveness_is_alive(session_id, true)",
-		[][]string{{"0"}},
-	)
-
-	// Drop the region and make sure it is no longer in the enum type.
-	tenEast1SQLDB.Exec(t, `ALTER DATABASE system DROP REGION "us-east2"`)
-	tenEast1SQLDB.CheckQueryResults(t,
-		"USE system; SELECT unnest(values) FROM [SHOW ENUMS] WHERE name = 'crdb_internal_region'",
-		[][]string{{"us-east1"}},
-	)
-
-	tenEast1SQLDB.Exec(t, `ALTER DATABASE system ADD REGION "us-east3"`)
+	tenSQLDB.Exec(t, `ALTER DATABASE system ADD REGION "us-east3"`)
 	checkRegions(t, "us-east1", "us-east3")
-	tenEast1SQLDB.Exec(t, `ALTER DATABASE db ADD REGION "us-east3"`)
+	tenSQLDB.Exec(t, `ALTER DATABASE db ADD REGION "us-east3"`)
 }
 
 func TestTenantStartupWithMultiRegionEnum(t *testing.T) {
@@ -531,7 +495,7 @@ func TestMrSystemDatabaseUpgrade(t *testing.T) {
 
 	// Enable settings required for configuring a tenant's system database as multi-region.
 	makeSettings := func() *cluster.Settings {
-		cs := cluster.MakeTestingClusterSettingsWithVersions(clusterversion.Latest.Version(),
+		cs := cluster.MakeTestingClusterSettingsWithVersions(clusterversion.V24_1.Version(),
 			clusterversion.MinSupported.Version(),
 			false)
 		instancestorage.ReclaimLoopInterval.Override(ctx, &cs.SV, 150*time.Millisecond)
@@ -542,32 +506,27 @@ func TestMrSystemDatabaseUpgrade(t *testing.T) {
 		base.TestingKnobs{
 			Server: &server.TestingKnobs{
 				DisableAutomaticVersionUpgrade: make(chan struct{}),
-				ClusterVersionOverride:         clusterversion.MinSupported.Version(),
+				BinaryVersionOverride:          clusterversion.MinSupported.Version(),
 			},
 		},
 		multiregionccltestutils.WithSettings(makeSettings()))
 	defer cleanup()
+
 	id, err := roachpb.MakeTenantID(11)
 	require.NoError(t, err)
-
-	// Disable license enforcement for this test.
-	for _, s := range cluster.Servers {
-		s.ExecutorConfig().(sql.ExecutorConfig).LicenseEnforcer.Disable(ctx)
-	}
 
 	tenantArgs := base.TestTenantArgs{
 		Settings: makeSettings(),
 		TestingKnobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
 				DisableAutomaticVersionUpgrade: make(chan struct{}),
-				ClusterVersionOverride:         clusterversion.MinSupported.Version(),
+				BinaryVersionOverride:          clusterversion.MinSupported.Version(),
 			},
 		},
 		TenantID: id,
 		Locality: cluster.Servers[0].Locality(),
 	}
-	appLayer, tenantSQL := serverutils.StartTenant(t, cluster.Servers[0], tenantArgs)
-	appLayer.ExecutorConfig().(sql.ExecutorConfig).LicenseEnforcer.Disable(ctx)
+	_, tenantSQL := serverutils.StartTenant(t, cluster.Servers[0], tenantArgs)
 
 	tDB := sqlutils.MakeSQLRunner(tenantSQL)
 

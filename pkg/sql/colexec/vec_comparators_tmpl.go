@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for vec_comparators.eg.go. It's formatted
@@ -69,7 +70,7 @@ type vecComparator interface {
 	set(srcVecIdx, dstVecIdx int, srcValIdx, dstValIdx int)
 
 	// setVec updates the vector at idx.
-	setVec(idx int, vec *coldata.Vec)
+	setVec(idx int, vec coldata.Vec)
 }
 
 // {{range .}}
@@ -96,7 +97,7 @@ func (c *_TYPEVecComparator) compare(vecIdx1, vecIdx2 int, valIdx1, valIdx2 int)
 	return cmp
 }
 
-func (c *_TYPEVecComparator) setVec(idx int, vec *coldata.Vec) {
+func (c *_TYPEVecComparator) setVec(idx int, vec coldata.Vec) {
 	c.vecs[idx] = vec._TYPE()
 	c.nulls[idx] = vec.Nulls()
 }

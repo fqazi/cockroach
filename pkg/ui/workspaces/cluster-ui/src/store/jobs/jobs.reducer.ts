@@ -4,12 +4,10 @@
 // included in the /LICENSE file.
 
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-import moment from "moment-timezone";
-
 import { JobsRequest, JobsResponse } from "src/api/jobsApi";
-import { createInitialState, RequestState } from "src/api/types";
-
 import { DOMAIN_NAME } from "../utils";
+import moment from "moment-timezone";
+import { createInitialState, RequestState } from "src/api/types";
 
 export type JobsState = RequestState<JobsResponse>;
 

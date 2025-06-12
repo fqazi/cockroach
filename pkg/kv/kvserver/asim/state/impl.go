@@ -7,11 +7,9 @@ package state
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"fmt"
 	"math"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/asim/workload"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
 	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -88,7 +85,7 @@ func newState(settings *config.SimulationSettings) *state {
 type rmap struct {
 	// NB: Both rangeTree and rangeMap hold references to ranges. They must
 	// both be updated on insertion and deletion to maintain consistent state.
-	rangeTree *btree.BTreeG[*rng]
+	rangeTree *btree.BTree
 	rangeMap  map[RangeID]*rng
 
 	// Unique ID generator for Ranges.
@@ -96,16 +93,18 @@ type rmap struct {
 }
 
 func newRMap() *rmap {
-	lessFn := func(a, b *rng) bool {
-		return a.startKey < b.startKey
-	}
 	rmap := &rmap{
-		rangeTree: btree.NewG[*rng](8, lessFn),
+		rangeTree: btree.New(8),
 		rangeMap:  make(map[RangeID]*rng),
 	}
 
 	rmap.initFirstRange()
 	return rmap
+}
+
+// Less is part of the btree.Item interface.
+func (r *rng) Less(than btree.Item) bool {
+	return r.startKey < than.(*rng).startKey
 }
 
 // initFirstRange initializes the first range within the rangemap, with
@@ -139,11 +138,11 @@ func (s *state) PrettyPrint() string {
 	builder := &strings.Builder{}
 	nStores := len(s.stores)
 	builder.WriteString(fmt.Sprintf("stores(%d)=[", nStores))
-	var storeIDs []StoreID
+	var storeIDs StoreIDSlice
 	for storeID := range s.stores {
 		storeIDs = append(storeIDs, storeID)
 	}
-	slices.Sort(storeIDs)
+	sort.Sort(storeIDs)
 
 	for i, storeID := range storeIDs {
 		store := s.stores[storeID]
@@ -162,7 +161,8 @@ func (s *state) String() string {
 	builder := &strings.Builder{}
 
 	orderedRanges := []*rng{}
-	s.ranges.rangeTree.Ascend(func(r *rng) bool {
+	s.ranges.rangeTree.Ascend(func(i btree.Item) bool {
+		r := i.(*rng)
 		orderedRanges = append(orderedRanges, r)
 		return !r.desc.EndKey.Equal(MaxKey.ToRKey())
 	})
@@ -172,11 +172,11 @@ func (s *state) String() string {
 
 	// Sort the unordered map storeIDs by its key to ensure deterministic
 	// printing.
-	var storeIDs []StoreID
+	var storeIDs StoreIDSlice
 	for storeID := range s.stores {
 		storeIDs = append(storeIDs, storeID)
 	}
-	slices.Sort(storeIDs)
+	sort.Sort(storeIDs)
 
 	for i, storeID := range storeIDs {
 		store := s.stores[storeID]
@@ -218,9 +218,7 @@ func (s *state) Stores() []Store {
 		store := s.stores[key]
 		stores = append(stores, store)
 	}
-	slices.SortFunc(stores, func(a, b Store) int {
-		return cmp.Compare(a.StoreID(), b.StoreID())
-	})
+	sort.Slice(stores, func(i, j int) bool { return stores[i].StoreID() < stores[j].StoreID() })
 	return stores
 }
 
@@ -309,9 +307,7 @@ func (s *state) Nodes() []Node {
 	for _, node := range s.nodes {
 		nodes = append(nodes, node)
 	}
-	slices.SortFunc(nodes, func(a, b Node) int {
-		return cmp.Compare(a.NodeID(), b.NodeID())
-	})
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].NodeID() < nodes[j].NodeID() })
 	return nodes
 }
 
@@ -327,8 +323,8 @@ func (s *state) rangeFor(key Key) *rng {
 	var r *rng
 	// If keyToFind equals to MinKey of the range, we found the right range, if
 	// the range is less than keyToFind then this is the right range also.
-	s.ranges.rangeTree.DescendLessOrEqual(keyToFind, func(i *rng) bool {
-		r = i
+	s.ranges.rangeTree.DescendLessOrEqual(keyToFind, func(i btree.Item) bool {
+		r = i.(*rng)
 		return false
 	})
 	return r
@@ -347,13 +343,11 @@ func (s *state) rng(rangeID RangeID) (*rng, bool) {
 
 // Ranges returns all ranges that exist in this state.
 func (s *state) Ranges() []Range {
-	ranges := make([]Range, 0, len(s.ranges.rangeMap))
+	ranges := []Range{}
 	for _, r := range s.ranges.rangeMap {
 		ranges = append(ranges, r)
 	}
-	slices.SortFunc(ranges, func(a, b Range) int {
-		return cmp.Compare(a.RangeID(), b.RangeID())
-	})
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].RangeID() < ranges[j].RangeID() })
 	return ranges
 }
 
@@ -380,18 +374,18 @@ func (r replicaList) Less(i, j int) bool {
 
 // Replicas returns all replicas that exist on a store.
 func (s *state) Replicas(storeID StoreID) []Replica {
-	var replicas []Replica
+	replicas := []Replica{}
 	store, ok := s.stores[storeID]
 	if !ok {
 		return replicas
 	}
 
 	repls := make(replicaList, 0, len(store.replicas))
-	var rangeIDs []RangeID
+	var rangeIDs RangeIDSlice
 	for rangeID := range store.replicas {
 		rangeIDs = append(rangeIDs, rangeID)
 	}
-	slices.Sort(rangeIDs)
+	sort.Sort(rangeIDs)
 	for _, rangeID := range rangeIDs {
 		rng := s.ranges.rangeMap[rangeID]
 		if replica := rng.replicas[storeID]; replica != nil {
@@ -685,7 +679,8 @@ func (s *state) SetSpanConfig(span roachpb.Span, config *roachpb.SpanConfig) {
 	//   [f, z)         - keeps old span config from [c,z)
 
 	splitsRequired := []Key{}
-	s.ranges.rangeTree.DescendLessOrEqual(&rng{startKey: startKey}, func(cur *rng) bool {
+	s.ranges.rangeTree.DescendLessOrEqual(&rng{startKey: startKey}, func(i btree.Item) bool {
+		cur, _ := i.(*rng)
 		rStart := cur.startKey
 		// There are two cases we handle:
 		// (1) rStart == startKey: We don't need to split.
@@ -698,7 +693,8 @@ func (s *state) SetSpanConfig(span roachpb.Span, config *roachpb.SpanConfig) {
 		return false
 	})
 
-	s.ranges.rangeTree.DescendLessOrEqual(&rng{startKey: endKey}, func(cur *rng) bool {
+	s.ranges.rangeTree.DescendLessOrEqual(&rng{startKey: endKey}, func(i btree.Item) bool {
+		cur, _ := i.(*rng)
 		rEnd := cur.endKey
 		rStart := cur.startKey
 		if rStart == endKey {
@@ -727,7 +723,8 @@ func (s *state) SetSpanConfig(span roachpb.Span, config *roachpb.SpanConfig) {
 	}
 
 	// Apply the span config to all the ranges affected.
-	s.ranges.rangeTree.AscendGreaterOrEqual(&rng{startKey: startKey}, func(cur *rng) bool {
+	s.ranges.rangeTree.AscendGreaterOrEqual(&rng{startKey: startKey}, func(i btree.Item) bool {
+		cur, _ := i.(*rng)
 		if cur.startKey == endKey {
 			return false
 		}
@@ -794,15 +791,16 @@ func (s *state) SplitRange(splitKey Key) (Range, Range, bool) {
 	endKey := Key(math.MaxInt32)
 	failed := false
 	// Find the sucessor range in the range map, to determine the endkey.
-	ranges.rangeTree.AscendGreaterOrEqual(r, func(i *rng) bool {
+	ranges.rangeTree.AscendGreaterOrEqual(r, func(i btree.Item) bool {
 		// The min key already exists in the range map, we cannot return a new
 		// range.
-		if r.startKey == i.startKey {
+		if !r.Less(i) {
 			failed = true
 			return false
 		}
 
-		endKey = i.startKey
+		successorRange, _ := i.(*rng)
+		endKey = successorRange.startKey
 		return false
 	})
 
@@ -815,10 +813,10 @@ func (s *state) SplitRange(splitKey Key) (Range, Range, bool) {
 	var predecessorRange *rng
 	// Find the predecessor range, to update it's endkey to the new range's min
 	// key.
-	ranges.rangeTree.DescendLessOrEqual(r, func(i *rng) bool {
+	ranges.rangeTree.DescendLessOrEqual(r, func(i btree.Item) bool {
 		// The case where the min key already exists cannot occur here, as the
 		// failed flag will have been set above.
-		predecessorRange = i
+		predecessorRange, _ = i.(*rng)
 		return false
 	})
 
@@ -991,7 +989,8 @@ func (s *state) ApplyLoad(lb workload.LoadBatch) {
 	// that range is not larger than the any key of the remaining load events.
 	iter := n - 1
 	max := &rng{startKey: Key(lb[iter].Key)}
-	s.ranges.rangeTree.DescendLessOrEqual(max, func(next *rng) bool {
+	s.ranges.rangeTree.DescendLessOrEqual(max, func(i btree.Item) bool {
+		next, _ := i.(*rng)
 		for iter > -1 && lb[iter].Key >= int64(next.startKey) {
 			s.applyLoad(next, lb[iter])
 			iter--
@@ -1062,7 +1061,7 @@ func (s *state) Clock() timeutil.TimeSource {
 // UpdateStorePool modifies the state of the StorePool for the Store with
 // ID StoreID.
 func (s *state) UpdateStorePool(
-	storeID StoreID, storeDescriptors map[roachpb.StoreID]*storepool.StoreDetailMu,
+	storeID StoreID, storeDescriptors map[roachpb.StoreID]*storepool.StoreDetail,
 ) {
 	var storeIDs roachpb.StoreIDSlice
 	for storeIDA := range storeDescriptors {
@@ -1071,8 +1070,10 @@ func (s *state) UpdateStorePool(
 	sort.Sort(storeIDs)
 	for _, gossipStoreID := range storeIDs {
 		detail := storeDescriptors[gossipStoreID]
-		copiedDetail := detail.Copy()
-		s.stores[storeID].storepool.Details.StoreDetails.Store(gossipStoreID, copiedDetail)
+		copiedDetail := *detail
+		copiedDesc := *detail.Desc
+		copiedDetail.Desc = &copiedDesc
+		s.stores[storeID].storepool.DetailsMu.StoreDetails[gossipStoreID] = &copiedDetail
 	}
 }
 
@@ -1178,7 +1179,7 @@ func (s *state) LoadSplitterFor(storeID StoreID) LoadSplitter {
 // with ID RangeID, on the store with ID StoreID.
 func (s *state) RaftStatus(rangeID RangeID, storeID StoreID) *raft.Status {
 	status := &raft.Status{
-		Progress: make(map[raftpb.PeerID]tracker.Progress),
+		Progress: make(map[uint64]tracker.Progress),
 	}
 
 	leader, ok := s.LeaseHolderReplica(rangeID)
@@ -1192,14 +1193,14 @@ func (s *state) RaftStatus(rangeID RangeID, storeID StoreID) *raft.Status {
 
 	// TODO(kvoli): The raft leader will always be the current leaseholder
 	// here. This should change to enable testing this scenario.
-	status.Lead = raftpb.PeerID(leader.ReplicaID())
-	status.RaftState = raftpb.StateLeader
+	status.Lead = uint64(leader.ReplicaID())
+	status.RaftState = raft.StateLeader
 	status.Commit = 2
 	// TODO(kvoli): A replica is never behind on their raft log, this should
 	// change to enable testing this scenario where replicas fall behind. e.g.
-	// Compacted on all replicas will return 1.
+	// FirstIndex on all replicas will return 2.
 	for _, replica := range rng.replicas {
-		status.Progress[raftpb.PeerID(replica.ReplicaID())] = tracker.Progress{
+		status.Progress[uint64(replica.ReplicaID())] = tracker.Progress{
 			Match: 2,
 			State: tracker.StateReplicate,
 		}
@@ -1362,11 +1363,11 @@ func (s *store) String() string {
 
 	// Sort the unordered map rangeIDs by its key to ensure deterministic
 	// printing.
-	var rangeIDs []RangeID
+	var rangeIDs RangeIDSlice
 	for rangeID := range s.replicas {
 		rangeIDs = append(rangeIDs, rangeID)
 	}
-	slices.Sort(rangeIDs)
+	sort.Sort(rangeIDs)
 
 	for i, rangeID := range rangeIDs {
 		replicaID := s.replicas[rangeID]
@@ -1429,11 +1430,11 @@ func (r *rng) String() string {
 
 	// Sort the unordered map storeIDs by its key to ensure deterministic
 	// printing.
-	var storeIDs []StoreID
+	var storeIDs StoreIDSlice
 	for storeID := range r.replicas {
 		storeIDs = append(storeIDs, storeID)
 	}
-	slices.Sort(storeIDs)
+	sort.Sort(storeIDs)
 
 	for i, storeID := range storeIDs {
 		replica := r.replicas[storeID]

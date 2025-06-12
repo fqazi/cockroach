@@ -312,7 +312,7 @@ distribution: <hidden>
 vectorized: <hidden>
 plan type: custom
 maximum memory usage: <hidden>
-DistSQL network usage: <hidden>
+network usage: <hidden>
 regions: <hidden>
 isolation level: serializable
 priority: normal
@@ -323,23 +323,22 @@ quality of service: regular
 ├── • render
 │   │
 │   └── • group (hash)
-│       │ sql nodes: <hidden>
+│       │ nodes: <hidden>
 │       │ regions: <hidden>
 │       │ actual row count: 0
-│       │ execution time: 0µs
 │       │ estimated max memory allocated: 0 B
 │       │ estimated max sql temp disk usage: 0 B
 │       │ group by: lk
 │       │
 │       └── • lookup join (left outer) (streamer)
-│           │ sql nodes: <hidden>
+│           │ nodes: <hidden>
 │           │ regions: <hidden>
 │           │ actual row count: 0
 │           │ KV time: 0µs
+│           │ KV contention time: 0µs
 │           │ KV rows decoded: 0
 │           │ KV bytes read: 0 B
 │           │ KV gRPC calls: 0
-│           │ execution time: 0µs
 │           │ estimated max memory allocated: 0 B
 │           │ table: rtable@rtable_pkey
 │           │ equality: (rk1, rk2) = (rk1, rk2)
@@ -347,43 +346,41 @@ quality of service: regular
 │           │ pred: st_intersects(geom1, geom)
 │           │
 │           └── • inverted join (left outer)
-│               │ sql nodes: <hidden>
+│               │ nodes: <hidden>
 │               │ regions: <hidden>
 │               │ actual row count: 0
 │               │ KV time: 0µs
+│               │ KV contention time: 0µs
 │               │ KV rows decoded: 0
 │               │ KV bytes read: 0 B
 │               │ KV gRPC calls: 0
-│               │ execution time: 0µs
 │               │ estimated max memory allocated: 0 B
 │               │ estimated max sql temp disk usage: 0 B
 │               │ table: rtable@geom_index
 │               │
 │               └── • scan buffer
-│                     sql nodes: <hidden>
+│                     nodes: <hidden>
 │                     regions: <hidden>
 │                     actual row count: 0
-│                     execution time: 0µs
 │                     label: buffer 1 (q)
 │
 ├── • subquery
 │   │ id: @S1
 │   │ original sql: SELECT * FROM ltable WHERE lk > 2
-│   │ exec mode: discard all rows
+│   │ exec mode: all rows
 │   │
 │   └── • buffer
-│       │ sql nodes: <hidden>
+│       │ nodes: <hidden>
 │       │ regions: <hidden>
 │       │ actual row count: 0
-│       │ execution time: 0µs
 │       │ label: buffer 1 (q)
 │       │
 │       └── • scan
-│             sql nodes: <hidden>
-│             kv nodes: <hidden>
+│             nodes: <hidden>
 │             regions: <hidden>
 │             actual row count: 0
 │             KV time: 0µs
+│             KV contention time: 0µs
 │             KV rows decoded: 0
 │             KV bytes read: 0 B
 │             KV gRPC calls: 0
@@ -398,16 +395,14 @@ quality of service: regular
     │ exec mode: one row
     │
     └── • group (scalar)
-        │ sql nodes: <hidden>
+        │ nodes: <hidden>
         │ regions: <hidden>
         │ actual row count: 1
-        │ execution time: 0µs
         │
         └── • scan buffer
-              sql nodes: <hidden>
+              nodes: <hidden>
               regions: <hidden>
               actual row count: 0
-              execution time: 0µs
               label: buffer 1 (q)
 
 # Anti joins are also converted to paired joins by the optimizer.

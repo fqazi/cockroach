@@ -50,33 +50,45 @@ const readImportDataProcessorName = "readImportDataProcessor"
 
 var progressUpdateInterval = time.Second * 10
 
-var importPKAdderBufferSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"kv.bulk_ingest.pk_buffer_size",
-	"the initial size of the BulkAdder buffer handling primary index imports",
-	32<<20,
-)
+var importPKAdderBufferSize = func() *settings.ByteSizeSetting {
+	s := settings.RegisterByteSizeSetting(
+		settings.ApplicationLevel,
+		"kv.bulk_ingest.pk_buffer_size",
+		"the initial size of the BulkAdder buffer handling primary index imports",
+		32<<20,
+	)
+	return s
+}()
 
-var importPKAdderMaxBufferSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"kv.bulk_ingest.max_pk_buffer_size",
-	"the maximum size of the BulkAdder buffer handling primary index imports",
-	128<<20,
-)
+var importPKAdderMaxBufferSize = func() *settings.ByteSizeSetting {
+	s := settings.RegisterByteSizeSetting(
+		settings.ApplicationLevel,
+		"kv.bulk_ingest.max_pk_buffer_size",
+		"the maximum size of the BulkAdder buffer handling primary index imports",
+		128<<20,
+	)
+	return s
+}()
 
-var importIndexAdderBufferSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"kv.bulk_ingest.index_buffer_size",
-	"the initial size of the BulkAdder buffer handling secondary index imports",
-	32<<20,
-)
+var importIndexAdderBufferSize = func() *settings.ByteSizeSetting {
+	s := settings.RegisterByteSizeSetting(
+		settings.ApplicationLevel,
+		"kv.bulk_ingest.index_buffer_size",
+		"the initial size of the BulkAdder buffer handling secondary index imports",
+		32<<20,
+	)
+	return s
+}()
 
-var importIndexAdderMaxBufferSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"kv.bulk_ingest.max_index_buffer_size",
-	"the maximum size of the BulkAdder buffer handling secondary index imports",
-	512<<20,
-)
+var importIndexAdderMaxBufferSize = func() *settings.ByteSizeSetting {
+	s := settings.RegisterByteSizeSetting(
+		settings.ApplicationLevel,
+		"kv.bulk_ingest.max_index_buffer_size",
+		"the maximum size of the BulkAdder buffer handling secondary index imports",
+		512<<20,
+	)
+	return s
+}()
 
 var readerParallelismSetting = settings.RegisterIntSetting(
 	settings.ApplicationLevel,
@@ -86,7 +98,7 @@ var readerParallelismSetting = settings.RegisterIntSetting(
 	settings.NonNegativeInt,
 )
 
-// importBufferConfigSizes determines the minimum, maximum and step size for the
+// ImportBufferConfigSizes determines the minimum, maximum and step size for the
 // BulkAdder buffer used in import.
 func importBufferConfigSizes(st *cluster.Settings, isPKAdder bool) (int64, func() int64) {
 	if isPKAdder {
@@ -105,7 +117,8 @@ func importBufferConfigSizes(st *cluster.Settings, isPKAdder bool) (int64, func(
 type readImportDataProcessor struct {
 	execinfra.ProcessorBase
 
-	spec execinfrapb.ReadImportDataSpec
+	flowCtx *execinfra.FlowCtx
+	spec    execinfrapb.ReadImportDataSpec
 
 	cancel context.CancelFunc
 	wg     ctxgroup.Group
@@ -130,8 +143,9 @@ func newReadImportDataProcessor(
 	post *execinfrapb.PostProcessSpec,
 ) (execinfra.Processor, error) {
 	idp := &readImportDataProcessor{
-		spec:   spec,
-		progCh: make(chan execinfrapb.RemoteProducerMetadata_BulkProcessorProgress),
+		flowCtx: flowCtx,
+		spec:    spec,
+		progCh:  make(chan execinfrapb.RemoteProducerMetadata_BulkProcessorProgress),
 	}
 	if err := idp.Init(ctx, idp, post, csvOutputTypes, flowCtx, processorID, nil, /* memMonitor */
 		execinfra.ProcStateOpts{
@@ -148,11 +162,11 @@ func newReadImportDataProcessor(
 	// Load the import job running the import in case any of the columns have a
 	// default expression which uses sequences. In this case we need to update the
 	// job progress within the import processor.
-	if idp.FlowCtx.Cfg.JobRegistry != nil {
+	if idp.flowCtx.Cfg.JobRegistry != nil {
 		idp.seqChunkProvider = &row.SeqChunkProvider{
 			JobID:    idp.spec.Progress.JobID,
-			Registry: idp.FlowCtx.Cfg.JobRegistry,
-			DB:       idp.FlowCtx.Cfg.DB,
+			Registry: idp.flowCtx.Cfg.JobRegistry,
+			DB:       idp.flowCtx.Cfg.DB,
 		}
 	}
 
@@ -169,7 +183,7 @@ func (idp *readImportDataProcessor) Start(ctx context.Context) {
 	idp.wg = ctxgroup.WithContext(grpCtx)
 	idp.wg.GoCtx(func(ctx context.Context) error {
 		defer close(idp.progCh)
-		idp.summary, idp.importErr = runImport(ctx, idp.FlowCtx, &idp.spec, idp.progCh,
+		idp.summary, idp.importErr = runImport(ctx, idp.flowCtx, &idp.spec, idp.progCh,
 			idp.seqChunkProvider)
 		return nil
 	})
@@ -221,9 +235,7 @@ func (idp *readImportDataProcessor) close() {
 		return
 	}
 
-	if idp.cancel != nil {
-		idp.cancel()
-	}
+	idp.cancel()
 	_ = idp.wg.Wait()
 
 	idp.InternalClose()

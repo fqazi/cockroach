@@ -198,8 +198,7 @@ type saramaConfig struct {
 		MaxMessages int          `json:",omitempty"`
 	}
 
-	Compression      compressionCodec `json:",omitempty"`
-	CompressionLevel int              `json:",omitempty"`
+	Compression compressionCodec `json:",omitempty"`
 
 	RequiredAcks string `json:",omitempty"`
 
@@ -240,7 +239,6 @@ func defaultSaramaConfig() *saramaConfig {
 	// The default compression protocol is sarama.CompressionNone,
 	// which is 0.
 	config.Compression = 0
-	config.CompressionLevel = sarama.CompressionLevelDefault
 
 	// This works around what seems to be a bug in sarama where it isn't
 	// computing the right value to compare against `Producer.MaxMessageBytes`
@@ -362,7 +360,6 @@ func (s *kafkaSink) EmitRow(
 	key, value []byte,
 	updated, mvcc hlc.Timestamp,
 	alloc kvevent.Alloc,
-	headers rowHeaders,
 ) error {
 	topic, err := s.topics.Name(topicDescr)
 	if err != nil {
@@ -379,20 +376,11 @@ func (s *kafkaSink) EmitRow(
 		downstreamClientSendCb()
 	}
 
-	recordHeaders := make([]sarama.RecordHeader, 0, len(headers))
-	for key, value := range headers {
-		recordHeaders = append(recordHeaders, sarama.RecordHeader{
-			Key:   []byte(key),
-			Value: value,
-		})
-	}
-
 	msg := &sarama.ProducerMessage{
 		Topic:    topic,
 		Key:      sarama.ByteEncoder(key),
 		Value:    sarama.ByteEncoder(value),
 		Metadata: messageMetadata{alloc: alloc, mvcc: mvcc, updateMetrics: updateMetrics},
-		Headers:  recordHeaders,
 	}
 	s.stats.startMessage(int64(msg.Key.Length() + msg.Value.Length()))
 	return s.emitMessage(ctx, msg)
@@ -800,9 +788,6 @@ func (c *saramaConfig) Apply(kafka *sarama.Config) error {
 	kafka.Producer.Flush.MaxMessages = c.Flush.MaxMessages
 	kafka.ClientID = c.ClientID
 
-	kafka.Producer.Compression = sarama.CompressionCodec(c.Compression)
-	kafka.Producer.CompressionLevel = c.CompressionLevel
-
 	if c.Version != "" {
 		parsedVersion, err := sarama.ParseKafkaVersion(c.Version)
 		if err != nil {
@@ -817,7 +802,7 @@ func (c *saramaConfig) Apply(kafka *sarama.Config) error {
 		}
 		kafka.Producer.RequiredAcks = parsedAcks
 	}
-
+	kafka.Producer.Compression = sarama.CompressionCodec(c.Compression)
 	return nil
 }
 
@@ -1209,7 +1194,7 @@ func makeKafkaSink(
 
 	topics, err := MakeTopicNamer(
 		targets,
-		WithPrefix(kafkaTopicPrefix), WithSingleName(kafkaTopicName), WithSanitizeFn(changefeedbase.SQLNameToKafkaName))
+		WithPrefix(kafkaTopicPrefix), WithSingleName(kafkaTopicName), WithSanitizeFn(SQLNameToKafkaName))
 
 	if err != nil {
 		return nil, err
@@ -1243,14 +1228,8 @@ type kafkaStats struct {
 func (s *kafkaStats) startMessage(sz int64) {
 	atomic.AddInt64(&s.outstandingBytes, sz)
 	atomic.AddInt64(&s.outstandingMessages, 1)
-	for {
-		curLargest := atomic.LoadInt64(&s.largestMessageSize)
-		if curLargest >= sz {
-			break
-		}
-		if atomic.CompareAndSwapInt64(&s.largestMessageSize, curLargest, sz) {
-			break
-		}
+	if atomic.LoadInt64(&s.largestMessageSize) < sz {
+		atomic.AddInt64(&s.largestMessageSize, sz)
 	}
 }
 

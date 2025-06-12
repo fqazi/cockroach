@@ -3,11 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames";
 import * as React from "react";
-import CopyToClipboard from "react-copy-to-clipboard";
 import { Helmet } from "react-helmet";
 import { connect } from "react-redux";
+import classNames from "classnames";
+import CopyToClipboard from "react-copy-to-clipboard";
 import { RouteComponentProps, withRouter } from "react-router-dom";
 
 import { AdminUIState } from "src/redux/state";

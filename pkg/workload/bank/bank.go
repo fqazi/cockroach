@@ -9,7 +9,6 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
-	"math/rand/v2"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
@@ -20,6 +19,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/workload/histogram"
 	"github.com/cockroachdb/errors"
 	"github.com/spf13/pflag"
+	"golang.org/x/exp/rand"
 )
 
 const (
@@ -102,9 +102,6 @@ func (*bank) Meta() workload.Meta { return bankMeta }
 // Flags implements the Flagser interface.
 func (b *bank) Flags() workload.Flags { return b.flags }
 
-// ConnFlags implements the ConnFlagser interface.
-func (b *bank) ConnFlags() *workload.ConnFlags { return b.connFlags }
-
 // Hooks implements the Hookser interface.
 func (b *bank) Hooks() workload.Hooks {
 	return workload.Hooks{
@@ -137,7 +134,7 @@ func (b *bank) Tables() []workload.Table {
 		InitialRows: workload.BatchedTuples{
 			NumBatches: numBatches,
 			FillBatch: func(batchIdx int, cb coldata.Batch, a *bufalloc.ByteAllocator) {
-				rng := rand.NewPCG(RandomSeed.Seed(), uint64(batchIdx))
+				rng := rand.NewSource(RandomSeed.Seed() + uint64(batchIdx))
 
 				rowBegin, rowEnd := batchIdx*b.batchSize, (batchIdx+1)*b.batchSize
 				if rowEnd > b.rows {
@@ -177,6 +174,10 @@ func (b *bank) Tables() []workload.Table {
 func (b *bank) Ops(
 	ctx context.Context, urls []string, reg *histogram.Registry,
 ) (workload.QueryLoad, error) {
+	sqlDatabase, err := workload.SanitizeUrls(b, b.connFlags.DBOverride, urls)
+	if err != nil {
+		return workload.QueryLoad{}, err
+	}
 	db, err := gosql.Open(`cockroach`, strings.Join(urls, ` `))
 	if err != nil {
 		return workload.QueryLoad{}, err
@@ -196,20 +197,21 @@ func (b *bank) Ops(
 	}
 
 	ql := workload.QueryLoad{
+		SQLDatabase: sqlDatabase,
 		Close: func(_ context.Context) error {
 			return db.Close()
 		},
 	}
 	for i := 0; i < b.connFlags.Concurrency; i++ {
-		rng := rand.New(rand.NewPCG(RandomSeed.Seed(), 0))
+		rng := rand.New(rand.NewSource(RandomSeed.Seed()))
 		hists := reg.GetHandle()
 		workerFn := func(ctx context.Context) error {
-			from := rng.IntN(b.rows)
-			to := rng.IntN(b.rows - 1)
+			from := rng.Intn(b.rows)
+			to := rng.Intn(b.rows - 1)
 			for from == to && b.rows != 1 {
-				to = rng.IntN(b.rows - 1)
+				to = rng.Intn(b.rows - 1)
 			}
-			amount := rand.IntN(maxTransfer)
+			amount := rand.Intn(maxTransfer)
 			start := timeutil.Now()
 			_, err := updateStmt.Exec(from, to, amount)
 			elapsed := timeutil.Since(start)

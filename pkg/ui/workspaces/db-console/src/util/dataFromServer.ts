@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-
 import FeatureFlags = cockroach.server.serverpb.FeatureFlags;
 
 export interface DataFromServer {

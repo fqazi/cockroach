@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecop"
 	"github.com/cockroachdb/cockroach/pkg/sql/colmem"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/errors"
 )
@@ -72,7 +71,7 @@ func newSubstringOperator(
 			return &substringInt32Int64Operator{base}
 		}
 	}
-	colexecerror.InternalError(errors.AssertionFailedf("unsupported substring argument types: %s %s", startType, lengthType))
+	colexecerror.InternalError(errors.Errorf("unsupported substring argument types: %s %s", startType, lengthType))
 	// This code is unreachable, but the compiler cannot infer that.
 	return nil
 }
@@ -111,7 +110,7 @@ func (s *substringInt64Int16Operator) Next() coldata.Batch {
 	outputCol := outputVec.Bytes()
 	outputNulls := outputVec.Nulls()
 	s.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec},
+		[]coldata.Vec{outputVec},
 		func() {
 			argsMaybeHaveNulls := bytesNulls.MaybeHasNulls() || startNulls.MaybeHasNulls() || lengthNulls.MaybeHasNulls()
 			for i := 0; i < n; i++ {
@@ -134,7 +133,7 @@ func (s *substringInt64Int16Operator) Next() coldata.Batch {
 				startCharIdx := int(startCol[rowIdx]) - 1
 				length := int(lengthCol[rowIdx])
 				if length < 0 {
-					colexecerror.ExpectedError(builtins.NegativeSubstringLengthErr)
+					colexecerror.ExpectedError(errors.Errorf("negative substring length %d not allowed", length))
 				}
 
 				endCharIdx := startCharIdx + length
@@ -212,7 +211,7 @@ func (s *substringInt64Int32Operator) Next() coldata.Batch {
 	outputCol := outputVec.Bytes()
 	outputNulls := outputVec.Nulls()
 	s.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec},
+		[]coldata.Vec{outputVec},
 		func() {
 			argsMaybeHaveNulls := bytesNulls.MaybeHasNulls() || startNulls.MaybeHasNulls() || lengthNulls.MaybeHasNulls()
 			for i := 0; i < n; i++ {
@@ -235,7 +234,7 @@ func (s *substringInt64Int32Operator) Next() coldata.Batch {
 				startCharIdx := int(startCol[rowIdx]) - 1
 				length := int(lengthCol[rowIdx])
 				if length < 0 {
-					colexecerror.ExpectedError(builtins.NegativeSubstringLengthErr)
+					colexecerror.ExpectedError(errors.Errorf("negative substring length %d not allowed", length))
 				}
 
 				endCharIdx := startCharIdx + length
@@ -313,7 +312,7 @@ func (s *substringInt64Int64Operator) Next() coldata.Batch {
 	outputCol := outputVec.Bytes()
 	outputNulls := outputVec.Nulls()
 	s.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec},
+		[]coldata.Vec{outputVec},
 		func() {
 			argsMaybeHaveNulls := bytesNulls.MaybeHasNulls() || startNulls.MaybeHasNulls() || lengthNulls.MaybeHasNulls()
 			for i := 0; i < n; i++ {
@@ -336,7 +335,7 @@ func (s *substringInt64Int64Operator) Next() coldata.Batch {
 				startCharIdx := int(startCol[rowIdx]) - 1
 				length := int(lengthCol[rowIdx])
 				if length < 0 {
-					colexecerror.ExpectedError(builtins.NegativeSubstringLengthErr)
+					colexecerror.ExpectedError(errors.Errorf("negative substring length %d not allowed", length))
 				}
 
 				endCharIdx := startCharIdx + length
@@ -414,7 +413,7 @@ func (s *substringInt16Int16Operator) Next() coldata.Batch {
 	outputCol := outputVec.Bytes()
 	outputNulls := outputVec.Nulls()
 	s.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec},
+		[]coldata.Vec{outputVec},
 		func() {
 			argsMaybeHaveNulls := bytesNulls.MaybeHasNulls() || startNulls.MaybeHasNulls() || lengthNulls.MaybeHasNulls()
 			for i := 0; i < n; i++ {
@@ -437,7 +436,7 @@ func (s *substringInt16Int16Operator) Next() coldata.Batch {
 				startCharIdx := int(startCol[rowIdx]) - 1
 				length := int(lengthCol[rowIdx])
 				if length < 0 {
-					colexecerror.ExpectedError(builtins.NegativeSubstringLengthErr)
+					colexecerror.ExpectedError(errors.Errorf("negative substring length %d not allowed", length))
 				}
 
 				endCharIdx := startCharIdx + length
@@ -515,7 +514,7 @@ func (s *substringInt16Int32Operator) Next() coldata.Batch {
 	outputCol := outputVec.Bytes()
 	outputNulls := outputVec.Nulls()
 	s.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec},
+		[]coldata.Vec{outputVec},
 		func() {
 			argsMaybeHaveNulls := bytesNulls.MaybeHasNulls() || startNulls.MaybeHasNulls() || lengthNulls.MaybeHasNulls()
 			for i := 0; i < n; i++ {
@@ -538,7 +537,7 @@ func (s *substringInt16Int32Operator) Next() coldata.Batch {
 				startCharIdx := int(startCol[rowIdx]) - 1
 				length := int(lengthCol[rowIdx])
 				if length < 0 {
-					colexecerror.ExpectedError(builtins.NegativeSubstringLengthErr)
+					colexecerror.ExpectedError(errors.Errorf("negative substring length %d not allowed", length))
 				}
 
 				endCharIdx := startCharIdx + length
@@ -616,7 +615,7 @@ func (s *substringInt16Int64Operator) Next() coldata.Batch {
 	outputCol := outputVec.Bytes()
 	outputNulls := outputVec.Nulls()
 	s.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec},
+		[]coldata.Vec{outputVec},
 		func() {
 			argsMaybeHaveNulls := bytesNulls.MaybeHasNulls() || startNulls.MaybeHasNulls() || lengthNulls.MaybeHasNulls()
 			for i := 0; i < n; i++ {
@@ -639,7 +638,7 @@ func (s *substringInt16Int64Operator) Next() coldata.Batch {
 				startCharIdx := int(startCol[rowIdx]) - 1
 				length := int(lengthCol[rowIdx])
 				if length < 0 {
-					colexecerror.ExpectedError(builtins.NegativeSubstringLengthErr)
+					colexecerror.ExpectedError(errors.Errorf("negative substring length %d not allowed", length))
 				}
 
 				endCharIdx := startCharIdx + length
@@ -717,7 +716,7 @@ func (s *substringInt32Int16Operator) Next() coldata.Batch {
 	outputCol := outputVec.Bytes()
 	outputNulls := outputVec.Nulls()
 	s.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec},
+		[]coldata.Vec{outputVec},
 		func() {
 			argsMaybeHaveNulls := bytesNulls.MaybeHasNulls() || startNulls.MaybeHasNulls() || lengthNulls.MaybeHasNulls()
 			for i := 0; i < n; i++ {
@@ -740,7 +739,7 @@ func (s *substringInt32Int16Operator) Next() coldata.Batch {
 				startCharIdx := int(startCol[rowIdx]) - 1
 				length := int(lengthCol[rowIdx])
 				if length < 0 {
-					colexecerror.ExpectedError(builtins.NegativeSubstringLengthErr)
+					colexecerror.ExpectedError(errors.Errorf("negative substring length %d not allowed", length))
 				}
 
 				endCharIdx := startCharIdx + length
@@ -818,7 +817,7 @@ func (s *substringInt32Int32Operator) Next() coldata.Batch {
 	outputCol := outputVec.Bytes()
 	outputNulls := outputVec.Nulls()
 	s.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec},
+		[]coldata.Vec{outputVec},
 		func() {
 			argsMaybeHaveNulls := bytesNulls.MaybeHasNulls() || startNulls.MaybeHasNulls() || lengthNulls.MaybeHasNulls()
 			for i := 0; i < n; i++ {
@@ -841,7 +840,7 @@ func (s *substringInt32Int32Operator) Next() coldata.Batch {
 				startCharIdx := int(startCol[rowIdx]) - 1
 				length := int(lengthCol[rowIdx])
 				if length < 0 {
-					colexecerror.ExpectedError(builtins.NegativeSubstringLengthErr)
+					colexecerror.ExpectedError(errors.Errorf("negative substring length %d not allowed", length))
 				}
 
 				endCharIdx := startCharIdx + length
@@ -919,7 +918,7 @@ func (s *substringInt32Int64Operator) Next() coldata.Batch {
 	outputCol := outputVec.Bytes()
 	outputNulls := outputVec.Nulls()
 	s.allocator.PerformOperation(
-		[]*coldata.Vec{outputVec},
+		[]coldata.Vec{outputVec},
 		func() {
 			argsMaybeHaveNulls := bytesNulls.MaybeHasNulls() || startNulls.MaybeHasNulls() || lengthNulls.MaybeHasNulls()
 			for i := 0; i < n; i++ {
@@ -942,7 +941,7 @@ func (s *substringInt32Int64Operator) Next() coldata.Batch {
 				startCharIdx := int(startCol[rowIdx]) - 1
 				length := int(lengthCol[rowIdx])
 				if length < 0 {
-					colexecerror.ExpectedError(builtins.NegativeSubstringLengthErr)
+					colexecerror.ExpectedError(errors.Errorf("negative substring length %d not allowed", length))
 				}
 
 				endCharIdx := startCharIdx + length

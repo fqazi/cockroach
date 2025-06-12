@@ -3,6 +3,22 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import * as React from "react";
+import { Helmet } from "react-helmet";
+import { connect } from "react-redux";
+import { RouteComponentProps, withRouter } from "react-router-dom";
+import { Moment } from "moment-timezone";
+import _ from "lodash";
+
+import { AdminUIState } from "src/redux/state";
+import { nodesSummarySelector } from "src/redux/nodes";
+import { refreshLiveness, refreshNodes } from "src/redux/apiReducers";
+import { cockroach } from "src/js/protos";
+import MembershipStatus = cockroach.kv.kvserver.liveness.livenesspb.MembershipStatus;
+import { LocalSetting } from "src/redux/localsettings";
+
+import "./decommissionedNodeHistory.styl";
+import { Text } from "src/components";
 import {
   ColumnsConfig,
   Table,
@@ -10,28 +26,8 @@ import {
   util,
   Timestamp,
 } from "@cockroachlabs/cluster-ui";
-import flow from "lodash/flow";
-import map from "lodash/map";
-import orderBy from "lodash/orderBy";
-import { Moment } from "moment-timezone";
-import * as React from "react";
-import { Helmet } from "react-helmet";
-import { connect } from "react-redux";
-import { RouteComponentProps, withRouter } from "react-router-dom";
 import { createSelector } from "reselect";
-
-import { Text } from "src/components";
-import { cockroach } from "src/js/protos";
-import { refreshLiveness, refreshNodes } from "src/redux/apiReducers";
-import { LocalSetting } from "src/redux/localsettings";
-import { nodesSummarySelector } from "src/redux/nodes";
-import { AdminUIState } from "src/redux/state";
 import { BackToAdvanceDebug } from "src/views/reports/containers/util";
-
-import "./decommissionedNodeHistory.styl";
-
-import MembershipStatus = cockroach.kv.kvserver.liveness.livenesspb.MembershipStatus;
-import ILiveness = cockroach.kv.kvserver.liveness.livenesspb.ILiveness;
 
 const decommissionedNodesSortSetting = new LocalSetting<
   AdminUIState,
@@ -84,15 +80,13 @@ export class DecommissionedNodeHistory extends React.Component<
       key: "id",
       title: "ID",
       sorter: sortByNodeId,
-      render: (_text: string, record: DecommissionedNodeStatusRow) => (
-        <Text>{`n${record.nodeId}`}</Text>
-      ),
+      render: (_text, record) => <Text>{`n${record.nodeId}`}</Text>,
     },
     {
       key: "decommissionedOn",
       title: "Decommissioned On",
       sorter: sortByDecommissioningDate,
-      render: (_text: string, record: DecommissionedNodeStatusRow) => {
+      render: (_text, record) => {
         return (
           <Timestamp
             time={record.decommissionedDate}
@@ -151,16 +145,17 @@ const decommissionedNodesTableData = createSelector(
       return liveness?.membership === MembershipStatus.DECOMMISSIONED;
     });
 
-    const data = flow(
-      (liveness: ILiveness[]) =>
-        orderBy(liveness, [l => getDecommissionedTime(l.node_id)], ["desc"]),
-      (liveness: ILiveness[]) =>
-        map(liveness, (l, idx: number) => ({
+    const data = _.chain(decommissionedNodes)
+      .orderBy([liveness => getDecommissionedTime(liveness.node_id)], ["desc"])
+      .map((liveness, idx: number) => {
+        const { node_id } = liveness;
+        return {
           key: `${idx}`,
-          nodeId: l.node_id,
-          decommissionedDate: getDecommissionedTime(l.node_id),
-        })),
-    )(decommissionedNodes);
+          nodeId: node_id,
+          decommissionedDate: getDecommissionedTime(node_id),
+        };
+      })
+      .value();
 
     return data;
   },

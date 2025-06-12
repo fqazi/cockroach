@@ -20,7 +20,7 @@ import (
 )
 
 func TestTryJoinJsonOrArrayIndex(t *testing.T) {
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.NewTestingEvalContext(st)
 
@@ -214,7 +214,7 @@ func TestTryJoinJsonOrArrayIndex(t *testing.T) {
 }
 
 func TestTryFilterJsonOrArrayIndex(t *testing.T) {
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.NewTestingEvalContext(st)
 

@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
-	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
 	"github.com/cockroachdb/cockroach/pkg/util/rangedesc"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -71,7 +70,7 @@ func (t *decommissioningNodeMap) makeOnNodeDecommissioningCallback(
 					if !shouldEnqueue {
 						return true /* wantMore */
 					}
-					processErr, enqueueErr := store.Enqueue(
+					_, processErr, enqueueErr := store.Enqueue(
 						// NB: We elide the shouldQueue check since we _know_ that the
 						// range being enqueued has replicas on a decommissioning node.
 						// Unfortunately, until
@@ -252,7 +251,7 @@ func (s *topLevelServer) DecommissionPreCheck(
 	})
 
 	if err != nil {
-		return decommissioning.PreCheckResult{}, grpcstatus.Error(codes.Internal, err.Error())
+		return decommissioning.PreCheckResult{}, grpcstatus.Errorf(codes.Internal, err.Error())
 	}
 
 	return decommissioning.PreCheckResult{
@@ -353,13 +352,13 @@ func (s *topLevelServer) Decommission(
 				return grpcstatus.Error(codes.NotFound, liveness.ErrMissingRecord.Error())
 			}
 			log.Errorf(ctx, "%+s", err)
-			return grpcstatus.Error(codes.Internal, err.Error())
+			return grpcstatus.Errorf(codes.Internal, err.Error())
 		}
 		if statusChanged {
 			event, nodeDetails := newEvent()
 			nodeDetails.TargetNodeID = int32(nodeID)
 			// Ensure an entry is produced in the external log in all cases.
-			log.StructuredEvent(ctx, severity.INFO, event)
+			log.StructuredEvent(ctx, event)
 
 			// If we die right now or if this transaction fails to commit, the
 			// membership event will not be recorded to the event log. While we

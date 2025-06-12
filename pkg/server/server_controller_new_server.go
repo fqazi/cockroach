@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/clientsecopts"
@@ -69,8 +70,7 @@ func (s *topLevelServer) newTenantServer(
 		return nil, err
 	}
 
-	baseCfg, sqlCfg, err := s.makeSharedProcessTenantConfig(ctx, tenantID, tenantNameContainer.Get(), portStartHint,
-		tenantStopper, testArgs.Settings)
+	baseCfg, sqlCfg, err := s.makeSharedProcessTenantConfig(ctx, tenantID, portStartHint, tenantStopper, testArgs.Settings)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +147,6 @@ func newTenantServerInternal(
 func (s *topLevelServer) makeSharedProcessTenantConfig(
 	ctx context.Context,
 	tenantID roachpb.TenantID,
-	tenantName roachpb.TenantName,
 	portStartHint int,
 	stopper *stop.Stopper,
 	testSettings *cluster.Settings,
@@ -166,8 +165,7 @@ func (s *topLevelServer) makeSharedProcessTenantConfig(
 		st.SV.TestingCopyForVirtualCluster(&testSettings.SV)
 	}
 
-	baseCfg, sqlCfg, err := makeSharedProcessTenantServerConfig(ctx, tenantID, tenantName, portStartHint, parentCfg,
-		localServerInfo, st, stopper, s.recorder)
+	baseCfg, sqlCfg, err := makeSharedProcessTenantServerConfig(ctx, tenantID, portStartHint, parentCfg, localServerInfo, st, stopper, s.recorder)
 	if err != nil {
 		return BaseConfig{}, SQLConfig{}, err
 	}
@@ -179,7 +177,6 @@ func (s *topLevelServer) makeSharedProcessTenantConfig(
 func makeSharedProcessTenantServerConfig(
 	ctx context.Context,
 	tenantID roachpb.TenantID,
-	tenantName roachpb.TenantName,
 	portStartHint int,
 	kvServerCfg Config,
 	kvServerInfo LocalKVServerInfo,
@@ -187,6 +184,21 @@ func makeSharedProcessTenantServerConfig(
 	stopper *stop.Stopper,
 	nodeMetricsRecorder *status.MetricsRecorder,
 ) (baseCfg BaseConfig, sqlCfg SQLConfig, err error) {
+	// We need a value in the version setting prior to the update
+	// coming from the system.settings table. This value must be valid
+	// and compatible with the state of the tenant's keyspace.
+	//
+	// Since we don't know at which binary version the tenant
+	// keyspace was initialized, we must be conservative and
+	// assume it was created a long time ago; and that we may
+	// have to run all known migrations since then. So initialize
+	// the version setting to the minimum supported version.
+	if err := clusterversion.Initialize(
+		ctx, st.Version.MinSupportedVersion(), &st.SV,
+	); err != nil {
+		return BaseConfig{}, SQLConfig{}, err
+	}
+
 	tr := tracing.NewTracerWithOpt(ctx, tracing.WithClusterSettings(&st.SV))
 
 	// Define a tenant store. This will be used to write the
@@ -233,6 +245,7 @@ func makeSharedProcessTenantServerConfig(
 	baseCfg.Config.DisableClusterNameVerification = kvServerCfg.Config.DisableClusterNameVerification
 
 	baseCfg.MaxOffset = kvServerCfg.BaseConfig.MaxOffset
+	baseCfg.StorageEngine = kvServerCfg.BaseConfig.StorageEngine
 	baseCfg.TestingInsecureWebAccess = kvServerCfg.BaseConfig.TestingInsecureWebAccess
 	baseCfg.Locality = kvServerCfg.BaseConfig.Locality
 	baseCfg.EnableDemoLoginEndpoint = kvServerCfg.BaseConfig.EnableDemoLoginEndpoint
@@ -317,11 +330,9 @@ func makeSharedProcessTenantServerConfig(
 		useStore := tempStorageCfg.Spec
 		// TODO(knz): Make tempDir configurable.
 		tempDir := useStore.Path
-		var unlockDirFn func()
-		if tempStorageCfg.Path, unlockDirFn, err = fs.CreateTempDir(tempDir, TempDirPrefix); err != nil {
+		if tempStorageCfg.Path, err = fs.CreateTempDir(tempDir, TempDirPrefix, stopper); err != nil {
 			return BaseConfig{}, SQLConfig{}, errors.Wrap(err, "could not create temporary directory for temp storage")
 		}
-		stopper.AddCloser(stop.CloserFn(unlockDirFn))
 		if useStore.Path != "" {
 			recordPath := filepath.Join(useStore.Path, TempDirsRecordFilename)
 			if err := fs.RecordTempDir(recordPath, tempStorageCfg.Path); err != nil {
@@ -330,10 +341,9 @@ func makeSharedProcessTenantServerConfig(
 		}
 	}
 
-	sqlCfg = MakeSQLConfig(tenantID, tenantName, tempStorageCfg)
+	sqlCfg = MakeSQLConfig(tenantID, tempStorageCfg)
+	baseCfg.Settings.ExternalIODir = kvServerCfg.BaseConfig.Settings.ExternalIODir
 	baseCfg.ExternalIODirConfig = kvServerCfg.BaseConfig.ExternalIODirConfig
-
-	baseCfg.ExternalIODir = kvServerCfg.BaseConfig.ExternalIODir
 
 	// Use the internal connector instead of the network.
 	// See: https://github.com/cockroachdb/cockroach/issues/84591

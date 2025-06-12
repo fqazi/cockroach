@@ -151,6 +151,8 @@ type internalSetting interface {
 	init(class Class, key InternalKey, description string, slot slotIdx)
 	isRetired() bool
 	isSensitive() bool
+	setToDefault(ctx context.Context, sv *Values)
+
 	getSlot() slotIdx
 
 	// isReportable indicates whether the value of the setting can be
@@ -161,33 +163,11 @@ type internalSetting interface {
 	// it cannot be listed, but can be accessed with `SHOW CLUSTER
 	// SETTING enterprise.license` or SET CLUSTER SETTING.
 	isReportable() bool
-
-	setToDefault(ctx context.Context, sv *Values)
-
-	// decodeAndSet sets the setting after decoding the encoded value.
-	decodeAndSet(ctx context.Context, sv *Values, encoded string) error
-
-	// decodeAndOverrideDefault overrides the default value for the respective
-	// setting to newVal. It does not change the current value. Validation checks
-	// are not run against the decoded value.
-	decodeAndSetDefaultOverride(ctx context.Context, sv *Values, encoded string) error
 }
 
-// TestingIsReportable is used in testing for reportability.
-func TestingIsReportable(s Setting) bool {
-	if _, ok := s.(*MaskedSetting); ok {
-		return false
-	}
-	if e, ok := s.(internalSetting); ok {
-		return e.isReportable()
-	}
-	return true
-}
-
-// TestingIsSensitive is used in testing for sensitivity.
-func TestingIsSensitive(s Setting) bool {
-	if e, ok := s.(internalSetting); ok {
-		return e.isSensitive()
-	}
-	return false
+// numericSetting is used for settings that can be set using an integer value.
+type numericSetting interface {
+	internalSetting
+	DecodeValue(value string) (int64, error)
+	set(ctx context.Context, sv *Values, value int64) error
 }

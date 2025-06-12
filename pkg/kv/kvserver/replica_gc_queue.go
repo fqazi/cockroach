@@ -12,8 +12,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
+	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -101,6 +100,7 @@ func newReplicaGCQueue(store *Store, db *kv.DB) *replicaGCQueue {
 			processDestroyedReplicas: true,
 			successes:                store.metrics.ReplicaGCQueueSuccesses,
 			failures:                 store.metrics.ReplicaGCQueueFailures,
+			storeFailures:            store.metrics.StoreFailures,
 			pending:                  store.metrics.ReplicaGCQueuePending,
 			processingNanos:          store.metrics.ReplicaGCQueueProcessingNanos,
 			disabledConfig:           kvserverbase.ReplicaGCQueueEnabled,
@@ -158,16 +158,17 @@ func replicaIsSuspect(repl *Replica) bool {
 	// because it has probably already been removed from its raft group but
 	// doesn't know it. Without this, node decommissioning can stall on such
 	// dormant ranges.
-	raftStatus := repl.RaftBasicStatus()
-	if raftStatus.Empty() {
+	raftStatus := repl.RaftStatus()
+	if raftStatus == nil {
 		liveness, ok := repl.store.cfg.NodeLiveness.Self()
 		return ok && !liveness.Membership.Active()
 	}
 
+	livenessMap := repl.store.cfg.NodeLiveness.GetIsLiveMap()
 	switch raftStatus.SoftState.RaftState {
 	// If a replica is a candidate, then by definition it has lost contact with
 	// its leader and possibly the rest of the Raft group, so consider it suspect.
-	case raftpb.StateCandidate, raftpb.StatePreCandidate:
+	case raft.StateCandidate, raft.StatePreCandidate:
 		return true
 
 	// If the replica is a follower, check that the leader is in our range
@@ -176,18 +177,18 @@ func replicaIsSuspect(repl *Replica) bool {
 	// a quiesced follower which was partitioned away from the Raft group during
 	// its own removal from the range -- this case is vulnerable to race
 	// conditions, but if it fails it will be GCed within 12 hours anyway.
-	case raftpb.StateFollower:
+	case raft.StateFollower:
 		leadDesc, ok := repl.Desc().GetReplicaDescriptorByID(roachpb.ReplicaID(raftStatus.Lead))
-		if !ok || !repl.store.cfg.NodeLiveness.GetNodeVitalityFromCache(leadDesc.NodeID).IsLive(livenesspb.ReplicaGCQueue) {
+		if !ok || !livenessMap[leadDesc.NodeID].IsLive {
 			return true
 		}
 
 	// If the replica is a leader, check that it has a quorum. This handles e.g.
 	// a stuck leader with a lost quorum being replaced via Node.ResetQuorum,
 	// which must cause the stale leader to relinquish its lease and GC itself.
-	case raftpb.StateLeader:
+	case raft.StateLeader:
 		if !repl.Desc().Replicas().CanMakeProgress(func(d roachpb.ReplicaDescriptor) bool {
-			return repl.store.cfg.NodeLiveness.GetNodeVitalityFromCache(d.NodeID).IsLive(livenesspb.ReplicaGCQueue)
+			return livenessMap[d.NodeID].IsLive
 		}) {
 			return true
 		}
@@ -315,7 +316,7 @@ func (rgcq *replicaGCQueue) process(
 		// possible if we currently think we're processing a pre-emptive snapshot
 		// but discover in RemoveReplica that this range has since been added and
 		// knows that.
-		if err := repl.store.RemoveReplica(ctx, repl, nextReplicaID, "MVCC GC queue", RemoveOptions{
+		if err := repl.store.RemoveReplica(ctx, repl, nextReplicaID, RemoveOptions{
 			DestroyData: true,
 		}); err != nil {
 			// Should never get an error from RemoveReplica.
@@ -359,7 +360,7 @@ func (rgcq *replicaGCQueue) process(
 		// A tombstone is written with a value of mergedTombstoneReplicaID because
 		// we know the range to have been merged. See the Merge case of
 		// runPreApplyTriggers() for details.
-		if err := repl.store.RemoveReplica(ctx, repl, mergedTombstoneReplicaID, "dangling subsume via MVCC GC queue", RemoveOptions{
+		if err := repl.store.RemoveReplica(ctx, repl, mergedTombstoneReplicaID, RemoveOptions{
 			DestroyData: true,
 		}); err != nil {
 			return false, err

@@ -209,7 +209,7 @@ func ExamineDescriptors(
 		err := cb.ValidateNamespaceEntry(row)
 		if err != nil {
 			problemsFound = true
-			nsReport(stdout, row, "%s", err)
+			nsReport(stdout, row, err.Error())
 		} else if verbose {
 			nsReport(stdout, row, "processed")
 		}

@@ -226,7 +226,8 @@ func TestCleanupTxnIntentsOnGCAsync(t *testing.T) {
 			}
 			txn := c.txn.Clone()
 			txn.LockSpans = append([]roachpb.Span{}, c.intentSpans...)
-			err := ir.CleanupTxnIntentsOnGCAsync(kvpb.AdmissionHeader{}, 1, txn, clock.Now(), onComplete)
+			err := ir.CleanupTxnIntentsOnGCAsync(
+				ctx, kvpb.AdmissionHeader{}, 1, txn, clock.Now(), onComplete)
 			if err != nil {
 				t.Fatalf("unexpected error sending async transaction")
 			}
@@ -803,7 +804,7 @@ func TestIntentResolutionTimeout(t *testing.T) {
 	}()
 	stopper := stop.NewStopper()
 	defer stopper.Stop(context.Background())
-	clock := hlc.NewClockWithSystemTimeSource(time.Nanosecond /* maxOffset */, base.DefaultMaxClockOffset, hlc.PanicLogger)
+	clock := hlc.NewClockWithSystemTimeSource(time.Nanosecond /* maxOffset */, base.DefaultMaxClockOffset)
 	cfg := Config{
 		Stopper: stopper,
 		Clock:   clock,

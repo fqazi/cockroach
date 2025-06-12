@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod/cloud"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
+	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/gce"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/gce/testutils"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/local"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
@@ -100,14 +101,14 @@ func TestServiceNameComponents(t *testing.T) {
 func TestMaybeRegisterServices(t *testing.T) {
 	ctx := context.Background()
 	rng, _ := randutil.NewTestRand()
-	dnsServer, dnsProvider, providerName := testutils.ProviderWithTestDNSServer(rng)
+	dnsServer, _, providerName := testutils.ProviderWithTestDNSServer(rng)
 
 	// Create a cluster with 3 nodes.
 	makeVM := func(clusterName string, i int) vm.VM {
 		return vm.VM{
 			Provider:    providerName,
 			DNSProvider: providerName,
-			PublicDNS:   fmt.Sprintf("%s.%s", vm.Name(clusterName, i), dnsProvider.Domain()),
+			PublicDNS:   fmt.Sprintf("%s.%s", vm.Name(clusterName, i), gce.Subdomain),
 		}
 	}
 	makeCluster := func() *SyncedCluster {
@@ -165,7 +166,7 @@ func TestMultipleRegistrations(t *testing.T) {
 			return vm.VM{
 				Provider:    providerName,
 				DNSProvider: providerName,
-				PublicDNS:   fmt.Sprintf("%s.%s", vm.Name(clusterName, i), testDNS.Domain()),
+				PublicDNS:   fmt.Sprintf("%s.%s", vm.Name(clusterName, i), gce.Subdomain),
 			}
 		}
 		clusterName := fmt.Sprintf("cluster-%d", rng.Uint32())

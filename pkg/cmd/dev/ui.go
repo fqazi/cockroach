@@ -38,7 +38,6 @@ func makeUICmd(d *dev) *cobra.Command {
 	uiCmd.AddCommand(makeUIE2eCmd(d))
 	uiCmd.AddCommand(makeMirrorDepsCmd(d))
 	uiCmd.AddCommand(makeUIStorybookCmd(d))
-	uiCmd.AddCommand(makeUICrdbApiClientCmd(d))
 
 	return uiCmd
 }
@@ -61,8 +60,6 @@ type UIDirectories struct {
 	protoOss string
 	// protoCcl is the absolute path to ./pkg/ui/workspaces/db-console/ccl/src/js/.
 	protoCcl string
-	// crdbJsProto is the absolute path to ./pkg/ui/workspaces/crdb-js-proto/.
-	crdbApiClient string
 }
 
 // getUIDirs computes the absolute path to the root of each UI sub-project.
@@ -73,15 +70,14 @@ func getUIDirs(d *dev) (*UIDirectories, error) {
 	}
 
 	return &UIDirectories{
-		workspace:     workspace,
-		root:          filepath.Join(workspace, "./pkg/ui"),
-		clusterUI:     filepath.Join(workspace, "./pkg/ui/workspaces/cluster-ui"),
-		dbConsole:     filepath.Join(workspace, "./pkg/ui/workspaces/db-console"),
-		e2eTests:      filepath.Join(workspace, "./pkg/ui/workspaces/e2e-tests"),
-		eslintPlugin:  filepath.Join(workspace, "./pkg/ui/workspaces/eslint-plugin-crdb"),
-		protoOss:      filepath.Join(workspace, "./pkg/ui/workspaces/db-console/src/js"),
-		protoCcl:      filepath.Join(workspace, "./pkg/ui/workspaces/db-console/ccl/src/js"),
-		crdbApiClient: filepath.Join(workspace, "./pkg/ui/workspaces/crdb-api-client"),
+		workspace:    workspace,
+		root:         filepath.Join(workspace, "./pkg/ui"),
+		clusterUI:    filepath.Join(workspace, "./pkg/ui/workspaces/cluster-ui"),
+		dbConsole:    filepath.Join(workspace, "./pkg/ui/workspaces/db-console"),
+		e2eTests:     filepath.Join(workspace, "./pkg/ui/workspaces/e2e-tests"),
+		eslintPlugin: filepath.Join(workspace, "./pkg/ui/workspaces/eslint-plugin-crdb"),
+		protoOss:     filepath.Join(workspace, "./pkg/ui/workspaces/db-console/src/js"),
+		protoCcl:     filepath.Join(workspace, "./pkg/ui/workspaces/db-console/ccl/src/js"),
 	}, nil
 }
 
@@ -123,7 +119,6 @@ func (d *dev) assertNoLinkedNpmDeps(targets []buildTarget) error {
 		uiDirs.clusterUI,
 		uiDirs.dbConsole,
 		uiDirs.e2eTests,
-		uiDirs.crdbApiClient,
 	}
 
 	type LinkedPackage struct {
@@ -312,10 +307,6 @@ Replaces 'make ui-watch'.`,
 			}
 			if !isOss {
 				args = append(args, "//pkg/ui/workspaces/db-console/ccl/src/js:crdb-protobuf-client-ccl-lib")
-				args = append(args, "//pkg/ui/workspaces/db-console/src/js:crdb-protobuf-client_files")
-				args = append(args, "//pkg/ui/workspaces/db-console/src/js:crdb-protobuf-client")
-				args = append(args, "//pkg/ui/workspaces/db-console/ccl/src/js:crdb-protobuf-client-ccl_files")
-				args = append(args, "//pkg/ui/workspaces/db-console/ccl/src/js:crdb-protobuf-client-ccl")
 			}
 			logCommand("bazel", args...)
 			err = d.exec.CommandContextInheritingStdStreams(ctx, "bazel", args...)
@@ -547,74 +538,6 @@ func makeUIStorybookCmd(d *dev) *cobra.Command {
 	return storybookCmd
 }
 
-// makeUICrdbApiClientCmd initializes the 'ui crdb-api-client' subcommand. which
-// generates JS protobuf client package and hoists it to source tree.
-func makeUICrdbApiClientCmd(d *dev) *cobra.Command {
-	return &cobra.Command{
-		Use:   "crdb-api-client",
-		Short: "Build crdb-api-client library",
-		Long:  ``,
-		Args:  cobra.MinimumNArgs(0),
-		RunE: func(cmd *cobra.Command, commandLine []string) error {
-			// Create a context that cancels when OS signals come in.
-			ctx, stop := signal.NotifyContext(d.cli.Context(), os.Interrupt, os.Kill)
-			defer stop()
-			bazelBin, err := d.getBazelBin(d.cli.Context(), []string{})
-			if err != nil {
-				return err
-			}
-			dstDirs, err := getUIDirs(d)
-			if err != nil {
-				return err
-			}
-
-			// Ensure node dependencies are up-to-date.
-			err = d.exec.CommandContextInheritingStdStreams(
-				ctx,
-				"pnpm",
-				"--dir",
-				dstDirs.root,
-				"install",
-			)
-			if err != nil {
-				log.Fatalf("failed to fetch node dependencies: %v", err)
-			}
-
-			args := []string{
-				"build",
-				"//pkg/ui/workspaces/crdb-api-client:crdb-api-client",
-			}
-
-			logCommand("bazel", args...)
-			err = d.exec.CommandContextInheritingStdStreams(ctx, "bazel", args...)
-			if err != nil {
-				log.Fatalf("failed to build crdb-api-client target: %v", err)
-				return err
-			}
-
-			// Hoist generated output files back to source tree.
-			crdbApiClientSrc := filepath.Join(bazelBin, "pkg", "ui", "workspaces", "crdb-api-client", "crdb-api-client")
-			crdbApiClientPaths := []string{"dist", "index.js", "index.ts"}
-
-			for _, relPath := range crdbApiClientPaths {
-				err = d.os.RemoveAll(filepath.Join(dstDirs.crdbApiClient, relPath))
-				if err != nil {
-					return err
-				}
-				err = d.os.CopyAll(
-					filepath.Join(crdbApiClientSrc, relPath),
-					filepath.Join(dstDirs.crdbApiClient, relPath),
-				)
-				if err != nil {
-					return err
-				}
-			}
-
-			return nil
-		},
-	}
-}
-
 func makeUILintCmd(d *dev) *cobra.Command {
 	const (
 		verboseFlag = "verbose"
@@ -692,9 +615,6 @@ func makeUICleanCmd(d *dev) *cobra.Command {
 				filepath.Join(uiDirs.dbConsole, "dist"),
 				filepath.Join(uiDirs.clusterUI, "dist"),
 				filepath.Join(uiDirs.eslintPlugin, "dist"),
-				filepath.Join(uiDirs.crdbApiClient, "dist"),
-				filepath.Join(uiDirs.crdbApiClient, "index.js"),
-				filepath.Join(uiDirs.crdbApiClient, "index.ts"),
 			}
 			if all {
 				workspace, err := d.getWorkspace(d.cli.Context())
@@ -711,7 +631,6 @@ func makeUICleanCmd(d *dev) *cobra.Command {
 					filepath.Join(uiDirs.clusterUI, "node_modules"),
 					filepath.Join(uiDirs.e2eTests, "node_modules"),
 					filepath.Join(uiDirs.eslintPlugin, "node_modules"),
-					filepath.Join(uiDirs.crdbApiClient, "node_modules"),
 				)
 			}
 

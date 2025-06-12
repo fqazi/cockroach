@@ -6,21 +6,10 @@
 package clusterstats
 
 import (
-	"bytes"
 	"context"
-	_ "embed"
-	"encoding/json"
-	"fmt"
-	"regexp"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/prometheus"
 	"github.com/golang/mock/gomock"
@@ -30,20 +19,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-//go:embed openmetrics_expected.txt
-var expectedOutput string
-
-// matches the metrics line and extracts the line without the timestamp
-// This ensures that the line exactly matches as timestamp is the only part that will not match
-var metricsRegExNoTimestamp = regexp.MustCompile(`(.*) \d+`)
-
-// matches the line after removing the timestamp to extract the tag. This is used to append the tag
-// to the key as teh data is sorted per tag
-var metricsRegExTag = regexp.MustCompile(`^.*,tag="(\d+)",agg_tag=.*$`)
-
 // testingComplexAggFn returns the coefficient of variation of tagged values at
 // the same index.
-func testingComplexAggFn(_ string, matSeries [][]float64) (string, []float64) {
+func testingComplexAggFn(query string, matSeries [][]float64) (string, []float64) {
 	agg := make([]float64, 0, 1)
 	for _, series := range matSeries {
 		stdev, _ := stats.StandardDeviationSample(series)
@@ -58,7 +36,7 @@ func testingComplexAggFn(_ string, matSeries [][]float64) (string, []float64) {
 }
 
 // testingAggFn returns the sum of tagged values at the same index.
-func testingAggFn(_ string, matSeries [][]float64) (string, []float64) {
+func testingAggFn(query string, matSeries [][]float64) (string, []float64) {
 	agg := make([]float64, 0, 1)
 	for _, series := range matSeries {
 		curSum := 0.0
@@ -68,13 +46,6 @@ func testingAggFn(_ string, matSeries [][]float64) (string, []float64) {
 		agg = append(agg, curSum)
 	}
 	return "sum(foo)", agg
-}
-
-type expectPromRangeQuery struct {
-	q        string
-	fromTime time.Time
-	toTime   time.Time
-	ret      model.Matrix
 }
 
 var (
@@ -139,7 +110,19 @@ var (
 			"3": {11, 22, 33, 44, 55, 66, 77, 88, 99},
 		},
 	}
-	makePromQueryRange = func(q string, tags []string, ticks int, ts promTimeSeries, empty bool) expectPromRangeQuery {
+)
+
+func TestClusterStatsCollectorSummaryCollector(t *testing.T) {
+	ctx := context.Background()
+
+	type expectPromRangeQuery struct {
+		q        string
+		fromTime time.Time
+		toTime   time.Time
+		ret      model.Matrix
+	}
+
+	makePromQueryRange := func(q string, tags []string, ticks int, ts promTimeSeries, empty bool) expectPromRangeQuery {
 		ret := make([]*model.SampleStream, len(tags))
 		for i, tg := range tags {
 			var values []model.SamplePair
@@ -170,7 +153,7 @@ var (
 		}
 	}
 
-	makeTickList = func(startTime time.Time, interval time.Duration, ticks int) []int64 {
+	makeTickList := func(startTime time.Time, interval time.Duration, ticks int) []int64 {
 		ret := make([]int64, ticks)
 		for i := 0; i < ticks; i++ {
 			ret[i] = startTime.Add(interval * time.Duration(i)).UnixNano()
@@ -178,7 +161,7 @@ var (
 		return ret
 	}
 
-	filterTSMap = func(tsMap map[string][]float64, ticks int, tags ...string) map[string][]float64 {
+	filterTSMap := func(tsMap map[string][]float64, ticks int, tags ...string) map[string][]float64 {
 		retTSMap := make(map[string][]float64)
 		for _, t := range tags {
 			retTSMap[t] = tsMap[t][:ticks-1]
@@ -186,7 +169,7 @@ var (
 		return retTSMap
 	}
 
-	makeExpectedTs = func(ts promTimeSeries, aggQuery AggQuery, ticks int, tags ...string) StatSummary {
+	makeExpectedTs := func(ts promTimeSeries, aggQuery AggQuery, ticks int, tags ...string) StatSummary {
 		filteredMap := filterTSMap(ts.values, ticks, tags...)
 		tsMat := convertEqualLengthMapToMat(filteredMap)
 		tag, val := aggQuery.AggFn("", tsMat)
@@ -198,23 +181,6 @@ var (
 			Tag:    aggQuery.Stat.Query,
 		}
 	}
-
-	benchMarkFn = func(totalKey string, totalValue float64) func(
-		summaries map[string]StatSummary) *roachtestutil.AggregatedMetric {
-		return func(summaries map[string]StatSummary) *roachtestutil.AggregatedMetric {
-			return &roachtestutil.AggregatedMetric{
-				Name:             totalKey,
-				Value:            roachtestutil.MetricPoint(totalValue),
-				Unit:             "count",
-				IsHigherBetter:   true,
-				AdditionalLabels: nil,
-			}
-		}
-	}
-)
-
-func TestClusterStatsCollectorSummaryCollector(t *testing.T) {
-	ctx := context.Background()
 
 	testCases := []struct {
 		desc              string
@@ -301,258 +267,22 @@ func TestClusterStatsCollectorSummaryCollector(t *testing.T) {
 				}(ctrl),
 			}
 
-			l, err := logger.RootLogger("", logger.TeeToStdout)
+			logger, err := logger.RootLogger("", logger.TeeToStdout)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			require.Equal(t, tc.expected, c.collectSummaries(
+			summaries, err := c.collectSummaries(
 				ctx,
-				l,
+				logger,
 				Interval{statsTestingStartTime, statsTestingStartTime.Add(statsTestingDuration * time.Duration(tc.ticks))},
 				tc.summaryQueries,
-			))
-		})
-	}
-}
-
-func TestExport(t *testing.T) {
-	ctx := context.Background()
-	statsWriter = nil
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	statsFileDest := "/location/of/file"
-	t.Run("multi tag, multi stat, 5 ticks true", func(t *testing.T) {
-		c := getClusterStatCollector(ctx, ctrl, []expectPromRangeQuery{
-			makePromQueryRange(fooStat.Query, []string{"1", "2", "3"}, 5, fooTS, false),
-			makePromQueryRange(barStat.Query, []string{"1", "2", "3"}, 5, barTS, false),
-		})
-		mockTest := getMockTest(t, ctrl, true, statsFileDest)
-		mockCluster := NewMockCluster(ctrl)
-		mockTest.EXPECT().Name().Return("mock_name")
-		mockTest.EXPECT().GetRunId().Return("mock_id").AnyTimes()
-		mockCluster.EXPECT().Cloud().Times(1).Return(spec.GCE)
-		mockTest.EXPECT().Spec().Return(&registry.TestSpec{
-			Owner: "roachtest_mock", Suites: registry.Suites(registry.Nightly),
-		}).AnyTimes()
-		statsWriter = func(ctx context.Context, tt test.Test, c cluster.Cluster, buffer *bytes.Buffer, dest string) error {
-			require.Equal(t, mockTest, tt)
-			require.Equal(t, mockCluster, c)
-			require.Equal(t, "/location/of/file/stats.om", dest)
-
-			require.Equal(t, parseData(expectedOutput), parseData(buffer.String()))
-			return nil
-		}
-		defer func() {
-			statsWriter = nil
-		}()
-		testRun, err := c.Export(
-			ctx, mockCluster, mockTest, false, statsTestingStartTime,
-			statsTestingStartTime.Add(statsTestingDuration*time.Duration(5)),
-			[]AggQuery{fooAggQuery, barAggQuery},
-			benchMarkFn("t1", 203),
-			benchMarkFn("t3", 404),
-		)
-		require.Nil(t, err)
-
-		// Compare individual fields instead of the whole struct
-		require.Equal(t, map[string]float64{"t1": 203, "t3": 404}, testRun.Total)
-		require.Equal(t, map[string]StatSummary{
-			fooStat.Query: makeExpectedTs(fooTS, fooAggQuery, 5, "1", "2", "3"),
-			barStat.Query: makeExpectedTs(barTS, barAggQuery, 5, "1", "2", "3"),
-		}, testRun.Stats)
-
-		// Verify BenchmarkMetrics
-		require.NotNil(t, testRun.BenchmarkMetrics)
-		require.Len(t, testRun.BenchmarkMetrics, 2)
-		require.Contains(t, testRun.BenchmarkMetrics, "t1")
-		require.Contains(t, testRun.BenchmarkMetrics, "t3")
-		require.Equal(t, float64(203), float64(testRun.BenchmarkMetrics["t1"].Value))
-		require.Equal(t, float64(404), float64(testRun.BenchmarkMetrics["t3"].Value))
-	})
-	t.Run("multi tag, multi stat, 5 ticks with openmetrics false", func(t *testing.T) {
-		c := getClusterStatCollector(ctx, ctrl, []expectPromRangeQuery{
-			makePromQueryRange(fooStat.Query, []string{"1", "2", "3"}, 5, fooTS, false),
-			makePromQueryRange(barStat.Query, []string{"1", "2", "3"}, 5, barTS, false),
-		})
-		mockTest := getMockTest(t, ctrl, false, statsFileDest)
-		mockCluster := NewMockCluster(ctrl)
-		statsWriter = func(ctx context.Context, tt test.Test, c cluster.Cluster, buffer *bytes.Buffer, dest string) error {
-			require.Equal(t, mockTest, tt)
-			require.Equal(t, mockCluster, c)
-			require.Equal(t, "/location/of/file/stats.json", dest)
-			var expectedJson map[string]interface{}
-			require.Nil(t, json.Unmarshal([]byte(expectedJSONContent), &expectedJson))
-			var actualJson map[string]interface{}
-			require.Nil(t, json.Unmarshal(buffer.Bytes(), &actualJson))
-			require.Equal(t, expectedJson, actualJson)
-			return nil
-		}
-		defer func() {
-			statsWriter = nil
-		}()
-		testRun, err := c.Export(
-			ctx, mockCluster, mockTest, false, statsTestingStartTime,
-			statsTestingStartTime.Add(statsTestingDuration*time.Duration(5)),
-			[]AggQuery{fooAggQuery, barAggQuery},
-			benchMarkFn("t1", 203),
-			benchMarkFn("t3", 404),
-		)
-		require.Nil(t, err)
-		require.Equal(t, ClusterStatRun{
-			Stats: map[string]StatSummary{
-				fooStat.Query: makeExpectedTs(fooTS, fooAggQuery, 5, "1", "2", "3"),
-				barStat.Query: makeExpectedTs(barTS, barAggQuery, 5, "1", "2", "3"),
-			},
-			Total: map[string]float64{"t1": 203, "t3": 404},
-		}, *testRun)
-	})
-}
-
-func getClusterStatCollector(
-	ctx context.Context, ctrl *gomock.Controller, mockedPromResults []expectPromRangeQuery,
-) clusterStatCollector {
-	return clusterStatCollector{
-		interval: statsTestingDuration,
-		promClient: func(ctrl *gomock.Controller) prometheus.Client {
-			c := NewMockClient(ctrl)
-			e := c.EXPECT()
-			for _, m := range mockedPromResults {
-				e.QueryRange(ctx, m.q, promv1.Range{Start: m.fromTime, End: m.toTime, Step: statsTestingDuration}).Return(
-					model.Value(m.ret),
-					nil,
-					nil,
-				)
+			)
+			if err != nil {
+				t.Fatal(err)
 			}
-			return c
-		}(ctrl),
+
+			require.Equal(t, tc.expected, summaries)
+		})
 	}
 }
-
-func getMockTest(
-	t *testing.T, ctrl *gomock.Controller, exportOpenmetrics bool, dest string,
-) *MockTest {
-	tst := NewMockTest(ctrl)
-	l, err := logger.RootLogger("", logger.TeeToStdout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tst.EXPECT().L().Return(l)
-	tst.EXPECT().ExportOpenmetrics().Times(1).Return(exportOpenmetrics)
-	tst.EXPECT().PerfArtifactsDir().Times(1).Return(dest)
-	tst.EXPECT().Owner().Return("roachtest_mock").AnyTimes()
-	return tst
-}
-
-// parseData is responsible for parsing the data and convert the same to a map pf metrics type to a list of metrics.
-// The key is the line mentioning the metric type + the tag if present.
-// The value is a list of metrics entries in the expected sequence with timestamp removed from each line.
-func parseData(content string) map[string][]string {
-	lines := strings.Split(content, "\n")
-	// output is a map of the type of metrics appended with the tag as key and the list of metrics as values.
-	// the values are must be sorted by timestamp. So, sequence of the data must be exactly matching after removing the timestamp
-	output := make(map[string][]string)
-	currentGauge := ""
-	for _, line := range lines {
-		if strings.HasPrefix(line, "# TYPE") || line == "# EOF" {
-			currentGauge = line
-			continue
-		}
-		match := metricsRegExNoTimestamp.FindStringSubmatch(line)
-		// tag is extracted as data for each tag must be sorted by timestamp
-		// the tag may not be present as well. In that case
-		tag := ""
-		if len(match) > 1 {
-			// compare and remove the timestamp which keeps changing
-			line = match[1]
-			tagMatch := metricsRegExTag.FindStringSubmatch(line)
-			if len(tagMatch) > 1 {
-				tag = fmt.Sprintf("_%s", tagMatch[1])
-			}
-		}
-		key := fmt.Sprintf("%s%s", currentGauge, tag)
-		output[key] = append(output[key], line)
-	}
-	return output
-}
-
-const expectedJSONContent = `{
-  "total": {
-    "t1": 203,
-    "t3": 404
-  },
-  "stats": {
-    "bar_count": {
-      "Time": [
-        1608854400000000000,
-        1608854410000000000,
-        1608854420000000000,
-        1608854430000000000
-      ],
-      "Value": [
-        123,
-        246,
-        369,
-        492
-      ],
-      "Tagged": {
-        "1": [
-          111,
-          222,
-          333,
-          444
-        ],
-        "2": [
-          1,
-          2,
-          3,
-          4
-        ],
-        "3": [
-          11,
-          22,
-          33,
-          44
-        ]
-      },
-      "AggTag": "sum(foo)",
-      "Tag": "bar_count"
-    },
-    "foo_count": {
-      "Time": [
-        1608854400000000000,
-        1608854410000000000,
-        1608854420000000000,
-        1608854430000000000
-      ],
-      "Value": [
-        123,
-        246,
-        369,
-        492
-      ],
-      "Tagged": {
-        "1": [
-          1,
-          2,
-          3,
-          4
-        ],
-        "2": [
-          11,
-          22,
-          33,
-          44
-        ],
-        "3": [
-          111,
-          222,
-          333,
-          444
-        ]
-      },
-      "AggTag": "sum(foo)",
-      "Tag": "foo_count"
-    }
-  }
-}`

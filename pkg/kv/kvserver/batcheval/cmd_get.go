@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
 
@@ -50,8 +49,7 @@ func Get(
 		MaxKeys:               cArgs.Header.MaxSpanRequestKeys,
 		TargetBytes:           cArgs.Header.TargetBytes,
 		AllowEmpty:            cArgs.Header.AllowEmpty,
-		ReadCategory:          fs.BatchEvalReadCategory,
-		ReturnRawMVCCValues:   args.ReturnRawMVCCValues,
+		ReadCategory:          storage.BatchEvalReadCategory,
 	})
 	if err != nil {
 		return result.Result{}, err
@@ -88,9 +86,8 @@ func Get(
 		}
 	}
 
-	shouldLockKey := getRes.Value != nil || args.LockNonExisting
 	var res result.Result
-	if args.KeyLockingStrength != lock.None && shouldLockKey {
+	if args.KeyLockingStrength != lock.None && getRes.Value != nil {
 		acq, err := acquireLockOnKey(ctx, readWriter, h.Txn, args.KeyLockingStrength,
 			args.KeyLockingDurability, args.Key, cArgs.Stats, cArgs.EvalCtx.ClusterSettings())
 		if err != nil {

@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/roleoption"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessioninit"
@@ -28,13 +27,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 // CreateRoleNode creates entries in the system.users table.
 // This is called from CREATE USER and CREATE ROLE.
 type CreateRoleNode struct {
-	zeroInputPlanNode
 	ifNotExists bool
 	isRole      bool
 	roleOptions roleoption.List
@@ -120,7 +117,7 @@ func (p *planner) CreateRoleNode(
 }
 
 func (n *CreateRoleNode) startExec(params runParams) error {
-	var opName redact.RedactableString
+	var opName string
 	if n.isRole {
 		sqltelemetry.IncIAMCreateCounter(sqltelemetry.Role)
 		opName = "create-role"
@@ -140,7 +137,7 @@ func (n *CreateRoleNode) startExec(params runParams) error {
 		opName,
 		params.p.txn,
 		sessiondata.NodeUserSessionDataOverride,
-		fmt.Sprintf(`select "isRole" from system.public.%s where username = $1`, catconstants.UsersTableName),
+		fmt.Sprintf(`select "isRole" from %s where username = $1`, sessioninit.UsersTableName),
 		n.roleName,
 	)
 	if err != nil {
@@ -155,7 +152,7 @@ func (n *CreateRoleNode) startExec(params runParams) error {
 	}
 
 	// TODO(richardjcai): move hashedPassword column to system.role_options.
-	stmt := fmt.Sprintf("INSERT INTO system.public.%s VALUES ($1, $2, $3, $4)", catconstants.UsersTableName)
+	stmt := fmt.Sprintf("INSERT INTO %s VALUES ($1, $2, $3, $4)", sessioninit.UsersTableName)
 	roleID, err := descidgen.GenerateUniqueRoleID(params.ctx, params.ExecCfg().DB, params.ExecCfg().Codec)
 	if err != nil {
 		return err
@@ -200,7 +197,7 @@ func (n *CreateRoleNode) startExec(params runParams) error {
 
 func updateRoleOptions(
 	params runParams,
-	opName redact.RedactableString,
+	opName string,
 	roleOptions roleoption.List,
 	roleName username.SQLUsername,
 	telemetryOp string,

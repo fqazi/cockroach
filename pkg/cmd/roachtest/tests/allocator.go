@@ -16,8 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/clusterstats"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/task"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -82,10 +80,18 @@ func registerAllocator(r registry.Registry) {
 		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.Range(start+1, nodes))
 		c.Run(ctx, option.WithNodes(c.Node(1)), "./cockroach workload init kv --drop {pgurl:1}")
 		for node := 1; node <= nodes; node++ {
-			t.Go(func(taskCtx context.Context, _ *logger.Logger) error {
+			node := node
+			// TODO(dan): Ideally, the test would fail if this queryload failed,
+			// but we can't put it in monitor as-is because the test deadlocks.
+			go func() {
 				cmd := fmt.Sprintf("./cockroach workload run kv --tolerate-errors --min-block-bytes=8 --max-block-bytes=127 {pgurl%s}", c.Node(node))
-				return c.RunE(taskCtx, option.WithNodes(c.Node(node)), cmd)
-			}, task.Name(fmt.Sprintf(`kv-%d`, node)))
+				l, err := t.L().ChildLogger(fmt.Sprintf(`kv-%d`, node))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer l.Close()
+				_ = c.RunE(ctx, option.WithNodes(c.Node(node)), cmd)
+			}()
 		}
 
 		// Wait for 3x replication, we record the time taken to achieve this.
@@ -93,7 +99,7 @@ func registerAllocator(r registry.Registry) {
 		startTime := timeutil.Now()
 		m = c.NewMonitor(ctx, c.CRDBNodes())
 		m.Go(func(ctx context.Context) error {
-			err := roachtestutil.WaitFor3XReplication(ctx, t.L(), db)
+			err := WaitFor3XReplication(ctx, t, t.L(), db)
 			replicateTime = timeutil.Now()
 			return err
 		})
@@ -120,25 +126,11 @@ func registerAllocator(r registry.Registry) {
 				// up-replication began, until the last rebalance action taken.
 				// The up replication time, is the time taken to up-replicate
 				// alone, not considering post up-replication rebalancing.
-				func(stats map[string]clusterstats.StatSummary) *roachtestutil.AggregatedMetric {
-					balanceTime := endTime.Sub(startTime).Seconds() - allocatorStableSeconds
-					return &roachtestutil.AggregatedMetric{
-						Name:             "t-balance(s)",
-						Value:            roachtestutil.MetricPoint(balanceTime),
-						Unit:             "seconds",
-						IsHigherBetter:   false,
-						AdditionalLabels: nil,
-					}
+				func(stats map[string]clusterstats.StatSummary) (string, float64) {
+					return "t-balance(s)", endTime.Sub(startTime).Seconds() - allocatorStableSeconds
 				},
-				func(stats map[string]clusterstats.StatSummary) *roachtestutil.AggregatedMetric {
-					upReplTime := replicateTime.Sub(startTime).Seconds()
-					return &roachtestutil.AggregatedMetric{
-						Name:             "t-uprepl(s)",
-						Value:            roachtestutil.MetricPoint(upReplTime),
-						Unit:             "seconds",
-						IsHigherBetter:   false,
-						AdditionalLabels: nil,
-					}
+				func(stats map[string]clusterstats.StatSummary) (string, float64) {
+					return "t-uprepl(s)", replicateTime.Sub(startTime).Seconds()
 				},
 			)
 			return err
@@ -316,6 +308,7 @@ func waitForRebalance(
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-statsTimer.C:
+			statsTimer.Read = true
 			stats, err := allocatorStats(db)
 			if err != nil {
 				return err

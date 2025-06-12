@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/plan"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/asim/state"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/constraint"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -135,11 +134,12 @@ func (sr *SimulatorReplica) RaftStatus() *raft.Status {
 	return sr.state.RaftStatus(sr.rng.RangeID(), sr.repl.StoreID())
 }
 
-// GetCompactedIndex returns the compacted index of the raft log.
-func (sr *SimulatorReplica) GetCompactedIndex() kvpb.RaftIndex {
-	// TODO(kvoli): We always return 1 here as RaftStatus is unimplemented. When
+// GetFirstIndex returns the index of the first entry in the replica's Raft
+// log.
+func (sr *SimulatorReplica) GetFirstIndex() kvpb.RaftIndex {
+	// TODO(kvoli): We always return 2 here as RaftStatus is unimplemented. When
 	// it is implemented, this may become variable.
-	return 1
+	return 2
 }
 
 func (sr *SimulatorReplica) SpanConfig() (*roachpb.SpanConfig, error) {
@@ -156,7 +156,4 @@ func (sr *SimulatorReplica) Desc() *roachpb.RangeDescriptor {
 // the allocator to make rebalancing decisions for a given range.
 func (sr *SimulatorReplica) RangeUsageInfo() allocator.RangeUsageInfo {
 	return sr.usage
-}
-
-func (sr *SimulatorReplica) SendStreamStats(stats *rac2.RangeSendStreamStats) {
 }

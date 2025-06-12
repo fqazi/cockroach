@@ -736,7 +736,6 @@ vectorized: true
           estimated row count: 1 (missing stats)
           table: t@t_pkey
           spans: /3/0
-          locking strength: for update
 
 query T
 EXPLAIN (VERBOSE) UPDATE t SET c = TRUE RETURNING b
@@ -844,9 +843,9 @@ vectorized: true
 │ columns: (b, a)
 │
 └── • render
-    │ columns: (column8, a, b)
+    │ columns: (column6, a, b)
     │ ordering: +a
-    │ render column8: a
+    │ render column6: a
     │ render a: a
     │ render b: b
     │
@@ -871,9 +870,9 @@ vectorized: true
 │ columns: (b, a)
 │
 └── • render
-    │ columns: (column8, a, b)
+    │ columns: (column6, a, b)
     │ ordering: +b
-    │ render column8: b
+    │ render column6: b
     │ render a: a
     │ render b: b
     │

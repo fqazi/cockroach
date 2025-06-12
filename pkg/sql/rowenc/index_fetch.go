@@ -10,7 +10,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/fetchpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/errors"
@@ -50,17 +49,6 @@ func InitIndexFetchSpec(
 		encoding.EncodedLengthUvarintAscending(uint64(s.TableID)) +
 		encoding.EncodedLengthUvarintAscending(uint64(index.GetID())))
 
-	if ext := table.ExternalRowData(); ext != nil {
-		newCodec := keys.MakeSQLCodec(ext.TenantID)
-		newPrefix := newCodec.TablePrefix(uint32(ext.TableID))
-		s.KeyPrefixLength = uint32(len(newPrefix) + encoding.EncodedLengthUvarintAscending(uint64(index.GetID())))
-		s.External = &fetchpb.IndexFetchSpec_ExternalRowData{
-			AsOf:     ext.AsOf,
-			TenantID: ext.TenantID,
-			TableID:  ext.TableID,
-		}
-	}
-
 	s.FamilyDefaultColumns = table.FamilyDefaultColumns()
 
 	families := table.GetFamilies()
@@ -73,7 +61,7 @@ func InitIndexFetchSpec(
 	s.KeyAndSuffixColumns = table.IndexFetchSpecKeyAndSuffixColumns(index)
 
 	var invertedColumnID descpb.ColumnID
-	if index.GetType() == idxtype.INVERTED {
+	if index.GetType() == descpb.IndexDescriptor_INVERTED {
 		invertedColumnID = index.InvertedColumnID()
 	}
 

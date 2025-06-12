@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvprober"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
@@ -75,10 +74,10 @@ type TestServerInterface interface {
 	// the .TenantController() method.
 	TenantControlInterface
 
-	// ApplicationLayer returns the interface to the application layer used
-	// in testing. If the server starts with tenancy enabled under the default
-	// tenant option, this refers to the SQL layer of the virtual cluster.
-	// Otherwise, in single-tenant mode, it refers to the system layer.
+	// ApplicationLayer returns the interface to the application layer that is
+	// exercised by the test. Depending on how the test server is started
+	// and (optionally) randomization, this can be either the SQL layer
+	// of a virtual cluster or that of the system interface.
 	ApplicationLayer() ApplicationLayerInterface
 
 	// SystemLayer returns the interface to the application layer
@@ -124,26 +123,15 @@ type TestServerController interface {
 	// ready. This is only effective when called before Start().
 	SetReadyFn(fn func(bool))
 
+	// BinaryVersionOverride returns the value of an override if set using
+	// TestingKnobs.
+	BinaryVersionOverride() roachpb.Version
+
 	// RunInitialSQL is used by 'cockroach demo' to initialize
 	// an admin user.
 	// TODO(knz): Migrate this logic to a demo-specific init task
 	// or config profile.
 	RunInitialSQL(ctx context.Context, startSingleNode bool, adminUser, adminPassword string) error
-}
-
-// DeploymentMode defines the mode of the underlying test server or tenant,
-// which can be single-tenant (system-only), shared-process, or
-// external-process.
-type DeploymentMode uint8
-
-const (
-	SingleTenant DeploymentMode = iota
-	SharedProcess
-	ExternalProcess
-)
-
-func (d DeploymentMode) IsExternal() bool {
-	return d == ExternalProcess
 }
 
 // ApplicationLayerInterface defines accessors to the application
@@ -337,9 +325,6 @@ type ApplicationLayerInterface interface {
 	// TestingKnobs returns the TestingKnobs in use by the test server.
 	TestingKnobs() *base.TestingKnobs
 
-	// ExternalIODir returns ExternalIODir form the server config.
-	ExternalIODir() string
-
 	// SQLServerInternal returns the *server.SQLServer as an interface{}
 	// Note: most tests should use SQLServer() and InternalExecutor() instead.
 	SQLServerInternal() interface{}
@@ -465,7 +450,7 @@ type ApplicationLayerInterface interface {
 	PrivilegeChecker() interface{}
 
 	// NodeDescStoreI returns the node descriptor lookup interface.
-	// The concrete return type is compatible with interface kvclient.NodeDescStore.
+	// The concrete return type is compatible with interface kvcoord.NodeDescStore.
 	NodeDescStoreI() interface{}
 
 	// Locality returns the locality used by the server.
@@ -473,11 +458,6 @@ type ApplicationLayerInterface interface {
 
 	// DistSQLPlanningNodeID returns the NodeID to use by the DistSQL span resolver.
 	DistSQLPlanningNodeID() roachpb.NodeID
-
-	// DeploymentMode returns the deployment mode of the underlying server or
-	// tenant, which can be single-tenant (system-only), shared-process, or
-	// external-process.
-	DeploymentMode() DeploymentMode
 }
 
 // TenantControlInterface defines the API of a test server that can
@@ -517,23 +497,13 @@ type TenantControlInterface interface {
 	// if the tenant record exists in KV.
 	WaitForTenantReadiness(ctx context.Context, tenantID roachpb.TenantID) error
 
-	// GrantTenantCapabilities grants a capability to a tenant and waits until the
-	// in-memory cache reflects the change.
-	//
-	// Note: There is no need to call WaitForTenantCapabilities separately.
-	GrantTenantCapabilities(
-		context.Context,
-		roachpb.TenantID,
-		map[tenantcapabilitiespb.ID]string,
-	) error
-
 	// WaitForTenantCapabilities waits until the in-RAM cache of
 	// tenant capabilities has been populated for the given tenant ID
 	// with the expected target capability values.
 	WaitForTenantCapabilities(
 		ctx context.Context,
 		tenID roachpb.TenantID,
-		targetCaps map[tenantcapabilitiespb.ID]string,
+		targetCaps map[tenantcapabilities.ID]string,
 		errPrefix string,
 	) error
 
@@ -662,6 +632,13 @@ type StorageLayerInterface interface {
 	// the server.
 	SpanConfigKVSubscriber() interface{}
 
+	// KVFlowController returns the embedded kvflowcontrol.Controller for the
+	// server.
+	KVFlowController() interface{}
+
+	// KVFlowHandles returns the embedded kvflowcontrol.Handles for the server.
+	KVFlowHandles() interface{}
+
 	// KvProber returns a *kvprober.Prober, which is useful when asserting the
 	// correctness of the prober from integration tests.
 	KvProber() *kvprober.Prober
@@ -669,10 +646,6 @@ type StorageLayerInterface interface {
 	// RaftTransport returns access to the raft transport.
 	// The return value is of type *kvserver.RaftTransport.
 	RaftTransport() interface{}
-
-	// StoreLivenessTransport provides access to the store liveness transport.
-	// The return value is of type *storeliveness.Transport.
-	StoreLivenessTransport() interface{}
 
 	// GetRangeLease returns information on the lease for the range
 	// containing key, and a timestamp taken from the node. The lease is

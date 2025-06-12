@@ -3,14 +3,17 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { AxisUnits } from "@cockroachlabs/cluster-ui";
 import React from "react";
 
 import LineGraph from "src/views/cluster/components/linegraph";
 import { Metric, Axis } from "src/views/shared/components/metricQuery";
+import { AxisUnits } from "@cockroachlabs/cluster-ui";
 
-import { GraphDashboardProps, nodeDisplayName } from "./dashboardUtils";
-import { storeMetrics } from "./storeUtils";
+import {
+  GraphDashboardProps,
+  nodeDisplayName,
+  storeIDsForNode,
+} from "./dashboardUtils";
 
 export default function (props: GraphDashboardProps) {
   const {
@@ -63,32 +66,36 @@ export default function (props: GraphDashboardProps) {
 
     <LineGraph
       title="Admission IO Tokens Exhausted Duration Per Second"
-      sources={storeSources}
+      sources={nodeSources}
       tenantSource={tenantSource}
       showMetricsInTooltip={true}
       tooltip={`Relative time the node had exhausted IO tokens for all IO-bound work per second of wall time, measured in microseconds/second. Increased IO token exhausted duration indicates IO resource exhaustion.`}
     >
       <Axis label="Duration (micros/sec)">
-        {storeMetrics(
-          {
-            name: "cr.store.admission.granter.io_tokens_exhausted_duration.kv",
-            nonNegativeRate: true,
-            aggregateMax: true,
-          },
-          nodeIDs,
-          storeIDsByNodeID,
-          "regular (foreground)",
-        )}
-        {storeMetrics(
-          {
-            name: "cr.store.admission.granter.elastic_io_tokens_exhausted_duration.kv",
-            nonNegativeRate: true,
-            aggregateMax: true,
-          },
-          nodeIDs,
-          storeIDsByNodeID,
-          "elastic (background)",
-        )}
+        {nodeIDs.map(nid => (
+          <>
+            <Metric
+              key={nid}
+              name="cr.node.admission.granter.io_tokens_exhausted_duration.kv"
+              title={
+                "Regular (Foreground) " +
+                nodeDisplayName(nodeDisplayNameByID, nid)
+              }
+              sources={[nid]}
+              nonNegativeRate
+            />
+            <Metric
+              key={nid}
+              name="cr.node.admission.granter.elastic_io_tokens_exhausted_duration.kv"
+              title={
+                "Elastic (Background) " +
+                nodeDisplayName(nodeDisplayNameByID, nid)
+              }
+              sources={[nid]}
+              nonNegativeRate
+            />
+          </>
+        ))}
       </Axis>
     </LineGraph>,
 
@@ -100,14 +107,16 @@ export default function (props: GraphDashboardProps) {
       showMetricsInTooltip={true}
     >
       <Axis label="Score">
-        {storeMetrics(
-          {
-            name: "cr.store.admission.io.overload",
-            aggregateMax: true,
-          },
-          nodeIDs,
-          storeIDsByNodeID,
-        )}
+        {nodeIDs.map(nid => (
+          <>
+            <Metric
+              key={nid}
+              name="cr.store.admission.io.overload"
+              title={nodeDisplayName(nodeDisplayNameByID, nid)}
+              sources={storeIDsForNode(storeIDsByNodeID, nid)}
+            />
+          </>
+        ))}
       </Axis>
     </LineGraph>,
 
@@ -138,7 +147,7 @@ export default function (props: GraphDashboardProps) {
       showMetricsInTooltip={true}
       tooltip={`The 99th percentile latency of requests waiting in the various Admission Control CPU queues.`}
     >
-      <Axis units={AxisUnits.DurationMillis} label="Delay Duration">
+      <Axis units={AxisUnits.Duration} label="Delay Duration">
         {nodeIDs.map(nid => (
           <>
             <Metric
@@ -169,30 +178,30 @@ export default function (props: GraphDashboardProps) {
 
     <LineGraph
       title="Admission Queueing Delay p99 – Store"
-      sources={storeSources}
+      sources={nodeSources}
       tenantSource={tenantSource}
       showMetricsInTooltip={true}
       tooltip={`The 99th percentile latency of requests waiting in the Admission Control store queue.`}
     >
-      <Axis units={AxisUnits.DurationMillis} label="Write Delay Duration">
-        {storeMetrics(
-          {
-            name: "cr.store.admission.wait_durations.kv-stores-p99",
-            aggregateMax: true,
-          },
-          nodeIDs,
-          storeIDsByNodeID,
-          "KV",
-        )}
-        {storeMetrics(
-          {
-            name: "cr.store.admission.wait_durations.elastic-stores-p99",
-            aggregateMax: true,
-          },
-          nodeIDs,
-          storeIDsByNodeID,
-          "elastic",
-        )}
+      <Axis units={AxisUnits.Duration} label="Write Delay Duration">
+        {nodeIDs.map(nid => (
+          <>
+            <Metric
+              key={nid}
+              name="cr.node.admission.wait_durations.kv-stores-p99"
+              title={"KV " + nodeDisplayName(nodeDisplayNameByID, nid)}
+              sources={[nid]}
+              downsampleMax
+            />
+            <Metric
+              key={nid}
+              name="cr.node.admission.wait_durations.elastic-stores-p99"
+              title={"Elastic " + nodeDisplayName(nodeDisplayNameByID, nid)}
+              sources={[nid]}
+              downsampleMax
+            />
+          </>
+        ))}
       </Axis>
     </LineGraph>,
 
@@ -203,13 +212,13 @@ export default function (props: GraphDashboardProps) {
       showMetricsInTooltip={true}
       tooltip={`The 99th percentile latency of requests waiting in the Admission Control elastic CPU queue.`}
     >
-      <Axis units={AxisUnits.DurationMillis} label="Delay Duration">
+      <Axis units={AxisUnits.Duration} label="Delay Duration">
         {nodeIDs.map(nid => (
           <>
             <Metric
               key={nid}
               name="cr.node.admission.wait_durations.elastic-cpu-p99"
-              title={nodeDisplayName(nodeDisplayNameByID, nid)}
+              title={"KV write " + nodeDisplayName(nodeDisplayNameByID, nid)}
               sources={[nid]}
               downsampleMax
             />
@@ -225,19 +234,19 @@ export default function (props: GraphDashboardProps) {
       showMetricsInTooltip={true}
       tooltip={`The 99th percentile latency of requests waiting in the Replication Admission Control queue. This metric is indicative of store overload on replicas.`}
     >
-      <Axis units={AxisUnits.DurationMillis} label="Flow Token Wait Duration">
+      <Axis units={AxisUnits.Duration} label="Flow Token Wait Duration">
         {nodeIDs.map(nid => (
           <>
             <Metric
               key={nid}
-              name="cr.node.kvflowcontrol.eval_wait.regular.duration-p99"
+              name="cr.node.kvadmission.flow_controller.regular_wait_duration-p99"
               title={"Regular " + nodeDisplayName(nodeDisplayNameByID, nid)}
               sources={[nid]}
               downsampleMax
             />
             <Metric
               key={nid}
-              name="cr.node.kvflowcontrol.eval_wait.elastic.duration-p99"
+              name="cr.node.kvadmission.flow_controller.elastic_wait_duration-p99"
               title={"Elastic " + nodeDisplayName(nodeDisplayNameByID, nid)}
               sources={[nid]}
               downsampleMax
@@ -259,35 +268,14 @@ export default function (props: GraphDashboardProps) {
           <>
             <Metric
               key={nid}
-              name="cr.node.kvflowcontrol.streams.eval.regular.blocked_count"
+              name="cr.node.kvadmission.flow_controller.regular_blocked_stream_count"
               title={"Regular " + nodeDisplayName(nodeDisplayNameByID, nid)}
               sources={[nid]}
             />
             <Metric
               key={nid}
-              name="cr.node.kvflowcontrol.streams.eval.elastic.blocked_count"
+              name="cr.node.kvadmission.flow_controller.elastic_blocked_stream_count"
               title={"Elastic " + nodeDisplayName(nodeDisplayNameByID, nid)}
-              sources={[nid]}
-            />
-          </>
-        ))}
-      </Axis>
-    </LineGraph>,
-
-    <LineGraph
-      title="Replication Stream Send Queue Size"
-      sources={nodeSources}
-      tenantSource={tenantSource}
-      showMetricsInTooltip={true}
-      tooltip={`Queued bytes to be sent across all replication streams on a node in Replication Admission Control. `}
-    >
-      <Axis units={AxisUnits.Bytes} label="Size">
-        {nodeIDs.map(nid => (
-          <>
-            <Metric
-              key={nid}
-              name="cr.node.kvflowcontrol.send_queue.bytes"
-              title={nodeDisplayName(nodeDisplayNameByID, nid)}
               sources={[nid]}
             />
           </>
@@ -390,14 +378,16 @@ export default function (props: GraphDashboardProps) {
       showMetricsInTooltip={true}
     >
       <Axis label="Count">
-        {storeMetrics(
-          {
-            name: "cr.store.storage.l0-sublevels",
-            aggregateMax: true,
-          },
-          nodeIDs,
-          storeIDsByNodeID,
-        )}
+        {nodeIDs.map(nid => (
+          <>
+            <Metric
+              key={nid}
+              name="cr.store.storage.l0-sublevels"
+              title={nodeDisplayName(nodeDisplayNameByID, nid)}
+              sources={storeIDsForNode(storeIDsByNodeID, nid)}
+            />
+          </>
+        ))}
       </Axis>
     </LineGraph>,
   ];

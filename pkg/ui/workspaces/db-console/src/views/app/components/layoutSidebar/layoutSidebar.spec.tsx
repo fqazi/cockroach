@@ -3,11 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import React from "react";
 import { shallow } from "enzyme";
 import { createMemoryHistory, History } from "history";
-import React from "react";
 import { match as Match } from "react-router";
-
 import { Sidebar } from "./index";
 
 describe("LayoutSidebar", () => {

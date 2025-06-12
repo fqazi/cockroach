@@ -4,17 +4,16 @@
 // included in the /LICENSE file.
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-
 import { fetchData } from "src/api";
 
 const STATUS_PREFIX = "_status";
 
 export type CancelSessionRequestMessage =
-  cockroach.server.serverpb.ICancelSessionRequest;
+  cockroach.server.serverpb.CancelSessionRequest;
 export type CancelSessionResponseMessage =
   cockroach.server.serverpb.CancelSessionResponse;
 export type CancelQueryRequestMessage =
-  cockroach.server.serverpb.ICancelQueryRequest;
+  cockroach.server.serverpb.CancelQueryRequest;
 export type CancelQueryResponseMessage =
   cockroach.server.serverpb.CancelQueryResponse;
 

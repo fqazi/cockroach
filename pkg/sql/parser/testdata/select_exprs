@@ -112,7 +112,7 @@ SELECT _ - _ -- literals removed
 SELECT -0. - -1 -- identifiers removed
 
 parse
-SELECT~+~+~++~bd(*)
+SELECT~~+~++~bd(*)
 ----
 SELECT ~(~(~(~bd(*)))) -- normalized!
 SELECT (~((~((~((~(bd((*)))))))))) -- fully parenthesized
@@ -1957,30 +1957,6 @@ SELECT ''::void[]
                  ^
 
 parse
-SELECT ''::trigger
-----
-SELECT ''::TRIGGER -- normalized!
-SELECT (('')::TRIGGER) -- fully parenthesized
-SELECT '_'::TRIGGER -- literals removed
-SELECT ''::TRIGGER -- identifiers removed
-
-parse
-SELECT '':::trigger
-----
-SELECT '':::TRIGGER -- normalized!
-SELECT ((''):::TRIGGER) -- fully parenthesized
-SELECT '_':::TRIGGER -- literals removed
-SELECT '':::TRIGGER -- identifiers removed
-
-error
-SELECT ''::trigger[]
-----
-at or near "EOF": syntax error: type trigger[] does not exist
-DETAIL: source SQL:
-SELECT ''::trigger[]
-                    ^
-
-parse
 SELECT overlaps(
 TIMESTAMP '2000-01-01 00:00:00',
 TIMESTAMP '2000-01-01 01:00:00',
@@ -2098,51 +2074,3 @@ SELECT my_func('a', 1, true)
 SELECT (my_func(('a'), (1), (true))) -- fully parenthesized
 SELECT my_func('_', _, _) -- literals removed
 SELECT _('a', 1, true) -- identifiers removed
-
-parse
-SELECT "[1,2]" <-> "[3,4]"
-----
-SELECT "[1,2]" <-> "[3,4]"
-SELECT (("[1,2]") <-> ("[3,4]")) -- fully parenthesized
-SELECT "[1,2]" <-> "[3,4]" -- literals removed
-SELECT _ <-> _ -- identifiers removed
-
-parse
-SELECT "[2,2]" <=> "[3,4]"
-----
-SELECT "[2,2]" <=> "[3,4]"
-SELECT (("[2,2]") <=> ("[3,4]")) -- fully parenthesized
-SELECT "[2,2]" <=> "[3,4]" -- literals removed
-SELECT _ <=> _ -- identifiers removed
-
-parse
-SELECT "[2,2]" <#> "[3,4]"
-----
-SELECT "[2,2]" <#> "[3,4]"
-SELECT (("[2,2]") <#> ("[3,4]")) -- fully parenthesized
-SELECT "[2,2]" <#> "[3,4]" -- literals removed
-SELECT _ <#> _ -- identifiers removed
-
-error
-SELECT "[2,2]" <# "[3,4]"
-----
-at or near "#": syntax error
-DETAIL: source SQL:
-SELECT "[2,2]" <# "[3,4]"
-                ^
-
-parse
-SELECT "[2,2]" <- "[3,4]"
-----
-SELECT "[2,2]" < (-"[3,4]") -- normalized!
-SELECT (("[2,2]") < ((-("[3,4]")))) -- fully parenthesized
-SELECT "[2,2]" < (-"[3,4]") -- literals removed
-SELECT _ < (-_) -- identifiers removed
-
-parse
-SELECT '$'::JSONPATH;
-----
-SELECT '$'::JSONPATH -- normalized!
-SELECT (('$')::JSONPATH) -- fully parenthesized
-SELECT '_'::JSONPATH -- literals removed
-SELECT '$'::JSONPATH -- identifiers removed

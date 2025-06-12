@@ -3,14 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { PayloadAction } from "@reduxjs/toolkit";
 import { all, call, put, takeLatest } from "redux-saga/effects";
 
-import { StmtInsightsReq, getStmtInsightsApi } from "src/api/stmtInsightsApi";
-
-import { maybeError } from "../../../util";
-
 import { actions } from "./statementInsights.reducer";
+import { StmtInsightsReq, getStmtInsightsApi } from "src/api/stmtInsightsApi";
+import { PayloadAction } from "@reduxjs/toolkit";
 
 export function* refreshStatementInsightsSaga(
   action?: PayloadAction<StmtInsightsReq>,
@@ -25,7 +22,7 @@ export function* requestStatementInsightsSaga(
     const result = yield call(getStmtInsightsApi, action?.payload);
     yield put(actions.received(result));
   } catch (e) {
-    yield put(actions.failed(maybeError(e)));
+    yield put(actions.failed(e));
   }
 }
 

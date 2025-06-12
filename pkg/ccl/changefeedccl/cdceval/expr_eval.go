@@ -275,13 +275,13 @@ func (e *familyEvaluator) planAndRun(ctx context.Context) (err error) {
 	return err
 }
 
-// preparePlan creates a plan for CDC expression. If no error is returned, the
-// caller must call e.performCleanup().
 func (e *familyEvaluator) preparePlan(
 	ctx context.Context,
 ) (plan sql.CDCExpressionPlan, prevCol catalog.Column, err error) {
-	// Perform cleanup of the previous plan if there is one.
-	e.performCleanup()
+	if e.cleanup != nil {
+		e.cleanup()
+		e.cleanup = nil
+	}
 
 	err = withPlanner(ctx, e.execCfg, e.statementTS, e.user, e.currDesc.SchemaTS, e.sessionData,
 		func(ctx context.Context, execCtx sql.JobExecContext, cleanup func()) error {
@@ -307,7 +307,6 @@ func (e *familyEvaluator) preparePlan(
 			return err
 		})
 	if err != nil {
-		e.performCleanup()
 		return sql.CDCExpressionPlan{}, nil, err
 	}
 	return plan, prevCol, nil
@@ -478,16 +477,7 @@ func (e *familyEvaluator) setupContextForRow(
 	return nil
 }
 
-func (e *familyEvaluator) performCleanup() {
-	if e.cleanup != nil {
-		e.cleanup()
-		e.cleanup = nil
-	}
-}
-
 func (e *familyEvaluator) closeErr() error {
-	defer e.performCleanup()
-
 	if e.errCh != nil {
 		// Must be deferred since planGroup  go routine might write.
 		defer func() {
@@ -502,6 +492,9 @@ func (e *familyEvaluator) closeErr() error {
 		return e.planGroup.Wait()
 	}
 
+	if e.cleanup != nil {
+		e.cleanup()
+	}
 	return nil
 }
 

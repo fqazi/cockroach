@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"fmt"
 	"regexp"
+	"runtime/debug"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
@@ -17,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
-	"github.com/cockroachdb/cockroach/pkg/util/debugutil"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
@@ -86,7 +86,6 @@ import (
 // | TIMETZ            | TIMETZ         | T_timetz      | 0         | 0     |
 // | JSON              | JSONB          | T_json        | 0         | 0     |
 // | JSONB             | JSONB          | T_jsonb       | 0         | 0     |
-// | JSONPATH          | JSONPATH       | T_jsonpath    | 0         | 0     |
 // |                   |                |               |           |       |
 // | BYTES             | BYTES          | T_bytea       | 0         | 0     |
 // |                   |                |               |           |       |
@@ -265,8 +264,8 @@ func (u UserDefinedTypeName) Basename() string {
 }
 
 // FQName returns the fully qualified name.
-func (u UserDefinedTypeName) FQName(explicitCatalog bool) string {
-	return FormatTypeName(u, explicitCatalog)
+func (u UserDefinedTypeName) FQName() string {
+	return FormatTypeName(u)
 }
 
 // Convenience list of pre-constructed types. Caller code can use any of these
@@ -493,15 +492,6 @@ var (
 		},
 	}
 
-	// PGVector is the type representing a PGVector object.
-	PGVector = &T{
-		InternalType: InternalType{
-			Family: PGVectorFamily,
-			Oid:    oidext.T_pgvector,
-			Locale: &emptyLocale,
-		},
-	}
-
 	// Void is the type representing void.
 	Void = &T{
 		InternalType: InternalType{
@@ -538,15 +528,6 @@ var (
 		InternalType: InternalType{
 			Family: TSVectorFamily,
 			Oid:    oid.T_tsvector,
-			Locale: &emptyLocale,
-		},
-	}
-
-	// Jsonpath is the jsonpath type which represents a jsonpath query.
-	Jsonpath = &T{
-		InternalType: InternalType{
-			Family: JsonpathFamily,
-			Oid:    oidext.T_jsonpath,
 			Locale: &emptyLocale,
 		},
 	}
@@ -590,25 +571,21 @@ var (
 		TimeTZ,
 		Jsonb,
 		VarBit,
-		// TODO(#22513): consider including jsonpath here.
 	}
 
-	Any = &T{InternalType: InternalType{
-		Family: AnyFamily, Oid: oid.T_any, Locale: &emptyLocale}}
-
-	// AnyElement is a special type used only during static analysis as a wildcard type
+	// Any is a special type used only during static analysis as a wildcard type
 	// that matches any other type, including scalar, array, and tuple types.
 	// Execution-time values should never have this type. As an example of its
 	// use, many SQL builtin functions allow an input value to be of any type,
 	// and so use this type in their static definitions.
-	AnyElement = &T{InternalType: InternalType{
+	Any = &T{InternalType: InternalType{
 		Family: AnyFamily, Oid: oid.T_anyelement, Locale: &emptyLocale}}
 
 	// AnyArray is a special type used only during static analysis as a wildcard
 	// type that matches an array having elements of any (uniform) type (including
 	// nested array types). Execution-time values should never have this type.
 	AnyArray = &T{InternalType: InternalType{
-		Family: ArrayFamily, ArrayContents: AnyElement, Oid: oid.T_anyarray, Locale: &emptyLocale}}
+		Family: ArrayFamily, ArrayContents: Any, Oid: oid.T_anyarray, Locale: &emptyLocale}}
 
 	// AnyEnum is a special type only used during static analysis as a wildcard
 	// type that matches an possible enum value. Execution-time values should
@@ -620,7 +597,7 @@ var (
 	// type that matches a tuple with any number of fields of any type (including
 	// tuple types). Execution-time values should never have this type.
 	AnyTuple = &T{InternalType: InternalType{
-		Family: TupleFamily, TupleContents: []*T{AnyElement}, Oid: oid.T_record, Locale: &emptyLocale}}
+		Family: TupleFamily, TupleContents: []*T{Any}, Oid: oid.T_record, Locale: &emptyLocale}}
 
 	// AnyTupleArray is a special type used only during static analysis as a wildcard
 	// type that matches an array of tuples with any number of fields of any type (including
@@ -638,11 +615,6 @@ var (
 	// than AnyTuple, which is a wildcard type.
 	EmptyTuple = &T{InternalType: InternalType{
 		Family: TupleFamily, Oid: oid.T_record, Locale: &emptyLocale}}
-
-	// Trigger is a special type used for trigger functions, which return a row of
-	// their target table.
-	Trigger = &T{InternalType: InternalType{
-		Family: TriggerFamily, Oid: oid.T_trigger, Locale: &emptyLocale}}
 
 	// StringArray is the type of an array value having String-typed elements.
 	StringArray = &T{InternalType: InternalType{
@@ -679,10 +651,6 @@ var (
 	// PGLSNArray is the type of an array value having PGLSN-typed elements.
 	PGLSNArray = &T{InternalType: InternalType{
 		Family: ArrayFamily, ArrayContents: PGLSN, Oid: oid.T__pg_lsn, Locale: &emptyLocale}}
-
-	// PGVectorArray is the type of an array value having PGVector-typed elements.
-	PGVectorArray = &T{InternalType: InternalType{
-		Family: ArrayFamily, ArrayContents: PGVector, Oid: oidext.T__pgvector, Locale: &emptyLocale}}
 
 	// RefCursorArray is the type of an array value having REFCURSOR-typed elements.
 	RefCursorArray = &T{InternalType: InternalType{
@@ -735,13 +703,6 @@ var (
 	// by Postgres in system tables. Int2vectors are 0-indexed, unlike normal arrays.
 	Int2Vector = &T{InternalType: InternalType{
 		Family: ArrayFamily, Oid: oid.T_int2vector, ArrayContents: Int2, Locale: &emptyLocale}}
-
-	// JsonpathArray is the type of an array value having Jsonpath-typed elements.
-	JsonpathArray = &T{
-		InternalType: InternalType{
-			Family: ArrayFamily, ArrayContents: Jsonpath, Oid: oidext.T__jsonpath, Locale: &emptyLocale,
-		},
-	}
 )
 
 // Unexported wrapper types.
@@ -992,21 +953,6 @@ func MakeCollatedString(strType *T, locale string) *T {
 	panic(errors.AssertionFailedf("cannot apply collation to non-string type: %s", strType))
 }
 
-// MakeCollatedType is like MakeCollatedString but also handles NULL and arrays
-// of string types that need to become arrays of collated string types.
-//
-// UNKNOWN  => STRING COLLATE EN
-// []STRING => []STRING COLLATE EN
-func MakeCollatedType(typ *T, locale string) *T {
-	if typ.Family() == ArrayFamily {
-		return MakeArray(MakeCollatedType(typ.ArrayContents(), locale))
-	}
-	if typ.Family() == UnknownFamily {
-		return MakeCollatedType(String, locale)
-	}
-	return MakeCollatedString(typ, locale)
-}
-
 // MakeDecimal constructs a new instance of a DECIMAL type (oid = T_numeric)
 // that has at most "precision" # of decimal digits (0 = unspecified number of
 // digits) and at most "scale" # of decimal digits after the decimal point
@@ -1228,11 +1174,9 @@ func MakeEnum(typeOID, arrayTypeOID oid.Oid) *T {
 // MakeArray constructs a new instance of an ArrayFamily type with the given
 // element type (which may itself be an ArrayFamily type).
 func MakeArray(typ *T) *T {
-	// Do not make an array of type unknown[]. Follow Postgres' behavior and convert
-	// this to type string[]. Likewise, Any does not have an array type, so treat it
-	// as an array of strings.
-	if typ.Family() == UnknownFamily ||
-		(typ.Family() == AnyFamily && typ.Oid() == oid.T_any) {
+	// Do not make an array of type unknown[]. Follow Postgres' behavior and
+	// convert this to type string[].
+	if typ.Family() == UnknownFamily {
 		typ = String
 	}
 	arr := &T{InternalType: InternalType{
@@ -1268,17 +1212,6 @@ func MakeLabeledTuple(contents []*T, labels []string) *T {
 		TupleContents: contents,
 		TupleLabels:   labels,
 		Locale:        &emptyLocale,
-	}}
-}
-
-// MakePGVector constructs a new instance of a VECTOR type (pg_vector) that has
-// the given number of dimensions.
-func MakePGVector(dims int32) *T {
-	return &T{InternalType: InternalType{
-		Family: PGVectorFamily,
-		Oid:    oidext.T_pgvector,
-		Width:  dims,
-		Locale: &emptyLocale,
 	}}
 }
 
@@ -1358,7 +1291,6 @@ func (t *T) Locale() string {
 //	STRING        : max # of characters
 //	COLLATEDSTRING: max # of characters
 //	BIT           : max # of bits
-//	VECTOR        : # of dimensions
 //
 // Width is always 0 for other types.
 func (t *T) Width() int32 {
@@ -1409,7 +1341,7 @@ func (t *T) TypeModifier() int32 {
 			// var header size.
 			return width + 4
 		}
-	case BitFamily, PGVectorFamily:
+	case BitFamily:
 		if width := t.Width(); width != 0 {
 			return width
 		}
@@ -1575,14 +1507,12 @@ var familyNames = map[Family]redact.SafeString{
 	JsonFamily:           "jsonb",
 	OidFamily:            "oid",
 	PGLSNFamily:          "pg_lsn",
-	PGVectorFamily:       "vector",
 	RefCursorFamily:      "refcursor",
 	StringFamily:         "string",
 	TimeFamily:           "time",
 	TimestampFamily:      "timestamp",
 	TimestampTZFamily:    "timestamptz",
 	TimeTZFamily:         "timetz",
-	TriggerFamily:        "trigger",
 	TSQueryFamily:        "tsquery",
 	TSVectorFamily:       "tsvector",
 	TupleFamily:          "tuple",
@@ -1590,7 +1520,6 @@ var familyNames = map[Family]redact.SafeString{
 	UuidFamily:           "uuid",
 	VoidFamily:           "void",
 	EncodedKeyFamily:     "encodedkey",
-	JsonpathFamily:       "jsonpath",
 }
 
 // Name returns a user-friendly word indicating the family type.
@@ -1614,12 +1543,7 @@ func (f Family) Name() redact.SafeString {
 func (t *T) Name() string {
 	switch fam := t.Family(); fam {
 	case AnyFamily:
-		switch t.Oid() {
-		case oid.T_any:
-			return "any"
-		default:
-			return "anyelement"
-		}
+		return "anyelement"
 
 	case ArrayFamily:
 		switch t.Oid() {
@@ -1627,8 +1551,6 @@ func (t *T) Name() string {
 			return "oidvector"
 		case oid.T_int2vector:
 			return "int2vector"
-		case oid.T_anyarray:
-			return "anyarray"
 		}
 		return t.ArrayContents().Name() + "[]"
 
@@ -1769,8 +1691,6 @@ func (t *T) SQLStandardNameWithTypmod(haveTypmod bool, typmod int) string {
 			return "oidvector"
 		case oid.T_int2vector:
 			return "int2vector"
-		case oid.T_anyarray:
-			return "anyarray"
 		}
 		// If we have a typemod specified then pass it down when
 		// formatting the array type.
@@ -1846,8 +1766,6 @@ func (t *T) SQLStandardNameWithTypmod(haveTypmod bool, typmod int) string {
 	case JsonFamily:
 		// Only binary JSON is currently supported.
 		return "jsonb"
-	case JsonpathFamily:
-		return "jsonpath"
 	case OidFamily:
 		switch t.Oid() {
 		case oid.T_oid:
@@ -1869,8 +1787,6 @@ func (t *T) SQLStandardNameWithTypmod(haveTypmod bool, typmod int) string {
 		}
 	case PGLSNFamily:
 		return "pg_lsn"
-	case PGVectorFamily:
-		return "vector"
 	case RefCursorFamily:
 		return "refcursor"
 	case StringFamily, CollatedStringFamily:
@@ -1930,8 +1846,6 @@ func (t *T) SQLStandardNameWithTypmod(haveTypmod bool, typmod int) string {
 			return "timestamp with time zone"
 		}
 		return fmt.Sprintf("timestamp(%d) with time zone", typmod)
-	case TriggerFamily:
-		return "trigger"
 	case TSQueryFamily:
 		return "tsquery"
 	case TSVectorFamily:
@@ -2031,8 +1945,6 @@ func (t *T) SQLString() string {
 	case JsonFamily:
 		// Only binary JSON is currently supported.
 		return "JSONB"
-	case JsonpathFamily:
-		return "JSONPATH"
 	case TimestampFamily, TimestampTZFamily, TimeFamily, TimeTZFamily:
 		if t.InternalType.Precision > 0 || t.InternalType.TimePrecisionIsSet {
 			return fmt.Sprintf("%s(%d)", strings.ToUpper(t.Name()), t.Precision())
@@ -2088,55 +2000,9 @@ func (t *T) SQLString() string {
 		if t.TypeMeta.Name == nil {
 			return fmt.Sprintf("@%d", t.Oid())
 		}
-		// Do not include the catalog name. We do not allow a table to reference
-		// a type in another database, so it will always be for the current database.
-		// Removing the catalog name makes the output more portable for other
-		// databases when this function is called to produce DDL like in SHOW
-		// CREATE.
-		return t.TypeMeta.Name.FQName(false /* explicitCatalog */)
-	case TupleFamily:
-		if t.UserDefined() {
-			// We do not expect to be in a situation where we want to format a
-			// user-defined type to a string and do not have the TypeMeta hydrated,
-			// but there have been bugs in the past, and returning a less informative
-			// string is better than a nil-pointer panic.
-			if t.TypeMeta.Name == nil {
-				return fmt.Sprintf("@%d", t.Oid())
-			}
-			// Do not include the catalog name. We do not allow a table to reference
-			// a type in another database, so it will always be for the current database.
-			// Removing the catalog name makes the output more portable for other
-			// databases when this function is called to produce DDL like in SHOW
-			// CREATE.
-			return t.TypeMeta.Name.FQName(false /* explicitCatalog */)
-		}
-		return strings.ToUpper(t.Name())
-	case PGVectorFamily:
-		if t.Width() == 0 {
-			return "VECTOR"
-		}
-		return fmt.Sprintf("VECTOR(%d)", t.Width())
+		return t.TypeMeta.Name.FQName()
 	}
 	return strings.ToUpper(t.Name())
-}
-
-// SQLStringFullyQualified is a wrapper for SQLString() for when we need the
-// type name to be a fully-qualified 3-part name.
-func (t *T) SQLStringFullyQualified() string {
-	if t.UserDefined() {
-		switch t.Family() {
-		case ArrayFamily:
-			return t.ArrayContents().SQLStringFullyQualified() + "[]"
-		default:
-			if t.TypeMeta.Name != nil {
-				// Include the catalog in the type name. This is necessary to properly
-				// resolve the type, as some code paths require the database name to
-				// correctly distinguish cross-database references.
-				return t.TypeMeta.Name.FQName(true /* explicitCatalog */)
-			}
-		}
-	}
-	return t.SQLString()
 }
 
 // SQLStringForError returns a version of SQLString that will preserve safe
@@ -2169,7 +2035,7 @@ func (t *T) SQLStringForError() redact.RedactableString {
 		IntervalFamily, StringFamily, BytesFamily, TimestampTZFamily, CollatedStringFamily, OidFamily,
 		UnknownFamily, UuidFamily, INetFamily, TimeFamily, JsonFamily, TimeTZFamily, BitFamily,
 		GeometryFamily, GeographyFamily, Box2DFamily, VoidFamily, EncodedKeyFamily, TSQueryFamily,
-		TSVectorFamily, AnyFamily, PGLSNFamily, PGVectorFamily, RefCursorFamily:
+		TSVectorFamily, AnyFamily, PGLSNFamily, RefCursorFamily:
 		// These types do not contain other types, and do not require redaction.
 		return redact.Sprint(redact.SafeString(t.SQLString()))
 	}
@@ -2181,7 +2047,7 @@ func (t *T) SQLStringForError() redact.RedactableString {
 // type name. The logic for proper formatting lives in the tree package.
 var FormatTypeName = fallbackFormatTypeName
 
-func fallbackFormatTypeName(UserDefinedTypeName, bool) string {
+func fallbackFormatTypeName(UserDefinedTypeName) string {
 	return "formatting logic has not been injected from tree"
 }
 
@@ -2193,7 +2059,7 @@ func fallbackFormatTypeName(UserDefinedTypeName, bool) string {
 // other attributes of equivalent types, such as width, precision, and oid, can
 // be different.
 //
-// Wildcard types (e.g. AnyElement, AnyArray, AnyTuple, etc) have special equivalence
+// Wildcard types (e.g. Any, AnyArray, AnyTuple, etc) have special equivalence
 // behavior. AnyFamily types match any other type, including other AnyFamily
 // types. And a wildcard collation (empty string) matches any other collation.
 func (t *T) Equivalent(other *T) bool {
@@ -2307,7 +2173,7 @@ func (t *T) Equal(other *T) bool {
 // static analysis, and cannot be used during execution.
 func (t *T) IsWildcardType() bool {
 	for _, wildcard := range []*T{
-		Any, AnyElement, AnyArray, AnyCollatedString, AnyEnum, AnyEnumArray, AnyTuple, AnyTupleArray,
+		Any, AnyArray, AnyCollatedString, AnyEnum, AnyEnumArray, AnyTuple, AnyTupleArray,
 	} {
 		// Note that pointer comparison is insufficient since we might have
 		// deserialized t from disk.
@@ -2316,23 +2182,6 @@ func (t *T) IsWildcardType() bool {
 		}
 	}
 	return false
-}
-
-// IsPolymorphicType returns true if the type can be used as the parameter or
-// return-type of a polymorphic function. Note that this does not include RECORD
-// (AnyTuple) or RECORD[].
-func (t *T) IsPolymorphicType() bool {
-	for _, poly := range []*T{AnyElement, AnyArray, AnyEnum, AnyEnumArray} {
-		if t.Identical(poly) {
-			return true
-		}
-	}
-	return false
-}
-
-// IsPseudoType returns true if the type is a pseudotype.
-func (t *T) IsPseudoType() bool {
-	return t.Identical(Trigger) || t.IsPolymorphicType()
 }
 
 // Size returns the size, in bytes, of this type once it has been marshaled to
@@ -2889,9 +2738,9 @@ func (t *T) EnumGetIdxOfPhysical(phys []byte) (int, error) {
 	err := errors.Wrapf(EnumValueNotFound,
 		"could not find %v in enum %q representation %s %s",
 		phys,
-		t.TypeMeta.Name.FQName(true /* explicitCatalog */),
+		t.TypeMeta.Name.FQName(),
 		t.TypeMeta.EnumData.debugString(),
-		debugutil.Stack(),
+		debug.Stack(),
 	)
 	return 0, err
 }
@@ -2946,8 +2795,6 @@ func IsValidArrayElementType(t *T) (valid bool, issueNum int) {
 		return false, 90886
 	case TSVectorFamily:
 		return false, 90886
-	case PGVectorFamily:
-		return false, 121432
 	default:
 		return true, 0
 	}

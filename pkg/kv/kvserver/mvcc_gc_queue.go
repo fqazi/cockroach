@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/keys"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/gc"
@@ -26,8 +26,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util"
+	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/grunning"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
@@ -99,6 +101,7 @@ var mvccGCQueueInterval = settings.RegisterDurationSetting(
 	"kv.mvcc_gc.queue_interval",
 	"how long the mvcc gc queue waits between processing replicas",
 	mvccGCQueueDefaultTimerDuration,
+	settings.NonNegativeDuration,
 )
 
 // mvccGCQueueHighPriInterval
@@ -107,6 +110,7 @@ var mvccGCQueueHighPriInterval = settings.RegisterDurationSetting(
 	"kv.mvcc_gc.queue_high_priority_interval",
 	"how long the mvcc gc queue waits between processing high priority replicas (e.g. after table drops)",
 	mvccHiPriGCQueueDefaultTimerDuration,
+	settings.NonNegativeDuration,
 )
 
 // EnqueueInMvccGCQueueOnSpanConfigUpdateEnabled controls whether replicas
@@ -120,6 +124,16 @@ var EnqueueInMvccGCQueueOnSpanConfigUpdateEnabled = settings.RegisterBoolSetting
 	"controls whether replicas are enqueued into the mvcc gc queue for "+
 		"processing, when a span config update occurs which affects the replica",
 	false,
+)
+
+// See https://github.com/cockroachdb/cockroach/pull/143122.
+var mvccGCQueueFullyEnableAC = settings.RegisterBoolSetting(
+	settings.SystemOnly,
+	"kv.mvcc_gc.queue_kv_admission_control.enabled",
+	"when true, MVCC GC queue operations are subject to store admission control. If set to false, "+
+		"since store admission control will be disabled, replication flow control will also be effectively disabled. "+
+		"This setting does not affect CPU admission control.",
+	true,
 )
 
 func largeAbortSpan(ms enginepb.MVCCStats) bool {
@@ -197,6 +211,7 @@ func newMVCCGCQueue(store *Store) *mvccGCQueue {
 			},
 			successes:       store.metrics.MVCCGCQueueSuccesses,
 			failures:        store.metrics.MVCCGCQueueFailures,
+			storeFailures:   store.metrics.StoreFailures,
 			pending:         store.metrics.MVCCGCQueuePending,
 			processingNanos: store.metrics.MVCCGCQueueProcessingNanos,
 			disabledConfig:  kvserverbase.MVCCGCQueueEnabled,
@@ -260,7 +275,7 @@ func (mgcq *mvccGCQueue) shouldQueue(
 		log.VErrEventf(ctx, 2, "failed to load span config: %v", err)
 		return false, 0
 	}
-	canGC, gcTimestamp, oldThreshold, newThreshold, err := repl.checkProtectedTimestampsForGC(ctx, conf.TTL())
+	canGC, _, gcTimestamp, oldThreshold, newThreshold, err := repl.checkProtectedTimestampsForGC(ctx, conf.TTL())
 	if err != nil {
 		log.VErrEventf(ctx, 2, "failed to check protected timestamp for gc: %v", err)
 		return false, 0
@@ -292,8 +307,8 @@ func makeMVCCGCQueueScore(
 	canAdvanceGCThreshold bool,
 ) mvccGCQueueScore {
 	repl.mu.RLock()
-	ms := *repl.shMu.state.Stats
-	hint := *repl.shMu.state.GCHint
+	ms := *repl.mu.state.Stats
+	hint := *repl.mu.state.GCHint
 	repl.mu.RUnlock()
 
 	if repl.store.cfg.TestingKnobs.DisableLastProcessedCheck {
@@ -583,11 +598,6 @@ func (r *replicaGCer) template() kvpb.GCRequest {
 	desc := r.repl.Desc()
 	var template kvpb.GCRequest
 	template.Key = desc.StartKey.AsRawKey()
-	if r.repl.RangeID == 1 {
-		// r1 should really start at LocalMax but it starts "officially" at KeyMin
-		// which is not addressable.
-		template.Key = keys.LocalMax
-	}
 	template.EndKey = desc.EndKey.AsRawKey()
 
 	return template
@@ -597,13 +607,34 @@ func (r *replicaGCer) send(ctx context.Context, req kvpb.GCRequest) error {
 	n := atomic.AddInt32(&r.count, 1)
 	log.Eventf(ctx, "sending batch %d (%d keys, %d rangekeys)", n, len(req.Keys), len(req.RangeKeys))
 
-	var b kv.Batch
-	b.AddRawRequest(&req)
-	b.AdmissionHeader = gcAdmissionHeader(r.repl.ClusterSettings())
-
-	if err := r.repl.store.cfg.DB.Run(ctx, &b); err != nil {
-		log.Infof(ctx, "%s", err)
-		return err
+	ba := &kvpb.BatchRequest{}
+	// Technically not needed since we're talking directly to the Replica.
+	ba.RangeID = r.repl.Desc().RangeID
+	ba.Timestamp = r.repl.Clock().Now()
+	ba.Add(&req)
+	// Since we are talking directly to the replica, we need to explicitly do
+	// admission control here, as we are bypassing server.Node.
+	var admissionHandle kvadmission.Handle
+	if r.admissionController != nil {
+		ba.AdmissionHeader = gcAdmissionHeader(r.repl.ClusterSettings())
+		ba.Replica.StoreID = r.storeID
+		var err error
+		admissionHandle, err = r.admissionController.AdmitKVWork(ctx, roachpb.SystemTenantID, ba)
+		if err != nil {
+			return err
+		}
+		if mvccGCQueueFullyEnableAC.Get(&r.repl.ClusterSettings().SV) {
+			ctx = admissionHandle.AnnotateCtx(ctx)
+		}
+	}
+	_, writeBytes, pErr := r.repl.SendWithWriteBytes(ctx, ba)
+	defer writeBytes.Release()
+	if r.admissionController != nil {
+		r.admissionController.AdmittedKVWorkDone(admissionHandle, writeBytes)
+	}
+	if pErr != nil {
+		log.VErrEventf(ctx, 2, "%v", pErr.String())
+		return pErr.GoError()
 	}
 	return nil
 }
@@ -672,7 +703,7 @@ func (mgcq *mvccGCQueue) process(
 	// Consult the protected timestamp state to determine whether we can GC and
 	// the timestamp which can be used to calculate the score and updated GC
 	// threshold.
-	canGC, gcTimestamp, oldThreshold, newThreshold, err := repl.checkProtectedTimestampsForGC(ctx, conf.TTL())
+	canGC, cacheTimestamp, gcTimestamp, oldThreshold, newThreshold, err := repl.checkProtectedTimestampsForGC(ctx, conf.TTL())
 	if err != nil {
 		return false, err
 	}
@@ -689,16 +720,29 @@ func (mgcq *mvccGCQueue) process(
 	}
 	r := makeMVCCGCQueueScore(ctx, repl, gcTimestamp, lastGC, conf.TTL(), canAdvanceGCThreshold)
 	log.VEventf(ctx, 2, "processing replica %s with score %s", repl.String(), r)
+	// Synchronize the new GC threshold decision with concurrent
+	// AdminVerifyProtectedTimestamp requests.
+	if err := repl.markPendingGC(cacheTimestamp, newThreshold); err != nil {
+		log.VEventf(ctx, 1, "not gc'ing replica %v due to pending protection: %v", repl, err)
+		return false, nil
+	}
 	// Update the last processed timestamp.
 	if err := repl.setQueueLastProcessed(ctx, mgcq.name, repl.store.Clock().Now()); err != nil {
 		log.VErrEventf(ctx, 2, "failed to update last processed time: %v", err)
 	}
 
-	snap := repl.store.TODOEngine().NewSnapshot(rditer.MakeReplicatedKeySpans(desc)...)
-	if util.RaceEnabled {
-		ss := rditer.MakeReplicatedKeySpanSet(desc)
-		defer ss.Release()
-		snap = spanset.NewReader(snap, ss, hlc.Timestamp{})
+	var snap storage.Reader
+	if repl.store.cfg.SharedStorageEnabled || storage.ShouldUseEFOS(&repl.ClusterSettings().SV) {
+		efos := repl.store.TODOEngine().NewEventuallyFileOnlySnapshot(rditer.MakeReplicatedKeySpans(desc))
+		if util.RaceEnabled {
+			ss := rditer.MakeReplicatedKeySpanSet(desc)
+			defer ss.Release()
+			snap = spanset.NewEventuallyFileOnlySnapshot(efos, ss)
+		} else {
+			snap = efos
+		}
+	} else {
+		snap = repl.store.TODOEngine().NewSnapshot()
 	}
 	defer snap.Close()
 
@@ -706,7 +750,10 @@ func (mgcq *mvccGCQueue) process(
 	maxLocksPerCleanupBatch := gc.MaxLocksPerCleanupBatch.Get(&repl.store.ClusterSettings().SV)
 	maxLocksKeyBytesPerCleanupBatch := gc.MaxLockKeyBytesPerCleanupBatch.Get(&repl.store.ClusterSettings().SV)
 	txnCleanupThreshold := gc.TxnCleanupThreshold.Get(&repl.store.ClusterSettings().SV)
-	clearRangeMinKeys := gc.ClearRangeMinKeys.Get(&repl.store.ClusterSettings().SV)
+	var clearRangeMinKeys int64 = 0
+	if repl.store.ClusterSettings().Version.IsActive(ctx, clusterversion.V23_1) {
+		clearRangeMinKeys = gc.ClearRangeMinKeys.Get(&repl.store.ClusterSettings().SV)
+	}
 
 	info, err := gc.Run(ctx, desc, snap, gcTimestamp, newThreshold,
 		gc.RunOptions{
@@ -744,16 +791,18 @@ func (mgcq *mvccGCQueue) process(
 		},
 		func(ctx context.Context, txn *roachpb.Transaction) error {
 			err := repl.store.intentResolver.
-				CleanupTxnIntentsOnGCAsync(gcAdmissionHeader(repl.store.ClusterSettings()), repl.RangeID, txn, gcTimestamp, func(pushed, succeeded bool) {
-					if pushed {
-						mgcq.store.metrics.GCPushTxn.Inc(1)
-					}
-					if succeeded {
-						mgcq.store.metrics.GCResolveSuccess.Inc(int64(len(txn.LockSpans)))
-					} else {
-						mgcq.store.metrics.GCTxnIntentsResolveFailed.Inc(int64(len(txn.LockSpans)))
-					}
-				})
+				CleanupTxnIntentsOnGCAsync(
+					ctx, gcAdmissionHeader(repl.store.ClusterSettings()), repl.RangeID, txn, gcTimestamp,
+					func(pushed, succeeded bool) {
+						if pushed {
+							mgcq.store.metrics.GCPushTxn.Inc(1)
+						}
+						if succeeded {
+							mgcq.store.metrics.GCResolveSuccess.Inc(int64(len(txn.LockSpans)))
+						} else {
+							mgcq.store.metrics.GCTxnIntentsResolveFailed.Inc(int64(len(txn.LockSpans)))
+						}
+					})
 			if errors.Is(err, stop.ErrThrottled) {
 				log.Eventf(ctx, "processing txn %s: %s; skipping for future GC", txn.ID.Short(), err)
 				return nil
@@ -810,7 +859,6 @@ func updateStoreMetricsWithGCInfo(metrics *StoreMetrics, info gc.Info) {
 	metrics.GCTransactionSpanGCCommitted.Inc(int64(info.TransactionSpanGCCommitted))
 	metrics.GCTransactionSpanGCStaging.Inc(int64(info.TransactionSpanGCStaging))
 	metrics.GCTransactionSpanGCPending.Inc(int64(info.TransactionSpanGCPending))
-	metrics.GCTransactionSpanGCPrepared.Inc(int64(info.TransactionSpanGCPrepared))
 	metrics.GCAbortSpanScanned.Inc(int64(info.AbortSpanTotal))
 	metrics.GCAbortSpanConsidered.Inc(int64(info.AbortSpanConsidered))
 	metrics.GCAbortSpanGCNum.Inc(int64(info.AbortSpanGCNum))
@@ -909,7 +957,7 @@ func (*mvccGCQueue) updateChan() <-chan time.Time {
 }
 
 func gcAdmissionHeader(st *cluster.Settings) kvpb.AdmissionHeader {
-	pri := gc.AdmissionPriority.Get(&st.SV)
+	pri := admissionpb.WorkPriority(gc.AdmissionPriority.Get(&st.SV))
 	return kvpb.AdmissionHeader{
 		// TODO(irfansharif): GC could be expected to be BulkNormalPri, so
 		// that it does not impact user-facing traffic when resources (e.g.

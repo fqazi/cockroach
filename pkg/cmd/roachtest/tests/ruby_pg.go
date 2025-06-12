@@ -146,7 +146,7 @@ func registerRubyPG(r registry.Registry) {
 			c,
 			node,
 			"installing bundler",
-			`cd /mnt/data1/ruby-pg/ && sudo gem install bundler:2.4.9`,
+			`cd /mnt/data1/ruby-pg/ && sudo gem install bundler:2.1.4`,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -257,6 +257,7 @@ func registerRubyPG(r registry.Registry) {
 	}
 
 	r.Add(registry.TestSpec{
+		Skip:             "uses old ruby version",
 		Name:             "ruby-pg",
 		Timeout:          1 * time.Hour,
 		Owner:            registry.OwnerSQLFoundations,

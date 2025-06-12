@@ -420,6 +420,10 @@ func (p *planner) getDescriptorsFromTargetListForPrivilegeChange(
 
 			return descs, nil
 		} else if targets.AllFunctionsInSchema || targets.AllProceduresInSchema {
+			isProcs := true
+			if targets.AllFunctionsInSchema {
+				isProcs = false
+			}
 			var descs []DescriptorWithObjectType
 			for _, scName := range targets.Schemas {
 				dbName := p.CurrentDatabase()
@@ -439,16 +443,10 @@ func (p *planner) getDescriptorsFromTargetListForPrivilegeChange(
 					if err != nil {
 						return err
 					}
-					// Only include procedures if ALL PROCEDURES was specified, and
-					// only include functions if ALL FUNCTIONS was specified.
-					if fn.IsProcedure() {
-						if !targets.AllProceduresInSchema {
-							return nil
-						}
-					} else {
-						if !targets.AllFunctionsInSchema {
-							return nil
-						}
+					if isProcs != fn.IsProcedure() {
+						// Skip functions if ALL PROCEDURES was specified, and
+						// skip procedures if ALL FUNCTIONS was specified.
+						return nil
 					}
 					descs = append(descs, DescriptorWithObjectType{
 						descriptor: fn,
@@ -566,7 +564,7 @@ func (p *planner) getFullyQualifiedNamesFromIDs(
 	ctx context.Context, ids []descpb.ID,
 ) (fullyQualifiedNames []string, _ error) {
 	for _, id := range ids {
-		desc, err := p.Descriptors().ByIDWithoutLeased(p.txn).Get().Desc(ctx, id)
+		desc, err := p.Descriptors().ByID(p.txn).Get().Desc(ctx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -593,7 +591,7 @@ func (p *planner) getFullyQualifiedNamesFromIDs(
 func (p *planner) getQualifiedSchemaName(
 	ctx context.Context, desc catalog.SchemaDescriptor,
 ) (*tree.ObjectNamePrefix, error) {
-	dbDesc, err := p.Descriptors().ByIDWithoutLeased(p.txn).WithoutNonPublic().Get().Database(ctx, desc.GetParentID())
+	dbDesc, err := p.Descriptors().ByID(p.txn).WithoutNonPublic().Get().Database(ctx, desc.GetParentID())
 	if err != nil {
 		return nil, err
 	}
@@ -610,7 +608,7 @@ func (p *planner) getQualifiedSchemaName(
 func (p *planner) getQualifiedTypeName(
 	ctx context.Context, desc catalog.TypeDescriptor,
 ) (*tree.TypeName, error) {
-	dbDesc, err := p.Descriptors().ByIDWithoutLeased(p.txn).WithoutNonPublic().Get().Database(ctx, desc.GetParentID())
+	dbDesc, err := p.Descriptors().ByID(p.txn).WithoutNonPublic().Get().Database(ctx, desc.GetParentID())
 	if err != nil {
 		return nil, err
 	}
@@ -967,16 +965,6 @@ func (l *internalLookupCtx) getTypeByID(id descpb.ID) (catalog.TypeDescriptor, e
 			tree.NewUnqualifiedTypeName(fmt.Sprintf("[%d]", id)))
 	}
 	return typ, nil
-}
-
-// hasSchemaWithID reports whether a schema with the given ID exists in the
-// lookup context.
-func (l *internalLookupCtx) hasSchemaWithID(id descpb.ID) bool {
-	if id == keys.SystemPublicSchemaID {
-		return true
-	}
-	_, ok := l.schemaDescs[id]
-	return ok
 }
 
 func (l *internalLookupCtx) getSchemaByID(id descpb.ID) (catalog.SchemaDescriptor, error) {

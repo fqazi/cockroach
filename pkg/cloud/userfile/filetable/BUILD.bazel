@@ -15,6 +15,5 @@ go_library(
         "//pkg/util/ioctx",
         "//pkg/util/log",
         "@com_github_cockroachdb_errors//:errors",
-        "@com_github_cockroachdb_redact//:redact",
     ],
 )

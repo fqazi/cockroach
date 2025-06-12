@@ -31,6 +31,18 @@ type (
 	RangeID int32
 )
 
+type RangeIDSlice []RangeID
+
+func (r RangeIDSlice) Len() int           { return len(r) }
+func (r RangeIDSlice) Swap(i, j int)      { r[i], r[j] = r[j], r[i] }
+func (r RangeIDSlice) Less(i, j int) bool { return r[i] < r[j] }
+
+type StoreIDSlice []StoreID
+
+func (r StoreIDSlice) Len() int           { return len(r) }
+func (r StoreIDSlice) Swap(i, j int)      { r[i], r[j] = r[j], r[i] }
+func (r StoreIDSlice) Less(i, j int) bool { return r[i] < r[j] }
+
 // State encapsulates the current configuration and load of a simulation run.
 // It provides methods for accessing and mutation simulation state of nodes,
 // stores, ranges and replicas.
@@ -154,7 +166,7 @@ type State interface {
 	Clock() timeutil.TimeSource
 	// UpdateStorePool modifies the state of the StorePool for the Store with
 	// ID StoreID.
-	UpdateStorePool(StoreID, map[roachpb.StoreID]*storepool.StoreDetailMu)
+	UpdateStorePool(StoreID, map[roachpb.StoreID]*storepool.StoreDetail)
 	// NextReplicasFn returns a function, that when called will return the current
 	// replicas that exist on the store.
 	NextReplicasFn(StoreID) func() []Replica

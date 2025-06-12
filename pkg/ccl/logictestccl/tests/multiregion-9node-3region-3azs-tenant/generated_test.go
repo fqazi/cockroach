@@ -26,7 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 )
 
-const configIdx = 15
+const configIdx = 14
 
 var cclLogicTestDir string
 
@@ -102,13 +102,6 @@ func TestCCLLogic_multi_region_privileges(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "multi_region_privileges")
-}
-
-func TestCCLLogic_multi_region_secondary_tenants_abstractions_allowed(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "multi_region_secondary_tenants_abstractions_allowed")
 }
 
 func TestCCLLogic_multi_region_secondary_tenants_abstractions_disallowed(

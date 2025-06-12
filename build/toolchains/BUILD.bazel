@@ -32,7 +32,7 @@ platform(
         "@platforms//cpu:x86_64",
     ],
     exec_properties = {
-        "container-image": "docker://us-east1-docker.pkg.dev/crl-ci-images/cockroach/bazel@sha256:394483c5651c395cb4d72f4f3551a3c5027ba5c0c278d79c819f7793bdbc5096",
+        "container-image": "docker://us-east1-docker.pkg.dev/crl-ci-images/cockroach/bazel@sha256:1277dc9c759382ec85c06af78c2ce6f84db2e19de1a364e0a76fbf4bc6853a24",
         "dockerReuse": "True",
         "Pool": "default",
     },
@@ -137,7 +137,7 @@ platform(
         "@platforms//cpu:arm64",
     ],
     exec_properties = {
-        "container-image": "docker://us-east1-docker.pkg.dev/crl-ci-images/cockroach/bazel@sha256:d855a27ab26c92c2a8cdc56bcc22f24cb2b50d6d9742af3c8eb61755f00bcccb",
+        "container-image": "docker://us-east1-docker.pkg.dev/crl-ci-images/cockroach/bazel@sha256:2ff9afdff2e838b218c8b4e80c5c1f398dc25674ba238a7bbf8364040b02fb0a",
         "dockerReuse": "True",
         "Pool": "default",
     },
@@ -413,14 +413,44 @@ config_setting(
     },
 )
 
+bool_flag(
+    name = "nogo_flag",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
+
 config_setting(
-    name = "is_dev_s390x",
-    constraint_values = [
-        "@platforms//cpu:s390x",
-    ],
+    name = "nogo",
     flag_values = {
-        ":dev_flag": "true",
+        ":nogo_flag": "true",
+        ":nogo_disable_flag": "false",
     },
+)
+
+# Note: the flag nonogo_flag and config_setting nonogo_explicit aren't meant
+# to be directly used in select()'s. Not using nogo is the default behavior.
+# The flag and config_setting are here solely so that they can be used by `dev`
+# to check whether an option is configured.
+bool_flag(
+    name = "nonogo_explicit_flag",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "nonogo_explicit",
+    flag_values = {
+        ":nonogo_explicit_flag": "true",
+    },
+    visibility = ["//build/bazelutil:__pkg__"],
+)
+
+# Note: nogo_disable can be set to force nogo checks off even if
+# `build --config lintonbuild` is set in .bazelrc.
+bool_flag(
+    name = "nogo_disable_flag",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
 )
 
 bool_flag(

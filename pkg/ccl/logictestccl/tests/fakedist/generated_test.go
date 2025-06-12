@@ -26,7 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 )
 
-const configIdx = 5
+const configIdx = 4
 
 var cclLogicTestDir string
 
@@ -131,13 +131,6 @@ func TestCCLLogic_pgcrypto_builtins(
 	runCCLLogicTest(t, "pgcrypto_builtins")
 }
 
-func TestCCLLogic_plpgsql_assign(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_assign")
-}
-
 func TestCCLLogic_plpgsql_block(
 	t *testing.T,
 ) {
@@ -150,13 +143,6 @@ func TestCCLLogic_plpgsql_call(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "plpgsql_call")
-}
-
-func TestCCLLogic_plpgsql_cte(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_cte")
 }
 
 func TestCCLLogic_plpgsql_cursor(
@@ -178,13 +164,6 @@ func TestCCLLogic_plpgsql_record(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "plpgsql_record")
-}
-
-func TestCCLLogic_plpgsql_srf(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_srf")
 }
 
 func TestCCLLogic_plpgsql_txn(
@@ -264,20 +243,6 @@ func TestCCLLogic_subject(
 	runCCLLogicTest(t, "subject")
 }
 
-func TestCCLLogic_triggers(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "triggers")
-}
-
-func TestCCLLogic_txn_retry(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "txn_retry")
-}
-
 func TestCCLLogic_udf_params(
 	t *testing.T,
 ) {
@@ -311,11 +276,4 @@ func TestCCLLogic_unique_read_committed(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "unique_read_committed")
-}
-
-func TestCCLLogic_vector(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "vector")
 }

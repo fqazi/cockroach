@@ -46,7 +46,7 @@ func TestReplicaChecksumVersion(t *testing.T) {
 
 	testutils.RunTrueAndFalse(t, "matchingVersion", func(t *testing.T, matchingVersion bool) {
 		cc := kvserverpb.ComputeChecksum{
-			ChecksumID: uuid.MakeV4(),
+			ChecksumID: uuid.FastMakeV4(),
 			Mode:       kvpb.ChecksumMode_CHECK_FULL,
 		}
 		if matchingVersion {
@@ -98,8 +98,8 @@ func TestStoreCheckpointSpans(t *testing.T) {
 	addReplica := func(rangeID roachpb.RangeID, start, end string) {
 		desc := makeDesc(rangeID, start, end)
 		r := &Replica{RangeID: rangeID, startKey: desc.StartKey}
-		r.shMu.state.Desc = &desc
-		r.isInitialized.Store(desc.IsInitialized())
+		r.mu.state.Desc = &desc
+		r.isInitialized.Set(desc.IsInitialized())
 		require.NoError(t, s.addToReplicasByRangeIDLocked(r))
 		if r.IsInitialized() {
 			require.NoError(t, s.addToReplicasByKeyLocked(r, r.Desc()))
@@ -185,7 +185,7 @@ func TestGetChecksumNotSuccessfulExitConditions(t *testing.T) {
 	}
 
 	// Checksum computation failed to start.
-	id := uuid.MakeV4()
+	id := uuid.FastMakeV4()
 	c, _ := tc.repl.trackReplicaChecksum(id)
 	close(c.started)
 	rc, err := tc.repl.getChecksum(ctx, id)
@@ -193,7 +193,7 @@ func TestGetChecksumNotSuccessfulExitConditions(t *testing.T) {
 	require.Nil(t, rc.Checksum)
 
 	// Checksum computation started, but failed.
-	id = uuid.MakeV4()
+	id = uuid.FastMakeV4()
 	c, _ = tc.repl.trackReplicaChecksum(id)
 	var g errgroup.Group
 	g.Go(func() error {
@@ -208,13 +208,13 @@ func TestGetChecksumNotSuccessfulExitConditions(t *testing.T) {
 	require.NoError(t, g.Wait())
 
 	// The initial wait for the task start expires. This will take 10ms.
-	id = uuid.MakeV4()
+	id = uuid.FastMakeV4()
 	rc, err = tc.repl.getChecksum(ctx, id)
 	require.ErrorContains(t, err, "checksum computation did not start")
 	require.Nil(t, rc.Checksum)
 
 	// The computation has started, but the request context timed out.
-	id = uuid.MakeV4()
+	id = uuid.FastMakeV4()
 	c, _ = tc.repl.trackReplicaChecksum(id)
 	g.Go(func() error {
 		c.started <- func() {}
@@ -227,7 +227,7 @@ func TestGetChecksumNotSuccessfulExitConditions(t *testing.T) {
 	require.NoError(t, g.Wait())
 
 	// Context is canceled during the initial waiting.
-	id = uuid.MakeV4()
+	id = uuid.FastMakeV4()
 	ctx, cancel = context.WithCancel(context.Background())
 	cancel()
 	rc, err = tc.repl.getChecksum(ctx, id)
@@ -236,7 +236,7 @@ func TestGetChecksumNotSuccessfulExitConditions(t *testing.T) {
 
 	// The task failed to start because the checksum collection request did not
 	// join. Later, when it joins, it doesn't find any trace and times out.
-	id = uuid.MakeV4()
+	id = uuid.FastMakeV4()
 	c, _ = tc.repl.trackReplicaChecksum(id)
 	require.NoError(t, startChecksumTask(context.Background(), id))
 	// TODO(pavelkalinnikov): Avoid this long wait in the test.
@@ -328,7 +328,7 @@ func TestReplicaChecksumSHA512(t *testing.T) {
 	for i, l := range locks {
 		txnID := uuid.FromUint128(uint128.FromInts(0, uint64(l.txnID)))
 		txn := &roachpb.Transaction{TxnMeta: enginepb.TxnMeta{ID: txnID}}
-		require.NoError(t, storage.MVCCAcquireLock(ctx, eng, &txn.TxnMeta, txn.IgnoredSeqNums, l.str, roachpb.Key(l.key), nil, 0, 0))
+		require.NoError(t, storage.MVCCAcquireLock(ctx, eng, txn, l.str, roachpb.Key(l.key), nil, 0, 0))
 
 		rd, err = CalcReplicaDigest(ctx, desc, eng, kvpb.ChecksumMode_CHECK_FULL, unlim, nil /* settings */)
 		require.NoError(t, err)

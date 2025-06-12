@@ -6,12 +6,8 @@
 package tests
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -24,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/prometheus"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -153,7 +148,6 @@ type tpceOptions struct {
 	activeCustomers  int                             // --active-customers in the workload
 	threads          int                             // overrides the number of threads used
 	skipCleanup      bool                            // passes --skip-cleanup to the tpc-e workload
-	exportMetrics    bool                            // exports metrics to stats.json used by roachperf
 	during           func(ctx context.Context) error // invoked concurrently with the workload
 }
 type tpceSetupType int
@@ -254,10 +248,6 @@ func runTPCE(ctx context.Context, t test.Test, c cluster.Cluster, opts tpceOptio
 		if strings.Contains(result.Stdout, "Reported tpsE :    --   (not between 80% and 100%)") {
 			return errors.New("invalid tpsE fraction")
 		}
-
-		if opts.exportMetrics {
-			return exportTPCEResults(t, c, result.Stdout)
-		}
 		return nil
 	})
 	if opts.during != nil {
@@ -269,16 +259,14 @@ func runTPCE(ctx context.Context, t test.Test, c cluster.Cluster, opts tpceOptio
 func registerTPCE(r registry.Registry) {
 	// Nightly, small scale configuration.
 	smallNightly := tpceOptions{
-		customers:     5_000,
-		nodes:         3,
-		cpus:          4,
-		ssds:          1,
-		exportMetrics: true,
+		customers: 5_000,
+		nodes:     3,
+		cpus:      4,
+		ssds:      1,
 	}
 	r.Add(registry.TestSpec{
 		Name:             fmt.Sprintf("tpce/c=%d/nodes=%d", smallNightly.customers, smallNightly.nodes),
 		Owner:            registry.OwnerTestEng,
-		Benchmark:        true,
 		Timeout:          4 * time.Hour,
 		Cluster:          r.MakeClusterSpec(smallNightly.nodes+1, spec.CPU(smallNightly.cpus), spec.WorkloadNode(), spec.WorkloadNodeCPU(smallNightly.cpus), spec.SSD(smallNightly.ssds)),
 		CompatibleClouds: registry.OnlyGCE,
@@ -293,11 +281,10 @@ func registerTPCE(r registry.Registry) {
 
 	// Weekly, large scale configuration.
 	largeWeekly := tpceOptions{
-		customers:     100_000,
-		nodes:         5,
-		cpus:          32,
-		ssds:          2,
-		exportMetrics: true,
+		customers: 100_000,
+		nodes:     5,
+		cpus:      32,
+		ssds:      2,
 	}
 	r.Add(registry.TestSpec{
 		Name:             fmt.Sprintf("tpce/c=%d/nodes=%d", largeWeekly.customers, largeWeekly.nodes),
@@ -305,115 +292,10 @@ func registerTPCE(r registry.Registry) {
 		Benchmark:        true,
 		CompatibleClouds: registry.OnlyGCE,
 		Suites:           registry.Suites(registry.Weekly),
-		Timeout:          8 * time.Hour,
+		Timeout:          36 * time.Hour,
 		Cluster:          r.MakeClusterSpec(largeWeekly.nodes+1, spec.CPU(largeWeekly.cpus), spec.WorkloadNode(), spec.WorkloadNodeCPU(largeWeekly.cpus), spec.SSD(largeWeekly.ssds)),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runTPCE(ctx, t, c, largeWeekly)
 		},
 	})
-}
-
-type tpceMetrics struct {
-	AvgLatency  string `json:"AvgLatency"`
-	P50Latency  string `json:"p50Latency"`
-	P90Latency  string `json:"p90Latency"`
-	P99Latency  string `json:"p99Latency"`
-	PMaxLatency string `json:"pMaxLatency"`
-}
-
-// exportTPCEResults parses the output of `tpce` into a JSON file
-// and writes it to the perf directory that roachperf expects. TPCE
-// is an open-loop workload with a fixed rate of transactions, so
-// we want roachperf to plot the latency. There are too many transaction
-// types to plot, so we isolate just `TradeResult`:
-//
-// The Measured Throughput is computed as the total number of Valid Trade-Result Transactions
-// within the Measurement Interval divided by the duration of the Measurement Interval in seconds.
-func exportTPCEResults(t test.Test, c cluster.Cluster, result string) error {
-	// Filter out everything but the TradeResult transaction metrics.
-	//
-	// Example output of TPCE:
-	// _Transaction_______|__pass_mix___pass_lat__|______txns______txns/s_______mix__________avg__________p50__________p90__________p99_________pMax
-	//  ...
-	//  TradeResult       |     false       true  |     72114       10.02    9.926%     41.918ms     37.796ms     57.525ms    104.819ms    299.538ms
-	s := bufio.NewScanner(strings.NewReader(result))
-	for s.Scan() {
-		if !strings.HasPrefix(s.Text(), " TradeResult") {
-			continue
-		}
-
-		fields := strings.Fields(s.Text())
-		if len(fields) != 13 {
-			return errors.Errorf("exportTPCEResults: unexpected format of metrics")
-		}
-
-		removeUnits := func(s string) string {
-			s, _ = strings.CutSuffix(s, "ms")
-			return s
-		}
-
-		metrics := tpceMetrics{
-			AvgLatency:  removeUnits(fields[8]),
-			P50Latency:  removeUnits(fields[9]),
-			P90Latency:  removeUnits(fields[10]),
-			P99Latency:  removeUnits(fields[11]),
-			PMaxLatency: removeUnits(fields[12]),
-		}
-
-		var metricBytes []byte
-		var err error
-		fileName := roachtestutil.GetBenchmarkMetricsFileName(t)
-		if t.ExportOpenmetrics() {
-			labels := map[string]string{
-				"workload": "tpce",
-			}
-			labelString := roachtestutil.GetOpenmetricsLabelString(t, c, labels)
-			metricBytes = GetTpceOpenmetricsBytes(metrics, fields[5], labelString)
-		} else {
-			metricBytes, err = json.Marshal(metrics)
-		}
-
-		if err != nil {
-			return err
-		}
-
-		// Copy the metrics to the artifacts directory, so it can be exported to roachperf.
-		// Assume single node artifacts, since the metrics we get are aggregated amongst the cluster.
-		perfDir := fmt.Sprintf("%s/1.perf", t.ArtifactsDir())
-		if err = os.MkdirAll(perfDir, 0755); err != nil {
-			return err
-		}
-
-		return os.WriteFile(fmt.Sprintf("%s/%s", perfDir, fileName), metricBytes, 0666)
-	}
-	return errors.Errorf("exportTPCEResults: found no lines starting with TradeResult")
-}
-
-func GetTpceOpenmetricsBytes(
-	metrics tpceMetrics, countOfLatencies string, labelString string,
-) []byte {
-
-	var buffer bytes.Buffer
-	now := timeutil.Now().Unix()
-
-	buffer.WriteString("# TYPE tpce_latency summary\n")
-	buffer.WriteString("# HELP tpce_latency Latency metrics for TPC-E transactions\n")
-
-	latencyString := func(quantile, latency string) string {
-		return fmt.Sprintf("tpce_latency{%s,unit=\"ms\",is_higher_better=\"false\",quantile=\"%s\"} %s %d\n", labelString, quantile, latency, now)
-	}
-
-	buffer.WriteString(latencyString("0.5", metrics.P50Latency))
-	buffer.WriteString(latencyString("0.9", metrics.P90Latency))
-	buffer.WriteString(latencyString("0.99", metrics.P99Latency))
-	buffer.WriteString(latencyString("1.0", metrics.PMaxLatency))
-	// Sum is hardcoded is zero to denote null values, since we don't have exact values
-	buffer.WriteString(fmt.Sprintf("tpce_latency_sum{%s} %d %d\n", labelString, 0, now))
-	buffer.WriteString(fmt.Sprintf("tpce_latency_count{%s} %s %d\n", labelString, countOfLatencies, now))
-	buffer.WriteString("# TYPE tpce_avg_latency gauge\n")
-	buffer.WriteString(fmt.Sprintf("tpce_avg_latency{%s,unit=\"ms\",is_higher_better=\"false\"} %s %d\n", labelString, metrics.AvgLatency, now))
-	buffer.WriteString("# EOF")
-
-	metricsBytes := buffer.Bytes()
-	return metricsBytes
 }

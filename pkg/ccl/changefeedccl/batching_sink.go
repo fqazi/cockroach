@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 )
 
@@ -45,7 +44,7 @@ type SinkClient interface {
 // BatchBuffer is an interface to aggregate KVs into a payload that can be sent
 // to the sink.
 type BatchBuffer interface {
-	Append(ctx context.Context, key []byte, value []byte, attributes attributes)
+	Append(key []byte, value []byte, attributes attributes)
 	ShouldFlush() bool
 
 	// Once all data has been Append'ed, Close can be called to return a finalized
@@ -102,15 +101,12 @@ type flushReq struct {
 // but separate from the encoded keys and values.
 type attributes struct {
 	tableName string
-	headers   map[string][]byte
-	mvcc      hlc.Timestamp
 }
 
 type rowEvent struct {
 	key             []byte
 	val             []byte
 	topicDescriptor TopicDescriptor
-	headers         rowHeaders
 
 	alloc kvevent.Alloc
 	mvcc  hlc.Timestamp
@@ -199,15 +195,13 @@ func (s *batchingSink) EmitRow(
 	key, value []byte,
 	updated, mvcc hlc.Timestamp,
 	alloc kvevent.Alloc,
-	headers rowHeaders,
 ) error {
-	s.metrics.recordMessageSize(int64(len(key) + len(value) + headersLen(headers)))
+	s.metrics.recordMessageSize(int64(len(key) + len(value)))
 
 	payload := newRowEvent()
 	payload.key = key
 	payload.val = value
 	payload.topicDescriptor = topic
-	payload.headers = headers
 	payload.mvcc = mvcc
 	payload.alloc = alloc
 
@@ -304,15 +298,13 @@ func hashToInt(h hash.Hash32, buf []byte) int {
 }
 
 // Append adds the contents of a kvEvent to the batch, merging its alloc pool.
-func (sb *sinkBatch) Append(ctx context.Context, e *rowEvent) {
+func (sb *sinkBatch) Append(e *rowEvent) {
 	if sb.isEmpty() {
 		sb.bufferTime = timeutil.Now()
 	}
 
-	sb.buffer.Append(ctx, e.key, e.val, attributes{
+	sb.buffer.Append(e.key, e.val, attributes{
 		tableName: e.topicDescriptor.GetTableName(),
-		headers:   e.headers,
-		mvcc:      e.mvcc,
 	})
 
 	sb.keys.Add(hashToInt(sb.hasher, e.key))
@@ -352,9 +344,6 @@ func (s *batchingSink) runBatchingWorker(ctx context.Context) {
 	// Once finalized, batches are sent to a parallelIO struct which handles
 	// performing multiple Flushes in parallel while maintaining Keys() ordering.
 	ioHandler := func(ctx context.Context, req IORequest) error {
-		ctx, sp := tracing.ChildSpan(ctx, "changefeed.batching_sink.io_handler")
-		defer sp.Finish()
-
 		batch, _ := req.(*sinkBatch)
 		defer s.metrics.recordSinkIOInflightChange(int64(-batch.numMessages))
 		s.metrics.recordSinkIOInflightChange(int64(batch.numMessages))
@@ -394,9 +383,6 @@ func (s *batchingSink) runBatchingWorker(ctx context.Context) {
 	}
 
 	tryFlushBatch := func(topic string) error {
-		ctx, sp := tracing.ChildSpan(ctx, "changefeed.batching_sink.try_flush_batch")
-		defer sp.Finish()
-
 		batchBuffer, ok := topicBatches[topic]
 		if !ok || batchBuffer.isEmpty() {
 			return nil
@@ -504,7 +490,7 @@ func (s *batchingSink) runBatchingWorker(ctx context.Context) {
 					topicBatches[topic] = batchBuffer
 				}
 
-				batchBuffer.Append(ctx, r)
+				batchBuffer.Append(r)
 				if s.knobs.OnAppend != nil {
 					s.knobs.OnAppend(r)
 				}
@@ -534,6 +520,7 @@ func (s *batchingSink) runBatchingWorker(ctx context.Context) {
 		case result := <-ioEmitter.GetResult():
 			handleResult(result)
 		case <-flushTimer.Ch():
+			flushTimer.MarkRead()
 			isTimerPending = false
 			if err := flushAll(); err != nil {
 				s.handleError(err)
@@ -578,19 +565,8 @@ func makeBatchingSink(
 	}
 
 	sink.wg.GoCtx(func(ctx context.Context) error {
-		ctx, sp := tracing.ChildSpan(ctx, "changefeed.batching_sink.worker")
-		defer sp.Finish()
-
 		sink.runBatchingWorker(ctx)
 		return nil
 	})
 	return sink
-}
-
-func headersLen(headers rowHeaders) int {
-	var total int
-	for k, v := range headers {
-		total += len(k) + len(v)
-	}
-	return total
 }

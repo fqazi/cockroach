@@ -6,6 +6,8 @@ go_library(
         "disk_counters.go",
         "disk_counters_darwin.go",
         "health_check.go",
+        "monitor_counters.go",
+        "monitor_counters_linux.go",
         "recorder.go",
         "runtime.go",
         "runtime_generic.go",
@@ -66,11 +68,9 @@ go_library(
         "//pkg/util/log",
         "//pkg/util/log/eventpb",
         "//pkg/util/log/logmetrics",
-        "//pkg/util/log/severity",
         "//pkg/util/metric",
         "//pkg/util/syncutil",
         "//pkg/util/system",
-        "@com_github_cockroachdb_crlib//crtime",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_redact//:redact",
         "@com_github_dustin_go_humanize//:go-humanize",
@@ -81,51 +81,59 @@ go_library(
         "@com_github_shirou_gopsutil_v3//net",
     ] + select({
         "@io_bazel_rules_go//go/platform:aix": [
+            "//pkg/storage/disk",
             "@com_github_shirou_gopsutil_v3//disk",
         ],
         "@io_bazel_rules_go//go/platform:android": [
+            "//pkg/storage/disk",
             "@com_github_shirou_gopsutil_v3//disk",
         ],
         "@io_bazel_rules_go//go/platform:darwin": [
+            "//pkg/storage/disk",
             "@com_github_lufia_iostat//:iostat",
         ],
         "@io_bazel_rules_go//go/platform:dragonfly": [
+            "//pkg/storage/disk",
             "@com_github_shirou_gopsutil_v3//disk",
         ],
         "@io_bazel_rules_go//go/platform:freebsd": [
+            "//pkg/storage/disk",
             "@com_github_shirou_gopsutil_v3//disk",
         ],
         "@io_bazel_rules_go//go/platform:illumos": [
+            "//pkg/storage/disk",
             "@com_github_shirou_gopsutil_v3//disk",
         ],
         "@io_bazel_rules_go//go/platform:ios": [
+            "//pkg/storage/disk",
             "@com_github_lufia_iostat//:iostat",
         ],
         "@io_bazel_rules_go//go/platform:js": [
+            "//pkg/storage/disk",
             "@com_github_shirou_gopsutil_v3//disk",
         ],
         "@io_bazel_rules_go//go/platform:linux": [
+            "//pkg/storage/disk",
             "@com_github_shirou_gopsutil_v3//disk",
         ],
         "@io_bazel_rules_go//go/platform:netbsd": [
+            "//pkg/storage/disk",
             "@com_github_shirou_gopsutil_v3//disk",
         ],
         "@io_bazel_rules_go//go/platform:openbsd": [
-            "@com_github_shirou_gopsutil_v3//disk",
-        ],
-        "@io_bazel_rules_go//go/platform:osx": [
+            "//pkg/storage/disk",
             "@com_github_shirou_gopsutil_v3//disk",
         ],
         "@io_bazel_rules_go//go/platform:plan9": [
-            "@com_github_shirou_gopsutil_v3//disk",
-        ],
-        "@io_bazel_rules_go//go/platform:qnx": [
+            "//pkg/storage/disk",
             "@com_github_shirou_gopsutil_v3//disk",
         ],
         "@io_bazel_rules_go//go/platform:solaris": [
+            "//pkg/storage/disk",
             "@com_github_shirou_gopsutil_v3//disk",
         ],
         "@io_bazel_rules_go//go/platform:windows": [
+            "//pkg/storage/disk",
             "@com_github_shirou_gopsutil_v3//disk",
         ],
         "//conditions:default": [],
@@ -159,7 +167,6 @@ go_test(
         "//pkg/testutils/serverutils",
         "//pkg/ts/tspb",
         "//pkg/ts/tsutil",
-        "//pkg/util/hlc",
         "//pkg/util/leaktest",
         "//pkg/util/log",
         "//pkg/util/log/eventpb",

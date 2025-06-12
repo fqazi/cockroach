@@ -18,14 +18,6 @@
     width: 230px;
 }
 
-.view-execution-detail-button {
-    white-space: nowrap;
-
-    >svg {
-        margin-right: $spacing-x-small;
-    }
-}
-
 .download-execution-detail-button {
     white-space: nowrap;
 
@@ -34,6 +26,11 @@
     }
 }
 
-.full-width {
-  width: 100%;
+.sorted-table {
+    width: 100%;
+}
+
+.gutter-row {
+  display: flex;
+  justify-content: right;
 }

@@ -573,9 +573,11 @@ func getValueBytesAndOffsets(
 	return valueBytes, offsets[:batchLength+1]
 }
 
-// Close should be called once the converter is no longer needed so that its
+// Release should be called once the converter is no longer needed so that its
 // memory could be GCed.
-func (c *ArrowBatchConverter) Close(ctx context.Context) {
+// TODO(yuzefovich): consider renaming this to Close in order to not be confused
+// with execreleasable.Releasable interface.
+func (c *ArrowBatchConverter) Release(ctx context.Context) {
 	if c.acc != nil {
 		c.acc.Shrink(ctx, c.accountedFor)
 	}

@@ -128,7 +128,7 @@ func newColBatchScanBase(
 ) (*colBatchScanBase, *kvpb.BoundedStalenessHeader, *cFetcherTableArgs, error) {
 	// NB: we hit this with a zero NodeID (but !ok) with multi-tenancy.
 	if nodeID, ok := flowCtx.NodeID.OptionalNodeID(); nodeID == 0 && ok {
-		return nil, nil, nil, errors.AssertionFailedf("attempting to create a ColBatchScan with uninitialized NodeID")
+		return nil, nil, nil, errors.Errorf("attempting to create a ColBatchScan with uninitialized NodeID")
 	}
 	var bsHeader *kvpb.BoundedStalenessHeader
 	if aost := flowCtx.EvalCtx.AsOfSystemTime; aost != nil && aost.BoundedStaleness {
@@ -328,35 +328,25 @@ func NewColBatchScan(
 		flowCtx.Txn,
 		bsHeader,
 		spec.Reverse,
-		tableArgs.RequiresRawMVCCValues(),
 		spec.LockingStrength,
 		spec.LockingWaitPolicy,
 		spec.LockingDurability,
 		flowCtx.EvalCtx.SessionData().LockTimeout,
-		flowCtx.EvalCtx.SessionData().DeadlockTimeout,
 		kvFetcherMemAcc,
 		flowCtx.EvalCtx.TestingKnobs.ForceProductionValues,
-		spec.FetchSpec.External,
 	)
 	fetcher := cFetcherPool.Get().(*cFetcher)
-	shouldCollectStats := execstats.ShouldCollectStats(ctx, flowCtx.CollectStats)
 	fetcher.cFetcherArgs = cFetcherArgs{
 		execinfra.GetWorkMemLimit(flowCtx),
 		estimatedRowCount,
 		flowCtx.TraceKV,
 		true, /* singleUse */
-		shouldCollectStats,
+		execstats.ShouldCollectStats(ctx, flowCtx.CollectStats),
 		false, /* alwaysReallocate */
-		flowCtx.Txn,
 	}
 	if err = fetcher.Init(fetcherAllocator, kvFetcher, tableArgs); err != nil {
 		fetcher.Release()
 		return nil, nil, err
-	}
-	if shouldCollectStats {
-		if flowTxn := flowCtx.EvalCtx.Txn; flowTxn != nil {
-			base.ContentionEventsListener.Init(flowTxn.ID())
-		}
 	}
 	return &ColBatchScan{
 		colBatchScanBase: base,

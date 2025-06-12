@@ -139,37 +139,35 @@ func (mb *mutationBuilder) buildFKChecksAndCascadesForDelete() {
 		//    there are any "orphaned" rows in the child table.
 		if a := h.fk.DeleteReferenceAction(); a != tree.Restrict && a != tree.NoAction {
 			telemetry.Inc(sqltelemetry.ForeignKeyCascadesUseCounter)
-			cols := make(opt.ColList, len(h.tabOrdinals))
-			for i, tabOrd := range h.tabOrdinals {
-				cols[i] = mb.fetchColIDs[tabOrd]
-			}
-			var builder memo.PostQueryBuilder
-			var triggerEventType tree.TriggerEventType
+			var builder memo.CascadeBuilder
 			switch a {
 			case tree.Cascade:
 				// Try the fast builder first; if it cannot be used, use the regular builder.
 				var ok bool
-				builder, ok = mb.tryNewOnDeleteFastCascadeBuilder(h.fk, i, h.otherTab)
+				builder, ok = tryNewOnDeleteFastCascadeBuilder(
+					mb.b.ctx, mb.md, mb.b.catalog, h.fk, i, mb.tab, h.otherTab, mb.outScope,
+				)
 				if !ok {
 					mb.ensureWithID()
-					builder = mb.newOnDeleteCascadeBuilder(i, h.otherTab, cols)
+					builder = newOnDeleteCascadeBuilder(mb.tab, i, h.otherTab)
 				}
-				triggerEventType = tree.TriggerEventDelete
 			case tree.SetNull, tree.SetDefault:
 				mb.ensureWithID()
-				builder = mb.newOnDeleteSetBuilder(i, h.otherTab, a, cols)
-				triggerEventType = tree.TriggerEventUpdate
+				builder = newOnDeleteSetBuilder(mb.tab, i, h.otherTab, a)
 			default:
 				panic(errors.AssertionFailedf("unhandled action type %s", a))
 			}
-			hasBeforeTriggers := cat.HasRowLevelTriggers(
-				h.otherTab, tree.TriggerActionTimeBefore, triggerEventType,
-			)
+
+			cols := make(opt.ColList, len(h.tabOrdinals))
+			for i, tabOrd := range h.tabOrdinals {
+				cols[i] = mb.fetchColIDs[tabOrd]
+			}
 			mb.cascades = append(mb.cascades, memo.FKCascade{
-				FKConstraint:      h.fk,
-				HasBeforeTriggers: hasBeforeTriggers,
-				Builder:           builder,
-				WithID:            mb.withID,
+				FKConstraint: h.fk,
+				Builder:      builder,
+				WithID:       mb.withID,
+				OldValues:    cols,
+				NewValues:    nil,
 			})
 			continue
 		}
@@ -297,26 +295,26 @@ func (mb *mutationBuilder) buildFKChecksForUpdate() {
 		if a := h.fk.UpdateReferenceAction(); a != tree.Restrict && a != tree.NoAction {
 			telemetry.Inc(sqltelemetry.ForeignKeyCascadesUseCounter)
 			mb.ensureWithID()
+			builder := newOnUpdateCascadeBuilder(mb.tab, i, h.otherTab, a)
+
 			oldCols := make(opt.ColList, len(h.tabOrdinals))
 			newCols := make(opt.ColList, len(h.tabOrdinals))
-			for j, tabOrd := range h.tabOrdinals {
+			for i, tabOrd := range h.tabOrdinals {
 				fetchColID := mb.fetchColIDs[tabOrd]
 				updateColID := mb.updateColIDs[tabOrd]
 				if updateColID == 0 {
 					updateColID = fetchColID
 				}
-				oldCols[j] = fetchColID
-				newCols[j] = updateColID
+
+				oldCols[i] = fetchColID
+				newCols[i] = updateColID
 			}
-			hasBeforeTriggers := cat.HasRowLevelTriggers(
-				h.otherTab, tree.TriggerActionTimeBefore, tree.TriggerEventUpdate,
-			)
-			builder := mb.newOnUpdateCascadeBuilder(i, h.otherTab, a, oldCols, newCols)
 			mb.cascades = append(mb.cascades, memo.FKCascade{
-				FKConstraint:      h.fk,
-				HasBeforeTriggers: hasBeforeTriggers,
-				Builder:           builder,
-				WithID:            mb.withID,
+				FKConstraint: h.fk,
+				Builder:      builder,
+				WithID:       mb.withID,
+				OldValues:    oldCols,
+				NewValues:    newCols,
 			})
 			continue
 		}
@@ -416,9 +414,11 @@ func (mb *mutationBuilder) buildFKChecksForUpsert() {
 		if a := h.fk.UpdateReferenceAction(); a != tree.Restrict && a != tree.NoAction {
 			telemetry.Inc(sqltelemetry.ForeignKeyCascadesUseCounter)
 			mb.ensureWithID()
+			builder := newOnUpdateCascadeBuilder(mb.tab, i, h.otherTab, a)
+
 			oldCols := make(opt.ColList, len(h.tabOrdinals))
 			newCols := make(opt.ColList, len(h.tabOrdinals))
-			for j, tabOrd := range h.tabOrdinals {
+			for i, tabOrd := range h.tabOrdinals {
 				fetchColID := mb.fetchColIDs[tabOrd]
 				// Here we don't need to use the upsertColIDs because the rows that
 				// correspond to inserts will be ignored in the cascade.
@@ -427,18 +427,15 @@ func (mb *mutationBuilder) buildFKChecksForUpsert() {
 					updateColID = fetchColID
 				}
 
-				oldCols[j] = fetchColID
-				newCols[j] = updateColID
+				oldCols[i] = fetchColID
+				newCols[i] = updateColID
 			}
-			hasBeforeTriggers := cat.HasRowLevelTriggers(
-				h.otherTab, tree.TriggerActionTimeBefore, tree.TriggerEventUpdate,
-			)
-			builder := mb.newOnUpdateCascadeBuilder(i, h.otherTab, a, oldCols, newCols)
 			mb.cascades = append(mb.cascades, memo.FKCascade{
-				FKConstraint:      h.fk,
-				HasBeforeTriggers: hasBeforeTriggers,
-				Builder:           builder,
-				WithID:            mb.withID,
+				FKConstraint: h.fk,
+				Builder:      builder,
+				WithID:       mb.withID,
+				OldValues:    oldCols,
+				NewValues:    newCols,
 			})
 			continue
 		}
@@ -657,19 +654,13 @@ func (h *fkCheckHelper) buildOtherTableScan(parent bool) (outScope *scope, tabMe
 		}
 	}
 	otherTabMeta := h.mb.b.addTable(h.otherTab, tree.NewUnqualifiedTableName(h.otherTab.Name()))
-	indexFlags := &tree.IndexFlags{IgnoreForeignKeys: true}
-	if h.mb.b.evalCtx.SessionData().AvoidFullTableScansInMutations {
-		indexFlags.AvoidFullScan = true
-	}
-
 	return h.mb.b.buildScan(
 		otherTabMeta,
 		h.otherTabOrdinals,
-		indexFlags,
+		&tree.IndexFlags{IgnoreForeignKeys: true},
 		locking,
 		h.mb.b.allocScope(),
 		true, /* disableNotVisibleIndex */
-		cat.PolicyScopeExempt,
 	), otherTabMeta
 }
 

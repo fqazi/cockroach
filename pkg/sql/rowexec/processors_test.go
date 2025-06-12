@@ -35,7 +35,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/distsqlutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -44,7 +43,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -180,24 +179,22 @@ func TestPostProcess(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
-	flowCtx := &execinfra.FlowCtx{}
 	for tcIdx, tc := range testCases {
 		t.Run(strconv.Itoa(tcIdx), func(t *testing.T) {
 			inBuf := distsqlutils.NewRowBuffer(types.ThreeIntCols, input, distsqlutils.RowBufferArgs{})
 			outBuf := &distsqlutils.RowBuffer{}
 
 			var out execinfra.ProcOutputHelper
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
+			semaCtx := tree.MakeSemaContext()
 			evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
-			defer evalCtx.Stop(ctx)
-			if err := out.Init(ctx, &tc.post, inBuf.OutputTypes(), &semaCtx, evalCtx, flowCtx); err != nil {
+			defer evalCtx.Stop(context.Background())
+			if err := out.Init(context.Background(), &tc.post, inBuf.OutputTypes(), &semaCtx, evalCtx); err != nil {
 				t.Fatal(err)
 			}
 
 			// Run the rows through the helper.
 			for i := range input {
-				status, err := out.EmitRow(ctx, input[i], outBuf)
+				status, err := out.EmitRow(context.Background(), input[i], outBuf)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -318,7 +315,7 @@ func TestProcessorBaseContext(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	// Use a custom context to distinguish it from the background one.
-	ctx := context.WithValue(context.Background(), contextKey{}, struct{}{})
+	ctx := context.WithValue(context.Background(), struct{}{}, struct{}{})
 	st := cluster.MakeTestingClusterSettings()
 
 	runTest := func(t *testing.T, f func(noop *noopProcessor)) {
@@ -401,7 +398,7 @@ func getPGXConnAndCleanupFunc(
 	ctx context.Context, t *testing.T, servingSQLAddr string,
 ) (*pgx.Conn, func()) {
 	t.Helper()
-	pgURL, cleanup := pgurlutils.PGUrl(t, servingSQLAddr, t.Name(), url.User(username.RootUser))
+	pgURL, cleanup := sqlutils.PGUrl(t, servingSQLAddr, t.Name(), url.User(username.RootUser))
 	pgURL.Path = "test"
 	pgxConfig, err := pgx.ParseConfig(pgURL.String())
 	require.NoError(t, err)
@@ -934,5 +931,3 @@ func testReaderProcessorDrain(
 		}
 	})
 }
-
-type contextKey struct{}

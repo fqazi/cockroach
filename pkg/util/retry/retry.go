@@ -11,7 +11,6 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 )
@@ -31,7 +30,7 @@ type Options struct {
 // backoff retry loop.
 type Retry struct {
 	opts           Options
-	ctx            context.Context
+	ctxDoneChan    <-chan struct{}
 	currentAttempt int
 	isReset        bool
 }
@@ -62,7 +61,7 @@ func StartWithCtx(ctx context.Context, opts Options) Retry {
 
 	var r Retry
 	r.opts = opts
-	r.ctx = ctx
+	r.ctxDoneChan = ctx.Done()
 	r.mustReset()
 	return r
 }
@@ -77,7 +76,7 @@ func (r *Retry) Reset() {
 	select {
 	case <-r.opts.Closer:
 		// When the closer has fired, you can't keep going.
-	case <-r.ctx.Done():
+	case <-r.ctxDoneChan:
 		// When the context was canceled, you can't keep going.
 	default:
 		r.mustReset()
@@ -121,17 +120,13 @@ func (r *Retry) Next() bool {
 	}
 
 	// Wait before retry.
-	d := r.retryIn()
-	if d > 0 {
-		log.VEventfDepth(r.ctx, 1 /* depth */, 2 /* level */, "will retry after %s", d)
-	}
 	select {
-	case <-time.After(d):
+	case <-time.After(r.retryIn()):
 		r.currentAttempt++
 		return true
 	case <-r.opts.Closer:
 		return false
-	case <-r.ctx.Done():
+	case <-r.ctxDoneChan:
 		return false
 	}
 }

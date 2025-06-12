@@ -8,6 +8,7 @@ package cli
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/csv"
 	"encoding/gob"
@@ -25,10 +26,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cli/clierrorplus"
 	"github.com/cockroachdb/cockroach/pkg/cli/clisqlclient"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/ts"
 	"github.com/cockroachdb/cockroach/pkg/ts/tspb"
 	"github.com/cockroachdb/cockroach/pkg/ts/tsutil"
+	"github.com/cockroachdb/cockroach/pkg/util/httputil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/spf13/cobra"
@@ -37,19 +40,13 @@ import (
 // TODO(knz): this struct belongs elsewhere.
 // See: https://github.com/cockroachdb/cockroach/issues/49509
 var debugTimeSeriesDumpOpts = struct {
-	format                 tsDumpFormat
-	from, to               timestampValue
-	clusterLabel           string
-	yaml                   string
-	targetURL              string
-	ddApiKey               string
-	ddSite                 string
-	httpToken              string
-	clusterID              string
-	zendeskTicket          string
-	organizationName       string
-	userName               string
-	storeToNodeMapYAMLFile string
+	format       tsDumpFormat
+	from, to     timestampValue
+	clusterLabel string
+	yaml         string
+	targetURL    string
+	ddApiKey     string
+	httpToken    string
 }{
 	format:       tsDumpText,
 	from:         timestampValue{},
@@ -62,11 +59,10 @@ var debugTimeSeriesDumpCmd = &cobra.Command{
 	Use:   "tsdump",
 	Short: "dump all the raw timeseries values in a cluster",
 	Long: `
-Dumps all of the raw timeseries values in a cluster. If the supplied time range
-is within the 'timeseries.storage.resolution_10s.ttl', metrics will be dumped
-as it is with 10s resolution. If the time range extends outside of the TTL, the
-timeseries downsampled to 30m resolution will be dumped for the time beyond
-the TTL.
+Dumps all of the raw timeseries values in a cluster. Only the default resolution
+is retrieved, i.e. typically datapoints older than the value of the
+'timeseries.storage.resolution_10s.ttl' cluster setting will be absent from the
+output.
 
 When an input file is provided instead (as an argument), this input file
 must previously have been created with the --format=raw switch. The command
@@ -83,7 +79,7 @@ will then convert it to the --format requested in the current invocation.
 		}
 
 		var w tsWriter
-		switch cmd := debugTimeSeriesDumpOpts.format; cmd {
+		switch debugTimeSeriesDumpOpts.format {
 		case tsDumpRaw:
 			if convertFile != "" {
 				return errors.Errorf("input file is already in raw format")
@@ -105,24 +101,24 @@ will then convert it to the --format requested in the current invocation.
 				10_000_000, /* threshold */
 				doRequest,
 			)
-		case tsDumpDatadogInit, tsDumpDatadog:
-			if len(args) < 1 {
-				return errors.New("no input file provided")
-			}
-
-			targetURL, err := getDatadogTargetURL(debugTimeSeriesDumpOpts.ddSite)
-			if err != nil {
-				return err
-			}
-
-			var datadogWriter = makeDatadogWriter(
-				targetURL,
-				cmd == tsDumpDatadogInit,
+		case tsDumpDatadog:
+			w = makeDatadogWriter(
+				ctx,
+				"https://api.datadoghq.com/api/v2/series",
+				false, /* init */
 				debugTimeSeriesDumpOpts.ddApiKey,
-				100,
+				100, /* threshold */
 				doDDRequest,
 			)
-			return datadogWriter.upload(args[0])
+		case tsDumpDatadogInit:
+			w = makeDatadogWriter(
+				ctx,
+				"https://api.datadoghq.com/api/v2/series",
+				true, /* init */
+				debugTimeSeriesDumpOpts.ddApiKey,
+				100, /* threshold */
+				doDDRequest,
+			)
 		case tsDumpOpenMetrics:
 			if debugTimeSeriesDumpOpts.targetURL != "" {
 				write := beginHttpRequestWithWritePipe(debugTimeSeriesDumpOpts.targetURL)
@@ -152,16 +148,13 @@ will then convert it to the --format requested in the current invocation.
 				StartNanos: time.Time(debugTimeSeriesDumpOpts.from).UnixNano(),
 				EndNanos:   time.Time(debugTimeSeriesDumpOpts.to).UnixNano(),
 				Names:      names,
-				Resolutions: []tspb.TimeSeriesResolution{
-					tspb.TimeSeriesResolution_RESOLUTION_30M, tspb.TimeSeriesResolution_RESOLUTION_10S,
-				},
 			}
 			tsClient := tspb.NewTimeSeriesClient(conn)
 
 			if debugTimeSeriesDumpOpts.format == tsDumpRaw {
 				stream, err := tsClient.DumpRaw(context.Background(), req)
 				if err != nil {
-					return errors.Wrapf(err, "connecting to %s", conn.Target())
+					return err
 				}
 
 				// Buffer the writes to os.Stdout since we're going to
@@ -191,7 +184,7 @@ will then convert it to the --format requested in the current invocation.
 			}
 			stream, err := tsClient.Dump(context.Background(), req)
 			if err != nil {
-				return errors.Wrapf(err, "connecting to %s", conn.Target())
+				return err
 			}
 			recv = stream.Recv
 		} else {
@@ -205,6 +198,7 @@ will then convert it to the --format requested in the current invocation.
 			}
 
 			dec := gob.NewDecoder(f)
+			gob.Register(&roachpb.KeyValue{})
 			decodeOne := func() (*tspb.TimeSeriesData, error) {
 				var v roachpb.KeyValue
 				err := dec.Decode(&v)
@@ -246,22 +240,13 @@ will then convert it to the --format requested in the current invocation.
 				return w.Flush()
 			}
 			if err != nil {
-				return errors.Wrapf(err, "connecting to %s", serverCfg.AdvertiseAddr)
+				return err
 			}
 			if err := w.Emit(data); err != nil {
 				return err
 			}
 		}
 	}),
-}
-
-func getDatadogTargetURL(site string) (string, error) {
-	host, ok := ddSiteToHostMap[site]
-	if !ok {
-		return "", fmt.Errorf("unsupported datadog site '%s'", site)
-	}
-	targetURL := fmt.Sprintf(targetURLFormat, host)
-	return targetURL, nil
 }
 
 func doRequest(req *http.Request) error {
@@ -273,6 +258,30 @@ func doRequest(req *http.Request) error {
 
 	if resp.StatusCode > 299 {
 		return errors.Newf("tsdump: bad response status: %+v", resp)
+	}
+	return nil
+}
+
+func doDDRequest(req *http.Request) error {
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	ddResp := DatadogResp{}
+	err = json.Unmarshal(respBytes, &ddResp)
+	if err != nil {
+		return err
+	}
+	if len(ddResp.Errors) > 0 {
+		return errors.Newf("tsdump: error response from datadog: %v", ddResp.Errors)
+	}
+	if resp.StatusCode > 299 {
+		return errors.Newf("tsdump: bad response status code: %+v", resp)
 	}
 	return nil
 }
@@ -305,6 +314,202 @@ type tsWriter interface {
 	Emit(*tspb.TimeSeriesData) error
 	Flush() error
 }
+
+// datadogWriter can convert our metrics to Datadog format and send
+// them via HTTP to the public DD endpoint, assuming an API key is set
+// in the CLI flags.
+type datadogWriter struct {
+	sync.Once
+	targetURL string
+	buffer    bytes.Buffer
+	series    []DatadogSeries
+	timestamp int64
+	init      bool
+	apiKey    string
+	// namePrefix sets the string to prepend to all metric names. The
+	// names are kept with `.` delimiters.
+	namePrefix string
+	doRequest  func(req *http.Request) error
+	threshold  int
+}
+
+func makeDatadogWriter(
+	ctx context.Context,
+	targetURL string,
+	init bool,
+	apiKey string,
+	threshold int,
+	doRequest func(req *http.Request) error,
+) *datadogWriter {
+	return &datadogWriter{
+		targetURL:  targetURL,
+		buffer:     bytes.Buffer{},
+		timestamp:  timeutil.Now().Unix(),
+		init:       init,
+		apiKey:     apiKey,
+		namePrefix: "crdb.tsdump.", // Default pre-set prefix to distinguish these uploads.
+		doRequest:  doRequest,
+		threshold:  threshold,
+	}
+}
+
+// DatadogPoint is a single metric point in Datadog format
+type DatadogPoint struct {
+	// Timestamp must be in seconds since Unix epoch.
+	Timestamp int64   `json:"timestamp"`
+	Value     float64 `json:"value"`
+}
+
+// DatadogSeries contains a JSON encoding of a single series object
+// that can be send to Datadog.
+type DatadogSeries struct {
+	Metric    string         `json:"metric"`
+	Type      int            `json:"type"`
+	Points    []DatadogPoint `json:"points"`
+	Resources []struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	} `json:"resources"`
+	// In order to encode arbitrary key-value pairs, use a `:` delimited
+	// tag string like `cluster:dedicated`.
+	Tags []string `json:"tags"`
+}
+
+// DatadogSubmitMetrics is the top level JSON object that must be sent to Datadog.
+// See: https://docs.datadoghq.com/api/latest/metrics/#submit-metrics
+type DatadogSubmitMetrics struct {
+	Series []DatadogSeries `json:"series"`
+}
+
+const (
+	DatadogSeriesTypeUnknown = iota
+	DatadogSeriesTypeCounter
+	DatadogSeriesTypeRate
+	DatadogSeriesTypeGauge
+)
+
+func (d *datadogWriter) Emit(data *tspb.TimeSeriesData) error {
+	series := &DatadogSeries{
+		// TODO(davidh): This is not correct. We should inspect metric metadata and set appropriately.
+		// The impact of not doing this is that the metric will be treated as a gauge by default.
+		Type:   DatadogSeriesTypeUnknown,
+		Points: make([]DatadogPoint, len(data.Datapoints)),
+	}
+
+	name := data.Name
+
+	var tags []string
+	// Hardcoded values
+	tags = append(tags, "cluster_type:SELF_HOSTED")
+	tags = append(tags, "job:cockroachdb")
+	tags = append(tags, "region:local")
+
+	// Command values
+	clusterTag := ""
+	if debugTimeSeriesDumpOpts.clusterLabel != "" {
+		clusterTag = fmt.Sprintf("cluster:%s", debugTimeSeriesDumpOpts.clusterLabel)
+	} else if serverCfg.ClusterName != "" {
+		clusterTag = fmt.Sprintf("cluster:%s", serverCfg.ClusterName)
+	} else {
+		clusterTag = fmt.Sprintf("cluster:cluster-debug-%d", d.timestamp)
+	}
+	tags = append(tags, clusterTag)
+	d.Do(func() {
+		fmt.Printf("Cluster label is set to: %s\n", clusterTag)
+	})
+
+	sl := reCrStoreNode.FindStringSubmatch(data.Name)
+	if len(sl) != 0 {
+		storeNodeKey := sl[1]
+		if storeNodeKey == "node" {
+			storeNodeKey += "_id"
+		}
+		tags = append(tags, fmt.Sprintf("%s:%s", storeNodeKey, data.Source))
+		name = sl[2]
+	} else {
+		tags = append(tags, "node_id:0")
+	}
+
+	series.Tags = tags
+
+	series.Metric = d.namePrefix + name
+
+	// When running in init mode, we insert zeros with the current
+	// timestamp in order to populate Datadog's metrics list. Then the
+	// user can enable these metrics for historic ingest and load the
+	// full dataset. This should only be necessary once globally.
+	if d.init {
+		series.Points = []DatadogPoint{{
+			Value:     0,
+			Timestamp: timeutil.Now().Unix(),
+		}}
+	} else {
+		for i, ts := range data.Datapoints {
+			series.Points[i].Value = ts.Value
+			series.Points[i].Timestamp = ts.TimestampNanos / 1_000_000_000
+		}
+	}
+
+	// We append every series directly to the list. This isn't ideal
+	// because every series batch that `Emit` is called with will contain
+	// around 360 points and the same metric will repeat many many times.
+	// This causes us to repeat the metadata collection here. Ideally, we
+	// can find the series object for this metric if it already exists
+	// and insert the points there.
+	d.series = append(d.series, *series)
+
+	// The limit of `100` is an experimentally set heuristic. It can
+	// probably be increased. This results in a payload that's generally
+	// below 2MB. DD's limit is 5MB.
+	if len(d.series) > d.threshold {
+		fmt.Printf(
+			"tsdump datadog upload: sending payload containing %d series including %s\n",
+			len(d.series),
+			d.series[0].Metric,
+		)
+		return d.Flush()
+	}
+	return nil
+}
+
+func (d *datadogWriter) Flush() error {
+	var buf bytes.Buffer
+	err := json.NewEncoder(&buf).Encode(&DatadogSubmitMetrics{Series: d.series})
+	if err != nil {
+		return err
+	}
+	var zipBuf bytes.Buffer
+	g := gzip.NewWriter(&zipBuf)
+	_, err = io.Copy(g, &buf)
+	if err != nil {
+		return err
+	}
+	err = g.Close()
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("POST", d.targetURL, &zipBuf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("DD-API-KEY", d.apiKey)
+	req.Header.Set(server.ContentTypeHeader, "application/json")
+	req.Header.Set(httputil.ContentEncodingHeader, "gzip")
+
+	err = d.doRequest(req)
+	if err != nil {
+		return err
+	}
+	d.series = nil
+	return nil
+}
+
+type DatadogResp struct {
+	Errors []string `json:"errors"`
+}
+
+var _ tsWriter = &datadogWriter{}
 
 type jsonWriter struct {
 	sync.Once
@@ -379,8 +584,6 @@ func (o *jsonWriter) Emit(data *tspb.TimeSeriesData) error {
 			storeNodeKey += "_id"
 		}
 		out.Metric[storeNodeKey] = data.Source
-		// `instance` is used in dashboards to split data by node.
-		out.Metric["instance"] = data.Source
 		name = sl[2]
 	}
 

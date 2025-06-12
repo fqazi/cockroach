@@ -26,7 +26,6 @@ go_library(
         "//pkg/kv/kvprober",
         "//pkg/kv/kvserver/liveness/livenesspb",
         "//pkg/multitenant/tenantcapabilities",
-        "//pkg/multitenant/tenantcapabilitiespb",
         "//pkg/roachpb",
         "//pkg/rpc",
         "//pkg/security/securitytest",
@@ -38,8 +37,8 @@ go_library(
         "//pkg/sql/catalog",
         "//pkg/sql/catalog/descpb",
         "//pkg/storage",
-        "//pkg/testutils/pgurlutils",
         "//pkg/testutils/skip",
+        "//pkg/testutils/sqlutils",
         "//pkg/util/envutil",
         "//pkg/util/hlc",
         "//pkg/util/httputil",
@@ -51,7 +50,7 @@ go_library(
         "//pkg/util/tracing",
         "//pkg/util/uuid",
         "@com_github_cockroachdb_errors//:errors",
-        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//:go_default_library",
     ],
 )
 
@@ -144,11 +143,13 @@ go_test(
     ],
     embed = [":serverutils"],
     deps = [
+        "//pkg/base",
         "//pkg/security/securityassets",
         "//pkg/security/securitytest",
         "//pkg/server",
         "//pkg/testutils",
         "//pkg/util/leaktest",
+        "//pkg/util/log",
         "@com_github_stretchr_testify//require",
     ],
 )

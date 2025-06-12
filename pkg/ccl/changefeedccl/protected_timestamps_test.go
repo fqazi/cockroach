@@ -100,7 +100,7 @@ func TestChangefeedUpdateProtectedTimestamp(t *testing.T) {
 			span roachpb.Span) func() []hlc.Timestamp {
 			return func() (r []hlc.Timestamp) {
 				require.NoError(t,
-					spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, srv.Clock().Now()))
+					spanconfigptsreader.TestingRefreshPTSState(ctx, t, ptsReader, srv.Clock().Now()))
 				protections, _, err := ptsReader.GetProtectionTimestamps(ctx, span)
 				require.NoError(t, err)
 				return protections
@@ -217,7 +217,7 @@ func TestChangefeedProtectedTimestamps(t *testing.T) {
 			span roachpb.Span) func() []hlc.Timestamp {
 			return func() (r []hlc.Timestamp) {
 				require.NoError(t,
-					spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, srv.Clock().Now()))
+					spanconfigptsreader.TestingRefreshPTSState(ctx, t, ptsReader, srv.Clock().Now()))
 				protections, _, err := ptsReader.GetProtectionTimestamps(ctx, span)
 				require.NoError(t, err)
 				return protections
@@ -442,8 +442,8 @@ func TestChangefeedCanceledWhenPTSIsOld(t *testing.T) {
 		sqlDB.Exec(t, fmt.Sprintf("ALTER CHANGEFEED %d SET gc_protect_expires_after = '250ms'", jobFeed.JobID()))
 
 		// Stale PTS record should trigger job cancellation.
-		require.NoError(t, jobFeed.WaitForState(func(s jobs.State) bool {
-			return s == jobs.StateCanceled
+		require.NoError(t, jobFeed.WaitForStatus(func(s jobs.Status) bool {
+			return s == jobs.StatusCanceled
 		}))
 	}
 
@@ -509,7 +509,7 @@ func TestPTSRecordProtectsTargetsAndSystemTables(t *testing.T) {
 		})
 	var jobID jobspb.JobID
 	sqlDB.QueryRow(t, `CREATE CHANGEFEED FOR TABLE foo INTO 'null://'`).Scan(&jobID)
-	waitForJobState(sqlDB, t, jobID, `running`)
+	waitForJobStatus(sqlDB, t, jobID, `running`)
 
 	// Lay protected timestamp record.
 	ptr := createProtectedTimestampRecord(ctx, s.Codec(), jobID, targets, ts)
@@ -548,7 +548,7 @@ func TestPTSRecordProtectsTargetsAndSystemTables(t *testing.T) {
 		t.Logf("updating PTS reader cache to %s", asOf)
 		require.NoError(
 			t,
-			spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, asOf),
+			spanconfigptsreader.TestingRefreshPTSState(ctx, t, ptsReader, asOf),
 		)
 		require.NoError(t, repl.ReadProtectedTimestampsForTesting(ctx))
 	}
@@ -669,9 +669,10 @@ func TestChangefeedMigratesProtectedTimestampTargets(t *testing.T) {
 
 		// removes table 3 from the target of the PTS record.
 		removeOnePTSTarget := func(recordID uuid.UUID) error {
+			recordIDBs := recordID.GetBytes()
 			return execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 				s := `select target from system.protected_ts_records where id = $1`
-				datums, err := txn.QueryRowEx(ctx, "pts-test", txn.KV(), sessiondata.NodeUserSessionDataOverride, s, recordID)
+				datums, err := txn.QueryRowEx(ctx, "pts-test", txn.KV(), sessiondata.NodeUserSessionDataOverride, s, recordIDBs)
 				require.NoError(t, err)
 				j := tree.MustBeDBytes(datums[0])
 
@@ -687,7 +688,7 @@ func TestChangefeedMigratesProtectedTimestampTargets(t *testing.T) {
 				require.NoError(t, err)
 
 				_, err = txn.ExecEx(ctx, "pts-test", txn.KV(), sessiondata.NodeUserSessionDataOverride,
-					"UPDATE system.protected_ts_records SET target = $1 WHERE id = $2", bs, recordID,
+					"UPDATE system.protected_ts_records SET target = $1 WHERE id = $2", bs, recordIDBs,
 				)
 				require.NoError(t, err)
 				return nil

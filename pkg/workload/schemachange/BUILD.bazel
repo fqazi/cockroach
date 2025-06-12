@@ -14,7 +14,6 @@ go_library(
         "schemachange.go",
         "tracing.go",
         "type_resolver.go",
-        "validation.go",
         "watch_dog.go",
         "workload_result.go",
         ":gen-optype-stringer",  # keep
@@ -32,8 +31,8 @@ go_library(
         "//pkg/sql/pgwire/pgcode",
         "//pkg/sql/pgwire/pgerror",
         "//pkg/sql/randgen",
+        "//pkg/sql/schemachange",
         "//pkg/sql/sem/catconstants",
-        "//pkg/sql/sem/idxtype",
         "//pkg/sql/sem/tree",
         "//pkg/sql/types",
         "//pkg/util",
@@ -58,6 +57,7 @@ go_library(
         "@io_opentelemetry_go_otel_trace//:trace",
         "@io_opentelemetry_go_proto_otlp//collector/trace/v1:trace",
         "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_x_exp//slices",
     ],
 )
 
@@ -77,5 +77,6 @@ go_test(
         "//pkg/sql/sem/tree",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_stretchr_testify//require",
+        "@org_golang_x_exp//slices",
     ],
 )

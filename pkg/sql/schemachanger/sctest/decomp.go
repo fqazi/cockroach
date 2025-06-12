@@ -16,7 +16,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scdecomp"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scdeps/sctestdeps"
@@ -42,6 +41,9 @@ func DecomposeToElements(t *testing.T, dir string, factory TestServerFactory) {
 		// Create a test cluster.
 		factory.Run(ctx, t, func(_ serverutils.TestServerInterface, db *gosql.DB) {
 			tdb := sqlutils.MakeSQLRunner(db)
+			// We need to disable the declarative schema changer so that we don't end
+			// up high-fiving ourselves here.
+			tdb.Exec(t, `SET CLUSTER SETTING sql.defaults.use_declarative_schema_changer = 'off'`)
 			datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
 				return runDecomposeTest(ctx, t, d, tdb)
 			})
@@ -76,14 +78,6 @@ func runDecomposeTest(
 			return nil
 		})
 		require.NotNilf(t, desc, "descriptor with name %q not found", name)
-
-		// Resolve all types from the descriptors we just read. This is required so
-		// that the ColumnType element, which contains the type name, includes the
-		// proper name.
-		testState := sctestdeps.NewTestDependencies(sctestdeps.WithDescriptors(allDescs.Catalog))
-		err := typedesc.HydrateTypesInDescriptor(ctx, desc, testState)
-		require.NoError(t, err)
-
 		m := make(map[scpb.Element]scpb.Status)
 		visitor := func(status scpb.Status, element scpb.Element) {
 			m[element] = status

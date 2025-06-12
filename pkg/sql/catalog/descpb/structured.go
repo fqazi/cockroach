@@ -69,12 +69,6 @@ type IndexID = catid.IndexID
 // ConstraintID is a custom type for TableDescriptor constraint IDs.
 type ConstraintID = catid.ConstraintID
 
-// TriggerID is a custom type for TableDescriptor trigger IDs.
-type TriggerID = catid.TriggerID
-
-// PolicyID is a custom type for TableDescriptor policy IDs.
-type PolicyID = catid.PolicyID
-
 // DescriptorVersion is a custom type for TableDescriptor Versions.
 type DescriptorVersion uint64
 
@@ -229,11 +223,6 @@ func (desc *TableDescriptor) IsView() bool {
 // MaterializedView implements the TableDescriptor interface.
 func (desc *TableDescriptor) MaterializedView() bool {
 	return desc.IsMaterializedView
-}
-
-// IsReadOnly implements the TableDescriptor interface.
-func (desc *TableDescriptor) IsReadOnly() bool {
-	return desc.IsMaterializedView || desc.GetExternal() != nil
 }
 
 // IsPhysicalTable implements the TableDescriptor interface.

@@ -28,7 +28,6 @@ func (i *immediateVisitor) CreateSequenceDescriptor(
 		Privileges:    &catpb.PrivilegeDescriptor{Version: catpb.Version23_2}, // Populated by `UserPrivileges` elements and `Owner` element
 		Version:       1,
 		FormatVersion: descpb.InterleavedFormatVersion,
-		Temporary:     op.Temporary,
 	}).BuildCreatedMutable()
 	tabledDesc := mut.(*tabledesc.Mutable)
 	tabledDesc.State = descpb.DescriptorState_ADD

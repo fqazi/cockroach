@@ -19,7 +19,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 )
 
 const minOffset = 0
@@ -89,13 +89,11 @@ func testStartPreceding(t *testing.T, evalCtx *Context, wfr *WindowFrameRun, off
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
 				}
-				if cmp, err := value.Compare(context.Background(), evalCtx, valueAt); err != nil {
-					t.Fatal(err)
-				} else if cmp <= 0 {
+				if value.Compare(evalCtx, valueAt) <= 0 {
 					if idx != frameStartIdx {
 						t.Errorf("FrameStartIdx returned wrong result on Preceding: expected %+v, found %+v", idx, frameStartIdx)
 						t.Errorf("Search for %+v when wfr.RowIdx=%+v", value, wfr.RowIdx)
-						t.Error(partitionToString(context.Background(), wfr.Rows))
+						t.Errorf(partitionToString(context.Background(), wfr.Rows))
 						t.Fatal("")
 					}
 					break
@@ -139,7 +137,7 @@ func testStartFollowing(t *testing.T, evalCtx *Context, wfr *WindowFrameRun, off
 					if idx != frameStartIdx {
 						t.Errorf("FrameStartIdx returned wrong result on Following: expected %+v, found %+v", idx, frameStartIdx)
 						t.Errorf("Search for %+v when wfr.RowIdx=%+v", value, wfr.RowIdx)
-						t.Error(partitionToString(context.Background(), wfr.Rows))
+						t.Errorf(partitionToString(context.Background(), wfr.Rows))
 						t.Fatal("")
 					}
 					break
@@ -148,13 +146,11 @@ func testStartFollowing(t *testing.T, evalCtx *Context, wfr *WindowFrameRun, off
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
 				}
-				if cmp, err := value.Compare(context.Background(), evalCtx, valueAt); err != nil {
-					t.Fatal(err)
-				} else if cmp <= 0 {
+				if value.Compare(evalCtx, valueAt) <= 0 {
 					if idx != frameStartIdx {
 						t.Errorf("FrameStartIdx returned wrong result on Following: expected %+v, found %+v", idx, frameStartIdx)
 						t.Errorf("Search for %+v when wfr.RowIdx=%+v", value, wfr.RowIdx)
-						t.Error(partitionToString(context.Background(), wfr.Rows))
+						t.Errorf(partitionToString(context.Background(), wfr.Rows))
 						t.Fatal("")
 					}
 					break
@@ -198,13 +194,11 @@ func testEndPreceding(t *testing.T, evalCtx *Context, wfr *WindowFrameRun, offse
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
 				}
-				if cmp, err := value.Compare(context.Background(), evalCtx, valueAt); err != nil {
-					t.Fatal(err)
-				} else if cmp >= 0 {
+				if value.Compare(evalCtx, valueAt) >= 0 {
 					if idx+1 != frameEndIdx {
 						t.Errorf("FrameEndIdx returned wrong result on Preceding: expected %+v, found %+v", idx+1, frameEndIdx)
 						t.Errorf("Search for %+v when wfr.RowIdx=%+v", value, wfr.RowIdx)
-						t.Error(partitionToString(context.Background(), wfr.Rows))
+						t.Errorf(partitionToString(context.Background(), wfr.Rows))
 						t.Fatal("")
 					}
 					break
@@ -248,13 +242,11 @@ func testEndFollowing(t *testing.T, evalCtx *Context, wfr *WindowFrameRun, offse
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
 				}
-				if cmp, err := value.Compare(context.Background(), evalCtx, valueAt); err != nil {
-					t.Fatal(err)
-				} else if cmp >= 0 {
+				if value.Compare(evalCtx, valueAt) >= 0 {
 					if idx+1 != frameEndIdx {
 						t.Errorf("FrameEndIdx returned wrong result on Following: expected %+v, found %+v", idx+1, frameEndIdx)
 						t.Errorf("Search for %+v when wfr.RowIdx=%+v", value, wfr.RowIdx)
-						t.Error(partitionToString(context.Background(), wfr.Rows))
+						t.Errorf(partitionToString(context.Background(), wfr.Rows))
 						t.Fatal("")
 					}
 					break
@@ -266,11 +258,11 @@ func testEndFollowing(t *testing.T, evalCtx *Context, wfr *WindowFrameRun, offse
 
 func makeIntSortedPartition(count int) indexedRows {
 	partition := indexedRows{rows: make([]indexedRow, count)}
-	rng, _ := randutil.NewTestRand()
+	r := rand.New(rand.NewSource(timeutil.Now().UnixNano()))
 	number := 0
 	for idx := 0; idx < count; idx++ {
-		if rng.Float64() < probabilityOfNewNumber {
-			number += rng.Intn(10)
+		if r.Float64() < probabilityOfNewNumber {
+			number += r.Intn(10)
 		}
 		partition.rows[idx] = indexedRow{idx: idx, row: tree.Datums{tree.NewDInt(tree.DInt(number))}}
 	}
@@ -279,11 +271,11 @@ func makeIntSortedPartition(count int) indexedRows {
 
 func makeFloatSortedPartition(count int) indexedRows {
 	partition := indexedRows{rows: make([]indexedRow, count)}
-	rng, _ := randutil.NewTestRand()
+	r := rand.New(rand.NewSource(timeutil.Now().UnixNano()))
 	number := 0.0
 	for idx := 0; idx < count; idx++ {
-		if rng.Float64() < probabilityOfNewNumber {
-			number += rng.Float64() * 10
+		if r.Float64() < probabilityOfNewNumber {
+			number += r.Float64() * 10
 		}
 		partition.rows[idx] = indexedRow{idx: idx, row: tree.Datums{tree.NewDFloat(tree.DFloat(number))}}
 	}
@@ -292,12 +284,12 @@ func makeFloatSortedPartition(count int) indexedRows {
 
 func makeDecimalSortedPartition(t *testing.T, count int) indexedRows {
 	partition := indexedRows{rows: make([]indexedRow, count)}
-	rng, _ := randutil.NewTestRand()
+	r := rand.New(rand.NewSource(timeutil.Now().UnixNano()))
 	number := &tree.DDecimal{}
 	for idx := 0; idx < count; idx++ {
 		tmp := apd.Decimal{}
-		if rng.Float64() < probabilityOfNewNumber {
-			_, err := tmp.SetFloat64(rng.Float64() * 10)
+		if r.Float64() < probabilityOfNewNumber {
+			_, err := tmp.SetFloat64(r.Float64() * 10)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

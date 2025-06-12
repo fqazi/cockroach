@@ -5,7 +5,6 @@ go_library(
     srcs = [
         "avro.go",
         "errors.go",
-        "name.go",
         "options.go",
         "settings.go",
         "sink_url.go",
@@ -14,6 +13,7 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/clusterversion",
         "//pkg/jobs",
         "//pkg/jobs/jobspb",
         "//pkg/kv/kvpb",
@@ -22,7 +22,6 @@ go_library(
         "//pkg/sql/catalog/descpb",
         "//pkg/sql/pgwire/pgcode",
         "//pkg/sql/pgwire/pgerror",
-        "//pkg/sql/types",
         "//pkg/util",
         "//pkg/util/iterutil",
         "//pkg/util/metamorphic",
@@ -35,17 +34,18 @@ go_test(
     srcs = [
         "errors_test.go",
         "main_test.go",
-        "name_test.go",
         "options_test.go",
     ],
     embed = [":changefeedbase"],
     deps = [
         "//pkg/ccl",
+        "//pkg/clusterversion",
         "//pkg/jobs",
         "//pkg/kv/kvpb",
         "//pkg/security/securityassets",
         "//pkg/security/securitytest",
         "//pkg/server",
+        "//pkg/settings/cluster",
         "//pkg/testutils/serverutils",
         "//pkg/testutils/testcluster",
         "//pkg/util/leaktest",

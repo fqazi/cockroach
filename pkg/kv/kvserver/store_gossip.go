@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
@@ -241,7 +240,7 @@ type StoreGossip struct {
 	cachedCapacity *cachedCapacity
 	// gossipOngoing indicates whether there is currently a triggered gossip,
 	// to avoid recursively re-triggering gossip.
-	gossipOngoing atomic.Bool
+	gossipOngoing syncutil.AtomicBool
 	// gossiper is used for adding information to gossip.
 	gossiper InfoGossiper
 	// descriptorGetter is used for getting an up to date or cached store
@@ -371,8 +370,8 @@ func (s *StoreGossip) GossipStore(ctx context.Context, useCached bool) error {
 	// recursively triggering a gossip of the store capacity. This doesn't
 	// block direct calls to GossipStore, rather capacity triggered gossip
 	// outlined in the methods below.
-	s.gossipOngoing.Store(true)
-	defer s.gossipOngoing.Store(false)
+	s.gossipOngoing.Set(true)
+	defer s.gossipOngoing.Set(false)
 
 	storeDesc, err := s.descriptorGetter.Descriptor(ctx, useCached)
 	if err != nil {
@@ -486,7 +485,7 @@ func (s *StoreGossip) shouldGossipOnCapacityDelta() (should bool, reason string)
 	// immediately as we will already be gossiping an up to date (cached)
 	// capacity. If we have recently gossiped the store descriptor, avoid
 	// re-gossiping too soon, to avoid overloading the receivers of store gossip.
-	if s.gossipOngoing.Load() || !s.canEagerlyGossipNow() {
+	if s.gossipOngoing.Get() || !s.canEagerlyGossipNow() {
 		return
 	}
 

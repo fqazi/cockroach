@@ -3,14 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import * as protos from "@cockroachlabs/crdb-protobuf-client";
 import { createMemoryHistory } from "history";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import Long from "long";
 import moment from "moment-timezone";
-
-import { Filters } from "../queryFilter";
+import * as protos from "@cockroachlabs/crdb-protobuf-client";
 import { SortSetting } from "../sortedtable";
+import { Filters } from "../queryFilter";
 import { TimeScale } from "../timeScaleDropdown";
 
 const history = createMemoryHistory({ initialEntries: ["/transactions"] });

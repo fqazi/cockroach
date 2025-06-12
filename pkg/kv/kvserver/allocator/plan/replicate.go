@@ -15,10 +15,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/allocatorimpl"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/benignerror"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -97,11 +95,10 @@ type AllocatorReplica interface {
 	LeaseCheckReplica
 	RangeUsageInfo() allocator.RangeUsageInfo
 	RaftStatus() *raft.Status
-	GetCompactedIndex() kvpb.RaftIndex
+	GetFirstIndex() kvpb.RaftIndex
 	LastReplicaAdded() (roachpb.ReplicaID, time.Time)
 	StoreID() roachpb.StoreID
 	GetRangeID() roachpb.RangeID
-	SendStreamStats(*rac2.RangeSendStreamStats)
 }
 
 // ReplicaPlanner implements the ReplicationPlanner interface.
@@ -535,7 +532,7 @@ func (rp ReplicaPlanner) findRemoveVoter(
 			lastReplAdded = 0
 		}
 		raftStatus := repl.RaftStatus()
-		if raftStatus == nil || raftStatus.RaftState != raftpb.StateLeader {
+		if raftStatus == nil || raftStatus.RaftState != raft.StateLeader {
 			// If requested, assume all replicas are up-to-date.
 			if rp.knobs.AllowVoterRemovalWhenNotLeader {
 				candidates = allocatorimpl.FilterUnremovableReplicasWithoutRaftStatus(

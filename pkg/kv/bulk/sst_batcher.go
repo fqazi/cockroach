@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -54,6 +53,7 @@ var (
 		"bulkio.ingest.flush_delay",
 		"amount of time to wait before sending a file to the KV/Storage layer to ingest",
 		0,
+		settings.NonNegativeDuration,
 	)
 
 	senderConcurrency = settings.RegisterIntSetting(
@@ -132,6 +132,8 @@ type SSTBatcher struct {
 
 	// writeAtBatchTS is passed to the writeAtBatchTs argument to db.AddSStable.
 	writeAtBatchTS bool
+
+	initialSplitDone bool
 
 	// disableScatters controls scatters of the as-we-fill split ranges.
 	disableScatters bool
@@ -337,23 +339,6 @@ func (b *SSTBatcher) AddMVCCKeyWithImportEpoch(
 	if canRetainBuffer {
 		b.valueScratch = buf
 	}
-	if err != nil {
-		return err
-	}
-	return b.AddMVCCKey(ctx, key, b.valueScratch)
-}
-
-func (b *SSTBatcher) AddMVCCKeyLDR(ctx context.Context, key storage.MVCCKey, value []byte) error {
-
-	mvccVal, err := storage.DecodeMVCCValue(value)
-	if err != nil {
-		return err
-	}
-	mvccVal.MVCCValueHeader.OriginTimestamp = key.Timestamp
-	mvccVal.OriginID = 1
-	// NOTE: since we are setting header values, EncodeMVCCValueToBuf will
-	// always use the sctarch buffer or return an error.
-	b.valueScratch, _, err = storage.EncodeMVCCValueToBuf(mvccVal, b.valueScratch[:0])
 	if err != nil {
 		return err
 	}
@@ -644,12 +629,9 @@ func (b *SSTBatcher) doFlush(ctx context.Context, reason int) error {
 					resp, err := b.db.AdminScatter(ctx, splitAt, maxScatterSize)
 					b.currentStats.ScatterWait += timeutil.Since(beforeScatter)
 					if err != nil {
-						// TODO(dt): switch to a typed error.
-						if strings.Contains(err.Error(), "existing range size") {
-							log.VEventf(ctx, 1, "%s scattered non-empty range rejected: %v", b.name, err)
-						} else {
-							log.Warningf(ctx, "%s failed to scatter	: %v", b.name, err)
-						}
+						// err could be a max size violation, but this is unexpected since we
+						// split before, so a warning is probably ok.
+						log.Warningf(ctx, "%s failed to scatter	: %v", b.name, err)
 					} else {
 						b.currentStats.Scatters++
 						b.currentStats.ScatterMoved += resp.ReplicasScatteredBytes
@@ -877,6 +859,7 @@ func (b *SSTBatcher) addSSTable(
 				req := &kvpb.AddSSTableRequest{
 					RequestHeader:                          kvpb.RequestHeader{Key: item.start, EndKey: item.end},
 					Data:                                   item.sstBytes,
+					DisallowShadowing:                      !b.disallowShadowingBelow.IsEmpty(),
 					DisallowShadowingBelow:                 b.disallowShadowingBelow,
 					MVCCStats:                              &item.stats,
 					IngestAsWrites:                         ingestAsWriteBatch,

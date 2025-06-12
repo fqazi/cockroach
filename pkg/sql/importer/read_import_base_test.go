@@ -130,7 +130,7 @@ func TestParallelImportProducerHandlesConsumerErrors(t *testing.T) {
 	}()
 
 	// Prepare import context, which flushes to kvCh frequently.
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	importCtx := &parallelImportContext{
 		semaCtx:    &semaCtx,
 		numWorkers: 1,
@@ -171,7 +171,7 @@ func TestParallelImportProducerHandlesCancellation(t *testing.T) {
 	}()
 
 	// Prepare import context, which flushes to kvCh frequently.
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	importCtx := &parallelImportContext{
 		numWorkers: 1,
 		batchSize:  2,

@@ -28,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/bufalloc"
@@ -84,8 +83,6 @@ var TxnCleanupThreshold = settings.RegisterDurationSetting(
 	"the threshold after which a transaction is considered abandoned and "+
 		"fit for removal, as measured by the maximum of its last heartbeat and timestamp",
 	time.Hour,
-	// TODO(arul): consider increasing the floor.
-	settings.PositiveDuration,
 )
 
 // MaxLocksPerCleanupBatch is the maximum number of locks that GC will send
@@ -145,10 +142,10 @@ var AdmissionPriority = settings.RegisterEnumSetting(
 	"kv.gc.admission_priority",
 	"the admission priority to use for mvcc gc work",
 	"bulk_normal_pri",
-	map[admissionpb.WorkPriority]string{
-		admissionpb.BulkNormalPri: "bulk_normal_pri",
-		admissionpb.NormalPri:     "normal_pri",
-		admissionpb.UserHighPri:   "user_high_pri",
+	map[int64]string{
+		int64(admissionpb.BulkNormalPri): "bulk_normal_pri",
+		int64(admissionpb.NormalPri):     "normal_pri",
+		int64(admissionpb.UserHighPri):   "user_high_pri",
 	},
 )
 
@@ -224,7 +221,6 @@ type Info struct {
 	// potentially necessary intent resolutions did not fail).
 	TransactionSpanGCAborted, TransactionSpanGCCommitted int
 	TransactionSpanGCStaging, TransactionSpanGCPending   int
-	TransactionSpanGCPrepared                            int
 	// AbortSpanTotal is the total number of transactions present in the AbortSpan.
 	AbortSpanTotal int
 	// AbortSpanConsidered is the number of AbortSpan entries old enough to be
@@ -457,7 +453,7 @@ func processReplicatedKeyRange(
 			CombineRangesAndPoints: true,
 			Reverse:                true,
 			ExcludeUserKeySpan:     excludeUserKeySpan,
-			ReadCategory:           fs.MVCCGCReadCategory,
+			ReadCategory:           storage.MVCCGCReadCategory,
 		}, func(iterator storage.MVCCIterator, span roachpb.Span, keyType storage.IterKeyType) error {
 			// Iterate all versions of all keys from oldest to newest. If a version is an
 			// intent it will have the highest timestamp of any versions and will be
@@ -543,7 +539,7 @@ func processReplicatedLocks(
 			LowerBound:   ltStartKey,
 			UpperBound:   ltEndKey,
 			MatchMinStr:  lock.Shared, // any strength
-			ReadCategory: fs.MVCCGCReadCategory,
+			ReadCategory: storage.MVCCGCReadCategory,
 		}
 		iter, err := storage.NewLockTableIterator(ctx, reader, opts)
 		if err != nil {
@@ -590,10 +586,8 @@ func processReplicatedLocks(
 	// We want to find/resolve replicated locks over both local and global
 	// keys. That's what the call to Select below will give us.
 	ltSpans := rditer.Select(desc.RangeID, rditer.SelectOpts{
-		Ranged: rditer.SelectRangedOptions{
-			RSpan:     desc.RSpan(),
-			LockTable: true,
-		},
+		ReplicatedBySpan:      desc.RSpan(),
+		ReplicatedSpansFilter: rditer.ReplicatedSpansLocksOnly,
 	})
 	for _, sp := range ltSpans {
 		if err := process(sp.Key, sp.EndKey); err != nil {
@@ -1222,8 +1216,6 @@ func processLocalKeyRange(
 		switch txn.Status {
 		case roachpb.PENDING:
 			info.TransactionSpanGCPending++
-		case roachpb.PREPARED:
-			info.TransactionSpanGCPrepared++
 		case roachpb.STAGING:
 			info.TransactionSpanGCStaging++
 		case roachpb.ABORTED:
@@ -1265,7 +1257,7 @@ func processLocalKeyRange(
 	endKey := keys.MakeRangeKeyPrefix(desc.EndKey)
 
 	_, err := storage.MVCCIterate(ctx, snap, startKey, endKey, hlc.Timestamp{},
-		storage.MVCCScanOptions{ReadCategory: fs.MVCCGCReadCategory},
+		storage.MVCCScanOptions{ReadCategory: storage.MVCCGCReadCategory},
 		func(kv roachpb.KeyValue) error {
 			return handleOne(kv)
 		})
@@ -1389,7 +1381,7 @@ func processReplicatedRangeTombstones(
 		IterKind:           storage.MVCCKeyIterKind,
 		KeyTypes:           storage.IterKeyTypeRangesOnly,
 		ExcludeUserKeySpan: excludeUserKeySpan,
-		ReadCategory:       fs.MVCCGCReadCategory,
+		ReadCategory:       storage.MVCCGCReadCategory,
 	})
 	defer iter.Close()
 

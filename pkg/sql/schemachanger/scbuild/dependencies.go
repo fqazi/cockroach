@@ -8,7 +8,6 @@ package scbuild
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
@@ -57,12 +56,6 @@ type Dependencies interface {
 	// Statements returns the statements behind this schema change.
 	Statements() []string
 
-	// EvalCtx returns the eval.Context for the schema change statement.
-	EvalCtx() *eval.Context
-
-	// SemaCtx returns the tree.SemaContext for the schema change statement.
-	SemaCtx() *tree.SemaContext
-
 	// AstFormatter returns something that can format AST nodes.
 	AstFormatter() AstFormatter
 
@@ -78,11 +71,7 @@ type Dependencies interface {
 	DescriptorCommentGetter() CommentGetter
 
 	// ZoneConfigGetter returns a zone config reader.
-	ZoneConfigGetter() scdecomp.ZoneConfigGetter
-
-	// GetDefaultZoneConfig is used to get the default zone config inside the
-	// server.
-	GetDefaultZoneConfig() *zonepb.ZoneConfig
+	ZoneConfigGetter() ZoneConfigGetter
 
 	// ClientNoticeSender returns a eval.ClientNoticeSender.
 	ClientNoticeSender() eval.ClientNoticeSender
@@ -95,15 +84,6 @@ type Dependencies interface {
 
 	// ReferenceProviderFactory returns a ReferenceProviderFactory.
 	ReferenceProviderFactory() ReferenceProviderFactory
-
-	// TemporarySchemaProvider returns a TemporarySchemaProvider.
-	TemporarySchemaProvider() TemporarySchemaProvider
-
-	// NodesStatusInfo returns a NodesStatusInfo.
-	NodesStatusInfo() NodesStatusInfo
-
-	// RegionProvider returns a RegionProvider.
-	RegionProvider() RegionProvider
 }
 
 // CreatePartitioningCCLCallback is the type of the CCL callback for creating
@@ -200,9 +180,6 @@ type AuthorizationAccessor interface {
 	// of, has ownership privilege of the desc.
 	HasOwnership(ctx context.Context, privilegeObject privilege.Object) (bool, error)
 
-	// UserHasOwnership is like HasOwnership but allows you to specify the owner.
-	UserHasOwnership(ctx context.Context, privilegeObject privilege.Object, user username.SQLUsername) (bool, error)
-
 	// CheckPrivilegeForUser verifies that `user` has `privilege` on `descriptor`.
 	CheckPrivilegeForUser(
 		ctx context.Context, privilegeObject privilege.Object, privilege privilege.Kind, user username.SQLUsername,
@@ -232,6 +209,9 @@ type AstFormatter interface {
 	// qualified names, where parts can be redacted.
 	FormatAstAsRedactableString(statement tree.Statement, annotations *tree.Annotations) redact.RedactableString
 }
+
+// ZoneConfigGetter see scdecomp.ZoneConfigGetter.
+type ZoneConfigGetter scdecomp.ZoneConfigGetter
 
 // CommentGetter see scdecomp.CommentGetter.
 type CommentGetter scdecomp.CommentGetter
@@ -276,8 +256,4 @@ type (
 	// FeatureChecker contains operations for checking if a schema change
 	// feature is allowed by the database administrator.
 	FeatureChecker = scbuildstmt.SchemaFeatureChecker
-
-	TemporarySchemaProvider = scbuildstmt.TemporarySchemaProvider
-	NodesStatusInfo         = scbuildstmt.NodeStatusInfo
-	RegionProvider          = scbuildstmt.RegionProvider
 )

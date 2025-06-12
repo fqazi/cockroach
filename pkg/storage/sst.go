@@ -14,8 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/errors"
@@ -84,6 +82,11 @@ func NewMultiMemSSTIterator(ssts [][]byte, verify bool, opts IterOptions) (MVCCI
 // timestamp is above the given timestamp and the values are equal. See comment
 // on AddSSTableRequest.DisallowShadowingBelow for details.
 //
+// If disallowShadowing is true, it also errors for any existing live key at the
+// SST key timestamp, and ignores entries that exactly match an existing entry
+// (key/value/timestamp), for backwards compatibility. If disallowShadowingBelow
+// is non-empty, disallowShadowing is ignored.
+//
 // sstTimestamp, if non-zero, represents the timestamp that all keys in the SST
 // are expected to be at. This method can make performance optimizations with
 // the expectation that no SST keys will be at any other timestamp. If the
@@ -103,6 +106,7 @@ func CheckSSTConflicts(
 	reader Reader,
 	start, end MVCCKey,
 	leftPeekBound, rightPeekBound roachpb.Key,
+	disallowShadowing bool,
 	disallowShadowingBelow hlc.Timestamp,
 	sstTimestamp hlc.Timestamp,
 	maxLockConflicts, targetLockConflictBytes int64,
@@ -110,7 +114,9 @@ func CheckSSTConflicts(
 ) (enginepb.MVCCStats, error) {
 
 	allowIdempotentHelper := func(_ hlc.Timestamp) bool { return false }
-	if !disallowShadowingBelow.IsEmpty() {
+	if disallowShadowingBelow.IsEmpty() && disallowShadowing {
+		allowIdempotentHelper = func(_ hlc.Timestamp) bool { return true }
+	} else if !disallowShadowingBelow.IsEmpty() {
 		allowIdempotentHelper = func(extTimestamp hlc.Timestamp) bool {
 			return disallowShadowingBelow.LessEq(extTimestamp)
 		}
@@ -139,7 +145,7 @@ func CheckSSTConflicts(
 		nonPrefixIter, err := reader.NewMVCCIterator(ctx, MVCCKeyAndIntentsIterKind, IterOptions{
 			KeyTypes:     IterKeyTypePointsAndRanges,
 			UpperBound:   end.Key,
-			ReadCategory: fs.BatchEvalReadCategory,
+			ReadCategory: BatchEvalReadCategory,
 		})
 		if err != nil {
 			return statsDiff, err
@@ -154,7 +160,7 @@ func CheckSSTConflicts(
 
 	// Check for any overlapping locks, and return them to be resolved.
 	if locks, err := ScanLocks(
-		ctx, reader, start.Key, end.Key, maxLockConflicts, targetLockConflictBytes); err != nil {
+		ctx, reader, start.Key, end.Key, maxLockConflicts, targetLockConflictBytes, BatchEvalReadCategory); err != nil {
 		return enginepb.MVCCStats{}, err
 	} else if len(locks) > 0 {
 		return enginepb.MVCCStats{}, &kvpb.LockConflictError{Locks: locks}
@@ -188,7 +194,7 @@ func CheckSSTConflicts(
 	rkIter, err = reader.NewMVCCIterator(ctx, MVCCKeyIterKind, IterOptions{
 		UpperBound:   rightPeekBound,
 		KeyTypes:     IterKeyTypeRangesOnly,
-		ReadCategory: fs.BatchEvalReadCategory,
+		ReadCategory: BatchEvalReadCategory,
 	})
 	if err != nil {
 		return enginepb.MVCCStats{}, err
@@ -233,7 +239,7 @@ func CheckSSTConflicts(
 		RangeKeyMaskingBelow: sstTimestamp,
 		Prefix:               usePrefixSeek,
 		useL6Filters:         true,
-		ReadCategory:         fs.BatchEvalReadCategory,
+		ReadCategory:         BatchEvalReadCategory,
 	})
 	if err != nil {
 		return enginepb.MVCCStats{}, err
@@ -286,8 +292,10 @@ func CheckSSTConflicts(
 
 		// Allow certain idempotent writes where key/timestamp/value all match:
 		//
+		// * disallowShadowing: any matching key.
 		// * disallowShadowingBelow: any matching key at or above the given timestamp.
-		allowIdempotent := !disallowShadowingBelow.IsEmpty() && disallowShadowingBelow.LessEq(extKey.Timestamp)
+		allowIdempotent := (!disallowShadowingBelow.IsEmpty() && disallowShadowingBelow.LessEq(extKey.Timestamp)) ||
+			(disallowShadowingBelow.IsEmpty() && disallowShadowing)
 		if allowIdempotent && sstKey.Timestamp.Equal(extKey.Timestamp) &&
 			bytes.Equal(extValueRaw, sstValueRaw) {
 			// This SST entry will effectively be a noop, but its stats have already
@@ -328,8 +336,9 @@ func CheckSSTConflicts(
 		// a WriteTooOldError -- that error implies that the client should
 		// retry at a higher timestamp, but we already know that such a retry
 		// would fail (because it will shadow an existing key).
-		if !extValueIsTombstone && !disallowShadowingBelow.IsEmpty() {
-			allowShadow := disallowShadowingBelow.LessEq(extKey.Timestamp) && bytes.Equal(extValueRaw, sstValueRaw)
+		if !extValueIsTombstone && (!disallowShadowingBelow.IsEmpty() || disallowShadowing) {
+			allowShadow := !disallowShadowingBelow.IsEmpty() &&
+				disallowShadowingBelow.LessEq(extKey.Timestamp) && bytes.Equal(extValueRaw, sstValueRaw)
 			if !allowShadow {
 				return kvpb.NewKeyCollisionError(sstKey.Key, sstValueRaw)
 			}
@@ -525,7 +534,7 @@ func CheckSSTConflicts(
 				// Check if shadowing a live key is allowed. Deleting a live key counts
 				// as a shadow.
 				extValueDeleted := extHasRange && extRangeKeys.Covers(extKey)
-				if !extValueIsTombstone && !extValueDeleted && !disallowShadowingBelow.IsEmpty() {
+				if !extValueIsTombstone && !extValueDeleted && (!disallowShadowingBelow.IsEmpty() || disallowShadowing) {
 					// Note that we don't check for value equality here, unlike in the
 					// point key shadow case. This is because a range key and a point key
 					// by definition have different values.
@@ -562,7 +571,7 @@ func CheckSSTConflicts(
 					// sstRangeKey starts earlier than extRangeKey. Add a fragment
 					overlappingSection.Key = extRangeKeys.Bounds.Key
 					statsDiff.AgeTo(sstRangeKeys.Versions.Newest().WallTime)
-					statsDiff.RangeKeyBytes += int64(mvccencoding.EncodedMVCCKeyPrefixLength(extRangeKeys.Bounds.Key))
+					statsDiff.RangeKeyBytes += int64(EncodedMVCCKeyPrefixLength(extRangeKeys.Bounds.Key))
 					addedFragment := MVCCRangeKeyStack{
 						Bounds:   roachpb.Span{Key: sstRangeKeys.Bounds.Key, EndKey: extRangeKeys.Bounds.Key},
 						Versions: sstRangeKeys.Versions,
@@ -570,7 +579,7 @@ func CheckSSTConflicts(
 					if addedFragment.CanMergeRight(extRangeKeys) {
 						statsDiff.Add(updateStatsOnRangeKeyMerge(extRangeKeys.Bounds.Key, sstRangeKeys.Versions))
 						// Remove the contribution for the end key.
-						statsDiff.RangeKeyBytes -= int64(mvccencoding.EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.EndKey))
+						statsDiff.RangeKeyBytes -= int64(EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.EndKey))
 						mergedIntoExisting = true
 					} else {
 						// Add the sst range key versions again, to account for the overlap
@@ -594,7 +603,7 @@ func CheckSSTConflicts(
 					// Same start key. No need to encode the start key again.
 					statsDiff.AgeTo(sstRangeKeys.Versions.Newest().WallTime)
 					statsDiff.RangeKeyCount--
-					statsDiff.RangeKeyBytes -= int64(mvccencoding.EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.Key))
+					statsDiff.RangeKeyBytes -= int64(EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.Key))
 				case 1:
 					// This SST start key fragments the ext range key. Unless the ext
 					// range key has already been fragmented at this point by sstPrevRangeKey.
@@ -605,7 +614,7 @@ func CheckSSTConflicts(
 					// done that for us.
 					statsDiff.AgeTo(sstRangeKeys.Versions.Newest().WallTime)
 					statsDiff.RangeKeyCount--
-					statsDiff.RangeKeyBytes -= int64(mvccencoding.EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.Key))
+					statsDiff.RangeKeyBytes -= int64(EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.Key))
 				}
 				if extRangeKeys.Bounds.EndKey.Compare(sstRangeKeys.Bounds.EndKey) < 0 {
 					overlappingSection.EndKey = extRangeKeys.Bounds.EndKey
@@ -613,8 +622,8 @@ func CheckSSTConflicts(
 				// Move up the GCBytesAge contribution of the overlapping section from
 				// extRangeKeys.Newest up to sstRangeKeys.Newest.
 				{
-					keyBytes := int64(mvccencoding.EncodedMVCCKeyPrefixLength(overlappingSection.Key)) +
-						int64(mvccencoding.EncodedMVCCKeyPrefixLength(overlappingSection.EndKey))
+					keyBytes := int64(EncodedMVCCKeyPrefixLength(overlappingSection.Key)) +
+						int64(EncodedMVCCKeyPrefixLength(overlappingSection.EndKey))
 					statsDiff.AgeTo(extRangeKeys.Newest().WallTime)
 					statsDiff.RangeKeyBytes -= keyBytes
 					statsDiff.AgeTo(sstRangeKeys.Newest().WallTime)
@@ -644,16 +653,16 @@ func CheckSSTConflicts(
 						statsDiff.Add(UpdateStatsOnRangeKeySplit(sstRangeKeys.Bounds.EndKey, extRangeKeys.Versions))
 						// Remove the contribution for the end key.
 						statsDiff.AgeTo(sstRangeKeys.Versions.Newest().WallTime)
-						statsDiff.RangeKeyBytes -= int64(mvccencoding.EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.EndKey))
+						statsDiff.RangeKeyBytes -= int64(EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.EndKey))
 					case 0:
 						// Remove the contribution for the end key.
 						statsDiff.AgeTo(sstRangeKeys.Versions.Newest().WallTime)
-						statsDiff.RangeKeyBytes -= int64(mvccencoding.EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.EndKey))
+						statsDiff.RangeKeyBytes -= int64(EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.EndKey))
 					case -1:
 						statsDiff.Add(UpdateStatsOnRangeKeySplit(extRangeKeys.Bounds.EndKey, sstRangeKeys.Versions))
 						// Remove the contribution for the end key.
 						statsDiff.AgeTo(sstRangeKeys.Versions.Newest().WallTime)
-						statsDiff.RangeKeyBytes -= int64(mvccencoding.EncodedMVCCKeyPrefixLength(extRangeKeys.Bounds.EndKey))
+						statsDiff.RangeKeyBytes -= int64(EncodedMVCCKeyPrefixLength(extRangeKeys.Bounds.EndKey))
 					}
 				}
 			}
@@ -738,7 +747,7 @@ func CheckSSTConflicts(
 					// sstRangeKeys when we did the call to updateStatsOnRangeKeyPutVersion
 					// in the for loop above.
 					statsDiff.AgeTo(sstRangeKeys.Versions.Newest().WallTime)
-					statsDiff.RangeKeyBytes += int64(mvccencoding.EncodedMVCCKeyPrefixLength(extRangeKeys.Bounds.Key))
+					statsDiff.RangeKeyBytes += int64(EncodedMVCCKeyPrefixLength(extRangeKeys.Bounds.Key))
 					updatedStack := extRangeKeys
 					updatedStack.Versions = extRangeKeys.Versions.Clone()
 				} else if !extPrevRangeKeys.IsEmpty() && extPrevRangeKeys.Bounds.EndKey.Equal(extRangeKeys.Bounds.Key) {
@@ -755,7 +764,7 @@ func CheckSSTConflicts(
 						statsDiff.Subtract(updateStatsOnRangeKeyPutVersion(updatedStack, v))
 					}
 					statsDiff.AgeTo(sstRangeKeys.Versions.Newest().WallTime)
-					statsDiff.RangeKeyBytes -= int64(mvccencoding.EncodedMVCCKeyPrefixLength(extRangeKeys.Bounds.Key))
+					statsDiff.RangeKeyBytes -= int64(EncodedMVCCKeyPrefixLength(extRangeKeys.Bounds.Key))
 					statsDiff.RangeKeyCount--
 				}
 				// Check if this ext range key is going to be fragmented by the sst
@@ -768,17 +777,17 @@ func CheckSSTConflicts(
 					}
 					// Remove the contribution for the end key.
 					statsDiff.AgeTo(sstRangeKeys.Versions.Newest().WallTime)
-					statsDiff.RangeKeyBytes -= int64(mvccencoding.EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.EndKey))
+					statsDiff.RangeKeyBytes -= int64(EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.EndKey))
 				case 0:
 					// Remove the contribution for the end key.
 					statsDiff.AgeTo(sstRangeKeys.Versions.Newest().WallTime)
-					statsDiff.RangeKeyBytes -= int64(mvccencoding.EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.EndKey))
+					statsDiff.RangeKeyBytes -= int64(EncodedMVCCKeyPrefixLength(sstRangeKeys.Bounds.EndKey))
 				case -1:
 					if !extRangeKeys.Versions.Equal(sstRangeKeys.Versions) {
 						// This ext range key's end will fragment this sst range key.
 						statsDiff.Add(UpdateStatsOnRangeKeySplit(extRangeKeys.Bounds.EndKey, sstRangeKeys.Versions))
 						statsDiff.AgeTo(sstRangeKeys.Versions.Newest().WallTime)
-						statsDiff.RangeKeyBytes -= int64(mvccencoding.EncodedMVCCKeyPrefixLength(extRangeKeys.Bounds.EndKey))
+						statsDiff.RangeKeyBytes -= int64(EncodedMVCCKeyPrefixLength(extRangeKeys.Bounds.EndKey))
 					}
 				}
 			}
@@ -1266,8 +1275,8 @@ func UpdateSSTTimestamps(
 			opts,
 			sstOut,
 			rewriteOpts,
-			mvccencoding.EncodeMVCCTimestampSuffix(from),
-			mvccencoding.EncodeMVCCTimestampSuffix(to),
+			EncodeMVCCTimestampSuffix(from),
+			EncodeMVCCTimestampSuffix(to),
 			concurrency,
 		)
 		if err != nil {

@@ -20,11 +20,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/task"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
@@ -32,6 +29,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/kr/pretty"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
 )
 
 // shudownGracePeriod is the default grace period (in seconds) that we
@@ -117,10 +115,10 @@ func registerDecommission(r registry.Registry) {
 			Name:             "decommission/mixed-versions",
 			Owner:            registry.OwnerKV,
 			Cluster:          r.MakeClusterSpec(numNodes),
-			CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
-			Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
+			CompatibleClouds: registry.AllExceptAWS,
+			Suites:           registry.Suites(registry.Nightly),
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-				runDecommissionMixedVersions(ctx, t, c)
+				runDecommissionMixedVersions(ctx, t, c, t.BuildVersion())
 			},
 		})
 	}
@@ -184,13 +182,14 @@ func runDrainAndDecommission(
 		run(`SET CLUSTER SETTING kv.snapshot_rebalance.max_rate='2GiB'`)
 
 		// Wait for initial up-replication.
-		err := roachtestutil.WaitForReplication(ctx, t.L(), db, defaultReplicationFactor, roachtestutil.AtLeastReplicationFactor)
+		err := WaitForReplication(ctx, t, t.L(), db, defaultReplicationFactor, atLeastReplicationFactor)
 		require.NoError(t, err)
 	}
 
-	m := t.NewGroup(task.WithContext(ctx))
+	var m *errgroup.Group
+	m, ctx = errgroup.WithContext(ctx)
 	m.Go(
-		func(ctx context.Context, l *logger.Logger) error {
+		func() error {
 			return c.RunE(ctx, option.WithNodes(c.Node(pinnedNode)),
 				fmt.Sprintf("./cockroach workload run kv --max-rate 500 --tolerate-errors --duration=%s {pgurl:1-%d}",
 					duration.String(), nodes-4,
@@ -205,7 +204,7 @@ func runDrainAndDecommission(
 	// Drain the last 3 nodes from the cluster.
 	for nodeID := nodes - 2; nodeID <= nodes; nodeID++ {
 		id := nodeID
-		m.Go(func(ctx context.Context, l *logger.Logger) error {
+		m.Go(func() error {
 			drain := func(id int) error {
 				t.Status(fmt.Sprintf("draining node %d", id))
 				return c.RunE(ctx, option.WithNodes(c.Node(id)), fmt.Sprintf("./cockroach node drain --certs-dir=%s --port={pgport:%d}", install.CockroachNodeCertsDir, id))
@@ -217,7 +216,7 @@ func runDrainAndDecommission(
 	// the draining status of the two nodes we just drained.
 	time.Sleep(30 * time.Second)
 
-	m.Go(func(ctx context.Context, l *logger.Logger) error {
+	m.Go(func() error {
 		// Decommission the fourth-to-last node from the cluster.
 		id := nodes - 3
 		decom := func(id int) error {
@@ -226,7 +225,9 @@ func runDrainAndDecommission(
 		}
 		return decom(id)
 	})
-	m.Wait()
+	if err := m.Wait(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // runDecommission decommissions and wipes nodes in a cluster repeatedly,
@@ -281,8 +282,8 @@ func runDecommission(
 		fmt.Sprintf("./cockroach workload run kv --max-rate 500 --tolerate-errors --duration=%s {pgurl:1-%d}", duration.String(), nodes),
 	}
 
-	run := func(l *logger.Logger, stmt string) {
-		db := c.Conn(ctx, l, pinnedNode)
+	run := func(stmt string) {
+		db := c.Conn(ctx, t.L(), pinnedNode)
 		defer db.Close()
 
 		t.Status(stmt)
@@ -290,20 +291,21 @@ func runDecommission(
 		if err != nil {
 			t.Fatal(err)
 		}
-		l.Printf("run: %s\n", stmt)
+		t.L().Printf("run: %s\n", stmt)
 	}
 
-	m := t.NewGroup(task.WithContext(ctx)) // see comment in version.go
-	for idx, cmd := range workloads {
+	var m *errgroup.Group // see comment in version.go
+	m, ctx = errgroup.WithContext(ctx)
+	for _, cmd := range workloads {
 		cmd := cmd // copy is important for goroutine
-		m.Go(func(ctx context.Context, _ *logger.Logger) error {
+		m.Go(func() error {
 			return c.RunE(ctx, option.WithNodes(c.Node(pinnedNode)), cmd)
-		}, task.Name(fmt.Sprintf("workload-%d", idx)))
+		})
 	}
 
 	stopOpts := option.NewStopOpts(option.Graceful(shutdownGracePeriod))
 
-	m.Go(func(ctx context.Context, l *logger.Logger) error {
+	m.Go(func() error {
 		tBegin, whileDown := timeutil.Now(), true
 		node := nodes
 		for timeutil.Since(tBegin) <= duration {
@@ -322,18 +324,18 @@ func runDecommission(
 				return err
 			}
 
-			run(l, fmt.Sprintf(`ALTER RANGE default CONFIGURE ZONE = 'constraints: {"+node%d"}'`, node))
+			run(fmt.Sprintf(`ALTER RANGE default CONFIGURE ZONE = 'constraints: {"+node%d"}'`, node))
 			if err := h.waitUpReplicated(ctx, nodeID, node, "kv"); err != nil {
 				return err
 			}
 
 			if whileDown {
-				if err := c.StopE(ctx, l, stopOpts, c.Node(node)); err != nil {
+				if err := c.StopE(ctx, t.L(), stopOpts, c.Node(node)); err != nil {
 					return err
 				}
 			}
 
-			run(l, fmt.Sprintf(`ALTER RANGE default CONFIGURE ZONE = 'constraints: {"-node%d"}'`, node))
+			run(fmt.Sprintf(`ALTER RANGE default CONFIGURE ZONE = 'constraints: {"-node%d"}'`, node))
 
 			targetNodeList := option.NodeListOption{nodeID}
 
@@ -353,7 +355,7 @@ func runDecommission(
 			}
 
 			if !whileDown {
-				if err := c.StopE(ctx, l, stopOpts, c.Node(node)); err != nil {
+				if err := c.StopE(ctx, t.L(), stopOpts, c.Node(node)); err != nil {
 					return err
 				}
 			}
@@ -363,13 +365,16 @@ func runDecommission(
 				return err
 			}
 
+			db := c.Conn(ctx, t.L(), pinnedNode)
+			defer db.Close()
+
 			startOpts := option.NewStartOpts(option.SkipInit)
 			startOpts.RoachprodOpts.JoinTargets = []int{pinnedNode}
 			extraArgs := []string{
 				fmt.Sprintf("--attrs=node%d", node),
 			}
 			startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs, extraArgs...)
-			if err := c.StartE(ctx, l, withDecommissionVMod(startOpts),
+			if err := c.StartE(ctx, t.L(), withDecommissionVMod(startOpts),
 				install.MakeClusterSettings(), c.Node(node)); err != nil {
 				return err
 			}
@@ -378,8 +383,10 @@ func runDecommission(
 		// having disappeared. Verify that the workloads don't dip their qps or
 		// show spikes in latencies.
 		return nil
-	}, task.Name("decommission"))
-	m.Wait()
+	})
+	if err := m.Wait(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // runDecommissionRandomized tests a bunch of node
@@ -1017,7 +1024,7 @@ func runDecommissionDrains(ctx context.Context, t test.Test, c cluster.Cluster, 
 		require.NoError(t, err)
 
 		// Wait for initial up-replication.
-		err = roachtestutil.WaitFor3XReplication(ctx, t.L(), db)
+		err = WaitFor3XReplication(ctx, t, t.L(), db)
 		require.NoError(t, err)
 	}
 
@@ -1133,7 +1140,7 @@ func runDecommissionSlow(ctx context.Context, t test.Test, c cluster.Cluster) {
 		run(db, `SET CLUSTER SETTING kv.snapshot_rebalance.max_rate='2GiB'`)
 
 		// Wait for initial up-replication.
-		err := roachtestutil.WaitForReplication(ctx, t.L(), db, replicationFactor, roachtestutil.AtLeastReplicationFactor)
+		err := WaitForReplication(ctx, t, t.L(), db, replicationFactor, atLeastReplicationFactor)
 		require.NoError(t, err)
 	}
 
@@ -1193,7 +1200,7 @@ var decommissionFooter = []string{
 
 // Header from the output of `cockroach node status`.
 var statusHeader = []string{
-	"id", "address", "sql_address", "build", "started_at", "updated_at", "locality", "attrs", "is_available", "is_live",
+	"id", "address", "sql_address", "build", "started_at", "updated_at", "locality", "is_available", "is_live",
 }
 
 // Header from the output of `cockroach node status --decommission`.

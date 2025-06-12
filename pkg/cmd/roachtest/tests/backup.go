@@ -10,11 +10,12 @@ import (
 	"context"
 	gosql "database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,7 +39,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/workload/histogram"
-	"github.com/cockroachdb/cockroach/pkg/workload/histogram/exporter"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -216,7 +216,7 @@ func registerBackupNodeShutdown(r registry.Registry) {
 			gatewayNode := 2
 			nodeToShutdown := 3
 			dest := loadBackupData(ctx, t, c)
-			backupQuery := `BACKUP bank.bank INTO 'nodelocal://1/` + dest + `' WITH DETACHED`
+			backupQuery := `BACKUP bank.bank TO 'nodelocal://1/` + dest + `' WITH DETACHED`
 			startBackup := func(c cluster.Cluster, l *logger.Logger) (jobID jobspb.JobID, err error) {
 				gatewayDB := c.Conn(ctx, l, gatewayNode)
 				defer gatewayDB.Close()
@@ -241,7 +241,7 @@ func registerBackupNodeShutdown(r registry.Registry) {
 			gatewayNode := 2
 			nodeToShutdown := 2
 			dest := loadBackupData(ctx, t, c)
-			backupQuery := `BACKUP bank.bank INTO 'nodelocal://1/` + dest + `' WITH DETACHED`
+			backupQuery := `BACKUP bank.bank TO 'nodelocal://1/` + dest + `' WITH DETACHED`
 			startBackup := func(c cluster.Cluster, l *logger.Logger) (jobID jobspb.JobID, err error) {
 				gatewayDB := c.Conn(ctx, l, gatewayNode)
 				defer gatewayDB.Close()
@@ -256,30 +256,51 @@ func registerBackupNodeShutdown(r registry.Registry) {
 
 }
 
+// fingerprint returns a fingerprint of `db.table`.
+func fingerprint(ctx context.Context, conn *gosql.DB, db, table string) (string, error) {
+	// See #113816 for why this is needed for now (probably until #94850 is
+	// resolved).
+	_, err := conn.Exec("SET direct_columnar_scans_enabled = false;")
+	if err != nil {
+		return "", err
+	}
+
+	var b strings.Builder
+
+	query := fmt.Sprintf("SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE %s.%s", db, table)
+	rows, err := conn.QueryContext(ctx, query)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, fp string
+		if err := rows.Scan(&name, &fp); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "%s: %s\n", name, fp)
+	}
+
+	return b.String(), rows.Err()
+}
+
 // initBulkJobPerfArtifacts registers a histogram, creates a performance
 // artifact directory and returns a method that when invoked records a tick.
-func initBulkJobPerfArtifacts(
-	timeout time.Duration, t test.Test, e exporter.Exporter,
-) (func(), *bytes.Buffer) {
+func initBulkJobPerfArtifacts(testName string, timeout time.Duration) (func(), *bytes.Buffer) {
 	// Register a named histogram to track the total time the bulk job took.
 	// Roachperf uses this information to display information about this
 	// roachtest.
-
-	reg := histogram.NewRegistryWithExporter(
+	reg := histogram.NewRegistry(
 		timeout,
 		histogram.MockWorkloadName,
-		e,
 	)
-	reg.GetHandle().Get(t.Name())
+	reg.GetHandle().Get(testName)
 
 	bytesBuf := bytes.NewBuffer([]byte{})
-	writer := io.Writer(bytesBuf)
-
-	e.Init(&writer)
-
+	jsonEnc := json.NewEncoder(bytesBuf)
 	tick := func() {
 		reg.Tick(func(tick histogram.Tick) {
-			_ = tick.Exporter.SnapshotAndWrite(tick.Hist, tick.Now, tick.Elapsed, &tick.Name)
+			_ = jsonEnc.Encode(tick.Snapshot())
 		})
 	}
 
@@ -301,36 +322,13 @@ func registerBackup(r registry.Registry) {
 		Suites:                    registry.Suites(registry.Nightly),
 		TestSelectionOptOutSuites: registry.Suites(registry.Nightly),
 		EncryptionSupport:         registry.EncryptionAlwaysDisabled,
-		PostProcessPerfMetrics: func(test string, histogram *roachtestutil.HistogramMetric) (roachtestutil.AggregatedPerfMetrics, error) {
-
-			metricName := fmt.Sprintf("%s_elapsed", test)
-			totalElapsed := histogram.Elapsed
-
-			numNodes := int64(10)
-			tb := int64(1 << 40)
-			mb := int64(1 << 20)
-			dataSizeInMB := (2 * tb) / mb
-			backupDuration := int64(totalElapsed / 1000)
-			avgRatePerNode := roachtestutil.MetricPoint(float64(dataSizeInMB) / float64(numNodes*backupDuration))
-
-			return roachtestutil.AggregatedPerfMetrics{
-				{
-					Name:           metricName,
-					Value:          avgRatePerNode,
-					Unit:           "MB/s/node",
-					IsHigherBetter: false,
-				},
-			}, nil
-		},
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			rows := rows2TiB
 			if c.IsLocal() {
 				rows = 100
 			}
 			dest := importBankData(ctx, rows, t, c)
-			exporter := roachtestutil.CreateWorkloadHistogramExporter(t, c)
-			tick, perfBuf := initBulkJobPerfArtifacts(2*time.Hour, t, exporter)
-			defer roachtestutil.CloseExporter(ctx, exporter, t, c, perfBuf, c.Node(1), "")
+			tick, perfBuf := initBulkJobPerfArtifacts("backup/2TB", 2*time.Hour)
 
 			m := c.NewMonitor(ctx)
 			m.Go(func(ctx context.Context) error {
@@ -350,6 +348,16 @@ func registerBackup(r registry.Registry) {
 					return err
 				}
 				tick()
+
+				// Upload the perf artifacts to any one of the nodes so that the test
+				// runner copies it into an appropriate directory path.
+				dest := filepath.Join(t.PerfArtifactsDir(), "stats.json")
+				if err := c.RunE(ctx, option.WithNodes(c.Node(1)), "mkdir -p "+filepath.Dir(dest)); err != nil {
+					t.L().ErrorfCtx(ctx, "failed to create perf dir: %+v", err)
+				}
+				if err := c.PutString(ctx, perfBuf.String(), dest, 0755, c.Node(1)); err != nil {
+					t.L().ErrorfCtx(ctx, "failed to upload perf artifacts to node: %s", err.Error())
+				}
 				return nil
 			})
 			m.Wait()
@@ -358,7 +366,7 @@ func registerBackup(r registry.Registry) {
 
 	// Skip running on aws because the roachtest env does not have the proper
 	// credentials. See 127062
-	for _, cloudProvider := range []spec.Cloud{spec.GCE} {
+	for _, cloudProvider := range []string{spec.GCE} {
 		r.Add(registry.TestSpec{
 			Name:                      fmt.Sprintf("backup/assume-role/%s", cloudProvider),
 			Owner:                     registry.OwnerDisasterRecovery,
@@ -417,11 +425,11 @@ func registerBackup(r registry.Registry) {
 					}
 
 					table := "bank"
-					originalBank, err := roachtestutil.Fingerprint(ctx, conn, "bank" /* db */, table)
+					originalBank, err := fingerprint(ctx, conn, "bank" /* db */, table)
 					if err != nil {
 						return err
 					}
-					restore, err := roachtestutil.Fingerprint(ctx, conn, "restoreDB" /* db */, table)
+					restore, err := fingerprint(ctx, conn, "restoreDB" /* db */, table)
 					if err != nil {
 						return err
 					}
@@ -437,7 +445,7 @@ func registerBackup(r registry.Registry) {
 		})
 	}
 	KMSSpec := r.MakeClusterSpec(3)
-	for _, cloudProvider := range []spec.Cloud{spec.GCE, spec.AWS} {
+	for _, cloudProvider := range []string{spec.GCE, spec.AWS} {
 		r.Add(registry.TestSpec{
 			Name:                      fmt.Sprintf("backup/KMS/%s/%s", cloudProvider, KMSSpec.String()),
 			Owner:                     registry.OwnerDisasterRecovery,
@@ -497,7 +505,7 @@ func registerBackup(r registry.Registry) {
 					}
 
 					kmsOptions := fmt.Sprintf("KMS=('%s', '%s')", kmsURIA, kmsURIB)
-					_, err := conn.ExecContext(ctx, `BACKUP bank.bank INTO '`+backupPath+`' WITH `+kmsOptions)
+					_, err := conn.ExecContext(ctx, `BACKUP bank.bank TO '`+backupPath+`' WITH `+kmsOptions)
 					return err
 				})
 				m.Wait()
@@ -507,7 +515,7 @@ func registerBackup(r registry.Registry) {
 				m.Go(func(ctx context.Context) error {
 					t.Status(`restore using KMSURIA`)
 					if _, err := conn.ExecContext(ctx,
-						`RESTORE TABLE bank.bank FROM LATEST IN $1 WITH into_db=restoreA, kms=$2`,
+						`RESTORE bank.bank FROM $1 WITH into_db=restoreA, kms=$2`,
 						backupPath, kmsURIA,
 					); err != nil {
 						return err
@@ -515,7 +523,7 @@ func registerBackup(r registry.Registry) {
 
 					t.Status(`restore using KMSURIB`)
 					if _, err := conn.ExecContext(ctx,
-						`RESTORE TABLE bank.bank FROM LATEST IN $1 WITH into_db=restoreB, kms=$2`,
+						`RESTORE bank.bank FROM $1 WITH into_db=restoreB, kms=$2`,
 						backupPath, kmsURIB,
 					); err != nil {
 						return err
@@ -523,15 +531,15 @@ func registerBackup(r registry.Registry) {
 
 					t.Status(`fingerprint`)
 					table := "bank"
-					originalBank, err := roachtestutil.Fingerprint(ctx, conn, "bank" /* db */, table)
+					originalBank, err := fingerprint(ctx, conn, "bank" /* db */, table)
 					if err != nil {
 						return err
 					}
-					restoreA, err := roachtestutil.Fingerprint(ctx, conn, "restoreA" /* db */, table)
+					restoreA, err := fingerprint(ctx, conn, "restoreA" /* db */, table)
 					if err != nil {
 						return err
 					}
-					restoreB, err := roachtestutil.Fingerprint(ctx, conn, "restoreB" /* db */, table)
+					restoreB, err := fingerprint(ctx, conn, "restoreB" /* db */, table)
 					if err != nil {
 						return err
 					}
@@ -615,10 +623,12 @@ func runBackupMVCCRangeTombstones(
 
 	// Configure cluster.
 	t.Status("configuring cluster")
-	_, err := conn.Exec(`SET CLUSTER SETTING server.debug.default_vmodule = 'txn=2,sst_batcher=4,revert=2'`)
+	_, err := conn.Exec(`SET CLUSTER SETTING kv.bulk_ingest.max_index_buffer_size = '2gb'`)
+	require.NoError(t, err)
+	_, err = conn.Exec(`SET CLUSTER SETTING server.debug.default_vmodule = 'txn=2,sst_batcher=4,revert=2'`)
 	require.NoError(t, err)
 	// Wait for ranges to upreplicate.
-	require.NoError(t, roachtestutil.WaitFor3XReplication(ctx, t.L(), conn))
+	require.NoError(t, WaitFor3XReplication(ctx, t, t.L(), conn))
 
 	// Create the orders table. It's about 16 GB across 8 files.
 	t.Status("creating table")
@@ -633,34 +643,34 @@ func runBackupMVCCRangeTombstones(
 	require.NoError(t, err)
 
 	// Set up some helpers.
-	waitForState := func(
+	waitForStatus := func(
 		jobID string,
-		exxpectedState jobs.State,
-		expectStatus jobs.StatusMessage,
+		expectStatus jobs.Status,
+		expectRunningStatus jobs.RunningStatus,
 		duration time.Duration,
 	) {
 		ctx, cancel := context.WithTimeout(ctx, duration)
 		defer cancel()
 		require.NoError(t, retry.Options{}.Do(ctx, func(ctx context.Context) error {
-			var statusMessage string
+			var status string
 			var payloadBytes, progressBytes []byte
 			require.NoError(t, conn.QueryRowContext(
 				ctx, jobutils.InternalSystemJobsBaseQuery, jobID).
-				Scan(&statusMessage, &payloadBytes, &progressBytes))
-			if jobs.State(statusMessage) == jobs.StateFailed {
+				Scan(&status, &payloadBytes, &progressBytes))
+			if jobs.Status(status) == jobs.StatusFailed {
 				var payload jobspb.Payload
 				require.NoError(t, protoutil.Unmarshal(payloadBytes, &payload))
 				t.Fatalf("job failed: %s", payload.Error)
 			}
-			if jobs.State(statusMessage) != exxpectedState {
-				return errors.Errorf("expected job state %s, but got %s", exxpectedState, statusMessage)
+			if jobs.Status(status) != expectStatus {
+				return errors.Errorf("expected job status %s, but got %s", expectStatus, status)
 			}
-			if expectStatus != "" {
+			if expectRunningStatus != "" {
 				var progress jobspb.Progress
 				require.NoError(t, protoutil.Unmarshal(progressBytes, &progress))
-				if jobs.StatusMessage(progress.StatusMessage) != expectStatus {
+				if jobs.RunningStatus(progress.RunningStatus) != expectRunningStatus {
 					return errors.Errorf("expected running status %s, but got %s",
-						expectStatus, progress.StatusMessage)
+						expectRunningStatus, progress.RunningStatus)
 				}
 			}
 			return nil
@@ -675,7 +685,7 @@ func runBackupMVCCRangeTombstones(
 		require.NoError(t, conn.QueryRowContext(ctx, `SELECT now()`).Scan(&ts))
 
 		t.Status(fmt.Sprintf("fingerprinting %s.%s at time '%s'", database, table, name))
-		fp, err := roachtestutil.Fingerprint(ctx, conn, database, table)
+		fp, err := fingerprint(ctx, conn, database, table)
 		require.NoError(t, err)
 		t.Status("fingerprint:\n", fp)
 
@@ -752,12 +762,12 @@ func runBackupMVCCRangeTombstones(
 			`IMPORT INTO orders CSV DATA ('%s') WITH delimiter='|', detached`,
 			strings.Join(files, "', '")),
 		).Scan(&jobID))
-		waitForState(jobID, jobs.StatePaused, "", 30*time.Minute)
+		waitForStatus(jobID, jobs.StatusPaused, "", 30*time.Minute)
 
 		t.Status("canceling import")
 		_, err = conn.ExecContext(ctx, fmt.Sprintf(`CANCEL JOB %s`, jobID))
 		require.NoError(t, err)
-		waitForState(jobID, jobs.StateCanceled, "", 30*time.Minute)
+		waitForStatus(jobID, jobs.StatusCanceled, "", 30*time.Minute)
 	}
 
 	_, err = conn.ExecContext(ctx, `SET CLUSTER SETTING jobs.debug.pausepoints = ''`)
@@ -801,7 +811,7 @@ func runBackupMVCCRangeTombstones(
 	require.NoError(t, err)
 	require.NoError(t, conn.QueryRowContext(ctx,
 		`SELECT job_id FROM [SHOW JOBS] WHERE job_type = 'SCHEMA CHANGE GC'`).Scan(&jobID))
-	waitForState(jobID, jobs.StateRunning, sql.StatusWaitingForMVCCGC, 2*time.Minute)
+	waitForStatus(jobID, jobs.StatusRunning, sql.RunningStatusWaitingForMVCCGC, 2*time.Minute)
 
 	// Check that the data has been deleted. We don't write MVCC range tombstones
 	// unless the range contains live data, so only assert their existence if the
@@ -1010,7 +1020,7 @@ func getAWSBackupPath(dest string) (string, error) {
 		AssumeRoleAWSKeyIDEnvVar:     amazon.AWSAccessKeyParam,
 		AssumeRoleAWSSecretKeyEnvVar: amazon.AWSSecretParam,
 		AssumeRoleAWSRoleEnvVar:      amazon.AssumeRoleParam,
-		KMSRegionAEnvVar:             amazon.S3RegionParam,
+		KMSRegionAEnvVar:             amazon.KMSRegionParam,
 	}
 	for env, param := range expect {
 		v := os.Getenv(env)

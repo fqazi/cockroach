@@ -75,7 +75,9 @@ describe("AlertBar", () => {
 
     expect(wrapper.text()).toContain(
       "Your license key expired on September 15th, 2024. " +
-        `The cluster will be throttled on ${gracePeriodEnd.format("MMMM Do, YYYY")} unless a new license key is added. Learn more`,
+        `The cluster will be throttled on ${gracePeriodEnd.format(
+          "MMMM Do, YYYY",
+        )} unless a new license key is added. Learn more`,
     );
   });
 
@@ -116,7 +118,9 @@ describe("AlertBar", () => {
 
     expect(wrapper.text()).toContain(
       "Telemetry has not been received from some nodes in this cluster since " +
-        `September 1st, 2024. These nodes will be throttled on ${telemetryDeadline.format("MMMM Do, YYYY")} unless telemetry is received. Learn more`,
+        `September 1st, 2024. These nodes will be throttled on ${telemetryDeadline.format(
+          "MMMM Do, YYYY",
+        )} unless telemetry is received. Learn more`,
     );
   });
 
@@ -149,7 +153,9 @@ describe("AlertBar", () => {
     );
 
     expect(wrapper.text()).toContain(
-      `This cluster will require a license key by ${gracePeriodEnd.format("MMMM Do, YYYY")} or the cluster will be throttled. Learn more`,
+      `This cluster will require a license key by ${gracePeriodEnd.format(
+        "MMMM Do, YYYY",
+      )} or the cluster will be throttled. Learn more`,
     );
   });
 });

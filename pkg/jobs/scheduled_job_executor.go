@@ -37,7 +37,7 @@ type ScheduledJobExecutor interface {
 		ctx context.Context,
 		txn isql.Txn,
 		jobID jobspb.JobID,
-		jobState State,
+		jobStatus Status,
 		details jobspb.Details,
 		env scheduledjobs.JobSchedulerEnv,
 		schedule *ScheduledJob,
@@ -151,13 +151,13 @@ func RegisterExecutorsMetrics(registry *metric.Registry) error {
 func DefaultHandleFailedRun(schedule *ScheduledJob, fmtOrMsg string, args ...interface{}) {
 	switch schedule.ScheduleDetails().OnError {
 	case jobspb.ScheduleDetails_RETRY_SOON:
-		schedule.SetScheduleStatusf("retrying: "+fmtOrMsg, args...)
+		schedule.SetScheduleStatus("retrying: "+fmtOrMsg, args...)
 		schedule.SetNextRun(schedule.env.Now().Add(retryFailedJobAfter)) // TODO(yevgeniy): backoff
 	case jobspb.ScheduleDetails_PAUSE_SCHED:
 		schedule.Pause()
-		schedule.SetScheduleStatusf("schedule paused: "+fmtOrMsg, args...)
+		schedule.SetScheduleStatus("schedule paused: "+fmtOrMsg, args...)
 	case jobspb.ScheduleDetails_RETRY_SCHED:
-		schedule.SetScheduleStatusf("reschedule: "+fmtOrMsg, args...)
+		schedule.SetScheduleStatus("reschedule: "+fmtOrMsg, args...)
 	}
 }
 
@@ -173,7 +173,7 @@ func NotifyJobTermination(
 	txn isql.Txn,
 	env scheduledjobs.JobSchedulerEnv,
 	jobID jobspb.JobID,
-	jobStatus State,
+	jobStatus Status,
 	jobDetails jobspb.Details,
 	scheduleID jobspb.ScheduleID,
 ) error {

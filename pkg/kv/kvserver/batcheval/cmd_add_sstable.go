@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvnemesis/kvnemesisutil"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
@@ -21,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -102,6 +100,15 @@ var AddSSTableRequireAtRequestTimestamp = settings.RegisterBoolSetting(
 	false,
 )
 
+// addSSTableCapacityRemainingLimit is the fraction of remaining store capacity
+// under which addsstable requests are rejected.
+var addSSTableCapacityRemainingLimit = settings.RegisterFloatSetting(
+	settings.SystemOnly,
+	"kv.bulk_io_write.min_capacity_remaining_fraction",
+	"remaining store capacity fraction below which an addsstable request is rejected",
+	0.05,
+)
+
 // prefixSeekCollisionCheckRatio specifies the minimum engine:sst byte ratio at
 // which we do prefix seeks in CheckSSTCollisions instead of regular seeks.
 // Prefix seeks make more sense if the inbound SST is wide relative to the engine
@@ -141,7 +148,7 @@ func EvalAddSSTable(
 	defer span.Finish()
 	log.Eventf(ctx, "evaluating AddSSTable [%s,%s)", start.Key, end.Key)
 
-	if min := storage.MinCapacityForBulkIngest.Get(&cArgs.EvalCtx.ClusterSettings().SV); min > 0 {
+	if min := addSSTableCapacityRemainingLimit.Get(&cArgs.EvalCtx.ClusterSettings().SV); min > 0 {
 		cap, err := cArgs.EvalCtx.GetEngineCapacity()
 		if err != nil {
 			return result.Result{}, err
@@ -197,15 +204,17 @@ func EvalAddSSTable(
 	var statsDelta enginepb.MVCCStats
 	maxLockConflicts := storage.MaxConflictsPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV)
 	targetLockConflictBytes := storage.TargetBytesPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV)
-	checkConflicts := args.DisallowConflicts || !args.DisallowShadowingBelow.IsEmpty()
+	checkConflicts := args.DisallowConflicts || args.DisallowShadowing ||
+		!args.DisallowShadowingBelow.IsEmpty()
 	if checkConflicts {
 		// If requested, check for MVCC conflicts with existing keys. This enforces
 		// all MVCC invariants by returning WriteTooOldError for any existing
 		// values at or above the SST timestamp, returning LockConflictError to
 		// resolve any encountered intents, and accurately updating MVCC stats.
 		//
-		// Additionally, if DisallowShadowingBelow is set, it will not write
-		// above existing/visible values (but will write above tombstones).
+		// Additionally, if DisallowShadowing or DisallowShadowingBelow is set, it
+		// will not write above existing/visible values (but will write above
+		// tombstones).
 		//
 		// If the overlap between the ingested SST and the engine is large (i.e.
 		// the SST is wide in keyspace), or if the ingested SST is very small,
@@ -230,7 +239,7 @@ func EvalAddSSTable(
 
 		log.VEventf(ctx, 2, "checking conflicts for SSTable [%s,%s)", start.Key, end.Key)
 		statsDelta, err = storage.CheckSSTConflicts(ctx, sst, readWriter, start, end, leftPeekBound, rightPeekBound,
-			args.DisallowShadowingBelow, sstTimestamp, maxLockConflicts, targetLockConflictBytes, usePrefixSeek)
+			args.DisallowShadowing, args.DisallowShadowingBelow, sstTimestamp, maxLockConflicts, targetLockConflictBytes, usePrefixSeek)
 		statsDelta.Add(sstReqStatsDelta)
 		if err != nil {
 			return result.Result{}, errors.Wrap(err, "checking for key collisions")
@@ -242,7 +251,8 @@ func EvalAddSSTable(
 		// and thus no or few locks, so this is cheap in the common case.
 		log.VEventf(ctx, 2, "checking conflicting locks for SSTable [%s,%s)", start.Key, end.Key)
 		locks, err := storage.ScanLocks(
-			ctx, readWriter, start.Key, end.Key, maxLockConflicts, 0)
+			ctx, readWriter, start.Key, end.Key, maxLockConflicts, 0,
+			storage.BatchEvalReadCategory)
 		if err != nil {
 			return result.Result{}, errors.Wrap(err, "scanning locks")
 		} else if len(locks) > 0 {
@@ -383,7 +393,7 @@ func EvalAddSSTable(
 			storage.IterOptions{
 				KeyTypes:     storage.IterKeyTypePointsAndRanges,
 				UpperBound:   reply.RangeSpan.EndKey,
-				ReadCategory: fs.BatchEvalReadCategory,
+				ReadCategory: storage.BatchEvalReadCategory,
 			})
 		if err != nil {
 			return result.Result{}, errors.Wrap(err, "error when creating iterator for non-empty span")
@@ -586,11 +596,6 @@ func assertSSTContents(sst []byte, sstTimestamp hlc.Timestamp, stats *enginepb.M
 			if !value.IsTombstone() {
 				return errors.AssertionFailedf("SST contains non-tombstone range key %s", rangeKey)
 			}
-
-			// Set the KVNemesisSeq to its zero value so that we can run KVNemesis
-			// under the race detector.
-			var emptyContainer kvnemesisutil.Container
-			value.MVCCValueHeader.KVNemesisSeq = emptyContainer
 			if value.MVCCValueHeader != (enginepb.MVCCValueHeader{}) {
 				return errors.AssertionFailedf("SST contains non-empty MVCC value header for range key %s",
 					rangeKey)

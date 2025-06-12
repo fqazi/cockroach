@@ -560,18 +560,14 @@ func TestReplicaClosedTimestamp(t *testing.T) {
 			cfg.TestingKnobs.DontCloseTimestamps = true
 			cfg.ClosedTimestampReceiver = &r
 			tc.StartWithStoreConfig(ctx, t, stopper, cfg)
-			tc.repl.raftMu.Lock()
 			tc.repl.mu.Lock()
 			defer tc.repl.mu.Unlock()
-			tc.repl.shMu.state.RaftClosedTimestamp = test.raftClosed
-			tc.repl.shMu.state.LeaseAppliedIndex = test.applied
-			tc.repl.raftMu.Unlock()
+			tc.repl.mu.state.RaftClosedTimestamp = test.raftClosed
+			tc.repl.mu.state.LeaseAppliedIndex = test.applied
 			// NB: don't release the mutex to make this test a bit more resilient to
 			// problems that could arise should something propose a command to this
 			// replica whose LeaseAppliedIndex we've mutated.
-			require.Equal(t, test.expClosed, tc.repl.getCurrentClosedTimestamp(ctx,
-				hlc.Timestamp{} /* sufficient */, tc.repl.shMu.state.LeaseAppliedIndex,
-				tc.repl.shMu.state.Lease.Replica.NodeID, tc.repl.shMu.state.RaftClosedTimestamp))
+			require.Equal(t, test.expClosed, tc.repl.getCurrentClosedTimestampLocked(ctx, hlc.Timestamp{} /* sufficient */))
 		})
 	}
 }
@@ -679,10 +675,8 @@ func TestQueryResolvedTimestamp(t *testing.T) {
 			// to the testing knobs in this test.
 
 			// Inject a closed timestamp.
-			tc.repl.raftMu.Lock()
 			tc.repl.mu.Lock()
-			tc.repl.shMu.state.RaftClosedTimestamp = test.closedTS
-			tc.repl.raftMu.Unlock()
+			tc.repl.mu.state.RaftClosedTimestamp = test.closedTS
 			tc.repl.mu.Unlock()
 
 			// Issue a QueryResolvedTimestamp request.
@@ -745,10 +739,8 @@ func TestQueryResolvedTimestampResolvesAbandonedIntents(t *testing.T) {
 
 	// Bump the clock and inject a closed timestamp.
 	tc.manualClock.AdvanceTo(ts20.GoTime())
-	tc.repl.raftMu.Lock()
 	tc.repl.mu.Lock()
-	tc.repl.shMu.state.RaftClosedTimestamp = ts20
-	tc.repl.raftMu.Unlock()
+	tc.repl.mu.state.RaftClosedTimestamp = ts20
 	tc.repl.mu.Unlock()
 
 	// Issue a QueryResolvedTimestamp request. Should return resolved timestamp
@@ -986,10 +978,8 @@ func TestServerSideBoundedStalenessNegotiation(t *testing.T) {
 				require.Nil(t, pErr)
 
 				// Inject a closed timestamp.
-				tc.repl.raftMu.Lock()
 				tc.repl.mu.Lock()
-				tc.repl.shMu.state.RaftClosedTimestamp = closedTS
-				tc.repl.raftMu.Unlock()
+				tc.repl.mu.state.RaftClosedTimestamp = closedTS
 				tc.repl.mu.Unlock()
 
 				// Construct and issue the request.
@@ -1082,10 +1072,8 @@ func TestServerSideBoundedStalenessNegotiationWithResumeSpan(t *testing.T) {
 		writeValue("h", 7)
 
 		// Inject a closed timestamp.
-		tc.repl.raftMu.Lock()
 		tc.repl.mu.Lock()
-		tc.repl.shMu.state.RaftClosedTimestamp = makeTS(30)
-		tc.repl.raftMu.Unlock()
+		tc.repl.mu.state.RaftClosedTimestamp = makeTS(30)
 		tc.repl.mu.Unlock()
 
 		// Return the timestamp of the earliest intent.

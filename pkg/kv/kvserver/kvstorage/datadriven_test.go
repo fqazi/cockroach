@@ -14,7 +14,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -40,7 +40,7 @@ func newEnv(t *testing.T) *env {
 	// all of it with the datadriven harness!
 	require.NoError(t, WriteClusterVersion(ctx, eng, clusterversion.TestingClusterVersion))
 	require.NoError(t, InitEngine(ctx, eng, roachpb.StoreIdent{
-		ClusterID: uuid.MakeV4(),
+		ClusterID: uuid.FastMakeV4(),
 		NodeID:    1,
 		StoreID:   1,
 	}))
@@ -64,7 +64,7 @@ func (e *env) handleNewReplica(
 	skipRaftReplicaID bool,
 	k, ek roachpb.RKey,
 ) *roachpb.RangeDescriptor {
-	sl := stateloader.Make(id.RangeID)
+	sl := logstore.NewStateLoader(id.RangeID)
 	require.NoError(t, sl.SetHardState(ctx, e.eng, raftpb.HardState{}))
 	if !skipRaftReplicaID && id.ReplicaID != 0 {
 		require.NoError(t, sl.SetRaftReplicaID(ctx, e.eng, id.ReplicaID))

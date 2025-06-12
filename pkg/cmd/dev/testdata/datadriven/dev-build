@@ -57,7 +57,6 @@ ls crdb-checkout/pkg/ui/workspaces/db-console/ccl/src/js/node_modules/@cockroach
 ls crdb-checkout/pkg/ui/workspaces/cluster-ui/node_modules/@cockroachlabs
 ls crdb-checkout/pkg/ui/workspaces/db-console/node_modules/@cockroachlabs
 ls crdb-checkout/pkg/ui/workspaces/e2e-tests/node_modules/@cockroachlabs
-ls crdb-checkout/pkg/ui/workspaces/crdb-api-client/node_modules/@cockroachlabs
 bazel build //pkg/cmd/cockroach:cockroach --verbose_failures --sandbox_debug --build_event_binary_file=/tmp/path
 bazel info workspace --color=no
 mkdir crdb-checkout/bin
@@ -72,15 +71,3 @@ bazel build //pkg:all_tests --config=test --build_event_binary_file=/tmp/path
 bazel info workspace --color=no
 mkdir crdb-checkout/bin
 bazel info bazel-bin --color=no --config=test
-
-exec
-dev build cockroach-short --pgo
-----
-bazel build --config=pgo //pkg/cmd/cockroach-short:cockroach-short --build_event_binary_file=/tmp/path
-bazel info workspace --color=no
-mkdir crdb-checkout/bin
-bazel info bazel-bin --color=no --config=pgo
-rm crdb-checkout/cockroach-short
-cp sandbox/pkg/cmd/cockroach-short/cockroach-short_/cockroach-short crdb-checkout/cockroach-short
-rm crdb-checkout/cockroach
-cp sandbox/pkg/cmd/cockroach-short/cockroach-short_/cockroach-short crdb-checkout/cockroach

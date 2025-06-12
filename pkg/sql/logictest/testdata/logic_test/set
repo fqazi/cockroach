@@ -149,14 +149,6 @@ on
 statement error parameter "ssl" cannot be changed
 SET ssl = 'off'
 
-query T
-SHOW authentication_method
-----
-cert-password
-
-statement error parameter "authentication_method" cannot be changed
-SET authentication_method = 'password'
-
 statement ok
 SET escape_string_warning = 'ON'
 
@@ -401,22 +393,6 @@ SET lock_timeout = 0
 
 query T
 SHOW lock_timeout
-----
-0
-
-statement ok
-SET deadlock_timeout = '1ms'
-
-query T
-SHOW deadlock_timeout
-----
-1
-
-statement ok
-SET deadlock_timeout = 0
-
-query T
-SHOW deadlock_timeout
 ----
 0
 

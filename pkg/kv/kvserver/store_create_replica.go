@@ -127,7 +127,7 @@ func (s *Store) tryGetReplica(
 		}
 
 		repl.mu.RUnlock()
-		if err := s.removeReplicaRaftMuLocked(ctx, repl, replicaID, "superseded by newer Replica", RemoveOptions{
+		if err := s.removeReplicaRaftMuLocked(ctx, repl, replicaID, RemoveOptions{
 			DestroyData: true,
 		}); err != nil {
 			log.Fatalf(ctx, "failed to remove replica: %v", err)
@@ -203,7 +203,6 @@ func (s *Store) tryGetOrCreateReplica(
 	// be accessed by someone holding a reference to, or currently creating a
 	// Replica for this rangeID, and that's us.
 
-	_ = kvstorage.CreateUninitReplicaTODO
 	if err := kvstorage.CreateUninitializedReplica(
 		// TODO(sep-raft-log): needs both engines due to tombstone (which lives on
 		// statemachine).
@@ -246,7 +245,7 @@ func fromReplicaIsTooOldRLocked(toReplica *Replica, fromReplica *roachpb.Replica
 	if fromReplica == nil {
 		return false
 	}
-	desc := toReplica.shMu.state.Desc
+	desc := toReplica.mu.state.Desc
 	_, found := desc.GetReplicaDescriptorByID(fromReplica.ReplicaID)
 	return !found && fromReplica.ReplicaID < desc.NextReplicaID
 }
@@ -265,13 +264,13 @@ func (s *Store) addToReplicasByKeyLocked(repl *Replica, desc *roachpb.RangeDescr
 	if got := s.GetReplicaIfExists(repl.RangeID); got != repl { // NB: got can be nil too
 		return errors.Errorf("%s: replica %s not in replicasByRangeID; got %s", s, repl, got)
 	}
-	if it := s.getOverlappingKeyRangeLocked(desc); !it.isEmpty() {
+	if it := s.getOverlappingKeyRangeLocked(desc); it.item != nil {
 		return errors.Errorf(
 			"%s: cannot add to replicasByKey: range %s overlaps with %s", s, repl, it.Desc())
 	}
-	if it := s.mu.replicasByKey.ReplaceOrInsertReplica(context.Background(), repl); !it.isEmpty() {
+	if it := s.mu.replicasByKey.ReplaceOrInsertReplica(context.Background(), repl); it.item != nil {
 		return errors.Errorf(
-			"%s: cannot add to replicasByKey: key %v already exists in the btree", s, it.key())
+			"%s: cannot add to replicasByKey: key %v already exists in the btree", s, it.item.key())
 	}
 	return nil
 }
@@ -280,8 +279,8 @@ func (s *Store) addToReplicasByKeyLocked(repl *Replica, desc *roachpb.RangeDescr
 // and the raftMu of the replica whose place is being held are locked.
 func (s *Store) addPlaceholderLocked(placeholder *ReplicaPlaceholder) error {
 	rangeID := placeholder.Desc().RangeID
-	if it := s.mu.replicasByKey.ReplaceOrInsertPlaceholder(context.Background(), placeholder); !it.isEmpty() {
-		return errors.Errorf("%s overlaps with existing replicaOrPlaceholder %+v in replicasByKey btree", placeholder, it.item())
+	if it := s.mu.replicasByKey.ReplaceOrInsertPlaceholder(context.Background(), placeholder); it.item != nil {
+		return errors.Errorf("%s overlaps with existing replicaOrPlaceholder %+v in replicasByKey btree", placeholder, it.item)
 	}
 	if exRng, ok := s.mu.replicaPlaceholders[rangeID]; ok {
 		return errors.Errorf("%s has ID collision with placeholder %+v", placeholder, exRng)
@@ -295,7 +294,8 @@ func (s *Store) addToReplicasByRangeIDLocked(repl *Replica) error {
 	// It's ok for the replica to exist in the replicas map as long as it is the
 	// same replica object. This does not happen, to the best of our knowledge.
 	// TODO(pavelkalinnikov): consider asserting that existing == nil.
-	if existing, loaded := s.mu.replicasByRangeID.LoadOrStore(repl.RangeID, repl); loaded && existing != repl {
+	if existing, loaded := s.mu.replicasByRangeID.LoadOrStore(
+		repl.RangeID, repl); loaded && existing != repl {
 		return errors.Errorf("%s: replica already exists", repl)
 	}
 	return nil

@@ -25,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/semenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -136,17 +135,6 @@ var validationMap = []struct {
 			"SchemaLocked":                  {status: thisFieldReferencesNoObjects},
 			"ImportEpoch":                   {status: thisFieldReferencesNoObjects},
 			"ImportType":                    {status: thisFieldReferencesNoObjects},
-			"External": {status: todoIAmKnowinglyAddingTechDebt,
-				reason: "TODO(features): add validation that TableID is sane within the same tenant"},
-			// LDRJobIDs is checked in StripDanglingBackreferences.
-			"LDRJobIDs":               {status: iSolemnlySwearThisFieldIsValidated},
-			"ReplicatedPCRVersion":    {status: thisFieldReferencesNoObjects},
-			"Triggers":                {status: iSolemnlySwearThisFieldIsValidated},
-			"NextTriggerID":           {status: thisFieldReferencesNoObjects},
-			"Policies":                {status: iSolemnlySwearThisFieldIsValidated},
-			"NextPolicyID":            {status: iSolemnlySwearThisFieldIsValidated},
-			"RowLevelSecurityEnabled": {status: thisFieldReferencesNoObjects},
-			"RowLevelSecurityForced":  {status: thisFieldReferencesNoObjects},
 		},
 	},
 	{
@@ -186,7 +174,6 @@ var validationMap = []struct {
 			"UseDeletePreservingEncoding": {status: thisFieldReferencesNoObjects},
 			"ConstraintID":                {status: iSolemnlySwearThisFieldIsValidated},
 			"CreatedAtNanos":              {status: thisFieldReferencesNoObjects},
-			"VecConfig":                   {status: thisFieldReferencesNoObjects},
 		},
 	},
 	{
@@ -267,7 +254,6 @@ var validationMap = []struct {
 			"RegionConfig":                  {status: iSolemnlySwearThisFieldIsValidated},
 			"DeclarativeSchemaChangerState": {status: thisFieldReferencesNoObjects},
 			"Composite":                     {status: iSolemnlySwearThisFieldIsValidated},
-			"ReplicatedPCRVersion":          {status: thisFieldReferencesNoObjects},
 		},
 	},
 	{
@@ -285,7 +271,6 @@ var validationMap = []struct {
 			"DefaultPrivileges":             {status: iSolemnlySwearThisFieldIsValidated},
 			"DeclarativeSchemaChangerState": {status: thisFieldReferencesNoObjects},
 			"SystemDatabaseSchemaVersion":   {status: iSolemnlySwearThisFieldIsValidated},
-			"ReplicatedPCRVersion":          {status: thisFieldReferencesNoObjects},
 		},
 	},
 	{
@@ -303,19 +288,14 @@ var validationMap = []struct {
 			"DefaultPrivileges":             {status: iSolemnlySwearThisFieldIsValidated},
 			"DeclarativeSchemaChangerState": {status: thisFieldReferencesNoObjects},
 			"Functions":                     {status: iSolemnlySwearThisFieldIsValidated},
-			"ReplicatedPCRVersion":          {status: thisFieldReferencesNoObjects},
 		},
 	},
 	{
 		obj: catpb.AutoStatsSettings{},
 		fieldMap: map[string]validationStatusInfo{
-			"Enabled":                  {status: iSolemnlySwearThisFieldIsValidated},
-			"MinStaleRows":             {status: iSolemnlySwearThisFieldIsValidated},
-			"FractionStaleRows":        {status: iSolemnlySwearThisFieldIsValidated},
-			"PartialEnabled":           {status: iSolemnlySwearThisFieldIsValidated},
-			"FullEnabled":              {status: iSolemnlySwearThisFieldIsValidated},
-			"PartialMinStaleRows":      {status: iSolemnlySwearThisFieldIsValidated},
-			"PartialFractionStaleRows": {status: iSolemnlySwearThisFieldIsValidated},
+			"Enabled":           {status: iSolemnlySwearThisFieldIsValidated},
+			"MinStaleRows":      {status: iSolemnlySwearThisFieldIsValidated},
+			"FractionStaleRows": {status: iSolemnlySwearThisFieldIsValidated},
 		},
 	},
 	{
@@ -343,28 +323,6 @@ var validationMap = []struct {
 			"Version":                       {status: thisFieldReferencesNoObjects},
 			"DeclarativeSchemaChangerState": {status: thisFieldReferencesNoObjects},
 			"IsProcedure":                   {status: thisFieldReferencesNoObjects},
-			"Security":                      {status: thisFieldReferencesNoObjects},
-			"ReplicatedPCRVersion":          {status: thisFieldReferencesNoObjects},
-		},
-	},
-	{
-		obj: descpb.TriggerDescriptor{},
-		fieldMap: map[string]validationStatusInfo{
-			"ID":                 {status: iSolemnlySwearThisFieldIsValidated},
-			"Name":               {status: iSolemnlySwearThisFieldIsValidated},
-			"ActionTime":         {status: thisFieldReferencesNoObjects},
-			"Events":             {status: iSolemnlySwearThisFieldIsValidated},
-			"NewTransitionAlias": {status: thisFieldReferencesNoObjects},
-			"OldTransitionAlias": {status: thisFieldReferencesNoObjects},
-			"ForEachRow":         {status: thisFieldReferencesNoObjects},
-			"WhenExpr":           {status: iSolemnlySwearThisFieldIsValidated},
-			"FuncID":             {status: iSolemnlySwearThisFieldIsValidated},
-			"FuncArgs":           {status: thisFieldReferencesNoObjects},
-			"FuncBody":           {status: iSolemnlySwearThisFieldIsValidated},
-			"Enabled":            {status: thisFieldReferencesNoObjects},
-			"DependsOn":          {status: iSolemnlySwearThisFieldIsValidated},
-			"DependsOnTypes":     {status: iSolemnlySwearThisFieldIsValidated},
-			"DependsOnRoutines":  {status: iSolemnlySwearThisFieldIsValidated},
 		},
 	},
 }
@@ -1949,7 +1907,7 @@ func TestValidateTableDesc(t *testing.T) {
 				NextConstraintID: 3,
 				Privileges:       catpb.NewBasePrivilegeDescriptor(username.AdminRoleName()),
 			}},
-		{err: ``,
+		{err: `index "sec" cannot store virtual column "c3"`,
 			desc: descpb.TableDescriptor{
 				ID:            2,
 				ParentID:      1,
@@ -2218,7 +2176,6 @@ func TestValidateTableDesc(t *testing.T) {
 						ID:                      1,
 						Name:                    "bar",
 						GeneratedAsIdentityType: catpb.GeneratedAsIdentityType_GENERATED_ALWAYS,
-						UsesSequenceIds:         []descpb.ID{32},
 						OnUpdateExpr:            proto.String("'blah'"),
 					},
 				},
@@ -2239,9 +2196,7 @@ func TestValidateTableDesc(t *testing.T) {
 						ID:                      1,
 						Name:                    "bar",
 						GeneratedAsIdentityType: catpb.GeneratedAsIdentityType_GENERATED_BY_DEFAULT,
-						UsesSequenceIds:         []descpb.ID{32},
-
-						OnUpdateExpr: proto.String("'blah'"),
+						OnUpdateExpr:            proto.String("'blah'"),
 					},
 				},
 				Families: []descpb.ColumnFamilyDescriptor{
@@ -2555,30 +2510,6 @@ func TestValidateTableDesc(t *testing.T) {
 				NextColumnID:      2,
 				AutoStatsSettings: &catpb.AutoStatsSettings{Enabled: &boolTrue},
 			}},
-		{err: `Setting sql_stats_automatic_partial_collection_enabled may not be set on virtual table`,
-			desc: descpb.TableDescriptor{
-				ID:            catconstants.MinVirtualID,
-				ParentID:      1,
-				Name:          "foo",
-				FormatVersion: descpb.InterleavedFormatVersion,
-				Columns: []descpb.ColumnDescriptor{
-					{ID: 1, Name: "bar"},
-				},
-				NextColumnID:      2,
-				AutoStatsSettings: &catpb.AutoStatsSettings{PartialEnabled: &boolTrue},
-			}},
-		{err: `Setting sql_stats_automatic_full_collection_enabled may not be set on virtual table`,
-			desc: descpb.TableDescriptor{
-				ID:            catconstants.MinVirtualID,
-				ParentID:      1,
-				Name:          "foo",
-				FormatVersion: descpb.InterleavedFormatVersion,
-				Columns: []descpb.ColumnDescriptor{
-					{ID: 1, Name: "bar"},
-				},
-				NextColumnID:      2,
-				AutoStatsSettings: &catpb.AutoStatsSettings{FullEnabled: &boolTrue},
-			}},
 		{err: `Setting sql_stats_automatic_collection_enabled may not be set on a view or sequence`,
 			desc: descpb.TableDescriptor{
 				Name:                    "bar",
@@ -2644,18 +2575,6 @@ func TestValidateTableDesc(t *testing.T) {
 				NextColumnID:      2,
 				AutoStatsSettings: &catpb.AutoStatsSettings{MinStaleRows: &negativeOne},
 			}},
-		{err: `invalid integer value for sql_stats_automatic_partial_collection_min_stale_rows: cannot be set to a negative value: -1`,
-			desc: descpb.TableDescriptor{
-				ID:            2,
-				ParentID:      1,
-				Name:          "foo",
-				FormatVersion: descpb.InterleavedFormatVersion,
-				Columns: []descpb.ColumnDescriptor{
-					{ID: 1, Name: "bar"},
-				},
-				NextColumnID:      2,
-				AutoStatsSettings: &catpb.AutoStatsSettings{PartialMinStaleRows: &negativeOne},
-			}},
 		{err: `invalid float value for sql_stats_automatic_collection_fraction_stale_rows: cannot set to a negative value: -1.000000`,
 			desc: descpb.TableDescriptor{
 				ID:            2,
@@ -2667,18 +2586,6 @@ func TestValidateTableDesc(t *testing.T) {
 				},
 				NextColumnID:      2,
 				AutoStatsSettings: &catpb.AutoStatsSettings{FractionStaleRows: &negativeOneFloat},
-			}},
-		{err: `invalid float value for sql_stats_automatic_partial_collection_fraction_stale_rows: cannot set to a negative value: -1.000000`,
-			desc: descpb.TableDescriptor{
-				ID:            2,
-				ParentID:      1,
-				Name:          "foo",
-				FormatVersion: descpb.InterleavedFormatVersion,
-				Columns: []descpb.ColumnDescriptor{
-					{ID: 1, Name: "bar"},
-				},
-				NextColumnID:      2,
-				AutoStatsSettings: &catpb.AutoStatsSettings{PartialFractionStaleRows: &negativeOneFloat},
 			}},
 		{err: `row-level TTL expiration expression "missing_col" refers to unknown columns`,
 			desc: descpb.TableDescriptor{
@@ -3018,229 +2925,6 @@ func TestValidateTableDesc(t *testing.T) {
 			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
 				desc.InboundFKs[0].ReferencedColumnIDs = []descpb.ColumnID{13}
 			})},
-		{err: `trigger "blah" has ID 0 not less than NextTrigger value 0 for table`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.Triggers = []descpb.TriggerDescriptor{
-					{
-						ID:         0,
-						Name:       "blah",
-						ActionTime: semenumpb.TriggerActionTime_BEFORE,
-						Events: []*descpb.TriggerDescriptor_Event{
-							{Type: semenumpb.TriggerEventType_INSERT},
-						},
-						FuncID:   5,
-						FuncBody: "BEGIN RETURN NULL; END",
-					},
-				}
-			})},
-		{err: `duplicate trigger name: "blah"`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextTriggerID = 2
-				desc.Triggers = []descpb.TriggerDescriptor{
-					{
-						ID:         0,
-						Name:       "blah",
-						ActionTime: semenumpb.TriggerActionTime_BEFORE,
-						Events: []*descpb.TriggerDescriptor_Event{
-							{Type: semenumpb.TriggerEventType_INSERT},
-						},
-						FuncID:            5,
-						FuncBody:          "BEGIN RETURN NULL; END",
-						DependsOnRoutines: []descpb.ID{5},
-					},
-					{
-						ID:   1,
-						Name: "blah",
-					},
-				}
-			})},
-		{err: `trigger "blah" contains unknown column "baz"`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextTriggerID = 1
-				desc.Triggers = []descpb.TriggerDescriptor{
-					{
-						ID:         0,
-						Name:       "blah",
-						ActionTime: semenumpb.TriggerActionTime_BEFORE,
-						Events: []*descpb.TriggerDescriptor_Event{
-							{Type: semenumpb.TriggerEventType_INSERT},
-							{Type: semenumpb.TriggerEventType_UPDATE, ColumnNames: []string{"bar", "baz"}},
-						},
-					},
-				}
-			})},
-		{err: `at or near "abc": syntax error`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextTriggerID = 1
-				desc.Triggers = []descpb.TriggerDescriptor{
-					{
-						ID:         0,
-						Name:       "blah",
-						ActionTime: semenumpb.TriggerActionTime_BEFORE,
-						Events: []*descpb.TriggerDescriptor_Event{
-							{Type: semenumpb.TriggerEventType_INSERT},
-						},
-						FuncID:   5,
-						FuncBody: "abc",
-					},
-				}
-			})},
-		{err: `column "bar" is GENERATED BY IDENTITY without sequence references`,
-			desc: descpb.TableDescriptor{
-				ID:            2,
-				ParentID:      1,
-				Name:          "foo",
-				FormatVersion: descpb.InterleavedFormatVersion,
-				Columns: []descpb.ColumnDescriptor{
-					{ID: 1, Name: "bar", OwnsSequenceIds: []descpb.ID{5}, GeneratedAsIdentityType: catpb.GeneratedAsIdentityType_GENERATED_ALWAYS},
-				},
-				NextColumnID: 2,
-			}},
-		{err: `policy ID was missing for policy "pol"`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextPolicyID = 1
-				desc.Policies = []descpb.PolicyDescriptor{
-					{
-						ID:   0,
-						Name: "pol",
-					},
-				}
-			}),
-		},
-		{err: `empty policy name`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextPolicyID = 2
-				desc.Policies = []descpb.PolicyDescriptor{
-					{
-						ID:   1,
-						Name: "",
-					},
-				}
-			}),
-		},
-		{err: `duplicate policy name: "pol"`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextPolicyID = 3
-				desc.Policies = []descpb.PolicyDescriptor{
-					{
-						ID:        1,
-						Name:      "pol",
-						Type:      catpb.PolicyType_PERMISSIVE,
-						Command:   catpb.PolicyCommand_ALL,
-						RoleNames: []string{"u1"},
-					},
-					{
-						ID:        2,
-						Name:      "pol",
-						Type:      catpb.PolicyType_RESTRICTIVE,
-						Command:   catpb.PolicyCommand_INSERT,
-						RoleNames: []string{"u1"},
-					},
-				}
-			}),
-		},
-		{err: `policy ID 10 in policy "pol_new" already in use by "pol_old"`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextPolicyID = 11
-				desc.Policies = []descpb.PolicyDescriptor{
-					{
-						ID:        10,
-						Name:      "pol_old",
-						Type:      catpb.PolicyType_RESTRICTIVE,
-						Command:   catpb.PolicyCommand_UPDATE,
-						RoleNames: []string{"u1"},
-					},
-					{
-						ID:        10,
-						Name:      "pol_new",
-						Type:      catpb.PolicyType_PERMISSIVE,
-						Command:   catpb.PolicyCommand_DELETE,
-						RoleNames: []string{"u1"},
-					},
-				}
-			}),
-		},
-		{err: `policy "pol" has ID 20, which is not less than the NextPolicyID value 5 for the table`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextPolicyID = 5
-				desc.Policies = []descpb.PolicyDescriptor{
-					{
-						ID:      20,
-						Name:    "pol",
-						Type:    catpb.PolicyType_PERMISSIVE,
-						Command: catpb.PolicyCommand_SELECT,
-					},
-				}
-			}),
-		},
-		{err: `policy "pol" has an unknown policy type POLICYTYPE_UNUSED`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextPolicyID = 2
-				desc.Policies = []descpb.PolicyDescriptor{
-					{
-						ID:      1,
-						Name:    "pol",
-						Type:    0,
-						Command: catpb.PolicyCommand_ALL,
-					},
-				}
-			}),
-		},
-		{err: `policy "pol" has an unknown policy command POLICYCOMMAND_UNUSED`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextPolicyID = 2
-				desc.Policies = []descpb.PolicyDescriptor{
-					{
-						ID:      1,
-						Name:    "pol",
-						Type:    catpb.PolicyType_PERMISSIVE,
-						Command: 0,
-					},
-				}
-			}),
-		},
-		{err: `policy "pol" has no roles defined`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextPolicyID = 2
-				desc.Policies = []descpb.PolicyDescriptor{
-					{
-						ID:        1,
-						Name:      "pol",
-						Type:      catpb.PolicyType_PERMISSIVE,
-						Command:   catpb.PolicyCommand_DELETE,
-						RoleNames: nil,
-					},
-				}
-			}),
-		},
-		{err: `policy "pol" contains duplicate role name "u1"`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextPolicyID = 2
-				desc.Policies = []descpb.PolicyDescriptor{
-					{
-						ID:        1,
-						Name:      "pol",
-						Type:      catpb.PolicyType_RESTRICTIVE,
-						Command:   catpb.PolicyCommand_ALL,
-						RoleNames: []string{"u1", "u2", "u11", "u1"},
-					},
-				}
-			}),
-		},
-		{err: `the public role must be the first role defined in policy "pol"`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextPolicyID = 2
-				desc.Policies = []descpb.PolicyDescriptor{
-					{
-						ID:        1,
-						Name:      "pol",
-						Type:      catpb.PolicyType_PERMISSIVE,
-						Command:   catpb.PolicyCommand_INSERT,
-						RoleNames: []string{"u1", "public"},
-					},
-				}
-			}),
-		},
 	}
 
 	for i, d := range testData {

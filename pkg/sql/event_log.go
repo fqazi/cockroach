@@ -21,11 +21,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scbuild"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scrun"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
-	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -155,10 +155,33 @@ type eventLogOptions struct {
 	// If verboseTraceLevel is non-zero, its value is used as value for
 	// the vmodule filter. See exec_log for an example use.
 	verboseTraceLevel log.Level
+
+	// Additional redaction options, if necessary.
+	rOpts redactionOptions
 }
 
-func (p *planner) getCommonSQLEventDetails() eventpb.CommonSQLEventDetails {
-	redactableStmt := p.FormatAstAsRedactableString(p.stmt.AST, p.extendedEvalCtx.Context.Annotations)
+// redactionOptions contains instructions on how to redact the SQL
+// events.
+type redactionOptions struct {
+	omitSQLNameRedaction bool
+}
+
+func (ro *redactionOptions) toFlags() tree.FmtFlags {
+	if ro.omitSQLNameRedaction {
+		return tree.FmtOmitNameRedaction
+	}
+	return tree.FmtSimple
+}
+
+var defaultRedactionOptions = redactionOptions{
+	omitSQLNameRedaction: false,
+}
+
+func (p *planner) getCommonSQLEventDetails(opt redactionOptions) eventpb.CommonSQLEventDetails {
+	redactableStmt := formatStmtKeyAsRedactableString(
+		p.extendedEvalCtx.VirtualSchemas, p.stmt.AST,
+		p.extendedEvalCtx.Context.Annotations, opt.toFlags(), p,
+	)
 	commonSQLEventDetails := eventpb.CommonSQLEventDetails{
 		Statement:       redactableStmt,
 		Tag:             p.stmt.AST.StatementTag(),
@@ -186,7 +209,7 @@ func (p *planner) logEventsWithOptions(
 		p.extendedEvalCtx.ExecCfg, p.InternalSQLTxn(),
 		1+depth,
 		opts,
-		p.getCommonSQLEventDetails(),
+		p.getCommonSQLEventDetails(opts.rOpts),
 		entries...)
 }
 
@@ -370,7 +393,7 @@ func LogEventForJobs(
 	jobID int64,
 	payload jobspb.Payload,
 	user username.SQLUsername,
-	status jobs.State,
+	status jobs.Status,
 ) error {
 	event.CommonDetails().Timestamp = txn.KV().ReadTimestamp().WallTime
 	jobCommon, ok := event.(eventpb.EventWithCommonJobPayload)
@@ -422,9 +445,8 @@ func (*EventLogTestingKnobs) ModuleTestingKnobs() {}
 // event should be directed to.
 type LogEventDestination int
 
-// hasFlag returns true if the receiver has all of the given flags.
 func (d LogEventDestination) hasFlag(f LogEventDestination) bool {
-	return d&f == f
+	return d&f != 0
 }
 
 const (
@@ -534,7 +556,7 @@ func insertEventRecords(
 		// Simply emit the events to their respective channels and call it a day.
 		if opts.dst.hasFlag(LogExternally) {
 			for i := range entries {
-				log.StructuredEvent(ctx, severity.INFO, entries[i])
+				log.StructuredEvent(ctx, entries[i])
 			}
 		}
 		// Not writing to system table: shortcut.
@@ -547,7 +569,7 @@ func insertEventRecords(
 	if txn != nil && opts.dst.hasFlag(LogExternally) {
 		txn.KV().AddCommitTrigger(func(ctx context.Context) {
 			for i := range entries {
-				log.StructuredEvent(ctx, severity.INFO, entries[i])
+				log.StructuredEvent(ctx, entries[i])
 			}
 		})
 	}

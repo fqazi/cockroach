@@ -4,12 +4,10 @@
 // included in the /LICENSE file.
 
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-import moment, { Moment } from "moment-timezone";
-
-import { SchemaInsightReqParams, SqlApiResponse } from "src/api";
-
-import { InsightRecommendation } from "../../insights";
 import { DOMAIN_NAME } from "../utils";
+import moment, { Moment } from "moment-timezone";
+import { InsightRecommendation } from "../../insights";
+import { SchemaInsightReqParams, SqlApiResponse } from "src/api";
 
 export type SchemaInsightsState = {
   data: SqlApiResponse<InsightRecommendation[]>;

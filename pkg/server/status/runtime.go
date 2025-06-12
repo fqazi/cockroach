@@ -8,10 +8,10 @@ package status
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"runtime/metrics"
 	"time"
 
@@ -46,10 +46,7 @@ var (
 		Help:        "Average number of goroutines that are waiting to run, normalized by number of cores",
 		Measurement: "goroutines",
 		Unit:        metric.Unit_COUNT,
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `If this metric has a value over 30, it indicates a CPU overload. If the condition lasts a short period of time (a few seconds), the database users are likely to experience inconsistent response times. If the condition persists for an extended period of time (tens of seconds, or minutes) the cluster may start developing stability issues. Review CPU planning.`}
+	}
 	metaGoAllocBytes = metric.Metadata{
 		Name:        "sys.go.allocbytes",
 		Help:        "Current bytes of memory allocated by go",
@@ -116,12 +113,6 @@ var (
 		Measurement: "GC Pause",
 		Unit:        metric.Unit_NANOSECONDS,
 	}
-	metaGCStopNS = metric.Metadata{
-		Name:        "sys.gc.stop.ns",
-		Help:        "Estimated GC stop-the-world stopping latencies",
-		Measurement: "GC Stopping",
-		Unit:        metric.Unit_NANOSECONDS,
-	}
 	metaGCPausePercent = metric.Metadata{
 		Name:        "sys.gc.pause.percent",
 		Help:        "Current GC pause percentage",
@@ -132,18 +123,6 @@ var (
 		Name:        "sys.gc.assist.ns",
 		Help:        "Estimated total CPU time user goroutines spent to assist the GC process",
 		Measurement: "CPU Time",
-		Unit:        metric.Unit_NANOSECONDS,
-	}
-	metaNonGCPauseNS = metric.Metadata{
-		Name:        "sys.go.pause.other.ns",
-		Help:        "Estimated non-GC-related total pause time",
-		Measurement: "Non-GC Pause",
-		Unit:        metric.Unit_NANOSECONDS,
-	}
-	metaNonGCStopNS = metric.Metadata{
-		Name:        "sys.go.stop.other.ns",
-		Help:        "Estimated non-GC-related stop-the-world stopping latencies",
-		Measurement: "Non-GC Stopping",
 		Unit:        metric.Unit_NANOSECONDS,
 	}
 
@@ -158,13 +137,6 @@ var (
 		Help:        "Current user cpu percentage consumed by the CRDB process",
 		Measurement: "CPU Time",
 		Unit:        metric.Unit_PERCENT,
-		Essential:   true,
-		Category:    metric.Metadata_HARDWARE,
-		HowToUse: `This metric gives the CPU usage percentage at the user
-		level by the CockroachDB process only. This is similar to the Linux
-		top command output. The metric value can be more than 1 (or 100%)
-		on multi-core systems. It is best to combine user and system
-		metrics.`,
 	}
 	metaCPUSysNS = metric.Metadata{
 		Name:        "sys.cpu.sys.ns",
@@ -177,25 +149,12 @@ var (
 		Help:        "Current system cpu percentage consumed by the CRDB process",
 		Measurement: "CPU Time",
 		Unit:        metric.Unit_PERCENT,
-		Essential:   true,
-		Category:    metric.Metadata_HARDWARE,
-		HowToUse: `This metric gives the CPU usage percentage at the system
-		(Linux kernel) level by the CockroachDB process only. This is
-		similar to the Linux top command output. The metric value can be
-		more than 1 (or 100%) on multi-core systems. It is best to combine
-		user and system metrics.`,
 	}
 	metaCPUCombinedPercentNorm = metric.Metadata{
 		Name:        "sys.cpu.combined.percent-normalized",
 		Help:        "Current user+system cpu percentage consumed by the CRDB process, normalized 0-1 by number of cores",
 		Measurement: "CPU Time",
 		Unit:        metric.Unit_PERCENT,
-		Essential:   true,
-		Category:    metric.Metadata_HARDWARE,
-		HowToUse: `This metric gives the CPU utilization percentage by the CockroachDB process. 
-		If it is equal to 1 (or 100%), then the CPU is overloaded. The CockroachDB process should 
-		not be running with over 80% utilization for extended periods of time (hours). This metric 
-		is used in the DB Console CPU Percent graph.`,
 	}
 	metaCPUNowNS = metric.Metadata{
 		Name:        "sys.cpu.now.ns",
@@ -209,20 +168,6 @@ var (
 		Help:        "Current user+system cpu percentage across the whole machine, normalized 0-1 by number of cores",
 		Measurement: "CPU Time",
 		Unit:        metric.Unit_PERCENT,
-		Essential:   true,
-		Category:    metric.Metadata_HARDWARE,
-		HowToUse: `This metric gives the CPU utilization percentage of the
-		underlying server, virtual machine, or container hosting the
-		CockroachDB process. It includes CPU usage from both CockroachDB
-		and non-CockroachDB processes. It also accounts for time spent
-		processing hardware (irq) and software (softirq) interrupts, as
-		well as nice time, which represents low-priority user-mode
-		activity.
-
-    A value of 1 (or 100%) indicates that the CPU is overloaded. Avoid
-    running the CockroachDB process in an environment where the CPU
-    remains overloaded for extended periods (e.g. multiple hours). This
-    metric appears in the DB Console on the Host CPU Percent graph.`,
 	}
 
 	metaRSSBytes = metric.Metadata{
@@ -230,15 +175,6 @@ var (
 		Help:        "Current process RSS",
 		Measurement: "RSS",
 		Unit:        metric.Unit_BYTES,
-		Essential:   true,
-		Category:    metric.Metadata_HARDWARE,
-		HowToUse: `This metric gives the amount of RAM used by the
-		CockroachDB process. Persistently low values over an extended
-		period of time suggest there is underutilized memory that can be
-		put to work with adjusted settings for --cache or --max_sql_memory
-		or both. Conversely, a high utilization, even if a temporary spike,
-		indicates an increased risk of Out-of-memory (OOM) crash
-		(particularly since the swap is generally disabled).`,
 	}
 	metaTotalMemBytes = metric.Metadata{
 		Name:        "sys.totalmem",
@@ -263,10 +199,6 @@ var (
 		Help:        "Process uptime",
 		Measurement: "Uptime",
 		Unit:        metric.Unit_SECONDS,
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric measures the length of time, in seconds, that the CockroachDB process has been running. Monitor this metric to detect events such as node restarts, which may require investigation or intervention.`,
 	}
 
 	// These disk and network stats are counters of the number of operations, packets, bytes, and
@@ -278,20 +210,12 @@ var (
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Operations",
 		Help:        "Disk read operations across all disks since this process started (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric reports the effective storage device read IOPS rate. To confirm that storage is sufficiently provisioned, assess the I/O performance rates (IOPS and MBPS) in the context of the sys.host.disk.iopsinprogress metric.`,
 	}
 	metaHostDiskReadBytes = metric.Metadata{
 		Name:        "sys.host.disk.read.bytes",
 		Unit:        metric.Unit_BYTES,
 		Measurement: "Bytes",
 		Help:        "Bytes read from all disks since this process started (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric reports the effective storage device read throughput (MB/s) rate. To confirm that storage is sufficiently provisioned, assess the I/O performance rates (IOPS and MBPS) in the context of the sys.host.disk.iopsinprogress metric.`,
 	}
 	metaHostDiskReadTime = metric.Metadata{
 		Name:        "sys.host.disk.read.time",
@@ -304,20 +228,12 @@ var (
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Operations",
 		Help:        "Disk write operations across all disks since this process started (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric reports the effective storage device write IOPS rate. To confirm that storage is sufficiently provisioned, assess the I/O performance rates (IOPS and MBPS) in the context of the sys.host.disk.iopsinprogress metric.`,
 	}
 	metaHostDiskWriteBytes = metric.Metadata{
 		Name:        "sys.host.disk.write.bytes",
 		Unit:        metric.Unit_BYTES,
 		Measurement: "Bytes",
 		Help:        "Bytes written to all disks since this process started (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric reports the effective storage device write throughput (MB/s) rate. To confirm that storage is sufficiently provisioned, assess the I/O performance rates (IOPS and MBPS) in the context of the sys.host.disk.iopsinprogress metric.`,
 	}
 	metaHostDiskWriteTime = metric.Metadata{
 		Name:        "sys.host.disk.write.time",
@@ -342,20 +258,12 @@ var (
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Operations",
 		Help:        "IO operations currently in progress on this host (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric gives the average queue length of the storage device. It characterizes the storage device's performance capability. All I/O performance metrics are Linux counters and correspond to the avgqu-sz in the Linux iostat command output. You need to view the device queue graph in the context of the actual read/write IOPS and MBPS metrics that show the actual device utilization. If the device is not keeping up, the queue will grow. Values over 10 are bad. Values around 5 mean the device is working hard trying to keep up. For internal (on chassis) NVMe devices, the queue values are typically 0. For network connected devices, such as AWS EBS volumes, the normal operating range of values is 1 to 2. Spikes in values are OK. They indicate an I/O spike where the device fell behind and then caught up. End users may experience inconsistent response times, but there should be no cluster stability issues. If the queue is greater than 5 for an extended period of time and IOPS or MBPS are low, then the storage is most likely not provisioned per Cockroach Labs guidance. In AWS EBS, it is commonly an EBS type, such as gp2, not suitable as database primary storage. If I/O is low and the queue is low, the most likely scenario is that the CPU is lacking and not driving I/O. One such case is a cluster with nodes with only 2 vcpus which is not supported sizing for production deployments. There are quite a few background processes in the database that take CPU away from the workload, so the workload is just not getting the CPU. Review storage and disk I/O.`,
 	}
 	metaHostNetRecvBytes = metric.Metadata{
 		Name:        "sys.host.net.recv.bytes",
 		Unit:        metric.Unit_BYTES,
 		Measurement: "Bytes",
 		Help:        "Bytes received on all network interfaces since this process started (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric gives the node's ingress/egress network transfer rates for flat sections which may indicate insufficiently provisioned networking or high error rates. CockroachDB is using a reliable TCP/IP protocol, so errors result in delivery retries that create a "slow network" effect.`,
 	}
 	metaHostNetRecvPackets = metric.Metadata{
 		Name:        "sys.host.net.recv.packets",
@@ -380,10 +288,6 @@ var (
 		Unit:        metric.Unit_BYTES,
 		Measurement: "Bytes",
 		Help:        "Bytes sent on all network interfaces since this process started (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric gives the node's ingress/egress network transfer rates for flat sections which may indicate insufficiently provisioned networking or high error rates. CockroachDB is using a reliable TCP/IP protocol, so errors result in delivery retries that create a "slow network" effect.`,
 	}
 	metaHostNetSendPackets = metric.Metadata{
 		Name:        "sys.host.net.send.packets",
@@ -418,56 +322,13 @@ var diskMetricsIgnoredDevices = envutil.EnvOrDefaultString("COCKROACH_DISK_METRI
 // allocated uint: bytes allocated by application
 // total     uint: total bytes requested from system
 // error           : any issues fetching stats. This should be a warning only.
-var getCgoMemStats func(context.Context) (cGoAlloc uint, cGoTotal uint, _ error)
-
-// cgoMemMaybePurge checks if the current jemalloc overhead (relative to
-// cgoAllocMem or cgoTargetMem, whichever is higher) is above overheadPercent;
-// if it is, a purge of all arenas is performed. We perform at most a purge per
-// minPeriod.
-var cgoMemMaybePurge func(
-	ctx context.Context,
-	cgoAllocMem, cgoTotalMem, cgoTargetMem uint64,
-	overheadPercent int,
-	minPeriod time.Duration,
-)
-
-// Distribution of individual GC-related stop-the-world pause
-// latencies. This is the time from deciding to stop the world
-// until the world is started again. Some of this time is spent
-// getting all threads to stop (this is measured directly in
-// /sched/pauses/stopping/gc:seconds), during which some threads
-// may still be running. Bucket counts increase monotonically.
-const runtimeMetricGCPauseTotal = "/sched/pauses/total/gc:seconds"
-
-// Distribution of individual GC-related stop-the-world stopping
-// latencies. This is the time it takes from deciding to stop the
-// world until all Ps are stopped. This is a subset of the total
-// GC-related stop-the-world time (/sched/pauses/total/gc:seconds).
-// During this time, some threads may be executing. Bucket counts
-// increase monotonically.
-const runtimeMetricGCStopTotal = "/sched/pauses/stopping/gc:seconds"
+var getCgoMemStats func(context.Context) (uint, uint, error)
 
 // Estimated total CPU time goroutines spent performing GC tasks to assist the
 // GC and prevent it from falling behind the application. This metric is an
 // overestimate, and not directly comparable to system CPU time measurements.
 // Compare only with other /cpu/classes metrics.
 const runtimeMetricGCAssist = "/cpu/classes/gc/mark/assist:cpu-seconds"
-
-// Distribution of individual non-GC-related stop-the-world
-// pause latencies. This is the time from deciding to stop the
-// world until the world is started again. Some of this time
-// is spent getting all threads to stop (measured directly in
-// /sched/pauses/stopping/other:seconds). Bucket counts increase
-// monotonically.
-const runtimeMetricNonGCPauseTotal = "/sched/pauses/total/other:seconds"
-
-// Distribution of individual non-GC-related stop-the-world
-// stopping latencies. This is the time it takes from deciding
-// to stop the world until all Ps are stopped. This is a
-// subset of the total non-GC-related stop-the-world time
-// (/sched/pauses/total/other:seconds). During this time, some
-// threads may be executing. Bucket counts increase monotonically.
-const runtimeMetricNonGCStopTotal = "/sched/pauses/stopping/other:seconds"
 
 // Memory occupied by live objects and dead objects that have not
 // yet been marked free by the garbage collector.
@@ -515,9 +376,6 @@ const runtimeMetricMemStackOSBytes = "/memory/classes/os-stacks:bytes"
 // metrics in /memory/classes.
 const runtimeMetricGoTotal = "/memory/classes/total:bytes"
 
-// Count of all completed GC cycles.
-const runtimeMetricGCCount = "/gc/cycles/total:gc-cycles"
-
 var runtimeMetrics = []string{
 	runtimeMetricGCAssist,
 	runtimeMetricGoTotal,
@@ -528,11 +386,6 @@ var runtimeMetrics = []string{
 	runtimeMetricMemStackHeapBytes,
 	runtimeMetricMemStackOSBytes,
 	runtimeMetricCumulativeAlloc,
-	runtimeMetricGCCount,
-	runtimeMetricGCPauseTotal,
-	runtimeMetricNonGCPauseTotal,
-	runtimeMetricGCStopTotal,
-	runtimeMetricNonGCStopTotal,
 }
 
 // GoRuntimeSampler are a collection of metrics to sample from golang's runtime environment and
@@ -566,45 +419,6 @@ func (grm *GoRuntimeSampler) uint64(name string) uint64 {
 func (grm *GoRuntimeSampler) float64(name string) float64 {
 	i := grm.getIndex(name)
 	return grm.metricSamples[i].Value.Float64()
-}
-
-// float64Histogram gets the sampled value by metrics name as *metrics.Float64Histogram.
-// N.B. This method will panic if the metrics value is not
-// metrics.KindFloat64Histogram.
-func (grm *GoRuntimeSampler) float64Histogram(name string) *metrics.Float64Histogram {
-	i := grm.getIndex(name)
-	return grm.metricSamples[i].Value.Float64Histogram()
-}
-
-// float64HistogramSum performs an estimated sum to the float64histogram.
-// The sum is estimated by taking the average of the bucket boundaries *
-// their count. Buckets with extreme boundary values such as -inf or inf
-// will be normalized to the other non infinity boundary value.
-func float64HistogramSum(h *metrics.Float64Histogram) float64 {
-	estSum := 0.0
-	if len(h.Buckets) == 2 && math.IsInf(h.Buckets[0], -1) && math.IsInf(h.Buckets[1], 1) {
-		panic("unable to estimate from histogram with boundary: [-inf, inf]")
-	}
-	var start, end float64 // start and end of current bucket
-	for i := 0; i <= len(h.Counts)-1; i++ {
-		start, end = h.Buckets[i], h.Buckets[i+1]
-		if math.IsInf(start, -1) { // -Inf
-			// Avoid interpolating with infinity by replacing it with
-			// the right boundary value.
-			start = end
-		}
-		if math.IsInf(end, 1) { // +Inf
-			// Avoid interpolating with infinity by replacing it with
-			// the left boundary value.
-			end = start
-		}
-		estBucketValue := start
-		if end != start {
-			estBucketValue += (end - start) / 2.0
-		}
-		estSum += estBucketValue * float64(h.Counts[i])
-	}
-	return estSum
 }
 
 // sampleRuntimeMetrics reads from metrics.Read api and fill in the value
@@ -669,11 +483,8 @@ type RuntimeStatSampler struct {
 		procUtime int64
 		procStime int64
 		// CPU usage for the whole system.
-		hostUtime       int64
-		hostStime       int64
-		hostIrqtime     int64
-		hostSoftIrqtime int64
-		hostNiceTime    int64
+		hostUtime int64
+		hostStime int64
 
 		cgoCall     int64
 		gcCount     int64
@@ -707,9 +518,6 @@ type RuntimeStatSampler struct {
 	CgoTotalBytes            *metric.Gauge
 	GcCount                  *metric.Counter
 	GcPauseNS                *metric.Counter
-	NonGcPauseNS             *metric.Gauge
-	GcStopNS                 *metric.Gauge
-	NonGcStopNS              *metric.Gauge
 	GcPausePercent           *metric.GaugeFloat64
 	GcAssistNS               *metric.Counter
 	// CPU stats for the CRDB process usage.
@@ -803,11 +611,8 @@ func NewRuntimeStatSampler(ctx context.Context, clock hlc.WallClock) *RuntimeSta
 		CgoTotalBytes:            metric.NewGauge(metaCgoTotalBytes),
 		GcCount:                  metric.NewCounter(metaGCCount),
 		GcPauseNS:                metric.NewCounter(metaGCPauseNS),
-		GcStopNS:                 metric.NewGauge(metaGCStopNS),
 		GcPausePercent:           metric.NewGaugeFloat64(metaGCPausePercent),
 		GcAssistNS:               metric.NewCounter(metaGCAssistNS),
-		NonGcPauseNS:             metric.NewGauge(metaNonGCPauseNS),
-		NonGcStopNS:              metric.NewGauge(metaNonGCStopNS),
 
 		CPUUserNS:              metric.NewCounter(metaCPUUserNS),
 		CPUUserPercent:         metric.NewGaugeFloat64(metaCPUUserPercent),
@@ -871,23 +676,6 @@ func GetCGoMemStats(ctx context.Context) *CGoMemStats {
 	}
 }
 
-// CGoMemMaybePurge checks if the current allocator overhead (relative to
-// cgoAllocMem or cgoTargetMem, whichever is higher) is above overheadPercent;
-// if it is, a purge of all arenas is performed. We perform at most a purge per
-// minPeriod.
-func CGoMemMaybePurge(
-	ctx context.Context,
-	cgoAllocMem, cgoTotalMem, cgoTargetMem uint64,
-	overheadPercent int,
-	minPeriod time.Duration,
-) {
-	if cgoMemMaybePurge != nil {
-		cgoMemMaybePurge(ctx, cgoAllocMem, cgoTotalMem, cgoTargetMem, overheadPercent, minPeriod)
-	}
-}
-
-var netstatEvery = log.Every(time.Minute)
-
 // SampleEnvironment queries the runtime system for various interesting metrics,
 // storing the resulting values in the set of metric gauges maintained by
 // RuntimeStatSampler. This makes runtime statistics more convenient for
@@ -897,6 +685,12 @@ var netstatEvery = log.Every(time.Minute)
 // to keep runtime statistics current.
 // The CGoMemStats should be provided via GetCGoMemStats().
 func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMemStats) {
+	// Note that debug.ReadGCStats() does not suffer the same problem as
+	// runtime.ReadMemStats(). The only way you can know that is by reading the
+	// source.
+	gc := &debug.GCStats{}
+	debug.ReadGCStats(gc)
+
 	rsr.goRuntimeSampler.sampleRuntimeMetrics()
 
 	numCgoCall := runtime.NumCgoCall()
@@ -959,9 +753,7 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 	var deltaNet net.IOCountersStat
 	netCounters, err := getSummedNetStats(ctx)
 	if err != nil {
-		if netstatEvery.ShouldLog() {
-			log.Ops.Warningf(ctx, "problem fetching net stats: %s; net stats will be empty.", err)
-		}
+		log.Ops.Warningf(ctx, "problem fetching net stats: %s; net stats will be empty.", err)
 	} else {
 		deltaNet = netCounters
 		subtractNetworkCounters(&deltaNet, rsr.last.net)
@@ -988,34 +780,18 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 	// System CPU usage is in seconds, convert to nanoseconds.
 	hostUtime := int64(cpuUsage.User * 1.e9)
 	hostStime := int64(cpuUsage.System * 1.e9)
-	hostIrqtime := int64(cpuUsage.Irq * 1.e9)
-	hostSoftIrqtime := int64(cpuUsage.Softirq * 1.e9)
-	hostNiceTime := int64(cpuUsage.Nice * 1.e9)
 
-	var procUrate, procSrate, hostUrate, hostSrate, hostIrqrate, hostSoftIrqrate, hostNiceRate float64
+	var procUrate, procSrate, hostUrate, hostSrate float64
 	if rsr.last.now != 0 { // We cannot compute these rates on the first iteration.
 		procUrate = float64(procUtime-rsr.last.procUtime) / dur
 		procSrate = float64(procStime-rsr.last.procStime) / dur
 		hostUrate = float64(hostUtime-rsr.last.hostUtime) / dur
 		hostSrate = float64(hostStime-rsr.last.hostStime) / dur
-		hostIrqrate = float64(hostIrqtime-rsr.last.hostIrqtime) / dur
-		hostSoftIrqrate = float64(hostSoftIrqtime-rsr.last.hostSoftIrqtime) / dur
-		hostNiceRate = float64(hostNiceTime-rsr.last.hostNiceTime) / dur
 	}
 
 	combinedNormalizedProcPerc := (procSrate + procUrate) / cpuCapacity
-	combinedNormalizedHostPerc := (hostSrate + hostUrate + hostIrqrate + hostSoftIrqrate + hostNiceRate) / float64(numHostCPUs)
-
-	gcPauseTotal := float64HistogramSum(rsr.goRuntimeSampler.float64Histogram(runtimeMetricGCPauseTotal))
-	nonGcPauseTotal := float64HistogramSum(rsr.goRuntimeSampler.float64Histogram(runtimeMetricNonGCPauseTotal))
-	gcStopTotal := float64HistogramSum(rsr.goRuntimeSampler.float64Histogram(runtimeMetricGCStopTotal))
-	nonGcStopTotal := float64HistogramSum(rsr.goRuntimeSampler.float64Histogram(runtimeMetricNonGCStopTotal))
-	gcPauseTotalNs := uint64(gcPauseTotal * 1.e9)
-	nonGcPauseTotalNs := int64(nonGcPauseTotal * 1.e9)
-	gcStopTotalNs := int64(gcStopTotal * 1.e9)
-	nonGcStopTotalNs := int64(nonGcStopTotal * 1.e9)
-	gcCount := rsr.goRuntimeSampler.uint64(runtimeMetricGCCount)
-	gcPauseRatio := float64(gcPauseTotalNs-rsr.last.gcPauseTime) / dur
+	combinedNormalizedHostPerc := (hostSrate + hostUrate) / float64(numHostCPUs)
+	gcPauseRatio := float64(uint64(gc.PauseTotal)-rsr.last.gcPauseTime) / dur
 	runnableSum := goschedstats.CumulativeNormalizedRunnableGoroutines()
 	gcAssistSeconds := rsr.goRuntimeSampler.float64(runtimeMetricGCAssist)
 	gcAssistNS := int64(gcAssistSeconds * 1e9)
@@ -1028,10 +804,7 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 	rsr.last.procStime = procStime
 	rsr.last.hostUtime = hostUtime
 	rsr.last.hostStime = hostStime
-	rsr.last.hostIrqtime = hostIrqtime
-	rsr.last.hostSoftIrqtime = hostSoftIrqtime
-	rsr.last.hostNiceTime = hostNiceTime
-	rsr.last.gcPauseTime = gcPauseTotalNs
+	rsr.last.gcPauseTime = uint64(gc.PauseTotal)
 	rsr.last.runnableSum = runnableSum
 
 	// Log summary of statistics to console.
@@ -1060,7 +833,7 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 		CPUUserPercent:    float32(procUrate) * 100,
 		CPUSysPercent:     float32(procSrate) * 100,
 		GCPausePercent:    float32(gcPauseRatio) * 100,
-		GCRunCount:        gcCount,
+		GCRunCount:        uint64(gc.NumGC),
 		NetHostRecvBytes:  deltaNet.BytesRecv,
 		NetHostSendBytes:  deltaNet.BytesSent,
 	}
@@ -1068,7 +841,7 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 	logStats(ctx, stats)
 
 	rsr.last.cgoCall = numCgoCall
-	rsr.last.gcCount = int64(gcCount)
+	rsr.last.gcCount = gc.NumGC
 
 	rsr.GoAllocBytes.Update(int64(goAlloc))
 	rsr.GoTotalBytes.Update(int64(goTotal))
@@ -1082,13 +855,10 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 	rsr.RunnableGoroutinesPerCPU.Update(runnableAvg)
 	rsr.CgoAllocBytes.Update(int64(cs.CGoAllocatedBytes))
 	rsr.CgoTotalBytes.Update(int64(cs.CGoTotalBytes))
-	rsr.GcCount.Update(int64(gcCount))
-	rsr.GcPauseNS.Update(int64(gcPauseTotalNs))
-	rsr.GcStopNS.Update(gcStopTotalNs)
+	rsr.GcCount.Update(gc.NumGC)
+	rsr.GcPauseNS.Update(int64(gc.PauseTotal))
 	rsr.GcPausePercent.Update(gcPauseRatio)
 	rsr.GcAssistNS.Update(gcAssistNS)
-	rsr.NonGcPauseNS.Update(nonGcPauseTotalNs)
-	rsr.NonGcStopNS.Update(nonGcStopTotalNs)
 
 	rsr.CPUUserNS.Update(procUtime)
 	rsr.CPUUserPercent.Update(procUrate)

@@ -189,6 +189,52 @@ func TestCombinable(t *testing.T) {
 		}
 	})
 
+	t.Run("AdminVerifyProtectedTimestamp", func(t *testing.T) {
+		v1 := &AdminVerifyProtectedTimestampResponse{
+			ResponseHeader: ResponseHeader{},
+			Verified:       false,
+			DeprecatedFailedRanges: []roachpb.RangeDescriptor{
+				{RangeID: 1},
+			},
+			VerificationFailedRanges: []AdminVerifyProtectedTimestampResponse_FailedRange{
+				{RangeID: 1, StartKey: roachpb.RKeyMin, EndKey: roachpb.RKeyMax, Reason: "foo"},
+			},
+		}
+
+		if _, ok := interface{}(v1).(combinable); !ok {
+			t.Fatal("AdminVerifyProtectedTimestampResponse unexpectedly does not implement combinable")
+		}
+		v2 := &AdminVerifyProtectedTimestampResponse{
+			ResponseHeader:         ResponseHeader{},
+			Verified:               true,
+			DeprecatedFailedRanges: nil,
+		}
+		v3 := &AdminVerifyProtectedTimestampResponse{
+			ResponseHeader: ResponseHeader{},
+			Verified:       false,
+			DeprecatedFailedRanges: []roachpb.RangeDescriptor{
+				{RangeID: 2},
+			},
+			VerificationFailedRanges: []AdminVerifyProtectedTimestampResponse_FailedRange{
+				{RangeID: 2, StartKey: roachpb.RKeyMin, EndKey: roachpb.RKeyMax, Reason: "bar"},
+			},
+		}
+		require.NoError(t, v1.combine(context.Background(), v2, nil))
+		require.NoError(t, v1.combine(context.Background(), v3, nil))
+		require.EqualValues(t, &AdminVerifyProtectedTimestampResponse{
+			Verified: false,
+			DeprecatedFailedRanges: []roachpb.RangeDescriptor{
+				{RangeID: 1},
+				{RangeID: 2},
+			},
+			VerificationFailedRanges: []AdminVerifyProtectedTimestampResponse_FailedRange{
+				{RangeID: 1, StartKey: roachpb.RKeyMin, EndKey: roachpb.RKeyMax, Reason: "foo"},
+				{RangeID: 2, StartKey: roachpb.RKeyMin, EndKey: roachpb.RKeyMax, Reason: "bar"},
+			},
+		}, v1)
+
+	})
+
 	t.Run("AdminScatter", func(t *testing.T) {
 
 		// Test that AdminScatterResponse properly implement it.
@@ -260,7 +306,7 @@ func TestContentionEvent_SafeFormat(t *testing.T) {
 		Key:     roachpb.Key("foo"),
 		TxnMeta: enginepb.TxnMeta{ID: uuid.FromStringOrNil("51b5ef6a-f18f-4e85-bc3f-c44e33f2bb27"), CoordinatorNodeID: 6},
 	}
-	const exp = redact.RedactableString(`conflicted with 51b5ef6a-f18f-4e85-bc3f-c44e33f2bb27 on ‹"foo"› for 0.000s`)
+	const exp = redact.RedactableString(`conflicted with ‹51b5ef6a-f18f-4e85-bc3f-c44e33f2bb27› on ‹"foo"› for 0.000s`)
 	require.Equal(t, exp, redact.Sprint(ce))
 }
 
@@ -277,7 +323,6 @@ func TestTenantConsumptionAddSub(t *testing.T) {
 		PGWireEgressBytes:    9,
 		KVRU:                 10,
 		CrossRegionNetworkRU: 11,
-		EstimatedCPUSeconds:  12,
 	}
 	var b TenantConsumption
 	for i := 0; i < 10; i++ {
@@ -295,7 +340,6 @@ func TestTenantConsumptionAddSub(t *testing.T) {
 		PGWireEgressBytes:    90,
 		KVRU:                 100,
 		CrossRegionNetworkRU: 110,
-		EstimatedCPUSeconds:  120,
 	}); b != exp {
 		t.Errorf("expected\n%#v\ngot\n%#v", exp, b)
 	}
@@ -314,7 +358,6 @@ func TestTenantConsumptionAddSub(t *testing.T) {
 		PGWireEgressBytes:    81,
 		KVRU:                 90,
 		CrossRegionNetworkRU: 99,
-		EstimatedCPUSeconds:  108,
 	}); c != exp {
 		t.Errorf("expected\n%#v\ngot\n%#v", exp, c)
 	}
@@ -385,14 +428,4 @@ func TestRequestHeaderRoundTrip(t *testing.T) {
 	require.NoError(t, protoutil.Unmarshal(sl, &rh))
 
 	require.Equal(t, exp, rh.KVNemesisSeq.Get())
-}
-
-func TestBatchRequestEmptySize(t *testing.T) {
-	ba := &BatchRequest{}
-	require.Equal(t, 22, ba.Size())
-}
-
-func TestBatchResponseEmptySize(t *testing.T) {
-	br := &BatchResponse{}
-	require.Equal(t, 6, br.Size())
 }

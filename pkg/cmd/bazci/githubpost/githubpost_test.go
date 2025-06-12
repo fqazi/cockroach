@@ -175,7 +175,8 @@ func TestListFailuresFromJSON(t *testing.T) {
 				message: `=== RUN   TestPretty/["hello",_["world"]]
     --- FAIL: TestPretty/["hello",_["world"]] (0.00s)
     	json_test.go:1656: injected failure`,
-				labels: []string{"C-test-failure", "release-blocker", "T-sql-queries"},
+				mention: []string{"@cockroachdb/unowned"},
+				labels:  []string{"C-test-failure", "release-blocker"},
 			}},
 			formatter: DefaultFormatter,
 		},

@@ -62,7 +62,7 @@ type tShim interface {
 
 // Scope creates a TestLogScope which corresponds to the lifetime of a
 // temporary logging directory. If -show-logs was passed on the
-// // command line, this is a no-op. Otherwise, it behaves
+// command line, this is a no-op. Otherwise, it behaves
 // like ScopeWithoutShowLogs().
 //
 // See the documentation of ScopeWithoutShowLogs() for API usage and
@@ -157,7 +157,7 @@ func newLogScope(t tShim, mostlyInline bool) (sc *TestLogScope) {
 
 		// Switch to the new configuration.
 		TestingResetActive()
-		sc.cleanupFn, err = ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+		sc.cleanupFn, err = ApplyConfig(cfg)
 		if err != nil {
 			return err
 		}
@@ -350,7 +350,7 @@ func (l *TestLogScope) SetupSingleFileLogging() (cleanup func()) {
 
 	// Apply the configuration.
 	TestingResetActive()
-	cleanup, err := ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+	cleanup, err := ApplyConfig(cfg)
 	if err != nil {
 		panic(errors.NewAssertionErrorWithWrappedErrf(err, "unexpected error in predefined log config"))
 	}

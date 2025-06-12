@@ -328,9 +328,6 @@ message RemoteProducerMetadata {
     optional bytes flow_id = 8 [(gogoproto.nullable) = false,
       (gogoproto.customname) = "FlowID",
       (gogoproto.customtype) = "FlowID"];
-    optional bool drained = 9 [(gogoproto.nullable) = false];
-    // ProcessorID is the ID of the processor that published the metadata.
-    optional int32 processor_id = 10 [(gogoproto.nullable) = false, (gogoproto.customname) = "ProcessorID"];
   }
   // Metrics are unconditionally emitted by table readers.
   message Metrics {
@@ -357,6 +354,22 @@ message RemoteProducerMetadata {
   // NEXT ID: 13
 }
 
+// DistSQLVersionGossipInfo represents the DistSQL server version information
+// that gets gossiped for each node. This is used by planners to avoid planning
+// on nodes with incompatible version during rolling cluster updates.
+//
+// For the meaning of the fields, see the corresponding constants in
+// distsqlrun/server.go.
+// TODO(yuzefovich): propagating version information is no longer needed once
+// compatibility with 23.2 is unnecessary.
+message DistSQLVersionGossipInfo {
+  optional uint32 version = 1 [(gogoproto.nullable) = false,
+    (gogoproto.casttype) = "DistSQLVersion"];
+
+  optional uint32 min_accepted_version = 2 [(gogoproto.nullable) = false,
+    (gogoproto.casttype) = "DistSQLVersion"];
+}
+
 // DistSQLDrainingInfo represents the DistSQL draining state that gets gossiped
 // for each node. This is used by planners to avoid planning on nodes that are
 // known to be draining.
@@ -379,6 +392,4 @@ message TracingAggregatorEvents {
     (gogoproto.customname) = "FlowID",
     (gogoproto.customtype) = "FlowID"];
   map<string, bytes> events = 3;
-
-  map<string, util.tracing.tracingpb.OperationMetadata> span_totals = 4 [(gogoproto.nullable) = false];
 }

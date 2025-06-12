@@ -206,7 +206,7 @@ inner-join (lookup g [as=g2])
  ├── cost: 1101976.47
  ├── key: (1,6)
  ├── fd: (1)-->(2), (6)-->(7)
- ├── inner-join (inverted g@g_geom_idx,inverted [as=g2])
+ ├── inner-join (inverted g@g_geom_idx [as=g2])
  │    ├── columns: g1.k:1!null g1.geom:2 g2.k:11!null
  │    ├── flags: force inverted join (into right side)
  │    ├── inverted-expr
@@ -234,7 +234,7 @@ inner-join (cross)
  ├── columns: k:1!null geom:2 k:6!null geom:7
  ├── flags: force inverted join (into right side)
  ├── immutable
- ├── stats: [rows=333333]
+ ├── stats: [rows=333333.3]
  ├── cost: 1e+100
  ├── cost-flags: huge-cost-penalty
  ├── key: (1,6)
@@ -424,7 +424,7 @@ limit
  ├── stats: [rows=10]
  ├── cost: 2134.54
  ├── key: (1)
- ├── fd: (1)-->(2-13), (16)-->(17-25), (28)-->(29-37), (2)==(16), (16)==(2), (3)==(28), (28)==(3)
+ ├── fd: (1)-->(2-13), (16)-->(17-25), (2)==(16), (16)==(2), (28)-->(29-37), (3)==(28), (28)==(3)
  ├── inner-join (lookup wallet [as=r])
  │    ├── columns: t.id:1!null sender_id:2!null receiver_id:3!null amount:4!null t.creation_date:5!null last_update:6 schedule_date:7 status:8 comment:9 linked_trans_id:10 c1:11 c2:12 c3:13 s.id:16!null s.name:17!null s.gender:18 s.email:19 s.first_name:20 s.last_name:21 s.creation_date:22!null s.situation:23 s.balance:24!null s.is_blocked:25 r.id:28!null r.name:29!null r.gender:30 r.email:31 r.first_name:32 r.last_name:33 r.creation_date:34!null r.situation:35 r.balance:36!null r.is_blocked:37
  │    ├── key columns: [3] = [28]
@@ -432,7 +432,7 @@ limit
  │    ├── stats: [rows=980.1, distinct(3)=98.995, null(3)=0, distinct(28)=98.995, null(28)=0]
  │    ├── cost: 2134.43
  │    ├── key: (1)
- │    ├── fd: (1)-->(2-13), (16)-->(17-25), (28)-->(29-37), (2)==(16), (16)==(2), (3)==(28), (28)==(3)
+ │    ├── fd: (1)-->(2-13), (16)-->(17-25), (2)==(16), (16)==(2), (28)-->(29-37), (3)==(28), (28)==(3)
  │    ├── limit hint: 10.00
  │    ├── inner-join (lookup wallet [as=s])
  │    │    ├── columns: t.id:1!null sender_id:2!null receiver_id:3 amount:4!null t.creation_date:5!null last_update:6 schedule_date:7 status:8 comment:9 linked_trans_id:10 c1:11 c2:12 c3:13 s.id:16!null s.name:17!null s.gender:18 s.email:19 s.first_name:20 s.last_name:21 s.creation_date:22!null s.situation:23 s.balance:24!null s.is_blocked:25
@@ -566,13 +566,13 @@ WHERE w = 'foo' AND x = '2AB23800-06B1-4E19-A3BB-DF3768B808D2'
 ----
 project
  ├── columns: w:1!null x:2!null y:3!null z:4!null
- ├── stats: [rows=500.489]
+ ├── stats: [rows=500.4888]
  ├── cost: 3193.02489
  ├── fd: ()-->(1,2)
  └── inner-join (lookup abcde@idx_abcd)
       ├── columns: w:1!null x:2!null y:3!null z:4!null a:8!null b:9!null c:10!null
       ├── key columns: [1 2 3] = [8 9 10]
-      ├── stats: [rows=500.489, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(3)=25, null(3)=0, distinct(8)=1, null(8)=0, distinct(9)=1, null(9)=0, distinct(10)=25, null(10)=0]
+      ├── stats: [rows=500.4888, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(3)=25, null(3)=0, distinct(8)=1, null(8)=0, distinct(9)=1, null(9)=0, distinct(10)=25, null(10)=0]
       ├── cost: 3188
       ├── fd: ()-->(1,2,8,9), (1)==(8), (8)==(1), (2)==(9), (9)==(2), (3)==(10), (10)==(3)
       ├── select
@@ -676,18 +676,18 @@ WHERE w = 'foo' AND x = '2AB23800-06B1-4E19-A3BB-DF3768B808D2' AND (i,j,k,l,m,n)
 ----
 project
  ├── columns: w:1!null x:2!null y:3!null z:4!null
- ├── stats: [rows=0.25]
- ├── cost: 12235.3275
+ ├── stats: [rows=4.504399]
+ ├── cost: 12261.73
  ├── fd: ()-->(1,2)
  └── inner-join (lookup abcde@idx_abcd)
       ├── columns: w:1!null x:2!null y:3!null z:4!null i:5!null j:6!null k:7!null l:8!null m:9!null n:10!null a:14!null b:15!null c:16!null
       ├── key columns: [1 2 3] = [14 15 16]
-      ├── stats: [rows=0.25, distinct(1)=2e-06, null(1)=0, distinct(2)=2e-06, null(2)=0, distinct(3)=2e-06, null(3)=0, distinct(14)=2e-06, null(14)=0, distinct(15)=2e-06, null(15)=0, distinct(16)=2e-06, null(16)=0]
-      ├── cost: 12235.305
+      ├── stats: [rows=4.504399, distinct(1)=0.9, null(1)=0, distinct(2)=0.9, null(2)=0, distinct(3)=0.884032, null(3)=0, distinct(14)=0.9, null(14)=0, distinct(15)=0.9, null(15)=0, distinct(16)=0.884032, null(16)=0]
+      ├── cost: 12261.665
       ├── fd: ()-->(1,2,5-10,14,15), (1)==(14), (14)==(1), (2)==(15), (15)==(2), (3)==(16), (16)==(3)
       ├── select
       │    ├── columns: w:1!null x:2!null y:3!null z:4!null i:5!null j:6!null k:7!null l:8!null m:9!null n:10!null
-      │    ├── stats: [rows=2e-06, distinct(1)=2e-06, null(1)=0, distinct(2)=2e-06, null(2)=0, distinct(3)=2e-06, null(3)=0, distinct(5)=2e-06, null(5)=0, distinct(6)=2e-06, null(6)=0, distinct(7)=2e-06, null(7)=0, distinct(8)=2e-06, null(8)=0, distinct(9)=2e-06, null(9)=0, distinct(10)=2e-06, null(10)=0, distinct(5-10)=2e-06, null(5-10)=0]
+      │    ├── stats: [rows=0.9000001, distinct(1)=0.9, null(1)=0, distinct(2)=0.9, null(2)=0, distinct(3)=0.884032, null(3)=0, distinct(5)=0.9, null(5)=0, distinct(6)=0.9, null(6)=0, distinct(7)=0.9, null(7)=0, distinct(8)=0.9, null(8)=0, distinct(9)=0.9, null(9)=0, distinct(10)=0.9, null(10)=0, distinct(5-10)=0.9, null(5-10)=0]
       │    ├── cost: 12230.22
       │    ├── fd: ()-->(1,2,5-10)
       │    ├── scan wxyzijklmn
@@ -817,7 +817,7 @@ project
       │    ├── columns: w:1!null x:2!null y:3!null z:4!null a:7!null b:8!null c:9!null d:10!null
       │    ├── key columns: [7 8 9] = [1 2 3]
       │    ├── lookup columns are key
-      │    ├── stats: [rows=50048.9, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(3)=2500, null(3)=0, distinct(7)=1, null(7)=0, distinct(8)=1, null(8)=0, distinct(9)=2500, null(9)=0]
+      │    ├── stats: [rows=50048.88, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(3)=2500, null(3)=0, distinct(7)=1, null(7)=0, distinct(8)=1, null(8)=0, distinct(9)=2500, null(9)=0]
       │    ├── cost: 613.74172
       │    ├── key: (9)
       │    ├── fd: ()-->(1,2,7,8), (3)-->(4), (9)-->(10), (10)-->(9), (1)==(7), (7)==(1), (2)==(8), (8)==(2), (3)==(9), (9)==(3)
@@ -995,34 +995,34 @@ WHERE
   a.attname IN ('descriptor_id', 'descriptor_name')
 ----
 project
- ├── columns: attname:3!null atttypid:4!null typbasetype:53 typtype:35
+ ├── columns: attname:3!null atttypid:4!null typbasetype:52 typtype:34
  ├── stats: [rows=198]
- ├── cost: 2928.23877
+ ├── cost: 2918.13877
  └── inner-join (merge)
-      ├── columns: attname:3!null atttypid:4!null oid:29!null typtype:35 typbasetype:53
-      ├── left ordering: +29
+      ├── columns: attname:3!null atttypid:4!null oid:28!null typtype:34 typbasetype:52
+      ├── left ordering: +28
       ├── right ordering: +4
-      ├── stats: [rows=198, distinct(4)=17.2927, null(4)=0, distinct(29)=17.2927, null(29)=0]
-      ├── cost: 2926.23877
-      ├── fd: (4)==(29), (29)==(4)
+      ├── stats: [rows=198, distinct(4)=17.2927, null(4)=0, distinct(28)=17.2927, null(28)=0]
+      ├── cost: 2916.13877
+      ├── fd: (4)==(28), (28)==(4)
       ├── scan pg_type@pg_type_oid_idx [as=t]
-      │    ├── columns: oid:29!null typtype:35 typbasetype:53
-      │    ├── stats: [rows=1000, distinct(29)=100, null(29)=0]
+      │    ├── columns: oid:28!null typtype:34 typbasetype:52
+      │    ├── stats: [rows=1000, distinct(28)=100, null(28)=0]
       │    ├── cost: 1481.52
-      │    └── ordering: +29
+      │    └── ordering: +28
       ├── sort
       │    ├── columns: attname:3!null atttypid:4
       │    ├── stats: [rows=20, distinct(3)=2, null(3)=0, distinct(4)=18.2927, null(4)=0.2]
-      │    ├── cost: 1433.49877
+      │    ├── cost: 1423.39877
       │    ├── ordering: +4
       │    └── select
       │         ├── columns: attname:3!null atttypid:4
       │         ├── stats: [rows=20, distinct(3)=2, null(3)=0, distinct(4)=18.2927, null(4)=0.2]
-      │         ├── cost: 1430.95
+      │         ├── cost: 1420.85
       │         ├── scan pg_attribute [as=a]
       │         │    ├── columns: attname:3 atttypid:4
       │         │    ├── stats: [rows=1000, distinct(3)=100, null(3)=10, distinct(4)=100, null(4)=10]
-      │         │    └── cost: 1420.92
+      │         │    └── cost: 1410.82
       │         └── filters
       │              └── attname:3 IN ('descriptor_id', 'descriptor_name') [outer=(3), constraints=(/3: [/'descriptor_id' - /'descriptor_id'] [/'descriptor_name' - /'descriptor_name']; tight)]
       └── filters (true)
@@ -1043,25 +1043,25 @@ WHERE
   a.attname = 'descriptor_id'
 ----
 project
- ├── columns: attname:3!null atttypid:4!null typbasetype:53 typtype:35
+ ├── columns: attname:3!null atttypid:4!null typbasetype:52 typtype:34
  ├── stats: [rows=99]
- ├── cost: 2869.62001
+ ├── cost: 2859.52001
  ├── fd: ()-->(3)
  └── inner-join (lookup pg_type@pg_type_oid_idx [as=t])
-      ├── columns: attname:3!null atttypid:4!null oid:29!null typtype:35 typbasetype:53
-      ├── key columns: [4] = [29]
-      ├── stats: [rows=99, distinct(4)=8.56179, null(4)=0, distinct(29)=8.56179, null(29)=0]
-      ├── cost: 2868.61001
-      ├── fd: ()-->(3), (4)==(29), (29)==(4)
+      ├── columns: attname:3!null atttypid:4!null oid:28!null typtype:34 typbasetype:52
+      ├── key columns: [4] = [28]
+      ├── stats: [rows=99, distinct(4)=8.56179, null(4)=0, distinct(28)=8.56179, null(28)=0]
+      ├── cost: 2858.51001
+      ├── fd: ()-->(3), (4)==(28), (28)==(4)
       ├── select
       │    ├── columns: attname:3!null atttypid:4
       │    ├── stats: [rows=10, distinct(3)=1, null(3)=0, distinct(4)=9.56179, null(4)=0.1]
-      │    ├── cost: 1430.95
+      │    ├── cost: 1420.85
       │    ├── fd: ()-->(3)
       │    ├── scan pg_attribute [as=a]
       │    │    ├── columns: attname:3 atttypid:4
       │    │    ├── stats: [rows=1000, distinct(3)=100, null(3)=10, distinct(4)=100, null(4)=10]
-      │    │    └── cost: 1420.92
+      │    │    └── cost: 1410.82
       │    └── filters
       │         └── attname:3 = 'descriptor_id' [outer=(3), constraints=(/3: [/'descriptor_id' - /'descriptor_id']; tight), fd=()-->(3)]
       └── filters (true)

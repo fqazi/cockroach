@@ -10,7 +10,6 @@ import (
 	"os"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/loqrecovery/loqrecoverypb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/vfs"
@@ -50,7 +49,7 @@ func (s PlanStore) SavePlan(plan loqrecoverypb.ReplicaUpdatePlan) error {
 	defer func() { _ = s.fs.Remove(tmpFileName) }()
 
 	if err := func() error {
-		outFile, err := s.fs.Create(tmpFileName, fs.UnspecifiedWriteCategory)
+		outFile, err := s.fs.Create(tmpFileName)
 		if err != nil {
 			return errors.Wrapf(err, "failed to create file %q", tmpFileName)
 		}

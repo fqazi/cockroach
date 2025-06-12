@@ -16,7 +16,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
@@ -52,6 +51,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/netutil/addr"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/workload"
 	"github.com/cockroachdb/cockroach/pkg/workload/histogram"
@@ -95,7 +95,7 @@ type transientCluster struct {
 
 	// latencyEnabled controls whether simulated latency is currently enabled.
 	// It is only relevant when using SimulateLatency.
-	latencyEnabled atomic.Bool
+	latencyEnabled syncutil.AtomicBool
 }
 
 // maxNodeInitTime is the maximum amount of time to wait for nodes to
@@ -104,7 +104,7 @@ const maxNodeInitTime = 60 * time.Second
 
 // secondaryTenantID is the ID of the secondary tenant to use when
 // --multitenant=true.
-const secondaryTenantID = 3
+const secondaryTenantID = 2
 
 // demoOrg is the organization to use to request an evaluation
 // license.
@@ -542,7 +542,7 @@ func (c *transientCluster) startTenantService(
 				Server: &server.TestingKnobs{
 					ContextTestingKnobs: rpc.ContextTestingKnobs{
 						InjectedLatencyOracle:  latencyMap,
-						InjectedLatencyEnabled: c.latencyEnabled.Load,
+						InjectedLatencyEnabled: c.latencyEnabled.Get,
 					},
 				},
 			},
@@ -570,7 +570,7 @@ func (c *transientCluster) startTenantService(
 					Server: &server.TestingKnobs{
 						ContextTestingKnobs: rpc.ContextTestingKnobs{
 							InjectedLatencyOracle:  latencyMap,
-							InjectedLatencyEnabled: c.latencyEnabled.Load,
+							InjectedLatencyEnabled: c.latencyEnabled.Get,
 						},
 					},
 				},
@@ -589,7 +589,7 @@ func (c *transientCluster) startTenantService(
 // clears the remote clock tracking. If the remote clocks were not cleared,
 // bad routing decisions would be made as soon as latency is turned on.
 func (c *transientCluster) SetSimulatedLatency(on bool) {
-	c.latencyEnabled.Store(on)
+	c.latencyEnabled.Set(on)
 	for _, s := range c.servers {
 		s.RPCContext().RemoteClocks.TestingResetLatencyInfos()
 	}
@@ -649,7 +649,7 @@ func (c *transientCluster) createAndAddNode(
 		// startup routine.
 		serverKnobs.ContextTestingKnobs = rpc.ContextTestingKnobs{
 			InjectedLatencyOracle:  regionlatency.MakeAddrMap(),
-			InjectedLatencyEnabled: c.latencyEnabled.Load,
+			InjectedLatencyEnabled: c.latencyEnabled.Get,
 		}
 	}
 
@@ -924,8 +924,7 @@ func (demoCtx *Context) testServerArgsForTransientCluster(
 		EnableDemoLoginEndpoint: true,
 		// Demo clusters by default will create their own tenants, so we
 		// don't need to create them here.
-		DefaultTestTenant: base.TestControlsTenantsExplicitly,
-		DefaultTenantName: roachpb.TenantName(demoTenantName),
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 
 		Knobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
@@ -1482,7 +1481,6 @@ func (c *transientCluster) generateCerts(ctx context.Context, certsDir string) (
 			true, /* overwrite */
 			username.RootUserName(),
 			nil,  /* tenantIDs - this makes it valid for all tenants */
-			nil,  /* tenantNames - this makes it valid for all tenants */
 			true, /* generatePKCS8Key */
 		); err != nil {
 			return err
@@ -1499,7 +1497,6 @@ func (c *transientCluster) generateCerts(ctx context.Context, certsDir string) (
 			true, /* overwrite */
 			demoUser,
 			nil,  /* tenantIDs - this makes it valid for all tenants */
-			nil,  /* tenantNames - this makes it valid for all tenants */
 			true, /* generatePKCS8Key */
 		); err != nil {
 			return err
@@ -1714,7 +1711,7 @@ func (c *transientCluster) SetupWorkload(ctx context.Context) error {
 				if err != nil {
 					return err
 				}
-				sqlURLs = append(sqlURLs, sqlURL.WithDatabase(gen.Meta().Name).ToPQ().String())
+				sqlURLs = append(sqlURLs, sqlURL.ToPQ().String())
 			}
 			if err := c.runWorkload(ctx, c.demoCtx.WorkloadGenerator, sqlURLs); err != nil {
 				return errors.Wrapf(err, "starting background workload")

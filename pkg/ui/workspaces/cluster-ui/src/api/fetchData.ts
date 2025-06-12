@@ -4,9 +4,7 @@
 // included in the /LICENSE file.
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-
 import { RequestError } from "../util";
-
 import { withBasePath } from "./basePath";
 
 interface ProtoBuilder<
@@ -27,9 +25,9 @@ export function toArrayBuffer(encodedRequest: Uint8Array): ArrayBuffer {
 }
 
 /**
- * @param respBuilder expects protobuf stub class to build decode response;
+ * @param RespBuilder expects protobuf stub class to build decode response;
  * @param path relative URL path for requested resource;
- * @param reqBuilder expects protobuf stub to encode request payload. It has to be
+ * @param ReqBuilder expects protobuf stub to encode request payload. It has to be
  * class type, not instance;
  * @param reqPayload is request payload object;
  * @param timeout is the timeout for the request (optional),
@@ -37,14 +35,11 @@ export function toArrayBuffer(encodedRequest: Uint8Array): ArrayBuffer {
  * TimeoutUnit ( Hour → "H", Minute → "M", Second → "S", Millisecond → "m" ),
  * e.g. "1M" (1 minute), default value "30S" (30 seconds);
  **/
-export const fetchData = async <
-  P extends ProtoBuilder<P>,
-  T extends ProtoBuilder<T>,
->(
-  respBuilder: T,
+export const fetchData = <P extends ProtoBuilder<P>, T extends ProtoBuilder<T>>(
+  RespBuilder: T,
   path: string,
-  reqBuilder?: P,
-  reqPayload?: ConstructorParameters<P>[0],
+  ReqBuilder?: P,
+  reqPayload?: FirstConstructorParameter<P>,
   timeout?: string,
 ): Promise<InstanceType<T>> => {
   const grpcTimeout = timeout || "30S";
@@ -58,19 +53,35 @@ export const fetchData = async <
   };
 
   if (reqPayload) {
-    const encodedRequest = reqBuilder.encode(reqPayload).finish();
+    const encodedRequest = ReqBuilder.encode(reqPayload).finish();
     params.method = "POST";
     params.body = toArrayBuffer(encodedRequest);
   }
 
-  const response = await fetch(withBasePath(path), params);
-  if (!response.ok) {
-    const errorBody = await getErrorBodyFromResponse(response);
-    throw new RequestError(response.status, errorBody);
-  }
-
-  const buffer = await response.arrayBuffer();
-  return respBuilder.decode(new Uint8Array(buffer));
+  return fetch(withBasePath(path), params)
+    .then(response => {
+      if (!response.ok) {
+        return response.arrayBuffer().then(buffer => {
+          let respError;
+          try {
+            respError = cockroach.server.serverpb.ResponseError.decode(
+              new Uint8Array(buffer),
+            );
+          } catch {
+            respError = new cockroach.server.serverpb.ResponseError({
+              error: response.statusText,
+            });
+          }
+          throw new RequestError(
+            response.statusText,
+            response.status,
+            respError.error,
+          );
+        });
+      }
+      return response.arrayBuffer();
+    })
+    .then(buffer => RespBuilder.decode(new Uint8Array(buffer)));
 };
 
 /**
@@ -78,7 +89,7 @@ export const fetchData = async <
  * @param path relative path for requested resource.
  * @param reqPayload request payload object.
  */
-export async function fetchDataJSON<ResponseType, RequestType>(
+export function fetchDataJSON<ResponseType, RequestType>(
   path: string,
   reqPayload?: RequestType,
 ): Promise<ResponseType> {
@@ -96,46 +107,15 @@ export async function fetchDataJSON<ResponseType, RequestType>(
     params.body = JSON.stringify(reqPayload);
   }
 
-  const response = await fetch(withBasePath(path), params);
-  if (!response.ok) {
-    const errorBody = await getErrorBodyFromResponse(response);
-    throw new RequestError(response.status, errorBody);
-  }
-  return await response.json();
-}
-
-// getErrorBodyFromResponse attempts to extract an error message from a
-// failed RPC call. It looks for this error in the following places:
-//   - If the response is a text or json blob, it returns them directly.
-//   - If the response can be deserialized to a proto Error type, it returns
-//     the error message field.
-//   - If the response has a statusText property then it is used.
-//   - If none of the above options were found, the status code is returned.
-async function getErrorBodyFromResponse(response: Response): Promise<string> {
-  const contentType = response.headers.get("Content-Type");
-  try {
-    if (contentType.includes("application/json")) {
-      const json = await response.json();
-      return json ? JSON.stringify(json) : response.statusText;
-    }
-
-    if (contentType.includes("text/plain")) {
-      const errText = await response.text();
-      return errText || response.statusText;
-    }
-
-    if (contentType.includes("application/x-protobuf")) {
-      const buffer = await response.arrayBuffer();
-      const error = cockroach.server.serverpb.ResponseError.decode(
-        new Uint8Array(buffer),
+  return fetch(withBasePath(path), params).then(response => {
+    if (!response.ok) {
+      throw new RequestError(
+        response.statusText,
+        response.status,
+        response.statusText,
       );
-      return error.error || response.statusText;
     }
-  } catch {
-    // If we can't parse the error body, we'll just return the status text.
-    // Note that statusText is not available in http2 responses so we'll fall
-    // back to status code.
-  }
 
-  return response.statusText || response.status.toString();
+    return response.json();
+  });
 }

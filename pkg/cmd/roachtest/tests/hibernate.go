@@ -23,7 +23,7 @@ var hibernateReleaseTagRegex = regexp.MustCompile(`^(?P<major>\d+)\.(?P<minor>\d
 
 // WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
 // This is used by docs automation to produce a list of supported versions for ORM's.
-var supportedHibernateTag = "6.6.0"
+var supportedHibernateTag = "6.3.1"
 
 type hibernateOptions struct {
 	testName string
@@ -244,6 +244,8 @@ func registerHibernate(r registry.Registry, opt hibernateOptions) {
 	}
 
 	r.Add(registry.TestSpec{
+		Skip:             `https://github.com/cockroachdb/cockroach/issues/127206#issuecomment-2234146075`,
+		SkipDetails:      `a test dependency was pulled from the upstream package repository`,
 		Name:             opt.testName,
 		Owner:            registry.OwnerSQLFoundations,
 		Cluster:          r.MakeClusterSpec(1),

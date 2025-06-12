@@ -6,14 +6,12 @@
 package cli
 
 import (
-	"archive/zip"
 	"context"
 	"database/sql/driver"
 	"fmt"
 	"io"
 	"net"
 	"os"
-	"path"
 	"strings"
 	"sync"
 	"time"
@@ -36,7 +34,7 @@ import (
 	tracezipper "github.com/cockroachdb/cockroach/pkg/util/tracing/zipper"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgconn"
 	"github.com/marusama/semaphore"
 	"github.com/spf13/cobra"
 )
@@ -59,23 +57,6 @@ type debugZipContext struct {
 	firstNodeSQLConn clisqlclient.Conn
 
 	sem semaphore.Semaphore
-}
-
-var filterFlags = map[string]struct{}{
-	"cert-principal-map":                {},
-	"certs-dir":                         {},
-	"cluster-name":                      {},
-	"disable-cluster-name-verification": {},
-	"format":                            {},
-	"host":                              {},
-	"url":                               {},
-	"enterprise-require-fips-ready":     {},
-	"log":                               {},
-	"log-config-file":                   {},
-	"log-config-vars":                   {},
-	"log-dir":                           {},
-	"logtostderr":                       {},
-	"vmodule":                           {},
 }
 
 func (zc *debugZipContext) runZipFn(
@@ -109,8 +90,7 @@ func (zc *debugZipContext) runZipRequest(ctx context.Context, zr *zipReporter, r
 func (zc *debugZipContext) forAllNodes(
 	ctx context.Context,
 	nodesList *serverpb.NodesListResponse,
-	redactedNodesList *serverpb.NodesListResponse,
-	fn func(ctx context.Context, nodeDetails serverpb.NodeDetails, nodeStatus *statuspb.NodeStatus, redactedNodeDetails serverpb.NodeDetails) error,
+	fn func(ctx context.Context, nodeDetails serverpb.NodeDetails, nodeStatus *statuspb.NodeStatus) error,
 ) error {
 	if nodesList == nil {
 		// Nothing to do, return
@@ -120,7 +100,7 @@ func (zc *debugZipContext) forAllNodes(
 		// Sequential case. Simplify.
 		for _, nodeDetails := range nodesList.Nodes {
 			var nodeStatus *statuspb.NodeStatus
-			if err := fn(ctx, nodeDetails, nodeStatus, zc.getRedactedNodeDetails(redactedNodesList, nodeDetails.NodeID)); err != nil {
+			if err := fn(ctx, nodeDetails, nodeStatus); err != nil {
 				return err
 			}
 		}
@@ -144,7 +124,7 @@ func (zc *debugZipContext) forAllNodes(
 			}
 			defer zc.sem.Release(1)
 
-			nodeErrs <- fn(ctx, nodeDetails, nodeStatus, zc.getRedactedNodeDetails(redactedNodesList, nodeDetails.NodeID))
+			nodeErrs <- fn(ctx, nodeDetails, nodeStatus)
 		}(nodeDetails, nodeStatus)
 	}
 	wg.Wait()
@@ -157,54 +137,7 @@ func (zc *debugZipContext) forAllNodes(
 	return err
 }
 
-// getRedactedNodeDetails finds out matching redacted node details using node Id.
-// When we have a redacted nodelist response and unredacted nodelist response,
-// there is no guarantee that the objects in the list are going to be in the same
-// order by node Id. Hence, we are explicitly extracting the required object by node
-// id.
-func (zc *debugZipContext) getRedactedNodeDetails(
-	redactedNodesList *serverpb.NodesListResponse, nodeId int32,
-) serverpb.NodeDetails {
-	if redactedNodesList == nil {
-		return serverpb.NodeDetails{}
-	}
-
-	for i := range redactedNodesList.Nodes {
-		if redactedNodesList.Nodes[i].NodeID == nodeId {
-			return redactedNodesList.Nodes[i]
-		}
-	}
-
-	return serverpb.NodeDetails{}
-}
-
 type nodeLivenesses = map[roachpb.NodeID]livenesspb.NodeLivenessStatus
-
-// validateZipFile checks the integrity of the generated zip file.
-func validateZipFile(zipFilePath string, zr *zipReporter) error {
-	// skip validation if the user has not requested it.
-	if !zipCtx.validateZipFile {
-		return nil
-	}
-	// Open the zip file.
-	r, err := zip.OpenReader(zipFilePath)
-
-	defer func(r *zip.ReadCloser) {
-		if r != nil {
-			err := r.Close()
-			if err != nil {
-				zr.info("failed to close zip file: %v", err)
-			}
-		}
-	}(r)
-
-	if err != nil {
-		zr.info("The generated file %s is corrupt. Please retry debug zip generation. error: %v", zipFilePath, err)
-		return err
-	}
-
-	return nil
-}
 
 func runDebugZip(cmd *cobra.Command, args []string) (retErr error) {
 	if err := zipCtx.files.validate(); err != nil {
@@ -272,9 +205,6 @@ func runDebugZip(cmd *cobra.Command, args []string) (retErr error) {
 	z := newZipper(out)
 	defer func() {
 		cErr := z.close()
-		if err = validateZipFile(dirName, zr); err != nil {
-			retErr = errors.CombineErrors(retErr, err)
-		}
 		retErr = errors.CombineErrors(retErr, cErr)
 	}()
 	s.done()
@@ -321,7 +251,7 @@ func runDebugZip(cmd *cobra.Command, args []string) (retErr error) {
 
 			zr.sqlOutputFilenameExtension = computeSQLOutputFilenameExtension(sqlExecCtx.TableDisplayFormat)
 
-			sqlConn, err := makeTenantSQLClient(ctx, catconstants.InternalAppNamePrefix+" cockroach zip", useSystemDb, tenant.TenantName)
+			sqlConn, err := makeTenantSQLClient(ctx, "cockroach zip", useSystemDb, tenant.TenantName)
 			// The zip output is sent directly into a text file, so the results should
 			// be scanned into strings.
 			_ = sqlConn.SetAlwaysInferResultTypes(false)
@@ -356,7 +286,7 @@ func runDebugZip(cmd *cobra.Command, args []string) (retErr error) {
 			// For a SQL only server, the nodeList will be a list of SQL nodes
 			// and livenessByNodeID is null. For a KV server, the nodeList will
 			// be a list of KV nodes along with the corresponding node liveness data.
-			nodesList, redactedNodesList, livenessByNodeID, err := zc.collectClusterData(ctx)
+			nodesList, livenessByNodeID, err := zc.collectClusterData(ctx)
 			if err != nil {
 				return err
 			}
@@ -367,8 +297,8 @@ func runDebugZip(cmd *cobra.Command, args []string) (retErr error) {
 			}
 
 			// Collect the per-node data.
-			if err := zc.forAllNodes(ctx, nodesList, redactedNodesList, func(ctx context.Context, nodeDetails serverpb.NodeDetails, nodesStatus *statuspb.NodeStatus, redactedNodeDetails serverpb.NodeDetails) error {
-				return zc.collectPerNodeData(ctx, nodeDetails, nodesStatus, livenessByNodeID, redactedNodeDetails)
+			if err := zc.forAllNodes(ctx, nodesList, func(ctx context.Context, nodeDetails serverpb.NodeDetails, nodesStatus *statuspb.NodeStatus) error {
+				return zc.collectPerNodeData(ctx, nodeDetails, nodesStatus, livenessByNodeID)
 			}); err != nil {
 				return err
 			}
@@ -376,7 +306,7 @@ func runDebugZip(cmd *cobra.Command, args []string) (retErr error) {
 			// Add a little helper script to draw attention to the existence of tags in
 			// the profiles.
 			{
-				s = zc.clusterPrinter.start("pprof summary script")
+				s := zc.clusterPrinter.start("pprof summary script")
 				if err := z.createRaw(s, zc.prefix+"/pprof-summary.sh", []byte(`#!/bin/sh
 find . -name cpu.pprof -print0 | xargs -0 go tool pprof -tags
 `)); err != nil {
@@ -386,7 +316,7 @@ find . -name cpu.pprof -print0 | xargs -0 go tool pprof -tags
 
 			// A script to summarize the hottest ranges for a storage server's range reports.
 			if zipCtx.includeRangeInfo {
-				s = zc.clusterPrinter.start("hot range summary script")
+				s := zc.clusterPrinter.start("hot range summary script")
 				if err := z.createRaw(s, zc.prefix+"/hot-ranges.sh", []byte(`#!/bin/sh
 for stat in "queries" "writes" "reads" "write_bytes" "read_bytes" "cpu_time"; do
 	echo "$stat"
@@ -399,7 +329,7 @@ done
 
 			// A script to summarize the hottest ranges for a tenant's range report.
 			if zipCtx.includeRangeInfo {
-				s = zc.clusterPrinter.start("tenant hot range summary script")
+				s := zc.clusterPrinter.start("tenant hot range summary script")
 				if err := z.createRaw(s, zc.prefix+"/hot-ranges-tenant.sh", []byte(`#!/bin/sh
 for stat in "queries" "writes" "reads" "write_bytes" "read_bytes" "cpu_time"; do
     echo "$stat"_per_second
@@ -409,17 +339,6 @@ done
 					return err
 				}
 			}
-
-			s = zr.start("capture debug zip flags")
-			flags := getCLIClusterFlags(true, cmd, func(flag string) bool {
-				_, filter := filterFlags[flag]
-				return filter
-			})
-
-			if err := z.createRaw(s, zc.prefix+"/debug_zip_command_flags.txt", []byte(flags)); err != nil {
-				return err
-			}
-
 			return nil
 		}(); err != nil {
 			return err
@@ -548,13 +467,8 @@ func (zc *debugZipContext) dumpTableDataForZip(
 	zr *zipReporter, conn clisqlclient.Conn, base, table string, tableQuery TableQuery,
 ) error {
 	ctx := context.Background()
-	fileName := sanitizeFilename(table)
-	baseName := path.Join(base, fileName)
-	fileNameWithExtension := fileName + "." + zc.clusterPrinter.sqlOutputFilenameExtension
-	if !zipCtx.files.shouldIncludeFile(fileNameWithExtension) {
-		zr.info("skipping table data for %s due to file filters", table)
-		return nil
-	}
+	baseName := base + "/" + sanitizeFilename(table)
+
 	s := zr.start(redact.Sprintf("retrieving SQL data for %s", table))
 	const maxRetries = 5
 	suffix := ""

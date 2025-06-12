@@ -68,15 +68,11 @@ func (c *CustomFuncs) neededMutationCols(
 		addCols(private.PartialIndexPutCols)
 		addCols(private.PartialIndexDelCols)
 	}
-	addCols(private.VectorIndexPutPartitionCols)
-	addCols(private.VectorIndexPutQuantizedVecCols)
-	addCols(private.VectorIndexDelPartitionCols)
 	addCols(private.ReturnCols)
 	addCols(opt.OptionalColList(private.PassthroughCols))
 	if private.CanaryCol != 0 {
 		cols.Add(private.CanaryCol)
 	}
-	cols.UnionWith(private.TriggerCols)
 
 	if private.WithID != 0 {
 		for i := range uniqueChecks {

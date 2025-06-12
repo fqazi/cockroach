@@ -39,7 +39,7 @@ type Expr interface {
 	// The semaCtx parameter defines the context in which to perform type checking.
 	// The desired parameter hints the desired type that the method's caller wants from
 	// the resulting TypedExpr. It is not valid to call TypeCheck with a nil desired
-	// type. Instead, call it with wildcard type types.AnyElement if no specific type is
+	// type. Instead, call it with wildcard type types.Any if no specific type is
 	// desired. This restriction is also true of most methods and functions related
 	// to type checking.
 	TypeCheck(ctx context.Context, semaCtx *SemaContext, desired *types.T) (TypedExpr, error)
@@ -423,7 +423,7 @@ func NewTypedCollateExpr(expr TypedExpr, locale string) *CollateExpr {
 		Expr:   expr,
 		Locale: locale,
 	}
-	node.typ = types.MakeCollatedType(expr.ResolvedType(), locale)
+	node.typ = types.MakeCollatedString(types.String, locale)
 	return node
 }
 
@@ -808,7 +808,7 @@ func (node *Placeholder) Format(ctx *FmtCtx) {
 // ResolvedType implements the TypedExpr interface.
 func (node *Placeholder) ResolvedType() *types.T {
 	if node.typ == nil {
-		return types.AnyElement
+		return types.Any
 	}
 	return node.typ
 }
@@ -966,7 +966,7 @@ type Subquery struct {
 // ResolvedType implements the TypedExpr interface.
 func (node *Subquery) ResolvedType() *types.T {
 	if node.typ == nil {
-		return types.AnyElement
+		return types.Any
 	}
 	return node.typ
 }
@@ -1045,7 +1045,6 @@ var binaryOpPrio = [...]int{
 	treebin.Bitxor: 6,
 	treebin.Bitor:  7,
 	treebin.Concat: 8, treebin.JSONFetchVal: 8, treebin.JSONFetchText: 8, treebin.JSONFetchValPath: 8, treebin.JSONFetchTextPath: 8,
-	treebin.Distance: 8, treebin.CosDistance: 8, treebin.NegInnerProduct: 8,
 }
 
 // binaryOpFullyAssoc indicates whether an operator is fully associative.
@@ -1059,7 +1058,6 @@ var binaryOpFullyAssoc = [...]bool{
 	treebin.Bitxor: true,
 	treebin.Bitor:  true,
 	treebin.Concat: true, treebin.JSONFetchVal: false, treebin.JSONFetchText: false, treebin.JSONFetchValPath: false, treebin.JSONFetchTextPath: false,
-	treebin.Distance: false, treebin.CosDistance: false, treebin.NegInnerProduct: false,
 }
 
 // BinaryExpr represents a binary value expression.
@@ -1743,7 +1741,6 @@ func (node *DGeometry) String() string        { return AsString(node) }
 func (node *DInt) String() string             { return AsString(node) }
 func (node *DInterval) String() string        { return AsString(node) }
 func (node *DJSON) String() string            { return AsString(node) }
-func (node *DJsonpath) String() string        { return AsString(node) }
 func (node *DUuid) String() string            { return AsString(node) }
 func (node *DIPAddr) String() string          { return AsString(node) }
 func (node *DString) String() string          { return AsString(node) }

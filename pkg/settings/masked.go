@@ -47,8 +47,8 @@ func (s *MaskedSetting) String(sv *Values) string {
 }
 
 // DefaultString returns the default value for the setting as a string.
-func (s *MaskedSetting) DefaultString() string {
-	return s.setting.DefaultString()
+func (s *MaskedSetting) DefaultString() (string, error) {
+	return s.setting.DecodeToString(s.setting.EncodedDefault())
 }
 
 // Visibility returns the visibility setting for the underlying setting.
@@ -89,4 +89,15 @@ func (s *MaskedSetting) ValueOrigin(ctx context.Context, sv *Values) ValueOrigin
 // IsUnsafe returns whether the underlying setting is unsafe.
 func (s *MaskedSetting) IsUnsafe() bool {
 	return s.setting.IsUnsafe()
+}
+
+// TestingIsReportable is used in testing for reportability.
+func TestingIsReportable(s Setting) bool {
+	if _, ok := s.(*MaskedSetting); ok {
+		return false
+	}
+	if e, ok := s.(internalSetting); ok {
+		return e.isReportable()
+	}
+	return true
 }

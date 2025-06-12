@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -80,7 +79,7 @@ func (r *Replica) executeReadOnlyBatch(
 	// Pin engine state eagerly so that all iterators created over this Reader are
 	// based off the state of the engine as of this point and are mutually
 	// consistent.
-	readCategory := fs.BatchEvalReadCategory
+	readCategory := storage.BatchEvalReadCategory
 	for _, union := range ba.Requests {
 		inner := union.GetInner()
 		switch inner.(type) {
@@ -462,9 +461,8 @@ func (r *Replica) executeReadOnlyBatchWithServersideRefreshes(
 
 	for retries := 0; ; retries++ {
 		if retries > 0 {
-			if boundAccount != nil {
-				boundAccount.Clear(ctx)
-			}
+			// It is safe to call Clear on an uninitialized BoundAccount.
+			boundAccount.Clear(ctx)
 			log.VEventf(ctx, 2, "server-side retry of batch")
 		}
 		now := timeutil.Now()
@@ -583,7 +581,7 @@ func (r *Replica) collectSpansRead(
 				getAlloc.union.Get = &getAlloc.get
 				ru := kvpb.RequestUnion{Value: &getAlloc.union}
 				baCopy.Requests = append(baCopy.Requests, ru)
-			}, false /* includeLockedNonExisting */); err != nil {
+			}); err != nil {
 				return nil, nil, err
 			}
 			continue

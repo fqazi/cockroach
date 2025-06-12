@@ -30,7 +30,7 @@ query TTTI rowsort
 SELECT start_key, end_key, replicas, lease_holder from [SHOW RANGES FROM TABLE kv WITH DETAILS]
 ORDER BY 1
 ----
-<before:/Table/72>  …/1/1                   {1}  1
+<before:/Table/66>  …/1/1                   {1}  1
 …/1/1               …/1/2                   {1}  1
 …/1/2               …/1/3                   {2}  2
 …/1/3               …/1/4                   {3}  3
@@ -59,24 +59,23 @@ vectorized: <hidden>
 plan type: custom
 rows decoded from KV: 5 (40 B, 10 KVs, 5 gRPC calls)
 maximum memory usage: <hidden>
-DistSQL network usage: <hidden>
+network usage: <hidden>
 regions: <hidden>
 isolation level: serializable
 priority: normal
 quality of service: regular
 ·
 • group (scalar)
-│ sql nodes: <hidden>
+│ nodes: <hidden>
 │ regions: <hidden>
 │ actual row count: 1
-│ execution time: 0µs
 │
 └── • scan
-      sql nodes: <hidden>
-      kv nodes: <hidden>
+      nodes: <hidden>
       regions: <hidden>
       actual row count: 5
       KV time: 0µs
+      KV contention time: 0µs
       KV rows decoded: 5
       KV pairs read: 10
       KV bytes read: 40 B
@@ -86,7 +85,7 @@ quality of service: regular
       table: kv@kv_pkey
       spans: FULL SCAN
 ·
-Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJzslt2O4jYUx-_7FNa5mqmCyBcM46tt2a2EWoYVsNuLCiFPcjZrkcSp7fDREY_VF-iTVUnINMkOEVFVcVG4QIp9cvz3__xO7BdQv4dAYfHhlw_jJfFEGuu77-_JT_PZlGy2YEAsfHxiESqgv4EFBthggAMGuGDAAFYGJFJ4qJSQWchL_sLE3wM1DeBxkupseGWAJyQCfQHNdYhAYcmeQ5wj81H2TTDAR814mC-z2b7bbNfJBg9gwFiEaRQrCgYsEhYrSnr9TMPPn0m2lKIktopHiQEXWYBGpYshzSOkxPzrT3UKETtFfPSEjz4lp_eeDxoVkch8Skbkx2IwmH8cE4-FoXqNSxiXZVymYPp5PCZKY1L4Ru5wr_s81veUmPmWigDEzbmAiO1JhJGQB8LCUHhMZ7LMXMMz095XVESkOkk1JVl8Lr8csGB1NKB4OnmsNAsQqFUpyuQ9UPNoXF6XH4JAYsC0kP1BvSzj2aen5Xo--3Vxdw8G4B69VHMR113-F7rthu7BWd3_yE1jIX2U6Ne0ro7tO7MaxC0-TdeTp-XdO-u_2ZnT2JlVL4l1eatYnVqlb_f6zq1ZujSL1aUyFaSGV26WYU23fTlRdjeinF7fvRHVhSi7S2UqRD1cmaiHmm7ncqKcbkS5vfykuRF1MVFOl8pUiBpdmahRTbd7OVFuN6IGvRtPXXhyu9SlwtPjlXl67HKxnaNKRKywcVF8eyWzsVLPym6U6AdYXD-VSKWHH6Xw8tjicZYnygd8VLqYtYqHSVxOKS2RRa_38momqzWTXctkVTMNmpnsdk1dRDmtqdzzmaxmJrfr9lheFYhR74TckJBpjL3DK0nl-I5xXWfMR4WSs5D_wb4FsHwth06ih3xbNns5VXZ8OVd0fTkboVIsqAWYF4Jd9WfY9GfQ6s_wvNN2M9Pw5nTVn4emPw-t_ozOO-00M41uTlf9GTX9eWz_EJnnrXa_-Tq2f2j_d14_ZkfSl1Ds1twHCubp13vjr_xB9gILVHYuLr6KXW7W8pBkp9oXFio0YMo2-B41yojHXGnuAdUyxePxu78DAAD__yEjlXY=
+Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJzsls2uozYUx_d9Cuus7q2Iwle-vJo2M5WiNjejJDNdVFHkC2cYFMDUNvnoVR6rL9Anq4DhFsiEgqoqi0kWkbAPx3__z-9gv4D8PQAKq3e_vJuuicOTSD18_0h-Wi7mZLcHDSLu4hMLUQL9DQzQwAQNLNDABg0GsNEgFtxBKblIQ16yF2buEaiugR_FiUqHNxo4XCDQF1C-ChAorNlzgEtkLoq-Dhq4qJgfZMvs9m92-228wxNoMOVBEkaSggarmEWSkl4_1fDzR6L8ECnR__pT5s8OjxRGyufRxZTgB0lcdLiLLiVGPvh8UiiJQOZSMiY_5oPe8v2UOCwI5GtczHxRxKVLzz9Op0QqjHPDyAMeVd-P1CMleraXPABxdy0gZEcSYsjFibAg4A5TqSw90_DMlPMZJeGJihNFSRqfyS8GDNicNcifvpgrFfMQqFGqxuwtUP2stS_ID54n0GOKi_6gWo_p4sPTertc_Lp6eAQN8IhOcunyf9Bt1nQPrur-R24SceGiQLeidXNu3plRQ231Yb6dPa0f3hj_z86s2s6MakmM9j1idOqRvtnrW_cuadUlRpeSlFga3rhLhhXdZnuUzG4oWb2-fUepFUpml5KUUBrdGKVRRbfVHiWrG0p2Lztb7ij9O0pWl5KUUBrfGKVxRbfdHiW7G0qD3h2kViDZXQpSAmlyY5AmXS6vS5QxjyTWLoNfX0mvrdQz0lsjuh7mV0zJE-Hge8GdLDZ_XGSJsgEXpcpnjfxhFhVTUglk4evdu5zJaMxkVjIZ5UyDeiazWVMXUVZjKvt6JqOeye66PZZVBSJUBy52JGAKI-f0SlIxfmC-qjLmokThs8D_g10CWLyWQSfQQX9fNHsxVXR8MZd3fTEbopTMqwToLcEu-zOs-zNo9Gd43Wmznml4d7rsz6juz6jRn_F1p616pvHd6bI_47o_k-YPkX7davvi69j8of3mvJ6kR9KngB-2vgsU9C-_3lf-ih-kLzBPpufi6jM_ZGatT3F6qn1igUQN5myHb1GhCP3Il8p3gCqR4Pn83d8BAAD__wOQkWY=
 
 query T
 EXPLAIN ANALYZE (DISTSQL) SELECT * FROM kv JOIN kw ON kv.k = kw.k
@@ -98,17 +97,16 @@ vectorized: <hidden>
 plan type: custom
 rows decoded from KV: 10 (80 B, 20 KVs, 10 gRPC calls)
 maximum memory usage: <hidden>
-DistSQL network usage: <hidden>
+network usage: <hidden>
 regions: <hidden>
 isolation level: serializable
 priority: normal
 quality of service: regular
 ·
 • merge join
-│ sql nodes: <hidden>
+│ nodes: <hidden>
 │ regions: <hidden>
 │ actual row count: 5
-│ execution time: 0µs
 │ estimated max memory allocated: 0 B
 │ estimated max sql temp disk usage: 0 B
 │ equality: (k) = (k)
@@ -116,11 +114,11 @@ quality of service: regular
 │ right cols are key
 │
 ├── • scan
-│     sql nodes: <hidden>
-│     kv nodes: <hidden>
+│     nodes: <hidden>
 │     regions: <hidden>
 │     actual row count: 5
 │     KV time: 0µs
+│     KV contention time: 0µs
 │     KV rows decoded: 5
 │     KV pairs read: 10
 │     KV bytes read: 40 B
@@ -131,11 +129,11 @@ quality of service: regular
 │     spans: FULL SCAN
 │
 └── • scan
-      sql nodes: <hidden>
-      kv nodes: <hidden>
+      nodes: <hidden>
       regions: <hidden>
       actual row count: 5
       KV time: 0µs
+      KV contention time: 0µs
       KV rows decoded: 5
       KV pairs read: 10
       KV bytes read: 40 B
@@ -145,7 +143,7 @@ quality of service: regular
       table: kw@kw_pkey
       spans: FULL SCAN
 ·
-Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJzsmt9um0gUxu_3KUZz1W5x7eFPYiNVsjbtSulukiqterOKqgmc2gjMuMzYjjfKY-0L7JOtwHUSjPH6IAcsIBdVgQHm_M6cb74Zc0_lj4Da9POHPz-cfSG_kt-vry6IPycfr84vib8gV5fEn7_1yTviL976VKOhcOGST0BS-y_KqEZ1qlGDatSkGrXojUankXBAShHFTe6TG87dO2r3NOqF05mKT99o1BERUPueKk8FQG36hd8GcA3chajboxp1QXEvSF7jz4f-_NvUhyXV6JkIZpNQ2sTXyJxq9POUx0edbtyRP76S-H3SJiFbHUYw8kTcQIFUq1PKm4BNev_-I382EQtJXHCEC65Nft53u1QgSQTctUmf_LY6Obr-dEYcHgTysd2Ue9G6XdyDi69nZ0QqmBJHzEJFXsGd6nqhem2TXhLXqgGAn9dgwu_IBCYiWhIeBMLhKu5WL-nDLVfOGCQRMzWdKZvE7ZPur08wevOg0dXRiv-a7-2SjLkcp8kO4_Y3GpWKj4Da7Fn2zt9Tu_egFUvgyUYCF0N_sS2Bi6cEdlmbwgOkUN9I4UluCp-eKyIXInA3n_sm7sherbaMhguIRvBReCFEXbZRzwF8V6-G7M3rd5E3Gq_-SzV6FUc_ZNpQ14aGNowFBe7AmSlPhOmM7-IbX5M_AqJgMiWuJ30yk3wEhfE_oTU20LL88njiMAu3cduK7FJ0xLTLrDSsHAT_G4eVG4e5GYeVioPtX-YMr9NdvdM12jI_tFKzoik8LaDUbQpfQqlPc1NYolKzeip1ujz0_ctDL6BwRqdrtuVxaIXTi6awX0Dh2hS-hML1c1NYosLp9VS4dHkY-5eHUUDhzE7Xasvj0ApnFE3hoIDCtSl8CYUb5KawRIUz6qlw6fIw9y8Ps4DCWZ22OA6tb2bRBFp4fet0GeGhSxgRagxRm8xDK52Vm8wSlc6sp9KZmG33a5BTEUrY2F_c_qrexqs6LGYM7ghWmZNiFjnwKRJO0nZ1eJU8KKlnF6RaXdVXB-fh-pJUXO3asHxJtj2ahBgBnzz-bLF_KCe5oYSgFiLyScAVhM7yMZb1-QX3VDpKFyREHg-8v3kWwfq2pO8ROODNEwbPLq215fFaAmB9dQIy5rJ5M5YPQwIaVAyI7QDUPwgglgakIwGx_Gqo6RAysISsphEyM4QYQlD1oxLUE1woJ7mh1DTXDAloUDGg8gUVCYjlV0NNh5CBJWQ1jZCZIaRvEuo9J2RkZ5z1o6yMNhs7H8XSitY7KnHOxGIWNO41HTcMxyd_NVB9qhkylqqNe-m51pGAGmjcsYSqNu6lexUzQ8gqaNxrOoROcXzyVwNHIKjIWKo27uULKhJQA407llDVxr18Qc0QOsEa93oDsjIzzmlr4VMqhOPTvA19JKD8dUH1U7KOjKVyC1-6XBhYQlVb-PK3ijKE-q2Ffw6oj-PTvA19JKD8dcERCCoylsotfPmCiiVUtYUvX1AzhAathU9Z-MyMw4p-P1PTIWQgAVVt4ksfQgxLqHm7-1hCO9YG1c_LBjqa5vn4LKKiH9HUlNAACahqJ1--qmIJNW-LH0toxwLhCFQVHU3zzHwWEfpLmnqLhpWddzIfCB2Vmy__Nx0koKrdfPk7SFhCzXPzWEKV7_SXv2ZGI8pfIlQ_NZvZaDCfKjbArFpIQFW7-fJVFUuoeW4eS6jy7f7yVRWNKH-JcASqmo0m8wFSw928-XCj0e-BWHzzXGrT3s-_zpZ_1n80voGPJLXv6eexWCS0viynIKn9nQcSNHrBfXgPCqKJF3pSeQ61VTSDh4df_gsAAP__1YKjfA==
+Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJzsmt1u2zYUx-_3FASv2lWuTX04toACxtIOSLckRRL0ZggKRjqxBcmiK9J2vCCPtRfYkw2S5yS2LM9HcyVDUi6KSqQ-zu_w_PknrUcqvwfUpteffv90ekN-Jr9eXZ4Tf0Y-X55dEH9OLi-IP3vvkw_En7_3qUZD4cIFH4Ok9h-UUY3qVKMG1ahJNWrRW41OIuGAlCKKuzwmF5y5D9TuaNQLJ1MVn77VqCMioPYjVZ4KgNr0ht8FcAXchajdoRp1QXEvSB7jzwb-7NvEhwXV6KkIpuNQ2sTXyIxq9HrC46NWO36R374S5Y3BJp2__5LLY0eECkLliTDVFIm5JC44wgXXJmx58m6hQJIIuGuTHvlleXJ49eWUODwI5HO_CfeiVb_40edfT0-JVDAhjpiGiryBB9X2QvXWJp0koGUHAD-rw5g_kDGMRbQgPAiEw1X8Wp3kHe64ckYgiZiqyVTZJO6fvP7qBKO3TxpdHi3Br8DeLciIy9E60kHc_1ajUvEhUJu9StvZR2p3nrR8metuZG4-8OfbMjd_yVybNbn7P7nTN3LXzczdy31F5EIE7uZ938UvslevLcPgHKIhfBZeCFGbbVRwAPfqzYC9e_sh8oaj5X-pRi_j6AdMG-jawNAGsYTAAzjTdMZ38Y3b5PeAKBhPiOtJn0wlH0Ju_C9ojQ20LLsuXjhMw23ctiK7EC0xaTNrHVYGgv-Mw8qMw9yMw1qLg-1f3wyvzG291Taa-j6YNrO8uTvJoc1N7g6qzSeZuStQm1k1tXm9LvT960LPoWlGq202dXEwTdPz5q6XQ9Oa3B1U03qZuStQ0_Rqatp6XRj714WRQ9PMVttq6uJgmmbkzV0_h6Y1uTuopvUzc1egphnV1LT1ujD3rwszh6ZZraYqDqZoZt7MWXhFa7UZ4aFLGBFqBFGTxYNpm5WZxQK1zaymtpmYffMrkBMRStjYJ9z-qM7Go1osZgzuEJaZk2IaOfAlEk7Sd3l4mdwoKWQXpFq26suDs3DVJBVXuzYefyTbDk1CjICPn3932D-UbmYoIai5iHwScAWhs3iOZXV-zj21HqULEiKPB96fPI1gdVny7hE44M0SBq-aVtry3JYAWLWOQcZcNi_G8mFIQP2SAbEdgHoHAcTWAelIQCy7Gio6hAwsIatuhMwUIYYQVP2oBLWLC6WbGUpFc82QgPolAypeUJGAWHY1VHQIGVhCVt0ImSlC-iahzmtCRnrGWd3KSmmzsfNWbF3ROkclzqlYzJzGvaLjhuH4ZK8Gyk81Q8ZStnEvPNc6ElANjTuWUNnGvXCvYqYIWTmNe0WH0AmOT_Zq4AgEFRlL2ca9eEFFAqqhcccSKtu4Fy-oKUJdrHGvNiArNeOcNBZ-TYVwfOq3oY8ElL0uKH9K1pGxlG7hC5cLA0uobAtf_FZRilCvsfCvAfVwfOq3oY8ElL0uOAJBRcZSuoUvXlCxhMq28MULaopQv7HwaxY-NeOwvN_PVHQIGUhAZZv4wocQwxKq3-4-ltCOtUH587KBjqZ-Pj6NKO9HNBUl1EcCKtvJF6-qWEL12-LHEtqxQDgCVUVHUz8zn0aE_pKm2qJhpeed1AdCR-Xmi_9NBwmobDdf_A4SllD93DyWUOk7_cWvmdGIspcI5U_NZjoazKeKNTCrFhJQ2W6-eFXFEqqfm8cSKn27v3hVRSPKXiIcgaqmo0l9gFRzN28-3Wr0PhDzb55Lbdr596-15Z_VH40v4ENJ7Ud6PRLzhNbNYgKS2vc8kKDRc-7DR1AQjb3Qk8pzqK2iKTw9_fRPAAAA__88tZtc
 
 query T
 EXPLAIN (VEC, VERBOSE) SELECT count(*) FROM kv
@@ -224,7 +222,7 @@ EXPLAIN (VEC, VERBOSE) SELECT count(*) FROM kv NATURAL INNER HASH JOIN kv kv2
 │             │ └ *colexec.countOp
 │             │   └ *colexec.invariantsChecker
 │             │     └ *colexecbase.simpleProjectOp
-│             │       └ *colexecdisk.twoInputDiskSpiller
+│             │       └ *colexecdisk.diskSpillerBase
 │             │         ├ *colexecjoin.hashJoiner
 │             │         │ ├ *colexec.invariantsChecker
 │             │         │ │ └ *colexec.ParallelUnorderedSynchronizer
@@ -261,7 +259,10 @@ EXPLAIN (VEC, VERBOSE) SELECT count(*) FROM kv NATURAL INNER HASH JOIN kv kv2
 │             │         │     └ *colexec.invariantsChecker
 │             │         │       └ *colrpc.Inbox
 │             │         ├ *colexec.invariantsChecker
-│             │         └ *colexec.invariantsChecker
+│             │         ├ *colexec.invariantsChecker
+│             │         └ *colexecdisk.hashBasedPartitioner
+│             │           ├ *colexecdisk.bufferExportingOperator
+│             │           └ *colexecdisk.bufferExportingOperator
 │             ├ *colexec.invariantsChecker
 │             │ └ *colrpc.Inbox
 │             ├ *colexec.invariantsChecker
@@ -277,7 +278,7 @@ EXPLAIN (VEC, VERBOSE) SELECT count(*) FROM kv NATURAL INNER HASH JOIN kv kv2
 │       └ *colexec.countOp
 │         └ *colexec.invariantsChecker
 │           └ *colexecbase.simpleProjectOp
-│             └ *colexecdisk.twoInputDiskSpiller
+│             └ *colexecdisk.diskSpillerBase
 │               ├ *colexecjoin.hashJoiner
 │               │ ├ *colexec.invariantsChecker
 │               │ │ └ *colexec.ParallelUnorderedSynchronizer
@@ -314,7 +315,10 @@ EXPLAIN (VEC, VERBOSE) SELECT count(*) FROM kv NATURAL INNER HASH JOIN kv kv2
 │               │     └ *colexec.invariantsChecker
 │               │       └ *colrpc.Inbox
 │               ├ *colexec.invariantsChecker
-│               └ *colexec.invariantsChecker
+│               ├ *colexec.invariantsChecker
+│               └ *colexecdisk.hashBasedPartitioner
+│                 ├ *colexecdisk.bufferExportingOperator
+│                 └ *colexecdisk.bufferExportingOperator
 ├ Node 3
 │ └ *colrpc.Outbox
 │   └ *colexecutils.deselectorOp
@@ -322,7 +326,7 @@ EXPLAIN (VEC, VERBOSE) SELECT count(*) FROM kv NATURAL INNER HASH JOIN kv kv2
 │       └ *colexec.countOp
 │         └ *colexec.invariantsChecker
 │           └ *colexecbase.simpleProjectOp
-│             └ *colexecdisk.twoInputDiskSpiller
+│             └ *colexecdisk.diskSpillerBase
 │               ├ *colexecjoin.hashJoiner
 │               │ ├ *colexec.invariantsChecker
 │               │ │ └ *colexec.ParallelUnorderedSynchronizer
@@ -359,7 +363,10 @@ EXPLAIN (VEC, VERBOSE) SELECT count(*) FROM kv NATURAL INNER HASH JOIN kv kv2
 │               │     └ *colexec.invariantsChecker
 │               │       └ *colrpc.Inbox
 │               ├ *colexec.invariantsChecker
-│               └ *colexec.invariantsChecker
+│               ├ *colexec.invariantsChecker
+│               └ *colexecdisk.hashBasedPartitioner
+│                 ├ *colexecdisk.bufferExportingOperator
+│                 └ *colexecdisk.bufferExportingOperator
 ├ Node 4
 │ └ *colrpc.Outbox
 │   └ *colexecutils.deselectorOp
@@ -367,7 +374,7 @@ EXPLAIN (VEC, VERBOSE) SELECT count(*) FROM kv NATURAL INNER HASH JOIN kv kv2
 │       └ *colexec.countOp
 │         └ *colexec.invariantsChecker
 │           └ *colexecbase.simpleProjectOp
-│             └ *colexecdisk.twoInputDiskSpiller
+│             └ *colexecdisk.diskSpillerBase
 │               ├ *colexecjoin.hashJoiner
 │               │ ├ *colexec.invariantsChecker
 │               │ │ └ *colexec.ParallelUnorderedSynchronizer
@@ -404,7 +411,10 @@ EXPLAIN (VEC, VERBOSE) SELECT count(*) FROM kv NATURAL INNER HASH JOIN kv kv2
 │               │     └ *colexec.invariantsChecker
 │               │       └ *colrpc.Inbox
 │               ├ *colexec.invariantsChecker
-│               └ *colexec.invariantsChecker
+│               ├ *colexec.invariantsChecker
+│               └ *colexecdisk.hashBasedPartitioner
+│                 ├ *colexecdisk.bufferExportingOperator
+│                 └ *colexecdisk.bufferExportingOperator
 └ Node 5
   └ *colrpc.Outbox
     └ *colexecutils.deselectorOp
@@ -412,7 +422,7 @@ EXPLAIN (VEC, VERBOSE) SELECT count(*) FROM kv NATURAL INNER HASH JOIN kv kv2
         └ *colexec.countOp
           └ *colexec.invariantsChecker
             └ *colexecbase.simpleProjectOp
-              └ *colexecdisk.twoInputDiskSpiller
+              └ *colexecdisk.diskSpillerBase
                 ├ *colexecjoin.hashJoiner
                 │ ├ *colexec.invariantsChecker
                 │ │ └ *colexec.ParallelUnorderedSynchronizer
@@ -449,4 +459,7 @@ EXPLAIN (VEC, VERBOSE) SELECT count(*) FROM kv NATURAL INNER HASH JOIN kv kv2
                 │               └ *colexec.invariantsChecker
                 │                 └ *colfetcher.ColBatchScan
                 ├ *colexec.invariantsChecker
-                └ *colexec.invariantsChecker
+                ├ *colexec.invariantsChecker
+                └ *colexecdisk.hashBasedPartitioner
+                  ├ *colexecdisk.bufferExportingOperator
+                  └ *colexecdisk.bufferExportingOperator

@@ -18,10 +18,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/storeliveness"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/tenantrate"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/txnwait"
-	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -37,23 +35,16 @@ import (
 // particular point is reached) or to change the behavior by returning
 // an error (which aborts all further processing for the command).
 type StoreTestingKnobs struct {
-	EvalKnobs                kvserverbase.BatchEvalTestingKnobs
-	IntentResolverKnobs      kvserverbase.IntentResolverTestingKnobs
-	TxnWaitKnobs             txnwait.TestingKnobs
-	ConsistencyTestingKnobs  ConsistencyTestingKnobs
-	TenantRateKnobs          tenantrate.TestingKnobs
-	EngineKnobs              []storage.ConfigOption
-	AllocatorKnobs           *allocator.TestingKnobs
-	GossipTestingKnobs       StoreGossipTestingKnobs
-	ReplicaPlannerKnobs      plan.ReplicaPlannerTestingKnobs
-	StoreLivenessKnobs       *storeliveness.TestingKnobs
-	RaftTestingKnobs         *raft.TestingKnobs
-	RaftLogReadyRaftMuLocked func(
-		ctx context.Context,
-		rangeID roachpb.RangeID,
-		replID roachpb.ReplicaID,
-		rd raft.Ready,
-	) bool
+	EvalKnobs               kvserverbase.BatchEvalTestingKnobs
+	IntentResolverKnobs     kvserverbase.IntentResolverTestingKnobs
+	TxnWaitKnobs            txnwait.TestingKnobs
+	ConsistencyTestingKnobs ConsistencyTestingKnobs
+	TenantRateKnobs         tenantrate.TestingKnobs
+	EngineKnobs             []storage.ConfigOption
+	AllocatorKnobs          *allocator.TestingKnobs
+	GossipTestingKnobs      StoreGossipTestingKnobs
+	ReplicaPlannerKnobs     plan.ReplicaPlannerTestingKnobs
+
 	// TestingRequestFilter is called before evaluating each request on a
 	// replica. The filter is run before the request acquires latches, so
 	// blocking in the filter will not block interfering requests. If it
@@ -185,9 +176,6 @@ type StoreTestingKnobs struct {
 	DisableReplicaGCQueue bool
 	// DisableReplicateQueue disables the replication queue.
 	DisableReplicateQueue bool
-	// DisableStoreRebalancer turns off the store rebalancer which moves replicas
-	// and leases.
-	DisableStoreRebalancer bool
 	// DisableLoadBasedSplitting turns off LBS so no splits happen because of load.
 	DisableLoadBasedSplitting bool
 	// LoadBasedSplittingOverrideKey returns a key which should be used for load
@@ -217,7 +205,7 @@ type StoreTestingKnobs struct {
 	// constructed and received, the follower will silently drop the snapshot
 	// without signaling an error to the sender, i.e. the leader. (To work around
 	// that, once could adjust the term for the message in that case in
-	// `(*Replica).stepRaftGroupRaftMuLocked` to prevent the message from getting dropped).
+	// `(*Replica).stepRaftGroup` to prevent the message from getting dropped).
 	//
 	// Another problem is that the snapshot may apply but fail to inform the
 	// leader of this fact. Once a Raft leader has determined that a follower
@@ -288,7 +276,7 @@ type StoreTestingKnobs struct {
 	// RefreshReasonTicksPeriod overrides the default period over which
 	// pending commands are refreshed. The period is specified as a multiple
 	// of Raft group ticks.
-	RefreshReasonTicksPeriod int64
+	RefreshReasonTicksPeriod int
 	// DisableProcessRaft disables the process raft loop.
 	DisableProcessRaft func(roachpb.StoreID) bool
 	// DisableLastProcessedCheck disables checking on replica queue last processed times.
@@ -492,11 +480,12 @@ type StoreTestingKnobs struct {
 	// various components choking on the range tombstone:
 	//
 	// - rangefeed.TestingKnobs.IgnoreOnDeleteRangeError
+	// - kvserverbase.BatchEvalTestingKnobs.DisableInitPutFailOnTombstones
 	GlobalMVCCRangeTombstone bool
 
 	// LeaseUpgradeInterceptor intercepts leases that get upgraded to
-	// leader leases or epoch-based leases.
-	LeaseUpgradeInterceptor func(roachpb.RangeID, *roachpb.Lease)
+	// epoch-based ones.
+	LeaseUpgradeInterceptor func(*roachpb.Lease)
 
 	// MVCCGCQueueLeaseCheckInterceptor intercepts calls to Replica.LeaseStatusAt when
 	// making high priority replica scans.
@@ -535,7 +524,7 @@ type StoreTestingKnobs struct {
 	// rangeID should ignore the queue being disabled, and be processed anyway.
 	BaseQueueDisabledBypassFilter func(rangeID roachpb.RangeID) bool
 
-	// InjectReproposalError injects an error in tryReproposeWithNewLeaseIndexRaftMuLocked.
+	// InjectReproposalError injects an error in tryReproposeWithNewLeaseIndex.
 	// If nil is returned, reproposal will be attempted.
 	InjectReproposalError func(p *ProposalData) error
 
@@ -546,21 +535,6 @@ type StoreTestingKnobs struct {
 	// FlowControlTestingKnobs provide fine-grained control over the various
 	// kvflowcontrol components for testing.
 	FlowControlTestingKnobs *kvflowcontrol.TestingKnobs
-
-	// RaftReportUnreachableBypass is called when a replica reports that another
-	// replica is unreachable. If the bypass function is non-nil and returns
-	// true, the report is ignored and ReportUnreachable is not called on the
-	// raft group for that replica.
-	RaftReportUnreachableBypass func(roachpb.ReplicaID) bool
-
-	// DisableUpdateLastUpdateTimesMapOnRaftGroupStep, if set, is invoked with the
-	// replica whose raft group is being stepped. It returns whether the
-	// lastUpdateTimes map should be not be updated upon stepping the raft group.
-	//
-	// This testing knob is used to simulate the leader not sending or receiving
-	// messages because it has no updates and heartbeats are turned off. This
-	// simulation is only meaningful for ranges that use leader leases.
-	DisableUpdateLastUpdateTimesMapOnRaftGroupStep func(r *Replica) bool
 }
 
 // ModuleTestingKnobs is part of the base.ModuleTestingKnobs interface.

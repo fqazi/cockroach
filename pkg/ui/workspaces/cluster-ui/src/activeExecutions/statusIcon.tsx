@@ -3,13 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
 import React from "react";
-
+import classNames from "classnames/bind";
 import { CircleFilled } from "src/icon";
+import { ExecutionStatus } from "./types";
 
 import styles from "./executionStatusIcon.module.scss";
-import { ExecutionStatus } from "./types";
 
 const cx = classNames.bind(styles);
 

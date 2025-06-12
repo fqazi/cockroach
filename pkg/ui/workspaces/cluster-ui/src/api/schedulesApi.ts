@@ -5,15 +5,13 @@
 
 import Long from "long";
 import moment from "moment-timezone";
-
-import { RequestError } from "../util";
-
 import {
   executeInternalSql,
   MAX_RESULT_SIZE,
   SqlExecutionRequest,
   sqlResultsAreEmpty,
 } from "./sqlApi";
+import { RequestError } from "../util";
 
 type ScheduleColumns = {
   id: string;
@@ -78,13 +76,13 @@ export function getSchedules(req: {
     execute: true,
   };
   return executeInternalSql<ScheduleColumns>(request).then(result => {
-    const txnResults = result.execution.txn_results;
+    const txn_results = result.execution.txn_results;
     if (sqlResultsAreEmpty(result)) {
       // No data.
       return [];
     }
 
-    return txnResults[0].rows.map(row => {
+    return txn_results[0].rows.map(row => {
       return {
         id: Long.fromString(row.id),
         label: row.label,
@@ -122,16 +120,24 @@ export function getSchedule(id: Long): Promise<Schedule> {
     execute: true,
   };
   return executeInternalSql<ScheduleColumns>(request).then(result => {
-    const txnResults = result.execution.txn_results;
-    if (txnResults.length === 0 || !txnResults[0].rows) {
+    const txn_results = result.execution.txn_results;
+    if (txn_results.length === 0 || !txn_results[0].rows) {
       // No data.
-      throw new RequestError(400, "No schedule found with this ID.");
+      throw new RequestError(
+        "Bad Request",
+        400,
+        "No schedule found with this ID.",
+      );
     }
 
-    if (txnResults[0].rows.length > 1) {
-      throw new RequestError(500, "Multiple schedules found for ID.");
+    if (txn_results[0].rows.length > 1) {
+      throw new RequestError(
+        "Internal Server Error",
+        500,
+        "Multiple schedules found for ID.",
+      );
     }
-    const row = txnResults[0].rows[0];
+    const row = txn_results[0].rows[0];
     return {
       id: Long.fromString(row.id),
       label: row.label,

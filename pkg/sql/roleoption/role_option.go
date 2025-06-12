@@ -11,6 +11,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/cli/cliflags"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/security/distinguishedname"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -74,8 +75,6 @@ const (
 	VIEWCLUSTERSETTING
 	NOVIEWCLUSTERSETTING
 	SUBJECT
-	BYPASSRLS
-	NOBYPASSRLS
 )
 
 // ControlChangefeedDeprecationNoticeMsg is a user friendly notice which should be shown when CONTROLCHANGEFEED is used
@@ -116,8 +115,6 @@ var toSQLStmts = map[Option]string{
 	VIEWCLUSTERSETTING:     `INSERT INTO system.role_options (username, option, user_id) VALUES ($1, 'VIEWCLUSTERSETTING', $2) ON CONFLICT DO NOTHING`,
 	NOVIEWCLUSTERSETTING:   `DELETE FROM system.role_options WHERE username = $1 AND user_id = $2 AND option = 'VIEWCLUSTERSETTING'`,
 	SUBJECT:                `UPSERT INTO system.role_options (username, option, value, user_id) VALUES ($1, 'SUBJECT', $2::string, $3)`,
-	BYPASSRLS:              `INSERT INTO system.role_options (username, option, user_id) VALUES ($1, 'BYPASSRLS', $2) ON CONFLICT DO NOTHING`,
-	NOBYPASSRLS:            `DELETE FROM system.role_options WHERE username = $1 AND user_id = $2 AND option = 'BYPASSRLS'`,
 }
 
 // Mask returns the bitmask for a given role option.
@@ -156,8 +153,6 @@ var ByName = map[string]Option{
 	"VIEWCLUSTERSETTING":     VIEWCLUSTERSETTING,
 	"NOVIEWCLUSTERSETTING":   NOVIEWCLUSTERSETTING,
 	"SUBJECT":                SUBJECT,
-	"BYPASSRLS":              BYPASSRLS,
-	"NOBYPASSRLS":            NOBYPASSRLS,
 }
 
 // ToOption takes a string and returns the corresponding Option.
@@ -215,6 +210,9 @@ func MakeListFromKVOptions(
 		switch option {
 		case SUBJECT:
 			roleOptions[i].Validate = func(settings *cluster.Settings, u username.SQLUsername, s string) error {
+				if !settings.Version.IsActive(ctx, clusterversion.V24_1) {
+					return pgerror.Newf(pgcode.FeatureNotSupported, "SUBJECT role option is only supported after v24.1 upgrade is finalized")
+				}
 				if err := base.CheckEnterpriseEnabled(settings, "SUBJECT role option"); err != nil {
 					return err
 				}
@@ -327,9 +325,7 @@ func (rol List) CheckRoleOptionConflicts() error {
 		(roleOptionBits&VIEWCLUSTERSETTING.Mask() != 0 &&
 			roleOptionBits&NOVIEWCLUSTERSETTING.Mask() != 0) ||
 		(roleOptionBits&REPLICATION.Mask() != 0 &&
-			roleOptionBits&NOREPLICATION.Mask() != 0) ||
-		(roleOptionBits&BYPASSRLS.Mask() != 0 &&
-			roleOptionBits&NOBYPASSRLS.Mask() != 0) {
+			roleOptionBits&NOREPLICATION.Mask() != 0) {
 		return pgerror.Newf(pgcode.Syntax, "conflicting role options")
 	}
 	return nil

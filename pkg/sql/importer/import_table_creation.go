@@ -157,6 +157,7 @@ func MakeSimpleTableDescriptor(
 		TxnTimestamp:       timeutil.Unix(0, walltime),
 		Settings:           st,
 	}
+	evalCtx.SetDeprecatedContext(ctx)
 	affected := make(map[descpb.ID]*tabledesc.Mutable)
 
 	tableDesc, err := sql.NewTableDesc(
@@ -176,8 +177,6 @@ func MakeSimpleTableDescriptor(
 		&evalCtx,
 		evalCtx.SessionData(), /* sessionData */
 		tree.PersistencePermanent,
-		// Sequences are unsupported here.
-		nil, /* colToSequenceRefs */
 		// We need to bypass the LOCALITY on non multi-region check here because
 		// we cannot access the database region config at import level.
 		// There is code that only allows REGIONAL BY TABLE tables to be imported,

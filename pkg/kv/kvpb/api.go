@@ -25,7 +25,7 @@ import (
 	"github.com/dustin/go-humanize"
 )
 
-//go:generate mockgen -package=kvpbmock -destination=kvpbmock/mocks_generated.go . InternalClient,Internal_MuxRangeFeedClient
+//go:generate mockgen -package=kvpbmock -destination=kvpbmock/mocks_generated.go . InternalClient,Internal_RangeFeedClient,Internal_MuxRangeFeedClient
 
 // SupportsBatch determines whether the methods in the provided batch
 // are supported by the ReadConsistencyType, returning an error if not.
@@ -333,6 +333,13 @@ func (cpr *ConditionalPutRequest) WriteBytes() int64 {
 	return int64(len(cpr.Key)) + int64(cpr.Value.Size())
 }
 
+var _ SizedWriteRequest = (*InitPutRequest)(nil)
+
+// WriteBytes makes InitPutRequest implement SizedWriteRequest.
+func (pr *InitPutRequest) WriteBytes() int64 {
+	return int64(len(pr.Key)) + int64(pr.Value.Size())
+}
+
 var _ SizedWriteRequest = (*IncrementRequest)(nil)
 
 // WriteBytes makes IncrementRequest implement SizedWriteRequest.
@@ -625,6 +632,24 @@ func (r *AdminScatterResponse) combine(_ context.Context, c combinable, _ *Batch
 
 var _ combinable = &AdminScatterResponse{}
 
+func (avptr *AdminVerifyProtectedTimestampResponse) combine(
+	_ context.Context, c combinable, _ *BatchRequest,
+) error {
+	other := c.(*AdminVerifyProtectedTimestampResponse)
+	if avptr != nil {
+		avptr.DeprecatedFailedRanges = append(avptr.DeprecatedFailedRanges,
+			other.DeprecatedFailedRanges...)
+		avptr.VerificationFailedRanges = append(avptr.VerificationFailedRanges,
+			other.VerificationFailedRanges...)
+		if err := avptr.ResponseHeader.combine(other.Header()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var _ combinable = &AdminVerifyProtectedTimestampResponse{}
+
 // combine implements the combinable interface.
 func (r *QueryResolvedTimestampResponse) combine(
 	_ context.Context, c combinable, _ *BatchRequest,
@@ -694,19 +719,6 @@ func (r *IsSpanEmptyResponse) combine(_ context.Context, c combinable, _ *BatchR
 }
 
 var _ combinable = &IsSpanEmptyResponse{}
-
-// combine implements the combinable interface.
-func (r *ExciseResponse) combine(_ context.Context, c combinable, _ *BatchRequest) error {
-	otherDR := c.(*ExciseResponse)
-	if r != nil {
-		if err := r.ResponseHeader.combine(otherDR.Header()); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-var _ combinable = &ExciseResponse{}
 
 // Header implements the Request interface.
 func (rh RequestHeader) Header() RequestHeader {
@@ -851,6 +863,9 @@ func (*PutRequest) Method() Method { return Put }
 func (*ConditionalPutRequest) Method() Method { return ConditionalPut }
 
 // Method implements the Request interface.
+func (*InitPutRequest) Method() Method { return InitPut }
+
+// Method implements the Request interface.
 func (*IncrementRequest) Method() Method { return Increment }
 
 // Method implements the Request interface.
@@ -956,9 +971,6 @@ func (*AddSSTableRequest) Method() Method { return AddSSTable }
 func (*LinkExternalSSTableRequest) Method() Method { return LinkExternalSSTable }
 
 // Method implements the Request interface.
-func (*ExciseRequest) Method() Method { return Excise }
-
-// Method implements the Request interface.
 func (*MigrateRequest) Method() Method { return Migrate }
 
 // Method implements the Request interface.
@@ -975,6 +987,11 @@ func (*SubsumeRequest) Method() Method { return Subsume }
 
 // Method implements the Request interface.
 func (*RangeStatsRequest) Method() Method { return RangeStats }
+
+// Method implements the Request interface.
+func (*AdminVerifyProtectedTimestampRequest) Method() Method {
+	return AdminVerifyProtectedTimestamp
+}
 
 // Method implements the Request interface.
 func (*QueryResolvedTimestampRequest) Method() Method { return QueryResolvedTimestamp }
@@ -1000,6 +1017,12 @@ func (pr *PutRequest) ShallowCopy() Request {
 // ShallowCopy implements the Request interface.
 func (cpr *ConditionalPutRequest) ShallowCopy() Request {
 	shallowCopy := *cpr
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Request interface.
+func (pr *InitPutRequest) ShallowCopy() Request {
+	shallowCopy := *pr
 	return &shallowCopy
 }
 
@@ -1214,12 +1237,6 @@ func (r *LinkExternalSSTableRequest) ShallowCopy() Request {
 }
 
 // ShallowCopy implements the Request interface.
-func (r *ExciseRequest) ShallowCopy() Request {
-	shallowCopy := *r
-	return &shallowCopy
-}
-
-// ShallowCopy implements the Request interface.
 func (r *MigrateRequest) ShallowCopy() Request {
 	shallowCopy := *r
 	return &shallowCopy
@@ -1251,6 +1268,12 @@ func (r *SubsumeRequest) ShallowCopy() Request {
 
 // ShallowCopy implements the Request interface.
 func (r *RangeStatsRequest) ShallowCopy() Request {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Request interface.
+func (r *AdminVerifyProtectedTimestampRequest) ShallowCopy() Request {
 	shallowCopy := *r
 	return &shallowCopy
 }
@@ -1288,6 +1311,12 @@ func (pr *PutResponse) ShallowCopy() Response {
 // ShallowCopy implements the Response interface.
 func (cpr *ConditionalPutResponse) ShallowCopy() Response {
 	shallowCopy := *cpr
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Response interface.
+func (pr *InitPutResponse) ShallowCopy() Response {
+	shallowCopy := *pr
 	return &shallowCopy
 }
 
@@ -1500,12 +1529,6 @@ func (r *LinkExternalSSTableResponse) ShallowCopy() Response {
 }
 
 // ShallowCopy implements the Response interface.
-func (r *ExciseResponse) ShallowCopy() Response {
-	shallowCopy := *r
-	return &shallowCopy
-}
-
-// ShallowCopy implements the Response interface.
 func (r *MigrateResponse) ShallowCopy() Response {
 	shallowCopy := *r
 	return &shallowCopy
@@ -1537,6 +1560,12 @@ func (r *SubsumeResponse) ShallowCopy() Response {
 
 // ShallowCopy implements the Response interface.
 func (r *RangeStatsResponse) ShallowCopy() Response {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Response interface.
+func (r *AdminVerifyProtectedTimestampResponse) ShallowCopy() Response {
 	shallowCopy := *r
 	return &shallowCopy
 }
@@ -1620,19 +1649,6 @@ func NewPutInline(key roachpb.Key, value roachpb.Value) Request {
 	}
 }
 
-// NewPutMustAcquireExclusiveLock returns a Request initialized to put the value
-// at key. It also sets the MustAcquireExclusiveLock flag.
-func NewPutMustAcquireExclusiveLock(key roachpb.Key, value roachpb.Value) Request {
-	value.InitChecksum(key)
-	return &PutRequest{
-		RequestHeader: RequestHeader{
-			Key: key,
-		},
-		Value:                    value,
-		MustAcquireExclusiveLock: true,
-	}
-}
-
 // NewConditionalPut returns a Request initialized to put value at key if the
 // existing value at key equals expValue.
 //
@@ -1674,13 +1690,28 @@ func NewConditionalPutInline(
 	}
 }
 
+// NewInitPut returns a Request initialized to put the value at key, as long as
+// the key doesn't exist, returning a ConditionFailedError if the key exists and
+// the existing value is different from value. If failOnTombstones is set to
+// true, tombstones count as mismatched values and will cause a
+// ConditionFailedError.
+func NewInitPut(key roachpb.Key, value roachpb.Value, failOnTombstones bool) Request {
+	value.InitChecksum(key)
+	return &InitPutRequest{
+		RequestHeader: RequestHeader{
+			Key: key,
+		},
+		Value:            value,
+		FailOnTombstones: failOnTombstones,
+	}
+}
+
 // NewDelete returns a Request initialized to delete the value at key.
-func NewDelete(key roachpb.Key, mustAcquireExclusiveLock bool) Request {
+func NewDelete(key roachpb.Key) Request {
 	return &DeleteRequest{
 		RequestHeader: RequestHeader{
 			Key: key,
 		},
-		MustAcquireExclusiveLock: mustAcquireExclusiveLock,
 	}
 }
 
@@ -1866,6 +1897,17 @@ func (*ConditionalPutRequest) flags() flag {
 		canParallelCommit
 }
 
+// InitPut, like ConditionalPut, effectively reads without writing if it hits a
+// ConditionFailedError, so it must update the timestamp cache in this case.
+// InitPuts do not require a refresh because on write-too-old errors, they
+// return an error immediately instead of continuing a serializable transaction
+// to be retried at end transaction.
+func (*InitPutRequest) flags() flag {
+	return isRead | isWrite | isTxn | isLocking | isIntentWrite |
+		appliesTSCache | updatesTSCache | updatesTSCacheOnErr | canBackpressure |
+		canPipeline | canParallelCommit
+}
+
 // Increment reads the existing value, but always leaves an intent so
 // it does not need to update the timestamp cache. Increments do not
 // require a refresh because on write-too-old errors, they return an
@@ -1962,7 +2004,8 @@ func (rsr *ReverseScanRequest) flags() flag {
 }
 
 // EndTxn updates the timestamp cache to prevent replays.
-// Replays for the same transaction key and timestamp must retry on EndTxn.
+// Replays for the same transaction key and timestamp will have
+// Txn.WriteTooOld=true and must retry on EndTxn.
 func (*EndTxnRequest) flags() flag              { return isWrite | isTxn | isAlone | updatesTSCache }
 func (*AdminSplitRequest) flags() flag          { return isAdmin | isAlone }
 func (*AdminUnsplitRequest) flags() flag        { return isAdmin | isAlone }
@@ -2043,7 +2086,8 @@ func (*CheckConsistencyRequest) flags() flag { return isAdmin | isRange | isAlon
 func (*ExportRequest) flags() flag {
 	return isRead | isRange | updatesTSCache | bypassesReplicaCircuitBreaker
 }
-func (*AdminScatterRequest) flags() flag { return isAdmin | isRange | isAlone }
+func (*AdminScatterRequest) flags() flag                  { return isAdmin | isRange | isAlone }
+func (*AdminVerifyProtectedTimestampRequest) flags() flag { return isAdmin | isRange | isAlone }
 func (r *AddSSTableRequest) flags() flag {
 	flags := isWrite | isRange | isAlone | isUnsplittable | canBackpressure | bypassesReplicaCircuitBreaker
 	if r.SSTTimestampToRequestTimestamp.IsSet() {
@@ -2058,11 +2102,6 @@ func (r *LinkExternalSSTableRequest) flags() flag {
 	}
 	return flags
 }
-
-func (r *ExciseRequest) flags() flag {
-	return isWrite | isRange | isAlone | bypassesReplicaCircuitBreaker
-}
-
 func (*MigrateRequest) flags() flag { return isWrite | isRange | isAlone }
 
 // RefreshRequest and RefreshRangeRequest both determine which timestamp cache
@@ -2074,7 +2113,7 @@ func (r *RefreshRangeRequest) flags() flag {
 	return isRead | isTxn | isRange | updatesTSCache
 }
 
-func (*SubsumeRequest) flags() flag    { return isWrite | isAlone | updatesTSCache }
+func (*SubsumeRequest) flags() flag    { return isRead | isAlone | updatesTSCache }
 func (*RangeStatsRequest) flags() flag { return isRead }
 func (*QueryResolvedTimestampRequest) flags() flag {
 	return isRead | isRange | requiresClosedTSOlderThanStorageSnapshot
@@ -2105,6 +2144,8 @@ func BulkOpSummaryID(tableID, indexID uint64) uint64 {
 func (b *BulkOpSummary) Add(other BulkOpSummary) {
 	b.DataSize += other.DataSize
 	b.SSTDataSize += other.SSTDataSize
+	b.DeprecatedRows += other.DeprecatedRows
+	b.DeprecatedIndexEntries += other.DeprecatedIndexEntries
 
 	if other.EntryCounts != nil && b.EntryCounts == nil {
 		b.EntryCounts = make(map[uint64]int64, len(other.EntryCounts))
@@ -2312,13 +2353,7 @@ func (r *IsSpanEmptyResponse) IsEmpty() bool {
 
 // SafeFormat implements redact.SafeFormatter.
 func (c *ContentionEvent) SafeFormat(w redact.SafePrinter, _ rune) {
-	prefix := redact.SafeString("conflicted")
-	if c.IsLatch {
-		prefix = "latch conflict"
-	}
-	w.Printf("%s with %s on %s for %.3fs",
-		prefix, c.TxnMeta.ID, c.Key, c.Duration.Seconds(),
-	)
+	w.Printf("conflicted with %s on %s for %.3fs", c.TxnMeta.ID, c.Key, c.Duration.Seconds())
 }
 
 // String implements fmt.Stringer.
@@ -2351,7 +2386,6 @@ func (c *TenantConsumption) Add(other *TenantConsumption) {
 	c.ExternalIOIngressBytes += other.ExternalIOIngressBytes
 	c.ExternalIOEgressBytes += other.ExternalIOEgressBytes
 	c.CrossRegionNetworkRU += other.CrossRegionNetworkRU
-	c.EstimatedCPUSeconds += other.EstimatedCPUSeconds
 }
 
 // Sub subtracts consumption, making sure no fields become negative.
@@ -2433,12 +2467,6 @@ func (c *TenantConsumption) Sub(other *TenantConsumption) {
 	} else {
 		c.CrossRegionNetworkRU -= other.CrossRegionNetworkRU
 	}
-
-	if c.EstimatedCPUSeconds < other.EstimatedCPUSeconds {
-		c.EstimatedCPUSeconds = 0
-	} else {
-		c.EstimatedCPUSeconds -= other.EstimatedCPUSeconds
-	}
 }
 
 func humanizeCount(n uint64) redact.SafeString {
@@ -2448,12 +2476,11 @@ func humanizeCount(n uint64) redact.SafeString {
 
 // SafeFormat implements redact.SafeFormatter.
 func (s *ScanStats) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Printf("n%d scan stats: stepped %s times (%s internal); seeked %s times (%s internal); "+
+	w.Printf("scan stats: stepped %s times (%s internal); seeked %s times (%s internal); "+
 		"block-bytes: (total %s, cached %s, duration %v); "+
 		"points: (count %s, key-bytes %s, value-bytes %s, tombstoned: %s) "+
 		"ranges: (count %s), (contained-points %s, skipped-points %s) "+
 		"evaluated requests: %s gets, %s scans, %s reverse scans",
-		s.NodeID,
 		humanizeCount(s.NumInterfaceSteps),
 		humanizeCount(s.NumInternalSteps),
 		humanizeCount(s.NumInterfaceSeeks),
@@ -2487,13 +2514,8 @@ func (s *ScanStats) String() string {
 
 // RangeFeedEventSink is an interface for sending a single rangefeed event.
 type RangeFeedEventSink interface {
-	// SendUnbuffered blocks until it sends the RangeFeedEvent, the stream is
-	// done, or the stream breaks. Send must be safe to call on the same stream in
-	// different goroutines.
-	SendUnbuffered(*RangeFeedEvent) error
-	// SendUnbufferedIsThreadSafe is a no-op declaration method. It is a contract
-	// that the interface has a thread-safe Send method.
-	SendUnbufferedIsThreadSafe()
+	Context() context.Context
+	Send(*RangeFeedEvent) error
 }
 
 // RangeFeedEventProducer is an adapter for receiving rangefeed events with either
@@ -2506,26 +2528,3 @@ type RangeFeedEventProducer interface {
 
 // SafeValue implements the redact.SafeValue interface.
 func (PushTxnType) SafeValue() {}
-
-func (writeOptions *WriteOptions) GetOriginID() uint32 {
-	if writeOptions == nil {
-		return 0
-	}
-	return writeOptions.OriginID
-}
-
-func (writeOptions *WriteOptions) GetOriginTimestamp() hlc.Timestamp {
-	if writeOptions == nil {
-		return hlc.Timestamp{}
-	}
-	return writeOptions.OriginTimestamp
-}
-
-func (r *ConditionalPutRequest) Validate() error {
-	if !r.OriginTimestamp.IsEmpty() {
-		if r.AllowIfDoesNotExist {
-			return errors.AssertionFailedf("invalid ConditionalPutRequest: AllowIfDoesNotExist and non-empty OriginTimestamp are incompatible")
-		}
-	}
-	return nil
-}

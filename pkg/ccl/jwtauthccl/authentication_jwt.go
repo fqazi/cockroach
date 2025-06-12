@@ -24,9 +24,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
-	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jws"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/lestrrat-go/jwx/jwk"
+	"github.com/lestrrat-go/jwx/jwt"
 )
 
 const (
@@ -67,11 +66,9 @@ type jwtAuthenticatorConf struct {
 	audience             []string
 	enabled              bool
 	issuersConf          issuerURLConf
-	issuerCA             string
 	jwks                 jwk.Set
 	claim                string
 	jwksAutoFetchEnabled bool
-	httpClient           *httputil.Client
 }
 
 // reloadConfig locks mutex and then refreshes the values in conf from the cluster settings.
@@ -85,20 +82,13 @@ func (authenticator *jwtAuthenticator) reloadConfig(ctx context.Context, st *clu
 func (authenticator *jwtAuthenticator) reloadConfigLocked(
 	ctx context.Context, st *cluster.Settings,
 ) {
-	clientTimeout := JWTAuthClientTimeout.Get(&st.SV)
 	conf := jwtAuthenticatorConf{
 		audience:             mustParseValueOrArray(JWTAuthAudience.Get(&st.SV)),
 		enabled:              JWTAuthEnabled.Get(&st.SV),
 		issuersConf:          mustParseJWTIssuersConf(JWTAuthIssuersConfig.Get(&st.SV)),
-		issuerCA:             JWTAuthIssuerCustomCA.Get(&st.SV),
 		jwks:                 mustParseJWKS(JWTAuthJWKS.Get(&st.SV)),
 		claim:                JWTAuthClaim.Get(&st.SV),
 		jwksAutoFetchEnabled: JWKSAutoFetchEnabled.Get(&st.SV),
-		httpClient: httputil.NewClient(
-			httputil.WithClientTimeout(clientTimeout),
-			httputil.WithDialerTimeout(clientTimeout),
-			httputil.WithCustomCAPEM(JWTAuthIssuerCustomCA.Get(&st.SV)),
-		),
 	}
 
 	if !authenticator.mu.conf.enabled && conf.enabled {
@@ -155,13 +145,9 @@ func (authenticator *jwtAuthenticator) ValidateJWTLogin(
 
 	telemetry.Inc(beginAuthUseCounter)
 
-	// Validate the token as below:
-	// 1. Check the token format and extract issuer
-	// jwx/v2 library mandates signature verification with Parse,
-	// so use ParseInsecure instead
-	// 2. Fetch JWKS corresponding to the issuer
-	// 3. Use Parse for signature verification
-	unverifiedToken, err := jwt.ParseInsecure(tokenBytes)
+	// Just parse the token to check the format is valid and issuer is present.
+	// The token will be parsed again later to actually verify the signature.
+	unverifiedToken, err := jwt.Parse(tokenBytes)
 	if err != nil {
 		return "", errors.WithDetailf(
 			errors.Newf("JWT authentication: invalid token"),
@@ -187,7 +173,7 @@ func (authenticator *jwtAuthenticator) ValidateJWTLogin(
 	}
 
 	// Now that both the issuer and key-id are matched, parse the token again to validate the signature.
-	parsedToken, err := jwt.Parse(tokenBytes, jwt.WithKeySet(jwkSet, jws.WithInferAlgorithmFromKey(true)), jwt.WithValidate(true))
+	parsedToken, err := jwt.Parse(tokenBytes, jwt.WithKeySet(jwkSet), jwt.WithValidate(true), jwt.InferAlgorithmFromKey(true))
 	if err != nil {
 		return "", errors.WithDetailf(
 			errors.Newf("JWT authentication: invalid token"),
@@ -233,7 +219,7 @@ func (authenticator *jwtAuthenticator) ValidateJWTLogin(
 func (authenticator *jwtAuthenticator) RetrieveIdentity(
 	ctx context.Context, user username.SQLUsername, tokenBytes []byte, identMap *identmap.Conf,
 ) (retrievedUser username.SQLUsername, authError error) {
-	unverifiedToken, err := jwt.ParseInsecure(tokenBytes)
+	unverifiedToken, err := jwt.Parse(tokenBytes)
 	if err != nil {
 		return user, errors.WithDetailf(
 			errors.Newf("JWT authentication: invalid token"),
@@ -371,7 +357,11 @@ func getOpenIdConfigEndpoint(issuerUrl string) string {
 }
 
 var getHttpResponse = func(ctx context.Context, url string, authenticator *jwtAuthenticator) ([]byte, error) {
-	resp, err := authenticator.mu.conf.httpClient.Get(context.Background(), url)
+	// TODO(souravcrl): cache the http client in a callback attached to customCA
+	// and other http client cluster settings as re parsing the custom CA every
+	// time is expensive
+	httpClient := httputil.NewClientWithTimeout(httputil.StandardHTTPTimeout)
+	resp, err := httpClient.Get(context.Background(), url)
 	if err != nil {
 		return nil, err
 	}
@@ -402,9 +392,6 @@ var ConfigureJWTAuth = func(
 		authenticator.reloadConfig(ambientCtx.AnnotateCtx(ctx), st)
 	})
 	JWTAuthIssuersConfig.SetOnChange(&st.SV, func(ctx context.Context) {
-		authenticator.reloadConfig(ambientCtx.AnnotateCtx(ctx), st)
-	})
-	JWTAuthIssuerCustomCA.SetOnChange(&st.SV, func(ctx context.Context) {
 		authenticator.reloadConfig(ambientCtx.AnnotateCtx(ctx), st)
 	})
 	JWTAuthJWKS.SetOnChange(&st.SV, func(ctx context.Context) {

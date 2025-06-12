@@ -16,18 +16,6 @@ COMMENT ON TABLE kv IS 'this is a table';
 COMMENT ON INDEX mv@idx IS 'this is an index';
 COMMENT ON CONSTRAINT ck ON kv IS 'this is a check constraint';
 COMMENT ON CONSTRAINT kv_pkey ON kv IS 'this is a primary key constraint';
-
--- below queries are for scan_descriptors_in_span tests
-CREATE TABLE scan_test_1(main SERIAL PRIMARY KEY, alternate VARCHAR UNIQUE);
-CREATE TABLE scan_test_2(main INT PRIMARY KEY, alternate VARCHAR UNIQUE);
-
-INSERT INTO scan_test_1(alternate) VALUES ('a');
-INSERT INTO scan_test_1(alternate) VALUES ('c');
-INSERT INTO scan_test_1(alternate) VALUES ('f');
-
-INSERT INTO scan_test_2(main, alternate) VALUES (1, 'b');
-INSERT INTO scan_test_2(main, alternate) VALUES (4, 'c');
-INSERT INTO scan_test_2(main, alternate) VALUES (9, 'd');
 ----
 
 scan_namespace_for_databases
@@ -35,7 +23,6 @@ scan_namespace_for_databases
 catalog:
   "001":
     namespace: (0, 0, "system")
-    num_objects: 0
   "100":
     namespace: (0, 0, "defaultdb")
   "102":
@@ -83,10 +70,6 @@ catalog:
     namespace: (100, 101, "kv")
   "109":
     namespace: (100, 101, "mv")
-  "110":
-    namespace: (100, 101, "scan_test_1")
-  "111":
-    namespace: (100, 101, "scan_test_2")
 trace:
 - Scan /NamespaceTable/30/1/100
 
@@ -145,7 +128,6 @@ trace:
 - Scan /Table/24/1/4/108
 - Scan /Table/24/1/5/108
 - Scan /Table/24/1/6/108
-- Scan /Table/24/1/7/108
 - Get /Table/5/1/108/2/1
 
 # Zone config, but no descriptor should be present.
@@ -163,7 +145,6 @@ trace:
 - Scan /Table/24/1/4/0
 - Scan /Table/24/1/5/0
 - Scan /Table/24/1/6/0
-- Scan /Table/24/1/7/0
 - Get /Table/5/1/0/2/1
 
 get_by_ids id=104 id=105 id=106 id=107
@@ -188,7 +169,6 @@ trace:
 - Scan Range /Table/24/1/4/104 /Table/24/1/4/108
 - Scan Range /Table/24/1/5/104 /Table/24/1/5/108
 - Scan Range /Table/24/1/6/104 /Table/24/1/6/108
-- Scan Range /Table/24/1/7/104 /Table/24/1/7/108
 - Scan Range /Table/5/1/104/2/1 /Table/5/1/108/2/1
 
 is_id_in_cache id=107
@@ -222,7 +202,176 @@ catalog:
   "001":
     descriptor: database
     namespace: (0, 0, "system")
-    num_objects: 63
+  "003":
+    descriptor: relation
+    namespace: (1, 29, "descriptor")
+  "004":
+    descriptor: relation
+    namespace: (1, 29, "users")
+  "005":
+    descriptor: relation
+    namespace: (1, 29, "zones")
+  "006":
+    descriptor: relation
+    namespace: (1, 29, "settings")
+  "007":
+    descriptor: relation
+    namespace: (1, 29, "descriptor_id_seq")
+  "008":
+    descriptor: relation
+    namespace: (1, 29, "tenants")
+  "009":
+    descriptor: relation
+    namespace: (1, 29, "region_liveness")
+  "011":
+    descriptor: relation
+    namespace: (1, 29, "lease")
+  "012":
+    descriptor: relation
+    namespace: (1, 29, "eventlog")
+  "013":
+    descriptor: relation
+    namespace: (1, 29, "rangelog")
+  "014":
+    descriptor: relation
+    namespace: (1, 29, "ui")
+  "015":
+    descriptor: relation
+    namespace: (1, 29, "jobs")
+  "019":
+    descriptor: relation
+    namespace: (1, 29, "web_sessions")
+  "020":
+    descriptor: relation
+    namespace: (1, 29, "table_statistics")
+  "021":
+    descriptor: relation
+    namespace: (1, 29, "locations")
+  "023":
+    descriptor: relation
+    namespace: (1, 29, "role_members")
+  "024":
+    descriptor: relation
+    namespace: (1, 29, "comments")
+  "025":
+    descriptor: relation
+    namespace: (1, 29, "replication_constraint_stats")
+  "026":
+    descriptor: relation
+    namespace: (1, 29, "replication_critical_localities")
+  "027":
+    descriptor: relation
+    namespace: (1, 29, "replication_stats")
+  "028":
+    descriptor: relation
+    namespace: (1, 29, "reports_meta")
+  "029":
+    namespace: (1, 0, "public")
+  "030":
+    descriptor: relation
+    namespace: (1, 29, "namespace")
+  "031":
+    descriptor: relation
+    namespace: (1, 29, "protected_ts_meta")
+  "032":
+    descriptor: relation
+    namespace: (1, 29, "protected_ts_records")
+  "033":
+    descriptor: relation
+    namespace: (1, 29, "role_options")
+  "034":
+    descriptor: relation
+    namespace: (1, 29, "statement_bundle_chunks")
+  "035":
+    descriptor: relation
+    namespace: (1, 29, "statement_diagnostics_requests")
+  "036":
+    descriptor: relation
+    namespace: (1, 29, "statement_diagnostics")
+  "037":
+    descriptor: relation
+    namespace: (1, 29, "scheduled_jobs")
+  "039":
+    descriptor: relation
+    namespace: (1, 29, "sqlliveness")
+  "040":
+    descriptor: relation
+    namespace: (1, 29, "migrations")
+  "041":
+    descriptor: relation
+    namespace: (1, 29, "join_tokens")
+  "042":
+    descriptor: relation
+    namespace: (1, 29, "statement_statistics")
+  "043":
+    descriptor: relation
+    namespace: (1, 29, "transaction_statistics")
+  "044":
+    descriptor: relation
+    namespace: (1, 29, "database_role_settings")
+  "045":
+    descriptor: relation
+    namespace: (1, 29, "tenant_usage")
+  "046":
+    descriptor: relation
+    namespace: (1, 29, "sql_instances")
+  "047":
+    descriptor: relation
+    namespace: (1, 29, "span_configurations")
+  "048":
+    descriptor: relation
+    namespace: (1, 29, "role_id_seq")
+  "050":
+    descriptor: relation
+    namespace: (1, 29, "tenant_settings")
+  "051":
+    descriptor: relation
+    namespace: (1, 29, "span_count")
+  "052":
+    descriptor: relation
+    namespace: (1, 29, "privileges")
+  "053":
+    descriptor: relation
+    namespace: (1, 29, "external_connections")
+  "054":
+    descriptor: relation
+    namespace: (1, 29, "job_info")
+  "055":
+    descriptor: relation
+    namespace: (1, 29, "span_stats_unique_keys")
+  "056":
+    descriptor: relation
+    namespace: (1, 29, "span_stats_buckets")
+  "057":
+    descriptor: relation
+    namespace: (1, 29, "span_stats_samples")
+  "058":
+    descriptor: relation
+    namespace: (1, 29, "span_stats_tenant_boundaries")
+  "059":
+    descriptor: relation
+    namespace: (1, 29, "task_payloads")
+  "060":
+    descriptor: relation
+    namespace: (1, 29, "tenant_tasks")
+  "061":
+    descriptor: relation
+    namespace: (1, 29, "statement_activity")
+  "062":
+    descriptor: relation
+    namespace: (1, 29, "transaction_activity")
+  "063":
+    descriptor: relation
+    namespace: (1, 29, "tenant_id_seq")
+  "064":
+    descriptor: relation
+    namespace: (1, 29, "mvcc_statistics")
+  "065":
+    descriptor: relation
+    namespace: (1, 29, "transaction_execution_insights")
+  "066":
+    descriptor: relation
+    namespace: (1, 29, "statement_execution_insights")
   "100":
     comments:
       database: this is the default database
@@ -266,12 +415,6 @@ catalog:
       index_2: this is an index
     descriptor: relation
     namespace: (100, 101, "mv")
-  "110":
-    descriptor: relation
-    namespace: (100, 101, "scan_test_1")
-  "111":
-    descriptor: relation
-    namespace: (100, 101, "scan_test_2")
 trace:
 - Scan /Table/3/1
 - Scan /NamespaceTable/30/1
@@ -306,7 +449,6 @@ trace:
 - Scan /Table/24/1/4/456
 - Scan /Table/24/1/5/456
 - Scan /Table/24/1/6/456
-- Scan /Table/24/1/7/456
 - Get /Table/5/1/456/2/1
 cached:
 - Get /Table/3/1/456/2/1
@@ -317,7 +459,6 @@ cached:
 - Scan /Table/24/1/4/456
 - Scan /Table/24/1/5/456
 - Scan /Table/24/1/6/456
-- Scan /Table/24/1/7/456
 - Get /Table/5/1/456/2/1
 
 get_by_names name_key=(123,456,foo)
@@ -363,10 +504,6 @@ catalog:
     comments:
       index_2: this is an index
     namespace: (100, 101, "mv")
-  "110":
-    namespace: (100, 101, "scan_test_1")
-  "111":
-    namespace: (100, 101, "scan_test_2")
 trace:
 - Scan /NamespaceTable/30/1/100
 - Scan /Table/24/1
@@ -383,7 +520,6 @@ scan_all_comments_nil_db
 catalog:
   "001":
     namespace: (0, 0, "system")
-    num_objects: 0
   "100":
     comments:
       database: this is the default database
@@ -407,194 +543,3 @@ catalog:
 trace:
 - Scan /NamespaceTable/30/1/0
 - Scan /Table/24/1
-
-# The below tests test the many circumstances for scanning a set
-# of descriptors within a span.
-#
-# For this test, there are two relevant tables, 'scan_test_1' and 'scan_test_2'
-# with two indexes each on columns main and secondary, denoted
-# by the below notation:
-# T1I1 (scan_test_1, main), T1I2, T2I1, T2I2
-#
-# The boundaries will be marked by keys on either side of it <left>/<right>.
-#
-# Indexes =      └────T1I1────┴────T1I2───┴────T2I1────┴────T2I2───┘
-# Keys    =   min/1          3/a         f/1          9/b         d/max
-#
-# Args 'start' and 'end' take the format "<tableId>/<indexId>(/<key>?)"
-
-# start key after end key should panic
-# disabled because the panic seems to appear in a different goroutine
-# scan_descriptors_in_span start=111/1 end=110/1 panics=true
-# ----
-
-# # same start and end key should return first descriptor
-# disabled because it panics if the same key is passed
-# scan_descriptors_in_span start=110/1 end=110/1
-# ----
-
-# test with only table prefix
-scan_descriptors_in_span start=110 end=111
-----
-catalog:
-  "110":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/111/2/1
-
-# start and end are one key away from each other
-scan_descriptors_in_span start=110/1/1 end=110/1/2
-----
-catalog:
-  "110":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/111/2/1
-
-# scan with the start at the prefix, the end in the table span
-scan_descriptors_in_span start=110/1 end=110/1/1
-----
-catalog:
-  "110":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/111/2/1
-
-# end after the first index
-scan_descriptors_in_span start=110/1 end=110/2
-----
-catalog:
-  "110":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/111/2/1
-
-
-# end in the second index
-scan_descriptors_in_span start=110/1 end=110/2/a
-----
-catalog:
-  "110":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/111/2/1
-
-
-# end on a value which doesn't exist
-scan_descriptors_in_span start=110/1 end=110/2/b
-----
-catalog:
-  "110":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/111/2/1
-
-
-# end on the last value in the second index
-scan_descriptors_in_span start=110/1 end=110/2/f
-----
-catalog:
-  "110":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/111/2/1
-
-
-# start on the last value in the second index
-scan_descriptors_in_span start=110/1 end=110/2/f
-----
-catalog:
-  "110":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/111/2/1
-
-
-# end directly on first index is exclusive
-scan_descriptors_in_span start=110/1 end=111/1
-----
-catalog:
-  "110":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/111/2/1
-
-
-# end on the first key of the second table is inclusive
-scan_descriptors_in_span start=110/1 end=111/1/0
-----
-catalog:
-  "110":
-    descriptor: relation
-  "111":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/112/2/1
-
-# end on an absurd key
-scan_descriptors_in_span start=110/2/f end=9000/1
-----
-catalog:
-  "110":
-    descriptor: relation
-  "111":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/9000/2/1
-
-# start in the middle of the first table
-scan_descriptors_in_span start=110/1/1 end=112/1
-----
-catalog:
-  "110":
-    descriptor: relation
-  "111":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/112/2/1
-
-# start on the last key of the first table
-scan_descriptors_in_span start=110/2/f end=112/1
-----
-catalog:
-  "110":
-    descriptor: relation
-  "111":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/112/2/1
-
-# start on the first key of the second table
-scan_descriptors_in_span start=111/1 end=112/1
-----
-catalog:
-  "111":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/111/2/1 /Table/3/1/112/2/1
-
-# verify that multiple span scanning works
-scan_descriptors_in_multiple_spans first=(110/1,111/1) second=(111/1,112/1)
-----
-catalog:
-  "110":
-    descriptor: relation
-  "111":
-    descriptor: relation
-trace:
-- Scan Range /Table/3/1/110/2/1 /Table/3/1/111/2/1
-- Scan Range /Table/3/1/111/2/1 /Table/3/1/112/2/1
-
-# verify that passing a zero length span returns nothing
-scan_descriptors_in_span start=111/1 end=111/1
-----
-catalog: {}
-trace: []
-
-# verify that passing a negative length span throws an error
-scan_descriptors_in_span start=112/1 end=111/1
-----
-catalog: {}
-error: 'failed to verify keys for Scan: end key /Tenant/10/Table/3/1/111/2/1 must be greater than start /Tenant/10/Table/3/1/112/2/1'
-trace:
-- Scan Range /Table/3/1/112/2/1 /Table/3/1/111/2/1

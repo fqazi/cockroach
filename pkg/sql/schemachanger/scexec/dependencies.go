@@ -8,7 +8,6 @@ package scexec
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobsprotectedts"
@@ -53,7 +52,6 @@ type Dependencies interface {
 type Catalog interface {
 	scmutationexec.NameResolver
 	scmutationexec.DescriptorReader
-	TemporarySchemaCreator
 
 	// CreateOrUpdateDescriptor upserts a descriptor.
 	CreateOrUpdateDescriptor(ctx context.Context, desc catalog.MutableDescriptor) error
@@ -67,43 +65,18 @@ type Catalog interface {
 	// DeleteDescriptor deletes a descriptor entry.
 	DeleteDescriptor(ctx context.Context, id descpb.ID) error
 
-	// WriteZoneConfigToBatch adds the new zoneconfig to uncommitted layer and
-	// writes to the kv batch.
-	WriteZoneConfigToBatch(ctx context.Context, id descpb.ID, zc catalog.ZoneConfig) error
-
-	// GetZoneConfig gets the zone config for a descriptor ID.
-	GetZoneConfig(ctx context.Context, id descpb.ID) (catalog.ZoneConfig, error)
-
-	// UpdateZoneConfig upserts a zone config for a descriptor ID.
-	UpdateZoneConfig(ctx context.Context, id descpb.ID, zc *zonepb.ZoneConfig) error
-
-	// UpdateSubzoneConfig upserts a subzone config into the given zone config
-	// for a descriptor ID.
-	UpdateSubzoneConfig(
-		ctx context.Context,
-		parentZone catalog.ZoneConfig,
-		subzone zonepb.Subzone,
-		subzoneSpans []zonepb.SubzoneSpan,
-		idxRefToDelete int32,
-	) (catalog.ZoneConfig, error)
-
 	// DeleteZoneConfig deletes the zone config for a descriptor.
 	DeleteZoneConfig(ctx context.Context, id descpb.ID) error
 
-	// DeleteSubzoneConfig deletes a subzone config from the zone config for a
-	// table.
-	DeleteSubzoneConfig(
-		ctx context.Context,
-		tableID descpb.ID,
-		subzone zonepb.Subzone,
-		subzoneSpans []zonepb.SubzoneSpan,
+	// UpdateComment upserts a comment for the (objID, subID, cmtType) key.
+	UpdateComment(
+		ctx context.Context, key catalogkeys.CommentKey, cmt string,
 	) error
 
-	// UpdateComment upserts a comment for the (objID, subID, cmtType) key.
-	UpdateComment(ctx context.Context, key catalogkeys.CommentKey, cmt string) error
-
 	// DeleteComment deletes a comment with (objID, subID, cmtType) key.
-	DeleteComment(ctx context.Context, key catalogkeys.CommentKey) error
+	DeleteComment(
+		ctx context.Context, key catalogkeys.CommentKey,
+	) error
 
 	// Validate validates all the uncommitted catalog changes performed
 	// in this transaction so far.
@@ -371,14 +344,6 @@ type DescriptorMetadataUpdater interface {
 	// UpdateTTLScheduleLabel updates the schedule_name for the TTL Scheduled Job
 	// of the given table.
 	UpdateTTLScheduleLabel(ctx context.Context, tbl *tabledesc.Mutable) error
-}
-
-type TemporarySchemaCreator interface {
-	// InsertTemporarySchema inserts a temporary schema into the current session
-	// data.
-	InsertTemporarySchema(
-		tempSchemaName string, databaseID descpb.ID, schemaID descpb.ID,
-	)
 }
 
 // StatsRefreshQueue queues table for stats refreshes.

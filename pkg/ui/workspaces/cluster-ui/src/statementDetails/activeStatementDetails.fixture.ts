@@ -3,12 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import noop from "lodash/noop";
 import moment from "moment-timezone";
-
-import { ExecutionStatus } from "../activeExecutions";
-
 import { ActiveStatementDetailsProps } from "./activeStatementDetails";
+import { noop } from "lodash";
+import { ExecutionStatus } from "../activeExecutions";
 
 export const getActiveStatementDetailsPropsFixture =
   (): ActiveStatementDetailsProps => {

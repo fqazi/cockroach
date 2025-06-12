@@ -3,9 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { getLogger } from "../util";
-
 import { fetchDataJSON } from "./fetchData";
+import { getLogger } from "../util";
 
 export type SqlExecutionRequest = {
   statements: SqlStatement[];
@@ -286,15 +285,15 @@ export function combineQueryErrors(
   };
 }
 
-export function txnResultIsEmpty(txnResults: SqlTxnResult<unknown>): boolean {
-  return !txnResults || !txnResults.rows || txnResults.rows?.length === 0;
+export function txnResultIsEmpty(txn_result: SqlTxnResult<unknown>): boolean {
+  return !txn_result || !txn_result.rows || txn_result.rows?.length === 0;
 }
 
 export function txnResultSetIsEmpty(
-  txnResults: SqlTxnResult<unknown>[],
+  txn_results: SqlTxnResult<unknown>[],
 ): boolean {
-  if (!txnResults || txnResults.length === 0) {
+  if (!txn_results || txn_results.length === 0) {
     return true;
   }
-  return txnResults.every(x => txnResultIsEmpty(x));
+  return txn_results.every(x => txnResultIsEmpty(x));
 }

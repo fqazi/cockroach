@@ -3,16 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import moment from "moment-timezone";
 import React, { useContext } from "react";
-
-import { Timezone } from "src/timestamp";
-
-import { TimezoneContext } from "../contexts";
-
+import moment from "moment-timezone";
 import { dateFormat, timeFormat } from "./timeScaleDropdown";
-import { TimeScale } from "./timeScaleTypes";
+import { TimezoneContext } from "../contexts";
 import { toRoundedDateRange } from "./utils";
+import { TimeScale } from "./timeScaleTypes";
+import { Timezone } from "src/timestamp";
 
 export const FormattedTimescale = (props: {
   ts: TimeScale;

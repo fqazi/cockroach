@@ -9,11 +9,10 @@ import (
 	"context"
 	"sync"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/storage/pebbleiter"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
@@ -49,6 +48,13 @@ func newWriteBatch(
 		parent:             parent,
 		batchStatsReporter: batchStatsReporter,
 		settings:           settings,
+		// NB: We do not use settings.Version.IsActive because we do not
+		// generally have a guarantee that the cluster version has been
+		// initialized. As a part of initializing a store, we use a Batch to
+		// write the store identifer key; this is written before any cluster
+		// version has been initialized.
+		mayWriteSizedDeletes: settings.Version.ActiveVersionOrEmpty(context.TODO()).
+			IsActive(clusterversion.V23_2_UseSizedPebblePointTombstones),
 	}
 	return wb
 }
@@ -63,6 +69,7 @@ type writeBatch struct {
 	batchStatsReporter               batchStatsReporter
 	settings                         *cluster.Settings
 	closed                           bool
+	mayWriteSizedDeletes             bool
 	shouldWriteLocalTimestamps       bool
 	shouldWriteLocalTimestampsCached bool
 }
@@ -101,7 +108,7 @@ func (wb *writeBatch) ClearEngineKey(key EngineKey, opts ClearOptions) error {
 		return emptyKeyError()
 	}
 	wb.buf = key.EncodeToBuf(wb.buf[:0])
-	if !opts.ValueSizeKnown {
+	if !opts.ValueSizeKnown || !wb.mayWriteSizedDeletes {
 		return wb.batch.Delete(wb.buf, nil)
 	}
 	return wb.batch.DeleteSized(wb.buf, opts.ValueSize, nil)
@@ -122,7 +129,7 @@ func (wb *writeBatch) clear(key MVCCKey, opts ClearOptions) error {
 	}
 
 	wb.buf = EncodeMVCCKeyToBuf(wb.buf[:0], key)
-	if !opts.ValueSizeKnown {
+	if !opts.ValueSizeKnown || !wb.mayWriteSizedDeletes {
 		return wb.batch.Delete(wb.buf, nil)
 	}
 	return wb.batch.DeleteSized(wb.buf, opts.ValueSize, nil)
@@ -188,7 +195,7 @@ func (wb *writeBatch) ClearMVCCRangeKey(rangeKey MVCCRangeKey) error {
 			rangeKey.StartKey, rangeKey.EndKey, rangeKey.EncodedTimestampSuffix)
 	}
 	return wb.ClearEngineRangeKey(
-		rangeKey.StartKey, rangeKey.EndKey, mvccencoding.EncodeMVCCTimestampSuffix(rangeKey.Timestamp))
+		rangeKey.StartKey, rangeKey.EndKey, EncodeMVCCTimestampSuffix(rangeKey.Timestamp))
 }
 
 // BufferedSize implements the Writer interface.
@@ -218,7 +225,7 @@ func (wb *writeBatch) PutRawMVCCRangeKey(rangeKey MVCCRangeKey, value []byte) er
 	// it's present, because we explicitly do NOT want to write range keys with
 	// the synthetic bit set.
 	return wb.PutEngineRangeKey(
-		rangeKey.StartKey, rangeKey.EndKey, mvccencoding.EncodeMVCCTimestampSuffix(rangeKey.Timestamp), value)
+		rangeKey.StartKey, rangeKey.EndKey, EncodeMVCCTimestampSuffix(rangeKey.Timestamp), value)
 }
 
 // PutEngineRangeKey implements the Writer interface.
@@ -274,7 +281,11 @@ func (wb *writeBatch) PutMVCC(key MVCCKey, value MVCCValue) error {
 	if key.Timestamp.IsEmpty() {
 		panic("PutMVCC timestamp is empty")
 	}
-	return wb.putMVCC(key, value)
+	encValue, err := EncodeMVCCValue(value)
+	if err != nil {
+		return err
+	}
+	return wb.put(key, encValue)
 }
 
 // PutRawMVCC implements the Writer interface.
@@ -299,41 +310,13 @@ func (wb *writeBatch) PutEngineKey(key EngineKey, value []byte) error {
 	return wb.batch.Set(wb.buf, value, nil)
 }
 
-func (wb *writeBatch) putMVCC(key MVCCKey, value MVCCValue) error {
-	// For performance, this method uses the pebble Batch's deferred operation
-	// API to avoid an extra memcpy. We:
-	// - determine the length of the encoded MVCC key and MVCC value
-	// - reserve space in the pebble Batch using SetDeferred
-	// - encode the MVCC key and MVCC value directly into the Batch
-	// - call Finish on the deferred operation (which will index the key if
-	//   wb.batch is indexed)
-	valueLen, isExtended := mvccValueSize(value)
-	keyLen := mvccencoding.EncodedMVCCKeyLength(key.Key, key.Timestamp)
-	o := wb.batch.SetDeferred(keyLen, valueLen)
-	mvccencoding.EncodeMVCCKeyToBufSized(o.Key, key.Key, key.Timestamp, keyLen)
-	if !isExtended {
-		// Fast path; we don't need to use the extended encoding and can copy
-		// RawBytes in verbatim.
-		copy(o.Value, value.Value.RawBytes)
-	} else {
-		// Slow path; we need the MVCC value header.
-		err := encodeExtendedMVCCValueToSizedBuf(value, o.Value)
-		if err != nil {
-			return err
-		}
-	}
-	return o.Finish()
-}
-
 func (wb *writeBatch) put(key MVCCKey, value []byte) error {
 	if len(key.Key) == 0 {
 		return emptyKeyError()
 	}
-	keyLen := mvccencoding.EncodedMVCCKeyLength(key.Key, key.Timestamp)
-	o := wb.batch.SetDeferred(keyLen, len(value))
-	mvccencoding.EncodeMVCCKeyToBufSized(o.Key, key.Key, key.Timestamp, keyLen)
-	copy(o.Value, value)
-	return o.Finish()
+
+	wb.buf = EncodeMVCCKeyToBuf(wb.buf[:0], key)
+	return wb.batch.Set(wb.buf, value, nil)
 }
 
 // LogData implements the Writer interface.
@@ -511,6 +494,13 @@ func newPebbleBatch(
 			parent:             parent,
 			batchStatsReporter: batchStatsReporter,
 			settings:           settings,
+			// NB: We do not use settings.Version.IsActive because we do not
+			// generally have a guarantee that the cluster version has been
+			// initialized. As a part of initializing a store, we use a Batch to
+			// write the store identifer key; this is written before any cluster
+			// version has been initialized.
+			mayWriteSizedDeletes: settings.Version.ActiveVersionOrEmpty(context.TODO()).
+				IsActive(clusterversion.V23_2_UseSizedPebblePointTombstones),
 		},
 		prefixIter: pebbleIterator{
 			lowerBoundBuf: pb.prefixIter.lowerBoundBuf,
@@ -567,7 +557,7 @@ func (p *pebbleBatch) MVCCIterate(
 	start, end roachpb.Key,
 	iterKind MVCCIterKind,
 	keyTypes IterKeyType,
-	readCategory fs.ReadCategory,
+	readCategory ReadCategory,
 	f func(MVCCKeyValue, MVCCRangeKeyStack) error,
 ) error {
 	if iterKind == MVCCKeyAndIntentsIterKind {
@@ -690,7 +680,7 @@ func (p *pebbleBatch) ScanInternal(
 	ctx context.Context,
 	lower, upper roachpb.Key,
 	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum) error,
+	visitRangeDel func(start []byte, end []byte, seqNum uint64) error,
 	visitRangeKey func(start []byte, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 	visitExternalFile func(sst *pebble.ExternalFile) error,
@@ -704,11 +694,11 @@ func (p *pebbleBatch) ConsistentIterators() bool {
 }
 
 // PinEngineStateForIterators implements the Batch interface.
-func (p *pebbleBatch) PinEngineStateForIterators(readCategory fs.ReadCategory) error {
+func (p *pebbleBatch) PinEngineStateForIterators(readCategory ReadCategory) error {
 	var err error
 	if p.iter == nil {
 		var iter *pebble.Iterator
-		o := &pebble.IterOptions{Category: readCategory.PebbleCategory()}
+		o := &pebble.IterOptions{CategoryAndQoS: getCategoryAndQoS(readCategory)}
 		if p.batch.Indexed() {
 			iter, err = p.batch.NewIter(o)
 		} else {

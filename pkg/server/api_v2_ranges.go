@@ -60,14 +60,20 @@ type nodeStatus struct {
 }
 
 // Response struct for listNodes.
+//
+// swagger:model nodesResponse
 type nodesResponse struct {
 	// Status of nodes.
+	//
+	// swagger:allOf
 	Nodes []nodeStatus `json:"nodes"`
 	// Continuation offset for the next paginated call, if more values are present.
 	// Specify as the `offset` parameter.
 	Next int `json:"next,omitempty"`
 }
 
+// swagger:operation GET /nodes/ listNodes
+//
 // # List nodes
 //
 // List all nodes on this cluster.
@@ -156,14 +162,19 @@ func parseRangeIDs(input string, w http.ResponseWriter) (ranges []roachpb.RangeI
 }
 
 type nodeRangeResponse struct {
+	// swagger:allOf
 	RangeInfo rangeInfo `json:"range_info"`
 	Error     string    `json:"error,omitempty"`
 }
 
+// swagger:model rangeResponse
 type rangeResponse struct {
+	// swagger:allOf
 	Responses map[string]nodeRangeResponse `json:"responses_by_node_id"`
 }
 
+// swagger:operation GET /ranges/{range_id}/ listRange
+//
 // # Get info about a range
 //
 // Retrieves more information about a specific range.
@@ -275,6 +286,7 @@ func (r *rangeDescriptorInfo) init(rd *roachpb.RangeDescriptor) {
 
 // Info related to a range.
 type rangeInfo struct {
+	// swagger:allOf
 	Desc rangeDescriptorInfo `json:"desc"`
 
 	// Span is the pretty-ified start/end key span for this range.
@@ -317,6 +329,8 @@ func (ri *rangeInfo) init(r serverpb.RangeInfo) {
 }
 
 // Response struct for listNodeRanges.
+//
+// swagger:model nodeRangesResponse
 type nodeRangesResponse struct {
 	// Info about retrieved ranges.
 	Ranges []rangeInfo `json:"ranges"`
@@ -324,6 +338,8 @@ type nodeRangesResponse struct {
 	Next int `json:"next,omitempty"`
 }
 
+// swagger:operation GET /nodes/{node_id}/ranges/ listNodeRanges
+//
 // # List ranges on a node
 //
 // Lists information about ranges on a specified node. If a list of range IDs
@@ -416,6 +432,8 @@ type responseError struct {
 }
 
 // Response struct for listHotRanges.
+//
+// swagger:model hotRangesResponse
 type hotRangesResponse struct {
 	Ranges []hotRangeInfo  `json:"ranges"`
 	Errors []responseError `json:"response_error,omitempty"`
@@ -426,6 +444,8 @@ type hotRangesResponse struct {
 
 // Hot range details struct describes common information about hot range,
 // (ie its range ID, QPS, table name, etc.).
+//
+// swagger:model hotRangeInfo
 type hotRangeInfo struct {
 	RangeID             roachpb.RangeID  `json:"range_id"`
 	NodeID              roachpb.NodeID   `json:"node_id"`
@@ -436,14 +456,16 @@ type hotRangeInfo struct {
 	ReadBytesPerSecond  float64          `json:"read_bytes_per_second"`
 	CPUTimePerSecond    float64          `json:"cpu_time_per_second"`
 	LeaseholderNodeID   roachpb.NodeID   `json:"leaseholder_node_id"`
-	Databases           []string         `json:"databases"`
-	Tables              []string         `json:"tables"`
-	Indexes             []string         `json:"indexes"`
+	TableName           string           `json:"table_name"`
+	DatabaseName        string           `json:"database_name"`
+	IndexName           string           `json:"index_name"`
 	SchemaName          string           `json:"schema_name"`
 	ReplicaNodeIDs      []roachpb.NodeID `json:"replica_node_ids"`
 	StoreID             roachpb.StoreID  `json:"store_id"`
 }
 
+// swagger:operation GET /ranges/hot/ listHotRanges
+//
 // # List hot ranges
 //
 // Lists information about hot ranges. If a list of range IDs
@@ -497,7 +519,7 @@ func (a *apiV2Server) listHotRanges(w http.ResponseWriter, r *http.Request) {
 		requestedNodes = []roachpb.NodeID{requestedNodeID}
 	}
 
-	remoteRequest := serverpb.HotRangesRequest{Nodes: []string{"local"}}
+	remoteRequest := serverpb.HotRangesRequest{NodeID: "local"}
 	nodeFn := func(ctx context.Context, status serverpb.StatusClient, nodeID roachpb.NodeID) ([]hotRangeInfo, error) {
 		resp, err := status.HotRangesV2(ctx, &remoteRequest)
 		if err != nil || resp == nil {
@@ -516,9 +538,9 @@ func (a *apiV2Server) listHotRanges(w http.ResponseWriter, r *http.Request) {
 				ReadBytesPerSecond:  r.ReadBytesPerSecond,
 				CPUTimePerSecond:    r.CPUTimePerSecond,
 				LeaseholderNodeID:   r.LeaseholderNodeID,
-				Databases:           r.Databases,
-				Tables:              r.Tables,
-				Indexes:             r.Indexes,
+				TableName:           r.TableName,
+				DatabaseName:        r.DatabaseName,
+				IndexName:           r.IndexName,
 				ReplicaNodeIDs:      r.ReplicaNodeIds,
 				SchemaName:          r.SchemaName,
 				StoreID:             r.StoreID,

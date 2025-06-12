@@ -13,6 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/internal/validate"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/zone"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/errors"
 )
 
 // MutableCatalog is like Catalog but mutable.
@@ -143,8 +144,8 @@ func (mc *MutableCatalog) UpsertDescriptor(desc catalog.Descriptor) {
 // UpsertComment upserts a ((ObjectID, SubID, CommentType) -> Comment) mapping
 // into the catalog.
 func (mc *MutableCatalog) UpsertComment(key catalogkeys.CommentKey, cmt string) error {
-	if err := key.Validate(); err != nil {
-		return err
+	if !catalogkeys.IsValidCommentType(key.CommentType) {
+		return errors.AssertionFailedf("invalid comment type %d", key.CommentType)
 	}
 	e := mc.ensureForID(descpb.ID(key.ObjectID))
 	mc.byteSize -= e.ByteSize()

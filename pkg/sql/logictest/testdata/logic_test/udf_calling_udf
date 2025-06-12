@@ -1,3 +1,5 @@
+# LogicTest: !local-mixed-23.1 !local-mixed-23.2
+
 statement ok
 CREATE FUNCTION lower_hello() RETURNS STRING LANGUAGE SQL AS $$ SELECT lower('hello') $$;
 
@@ -246,7 +248,6 @@ CREATE FUNCTION public.f131354()
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT public."fooBAR"();
 $$
@@ -256,7 +257,6 @@ SELECT create_statement FROM [SHOW CREATE PROCEDURE p131354];
 ----
 CREATE PROCEDURE public.p131354()
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT public."fooBAR"();
 $$

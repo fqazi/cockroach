@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"math"
-	"math/rand"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -19,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -38,20 +36,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
-	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-)
-
-// ttlMaxKVAutoRetry is the maximum number of times a TTL operation will
-// automatically retry in the KV layer before reducing the batch size to handle
-// contention.
-var ttlMaxKVAutoRetry = settings.RegisterIntSetting(
-	settings.ApplicationLevel,
-	"sql.ttl.max_kv_auto_retries",
-	"the number of times a TTL operation will automatically retry in the KV layer before reducing the batch size",
-	10,
-	settings.PositiveInt,
 )
 
 // ttlProcessor manages the work managed by a single node for a job run by
@@ -72,66 +58,12 @@ func (t *ttlProcessor) Start(ctx context.Context) {
 	t.MoveToDraining(err)
 }
 
-func getTableInfo(
-	ctx context.Context, db descs.DB, tableID descpb.ID,
-) (
-	relationName string,
-	pkColIDs catalog.TableColMap,
-	pkColNames []string,
-	pkColTypes []*types.T,
-	pkColDirs []catenumpb.IndexColumn_Direction,
-	numFamilies int,
-	labelMetrics bool,
-	err error,
-) {
-	err = db.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
-		desc, err := txn.Descriptors().ByIDWithLeased(txn.KV()).WithoutNonPublic().Get().Table(ctx, tableID)
-		if err != nil {
-			return err
-		}
-
-		numFamilies = desc.NumFamilies()
-		var buf bytes.Buffer
-		primaryIndexDesc := desc.GetPrimaryIndex().IndexDesc()
-		pkColNames = make([]string, 0, len(primaryIndexDesc.KeyColumnNames))
-		for _, name := range primaryIndexDesc.KeyColumnNames {
-			lexbase.EncodeRestrictedSQLIdent(&buf, name, lexbase.EncNoFlags)
-			pkColNames = append(pkColNames, buf.String())
-			buf.Reset()
-		}
-		pkColTypes, err = GetPKColumnTypes(desc, primaryIndexDesc)
-		if err != nil {
-			return err
-		}
-		pkColDirs = primaryIndexDesc.KeyColumnDirections
-		pkColIDs = catalog.TableColMap{}
-		for i, id := range primaryIndexDesc.KeyColumnIDs {
-			pkColIDs.Set(id, i)
-		}
-
-		if !desc.HasRowLevelTTL() {
-			return errors.Newf("unable to find TTL on table %s", desc.GetName())
-		}
-
-		rowLevelTTL := desc.GetRowLevelTTL()
-		labelMetrics = rowLevelTTL.LabelMetrics
-
-		tn, err := descs.GetObjectName(ctx, txn.KV(), txn.Descriptors(), desc)
-		if err != nil {
-			return errors.Wrapf(err, "error fetching table relation name for TTL")
-		}
-
-		relationName = tn.FQString() + "@" + lexbase.EscapeSQLIdent(primaryIndexDesc.Name)
-		return nil
-	})
-	return relationName, pkColIDs, pkColNames, pkColTypes, pkColDirs, numFamilies, labelMetrics, err
-}
-
 func (t *ttlProcessor) work(ctx context.Context) error {
 	ttlSpec := t.ttlSpec
 	flowCtx := t.FlowCtx
 	serverCfg := flowCtx.Cfg
 	db := serverCfg.DB
+	descsCol := flowCtx.Descriptors
 	codec := serverCfg.Codec
 	details := ttlSpec.RowLevelTTLDetails
 	tableID := details.TableID
@@ -162,10 +94,55 @@ func (t *ttlProcessor) work(ctx context.Context) error {
 		deleteRateLimit,
 	)
 
-	relationName, pkColIDs, pkColNames, pkColTypes, pkColDirs, numFamilies, labelMetrics, err := getTableInfo(
-		ctx, db, tableID,
+	var (
+		relationName string
+		pkColIDs     catalog.TableColMap
+		pkColNames   []string
+		pkColTypes   []*types.T
+		pkColDirs    []catenumpb.IndexColumn_Direction
+		numFamilies  int
+		labelMetrics bool
 	)
-	if err != nil {
+	if err := db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+		desc, err := descsCol.ByIDWithLeased(txn.KV()).WithoutNonPublic().Get().Table(ctx, tableID)
+		if err != nil {
+			return err
+		}
+
+		numFamilies = desc.NumFamilies()
+		var buf bytes.Buffer
+		primaryIndexDesc := desc.GetPrimaryIndex().IndexDesc()
+		pkColNames = make([]string, 0, len(primaryIndexDesc.KeyColumnNames))
+		for _, name := range primaryIndexDesc.KeyColumnNames {
+			lexbase.EncodeRestrictedSQLIdent(&buf, name, lexbase.EncNoFlags)
+			pkColNames = append(pkColNames, buf.String())
+			buf.Reset()
+		}
+		pkColTypes, err = GetPKColumnTypes(desc, primaryIndexDesc)
+		if err != nil {
+			return err
+		}
+		pkColDirs = primaryIndexDesc.KeyColumnDirections
+		pkColIDs = catalog.TableColMap{}
+		for i, id := range primaryIndexDesc.KeyColumnIDs {
+			pkColIDs.Set(id, i)
+		}
+
+		if !desc.HasRowLevelTTL() {
+			return errors.Newf("unable to find TTL on table %s", desc.GetName())
+		}
+
+		rowLevelTTL := desc.GetRowLevelTTL()
+		labelMetrics = rowLevelTTL.LabelMetrics
+
+		tn, err := descs.GetObjectName(ctx, txn.KV(), descsCol, desc)
+		if err != nil {
+			return errors.Wrapf(err, "error fetching table relation name for TTL")
+		}
+
+		relationName = tn.FQString() + "@" + lexbase.EscapeSQLIdent(primaryIndexDesc.Name)
+		return nil
+	}); err != nil {
 		return err
 	}
 
@@ -181,59 +158,23 @@ func (t *ttlProcessor) work(ctx context.Context) error {
 	if processorSpanCount < processorConcurrency {
 		processorConcurrency = processorSpanCount
 	}
-	var processorRowCount atomic.Int64
-	var spansProccessedSinceLastUpdate atomic.Int64
-	var rowsProccessedSinceLastUpdate atomic.Int64
+	var rowsDeletedSoFar atomic.Int64
+	var spansProccessedSoFar atomic.Int64
+	var spansProccessedSinceLastLog atomic.Int64
 
-	// Update progress for approximately every 1% of spans processed, at least
-	// 60 seconds apart with jitter.
+	// Log progress approximately every 1% of spans processed.
 	updateEvery := max(1, processorSpanCount/100)
-	updateEveryDuration := 60*time.Second + time.Duration(rand.Int63n(10*1000))*time.Millisecond
-	lastUpdated := timeutil.Now()
-	updateFractionCompleted := func() error {
-		jobID := ttlSpec.JobID
-		lastUpdated = timeutil.Now()
-		spansToAdd := spansProccessedSinceLastUpdate.Swap(0)
-		rowsToAdd := rowsProccessedSinceLastUpdate.Swap(0)
-
-		var deletedRowCount, processedSpanCount, totalSpanCount int64
-		var fractionCompleted float32
-
-		err := jobRegistry.UpdateJobWithTxn(
-			ctx,
-			jobID,
-			nil, /* txn */
-			func(_ isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
-				progress := md.Progress
-				rowLevelTTL := progress.Details.(*jobspb.Progress_RowLevelTTL).RowLevelTTL
-				rowLevelTTL.JobProcessedSpanCount += spansToAdd
-				rowLevelTTL.JobDeletedRowCount += rowsToAdd
-				deletedRowCount = rowLevelTTL.JobDeletedRowCount
-				processedSpanCount = rowLevelTTL.JobProcessedSpanCount
-				totalSpanCount = rowLevelTTL.JobTotalSpanCount
-
-				fractionCompleted = float32(rowLevelTTL.JobProcessedSpanCount) / float32(rowLevelTTL.JobTotalSpanCount)
-				progress.Progress = &jobspb.Progress_FractionCompleted{
-					FractionCompleted: fractionCompleted,
-				}
-
-				ju.UpdateProgress(progress)
-				return nil
-			},
-		)
-		if err != nil {
-			return err
-		}
+	logProgress := func() error {
 		processorID := t.ProcessorID
 		log.Infof(
 			ctx,
-			"TTL fractionCompleted updated processorID=%d tableID=%d deletedRowCount=%d processedSpanCount=%d totalSpanCount=%d fractionCompleted=%.3f",
-			processorID, tableID, deletedRowCount, processedSpanCount, totalSpanCount, fractionCompleted,
+			"TTL progress processorID=%d tableID=%d deletedRowCount=%d processedSpanCountForProcessor=%d totalSpanCountForProcessor=%d",
+			processorID, tableID, rowsDeletedSoFar.Load(), spansProccessedSoFar.Load(), processorSpanCount,
 		)
 		return nil
 	}
 
-	err = func() error {
+	err := func() error {
 		boundsChan := make(chan QueryBounds, processorConcurrency)
 		defer close(boundsChan)
 		for i := int64(0); i < processorConcurrency; i++ {
@@ -245,7 +186,6 @@ func (t *ttlProcessor) work(ctx context.Context) error {
 							RelationName:      relationName,
 							PKColNames:        pkColNames,
 							PKColDirs:         pkColDirs,
-							PKColTypes:        pkColTypes,
 							Bounds:            bounds,
 							AOSTDuration:      ttlSpec.AOSTDuration,
 							SelectBatchSize:   ttlSpec.SelectBatchSize,
@@ -273,9 +213,9 @@ func (t *ttlProcessor) work(ctx context.Context) error {
 						deleteBuilder,
 					)
 					// add before returning err in case of partial success
-					processorRowCount.Add(spanRowCount)
-					rowsProccessedSinceLastUpdate.Add(spanRowCount)
-					spansProccessedSinceLastUpdate.Add(1)
+					rowsDeletedSoFar.Add(spanRowCount)
+					spansProccessedSoFar.Add(1)
+					spansProccessedSinceLastLog.Add(1)
 					if err != nil {
 						// Continue until channel is fully read.
 						// Otherwise, the keys input will be blocked.
@@ -311,12 +251,12 @@ func (t *ttlProcessor) work(ctx context.Context) error {
 			} else {
 				// If the span has no rows, we still need to increment the processed
 				// count.
-				spansProccessedSinceLastUpdate.Add(1)
+				spansProccessedSoFar.Add(1)
+				spansProccessedSinceLastLog.Add(1)
 			}
-
-			if spansProccessedSinceLastUpdate.Load() >= updateEvery &&
-				timeutil.Since(lastUpdated) >= updateEveryDuration {
-				if err := updateFractionCompleted(); err != nil {
+			if spansProccessedSinceLastLog.Load() >= updateEvery {
+				spansProccessedSinceLastLog.Store(0)
+				if err := logProgress(); err != nil {
 					return err
 				}
 			}
@@ -330,7 +270,7 @@ func (t *ttlProcessor) work(ctx context.Context) error {
 	if err := group.Wait(); err != nil {
 		return err
 	}
-	if err := updateFractionCompleted(); err != nil {
+	if err := logProgress(); err != nil {
 		return err
 	}
 
@@ -344,23 +284,25 @@ func (t *ttlProcessor) work(ctx context.Context) error {
 			progress := md.Progress
 			rowLevelTTL := progress.Details.(*jobspb.Progress_RowLevelTTL).RowLevelTTL
 			processorID := t.ProcessorID
+			fractionCompleted := float32(processorSpanCount) / float32(rowLevelTTL.JobTotalSpanCount)
+			progress.Progress = &jobspb.Progress_FractionCompleted{
+				FractionCompleted: fractionCompleted,
+			}
+			rowLevelTTL.JobDeletedRowCount += rowsDeletedSoFar.Load()
+			rowLevelTTL.JobProcessedSpanCount += spansProccessedSoFar.Load()
 			rowLevelTTL.ProcessorProgresses = append(rowLevelTTL.ProcessorProgresses, jobspb.RowLevelTTLProcessorProgress{
 				ProcessorID:          processorID,
 				SQLInstanceID:        sqlInstanceID,
-				ProcessorRowCount:    processorRowCount.Load(),
+				ProcessorRowCount:    rowsDeletedSoFar.Load(),
 				ProcessorSpanCount:   processorSpanCount,
 				ProcessorConcurrency: processorConcurrency,
 			})
-			var fractionCompleted float32
-			if f, ok := progress.Progress.(*jobspb.Progress_FractionCompleted); ok {
-				fractionCompleted = f.FractionCompleted
-			}
 			ju.UpdateProgress(progress)
 			log.VInfof(
 				ctx,
 				2, /* level */
 				"TTL processorRowCount updated processorID=%d sqlInstanceID=%d tableID=%d jobRowCount=%d processorRowCount=%d fractionCompleted=%.3f",
-				processorID, sqlInstanceID, tableID, rowLevelTTL.JobDeletedRowCount, processorRowCount.Load(), fractionCompleted,
+				processorID, sqlInstanceID, tableID, rowLevelTTL.JobDeletedRowCount, rowsDeletedSoFar.Load(), fractionCompleted,
 			)
 			return nil
 		},
@@ -416,74 +358,48 @@ func (t *ttlProcessor) runTTLOnQueryBounds(
 			return spanRowCount, errors.Wrapf(err, "error selecting rows to delete")
 		}
 
-		numExpiredRows := len(expiredRowsPKs)
-		metrics.RowSelections.Inc(int64(numExpiredRows))
+		numExpiredRows := int64(len(expiredRowsPKs))
+		metrics.RowSelections.Inc(numExpiredRows)
 
 		// Step 2. Delete the rows which have expired.
-		deleteBatchSize := deleteBuilder.GetBatchSize()
-		for startRowIdx := 0; startRowIdx < numExpiredRows; startRowIdx += deleteBatchSize {
-			// We are going to attempt a delete of size deleteBatchSize. But we use
-			// retry.Batch to allow retrying with a smaller batch size in case of
-			// an error.
-			rb := retry.Batch{
-				Do: func(ctx context.Context, processed, batchSize int) error {
-					until := startRowIdx + processed + batchSize
-					if until > numExpiredRows {
-						until = numExpiredRows
-					}
-					deleteBatch := expiredRowsPKs[startRowIdx+processed : until]
-					var batchRowCount int64
-					do := func(ctx context.Context, txn descs.Txn) error {
-						txn.KV().SetDebugName("ttljob-delete-batch")
-						// We explicitly specify a low retry limit because this operation is
-						// wrapped with its own retry function that will also take care of
-						// adjusting the batch size on each retry.
-						maxAutoRetries := ttlMaxKVAutoRetry.Get(&flowCtx.Cfg.Settings.SV)
-						txn.KV().SetMaxAutoRetries(int(maxAutoRetries))
-						if ttlSpec.DisableChangefeedReplication {
-							txn.KV().SetOmitInRangefeeds()
-						}
-						// If we detected a schema change here, the DELETE will not succeed
-						// (the SELECT still will because of the AOST). Early exit here.
-						desc, err := txn.Descriptors().ByIDWithLeased(txn.KV()).WithoutNonPublic().Get().Table(ctx, details.TableID)
-						if err != nil {
-							return err
-						}
-						if ttlSpec.PreDeleteChangeTableVersion || desc.GetVersion() != details.TableVersion {
-							return errors.Newf(
-								"table has had a schema change since the job has started at %s, job will run at the next scheduled time",
-								desc.GetModificationTime().GoTime().Format(time.RFC3339),
-							)
-						}
-						batchRowCount, err = deleteBuilder.Run(ctx, txn, deleteBatch)
-						if err != nil {
-							return err
-						}
-						return nil
-					}
-					if err := serverCfg.DB.DescsTxn(
-						ctx, do, isql.SteppingEnabled(), isql.WithPriority(admissionpb.BulkLowPri),
-					); err != nil {
-						return errors.Wrapf(err, "error during row deletion")
-					}
-					metrics.RowDeletions.Inc(batchRowCount)
-					spanRowCount += batchRowCount
-					return nil
-				},
-				IsRetryableError: kv.IsAutoRetryLimitExhaustedError,
-				OnRetry: func(err error, nextBatchSize int) error {
-					metrics.NumDeleteBatchRetries.Inc(1)
-					log.Infof(ctx,
-						"row-level TTL reached the auto-retry limit, reducing batch size to %d rows. Error: %v",
-						nextBatchSize, err)
-					return nil
-				},
+		deleteBatchSize := deleteBuilder.DeleteBatchSize
+		for startRowIdx := int64(0); startRowIdx < numExpiredRows; startRowIdx += deleteBatchSize {
+			until := startRowIdx + deleteBatchSize
+			if until > numExpiredRows {
+				until = numExpiredRows
 			}
-			// Adjust the batch size if we are on the final batch.
-			deleteBatchSize = min(deleteBatchSize, numExpiredRows-startRowIdx)
-			if err := rb.Execute(ctx, deleteBatchSize); err != nil {
-				return spanRowCount, err
+			deleteBatch := expiredRowsPKs[startRowIdx:until]
+			var batchRowCount int64
+			do := func(ctx context.Context, txn isql.Txn) error {
+				txn.KV().SetDebugName("ttljob-delete-batch")
+				if ttlSpec.DisableChangefeedReplication {
+					txn.KV().SetOmitInRangefeeds()
+				}
+				// If we detected a schema change here, the DELETE will not succeed
+				// (the SELECT still will because of the AOST). Early exit here.
+				desc, err := flowCtx.Descriptors.ByIDWithLeased(txn.KV()).WithoutNonPublic().Get().Table(ctx, details.TableID)
+				if err != nil {
+					return err
+				}
+				if ttlSpec.PreDeleteChangeTableVersion || desc.GetVersion() != details.TableVersion {
+					return errors.Newf(
+						"table has had a schema change since the job has started at %s, aborting",
+						desc.GetModificationTime().GoTime().Format(time.RFC3339),
+					)
+				}
+				batchRowCount, err = deleteBuilder.Run(ctx, txn, deleteBatch)
+				if err != nil {
+					return err
+				}
+				return nil
 			}
+			if err := serverCfg.DB.Txn(
+				ctx, do, isql.SteppingEnabled(), isql.WithPriority(admissionpb.TTLLowPri),
+			); err != nil {
+				return spanRowCount, errors.Wrapf(err, "error during row deletion")
+			}
+			metrics.RowDeletions.Inc(batchRowCount)
+			spanRowCount += batchRowCount
 		}
 
 		// Step 3. Early exit if necessary.

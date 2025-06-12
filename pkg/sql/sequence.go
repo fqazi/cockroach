@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/resolver"
@@ -25,11 +24,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/unique"
 	"github.com/cockroachdb/errors"
 )
 
@@ -108,20 +107,15 @@ func incrementSequenceHelper(
 			string(descriptor.DescriptorType()), descriptor.GetName())
 	}
 
-	// If the descriptor is read only block any write operations.
-	if descriptor.IsReadOnly() {
-		return 0, readOnlyError("nextval()")
-	}
-
 	var err error
 	seqOpts := descriptor.GetSequenceOpts()
 
 	var val int64
 	if seqOpts.Virtual {
-		rowid := unique.GenerateUniqueInt(
-			unique.ProcessUniqueID(p.EvalContext().NodeID.SQLInstanceID()),
+		rowid := builtins.GenerateUniqueInt(
+			builtins.ProcessUniqueID(p.EvalContext().NodeID.SQLInstanceID()),
 		)
-		val = rowid
+		val = int64(rowid)
 	} else {
 		val, err = p.incrementSequenceUsingCache(ctx, descriptor)
 	}
@@ -295,10 +289,6 @@ func (p *planner) SetSequenceValueByID(
 	if err != nil {
 		return err
 	}
-	// If the descriptor is read only block any write operations.
-	if descriptor.IsReadOnly() {
-		return readOnlyError("setval()")
-	}
 	seqName, err := p.getQualifiedTableName(ctx, descriptor)
 	if err != nil {
 		return err
@@ -415,14 +405,7 @@ func (p *planner) GetSequenceValue(
 func getSequenceValueFromDesc(
 	ctx context.Context, txn *kv.Txn, codec keys.SQLCodec, desc catalog.TableDescriptor,
 ) (int64, error) {
-	targetID := desc.GetID()
-	// For external row data, adjust the key that we will
-	// scan.
-	if ext := desc.ExternalRowData(); ext != nil {
-		codec = keys.MakeSQLCodec(ext.TenantID)
-		targetID = desc.ExternalRowData().TableID
-	}
-	keyValue, err := txn.Get(ctx, codec.SequenceKey(uint32(targetID)))
+	keyValue, err := txn.Get(ctx, codec.SequenceKey(uint32(desc.GetID())))
 	if err != nil {
 		return 0, err
 	}
@@ -672,7 +655,7 @@ func maybeAddSequenceDependencies(
 		// Check if this reference is cross DB.
 		if seqDesc.GetParentID() != tableDesc.GetParentID() &&
 			!allowCrossDatabaseSeqReferences.Get(&st.SV) {
-			return nil, errors.WithHint(
+			return nil, errors.WithHintf(
 				pgerror.Newf(pgcode.FeatureNotSupported,
 					"sequence references cannot come from other databases; (see the '%s' cluster setting)",
 					allowCrossDatabaseSeqReferencesSetting),
@@ -904,6 +887,5 @@ func (p *planner) removeSequenceDependencies(
 	}
 	// Remove the reference from the column descriptor to the sequence descriptor.
 	col.ColumnDesc().UsesSequenceIds = []descpb.ID{}
-	col.ColumnDesc().GeneratedAsIdentityType = catpb.GeneratedAsIdentityType_NOT_IDENTITY_COLUMN
 	return nil
 }

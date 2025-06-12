@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/errors"
 )
 
@@ -120,36 +119,6 @@ func (i *immediateVisitor) checkOutFunction(
 		return nil, catalog.WrapTypeDescRefErr(id, catalog.NewDescriptorTypeError(desc))
 	}
 	return mut, nil
-}
-
-func (i *immediateVisitor) checkOutTrigger(
-	ctx context.Context, tableID descpb.ID, triggerID catid.TriggerID,
-) (*descpb.TriggerDescriptor, error) {
-	tbl, err := i.checkOutTable(ctx, tableID)
-	if err != nil {
-		return nil, err
-	}
-	trigger := catalog.FindTriggerByID(tbl, triggerID)
-	if trigger != nil {
-		return trigger, nil
-	}
-	panic(errors.AssertionFailedf("failed to find trigger with ID %d in table %q (%d)",
-		triggerID, tbl.GetName(), tbl.GetID()))
-}
-
-func (i *immediateVisitor) checkOutPolicy(
-	ctx context.Context, tableID descpb.ID, policyID catid.PolicyID,
-) (*descpb.PolicyDescriptor, error) {
-	tbl, err := i.checkOutTable(ctx, tableID)
-	if err != nil {
-		return nil, err
-	}
-	policy := catalog.FindPolicyByID(tbl, policyID)
-	if policy != nil {
-		return policy, nil
-	}
-	panic(errors.AssertionFailedf("failed to find policy with ID %d in table %q (%d)",
-		policyID, tbl.GetName(), tbl.GetID()))
 }
 
 func mutationStateChange(

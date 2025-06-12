@@ -3,10 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { api as clusterUiApi } from "@cockroachlabs/cluster-ui";
 import { Action } from "redux";
-
 import { PayloadAction } from "src/interfaces/action";
+import { api as clusterUiApi } from "@cockroachlabs/cluster-ui";
 
 export const COLLECT_EXECUTION_DETAILS =
   "cockroachui/jobs/COLLECT_EXECUTION_DETAILS";

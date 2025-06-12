@@ -151,7 +151,7 @@ func TestSpanImport(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
-	metrics := MakeDistSenderMetrics(roachpb.Locality{})
+	metrics := MakeDistSenderMetrics()
 	gt := grpcTransport{
 		opts: SendOptions{
 			metrics: &metrics,
@@ -185,7 +185,7 @@ func TestResponseVerifyFailure(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
-	metrics := MakeDistSenderMetrics(roachpb.Locality{})
+	metrics := MakeDistSenderMetrics()
 	gt := grpcTransport{
 		opts: SendOptions{
 			metrics: &metrics,
@@ -255,17 +255,18 @@ func (m *mockInternalClient) Batch(
 	return br, nil
 }
 
-func (m *mockInternalClient) BatchStream(
-	ctx context.Context, opts ...grpc.CallOption,
-) (kvpb.Internal_BatchStreamClient, error) {
-	return nil, fmt.Errorf("unsupported BatchStream call")
-}
-
 // RangeLookup implements the kvpb.InternalClient interface.
 func (m *mockInternalClient) RangeLookup(
 	ctx context.Context, rl *kvpb.RangeLookupRequest, _ ...grpc.CallOption,
 ) (*kvpb.RangeLookupResponse, error) {
 	return nil, fmt.Errorf("unsupported RangeLookup call")
+}
+
+// RangeFeed is part of the kvpb.InternalClient interface.
+func (m *mockInternalClient) RangeFeed(
+	ctx context.Context, in *kvpb.RangeFeedRequest, opts ...grpc.CallOption,
+) (kvpb.Internal_RangeFeedClient, error) {
+	return nil, fmt.Errorf("unsupported RangeFeed call")
 }
 
 func (m *mockInternalClient) MuxRangeFeed(

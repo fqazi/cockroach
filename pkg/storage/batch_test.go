@@ -12,15 +12,12 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -28,8 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/vfs"
-	"github.com/cockroachdb/pebble/vfs/errorfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -184,7 +179,7 @@ func TestReadOnlyBasics(t *testing.T) {
 	successTestCases := []func(){
 		func() {
 			_ = ro.MVCCIterate(context.Background(), a.Key, a.Key, MVCCKeyIterKind, IterKeyTypePointsOnly,
-				fs.UnknownReadCategory,
+				UnknownReadCategory,
 				func(MVCCKeyValue, MVCCRangeKeyStack) error { return iterutil.StopIteration() })
 		},
 		func() {
@@ -965,7 +960,7 @@ func TestBatchReader(t *testing.T) {
 
 		{pebble.InternalKeyKindDelete, "mvccKey", 9, "", nil, nil},
 		{pebble.InternalKeyKindRangeKeyUnset, "rangeFrom", 0, "rangeTo", nil, []EngineRangeKeyValue{
-			{Version: mvccencoding.EncodeMVCCTimestampSuffix(wallTS(9)), Value: nil},
+			{Version: EncodeMVCCTimestampSuffix(wallTS(9)), Value: nil},
 		}},
 		{pebble.InternalKeyKindRangeDelete, "clearFrom", 0, "clearTo", []byte("clearTo\000"), nil},
 		{pebble.InternalKeyKindRangeKeyDelete, "clearFrom", 0, "clearTo", []byte("clearTo\000"), nil},
@@ -1012,62 +1007,4 @@ func TestBatchReader(t *testing.T) {
 
 	require.False(t, r.Next())
 	require.NoError(t, r.Error())
-}
-
-// TestBatchCommitDoesntTouchSST tests that committing a writeBatch doesn't
-// touch SST files.
-func TestBatchCommitDoesntTouchSST(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	// Create an atomic variable that will cause an error when SST operations are
-	// performed.
-	var failSSTOps atomic.Bool
-
-	// Create a custom injector that blocks SST operations when failSSTOps is
-	// true.
-	injector := errorfs.InjectorFunc(func(op errorfs.Op) error {
-		if strings.Contains(op.Path, ".sst") && failSSTOps.Load() {
-			return errors.Newf("blocking SST operation: %+v", op)
-		}
-		return nil
-	})
-
-	// Create the wrapped filesystem, and create a db.
-	memFS := vfs.NewMem()
-	wrappedFS := errorfs.Wrap(memFS, injector)
-	env := mustInitTestEnv(t, wrappedFS, "")
-	db, err := Open(context.Background(), env, cluster.MakeClusterSettings())
-	require.NoError(t, err)
-	defer db.Close()
-
-	// Initialize the db with some data.
-	initBatch := db.NewBatch()
-	defer initBatch.Close()
-
-	// Perform some operations.
-	require.NoError(t, initBatch.PutUnversioned(mvccKey("key1").Key, []byte("val1")))
-	require.NoError(t, initBatch.PutUnversioned(mvccKey("key2").Key, []byte("val2")))
-	require.NoError(t, initBatch.PutUnversioned(mvccKey("key3").Key, []byte("val3")))
-	require.NoError(t, initBatch.PutUnversioned(mvccKey("key4").Key, []byte("val4")))
-	require.NoError(t, initBatch.Commit(true /* sync */))
-
-	// Force a flush to create an SST file.
-	require.NoError(t, db.Flush())
-
-	// Create a new batch for testing.
-	testingBatch := db.NewBatch()
-	defer testingBatch.Close()
-
-	// Perform some operations.
-	require.Equal(t, []byte("val1"), mvccGetRaw(t, testingBatch, mvccKey("key1")))
-	require.Equal(t, []byte(nil), mvccGetRaw(t, testingBatch, mvccKey("non-existent-key")))
-	_, err = Scan(context.Background(), testingBatch, localMax, roachpb.KeyMax, 0)
-	require.NoError(t, err)
-	require.NoError(t, testingBatch.ClearUnversioned(mvccKey("key4").Key, ClearOptions{}))
-
-	// Before committing, enable SST operation errors and make sure the commit
-	// succeeds.
-	failSSTOps.Store(true)
-	require.NoError(t, testingBatch.Commit(true /* sync */))
 }

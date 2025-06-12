@@ -6,16 +6,15 @@
 package log
 
 import (
-	"sync/atomic"
-
 	"github.com/cockroachdb/cockroach/pkg/cli/exit"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 )
 
 // Type of a stderr copy sink.
 type stderrSink struct {
 	// the --no-color flag. When set it disables escapes code on the
 	// stderr copy.
-	noColor atomic.Bool
+	noColor syncutil.AtomicBool
 }
 
 // activeAtSeverity implements the logSink interface.

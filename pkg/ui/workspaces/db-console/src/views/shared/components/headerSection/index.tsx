@@ -8,7 +8,6 @@ import { Link, RouteComponentProps, withRouter } from "react-router-dom";
 
 import { Text, TextTypes } from "src/components";
 import { trustIcon } from "src/util/trust";
-
 import ArrowLeftIcon from "!!raw-loader!assets/arrowLeft.svg";
 import "./headerSection.styl";
 

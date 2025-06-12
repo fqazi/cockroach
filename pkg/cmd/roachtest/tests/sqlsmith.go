@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/internal/sqlsmith"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/errors"
 )
@@ -35,7 +34,7 @@ func registerSQLSmith(r registry.Registry) {
 		sqlsmith.RandTableSetupName: sqlsmith.Setups[sqlsmith.RandTableSetupName],
 		"tpch-sf1": func(r *rand.Rand) []string {
 			return []string{`
-RESTORE TABLE tpch.* FROM '/' IN 'gs://cockroach-fixtures-us-east1/workload/tpch/scalefactor=1/backup?AUTH=implicit'
+RESTORE TABLE tpch.* FROM 'gs://cockroach-fixtures-us-east1/workload/tpch/scalefactor=1/backup?AUTH=implicit'
 WITH into_db = 'defaultdb', unsafe_restore_incompatible_version;
 `}
 		},
@@ -56,7 +55,7 @@ WITH into_db = 'defaultdb', unsafe_restore_incompatible_version;
 				stmts = append(
 					stmts,
 					fmt.Sprintf(`
-RESTORE TABLE tpcc.%s FROM '/' IN 'gs://cockroach-fixtures-us-east1/workload/tpcc/%[2]s/%[1]s?AUTH=implicit'
+RESTORE TABLE tpcc.%s FROM 'gs://cockroach-fixtures-us-east1/workload/tpcc/%[2]s/%[1]s?AUTH=implicit'
 WITH into_db = 'defaultdb', unsafe_restore_incompatible_version;
 `,
 						t, version,
@@ -121,12 +120,25 @@ WITH into_db = 'defaultdb', unsafe_restore_incompatible_version;
 		for _, stmt := range setup {
 			logStmt(stmt)
 			if _, err := conn.Exec(stmt); err != nil {
+				if strings.Contains(err.Error(), "does not exist") {
+					// This is likely to be an elusive 'pq: column
+					// "crdb_internal_idx_expr" does not exist' error that we
+					// cannot reproduce. The current hypothesis is that the
+					// CREATE TABLE statement contains some non-visible
+					// characters that get lost when printing as a string, so we
+					// will log this statement as a sequence of integers so that
+					// later we can reconstruct the stmt precisely.
+					for _, char := range stmt {
+						fmt.Fprintf(smithLog, "%d ", char)
+					}
+					fmt.Fprint(smithLog, "\n\n")
+				}
 				t.Fatalf("error: %s\nstatement: %s", err.Error(), stmt)
 			}
 		}
 
 		if settingName == "multi-region" {
-			setupMultiRegionDatabase(t, conn, rng, logStmt)
+			setupMultiRegionDatabase(t, conn, logStmt)
 		}
 
 		const timeout = time.Minute
@@ -303,7 +315,7 @@ WITH into_db = 'defaultdb', unsafe_restore_incompatible_version;
 					sb.WriteString(errStr)
 					sb.WriteString(hintStr)
 
-					t.Fatal(sb.String())
+					t.Fatalf(sb.String())
 				}
 			}
 		}
@@ -328,6 +340,7 @@ WITH into_db = 'defaultdb', unsafe_restore_incompatible_version;
 			Leases:           registry.MetamorphicLeases,
 			NativeLibs:       registry.LibGEOS,
 			Timeout:          time.Minute * 20,
+			RequiresLicense:  true,
 			// NB: sqlsmith failures should never block a release.
 			NonReleaseBlocker: true,
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -350,28 +363,8 @@ WITH into_db = 'defaultdb', unsafe_restore_incompatible_version;
 }
 
 // setupMultiRegionDatabase is used to set up a multi-region database.
-func setupMultiRegionDatabase(t test.Test, conn *gosql.DB, rnd *rand.Rand, logStmt func(string)) {
+func setupMultiRegionDatabase(t test.Test, conn *gosql.DB, logStmt func(string)) {
 	t.Helper()
-
-	execStmt := func(stmt string) {
-		logStmt(stmt)
-		if _, err := conn.Exec(stmt); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// If we have a stmt timeout set on the session, then increase it 3x given
-	// that schema changes below can take non-trivial amount of time.
-	row := conn.QueryRow("SHOW statement_timeout")
-	var stmtTimeout int
-	if err := row.Scan(&stmtTimeout); err != nil {
-		t.Fatal(err)
-	} else if stmtTimeout != 0 {
-		t.L().Printf("temporarily increasing the statement timeout")
-		execStmt(fmt.Sprintf("SET statement_timeout = %d", 3*stmtTimeout))
-		defer execStmt(fmt.Sprintf("SET statement_timeout = %d", stmtTimeout))
-	}
-
 	regionsSet := make(map[string]struct{})
 	var region, zone string
 	rows, err := conn.Query("SHOW REGIONS FROM CLUSTER")
@@ -386,8 +379,6 @@ func setupMultiRegionDatabase(t test.Test, conn *gosql.DB, rnd *rand.Rand, logSt
 	}
 
 	var regionList []string
-	// Take advantage of random map iteration in go to create a randomly ordered
-	// list of regions.
 	for region := range regionsSet {
 		regionList = append(regionList, region)
 	}
@@ -396,67 +387,12 @@ func setupMultiRegionDatabase(t test.Test, conn *gosql.DB, rnd *rand.Rand, logSt
 		t.Fatal(errors.New("no regions, cannot run multi-region config"))
 	}
 
-	for i, region := range regionList {
-		if i == 0 {
-			execStmt(fmt.Sprintf(`ALTER DATABASE defaultdb SET PRIMARY REGION "%s";`, region))
-		} else {
-			// Add other regions with a 2/3 chance.
-			if rnd.Intn(3) < 2 {
-				execStmt(fmt.Sprintf(`ALTER DATABASE defaultdb ADD REGION IF NOT EXISTS "%s";`, region))
-			}
-		}
-	}
-
-	tables, err := extractTableNames(conn)
-	if err != nil {
+	stmt := fmt.Sprintf(`ALTER DATABASE defaultdb SET PRIMARY REGION "%s";
+ALTER TABLE seed_mr_table SET LOCALITY REGIONAL BY ROW;
+INSERT INTO seed_mr_table DEFAULT VALUES;`, regionList[0])
+	if _, err := conn.Exec(stmt); err != nil {
 		t.Fatal(err)
-	}
-
-	// Maybe use auto-rehoming.
-	if rnd.Intn(2) == 0 {
-		execStmt(`SET enable_auto_rehoming = on;`)
 	} else {
-		execStmt(`SET enable_auto_rehoming = off;`)
+		logStmt(stmt)
 	}
-
-	for _, table := range tables {
-		// Maybe change the locality of the table.
-		if val := rnd.Intn(3); val == 0 {
-			execStmt(fmt.Sprintf(`ALTER TABLE %s SET LOCALITY REGIONAL BY ROW;`, table.String()))
-		} else if val == 1 {
-			execStmt(fmt.Sprintf(`ALTER TABLE %s SET LOCALITY GLOBAL;`, table.String()))
-		}
-		// Else keep the locality as REGIONAL BY TABLE.
-	}
-}
-
-func extractTableNames(conn *gosql.DB) ([]tree.TableName, error) {
-	rows, err := conn.Query(`
-SELECT DISTINCT
-	table_catalog,
-	table_schema,
-	table_name
-FROM
-	information_schema.tables
-WHERE
-	table_schema NOT IN ('crdb_internal', 'pg_catalog', 'pg_extension',
-	                     'information_schema')
-ORDER BY
-	table_catalog, table_schema, table_name
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var tables []tree.TableName
-	for rows.Next() {
-		var catalog, schema, name tree.Name
-		if err := rows.Scan(&catalog, &schema, &name); err != nil {
-			return nil, err
-		}
-		tableName := tree.MakeTableNameWithSchema(catalog, schema, name)
-		tables = append(tables, tableName)
-	}
-	return tables, rows.Err()
 }

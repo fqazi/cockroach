@@ -7,9 +7,8 @@ package kvstorage
 
 import (
 	"bytes"
-	"cmp"
 	"context"
-	"slices"
+	"sort"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -405,10 +404,7 @@ func (r Replica) Load(
 	}
 	sl := stateloader.Make(r.Desc.RangeID)
 	var err error
-	if ls.TruncState, err = sl.LoadRaftTruncatedState(ctx, eng); err != nil {
-		return LoadedReplicaState{}, err
-	}
-	if ls.LastEntryID, err = sl.LoadLastEntryID(ctx, eng, ls.TruncState); err != nil {
+	if ls.LastIndex, err = sl.LoadLastIndex(ctx, eng); err != nil {
 		return LoadedReplicaState{}, err
 	}
 	if ls.ReplState, err = sl.Load(ctx, eng, r.Desc); err != nil {
@@ -521,8 +517,8 @@ func loadReplicas(ctx context.Context, eng storage.Engine) ([]Replica, error) {
 	for _, repl := range s {
 		sl = append(sl, repl)
 	}
-	slices.SortFunc(sl, func(a, b Replica) int {
-		return cmp.Compare(a.RangeID, b.RangeID)
+	sort.Slice(sl, func(i, j int) bool {
+		return sl[i].RangeID < sl[j].RangeID
 	})
 	return sl, nil
 }

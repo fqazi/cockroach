@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -172,7 +171,7 @@ func runAdmissionControlFollowerOverload(
 
 	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.CRDBNodes())
 	db := c.Conn(ctx, t.L(), 1)
-	require.NoError(t, roachtestutil.WaitFor3XReplication(ctx, t.L(), db))
+	require.NoError(t, WaitFor3XReplication(ctx, t, t.L(), db))
 
 	{
 		_, err := c.Conn(ctx, t.L(), 1).ExecContext(ctx, `SET CLUSTER SETTING admission.kv.pause_replication_io_threshold = 0.8`)
@@ -301,9 +300,7 @@ sudo systemd-run --property=Type=exec \
 		//   └─md0         9:0    0 872.3G  0 raid0 /mnt/data1
 		//
 		// and so the actual write throttle is about 2x what was set.
-		c.Run(ctx, option.WithNodes(c.Node(3)), "sudo", "systemctl", "set-property",
-			roachtestutil.SystemInterfaceSystemdUnitName(),
-			"'IOWriteBandwidthMax={store-dir} 20971520'")
+		c.Run(ctx, option.WithNodes(c.Node(3)), "sudo", "systemctl", "set-property", "cockroach", "'IOWriteBandwidthMax={store-dir} 20971520'")
 		t.L().Printf("installed write throughput limit on n3")
 	}
 

@@ -79,9 +79,6 @@ var _ kvserverbase.BulkAdder = &BufferingAdder{}
 // passed to add into SSTs that are then ingested. rangeCache if set is
 // consulted to avoid generating an SST that will span a range boundary and thus
 // encounter an error and need to be split and retired to be applied.
-//
-// The BulkAdder takes ownership of the memory monitor which must be non-nil. In
-// case of an error, the monitor will be stopped.
 func MakeBulkAdder(
 	ctx context.Context,
 	db *kv.DB,
@@ -91,15 +88,7 @@ func MakeBulkAdder(
 	opts kvserverbase.BulkAdderOptions,
 	bulkMon *mon.BytesMonitor,
 	sendLimiter limit.ConcurrentRequestLimiter,
-) (_ *BufferingAdder, retErr error) {
-	if bulkMon == nil {
-		return nil, errors.New("bulkMon must be non-nil")
-	}
-	defer func() {
-		if retErr != nil {
-			bulkMon.Stop(ctx)
-		}
-	}()
+) (*BufferingAdder, error) {
 	if opts.MinBufferSize == 0 {
 		opts.MinBufferSize = 32 << 20
 	}
@@ -177,8 +166,11 @@ func (b *BufferingAdder) Close(ctx context.Context) {
 		b.sink.mu.Unlock()
 	}
 	b.sink.Close(ctx)
-	b.memAcc.Close(ctx)
-	b.bulkMon.Stop(ctx)
+
+	if b.bulkMon != nil {
+		b.memAcc.Close(ctx)
+		b.bulkMon.Stop(ctx)
+	}
 }
 
 // Add adds a key to the buffer and checks if it needs to flush.
@@ -472,6 +464,7 @@ func (b *BufferingAdder) createInitialSplits(ctx context.Context) error {
 	log.Infof(ctx, "%s adder scattered %d initial split spans in %v",
 		b.name, len(toScatter), timing(scattersWait))
 
+	b.sink.initialSplitDone = true
 	return nil
 }
 

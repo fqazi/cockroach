@@ -36,6 +36,11 @@ type BatchEvalTestingKnobs struct {
 	// explanation of why.
 	AllowGCWithNewThresholdAndKeys bool
 
+	// DisableInitPutFailOnTombstones disables FailOnTombstones for InitPut. This
+	// is useful together with e.g. StoreTestingKnobs.GlobalMVCCRangeTombstone,
+	// where we still want InitPut to succeed on top of the range tombstone.
+	DisableInitPutFailOnTombstones bool
+
 	// UseRangeTombstonesForPointDeletes will use point-sized MVCC range
 	// tombstones when deleting point keys, to increase test coverage. These
 	// should not appear different from a point tombstone to a KV client.
@@ -47,19 +52,6 @@ type BatchEvalTestingKnobs struct {
 	// its record (which can be resolved synchronously with EndTxn). This is
 	// useful in certain tests.
 	DisableTxnAutoGC bool
-
-	// OverrideDoTimelyApplicationToAllReplicas overrides the cluster version
-	// check for the timely replication directive which force flushes rac2 send
-	// queues to all replicas, if present for *Migrate* requests only. When set
-	// to true, the directive is always set, when set to false, the default
-	// behavior is used.
-	//
-	// NOTE: This currently only applies to Migrate requests and only ignores the
-	// cluster version.
-	OverrideDoTimelyApplicationToAllReplicas bool
-
-	// CommitTriggerError is called at commit triggers to simulate errors.
-	CommitTriggerError func() error
 }
 
 // IntentResolverTestingKnobs contains testing helpers that are used during

@@ -92,19 +92,16 @@ const (
 	PlanFlagContainsUpsert
 )
 
-// IsSet returns true if the receiver has all of the given flags set.
-func (pf PlanFlags) IsSet(flags PlanFlags) bool {
-	return (pf & flags) == flags
+func (pf PlanFlags) IsSet(flag PlanFlags) bool {
+	return (pf & flag) != 0
 }
 
-// Set sets all of the given flags in the receiver.
-func (pf *PlanFlags) Set(flags PlanFlags) {
-	*pf |= flags
+func (pf *PlanFlags) Set(flag PlanFlags) {
+	*pf |= flag
 }
 
-// Unset unsets all of the given flags in the receiver.
-func (pf *PlanFlags) Unset(flags PlanFlags) {
-	*pf &^= flags
+func (pf *PlanFlags) Unset(flag PlanFlags) {
+	*pf &^= flag
 }
 
 // ScanParams contains all the parameters for a table scan.
@@ -191,10 +188,6 @@ const (
 	// SubqueryAllRows - the subquery is an argument to ARRAY. The result is a
 	// tuple of rows.
 	SubqueryAllRows
-	// SubqueryDiscardAllRows - the subquery is executed for its side effects
-	// (e.g. it is adding to a bufferNode). The result is empty, and will never be
-	// used.
-	SubqueryDiscardAllRows
 )
 
 // TableColumnOrdinal is the 0-based ordinal index of a cat.Table column.
@@ -292,25 +285,19 @@ type RecursiveCTEIterationFn func(ef Factory, bufferRef Node) (Plan, error)
 // rightColumns passed to ConstructApplyJoin (in order).
 type ApplyJoinPlanRightSideFn func(ctx context.Context, ef Factory, leftRow tree.Datums) (Plan, error)
 
-// PostQuery describes a cascading query or an AFTER trigger action. The query
-// uses a node created by ConstructBuffer as an input; it should only be
-// triggered if this buffer is not empty.
-type PostQuery struct {
-	// FKConstraint is used for logging and EXPLAIN purposes. It is nil if this
-	// PostQuery describes a set of AFTER triggers.
+// Cascade describes a cascading query. The query uses a node created by
+// ConstructBuffer as an input; it should only be triggered if this buffer is
+// not empty.
+type Cascade struct {
 	FKConstraint cat.ForeignKeyConstraint
-
-	// Triggers is used for logging and EXPLAIN purposes. It is nil if this
-	// PostQuery describes a foreign-key cascade action.
-	Triggers []cat.Trigger
 
 	// Buffer is the Node returned by ConstructBuffer which stores the input to
 	// the mutation. It is nil if the cascade does not require a buffer.
 	Buffer Node
 
-	// PlanFn builds the cascade/trigger query and creates the plan for it.
-	// Note that the generated Plan can in turn contain more cascades, triggers,
-	// and checks.
+	// PlanFn builds the cascade query and creates the plan for it.
+	// Note that the generated Plan can in turn contain more cascades (as well as
+	// checks, which should run after all cascades are executed).
 	//
 	// The bufferRef is a reference that can be used with ConstructWithBuffer to
 	// read the mutation input. It is conceptually the same as the Buffer field;
@@ -318,8 +305,8 @@ type PostQuery struct {
 	// implementation of the node (e.g. to facilitate early cleanup of the
 	// original plan).
 	//
-	// If the cascade/trigger does not require input buffering (Buffer is nil),
-	// then bufferRef should be nil and numBufferedRows should be 0.
+	// If the cascade does not require input buffering (Buffer is nil), then
+	// bufferRef should be nil and numBufferedRows should be 0.
 	//
 	// This method does not mutate any captured state; it is ok to call PlanFn
 	// methods concurrently (provided that they don't use a single non-thread-safe
@@ -334,10 +321,10 @@ type PostQuery struct {
 		allowAutoCommit bool,
 	) (Plan, error)
 
-	// GetExplainPlan returns the explain plan for the cascade or trigger query.
-	// It will always return a cached plan if there is one, and the boolean
-	// argument controls whether this function can create a new plan (which will
-	// be cached going forward). If createPlanIfMissing is false and there is no
+	// GetExplainPlan returns the explain plan for the cascade query. It will
+	// always return a cached plan if there is one, and the boolean argument
+	// controls whether this function can create a new plan (which will be
+	// cached going forward). If createPlanIfMissing is false and there is no
 	// cached plan, then nil, nil is returned.
 	GetExplainPlan func(_ context.Context, createPlanIfMissing bool) (Plan, error)
 }
@@ -400,9 +387,6 @@ const (
 
 	// ExecutionStatsID is an annotation with a *ExecutionStats value.
 	ExecutionStatsID
-
-	// PolicyInfoID is an annotation with a *RLSPoliciesApplied value.
-	PolicyInfoID
 )
 
 // EstimatedStats contains estimated statistics about a given operator.
@@ -446,8 +430,6 @@ type ExecutionStats struct {
 
 	KVTime                optional.Duration
 	KVContentionTime      optional.Duration
-	KVLockWaitTime        optional.Duration
-	KVLatchWaitTime       optional.Duration
 	KVBytesRead           optional.Uint
 	KVPairsRead           optional.Uint
 	KVRowsRead            optional.Uint
@@ -527,43 +509,16 @@ type ExecutionStats struct {
 	SeekCount         optional.Uint
 	InternalSeekCount optional.Uint
 
-	ExecTime         optional.Duration
 	MaxAllocatedMem  optional.Uint
 	MaxAllocatedDisk optional.Uint
 	SQLCPUTime       optional.Duration
 
-	// SQLNodes on which this operator was executed.
-	SQLNodes []string
-	// KVNodes that served read requests.
-	KVNodes []string
-	// Regions on which this operator was executed. Includes both KV and SQL
-	// processing.
+	// Nodes on which this operator was executed.
+	Nodes []string
+
+	// Regions on which this operator was executed.
 	// Only being generated on EXPLAIN ANALYZE.
 	Regions []string
-	// UsedFollowerRead indicates whether at least some reads were served by the
-	// follower replicas.
-	UsedFollowerRead bool
-}
-
-// RLSPoliciesApplied contains information about the row-level security policies
-// that were applied during the query.
-type RLSPoliciesApplied struct {
-	// PoliciesSkippedForRole is true if the user is a member of a role that is
-	// exempt from all policies (e.g., admin).
-	PoliciesSkippedForRole bool
-
-	// PoliciesFilteredAllRows is true if RLS was enforced, and although policies
-	// were applied, the result was that no rows were returned (typically represented
-	// by an empty VALUES node). This is used when it's not possible to attribute
-	// the result to specific table-level policy details (e.g., due to an empty
-	// VALUES node replacing a scan).
-	PoliciesFilteredAllRows bool
-
-	// Policies is the list of policy IDs applied to the scan of a single table.
-	// This applies to the table that this annotation was attached to. If this is
-	// empty, it either means policies were skipped due to the role, or none were
-	// applied.
-	Policies opt.PolicyIDSet
 }
 
 // BuildPlanForExplainFn builds an execution plan against the given

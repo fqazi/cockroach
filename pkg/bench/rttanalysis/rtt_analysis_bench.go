@@ -38,12 +38,10 @@ type RoundTripBenchTestCase struct {
 	// new tables so that the test is not bothered by the lease acquisition. The
 	// lease acquisition cannot be done in the same transaction as the one
 	// creating the table.
-	SetupEx  []string
-	Stmt     string
-	StmtArgs []interface{}
-	Reset    string
-	// ResetEx is like Reset, but allows the test to send multiple statements.
-	ResetEx   []string
+	SetupEx   []string
+	Stmt      string
+	StmtArgs  []interface{}
+	Reset     string
 	SkipIssue int
 	// NonAdminUser specifies that the test should be run as a user without admin
 	// privileges. The setup and reset portions of the test will still be run as
@@ -51,16 +49,13 @@ type RoundTripBenchTestCase struct {
 	NonAdminUser bool
 }
 
-// runCPUMemBenchmark only measures CPU and memory usage for the test cases.
-// It avoids creating a tracing span so that there's less overhead, which means
-// roundtrips are not measured.
-func runCPUMemBenchmark(b testingB, tests []RoundTripBenchTestCase, cc ClusterConstructor) {
+func runRoundTripBenchmark(b testingB, tests []RoundTripBenchTestCase, cc ClusterConstructor) {
 	for _, tc := range tests {
 		b.Run(tc.Name, func(b testingB) {
 			if tc.SkipIssue != 0 {
 				skip.WithIssue(b, tc.SkipIssue)
 			}
-			executeRoundTripTest(b, tc, cc, false /* measureRoundtrips */)
+			executeRoundTripTest(b, tc, cc)
 		})
 	}
 }
@@ -114,20 +109,18 @@ func runRoundTripBenchmarkTestCase(
 			defer alloc.Release()
 			executeRoundTripTest(tShim{
 				T: t, results: results, scope: scope,
-			}, tc, cc, true /* measureRoundTrips */)
+			}, tc, cc)
 		}()
 	}
 	wg.Wait()
 }
 
 // executeRoundTripTest executes a RoundTripBenchCase on with the provided SQL runner
-func executeRoundTripTest(
-	b testingB, tc RoundTripBenchTestCase, cc ClusterConstructor, measureRoundtrips bool,
-) {
+func executeRoundTripTest(b testingB, tc RoundTripBenchTestCase, cc ClusterConstructor) {
 	getDir, cleanup := b.logScope()
 	defer cleanup()
 
-	cluster := cc(b, measureRoundtrips)
+	cluster := cc(b)
 	defer cluster.close()
 
 	adminSQL := sqlutils.MakeSQLRunner(cluster.adminConn())
@@ -180,9 +173,6 @@ func executeRoundTripTest(
 
 		total := 0
 		for _, statement := range statements {
-			if !measureRoundtrips {
-				continue
-			}
 			r, ok = cluster.getStatementTrace(statement.SQL)
 			if !ok {
 				b.Fatalf(
@@ -208,29 +198,24 @@ func executeRoundTripTest(
 
 		adminSQL.Exec(b, "DROP DATABASE bench;")
 		adminSQL.Exec(b, tc.Reset)
-		for _, s := range tc.ResetEx {
-			adminSQL.Exec(b, s)
-		}
 	}
 
-	if measureRoundtrips {
-		res := float64(roundTrips) / float64(b.N())
+	res := float64(roundTrips) / float64(b.N())
 
-		reportf := b.Errorf
-		if b.isBenchmark() {
-			reportf = b.Logf
-		}
-		if haveExp && !exp.matches(int(res)) && !*rewriteFlag {
-			reportf(`%s: got %v, expected %v`, b.Name(), res, exp)
-			dir := getDir()
-			jaegerJSON, err := r.ToJaegerJSON(tc.Stmt, "", "n0")
-			require.NoError(b, err)
-			path := filepath.Join(dir, strings.Replace(b.Name(), "/", "_", -1)) + ".jaeger.json"
-			require.NoError(b, os.WriteFile(path, []byte(jaegerJSON), 0666))
-			reportf("wrote jaeger trace to %s", path)
-		}
-		b.ReportMetric(res, roundTripsMetric)
+	reportf := b.Errorf
+	if b.isBenchmark() {
+		reportf = b.Logf
 	}
+	if haveExp && !exp.matches(int(res)) && !*rewriteFlag {
+		reportf(`%s: got %v, expected %v`, b.Name(), res, exp)
+		dir := getDir()
+		jaegerJSON, err := r.ToJaegerJSON(tc.Stmt, "", "n0")
+		require.NoError(b, err)
+		path := filepath.Join(dir, strings.Replace(b.Name(), "/", "_", -1)) + ".jaeger.json"
+		require.NoError(b, os.WriteFile(path, []byte(jaegerJSON), 0666))
+		reportf("wrote jaeger trace to %s", path)
+	}
+	b.ReportMetric(res, roundTripsMetric)
 }
 
 const roundTripsMetric = "roundtrips"

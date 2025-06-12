@@ -202,9 +202,6 @@ func (tc *txnCommitter) SendLocked(
 	switch br.Txn.Status {
 	case roachpb.STAGING:
 		// Continue with STAGING-specific validation and cleanup.
-	case roachpb.PREPARED:
-		// The transaction is prepared.
-		return br, nil
 	case roachpb.COMMITTED:
 		// The transaction is explicitly committed. This is possible if all
 		// in-flight writes were sent to the same range as the EndTxn request,
@@ -351,11 +348,6 @@ func (tc *txnCommitter) canCommitInParallel(ba *kvpb.BatchRequest, et *kvpb.EndT
 		return false
 	}
 
-	// We don't support a parallel prepare.
-	if et.Prepare {
-		return false
-	}
-
 	// If the transaction has a commit trigger, we don't allow it to commit in
 	// parallel with writes. There's no fundamental reason for this restriction,
 	// but for now it's not worth the complication.
@@ -499,26 +491,17 @@ func (tc *txnCommitter) makeTxnCommitExplicitAsync(
 	if multitenant.HasTenantCostControlExemption(ctx) {
 		asyncCtx = multitenant.WithTenantCostControlExemption(asyncCtx)
 	}
-
-	work := func(ctx context.Context) {
-		tc.mu.Lock()
-		defer tc.mu.Unlock()
-		if err := makeTxnCommitExplicitLocked(ctx, tc.wrapped, txn, lockSpans); err != nil {
-			log.Errorf(ctx, "making txn commit explicit failed for %s: %v", txn, err)
-		}
-	}
-
-	asyncCtx, hdl, err := tc.stopper.GetHandle(asyncCtx, stop.TaskOpts{
-		TaskName: "txnCommitter: making txn commit explicit",
-	})
-	if err != nil {
+	if err := tc.stopper.RunAsyncTask(
+		asyncCtx, "txnCommitter: making txn commit explicit", func(ctx context.Context) {
+			tc.mu.Lock()
+			defer tc.mu.Unlock()
+			if err := makeTxnCommitExplicitLocked(ctx, tc.wrapped, txn, lockSpans); err != nil {
+				log.Errorf(ctx, "making txn commit explicit failed for %s: %v", txn, err)
+			}
+		},
+	); err != nil {
 		log.VErrEventf(ctx, 1, "failed to make txn commit explicit: %v", err)
-		return
 	}
-	go func(ctx context.Context) {
-		defer hdl.Activate(ctx).Release(ctx)
-		work(ctx)
-	}(asyncCtx)
 }
 
 func makeTxnCommitExplicitLocked(
@@ -608,9 +591,6 @@ func (tc *txnCommitter) setWrapped(wrapped lockedSender) { tc.wrapped = wrapped 
 
 // populateLeafInputState is part of the txnInterceptor interface.
 func (*txnCommitter) populateLeafInputState(*roachpb.LeafTxnInputState) {}
-
-// initializeLeaf is part of the txnInterceptor interface.
-func (*txnCommitter) initializeLeaf(tis *roachpb.LeafTxnInputState) {}
 
 // populateLeafFinalState is part of the txnInterceptor interface.
 func (*txnCommitter) populateLeafFinalState(*roachpb.LeafTxnFinalState) {}

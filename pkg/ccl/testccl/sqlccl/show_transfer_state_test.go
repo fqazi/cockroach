@@ -14,12 +14,10 @@ import (
 	"github.com/cockroachdb/cockroach-go/v2/crdb"
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/testutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/errors"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 )
@@ -51,20 +49,6 @@ func TestShowTransferState(t *testing.T) {
 	_, err = tenantDB.Exec("GRANT SELECT ON tab TO testuser")
 	require.NoError(t, err)
 
-	testutils.SucceedsSoon(t, func() error {
-		// Waiting for the cluster setting to propagate to the tenant.
-		var enabled bool
-		if err := tenantDB.QueryRow(
-			`SHOW CLUSTER SETTING server.user_login.session_revival_token.enabled`,
-		).Scan(&enabled); err != nil {
-			return err
-		}
-		if !enabled {
-			return errors.New("cluster setting not yet propagated")
-		}
-		return nil
-	})
-
 	testUserConn := tenant.SQLConn(t, serverutils.User(username.TestUser))
 
 	t.Run("without_transfer_key", func(t *testing.T) {
@@ -95,7 +79,7 @@ func TestShowTransferState(t *testing.T) {
 
 	var state, token string
 	t.Run("with_transfer_key", func(t *testing.T) {
-		pgURL, cleanup := pgurlutils.PGUrl(
+		pgURL, cleanup := sqlutils.PGUrl(
 			t,
 			tenant.SQLAddr(),
 			"TestShowTransferState-with_transfer_key",
@@ -160,7 +144,7 @@ func TestShowTransferState(t *testing.T) {
 	})
 
 	t.Run("successful_transfer", func(t *testing.T) {
-		pgURL, cleanup := pgurlutils.PGUrl(
+		pgURL, cleanup := sqlutils.PGUrl(
 			t,
 			tenant.SQLAddr(),
 			"TestShowTransferState-successful_transfer",
@@ -225,9 +209,9 @@ func TestShowTransferState(t *testing.T) {
 		t.Run("root_user", func(t *testing.T) {
 			var key string
 			var errVal, sessionState, sessionRevivalToken gosql.NullString
-
 			err := tenantDB.QueryRow(`SHOW TRANSFER STATE WITH 'bar'`).Scan(&errVal, &sessionState, &sessionRevivalToken, &key)
 			require.NoError(t, err)
+
 			require.True(t, errVal.Valid)
 			require.Equal(t, "cannot create token for root user", errVal.String)
 			require.False(t, sessionState.Valid)
@@ -250,7 +234,7 @@ func TestShowTransferState(t *testing.T) {
 		})
 
 		t.Run("temp_tables", func(t *testing.T) {
-			pgURL, cleanup := pgurlutils.PGUrl(
+			pgURL, cleanup := sqlutils.PGUrl(
 				t,
 				tenant.SQLAddr(),
 				"TestShowTransferState-errors-temp_tables",

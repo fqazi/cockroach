@@ -59,9 +59,9 @@ func CreateTestProjectingOperator(
 		return nil, err
 	}
 	p := &MockTypeContext{Typs: inputTypes}
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	semaCtx.IVarContainer = p
-	typedExpr, err := tree.TypeCheck(ctx, expr, &semaCtx, types.AnyElement)
+	typedExpr, err := tree.TypeCheck(ctx, expr, &semaCtx, types.Any)
 	if err != nil {
 		return nil, err
 	}

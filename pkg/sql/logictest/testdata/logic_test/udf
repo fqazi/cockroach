@@ -70,7 +70,6 @@ CREATE FUNCTION public.f_no_ref(a INT8)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -98,13 +97,12 @@ $$
 query T
 SELECT create_statement FROM [SHOW CREATE FUNCTION f];
 ----
-CREATE FUNCTION public.f(a public.notmyworkday)
+CREATE FUNCTION public.f(a test.public.notmyworkday)
   RETURNS INT8
   VOLATILE
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT a FROM test.public.t;
   SELECT b FROM test.public.t@t_idx_b;
@@ -136,9 +134,9 @@ SELECT oid, proname, pronamespace, proowner, prolang, proleakproof, proisstrict,
 FROM pg_catalog.pg_proc WHERE proname IN ('proc_f', 'proc_f_2')
 ORDER BY 1
 ----
-100118  proc_f    105  1546506610  14  false  false  false  v  1  20  20     NULL  NULL    f  SELECT 1;
-100119  proc_f    105  1546506610  14  true   true   false  i  2  25  25 20  NULL  {"",b}  f  SELECT 'hello';
-100121  proc_f_2  120  1546506610  14  false  false  false  v  1  25  25     NULL  NULL    f  SELECT 'hello';
+100118  proc_f    105  1546506610  14  false  false  false  v  1  20  20     {i}    NULL    f  SELECT 1;
+100119  proc_f    105  1546506610  14  true   true   false  i  2  25  25 20  {i,i}  {"",b}  f  SELECT 'hello';
+100121  proc_f_2  120  1546506610  14  false  false  false  v  1  25  25     {i}    NULL    f  SELECT 'hello';
 
 # Ensure that the pg_proc virtual index works properly.
 
@@ -228,6 +226,7 @@ CREATE FUNCTION f_test_cor(a INT, b INT) RETURNS INT IMMUTABLE LEAKPROOF STRICT 
 statement error pgcode 42723 pq: function "f_test_cor" already exists with same argument types
 CREATE FUNCTION f_test_cor(a INT, b INT) RETURNS INT IMMUTABLE LANGUAGE SQL AS $$ SELECT 1 $$;
 
+skipif config local-mixed-23.1
 statement error pgcode 42809 cannot change routine kind\nDETAIL: "f_test_cor" is a function
 CREATE OR REPLACE PROCEDURE f_test_cor(a INT, b INT) LANGUAGE SQL AS $$ SELECT 2 $$;
 
@@ -252,7 +251,6 @@ CREATE FUNCTION public.f_test_cor(a INT8, b INT8)
   LEAKPROOF
   STRICT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -271,7 +269,6 @@ CREATE FUNCTION public.f_test_cor(a INT8, b INT8)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 2;
 $$
@@ -288,7 +285,6 @@ CREATE FUNCTION public.f_test_cor(a INT8, b INT8)
   LEAKPROOF
   STRICT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 3;
 $$
@@ -675,7 +671,6 @@ CREATE FUNCTION public.single_quote(s STRING)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT (e'\'' || s) || e'\'';
 $$
@@ -853,8 +848,6 @@ SELECT * FROM f();
 
 statement ok
 DROP FUNCTION f;
-
-statement ok
 CREATE FUNCTION f() RETURNS two_typ LANGUAGE SQL AS $$ SELECT ROW(1, 2); $$;
 
 query T
@@ -1007,28 +1000,11 @@ PREPARE p AS SELECT f($1::REGCLASS::INT)
 statement ok
 EXECUTE p(10)
 
-subtest end
-
-subtest regression_142886
-
-# Regression test for #142886 - we should not be able to create an overload that
-# differs only in the type width of the input type.
-statement ok
-CREATE FUNCTION f142886(p VARCHAR(10)) RETURNS INT LANGUAGE SQL AS $$ SELECT 0; $$;
-
-statement error pgcode 42723 function "f142886" already exists with same argument types
-CREATE FUNCTION f142886(p VARCHAR(100)) RETURNS INT LANGUAGE SQL AS $$ SELECT 0; $$;
-
-statement ok
-DROP FUNCTION f142886;
-
-subtest end
-
 # Regression test for #142615.
 subtest regression_142615
 
 statement ok
-create function app_to_db_id(app_id INT8) RETURNS INT8 LANGUAGE plpgsql AS $$ BEGIN RETURN app_id * 2; END; $$;
+create function app_to_db_id(app_id INT8) RETURNS INT8 LANGUAGE SQL AS $$ SELECT app_id * 2; $$;
 
 statement ok
 create sequence seq1;
@@ -1042,7 +1018,7 @@ select * from pg_catalog.pg_attrdef;
 1508958170  132  2  unique_rowid()                                         unique_rowid()
 1202826234  151  1  gen_random_uuid()                                      gen_random_uuid()
 1202826232  151  3  now()                                                  now()
-3466299042  175  1  public.app_to_db_id(nextval('public.seq1'::REGCLASS))  public.app_to_db_id(nextval('public.seq1'::REGCLASS))
-3466299041  175  2  unique_rowid()                                         unique_rowid()
+2121222035  174  1  public.app_to_db_id(nextval('public.seq1'::REGCLASS))  public.app_to_db_id(nextval('public.seq1'::REGCLASS))
+2121222032  174  2  unique_rowid()                                         unique_rowid()
 
 subtest end

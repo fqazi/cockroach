@@ -8,12 +8,12 @@ package kvserverbase
 import (
 	"context"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/util/debugutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
@@ -53,7 +53,7 @@ func LimitBulkIOWrite(ctx context.Context, limiter *rate.Limiter, cost int) erro
 
 	if d := timeutil.Since(begin); d > bulkIOWriteLimiterLongWait {
 		log.Warningf(ctx, "bulk io write limiter took %s (>%s):\n%s",
-			d, bulkIOWriteLimiterLongWait, debugutil.Stack())
+			d, bulkIOWriteLimiterLongWait, debug.Stack())
 	}
 	return nil
 }
@@ -81,7 +81,6 @@ func WriteFileSyncing(
 	perm os.FileMode,
 	settings *cluster.Settings,
 	limiter *rate.Limiter,
-	category vfs.DiskWriteCategory,
 ) error {
 	chunkSize := sstWriteSyncRate.Get(&settings.SV)
 	sync := true
@@ -90,7 +89,7 @@ func WriteFileSyncing(
 		sync = false
 	}
 
-	f, err := fs.Create(filename, category)
+	f, err := fs.Create(filename)
 	if err != nil {
 		if strings.Contains(err.Error(), "No such file or directory") {
 			return os.ErrNotExist

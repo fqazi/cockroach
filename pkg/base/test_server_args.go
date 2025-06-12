@@ -12,7 +12,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/testutils/listenerutil"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
@@ -43,8 +42,7 @@ type TestServerArgs struct {
 	// If not set (and hence the server is the only one in the cluster), the
 	// default zone config will be overridden to disable all replication - so that
 	// tests don't get log spam about ranges not being replicated enough. This
-	// is always set to true when the server is started via a TestCluster, unless
-	// the StartSingleNode TestClusterArgs is set.
+	// is always set to true when the server is started via a TestCluster.
 	PartOfCluster bool
 
 	// Listener (if nonempty) is the listener to use for all incoming RPCs.
@@ -90,13 +88,12 @@ type TestServerArgs struct {
 	// If not initialized, will default to DefaultTestTempStorageConfig.
 	TempStorageConfig TempStorageConfig
 
+	// ExternalIODir is used to initialize field in cluster.Settings.
+	ExternalIODir string
+
 	// ExternalIODirConfig is used to initialize the same-named
 	// field on the server.Config struct.
 	ExternalIODirConfig ExternalIODirConfig
-
-	// ExternalIODir is used to initialize the same-named field on
-	// the server.Config struct.
-	ExternalIODir string
 
 	// Fields copied to the server.Config.
 	Insecure                    bool
@@ -159,69 +156,11 @@ type TestServerArgs struct {
 	// below for alternative options that suits your test case.
 	DefaultTestTenant DefaultTestTenantOptions
 
-	// DefaultTenantName is the name of the tenant created implicitly according
-	// to DefaultTestTenant. It is typically `test-tenant` for unit tests and
-	// always `demoapp` for the cockroach demo.
-	DefaultTenantName roachpb.TenantName
-
 	// StartDiagnosticsReporting checks cluster.TelemetryOptOut(), and
 	// if not disabled starts the asynchronous goroutine that checks for
 	// CockroachDB upgrades and periodically reports diagnostics to
 	// Cockroach Labs. Should remain disabled during unit testing.
 	StartDiagnosticsReporting bool
-
-	SlimTestSeverConfig *SlimTestServerConfig
-}
-
-type slimOptions struct {
-	EnableSpanConfigJob bool
-	EnableAutoStats     bool
-	EnableTimeseries    bool
-	EnableAllUpgrades   bool
-}
-
-type SlimServerOption func(*slimOptions)
-
-func WithSpanConfigJob() SlimServerOption {
-	return func(o *slimOptions) {
-		o.EnableSpanConfigJob = true
-	}
-}
-
-func WithAutoStats() SlimServerOption {
-	return func(o *slimOptions) {
-		o.EnableAutoStats = true
-	}
-}
-
-func WithTimeseries() SlimServerOption {
-	return func(o *slimOptions) {
-		o.EnableTimeseries = true
-	}
-}
-
-func WithAllUpgrades() SlimServerOption {
-	return func(o *slimOptions) {
-		o.EnableAllUpgrades = true
-	}
-}
-
-func processOptions(opts []SlimServerOption) *slimOptions {
-	ret := &slimOptions{}
-	for _, o := range opts {
-		o(ret)
-	}
-	return ret
-}
-
-func (a *TestServerArgs) SlimServerConfig(opts ...SlimServerOption) {
-	a.SlimTestSeverConfig = &SlimTestServerConfig{
-		Options: *processOptions(opts),
-	}
-}
-
-type SlimTestServerConfig struct {
-	Options slimOptions
 }
 
 // TestClusterArgs contains the parameters one can set when creating a test
@@ -241,10 +180,6 @@ type TestClusterArgs struct {
 	// IDs unpredictable. Even in ParallelStart mode, StartTestCluster
 	// waits for all nodes to start before returning.
 	ParallelStart bool
-	// StartSingleNode will initialize the cluster like 'cockroach
-	// start-single-node'. Attempts to add more than one node to the cluster will
-	// fail.
-	StartSingleNode bool
 
 	// ServerArgsPerNode override the default ServerArgs with the value in this
 	// map. The map's key is an index within TestCluster.Servers. If there is
@@ -519,34 +454,6 @@ func TestIsForStuffThatShouldWorkWithSharedProcessModeButDoesntYet(
 	}
 }
 
-// TestSkippedForExternalModeDueToPerformance can be used to disable selecting
-// the external process virtual cluster due to significant performance
-// degradation compared to other modes. However, the goal is to eventually make
-// it work efficiently in external mode.
-//
-// It should link to a github issue with label C-investigation.
-func TestSkippedForExternalModeDueToPerformance(issueNumber int) DefaultTestTenantOptions {
-	return testSkippedForExternalProcessMode(issueNumber)
-}
-
-// TestDoesNotWorkWithExternalProcessMode disables selecting the external
-// process virtual cluster for tests that are not functional in that mode and
-// require further investigation. Any test using this function should reference
-// a GitHub issue tagged with "C-investigation" describing the underlying
-// problem.
-func TestDoesNotWorkWithExternalProcessMode(issueNumber int) DefaultTestTenantOptions {
-	return testSkippedForExternalProcessMode(issueNumber)
-}
-
-func testSkippedForExternalProcessMode(issueNumber int) DefaultTestTenantOptions {
-	return DefaultTestTenantOptions{
-		testBehavior:           ttSharedProcess,
-		allowAdditionalTenants: true,
-		issueNum:               issueNumber,
-		label:                  "C-investigation",
-	}
-}
-
 // InternalNonDefaultDecision builds a sentinel value used inside a
 // mechanism in serverutils. Should not be used by tests directly.
 func InternalNonDefaultDecision(
@@ -572,8 +479,8 @@ var (
 	// with no special attributes.
 	DefaultTestStoreSpec = StoreSpec{
 		InMemory: true,
-		Size: storageconfig.SizeSpec{
-			Capacity: 512 << 20,
+		Size: SizeSpec{
+			InBytes: 512 << 20,
 		},
 	}
 )
@@ -591,7 +498,7 @@ func DefaultTestTempStorageConfigWithSize(
 	st *cluster.Settings, maxSizeBytes int64,
 ) TempStorageConfig {
 	monitor := mon.NewMonitor(mon.Options{
-		Name:      mon.MakeName("in-mem temp storage"),
+		Name:      "in-mem temp storage",
 		Res:       mon.DiskResource,
 		Increment: 1024 * 1024,
 		Settings:  st,
@@ -666,7 +573,7 @@ type TestTenantArgs struct {
 	ExternalIODirConfig ExternalIODirConfig
 
 	// ExternalIODir is used to initialize the same-named field on
-	// the server.Config struct.
+	// the params.Settings struct.
 	ExternalIODir string
 
 	// If set, this will be appended to the Postgres URL by functions that
@@ -705,11 +612,7 @@ type TestTenantArgs struct {
 	// determine the tenant's HTTP port.
 	StartingHTTPPort int
 
-	// Tracer, if set, will be used by the Server for creating Spans.
-	Tracer *tracing.Tracer
-
-	// TracingDefault controls whether the tracing will be on or off by default,
-	// if Tracer is not set.
+	// TracingDefault controls whether the tracing will be on or off by default.
 	TracingDefault tracing.TracingMode
 
 	// GoroutineDumpDirName is used to initialize the same named field on the

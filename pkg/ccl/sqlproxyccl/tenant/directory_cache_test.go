@@ -596,19 +596,14 @@ func TestRefreshThrottling(t *testing.T) {
 func createTenant(tc serverutils.TestClusterInterface, id roachpb.TenantID) error {
 	srv := tc.Server(0)
 	conn := srv.InternalExecutor().(*sql.InternalExecutor)
-	for _, stmt := range []string{
-		`CREATE VIRTUAL CLUSTER [$1]`,
-		`ALTER VIRTUAL CLUSTER [$1] START SERVICE EXTERNAL`,
-	} {
-		if _, err := conn.Exec(
-			context.Background(),
-			"testserver-create-tenant",
-			nil, /* txn */
-			stmt,
-			id.ToUint64(),
-		); err != nil {
-			return err
-		}
+	if _, err := conn.Exec(
+		context.Background(),
+		"testserver-create-tenant",
+		nil, /* txn */
+		"SELECT crdb_internal.create_tenant($1)",
+		id.ToUint64(),
+	); err != nil {
+		return err
 	}
 	return nil
 }

@@ -19,15 +19,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/apply"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvtestutils"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
@@ -48,7 +45,6 @@ func (cfg kvnemesisTestCfg) testClusterArgs(
 	ctx context.Context, tr *SeqTracker,
 ) base.TestClusterArgs {
 	storeKnobs := &kvserver.StoreTestingKnobs{
-		AllowUnsynchronizedReplicationChanges: true,
 		// Drop the clock MaxOffset to reduce commit-wait time for
 		// transactions that write to global_read ranges.
 		MaxOffset: 10 * time.Millisecond,
@@ -160,18 +156,11 @@ func (cfg kvnemesisTestCfg) testClusterArgs(
 		}
 	}
 
-	st := cluster.MakeTestingClusterSettings()
+	settings := cluster.MakeTestingClusterSettings()
 	// TODO(mira): Remove this cluster setting once the default is set to true.
-	kvcoord.KeepRefreshSpansOnSavepointRollback.Override(ctx, &st.SV, true)
-	if cfg.leaseTypeOverride != 0 {
-		kvserver.OverrideDefaultLeaseType(ctx, &st.SV, cfg.leaseTypeOverride)
-	}
+	kvcoord.KeepRefreshSpansOnSavepointRollback.Override(ctx, &settings.SV, true)
 
-	if cfg.testSettings != nil {
-		cfg.testSettings(ctx, st)
-	}
-
-	args := base.TestClusterArgs{
+	return base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			Knobs: base.TestingKnobs{
 				Store: storeKnobs,
@@ -194,15 +183,9 @@ func (cfg kvnemesisTestCfg) testClusterArgs(
 					},
 				},
 			},
-			Settings: st,
+			Settings: settings,
 		},
 	}
-
-	if cfg.testArgs != nil {
-		cfg.testArgs(&args)
-	}
-
-	return args
 }
 
 func randWithSeed(
@@ -275,29 +258,10 @@ type kvnemesisTestCfg struct {
 	// considered truly random, but is random enough for the desired purpose.
 	invalidLeaseAppliedIndexProb float64 // [0,1)
 	injectReproposalErrorProb    float64 // [0,1)
-	// bufferedWriteProb is the probability that an SSI transaction is configured
-	// to use buffered writes. Once write buffering supports RC and SSI
-	// transactions, this will apply to all transactions.
-	bufferedWriteProb float64 // [0,1)
-
 	// If enabled, track Raft proposals and command application, and assert
 	// invariants (in particular that we don't double-apply a request or
 	// proposal).
 	assertRaftApply bool
-	// If set, overrides the default lease type for ranges.
-	leaseTypeOverride roachpb.LeaseType
-
-	// testSettings is passed the settings object used for the kvnemesis
-	// TestCluster.
-	testSettings func(context.Context, *cluster.Settings)
-
-	// testArgs is passed the TestClusterArgs used to start the kvnemesis
-	// TestCluster.
-	testArgs func(*base.TestClusterArgs)
-
-	// testGeneratorConfig modifies the default generator configuration. This is
-	// useful if a test configuration does not yet support particular operations.
-	testGeneratorConfig func(*GeneratorConfig)
 }
 
 func TestKVNemesisSingleNode(t *testing.T) {
@@ -330,64 +294,6 @@ func TestKVNemesisSingleNode_ReproposalChaos(t *testing.T) {
 	})
 }
 
-// TestKVNemesisMultiNode_BufferedWrites runs KVNemesis with write buffering
-// enabled.
-func TestKVNemesisMultiNode_BufferedWrites(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	testKVNemesisImpl(t, kvnemesisTestCfg{
-		numNodes:     3,
-		numSteps:     defaultNumSteps,
-		concurrency:  5,
-		seedOverride: 0,
-		// TODO(#145458): Until #145458 is fixed reduce the
-		// rate of lost writes by avoiding lease transfers and
-		// merges and also turning off error injection.
-		invalidLeaseAppliedIndexProb: 0.0,
-		injectReproposalErrorProb:    0.0,
-		assertRaftApply:              true,
-		bufferedWriteProb:            0.70,
-		testGeneratorConfig: func(g *GeneratorConfig) {
-			g.Ops.ChangeLease = ChangeLeaseConfig{}
-			g.Ops.Merge = MergeConfig{}
-		},
-		testSettings: func(ctx context.Context, st *cluster.Settings) {
-			kvcoord.BufferedWritesEnabled.Override(ctx, &st.SV, true)
-			concurrency.UnreplicatedLockReliabilityLeaseTransfer.Override(ctx, &st.SV, true)
-			concurrency.UnreplicatedLockReliabilityMerge.Override(ctx, &st.SV, true)
-			concurrency.UnreplicatedLockReliabilitySplit.Override(ctx, &st.SV, true)
-		},
-	})
-}
-
-// TestKVNemesisMultiNode_BufferedWritesNoPipelining turns on buffered
-// writes and turns off write pipelining. Turning off write pipelining
-// allows us to test the lock reliability features even without a fix
-// for #145458.
-func TestKVNemesisMultiNode_BufferedWritesNoPipelining(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	testKVNemesisImpl(t, kvnemesisTestCfg{
-		numNodes:                     3,
-		numSteps:                     defaultNumSteps,
-		concurrency:                  5,
-		seedOverride:                 0,
-		invalidLeaseAppliedIndexProb: 0.2,
-		injectReproposalErrorProb:    0.2,
-		assertRaftApply:              true,
-		bufferedWriteProb:            0.70,
-		testSettings: func(ctx context.Context, st *cluster.Settings) {
-			kvcoord.BufferedWritesEnabled.Override(ctx, &st.SV, true)
-			kvcoord.PipelinedWritesEnabled.Override(ctx, &st.SV, false)
-			concurrency.UnreplicatedLockReliabilityLeaseTransfer.Override(ctx, &st.SV, true)
-			concurrency.UnreplicatedLockReliabilityMerge.Override(ctx, &st.SV, true)
-			concurrency.UnreplicatedLockReliabilitySplit.Override(ctx, &st.SV, true)
-		},
-	})
-}
-
 func TestKVNemesisMultiNode(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -400,22 +306,6 @@ func TestKVNemesisMultiNode(t *testing.T) {
 		invalidLeaseAppliedIndexProb: 0.2,
 		injectReproposalErrorProb:    0.2,
 		assertRaftApply:              true,
-	})
-}
-
-func TestKVNemesisMultiNode_LeaderLeases(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	testKVNemesisImpl(t, kvnemesisTestCfg{
-		numNodes:                     4,
-		numSteps:                     defaultNumSteps,
-		concurrency:                  5,
-		seedOverride:                 0,
-		invalidLeaseAppliedIndexProb: 0.2,
-		injectReproposalErrorProb:    0.2,
-		assertRaftApply:              true,
-		leaseTypeOverride:            roachpb.LeaseLeader,
 	})
 }
 
@@ -451,16 +341,10 @@ func testKVNemesisImpl(t *testing.T, cfg kvnemesisTestCfg) {
 	config := NewDefaultConfig()
 	config.NumNodes = cfg.numNodes
 	config.NumReplicas = 3
-	config.BufferedWritesProb = cfg.bufferedWriteProb
 	if config.NumReplicas > cfg.numNodes {
 		config.NumReplicas = cfg.numNodes
 	}
-	if cfg.testGeneratorConfig != nil {
-		cfg.testGeneratorConfig(&config)
-	}
-
 	logger := newTBridge(t)
-	defer dumpRaftLogsOnFailure(t, logger.ll.dir, tc.Servers)
 	env := &Env{SQLDBs: sqlDBs, Tracker: tr, L: logger}
 	failures, err := RunNemesis(ctx, rng, env, config, cfg.concurrency, cfg.numSteps, dbs...)
 
@@ -492,20 +376,4 @@ func TestRunReproductionSteps(t *testing.T) {
 	_, _ = db0, ctx
 
 	// Paste a repro as printed by kvnemesis here.
-}
-
-func dumpRaftLogsOnFailure(t *testing.T, dir string, srvs []serverutils.TestServerInterface) {
-	if !t.Failed() {
-		return
-	}
-	d := kvtestutils.RaftLogDumper{Dir: dir}
-	for _, srv := range srvs {
-		require.NoError(t, srv.GetStores().(*kvserver.Stores).VisitStores(func(s *kvserver.Store) error {
-			s.VisitReplicas(func(replica *kvserver.Replica) (wantMore bool) {
-				d.Dump(t, s.LogEngine(), s.StoreID(), replica.RangeID)
-				return true // more
-			})
-			return nil
-		}))
-	}
 }

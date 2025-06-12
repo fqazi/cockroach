@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
@@ -23,12 +22,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/cache"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
-	"github.com/cockroachdb/cockroach/pkg/util/json"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
@@ -120,19 +117,6 @@ func (r Row) DatumNamed(n string) (Iterator, error) {
 	return iter{r: r, cols: []int{idx}}, nil
 }
 
-// DatumsNamed returns the datums with the specified column names, in the form of an Iterator.
-func (r Row) DatumsNamed(names []string) (Iterator, error) {
-	cols := make([]int, 0, len(names))
-	for _, n := range names {
-		idx, ok := r.EventDescriptor.colsByName[n]
-		if !ok {
-			return nil, errors.AssertionFailedf("No column with name %s in this row", n)
-		}
-		cols = append(cols, idx)
-	}
-	return iter{r: r, cols: cols}, nil
-}
-
 // IsDeleted returns true if event corresponds to a deletion event.
 func (r Row) IsDeleted() bool {
 	return r.deleted
@@ -171,26 +155,6 @@ func (r Row) DebugString() string {
 	}
 	sb.WriteByte('}')
 	return sb.String()
-}
-
-func (r Row) ToJSON() (*tree.DJSON, error) {
-	builder := json.NewObjectBuilder(len(r.cols))
-	err := r.ForAllColumns().Datum(func(d tree.Datum, col ResultColumn) error {
-		val, err := tree.AsJSON(
-			d,
-			sessiondatapb.DataConversionConfig{},
-			time.UTC,
-		)
-		if err != nil {
-			return err
-		}
-		builder.Add(col.Name, val)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tree.NewDJSON(builder.Build()), nil
 }
 
 // forEachColumn is a helper which invokes fn for reach column in the ordColumn list.
@@ -233,8 +197,6 @@ func (r Row) forEachColumn(fn ColumnFn, colIndexes []int) error {
 // such column expected to be found.
 type ResultColumn struct {
 	colinfo.ResultColumn
-	Computed  bool
-	Nullable  bool
 	ord       int
 	sqlString string
 }
@@ -300,8 +262,6 @@ func NewEventDescriptor(
 				TableID:        desc.GetID(),
 				PGAttributeNum: uint32(col.GetPGAttributeNum()),
 			},
-			Computed:  col.IsComputed(),
-			Nullable:  col.IsNullable(),
 			ord:       ord,
 			sqlString: col.ColumnDesc().SQLStringNotHumanReadable(),
 		}
@@ -320,25 +280,16 @@ func NewEventDescriptor(
 	// appear in the primary key index.
 	primaryIdx := desc.GetPrimaryIndex()
 	colOrd := catalog.ColumnIDToOrdinalMap(desc.PublicColumns())
-	writeOnlyAndPublic := catalog.ColumnIDToOrdinalMap(desc.WritableColumns())
+	sd.keyCols = make([]int, primaryIdx.NumKeyColumns())
 	var primaryKeyOrdinal catalog.TableColMap
 
-	ordIdx := 0
 	for i := 0; i < primaryIdx.NumKeyColumns(); i++ {
 		ord, ok := colOrd.Get(primaryIdx.GetKeyColumnID(i))
-		// Columns going through mutation can exist in the PK, but not
-		// be public, since a later primary index will make these fully
-		// public.
 		if !ok {
-			if _, isWriteOnlyColumn := writeOnlyAndPublic.Get(primaryIdx.GetKeyColumnID(i)); isWriteOnlyColumn {
-				continue
-			}
 			return nil, errors.AssertionFailedf("expected to find column %d", ord)
 		}
-		primaryKeyOrdinal.Set(desc.PublicColumns()[ord].GetID(), ordIdx)
-		ordIdx += 1
+		primaryKeyOrdinal.Set(desc.PublicColumns()[ord].GetID(), i)
 	}
-	sd.keyCols = make([]int, ordIdx)
 
 	switch {
 	case keyOnly:
@@ -503,13 +454,6 @@ func NewEventDecoder(
 		return nil, err
 	}
 
-	return NewEventDecoderWithCache(ctx, rfCache, includeVirtual, keyOnly), nil
-}
-
-// NewEventDecoderWithCache returns key value decoder.
-func NewEventDecoderWithCache(
-	ctx context.Context, rfCache *rowFetcherCache, includeVirtual bool, keyOnly bool,
-) Decoder {
 	eventDescriptorCache := cache.NewUnorderedCache(DefaultCacheConfig)
 	getEventDescriptor := func(
 		desc catalog.TableDescriptor,
@@ -522,7 +466,7 @@ func NewEventDecoderWithCache(
 	return &eventDecoder{
 		getEventDescriptor: getEventDescriptor,
 		rfCache:            rfCache,
-	}
+	}, nil
 }
 
 // RowType is the type of the row being decoded.
@@ -624,10 +568,7 @@ func (d *eventDecoder) initForKey(
 // In particular, when decoding previous row, we strip table OID column
 // since it makes little sense to include it in the previous row value.
 var systemColumns = []descpb.ColumnDescriptor{
-	colinfo.MVCCTimestampColumnDesc,
-	colinfo.TableOIDColumnDesc,
-	colinfo.OriginIDColumnDesc,
-	colinfo.OriginTimestampColumnDesc,
+	colinfo.MVCCTimestampColumnDesc, colinfo.TableOIDColumnDesc,
 }
 
 type fetcher struct {
@@ -690,39 +631,6 @@ func (it iter) Datum(fn DatumFn) error {
 func (it iter) Col(fn ColumnFn) error {
 	return it.r.forEachColumn(fn, it.cols)
 }
-
-// NewSkipIterator returns an iterator that skips columns with the specified name.
-func NewSkipIterator(it Iterator, skipColName string) Iterator {
-	return skipIter{it: it, skipColName: skipColName}
-}
-
-// skipIter wraps an Iterator with the ability to skip one column.
-type skipIter struct {
-	it          Iterator
-	skipColName string
-}
-
-// Col implements Iterator.
-func (s skipIter) Col(fn ColumnFn) error {
-	return s.it.Col(func(col ResultColumn) error {
-		if col.Name == s.skipColName {
-			return nil
-		}
-		return fn(col)
-	})
-}
-
-// Datum implements Iterator.
-func (s skipIter) Datum(fn DatumFn) error {
-	return s.it.Datum(func(d tree.Datum, col ResultColumn) error {
-		if col.Name == s.skipColName {
-			return nil
-		}
-		return fn(d, col)
-	})
-}
-
-var _ Iterator = skipIter{}
 
 // TestingMakeEventRow initializes Row with provided arguments.
 // Exposed for unit tests.

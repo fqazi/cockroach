@@ -289,7 +289,6 @@ func TestClientURLFlagEquivalence(t *testing.T) {
 	defer func() { _ = cleanup2() }()
 
 	anyCmd := []string{"sql", "node drain"}
-	anyClientNonSQLCmd := []string{"gen haproxy"}
 	anyNonSQL := []string{"node drain", "init"}
 	anySQL := []string{"sql"}
 	sqlShell := []string{"sql"}
@@ -316,7 +315,7 @@ func TestClientURLFlagEquivalence(t *testing.T) {
 		{anyNonSQLShell, []string{"--url=postgresql://foo/bar"}, []string{"--host=foo" /*db ignored*/}, "", ""},
 
 		{anySQL, []string{"--url=postgresql://foo@"}, []string{"--user=foo"}, "", ""},
-		{anyNonSQL, []string{"--url=postgresql://foo@bar"}, []string{"--user=foo", "--host=bar"}, "", ""},
+		{anyNonSQL, []string{"--url=postgresql://foo@bar"}, []string{"--host=bar" /*user ignored*/}, "", ""},
 
 		{sqlShell, []string{"--url=postgresql://a@b:12345/d"}, []string{"--user=a", "--host=b", "--port=12345", "--database=d"}, "", ""},
 		{sqlShell, []string{"--url=postgresql://a@b:c/d"}, nil, `invalid port ":c" after host`, ""},
@@ -381,10 +380,6 @@ func TestClientURLFlagEquivalence(t *testing.T) {
 		{anyNonSQL, []string{"--url=postgresql://foo?sslmode=verify-full&sslrootcert=blih/loh.crt"}, nil, `invalid file name for "sslrootcert": expected .* got .*`, ""},
 		{anyNonSQL, []string{"--url=postgresql://foo?sslmode=verify-full&sslcert=blih/loh.crt"}, nil, `invalid file name for "sslcert": expected .* got .*`, ""},
 		{anyNonSQL, []string{"--url=postgresql://foo?sslmode=verify-full&sslkey=blih/loh.crt"}, nil, `invalid file name for "sslkey": expected .* got .*`, ""},
-		// Check that client commands take username into account when enforcing
-		// client cert names. Concretely, it's looking for 'timapples' in the client
-		// cert key file name, not 'root'.
-		{anyClientNonSQLCmd, []string{"--url=postgresql://timapples@foo?sslmode=verify-full&sslkey=/certs/client.roachprod.key"}, nil, `invalid file name for "sslkey": expected "client.timapples.key", got .*`, ""},
 
 		// Check that not specifying a certs dir will cause Go to use root trust store.
 		{anyCmd, []string{"--url=postgresql://foo?sslmode=verify-full"}, []string{"--host=foo"}, "", ""},
@@ -1491,7 +1486,7 @@ func TestSQLPodStorageDefaults(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, td.storePath, serverCfg.Stores.Specs[0].Path)
 				for _, s := range serverCfg.Stores.Specs {
-					assert.Zero(t, s.BallastSize.Capacity)
+					assert.Zero(t, s.BallastSize.InBytes)
 					assert.Zero(t, s.BallastSize.Percent)
 				}
 			} else {
@@ -1524,34 +1519,6 @@ func TestTenantID(t *testing.T) {
 			} else {
 				assert.ErrorContains(t, err, tt.errContains)
 				assert.Equal(t, roachpb.TenantID{}, cfgTenantID)
-			}
-		})
-	}
-}
-
-func TestTenantName(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	tests := []struct {
-		name        string
-		arg         string
-		errContains string
-	}{
-		{"empty tenant name text", "", "invalid tenant name: \"\""},
-		{"tenant name not valid", "a+bc", "invalid tenant name: \"a+bc\""},
-		{"tenant name \"abc\" is valid", "abc", ""},
-		{"tenant name \"system\" is valid", "system", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tns := tenantNameSetter{tenantNames: &[]roachpb.TenantName{}}
-			err := tns.Set(tt.arg)
-			if tt.errContains == "" {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.arg, tns.String())
-			} else {
-				assert.True(t, strings.Contains(err.Error(), tt.errContains))
 			}
 		})
 	}

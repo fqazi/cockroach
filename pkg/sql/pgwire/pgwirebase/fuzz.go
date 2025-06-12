@@ -4,6 +4,7 @@
 // included in the /LICENSE file.
 
 //go:build gofuzz
+// +build gofuzz
 
 package pgwirebase
 
@@ -12,7 +13,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 )
 
@@ -39,7 +39,7 @@ func FuzzDecodeDatum(data []byte) int {
 	evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
 	defer evalCtx.Stop(context.Background())
 
-	_, err := DecodeDatum(context.Background(), evalCtx, typ, code, b, &tree.DatumAlloc{})
+	_, err := DecodeDatum(context.Background(), evalCtx, typ, code, b)
 	if err != nil {
 		return 0
 	}

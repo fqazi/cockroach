@@ -6,9 +6,8 @@
 package validate
 
 import (
-	"cmp"
 	"fmt"
-	"slices"
+	"sort"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -45,7 +44,7 @@ func validateSchemaChangerState(d catalog.Descriptor, vea catalog.ValidationErro
 				i, got, d.GetID()))
 		}
 		switch t.TargetStatus {
-		case scpb.Status_PUBLIC, scpb.Status_ABSENT, scpb.Status_TRANSIENT_ABSENT, scpb.Status_TRANSIENT_PUBLIC:
+		case scpb.Status_PUBLIC, scpb.Status_ABSENT, scpb.Status_TRANSIENT_ABSENT:
 			// These are valid target status values.
 		default:
 			report(errors.Errorf("target %d is targeting an invalid status %s",
@@ -90,8 +89,8 @@ func validateSchemaChangerState(d catalog.Descriptor, vea catalog.ValidationErro
 	}
 
 	// Validate that the statements are sorted.
-	if !slices.IsSortedFunc(scs.RelevantStatements, func(a, b scpb.DescriptorState_Statement) int {
-		return cmp.Compare(a.StatementRank, b.StatementRank)
+	if !sort.SliceIsSorted(scs.RelevantStatements, func(i, j int) bool {
+		return scs.RelevantStatements[i].StatementRank < scs.RelevantStatements[j].StatementRank
 	}) {
 		report(errors.New("RelevantStatements are not sorted"))
 	}
@@ -113,7 +112,7 @@ func validateSchemaChangerState(d catalog.Descriptor, vea catalog.ValidationErro
 		statementRanks.Add(int(s.StatementRank))
 		if _, ok := statementsExpected[s.StatementRank]; !ok {
 			report(errors.Errorf("unexpected statement %d (%s)",
-				s.StatementRank, s.Statement.RedactedStatement))
+				s.StatementRank, s.Statement.Statement))
 		}
 	}
 

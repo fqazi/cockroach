@@ -37,20 +37,16 @@ filegroup(
         "//conditions:default": [],
     }),
     visibility = [
-        "//pkg/ccl/logictestccl/tests/cockroach-go-testserver-25.1:__pkg__",
-        "//pkg/ccl/logictestccl/tests/cockroach-go-testserver-25.2:__pkg__",
-        "//pkg/sql/logictest/tests/cockroach-go-testserver-25.1:__pkg__",
-        "//pkg/sql/logictest/tests/cockroach-go-testserver-25.2:__pkg__",
+        "//pkg/ccl/logictestccl/tests/cockroach-go-testserver-23.1:__pkg__",
+        "//pkg/sql/logictest/tests/cockroach-go-testserver-23.1:__pkg__",
+        "//pkg/sql/logictest/tests/cockroach-go-testserver-23.2:__pkg__",
     ],
 )
 
 go_library(
     name = "logictest",
     testonly = 1,
-    srcs = [
-        "logic.go",
-        "parsing.go",
-    ],
+    srcs = ["logic.go"],
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/logictest",
     visibility = ["//visibility:public"],
     deps = [
@@ -64,7 +60,6 @@ go_library(
         "//pkg/kv/kvserver/kvserverbase",
         "//pkg/kv/kvserver/txnwait",
         "//pkg/multitenant/tenantcapabilities",
-        "//pkg/multitenant/tenantcapabilitiespb",
         "//pkg/security/username",
         "//pkg/server",
         "//pkg/settings/cluster",
@@ -86,13 +81,11 @@ go_library(
         "//pkg/testutils",
         "//pkg/testutils/datapathutils",
         "//pkg/testutils/floatcmp",
-        "//pkg/testutils/pgurlutils",
         "//pkg/testutils/physicalplanutils",
         "//pkg/testutils/release",
         "//pkg/testutils/serverutils",
         "//pkg/testutils/skip",
         "//pkg/testutils/sqlutils",
-        "//pkg/util/debugutil",
         "//pkg/util/envutil",
         "//pkg/util/log",
         "//pkg/util/metamorphic",

@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -234,10 +233,35 @@ func (m mvccCPutOp) run(ctx context.Context) string {
 	txn.Sequence++
 
 	_, err := storage.MVCCConditionalPut(ctx, writer, m.key,
-		txn.ReadTimestamp, m.value, m.expVal, storage.ConditionalPutWriteOptions{
-			MVCCWriteOptions:    storage.MVCCWriteOptions{Txn: txn},
-			AllowIfDoesNotExist: true,
-		})
+		txn.ReadTimestamp, m.value, m.expVal, true, storage.MVCCWriteOptions{Txn: txn})
+	if err != nil {
+		if writeTooOldErr := (*kvpb.WriteTooOldError)(nil); errors.As(err, &writeTooOldErr) {
+			txn.WriteTimestamp.Forward(writeTooOldErr.ActualTimestamp)
+			// Update the txn's lock spans to account for this intent being written.
+			addKeyToLockSpans(txn, m.key)
+		}
+		return fmt.Sprintf("error: %s", err)
+	}
+
+	// Update the txn's lock spans to account for this intent being written.
+	addKeyToLockSpans(txn, m.key)
+	return "ok"
+}
+
+type mvccInitPutOp struct {
+	m      *metaTestRunner
+	writer readWriterID
+	key    roachpb.Key
+	value  roachpb.Value
+	txn    txnID
+}
+
+func (m mvccInitPutOp) run(ctx context.Context) string {
+	txn := m.m.getTxn(m.txn)
+	writer := m.m.getReadWriter(m.writer)
+	txn.Sequence++
+
+	_, err := storage.MVCCInitPut(ctx, writer, m.key, txn.ReadTimestamp, m.value, false, storage.MVCCWriteOptions{Txn: txn})
 	if err != nil {
 		if writeTooOldErr := (*kvpb.WriteTooOldError)(nil); errors.As(err, &writeTooOldErr) {
 			txn.WriteTimestamp.Forward(writeTooOldErr.ActualTimestamp)
@@ -288,7 +312,7 @@ func (m mvccAcquireLockOp) run(ctx context.Context) string {
 	txn := m.m.getTxn(m.txn)
 	writer := m.m.getReadWriter(m.writer)
 
-	err := storage.MVCCAcquireLock(ctx, writer, &txn.TxnMeta, txn.IgnoredSeqNums, m.strength, m.key, nil, int64(m.maxLockConflicts), m.targetLockConflictBytes)
+	err := storage.MVCCAcquireLock(ctx, writer, txn, m.strength, m.key, nil, int64(m.maxLockConflicts), m.targetLockConflictBytes)
 	if err != nil {
 		return fmt.Sprintf("error: %s", err)
 	}
@@ -771,7 +795,7 @@ type compactOp struct {
 }
 
 func (c compactOp) run(ctx context.Context) string {
-	err := c.m.engine.CompactRange(ctx, c.key, c.endKey)
+	err := c.m.engine.CompactRange(c.key, c.endKey)
 	if err != nil {
 		return fmt.Sprintf("error: %s", err.Error())
 	}
@@ -785,7 +809,7 @@ type ingestOp struct {
 
 func (i ingestOp) run(ctx context.Context) string {
 	sstPath := filepath.Join(i.m.path, "ingest.sst")
-	f, err := i.m.engineFS.Create(sstPath, fs.UnspecifiedWriteCategory)
+	f, err := i.m.engineFS.Create(sstPath)
 	if err != nil {
 		return fmt.Sprintf("error = %s", err.Error())
 	}
@@ -924,6 +948,33 @@ var opGenerators = []opGenerator{
 			operandTransaction,
 			operandUnusedMVCCKey,
 			operandValue,
+			operandValue,
+		},
+		weight: 50,
+	},
+	{
+		name: "mvcc_init_put",
+		generate: func(ctx context.Context, m *metaTestRunner, args ...string) mvccOp {
+			writer := readWriterID(args[0])
+			txn := txnID(args[1])
+			key := m.txnKeyGenerator.parse(args[2])
+			value := roachpb.MakeValueFromBytes(m.valueGenerator.parse(args[3]))
+
+			// Track this write in the txn generator. This ensures the batch will be
+			// committed before the transaction is committed
+			m.txnGenerator.trackTransactionalWrite(writer, txn, key.Key, nil)
+			return &mvccInitPutOp{
+				m:      m,
+				writer: writer,
+				key:    key.Key,
+				value:  value,
+				txn:    txn,
+			}
+		},
+		operands: []operandType{
+			operandReadWriter,
+			operandTransaction,
+			operandUnusedMVCCKey,
 			operandValue,
 		},
 		weight: 50,

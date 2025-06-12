@@ -20,11 +20,10 @@ package confchange
 import (
 	"math/rand"
 	"reflect"
-	"slices"
+	"sort"
 	"testing"
 	"testing/quick"
 
-	"github.com/cockroachdb/cockroach/pkg/raft/quorum"
 	pb "github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 )
@@ -33,12 +32,12 @@ type rndConfChange pb.ConfState
 
 // Generate creates a random (valid) ConfState for use with quickcheck.
 func (rndConfChange) Generate(rand *rand.Rand, _ int) reflect.Value {
-	conv := func(sl []int) []pb.PeerID {
+	conv := func(sl []int) []uint64 {
 		// We want IDs but the incoming slice is zero-indexed, so add one to
 		// each.
-		out := make([]pb.PeerID, len(sl))
+		out := make([]uint64, len(sl))
 		for i := range sl {
-			out[i] = pb.PeerID(sl[i] + 1)
+			out[i] = uint64(sl[i] + 1)
 		}
 		return out
 	}
@@ -70,7 +69,7 @@ func (rndConfChange) Generate(rand *rand.Rand, _ int) reflect.Value {
 	// NB: this code avoids creating non-nil empty slices (here and below).
 	nOutgoingRetainedVoters := rand.Intn(nVoters + 1)
 	if nOutgoingRetainedVoters > 0 || nRemovedVoters > 0 {
-		cs.VotersOutgoing = append([]pb.PeerID(nil), cs.Voters[:nOutgoingRetainedVoters]...)
+		cs.VotersOutgoing = append([]uint64(nil), cs.Voters[:nOutgoingRetainedVoters]...)
 		cs.VotersOutgoing = append(cs.VotersOutgoing, ids[:nRemovedVoters]...)
 	}
 	// Only outgoing voters that are not also incoming voters can be in
@@ -90,28 +89,27 @@ func TestRestore(t *testing.T) {
 
 	f := func(cs pb.ConfState) bool {
 		chg := Changer{
-			Config:      quorum.MakeEmptyConfig(),
-			ProgressMap: tracker.MakeEmptyProgressMap(),
-			LastIndex:   10,
+			Tracker:   tracker.MakeProgressTracker(20, 0),
+			LastIndex: 10,
 		}
-		cfg, progressMap, err := Restore(chg, cs)
+		cfg, trk, err := Restore(chg, cs)
 		if err != nil {
 			t.Error(err)
 			return false
 		}
-		chg.Config = cfg
-		chg.ProgressMap = progressMap
+		chg.Tracker.Config = cfg
+		chg.Tracker.Progress = trk
 
-		for _, sl := range [][]pb.PeerID{
+		for _, sl := range [][]uint64{
 			cs.Voters,
 			cs.Learners,
 			cs.VotersOutgoing,
 			cs.LearnersNext,
 		} {
-			slices.Sort(sl)
+			sort.Slice(sl, func(i, j int) bool { return sl[i] < sl[j] })
 		}
 
-		cs2 := chg.Config.ConfState()
+		cs2 := chg.Tracker.ConfState()
 		// NB: cs.Equivalent does the same "sorting" dance internally, but let's
 		// test it a bit here instead of relying on it.
 		if reflect.DeepEqual(cs, cs2) && cs.Equivalent(cs2) == nil && cs2.Equivalent(cs) == nil {
@@ -123,7 +121,7 @@ after:  %+#v`, cs, cs2)
 		return false
 	}
 
-	ids := func(sl ...pb.PeerID) []pb.PeerID {
+	ids := func(sl ...uint64) []uint64 {
 		return sl
 	}
 

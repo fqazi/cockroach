@@ -9,7 +9,6 @@ import (
 	"context"
 	gosql "database/sql"
 	"encoding/base64"
-	gojson "encoding/json"
 	"fmt"
 	"math/rand"
 	"net/url"
@@ -23,9 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
-	"github.com/cockroachdb/cockroach/pkg/sql/enum"
 	"github.com/cockroachdb/cockroach/pkg/sql/randgen"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -142,13 +138,13 @@ func TestEncoders(t *testing.T) {
 			resolved: `{"resolved":{"string":"1.0000000002"}}`,
 		},
 		`format=avro,envelope=key_only,updated`: {
-			err: `updated is only usable with envelope=wrapped or envelope=enriched`,
+			err: `updated is only usable with envelope=wrapped`,
 		},
 		`format=avro,envelope=key_only,diff`: {
-			err: `diff is only usable with envelope=wrapped or envelope=enriched`,
+			err: `diff is only usable with envelope=wrapped`,
 		},
 		`format=avro,envelope=key_only,updated,diff`: {
-			err: `updated is only usable with envelope=wrapped or envelope=enriched`,
+			err: `updated is only usable with envelope=wrapped`,
 		},
 		`format=avro,envelope=row`: {
 			err: `envelope=row is not supported with format=avro`,
@@ -241,7 +237,7 @@ func TestEncoders(t *testing.T) {
 				return
 			}
 			require.NoError(t, o.Validate())
-			e, err := getEncoder(context.Background(), o, targets, false, nil, nil, getTestingEnrichedSourceProvider(t, o))
+			e, err := getEncoder(o, targets, false, nil, nil)
 			require.NoError(t, err)
 
 			rowInsert := cdcevent.TestingMakeEventRow(tableDesc, 0, row, false)
@@ -387,7 +383,7 @@ func TestAvroEncoderWithTLS(t *testing.T) {
 				StatementTimeName: changefeedbase.StatementTimeName(tableDesc.GetName()),
 			})
 
-			e, err := getEncoder(context.Background(), opts, targets, false, nil, nil, getTestingEnrichedSourceProvider(t, opts))
+			e, err := getEncoder(opts, targets, false, nil, nil)
 			require.NoError(t, err)
 
 			rowInsert := cdcevent.TestingMakeEventRow(tableDesc, 0, row, false)
@@ -419,7 +415,7 @@ func TestAvroEncoderWithTLS(t *testing.T) {
 			defer noCertReg.Close()
 			opts.SchemaRegistryURI = noCertReg.URL()
 
-			enc, err := getEncoder(context.Background(), opts, targets, false, nil, nil, getTestingEnrichedSourceProvider(t, opts))
+			enc, err := getEncoder(opts, targets, false, nil, nil)
 			require.NoError(t, err)
 			_, err = enc.EncodeKey(context.Background(), rowInsert)
 			require.Regexp(t, "x509", err)
@@ -432,7 +428,7 @@ func TestAvroEncoderWithTLS(t *testing.T) {
 			defer wrongCertReg.Close()
 			opts.SchemaRegistryURI = wrongCertReg.URL()
 
-			enc, err = getEncoder(context.Background(), opts, targets, false, nil, nil, getTestingEnrichedSourceProvider(t, opts))
+			enc, err = getEncoder(opts, targets, false, nil, nil)
 			require.NoError(t, err)
 			_, err = enc.EncodeKey(context.Background(), rowInsert)
 			require.Regexp(t, `contacting confluent schema registry.*: x509`, err)
@@ -771,41 +767,6 @@ func TestAvroSchemaNamespace(t *testing.T) {
 	cdcTest(t, testFn, feedTestForceSink("kafka"), feedTestUseRootUserConnection)
 }
 
-func TestAvroSchemaHasExpectedTopLevelFields(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-		sqlDB := sqlutils.MakeSQLRunner(s.DB)
-		sqlDB.Exec(t, `CREATE DATABASE movr`)
-		sqlDB.Exec(t, `CREATE TABLE movr.drivers (id INT PRIMARY KEY, name STRING)`)
-		sqlDB.Exec(t,
-			`INSERT INTO movr.drivers VALUES (1, 'Alice')`,
-		)
-
-		foo := feed(t, f, fmt.Sprintf(`CREATE CHANGEFEED FOR movr.drivers `+
-			`WITH format=%s`, changefeedbase.OptFormatAvro))
-		defer closeFeed(t, foo)
-
-		assertPayloads(t, foo, []string{
-			`drivers: {"id":{"long":1}}->{"after":{"drivers":{"id":{"long":1},"name":{"string":"Alice"}}}}`,
-		})
-
-		reg := foo.(*kafkaFeed).registry
-
-		schemaJSON := reg.SchemaForSubject(`drivers-value`)
-		var schema map[string]any
-		require.NoError(t, gojson.Unmarshal([]byte(schemaJSON), &schema))
-		var keys []string
-		for k := range schema {
-			keys = append(keys, k)
-		}
-		require.ElementsMatch(t, keys, []string{"type", "name", "fields"})
-	}
-
-	cdcTest(t, testFn, feedTestForceSink("kafka"), feedTestUseRootUserConnection)
-}
-
 func TestTableNameCollision(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -853,7 +814,7 @@ func TestTableNameCollision(t *testing.T) {
 		})
 	}
 
-	cdcTest(t, testFn, feedTestForceSink("kafka"), feedTestUseRootUserConnection, withDebugUseAfterFinish)
+	cdcTest(t, testFn, feedTestForceSink("kafka"), feedTestUseRootUserConnection)
 }
 
 func TestAvroMigrateToUnsupportedColumn(t *testing.T) {
@@ -973,8 +934,7 @@ func BenchmarkEncoders(b *testing.B) {
 		b.ReportAllocs()
 		b.StopTimer()
 
-		encoder, err := getEncoder(context.Background(), opts, targets, false, nil, nil,
-			getTestingEnrichedSourceProvider(b, opts))
+		encoder, err := getEncoder(opts, targets, false, nil, nil)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1204,7 +1164,7 @@ func TestJsonRountrip(t *testing.T) {
 			switch typ {
 			case types.Jsonb:
 				// Unsupported by sql/catalog/colinfo
-			case types.TSQuery, types.TSVector, types.PGVector:
+			case types.TSQuery, types.TSVector:
 				// Unsupported by pkg/sql/parser
 			default:
 				if arrayTyp.InternalType.ArrayContents == typ {
@@ -1246,9 +1206,7 @@ func TestJsonRountrip(t *testing.T) {
 			dRow := rowenc.EncDatumRow{rowenc.EncDatum{Datum: tree.NewDInt(1)}, rowenc.EncDatum{Datum: test.datum}}
 			cdcRow := cdcevent.TestingMakeEventRow(tableDesc, 0, dRow, false)
 
-			// TODO(#139660): test this with other envelopes.
-			opts := jsonEncoderOptions{EncodingOptions: changefeedbase.EncodingOptions{Envelope: changefeedbase.OptEnvelopeBare}}
-			encoder, err := makeJSONEncoder(context.Background(), opts, getTestingEnrichedSourceProvider(t, opts.EncodingOptions), makeChangefeedTargets(test.name))
+			encoder, err := makeJSONEncoder(jsonEncoderOptions{})
 			require.NoError(t, err)
 
 			// Encode the value to a string and parse it. Assert that the parsed json matches the
@@ -1340,7 +1298,7 @@ func TestAvroWithRegionalTable(t *testing.T) {
 				sqlDB.Exec(t, `CREATE TABLE table1 (a INT PRIMARY KEY) LOCALITY REGIONAL BY ROW`)
 				schemaReg := cdctest.StartTestSchemaRegistry()
 				defer schemaReg.Close()
-				stmt := fmt.Sprintf(`CREATE CHANGEFEED FOR TABLE table1 WITH format = avro, envelope = %s,
+				stmt := fmt.Sprintf(`CREATE CHANGEFEED FOR TABLE table1 WITH format = avro, envelope = %s, 
 	confluent_schema_registry = "%s", schema_change_events = column_changes, schema_change_policy = nobackfill`,
 					test.envelope, schemaReg.URL())
 
@@ -1353,35 +1311,4 @@ func TestAvroWithRegionalTable(t *testing.T) {
 			})
 		})
 	}
-}
-
-// Create a thin, in-memory user-defined enum type
-func createEnum(enumLabels tree.EnumValueList, typeName tree.TypeName) *types.T {
-
-	members := make([]descpb.TypeDescriptor_EnumMember, len(enumLabels))
-	physReps := enum.GenerateNEvenlySpacedBytes(len(enumLabels))
-	for i := range enumLabels {
-		members[i] = descpb.TypeDescriptor_EnumMember{
-			LogicalRepresentation:  string(enumLabels[i]),
-			PhysicalRepresentation: physReps[i],
-			Capability:             descpb.TypeDescriptor_EnumMember_ALL,
-		}
-	}
-
-	enumKind := descpb.TypeDescriptor_ENUM
-
-	typeDesc := typedesc.NewBuilder(&descpb.TypeDescriptor{
-		Name:        typeName.Type(),
-		ID:          0,
-		Kind:        enumKind,
-		EnumMembers: members,
-		Version:     1,
-	}).BuildCreatedMutableType()
-
-	typ, _ := typedesc.HydratedTFromDesc(context.Background(), &typeName, typeDesc, nil /* res */)
-
-	testTypes[typeName.SQLString()] = typ
-
-	return typ
-
 }

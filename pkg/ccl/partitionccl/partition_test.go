@@ -74,7 +74,6 @@ func TestRemovePartitioningExpiredLicense(t *testing.T) {
 // would be bad if we rolled back the dropping of the index.
 func TestDropEnumValueWithConcurrentPartitionedIndexDrop(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
 
 	var s serverutils.TestServerInterface
 	var sqlDB *gosql.DB
@@ -131,14 +130,10 @@ SELECT count(*) > 0
 	} {
 		tdb.Exec(t, stmt)
 	}
-	// Run a transaction to drop the index and the enum value. The statements
-	// must not autocommit in order for the testing knobs to work.
+	// Run a transaction to drop the index and the enum value.
 	errCh := make(chan error)
 	go func() {
 		errCh <- crdb.ExecuteTx(ctx, sqlDB, nil, func(tx *gosql.Tx) error {
-			if _, err := tx.Exec("SET LOCAL autocommit_before_ddl = false"); err != nil {
-				return err
-			}
 			if _, err := tx.Exec("drop index tbl@idx;"); err != nil {
 				return err
 			}
@@ -153,7 +148,7 @@ SELECT count(*) > 0
 		tdb.QueryRow(t, `
 SELECT bool_and(done)
   FROM (
-        SELECT status NOT IN `+jobs.NonTerminalStateTupleString+` AS done
+        SELECT status NOT IN `+jobs.NonTerminalStatusTupleString+` AS done
           FROM [SHOW JOBS]
          WHERE job_type = 'TYPEDESC SCHEMA CHANGE'
        );`).

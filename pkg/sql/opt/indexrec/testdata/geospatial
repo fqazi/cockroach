@@ -74,7 +74,7 @@ select
  │         │    └── st_coveredby('01010000C00000000000000000000000000000000000000000000000000000000000000000', geom1:4)
  │         ├── cost: 254.706667
  │         ├── key: (11)
- │         └── scan t2@_hyp_1,inverted
+ │         └── scan t2@_hyp_1
  │              ├── columns: rowid:11!null geom1_inverted_key:14!null
  │              ├── inverted constraint: /14/11
  │              │    └── spans
@@ -109,7 +109,9 @@ select
  │              │         ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 253.575556
+ │              ├── cost: 253.575556
+ │              ├── key: (11)
+ │              └── fd: (11)-->(14)
  └── filters
       └── st_covers(geom1:4, '01010000C00000000000000000000000000000000000000000000000000000000000000000') [outer=(4), immutable, constraints=(/4: (/NULL - ])]
 
@@ -172,7 +174,7 @@ select
  │         │    └── st_covers('0102000000020000000000000000000000000000000000000000000000000000000000000000000040', geom2:8)
  │         ├── cost: 254.706667
  │         ├── key: (11)
- │         └── scan t2@_hyp_1,inverted
+ │         └── scan t2@_hyp_1
  │              ├── columns: rowid:11!null geom2_inverted_key:14!null
  │              ├── inverted constraint: /14/11
  │              │    └── spans
@@ -207,7 +209,9 @@ select
  │              │         ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 253.575556
+ │              ├── cost: 253.575556
+ │              ├── key: (11)
+ │              └── fd: (11)-->(14)
  └── filters
       └── st_covers('0102000000020000000000000000000000000000000000000000000000000000000000000000000040', geom2:8) [outer=(8), immutable, constraints=(/8: (/NULL - ])]
 
@@ -314,7 +318,7 @@ select
  │         │    └── st_coveredby('0102000000020000000000000000000000000000000000000000000000000000000000000000000040', geom2:8)
  │         ├── cost: 254.706667
  │         ├── key: (11)
- │         └── scan t2@_hyp_1,inverted
+ │         └── scan t2@_hyp_1
  │              ├── columns: rowid:11!null geom2_inverted_key:14!null
  │              ├── inverted constraint: /14/11
  │              │    └── spans
@@ -349,7 +353,9 @@ select
  │              │         ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 253.575556
+ │              ├── cost: 253.575556
+ │              ├── key: (11)
+ │              └── fd: (11)-->(14)
  └── filters
       └── st_contains(geom2:8, '0102000000020000000000000000000000000000000000000000000000000000000000000000000040') [outer=(8), immutable, constraints=(/8: (/NULL - ])]
 
@@ -472,7 +478,7 @@ select
  │         │    └── st_intersects('0102000000020000000000000000000000000000000000000000000000000000000000000000000040', geom1:4)
  │         ├── cost: 254.706667
  │         ├── key: (11)
- │         └── scan t2@_hyp_1,inverted
+ │         └── scan t2@_hyp_1
  │              ├── columns: rowid:11!null geom1_inverted_key:14!null
  │              ├── inverted constraint: /14/11
  │              │    └── spans
@@ -507,7 +513,9 @@ select
  │              │         ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 253.575556
+ │              ├── cost: 253.575556
+ │              ├── key: (11)
+ │              └── fd: (11)-->(14)
  └── filters
       └── st_equals(geom1:4, '0102000000020000000000000000000000000000000000000000000000000000000000000000000040') [outer=(4), immutable, constraints=(/4: (/NULL - ])]
 
@@ -571,7 +579,7 @@ select
  │         │    └── st_intersects('01030000000100000005000000000000000000F03F0000000000000040000000000000F03F00000000000010400000000000000840000000000000104000000000000008400000000000000040000000000000F03F0000000000000040', geom1:4)
  │         ├── cost: 258.706667
  │         ├── key: (11)
- │         └── scan t2@_hyp_1,inverted
+ │         └── scan t2@_hyp_1
  │              ├── columns: rowid:11!null geom1_inverted_key:14!null
  │              ├── inverted constraint: /14/11
  │              │    └── spans
@@ -607,7 +615,9 @@ select
  │              │         ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 257.575556
+ │              ├── cost: 257.575556
+ │              ├── key: (11)
+ │              └── fd: (11)-->(14)
  └── filters
       └── st_intersects(geom1:4, '01030000000100000005000000000000000000F03F0000000000000040000000000000F03F00000000000010400000000000000840000000000000104000000000000008400000000000000040000000000000F03F0000000000000040') [outer=(4), immutable, constraints=(/4: (/NULL - ])]
 
@@ -709,7 +719,7 @@ select
  │         │    └── st_dwithinexclusive('0101000020E6100000A6272CF1807245C0A6B73F170DFC5240', geog2:9, 10.0, true)
  │         ├── cost: 238.706667
  │         ├── key: (11)
- │         └── scan t2@_hyp_1,inverted
+ │         └── scan t2@_hyp_1
  │              ├── columns: rowid:11!null geog2_inverted_key:14!null
  │              ├── inverted constraint: /14/11
  │              │    └── spans
@@ -740,7 +750,9 @@ select
  │              │         ├── ["B\xfdO\xb0\x00\x00\x00\x00\x00\x00", "B\xfdO\xb0\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfdO\xc0\x00\x00\x00\x00\x00\x00", "B\xfdO\xc0\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfdP\x00\x00\x00\x00\x00\x00\x00", "B\xfdP\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 237.575556
+ │              ├── cost: 237.575556
+ │              ├── key: (11)
+ │              └── fd: (11)-->(14)
  └── filters
       └── st_dwithinexclusive('0101000020E6100000A6272CF1807245C0A6B73F170DFC5240', geog2:9, 10.0, true) [outer=(9), immutable, constraints=(/9: (/NULL - ])]
 
@@ -870,7 +882,7 @@ select
  │         │    └── st_covers('01030000000100000005000000000000000000F03F0000000000000040000000000000F03F00000000000010400000000000000840000000000000104000000000000008400000000000000040000000000000F03F0000000000000040', geom1:4)
  │         ├── cost: 258.706667
  │         ├── key: (11)
- │         └── scan t2@_hyp_3,inverted
+ │         └── scan t2@_hyp_3
  │              ├── columns: rowid:11!null geom1_inverted_key:14!null
  │              ├── inverted constraint: /14/11
  │              │    └── spans
@@ -906,7 +918,9 @@ select
  │              │         ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 257.575556
+ │              ├── cost: 257.575556
+ │              ├── key: (11)
+ │              └── fd: (11)-->(14)
  └── filters
       ├── bbox1:6 && bbox2:7 [outer=(6,7), immutable, constraints=(/6: (/NULL - ]; /7: (/NULL - ])]
       └── 'BOX(1 2,3 4)' ~ geom1:4 [outer=(4), immutable]
@@ -1065,7 +1079,7 @@ select
  │         │    └── st_intersects('01010000C00000000000000000000000000000000000000000000000000000000000000000', geom1:4)
  │         ├── cost: 254.706667
  │         ├── key: (11)
- │         └── scan t2@_hyp_1,inverted
+ │         └── scan t2@_hyp_1
  │              ├── columns: rowid:11!null geom1_inverted_key:14!null
  │              ├── inverted constraint: /14/11
  │              │    └── spans
@@ -1100,7 +1114,9 @@ select
  │              │         ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 253.575556
+ │              ├── cost: 253.575556
+ │              ├── key: (11)
+ │              └── fd: (11)-->(14)
  └── filters
       ├── st_overlaps(geom1:4, '01010000C00000000000000000000000000000000000000000000000000000000000000000') [outer=(4), immutable, constraints=(/4: (/NULL - ])]
       └── st_overlaps('01010000C00000000000000000000000000000000000000000000000000000000000000000', geom2:8) [outer=(8), immutable, constraints=(/8: (/NULL - ])]
@@ -1168,7 +1184,7 @@ select
  │         │    └── st_intersects('01010000C00000000000000000000000000000000000000000000000000000000000000000', geom1:4)
  │         ├── cost: 19.2177778
  │         ├── key: (11)
- │         └── scan t2@_hyp_3,inverted
+ │         └── scan t2@_hyp_3
  │              ├── columns: rowid:11!null geom1_inverted_key:15!null
  │              ├── constraint: /1: [/2 - /2]
  │              ├── inverted constraint: /15/11
@@ -1204,7 +1220,9 @@ select
  │              │         ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 19.1866667
+ │              ├── cost: 19.1866667
+ │              ├── key: (11)
+ │              └── fd: (11)-->(15)
  └── filters
       └── st_overlaps(geom1:4, '01010000C00000000000000000000000000000000000000000000000000000000000000000') [outer=(4), immutable, constraints=(/4: (/NULL - ])]
 
@@ -1269,7 +1287,7 @@ select
  │         │    └── st_intersects('01010000C00000000000000000000000000000000000000000000000000000000000000000', geom1:4)
  │         ├── cost: 254.706667
  │         ├── key: (11)
- │         └── scan t2@_hyp_2,inverted
+ │         └── scan t2@_hyp_2
  │              ├── columns: rowid:11!null geom1_inverted_key:14!null
  │              ├── inverted constraint: /14/11
  │              │    └── spans
@@ -1304,7 +1322,9 @@ select
  │              │         ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 253.575556
+ │              ├── cost: 253.575556
+ │              ├── key: (11)
+ │              └── fd: (11)-->(14)
  └── filters
       ├── st_overlaps(geom1:4, '01010000C00000000000000000000000000000000000000000000000000000000000000000') [outer=(4), immutable, constraints=(/4: (/NULL - ])]
       └── k:1 > 2 [outer=(1), constraints=(/1: [/3 - ]; tight)]
@@ -1336,7 +1356,7 @@ inner-join (zigzag t2@_hyp_1 t2@_hyp_2)
  ├── left fixed columns: [1] = [2]
  ├── right fixed columns: [2] = [3]
  ├── immutable
- ├── cost: 28.3042149
+ ├── cost: 20.3042149
  ├── fd: ()-->(1,2)
  └── filters
       ├── st_overlaps(geom1:4, '01010000C00000000000000000000000000000000000000000000000000000000000000000') [outer=(4), immutable, constraints=(/4: (/NULL - ])]
@@ -1406,7 +1426,7 @@ select
  │         │    └── st_intersects('01010000C00000000000000000000000000000000000000000000000000000000000000000', geom1:4)
  │         ├── cost: 254.706667
  │         ├── key: (11)
- │         └── scan t2@_hyp_3,inverted
+ │         └── scan t2@_hyp_3
  │              ├── columns: rowid:11!null geom1_inverted_key:14!null
  │              ├── inverted constraint: /14/11
  │              │    └── spans
@@ -1441,7 +1461,9 @@ select
  │              │         ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 253.575556
+ │              ├── cost: 253.575556
+ │              ├── key: (11)
+ │              └── fd: (11)-->(14)
  └── filters
       ├── st_overlaps(geom1:4, '01010000C00000000000000000000000000000000000000000000000000000000000000000') [outer=(4), immutable, constraints=(/4: (/NULL - ])]
       ├── k:1 > 2 [outer=(1), constraints=(/1: [/3 - ]; tight)]
@@ -1609,7 +1631,7 @@ select
  │         │    └── st_intersects('01030000000100000005000000000000000000F03F0000000000000040000000000000F03F00000000000010400000000000000840000000000000104000000000000008400000000000000040000000000000F03F0000000000000040', geom1:4)
  │         ├── cost: 19.2177778
  │         ├── key: (11)
- │         └── scan t2@_hyp_3,inverted
+ │         └── scan t2@_hyp_3
  │              ├── columns: rowid:11!null geom1_inverted_key:15!null
  │              ├── constraint: /1: [/2 - /2]
  │              ├── inverted constraint: /15/11
@@ -1646,7 +1668,9 @@ select
  │              │         ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 19.1866667
+ │              ├── cost: 19.1866667
+ │              ├── key: (11)
+ │              └── fd: (11)-->(15)
  └── filters
       └── geom1:4 && 'BOX(1 2,3 4)' [outer=(4), immutable, constraints=(/4: (/NULL - ])]
 
@@ -1791,14 +1815,16 @@ select
  │         │    └── st_coveredby('01010000C00000000000000000000000000000000000000000000000000000000000000000', geom1:2)
  │         ├── cost: 142.706667
  │         ├── key: (3)
- │         └── scan t2@inverted_idx,inverted
- │              ├── columns: rowid:3!null geom1_inverted_key:6!null
+ │         └── scan t2@inverted_idx
+ │              ├── columns: rowid:3!null t2.geom1_inverted_key:6!null
  │              ├── inverted constraint: /6/3
  │              │    └── spans
  │              │         ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x10\x00\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 141.575556
+ │              ├── cost: 141.575556
+ │              ├── key: (3)
+ │              └── fd: (3)-->(6)
  └── filters
       └── st_covers(geom1:2, '01010000C00000000000000000000000000000000000000000000000000000000000000000') [outer=(2), immutable, constraints=(/2: (/NULL - ])]
 
@@ -1865,7 +1891,7 @@ select
  │         │    └── st_coveredby('01010000C00000000000000000000000000000000000000000000000000000000000000000', geom1:2)
  │         ├── cost: 254.706667
  │         ├── key: (3)
- │         └── scan t2@_hyp_2,inverted
+ │         └── scan t2@_hyp_2
  │              ├── columns: rowid:3!null geom1_inverted_key:8!null
  │              ├── inverted constraint: /8/3
  │              │    └── spans
@@ -1900,7 +1926,9 @@ select
  │              │         ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 253.575556
+ │              ├── cost: 253.575556
+ │              ├── key: (3)
+ │              └── fd: (3)-->(8)
  └── filters
       └── st_covers(geom1:2, '01010000C00000000000000000000000000000000000000000000000000000000000000000') [outer=(2), immutable, constraints=(/2: (/NULL - ])]
 
@@ -1934,104 +1962,15 @@ select
  │         │    └── st_coveredby('01010000C00000000000000000000000000000000000000000000000000000000000000000', geom1:2)
  │         ├── cost: 142.706667
  │         ├── key: (3)
- │         └── scan t2@inverted_idx_visible,inverted
- │              ├── columns: rowid:3!null geom1_inverted_key:8!null
+ │         └── scan t2@inverted_idx_visible
+ │              ├── columns: rowid:3!null t2.geom1_inverted_key:8!null
  │              ├── inverted constraint: /8/3
  │              │    └── spans
  │              │         ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x10\x00\x00\x00\x00\x00\x00\x00"]
  │              │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
  │              │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │              └── cost: 141.575556
+ │              ├── cost: 141.575556
+ │              ├── key: (3)
+ │              └── fd: (3)-->(8)
  └── filters
       └── st_covers(geom1:2, '01010000C00000000000000000000000000000000000000000000000000000000000000000') [outer=(2), immutable, constraints=(/2: (/NULL - ])]
-
-# Regression test for #143826 and #144933. Ensure that we avoid an internal
-# error when building recommendations due to #145067.
-exec-ddl
-CREATE TABLE t (g GEOMETRY NOT NULL, i INT)
-----
-
-index-recommendations format=hide-all
-SELECT *, i + 10 FROM t WHERE st_covers(g, 'POINT(0 0 0 0)')
-----
-creation: CREATE INVERTED INDEX ON t.public.t (g);
---
-optimal plan:
-project
- ├── select
- │    ├── index-join t
- │    │    └── inverted-filter
- │    │         ├── inverted expression: /6
- │    │         │    ├── tight: false, unique: false
- │    │         │    └── union spans
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x10\x00\x00\x00\x00\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x00\x01", "B\xfd\x10\x00\x00\x00\x00\x00\x00\x01"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x00\x04", "B\xfd\x10\x00\x00\x00\x00\x00\x00\x04"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x00\x10", "B\xfd\x10\x00\x00\x00\x00\x00\x00\x10"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x00@", "B\xfd\x10\x00\x00\x00\x00\x00\x00@"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x01\x00", "B\xfd\x10\x00\x00\x00\x00\x00\x01\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x04\x00", "B\xfd\x10\x00\x00\x00\x00\x00\x04\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x10\x00", "B\xfd\x10\x00\x00\x00\x00\x00\x10\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x00\x00@\x00", "B\xfd\x10\x00\x00\x00\x00\x00@\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x00\x01\x00\x00", "B\xfd\x10\x00\x00\x00\x00\x01\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x00\x04\x00\x00", "B\xfd\x10\x00\x00\x00\x00\x04\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x00\x10\x00\x00", "B\xfd\x10\x00\x00\x00\x00\x10\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x00@\x00\x00", "B\xfd\x10\x00\x00\x00\x00@\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x01\x00\x00\x00", "B\xfd\x10\x00\x00\x00\x01\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x04\x00\x00\x00", "B\xfd\x10\x00\x00\x00\x04\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00\x10\x00\x00\x00", "B\xfd\x10\x00\x00\x00\x10\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x00@\x00\x00\x00", "B\xfd\x10\x00\x00\x00@\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x01\x00\x00\x00\x00", "B\xfd\x10\x00\x00\x01\x00\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x04\x00\x00\x00\x00", "B\xfd\x10\x00\x00\x04\x00\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00\x10\x00\x00\x00\x00", "B\xfd\x10\x00\x00\x10\x00\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x00@\x00\x00\x00\x00", "B\xfd\x10\x00\x00@\x00\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x01\x00\x00\x00\x00\x00", "B\xfd\x10\x00\x01\x00\x00\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x04\x00\x00\x00\x00\x00", "B\xfd\x10\x00\x04\x00\x00\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00\x10\x00\x00\x00\x00\x00", "B\xfd\x10\x00\x10\x00\x00\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x00@\x00\x00\x00\x00\x00", "B\xfd\x10\x00@\x00\x00\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x01\x00\x00\x00\x00\x00\x00", "B\xfd\x10\x01\x00\x00\x00\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x04\x00\x00\x00\x00\x00\x00", "B\xfd\x10\x04\x00\x00\x00\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10\x10\x00\x00\x00\x00\x00\x00", "B\xfd\x10\x10\x00\x00\x00\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
- │    │         │         ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
- │    │         │         └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │    │         ├── pre-filterer expression
- │    │         │    └── st_coveredby('01010000C00000000000000000000000000000000000000000000000000000000000000000', g)
- │    │         └── scan t@_hyp_1,inverted
- │    │              └── inverted constraint: /6/3
- │    │                   └── spans
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x10\x00\x00\x00\x00\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x00\x01", "B\xfd\x10\x00\x00\x00\x00\x00\x00\x01"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x00\x04", "B\xfd\x10\x00\x00\x00\x00\x00\x00\x04"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x00\x10", "B\xfd\x10\x00\x00\x00\x00\x00\x00\x10"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x00@", "B\xfd\x10\x00\x00\x00\x00\x00\x00@"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x01\x00", "B\xfd\x10\x00\x00\x00\x00\x00\x01\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x04\x00", "B\xfd\x10\x00\x00\x00\x00\x00\x04\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x00\x00\x10\x00", "B\xfd\x10\x00\x00\x00\x00\x00\x10\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x00\x00@\x00", "B\xfd\x10\x00\x00\x00\x00\x00@\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x00\x01\x00\x00", "B\xfd\x10\x00\x00\x00\x00\x01\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x00\x04\x00\x00", "B\xfd\x10\x00\x00\x00\x00\x04\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x00\x10\x00\x00", "B\xfd\x10\x00\x00\x00\x00\x10\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x00@\x00\x00", "B\xfd\x10\x00\x00\x00\x00@\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x01\x00\x00\x00", "B\xfd\x10\x00\x00\x00\x01\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x04\x00\x00\x00", "B\xfd\x10\x00\x00\x00\x04\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00\x10\x00\x00\x00", "B\xfd\x10\x00\x00\x00\x10\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x00@\x00\x00\x00", "B\xfd\x10\x00\x00\x00@\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x01\x00\x00\x00\x00", "B\xfd\x10\x00\x00\x01\x00\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x04\x00\x00\x00\x00", "B\xfd\x10\x00\x00\x04\x00\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00\x10\x00\x00\x00\x00", "B\xfd\x10\x00\x00\x10\x00\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x00@\x00\x00\x00\x00", "B\xfd\x10\x00\x00@\x00\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x01\x00\x00\x00\x00\x00", "B\xfd\x10\x00\x01\x00\x00\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x04\x00\x00\x00\x00\x00", "B\xfd\x10\x00\x04\x00\x00\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00\x10\x00\x00\x00\x00\x00", "B\xfd\x10\x00\x10\x00\x00\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x00@\x00\x00\x00\x00\x00", "B\xfd\x10\x00@\x00\x00\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x01\x00\x00\x00\x00\x00\x00", "B\xfd\x10\x01\x00\x00\x00\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x04\x00\x00\x00\x00\x00\x00", "B\xfd\x10\x04\x00\x00\x00\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10\x10\x00\x00\x00\x00\x00\x00", "B\xfd\x10\x10\x00\x00\x00\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x10@\x00\x00\x00\x00\x00\x00", "B\xfd\x10@\x00\x00\x00\x00\x00\x00"]
- │    │                        ├── ["B\xfd\x11\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x11\x00\x00\x00\x00\x00\x00\x00"]
- │    │                        └── ["B\xfd\x14\x00\x00\x00\x00\x00\x00\x00", "B\xfd\x14\x00\x00\x00\x00\x00\x00\x00"]
- │    └── filters
- │         └── st_covers(g, '01010000C00000000000000000000000000000000000000000000000000000000000000000')
- └── projections
-      └── i + 10

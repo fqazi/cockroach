@@ -8,13 +8,14 @@ package kvstorage
 import (
 	"context"
 
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
+	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/errors"
 )
 
@@ -22,10 +23,9 @@ import (
 // is used to initialize the in-memory Replica instance.
 // TODO(pavelkalinnikov): integrate with kvstorage.Replica.
 type LoadedReplicaState struct {
-	ReplicaID   roachpb.ReplicaID
-	LastEntryID logstore.EntryID
-	ReplState   kvserverpb.ReplicaState
-	TruncState  kvserverpb.RaftTruncatedState
+	ReplicaID roachpb.ReplicaID
+	LastIndex kvpb.RaftIndex
+	ReplState kvserverpb.ReplicaState
 
 	hardState raftpb.HardState
 }
@@ -55,10 +55,7 @@ func LoadReplicaState(
 	if ls.hardState, err = sl.LoadHardState(ctx, eng); err != nil {
 		return LoadedReplicaState{}, err
 	}
-	if ls.TruncState, err = sl.LoadRaftTruncatedState(ctx, eng); err != nil {
-		return LoadedReplicaState{}, err
-	}
-	if ls.LastEntryID, err = sl.LoadLastEntryID(ctx, eng, ls.TruncState); err != nil {
+	if ls.LastIndex, err = sl.LoadLastIndex(ctx, eng); err != nil {
 		return LoadedReplicaState{}, err
 	}
 	if ls.ReplState, err = sl.Load(ctx, eng, desc); err != nil {
@@ -101,17 +98,6 @@ func (r LoadedReplicaState) check(storeID roachpb.StoreID) error {
 	return nil
 }
 
-// CreateUninitReplicaTODO is the plan for splitting CreateUninitializedReplica
-// into cross-engine writes.
-//
-//  1. Log storage write (durable):
-//     1.1. Write WAG node with the state machine mutation (2).
-//  2. State machine mutation:
-//     2.1. Write RaftReplicaID with the new ReplicaID/LogID.
-//
-// TODO(sep-raft-log): support the status quo in which only 2.1 is written.
-const CreateUninitReplicaTODO = 0
-
 // CreateUninitializedReplica creates an uninitialized replica in storage.
 // Returns kvpb.RaftGroupDeletedError if this replica can not be created
 // because it has been deleted.
@@ -122,14 +108,15 @@ func CreateUninitializedReplica(
 	rangeID roachpb.RangeID,
 	replicaID roachpb.ReplicaID,
 ) error {
-	sl := stateloader.Make(rangeID)
 	// Before creating the replica, see if there is a tombstone which would
 	// indicate that this replica has been removed.
-	// TODO(pav-kv): should also check that there is no existing replica, i.e.
-	// ReplicaID load should find nothing.
-	if ts, err := sl.LoadRangeTombstone(ctx, eng); err != nil {
+	tombstoneKey := keys.RangeTombstoneKey(rangeID)
+	var tombstone kvserverpb.RangeTombstone
+	if ok, err := storage.MVCCGetProto(
+		ctx, eng, tombstoneKey, hlc.Timestamp{}, &tombstone, storage.MVCCGetOptions{},
+	); err != nil {
 		return err
-	} else if replicaID < ts.NextReplicaID {
+	} else if ok && replicaID < tombstone.NextReplicaID {
 		return &kvpb.RaftGroupDeletedError{}
 	}
 
@@ -145,7 +132,7 @@ func CreateUninitializedReplica(
 	//   the Term and Vote values for that older replica in the context of
 	//   this newer replica is harmless since it just limits the votes for
 	//   this replica.
-	_ = CreateUninitReplicaTODO
+	sl := stateloader.Make(rangeID)
 	if err := sl.SetRaftReplicaID(ctx, eng, replicaID); err != nil {
 		return err
 	}

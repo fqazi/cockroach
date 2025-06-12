@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/roleoption"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
@@ -30,12 +29,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
-	"github.com/cockroachdb/redact"
 )
 
 // alterRoleNode represents an ALTER ROLE ... [WITH] OPTION... statement.
 type alterRoleNode struct {
-	zeroInputPlanNode
 	roleName    username.SQLUsername
 	ifExists    bool
 	isRole      bool
@@ -44,7 +41,6 @@ type alterRoleNode struct {
 
 // alterRoleSetNode represents an `ALTER ROLE ... SET` statement.
 type alterRoleSetNode struct {
-	zeroInputPlanNode
 	roleName username.SQLUsername
 	ifExists bool
 	isRole   bool
@@ -142,7 +138,7 @@ func (p *planner) checkPasswordOptionConstraints(
 }
 
 func (n *alterRoleNode) startExec(params runParams) error {
-	var opName redact.RedactableString
+	var opName string
 	if n.isRole {
 		sqltelemetry.IncIAMAlterCounter(sqltelemetry.Role)
 		opName = "alter-role"
@@ -196,7 +192,7 @@ func (n *alterRoleNode) startExec(params runParams) error {
 		opName,
 		params.p.txn,
 		sessiondata.NodeUserSessionDataOverride,
-		fmt.Sprintf("SELECT 1 FROM system.public.%s WHERE username = $1", catconstants.UsersTableName),
+		fmt.Sprintf("SELECT 1 FROM %s WHERE username = $1", sessioninit.UsersTableName),
 		n.roleName,
 	)
 	if err != nil {
@@ -426,7 +422,7 @@ func (p *planner) processSetOrResetClause(
 }
 
 func (n *alterRoleSetNode) startExec(params runParams) error {
-	var opName redact.RedactableString
+	var opName string
 	if n.isRole {
 		sqltelemetry.IncIAMAlterCounter(sqltelemetry.Role)
 		opName = "alter-role"
@@ -445,19 +441,19 @@ func (n *alterRoleSetNode) startExec(params runParams) error {
 	}
 
 	var deleteQuery = fmt.Sprintf(
-		`DELETE FROM system.public.%s WHERE database_id = $1 AND role_name = $2`,
-		catconstants.DatabaseRoleSettingsTableName,
+		`DELETE FROM %s WHERE database_id = $1 AND role_name = $2`,
+		sessioninit.DatabaseRoleSettingsTableName,
 	)
 
 	var upsertQuery = fmt.Sprintf(`
-UPSERT INTO system.public.%s (database_id, role_name, settings, role_id)
+UPSERT INTO %s (database_id, role_name, settings, role_id)
 VALUES ($1, $2, $3, (
 	SELECT CASE $2
 		WHEN '%s' THEN %d
 		ELSE (SELECT user_id FROM system.users WHERE username = $2)
 	END
 ))`,
-		catconstants.DatabaseRoleSettingsTableName, username.EmptyRole, username.EmptyRoleID,
+		sessioninit.DatabaseRoleSettingsTableName, username.EmptyRole, username.EmptyRoleID,
 	)
 
 	// Instead of inserting an empty settings array, this function will make
@@ -563,7 +559,7 @@ func deepEqualIgnoringOrders(s1, s2 []string) bool {
 // getRoleName resolves the roleName and performs additional validation
 // to make sure the role is safe to edit.
 func (n *alterRoleSetNode) getRoleName(
-	params runParams, opName redact.RedactableString,
+	params runParams, opName string,
 ) (needsUpdate bool, retRoleName username.SQLUsername, err error) {
 	if n.allRoles {
 		return true, username.MakeSQLUsernameFromPreNormalizedString(""), nil
@@ -586,7 +582,7 @@ func (n *alterRoleSetNode) getRoleName(
 		opName,
 		params.p.txn,
 		sessiondata.NodeUserSessionDataOverride,
-		fmt.Sprintf("SELECT 1 FROM system.public.%s WHERE username = $1", catconstants.UsersTableName),
+		fmt.Sprintf("SELECT 1 FROM %s WHERE username = $1", sessioninit.UsersTableName),
 		n.roleName,
 	)
 	if err != nil {
@@ -636,11 +632,11 @@ func (n *alterRoleSetNode) getRoleName(
 //  2. newSettings = {timezone=America/New_York, statement_timeout=10s}
 //  3. err = nil
 func (n *alterRoleSetNode) makeNewSettings(
-	params runParams, opName redact.RedactableString, roleName username.SQLUsername,
+	params runParams, opName string, roleName username.SQLUsername,
 ) (oldSettings []string, newSettings []string, err error) {
 	var selectQuery = fmt.Sprintf(
-		`SELECT settings FROM system.public.%s WHERE database_id = $1 AND role_name = $2`,
-		catconstants.DatabaseRoleSettingsTableName,
+		`SELECT settings FROM %s WHERE database_id = $1 AND role_name = $2`,
+		sessioninit.DatabaseRoleSettingsTableName,
 	)
 	datums, err := params.p.InternalSQLTxn().QueryRowEx(
 		params.ctx,

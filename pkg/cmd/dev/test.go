@@ -180,7 +180,6 @@ func (d *dev) test(cmd *cobra.Command, commandLine []string) error {
 			{"pkg/sql/opt/norm", "pkg/sql/opt/testutils/opttester/testfixtures"},
 			{"pkg/sql/opt/xform", "pkg/sql/opt/testutils/opttester/testfixtures"},
 			{"pkg/sql/opt/exec/explain", "pkg/sql/opt/testutils/opttester/testfixtures"},
-			{"pkg/sql/sem/tree", "pkg/sql/sem/tree/testdata/pretty"},
 		}
 
 		logicTestPaths = []string{
@@ -226,7 +225,9 @@ func (d *dev) test(cmd *cobra.Command, commandLine []string) error {
 	var args []string
 	var goTags []string
 	args = append(args, "test")
-	addCommonBazelArguments(&args)
+	if numCPUs != 0 {
+		args = append(args, fmt.Sprintf("--local_cpu_resources=%d", numCPUs))
+	}
 	if race {
 		args = append(args, "--config=race", "--test_sharding_strategy=disabled")
 	}

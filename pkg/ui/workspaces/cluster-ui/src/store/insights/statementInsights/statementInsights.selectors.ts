@@ -4,19 +4,18 @@
 // included in the /LICENSE file.
 
 import { createSelector } from "reselect";
+import { localStorageSelector } from "src/store/utils/selectors";
+import { AppState } from "src/store/reducers";
 
-import { InsightEnumToLabel } from "src/insights";
-import {
-  selectStatementFingerprintID,
-  selectID,
-  selectStmtInsights,
-} from "src/selectors/common";
 import {
   selectStatementInsightDetailsCombiner,
   selectStatementInsightDetailsCombinerByFingerprint,
 } from "src/selectors/insightsCommon.selectors";
-import { AppState } from "src/store/reducers";
-import { localStorageSelector } from "src/store/utils/selectors";
+import { selectStatementFingerprintID, selectID } from "src/selectors/common";
+import { InsightEnumToLabel, StmtInsightEvent } from "src/insights";
+
+export const selectStmtInsights = (state: AppState): StmtInsightEvent[] =>
+  state.adminUI?.stmtInsights?.data?.results;
 
 export const selectStmtInsightsError = (state: AppState): Error | null =>
   state.adminUI?.stmtInsights?.lastError;

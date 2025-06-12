@@ -127,16 +127,6 @@ type TxnSender interface {
 	// Transaction proto.
 	SetOmitInRangefeeds()
 
-	// SetBufferedWritesEnabled toggles whether the writes are buffered on the
-	// gateway node until the commit time. Only allowed on the RootTxn. Buffered
-	// writes cannot be enabled on a txn that performed any requests. When
-	// disabling buffered writes, if there are any writes in the buffer, they
-	// are flushed with the next BatchRequest.
-	SetBufferedWritesEnabled(bool)
-
-	// BufferedWritesEnabled returns whether the buffered writes are enabled.
-	BufferedWritesEnabled() bool
-
 	// String returns a string representation of the txn.
 	String() string
 
@@ -298,10 +288,6 @@ type TxnSender interface {
 	// TODO(knz): Remove this, see
 	// https://github.com/cockroachdb/cockroach/issues/15012
 	Active() bool
-
-	// Key returns the current "anchor" key of the transaction, or nil if no such
-	// key has been set because the transaction has not yet acquired any locks.
-	Key() roachpb.Key
 
 	// Epoch returns the txn's epoch.
 	Epoch() enginepb.TxnEpoch

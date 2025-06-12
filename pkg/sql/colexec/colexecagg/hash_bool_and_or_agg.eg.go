@@ -37,12 +37,12 @@ type boolAndHashAgg struct {
 var _ AggregateFunc = &boolAndHashAgg{}
 
 func (a *boolAndHashAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Bool(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		{
 			sel = sel[startIdx:endIdx]
 			if nulls.MaybeHasNulls() {
@@ -133,12 +133,12 @@ type boolOrHashAgg struct {
 var _ AggregateFunc = &boolOrHashAgg{}
 
 func (a *boolOrHashAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Bool(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		{
 			sel = sel[startIdx:endIdx]
 			if nulls.MaybeHasNulls() {

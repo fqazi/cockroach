@@ -117,10 +117,9 @@ type eventTxnStartPayload struct {
 	historicalTimestamp *hlc.Timestamp
 	// qualityOfService denotes the user-level admission queue priority to use for
 	// any new Txn started using this payload.
-	qualityOfService      sessiondatapb.QoSLevel
-	isoLevel              isolation.Level
-	omitInRangefeeds      bool
-	bufferedWritesEnabled bool
+	qualityOfService sessiondatapb.QoSLevel
+	isoLevel         isolation.Level
+	omitInRangefeeds bool
 }
 
 // makeEventTxnStartPayload creates an eventTxnStartPayload.
@@ -133,18 +132,16 @@ func makeEventTxnStartPayload(
 	qualityOfService sessiondatapb.QoSLevel,
 	isoLevel isolation.Level,
 	omitInRangefeeds bool,
-	bufferedWritesEnabled bool,
 ) eventTxnStartPayload {
 	return eventTxnStartPayload{
-		pri:                   pri,
-		readOnly:              readOnly,
-		txnSQLTimestamp:       txnSQLTimestamp,
-		historicalTimestamp:   historicalTimestamp,
-		tranCtx:               tranCtx,
-		qualityOfService:      qualityOfService,
-		isoLevel:              isoLevel,
-		omitInRangefeeds:      omitInRangefeeds,
-		bufferedWritesEnabled: bufferedWritesEnabled,
+		pri:                 pri,
+		readOnly:            readOnly,
+		txnSQLTimestamp:     txnSQLTimestamp,
+		historicalTimestamp: historicalTimestamp,
+		tranCtx:             tranCtx,
+		qualityOfService:    qualityOfService,
+		isoLevel:            isoLevel,
+		omitInRangefeeds:    omitInRangefeeds,
 	}
 }
 
@@ -165,23 +162,6 @@ type eventTxnFinishAbortedPLpgSQL struct{}
 // generated when such a savepoint is rolled back to from the Open state. In
 // that case no event is necessary.
 type eventSavepointRollback struct{}
-
-// eventTxnFinishPrepared is generated when a PREPARE TRANSACTION statement is
-// executed. The current transaction is dissociated with the current session.
-type eventTxnFinishPrepared struct{}
-
-// eventTxnFinishPreparedErrPayload represents the payload for
-// eventTxnFinishPrepared, if the PREPARE TRANSACTION statement encountered an
-// error. No payload is used if the statement was successful.
-type eventTxnFinishPreparedErrPayload struct {
-	// err is the error encountered during the prepare.
-	err error
-}
-
-// errorCause implements the payloadWithError interface.
-func (p eventTxnFinishPreparedErrPayload) errorCause() error {
-	return p.err
-}
 
 type eventNonRetriableErr struct {
 	IsCommit fsm.Bool
@@ -250,7 +230,6 @@ type payloadWithError interface {
 func (eventTxnStart) Event()                            {}
 func (eventTxnFinishCommitted) Event()                  {}
 func (eventTxnFinishAborted) Event()                    {}
-func (eventTxnFinishPrepared) Event()                   {}
 func (eventTxnFinishCommittedPLpgSQL) Event()           {}
 func (eventTxnFinishAbortedPLpgSQL) Event()             {}
 func (eventSavepointRollback) Event()                   {}
@@ -395,30 +374,11 @@ var TxnStateTransitions = fsm.Compile(fsm.Pattern{
 		},
 	},
 	stateOpen{ImplicitTxn: fsm.False, WasUpgraded: fsm.Var("wasUpgraded")}: {
-		// Handle prepared transactions. Note that this statement is only valid in
-		// the context of an explicit transaction, so we don't need to handle
-		// implicit transactions.
-		eventTxnFinishPrepared{}: {
-			Description: "PREPARE TRANSACTION",
-			Next:        stateNoTxn{},
-			Action: func(args fsm.Args) error {
-				// Note that the KV txn has been prepared by the statement execution by
-				// this point and is being dissociated from the session.
-				return args.Extended.(*txnState).finishTxn(txnPrepare, advanceOne)
-			},
-		},
 		// Handle the errors in explicit txns.
 		eventNonRetriableErr{IsCommit: fsm.False}: {
 			Next: stateAborted{WasUpgraded: fsm.Var("wasUpgraded")},
 			Action: func(args fsm.Args) error {
 				ts := args.Extended.(*txnState)
-				func() {
-					ts.mu.Lock()
-					defer ts.mu.Unlock()
-					if !ts.mu.hasSavepoints {
-						_ = ts.mu.txn.Rollback(ts.Ctx)
-					}
-				}()
 				ts.setAdvanceInfo(skipBatch, noRewind, txnEvent{eventType: noEvent})
 				return nil
 			},
@@ -600,7 +560,6 @@ func noTxnToOpen(args fsm.Args) error {
 		payload.qualityOfService,
 		payload.isoLevel,
 		payload.omitInRangefeeds,
-		payload.bufferedWritesEnabled,
 	)
 	ts.setAdvanceInfo(
 		advCode,

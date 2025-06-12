@@ -108,14 +108,6 @@ func (m *MockTransactionalSender) SetOmitInRangefeeds() {
 	m.txn.OmitInRangefeeds = true
 }
 
-// SetBufferedWritesEnabled is part of the TxnSender interface.
-func (m *MockTransactionalSender) SetBufferedWritesEnabled(enabled bool) {}
-
-// BufferedWritesEnabled is part of the TxnSender interface.
-func (m *MockTransactionalSender) BufferedWritesEnabled() bool {
-	return false
-}
-
 // String is part of the TxnSender interface.
 func (m *MockTransactionalSender) String() string {
 	return m.txn.String()
@@ -218,9 +210,6 @@ func (m *MockTransactionalSender) ReleaseSavepoint(context.Context, SavepointTok
 func (m *MockTransactionalSender) CanUseSavepoint(context.Context, SavepointToken) bool {
 	panic("unimplemented")
 }
-
-// Key is part of the TxnSender interface.
-func (m *MockTransactionalSender) Key() roachpb.Key { panic("unimplemented") }
 
 // Epoch is part of the TxnSender interface.
 func (m *MockTransactionalSender) Epoch() enginepb.TxnEpoch { panic("unimplemented") }

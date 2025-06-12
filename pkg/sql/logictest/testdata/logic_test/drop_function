@@ -22,7 +22,6 @@ CREATE FUNCTION public.f_test_drop()
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -32,7 +31,6 @@ CREATE FUNCTION public.f_test_drop(INT8)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -46,7 +44,6 @@ CREATE FUNCTION sc1.f_test_drop(INT8)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -63,9 +60,6 @@ DROP FUNCTION IF EXISTS f_not_existing;
 statement error pgcode 42883 pq: unknown function: f_not_existing\(\)
 DROP FUNCTION f_not_existing;
 
-statement ok
-SET autocommit_before_ddl = false
-
 # drop a function twice should fail.
 statement error pgcode 42883 pq: function f_test_drop\(\) does not exist
 BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
@@ -75,9 +69,6 @@ COMMIT;
 
 statement ok
 ROLLBACK;
-
-statement ok
-RESET autocommit_before_ddl
 
 statement error pgcode 42883 procedure f_test_drop\(\) does not exist
 DROP PROCEDURE f_test_drop
@@ -103,7 +94,6 @@ CREATE FUNCTION public.f_test_drop(INT8)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -117,7 +107,6 @@ CREATE FUNCTION sc1.f_test_drop(INT8)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -139,7 +128,6 @@ CREATE FUNCTION sc1.f_test_drop(INT8)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -165,7 +153,6 @@ CREATE FUNCTION public.f_test_drop()
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -179,12 +166,11 @@ CREATE FUNCTION sc1.f_test_drop()
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
 
-statement ok
+statement ok;
 BEGIN;
 DROP FUNCTION f_test_drop();
 DROP FUNCTION f_test_drop();
@@ -219,23 +205,21 @@ CREATE FUNCTION f114677(v t114677_2) RETURNS INT LANGUAGE SQL AS $$ SELECT 1; $$
 query T nosort
 SELECT create_statement FROM [SHOW CREATE FUNCTION f114677] ORDER BY create_statement;
 ----
-CREATE FUNCTION public.f114677(v public.t114677)
+CREATE FUNCTION public.f114677(v T114677)
   RETURNS INT8
   VOLATILE
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 0;
 $$
-CREATE FUNCTION public.f114677(v public.t114677_2)
+CREATE FUNCTION public.f114677(v T114677_2)
   RETURNS INT8
   VOLATILE
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -249,13 +233,12 @@ DROP FUNCTION f114677(t114677);
 query T
 SELECT create_statement FROM [SHOW CREATE FUNCTION f114677];
 ----
-CREATE FUNCTION public.f114677(v public.t114677_2)
+CREATE FUNCTION public.f114677(v T114677_2)
   RETURNS INT8
   VOLATILE
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -274,24 +257,38 @@ subtest functions_calling_functions
 statement ok
 CREATE FUNCTION f_called_by_b() RETURNS INT LANGUAGE SQL AS $$ SELECT 1 $$;
 
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
 statement ok
 CREATE FUNCTION f_called_by_b2() RETURNS INT LANGUAGE SQL AS $$ SELECT 1 + f_called_by_b() $$;
 
-statement ok
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
+statement ok;
 CREATE FUNCTION f_b()  RETURNS INT LANGUAGE SQL AS $$ SELECT (f_called_by_b2()) /f_called_by_b2() FROM f_called_by_b() $$;
 
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
 statement error pgcode 2BP01 cannot drop function \"f_called_by_b\" because other objects \(\[test.public.f_called_by_b2, test.public.f_b\]\) still depend on it
 DROP FUNCTION f_called_by_b;
 
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
 statement error pgcode 2BP01 cannot drop function \"f_called_by_b2\" because other objects \(\[test.public.f_b\]\) still depend on it
 DROP FUNCTION f_called_by_b2;
 
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
 statement ok
 CREATE OR REPLACE FUNCTION f_b()  RETURNS INT LANGUAGE SQL AS $$ SELECT 1 $$;
 
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
 statement error pgcode 2BP01 cannot drop function \"f_called_by_b\" because other objects \(\[test.public.f_called_by_b2\]\) still depend on it
 DROP FUNCTION f_called_by_b;
 
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
 statement error pgcode 2BP01 cannot drop function \"f_called_by_b\" because other objects \(\[test.public.f_called_by_b2\]\) still depend on it
 DROP FUNCTION f_called_by_b;
 
@@ -301,6 +298,8 @@ CREATE SCHEMA altSchema;
 CREATE FUNCTION altSchema.f_called_by_b() RETURNS INT LANGUAGE SQL AS $$ SELECT 1 $$;
 CREATE TABLE t1_with_b_2_ref(j int default altSchema.f_called_by_b() CHECK (altSchema.f_called_by_b() > 0));
 
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
 statement error pgcode 0A000 cannot set schema for function \"f_called_by_b\" because other functions \(\[test.public.f_called_by_b2\]\) still depend on it
 ALTER FUNCTION f_called_by_b SET SCHEMA altSchema;
 
@@ -312,11 +311,12 @@ onlyif config local-legacy-schema-changer
 statement error pgcode 2BP01 cannot drop function \"f_called_by_b\" because other object \(\[test.public.t1_with_b_2_ref\]\) still depend on it
 DROP SCHEMA altSchema CASCADE;
 
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
 statement ok
 SELECT * FROM  f_called_by_b2();
 
 skipif config local-legacy-schema-changer
-skipif config local-schema-locked
 query T
 SELECT create_statement FROM [SHOW CREATE TABLE t1_with_b_2_ref];
 ----
@@ -324,35 +324,15 @@ CREATE TABLE public.t1_with_b_2_ref (
   j INT8 NULL,
   rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
   CONSTRAINT t1_with_b_2_ref_pkey PRIMARY KEY (rowid ASC)
-);
-
-onlyif config local-schema-locked
-skipif config local-legacy-schema-changer
-query T
-SELECT create_statement FROM [SHOW CREATE TABLE t1_with_b_2_ref];
-----
-CREATE TABLE public.t1_with_b_2_ref (
-  j INT8 NULL,
-  rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-  CONSTRAINT t1_with_b_2_ref_pkey PRIMARY KEY (rowid ASC)
-) WITH (schema_locked = true);
+)
 
 onlyif config local-legacy-schema-changer
 statement ok
 DROP FUNCTION f_called_by_b2;
 DROP TABLE t1_with_b_2_ref;
 
-statement ok
-SET ROLE testuser;
-
-# Check to ensure ownership is validated properly during a drop. This is a
-# regression test to ensure we populate a proper pgcode for our error.
-statement error pgcode 42501 must be owner of function f_b
-DROP FUNCTION f_b();
-
-statement ok
-SET ROLE root;
-
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
 statement ok
 DROP FUNCTION f_b;
 
@@ -409,11 +389,3 @@ CREATE FUNCTION f_bit(c BIT(0)) RETURNS INT LANGUAGE SQL AS 'SELECT 1'
 
 statement ok
 DROP FUNCTION f_bit(BIT(2))
-
-# Regression test for #142886 - we should be able to drop a function by
-# specifying the input type but without type width.
-statement ok
-CREATE FUNCTION f142886(p VARCHAR(10)) RETURNS INT LANGUAGE SQL AS $$ SELECT 0; $$;
-
-statement ok
-DROP FUNCTION f142886(VARCHAR);

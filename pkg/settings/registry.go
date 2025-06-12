@@ -235,52 +235,13 @@ var retiredSettings = map[InternalKey]struct{}{
 	"sql.drop_virtual_cluster.enabled":                       {},
 	"cross_cluster_replication.enabled":                      {},
 	"server.controller.default_tenant.check_service.enabled": {},
-
-	// removed as of 24.2
-	"storage.value_blocks.enabled":       {},
-	"kv.gc.sticky_hint.enabled":          {},
-	"kv.rangefeed.range_stuck_threshold": {},
-
-	// removed as of 24.3
-	"bulkio.backup.split_keys_on_timestamps":           {},
-	"sql.create_tenant.default_template":               {},
-	"kvadmission.low_pri_read_elastic_control.enabled": {},
-
-	// removed as of 25.1
-	"sql.auth.resolve_membership_single_scan.enabled":            {},
-	"storage.single_delete.crash_on_invariant_violation.enabled": {},
-	"storage.single_delete.crash_on_ineffectual.enabled":         {},
-	"bulkio.backup.elide_common_prefix.enabled":                  {},
-	"kv.bulkio.write_metadata_sst.enabled":                       {},
-	"jobs.execution_errors.max_entries":                          {},
-	"jobs.execution_errors.max_entry_size":                       {},
-	"sql.metrics.statement_details.plan_collection.enabled":      {},
-	"sql.metrics.statement_details.plan_collection.period":       {},
-
-	// removed as of 25.2
-	"kv.snapshot_receiver.excise.enabled":                    {},
-	"kv.mvcc_gc.queue_kv_admission_control.enabled":          {},
-	"sql.catalog.experimental_use_session_based_leasing":     {},
-	"bulkio.backup.merge_file_buffer_size":                   {},
-	"changefeed.new_webhook_sink_enabled":                    {},
-	"changefeed.new_webhook_sink.enabled":                    {},
-	"changefeed.new_pubsub_sink_enabled":                     {},
-	"changefeed.new_pubsub_sink.enabled":                     {},
-	"logical_replication.consumer.use_implicit_txns.enabled": {},
-
-	// removed as of 25.3
-	"sql.metrics.max_stmt_fingerprints_per_explicit_txn": {},
+	"sql.auth.resolve_membership_single_scan.enabled":        {},
 }
 
 // grandfatheredDefaultSettings is the list of "grandfathered" existing sql.defaults
 // cluster settings. In 22.2 and later, new session settings do not need an
-// associated sql.defaults cluster setting (see the `vector_search_beam_size`
-// setting in vars.go for an example). A session setting can have its default
-// changed with ALTER ROLE ... SET, similar to this (the example assumes that
-// all roles should use the new default):
-//
-//	ALTER ROLE ALL SET vector_search_beam_size=128;
-//
+// associated sql.defaults cluster setting. Instead they can have their default
+// changed with ALTER ROLE ... SET.
 // Caveat: in some cases, we may still add new sql.defaults cluster settings,
 // but the new ones *must* be marked as non-public. Undocumented settings are
 // excluded from the check that prevents new sql.defaults settings. The
@@ -293,7 +254,6 @@ var grandfatheredDefaultSettings = map[InternalKey]struct{}{
 	"sql.defaults.cost_scans_with_default_col_size.enabled":                     {},
 	"sql.defaults.datestyle":                                                    {},
 	"sql.defaults.datestyle.enabled":                                            {},
-	"sql.defaults.deadlock_timeout":                                             {},
 	"sql.defaults.default_hash_sharded_index_bucket_count":                      {},
 	"sql.defaults.default_int_size":                                             {},
 	"sql.defaults.disallow_full_table_scans.enabled":                            {},

@@ -593,12 +593,6 @@ func (c *coster) ComputeCost(candidate memo.RelExpr, required *physical.Required
 	case opt.ProjectSetOp:
 		cost = c.computeProjectSetCost(candidate.(*memo.ProjectSetExpr))
 
-	case opt.VectorSearchOp:
-		cost = c.computeVectorSearchCost(candidate.(*memo.VectorSearchExpr))
-
-	case opt.VectorMutationSearchOp:
-		cost = c.computeVectorMutationSearchCost(candidate.(*memo.VectorMutationSearchExpr))
-
 	case opt.InsertOp:
 		insertExpr, _ := candidate.(*memo.InsertExpr)
 		if len(insertExpr.FastPathUniqueChecks) != 0 {
@@ -763,16 +757,6 @@ func (c *coster) computeDistributeCost(
 	return DistributeCost
 }
 
-func (c *coster) computeVectorSearchCost(search *memo.VectorSearchExpr) memo.Cost {
-	// TODO(drewk, mw5h): implement a proper cost function.
-	return memo.Cost{C: cpuCostFactor * search.Relational().Statistics().RowCount}
-}
-
-func (c *coster) computeVectorMutationSearchCost(search *memo.VectorMutationSearchExpr) memo.Cost {
-	// TODO(drewk, mw5h): implement a proper cost function.
-	return memo.Cost{C: cpuCostFactor * search.Relational().Statistics().RowCount}
-}
-
 func (c *coster) computeScanCost(scan *memo.ScanExpr, required *physical.Required) memo.Cost {
 	if scan.Flags.ForceIndex && scan.Flags.Index != scan.Index || scan.Flags.ForceZigzag {
 		// If we are forcing an index, any other index has a very high cost. In
@@ -786,7 +770,7 @@ func (c *coster) computeScanCost(scan *memo.ScanExpr, required *physical.Require
 	// scan" for the purposes of the NO_FULL_SCAN and AVOID_FULL_SCAN hints
 	// (isUnfiltered is false for partial indexes), but if the user has explicitly
 	// forced the partial index, we do consider it a full scan.
-	isFullScan := isUnfiltered || (scan.Flags.ForceIndex && scan.IsFullIndexScan())
+	isFullScan := isUnfiltered || (scan.Flags.ForceIndex && scan.IsFullIndexScan(c.mem.Metadata()))
 	if scan.Flags.NoFullScan && isFullScan {
 		return hugeCost
 	}
@@ -797,9 +781,8 @@ func (c *coster) computeScanCost(scan *memo.ScanExpr, required *physical.Require
 
 	stats := scan.Relational().Statistics()
 	rowCount := stats.RowCount
-	if isUnfiltered && c.evalCtx != nil && c.evalCtx.SessionData().DisallowFullTableScans &&
-		!c.evalCtx.SessionData().Internal {
-		if !scan.IsVirtualTable(c.mem.Metadata()) {
+	if isUnfiltered && c.evalCtx != nil && c.evalCtx.SessionData().DisallowFullTableScans {
+		if !scan.IsVirtualTable(c.mem.Metadata()) || c.evalCtx.SessionData().OptimizerApplyFullScanPenaltyToVirtualTables {
 			// Don't apply the huge cost to full scans of virtual tables since
 			// we don't reject them anyway. In other words, we would only
 			// penalize plans with full scans of virtual tables, which might
@@ -837,7 +820,7 @@ func (c *coster) computeScanCost(scan *memo.ScanExpr, required *physical.Require
 	// choose a reverse scan over a sort, add the reverse scan cost before we
 	// alter the row count for unbounded scan penalties below. This cost must also
 	// be added before adjusting the row count for the limit hint.
-	if ordering.ScanIsReverse(c.mem, scan, &required.Ordering) {
+	if ordering.ScanIsReverse(scan, &required.Ordering) {
 		if rowCount > 1 {
 			// Need to do binary search to seek to the previous row.
 			perRowCost.C += math.Log2(rowCount) * cpuCostFactor
@@ -881,7 +864,7 @@ func (c *coster) computeScanCost(scan *memo.ScanExpr, required *physical.Require
 	if scan.Distribution.Regions != nil {
 		regionsAccessed = scan.Distribution
 	} else {
-		tabMeta := c.mem.Metadata().TableMeta(scan.Table)
+		tabMeta := scan.Memo().Metadata().TableMeta(scan.Table)
 		regionsAccessed.FromIndexScan(c.ctx, c.evalCtx, tabMeta, scan.Index, scan.Constraint)
 	}
 	if scan.LocalityOptimized {
@@ -890,12 +873,9 @@ func (c *coster) computeScanCost(scan *memo.ScanExpr, required *physical.Require
 	extraCost := c.distributionCost(regionsAccessed)
 	cost.Add(extraCost)
 
-	if isFullScan {
-		cost.IncrFullScanCount()
-		if scan.Flags.AvoidFullScan {
-			// Apply a penalty for a full scan if needed.
-			cost.Flags.FullScanPenalty = true
-		}
+	// Apply a penalty for a full scan if needed.
+	if scan.Flags.AvoidFullScan && isFullScan {
+		cost.Flags.FullScanPenalty = true
 	}
 
 	return cost
@@ -1110,7 +1090,7 @@ func (c *coster) computeLookupJoinCost(
 		join.LocalityOptimized,
 	)
 	_, provided := distribution.BuildLookupJoinLookupTableDistribution(
-		c.ctx, c.evalCtx, c.mem, join, required, c.MaybeGetBestCostRelation)
+		c.ctx, c.evalCtx, join, required, c.MaybeGetBestCostRelation)
 	extraCost := c.distributionCost(provided)
 	cost.Add(extraCost)
 	return cost
@@ -1268,7 +1248,7 @@ func (c *coster) computeInvertedJoinCost(
 
 	cost.C += rowsProcessed * perRowCost.C
 
-	provided := distribution.BuildInvertedJoinLookupTableDistribution(c.ctx, c.evalCtx, c.mem, join)
+	provided := distribution.BuildInvertedJoinLookupTableDistribution(c.ctx, c.evalCtx, join)
 	extraCost := c.distributionCost(provided)
 	cost.Add(extraCost)
 	return cost

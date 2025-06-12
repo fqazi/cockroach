@@ -7,9 +7,7 @@ package server
 
 import (
 	"context"
-	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/authserver"
@@ -19,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/errors/errorspb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -41,19 +38,16 @@ func (s *systemStatusServer) DownloadSpan(
 	ctx = s.AnnotateCtx(ctx)
 
 	resp := &serverpb.DownloadSpanResponse{
-		Errors: make(map[roachpb.NodeID]errorspb.EncodedError),
+		ErrorsByNodeID: make(map[roachpb.NodeID]string),
 	}
 	if len(req.NodeID) > 0 {
 		_, local, err := s.parseNodeID(req.NodeID)
 		if err != nil {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
+			return nil, status.Errorf(codes.InvalidArgument, err.Error())
 		}
 
 		if local {
-			if err := s.localDownloadSpan(ctx, req); err != nil {
-				resp.Errors[s.node.Descriptor.NodeID] = errors.EncodeError(ctx, err)
-			}
-			return resp, nil
+			return resp, s.localDownloadSpan(ctx, req)
 		}
 
 		return nil, errors.AssertionFailedf("requesting download on a specific node is not supported yet")
@@ -65,15 +59,9 @@ func (s *systemStatusServer) DownloadSpan(
 	nodeFn := func(ctx context.Context, status serverpb.StatusClient, _ roachpb.NodeID) (*serverpb.DownloadSpanResponse, error) {
 		return status.DownloadSpan(ctx, &remoteRequest)
 	}
-	responseFn := func(nodeID roachpb.NodeID, downloadSpanResp *serverpb.DownloadSpanResponse) {
-		for i, e := range downloadSpanResp.Errors {
-			resp.Errors[i] = e
-		}
-	}
+	responseFn := func(nodeID roachpb.NodeID, downloadSpanResp *serverpb.DownloadSpanResponse) {}
 	errorFn := func(nodeID roachpb.NodeID, err error) {
-		if _, ok := resp.Errors[nodeID]; !ok {
-			resp.Errors[nodeID] = errors.EncodeError(ctx, err)
-		}
+		resp.ErrorsByNodeID[nodeID] = err.Error()
 	}
 
 	if err := iterateNodes(ctx, s.serverIterator, s.stopper, "download spans",
@@ -94,43 +82,15 @@ func (s *systemStatusServer) localDownloadSpan(
 ) error {
 	return s.stores.VisitStores(func(store *kvserver.Store) error {
 		downloadSpansCh := make(chan roachpb.Span)
-		stopDiskMonCh := make(chan struct{})
-		e := store.StateEngine()
 		return ctxgroup.GoAndWait(ctx,
-			// Download until downloadSpansCh closes, then close stopMonCh.
+			// Download until downloadSpansCh closes, then close stopTuningCh.
 			func(ctx context.Context) error {
-				defer close(stopDiskMonCh)
-				return downloadSpans(ctx, e, downloadSpansCh, req.ViaBackingFileDownload)
+				return downloadSpans(ctx, store.StateEngine(), downloadSpansCh, req.ViaBackingFileDownload)
 			},
 			// Send spans to downloadSpansCh.
 			func(ctx context.Context) error {
 				defer close(downloadSpansCh)
 				return sendDownloadSpans(ctx, req.Spans, downloadSpansCh)
-			},
-			func(ctx context.Context) error {
-				tick := time.NewTicker(time.Second * 15)
-				defer tick.Stop()
-
-				for {
-					select {
-					case <-stopDiskMonCh:
-						return nil
-					case <-ctx.Done():
-						return nil
-					case <-tick.C:
-						if min := storage.MinCapacityForBulkIngest.Get(&s.st.SV); min > 0 {
-							cap, err := e.Capacity()
-							if err != nil {
-								return err
-							}
-							if 1-cap.FractionUsed() < min {
-								return &kvpb.InsufficientSpaceError{
-									StoreID: store.StoreID(), Op: "ingest data", Available: cap.Available, Capacity: cap.Capacity, Required: min,
-								}
-							}
-						}
-					}
-				}
 			},
 		)
 	})

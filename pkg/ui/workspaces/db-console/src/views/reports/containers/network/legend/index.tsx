@@ -4,11 +4,12 @@
 // included in the /LICENSE file.
 
 import { Tooltip } from "antd";
-import React from "react";
-
-import { Text, TextTypes } from "src/components";
+import "antd/lib/divider/style";
+import "antd/lib/tooltip/style";
 import { Chip } from "src/views/app/components/chip";
+import React from "react";
 import "./legend.styl";
+import { Text, TextTypes } from "src/components";
 
 interface ILegendProps {
   stddevMinus2: number;

@@ -215,18 +215,13 @@ func (c *SyncedCluster) DiscoverService(
 
 	// Finally, fall back to the default ports if no services are found. This is
 	// required for scenarios where the services were not registered with a DNS
-	// provider (Google DNS). Currently, services will not be registered in the
-	// following scenarios:
-	//
-	// 1. A system interface started with default ports. This is an optimisation
-	// to avoid the overhead of registering services when starting a storage
-	// cluster with default ports.
-	// 2. Clusters not on GCP
-	// 3. Clusters that specify a custom project.
-	//
-	// The fall back is also useful for
+	// provider (Google DNS). Currently, services will not be registered with DNS
+	// for clusters not on GCP, and it will also not be registered for GCP
+	// clusters that specify a custom project. The fall back is also useful for
 	// backwards compatibility with clusters that were created before the
 	// introduction of service discovery, or without a DNS provider.
+	// TODO(Herko): Remove this once DNS support is fully
+	// functional.
 	if len(services) == 0 {
 		var port int
 		switch serviceType {
@@ -259,8 +254,7 @@ func (c *SyncedCluster) ListLoadBalancers(l *logger.Logger) ([]vm.ServiceAddress
 		if listErr != nil {
 			return listErr
 		}
-		lock.Lock()
-		defer lock.Unlock()
+		defer lock.Lock()
 		allAddresses = append(allAddresses, addresses...)
 		return nil
 	})
@@ -507,20 +501,4 @@ func (c *SyncedCluster) TargetDNSName(node Node) string {
 	}
 	// Targets always end with a period as per SRV record convention.
 	return fmt.Sprintf("%s.%s", cVM.PublicDNS, postfix)
-}
-
-// FindLoadBalancer returns the first load balancer address that matches the
-// given port. If no load balancer is found, an error is returned.
-func (c *SyncedCluster) FindLoadBalancer(l *logger.Logger, port int) (*vm.ServiceAddress, error) {
-	addresses, err := c.ListLoadBalancers(l)
-	if err != nil {
-		return nil, err
-	}
-	// Find the load balancer with the matching port.
-	for _, a := range addresses {
-		if a.Port == port {
-			return &a, nil
-		}
-	}
-	return nil, errors.Newf("no load balancer found for port %d", port)
 }

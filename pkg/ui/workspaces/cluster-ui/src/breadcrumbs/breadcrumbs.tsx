@@ -3,10 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classnames from "classnames/bind";
 import React, { FunctionComponent, ReactElement } from "react";
 import { Link } from "react-router-dom";
-
+import classnames from "classnames/bind";
 import styles from "./breadcrumbs.module.scss";
 
 export interface BreadcrumbItem {
@@ -29,11 +28,10 @@ export const Breadcrumbs: FunctionComponent<BreadcrumbsProps> = ({
   if (items.length === 0) {
     return null;
   }
-  const lastItem = items.slice(-1)[0];
-  const itemsWithoutLast = items.slice(0, -1);
+  const lastItem = items.pop();
   return (
     <div className={cx("breadcrumbs")}>
-      {itemsWithoutLast.map(({ link, name, onClick = () => {} }) => (
+      {items.map(({ link, name, onClick = () => {} }) => (
         <div className={cx("breadcrumbs__item")} key={link}>
           <Link
             className={cx("breadcrumbs__item--link")}

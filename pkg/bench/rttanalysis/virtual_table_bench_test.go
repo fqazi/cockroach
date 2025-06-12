@@ -36,7 +36,6 @@ CREATE TABLE t2 (i INT PRIMARY KEY, j INT REFERENCES t1(i));
 		{
 			Name: "virtual table cache with schema change",
 			Setup: `
-SET autocommit_before_ddl = false;
 CREATE TABLE t1 (i INT PRIMARY KEY);
 CREATE TABLE t2 (i INT PRIMARY KEY, j INT);`,
 			Stmt: `
@@ -45,7 +44,6 @@ ALTER TABLE t1 ADD COLUMN j INT;
 SELECT * FROM crdb_internal.table_columns;
 CREATE INDEX idx ON t2 (j);
 SELECT * FROM crdb_internal.index_columns;`,
-			Reset: "RESET autocommit_before_ddl;",
 		},
 		// This checks that catalog point lookups following a virtual table scan
 		// access cached descriptors.

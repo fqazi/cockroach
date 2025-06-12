@@ -46,9 +46,6 @@ type Table interface {
 	// that they cannot be mutated.
 	IsMaterializedView() bool
 
-	// LookupColumnOrdinal returns the ordinal of the column with the given ID.
-	LookupColumnOrdinal(colID descpb.ColumnID) (int, error)
-
 	// ColumnCount returns the number of columns in the table. This includes
 	// public columns, write-only columns, etc.
 	ColumnCount() int
@@ -175,29 +172,9 @@ type Table interface {
 	// owning database could not be determined.
 	GetDatabaseID() descpb.ID
 
-	// GetSchemaID returns the owning schema id of the table, or zero, if the
-	// owning schema could not be determined.
-	GetSchemaID() descpb.ID
-
 	// IsHypothetical returns true if this is a hypothetical table (used when
 	// searching for index recommendations).
 	IsHypothetical() bool
-
-	// TriggerCount returns the number of triggers present on the table.
-	TriggerCount() int
-
-	// Trigger returns the ith trigger, where i < TriggerCount.
-	Trigger(i int) Trigger
-
-	// IsRowLevelSecurityEnabled is true if policies should be applied during the query.
-	IsRowLevelSecurityEnabled() bool
-
-	// IsRowLevelSecurityForced is true if row-level security policies should be
-	// applied to the table owner.
-	IsRowLevelSecurityForced() bool
-
-	// Policies returns all the policies defined for this table.
-	Policies() *Policies
 }
 
 // CheckConstraint represents a check constraint on a table. Check constraints
@@ -219,10 +196,6 @@ type CheckConstraint interface {
 	// ColumnOrdinal returns the table column ordinal of the ith column in this
 	// constraint.
 	ColumnOrdinal(i int) int
-
-	// IsRLSConstraint is true if this is a constraint used to enforce
-	// row-level security policies.
-	IsRLSConstraint() bool
 }
 
 // TableStatistic is an interface to a table statistic. Each statistic is
@@ -383,12 +356,6 @@ type UniqueConstraint interface {
 
 	// WithoutIndex is true if this unique constraint is not enforced by an index.
 	WithoutIndex() bool
-
-	// TombstoneIndexOrdinal returns the index ordinal of the index into which to write
-	// tombstones for the enforcement of this uniqueness constraint, or -1 if this
-	// constraint is not enforceable with tombstones. 'ok' is true if this constraint is
-	// enforceable with tombstones, false otherwise.
-	TombstoneIndexOrdinal() (_ IndexOrdinal, ok bool)
 
 	// Validated is true if the constraint is validated (i.e. we know that the
 	// existing data satisfies the constraint). It is possible to set up a unique

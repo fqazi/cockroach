@@ -9,11 +9,9 @@ import React, {
   useImperativeHandle,
   useState,
 } from "react";
-
-import { ICancelQueryRequest } from "src/store/terminateQuery";
-
 import { Modal } from "../modal";
 import { Text } from "../text";
+import { ICancelQueryRequest } from "src/store/terminateQuery";
 export interface TerminateQueryModalRef {
   showModalFor: (req: ICancelQueryRequest) => void;
 }
@@ -22,10 +20,10 @@ interface TerminateQueryModalProps {
   cancel: (payload: ICancelQueryRequest) => void;
 }
 
-const TerminateQueryModal: React.ForwardRefRenderFunction<
-  TerminateQueryModalRef,
-  TerminateQueryModalProps
-> = (props, ref) => {
+const TerminateQueryModal = (
+  props: TerminateQueryModalProps,
+  ref: React.RefObject<TerminateQueryModalRef>,
+) => {
   const { cancel } = props;
   const [visible, setVisible] = useState(false);
   const [req, setReq] = useState<ICancelQueryRequest>();

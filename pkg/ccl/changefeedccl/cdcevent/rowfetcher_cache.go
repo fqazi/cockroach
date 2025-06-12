@@ -38,59 +38,80 @@ var traceKVLogFrequency = settings.RegisterDurationSetting(
 	"changefeed.cdcevent.trace_kv.log_frequency",
 	"controls how frequently KVs are logged when KV tracing is enabled",
 	500*time.Millisecond,
+	settings.NonNegativeDuration,
 )
 
 // rowFetcherCache maintains a cache of single table row.Fetchers. Given a key
-// with an MVCC timestamp, it retrieves the correct TableDescriptor for that key
+// with an mvcc timestamp, it retrieves the correct TableDescriptor for that key
 // and returns a row.Fetcher initialized with that table. This Fetcher's
 // ConsumeKVProvider() can be used to turn that key (or all the keys making up
 // the column families of one row) into a row.
 type rowFetcherCache struct {
 	codec           keys.SQLCodec
-	descFetcher     tableDescFetcher
+	leaseMgr        *lease.Manager
 	fetchers        *cache.UnorderedCache
 	watchedFamilies map[watchedFamily]struct{}
+
+	collection *descs.Collection
+	db         *kv.DB
 
 	rfArgs rowFetcherArgs
 
 	a tree.DatumAlloc
 }
 
-type tableDescFetcher interface {
-	// FetchTableDesc returns the TableDescriptor for the gven descriptor ID at the given timestamp.
-	FetchTableDesc(context.Context, descpb.ID, hlc.Timestamp) (catalog.TableDescriptor, error)
+// rowFetcherArgs contains arguments to pass to all row fetchers
+// created by this cache.
+type rowFetcherArgs struct {
+	traceKV             bool
+	traceKVLogFrequency time.Duration
 }
 
-// dbTableDescFetcher is a tableDescFetcher that fetches table
-// descriptors from the underlying descriptor collection and DB.
-type dbTableDescFetcher struct {
-	leaseMgr   *lease.Manager
-	collection *descs.Collection
-	db         *kv.DB
+type cachedFetcher struct {
+	tableDesc  catalog.TableDescriptor
+	fetcher    row.Fetcher
+	familyDesc descpb.ColumnFamilyDescriptor
+	skip       bool
 }
 
-func (f *dbTableDescFetcher) FetchTableDesc(
-	ctx context.Context, tableID descpb.ID, ts hlc.Timestamp,
-) (catalog.TableDescriptor, error) {
-	// Retrieve the target TableDescriptor from the lease manager. No caching
-	// is attempted because the lease manager does its own caching.
-	desc, err := f.leaseMgr.Acquire(ctx, ts, tableID)
-	if err != nil {
-		// Manager can return all kinds of errors during chaos, but based on
-		// its usage, none of them should ever be terminal.
-		return nil, changefeedbase.MarkRetryableError(err)
+type watchedFamily struct {
+	tableID    descpb.ID
+	familyName string
+}
+
+// newRowFetcherCache constructs row fetcher cache.
+func newRowFetcherCache(
+	ctx context.Context,
+	codec keys.SQLCodec,
+	leaseMgr *lease.Manager,
+	cf *descs.CollectionFactory,
+	db *kv.DB,
+	s *cluster.Settings,
+	targets changefeedbase.Targets,
+) (*rowFetcherCache, error) {
+	if targets.Size == 0 {
+		return nil, errors.AssertionFailedf("Expected at least one target, found 0")
 	}
-	tableDesc := desc.Underlying().(catalog.TableDescriptor)
-	// Immediately release the lease, since we only need it for the exact
-	// timestamp requested.
-	desc.Release(ctx)
-	if tableDesc.MaybeRequiresTypeHydration() {
-		tableDesc, err = refreshUDT(ctx, tableID, f.db, f.collection, ts)
-		if err != nil {
-			return nil, err
-		}
+	watchedFamilies := make(map[watchedFamily]struct{}, targets.Size)
+	err := targets.EachTarget(func(t changefeedbase.Target) error {
+		watchedFamilies[watchedFamily{tableID: t.TableID, familyName: t.FamilyName}] = struct{}{}
+		return nil
+	})
+	if len(watchedFamilies) == 0 {
+		return nil, errors.AssertionFailedf("No watched families resulted from %+v", targets)
 	}
-	return tableDesc, nil
+	return &rowFetcherCache{
+		codec:           codec,
+		leaseMgr:        leaseMgr,
+		collection:      cf.NewCollection(ctx),
+		db:              db,
+		fetchers:        cache.NewUnorderedCache(DefaultCacheConfig),
+		watchedFamilies: watchedFamilies,
+		rfArgs: rowFetcherArgs{
+			traceKV:             log.V(row.TraceKVVerbosity),
+			traceKVLogFrequency: traceKVLogFrequency.Get(&s.SV),
+		},
+	}, err
 }
 
 func refreshUDT(
@@ -129,78 +150,10 @@ func refreshUDT(
 	return tableDesc, nil
 }
 
-// rowFetcherArgs contains arguments to pass to all row fetchers
-// created by this cache.
-type rowFetcherArgs struct {
-	traceKV             bool
-	traceKVLogFrequency time.Duration
-}
-
-type cachedFetcher struct {
-	tableDesc  catalog.TableDescriptor
-	fetcher    row.Fetcher
-	familyDesc descpb.ColumnFamilyDescriptor
-	skip       bool
-}
-
-type watchedFamily struct {
-	tableID    descpb.ID
-	familyName string
-}
-
-// newRowFetcherCache constructs row fetcher cache.
-func newRowFetcherCache(
-	ctx context.Context,
-	codec keys.SQLCodec,
-	leaseMgr *lease.Manager,
-	cf *descs.CollectionFactory,
-	db *kv.DB,
-	s *cluster.Settings,
-	targets changefeedbase.Targets,
-) (*rowFetcherCache, error) {
-	watchedFamilies, err := watchedFamilesFromTarget(targets)
-	if err != nil {
-		return nil, err
-	}
-
-	return &rowFetcherCache{
-		codec: codec,
-		descFetcher: &dbTableDescFetcher{
-			leaseMgr:   leaseMgr,
-			db:         db,
-			collection: cf.NewCollection(ctx),
-		},
-		fetchers:        cache.NewUnorderedCache(DefaultCacheConfig),
-		watchedFamilies: watchedFamilies,
-		rfArgs: rowFetcherArgs{
-			traceKV:             log.V(row.TraceKVVerbosity),
-			traceKVLogFrequency: traceKVLogFrequency.Get(&s.SV),
-		},
-	}, nil
-}
-
-func watchedFamilesFromTarget(targets changefeedbase.Targets) (map[watchedFamily]struct{}, error) {
-	if targets.Size == 0 {
-		return nil, errors.AssertionFailedf("Expected at least one target, found 0")
-	}
-	watchedFamilies := make(map[watchedFamily]struct{}, targets.Size)
-	err := targets.EachTarget(func(t changefeedbase.Target) error {
-		watchedFamilies[watchedFamily{tableID: t.TableID, familyName: t.FamilyName}] = struct{}{}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(watchedFamilies) == 0 {
-		return nil, errors.AssertionFailedf("No watched families resulted from %+v", targets)
-	}
-
-	return watchedFamilies, nil
-}
-
 func (c *rowFetcherCache) tableDescForKey(
 	ctx context.Context, key roachpb.Key, ts hlc.Timestamp,
 ) (catalog.TableDescriptor, descpb.FamilyID, error) {
+	var tableDesc catalog.TableDescriptor
 	key, err := c.codec.StripTenantPrefix(key)
 	if err != nil {
 		return nil, descpb.FamilyID(0), err
@@ -217,10 +170,25 @@ func (c *rowFetcherCache) tableDescForKey(
 
 	family := descpb.FamilyID(familyID)
 
-	tableDesc, err := c.descFetcher.FetchTableDesc(ctx, tableID, ts)
+	// Retrieve the target TableDescriptor from the lease manager. No caching
+	// is attempted because the lease manager does its own caching.
+	desc, err := c.leaseMgr.Acquire(ctx, ts, tableID)
 	if err != nil {
-		return nil, family, err
+		// Manager can return all kinds of errors during chaos, but based on
+		// its usage, none of them should ever be terminal.
+		return nil, family, changefeedbase.MarkRetryableError(err)
 	}
+	tableDesc = desc.Underlying().(catalog.TableDescriptor)
+	// Immediately release the lease, since we only need it for the exact
+	// timestamp requested.
+	desc.Release(ctx)
+	if catalog.MaybeRequiresHydration(tableDesc) {
+		tableDesc, err = refreshUDT(ctx, tableID, c.db, c.collection, ts)
+		if err != nil {
+			return nil, family, err
+		}
+	}
+
 	// Skip over the column data.
 	for skippedCols := 0; skippedCols < tableDesc.GetPrimaryIndex().NumKeyColumns(); skippedCols++ {
 		l, err := encoding.PeekLength(remaining)
@@ -326,59 +294,4 @@ func (c *rowFetcherCache) RowFetcherForColumnFamily(
 
 	c.fetchers.Add(idVer, f)
 	return rf, familyDesc, nil
-}
-
-// fixedDescFetcher is a tableDescFetcher that returns descriptors from a given
-// fixed set of descriptors.
-type fixedDescFetcher struct {
-	descCol map[descpb.ID]catalog.TableDescriptor
-}
-
-// FetchTableDesc implements tableDescFetcher. Note that the timestamp is
-// currently ignored.
-func (f *fixedDescFetcher) FetchTableDesc(
-	_ context.Context, id descpb.ID, _ hlc.Timestamp,
-) (catalog.TableDescriptor, error) {
-	if tableDesc, ok := f.descCol[id]; ok {
-		return tableDesc, nil
-	} else {
-		return nil, errors.Newf("could not find descriptor for %d in fixed descriptor set", id)
-	}
-}
-
-// newFixedRowFetcherCache constructs row fetcher cache that uses only the fixed
-// set of descriptors provided.
-//
-// TODO(ssd): This may not be necessary into the future if we push this logic
-// down into the descriptor collection exactly.
-//
-// TODO(ssd): If we do keep this, what we likely want here is to inject a
-// descFetcher that can be served off of a feed of schema updates from a
-// rnagefeed and which respects timestamps.
-//
-// TODO(ssd): Right now we take a collection of TableDescriptors. I don't think
-// this correctly supports UDTs at the moment.
-func NewFixedRowFetcherCache(
-	ctx context.Context,
-	codec keys.SQLCodec,
-	s *cluster.Settings,
-	targets changefeedbase.Targets,
-	descs map[descpb.ID]catalog.TableDescriptor,
-) (*rowFetcherCache, error) {
-	watchedFamilies, err := watchedFamilesFromTarget(targets)
-	if err != nil {
-		return nil, err
-	}
-	return &rowFetcherCache{
-		codec: codec,
-		descFetcher: &fixedDescFetcher{
-			descCol: descs,
-		},
-		fetchers:        cache.NewUnorderedCache(DefaultCacheConfig),
-		watchedFamilies: watchedFamilies,
-		rfArgs: rowFetcherArgs{
-			traceKV:             log.V(row.TraceKVVerbosity),
-			traceKVLogFrequency: traceKVLogFrequency.Get(&s.SV),
-		},
-	}, nil
 }

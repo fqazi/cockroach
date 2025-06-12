@@ -22,11 +22,9 @@ import (
 
 // RemoteClockMetrics is the collection of metrics for the clock monitor.
 type RemoteClockMetrics struct {
-	ClockOffsetMeanNanos         *metric.Gauge
-	ClockOffsetStdDevNanos       *metric.Gauge
-	ClockOffsetMedianNanos       *metric.Gauge
-	ClockOffsetMedianAbsDevNanos *metric.Gauge
-	RoundTripLatency             metric.IHistogram
+	ClockOffsetMeanNanos   *metric.Gauge
+	ClockOffsetStdDevNanos *metric.Gauge
+	RoundTripLatency       metric.IHistogram
 }
 
 // avgLatencyMeasurementAge determines how to exponentially weight the
@@ -42,9 +40,6 @@ var (
 		Help:        "Mean clock offset with other nodes",
 		Measurement: "Clock Offset",
 		Unit:        metric.Unit_NANOSECONDS,
-		Essential:   true,
-		Category:    metric.Metadata_NETWORKING,
-		HowToUse:    "This metric gives the node's clock skew. In a well-configured environment, the actual clock skew would be in the sub-millisecond range. A skew exceeding 5 ms is likely due to a NTP service mis-configuration. Reducing the actual clock skew reduces the probability of uncertainty related conflicts and corresponding retires which has a positive impact on workload performance. Conversely, a larger actual clock skew increases the probability of retries due to uncertainty conflicts, with potentially measurable adverse effects on workload performance.",
 	}
 	metaClockOffsetStdDevNanos = metric.Metadata{
 		Name:        "clock-offset.stddevnanos",
@@ -52,24 +47,7 @@ var (
 		Measurement: "Clock Offset",
 		Unit:        metric.Unit_NANOSECONDS,
 	}
-	metaClockOffsetMedianNanos = metric.Metadata{
-		// An outlier resistant measure of centrality, useful for
-		// diagnosing unhealthy nodes.
-		// Demo: https://docs.google.com/spreadsheets/d/1gmzQxEVYDKb_b-Mn50ZTje-LqZw6TZwUxxUPY2rG69M/edit?gid=0#gid=0
-		Name:        "clock-offset.mediannanos",
-		Help:        "Median clock offset with other nodes",
-		Measurement: "Clock Offset",
-		Unit:        metric.Unit_NANOSECONDS,
-	}
-	metaClockOffsetMedianAbsDevNanos = metric.Metadata{
-		// An outlier resistant measure of dispersion, see
-		// https://en.wikipedia.org/wiki/Median_absolute_deviation
-		// and demo above.
-		Name:        "clock-offset.medianabsdevnanos",
-		Help:        "Median Absolute Deviation (MAD) with other nodes",
-		Measurement: "Clock Offset",
-		Unit:        metric.Unit_NANOSECONDS,
-	}
+
 	metaConnectionRoundTripLatency = metric.Metadata{
 		// NB: the name is legacy and should not be changed since customers
 		// rely on it.
@@ -165,10 +143,8 @@ func newRemoteClockMonitor(
 		histogramWindowInterval = time.Duration(math.MaxInt64)
 	}
 	r.metrics = RemoteClockMetrics{
-		ClockOffsetMeanNanos:         metric.NewGauge(metaClockOffsetMeanNanos),
-		ClockOffsetStdDevNanos:       metric.NewGauge(metaClockOffsetStdDevNanos),
-		ClockOffsetMedianNanos:       metric.NewGauge(metaClockOffsetMedianNanos),
-		ClockOffsetMedianAbsDevNanos: metric.NewGauge(metaClockOffsetMedianAbsDevNanos),
+		ClockOffsetMeanNanos:   metric.NewGauge(metaClockOffsetMeanNanos),
+		ClockOffsetStdDevNanos: metric.NewGauge(metaClockOffsetStdDevNanos),
 		RoundTripLatency: metric.NewHistogram(metric.HistogramOptions{
 			Mode:     metric.HistogramModePreferHdrLatency,
 			Metadata: metaConnectionRoundTripLatency,
@@ -368,18 +344,8 @@ func (r *RemoteClockMonitor) VerifyClockOffset(ctx context.Context) error {
 	if err != nil && !errors.Is(err, stats.EmptyInput) {
 		return err
 	}
-	median, err := offsets.Median()
-	if err != nil && !errors.Is(err, stats.EmptyInput) {
-		return err
-	}
-	medianAbsoluteDeviation, err := offsets.MedianAbsoluteDeviation()
-	if err != nil && !errors.Is(err, stats.EmptyInput) {
-		return err
-	}
 	r.metrics.ClockOffsetMeanNanos.Update(int64(mean))
 	r.metrics.ClockOffsetStdDevNanos.Update(int64(stdDev))
-	r.metrics.ClockOffsetMedianNanos.Update(int64(median))
-	r.metrics.ClockOffsetMedianAbsDevNanos.Update(int64(medianAbsoluteDeviation))
 
 	if numClocks > 0 && healthyOffsetCount <= numClocks/2 {
 		return errors.Errorf(
@@ -420,9 +386,6 @@ func (r RemoteOffset) isHealthy(ctx context.Context, toleratedOffset time.Durati
 }
 
 func (r RemoteOffset) isStale(ttl time.Duration, now time.Time) bool {
-	if ttl == 0 {
-		return false // ttl disabled
-	}
 	return r.measuredAt().Add(ttl).Before(now)
 }
 

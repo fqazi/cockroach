@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,9 +37,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
@@ -484,14 +483,14 @@ func TestTxnCoordSenderCommitCanceled(t *testing.T) {
 	// blockCommits is used to block commit responses for a given txn. The key is
 	// a txn ID, and the value is a ready channel (chan struct) that will be
 	// closed when the commit has been received and blocked.
-	var blockCommits syncutil.Map[uuid.UUID, chan struct{}]
+	var blockCommits sync.Map
 	responseFilter := func(_ context.Context, ba *kvpb.BatchRequest, _ *kvpb.BatchResponse) *kvpb.Error {
 		if arg, ok := ba.GetArg(kvpb.EndTxn); ok && ba.Txn != nil {
 			et := arg.(*kvpb.EndTxnRequest)
 			readyC, ok := blockCommits.Load(ba.Txn.ID)
 			if ok && et.Commit && len(et.InFlightWrites) == 0 {
-				close(*readyC) // notify test that commit is received and blocked
-				<-ctx.Done()   // wait for test to complete (NB: not the passed context)
+				close(readyC.(chan struct{})) // notify test that commit is received and blocked
+				<-ctx.Done()                  // wait for test to complete (NB: not the passed context)
 			}
 		}
 		return nil
@@ -522,7 +521,7 @@ func TestTxnCoordSenderCommitCanceled(t *testing.T) {
 	// Commit the transaction, but ask the response filter to block the final
 	// async commit sent by txnCommitter to make the implicit commit explicit.
 	readyC := make(chan struct{})
-	blockCommits.Store(txn.ID(), &readyC)
+	blockCommits.Store(txn.ID(), readyC)
 	require.NoError(t, txn.Commit(ctx))
 	<-readyC
 
@@ -984,6 +983,65 @@ func testTxnCoordSenderTxnUpdatedOnError(t *testing.T, isoLevel isolation.Level)
 			}
 		})
 	}
+}
+
+// TestWTOBitTerminatedOnErrorResponses is a regression test for #85711. It
+// ensures that when batch request errors have the WTO bit set, subsequent
+// request don't carry that bit (something that's asserted on in client-side
+// interceptors).
+func TestWTOBitTerminatedOnErrorResponses(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	ctx := context.Background()
+
+	keyA := roachpb.Key("a")
+	keyB := roachpb.Key("b")
+
+	s, _, db := serverutils.StartServer(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
+
+	// Split to ensure batch requests get split through the distsender.
+	require.NoError(t, db.AdminSplit(
+		ctx,
+		keyB,             /* splitKey */
+		hlc.MaxTimestamp, /* expirationTime */
+	))
+
+	// Write a key that the txn-al CPut below doesn't expect, failing the batch
+	// request.
+	require.NoError(t, db.Put(ctx, keyB, []byte("b-unexpected")))
+
+	txn := db.NewTxn(ctx, "root")
+
+	// Read a key to pin the read timestamp. We'll use it to trigger to WTO
+	// error below.
+	b0 := txn.NewBatch()
+	b0.Get(keyB)
+	require.NoError(t, txn.Run(ctx, b0))
+
+	// Write to keyA out-of-band to induce a WTO condition in the txn-al Put
+	// below.
+	require.NoError(t, db.Put(ctx, keyA, "a-unexpected"))
+
+	// Send a batch (as part of a leaf txn) that will be split into two
+	// sub-batches: [Put(a), CPut(b, nil)]. Put(a) should observe the WTO bit
+	// set in the batch response, whereas the CPut induces an error response.
+	// Since these are two separate requests, the error response is combined
+	// with the batch request such that the error itself has the WTO bit set. In
+	// #85711 we observed that the bit was not terminated on the client side,
+	// and subsequent requests were issued with the WTO bit set, which tripped
+	// up assertions.
+	b1 := txn.NewBatch()
+	b1.Put(keyA, "a")
+	b1.CPut(keyB, "b", nil /* expValue */)
+	require.True(t, testutils.IsError(txn.Run(ctx, b1), "unexpected value"))
+	require.False(t, txn.TestingCloneTxn().WriteTooOld) // WTO bit is terminated
+
+	b2 := txn.NewBatch()
+	b2.Put(keyB, "b")
+	require.NoError(t, txn.Run(ctx, b2))
+	require.False(t, txn.TestingCloneTxn().WriteTooOld) // WTO bit is terminated
+	require.NoError(t, txn.Commit(ctx))
 }
 
 // TestTxnMultipleCoord checks that multiple txn coordinators can be
@@ -2836,16 +2894,7 @@ func TestPutsInStagingTxn(t *testing.T) {
 	s, _, db := serverutils.StartServer(t,
 		base.TestServerArgs{
 			Settings: settings,
-			Knobs: base.TestingKnobs{
-				Store: &storeKnobs,
-				KVClient: &kvcoord.ClientTestingKnobs{
-					// Disable randomization of the transaction's anchor key so that the
-					// txn record, and by extension the EndTxn request constructed to
-					// commit the transaction, ends up on the same range on which the
-					// first write is performed.
-					DisableTxnAnchorKeyRandomization: true,
-				},
-			},
+			Knobs:    base.TestingKnobs{Store: &storeKnobs},
 		})
 	defer s.Stopper().Stop(ctx)
 
@@ -2862,11 +2911,10 @@ func TestPutsInStagingTxn(t *testing.T) {
 	require.NoError(t, db.Put(ctx, keyB, "b"))
 
 	// Send a batch that will be split into two sub-batches: [Put(a)+EndTxn,
-	// Put(b)] (the EndTxn is grouped with the first write because we've disabled
-	// randomization). These sub-batches are sent serially since we've inhibited
-	// the DistSender's concurrency. The first one will transition the txn to
-	// STAGING, and the DistSender will use that updated txn when sending the 2nd
-	// sub-batch.
+	// Put(b)] (the EndTxn is grouped with the first write). These sub-batches are
+	// sent serially since we've inhibited the DistSender's concurrency. The first
+	// one will transition the txn to STAGING, and the DistSender will use that
+	// updated txn when sending the 2nd sub-batch.
 	b := txn.NewBatch()
 	b.Put(keyA, "a")
 	b.Put(keyB, "b")

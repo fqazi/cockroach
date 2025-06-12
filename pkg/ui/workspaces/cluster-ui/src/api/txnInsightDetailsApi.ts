@@ -4,21 +4,17 @@
 // included in the /LICENSE file.
 
 import moment from "moment-timezone";
-
-import {
-  InsightNameEnum,
-  StmtFailureCodesStr,
-  TxnInsightDetails,
-} from "../insights";
-import { maybeError } from "../util";
-
-import { getTxnInsightsContentionDetailsApi } from "./contentionApi";
 import {
   executeInternalSql,
   isMaxSizeError,
   sqlApiErrorMessage,
   SqlApiResponse,
 } from "./sqlApi";
+import {
+  InsightNameEnum,
+  StmtFailureCodesStr,
+  TxnInsightDetails,
+} from "../insights";
 import {
   formatStmtInsights,
   stmtInsightsByTxnExecutionQuery,
@@ -30,6 +26,7 @@ import {
   TxnInsightsResponseRow,
 } from "./txnInsightsApi";
 import { makeInsightsSqlRequest } from "./txnInsightsUtils";
+import { getTxnInsightsContentionDetailsApi } from "./contentionApi";
 
 export type TxnInsightDetailsRequest = {
   txnExecutionID: string;
@@ -104,7 +101,7 @@ export async function getTxnInsightDetailsApi(
         );
       }
     } catch (e) {
-      errors.txnDetailsErr = maybeError(e);
+      errors.txnDetailsErr = e;
     }
   }
 
@@ -131,12 +128,12 @@ export async function getTxnInsightDetailsApi(
         txnInsightDetails.statements = formatStmtInsights(stmts);
       }
     } catch (e) {
-      errors.statementsErr = maybeError(e);
+      errors.statementsErr = e;
     }
   }
 
   const highContention = txnInsightDetails.txnDetails?.insights?.some(
-    insight => insight.name === InsightNameEnum.HIGH_CONTENTION,
+    insight => insight.name === InsightNameEnum.highContention,
   );
 
   const isRetrySerializableFailure =
@@ -153,7 +150,7 @@ export async function getTxnInsightDetailsApi(
         contentionInfo?.blockingContentionDetails;
     }
   } catch (e) {
-    errors.contentionErr = maybeError(e);
+    errors.contentionErr = e;
   }
 
   return {

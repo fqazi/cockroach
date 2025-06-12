@@ -30,9 +30,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
+	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/channel"
@@ -42,8 +42,8 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/errors/stdstrings"
 	"github.com/cockroachdb/redact"
-	pgx "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgconn"
+	pgx "github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -207,7 +207,7 @@ func hbaRunTest(t *testing.T, insecure bool) {
 		if err := cfg.Validate(&dir); err != nil {
 			t.Fatal(err)
 		}
-		cleanup, err := log.ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+		cleanup, err := log.ApplyConfig(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -485,13 +485,6 @@ func hbaRunTest(t *testing.T, insecure bool) {
 						showSystemIdentity = true
 					}
 
-					// Whether to display the authentication_method as well.
-					showAuthMethod := false
-					if td.HasArg("show_authentication_method") {
-						rmArg("show_authentication_method")
-						showAuthMethod = true
-					}
-
 					certName := ""
 					if td.HasArg("cert_name") {
 						td.ScanArgs(t, "cert_name", &certName)
@@ -507,7 +500,7 @@ func hbaRunTest(t *testing.T, insecure bool) {
 
 					// We want the certs to be present in the filesystem for this test.
 					// However, certs are only generated for users "root" and "testuser" specifically.
-					sqlURL, cleanupFn := pgurlutils.PGUrlWithOptionalClientCerts(
+					sqlURL, cleanupFn := sqlutils.PGUrlWithOptionalClientCerts(
 						t, s.AdvSQLAddr(), t.Name(), url.User(systemIdentity),
 						forceCerts || systemIdentity == username.RootUser ||
 							systemIdentity == username.TestUser, certName)
@@ -586,14 +579,6 @@ func hbaRunTest(t *testing.T, insecure bool) {
 						defer func() { _ = dbSQL.Close(ctx) }()
 					}
 					if err != nil {
-						// If the error is a PgError, return that directly instead of the
-						// wrapped error. The wrapped error includes additional contextual
-						// information that complicates checking for the expected error
-						// string in tests.
-						pgErr := new(pgconn.PgError)
-						if errors.As(err, &pgErr) {
-							return "", pgErr
-						}
 						return "", err
 					}
 					row := dbSQL.QueryRow(ctx, "SELECT current_catalog")
@@ -608,23 +593,6 @@ func hbaRunTest(t *testing.T, insecure bool) {
 							t.Fatal(err)
 						}
 						result += " " + name
-					}
-					if showAuthMethod {
-						var method, methodFromShowSessions string
-						row := dbSQL.QueryRow(ctx, `SHOW authentication_method`)
-						if err := row.Scan(&method); err != nil {
-							t.Fatal(err)
-						}
-						// Verify that the session variable agrees with the information
-						// in SHOW SESSIONS.
-						row = dbSQL.QueryRow(ctx, `SELECT authentication_method FROM [SHOW SESSIONS] WHERE session_id = current_setting('session_id');`)
-						if err := row.Scan(&methodFromShowSessions); err != nil {
-							t.Fatal(err)
-						}
-						if method != methodFromShowSessions {
-							t.Fatalf("SHOW SESSIONS disagrees with SHOW: %s vs %s", method, methodFromShowSessions)
-						}
-						result += " " + method
 					}
 
 					return "ok " + result, nil

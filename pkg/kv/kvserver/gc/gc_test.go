@@ -148,9 +148,9 @@ func TestLockAgeThresholdSetting(t *testing.T) {
 		require.NoError(t, err)
 		// Acquire some shared and exclusive locks as well.
 		for _, txn := range []*roachpb.Transaction{&txn1, &txn2} {
-			require.NoError(t, storage.MVCCAcquireLock(ctx, eng, &txn.TxnMeta, txn.IgnoredSeqNums, lock.Shared, makeKey(local, lock.Shared), nil, 0, 0))
+			require.NoError(t, storage.MVCCAcquireLock(ctx, eng, txn, lock.Shared, makeKey(local, lock.Shared), nil, 0, 0))
 		}
-		require.NoError(t, storage.MVCCAcquireLock(ctx, eng, &txn1.TxnMeta, txn1.IgnoredSeqNums, lock.Exclusive, makeKey(local, lock.Exclusive), nil, 0, 0))
+		require.NoError(t, storage.MVCCAcquireLock(ctx, eng, &txn1, lock.Exclusive, makeKey(local, lock.Exclusive), nil, 0, 0))
 	}
 	require.NoError(t, eng.Flush())
 
@@ -217,9 +217,9 @@ func TestIntentCleanupBatching(t *testing.T) {
 			idx := i*len(objectKeys) + j
 			switch idx % 3 {
 			case 0:
-				require.NoError(t, storage.MVCCAcquireLock(ctx, eng, &txn.TxnMeta, txn.IgnoredSeqNums, lock.Shared, key, nil, 0, 0))
+				require.NoError(t, storage.MVCCAcquireLock(ctx, eng, &txn, lock.Shared, key, nil, 0, 0))
 			case 1:
-				require.NoError(t, storage.MVCCAcquireLock(ctx, eng, &txn.TxnMeta, txn.IgnoredSeqNums, lock.Exclusive, key, nil, 0, 0))
+				require.NoError(t, storage.MVCCAcquireLock(ctx, eng, &txn, lock.Exclusive, key, nil, 0, 0))
 			case 2:
 				_, err := storage.MVCCPut(ctx, eng, key, intentHlc, value, storage.MVCCWriteOptions{Txn: &txn})
 				require.NoError(t, err)
@@ -333,7 +333,7 @@ type testIntent struct {
 func generateScattered(total int, txns int, maxKeySize int, random *rand.Rand) []testIntent {
 	var txnIds []uuid.UUID
 	for len(txnIds) < txns {
-		txnIds = append(txnIds, uuid.MakeV4())
+		txnIds = append(txnIds, uuid.FastMakeV4())
 	}
 	var intents []testIntent
 	for len(intents) < total {
@@ -362,7 +362,7 @@ func generateSequential(total int, maxTxnSize int, maxKeySize int, random *rand.
 	for ; len(intents) < total; leftForTransaction-- {
 		if leftForTransaction == 0 {
 			leftForTransaction = intnFrom1(random, maxTxnSize)
-			txnUUID = uuid.MakeV4()
+			txnUUID = uuid.FastMakeV4()
 		}
 		intents = append(intents,
 			testIntent{
@@ -420,7 +420,7 @@ func TestGCIntentBatcherErrorHandling(t *testing.T) {
 
 	key1 := []byte("key1")
 	key2 := []byte("key2")
-	txn1 := enginepb.MVCCMetadata{Txn: &enginepb.TxnMeta{ID: uuid.MakeV4()}}
+	txn1 := enginepb.MVCCMetadata{Txn: &enginepb.TxnMeta{ID: uuid.FastMakeV4()}}
 
 	// Verify intent cleanup error is propagated to caller.
 	info := Info{}

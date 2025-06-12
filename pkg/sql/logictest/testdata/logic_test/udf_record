@@ -80,7 +80,6 @@ f_table  CREATE FUNCTION public.f_table()
            NOT LEAKPROOF
            CALLED ON NULL INPUT
            LANGUAGE SQL
-           SECURITY INVOKER
            AS $$
            SELECT t.a, t.b FROM test.public.t ORDER BY a LIMIT 1;
          $$
@@ -583,8 +582,6 @@ SELECT * FROM f() AS g(bar bar_typ);
 # Column-definition list cannot be used with a scalar type.
 statement ok
 DROP FUNCTION f;
-
-statement ok
 CREATE FUNCTION f() RETURNS INT LANGUAGE SQL AS $$ SELECT 1; $$;
 
 statement error pgcode 42601 pq: a column definition list is only allowed for functions returning \"record\"
@@ -593,8 +590,6 @@ SELECT * FROM f() AS g(bar FLOAT);
 # Column-definition list cannot be used with OUT-parameters.
 statement ok
 DROP FUNCTION f;
-
-statement ok
 CREATE FUNCTION f(OUT x INT, OUT y INT) RETURNS RECORD LANGUAGE SQL AS $$ SELECT ROW(1, 2); $$;
 
 statement error pgcode 42601 pq: a column definition list is redundant for a function with OUT parameters
@@ -604,8 +599,6 @@ SELECT * FROM f() AS g(bar bar_typ);
 # definition list.
 statement ok
 DROP FUNCTION f;
-
-statement ok
 CREATE FUNCTION f() RETURNS RECORD LANGUAGE SQL AS $$ SELECT 1, 2; $$;
 
 statement error pgcode 42804 pq: function return row and query-specified return row do not match
@@ -617,8 +610,6 @@ SELECT * FROM f() AS g(foo INT, bar INT, baz INT);
 # RECORD-returning UDF requires a column-definition list.
 statement ok
 DROP FUNCTION f;
-
-statement ok
 CREATE FUNCTION f() RETURNS RECORD LANGUAGE SQL AS $$ SELECT ROW(1, 2); $$;
 
 statement error pgcode 42601 pq: a column definition list is required for functions returning \"record\"
@@ -632,8 +623,6 @@ SELECT * FROM f() AS g(bar, baz);
 # column-definition list.
 statement ok
 DROP FUNCTION f;
-
-statement ok
 CREATE FUNCTION f() RETURNS RECORD LANGUAGE SQL AS $$ SELECT True; $$;
 
 statement error pgcode 42P13 pq: return type mismatch in function declared to return record

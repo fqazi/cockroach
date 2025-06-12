@@ -10,13 +10,10 @@ import (
 	"context"
 	"io"
 	"math/rand"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestflags"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/task"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod"
@@ -37,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/errors/oserror"
 	"github.com/kr/pretty"
 	"github.com/stretchr/testify/require"
 )
@@ -87,14 +82,9 @@ func TestRunnerRun(t *testing.T) {
 
 	r := mkReg(t)
 	r.Add(registry.TestSpec{
-		Name:  "pass",
-		Owner: OwnerUnitTest,
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			// N.B. sleep to ensure non-zero run duration
-			time.Sleep(time.Duration(rand.Intn(5)+1) * time.Millisecond)
-			t.L().Printf("pass")
-		},
-		// N.B. 0-node cluster results in a no-op cluster allocator. (See clusterFactory.newCluster)
+		Name:             "pass",
+		Owner:            OwnerUnitTest,
+		Run:              func(ctx context.Context, t test.Test, c cluster.Cluster) {},
 		Cluster:          r.MakeClusterSpec(0),
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
@@ -110,7 +100,7 @@ func TestRunnerRun(t *testing.T) {
 		Suites:           registry.Suites(registry.Nightly),
 	})
 	r.Add(registry.TestSpec{
-		Name:  "fail_errors",
+		Name:  "errors",
 		Owner: OwnerUnitTest,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			t.Errorf("first %s", "error")
@@ -121,7 +111,7 @@ func TestRunnerRun(t *testing.T) {
 		Suites:           registry.Suites(registry.Nightly),
 	})
 	r.Add(registry.TestSpec{
-		Name:  "fail_panic",
+		Name:  "panic",
 		Owner: OwnerUnitTest,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			sl := []int{0}
@@ -129,26 +119,6 @@ func TestRunnerRun(t *testing.T) {
 			// good at figuring out static out of bound indexing.
 			idx := rand.Intn(2) + 1 // definitely out of bounds
 			t.L().Printf("boom %d", sl[idx])
-		},
-		Cluster:          r.MakeClusterSpec(0),
-		CompatibleClouds: registry.AllExceptAWS,
-		Suites:           registry.Suites(registry.Nightly),
-	})
-	r.Add(registry.TestSpec{
-		Name:  "skip",
-		Owner: OwnerUnitTest,
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			t.Skip("#799")
-		},
-		Cluster:          r.MakeClusterSpec(0),
-		CompatibleClouds: registry.AllExceptAWS,
-		Suites:           registry.Suites(registry.Nightly),
-	})
-	r.Add(registry.TestSpec{
-		Name:  "skip_details",
-		Owner: OwnerUnitTest,
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			t.Skip("#999", "test is broken")
 		},
 		Cluster:          r.MakeClusterSpec(0),
 		CompatibleClouds: registry.AllExceptAWS,
@@ -169,31 +139,14 @@ func TestRunnerRun(t *testing.T) {
 		{filters: []string{"errors"}, expErr: "some tests failed", expOut: "second error"},
 		{filters: []string{"panic"}, expErr: "some tests failed", expOut: "index out of range"},
 	}
-	// Restore original values needed for enabling GH markdown output.
-	prev1 := os.Getenv("GITHUB_STEP_SUMMARY")
-	prev2 := roachtestflags.GitHubActions
-	defer func() {
-		err := os.Setenv("GITHUB_STEP_SUMMARY", prev1)
-		require.NoError(t, err)
-		roachtestflags.GitHubActions = prev2
-	}()
-
 	for _, c := range testCases {
 		t.Run("", func(t *testing.T) {
 			rt := setupRunnerTest(t, r, c.filters)
 
 			const count = 1
 			err := rt.runner.Run(ctx, rt.tests, count, defaultParallelism, rt.copt, testOpts{}, rt.lopt)
+
 			assertTestCompletion(t, rt.tests, c.filters, rt.runner.getCompletedTests(), err, c.expErr)
-			// Write test reports & verify their contents.
-			testSummaryPath := filepath.Join(rt.lopt.artifactsDir, "test_summary.tsv")
-			markdownPath := filepath.Join(rt.lopt.artifactsDir, "test_summary.md")
-			// Enable GH markdown output.
-			roachtestflags.GitHubActions = true
-			err = os.Setenv("GITHUB_STEP_SUMMARY", markdownPath)
-			require.NoError(t, err)
-			rt.runner.writeTestReports(ctx, nilLogger(), rt.lopt.artifactsDir)
-			assertTestReports(t, testSummaryPath, markdownPath, rt.runner.getCompletedTests())
 
 			// N.B. skip the case of no matching tests
 			if len(rt.tests) > 0 {
@@ -298,7 +251,7 @@ func setupRunnerTest(t *testing.T, r testRegistryImpl, testFilters []string) *ru
 		tee:          logger.NoTee,
 		stdout:       &stdout,
 		stderr:       &stderr,
-		artifactsDir: filepath.Join(t.TempDir(), "runnerTest"),
+		artifactsDir: "",
 	}
 	copt := defaultClusterOpt()
 	return &runnerTest{
@@ -331,94 +284,8 @@ func assertTestCompletion(
 	for i, info := range completed {
 		if info.test == "pass" {
 			require.Truef(t, info.pass, "expected test %s to pass", tests[i].Name)
-		} else if strings.Contains(info.test, "fail") {
+		} else if info.test == "fail" {
 			require.Falsef(t, info.pass, "expected test %s to fail", tests[i].Name)
-		} else {
-			// Assert test was skipped.
-			require.Truef(t, info.skip != "", "expected test %s to be skipped", tests[i].Name)
-			require.Contains(t, info.test, "skip")
-		}
-	}
-}
-
-// verifies written test report files
-func assertTestReports(
-	t *testing.T, testSummaryPath, markdownPath string, completed []completedTestInfo,
-) {
-	t.Helper()
-
-	if len(completed) == 0 {
-		// no tests run, no reports written
-		_, err := os.Stat(testSummaryPath)
-		require.True(t, oserror.IsNotExist(err))
-		_, err = os.Stat(markdownPath)
-		require.True(t, oserror.IsNotExist(err))
-		return
-	}
-
-	summaryBytes, err := os.ReadFile(testSummaryPath)
-	require.NoError(t, err)
-	markdownBytes, err := os.ReadFile(markdownPath)
-	require.NoError(t, err)
-
-	summaryRows := strings.Split(string(summaryBytes), "\n")
-	markdownRows := strings.Split(string(markdownBytes), "\n")
-
-	findRow := func(rows []string, test string, numCols int, markdown bool) []string {
-		for _, row := range rows {
-			var columns []string
-			if markdown {
-				columns = strings.Split(row, "|")
-				if len(columns) > 1 {
-					// Skip leading and trailing pipes.
-					columns = columns[1 : len(columns)-1]
-					// Remove formatting to normalize column values.
-					for i := range columns {
-						columns[i] = strings.ToLower(strings.Trim(strings.TrimSpace(columns[i]), "`"))
-					}
-				}
-			} else {
-				columns = strings.Split(row, "\t")
-			}
-			if len(columns) != numCols {
-				continue
-			}
-			if columns[0] == test {
-				return columns
-			}
-		}
-		return []string{}
-	}
-
-	for _, info := range completed {
-		// columns: test_name, status, ignore_details, duration
-		summaryRow := findRow(summaryRows, info.test, 4, false)
-		markdownRow := findRow(markdownRows, info.test, 4, true)
-		// Assert test name.
-		require.Equal(t, info.test, summaryRow[0])
-		require.Equal(t, info.test, markdownRow[0])
-		// Assert status.
-		if info.pass {
-			require.Equal(t, "success", summaryRow[1])
-			require.Contains(t, markdownRow[1], "success")
-			// Assert duration > 0.
-			duration, err := strconv.ParseInt(summaryRow[3], 10, 64)
-			require.NoError(t, err)
-			require.Greater(t, duration, int64(0))
-
-			timeDuration, err := time.ParseDuration(markdownRow[3])
-			require.NoError(t, err)
-
-			require.Equal(t, duration, timeDuration.Milliseconds())
-		} else if info.failure != "" {
-			require.Equal(t, "failed", summaryRow[1])
-			require.Contains(t, markdownRow[1], "failed")
-		} else {
-			require.Equal(t, "skipped", summaryRow[1])
-			require.Contains(t, markdownRow[1], "skipped")
-			// Assert skip details.
-			require.Equal(t, info.skip, summaryRow[2])
-			require.Equal(t, info.skip, markdownRow[2])
 		}
 	}
 }
@@ -450,9 +317,6 @@ func TestRunnerTestTimeout(t *testing.T) {
 	var buf syncedBuffer
 	copt := defaultClusterOpt()
 	lopt := defaultLoggingOpt(&buf)
-	numTasks := 3
-	tasksWaitGroup := sync.WaitGroup{}
-	tasksWaitGroup.Add(numTasks)
 	test := registry.TestSpec{
 		Name:             `timeout`,
 		Owner:            OwnerUnitTest,
@@ -462,15 +326,6 @@ func TestRunnerTestTimeout(t *testing.T) {
 		Suites:           registry.Suites(registry.Nightly),
 		CockroachBinary:  registry.StandardCockroach,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			for i := 0; i < numTasks; i++ {
-				t.Go(func(taskCtx context.Context, l *logger.Logger) error {
-					defer func() {
-						tasksWaitGroup.Done()
-					}()
-					<-taskCtx.Done()
-					return nil
-				})
-			}
 			<-ctx.Done()
 		},
 	}
@@ -485,9 +340,6 @@ func TestRunnerTestTimeout(t *testing.T) {
 	if !timeoutRE.MatchString(out) {
 		t.Fatalf("unable to find \"timed out\" message:\n%s", out)
 	}
-
-	// Ensure tasks are also canceled.
-	tasksWaitGroup.Wait()
 }
 
 func TestRegistryPrepareSpec(t *testing.T) {
@@ -730,102 +582,6 @@ func TestTransientErrorFallback(t *testing.T) {
 	})
 }
 
-func TestRunnerTasks(t *testing.T) {
-	ctx := context.Background()
-	stopper := stop.NewStopper()
-	defer stopper.Stop(ctx)
-	cr := newClusterRegistry()
-	runner := newUnitTestRunner(cr, stopper)
-
-	var buf syncedBuffer
-	copt := defaultClusterOpt()
-	lopt := defaultLoggingOpt(&buf)
-
-	mockTest := registry.TestSpec{
-		Name:             `mock test`,
-		Owner:            OwnerUnitTest,
-		Cluster:          spec.MakeClusterSpec(0),
-		CompatibleClouds: registry.AllExceptAWS,
-		Suites:           registry.Suites(registry.Nightly),
-		CockroachBinary:  registry.StandardCockroach,
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			t.Go(func(taskCtx context.Context, l *logger.Logger) error {
-				return errors.New("task error")
-			}, task.Name("task"))
-			<-ctx.Done()
-		},
-	}
-
-	// If a task fails, the test runner should return an error.
-	t.Run("Task Error", func(t *testing.T) {
-		mockTest.Run = func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			t.Go(func(taskCtx context.Context, l *logger.Logger) error {
-				return errors.New("task error")
-			}, task.Name("task"))
-			<-ctx.Done()
-		}
-		err := runner.Run(ctx, []registry.TestSpec{mockTest}, 1, /* count */
-			defaultParallelism, copt, testOpts{}, lopt)
-		if !testutils.IsError(err, "some tests failed") {
-			t.Fatalf("expected error \"some tests failed\", got: %v", err)
-		}
-	})
-
-	// If a task panics, the test runner should return an error.
-	t.Run("Task Panic", func(t *testing.T) {
-		mockTest.Run = func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			t.Go(func(taskCtx context.Context, l *logger.Logger) error {
-				panic("task panic")
-			}, task.Name("task"))
-			<-ctx.Done()
-		}
-		err := runner.Run(ctx, []registry.TestSpec{mockTest}, 1, /* count */
-			defaultParallelism, copt, testOpts{}, lopt)
-		if !testutils.IsError(err, "some tests failed") {
-			t.Fatalf("expected error \"some tests failed\", got: %v", err)
-		}
-	})
-
-	// Test task termination if a test fails.
-	t.Run("Terminate Failure", func(t *testing.T) {
-		var tasksDone atomic.Uint32
-		mockTest.Run = func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			t.Go(func(taskCtx context.Context, l *logger.Logger) error {
-				defer func() {
-					tasksDone.Add(1)
-				}()
-				<-taskCtx.Done()
-				return nil
-			}, task.Name("task"))
-			t.Fatalf("test failed")
-		}
-		err := runner.Run(ctx, []registry.TestSpec{mockTest}, 1, /* count */
-			defaultParallelism, copt, testOpts{}, lopt)
-		if !testutils.IsError(err, "some tests failed") {
-			t.Fatalf("expected error \"some tests failed\", got: %v", err)
-		}
-		require.Equal(t, uint32(1), tasksDone.Load())
-	})
-
-	// Test task termination if a test fails.
-	t.Run("Terminate Success", func(t *testing.T) {
-		var tasksDone atomic.Uint32
-		mockTest.Run = func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			t.Go(func(taskCtx context.Context, l *logger.Logger) error {
-				defer func() {
-					tasksDone.Add(1)
-				}()
-				<-taskCtx.Done()
-				return nil
-			}, task.Name("task"))
-		}
-		err := runner.Run(ctx, []registry.TestSpec{mockTest}, 1, /* count */
-			defaultParallelism, copt, testOpts{}, lopt)
-		require.NoError(t, err)
-		require.Equal(t, uint32(1), tasksDone.Load())
-	})
-}
-
 func TestVMPreemptionPolling(t *testing.T) {
 	ctx := context.Background()
 	stopper := stop.NewStopper()
@@ -961,39 +717,4 @@ func TestVMPreemptionPolling(t *testing.T) {
 
 		require.NoError(t, err)
 	})
-}
-
-// TestRunnerFailureAfterTimeout checks that a test has a failure added
-// after the test has timed out works as expected.
-//
-// Specifically, this is a regression test that replacing the test logger
-// for post test artifacts collection or assertion checks is atomic and
-// doesn't race with the logger potentially still being used by the test.
-func TestRunnerFailureAfterTimeout(t *testing.T) {
-	ctx := context.Background()
-	stopper := stop.NewStopper()
-	defer stopper.Stop(ctx)
-	cr := newClusterRegistry()
-	runner := newUnitTestRunner(cr, stopper)
-
-	var buf syncedBuffer
-	copt := defaultClusterOpt()
-	lopt := defaultLoggingOpt(&buf)
-	test := registry.TestSpec{
-		Name:  `timeout`,
-		Owner: OwnerUnitTest,
-		// Set the timeout very low so we can observe the timeout
-		// and error racing.
-		Timeout:          1 * time.Nanosecond,
-		Cluster:          spec.MakeClusterSpec(0),
-		CompatibleClouds: registry.AllExceptAWS,
-		Suites:           registry.Suites(registry.Nightly),
-		CockroachBinary:  registry.StandardCockroach,
-		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			t.Error("test failed")
-		},
-	}
-	err := runner.Run(ctx, []registry.TestSpec{test}, 1, /* count */
-		defaultParallelism, copt, testOpts{}, lopt)
-	require.Error(t, err)
 }

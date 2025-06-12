@@ -18,11 +18,7 @@ import (
 )
 
 func alterTableDropConstraint(
-	b BuildCtx,
-	tn *tree.TableName,
-	tbl *scpb.Table,
-	stmt tree.Statement,
-	t *tree.AlterTableDropConstraint,
+	b BuildCtx, tn *tree.TableName, tbl *scpb.Table, t *tree.AlterTableDropConstraint,
 ) {
 	constraintElems := b.ResolveConstraint(tbl.TableID, t.Constraint, ResolveParams{
 		IsExistenceOptional: t.IfExists,

@@ -17,9 +17,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/bazci/githubpost/issues"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
+	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/tests"
 	"github.com/cockroachdb/cockroach/pkg/internal/team"
 	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
@@ -139,12 +139,12 @@ func TestCreatePostRequest(t *testing.T) {
 
 		ti := &testImpl{
 			spec:        testSpec,
+			l:           nilLogger(),
 			start:       time.Date(2023, time.July, 21, 16, 34, 3, 817, time.UTC),
 			end:         time.Date(2023, time.July, 21, 16, 42, 13, 137, time.UTC),
 			cockroach:   "cockroach",
-			cockroachEA: "cockroach-ea",
+			cockroachEA: "cockroach-short",
 		}
-		ti.ReplaceL(nilLogger())
 
 		testClusterImpl := &clusterImpl{spec: clusterSpec, arch: vm.ArchAMD64, name: "foo"}
 		vo := vm.DefaultCreateOpts()
@@ -178,7 +178,7 @@ func TestCreatePostRequest(t *testing.T) {
 				params := getTestParameters(ti, github.cluster, github.vmCreateOpts)
 				req, err := github.createPostRequest(
 					testName, ti.start, ti.end, testSpec, testCase.failures,
-					message, roachtestutil.UsingRuntimeAssertions(ti), ti.goCoverEnabled, params,
+					message, tests.UsingRuntimeAssertions(ti), ti.goCoverEnabled, params,
 				)
 				if testCase.loadTeamsFailed {
 					// Assert that if TEAMS.yaml cannot be loaded then function errors.
@@ -214,8 +214,6 @@ func TestCreatePostRequest(t *testing.T) {
 							refError = vmPreemptionError("my_VM")
 						case "vm-host-error":
 							refError = vmHostError("my_VM")
-						case "live-migration-error":
-							refError = liveMigrationError("my_VM")
 						case "error-with-owner-sql-foundations":
 							refError = registry.ErrorWithOwner(registry.OwnerSQLFoundations, refError)
 						case "error-with-owner-test-eng":
@@ -293,10 +291,6 @@ func formatPostRequest(req issues.PostRequest) (string, error) {
 	q := u.Query()
 	q.Add("title", formatter.Title(data))
 	q.Add("body", post.String())
-	// Adding a template parameter is required to be able to view the rendered
-	// template on GitHub, otherwise it just takes you to the template selection
-	// page.
-	q.Add("template", "none")
 	u.RawQuery = q.Encode()
 	post.WriteString(fmt.Sprintf("Rendered:\n%s", u.String()))
 

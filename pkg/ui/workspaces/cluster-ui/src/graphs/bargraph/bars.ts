@@ -3,11 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import merge from "lodash/merge";
+import { merge } from "lodash";
 import uPlot, { Options, Band, AlignedData } from "uplot";
-
 import { AxisUnits, AxisDomain } from "../utils/domain";
-
 import { barTooltipPlugin } from "./plugins";
 
 const seriesPalette = [

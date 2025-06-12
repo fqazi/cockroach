@@ -19,9 +19,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/distsql"
+	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execagg"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
-	"github.com/cockroachdb/cockroach/pkg/sql/execversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/physicalplan"
 	"github.com/cockroachdb/cockroach/pkg/sql/randgen"
@@ -67,10 +67,10 @@ func runTestFlow(
 		t.Fatal(err)
 	}
 	req := execinfrapb.SetupFlowRequest{
-		Version:           execversion.Latest,
+		Version:           execinfra.Version,
 		LeafTxnInputState: leafInputState,
 		Flow: execinfrapb.FlowSpec{
-			FlowID:     execinfrapb.FlowID{UUID: uuid.MakeV4()},
+			FlowID:     execinfrapb.FlowID{UUID: uuid.FastMakeV4()},
 			Processors: procs,
 		},
 	}
@@ -185,7 +185,8 @@ func checkDistAggregationInfo(
 	// (e.g. DECIMAL instead of INT).
 	intermediaryTypes := make([]*types.T, numIntermediary)
 	for i, fn := range info.LocalStage {
-		returnTyp, err := execagg.GetAggregateOutputType(fn, colTypes)
+		var err error
+		_, returnTyp, err := execagg.GetAggregateInfo(fn, colTypes...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -204,7 +205,7 @@ func checkDistAggregationInfo(
 			inputTypes[i] = intermediaryTypes[localIdx]
 		}
 		var err error
-		finalOutputTypes[i], err = execagg.GetAggregateOutputType(finalInfo.Fn, inputTypes)
+		_, finalOutputTypes[i], err = execagg.GetAggregateInfo(finalInfo.Fn, inputTypes...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -506,7 +507,7 @@ func TestSingleArgumentDistAggregateFunctions(t *testing.T) {
 				continue
 			}
 			// See if this column works with this function.
-			_, err := execagg.GetAggregateOutputType(fn, []*types.T{col.GetType()})
+			_, _, err := execagg.GetAggregateInfo(fn, col.GetType())
 			if err != nil {
 				continue
 			}

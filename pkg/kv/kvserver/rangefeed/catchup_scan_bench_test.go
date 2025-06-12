@@ -54,7 +54,7 @@ func runCatchUpBenchmark(b *testing.B, emk engineMaker, opts benchOptions) (numE
 			err = iter.CatchUpScan(ctx, func(*kvpb.RangeFeedEvent) error {
 				counter++
 				return nil
-			}, opts.withDiff, false /* withFiltering */, false /* withOmitRemote */)
+			}, opts.withDiff, false /* withFiltering */)
 			if err != nil {
 				b.Fatalf("failed catchUp scan: %+v", err)
 			}
@@ -199,7 +199,7 @@ type benchOptions struct {
 type engineMaker func(testing.TB, string, int64, fs.RWMode) storage.Engine
 
 func setupMVCCPebble(b testing.TB, dir string, lBaseMaxBytes int64, rw fs.RWMode) storage.Engine {
-	env, err := fs.InitEnv(context.Background(), vfs.Default, dir, fs.EnvConfig{RW: rw}, nil /* statsCollector */)
+	env, err := fs.InitEnv(context.Background(), vfs.Default, dir, fs.EnvConfig{RW: rw})
 	if err != nil {
 		b.Fatalf("could not initialize new fs env at %s: %+v", dir, err)
 	}

@@ -6,9 +6,8 @@
 import { assert } from "chai";
 
 import { filterBySearchQuery } from "src/sqlActivity/util";
-
-import { FlatPlanNode } from "../statementDetails";
 import { AggregateStatistics } from "../statementsTable";
+import { FlatPlanNode } from "../statementDetails";
 
 describe("StatementsPage", () => {
   test("filterBySearchQuery", () => {

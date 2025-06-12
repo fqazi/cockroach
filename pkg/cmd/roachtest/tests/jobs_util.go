@@ -14,16 +14,15 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
+	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -89,7 +88,7 @@ func executeNodeShutdown(
 		// is in a healthy state before we start bringing any
 		// nodes down.
 		t.Status("waiting for cluster to be 3x replicated")
-		err := roachtestutil.WaitFor3XReplication(ctx, t.L(), watcherDB)
+		err := WaitFor3XReplication(ctx, t, t.L(), watcherDB)
 		if err != nil {
 			return err
 		}
@@ -118,12 +117,12 @@ func executeNodeShutdown(
 				if err != nil {
 					return errors.Wrap(err, "getting the job status")
 				}
-				jobStatus := jobs.State(status)
+				jobStatus := jobs.Status(status)
 				switch jobStatus {
-				case jobs.StateSucceeded:
+				case jobs.StatusSucceeded:
 					t.Status("job completed")
 					return nil
-				case jobs.StateRunning:
+				case jobs.StatusRunning:
 					t.L().Printf("job %d still running, waiting to succeed", jobID)
 				default:
 					// Waiting for job to complete.
@@ -170,169 +169,23 @@ func executeNodeShutdown(
 	return nil
 }
 
-type checkStatusFunc func(status jobs.State) (success bool, unexpected bool)
-
-func WaitForState(
-	ctx context.Context,
-	db *gosql.DB,
-	jobID jobspb.JobID,
-	check checkStatusFunc,
-	maxWait time.Duration,
-) error {
-	startTime := timeutil.Now()
-	ticker := time.NewTicker(time.Microsecond)
-	defer ticker.Stop()
-	var state string
-	for {
-		select {
-		case <-ticker.C:
-			err := db.QueryRowContext(ctx, `SELECT status FROM [SHOW JOB $1]`, jobID).Scan(&state)
-			if err != nil {
-				return errors.Wrapf(err, "getting the job state %s", state)
-			}
-			success, unexpected := check(jobs.State(state))
-			if unexpected {
-				return errors.Newf("unexpectedly found job %d in state %s", jobID, state)
-			}
-			if success {
-				return nil
-			}
-			if timeutil.Since(startTime) > maxWait {
-				return errors.Newf("job %d still in state %s after %s", jobID, state, maxWait)
-			}
-			ticker.Reset(5 * time.Second)
-		case <-ctx.Done():
-			return errors.Wrapf(ctx.Err(), "context canceled while waiting for job to reach state %s", state)
-		}
-	}
-}
-
 func WaitForRunning(
 	ctx context.Context, db *gosql.DB, jobID jobspb.JobID, maxWait time.Duration,
 ) error {
-	return WaitForState(ctx, db, jobID,
-		func(status jobs.State) (success bool, unexpected bool) {
-			switch status {
-			case jobs.StateRunning:
-				return true, false
-			case jobs.StatePending:
-				return false, false
-			default:
-				return false, true
-			}
-		}, maxWait)
-}
-
-// WaitForSucceeded waits for a job to reach the succeeded state from a running
-// state.
-func WaitForSucceeded(
-	ctx context.Context, db *gosql.DB, jobID jobspb.JobID, maxWait time.Duration,
-) error {
-	return WaitForState(ctx, db, jobID,
-		func(status jobs.State) (success bool, unexpected bool) {
-			switch status {
-			case jobs.StateSucceeded:
-				return true, false
-			case jobs.StateRunning:
-				return false, false
-			default:
-				return false, true
-			}
-		}, maxWait)
-}
-
-// WaitForPaused waits for a job to reach the paused state from a running state.
-func WaitForPaused(
-	ctx context.Context, db *gosql.DB, jobID jobspb.JobID, maxWait time.Duration,
-) error {
-	return WaitForState(ctx, db, jobID,
-		func(status jobs.State) (success bool, unexpected bool) {
-			switch status {
-			case jobs.StatePaused:
-				return true, false
-			case jobs.StateRunning:
-				return false, false
-			case jobs.StatePauseRequested:
-				return false, false
-			default:
-				return false, true
-			}
-		}, maxWait)
-}
-
-// WaitForResume waits for a job to reach the resumed state from a paused state.
-func WaitForResume(
-	ctx context.Context, db *gosql.DB, jobID jobspb.JobID, maxWait time.Duration,
-) error {
-	return WaitForState(ctx, db, jobID,
-		func(status jobs.State) (success bool, unexpected bool) {
-			switch status {
-			case jobs.StateRunning:
-				return true, false
-			case jobs.StatePaused:
-				return false, false
-			default:
-				return false, true
-			}
-		}, maxWait)
-}
-
-// WaitForFailed waits for a job to reach the failed state from a running state.
-func WaitForFailed(
-	ctx context.Context, db *gosql.DB, jobID jobspb.JobID, maxWait time.Duration,
-) error {
-	return WaitForState(ctx, db, jobID,
-		func(state jobs.State) (success bool, unexpected bool) {
-			switch state {
-			case jobs.StateFailed:
-				return true, false
-			case jobs.StateRunning:
-				return false, false
-			case jobs.StateReverting:
-				return false, false
-			default:
-				return false, true
-			}
-		}, maxWait)
-}
-
-type jobRecord struct {
-	status   string
-	payload  jobspb.Payload
-	progress jobspb.Progress
-}
-
-func (jr *jobRecord) GetHighWater() time.Time {
-	var highwaterTime time.Time
-	highwater := jr.progress.GetHighWater()
-	if highwater != nil {
-		highwaterTime = highwater.GoTime()
-	}
-	return highwaterTime
-}
-func (jr *jobRecord) GetFinishedTime() time.Time { return time.UnixMicro(jr.payload.FinishedMicros) }
-func (jr *jobRecord) GetStatus() string          { return jr.status }
-func (jr *jobRecord) GetError() string           { return jr.payload.Error }
-
-func getJobRecord(db *gosql.DB, jobID int) (*jobRecord, error) {
-	var (
-		jr            jobRecord
-		payloadBytes  []byte
-		progressBytes []byte
-	)
-	if err := db.QueryRow(
-		`SELECT status, payload, progress FROM crdb_internal.system_jobs WHERE id = $1`, jobID,
-	).Scan(&jr.status, &payloadBytes, &progressBytes); err != nil {
-		return nil, err
-	}
-
-	if err := protoutil.Unmarshal(payloadBytes, &jr.payload); err != nil {
-		return nil, err
-	}
-	if err := protoutil.Unmarshal(progressBytes, &jr.progress); err != nil {
-		return nil, err
-	}
-	return &jr, nil
+	return testutils.SucceedsWithinError(func() error {
+		var status jobs.Status
+		if err := db.QueryRowContext(ctx, "SELECT status FROM [SHOW JOB $1]", jobID).Scan(&status); err != nil {
+			return err
+		}
+		switch status {
+		case jobs.StatusPending:
+		case jobs.StatusRunning:
+		default:
+			return errors.Newf("job too fast! job got to state %s before the target node could be shutdown",
+				status)
+		}
+		return nil
+	}, maxWait)
 }
 
 func getJobProgress(t test.Test, db *sqlutils.SQLRunner, jobID jobspb.JobID) *jobspb.Progress {
@@ -385,14 +238,14 @@ func getFractionProgressed(
 	if err != nil {
 		return 0, errors.Wrap(err, "getting the job status and fraction completed")
 	}
-	jobStatus := jobs.State(status)
+	jobStatus := jobs.Status(status)
 	switch jobStatus {
-	case jobs.StateSucceeded:
+	case jobs.StatusSucceeded:
 		if fractionCompleted != 1 {
 			return 0, errors.Newf("job completed but fraction completed is %.2f", fractionCompleted)
 		}
 		return fractionCompleted, nil
-	case jobs.StateRunning:
+	case jobs.StatusRunning:
 		l.Printf("job %d still running, %.2f completed, waiting to succeed", jobID, fractionCompleted)
 		return fractionCompleted, nil
 	default:

@@ -7,7 +7,6 @@
 package memo
 
 import (
-	"bytes"
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
@@ -143,10 +142,11 @@ type Memo struct {
 
 	// The following are selected fields from SessionData which can affect
 	// planning. We need to cross-check these before reusing a cached memo.
+	// NOTE: If you add new fields here, be sure to add them to the relevant
+	//       fields in explain_bundle.go.
 	reorderJoinsLimit                          int
 	zigzagJoinEnabled                          bool
 	useForecasts                               bool
-	useMergedPartialStatistics                 bool
 	useHistograms                              bool
 	useMultiColStats                           bool
 	useNotVisibleIndex                         bool
@@ -158,7 +158,7 @@ type Memo struct {
 	intervalStyle                              duration.IntervalStyle
 	propagateInputOrdering                     bool
 	disallowFullTableScans                     bool
-	avoidFullTableScansInMutations             bool
+	applyFullScanPenaltyToVirtualTables        bool
 	largeFullScanRows                          float64
 	txnRowsReadErr                             int64
 	nullOrderedLast                            bool
@@ -194,19 +194,11 @@ type Memo struct {
 	useImprovedMultiColumnSelectivityEstimate  bool
 	proveImplicationWithVirtualComputedCols    bool
 	pushOffsetIntoIndexJoin                    bool
-	usePolymorphicParameterFix                 bool
-	useConditionalHoistFix                     bool
 	pushLimitIntoProjectFilteredScan           bool
-	unsafeAllowTriggersModifyingCascades       bool
 	legacyVarcharTyping                        bool
 	preferBoundedCardinality                   bool
 	minRowCount                                float64
 	checkInputMinRowCount                      float64
-	planLookupJoinsWithReverseScans            bool
-	useInsertFastPath                          bool
-	internal                                   bool
-	usePre_25_2VariadicBuiltins                bool
-	useExistsFilterHoistRule                   bool
 
 	// txnIsoLevel is the isolation level under which the plan was created. This
 	// affects the planning of some locking operations, so it must be included in
@@ -218,10 +210,6 @@ type Memo struct {
 
 	// curWithID is the highest currently in-use WITH ID.
 	curWithID opt.WithID
-
-	// curRoutineResultBufferID is the highest currently in-use routine result
-	// buffer ID. See the RoutineResultBufferID comment for more details.
-	curRoutineResultBufferID RoutineResultBufferID
 
 	newGroupFn func(opt.Expr)
 
@@ -243,14 +231,12 @@ type Memo struct {
 // IsStale method for more details).
 func (m *Memo) Init(ctx context.Context, evalCtx *eval.Context) {
 	// This initialization pattern ensures that fields are not unwittingly
-	// reused. Field reuse must be explicitpkg/sql/opt/memo/memo.go.
+	// reused. Field reuse must be explicit.
 	*m = Memo{
-		//nolint metadata is being reused.
 		metadata:                                   m.metadata,
 		reorderJoinsLimit:                          int(evalCtx.SessionData().ReorderJoinsLimit),
 		zigzagJoinEnabled:                          evalCtx.SessionData().ZigzagJoinEnabled,
 		useForecasts:                               evalCtx.SessionData().OptimizerUseForecasts,
-		useMergedPartialStatistics:                 evalCtx.SessionData().OptimizerUseMergedPartialStatistics,
 		useHistograms:                              evalCtx.SessionData().OptimizerUseHistograms,
 		useMultiColStats:                           evalCtx.SessionData().OptimizerUseMultiColStats,
 		useNotVisibleIndex:                         evalCtx.SessionData().OptimizerUseNotVisibleIndexes,
@@ -262,7 +248,7 @@ func (m *Memo) Init(ctx context.Context, evalCtx *eval.Context) {
 		intervalStyle:                              evalCtx.SessionData().GetIntervalStyle(),
 		propagateInputOrdering:                     evalCtx.SessionData().PropagateInputOrdering,
 		disallowFullTableScans:                     evalCtx.SessionData().DisallowFullTableScans,
-		avoidFullTableScansInMutations:             evalCtx.SessionData().AvoidFullTableScansInMutations,
+		applyFullScanPenaltyToVirtualTables:        evalCtx.SessionData().OptimizerApplyFullScanPenaltyToVirtualTables,
 		largeFullScanRows:                          evalCtx.SessionData().LargeFullScanRows,
 		txnRowsReadErr:                             evalCtx.SessionData().TxnRowsReadErr,
 		nullOrderedLast:                            evalCtx.SessionData().NullOrderedLast,
@@ -298,19 +284,11 @@ func (m *Memo) Init(ctx context.Context, evalCtx *eval.Context) {
 		useImprovedMultiColumnSelectivityEstimate:  evalCtx.SessionData().OptimizerUseImprovedMultiColumnSelectivityEstimate,
 		proveImplicationWithVirtualComputedCols:    evalCtx.SessionData().OptimizerProveImplicationWithVirtualComputedColumns,
 		pushOffsetIntoIndexJoin:                    evalCtx.SessionData().OptimizerPushOffsetIntoIndexJoin,
-		usePolymorphicParameterFix:                 evalCtx.SessionData().OptimizerUsePolymorphicParameterFix,
-		useConditionalHoistFix:                     evalCtx.SessionData().OptimizerUseConditionalHoistFix,
 		pushLimitIntoProjectFilteredScan:           evalCtx.SessionData().OptimizerPushLimitIntoProjectFilteredScan,
-		unsafeAllowTriggersModifyingCascades:       evalCtx.SessionData().UnsafeAllowTriggersModifyingCascades,
 		legacyVarcharTyping:                        evalCtx.SessionData().LegacyVarcharTyping,
 		preferBoundedCardinality:                   evalCtx.SessionData().OptimizerPreferBoundedCardinality,
 		minRowCount:                                evalCtx.SessionData().OptimizerMinRowCount,
 		checkInputMinRowCount:                      evalCtx.SessionData().OptimizerCheckInputMinRowCount,
-		planLookupJoinsWithReverseScans:            evalCtx.SessionData().OptimizerPlanLookupJoinsWithReverseScans,
-		useInsertFastPath:                          evalCtx.SessionData().InsertFastPath,
-		internal:                                   evalCtx.SessionData().Internal,
-		usePre_25_2VariadicBuiltins:                evalCtx.SessionData().UsePre_25_2VariadicBuiltins,
-		useExistsFilterHoistRule:                   evalCtx.SessionData().OptimizerUseExistsFilterHoistRule,
 		txnIsoLevel:                                evalCtx.TxnIsoLevel,
 	}
 	m.metadata.Init()
@@ -427,7 +405,6 @@ func (m *Memo) IsStale(
 	if m.reorderJoinsLimit != int(evalCtx.SessionData().ReorderJoinsLimit) ||
 		m.zigzagJoinEnabled != evalCtx.SessionData().ZigzagJoinEnabled ||
 		m.useForecasts != evalCtx.SessionData().OptimizerUseForecasts ||
-		m.useMergedPartialStatistics != evalCtx.SessionData().OptimizerUseMergedPartialStatistics ||
 		m.useHistograms != evalCtx.SessionData().OptimizerUseHistograms ||
 		m.useMultiColStats != evalCtx.SessionData().OptimizerUseMultiColStats ||
 		m.useNotVisibleIndex != evalCtx.SessionData().OptimizerUseNotVisibleIndexes ||
@@ -439,7 +416,7 @@ func (m *Memo) IsStale(
 		m.intervalStyle != evalCtx.SessionData().GetIntervalStyle() ||
 		m.propagateInputOrdering != evalCtx.SessionData().PropagateInputOrdering ||
 		m.disallowFullTableScans != evalCtx.SessionData().DisallowFullTableScans ||
-		m.avoidFullTableScansInMutations != evalCtx.SessionData().AvoidFullTableScansInMutations ||
+		m.applyFullScanPenaltyToVirtualTables != evalCtx.SessionData().OptimizerApplyFullScanPenaltyToVirtualTables ||
 		m.largeFullScanRows != evalCtx.SessionData().LargeFullScanRows ||
 		m.txnRowsReadErr != evalCtx.SessionData().TxnRowsReadErr ||
 		m.nullOrderedLast != evalCtx.SessionData().NullOrderedLast ||
@@ -475,19 +452,11 @@ func (m *Memo) IsStale(
 		m.useImprovedMultiColumnSelectivityEstimate != evalCtx.SessionData().OptimizerUseImprovedMultiColumnSelectivityEstimate ||
 		m.proveImplicationWithVirtualComputedCols != evalCtx.SessionData().OptimizerProveImplicationWithVirtualComputedColumns ||
 		m.pushOffsetIntoIndexJoin != evalCtx.SessionData().OptimizerPushOffsetIntoIndexJoin ||
-		m.usePolymorphicParameterFix != evalCtx.SessionData().OptimizerUsePolymorphicParameterFix ||
-		m.useConditionalHoistFix != evalCtx.SessionData().OptimizerUseConditionalHoistFix ||
 		m.pushLimitIntoProjectFilteredScan != evalCtx.SessionData().OptimizerPushLimitIntoProjectFilteredScan ||
-		m.unsafeAllowTriggersModifyingCascades != evalCtx.SessionData().UnsafeAllowTriggersModifyingCascades ||
 		m.legacyVarcharTyping != evalCtx.SessionData().LegacyVarcharTyping ||
 		m.preferBoundedCardinality != evalCtx.SessionData().OptimizerPreferBoundedCardinality ||
 		m.minRowCount != evalCtx.SessionData().OptimizerMinRowCount ||
 		m.checkInputMinRowCount != evalCtx.SessionData().OptimizerCheckInputMinRowCount ||
-		m.planLookupJoinsWithReverseScans != evalCtx.SessionData().OptimizerPlanLookupJoinsWithReverseScans ||
-		m.useInsertFastPath != evalCtx.SessionData().InsertFastPath ||
-		m.internal != evalCtx.SessionData().Internal ||
-		m.usePre_25_2VariadicBuiltins != evalCtx.SessionData().UsePre_25_2VariadicBuiltins ||
-		m.useExistsFilterHoistRule != evalCtx.SessionData().OptimizerUseExistsFilterHoistRule ||
 		m.txnIsoLevel != evalCtx.TxnIsoLevel {
 		return true, nil
 	}
@@ -495,8 +464,10 @@ func (m *Memo) IsStale(
 	// Memo is stale if the fingerprint of any object in the memo's metadata has
 	// changed, or if the current user no longer has sufficient privilege to
 	// access the object.
-	if depsUpToDate, err := m.Metadata().CheckDependencies(ctx, evalCtx, catalog); err != nil || !depsUpToDate {
+	if depsUpToDate, err := m.Metadata().CheckDependencies(ctx, evalCtx, catalog); err != nil {
 		return true, err
+	} else if !depsUpToDate {
+		return true, nil
 	}
 	return false, nil
 }
@@ -573,12 +544,9 @@ func (m *Memo) NextRank() opt.ScalarRank {
 	return m.curRank
 }
 
-// CopyRankAndIDsFrom copies the next ScalarRank, WithID, and
-// RoutineResultBufferID from the other memo.
-func (m *Memo) CopyRankAndIDsFrom(other *Memo) {
+// CopyNextRankFrom copies the next ScalarRank from the other memo.
+func (m *Memo) CopyNextRankFrom(other *Memo) {
 	m.curRank = other.curRank
-	m.curWithID = other.curWithID
-	m.curRoutineResultBufferID = other.curRoutineResultBufferID
 }
 
 // RequestColStat calculates and returns the column statistic calculated on the
@@ -622,20 +590,11 @@ func (m *Memo) NextWithID() opt.WithID {
 	return m.curWithID
 }
 
-// NextRoutineResultBufferID returns a not-yet-assigned identifier for the
-// result buffer of a PL/pgSQL set-returning function.
-func (m *Memo) NextRoutineResultBufferID() RoutineResultBufferID {
-	m.curRoutineResultBufferID++
-	return m.curRoutineResultBufferID
-}
-
 // Detach is used when we detach a memo that is to be reused later (either for
 // execbuilding or with AssignPlaceholders). New expressions should no longer be
 // constructed in this memo.
 func (m *Memo) Detach() {
 	m.interner = interner{}
-	m.replacer = nil
-
 	// It is important to not hold on to the EvalCtx in the logicalPropsBuilder
 	// (#57059).
 	m.logPropsBuilder = logicalPropsBuilder{}
@@ -665,27 +624,9 @@ func (m *Memo) DisableCheckExpr() {
 	m.disableCheckExpr = true
 }
 
-// String prints the current expression tree stored in the memo. It should only
-// be used for testing and debugging.
-func (m *Memo) String() string {
-	return m.FormatExpr(m.rootExpr)
-}
-
-// FormatExpr prints the given expression for testing and debugging.
-func (m *Memo) FormatExpr(expr opt.Expr) string {
-	if expr == nil {
-		return ""
-	}
-	f := MakeExprFmtCtxBuffer(
-		context.Background(),
-		&bytes.Buffer{},
-		ExprFmtHideQualifications,
-		false, /* redactableValues */
-		m,
-		nil, /* catalog */
-	)
-	f.FormatExpr(expr)
-	return f.Buffer.String()
+// EvalContext returns the eval.Context of the current SQL request.
+func (m *Memo) EvalContext() *eval.Context {
+	return m.logPropsBuilder.evalCtx
 }
 
 // ValuesContainer lets ValuesExpr and LiteralValuesExpr share code.

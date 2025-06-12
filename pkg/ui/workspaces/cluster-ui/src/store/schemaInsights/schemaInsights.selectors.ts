@@ -4,9 +4,8 @@
 // included in the /LICENSE file.
 
 import { createSelector } from "reselect";
-
-import { insightType } from "../../insights";
 import { adminUISelector, localStorageSelector } from "../utils/selectors";
+import { insightType } from "../../insights";
 
 const selectSchemaInsightState = createSelector(
   adminUISelector,

@@ -696,7 +696,7 @@ func getOwner(ctx context.Context, packageName, testName string) (_teams []team.
 		}
 
 		// Workaround for #107885.
-		if strings.Contains(packageName, "backup") {
+		if strings.Contains(packageName, "backupccl") {
 			dr := co.GetTeamForAlias("cockroachdb/disaster-recovery")
 			if dr.Name() == "" {
 				log.Fatalf("disaster-recovery team could not be found in TEAMS.yaml")
@@ -757,13 +757,4 @@ func postGeneralFailureImpl(logs string, fileIssue func(context.Context, Failure
 		log.Println(err) // keep going
 	}
 
-}
-
-// MicrobenchmarkFailure creates a Failure struct for a microbenchmark failure.
-func MicrobenchmarkFailure(packageName string, benchmarkName string, logs string) Failure {
-	return Failure{
-		packageName: packageName,
-		testName:    benchmarkName,
-		testMessage: logs,
-	}
 }

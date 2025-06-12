@@ -13,11 +13,10 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/storage/disk"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/vfs"
@@ -50,6 +49,13 @@ var MustExist ConfigOption = func(cfg *engineConfig) error {
 // automatic compactions. Used primarily for debugCompactCmd.
 var DisableAutomaticCompactions ConfigOption = func(cfg *engineConfig) error {
 	cfg.opts.DisableAutomaticCompactions = true
+	return nil
+}
+
+// ForceWriterParallelism configures an engine to be opened with disabled
+// automatic compactions. Used primarily for debugCompactCmd.
+var ForceWriterParallelism ConfigOption = func(cfg *engineConfig) error {
+	cfg.opts.Experimental.ForceWriterParallelism = true
 	return nil
 }
 
@@ -134,6 +140,17 @@ func TargetFileSize(size int64) ConfigOption {
 	}
 }
 
+// MaxWriterConcurrency sets the concurrency of the sstable Writers. A concurrency
+// of 0 implies no parallelism in the Writer, and a concurrency of 1 or more implies
+// parallelism in the Writer. Currently, there's no difference between a concurrency
+// of 1 or more.
+func MaxWriterConcurrency(concurrency int) ConfigOption {
+	return func(cfg *engineConfig) error {
+		cfg.opts.Experimental.MaxWriterConcurrency = concurrency
+		return nil
+	}
+}
+
 // MaxOpenFiles sets the maximum number of files an engine should open.
 func MaxOpenFiles(count int) ConfigOption {
 	return func(cfg *engineConfig) error {
@@ -143,21 +160,20 @@ func MaxOpenFiles(count int) ConfigOption {
 
 }
 
-// CacheSize configures the size of the block cache. Note that this option is
-// ignored if Caches() is also used.
+// CacheSize configures the size of the block cache.
 func CacheSize(size int64) ConfigOption {
 	return func(cfg *engineConfig) error {
-		cfg.opts.CacheSize = size
+		cfg.cacheSize = &size
 		return nil
 	}
 }
 
-// Caches sets the block and file caches. Useful when multiple stores share
+// Caches sets the block and table caches. Useful when multiple stores share
 // the same caches.
-func Caches(cache *pebble.Cache, fileCache *pebble.FileCache) ConfigOption {
+func Caches(cache *pebble.Cache, tableCache *pebble.TableCache) ConfigOption {
 	return func(cfg *engineConfig) error {
 		cfg.opts.Cache = cache
-		cfg.opts.FileCache = fileCache
+		cfg.opts.TableCache = tableCache
 		return nil
 	}
 }
@@ -207,40 +223,6 @@ func MaxConcurrentCompactions(n int) ConfigOption {
 	}
 }
 
-// MemtableSize configures the size of a MemTable in steady state.
-func MemtableSize(bytes uint64) ConfigOption {
-	return func(cfg *engineConfig) error {
-		cfg.opts.MemTableSize = bytes
-		return nil
-	}
-}
-
-// L0CompactionThreshold configures the amount of L0 read-amplification
-// necessary to trigger an L0 compaction.
-func L0CompactionThreshold(n int) ConfigOption {
-	return func(cfg *engineConfig) error {
-		cfg.opts.L0CompactionThreshold = n
-		return nil
-	}
-}
-
-// DisableWAL disables the WAL for this Engine.
-func DisableWAL() ConfigOption {
-	return func(cfg *engineConfig) error {
-		cfg.opts.DisableWAL = true
-		return nil
-	}
-}
-
-// WALBytesPerSync sets the number of bytes to write to a WAL before calling
-// Sync on it in the background.
-func WALBytesPerSync(bytes int) ConfigOption {
-	return func(cfg *engineConfig) error {
-		cfg.opts.WALBytesPerSync = bytes
-		return nil
-	}
-}
-
 // MaxConcurrentDownloads configures the maximum number of concurrent
 // download compactions an Engine will execute.
 func MaxConcurrentDownloads(n int) ConfigOption {
@@ -267,26 +249,23 @@ func errConfigOption(err error) func(*engineConfig) error {
 }
 
 func makeExternalWALDir(
-	engineCfg *engineConfig,
-	externalDir storageconfig.ExternalPath,
-	defaultFS vfs.FS,
-	diskWriteStats disk.WriteStatsManager,
+	engineCfg *engineConfig, externalDir base.ExternalPath, defaultFS vfs.FS,
 ) (wal.Dir, error) {
 	// If the store is encrypted, we require that all the WAL failover dirs also
 	// be encrypted so that the user doesn't accidentally leak data unencrypted
 	// onto the filesystem.
-	if engineCfg.env.Encryption != nil && externalDir.Encryption == nil {
+	if engineCfg.env.Encryption != nil && len(externalDir.EncryptionOptions) == 0 {
 		return wal.Dir{}, errors.Newf("must provide --enterprise-encryption flag for %q, used as WAL failover path for encrypted store %q",
 			externalDir.Path, engineCfg.env.Dir)
 	}
-	if engineCfg.env.Encryption == nil && externalDir.Encryption != nil {
+	if engineCfg.env.Encryption == nil && len(externalDir.EncryptionOptions) != 0 {
 		return wal.Dir{}, errors.Newf("must provide --enterprise-encryption flag for store %q, specified WAL failover path %q is encrypted",
 			engineCfg.env.Dir, externalDir.Path)
 	}
 	env, err := fs.InitEnv(context.Background(), defaultFS, externalDir.Path, fs.EnvConfig{
 		RW:                engineCfg.env.RWMode(),
-		EncryptionOptions: externalDir.Encryption,
-	}, diskWriteStats)
+		EncryptionOptions: externalDir.EncryptionOptions,
+	})
 	if err != nil {
 		return wal.Dir{}, err
 	}
@@ -300,12 +279,7 @@ func makeExternalWALDir(
 // WALFailover configures automatic failover of the engine's write-ahead log to
 // another volume in the event the WAL becomes blocked on a write that does not
 // complete within a reasonable duration.
-func WALFailover(
-	walCfg storageconfig.WALFailover,
-	storeEnvs fs.Envs,
-	defaultFS vfs.FS,
-	diskWriteStats disk.WriteStatsManager,
-) ConfigOption {
+func WALFailover(walCfg base.WALFailoverConfig, storeEnvs fs.Envs, defaultFS vfs.FS) ConfigOption {
 	// The set of options available in single-store versus multi-store
 	// configurations vary. This is in part due to the need to store the multiple
 	// stores' WALs separately. When WALFailoverExplicitPath is provided, we have
@@ -313,15 +287,15 @@ func WALFailover(
 	// stores. Note that the store ID is not known when a store is first opened.
 	if len(storeEnvs) == 1 {
 		switch walCfg.Mode {
-		case storageconfig.WALFailoverDefaultMode, storageconfig.WALFailoverAmongStores:
+		case base.WALFailoverDefault, base.WALFailoverAmongStores:
 			return noopConfigOption
-		case storageconfig.WALFailoverDisabled:
+		case base.WALFailoverDisabled:
 			// Check if the user provided an explicit previous path. If they did, they
 			// were previously using WALFailoverExplicitPath and are now disabling it.
 			// We need to add the explicilt path to WALRecoveryDirs.
 			if walCfg.PrevPath.IsSet() {
 				return func(cfg *engineConfig) error {
-					walDir, err := makeExternalWALDir(cfg, walCfg.PrevPath, defaultFS, diskWriteStats)
+					walDir, err := makeExternalWALDir(cfg, walCfg.PrevPath, defaultFS)
 					if err != nil {
 						return err
 					}
@@ -335,16 +309,16 @@ func WALFailover(
 			// notices the OPTIONS file encodes a WAL failover secondary that was not
 			// provided to Options.WALRecoveryDirs.
 			return noopConfigOption
-		case storageconfig.WALFailoverToExplicitPath:
+		case base.WALFailoverExplicitPath:
 			// The user has provided an explicit path to which we should fail over WALs.
 			return func(cfg *engineConfig) error {
-				walDir, err := makeExternalWALDir(cfg, walCfg.Path, defaultFS, diskWriteStats)
+				walDir, err := makeExternalWALDir(cfg, walCfg.Path, defaultFS)
 				if err != nil {
 					return err
 				}
 				cfg.opts.WALFailover = makePebbleWALFailoverOptsForDir(cfg.settings, walDir)
 				if walCfg.PrevPath.IsSet() {
-					walDir, err := makeExternalWALDir(cfg, walCfg.PrevPath, defaultFS, diskWriteStats)
+					walDir, err := makeExternalWALDir(cfg, walCfg.PrevPath, defaultFS)
 					if err != nil {
 						return err
 					}
@@ -358,14 +332,14 @@ func WALFailover(
 	}
 
 	switch walCfg.Mode {
-	case storageconfig.WALFailoverDefaultMode:
+	case base.WALFailoverDefault:
 		// If the user specified no WAL failover setting, we default to disabling WAL
 		// failover and assume that the previous process did not have WAL failover
 		// enabled (so there's no need to populate Options.WALRecoveryDirs). If an
 		// operator had WAL failover enabled and now wants to disable it, they must
 		// explicitly set --wal-failover=disabled for the next process.
 		return noopConfigOption
-	case storageconfig.WALFailoverDisabled:
+	case base.WALFailoverDisabled:
 		// Check if the user provided an explicit previous path; that's unsupported
 		// in multi-store configurations.
 		if walCfg.PrevPath.IsSet() {
@@ -375,10 +349,10 @@ func WALFailover(
 		// WALFailoverAmongStores.
 
 		// Fallthrough
-	case storageconfig.WALFailoverToExplicitPath:
+	case base.WALFailoverExplicitPath:
 		// Not supported for multi-store configurations.
 		return errConfigOption(errors.Newf("storage: cannot use explicit path --wal-failover option with multiple stores"))
-	case storageconfig.WALFailoverAmongStores:
+	case base.WALFailoverAmongStores:
 		// Fallthrough
 	default:
 		panic("unreachable")
@@ -446,7 +420,7 @@ func WALFailover(
 			// Use auxiliary/wals-among-stores within the other stores directory.
 			Dirname: secondaryEnv.PathJoin(secondaryEnv.Dir, base.AuxiliaryDir, "wals-among-stores"),
 		}
-		if walCfg.Mode == storageconfig.WALFailoverAmongStores {
+		if walCfg.Mode == base.WALFailoverAmongStores {
 			cfg.opts.WALFailover = makePebbleWALFailoverOptsForDir(cfg.settings, secondary)
 			return nil
 		}
@@ -466,7 +440,15 @@ func makePebbleWALFailoverOptsForDir(
 			// UnhealthyOperationLatencyThreshold should be pulled from the
 			// cluster setting.
 			UnhealthyOperationLatencyThreshold: func() (time.Duration, bool) {
-				return walFailoverUnhealthyOpThreshold.Get(&settings.SV), true
+				// WAL failover requires 24.1 to be finalized first. Otherwise, we might
+				// write WALs to a secondary, downgrade to a previous version's binary and
+				// blindly miss WALs. The second return value indicates whether the
+				// WAL manager is allowed to failover to the secondary.
+				//
+				// NB: We do not use settings.Version.IsActive because we do not have a
+				// guarantee that the cluster version has been initialized.
+				versionOK := settings.Version.ActiveVersionOrEmpty(context.TODO()).IsActive(clusterversion.V24_1Start)
+				return walFailoverUnhealthyOpThreshold.Get(&settings.SV), versionOK
 			},
 		},
 	}
@@ -480,22 +462,6 @@ func makePebbleWALFailoverOptsForDir(
 func PebbleOptions(pebbleOptions string, parseHooks *pebble.ParseHooks) ConfigOption {
 	return func(cfg *engineConfig) error {
 		return cfg.opts.Parse(pebbleOptions, parseHooks)
-	}
-}
-
-// DiskMonitor configures a monitor to track disk stats.
-func DiskMonitor(diskMonitor *disk.Monitor) ConfigOption {
-	return func(cfg *engineConfig) error {
-		cfg.diskMonitor = diskMonitor
-		return nil
-	}
-}
-
-// DiskWriteStatsCollector configures an engine to categorically track disk write stats.
-func DiskWriteStatsCollector(dsc *vfs.DiskWriteStatsCollector) ConfigOption {
-	return func(cfg *engineConfig) error {
-		cfg.DiskWriteStatsCollector = dsc
-		return nil
 	}
 }
 
@@ -553,6 +519,10 @@ func Open(
 			}
 			return nil, err
 		}
+	}
+	if cfg.cacheSize != nil && cfg.opts.Cache == nil {
+		cfg.opts.Cache = pebble.NewCache(*cfg.cacheSize)
+		defer cfg.opts.Cache.Unref()
 	}
 	p, err := newPebble(ctx, cfg)
 	if err != nil {

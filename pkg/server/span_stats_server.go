@@ -8,7 +8,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strconv"
 	"time"
 
@@ -21,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/rangedesc"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -35,6 +33,7 @@ var SpanStatsNodeTimeout = settings.RegisterDurationSetting(
 	"the duration allowed for a single node to return span stats data before"+
 		" the request is cancelled; if set to 0, there is no timeout",
 	time.Minute,
+	settings.NonNegativeDuration,
 )
 
 const defaultRangeStatsBatchLimit = 100
@@ -186,15 +185,12 @@ func collectSpanStatsResponses(
 			res.SpanToStats[spanStr].ApproximateDiskBytes += spanStats.ApproximateDiskBytes
 			res.SpanToStats[spanStr].RemoteFileBytes += spanStats.RemoteFileBytes
 			res.SpanToStats[spanStr].ExternalFileBytes += spanStats.ExternalFileBytes
-			res.SpanToStats[spanStr].StoreIDs = util.CombineUnique(res.SpanToStats[spanStr].StoreIDs, spanStats.StoreIDs)
 
 			// Logical values: take the values from the node that responded first.
 			// TODO: This should really be read from the leaseholder.
-			// https://github.com/cockroachdb/cockroach/issues/138792
 			if _, ok := responses[spanStr]; !ok {
 				res.SpanToStats[spanStr].TotalStats = spanStats.TotalStats
 				res.SpanToStats[spanStr].RangeCount = spanStats.RangeCount
-				res.SpanToStats[spanStr].ReplicaCount = spanStats.ReplicaCount
 				responses[spanStr] = struct{}{}
 			}
 		}
@@ -263,7 +259,6 @@ func (s *systemStatusServer) statsForSpan(
 		return nil, err
 	}
 
-	storeIDs := make(map[roachpb.StoreID]struct{})
 	var fullyContainedKeysBatch []roachpb.Key
 	// Iterate through the span's ranges.
 	for _, desc := range descriptors {
@@ -271,12 +266,6 @@ func (s *systemStatusServer) statsForSpan(
 		// Get the descriptor for the current range of the span.
 		descSpan := desc.RSpan()
 		spanStats.RangeCount += 1
-
-		voterAndNonVoterReplicas := desc.Replicas().VoterAndNonVoterDescriptors()
-		spanStats.ReplicaCount += int32(len(voterAndNonVoterReplicas))
-		for _, repl := range voterAndNonVoterReplicas {
-			storeIDs[repl.StoreID] = struct{}{}
-		}
 
 		// Is the descriptor fully contained by the request span?
 		if rSpan.ContainsKeyRange(descSpan.Key, desc.EndKey) {
@@ -309,7 +298,6 @@ func (s *systemStatusServer) statsForSpan(
 			log.VEventf(ctx, 1, "Range %v exceeds span %v, calculating stats for subspan %v",
 				descSpan, rSpan, roachpb.RSpan{Key: scanStart, EndKey: scanEnd},
 			)
-
 			err = s.stores.VisitStores(func(s *kvserver.Store) error {
 				stats, err := storage.ComputeStats(
 					ctx,
@@ -326,20 +314,12 @@ func (s *systemStatusServer) statsForSpan(
 				spanStats.TotalStats.Add(stats)
 				return nil
 			})
+
 			if err != nil {
 				return nil, err
 			}
 		}
 	}
-
-	spanStats.StoreIDs = make([]roachpb.StoreID, 0, len(storeIDs))
-	for storeID := range storeIDs {
-		spanStats.StoreIDs = append(spanStats.StoreIDs, storeID)
-	}
-	sort.Slice(spanStats.StoreIDs, func(i, j int) bool {
-		return spanStats.StoreIDs[i] < spanStats.StoreIDs[j]
-	})
-
 	// If we still have some remaining ranges, request range stats for the current batch.
 	if len(fullyContainedKeysBatch) > 0 {
 		// Obtain stats for fully contained ranges via RangeStats.
@@ -471,6 +451,12 @@ func isLegacyRequest(req *roachpb.SpanStatsRequest) bool {
 func verifySpanStatsRequest(
 	ctx context.Context, req *roachpb.SpanStatsRequest, version clusterversion.Handle,
 ) error {
+
+	// If the cluster's active version is less than 23.1 return a mixed version error.
+	if !version.IsActive(ctx, clusterversion.V23_1) {
+		return errors.New(MixedVersionErr)
+	}
+
 	// If we receive a request using the old format.
 	if isLegacyRequest(req) {
 		// We want to force 23.1 callers to use the new format (e.g. Spans field).

@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -34,7 +33,7 @@ func hashRange(t *testing.T, reader storage.Reader, start, end roachpb.Key) []by
 	h := sha256.New()
 	require.NoError(t, reader.MVCCIterate(context.Background(), start, end,
 		storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypePointsOnly,
-		fs.UnknownReadCategory, func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
+		storage.UnknownReadCategory, func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
 			h.Write(kv.Key.Key)
 			h.Write(kv.Value)
 			return nil

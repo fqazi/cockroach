@@ -43,7 +43,7 @@ func init() {
 	alphaRangeDescriptorDB = mockRangeDescriptorDBForDescs(
 		append(alphaRangeDescriptors, TestMetaRangeDescriptor)...,
 	)
-	tf = func(options SendOptions, slice ReplicaSlice) Transport {
+	tf = func(options SendOptions, slice ReplicaSlice) (Transport, error) {
 		panic("transport not set up for use")
 	}
 }

@@ -4,15 +4,13 @@
 // included in the /LICENSE file.
 
 import * as protos from "@cockroachlabs/crdb-protobuf-client";
-
 import { AggregateStatistics } from "src/statementsTable";
-
 import { longToInt } from "./fixLong";
 
 type Statement =
   protos.cockroach.server.serverpb.StatementsResponse.ICollectedStatementStatistics;
-type StatementType = AggregateStatistics | Statement;
-type StatementsType = Array<StatementType>;
+type statementType = AggregateStatistics | Statement;
+type statementsType = Array<statementType>;
 
 /**
  * Function to calculate total workload of statements
@@ -21,8 +19,8 @@ type StatementsType = Array<StatementType>;
  * @param statements array of statements (AggregateStatistics or Statement)
  * @returns the total workload of all statements
  */
-export function calculateTotalWorkload(statements: StatementsType): number {
-  return statements.reduce((totalWorkload: number, stmt: StatementType) => {
+export function calculateTotalWorkload(statements: statementsType): number {
+  return statements.reduce((totalWorkload: number, stmt: statementType) => {
     return (totalWorkload +=
       longToInt(stmt.stats.count) * stmt.stats.service_lat.mean);
   }, 0);

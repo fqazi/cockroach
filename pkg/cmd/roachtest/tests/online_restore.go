@@ -12,18 +12,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/backup/backuptestutils"
+	"github.com/cockroachdb/cockroach/pkg/ccl/backupccl/backuptestutils"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/clusterstats"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/prometheus"
-	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	crdbworkload "github.com/cockroachdb/cockroach/pkg/workload"
@@ -48,58 +45,6 @@ var queriesThroughputAgg = clusterstats.AggQuery{
 	Tag:   "Queries over Time",
 }
 
-type onlineRestoreSpecs struct {
-	restoreSpecs
-
-	// workload defines the workload that will run during the download phase of
-	// Online Restore. If set, must match the fixture that is being restored.
-	workload restoreWorkload
-	// linkPhaseTimeout is the timeout for the link phase of the restore, if set.
-	linkPhaseTimeout time.Duration
-	// downloadPhaseTimeout is the timeout for the download phase of the restore, if set.
-	downloadPhaseTimeout time.Duration
-}
-
-// restoreWorkload describes the workload that will run during the download
-// phase of Online Restore.
-type restoreWorkload interface {
-	// Run begins a workload that runs indefinitely until the passed context is
-	// canceled.
-	Run(ctx context.Context, t test.Test, c cluster.Cluster, sp hardwareSpecs) error
-}
-
-type tpccRunOpts struct {
-	workers        int
-	maxOps         int
-	maxRate        int
-	waitFraction   float64
-	queryTraceFile string
-	seed           uint64
-	fakeTime       uint32
-}
-
-type tpccRestore struct {
-	opts tpccRunOpts
-}
-
-var _ restoreWorkload = &tpccRestore{}
-
-func (tpcc tpccRestore) Run(
-	ctx context.Context, t test.Test, c cluster.Cluster, sp hardwareSpecs,
-) error {
-	crdbNodes := sp.getCRDBNodes()
-	cmd := roachtestutil.NewCommand(`./cockroach workload run tpcc`).
-		MaybeFlag(tpcc.opts.workers > 0, "workers", tpcc.opts.workers).
-		MaybeFlag(tpcc.opts.waitFraction != 1, "wait", tpcc.opts.waitFraction).
-		MaybeFlag(tpcc.opts.maxOps != 0, "max-ops", tpcc.opts.maxOps).
-		MaybeFlag(tpcc.opts.maxRate != 0, "max-rate", tpcc.opts.maxRate).
-		MaybeFlag(tpcc.opts.seed != 0, "seed", tpcc.opts.seed).
-		MaybeFlag(tpcc.opts.fakeTime != 0, "fake-time", tpcc.opts.fakeTime).
-		MaybeFlag(tpcc.opts.queryTraceFile != "", "query-trace-file", tpcc.opts.queryTraceFile).
-		Arg("{pgurl:%d-%d}", crdbNodes[0], crdbNodes[len(crdbNodes)-1])
-	return c.RunE(ctx, option.WithNodes([]int{sp.getWorkloadNode()}), cmd.String())
-}
-
 func registerOnlineRestorePerf(r registry.Registry) {
 	// This driver creates a variety of roachtests to benchmark online restore
 	// performance with the prefix
@@ -108,63 +53,40 @@ func registerOnlineRestorePerf(r registry.Registry) {
 	// corresponding roachtest that runs a conventional restore over the same
 	// cluster topology and workload in order to measure post restore query
 	// latency relative to online restore (prefix restore/control/*).
-	//
-	// Performance optimizations to reduce download phase time require further
-	// investigation.
-	for _, sp := range []onlineRestoreSpecs{
+	for _, sp := range []restoreSpecs{
 		{
-			// 350 GB tpcc Online Restore
-			restoreSpecs: restoreSpecs{
-				hardware: makeHardwareSpecs(hardwareSpecs{workloadNode: true}),
-				backup: backupSpecs{
-					cloud:   spec.GCE,
-					fixture: SmallFixture,
-				},
-				fullBackupOnly: true,
-				timeout:        1 * time.Hour,
-				suites:         registry.Suites(registry.Nightly),
-			},
-			workload: tpccRestore{
-				opts: tpccRunOpts{waitFraction: 0, workers: 100, maxRate: 300},
-			},
-			linkPhaseTimeout:     45 * time.Second, // typically takes 20 seconds
-			downloadPhaseTimeout: 20 * time.Minute, // typically takes 10 minutes.
+			// 15GB tpce Online Restore
+			hardware: makeHardwareSpecs(hardwareSpecs{ebsThroughput: 250 /* MB/s */, workloadNode: true}),
+			backup: makeRestoringBackupSpecs(backupSpecs{
+				nonRevisionHistory: true,
+				version:            "v23.1.11",
+				workload:           tpceRestore{customers: 1000}}),
+			timeout:                30 * time.Minute,
+			suites:                 registry.Suites(registry.Nightly),
+			restoreUptoIncremental: 1,
+			skip:                   "used for ad hoc testing. NB this backup contains prefixes",
 		},
 		{
-			// 350 GB tpcc Online Restore with 48 incrementals
-			restoreSpecs: restoreSpecs{
-				hardware: makeHardwareSpecs(hardwareSpecs{workloadNode: true}),
-				backup: backupSpecs{
-					cloud:   spec.GCE,
-					fixture: SmallFixture,
-				},
-				fullBackupOnly: false,
-				timeout:        1 * time.Hour,
-				suites:         registry.Suites(registry.Nightly),
-			},
-			workload: tpccRestore{
-				opts: tpccRunOpts{waitFraction: 0, workers: 100, maxRate: 300},
-			},
-			linkPhaseTimeout:     45 * time.Second, // typically takes 20 seconds
-			downloadPhaseTimeout: 20 * time.Minute, // typically takes 10 minutes.
+			// 400GB tpce Online Restore
+			hardware:               makeHardwareSpecs(hardwareSpecs{ebsThroughput: 1000 /* MB/s */, workloadNode: true}),
+			backup:                 makeRestoringBackupSpecs(backupSpecs{nonRevisionHistory: true, version: fixtureFromMasterVersion, numBackupsInChain: 5}),
+			timeout:                1 * time.Hour,
+			suites:                 registry.Suites(registry.Nightly),
+			restoreUptoIncremental: 1,
+			skip:                   "fails every time. TPCC tests dropping soon",
 		},
 		{
-			// 2TB tpcc Online Restore
-			restoreSpecs: restoreSpecs{
-				hardware: makeHardwareSpecs(hardwareSpecs{nodes: 10, volumeSize: 1500, workloadNode: true}),
-				backup: backupSpecs{
-					cloud:   spec.GCE,
-					fixture: MediumFixture,
-				},
-				fullBackupOnly: true,
-				timeout:        3 * time.Hour,
-				suites:         registry.Suites(registry.Nightly),
-			},
-			workload: tpccRestore{
-				opts: tpccRunOpts{waitFraction: 0, workers: 100, maxRate: 1000},
-			},
-			linkPhaseTimeout:     10 * time.Minute, // typically takes 5 minutes
-			downloadPhaseTimeout: 4 * time.Hour,    // typically takes 2 hours.
+			// 8TB tpce Online Restore
+			hardware: makeHardwareSpecs(hardwareSpecs{nodes: 10, volumeSize: 2000,
+				ebsThroughput: 1000 /* MB/s */, workloadNode: true}),
+			backup: makeRestoringBackupSpecs(backupSpecs{
+				nonRevisionHistory: true,
+				version:            fixtureFromMasterVersion,
+				workload:           tpceRestore{customers: 500000}}),
+			timeout:                5 * time.Hour,
+			suites:                 registry.Suites(registry.Nightly),
+			restoreUptoIncremental: 1,
+			skip:                   "used for ad hoc experiments",
 		},
 	} {
 		for _, runOnline := range []bool{true, false} {
@@ -179,9 +101,6 @@ func registerOnlineRestorePerf(r registry.Registry) {
 						sp.namePrefix = "online/"
 					} else {
 						sp.namePrefix = "offline/"
-						sp.skip = "used for ad hoc experiments"
-					}
-					if !runWorkload {
 						sp.skip = "used for ad hoc experiments"
 					}
 
@@ -200,19 +119,19 @@ func registerOnlineRestorePerf(r registry.Registry) {
 						Name:      sp.testName,
 						Owner:     registry.OwnerDisasterRecovery,
 						Benchmark: true,
-						Cluster:   sp.hardware.makeClusterSpecs(r),
+						Cluster:   sp.hardware.makeClusterSpecs(r, sp.backup.cloud),
 						Timeout:   sp.timeout,
 						// These tests measure performance. To ensure consistent perf,
 						// disable metamorphic encryption.
 						EncryptionSupport:         registry.EncryptionAlwaysDisabled,
-						CompatibleClouds:          sp.backup.CompatibleClouds(),
+						CompatibleClouds:          registry.Clouds(sp.backup.cloud),
 						Suites:                    sp.suites,
 						TestSelectionOptOutSuites: sp.suites,
 						Skip:                      sp.skip,
 						// Takes 10 minutes on OR tests for some reason.
 						SkipPostValidations: registry.PostValidationReplicaDivergence,
 						Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-							rd := makeRestoreDriver(t, c, sp.restoreSpecs)
+							rd := makeRestoreDriver(t, c, sp)
 							rd.prepareCluster(ctx)
 
 							restoreStats := runRestore(ctx, t, c, sp, rd, runOnline, runWorkload, useWorkarounds)
@@ -221,14 +140,16 @@ func registerOnlineRestorePerf(r registry.Registry) {
 									ctx,
 									c,
 									t.L(),
-									sp.backup.fixture.DatabaseName(),
+									sp.backup.workload.DatabaseName(),
 									restoreStats.downloadEndTimeLowerBound,
 								))
 							}
 							if runWorkload {
-								if err := exportStats(ctx, rd, restoreStats); err != nil {
-									t.L().Printf("failed to export stats: %s", err.Error())
-								}
+								require.NoError(t, exportStats(
+									ctx,
+									rd,
+									restoreStats,
+								))
 							}
 						},
 					})
@@ -238,55 +159,27 @@ func registerOnlineRestorePerf(r registry.Registry) {
 	}
 }
 
-// maybeAddSomeEmptyTables adds some empty tables to the cluster to exercise
-// prefix rewrite rules.
-func maybeAddSomeEmptyTables(ctx context.Context, rd restoreDriver) error {
-	if rd.rng.Intn(2) == 0 {
-		return nil
-	}
-	rd.t.L().Printf("adding some empty tables")
-	db, err := rd.c.ConnE(ctx, rd.t.L(), rd.c.Node(1)[0])
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	if _, err := db.Exec(`CREATE DATABASE empty`); err != nil {
-		return err
-	}
-	numTables := rd.rng.Intn(10)
-	for i := 0; i < numTables; i++ {
-		if _, err := db.Exec(fmt.Sprintf(`CREATE TABLE empty.t%d (a INT)`, i)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func registerOnlineRestoreCorrectness(r registry.Registry) {
-	sp := onlineRestoreSpecs{
-		restoreSpecs: restoreSpecs{
-			hardware: makeHardwareSpecs(hardwareSpecs{workloadNode: true}),
-			backup: backupSpecs{
-				cloud:   spec.AWS,
-				fixture: TinyFixture,
-			},
-			timeout:    15 * time.Minute,
-			suites:     registry.Suites(registry.Nightly),
-			namePrefix: "online/correctness",
-			skip:       "skip for now - flaky",
-		},
-		workload: tpccRestore{
-			opts: tpccRunOpts{workers: 1, waitFraction: 0, maxOps: 1000},
-		},
+	sp := restoreSpecs{
+		hardware: makeHardwareSpecs(hardwareSpecs{workloadNode: true}),
+		backup: makeRestoringBackupSpecs(backupSpecs{
+			nonRevisionHistory: true,
+			version:            fixtureFromMasterVersion,
+			workload:           tpccRestore{opts: tpccRestoreOptions{warehouses: 10, workers: 1, waitFraction: 0, maxOps: 1000}}}),
+		timeout:                15 * time.Minute,
+		suites:                 registry.Suites(registry.Nightly),
+		restoreUptoIncremental: 1,
+		namePrefix:             "online/correctness",
+		skip:                   "skip for now - flaky",
 	}
 	sp.initTestName()
 	r.Add(
 		registry.TestSpec{
 			Name:                      sp.testName,
 			Owner:                     registry.OwnerDisasterRecovery,
-			Cluster:                   sp.hardware.makeClusterSpecs(r),
+			Cluster:                   sp.hardware.makeClusterSpecs(r, sp.backup.cloud),
 			Timeout:                   sp.timeout,
-			CompatibleClouds:          sp.backup.CompatibleClouds(),
+			CompatibleClouds:          registry.Clouds(sp.backup.cloud),
 			Suites:                    sp.suites,
 			TestSelectionOptOutSuites: sp.suites,
 			SkipPostValidations:       registry.PostValidationReplicaDivergence,
@@ -297,11 +190,11 @@ func registerOnlineRestoreCorrectness(r registry.Registry) {
 				regRestoreSpecs, regWorkload := initCorrectnessRestoreSpecs(
 					t, sp, defaultSeed, defaultFakeTime, "-reg.trace",
 				)
-				orSpecs, onlineWorkload := initCorrectnessRestoreSpecs(
+				onlineRestoreSpecs, onlineWorkload := initCorrectnessRestoreSpecs(
 					t, sp, defaultSeed, defaultFakeTime, "-online.trace",
 				)
 
-				rd := makeRestoreDriver(t, c, sp.restoreSpecs)
+				rd := makeRestoreDriver(t, c, sp)
 				rd.prepareCluster(ctx)
 
 				runRestore(
@@ -321,13 +214,13 @@ func registerOnlineRestoreCorrectness(r registry.Registry) {
 				rd.prepareCluster(ctx)
 
 				runRestore(
-					ctx, t, c, orSpecs, rd,
+					ctx, t, c, onlineRestoreSpecs, rd,
 					true /* runOnline */, true /* runWorkload */, false, /* useWorkarounds */
 				)
 				details, err = c.RunWithDetails(
 					ctx,
 					t.L(),
-					option.WithNodes([]int{orSpecs.hardware.getWorkloadNode()}),
+					option.WithNodes([]int{onlineRestoreSpecs.hardware.getWorkloadNode()}),
 					fmt.Sprintf("cat %s", onlineWorkload.opts.queryTraceFile),
 				)
 				require.NoError(t, err, "failed to retrieve query trace for online restore")
@@ -421,18 +314,17 @@ func exportStats(ctx context.Context, rd restoreDriver, restoreStats restoreStat
 	endTime := timeutil.Now()
 	latencyQueryKey := sqlServiceLatency.Query
 	statsCollector := restoreStats.collector
-	qpsQueryKey := queriesThroughput.Query
 	exportingStats, err := statsCollector.Exporter().Export(ctx, rd.c, rd.t, true, /* dryRun */
 		restoreStats.workloadStartTime,
 		endTime,
 		[]clusterstats.AggQuery{sqlServiceLatencyP95Agg, queriesThroughputAgg},
-		func(stats map[string]clusterstats.StatSummary) *roachtestutil.AggregatedMetric {
+		func(stats map[string]clusterstats.StatSummary) (string, float64) {
 			var timeToHealth time.Time
 			healthyLatencyRatio := 1.25
 			n := len(stats[latencyQueryKey].Value)
 			rd.t.L().Printf("aggregating latency over %d data points", n)
 			if n == 0 {
-				return nil // Return nil for no data points
+				return "", 0
 			}
 			healthyLatency := stats[latencyQueryKey].Value[n-1]
 			latestHealthyValue := healthyLatency
@@ -454,14 +346,7 @@ func exportStats(ctx context.Context, rd restoreDriver, restoreStats restoreStat
 			description := "Time to within 1.25x of regular p95 latency (mins)"
 			rd.t.L().Printf("%s: %.2f minutes, compared to link + download phase time %.2f", description, rto, fullRestoreTime)
 			rd.t.L().Printf("Latency at Recovery Time %.0f ms; at end of test %.0f ms", latestHealthyValue, healthyLatency)
-
-			return &roachtestutil.AggregatedMetric{
-				Name:             description,
-				Value:            roachtestutil.MetricPoint(rto),
-				Unit:             "minutes",
-				IsHigherBetter:   false,
-				AdditionalLabels: nil,
-			}
+			return description, rto
 		},
 	)
 	if err != nil {
@@ -471,14 +356,6 @@ func exportStats(ctx context.Context, rd restoreDriver, restoreStats restoreStat
 	outlier, err := stats.Percentile(exportingStats.Stats[latencyQueryKey].Value, 95)
 	if err != nil {
 		return errors.Wrap(err, "could not compute latency outliers")
-	}
-
-	medianQPS, err := stats.Median(exportingStats.Stats[qpsQueryKey].Value)
-	if err != nil {
-		return errors.Wrap(err, "could not compute median QPS")
-	}
-	if medianQPS < 10 {
-		return errors.Errorf("median QPS %.2f < 10. Check test.log if workload silently failed", medianQPS)
 	}
 
 	for i, val := range exportingStats.Stats[latencyQueryKey].Value {
@@ -494,7 +371,7 @@ func exportStats(ctx context.Context, rd restoreDriver, restoreStats restoreStat
 			exportingStats.Stats[latencyQueryKey].Value[i] = 0
 		}
 	}
-	if err := exportingStats.SerializeOutRun(ctx, rd.t, rd.c, rd.t.ExportOpenmetrics()); err != nil {
+	if err := exportingStats.SerializeOutRun(ctx, rd.t, rd.c); err != nil {
 		return errors.Wrap(err, "failed to export stats")
 	}
 	return nil
@@ -524,20 +401,13 @@ func waitForDownloadJob(
 			if err := conn.QueryRow(`SELECT status FROM [SHOW JOBS] WHERE job_type = 'RESTORE' ORDER BY created DESC LIMIT 1`).Scan(&status); err != nil {
 				return downloadJobEndTimeLowerBound, err
 			}
-			if status == string(jobs.StateSucceeded) {
-				var externalBytes uint64
-				if err := conn.QueryRow(jobutils.GetExternalBytesForConnectedTenant).Scan(&externalBytes); err != nil {
-					return downloadJobEndTimeLowerBound, errors.Wrapf(err, "could not get external bytes")
-				}
-				if externalBytes != 0 {
-					return downloadJobEndTimeLowerBound, errors.Newf(" not all data downloaded. %d external bytes still in cluster", externalBytes)
-				}
+			if status == string(jobs.StatusSucceeded) {
 				postDownloadDelay := time.Minute
 				l.Printf("Download job completed; let workload run for %.2f minute before proceeding", postDownloadDelay.Minutes())
 				time.Sleep(postDownloadDelay)
 				downloadJobEndTimeLowerBound = timeutil.Now().Add(-pollingInterval).Add(-postDownloadDelay)
 				return downloadJobEndTimeLowerBound, nil
-			} else if status == string(jobs.StateRunning) {
+			} else if status == string(jobs.StatusRunning) {
 				l.Printf("Download job still running")
 			} else {
 				return downloadJobEndTimeLowerBound, errors.Newf("job unexpectedly found in %s state", status)
@@ -549,10 +419,10 @@ func waitForDownloadJob(
 // initCorrectnessRestoreSpecs initializes the restoreSpecs for correctness testing based on the
 // base restore spec by setting the workload seed, fake time, and trace file name
 func initCorrectnessRestoreSpecs(
-	t test.Test, baseSp onlineRestoreSpecs, seed uint64, fakeTime uint32, traceSuffix string,
-) (onlineRestoreSpecs, tpccRestore) {
+	t test.Test, baseSp restoreSpecs, seed uint64, fakeTime uint32, traceSuffix string,
+) (restoreSpecs, tpccRestore) {
 	t.Helper()
-	tpccWorkload, ok := baseSp.workload.(tpccRestore)
+	tpccWorkload, ok := baseSp.backup.workload.(tpccRestore)
 	if !ok {
 		require.Fail(t, "only tpcc workloads are supported for correctness testing")
 	}
@@ -564,7 +434,7 @@ func initCorrectnessRestoreSpecs(
 	if tpccWorkload.opts.fakeTime == 0 {
 		tpccWorkload.opts.fakeTime = fakeTime
 	}
-	baseSp.workload = tpccWorkload
+	baseSp.backup.workload = tpccWorkload
 	return baseSp, tpccWorkload
 }
 
@@ -581,7 +451,7 @@ func runRestore(
 	ctx context.Context,
 	t test.Test,
 	c cluster.Cluster,
-	sp onlineRestoreSpecs,
+	sp restoreSpecs,
 	rd restoreDriver,
 	runOnline, runWorkload, useWorkarounds bool,
 ) restoreStats {
@@ -623,28 +493,16 @@ func runRestore(
 			if _, err := db.Exec("SET CLUSTER SETTING admission.sql_kv_response.enabled=false"); err != nil {
 				return err
 			}
-			if _, err := db.Exec("SET CLUSTER SETTING kv.consistency_queue.enabled=false"); err != nil {
-				return err
-			}
-			if _, err := db.Exec("SET CLUSTER SETTING kv.range_merge.skip_external_bytes.enabled=true"); err != nil {
-				return err
-			}
 		}
-		opts := "WITH UNSAFE_RESTORE_INCOMPATIBLE_VERSION"
+		opts := ""
 		if runOnline {
-			opts = "WITH EXPERIMENTAL DEFERRED COPY, UNSAFE_RESTORE_INCOMPATIBLE_VERSION"
-		}
-		if err := maybeAddSomeEmptyTables(ctx, rd); err != nil {
-			return errors.Wrapf(err, "failed to add some empty tables")
+			opts = "WITH EXPERIMENTAL DEFERRED COPY"
 		}
 		restoreStartTime = timeutil.Now()
-		restoreCmd := rd.restoreCmd(ctx, fmt.Sprintf("DATABASE %s", sp.backup.fixture.DatabaseName()), opts)
+		restoreCmd := rd.restoreCmd(fmt.Sprintf("DATABASE %s", sp.backup.workload.DatabaseName()), opts)
 		t.L().Printf("Running %s", restoreCmd)
 		if _, err = db.ExecContext(ctx, restoreCmd); err != nil {
 			return err
-		}
-		if runOnline && sp.linkPhaseTimeout != 0 && sp.linkPhaseTimeout < timeutil.Since(restoreStartTime) {
-			return errors.Newf("link phase took too long: %s greater than timeout %s", timeutil.Since(restoreStartTime), sp.linkPhaseTimeout)
 		}
 		return nil
 	})
@@ -661,7 +519,7 @@ func runRestore(
 			return nil
 		}
 		workloadStartTime = timeutil.Now()
-		err := sp.workload.Run(ctx, t, c, sp.hardware)
+		err := sp.backup.workload.run(ctx, t, c, sp.hardware)
 		// We expect the workload to return a context cancelled error because
 		// the roachtest driver cancels the monitor's context after the download job completes
 		if err != nil && ctx.Err() == nil {
@@ -680,15 +538,12 @@ func runRestore(
 			if err != nil {
 				return err
 			}
-			if sp.downloadPhaseTimeout != 0 && sp.downloadPhaseTimeout < timeutil.Since(restoreEndTime) {
-				return errors.Newf("download phase took too long: %s greater than timeout %s", timeutil.Since(restoreEndTime), sp.downloadPhaseTimeout)
-			}
 		}
 		if runWorkload {
-			// Run the workload for at most 5 minutes.
+			// Run the workload for at most 10 minutes.
 			testRuntime := timeutil.Since(testStartTime)
 			workloadDuration := sp.timeout - (testRuntime + time.Minute)
-			maxWorkloadDuration := time.Minute * 5
+			maxWorkloadDuration := time.Minute * 10
 			if workloadDuration > maxWorkloadDuration {
 				workloadDuration = maxWorkloadDuration
 			}

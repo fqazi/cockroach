@@ -6,7 +6,6 @@
 package rangefeed
 
 import (
-	"context"
 	"math/rand"
 	"testing"
 
@@ -16,8 +15,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/randgen"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc/keyside"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/storageutils"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
@@ -33,7 +32,6 @@ var (
 	pointKV = storageutils.PointKV
 	rangeKV = storageutils.RangeKV
 )
-
 var (
 	testKey            = roachpb.Key("/db1")
 	testTxnID          = uuid.MakeV4()
@@ -96,8 +94,6 @@ func generateStaticTestdata() testData {
 func TestEventSizeCalculation(t *testing.T) {
 	st := cluster.MakeTestingClusterSettings()
 	data := generateStaticTestdata()
-	storage.ColumnarBlocksEnabled.Override(context.Background(), &st.SV, true)
-	storage.CompressionAlgorithmStorage.Override(context.Background(), &st.SV, storage.CompressionAlgorithmSnappy)
 
 	key := data.key
 	timestamp := data.timestamp
@@ -221,10 +217,10 @@ func TestEventSizeCalculation(t *testing.T) {
 		{
 			name:                 "sstEvent event",
 			ev:                   event{sst: &sstEvent{data: sst, span: span, ts: timestamp}},
-			expectedCurrMemUsage: int64(2218),
+			expectedCurrMemUsage: int64(1962),
 			actualCurrMemUsage: eventOverhead + sstEventOverhead +
 				int64(cap(sst)+cap(span.Key)+cap(span.EndKey)),
-			expectedFutureMemUsage: int64(2234),
+			expectedFutureMemUsage: int64(1978),
 			actualFutureMemUsage: futureEventBaseOverhead + rangefeedSSTTableOverhead +
 				int64(cap(sst)+cap(span.Key)+cap(span.EndKey)),
 		},
@@ -250,6 +246,11 @@ func TestEventSizeCalculation(t *testing.T) {
 	}
 }
 
+func generateRandomizedTs(rand *rand.Rand) hlc.Timestamp {
+	// Avoid generating zero timestamp which will equal to an empty event.
+	return hlc.Timestamp{WallTime: int64(rand.Intn(100)) + 1}
+}
+
 func generateRandomizedBytes(rand *rand.Rand) []byte {
 	const tableID = 42
 	dataTypes := []*types.T{types.String, types.Int, types.Decimal, types.Bytes, types.Bool, types.Date, types.Timestamp, types.Float}
@@ -264,6 +265,33 @@ func generateRandomizedBytes(rand *rand.Rand) []byte {
 		panic(err)
 	}
 	return key
+}
+
+func generateStartAndEndKey(rand *rand.Rand) (roachpb.Key, roachpb.Key) {
+	start := rand.Intn(2 << 20)
+	end := start + rand.Intn(2<<20)
+	startDatum := tree.NewDInt(tree.DInt(start))
+	endDatum := tree.NewDInt(tree.DInt(end))
+	const tableID = 42
+
+	startKey, err := keyside.Encode(
+		keys.SystemSQLCodec.TablePrefix(tableID),
+		startDatum,
+		encoding.Ascending,
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	endKey, err := keyside.Encode(
+		keys.SystemSQLCodec.TablePrefix(tableID),
+		endDatum,
+		encoding.Ascending,
+	)
+	if err != nil {
+		panic(err)
+	}
+	return startKey, endKey
 }
 
 func generateRandomizedTxnId(rand *rand.Rand) uuid.UUID {
@@ -293,14 +321,14 @@ func generateRandomTestData(rand *rand.Rand) testData {
 		kvs:              testSSTKVs,
 		span:             generateRandomizedSpan(rand).AsRawSpanWithNoLocals(),
 		key:              generateRandomizedBytes(rand),
-		timestamp:        GenerateRandomizedTs(rand, 100 /* maxTime */),
+		timestamp:        generateRandomizedTs(rand),
 		value:            generateRandomizedBytes(rand),
 		startKey:         startKey,
 		endKey:           endkey,
 		txnID:            generateRandomizedTxnId(rand),
 		txnKey:           generateRandomizedBytes(rand),
 		txnIsoLevel:      isolation.Levels()[rand.Intn(len(isolation.Levels()))],
-		txnMinTimestamp:  GenerateRandomizedTs(rand, 100 /* maxTime */),
+		txnMinTimestamp:  generateRandomizedTs(rand),
 		omitInRangefeeds: rand.Intn(2) == 1,
 	}
 }

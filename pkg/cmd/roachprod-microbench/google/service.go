@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachprod-microbench/model"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachprod-microbench/util"
 	"github.com/cockroachdb/errors"
 	"golang.org/x/exp/maps"
 	"google.golang.org/api/drive/v3"
@@ -23,8 +22,6 @@ import (
 	"google.golang.org/api/option"
 	"google.golang.org/api/sheets/v4"
 )
-
-const dashboardURL = "https://microbench.testeng.crdb.io/dashboard/"
 
 // Service is capable of communicating with the Google Drive API and the Google
 // Sheets API to create new spreadsheets and populate them from benchstat
@@ -77,23 +74,31 @@ func (srv *Service) testServices(ctx context.Context) error {
 
 // CreateSheet creates a new Google spreadsheet with the provided metric data.
 func (srv *Service) CreateSheet(
-	ctx context.Context,
-	name string,
-	comparisonResults []*model.ComparisonResult,
-	oldID, newID string,
+	ctx context.Context, name string, metricMap model.MetricMap, oldID, newID string,
 ) (string, error) {
 	var s sheets.Spreadsheet
 	s.Properties = &sheets.SpreadsheetProperties{Title: name}
 
-	// Raw data sheets.
-	sheetInfos, idx := make([]rawSheetInfo, 0, len(comparisonResults)), 0
-	for _, result := range comparisonResults {
-		metric := result.Metric
-		comparisons := make(map[string]*model.Comparison)
-		for _, detail := range result.Comparisons {
-			comparisons[detail.BenchmarkName] = detail.Comparison
-		}
+	// Sort sheets by name in reverse order. This ensures `sec/op` is the first
+	// sheet and metric in the summary.
+	sheetNames := make([]string, 0, len(metricMap))
+	for sheetName := range metricMap {
+		sheetNames = append(sheetNames, sheetName)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(sheetNames)))
 
+	// Raw data sheets.
+	sheetInfos, idx := make([]rawSheetInfo, 0, len(metricMap)), 0
+	for _, sheetName := range sheetNames {
+		metric := metricMap[sheetName]
+		// Compute comparisons for each benchmark present in both runs.
+		comparisons := make(map[string]*model.Comparison)
+		for name := range metric.BenchmarkEntries {
+			comparison := metric.ComputeComparison(name, oldID, newID)
+			if comparison != nil {
+				comparisons[name] = comparison
+			}
+		}
 		// Only generate a sheet if there are comparisons to show.
 		if len(comparisons) != 0 {
 			sh, info := srv.createRawSheet(metric, comparisons, oldID, newID, idx)
@@ -163,7 +168,7 @@ func (srv *Service) createRawSheet(
 
 		// Column: Benchmark name.
 		vals = append(vals, strCell("name"))
-		metadata = append(metadata, withSize(600))
+		metadata = append(metadata, withSize(400))
 
 		// Columns: Metric names.
 		for _, run := range runs {
@@ -201,7 +206,7 @@ func (srv *Service) createRawSheet(
 		entry := metric.BenchmarkEntries[name]
 		comparison := comparisons[name]
 		var vals []*sheets.CellData
-		vals = append(vals, strCellWithLink(name, dashboardLink(name)))
+		vals = append(vals, strCell(name))
 		for _, run := range runs {
 			vals = append(vals, numCell(entry.Summaries[run].Center))
 		}
@@ -272,7 +277,7 @@ func (srv *Service) createOverviewSheet(rawInfos []rawSheetInfo) *sheets.Sheet {
 		if len(info.nonZeroVals) == 0 {
 			noChanges := fmt.Sprintf("no change in %s", info.metric.Name)
 			vals = append(vals, strCell(noChanges))
-			metadata = append(metadata, withSize(400))
+			metadata = append(metadata, withSize(200))
 			continue
 		}
 
@@ -311,7 +316,7 @@ func (srv *Service) createOverviewSheet(rawInfos []rawSheetInfo) *sheets.Sheet {
 			},
 		})
 		vals = append(vals, &sheets.CellData{})
-		metadata = append(metadata, withSize(400), withSize(100))
+		metadata = append(metadata, withSize(200), withSize(100))
 
 		deltaCol := int64(len(vals)) - 1
 		cf := condFormatting(props.SheetId, deltaCol, smallerBetter)
@@ -370,29 +375,6 @@ func strCell(s string) *sheets.CellData {
 			StringValue: &s,
 		},
 	}
-}
-
-func strCellWithLink(s string, link string) *sheets.CellData {
-	return &sheets.CellData{
-		UserEnteredValue: &sheets.ExtendedValue{
-			StringValue: &s,
-		},
-		TextFormatRuns: []*sheets.TextFormatRun{
-			{
-				StartIndex: 0,
-				Format: &sheets.TextFormat{
-					Link: &sheets.Link{
-						Uri: link,
-					},
-				},
-			},
-		},
-	}
-}
-
-func dashboardLink(name string) string {
-	parts := strings.Split(name, util.PackageSeparator)
-	return dashboardURL + "?benchmark=" + parts[1] + "&package=" + parts[0]
 }
 
 func numCell(f float64) *sheets.CellData {

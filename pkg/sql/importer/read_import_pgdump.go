@@ -38,6 +38,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
@@ -274,7 +275,7 @@ func createPostgresSchemas(
 		ctx context.Context, txn descs.Txn,
 	) error {
 		schemaDescs = nil // reset for retries
-		dbDesc, err := txn.Descriptors().ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Database(ctx, parentID)
+		dbDesc, err := txn.Descriptors().ByID(txn.KV()).WithoutNonPublic().Get().Database(ctx, parentID)
 		if err != nil {
 			return err
 		}
@@ -641,7 +642,7 @@ func readPostgresStmt(
 			Name:             stmt.Name,
 			Columns:          stmt.Columns,
 			Storing:          stmt.Storing,
-			Type:             stmt.Type,
+			Inverted:         stmt.Inverted,
 			PartitionByIndex: stmt.PartitionByIndex,
 			StorageParams:    stmt.StorageParams,
 			// Postgres doesn't support NotVisible Index, so NotVisible is not populated here.
@@ -756,9 +757,6 @@ func readPostgresStmt(
 			return unsupportedStmtLogger.log(stmt.String(), false /* isParseError */)
 		}
 		return wrapErrorWithUnsupportedHint(errors.Errorf("unsupported statement: %s", stmt))
-	case *tree.AlterTableSetLogged:
-		// No-op: CockroachDB does not support unlogged tables, tables are logged by default
-		return nil
 	case *tree.CreateSequence:
 		schemaQualifiedTableName, err := getSchemaAndTableName(&stmt.Name)
 		if err != nil {
@@ -780,7 +778,7 @@ func readPostgresStmt(
 				switch expr := selExpr.Expr.(type) {
 				case *tree.FuncExpr:
 					// Look for function calls that mutate schema (this is actually a thing).
-					semaCtx := tree.MakeSemaContext(nil /* resolver */)
+					semaCtx := tree.MakeSemaContext()
 					semaCtx.Properties.Require("pg_dump function arguments", tree.RejectSubqueries)
 					if _, err := expr.TypeCheck(ctx, &semaCtx, nil /* desired */); err != nil {
 						// If the expression does not type check, it may be a case of using
@@ -874,7 +872,7 @@ func readPostgresStmt(
 		for _, name := range names {
 			tableName := name.ToUnresolvedObjectName().String()
 			if err := sql.DescsTxn(ctx, p.ExecCfg(), func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
-				dbDesc, err := col.ByIDWithoutLeased(txn.KV()).Get().Database(ctx, parentID)
+				dbDesc, err := col.ByID(txn.KV()).Get().Database(ctx, parentID)
 				if err != nil {
 					return err
 				}
@@ -1025,6 +1023,9 @@ func newPgDumpReader(
 	}, nil
 }
 
+func (m *pgDumpReader) start(ctx ctxgroup.Group) {
+}
+
 func (m *pgDumpReader) readFiles(
 	ctx context.Context,
 	dataFiles map[int32]string,
@@ -1059,7 +1060,7 @@ func (m *pgDumpReader) readFile(
 	var inserts, count int64
 	rowLimit := m.opts.RowLimit
 	ps := newPostgreStream(ctx, input, int(m.opts.MaxRowSize), m.unsupportedStmtLogger)
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	for _, conv := range m.tables {
 		conv.KvBatch.Source = inputIdx
 		conv.FractionFn = input.ReadFraction

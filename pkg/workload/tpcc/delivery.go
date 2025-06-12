@@ -8,14 +8,13 @@ package tpcc
 import (
 	"context"
 	"fmt"
-	"math/rand/v2"
 	"strings"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/workload"
 	"github.com/cockroachdb/errors"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/exp/rand"
 )
 
 // 2.7 The Delivery Transaction
@@ -73,15 +72,15 @@ func createDelivery(
 	return del, nil
 }
 
-func (del *delivery) run(ctx context.Context, wID int) (interface{}, time.Duration, error) {
+func (del *delivery) run(ctx context.Context, wID int) (interface{}, error) {
 	del.config.auditor.deliveryTransactions.Add(1)
 
-	rng := rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
+	rng := rand.New(rand.NewSource(uint64(timeutil.Now().UnixNano())))
 
-	oCarrierID := rng.IntN(10) + 1
+	oCarrierID := rng.Intn(10) + 1
 	olDeliveryD := timeutil.Now()
 
-	onTxnStartDuration, err := del.config.executeTx(
+	err := del.config.executeTx(
 		ctx, del.mcp.Get(),
 		func(tx pgx.Tx) error {
 			// 2.7.4.2. For each district:
@@ -103,41 +102,38 @@ func (del *delivery) run(ctx context.Context, wID int) (interface{}, time.Durati
 				if err := del.sumAmount.QueryRowTx(
 					ctx, tx, wID, dID, oID,
 				).Scan(&olTotal); err != nil {
-					return errors.Wrap(err, "select order_line failed")
+					return err
 				}
 				dIDolTotalPairs[dID] = olTotal
 			}
 			dIDoIDPairsStr := makeInTuples(dIDoIDPairs)
 
+			rows, err := tx.Query(
+				ctx,
+				fmt.Sprintf(`
+					UPDATE "order"
+					SET o_carrier_id = %d
+					WHERE o_w_id = %d AND (o_d_id, o_id) IN (%s)
+					RETURNING o_d_id, o_c_id`,
+					oCarrierID, wID, dIDoIDPairsStr,
+				),
+			)
+			if err != nil {
+				return err
+			}
 			dIDcIDPairs := make(map[int]int)
-			err := func() error {
-				rows, err := tx.Query(
-					ctx,
-					fmt.Sprintf(`
-						UPDATE "order"
-						SET o_carrier_id = %d
-						WHERE o_w_id = %d AND (o_d_id, o_id) IN (%s)
-						RETURNING o_d_id, o_c_id`,
-						oCarrierID, wID, dIDoIDPairsStr,
-					),
-				)
-				if err != nil {
+			for rows.Next() {
+				var dID, oCID int
+				if err := rows.Scan(&dID, &oCID); err != nil {
+					rows.Close()
 					return err
 				}
-				defer rows.Close()
-
-				for rows.Next() {
-					var dID, oCID int
-					if err := rows.Scan(&dID, &oCID); err != nil {
-						return err
-					}
-					dIDcIDPairs[dID] = oCID
-				}
-				return rows.Err()
-			}()
-			if err != nil {
-				return errors.Wrap(err, "update order failed")
+				dIDcIDPairs[dID] = oCID
 			}
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			rows.Close()
 
 			if err := checkSameKeys(dIDoIDPairs, dIDcIDPairs); err != nil {
 				return err
@@ -155,9 +151,8 @@ func (del *delivery) run(ctx context.Context, wID int) (interface{}, time.Durati
 					dIDToOlTotalStr, wID, dIDcIDPairsStr,
 				),
 			); err != nil {
-				return errors.Wrap(err, "update customer failed")
+				return err
 			}
-
 			if _, err := tx.Exec(
 				ctx,
 				fmt.Sprintf(`
@@ -166,10 +161,10 @@ func (del *delivery) run(ctx context.Context, wID int) (interface{}, time.Durati
 					wID, dIDoIDPairsStr,
 				),
 			); err != nil {
-				return errors.Wrap(err, "delete new_order failed")
+				return err
 			}
 
-			if _, err := tx.Exec(
+			_, err = tx.Exec(
 				ctx,
 				fmt.Sprintf(`
 					UPDATE order_line
@@ -177,13 +172,10 @@ func (del *delivery) run(ctx context.Context, wID int) (interface{}, time.Durati
 					WHERE ol_w_id = %d AND (ol_d_id, ol_o_id) IN (%s)`,
 					olDeliveryD.Format("2006-01-02 15:04:05"), wID, dIDoIDPairsStr,
 				),
-			); err != nil {
-				return errors.Wrap(err, "update order_line failed")
-			}
-
-			return nil
+			)
+			return err
 		})
-	return nil, onTxnStartDuration, err
+	return nil, err
 }
 
 func makeInTuples(pairs map[int]int) string {

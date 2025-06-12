@@ -121,7 +121,7 @@ distribution: local
 vectorized: true
 ·
 • sort
-│ order: -column26,-started
+│ order: -column29,-started
 │
 └── • render
     │
@@ -359,7 +359,6 @@ vectorized: true
         │   │
         │   └── • hash join (left outer)
         │       │ equality: (column62) = (table_id)
-        │       │ right cols are key
         │       │
         │       ├── • render
         │       │   │
@@ -384,11 +383,8 @@ vectorized: true
         │       │               └── • virtual table
         │       │                     table: pg_class@primary
         │       │
-        │       └── • distinct
-        │           │ distinct on: table_id
-        │           │
-        │           └── • virtual table
-        │                 table: table_row_statistics@primary
+        │       └── • virtual table
+        │             table: table_row_statistics@primary
         │
         └── • virtual table
               table: tables@tables_database_name_idx (partial index)
@@ -413,7 +409,6 @@ vectorized: true
         │   │
         │   └── • hash join (left outer)
         │       │ equality: (column77) = (table_id)
-        │       │ right cols are key
         │       │
         │       ├── • render
         │       │   │
@@ -444,22 +439,21 @@ vectorized: true
         │       │               └── • sort
         │       │                   │ order: +objoid
         │       │                   │
-        │       │                   └── • filter
-        │       │                       │ filter: objsubid = 0
+        │       │                   └── • render
         │       │                       │
-        │       │                       └── • render
+        │       │                       └── • filter
+        │       │                           │ filter: objsubid = 0
         │       │                           │
-        │       │                           └── • filter
-        │       │                               │ filter: classoid = 4294967083
+        │       │                           └── • render
         │       │                               │
-        │       │                               └── • virtual table
-        │       │                                     table: kv_catalog_comments@primary
+        │       │                               └── • filter
+        │       │                                   │ filter: classoid = 4294967092
+        │       │                                   │
+        │       │                                   └── • virtual table
+        │       │                                         table: kv_catalog_comments@primary
         │       │
-        │       └── • distinct
-        │           │ distinct on: table_id
-        │           │
-        │           └── • virtual table
-        │                 table: table_row_statistics@primary
+        │       └── • virtual table
+        │             table: table_row_statistics@primary
         │
         └── • virtual table
               table: tables@tables_database_name_idx (partial index)
@@ -566,8 +560,7 @@ vectorized: true
     └── • group (hash)
         │ group by: column_name, ordinal_position, column_default, is_nullable, generation_expression, is_hidden, crdb_sql_type
         │
-        └── • sort
-            │ order: +index_name
+        └── • window
             │
             └── • hash join (left outer)
                 │ equality: (column_name) = (column_name)
@@ -617,7 +610,7 @@ vectorized: true
 └── • subquery
     │ id: @S1
     │ original sql: SELECT * FROM (SELECT tp.table_catalog AS database_name, tp.table_schema AS schema_name, tp.table_name, tp.grantee, tp.privilege_type, tp.is_grantable::BOOL, CASE WHEN s.sequence_name IS NOT NULL THEN 'sequence' ELSE 'table' END AS object_type FROM "".information_schema.table_privileges AS tp LEFT JOIN "".information_schema.sequences AS s ON (((tp.table_catalog = s.sequence_catalog) AND (tp.table_schema = s.sequence_schema)) AND (tp.table_name = s.sequence_name))) WHERE (database_name, schema_name, table_name) IN (('test', 'public', 'foo'),)
-    │ exec mode: discard all rows
+    │ exec mode: all rows
     │
     └── • buffer
         │ label: buffer 1 (r)
@@ -712,13 +705,13 @@ vectorized: true
             └── • virtual table
                   table: pg_namespace@primary
 
-statement ok
+statement OK
 ANALYZE system.users
 
-statement ok
+statement OK
 ANALYZE system.role_options
 
-statement ok
+statement OK
 ANALYZE system.role_members
 
 query T retry
@@ -741,41 +734,39 @@ vectorized: true
             │ estimated row count: 3
             │ order: +"role"
             │
-            └── • merge join (right outer)
+            └── • hash join (left outer)
                 │ estimated row count: 3
-                │ equality: (member) = (username)
-                │ right cols are key
+                │ equality: (username) = (member)
+                │ left cols are key
                 │
-                ├── • scan
-                │     estimated row count: 1 (100% of the table; stats collected <hidden> ago)
-                │     table: role_members@role_members_member_idx
-                │     spans: FULL SCAN
+                ├── • group (hash)
+                │   │ estimated row count: 3
+                │   │ group by: username
+                │   │
+                │   └── • window
+                │       │ estimated row count: 3
+                │       │
+                │       └── • render
+                │           │
+                │           └── • hash join (left outer)
+                │               │ estimated row count: 3
+                │               │ equality: (username) = (username)
+                │               │ left cols are key
+                │               │
+                │               ├── • scan
+                │               │     estimated row count: 3 (100% of the table; stats collected <hidden> ago)
+                │               │     table: users@users_user_id_idx
+                │               │     spans: FULL SCAN
+                │               │
+                │               └── • scan
+                │                     estimated row count: 1 (100% of the table; stats collected <hidden> ago)
+                │                     table: role_options@primary
+                │                     spans: FULL SCAN
                 │
-                └── • group (streaming)
-                    │ estimated row count: 3
-                    │ group by: username
-                    │ ordered: +username
-                    │
-                    └── • sort
-                        │ estimated row count: 3
-                        │ order: +username,+option
-                        │
-                        └── • render
-                            │
-                            └── • hash join (left outer)
-                                │ estimated row count: 3
-                                │ equality: (username) = (username)
-                                │ left cols are key
-                                │
-                                ├── • scan
-                                │     estimated row count: 3 (100% of the table; stats collected <hidden> ago)
-                                │     table: users@users_user_id_idx
-                                │     spans: FULL SCAN
-                                │
-                                └── • scan
-                                      estimated row count: 1 (100% of the table; stats collected <hidden> ago)
-                                      table: role_options@primary
-                                      spans: FULL SCAN
+                └── • scan
+                      estimated row count: 1 (100% of the table; stats collected <hidden> ago)
+                      table: role_members@role_members_role_idx
+                      spans: FULL SCAN
 
 # EXPLAIN selecting from a sequence.
 statement ok
@@ -1594,8 +1585,6 @@ TABLE tc
  ├── rowid int not null default (unique_rowid()) [hidden]
  ├── crdb_internal_mvcc_timestamp decimal [hidden] [system]
  ├── tableoid oid [hidden] [system]
- ├── crdb_internal_origin_id int4 [hidden] [system]
- ├── crdb_internal_origin_timestamp decimal [hidden] [system]
  ├── PRIMARY INDEX tc_pkey
  │    └── rowid int not null default (unique_rowid()) [hidden]
  └── INDEX c
@@ -1616,8 +1605,6 @@ TABLE tc
  ├── rowid int not null default (‹×›) [hidden]
  ├── crdb_internal_mvcc_timestamp decimal [hidden] [system]
  ├── tableoid oid [hidden] [system]
- ├── crdb_internal_origin_id int4 [hidden] [system]
- ├── crdb_internal_origin_timestamp decimal [hidden] [system]
  ├── PRIMARY INDEX tc_pkey
  │    └── rowid int not null default (‹×›) [hidden]
  └── INDEX c
@@ -1638,8 +1625,6 @@ TABLE tc
  ├── rowid int not null default (unique_rowid()) [hidden]
  ├── crdb_internal_mvcc_timestamp decimal [hidden] [system]
  ├── tableoid oid [hidden] [system]
- ├── crdb_internal_origin_id int4 [hidden] [system]
- ├── crdb_internal_origin_timestamp decimal [hidden] [system]
  ├── PRIMARY INDEX tc_pkey
  │    └── rowid int not null default (unique_rowid()) [hidden]
  └── INDEX c
@@ -1650,18 +1635,16 @@ TABLE t
  ├── v int
  ├── crdb_internal_mvcc_timestamp decimal [hidden] [system]
  ├── tableoid oid [hidden] [system]
- ├── crdb_internal_origin_id int4 [hidden] [system]
- ├── crdb_internal_origin_timestamp decimal [hidden] [system]
  └── PRIMARY INDEX t_pkey
       └── k int not null
 inner-join (hash)
- ├── columns: a:1 b:2 k:8 v:9
+ ├── columns: a:1 b:2 k:6 v:7
  ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-more)
- ├── stats: [rows=990, distinct(1)=99, null(1)=0, distinct(8)=99, null(8)=0]
+ ├── stats: [rows=990, distinct(1)=99, null(1)=0, distinct(6)=99, null(6)=0]
  ├── cost: 2277.90625
- ├── fd: (8)-->(9), (1)==(8), (8)==(1)
+ ├── fd: (6)-->(7), (1)==(6), (6)==(1)
  ├── distribution: test
- ├── prune: (2,9)
+ ├── prune: (2,7)
  ├── scan tc
  │    ├── columns: a:1 b:2
  │    ├── stats: [rows=1000, distinct(1)=100, null(1)=10]
@@ -1669,19 +1652,19 @@ inner-join (hash)
  │    ├── distribution: test
  │    ├── prune: (1,2)
  │    ├── interesting orderings: (+1)
- │    └── unfiltered-cols: (1-7)
+ │    └── unfiltered-cols: (1-5)
  ├── scan t
- │    ├── columns: k:8 v:9
- │    ├── stats: [rows=1000, distinct(8)=1000, null(8)=0]
+ │    ├── columns: k:6 v:7
+ │    ├── stats: [rows=1000, distinct(6)=1000, null(6)=0]
  │    ├── cost: 1108.82
- │    ├── key: (8)
- │    ├── fd: (8)-->(9)
+ │    ├── key: (6)
+ │    ├── fd: (6)-->(7)
  │    ├── distribution: test
- │    ├── prune: (8,9)
- │    ├── interesting orderings: (+8)
- │    └── unfiltered-cols: (8-13)
+ │    ├── prune: (6,7)
+ │    ├── interesting orderings: (+6)
+ │    └── unfiltered-cols: (6-9)
  └── filters
-      └── k:8 = a:1 [outer=(1,8), constraints=(/1: (/NULL - ]; /8: (/NULL - ]), fd=(1)==(8), (8)==(1)]
+      └── k:6 = a:1 [outer=(1,6), constraints=(/1: (/NULL - ]; /6: (/NULL - ]), fd=(1)==(6), (6)==(1)]
 
 query T
 EXPLAIN (OPT,VERBOSE,CATALOG,REDACT) SELECT * FROM tc JOIN t ON k=a
@@ -1692,8 +1675,6 @@ TABLE tc
  ├── rowid int not null default (‹×›) [hidden]
  ├── crdb_internal_mvcc_timestamp decimal [hidden] [system]
  ├── tableoid oid [hidden] [system]
- ├── crdb_internal_origin_id int4 [hidden] [system]
- ├── crdb_internal_origin_timestamp decimal [hidden] [system]
  ├── PRIMARY INDEX tc_pkey
  │    └── rowid int not null default (‹×›) [hidden]
  └── INDEX c
@@ -1704,18 +1685,16 @@ TABLE t
  ├── v int
  ├── crdb_internal_mvcc_timestamp decimal [hidden] [system]
  ├── tableoid oid [hidden] [system]
- ├── crdb_internal_origin_id int4 [hidden] [system]
- ├── crdb_internal_origin_timestamp decimal [hidden] [system]
  └── PRIMARY INDEX t_pkey
       └── k int not null
 inner-join (hash)
- ├── columns: a:1 b:2 k:8 v:9
+ ├── columns: a:1 b:2 k:6 v:7
  ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-more)
- ├── stats: [rows=990, distinct(1)=99, null(1)=0, distinct(8)=99, null(8)=0]
+ ├── stats: [rows=990, distinct(1)=99, null(1)=0, distinct(6)=99, null(6)=0]
  ├── cost: 2277.90625
- ├── fd: (8)-->(9), (1)==(8), (8)==(1)
+ ├── fd: (6)-->(7), (1)==(6), (6)==(1)
  ├── distribution: test
- ├── prune: (2,9)
+ ├── prune: (2,7)
  ├── scan tc
  │    ├── columns: a:1 b:2
  │    ├── stats: [rows=1000, distinct(1)=100, null(1)=10]
@@ -1723,19 +1702,19 @@ inner-join (hash)
  │    ├── distribution: test
  │    ├── prune: (1,2)
  │    ├── interesting orderings: (+1)
- │    └── unfiltered-cols: (1-7)
+ │    └── unfiltered-cols: (1-5)
  ├── scan t
- │    ├── columns: k:8 v:9
- │    ├── stats: [rows=1000, distinct(8)=1000, null(8)=0]
+ │    ├── columns: k:6 v:7
+ │    ├── stats: [rows=1000, distinct(6)=1000, null(6)=0]
  │    ├── cost: 1108.82
- │    ├── key: (8)
- │    ├── fd: (8)-->(9)
+ │    ├── key: (6)
+ │    ├── fd: (6)-->(7)
  │    ├── distribution: test
- │    ├── prune: (8,9)
- │    ├── interesting orderings: (+8)
- │    └── unfiltered-cols: (8-13)
+ │    ├── prune: (6,7)
+ │    ├── interesting orderings: (+6)
+ │    └── unfiltered-cols: (6-9)
  └── filters
-      └── k:8 = a:1 [outer=(1,8), constraints=(‹×›), fd=(1)==(8), (8)==(1)]
+      └── k:6 = a:1 [outer=(1,6), constraints=(‹×›), fd=(1)==(6), (6)==(1)]
 
 query T
 EXPLAIN (OPT) SELECT * FROM tc WHERE a + 2 * b > 1 ORDER BY a*b
@@ -1767,37 +1746,37 @@ query T
 EXPLAIN (OPT, VERBOSE) SELECT * FROM tc WHERE a + 2 * b > 1 ORDER BY a*b
 ----
 distribute
- ├── columns: a:1 b:2  [hidden: column8:8]
+ ├── columns: a:1 b:2  [hidden: column6:6]
  ├── immutable
- ├── stats: [rows=333.333]
+ ├── stats: [rows=333.3333]
  ├── cost: 1418.32951
- ├── fd: (1,2)-->(8)
- ├── ordering: +8
+ ├── fd: (1,2)-->(6)
+ ├── ordering: +6
  ├── distribution: test
  ├── input distribution:
- ├── prune: (1,2,8)
+ ├── prune: (1,2,6)
  ├── interesting orderings: (+1)
  └── sort
-      ├── columns: a:1 b:2 column8:8
+      ├── columns: a:1 b:2 column6:6
       ├── immutable
-      ├── stats: [rows=333.333]
+      ├── stats: [rows=333.3333]
       ├── cost: 1218.30951
-      ├── fd: (1,2)-->(8)
-      ├── ordering: +8
-      ├── prune: (1,2,8)
+      ├── fd: (1,2)-->(6)
+      ├── ordering: +6
+      ├── prune: (1,2,6)
       ├── interesting orderings: (+1)
       └── project
-           ├── columns: column8:8 a:1 b:2
+           ├── columns: column6:6 a:1 b:2
            ├── immutable
-           ├── stats: [rows=333.333]
+           ├── stats: [rows=333.3333]
            ├── cost: 1145.73667
-           ├── fd: (1,2)-->(8)
-           ├── prune: (1,2,8)
+           ├── fd: (1,2)-->(6)
+           ├── prune: (1,2,6)
            ├── interesting orderings: (+1)
            ├── select
            │    ├── columns: a:1 b:2
            │    ├── immutable
-           │    ├── stats: [rows=333.333]
+           │    ├── stats: [rows=333.3333]
            │    ├── cost: 1139.05
            │    ├── interesting orderings: (+1)
            │    ├── scan tc
@@ -1809,43 +1788,43 @@ distribute
            │    └── filters
            │         └── (a:1 + (b:2 * 2)) > 1 [outer=(1,2), immutable]
            └── projections
-                └── a:1 * b:2 [as=column8:8, outer=(1,2), immutable]
+                └── a:1 * b:2 [as=column6:6, outer=(1,2), immutable]
 
 query T
 EXPLAIN (OPT, VERBOSE, REDACT) SELECT * FROM tc WHERE a + 2 * b > 1 ORDER BY a*b
 ----
 distribute
- ├── columns: a:1 b:2  [hidden: column8:8]
+ ├── columns: a:1 b:2  [hidden: column6:6]
  ├── immutable
- ├── stats: [rows=333.333]
+ ├── stats: [rows=333.3333]
  ├── cost: 1418.32951
- ├── fd: (1,2)-->(8)
- ├── ordering: +8
+ ├── fd: (1,2)-->(6)
+ ├── ordering: +6
  ├── distribution: test
  ├── input distribution:
- ├── prune: (1,2,8)
+ ├── prune: (1,2,6)
  ├── interesting orderings: (+1)
  └── sort
-      ├── columns: a:1 b:2 column8:8
+      ├── columns: a:1 b:2 column6:6
       ├── immutable
-      ├── stats: [rows=333.333]
+      ├── stats: [rows=333.3333]
       ├── cost: 1218.30951
-      ├── fd: (1,2)-->(8)
-      ├── ordering: +8
-      ├── prune: (1,2,8)
+      ├── fd: (1,2)-->(6)
+      ├── ordering: +6
+      ├── prune: (1,2,6)
       ├── interesting orderings: (+1)
       └── project
-           ├── columns: column8:8 a:1 b:2
+           ├── columns: column6:6 a:1 b:2
            ├── immutable
-           ├── stats: [rows=333.333]
+           ├── stats: [rows=333.3333]
            ├── cost: 1145.73667
-           ├── fd: (1,2)-->(8)
-           ├── prune: (1,2,8)
+           ├── fd: (1,2)-->(6)
+           ├── prune: (1,2,6)
            ├── interesting orderings: (+1)
            ├── select
            │    ├── columns: a:1 b:2
            │    ├── immutable
-           │    ├── stats: [rows=333.333]
+           │    ├── stats: [rows=333.3333]
            │    ├── cost: 1139.05
            │    ├── interesting orderings: (+1)
            │    ├── scan tc
@@ -1857,43 +1836,43 @@ distribute
            │    └── filters
            │         └── (a:1 + (b:2 * ‹×›)) > ‹×› [outer=(1,2), immutable]
            └── projections
-                └── a:1 * b:2 [as=column8:8, outer=(1,2), immutable]
+                └── a:1 * b:2 [as=column6:6, outer=(1,2), immutable]
 
 query T
 EXPLAIN (OPT, TYPES) SELECT * FROM tc WHERE a + 2 * b > 1 ORDER BY a*b
 ----
 distribute
- ├── columns: a:1(int) b:2(int)  [hidden: column8:8(int)]
+ ├── columns: a:1(int) b:2(int)  [hidden: column6:6(int)]
  ├── immutable
- ├── stats: [rows=333.333]
+ ├── stats: [rows=333.3333]
  ├── cost: 1418.32951
- ├── fd: (1,2)-->(8)
- ├── ordering: +8
+ ├── fd: (1,2)-->(6)
+ ├── ordering: +6
  ├── distribution: test
  ├── input distribution:
- ├── prune: (1,2,8)
+ ├── prune: (1,2,6)
  ├── interesting orderings: (+1)
  └── sort
-      ├── columns: a:1(int) b:2(int) column8:8(int)
+      ├── columns: a:1(int) b:2(int) column6:6(int)
       ├── immutable
-      ├── stats: [rows=333.333]
+      ├── stats: [rows=333.3333]
       ├── cost: 1218.30951
-      ├── fd: (1,2)-->(8)
-      ├── ordering: +8
-      ├── prune: (1,2,8)
+      ├── fd: (1,2)-->(6)
+      ├── ordering: +6
+      ├── prune: (1,2,6)
       ├── interesting orderings: (+1)
       └── project
-           ├── columns: column8:8(int) a:1(int) b:2(int)
+           ├── columns: column6:6(int) a:1(int) b:2(int)
            ├── immutable
-           ├── stats: [rows=333.333]
+           ├── stats: [rows=333.3333]
            ├── cost: 1145.73667
-           ├── fd: (1,2)-->(8)
-           ├── prune: (1,2,8)
+           ├── fd: (1,2)-->(6)
+           ├── prune: (1,2,6)
            ├── interesting orderings: (+1)
            ├── select
            │    ├── columns: a:1(int) b:2(int)
            │    ├── immutable
-           │    ├── stats: [rows=333.333]
+           │    ├── stats: [rows=333.3333]
            │    ├── cost: 1139.05
            │    ├── interesting orderings: (+1)
            │    ├── scan tc
@@ -1911,7 +1890,7 @@ distribute
            │              │         └── const: 2 [type=int]
            │              └── const: 1 [type=int]
            └── projections
-                └── mult [as=column8:8, type=int, outer=(1,2), immutable]
+                └── mult [as=column6:6, type=int, outer=(1,2), immutable]
                      ├── variable: a:1 [type=int]
                      └── variable: b:2 [type=int]
 
@@ -1919,37 +1898,37 @@ query T
 EXPLAIN (OPT, TYPES, REDACT) SELECT * FROM tc WHERE a + 2 * b > 1 ORDER BY a*b
 ----
 distribute
- ├── columns: a:1(int) b:2(int)  [hidden: column8:8(int)]
+ ├── columns: a:1(int) b:2(int)  [hidden: column6:6(int)]
  ├── immutable
- ├── stats: [rows=333.333]
+ ├── stats: [rows=333.3333]
  ├── cost: 1418.32951
- ├── fd: (1,2)-->(8)
- ├── ordering: +8
+ ├── fd: (1,2)-->(6)
+ ├── ordering: +6
  ├── distribution: test
  ├── input distribution:
- ├── prune: (1,2,8)
+ ├── prune: (1,2,6)
  ├── interesting orderings: (+1)
  └── sort
-      ├── columns: a:1(int) b:2(int) column8:8(int)
+      ├── columns: a:1(int) b:2(int) column6:6(int)
       ├── immutable
-      ├── stats: [rows=333.333]
+      ├── stats: [rows=333.3333]
       ├── cost: 1218.30951
-      ├── fd: (1,2)-->(8)
-      ├── ordering: +8
-      ├── prune: (1,2,8)
+      ├── fd: (1,2)-->(6)
+      ├── ordering: +6
+      ├── prune: (1,2,6)
       ├── interesting orderings: (+1)
       └── project
-           ├── columns: column8:8(int) a:1(int) b:2(int)
+           ├── columns: column6:6(int) a:1(int) b:2(int)
            ├── immutable
-           ├── stats: [rows=333.333]
+           ├── stats: [rows=333.3333]
            ├── cost: 1145.73667
-           ├── fd: (1,2)-->(8)
-           ├── prune: (1,2,8)
+           ├── fd: (1,2)-->(6)
+           ├── prune: (1,2,6)
            ├── interesting orderings: (+1)
            ├── select
            │    ├── columns: a:1(int) b:2(int)
            │    ├── immutable
-           │    ├── stats: [rows=333.333]
+           │    ├── stats: [rows=333.3333]
            │    ├── cost: 1139.05
            │    ├── interesting orderings: (+1)
            │    ├── scan tc
@@ -1967,7 +1946,7 @@ distribute
            │              │         └── const: ‹×› [type=int]
            │              └── const: ‹×› [type=int]
            └── projections
-                └── mult [as=column8:8, type=int, outer=(1,2), immutable]
+                └── mult [as=column6:6, type=int, outer=(1,2), immutable]
                      ├── variable: a:1 [type=int]
                      └── variable: b:2 [type=int]
 
@@ -2253,30 +2232,29 @@ distribution: <hidden>
 vectorized: <hidden>
 plan type: custom
 maximum memory usage: <hidden>
-DistSQL network usage: <hidden>
+network usage: <hidden>
 regions: <hidden>
 isolation level: serializable
 priority: normal
 quality of service: regular
 ·
 • values
-  sql nodes: <hidden>
+  nodes: <hidden>
   regions: <hidden>
   actual row count: 1
-  execution time: 0µs
   size: 1 column, 1 row
 
 # Tests for EXPLAIN (OPT, MEMO).
 query T
 EXPLAIN (OPT, MEMO) SELECT * FROM tc JOIN t ON k=a
 ----
-memo (optimized, ~19KB, required=[presentation: info:14] [distribution: test])
- ├── G1: (explain G2 [presentation: a:1,b:2,k:8,v:9] [distribution: test])
- │    └── [presentation: info:14] [distribution: test]
- │         ├── best: (explain G2="[presentation: a:1,b:2,k:8,v:9] [distribution: test]" [presentation: a:1,b:2,k:8,v:9] [distribution: test])
+memo (optimized, ~18KB, required=[presentation: info:10] [distribution: test])
+ ├── G1: (explain G2 [presentation: a:1,b:2,k:6,v:7] [distribution: test])
+ │    └── [presentation: info:10] [distribution: test]
+ │         ├── best: (explain G2="[presentation: a:1,b:2,k:6,v:7] [distribution: test]" [presentation: a:1,b:2,k:6,v:7] [distribution: test])
  │         └── cost: 2277.93
- ├── G2: (inner-join G3 G4 G5) (inner-join G4 G3 G5) (merge-join G3 G4 G6 inner-join,+1,+8) (lookup-join G3 G6 t,keyCols=[1],outCols=(1,2,8,9)) (merge-join G4 G3 G6 inner-join,+8,+1) (lookup-join G7 G6 tc,keyCols=[3],outCols=(1,2,8,9))
- │    ├── [presentation: a:1,b:2,k:8,v:9] [distribution: test]
+ ├── G2: (inner-join G3 G4 G5) (inner-join G4 G3 G5) (merge-join G3 G4 G6 inner-join,+1,+6) (lookup-join G3 G6 t,keyCols=[1],outCols=(1,2,6,7)) (merge-join G4 G3 G6 inner-join,+6,+1) (lookup-join G7 G6 tc,keyCols=[3],outCols=(1,2,6,7))
+ │    ├── [presentation: a:1,b:2,k:6,v:7] [distribution: test]
  │    │    ├── best: (inner-join G3="[distribution: test]" G4="[distribution: test]" G5)
  │    │    └── cost: 2277.91
  │    └── []
@@ -2295,27 +2273,27 @@ memo (optimized, ~19KB, required=[presentation: info:14] [distribution: test])
  │    └── []
  │         ├── best: (scan tc,cols=(1,2))
  │         └── cost: 1129.02
- ├── G4: (scan t,cols=(8,9))
+ ├── G4: (scan t,cols=(6,7))
  │    ├── [distribution: test]
- │    │    ├── best: (scan t,cols=(8,9))
+ │    │    ├── best: (scan t,cols=(6,7))
  │    │    └── cost: 1108.82
- │    ├── [ordering: +8]
- │    │    ├── best: (scan t,cols=(8,9))
+ │    ├── [ordering: +6]
+ │    │    ├── best: (scan t,cols=(6,7))
  │    │    └── cost: 1108.82
- │    ├── [ordering: +8] [distribution: test]
- │    │    ├── best: (scan t,cols=(8,9))
+ │    ├── [ordering: +6] [distribution: test]
+ │    │    ├── best: (scan t,cols=(6,7))
  │    │    └── cost: 1108.82
  │    └── []
- │         ├── best: (scan t,cols=(8,9))
+ │         ├── best: (scan t,cols=(6,7))
  │         └── cost: 1108.82
  ├── G5: (filters G8)
  ├── G6: (filters)
- ├── G7: (lookup-join G4 G6 tc@c,keyCols=[8],outCols=(1,3,8,9))
+ ├── G7: (lookup-join G4 G6 tc@c,keyCols=[6],outCols=(1,3,6,7))
  │    ├── [distribution: test]
- │    │    ├── best: (lookup-join G4="[distribution: test]" G6 tc@c,keyCols=[8],outCols=(1,3,8,9))
+ │    │    ├── best: (lookup-join G4="[distribution: test]" G6 tc@c,keyCols=[6],outCols=(1,3,6,7))
  │    │    └── cost: 23181.94
  │    └── []
- │         ├── best: (lookup-join G4 G6 tc@c,keyCols=[8],outCols=(1,3,8,9))
+ │         ├── best: (lookup-join G4 G6 tc@c,keyCols=[6],outCols=(1,3,6,7))
  │         └── cost: 23181.94
  ├── G8: (eq G9 G10)
  ├── G9: (variable k)
@@ -2335,8 +2313,6 @@ TABLE tc
  ├── rowid int not null default (unique_rowid()) [hidden]
  ├── crdb_internal_mvcc_timestamp decimal [hidden] [system]
  ├── tableoid oid [hidden] [system]
- ├── crdb_internal_origin_id int4 [hidden] [system]
- ├── crdb_internal_origin_timestamp decimal [hidden] [system]
  ├── PRIMARY INDEX tc_pkey
  │    └── rowid int not null default (unique_rowid()) [hidden]
  └── INDEX c
@@ -2347,17 +2323,15 @@ TABLE t
  ├── v int
  ├── crdb_internal_mvcc_timestamp decimal [hidden] [system]
  ├── tableoid oid [hidden] [system]
- ├── crdb_internal_origin_id int4 [hidden] [system]
- ├── crdb_internal_origin_timestamp decimal [hidden] [system]
  └── PRIMARY INDEX t_pkey
       └── k int not null
-memo (optimized, ~19KB, required=[presentation: info:14] [distribution: test])
- ├── G1: (explain G2 [presentation: a:1,b:2,k:8,v:9] [distribution: test])
- │    └── [presentation: info:14] [distribution: test]
- │         ├── best: (explain G2="[presentation: a:1,b:2,k:8,v:9] [distribution: test]" [presentation: a:1,b:2,k:8,v:9] [distribution: test])
+memo (optimized, ~18KB, required=[presentation: info:10] [distribution: test])
+ ├── G1: (explain G2 [presentation: a:1,b:2,k:6,v:7] [distribution: test])
+ │    └── [presentation: info:10] [distribution: test]
+ │         ├── best: (explain G2="[presentation: a:1,b:2,k:6,v:7] [distribution: test]" [presentation: a:1,b:2,k:6,v:7] [distribution: test])
  │         └── cost: 2277.93
- ├── G2: (inner-join G3 G4 G5) (inner-join G4 G3 G5) (merge-join G3 G4 G6 inner-join,+1,+8) (lookup-join G3 G6 t,keyCols=[1],outCols=(1,2,8,9)) (merge-join G4 G3 G6 inner-join,+8,+1) (lookup-join G7 G6 tc,keyCols=[3],outCols=(1,2,8,9))
- │    ├── [presentation: a:1,b:2,k:8,v:9] [distribution: test]
+ ├── G2: (inner-join G3 G4 G5) (inner-join G4 G3 G5) (merge-join G3 G4 G6 inner-join,+1,+6) (lookup-join G3 G6 t,keyCols=[1],outCols=(1,2,6,7)) (merge-join G4 G3 G6 inner-join,+6,+1) (lookup-join G7 G6 tc,keyCols=[3],outCols=(1,2,6,7))
+ │    ├── [presentation: a:1,b:2,k:6,v:7] [distribution: test]
  │    │    ├── best: (inner-join G3="[distribution: test]" G4="[distribution: test]" G5)
  │    │    └── cost: 2277.91
  │    └── []
@@ -2376,39 +2350,39 @@ memo (optimized, ~19KB, required=[presentation: info:14] [distribution: test])
  │    └── []
  │         ├── best: (scan tc,cols=(1,2))
  │         └── cost: 1129.02
- ├── G4: (scan t,cols=(8,9))
+ ├── G4: (scan t,cols=(6,7))
  │    ├── [distribution: test]
- │    │    ├── best: (scan t,cols=(8,9))
+ │    │    ├── best: (scan t,cols=(6,7))
  │    │    └── cost: 1108.82
- │    ├── [ordering: +8]
- │    │    ├── best: (scan t,cols=(8,9))
+ │    ├── [ordering: +6]
+ │    │    ├── best: (scan t,cols=(6,7))
  │    │    └── cost: 1108.82
- │    ├── [ordering: +8] [distribution: test]
- │    │    ├── best: (scan t,cols=(8,9))
+ │    ├── [ordering: +6] [distribution: test]
+ │    │    ├── best: (scan t,cols=(6,7))
  │    │    └── cost: 1108.82
  │    └── []
- │         ├── best: (scan t,cols=(8,9))
+ │         ├── best: (scan t,cols=(6,7))
  │         └── cost: 1108.82
  ├── G5: (filters G8)
  ├── G6: (filters)
- ├── G7: (lookup-join G4 G6 tc@c,keyCols=[8],outCols=(1,3,8,9))
+ ├── G7: (lookup-join G4 G6 tc@c,keyCols=[6],outCols=(1,3,6,7))
  │    ├── [distribution: test]
- │    │    ├── best: (lookup-join G4="[distribution: test]" G6 tc@c,keyCols=[8],outCols=(1,3,8,9))
+ │    │    ├── best: (lookup-join G4="[distribution: test]" G6 tc@c,keyCols=[6],outCols=(1,3,6,7))
  │    │    └── cost: 23181.94
  │    └── []
- │         ├── best: (lookup-join G4 G6 tc@c,keyCols=[8],outCols=(1,3,8,9))
+ │         ├── best: (lookup-join G4 G6 tc@c,keyCols=[6],outCols=(1,3,6,7))
  │         └── cost: 23181.94
  ├── G8: (eq G9 G10)
  ├── G9: (variable k)
  └── G10: (variable a)
 inner-join (hash)
- ├── columns: a:1 b:2 k:8 v:9
+ ├── columns: a:1 b:2 k:6 v:7
  ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-more)
- ├── stats: [rows=990, distinct(1)=99, null(1)=0, distinct(8)=99, null(8)=0]
+ ├── stats: [rows=990, distinct(1)=99, null(1)=0, distinct(6)=99, null(6)=0]
  ├── cost: 2277.90625
- ├── fd: (8)-->(9), (1)==(8), (8)==(1)
+ ├── fd: (6)-->(7), (1)==(6), (6)==(1)
  ├── distribution: test
- ├── prune: (2,9)
+ ├── prune: (2,7)
  ├── scan tc
  │    ├── columns: a:1 b:2
  │    ├── stats: [rows=1000, distinct(1)=100, null(1)=10]
@@ -2416,19 +2390,19 @@ inner-join (hash)
  │    ├── distribution: test
  │    ├── prune: (1,2)
  │    ├── interesting orderings: (+1)
- │    └── unfiltered-cols: (1-7)
+ │    └── unfiltered-cols: (1-5)
  ├── scan t
- │    ├── columns: k:8 v:9
- │    ├── stats: [rows=1000, distinct(8)=1000, null(8)=0]
+ │    ├── columns: k:6 v:7
+ │    ├── stats: [rows=1000, distinct(6)=1000, null(6)=0]
  │    ├── cost: 1108.82
- │    ├── key: (8)
- │    ├── fd: (8)-->(9)
+ │    ├── key: (6)
+ │    ├── fd: (6)-->(7)
  │    ├── distribution: test
- │    ├── prune: (8,9)
- │    ├── interesting orderings: (+8)
- │    └── unfiltered-cols: (8-13)
+ │    ├── prune: (6,7)
+ │    ├── interesting orderings: (+6)
+ │    └── unfiltered-cols: (6-9)
  └── filters
-      └── k:8 = a:1 [outer=(1,8), constraints=(/1: (/NULL - ]; /8: (/NULL - ]), fd=(1)==(8), (8)==(1)]
+      └── k:6 = a:1 [outer=(1,6), constraints=(/1: (/NULL - ]; /6: (/NULL - ]), fd=(1)==(6), (6)==(1)]
 
 # Regression test for overflow when printing out the estimated row count.
 statement ok

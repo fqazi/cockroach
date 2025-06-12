@@ -8,7 +8,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"math"
 	"math/rand"
 	"os"
 	"os/user"
@@ -52,8 +51,6 @@ const (
 )
 
 func main() {
-	_ = roachprod.InitProviders()
-
 	cobra.EnableCommandSorting = false
 
 	var rootCmd = &cobra.Command{
@@ -117,26 +114,11 @@ Examples:
 			}
 
 			for _, s := range specs {
-				var skip, randomized, timeout string
+				var skip string
 				if s.Skip != "" {
 					skip = " (skipped: " + s.Skip + ")"
 				}
-				var prefix, separator string
-				longListing := false
-				if s.Randomized {
-					longListing = true
-					randomized = "randomized"
-					separator = ","
-				}
-				if s.Timeout != 0 {
-					longListing = true
-					timeout = fmt.Sprintf("%stimeout: %s", separator, s.Timeout)
-				}
-				if longListing {
-					// N.B. use a prefix to separate the extended listing.
-					prefix = "  "
-				}
-				fmt.Printf("%s [%s]%s %s%s%s\n", s.Name, s.Owner, skip, prefix, randomized, timeout)
+				fmt.Printf("%s [%s]%s\n", s.Name, s.Owner, skip)
 			}
 			return nil
 		},
@@ -206,15 +188,12 @@ the cluster nodes on start.
 		Long: `Run an automated operation on an existing roachprod cluster.
 If multiple operations are matched by the passed-in regex filter, one operation
 is chosen at random and run. The provided cluster name must already exist in roachprod;
-this command does no setup/teardown of clusters.
-
-This command can be used to run operation in parallel and infinitely on a cluster. 
-Check --parallelism, --run-forever and --wait-before-next-execution flags`,
+this command does no setup/teardown of clusters.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("\nRunning operation %s on %s.\n\n", args[1], args[0])
+			fmt.Printf("\nRunning operation %s.\n\n", args[0])
 			cmd.SilenceUsage = true
-			return runOperations(operations.RegisterOperations, args[1], args[0])
+			return runOperation(operations.RegisterOperations, args[1], args[0])
 		},
 	}
 	roachtestflags.AddRunOpsFlags(runOperationCmd.Flags())
@@ -267,14 +246,14 @@ func testsToRun(
 		return nil, errors.Newf("%s", msg)
 	}
 
-	if roachtestflags.SelectiveTests {
+	// selective-tests is considered only if the select-probability is 1.0. This is because select probability already
+	// takes care of running limited tests.
+	if roachtestflags.SelectiveTests && roachtestflags.SelectProbability == 1.0 {
 		fmt.Printf("selective Test enabled\n")
 		// the test categorization must be complete in 30 seconds
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		updateSpecForSelectiveTests(ctx, specs, func(format string, args ...interface{}) {
-			fmt.Fprintf(os.Stdout, format, args...)
-		})
+		updateSpecForSelectiveTests(ctx, specs)
 	}
 
 	var notSkipped []registry.TestSpec
@@ -286,12 +265,8 @@ func testsToRun(
 				fmt.Fprintf(os.Stdout, "##teamcity[testIgnored name='%s' message='%s']\n",
 					s.Name, TeamCityEscape(s.Skip))
 			}
-			skipDetails := s.Skip
-			if skipDetails != "" {
-				skipDetails = " (" + s.SkipDetails + ")"
-			}
 			if print {
-				fmt.Fprintf(os.Stdout, "--- SKIP: %s (%s)\n\t%s\n", s.Name, "0.00s", skipDetails)
+				fmt.Fprintf(os.Stdout, "--- SKIP: %s (%s)\n\t%s\n", s.Name, "0.00s", s.Skip)
 			}
 		}
 	}
@@ -320,79 +295,32 @@ func testsToRun(
 
 // updateSpecForSelectiveTests is responsible for updating the test spec skip and skip details
 // based on the test categorization criteria.
-// The following steps are performed in this function:
-//  1. Queries Snowflake for the test run data.
-//  2. The snowflake data sets "selected=true" based on the following criteria:
-//     a. the test that has failed at least once in last 30 days
-//     b. the test is newer than 20 days
-//     c. the test has not been run for more than 7 days
-//  2. The rest of the tests returned by snowflake are the successful tests marked as "selected=false".
-//  3. Now, an intersection of the tests that are selected by the build (specs) and tests returned by snowflake
-//     as successful is taken. This is done to select tests on the next criteria of selecting the 35% of
-//     the successful tests.
-//  4. The tests that meet the 35% criteria, are marked as "selected=true"
-//  5. All tests that are marked "selected=true" are considered for the test run.
-func updateSpecForSelectiveTests(
-	ctx context.Context, specs []registry.TestSpec, logFunc func(format string, args ...interface{}),
-) {
+func updateSpecForSelectiveTests(ctx context.Context, specs []registry.TestSpec) {
 	selectedTestsCount := 0
-	allTests, err := testselector.CategoriseTests(ctx,
-		testselector.NewDefaultSelectTestsReq(roachtestflags.Cloud, roachtestflags.Suite))
+	// run and select 35% of successful tests which gives a window of 3 days for all tests to run
+	selectedTests, err := testselector.CategoriseTests(ctx,
+		testselector.NewDefaultSelectTestsReq(35, roachtestflags.Cloud, roachtestflags.Suite))
 	if err != nil {
-		logFunc("running all tests! error selecting tests: %v\n", err)
+		fmt.Printf("running all tests! error selecting tests: %v\n", err)
 		return
 	}
-
-	// successfulTests are the tests considered by snowflake to not run, but, part of the testSpecs.
-	// So, it is an intersection of all tests that are part of the run and all tests that are returned
-	// by snowflake as successful.
-	// This is why we need the intersection:
-	// - testSpec contains all the tests that are currently considered as a part of the current run.
-	// - The list of tests returned by selector can contain tests may not be part of the test spec. This can
-	//   be because of tests getting decommissioned.
-	// Now, we want to take the tests common to both. These are the tests from which we need to select
-	// "successfulTestsSelectPct" percent tests to run.
-	successfulTests := make([]*testselector.TestDetails, 0)
-
-	// allTestsMap is maintained to check for the test details while skipping a test
-	allTestsMap := make(map[string]*testselector.TestDetails)
-	// all tests from specs are added as nil to the map
-	// this is used in identifying the tests that are part of the build
-	for _, test := range specs {
-		allTestsMap[test.Name] = nil
+	tdMap := make(map[string]*testselector.TestDetails)
+	for _, td := range selectedTests {
+		tdMap[td.Name] = td
 	}
-	for i := 0; i < len(allTests); i++ {
-		td := allTests[i]
-		if _, ok := allTestsMap[td.Name]; ok && !td.Selected {
-			// adding only the unselected tests that are part of the specs
-			// These are tests that have been running successfully
-			successfulTests = append(successfulTests, td)
-		}
-		// populate the test details for the tests returned from snowflake
-		allTestsMap[td.Name] = td
-	}
-	// numberOfTestsToSelect is the number of tests to be selected from the successfulTests based on percentage selection
-	numberOfTestsToSelect := int(math.Ceil(float64(len(successfulTests)) * roachtestflags.SuccessfulTestsSelectPct))
-	for i := 0; i < numberOfTestsToSelect; i++ {
-		successfulTests[i].Selected = true
-	}
-	logFunc("%d selected out of %d successful tests.\n", numberOfTestsToSelect, len(successfulTests))
 	for i := range specs {
-		if testShouldBeSkipped(allTestsMap, specs[i], roachtestflags.Suite) {
-			if specs[i].Skip == "" {
-				// updating only if the test not already skipped
-				specs[i].Skip = "test selector"
-				specs[i].SkipDetails = "test skipped because it is stable and selective-tests is set."
-			}
+		if testShouldBeSkipped(tdMap, specs[i], roachtestflags.Suite) {
+			specs[i].Skip = "test selector"
+			specs[i].SkipDetails = "test skipped because it is stable and selective-tests is set."
 		} else {
 			selectedTestsCount++
 		}
-		if td, ok := allTestsMap[specs[i].Name]; ok && td != nil {
+		if td, ok := tdMap[specs[i].Name]; ok {
 			// populate the stats as obtained from the test selector
 			specs[i].SetStats(td.AvgDurationInMillis, td.LastFailureIsPreempt)
 		}
 	}
-	logFunc("%d out of %d tests selected for the run!\n", selectedTestsCount, len(specs))
+	fmt.Printf("%d out of %d tests selected for the run!\n", selectedTestsCount, len(specs))
 }
 
 // testShouldBeSkipped decides whether a test should be skipped based on test details and suite
@@ -407,9 +335,8 @@ func testShouldBeSkipped(
 		// test should not be skipped for this suite
 		return false
 	}
-
-	td := testNamesToRun[test.Name]
-	return td != nil && !td.Selected
+	td, ok := testNamesToRun[test.Name]
+	return ok && test.Skip == "" && !td.Selected
 }
 
 func opsToRun(r testRegistryImpl, filter string) ([]registry.OperationSpec, error) {
@@ -533,11 +460,5 @@ func validateAndConfigure(cmd *cobra.Command, args []string) {
 			printErrAndExit(fmt.Errorf("unsupported option value %q for option %q; Usage: %s",
 				roachtestflags.UseSpotVM, spotFlagInfo.Name, spotFlagInfo.Usage))
 		}
-	}
-
-	// Test selection and select probability flags are mutually exclusive.
-	selectProbFlagInfo := roachtestflags.Changed(&roachtestflags.SelectProbability)
-	if roachtestflags.SelectiveTests && selectProbFlagInfo != nil {
-		printErrAndExit(fmt.Errorf("select-probability and selective-tests=true are incompatible. Disable one of them"))
 	}
 }

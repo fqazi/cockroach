@@ -27,8 +27,8 @@ var railsReleaseTagRegex = regexp.MustCompile(`^v(?P<major>\d+)\.(?P<minor>\d+)\
 
 // WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
 // This is used by docs automation to produce a list of supported versions for ORM's.
-var supportedRailsVersion = "8.0.1"
-var activerecordAdapterVersion = "v8.0.1"
+var supportedRailsVersion = "7.1.3"
+var activerecordAdapterVersion = "v7.1.0"
 
 // This test runs activerecord's full test suite against a single cockroach node.
 
@@ -111,11 +111,11 @@ func registerActiveRecord(r registry.Registry) {
 			t,
 			c,
 			node,
-			"install ruby 3.3",
+			"install ruby 3.1",
 			`mkdir -p ruby-install && \
         curl -fsSL https://github.com/postmodern/ruby-install/archive/v0.9.1.tar.gz | tar --strip-components=1 -C ruby-install -xz && \
         sudo make -C ruby-install install && \
-        sudo ruby-install --system ruby 3.3.6 && \
+        sudo ruby-install --system ruby 3.1.4 && \
         sudo gem update --system`,
 		); err != nil {
 			t.Fatal(err)
@@ -146,7 +146,7 @@ func registerActiveRecord(r registry.Registry) {
 			c,
 			node,
 			"installing bundler",
-			`cd /mnt/data1/activerecord-cockroachdb-adapter/ && sudo gem install bundler:2.5.23`,
+			`cd /mnt/data1/activerecord-cockroachdb-adapter/ && sudo gem install bundler:2.1.4`,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -242,6 +242,8 @@ func registerActiveRecord(r registry.Registry) {
 	}
 
 	r.Add(registry.TestSpec{
+		Skip:             "https://github.com/cockroachdb/activerecord-cockroachdb-adapter/pull/333",
+		SkipDetails:      "upstream test suite is flaky",
 		Name:             "activerecord",
 		Owner:            registry.OwnerSQLFoundations,
 		Timeout:          5 * time.Hour,

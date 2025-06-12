@@ -74,11 +74,6 @@ func (i *immediateVisitor) RemoveTableComment(_ context.Context, op scop.RemoveT
 	return nil
 }
 
-func (i *immediateVisitor) RemoveTypeComment(_ context.Context, op scop.RemoveTypeComment) error {
-	i.DeleteComment(op.TypeID, 0, catalogkeys.TypeCommentType)
-	return nil
-}
-
 func (i *immediateVisitor) RemoveDatabaseComment(
 	_ context.Context, op scop.RemoveDatabaseComment,
 ) error {

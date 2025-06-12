@@ -3,15 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import moment from "moment-timezone";
-
-import { ClusterIndexUsageStatistic } from "../../api";
-
 import {
   formatMomentDuration,
   indexNeverUsedReason,
   recommendDropUnusedIndex,
 } from "./indexUsageStatsRec";
+import { ClusterIndexUsageStatistic } from "../../api";
+import moment from "moment-timezone";
 
 describe("recommendDropUnusedIndex", () => {
   const mockCurrentTime = moment();

@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/fetchpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemaexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -437,7 +436,7 @@ func makeIndexColumnCache(idx *descpb.IndexDescriptor, all []catalog.Column) (ic
 	// code needs to tolerate any descriptor state (like having no key columns, or
 	// having uninitialized column IDs).
 	var invertedColumnID descpb.ColumnID
-	if nKey > 0 && idx.Type == idxtype.INVERTED {
+	if nKey > 0 && idx.Type == descpb.IndexDescriptor_INVERTED {
 		invertedColumnID = idx.InvertedColumnID()
 	}
 	var compositeIDs catalog.TableColSet

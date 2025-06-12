@@ -3,7 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import isNumber from "lodash/isNumber";
+import { isNumber } from "lodash";
 
 function numberToString(n: number) {
   return n?.toString() || "";

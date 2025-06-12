@@ -3,9 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import Long from "long";
 
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { NodeLivenessStatus } from "./nodeLivenessStatus";
 
 export const getLivenessResponse =

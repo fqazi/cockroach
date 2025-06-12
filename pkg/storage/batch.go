@@ -15,11 +15,11 @@ import (
 )
 
 // Ensure that we always update the batch reader to consider any necessary
-// updates when a new key kind is introduced. To do this, we assert that the
-// latest key we considered equals InternalKeyKindMax, ensuring that compilation
-// will fail if it's not. Unfortunately, this doesn't protect against reusing a
-// currently unused RocksDB key kind.
-const _ = uint(pebble.InternalKeyKindExcise - pebble.InternalKeyKindMax)
+// updates when a new key kind is introduced. To do this, we assert
+// InternalKeyKindMax=23, ensuring that compilation will fail if it's not.
+// Unfortunately, this doesn't protect against reusing a currently unused
+// RocksDB key kind.
+const _ = uint(pebble.InternalKeyKindDeleteSized - pebble.InternalKeyKindMax)
 
 // decodeBatchHeader decodes the header of Pebble batch representation,
 // returning the parsed header and a batchrepr.Reader into the contents of the
@@ -205,7 +205,7 @@ func (r *BatchReader) EngineRangeKeys() ([]EngineRangeKeyValue, error) {
 
 // rangeKeys decodes and returns the current Pebble range key.
 func (r *BatchReader) rangeKeys() (rangekey.Span, error) {
-	return rangekey.Decode(pebble.MakeInternalKey(r.key, 0 /* seqNum */, r.kind), r.value, nil)
+	return rangekey.Decode(pebble.InternalKey{UserKey: r.key, Trailer: uint64(r.kind)}, r.value, nil)
 }
 
 // Next advances to the next entry in the batch, returning false when the batch

@@ -24,6 +24,7 @@ RUN apt-get update \
     netbase \
     openjdk-8-jre \
     openssh-client \
+    patchelf \
     python-is-python3 \
     python3 \
     python3.8-venv \
@@ -73,6 +74,18 @@ RUN curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key a
     google-cloud-cli-gke-gcloud-auth-plugin \
     && apt-get clean
 
+# chrome is needed for UI tests. Unfortunately it is only distributed for x86_64
+# and not for ARM. Chrome shouldn't need to be installed when we migrate away
+# from Karma for UI testing.
+RUN case ${TARGETPLATFORM} in \
+    "linux/amd64") \
+      curl -fsSL https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+      && echo "deb [arch=amd64] https://dl.google.com/linux/chrome/deb/ stable main" | tee /etc/apt/sources.list.d/google.list \
+      && apt-get update \
+      && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      google-chrome-stable ;; \
+    esac
+
 RUN apt-get purge -y \
     apt-transport-https \
     flex \
@@ -90,15 +103,6 @@ RUN case ${TARGETPLATFORM} in \
  unzip awscliv2.zip && \
  ./aws/install && \
  rm -rf aws awscliv2.zip
-
-RUN case ${TARGETPLATFORM} in \
-    "linux/amd64") ARCH=x86_64; SHASUM=a3fb9c1de3512bc91f27cc47297d6d6cf208adee9b64ed719130da59ac13e26b ;; \
-    "linux/arm64") ARCH=aarch64; SHASUM=e5165eb592a317e1f6da0ac7fcbccf60d7fb8e5ac1f0d7336a9be51c23308b06 ;; \
-  esac && \
- curl -fsSL "https://github.com/NixOS/patchelf/releases/download/0.17.2/patchelf-0.17.2-$ARCH.tar.gz" -o "patchelf.tar.gz" && \
- echo "$SHASUM patchelf.tar.gz" | sha256sum -c - && \
- tar --strip-components=1 -C /usr -xzf patchelf.tar.gz && \
- rm -rf patchelf.tar.gz
 
 # Install Bazelisk as Bazel.
 # NOTE: you should keep this in sync with build/packer/teamcity-agent.sh and

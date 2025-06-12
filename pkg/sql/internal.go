@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
@@ -26,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/lease"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
-	"github.com/cockroachdb/cockroach/pkg/sql/parser/statements"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgwirebase"
 	"github.com/cockroachdb/cockroach/pkg/sql/regions"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
@@ -34,20 +32,18 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/ssmemstorage"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/fsm"
-	"github.com/cockroachdb/cockroach/pkg/util/growstack"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/startup"
-	"github.com/cockroachdb/cockroach/pkg/util/stop"
-	"github.com/cockroachdb/crlib/crtime"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
-	"github.com/cockroachdb/redact"
 )
 
 // NewInternalSessionData returns a session data for use in internal queries
@@ -55,11 +51,11 @@ import (
 // steps of background jobs and schema changes. Each session variable is
 // initialized using the correct default value.
 func NewInternalSessionData(
-	ctx context.Context, settings *cluster.Settings, opName redact.SafeString,
+	ctx context.Context, settings *cluster.Settings, opName string,
 ) *sessiondata.SessionData {
 	appName := catconstants.InternalAppNamePrefix
 	if opName != "" {
-		appName = catconstants.InternalAppNamePrefix + "-" + string(opName)
+		appName = catconstants.InternalAppNamePrefix + "-" + opName
 	}
 
 	sd := &sessiondata.SessionData{}
@@ -181,11 +177,10 @@ func MakeInternalExecutorMemMonitor(
 	memMetrics MemoryMetrics, settings *cluster.Settings,
 ) *mon.BytesMonitor {
 	return mon.NewMonitor(mon.Options{
-		Name:       mon.MakeName("internal SQL executor"),
-		CurCount:   memMetrics.CurBytesCount,
-		MaxHist:    memMetrics.MaxBytesHist,
-		Settings:   settings,
-		LongLiving: true,
+		Name:     "internal SQL executor",
+		CurCount: memMetrics.CurBytesCount,
+		MaxHist:  memMetrics.MaxBytesHist,
+		Settings: settings,
 	})
 }
 
@@ -212,7 +207,6 @@ var ieRowsAffectedRetryLimit = settings.RegisterIntSetting(
 
 func (ie *InternalExecutor) runWithEx(
 	ctx context.Context,
-	opName redact.RedactableString,
 	txn *kv.Txn,
 	w ieResultWriter,
 	mode ieExecutionMode,
@@ -221,40 +215,13 @@ func (ie *InternalExecutor) runWithEx(
 	wg *sync.WaitGroup,
 	syncCallback func([]*streamingCommandResult),
 	errCallback func(error),
-	attributeToUser bool,
-	growStackSize bool,
 ) error {
-	ex, err := ie.initConnEx(ctx, txn, w, mode, sd, stmtBuf, syncCallback, attributeToUser)
+	ex, err := ie.initConnEx(ctx, txn, w, mode, sd, stmtBuf, syncCallback)
 	if err != nil {
 		return err
 	}
 	wg.Add(1)
-	cleanup := func(ctx context.Context) {
-		closeMode := normalClose
-		if txn != nil {
-			closeMode = externalTxnClose
-		}
-		ex.close(ctx, closeMode)
-		wg.Done()
-	}
-	ctx, hdl, err := ie.s.cfg.Stopper.GetHandle(ctx, stop.TaskOpts{
-		TaskName: opName.StripMarkers(),
-		SpanOpt:  stop.ChildSpan,
-	})
-	if err != nil {
-		// The goroutine wasn't started, so we need to perform the cleanup
-		// ourselves.
-		cleanup(ctx)
-		return err
-	}
 	go func() {
-		defer hdl.Activate(ctx).Release(ctx)
-		defer cleanup(ctx)
-		// TODO(yuzefovich): benchmark whether we should be growing the
-		// stack size unconditionally.
-		if growStackSize {
-			growstack.Grow()
-		}
 		if err := ex.run(
 			ctx,
 			ie.mon,
@@ -265,6 +232,12 @@ func (ie *InternalExecutor) runWithEx(
 			errCallback(err)
 		}
 		w.finish()
+		closeMode := normalClose
+		if txn != nil {
+			closeMode = externalTxnClose
+		}
+		ex.close(ctx, closeMode)
+		wg.Done()
 	}()
 	return nil
 }
@@ -288,21 +261,19 @@ func (ie *InternalExecutor) initConnEx(
 	sd *sessiondata.SessionData,
 	stmtBuf *StmtBuf,
 	syncCallback func([]*streamingCommandResult),
-	attributeToUser bool,
 ) (*connExecutor, error) {
 	clientComm := &internalClientComm{
 		w:    w,
 		mode: mode,
 		sync: syncCallback,
 	}
-	clientComm.results = clientComm.resultsScratch[:0]
 	clientComm.rowsAffectedState.rewind = func() {
 		var zero int
 		_ = w.addResult(ctx, ieIteratorResult{rowsAffected: &zero})
 	}
 	clientComm.rowsAffectedState.numRewindsLimit = ieRowsAffectedRetryLimit.Get(&ie.s.cfg.Settings.SV)
 
-	applicationStats := ie.s.localSqlStats.GetApplicationStats(sd.ApplicationName)
+	applicationStats := ie.s.sqlStats.GetApplicationStats(sd.ApplicationName, true /* internal */)
 	sds := sessiondata.NewStack(sd)
 	defaults := SessionDefaults(map[string]string{
 		"application_name": sd.ApplicationName,
@@ -311,38 +282,23 @@ func (ie *InternalExecutor) initConnEx(
 	var ex *connExecutor
 	var err error
 	if txn == nil {
-		var postSetupFn func(*connExecutor)
-		// Inject any synthetic descriptors into the internal executor after
-		// it's created.
-		if ie.syntheticDescriptors != nil {
-			postSetupFn = func(ex *connExecutor) {
-				// Note that we don't need to set shouldResetSyntheticDescriptors
-				// since ReleaseAll will be called on the descs.Collection which
-				// will also release synthetic descriptors.
+		postSetupFn := func(ex *connExecutor) {
+			// Inject any synthetic descriptors into the internal
+			// executor after its created
+			if ie.syntheticDescriptors != nil {
 				ex.extraTxnState.descCollection.SetSyntheticDescriptors(ie.syntheticDescriptors)
+				ex.extraTxnState.shouldResetSyntheticDescriptors = true
 			}
-		}
-		srvMetrics := &ie.s.InternalMetrics
-		if attributeToUser {
-			srvMetrics = &ie.s.Metrics
 		}
 		ex = ie.s.newConnExecutor(
 			ctx,
-			executorTypeInternal,
 			sdMutIterator,
 			stmtBuf,
 			clientComm,
-			// memMetrics is only about attributing memory monitoring to the
-			// right metric, so we choose to ignore the 'attributeToUser'
-			// boolean and use "internal memory metrics" unconditionally. (We
-			// will be using the internal sql executor as the parent during
-			// query execution, using different metrics here could lead to
-			// confusion.)
 			ie.memMetrics,
-			srvMetrics,
+			&ie.s.InternalMetrics,
 			applicationStats,
 			ie.s.cfg.GenerateID(),
-			false, /* underOuterTxn */
 			postSetupFn,
 		)
 	} else {
@@ -353,13 +309,13 @@ func (ie *InternalExecutor) initConnEx(
 			stmtBuf,
 			clientComm,
 			applicationStats,
-			attributeToUser,
 		)
 		if err != nil {
 			return nil, err
 		}
 	}
 
+	ex.executorType = executorTypeInternal
 	return ex, nil
 
 }
@@ -383,8 +339,7 @@ func (ie *InternalExecutor) newConnExecutorWithTxn(
 	sdMutIterator *sessionDataMutatorIterator,
 	stmtBuf *StmtBuf,
 	clientComm ClientComm,
-	applicationStats *ssmemstorage.Container,
-	attributeToUser bool,
+	applicationStats sqlstats.ApplicationStats,
 ) (ex *connExecutor, _ error) {
 
 	// If the internal executor has injected synthetic descriptors, we will
@@ -398,41 +353,29 @@ func (ie *InternalExecutor) newConnExecutorWithTxn(
 	// here.
 	shouldResetSyntheticDescriptors := len(ie.syntheticDescriptors) > 0
 
-	var postSetupFn func(*connExecutor)
-	// If an internal executor is run with a not-nil txn and has some extra txn
-	// state already set up, we may want to let it inherit the descriptor
-	// collection, schema change job records and job collections from the
-	// caller.
-	if ie.extraTxnState != nil {
-		postSetupFn = func(ex *connExecutor) {
-			ex.extraTxnState.skipResettingSchemaObjects = true
+	// If an internal executor is run with a not-nil txn, we may want to
+	// let it inherit the descriptor collection, schema change job records
+	// and job collections from the caller.
+	postSetupFn := func(ex *connExecutor) {
+		if ie.extraTxnState != nil {
 			ex.extraTxnState.descCollection = ie.extraTxnState.descCollection
+			ex.extraTxnState.fromOuterTxn = true
 			ex.extraTxnState.jobs = ie.extraTxnState.jobs
 			ex.extraTxnState.schemaChangerState = ie.extraTxnState.schemaChangerState
 			ex.extraTxnState.shouldResetSyntheticDescriptors = shouldResetSyntheticDescriptors
+			ex.initPlanner(ctx, &ex.planner)
 		}
 	}
 
-	srvMetrics := &ie.s.InternalMetrics
-	if attributeToUser {
-		srvMetrics = &ie.s.Metrics
-	}
 	ex = ie.s.newConnExecutor(
 		ctx,
-		executorTypeInternal,
 		sdMutIterator,
 		stmtBuf,
 		clientComm,
-		// memMetrics is only about attributing memory monitoring to the right
-		// metric, so we choose to ignore the 'attributeToUser' boolean and use
-		// "internal memory metrics" unconditionally. (We will be using the
-		// internal sql executor as the parent during query execution, using
-		// different metrics here could lead to confusion.)
 		ie.memMetrics,
-		srvMetrics,
+		&ie.s.InternalMetrics,
 		applicationStats,
 		ie.s.cfg.GenerateID(),
-		true, /* underOuterTxn */
 		postSetupFn,
 	)
 
@@ -476,9 +419,6 @@ func (ie *InternalExecutor) newConnExecutorWithTxn(
 		ex.QualityOfService(),
 		isolation.Serializable,
 		txn.GetOmitInRangefeeds(),
-		// TODO(yuzefovich): re-evaluate whether we want to allow buffered
-		// writes for internal executor.
-		false, /* bufferedWritesEnabled */
 	)
 
 	// Modify the Collection to match the parent executor's Collection.
@@ -500,6 +440,10 @@ type ieIteratorResult struct {
 
 type rowsIterator struct {
 	r ieResultReader
+
+	// depth tracks the current depth of recursion in Next(). Once it exceeds
+	// iteratorDepthLimit, an error is returned to prevent stack overflow.
+	depth int64
 
 	rowsAffected int
 	resultCols   colinfo.ResultColumns
@@ -528,60 +472,102 @@ type rowsIterator struct {
 
 	// wg can be used to wait for the connExecutor's goroutine to exit.
 	wg *sync.WaitGroup
+
+	// sp will finished on Close().
+	sp *tracing.Span
 }
 
 var _ isql.Rows = &rowsIterator{}
 var _ eval.InternalRows = &rowsIterator{}
 
-func (r *rowsIterator) Next(ctx context.Context) (bool, error) {
-	for !r.done && r.lastErr == nil {
-		var data ieIteratorResult
-		if r.first != nil {
-			// This is the very first call to Next() and we have already buffered
-			// up the first piece of data before returning rowsIterator to the caller.
-			data = *r.first
-			r.first = nil
-		} else {
-			nextItem, done, err := r.r.nextResult(ctx)
-			if err != nil || done {
-				r.lastErr = err
-				break
-			}
-			data = nextItem
-		}
+// iteratorDepthLimit is maximum allowed depth of recursion in Next(). It is set
+// to be sufficiently large to not matter under normal circumstances while
+// preventing the possibility of the stack overflow (as we've seen in #109197).
+const iteratorDepthLimit = 1000
 
+var iteratorDepthLimitExceededErr = errors.New("rowsIterator exceeded recursion depth limit")
+
+func (r *rowsIterator) Next(ctx context.Context) (_ bool, retErr error) {
+	// Due to recursive calls to Next() below, this deferred function might get
+	// executed multiple times, yet it is not a problem because Close() is
+	// idempotent and we're unsetting the error callback.
+	defer func() {
+		// If the iterator has just reached its terminal state, we'll close it
+		// automatically.
+		if r.done {
+			// We can ignore the returned error because Close() will update
+			// r.lastErr if necessary.
+			_ /* err */ = r.Close()
+		}
+		if r.errCallback != nil {
+			r.lastErr = r.errCallback(r.lastErr)
+			r.errCallback = nil
+		}
+		retErr = r.lastErr
+		r.depth--
+	}()
+
+	r.depth++
+	if r.depth > iteratorDepthLimit {
+		r.lastErr = iteratorDepthLimitExceededErr
+		r.done = true
+		return false, r.lastErr
+	}
+
+	if r.done {
+		return false, r.lastErr
+	}
+
+	// handleDataObject processes a single object read from ieResultReader and
+	// returns the result to be returned by Next. It also might call Next
+	// recursively if the object is a piece of metadata.
+	handleDataObject := func(data ieIteratorResult) (bool, error) {
 		if data.row != nil {
 			r.rowsAffected++
-			// No need to make a copy because streamingCommandResult does that for us.
+			// No need to make a copy because streamingCommandResult does that
+			// for us.
 			r.lastRow = data.row
 			return true, nil
 		}
-
 		if data.rowsAffected != nil {
 			r.rowsAffected = *data.rowsAffected
-			continue
+			return r.Next(ctx)
 		}
-
-		// In "rows affected" execution mode we simply ignore the column schema
-		// since we always return the number of rows affected (i.e. a single
-		// integer column).
-		if r.mode == rowsAffectedIEExecutionMode && data.cols != nil {
-			continue
-		}
-
 		if data.cols != nil {
-			r.lastErr = errors.AssertionFailedf("unexpectedly received non-nil cols in Next: %v", data)
-		} else if data.err == nil {
-			r.lastErr = errors.AssertionFailedf("unexpectedly empty ieIteratorResult object")
-		} else {
-			r.lastErr = data.err
+			if r.mode == rowsAffectedIEExecutionMode {
+				// In "rows affected" execution mode we simply ignore the column
+				// schema since we always return the number of rows affected
+				// (i.e. a single integer column).
+				return r.Next(ctx)
+			}
+			// At this point we don't expect to see the columns - we should only
+			// return the rowsIterator to the caller of execInternal after the
+			// columns have been determined.
+			data.err = errors.AssertionFailedf("unexpectedly received non-nil cols in Next: %v", data)
 		}
+		if data.err == nil {
+			data.err = errors.AssertionFailedf("unexpectedly empty ieIteratorResult object")
+		}
+		r.lastErr = data.err
+		r.done = true
+		return false, r.lastErr
 	}
 
-	r.done = true
-	// r.Close() is idempotent, so it's okay to call multiple times.
-	_ = r.Close()
-	return false, r.lastErr
+	if r.first != nil {
+		// This is the very first call to Next() and we have already buffered
+		// up the first piece of data before returning rowsIterator to the
+		// caller.
+		first := r.first
+		r.first = nil
+		return handleDataObject(*first)
+	}
+
+	var next ieIteratorResult
+	next, r.done, r.lastErr = r.r.nextResult(ctx)
+	if r.done || r.lastErr != nil {
+		return false, r.lastErr
+	}
+	return handleDataObject(next)
 }
 
 func (r *rowsIterator) Cur() tree.Datums {
@@ -593,19 +579,21 @@ func (r *rowsIterator) RowsAffected() int {
 }
 
 func (r *rowsIterator) Close() error {
-	// Ensure that we wait for the connExecutor goroutine to exit.
-	defer r.wg.Wait()
 	// Closing the stmtBuf will tell the connExecutor to stop executing commands
 	// (if it hasn't exited yet).
 	r.stmtBuf.Close()
+	// We need to finish the span but only after the connExecutor goroutine is
+	// done.
+	defer func() {
+		if r.sp != nil {
+			r.wg.Wait()
+			r.sp.Finish()
+			r.sp = nil
+		}
+	}()
 	// Close the ieResultReader to tell the writer that we're done.
 	if err := r.r.close(); err != nil && r.lastErr == nil {
 		r.lastErr = err
-	}
-
-	if r.lastErr != nil && r.errCallback != nil {
-		r.lastErr = r.errCallback(r.lastErr)
-		r.errCallback = nil
 	}
 	return r.lastErr
 }
@@ -628,11 +616,7 @@ func (r *rowsIterator) HasResults() bool {
 // QueryBuffered is deprecated because it may transparently execute a query as
 // root. Use QueryBufferedEx instead.
 func (ie *InternalExecutor) QueryBuffered(
-	ctx context.Context,
-	opName redact.RedactableString,
-	txn *kv.Txn,
-	stmt string,
-	qargs ...interface{},
+	ctx context.Context, opName string, txn *kv.Txn, stmt string, qargs ...interface{},
 ) ([]tree.Datums, error) {
 	return ie.QueryBufferedEx(ctx, opName, txn, ie.maybeNodeSessionDataOverride(opName), stmt, qargs...)
 }
@@ -646,13 +630,13 @@ func (ie *InternalExecutor) QueryBuffered(
 // have previously been set through SetSessionData().
 func (ie *InternalExecutor) QueryBufferedEx(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	txn *kv.Txn,
 	session sessiondata.InternalExecutorOverride,
 	stmt string,
 	qargs ...interface{},
 ) ([]tree.Datums, error) {
-	datums, _, err := ie.queryInternalBuffered(ctx, opName, txn, session, ieStmt{stmt: stmt}, 0 /* limit */, qargs...)
+	datums, _, err := ie.queryInternalBuffered(ctx, opName, txn, session, stmt, 0 /* limit */, qargs...)
 	return datums, err
 }
 
@@ -660,22 +644,22 @@ func (ie *InternalExecutor) QueryBufferedEx(
 // ResultColumns of the input query.
 func (ie *InternalExecutor) QueryBufferedExWithCols(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	txn *kv.Txn,
 	session sessiondata.InternalExecutorOverride,
 	stmt string,
 	qargs ...interface{},
 ) ([]tree.Datums, colinfo.ResultColumns, error) {
-	datums, cols, err := ie.queryInternalBuffered(ctx, opName, txn, session, ieStmt{stmt: stmt}, 0 /* limit */, qargs...)
+	datums, cols, err := ie.queryInternalBuffered(ctx, opName, txn, session, stmt, 0 /* limit */, qargs...)
 	return datums, cols, err
 }
 
 func (ie *InternalExecutor) queryInternalBuffered(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	txn *kv.Txn,
 	sessionDataOverride sessiondata.InternalExecutorOverride,
-	stmt ieStmt,
+	stmt string,
 	// Non-zero limit specifies the limit on the number of rows returned.
 	limit int,
 	qargs ...interface{},
@@ -709,11 +693,7 @@ func (ie *InternalExecutor) queryInternalBuffered(
 //
 // QueryRow is deprecated (like Query). Use QueryRowEx() instead.
 func (ie *InternalExecutor) QueryRow(
-	ctx context.Context,
-	opName redact.RedactableString,
-	txn *kv.Txn,
-	stmt string,
-	qargs ...interface{},
+	ctx context.Context, opName string, txn *kv.Txn, stmt string, qargs ...interface{},
 ) (tree.Datums, error) {
 	return ie.QueryRowEx(ctx, opName, txn, ie.maybeNodeSessionDataOverride(opName), stmt, qargs...)
 }
@@ -725,7 +705,7 @@ func (ie *InternalExecutor) QueryRow(
 // have previously been set through SetSessionData().
 func (ie *InternalExecutor) QueryRowEx(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	txn *kv.Txn,
 	session sessiondata.InternalExecutorOverride,
 	stmt string,
@@ -735,40 +715,14 @@ func (ie *InternalExecutor) QueryRowEx(
 	return rows, err
 }
 
-// QueryRowExParsed is like QueryRowEx, but takes a parsed statement.
-func (ie *InternalExecutor) QueryRowExParsed(
-	ctx context.Context,
-	opName redact.RedactableString,
-	txn *kv.Txn,
-	session sessiondata.InternalExecutorOverride,
-	parsedStmt statements.Statement[tree.Statement],
-	qargs ...interface{},
-) (tree.Datums, error) {
-	rows, _, err := ie.queryRowExWithCols(ctx, opName, txn, session, ieStmt{parsed: parsedStmt}, qargs...)
-	return rows, err
-}
-
 // QueryRowExWithCols is like QueryRowEx, additionally returning the computed
 // ResultColumns of the input query.
 func (ie *InternalExecutor) QueryRowExWithCols(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	txn *kv.Txn,
 	session sessiondata.InternalExecutorOverride,
 	stmt string,
-	qargs ...interface{},
-) (tree.Datums, colinfo.ResultColumns, error) {
-	return ie.queryRowExWithCols(ctx, opName, txn, session, ieStmt{stmt: stmt}, qargs...)
-}
-
-// QueryRowExWithCols is like QueryRowEx, additionally returning the computed
-// ResultColumns of the input query.
-func (ie *InternalExecutor) queryRowExWithCols(
-	ctx context.Context,
-	opName redact.RedactableString,
-	txn *kv.Txn,
-	session sessiondata.InternalExecutorOverride,
-	stmt ieStmt,
 	qargs ...interface{},
 ) (tree.Datums, colinfo.ResultColumns, error) {
 	rows, cols, err := ie.queryInternalBuffered(ctx, opName, txn, session, stmt, 2 /* limit */, qargs...)
@@ -781,7 +735,7 @@ func (ie *InternalExecutor) queryRowExWithCols(
 	case 1:
 		return rows[0], cols, nil
 	default:
-		return nil, nil, &tree.MultipleResultsError{SQL: stmt.SQL()}
+		return nil, nil, &tree.MultipleResultsError{SQL: stmt}
 	}
 }
 
@@ -794,11 +748,7 @@ func (ie *InternalExecutor) queryRowExWithCols(
 // Exec is deprecated because it may transparently execute a query as root. Use
 // ExecEx instead.
 func (ie *InternalExecutor) Exec(
-	ctx context.Context,
-	opName redact.RedactableString,
-	txn *kv.Txn,
-	stmt string,
-	qargs ...interface{},
+	ctx context.Context, opName string, txn *kv.Txn, stmt string, qargs ...interface{},
 ) (int, error) {
 	return ie.ExecEx(ctx, opName, txn, ie.maybeNodeSessionDataOverride(opName), stmt, qargs...)
 }
@@ -810,48 +760,10 @@ func (ie *InternalExecutor) Exec(
 // have previously been set through SetSessionData().
 func (ie *InternalExecutor) ExecEx(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	txn *kv.Txn,
 	session sessiondata.InternalExecutorOverride,
 	stmt string,
-	qargs ...interface{},
-) (int, error) {
-	return ie.execIEStmt(ctx, opName, txn, session, ieStmt{stmt: stmt}, qargs...)
-}
-
-// ExecParsed is like Exec but allows the caller to provide an already parsed
-// statement.
-func (ie *InternalExecutor) ExecParsed(
-	ctx context.Context,
-	opName redact.RedactableString,
-	txn *kv.Txn,
-	o sessiondata.InternalExecutorOverride,
-	parsedStmt statements.Statement[tree.Statement],
-	qargs ...interface{},
-) (int, error) {
-	return ie.execIEStmt(ctx, opName, txn, o, ieStmt{parsed: parsedStmt}, qargs...)
-}
-
-type ieStmt struct {
-	// Only one should be set.
-	stmt   string
-	parsed statements.Statement[tree.Statement]
-}
-
-func (s *ieStmt) SQL() string {
-	if s.stmt != "" {
-		return s.stmt
-	}
-	return s.parsed.SQL
-}
-
-// execIEStmt extracts the shared logic between ExecEx and ExecParsed.
-func (ie *InternalExecutor) execIEStmt(
-	ctx context.Context,
-	opName redact.RedactableString,
-	txn *kv.Txn,
-	session sessiondata.InternalExecutorOverride,
-	stmt ieStmt,
 	qargs ...interface{},
 ) (int, error) {
 	// We will run the query to completion, so we can use an async result
@@ -883,11 +795,7 @@ func (ie *InternalExecutor) execIEStmt(
 // QueryIterator is deprecated because it may transparently execute a query
 // as root. Use QueryIteratorEx instead.
 func (ie *InternalExecutor) QueryIterator(
-	ctx context.Context,
-	opName redact.RedactableString,
-	txn *kv.Txn,
-	stmt string,
-	qargs ...interface{},
+	ctx context.Context, opName string, txn *kv.Txn, stmt string, qargs ...interface{},
 ) (isql.Rows, error) {
 	return ie.QueryIteratorEx(ctx, opName, txn, ie.maybeNodeSessionDataOverride(opName), stmt, qargs...)
 }
@@ -897,14 +805,14 @@ func (ie *InternalExecutor) QueryIterator(
 // *must* be closed.
 func (ie *InternalExecutor) QueryIteratorEx(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	txn *kv.Txn,
 	session sessiondata.InternalExecutorOverride,
 	stmt string,
 	qargs ...interface{},
 ) (isql.Rows, error) {
 	return ie.execInternal(
-		ctx, opName, newSyncIEResultChannel(), defaultIEExecutionMode, txn, session, ieStmt{stmt: stmt}, qargs...,
+		ctx, opName, newSyncIEResultChannel(), defaultIEExecutionMode, txn, session, stmt, qargs...,
 	)
 }
 
@@ -949,25 +857,6 @@ func applyOverrides(o sessiondata.InternalExecutorOverride, sd *sessiondata.Sess
 	if o.OptimizerUseHistograms {
 		sd.OptimizerUseHistograms = true
 	}
-	if o.OriginIDForLogicalDataReplication != 0 {
-		sd.OriginIDForLogicalDataReplication = o.OriginIDForLogicalDataReplication
-	}
-	if o.OriginTimestampForLogicalDataReplication.IsSet() {
-		sd.OriginTimestampForLogicalDataReplication = o.OriginTimestampForLogicalDataReplication
-	}
-	if o.PlanCacheMode != nil {
-		sd.PlanCacheMode = *o.PlanCacheMode
-	}
-	if o.DisablePlanGists {
-		sd.DisablePlanGists = true
-	}
-	if o.BufferedWritesEnabled != nil {
-		sd.BufferedWritesEnabled = *o.BufferedWritesEnabled
-	}
-	// For 25.2, we're being conservative and explicitly disabling buffered
-	// writes for the internal executor.
-	// TODO(yuzefovich): remove this for 25.3.
-	sd.BufferedWritesEnabled = false
 
 	if o.MultiOverride != "" {
 		overrides := strings.Split(o.MultiOverride, ",")
@@ -1003,12 +892,12 @@ var ieMultiOverride = settings.RegisterStringSetting(
 )
 
 func (ie *InternalExecutor) maybeNodeSessionDataOverride(
-	opName redact.RedactableString,
+	opName string,
 ) sessiondata.InternalExecutorOverride {
 	if ie.sessionDataStack == nil {
 		return sessiondata.InternalExecutorOverride{
 			User:            username.NodeUserName(),
-			ApplicationName: catconstants.InternalAppNamePrefix + "-" + opName.StripMarkers(),
+			ApplicationName: catconstants.InternalAppNamePrefix + "-" + opName,
 		}
 	}
 	o := sessiondata.NoSessionDataOverride
@@ -1017,7 +906,7 @@ func (ie *InternalExecutor) maybeNodeSessionDataOverride(
 		o.User = username.NodeUserName()
 	}
 	if sd.ApplicationName == "" {
-		o.ApplicationName = catconstants.InternalAppNamePrefix + "-" + opName.StripMarkers()
+		o.ApplicationName = catconstants.InternalAppNamePrefix + "-" + opName
 	}
 	return o
 }
@@ -1040,14 +929,6 @@ func GetInternalOpName(ctx context.Context) (opName string, ok bool) {
 	}
 	return tag.ValueStr(), true
 }
-
-var attributeToUserEnabled = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"sql.internal_executor.attribute_to_user.enabled",
-	"controls whether internally-executed queries with the AttributeToUser "+
-		"override should actually be attributed to user or not",
-	true,
-)
 
 // execInternal is the main entry point for executing a statement via the
 // InternalExecutor. From the high level it does the following:
@@ -1148,12 +1029,12 @@ var attributeToUserEnabled = settings.RegisterBoolSetting(
 // SetSessionData(), if anything.
 func (ie *InternalExecutor) execInternal(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	rw *ieResultChannel,
 	mode ieExecutionMode,
 	txn *kv.Txn,
 	sessionDataOverride sessiondata.InternalExecutorOverride,
-	ieStmt ieStmt,
+	stmt string,
 	qargs ...interface{},
 ) (r *rowsIterator, retErr error) {
 	startup.AssertStartupRetry(ctx)
@@ -1184,14 +1065,6 @@ func (ie *InternalExecutor) execInternal(
 
 	applyInternalExecutorSessionExceptions(sd)
 	applyOverrides(sessionDataOverride, sd)
-	if txn != nil && txn.Type() == kv.RootTxn {
-		// For 25.2, we're being conservative and explicitly disabling buffered
-		// writes for the internal executor.
-		// TODO(yuzefovich): remove this for 25.3.
-		txn.SetBufferedWritesEnabled(false)
-	}
-	attributeToUser := sessionDataOverride.AttributeToUser && attributeToUserEnabled.Get(&ie.s.cfg.Settings.SV)
-	growStackSize := sessionDataOverride.GrowStackSize
 	if !rw.async() && (txn != nil && txn.Type() == kv.RootTxn) {
 		// If the "outer" query uses the RootTxn and the sync result channel is
 		// requested, then we must disable both DistSQL and Streamer to ensure
@@ -1213,17 +1086,10 @@ func (ie *InternalExecutor) execInternal(
 	// their respective "pressure" on internal queries. Hence the choice here to
 	// add the delegate prefix to the current app name.
 	if sd.ApplicationName == "" || sd.ApplicationName == catconstants.InternalAppNamePrefix {
-		sd.ApplicationName = catconstants.InternalAppNamePrefix + "-" + opName.StripMarkers()
+		sd.ApplicationName = catconstants.InternalAppNamePrefix + "-" + opName
 	} else if !strings.HasPrefix(sd.ApplicationName, catconstants.InternalAppNamePrefix) {
 		// If this is already an "internal app", don't put more prefix.
 		sd.ApplicationName = catconstants.DelegatedAppNamePrefix + sd.ApplicationName
-	}
-	if attributeToUser {
-		// If this query should be attributable to user, then we discard
-		// previous app name heuristics and use a separate prefix. This is
-		// needed since we hard-code filters that exclude queries with '$
-		// internal' in their app names on the UI.
-		sd.ApplicationName = catconstants.AttributedToUserInternalAppNamePrefix + "-" + opName.StripMarkers()
 	}
 	// If the caller has injected a mapping to temp schemas, install it, and
 	// leave it installed for the rest of the transaction.
@@ -1232,11 +1098,12 @@ func (ie *InternalExecutor) execInternal(
 		ie.extraTxnState.descCollection.SetDescriptorSessionDataProvider(p)
 	}
 
-	numCommands := 2 // ExecStmt -> Sync
-	if len(qargs) > 0 {
-		numCommands = 4 // PrepareStmt -> BindStmt -> ExecPortal -> Sync
-	}
-	stmtBuf := NewStmtBuf(numCommands)
+	// The returned span is finished by this function in all error paths, but if
+	// an iterator is returned, then we transfer the responsibility of closing
+	// the span to the iterator. This is necessary so that the connExecutor
+	// exits before the span is finished.
+	ctx, sp := tracing.EnsureChildSpan(ctx, ie.s.cfg.AmbientCtx.Tracer, opName)
+	stmtBuf := NewStmtBuf()
 	var wg sync.WaitGroup
 
 	defer func() {
@@ -1253,6 +1120,7 @@ func (ie *InternalExecutor) execInternal(
 			}
 			stmtBuf.Close()
 			wg.Wait()
+			sp.Finish()
 		} else {
 			r.errCallback = func(err error) error {
 				if err != nil && !errIsRetriable(err) {
@@ -1260,23 +1128,20 @@ func (ie *InternalExecutor) execInternal(
 				}
 				return err
 			}
+			r.sp = sp
 		}
 	}()
 
-	timeReceived := crtime.NowMono()
+	timeReceived := timeutil.Now()
 	parseStart := timeReceived
-	parsed := ieStmt.parsed
-	if parsed.AST == nil {
-		var err error
-		parsed, err = parser.ParseOne(ieStmt.stmt)
-		if err != nil {
-			return nil, err
-		}
+	parsed, err := parser.ParseOne(stmt)
+	if err != nil {
+		return nil, err
 	}
 	if err := ie.checkIfStmtIsAllowed(parsed.AST, txn); err != nil {
 		return nil, err
 	}
-	parseEnd := crtime.NowMono()
+	parseEnd := timeutil.Now()
 
 	// Transforms the args to datums. The datum types will be passed as type
 	// hints to the PrepareStmt command below.
@@ -1303,7 +1168,7 @@ func (ie *InternalExecutor) execInternal(
 	errCallback := func(err error) {
 		_ = rw.addResult(ctx, ieIteratorResult{err: err})
 	}
-	err = ie.runWithEx(ctx, opName, txn, rw, mode, sd, stmtBuf, &wg, syncCallback, errCallback, attributeToUser, growStackSize)
+	err = ie.runWithEx(ctx, txn, rw, mode, sd, stmtBuf, &wg, syncCallback, errCallback)
 	if err != nil {
 		return nil, err
 	}
@@ -1312,6 +1177,10 @@ func (ie *InternalExecutor) execInternal(
 	numParams := len(datums)
 	if parsed.NumPlaceholders > numParams {
 		numParams = parsed.NumPlaceholders
+	}
+	typeHints := make(tree.PlaceholderTypes, numParams)
+	for i, d := range datums {
+		typeHints[tree.PlaceholderIdx(i)] = d.ResolvedType()
 	}
 	if len(qargs) == 0 {
 		if err := stmtBuf.Push(
@@ -1334,10 +1203,6 @@ func (ie *InternalExecutor) execInternal(
 			return nil, err
 		}
 	} else {
-		typeHints := make(tree.PlaceholderTypes, numParams)
-		for i, d := range datums {
-			typeHints[tree.PlaceholderIdx(i)] = d.ResolvedType()
-		}
 		if err := stmtBuf.Push(
 			ctx,
 			PrepareStmt{
@@ -1439,22 +1304,14 @@ func (ie *InternalExecutor) commitTxn(ctx context.Context) error {
 	}
 
 	rw := newAsyncIEResultChannel()
-	stmtBuf := NewStmtBuf(0 /* toReserve */)
+	stmtBuf := NewStmtBuf()
 
-	// Create a fresh conn executor simply for the purpose of committing the
-	// txn.
-	// TODO(#124935): this probably will need to change.
-	ex, err := ie.initConnEx(
-		ctx, ie.extraTxnState.txn, rw, defaultIEExecutionMode, sd, stmtBuf,
-		nil /* syncCallback */, false, /* attributeToUser */
-	)
+	ex, err := ie.initConnEx(ctx, ie.extraTxnState.txn, rw, defaultIEExecutionMode, sd, stmtBuf, nil /* syncCallback */)
 	if err != nil {
 		return errors.Wrap(err, "cannot create conn executor to commit txn")
 	}
 	// TODO(janexing): is this correct?
 	ex.planner.txn = ie.extraTxnState.txn
-	// TODO(#124935): might need to set ex.extraTxnState.shouldExecuteOnTxnFinish
-	// to true.
 
 	defer ex.close(ctx, externalTxnClose)
 	if ie.extraTxnState.txn.IsCommitted() {
@@ -1536,8 +1393,6 @@ type internalClientComm struct {
 	// at any point in time (i.e. any command is created, evaluated, and then
 	// closed / discarded, and only after that a new command can be processed).
 	results []*streamingCommandResult
-	// resultsScratch is the underlying storage for results.
-	resultsScratch [4]*streamingCommandResult
 
 	// The results of the query execution will be written into w.
 	w ieResultWriter
@@ -1826,23 +1681,6 @@ func (txn *internalTxn) KV() *kv.Txn { return txn.txn }
 func (txn *internalTxn) init(kvTxn *kv.Txn, ie InternalExecutor) {
 	txn.txn = kvTxn
 	txn.InternalExecutor = ie
-}
-
-// GetSystemSchemaVersion exposes the schema version from the system db desc.
-func (txn *internalTxn) GetSystemSchemaVersion(ctx context.Context) (roachpb.Version, error) {
-	sysDB, err := txn.extraTxnState.descCollection.ByIDWithLeased(txn.txn).
-		WithoutNonPublic().
-		Get().Database(ctx, keys.SystemDatabaseID)
-
-	if err != nil {
-		return roachpb.Version{}, err
-	}
-
-	v := sysDB.DatabaseDesc().GetSystemDatabaseSchemaVersion()
-	if v == nil {
-		return roachpb.Version{}, nil
-	}
-	return *v, nil
 }
 
 type internalExecutor struct {

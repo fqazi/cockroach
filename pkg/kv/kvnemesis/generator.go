@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"slices"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -28,14 +27,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
+	"golang.org/x/exp/slices"
 )
 
 // GeneratorConfig contains all the tunable knobs necessary to run a Generator.
 type GeneratorConfig struct {
 	Ops                   OperationConfig
 	NumNodes, NumReplicas int
-
-	BufferedWritesProb float64
 }
 
 // OperationConfig configures the relative probabilities of producing various
@@ -53,7 +51,6 @@ type OperationConfig struct {
 	Merge          MergeConfig
 	ChangeReplicas ChangeReplicasConfig
 	ChangeLease    ChangeLeaseConfig
-	ChangeSetting  ChangeSettingConfig
 	ChangeZone     ChangeZoneConfig
 }
 
@@ -327,13 +324,6 @@ type ChangeLeaseConfig struct {
 	TransferLease int
 }
 
-// ChangeSettingConfig configures the relative probability of generating a
-// cluster setting change operation.
-type ChangeSettingConfig struct {
-	// SetLeaseType changes the default range lease type.
-	SetLeaseType int
-}
-
 // ChangeZoneConfig configures the relative probability of generating a zone
 // configuration change operation.
 type ChangeZoneConfig struct {
@@ -452,9 +442,6 @@ func newAllOperationsConfig() GeneratorConfig {
 		},
 		ChangeLease: ChangeLeaseConfig{
 			TransferLease: 1,
-		},
-		ChangeSetting: ChangeSettingConfig{
-			SetLeaseType: 1,
 		},
 		ChangeZone: ChangeZoneConfig{
 			ToggleGlobalReads: 1,
@@ -696,7 +683,6 @@ func (g *generator) RandStep(rng *rand.Rand) Step {
 	transferLeaseFn := makeTransferLeaseFn(key, append(voters, nonVoters...))
 	addOpGen(&allowed, transferLeaseFn, g.Config.Ops.ChangeLease.TransferLease)
 
-	addOpGen(&allowed, setLeaseType, g.Config.Ops.ChangeSetting.SetLeaseType)
 	addOpGen(&allowed, toggleGlobalReads, g.Config.Ops.ChangeZone.ToggleGlobalReads)
 
 	return step(g.selectOp(rng, allowed))
@@ -1466,14 +1452,6 @@ func makeTransferLeaseFn(key string, current []roachpb.ReplicationTarget) opGenF
 	}
 }
 
-func setLeaseType(_ *generator, rng *rand.Rand) Operation {
-	leaseTypes := roachpb.TestingAllLeaseTypes()
-	leaseType := leaseTypes[rng.Intn(len(leaseTypes))]
-	op := changeSetting(ChangeSettingType_SetLeaseType)
-	op.ChangeSetting.LeaseType = leaseType
-	return op
-}
-
 func toggleGlobalReads(_ *generator, _ *rand.Rand) Operation {
 	return changeZone(ChangeZoneType_ToggleGlobalReads)
 }
@@ -1495,31 +1473,28 @@ func (g *generator) registerClosureTxnOps(allowed *[]opGen, c *ClosureTxnConfig)
 	const Commit, Rollback = ClosureTxnType_Commit, ClosureTxnType_Rollback
 	const SSI, SI, RC = isolation.Serializable, isolation.Snapshot, isolation.ReadCommitted
 	addOpGen(allowed,
-		makeClosureTxn(Commit, SSI, g.Config.BufferedWritesProb, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.CommitSerializable)
+		makeClosureTxn(Commit, SSI, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.CommitSerializable)
 	addOpGen(allowed,
-		makeClosureTxn(Commit, SI, 0 /* bufferedWritesProb */, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.CommitSnapshot)
+		makeClosureTxn(Commit, SI, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.CommitSnapshot)
 	addOpGen(allowed,
-		makeClosureTxn(Commit, RC, 0 /* bufferedWritesProb */, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.CommitReadCommitted)
-
+		makeClosureTxn(Commit, RC, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.CommitReadCommitted)
 	addOpGen(allowed,
-		makeClosureTxn(Rollback, SSI, g.Config.BufferedWritesProb, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.RollbackSerializable)
+		makeClosureTxn(Rollback, SSI, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.RollbackSerializable)
 	addOpGen(allowed,
-		makeClosureTxn(Rollback, SI, 0 /* bufferedWritesProb */, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.RollbackSnapshot)
+		makeClosureTxn(Rollback, SI, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.RollbackSnapshot)
 	addOpGen(allowed,
-		makeClosureTxn(Rollback, RC, 0 /* bufferedWritesProb */, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.RollbackReadCommitted)
-
+		makeClosureTxn(Rollback, RC, &c.TxnClientOps, &c.TxnBatchOps, nil /* commitInBatch*/, &c.SavepointOps), c.RollbackReadCommitted)
 	addOpGen(allowed,
-		makeClosureTxn(Commit, SSI, g.Config.BufferedWritesProb, &c.TxnClientOps, &c.TxnBatchOps, &c.CommitBatchOps, &c.SavepointOps), c.CommitSerializableInBatch)
+		makeClosureTxn(Commit, SSI, &c.TxnClientOps, &c.TxnBatchOps, &c.CommitBatchOps, &c.SavepointOps), c.CommitSerializableInBatch)
 	addOpGen(allowed,
-		makeClosureTxn(Commit, SI, 0 /* bufferedWritesProb */, &c.TxnClientOps, &c.TxnBatchOps, &c.CommitBatchOps, &c.SavepointOps), c.CommitSnapshotInBatch)
+		makeClosureTxn(Commit, SI, &c.TxnClientOps, &c.TxnBatchOps, &c.CommitBatchOps, &c.SavepointOps), c.CommitSnapshotInBatch)
 	addOpGen(allowed,
-		makeClosureTxn(Commit, RC, 0 /* bufferedWritesProb */, &c.TxnClientOps, &c.TxnBatchOps, &c.CommitBatchOps, &c.SavepointOps), c.CommitReadCommittedInBatch)
+		makeClosureTxn(Commit, RC, &c.TxnClientOps, &c.TxnBatchOps, &c.CommitBatchOps, &c.SavepointOps), c.CommitReadCommittedInBatch)
 }
 
 func makeClosureTxn(
 	txnType ClosureTxnType,
 	iso isolation.Level,
-	bufferedWritesProb float64,
 	txnClientOps *ClientOperationConfig,
 	txnBatchOps *BatchOperationConfig,
 	commitInBatch *ClientOperationConfig,
@@ -1552,7 +1527,6 @@ func makeClosureTxn(
 			maybeUpdateSavepoints(&spIDs, ops[i])
 		}
 		op := closureTxn(txnType, iso, ops...)
-		op.ClosureTxn.BufferedWrites = rng.Float64() < bufferedWritesProb
 		if commitInBatch != nil {
 			if txnType != ClosureTxnType_Commit {
 				panic(errors.AssertionFailedf(`CommitInBatch must commit got: %s`, txnType))
@@ -1952,10 +1926,6 @@ func changeReplicas(key string, changes ...kvpb.ReplicationChange) Operation {
 
 func transferLease(key string, target roachpb.StoreID) Operation {
 	return Operation{TransferLease: &TransferLeaseOperation{Key: []byte(key), Target: target}}
-}
-
-func changeSetting(changeType ChangeSettingType) Operation {
-	return Operation{ChangeSetting: &ChangeSettingOperation{Type: changeType}}
 }
 
 func changeZone(changeType ChangeZoneType) Operation {

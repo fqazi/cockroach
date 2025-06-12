@@ -30,8 +30,7 @@ const (
 
 var (
 	// Shared flags.
-	numCPUs    int
-	pgoEnabled bool
+	numCPUs int
 )
 
 var archivedCdepConfigurations = []configuration{
@@ -165,7 +164,6 @@ func (d *dev) getArchivedCdepString(bazelBin string) (string, error) {
 
 func addCommonBuildFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&numCPUs, "cpus", 0, "cap the number of CPU cores used for building and testing at the Bazel level (note that this has no impact on GOMAXPROCS or the functionality of any build or test action under the Bazel level)")
-	cmd.Flags().BoolVar(&pgoEnabled, "pgo", false, "build with profile-guided optimization (PGO)")
 }
 
 func addCommonTestFlags(cmd *cobra.Command) {
@@ -270,13 +268,4 @@ func (d *dev) getMergeBaseHash(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(baseBytes)), nil
-}
-
-func addCommonBazelArguments(args *[]string) {
-	if numCPUs != 0 {
-		*args = append(*args, fmt.Sprintf("--local_cpu_resources=%d", numCPUs))
-	}
-	if pgoEnabled {
-		*args = append(*args, "--config=pgo")
-	}
 }

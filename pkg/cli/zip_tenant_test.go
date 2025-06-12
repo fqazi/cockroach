@@ -26,7 +26,6 @@ func TestTenantZip(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	skip.UnderRace(t, "test too slow under race")
-	skip.UnderDeadlock(t, "this test takes cpu profiles")
 
 	tenants := []struct {
 		testName      string
@@ -91,7 +90,7 @@ func TestTenantZip(t *testing.T) {
 				tenant.preZip(t, c)
 			}
 
-			out, err := c.RunWithCapture("debug zip --concurrency=1 --cpu-profile-duration=1s --validate-zip-file=false " + os.DevNull)
+			out, err := c.RunWithCapture("debug zip --concurrency=1 --cpu-profile-duration=1s " + os.DevNull)
 			if err != nil {
 				t.Fatal(err)
 			}

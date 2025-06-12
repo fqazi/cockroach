@@ -11,14 +11,15 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/gossip"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/distsql"
+	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
-	"github.com/cockroachdb/cockroach/pkg/sql/execversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
@@ -67,7 +68,7 @@ func TestServer(t *testing.T) {
 	}
 
 	req := &execinfrapb.SetupFlowRequest{
-		Version:           execversion.Latest,
+		Version:           execinfra.Version,
 		LeafTxnInputState: leafInputState,
 	}
 	req.Flow = execinfrapb.FlowSpec{
@@ -94,15 +95,15 @@ func TestServer(t *testing.T) {
 	// Verify version handling.
 	t.Run("version", func(t *testing.T) {
 		testCases := []struct {
-			version     execversion.V
+			version     execinfrapb.DistSQLVersion
 			expectedErr string
 		}{
 			{
-				version:     execversion.Latest + 1,
+				version:     execinfra.Version + 1,
 				expectedErr: "version mismatch",
 			},
 			{
-				version:     execversion.MinAccepted - 1,
+				version:     execinfra.MinAcceptedVersion - 1,
 				expectedErr: "version mismatch",
 			},
 			// TODO(yuzefovich): figure out what setup to perform to simulate
@@ -111,7 +112,7 @@ func TestServer(t *testing.T) {
 			// panic in a separate goroutine because there is no RowReceiver set
 			// up for the table reader.
 			//{
-			//	version:     execversion.MinAccepted,
+			//	version:     execinfra.MinAcceptedVersion,
 			//	expectedErr: "",
 			//},
 		}
@@ -130,6 +131,27 @@ func TestServer(t *testing.T) {
 			})
 		}
 	})
+}
+
+// Test that a node gossips its DistSQL version information.
+func TestDistSQLServerGossipsVersion(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	s := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(context.Background())
+
+	var v execinfrapb.DistSQLVersionGossipInfo
+	if err := s.GossipI().(*gossip.Gossip).GetInfoProto(
+		gossip.MakeDistSQLNodeVersionKey(base.SQLInstanceID(s.NodeID())), &v,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if v.Version != execinfra.Version || v.MinAcceptedVersion != execinfra.MinAcceptedVersion {
+		t.Fatalf("node is gossipping the wrong version. Expected: [%d-%d], got [%d-%d",
+			execinfra.Version, execinfra.MinAcceptedVersion, v.Version, v.MinAcceptedVersion)
+	}
 }
 
 // runLocalFlow takes in a SetupFlowRequest to setup a local sync flow that is

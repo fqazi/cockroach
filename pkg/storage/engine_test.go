@@ -29,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -705,7 +704,7 @@ func TestFlushNumSSTables(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	engine := NewDefaultInMemForTesting(DiskWriteStatsCollector(vfs.NewDiskWriteStatsCollector()))
+	engine := NewDefaultInMemForTesting()
 	defer engine.Close()
 
 	batch := engine.NewBatch()
@@ -981,7 +980,7 @@ func TestSnapshotMethods(t *testing.T) {
 	index := 0
 	if err := snap.MVCCIterate(context.Background(), localMax, roachpb.KeyMax,
 		MVCCKeyAndIntentsIterKind, IterKeyTypePointsOnly,
-		fs.UnknownReadCategory, func(kv MVCCKeyValue, _ MVCCRangeKeyStack) error {
+		UnknownReadCategory, func(kv MVCCKeyValue, _ MVCCRangeKeyStack) error {
 			if !kv.Key.Equal(keys[index]) || !bytes.Equal(kv.Value, vals[index]) {
 				t.Errorf("%d: key/value not equal between expected and snapshot: %s/%s, %s/%s",
 					index, keys[index], vals[index], kv.Key, kv.Value)
@@ -1072,7 +1071,7 @@ func TestCreateCheckpoint(t *testing.T) {
 }
 
 func mustInitTestEnv(t testing.TB, baseFS vfs.FS, dir string) *fs.Env {
-	e, err := fs.InitEnv(context.Background(), baseFS, dir, fs.EnvConfig{}, nil /* statsCollector */)
+	e, err := fs.InitEnv(context.Background(), baseFS, dir, fs.EnvConfig{})
 	require.NoError(t, err)
 	return e
 }
@@ -1205,7 +1204,7 @@ func TestIngestDelayLimit(t *testing.T) {
 		{max, 55, -1},
 	} {
 		var m pebble.Metrics
-		m.Levels[0].TablesCount = tc.fileCount
+		m.Levels[0].NumFiles = tc.fileCount
 		m.Levels[0].Sublevels = tc.sublevelCount
 		require.Equal(t, tc.exp, calculatePreIngestDelay(s, &m))
 	}
@@ -1288,9 +1287,9 @@ func TestEngineFS(t *testing.T) {
 		)
 		switch s[0] {
 		case "create":
-			g, err = e.Create(s[1], fs.UnspecifiedWriteCategory)
+			g, err = e.Create(s[1])
 		case "create-with-sync":
-			g, err = fs.CreateWithSync(e, s[1], 1, fs.UnspecifiedWriteCategory)
+			g, err = fs.CreateWithSync(e, s[1], 1)
 		case "link":
 			err = e.Link(s[1], s[2])
 		case "open":
@@ -1396,7 +1395,7 @@ func TestEngineFSFileNotFoundError(t *testing.T) {
 
 	fname := filepath.Join(dir, "random.file")
 	data := "random data"
-	if f, err := env.Create(fname, fs.UnspecifiedWriteCategory); err != nil {
+	if f, err := env.Create(fname); err != nil {
 		t.Fatalf("unable to open file with filename %s, got err %v", fname, err)
 	} else {
 		// Write data to file so we can read it later.
@@ -1482,13 +1481,13 @@ func TestFS(t *testing.T) {
 			require.NoError(t, err)
 
 			// Create a file at a/b/c/foo.
-			f, err := e.Create(path("a/b/c/foo"), fs.UnspecifiedWriteCategory)
+			f, err := e.Create(path("a/b/c/foo"))
 			require.NoError(t, err)
 			require.NoError(t, f.Close())
 			expectLS(path("a/b/c"), []string{"foo"})
 
 			// Create a file at a/b/c/bar.
-			f, err = e.Create(path("a/b/c/bar"), fs.UnspecifiedWriteCategory)
+			f, err = e.Create(path("a/b/c/bar"))
 			require.NoError(t, err)
 			require.NoError(t, f.Close())
 			expectLS(path("a/b/c"), []string{"bar", "foo"})
@@ -1534,9 +1533,9 @@ func TestGetIntent(t *testing.T) {
 	// Key "b" has an intent, an exclusive lock, and a shared lock from txn1.
 	// NOTE: acquire in increasing strength order so that acquisition is never
 	// skipped.
-	err = MVCCAcquireLock(ctx, eng, &txn1.TxnMeta, txn1.IgnoredSeqNums, lock.Shared, keyB, nil, 0, 0)
+	err = MVCCAcquireLock(ctx, eng, txn1, lock.Shared, keyB, nil, 0, 0)
 	require.NoError(t, err)
-	err = MVCCAcquireLock(ctx, eng, &txn1.TxnMeta, txn1.IgnoredSeqNums, lock.Exclusive, keyB, nil, 0, 0)
+	err = MVCCAcquireLock(ctx, eng, txn1, lock.Exclusive, keyB, nil, 0, 0)
 	require.NoError(t, err)
 	_, err = MVCCPut(ctx, eng, keyB, txn1.ReadTimestamp, val, MVCCWriteOptions{Txn: txn1})
 	require.NoError(t, err)
@@ -1546,15 +1545,15 @@ func TestGetIntent(t *testing.T) {
 	require.NoError(t, err)
 
 	// Key "d" has an exclusive lock and a shared lock from txn2.
-	err = MVCCAcquireLock(ctx, eng, &txn2.TxnMeta, txn2.IgnoredSeqNums, lock.Shared, keyD, nil, 0, 0)
+	err = MVCCAcquireLock(ctx, eng, txn2, lock.Shared, keyD, nil, 0, 0)
 	require.NoError(t, err)
-	err = MVCCAcquireLock(ctx, eng, &txn2.TxnMeta, txn2.IgnoredSeqNums, lock.Exclusive, keyD, nil, 0, 0)
+	err = MVCCAcquireLock(ctx, eng, txn2, lock.Exclusive, keyD, nil, 0, 0)
 	require.NoError(t, err)
 
 	// Key "e" has a shared lock from each txn.
-	err = MVCCAcquireLock(ctx, eng, &txn1.TxnMeta, txn1.IgnoredSeqNums, lock.Shared, keyE, nil, 0, 0)
+	err = MVCCAcquireLock(ctx, eng, txn1, lock.Shared, keyE, nil, 0, 0)
 	require.NoError(t, err)
-	err = MVCCAcquireLock(ctx, eng, &txn2.TxnMeta, txn2.IgnoredSeqNums, lock.Shared, keyE, nil, 0, 0)
+	err = MVCCAcquireLock(ctx, eng, txn2, lock.Shared, keyE, nil, 0, 0)
 	require.NoError(t, err)
 
 	// Key "f" has no intent/locks.
@@ -1574,7 +1573,7 @@ func TestGetIntent(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(string(test.key), func(t *testing.T) {
-			intent, err := GetIntent(ctx, eng, test.key)
+			intent, err := GetIntent(ctx, eng, test.key, UnknownReadCategory)
 			if test.expErr {
 				require.Error(t, err)
 			} else {
@@ -1642,7 +1641,7 @@ func TestScanLocks(t *testing.T) {
 		if str == lock.Intent {
 			_, err = MVCCPut(ctx, eng, roachpb.Key(k), txn1.ReadTimestamp, roachpb.Value{RawBytes: roachpb.Key(k)}, MVCCWriteOptions{Txn: txn1})
 		} else {
-			err = MVCCAcquireLock(ctx, eng, &txn1.TxnMeta, txn1.IgnoredSeqNums, str, roachpb.Key(k), nil, 0, 0)
+			err = MVCCAcquireLock(ctx, eng, txn1, str, roachpb.Key(k), nil, 0, 0)
 		}
 		require.NoError(t, err)
 	}
@@ -1650,7 +1649,7 @@ func TestScanLocks(t *testing.T) {
 	for name, tc := range testcases {
 		tc := tc
 		t.Run(name, func(t *testing.T) {
-			scannedLocks, err := ScanLocks(ctx, eng, tc.from, tc.to, tc.max, tc.targetBytes)
+			scannedLocks, err := ScanLocks(ctx, eng, tc.from, tc.to, tc.max, tc.targetBytes, UnknownReadCategory)
 			require.NoError(t, err)
 			require.Len(t, scannedLocks, len(tc.expectLocks), "unexpected number of locks")
 			for i, l := range scannedLocks {
@@ -1813,7 +1812,7 @@ func TestEngineClearRange(t *testing.T) {
 
 		"ClearRangeWithHeuristic individual": {
 			clearRange: func(rw ReadWriter, start, end roachpb.Key) error {
-				return ClearRangeWithHeuristic(ctx, rw, rw, start, end, math.MaxInt)
+				return ClearRangeWithHeuristic(ctx, rw, rw, start, end, math.MaxInt, math.MaxInt)
 			},
 			clearsPointKeys: true,
 			clearsRangeKeys: true,
@@ -1821,7 +1820,7 @@ func TestEngineClearRange(t *testing.T) {
 		},
 		"ClearRangeWithHeuristic ranged": {
 			clearRange: func(rw ReadWriter, start, end roachpb.Key) error {
-				return ClearRangeWithHeuristic(ctx, rw, rw, start, end, 1)
+				return ClearRangeWithHeuristic(ctx, rw, rw, start, end, 1, 1)
 			},
 			clearsPointKeys: true,
 			clearsRangeKeys: true,
@@ -1829,9 +1828,33 @@ func TestEngineClearRange(t *testing.T) {
 		},
 		"ClearRangeWithHeuristic point keys individual": {
 			clearRange: func(rw ReadWriter, start, end roachpb.Key) error {
-				return ClearRangeWithHeuristic(ctx, rw, rw, start, end, math.MaxInt)
+				return ClearRangeWithHeuristic(ctx, rw, rw, start, end, math.MaxInt, 0)
 			},
 			clearsPointKeys: true,
+			clearsRangeKeys: false,
+			clearsIntents:   false,
+		},
+		"ClearRangeWithHeuristic point keys ranged": {
+			clearRange: func(rw ReadWriter, start, end roachpb.Key) error {
+				return ClearRangeWithHeuristic(ctx, rw, rw, start, end, 1, 0)
+			},
+			clearsPointKeys: true,
+			clearsRangeKeys: false,
+			clearsIntents:   false,
+		},
+		"ClearRangeWithHeuristic range keys individual": {
+			clearRange: func(rw ReadWriter, start, end roachpb.Key) error {
+				return ClearRangeWithHeuristic(ctx, rw, rw, start, end, 0, math.MaxInt)
+			},
+			clearsPointKeys: false,
+			clearsRangeKeys: true,
+			clearsIntents:   false,
+		},
+		"ClearRangeWithHeuristic range keys ranged": {
+			clearRange: func(rw ReadWriter, start, end roachpb.Key) error {
+				return ClearRangeWithHeuristic(ctx, rw, rw, start, end, 0, 1)
+			},
+			clearsPointKeys: false,
 			clearsRangeKeys: true,
 			clearsIntents:   false,
 		},
@@ -1982,9 +2005,9 @@ func TestEngineIteratorVisibility(t *testing.T) {
 				// Pin the pinned reader, if it supports it. This should ensure later
 				// iterators see the current state.
 				if rPinned.ConsistentIterators() {
-					require.NoError(t, rPinned.PinEngineStateForIterators(fs.UnknownReadCategory))
+					require.NoError(t, rPinned.PinEngineStateForIterators(UnknownReadCategory))
 				} else {
-					require.Error(t, rPinned.PinEngineStateForIterators(fs.UnknownReadCategory))
+					require.Error(t, rPinned.PinEngineStateForIterators(UnknownReadCategory))
 				}
 
 				// Write a new key to the engine, and set up the expected results.
@@ -2211,11 +2234,11 @@ func TestScanConflictingIntentsForDroppingLatchesEarly(t *testing.T) {
 			setup: func(t *testing.T, rw ReadWriter, _ *roachpb.Transaction) {
 				txnA := newTxn(belowTxnTS)
 				txnB := newTxn(belowTxnTS)
-				err := MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err := MVCCAcquireLock(ctx, rw, txnA, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnB.TxnMeta, txnB.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnB, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Exclusive, keyB, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnA, lock.Exclusive, keyB, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
 				require.NoError(t, err)
 			},
 			start:                 keyA,
@@ -2229,9 +2252,9 @@ func TestScanConflictingIntentsForDroppingLatchesEarly(t *testing.T) {
 			name: "shared and exclusive locks should be ignored no end key",
 			setup: func(t *testing.T, rw ReadWriter, _ *roachpb.Transaction) {
 				txnA := newTxn(belowTxnTS)
-				err := MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err := MVCCAcquireLock(ctx, rw, txnA, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Exclusive, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnA, lock.Exclusive, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
 				require.NoError(t, err)
 			},
 			start:                 keyA,
@@ -2244,11 +2267,11 @@ func TestScanConflictingIntentsForDroppingLatchesEarly(t *testing.T) {
 			setup: func(t *testing.T, rw ReadWriter, _ *roachpb.Transaction) {
 				txnA := newTxn(belowTxnTS)
 				txnB := newTxn(belowTxnTS)
-				err := MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err := MVCCAcquireLock(ctx, rw, txnA, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnB.TxnMeta, txnB.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnB, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Exclusive, keyB, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnA, lock.Exclusive, keyB, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
 				require.NoError(t, err)
 				require.NoError(t, err)
 				_, err = MVCCPut(ctx, rw, keyC, txnA.WriteTimestamp, val, MVCCWriteOptions{Txn: txnA})
@@ -2264,11 +2287,11 @@ func TestScanConflictingIntentsForDroppingLatchesEarly(t *testing.T) {
 			setup: func(t *testing.T, rw ReadWriter, txn *roachpb.Transaction) {
 				txnA := newTxn(belowTxnTS)
 				txnB := newTxn(belowTxnTS)
-				err := MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err := MVCCAcquireLock(ctx, rw, txnA, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnB.TxnMeta, txnB.IgnoredSeqNums, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnB, lock.Shared, keyA, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
 				require.NoError(t, err)
-				err = MVCCAcquireLock(ctx, rw, &txnA.TxnMeta, txnA.IgnoredSeqNums, lock.Exclusive, keyB, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
+				err = MVCCAcquireLock(ctx, rw, txnA, lock.Exclusive, keyB, nil /*ms*/, 0 /*maxConflicts*/, 0 /*targetLockConflictBytes*/)
 				require.NoError(t, err)
 				_, err = MVCCPut(ctx, rw, keyC, txn.WriteTimestamp, val, MVCCWriteOptions{Txn: txn})
 				require.NoError(t, err)
@@ -2565,9 +2588,9 @@ func TestEngineRangeKeyMutations(t *testing.T) {
 
 				// Engine methods don't do validation, but just pass through to Pebble.
 				require.NoError(t, rw.PutEngineRangeKey(
-					rk.StartKey, rk.EndKey, mvccencoding.EncodeMVCCTimestampSuffix(rk.Timestamp), nil))
+					rk.StartKey, rk.EndKey, EncodeMVCCTimestampSuffix(rk.Timestamp), nil))
 				require.NoError(t, rw.ClearEngineRangeKey(
-					rk.StartKey, rk.EndKey, mvccencoding.EncodeMVCCTimestampSuffix(rk.Timestamp)))
+					rk.StartKey, rk.EndKey, EncodeMVCCTimestampSuffix(rk.Timestamp)))
 				require.NoError(t, rw.ClearRawRange(
 					rk.StartKey, rk.EndKey, false /* pointKeys */, true /* rangeKeys */))
 			})
@@ -2635,7 +2658,7 @@ func TestEngineRangeKeyMutations(t *testing.T) {
 		valueRaw, err := EncodeMVCCValue(MVCCValue{})
 		require.NoError(t, err)
 		require.NoError(t, rw.PutEngineRangeKey(
-			roachpb.Key("c"), roachpb.Key("e"), mvccencoding.EncodeMVCCTimestampSuffix(wallTS(1)), valueRaw))
+			roachpb.Key("c"), roachpb.Key("e"), EncodeMVCCTimestampSuffix(wallTS(1)), valueRaw))
 		require.NoError(t, rw.PutRawMVCCRangeKey(rangeKey("e", "g", 1), valueRaw))
 		require.Equal(t, []MVCCRangeKeyValue{
 			rangeKV("a", "f", 1, MVCCValue{}),
@@ -2730,7 +2753,7 @@ func scanLockKeys(t *testing.T, r Reader) []roachpb.Key {
 	t.Helper()
 
 	var lockKeys []roachpb.Key
-	locks, err := ScanLocks(context.Background(), r, keys.LocalMax, keys.MaxKey, 0, 0)
+	locks, err := ScanLocks(context.Background(), r, keys.LocalMax, keys.MaxKey, 0, 0, UnknownReadCategory)
 	require.NoError(t, err)
 	for _, l := range locks {
 		lockKeys = append(lockKeys, l.Key)

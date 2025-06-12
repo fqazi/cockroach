@@ -24,6 +24,8 @@
 //	     description: Handle to logged-in REST session. Use `/login/` to
 //	       log in and get a session.
 //	     in: header
+//
+// swagger:meta
 package server
 
 import (
@@ -43,14 +45,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
-	"github.com/cockroachdb/redact"
 	"github.com/gorilla/mux"
-)
-
-// Path variables.
-const (
-	dbIdPathVar    = "database_id"
-	tableIdPathVar = "table_id"
 )
 
 type ApiV2System interface {
@@ -104,8 +99,6 @@ func newAPIV2Server(ctx context.Context, opts *apiV2ServerOpts) http.Handler {
 	allowAnonymous := opts.sqlServer.cfg.Insecure
 	authMux := authserver.NewV2Mux(authServer, innerMux, allowAnonymous)
 	outerMux := mux.NewRouter()
-	serverMetrics := NewServerHttpMetrics(opts.sqlServer.MetricsRegistry(), opts.sqlServer.execCfg.Settings)
-	serverMetrics.registerMetricsMiddleware(outerMux)
 
 	systemAdmin, saOk := opts.admin.(*systemAdminServer)
 	systemStatus, ssOk := opts.status.(*systemStatusServer)
@@ -191,13 +184,6 @@ func registerRoutes(
 		{"rules/", a.listRules, false, authserver.RegularRole, true},
 
 		{"sql/", a.execSQL, true, authserver.RegularRole, true},
-		{"database_metadata/", a.GetDbMetadata, true, authserver.RegularRole, true},
-		{"database_metadata/{database_id:[0-9]+}/", a.GetDbMetadataWithDetails, true, authserver.RegularRole, true},
-		{"table_metadata/", a.GetTableMetadata, true, authserver.RegularRole, true},
-		{"table_metadata/{table_id:[0-9]+}/", a.GetTableMetadataWithDetails, true, authserver.RegularRole, true},
-		{"table_metadata/updatejob/", a.TableMetadataJob, true, authserver.RegularRole, true},
-		{fmt.Sprintf("grants/databases/{%s:[0-9]+}/", dbIdPathVar), a.getDatabaseGrants, true, authserver.RegularRole, true},
-		{fmt.Sprintf("grants/tables/{%s:[0-9]+}/", tableIdPathVar), a.getTableGrants, true, authserver.RegularRole, true},
 	}
 
 	// For all routes requiring authentication, have the outer mux (a.mux)
@@ -216,8 +202,8 @@ func registerRoutes(
 		}
 
 		// Tell the authz server how to connect to SQL.
-		authzAccessorFactory := func(ctx context.Context, opName redact.SafeString) (sql.AuthorizationAccessor, func()) {
-			txn := a.db.NewTxn(ctx, string(opName))
+		authzAccessorFactory := func(ctx context.Context, opName string) (sql.AuthorizationAccessor, func()) {
+			txn := a.db.NewTxn(ctx, opName)
 			p, cleanup := sql.NewInternalPlanner(
 				opName,
 				txn,
@@ -257,6 +243,8 @@ func (c *callCountDecorator) ServeHTTP(w http.ResponseWriter, req *http.Request)
 }
 
 // Response for listSessions.
+//
+// swagger:model listSessionsResp
 type listSessionsResponse struct {
 	serverpb.ListSessionsResponse
 
@@ -265,6 +253,8 @@ type listSessionsResponse struct {
 	Next string `json:"next,omitempty"`
 }
 
+// swagger:operation GET /sessions/ listSessions
+//
 // # List sessions
 //
 // List all sessions on this cluster. If a username is provided, only
@@ -332,6 +322,8 @@ func (a *apiV2Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	apiutil.WriteJSONResponse(ctx, w, http.StatusOK, response)
 }
 
+// swagger:operation GET /health/ health
+//
 // # Check node health
 //
 // Helper endpoint to check for node health. If `ready` is true, it also checks
@@ -394,6 +386,8 @@ func (a *apiV2Server) health(w http.ResponseWriter, r *http.Request) {
 	healthInternal(w, r, a.admin.checkReadinessForHealthCheck)
 }
 
+// swagger:operation GET /rules/ rules
+//
 // # Get metric recording and alerting rule templates
 //
 // Endpoint to export recommended metric recording and alerting rules.

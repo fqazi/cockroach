@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
 )
 
@@ -48,18 +47,6 @@ func (mb *mutationBuilder) buildUniqueChecksForInsert() {
 		if !u.WithoutIndex() || u.UniquenessGuaranteedByAnotherIndex() {
 			continue
 		}
-
-		// For non-serializable transactions, we guarantee uniqueness by writing tombstones in all
-		// partitions of a unique index with implicit partitioning columns.
-		if mb.b.evalCtx.TxnIsoLevel != isolation.Serializable {
-			if indexOrdinal, ok := u.TombstoneIndexOrdinal(); ok {
-				mb.uniqueWithTombstoneIndexes.Add(indexOrdinal)
-				continue
-			}
-			panic(unimplemented.NewWithIssue(126592,
-				"unique without index constraint under non-serializable isolation levels"))
-		}
-
 		// If this constraint is an arbiter of an INSERT ... ON CONFLICT ... DO
 		// NOTHING clause, we don't need to plan a check (ON CONFLICT ... DO UPDATE
 		// does not go through this code path; that's handled by
@@ -67,7 +54,6 @@ func (mb *mutationBuilder) buildUniqueChecksForInsert() {
 		if mb.uniqueConstraintIsArbiter(i) {
 			continue
 		}
-
 		if h.init(mb, i) {
 			uniqueChecksItem, fastPathUniqueChecksItem := h.buildInsertionCheck(buildFastPathCheck)
 			if fastPathUniqueChecksItem == nil {
@@ -108,17 +94,6 @@ func (mb *mutationBuilder) buildUniqueChecksForUpdate() {
 		if !mb.uniqueColsUpdated(i) {
 			continue
 		}
-		// For non-serializable transactions, we guarantee uniqueness by writing tombstones in all
-		// partitions of a unique index with implicit partitioning columns.
-		if mb.b.evalCtx.TxnIsoLevel != isolation.Serializable {
-			if indexOrdinal, ok := u.TombstoneIndexOrdinal(); ok {
-				mb.uniqueWithTombstoneIndexes.Add(indexOrdinal)
-				continue
-			}
-			panic(unimplemented.NewWithIssue(126592,
-				"unique without index constraint under non-serializable isolation levels"))
-		}
-
 		if h.init(mb, i) {
 			// The insertion check works for updates too since it simply checks that
 			// the unique columns in the newly inserted or updated rows do not match
@@ -150,21 +125,10 @@ func (mb *mutationBuilder) buildUniqueChecksForUpsert() {
 		if !u.WithoutIndex() || u.UniquenessGuaranteedByAnotherIndex() {
 			continue
 		}
-		// For non-serializable transactions, we guarantee uniqueness by writing tombstones in all
-		// partitions of a unique index with implicit partitioning columns.
-		if mb.b.evalCtx.TxnIsoLevel != isolation.Serializable {
-			if indexOrdinal, ok := u.TombstoneIndexOrdinal(); ok {
-				mb.uniqueWithTombstoneIndexes.Add(indexOrdinal)
-				continue
-			}
-			panic(unimplemented.NewWithIssue(126592,
-				"unique without index constraint under non-serializable isolation levels"))
-		}
-
 		// If this constraint is an arbiter of an INSERT ... ON CONFLICT ... DO
 		// UPDATE clause and not updated by the DO UPDATE clause, we don't need to
 		// plan a check (ON CONFLICT ... DO NOTHING does not go through this code
-		// path; that's handled by buildUniqueChecksForInsert). Note that if
+		// path; that's handled by buildUniqueChecksForInsert). Note that that if
 		// the constraint is partial and columns referenced in the predicate are
 		// updated, we'll still plan the check (this is handled correctly by
 		// mb.uniqueColsUpdated).
@@ -653,21 +617,15 @@ func (h *uniqueCheckHelper) buildTableScan() (outScope *scope, ordinals []int) {
 			},
 		}
 	}
-	// After the update we can't guarantee that the constraints are unique
-	// (which is why we need the uniqueness checks in the first place).
-	indexFlags := &tree.IndexFlags{IgnoreUniqueWithoutIndexKeys: true}
-	if h.mb.b.evalCtx.SessionData().AvoidFullTableScansInMutations {
-		indexFlags.AvoidFullScan = true
-	}
-	// The scan is exempt from RLS to maintain data integrity.
 	return h.mb.b.buildScan(
 		tabMeta,
 		ordinals,
-		indexFlags,
+		// After the update we can't guarantee that the constraints are unique
+		// (which is why we need the uniqueness checks in the first place).
+		&tree.IndexFlags{IgnoreUniqueWithoutIndexKeys: true},
 		locking,
 		h.mb.b.allocScope(),
 		true, /* disableNotVisibleIndex */
-		cat.PolicyScopeExempt,
 	), ordinals
 }
 

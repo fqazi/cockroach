@@ -33,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +42,7 @@ func TestInternalExecutor(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	s, db, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
@@ -126,7 +125,7 @@ func TestInternalFullTableScan(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	s, db, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
@@ -177,7 +176,7 @@ func TestInternalStmtFingerprintLimit(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	s, db, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
@@ -201,7 +200,7 @@ func TestSessionBoundInternalExecutor(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	s, db, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
@@ -248,7 +247,7 @@ func TestInternalExecAppNameInitialization(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	params.Insecure = true
 
 	// sem will be fired every time pg_sleep(1337666) is called.
@@ -299,10 +298,10 @@ func TestInternalExecAppNameInitialization(t *testing.T) {
 
 type testInternalExecutor interface {
 	QueryRow(
-		ctx context.Context, opName redact.RedactableString, txn *kv.Txn, stmt string, qargs ...interface{},
+		ctx context.Context, opName string, txn *kv.Txn, stmt string, qargs ...interface{},
 	) (tree.Datums, error)
 	Exec(
-		ctx context.Context, opName redact.RedactableString, txn *kv.Txn, stmt string, qargs ...interface{},
+		ctx context.Context, opName string, txn *kv.Txn, stmt string, qargs ...interface{},
 	) (int, error)
 }
 
@@ -390,17 +389,14 @@ func testInternalExecutorAppNameInitialization(
 	}
 
 	// Now check that it was properly registered in statistics.
-	testutils.SucceedsSoon(t, func() error {
-		if row, err := ie.QueryRow(context.Background(), "find-query", nil,
-			"SELECT application_name FROM crdb_internal.node_statement_statistics WHERE key LIKE 'SELECT' || ' pg_sleep(%'"); err != nil {
-			t.Fatal(err)
-		} else if row == nil {
-			return fmt.Errorf("expected 1 query got 0")
-		} else if appName := string(*row[0].(*tree.DString)); appName != expectedAppName {
-			return fmt.Errorf("unexpected app name: expected %q, got %q", expectedAppName, appName)
-		}
-		return nil
-	})
+	if row, err := ie.QueryRow(context.Background(), "find-query", nil,
+		"SELECT application_name FROM crdb_internal.node_statement_statistics WHERE key LIKE 'SELECT' || ' pg_sleep(%'"); err != nil {
+		t.Fatal(err)
+	} else if row == nil {
+		t.Fatalf("expected 1 query, got 0")
+	} else if appName := string(*row[0].(*tree.DString)); appName != expectedAppName {
+		t.Fatalf("unexpected app name: expected %q, got %q", expectedAppName, appName)
+	}
 }
 
 // Test that, when executing inside a higher-level txn, the internal executor
@@ -430,14 +426,13 @@ func TestInternalExecutorPushDetectionInTxn(t *testing.T) {
 			tt.serializable, tt.pushed, tt.refreshable)
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			params, _ := createTestServerParamsAllowTenants()
+			params, _ := createTestServerParams()
 			s, _, db := serverutils.StartServer(t, params)
 			defer s.Stopper().Stop(ctx)
 
 			// Setup a txn.
 			txn := db.NewTxn(ctx, "test")
-			// Build a key in the tenant's keyspace
-			keyA := append(s.Codec().TenantPrefix(), roachpb.Key("a")...)
+			keyA := roachpb.Key("a")
 			if !tt.serializable {
 				require.NoError(t, txn.SetIsoLevel(isolation.Snapshot))
 			}
@@ -508,7 +503,7 @@ func TestInternalExecutorWithDefinedQoSOverrideDoesNotPanic(t *testing.T) {
 	defer s.Stopper().Stop(ctx)
 
 	ie := s.InternalExecutor().(*sql.InternalExecutor)
-	qosLevel := sessiondatapb.BulkLow
+	qosLevel := sessiondatapb.TTLLow
 	_, err := ie.ExecEx(
 		ctx, "defined_quality_of_service_level_does_not_panic", nil,
 		sessiondata.InternalExecutorOverride{User: username.NodeUserName(), QualityOfService: &qosLevel},
@@ -618,7 +613,7 @@ func TestInternalExecutorEncountersRetry(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	srv, db, kvDB := serverutils.StartServer(t, params)
 	defer srv.Stopper().Stop(ctx)
 	s := srv.ApplicationLayer()
@@ -719,7 +714,7 @@ func TestInternalExecutorSyntheticDesc(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	s, db, kvDB := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
@@ -748,7 +743,7 @@ func TestInternalExecutorSyntheticDesc(t *testing.T) {
 	blah INT8 NULL,
 	rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
 	CONSTRAINT t_pkey PRIMARY KEY (rowid ASC)
-);`,
+)`,
 					string(*createStatement))
 				return nil
 			}))
@@ -770,7 +765,7 @@ func TestInternalExecutorSyntheticDesc(t *testing.T) {
 	blah INT8 NULL,
 	rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
 	CONSTRAINT t_pkey PRIMARY KEY (rowid ASC)
-);`,
+)`,
 							string(*createStatement))
 						return nil
 					})

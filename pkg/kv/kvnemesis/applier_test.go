@@ -57,6 +57,7 @@ func TestApplier(t *testing.T) {
 	sstFile := &storage.MemObject{}
 	{
 		st := cluster.MakeTestingClusterSettings()
+		storage.ValueBlocksEnabled.Override(ctx, &st.SV, true)
 		w := storage.MakeIngestionSSTWriter(ctx, st, sstFile)
 		defer w.Close()
 

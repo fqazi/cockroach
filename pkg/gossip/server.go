@@ -125,10 +125,8 @@ func (s *server) Gossip(stream Gossip_GossipServer) error {
 			infoCount := int64(len(reply.Delta))
 			s.nodeMetrics.BytesSent.Inc(bytesSent)
 			s.nodeMetrics.InfosSent.Inc(infoCount)
-			s.nodeMetrics.MessagesSent.Inc(1)
 			s.serverMetrics.BytesSent.Inc(bytesSent)
 			s.serverMetrics.InfosSent.Inc(infoCount)
-			s.serverMetrics.MessagesSent.Inc(1)
 
 			return stream.Send(reply)
 		}
@@ -138,12 +136,8 @@ func (s *server) Gossip(stream Gossip_GossipServer) error {
 
 	errCh := make(chan error, 1)
 
-	// Maintain what were the recently sent high water stamps to avoid resending
-	// them.
-	lastSentHighWaterStamps := make(map[roachpb.NodeID]int64)
-
 	if err := s.stopper.RunAsyncTask(ctx, "gossip receiver", func(ctx context.Context) {
-		errCh <- s.gossipReceiver(ctx, &args, &lastSentHighWaterStamps, send, stream.Recv)
+		errCh <- s.gossipReceiver(ctx, &args, send, stream.Recv)
 	}); err != nil {
 		return err
 	}
@@ -178,12 +172,9 @@ func (s *server) Gossip(stream Gossip_GossipServer) error {
 				ratchetHighWaterStamp(args.HighWaterStamps, i.NodeID, i.OrigStamp)
 			}
 
-			var diffStamps map[roachpb.NodeID]int64
-			lastSentHighWaterStamps, diffStamps =
-				s.mu.is.getHighWaterStampsWithDiff(lastSentHighWaterStamps)
 			*reply = Response{
 				NodeID:          s.NodeID.Get(),
-				HighWaterStamps: diffStamps,
+				HighWaterStamps: s.mu.is.getHighWaterStamps(),
 				Delta:           delta,
 			}
 
@@ -201,9 +192,6 @@ func (s *server) Gossip(stream Gossip_GossipServer) error {
 		case err := <-errCh:
 			return err
 		case <-ready:
-			// We just sleep here instead of calling batchAndConsume() because the
-			// channel is closed, and sleeping won't block the sender of the channel.
-			time.Sleep(infosBatchDelay)
 		}
 	}
 }
@@ -211,7 +199,6 @@ func (s *server) Gossip(stream Gossip_GossipServer) error {
 func (s *server) gossipReceiver(
 	ctx context.Context,
 	argsPtr **Request,
-	lastSentHighWaterStampsPtr *map[roachpb.NodeID]int64,
 	senderFn func(*Response) error,
 	receiverFn func() (*Request, error),
 ) error {
@@ -262,7 +249,6 @@ func (s *server) gossipReceiver(
 					createdAt: timeutil.Now(),
 				}
 
-				//nolint:deferloop (this happens at most once).
 				defer func(nodeID roachpb.NodeID, addr util.UnresolvedAddr) {
 					log.VEventf(ctx, 2, "removing n%d from incoming set", args.NodeID)
 					s.mu.incoming.removeNode(nodeID)
@@ -312,10 +298,8 @@ func (s *server) gossipReceiver(
 		infosReceived := int64(len(args.Delta))
 		s.nodeMetrics.BytesReceived.Inc(bytesReceived)
 		s.nodeMetrics.InfosReceived.Inc(infosReceived)
-		s.nodeMetrics.MessagesReceived.Inc(1)
 		s.serverMetrics.BytesReceived.Inc(bytesReceived)
 		s.serverMetrics.InfosReceived.Inc(infosReceived)
-		s.serverMetrics.MessagesReceived.Inc(1)
 
 		freshCount, err := s.mu.is.combine(args.Delta, args.NodeID)
 		if err != nil {
@@ -326,12 +310,9 @@ func (s *server) gossipReceiver(
 		}
 		s.maybeTightenLocked()
 
-		var diffStamps map[roachpb.NodeID]int64
-		*lastSentHighWaterStampsPtr, diffStamps =
-			s.mu.is.getHighWaterStampsWithDiff(*lastSentHighWaterStampsPtr)
 		*reply = Response{
 			NodeID:          s.NodeID.Get(),
-			HighWaterStamps: diffStamps,
+			HighWaterStamps: s.mu.is.getHighWaterStamps(),
 		}
 
 		s.mu.Unlock()

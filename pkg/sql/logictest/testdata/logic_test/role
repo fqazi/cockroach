@@ -1,4 +1,4 @@
-# LogicTest: local 3node-tenant
+# LogicTest: local 3node-tenant local-mixed-23.2
 
 statement error a role/user named admin already exists
 CREATE ROLE admin
@@ -183,11 +183,7 @@ GRANT testrole TO testuser WITH ADMIN OPTION
 
 statement ok
 CREATE ROLE child_role;
-
-statement ok
 GRANT testrole to child_role;
-
-statement ok
 GRANT testuser TO child_role;
 
 query TTB colnames,rowsort
@@ -1867,11 +1863,21 @@ subtest end
 subtest subject
 
 skipif config 3node-tenant
+skipif config local-mixed-23.2
 statement error OSS binaries do not include enterprise features
 CREATE ROLE role_with_subject SUBJECT 'foo'
 
 skipif config 3node-tenant
+skipif config local-mixed-23.2
 statement error OSS binaries do not include enterprise features
+ALTER ROLE testuser SUBJECT 'foo'
+
+onlyif config local-mixed-23.2
+statement error SUBJECT role option is only supported after v24.1 upgrade is finalized
+CREATE ROLE role_with_subject SUBJECT 'foo'
+
+onlyif config local-mixed-23.2
+statement error SUBJECT role option is only supported after v24.1 upgrade is finalized
 ALTER ROLE testuser SUBJECT 'foo'
 
 subtest end

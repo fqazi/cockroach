@@ -26,16 +26,18 @@ build --flag_alias=cross=//build/toolchains:cross_flag
 build --flag_alias=dev=//build/toolchains:dev_flag
 build --flag_alias=force_build_cdeps=//build/toolchains:force_build_cdeps_flag
 build --flag_alias=heavy=//build/toolchains:heavy_flag
+build --flag_alias=lintonbuild=//build/toolchains:nogo_flag
+build --flag_alias=nolintonbuild=//build/toolchains:nonogo_explicit_flag
 
 build:crdb_test_off --crdb_test_off
 build:cross --cross
 build:dev --dev
 build:force_build_cdeps --force_build_cdeps
 build:heavy --heavy
-build:lintonbuild --run_validations
-build:nolintonbuild --norun_validations
+build:lintonbuild --lintonbuild
+build:nolintonbuild --nolintonbuild
 # Note: nonogo is classically the name of the nolintonbuild configuration.
-build:nonogo --config nolintonbuild
+build:nonogo --nolintonbuild
 build:test --crdb_test
 
 # Basic settings.
@@ -45,6 +47,7 @@ build --define gotags=bazel,gss
 build --experimental_proto_descriptor_sets_include_source_info
 build --incompatible_strict_action_env --incompatible_enable_cc_toolchain_resolution
 build --symlink_prefix=_bazel/
+build --strip=never
 common --experimental_allow_tags_propagation
 test --config=test --experimental_ui_max_stdouterr_bytes=10485760
 build --ui_event_filters=-DEBUG
@@ -61,15 +64,16 @@ test:race --heavy
 
 # CI uses a custom timeout for enormous targets.
 test:use_ci_timeouts --test_timeout=60,300,900,900
-
 # CI should always run with `--config=ci`.
+build:cibase --lintonbuild
 # Set `-test.v` in Go tests.
 # Ref: https://github.com/bazelbuild/rules_go/pull/2456
-test:ci --test_env=GO_TEST_WRAP_TESTV=1
+test:cibase --test_env=GO_TEST_WRAP_TESTV=1
 # Dump all output for failed tests to the build log.
 test:ci --test_output=errors
 # Put all tmp artifacts in /artifacts/tmp.
 test:ci --test_tmpdir=/artifacts/tmp
+build:ci --config=cibase
 
 build:cross --stamp
 
@@ -79,32 +83,32 @@ build:cross --stamp
 # `--workspace_status_command`; if using these `base` configs, you need to
 # specify an appropriate `--workspace_status_command`. These `base` configs are
 # used by the release process which needs to have more control over stamping.
-build:crosslinux '--workspace_status_command=./build/bazelutil/stamp.sh -t x86_64-pc-linux-gnu'
+build:crosslinux '--workspace_status_command=./build/bazelutil/stamp.sh x86_64-pc-linux-gnu'
 build:crosslinux --config=crosslinuxbase
 build:crosslinuxbase --platforms=//build/toolchains:cross_linux
 build:crosslinuxbase --config=cross
-build:crosslinuxfips '--workspace_status_command=./build/bazelutil/stamp.sh -t x86_64-pc-linux-gnu'
+build:crosslinuxfips '--workspace_status_command=./build/bazelutil/stamp.sh x86_64-pc-linux-gnu'
 build:crosslinuxfips --config=crosslinuxfipsbase
 build:crosslinuxfipsbase --platforms=//build/toolchains:cross_linux
 build:crosslinuxfipsbase --config=cross
-build:crosslinuxfipsbase --@io_bazel_rules_go//go/toolchain:sdk_version=1.23.7fips
-build:crosswindows '--workspace_status_command=./build/bazelutil/stamp.sh -t x86_64-w64-mingw32'
+build:crosslinuxfipsbase --@io_bazel_rules_go//go/toolchain:sdk_version=1.22.5fips
+build:crosswindows '--workspace_status_command=./build/bazelutil/stamp.sh x86_64-w64-mingw32'
 build:crosswindows --config=crosswindowsbase
 build:crosswindowsbase --platforms=//build/toolchains:cross_windows
 build:crosswindowsbase --config=cross
-build:crossmacos '--workspace_status_command=./build/bazelutil/stamp.sh -t x86_64-apple-darwin21.2'
+build:crossmacos '--workspace_status_command=./build/bazelutil/stamp.sh x86_64-apple-darwin21.2'
 build:crossmacos --config=crossmacosbase
 build:crossmacosbase --platforms=//build/toolchains:cross_macos
 build:crossmacosbase --config=cross
-build:crossmacosarm '--workspace_status_command=./build/bazelutil/stamp.sh -t aarch64-apple-darwin21.2'
+build:crossmacosarm '--workspace_status_command=./build/bazelutil/stamp.sh aarch64-apple-darwin21.2'
 build:crossmacosarm --config=crossmacosarmbase
 build:crossmacosarmbase --platforms=//build/toolchains:cross_macos_arm
 build:crossmacosarmbase --config=cross
-build:crosslinuxarm '--workspace_status_command=./build/bazelutil/stamp.sh -t aarch64-unknown-linux-gnu'
+build:crosslinuxarm '--workspace_status_command=./build/bazelutil/stamp.sh aarch64-unknown-linux-gnu'
 build:crosslinuxarm --config=crosslinuxarmbase
 build:crosslinuxarmbase --platforms=//build/toolchains:cross_linux_arm
 build:crosslinuxarmbase --config=cross
-build:crosslinuxs390x '--workspace_status_command=./build/bazelutil/stamp.sh -t s390x-unknown-linux-gnu'
+build:crosslinuxs390x '--workspace_status_command=./build/bazelutil/stamp.sh s390x-unknown-linux-gnu'
 build:crosslinuxs390x --config=crosslinuxs390xbase
 build:crosslinuxs390xbase --platforms=//build/toolchains:cross_linux_s390x
 build:crosslinuxs390xbase --config=cross
@@ -116,8 +120,6 @@ build:macos --host_action_env=PATH=/opt/homebrew/bin:/opt/local/bin:/usr/local/b
 
 build:macos --linkopt="-Xlinker"
 build:macos --linkopt="-no_warn_duplicate_libraries"
-
-build:pgo --@io_bazel_rules_go//go/config:pgoprofile=@pgo_profile//:profile.pprof
 
 build:engflowbase --define=EXECUTOR=remote
 build:engflowbase --disk_cache=
@@ -131,8 +133,7 @@ build:engflowbase --action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 build:engflowbase --extra_execution_platforms=//build/toolchains:cross_linux
 build:engflowbase --remote_upload_local_results=false
 build:engflowbase --remote_download_toplevel
-build:engflowbase --test_env=GO_TEST_WRAP_TESTV=1
-build:engflowbase --config=lintonbuild
+build:engflowbase --config=cibase
 test:engflowbase --test_env=REMOTE_EXEC=1
 test:engflowbase --test_env=GOTRACEBACK=all
 build:engflow --config=engflowbase

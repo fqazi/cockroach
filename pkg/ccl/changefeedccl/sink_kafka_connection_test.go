@@ -19,6 +19,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
+	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -70,12 +71,7 @@ func (e *externalConnectionKafkaSink) Close() error {
 
 // EmitRow implements the Sink interface.
 func (e *externalConnectionKafkaSink) EmitRow(
-	_ context.Context,
-	_ TopicDescriptor,
-	_, _ []byte,
-	_, _ hlc.Timestamp,
-	_ kvevent.Alloc,
-	_ rowHeaders,
+	_ context.Context, _ TopicDescriptor, _, _ []byte, _, _ hlc.Timestamp, _ kvevent.Alloc,
 ) error {
 	return nil
 }
@@ -120,6 +116,11 @@ func TestChangefeedExternalConnections(t *testing.T) {
 	enableEnterprise()
 	unknownParams := func(sink string, params ...string) string {
 		return fmt.Sprintf(`unknown %s sink query parameters: [%s]`, sink, strings.Join(params, ", "))
+	}
+
+	// TODO(#127536): We disabled testing the Kafka V2 sink here, since it doesnt support MSK yet. Re-enable it.
+	if KafkaV2Enabled.Get(&s.Server.ClusterSettings().SV) {
+		skip.WithIssue(t, 127536, "Kafka V2 sink does not support MSK yet")
 	}
 
 	for _, tc := range []struct {
@@ -233,24 +234,9 @@ func TestChangefeedExternalConnections(t *testing.T) {
 			expectedError: "sasl_enabled must be enabled to configure SASL mechanism",
 		},
 		{
-			name:          "param sasl_mechanism must be one of AWS_MSK_IAM, OAUTHBEARER, PLAIN, SCRAM-SHA-256, or SCRAM-SHA-512",
+			name:          "param sasl_mechanism must be one of OAUTHBEARER, PLAIN, SCRAM-SHA-256, or SCRAM-SHA-512",
 			uri:           "kafka://nope/?sasl_enabled=true&sasl_mechanism=unsuppported",
-			expectedError: "param sasl_mechanism must be one of AWS_MSK_IAM, OAUTHBEARER, PLAIN, SCRAM-SHA-256, or SCRAM-SHA-512",
-		},
-		{
-			name:          "sasl_aws_iam_session_name must be provided when AWS IAM role authentication is enabled",
-			uri:           "kafka://nope/?sasl_enabled=true&sasl_mechanism=AWS_MSK_IAM&sasl_aws_region=us-west-1&sasl_aws_iam_role_arn=foo",
-			expectedError: "sasl_aws_iam_session_name must be provided when SASL is enabled using mechanism AWS_MSK_IAM",
-		},
-		{
-			name:          "sasl_aws_iam_role_arn must be provided when AWS IAM role authentication is enabled",
-			uri:           "kafka://nope/?sasl_enabled=true&sasl_mechanism=AWS_MSK_IAM&sasl_aws_region=us-west-1&sasl_aws_iam_session_name=foo",
-			expectedError: "sasl_aws_iam_role_arn must be provided when SASL is enabled using mechanism AWS_MSK_IAM",
-		},
-		{
-			name:          "sasl_aws_region must be provided when AWS IAM role authentication is enabled",
-			uri:           "kafka://nope/?sasl_enabled=true&sasl_mechanism=AWS_MSK_IAM&sasl_aws_iam_session_name=foo&sasl_aws_iam_role_arn=foo",
-			expectedError: "sasl_aws_region must be provided when SASL is enabled using mechanism AWS_MSK_IAM",
+			expectedError: "param sasl_mechanism must be one of OAUTHBEARER, PLAIN, SCRAM-SHA-256, or SCRAM-SHA-512",
 		},
 		// confluent-cloud scheme tests
 		{
@@ -344,7 +330,6 @@ func TestChangefeedExternalConnections(t *testing.T) {
 		// kafka scheme external connections
 		sqlDB.Exec(t, `CREATE EXTERNAL CONNECTION nope AS 'kafka://nope'`)
 		sqlDB.Exec(t, `CREATE EXTERNAL CONNECTION "nope-with-params" AS 'kafka://nope/?tls_enabled=true&insecure_tls_skip_verify=true&topic_name=foo'`)
-		sqlDB.Exec(t, `CREATE EXTERNAL CONNECTION "nope-with-aws-iam-auth" AS 'kafka://nope/?sasl_enabled=true&sasl_mechanism=AWS_MSK_IAM&sasl_aws_region=us-west-1&sasl_aws_iam_role_arn=foo&sasl_aws_iam_session_name=bar'`)
 		// confluent-cloud external connections
 		sqlDB.Exec(t, `CREATE EXTERNAL CONNECTION confluent1 AS 'confluent-cloud://nope?api_key=fee&api_secret=bar'`)
 		sqlDB.Exec(t, `CREATE EXTERNAL CONNECTION confluent2 AS 'confluent-cloud://nope?api_key=fee&api_secret=bar&`+

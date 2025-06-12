@@ -15,24 +15,22 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/mixedversion"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/task"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
 	// storeToRangeFactor is the number of ranges to create per store in the
 	// cluster.
-	storeToRangeFactor = 10
+	storeToRangeFactor = 5
 	// meanCPUTolerance is the tolerance applied when checking normalized (0-100)
 	// CPU percent utilization of stores against the mean. In multi-store tests,
 	// the same CPU utilization will be reported for stores on the same node. The
@@ -102,9 +100,8 @@ func registerRebalanceLoad(r registry.Registry) {
 				mixedversion.ClusterSettingOption(
 					install.ClusterSettingsOption(settings.ClusterSettings),
 				),
-				// Only use the latest version of each release to work around #127029.
-				mixedversion.AlwaysUseLatestPredecessors,
-				mixedversion.MinimumSupportedVersion("v23.2.0"),
+				// Test currently fails in shared-process deployments, see: #129389.
+				mixedversion.EnabledDeploymentModes(mixedversion.SystemOnlyDeployment),
 			)
 			mvt.OnStartup("maybe enable split/scatter on tenant",
 				func(ctx context.Context, l *logger.Logger, r *rand.Rand, h *mixedversion.Helper) error {
@@ -112,10 +109,8 @@ func registerRebalanceLoad(r registry.Registry) {
 				})
 			mvt.InMixedVersion("rebalance load run",
 				func(ctx context.Context, l *logger.Logger, r *rand.Rand, h *mixedversion.Helper) error {
-					binary := uploadCockroach(ctx, t, c, appNode, h.System.FromVersion)
 					return rebalanceByLoad(
-						ctx, t, l, c, maxDuration, concurrency, appNode,
-						fmt.Sprintf("%s workload", binary), numStores, numNodes)
+						ctx, t, l, c, rebalanceMode, maxDuration, concurrency, appNode, numStores, numNodes)
 				})
 			mvt.Run()
 		} else {
@@ -123,8 +118,8 @@ func registerRebalanceLoad(r registry.Registry) {
 			// a failure it will be available in the artifacts.
 			c.Start(ctx, t.L(), startOpts, settings, roachNodes)
 			require.NoError(t, rebalanceByLoad(
-				ctx, t, t.L(), c, maxDuration,
-				concurrency, appNode, "./cockroach workload", numStores, numNodes,
+				ctx, t, t.L(), c, rebalanceMode, maxDuration,
+				concurrency, appNode, numStores, numNodes,
 			))
 		}
 
@@ -149,13 +144,11 @@ func registerRebalanceLoad(r registry.Registry) {
 	)
 	r.Add(
 		registry.TestSpec{
-			Name:    `rebalance/by-load/leases/mixed-version`,
-			Owner:   registry.OwnerKV,
-			Cluster: r.MakeClusterSpec(4), // the last node is just used to generate load
-			// Disabled on IBM because s390x is only built on master and mixed-version
-			// is impossible to test as of 05/2025.
-			CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
-			Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
+			Name:             `rebalance/by-load/leases/mixed-version`,
+			Owner:            registry.OwnerKV,
+			Cluster:          r.MakeClusterSpec(4), // the last node is just used to generate load
+			CompatibleClouds: registry.AllExceptAWS,
+			Suites:           registry.Suites(registry.Nightly),
 			Randomized:       true,
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 				if c.IsLocal() {
@@ -187,13 +180,11 @@ func registerRebalanceLoad(r registry.Registry) {
 	)
 	r.Add(
 		registry.TestSpec{
-			Name:    `rebalance/by-load/replicas/mixed-version`,
-			Owner:   registry.OwnerKV,
-			Cluster: r.MakeClusterSpec(7), // the last node is just used to generate load
-			// Disabled on IBM because s390x is only built on master and mixed-version
-			// is impossible to test as of 05/2025.
-			CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
-			Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
+			Name:             `rebalance/by-load/replicas/mixed-version`,
+			Owner:            registry.OwnerKV,
+			Cluster:          r.MakeClusterSpec(7), // the last node is just used to generate load
+			CompatibleClouds: registry.AllExceptAWS,
+			Suites:           registry.Suites(registry.Nightly),
 			Randomized:       true,
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 				if c.IsLocal() {
@@ -206,18 +197,12 @@ func registerRebalanceLoad(r registry.Registry) {
 			},
 		},
 	)
-
+	cSpec := r.MakeClusterSpec(7, spec.SSD(2)) // the last node is just used to generate load
 	r.Add(
 		registry.TestSpec{
-			Name:  `rebalance/by-load/replicas/ssds=2`,
-			Owner: registry.OwnerKV,
-			Cluster: r.MakeClusterSpec(7,
-				// When using ssd > 1, only local SSDs on AMD64 arch are compatible
-				// currently. See #121951.
-				spec.SSD(2),
-				spec.Arch(vm.ArchAMD64),
-				spec.PreferLocalSSD(),
-			), // the last node is just used to generate load
+			Name:             `rebalance/by-load/replicas/ssds=2`,
+			Owner:            registry.OwnerKV,
+			Cluster:          cSpec,
 			CompatibleClouds: registry.OnlyGCE,
 			Suites:           registry.Suites(registry.Nightly),
 			Leases:           registry.MetamorphicLeases,
@@ -238,38 +223,39 @@ func rebalanceByLoad(
 	t test.Test,
 	l *logger.Logger,
 	c cluster.Cluster,
+	rebalanceMode string,
 	maxDuration time.Duration,
 	concurrency int,
 	appNode option.NodeListOption,
-	workloadPath string,
 	numStores, numNodes int,
 ) error {
-
 	// We want each store to end up with approximately storeToRangeFactor
 	// (factor) leases such that the CPU load is evenly spread, e.g.
 	//   (n * factor) -1 splits = factor * n ranges = factor leases per store
 	// Note that we only assert on the CPU of each store w.r.t the mean, not
 	// the lease count.
 	splits := (numStores * storeToRangeFactor) - 1
-	c.Run(ctx, option.WithNodes(appNode), fmt.Sprintf("%s init kv --drop --splits=%d {pgurl:1}", workloadPath, splits))
+	c.Run(ctx, option.WithNodes(appNode), fmt.Sprintf("./cockroach workload init kv --drop --splits=%d {pgurl:1}", splits))
 
 	db := c.Conn(ctx, l, 1)
 	defer db.Close()
 
-	require.NoError(t, roachtestutil.WaitFor3XReplication(ctx, l, db))
+	require.NoError(t, WaitFor3XReplication(ctx, t, l, db))
+
+	var m *errgroup.Group
+	m, ctx = errgroup.WithContext(ctx)
 
 	// Enable us to exit out of workload early when we achieve the desired CPU
 	// balance. This drastically shortens the duration of the test in the
 	// common case.
 	ctx, cancel := context.WithCancel(ctx)
-	m := t.NewErrorGroup(task.WithContext(ctx))
 
-	m.Go(func(ctx context.Context, l *logger.Logger) error {
+	m.Go(func() error {
 		l.Printf("starting load generator")
 		err := c.RunE(ctx, option.WithNodes(appNode), fmt.Sprintf(
-			"%s run kv --read-percent=95 --tolerate-errors --concurrency=%d "+
+			"./cockroach workload run kv --read-percent=95 --tolerate-errors --concurrency=%d "+
 				"--duration=%v {pgurl:1-%d}",
-			workloadPath, concurrency, maxDuration, numNodes))
+			concurrency, maxDuration, numNodes))
 		if errors.Is(ctx.Err(), context.Canceled) {
 			// We got canceled either because CPU balance was achieved or the
 			// other worker hit an error. In either case, it's not this worker's
@@ -277,9 +263,9 @@ func rebalanceByLoad(
 			return nil
 		}
 		return err
-	}, task.Name("load-generator"))
+	})
 
-	m.Go(func(ctx context.Context, l *logger.Logger) error {
+	m.Go(func() error {
 		l.Printf("checking for CPU balance")
 
 		storeCPUFn, err := makeStoreCPUFn(ctx, t, l, c, numNodes, numStores)
@@ -319,8 +305,8 @@ func rebalanceByLoad(
 			}
 		}
 		return errors.Errorf("CPU not evenly balanced after timeout: %s", reason)
-	}, task.Name("cpu-balance"))
-	return m.WaitE()
+	})
+	return m.Wait()
 }
 
 // makeStoreCPUFn returns a function which can be called to gather the CPU of
@@ -329,7 +315,7 @@ func rebalanceByLoad(
 func makeStoreCPUFn(
 	ctx context.Context, t test.Test, l *logger.Logger, c cluster.Cluster, numNodes, numStores int,
 ) (func(ctx context.Context) ([]float64, error), error) {
-	adminURLs, err := c.ExternalAdminUIAddr(ctx, l, c.Node(1), option.VirtualClusterName(install.SystemInterfaceName))
+	adminURLs, err := c.ExternalAdminUIAddr(ctx, l, c.Node(1))
 	if err != nil {
 		return nil, err
 	}

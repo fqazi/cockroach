@@ -51,7 +51,8 @@ const (
 var queueGuaranteedProcessingTimeBudget = settings.RegisterDurationSetting(
 	settings.ApplicationLevel,
 	"kv.queue.process.guaranteed_time_budget",
-	"the guaranteed duration before which the processing of a queue may time out",
+	"the guaranteed duration before which the processing of a queue may "+
+		"time out",
 	defaultProcessTimeout,
 	settings.WithVisibility(settings.Reserved),
 )
@@ -328,6 +329,10 @@ type queueConfig struct {
 	successes *metric.Counter
 	// failures is a counter of replicas which failed processing.
 	failures *metric.Counter
+	// storeFailures is a counter of replicas that failed processing due to a
+	// StoreBenignError. These errors must be counted independently of the above
+	// failures metric.
+	storeFailures *metric.Counter
 	// pending is a gauge measuring current replica count pending.
 	pending *metric.Gauge
 	// processingNanos is a counter measuring total nanoseconds spent processing
@@ -598,22 +603,18 @@ func (bq *baseQueue) Async(
 		log.InfofDepth(ctx, 2, "%s", redact.Safe(opName))
 	}
 	opName += " (" + bq.name + ")"
-	bgCtx, hdl, err := bq.store.stopper.GetHandle(
-		bq.AnnotateCtx(context.Background()), stop.TaskOpts{
+	bgCtx := bq.AnnotateCtx(context.Background())
+	if err := bq.store.stopper.RunAsyncTaskEx(bgCtx,
+		stop.TaskOpts{
 			TaskName:   opName,
 			Sem:        bq.addOrMaybeAddSem,
 			WaitForSem: wait,
-		})
-	if err != nil {
-		if bq.addLogN.ShouldLog() {
-			log.Infof(ctx, "rate limited in %s: %s", redact.Safe(opName), err)
-		}
-		return
+		},
+		func(ctx context.Context) {
+			fn(ctx, baseQueueHelper{bq})
+		}); err != nil && bq.addLogN.ShouldLog() {
+		log.Infof(ctx, "rate limited in %s: %s", redact.Safe(opName), err)
 	}
-	go func(ctx context.Context) {
-		defer hdl.Activate(ctx).Release(ctx)
-		fn(ctx, baseQueueHelper{bq})
-	}(bgCtx)
 }
 
 // MaybeAddAsync offers the replica to the queue. The queue will only process a
@@ -690,7 +691,7 @@ func (bq *baseQueue) maybeAdd(ctx context.Context, repl replicaInQueue, now hlc.
 			return
 		}
 		if hasExternal {
-			log.VInfof(ctx, 1, "skipping %s for %s because it has external bytes", bq.name, realRepl)
+			log.Infof(ctx, "skipping %s for %s because it has external bytes", bq.name, realRepl)
 			return
 		}
 	}
@@ -909,6 +910,7 @@ func (bq *baseQueue) processOneAsyncAndReleaseSem(
 	// it is no longer processable, return immediately.
 	if _, err := bq.replicaCanBeProcessed(ctx, repl, false /*acquireLeaseIfNeeded */); err != nil {
 		bq.finishProcessingReplica(ctx, stopper, repl, err)
+		log.Infof(ctx, "%s: skipping %d since replica can't be processed %v", taskName, repl.ReplicaID(), err)
 		<-bq.processSem
 		return
 	}
@@ -1073,9 +1075,7 @@ func (bq *baseQueue) replicaCanBeProcessed(
 			st := repl.CurrentLeaseStatus(ctx)
 			if st.IsValid() && !st.OwnedBy(repl.StoreID()) {
 				log.VEventf(ctx, 1, "needs lease; not adding: %v", st.Lease)
-				// NB: this is an expected error, so make sure it doesn't get
-				// logged loudly.
-				return nil, benignerror.New(errors.Newf("needs lease, not adding: %v", st.Lease))
+				return nil, errors.Newf("needs lease, not adding: %v", st.Lease)
 			}
 		}
 	}
@@ -1169,12 +1169,17 @@ func (bq *baseQueue) finishProcessingReplica(
 	// Handle failures.
 	if err != nil {
 		benign := benignerror.IsBenign(err)
+		storeBenign := benignerror.IsStoreBenign(err)
 
 		// Increment failures metric.
 		//
 		// TODO(tschottdorf): once we start asserting zero failures in tests
 		// (and production), move benign failures into a dedicated category.
 		bq.failures.Inc(1)
+		if storeBenign {
+			bq.storeFailures.Inc(1)
+			requeue = true
+		}
 
 		// Determine whether a failure is a purgatory error. If it is, add
 		// the failing replica to purgatory. Note that even if the item was

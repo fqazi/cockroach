@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/upgrade"
-	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
@@ -34,22 +33,14 @@ import (
 func bootstrapSystem(
 	ctx context.Context, cv clusterversion.ClusterVersion, deps upgrade.SystemDeps,
 ) error {
-	var skipSomeSteps bool
-	if deps.TestingKnobs != nil && deps.TestingKnobs.SkipSomeUpgradeSteps {
-		skipSomeSteps = true
-	}
 	for _, u := range []struct {
-		name            string
-		fn              upgrade.SystemUpgradeFunc
-		skippableInTest bool
+		name string
+		fn   upgrade.SystemUpgradeFunc
 	}{
-		{"initialize cluster version", populateVersionSetting, false},
-		{"configure key visualizer", keyVisualizerTablesMigration, true},
+		{"initialize cluster version", populateVersionSetting},
+		{"configure key visualizer", keyVisualizerTablesMigration},
+		{"configure sql activity table TTLs", sqlStatsTTLChange},
 	} {
-		if skipSomeSteps && u.skippableInTest {
-			log.Infof(ctx, "skipping system bootstrap step %q", u.name)
-			continue
-		}
 		log.Infof(ctx, "executing system bootstrap step %q", u.name)
 		if err := u.fn(ctx, cv, deps); err != nil {
 			return errors.Wrapf(err, "system bootstrap step %q failed", u.name)
@@ -67,33 +58,19 @@ func bootstrapSystem(
 func bootstrapCluster(
 	ctx context.Context, cv clusterversion.ClusterVersion, deps upgrade.TenantDeps,
 ) error {
-	var skipSomeSteps bool
-	if deps.TestingKnobs != nil && deps.TestingKnobs.SkipSomeUpgradeSteps {
-		skipSomeSteps = true
-	}
 	for _, u := range []struct {
-		name            string
-		fn              upgrade.TenantUpgradeFunc
-		skippableInTest bool
+		name string
+		fn   upgrade.TenantUpgradeFunc
 	}{
-		{"add users and roles", addRootUser, false},
-		{"enable diagnostics reporting", optInToDiagnosticsStatReporting, true},
-		{"initialize the cluster.secret setting", initializeClusterSecret, true},
-		{"update system.locations with default location data", updateSystemLocationData, true},
-		{"create default databases", createDefaultDbs, false},
-		{"create jobs metrics polling job", createJobsMetricsPollingJob, true},
-		{"create sql activity updater job", createActivityUpdateJobMigration, true},
-		{"create mvcc stats job", createMVCCStatisticsJob, true},
-		{"create update cached table metadata job", createUpdateTableMetadataCacheJob, true},
-		{"maybe initialize replication standby read-only catalog", maybeSetupPCRStandbyReader, true},
-		{"create sql activity flush job", createSqlActivityFlushJob, true},
-		{"configure sql activity table TTLs", sqlStatsTTLChange, true},
+		{"add users and roles", addRootUser},
+		{"enable diagnostics reporting", optInToDiagnosticsStatReporting},
+		{"initialize the cluster.secret setting", initializeClusterSecret},
+		{"update system.locations with default location data", updateSystemLocationData},
+		{"create default databases", createDefaultDbs},
+		{"create jobs metrics polling job", createJobsMetricsPollingJob},
+		{"create sql activity updater job", createActivityUpdateJobMigration},
+		{"create mvcc stats job", createMVCCStatisticsJob},
 	} {
-
-		if skipSomeSteps && u.skippableInTest {
-			log.Infof(ctx, "skipping bootstrap step %q", u.name)
-			continue
-		}
 		log.Infof(ctx, "executing bootstrap step %q", u.name)
 		if err := u.fn(ctx, cv, deps); err != nil {
 			return errors.Wrapf(err, "bootstrap step %q failed", u.name)
@@ -161,19 +138,13 @@ func addRootToAdminRole(ctx context.Context, txn isql.Txn) error {
 func optInToDiagnosticsStatReporting(
 	ctx context.Context, _ clusterversion.ClusterVersion, deps upgrade.TenantDeps,
 ) error {
-	// N.B. The default for `diagnostics.reporting.enabled` is `true` as of [1].
-	// [1] https://github.com/cockroachdb/cockroach/pull/131097
-	optIn := true
 	// We're opting-out of the automatic opt-in. See discussion in updates.go.
 	if cluster.TelemetryOptOut {
-		optIn = false
+		return nil
 	}
 	_, err := deps.InternalExecutor.Exec(
 		ctx, "optInToDiagnosticsStatReporting", nil, /* txn */
-		fmt.Sprintf(`SET CLUSTER SETTING diagnostics.reporting.enabled = %t`, optIn))
-	if errors.Is(err, cluster.SettingOverrideErr) {
-		return nil
-	}
+		`SET CLUSTER SETTING diagnostics.reporting.enabled = true`)
 	return err
 }
 
@@ -261,12 +232,6 @@ func createDefaultDbs(
 	// already.
 	const createDbStmt = `CREATE DATABASE IF NOT EXISTS "%s" WITH OWNER root`
 
-	id, _, _ := readerTenantInfo(ctx, deps)
-	if id.IsSet() {
-		// Don't create the default databases for read from standby tenants.
-		return nil
-	}
-
 	var err error
 	for _, dbName := range []string{catalogkeys.DefaultDatabaseName, catalogkeys.PgDatabaseName} {
 		stmt := fmt.Sprintf(createDbStmt, dbName)
@@ -277,22 +242,4 @@ func createDefaultDbs(
 		}
 	}
 	return nil
-}
-
-// readerTenantInfo returns the tenant ID and timestamp if we're spinning up a
-// read from standby tenant.
-func readerTenantInfo(
-	ctx context.Context, d upgrade.TenantDeps,
-) (roachpb.TenantID, hlc.Timestamp, error) {
-	if d.TenantInfoAccessor == nil {
-		return roachpb.TenantID{}, hlc.Timestamp{}, nil
-	}
-	id, ts, err := d.TenantInfoAccessor.ReadFromTenantInfo(ctx)
-	if err != nil {
-		return roachpb.TenantID{}, hlc.Timestamp{}, err
-	}
-	if !id.IsSet() {
-		return roachpb.TenantID{}, hlc.Timestamp{}, nil
-	}
-	return id, ts, nil
 }

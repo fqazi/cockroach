@@ -51,6 +51,7 @@ pending-dispatch from=n2 to=n1
 range=r1 pri=low-pri store=s1 up-to-log-position=log-position=6/21
 range=r1 pri=normal-pri store=s1 up-to-log-position=log-position=6/20
 
+
 # Mark the client-initiated stream from n2->n1 as idle.
 client-mark-idle from=n2 to=n1
 ----

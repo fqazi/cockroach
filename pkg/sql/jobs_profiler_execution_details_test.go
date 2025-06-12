@@ -115,7 +115,7 @@ func TestShowJobsWithExecutionDetails(t *testing.T) {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute*2)
 	defer cancel()
 
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	params.Knobs.JobsTestingKnobs = jobs.NewTestingKnobsWithShortIntervals()
 	defer jobs.ResetConstructors()()
 	s, sqlDB, _ := serverutils.StartServer(t, params)
@@ -123,18 +123,18 @@ func TestShowJobsWithExecutionDetails(t *testing.T) {
 
 	runner := sqlutils.MakeSQLRunner(sqlDB)
 
-	defer jobs.TestingRegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+	jobs.RegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 		return fakeExecResumer{
 			OnResume: func(ctx context.Context) error {
 				p := sql.PhysicalPlan{}
-				infra := physicalplan.NewPhysicalInfrastructure(uuid.MakeV4(), base.SQLInstanceID(1))
+				infra := physicalplan.NewPhysicalInfrastructure(uuid.FastMakeV4(), base.SQLInstanceID(1))
 				p.PhysicalInfrastructure = infra
 				jobsprofiler.StorePlanDiagram(ctx, s.Stopper(), &p, s.InternalDB().(isql.DB), j.ID())
 				checkForPlanDiagrams(ctx, t, s.InternalDB().(isql.DB), j.ID(), 1)
 				return nil
 			},
 		}
-	}, jobs.UsesTenantCostControl)()
+	}, jobs.UsesTenantCostControl)
 
 	runner.Exec(t, `CREATE TABLE t (id INT)`)
 	runner.Exec(t, `INSERT INTO t SELECT generate_series(1, 100)`)
@@ -159,7 +159,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute*2)
 	defer cancel()
 
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	params.Knobs.JobsTestingKnobs = jobs.NewTestingKnobsWithShortIntervals()
 	defer jobs.ResetConstructors()()
 	s, sqlDB, _ := serverutils.StartServer(t, params)
@@ -174,11 +174,11 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 	defer close(isRunning)
 	continueRunning := make(chan struct{})
 	t.Run("read/write DistSQL diagram", func(t *testing.T) {
-		defer jobs.TestingRegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+		jobs.RegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 			return fakeExecResumer{
 				OnResume: func(ctx context.Context) error {
 					p := sql.PhysicalPlan{}
-					infra := physicalplan.NewPhysicalInfrastructure(uuid.MakeV4(), base.SQLInstanceID(1))
+					infra := physicalplan.NewPhysicalInfrastructure(uuid.FastMakeV4(), base.SQLInstanceID(1))
 					p.PhysicalInfrastructure = infra
 					jobsprofiler.StorePlanDiagram(ctx, s.Stopper(), &p, s.InternalDB().(isql.DB), j.ID())
 					checkForPlanDiagrams(ctx, t, s.InternalDB().(isql.DB), j.ID(), 1)
@@ -187,7 +187,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 					return nil
 				},
 			}
-		}, jobs.UsesTenantCostControl)()
+		}, jobs.UsesTenantCostControl)
 
 		var importJobID int
 		runner.QueryRow(t, `IMPORT INTO t CSV DATA ('nodelocal://1/foo') WITH DETACHED`).Scan(&importJobID)
@@ -205,7 +205,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 		continueCh := make(chan struct{})
 		defer close(blockCh)
 		defer close(continueCh)
-		defer jobs.TestingRegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+		jobs.RegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 			return fakeExecResumer{
 				OnResume: func(ctx context.Context) error {
 					pprof.Do(ctx, pprof.Labels("foo", "bar"), func(ctx2 context.Context) {
@@ -215,7 +215,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 					return nil
 				},
 			}
-		}, jobs.UsesTenantCostControl)()
+		}, jobs.UsesTenantCostControl)
 		var importJobID int
 		runner.QueryRow(t, `IMPORT INTO t CSV DATA ('nodelocal://1/foo') WITH DETACHED`).Scan(&importJobID)
 		<-blockCh
@@ -224,18 +224,8 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 		require.NoError(t, err)
 		continueCh <- struct{}{}
 		jobutils.WaitForJobToSucceed(t, runner, jobspb.JobID(importJobID))
-		expectedSubstrings := []string{
-			fmt.Sprintf("labels: {\"foo\":\"bar\", \"job\":\"IMPORT id=%d\", \"n\":\"1\"}", importJobID),
-			"github.com/cockroachdb/cockroach/pkg/sql_test.fakeExecResumer.Resume",
-		}
-		goroutinesStr := string(goroutines)
-		for _, substr := range expectedSubstrings {
-			if s.DeploymentMode().IsExternal() {
-				require.NotContains(t, goroutinesStr, substr)
-			} else {
-				require.Contains(t, goroutinesStr, substr)
-			}
-		}
+		require.True(t, strings.Contains(string(goroutines), fmt.Sprintf("labels: {\"foo\":\"bar\", \"job\":\"IMPORT id=%d\", \"n\":\"1\"}", importJobID)))
+		require.True(t, strings.Contains(string(goroutines), "github.com/cockroachdb/cockroach/pkg/sql_test.fakeExecResumer.Resume"))
 	})
 
 	t.Run("execution details for invalid job ID", func(t *testing.T) {
@@ -243,7 +233,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 	})
 
 	t.Run("read/write terminal trace", func(t *testing.T) {
-		defer jobs.TestingRegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+		jobs.RegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 			return fakeExecResumer{
 				OnResume: func(ctx context.Context) error {
 					sp := tracing.SpanFromContext(ctx)
@@ -252,7 +242,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 					return nil
 				},
 			}
-		}, jobs.UsesTenantCostControl)()
+		}, jobs.UsesTenantCostControl)
 		var importJobID int
 		runner.QueryRow(t, `IMPORT INTO t CSV DATA ('nodelocal://1/foo') WITH DETACHED`).Scan(&importJobID)
 		jobutils.WaitForJobToSucceed(t, runner, jobspb.JobID(importJobID))
@@ -272,7 +262,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 		continueCh := make(chan struct{})
 		defer close(blockCh)
 		defer close(continueCh)
-		defer jobs.TestingRegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+		jobs.RegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 			return fakeExecResumer{
 				OnResume: func(ctx context.Context) error {
 					_, childSp := tracing.ChildSpan(ctx, "child")
@@ -282,7 +272,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 					return nil
 				},
 			}
-		}, jobs.UsesTenantCostControl)()
+		}, jobs.UsesTenantCostControl)
 		var importJobID int
 		runner.QueryRow(t, `IMPORT INTO t CSV DATA ('nodelocal://1/foo') WITH DETACHED`).Scan(&importJobID)
 		<-blockCh
@@ -333,7 +323,7 @@ func TestListProfilerExecutionDetails(t *testing.T) {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute*2)
 	defer cancel()
 
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	params.Knobs.JobsTestingKnobs = jobs.NewTestingKnobsWithShortIntervals()
 	defer jobs.ResetConstructors()()
 	s, sqlDB, _ := serverutils.StartServer(t, params)
@@ -347,11 +337,11 @@ func TestListProfilerExecutionDetails(t *testing.T) {
 	defer close(writtenDiagram)
 	continueCh := make(chan struct{})
 	defer close(continueCh)
-	defer jobs.TestingRegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+	jobs.RegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 		return fakeExecResumer{
 			OnResume: func(ctx context.Context) error {
 				p := sql.PhysicalPlan{}
-				infra := physicalplan.NewPhysicalInfrastructure(uuid.MakeV4(), base.SQLInstanceID(1))
+				infra := physicalplan.NewPhysicalInfrastructure(uuid.FastMakeV4(), base.SQLInstanceID(1))
 				p.PhysicalInfrastructure = infra
 				jobsprofiler.StorePlanDiagram(ctx, s.Stopper(), &p, s.InternalDB().(isql.DB), j.ID())
 				checkForPlanDiagrams(ctx, t, s.InternalDB().(isql.DB), j.ID(), expectedDiagrams)
@@ -363,7 +353,7 @@ func TestListProfilerExecutionDetails(t *testing.T) {
 				return nil
 			},
 		}
-	}, jobs.UsesTenantCostControl)()
+	}, jobs.UsesTenantCostControl)
 
 	runner.Exec(t, `CREATE TABLE t (id INT)`)
 	runner.Exec(t, `INSERT INTO t SELECT generate_series(1, 100)`)
@@ -376,31 +366,18 @@ func TestListProfilerExecutionDetails(t *testing.T) {
 
 		runner.Exec(t, `SELECT crdb_internal.request_job_execution_details($1)`, importJobID)
 		files := listExecutionDetails(t, s, jobspb.JobID(importJobID))
-
-		patterns := []string{
-			".*/distsql-plan.html",
-		}
-		if !s.DeploymentMode().IsExternal() {
-			patterns = append(patterns, ".*/job-goroutines.txt")
-		}
-		patterns = append(patterns, ".*/trace.zip")
-
-		require.Len(t, files, len(patterns))
-		for i, pattern := range patterns {
-			require.Regexp(t, pattern, files[i])
-		}
+		require.Len(t, files, 3)
+		require.Regexp(t, "distsql\\..*\\.html", files[0])
+		require.Regexp(t, "goroutines\\..*\\.txt", files[1])
+		require.Regexp(t, "trace\\..*\\.zip", files[2])
 
 		continueCh <- struct{}{}
 		jobutils.WaitForJobToPause(t, runner, jobspb.JobID(importJobID))
 
 		testutils.SucceedsSoon(t, func() error {
 			files = listExecutionDetails(t, s, jobspb.JobID(importJobID))
-			expectedCount := 5
-			if s.DeploymentMode().IsExternal() {
-				expectedCount--
-			}
-			if len(files) != expectedCount {
-				return errors.Newf("expected %d files, got %d: %v", expectedCount, len(files), files)
+			if len(files) != 5 {
+				return errors.Newf("expected 5 files, got %d: %v", len(files), files)
 			}
 			return nil
 		})
@@ -416,32 +393,21 @@ func TestListProfilerExecutionDetails(t *testing.T) {
 		jobutils.WaitForJobToSucceed(t, runner, jobspb.JobID(importJobID))
 		testutils.SucceedsSoon(t, func() error {
 			files = listExecutionDetails(t, s, jobspb.JobID(importJobID))
-			expectedCount := 10
-			if s.DeploymentMode().IsExternal() {
-				expectedCount = 8
-			}
-			if len(files) != expectedCount {
-				return errors.Newf("expected %d files, got %d: %v", expectedCount, len(files), files)
+			if len(files) != 10 {
+				return errors.Newf("expected 10 files, got %d: %v", len(files), files)
 			}
 			return nil
 		})
-		patterns = []string{
-			".*/distsql-plan.html",
-			".*/distsql-plan.html",
-		}
-		if !s.DeploymentMode().IsExternal() {
-			patterns = append(patterns, ".*/job-goroutines.txt", ".*/job-goroutines.txt")
-		}
-		patterns = append(patterns,
-			"[0-9_.]*/resumer-trace/.*~cockroach\\.sql\\.jobs\\.jobspb\\.TraceData\\.binpb",
-			"[0-9_.]*/resumer-trace/.*~cockroach\\.sql\\.jobs\\.jobspb\\.TraceData\\.binpb",
-			"[0-9_.]*/resumer-trace/.*~cockroach\\.sql\\.jobs\\.jobspb\\.TraceData\\.binpb.txt",
-			"[0-9_.]*/resumer-trace/.*~cockroach\\.sql\\.jobs\\.jobspb\\.TraceData\\.binpb.txt",
-		)
-		patterns = append(patterns, ".*/trace.zip", ".*/trace.zip")
-		for i, pattern := range patterns {
-			require.Regexp(t, pattern, files[i])
-		}
+		require.Regexp(t, "[0-9]/resumer-trace/.*~cockroach\\.sql\\.jobs\\.jobspb\\.TraceData\\.binpb", files[0])
+		require.Regexp(t, "[0-9]/resumer-trace/.*~cockroach\\.sql\\.jobs\\.jobspb\\.TraceData\\.binpb.txt", files[1])
+		require.Regexp(t, "[0-9]/resumer-trace/.*~cockroach\\.sql\\.jobs\\.jobspb\\.TraceData\\.binpb", files[2])
+		require.Regexp(t, "[0-9]/resumer-trace/.*~cockroach\\.sql\\.jobs\\.jobspb\\.TraceData\\.binpb.txt", files[3])
+		require.Regexp(t, "distsql\\..*\\.html", files[4])
+		require.Regexp(t, "distsql\\..*\\.html", files[5])
+		require.Regexp(t, "goroutines\\..*\\.txt", files[6])
+		require.Regexp(t, "goroutines\\..*\\.txt", files[7])
+		require.Regexp(t, "trace\\..*\\.zip", files[8])
+		require.Regexp(t, "trace\\..*\\.zip", files[9])
 	})
 }
 
@@ -467,9 +433,8 @@ func listExecutionDetails(
 
 	edResp := serverpb.ListJobProfilerExecutionDetailsResponse{}
 	require.NoError(t, protoutil.Unmarshal(body, &edResp))
-	// Sort the responses with the variable date/time digits in the prefix removed.
 	sort.Slice(edResp.Files, func(i, j int) bool {
-		return strings.TrimLeft(edResp.Files[i], "0123456789_.") < strings.TrimLeft(edResp.Files[j], "0123456789_.")
+		return edResp.Files[i] < edResp.Files[j]
 	})
 	return edResp.Files
 }

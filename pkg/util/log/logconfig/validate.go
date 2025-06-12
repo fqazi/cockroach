@@ -372,10 +372,6 @@ func (c *Config) validateFileSinkConfig(fc *FileSinkConfig) error {
 			return errors.Newf(`Unable to use "buffered-writes" in conjunction with a "buffering" configuration. ` +
 				`These configuration options are mutually exclusive.`)
 		}
-		if *fc.Auditable {
-			return errors.Newf(`File-based audit logging cannot coexist with buffering configuration. ` +
-				`Disable either the buffering configuration ("buffering") or auditable log ("auditable") configuration.`)
-		}
 		// To preserve the format of log files, avoid additional formatting in the
 		// buffering configuration.
 		fmtNone := BufferFmtNone

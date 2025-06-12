@@ -3,35 +3,32 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import React from "react";
+import { cockroach } from "src/js/protos";
+import { getKeyVisualizerSamples } from "src/util/api";
+import KeyVisualizer from "src/views/keyVisualizer/keyVisualizer";
+import {
+  KeyVisSample,
+  KeyVisualizerProps,
+  SampleBucket,
+} from "src/views/keyVisualizer/interfaces";
+import { CanvasHeight, XAxisPadding } from "./constants";
+import { AdminUIState } from "src/redux/state";
+import { connect } from "react-redux";
 import {
   TimeScale,
   TimeScaleDropdown,
   TimeScaleOptions,
   util,
 } from "@cockroachlabs/cluster-ui";
-import moment from "moment-timezone";
-import React from "react";
-import { connect } from "react-redux";
-import { RouteComponentProps } from "react-router-dom";
-
-import { cockroach } from "src/js/protos";
-import { refreshSettings } from "src/redux/apiReducers";
 import { selectClusterSettings } from "src/redux/clusterSettings";
-import { AdminUIState } from "src/redux/state";
 import { selectTimeScale, setTimeScale } from "src/redux/timeScale";
-import { getKeyVisualizerSamples } from "src/util/api";
-import {
-  KeyVisSample,
-  KeyVisualizerProps,
-} from "src/views/keyVisualizer/interfaces";
-import KeyVisualizer from "src/views/keyVisualizer/keyVisualizer";
-
-import { BackToAdvanceDebug } from "../reports/containers/util";
-
-import { CanvasHeight, XAxisPadding } from "./constants";
-
+import { refreshSettings } from "src/redux/apiReducers";
 import KeyVisSamplesRequest = cockroach.server.serverpb.KeyVisSamplesRequest;
 import KeyVisSamplesResponse = cockroach.server.serverpb.KeyVisSamplesResponse;
+import { BackToAdvanceDebug } from "../reports/containers/util";
+import { RouteComponentProps } from "react-router-dom";
+import moment from "moment-timezone";
 
 const EnabledSetting = "keyvisualizer.enabled";
 const IntervalSetting = "keyvisualizer.sample_interval";
@@ -158,18 +155,16 @@ function buildKeyVisualizerProps(
     );
 
   // Hex encode bucket UUIDs.
-  const keySamples: KeyVisSample[] = samples.map(sample => ({
-    ...sample,
-    buckets: sample.buckets.map(bucket => ({
-      ...bucket,
-      startKeyHex: encodeToHexString(bucket.start_key_id),
-      endKeyHex: encodeToHexString(bucket.end_key_id),
-    })),
-  }));
+  samples.forEach(sample => {
+    sample.buckets.forEach((bucket: SampleBucket) => {
+      bucket.startKeyHex = encodeToHexString(bucket.start_key_id);
+      bucket.endKeyHex = encodeToHexString(bucket.end_key_id);
+    });
+  });
 
   return {
     keys: state.response.pretty_key_for_uuid,
-    samples: keySamples,
+    samples: samples as KeyVisSample[],
     yOffsetsForKey: buildYAxis(state.response.sorted_pretty_keys),
     hottestBucket: hottestBucket(samples),
   };

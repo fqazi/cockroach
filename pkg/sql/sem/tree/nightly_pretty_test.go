@@ -4,6 +4,7 @@
 // included in the /LICENSE file.
 
 //go:build nightly
+// +build nightly
 
 package tree_test
 

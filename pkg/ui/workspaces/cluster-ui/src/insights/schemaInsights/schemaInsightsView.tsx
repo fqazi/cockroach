@@ -3,25 +3,19 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { InlineAlert } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
-import React, { useContext, useEffect, useState } from "react";
-import { useHistory } from "react-router-dom";
-
-import { Anchor } from "src/anchor";
-import sortableTableStyles from "src/sortedtable/sortedtable.module.scss";
+import React, { useContext } from "react";
 import styles from "src/statementsPage/statementsPage.module.scss";
-import { insights, usePagination } from "src/util";
-
-import { CockroachCloudContext } from "../../contexts";
+import sortableTableStyles from "src/sortedtable/sortedtable.module.scss";
+import { SortSetting } from "../../sortedtable";
+import classNames from "classnames/bind";
+import { PageConfig, PageConfigItem } from "../../pageConfig";
+import { Loading } from "../../loading";
+import { useEffect, useState } from "react";
+import { useHistory } from "react-router-dom";
 import {
   InsightsSortedTable,
   makeInsightsColumns,
 } from "../../insightsTable/insightsTable";
-import insightTableStyles from "../../insightsTable/insightsTable.module.scss";
-import { Loading } from "../../loading";
-import { PageConfig, PageConfigItem } from "../../pageConfig";
-import { Pagination } from "../../pagination";
 import {
   calculateActiveFilters,
   defaultFilters,
@@ -29,18 +23,21 @@ import {
   getFullFiltersAsStringRecord,
   SelectedFilters,
 } from "../../queryFilter";
-import { getSchemaInsightEventFiltersFromURL } from "../../queryFilter/utils";
-import { Search } from "../../search";
-import { SortSetting } from "../../sortedtable";
+import { queryByName, syncHistory } from "../../util";
 import { getTableSortFromURL } from "../../sortedtable/getTableSortFromURL";
 import { TableStatistics } from "../../tableStatistics";
-import { queryByName, syncHistory } from "../../util";
-import { InsightsError } from "../insightsErrorComponent";
 import { InsightRecommendation, SchemaInsightEventFilters } from "../types";
+import { getSchemaInsightEventFiltersFromURL } from "../../queryFilter/utils";
 import { filterSchemaInsights } from "../utils";
-
+import { Search } from "../../search";
+import { InsightsError } from "../insightsErrorComponent";
+import { Pagination } from "../../pagination";
 import { EmptySchemaInsightsTablePlaceholder } from "./emptySchemaInsightsTablePlaceholder";
-
+import { CockroachCloudContext } from "../../contexts";
+import { InlineAlert } from "@cockroachlabs/ui-components";
+import { insights, usePagination } from "src/util";
+import { Anchor } from "src/anchor";
+import insightTableStyles from "../../insightsTable/insightsTable.module.scss";
 const cx = classNames.bind(styles);
 const sortableTableCx = classNames.bind(sortableTableStyles);
 const insightTableCx = classNames.bind(insightTableStyles);

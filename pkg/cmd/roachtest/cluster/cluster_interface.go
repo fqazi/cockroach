@@ -9,7 +9,6 @@ import (
 	"context"
 	gosql "database/sql"
 	"os"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachprod/grafana"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
@@ -53,10 +52,6 @@ type Cluster interface {
 	// used by builds with runtime assertions enabled.
 	SetRandomSeed(seed int64)
 
-	// SetDefaultVirtualCluster changes the virtual cluster tests
-	// connect to by default.
-	SetDefaultVirtualCluster(string)
-
 	// Starting and stopping CockroachDB.
 
 	StartE(ctx context.Context, l *logger.Logger, startOpts option.StartOpts, settings install.ClusterSettings, opts ...option.Option) error
@@ -92,13 +87,13 @@ type Cluster interface {
 
 	// SQL clients to nodes.
 
-	Conn(ctx context.Context, l *logger.Logger, node int, opts ...option.OptionFunc) *gosql.DB
-	ConnE(ctx context.Context, l *logger.Logger, node int, opts ...option.OptionFunc) (*gosql.DB, error)
+	Conn(ctx context.Context, l *logger.Logger, node int, opts ...func(*option.ConnOption)) *gosql.DB
+	ConnE(ctx context.Context, l *logger.Logger, node int, opts ...func(*option.ConnOption)) (*gosql.DB, error)
 
 	// URLs and Ports for the Admin UI.
 
-	InternalAdminUIAddr(ctx context.Context, l *logger.Logger, node option.NodeListOption, opts ...option.OptionFunc) ([]string, error)
-	ExternalAdminUIAddr(ctx context.Context, l *logger.Logger, node option.NodeListOption, opts ...option.OptionFunc) ([]string, error)
+	InternalAdminUIAddr(ctx context.Context, l *logger.Logger, node option.NodeListOption) ([]string, error)
+	ExternalAdminUIAddr(ctx context.Context, l *logger.Logger, node option.NodeListOption) ([]string, error)
 	AdminUIPorts(ctx context.Context, l *logger.Logger, node option.NodeListOption, tenant string, sqlInstance int) ([]int, error)
 
 	// Running commands on nodes.
@@ -136,7 +131,7 @@ type Cluster interface {
 
 	Spec() spec.ClusterSpec
 	Name() string
-	Cloud() spec.Cloud
+	Cloud() string
 	IsLocal() bool
 	// IsSecure returns true iff the cluster uses TLS.
 	IsSecure() bool
@@ -158,7 +153,6 @@ type Cluster interface {
 	Install(
 		ctx context.Context, l *logger.Logger, nodes option.NodeListOption, software ...string,
 	) error
-	PopulateEtcHosts(ctx context.Context, l *logger.Logger) error
 
 	// Methods whose inclusion on this interface is purely historical.
 	// These should be removed over time.
@@ -209,6 +203,4 @@ type Cluster interface {
 
 	// GetPreemptedVMs gets any VMs that were part of the cluster but preempted by cloud vendor.
 	GetPreemptedVMs(ctx context.Context, l *logger.Logger) ([]vm.PreemptedVM, error)
-
-	RegisterClusterHook(hookName string, hookType option.ClusterHookType, timeout time.Duration, hook func(context.Context) error)
 }

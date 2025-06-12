@@ -20,7 +20,7 @@ import (
 
 func TestCheckConstraintBuilder_Build(t *testing.T) {
 	ctx := context.Background()
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 
 	// Trick to get the init() for the builtins package to run.
 	_ = builtins.AllBuiltinNames()
@@ -142,7 +142,7 @@ func TestCheckConstraintBuilder_Build(t *testing.T) {
 
 func TestCheckConstraintBuilder_DefaultName(t *testing.T) {
 	ctx := context.Background()
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 
 	database := tree.Name("foo")
 	table := tree.Name("bar")

@@ -6,19 +6,19 @@
 import React from "react";
 import { connect } from "react-redux";
 
-import { emailSubscriptionAlertLocalSetting } from "src/redux/alerts";
+import { EmailSubscriptionForm } from "src/views/shared/components/emailSubscriptionForm";
 import { signUpForEmailSubscription } from "src/redux/customAnalytics";
-import { clusterIdSelector } from "src/redux/nodes";
 import { AdminUIState } from "src/redux/state";
+import { clusterIdSelector } from "src/redux/nodes";
+
+import "./emailSubscription.styl";
 import {
   loadUIData,
   RELEASE_NOTES_SIGNUP_DISMISSED_KEY,
   saveUIData,
 } from "src/redux/uiData";
 import { dismissReleaseNotesSignupForm } from "src/redux/uiDataSelectors";
-import { EmailSubscriptionForm } from "src/views/shared/components/emailSubscriptionForm";
-
-import "./emailSubscription.styl";
+import { emailSubscriptionAlertLocalSetting } from "src/redux/alerts";
 
 type EmailSubscriptionProps = MapDispatchToProps & MapStateToProps;
 

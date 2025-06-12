@@ -1,4 +1,5 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test", "gomock")
+load("@bazel_gomock//:gomock.bzl", "gomock")
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "scexec",
@@ -16,7 +17,6 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/config/zonepb",
         "//pkg/jobs",
         "//pkg/jobs/jobspb",
         "//pkg/jobs/jobsprotectedts",
@@ -38,7 +38,6 @@ go_library(
         "//pkg/sql/schemachanger/scpb",
         "//pkg/sql/schemachanger/scplan",
         "//pkg/sql/sem/catid",
-        "//pkg/sql/sem/idxtype",
         "//pkg/sql/sessiondata",
         "//pkg/util/ctxgroup",
         "//pkg/util/hlc",
@@ -62,7 +61,6 @@ go_test(
         ":scexec",
         "//pkg/base",
         "//pkg/clusterversion",
-        "//pkg/config/zonepb",  # keep
         "//pkg/jobs",
         "//pkg/jobs/jobspb",
         "//pkg/roachpb",
@@ -78,6 +76,7 @@ go_test(
         "//pkg/sql/catalog/catenumpb",
         "//pkg/sql/catalog/descpb",
         "//pkg/sql/catalog/descs",
+        "//pkg/sql/catalog/lease",
         "//pkg/sql/catalog/nstree",
         "//pkg/sql/catalog/tabledesc",
         "//pkg/sql/isql",
@@ -91,6 +90,7 @@ go_test(
         "//pkg/sql/schemachanger/scexec/scmutationexec",  # keep
         "//pkg/sql/schemachanger/scop",
         "//pkg/sql/schemachanger/scpb",
+        "//pkg/sql/schemachanger/scplan",
         "//pkg/sql/sem/catconstants",
         "//pkg/sql/sem/catid",  # keep
         "//pkg/sql/sem/tree",
@@ -98,20 +98,16 @@ go_test(
         "//pkg/sql/types",
         "//pkg/testutils/serverutils",
         "//pkg/testutils/sqlutils",
+        "//pkg/testutils/testcluster",
+        "//pkg/util/ctxgroup",
         "//pkg/util/hlc",
         "//pkg/util/iterutil",
         "//pkg/util/leaktest",
         "//pkg/util/log",
-        "//pkg/util/mon",
         "//pkg/util/randutil",
         "//pkg/util/timeutil",
         "@com_github_golang_mock//gomock",
         "@com_github_stretchr_testify//require",
-        "//pkg/sql/sem/idxtype",
-        "//pkg/sql/catalog/lease",
-        "//pkg/sql/schemachanger/scplan",
-        "//pkg/testutils/testcluster",
-        "//pkg/util/ctxgroup",
     ],
 )
 

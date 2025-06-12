@@ -121,7 +121,6 @@ func ValidateSchemaExists(
 	schemas []Schema,
 	expectExists bool,
 ) {
-	t.Helper()
 	// First validate by reading the columns and the index.
 	for _, stmt := range stmts {
 		_, err := sqlDB.Exec(stmt)
@@ -159,7 +158,7 @@ func GetTable(
 	err := s.InternalDB().(descs.DB).DescsTxn(ctx, func(
 		ctx context.Context, txn descs.Txn,
 	) (err error) {
-		table, err = txn.Descriptors().ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Table(ctx, tableID)
+		table, err = txn.Descriptors().ByID(txn.KV()).WithoutNonPublic().Get().Table(ctx, tableID)
 		return err
 	})
 	require.NoError(t, err)

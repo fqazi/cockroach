@@ -97,49 +97,6 @@ type planNode interface {
 	// The node must not be used again after this method is called. Some nodes put
 	// themselves back into memory pools on Close.
 	Close(ctx context.Context)
-
-	InputCount() int
-	Input(i int) (planNode, error)
-	SetInput(i int, p planNode) error
-}
-
-// zeroInputPlanNode is embedded in planNode implementations that have no input
-// planNode. It implements the InputCount, Input, and SetInput methods of
-// planNode.
-type zeroInputPlanNode struct{}
-
-func (zeroInputPlanNode) InputCount() int { return 0 }
-
-func (zeroInputPlanNode) Input(i int) (planNode, error) {
-	return nil, errors.AssertionFailedf("node has no inputs")
-}
-
-func (zeroInputPlanNode) SetInput(i int, p planNode) error {
-	return errors.AssertionFailedf("node has no inputs")
-}
-
-// singleInputPlanNode is embedded in planNode implementations that have a
-// single input planNode. It implements the InputCount, Input, and SetInput
-// methods of planNode.
-type singleInputPlanNode struct {
-	input planNode
-}
-
-func (n *singleInputPlanNode) InputCount() int { return 1 }
-
-func (n *singleInputPlanNode) Input(i int) (planNode, error) {
-	if i == 0 {
-		return n.input, nil
-	}
-	return nil, errors.AssertionFailedf("input index %d is out of range", i)
-}
-
-func (n *singleInputPlanNode) SetInput(i int, p planNode) error {
-	if i == 0 {
-		n.input = p
-		return nil
-	}
-	return errors.AssertionFailedf("input index %d is out of range", i)
 }
 
 // mutationPlanNode is a specification of planNode for mutations operations
@@ -151,6 +108,9 @@ type mutationPlanNode interface {
 	// should only be called once Next returns false.
 	rowsWritten() int64
 }
+
+// PlanNode is the exported name for planNode. Useful for CCL hooks.
+type PlanNode = planNode
 
 // planNodeFastPath is implemented by nodes that can perform all their
 // work during startPlan(), possibly affecting even multiple rows. For
@@ -206,7 +166,6 @@ var _ planNode = &CreateRoleNode{}
 var _ planNode = &createViewNode{}
 var _ planNode = &delayedNode{}
 var _ planNode = &deleteNode{}
-var _ planNode = &deleteSwapNode{}
 var _ planNode = &deleteRangeNode{}
 var _ planNode = &distinctNode{}
 var _ planNode = &dropDatabaseNode{}
@@ -220,7 +179,6 @@ var _ planNode = &dropViewNode{}
 var _ planNode = &errorIfRowsNode{}
 var _ planNode = &explainVecNode{}
 var _ planNode = &filterNode{}
-var _ planNode = &endPreparedTxnNode{}
 var _ planNode = &GrantRoleNode{}
 var _ planNode = &groupNode{}
 var _ planNode = &hookFnNode{}
@@ -260,11 +218,8 @@ var _ planNode = &truncateNode{}
 var _ planNode = &unaryNode{}
 var _ planNode = &unionNode{}
 var _ planNode = &updateNode{}
-var _ planNode = &updateSwapNode{}
 var _ planNode = &upsertNode{}
 var _ planNode = &valuesNode{}
-var _ planNode = &vectorMutationSearchNode{}
-var _ planNode = &vectorSearchNode{}
 var _ planNode = &virtualTableNode{}
 var _ planNode = &windowNode{}
 var _ planNode = &zeroNode{}
@@ -471,20 +426,17 @@ type planComponents struct {
 	mainRowCount int64
 
 	// cascades contains metadata for all cascades.
-	cascades []postQueryMetadata
+	cascades []cascadeMetadata
 
 	// checkPlans contains all the plans for queries that are to be executed after
 	// the main query (for example, foreign key checks).
 	checkPlans []checkPlan
-
-	// triggers contains metadata for all triggers.
-	triggers []postQueryMetadata
 }
 
-type postQueryMetadata struct {
-	exec.PostQuery
-	// plan for the cascade/triggers. This plan is not populated upfront; it is
-	// created only when it needs to run, after the main query.
+type cascadeMetadata struct {
+	exec.Cascade
+	// plan for the cascade. This plan is not populated upfront; it is created
+	// only when it needs to run, after the main query (and previous cascades).
 	plan planMaybePhysical
 }
 
@@ -506,9 +458,6 @@ func (p *planComponents) close(ctx context.Context) {
 	for i := range p.checkPlans {
 		p.checkPlans[i].plan.Close(ctx)
 	}
-	for i := range p.triggers {
-		p.triggers[i].plan.Close(ctx)
-	}
 }
 
 // init resets planTop to point to a given statement; used at the start of the
@@ -526,16 +475,10 @@ func (p *planTop) init(stmt *Statement, instrumentation *instrumentationHelper) 
 func (p *planTop) savePlanInfo() {
 	vectorized := p.flags.IsSet(planFlagVectorized)
 	distribution := physicalplan.LocalPlan
-	if p.flags.IsSet(planFlagDistributedExecution) {
-		// Only show that the plan was distributed if we actually had
-		// distributed execution. This matches the logic from explainPlanNode
-		// where we use the actual physical plan's distribution rather than the
-		// physical planning heuristic.
-		if p.flags.IsSet(planFlagFullyDistributed) {
-			distribution = physicalplan.FullyDistributedPlan
-		} else if p.flags.IsSet(planFlagPartiallyDistributed) {
-			distribution = physicalplan.PartiallyDistributedPlan
-		}
+	if p.flags.IsSet(planFlagFullyDistributed) {
+		distribution = physicalplan.FullyDistributedPlan
+	} else if p.flags.IsSet(planFlagPartiallyDistributed) {
+		distribution = physicalplan.PartiallyDistributedPlan
 	}
 	containsMutation := p.flags.IsSet(planFlagContainsMutation)
 	generic := p.flags.IsSet(planFlagGeneric)
@@ -546,38 +489,37 @@ func (p *planTop) savePlanInfo() {
 }
 
 // startExec calls startExec() on each planNode using a depth-first, post-order
-// traversal. The subqueries, if any, are also started.
+// traversal.  The subqueries, if any, are also started.
 //
 // If the planNode also implements the nodeReadingOwnWrites interface,
 // the txn is temporarily reconfigured to use read-your-own-writes for
 // the duration of the call to startExec. This is used e.g. by
 // DDL statements.
+//
+// Reminder: walkPlan() ensures that subqueries and sub-plans are
+// started before startExec() is called.
 func startExec(params runParams, plan planNode) error {
-	switch plan.(type) {
-	case *explainVecNode, *explainDDLNode:
-		// Do not recurse: we're not starting the plan if we just show its
-		// structure with EXPLAIN.
-	case *showTraceNode:
-		// showTrace needs to override the params struct, and does so in its
-		// startExec() method.
-	default:
-		// Start children nodes first. This ensures that subqueries and
-		// sub-plans are started before startExec() is called.
-		for i, n := 0, plan.InputCount(); i < n; i++ {
-			child, err := plan.Input(i)
-			if err != nil {
-				return err
+	o := planObserver{
+		enterNode: func(ctx context.Context, _ string, p planNode) (bool, error) {
+			switch p.(type) {
+			case *explainVecNode, *explainDDLNode:
+				// Do not recurse: we're not starting the plan if we just show its structure with EXPLAIN.
+				return false, nil
+			case *showTraceNode:
+				// showTrace needs to override the params struct, and does so in its startExec() method.
+				return false, nil
 			}
-			if err := startExec(params, child); err != nil {
-				return err
+			return true, nil
+		},
+		leaveNode: func(_ string, n planNode) (err error) {
+			if _, ok := n.(planNodeReadingOwnWrites); ok {
+				prevMode := params.p.Txn().ConfigureStepping(params.ctx, kv.SteppingDisabled)
+				defer func() { _ = params.p.Txn().ConfigureStepping(params.ctx, prevMode) }()
 			}
-		}
+			return n.startExec(params)
+		},
 	}
-	if _, ok := plan.(planNodeReadingOwnWrites); ok {
-		prevMode := params.p.Txn().ConfigureStepping(params.ctx, kv.SteppingDisabled)
-		defer func() { _ = params.p.Txn().ConfigureStepping(params.ctx, prevMode) }()
-	}
-	return plan.startExec(params)
+	return walkPlan(params.ctx, plan, o)
 }
 
 func (p *planner) maybePlanHook(ctx context.Context, stmt tree.Statement) (planNode, error) {
@@ -598,21 +540,21 @@ func (p *planner) maybePlanHook(ctx context.Context, stmt tree.Statement) (planN
 			if !matched {
 				continue
 			}
-			return newHookFnNode(planHook.name, func(ctx context.Context, datums chan<- tree.Datums) error {
+			return newHookFnNode(planHook.name, func(ctx context.Context, nodes []planNode, datums chan<- tree.Datums) error {
 				return errors.AssertionFailedf(
 					"cannot execute prepared %v statement",
 					planHook.name,
 				)
-			}, header, p.execCfg.Stopper), nil
+			}, header, nil), nil
 		}
 
-		if fn, header, avoidBuffering, err := planHook.fn(ctx, stmt, p); err != nil {
+		if fn, header, subplans, avoidBuffering, err := planHook.fn(ctx, stmt, p); err != nil {
 			return nil, err
 		} else if fn != nil {
 			if avoidBuffering {
 				p.curPlan.avoidBuffering = true
 			}
-			return newHookFnNode(planHook.name, fn, header, p.execCfg.Stopper), nil
+			return newHookFnNode(planHook.name, fn, header, subplans), nil
 		}
 	}
 	return nil, nil
@@ -631,18 +573,16 @@ const (
 	// did not find one.
 	planFlagOptCacheMiss
 
-	// planFlagFullyDistributed is set if the query is planned to use full
-	// distribution. This flag indicates that the query is such that it can be
-	// distributed, and we think it's worth doing so; however, due to range
-	// placement and other physical planning decisions, the plan might still end
-	// up being local. See planFlagDistributedExecution if interested in whether
-	// the physical plan actually ends up being distributed.
+	// planFlagFullyDistributed is set if the query execution is is fully
+	// distributed.
 	planFlagFullyDistributed
 
-	// planFlagPartiallyDistributed is set if the query is planned to use
-	// partial distribution (see physicalplan.PartiallyDistributedPlan). Same
-	// caveats apply as for planFlagFullyDistributed.
+	// planFlagPartiallyDistributed is set if the query execution is is partially
+	// distributed (see physicalplan.PartiallyDistributedPlan).
 	planFlagPartiallyDistributed
+
+	// planFlagNotDistributed is set if the query execution is not distributed.
+	planFlagNotDistributed
 
 	// planFlagImplicitTxn marks that the plan was run inside of an implicit
 	// transaction.
@@ -703,10 +643,6 @@ const (
 	// current execution of the query.
 	planFlagOptimized
 
-	// planFlagDistributedExecution is set if execution of any part of the plan
-	// was distributed.
-	planFlagDistributedExecution
-
 	// These flags indicate whether at least one DELETE, INSERT, UPDATE, or
 	// UPSERT stmt was found in the whole plan.
 	planFlagContainsDelete
@@ -715,25 +651,20 @@ const (
 	planFlagContainsUpsert
 )
 
-// IsSet returns true if the receiver has all of the given flags set.
-func (pf planFlags) IsSet(flags planFlags) bool {
-	return (pf & flags) == flags
+func (pf planFlags) IsSet(flag planFlags) bool {
+	return (pf & flag) != 0
 }
 
-// Set sets all of the given flags in the receiver.
-func (pf *planFlags) Set(flags planFlags) {
-	*pf |= flags
+func (pf *planFlags) Set(flag planFlags) {
+	*pf |= flag
 }
 
-// Unset unsets all of the given flags in the receiver.
-func (pf *planFlags) Unset(flags planFlags) {
-	*pf &^= flags
+func (pf *planFlags) Unset(flag planFlags) {
+	*pf &^= flag
 }
 
-// ShouldBeDistributed returns true if either fully distributed or partially
-// distributed flag is set. In other words, it returns whether the plan should
-// be distributed (we might end up not distributing it though due to range
-// placement or moving the single flow to the gateway).
-func (pf planFlags) ShouldBeDistributed() bool {
-	return pf&(planFlagFullyDistributed|planFlagPartiallyDistributed) != 0
+// IsDistributed returns true if either the fully or the partially distributed
+// flags is set.
+func (pf planFlags) IsDistributed() bool {
+	return pf.IsSet(planFlagFullyDistributed) || pf.IsSet(planFlagPartiallyDistributed)
 }

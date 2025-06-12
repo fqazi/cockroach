@@ -142,19 +142,11 @@ func AuthorizeChangefeedJobAccess(
 	ctx context.Context,
 	a jobsauth.AuthorizationAccessor,
 	jobID jobspb.JobID,
-	getLegacyPayload func(ctx context.Context) (*jobspb.Payload, error),
+	payload *jobspb.Payload,
 ) error {
-	payload, err := getLegacyPayload(ctx)
-	if err != nil {
-		return err
-	}
 	specs, ok := payload.UnwrapDetails().(jobspb.ChangefeedDetails)
 	if !ok {
 		return errors.Newf("could not unwrap details from the payload of job %d", jobID)
-	}
-
-	if len(specs.TargetSpecifications) == 0 {
-		return pgerror.Newf(pgcode.InsufficientPrivilege, "job contains no tables on which the user has %s privilege", privilege.CHANGEFEED)
 	}
 
 	for _, spec := range specs.TargetSpecifications {

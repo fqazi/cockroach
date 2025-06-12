@@ -84,13 +84,6 @@ func (b *Builder) buildCreateFunction(
 	return execPlan{root: root}, colOrdMap{}, err
 }
 
-func (b *Builder) buildCreateTrigger(
-	ct *memo.CreateTriggerExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	root, err := b.factory.ConstructCreateTrigger(ct.Syntax)
-	return execPlan{root: root}, colOrdMap{}, err
-}
-
 func (b *Builder) buildExplainOpt(
 	explain *memo.ExplainExpr,
 ) (_ execPlan, outputCols colOrdMap, err error) {
@@ -176,9 +169,8 @@ func (b *Builder) buildExplain(
 			// annotates nodes with extra information when the factory is an
 			// exec.ExplainFactory so it must be the outer factory and the gist
 			// factory must be the inner factory.
-			var gf explain.PlanGistFactory
-			gf.Init(f)
-			ef := explain.NewFactory(&gf, b.semaCtx, b.evalCtx)
+			gf := explain.NewPlanGistFactory(f)
+			ef := explain.NewFactory(gf, b.semaCtx, b.evalCtx)
 
 			explainBld := New(
 				b.ctx, ef, b.optimizer, b.mem, b.catalog, explainExpr.Input,

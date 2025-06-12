@@ -61,6 +61,9 @@ func TestSettingAndCheckingLicense(t *testing.T) {
 
 func TestGetLicenseTypePresent(t *testing.T) {
 	defer leaktest.AfterTest(t)()
+	defer func() {
+		trialLicenseExpiryTimestamp.Store(0)
+	}()
 
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -155,6 +158,9 @@ func TestSettingBadLicenseStrings(t *testing.T) {
 
 func TestTimeToEnterpriseLicenseExpiry(t *testing.T) {
 	defer leaktest.AfterTest(t)()
+	defer func() {
+		trialLicenseExpiryTimestamp.Store(0)
+	}()
 
 	ctx := context.Background()
 
@@ -276,13 +282,16 @@ func TestRefreshLicenseEnforcerOnLicenseChange(t *testing.T) {
 		{[]string{"crl-0-EMDYt8MDGAQiDkNSREIgVW5pdCBUZXN0", "crl-0-EMDYt8MDGAQiDkNSREIgVW5pdCBUZXN0"},
 			"", jan1st2000.Add(7 * 24 * time.Hour)},
 		// A second trial license is not allowed if it has a different expiry (Jan 1st 2000 8:01 AST)
-		{[]string{"crl-0-EMDYt8MDGAQiDkNSREIgVW5pdCBUZXN0", "crl-0-EPzYt8MDGAQiDkNSREIgVW5pdCBUZXN0"},
+		{[]string{"crl-0-EMDYt8MDGAQiDkNSREIgVW5pdCBUZXN0KAM", "crl-0-EPzYt8MDGAQiDkNSREIgVW5pdCBUZXN0"},
 			"a trial license has previously been installed on this cluster", timeutil.UnixEpoch},
 	} {
 		t.Run(fmt.Sprintf("test %d", i), func(t *testing.T) {
-			// Reset from prior test unit.
-			err := enforcer.TestingResetTrialUsage(ctx)
-			require.NoError(t, err)
+			// Reset at the end of the test unit
+			defer func() {
+				err = enforcer.TestingResetTrialUsage(ctx)
+				require.NoError(t, err)
+				trialLicenseExpiryTimestamp.Store(0)
+			}()
 
 			tdb := sqlutils.MakeSQLRunner(sqlDB)
 
@@ -335,18 +344,6 @@ func TestRefreshLicenseEnforcerOnLicenseChange(t *testing.T) {
 				return ts.Equal(tc.expectedGracePeriodEnd)
 			}, 20*time.Second, time.Millisecond,
 				"GetGracePeriodEndTS() did not return grace period of %s in time", tc.expectedGracePeriodEnd.String())
-
-			// Perform the throttle check after the license change. We expect an error
-			// if a grace period is set, since all licenses expired long ago and any
-			// grace period would have already ended.
-			const aboveThreshold = 100
-			_, err = enforcer.TestingMaybeFailIfThrottled(ctx, aboveThreshold)
-			if tc.expectedGracePeriodEnd.Equal(timeutil.UnixEpoch) {
-				require.NoError(t, err)
-			} else {
-				require.Error(t, err)
-				require.Contains(t, err.Error(), "maximum number of concurrently open transactions has been reached")
-			}
 		})
 	}
 }

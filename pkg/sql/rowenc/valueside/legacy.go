@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil/pgdate"
 	"github.com/cockroachdb/cockroach/pkg/util/tsearch"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/cockroach/pkg/util/vector"
 	"github.com/cockroachdb/errors"
 	"github.com/lib/pq/oid"
 )
@@ -164,15 +163,6 @@ func MarshalLegacy(colType *types.T, val tree.Datum) (roachpb.Value, error) {
 			r.SetBytes(data)
 			return r, nil
 		}
-	case types.PGVectorFamily:
-		if v, ok := val.(*tree.DPGVector); ok {
-			data, err := vector.Encode(nil, v.T)
-			if err != nil {
-				return r, err
-			}
-			r.SetBytes(data)
-			return r, nil
-		}
 	case types.ArrayFamily:
 		if v, ok := val.(*tree.DArray); ok {
 			if err := checkElementType(v.ParamTyp, colType.ArrayContents()); err != nil {
@@ -187,7 +177,7 @@ func MarshalLegacy(colType *types.T, val tree.Datum) (roachpb.Value, error) {
 		}
 	case types.TupleFamily:
 		if v, ok := val.(*tree.DTuple); ok {
-			b, _, err := encodeUntaggedTuple(v, nil /* appendTo */, nil /* scratch */)
+			b, err := encodeUntaggedTuple(v, nil /* appendTo */, 0 /* colID */, nil /* scratch */)
 			if err != nil {
 				return r, err
 			}
@@ -427,16 +417,6 @@ func UnmarshalLegacy(a *tree.DatumAlloc, typ *types.T, value roachpb.Value) (tre
 			return nil, err
 		}
 		return tree.NewDTSVector(vec), nil
-	case types.PGVectorFamily:
-		v, err := value.GetBytes()
-		if err != nil {
-			return nil, err
-		}
-		_, vec, err := vector.Decode(v)
-		if err != nil {
-			return nil, err
-		}
-		return tree.NewDPGVector(vec), nil
 	case types.EnumFamily:
 		v, err := value.GetBytes()
 		if err != nil {

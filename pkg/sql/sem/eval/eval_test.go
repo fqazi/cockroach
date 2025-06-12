@@ -79,8 +79,8 @@ func TestEval(t *testing.T) {
 	t.Run("no-opt", func(t *testing.T) {
 		walkExpr(t, func(e tree.Expr) (tree.TypedExpr, error) {
 			// expr.TypeCheck to avoid constant folding.
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
-			typedExpr, err := e.TypeCheck(ctx, &semaCtx, types.AnyElement)
+			semaCtx := tree.MakeSemaContext()
+			typedExpr, err := e.TypeCheck(ctx, &semaCtx, types.Any)
 			if err != nil {
 				return nil, err
 			}
@@ -93,7 +93,7 @@ func optBuildScalar(evalCtx *eval.Context, e tree.Expr) (tree.TypedExpr, error) 
 	var o xform.Optimizer
 	ctx := context.Background()
 	o.Init(ctx, evalCtx, nil /* catalog */)
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	b := optbuilder.NewScalar(ctx, &semaCtx, evalCtx, o.Factory())
 	scalar, err := b.Build(e)
 	if err != nil {
@@ -197,7 +197,7 @@ func TestTimeConversion(t *testing.T) {
 			t.Errorf("%s: %v", exprStr, err)
 			continue
 		}
-		semaCtx := tree.MakeSemaContext(nil /* resolver */)
+		semaCtx := tree.MakeSemaContext()
 		typedExpr, err := expr.TypeCheck(context.Background(), &semaCtx, types.Timestamp)
 		if err != nil {
 			t.Errorf("%s: %v", exprStr, err)
@@ -343,10 +343,10 @@ func TestEvalError(t *testing.T) {
 		{`like_escape('abc', '%b漢', '漢')`, `LIKE pattern must not end with escape character`},
 		{`similar_to_escape('abc', '-a-b-c', '-')`, `error parsing regexp: invalid escape sequence`},
 		{`similar_to_escape('a(b)c', '%((_)_', '(')`, `error parsing regexp: unexpected )`},
-		{`convert_from('\xaaaa'::bytea, 'woo')`, `invalid source encoding name "woo"`},
-		{`convert_from('\xaaaa'::bytea, 'utf8')`, `invalid byte sequence for encoding "UTF8"`},
-		{`convert_to('abc', 'woo')`, `invalid destination encoding name "woo"`},
-		{`convert_to('漢', 'latin1')`, `character '漢' has no representation in encoding "LATIN1"`},
+		{`convert_from('\xaaaa'::bytea, 'woo')`, `convert_from(): invalid source encoding name "woo"`},
+		{`convert_from('\xaaaa'::bytea, 'utf8')`, `convert_from(): invalid byte sequence for encoding "UTF8"`},
+		{`convert_to('abc', 'woo')`, `convert_to(): invalid destination encoding name "woo"`},
+		{`convert_to('漢', 'latin1')`, `convert_to(): character '漢' has no representation in encoding "LATIN1"`},
 		{`'123'::BIT`, `could not parse string as bit array: "2" is not a valid binary digit`},
 		{`B'1001' & B'101'`, `cannot AND bit strings of different sizes`},
 		{`B'1001' | B'101'`, `cannot OR bit strings of different sizes`},
@@ -358,8 +358,8 @@ func TestEvalError(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", d.expr, err)
 		}
-		semaCtx := tree.MakeSemaContext(nil /* resolver */)
-		typedExpr, err := tree.TypeCheck(ctx, expr, &semaCtx, types.AnyElement)
+		semaCtx := tree.MakeSemaContext()
+		typedExpr, err := tree.TypeCheck(ctx, expr, &semaCtx, types.Any)
 		if err == nil {
 			evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
 			defer evalCtx.Stop(ctx)

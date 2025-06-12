@@ -3,25 +3,21 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
+import { connect } from "react-redux";
 import { Dispatch } from "redux";
-
-import {
-  selecteActiveStatement,
-  selectContentionDetailsForStatement,
-} from "src/selectors/activeExecutions.selectors";
 import { actions as sessionsActions } from "src/store/sessions";
-import { selectHasAdminRole } from "src/store/uiConfig";
-
 import { AppState } from "../store";
-
 import {
   ActiveStatementDetails,
   ActiveStatementDetailsDispatchProps,
 } from "./activeStatementDetails";
-
 import { ActiveStatementDetailsStateProps } from ".";
+import {
+  selecteActiveStatement,
+  selectContentionDetailsForStatement,
+} from "src/selectors/activeExecutions.selectors";
+import { selectHasAdminRole } from "src/store/uiConfig";
 
 // For tenant cases, we don't show information about node, regions and
 // diagnostics.

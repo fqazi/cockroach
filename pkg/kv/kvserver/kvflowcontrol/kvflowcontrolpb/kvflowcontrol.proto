@@ -18,15 +18,9 @@ import "gogoproto/gogo.proto";
 // raftlog.EntryEncoding.
 //
 // [1]: The field tags and types must be kept identical with what's found there.
-//
-// RaftAdmissionMeta is used by both RACv1 and RACv2 encodings. RACv1 encoding
-// uses all the fields. RACv2 encoding uses only AdmissionPriority and
-// AdmissionCreateTime, and AdmissionPriority is set to the raftpb.Priority.
 message RaftAdmissionMeta {
-  // AdmissionPriority of the command.
-  // - RACv1: maps to admission.WorkPriority
-  // - RACv2: maps to raftpb.Priority
-  // Used within a tenant below-raft for replication admission control.
+  // AdmissionPriority of the command (maps to admission.WorkPriority); used
+  // within a tenant below-raft for replication admission control.
   int32 admission_priority = 18;
   // AdmissionCreateTime is equivalent to Time.UnixNano() at the creation time
   // of the request, or a parent request, for which this command is a part of.
@@ -35,8 +29,7 @@ message RaftAdmissionMeta {
   int64 admission_create_time = 19;
   // AdmissionOriginNode captures where this raft command originated. It's used
   // to inform said node of this raft command's (virtual) admission in order for
-  // it to release flow tokens for subsequent commands. Not used by RACv2
-  // encoding.
+  // it to release flow tokens for subsequent commands.
   int32 admission_origin_node = 20 [(gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.NodeID"];
 
   // TODO(irfansharif): If the {marshaling,unmarshaling} performance overhead
@@ -72,6 +65,47 @@ message RaftAdmissionMeta {
   // small write sizes). The ideas above are too complicated.
 }
 
+// AdmittedRaftLogEntries represents a set of raft log entries that were
+// admitted below raft. These are identified by:
+// - the range ID (there's one per raft group);
+// - the admission priority of all said entries;
+// - the (inclusive) raft log position up-to-which we've admitted entries;
+// - the store ID on which these raft logs were admitted.
+//
+// This is used as part replication admission control to release, at the origin,
+// the specific flow tokens acquired when replicating these log entries along
+// this particular "replication stream" (i.e. flowing to a particular store,
+// remote or otherwise).
+message AdmittedRaftLogEntries {
+  option (gogoproto.goproto_stringer) = false;
+
+  // RangeID of the raft group these entries belong to. This is the range on
+  // whose behalf work was admitted.
+  int64 range_id = 1 [(gogoproto.customname) = "RangeID",
+    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.RangeID"];
+
+  // AdmissionPriority of all admitted entries (maps to admissionpb.WorkPriority).
+  int32 admission_priority = 2;
+
+  // UpToRaftLogPosition (inclusive) of the highest entry that was admitted.
+  // Within a given priority, admission takes place in raft log order (i.e.
+  // entries with lower terms get admitted first, or with lower indexes within
+  // the same term). So the value here implies admission of all entries that
+  // sort before and have the same priority.
+  RaftLogPosition up_to_raft_log_position = 3 [(gogoproto.nullable) = false];
+
+  // StoreID on which this raft log entry was admitted.
+  //
+  // TODO(irfansharif): We can avoid sending this for every logically admitted
+  // message if the raft transport stream we were sending it on had some
+  // handshake protocol at the start, where the client identified itself by its
+  // NodeID. That way the origin replica receiving this information can infer
+  // the StoreID where this work was done since we we never store multiple
+  // replicas of a range on the same {single,multi}-store node.
+  uint64 store_id = 4 [(gogoproto.customname) = "StoreID",
+    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.StoreID"];
+}
+
 // RaftLogPosition is a point on the raft log, identified by a term and an
 // index.
 message RaftLogPosition {
@@ -79,45 +113,4 @@ message RaftLogPosition {
 
   uint64 term = 1;
   uint64 index = 2;
-}
-
-// AdmittedState communicates a replica's vector of admitted log indices at
-// different priorities to the leader of a range.
-//
-// Used only in RACv2.
-message AdmittedState {
-  option (gogoproto.goproto_stringer) = false;
-  // Term is the leader term of the log for which the Admitted indices were
-  // computed. The indices are consistent with this leader's log.
-  uint64 term = 1;
-  // Admitted contains admitted log indices for each priority < NumPriorities.
-  repeated uint64 admitted = 2;
-}
-
-// PiggybackedAdmittedState wraps the AdmittedState with the routing information
-// needed to deliver the admitted vector to a particular leader replica, and for
-// it to know who sent it.
-//
-// Used only in RACv2.
-message PiggybackedAdmittedState {
-  option (gogoproto.goproto_stringer) = false;
-
-  // RangeID is the ID of the range to which this message is related. Used for
-  // routing at the leader node.
-  uint64 range_id = 1 [(gogoproto.customname) = "RangeID",
-    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.RangeID"];
-  // ToStoreID is the store at the leader containing the leader replica. Used
-  // for routing at the leader node.
-  uint64 to_store_id = 2 [(gogoproto.customname) = "ToStoreID",
-    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.StoreID"];
-
-  // FromReplicaID is the replica sending this message.
-  uint64 from_replica_id = 3 [(gogoproto.customname) = "FromReplicaID",
-    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.ReplicaID"];
-  // ToReplicaID is the leader replica receiving this message.
-  uint64 to_replica_id = 4 [(gogoproto.customname) = "ToReplicaID",
-    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.ReplicaID"];
-
-  // Admitted is the admitted vector at the sending replica.
-  AdmittedState admitted = 5 [(gogoproto.nullable) = false];
 }

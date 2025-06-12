@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
-	"github.com/cockroachdb/cockroach/pkg/sql/oidext"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -17,7 +16,6 @@ import (
 )
 
 type unsupportedTypeChecker struct {
-	//lint:ignore U1000 unused
 	version clusterversion.Handle
 }
 
@@ -27,29 +25,20 @@ func NewUnsupportedTypeChecker(handle clusterversion.Handle) tree.UnsupportedTyp
 	return &unsupportedTypeChecker{version: handle}
 }
 
-// ResetUnsupportedTypeChecker is similar to NewUnsupportedTypeChecker, but
-// reuses an existing, non-nil tree.UnsupportedTypeChecker if one is given,
-// instead of allocating a new one.
-func ResetUnsupportedTypeChecker(
-	handle clusterversion.Handle, existing tree.UnsupportedTypeChecker,
-) tree.UnsupportedTypeChecker {
-	if u, ok := existing.(*unsupportedTypeChecker); ok && u != nil {
-		u.version = handle
-		return existing
-	}
-	return NewUnsupportedTypeChecker(handle)
-}
-
-var _ tree.UnsupportedTypeChecker = (*unsupportedTypeChecker)(nil)
+var _ tree.UnsupportedTypeChecker = &unsupportedTypeChecker{}
 
 // CheckType implements the tree.UnsupportedTypeChecker interface.
 func (tc *unsupportedTypeChecker) CheckType(ctx context.Context, typ *types.T) error {
-	// NB: when adding an unsupported type here, change the constructor to not
-	// return nil.
-	if (typ.Oid() == oidext.T_jsonpath || typ.Oid() == oidext.T__jsonpath) &&
-		!tc.version.IsActive(ctx, clusterversion.V25_2) {
+	var errorTypeString string
+	switch typ.Family() {
+	case types.PGLSNFamily:
+		errorTypeString = "pg_lsn"
+	case types.RefCursorFamily:
+		errorTypeString = "refcursor"
+	}
+	if errorTypeString != "" && !tc.version.IsActive(ctx, clusterversion.V23_2) {
 		return pgerror.Newf(pgcode.FeatureNotSupported,
-			"%s not supported until version 25.2", typ.String(),
+			"%s not supported until version 23.2", errorTypeString,
 		)
 	}
 	return nil

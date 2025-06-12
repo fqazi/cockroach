@@ -6,11 +6,8 @@
 package metric
 
 import (
-	"context"
 	"io"
-	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/gogo/protobuf/proto"
 	"github.com/prometheus/client_golang/prometheus"
@@ -54,22 +51,16 @@ func MakePrometheusExporterForSelectedMetrics(selection map[string]struct{}) Pro
 
 // find the family for the passed-in metric, or create and return it if not found.
 func (pm *PrometheusExporter) findOrCreateFamily(
-	prom PrometheusCompatible, options *scrapeOptions,
+	prom PrometheusExportable,
 ) *prometheusgo.MetricFamily {
-	familyName := ExportedName(prom.GetName(options.useStaticLabels))
+	familyName := exportedName(prom.GetName())
 	if family, ok := pm.families[familyName]; ok {
 		return family
 	}
 
-	// The Help field for metric metadata is written as a string literal
-	// which is formatted for reading in a code editor. When outputting
-	// to Prometheus and other systems, we want to remove all the
-	// newlines an only capture the first sentence for brevity.
-	left, _, _ := strings.Cut(strings.Join(strings.Fields(prom.GetHelp()), " "), ".")
-
 	family := &prometheusgo.MetricFamily{
 		Name: proto.String(familyName),
-		Help: proto.String(left),
+		Help: proto.String(prom.GetHelp()),
 		Type: prom.GetType(),
 	}
 
@@ -77,94 +68,34 @@ func (pm *PrometheusExporter) findOrCreateFamily(
 	return family
 }
 
-type scrapeOptions struct {
-	includeChildMetrics     bool
-	includeAggregateMetrics bool
-	useStaticLabels         bool
-}
-
-// ScrapeOption is a function that modifies scrapeOptions
-type ScrapeOption func(*scrapeOptions)
-
-// WithIncludeChildMetrics returns an option to set whether child metrics are included
-func WithIncludeChildMetrics(include bool) ScrapeOption {
-	return func(o *scrapeOptions) {
-		o.includeChildMetrics = include
-	}
-}
-
-// WithIncludeAggregateMetrics returns an option to set whether aggregate metrics are included
-func WithIncludeAggregateMetrics(include bool) ScrapeOption {
-	return func(o *scrapeOptions) {
-		o.includeAggregateMetrics = include
-	}
-}
-
-// WithUseStaticLabels returns an option to set whether static labels are used
-func WithUseStaticLabels(use bool) ScrapeOption {
-	return func(o *scrapeOptions) {
-		o.useStaticLabels = use
-	}
-}
-
-// applyScrapeOptions creates a new scrapeOptions with the given options applied
-func applyScrapeOptions(options ...ScrapeOption) *scrapeOptions {
-	opts := &scrapeOptions{
-		// default values here if needed
-	}
-	for _, option := range options {
-		option(opts)
-	}
-	return opts
-}
-
 // ScrapeRegistry scrapes all metrics contained in the registry to the metric
 // family map, holding on only to the scraped data (which is no longer
 // connected to the registry and metrics within) when returning from the
 // call. It creates new families as needed.
-func (pm *PrometheusExporter) ScrapeRegistry(registry *Registry, options ...ScrapeOption) {
-	o := applyScrapeOptions(options...)
+func (pm *PrometheusExporter) ScrapeRegistry(registry *Registry, includeChildMetrics bool) {
 	labels := registry.GetLabels()
 	f := func(name string, v interface{}) {
-		switch prom := v.(type) {
-		case PrometheusVector:
-			for _, m := range prom.ToPrometheusMetrics() {
-				m := m
-				m.Label = append(m.Label, labels...)
-				m.Label = append(m.Label, prom.GetLabels(o.useStaticLabels)...)
-
-				family := pm.findOrCreateFamily(prom, o)
-				family.Metric = append(family.Metric, m)
-			}
-
-		case PrometheusExportable:
-			m := prom.ToPrometheusMetric()
-			// Set registry and metric labels.
-			m.Label = append(labels, prom.GetLabels(o.useStaticLabels)...)
-			family := pm.findOrCreateFamily(prom, o)
-
-			// Based on cluster settings may report just the parent, or just the children, or the parent
-			// and the children.
-			promIter, ok := v.(PrometheusIterable)
-			if ok && o.includeChildMetrics {
-				if o.includeAggregateMetrics {
-					family.Metric = append(family.Metric, m)
-				}
-				promIter.Each(m.Label, func(metric *prometheusgo.Metric) {
-					family.Metric = append(family.Metric, metric)
-				})
-				return
-			}
-
-			// No child metrics.
-			family.Metric = append(family.Metric, m)
-
-		default:
-			log.Infof(context.Background(), "metric %s is not compatible with any prometheus metric type", name)
+		prom, ok := v.(PrometheusExportable)
+		if !ok {
 			return
 		}
-	}
+		m := prom.ToPrometheusMetric()
+		// Set registry and metric labels.
+		m.Label = append(labels, prom.GetLabels()...)
 
+		family := pm.findOrCreateFamily(prom)
+		family.Metric = append(family.Metric, m)
+
+		// Deal with metrics which have children which are exposed to
+		// prometheus if we should.
+		promIter, ok := v.(PrometheusIterable)
+		if !ok || !includeChildMetrics {
+			return
+		}
+		promIter.Each(m.Label, func(metric *prometheusgo.Metric) {
+			family.Metric = append(family.Metric, metric)
+		})
+	}
 	if pm.selection == nil {
 		registry.Each(f)
 	} else {

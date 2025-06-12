@@ -289,10 +289,10 @@ statement ok
 CREATE USER testuser4
 
 statement ok
-REVOKE SELECT ON crdb_internal.feature_usage FROM public
+REVOKE SELECT ON crdb_internal.tables FROM public
 
-query B retry
-SELECT has_table_privilege('testuser4', 'crdb_internal.feature_usage', 'SELECT')
+query B
+SELECT has_table_privilege('testuser4', 'crdb_internal.tables', 'SELECT')
 ----
 false
 
@@ -301,14 +301,11 @@ statement ok
 BEGIN TRANSACTION PRIORITY HIGH ISOLATION LEVEL SERIALIZABLE;
 
 statement ok
-SET LOCAL autocommit_before_ddl=off;
-
-statement ok
-GRANT SELECT ON crdb_internal.feature_usage TO testuser4
+GRANT SELECT ON crdb_internal.tables TO testuser4
 
 # This should not cache the uncommitted privilege.
 query B
-SELECT has_table_privilege('testuser4', 'crdb_internal.feature_usage', 'SELECT')
+SELECT has_table_privilege('testuser4', 'crdb_internal.tables', 'SELECT')
 ----
 true
 
@@ -316,23 +313,15 @@ statement ok
 ROLLBACK
 
 query B
-SELECT has_table_privilege('testuser4', 'crdb_internal.feature_usage', 'SELECT')
+SELECT has_table_privilege('testuser4', 'crdb_internal.tables', 'SELECT')
 ----
 false
-
-# Cleanup the privilege that was added.
-statement ok
-REVOKE SYSTEM MODIFYCLUSTERSETTING FROM testuser
 
 # This subtest makes sure that an unknown privilege in the system.privileges
 # table does not break code that is trying to look up other privileges.
 # This situation can happen if a new synthetic privilege is backported to an
 # older branch.
 subtest unknown_privilege
-
-# Add an arbitrary privilege so that we can test manually overriding it.
-statement ok
-GRANT SYSTEM CREATEDB TO testuser
 
 statement ok
 INSERT INTO system.users VALUES ('node', NULL, true, 0);

@@ -56,7 +56,7 @@ type SpillingBuffer struct {
 	diskQueue       colcontainer.RewindableQueue
 	fdSemaphore     semaphore.Semaphore
 	diskAcc         *mon.BoundAccount
-	diskQueueMemAcc *mon.BoundAccount
+	converterMemAcc *mon.BoundAccount
 
 	dequeueScratch            coldata.Batch
 	lastDequeuedBatchMemUsage int64
@@ -99,14 +99,9 @@ func NewSpillingBuffer(
 	fdSemaphore semaphore.Semaphore,
 	inputTypes []*types.T,
 	diskAcc *mon.BoundAccount,
-	diskQueueMemAcc *mon.BoundAccount,
+	converterMemAcc *mon.BoundAccount,
 	colIdxs ...int,
 ) *SpillingBuffer {
-	if unlimitedAllocator.Acc() == diskQueueMemAcc {
-		colexecerror.InternalError(errors.AssertionFailedf(
-			"memory accounts for allocator and disk queue must be different",
-		))
-	}
 	if colIdxs == nil {
 		colIdxs = make([]int, len(inputTypes))
 		for i := range colIdxs {
@@ -138,7 +133,7 @@ func NewSpillingBuffer(
 		diskQueueCfg:       diskQueueCfg,
 		fdSemaphore:        fdSemaphore,
 		diskAcc:            diskAcc,
-		diskQueueMemAcc:    diskQueueMemAcc,
+		converterMemAcc:    converterMemAcc,
 	}
 }
 
@@ -182,7 +177,7 @@ func (b *SpillingBuffer) AppendTuples(
 			}
 		}
 		if b.diskQueue, err = colcontainer.NewRewindableDiskQueue(
-			ctx, b.storedTypes, b.diskQueueCfg, b.diskAcc, b.diskQueueMemAcc,
+			ctx, b.storedTypes, b.diskQueueCfg, b.diskAcc, b.converterMemAcc,
 		); err != nil {
 			colexecerror.InternalError(err)
 		}
@@ -226,7 +221,7 @@ func (b *SpillingBuffer) AppendTuples(
 // made.
 func (b *SpillingBuffer) GetVecWithTuple(
 	ctx context.Context, colIdx, idx int,
-) (_ *coldata.Vec, rowIdx int, length int) {
+) (_ coldata.Vec, rowIdx int, length int) {
 	var err error
 	if idx < 0 || idx >= b.Length() {
 		colexecerror.InternalError(

@@ -5,10 +5,6 @@
 
 import React from "react";
 import {RenderFunction} from "storybook__react";
-import "react-select/dist/react-select.css";
-import "styl/app.styl";
-import "../styles.css";
-import "src/views/app/containers/layout/layout.styl";
 
 export const withBackgroundFactory = (backgroundColor = "#F5F7FA") => (storyFn: RenderFunction) => (
   <div style={{backgroundColor}}>

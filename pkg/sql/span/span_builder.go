@@ -6,7 +6,6 @@
 package span
 
 import (
-	"context"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -40,50 +39,24 @@ type Builder struct {
 	alloc     tree.DatumAlloc
 }
 
-// Init initializes a Builder with a table and index. It does not set up the
-// Builder to create external spans, even if the table uses external row data.
+// Init initializes a Builder with a table and index.
 func (s *Builder) Init(
 	evalCtx *eval.Context, codec keys.SQLCodec, table catalog.TableDescriptor, index catalog.Index,
 ) {
-	if ext := table.ExternalRowData(); ext != nil {
-		panic(errors.AssertionFailedf("%s uses external row data", table.GetName()))
-	}
 	s.evalCtx = evalCtx
 	s.codec = codec
 	s.keyAndPrefixCols = table.IndexFetchSpecKeyAndSuffixColumns(index)
 	s.KeyPrefix = rowenc.MakeIndexKeyPrefix(codec, table.GetID(), index.GetID())
 }
 
-// InitAllowingExternalRowData initializes a Builder with a table and index. If
-// the table uses external row data, the Builder will create external spans.
-func (s *Builder) InitAllowingExternalRowData(
-	evalCtx *eval.Context, codec keys.SQLCodec, table catalog.TableDescriptor, index catalog.Index,
-) {
-	s.evalCtx = evalCtx
-	s.keyAndPrefixCols = table.IndexFetchSpecKeyAndSuffixColumns(index)
-	if ext := table.ExternalRowData(); ext != nil {
-		s.codec = keys.MakeSQLCodec(ext.TenantID)
-		s.KeyPrefix = rowenc.MakeIndexKeyPrefix(s.codec, ext.TableID, index.GetID())
-	} else {
-		s.codec = codec
-		s.KeyPrefix = rowenc.MakeIndexKeyPrefix(codec, table.GetID(), index.GetID())
-	}
-}
-
-// InitWithFetchSpec creates a Builder using IndexFetchSpec. If the spec
-// specifies external row data, the Builder will create external spans.
+// InitWithFetchSpec creates a Builder using IndexFetchSpec.
 func (s *Builder) InitWithFetchSpec(
 	evalCtx *eval.Context, codec keys.SQLCodec, spec *fetchpb.IndexFetchSpec,
 ) {
 	s.evalCtx = evalCtx
+	s.codec = codec
 	s.keyAndPrefixCols = spec.KeyAndSuffixColumns
-	if ext := spec.External; ext != nil {
-		s.codec = keys.MakeSQLCodec(ext.TenantID)
-		s.KeyPrefix = rowenc.MakeIndexKeyPrefix(s.codec, ext.TableID, spec.IndexID)
-	} else {
-		s.codec = codec
-		s.KeyPrefix = rowenc.MakeIndexKeyPrefix(codec, spec.TableID, spec.IndexID)
-	}
+	s.KeyPrefix = rowenc.MakeIndexKeyPrefix(codec, spec.TableID, spec.IndexID)
 }
 
 // SpanFromEncDatums encodes a span with len(values) constraint columns from the
@@ -104,7 +77,6 @@ func (s *Builder) SpanFromEncDatums(
 // generated. Since the exec code knows nothing about index column sorting
 // direction we assume ascending if they are descending we deal with that here.
 func (s *Builder) SpanFromEncDatumsWithRange(
-	ctx context.Context,
 	values rowenc.EncDatumRow,
 	prefixLen int,
 	startBound, endBound *rowenc.EncDatum,
@@ -126,8 +98,8 @@ func (s *Builder) SpanFromEncDatumsWithRange(
 			return roachpb.Span{}, true, true, nil
 		}
 		if !startInclusive {
-			if (isDesc && startBound.Datum.IsMin(ctx, s.evalCtx)) ||
-				(!isDesc && startBound.Datum.IsMax(ctx, s.evalCtx)) {
+			if (isDesc && startBound.Datum.IsMin(s.evalCtx)) ||
+				(!isDesc && startBound.Datum.IsMax(s.evalCtx)) {
 				// There are no values that satisfy the start bound.
 				return roachpb.Span{}, false, true, nil
 			}
@@ -157,7 +129,7 @@ func (s *Builder) SpanFromEncDatumsWithRange(
 			// filtered cases where this is not possible. If the index column is ASC,
 			// we can directly increment the key below instead of the datum.
 			var ok bool
-			startDatum, ok = startDatum.Prev(ctx, s.evalCtx)
+			startDatum, ok = startDatum.Prev(s.evalCtx)
 			if !ok {
 				return roachpb.Span{}, false, false, errors.AssertionFailedf(
 					"couldn't get a Prev value for %s", startBound.Datum,
@@ -299,7 +271,7 @@ func (s *Builder) appendSpansFromConstraintSpan(
 	var err error
 	var containsNull bool
 	// Encode each logical part of the start key.
-	span.Key, containsNull, err = s.encodeConstraintKey(cs.StartKey(), true /* includePrefix */)
+	span.Key, containsNull, err = s.encodeConstraintKey(cs.StartKey())
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +284,7 @@ func (s *Builder) appendSpansFromConstraintSpan(
 		span.Key = span.Key.PrefixEnd()
 	}
 	// Encode each logical part of the end key.
-	span.EndKey, _, err = s.encodeConstraintKey(cs.EndKey(), true /* includePrefix */)
+	span.EndKey, _, err = s.encodeConstraintKey(cs.EndKey())
 	if err != nil {
 		return nil, err
 	}
@@ -337,18 +309,13 @@ func (s *Builder) appendSpansFromConstraintSpan(
 
 // encodeConstraintKey encodes each logical part of a constraint.Key into a
 // roachpb.Key.
-//
-// includePrefix is true if the KeyPrefix bytes should be included in the
-// returned key.
 func (s *Builder) encodeConstraintKey(
-	ck constraint.Key, includePrefix bool,
+	ck constraint.Key,
 ) (key roachpb.Key, containsNull bool, _ error) {
 	if ck.IsEmpty() {
 		return key, containsNull, nil
 	}
-	if includePrefix {
-		key = append(key, s.KeyPrefix...)
-	}
+	key = append(key, s.KeyPrefix...)
 	for i := 0; i < ck.Length(); i++ {
 		val := ck.Value(i)
 		if val == tree.DNull {
@@ -398,7 +365,7 @@ var _ InvertedSpans = inverted.SpanExpressionProtoSpans{}
 // scratch can be an optional roachpb.Spans slice that will be reused to
 // populate the result.
 func (s *Builder) SpansFromInvertedSpans(
-	ctx context.Context, invertedSpans InvertedSpans, c *constraint.Constraint, scratch roachpb.Spans,
+	invertedSpans InvertedSpans, c *constraint.Constraint, scratch roachpb.Spans,
 ) (roachpb.Spans, error) {
 	if invertedSpans == nil {
 		return nil, errors.AssertionFailedf("invertedSpans cannot be nil")
@@ -414,7 +381,7 @@ func (s *Builder) SpansFromInvertedSpans(
 			span := c.Spans.Get(i)
 
 			// The spans must have the same start and end key.
-			if !span.HasSingleKey(ctx, s.evalCtx) {
+			if !span.HasSingleKey(s.evalCtx) {
 				return nil, errors.AssertionFailedf("constraint span %s does not have a single key", span)
 			}
 
@@ -476,36 +443,4 @@ func (s *Builder) generateInvertedSpanKey(
 
 	span, _, err := s.SpanFromEncDatums(scratchRow[:keyLen])
 	return span.Key, err
-}
-
-// KeysFromVectorPrefixConstraint extracts the encoded prefix keys from a
-// vector search operator's prefix constraint. It validates that each span in
-// the constraint has a single key.
-func (s *Builder) KeysFromVectorPrefixConstraint(
-	ctx context.Context, prefixConstraint *constraint.Constraint,
-) ([]roachpb.Key, error) {
-	if prefixConstraint == nil || prefixConstraint.Spans.Count() == 0 {
-		// No prefix.
-		return nil, nil
-	}
-	prefixKeys := make([]roachpb.Key, prefixConstraint.Spans.Count())
-	for i, n := 0, prefixConstraint.Spans.Count(); i < n; i++ {
-		span := prefixConstraint.Spans.Get(i)
-
-		// A vector index with prefix columns is organized as a forest of index
-		// trees, one for each unique prefix. This structure does not support
-		// scanning across multiple trees at once, so the prefix spans must have the
-		// same start and end key.
-		if !span.HasSingleKey(ctx, s.evalCtx) {
-			return nil, errors.AssertionFailedf("constraint span %s does not have a single key", span)
-		}
-		// Do not include the /Table/Index prefix bytes - we only want the portion
-		// of the prefix that corresponds to the prefix columns.
-		var err error
-		prefixKeys[i], _, err = s.encodeConstraintKey(span.StartKey(), false /* includePrefix */)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return prefixKeys, nil
 }

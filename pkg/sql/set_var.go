@@ -30,7 +30,6 @@ import (
 
 // setVarNode represents a SET {SESSION | LOCAL} statement.
 type setVarNode struct {
-	zeroInputPlanNode
 	name  string
 	local bool
 	v     sessionVar
@@ -39,9 +38,7 @@ type setVarNode struct {
 }
 
 // resetAllNode represents a RESET ALL statement.
-type resetAllNode struct {
-	zeroInputPlanNode
-}
+type resetAllNode struct{}
 
 // SetVar sets session variables.
 // Privileges: None.
@@ -425,20 +422,6 @@ func lockTimeoutVarSet(ctx context.Context, m sessionDataMutator, s string) erro
 	}
 
 	m.SetLockTimeout(timeout)
-	return nil
-}
-
-func deadlockTimeoutVarSet(ctx context.Context, m sessionDataMutator, s string) error {
-	timeout, err := validateTimeoutVar(
-		m.data.GetIntervalStyle(),
-		s,
-		"deadlock_timeout",
-	)
-	if err != nil {
-		return err
-	}
-
-	m.SetDeadlockTimeout(timeout)
 	return nil
 }
 

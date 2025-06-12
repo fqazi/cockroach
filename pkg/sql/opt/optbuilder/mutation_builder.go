@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/cast"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
@@ -62,8 +61,6 @@ type mutationBuilder struct {
 	// inserted into the target table. It is only populated for INSERT
 	// expressions. It is currently used to inline constant insert values into
 	// uniqueness checks.
-	//
-	// insertExpr may not be set (e.g. if there are INSERT triggers).
 	insertExpr memo.RelExpr
 
 	// targetColList is an ordered list of IDs of the table columns into which
@@ -139,31 +136,6 @@ type mutationBuilder struct {
 	// the table.
 	partialIndexDelColIDs opt.OptionalColList
 
-	// vectorIndexDelPartitionColIDs lists the input column IDs storing the keys
-	// for the partitions that the deleted or updated rows should be removed from.
-	// The length is always equal to the number of vector indexes on the table.
-	vectorIndexDelPartitionColIDs opt.OptionalColList
-
-	// vectorIndexPutPartitionColIDs lists the input column IDs storing the keys
-	// for the partitions that the inserted or updated rows should be added to.
-	// The length is always equal to the number of vector indexes on the table.
-	vectorIndexPutPartitionColIDs opt.OptionalColList
-
-	// vectorIndexPutQuantizedVecColIDs lists the input column IDs storing the
-	// quantized and encoded vectors that should be inserted into the index. Note
-	// that the quantized vectors are not needed for deletions. The length is
-	// always equal to the number of vector indexes on the table.
-	vectorIndexPutQuantizedVecColIDs opt.OptionalColList
-
-	// triggerColIDs is the set of column IDs used to project the OLD and NEW rows
-	// for row-level AFTER triggers, and possibly also contains the canary column.
-	// It is only populated if the mutation statement has row-level AFTER
-	// triggers.
-	//
-	// NOTE: triggerColIDs may contain columns both contained and not contained in
-	// the lists above.
-	triggerColIDs opt.ColSet
-
 	// canaryColID is the ID of the column that is used to decide whether to
 	// insert or update each row. If the canary column's value is null, then it's
 	// an insert; otherwise it's an update.
@@ -213,9 +185,6 @@ type mutationBuilder struct {
 	// cascades contains foreign key check cascades; see buildFK* methods.
 	cascades memo.FKCascades
 
-	// afterTriggers contains AFTER triggers; see buildRowLevelAfterTriggers.
-	afterTriggers *memo.AfterTriggers
-
 	// withID is nonzero if we need to buffer the input for FK or uniqueness
 	// checks.
 	withID opt.WithID
@@ -240,10 +209,6 @@ type mutationBuilder struct {
 	// inputForInsertExpr stores the result of outscope.expr from the most
 	// recent call to buildInputForInsert.
 	inputForInsertExpr memo.RelExpr
-
-	// uniqueWithTombstoneIndexes is the set of unique indexes that ensure uniqueness
-	// by writing tombstones to all partitions
-	uniqueWithTombstoneIndexes intsets.Fast
 }
 
 func (mb *mutationBuilder) init(b *Builder, opName string, tab cat.Table, alias tree.TableName) {
@@ -257,31 +222,19 @@ func (mb *mutationBuilder) init(b *Builder, opName string, tab cat.Table, alias 
 		alias:  alias,
 	}
 
-	tabCols := tab.ColumnCount()
-	mb.targetColList = make(opt.ColList, 0, tabCols)
+	n := tab.ColumnCount()
+	mb.targetColList = make(opt.ColList, 0, n)
 
 	// Allocate segmented array of column IDs.
 	numPartialIndexes := partialIndexCount(tab)
-	numVectorIndexes := vectorIndexCount(tab)
-	numChecks := tab.CheckCount()
-	colIDs := make(opt.OptionalColList, 4*tabCols+numChecks+2*numPartialIndexes+3*numVectorIndexes)
-
-	var start int
-	getSlice := func(n int) opt.OptionalColList {
-		slice := colIDs[start : start+n]
-		start += n
-		return slice
-	}
-	mb.insertColIDs = getSlice(tabCols)
-	mb.fetchColIDs = getSlice(tabCols)
-	mb.updateColIDs = getSlice(tabCols)
-	mb.upsertColIDs = getSlice(tabCols)
-	mb.checkColIDs = getSlice(numChecks)
-	mb.partialIndexPutColIDs = getSlice(numPartialIndexes)
-	mb.partialIndexDelColIDs = getSlice(numPartialIndexes)
-	mb.vectorIndexPutPartitionColIDs = getSlice(numVectorIndexes)
-	mb.vectorIndexPutQuantizedVecColIDs = getSlice(numVectorIndexes)
-	mb.vectorIndexDelPartitionColIDs = getSlice(numVectorIndexes)
+	colIDs := make(opt.OptionalColList, n*4+tab.CheckCount()+2*numPartialIndexes)
+	mb.insertColIDs = colIDs[:n]
+	mb.fetchColIDs = colIDs[n : n*2]
+	mb.updateColIDs = colIDs[n*2 : n*3]
+	mb.upsertColIDs = colIDs[n*3 : n*4]
+	mb.checkColIDs = colIDs[n*4 : n*4+tab.CheckCount()]
+	mb.partialIndexPutColIDs = colIDs[n*4+tab.CheckCount() : n*4+tab.CheckCount()+numPartialIndexes]
+	mb.partialIndexDelColIDs = colIDs[n*4+tab.CheckCount()+numPartialIndexes:]
 
 	// Add the table and its columns (including mutation columns) to metadata.
 	mb.tabID = mb.md.AddTable(tab, &mb.alias)
@@ -327,7 +280,6 @@ func (mb *mutationBuilder) buildInputForUpdate(
 	texpr tree.TableExpr,
 	from tree.TableExprs,
 	where *tree.Where,
-	whereColRefs *opt.ColSet,
 	limit *tree.Limit,
 	orderBy tree.OrderBy,
 ) {
@@ -336,13 +288,6 @@ func (mb *mutationBuilder) buildInputForUpdate(
 		indexFlags = source.IndexFlags
 		telemetry.Inc(sqltelemetry.IndexHintUseCounter)
 		telemetry.Inc(sqltelemetry.IndexHintUpdateUseCounter)
-	}
-
-	if mb.b.evalCtx.SessionData().AvoidFullTableScansInMutations {
-		if indexFlags == nil {
-			indexFlags = &tree.IndexFlags{}
-		}
-		indexFlags.AvoidFullScan = true
 	}
 
 	// Fetch columns from different instance of the table metadata, so that it's
@@ -363,7 +308,6 @@ func (mb *mutationBuilder) buildInputForUpdate(
 		noRowLocking,
 		inScope,
 		false, /* disableNotVisibleIndex */
-		cat.PolicyScopeUpdate,
 	)
 
 	// Set list of columns that will be fetched by the input expression.
@@ -398,7 +342,7 @@ func (mb *mutationBuilder) buildInputForUpdate(
 	}
 
 	// WHERE
-	mb.b.buildWhere(where, mb.outScope, whereColRefs)
+	mb.b.buildWhere(where, mb.outScope)
 
 	// SELECT + ORDER BY (which may add projected expressions)
 	projectionsScope := mb.outScope.replace()
@@ -456,13 +400,6 @@ func (mb *mutationBuilder) buildInputForDelete(
 		telemetry.Inc(sqltelemetry.IndexHintDeleteUseCounter)
 	}
 
-	if mb.b.evalCtx.SessionData().AvoidFullTableScansInMutations {
-		if indexFlags == nil {
-			indexFlags = &tree.IndexFlags{}
-		}
-		indexFlags.AvoidFullScan = true
-	}
-
 	// Fetch columns from different instance of the table metadata, so that it's
 	// possible to remap columns, as in this example:
 	//
@@ -482,7 +419,6 @@ func (mb *mutationBuilder) buildInputForDelete(
 		noRowLocking,
 		inScope,
 		false, /* disableNotVisibleIndex */
-		cat.PolicyScopeDelete,
 	)
 
 	// Set list of columns that will be fetched by the input expression.
@@ -519,7 +455,7 @@ func (mb *mutationBuilder) buildInputForDelete(
 	}
 
 	// WHERE
-	mb.b.buildWhere(where, mb.outScope, nil /* colRefs */)
+	mb.b.buildWhere(where, mb.outScope)
 
 	// SELECT + ORDER BY (which may add projected expressions)
 	projectionsScope := mb.outScope.replace()
@@ -865,64 +801,36 @@ func (mb *mutationBuilder) addSynthesizedComputedCols(colIDs opt.OptionalColList
 // is true, check columns that do not reference mutation columns are not added
 // to checkColIDs, which allows pruning normalization rules to remove the
 // unnecessary projected column.
-func (mb *mutationBuilder) addCheckConstraintCols(
-	isUpdate bool, policyCmdScope cat.PolicyCommandScope, includeSelectPolicies bool,
-) {
+func (mb *mutationBuilder) addCheckConstraintCols(isUpdate bool) {
 	if mb.tab.CheckCount() != 0 {
 		projectionsScope := mb.outScope.replace()
 		projectionsScope.appendColumnsFromScope(mb.outScope)
 		mutationCols := mb.mutationColumnIDs()
-		var seenRLSConstraint bool
 
 		for i, n := 0, mb.tab.CheckCount(); i < n; i++ {
 			check := mb.tab.Check(i)
-
-			referencedCols := &opt.ColSet{}
-			var scopeCol *scopeColumn
-
-			// For tables with RLS enabled, we create a synthetic check constraint
-			// to enforce the policies. Since this check varies based on the role
-			// and command used, it must be generated each time it is needed rather
-			// than being included with the table's actual check constraints.
-			if check.IsRLSConstraint() {
-				if seenRLSConstraint {
-					panic(errors.AssertionFailedf("a table should only have one RLS constraint"))
-				}
-				seenRLSConstraint = true
-
-				var rlsScalar opt.ScalarExpr
-				rlsScalar, check = mb.buildRLSCheckConstraint(policyCmdScope, includeSelectPolicies, referencedCols)
-				colName := scopeColName("").WithMetadataName("rls")
-				scopeCol = mb.b.synthesizeColumn(projectionsScope, colName, rlsScalar.DataType(), nil /* expr */, rlsScalar)
-			} else {
-				expr, err := parser.ParseExpr(check.Constraint())
-				if err != nil {
-					panic(err)
-				}
-
-				texpr := mb.outScope.resolveAndRequireType(expr, types.Bool)
-
-				// Use an anonymous name because the column cannot be referenced
-				// in other expressions.
-				colName := scopeColName("").WithMetadataName(fmt.Sprintf("check%d", i+1))
-				scopeCol = projectionsScope.addColumn(colName, texpr)
-
-				// TODO(ridwanmsharif): Maybe we can avoid building constraints here
-				// and instead use the constraints stored in the table metadata.
-				mb.b.buildScalar(texpr, mb.outScope, projectionsScope, scopeCol, referencedCols)
+			expr, err := parser.ParseExpr(check.Constraint())
+			if err != nil {
+				panic(err)
 			}
 
-			// For non-UPDATE mutations, track the synthesized check columns in
-			// checkColIDs. For UPDATE mutations, track the check columns in two
-			// scenarios:
-			// - If the check expression is a real check constraint and the columns
-			//   referenced in the check expression are being mutated.
-			// - If the check expression is a synthetic one used for row-level
-			//   security (RLS). Since it's not a real check expression, different
-			//   expressions can exist for read and write operations. This means it's
-			//   possible to read a row whose column values would violate the write
-			//   expression.
-			if !isUpdate || check.IsRLSConstraint() || referencedCols.Intersects(mutationCols) {
+			texpr := mb.outScope.resolveAndRequireType(expr, types.Bool)
+
+			// Use an anonymous name because the column cannot be referenced
+			// in other expressions.
+			colName := scopeColName("").WithMetadataName(fmt.Sprintf("check%d", i+1))
+			scopeCol := projectionsScope.addColumn(colName, texpr)
+
+			// TODO(ridwanmsharif): Maybe we can avoid building constraints here
+			// and instead use the constraints stored in the table metadata.
+			referencedCols := &opt.ColSet{}
+			mb.b.buildScalar(texpr, mb.outScope, projectionsScope, scopeCol, referencedCols)
+
+			// If the mutation is not an UPDATE, track the synthesized check
+			// columns in checkColIDS. If the mutation is an UPDATE, only track
+			// the check columns if the columns referenced in the check
+			// expression are being mutated.
+			if !isUpdate || referencedCols.Intersects(mutationCols) {
 				mb.checkColIDs[i] = scopeCol.id
 
 				// TODO(michae2): Under weaker isolation levels we need to use shared
@@ -968,251 +876,6 @@ func (mb *mutationBuilder) addCheckConstraintCols(
 	}
 }
 
-// buildRLSCheckConstraint returns a RLS specific check constraint that is used
-// to enforce the policies on write.
-func (mb *mutationBuilder) buildRLSCheckConstraint(
-	cmdScope cat.PolicyCommandScope, includeSelectPolicies bool, referencedCols *opt.ColSet,
-) (opt.ScalarExpr, *rlsCheckConstraint) {
-	tabMeta := mb.md.TableMeta(mb.tabID)
-	scalar := mb.buildRLSCheckExpr(tabMeta, cmdScope, includeSelectPolicies, referencedCols)
-
-	// Build a CheckConstraint so the caller knows what columns were referenced.
-	check := rlsCheckConstraint{
-		colIDs: mb.b.getColIDsFromPoliciesUsed(tabMeta),
-		tab:    mb.tab,
-	}
-	return scalar, &check
-}
-
-// buildRLSCheckExpr constructs the scalar expression that enforces row-level
-// security (RLS) policies via a synthetic check constraint. The resulting
-// expression is used during data mutation operations (e.g., INSERT, UPDATE, UPSERT).
-//
-// The includeSelectPolicies parameter controls whether SELECT policies are also
-// enforced in the check constraint:
-//   - For INSERT: if set, SELECT policies are applied to the newly inserted rows
-//     (e.g., for INSERT ... RETURNING to ensure returned rows are visible).
-//   - For UPDATE: if set, SELECT policies are applied if any SET clause, WHERE clause,
-//     or RETURNING clause references a column from the table (i.e., when existing
-//     rows need to be checked for visibility).
-//   - For UPSERT: this parameter is ignored because UPSERT enforces SELECT policies
-//     internally based on conflict detection.
-//
-// The referencedCols is updated to reflect the columns that are referenced in
-// all applied policy expressions.
-func (mb *mutationBuilder) buildRLSCheckExpr(
-	tabMeta *opt.TableMeta,
-	cmdScope cat.PolicyCommandScope,
-	includeSelectPolicies bool,
-	referencedCols *opt.ColSet,
-) opt.ScalarExpr {
-	if mb.b.isExemptFromRLSPolicies(tabMeta, cmdScope) {
-		return memo.TrueSingleton
-	}
-
-	var scalar opt.ScalarExpr
-	switch cmdScope {
-	case cat.PolicyScopeInsert:
-		scalar = mb.genPolicyWithCheckExpr(tabMeta, cat.PolicyScopeInsert, referencedCols)
-		// Only apply select policies if requested.
-		if includeSelectPolicies {
-			// Note: we use mb.outScope because we want the policies applied to the newly
-			// inserted rows. For example, INSERT ... RETURNING must ensure the returned
-			// rows are visible.
-			scalar = mb.b.factory.ConstructAnd(
-				mb.genPolicyUsingExpr(tabMeta, cat.PolicyScopeSelect, mb.outScope, referencedCols),
-				scalar,
-			)
-		}
-	case cat.PolicyScopeUpdate:
-		scalar = mb.genPolicyWithCheckExpr(tabMeta, cat.PolicyScopeUpdate, referencedCols)
-		// Only apply select policies if requested.
-		if includeSelectPolicies {
-			scalar = mb.b.factory.ConstructAnd(
-				mb.genPolicyUsingExpr(tabMeta, cat.PolicyScopeSelect, mb.outScope, referencedCols),
-				scalar,
-			)
-		}
-	case cat.PolicyScopeUpsert:
-		// For UPSERT, the applied RLS policies depend on whether the operation results in
-		// an INSERT or an UPDATE. We determine this by checking if the canary column is NULL:
-		//   - If it IS NULL → no conflict occurred → this is an INSERT
-		//   - If it is NOT NULL → conflict occurred → this is an UPDATE
-		//
-		// The expression below enforces:
-		//   - On conflict (UPDATE):
-		//       * SELECT + UPDATE policies on the existing row (fetchScope)
-		//       * SELECT + UPDATE policies on the updated row (outScope)
-		//   - On no conflict (INSERT):
-		//       * SELECT + INSERT policies on the inserted row (outScope)
-		//
-		// This is expressed as:
-		//   (isConflict AND all UPDATE-related policies)
-		//   OR
-		//   (isNotConflict AND all INSERT-related policies)
-		isNotConflict := mb.b.factory.ConstructIs(
-			mb.b.factory.ConstructVariable(mb.canaryColID),
-			memo.NullSingleton,
-		)
-		isConflict := mb.b.factory.ConstructNot(isNotConflict)
-		scalar = mb.b.factory.ConstructOr(
-			// CASE 1: apply all UPDATE-related policies. Note: we use mb.fetchScope
-			// to apply policies against columns fetched during conflict detection.
-			// We don't filter out rows that violate SELECT policies (as we would in
-			// a normal query), because we want the UPSERT to fail if a conflict occurs
-			// but the user does not have visibility into the conflicting row.
-			mb.b.factory.ConstructAnd(
-				isConflict,
-				mb.b.factory.ConstructAnd(
-					mb.genPolicyUsingExpr(tabMeta, cat.PolicyScopeSelect, mb.fetchScope, referencedCols),
-					mb.b.factory.ConstructAnd(
-						mb.genPolicyUsingExpr(tabMeta, cat.PolicyScopeUpdate, mb.fetchScope, referencedCols),
-						mb.b.factory.ConstructAnd(
-							mb.genPolicyUsingExpr(tabMeta, cat.PolicyScopeSelect, mb.outScope, referencedCols),
-							mb.genPolicyWithCheckExpr(tabMeta, cat.PolicyScopeUpdate, referencedCols),
-						),
-					),
-				),
-			),
-			// CASE 2: apply all INSERT-related policies
-			mb.b.factory.ConstructAnd(
-				isNotConflict,
-				mb.b.factory.ConstructAnd(
-					mb.genPolicyUsingExpr(tabMeta, cat.PolicyScopeSelect, mb.outScope, referencedCols),
-					mb.genPolicyWithCheckExpr(tabMeta, cat.PolicyScopeInsert, referencedCols),
-				),
-			),
-		)
-	default:
-		panic(errors.AssertionFailedf("unsupported policy command scope for check expr: %v", cmdScope))
-	}
-
-	mb.b.factory.Metadata().GetRLSMeta().RefreshNoPoliciesAppliedForTable(tabMeta.MetaID)
-	return scalar
-}
-
-// genPolicyWithCheckExpr will build a WITH CHECK expression for the
-// given policy command. If no policy applies, then the 'false' expression is
-// returned.
-func (mb *mutationBuilder) genPolicyWithCheckExpr(
-	tabMeta *opt.TableMeta, cmdScope cat.PolicyCommandScope, referencedCols *opt.ColSet,
-) opt.ScalarExpr {
-	scalar := mb.genPolicyExpr(tabMeta, cmdScope, mb.outScope, referencedCols, false /* forceUsingExpr */)
-	if scalar == nil {
-		return memo.FalseSingleton
-	}
-	return scalar
-}
-
-// genPolicyUsingExpr generates a USING expression for the given policy command.
-// If no applicable policies are found, it returns 'false'. Otherwise, it returns
-// the generated scalar expression.
-func (mb *mutationBuilder) genPolicyUsingExpr(
-	tabMeta *opt.TableMeta,
-	cmdScope cat.PolicyCommandScope,
-	exprScope *scope,
-	referencedCols *opt.ColSet,
-) opt.ScalarExpr {
-	scalar := mb.genPolicyExpr(tabMeta, cmdScope, exprScope, referencedCols, true /* forceUsingExpr */)
-	if scalar == nil {
-		return memo.FalseSingleton
-	}
-	return scalar
-}
-
-// genPolicyExpr constructs a scalar expression representing the RLS (row-level
-// security) policy checks to enforce for a given command scope (INSERT, UPDATE,
-// etc.).
-//
-// Typically, RLS policies are enforced using the WITH CHECK expression, which
-// ensures that written rows comply with the defined policies. However, in
-// certain scenarios, the USING expression is used instead—most notably during
-// conflict resolution in UPSERTs. In those cases, we don't filter out invisible
-// rows during scans; instead, we enforce visibility by requiring the row to
-// satisfy the USING expression. If it doesn't, the statement fails via a
-// constraint violation.
-//
-// The `forceUsingExpr` flag controls this behaviour:
-//   - If false: the WITH CHECK expression is used (if present).
-//   - If true: the USING expression is used instead, even if a WITH CHECK
-//     expression is defined.
-//
-// This function returns a scalar expression composed of all applicable policies
-// (both permissive and restrictive), and records which policies were applied in
-// the RLS metadata.
-//
-// The final expression has the form:
-//
-//	(permissive1 OR permissive2 OR ...) AND restrictive1 AND restrictive2 AND ...
-//
-// This structure allows permissive policies to grant access if *any* are
-// satisfied, while all restrictive policies must be satisfied to allow the
-// operation.
-func (mb *mutationBuilder) genPolicyExpr(
-	tabMeta *opt.TableMeta,
-	cmdScope cat.PolicyCommandScope,
-	exprScope *scope,
-	referencedCols *opt.ColSet,
-	forceUsingExpr bool,
-) opt.ScalarExpr {
-	var scalar opt.ScalarExpr
-	var policiesUsed opt.PolicyIDSet
-	policies := tabMeta.Table.Policies()
-
-	// Create a closure to handle building the expression for one policy.
-	buildForPolicy := func(p cat.Policy, combineScalars func(opt.ScalarExpr, opt.ScalarExpr) opt.ScalarExpr) {
-		if !p.AppliesToRole(mb.b.ctx, mb.b.catalog, mb.b.checkPrivilegeUser) || !policyAppliesToCommandScope(p, cmdScope) {
-			return
-		}
-		policiesUsed.Add(p.ID)
-
-		expr := p.WithCheckExpr
-		if expr == "" || forceUsingExpr {
-			// The USING expression is used in two scenarios:
-			// - When the WITH CHECK expression is not defined
-			// - When the caller explicitly requests only the USING expression (e.g.,
-			// during UPSERT)
-			expr = p.UsingExpr
-		}
-		if expr == "" {
-			// If both expressions are missing, the policy does not apply and can
-			// be skipped.
-			return
-		}
-		pexpr, err := parser.ParseExpr(expr)
-		if err != nil {
-			panic(err)
-		}
-		texpr := exprScope.resolveAndRequireType(pexpr, types.Bool)
-		singleExprScalar := mb.b.buildScalar(texpr, mb.outScope, nil, nil, referencedCols)
-
-		// Build up a scalar expression of all singleExprScalar's combined.
-		if scalar != nil {
-			scalar = combineScalars(scalar, singleExprScalar)
-		} else {
-			scalar = singleExprScalar
-		}
-	}
-
-	for _, policy := range policies.Permissive {
-		buildForPolicy(policy, mb.b.factory.ConstructOr)
-	}
-	// If no permissive policies apply, then we will add a false check as
-	// nothing is allowed to be written.
-	if scalar == nil {
-		return memo.FalseSingleton
-	}
-	for _, policy := range policies.Restrictive {
-		buildForPolicy(policy, mb.b.factory.ConstructAnd)
-	}
-
-	if scalar == nil {
-		panic(errors.AssertionFailedf("at least one applicable policy should have been included"))
-	}
-	mb.b.factory.Metadata().GetRLSMeta().AddPoliciesUsed(tabMeta.MetaID, policiesUsed, false /* applyFilterExpr */)
-	return scalar
-}
-
 // getColumnFamilySet gets the set of column families represented in colOrdinals.
 func getColumnFamilySet(colOrdinals intsets.Fast, tab cat.Table) intsets.Fast {
 	families := intsets.Fast{}
@@ -1255,7 +918,7 @@ func (mb *mutationBuilder) projectPartialIndexPutCols() {
 	mb.projectPartialIndexColsImpl(mb.outScope, nil /* delScope */)
 }
 
-// projectPartialIndexDelCols builds a Project that synthesizes boolean DEL
+// projectPartialIndexDelCols builds a Project that synthesizes boolean PUT
 // columns for each partial index defined on the target table. See
 // partialIndexDelColIDs for more info on these columns.
 func (mb *mutationBuilder) projectPartialIndexDelCols() {
@@ -1327,188 +990,6 @@ func (mb *mutationBuilder) projectPartialIndexColsImpl(putScope, delScope *scope
 	}
 }
 
-// projectVectorIndexColsForInsert builds VectorMutationSearch operators for the input
-// of an INSERT mutation. See projectVectorIndexColsImpl for details.
-func (mb *mutationBuilder) projectVectorIndexColsForInsert() {
-	mb.projectVectorIndexColsImpl(opt.InsertOp /* op */)
-
-	// Execution expects each list to have one entry for each vector index. Ensure
-	// this is the case by projecting NULL values as necessary.
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexPutPartitionColIDs)
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexPutQuantizedVecColIDs)
-}
-
-// projectVectorIndexColsForUpsert builds VectorMutationSearch operators for the input
-// of an UPSERT mutation. See projectVectorIndexColsImpl for details.
-func (mb *mutationBuilder) projectVectorIndexColsForUpsert() {
-	mb.projectVectorIndexColsImpl(opt.UpsertOp /* op */)
-
-	// Execution expects each list to have one entry for each vector index. Ensure
-	// this is the case by projecting NULL values as necessary.
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexPutPartitionColIDs)
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexPutQuantizedVecColIDs)
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexDelPartitionColIDs)
-}
-
-// projectVectorIndexColsForUpdate builds VectorMutationSearch operators for the input
-// of an UPDATE mutation. See projectVectorIndexColsImpl for details.
-func (mb *mutationBuilder) projectVectorIndexColsForUpdate() {
-	mb.projectVectorIndexColsImpl(opt.UpdateOp /* op */)
-
-	// Execution expects each list to have one entry for each vector index. Ensure
-	// this is the case by projecting NULL values as necessary.
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexPutPartitionColIDs)
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexPutQuantizedVecColIDs)
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexDelPartitionColIDs)
-}
-
-// projectVectorIndexColsForDelete builds VectorMutationSearch operators for the
-// input of a DELETE mutation. See projectVectorIndexColsImpl for details.
-func (mb *mutationBuilder) projectVectorIndexColsForDelete() {
-	mb.projectVectorIndexColsImpl(opt.DeleteOp /* op */)
-
-	// Execution expects each list to have one entry for each vector index. Ensure
-	// this is the case by projecting NULL values as necessary.
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexDelPartitionColIDs)
-}
-
-// replaceUnsetColsWithNulls checks the given OptionalColList for unset column
-// IDs, and replaces any found with a new column that projects a NULL value.
-func (mb *mutationBuilder) replaceUnsetColsWithNulls(cols opt.OptionalColList) {
-	// We will construct a new Project operator that will contain the newly
-	// synthesized column(s).
-	pb := makeProjectionBuilder(mb.b, mb.outScope)
-
-	for i, colID := range cols {
-		if colID == 0 {
-			// Add synthesized column that projects a NULL value. Update the cols list
-			// to include the new column ID.
-			colName := scopeColName("").WithMetadataName(fmt.Sprintf("null%d", i+1))
-			cols[i], _ = pb.Add(colName, tree.DNull, types.Unknown)
-		}
-	}
-
-	mb.outScope = pb.Finish()
-}
-
-// projectVectorIndexColsImpl builds VectorMutationSearch operators that project
-// partitions to be the target of index insertions and deletions for each vector
-// index defined on the target table. This is needed because vector indexes must
-// perform a search to determine which partition a given vector belongs to.
-func (mb *mutationBuilder) projectVectorIndexColsImpl(op opt.Operator) {
-	if vectorIndexCount(mb.tab) > 0 {
-		addCol := func(name string, typ *types.T) opt.ColumnID {
-			colName := scopeColName("").WithMetadataName(name)
-			sc := mb.b.synthesizeColumn(mb.outScope, colName, typ, nil /* expr */, nil /* expr */)
-			return sc.id
-		}
-		idxOrd := 0
-		for i := range mb.tab.DeletableIndexCount() {
-			index := mb.tab.Index(i)
-
-			// Skip non-vector indexes.
-			if index.Type() != idxtype.VECTOR {
-				continue
-			}
-
-			// Determine whether index PUT and DEL operations will be necessary.
-			indexColIsUpdated := false
-			if op == opt.UpsertOp || op == opt.UpdateOp {
-				// UPSERT and UPDATE statements can target specific columns for update.
-				// Check if any columns from the index are being updated.
-				for colIndexOrd := 0; colIndexOrd < index.ColumnCount(); colIndexOrd++ {
-					colTableOrd := index.Column(colIndexOrd).Ordinal()
-					if mb.upsertColIDs[colTableOrd] != 0 || mb.updateColIDs[colTableOrd] != 0 {
-						indexColIsUpdated = true
-						break
-					}
-				}
-			}
-			// It is possible for a vector index to be the target of both PUT and DEL
-			// operations, in which case two search operators are needed in order to
-			// locate the old index entry, as well as the partition for the new one.
-			//
-			// TODO(drewk): we may be able to avoid the DEL for updates to stored
-			// columns (once they're supported).
-			if op == opt.DeleteOp || indexColIsUpdated {
-				const isIndexPut = false
-				partitionCol := addCol(fmt.Sprintf("vector_index_del_partition%d", idxOrd+1), types.Int)
-				mb.outScope.expr = mb.buildVectorMutationSearch(
-					mb.outScope.expr, index, partitionCol, 0 /* encVectorCol */, isIndexPut,
-				)
-				mb.vectorIndexDelPartitionColIDs[idxOrd] = partitionCol
-			}
-			if op == opt.InsertOp || op == opt.UpsertOp || indexColIsUpdated {
-				const isIndexPut = true
-				partitionCol := addCol(fmt.Sprintf("vector_index_put_partition%d", idxOrd+1), types.Int)
-				quantizedVecCol := addCol(fmt.Sprintf("vector_index_put_quantized_vec%d", idxOrd+1), types.Bytes)
-				mb.outScope.expr = mb.buildVectorMutationSearch(
-					mb.outScope.expr, index, partitionCol, quantizedVecCol, isIndexPut,
-				)
-				mb.vectorIndexPutPartitionColIDs[idxOrd] = partitionCol
-				mb.vectorIndexPutQuantizedVecColIDs[idxOrd] = quantizedVecCol
-			}
-			idxOrd++
-		}
-	}
-}
-
-// buildVectorMutationSearch builds a VectorMutationSearch operator that will
-// find the partition (and quantized vector, if requested) for vectors in the
-// given queryVectorCol.
-func (mb *mutationBuilder) buildVectorMutationSearch(
-	input memo.RelExpr, index cat.Index, partitionCol, quantizedVecCol opt.ColumnID, isIndexPut bool,
-) memo.RelExpr {
-	if index.IsTemporaryIndexForBackfill() {
-		panic(unimplemented.NewWithIssue(144443, "Cannot write to a vector index while it is being built"))
-	}
-	getCol := func(colOrd int) (colID opt.ColumnID) {
-		// Check in turn if the column is being upserted, inserted, updated, or
-		// fetched.
-		if isIndexPut {
-			colID = mb.upsertColIDs[colOrd]
-			if colID == 0 {
-				colID = mb.insertColIDs[colOrd]
-			}
-			if colID == 0 {
-				colID = mb.updateColIDs[colOrd]
-			}
-		}
-		if colID == 0 {
-			colID = mb.fetchColIDs[colOrd]
-		}
-		if colID == 0 {
-			panic(errors.AssertionFailedf("column %d not found", colOrd))
-		}
-		return colID
-	}
-	prefixCols := make(opt.ColList, 0, index.PrefixColumnCount())
-	for colIdx := range index.PrefixColumnCount() {
-		prefixCols = append(prefixCols, getCol(index.Column(colIdx).Ordinal()))
-	}
-	var suffixCols opt.ColList
-	if !isIndexPut {
-		// Index DEL operations must specify the full key to ensure the correct
-		// index entry is deleted.
-		suffixStart := index.PrefixColumnCount() + 1
-		suffixCols = make(opt.ColList, 0, index.KeyColumnCount()-suffixStart)
-		for colIdx := suffixStart; colIdx < index.KeyColumnCount(); colIdx++ {
-			suffixCols = append(suffixCols, getCol(index.Column(colIdx).Ordinal()))
-		}
-	}
-	private := memo.VectorMutationSearchPrivate{
-		Table:              mb.tabID,
-		Index:              index.Ordinal(),
-		PrefixKeyCols:      prefixCols,
-		QueryVectorCol:     getCol(index.VectorColumn().Ordinal()),
-		SuffixKeyCols:      suffixCols,
-		PartitionCol:       partitionCol,
-		QuantizedVectorCol: quantizedVecCol,
-		IsIndexPut:         isIndexPut,
-	}
-	return mb.b.factory.ConstructVectorMutationSearch(input, &private)
-}
-
 // computedColumnScope returns a new scope that can be used to build computed
 // column expressions. Columns will never be ambiguous because each column in
 // the returned scope maps to a single column in the target table.
@@ -1564,12 +1045,7 @@ func (mb *mutationBuilder) disambiguateColumns() {
 
 // makeMutationPrivate builds a MutationPrivate struct containing the table and
 // column metadata needed for the mutation operator.
-//
-// - vectorInsert indicates that the mutation operator is an Insert with a
-// specialized vectorized implementation for Copy.
-func (mb *mutationBuilder) makeMutationPrivate(
-	needResults, vectorInsert bool,
-) *memo.MutationPrivate {
+func (mb *mutationBuilder) makeMutationPrivate(needResults bool) *memo.MutationPrivate {
 	// Helper function that returns nil if there are no non-zero column IDs in a
 	// given list. A zero column ID indicates that column does not participate
 	// in this mutation operation.
@@ -1581,30 +1057,21 @@ func (mb *mutationBuilder) makeMutationPrivate(
 	}
 
 	private := &memo.MutationPrivate{
-		Table:                          mb.tabID,
-		InsertCols:                     checkEmptyList(mb.insertColIDs),
-		FetchCols:                      checkEmptyList(mb.fetchColIDs),
-		UpdateCols:                     checkEmptyList(mb.updateColIDs),
-		CanaryCol:                      mb.canaryColID,
-		ArbiterIndexes:                 mb.arbiters.IndexOrdinals(),
-		ArbiterConstraints:             mb.arbiters.UniqueConstraintOrdinals(),
-		CheckCols:                      checkEmptyList(mb.checkColIDs),
-		PartialIndexPutCols:            checkEmptyList(mb.partialIndexPutColIDs),
-		PartialIndexDelCols:            checkEmptyList(mb.partialIndexDelColIDs),
-		VectorIndexPutPartitionCols:    checkEmptyList(mb.vectorIndexPutPartitionColIDs),
-		VectorIndexPutQuantizedVecCols: checkEmptyList(mb.vectorIndexPutQuantizedVecColIDs),
-		VectorIndexDelPartitionCols:    checkEmptyList(mb.vectorIndexDelPartitionColIDs),
-		TriggerCols:                    mb.triggerColIDs,
-		FKCascades:                     mb.cascades,
-		AfterTriggers:                  mb.afterTriggers,
-		UniqueWithTombstoneIndexes:     mb.uniqueWithTombstoneIndexes.Ordered(),
-		VectorInsert:                   vectorInsert,
+		Table:               mb.tabID,
+		InsertCols:          checkEmptyList(mb.insertColIDs),
+		FetchCols:           checkEmptyList(mb.fetchColIDs),
+		UpdateCols:          checkEmptyList(mb.updateColIDs),
+		CanaryCol:           mb.canaryColID,
+		ArbiterIndexes:      mb.arbiters.IndexOrdinals(),
+		ArbiterConstraints:  mb.arbiters.UniqueConstraintOrdinals(),
+		CheckCols:           checkEmptyList(mb.checkColIDs),
+		PartialIndexPutCols: checkEmptyList(mb.partialIndexPutColIDs),
+		PartialIndexDelCols: checkEmptyList(mb.partialIndexDelColIDs),
+		FKCascades:          mb.cascades,
 	}
 
-	// If we didn't actually plan any checks, cascades, or triggers, don't buffer
-	// the input.
-	if len(mb.uniqueChecks) > 0 || len(mb.fkChecks) > 0 ||
-		len(mb.cascades) > 0 || mb.afterTriggers != nil {
+	// If we didn't actually plan any checks or cascades, don't buffer the input.
+	if len(mb.uniqueChecks) > 0 || len(mb.fkChecks) > 0 || len(mb.cascades) > 0 {
 		private.WithID = mb.withID
 	}
 
@@ -1663,33 +1130,14 @@ func (mb *mutationBuilder) mapToReturnColID(tabOrd int) opt.ColumnID {
 }
 
 // buildReturning wraps the input expression with a Project operator that
-// projects the given RETURNING expressions. The inScope and outScope parameters
-// should be built with buildReturningScopes.
-func (mb *mutationBuilder) buildReturning(
-	returning *tree.ReturningExprs, inScope, outScope *scope,
-) {
+// projects the given RETURNING expressions.
+func (mb *mutationBuilder) buildReturning(returning *tree.ReturningExprs) {
 	// Handle case of no RETURNING clause.
 	if returning == nil {
-		// Create an empty scope and add the built expression to it.
 		expr := mb.outScope.expr
 		mb.outScope = mb.b.allocScope()
 		mb.outScope.expr = expr
 		return
-	}
-
-	// Construct the Project operator that projects the RETURNING expressions.
-	inScope.expr = mb.outScope.expr
-	mb.b.constructProjectForScope(inScope, outScope)
-	mb.outScope = outScope
-}
-
-// buildReturningScopes builds the input and output scopes for the RETURNING
-// clause. If the RETURNING clause is nil, both returned scopes are nil.
-func (mb *mutationBuilder) buildReturningScopes(
-	returning *tree.ReturningExprs, colRefs *opt.ColSet,
-) (inScope, outScope *scope) {
-	if returning == nil {
-		return nil, nil
 	}
 
 	// Start out by constructing a scope containing one column for each non-
@@ -1701,7 +1149,8 @@ func (mb *mutationBuilder) buildReturningScopes(
 	//   3. Mark hidden columns.
 	//   4. Project columns in same order as defined in table schema.
 	//
-	inScope = mb.outScope.replace()
+	inScope := mb.outScope.replace()
+	inScope.expr = mb.outScope.expr
 	inScope.appendOrdinaryColumnsFromTable(mb.md.TableMeta(mb.tabID), &mb.alias)
 
 	// extraAccessibleCols contains all the columns that the RETURNING
@@ -1711,11 +1160,12 @@ func (mb *mutationBuilder) buildReturningScopes(
 	// clause, respectively.
 	inScope.appendColumns(mb.extraAccessibleCols)
 
-	// Build the projections of the RETURNING expressions.
-	outScope = inScope.replace()
+	// Construct the Project operator that projects the RETURNING expressions.
+	outScope := inScope.replace()
 	mb.b.analyzeReturningList(returning, nil /* desiredTypes */, inScope, outScope)
-	mb.b.buildProjectionList(inScope, outScope, colRefs)
-	return inScope, outScope
+	mb.b.buildProjectionList(inScope, outScope)
+	mb.b.constructProjectForScope(inScope, outScope)
+	mb.outScope = outScope
 }
 
 // checkNumCols raises an error if the expected number of columns does not match
@@ -2010,16 +1460,6 @@ func partialIndexCount(tab cat.Table) int {
 	return count
 }
 
-func vectorIndexCount(tab cat.Table) int {
-	count := 0
-	for i, n := 0, tab.DeletableIndexCount(); i < n; i++ {
-		if tab.Index(i).Type() == idxtype.VECTOR {
-			count++
-		}
-	}
-	return count
-}
-
 type checkInputScanType uint8
 
 const (
@@ -2093,11 +1533,7 @@ func (mb *mutationBuilder) buildCheckInputScan(
 	// TODO(mgartner): We do not currently inline constants for FK checks
 	// because this would break the insert fast path. The fast path can
 	// currently only be planned when FK checks are built with WithScans.
-	//
-	// We also do not inline constants for checks that have row-level triggers
-	// because the triggers may modify the values that are being checked.
-	if !isFK && mb.insertExpr != nil &&
-		!cat.HasRowLevelTriggers(mb.tab, tree.TriggerActionTimeBefore, tree.TriggerEventInsert) {
+	if !isFK && mb.insertExpr != nil {
 		// Find the constant columns produced by the insert expression. All
 		// input columns must be constant in order to inline them.
 		constCols := memo.FindInlinableConstants(mb.insertExpr)

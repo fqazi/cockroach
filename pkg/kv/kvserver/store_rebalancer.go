@@ -32,18 +32,12 @@ var (
 		Help:        "Number of lease transfers motivated by store-level load imbalances",
 		Measurement: "Lease Transfers",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_REPLICATION,
-		HowToUse:    `Used to identify when there has been more rebalancing activity triggered by imbalance between stores (of QPS or CPU). If this is high (when the count is rated), it indicates that more rebalancing activity is taking place due to load imbalance between stores.`,
 	}
 	metaStoreRebalancerRangeRebalanceCount = metric.Metadata{
 		Name:        "rebalancing.range.rebalances",
 		Help:        "Number of range rebalance operations motivated by store-level load imbalances",
 		Measurement: "Range Rebalances",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_REPLICATION,
-		HowToUse:    `Used to identify when there has been more rebalancing activity triggered by imbalance between stores (of QPS or CPU). If this is high (when the count is rated), it indicates that more rebalancing activity is taking place due to load imbalance between stores.`,
 	}
 	metaStoreRebalancerImbalancedOverfullOptionsExhausted = metric.Metadata{
 		Name: "rebalancing.state.imbalanced_overfull_options_exhausted",
@@ -77,10 +71,10 @@ var LoadBasedRebalancingMode = settings.RegisterEnumSetting(
 	"kv.allocator.load_based_rebalancing",
 	"whether to rebalance based on the distribution of load across stores",
 	"leases and replicas",
-	map[LBRebalancingMode]string{
-		LBRebalancingOff:               "off",
-		LBRebalancingLeasesOnly:        "leases",
-		LBRebalancingLeasesAndReplicas: "leases and replicas",
+	map[int64]string{
+		int64(LBRebalancingOff):               "off",
+		int64(LBRebalancingLeasesOnly):        "leases",
+		int64(LBRebalancingLeasesAndReplicas): "leases and replicas",
 	},
 	settings.WithPublic)
 
@@ -155,7 +149,6 @@ type StoreRebalancer struct {
 	processTimeoutFn        func(replica CandidateReplica) time.Duration
 	objectiveProvider       RebalanceObjectiveProvider
 	subscribedToSpanConfigs func() bool
-	disabled                func() bool
 }
 
 // NewStoreRebalancer creates a StoreRebalancer to work in tandem with the
@@ -197,10 +190,6 @@ func NewStoreRebalancer(
 				return false
 			}
 			return !rq.store.cfg.SpanConfigSubscriber.LastUpdated().IsEmpty()
-		},
-		disabled: func() bool {
-			return LoadBasedRebalancingMode.Get(&st.SV) == LBRebalancingOff ||
-				rq.store.cfg.TestingKnobs.DisableStoreRebalancer
 		},
 	}
 	sr.AddLogTag("store-rebalancer", nil)
@@ -246,7 +235,7 @@ type RebalanceContext struct {
 // RebalanceMode returns the mode of the store rebalancer. See
 // LoadBasedRebalancingMode.
 func (sr *StoreRebalancer) RebalanceMode() LBRebalancingMode {
-	return LoadBasedRebalancingMode.Get(&sr.st.SV)
+	return LBRebalancingMode(LoadBasedRebalancingMode.Get(&sr.st.SV))
 }
 
 // RebalanceDimension returns the dimension the store rebalancer is balancing.
@@ -316,15 +305,18 @@ func (sr *StoreRebalancer) Start(ctx context.Context, stopper *stop.Stopper) {
 			case <-stopper.ShouldQuiesce():
 				return
 			case <-timer.C:
+				timer.Read = true
 				timer.Reset(jitteredInterval(allocator.LoadBasedRebalanceInterval.Get(&sr.st.SV)))
 			}
-			if sr.disabled() {
-				continue
-			}
+
 			// Once the rebalance mode and rebalance objective are defined for
 			// this loop, they are immutable and do not change. This avoids
 			// inconsistency where the rebalance objective changes and very
 			// different or contradicting actions are then taken.
+			mode := sr.RebalanceMode()
+			if mode == LBRebalancingOff {
+				continue
+			}
 			if !sr.subscribedToSpanConfigs() {
 				continue
 			}
@@ -334,7 +326,7 @@ func (sr *StoreRebalancer) Start(ctx context.Context, stopper *stop.Stopper) {
 
 			hottestRanges := sr.replicaRankings.TopLoad(objective.ToDimension())
 			options := sr.scorerOptions(ctx, objective.ToDimension())
-			rctx := sr.NewRebalanceContext(ctx, options, hottestRanges, sr.RebalanceMode())
+			rctx := sr.NewRebalanceContext(ctx, options, hottestRanges, mode)
 			sr.rebalanceStore(ctx, rctx)
 		}
 	})
