@@ -1945,12 +1945,12 @@ func TestNoBackfillAfterNonTargetColumnDrop(t *testing.T) {
 			`hasfams.b_and_c: [1]->{"after": {"b": "b1", "c": "c1"}}`,
 		})
 
-		//// Check that dropping a watched column still backfills.
-		//sqlDB.Exec(t, `ALTER TABLE hasfams DROP COLUMN c`)
-		//assertPayloadsStripTs(t, cf, []string{
-		//	`hasfams.b_and_c: [0]->{"after": {"b": "b"}}`,
-		//	`hasfams.b_and_c: [1]->{"after": {"b": "b1"}}`,
-		//})
+		// Check that dropping a watched column still backfills.
+		sqlDB.Exec(t, `ALTER TABLE hasfams DROP COLUMN c`)
+		assertPayloadsStripTs(t, cf, []string{
+			`hasfams.b_and_c: [0]->{"after": {"b": "b"}}`,
+			`hasfams.b_and_c: [1]->{"after": {"b": "b1"}}`,
+		})
 	}
 
 	//runWithAndWithoutRegression141453(t, testFn, func(t *testing.T, testFn cdcTestFn) {
@@ -3130,7 +3130,7 @@ func TestChangefeedSchemaChangeAllowBackfill(t *testing.T) {
 				`drop_column: [2]->{"after": {"a": 2, "b": "2"}}`,
 			})
 			sqlDB.Exec(t, `ALTER TABLE drop_column DROP COLUMN b`)
-			ts := schematestutils.FetchDescVersionModificationTime(t, s.Server, `d`, `public`, `drop_column`, 2)
+			ts := schematestutils.FetchDescVersionModificationTime(t, s.Server, `d`, `public`, `drop_column`, 6)
 
 			// Backfill for DROP COLUMN b.
 			assertPayloads(t, dropColumn, []string{
@@ -3183,7 +3183,7 @@ func TestChangefeedSchemaChangeAllowBackfill(t *testing.T) {
 			// the 7th step (version 15). Finally, when adding column d, it goes from 17->25 ith the schema change
 			// being visible at the 7th step (version 23).
 			// TODO(#142936): Investigate if this descriptor version hardcoding is sound.
-			dropTS := schematestutils.FetchDescVersionModificationTime(t, s.Server, `d`, `public`, `multiple_alters`, 2)
+			dropTS := schematestutils.FetchDescVersionModificationTime(t, s.Server, `d`, `public`, `multiple_alters`, 6)
 			addTS := schematestutils.FetchDescVersionModificationTime(t, s.Server, `d`, `public`, `multiple_alters`, 15)
 			addTS2 := schematestutils.FetchDescVersionModificationTime(t, s.Server, `d`, `public`, `multiple_alters`, 23)
 
