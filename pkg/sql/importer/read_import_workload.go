@@ -54,6 +54,9 @@ func newWorkloadReader(
 	return &workloadReader{semaCtx: semaCtx, evalCtx: evalCtx, table: table, kvCh: kvCh, parallelism: parallelism, db: db}
 }
 
+func (w *workloadReader) start(ctx ctxgroup.Group) {
+}
+
 // makeDatumFromColOffset tries to fast-path a few workload-generated types into
 // directly datums, to dodge making a string and then the parsing it.
 func makeDatumFromColOffset(
@@ -117,20 +120,6 @@ func makeDatumFromColOffset(
 			str := *(*string)(unsafe.Pointer(&data))
 			return rowenc.ParseDatumStringAs(ctx, hint, str, evalCtx, semaCtx)
 		}
-	case types.TimestampFamily, types.TimestampTZFamily:
-		switch hint.Family() {
-		case types.TimestampFamily:
-			// workloads are responsible for rounding their timestamp(s) so skip
-			// MakeDTimestamp here and just directly construct it.
-			return alloc.NewDTimestamp(tree.DTimestamp{Time: col.Timestamp()[rowIdx]}), nil
-
-		case types.TimestampTZFamily:
-			// workloads are responsible for rounding their timestamp(s) so skip
-			// MakeDTimestamp here and just directly construct it.
-			return alloc.NewDTimestampTZ(tree.DTimestampTZ{Time: col.Timestamp()[rowIdx]}), nil
-		}
-	case types.DecimalFamily:
-		return alloc.NewDDecimal(tree.DDecimal{Decimal: col.Decimal()[rowIdx]}), nil
 	}
 	return nil, errors.Errorf(
 		`don't know how to interpret %s column as %s`, col.Type(), hint)
