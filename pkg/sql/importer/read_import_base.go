@@ -73,11 +73,14 @@ func runImport(
 		return nil, err
 	}
 
-	// This group holds the go routines that are responsible for producing KV
-	// batches and ingesting produced KVs.
+	// This group holds the go routines that are responsible for producing KV batches.
+	// and ingesting produced KVs.
+	// Depending on the import implementation both conv.start and conv.readFiles can
+	// produce KVs so we should close the channel only after *both* are finished.
 	group := ctxgroup.WithContext(ctx)
+	conv.start(group)
 
-	// Read input files into kvs.
+	// Read input files into kvs
 	group.GoCtx(func(ctx context.Context) error {
 		defer close(kvCh)
 		ctx, span := tracing.ChildSpan(ctx, "import-files-to-kvs")
@@ -126,7 +129,9 @@ func runImport(
 	}
 }
 
-// readInputFiles reads each of the passed dataFiles using the passed func. The
+type readFileFunc func(context.Context, *fileReader, int32, int64, chan string) error
+
+// readInputFile reads each of the passed dataFiles using the passed func. The
 // key part of dataFiles is the unique index of the data file among all files in
 // the IMPORT. progressFn, if not nil, is periodically invoked with a percentage
 // of the total progress of reading through all of the files. This percentage
@@ -139,7 +144,7 @@ func readInputFiles(
 	dataFiles map[int32]string,
 	resumePos map[int32]int64,
 	format roachpb.IOFileFormat,
-	fileFunc func(context.Context, *fileReader, int32, int64, chan string) error,
+	fileFunc readFileFunc,
 	makeExternalStorage cloud.ExternalStorageFactory,
 	user username.SQLUsername,
 ) error {
@@ -368,6 +373,7 @@ func (f fileReader) ReadFraction() float32 {
 }
 
 type inputConverter interface {
+	start(group ctxgroup.Group)
 	readFiles(ctx context.Context, dataFiles map[int32]string, resumePos map[int32]int64,
 		format roachpb.IOFileFormat, makeExternalStorage cloud.ExternalStorageFactory, user username.SQLUsername) error
 }
@@ -376,10 +382,38 @@ type inputConverter interface {
 // mapped specifically to a particular data column.
 func formatHasNamedColumns(format roachpb.IOFileFormat_FileFormat) bool {
 	switch format {
-	case roachpb.IOFileFormat_Avro:
+	case roachpb.IOFileFormat_Avro,
+		roachpb.IOFileFormat_Mysqldump,
+		roachpb.IOFileFormat_PgDump:
 		return true
 	}
 	return false
+}
+
+func isMultiTableFormat(format roachpb.IOFileFormat_FileFormat) bool {
+	switch format {
+	case roachpb.IOFileFormat_Mysqldump,
+		roachpb.IOFileFormat_PgDump:
+		return true
+	}
+	return false
+}
+
+func makeRowErr(row int64, code pgcode.Code, format string, args ...interface{}) error {
+	err := pgerror.NewWithDepthf(1, code, format, args...)
+	err = errors.WrapWithDepthf(1, err, "row %d", row)
+	return err
+}
+
+func wrapRowErr(err error, row int64, code pgcode.Code, format string, args ...interface{}) error {
+	if format != "" || len(args) > 0 {
+		err = errors.WrapWithDepthf(1, err, format, args...)
+	}
+	err = errors.WrapWithDepthf(1, err, "row %d", row)
+	if code != pgcode.Uncategorized {
+		err = pgerror.WithCandidateCode(err, code)
+	}
+	return err
 }
 
 // importRowError is an error type describing malformed import data.

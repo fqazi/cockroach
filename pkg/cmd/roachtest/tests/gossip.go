@@ -289,37 +289,35 @@ func (g *gossipUtil) checkConnectedAndFunctional(
 	}
 
 	for i := 1; i <= c.Spec().NodeCount; i++ {
-		func() {
-			db := g.conn(ctx, t.L(), i)
-			defer db.Close()
-			if i == 1 {
-				if _, err := db.Exec("CREATE DATABASE IF NOT EXISTS test"); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := db.Exec("CREATE TABLE IF NOT EXISTS test.kv (k INT PRIMARY KEY, v INT)"); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := db.Exec(`UPSERT INTO test.kv (k, v) VALUES (1, 0)`); err != nil {
-					t.Fatal(err)
-				}
-			}
-			rows, err := db.Query(`UPDATE test.kv SET v=v+1 WHERE k=1 RETURNING v`)
-			if err != nil {
+		db := g.conn(ctx, t.L(), i)
+		defer db.Close()
+		if i == 1 {
+			if _, err := db.Exec("CREATE DATABASE IF NOT EXISTS test"); err != nil {
 				t.Fatal(err)
 			}
-			defer rows.Close()
-			var count int
-			if rows.Next() {
-				if err := rows.Scan(&count); err != nil {
-					t.Fatal(err)
-				}
-				if count != i {
-					t.Fatalf("unexpected value %d for write #%d (expected %d)", count, i, i)
-				}
-			} else {
-				t.Fatalf("no results found from update")
+			if _, err := db.Exec("CREATE TABLE IF NOT EXISTS test.kv (k INT PRIMARY KEY, v INT)"); err != nil {
+				t.Fatal(err)
 			}
-		}()
+			if _, err := db.Exec(`UPSERT INTO test.kv (k, v) VALUES (1, 0)`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rows, err := db.Query(`UPDATE test.kv SET v=v+1 WHERE k=1 RETURNING v`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var count int
+		if rows.Next() {
+			if err := rows.Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != i {
+				t.Fatalf("unexpected value %d for write #%d (expected %d)", count, i, i)
+			}
+		} else {
+			t.Fatalf("no results found from update")
+		}
 	}
 }
 
@@ -538,9 +536,7 @@ SELECT count(replicas)
 	// Stop our special snowflake process which won't be recognized by the test
 	// harness, and start it again on the regular.
 	c.Stop(ctx, t.L(), option.DefaultStopOpts(), c.Node(1))
-	// N.B. Since n1 was initially stripped of all the replicas, we must wait for full replication. Otherwise, the
-	// replica consistency checks may time out.
-	c.Start(ctx, t.L(), option.NewStartOpts(option.WaitForReplication()), install.MakeClusterSettings(), c.Node(1))
+	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.Node(1))
 }
 
 func runCheckLocalityIPAddress(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -565,6 +561,8 @@ func runCheckLocalityIPAddress(ctx context.Context, t test.Test, c cluster.Clust
 
 	for i := 1; i <= c.Spec().NodeCount; i++ {
 		db := c.Conn(ctx, t.L(), 1)
+		defer db.Close()
+
 		rows, err := db.Query(
 			`SELECT node_id, advertise_address FROM crdb_internal.gossip_nodes`,
 		)
@@ -594,7 +592,6 @@ func runCheckLocalityIPAddress(ctx context.Context, t test.Test, c cluster.Clust
 				}
 			}
 		}
-		db.Close()
 	}
 	if rowCount <= 0 {
 		t.Fatal("No results for " +

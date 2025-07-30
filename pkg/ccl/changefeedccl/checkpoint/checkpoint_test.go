@@ -6,18 +6,22 @@
 package checkpoint_test
 
 import (
-	"iter"
 	"math"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/checkpoint"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rangefeed"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric/aggmetric"
+	"github.com/cockroachdb/cockroach/pkg/util/randutil"
+	"github.com/cockroachdb/cockroach/pkg/util/shuffle"
 	"github.com/cockroachdb/cockroach/pkg/util/span"
 	"github.com/stretchr/testify/require"
 )
@@ -41,16 +45,6 @@ func (rs checkpointSpans) Swap(i int, j int) {
 	rs[i], rs[j] = rs[j], rs[i]
 }
 
-func (rs checkpointSpans) All() iter.Seq2[roachpb.Span, hlc.Timestamp] {
-	return func(yield func(roachpb.Span, hlc.Timestamp) bool) {
-		for _, checkpointSpan := range rs {
-			if !yield(checkpointSpan.span, checkpointSpan.ts) {
-				return
-			}
-		}
-	}
-}
-
 func TestCheckpointMake(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -60,10 +54,10 @@ func TestCheckpointMake(t *testing.T) {
 	}
 
 	for name, tc := range map[string]struct {
-		frontier                        hlc.Timestamp
-		spans                           checkpointSpans
-		maxBytes                        int64
-		expectedCheckpointPossibilities []*jobspb.TimestampSpansMap
+		frontier hlc.Timestamp
+		spans    checkpointSpans
+		maxBytes int64
+		expected jobspb.ChangefeedProgress_Checkpoint
 	}{
 		"all spans ahead of frontier checkpointed": {
 			frontier: ts(1),
@@ -74,11 +68,12 @@ func TestCheckpointMake(t *testing.T) {
 				{span: roachpb.Span{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")}, ts: ts(4)},
 			},
 			maxBytes: 100,
-			expectedCheckpointPossibilities: []*jobspb.TimestampSpansMap{
-				jobspb.NewTimestampSpansMap(map[hlc.Timestamp]roachpb.Spans{
-					ts(2): {{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}},
-					ts(4): {{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")}},
-				}),
+			expected: jobspb.ChangefeedProgress_Checkpoint{
+				Timestamp: ts(2),
+				Spans: []roachpb.Span{
+					{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")},
+					{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")},
+				},
 			},
 		},
 		"only some spans ahead of frontier checkpointed because of maxBytes constraint": {
@@ -90,13 +85,9 @@ func TestCheckpointMake(t *testing.T) {
 				{span: roachpb.Span{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")}, ts: ts(4)},
 			},
 			maxBytes: 2,
-			expectedCheckpointPossibilities: []*jobspb.TimestampSpansMap{
-				jobspb.NewTimestampSpansMap(map[hlc.Timestamp]roachpb.Spans{
-					ts(2): {{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}},
-				}),
-				jobspb.NewTimestampSpansMap(map[hlc.Timestamp]roachpb.Spans{
-					ts(4): {{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")}},
-				}),
+			expected: jobspb.ChangefeedProgress_Checkpoint{
+				Timestamp: ts(2),
+				Spans:     []roachpb.Span{{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}},
 			},
 		},
 		"no spans checkpointed because of maxBytes constraint": {
@@ -107,8 +98,10 @@ func TestCheckpointMake(t *testing.T) {
 				{span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")}, ts: ts(1)},
 				{span: roachpb.Span{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")}, ts: ts(4)},
 			},
-			maxBytes:                        0,
-			expectedCheckpointPossibilities: []*jobspb.TimestampSpansMap{nil},
+			maxBytes: 0,
+			expected: jobspb.ChangefeedProgress_Checkpoint{
+				Timestamp: ts(2),
+			},
 		},
 		"no spans checkpointed because all spans are at frontier": {
 			frontier: ts(1),
@@ -118,212 +111,109 @@ func TestCheckpointMake(t *testing.T) {
 				{span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")}, ts: ts(1)},
 				{span: roachpb.Span{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")}, ts: ts(1)},
 			},
-			maxBytes:                        100,
-			expectedCheckpointPossibilities: []*jobspb.TimestampSpansMap{nil},
+			maxBytes: 100,
+			expected: jobspb.ChangefeedProgress_Checkpoint{},
 		},
 		"adjacent spans ahead of frontier merged before being checkpointed": {
 			frontier: ts(1),
 			spans: checkpointSpans{
 				{span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}, ts: ts(1)},
 				{span: roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}, ts: ts(2)},
-				{span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")}, ts: ts(2)},
+				{span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")}, ts: ts(4)},
 				{span: roachpb.Span{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")}, ts: ts(1)},
 			},
 			maxBytes: 100,
-			expectedCheckpointPossibilities: []*jobspb.TimestampSpansMap{
-				jobspb.NewTimestampSpansMap(map[hlc.Timestamp]roachpb.Spans{
-					ts(2): {{Key: roachpb.Key("b"), EndKey: roachpb.Key("d")}},
-				}),
+			expected: jobspb.ChangefeedProgress_Checkpoint{
+				Timestamp: ts(2),
+				Spans:     []roachpb.Span{{Key: roachpb.Key("b"), EndKey: roachpb.Key("d")}},
 			},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			aggMetrics := checkpoint.NewAggMetrics(aggmetric.MakeBuilder())
-
-			actualCheckpoint := checkpoint.Make(
+			actual := checkpoint.Make(
 				tc.frontier,
-				tc.spans.All(),
+				func(fn span.Operation) {
+					for _, sp := range tc.spans {
+						fn(sp.span, sp.ts)
+					}
+				},
 				tc.maxBytes,
 				aggMetrics.AddChild(),
 			)
-			require.Condition(t, func() bool {
-				for _, expectedCheckpoint := range tc.expectedCheckpointPossibilities {
-					if expectedCheckpoint.Equal(actualCheckpoint) {
-						return true
-					}
-				}
-				return false
-			})
+			require.Equal(t, tc.expected, actual)
 
 			// Verify that metrics were set/not set based on whether a
 			// checkpoint was created.
-			if actualCheckpoint != nil {
+			if tc.expected.Timestamp.IsSet() {
 				require.Greater(t, aggMetrics.CreateNanos.CumulativeSnapshot().Mean(), float64(0))
-				require.Equal(t, aggMetrics.TotalBytes.CumulativeSnapshot().Mean(), float64(actualCheckpoint.Size()))
-				require.Equal(t, aggMetrics.TimestampCount.CumulativeSnapshot().Mean(), float64(actualCheckpoint.TimestampCount()))
-				require.Equal(t, aggMetrics.SpanCount.CumulativeSnapshot().Mean(), float64(actualCheckpoint.SpanCount()))
+				require.Greater(t, aggMetrics.TotalBytes.CumulativeSnapshot().Mean(), float64(0))
+				require.Equal(t, float64(len(tc.expected.Spans)), aggMetrics.SpanCount.CumulativeSnapshot().Mean())
 			} else {
 				require.True(t, math.IsNaN(aggMetrics.CreateNanos.CumulativeSnapshot().Mean()))
 				require.True(t, math.IsNaN(aggMetrics.TotalBytes.CumulativeSnapshot().Mean()))
-				require.True(t, math.IsNaN(aggMetrics.TimestampCount.CumulativeSnapshot().Mean()))
 				require.True(t, math.IsNaN(aggMetrics.SpanCount.CumulativeSnapshot().Mean()))
 			}
 		})
 	}
 }
 
-func TestCheckpointRestore(t *testing.T) {
+// TestCheckpointCatchupTime generates 100 random non-overlapping spans with random
+// timestamps within a minute of each other and turns them into checkpoint
+// spans. It then does some sanity checks. It also compares the total
+// catchup time between the checkpoint timestamp and the high watermark.
+// Although the test relies on internal implementation details, it is a
+// good base to explore other fine-grained checkpointing algorithms.
+func TestCheckpointCatchupTime(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	ts := func(wt int64) hlc.Timestamp {
-		return hlc.Timestamp{WallTime: wt}
+	const numSpans = 100
+	maxBytes := changefeedbase.SpanCheckpointMaxBytes.Default()
+	hwm := hlc.Timestamp{}
+	rng, _ := randutil.NewTestRand()
+
+	spans := make(checkpointSpans, numSpans)
+
+	// Generate spans. They should not be overlapping.
+	// Randomize the order in which spans are processed.
+	for i, s := range rangefeed.GenerateRandomizedSpans(rng, numSpans) {
+		ts := rangefeed.GenerateRandomizedTs(rng, time.Minute.Nanoseconds())
+		if hwm.IsEmpty() || ts.Less(hwm) {
+			hwm = ts
+		}
+		spans[i] = checkpointSpan{s.AsRawSpanWithNoLocals(), ts}
+	}
+	shuffle.Shuffle(spans)
+
+	forEachSpan := func(fn span.Operation) {
+		for _, s := range spans {
+			fn(s.span, s.ts)
+		}
 	}
 
-	for name, tc := range map[string]struct {
-		trackedSpans              roachpb.Spans
-		initialHighWater          hlc.Timestamp
-		checkpointToRestore       *jobspb.TimestampSpansMap
-		expectedCheckpointedSpans checkpointSpans
-		expectedError             string
-	}{
-		"restoring checkpoint with single timestamp": {
-			trackedSpans:     roachpb.Spans{{Key: roachpb.Key("a"), EndKey: roachpb.Key("z")}},
-			initialHighWater: ts(1),
-			checkpointToRestore: jobspb.NewTimestampSpansMap(map[hlc.Timestamp]roachpb.Spans{
-				ts(2): {{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")},
-					{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}},
-			}),
-			expectedCheckpointedSpans: checkpointSpans{
-				{span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}, ts: ts(2)},
-				{span: roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}, ts: ts(2)},
-			},
-		},
-		"restoring checkpoint with multiple timestamps": {
-			trackedSpans:     roachpb.Spans{{Key: roachpb.Key("a"), EndKey: roachpb.Key("z")}},
-			initialHighWater: ts(0),
-			checkpointToRestore: jobspb.NewTimestampSpansMap(map[hlc.Timestamp]roachpb.Spans{
-				ts(2): {{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")},
-					{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}},
-				ts(1): {{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")}},
-			}),
-			expectedCheckpointedSpans: checkpointSpans{
-				{span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}, ts: ts(2)},
-				{span: roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}, ts: ts(2)},
-				{span: roachpb.Span{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")}, ts: ts(1)},
-			},
-		},
-		"restoring checkpoint containing empty timestamp (developer error)": {
-			trackedSpans:     roachpb.Spans{{Key: roachpb.Key("a"), EndKey: roachpb.Key("z")}},
-			initialHighWater: ts(0),
-			checkpointToRestore: jobspb.NewTimestampSpansMap(map[hlc.Timestamp]roachpb.Spans{
-				ts(2): {{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")},
-					{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}},
-				ts(0): {{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")}},
-			}),
-			expectedError: "checkpoint timestamp is empty",
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			actualFrontier, err := span.MakeFrontierAt(tc.initialHighWater, tc.trackedSpans...)
-			require.NoError(t, err)
-			err = checkpoint.Restore(actualFrontier, tc.checkpointToRestore)
-			if tc.expectedError != "" {
-				require.ErrorContains(t, err, tc.expectedError)
-				return
-			}
-			require.NoError(t, err)
+	// Compute the checkpoint.
+	cp := checkpoint.Make(hwm, forEachSpan, maxBytes, nil /* metrics */)
+	cpSpans, cpTS := roachpb.Spans(cp.Spans), cp.Timestamp
+	require.Less(t, len(cpSpans), numSpans)
+	require.True(t, hwm.Less(cpTS))
 
-			actualFrontierSpans := checkpointSpans{}
-			for sp, ts := range actualFrontier.Entries() {
-				actualFrontierSpans = append(actualFrontierSpans, checkpointSpan{span: sp, ts: ts})
-			}
-
-			expectedFrontierSpans := checkpointSpans{}
-			expectedFrontier, err := span.MakeFrontierAt(tc.initialHighWater, tc.trackedSpans...)
-			require.NoError(t, err)
-			for _, s := range tc.expectedCheckpointedSpans {
-				_, err = expectedFrontier.Forward(s.span, s.ts)
-				require.NoError(t, err)
-			}
-			for sp, ts := range expectedFrontier.Entries() {
-				expectedFrontierSpans = append(expectedFrontierSpans, checkpointSpan{span: sp, ts: ts})
-			}
-			require.Equal(t, expectedFrontierSpans, actualFrontierSpans)
-		})
+	// Calculate the total amount of time these spans would have to "catch up"
+	// using the checkpoint spans compared to starting at the frontier.
+	catchup := cpTS.GoTime().Sub(hwm.GoTime())
+	sort.Sort(cpSpans)
+	sort.Sort(spans)
+	var catchupFromCheckpoint, catchupFromHWM time.Duration
+	j := 0
+	for _, s := range spans {
+		catchupFromHWM += s.ts.GoTime().Sub(hwm.GoTime())
+		if j < len(cpSpans) && cpSpans[j].Equal(s.span) {
+			catchupFromCheckpoint += s.ts.GoTime().Sub(cpTS.GoTime())
+			j++
+		}
 	}
-}
-
-func TestCheckpointMakeRestoreRoundTrip(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ts := func(wt int64) hlc.Timestamp {
-		return hlc.Timestamp{WallTime: wt}
-	}
-
-	for name, tc := range map[string]struct {
-		trackedSpans             roachpb.Spans
-		frontier                 hlc.Timestamp
-		spans                    checkpointSpans
-		expectedSpansIfDifferent checkpointSpans
-	}{
-		"some spans ahead of frontier": {
-			trackedSpans: roachpb.Spans{{Key: roachpb.Key("a"), EndKey: roachpb.Key("e")}},
-			frontier:     ts(1),
-			spans: checkpointSpans{
-				{span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}, ts: ts(1)},
-				{span: roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}, ts: ts(2)},
-				{span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")}, ts: ts(1)},
-				{span: roachpb.Span{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")}, ts: ts(4)},
-			},
-		},
-		"some spans ahead of frontier with some spans needing to be merged": {
-			trackedSpans: roachpb.Spans{{Key: roachpb.Key("a"), EndKey: roachpb.Key("e")}},
-			spans: checkpointSpans{
-				{span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}, ts: ts(1)},
-				{span: roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}, ts: ts(2)},
-				{span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")}, ts: ts(2)},
-				{span: roachpb.Span{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")}, ts: ts(1)},
-			},
-			expectedSpansIfDifferent: checkpointSpans{
-				{span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}, ts: ts(1)},
-				{span: roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("d")}, ts: ts(2)},
-				{span: roachpb.Span{Key: roachpb.Key("d"), EndKey: roachpb.Key("e")}, ts: ts(1)},
-			},
-		},
-		"no spans ahead of frontier": {
-			trackedSpans: roachpb.Spans{{Key: roachpb.Key("a"), EndKey: roachpb.Key("e")}},
-			frontier:     ts(1),
-			spans: checkpointSpans{
-				{span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("e")}, ts: ts(1)},
-			},
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			cp := checkpoint.Make(
-				tc.frontier,
-				tc.spans.All(),
-				changefeedbase.SpanCheckpointMaxBytes.Default(),
-				nil, /* metrics */
-			)
-
-			restoredSpans := func() checkpointSpans {
-				var spans checkpointSpans
-				restoredFrontier, err := span.MakeFrontierAt(tc.frontier, tc.trackedSpans...)
-				require.NoError(t, err)
-				require.NoError(t, checkpoint.Restore(restoredFrontier, cp))
-				for sp, ts := range restoredFrontier.Entries() {
-					spans = append(spans, checkpointSpan{span: sp, ts: ts})
-				}
-				return spans
-			}()
-
-			if tc.expectedSpansIfDifferent == nil {
-				require.ElementsMatch(t, tc.spans, restoredSpans)
-			} else {
-				require.ElementsMatch(t, tc.expectedSpansIfDifferent, restoredSpans)
-			}
-		})
-	}
+	t.Logf("Checkpoint time improved by %v for %d/%d spans\ntotal catchup from checkpoint: %v\ntotal catchup from high watermark: %v\nPercent improvement %f",
+		catchup, len(cpSpans), numSpans, catchupFromCheckpoint, catchupFromHWM,
+		100*(1-float64(catchupFromCheckpoint.Nanoseconds())/float64(catchupFromHWM.Nanoseconds())))
+	require.Less(t, catchupFromCheckpoint, catchupFromHWM)
 }

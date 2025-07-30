@@ -38,8 +38,6 @@ func (op Operation) Result() *Result {
 		return &o.Result
 	case *BarrierOperation:
 		return &o.Result
-	case *FlushLockTableOperation:
-		return &o.Result
 	case *SplitOperation:
 		return &o.Result
 	case *MergeOperation:
@@ -140,8 +138,6 @@ func (op Operation) format(w *strings.Builder, fctx formatCtx) {
 		o.format(w, fctx)
 	case *BarrierOperation:
 		o.format(w, fctx)
-	case *FlushLockTableOperation:
-		o.format(w, fctx)
 	case *SplitOperation:
 		o.format(w, fctx)
 	case *MergeOperation:
@@ -179,10 +175,6 @@ func (op Operation) format(w *strings.Builder, fctx formatCtx) {
 		w.WriteString(newFctx.indent)
 		w.WriteString(newFctx.receiver)
 		fmt.Fprintf(w, `.SetIsoLevel(isolation.%s)`, o.IsoLevel)
-		w.WriteString("\n")
-		w.WriteString(newFctx.indent)
-		w.WriteString(newFctx.receiver)
-		fmt.Fprintf(w, `.SetBufferedWritesEnabled(%v)`, o.BufferedWrites)
 		formatOps(w, newFctx, o.Ops)
 		if o.CommitInBatch != nil {
 			newFctx.receiver = `b`
@@ -369,11 +361,6 @@ func (op BarrierOperation) format(w *strings.Builder, fctx formatCtx) {
 	} else {
 		fmt.Fprintf(w, `%s.Barrier(ctx, %s, %s)`, fctx.receiver, fmtKey(op.Key), fmtKey(op.EndKey))
 	}
-	op.Result.format(w)
-}
-
-func (op FlushLockTableOperation) format(w *strings.Builder, fctx formatCtx) {
-	fmt.Fprintf(w, `%s.FlushLockTable(ctx, %s, %s)`, fctx.receiver, fmtKey(op.Key), fmtKey(op.EndKey))
 	op.Result.format(w)
 }
 

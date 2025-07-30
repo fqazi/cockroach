@@ -27,7 +27,7 @@ func addMonitor(
 	reservedBytes int64,
 ) *mon.BytesMonitor {
 	m := mon.NewMonitor(mon.Options{
-		Name:      mon.MakeName(name),
+		Name:      mon.MakeMonitorName(name),
 		Increment: 1,
 		Settings:  st,
 	})

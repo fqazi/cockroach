@@ -16,7 +16,6 @@ import (
 	"strings"
 	"sync"
 	"text/template"
-	"time"
 
 	"github.com/alessio/shellescape"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
@@ -49,8 +48,6 @@ type MonitorProcessDead struct {
 	SQLInstance        int
 	ExitCode           string
 }
-
-type MonitorReady struct{}
 
 type MonitorError struct {
 	Err error
@@ -114,11 +111,6 @@ func (e MonitorProcessDead) String() string {
 		virtualClusterDesc(e.VirtualClusterName, e.SQLInstance), e.ExitCode,
 	)
 }
-
-func (e MonitorReady) String() string {
-	return "monitor is ready"
-}
-
 func (e MonitorError) String() string {
 	return fmt.Sprintf("error: %s", e.Err.Error())
 }
@@ -297,7 +289,6 @@ func (m *monitorNode) monitorNode(ctx context.Context, l *logger.Logger) {
 		m.sendEvent(NodeMonitorInfo{Node: m.node, Event: MonitorError{err}})
 		return
 	}
-	m.sendEvent(NodeMonitorInfo{Node: m.node, Event: MonitorReady{}})
 
 	// Watch for context cancellation, which can happen if the test
 	// fails, or if the monitor loop exits.
@@ -316,7 +307,7 @@ func (m *monitorNode) monitorNode(ctx context.Context, l *logger.Logger) {
 	if err := sess.Wait(); err != nil {
 		// If we got an error waiting for the session but the context
 		// is already canceled, do not send an error through the
-		// channel; context cancellation happens at the user's request
+		// channel; context cancelation happens at the user's request
 		// or when the test finishes. In either case, the monitor
 		// should quiesce. Reporting the error is confusing and can be
 		// noisy in the case of multiple monitors.
@@ -345,39 +336,18 @@ func (c *SyncedCluster) Monitor(
 	l *logger.Logger, ctx context.Context, opts MonitorOpts,
 ) chan NodeMonitorInfo {
 	ch := make(chan NodeMonitorInfo)
-
-	nodes := c.Nodes
+	nodes := c.TargetNodes()
 	var wg sync.WaitGroup
 	monitorCtx, cancel := context.WithCancel(ctx)
-
-	type Ready struct {
-		once sync.Once
-		ch   chan struct{}
-	}
-	nodeReady := make(map[Node]*Ready)
-	for _, node := range nodes {
-		nodeReady[node] = &Ready{
-			ch:   make(chan struct{}),
-			once: sync.Once{},
-		}
-	}
 
 	// sendEvent sends the NodeMonitorInfo passed through the channel
 	// that is listened to by the caller. Bails if the context is
 	// canceled.
 	sendEvent := func(info NodeMonitorInfo) {
-		nodeReady[info.Node].once.Do(func() {
-			close(nodeReady[info.Node].ch)
-		})
 		// if the monitor's context is already canceled, do not attempt to
 		// send the error down the channel, as it is most likely *caused*
 		// by the cancelation itself.
 		if monitorCtx.Err() != nil {
-			return
-		}
-
-		// Do not forward the MonitorReady event to the caller.
-		if _, ok := info.Event.(MonitorReady); ok {
 			return
 		}
 
@@ -411,18 +381,6 @@ func (c *SyncedCluster) Monitor(
 		cancel()
 		close(ch)
 	}()
-
-	// Wait for all monitoring goroutines to be ready.
-	for node, ready := range nodeReady {
-		select {
-		case <-ready.ch:
-		case <-monitorCtx.Done():
-			return ch
-		case <-time.After(60 * time.Second):
-			sendEvent(NodeMonitorInfo{Node: node, Event: MonitorError{errors.New("timed out waiting for monitor to start")}})
-			return ch
-		}
-	}
 
 	return ch
 }

@@ -38,7 +38,7 @@ import (
 // TODO(pav-kv): consolidate all flow control state changes here. Much of the
 // transitions in raft.go logically belong here.
 type Progress struct {
-	// Match is the index up to which the peer's log is known to durably match the
+	// Match is the index up to which the follower's log is known to match the
 	// leader's.
 	Match uint64
 	// Next is the log index of the next entry to send to this follower. All
@@ -348,7 +348,7 @@ func (pr *Progress) ShouldSendEntries(last uint64, lazyReplication bool) bool {
 // We must send a message periodically even if all updates are already in flight
 // to this peer, to guarantee that eventually the flow is either accepted or
 // rejected.
-func (pr *Progress) ShouldSendProbe(last, commit uint64) bool {
+func (pr *Progress) ShouldSendProbe(last, commit uint64, advanceCommit bool) bool {
 	switch pr.State {
 	case StateProbe:
 		return !pr.MsgAppProbesPaused
@@ -379,7 +379,10 @@ func (pr *Progress) ShouldSendProbe(last, commit uint64) bool {
 		// to the follower.
 		// TODO(iskettaneh): Remove the dependency on MsgAppProbesPaused to send
 		// MsgApps.
-		return pr.IsFollowerCommitStale(commit) && !pr.MsgAppProbesPaused
+		if advanceCommit {
+			return pr.IsFollowerCommitStale(commit) && !pr.MsgAppProbesPaused
+		}
+		return false
 
 	case StateSnapshot:
 		return false

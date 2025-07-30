@@ -151,16 +151,11 @@ func registerLargeSchemaBenchmark(r registry.Registry, numTables int, isMultiReg
 						c.Start(ctx, t.L(), startOpts, settings, c.CRDBNodes())
 						conn := c.Conn(ctx, t.L(), 1)
 						defer conn.Close()
-						// Disable autocommit before DDL since we need to batch statements
-						// in a single transaction for them to complete in a reasonable amount
-						// of time. In multi-region this latency can be substantial.
-						_, err := conn.Exec("SET CLUSTER SETTING sql.defaults.autocommit_before_ddl.enabled = 'false'")
-						require.NoError(t, err)
 						// Since we will be making a large number of databases / tables
 						// quickly,on MR the job retention can slow things down. Let's
 						// minimize how long jobs are kept, so that the creation / ingest
 						// completes in a reasonable amount of time.
-						_, err = conn.Exec("SET CLUSTER SETTING jobs.retention_time='1h'")
+						_, err := conn.Exec("SET CLUSTER SETTING jobs.retention_time='1h'")
 						require.NoError(t, err)
 						// Use a higher number of retries, since we hit retry errors on importing
 						// a large number of tables
@@ -180,7 +175,7 @@ func registerLargeSchemaBenchmark(r registry.Registry, numTables int, isMultiReg
 			}
 			// Upload a file containing the ORM queries.
 			require.NoError(t, c.PutString(ctx, LargeSchemaOrmQueries, "ormQueries.sql", 0755, c.WorkloadNode()))
-			mon := c.NewDeprecatedMonitor(ctx, c.All())
+			mon := c.NewMonitor(ctx, c.All())
 			// Upload a file containing the web API calls we want to benchmark.
 			require.NoError(t, c.PutString(ctx,
 				LargeSchemaAPICalls,

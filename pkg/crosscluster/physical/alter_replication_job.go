@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/utilccl"
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/replicationutils"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/streamclient"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
@@ -27,12 +26,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
-	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/asof"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -112,6 +108,10 @@ func (r *resolvedTenantReplicationOptions) GetExpirationWindow() (time.Duration,
 		return 0, false
 	}
 	return *r.expirationWindow, true
+}
+
+func (r *resolvedTenantReplicationOptions) DestinationOptionsSet() bool {
+	return r != nil && (r.retention != nil || r.resumeTimestamp.IsSet() || r.enableReaderTenant)
 }
 
 func (r *resolvedTenantReplicationOptions) ReaderTenantEnabled() bool {
@@ -226,24 +226,7 @@ func alterReplicationJobHook(
 		if err != nil {
 			return err
 		}
-		jobRegistry := p.ExecCfg().JobRegistry
-		if alterTenantStmt.Producer {
-			if err := p.CheckPrivilege(
-				ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPLICATIONSOURCE,
-			); err != nil {
-				return err
-			}
-			return alterTenantSetReplicationSource(ctx, p.InternalSQLTxn(), jobRegistry, options, tenInfo)
-		}
-		if err := p.CheckPrivilege(
-			ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPLICATIONDEST,
-		); err != nil {
-			if !p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.V25_2) {
-				p.BufferClientNotice(ctx, pgnotice.Newf("this command will require the REPLICATIONDEST privilege on a fully upgraded 25.2+ cluster"))
-			} else {
-				return err
-			}
-		}
+
 		// If a source uri is being provided, we're enabling replication into an
 		// existing virtual cluster. It must be inactive, and we'll verify that it
 		// was the cluster from which the one it will replicate was replicated, i.e.
@@ -261,7 +244,7 @@ func alterReplicationJobHook(
 				options,
 			)
 		}
-
+		jobRegistry := p.ExecCfg().JobRegistry
 		if !alterTenantStmt.Options.IsDefault() {
 			// If the statement contains options, then the user provided the ALTER
 			// TENANT ... SET REPLICATION [options] form of the command.
@@ -301,21 +284,6 @@ func alterReplicationJobHook(
 	return fn, nil, false, nil
 }
 
-func alterTenantSetReplicationSource(
-	ctx context.Context,
-	txn isql.Txn,
-	jobRegistry *jobs.Registry,
-	options *resolvedTenantReplicationOptions,
-	tenInfo *mtinfopb.TenantInfo,
-) error {
-	if expirationWindow, ok := options.GetExpirationWindow(); ok {
-		if err := alterTenantExpirationWindow(ctx, txn, jobRegistry, expirationWindow, tenInfo); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func alterTenantSetReplication(
 	ctx context.Context,
 	p sql.PlanHookState,
@@ -324,11 +292,19 @@ func alterTenantSetReplication(
 	options *resolvedTenantReplicationOptions,
 	tenInfo *mtinfopb.TenantInfo,
 ) error {
-	if err := checkForActiveIngestionJob(tenInfo); err != nil {
-		return err
+
+	if expirationWindow, ok := options.GetExpirationWindow(); ok {
+		if err := alterTenantExpirationWindow(ctx, txn, jobRegistry, expirationWindow, tenInfo); err != nil {
+			return err
+		}
 	}
-	if err := alterTenantConsumerOptions(ctx, p, txn, jobRegistry, options, tenInfo); err != nil {
-		return err
+	if options.DestinationOptionsSet() {
+		if err := checkForActiveIngestionJob(tenInfo); err != nil {
+			return err
+		}
+		if err := alterTenantConsumerOptions(ctx, p, txn, jobRegistry, options, tenInfo); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -375,6 +351,10 @@ func alterTenantRestartReplication(
 			dstTenantID,
 			tenInfo.DataState,
 		)
+	}
+
+	if alterTenantStmt.Options.ExpirationWindowSet() {
+		return CannotSetExpirationWindowErr
 	}
 
 	configUri, err := streamclient.ParseConfigUri(srcUri)

@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -258,7 +257,7 @@ func NewReplicationHelper(
 		`SET CLUSTER SETTING stream_replication.min_checkpoint_frequency = '10ms'`)
 
 	// Sink to read data from.
-	sink, cleanupSink := pgurlutils.PGUrl(t, s.AdvSQLAddr(), t.Name(), url.User(username.RootUser))
+	sink, cleanupSink := sqlutils.PGUrl(t, s.AdvSQLAddr(), t.Name(), url.User(username.RootUser))
 
 	rng, seed := randutil.NewPseudoRand()
 	t.Logf("Replication helper seed %d", seed)

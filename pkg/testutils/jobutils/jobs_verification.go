@@ -16,9 +16,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
+	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
-	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -26,37 +26,37 @@ import (
 // WaitForJobToSucceed waits for the specified job ID to succeed.
 func WaitForJobToSucceed(t testing.TB, db *sqlutils.SQLRunner, jobID jobspb.JobID) {
 	t.Helper()
-	WaitForJobToHaveStatus(t, db, jobID, jobs.StateSucceeded)
+	waitForJobToHaveStatus(t, db, jobID, jobs.StatusSucceeded)
 }
 
 // WaitForJobToPause waits for the specified job ID to be paused.
 func WaitForJobToPause(t testing.TB, db *sqlutils.SQLRunner, jobID jobspb.JobID) {
 	t.Helper()
-	WaitForJobToHaveStatus(t, db, jobID, jobs.StatePaused)
+	waitForJobToHaveStatus(t, db, jobID, jobs.StatusPaused)
 }
 
 // WaitForJobToCancel waits for the specified job ID to be in a cancelled state.
 func WaitForJobToCancel(t testing.TB, db *sqlutils.SQLRunner, jobID jobspb.JobID) {
 	t.Helper()
-	WaitForJobToHaveStatus(t, db, jobID, jobs.StateCanceled)
+	waitForJobToHaveStatus(t, db, jobID, jobs.StatusCanceled)
 }
 
 // WaitForJobToRun waits for the specified job ID to be in a running state.
 func WaitForJobToRun(t testing.TB, db *sqlutils.SQLRunner, jobID jobspb.JobID) {
 	t.Helper()
-	WaitForJobToHaveStatus(t, db, jobID, jobs.StateRunning)
+	waitForJobToHaveStatus(t, db, jobID, jobs.StatusRunning)
 }
 
 // WaitForJobToFail waits for the specified job ID to be in a failed state.
 func WaitForJobToFail(t testing.TB, db *sqlutils.SQLRunner, jobID jobspb.JobID) {
 	t.Helper()
-	WaitForJobToHaveStatus(t, db, jobID, jobs.StateFailed)
+	waitForJobToHaveStatus(t, db, jobID, jobs.StatusFailed)
 }
 
 // WaitForJobReverting waits for the specified job ID to be in a reverting state.
 func WaitForJobReverting(t testing.TB, db *sqlutils.SQLRunner, jobID jobspb.JobID) {
 	t.Helper()
-	WaitForJobToHaveStatus(t, db, jobID, jobs.StateReverting)
+	waitForJobToHaveStatus(t, db, jobID, jobs.StatusReverting)
 }
 
 const (
@@ -75,29 +75,25 @@ const (
 	JobPayloadByIDQuery         = "SELECT value FROM system.job_info WHERE job_id = $1 AND info_key::string = 'legacy_payload' ORDER BY written DESC LIMIT 1"
 )
 
-func WaitForJobToHaveStatus(
-	t testing.TB, db *sqlutils.SQLRunner, jobID jobspb.JobID, expectedStatus jobs.State,
+func waitForJobToHaveStatus(
+	t testing.TB, db *sqlutils.SQLRunner, jobID jobspb.JobID, expectedStatus jobs.Status,
 ) {
 	t.Helper()
-	const duration = 2 * time.Minute
-	err := retry.ForDuration(duration, func() error {
+	testutils.SucceedsWithin(t, func() error {
 		var status string
 		db.QueryRow(t, "SELECT status FROM system.jobs WHERE id = $1", jobID).Scan(&status)
-		if jobs.State(status) == jobs.StateFailed {
-			if expectedStatus == jobs.StateFailed {
+		if jobs.Status(status) == jobs.StatusFailed {
+			if expectedStatus == jobs.StatusFailed {
 				return nil
 			}
 			payload := GetJobPayload(t, db, jobID)
 			t.Fatalf("job failed: %s", payload.Error)
 		}
-		if e, a := expectedStatus, jobs.State(status); e != a {
+		if e, a := expectedStatus, jobs.Status(status); e != a {
 			return errors.Errorf("expected job status %s, but got %s", e, a)
 		}
 		return nil
-	})
-	if err != nil {
-		t.Fatalf("condition failed to evaluate within %s: %s", duration, err)
-	}
+	}, 2*time.Minute)
 }
 
 // BulkOpResponseFilter creates a blocking response filter for the responses
@@ -123,14 +119,14 @@ func verifySystemJob(
 	db *sqlutils.SQLRunner,
 	offset int,
 	filterType jobspb.Type,
-	expectedState string,
 	expectedStatus string,
+	expectedRunningStatus string,
 	expected jobs.Record,
 ) error {
 	var actual jobs.Record
-	var stateString string
-	var status gosql.NullString
 	var statusString string
+	var runningStatus gosql.NullString
+	var runningStatusString string
 	var usernameString string
 	// We have to query for the nth job created rather than filtering by ID,
 	// because job-generating SQL queries (e.g. BACKUP) do not currently return
@@ -142,23 +138,23 @@ func verifySystemJob(
 		offset,
 	).Scan(
 		&actual.Description, &usernameString,
-		&stateString, &status,
+		&statusString, &runningStatus,
 	)
 	actual.Username = username.MakeSQLUsernameFromPreNormalizedString(usernameString)
-	if status.Valid {
-		statusString = status.String
+	if runningStatus.Valid {
+		runningStatusString = runningStatus.String
 	}
 
 	expected.DescriptorIDs = nil
 	expected.Details = nil
 	require.Equal(t, expected.Description, actual.Description)
 	require.Equal(t, expected.Username, actual.Username)
-	if expectedState != stateString {
-		return errors.Errorf("job %d: expected state %v, got %v", offset, expectedState, stateString)
+	if expectedStatus != statusString {
+		return errors.Errorf("job %d: expected status %v, got %v", offset, expectedStatus, statusString)
 	}
-	if expectedStatus != "" && expectedStatus != statusString {
-		return errors.Errorf("job %d: expected status %v, got %v",
-			offset, expectedStatus, statusString)
+	if expectedRunningStatus != "" && expectedRunningStatus != runningStatusString {
+		return errors.Errorf("job %d: expected running status %v, got %v",
+			offset, expectedRunningStatus, runningStatusString)
 	}
 
 	return nil
@@ -171,10 +167,10 @@ func VerifyRunningSystemJob(
 	db *sqlutils.SQLRunner,
 	offset int,
 	filterType jobspb.Type,
-	expectedStatus jobs.StatusMessage,
+	expectedRunningStatus jobs.RunningStatus,
 	expected jobs.Record,
 ) error {
-	return verifySystemJob(t, db, offset, filterType, "running", string(expectedStatus), expected)
+	return verifySystemJob(t, db, offset, filterType, "running", string(expectedRunningStatus), expected)
 }
 
 // VerifySystemJob checks that job description, user, and running status are
@@ -184,7 +180,7 @@ func VerifySystemJob(
 	db *sqlutils.SQLRunner,
 	offset int,
 	filterType jobspb.Type,
-	expectedStatus jobs.State,
+	expectedStatus jobs.Status,
 	expected jobs.Record,
 ) error {
 	return verifySystemJob(t, db, offset, filterType, string(expectedStatus), "", expected)

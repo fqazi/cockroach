@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/gossip"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/keys"
-	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvstreamer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangecache"
@@ -157,7 +156,8 @@ type ServerConfig struct {
 	ExternalStorageFromURI cloud.ExternalStorageFromURIFactory
 
 	// ProtectedTimestampProvider maintains the state of the protected timestamp
-	// subsystem. It is queried during the GC process.
+	// subsystem. It is queried during the GC process and in the handling of
+	// AdminVerifyProtectedTimestampRequest.
 	ProtectedTimestampProvider protectedts.Provider
 
 	DistSender *kvcoord.DistSender
@@ -210,11 +210,6 @@ type ServerConfig struct {
 	// RootSQLMemoryPoolSize is the size in bytes of the root SQL memory
 	// monitor.
 	RootSQLMemoryPoolSize int64
-
-	// VecIndexManager allows SQL processors to access the vecindex.VectorIndex
-	// for operations on a vector index. It's stored as an `interface{}` due to
-	// package dependency cycles
-	VecIndexManager interface{}
 }
 
 // RuntimeStats is an interface through which the rowexec layer can get
@@ -242,10 +237,6 @@ type TestingKnobs struct {
 	// function returns an error, or if the table has already been dropped.
 	RunAfterBackfillChunk func()
 
-	// RunBeforeIndexBackfillProgressUpdate is called before updating the
-	// progress for a single index backfill.
-	RunBeforeIndexBackfillProgressUpdate func(ctx context.Context, completed []roachpb.Span)
-
 	// SerializeIndexBackfillCreationAndIngestion ensures that every index batch
 	// created during an index backfill is also ingested before moving on to the
 	// next batch or returning.
@@ -258,10 +249,6 @@ type TestingKnobs struct {
 	// processor pushes the spans for which it has successfully backfilled the
 	// indexes.
 	IndexBackfillProgressReportInterval time.Duration
-
-	// RunDuringReencodeVectorIndexEntry is called during vector index entry backfill to
-	// simulate a transaction error.
-	RunDuringReencodeVectorIndexEntry func(txn *kv.Txn) error
 
 	// ForceDiskSpill forces any processors/operators that can fall back to disk
 	// to fall back to disk immediately.

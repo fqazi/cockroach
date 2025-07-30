@@ -2,9 +2,6 @@ statement ok
 CREATE DATABASE d
 
 statement ok
-SET create_table_with_schema_locked=false
-
-statement ok
 USE d
 
 query T colnames

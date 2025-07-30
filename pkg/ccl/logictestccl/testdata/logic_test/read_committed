@@ -1,5 +1,3 @@
-# LogicTest: !local-schema-locked
-
 subtest cursor
 
 # Verify that SQL and PL/pgSQL cursors run under READ COMMITTED correctly.
@@ -322,9 +320,6 @@ statement ok
 SET autocommit_before_ddl = false
 
 statement ok
-SET create_table_with_schema_locked=false
-
-statement ok
 BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;
 CREATE TABLE single_stmt_explicit (a INT PRIMARY KEY);
 COMMIT
@@ -485,9 +480,6 @@ ROLLBACK
 statement ok
 RESET autocommit_before_ddl
 
-statement ok
-RESET create_table_with_schema_locked
-
 subtest end
 
 statement ok
@@ -561,8 +553,6 @@ user testuser
 statement ok
 COMMIT
 
-subtest end
-
 subtest regression_130661
 
 statement ok
@@ -585,58 +575,6 @@ SELECT * FROM t130661 WHERE id = 1 FOR UPDATE
 
 statement ok
 COMMIT
-
-subtest end
-
-subtest regression_141961
-
-statement ok
-BEGIN ISOLATION LEVEL READ COMMITTED;
-
-query I
-SELECT * FROM (WITH foo AS (SELECT * FROM t FOR UPDATE LIMIT 1) SELECT 1);
-----
-1
-
-statement ok
-ROLLBACK;
-
-subtest end
-
-subtest regression_143138
-
-statement ok
-CREATE TABLE usertable (
-  ycsb_key VARCHAR(255) NOT NULL,
-  field0 STRING NOT NULL,
-  field1 STRING NOT NULL,
-  CONSTRAINT usertable_pkey PRIMARY KEY (ycsb_key ASC),
-  FAMILY fam_0_ycsb_key (ycsb_key),
-  FAMILY fam_1_field0 (field0),
-  FAMILY fam_2_field1 (field1)
-)
-
-statement ok
-SET plan_cache_mode = force_generic_plan
-
-statement ok
-PREPARE p AS UPDATE usertable SET field1 = $2:::STRING WHERE ycsb_key = $1:::STRING;
-
-query T kvtrace
-EXECUTE p ('foo', 'bar')
-----
-Scan /Table/119/1/"foo"/2/1 lock Exclusive (Block, Unreplicated)
-
-statement ok
-BEGIN ISOLATION LEVEL READ COMMITTED;
-
-query T kvtrace
-EXECUTE p ('foo', 'bar')
-----
-Scan /Table/119/1/"foo"/2/1 lock Exclusive (Block, Unreplicated)
-
-statement ok
-ROLLBACK
 
 subtest end
 

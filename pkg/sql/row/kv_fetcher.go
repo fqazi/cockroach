@@ -198,7 +198,6 @@ func NewStreamingKVFetcher(
 	maintainOrdering bool,
 	singleRowLookup bool,
 	maxKeysPerRow int,
-	reverse bool,
 	diskBuffer kvstreamer.ResultDiskBuffer,
 	kvFetcherMemAcc *mon.BoundAccount,
 	ext *fetchpb.IndexFetchSpec_ExternalRowData,
@@ -221,7 +220,6 @@ func NewStreamingKVFetcher(
 		&kvPairsRead,
 		GetKeyLockingStrength(lockStrength),
 		GetKeyLockingDurability(lockDurability),
-		reverse,
 	)
 	mode := kvstreamer.OutOfOrder
 	if maintainOrdering {
@@ -236,10 +234,7 @@ func NewStreamingKVFetcher(
 		maxKeysPerRow,
 		diskBuffer,
 	)
-	return newKVFetcher(newTxnKVStreamer(
-		streamer, lockStrength, lockDurability, kvFetcherMemAcc,
-		&kvPairsRead, &batchRequestsIssued, rawMVCCValues, reverse,
-	))
+	return newKVFetcher(newTxnKVStreamer(streamer, lockStrength, lockDurability, kvFetcherMemAcc, &kvPairsRead, &batchRequestsIssued, rawMVCCValues))
 }
 
 func newKVFetcher(batchFetcher KVBatchFetcher) *KVFetcher {
@@ -300,12 +295,9 @@ func (f *KVFetcher) nextKV(
 				// If we've made it to the very last key in the batch, copy out
 				// the key so that the GC can reclaim the large backing slice
 				// before nextKV() is called again.
-				//
-				// Combine two allocations into one.
-				buf := make([]byte, len(key)+len(rawBytes))
-				f.kv.Key = buf[:len(key):len(key)]
+				f.kv.Key = make(roachpb.Key, len(key))
 				copy(f.kv.Key, key)
-				f.kv.Value.RawBytes = buf[len(key):]
+				f.kv.Value.RawBytes = make([]byte, len(rawBytes))
 				copy(f.kv.Value.RawBytes, rawBytes)
 			}
 			return true, f.kv, f.spanID, nil

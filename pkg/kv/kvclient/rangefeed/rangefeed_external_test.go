@@ -8,7 +8,6 @@ package rangefeed_test
 import (
 	"context"
 	"fmt"
-	"maps"
 	"runtime/pprof"
 	"slices"
 	"sort"
@@ -72,9 +71,6 @@ func (t rangefeedTestType) String() string {
 var feedTypes = []rangefeedTestType{
 	{
 		useBufferedSender: false,
-	},
-	{
-		useBufferedSender: true,
 	},
 }
 
@@ -627,7 +623,7 @@ func TestWithOnSSTable(t *testing.T) {
 		}
 		sst, sstStart, sstEnd := storageutils.MakeSST(t, tsrv.ClusterSettings(), sstKVs)
 		_, _, _, pErr := db.AddSSTableAtBatchTimestamp(ctx, sstStart, sstEnd, sst,
-			false /* disallowConflicts */, hlc.Timestamp{},
+			false /* disallowConflicts */, false /* disallowShadowing */, hlc.Timestamp{},
 			nil, /* stats */
 			false /* ingestAsWrites */, now)
 		require.Nil(t, pErr)
@@ -734,7 +730,7 @@ func TestWithOnSSTableCatchesUpIfNotSet(t *testing.T) {
 		expectKVs := kvs{pointKV("c", ts, "3"), pointKV("d", ts, "4")}
 		sst, sstStart, sstEnd := storageutils.MakeSST(t, srv.ClusterSettings(), sstKVs)
 		_, _, _, pErr := db.AddSSTableAtBatchTimestamp(ctx, sstStart, sstEnd, sst,
-			false /* disallowConflicts */, hlc.Timestamp{},
+			false /* disallowConflicts */, false /* disallowShadowing */, hlc.Timestamp{},
 			nil, /* stats */
 			false /* ingestAsWrites */, now)
 		require.Nil(t, pErr)
@@ -918,8 +914,11 @@ func (events *testEvents) String() string {
 	events.Lock()
 	defer events.Unlock()
 	var buf strings.Builder
-
-	timestamps := slices.SortedFunc(maps.Keys(events.events), func(a hlc.Timestamp, b hlc.Timestamp) int {
+	timestamps := make([]hlc.Timestamp, 0, len(events.events))
+	for key := range events.events {
+		timestamps = append(timestamps, key)
+	}
+	slices.SortFunc(timestamps, func(a hlc.Timestamp, b hlc.Timestamp) int {
 		return a.Compare(b)
 	})
 	fmt.Fprint(&buf, "\n")
@@ -992,7 +991,7 @@ func TestUnrecoverableErrors(t *testing.T) {
 
 			ptsReader := store.GetStoreConfig().ProtectedTimestampReader
 			require.NoError(t,
-				spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, srv.SystemLayer().Clock().Now()))
+				spanconfigptsreader.TestingRefreshPTSState(ctx, t, ptsReader, srv.SystemLayer().Clock().Now()))
 		}
 
 		f, err := rangefeed.NewFactory(ts.AppStopper(), kvDB, ts.ClusterSettings(), nil)
@@ -1582,7 +1581,7 @@ func TestRangeFeedIntentResolutionRace(t *testing.T) {
 			require.False(t, commitTS.LessEq(c.ResolvedTS),
 				"repl %s emitted checkpoint %s beyond write timestamp %s", repl3, c.ResolvedTS, commitTS)
 		case v := <-valueC:
-			require.Failf(t, "repl3 emitted premature value", "value: %#+v", v)
+			require.Fail(t, "repl3 emitted premature value %s", v)
 		case <-waitC:
 			done = true
 		}
@@ -1917,14 +1916,10 @@ func TestRangefeedCatchupStarvation(t *testing.T) {
 		f, err := rangefeed.NewFactory(s.AppStopper(), db, s.ClusterSettings(), nil)
 		require.NoError(t, err)
 
-		blocked := make(chan struct{}, 1)
+		blocked := make(chan struct{})
 		r1, err := f.RangeFeed(ctx, "consumer-1-rf-1", []roachpb.Span{span}, ts,
 			func(ctx context.Context, value *kvpb.RangeFeedValue) {
-				select {
-				case blocked <- struct{}{}:
-				default:
-					// We can hit this case on retries.
-				}
+				blocked <- struct{}{}
 				<-ctx.Done()
 			},
 			rangefeed.WithConsumerID(1),

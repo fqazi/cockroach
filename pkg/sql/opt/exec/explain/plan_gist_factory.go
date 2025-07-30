@@ -23,10 +23,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecpb"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/base64"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil"
@@ -35,7 +33,7 @@ import (
 )
 
 func init() {
-	if numOperators != 67 {
+	if numOperators != 63 {
 		// This error occurs when an operator has been added or removed in
 		// pkg/sql/opt/exec/explain/factory.opt. If an operator is added at the
 		// end of factory.opt, simply adjust the hardcoded value above. If an
@@ -533,10 +531,6 @@ func (u *unknownTable) IsMaterializedView() bool {
 	return false
 }
 
-func (u *unknownTable) LookupColumnOrdinal(descpb.ColumnID) (int, error) {
-	panic(errors.AssertionFailedf("not implemented"))
-}
-
 func (u *unknownTable) ColumnCount() int {
 	return 0
 }
@@ -646,18 +640,8 @@ func (u *unknownTable) HomeRegionColName() (colName string, ok bool) {
 	return "", false
 }
 
-// RegionalByRowUsingConstraint is part of the cat.Table interface.
-func (ot *unknownTable) RegionalByRowUsingConstraint() cat.ForeignKeyConstraint {
-	return nil
-}
-
 // GetDatabaseID is part of the cat.Table interface.
 func (u *unknownTable) GetDatabaseID() descpb.ID {
-	return 0
-}
-
-// GetSchemaID is part of the cat.Table interface.
-func (u *unknownTable) GetSchemaID() descpb.ID {
 	return 0
 }
 
@@ -675,15 +659,6 @@ func (u *unknownTable) TriggerCount() int {
 func (u *unknownTable) Trigger(i int) cat.Trigger {
 	panic(errors.AssertionFailedf("not implemented"))
 }
-
-// IsRowLevelSecurityEnabled is part of the cat.Table interface
-func (u *unknownTable) IsRowLevelSecurityEnabled() bool { return false }
-
-// IsRowLevelSecurityForced is part of the cat.Table interface
-func (u *unknownTable) IsRowLevelSecurityForced() bool { return false }
-
-// Policies is part of the cat.Table interface.
-func (u *unknownTable) Policies() *cat.Policies { return nil }
 
 var _ cat.Table = &unknownTable{}
 
@@ -712,8 +687,12 @@ func (u *unknownIndex) IsUnique() bool {
 	return false
 }
 
-func (u *unknownIndex) Type() idxtype.T {
-	return idxtype.FORWARD
+func (u *unknownIndex) IsInverted() bool {
+	return false
+}
+
+func (u *unknownIndex) IsVector() bool {
+	return false
 }
 
 func (u *unknownIndex) GetInvisibility() float64 {
@@ -794,10 +773,6 @@ func (u *unknownIndex) GeoConfig() geopb.Config {
 	return geopb.Config{}
 }
 
-func (u *unknownIndex) VecConfig() *vecpb.Config {
-	return nil
-}
-
 func (u *unknownIndex) Version() descpb.IndexDescriptorVersion {
 	return descpb.LatestIndexDescriptorVersion
 }
@@ -808,10 +783,6 @@ func (u *unknownIndex) PartitionCount() int {
 
 func (u *unknownIndex) Partition(i int) cat.Partition {
 	panic(errors.AssertionFailedf("not implemented"))
-}
-
-func (u *unknownIndex) IsTemporaryIndexForBackfill() bool {
-	return false
 }
 
 var _ cat.Index = &unknownIndex{}

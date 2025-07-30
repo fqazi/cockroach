@@ -31,6 +31,7 @@ var pollingInterval = settings.RegisterDurationSetting(
 	"sql.stmt_diagnostics.poll_interval",
 	"rate at which the stmtdiagnostics.Registry polls for requests, set to zero to disable",
 	10*time.Second,
+	settings.NonNegativeDuration,
 )
 
 var bundleChunkSize = settings.RegisterByteSizeSetting(
@@ -108,18 +109,11 @@ type Request struct {
 	minExecutionLatency time.Duration
 	expiresAt           time.Time
 	redacted            bool
-	username            string
 }
 
 // IsRedacted returns whether this diagnostic request is for a redacted bundle.
 func (r *Request) IsRedacted() bool {
 	return r.redacted
-}
-
-// Username returns the normalized username of the user that initiated this
-// request. It can be empty in which case the requester user is unknown.
-func (r *Request) Username() string {
-	return r.username
 }
 
 func (r *Request) isExpired(now time.Time) bool {
@@ -150,9 +144,7 @@ func NewRegistry(db isql.DB, st *cluster.Settings) *Registry {
 
 // Start will start the polling loop for the Registry.
 func (r *Registry) Start(ctx context.Context, stopper *stop.Stopper) {
-	// The registry has the same lifetime as the server, so the cancellation
-	// function can be ignored and it'll be called by the stopper.
-	ctx, _ = stopper.WithCancelOnQuiesce(ctx) // nolint:quiesce
+	ctx, _ = stopper.WithCancelOnQuiesce(ctx)
 
 	// Since background statement diagnostics collection is not under user
 	// control, exclude it from cost accounting and control.
@@ -203,6 +195,7 @@ func (r *Registry) poll(ctx context.Context) {
 		case <-pollIntervalChanged:
 			continue // go back around and maybe reset the timer
 		case <-timer.C:
+			timer.Read = true
 		case <-ctx.Done():
 			return
 		}
@@ -231,7 +224,6 @@ func (r *Registry) addRequestInternalLocked(
 	minExecutionLatency time.Duration,
 	expiresAt time.Time,
 	redacted bool,
-	username string,
 ) {
 	if r.findRequestLocked(id) {
 		// Request already exists.
@@ -248,7 +240,6 @@ func (r *Registry) addRequestInternalLocked(
 		minExecutionLatency: minExecutionLatency,
 		expiresAt:           expiresAt,
 		redacted:            redacted,
-		username:            username,
 	}
 }
 
@@ -287,11 +278,10 @@ func (r *Registry) InsertRequest(
 	minExecutionLatency time.Duration,
 	expiresAfter time.Duration,
 	redacted bool,
-	username string,
 ) error {
 	_, err := r.insertRequestInternal(
 		ctx, stmtFingerprint, planGist, antiPlanGist, samplingProbability,
-		minExecutionLatency, expiresAfter, redacted, username,
+		minExecutionLatency, expiresAfter, redacted,
 	)
 	return err
 }
@@ -305,7 +295,6 @@ func (r *Registry) insertRequestInternal(
 	minExecutionLatency time.Duration,
 	expiresAfter time.Duration,
 	redacted bool,
-	username string,
 ) (RequestID, error) {
 	if samplingProbability != 0 {
 		if samplingProbability < 0 || samplingProbability > 1 {
@@ -349,7 +338,7 @@ func (r *Registry) insertRequestInternal(
 
 		now := timeutil.Now()
 		insertColumns := "statement_fingerprint, requested_at"
-		qargs := make([]interface{}, 2, 9)
+		qargs := make([]interface{}, 2, 8)
 		qargs[0] = stmtFingerprint // statement_fingerprint
 		qargs[1] = now             // requested_at
 		if planGist != "" {
@@ -373,10 +362,6 @@ func (r *Registry) insertRequestInternal(
 		if redacted {
 			insertColumns += ", redacted"
 			qargs = append(qargs, redacted) // redacted
-		}
-		if username != "" {
-			insertColumns += ", username"
-			qargs = append(qargs, username) // username
 		}
 		valuesClause := "$1, $2"
 		for i := range qargs[2:] {
@@ -409,10 +394,7 @@ func (r *Registry) insertRequestInternal(
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		r.mu.epoch++
-		r.addRequestInternalLocked(
-			ctx, reqID, stmtFingerprint, planGist, antiPlanGist, samplingProbability,
-			minExecutionLatency, expiresAt, redacted, username,
-		)
+		r.addRequestInternalLocked(ctx, reqID, stmtFingerprint, planGist, antiPlanGist, samplingProbability, minExecutionLatency, expiresAt, redacted)
 	}()
 
 	return reqID, nil
@@ -658,8 +640,6 @@ func (r *Registry) InsertStatementDiagnostics(
 			// Insert a completed request into system.statement_diagnostics_request.
 			// This is necessary because the UI uses this table to discover completed
 			// diagnostics.
-			//
-			// This bundle was collected via explicit EXPLAIN ANALYZE (DEBUG).
 			_, err := txn.ExecEx(ctx, "stmt-diag-add-completed", txn.KV(),
 				sessiondata.NodeUserSessionDataOverride,
 				"INSERT INTO system.statement_diagnostics_requests"+
@@ -691,7 +671,7 @@ func (r *Registry) pollRequests(ctx context.Context) error {
 
 		it, err := r.db.Executor().QueryIteratorEx(ctx, "stmt-diag-poll", nil, /* txn */
 			sessiondata.NodeUserSessionDataOverride,
-			`SELECT id, statement_fingerprint, min_execution_latency, expires_at, sampling_probability, plan_gist, anti_plan_gist, redacted, username
+			`SELECT id, statement_fingerprint, min_execution_latency, expires_at, sampling_probability, plan_gist, anti_plan_gist, redacted
 				FROM system.statement_diagnostics_requests
 				WHERE completed = false AND (expires_at IS NULL OR expires_at > now())`,
 		)
@@ -727,7 +707,7 @@ func (r *Registry) pollRequests(ctx context.Context) error {
 		var minExecutionLatency time.Duration
 		var expiresAt time.Time
 		var samplingProbability float64
-		var planGist, username string
+		var planGist string
 		var antiPlanGist, redacted bool
 
 		if minExecLatency, ok := row[2].(*tree.DInterval); ok {
@@ -753,11 +733,8 @@ func (r *Registry) pollRequests(ctx context.Context) error {
 		if b, ok := row[7].(*tree.DBool); ok {
 			redacted = bool(*b)
 		}
-		if u, ok := row[8].(*tree.DString); ok {
-			username = string(*u)
-		}
 		ids.Add(int(id))
-		r.addRequestInternalLocked(ctx, id, stmtFingerprint, planGist, antiPlanGist, samplingProbability, minExecutionLatency, expiresAt, redacted, username)
+		r.addRequestInternalLocked(ctx, id, stmtFingerprint, planGist, antiPlanGist, samplingProbability, minExecutionLatency, expiresAt, redacted)
 	}
 
 	// Remove all other requests.

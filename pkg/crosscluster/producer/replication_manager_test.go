@@ -61,16 +61,11 @@ func TestReplicationManagerRequiresReplicationPrivilege(t *testing.T) {
 		})
 		defer cleanup()
 		ec := pi.EvalContext()
-		mgr, err := newReplicationStreamManager(ctx, ec, p.(resolver.SchemaResolver), pi.InternalSQLTxn(), clusterunique.ID{})
-		require.NoError(t, err)
-		if err := mgr.AuthorizeViaReplicationPriv(context.Background()); err != nil {
-			return nil, err
-		}
-		return mgr, nil
+		return newReplicationStreamManagerWithPrivilegesCheck(ctx, ec, p.(resolver.SchemaResolver), pi.InternalSQLTxn(), clusterunique.ID{})
 	}
 
 	tDB.Exec(t, "CREATE ROLE somebody")
-	tDB.Exec(t, "GRANT SYSTEM REPLICATIONSOURCE TO somebody")
+	tDB.Exec(t, "GRANT SYSTEM REPLICATION TO somebody")
 	tDB.Exec(t, "CREATE ROLE anybody")
 
 	for _, tc := range []struct {
@@ -80,7 +75,7 @@ func TestReplicationManagerRequiresReplicationPrivilege(t *testing.T) {
 		{user: "admin", expErr: ""},
 		{user: "root", expErr: ""},
 		{user: "somebody", expErr: ""},
-		{user: "anybody", expErr: "user anybody does not have REPLICATIONSOURCE system privilege"},
+		{user: "anybody", expErr: "user anybody does not have REPLICATION system privilege"},
 		{user: "nobody", expErr: `role/user "nobody" does not exist`},
 	} {
 		t.Run(tc.user, func(t *testing.T) {

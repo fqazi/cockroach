@@ -280,25 +280,27 @@ func init() {
 			}
 		},
 	)
-}
 
-// Special rules to ensure that swapping default expressions is done in order.
-func init() {
-	registerDepRule(
-		"handle default column expression swaps",
+	registerDepRuleForDrop(
+		"secondary index partial no longer public before referenced column",
 		scgraph.Precedence,
-		"old-column-expression", "new-column-expression",
+		"secondary-partial-index", "column",
+		scpb.Status_ABSENT, scpb.Status_WRITE_ONLY,
 		func(from, to NodeVars) rel.Clauses {
 			return rel.Clauses{
-				from.Type((*scpb.ColumnDefaultExpression)(nil), (*scpb.ColumnOnUpdateExpression)(nil)),
-				to.Type((*scpb.ColumnDefaultExpression)(nil), (*scpb.ColumnOnUpdateExpression)(nil)),
-				from.El.AttrEqVar(rel.Type, "same-type"),
-				to.El.AttrEqVar(rel.Type, "same-type"),
-				JoinOnColumnID(from, to, "table-id", "col-id"),
-				from.TargetStatus(scpb.ToAbsent),
-				from.CurrentStatus(scpb.Status_ABSENT),
-				to.TargetStatus(scpb.ToPublic),
-				to.CurrentStatus(scpb.Status_PUBLIC),
+				from.Type((*scpb.SecondaryIndexPartial)(nil)),
+				to.Type((*scpb.Column)(nil)),
+				JoinOnDescID(from, to, "table-id"),
+				descriptorIsNotBeingDropped(from.El),
+				FilterElements("secondaryIndexReferencesColumn", from, to,
+					func(index *scpb.SecondaryIndexPartial, column *scpb.Column) bool {
+						for _, refColumns := range index.ReferencedColumnIDs {
+							if refColumns == column.ColumnID {
+								return true
+							}
+						}
+						return false
+					}),
 			}
 		},
 	)

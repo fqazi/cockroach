@@ -131,7 +131,11 @@ func runAdmissionControlSnapshotOverloadIO(
 	{
 		// Defensive, since admission control is enabled by default.
 		roachtestutil.SetAdmissionControl(ctx, t, c, true)
-		// Ensure ingest splits are enabled. (Enabled by default in v24.1+)
+		// Ensure ingest splits and excises are enabled. (Enabled by default in v24.1+)
+		if _, err := db.ExecContext(
+			ctx, "SET CLUSTER SETTING kv.snapshot_receiver.excise.enabled = 'true'"); err != nil {
+			t.Fatalf("failed to set kv.snapshot_receiver.excise.enabled: %v", err)
+		}
 		if _, err := db.ExecContext(
 			ctx, "SET CLUSTER SETTING storage.ingest_split.enabled = 'true'"); err != nil {
 			t.Fatalf("failed to set storage.ingest_split.enabled: %v", err)
@@ -190,7 +194,7 @@ func runAdmissionControlSnapshotOverloadIO(
 	}
 
 	t.Status(fmt.Sprintf("starting kv workload thread (<%s)", time.Minute))
-	m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+	m := c.NewMonitor(ctx, c.CRDBNodes())
 	m.Go(func(ctx context.Context) error {
 
 		labels := map[string]string{

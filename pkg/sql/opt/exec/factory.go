@@ -285,7 +285,7 @@ type KVOption struct {
 // RecursiveCTEIterationFn creates a plan for an iteration of WITH RECURSIVE,
 // given the result of the last iteration (as a node created by
 // ConstructBuffer).
-type RecursiveCTEIterationFn func(ctx context.Context, ef Factory, bufferRef Node) (Plan, error)
+type RecursiveCTEIterationFn func(ef Factory, bufferRef Node) (Plan, error)
 
 // ApplyJoinPlanRightSideFn creates a plan for an iteration of ApplyJoin, given
 // a row produced from the left side. The plan is guaranteed to produce the
@@ -400,9 +400,6 @@ const (
 
 	// ExecutionStatsID is an annotation with a *ExecutionStats value.
 	ExecutionStatsID
-
-	// PolicyInfoID is an annotation with a *RLSPoliciesApplied value.
-	PolicyInfoID
 )
 
 // EstimatedStats contains estimated statistics about a given operator.
@@ -446,8 +443,6 @@ type ExecutionStats struct {
 
 	KVTime                optional.Duration
 	KVContentionTime      optional.Duration
-	KVLockWaitTime        optional.Duration
-	KVLatchWaitTime       optional.Duration
 	KVBytesRead           optional.Uint
 	KVPairsRead           optional.Uint
 	KVRowsRead            optional.Uint
@@ -543,27 +538,6 @@ type ExecutionStats struct {
 	// UsedFollowerRead indicates whether at least some reads were served by the
 	// follower replicas.
 	UsedFollowerRead bool
-}
-
-// RLSPoliciesApplied contains information about the row-level security policies
-// that were applied during the query.
-type RLSPoliciesApplied struct {
-	// PoliciesSkippedForRole is true if the user is a member of a role that is
-	// exempt from all policies (e.g., admin).
-	PoliciesSkippedForRole bool
-
-	// PoliciesFilteredAllRows is true if RLS was enforced, and although policies
-	// were applied, the result was that no rows were returned (typically represented
-	// by an empty VALUES node). This is used when it's not possible to attribute
-	// the result to specific table-level policy details (e.g., due to an empty
-	// VALUES node replacing a scan).
-	PoliciesFilteredAllRows bool
-
-	// Policies is the list of policy IDs applied to the scan of a single table.
-	// This applies to the table that this annotation was attached to. If this is
-	// empty, it either means policies were skipped due to the role, or none were
-	// applied.
-	Policies opt.PolicyIDSet
 }
 
 // BuildPlanForExplainFn builds an execution plan against the given

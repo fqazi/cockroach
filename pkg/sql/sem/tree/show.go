@@ -104,7 +104,7 @@ type ShowBackup struct {
 
 // Format implements the NodeFormatter interface.
 func (node *ShowBackup) Format(ctx *FmtCtx) {
-	if node.Path == nil {
+	if node.InCollection != nil && node.Path == nil {
 		ctx.WriteString("SHOW BACKUPS IN ")
 		ctx.FormatURIs(node.InCollection)
 		return
@@ -124,10 +124,13 @@ func (node *ShowBackup) Format(ctx *FmtCtx) {
 		ctx.WriteString("FROM ")
 	}
 
-	ctx.FormatNode(node.Path)
-	ctx.WriteString(" IN ")
-	ctx.FormatURIs(node.InCollection)
-
+	if node.InCollection != nil {
+		ctx.FormatNode(node.Path)
+		ctx.WriteString(" IN ")
+		ctx.FormatURIs(node.InCollection)
+	} else {
+		ctx.FormatURI(node.Path)
+	}
 	if !node.Options.IsDefault() {
 		ctx.WriteString(" WITH OPTIONS (")
 		ctx.FormatNode(&node.Options)
@@ -859,28 +862,12 @@ func (node *ShowCreateAllTables) Format(ctx *FmtCtx) {
 	ctx.WriteString("SHOW CREATE ALL TABLES")
 }
 
-// ShowCreateAllTriggers represents a SHOW CREATE ALL TRIGGERS statement.
-type ShowCreateAllTriggers struct{}
-
-// Format implements the NodeFormatter interface.
-func (node *ShowCreateAllTriggers) Format(ctx *FmtCtx) {
-	ctx.WriteString("SHOW CREATE ALL TRIGGERS")
-}
-
 // ShowCreateAllTypes represents a SHOW CREATE ALL TYPES statement.
 type ShowCreateAllTypes struct{}
 
 // Format implements the NodeFormatter interface.
 func (node *ShowCreateAllTypes) Format(ctx *FmtCtx) {
 	ctx.WriteString("SHOW CREATE ALL TYPES")
-}
-
-// ShowCreateAllRoutines represents a SHOW CREATE ALL ROUTINES statement.
-type ShowCreateAllRoutines struct{}
-
-// Format implements the NodeFormatter interface.
-func (node *ShowCreateAllRoutines) Format(ctx *FmtCtx) {
-	ctx.WriteString("SHOW CREATE ALL ROUTINES")
 }
 
 // ShowCreateSchedules represents a SHOW CREATE SCHEDULE statement.

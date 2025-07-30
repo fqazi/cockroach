@@ -42,7 +42,7 @@ type applyCommittedEntriesStats struct {
 	appBatchStats
 	followerStoreWriteBytes kvadmission.FollowerStoreWriteBytes
 	numBatchesProcessed     int // TODO(sep-raft-log): numBatches
-	assertionsRequested     int
+	stateAssertions         int
 	numConfChangeEntries    int
 }
 
@@ -143,13 +143,10 @@ func (sm *replicaStateMachine) NewBatch() apply.Batch {
 	// make it safer.
 	b.r = r
 	b.applyStats = &sm.applyStats
-	// TODO(#144627): most commands do not need to read. Use NewWriteBatch because
-	// it is more efficient. If there are exceptions, sparingly use NewReader or
-	// NewBatch (if it needs to read its own writes, which is unlikely).
 	b.batch = r.store.TODOEngine().NewBatch()
 	r.mu.RLock()
 	b.state = r.shMu.state
-	b.truncState = r.asLogStorage().shMu.trunc
+	b.truncState = r.shMu.raftTruncState
 	b.state.Stats = &sm.stats
 	*b.state.Stats = *r.shMu.state.Stats
 	b.closedTimestampSetter = r.mu.closedTimestampSetter
@@ -206,9 +203,14 @@ func (sm *replicaStateMachine) ApplySideEffects(
 		// Some tests (TestRangeStatsInit) assumes that once the store has started
 		// and the first range has a lease that there will not be a later hard-state.
 		if shouldAssert {
-			// Queue a check that the on-disk state doesn't diverge from the in-memory
+			// Assert that the on-disk state doesn't diverge from the in-memory
 			// state as a result of the side effects.
-			sm.applyStats.assertionsRequested++
+			sm.r.mu.RLock()
+			// TODO(sep-raft-log): either check only statemachine invariants or
+			// pass both engines in.
+			sm.r.assertStateRaftMuLockedReplicaMuRLocked(ctx, sm.r.store.TODOEngine())
+			sm.r.mu.RUnlock()
+			sm.applyStats.stateAssertions++
 		}
 	} else if res := cmd.ReplicatedResult(); !res.IsZero() {
 		log.Fatalf(ctx, "failed to handle all side-effects of ReplicatedEvalResult: %v", res)
@@ -286,11 +288,24 @@ func (sm *replicaStateMachine) handleNonTrivialReplicatedEvalResult(
 		log.Fatalf(ctx, "zero-value ReplicatedEvalResult passed to handleNonTrivialReplicatedEvalResult")
 	}
 
+	truncState := rResult.RaftTruncatedState
+	if truncState != nil {
+		rResult.RaftTruncatedState = nil
+	}
+
 	if rResult.State != nil {
 		if newLease := rResult.State.Lease; newLease != nil {
 			sm.r.handleLeaseResult(ctx, newLease, rResult.PriorReadSummary)
 			rResult.State.Lease = nil
 			rResult.PriorReadSummary = nil
+		}
+
+		if newTruncState := rResult.State.TruncatedState; newTruncState != nil {
+			if truncState != nil {
+				log.Fatalf(ctx, "double RaftTruncatedState in ReplicatedEvalResult")
+			}
+			truncState = newTruncState
+			rResult.State.TruncatedState = nil
 		}
 
 		if newVersion := rResult.State.Version; newVersion != nil {
@@ -310,9 +325,23 @@ func (sm *replicaStateMachine) handleNonTrivialReplicatedEvalResult(
 
 	// TODO(#93248): the strongly coupled truncation code will be removed once the
 	// loosely coupled truncations are the default.
-	if rResult.GetRaftTruncatedState() != nil {
-		sm.r.finalizeTruncationRaftMuLocked(ctx)
-		rResult.DiscardRaftTruncation()
+	if truncState != nil {
+		// NB: raftLogDelta reflects removals of any sideloaded entries.
+		raftLogDelta, expectedFirstIndexWasAccurate := sm.r.handleTruncatedStateResult(
+			ctx, truncState, rResult.RaftExpectedFirstIndex)
+		// NB: The RaftExpectedFirstIndex field is zero if this proposal is from
+		// before v22.1 that added it, when all truncations were strongly coupled.
+		// The delta in these historical proposals is thus accurate.
+		// TODO(pav-kv): remove the zero check after any below-raft migration.
+		isRaftLogTruncationDeltaTrusted := expectedFirstIndexWasAccurate ||
+			rResult.RaftExpectedFirstIndex == 0
+		// The proposer hasn't included the sideloaded entries into the delta. We
+		// counted these above, and combine the deltas.
+		raftLogDelta += rResult.RaftLogDelta
+		sm.r.handleRaftLogDeltaResult(ctx, raftLogDelta, isRaftLogTruncationDeltaTrusted)
+
+		rResult.RaftLogDelta = 0
+		rResult.RaftExpectedFirstIndex = 0
 	}
 
 	// The rest of the actions are "nontrivial" and may have large effects on the

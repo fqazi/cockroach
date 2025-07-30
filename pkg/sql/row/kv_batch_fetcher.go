@@ -61,7 +61,7 @@ var logAdmissionPacerErr = log.Every(100 * time.Millisecond)
 // each time we seek admission for response handling during internally submitted
 // low priority reads (like row-level TTL selects).
 var elasticCPUDurationPerLowPriReadResponse = settings.RegisterDurationSetting(
-	settings.ApplicationLevel,
+	settings.SystemOnly,
 	"sqladmission.elastic_cpu.duration_per_low_pri_read_response",
 	"controls how many CPU tokens are allotted for handling responses for internally submitted low priority reads",
 	// NB: Experimentally, during TTL reads, we observed cumulative on-CPU time
@@ -75,7 +75,7 @@ var elasticCPUDurationPerLowPriReadResponse = settings.RegisterDurationSetting(
 // internally submitted low-priority reads (like row-level TTL selects)
 // integrate with elastic CPU control.
 var internalLowPriReadElasticControlEnabled = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
+	settings.SystemOnly,
 	"sqladmission.low_pri_read_response_elastic_control.enabled",
 	"determines whether the sql portion of internally submitted reads integrate with elastic CPU controller",
 	true,
@@ -893,12 +893,12 @@ func (f *txnKVFetcher) nextBatch(ctx context.Context) (resp KVBatchFetcherRespon
 			}
 			if len(t.Rows) > 0 {
 				return KVBatchFetcherResponse{}, errors.AssertionFailedf(
-					"unexpectedly got a ReverseScanResponse using KEY_VALUES response format",
+					"unexpectedly got a ScanResponse using KEY_VALUES response format",
 				)
 			}
 			if len(t.IntentRows) > 0 {
 				return KVBatchFetcherResponse{}, errors.AssertionFailedf(
-					"unexpectedly got a ReverseScanResponse with non-nil IntentRows",
+					"unexpectedly got a ScanResponse with non-nil IntentRows",
 				)
 			}
 			// Note that ret.BatchResponse and ret.ColBatch might be nil when

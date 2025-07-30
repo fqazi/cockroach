@@ -153,10 +153,6 @@ type Catalog interface {
 	// be safely copied or used across goroutines.
 	ResolveSchema(ctx context.Context, flags Flags, name *SchemaName) (Schema, SchemaName, error)
 
-	// ResolveSchemaByID is similar to ResolveSchema, except that it locates a
-	// schema by its StableID. See the comment for StableID for more details.
-	ResolveSchemaByID(ctx context.Context, flags Flags, id StableID) (Schema, error)
-
 	// GetAllSchemaNamesForDB Gets all the SchemaNames for a database.
 	GetAllSchemaNamesForDB(ctx context.Context, dbName string) ([]SchemaName, error)
 
@@ -233,13 +229,6 @@ type Catalog interface {
 	// returns true. Returns an error if query on the `system.users` table failed
 	HasAdminRole(ctx context.Context) (bool, error)
 
-	// UserHasAdminRole checks if the specified user has admin privileges.
-	UserHasAdminRole(ctx context.Context, user username.SQLUsername) (bool, error)
-
-	// UserIsMemberOfAnyRole checks if the specified user is a member of any of the given roles,
-	// either directly or indirectly through role inheritance.
-	UserIsMemberOfAnyRole(ctx context.Context, user username.SQLUsername, roles map[username.SQLUsername]struct{}) (bool, error)
-
 	// HasRoleOption converts the roleoption to its SQL column name and checks if
 	// the user belongs to a role where the option has value true. Requires a
 	// valid transaction to be open.
@@ -248,10 +237,6 @@ type Catalog interface {
 	// the role options table. Example: CREATEROLE instead of NOCREATEROLE.
 	// NOLOGIN instead of LOGIN.
 	HasRoleOption(ctx context.Context, roleOption roleoption.Option) (bool, error)
-
-	// UserHasGlobalPrivilegeOrRoleOption returns a bool representing whether the given user
-	// has a global privilege or the corresponding legacy role option.
-	UserHasGlobalPrivilegeOrRoleOption(ctx context.Context, privilege privilege.Kind, user username.SQLUsername) (bool, error)
 
 	// FullyQualifiedName retrieves the fully qualified name of a data source.
 	// Note that:
@@ -283,7 +268,4 @@ type Catalog interface {
 	// GetRoutineOwner returns the username.SQLUsername of the routine's
 	// (specified by routineOid) owner.
 	GetRoutineOwner(ctx context.Context, routineOid oid.Oid) (username.SQLUsername, error)
-
-	// IsOwner returns true if user is the owner of the object o
-	IsOwner(ctx context.Context, o Object, user username.SQLUsername) (bool, error)
 }

@@ -6,7 +6,6 @@
 package resolvedspan
 
 import (
-	"iter"
 	"slices"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
@@ -57,6 +56,21 @@ func (f *AggregatorFrontier) ForwardResolvedSpan(
 		return false, errors.AssertionFailedf("unknown boundary type: %v", boundaryType)
 	}
 	return f.resolvedSpanFrontier.ForwardResolvedSpan(r)
+}
+
+// EntriesWithBoundaryType is analogous to Entries on span.Frontier, with the
+// difference that the supplied callback also accepts the boundary type of the
+// span, which will be non-NONE for spans at the boundary.
+func (f *AggregatorFrontier) EntriesWithBoundaryType(
+	fn func(roachpb.Span, hlc.Timestamp, jobspb.ResolvedSpan_BoundaryType) (done span.OpResult),
+) {
+	f.Entries(func(span roachpb.Span, timestamp hlc.Timestamp) (done span.OpResult) {
+		var boundaryType jobspb.ResolvedSpan_BoundaryType
+		if ok, bt := f.boundary.At(timestamp); ok {
+			boundaryType = bt
+		}
+		return fn(span, timestamp, boundaryType)
+	})
 }
 
 // CoordinatorFrontier wraps a resolvedSpanFrontier with additional
@@ -156,32 +170,11 @@ func (f *CoordinatorFrontier) InBackfill(r jobspb.ResolvedSpan) bool {
 	return f.resolvedSpanFrontier.InBackfill(r)
 }
 
-// All returns an iterator over the resolved spans in the frontier.
-func (f *CoordinatorFrontier) All() iter.Seq[jobspb.ResolvedSpan] {
-	return func(yield func(jobspb.ResolvedSpan) bool) {
-		for resolvedSpan := range f.resolvedSpanFrontier.All() {
-			// Check if it's at an earlier backfill boundary.
-			if resolvedSpan.BoundaryType == jobspb.ResolvedSpan_NONE {
-				if _, ok := slices.BinarySearchFunc(f.backfills, resolvedSpan.Timestamp,
-					func(elem hlc.Timestamp, ts hlc.Timestamp) int {
-						return elem.Compare(ts)
-					},
-				); ok {
-					resolvedSpan.BoundaryType = jobspb.ResolvedSpan_BACKFILL
-				}
-			}
-			if !yield(resolvedSpan) {
-				return
-			}
-		}
-	}
-}
-
 // MakeCheckpoint creates a checkpoint based on the current state of the frontier.
 func (f *CoordinatorFrontier) MakeCheckpoint(
 	maxBytes int64, metrics *checkpoint.Metrics,
-) *jobspb.TimestampSpansMap {
-	return checkpoint.Make(f.Frontier(), f.Entries(), maxBytes, metrics)
+) jobspb.ChangefeedProgress_Checkpoint {
+	return checkpoint.Make(f.Frontier(), f.Entries, maxBytes, metrics)
 }
 
 // spanFrontier is a type alias to make it possible to embed and forward calls
@@ -335,25 +328,6 @@ func (f *resolvedSpanFrontier) HasLaggingSpans(sv *settings.Values) bool {
 		frontier = f.statementTime
 	}
 	return frontier.Add(lagThresholdNanos, 0).Less(f.latestTS)
-}
-
-// All returns an iterator over the resolved spans in the frontier.
-func (f *resolvedSpanFrontier) All() iter.Seq[jobspb.ResolvedSpan] {
-	return func(yield func(jobspb.ResolvedSpan) bool) {
-		for sp, ts := range f.spanFrontier.Entries() {
-			var boundaryType jobspb.ResolvedSpan_BoundaryType
-			if ok, bt := f.boundary.At(ts); ok {
-				boundaryType = bt
-			}
-			if !yield(jobspb.ResolvedSpan{
-				Span:         sp,
-				Timestamp:    ts,
-				BoundaryType: boundaryType,
-			}) {
-				return
-			}
-		}
-	}
 }
 
 // resolvedSpanBoundary encapsulates a resolved span boundary, which is

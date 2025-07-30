@@ -35,7 +35,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/ioctx"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
-	"github.com/cockroachdb/errors/oserror"
 	"github.com/stretchr/testify/require"
 )
 
@@ -76,12 +75,7 @@ func TestPutHttp(t *testing.T) {
 				}
 				http.ServeFile(w, r, localfile)
 			case "DELETE":
-				err := os.Remove(localfile)
-				if oserror.IsNotExist(err) {
-					http.Error(w, err.Error(), 404)
-					return
-				}
-				if err != nil {
+				if err := os.Remove(localfile); err != nil {
 					http.Error(w, err.Error(), 500)
 					return
 				}

@@ -8,18 +8,21 @@ load(":gen.bzl", "batch_gen")
 go_library(
     name = "kvpb",
     srcs = [
+        ":gen-batch-generated",  # keep
+        ":gen-errordetailtype-stringer",  # keep
+        ":gen-method-stringer",  # keep
         "ambiguous_result_error.go",
         "api.go",
-        "api_adapter.go",
+        # DRPC protobuf file (api_drpc.pb.go) is currently generated manually.
+        # TODO (chandrat): Remove this once DRPC protobuf generation is
+        # integrated into the build process.
+        "api_drpc_hacky.go",
         "batch.go",
         "data.go",
         "errors.go",
         "method.go",
         "node_decommissioned_error.go",
         "replica_unavailable_error.go",
-        ":gen-batch-generated",  # keep
-        ":gen-errordetailtype-stringer",  # keep
-        ":gen-method-stringer",  # keep
     ],
     embed = [":kvpb_go_proto"],
     importpath = "github.com/cockroachdb/cockroach/pkg/kv/kvpb",
@@ -28,7 +31,6 @@ go_library(
         "//pkg/col/coldata",
         "//pkg/kv/kvnemesis/kvnemesisutil",
         "//pkg/kv/kvserver/concurrency/lock",
-        "//pkg/raft/raftpb",
         "//pkg/roachpb",
         "//pkg/storage/enginepb",
         "//pkg/util/admission/admissionpb",
@@ -42,14 +44,14 @@ go_library(
         "//pkg/util/uuid",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_errors//extgrpc",
-        "@com_github_cockroachdb_pebble//:pebble",
         "@com_github_cockroachdb_redact//:redact",
         "@com_github_dustin_go_humanize//:go-humanize",
         "@com_github_gogo_protobuf//proto",
         "@com_github_gogo_protobuf//types",
         "@com_github_gogo_status//:status",
         "@com_github_golang_mock//gomock",  # keep
-        "@org_golang_google_grpc//:grpc",
+        "@io_storj_drpc//:drpc",
+        "@io_storj_drpc//drpcerr",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//metadata",  # keep
     ],
@@ -76,7 +78,6 @@ go_test(
         "//pkg/roachpb",
         "//pkg/storage/enginepb",
         "//pkg/testutils/echotest",
-        "//pkg/testutils/skip",
         "//pkg/util/buildutil",
         "//pkg/util/encoding",
         "//pkg/util/hlc",
@@ -105,7 +106,7 @@ proto_library(
     deps = [
         "//pkg/kv/kvserver/concurrency/lock:lock_proto",
         "//pkg/kv/kvserver/readsummary/rspb:rspb_proto",
-        "//pkg/multitenant/tenantcapabilitiespb:tenantcapabilitiespb_proto",
+        "//pkg/multitenant/tenantcapabilities/tenantcapabilitiespb:tenantcapabilitiespb_proto",
         "//pkg/roachpb:roachpb_proto",
         "//pkg/rpc/rpcpb:rpcpb_proto",
         "//pkg/settings:settings_proto",
@@ -121,17 +122,14 @@ proto_library(
 
 go_proto_library(
     name = "kvpb_go_proto",
-    compilers = [
-        "//pkg/cmd/protoc-gen-gogoroach:protoc-gen-gogoroach_grpc_compiler",
-        "//pkg/cmd/protoc-gen-go-drpc:protoc-gen-go-drpc_compiler",
-    ],
+    compilers = ["//pkg/cmd/protoc-gen-gogoroach:protoc-gen-gogoroach_grpc_compiler"],
     importpath = "github.com/cockroachdb/cockroach/pkg/kv/kvpb",
     proto = ":kvpb_proto",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/kv/kvserver/concurrency/lock",
         "//pkg/kv/kvserver/readsummary/rspb",
-        "//pkg/multitenant/tenantcapabilitiespb",
+        "//pkg/multitenant/tenantcapabilities/tenantcapabilitiespb",
         "//pkg/roachpb",
         "//pkg/rpc/rpcpb",
         "//pkg/settings",

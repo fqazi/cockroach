@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/geo"
 	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
 	"github.com/cockroachdb/cockroach/pkg/sql/lex"
-	"github.com/cockroachdb/cockroach/pkg/sql/oidext"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/cast"
@@ -495,8 +494,6 @@ func performCastWithoutPrecisionTruncation(
 			s = tree.AsStringWithFlags(t, tree.FmtPgwireText)
 		case *tree.DJSON:
 			s = t.JSON.String()
-		case *tree.DJsonpath:
-			s = t.Jsonpath.String()
 		case *tree.DTSQuery:
 			s = t.TSQuery.String()
 		case *tree.DTSVector:
@@ -527,10 +524,6 @@ func performCastWithoutPrecisionTruncation(
 			}
 			return tree.NewDString(s), nil
 		case types.CollatedStringFamily:
-			if t.Oid() == oidext.T_citext {
-				return tree.NewDCIText(s, &evalCtx.CollationEnv)
-			}
-
 			// bpchar types truncate trailing whitespace.
 			if t.Oid() == oid.T_bpchar {
 				s = strings.TrimRight(s, " ")
@@ -899,8 +892,6 @@ func performCastWithoutPrecisionTruncation(
 		switch v := d.(type) {
 		case *tree.DString:
 			return tree.ParseDJSON(string(*v))
-		case *tree.DCollatedString:
-			return tree.ParseDJSON(v.Contents)
 		case *tree.DJSON:
 			return v, nil
 		case *tree.DGeography:
@@ -916,23 +907,10 @@ func performCastWithoutPrecisionTruncation(
 			}
 			return tree.ParseDJSON(string(j))
 		}
-	case types.JsonpathFamily:
-		switch v := d.(type) {
-		case *tree.DString:
-			return tree.ParseDJsonpath(string(*v))
-		case *tree.DCollatedString:
-			return tree.ParseDJsonpath(v.Contents)
-		}
 	case types.TSQueryFamily:
 		switch v := d.(type) {
 		case *tree.DString:
 			q, err := tsearch.ParseTSQuery(string(*v))
-			if err != nil {
-				return nil, err
-			}
-			return &tree.DTSQuery{TSQuery: q}, nil
-		case *tree.DCollatedString:
-			q, err := tsearch.ParseTSQuery(v.Contents)
 			if err != nil {
 				return nil, err
 			}
@@ -944,12 +922,6 @@ func performCastWithoutPrecisionTruncation(
 		switch v := d.(type) {
 		case *tree.DString:
 			vec, err := tsearch.ParseTSVector(string(*v))
-			if err != nil {
-				return nil, err
-			}
-			return &tree.DTSVector{TSVector: vec}, nil
-		case *tree.DCollatedString:
-			vec, err := tsearch.ParseTSVector(v.Contents)
 			if err != nil {
 				return nil, err
 			}
@@ -999,8 +971,6 @@ func performCastWithoutPrecisionTruncation(
 			return performIntToOidCast(ctx, evalCtx.Planner, t, *v)
 		case *tree.DString:
 			return ParseDOid(ctx, evalCtx, string(*v), t)
-		case *tree.DCollatedString:
-			return ParseDOid(ctx, evalCtx, v.Contents, t)
 		}
 	case types.TupleFamily:
 		switch v := d.(type) {
@@ -1028,13 +998,10 @@ func performCastWithoutPrecisionTruncation(
 		case *tree.DString:
 			res, _, err := tree.ParseDTupleFromString(evalCtx, string(*v), t)
 			return res, err
-		case *tree.DCollatedString:
-			res, _, err := tree.ParseDTupleFromString(evalCtx, v.Contents, t)
-			return res, err
 		}
 	case types.VoidFamily:
 		switch d.(type) {
-		case *tree.DString, *tree.DCollatedString:
+		case *tree.DString:
 			return tree.DVoidDatum, nil
 		}
 	}

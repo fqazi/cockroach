@@ -301,7 +301,7 @@ CREATE SCHEMA altSchema;
 CREATE FUNCTION altSchema.f_called_by_b() RETURNS INT LANGUAGE SQL AS $$ SELECT 1 $$;
 CREATE TABLE t1_with_b_2_ref(j int default altSchema.f_called_by_b() CHECK (altSchema.f_called_by_b() > 0));
 
-statement error pgcode 0A000 cannot set schema for function \"f_called_by_b\" because other functions or views \(\[test.public.f_called_by_b2\]\) still depend on it
+statement error pgcode 0A000 cannot set schema for function \"f_called_by_b\" because other functions \(\[test.public.f_called_by_b2\]\) still depend on it
 ALTER FUNCTION f_called_by_b SET SCHEMA altSchema;
 
 skipif config local-legacy-schema-changer
@@ -316,7 +316,6 @@ statement ok
 SELECT * FROM  f_called_by_b2();
 
 skipif config local-legacy-schema-changer
-onlyif config schema-locked-disabled
 query T
 SELECT create_statement FROM [SHOW CREATE TABLE t1_with_b_2_ref];
 ----
@@ -324,18 +323,7 @@ CREATE TABLE public.t1_with_b_2_ref (
   j INT8 NULL,
   rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
   CONSTRAINT t1_with_b_2_ref_pkey PRIMARY KEY (rowid ASC)
-);
-
-skipif config schema-locked-disabled
-skipif config local-legacy-schema-changer
-query T
-SELECT create_statement FROM [SHOW CREATE TABLE t1_with_b_2_ref];
-----
-CREATE TABLE public.t1_with_b_2_ref (
-  j INT8 NULL,
-  rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-  CONSTRAINT t1_with_b_2_ref_pkey PRIMARY KEY (rowid ASC)
-) WITH (schema_locked = true);
+)
 
 onlyif config local-legacy-schema-changer
 statement ok
@@ -409,11 +397,3 @@ CREATE FUNCTION f_bit(c BIT(0)) RETURNS INT LANGUAGE SQL AS 'SELECT 1'
 
 statement ok
 DROP FUNCTION f_bit(BIT(2))
-
-# Regression test for #142886 - we should be able to drop a function by
-# specifying the input type but without type width.
-statement ok
-CREATE FUNCTION f142886(p VARCHAR(10)) RETURNS INT LANGUAGE SQL AS $$ SELECT 0; $$;
-
-statement ok
-DROP FUNCTION f142886(VARCHAR);

@@ -105,12 +105,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slinstance"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slprovider"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/insights"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/sql/stmtdiagnostics"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilegecache"
 	tablemetadatacacheutil "github.com/cockroachdb/cockroach/pkg/sql/tablemetadatacache/util"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex"
 	"github.com/cockroachdb/cockroach/pkg/storage"
+	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/ts"
 	"github.com/cockroachdb/cockroach/pkg/upgrade"
 	"github.com/cockroachdb/cockroach/pkg/upgrade/upgradebase"
@@ -121,7 +122,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/log/eventlog"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/netutil"
@@ -141,7 +141,6 @@ import (
 	"github.com/marusama/semaphore"
 	"github.com/nightlyone/lockfile"
 	"google.golang.org/grpc"
-	"storj.io/drpc"
 )
 
 // SQLServer encapsulates the part of a CRDB server that is dedicated to SQL
@@ -234,7 +233,6 @@ type sqlServerOptionalKVArgs struct {
 	gossip gossip.OptionalGossip
 	// To register blob and DistSQL servers.
 	grpcServer *grpc.Server
-	drpcMux    drpc.Mux
 	// For the temporaryObjectCleaner.
 	isMeta1Leaseholder func(context.Context, hlc.ClockTimestamp) (bool, error)
 	// DistSQL, lease management, and others want to know the node they're on.
@@ -399,8 +397,6 @@ type sqlServerArgs struct {
 	// grpc is the RPC service.
 	grpc *grpcServer
 
-	drpc *drpcServer
-
 	// externalStorageBuilder is the constructor for accesses to external
 	// storage.
 	externalStorageBuilder *externalStorageBuilder
@@ -442,7 +438,7 @@ var vmoduleSetting = settings.RegisterStringSetting(
 func newRootSQLMemoryMonitor(opts monitorAndMetricsOptions) monitorAndMetrics {
 	rootSQLMetrics := sql.MakeBaseMemMetrics("root", opts.histogramWindowInterval)
 	rootSQLMemoryMonitor := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("root"),
+		Name:     mon.MakeMonitorName("root"),
 		CurCount: rootSQLMetrics.CurBytesCount,
 		MaxHist:  rootSQLMetrics.MaxBytesHist,
 		Settings: opts.settings,
@@ -558,9 +554,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 	// Create trace service for inter-node sharing of inflight trace spans.
 	tracingService := service.New(cfg.Tracer)
 	tracingservicepb.RegisterTracingServer(cfg.grpcServer, tracingService)
-	if err := tracingservicepb.DRPCRegisterTracing(cfg.drpcMux, tracingService); err != nil {
-		return nil, err
-	}
 
 	// If the node id is already populated, we only need to create a placeholder
 	// instance provider without initializing the instance, since this is not a
@@ -667,7 +660,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 	}
 
 	leaseMgr := lease.NewLeaseManager(
-		ctx,
 		cfg.AmbientCtx,
 		cfg.nodeIDContainer,
 		cfg.internalDB,
@@ -679,7 +671,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		lmKnobs,
 		cfg.stopper,
 		cfg.rangeFeedFactory,
-		cfg.monitorAndMetrics.rootSQLMemoryMonitor,
 	)
 	cfg.registry.AddMetricStruct(leaseMgr.MetricsStruct())
 
@@ -696,20 +687,20 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 	// operations (IMPORT, index backfill). It is itself a child of the
 	// ParentMemoryMonitor.
 	bulkMemoryMonitor := mon.NewMonitorInheritWithLimit(
-		mon.MakeName("bulk-mon"), 0 /* limit */, rootSQLMemoryMonitor, true, /* longLiving */
+		"bulk-mon", 0 /* limit */, rootSQLMemoryMonitor, true, /* longLiving */
 	)
 	bulkMetrics := bulk.MakeBulkMetrics(cfg.HistogramWindowInterval())
 	cfg.registry.AddMetricStruct(bulkMetrics)
 	bulkMemoryMonitor.SetMetrics(bulkMetrics.CurBytesCount, bulkMetrics.MaxBytesHist)
 	bulkMemoryMonitor.StartNoReserved(ctx, rootSQLMemoryMonitor)
 
-	backfillMemoryMonitor := execinfra.NewMonitor(ctx, bulkMemoryMonitor, mon.MakeName("backfill-mon"))
+	backfillMemoryMonitor := execinfra.NewMonitor(ctx, bulkMemoryMonitor, "backfill-mon")
 	backfillMemoryMonitor.MarkLongLiving()
-	backupMemoryMonitor := execinfra.NewMonitor(ctx, bulkMemoryMonitor, mon.MakeName("backup-mon"))
+	backupMemoryMonitor := execinfra.NewMonitor(ctx, bulkMemoryMonitor, "backup-mon")
 	backupMemoryMonitor.MarkLongLiving()
 
 	changefeedMemoryMonitor := mon.NewMonitorInheritWithLimit(
-		mon.MakeName("changefeed-mon"), 0 /* limit */, rootSQLMemoryMonitor, true, /* longLiving */
+		"changefeed-mon", 0 /* limit */, rootSQLMemoryMonitor, true, /* longLiving */
 	)
 	if jobs.MakeChangefeedMemoryMetricsHook != nil {
 		changefeedCurCount, changefeedMaxHist := jobs.MakeChangefeedMemoryMetricsHook(cfg.HistogramWindowInterval())
@@ -718,7 +709,7 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 	changefeedMemoryMonitor.StartNoReserved(ctx, rootSQLMemoryMonitor)
 
 	serverCacheMemoryMonitor := mon.NewMonitorInheritWithLimit(
-		mon.MakeName("server-cache-mon"), 0 /* limit */, rootSQLMemoryMonitor, true, /* longLiving */
+		"server-cache-mon", 0 /* limit */, rootSQLMemoryMonitor, true, /* longLiving */
 	)
 	serverCacheMemoryMonitor.StartNoReserved(ctx, rootSQLMemoryMonitor)
 
@@ -730,6 +721,26 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		return nil, errors.Wrap(err, "creating temp storage")
 	}
 	cfg.stopper.AddCloser(tempEngine)
+	// Remove temporary directory linked to tempEngine after closing
+	// tempEngine.
+	cfg.stopper.AddCloser(stop.CloserFn(func() {
+		useStore := cfg.TempStorageConfig.Spec
+		var err error
+		if useStore.InMemory {
+			// Used store is in-memory so we remove the temp
+			// directory directly since there is no record file.
+			err = os.RemoveAll(cfg.TempStorageConfig.Path)
+		} else {
+			// If record file exists, we invoke CleanupTempDirs to
+			// also remove the record after the temp directory is
+			// removed.
+			recordPath := filepath.Join(useStore.Path, TempDirsRecordFilename)
+			err = fs.CleanupTempDirs(recordPath)
+		}
+		if err != nil {
+			log.Errorf(ctx, "could not remove temporary store directory: %v", err.Error())
+		}
+	}))
 
 	distSQLMetrics := execinfra.MakeDistSQLMetrics(cfg.HistogramWindowInterval())
 	cfg.registry.AddMetricStruct(distSQLMetrics)
@@ -792,9 +803,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 
 	rangeStatsFetcher := rangestats.NewFetcher(cfg.db)
 
-	vecIndexManager := vecindex.NewManager(ctx, cfg.stopper, &cfg.Settings.SV, codec, cfg.internalDB)
-	cfg.registry.AddMetricStruct(vecIndexManager.Metrics())
-
 	// Set up the DistSQL server.
 	distSQLCfg := execinfra.ServerConfig{
 		AmbientContext:   cfg.AmbientCtx,
@@ -829,7 +837,7 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		) (kvserverbase.BulkAdder, error) {
 			// Attach a child memory monitor to enable control over the BulkAdder's
 			// memory usage.
-			bulkMon := execinfra.NewMonitor(ctx, bulkMemoryMonitor, mon.MakeName("bulk-adder-monitor"))
+			bulkMon := execinfra.NewMonitor(ctx, bulkMemoryMonitor, "bulk-adder-monitor")
 			return bulk.MakeBulkAdder(ctx, db, cfg.distSender.RangeDescriptorCache(), cfg.Settings, ts, opts, bulkMon, bulkSenderLimiter)
 		},
 
@@ -858,7 +866,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		AdmissionPacerFactory:    cfg.admissionPacerFactory,
 		ExecutorConfig:           execCfg,
 		RootSQLMemoryPoolSize:    cfg.MemoryPoolSize,
-		VecIndexManager:          vecIndexManager,
 	}
 	cfg.TempStorageConfig.Mon.SetMetrics(distSQLMetrics.CurDiskBytesCount, distSQLMetrics.MaxDiskBytesHist)
 	if codec.ForSystemTenant() {
@@ -881,9 +888,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 
 	distSQLServer := distsql.NewServer(ctx, distSQLCfg, cfg.remoteFlowRunner)
 	execinfrapb.RegisterDistSQLServer(cfg.grpcServer, distSQLServer)
-	if err := execinfrapb.DRPCRegisterDistSQL(cfg.drpcMux, distSQLServer.AsDRPCServer()); err != nil {
-		return nil, err
-	}
 
 	// Set up Executor
 
@@ -946,12 +950,9 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		if err != nil {
 			return nil, errors.Wrap(err, "initializing certificate manager")
 		}
-		err = certMgr.RegisterExpirationCache(
-			ctx, cfg.stopper, &timeutil.DefaultTimeSource{}, rootSQLMemoryMonitor,
+		certMgr.RegisterExpirationCache(
+			ctx, cfg.Settings, cfg.stopper, &timeutil.DefaultTimeSource{}, rootSQLMemoryMonitor,
 		)
-		if err != nil {
-			return nil, errors.Wrap(err, "adding clientcert cache")
-		}
 	}
 
 	storageEngineClient := kvserver.NewStorageEngineClient(cfg.kvNodeDialer)
@@ -1040,7 +1041,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		),
 
 		QueryCache:                 querycache.New(cfg.QueryCacheSize),
-		VecIndexManager:            vecIndexManager,
 		RowMetrics:                 &rowMetrics,
 		InternalRowMetrics:         &internalRowMetrics,
 		ProtectedTimestampProvider: cfg.protectedtsProvider,
@@ -1055,7 +1055,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		RangeStatsFetcher:          rangeStatsFetcher,
 		NodeDescs:                  cfg.nodeDescs,
 		TenantCapabilitiesReader:   cfg.tenantCapabilitiesReader,
-		TenantReadOnly:             cfg.SQLConfig.TenantReadOnly,
 		CidrLookup:                 cfg.BaseConfig.CidrLookup,
 		LicenseEnforcer:            cfg.SQLConfig.LicenseEnforcer,
 	}
@@ -1113,9 +1112,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 	if ttlKnobs := cfg.TestingKnobs.TTL; ttlKnobs != nil {
 		execCfg.TTLTestingKnobs = ttlKnobs.(*sql.TTLTestingKnobs)
 	}
-	if inspectKnobs := cfg.TestingKnobs.Inspect; inspectKnobs != nil {
-		execCfg.InspectTestingKnobs = inspectKnobs.(*sql.InspectTestingKnobs)
-	}
 	if schemaTelemetryKnobs := cfg.TestingKnobs.SchemaTelemetry; schemaTelemetryKnobs != nil {
 		execCfg.SchemaTelemetryTestingKnobs = schemaTelemetryKnobs.(*sql.SchemaTelemetryTestingKnobs)
 	}
@@ -1123,7 +1119,7 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		execCfg.SQLStatsTestingKnobs = sqlStatsKnobs.(*sqlstats.TestingKnobs)
 	}
 	if eventlogKnobs := cfg.TestingKnobs.EventLog; eventlogKnobs != nil {
-		execCfg.EventLogTestingKnobs = eventlogKnobs.(*eventlog.EventLogTestingKnobs)
+		execCfg.EventLogTestingKnobs = eventlogKnobs.(*sql.EventLogTestingKnobs)
 	}
 	if telemetryLoggingKnobs := cfg.TestingKnobs.TelemetryLoggingKnobs; telemetryLoggingKnobs != nil {
 		execCfg.TelemetryLoggingTestingKnobs = telemetryLoggingKnobs.(*sql.TelemetryLoggingTestingKnobs)
@@ -1142,6 +1138,10 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		execCfg.ExternalConnectionTestingKnobs = externalConnKnobs.(*externalconn.TestingKnobs)
 	}
 
+	if insightsKnobs := cfg.TestingKnobs.Insights; insightsKnobs != nil {
+		execCfg.InsightsTestingKnobs = insightsKnobs.(*insights.TestingKnobs)
+
+	}
 	var tableStatsTestingKnobs *stats.TableStatsTestingKnobs
 	if tableStatsKnobs := cfg.TestingKnobs.TableStatsKnobs; tableStatsKnobs != nil {
 		tableStatsTestingKnobs = tableStatsKnobs.(*stats.TableStatsTestingKnobs)
@@ -1166,7 +1166,7 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		execCfg,
 	)
 
-	distSQLServer.ServerConfig.SQLStatsController = pgServer.SQLServer.GetSQLStatsProvider()
+	distSQLServer.ServerConfig.SQLStatsController = pgServer.SQLServer.GetSQLStatsController()
 	distSQLServer.ServerConfig.SchemaTelemetryController = pgServer.SQLServer.GetSchemaTelemetryController()
 	distSQLServer.ServerConfig.IndexUsageStatsController = pgServer.SQLServer.GetIndexUsageStatsController()
 
@@ -1178,7 +1178,7 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 	// returning the memory allocated to internalDBMonitor since the
 	// parent monitor is being closed anyway.
 	internalDBMonitor := mon.NewMonitor(mon.Options{
-		Name:       mon.MakeName("internal sql executor"),
+		Name:       mon.MakeMonitorName("internal sql executor"),
 		CurCount:   internalMemMetrics.CurBytesCount,
 		MaxHist:    internalMemMetrics.MaxBytesHist,
 		Settings:   cfg.Settings,
@@ -1204,7 +1204,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		execCfg.TableStatsCache,
 		stats.DefaultAsOfTime,
 		tableStatsTestingKnobs,
-		execCfg.TenantReadOnly,
 	)
 	execCfg.StatsRefresher = statsRefresher
 	distSQLServer.ServerConfig.StatsRefresher = statsRefresher
@@ -1263,7 +1262,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		var systemDeps upgrade.SystemDeps
 		keyVisKnobs, _ := cfg.TestingKnobs.KeyVisualizer.(*keyvisualizer.TestingKnobs)
 		sqlStatsKnobs, _ := cfg.TestingKnobs.SQLStatsKnobs.(*sqlstats.TestingKnobs)
-		upgradeKnobs, _ := cfg.TestingKnobs.UpgradeManager.(*upgradebase.TestingKnobs)
 		if codec.ForSystemTenant() {
 			c = upgradecluster.New(upgradecluster.ClusterConfig{
 				NodeLiveness:     nodeLiveness,
@@ -1288,16 +1286,16 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 			KeyVisKnobs:        keyVisKnobs,
 			SQLStatsKnobs:      sqlStatsKnobs,
 			TenantInfoAccessor: cfg.tenantConnect,
-			TestingKnobs:       upgradeKnobs,
 		}
 
+		knobs, _ := cfg.TestingKnobs.UpgradeManager.(*upgradebase.TestingKnobs)
 		upgradeMgr = upgrademanager.NewManager(
 			systemDeps, leaseMgr, cfg.circularInternalExecutor, jobRegistry, codec,
-			cfg.Settings, clusterIDForSQL, upgradeKnobs, execCfg.LicenseEnforcer,
+			cfg.Settings, clusterIDForSQL, knobs, execCfg.LicenseEnforcer,
 		)
 		execCfg.UpgradeJobDeps = upgradeMgr
 		execCfg.VersionUpgradeHook = upgradeMgr.Migrate
-		execCfg.UpgradeTestingKnobs = upgradeKnobs
+		execCfg.UpgradeTestingKnobs = knobs
 	}
 
 	// Instantiate a span config manager.
@@ -1402,14 +1400,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 	vmoduleSetting.SetOnChange(&cfg.Settings.SV, fn)
 	fn(ctx)
 
-	metric.AppNameLabelEnabled.SetOnChange(&cfg.Settings.SV, func(ctx context.Context) {
-		pgServer.SQLServer.UpdateLabelValueConfig(&cfg.Settings.SV, cfg.registry)
-	})
-
-	metric.DBNameLabelEnabled.SetOnChange(&cfg.Settings.SV, func(ctx context.Context) {
-		pgServer.SQLServer.UpdateLabelValueConfig(&cfg.Settings.SV, cfg.registry)
-	})
-
 	auditlogging.ConfigureRoleBasedAuditClusterSettings(ctx, execCfg.AuditConfig, execCfg.Settings, &execCfg.Settings.SV)
 
 	return &SQLServer{
@@ -1476,7 +1466,6 @@ func (s *SQLServer) preStart(
 		// from KV (or elsewhere).
 		if entry, _ := s.tenantConnect.TenantInfo(); entry.Name != "" {
 			s.cfg.idProvider.SetTenantName(entry.Name)
-			s.execCfg.RPCContext.TenantName = entry.Name
 			s.execCfg.VirtualClusterName = entry.Name
 		}
 		if err := s.startCheckService(ctx, stopper); err != nil {

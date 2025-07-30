@@ -176,10 +176,13 @@ func ValidateKMSURIsAgainstFullBackup(
 			return nil, err
 		}
 
+		defer func() {
+			_ = kms.Close()
+		}()
+
 		// Depending on the KMS specific implementation, this may or may not contact
 		// the remote KMS.
 		id := kms.MasterKeyID()
-		_ = kms.Close()
 
 		encryptedDataKey, err := kmsMasterKeyIDToDataKey.getEncryptedDataKey(PlaintextMasterKeyID(id))
 		if err != nil {
@@ -202,11 +205,8 @@ func ValidateKMSURIsAgainstFullBackup(
 // MakeNewEncryptionOptions returns a new jobspb.BackupEncryptionOptions based
 // on the passed in encryption parameters.
 func MakeNewEncryptionOptions(
-	ctx context.Context, encryptionParams *jobspb.BackupEncryptionOptions, kmsEnv cloud.KMSEnv,
+	ctx context.Context, encryptionParams jobspb.BackupEncryptionOptions, kmsEnv cloud.KMSEnv,
 ) (*jobspb.BackupEncryptionOptions, *jobspb.EncryptionInfo, error) {
-	if !encryptionParams.IsEncrypted() {
-		return nil, nil, nil
-	}
 	var encryptionOptions *jobspb.BackupEncryptionOptions
 	var encryptionInfo *jobspb.EncryptionInfo
 	switch encryptionParams.Mode {
@@ -332,69 +332,48 @@ func WriteNewEncryptionInfoToBackup(
 
 // GetEncryptionFromBase retrieves the encryption options of the base backup. It
 // is expected that incremental backups use the same encryption options as the
-// base backups. The encryptionParams input is expected not to have a key set
-// and to simply have the user supplied fields. The output will only have the
-// key set.
+// base backups.
 func GetEncryptionFromBase(
 	ctx context.Context,
 	user username.SQLUsername,
 	makeCloudStorage cloud.ExternalStorageFromURIFactory,
 	baseBackupURI string,
-	encryptionParams *jobspb.BackupEncryptionOptions,
+	encryptionParams jobspb.BackupEncryptionOptions,
 	kmsEnv cloud.KMSEnv,
 ) (*jobspb.BackupEncryptionOptions, error) {
-	if !encryptionParams.IsEncrypted() {
-		return nil, nil
-	}
-	exportStore, err := makeCloudStorage(ctx, baseBackupURI, user)
-	if err != nil {
-		return nil, err
-	}
-	defer exportStore.Close()
-	return GetEncryptionFromBaseStore(ctx, exportStore, encryptionParams, kmsEnv)
-}
-
-// GetEncryptionFromBaseStore retrieves the encryption options of a base backup store.
-func GetEncryptionFromBaseStore(
-	ctx context.Context,
-	baseStore cloud.ExternalStorage,
-	encryptionParams *jobspb.BackupEncryptionOptions,
-	kmsEnv cloud.KMSEnv,
-) (*jobspb.BackupEncryptionOptions, error) {
-	if !encryptionParams.IsEncrypted() {
-		return nil, nil
-	}
-
-	if encryptionParams.HasKey() {
-		return nil, errors.New("encryption options already have a key")
-	}
-
-	opts, err := ReadEncryptionOptions(ctx, baseStore)
-	if err != nil {
-		return nil, err
-	}
 	var encryptionOptions *jobspb.BackupEncryptionOptions
-	switch encryptionParams.Mode {
-	case jobspb.EncryptionMode_Passphrase:
-		encryptionOptions = &jobspb.BackupEncryptionOptions{
-			Mode: jobspb.EncryptionMode_Passphrase,
-			Key:  storageccl.GenerateKey([]byte(encryptionParams.RawPassphrase), opts[0].Salt),
-		}
-	case jobspb.EncryptionMode_KMS:
-		var defaultKMSInfo *jobspb.BackupEncryptionOptions_KMSInfo
-		for _, encFile := range opts {
-			defaultKMSInfo, err = ValidateKMSURIsAgainstFullBackup(ctx, encryptionParams.RawKmsUris,
-				NewEncryptedDataKeyMapFromProtoMap(encFile.EncryptedDataKeyByKMSMasterKeyID), kmsEnv)
-			if err == nil {
-				break
-			}
-		}
+	if encryptionParams.Mode != jobspb.EncryptionMode_None {
+		exportStore, err := makeCloudStorage(ctx, baseBackupURI, user)
 		if err != nil {
 			return nil, err
 		}
-		encryptionOptions = &jobspb.BackupEncryptionOptions{
-			Mode:    jobspb.EncryptionMode_KMS,
-			KMSInfo: defaultKMSInfo,
+		defer exportStore.Close()
+		opts, err := ReadEncryptionOptions(ctx, exportStore)
+		if err != nil {
+			return nil, err
+		}
+
+		switch encryptionParams.Mode {
+		case jobspb.EncryptionMode_Passphrase:
+			encryptionOptions = &jobspb.BackupEncryptionOptions{
+				Mode: jobspb.EncryptionMode_Passphrase,
+				Key:  storageccl.GenerateKey([]byte(encryptionParams.RawPassphrase), opts[0].Salt),
+			}
+		case jobspb.EncryptionMode_KMS:
+			var defaultKMSInfo *jobspb.BackupEncryptionOptions_KMSInfo
+			for _, encFile := range opts {
+				defaultKMSInfo, err = ValidateKMSURIsAgainstFullBackup(ctx, encryptionParams.RawKmsUris,
+					NewEncryptedDataKeyMapFromProtoMap(encFile.EncryptedDataKeyByKMSMasterKeyID), kmsEnv)
+				if err == nil {
+					break
+				}
+			}
+			if err != nil {
+				return nil, err
+			}
+			encryptionOptions = &jobspb.BackupEncryptionOptions{
+				Mode:    jobspb.EncryptionMode_KMS,
+				KMSInfo: defaultKMSInfo}
 		}
 	}
 	return encryptionOptions, nil
@@ -460,8 +439,9 @@ func ReadEncryptionOptions(
 		if err != nil {
 			return nil, errors.Wrap(err, encryptionReadErrorMsg)
 		}
+		defer r.Close(ctx)
+
 		encInfoBytes, err := ioctx.ReadAll(ctx, r)
-		_ = r.Close(ctx)
 		if err != nil {
 			return nil, errors.Wrap(err, encryptionReadErrorMsg)
 		}

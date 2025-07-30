@@ -134,9 +134,8 @@ func TestUploadZipEndToEnd(t *testing.T) {
 	// those two in this list to avoid unnecessary errors
 	origTableDumps := clusterWideTableDumps
 	clusterWideTableDumps = map[string]columnParserMap{
-		"system.namespace.txt":            {},
-		"crdb_internal.system_jobs.txt":   origTableDumps["crdb_internal.system_jobs.txt"],
-		"crdb_internal.cluster_locks.txt": origTableDumps["crdb_internal.cluster_locks.txt"],
+		"system.namespace.txt":          {},
+		"crdb_internal.system_jobs.txt": origTableDumps["crdb_internal.system_jobs.txt"],
 	}
 	defer func() {
 		clusterWideTableDumps = origTableDumps
@@ -147,7 +146,7 @@ func TestUploadZipEndToEnd(t *testing.T) {
 			defer req.Body.Close()
 
 			switch req.URL.Path {
-			case "/api/v2/profile":
+			case "/v1/input":
 				return uploadProfileHook(t, req)
 			case "/api/v2/logs/config/archives":
 				return setupDDArchiveHook(t, req)
@@ -163,11 +162,6 @@ func TestUploadZipEndToEnd(t *testing.T) {
 	)()
 
 	defer testutils.TestingHook(&gcsLogUpload, writeLogsToGCSHook)()
-
-	// Mock the interactive prompt to always accept (return nil) for end-to-end tests
-	defer testutils.TestingHook(&promptUserForConfirmation, func(warningMsg string) error {
-		return nil // Always accept in end-to-end tests
-	})()
 
 	datadriven.Walk(t, "testdata/upload", func(t *testing.T, path string) {
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
@@ -213,13 +207,7 @@ func TestUploadZipEndToEnd(t *testing.T) {
 				}
 			case "upload-tables":
 				includeFlag = "--include=tables"
-			case "upload-misc":
-				includeFlag = "--include=misc"
 			}
-
-			defer testutils.TestingHook(&getCurrentTime, func() time.Time {
-				return time.Date(2024, 11, 14, 0, 0, 0, 0, time.UTC)
-			})()
 
 			debugDir, cleanup := setupZipDir(t, testInput)
 			defer cleanup()
@@ -286,127 +274,6 @@ func TestAppendUserTags(t *testing.T) {
 	for _, tc := range tt {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.expected, appendUserTags(tc.systemTags, tc.userTags...))
-		})
-	}
-}
-
-func TestValidateRedactionStatus(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	tests := []struct {
-		name          string
-		flagsContent  string
-		fileExists    bool
-		dryRun        bool
-		expectError   bool
-		errorContains string
-		description   string
-	}{
-		{
-			name:         "redacted zip with other flags proceeds silently",
-			flagsContent: " --concurrency=15 --cpu-profile-duration=5s --files-from=2025-06-15 08:45:34 --redact=true --include-range-info=true",
-			fileExists:   true,
-			dryRun:       false,
-			expectError:  false,
-			description:  "When --redact=true is found, no warnings should be shown and upload proceeds",
-		},
-		{
-			name:          "missing file user declines",
-			flagsContent:  "",
-			fileExists:    false,
-			dryRun:        false,
-			expectError:   true,
-			errorContains: "upload aborted",
-			description:   "When file is missing and user declines, should return cancellation error",
-		},
-		{
-			name:          "missing file user accepts",
-			flagsContent:  "",
-			fileExists:    false,
-			dryRun:        false,
-			expectError:   false,
-			errorContains: "user accepts",
-			description:   "When file is missing and user accepts, should proceed without error",
-		},
-		{
-			name:          "unredacted zip user declines",
-			flagsContent:  " --concurrency=1 --redact=false --nodes=1",
-			fileExists:    true,
-			dryRun:        false,
-			expectError:   true,
-			errorContains: "upload aborted",
-			description:   "When --redact=false and user declines, should return cancellation error",
-		},
-		{
-			name:          "unredacted zip user accepts",
-			flagsContent:  " --concurrency=1 --redact=false --nodes=1",
-			fileExists:    true,
-			dryRun:        false,
-			expectError:   false,
-			errorContains: "user accepts",
-			description:   "When --redact=false and user accepts, should proceed without error",
-		},
-		{
-			name:          "unclear redaction status user declines",
-			flagsContent:  " --concurrency=1 --nodes=1",
-			fileExists:    true,
-			dryRun:        false,
-			expectError:   true,
-			errorContains: "upload aborted",
-			description:   "When no --redact flag and user declines, should return cancellation error",
-		},
-		{
-			name:          "unclear redaction status user accepts",
-			flagsContent:  " --concurrency=1 --nodes=1",
-			fileExists:    true,
-			dryRun:        false,
-			expectError:   false,
-			errorContains: "user accepts",
-			description:   "When no --redact flag and user accepts, should proceed without error",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			tempDir := t.TempDir()
-
-			if test.fileExists {
-				flagsFile := path.Join(tempDir, debugZipCommandFlagsFileName)
-				if err := os.WriteFile(flagsFile, []byte(test.flagsContent), 0644); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			originalDryRun := debugZipUploadOpts.dryRun
-			debugZipUploadOpts.dryRun = test.dryRun
-			defer func() { debugZipUploadOpts.dryRun = originalDryRun }()
-
-			if test.errorContains == "upload aborted" || test.errorContains == "user accepts" {
-				originalPrompt := promptUserForConfirmation
-				switch test.errorContains {
-				case "upload aborted":
-					promptUserForConfirmation = func(warningMsg string) error {
-						require.Contains(t, warningMsg, "WARNING:")
-						return fmt.Errorf("upload aborted")
-					}
-				case "user accepts":
-					promptUserForConfirmation = func(warningMsg string) error {
-						require.Contains(t, warningMsg, "WARNING:")
-						return nil
-					}
-				}
-				defer func() { promptUserForConfirmation = originalPrompt }()
-			}
-
-			// Test validation
-			err := validateRedactionStatus(tempDir)
-
-			if test.expectError {
-				require.Error(t, err, fmt.Sprintf("Test case: %s", test.description))
-				require.Contains(t, err.Error(), test.errorContains, fmt.Sprintf("Test case: %s", test.description))
-			} else {
-				require.NoError(t, err, fmt.Sprintf("Test case: %s", test.description))
-			}
 		})
 	}
 }
@@ -530,8 +397,10 @@ func setupDDLogsHook(t *testing.T, req *http.Request) ([]byte, error) {
 
 			fmt.Println("Logs API Hook:", string(raw))
 		}
-	} else if bytes.Contains(body.Bytes(), []byte("source:debug-zip")) {
-		// capture the body contents for the table dump upload use case
+	}
+
+	// capture the body contents for the table dump upload use case
+	if bytes.Contains(body.Bytes(), []byte("source:debug-zip")) {
 		var lines []map[string]any
 		require.NoError(t, json.Unmarshal(body.Bytes(), &lines))
 
@@ -549,8 +418,6 @@ func setupDDLogsHook(t *testing.T, req *http.Request) ([]byte, error) {
 			}
 			fmt.Println()
 		}
-	} else {
-		fmt.Printf("body: %s\n", body.String())
 	}
 
 	return []byte("200 OK"), nil
@@ -700,14 +567,38 @@ func TestLogUploadSigSplit(t *testing.T) {
 	}
 }
 
+func TestTableDumpColumnParsing(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+
+	datadriven.RunTest(t, "testdata/table_dump_column_parsing", func(t *testing.T, d *datadriven.TestData) string {
+		table, ok := clusterWideTableDumps[d.Cmd]
+		require.True(t, ok, "table dump not found: %s", d.Cmd)
+
+		var buf bytes.Buffer
+		for _, line := range strings.Split(strings.TrimSpace(d.Input), "\n") {
+			cols := strings.Fields(strings.TrimSpace(line))
+			fn, ok := table[cols[0]]
+			require.True(t, ok, "column not found: %s", cols[0])
+
+			decoded, err := fn(strings.TrimSpace(cols[1]))
+			require.NoError(t, err)
+
+			raw, err := json.Marshal(decoded)
+			require.NoError(t, err)
+
+			buf.Write(append(raw, '\n'))
+		}
+
+		return buf.String()
+	})
+}
+
 func copyZipFiles(t *testing.T, src, dest string) {
 	t.Helper()
 
 	paths, err := expandPatterns([]string{
 		path.Join(src, "*.txt"),
 		path.Join(src, "nodes/*/*.txt"),
-		path.Join(src, "*.json"),
-		path.Join(src, "reports/*.json"),
 	})
 	require.NoError(t, err)
 

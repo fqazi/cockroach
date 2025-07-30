@@ -20,6 +20,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil"
+	"github.com/cockroachdb/cockroach/pkg/util/intsets"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
@@ -94,10 +95,6 @@ type Builder struct {
 	// rather than scans.
 	withExprs []builtWithExpr
 
-	// routineResultBuffers allows expressions within the body of a set-returning
-	// PL/pgSQL function to add to the result set during execution.
-	routineResultBuffers map[memo.RoutineResultBufferID]tree.RoutineResultWriter
-
 	// allowAutoCommit is passed through to factory methods for mutation
 	// operators. It allows execution to commit the transaction as part of the
 	// mutation itself. See canAutoCommit().
@@ -107,16 +104,12 @@ type Builder struct {
 	// for EXPLAIN.
 	initialAllowAutoCommit bool
 
-	allowInsertFastPath      bool
-	allowDeleteRangeFastPath bool
+	allowInsertFastPath bool
 
-	// forceForUpdateLocking, if set, is the table ID of the table being mutated
-	// that should be locked using forUpdateLocking in mutation's input
-	// operators to reduce query retries. In other words, it allows us to apply
-	// the implicit locking during the initial scan of the mutation. It will
-	// only be set if we are guaranteed to never scan data that won't be
-	// mutated.
-	forceForUpdateLocking opt.TableID
+	// forceForUpdateLocking is a set of opt catalog table IDs that serve as input
+	// for mutation operators, and should be locked using forUpdateLocking to
+	// reduce query retries.
+	forceForUpdateLocking intsets.Fast
 
 	// planLazySubqueries is true if the builder should plan subqueries that are
 	// lazily evaluated as routines instead of a subquery which is evaluated
@@ -282,7 +275,6 @@ func New(
 		b.allowAutoCommit = b.allowAutoCommit && !prohibitAutoCommit
 		b.initialAllowAutoCommit = b.allowAutoCommit
 		b.allowInsertFastPath = sd.InsertFastPath
-		b.allowDeleteRangeFastPath = sd.OptimizerUseDeleteRangeFastPath
 	}
 	return b
 }

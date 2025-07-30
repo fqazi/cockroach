@@ -16,11 +16,11 @@ import (
 
 const (
 	// rulesVersion version of elements that can be appended to rel rule names.
-	rulesVersion = "-25.4"
+	rulesVersion = "-25.1"
 )
 
 // rulesVersionKey version of elements used by this rule set.
-var rulesVersionKey = clusterversion.V25_4
+var rulesVersionKey = clusterversion.V25_1
 
 // descriptorIsNotBeingDropped creates a clause which leads to the outer clause
 // failing to unify if the passed element is part of a descriptor and
@@ -89,7 +89,7 @@ func isSubjectTo2VersionInvariant(e scpb.Element) bool {
 	}
 	switch e.(type) {
 	case *scpb.CheckConstraint, *scpb.UniqueWithoutIndexConstraint, *scpb.ForeignKeyConstraint,
-		*scpb.ColumnNotNull, *scpb.TableSchemaLocked:
+		*scpb.ColumnNotNull:
 		return true
 	}
 	return false
@@ -113,11 +113,6 @@ func isIndexColumn(e scpb.Element) bool {
 
 func isColumn(e scpb.Element) bool {
 	_, ok := e.(*scpb.Column)
-	return ok
-}
-
-func isTableSchemaLocked(e scpb.Element) bool {
-	_, ok := e.(*scpb.TableSchemaLocked)
 	return ok
 }
 
@@ -173,22 +168,17 @@ func getExpression(element scpb.Element) (*scpb.Expression, error) {
 			return nil, nil
 		}
 		return e.EmbeddedExpr, nil
+	case *scpb.SecondaryIndexPartial:
+		if e == nil {
+			return nil, nil
+		}
+		return &e.Expression, nil
 	case *scpb.CheckConstraint:
 		if e == nil {
 			return nil, nil
 		}
 		return &e.Expression, nil
 	case *scpb.CheckConstraintUnvalidated:
-		if e == nil {
-			return nil, nil
-		}
-		return &e.Expression, nil
-	case *scpb.PolicyUsingExpr:
-		if e == nil {
-			return nil, nil
-		}
-		return &e.Expression, nil
-	case *scpb.PolicyWithCheckExpr:
 		if e == nil {
 			return nil, nil
 		}
@@ -249,7 +239,7 @@ func isIndexDependent(e scpb.Element) bool {
 	case *scpb.IndexName, *scpb.IndexComment, *scpb.IndexColumn,
 		*scpb.IndexZoneConfig:
 		return true
-	case *scpb.IndexPartitioning, *scpb.PartitionZoneConfig:
+	case *scpb.IndexPartitioning, *scpb.PartitionZoneConfig, *scpb.SecondaryIndexPartial:
 		return true
 	}
 	return false
@@ -304,8 +294,6 @@ func isConstraintDependent(e scpb.Element) bool {
 		return true
 	case *scpb.ConstraintComment:
 		return true
-	case *scpb.TableLocalityRegionalByRowUsingConstraint:
-		return true
 	}
 	return false
 }
@@ -330,8 +318,7 @@ func isTriggerDependent(e scpb.Element) bool {
 
 func isPolicyDependent(e scpb.Element) bool {
 	switch e.(type) {
-	case *scpb.PolicyName, *scpb.PolicyRole, *scpb.PolicyUsingExpr,
-		*scpb.PolicyWithCheckExpr, *scpb.PolicyDeps:
+	case *scpb.PolicyName:
 		return true
 	}
 	return false
@@ -360,14 +347,6 @@ func isDescriptorParentReference(e scpb.Element) bool {
 func isOwner(e scpb.Element) bool {
 	switch e.(type) {
 	case *scpb.Owner:
-		return true
-	}
-	return false
-}
-
-func isSchemaLocked(e scpb.Element) bool {
-	switch e.(type) {
-	case *scpb.TableSchemaLocked:
 		return true
 	}
 	return false

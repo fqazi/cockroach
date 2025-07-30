@@ -22,9 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/exprutil"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
-	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
@@ -33,6 +31,11 @@ import (
 // defaultRetentionTTLSeconds is the default value for how long
 // replicated data will be retained.
 const defaultRetentionTTLSeconds = int32(4 * 60 * 60)
+
+// CannotSetExpirationWindowErr get returned if the user attempts to specify the
+// EXPIRATION WINDOW option to create a replication stream, as this job setting
+// should only be set from the producer cluster.
+var CannotSetExpirationWindowErr = errors.New("cannot specify EXPIRATION WINDOW option while starting a physical replication stream")
 
 func streamIngestionJobDescription(
 	p sql.PlanHookState,
@@ -110,6 +113,9 @@ func ingestionPlanHook(
 	if ret, ok := options.GetRetention(); ok {
 		retentionTTLSeconds = ret
 	}
+	if _, ok := options.GetExpirationWindow(); ok {
+		return nil, nil, false, CannotSetExpirationWindowErr
+	}
 
 	fn := func(ctx context.Context, _ chan<- tree.Datums) (err error) {
 		defer func() {
@@ -128,12 +134,6 @@ func ingestionPlanHook(
 		}
 
 		if err := sql.CanManageTenant(ctx, p); err != nil {
-			return err
-		}
-
-		if err := p.CheckPrivilege(
-			ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPLICATIONDEST,
-		); err != nil {
 			return err
 		}
 

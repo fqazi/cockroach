@@ -66,7 +66,7 @@ func startDistIngestion(
 	msg := redact.Sprintf("resuming stream (producer job %d) from %s", streamID, heartbeatTimestamp)
 
 	if streamProgress.InitialRevertRequired {
-		updateStatus(ctx, ingestionJob, jobspb.InitializingReplication, "reverting existing data to prepare for replication")
+		updateRunningStatus(ctx, ingestionJob, jobspb.InitializingReplication, "reverting existing data to prepare for replication")
 
 		revertTo := replicatedTime
 		revertTo.Forward(streamProgress.InitialRevertTo)
@@ -87,13 +87,13 @@ func startDistIngestion(
 		if err := ingestionJob.NoTxn().Update(ctx, func(txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
 			md.Progress.GetStreamIngest().InitialRevertRequired = false
 			ju.UpdateProgress(md.Progress)
-			updateStatusInternal(md, ju, jobspb.InitializingReplication, string(msg))
+			updateRunningStatusInternal(md, ju, jobspb.InitializingReplication, string(msg))
 			return nil
 		}); err != nil {
 			return errors.Wrap(err, "failed to update job progress")
 		}
 	} else {
-		updateStatus(ctx, ingestionJob, jobspb.InitializingReplication, msg)
+		updateRunningStatus(ctx, ingestionJob, jobspb.InitializingReplication, msg)
 	}
 
 	client, err := connectToActiveClient(ctx, ingestionJob, execCtx.ExecCfg().InternalDB,
@@ -172,7 +172,7 @@ func startDistIngestion(
 			// Update the running aggregate of the component with the latest received
 			// aggregate.
 			resumer.mu.Lock()
-			resumer.mu.perNodeAggregatorStats[componentID] = *agg
+			resumer.mu.perNodeAggregatorStats[componentID] = agg.Events
 			resumer.mu.Unlock()
 		}
 		return nil
@@ -226,9 +226,9 @@ func startDistIngestion(
 		)
 		defer recv.Release()
 
-		// Copy the eval.Context, as dsp.Run() might change it.
-		evalCtxCopy := execCtx.ExtendedEvalContext().Context.Copy()
-		dsp.Run(ctx, planner.initialPlanCtx, noTxn, planner.initialPlan, recv, evalCtxCopy, nil /* finishedSetupFn */)
+		// Copy the evalCtx, as dsp.Run() might change it.
+		evalCtxCopy := *execCtx.ExtendedEvalContext()
+		dsp.Run(ctx, planner.initialPlanCtx, noTxn, planner.initialPlan, recv, &evalCtxCopy, nil /* finishedSetupFn */)
 		return rw.Err()
 	}
 
@@ -250,7 +250,7 @@ func startDistIngestion(
 		}
 		msg := redact.Sprintf("creating %d initial splits based on the source cluster's topology",
 			countNumOfSplitsAndScatters())
-		updateStatus(ctx, ingestionJob, jobspb.CreatingInitialSplits, msg)
+		updateRunningStatus(ctx, ingestionJob, jobspb.CreatingInitialSplits, msg)
 		if err := createInitialSplits(ctx, codec, splitter, planner.initialTopology, len(planner.initialDestinationNodes), details.DestinationTenantID); err != nil {
 			return err
 		}
@@ -266,7 +266,7 @@ func startDistIngestion(
 	if err := ingestionJob.NoTxn().Update(ctx, func(txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
 		md.Progress.GetStreamIngest().ReplicationStatus = replicationStatusForFlow
 		md.Progress.GetStreamIngest().InitialSplitComplete = true
-		md.Progress.StatusMessage = replicationStatusForFlow.String()
+		md.Progress.RunningStatus = replicationStatusForFlow.String()
 		ju.UpdateProgress(md.Progress)
 		return nil
 	}); err != nil {
@@ -631,15 +631,13 @@ func (p *replicationFlowPlanner) constructPlanGenerator(
 			execinfrapb.PostProcessSpec{},
 			streamIngestionResultTypes,
 			execinfrapb.Ordering{},
-			nil, /* finalizeLastStageCb */
 		)
 
 		// The ResultRouters from the previous stage will feed in to the
 		// StreamIngestionFrontier processor.
-		p.AddSingleGroupStage(
-			ctx, gatewayID, execinfrapb.ProcessorCoreUnion{StreamIngestionFrontier: streamIngestionFrontierSpec},
-			execinfrapb.PostProcessSpec{}, streamIngestionResultTypes, nil, /* finalizeLastStageCb */
-		)
+		p.AddSingleGroupStage(ctx, gatewayID,
+			execinfrapb.ProcessorCoreUnion{StreamIngestionFrontier: streamIngestionFrontierSpec},
+			execinfrapb.PostProcessSpec{}, streamIngestionResultTypes)
 
 		p.PlanToStreamColMap = []int{0}
 		sql.FinalizePlan(ctx, planCtx, p)

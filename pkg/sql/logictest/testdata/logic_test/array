@@ -480,7 +480,6 @@ SELECT ARRAY[ROW()] FROM ident
 statement ok
 CREATE TABLE a (b INT ARRAY)
 
-onlyif config schema-locked-disabled
 query TT
 SHOW CREATE TABLE a
 ----
@@ -488,17 +487,7 @@ a  CREATE TABLE public.a (
      b INT8[] NULL,
      rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
      CONSTRAINT a_pkey PRIMARY KEY (rowid ASC)
-   );
-
-skipif config schema-locked-disabled
-query TT
-SHOW CREATE TABLE a
-----
-a  CREATE TABLE public.a (
-     b INT8[] NULL,
-     rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-     CONSTRAINT a_pkey PRIMARY KEY (rowid ASC)
-   ) WITH (schema_locked = true);
+   )
 
 statement ok
 DROP TABLE a
@@ -551,7 +540,6 @@ SELECT * FROM a
 ----
 {1,2,3}
 
-onlyif config schema-locked-disabled
 query TT
 SHOW CREATE TABLE a
 ----
@@ -559,17 +547,7 @@ a  CREATE TABLE public.a (
      b INT8[] NULL,
      rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
      CONSTRAINT a_pkey PRIMARY KEY (rowid ASC)
-   );
-
-skipif config schema-locked-disabled
-query TT
-SHOW CREATE TABLE a
-----
-a  CREATE TABLE public.a (
-     b INT8[] NULL,
-     rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-     CONSTRAINT a_pkey PRIMARY KEY (rowid ASC)
-   ) WITH (schema_locked = true);
+   )
 
 statement error could not parse "foo" as type int
 INSERT INTO a VALUES (ARRAY['foo'])
@@ -634,7 +612,6 @@ DROP TABLE a
 statement ok
 CREATE TABLE a (b SMALLINT[])
 
-onlyif config schema-locked-disabled
 query TT
 SHOW CREATE TABLE a
 ----
@@ -642,17 +619,7 @@ a  CREATE TABLE public.a (
      b INT2[] NULL,
      rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
      CONSTRAINT a_pkey PRIMARY KEY (rowid ASC)
-   );
-
-skipif config schema-locked-disabled
-query TT
-SHOW CREATE TABLE a
-----
-a  CREATE TABLE public.a (
-     b INT2[] NULL,
-     rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
-     CONSTRAINT a_pkey PRIMARY KEY (rowid ASC)
-   ) WITH (schema_locked = true);
+   )
 
 statement error integer out of range for type int2
 INSERT INTO a VALUES (ARRAY[100000])
@@ -1175,7 +1142,7 @@ SELECT array_position(NULL::STRING[], 'abc')
 ----
 NULL
 
-query error initial position must not be null
+query error array_position\(\): initial position must not be null
 SELECT array_position(ARRAY['sun','mon','tue','wed','thu','fri','sat','mon'], 'mon', null)
 
 query error unknown signature: array_position\(int, string, int\)
@@ -1726,7 +1693,7 @@ statement error duplicate key value violates unique constraint
 CREATE UNIQUE INDEX ON unique_array(b)
 
 # Create an indexes on a bad type.
-statement error column x has type geography\[\], which is not indexable in a non-inverted index\nHINT: you may want to create an inverted index instead. See the documentation for inverted indexes: https://www.cockroachlabs.com/docs/dev/inverted-indexes.html
+statement error pq: unimplemented: column x is of type geography\[\] and thus is not indexable
 CREATE TABLE tbad (x GEOGRAPHY[] PRIMARY KEY)
 
 # Test arrays of composite types.

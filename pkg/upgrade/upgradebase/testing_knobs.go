@@ -71,17 +71,9 @@ type TestingKnobs struct {
 
 	SkipUpdateTableMetadataCacheBootstrap bool
 
-	SkipSqlActivityFlushJobBootstrap bool
-
 	// ForceCheckLicenseViolation is true if we want the v24_3_check_license_violation.go
 	// task to continue even though we are in a test environment.
 	ForceCheckLicenseViolation bool
-
-	SkipSomeUpgradeSteps bool
-
-	SkipZoneConfigBootstrap bool
-
-	SkipHotRangesLoggerJobBootstrap bool
 }
 
 // ModuleTestingKnobs makes TestingKnobs a base.ModuleTestingKnobs.

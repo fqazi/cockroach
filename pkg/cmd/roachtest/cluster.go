@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"math/rand"
 	"net"
@@ -42,7 +43,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/cloud"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/failureinjection/failures"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/prometheus"
@@ -97,8 +97,6 @@ func validateBinaryFormat(path string, arch vm.CPUArch, checkEA bool) (string, e
 	} else if arch == vm.ArchAMD64 && !strings.Contains(fileFormat, "x86-64") && !strings.Contains(fileFormat, "x86_64") {
 		// Otherwise, we expect a binary that was built for amd64.
 		return "", errors.Newf("%s has incompatible architecture; want: %q, got: %q", abspath, arch, fileFormat)
-	} else if arch == vm.ArchS390x && !strings.Contains(fileFormat, "ibm s/390") {
-		return "", errors.Newf("%s has incompabile architecture; want: %q, got: %q", abspath, arch, fileFormat)
 	}
 	if arch == vm.ArchFIPS && strings.HasSuffix(abspath, "cockroach") {
 		// Check that the binary is patched to use OpenSSL FIPS.
@@ -124,9 +122,7 @@ func findBinary(
 ) (abspath string, err error) {
 	// Check to see if binary exists and is a regular file and executable.
 	if fi, err := os.Stat(name); err == nil && fi.Mode().IsRegular() && (fi.Mode()&0111) != 0 {
-		if s, err := validateBinaryFormat(name, arch, checkEA); err == nil {
-			return s, nil
-		}
+		return validateBinaryFormat(name, arch, checkEA)
 	}
 	return findBinaryOrLibrary("bin", name, "", osName, arch, checkEA)
 }
@@ -153,7 +149,6 @@ func findLibrary(libraryName string, os string, arch vm.CPUArch) (string, error)
 
 // findBinaryOrLibrary searches for a binary or library, _first_ in the $PATH, _then_ in the following hardcoded paths,
 //
-//	$PWD/artifacts
 //	$GOPATH/src/github.com/cockroachdb/cockroach/
 //	$GOPATH/src/github.com/cockroachdb/artifacts/
 //	$PWD/binOrLib
@@ -197,7 +192,6 @@ func findBinaryOrLibrary(
 	}
 
 	dirs := []string{
-		filepath.Join(os.ExpandEnv("$PWD"), "artifacts"),
 		filepath.Join(gopath, "/src/github.com/cockroachdb/cockroach/"),
 		filepath.Join(gopath, "/src/github.com/cockroachdb/cockroach/artifacts/"),
 		filepath.Join(os.ExpandEnv("$PWD"), binOrLib),
@@ -276,8 +270,6 @@ func initBinariesAndLibraries() {
 		if string(defaultArch) != runtime.GOARCH {
 			fmt.Printf("WARN: local cluster's architecture (%q) differs from default (%q)\n", runtime.GOARCH, defaultArch)
 		}
-	} else if roachtestflags.Cloud == spec.IBM {
-		defaultArch = vm.ArchS390x
 	}
 	fmt.Printf("Locating and verifying binaries for os=%q, arch=%q\n", defaultOSName, defaultArch)
 
@@ -356,7 +348,7 @@ func initBinariesAndLibraries() {
 
 	// In v20.2 or higher, optionally expect certain library files to exist.
 	// Since they may not be found in older versions, do not hard error if they are not found.
-	for _, arch := range []vm.CPUArch{vm.ArchAMD64, vm.ArchARM64, vm.ArchFIPS, vm.ArchS390x} {
+	for _, arch := range []vm.CPUArch{vm.ArchAMD64, vm.ArchARM64, vm.ArchFIPS} {
 		if roachtestflags.ARM64Probability == 0 && defaultArch != vm.ArchARM64 && arch == vm.ArchARM64 {
 			// arm64 isn't used, skip finding libs for it.
 			continue
@@ -541,7 +533,7 @@ func makeClusterName(name string) string {
 	return vm.DNSSafeName(name)
 }
 
-// MachineTypeToCPUs returns a CPU count for GCE, AWS, Azure and IBM machine types.
+// MachineTypeToCPUs returns a CPU count for GCE, AWS, and Azure machine types.
 // -1 is returned for unknown machine types.
 func MachineTypeToCPUs(s string) int {
 	{
@@ -560,23 +552,6 @@ func MachineTypeToCPUs(s string) int {
 			return v
 		}
 		if _, err := fmt.Sscanf(s, "n2-highmem-%d", &v); err == nil {
-			return v
-		}
-	}
-
-	{
-		// IBM machine types.
-		var v int
-		// bz2 is the balanced IBM Z machine type family.
-		if _, err := fmt.Sscanf(s, "bz2-%dx", &v); err == nil {
-			return v
-		}
-		// bz2 is the compute optimized IBM Z machine type family.
-		if _, err := fmt.Sscanf(s, "cz2-%dx", &v); err == nil {
-			return v
-		}
-		// bz2 is the memory optimized IBM Z machine type family.
-		if _, err := fmt.Sscanf(s, "mx2-%dx", &v); err == nil {
 			return v
 		}
 	}
@@ -696,11 +671,6 @@ type clusterImpl struct {
 	// tagged grafana annotations. If empty, grafana is not available.
 	grafanaTags               []string
 	disableGrafanaAnnotations atomic.Bool
-
-	// preStartHooks contains registered preStartHook(s).
-	preStartHooks []install.PreStartHook
-	// preStartVirtualClusterHooks contains registered preStartVirtualClusterHook(s).
-	preStartVirtualClusterHooks []install.PreStartHook
 }
 
 // Name returns the cluster name, i.e. something like `teamcity-....`
@@ -1032,30 +1002,31 @@ func (f *clusterFactory) newCluster(
 }
 
 type attachOpt struct {
+	skipValidation bool
+	// Implies skipWipe.
+	skipStop bool
 	skipWipe bool
 }
 
 // attachToExistingCluster creates a cluster object based on machines that have
-// already been allocated by roachprod.
+// already been already allocated by roachprod.
+//
+// NOTE: setTest() needs to be called before a test can use this cluster.
 func attachToExistingCluster(
 	ctx context.Context,
 	name string,
 	l *logger.Logger,
-	clusterSpec spec.ClusterSpec,
+	spec spec.ClusterSpec,
 	opt attachOpt,
 	r *clusterRegistry,
 ) (*clusterImpl, error) {
-	exp := clusterSpec.Expiration()
-	// Set by `validate` below, unless it errors out.
-	var attachedCloud spec.Cloud
-
+	exp := spec.Expiration()
 	if name == "local" {
 		exp = timeutil.Now().Add(100000 * time.Hour)
 	}
 	c := &clusterImpl{
 		name:       name,
-		cloud:      attachedCloud,
-		spec:       clusterSpec,
+		spec:       spec,
 		l:          l,
 		expiration: exp,
 		destroyState: destroyState{
@@ -1065,25 +1036,29 @@ func attachToExistingCluster(
 		r: r,
 	}
 
-	if err := c.validate(clusterSpec, l); err != nil {
-		return nil, err
-	}
-	// Assert cloud was set.
-	if c.cloud == spec.AnyCloud {
-		return nil, errors.New("unable to validate cloud provider")
+	if !opt.skipValidation {
+		if err := c.validate(ctx, spec, l); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := r.registerCluster(c); err != nil {
 		return nil, err
 	}
 
-	if !opt.skipWipe {
-		if roachtestflags.ClusterWipe {
-			if err := roachprod.Wipe(ctx, l, c.MakeNodes(c.All()), false /* preserveCerts */); err != nil {
-				return nil, err
+	if !opt.skipStop {
+		c.status("stopping cluster")
+		if err := c.StopE(ctx, l, option.DefaultStopOpts(), c.All()); err != nil {
+			return nil, err
+		}
+		if !opt.skipWipe {
+			if roachtestflags.ClusterWipe {
+				if err := roachprod.Wipe(ctx, l, c.MakeNodes(c.All()), false /* preserveCerts */); err != nil {
+					return nil, err
+				}
+			} else {
+				l.Printf("skipping cluster wipe\n")
 			}
-		} else {
-			l.Printf("skipping cluster wipe\n")
 		}
 	}
 
@@ -1110,19 +1085,15 @@ func (c *clusterImpl) Save(ctx context.Context, msg string, l *logger.Logger) {
 	c.destroyState.mu.Unlock()
 }
 
-func (c *clusterImpl) saved() bool {
-	c.destroyState.mu.Lock()
-	defer c.destroyState.mu.Unlock()
-	return c.destroyState.mu.saved
-}
-
 var errClusterNotFound = errors.New("cluster not found")
 
 // validateCluster takes a cluster and checks that the reality corresponds to
 // the cluster's spec. It's intended to be used with clusters created by
 // attachToExistingCluster(); otherwise, clusters create with newCluster() are
 // know to be up to spec.
-func (c *clusterImpl) validate(nodes spec.ClusterSpec, l *logger.Logger) error {
+func (c *clusterImpl) validate(
+	ctx context.Context, nodes spec.ClusterSpec, l *logger.Logger,
+) error {
 	// Perform validation on the existing cluster.
 	c.status("checking that existing cluster matches spec")
 	pattern := "^" + regexp.QuoteMeta(c.name) + "$"
@@ -1156,16 +1127,6 @@ func (c *clusterImpl) validate(nodes spec.ClusterSpec, l *logger.Logger) error {
 			if vmCPUs > 1 && vmCPUs&1 == 1 {
 				return fmt.Errorf("node %d has an _odd_ number of CPUs (%d)", nodeID, vmCPUs)
 			}
-		}
-	}
-	// Find cloud providers from the list of VMs.
-	for _, vm := range cDetails.VMs {
-		// N.B. At this time roachtest clusters use a single provider, so we grab the first one.
-		if provider, ok := spec.TryCloudFromString(vm.Provider); ok {
-			c.cloud = provider
-			break
-		} else {
-			return fmt.Errorf("unknown cloud provider %q", vm.Provider)
 		}
 	}
 	return nil
@@ -1368,16 +1329,9 @@ func (c *clusterImpl) FetchDebugZip(
 	c.status("fetching debug zip")
 
 	nodes := selectedNodesOrDefault(opts, c.All())
-	// Shuffle the nodes to avoid always trying the same node first.
-	rand.Shuffle(len(nodes), func(i, j int) { nodes[i], nodes[j] = nodes[j], nodes[i] })
-	defaultTimeout := 10 * time.Minute
-	if c.spec.NodeCount >= 30 {
-		// For "large" clusters, double the timeout.
-		defaultTimeout *= 2
-	}
 
 	// Don't hang forever if we can't fetch the debug zip.
-	return timeutil.RunWithTimeout(ctx, "debug zip", defaultTimeout, func(ctx context.Context) error {
+	return timeutil.RunWithTimeout(ctx, "debug zip", 10*time.Minute, func(ctx context.Context) error {
 		const zipName = "debug.zip"
 		path := filepath.Join(c.t.ArtifactsDir(), dest)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -1490,18 +1444,14 @@ func selectedNodesOrDefault(
 
 type HealthStatusResult struct {
 	Node   int
-	URL    string
 	Status int
 	Body   []byte
 	Err    error
 }
 
-func newHealthStatusResult(
-	node int, url string, status int, body []byte, err error,
-) *HealthStatusResult {
+func newHealthStatusResult(node int, status int, body []byte, err error) *HealthStatusResult {
 	return &HealthStatusResult{
 		Node:   node,
-		URL:    url,
 		Status: status,
 		Body:   body,
 		Err:    err,
@@ -1524,21 +1474,18 @@ func (c *clusterImpl) HealthStatus(
 		return nil, errors.WithDetail(err, "Unable to get admin UI address(es)")
 	}
 	client := roachtestutil.DefaultHTTPClient(c, l)
-	protocol := "http"
-	if c.IsSecure() {
-		protocol = "https"
-	}
 	getStatus := func(ctx context.Context, nodeIndex, node int) *HealthStatusResult {
-		url := fmt.Sprintf(`%s://%s/health?ready=1`, protocol, adminAddrs[nodeIndex])
+		url := fmt.Sprintf(`https://%s/health?ready=1`, adminAddrs[nodeIndex])
+
 		resp, err := client.Get(ctx, url)
 		if err != nil {
-			return newHealthStatusResult(node, url, 0, nil, err)
+			return newHealthStatusResult(node, 0, nil, err)
 		}
 
 		defer resp.Body.Close()
 		body, err := io.ReadAll(resp.Body)
 
-		return newHealthStatusResult(node, url, resp.StatusCode, body, err)
+		return newHealthStatusResult(node, resp.StatusCode, body, err)
 	}
 
 	results := make([]*HealthStatusResult, nodeCount)
@@ -1859,12 +1806,6 @@ func (c *clusterImpl) doDestroy(ctx context.Context, l *logger.Logger) <-chan st
 	return ch
 }
 
-func (c *clusterImpl) Reset(
-	ctx context.Context, l *logger.Logger, nodes option.NodeListOption,
-) error {
-	return roachprod.Reset(l, c.MakeNodes(nodes))
-}
-
 func (c *clusterImpl) addLabels(labels map[string]string) error {
 	// N.B. we must sanitize the values; e.g., some test names can exceed the maximum length (63 chars in GCE).
 	// N.B. we don't sanitize the keys; unlike values, they are typically _not_ (dynamically) generated.
@@ -2141,9 +2082,6 @@ func (c *clusterImpl) StartE(
 	defer c.clearStatusForClusterOpt(startOpts.RoachtestOpts.Worker)
 
 	startOpts.RoachprodOpts.EncryptedStores = c.encAtRest
-	if c.t.Spec().(*registry.TestSpec).Benchmark {
-		startOpts.RoachprodOpts.ScheduleBackups = false
-	}
 
 	// Needed for backward-compat on crdb_internal.ranges{_no_leases}.
 	// Remove in v23.2.
@@ -2173,20 +2111,18 @@ func (c *clusterImpl) StartE(
 
 	clusterSettingsOpts := c.configureClusterSettingOptions(c.clusterSettings, settings)
 
-	startOpts.RoachprodOpts.PreStartHooks = append(startOpts.RoachprodOpts.PreStartHooks, c.preStartHooks...)
-	nodes := selectedNodesOrDefault(opts, c.CRDBNodes())
-	if err := roachprod.Start(ctx, l, c.MakeNodes(nodes), startOpts.RoachprodOpts, clusterSettingsOpts...); err != nil {
+	if err := roachprod.Start(ctx, l, c.MakeNodes(opts...), startOpts.RoachprodOpts, clusterSettingsOpts...); err != nil {
 		return err
 	}
 
 	// Do not refetch certs if that step already happened once (i.e., we
 	// are restarting a node).
 	if settings.Secure && c.localCertsDir == "" {
-		// Get the certs from the first node.
 		if err := c.RefetchCertsFromNode(ctx, 1); err != nil {
 			return err
 		}
 	}
+	nodes := selectedNodesOrDefault(opts, c.CRDBNodes())
 	// N.B. If `SkipInit` is set, we don't wait for SQL since node(s) may not join the cluster in any definite time.
 	if !startOpts.RoachprodOpts.SkipInit {
 		// Wait for SQL to be ready on all nodes, for 'system' tenant, only.
@@ -2195,10 +2131,10 @@ func (c *clusterImpl) StartE(
 			if err != nil {
 				return errors.Wrapf(err, "failed to connect to n%d", n)
 			}
+			defer conn.Close()
+
 			// N.B. We must ensure SQL session is fully initialized before attempting to execute any SQL commands.
-			err = roachtestutil.WaitForSQLReady(ctx, conn)
-			conn.Close()
-			if err != nil {
+			if err := roachtestutil.WaitForSQLReady(ctx, conn); err != nil {
 				return errors.Wrap(err, "failed to wait for SQL to be ready")
 			}
 		}
@@ -2216,15 +2152,12 @@ func (c *clusterImpl) StartE(
 		defer conn.Close()
 
 		if err := roachtestutil.WaitForReplication(
-			ctx, l, conn, startOpts.WaitForReplicationFactor, roachprod.AtLeastReplicationFactor,
+			ctx, l, conn, startOpts.WaitForReplicationFactor, roachtestutil.AtLeastReplicationFactor,
 		); err != nil {
 			return errors.Wrap(err, "failed to wait for replication after starting cockroach")
 		}
 	}
-	// If starting the cluster was successful, mark the nodes as healthy. N.B. we must wait
-	// until cluster startup succeeds as we may have tests that purposely inject failures into
-	// cluster startup.
-	c.t.Monitor().ExpectProcessAlive(nodes)
+
 	return nil
 }
 
@@ -2254,7 +2187,6 @@ func (c *clusterImpl) StartServiceForVirtualClusterE(
 	if len(startOpts.SeparateProcessNodes) > 0 {
 		startOpts.RoachprodOpts.VirtualClusterLocation = c.MakeNodes(startOpts.SeparateProcessNodes)
 	}
-	startOpts.RoachprodOpts.PreStartHooks = append(startOpts.RoachprodOpts.PreStartHooks, c.preStartVirtualClusterHooks...)
 	if err := roachprod.StartServiceForVirtualCluster(
 		ctx, l, c.MakeNodes(storageCluster), startOpts.RoachprodOpts, clusterSettingsOpts...,
 	); err != nil {
@@ -2262,19 +2194,9 @@ func (c *clusterImpl) StartServiceForVirtualClusterE(
 	}
 
 	if settings.Secure {
-		// Get the certs from the first node.
 		if err := c.RefetchCertsFromNode(ctx, 1); err != nil {
 			return err
 		}
-	}
-
-	// If we are starting a separate process virtual cluster, we need to
-	// mark each SQL instance as healthy.
-	if len(startOpts.SeparateProcessNodes) > 0 {
-		nodes := startOpts.SeparateProcessNodes
-		virtualClusterName := startOpts.RoachprodOpts.VirtualClusterName
-		sqlInstance := startOpts.RoachprodOpts.SQLInstance
-		c.t.Monitor().ExpectProcessAlive(nodes, option.VirtualClusterName(virtualClusterName), option.SQLInstance(sqlInstance))
 	}
 	return nil
 }
@@ -2302,9 +2224,6 @@ func (c *clusterImpl) StopServiceForVirtualClusterE(
 	nodes := c.All()
 	if len(stopOpts.SeparateProcessNodes) > 0 {
 		nodes = stopOpts.SeparateProcessNodes
-		virtualClusterName := stopOpts.RoachprodOpts.VirtualClusterName
-		sqlInstance := stopOpts.RoachprodOpts.SQLInstance
-		c.t.Monitor().ExpectProcessDead(nodes, option.VirtualClusterName(virtualClusterName), option.SQLInstance(sqlInstance))
 	}
 
 	return roachprod.StopServiceForVirtualCluster(
@@ -2332,7 +2251,20 @@ func (c *clusterImpl) RefetchCertsFromNode(ctx context.Context, node int) error 
 	// certs. Bypass that distinction (which should be fixed independently, but
 	// that might cause fallout) by using a non-existing dir here.
 	c.localCertsDir = filepath.Join(c.localCertsDir, install.CockroachNodeCertsDir)
-	return roachprod.FetchCertsDir(ctx, c.l, c.MakeNodes(c.Node(node)), fmt.Sprintf("./%s", install.CockroachNodeCertsDir), c.localCertsDir)
+	// Get the certs from the first node.
+	if err := c.Get(ctx, c.l, fmt.Sprintf("./%s", install.CockroachNodeCertsDir), c.localCertsDir, c.Node(node)); err != nil {
+		return errors.Wrap(err, "cluster.StartE")
+	}
+	// Need to prevent world readable files or lib/pq will complain.
+	return filepath.Walk(c.localCertsDir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return errors.Wrap(err, "walking localCertsDir failed")
+		}
+		if info.IsDir() {
+			return nil
+		}
+		return os.Chmod(path, 0600)
+	})
 }
 
 func (c *clusterImpl) SetDefaultVirtualCluster(name string) {
@@ -2411,7 +2343,6 @@ func (c *clusterImpl) StopE(
 		stopOpts.RoachprodOpts.Wait = true
 		stopOpts.RoachprodOpts.GracePeriod = 10
 	}
-	c.t.Monitor().ExpectProcessDead(selectedNodesOrDefault(nodes, c.All()))
 	return errors.Wrap(roachprod.Stop(ctx, l, c.MakeNodes(nodes...), stopOpts.RoachprodOpts), "cluster.StopE")
 }
 
@@ -2439,7 +2370,6 @@ func (c *clusterImpl) SignalE(
 	if c.spec.NodeCount == 0 {
 		return nil // unit tests
 	}
-	c.t.Monitor().ExpectProcessDead(selectedNodesOrDefault(nodes, c.All()))
 	return errors.Wrap(roachprod.Signal(ctx, l, c.MakeNodes(nodes...), sig), "cluster.Signal")
 }
 
@@ -2471,7 +2401,6 @@ func (c *clusterImpl) WipeE(
 	}
 	c.setStatusForClusterOpt("wiping", false, nodes...)
 	defer c.clearStatusForClusterOpt(false)
-	c.t.Monitor().ExpectProcessDead(selectedNodesOrDefault(nodes, c.All()))
 	return roachprod.Wipe(ctx, l, c.MakeNodes(nodes...), c.IsSecure())
 }
 
@@ -2503,7 +2432,7 @@ func (c *clusterImpl) RunE(ctx context.Context, options install.RunOptions, args
 		return errors.New("No command passed")
 	}
 	nodes := option.FromInstallNodes(options.Nodes)
-	l, logFile, err := roachtestutil.LoggerForCmd(c.l, nodes, args...)
+	l, logFile, err := c.loggerForCmd(nodes, args...)
 	if err != nil {
 		return err
 	}
@@ -2520,7 +2449,7 @@ func (c *clusterImpl) RunE(ctx context.Context, options install.RunOptions, args
 	}
 	if err := roachprod.Run(
 		ctx, l, c.MakeNodes(nodes), "", "", c.IsSecure(),
-		l.Stdout, l.Stderr, args, options.WithExpanderConfig(expanderCfg).WithLogExpandedCommand(),
+		l.Stdout, l.Stderr, args, options.WithExpanderConfig(expanderCfg),
 	); err != nil {
 		if err := ctx.Err(); err != nil {
 			l.Printf("(note: incoming context was canceled: %s)", err)
@@ -2571,7 +2500,7 @@ func (c *clusterImpl) RunWithDetails(
 		return nil, errors.New("No command passed")
 	}
 	nodes := option.FromInstallNodes(options.Nodes)
-	l, logFile, err := roachtestutil.LoggerForCmd(c.l, nodes, args...)
+	l, logFile, err := c.loggerForCmd(nodes, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2590,7 +2519,7 @@ func (c *clusterImpl) RunWithDetails(
 	}
 	results, err := roachprod.RunWithDetails(
 		ctx, l, c.MakeNodes(nodes), "" /* SSHOptions */, "", /* processTag */
-		c.IsSecure(), args, options.WithExpanderConfig(expanderCfg).WithLogExpandedCommand(),
+		c.IsSecure(), args, options.WithExpanderConfig(expanderCfg),
 	)
 
 	var logFileFull string
@@ -2655,13 +2584,28 @@ func (c *clusterImpl) Install(
 	return errors.Wrap(roachprod.Install(ctx, l, c.MakeNodes(nodes), software), "cluster.Install")
 }
 
-// PopulatesEtcHosts populates the cluster's /etc/hosts file with the private IP
-// addresses of the nodes in the cluster.
-func (c *clusterImpl) PopulateEtcHosts(ctx context.Context, l *logger.Logger) error {
-	if ctx.Err() != nil {
-		return errors.Wrap(ctx.Err(), "cluster.Install")
+// cmdLogFileName comes up with a log file to use for the given argument string.
+func cmdLogFileName(t time.Time, nodes option.NodeListOption, args ...string) string {
+	logFile := fmt.Sprintf(
+		"run_%s_n%s_%s",
+		t.Format(`150405.000000000`),
+		nodes.String()[1:],
+		install.GenFilenameFromArgs(20, args...),
+	)
+	return logFile
+}
+
+func (c *clusterImpl) loggerForCmd(
+	node option.NodeListOption, args ...string,
+) (*logger.Logger, string, error) {
+	logFile := cmdLogFileName(timeutil.Now(), node, args...)
+
+	// NB: we set no prefix because it's only going to a file anyway.
+	l, err := c.l.ChildLogger(logFile, logger.QuietStderr, logger.QuietStdout)
+	if err != nil {
+		return nil, "", err
 	}
-	return errors.Wrap(roachprod.PopulateEtcHosts(ctx, l, c.name), "cluster.PopulatesEtcHosts")
+	return l, logFile, nil
 }
 
 // pgURLErr returns the Postgres endpoint for the specified nodes. It accepts a
@@ -3027,16 +2971,14 @@ func (c *clusterImpl) Extend(ctx context.Context, d time.Duration, l *logger.Log
 	return nil
 }
 
-// NewDeprecatedMonitor creates a monitor that can watch for unexpected crdb node deaths on m.Wait()
+// NewMonitor creates a monitor that can watch for unexpected crdb node deaths on m.Wait()
 // and provide roachtest safe goroutines.
 //
 // As a general rule, if the user has a workload node, do not monitor it. A
 // monitor's semantics around handling expected node deaths breaks down if it's
 // monitoring a workload node.
-func (c *clusterImpl) NewDeprecatedMonitor(
-	ctx context.Context, opts ...option.Option,
-) cluster.Monitor {
-	return newMonitor(ctx, c.t, c, false /* expectExactProcessDeath */, opts...)
+func (c *clusterImpl) NewMonitor(ctx context.Context, opts ...option.Option) cluster.Monitor {
+	return newMonitor(ctx, c.t, c, opts...)
 }
 
 func (c *clusterImpl) StartGrafana(
@@ -3167,12 +3109,6 @@ func archForTest(ctx context.Context, l *logger.Logger, testSpec registry.TestSp
 		return testSpec.Cluster.Arch
 	}
 
-	if roachtestflags.Cloud == spec.IBM {
-		// N.B. IBM only supports S390x on the "s390x" architecture.
-		l.PrintfCtx(ctx, "IBM Cloud: forcing arch=%q (only supported), %s", vm.ArchS390x, testSpec.Name)
-		return vm.ArchS390x
-	}
-
 	// CPU architecture is unspecified, choose one according to the
 	// probability distribution.
 	var arch vm.CPUArch
@@ -3284,68 +3220,4 @@ func (c *clusterImpl) GetHostErrorVMs(ctx context.Context, l *logger.Logger) ([]
 		allHostErrorVMs = append(allHostErrorVMs, hostErrorVMS...)
 	}
 	return allHostErrorVMs, nil
-}
-
-func (c *clusterImpl) GetLiveMigrationVMs(l *logger.Logger) ([]string, error) {
-	if c.IsLocal() {
-		return nil, nil
-	}
-	cachedCluster, err := getCachedCluster(c.name)
-	if err != nil {
-		return nil, err
-	}
-
-	var liveMigrationVMs struct {
-		syncutil.Mutex
-		names []string
-	}
-	clusterErr := vm.FanOut(cachedCluster.VMs, func(p vm.Provider, vms vm.List) error {
-		names, err := p.GetLiveMigrationVMs(l, vms, cachedCluster.CreatedAt)
-		if err != nil {
-			return err
-		}
-		liveMigrationVMs.Lock()
-		defer liveMigrationVMs.Unlock()
-		liveMigrationVMs.names = append(liveMigrationVMs.names, names...)
-		return nil
-	})
-
-	return liveMigrationVMs.names, clusterErr
-}
-
-// RegisterClusterHook registers a hook to be run at a certain point as defined
-// by option.ClusterHookType. This exposes a way for test writers to run code
-// in between certain steps normally orchestrated by the framework, e.g. running
-// some workload during cluster init that depends on knowing connection info.
-func (c *clusterImpl) RegisterClusterHook(
-	hookName string,
-	hookType option.ClusterHookType,
-	timeout time.Duration,
-	fn func(context.Context) error,
-) {
-	switch hookType {
-	case option.PreStartHook:
-		c.preStartHooks = append(c.preStartHooks, install.PreStartHook{Name: hookName, Fn: fn, Timeout: timeout})
-	case option.PreStartVirtualClusterHook:
-		c.preStartVirtualClusterHooks = append(c.preStartVirtualClusterHooks, install.PreStartHook{Name: hookName, Fn: fn, Timeout: timeout})
-	default:
-		panic(fmt.Sprintf("unknown test hook type %v", hookType))
-	}
-}
-
-// GetFailer returns a *failures.Failer for the given failure mode name. Used
-// for conducting failure injection on a cluster.
-func (c *clusterImpl) GetFailer(
-	l *logger.Logger,
-	nodes option.NodeListOption,
-	failureModeName string,
-	opts ...failures.ClusterOptionFunc,
-) (*failures.Failer, error) {
-	fr := failures.GetFailureRegistry()
-	clusterOpts := append(opts, failures.Secure(c.IsSecure()), failures.LocalCertsPath(c.localCertsDir))
-	failer, err := fr.GetFailer(c.MakeNodes(nodes), failureModeName, l, clusterOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return failer, err
 }

@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/fetchpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execopnode"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execstats"
@@ -115,15 +114,11 @@ type joinReader struct {
 
 	// fetcher wraps the row.Fetcher used to perform lookups. This enables the
 	// joinReader to wrap the fetcher with a stat collector when necessary.
-	fetcher  rowFetcher
-	alloc    tree.DatumAlloc
-	rowAlloc rowenc.EncDatumRowAlloc
-	// parallelize, if true, indicates that the KV lookups will be parallelized
-	// across ranges when using the DistSender API. It has no influence on the
-	// behavior when using the Streamer API (when the lookups are always
-	// parallelized).
-	parallelize bool
-	readerType  joinReaderType
+	fetcher            rowFetcher
+	alloc              tree.DatumAlloc
+	rowAlloc           rowenc.EncDatumRowAlloc
+	shouldLimitBatches bool
+	readerType         joinReaderType
 
 	// txn is the transaction used by the join reader.
 	txn *kv.Txn
@@ -177,8 +172,8 @@ type joinReader struct {
 	// remoteLookupExpr contains the lookup join conditions targeting remote
 	// nodes. See comments in the spec for more details.
 	lookupCols       []uint32
-	lookupExpr       execexpr.Helper
-	remoteLookupExpr execexpr.Helper
+	lookupExpr       execinfrapb.ExprHelper
+	remoteLookupExpr execinfrapb.ExprHelper
 
 	// spansCanOverlap indicates whether the spans generated for a given input
 	// batch can overlap. It is used in the fetcher when deciding whether a newly
@@ -208,13 +203,6 @@ type joinReader struct {
 
 	// curBatchInputRowCount is the number of input rows in the current batch.
 	curBatchInputRowCount int64
-
-	// If set, the lookup columns form a key in the target table and thus each
-	// lookup has at most one result.
-	lookupColumnsAreKey bool
-
-	// lockingWaitPolicy is the wait policy for the underlying rowFetcher.
-	lockingWaitPolicy descpb.ScanLockingWaitPolicy
 
 	// State variables for each batch of input rows.
 	scratchInputRows rowenc.EncDatumRows
@@ -248,6 +236,11 @@ type joinReader struct {
 	// detailed comment in the spec). This can never be true for index joins,
 	// and requires that the spec has MaintainOrdering set to true.
 	outputGroupContinuationForLeftRow bool
+
+	// lookupBatchBytesLimit controls the TargetBytes of lookup requests. If 0, a
+	// default will be used. Regardless of this value, bytes limits aren't always
+	// used.
+	lookupBatchBytesLimit rowinfra.BytesLimit
 
 	// limitHintHelper is used in limiting batches of input rows in the presence
 	// of hard and soft limits.
@@ -330,42 +323,25 @@ func newJoinReader(
 	default:
 		return nil, errors.AssertionFailedf("unsupported joinReaderType")
 	}
-	parallelize := spec.Parallelize
-	if !parallelize {
-		// The joiner has a choice to make between getting DistSender-level
-		// parallelism for its lookup batches and setting row and memory limits
-		// (due to implementation limitations, you can't have both at the same
-		// time). We choose parallelism when we know that each lookup returns at
-		// most one row: in case of indexJoinReaderType, we know that there's
-		// exactly one lookup row for each input row. Similarly, in case of
-		// spec.LookupColumnsAreKey, we know that there's at most one lookup row
-		// per input row. In other cases, we disable parallelism and use the
-		// TargetBytes limit.
-		// TODO(yuzefovich): remove this once compatibility with 25.2 is no
-		// longer needed - the execbuilder is now fully-responsible for making
-		// this determination.
-		parallelize = spec.LookupColumnsAreKey || readerType == indexJoinReaderType
-		if flowCtx.EvalCtx.SessionData().ParallelizeMultiKeyLookupJoinsEnabled {
-			parallelize = true
-		}
-		if spec.MaintainLookupOrdering {
-			// We need to disable parallelism for the traditional fetcher in
-			// order to ensure the lookups are ordered.
-			parallelize = false
-		}
+	// The joiner has a choice to make between getting DistSender-level
+	// parallelism for its lookup batches and setting row and memory limits (due
+	// to implementation limitations, you can't have both at the same time). We
+	// choose parallelism when we know that each lookup returns at most one row:
+	// in case of indexJoinReaderType, we know that there's exactly one lookup
+	// row for each input row. Similarly, in case of spec.LookupColumnsAreKey,
+	// we know that there's at most one lookup row per input row. In other
+	// cases, we use limits.
+	shouldLimitBatches := !spec.LookupColumnsAreKey && readerType == lookupJoinReaderType
+	if flowCtx.EvalCtx.SessionData().ParallelizeMultiKeyLookupJoinsEnabled {
+		shouldLimitBatches = false
 	}
 	if spec.MaintainLookupOrdering {
-		if !spec.MaintainOrdering {
-			// MaintainLookupOrdering indicates the output of the lookup joiner
-			// should be sorted by <inputCols>, <lookupCols>. It doesn't make
-			// sense for MaintainLookupOrdering to be true when MaintainOrdering
-			// is not.
-			return nil, errors.AssertionFailedf("MaintainLookupOrdering requires that MaintainOrdering is set")
-		}
-		if spec.Parallelize {
-			// Parallelization must have been disabled in the execbuilder.
-			return nil, errors.AssertionFailedf("Parallelize requires that MaintainLookupOrdering is not set")
-		}
+		// MaintainLookupOrdering indicates the output of the lookup joiner should
+		// be sorted by <inputCols>, <lookupCols>. It doesn't make sense for
+		// MaintainLookupOrdering to be true when MaintainOrdering is not.
+		// Additionally, we need to disable parallelism for the traditional fetcher
+		// in order to ensure the lookups are ordered, so set shouldLimitBatches.
+		spec.MaintainOrdering, shouldLimitBatches = true, true
 	}
 	useStreamer, txn, err := flowCtx.UseStreamer(ctx)
 	if err != nil {
@@ -382,12 +358,11 @@ func newJoinReader(
 		input:                               input,
 		lookupCols:                          lookupCols,
 		outputGroupContinuationForLeftRow:   spec.OutputGroupContinuationForLeftRow,
-		parallelize:                         parallelize,
+		shouldLimitBatches:                  shouldLimitBatches,
 		readerType:                          readerType,
-		lookupColumnsAreKey:                 spec.LookupColumnsAreKey,
-		lockingWaitPolicy:                   spec.LockingWaitPolicy,
 		txn:                                 txn,
 		usesStreamer:                        useStreamer,
+		lookupBatchBytesLimit:               rowinfra.BytesLimit(spec.LookupBatchBytesLimit),
 		limitHintHelper:                     execinfra.MakeLimitHintHelper(spec.LimitHint, post),
 		errorOnLookup:                       errorOnLookup,
 		allowEnforceHomeRegionFollowerReads: flowCtx.EvalCtx.SessionData().EnforceHomeRegionFollowerReadsEnabled,
@@ -539,8 +514,7 @@ func newJoinReader(
 		// We need to use an unlimited monitor for the streamer's budget since
 		// the streamer itself is responsible for staying under the limit.
 		jr.streamerInfo.unlimitedMemMonitor = mon.NewMonitorInheritWithLimit(
-			mon.MakeName("joinreader-streamer").Unlimited(), math.MaxInt64, flowCtx.Mon,
-			false, /* longLiving */
+			"joinreader-streamer-unlimited" /* name */, math.MaxInt64, flowCtx.Mon, false, /* longLiving */
 		)
 		jr.streamerInfo.unlimitedMemMonitor.StartNoReserved(ctx, flowCtx.Mon)
 		jr.streamerInfo.budgetAcc = jr.streamerInfo.unlimitedMemMonitor.MakeBoundAccount()
@@ -574,10 +548,10 @@ func newJoinReader(
 		if jr.streamerInfo.maintainOrdering {
 			diskBufferMemAcc := jr.streamerInfo.unlimitedMemMonitor.MakeBoundAccount()
 			jr.streamerInfo.diskMonitor = execinfra.NewMonitor(
-				ctx, jr.FlowCtx.DiskMonitor, mon.MakeName("streamer-disk"),
+				ctx, jr.FlowCtx.DiskMonitor, "streamer-disk", /* name */
 			)
 			diskBuffer = rowcontainer.NewKVStreamerResultDiskBuffer(
-				jr.FlowCtx.Cfg.TempStorage, diskBufferMemAcc, jr.streamerInfo.diskMonitor, spec.ReverseScans,
+				jr.FlowCtx.Cfg.TempStorage, diskBufferMemAcc, jr.streamerInfo.diskMonitor,
 			)
 		}
 		singleRowLookup := readerType == indexJoinReaderType || spec.LookupColumnsAreKey
@@ -596,7 +570,6 @@ func newJoinReader(
 			jr.streamerInfo.maintainOrdering,
 			singleRowLookup,
 			int(spec.FetchSpec.MaxKeysPerRow),
-			spec.ReverseScans,
 			diskBuffer,
 			&jr.streamerInfo.txnKVStreamerMemAcc,
 			spec.FetchSpec.External,
@@ -618,7 +591,6 @@ func newJoinReader(
 		row.FetcherInitArgs{
 			StreamingKVFetcher:         streamingKVFetcher,
 			Txn:                        jr.txn,
-			Reverse:                    spec.ReverseScans,
 			LockStrength:               spec.LockingStrength,
 			LockWaitPolicy:             spec.LockingWaitPolicy,
 			LockDurability:             spec.LockingDurability,
@@ -636,9 +608,6 @@ func newJoinReader(
 	}
 
 	if execstats.ShouldCollectStats(ctx, flowCtx.CollectStats) {
-		if flowTxn := flowCtx.EvalCtx.Txn; flowTxn != nil {
-			jr.contentionEventsListener.Init(flowTxn.ID())
-		}
 		jr.input = newInputStatCollector(jr.input)
 		jr.fetcher = newRowFetcherStatCollector(&fetcher)
 		jr.ExecStatsForTrace = jr.execStatsForTrace
@@ -755,14 +724,13 @@ func (jr *joinReader) initJoinReaderStrategy(
 	// joinReader will overflow to disk if this limit is not enough.
 	limit := execinfra.GetWorkMemLimit(flowCtx)
 	// Initialize memory monitors and row container for looked up rows.
-	mn := mon.MakeName("joinreader")
-	jr.limitedMemMonitor = execinfra.NewLimitedMonitor(ctx, jr.MemMonitor, flowCtx, mn.Limited())
+	jr.limitedMemMonitor = execinfra.NewLimitedMonitor(ctx, jr.MemMonitor, flowCtx, "joinreader-limited")
 	// We want to make sure that if the disk-backed container is spilled to
 	// disk, it releases all of the memory reservations, so we make the
 	// corresponding memory monitor not hold on to any bytes.
 	jr.limitedMemMonitor.RelinquishAllOnReleaseBytes()
-	jr.unlimitedMemMonitor = execinfra.NewMonitor(ctx, flowCtx.Mon, mn.Unlimited())
-	jr.diskMonitor = execinfra.NewMonitor(ctx, flowCtx.DiskMonitor, mn.Disk())
+	jr.unlimitedMemMonitor = execinfra.NewMonitor(ctx, flowCtx.Mon, "joinreader-unlimited")
+	jr.diskMonitor = execinfra.NewMonitor(ctx, flowCtx.DiskMonitor, "joinreader-disk")
 	drc := rowcontainer.NewDiskBackedNumberedRowContainer(
 		false, /* deDup */
 		typs,
@@ -892,15 +860,16 @@ func (jr *joinReader) getBatchBytesLimit() rowinfra.BytesLimit {
 		// BatchRequests.
 		return rowinfra.NoBytesLimit
 	}
-	if jr.parallelize {
-		// We deem it safe to not use the TargetBytes limit in order to get the
+	if !jr.shouldLimitBatches {
+		// We deem it safe to not limit the batches in order to get the
 		// DistSender-level parallelism.
 		return rowinfra.NoBytesLimit
 	}
-	if testingLimit := jr.FlowCtx.Cfg.TestingKnobs.JoinReaderBatchBytesLimit; testingLimit != 0 {
-		return rowinfra.BytesLimit(testingLimit)
+	bytesLimit := jr.lookupBatchBytesLimit
+	if bytesLimit == 0 {
+		bytesLimit = rowinfra.GetDefaultBatchBytesLimit(jr.FlowCtx.EvalCtx.TestingKnobs.ForceProductionValues)
 	}
-	return rowinfra.GetDefaultBatchBytesLimit(jr.FlowCtx.EvalCtx.TestingKnobs.ForceProductionValues)
+	return bytesLimit
 }
 
 // readInput reads the next batch of input rows and starts an index scan, which
@@ -937,12 +906,6 @@ func (jr *joinReader) readInput() (
 		}
 		jr.scratchInputRows = jr.scratchInputRows[:0]
 		jr.resetScratchWhenReadingInput = false
-	}
-
-	// Assert that the correct number of rows were fetched in the last batch.
-	if err := jr.assertBatchRowCounts(); err != nil {
-		jr.MoveToDraining(err)
-		return jrStateUnknown, nil, jr.DrainHelper()
 	}
 
 	// Read the next batch of input rows.
@@ -1083,13 +1046,11 @@ func (jr *joinReader) readInput() (
 	//    fetcher only accepts a limit if the spans are sorted), and
 	// b) Pebble has various optimizations for Seeks in sorted order.
 	if jr.readerType == indexJoinReaderType && jr.maintainOrdering {
-		// Assert that the index join has 'parallelize=true' set. Since we
-		// didn't sort above, the fetcher doesn't support the TargetBytes limit
-		// (which would be set via getBatchBytesLimit() if 'parallelize' was
-		// false).
-		if !jr.parallelize {
+		// Assert that the index join doesn't have shouldLimitBatches set. Since we
+		// didn't sort above, the fetcher doesn't support a limit.
+		if jr.shouldLimitBatches {
 			err := errors.AssertionFailedf("index join configured with both maintainOrdering and " +
-				"parallelize=false; this shouldn't have happened as the implementation doesn't support it")
+				"shouldLimitBatched; this shouldn't have happened as the implementation doesn't support it")
 			jr.MoveToDraining(err)
 			return jrStateUnknown, nil, jr.DrainHelper()
 		}
@@ -1116,33 +1077,6 @@ func (jr *joinReader) readInput() (
 	}
 
 	return jrFetchingLookupRows, outRow, nil
-}
-
-// assertBatchRowCounts performs assertions to prevent silently returning
-// incorrect results, e.g., if the lookup index is corrupt.
-func (jr *joinReader) assertBatchRowCounts() error {
-	// An index join without SKIP LOCKED should fetch exactly one row for each
-	// input row.
-	nonSkippingIndexJoin := jr.readerType == indexJoinReaderType &&
-		jr.lockingWaitPolicy != descpb.ScanLockingWaitPolicy_SKIP_LOCKED
-	if nonSkippingIndexJoin && jr.curBatchRowsRead != jr.curBatchInputRowCount {
-		return errors.AssertionFailedf(
-			"expected to fetch %d rows, found %d",
-			jr.curBatchInputRowCount, jr.curBatchRowsRead,
-		)
-	}
-	// An index join with SKIP LOCKED or a lookup join where the lookup columns
-	// form a key should fetch at most one row for each input row.
-	skippingIndexJoin := jr.readerType == indexJoinReaderType &&
-		jr.lockingWaitPolicy == descpb.ScanLockingWaitPolicy_SKIP_LOCKED
-	if (skippingIndexJoin || jr.lookupColumnsAreKey) &&
-		jr.curBatchRowsRead > jr.curBatchInputRowCount {
-		return errors.AssertionFailedf(
-			"expected to fetch no more than %d rows, found %d",
-			jr.curBatchInputRowCount, jr.curBatchRowsRead,
-		)
-	}
-	return nil
 }
 
 var noHomeRegionError = pgerror.Newf(pgcode.QueryHasNoHomeRegion,
@@ -1325,8 +1259,6 @@ func (jr *joinReader) execStatsForTrace() *execinfrapb.ComponentStats {
 			TuplesRead:          fis.NumTuples,
 			KVTime:              fis.WaitTime,
 			ContentionTime:      optional.MakeTimeValue(jr.contentionEventsListener.GetContentionTime()),
-			LockWaitTime:        optional.MakeTimeValue(jr.contentionEventsListener.GetLockWaitTime()),
-			LatchWaitTime:       optional.MakeTimeValue(jr.contentionEventsListener.GetLatchWaitTime()),
 			BatchRequestsIssued: optional.MakeUint(uint64(jr.fetcher.GetBatchRequestsIssued())),
 			KVCPUTime:           optional.MakeTimeValue(fis.kvCPUTime),
 			UsedStreamer:        jr.usesStreamer,

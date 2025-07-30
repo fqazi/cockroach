@@ -17,8 +17,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/ctpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/tracker"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowcontrolpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowinspectpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/leases"
@@ -30,6 +32,7 @@ import (
 	rafttracker "github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -45,7 +48,7 @@ type testProposer struct {
 	syncutil.RWMutex
 	clock      *hlc.Clock
 	ds         destroyStatus
-	ci         kvpb.RaftIndex
+	fi         kvpb.RaftIndex
 	lai        kvpb.LeaseAppliedIndex
 	enqueued   int
 	registered int
@@ -73,7 +76,7 @@ type testProposer struct {
 	// is. Some types of replicas are not eligible to get a lease.
 	leaderReplicaType roachpb.ReplicaType
 	// rangePolicy is used in closedTimestampTarget.
-	rangePolicy ctpb.RangeClosedTimestampPolicy
+	rangePolicy roachpb.RangeClosedTimestampPolicy
 }
 
 var _ proposer = &testProposer{}
@@ -138,6 +141,9 @@ func (t *testProposer) locker() sync.Locker {
 
 func (t *testProposer) rlocker() sync.Locker {
 	return t.RWMutex.RLocker()
+}
+func (t *testProposer) flowControlHandle(ctx context.Context) kvflowcontrol.Handle {
+	return &testFlowTokenHandle{}
 }
 
 func (t *testProposer) getStoreID() roachpb.StoreID {
@@ -247,7 +253,7 @@ func (t *testProposer) verifyLeaseRequestSafetyRLocked(
 		LocalReplicaID:     t.getReplicaID(),
 		Desc:               desc,
 		RaftStatus:         &raftStatus,
-		RaftCompacted:      t.ci,
+		RaftFirstIndex:     t.fi,
 		PrevLease:          prevLease,
 		PrevLeaseExpired:   !t.validLease,
 		NextLeaseHolder:    nextLease.Replica,
@@ -677,7 +683,7 @@ func TestProposalBufferRejectUnsafeLeaseTransfer(t *testing.T) {
 	ctx := context.Background()
 
 	proposer := raftpb.PeerID(1)
-	proposerCompactedIndex := kvpb.RaftIndex(4)
+	proposerFirstIndex := kvpb.RaftIndex(5)
 	target := raftpb.PeerID(2)
 
 	// Each subtest will try to propose a lease transfer in a different Raft
@@ -729,7 +735,7 @@ func TestProposalBufferRejectUnsafeLeaseTransfer(t *testing.T) {
 			name:               "leader, target state replicate, match+1 < firstIndex",
 			proposerState:      raftpb.StateLeader,
 			targetState:        rafttracker.StateReplicate,
-			targetMatch:        proposerCompactedIndex - 1,
+			targetMatch:        proposerFirstIndex - 2,
 			expRejection:       true,
 			expRejectionReason: raftutil.ReplicaMatchBelowLeadersFirstIndex,
 		},
@@ -737,14 +743,14 @@ func TestProposalBufferRejectUnsafeLeaseTransfer(t *testing.T) {
 			name:          "leader, target state replicate, match+1 == firstIndex",
 			proposerState: raftpb.StateLeader,
 			targetState:   rafttracker.StateReplicate,
-			targetMatch:   proposerCompactedIndex,
+			targetMatch:   proposerFirstIndex - 1,
 			expRejection:  false,
 		},
 		{
 			name:          "leader, target state replicate, match+1 > firstIndex",
 			proposerState: raftpb.StateLeader,
 			targetState:   rafttracker.StateReplicate,
-			targetMatch:   proposerCompactedIndex + 1,
+			targetMatch:   proposerFirstIndex,
 			expRejection:  false,
 		},
 	} {
@@ -774,7 +780,7 @@ func TestProposalBufferRejectUnsafeLeaseTransfer(t *testing.T) {
 			if tc.proposerState == raftpb.StateLeader {
 				raftStatus.Lead = proposer
 				raftStatus.Progress = map[raftpb.PeerID]rafttracker.Progress{
-					proposer: {State: rafttracker.StateReplicate, Match: uint64(proposerCompactedIndex)},
+					proposer: {State: rafttracker.StateReplicate, Match: uint64(proposerFirstIndex)},
 				}
 				if tc.targetState != math.MaxUint64 {
 					raftStatus.Progress[target] = rafttracker.Progress{
@@ -786,7 +792,7 @@ func TestProposalBufferRejectUnsafeLeaseTransfer(t *testing.T) {
 				status: raftStatus,
 			}
 			p.raftGroup = r
-			p.ci = proposerCompactedIndex
+			p.fi = proposerFirstIndex
 
 			var b propBuf
 			clock := hlc.NewClockForTesting(nil)
@@ -825,7 +831,7 @@ func TestProposalBufferLinesUpEntriesAndProposals(t *testing.T) {
 	ctx := context.Background()
 
 	proposer := uint64(1)
-	proposerCompactedIndex := kvpb.RaftIndex(4)
+	proposerFirstIndex := kvpb.RaftIndex(5)
 
 	var matchingDroppedProposalsSeen int
 	p := testProposer{
@@ -850,7 +856,7 @@ func TestProposalBufferLinesUpEntriesAndProposals(t *testing.T) {
 		return raft.ErrProposalDropped
 	}}
 	p.raftGroup = r
-	p.ci = proposerCompactedIndex
+	p.fi = proposerFirstIndex
 
 	var b propBuf
 	// Make the proposal buffer large so that all the proposals we're putting in
@@ -971,7 +977,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 		// like to close a timestamp above the current lease expiration because it
 		// wouldn't be processing commands if the lease is expired).
 		leaseExp    hlc.Timestamp
-		rangePolicy ctpb.RangeClosedTimestampPolicy
+		rangePolicy roachpb.RangeClosedTimestampPolicy
 		// The highest closed timestamp that the propBuf has previously attached to
 		// a proposal. The propBuf should never propose a new closedTS below this.
 		prevClosedTimestamp hlc.Timestamp
@@ -995,7 +1001,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 			reqType:                 regularWrite,
 			trackerLowerBound:       hlc.Timestamp{},
 			leaseExp:                hlc.MaxTimestamp,
-			rangePolicy:             ctpb.LAG_BY_CLUSTER_SETTING,
+			rangePolicy:             roachpb.LAG_BY_CLUSTER_SETTING,
 			prevClosedTimestamp:     hlc.Timestamp{},
 			expClosed:               nowMinusClosedLag,
 			expAssignedClosedBumped: true,
@@ -1006,7 +1012,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 			reqType:                 regularWrite,
 			trackerLowerBound:       nowMinusTwiceClosedLag,
 			leaseExp:                hlc.MaxTimestamp,
-			rangePolicy:             ctpb.LAG_BY_CLUSTER_SETTING,
+			rangePolicy:             roachpb.LAG_BY_CLUSTER_SETTING,
 			prevClosedTimestamp:     hlc.Timestamp{},
 			expClosed:               nowMinusTwiceClosedLag.FloorPrev(),
 			expAssignedClosedBumped: true,
@@ -1018,7 +1024,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 			reqType:                 regularWrite,
 			trackerLowerBound:       hlc.Timestamp{},
 			leaseExp:                hlc.MaxTimestamp,
-			rangePolicy:             ctpb.LAG_BY_CLUSTER_SETTING,
+			rangePolicy:             roachpb.LAG_BY_CLUSTER_SETTING,
 			prevClosedTimestamp:     someClosedTS,
 			expClosed:               someClosedTS,
 			expAssignedClosedBumped: false,
@@ -1036,7 +1042,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 			// The current lease can be expired; we won't backtrack the closed
 			// timestamp to this expiration.
 			leaseExp:    expiredLeaseTimestamp,
-			rangePolicy: ctpb.LAG_BY_CLUSTER_SETTING,
+			rangePolicy: roachpb.LAG_BY_CLUSTER_SETTING,
 			// Lease requests don't carry closed timestamps.
 			expClosed: hlc.Timestamp{},
 			// Check that the lease proposal does not bump b.assignedClosedTimestamp.
@@ -1058,7 +1064,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 			// The current lease can be expired; we won't backtrack the closed
 			// timestamp to this expiration.
 			leaseExp:    expiredLeaseTimestamp,
-			rangePolicy: ctpb.LAG_BY_CLUSTER_SETTING,
+			rangePolicy: roachpb.LAG_BY_CLUSTER_SETTING,
 			// Lease extensions don't carry closed timestamps.
 			expClosed:               hlc.Timestamp{},
 			expAssignedClosedBumped: false,
@@ -1075,7 +1081,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 			},
 			trackerLowerBound:       hlc.Timestamp{},
 			leaseExp:                hlc.MaxTimestamp,
-			rangePolicy:             ctpb.LAG_BY_CLUSTER_SETTING,
+			rangePolicy:             roachpb.LAG_BY_CLUSTER_SETTING,
 			expClosed:               nowMinusClosedLag,
 			expAssignedClosedBumped: true,
 		},
@@ -1086,7 +1092,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 			reqType:                 regularWrite,
 			trackerLowerBound:       hlc.Timestamp{},
 			leaseExp:                hlc.MaxTimestamp,
-			rangePolicy:             ctpb.LEAD_FOR_GLOBAL_READS_WITH_NO_LATENCY_INFO,
+			rangePolicy:             roachpb.LEAD_FOR_GLOBAL_READS,
 			prevClosedTimestamp:     hlc.Timestamp{},
 			expClosed:               nowPlusGlobalReadLead,
 			expAssignedClosedBumped: true,
@@ -1158,3 +1164,47 @@ func (t mockTracker) Count() int {
 }
 
 var _ tracker.Tracker = mockTracker{}
+
+type testFlowTokenHandle struct{}
+
+var _ kvflowcontrol.Handle = &testFlowTokenHandle{}
+
+func (t *testFlowTokenHandle) Admit(
+	ctx context.Context, priority admissionpb.WorkPriority, t2 time.Time,
+) (bool, error) {
+	return false, nil
+}
+
+func (t *testFlowTokenHandle) DeductTokensFor(
+	ctx context.Context,
+	priority admissionpb.WorkPriority,
+	position kvflowcontrolpb.RaftLogPosition,
+	tokens kvflowcontrol.Tokens,
+) {
+}
+
+func (t *testFlowTokenHandle) ReturnTokensUpto(
+	ctx context.Context,
+	priority admissionpb.WorkPriority,
+	position kvflowcontrolpb.RaftLogPosition,
+	stream kvflowcontrol.Stream,
+) {
+}
+
+func (t *testFlowTokenHandle) ConnectStream(
+	ctx context.Context, position kvflowcontrolpb.RaftLogPosition, stream kvflowcontrol.Stream,
+) {
+}
+
+func (t *testFlowTokenHandle) DisconnectStream(ctx context.Context, stream kvflowcontrol.Stream) {
+}
+
+func (t *testFlowTokenHandle) ResetStreams(ctx context.Context) {
+}
+
+func (t *testFlowTokenHandle) Inspect(context.Context) kvflowinspectpb.Handle {
+	return kvflowinspectpb.Handle{}
+}
+
+func (t *testFlowTokenHandle) Close(ctx context.Context) {
+}

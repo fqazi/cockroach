@@ -7,6 +7,7 @@ package jobsauth
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
@@ -28,6 +29,23 @@ const (
 	// ControlAccess is used to perform authorization for modifying jobs (ex. PAUSE|CANCEL|RESUME JOB).
 	ControlAccess
 )
+
+var authorizers = make(map[jobspb.Type]Authorizer)
+
+// Authorizer is a function which returns a pgcode.InsufficientPrivilege error if
+// authorization for the job denoted by jobID and payload fails.
+type Authorizer func(
+	ctx context.Context, a AuthorizationAccessor, jobID jobspb.JobID, getLegacyPayload func(ctx context.Context) (*jobspb.Payload, error),
+) error
+
+// RegisterAuthorizer registers a AuthorizationCheck for a certain job type.
+func RegisterAuthorizer(typ jobspb.Type, fn Authorizer) {
+	if _, ok := authorizers[typ]; ok {
+		panic(fmt.Sprintf("cannot register two authorizers for the type %s", typ))
+	}
+
+	authorizers[typ] = fn
+}
 
 // AuthorizationAccessor is an interface for checking authorization on jobs.
 type AuthorizationAccessor interface {
@@ -94,11 +112,14 @@ func GetGlobalJobPrivileges(
 //  2. they are an admin
 //  3. they have the global CONTROLJOB or VIEWJOB (for view access) privilege
 //     and the job is *not* owned by an admin in the case of attempted control
+//  4. a job-specific custom authorization check allows access.
 func Authorize(
 	ctx context.Context,
 	a AuthorizationAccessor,
 	jobID jobspb.JobID,
+	getLegacyPayload func(ctx context.Context) (*jobspb.Payload, error),
 	owner username.SQLUsername,
+	typ jobspb.Type,
 	accessLevel AccessLevel,
 	global GlobalJobPrivileges,
 ) error {
@@ -147,6 +168,9 @@ func Authorize(
 		return nil
 	}
 
+	if check, ok := authorizers[typ]; ok {
+		return check(ctx, a, jobID, getLegacyPayload)
+	}
 	return pgerror.Newf(pgcode.InsufficientPrivilege,
 		"user %s does not have privileges for job %d",
 		a.User(), jobID)

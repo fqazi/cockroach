@@ -48,5 +48,4 @@ timeout -s INT $((7800*60)) build/teamcity-roachtest-invoke.sh \
   --use-spot="${USE_SPOT:-auto}" \
   --slack-token="${SLACK_TOKEN}" \
   --export-openmetrics="${EXPORT_OPENMETRICS:-false}" \
-  --openmetrics-labels="branch=$(tc_build_branch), goarch=${arch}, goos=linux, commit=${COMMIT_SHA}, suite=weekly" \
   ${TESTS:-}

@@ -10,17 +10,15 @@ import (
 	"context"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/lockspanset"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
 
@@ -179,41 +177,9 @@ func Subsume(
 		return result.Result{}, errors.Wrap(err, "watching for merge during subsume")
 	}
 
-	// If requested, we write out any unreplicated locks as replicated locks. Note
-	// that the locks are still in the in-memory lock table at this point. They
-	// will be cleared later when OnRangeMerge is called the replica in
-	// (*Store).MergeRange.
-	stats := cArgs.EvalCtx.GetMVCCStats()
-	if args.PreserveUnreplicatedLocks {
-		durabilityUpgradeLimit := concurrency.GetMaxLockFlushSize(&cArgs.EvalCtx.ClusterSettings().SV)
-		acquisitions, approxSize := cArgs.EvalCtx.GetConcurrencyManager().OnRangeSubsumeEval()
-		if approxSize > durabilityUpgradeLimit {
-			log.Warningf(ctx,
-				"refusing to upgrade lock durability of %d locks since approximate lock size of %d byte exceeds %d bytes",
-				len(acquisitions),
-				approxSize,
-				durabilityUpgradeLimit)
-		} else {
-			log.VEventf(ctx, 2, "upgrading durability of %d locks", len(acquisitions))
-			statsDelta := enginepb.MVCCStats{}
-			for _, acq := range acquisitions {
-				if err := storage.MVCCAcquireLock(ctx, readWriter,
-					&acq.Txn, acq.IgnoredSeqNums, acq.Strength, acq.Key, &statsDelta, 0, 0, true /* allowSequenceNumberRegression */); err != nil {
-					return result.Result{}, err
-				}
-			}
-			// Apply the stats delta to both the stats snapshot we are sending in the
-			// response and to the stats update we expect as part of this proposal.
-			stats.Add(statsDelta)
-			cArgs.Stats.Add(statsDelta)
-		}
-	}
-
 	// Now that the range is frozen, collect some information to ship to the LHS
 	// leaseholder through the merge trigger.
-	reply.MVCCStats = stats
-	// NB: This will get overwritten via RepopulateSubsumeResponseLAI if
-	// PreserveUnreplicatedLocks is true.
+	reply.MVCCStats = cArgs.EvalCtx.GetMVCCStats()
 	reply.LeaseAppliedIndex = cArgs.EvalCtx.GetLeaseAppliedIndex()
 	reply.FreezeStart = cArgs.EvalCtx.Clock().NowAsClockTimestamp()
 
@@ -244,7 +210,8 @@ func Subsume(
 	// Set DoTimelyApplicationToAllReplicas so that merges are applied on all
 	// replicas. This is needed since Replica.AdminMerge calls
 	// waitForApplication when sending a kvpb.SubsumeRequest.
-	pd.Replicated.DoTimelyApplicationToAllReplicas = true
-	pd.Local.RepopulateSubsumeResponseLAI = args.PreserveUnreplicatedLocks
+	if cArgs.EvalCtx.ClusterSettings().Version.IsActive(ctx, clusterversion.V25_1_AddRangeForceFlushKey) {
+		pd.Replicated.DoTimelyApplicationToAllReplicas = true
+	}
 	return pd, nil
 }

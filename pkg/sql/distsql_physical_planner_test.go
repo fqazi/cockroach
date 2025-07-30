@@ -23,9 +23,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangecache"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -450,9 +449,10 @@ func TestDistSQLUnavailableHosts(t *testing.T) {
 			}
 
 			// Grant capability to run RELOCATE to secondary (test) tenant.
-			tc.GrantTenantCapabilities(
-				ctx, t, serverutils.TestTenantID(),
-				map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanAdminRelocateRange: "true"})
+			systemDB := sqlutils.MakeSQLRunner(tc.SystemLayer(0).SQLConn(t))
+			systemDB.Exec(t,
+				`ALTER TENANT [$1] GRANT CAPABILITY can_admin_relocate_range=true`,
+				serverutils.TestTenantID().ToUint64())
 		}
 
 		// Connect to node 1 (gateway node)
@@ -1441,7 +1441,7 @@ func TestPartitionSpans(t *testing.T) {
 				gossip:               gw,
 				nodeHealth: distSQLNodeHealth{
 					gossip: gw,
-					connHealthSystem: func(node roachpb.NodeID, _ rpcbase.ConnectionClass) error {
+					connHealthSystem: func(node roachpb.NodeID, _ rpc.ConnectionClass) error {
 						return connHealth(node)
 					},
 					connHealthInstance: func(sqlInstance base.SQLInstanceID, _ string) error {
@@ -1806,7 +1806,7 @@ func TestPartitionSpansSkipsNodesNotInGossip(t *testing.T) {
 		gossip:               gw,
 		nodeHealth: distSQLNodeHealth{
 			gossip: gw,
-			connHealthSystem: func(node roachpb.NodeID, _ rpcbase.ConnectionClass) error {
+			connHealthSystem: func(node roachpb.NodeID, _ rpc.ConnectionClass) error {
 				_, _, err := mockGossip.GetNodeIDAddress(node)
 				return err
 			},
@@ -1883,10 +1883,10 @@ func TestCheckNodeHealth(t *testing.T) {
 		return true
 	}
 
-	connHealthy := func(roachpb.NodeID, rpcbase.ConnectionClass) error {
+	connHealthy := func(roachpb.NodeID, rpc.ConnectionClass) error {
 		return nil
 	}
-	connUnhealthy := func(roachpb.NodeID, rpcbase.ConnectionClass) error {
+	connUnhealthy := func(roachpb.NodeID, rpc.ConnectionClass) error {
 		return errors.New("injected conn health error")
 	}
 	_ = connUnhealthy
@@ -1914,7 +1914,7 @@ func TestCheckNodeHealth(t *testing.T) {
 	}
 
 	connHealthTests := []struct {
-		connHealth func(roachpb.NodeID, rpcbase.ConnectionClass) error
+		connHealth func(roachpb.NodeID, rpc.ConnectionClass) error
 		exp        string
 	}{
 		{connHealthy, ""},
@@ -1995,22 +1995,9 @@ func TestCheckScanParallelizationIfLocal(t *testing.T) {
 			prohibitParallelization: true,
 		},
 		{
-			plan: planComponents{main: planMaybePhysical{planNode: &groupNode{
-				singleInputPlanNode: singleInputPlanNode{scanToParallelize},
-				funcs: []*aggregateFuncHolder{
-					{filterRenderIdx: 0},
-					{filterRenderIdx: tree.NoColumnIdx},
-				}},
-			}},
-			// Filtering aggregation is not natively supported.
-			prohibitParallelization: true,
-		},
-		{
 			plan: planComponents{main: planMaybePhysical{planNode: &indexJoinNode{
 				singleInputPlanNode: singleInputPlanNode{scanToParallelize},
-				indexJoinPlanningInfo: indexJoinPlanningInfo{
-					fetch: fetchPlanningInfo{desc: makeTableDesc()},
-				},
+				table:               &scanNode{desc: makeTableDesc()},
 			}}},
 			hasScanNodeToParallelize: true,
 		},
@@ -2033,16 +2020,6 @@ func TestCheckScanParallelizationIfLocal(t *testing.T) {
 			plan: planComponents{main: planMaybePhysical{planNode: &renderNode{
 				singleInputPlanNode: singleInputPlanNode{scanToParallelize},
 				render:              []tree.TypedExpr{&tree.IsNullExpr{}},
-			}}},
-			// Not a simple projection (some expressions might be handled by
-			// wrapping a row-execution processor, so we choose to be safe and
-			// prohibit the parallelization for all non-IndexedVar expressions).
-			prohibitParallelization: true,
-		},
-		{
-			plan: planComponents{main: planMaybePhysical{planNode: &renderNode{
-				singleInputPlanNode: singleInputPlanNode{scanToParallelize},
-				render:              []tree.TypedExpr{&tree.IndexedVar{Idx: 0}, &tree.IsNullExpr{}},
 			}}},
 			// Not a simple projection (some expressions might be handled by
 			// wrapping a row-execution processor, so we choose to be safe and
@@ -2085,7 +2062,8 @@ func TestCheckScanParallelizationIfLocal(t *testing.T) {
 			prohibitParallelization: true,
 		},
 	} {
-		prohibitParallelization, hasScanNodeToParallize := checkScanParallelizationIfLocal(context.Background(), &tc.plan)
+		var c localScanParallelizationChecker
+		prohibitParallelization, hasScanNodeToParallize := checkScanParallelizationIfLocal(context.Background(), &tc.plan, &c)
 		require.Equal(t, tc.prohibitParallelization, prohibitParallelization)
 		require.Equal(t, tc.hasScanNodeToParallelize, hasScanNodeToParallize)
 	}

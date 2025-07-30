@@ -14,6 +14,7 @@ import {
 import { ConfigProvider } from "antd";
 import { ConnectedRouter } from "connected-react-router";
 import { History } from "history";
+import "nvd3/build/nv.d3.min.css";
 import React from "react";
 import { Provider, ReactReduxContext } from "react-redux";
 import { Redirect, Route, Switch } from "react-router-dom";
@@ -473,15 +474,10 @@ export const App: React.FC<AppProps> = (props: AppProps) => {
                         {/* hot ranges */}
                         <Route
                           exact
-                          path={`/topranges`}
-                          component={HotRangesPage}
-                        />
-                        {/* old route redirects */}
-                        <Route
-                          exact
                           path={`/hotranges`}
                           component={HotRangesPage}
                         />
+                        {/* old route redirects */}
                         <Redirect
                           exact
                           from="/cluster"

@@ -13,6 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
+	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/rangedesc"
 	"github.com/cockroachdb/cockroach/pkg/util/span"
@@ -97,15 +98,18 @@ func computeRangeStats(
 				EndKey: lazyIterator.CurRangeDescriptor().EndKey.AsRawKey(),
 			}
 			stats.RangeCount += 1
-			for _, timestamp := range frontier.SpanEntries(rangeSpan) {
-				if timestamp.IsEmpty() {
-					stats.ScanningRangeCount += 1
-					break
-				} else if now.Sub(timestamp.GoTime()) > laggingSpanThreshold {
-					stats.LaggingRangeCount += 1
-					break
-				}
-			}
+			frontier.SpanEntries(
+				rangeSpan,
+				func(_ roachpb.Span, timestamp hlc.Timestamp) span.OpResult {
+					if timestamp.IsEmpty() {
+						stats.ScanningRangeCount += 1
+						return span.StopMatch
+					} else if now.Sub(timestamp.GoTime()) > laggingSpanThreshold {
+						stats.LaggingRangeCount += 1
+						return span.StopMatch
+					}
+					return span.ContinueMatch
+				})
 		}
 		if lazyIterator.Error() != nil {
 			return streampb.StreamEvent_RangeStats{}, err

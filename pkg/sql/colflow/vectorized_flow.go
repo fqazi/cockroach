@@ -798,7 +798,7 @@ func (s *vectorizedFlowCreator) setupRouter(
 		sb.WriteString(s.StreamID.String())
 	}
 	streamIDs := redact.SafeString(sb.String())
-	mmName := mon.MakeName("hash-router-[" + streamIDs + "]")
+	mmName := "hash-router-[" + streamIDs + "]"
 
 	numOutputs := len(output.Streams)
 	// We need to create two memory accounts for each output (one for the
@@ -1274,7 +1274,7 @@ var _ flowinfra.InboundStreamHandler = vectorizedInboundStreamHandler{}
 // Run is part of the flowinfra.InboundStreamHandler interface.
 func (s vectorizedInboundStreamHandler) Run(
 	ctx context.Context,
-	stream execinfrapb.RPCDistSQL_FlowStreamStream,
+	stream execinfrapb.DistSQL_FlowStreamServer,
 	_ *execinfrapb.ProducerMessage,
 	_ *flowinfra.FlowBase,
 ) error {

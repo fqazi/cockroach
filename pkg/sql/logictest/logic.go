@@ -43,8 +43,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/txnwait"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
-	"github.com/cockroachdb/cockroach/pkg/security/provisioning"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -66,7 +64,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/floatcmp"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/physicalplanutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/release"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -75,10 +72,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/debugutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/log/eventlog"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
-	"github.com/cockroachdb/cockroach/pkg/util/system"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
@@ -255,6 +250,19 @@ import (
 //    Completes a pending statement with the provided name, validating its
 //    results as expected per the given options to "statement async <name>...".
 //
+//  - copy,copy-error
+//    Runs a COPY FROM STDIN statement, because of the separate data chunk it requires
+//    special logictest support. Format is:
+//      copy
+//      COPY <table> FROM STDIN;
+//      <blankline>
+//      COPY DATA
+//      ----
+//      <NUMROWS>
+//
+//    copy-error is just like copy but an error is expected and results should be error
+//    string.
+//
 //  - query <typestring> <options> <label>
 //    Runs the query that follows and verifies the results (specified after the
 //    query and a ---- separator). Example:
@@ -279,9 +287,6 @@ import (
 //        place of actual results.
 //
 //    Options are comma separated strings from the following:
-//      - match(<regexp>): returned rows with string representations that do not
-//            satisfy the given regexp are excluded from the test output. This
-//            is useful for condensing the output of EXPLAIN ANALYZE queries.
 //      - nosort: sorts neither the returned or expected rows. Skips the
 //            flakiness check that forces either rowsort, valuesort,
 //            partialsort, or an ORDER BY clause to be present.
@@ -313,17 +318,16 @@ import (
 //            asynchronously, subsequent queries that depend on the state of
 //            the query should be run with the "retry" option to ensure
 //            deterministic test results.
-//      - kvtrace: runs the query and compares against the results of the kv
-//            operations trace of the query. kvtrace optionally accepts arguments of the
-//            form kvtrace(op,op,...). Op is one of the accepted k/v arguments such as
-//            'CPut', 'Scan' etc. It also accepts arguments of the form 'prefix=...'. For
-//            example, if kvtrace(CPut,Del,prefix=/Table/54,prefix=/Table/55), the results
-//            will be filtered to contain messages starting with CPut /Table/54, CPut
-//            /Table/55, Del /Table/54, Del /Table/55. The 'redactbytes' will redact the
-//            contents of /BYTES/ values to prevent test flakiness in the presence of
-//            nondeterminism and/or processor architecture differences. Tenant IDs do not
-//            need to be included in prefixes and will be removed from results. Cannot be
-//            combined with noticetrace.
+//      - kvtrace: runs the query and compares against the results of the
+//            kv operations trace of the query. kvtrace optionally accepts
+//            arguments of the form kvtrace(op,op,...). Op is one of
+//            the accepted k/v arguments such as 'CPut', 'Scan' etc. It
+//            also accepts arguments of the form 'prefix=...'. For example,
+//            if kvtrace(CPut,Del,prefix=/Table/54,prefix=/Table/55), the
+//            results will be filtered to contain messages starting with
+//            CPut /Table/54, CPut /Table/55, Del /Table/54, Del /Table/55.
+//            Tenant IDs do not need to be included in prefixes and will be
+//            removed from results. Cannot be combined with noticetrace.
 //      - noticetrace: runs the query and compares only the notices that
 //						appear. Cannot be combined with kvtrace.
 //      - nodeidx=N: runs the query on node N of the cluster.
@@ -406,8 +410,6 @@ import (
 //    Skips the following `statement` or `query` if the argument is postgresql,
 //    cockroachdb, or a config matching the currently running
 //    configuration. Note that this is different from `skip`.
-//    - skipif bigendian/littleendian will skip the following `statement` or
-//      `query` if the system is big endian / little endian, respectively.
 //
 //  - onlyif <mysql/mssql/postgresql/cockroachdb/config [#ISSUE] CONFIG [CONFIG...]
 //    Skips the following `statement` or `query` if the argument is not
@@ -904,9 +906,6 @@ type logicQuery struct {
 	colNames bool
 	// some tests require the output to match modulo sorting.
 	sorter logicSorter
-	// match filters result rows such that only rows that have at least one
-	// column matching the regexp are included.
-	match *regexp.Regexp
 	// noSort is true if the nosort option was explicitly provided in the test.
 	noSort bool
 	// empty indicates whether the result is expected to be empty (i.e. 0 rows
@@ -944,10 +943,6 @@ type logicQuery struct {
 	// the particular operation types to filter on, such as CPut or Del.
 	kvOpTypes        []string
 	keyPrefixFilters []string
-	// kvtraceRedactBytes can only be used when kvtrace is true. When active, BYTES
-	// values in keys are expunged from output (to prevent test failures where the
-	// BYTES value is nondeterministic or architecture dependent).
-	kvtraceRedactBytes bool
 
 	// nodeIdx determines which node on the cluster to execute a query on for the given query.
 	nodeIdx int
@@ -971,6 +966,7 @@ type logicQuery struct {
 var allowedKVOpTypes = []string{
 	"CPut",
 	"Put",
+	"InitPut",
 	"Del",
 	"DelRange",
 	"ClearRange",
@@ -1253,7 +1249,7 @@ func (t *logicTest) getOrOpenClient(user string, nodeIdx int, newSession bool) *
 			addr = t.tenantAddrs[nodeIdx]
 		}
 		var cleanupFunc func()
-		pgURL, cleanupFunc = pgurlutils.PGUrl(t.rootT, addr, "TestLogic", url.User(pgUser))
+		pgURL, cleanupFunc = sqlutils.PGUrl(t.rootT, addr, "TestLogic", url.User(pgUser))
 		t.clusterCleanupFuncs = append(t.clusterCleanupFuncs, cleanupFunc)
 	}
 	pgURL.Path = "test"
@@ -1509,6 +1505,7 @@ func (t *logicTest) newCluster(
 	// when run with fakedist-disk config, so we'll use a larger limit here.
 	// There isn't really a downside to doing so.
 	tempStorageDiskLimit := int64(512 << 20) /* 512 MiB */
+	// MVCC range tombstones are only available in 22.2 or newer.
 	shouldUseMVCCRangeTombstonesForPointDeletes := useMVCCRangeTombstonesForPointDeletes && !serverArgs.DisableUseMVCCRangeTombstonesForPointDeletes
 	ignoreMVCCRangeTombstoneErrors := globalMVCCRangeTombstone || shouldUseMVCCRangeTombstonesForPointDeletes
 
@@ -1542,6 +1539,7 @@ func (t *logicTest) newCluster(
 					DisableConsistencyQueue:  true,
 					GlobalMVCCRangeTombstone: globalMVCCRangeTombstone,
 					EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
+						DisableInitPutFailOnTombstones:    ignoreMVCCRangeTombstoneErrors,
 						UseRangeTombstonesForPointDeletes: shouldUseMVCCRangeTombstonesForPointDeletes,
 					},
 				},
@@ -1733,7 +1731,13 @@ func (t *logicTest) newCluster(
 
 		capabilities := toa.capabilities
 		if len(capabilities) > 0 {
-			capabilityMap := make(map[tenantcapabilitiespb.ID]string, len(capabilities))
+			for name, value := range capabilities {
+				query := fmt.Sprintf("ALTER TENANT [$1] GRANT CAPABILITY %s = $2", name)
+				if _, err := conn.Exec(query, tenantID.ToUint64(), value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			capabilityMap := make(map[tenantcapabilities.ID]string, len(capabilities))
 			for k, v := range capabilities {
 				capability, ok := tenantcapabilities.FromName(k)
 				if !ok {
@@ -1741,7 +1745,7 @@ func (t *logicTest) newCluster(
 				}
 				capabilityMap[capability.ID()] = v
 			}
-			t.cluster.GrantTenantCapabilities(context.Background(), t.t(), tenantID, capabilityMap)
+			t.cluster.WaitForTenantCapabilities(t.t(), tenantID, capabilityMap)
 		}
 	}
 
@@ -1804,19 +1808,6 @@ func (t *logicTest) newCluster(
 			}
 		}
 
-		if cfg.DisableSchemaLockedByDefault {
-			if _, err := conn.Exec(
-				"SET CLUSTER SETTING sql.defaults.create_table_with_schema_locked = false",
-			); err != nil {
-				t.Fatal(err)
-			}
-		} else {
-			if _, err := conn.Exec(
-				"SET CLUSTER SETTING sql.defaults.create_table_with_schema_locked = true",
-			); err != nil {
-				t.Fatal(err)
-			}
-		}
 		// We disable the automatic stats collection in order to have
 		// deterministic tests.
 		//
@@ -1871,22 +1862,6 @@ func (t *logicTest) newCluster(
 			); err != nil {
 				t.Fatal(err)
 			}
-		}
-
-		// Enable vector indexes by default for tests.
-		// TODO(andyk): Remove this once vector indexes are enabled by default.
-		if _, err := conn.Exec(
-			"SET CLUSTER SETTING feature.vector_index.enabled = true",
-		); err != nil {
-			t.Fatal(err)
-		}
-
-		// Ensure that vector index background operations are deterministic, so
-		// that tests don't flake.
-		if _, err := conn.Exec(
-			"SET CLUSTER SETTING sql.vecindex.deterministic_fixups.enabled = true",
-		); err != nil {
-			t.Fatal(err)
 		}
 	}
 
@@ -2018,10 +1993,7 @@ func (t *logicTest) setup(
 		skip.UnderRace(t.t(), "test uses a different binary, so the race detector doesn't work")
 		skip.UnderStress(t.t(), "test takes a long time and downloads release artifacts")
 		if !bazel.BuiltWithBazel() {
-			skip.IgnoreLint(t.t(), "cockroach-go/testserver can only be used in bazel builds")
-		}
-		if runtime.GOARCH == "s390x" {
-			skip.IgnoreLint(t.t(), "cockroach-go/testserver is not operational on s390x")
+			skip.IgnoreLint(t.t(), "cockroach-go/testserver can only be uzed in bazel builds")
 		}
 		if cfg.NumNodes != 3 {
 			t.Fatal("cockroach-go testserver tests must use 3 nodes")
@@ -2108,11 +2080,11 @@ var _ knobOpt = knobOptSynchronousEventLog{}
 
 // apply implements the clusterOpt interface.
 func (c knobOptSynchronousEventLog) apply(args *base.TestingKnobs) {
-	_, ok := args.EventLog.(*eventlog.EventLogTestingKnobs)
+	_, ok := args.EventLog.(*sql.EventLogTestingKnobs)
 	if !ok {
-		args.EventLog = &eventlog.EventLogTestingKnobs{}
+		args.EventLog = &sql.EventLogTestingKnobs{}
 	}
-	args.EventLog.(*eventlog.EventLogTestingKnobs).SyncWrites = true
+	args.EventLog.(*sql.EventLogTestingKnobs).SyncWrites = true
 }
 
 // clusterOptIgnoreStrictGCForTenants corresponds to the
@@ -2128,21 +2100,6 @@ func (c clusterOptIgnoreStrictGCForTenants) apply(args *base.TestServerArgs) {
 		args.Knobs.Store = &kvserver.StoreTestingKnobs{}
 	}
 	args.Knobs.Store.(*kvserver.StoreTestingKnobs).IgnoreStrictGCEnforcement = true
-}
-
-// clusterOptDisableUseMVCCRangeTombstonesForPointDeletes corresponds
-// to the disable-mvcc-range-tombstones-for-point-deletes directive.
-type clusterOptDisableUseMVCCRangeTombstonesForPointDeletes struct{}
-
-var _ clusterOpt = clusterOptDisableUseMVCCRangeTombstonesForPointDeletes{}
-
-// apply implements the clusterOpt interface.
-func (c clusterOptDisableUseMVCCRangeTombstonesForPointDeletes) apply(args *base.TestServerArgs) {
-	_, ok := args.Knobs.Store.(*kvserver.StoreTestingKnobs)
-	if !ok {
-		args.Knobs.Store = &kvserver.StoreTestingKnobs{}
-	}
-	args.Knobs.Store.(*kvserver.StoreTestingKnobs).EvalKnobs.UseRangeTombstonesForPointDeletes = false
 }
 
 // knobOptDisableCorpusGeneration disables corpus generation for declarative
@@ -2289,8 +2246,6 @@ func readClusterOptions(t *testing.T, path string) []clusterOpt {
 			res = append(res, clusterOptTracingOff{})
 		case "ignore-tenant-strict-gc-enforcement":
 			res = append(res, clusterOptIgnoreStrictGCForTenants{})
-		case "disable-mvcc-range-tombstones-for-point-deletes":
-			res = append(res, clusterOptDisableUseMVCCRangeTombstonesForPointDeletes{})
 		default:
 			t.Fatalf("unrecognized cluster option: %s", opt)
 		}
@@ -2888,8 +2843,6 @@ func (t *logicTest) processSubtest(
 										matched = "/Tenant/%" + matched
 									}
 									query.keyPrefixFilters = append(query.keyPrefixFilters, matched)
-								} else if c == "redactbytes" {
-									query.kvtraceRedactBytes = true
 								} else if isAllowedKVOp(c) {
 									query.kvOpTypes = append(query.kvOpTypes, c)
 								} else {
@@ -2899,18 +2852,6 @@ func (t *logicTest) processSubtest(
 										allowedKVOpTypes,
 									)
 								}
-							}
-							continue
-						}
-
-						if strings.HasPrefix(opt, "match(") && strings.HasSuffix(opt, ")") {
-							s := opt
-							s = strings.TrimPrefix(s, "match(")
-							s = strings.TrimSuffix(s, ")")
-							var err error
-							query.match, err = regexp.Compile(s)
-							if err != nil {
-								return errors.Errorf("%s: invalid match regexp: %s", query.pos, opt)
 							}
 							continue
 						}
@@ -2939,7 +2880,6 @@ func (t *logicTest) processSubtest(
 							query.kvtrace = true
 							query.kvOpTypes = nil
 							query.keyPrefixFilters = nil
-							query.kvtraceRedactBytes = false
 
 						case "noticetrace":
 							query.noticetrace = true
@@ -3085,13 +3025,7 @@ func (t *logicTest) processSubtest(
 
 					projection := `message`
 					if len(t.tenantApps) != 0 || t.cluster.StartedDefaultTestTenant() {
-						projection = `regexp_replace(message, '/Tenant/\d+', '', 'g')`
-					}
-					if query.kvtraceRedactBytes {
-						projection = fmt.Sprintf(
-							`regexp_replace(%s, '/BYTES/0x[abcdef\d]+', '/BYTES/:redacted:', 'g')`,
-							projection,
-						)
+						projection = `regexp_replace(message, '/Tenant/\d+', '')`
 					}
 					queryPrefix := fmt.Sprintf(`SELECT %s FROM [SHOW KV TRACE FOR SESSION] `, projection)
 					buildQuery := func(ops []string, keyFilters []string) string {
@@ -3107,9 +3041,7 @@ func (t *logicTest) processSubtest(
 								} else {
 									sb.WriteString("OR ")
 								}
-								// % wildcard between command and prefix is for
-								// optional '(locking)' substring.
-								sb.WriteString(fmt.Sprintf("message LIKE '%s %%%s%%' ", c, f))
+								sb.WriteString(fmt.Sprintf("message like '%s %s%%' ", c, f))
 							}
 						}
 						return sb.String()
@@ -3224,7 +3156,6 @@ func (t *logicTest) processSubtest(
 					return errors.Errorf("unknown user option: %s", fields[3])
 				}
 				newSession = true
-				provisioning.Testing.Supported = true
 			}
 			t.setSessionUser(fields[1], nodeIdx, newSession)
 			// In multi-tenant tests, we may need to also create database test when
@@ -3341,16 +3272,6 @@ func (t *logicTest) processSubtest(
 					"should be skip command instead of skipif: %s:%d",
 					path, s.Line+subtest.lineLineIndexIntoFile,
 				)
-			case "bigendian":
-				if system.BigEndian {
-					s.SetSkip("big endian system")
-					continue
-				}
-			case "littleendian":
-				if !system.BigEndian {
-					s.SetSkip("little endian system")
-					continue
-				}
 			default:
 				return errors.Errorf("unimplemented test statement: %s", s.Text())
 			}
@@ -3798,22 +3719,6 @@ func (t *logicTest) finishExecQuery(query logicQuery, rows *gosql.Rows, err erro
 				if err := rows.Scan(vals...); err != nil {
 					return err
 				}
-
-				if query.match != nil {
-					// Exclude rows that don't match the regexp.
-					match := false
-					for _, v := range vals {
-						val := *v.(*interface{})
-						if val != nil && query.match.MatchString(fmt.Sprint(val)) {
-							match = true
-							break
-						}
-					}
-					if !match {
-						continue
-					}
-				}
-
 				rowCount++
 				for i, v := range vals {
 					colT := query.colTypes[i]

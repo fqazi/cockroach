@@ -136,8 +136,8 @@ any mixed-cluster or upgrade tests with the forked release.
 
 **When**: Around the time we are cutting the first beta of the forked release.
 Technically this step can happen right after forking, but if there are changes
-to the gates or upgrades in the forked release it might cause issues with
-master-to-master upgrades.
+to the gates or upgrades in the forked release it might cause master-to-master
+upgrades to cause opaque issues.
 
 **Checklist**:
 
@@ -148,11 +148,12 @@ master-to-master upgrades.
 
 - [ ] Add final version for the previous release (e.g. `V24_1`).
 
-- [ ] Add start version (e.g. `V24_2_Start` with version `24.1-2`) and add a new
+- [ ] Add start version (e.g. `V24_2Start` with version `24.1-2`) and add a new
   first upgrade for it (in `upgrades/upgrades.go`).
 
-- [ ] Update `SystemDatabaseSchemaBootstrapVersion` in
-  `pkg/sql/catalog/systemschema/system.go` to the start version just created.
+- [ ] Do not update `PreviousRelease` constant. We can only update the
+  `PreviousRelease` when an RC is published, which is needed for upgrade
+  roachtests.
 
 - [ ] Update `roachpb.successorSeries` map and update `TestReleaseSeriesSuccessor`
 
@@ -178,7 +179,7 @@ master-to-master upgrades.
 - [ ] Regenerate expected test data as needed (usually
   `pkg/sql/catalog/systemschema_test` and some logictests).
 
-**Sample PR:** [#139387](https://github.com/cockroachdb/cockroach/pull/139387)
+**Sample PR:** [#134750](https://github.com/cockroachdb/cockroach/pull/134750)
 
 ### M.2: Enable mixed-cluster logic tests
 
@@ -217,7 +218,7 @@ bootstrap data in a meaningful way.
 
 ### M.3: Enable upgrade tests
 
-**What**: This change recognizes the forked release as an available release and
+**What**: This change recognizes the forked release as an available release and 
 enables upgrade tests from that version.
 
 **When**: After the first RC of the forked release is published. It can NOT
@@ -235,12 +236,11 @@ generate the necessary fixtures.
 - [ ] Verify the logic in `supportsSkipUpgradeTo`
   (`pkg/cmd/roachtest/roachtestutil/mixedversion/mixedversion.go`) is correct
   for the new release.
-
+ 
 - [ ] Add `cockroach-go-testserver-...` logictest config for the forked version
   (e.g. `cockroach-go-testserver-24.1`) and add it to
-  `cockroach-go-testserver-configs`. Update the visibility for
-  `cockroach_predecessor_version` in `pkg/sql/logictest/BUILD.bazel`. Run
-  `./dev gen` and fix up any tests that fail (using a draft PR helps).
+  `cockroach-go-testserver-configs`. Run `./dev gen` and fix up any tests that
+  need changing.
 
 - [ ] Update releases file:
   ```
@@ -253,7 +253,7 @@ generate the necessary fixtures.
 - [ ] Check that all gates for the previous release are identical on the
   `master` and release branch.
 
-**Sample PR:** [#141765](https://github.com/cockroachdb/cockroach/pull/141765)
+**Sample PR:** TODO
 
 ### M.4: Bump min supported
 
@@ -297,13 +297,12 @@ in two PRs.
 - [ ] Remove logictest configs that involve now-unsupported versions (and run
   `./dev gen testlogic bazel`).
 
-- [ ] Remove `pkg/sql/catalog/bootstrap/data` files for now-unsupported versions.
+- [ ] Remove `pkg/sql/catalog/bootstrap` data for now-unsupported versions.
 
-- [ ] Update `pkg/storage.MinimumSupportedFormatVersion` and `storage.pebbleFormatVersionMap`
+- [ ] Update `pkg/storage.MinimumSupportedFormatVersion` and `storage.pebbleVersionMap`
 
 - [ ] Update `pkg/sql/schemachanger/scplan.rulesForReleases` and remove the
   defunct package(s) inside `rules`.
-  - rewrite `TestDeclarativeRules` output: `./dev test pkg/cli -f DeclarativeRules --rewrite`
 
 - [ ] File issue(s) to remove `TODO_Delete_` uses and simplify related code; assign
   to relevant teams (depending on which top-level packages use such gates).
@@ -313,15 +312,15 @@ in two PRs.
   Historically, these cleanup issues have not received much attention and the code
   was carried over for a long time. Feel free to ping individuals or do some of
   the cleanup directly (in separate PRs).
-
+  
   The cleanup comes down to simplifying the code based on the knowledge that
   `IsActive()` will always return `true` for obsolete gates. If simplifying the
   code becomes non-trivial, error on the side of just removing `IsActive()` calls
   and leaving TODOs for further cleanup.
-
+  
   Example PRs: #124013, #124286
   </details>
-
+  
 - [ ] Regenerate expected test data results as needed; file issues for any
   skipped tests. Note that upgrade tests in `pkg/upgrade/upgrades` use
   `clusterversion.SkipWhenMinSupportedVersionIsAtLeast()` so they can be removed

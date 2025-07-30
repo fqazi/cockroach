@@ -17,7 +17,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/cli/clierror"
@@ -31,9 +30,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
+	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/errors"
 	"github.com/kr/pretty"
 )
@@ -189,7 +188,7 @@ func newCLITestWithArgs(params TestCLIParams, argsFn func(args *base.TestServerA
 		// the lease acquisition codepath. This may then cause CLI commands
 		// (such as status or ls) which require a NodeLiveness record to fail. Explicitly
 		// heartbeat the NodeLiveness record to prevent tests from flaking.
-		err = retry.ForDuration(200*time.Second, c.Server.HeartbeatNodeLiveness)
+		err = testutils.SucceedsSoonError(c.Server.HeartbeatNodeLiveness)
 		if err != nil {
 			log.Fatalf(context.Background(), "Couldn't heartbeat node liveness: %s", err)
 		}

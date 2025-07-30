@@ -281,7 +281,7 @@ func (p *planner) getAndValidateTypedClusterSetting(
 				requiredType = types.Float
 			case settings.AnyEnumSetting:
 				// EnumSettings can be set with either strings or integers.
-				requiredType = types.AnyElement
+				requiredType = types.Any
 			case *settings.DurationSetting:
 				requiredType = types.Interval
 			case *settings.DurationSettingWithExplicitUnit:
@@ -820,9 +820,6 @@ func toSettingString(
 		if i, intOK := d.(*tree.DInt); intOK {
 			v, ok := setting.ParseEnum(settings.EncodeInt(int64(*i)))
 			if ok {
-				if err := setting.Validate(v); err != nil {
-					return "", err
-				}
 				return settings.EncodeInt(v), nil
 			}
 			return "", errors.WithHint(errors.Errorf("invalid integer value '%d' for enum setting", *i), setting.GetAvailableValuesAsHint())
@@ -830,9 +827,6 @@ func toSettingString(
 			str := string(*s)
 			v, ok := setting.ParseEnum(str)
 			if ok {
-				if err := setting.Validate(v); err != nil {
-					return "", err
-				}
 				return settings.EncodeInt(v), nil
 			}
 			return "", errors.WithHint(errors.Errorf("invalid string value '%s' for enum setting", str), setting.GetAvailableValuesAsHint())

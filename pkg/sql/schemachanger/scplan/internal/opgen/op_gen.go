@@ -42,15 +42,9 @@ type Transition interface {
 }
 
 // HasTransient returns true if the element of this type has
-// TransientAbsent transitions
+// Transient transitions
 func HasTransient(elType scpb.Element) bool {
-	return hasTarget(elType, scpb.TransientAbsent)
-}
-
-// HasTransientPublic returns true if the element of this type
-// has TransientPublic transitions.
-func HasTransientPublic(elType scpb.Element) bool {
-	return hasTarget(elType, scpb.TransientPublic)
+	return hasTarget(elType, scpb.Transient)
 }
 
 // HasPublic returns true if the element of this type has

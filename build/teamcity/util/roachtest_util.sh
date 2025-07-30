@@ -11,9 +11,6 @@ if [[ "$GOOGLE_EPHEMERAL_CREDENTIALS" ]]; then
   echo "$GOOGLE_EPHEMERAL_CREDENTIALS" > creds.json
   gcloud auth activate-service-account --key-file=creds.json
   export ROACHPROD_USER=teamcity
-
-  # Set GOOGLE_APPLICATION_CREDENTIALS so that gcp go libraries can find it.
-  export GOOGLE_APPLICATION_CREDENTIALS="$(pwd)/creds.json"
 else
   echo 'warning: GOOGLE_EPHEMERAL_CREDENTIALS not set' >&2
   echo "Assuming that you've run \`gcloud auth login\` from inside the builder." >&2
@@ -32,18 +29,17 @@ stats_file_name="stats.json"
 EXPORT_OPENMETRICS="${EXPORT_OPENMETRICS:-false}"
 
 if [[ "${EXPORT_OPENMETRICS}" == "true" ]]; then
-  # Use * to upload aggregated and other stats file
-  stats_file_name="*stats.om"
+  stats_file_name="stats.om"
 fi
-
-COMMIT_SHA=$(git rev-parse --short HEAD)
 
 # Set up a function we'll invoke at the end.
 function upload_stats {
   if tc_release_branch; then
     bucket="${ROACHTEST_BUCKET:-cockroach-nightly-${CLOUD}}"
     if [[ "${EXPORT_OPENMETRICS}" == "true" ]]; then
-        bucket="${ROACHTEST_BUCKET:-crl-artifacts-roachperf-openmetrics/${CLOUD}}"
+
+        # TODO(sambhav-jain-16): Change the bucket after new buckets are created
+        bucket="${ROACHTEST_BUCKET:-cockroach-testeng-metrics/omloader/incoming/${CLOUD}}"
     fi
 
     if [[ "${CLOUD}" == "gce" && "${EXPORT_OPENMETRICS}" == "false" ]]; then
@@ -64,6 +60,12 @@ function upload_stats {
       remote_artifacts_dir="${remote_artifacts_dir}-fips"
     fi
 
+    # If using openmetrics, activate new service account for uploading to openmetrics bucket
+    if [[ "${EXPORT_OPENMETRICS}" == "true" && "$ROACHPERF_OPENMETRICS_CREDENTIALS" ]]; then
+      echo "$ROACHPERF_OPENMETRICS_CREDENTIALS" > roachperf.json
+      gcloud auth activate-service-account --key-file=roachperf.json
+    fi
+
     # The ${stats_file_name} files need some path translation:
     #     ${artifacts}/path/to/test/${stats_file_name}
     # to
@@ -81,12 +83,10 @@ function upload_stats {
             artifacts_dir="${artifacts_dir}-arm64"
           elif [[ "${f}" == *"/cpu_arch=fips/"* ]]; then
             artifacts_dir="${artifacts_dir}-fips"
-          elif [[ "${f}" == *"/cpu_arch=s390x/"* ]]; then
-            artifacts_dir="${artifacts_dir}-s390x"
           fi
           gsutil cp "${f}" "gs://${bucket}/${artifacts_dir}/${stats_dir}/${f}"
         fi
-      done <<< "$(find . -name "${stats_file_name}" | sed 's/^\.\///')")
+      done <<< "$(find . -name ${stats_file_name} | sed 's/^\.\///')")
   fi
 }
 

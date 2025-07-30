@@ -181,12 +181,12 @@ func (e *scheduledBackupExecutor) NotifyJobTermination(
 	ctx context.Context,
 	txn isql.Txn,
 	jobID jobspb.JobID,
-	jobState jobs.State,
+	jobStatus jobs.Status,
 	details jobspb.Details,
 	env scheduledjobs.JobSchedulerEnv,
 	schedule *jobs.ScheduledJob,
 ) error {
-	if jobState == jobs.StateSucceeded {
+	if jobStatus == jobs.StatusSucceeded {
 		e.metrics.NumSucceeded.Inc(1)
 		log.Infof(ctx, "backup job %d scheduled by %d succeeded", jobID, schedule.ScheduleID())
 		return e.backupSucceeded(ctx, jobs.ScheduledJobTxn(txn), schedule, details, env)
@@ -194,8 +194,8 @@ func (e *scheduledBackupExecutor) NotifyJobTermination(
 
 	e.metrics.NumFailed.Inc(1)
 	err := errors.Errorf(
-		"backup job %d scheduled by %d failed with state %s",
-		jobID, schedule.ScheduleID(), jobState)
+		"backup job %d scheduled by %d failed with status %s",
+		jobID, schedule.ScheduleID(), jobStatus)
 	log.Errorf(ctx, "backup error: %v	", err)
 	jobs.DefaultHandleFailedRun(schedule, "backup job %d failed with err=%v", jobID, err)
 	return nil
@@ -574,7 +574,6 @@ func init() {
 		tree.ScheduledBackupExecutor.InternalName(),
 		func() (jobs.ScheduledJobExecutor, error) {
 			m := jobs.MakeExecutorMetrics(tree.ScheduledBackupExecutor.UserName())
-
 			pm := jobs.MakeExecutorPTSMetrics(tree.ScheduledBackupExecutor.UserName())
 			return &scheduledBackupExecutor{
 				metrics: backupMetrics{
@@ -585,21 +584,6 @@ func init() {
 						Help:        "The unix timestamp of the most recently completed backup by a schedule specified as maintaining this metric",
 						Measurement: "Jobs",
 						Unit:        metric.Unit_TIMESTAMP_SEC,
-						Essential:   true,
-						Category:    metric.Metadata_SQL,
-						HowToUse: `Monitor this metric to ensure that backups are
-						meeting the recovery point objective (RPO). Each node
-						exports the time that it last completed a backup on behalf
-						of the schedule. If a node is restarted, it will report 0
-						until it completes a backup. If all nodes are restarted,
-						max() is 0 until a node completes a backup.
-
-						To make use of this metric, first, from each node, take the maximum
-						over a rolling window equal to or greater than the backup frequency,
-						and then take the maximum of those values across nodes. For example
-						with a backup frequency of 60 minutes, monitor time() -
-						max_across_nodes(max_over_time(schedules_BACKUP_last_completed_time,
-						60min)).`,
 					}),
 					RpoTenantMetric: metric.NewExportedGaugeVec(metric.Metadata{
 						Name:        "schedules.BACKUP.last-completed-time-by-virtual_cluster",

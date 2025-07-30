@@ -70,7 +70,7 @@ func CreateSQLStatsCompactionScheduleIfNotYetExist(
 		jobspb.ExecutionArguments{Args: args},
 	)
 
-	compactionSchedule.SetScheduleStatus(string(jobs.StatePending))
+	compactionSchedule.SetScheduleStatus(string(jobs.StatusPending))
 	if err := jobs.ScheduledJobTxn(txn).Create(ctx, compactionSchedule); err != nil {
 		return nil, err
 	}

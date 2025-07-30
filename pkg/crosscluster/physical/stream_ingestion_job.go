@@ -92,33 +92,30 @@ func connectToActiveClient(
 	return client, errors.Wrapf(err, "ingestion job %d failed to connect to stream address or existing topology for planning", ingestionJob.ID())
 }
 
-func updateStatus(
+func updateRunningStatus(
 	ctx context.Context,
 	ingestionJob *jobs.Job,
-	replicationStatus jobspb.ReplicationStatus,
-	status redact.RedactableString,
+	status jobspb.ReplicationStatus,
+	runningStatus redact.RedactableString,
 ) {
 	err := ingestionJob.NoTxn().Update(ctx, func(txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
-		updateStatusInternal(md, ju, replicationStatus, string(status.Redact()))
+		updateRunningStatusInternal(md, ju, status, string(runningStatus.Redact()))
 		return nil
 	})
 	if err != nil {
 		log.Warningf(ctx, "error when updating job running status: %s", err)
-	} else if replicationStatus == jobspb.ReplicationError {
-		log.Warningf(ctx, "%s", status)
+	} else if status == jobspb.ReplicationError {
+		log.Warningf(ctx, "%s", runningStatus)
 	} else {
-		log.Infof(ctx, "%s", status)
+		log.Infof(ctx, "%s", runningStatus)
 	}
 }
 
-func updateStatusInternal(
-	md jobs.JobMetadata,
-	ju *jobs.JobUpdater,
-	replicationStatus jobspb.ReplicationStatus,
-	status string,
+func updateRunningStatusInternal(
+	md jobs.JobMetadata, ju *jobs.JobUpdater, status jobspb.ReplicationStatus, runningStatus string,
 ) {
-	md.Progress.GetStreamIngest().ReplicationStatus = replicationStatus
-	md.Progress.StatusMessage = status
+	md.Progress.GetStreamIngest().ReplicationStatus = status
+	md.Progress.RunningStatus = runningStatus
 	ju.UpdateProgress(md.Progress)
 }
 
@@ -136,7 +133,7 @@ func completeIngestion(
 
 	msg := redact.Sprintf("completing the producer job %d in the source cluster",
 		details.StreamID)
-	updateStatus(ctx, ingestionJob, jobspb.ReplicationFailingOver, msg)
+	updateRunningStatus(ctx, ingestionJob, jobspb.ReplicationFailingOver, msg)
 	completeProducerJob(ctx, ingestionJob, execCtx.ExecCfg().InternalDB, true)
 	evalContext := &execCtx.ExtendedEvalContext().Context
 	if err := startPostCutoverRetentionJob(ctx, execCtx.ExecCfg(), details, evalContext, cutoverTimestamp); err != nil {
@@ -292,7 +289,7 @@ func ingestWithRetries(
 	if err != nil {
 		return err
 	}
-	updateStatus(ctx, ingestionJob, jobspb.ReplicationFailingOver,
+	updateRunningStatus(ctx, ingestionJob, jobspb.ReplicationFailingOver,
 		"stream ingestion finished successfully")
 	return nil
 }
@@ -302,7 +299,7 @@ func (s *streamIngestionResumer) handleResumeError(
 	ctx context.Context, execCtx sql.JobExecContext, err error,
 ) error {
 	msg := redact.Sprintf("ingestion job failed (%s) but is being paused", err)
-	updateStatus(ctx, s.job, jobspb.ReplicationError, msg)
+	updateRunningStatus(ctx, s.job, jobspb.ReplicationError, msg)
 	// The ingestion job is paused but the producer job will keep
 	// running until it times out. Users can still resume ingestion before
 	// the producer job times out.
@@ -485,7 +482,7 @@ func maybeRevertToCutoverTimestamp(
 			shouldRevertToCutover = cutoverTimeIsEligibleForCutover(ctx, cutoverTimestamp, md.Progress)
 
 			if shouldRevertToCutover {
-				updateStatusInternal(md, ju, jobspb.ReplicationFailingOver,
+				updateRunningStatusInternal(md, ju, jobspb.ReplicationFailingOver,
 					fmt.Sprintf("starting to cut over to the given timestamp %s", cutoverTimestamp))
 			} else {
 				if streamIngestionProgress.ReplicationStatus == jobspb.ReplicationFailingOver {
@@ -792,7 +789,7 @@ func (c *cutoverProgressTracker) updateJobProgress(
 	}
 
 	if err := c.job.NoTxn().FractionProgressed(ctx, persistProgress); err != nil {
-		return jobs.SimplifyInvalidStateError(err)
+		return jobs.SimplifyInvalidStatusError(err)
 	}
 	if c.onJobProgressUpdate != nil {
 		c.onJobProgressUpdate(remainingSpans)

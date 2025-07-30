@@ -58,7 +58,8 @@ func (n *checkExternalConnectionNode) startExec(params runParams) error {
 	defer store.Close()
 
 	dsp := params.p.DistSQLPlanner()
-	planCtx, sqlInstanceIDs, err := dsp.SetupAllNodesPlanning(ctx, params.extendedEvalCtx, params.ExecCfg())
+	evalCtx := params.extendedEvalCtx
+	planCtx, sqlInstanceIDs, err := dsp.SetupAllNodesPlanning(ctx, evalCtx, params.ExecCfg())
 	if err != nil {
 		return err
 	}
@@ -74,7 +75,6 @@ func (n *checkExternalConnectionNode) startExec(params runParams) error {
 		execinfrapb.PostProcessSpec{},
 		cloudCheckFlowTypes,
 		execinfrapb.Ordering{},
-		nil, /* finalizeLastStageCb */
 	)
 	plan.PlanToStreamColMap = make([]int, len(cloudCheckFlowTypes))
 	for i := range plan.PlanToStreamColMap {
@@ -109,14 +109,13 @@ func (n *checkExternalConnectionNode) startExec(params runParams) error {
 			nil, /* rangeCache */
 			nil, /* txn - the flow does not read or write the database */
 			nil, /* clockUpdater */
-			params.extendedEvalCtx.Tracing,
+			evalCtx.Tracing,
 		)
 		defer recv.Release()
 		defer close(n.rows)
 
-		// Copy the eval.Context, as dsp.Run() might change it.
-		evalCtxCopy := params.extendedEvalCtx.Context.Copy()
-		dsp.Run(ctx, planCtx, nil, plan, recv, evalCtxCopy, nil /* finishedSetupFn */)
+		evalCtxCopy := *evalCtx
+		dsp.Run(ctx, planCtx, nil, plan, recv, &evalCtxCopy, nil /* finishedSetupFn */)
 	}()
 	return nil
 }
@@ -150,7 +149,6 @@ func (n *checkExternalConnectionNode) Close(_ context.Context) {
 }
 
 func (n *checkExternalConnectionNode) parseParams(params runParams) error {
-	params.p.SemaCtx().Properties.Require("check_external_connection", tree.RejectSubqueries)
 	exprEval := params.p.ExprEvaluator("CHECK EXTERNAL CONNECTION")
 	loc, err := exprEval.String(params.ctx, n.node.URI)
 	if err != nil {

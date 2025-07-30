@@ -88,6 +88,7 @@ var cutoverSignalPollInterval = settings.RegisterDurationSetting(
 	"bulkio.stream_ingestion.failover_signal_poll_interval",
 	"the interval at which the stream ingestion job checks if it has been signaled to cutover",
 	10*time.Second,
+	settings.NonNegativeDuration,
 	settings.WithName("physical_replication.consumer.failover_signal_poll_interval"),
 )
 
@@ -282,7 +283,7 @@ type streamIngestionProcessor struct {
 
 	// Aggregator that aggregates StructuredEvents emitted in the
 	// backupDataProcessors' trace recording.
-	agg      *tracing.TracingAggregator
+	agg      *bulkutil.TracingAggregator
 	aggTimer timeutil.Timer
 }
 
@@ -388,7 +389,7 @@ func (sip *streamIngestionProcessor) Start(ctx context.Context) {
 	ctx = logtags.AddTag(ctx, "job", sip.spec.JobID)
 	ctx = logtags.AddTag(ctx, "proc", sip.ProcessorID)
 	log.Infof(ctx, "starting ingest proc")
-	sip.agg = tracing.TracingAggregatorForContext(ctx)
+	sip.agg = bulkutil.TracingAggregatorForContext(ctx)
 
 	// If the aggregator is nil, we do not want the timer to fire.
 	if sip.agg != nil {
@@ -523,6 +524,7 @@ func (sip *streamIngestionProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.Pr
 			return row, nil
 		}
 	case <-sip.aggTimer.C:
+		sip.aggTimer.Read = true
 		sip.aggTimer.Reset(15 * time.Second)
 		return nil, bulkutil.ConstructTracingAggregatorProducerMeta(sip.Ctx(),
 			sip.FlowCtx.NodeID.SQLInstanceID(), sip.FlowCtx.ID, sip.agg)
@@ -699,6 +701,7 @@ func (sip *streamIngestionProcessor) consumeEvents(ctx context.Context) error {
 			// This timer is used to periodically flush a
 			// buffer that may have been previously
 			// skipped.
+			sip.maxFlushRateTimer.Read = true
 			if err := sip.flush(); err != nil {
 				return err
 			}
@@ -1023,7 +1026,7 @@ func (r *rangeKeyBatcher) flush(ctx context.Context, toFlush mvccRangeKeyValues)
 
 		log.Infof(ctx, "sending SSTable [%s, %s) of size %d (as write: %v)", start, end, len(data), ingestAsWrites)
 		_, _, err := r.db.AddSSTable(ctx, start, end, data,
-			false, /* disallowConflicts */
+			false /* disallowConflicts */, false, /* disallowShadowing */
 			hlc.Timestamp{}, nil /* stats */, ingestAsWrites,
 			r.db.Clock().Now())
 		if err != nil {
@@ -1114,8 +1117,8 @@ func splitRangeKeySSTAtKey(
 		// reachedSplit tracks if we've already reached our split key.
 		reachedSplit = false
 
-		// We start writing into the left side. Eventually we'll swap in the RHS
-		// writer.
+		// We start writting into the left side. Eventualy
+		// we'll swap in the RHS writer.
 		leftWriter  = storage.MakeIngestionSSTWriter(ctx, st, left)
 		rightWriter = storage.MakeIngestionSSTWriter(ctx, st, right)
 		writer      = &leftWriter
@@ -1128,7 +1131,7 @@ func splitRangeKeySSTAtKey(
 			return err
 		}
 		if first == nil || last == nil {
-			return errors.AssertionFailedf("likely programming error: invalid SST bounds on RHS [%v, %v)", first, last)
+			return errors.AssertionFailedf("likely prorgramming error: invalid SST bounds on RHS [%v, %v)", first, last)
 		}
 
 		leftRet = &rangeKeySST{start: first, end: last, data: left.Data()}
@@ -1246,11 +1249,12 @@ func (sip *streamIngestionProcessor) flush() error {
 	sip.buffer = getBuffer()
 
 	checkpoint := &jobspb.ResolvedSpans{ResolvedSpans: make([]jobspb.ResolvedSpan, 0, sip.frontier.Len())}
-	for sp, ts := range sip.frontier.Entries() {
+	sip.frontier.Entries(func(sp roachpb.Span, ts hlc.Timestamp) span.OpResult {
 		if !ts.IsEmpty() {
 			checkpoint.ResolvedSpans = append(checkpoint.ResolvedSpans, jobspb.ResolvedSpan{Span: sp, Timestamp: ts})
 		}
-	}
+		return span.ContinueMatch
+	})
 
 	select {
 	case sip.flushCh <- flushableBuffer{
@@ -1273,15 +1277,11 @@ type flushableBuffer struct {
 
 // flushBuffer flushes the given streamIngestionBuffer via the SST
 // batchers and returns the underlying streamIngestionBuffer to the pool.
-func (sip *streamIngestionProcessor) flushBuffer(
-	b flushableBuffer,
-) (_ *jobspb.ResolvedSpans, err error) {
+func (sip *streamIngestionProcessor) flushBuffer(b flushableBuffer) (*jobspb.ResolvedSpans, error) {
 	ctx, sp := tracing.ChildSpan(sip.Ctx(), "stream-ingestion-flush")
 	defer sp.Finish()
-	defer func() {
-		// Ensure the batcher is always reset, even on early error returns.
-		err = errors.CombineErrors(err, sip.batcher.Reset(ctx))
-	}()
+	// Ensure the batcher is always reset, even on early error returns.
+	defer sip.batcher.Reset(ctx)
 
 	// First process the point KVs.
 	//

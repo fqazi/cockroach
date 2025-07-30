@@ -59,11 +59,6 @@ func TestFormat(t *testing.T) {
 			// REFCURSOR doesn't support comparison operators.
 			return true
 		}
-
-		// Skip jsonpath because we don't support <jsonpath> = <string> comparisons.
-		if typ.Family() == types.JsonpathFamily {
-			return true
-		}
 		return !randgen.IsLegalColumnType(typ)
 	}
 	for _, typ := range types.OidToType {
@@ -142,9 +137,6 @@ func TestFormat(t *testing.T) {
 					case types.Float4:
 						// Arrays of float4s are tricky, see issue for details.
 						skip.WithIssue(t, 84326)
-					case types.CIText:
-						// Explicit casts should be used for CIText array literals.
-						skip.IgnoreLint(t)
 					}
 				}
 				stmts := tdb.Query(t, r(`SELECT rowid, format('%L', c) FROM tablename WHERE c IS NOT NULL`))

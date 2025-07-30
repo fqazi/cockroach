@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/fetchpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execopnode"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execstats"
@@ -81,7 +80,7 @@ type invertedJoiner struct {
 	// fetched columns (same length with prefixEqualityCols).
 	prefixFetchedColOrdinals []int
 
-	onExprHelper execexpr.Helper
+	onExprHelper execinfrapb.ExprHelper
 	combinedRow  rowenc.EncDatumRow
 
 	joinType descpb.JoinType
@@ -272,7 +271,7 @@ func newInvertedJoiner(
 	ij.combinedRow = make(rowenc.EncDatumRow, 0, combinedRowLen)
 
 	if ij.datumsToInvertedExpr == nil {
-		var invertedExprHelper execexpr.Helper
+		var invertedExprHelper execinfrapb.ExprHelper
 		if err := invertedExprHelper.Init(ctx, spec.InvertedExpr, onExprColTypes, semaCtx, evalCtx); err != nil {
 			return nil, err
 		}
@@ -309,9 +308,6 @@ func newInvertedJoiner(
 	}
 
 	if execstats.ShouldCollectStats(ctx, flowCtx.CollectStats) {
-		if flowTxn := flowCtx.EvalCtx.Txn; flowTxn != nil {
-			ij.contentionEventsListener.Init(flowTxn.ID())
-		}
 		ij.input = newInputStatCollector(ij.input)
 		ij.fetcher = newRowFetcherStatCollector(&fetcher)
 		ij.ExecStatsForTrace = ij.execStatsForTrace
@@ -322,12 +318,9 @@ func newInvertedJoiner(
 	ij.spanBuilder.InitWithFetchSpec(flowCtx.EvalCtx, flowCtx.Codec(), &ij.fetchSpec)
 
 	// Initialize memory monitors and row container for index rows.
-	ij.MemMonitor = execinfra.NewLimitedMonitor(ctx, flowCtx.Mon, flowCtx,
-		mon.MakeName("invertedjoiner").Limited())
-	ij.unlimitedMemMonitor = execinfra.NewMonitor(ctx, flowCtx.Mon,
-		mon.MakeName("invertedjoiner").Unlimited())
-	ij.diskMonitor = execinfra.NewMonitor(ctx, flowCtx.DiskMonitor,
-		mon.MakeName("invertedjoiner").Disk())
+	ij.MemMonitor = execinfra.NewLimitedMonitor(ctx, flowCtx.Mon, flowCtx, "invertedjoiner-limited")
+	ij.unlimitedMemMonitor = execinfra.NewMonitor(ctx, flowCtx.Mon, "invertedjoiner-unlimited")
+	ij.diskMonitor = execinfra.NewMonitor(ctx, flowCtx.DiskMonitor, "invertedjoiner-disk")
 	ij.indexRows = rowcontainer.NewDiskBackedNumberedRowContainer(
 		true, /* deDup */
 		rightColTypes,
@@ -786,8 +779,6 @@ func (ij *invertedJoiner) execStatsForTrace() *execinfrapb.ComponentStats {
 			TuplesRead:          fis.NumTuples,
 			KVTime:              fis.WaitTime,
 			ContentionTime:      optional.MakeTimeValue(ij.contentionEventsListener.GetContentionTime()),
-			LockWaitTime:        optional.MakeTimeValue(ij.contentionEventsListener.GetLockWaitTime()),
-			LatchWaitTime:       optional.MakeTimeValue(ij.contentionEventsListener.GetLatchWaitTime()),
 			BatchRequestsIssued: optional.MakeUint(uint64(ij.fetcher.GetBatchRequestsIssued())),
 			KVCPUTime:           optional.MakeTimeValue(fis.kvCPUTime),
 		},

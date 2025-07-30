@@ -636,8 +636,6 @@ const (
 	TTLExpirationExpr               SchemaExprContext = "TTL EXPIRATION EXPRESSION"
 	TTLDefaultExpr                  SchemaExprContext = "TTL DEFAULT"
 	TTLUpdateExpr                   SchemaExprContext = "TTL UPDATE"
-	PolicyUsingExpr                 SchemaExprContext = "POLICY USING"
-	PolicyWithCheckExpr             SchemaExprContext = "POLICY WITH CHECK"
 )
 
 func ComputedColumnExprContext(isVirtual bool) SchemaExprContext {

@@ -100,7 +100,7 @@ func VersionSupportsElementUse(el scpb.Element, version clusterversion.ClusterVe
 		*scpb.TableLocalitySecondaryRegion, *scpb.TableLocalityRegionalByRow,
 		*scpb.ColumnName, *scpb.ColumnType, *scpb.ColumnDefaultExpression,
 		*scpb.ColumnOnUpdateExpression, *scpb.SequenceOwner, *scpb.ColumnComment,
-		*scpb.IndexName, *scpb.IndexPartitioning,
+		*scpb.IndexName, *scpb.IndexPartitioning, *scpb.SecondaryIndexPartial,
 		*scpb.IndexComment, *scpb.ConstraintWithoutIndexName, *scpb.ConstraintComment,
 		*scpb.Namespace, *scpb.Owner, *scpb.UserPrivileges,
 		*scpb.DatabaseRegionConfig, *scpb.DatabaseRoleSetting, *scpb.DatabaseComment,
@@ -132,10 +132,6 @@ func VersionSupportsElementUse(el scpb.Element, version clusterversion.ClusterVe
 		return true
 	case *scpb.NamedRangeZoneConfig, *scpb.Policy, *scpb.PolicyName:
 		return version.IsActive(clusterversion.V25_1)
-	case *scpb.PolicyRole, *scpb.PolicyUsingExpr, *scpb.PolicyWithCheckExpr, *scpb.PolicyDeps, *scpb.RowLevelSecurityEnabled, *scpb.RowLevelSecurityForced:
-		return version.IsActive(clusterversion.V25_2)
-	case *scpb.TableLocalityRegionalByRowUsingConstraint:
-		return version.IsActive(clusterversion.V25_3)
 	default:
 		panic(errors.AssertionFailedf("unknown element %T", el))
 	}

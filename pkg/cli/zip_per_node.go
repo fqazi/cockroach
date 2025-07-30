@@ -132,7 +132,7 @@ func (zc *debugZipContext) collectPerNodeData(
 // makePerNodeZipRequests defines the zipRequests (API requests) that are to be
 // performed once per node.
 func makePerNodeZipRequests(
-	zr *zipReporter, prefix, id string, status serverpb.RPCStatusClient,
+	zr *zipReporter, prefix, id string, status serverpb.StatusClient,
 ) []zipRequest {
 	var zipRequests []zipRequest
 
@@ -271,9 +271,6 @@ func (zc *debugZipContext) collectFileList(
 	case serverpb.FileType_CPU:
 		fileKind = "cpu profile"
 		prefix = prefix + "/cpuprof"
-	case serverpb.FileType_EXECUTIONTRACE:
-		fileKind = "execution trace"
-		prefix = prefix + "/executiontraces"
 	default:
 		return errors.AssertionFailedf("unknown file type: %v", fileType)
 	}
@@ -414,7 +411,6 @@ func (zc *debugZipContext) getLogFiles(
 		// transfers somehow.
 
 		nodePrinter.info("%d log files found", len(logs.Files))
-		var warnings []string
 		for _, file := range logs.Files {
 			ctime := extractTimeFromFileName(file.Name)
 			mtime := timeutil.Unix(0, file.ModTimeNanos)
@@ -489,12 +485,10 @@ func (zc *debugZipContext) getLogFiles(
 			if warnRedactLeak {
 				// Defer the warning, so that it does not get "drowned" as
 				// part of the main zip output.
-				warnings = append(warnings,
-					fmt.Sprintf("server-side redaction failed for %s, completed client-side (--redact=true)", file.Name))
+				defer func(fileName string) {
+					fmt.Fprintf(stderr, "WARNING: server-side redaction failed for %s, completed client-side (--redact=true)\n", fileName)
+				}(file.Name)
 			}
-		}
-		for _, w := range warnings {
-			fmt.Fprintf(stderr, "WARNING: %s\n", w)
 		}
 	}
 	return nil
@@ -517,12 +511,6 @@ func (zc *debugZipContext) getProfiles(
 	if err := zc.collectFileList(ctx, nodePrinter, id, prefix, serverpb.FileType_CPU); err != nil {
 		return err
 	}
-
-	// Collect all relevant execution traces.
-	if err := zc.collectFileList(ctx, nodePrinter, id, prefix, serverpb.FileType_EXECUTIONTRACE); err != nil {
-		return err
-	}
-
 	return nil
 }
 

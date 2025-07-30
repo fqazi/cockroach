@@ -21,7 +21,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/testutils/release"
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
-	"github.com/cockroachdb/version"
+	"github.com/cockroachdb/cockroach/pkg/util/version"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
 )
@@ -82,13 +82,13 @@ func updateReleasesFiles(_ *cobra.Command, _ []string) (retErr error) {
 		return fmt.Errorf("failed to validate downloaded data: %w", err)
 	}
 	currentVersion := version.MustParse(build.BinaryVersion())
-	addCurrentRelease(result, &currentVersion)
+	addCurrentRelease(result, currentVersion)
 
 	fmt.Printf("writing results to %s\n", releaseDataFile)
 	if err := saveResultsInYaml(result); err != nil {
 		return err
 	}
-	currentSeries := currentVersion.Format("%X.%Y")
+	currentSeries := fmt.Sprintf("%d.%d", currentVersion.Major(), currentVersion.Minor())
 	predecessor := result[result[currentSeries].Predecessor].Latest
 	if predecessor == "" {
 		return fmt.Errorf("could not determine predecessor version for version %+v", currentVersion)
@@ -129,7 +129,7 @@ func processReleaseData(data []Release) map[string]release.Series {
 		// For the purposes of the cockroach_releases file, we are only interested
 		// in rc pre-releases, as we do not support upgrades from alpha or beta
 		// releases.
-		if v.IsPrerelease() && !strings.HasPrefix(v.Format("%P"), "rc") {
+		if pre := v.PreRelease(); pre != "" && !strings.HasPrefix(pre, "rc") {
 			continue
 		}
 		// Skip cloud-only releases, because the binaries are not yet publicly available.
@@ -184,15 +184,15 @@ func processReleaseData(data []Release) map[string]release.Series {
 // new entry will have no `Latest` information as, in that case, the
 // current release series is still in development.
 func addCurrentRelease(data map[string]release.Series, currentVersion *version.Version) {
-	name := currentVersion.Format("%X.%Y")
+	name := fmt.Sprintf("%d.%d", currentVersion.Major(), currentVersion.Minor())
 	if _, ok := data[name]; ok {
 		return
 	}
 
-	var latestVersion version.Version
+	var latestVersion *version.Version
 	for _, d := range data {
 		v := version.MustParse("v" + d.Latest)
-		if latestVersion.Empty() {
+		if latestVersion == nil {
 			latestVersion = v
 		}
 
@@ -204,7 +204,7 @@ func addCurrentRelease(data map[string]release.Series, currentVersion *version.V
 	// Assume that the predecessor of the current version is the latest
 	// released series.
 	data[name] = release.Series{
-		Predecessor: latestVersion.Format("%X.%Y"),
+		Predecessor: fmt.Sprintf("%d.%d", latestVersion.Major(), latestVersion.Minor()),
 	}
 }
 

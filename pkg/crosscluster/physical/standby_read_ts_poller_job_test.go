@@ -12,13 +12,12 @@ import (
 	"testing"
 	"time"
 
-	apd "github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/replicationtestutils"
+	"github.com/cockroachdb/cockroach/pkg/crosscluster/replicationutils"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -53,7 +52,7 @@ func TestStandbyReadTSPollerJob(t *testing.T) {
 	srcTime := c.SrcCluster.Server(0).Clock().Now()
 	c.WaitUntilReplicatedTime(srcTime, jobspb.JobID(ingestionJobID))
 
-	stats := replicationtestutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, ingestionJobID)
+	stats := replicationutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, ingestionJobID)
 	readerTenantID := stats.IngestionDetails.ReadTenantID
 	require.NotNil(t, readerTenantID)
 
@@ -67,17 +66,14 @@ INSERT INTO a VALUES (1);
 
 	c.SrcTenantSQL.Exec(t, defaultDBQuery)
 	waitForPollerJobToStartDest(t, c, ingestionJobID)
-	pollerResolvedTime := waitForPollerTimeToAdvance(t, c.ReaderTenantSQL, apd.New(0, 0))
-
 	observeValueInReaderTenant(t, c.ReaderTenantSQL)
-	waitForPollerTimeToAdvance(t, c.ReaderTenantSQL, pollerResolvedTime)
 
 	// Failback and setup stanby reader tenant on the og source.
 	{
 		c.Cutover(ctx, producerJobID, ingestionJobID, srcTime.GoTime(), false)
 		defer c.StartDestTenant(ctx, nil, 0)()
 
-		destPgURL, cleanupSinkCert := pgurlutils.PGUrl(t, c.DestSysServer.AdvSQLAddr(), t.Name(), url.User(username.RootUser))
+		destPgURL, cleanupSinkCert := sqlutils.PGUrl(t, c.DestSysServer.AdvSQLAddr(), t.Name(), url.User(username.RootUser))
 		defer cleanupSinkCert()
 
 		c.SrcSysSQL.Exec(t, fmt.Sprintf("ALTER VIRTUAL CLUSTER '%s' STOP SERVICE", c.Args.SrcTenantName))
@@ -90,8 +86,7 @@ INSERT INTO a VALUES (1);
 		_, failbackJobID := replicationtestutils.GetStreamJobIds(t, ctx, c.SrcSysSQL, c.Args.SrcTenantName)
 		now := c.SrcCluster.Servers[0].Clock().Now()
 		replicationtestutils.WaitUntilReplicatedTime(c.T, now, c.SrcSysSQL, jobspb.JobID(failbackJobID))
-
-		stats := replicationtestutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.SrcSysSQL, failbackJobID)
+		stats := replicationutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.SrcSysSQL, failbackJobID)
 		srcReaderTenantID := stats.IngestionDetails.ReadTenantID
 		require.NotNil(t, srcReaderTenantID)
 
@@ -168,22 +163,6 @@ WHERE job_type = 'STANDBY READ TS POLLER'
 	jobutils.WaitForJobToRun(t, readerSQL, jobID)
 }
 
-func waitForPollerTimeToAdvance(
-	t *testing.T, readerSQL *sqlutils.SQLRunner, prevTime *apd.Decimal,
-) *apd.Decimal {
-	var resolvedTime apd.Decimal
-	testutils.SucceedsSoon(t, func() error {
-		readerSQL.QueryRow(t, `SELECT COALESCE(high_water_timestamp, '0')
-		FROM crdb_internal.jobs 
-		WHERE job_type = 'STANDBY READ TS POLLER'`).Scan(&resolvedTime)
-		if resolvedTime.Cmp(prevTime) <= 0 {
-			return errors.Errorf("resolved time has not advanced past %d", prevTime)
-		}
-		return nil
-	})
-	return &resolvedTime
-}
-
 func TestReaderTenantCutover(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -203,7 +182,7 @@ func TestReaderTenantCutover(t *testing.T) {
 		srcTime := c.SrcCluster.Server(0).Clock().Now()
 		c.WaitUntilReplicatedTime(srcTime, jobspb.JobID(ingestionJobID))
 
-		stats := replicationtestutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, ingestionJobID)
+		stats := replicationutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, ingestionJobID)
 		readerTenantID := stats.IngestionDetails.ReadTenantID
 		require.NotNil(t, readerTenantID)
 

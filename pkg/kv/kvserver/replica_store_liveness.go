@@ -34,8 +34,9 @@ var RaftLeaderFortificationFractionEnabled = settings.RegisterFloatSetting(
 		"expiration-based leases. Set to a value between 0.0 and 1.0 to gradually "+
 		"roll out Leader leases across the ranges in a cluster.",
 	metamorphic.ConstantWithTestChoice("kv.raft.leader_fortification.fraction_enabled",
-		1.0, /* defaultValue */
-		0.0 /* otherValues */), settings.FloatInRange(0.0, 1.0),
+		0.0, /* defaultValue */
+		1.0 /* otherValues */),
+	settings.FloatInRange(0.0, 1.0),
 	settings.WithPublic,
 )
 
@@ -62,9 +63,7 @@ func (r *replicaRLockedStoreLiveness) SupportFor(replicaID raftpb.PeerID) (raftp
 	storeID, ok := r.getStoreIdent(replicaID)
 	if !ok {
 		ctx := r.AnnotateCtx(context.TODO())
-		if log.ExpensiveLogEnabled(ctx, 1) {
-			log.VEventf(ctx, 1, "store not found for replica %d in SupportFor", replicaID)
-		}
+		log.Warningf(ctx, "store not found for replica %d in SupportFor", replicaID)
 		return 0, false
 	}
 	epoch, ok := r.store.storeLiveness.SupportFor(storeID)
@@ -78,9 +77,7 @@ func (r *replicaRLockedStoreLiveness) SupportFrom(
 	storeID, ok := r.getStoreIdent(replicaID)
 	if !ok {
 		ctx := r.AnnotateCtx(context.TODO())
-		if log.ExpensiveLogEnabled(ctx, 1) {
-			log.VEventf(ctx, 1, "store not found for replica %d in SupportFrom", replicaID)
-		}
+		log.Warningf(ctx, "store not found for replica %d in SupportFrom", replicaID)
 		return 0, hlc.Timestamp{}
 	}
 	epoch, exp := r.store.storeLiveness.SupportFrom(storeID)
@@ -89,17 +86,10 @@ func (r *replicaRLockedStoreLiveness) SupportFrom(
 
 // SupportFromEnabled implements the raftstoreliveness.StoreLiveness interface.
 func (r *replicaRLockedStoreLiveness) SupportFromEnabled() bool {
-	return (*Replica)(r).SupportFromEnabled((*Replica)(r).descRLocked())
-}
-
-// SupportFromEnabled is similar to
-// (*replicaRLockedStoreLiveness).SupportFromEnabled() but doesn't require
-// locking the replica mutex.
-func (r *Replica) SupportFromEnabled(desc *roachpb.RangeDescriptor) bool {
 	if !r.store.storeLiveness.SupportFromEnabled(context.TODO()) {
 		return false
 	}
-	if r.shouldUseExpirationLease(desc) {
+	if (*Replica)(r).shouldUseExpirationLeaseRLocked() {
 		// If this range wants to use an expiration based lease, either because it's
 		// one of the system ranges (NodeLiveness, Meta) or because the cluster
 		// setting to always use expiration based leases is turned on, then do not
@@ -109,7 +99,6 @@ func (r *Replica) SupportFromEnabled(desc *roachpb.RangeDescriptor) bool {
 		// ranges.
 		return false
 	}
-
 	fracEnabled := RaftLeaderFortificationFractionEnabled.Get(&r.store.ClusterSettings().SV)
 	fortifyEnabled := raftFortificationEnabledForRangeID(fracEnabled, r.RangeID)
 	return fortifyEnabled

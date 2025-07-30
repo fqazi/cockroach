@@ -26,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowinspectpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/rac2"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server"
@@ -65,91 +66,96 @@ func TestFlowControlBasicV2(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(t *testing.T, mode kvflowcontrol.ModeT) {
-		testutils.RunTrueAndFalse(t, "always-enqueue", func(t *testing.T, alwaysEnqueue bool) {
-			ctx := context.Background()
-			settings := cluster.MakeTestingClusterSettings()
-			tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
-				ReplicationMode: base.ReplicationManual,
-				ServerArgs: base.TestServerArgs{
-					Settings: settings,
-					Knobs: base.TestingKnobs{
-						Store: &kvserver.StoreTestingKnobs{
-							RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-								return true
-							},
-							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
-								UseOnlyForScratchRanges: true,
-								OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
-									// This test asserts on the exact values of tracked tokens. In
-									// non-test code, the tokens deducted are a few bytes off (give
-									// or take) from the size of the proposals. We don't care about
-									// such differences.
-									return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+	testutils.RunValues(t, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(t *testing.T, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(t *testing.T, mode kvflowcontrol.ModeT) {
+			testutils.RunTrueAndFalse(t, "always-enqueue", func(t *testing.T, alwaysEnqueue bool) {
+				ctx := context.Background()
+				settings := cluster.MakeTestingClusterSettings()
+				tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
+					ReplicationMode: base.ReplicationManual,
+					ServerArgs: base.TestServerArgs{
+						Settings: settings,
+						Knobs: base.TestingKnobs{
+							Store: &kvserver.StoreTestingKnobs{
+								FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+									UseOnlyForScratchRanges: true,
+									OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+										return v2EnabledWhenLeaderLevel
+									},
+									OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
+										// This test asserts on the exact values of tracked tokens. In
+										// non-test code, the tokens deducted are a few bytes off (give
+										// or take) from the size of the proposals. We don't care about
+										// such differences.
+										return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+									},
 								},
 							},
-						},
-						AdmissionControl: &admission.TestingKnobs{
-							DisableWorkQueueFastPath: alwaysEnqueue,
+							AdmissionControl: &admission.TestingKnobs{
+								DisableWorkQueueFastPath: alwaysEnqueue,
+							},
 						},
 					},
-				},
-			})
-			defer tc.Stopper().Stop(ctx)
+				})
+				defer tc.Stopper().Stop(ctx)
 
-			// Setup the test state with 3 voters, one on each of the three
-			// node/stores.
-			k := tc.ScratchRange(t)
-			tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
-			h := newFlowControlTestHelper(t, tc)
-			h.init(mode)
-			defer h.close(makeV2EnabledTestFileName(mode, "basic"))
+				// Setup the test state with 3 voters, one on each of the three
+				// node/stores.
+				k := tc.ScratchRange(t)
+				tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
+				h := newFlowControlTestHelperV2(t, tc, v2EnabledWhenLeaderLevel)
+				h.init(mode)
+				defer h.close(makeV2EnabledTestFileName(v2EnabledWhenLeaderLevel, mode, "basic"))
 
-			desc, err := tc.LookupRange(k)
-			require.NoError(t, err)
-			h.enableVerboseRaftMsgLoggingForRange(desc.RangeID)
-			n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+				desc, err := tc.LookupRange(k)
+				require.NoError(t, err)
+				h.enableVerboseRaftMsgLoggingForRange(desc.RangeID)
+				n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
 
-			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
-			// Reset the token metrics, since a send queue may have instantly
-			// formed when adding one of the replicas, before being quickly
-			// drained.
-			h.resetV2TokenMetrics(ctx)
+				h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
+				// Reset the token metrics, since a send queue may have instantly
+				// formed when adding one of the replicas, before being quickly
+				// drained.
+				h.resetV2TokenMetrics(ctx)
 
-			h.comment(`-- Flow token metrics, before issuing the 1MiB replicated write.`)
-			h.query(n1, v2FlowTokensQueryStr)
+				h.comment(`-- Flow token metrics, before issuing the 1MiB replicated write.`)
+				h.query(n1, v2FlowTokensQueryStr)
 
-			h.comment(`-- (Issuing + admitting a 1MiB, triply replicated write...)`)
-			h.log("sending put request")
-			h.put(ctx, k, 1, testFlowModeToPri(mode))
-			h.log("sent put request")
+				h.comment(`-- (Issuing + admitting a 1MiB, triply replicated write...)`)
+				h.log("sending put request")
+				h.put(ctx, k, 1, testFlowModeToPri(mode))
+				h.log("sent put request")
 
-			h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
-			h.comment(`
+				h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
+				h.comment(`
 -- Stream counts as seen by n1 post-write. We should see three {regular,elastic}
 -- streams given there are three nodes and we're using a replication factor of
 -- three.
 `)
-			h.query(n1, `
+				h.query(n1, `
   SELECT name, value
     FROM crdb_internal.node_metrics
    WHERE name LIKE '%kvflowcontrol%stream%'
 ORDER BY name ASC;
 `)
 
-			h.comment(`-- Another view of the stream count, using /inspectz-backed vtables.`)
-			h.query(n1, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
+				h.comment(`-- Another view of the stream count, using /inspectz-backed vtables.`)
+				h.query(n1, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
 
-			h.comment(`
+				h.comment(`
 -- Flow token metrics from n1 after issuing the 1MiB replicated write,
 -- and it being admitted on n1, n2 and n3. We should see 3*1MiB = 3MiB of
 -- {regular,elastic} tokens deducted and returned, and {8*3=24MiB,16*3=48MiB} of
 -- {regular,elastic} tokens available. Everything should be accounted for.
 `)
-			h.query(n1, v2FlowTokensQueryStr)
+				h.query(n1, v2FlowTokensQueryStr)
+			})
 		})
 	})
 }
@@ -161,117 +167,118 @@ func TestFlowControlRangeSplitMergeV2(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	defer setRACv2DebugVModule(t)()
 
-	testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(t *testing.T, mode kvflowcontrol.ModeT) {
-		ctx := context.Background()
-		settings := cluster.MakeTestingClusterSettings()
-		tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings: settings,
-				Knobs: base.TestingKnobs{
-					Store: &kvserver.StoreTestingKnobs{
-						RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-							return true
-						},
-						FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
-							UseOnlyForScratchRanges: true,
-							OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
-								// This test asserts on the exact values of tracked tokens. In
-								// non-test code, the tokens deducted are a few bytes off (give
-								// or take) from the size of the proposals. We don't care about
-								// such differences.
-								return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+	testutils.RunValues(t, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(t *testing.T, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(t *testing.T, mode kvflowcontrol.ModeT) {
+			ctx := context.Background()
+			settings := cluster.MakeTestingClusterSettings()
+			tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
+				ReplicationMode: base.ReplicationManual,
+				ServerArgs: base.TestServerArgs{
+					Settings: settings,
+					Knobs: base.TestingKnobs{
+						Store: &kvserver.StoreTestingKnobs{
+							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+								UseOnlyForScratchRanges: true,
+								OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+									return v2EnabledWhenLeaderLevel
+								},
+								OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
+									// This test asserts on the exact values of tracked tokens. In
+									// non-test code, the tokens deducted are a few bytes off (give
+									// or take) from the size of the proposals. We don't care about
+									// such differences.
+									return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+								},
 							},
 						},
 					},
 				},
-			},
-		})
-		defer tc.Stopper().Stop(ctx)
+			})
+			defer tc.Stopper().Stop(ctx)
 
-		k := tc.ScratchRange(t)
-		tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
+			k := tc.ScratchRange(t)
+			tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
 
-		n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+			n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
 
-		h := newFlowControlTestHelper(t, tc)
-		h.init(mode)
-		defer h.close(makeV2EnabledTestFileName(mode, "split_merge"))
+			h := newFlowControlTestHelperV2(t, tc, v2EnabledWhenLeaderLevel)
+			h.init(mode)
+			defer h.close(makeV2EnabledTestFileName(v2EnabledWhenLeaderLevel, mode, "split_merge"))
 
-		desc, err := tc.LookupRange(k)
-		require.NoError(t, err)
-		h.enableVerboseRaftMsgLoggingForRange(desc.RangeID)
-		// NB: There will be no other splits and rangeIDs are allocated
-		// sequentially.
-		h.enableVerboseRaftMsgLoggingForRange(desc.RangeID + 1)
+			desc, err := tc.LookupRange(k)
+			require.NoError(t, err)
 
-		h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
-		// Reset the token metrics, since a send queue may have instantly
-		// formed when adding one of the replicas, before being quickly
-		// drained.
-		h.resetV2TokenMetrics(ctx)
-		h.comment("(Sending 1 MiB put request to pre-split range.)")
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
-		h.comment("(Sent 1 MiB put request to pre-split range.)")
+			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
+			// Reset the token metrics, since a send queue may have instantly
+			// formed when adding one of the replicas, before being quickly
+			// drained.
+			h.resetV2TokenMetrics(ctx)
+			h.comment("(Sending 1 MiB put request to pre-split range.)")
+			h.put(ctx, k, 1, testFlowModeToPri(mode))
+			h.comment("(Sent 1 MiB put request to pre-split range.)")
 
-		h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
-		h.comment(`
+			h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
+			h.comment(`
 -- Flow token metrics from n1 after issuing + admitting the 1MiB 3x
 -- replicated write to the pre-split range. There should be 3MiB of
 -- {regular,elastic} tokens {deducted,returned}.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`-- (Splitting range.)`)
-		left, right := tc.SplitRangeOrFatal(t, k.Next())
-		h.waitForConnectedStreams(ctx, right.RangeID, 3, 0 /* serverIdx */)
+			h.comment(`-- (Splitting range.)`)
+			left, right := tc.SplitRangeOrFatal(t, k.Next())
+			h.waitForConnectedStreams(ctx, right.RangeID, 3, 0 /* serverIdx */)
 
-		h.comment("(Sending 2 x 1 MiB put request to post-split LHS range.)")
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
-		h.comment("(Sent 2 x 1 MiB put request to post-split LHS range.)")
+			h.comment("(Sending 2 x 1 MiB put request to post-split LHS range.)")
+			h.put(ctx, k, 1, testFlowModeToPri(mode))
+			h.put(ctx, k, 1, testFlowModeToPri(mode))
+			h.comment("(Sent 2 x 1 MiB put request to post-split LHS range.)")
 
-		h.comment("(Sending 3 x 1 MiB put request to post-split RHS range.)")
-		h.put(ctx, roachpb.Key(right.StartKey), 1, testFlowModeToPri(mode))
-		h.put(ctx, roachpb.Key(right.StartKey), 1, testFlowModeToPri(mode))
-		h.put(ctx, roachpb.Key(right.StartKey), 1, testFlowModeToPri(mode))
-		h.comment("(Sent 3 x 1 MiB put request to post-split RHS range.)")
+			h.comment("(Sending 3 x 1 MiB put request to post-split RHS range.)")
+			h.put(ctx, roachpb.Key(right.StartKey), 1, testFlowModeToPri(mode))
+			h.put(ctx, roachpb.Key(right.StartKey), 1, testFlowModeToPri(mode))
+			h.put(ctx, roachpb.Key(right.StartKey), 1, testFlowModeToPri(mode))
+			h.comment("(Sent 3 x 1 MiB put request to post-split RHS range.)")
 
-		h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
-		h.comment(`
+			h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
+			h.comment(`
 -- Flow token metrics from n1 after further issuing 2MiB and 3MiB writes to
 -- post-split LHS and RHS ranges respectively. We should see 15MiB extra tokens
 -- {deducted,returned}, which comes from (2MiB+3MiB)*3=15MiB. So we stand at
 -- 3MiB+15MiB=18MiB now.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`-- Observe the newly split off replica, with its own three streams.`)
-		h.query(n1, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
+			h.comment(`-- Observe the newly split off replica, with its own three streams.`)
+			h.query(n1, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
 
-		h.comment(`-- (Merging ranges.)`)
-		merged := tc.MergeRangesOrFatal(t, left.StartKey.AsRawKey())
+			h.comment(`-- (Merging ranges.)`)
+			merged := tc.MergeRangesOrFatal(t, left.StartKey.AsRawKey())
 
-		h.comment("(Sending 4 x 1 MiB put request to post-merge range.)")
-		h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
-		h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
-		h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
-		h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
-		h.comment("(Sent 4 x 1 MiB put request to post-merge range.)")
+			h.comment("(Sending 4 x 1 MiB put request to post-merge range.)")
+			h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
+			h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
+			h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
+			h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
+			h.comment("(Sent 4 x 1 MiB put request to post-merge range.)")
 
-		h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
-		h.comment(`
+			h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
+			h.comment(`
 -- Flow token metrics from n1 after issuing 4MiB of replicated writes to
 -- the post-merged range. We should see 12MiB extra tokens {deducted,returned},
 -- which comes from 4MiB*3=12MiB. So we stand at 18MiB+12MiB=30MiB now.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`-- Observe only the merged replica with its own three streams.`)
-		h.query(n1, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
+			h.comment(`-- Observe only the merged replica with its own three streams.`)
+			h.query(n1, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
+		})
 	})
 }
 
@@ -281,779 +288,29 @@ func TestFlowControlBlockedAdmissionV2(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(t *testing.T, mode kvflowcontrol.ModeT) {
-		ctx := context.Background()
-		var disableWorkQueueGranting atomic.Bool
-		disableWorkQueueGranting.Store(true)
-		settings := cluster.MakeTestingClusterSettings()
-		tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings: settings,
-				Knobs: base.TestingKnobs{
-					Store: &kvserver.StoreTestingKnobs{
-						RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-							return true
-						},
-						FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
-							UseOnlyForScratchRanges: true,
-							OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
-								// This test asserts on the exact values of tracked tokens. In
-								// non-test code, the tokens deducted are a few bytes off (give
-								// or take) from the size of the proposals. We don't care about
-								// such differences.
-								return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
-							},
-						},
-					},
-					AdmissionControl: &admission.TestingKnobs{
-						DisableWorkQueueFastPath: true,
-						DisableWorkQueueGranting: func() bool {
-							return disableWorkQueueGranting.Load()
-						},
-					},
-				},
-			},
-		})
-		defer tc.Stopper().Stop(ctx)
-
-		k := tc.ScratchRange(t)
-		tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
-
-		n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
-
-		h := newFlowControlTestHelper(t, tc)
-		h.init(mode)
-		defer h.close(makeV2EnabledTestFileName(mode, "blocked_admission"))
-
-		desc, err := tc.LookupRange(k)
-		require.NoError(t, err)
-		h.enableVerboseRaftMsgLoggingForRange(desc.RangeID)
-		h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
-		// Reset the token metrics, since a send queue may have instantly
-		// formed when adding one of the replicas, before being quickly
-		// drained.
-		h.resetV2TokenMetrics(ctx)
-
-		h.comment(`-- (Issuing 5 1MiB, 3x replicated write that's not admitted.)`)
-		h.log("sending put requests")
-		for i := 0; i < 5; i++ {
-			h.put(ctx, k, 1, testFlowModeToPri(mode))
-		}
-		h.log("sent put requests")
-
-		h.comment(`
--- Flow token metrics from n1 after issuing 5 1MiB 3x replicated writes
--- that are yet to get admitted. We see 5*1MiB*3=15MiB deductions of
--- {regular,elastic} tokens with no corresponding returns.
-`)
-		h.query(n1, v2FlowTokensQueryStr)
-
-		h.comment(`-- Observe the total tracked tokens per-stream on n1.`)
-		h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
-
-		h.comment(`-- Observe the individual tracked tokens per-stream on the scratch range.`)
-		h.query(n1, v2FlowPerStoreDeductionQueryStr, flowPerStoreDeductionQueryHeaderStrs...)
-
-		h.comment(`-- (Allow below-raft admission to proceed.)`)
-		disableWorkQueueGranting.Store(false)
-		h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */) // wait for admission
-
-		h.comment(`
--- Flow token metrics from n1 after work gets admitted. We see 15MiB returns of
--- {regular,elastic} tokens, and the available capacities going back to what
--- they were.
-`)
-		h.query(n1, v2FlowTokensQueryStr)
-	})
-}
-
-// TestFlowControlAdmissionPostSplitMergeV2 walks through what happens with flow
-// tokens when a range after undergoes splits/merges. It does this by blocking
-// and later unblocking below-raft admission, verifying:
-// - tokens for the RHS are released at the post-merge subsuming leaseholder,
-// - admission for the RHS post-merge does not cause a double return of tokens,
-// - admission for the LHS can happen post-merge,
-// - admission for the LHS and RHS can happen post-split.
-func TestFlowControlAdmissionPostSplitMergeV2(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.UnderDuressWithIssue(t, 150840)
-	defer setRACv2DebugVModule(t)()
-
-	testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(t *testing.T, mode kvflowcontrol.ModeT) {
-		ctx := context.Background()
-		var disableWorkQueueGranting atomic.Bool
-		disableWorkQueueGranting.Store(true)
-		settings := cluster.MakeTestingClusterSettings()
-		// This test doesn't want leadership changing hands, and leader leases (by
-		// virtue of raft fortification) help ensure this. Override to disable any
-		// metamorphosis.
-		kvserver.OverrideDefaultLeaseType(ctx, &settings.SV, roachpb.LeaseLeader)
-		// Using a manual clock here ensures that StoreLiveness support, once
-		// established, never expires. By extension, leadership should stay
-		// sticky.
-		manualClock := hlc.NewHybridManualClock()
-		tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Knobs: base.TestingKnobs{
-					Server: &server.TestingKnobs{
-						WallClock: manualClock,
-					},
-					Store: &kvserver.StoreTestingKnobs{
-						RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-							return true
-						},
-						FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
-							UseOnlyForScratchRanges: true,
-							OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
-								// This test asserts on the exact values of tracked tokens. In
-								// non-test code, the tokens deducted are a few bytes off (give
-								// or take) from the size of the proposals. We don't care about
-								// such differences.
-								return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
-							},
-						},
-					},
-					AdmissionControl: &admission.TestingKnobs{
-						DisableWorkQueueFastPath: true,
-						DisableWorkQueueGranting: func() bool {
-							return disableWorkQueueGranting.Load()
-						},
-					},
-				},
-			},
-		})
-		defer tc.Stopper().Stop(ctx)
-
-		k := tc.ScratchRange(t)
-		tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
-
-		n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
-
-		h := newFlowControlTestHelper(t, tc)
-		h.init(mode)
-		defer h.close(makeV2EnabledTestFileName(mode, "admission_post_split_merge"))
-
-		desc, err := tc.LookupRange(k)
-		require.NoError(t, err)
-		h.enableVerboseRaftMsgLoggingForRange(desc.RangeID)
-		// NB: There will be no other splits and rangeIDs are allocated
-		// sequentially.
-		h.enableVerboseRaftMsgLoggingForRange(desc.RangeID + 1)
-
-		h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
-		// Reset the token metrics, since a send queue may have instantly
-		// formed when adding one of the replicas, before being quickly
-		// drained.
-		h.resetV2TokenMetrics(ctx)
-
-		h.comment(`(Sending 2 x 1 MiB put request to pre-split range)`)
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
-		h.put(ctx, k.Next(), 1, testFlowModeToPri(mode))
-		h.comment(`(Sent 2 x 1 MiB put request to pre-split range)`)
-
-		h.comment(`
--- Flow token metrics from n1 after issuing a 2*1MiB 3x replicated write
--- that are yet to get admitted. We see 2*3*1MiB=6MiB deductions of
--- {regular,elastic} tokens with no corresponding returns. The 2*1MiB writes
--- happened on what is soon going to be the LHS and RHS of a range being split.
-`)
-		h.query(n1, v2FlowTokensQueryStr)
-
-		h.comment(`-- (Splitting range.)`)
-		left, right := tc.SplitRangeOrFatal(t, k.Next())
-		h.waitForConnectedStreams(ctx, right.RangeID, 3, 0 /* serverIdx */)
-
-		h.comment(`(Sending 2 x 1 MiB put request to post-split LHS range)`)
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
-		h.comment(`(Sent 2 x 1 MiB put request to post-split LHS range)`)
-
-		h.comment(`(Sending 3 x 1 MiB put request to post-split RHS range)`)
-		h.put(ctx, roachpb.Key(right.StartKey), 1, testFlowModeToPri(mode))
-		h.put(ctx, roachpb.Key(right.StartKey), 1, testFlowModeToPri(mode))
-		h.put(ctx, roachpb.Key(right.StartKey), 1, testFlowModeToPri(mode))
-		h.comment(`(Sent 3 x 1 MiB put request to post-split RHS range)`)
-
-		h.comment(`
--- Flow token metrics from n1 after further issuing 2MiB and 3MiB writes to
--- post-split LHS and RHS ranges respectively. We should see 15MiB extra tokens
--- deducted which comes from (2MiB+3MiB)*3=15MiB. So we stand at
--- 6MiB+15MiB=21MiB now.
-`)
-		h.query(n1, v2FlowTokensQueryStr)
-
-		h.comment(`-- Observe the newly split off replica, with its own three streams.`)
-		h.query(n1, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
-
-		h.comment(`-- (Merging ranges.)`)
-		merged := tc.MergeRangesOrFatal(t, left.StartKey.AsRawKey())
-
-		h.comment(`(Sending 4 x 1 MiB put request to post-merge range)`)
-		h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
-		h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
-		h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
-		h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
-		h.comment(`(Sent 4 x 1 MiB put request to post-merge range)`)
-
-		h.comment(`
--- Flow token metrics from n1 after issuing 4MiB of replicated writes to
--- the post-merged range. We should see 12MiB extra tokens deducted which comes
--- from 4MiB*3=12MiB. So we stand at 21MiB+12MiB=33MiB tokens deducted now. The
--- RHS of the range is gone now, and the previously 3*3MiB=9MiB of tokens
--- deducted for it are released at the subsuming LHS leaseholder.
-`)
-		h.query(n1, v2FlowTokensQueryStr)
-
-		h.comment(`-- Observe only the merged replica with its own three streams.`)
-		h.query(n1, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
-
-		h.comment(`-- (Allow below-raft admission to proceed.)`)
-		disableWorkQueueGranting.Store(false)
-		h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */) // wait for admission
-
-		h.comment(`
--- Flow token metrics from n1 after work gets admitted. We see all outstanding
--- {regular,elastic} tokens returned, including those from:
--- - the LHS before the merge, and
--- - the LHS and RHS before the original split.
-`)
-		h.query(n1, v2FlowTokensQueryStr)
-	})
-}
-
-// TestFlowControlCrashedNodeV2 tests flow token behavior in the presence of
-// crashed nodes.
-func TestFlowControlCrashedNodeV2(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(t *testing.T, mode kvflowcontrol.ModeT) {
-		ctx := context.Background()
-		settings := cluster.MakeTestingClusterSettings()
-		// This test doesn't want leadership changing hands, and leader leases (by
-		// virtue of raft fortification) help ensure this. Override to disable any
-		// metamorphosis.
-		kvserver.OverrideDefaultLeaseType(ctx, &settings.SV, roachpb.LeaseLeader)
-
-		// We want to observe a disconnected stream when crashing a node, however
-		// we don't care about replicas blipping into StateProbe otherwise.
-		var bypassReplicaUnreachable atomic.Bool
-		bypassReplicaUnreachable.Store(true)
-		tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings: settings,
-				RaftConfig: base.RaftConfig{
-					// Reduce the RangeLeaseDuration to speeds up failure detection
-					// below.
-					RangeLeaseDuration: time.Second,
-				},
-				Knobs: base.TestingKnobs{
-					Store: &kvserver.StoreTestingKnobs{
-						RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-							return bypassReplicaUnreachable.Load()
-						},
-						FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
-							UseOnlyForScratchRanges: true,
-							OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
-								// This test asserts on the exact values of tracked tokens. In
-								// non-test code, the tokens deducted are a few bytes off (give
-								// or take) from the size of the proposals. We don't care about
-								// such differences.
-								return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
-							},
-						},
-					},
-					AdmissionControl: &admission.TestingKnobs{
-						DisableWorkQueueFastPath: true,
-						DisableWorkQueueGranting: func() bool {
-							return true
-						},
-					},
-				},
-			},
-		})
-		defer tc.Stopper().Stop(ctx)
-
-		k := tc.ScratchRange(t)
-		tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
-
-		n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
-
-		h := newFlowControlTestHelper(t, tc)
-		h.init(mode)
-		defer h.close(makeV2EnabledTestFileName(mode, "crashed_node"))
-
-		desc, err := tc.LookupRange(k)
-		require.NoError(t, err)
-		tc.TransferRangeLeaseOrFatal(t, desc, tc.Target(0))
-		h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
-		// Reset the token metrics, since a send queue may have instantly
-		// formed when adding one of the replicas, before being quickly
-		// drained.
-		h.resetV2TokenMetrics(ctx)
-
-		h.comment(`-- (Issuing 5x1MiB, 3x replicated writes that are not admitted.)`)
-		h.log("sending put requests")
-		for i := 0; i < 5; i++ {
-			h.put(ctx, k, 1, testFlowModeToPri(mode))
-		}
-		h.log("sent put requests")
-
-		h.comment(`
--- Flow token metrics from n1 after issuing 5 1MiB 3x replicated writes
--- that are yet to get admitted. We see 5*1MiB*3=15MiB deductions of
--- {regular,elastic} tokens with no corresponding returns.
-`)
-		h.query(n1, v2FlowTokensQueryStr)
-		h.comment(`-- Observe the per-stream tracked tokens on n1, before n2 is crashed.`)
-		h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
-
-		bypassReplicaUnreachable.Store(false)
-		h.comment(`-- (Crashing n2)`)
-		tc.StopServer(1)
-		h.waitForConnectedStreams(ctx, desc.RangeID, 2, 0 /* serverIdx */)
-		bypassReplicaUnreachable.Store(true)
-
-		h.comment(`
--- Observe the per-stream tracked tokens on n1, after n2 crashed. We're no
--- longer tracking the 5MiB held by n2.
-`)
-		h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
-
-		h.comment(`
--- Flow token metrics from n1 after n2 crashed. Observe that we've returned the
--- 5MiB previously held by n2.
-`)
-		h.query(n1, v2FlowTokensQueryStr)
-	})
-}
-
-// TestFlowControlRaftSnapshotV2 tests flow token behavior when one replica
-// needs to be caught up via raft snapshot.
-func TestFlowControlRaftSnapshotV2(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	defer setRACv2DebugVModule(t)()
-
-	const numServers int = 5
-
-	testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(t *testing.T, mode kvflowcontrol.ModeT) {
-		stickyServerArgs := make(map[int]base.TestServerArgs)
-		var disableWorkQueueGranting atomic.Bool
-		disableWorkQueueGranting.Store(true)
-		ctx := context.Background()
-		settings := cluster.MakeTestingClusterSettings()
-		// This test doesn't want leadership changing hands, and leader leases (by
-		// virtue of raft fortification) help ensure this. Override to disable any
-		// metamorphosis.
-		kvserver.OverrideDefaultLeaseType(ctx, &settings.SV, roachpb.LeaseLeader)
-		// Using a manual clock here ensures that StoreLiveness support, once
-		// established, never expires. By extension, leadership should stay
-		// sticky.
-		manualClock := hlc.NewHybridManualClock()
-		for i := 0; i < numServers; i++ {
-			stickyServerArgs[i] = base.TestServerArgs{
-				Settings: settings,
-				StoreSpecs: []base.StoreSpec{
-					{
-						InMemory:    true,
-						StickyVFSID: strconv.FormatInt(int64(i), 10),
-					},
-				},
-				Knobs: base.TestingKnobs{
-					Server: &server.TestingKnobs{
-						StickyVFSRegistry: fs.NewStickyRegistry(),
-						WallClock:         manualClock,
-					},
-					Store: &kvserver.StoreTestingKnobs{
-						RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-							return true
-						},
-						FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
-							UseOnlyForScratchRanges: true,
-							OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
-								// This test makes use of (small) increment
-								// requests, but wants to see large token
-								// deductions/returns.
-								return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
-							},
-						},
-					},
-					AdmissionControl: &admission.TestingKnobs{
-						DisableWorkQueueFastPath: true,
-						DisableWorkQueueGranting: func() bool {
-							return disableWorkQueueGranting.Load()
-						},
-					},
-					RaftTransport: &kvserver.RaftTransportTestingKnobs{
-						OverrideIdleTimeout: func() time.Duration {
-							// Effectively disable token returns due to underlying
-							// raft transport streams disconnecting due to
-							// inactivity.
-							return time.Hour
-						},
-					},
-				},
-			}
-		}
-
-		tc := testcluster.StartTestCluster(t, numServers,
-			base.TestClusterArgs{
-				ReplicationMode:   base.ReplicationManual,
-				ServerArgsPerNode: stickyServerArgs,
-			})
-		defer tc.Stopper().Stop(ctx)
-
-		n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
-		h := newFlowControlTestHelper(t, tc)
-		h.init(mode)
-		defer h.close(makeV2EnabledTestFileName(mode, "raft_snapshot"))
-
-		store := tc.GetFirstStoreFromServer(t, 0)
-
-		incA := int64(5)
-		incB := int64(7)
-		incAB := incA + incB
-
-		k := tc.ScratchRange(t)
-		tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
-
-		tc.AddVotersOrFatal(t, k, tc.Targets(3, 4)...)
-		repl := store.LookupReplica(roachpb.RKey(k))
-		require.NotNil(t, repl)
-		h.enableVerboseRaftMsgLoggingForRange(repl.Desc().RangeID)
-		h.waitForConnectedStreams(ctx, repl.RangeID, 5, 0 /* serverIdx */)
-		// Reset the token metrics, since a send queue may have instantly
-		// formed when adding one of the replicas, before being quickly
-		// drained.
-		h.resetV2TokenMetrics(ctx)
-
-		// Set up a key to replicate across the cluster. We're going to modify this
-		// key and truncate the raft logs from that command after killing one of the
-		// nodes to check that it gets the new value after it comes up.
-		incArgs := incrementArgs(k, incA)
-		if _, err := kv.SendWrappedWithAdmission(ctx, tc.Server(0).DB().NonTransactionalSender(), kvpb.Header{}, kvpb.AdmissionHeader{
-			Priority: int32(testFlowModeToPri(mode)),
-			Source:   kvpb.AdmissionHeader_FROM_SQL,
-		}, incArgs); err != nil {
-			t.Fatal(err)
-		}
-		// We don't need to assert that the tokens are tracked, but doing so
-		// will make debugging this test failure easier.
-		h.waitForTotalTrackedTokens(ctx, repl.RangeID, 5<<20 /* 5 MiB */, 0 /* serverIdx */)
-		testutils.SucceedsSoon(h.t, func() error {
-			return h.checkTokensAvailable(
-				ctx,
-				5, /* expStreamCount */
-				0, /* serverIdx */
-				h.tokensAvailableLimitWithDelta(tokensAvailableDeltaMode(mode, -(1<<20) /* 1 MiB */)),
-				h.tc.GetFirstStoreFromServer(h.t, 0).GetStoreConfig().KVFlowStreamTokenProvider.Inspect(ctx),
-			)
-		})
-
-		h.comment(`
--- Flow token metrics from n1 after issuing 1 1MiB 5x replicated write
--- that's not admitted. Since this test is ignoring crashed nodes for token
--- deduction purposes, we see a deduction of 5MiB tokens.
-	`)
-		h.query(n1, v2FlowTokensQueryStr)
-
-		h.comment(`
--- Observe the total tracked tokens per-stream on n1. 1MiB is tracked for n1-n5.
-	`)
-		h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
-
-		tc.WaitForValues(t, k, []int64{incA, incA, incA, incA, incA})
-
-		h.comment(`
--- (Killing n2 and n3, but preventing their tokens from being returned +
--- artificially allowing tokens to get deducted.)`)
-
-		// Kill stores 1 + 2, increment the key on the other stores and truncate
-		// their logs to make sure that when store 1 + 2 comes back up they will
-		// require a snapshot from Raft.
-		tc.StopServer(1)
-		tc.StopServer(2)
-
-		h.comment(`
--- Observe the total tracked tokens per-stream on n1. 1MiB is (still) tracked
--- for n1-n5, because they are not in StateSnapshot yet and have likely been
--- in StateProbe for less than the close timer.
-	`)
-		h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
-
-		h.comment(`
--- (Issuing another 1MiB of 5x replicated writes while n2 and n3 are down and
--- below-raft admission is paused.)
-`)
-		incArgs = incrementArgs(k, incB)
-		if _, err := kv.SendWrappedWithAdmission(ctx, tc.Server(0).DB().NonTransactionalSender(), kvpb.Header{}, kvpb.AdmissionHeader{
-			Priority: int32(testFlowModeToPri(mode)),
-			Source:   kvpb.AdmissionHeader_FROM_SQL,
-		}, incArgs); err != nil {
-			t.Fatal(err)
-		}
-
-		h.comment(`
--- Flow token metrics from n1 after issuing 1 1MiB 5x replicated write
--- that's not admitted. We'll have deducted another 5*1MiB=5MiB worth of tokens.
-	`)
-		h.query(n1, v2FlowTokensQueryStr)
-		h.comment(`
--- Observe the total tracked tokens per-stream on n1. 2MiB is tracked for n1-n5;
--- see last comment for an explanation why we're still deducting for n2, n3.
-`)
-		h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
-
-		tc.WaitForValues(t, k, []int64{incAB, 0 /* stopped */, 0 /* stopped */, incAB, incAB})
-
-		index := repl.GetLastIndex()
-		h.comment(`-- (Truncating raft log.)`)
-
-		// Truncate the log at index+1 (log entries < N are removed, so this
-		// includes the increment).
-		truncArgs := truncateLogArgs(index+1, repl.GetRangeID())
-		if _, err := kv.SendWrappedWithAdmission(ctx, tc.Server(0).DB().NonTransactionalSender(), kvpb.Header{}, kvpb.AdmissionHeader{
-			Priority: int32(testFlowModeToPri(mode)),
-			Source:   kvpb.AdmissionHeader_FROM_SQL,
-		}, truncArgs); err != nil {
-			t.Fatal(err)
-		}
-
-		h.comment(`-- (Restarting n2 and n3.)`)
-		require.NoError(t, tc.RestartServer(1))
-		require.NoError(t, tc.RestartServer(2))
-
-		tc.WaitForValues(t, k, []int64{incAB, incAB, incAB, incAB, incAB})
-
-		h.comment(`
--- Flow token metrics from n1 after restarting n2 and n3. We've returned the
--- 2MiB previously held by those nodes (2MiB each). We're reacting to it's raft
--- progress state, noting that since we've truncated our log, we need to catch
--- it up via snapshot. So we release all held tokens.
-		`)
-		h.query(n1, v2FlowTokensQueryStr)
-
-		h.comment(`
--- Observe the total tracked tokens per-stream on n1. There's nothing tracked
--- for n2 and n3 anymore.
-`)
-		h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
-
-		h.waitForConnectedStreams(ctx, repl.RangeID, 5, 0 /* serverIdx */)
-		h.comment(`-- (Allow below-raft admission to proceed.)`)
-		disableWorkQueueGranting.Store(false)
-
-		h.waitForAllTokensReturned(ctx, 5, 0 /* serverIdx */)
-
-		h.comment(`
--- Flow token metrics from n1 after work gets admitted. We see the remaining
--- 6MiB of tokens returned.
-`)
-		h.query(n1, v2FlowTokensQueryStr)
-
-		h.comment(`
--- Observe the total tracked tokens per-stream on n1; there should be nothing.
-`)
-		h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
-
-		h.comment(`-- Another view of tokens, using /inspectz-backed vtables.`)
-		h.query(n1, `
-SELECT store_id,
-	   crdb_internal.humanize_bytes(available_eval_regular_tokens),
-	   crdb_internal.humanize_bytes(available_eval_elastic_tokens)
-  FROM crdb_internal.kv_flow_controller_v2
- ORDER BY store_id ASC;
-`, "store_id", "eval_regular_available", "eval_elastic_available")
-	})
-}
-
-// TestFlowControlRaftMembershipV2 tests flow token behavior when the raft
-// membership changes.
-func TestFlowControlRaftMembershipV2(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	// And also #148903, #148348, #144546, #141912.
-	skip.UnderDuressWithIssue(t, 149036)
-	defer setRACv2DebugVModule(t)()
-
-	testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(t *testing.T, mode kvflowcontrol.ModeT) {
-		ctx := context.Background()
-		settings := cluster.MakeTestingClusterSettings()
-		var disableWorkQueueGranting atomic.Bool
-		disableWorkQueueGranting.Store(true)
-		// This test doesn't want leadership changing hands, and leader leases (by
-		// virtue of raft fortification) help ensure this. Override to disable any
-		// metamorphosis.
-		kvserver.OverrideDefaultLeaseType(ctx, &settings.SV, roachpb.LeaseLeader)
-		// Using a manual clock here ensures that StoreLiveness support, once
-		// established, never expires. By extension, leadership should stay
-		// sticky.
-		manualClock := hlc.NewHybridManualClock()
-		tc := testcluster.StartTestCluster(t, 5, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings: settings,
-				Knobs: base.TestingKnobs{
-					Store: &kvserver.StoreTestingKnobs{
-						RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-							return true
-						},
-						FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
-							UseOnlyForScratchRanges: true,
-							OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
-								// This test asserts on the exact values of tracked tokens. In
-								// non-test code, the tokens deducted are a few bytes off (give
-								// or take) from the size of the proposals. We don't care about
-								// such differences.
-								return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
-							},
-						},
-					},
-					AdmissionControl: &admission.TestingKnobs{
-						DisableWorkQueueFastPath: true,
-						DisableWorkQueueGranting: func() bool {
-							return disableWorkQueueGranting.Load()
-						},
-					},
-					Server: &server.TestingKnobs{
-						WallClock: manualClock,
-					},
-				},
-			},
-		})
-		defer tc.Stopper().Stop(ctx)
-
-		k := tc.ScratchRange(t)
-		tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
-
-		n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
-
-		h := newFlowControlTestHelper(t, tc)
-		h.init(mode)
-		defer h.close(makeV2EnabledTestFileName(mode, "raft_membership"))
-
-		desc, err := tc.LookupRange(k)
-		require.NoError(t, err)
-		h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
-		// Reset the token metrics, since a send queue may have instantly
-		// formed when adding one of the replicas, before being quickly
-		// drained.
-		h.resetV2TokenMetrics(ctx)
-
-		h.comment(`-- (Issuing 1x1MiB, 3x replicated write that's not admitted.)`)
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
-
-		h.comment(`
--- Flow token metrics from n1 after issuing 1x1MiB 3x replicated write
--- that's not admitted. We see 1*1MiB*3=3MiB deductions of tokens with
--- no corresponding returns.
-`)
-		h.query(n1, v2FlowTokensQueryStr)
-
-		h.comment(`-- (Adding a voting replica on n4.)`)
-		tc.AddVotersOrFatal(t, k, tc.Target(3))
-		h.waitForConnectedStreams(ctx, desc.RangeID, 4, 0 /* serverIdx */)
-
-		h.comment(`
--- Observe the total tracked tokens per-stream on n1. s1-s3 should have 1MiB
--- tracked each, and s4 should have none.`)
-		h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
-
-		h.comment(`-- (Issuing 1x1MiB, 4x replicated write that's not admitted.)`)
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
-
-		h.comment(`
--- Observe the individual tracked tokens per-stream on the scratch range. s1-s3
--- should have 2MiB tracked (they've observed 2x1MiB writes), s4 should have
--- 1MiB.
-`)
-		h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
-
-		h.comment(`-- (Removing voting replica from n3.)`)
-		tc.RemoveVotersOrFatal(t, k, tc.Target(2))
-		h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
-
-		h.comment(`-- (Adding non-voting replica to n5.)`)
-		tc.AddNonVotersOrFatal(t, k, tc.Target(4))
-		h.waitForConnectedStreams(ctx, desc.RangeID, 4, 0 /* serverIdx */)
-
-		h.comment(`-- (Issuing 1x1MiB, 4x replicated write (w/ one non-voter) that's not admitted.`)
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
-
-		h.comment(`
--- Observe the individual tracked tokens per-stream on the scratch range. s1-s2
--- should have 3MiB tracked (they've observed 3x1MiB writes), there should be
--- no s3 since it was removed, s4 and s5 should have 2MiB and 1MiB
--- respectively.
-`)
-		h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
-
-		h.comment(`-- (Allow below-raft admission to proceed.)`)
-		disableWorkQueueGranting.Store(false)
-		h.waitForAllTokensReturned(ctx, 5, 0 /* serverIdx */)
-
-		h.comment(`-- Observe that there no tracked tokens across s1,s2,s4,s5.`)
-		h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
-
-		h.comment(`
--- Flow token metrics from n1 after work gets admitted. All {regular,elastic}
--- tokens deducted are returned, including from when s3 was removed as a raft
--- member.
-`)
-		h.query(n1, v2FlowTokensQueryStr)
-	})
-}
-
-// TestFlowControlRaftMembershipRemoveSelfV2 tests flow token behavior when
-// the raft leader removes itself from the raft group.
-func TestFlowControlRaftMembershipRemoveSelfV2(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	// Under overload, token deductions may not line up as expected, likely due
-	// to dropping streams.
-	skip.UnderDuressWithIssue(t, 148079)
-	defer setRACv2DebugVModule(t)()
-
-	testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(t *testing.T, mode kvflowcontrol.ModeT) {
-		testutils.RunTrueAndFalse(t, "transfer-lease-first", func(t *testing.T, transferLeaseFirst bool) {
+	testutils.RunValues(t, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(t *testing.T, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(t *testing.T, mode kvflowcontrol.ModeT) {
 			ctx := context.Background()
-			settings := cluster.MakeTestingClusterSettings()
 			var disableWorkQueueGranting atomic.Bool
 			disableWorkQueueGranting.Store(true)
-			tc := testcluster.StartTestCluster(t, 4, base.TestClusterArgs{
+			settings := cluster.MakeTestingClusterSettings()
+			tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
 				ReplicationMode: base.ReplicationManual,
 				ServerArgs: base.TestServerArgs{
 					Settings: settings,
 					Knobs: base.TestingKnobs{
 						Store: &kvserver.StoreTestingKnobs{
-							RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-								return true
-							},
 							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
 								UseOnlyForScratchRanges: true,
+								OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+									return v2EnabledWhenLeaderLevel
+								},
 								OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
 									// This test asserts on the exact values of tracked tokens. In
 									// non-test code, the tokens deducted are a few bytes off (give
@@ -1078,20 +335,657 @@ func TestFlowControlRaftMembershipRemoveSelfV2(t *testing.T) {
 			tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
 
 			n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
-			n4 := sqlutils.MakeSQLRunner(tc.ServerConn(3))
 
-			h := newFlowControlTestHelper(t, tc)
+			h := newFlowControlTestHelperV2(t, tc, v2EnabledWhenLeaderLevel)
 			h.init(mode)
-			// Note this test behaves identically independent of we transfer the lease
-			// first.
-			defer h.close(makeV2EnabledTestFileName(mode, "raft_membership_remove_self"))
+			defer h.close(makeV2EnabledTestFileName(v2EnabledWhenLeaderLevel, mode, "blocked_admission"))
 
 			desc, err := tc.LookupRange(k)
 			require.NoError(t, err)
 			h.enableVerboseRaftMsgLoggingForRange(desc.RangeID)
+			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
+			// Reset the token metrics, since a send queue may have instantly
+			// formed when adding one of the replicas, before being quickly
+			// drained.
+			h.resetV2TokenMetrics(ctx)
 
-			// Make sure the lease is on n1 and that we're triply connected.
+			h.comment(`-- (Issuing 5 1MiB, 3x replicated write that's not admitted.)`)
+			h.log("sending put requests")
+			for i := 0; i < 5; i++ {
+				h.put(ctx, k, 1, testFlowModeToPri(mode))
+			}
+			h.log("sent put requests")
+
+			h.comment(`
+-- Flow token metrics from n1 after issuing 5 1MiB 3x replicated writes
+-- that are yet to get admitted. We see 5*1MiB*3=15MiB deductions of
+-- {regular,elastic} tokens with no corresponding returns.
+`)
+			h.query(n1, v2FlowTokensQueryStr)
+
+			h.comment(`-- Observe the total tracked tokens per-stream on n1.`)
+			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+
+			h.comment(`-- Observe the individual tracked tokens per-stream on the scratch range.`)
+			h.query(n1, v2FlowPerStoreDeductionQueryStr, flowPerStoreDeductionQueryHeaderStrs...)
+
+			h.comment(`-- (Allow below-raft admission to proceed.)`)
+			disableWorkQueueGranting.Store(false)
+			h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */) // wait for admission
+
+			h.comment(`
+-- Flow token metrics from n1 after work gets admitted. We see 15MiB returns of
+-- {regular,elastic} tokens, and the available capacities going back to what
+-- they were.
+`)
+			h.query(n1, v2FlowTokensQueryStr)
+		})
+	})
+}
+
+// TestFlowControlAdmissionPostSplitMergeV2 walks through what happens with flow
+// tokens when a range after undergoes splits/merges. It does this by blocking
+// and later unblocking below-raft admission, verifying:
+// - tokens for the RHS are released at the post-merge subsuming leaseholder,
+// - admission for the RHS post-merge does not cause a double return of tokens,
+// - admission for the LHS can happen post-merge,
+// - admission for the LHS and RHS can happen post-split.
+func TestFlowControlAdmissionPostSplitMergeV2(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	skip.UnderDuressWithIssue(t, 150840)
+	defer setRACv2DebugVModule(t)()
+
+	testutils.RunValues(t, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(t *testing.T, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(t *testing.T, mode kvflowcontrol.ModeT) {
+			ctx := context.Background()
+			var disableWorkQueueGranting atomic.Bool
+			disableWorkQueueGranting.Store(true)
+			settings := cluster.MakeTestingClusterSettings()
+			// This test doesn't want leadership changing hands, and leader leases (by
+			// virtue of raft fortification) help ensure this. Override to disable any
+			// metamorphosis.
+			kvserver.OverrideDefaultLeaseType(ctx, &settings.SV, roachpb.LeaseLeader)
+			// Using a manual clock here ensures that StoreLiveness support, once
+			// established, never expires. By extension, leadership should stay
+			// sticky.
+			manualClock := hlc.NewHybridManualClock()
+			tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
+				ReplicationMode: base.ReplicationManual,
+				ServerArgs: base.TestServerArgs{
+					Knobs: base.TestingKnobs{
+						Server: &server.TestingKnobs{
+							WallClock: manualClock,
+						},
+						Store: &kvserver.StoreTestingKnobs{
+							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+								UseOnlyForScratchRanges: true,
+								OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+									return v2EnabledWhenLeaderLevel
+								},
+								OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
+									// This test asserts on the exact values of tracked tokens. In
+									// non-test code, the tokens deducted are a few bytes off (give
+									// or take) from the size of the proposals. We don't care about
+									// such differences.
+									return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+								},
+							},
+						},
+						AdmissionControl: &admission.TestingKnobs{
+							DisableWorkQueueFastPath: true,
+							DisableWorkQueueGranting: func() bool {
+								return disableWorkQueueGranting.Load()
+							},
+						},
+					},
+				},
+			})
+			defer tc.Stopper().Stop(ctx)
+
+			k := tc.ScratchRange(t)
+			tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
+
+			n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+
+			h := newFlowControlTestHelperV2(t, tc, v2EnabledWhenLeaderLevel)
+			h.init(mode)
+			defer h.close(makeV2EnabledTestFileName(v2EnabledWhenLeaderLevel, mode, "admission_post_split_merge"))
+
+			desc, err := tc.LookupRange(k)
+			require.NoError(t, err)
+
+			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
+			// Reset the token metrics, since a send queue may have instantly
+			// formed when adding one of the replicas, before being quickly
+			// drained.
+			h.resetV2TokenMetrics(ctx)
+
+			h.comment(`(Sending 2 x 1 MiB put request to pre-split range)`)
+			h.put(ctx, k, 1, testFlowModeToPri(mode))
+			h.put(ctx, k.Next(), 1, testFlowModeToPri(mode))
+			h.comment(`(Sent 2 x 1 MiB put request to pre-split range)`)
+
+			h.comment(`
+-- Flow token metrics from n1 after issuing a 2*1MiB 3x replicated write
+-- that are yet to get admitted. We see 2*3*1MiB=6MiB deductions of
+-- {regular,elastic} tokens with no corresponding returns. The 2*1MiB writes
+-- happened on what is soon going to be the LHS and RHS of a range being split.
+`)
+			h.query(n1, v2FlowTokensQueryStr)
+
+			h.comment(`-- (Splitting range.)`)
+			left, right := tc.SplitRangeOrFatal(t, k.Next())
+			h.waitForConnectedStreams(ctx, right.RangeID, 3, 0 /* serverIdx */)
+
+			h.comment(`(Sending 2 x 1 MiB put request to post-split LHS range)`)
+			h.put(ctx, k, 1, testFlowModeToPri(mode))
+			h.put(ctx, k, 1, testFlowModeToPri(mode))
+			h.comment(`(Sent 2 x 1 MiB put request to post-split LHS range)`)
+
+			h.comment(`(Sending 3 x 1 MiB put request to post-split RHS range)`)
+			h.put(ctx, roachpb.Key(right.StartKey), 1, testFlowModeToPri(mode))
+			h.put(ctx, roachpb.Key(right.StartKey), 1, testFlowModeToPri(mode))
+			h.put(ctx, roachpb.Key(right.StartKey), 1, testFlowModeToPri(mode))
+			h.comment(`(Sent 3 x 1 MiB put request to post-split RHS range)`)
+
+			h.comment(`
+-- Flow token metrics from n1 after further issuing 2MiB and 3MiB writes to
+-- post-split LHS and RHS ranges respectively. We should see 15MiB extra tokens
+-- deducted which comes from (2MiB+3MiB)*3=15MiB. So we stand at
+-- 6MiB+15MiB=21MiB now.
+`)
+			h.query(n1, v2FlowTokensQueryStr)
+
+			h.comment(`-- Observe the newly split off replica, with its own three streams.`)
+			h.query(n1, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
+
+			h.comment(`-- (Merging ranges.)`)
+			merged := tc.MergeRangesOrFatal(t, left.StartKey.AsRawKey())
+
+			h.comment(`(Sending 4 x 1 MiB put request to post-merge range)`)
+			h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
+			h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
+			h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
+			h.put(ctx, roachpb.Key(merged.StartKey), 1, testFlowModeToPri(mode))
+			h.comment(`(Sent 4 x 1 MiB put request to post-merge range)`)
+
+			h.comment(`
+-- Flow token metrics from n1 after issuing 4MiB of replicated writes to
+-- the post-merged range. We should see 12MiB extra tokens deducted which comes
+-- from 4MiB*3=12MiB. So we stand at 21MiB+12MiB=33MiB tokens deducted now. The
+-- RHS of the range is gone now, and the previously 3*3MiB=9MiB of tokens
+-- deducted for it are released at the subsuming LHS leaseholder.
+`)
+			h.query(n1, v2FlowTokensQueryStr)
+
+			h.comment(`-- Observe only the merged replica with its own three streams.`)
+			h.query(n1, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
+
+			h.comment(`-- (Allow below-raft admission to proceed.)`)
+			disableWorkQueueGranting.Store(false)
+			h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */) // wait for admission
+
+			h.comment(`
+-- Flow token metrics from n1 after work gets admitted. We see all outstanding
+-- {regular,elastic} tokens returned, including those from:
+-- - the LHS before the merge, and
+-- - the LHS and RHS before the original split.
+`)
+			h.query(n1, v2FlowTokensQueryStr)
+		})
+	})
+}
+
+// TestFlowControlCrashedNodeV2 tests flow token behavior in the presence of
+// crashed nodes.
+func TestFlowControlCrashedNodeV2(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	testutils.RunValues(t, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(t *testing.T, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(t *testing.T, mode kvflowcontrol.ModeT) {
+			ctx := context.Background()
+			settings := cluster.MakeTestingClusterSettings()
+			// This test doesn't want leadership changing hands, and leader leases (by
+			// virtue of raft fortification) help ensure this. Override to disable any
+			// metamorphosis.
+			kvserver.OverrideDefaultLeaseType(ctx, &settings.SV, roachpb.LeaseLeader)
+			tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
+				ReplicationMode: base.ReplicationManual,
+				ServerArgs: base.TestServerArgs{
+					Settings: settings,
+					RaftConfig: base.RaftConfig{
+						// Reduce the RangeLeaseDuration to speeds up failure detection
+						// below.
+						RangeLeaseDuration: time.Second,
+					},
+					Knobs: base.TestingKnobs{
+						Store: &kvserver.StoreTestingKnobs{
+							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+								UseOnlyForScratchRanges: true,
+								OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+									return v2EnabledWhenLeaderLevel
+								},
+								OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
+									// This test asserts on the exact values of tracked tokens. In
+									// non-test code, the tokens deducted are a few bytes off (give
+									// or take) from the size of the proposals. We don't care about
+									// such differences.
+									return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+								},
+							},
+						},
+						AdmissionControl: &admission.TestingKnobs{
+							DisableWorkQueueFastPath: true,
+							DisableWorkQueueGranting: func() bool {
+								return true
+							},
+						},
+					},
+				},
+			})
+			defer tc.Stopper().Stop(ctx)
+
+			k := tc.ScratchRange(t)
+			tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
+
+			n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+
+			h := newFlowControlTestHelperV2(t, tc, v2EnabledWhenLeaderLevel)
+			h.init(mode)
+			defer h.close(makeV2EnabledTestFileName(v2EnabledWhenLeaderLevel, mode, "crashed_node"))
+
+			desc, err := tc.LookupRange(k)
+			require.NoError(t, err)
 			tc.TransferRangeLeaseOrFatal(t, desc, tc.Target(0))
+			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
+			// Reset the token metrics, since a send queue may have instantly
+			// formed when adding one of the replicas, before being quickly
+			// drained.
+			h.resetV2TokenMetrics(ctx)
+
+			h.comment(`-- (Issuing 5x1MiB, 3x replicated writes that are not admitted.)`)
+			h.log("sending put requests")
+			for i := 0; i < 5; i++ {
+				h.put(ctx, k, 1, testFlowModeToPri(mode))
+			}
+			h.log("sent put requests")
+
+			h.comment(`
+-- Flow token metrics from n1 after issuing 5 1MiB 3x replicated writes
+-- that are yet to get admitted. We see 5*1MiB*3=15MiB deductions of
+-- {regular,elastic} tokens with no corresponding returns.
+`)
+			h.query(n1, v2FlowTokensQueryStr)
+			h.comment(`-- Observe the per-stream tracked tokens on n1, before n2 is crashed.`)
+			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+
+			h.comment(`-- (Crashing n2)`)
+			tc.StopServer(1)
+			h.waitForConnectedStreams(ctx, desc.RangeID, 2, 0 /* serverIdx */)
+
+			h.comment(`
+-- Observe the per-stream tracked tokens on n1, after n2 crashed. We're no
+-- longer tracking the 5MiB held by n2.
+`)
+			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+
+			h.comment(`
+-- Flow token metrics from n1 after n2 crashed. Observe that we've returned the
+-- 5MiB previously held by n2.
+`)
+			h.query(n1, v2FlowTokensQueryStr)
+		})
+	})
+}
+
+// TestFlowControlRaftSnapshotV2 tests flow token behavior when one replica
+// needs to be caught up via raft snapshot.
+func TestFlowControlRaftSnapshotV2(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	defer setRACv2DebugVModule(t)()
+
+	const numServers int = 5
+
+	testutils.RunValues(t, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(t *testing.T, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(t *testing.T, mode kvflowcontrol.ModeT) {
+			stickyServerArgs := make(map[int]base.TestServerArgs)
+			var disableWorkQueueGranting atomic.Bool
+			disableWorkQueueGranting.Store(true)
+			var bypassReplicaUnreachable atomic.Bool
+			bypassReplicaUnreachable.Store(false)
+			ctx := context.Background()
+			settings := cluster.MakeTestingClusterSettings()
+			// This test doesn't want leadership changing hands, and leader leases (by
+			// virtue of raft fortification) help ensure this. Override to disable any
+			// metamorphosis.
+			kvserver.OverrideDefaultLeaseType(ctx, &settings.SV, roachpb.LeaseLeader)
+			// Using a manual clock here ensures that StoreLiveness support, once
+			// established, never expires. By extension, leadership should stay
+			// sticky.
+			manualClock := hlc.NewHybridManualClock()
+			for i := 0; i < numServers; i++ {
+				stickyServerArgs[i] = base.TestServerArgs{
+					Settings: settings,
+					StoreSpecs: []base.StoreSpec{
+						{
+							InMemory:    true,
+							StickyVFSID: strconv.FormatInt(int64(i), 10),
+						},
+					},
+					Knobs: base.TestingKnobs{
+						Server: &server.TestingKnobs{
+							StickyVFSRegistry: fs.NewStickyRegistry(),
+							WallClock:         manualClock,
+						},
+						Store: &kvserver.StoreTestingKnobs{
+							RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
+								// This test is going to crash nodes, then truncate the raft log
+								// and assert that tokens are returned upon an replica entering
+								// StateSnapshot. To avoid the stopped replicas entering
+								// StateProbe returning tokens, we disable reporting a replica
+								// as unreachable while nodes are down.
+								return bypassReplicaUnreachable.Load()
+							},
+							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+								UseOnlyForScratchRanges: true,
+								OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+									return v2EnabledWhenLeaderLevel
+								},
+								OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
+									// This test makes use of (small) increment
+									// requests, but wants to see large token
+									// deductions/returns.
+									return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+								},
+							},
+						},
+						AdmissionControl: &admission.TestingKnobs{
+							DisableWorkQueueFastPath: true,
+							DisableWorkQueueGranting: func() bool {
+								return disableWorkQueueGranting.Load()
+							},
+						},
+						RaftTransport: &kvserver.RaftTransportTestingKnobs{
+							OverrideIdleTimeout: func() time.Duration {
+								// Effectively disable token returns due to underlying
+								// raft transport streams disconnecting due to
+								// inactivity.
+								return time.Hour
+							},
+						},
+					},
+				}
+			}
+
+			tc := testcluster.StartTestCluster(t, numServers,
+				base.TestClusterArgs{
+					ReplicationMode:   base.ReplicationManual,
+					ServerArgsPerNode: stickyServerArgs,
+				})
+			defer tc.Stopper().Stop(ctx)
+
+			n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+			h := newFlowControlTestHelperV2(t, tc, v2EnabledWhenLeaderLevel)
+			h.init(mode)
+			defer h.close(makeV2EnabledTestFileName(v2EnabledWhenLeaderLevel, mode, "raft_snapshot"))
+
+			store := tc.GetFirstStoreFromServer(t, 0)
+
+			incA := int64(5)
+			incB := int64(7)
+			incAB := incA + incB
+
+			k := tc.ScratchRange(t)
+			tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
+
+			tc.AddVotersOrFatal(t, k, tc.Targets(3, 4)...)
+			repl := store.LookupReplica(roachpb.RKey(k))
+			require.NotNil(t, repl)
+			h.waitForConnectedStreams(ctx, repl.RangeID, 5, 0 /* serverIdx */)
+			// Reset the token metrics, since a send queue may have instantly
+			// formed when adding one of the replicas, before being quickly
+			// drained.
+			h.resetV2TokenMetrics(ctx)
+
+			// Set up a key to replicate across the cluster. We're going to modify this
+			// key and truncate the raft logs from that command after killing one of the
+			// nodes to check that it gets the new value after it comes up.
+			incArgs := incrementArgs(k, incA)
+			if _, err := kv.SendWrappedWithAdmission(ctx, tc.Server(0).DB().NonTransactionalSender(), kvpb.Header{}, kvpb.AdmissionHeader{
+				Priority: int32(testFlowModeToPri(mode)),
+				Source:   kvpb.AdmissionHeader_FROM_SQL,
+			}, incArgs); err != nil {
+				t.Fatal(err)
+			}
+			// We don't need to assert that the tokens are tracked, but doing so
+			// will make debugging this test failure easier.
+			h.waitForTotalTrackedTokens(ctx, repl.RangeID, 5<<20 /* 5 MiB */, 0 /* serverIdx */)
+			h.waitForAllTokensAvailable(ctx, 5, 0 /* serverIdx */, h.tokensAvailableLimitWithDelta(tokensAvailableDeltaModeEnabled(
+				mode,
+				v2EnabledWhenLeaderLevel,
+				-(1<<20), /* 1 MiB */
+			)))
+
+			h.comment(`
+-- Flow token metrics from n1 after issuing 1 1MiB 5x replicated write
+-- that's not admitted. Since this test is ignoring crashed nodes for token
+-- deduction purposes, we see a deduction of 5MiB tokens.
+	`)
+			h.query(n1, v2FlowTokensQueryStr)
+
+			h.comment(`
+-- Observe the total tracked tokens per-stream on n1. 1MiB is tracked for n1-n5.
+	`)
+			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+
+			tc.WaitForValues(t, k, []int64{incA, incA, incA, incA, incA})
+
+			h.comment(`
+-- (Killing n2 and n3, but preventing their tokens from being returned +
+-- artificially allowing tokens to get deducted.)`)
+
+			// Kill stores 1 + 2, increment the key on the other stores and truncate
+			// their logs to make sure that when store 1 + 2 comes back up they will
+			// require a snapshot from Raft.
+			//
+			// Also prevent replicas on the killed nodes from being marked as
+			// unreachable, in order to prevent them from returning tokens via
+			// entering StateProbe, before we're able to truncate the log and assert
+			// on the snapshot behavior.
+			bypassReplicaUnreachable.Store(true)
+			tc.StopServer(1)
+			tc.StopServer(2)
+
+			h.comment(`
+-- Observe the total tracked tokens per-stream on n1. 1MiB is (still) tracked
+-- for n1-n5, because they are not in StateSnapshot yet and have likely been
+-- in StateProbe for less than the close timer.
+	`)
+			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+
+			h.comment(`
+-- (Issuing another 1MiB of 5x replicated writes while n2 and n3 are down and
+-- below-raft admission is paused.)
+`)
+			incArgs = incrementArgs(k, incB)
+			if _, err := kv.SendWrappedWithAdmission(ctx, tc.Server(0).DB().NonTransactionalSender(), kvpb.Header{}, kvpb.AdmissionHeader{
+				Priority: int32(testFlowModeToPri(mode)),
+				Source:   kvpb.AdmissionHeader_FROM_SQL,
+			}, incArgs); err != nil {
+				t.Fatal(err)
+			}
+
+			h.comment(`
+-- Flow token metrics from n1 after issuing 1 1MiB 5x replicated write
+-- that's not admitted. We'll have deducted another 5*1MiB=5MiB worth of tokens.
+	`)
+			h.query(n1, v2FlowTokensQueryStr)
+			h.comment(`
+-- Observe the total tracked tokens per-stream on n1. 2MiB is tracked for n1-n5;
+-- see last comment for an explanation why we're still deducting for n2, n3.
+`)
+			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+
+			tc.WaitForValues(t, k, []int64{incAB, 0 /* stopped */, 0 /* stopped */, incAB, incAB})
+
+			index := repl.GetLastIndex()
+			h.comment(`-- (Truncating raft log.)`)
+
+			// Truncate the log at index+1 (log entries < N are removed, so this
+			// includes the increment).
+			truncArgs := truncateLogArgs(index+1, repl.GetRangeID())
+			if _, err := kv.SendWrappedWithAdmission(ctx, tc.Server(0).DB().NonTransactionalSender(), kvpb.Header{}, kvpb.AdmissionHeader{
+				Priority: int32(testFlowModeToPri(mode)),
+				Source:   kvpb.AdmissionHeader_FROM_SQL,
+			}, truncArgs); err != nil {
+				t.Fatal(err)
+			}
+
+			h.comment(`-- (Restarting n2 and n3.)`)
+			require.NoError(t, tc.RestartServer(1))
+			require.NoError(t, tc.RestartServer(2))
+			bypassReplicaUnreachable.Store(false)
+
+			tc.WaitForValues(t, k, []int64{incAB, incAB, incAB, incAB, incAB})
+
+			h.comment(`
+-- Flow token metrics from n1 after restarting n2 and n3. We've returned the
+-- 2MiB previously held by those nodes (2MiB each). We're reacting to it's raft
+-- progress state, noting that since we've truncated our log, we need to catch
+-- it up via snapshot. So we release all held tokens.
+		`)
+			h.query(n1, v2FlowTokensQueryStr)
+
+			h.comment(`
+-- Observe the total tracked tokens per-stream on n1. There's nothing tracked
+-- for n2 and n3 anymore.
+`)
+			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+
+			h.waitForConnectedStreams(ctx, repl.RangeID, 5, 0 /* serverIdx */)
+			h.comment(`-- (Allow below-raft admission to proceed.)`)
+			disableWorkQueueGranting.Store(false)
+
+			h.waitForAllTokensReturned(ctx, 5, 0 /* serverIdx */)
+
+			h.comment(`
+-- Flow token metrics from n1 after work gets admitted. We see the remaining
+-- 6MiB of tokens returned.
+`)
+			h.query(n1, v2FlowTokensQueryStr)
+
+			h.comment(`
+-- Observe the total tracked tokens per-stream on n1; there should be nothing.
+`)
+			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+
+			h.comment(`-- Another view of tokens, using /inspectz-backed vtables.`)
+			h.query(n1, `
+SELECT store_id,
+	   crdb_internal.humanize_bytes(available_eval_regular_tokens),
+	   crdb_internal.humanize_bytes(available_eval_elastic_tokens)
+  FROM crdb_internal.kv_flow_controller_v2
+ ORDER BY store_id ASC;
+`, "store_id", "eval_regular_available", "eval_elastic_available")
+		})
+	})
+}
+
+// TestFlowControlRaftMembershipV2 tests flow token behavior when the raft
+// membership changes.
+func TestFlowControlRaftMembershipV2(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	// And also #148903, #148348, #144546, #141912.
+	skip.UnderDuressWithIssue(t, 149036)
+	defer setRACv2DebugVModule(t)()
+
+	testutils.RunValues(t, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(t *testing.T, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(t *testing.T, mode kvflowcontrol.ModeT) {
+			ctx := context.Background()
+			settings := cluster.MakeTestingClusterSettings()
+			var disableWorkQueueGranting atomic.Bool
+			disableWorkQueueGranting.Store(true)
+			// This test doesn't want leadership changing hands, and leader leases (by
+			// virtue of raft fortification) help ensure this. Override to disable any
+			// metamorphosis.
+			kvserver.OverrideDefaultLeaseType(ctx, &settings.SV, roachpb.LeaseLeader)
+			// Using a manual clock here ensures that StoreLiveness support, once
+			// established, never expires. By extension, leadership should stay
+			// sticky.
+			manualClock := hlc.NewHybridManualClock()
+			tc := testcluster.StartTestCluster(t, 5, base.TestClusterArgs{
+				ReplicationMode: base.ReplicationManual,
+				ServerArgs: base.TestServerArgs{
+					Settings: settings,
+					Knobs: base.TestingKnobs{
+						Store: &kvserver.StoreTestingKnobs{
+							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+								UseOnlyForScratchRanges: true,
+								OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+									return v2EnabledWhenLeaderLevel
+								},
+								OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
+									// This test asserts on the exact values of tracked tokens. In
+									// non-test code, the tokens deducted are a few bytes off (give
+									// or take) from the size of the proposals. We don't care about
+									// such differences.
+									return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+								},
+							},
+						},
+						AdmissionControl: &admission.TestingKnobs{
+							DisableWorkQueueFastPath: true,
+							DisableWorkQueueGranting: func() bool {
+								return disableWorkQueueGranting.Load()
+							},
+						},
+						Server: &server.TestingKnobs{
+							WallClock: manualClock,
+						},
+					},
+				},
+			})
+			defer tc.Stopper().Stop(ctx)
+
+			k := tc.ScratchRange(t)
+			tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
+
+			n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+
+			h := newFlowControlTestHelperV2(t, tc, v2EnabledWhenLeaderLevel)
+			h.init(mode)
+			defer h.close(makeV2EnabledTestFileName(v2EnabledWhenLeaderLevel, mode, "raft_membership"))
+
+			desc, err := tc.LookupRange(k)
+			require.NoError(t, err)
 			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
 			// Reset the token metrics, since a send queue may have instantly
 			// formed when adding one of the replicas, before being quickly
@@ -1108,54 +1002,197 @@ func TestFlowControlRaftMembershipRemoveSelfV2(t *testing.T) {
 `)
 			h.query(n1, v2FlowTokensQueryStr)
 
-			h.comment(`-- (Replacing current raft leader on n1 in raft group with new n4 replica.)`)
-			testutils.SucceedsSoon(t, func() error {
-				// Relocate range from n1 -> n4.
-				if err := tc.Servers[2].DB().
-					AdminRelocateRange(
-						context.Background(), desc.StartKey.AsRawKey(),
-						tc.Targets(3, 2, 1), nil, transferLeaseFirst); err != nil {
-					return err
-				}
-				leaseHolder, err := tc.FindRangeLeaseHolder(desc, nil)
-				if err != nil {
-					return err
-				}
-				if !leaseHolder.Equal(tc.Target(3)) {
-					return errors.Errorf("expected leaseholder to be n4, found %v", leaseHolder)
-				}
-				return nil
-			})
-			h.waitForAllTokensReturned(ctx, 4, 0 /* serverIdx */)
-			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 3 /* serverIdx */)
+			h.comment(`-- (Adding a voting replica on n4.)`)
+			tc.AddVotersOrFatal(t, k, tc.Target(3))
+			h.waitForConnectedStreams(ctx, desc.RangeID, 4, 0 /* serverIdx */)
 
 			h.comment(`
+-- Observe the total tracked tokens per-stream on n1. s1-s3 should have 1MiB
+-- tracked each, and s4 should have none.`)
+			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+
+			h.comment(`-- (Issuing 1x1MiB, 4x replicated write that's not admitted.)`)
+			h.put(ctx, k, 1, testFlowModeToPri(mode))
+
+			h.comment(`
+-- Observe the individual tracked tokens per-stream on the scratch range. s1-s3
+-- should have 2MiB tracked (they've observed 2x1MiB writes), s4 should have
+-- 1MiB.
+`)
+			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+
+			h.comment(`-- (Removing voting replica from n3.)`)
+			tc.RemoveVotersOrFatal(t, k, tc.Target(2))
+			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
+
+			h.comment(`-- (Adding non-voting replica to n5.)`)
+			tc.AddNonVotersOrFatal(t, k, tc.Target(4))
+			h.waitForConnectedStreams(ctx, desc.RangeID, 4, 0 /* serverIdx */)
+
+			h.comment(`-- (Issuing 1x1MiB, 4x replicated write (w/ one non-voter) that's not admitted.`)
+			h.put(ctx, k, 1, testFlowModeToPri(mode))
+
+			h.comment(`
+-- Observe the individual tracked tokens per-stream on the scratch range. s1-s2
+-- should have 3MiB tracked (they've observed 3x1MiB writes), there should be
+-- no s3 since it was removed, s4 and s5 should have 2MiB and 1MiB
+-- respectively.
+`)
+			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+
+			h.comment(`-- (Allow below-raft admission to proceed.)`)
+			disableWorkQueueGranting.Store(false)
+			h.waitForAllTokensReturned(ctx, 5, 0 /* serverIdx */)
+
+			h.comment(`-- Observe that there no tracked tokens across s1,s2,s4,s5.`)
+			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+
+			h.comment(`
+-- Flow token metrics from n1 after work gets admitted. All {regular,elastic}
+-- tokens deducted are returned, including from when s3 was removed as a raft
+-- member.
+`)
+			h.query(n1, v2FlowTokensQueryStr)
+		})
+	})
+}
+
+// TestFlowControlRaftMembershipRemoveSelfV2 tests flow token behavior when
+// the raft leader removes itself from the raft group.
+func TestFlowControlRaftMembershipRemoveSelfV2(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	// Under overload, token deductions may not line up as expected, likely due
+	// to dropping streams.
+	skip.UnderDuressWithIssue(t, 148079)
+	defer setRACv2DebugVModule(t)()
+
+	testutils.RunValues(t, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(t *testing.T, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(t *testing.T, mode kvflowcontrol.ModeT) {
+			testutils.RunTrueAndFalse(t, "transfer-lease-first", func(t *testing.T, transferLeaseFirst bool) {
+				ctx := context.Background()
+				settings := cluster.MakeTestingClusterSettings()
+				var disableWorkQueueGranting atomic.Bool
+				disableWorkQueueGranting.Store(true)
+				tc := testcluster.StartTestCluster(t, 4, base.TestClusterArgs{
+					ReplicationMode: base.ReplicationManual,
+					ServerArgs: base.TestServerArgs{
+						Settings: settings,
+						Knobs: base.TestingKnobs{
+							Store: &kvserver.StoreTestingKnobs{
+								FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+									UseOnlyForScratchRanges: true,
+									OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+										return v2EnabledWhenLeaderLevel
+									},
+									OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
+										// This test asserts on the exact values of tracked tokens. In
+										// non-test code, the tokens deducted are a few bytes off (give
+										// or take) from the size of the proposals. We don't care about
+										// such differences.
+										return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+									},
+								},
+							},
+							AdmissionControl: &admission.TestingKnobs{
+								DisableWorkQueueFastPath: true,
+								DisableWorkQueueGranting: func() bool {
+									return disableWorkQueueGranting.Load()
+								},
+							},
+						},
+					},
+				})
+				defer tc.Stopper().Stop(ctx)
+
+				k := tc.ScratchRange(t)
+				tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
+
+				n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+				n4 := sqlutils.MakeSQLRunner(tc.ServerConn(3))
+
+				h := newFlowControlTestHelperV2(t, tc, v2EnabledWhenLeaderLevel)
+				h.init(mode)
+				// Note this test behaves identically independent of we transfer the lease
+				// first.
+				defer h.close(makeV2EnabledTestFileName(v2EnabledWhenLeaderLevel, mode, "raft_membership_remove_self"))
+
+				desc, err := tc.LookupRange(k)
+				require.NoError(t, err)
+
+				// Make sure the lease is on n1 and that we're triply connected.
+				tc.TransferRangeLeaseOrFatal(t, desc, tc.Target(0))
+				h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
+				// Reset the token metrics, since a send queue may have instantly
+				// formed when adding one of the replicas, before being quickly
+				// drained.
+				h.resetV2TokenMetrics(ctx)
+
+				h.comment(`-- (Issuing 1x1MiB, 3x replicated write that's not admitted.)`)
+				h.put(ctx, k, 1, testFlowModeToPri(mode))
+
+				h.comment(`
+-- Flow token metrics from n1 after issuing 1x1MiB 3x replicated write
+-- that's not admitted. We see 1*1MiB*3=3MiB deductions of tokens with
+-- no corresponding returns.
+`)
+				h.query(n1, v2FlowTokensQueryStr)
+
+				h.comment(`-- (Replacing current raft leader on n1 in raft group with new n4 replica.)`)
+				testutils.SucceedsSoon(t, func() error {
+					// Relocate range from n1 -> n4.
+					if err := tc.Servers[2].DB().
+						AdminRelocateRange(
+							context.Background(), desc.StartKey.AsRawKey(),
+							tc.Targets(3, 2, 1), nil, transferLeaseFirst); err != nil {
+						return err
+					}
+					leaseHolder, err := tc.FindRangeLeaseHolder(desc, nil)
+					if err != nil {
+						return err
+					}
+					if !leaseHolder.Equal(tc.Target(3)) {
+						return errors.Errorf("expected leaseholder to be n4, found %v", leaseHolder)
+					}
+					return nil
+				})
+				h.waitForAllTokensReturned(ctx, 4, 0 /* serverIdx */)
+				h.waitForConnectedStreams(ctx, desc.RangeID, 3, 3 /* serverIdx */)
+
+				h.comment(`
 -- Flow token metrics from n1 after raft leader removed itself from raft group.
 -- All {regular,elastic} tokens deducted are returned. Note that the available
 -- tokens increases, as n1 has seen 4 replication streams, s1,s2,s3,s4.
 `)
-			h.query(n1, v2FlowTokensQueryStr)
+				h.query(n1, v2FlowTokensQueryStr)
 
-			h.comment(`
+				h.comment(`
 -- n1 should have no connected streams now after transferring the lease to n4.
 -- While, n4 should have 3 connected streams to s2,s3,s4. Query the stream count
 -- on n1, then on n4.
 -- n1 connected v2 streams:
 `)
-			h.query(n1, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
+				h.query(n1, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
 
-			h.comment(`-- n4 connected v2 streams:`)
-			h.query(n4, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
+				h.comment(`-- n4 connected v2 streams:`)
+				h.query(n4, v2FlowPerRangeStreamQueryStr, flowPerRangeStreamQueryHeaderStrs...)
 
-			h.comment(`-- (Allow below-raft admission to proceed.)`)
-			disableWorkQueueGranting.Store(false)
-			h.waitForAllTokensReturned(ctx, 4, 0 /* serverIdx */)
+				h.comment(`-- (Allow below-raft admission to proceed.)`)
+				disableWorkQueueGranting.Store(false)
+				h.waitForAllTokensReturned(ctx, 4, 0 /* serverIdx */)
 
-			h.comment(`
+				h.comment(`
 -- Flow token metrics from n1 after work gets admitted. Tokens were already
 -- returned earlier, so there's no change.
 `)
-			h.query(n1, v2FlowTokensQueryStr)
+				h.query(n1, v2FlowTokensQueryStr)
+			})
 		})
 	})
 }
@@ -1167,91 +1204,96 @@ func TestFlowControlClassPrioritizationV2(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(t *testing.T, mode kvflowcontrol.ModeT) {
-		ctx := context.Background()
-		var disableWorkQueueGranting atomic.Bool
-		disableWorkQueueGranting.Store(true)
-		settings := cluster.MakeTestingClusterSettings()
-		tc := testcluster.StartTestCluster(t, 5, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings: settings,
-				Knobs: base.TestingKnobs{
-					Store: &kvserver.StoreTestingKnobs{
-						RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-							return true
+	testutils.RunValues(t, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(t *testing.T, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(t *testing.T, mode kvflowcontrol.ModeT) {
+			ctx := context.Background()
+			var disableWorkQueueGranting atomic.Bool
+			disableWorkQueueGranting.Store(true)
+			settings := cluster.MakeTestingClusterSettings()
+			tc := testcluster.StartTestCluster(t, 5, base.TestClusterArgs{
+				ReplicationMode: base.ReplicationManual,
+				ServerArgs: base.TestServerArgs{
+					Settings: settings,
+					Knobs: base.TestingKnobs{
+						Store: &kvserver.StoreTestingKnobs{
+							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+								UseOnlyForScratchRanges: true,
+								OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+									return v2EnabledWhenLeaderLevel
+								},
+								OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
+									// This test asserts on the exact values of tracked tokens. In
+									// non-test code, the tokens deducted are a few bytes off (give
+									// or take) from the size of the proposals. We don't care about
+									// such differences.
+									return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+								},
+							},
 						},
-						FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
-							UseOnlyForScratchRanges: true,
-							OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
-								// This test asserts on the exact values of tracked tokens. In
-								// non-test code, the tokens deducted are a few bytes off (give
-								// or take) from the size of the proposals. We don't care about
-								// such differences.
-								return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+						AdmissionControl: &admission.TestingKnobs{
+							DisableWorkQueueFastPath: true,
+							DisableWorkQueueGranting: func() bool {
+								return disableWorkQueueGranting.Load()
 							},
 						},
 					},
-					AdmissionControl: &admission.TestingKnobs{
-						DisableWorkQueueFastPath: true,
-						DisableWorkQueueGranting: func() bool {
-							return disableWorkQueueGranting.Load()
-						},
-					},
 				},
-			},
-		})
-		defer tc.Stopper().Stop(ctx)
+			})
+			defer tc.Stopper().Stop(ctx)
 
-		k := tc.ScratchRange(t)
-		tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
+			k := tc.ScratchRange(t)
+			tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
 
-		n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+			n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
 
-		h := newFlowControlTestHelper(t, tc)
-		h.init(mode)
-		defer h.close(makeV2EnabledTestFileName(mode, "class_prioritization"))
+			h := newFlowControlTestHelperV2(t, tc, v2EnabledWhenLeaderLevel)
+			h.init(mode)
+			defer h.close(makeV2EnabledTestFileName(v2EnabledWhenLeaderLevel, mode, "class_prioritization"))
 
-		desc, err := tc.LookupRange(k)
-		require.NoError(t, err)
-		h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
-		// Reset the token metrics, since a send queue may have instantly
-		// formed when adding one of the replicas, before being quickly
-		// drained.
-		h.resetV2TokenMetrics(ctx)
+			desc, err := tc.LookupRange(k)
+			require.NoError(t, err)
+			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
+			// Reset the token metrics, since a send queue may have instantly
+			// formed when adding one of the replicas, before being quickly
+			// drained.
+			h.resetV2TokenMetrics(ctx)
 
-		h.comment(`-- (Issuing 1x1MiB, 3x replicated elastic write that's not admitted.)`)
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
+			h.comment(`-- (Issuing 1x1MiB, 3x replicated elastic write that's not admitted.)`)
+			h.put(ctx, k, 1, testFlowModeToPri(mode))
 
-		h.comment(`
+			h.comment(`
 -- Flow token metrics from n1 after issuing 1x1MiB elastic 3x replicated write
 -- that's not admitted. We see 1*1MiB*3=3MiB deductions of elastic tokens with
 -- no corresponding returns.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`-- (Issuing 1x1MiB, 3x replicated write that's not admitted.)`)
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
+			h.comment(`-- (Issuing 1x1MiB, 3x replicated write that's not admitted.)`)
+			h.put(ctx, k, 1, testFlowModeToPri(mode))
 
-		h.comment(`
+			h.comment(`
 -- Flow token metrics from n1 after issuing 1x1MiB 3x replicated write
 -- that's not admitted. We see 1*1MiB*3=3MiB deductions of {regular,elastic}
 -- tokens with no corresponding returns.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`-- (Allow below-raft admission to proceed.)`)
-		disableWorkQueueGranting.Store(false)
-		h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
+			h.comment(`-- (Allow below-raft admission to proceed.)`)
+			disableWorkQueueGranting.Store(false)
+			h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
 
-		h.comment(`
+			h.comment(`
 -- Flow token metrics from n1 after work gets admitted. All {regular,elastic}
 -- tokens deducted are returned.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
+		})
 	})
 }
 
@@ -1263,123 +1305,128 @@ func TestFlowControlUnquiescedRangeV2(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(t *testing.T, mode kvflowcontrol.ModeT) {
-		ctx := context.Background()
-		var disableWorkQueueGranting atomic.Bool
-		var disablePiggybackTokenDispatch atomic.Bool
-		disableWorkQueueGranting.Store(true)
-		disablePiggybackTokenDispatch.Store(true)
+	testutils.RunValues(t, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(t *testing.T, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(t *testing.T, mode kvflowcontrol.ModeT) {
+			ctx := context.Background()
+			var disableWorkQueueGranting atomic.Bool
+			var disablePiggybackTokenDispatch atomic.Bool
+			disableWorkQueueGranting.Store(true)
+			disablePiggybackTokenDispatch.Store(true)
 
-		settings := cluster.MakeTestingClusterSettings()
-		// Override metamorphism to allow range quiescence.
-		kvserver.OverrideDefaultLeaseType(ctx, &settings.SV, roachpb.LeaseEpoch)
-		tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings: settings,
-				RaftConfig: base.RaftConfig{
-					// Suppress timeout-based elections. This test doesn't want to deal
-					// with leadership changing hands.
-					RaftElectionTimeoutTicks: 1000000,
-				},
-				Knobs: base.TestingKnobs{
-					Store: &kvserver.StoreTestingKnobs{
-						RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-							return true
+			settings := cluster.MakeTestingClusterSettings()
+			// Override metamorphism to allow range quiescence.
+			kvserver.OverrideDefaultLeaseType(ctx, &settings.SV, roachpb.LeaseEpoch)
+			tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
+				ReplicationMode: base.ReplicationManual,
+				ServerArgs: base.TestServerArgs{
+					Settings: settings,
+					RaftConfig: base.RaftConfig{
+						// Suppress timeout-based elections. This test doesn't want to deal
+						// with leadership changing hands.
+						RaftElectionTimeoutTicks: 1000000,
+					},
+					Knobs: base.TestingKnobs{
+						Store: &kvserver.StoreTestingKnobs{
+							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+								UseOnlyForScratchRanges: true,
+								OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+									return v2EnabledWhenLeaderLevel
+								},
+								OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
+									// This test asserts on the exact values of tracked tokens. In
+									// non-test code, the tokens deducted are a few bytes off (give
+									// or take) from the size of the proposals. We don't care about
+									// such differences.
+									return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+								},
+							},
 						},
-						FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
-							UseOnlyForScratchRanges: true,
-							OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
-								// This test asserts on the exact values of tracked tokens. In
-								// non-test code, the tokens deducted are a few bytes off (give
-								// or take) from the size of the proposals. We don't care about
-								// such differences.
-								return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+						AdmissionControl: &admission.TestingKnobs{
+							DisableWorkQueueFastPath: true,
+							DisableWorkQueueGranting: func() bool {
+								return disableWorkQueueGranting.Load()
+							},
+						},
+						RaftTransport: &kvserver.RaftTransportTestingKnobs{
+							DisableFallbackFlowTokenDispatch: func() bool {
+								return disablePiggybackTokenDispatch.Load()
+							},
+							DisablePiggyBackedFlowTokenDispatch: func() bool {
+								return disablePiggybackTokenDispatch.Load()
 							},
 						},
 					},
-					AdmissionControl: &admission.TestingKnobs{
-						DisableWorkQueueFastPath: true,
-						DisableWorkQueueGranting: func() bool {
-							return disableWorkQueueGranting.Load()
-						},
-					},
-					RaftTransport: &kvserver.RaftTransportTestingKnobs{
-						DisableFallbackFlowTokenDispatch: func() bool {
-							return disablePiggybackTokenDispatch.Load()
-						},
-						DisablePiggyBackedFlowTokenDispatch: func() bool {
-							return disablePiggybackTokenDispatch.Load()
-						},
-					},
 				},
-			},
-		})
-		defer tc.Stopper().Stop(ctx)
+			})
+			defer tc.Stopper().Stop(ctx)
 
-		k := tc.ScratchRange(t)
-		desc, err := tc.LookupRange(k)
-		require.NoError(t, err)
+			k := tc.ScratchRange(t)
+			desc, err := tc.LookupRange(k)
+			require.NoError(t, err)
 
-		tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
-		h := newFlowControlTestHelper(t, tc)
-		h.init(mode)
-		defer h.close(makeV2EnabledTestFileName(mode, "unquiesced_range"))
+			tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
+			h := newFlowControlTestHelperV2(t, tc, v2EnabledWhenLeaderLevel)
+			h.init(mode)
+			defer h.close(makeV2EnabledTestFileName(v2EnabledWhenLeaderLevel, mode, "unquiesced_range"))
 
-		h.enableVerboseRaftMsgLoggingForRange(desc.RangeID)
-		n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+			h.enableVerboseRaftMsgLoggingForRange(desc.RangeID)
+			n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
 
-		h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
-		// Reset the token metrics, since a send queue may have instantly
-		// formed when adding one of the replicas, before being quickly
-		// drained.
-		h.resetV2TokenMetrics(ctx)
+			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
+			// Reset the token metrics, since a send queue may have instantly
+			// formed when adding one of the replicas, before being quickly
+			// drained.
+			h.resetV2TokenMetrics(ctx)
 
-		h.comment(`-- (Issuing 1x1MiB, 3x replicated elastic write that's not admitted.)`)
-		h.put(ctx, k, 1, admissionpb.BulkNormalPri)
-		h.comment(`
+			h.comment(`-- (Issuing 1x1MiB, 3x replicated elastic write that's not admitted.)`)
+			h.put(ctx, k, 1, admissionpb.BulkNormalPri)
+			h.comment(`
 -- Flow token metrics from n1 after issuing 1x1MiB elastic 3x replicated write
 -- that's not admitted. We see 1*1MiB*3=3MiB deductions of elastic tokens with
 -- no corresponding returns.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		// The range must not quiesce because the leader holds send tokens.
-		leader := tc.GetRaftLeader(t, roachpb.RKey(k))
-		require.NotNil(t, leader)
-		require.False(t, leader.IsQuiescent())
+			// The range must not quiesce because the leader holds send tokens.
+			leader := tc.GetRaftLeader(t, roachpb.RKey(k))
+			require.NotNil(t, leader)
+			require.False(t, leader.IsQuiescent())
 
-		h.comment(`
+			h.comment(`
 -- (Allow below-raft admission to proceed. We've disabled the piggybacked token
 -- return mechanism so no tokens are returned via this path. But the tokens will
 -- be returned anyway because the range is not quiesced and keeps pinging.)`)
-		disableWorkQueueGranting.Store(false)
-		h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
-		h.query(n1, v2FlowTokensQueryStr)
+			disableWorkQueueGranting.Store(false)
+			h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`-- (Issuing another 1x1MiB 3x elastic write.)`)
-		disableWorkQueueGranting.Store(true)
-		h.put(ctx, k, 1, admissionpb.BulkNormalPri)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.comment(`-- (Issuing another 1x1MiB 3x elastic write.)`)
+			disableWorkQueueGranting.Store(true)
+			h.put(ctx, k, 1, admissionpb.BulkNormalPri)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`
+			h.comment(`
 -- (Allow below-raft admission to proceed. We've enabled the piggybacked token
 -- return mechanism so tokens are returned either via this path, or the normal
 -- MsgAppResp flow, depending on which is exercised first.)`)
-		disablePiggybackTokenDispatch.Store(false)
-		disableWorkQueueGranting.Store(false)
-		h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
-		h.query(n1, v2FlowTokensQueryStr)
+			disablePiggybackTokenDispatch.Store(false)
+			disableWorkQueueGranting.Store(false)
+			h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`-- (Now the range can quiesce. Wait for it.)`)
-		testutils.SucceedsSoon(t, func() error {
-			if !leader.IsQuiescent() {
-				return errors.Errorf("%s not quiescent", leader)
-			}
-			return nil
+			h.comment(`-- (Now the range can quiesce. Wait for it.)`)
+			testutils.SucceedsSoon(t, func() error {
+				if !leader.IsQuiescent() {
+					return errors.Errorf("%s not quiescent", leader)
+				}
+				return nil
+			})
 		})
 	})
 }
@@ -1390,201 +1437,215 @@ func TestFlowControlTransferLeaseV2(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(t *testing.T, mode kvflowcontrol.ModeT) {
-		ctx := context.Background()
-		var disableWorkQueueGranting atomic.Bool
-		disableWorkQueueGranting.Store(true)
-		settings := cluster.MakeTestingClusterSettings()
-		tc := testcluster.StartTestCluster(t, 5, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings: settings,
-				Knobs: base.TestingKnobs{
-					Store: &kvserver.StoreTestingKnobs{
-						RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-							return true
+	testutils.RunValues(t, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(t *testing.T, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(t *testing.T, mode kvflowcontrol.ModeT) {
+			ctx := context.Background()
+			var disableWorkQueueGranting atomic.Bool
+			disableWorkQueueGranting.Store(true)
+			settings := cluster.MakeTestingClusterSettings()
+			tc := testcluster.StartTestCluster(t, 5, base.TestClusterArgs{
+				ReplicationMode: base.ReplicationManual,
+				ServerArgs: base.TestServerArgs{
+					Settings: settings,
+					Knobs: base.TestingKnobs{
+						Store: &kvserver.StoreTestingKnobs{
+							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+								UseOnlyForScratchRanges: true,
+								OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+									return v2EnabledWhenLeaderLevel
+								},
+								OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
+									// This test asserts on the exact values of tracked tokens. In
+									// non-test code, the tokens deducted are a few bytes off (give
+									// or take) from the size of the proposals. We don't care about
+									// such differences.
+									return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+								},
+							},
 						},
-						FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
-							UseOnlyForScratchRanges: true,
-							OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
-								// This test asserts on the exact values of tracked tokens. In
-								// non-test code, the tokens deducted are a few bytes off (give
-								// or take) from the size of the proposals. We don't care about
-								// such differences.
-								return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+						AdmissionControl: &admission.TestingKnobs{
+							DisableWorkQueueFastPath: true,
+							DisableWorkQueueGranting: func() bool {
+								return disableWorkQueueGranting.Load()
 							},
 						},
 					},
-					AdmissionControl: &admission.TestingKnobs{
-						DisableWorkQueueFastPath: true,
-						DisableWorkQueueGranting: func() bool {
-							return disableWorkQueueGranting.Load()
-						},
-					},
 				},
-			},
-		})
-		defer tc.Stopper().Stop(ctx)
+			})
+			defer tc.Stopper().Stop(ctx)
 
-		k := tc.ScratchRange(t)
-		tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
+			k := tc.ScratchRange(t)
+			tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
 
-		n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+			n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
 
-		h := newFlowControlTestHelper(t, tc)
-		h.init(mode)
-		defer h.close(makeV2EnabledTestFileName(mode, "transfer_lease"))
+			h := newFlowControlTestHelperV2(t, tc, v2EnabledWhenLeaderLevel)
+			h.init(mode)
+			defer h.close(makeV2EnabledTestFileName(v2EnabledWhenLeaderLevel, mode, "transfer_lease"))
 
-		desc, err := tc.LookupRange(k)
-		require.NoError(t, err)
-		h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
-		// Reset the token metrics, since a send queue may have instantly
-		// formed when adding one of the replicas, before being quickly
-		// drained.
-		h.resetV2TokenMetrics(ctx)
+			desc, err := tc.LookupRange(k)
+			require.NoError(t, err)
+			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
+			// Reset the token metrics, since a send queue may have instantly
+			// formed when adding one of the replicas, before being quickly
+			// drained.
+			h.resetV2TokenMetrics(ctx)
 
-		h.comment(`-- (Issuing 1x1MiB, 3x replicated write that's not admitted.)`)
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
+			h.comment(`-- (Issuing 1x1MiB, 3x replicated write that's not admitted.)`)
+			h.put(ctx, k, 1, testFlowModeToPri(mode))
 
-		h.comment(`
+			h.comment(`
 -- Flow token metrics from n1 after issuing 1x1MiB 3x replicated write
 -- that's not admitted. We see 1*1MiB*3=3MiB deductions of tokens with
 -- no corresponding returns.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`-- (Transferring range lease to n2 and allowing leadership to follow.)`)
-		tc.TransferRangeLeaseOrFatal(t, desc, tc.Target(1))
-		testutils.SucceedsSoon(t, func() error {
-			if leader := tc.GetRaftLeader(t, roachpb.RKey(k)); leader.NodeID() != tc.Target(1).NodeID {
-				return errors.Errorf("expected raft leadership to transfer to n1, found n%d", leader.NodeID())
-			}
-			return nil
-		})
-		h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
+			h.comment(`-- (Transferring range lease to n2 and allowing leadership to follow.)`)
+			tc.TransferRangeLeaseOrFatal(t, desc, tc.Target(1))
+			testutils.SucceedsSoon(t, func() error {
+				if leader := tc.GetRaftLeader(t, roachpb.RKey(k)); leader.NodeID() != tc.Target(1).NodeID {
+					return errors.Errorf("expected raft leadership to transfer to n1, found n%d", leader.NodeID())
+				}
+				return nil
+			})
+			h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
 
-		h.comment(`
+			h.comment(`
 -- Flow token metrics from n1 having lost the lease and raft leadership. All
 -- deducted tokens are returned.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
+		})
 	})
 }
 
 // TestFlowControlLeaderNotLeaseholderV2 tests flow control behavior when the
 // range leaseholder is not the raft leader.
+//
+// NOTE: This test diverges from TestFlowControlLeaderNotLeaseholder, as v1
+// replication flow control doesn't admit via the store work queue when the
+// replica is a leaseholder but not the raft leader. Tracked in #130948.
 func TestFlowControlLeaderNotLeaseholderV2(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(t *testing.T, mode kvflowcontrol.ModeT) {
-		ctx := context.Background()
-		var disableWorkQueueGranting atomic.Bool
-		disableWorkQueueGranting.Store(true)
-		settings := cluster.MakeTestingClusterSettings()
-		tc := testcluster.StartTestCluster(t, 5, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings: settings,
-				Knobs: base.TestingKnobs{
-					Store: &kvserver.StoreTestingKnobs{
-						RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-							return true
+	testutils.RunValues(t, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(t *testing.T, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(t *testing.T, mode kvflowcontrol.ModeT) {
+			ctx := context.Background()
+			var disableWorkQueueGranting atomic.Bool
+			disableWorkQueueGranting.Store(true)
+			settings := cluster.MakeTestingClusterSettings()
+			tc := testcluster.StartTestCluster(t, 5, base.TestClusterArgs{
+				ReplicationMode: base.ReplicationManual,
+				ServerArgs: base.TestServerArgs{
+					Settings: settings,
+					Knobs: base.TestingKnobs{
+						Store: &kvserver.StoreTestingKnobs{
+							// Disable leader transfers during leaseholder changes so
+							// that we can easily create leader-not-leaseholder
+							// scenarios.
+							DisableLeaderFollowsLeaseholder: true,
+							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+								UseOnlyForScratchRanges: true,
+								OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+									return v2EnabledWhenLeaderLevel
+								},
+								OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
+									// This test asserts on the exact values of tracked tokens. In
+									// non-test code, the tokens deducted are a few bytes off (give
+									// or take) from the size of the proposals. We don't care about
+									// such differences.
+									return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+								},
+							},
 						},
-						// Disable leader transfers during leaseholder changes so
-						// that we can easily create leader-not-leaseholder
-						// scenarios.
-						DisableLeaderFollowsLeaseholder: true,
-						FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
-							UseOnlyForScratchRanges: true,
-							OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
-								// This test asserts on the exact values of tracked tokens. In
-								// non-test code, the tokens deducted are a few bytes off (give
-								// or take) from the size of the proposals. We don't care about
-								// such differences.
-								return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+						AdmissionControl: &admission.TestingKnobs{
+							DisableWorkQueueFastPath: true,
+							DisableWorkQueueGranting: func() bool {
+								return disableWorkQueueGranting.Load()
 							},
 						},
 					},
-					AdmissionControl: &admission.TestingKnobs{
-						DisableWorkQueueFastPath: true,
-						DisableWorkQueueGranting: func() bool {
-							return disableWorkQueueGranting.Load()
-						},
-					},
 				},
-			},
-		})
-		defer tc.Stopper().Stop(ctx)
+			})
+			defer tc.Stopper().Stop(ctx)
 
-		k := tc.ScratchRange(t)
-		tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
+			k := tc.ScratchRange(t)
+			tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
 
-		n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
-		n2 := sqlutils.MakeSQLRunner(tc.ServerConn(1))
+			n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+			n2 := sqlutils.MakeSQLRunner(tc.ServerConn(1))
 
-		h := newFlowControlTestHelper(t, tc)
-		h.init(mode)
-		defer h.close(makeV2EnabledTestFileName(mode, "leader_not_leaseholder"))
+			h := newFlowControlTestHelperV2(t, tc, v2EnabledWhenLeaderLevel)
+			h.init(mode)
+			defer h.close(makeV2EnabledTestFileName(v2EnabledWhenLeaderLevel, mode, "leader_not_leaseholder"))
 
-		desc, err := tc.LookupRange(k)
-		require.NoError(t, err)
-		h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
-		// Reset the token metrics, since a send queue may have instantly
-		// formed when adding one of the replicas, before being quickly
-		// drained.
-		h.resetV2TokenMetrics(ctx)
+			desc, err := tc.LookupRange(k)
+			require.NoError(t, err)
+			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
+			// Reset the token metrics, since a send queue may have instantly
+			// formed when adding one of the replicas, before being quickly
+			// drained.
+			h.resetV2TokenMetrics(ctx)
 
-		h.comment(`-- (Issuing 1x1MiB, 3x replicated write that's not admitted.)`)
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
+			h.comment(`-- (Issuing 1x1MiB, 3x replicated write that's not admitted.)`)
+			h.put(ctx, k, 1, testFlowModeToPri(mode))
 
-		h.comment(`
+			h.comment(`
 -- Flow token metrics from n1 after issuing 1x1MiB 3x replicated write
 -- that's not admitted. We see 1*1MiB*3=3MiB deductions of tokens with
 -- no corresponding returns.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`-- (Transferring only range lease, not raft leadership, to n2.)`)
-		tc.TransferRangeLeaseOrFatal(t, desc, tc.Target(1))
-		require.Equal(t, tc.GetRaftLeader(t, roachpb.RKey(k)).NodeID(), tc.Target(0).NodeID)
+			h.comment(`-- (Transferring only range lease, not raft leadership, to n2.)`)
+			tc.TransferRangeLeaseOrFatal(t, desc, tc.Target(1))
+			require.Equal(t, tc.GetRaftLeader(t, roachpb.RKey(k)).NodeID(), tc.Target(0).NodeID)
 
-		h.comment(`
+			h.comment(`
 -- Flow token metrics from n1 having lost the lease but retained raft
 -- leadership. No deducted tokens are released.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`
+			h.comment(`
 -- (Allow below-raft admission to proceed. All tokens should be returned.)
 `)
-		disableWorkQueueGranting.Store(false)
-		h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
-		h.query(n1, v2FlowTokensQueryStr)
+			disableWorkQueueGranting.Store(false)
+			h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`
+			h.comment(`
 -- (Issuing another 1x1MiB, 3x replicated write that's admitted via 
 -- the work queue on the leaseholder. It shouldn't deduct any tokens.)
 `)
-		h.put(ctx, k, 1, testFlowModeToPri(mode))
+			h.put(ctx, k, 1, testFlowModeToPri(mode))
 
-		h.comment(`
+			h.comment(`
 -- Looking at n1's flow token metrics, there's no change. No additional tokens
 -- are deducted since the write is not being proposed here.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`
+			h.comment(`
 -- Looking at n2's flow token metrics, there's no activity. n2 never acquired
 -- the raft leadership.
 `)
-		h.query(n2, v2FlowTokensQueryStr)
+			h.query(n2, v2FlowTokensQueryStr)
+		})
 	})
 }
 
@@ -1598,96 +1659,101 @@ func TestFlowControlGranterAdmitOneByOneV2(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(t *testing.T, mode kvflowcontrol.ModeT) {
-		ctx := context.Background()
-		var disableWorkQueueGranting atomic.Bool
-		disableWorkQueueGranting.Store(true)
-		settings := cluster.MakeTestingClusterSettings()
-		tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings: settings,
-				Knobs: base.TestingKnobs{
-					Store: &kvserver.StoreTestingKnobs{
-						RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-							return true
-						},
-						FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
-							UseOnlyForScratchRanges: true,
-							OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
-								// This test asserts on the exact values of tracked
-								// tokens. In non-test code, the tokens deducted are
-								// a few bytes off (give or take) from the size of
-								// the proposals. We don't care about such
-								// differences.
-								return kvflowcontrol.Tokens(1 << 10 /* 1KiB */)
+	testutils.RunValues(t, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(t *testing.T, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(t, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(t *testing.T, mode kvflowcontrol.ModeT) {
+			ctx := context.Background()
+			var disableWorkQueueGranting atomic.Bool
+			disableWorkQueueGranting.Store(true)
+			settings := cluster.MakeTestingClusterSettings()
+			tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
+				ReplicationMode: base.ReplicationManual,
+				ServerArgs: base.TestServerArgs{
+					Settings: settings,
+					Knobs: base.TestingKnobs{
+						Store: &kvserver.StoreTestingKnobs{
+							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+								UseOnlyForScratchRanges: true,
+								OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+									return v2EnabledWhenLeaderLevel
+								},
+								OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
+									// This test asserts on the exact values of tracked
+									// tokens. In non-test code, the tokens deducted are
+									// a few bytes off (give or take) from the size of
+									// the proposals. We don't care about such
+									// differences.
+									return kvflowcontrol.Tokens(1 << 10 /* 1KiB */)
+								},
 							},
 						},
-					},
-					AdmissionControl: &admission.TestingKnobs{
-						DisableWorkQueueFastPath: true,
-						DisableWorkQueueGranting: func() bool {
-							return disableWorkQueueGranting.Load()
+						AdmissionControl: &admission.TestingKnobs{
+							DisableWorkQueueFastPath: true,
+							DisableWorkQueueGranting: func() bool {
+								return disableWorkQueueGranting.Load()
+							},
+							AlwaysTryGrantWhenAdmitted: true,
 						},
-						AlwaysTryGrantWhenAdmitted: true,
 					},
 				},
-			},
-		})
-		defer tc.Stopper().Stop(ctx)
+			})
+			defer tc.Stopper().Stop(ctx)
 
-		k := tc.ScratchRange(t)
-		tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
+			k := tc.ScratchRange(t)
+			tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
 
-		n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+			n1 := sqlutils.MakeSQLRunner(tc.ServerConn(0))
 
-		h := newFlowControlTestHelper(t, tc)
-		h.init(mode)
-		defer h.close(makeV2EnabledTestFileName(mode, "granter_admit_one_by_one"))
+			h := newFlowControlTestHelperV2(t, tc, v2EnabledWhenLeaderLevel)
+			h.init(mode)
+			defer h.close(makeV2EnabledTestFileName(v2EnabledWhenLeaderLevel, mode, "granter_admit_one_by_one"))
 
-		desc, err := tc.LookupRange(k)
-		require.NoError(t, err)
-		h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
-		// Reset the token metrics, since a send queue may have instantly
-		// formed when adding one of the replicas, before being quickly
-		// drained.
-		h.resetV2TokenMetrics(ctx)
+			desc, err := tc.LookupRange(k)
+			require.NoError(t, err)
+			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
+			// Reset the token metrics, since a send queue may have instantly
+			// formed when adding one of the replicas, before being quickly
+			// drained.
+			h.resetV2TokenMetrics(ctx)
 
-		h.comment(`-- (Issuing 1024*1KiB, 3x replicated writes that are not admitted.)`)
-		h.log("sending put requests")
-		for i := 0; i < 1024; i++ {
-			// TODO(kvoli): This sleep is necessary because we fill up the (raft)
-			// send queue and delay sending + tracking. We need to determine why this
-			// occasionally occurs under race.
-			time.Sleep(1 * time.Millisecond)
-			h.put(ctx, k, 1, testFlowModeToPri(mode))
-		}
-		h.log("sent put requests")
+			h.comment(`-- (Issuing 1024*1KiB, 3x replicated writes that are not admitted.)`)
+			h.log("sending put requests")
+			for i := 0; i < 1024; i++ {
+				// TODO(kvoli): This sleep is necessary because we fill up the (raft)
+				// send queue and delay sending + tracking. We need to determine why this
+				// occasionally occurs under race.
+				time.Sleep(1 * time.Millisecond)
+				h.put(ctx, k, 1, testFlowModeToPri(mode))
+			}
+			h.log("sent put requests")
 
-		h.comment(`
+			h.comment(`
 -- Flow token metrics from n1 after issuing 1024KiB, i.e. 1MiB 3x replicated writes
 -- that are yet to get admitted. We see 3*1MiB=3MiB deductions of
 -- {regular,elastic} tokens with no corresponding returns.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
 
-		h.comment(`-- Observe the total tracked tokens per-stream on n1.`)
-		h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+			h.comment(`-- Observe the total tracked tokens per-stream on n1.`)
+			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
 
-		h.comment(`-- (Allow below-raft admission to proceed.)`)
-		disableWorkQueueGranting.Store(false)
-		h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */) // wait for admission
+			h.comment(`-- (Allow below-raft admission to proceed.)`)
+			disableWorkQueueGranting.Store(false)
+			h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */) // wait for admission
 
-		h.comment(`
+			h.comment(`
 -- Flow token metrics from n1 after work gets admitted. We see 3MiB returns of
 -- {regular,elastic} tokens, and the available capacities going back to what
 -- they were. In #105185, by now we would've observed panics.
 `)
-		h.query(n1, v2FlowTokensQueryStr)
+			h.query(n1, v2FlowTokensQueryStr)
 
+		})
 	})
 }
 
@@ -1734,10 +1800,6 @@ func TestFlowControlSendQueue(t *testing.T) {
 	// Using a manual clock here ensures that StoreLiveness support, once
 	// established, never expires. By extension, leadership should stay sticky.
 	manualClock := hlc.NewHybridManualClock()
-	// We want to observe a disconnected stream when crashing a node, however
-	// we don't care about replicas blipping into StateProbe otherwise.
-	var bypassReplicaUnreachable atomic.Bool
-	bypassReplicaUnreachable.Store(true)
 	stickyArgsPerServer := make(map[int]base.TestServerArgs)
 	for i := range disableWorkQueueGrantingServers {
 		// Start with admission (logical token return) disabled across all nodes.
@@ -1756,9 +1818,6 @@ func TestFlowControlSendQueue(t *testing.T) {
 					WallClock:         manualClock,
 				},
 				Store: &kvserver.StoreTestingKnobs{
-					RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-						return bypassReplicaUnreachable.Load()
-					},
 					FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
 						UseOnlyForScratchRanges: true,
 						OverrideTokenDeduction: func(tokens kvflowcontrol.Tokens) kvflowcontrol.Tokens {
@@ -1809,7 +1868,10 @@ func TestFlowControlSendQueue(t *testing.T) {
 	k := tc.ScratchRange(t)
 	tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
 
-	h := newFlowControlTestHelper(t, tc)
+	h := newFlowControlTestHelper(
+		t, tc, "flow_control_integration_v2", /* testdata */
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding, true, /* isStatic */
+	)
 	h.init(kvflowcontrol.ApplyToAll)
 	defer h.close("send_queue")
 
@@ -1884,7 +1946,7 @@ func TestFlowControlSendQueue(t *testing.T) {
 	setTokenReturnEnabled(true /* enabled */, 0, 1)
 	// Wait for token return on n1, n2. We should only be tracking the tokens for
 	// n3 now.
-	h.waitForAllTokensReturnedForStreams(ctx, 0 /* serverIdx */, testingMkFlowStream(0), testingMkFlowStream(1))
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0 /* serverIdx */, testingMkFlowStream(0), testingMkFlowStream(1))
 	h.waitForTotalTrackedTokens(ctx, desc.RangeID, 4<<20 /* 4MiB */, 0 /* serverIdx */)
 	h.comment(`-- Observe the total tracked tokens per-stream on n1.`)
 	h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
@@ -1901,7 +1963,7 @@ func TestFlowControlSendQueue(t *testing.T) {
 	// NB: The write won't be tracked because the quorum [n1,n2] have tokens for
 	// eval.
 	h.waitForTotalTrackedTokens(ctx, desc.RangeID, 5<<20 /* 5 MiB */, 0 /* serverIdx */)
-	h.waitForAllTokensReturnedForStreams(ctx, 0 /* serverIdx */, testingMkFlowStream(0))
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0 /* serverIdx */, testingMkFlowStream(0))
 	h.waitForSendQueueSize(ctx, desc.RangeID, 1<<20 /* 1MiB expSize */, 0 /* serverIdx */)
 	h.comment(`
 -- The send queue metrics from n1 should reflect the 1 MiB write being queued
@@ -1912,13 +1974,12 @@ func TestFlowControlSendQueue(t *testing.T) {
 	h.query(n1, flowPerStoreTokenQueryStr, flowPerStoreTokenQueryHeaderStrs...)
 
 	h.comment(`-- (Stopping n2.)`)
-	bypassReplicaUnreachable.Store(false)
 	tc.StopServer(1 /* n2 */)
 	// There should now be 2 connected streams (n1,n3).
 	h.waitForConnectedStreams(ctx, desc.RangeID, 2, 0 /* serverIdx */)
 	// There should also be 5 MiB of tracked tokens for n1->n3, 4 + 1 MiB.
 	h.waitForTotalTrackedTokens(ctx, desc.RangeID, 5<<20 /* 5 MiB */, 0 /* serverIdx */)
-	h.waitForAllTokensReturnedForStreams(ctx, 0 /* serverIdx */, testingMkFlowStream(0), testingMkFlowStream(1))
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0 /* serverIdx */, testingMkFlowStream(0), testingMkFlowStream(1))
 	h.waitForSendQueueSize(ctx, desc.RangeID, 0 /* expSize */, 0 /* serverIdx */)
 	h.comment(`
 -- Flow token metrics from n1, the disconnect should be reflected in the metrics.`)
@@ -1943,7 +2004,7 @@ func TestFlowControlSendQueue(t *testing.T) {
 	h.comment(`-- (Disabling wait-for-eval bypass.)`)
 	noopWaitForEval.Store(false)
 	h.waitForTotalTrackedTokens(ctx, desc.RangeID, 6<<20 /* 6 MiB */, 0 /* serverIdx */)
-	h.waitForAllTokensReturnedForStreams(ctx, 0 /* serverIdx */, testingMkFlowStream(0), testingMkFlowStream(1))
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0 /* serverIdx */, testingMkFlowStream(0), testingMkFlowStream(1))
 
 	h.comment(`
 -- Send queue metrics from n1, n3's should not be allowed to form a send queue.`)
@@ -1964,7 +2025,6 @@ func TestFlowControlSendQueue(t *testing.T) {
 	h.query(n1, flowPerStoreTokenQueryStr, flowPerStoreTokenQueryHeaderStrs...)
 
 	h.comment(`-- (Starting n2.)`)
-	bypassReplicaUnreachable.Store(true)
 	require.NoError(t, tc.RestartServer(1))
 	h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
 	h.comment(`-- There should now be 3 connected streams again.`)
@@ -1992,7 +2052,7 @@ func TestFlowControlSendQueue(t *testing.T) {
 	// admission is allowed. While n4,n5 will continue to track as they are
 	// blocked from admitting.
 	h.waitForTotalTrackedTokens(ctx, desc.RangeID, 8<<20 /* 8 MiB */, 0 /* serverIdx */)
-	h.waitForAllTokensReturnedForStreams(ctx, 0 /* serverIdx */, testingMkFlowStream(0), testingMkFlowStream(1), testingMkFlowStream(2))
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0 /* serverIdx */, testingMkFlowStream(0), testingMkFlowStream(1), testingMkFlowStream(2))
 	h.comment(`
 -- From n1. We should expect to see the unblocked streams quickly
 -- untrack as admission is allowed (so not observed here), while n4,n5 will continue
@@ -2007,7 +2067,7 @@ func TestFlowControlSendQueue(t *testing.T) {
 	// quickly admits and untracks. While n4,n5 queue the write, not sending the
 	// msg, deducting and tracking the entry tokens.
 	h.waitForTotalTrackedTokens(ctx, desc.RangeID, 8<<20 /* 8 MiB */, 0 /* serverIdx */)
-	h.waitForAllTokensReturnedForStreams(ctx, 0 /* serverIdx */, testingMkFlowStream(0), testingMkFlowStream(1), testingMkFlowStream(2))
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0 /* serverIdx */, testingMkFlowStream(0), testingMkFlowStream(1), testingMkFlowStream(2))
 	h.comment(`
 -- Send queue and flow token metrics from n1. The 1 MiB write should be queued
 -- for n4,n5, while the quorum (n1,n2,n3) proceeds.
@@ -2034,6 +2094,7 @@ func TestFlowControlSendQueue(t *testing.T) {
 	h.put(contextWithTestGeneratedPut(ctx), k, 1, admissionpb.NormalPri)
 	h.put(contextWithTestGeneratedPut(ctx), k, 1, admissionpb.NormalPri)
 	h.put(contextWithTestGeneratedPut(ctx), k, 1, admissionpb.NormalPri)
+	// XXX:
 	h.waitForTotalTrackedTokens(ctx, desc.RangeID, 16<<20 /* 16 MiB */, 0 /* serverIdx */)
 	h.comment(`
 -- Send queue and flow token metrics from n1. The 4 MiB write should not be
@@ -2052,7 +2113,7 @@ func TestFlowControlSendQueue(t *testing.T) {
 	// Expect 4 x 4 MiB tracked tokens for the 4 MiB write = 16 MiB.
 	// Expect 2 x 1 MiB tracked tokens for the 1 MiB write =  2 MiB.
 	h.waitForTotalTrackedTokens(ctx, desc.RangeID, 18<<20 /* 18MiB */, 0 /* serverIdx */)
-	h.waitForAllTokensReturnedForStreams(ctx, 0 /* serverIdx */, testingMkFlowStream(0))
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0 /* serverIdx */, testingMkFlowStream(0))
 	h.comment(`
 -- Observe the total tracked tokens per-stream on n1. We should expect to see the
 -- 1 MiB write being tracked across a quorum of streams, while the 4 MiB write
@@ -2094,9 +2155,6 @@ func TestFlowControlRepeatedlySwitchMode(t *testing.T) {
 			Settings: settings,
 			Knobs: base.TestingKnobs{
 				Store: &kvserver.StoreTestingKnobs{
-					RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-						return true
-					},
 					FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
 						UseOnlyForScratchRanges: true,
 						OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
@@ -2118,7 +2176,7 @@ func TestFlowControlRepeatedlySwitchMode(t *testing.T) {
 	// node/stores.
 	k := tc.ScratchRange(t)
 	tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
-	h := newFlowControlTestHelper(t, tc)
+	h := newFlowControlTestHelperV2(t, tc, kvflowcontrol.V2EnabledWhenLeaderV2Encoding)
 	mode := kvflowcontrol.ApplyToElastic
 	h.init(mode)
 
@@ -2157,8 +2215,18 @@ func TestFlowControlRepeatedlySwitchMode(t *testing.T) {
 		}
 	}
 	// All tokens must be returned.
-	h.waitForAllTokensReturnedForStreams(ctx, 0 /* serverIdx */)
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0 /* serverIdx */)
 }
+
+// TODO(kvoli): Add the following tests which exercise interesting events while
+// send tokens are exhausted on a partial number, or on all streams:
+// - TestFlowControlSendQueueRangeSplitMerge
+// - TestFlowControlSendQueueTransferLease
+// - TestFlowControlSendQueueRaftMembershipRemoveSelf
+// - TestFlowControlSendQueueRaftMembership
+// - TestFlowControlSendQueueRaftSnapshot
+// - TestFlowControlSendQueueLeaderNotLeaseholder
+// - TestFlowControlSendQueueGranterAdmitOneByOne
 
 // TestFlowControlSendQueueManyInflight exercises send queue formation,
 // prevention and quickly draining 1k+ entries tracked in the send queue, in
@@ -2182,9 +2250,6 @@ func TestFlowControlSendQueueManyInflight(t *testing.T) {
 			Settings: settings,
 			Knobs: base.TestingKnobs{
 				Store: &kvserver.StoreTestingKnobs{
-					RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-						return true
-					},
 					FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
 						UseOnlyForScratchRanges: true,
 						OverrideTokenDeduction: func(tokens kvflowcontrol.Tokens) kvflowcontrol.Tokens {
@@ -2218,7 +2283,10 @@ func TestFlowControlSendQueueManyInflight(t *testing.T) {
 	})
 	defer tc.Stopper().Stop(ctx)
 
-	h := newFlowControlTestHelper(t, tc)
+	h := newFlowControlTestHelper(
+		t, tc, "flow_control_integration_v2", /* testdata */
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding, true, /* isStatic */
+	)
 	h.init(kvflowcontrol.ApplyToAll)
 	defer h.close("send_queue_many_inflight")
 
@@ -2378,9 +2446,6 @@ func TestFlowControlSendQueueRangeRelocate(t *testing.T) {
 					Settings: settings,
 					Knobs: base.TestingKnobs{
 						Store: &kvserver.StoreTestingKnobs{
-							RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-								return true
-							},
 							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
 								UseOnlyForScratchRanges: true,
 								OverrideTokenDeduction: func(tokens kvflowcontrol.Tokens) kvflowcontrol.Tokens {
@@ -2415,7 +2480,10 @@ func TestFlowControlSendQueueRangeRelocate(t *testing.T) {
 			k := tc.ScratchRange(t)
 			tc.AddVotersOrFatal(t, k, tc.Targets(1, 2, 3, 4)...)
 
-			h := newFlowControlTestHelper(t, tc)
+			h := newFlowControlTestHelper(
+				t, tc, "flow_control_integration_v2", /* testdata */
+				kvflowcontrol.V2EnabledWhenLeaderV2Encoding, true, /* isStatic */
+			)
 			h.init(kvflowcontrol.ApplyToAll)
 			defer h.close(fmt.Sprintf("send_queue_range_relocate_from_%s", fromString))
 
@@ -2443,7 +2511,7 @@ func TestFlowControlSendQueueRangeRelocate(t *testing.T) {
 			h.put(contextWithTestGeneratedPut(ctx), roachpb.Key(desc.StartKey), 1, admissionpb.NormalPri)
 			h.comment(`(Sent 1 MiB put request)`)
 			h.waitForTotalTrackedTokens(ctx, desc.RangeID, 4<<20 /* 4 MiB */, 0 /* serverIdx */)
-			h.waitForAllTokensReturnedForStreams(ctx, 0, /* serverIdx */
+			h.waitForAllTokensReturnedForStreamsV2(ctx, 0, /* serverIdx */
 				testingMkFlowStream(0), testingMkFlowStream(1),
 				testingMkFlowStream(3), testingMkFlowStream(4))
 			h.waitForSendQueueSize(ctx, desc.RangeID, 1<<20 /* expSize 1 MiB */, 0 /* serverIdx */)
@@ -2515,7 +2583,7 @@ func TestFlowControlSendQueueRangeRelocate(t *testing.T) {
 			h.put(contextWithTestGeneratedPut(ctx), k, 1, admissionpb.NormalPri, newLeaseholderIdx)
 			h.comment(`(Sent 1 MiB put request to the relocated range)`)
 
-			h.waitForAllTokensReturnedForStreams(ctx, 0, /* serverIdx */
+			h.waitForAllTokensReturnedForStreamsV2(ctx, 0, /* serverIdx */
 				testingMkFlowStream(0), testingMkFlowStream(1),
 				testingMkFlowStream(3), testingMkFlowStream(4))
 
@@ -2525,7 +2593,7 @@ func TestFlowControlSendQueueRangeRelocate(t *testing.T) {
 					toStreams = append(toStreams, testingMkFlowStream(toServerIdx))
 				}
 			}
-			h.waitForAllTokensReturnedForStreams(ctx, newLeaseholderIdx, toStreams...)
+			h.waitForAllTokensReturnedForStreamsV2(ctx, newLeaseholderIdx, toStreams...)
 
 			h.comment(`-- Observe the total tracked tokens per-stream on n1.`)
 			h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
@@ -2601,9 +2669,6 @@ func TestFlowControlRangeSplitMergeMixedVersion(t *testing.T) {
 					DisableAutomaticVersionUpgrade: make(chan struct{}),
 				},
 				Store: &kvserver.StoreTestingKnobs{
-					RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-						return true
-					},
 					FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
 						UseOnlyForScratchRanges: true,
 						OverrideTokenDeduction: func(tokens kvflowcontrol.Tokens) kvflowcontrol.Tokens {
@@ -2632,7 +2697,10 @@ func TestFlowControlRangeSplitMergeMixedVersion(t *testing.T) {
 	k := tc.ScratchRange(t)
 	tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
 
-	h := newFlowControlTestHelper(t, tc)
+	h := newFlowControlTestHelper(
+		t, tc, "flow_control_integration_v2", /* testdata */
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding, true, /* isStatic */
+	)
 
 	const mode = kvflowcontrol.ApplyToElastic
 	h.init(mode)
@@ -2713,7 +2781,7 @@ func TestFlowControlRangeSplitMergeMixedVersion(t *testing.T) {
 	cancelRight, chRight := h.putAsync(traceCtxRight, roachpb.Key(right.StartKey), 1, admissionpb.BulkNormalPri)
 	cancels = append(cancels, cancelRight)
 	h.comment(`(Sent 1 MiB BulkNormalPri put request to post-split RHS range)`)
-	h.waitForAllTokensReturnedForStreams(ctx, 0, /* serverIdx */
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0, /* serverIdx */
 		testingMkFlowStream(0), testingMkFlowStream(1))
 
 	h.comment(`
@@ -2846,10 +2914,19 @@ func TestFlowControlSendQueueRangeMigrate(t *testing.T) {
 					DisableAutomaticVersionUpgrade: make(chan struct{}),
 				},
 				Store: &kvserver.StoreTestingKnobs{
-					RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-						return true
+					EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
+						// Because we are migrating from a version (currently) prior to the
+						// range force flush key version gate, we won't trigger the force
+						// flush via migrate until we're on the endV, which defeats the
+						// purpose of this test. We override the behavior here to allow the
+						// force flush to be triggered on the startV from a Migrate
+						// request.
+						OverrideDoTimelyApplicationToAllReplicas: true,
 					},
 					FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+						OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+							return kvflowcontrol.V2EnabledWhenLeaderV2Encoding
+						},
 						UseOnlyForScratchRanges: true,
 						OverrideTokenDeduction: func(tokens kvflowcontrol.Tokens) kvflowcontrol.Tokens {
 							// Deduct every write as 1 MiB, regardless of how large it
@@ -2883,7 +2960,10 @@ func TestFlowControlSendQueueRangeMigrate(t *testing.T) {
 	k := tc.ScratchRange(t)
 	tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
 
-	h := newFlowControlTestHelper(t, tc)
+	h := newFlowControlTestHelper(
+		t, tc, "flow_control_integration_v2", /* testdata */
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding, true, /* isStatic */
+	)
 	h.init(kvflowcontrol.ApplyToAll)
 	defer h.close("send_queue_range_migrate")
 
@@ -2945,7 +3025,7 @@ func TestFlowControlSendQueueRangeMigrate(t *testing.T) {
 	h.put(ctx, roachpb.Key(desc.StartKey), 1, admissionpb.NormalPri)
 	h.comment(`(Sent 1 MiB put request)`)
 	h.waitForTotalTrackedTokens(ctx, desc.RangeID, 4<<20 /* 4 MiB */, 0 /* serverIdx */)
-	h.waitForAllTokensReturnedForStreams(ctx, 0, /* serverIdx */
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0, /* serverIdx */
 		testingMkFlowStream(0), testingMkFlowStream(1))
 	h.waitForSendQueueSize(ctx, desc.RangeID, 1<<20 /* expSize 1 MiB */, 0 /* serverIdx */)
 
@@ -2992,7 +3072,7 @@ func TestFlowControlSendQueueRangeMigrate(t *testing.T) {
 	h.put(ctx, roachpb.Key(desc.StartKey), 1, admissionpb.NormalPri)
 	h.comment(`(Sent 1 MiB put request to the migrated range)`)
 	h.waitForSendQueueSize(ctx, desc.RangeID, 1<<20 /* expSize 1 MiB */, 0 /* serverIdx */)
-	h.waitForAllTokensReturnedForStreams(ctx, 0, /* serverIdx */
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0, /* serverIdx */
 		testingMkFlowStream(0), testingMkFlowStream(1))
 
 	h.comment(`
@@ -3052,9 +3132,6 @@ func TestFlowControlSendQueueRangeSplitMerge(t *testing.T) {
 			Settings: settings,
 			Knobs: base.TestingKnobs{
 				Store: &kvserver.StoreTestingKnobs{
-					RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-						return true
-					},
 					FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
 						UseOnlyForScratchRanges: true,
 						OverrideTokenDeduction: func(tokens kvflowcontrol.Tokens) kvflowcontrol.Tokens {
@@ -3089,7 +3166,10 @@ func TestFlowControlSendQueueRangeSplitMerge(t *testing.T) {
 	k := tc.ScratchRange(t)
 	tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
 
-	h := newFlowControlTestHelper(t, tc)
+	h := newFlowControlTestHelper(
+		t, tc, "flow_control_integration_v2", /* testdata */
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding, true, /* isStatic */
+	)
 	h.init(kvflowcontrol.ApplyToAll)
 	defer h.close("send_queue_range_split_merge")
 
@@ -3130,7 +3210,7 @@ func TestFlowControlSendQueueRangeSplitMerge(t *testing.T) {
 	h.comment(`(Sent 1 MiB put request to pre-split range)`)
 
 	h.waitForTotalTrackedTokens(ctx, desc.RangeID, 4<<20 /* 4 MiB */, 0 /* serverIdx */)
-	h.waitForAllTokensReturnedForStreams(ctx, 0, /* serverIdx */
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0, /* serverIdx */
 		testingMkFlowStream(0), testingMkFlowStream(1))
 	h.waitForSendQueueSize(ctx, desc.RangeID, 1<<20 /* expSize 1 MiB */, 0 /* serverIdx */)
 
@@ -3164,13 +3244,13 @@ func TestFlowControlSendQueueRangeSplitMerge(t *testing.T) {
 	h.comment(`(Sending 1 MiB put request to post-split LHS range)`)
 	h.put(ctx, roachpb.Key(left.StartKey), 1, admissionpb.NormalPri)
 	h.comment(`(Sent 1 MiB put request to post-split LHS range)`)
-	h.waitForAllTokensReturnedForStreams(ctx, 0, /* serverIdx */
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0, /* serverIdx */
 		testingMkFlowStream(0), testingMkFlowStream(1))
 
 	h.comment(`(Sending 1 MiB put request to post-split RHS range)`)
 	h.put(ctx, roachpb.Key(right.StartKey), 1, admissionpb.NormalPri)
 	h.comment(`(Sent 1 MiB put request to post-split RHS range)`)
-	h.waitForAllTokensReturnedForStreams(ctx, 0, /* serverIdx */
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0, /* serverIdx */
 		testingMkFlowStream(0), testingMkFlowStream(1))
 
 	h.comment(`
@@ -3193,7 +3273,7 @@ func TestFlowControlSendQueueRangeSplitMerge(t *testing.T) {
 	h.comment(`(Sending 1 MiB put request to post-split-merge range)`)
 	h.put(ctx, k, 1, admissionpb.NormalPri)
 	h.comment(`(Sent 1 MiB put request to post-split-merge range)`)
-	h.waitForAllTokensReturnedForStreams(ctx, 0, /* serverIdx */
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0, /* serverIdx */
 		testingMkFlowStream(0), testingMkFlowStream(1))
 	h.waitForSendQueueSize(ctx, merged.RangeID, 1<<20 /* expSize 1 MiB */, 0 /* serverIdx */)
 
@@ -3300,9 +3380,6 @@ func TestFlowControlSendQueueRangeFeed(t *testing.T) {
 			Settings: settings,
 			Knobs: base.TestingKnobs{
 				Store: &kvserver.StoreTestingKnobs{
-					RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-						return true
-					},
 					FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
 						UseOnlyForScratchRanges: true,
 						OverrideTokenDeduction: func(tokens kvflowcontrol.Tokens) kvflowcontrol.Tokens {
@@ -3338,7 +3415,10 @@ func TestFlowControlSendQueueRangeFeed(t *testing.T) {
 	k := tc.ScratchRange(t)
 	tc.AddVotersOrFatal(t, k, tc.Targets(1, 2)...)
 
-	h := newFlowControlTestHelper(t, tc)
+	h := newFlowControlTestHelper(
+		t, tc, "flow_control_integration_v2", /* testdata */
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding, true, /* isStatic */
+	)
 	h.init(kvflowcontrol.ApplyToAll)
 	defer h.close("send_queue_range_feed")
 
@@ -3432,7 +3512,7 @@ func TestFlowControlSendQueueRangeFeed(t *testing.T) {
 	h.put(ctx, roachpb.Key(desc.StartKey), 1, admissionpb.NormalPri)
 	h.comment(`(Sent 1 MiB put request)`)
 	h.waitForTotalTrackedTokens(ctx, desc.RangeID, 4<<20 /* 4 MiB */, 0 /* serverIdx */)
-	h.waitForAllTokensReturnedForStreams(ctx, 0, /* serverIdx */
+	h.waitForAllTokensReturnedForStreamsV2(ctx, 0, /* serverIdx */
 		testingMkFlowStream(0), testingMkFlowStream(1))
 	h.waitForSendQueueSize(ctx, desc.RangeID, 1<<20 /* expSize 1 MiB */, 0 /* serverIdx */)
 
@@ -3470,25 +3550,46 @@ func TestFlowControlSendQueueRangeFeed(t *testing.T) {
 }
 
 type flowControlTestHelper struct {
-	t        testing.TB
-	tc       *testcluster.TestCluster
-	st       *cluster.Settings
-	buf      *strings.Builder
-	rng      *rand.Rand
-	testdata string
+	t             testing.TB
+	tc            *testcluster.TestCluster
+	st            *cluster.Settings
+	buf           *strings.Builder
+	rng           *rand.Rand
+	testdata      string
+	level         kvflowcontrol.V2EnabledWhenLeaderLevel
+	isStaticLevel bool
 }
 
-func newFlowControlTestHelper(t testing.TB, tc *testcluster.TestCluster) *flowControlTestHelper {
+func newFlowControlTestHelper(
+	t testing.TB,
+	tc *testcluster.TestCluster,
+	testdata string,
+	level kvflowcontrol.V2EnabledWhenLeaderLevel,
+	isStatic bool,
+) *flowControlTestHelper {
 	rng, _ := randutil.NewPseudoRand()
 	buf := &strings.Builder{}
 	return &flowControlTestHelper{
-		t:        t,
-		tc:       tc,
-		st:       tc.Server(0).ClusterSettings(),
-		buf:      buf,
-		rng:      rng,
-		testdata: "flow_control_integration_v2",
+		t:             t,
+		tc:            tc,
+		st:            tc.Server(0).ClusterSettings(),
+		buf:           buf,
+		rng:           rng,
+		testdata:      testdata,
+		level:         level,
+		isStaticLevel: isStatic,
 	}
+}
+
+func newFlowControlTestHelperV2(
+	t testing.TB, tc *testcluster.TestCluster, level kvflowcontrol.V2EnabledWhenLeaderLevel,
+) *flowControlTestHelper {
+	return newFlowControlTestHelper(t,
+		tc,
+		"flow_control_integration_v2", /* testdata */
+		level,
+		true, /* isStatic */
+	)
 }
 
 func testFlowModeToPri(mode kvflowcontrol.ModeT) admissionpb.WorkPriority {
@@ -3514,34 +3615,24 @@ func (h *flowControlTestHelper) init(mode kvflowcontrol.ModeT) {
 }
 
 // waitForAllTokensReturned waits for all tokens to be returned across all
-// streams.
+// streams. The expected number of streams and protocol level is passed in as
+// an argument, in order to allow switching between v1 and v2 flow control.
 func (h *flowControlTestHelper) waitForAllTokensReturned(
-	ctx context.Context, expStreamCount, serverIdx int,
+	ctx context.Context, expStreamCount, serverIdx int, lvl ...kvflowcontrol.V2EnabledWhenLeaderLevel,
 ) {
 	testutils.SucceedsSoon(h.t, func() error {
-		streams := h.tc.GetFirstStoreFromServer(h.t, serverIdx).GetStoreConfig().KVFlowStreamTokenProvider.Inspect(ctx)
-		return h.checkTokensAvailable(ctx, expStreamCount, serverIdx, h.tokensAvailableLimitWithDelta(kvflowinspectpb.Stream{}), streams)
+		return h.checkAllTokensReturned(ctx, expStreamCount, serverIdx, lvl...)
 	})
 }
 
-// waitForAllTokensReturnedForStreams waits for all tokens to be returned
-// across the specified streams.
-func (h *flowControlTestHelper) waitForAllTokensReturnedForStreams(
+// waitForAllTokensReturnedForStreamsV2 waits for all tokens to be returned
+// across the specified streams. This only works for RACv2.
+func (h *flowControlTestHelper) waitForAllTokensReturnedForStreamsV2(
 	ctx context.Context, serverIdx int, streamIDs ...kvflowcontrol.Stream,
 ) {
 	testutils.SucceedsSoon(h.t, func() error {
-		streams := h.tc.GetFirstStoreFromServer(h.t, serverIdx).GetStoreConfig().KVFlowStreamTokenProvider.Inspect(ctx)
-		filteredStreams := make([]kvflowinspectpb.Stream, 0, len(streams))
-		for _, stream := range streams {
-			for _, s := range streamIDs {
-				if s.TenantID == stream.TenantID && s.StoreID == stream.StoreID {
-					filteredStreams = append(filteredStreams, stream)
-					break
-				}
-			}
-		}
-		return h.checkTokensAvailable(
-			ctx, len(streamIDs), serverIdx, h.tokensAvailableLimitWithDelta(kvflowinspectpb.Stream{}), filteredStreams)
+		return h.checkTokensAvailableForStreamsV2(ctx, len(streamIDs), serverIdx,
+			h.tokensAvailableLimitWithDelta(kvflowinspectpb.Stream{}), streamIDs...)
 	})
 }
 
@@ -3565,7 +3656,20 @@ func (h *flowControlTestHelper) checkSendQueueSize(
 	return nil
 }
 
-func tokensAvailableDeltaMode(mode kvflowcontrol.ModeT, delta int64) kvflowinspectpb.Stream {
+// checkAllTokensReturned checks that all tokens have been returned across all
+// streams. It also checks that the expected number of streams are present. The
+// protocol level is passed in as an argument, in order to allow switching
+// between v1 and v2 flow control.
+func (h *flowControlTestHelper) checkAllTokensReturned(
+	ctx context.Context, expStreamCount, serverIdx int, lvl ...kvflowcontrol.V2EnabledWhenLeaderLevel,
+) error {
+	return h.checkTokensAvailableWithLevel(
+		ctx, expStreamCount, serverIdx, h.tokensAvailableLimitWithDelta(kvflowinspectpb.Stream{}), lvl...)
+}
+
+func tokensAvailableDeltaModeEnabled(
+	mode kvflowcontrol.ModeT, enabled kvflowcontrol.V2EnabledWhenLeaderLevel, delta int64,
+) kvflowinspectpb.Stream {
 	streamDelta := kvflowinspectpb.Stream{
 		AvailableEvalElasticTokens: delta,
 		AvailableSendElasticTokens: delta,
@@ -3574,8 +3678,13 @@ func tokensAvailableDeltaMode(mode kvflowcontrol.ModeT, delta int64) kvflowinspe
 	case kvflowcontrol.ApplyToElastic:
 	// Handled above, nothing to do.
 	case kvflowcontrol.ApplyToAll:
-		streamDelta.AvailableEvalRegularTokens = delta
-		streamDelta.AvailableSendRegularTokens = delta
+		if enabled == kvflowcontrol.V2EnabledWhenLeaderV2Encoding {
+			// NB: We cannot reliably assert on the regular tokens when not using the
+			// V2 protocol because we will convert all decoded priorities to elastic
+			// in processor.go: AdmitRaftEntriesRaftMuLocked.
+			streamDelta.AvailableEvalRegularTokens = delta
+			streamDelta.AvailableSendRegularTokens = delta
+		}
 	default:
 		panic("unknown flow control mode")
 	}
@@ -3596,13 +3705,75 @@ func (h *flowControlTestHelper) tokensAvailableLimitWithDelta(
 	}
 }
 
+// waitForAllTokensAvaiable waits for all tokens to be equal to the provided
+// expTokensStream across all streams. The expected number of streams and
+// protocol level is passed in as an argument, in order to allow switching
+// between v1 and v2 flow control.
+func (h *flowControlTestHelper) waitForAllTokensAvailable(
+	ctx context.Context,
+	expStreamCount, serverIdx int,
+	expTokensStream kvflowinspectpb.Stream,
+	lvl ...kvflowcontrol.V2EnabledWhenLeaderLevel,
+) {
+	testutils.SucceedsSoon(h.t, func() error {
+		return h.checkTokensAvailableWithLevel(ctx, expStreamCount, serverIdx, expTokensStream, lvl...)
+	})
+}
+
+// checkTokensAvailableForStreamsV2 checks that the expected number of tokens
+// are available across the specified streams. This only works for RACv2.
+func (h *flowControlTestHelper) checkTokensAvailableForStreamsV2(
+	ctx context.Context,
+	expStreamCount, serverIdx int,
+	expTokensStream kvflowinspectpb.Stream,
+	streamIDs ...kvflowcontrol.Stream,
+) error {
+	streams := h.tc.GetFirstStoreFromServer(h.t, serverIdx).GetStoreConfig().KVFlowStreamTokenProvider.Inspect(ctx)
+	filteredStreams := make([]kvflowinspectpb.Stream, 0, len(streams))
+	for _, stream := range streams {
+		for _, s := range streamIDs {
+			if s.TenantID == stream.TenantID && s.StoreID == stream.StoreID {
+				filteredStreams = append(filteredStreams, stream)
+				break
+			}
+		}
+	}
+	return h.checkTokensAvailable(
+		ctx, expStreamCount, serverIdx, expTokensStream, filteredStreams, h.level)
+}
+
+// checkTokensAvailableWithLevel checks that the expected number of tokens are
+// available across all streams. The V2EnabledWhenLeaderLevel may be passed in
+// as an argument, in order to allow switching between v1 and v2 flow control.
+func (h *flowControlTestHelper) checkTokensAvailableWithLevel(
+	ctx context.Context,
+	expStreamCount, serverIdx int,
+	expTokensStream kvflowinspectpb.Stream,
+	lvl ...kvflowcontrol.V2EnabledWhenLeaderLevel,
+) error {
+	var streams []kvflowinspectpb.Stream
+	level := h.resolveLevelArgs(lvl...)
+	switch level {
+	case kvflowcontrol.V2NotEnabledWhenLeader:
+		streams = h.tc.Server(serverIdx).KVFlowController().(kvflowcontrol.Controller).Inspect(ctx)
+	case kvflowcontrol.V2EnabledWhenLeaderV1Encoding, kvflowcontrol.V2EnabledWhenLeaderV2Encoding:
+		streams = h.tc.GetFirstStoreFromServer(h.t, serverIdx).GetStoreConfig().KVFlowStreamTokenProvider.Inspect(ctx)
+	default:
+		h.t.Fatalf("unknown level: %v", level)
+	}
+	return h.checkTokensAvailable(ctx, expStreamCount, serverIdx, expTokensStream, streams, level)
+}
+
 // checkTokensAvailable checks that the expected number of tokens are available
-// across all streams.
+// across all streams. The expected number of streams and protocol level is
+// passed in as an argument, in order to allow switching between v1 and v2 flow
+// control.
 func (h *flowControlTestHelper) checkTokensAvailable(
 	ctx context.Context,
 	expStreamCount, serverIdx int,
 	expTokensStream kvflowinspectpb.Stream,
 	streams []kvflowinspectpb.Stream,
+	level kvflowcontrol.V2EnabledWhenLeaderLevel,
 ) error {
 	if len(streams) != expStreamCount {
 		return fmt.Errorf("expected %d replication streams, got %d [%+v]", expStreamCount, len(streams), streams)
@@ -3614,9 +3785,10 @@ func (h *flowControlTestHelper) checkTokensAvailable(
 		typName string,
 	) error {
 		if actualTokens != expTokens {
-			return fmt.Errorf("expected %v of %v flow tokens for %v, got %v [stream=%v]",
+			return fmt.Errorf("expected %v of %v flow tokens for %v, got %v [level=%v stream=%v]",
 				humanize.IBytes(uint64(expTokens)), typName, stream,
 				humanize.IBytes(uint64(actualTokens)),
+				level,
 				streams,
 			)
 		}
@@ -3638,28 +3810,33 @@ func (h *flowControlTestHelper) checkTokensAvailable(
 		); err != nil {
 			return err
 		}
-		// V2 flow control also has send tokens.
-		if err := checkTokens(
-			expTokensStream.AvailableSendRegularTokens, stream.AvailableSendRegularTokens, s, "regular send",
-		); err != nil {
-			return err
-		}
-		if err := checkTokens(
-			expTokensStream.AvailableSendElasticTokens, stream.AvailableSendElasticTokens, s, "elastic send",
-		); err != nil {
-			return err
+		if level > kvflowcontrol.V2NotEnabledWhenLeader {
+			// V2 flow control also has send tokens.
+			if err := checkTokens(
+				expTokensStream.AvailableSendRegularTokens, stream.AvailableSendRegularTokens, s, "regular send",
+			); err != nil {
+				return err
+			}
+			if err := checkTokens(
+				expTokensStream.AvailableSendElasticTokens, stream.AvailableSendElasticTokens, s, "elastic send",
+			); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
 func (h *flowControlTestHelper) waitForConnectedStreams(
-	ctx context.Context, rangeID roachpb.RangeID, expConnectedStreams, serverIdx int,
+	ctx context.Context,
+	rangeID roachpb.RangeID,
+	expConnectedStreams, serverIdx int,
+	lvl ...kvflowcontrol.V2EnabledWhenLeaderLevel,
 ) {
 	h.t.Helper()
+	level := h.resolveLevelArgs(lvl...)
 	testutils.SucceedsSoon(h.t, func() error {
-		state, found := kvserver.MakeStoresForRACv2(h.tc.Server(serverIdx).
-			GetStores().(*kvserver.Stores)).LookupInspect(rangeID)
+		state, found := h.getInspectHandlesForLevel(serverIdx, level).LookupInspect(rangeID)
 		if !found {
 			return fmt.Errorf("handle for %s not found", rangeID)
 		}
@@ -3679,10 +3856,13 @@ func (h *flowControlTestHelper) waitForConnectedStreams(
 }
 
 func (h *flowControlTestHelper) computeTotalTrackedTokens(
-	ctx context.Context, rangeID roachpb.RangeID, serverIdx int,
+	ctx context.Context,
+	rangeID roachpb.RangeID,
+	serverIdx int,
+	lvl ...kvflowcontrol.V2EnabledWhenLeaderLevel,
 ) (kvflowcontrol.Tokens, error) {
-	state, found := kvserver.MakeStoresForRACv2(h.tc.Server(serverIdx).
-		GetStores().(*kvserver.Stores)).LookupInspect(rangeID)
+	level := h.resolveLevelArgs(lvl...)
+	state, found := h.getInspectHandlesForLevel(serverIdx, level).LookupInspect(rangeID)
 	if !found {
 		return 0, fmt.Errorf("handle for %s not found", rangeID)
 	}
@@ -3697,10 +3877,14 @@ func (h *flowControlTestHelper) computeTotalTrackedTokens(
 }
 
 func (h *flowControlTestHelper) waitForTotalTrackedTokens(
-	ctx context.Context, rangeID roachpb.RangeID, expTotalTrackedTokens int64, serverIdx int,
+	ctx context.Context,
+	rangeID roachpb.RangeID,
+	expTotalTrackedTokens int64,
+	serverIdx int,
+	lvl ...kvflowcontrol.V2EnabledWhenLeaderLevel,
 ) {
 	testutils.SucceedsSoon(h.t, func() error {
-		if totalTracked, err := h.computeTotalTrackedTokens(ctx, rangeID, serverIdx); err != nil {
+		if totalTracked, err := h.computeTotalTrackedTokens(ctx, rangeID, serverIdx, lvl...); err != nil {
 			return err
 		} else if totalTracked != kvflowcontrol.Tokens(expTotalTrackedTokens) {
 			return fmt.Errorf("expected to track %d tokens in aggregate, got %d",
@@ -3767,6 +3951,29 @@ func (h *flowControlTestHelper) log(msg string) {
 	}
 }
 
+// resolveLevelArgs resolves the level to use for the test. If the level is
+// static, the level is returned as is. If the level is dynamic, the level is
+// resolved via arguments if provided, otherwise the default given at
+// construction is used. The function verifies that no more than one level is
+// provided.
+func (h *flowControlTestHelper) resolveLevelArgs(
+	level ...kvflowcontrol.V2EnabledWhenLeaderLevel,
+) kvflowcontrol.V2EnabledWhenLeaderLevel {
+	if h.isStaticLevel {
+		// The level is static and should not change during the test via arguments.
+		require.Len(h.t, level, 0)
+		return h.level
+	}
+	// The level is dynamic and should be resolved via arguments if provided,
+	// otherwise the default given at construction is used. Verify that no more
+	// than one level is provided.
+	require.Less(h.t, len(level), 2)
+	if len(level) == 0 {
+		return h.level
+	}
+	return level[0]
+}
+
 const v2FlowPerRangeStreamQueryStr = `
 SELECT
   chr(96 + dense_rank() OVER (ORDER BY range_id)) as range_id,
@@ -3811,7 +4018,8 @@ var flowPerStoreDeductionQueryHeaderStrs = []string{
 	"range_id", "store_id", "priority", "tokens"}
 
 // v2FlowTokensQueryStr is the query string to fetch flow tokens metrics from
-// the node metrics table.
+// the node metrics table. It fetches all metrics related to flow control
+// tokens, distinct from v1 token metrics which only track eval tokens.
 const v2FlowTokensQueryStr = `
 SELECT 
   name,
@@ -3965,6 +4173,20 @@ func (h *flowControlTestHelper) close(filename string) {
 		h.t.(*testing.T), h.buf.String(), datapathutils.TestDataPath(h.t, h.testdata, filename))
 }
 
+func (h *flowControlTestHelper) getInspectHandlesForLevel(
+	serverIdx int, level kvflowcontrol.V2EnabledWhenLeaderLevel,
+) kvflowcontrol.InspectHandles {
+	switch level {
+	case kvflowcontrol.V2NotEnabledWhenLeader:
+		return h.tc.Server(serverIdx).KVFlowHandles().(kvflowcontrol.Handles)
+	case kvflowcontrol.V2EnabledWhenLeaderV1Encoding, kvflowcontrol.V2EnabledWhenLeaderV2Encoding:
+		return kvserver.MakeStoresForRACv2(h.tc.Server(serverIdx).GetStores().(*kvserver.Stores))
+	default:
+		h.t.Fatalf("unknown level: %v", level)
+	}
+	panic("unreachable")
+}
+
 // enableVerboseRaftMsgLoggingForRange installs a raft handler on each node,
 // which in turn enables verbose message logging.
 func (h *flowControlTestHelper) enableVerboseRaftMsgLoggingForRange(rangeID roachpb.RangeID) {
@@ -3993,72 +4215,91 @@ func (h *flowControlTestHelper) resetV2TokenMetrics(ctx context.Context) {
 }
 
 // makeV2EnabledTestFileName is a utility function which returns an updated
-// filename for the testdata file.
-func makeV2EnabledTestFileName(mode kvflowcontrol.ModeT, filename string) string {
-	return filename + "_v2_encoding" + "_" + mode.String()
+// filename for the testdata file based on the v2EnabledWhenLeaderLevel.
+func makeV2EnabledTestFileName(
+	v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel,
+	mode kvflowcontrol.ModeT,
+	filename string,
+) string {
+	var enabledPart string
+	switch v2EnabledWhenLeaderLevel {
+	case kvflowcontrol.V2NotEnabledWhenLeader:
+		panic("unused")
+	case kvflowcontrol.V2EnabledWhenLeaderV1Encoding:
+		enabledPart = "_v1_encoding"
+	case kvflowcontrol.V2EnabledWhenLeaderV2Encoding:
+		enabledPart = "_v2_encoding"
+	default:
+		panic("unknown v2EnabledWhenLeaderLevel")
+	}
+	return filename + enabledPart + "_" + mode.String()
 }
 
 func BenchmarkFlowControlV2Basic(b *testing.B) {
 	defer leaktest.AfterTest(b)()
 	defer log.Scope(b).Close(b)
-
-	testutils.RunValues(b, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
-		kvflowcontrol.ApplyToElastic,
-		kvflowcontrol.ApplyToAll,
-	}, func(b *testing.B, mode kvflowcontrol.ModeT) {
-		ctx := context.Background()
-		settings := cluster.MakeTestingClusterSettings()
-		tc := testcluster.StartTestCluster(b, 3, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings: settings,
-				Knobs: base.TestingKnobs{
-					Store: &kvserver.StoreTestingKnobs{
-						RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
-							return true
-						},
-						FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
-							UseOnlyForScratchRanges: true,
-							OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
-								// This test makes use of (small) increment requests, but
-								// wants to see large token deductions/returns.
-								return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+	testutils.RunValues(b, "v2_enabled_when_leader_level", []kvflowcontrol.V2EnabledWhenLeaderLevel{
+		kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
+		kvflowcontrol.V2EnabledWhenLeaderV2Encoding,
+	}, func(b *testing.B, v2EnabledWhenLeaderLevel kvflowcontrol.V2EnabledWhenLeaderLevel) {
+		testutils.RunValues(b, "kvadmission.flow_control.mode", []kvflowcontrol.ModeT{
+			kvflowcontrol.ApplyToElastic,
+			kvflowcontrol.ApplyToAll,
+		}, func(b *testing.B, mode kvflowcontrol.ModeT) {
+			ctx := context.Background()
+			settings := cluster.MakeTestingClusterSettings()
+			tc := testcluster.StartTestCluster(b, 3, base.TestClusterArgs{
+				ReplicationMode: base.ReplicationManual,
+				ServerArgs: base.TestServerArgs{
+					Settings: settings,
+					Knobs: base.TestingKnobs{
+						Store: &kvserver.StoreTestingKnobs{
+							FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
+								UseOnlyForScratchRanges: true,
+								OverrideV2EnabledWhenLeaderLevel: func() kvflowcontrol.V2EnabledWhenLeaderLevel {
+									return v2EnabledWhenLeaderLevel
+								},
+								OverrideTokenDeduction: func(_ kvflowcontrol.Tokens) kvflowcontrol.Tokens {
+									// This test makes use of (small) increment requests, but
+									// wants to see large token deductions/returns.
+									return kvflowcontrol.Tokens(1 << 20 /* 1MiB */)
+								},
 							},
 						},
-					},
-					AdmissionControl: &admission.TestingKnobs{
-						DisableWorkQueueFastPath: false,
+						AdmissionControl: &admission.TestingKnobs{
+							DisableWorkQueueFastPath: false,
+						},
 					},
 				},
-			},
-		})
-		defer tc.Stopper().Stop(ctx)
+			})
+			defer tc.Stopper().Stop(ctx)
 
-		// Set up the benchmark state with 3 voters, one on each of the three
-		// node/stores.
-		k := tc.ScratchRange(b)
-		tc.AddVotersOrFatal(b, k, tc.Targets(1, 2)...)
-		h := newFlowControlTestHelper(b, tc)
-		h.init(mode)
+			// Set up the benchmark state with 3 voters, one on each of the three
+			// node/stores.
+			k := tc.ScratchRange(b)
+			tc.AddVotersOrFatal(b, k, tc.Targets(1, 2)...)
+			h := newFlowControlTestHelperV2(b, tc, v2EnabledWhenLeaderLevel)
+			h.init(mode)
 
-		desc, err := tc.LookupRange(k)
-		require.NoError(b, err)
-		h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
+			desc, err := tc.LookupRange(k)
+			require.NoError(b, err)
+			h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
 
-		incArgs := incrementArgs(k, int64(1))
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			if _, err := kv.SendWrappedWithAdmission(
-				ctx, tc.Server(0).DB().NonTransactionalSender(), kvpb.Header{},
-				kvpb.AdmissionHeader{
-					Priority: int32(testFlowModeToPri(mode)),
-					Source:   kvpb.AdmissionHeader_FROM_SQL,
-				}, incArgs); err != nil {
-				b.Fatal(err)
+			incArgs := incrementArgs(k, int64(1))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := kv.SendWrappedWithAdmission(
+					ctx, tc.Server(0).DB().NonTransactionalSender(), kvpb.Header{},
+					kvpb.AdmissionHeader{
+						Priority: int32(testFlowModeToPri(mode)),
+						Source:   kvpb.AdmissionHeader_FROM_SQL,
+					}, incArgs); err != nil {
+					b.Fatal(err)
+				}
 			}
-		}
-		h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
-		b.StopTimer()
+			h.waitForAllTokensReturned(ctx, 3, 0 /* serverIdx */)
+			b.StopTimer()
+		})
 	})
 }
 

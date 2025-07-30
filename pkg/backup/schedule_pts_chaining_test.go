@@ -131,7 +131,7 @@ INSERT INTO t values (1), (10), (100);
 	clearSuccessfulJobEntryForSchedule := func(t *testing.T, schedule *jobs.ScheduledJob) {
 		query := "DELETE FROM " + th.env.SystemJobsTableName() +
 			" WHERE status=$1 AND created_by_type=$2 AND created_by_id=$3"
-		_, err := th.sqlDB.DB.ExecContext(context.Background(), query, jobs.StateSucceeded,
+		_, err := th.sqlDB.DB.ExecContext(context.Background(), query, jobs.StatusSucceeded,
 			jobs.CreatedByScheduledJobs, schedule.ScheduleID())
 		require.NoError(t, err)
 	}
@@ -460,7 +460,7 @@ INSERT INTO t select x, y from generate_series(1, 100) as g(x), generate_series(
 	clearSuccessfulJobForSchedule := func(t *testing.T, schedule *jobs.ScheduledJob) {
 		query := "DELETE FROM " + th.env.SystemJobsTableName() +
 			" WHERE status=$1 AND created_by_type=$2 AND created_by_id=$3"
-		_, err := th.sqlDB.DB.ExecContext(context.Background(), query, jobs.StateSucceeded,
+		_, err := th.sqlDB.DB.ExecContext(context.Background(), query, jobs.StatusSucceeded,
 			jobs.CreatedByScheduledJobs, schedule.ScheduleID())
 		require.NoError(t, err)
 	}

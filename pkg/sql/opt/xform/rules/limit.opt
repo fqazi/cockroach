@@ -295,30 +295,23 @@
 # GenerateVectorSearch generates VectorSearch expressions that implement
 # approximate KNN search using vector indexes. Currently, the comparison
 # must be with a constant or placeholder vector expression.
+#
+# TODO(drewk, mw5h): generate VectorSearch in more cases.
 [GenerateVectorSearch, Explore]
 (Limit
     $project:(Project
-            $input:* &
-                (Let
-                    (
-                        $scan
-                        $filters
-                        $ok
-                    ):(GetFilteredCanonicalScan $input)
-                    $ok
-                )
+            $scan:(Scan
+                $scanPrivate:* & (IsCanonicalScan $scanPrivate)
+            )
             $projections:[
-                ...
                 (ProjectionsItem
-                    $distOp:(VectorDistance | VectorCosDistance
-                            | VectorNegInnerProduct
+                    $distanceExpr:(VectorDistance
                         (Variable $vectorCol:*) &
                             (IsFixedWidthVectorCol $vectorCol)
                         $queryVector:(Const | Placeholder)
                     )
                     $distanceCol:*
                 )
-                ...
             ]
             $passthrough:*
         ) &
@@ -328,13 +321,11 @@
 )
 =>
 (TryGenerateVectorSearch
-    $scan
-    $filters
+    $scanPrivate
     $passthrough
     $vectorCol
-    (OpName $distOp)
+    $distanceCol
+    $distanceExpr
     $queryVector
-    $projections
     $limit
-    $ordering
 )

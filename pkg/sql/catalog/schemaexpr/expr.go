@@ -26,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/errors"
 )
 
@@ -80,7 +81,7 @@ func DequalifyAndValidateExprImpl(
 	}
 
 	if err := funcdesc.MaybeFailOnUDFUsage(typedExpr, context, version); err != nil {
-		return "", nil, colIDs, err
+		return "", nil, colIDs, unimplemented.NewWithIssue(83234, "usage of user-defined function from relations not supported")
 	}
 
 	// We need to do the rewrite here before the expression is serialized because
@@ -355,7 +356,7 @@ func deserializeExprForFormatting(
 	}
 
 	// Type-check the expression to resolve user defined types.
-	typedExpr, err := replacedExpr.TypeCheck(ctx, semaCtx, types.AnyElement)
+	typedExpr, err := replacedExpr.TypeCheck(ctx, semaCtx, types.Any)
 	if err != nil {
 		return nil, err
 	}
@@ -545,35 +546,6 @@ func ValidateComputedColumnExpressionDoesNotDependOnColumn(
 			} else if hasRef {
 				return sqlerrors.NewDependentBlocksOpError(op, objType,
 					string(dependentCol.ColName()), "computed column", string(col.ColName()))
-			}
-		}
-	}
-	return nil
-}
-
-// ValidatePolicyExpressionsDoNotDependOnColumn will check if the dependendCol
-// has a dependency on any expressions defined for row-level security policies.
-func ValidatePolicyExpressionsDoNotDependOnColumn(
-	tableDesc catalog.TableDescriptor, dependentCol catalog.Column, objType, op string,
-) error {
-	for _, p := range tableDesc.GetPolicies() {
-		checkExpr := func(expr string) error {
-			if hasRef, err := validateExpressionDoesNotDependOnColumn(tableDesc, expr, dependentCol.GetID()); err != nil {
-				return err
-			} else if hasRef {
-				return sqlerrors.NewAlterDependsOnPolicyExprError(op, objType,
-					string(dependentCol.ColName()))
-			}
-			return nil
-		}
-		if p.UsingExpr != "" {
-			if err := checkExpr(p.UsingExpr); err != nil {
-				return err
-			}
-		}
-		if p.WithCheckExpr != "" {
-			if err := checkExpr(p.WithCheckExpr); err != nil {
-				return err
 			}
 		}
 	}

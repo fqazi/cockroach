@@ -102,6 +102,7 @@ func (j *tableMetadataUpdateJobResumer) Resume(ctx context.Context, execCtxI int
 			timer.Stop()
 			continue
 		case <-timer.C:
+			timer.Read = true
 			log.Info(ctx, "running table metadata update job after data cache expiration")
 		case <-signalCh:
 			log.Info(ctx, "running table metadata update job via grpc signal")
@@ -139,7 +140,7 @@ func (j *tableMetadataUpdateJobResumer) markAsRunning(ctx context.Context) {
 		progress := md.Progress
 		details := progress.Details.(*jobspb.Progress_TableMetadataCache).TableMetadataCache
 		now := timeutil.Now()
-		progress.StatusMessage = fmt.Sprintf("Job started at %s", now)
+		progress.RunningStatus = fmt.Sprintf("Job started at %s", now)
 		details.LastStartTime = &now
 		details.Status = jobspb.UpdateTableMetadataCacheProgress_RUNNING
 		progress.Progress = &jobspb.Progress_FractionCompleted{
@@ -159,7 +160,7 @@ func (j *tableMetadataUpdateJobResumer) markAsCompleted(ctx context.Context) {
 		progress := md.Progress
 		details := progress.Details.(*jobspb.Progress_TableMetadataCache).TableMetadataCache
 		now := timeutil.Now()
-		progress.StatusMessage = fmt.Sprintf("Job completed at %s", now)
+		progress.RunningStatus = fmt.Sprintf("Job completed at %s", now)
 		details.LastCompletedTime = &now
 		details.Status = jobspb.UpdateTableMetadataCacheProgress_NOT_RUNNING
 		progress.Progress = &jobspb.Progress_FractionCompleted{

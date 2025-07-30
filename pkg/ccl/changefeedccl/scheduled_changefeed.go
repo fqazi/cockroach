@@ -90,12 +90,12 @@ func (s *scheduledChangefeedExecutor) NotifyJobTermination(
 	ctx context.Context,
 	txn isql.Txn,
 	jobID jobspb.JobID,
-	jobState jobs.State,
+	jobStatus jobs.Status,
 	details jobspb.Details,
 	env scheduledjobs.JobSchedulerEnv,
 	schedule *jobs.ScheduledJob,
 ) error {
-	if jobState == jobs.StateSucceeded {
+	if jobStatus == jobs.StatusSucceeded {
 		s.metrics.NumSucceeded.Inc(1)
 		log.Infof(ctx, "changefeed job %d scheduled by %d succeeded", jobID, schedule.ScheduleID())
 		return nil
@@ -104,7 +104,7 @@ func (s *scheduledChangefeedExecutor) NotifyJobTermination(
 	s.metrics.NumFailed.Inc(1)
 	err := errors.Errorf(
 		"changefeed job %d scheduled by %d failed with status %s",
-		jobID, schedule.ScheduleID(), jobState)
+		jobID, schedule.ScheduleID(), jobStatus)
 	log.Errorf(ctx, "changefeed error: %v	", err)
 	jobs.DefaultHandleFailedRun(schedule, "changefeed job %d failed with err=%v", jobID, err)
 	return nil
@@ -275,7 +275,7 @@ func makeScheduledChangefeedSpec(
 	var err error
 
 	tablePatterns := make([]tree.TablePattern, 0)
-	for _, target := range schedule.TableTargets {
+	for _, target := range schedule.Targets {
 		tablePatterns = append(tablePatterns, target.TableName)
 	}
 
@@ -284,13 +284,12 @@ func makeScheduledChangefeedSpec(
 		return nil, errors.Wrap(err, "qualifying target tables")
 	}
 
-	newTargets := make([]tree.ChangefeedTableTarget, 0)
+	newTargets := make([]tree.ChangefeedTarget, 0)
 	for i, table := range qualifiedTablePatterns {
-		target := schedule.TableTargets[i]
-		newTargets = append(newTargets, tree.ChangefeedTableTarget{TableName: table, FamilyName: target.FamilyName})
+		newTargets = append(newTargets, tree.ChangefeedTarget{TableName: table, FamilyName: schedule.Targets[i].FamilyName})
 	}
 
-	schedule.TableTargets = newTargets
+	schedule.Targets = newTargets
 
 	// We need to change the TableExpr inside the Select clause to be fully
 	// qualified. Otherwise, when we execute the schedule, we will parse the
@@ -627,10 +626,10 @@ func doCreateChangefeedSchedule(
 	}
 
 	createChangefeedNode := &tree.CreateChangefeed{
-		TableTargets: spec.TableTargets,
-		SinkURI:      tree.NewStrVal(*spec.evaluatedSinkURI),
-		Options:      spec.Options,
-		Select:       spec.Select,
+		Targets: spec.Targets,
+		SinkURI: tree.NewStrVal(*spec.evaluatedSinkURI),
+		Options: spec.Options,
+		Select:  spec.Select,
 	}
 
 	es, err := makeChangefeedSchedule(env, p.User(), scheduleLabel, recurrence, details, createChangefeedNode)

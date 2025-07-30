@@ -8,45 +8,22 @@ package cli
 import (
 	"context"
 	"os"
-	"os/exec"
-	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/drtprod/cli/commands"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachprod/cli"
 	"github.com/spf13/cobra"
 )
 
-// setEnvIfNotExists sets an environment variable only if it doesn't already exist.
-func setEnvIfNotExists(key, value string) {
-	if _, exists := os.LookupEnv(key); !exists {
-		_ = os.Setenv(key, value)
-	}
-}
-
 func init() {
-	// Set environment variables for the GCE project and DNS configurations if not already set.
-	setEnvIfNotExists("ROACHPROD_DNS", "drt.crdb.io")
-	setEnvIfNotExists("ROACHPROD_GCE_DNS_DOMAIN", "drt.crdb.io")
-	setEnvIfNotExists("ROACHPROD_GCE_DNS_ZONE", "drt")
-	setEnvIfNotExists("ROACHPROD_GCE_DEFAULT_PROJECT", "cockroach-drt")
-
-	if _, exists := os.LookupEnv("DD_API_KEY"); !exists {
-		// set the DD_API_KEY if we are able to fetch it from the secrets.
-		// this is for audit logging all events by drtprod
-		cmd := exec.Command("gcloud", "--project=cockroach-drt", "secrets", "versions", "access", "latest",
-			"--secret", "datadog-api-key")
-		output, err := cmd.Output()
-		if err == nil && string(output) != "" {
-			// std output has the new line in the end. That is trimmed.
-			_ = os.Setenv("DD_API_KEY", strings.TrimRight(string(output), "\n"))
-		}
-	}
+	// Set environment variables for the GCE project and DNS configurations.
+	_ = os.Setenv("ROACHPROD_DNS", "drt.crdb.io")
+	_ = os.Setenv("ROACHPROD_GCE_DNS_DOMAIN", "drt.crdb.io")
+	_ = os.Setenv("ROACHPROD_GCE_DNS_ZONE", "drt")
+	_ = os.Setenv("ROACHPROD_GCE_DEFAULT_PROJECT", "cockroach-drt")
 }
 
 // Initialize sets up the environment and initializes the command-line interface.
 func Initialize(ctx context.Context) {
-	// Apply our flag defaults.
-	cli.UpdateFlagDefaults()
 	// Disable command sorting in Cobra (command-line parser).
 	cobra.EnableCommandSorting = false
 

@@ -20,7 +20,7 @@ const InternalAppNamePrefix = ReportableAppNamePrefix + "internal"
 
 // AttributedToUserInternalAppNamePrefix indicates that the application name
 // identifies an internally-executed query that should be attributed to the
-// user. Specifically, this means having the queries show up in SQL activity pages.
+// user.
 const AttributedToUserInternalAppNamePrefix = ReportableAppNamePrefix + "public-internal"
 
 // DelegatedAppNamePrefix is added to a regular client application
@@ -139,7 +139,6 @@ const (
 	CrdbInternalCreateProcedureStmtsTableID
 	CrdbInternalCreateSchemaStmtsTableID
 	CrdbInternalCreateStmtsTableID
-	CrdbInternalCreateTriggerStmtsTableID
 	CrdbInternalCreateTypeStmtsTableID
 	CrdbInternalDatabasesTableID
 	CrdbInternalFeatureUsageID
@@ -206,9 +205,9 @@ const (
 	CrdbInternalShowTenantCapabilitiesCacheTableID
 	CrdbInternalInheritedRoleMembersTableID
 	CrdbInternalKVSystemPrivilegesViewID
-	CrdbInternalKVFlowControllerID // obsolete
+	CrdbInternalKVFlowControllerID
 	CrdbInternalKVFlowControllerIDV2
-	CrdbInternalKVFlowHandlesID // obsolete
+	CrdbInternalKVFlowHandlesID
 	CrdbInternalKVFlowHandlesIDV2
 	CrdbInternalKVFlowTokenDeductions
 	CrdbInternalKVFlowTokenDeductionsV2

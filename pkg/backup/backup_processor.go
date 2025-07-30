@@ -53,18 +53,21 @@ var (
 		"bulkio.backup.read_with_priority_after",
 		"amount of time since the read-as-of time above which a BACKUP should use priority when retrying reads",
 		time.Minute,
+		settings.NonNegativeDuration,
 		settings.WithPublic)
 	delayPerAttempt = settings.RegisterDurationSetting(
 		settings.ApplicationLevel,
 		"bulkio.backup.read_retry_delay",
 		"amount of time since the read-as-of time, per-prior attempt, to wait before making another attempt",
 		time.Second*5,
+		settings.NonNegativeDuration,
 	)
 	timeoutPerAttempt = settings.RegisterDurationSetting(
 		settings.ApplicationLevel,
 		"bulkio.backup.read_timeout",
 		"amount of time after which a read attempt is considered timed out, which causes the backup to fail",
 		time.Minute*5,
+		settings.NonNegativeDuration,
 		settings.WithPublic)
 
 	preSplitExports = settings.RegisterBoolSetting(
@@ -134,7 +137,7 @@ type backupDataProcessor struct {
 
 	// Aggregator that aggregates StructuredEvents emitted in the
 	// backupDataProcessors' trace recording.
-	agg      *tracing.TracingAggregator
+	agg      *bulk.TracingAggregator
 	aggTimer timeutil.Timer
 
 	// completedSpans tracks how many spans have been successfully backed up by
@@ -191,7 +194,7 @@ func (bp *backupDataProcessor) Start(ctx context.Context) {
 
 	// Construct an Aggregator to aggregate and render AggregatorEvents emitted in
 	// bps' trace recording.
-	bp.agg = tracing.TracingAggregatorForContext(ctx)
+	bp.agg = bulk.TracingAggregatorForContext(ctx)
 	// If the aggregator is nil, we do not want the timer to fire.
 	if bp.agg != nil {
 		bp.aggTimer.Reset(15 * time.Second)
@@ -261,6 +264,7 @@ func (bp *backupDataProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.Producer
 		}
 		return nil, bp.constructProgressProducerMeta(prog)
 	case <-bp.aggTimer.C:
+		bp.aggTimer.Read = true
 		bp.aggTimer.Reset(15 * time.Second)
 		return nil, bulk.ConstructTracingAggregatorProducerMeta(bp.Ctx(),
 			bp.FlowCtx.NodeID.SQLInstanceID(), bp.FlowCtx.ID, bp.agg)
@@ -435,14 +439,25 @@ func runBackupProcessor(
 		todo <- chunk
 	}
 	return ctxgroup.GroupWorkers(ctx, numSenders, func(ctx context.Context, _ int) error {
-		ctx, sp := tracing.ChildSpan(ctx, "backup.worker")
-		defer sp.Finish()
-
 		readTime := spec.BackupEndTime.GoTime()
 
-		pacer := newBackupPacer(
-			ctx, flowCtx.Cfg.AdmissionPacerFactory, clusterSettings,
-		)
+		// Passing a nil pacer is effectively a noop if CPU control is disabled.
+		var pacer *admission.Pacer = nil
+		if fileSSTSinkElasticCPUControlEnabled.Get(&clusterSettings.SV) {
+			tenantID, ok := roachpb.ClientTenantFromContext(ctx)
+			if !ok {
+				tenantID = roachpb.SystemTenantID
+			}
+			pacer = flowCtx.Cfg.AdmissionPacerFactory.NewPacer(
+				100*time.Millisecond,
+				admission.WorkInfo{
+					TenantID:        tenantID,
+					Priority:        admissionpb.BulkNormalPri,
+					CreateTime:      timeutil.Now().UnixNano(),
+					BypassAdmission: false,
+				},
+			)
+		}
 		// It is safe to close a nil pacer.
 		defer pacer.Close()
 
@@ -493,6 +508,7 @@ func runBackupProcessor(
 								case <-ctxDone:
 									return ctx.Err()
 								case <-timer.C:
+									timer.Read = true
 								}
 							}
 
@@ -541,19 +557,12 @@ func runBackupProcessor(
 							redact.Sprintf("ExportRequest for span %s", span.span),
 							timeoutPerAttempt.Get(&clusterSettings.SV), func(ctx context.Context) error {
 								sp := tracing.SpanFromContext(ctx)
-								tracer := sp.Tracer()
-								if tracer == nil {
-									tracer = flowCtx.Cfg.Tracer
-								}
-								if tracer == nil {
-									log.Warning(ctx, "nil tracer in backup processor")
-								}
 								opts := make([]tracing.SpanOption, 0)
 								opts = append(opts, tracing.WithParent(sp))
 								if sendExportRequestWithVerboseTracing.Get(&clusterSettings.SV) {
 									opts = append(opts, tracing.WithRecording(tracingpb.RecordingVerbose))
 								}
-								ctx, exportSpan := tracer.StartSpanCtx(ctx, "backup.ExportRequest", opts...)
+								ctx, exportSpan := sp.Tracer().StartSpanCtx(ctx, "backup.ExportRequest", opts...)
 								rawResp, pErr = kv.SendWrappedWithAdmission(
 									ctx, flowCtx.Cfg.DB.KV().NonTransactionalSender(), header, admissionHeader, req)
 								recording = exportSpan.FinishAndGetConfiguredRecording()
@@ -753,30 +762,6 @@ func logClose(ctx context.Context, c io.Closer, desc string) {
 	if err := c.Close(); err != nil {
 		log.Warningf(ctx, "failed to close %s: %s", redact.SafeString(desc), err.Error())
 	}
-}
-
-// newBackupPacer creates a new AC pacer for backup. It may return nil if CPU
-// control is disabled, which is effectively a noop.
-func newBackupPacer(
-	ctx context.Context, factory admission.PacerFactory, settings *cluster.Settings,
-) *admission.Pacer {
-	var pacer *admission.Pacer
-	if fileSSTSinkElasticCPUControlEnabled.Get(&settings.SV) {
-		tenantID, ok := roachpb.ClientTenantFromContext(ctx)
-		if !ok {
-			tenantID = roachpb.SystemTenantID
-		}
-		pacer = factory.NewPacer(
-			100*time.Millisecond,
-			admission.WorkInfo{
-				TenantID:        tenantID,
-				Priority:        admissionpb.BulkNormalPri,
-				CreateTime:      timeutil.Now().UnixNano(),
-				BypassAdmission: false,
-			},
-		)
-	}
-	return pacer
 }
 
 func init() {

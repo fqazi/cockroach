@@ -943,7 +943,7 @@ func (sb *ScalarBuilder) Build(expr tree.Expr) (_ opt.ScalarExpr, err error) {
 		}
 	}()
 
-	typedExpr := sb.scope.resolveType(expr, types.AnyElement)
+	typedExpr := sb.scope.resolveType(expr, types.Any)
 	scalar := sb.buildScalar(typedExpr, &sb.scope, nil, nil, nil)
 	return scalar, nil
 }

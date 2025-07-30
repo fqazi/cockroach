@@ -148,7 +148,7 @@ func (b *replicaAppBatch) Stage(
 	if err := b.ab.runPostAddTriggers(ctx, &cmd.ReplicatedCmd, postAddEnv{
 		st:          b.r.store.cfg.Settings,
 		eng:         b.r.store.TODOEngine(),
-		sideloaded:  b.r.logStorage.ls.Sideload,
+		sideloaded:  b.r.raftMu.sideloaded,
 		bulkLimiter: b.r.store.limiters.BulkIOWriteRate,
 	}); err != nil {
 		return nil, err
@@ -253,20 +253,16 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 	// We don't track these stats in standalone log application since they depend
 	// on whether the proposer is still waiting locally, and this concept does not
 	// apply in a standalone context.
-	if !cmd.IsLocal() {
+	//
+	// TODO(irfansharif): This code block can be removed once below-raft
+	// admission control is the only form of IO admission control. It pre-dates
+	// it -- these stats were previously used to deduct IO tokens for follower
+	// writes/ingests without waiting.
+	if !cmd.IsLocal() && !cmd.ApplyAdmissionControl() {
 		writeBytes, ingestedBytes := cmd.getStoreWriteByteSizes()
-		if writeBytes > 0 || ingestedBytes > 0 {
-			b.ab.numWriteAndIngestedBytes += writeBytes + ingestedBytes
-		}
-		// TODO(irfansharif): This code block can be removed once below-raft
-		// admission control is the only form of IO admission control. It pre-dates
-		// it -- these stats were previously used to deduct IO tokens for follower
-		// writes/ingests without waiting.
-		if !cmd.ApplyAdmissionControl() {
-			b.followerStoreWriteBytes.NumEntries++
-			b.followerStoreWriteBytes.WriteBytes += writeBytes
-			b.followerStoreWriteBytes.IngestedBytes += ingestedBytes
-		}
+		b.followerStoreWriteBytes.NumEntries++
+		b.followerStoreWriteBytes.WriteBytes += writeBytes
+		b.followerStoreWriteBytes.IngestedBytes += ingestedBytes
 	}
 
 	// MVCC history mutations violate the closed timestamp, modifying data that
@@ -299,13 +295,6 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 		// process linked external ssts.
 		b.r.disconnectRangefeedSpanWithErr(res.LinkExternalSSTable.Span, kvpb.NewError(errors.New("LinkExternalSSTable not supported in rangefeeds")))
 		res.LinkExternalSSTable = nil
-	}
-
-	if res.Excise != nil {
-		// All watching rangefeeds should error until we teach clients how to
-		// process excise commands.
-		b.r.disconnectRangefeedSpanWithErr(res.Excise.Span, kvpb.NewErrorf("Replica applied ExciseRequest"))
-		res.Excise = nil
 	}
 
 	if res.Split != nil {
@@ -418,8 +407,80 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 	}
 
 	if truncatedState := res.GetRaftTruncatedState(); truncatedState != nil {
-		if err := b.stageTruncation(ctx, res); err != nil {
-			return err
+		var err error
+		// Typically one should not be checking the cluster version below raft,
+		// since it can cause state machine divergence. However, this check is
+		// only for deciding how to truncate the raft log, which is not part of
+		// the state machine. Also, we will eventually eliminate this check by
+		// only supporting loosely coupled truncation.
+		looselyCoupledTruncation := isLooselyCoupledRaftLogTruncationEnabled(ctx, b.r.ClusterSettings())
+		// In addition to cluster version and cluster settings, we also apply
+		// immediately if RaftExpectedFirstIndex is not populated (see comment in
+		// that proto).
+		//
+		// In the release following LooselyCoupledRaftLogTruncation, we will
+		// retire the strongly coupled path. It is possible that some replica
+		// still has a truncation sitting in a raft log that never populated
+		// RaftExpectedFirstIndex, which will be interpreted as 0. When applying
+		// it, the loosely coupled code will mark the log size as untrusted and
+		// will recompute the size. This has no correctness impact, so we are not
+		// going to bother with a long-running migration.
+		apply := !looselyCoupledTruncation || res.RaftExpectedFirstIndex == 0
+		if apply {
+			if apply, err = handleTruncatedStateBelowRaftPreApply(
+				ctx, b.truncState, truncatedState,
+				b.r.raftMu.stateLoader.StateLoader, b.batch,
+			); err != nil {
+				return errors.Wrap(err, "unable to handle truncated state")
+			}
+		} else {
+			b.r.store.raftTruncator.addPendingTruncation(
+				ctx, (*raftTruncatorReplica)(b.r), *truncatedState, res.RaftExpectedFirstIndex,
+				res.RaftLogDelta)
+		}
+		if apply {
+			// This truncation command will apply synchronously in this batch.
+			// Determine if there are any sideloaded entries that will be removed as a
+			// side effect.
+			//
+			// We must sync state machine batch application if the command removes any
+			// sideloaded log entries. Not doing so can lead to losing the entries.
+			// See the usage of changeTruncatesSideloadedFiles flag at the other end.
+			//
+			// We only need to check sideloaded entries in this path. The loosely
+			// coupled truncation mechanism in the other branch already ensures
+			// enacting truncations only after state machine synced.
+			if has, err := b.r.raftMu.sideloaded.HasAnyEntry(
+				ctx, b.truncState.Index, truncatedState.Index+1, // include end Index
+			); err != nil {
+				return errors.Wrap(err, "failed searching for sideloaded entries")
+			} else if has {
+				b.changeTruncatesSideloadedFiles = true
+			}
+		} else {
+			// The truncated state was discarded, or we are queuing a pending
+			// truncation, so make sure we don't apply it to our in-memory state.
+			if res.State != nil {
+				res.State.TruncatedState = nil
+			}
+			res.RaftTruncatedState = nil
+			res.RaftLogDelta = 0
+			res.RaftExpectedFirstIndex = 0
+			if !looselyCoupledTruncation {
+				// TODO(ajwerner): consider moving this code.
+				// We received a truncation that doesn't apply to us, so we know that
+				// there's a leaseholder out there with a log that has earlier entries
+				// than ours. That leader also guided our log size computations by
+				// giving us RaftLogDeltas for past truncations, and this was likely
+				// off. Mark our Raft log size is not trustworthy so that, assuming
+				// we step up as leader at some point in the future, we recompute
+				// our numbers.
+				// TODO(sumeer): this code will be deleted when there is no
+				// !looselyCoupledTruncation code path.
+				b.r.mu.Lock()
+				b.r.shMu.raftLogSizeTrusted = false
+				b.r.mu.Unlock()
+			}
 		}
 	}
 
@@ -453,7 +514,7 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 
 		// Delete all of the Replica's data. We're going to delete the hard state too.
 		// We've set the replica's in-mem status to reflect the pending destruction
-		// above, and DestroyReplica will also add a range tombstone to the
+		// above, and preDestroyRaftMuLocked will also add a range tombstone to the
 		// batch, so that when we commit it, the removal is finalized.
 		if err := kvstorage.DestroyReplica(ctx, b.r.RangeID, b.batch, b.batch, change.NextReplicaID(), kvstorage.ClearRangeDataOptions{
 			ClearReplicatedBySpan:      span,
@@ -477,73 +538,6 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 		log.Fatalf(ctx, "non-nil logical op log with nil write batch: %v", cmd.Cmd)
 	}
 
-	return nil
-}
-
-// stageTruncation stages the raft log truncation command. It prepares the
-// truncation to happen immediately if tightly coupled truncations are used, or
-// queues the truncation into the loosely coupled machinery otherwise.
-func (b *replicaAppBatch) stageTruncation(
-	ctx context.Context, res *kvserverpb.ReplicatedEvalResult,
-) error {
-	truncatedState := res.GetRaftTruncatedState() // NB: not nil
-	// Use loosely-coupled truncations if configured by the setting. Otherwise,
-	// perform a tightly-coupled truncation, i.e. apply it immediately.
-	//
-	// We also apply immediately if RaftExpectedFirstIndex is not populated (see
-	// comment in that proto). It is possible that a replica still has a
-	// truncation sitting in the raft log that never populated this field.
-	// TODO(pav-kv): remove the zero check after any below-raft migration.
-	useLooselyCoupled := res.RaftExpectedFirstIndex != 0 &&
-		looselyCoupledTruncationEnabled.Get(&b.r.ClusterSettings().SV)
-
-	if useLooselyCoupled {
-		b.r.store.raftTruncator.addPendingTruncation(
-			ctx, (*raftTruncatorReplica)(b.r), *truncatedState, res.RaftExpectedFirstIndex,
-			res.RaftLogDelta)
-		res.DiscardRaftTruncation()
-		return nil
-	} else if truncatedState.Index <= b.truncState.Index {
-		// The truncated index does not move forward. The truncation is a no-op.
-		res.DiscardRaftTruncation()
-		return nil
-	}
-
-	// This truncation will apply synchronously in this batch. Stage the write
-	// into the batch, and compute metadata used after applying it.
-	if err := handleTruncatedStateBelowRaftPreApply(
-		ctx, b.truncState, *truncatedState,
-		b.r.raftMu.stateLoader.StateLoader, b.batch,
-	); err != nil {
-		return errors.Wrap(err, "unable to handle truncated state")
-	}
-
-	pt := pendingTruncation{
-		RaftTruncatedState: *truncatedState,
-		expectedFirstIndex: res.RaftExpectedFirstIndex,
-		logDeltaBytes:      res.RaftLogDelta,
-		isDeltaTrusted:     true,
-	}
-	// Determine if there are any sideloaded entries that will be removed as a
-	// side effect, and the total size of these entries.
-	//
-	// If any sideloaded entries are to be removed, the log engine write must be
-	// synced first. Not doing so can lead to losing the entries during an
-	// inopportune crash, and log remaining in an inconsistent state. See the
-	// usage of changeTruncatesSideloadedFiles flag at the other end.
-	//
-	// The size computation feeds into maintaining the log size in memory.
-	if entries, size, err := b.r.logStorage.ls.Sideload.Stats(ctx, kvpb.RaftSpan{
-		After: b.truncState.Index, Last: truncatedState.Index,
-	}); err != nil {
-		return errors.Wrap(err, "failed searching for sideloaded entries")
-	} else if entries != 0 {
-		b.changeTruncatesSideloadedFiles = true
-		pt.logDeltaBytes -= size
-		pt.hasSideloaded = true // unused, but set for "completeness"
-	}
-
-	b.r.stagePendingTruncationRaftMuLocked(pt)
 	return nil
 }
 
@@ -704,7 +698,6 @@ func (b *replicaAppBatch) ApplyToStateMachine(ctx context.Context) error {
 	}
 
 	b.recordStatsOnCommit()
-
 	return nil
 }
 
@@ -725,7 +718,6 @@ func (b *replicaAppBatch) recordStatsOnCommit() {
 	b.applyStats.appBatchStats.merge(b.ab.appBatchStats)
 	b.applyStats.numBatchesProcessed++
 	b.applyStats.followerStoreWriteBytes.Merge(b.followerStoreWriteBytes)
-	b.r.recordRequestWriteBytes(b.ab.numWriteAndIngestedBytes)
 
 	if n := b.ab.numAddSST; n > 0 {
 		b.r.store.metrics.AddSSTableApplications.Inc(int64(n))

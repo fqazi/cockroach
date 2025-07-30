@@ -9,9 +9,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecpb"
 )
 
 // IndexOrdinal identifies an index (in the context of a Table).
@@ -47,11 +45,14 @@ type Index interface {
 	// Specifically idx = Table().Index(idx.Ordinal).
 	Ordinal() IndexOrdinal
 
-	// Type returns the type of this index: forward, inverted, vector, etc.
-	Type() idxtype.T
-
 	// IsUnique returns true if this index is declared as UNIQUE in the schema.
 	IsUnique() bool
+
+	// IsInverted returns true if this is an inverted index.
+	IsInverted() bool
+
+	// IsVector returns true if this is a vector index.
+	IsVector() bool
 
 	// GetInvisibility returns index invisibility.
 	GetInvisibility() float64
@@ -195,10 +196,6 @@ type Index interface {
 	// describes the configuration for this geospatial inverted index.
 	GeoConfig() geopb.Config
 
-	// VecConfig returns a vector index configuration. If not empty, it describes
-	// the configuration for this vector index.
-	VecConfig() *vecpb.Config
-
 	// Version returns the IndexDescriptorVersion of the index.
 	Version() descpb.IndexDescriptorVersion
 
@@ -209,10 +206,6 @@ type Index interface {
 	// Partition returns the ith PARTITION BY LIST partition within the index
 	// definition, where i < PartitionCount.
 	Partition(i int) Partition
-
-	// IsTemporaryIndexForBackfill returns true iff the index is an index being
-	// used as the temporary index being used by an in-progress index backfill.
-	IsTemporaryIndexForBackfill() bool
 }
 
 // IndexColumn describes a single column that is part of an index definition.

@@ -66,14 +66,11 @@ func (ex *connExecutor) maybeAutoCommitBeforeDDL(
 	return nil, nil
 }
 
-// maybeAdjustTxnForDDL checks if the statement is a schema change and adjusts
-// the txn if it is. The following adjustments will be performed:
-// - upgrading to serializable isolation. If the txn contains multiple
-// statements, and an upgrade was attempted, an error is returned.
-// - disabling buffered writes.
-// TODO(#140695): we disable buffered writes out of caution. We should consider
-// allowing this in the future.
-func (ex *connExecutor) maybeAdjustTxnForDDL(ctx context.Context, stmt Statement) error {
+// maybeUpgradeToSerializable checks if the statement is a schema change, and
+// upgrades the transaction to serializable isolation if it is. If the
+// transaction contains multiple statements, and an upgrade was attempted, an
+// error is returned.
+func (ex *connExecutor) maybeUpgradeToSerializable(ctx context.Context, stmt Statement) error {
 	p := &ex.planner
 	if tree.CanModifySchema(stmt.AST) {
 		if ex.state.mu.txn.IsoLevel().ToleratesWriteSkew() {
@@ -86,9 +83,6 @@ func (ex *connExecutor) maybeAdjustTxnForDDL(ctx context.Context, stmt Statement
 			} else {
 				return txnSchemaChangeErr
 			}
-		}
-		if ex.state.mu.txn.BufferedWritesEnabled() {
-			ex.state.mu.txn.SetBufferedWritesEnabled(false /* enabled */)
 		}
 	}
 	return nil

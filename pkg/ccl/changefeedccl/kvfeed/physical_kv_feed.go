@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 )
 
@@ -63,9 +62,6 @@ type rangefeed struct {
 
 // Run implements the physicalFeedFactory interface.
 func (p rangefeedFactory) Run(ctx context.Context, sink kvevent.Writer, cfg rangeFeedConfig) error {
-	ctx, sp := tracing.ChildSpan(ctx, "changefeed.physical_kv_feed.run")
-	defer sp.Finish()
-
 	// To avoid blocking raft, RangeFeed puts all entries in a server side
 	// buffer. But to keep things simple, it's a small fixed-sized buffer. This
 	// means we need to ingest everything we get back as quickly as possible, so
@@ -103,17 +99,12 @@ func (p rangefeedFactory) Run(ctx context.Context, sink kvevent.Writer, cfg rang
 	if cfg.RangeObserver != nil {
 		rfOpts = append(rfOpts, kvcoord.WithRangeObserver(cfg.RangeObserver))
 	}
-	if cfg.ConsumerID != 0 {
-		rfOpts = append(rfOpts, kvcoord.WithConsumerID(cfg.ConsumerID))
-	}
+	rfOpts = append(rfOpts, kvcoord.WithConsumerID(cfg.ConsumerID))
 	if len(cfg.Knobs.RangefeedOptions) != 0 {
 		rfOpts = append(rfOpts, cfg.Knobs.RangefeedOptions...)
 	}
 
 	g.GoCtx(func(ctx context.Context) error {
-		if cfg.Knobs.OnRangeFeedStart != nil {
-			cfg.Knobs.OnRangeFeedStart(cfg.Spans)
-		}
 		return p(ctx, cfg.Spans, eventCh, rfOpts...)
 	})
 	return g.Wait()
@@ -135,9 +126,6 @@ func quantizeTS(ts hlc.Timestamp, granularity time.Duration) hlc.Timestamp {
 // addEventsToBuffer consumes rangefeed events from `p.eventCh`, transforms
 // them to kvevent.Event's, and pushes them into `p.memBuf`.
 func (p *rangefeed) addEventsToBuffer(ctx context.Context) error {
-	ctx, sp := tracing.ChildSpan(ctx, "changefeed.physical_kv_feed.add_events_to_buffer")
-	defer sp.Finish()
-
 	for {
 		select {
 		case e := <-p.eventCh:
@@ -178,9 +166,6 @@ func (p *rangefeed) addEventsToBuffer(ctx context.Context) error {
 				// For now, we just error on SST ingestion, since we currently don't
 				// expect SST ingestion into spans with active changefeeds.
 				return errors.Errorf("unexpected SST ingestion: %v", t)
-			case *kvpb.RangeFeedBulkEvents:
-				// Should be disabled so this is unreachable.
-				return errors.Errorf("unexpected bulk delivery: %v", t)
 
 			case *kvpb.RangeFeedDeleteRange:
 				// For now, we just ignore on MVCC range tombstones. These are currently

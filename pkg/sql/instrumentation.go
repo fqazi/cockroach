@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -17,6 +16,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/settings"
+	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
@@ -66,6 +66,7 @@ var collectTxnStatsSampleRate = settings.RegisterFloatSetting(
 //
 //   - SetDiscardRows(), ShouldDiscardRows(), ShouldSaveFlows(),
 //     ShouldBuildExplainPlan(), RecordExplainPlan(), RecordPlanInfo(),
+//     PlanForStats() can be called at any point during execution.
 //
 //   - Finish() is called after query execution.
 type instrumentationHelper struct {
@@ -80,9 +81,6 @@ type instrumentationHelper struct {
 	// Transaction information.
 	implicitTxn bool
 	txnPriority roachpb.UserPriority
-	// txnBufferedWritesEnabled tracks whether the write buffering was
-	// enabled on the transaction before executing the stmt.
-	txnBufferedWritesEnabled bool
 
 	codec keys.SQLCodec
 
@@ -141,6 +139,10 @@ type instrumentationHelper struct {
 	topLevelStats topLevelQueryStats
 
 	queryLevelStatsWithErr *execstats.QueryLevelStatsWithErr
+
+	// If savePlanForStats is true and the explainPlan was collected, the
+	// serialized version of the plan will be returned via PlanForStats().
+	savePlanForStats bool
 
 	explainPlan      *explain.Plan
 	distribution     physicalplan.PlanDistribution
@@ -206,9 +208,6 @@ type instrumentationHelper struct {
 
 	// retryCount is the number of times the transaction was retried.
 	retryCount uint64
-
-	// retryStmtCount is the number of times the statement was retried.
-	retryStmtCount uint64
 
 	// joinTypeCounts records the number of times each type of logical join was
 	// used in the query, up to 255.
@@ -334,6 +333,7 @@ var inFlightTraceCollectorPollInterval = settings.RegisterDurationSetting(
 	"determines the interval between polling done by the in-flight trace "+
 		"collector for the statement bundle, set to zero to disable",
 	0,
+	settings.NonNegativeDuration,
 )
 
 var timeoutTraceCollectionEnabled = settings.RegisterBoolSetting(
@@ -423,7 +423,6 @@ func (ih *instrumentationHelper) Setup(
 	ih.fingerprint = stmt.StmtNoConstants
 	ih.implicitTxn = implicitTxn
 	ih.txnPriority = txnPriority
-	ih.txnBufferedWritesEnabled = p.txn.BufferedWritesEnabled()
 	ih.retryCount = uint64(retryCount)
 	ih.codec = cfg.Codec
 	ih.origCtx = ctx
@@ -454,6 +453,9 @@ func (ih *instrumentationHelper) Setup(
 	ih.stmtDiagnosticsRecorder = stmtDiagnosticsRecorder
 	ih.withStatementTrace = cfg.TestingKnobs.WithStatementTrace
 
+	var previouslySampled bool
+	previouslySampled, ih.savePlanForStats = statsCollector.ShouldSample(stmt.StmtNoConstants, implicitTxn, p.SessionData().Database)
+
 	defer func() { ih.finalizeSetup(newCtx, cfg) }()
 
 	if sp := tracing.SpanFromContext(ctx); sp != nil {
@@ -470,31 +472,35 @@ func (ih *instrumentationHelper) Setup(
 			ih.needFinish = true
 			return ctx
 		}
-	}
-
-	if collectTxnExecStats {
-		statsCollector.SetStatementSampled(stmt.StmtNoConstants, implicitTxn, p.SessionData().Database)
 	} else {
-		collectTxnExecStats = func() bool {
-			if stmt.AST.StatementType() == tree.TypeTCL {
-				// We don't collect stats for  statements so there's no need
-				//to trace them.
-				return false
-			}
-
-			// TODO(117690): Unify StmtStatsEnable and TxnStatsEnable into a single cluster setting.
-			if collectTxnStatsSampleRate.Get(&cfg.Settings.SV) == 0 || !sqlstats.StmtStatsEnable.Get(&cfg.Settings.SV) {
-				return false
-			}
-
-			// If this is the first time we see this statement in the current stats
-			// container, we'll collect its execution stats anyway (unless the user
-			// disabled txn or stmt stats collection entirely).
-			return statsCollector.ShouldSampleNewStatement(stmt.StmtNoConstants, implicitTxn, p.SessionData().Database)
-		}()
+		if buildutil.CrdbTestBuild {
+			panic(errors.AssertionFailedf("the context doesn't have a tracing span"))
+		}
 	}
 
-	ih.collectExecStats = collectTxnExecStats
+	shouldSampleFirstEncounter := func() bool {
+		if stmt.AST.StatementType() == tree.TypeTCL {
+			// We don't collect stats for TCL statements so
+			// there's no need to trace them.
+			return false
+		}
+
+		// If this is the first time we see this statement in the current stats
+		// container, we'll collect its execution stats anyway (unless the user
+		// disabled txn or stmt stats collection entirely).
+		// TODO(117690): Unify StmtStatsEnable and TxnStatsEnable into a single cluster setting.
+		if collectTxnStatsSampleRate.Get(&cfg.Settings.SV) == 0 ||
+			!sqlstats.StmtStatsEnable.Get(&cfg.Settings.SV) {
+			return false
+		}
+
+		// We don't want to collect the stats if the stats container is full,
+		// since previouslySampled will always return false for statements
+		// not already in the container.
+		return !previouslySampled && !statsCollector.StatementsContainerFull()
+	}
+
+	ih.collectExecStats = collectTxnExecStats || shouldSampleFirstEncounter()
 
 	if !ih.collectBundle && ih.withStatementTrace == nil && ih.outputMode == unmodifiedOutput {
 		if ih.collectExecStats {
@@ -634,8 +640,6 @@ func (ih *instrumentationHelper) Finish(
 		}
 	}
 
-	ih.retryStmtCount = uint64(p.autoRetryStmtCounter)
-
 	// Record the statement information that we've collected.
 	// Note that in case of implicit transactions, the trace contains the auto-commit too.
 	traceID := ih.sp.TraceID()
@@ -707,7 +711,7 @@ func (ih *instrumentationHelper) Finish(
 				planString = "-- plan is missing, probably hit an error with gist matching: " + ih.planGist.String()
 			}
 			bundle = buildStatementBundle(
-				bundleCtx, ih.explainFlags, cfg.DB, p, ie.(*InternalExecutor), ih.diagRequest.Username(),
+				bundleCtx, ih.explainFlags, cfg.DB, p, ie.(*InternalExecutor),
 				stmtRawSQL, &p.curPlan, planString, trace, placeholders, res.ErrAllowReleased(),
 				payloadErr, retErr, &p.extendedEvalCtx.Settings.SV, ih.inFlightTraceCollector,
 			)
@@ -807,6 +811,38 @@ func (ih *instrumentationHelper) RecordPlanInfo(
 	ih.optimized = optimized
 }
 
+// PlanForStats returns the plan as an ExplainTreePlanNode tree, if it was
+// collected (nil otherwise). It should be called after RecordExplainPlan() and
+// RecordPlanInfo().
+func (ih *instrumentationHelper) PlanForStats(ctx context.Context) *appstatspb.ExplainTreePlanNode {
+	if ih.explainPlan == nil || !ih.savePlanForStats {
+		return nil
+	}
+
+	ob := explain.NewOutputBuilder(explain.Flags{
+		HideValues: true,
+	})
+	ob.AddDistribution(ih.distribution.String())
+	ob.AddVectorized(ih.vectorized)
+	ob.AddPlanType(ih.generic, ih.optimized)
+	// We cannot allow the creation of post-query plans if they are missing
+	// since PlanForStats() is called after the query execution, so it could hit
+	// problems if we were to try to create some new plans (#135155, #138974).
+	//
+	// This means that the "plan for stats" could change depending on the data
+	// that the query ran over. (For example, in one case the cascade could be
+	// triggered and in another the cascade could be skipped ("short-circuited")
+	// depending on whether the main query modified some rows or not.) This is
+	// unfortunate because we would produce different "plan for stats" even
+	// though the query is the same.
+	const createPostQueryPlanIfMissing = false
+	if err := emitExplain(ctx, ob, ih.evalCtx, ih.codec, ih.explainPlan, createPostQueryPlanIfMissing); err != nil {
+		log.Warningf(ctx, "unable to emit explain plan tree: %v", err)
+		return nil
+	}
+	return ob.BuildProtoTree()
+}
+
 // emitExplainAnalyzePlanToOutputBuilder creates an explain.OutputBuilder and
 // populates it with the EXPLAIN ANALYZE plan. BuildString/BuildStringRows can
 // be used on the result.
@@ -826,10 +862,8 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 	ob.AddDistribution(ih.distribution.String())
 	ob.AddVectorized(ih.vectorized)
 	ob.AddPlanType(ih.generic, ih.optimized)
-	ob.AddRetryCount("transaction", ih.retryCount)
-	ob.AddRetryTime("transaction", phaseTimes.GetTransactionRetryLatency())
-	ob.AddRetryCount("statement", ih.retryStmtCount)
-	ob.AddRetryTime("statement", phaseTimes.GetStatementRetryLatency())
+	ob.AddRetryCount(ih.retryCount)
+	ob.AddRetryTime(phaseTimes.GetTransactionRetryLatency())
 
 	if queryStats != nil {
 		if queryStats.KVRowsRead != 0 {
@@ -841,15 +875,9 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 		if queryStats.ContentionTime != 0 {
 			ob.AddContentionTime(queryStats.ContentionTime)
 		}
-		if queryStats.LockWaitTime != 0 {
-			ob.AddLockWaitTime(queryStats.LockWaitTime)
-		}
-		if queryStats.LatchWaitTime != 0 {
-			ob.AddLatchWaitTime(queryStats.LatchWaitTime)
-		}
 
 		ob.AddMaxMemUsage(queryStats.MaxMemUsage)
-		ob.AddDistSQLNetworkStats(queryStats.DistSQLNetworkMessages, queryStats.DistSQLNetworkBytesSent)
+		ob.AddNetworkStats(queryStats.NetworkMessages, queryStats.NetworkBytesSent)
 		ob.AddMaxDiskUsage(queryStats.MaxDiskUsage)
 		if len(queryStats.Regions) > 0 {
 			ob.AddRegionsStats(queryStats.Regions)
@@ -858,7 +886,7 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 			ob.AddTopLevelField("used follower read", "")
 		}
 
-		if !ih.containsMutation && ih.vectorized && grunning.Supported {
+		if !ih.containsMutation && ih.vectorized && grunning.Supported() {
 			// Currently we cannot separate SQL CPU time from local KV CPU time for
 			// mutations, since they do not collect statistics. Additionally, CPU time
 			// is only collected for vectorized plans since it is gathered by the
@@ -887,18 +915,6 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 		asOfSystemTime = ih.evalCtx.AsOfSystemTime
 	}
 	ob.AddTxnInfo(iso, ih.txnPriority, qos, asOfSystemTime)
-	// Highlight that write buffering was enabled on the current txn, unless
-	// we're in "deterministic explain" mode.
-	if ih.txnBufferedWritesEnabled && !flags.Deflake.HasAny(explain.DeflakeAll) {
-		// In order to not pollute the output, we don't include the write
-		// buffering info for read-only implicit txns. However, if we're in an
-		// explicit txn, even if the stmt is read-only, it might still be
-		// helpful to highlight the write buffering being enabled.
-		readOnlyImplicit := !ih.containsMutation && ih.implicitTxn
-		if !readOnlyImplicit {
-			ob.AddTopLevelField("buffered writes enabled", "")
-		}
-	}
 
 	// When building EXPLAIN ANALYZE output we do **not** want to create
 	// post-query plans if they are missing. The fact that they are missing
@@ -942,19 +958,12 @@ func (ih *instrumentationHelper) setExplainAnalyzeResult(
 			} else {
 				buf.WriteString("Diagram: ")
 			}
-			if d.diagram != nil {
-				d.diagram.AddSpans(trace)
-				_, url, err := d.diagram.ToURL()
-				if err != nil {
-					buf.WriteString(err.Error())
-				} else {
-					buf.WriteString(url.String())
-				}
+			d.diagram.AddSpans(trace)
+			_, url, err := d.diagram.ToURL()
+			if err != nil {
+				buf.WriteString(err.Error())
 			} else {
-				if buildutil.CrdbTestBuild {
-					panic(errors.AssertionFailedf("diagram shouldn't be nil in EXPLAIN ANALYZE (DISTSQL)"))
-				}
-				buf.WriteString("<missing>")
+				buf.WriteString(url.String())
 			}
 			rows = append(rows, buf.String())
 		}
@@ -979,42 +988,22 @@ func (ih *instrumentationHelper) getAssociateNodeWithComponentsFn() func(exec.No
 
 // execNodeTraceMetadata associates exec.Nodes with metadata for corresponding
 // execution components.
-//
-// A single exec.Node might result in multiple stages in the physical plan, and
-// each stage will be represented by a separate execComponents object. The
-// stages are accumulated in the order of creation, meaning that later stages
-// appear later in the slice.
+// Currently, we only store info about processors. A node can correspond to
+// multiple processors if the plan is distributed.
 //
 // TODO(radu): we perform similar processing of execution traces in various
 // parts of the code. Come up with some common infrastructure that makes this
 // easier.
-type execNodeTraceMetadata map[exec.Node][]execComponents
+type execNodeTraceMetadata map[exec.Node]execComponents
 
-// execComponents contains all components that correspond to a single stage of
-// a physical plan.
 type execComponents []execinfrapb.ComponentID
 
 // associateNodeWithComponents is called during planning, as processors are
-// planned for an execution operator. This function can be called multiple times
-// for the same exec.Node and execComponents.
+// planned for an execution operator.
 func (m execNodeTraceMetadata) associateNodeWithComponents(
 	node exec.Node, components execComponents,
 ) {
-	if prevComponents, ok := m[node]; ok {
-		// We already have some components associated with this node. Check
-		// whether this is a duplicate association (that should be a no-op).
-		for _, oldComponents := range prevComponents {
-			if slices.Equal(oldComponents, components) {
-				// This association has already been performed.
-				return
-			}
-		}
-		// This must be a new stage in the physical plan, so we want to extend
-		// the mapping for the exec.Node.
-		m[node] = append(prevComponents, components)
-	} else {
-		m[node] = []execComponents{components}
-	}
+	m[node] = components
 }
 
 // annotateExplain aggregates the statistics in the trace and annotates
@@ -1041,78 +1030,61 @@ func (m execNodeTraceMetadata) annotateExplain(
 	var walk func(n *explain.Node)
 	walk = func(n *explain.Node) {
 		wrapped := n.WrappedNode()
-		if componentsMultipleStages, ok := m[wrapped]; ok {
+		if components, ok := m[wrapped]; ok {
 			var nodeStats exec.ExecutionStats
 
 			incomplete := false
 			var sqlInstanceIDs, kvNodeIDs intsets.Fast
 			var regions []string
-			lastStageIdx := len(componentsMultipleStages) - 1
-		OUTER:
-			for stageIdx, components := range componentsMultipleStages {
-				for _, c := range components {
-					if c.Type == execinfrapb.ComponentID_PROCESSOR {
-						sqlInstanceIDs.Add(int(c.SQLInstanceID))
-						if region := sqlInstanceIDToRegion[int64(c.SQLInstanceID)]; region != "" {
-							// Add only if the region is not an empty string (it
-							// will be an empty string if the region is not
-							// setup).
-							regions = util.InsertUnique(regions, region)
-						}
+			for _, c := range components {
+				if c.Type == execinfrapb.ComponentID_PROCESSOR {
+					sqlInstanceIDs.Add(int(c.SQLInstanceID))
+					if region := sqlInstanceIDToRegion[int64(c.SQLInstanceID)]; region != "" {
+						// Add only if the region is not an empty string (it
+						// will be an empty string if the region is not setup).
+						regions = util.InsertUnique(regions, region)
 					}
-					stats := statsMap[c]
-					if stats == nil {
-						incomplete = true
-						break OUTER
-					}
-					for _, kvNodeID := range stats.KV.NodeIDs {
-						kvNodeIDs.Add(int(kvNodeID))
-					}
-					regions = util.CombineUnique(regions, stats.KV.Regions)
-					if stageIdx == lastStageIdx {
-						// Row count and batch count are special statistics that
-						// we need to populate based only on the last stage of
-						// processors.
-						nodeStats.RowCount.MaybeAdd(stats.Output.NumTuples)
-						nodeStats.VectorizedBatchCount.MaybeAdd(stats.Output.NumBatches)
-					}
-					nodeStats.KVTime.MaybeAdd(stats.KV.KVTime)
-					nodeStats.KVContentionTime.MaybeAdd(stats.KV.ContentionTime)
-					nodeStats.KVLockWaitTime.MaybeAdd(stats.KV.LockWaitTime)
-					nodeStats.KVLatchWaitTime.MaybeAdd(stats.KV.LatchWaitTime)
-					nodeStats.KVBytesRead.MaybeAdd(stats.KV.BytesRead)
-					nodeStats.KVPairsRead.MaybeAdd(stats.KV.KVPairsRead)
-					nodeStats.KVRowsRead.MaybeAdd(stats.KV.TuplesRead)
-					nodeStats.KVBatchRequestsIssued.MaybeAdd(stats.KV.BatchRequestsIssued)
-					nodeStats.UsedStreamer = nodeStats.UsedStreamer || stats.KV.UsedStreamer
-					nodeStats.StepCount.MaybeAdd(stats.KV.NumInterfaceSteps)
-					nodeStats.InternalStepCount.MaybeAdd(stats.KV.NumInternalSteps)
-					nodeStats.SeekCount.MaybeAdd(stats.KV.NumInterfaceSeeks)
-					nodeStats.InternalSeekCount.MaybeAdd(stats.KV.NumInternalSeeks)
-					// If multiple physical plan stages correspond to a single
-					// operator, we want to aggregate the execution time across
-					// all of them.
-					nodeStats.ExecTime.MaybeAdd(stats.Exec.ExecTime)
-					nodeStats.MaxAllocatedMem.MaybeAdd(stats.Exec.MaxAllocatedMem)
-					nodeStats.MaxAllocatedDisk.MaybeAdd(stats.Exec.MaxAllocatedDisk)
-					if noMutations && !makeDeterministic {
-						// Currently we cannot separate SQL CPU time from local
-						// KV CPU time for mutations, since they do not collect
-						// statistics. Additionally, some platforms do not
-						// support usage of the grunning library, so we can't
-						// show this field when a deterministic output is
-						// required.
-						// TODO(drewk): once the grunning library is fully
-						// supported we can unconditionally display the CPU time
-						// here and in output.go and component_stats.go.
-						nodeStats.SQLCPUTime.MaybeAdd(stats.Exec.CPUTime)
-					}
-					nodeStats.UsedFollowerRead = nodeStats.UsedFollowerRead || stats.KV.UsedFollowerRead
 				}
+				stats := statsMap[c]
+				if stats == nil {
+					incomplete = true
+					break
+				}
+				for _, kvNodeID := range stats.KV.NodeIDs {
+					kvNodeIDs.Add(int(kvNodeID))
+				}
+				regions = util.CombineUnique(regions, stats.KV.Regions)
+				nodeStats.RowCount.MaybeAdd(stats.Output.NumTuples)
+				nodeStats.KVTime.MaybeAdd(stats.KV.KVTime)
+				nodeStats.KVContentionTime.MaybeAdd(stats.KV.ContentionTime)
+				nodeStats.KVBytesRead.MaybeAdd(stats.KV.BytesRead)
+				nodeStats.KVPairsRead.MaybeAdd(stats.KV.KVPairsRead)
+				nodeStats.KVRowsRead.MaybeAdd(stats.KV.TuplesRead)
+				nodeStats.KVBatchRequestsIssued.MaybeAdd(stats.KV.BatchRequestsIssued)
+				nodeStats.UsedStreamer = stats.KV.UsedStreamer
+				nodeStats.StepCount.MaybeAdd(stats.KV.NumInterfaceSteps)
+				nodeStats.InternalStepCount.MaybeAdd(stats.KV.NumInternalSteps)
+				nodeStats.SeekCount.MaybeAdd(stats.KV.NumInterfaceSeeks)
+				nodeStats.InternalSeekCount.MaybeAdd(stats.KV.NumInternalSeeks)
+				nodeStats.VectorizedBatchCount.MaybeAdd(stats.Output.NumBatches)
+				nodeStats.ExecTime.MaybeAdd(stats.Exec.ExecTime)
+				nodeStats.MaxAllocatedMem.MaybeAdd(stats.Exec.MaxAllocatedMem)
+				nodeStats.MaxAllocatedDisk.MaybeAdd(stats.Exec.MaxAllocatedDisk)
+				if noMutations && !makeDeterministic {
+					// Currently we cannot separate SQL CPU time from local KV CPU time
+					// for mutations, since they do not collect statistics. Additionally,
+					// some platforms do not support usage of the grunning library, so we
+					// can't show this field when a deterministic output is required.
+					// TODO(drewk): once the grunning library is fully supported we can
+					// unconditionally display the CPU time here and in output.go and
+					// component_stats.go.
+					nodeStats.SQLCPUTime.MaybeAdd(stats.Exec.CPUTime)
+				}
+				nodeStats.UsedFollowerRead = nodeStats.UsedFollowerRead || stats.KV.UsedFollowerRead
 			}
 			// If we didn't get statistics for all processors, we don't show the
-			// incomplete results. In the future, we may consider an incomplete
-			// flag if we want to show them with a warning.
+			// incomplete results. In the future, we may consider an incomplete flag
+			// if we want to show them with a warning.
 			if !incomplete {
 				for i, ok := sqlInstanceIDs.Next(0); ok; i, ok = sqlInstanceIDs.Next(i + 1) {
 					nodeStats.SQLNodes = append(nodeStats.SQLNodes, fmt.Sprintf("n%d", i))

@@ -95,7 +95,7 @@ func TestEval(t *testing.T) {
 			}
 			// expr.TypeCheck to avoid constant folding.
 			semaCtx := tree.MakeSemaContext(nil /* resolver */)
-			typedExpr, err := expr.TypeCheck(ctx, &semaCtx, types.AnyElement)
+			typedExpr, err := expr.TypeCheck(ctx, &semaCtx, types.Any)
 			if err != nil {
 				// An error here should have been found above by QueryRow.
 				t.Fatal(err)
@@ -112,7 +112,7 @@ func TestEval(t *testing.T) {
 						continue
 					}
 					// Figure out the type of the tuple value.
-					expr, err := tuple.Exprs[i].TypeCheck(ctx, &semaCtx, types.AnyElement)
+					expr, err := tuple.Exprs[i].TypeCheck(ctx, &semaCtx, types.Any)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -156,7 +156,7 @@ func TestEval(t *testing.T) {
 				return strings.TrimSpace(d.Expected)
 			}
 			semaCtx := tree.MakeSemaContext(nil /* resolver */)
-			typedExpr, err := expr.TypeCheck(ctx, &semaCtx, types.AnyElement)
+			typedExpr, err := expr.TypeCheck(ctx, &semaCtx, types.Any)
 			if err != nil {
 				// Skip this test as it's testing an expected error which would be
 				// caught before execution.

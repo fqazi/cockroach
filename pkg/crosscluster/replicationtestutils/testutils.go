@@ -22,24 +22,16 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts/ptpb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
-	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -52,7 +44,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
@@ -81,7 +72,6 @@ type TenantStreamingClustersArgs struct {
 	EnableReaderTenant             bool
 	TestingKnobs                   *sql.StreamingTestingKnobs
 	TenantCapabilitiesTestingKnobs *tenantcapabilities.TestingKnobs
-	ServerKnobs                    *server.TestingKnobs
 
 	MultitenantSingleClusterNumNodes    int
 	MultiTenantSingleClusterTestRegions []string
@@ -165,8 +155,8 @@ func (c *TenantStreamingClusters) init(ctx context.Context) {
 	if !c.Args.SrcTenantID.IsSystem() {
 		c.SrcSysSQL.Exec(c.T, `ALTER TENANT $1 SET CLUSTER SETTING sql.virtual_cluster.feature_access.multiregion.enabled=true`, c.Args.SrcTenantName)
 		c.SrcSysSQL.Exec(c.T, `ALTER TENANT $1 GRANT CAPABILITY can_use_nodelocal_storage`, c.Args.SrcTenantName)
-		require.NoError(c.T, c.SrcCluster.Server(0).TenantController().WaitForTenantCapabilities(ctx, c.Args.SrcTenantID, map[tenantcapabilitiespb.ID]string{
-			tenantcapabilitiespb.CanUseNodelocalStorage: "true",
+		require.NoError(c.T, c.SrcCluster.Server(0).TenantController().WaitForTenantCapabilities(ctx, c.Args.SrcTenantID, map[tenantcapabilities.ID]string{
+			tenantcapabilities.CanUseNodelocalStorage: "true",
 		}, ""))
 	}
 	if c.Args.SrcInitFunc != nil {
@@ -206,8 +196,8 @@ func (c *TenantStreamingClusters) StartDestTenant(
 	})
 	// TODO (msbutler): consider granting the new tenant some capabilities.
 	c.DestSysSQL.Exec(c.T, `ALTER TENANT $1 GRANT CAPABILITY can_use_nodelocal_storage`, c.Args.DestTenantName)
-	require.NoError(c.T, c.DestCluster.Server(server).TenantController().WaitForTenantCapabilities(ctx, c.Args.DestTenantID, map[tenantcapabilitiespb.ID]string{
-		tenantcapabilitiespb.CanUseNodelocalStorage: "true",
+	require.NoError(c.T, c.DestCluster.Server(server).TenantController().WaitForTenantCapabilities(ctx, c.Args.DestTenantID, map[tenantcapabilities.ID]string{
+		tenantcapabilities.CanUseNodelocalStorage: "true",
 	}, ""))
 	return func() {
 		require.NoError(c.T, c.DestTenantConn.Close())
@@ -299,7 +289,7 @@ func (c *TenantStreamingClusters) WaitUntilStartTimeReached(ingestionJobID jobsp
 // WaitForPostCutoverRetentionJob should be called after cutover completes to
 // verify that there exists a new producer job on the newly cutover to tenant. This should be called after the replication job completes.
 func (c *TenantStreamingClusters) WaitForPostCutoverRetentionJob() {
-	c.DestSysSQL.Exec(c.T, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION SOURCE EXPIRATION WINDOW ='10ms'`, c.Args.DestTenantName))
+	c.DestSysSQL.Exec(c.T, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='10ms'`, c.Args.DestTenantName))
 	var retentionJobID jobspb.JobID
 	retentionJobQuery := fmt.Sprintf(`SELECT job_id FROM [SHOW JOBS]
 WHERE description = 'History Retention for Physical Replication of %s'
@@ -309,7 +299,7 @@ ORDER BY created DESC LIMIT 1`, c.Args.DestTenantName)
 		// Grab the latest producer job on the destination cluster.
 		var status string
 		c.DestSysSQL.QueryRow(c.T, "SELECT status FROM system.jobs WHERE id = $1", retentionJobID).Scan(&status)
-		if jobs.State(status) == jobs.StateRunning || jobs.State(status) == jobs.StateSucceeded {
+		if jobs.Status(status) == jobs.StatusRunning || jobs.Status(status) == jobs.StatusSucceeded {
 			return nil
 		}
 		return errors.Newf("Unexpected status %s", status)
@@ -337,7 +327,7 @@ func (c *TenantStreamingClusters) Cutover(
 		require.Equal(c.T, cutoverTime, cutoverOutput.GoTime())
 	}
 
-	protectedTimestamp := TestingGetPTSFromReplicationJob(c.T, ctx, c.SrcSysSQL, c.SrcSysServer, jobspb.JobID(producerJobID))
+	protectedTimestamp := replicationutils.TestingGetPTSFromReplicationJob(c.T, ctx, c.SrcSysSQL, c.SrcSysServer, jobspb.JobID(producerJobID))
 	require.LessOrEqual(c.T, protectedTimestamp.GoTime(), cutoverOutput.GoTime())
 
 	// PTS should be less than or equal to retained time as a result of heartbeats.
@@ -418,10 +408,6 @@ func CreateServerArgs(args TenantStreamingClustersArgs) base.TestServerArgs {
 			MaxRetries:     TestingMaxDistSQLRetries,
 		}
 	}
-	if args.ServerKnobs == nil {
-		// Prevents panics in cluster startup.
-		args.ServerKnobs = &server.TestingKnobs{}
-	}
 	return base.TestServerArgs{
 		DefaultTestTenant: base.TestControlsTenantsExplicitly,
 		Knobs: base.TestingKnobs{
@@ -436,7 +422,6 @@ func CreateServerArgs(args TenantStreamingClustersArgs) base.TestServerArgs {
 				// easy-to-predict IDs when we create a tenant after a drop.
 				EnableTenantIDReuse: true,
 			},
-			Server: args.ServerKnobs,
 		},
 		ExternalIODir: args.ExternalIODir,
 	}
@@ -469,7 +454,7 @@ func startC2CTestCluster(
 	c := testcluster.StartTestCluster(t, numNodes, params)
 
 	// TODO(casper): support adding splits when we have multiple nodes.
-	pgURL, cleanupSinkCert := pgurlutils.PGUrl(t, c.Server(0).SystemLayer().AdvSQLAddr(), t.Name(), url.User(username.RootUser))
+	pgURL, cleanupSinkCert := sqlutils.PGUrl(t, c.Server(0).SystemLayer().AdvSQLAddr(), t.Name(), url.User(username.RootUser))
 	return c, pgURL, func() {
 		c.Stopper().Stop(ctx)
 		cleanupSinkCert()
@@ -622,7 +607,7 @@ func WaitUntilReplicatedTime(
 			// Include job status in the error in case it is useful.
 			err = errors.Wrapf(err, "job status %s %s", jobStatus[0][0], jobStatus[0][1])
 			// Don't wait for an advance that is never happening if paused or failed.
-			if jobStatus[0][0] == string(jobs.StatePaused) || jobStatus[0][0] == string(jobs.StateFailed) {
+			if jobStatus[0][0] == string(jobs.StatusPaused) || jobStatus[0][0] == string(jobs.StatusFailed) {
 				t.Fatal(err)
 			}
 		}
@@ -710,9 +695,9 @@ func ConfigureClusterSettings(setting map[string]string) []string {
 	return res
 }
 
-func GetStatusMesssage(t *testing.T, sqlRunner *sqlutils.SQLRunner, ingestionJobID int) string {
+func RunningStatus(t *testing.T, sqlRunner *sqlutils.SQLRunner, ingestionJobID int) string {
 	p := jobutils.GetJobProgress(t, sqlRunner, jobspb.JobID(ingestionJobID))
-	return p.StatusMessage
+	return p.RunningStatus
 }
 
 func DecimalTimeToHLC(t *testing.T, s string) hlc.Timestamp {
@@ -737,7 +722,7 @@ func GetStreamJobIds(
 		destTenantName).Scan(&tenantInfoBytes)
 	require.NoError(t, protoutil.Unmarshal(tenantInfoBytes, &tenantInfo))
 
-	stats := TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, sqlRunner, int(tenantInfo.PhysicalReplicationConsumerJobID))
+	stats := replicationutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, sqlRunner, int(tenantInfo.PhysicalReplicationConsumerJobID))
 	return int(stats.IngestionDetails.StreamID), int(tenantInfo.PhysicalReplicationConsumerJobID)
 }
 
@@ -772,91 +757,4 @@ func SSTMaker(t *testing.T, keyValues []roachpb.KeyValue) kvpb.RangeFeedSSTable 
 
 func WaitForAllProducerJobsToFail(t *testing.T, sql *sqlutils.SQLRunner) {
 	sql.CheckQueryResultsRetry(t, "SELECT distinct(status) FROM [SHOW JOBS] where job_type = 'REPLICATION STREAM PRODUCER'", [][]string{{"failed"}})
-}
-
-func WaitForPTSProtection(
-	t *testing.T,
-	ctx context.Context,
-	sqlRunner *sqlutils.SQLRunner,
-	srv serverutils.ApplicationLayerInterface,
-	producerJobID jobspb.JobID,
-	minTime hlc.Timestamp,
-) {
-	testutils.SucceedsSoon(t, func() error {
-		protected := TestingGetPTSFromReplicationJob(t, ctx, sqlRunner, srv, producerJobID)
-		if protected.Less(minTime) {
-			return errors.Newf("pts %s is less than min time %s", protected, minTime)
-		}
-		return nil
-	})
-}
-
-func WaitForPTSProtectionToNotExist(
-	t *testing.T,
-	ctx context.Context,
-	sqlRunner *sqlutils.SQLRunner,
-	srv serverutils.ApplicationLayerInterface,
-	producerJobID jobspb.JobID,
-) {
-	ptsRecordID := getPTSRecordIDFromProducerJob(t, sqlRunner, producerJobID)
-	ptsProvider := srv.ExecutorConfig().(sql.ExecutorConfig).ProtectedTimestampProvider
-	testutils.SucceedsSoon(t, func() error {
-		err := srv.InternalDB().(descs.DB).Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-			_, err := ptsProvider.WithTxn(txn).GetRecord(ctx, ptsRecordID)
-			return err
-		})
-		if errors.Is(err, protectedts.ErrNotExists) {
-			return nil
-		}
-		if err == nil {
-			return errors.New("PTS record still exists")
-		}
-		return err
-	})
-}
-
-func getPTSRecordIDFromProducerJob(
-	t *testing.T, sqlRunner *sqlutils.SQLRunner, producerJobID jobspb.JobID,
-) uuid.UUID {
-	payload := jobutils.GetJobPayload(t, sqlRunner, producerJobID)
-	return payload.GetStreamReplication().ProtectedTimestampRecordID
-}
-
-func TestingGetPTSFromReplicationJob(
-	t *testing.T,
-	ctx context.Context,
-	sqlRunner *sqlutils.SQLRunner,
-	srv serverutils.ApplicationLayerInterface,
-	producerJobID jobspb.JobID,
-) hlc.Timestamp {
-	ptsRecordID := getPTSRecordIDFromProducerJob(t, sqlRunner, producerJobID)
-	ptsProvider := srv.ExecutorConfig().(sql.ExecutorConfig).ProtectedTimestampProvider
-
-	var ptsRecord *ptpb.Record
-	err := srv.InternalDB().(descs.DB).Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		var err error
-		ptsRecord, err = ptsProvider.WithTxn(txn).GetRecord(ctx, ptsRecordID)
-		return err
-	})
-	require.NoError(t, err)
-
-	return ptsRecord.Timestamp
-}
-
-func TestingGetStreamIngestionStatsFromReplicationJob(
-	t *testing.T, ctx context.Context, sqlRunner *sqlutils.SQLRunner, ingestionJobID int,
-) *streampb.StreamIngestionStats {
-	payload := jobutils.GetJobPayload(t, sqlRunner, jobspb.JobID(ingestionJobID))
-	progress := jobutils.GetJobProgress(t, sqlRunner, jobspb.JobID(ingestionJobID))
-	details := payload.GetStreamIngestion()
-	stats, err := replicationutils.GetStreamIngestionStats(ctx, *details, *progress)
-	require.NoError(t, err)
-	return stats
-}
-
-func GetProducerJobIDFromLDRJob(
-	t *testing.T, sqlRunner *sqlutils.SQLRunner, ldrJobID jobspb.JobID,
-) jobspb.JobID {
-	payload := jobutils.GetJobPayload(t, sqlRunner, ldrJobID)
-	return jobspb.JobID(payload.GetLogicalReplicationDetails().StreamID)
 }

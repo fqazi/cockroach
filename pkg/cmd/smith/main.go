@@ -81,7 +81,6 @@ var (
 		"EnableWith":                 sqlsmith.EnableWith(),
 		"FavorCommonData":            sqlsmith.FavorCommonData(),
 		"IgnoreFNs":                  strArgOpt(sqlsmith.IgnoreFNs),
-		"InsUpdDelOnly":              sqlsmith.InsUpdDelOnly(),
 		"InsUpdOnly":                 sqlsmith.InsUpdOnly(),
 		"MaybeSortOutput":            sqlsmith.MaybeSortOutput(),
 		"MultiRegionDDLs":            sqlsmith.MultiRegionDDLs(),

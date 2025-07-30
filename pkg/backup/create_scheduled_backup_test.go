@@ -67,7 +67,7 @@ func (th *testHelper) protectedTimestamps() protectedts.Manager {
 
 // newTestHelper creates and initializes appropriate state for a test,
 // returning testHelper as well as a cleanup function.
-func newTestHelper(t *testing.T, testKnobs ...func(*base.TestingKnobs)) (*testHelper, func()) {
+func newTestHelper(t *testing.T) (*testHelper, func()) {
 	dir, dirCleanupFn := testutils.TempDir(t)
 
 	th := &testHelper{
@@ -76,23 +76,18 @@ func newTestHelper(t *testing.T, testKnobs ...func(*base.TestingKnobs)) (*testHe
 		iodir: dir,
 	}
 
-	knobs := base.TestingKnobs{
-		JobsTestingKnobs: &jobs.TestingKnobs{
-			JobSchedulerEnv: th.env,
-			TakeOverJobsScheduling: func(fn execSchedulesFn) {
-				th.executeSchedules = func() error {
-					defer th.server.JobRegistry().(*jobs.Registry).TestingNudgeAdoptionQueue()
-					return fn(context.Background(), allSchedules)
-				}
-			},
-			CaptureJobExecutionConfig: func(config *scheduledjobs.JobExecutionConfig) {
-				th.cfg = config
-			},
-			IntervalOverrides: jobs.NewTestingKnobsWithShortIntervals().IntervalOverrides,
+	knobs := &jobs.TestingKnobs{
+		JobSchedulerEnv: th.env,
+		TakeOverJobsScheduling: func(fn execSchedulesFn) {
+			th.executeSchedules = func() error {
+				defer th.server.JobRegistry().(*jobs.Registry).TestingNudgeAdoptionQueue()
+				return fn(context.Background(), allSchedules)
+			}
 		},
-	}
-	for _, testKnob := range testKnobs {
-		testKnob(&knobs)
+		CaptureJobExecutionConfig: func(config *scheduledjobs.JobExecutionConfig) {
+			th.cfg = config
+		},
+		IntervalOverrides: jobs.NewTestingKnobsWithShortIntervals().IntervalOverrides,
 	}
 
 	args := base.TestServerArgs{
@@ -102,13 +97,16 @@ func newTestHelper(t *testing.T, testKnobs ...func(*base.TestingKnobs)) (*testHe
 		// Some scheduled backup tests fail when run within a tenant. More
 		// investigation is required. Tracked with #76378.
 		DefaultTestTenant: base.TODOTestTenantDisabled,
-		Knobs:             knobs,
+		Knobs: base.TestingKnobs{
+			JobsTestingKnobs: knobs,
+		},
 	}
 	jobs.PollJobsMetricsInterval.Override(context.Background(), &args.Settings.SV, 250*time.Millisecond)
 	s, db, _ := serverutils.StartServer(t, args)
 	require.NotNil(t, th.cfg)
 	th.sqlDB = sqlutils.MakeSQLRunner(db)
 	th.server = s.ApplicationLayer()
+	th.sqlDB.Exec(t, `SET CLUSTER SETTING bulkio.backup.merge_file_buffer_size = '1MiB'`)
 	th.sqlDB.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.target_duration = '100ms'`) // speeds up test
 
 	return th, func() {
@@ -143,29 +141,21 @@ func (h *testHelper) clearSchedules(t *testing.T) {
 }
 
 func (h *testHelper) waitForSuccessfulScheduledJob(t *testing.T, scheduleID jobspb.ScheduleID) {
-	t.Helper()
-	query := "SELECT status FROM " + h.env.SystemJobsTableName() +
-		" WHERE created_by_type=$1 AND created_by_id=$2 ORDER BY created DESC LIMIT 1"
+	query := "SELECT id FROM " + h.env.SystemJobsTableName() +
+		" WHERE status=$1 AND created_by_type=$2 AND created_by_id=$3"
 
 	testutils.SucceedsSoon(t, func() error {
 		// Force newly created job to be adopted and verify it succeeds.
 		h.server.JobRegistry().(*jobs.Registry).TestingNudgeAdoptionQueue()
-		var status string
-		err := h.sqlDB.DB.QueryRowContext(context.Background(),
-			query, jobs.CreatedByScheduledJobs, scheduleID).Scan(&status)
-		if err != nil {
-			return err
-		} else if status != string(jobs.StateSucceeded) {
-			return errors.Newf("expected job to succeed; found %s", status)
-		}
-		return nil
+		var unused int64
+		return h.sqlDB.DB.QueryRowContext(context.Background(),
+			query, jobs.StatusSucceeded, jobs.CreatedByScheduledJobs, scheduleID).Scan(&unused)
 	})
 }
 
 func (h *testHelper) waitForSuccessfulScheduledJobCount(
 	t *testing.T, scheduleID jobspb.ScheduleID, expectedCount int,
 ) {
-	t.Helper()
 	query := "SELECT count(*) FROM " + h.env.SystemJobsTableName() +
 		" WHERE status=$1 AND created_by_type=$2 AND created_by_id=$3"
 
@@ -174,7 +164,7 @@ func (h *testHelper) waitForSuccessfulScheduledJobCount(
 		h.server.JobRegistry().(*jobs.Registry).TestingNudgeAdoptionQueue()
 		var count int
 		err := h.sqlDB.DB.QueryRowContext(context.Background(),
-			query, jobs.StateSucceeded, jobs.CreatedByScheduledJobs, scheduleID).Scan(&count)
+			query, jobs.StatusSucceeded, jobs.CreatedByScheduledJobs, scheduleID).Scan(&count)
 		require.NoError(t, err)
 		if count != expectedCount {
 			return errors.Newf("expected %d jobs; found %d", expectedCount, count)

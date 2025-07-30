@@ -7,24 +7,16 @@ package cdctest
 
 import (
 	"bytes"
-	"context"
 	gosql "database/sql"
 	gojson "encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
-	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
 	"github.com/cockroachdb/errors"
-	"github.com/lib/pq/oid"
 )
 
 // Validator checks for violations of our changefeed ordering and delivery
@@ -199,7 +191,6 @@ type beforeAfterValidator struct {
 	table          string
 	primaryKeyCols []string
 	resolved       map[string]hlc.Timestamp
-	diff           bool
 
 	failures []string
 }
@@ -207,7 +198,7 @@ type beforeAfterValidator struct {
 // NewBeforeAfterValidator returns a Validator verifies that the "before" and
 // "after" fields in each row agree with the source table when performing AS OF
 // SYSTEM TIME lookups before and at the row's timestamp.
-func NewBeforeAfterValidator(sqlDB *gosql.DB, table string, diff bool) (Validator, error) {
+func NewBeforeAfterValidator(sqlDB *gosql.DB, table string) (Validator, error) {
 	primaryKeyCols, err := fetchPrimaryKeyCols(sqlDB, table)
 	if err != nil {
 		return nil, errors.Wrap(err, "fetchPrimaryKeyCols failed")
@@ -216,7 +207,6 @@ func NewBeforeAfterValidator(sqlDB *gosql.DB, table string, diff bool) (Validato
 	return &beforeAfterValidator{
 		sqlDB:          sqlDB,
 		table:          table,
-		diff:           diff,
 		primaryKeyCols: primaryKeyCols,
 		resolved:       make(map[string]hlc.Timestamp),
 	}, nil
@@ -256,15 +246,6 @@ func (v *beforeAfterValidator) NoteRow(
 	// updated timestamp.
 	if err := v.checkRowAt("after", keyJSONAsArray, afterJSON, updated); err != nil {
 		return err
-	}
-
-	if !v.diff {
-		// If the diff option is not specified in the change feed,
-		// we don't expect the rows to contain a "before" field.
-		if beforeJson != nil {
-			return errors.Errorf(`expected before to be nil, got %s`, beforeJson.String())
-		}
-		return nil
 	}
 
 	if v.resolved[partition].IsEmpty() && (beforeJson == nil || beforeJson.Type() == json.NullJSONType) {
@@ -361,68 +342,6 @@ func (v *beforeAfterValidator) Failures() []string {
 	return v.failures
 }
 
-type mvccTimestampValidator struct {
-	failures []string
-}
-
-// NewMvccTimestampValidator returns a Validator that verifies that the emitted
-// row includes the mvcc_timestamp field and that its value is not later than
-// the updated timestamp
-func NewMvccTimestampValidator() Validator {
-	return &mvccTimestampValidator{}
-}
-
-// NoteRow implements the Validator interface.
-func (v *mvccTimestampValidator) NoteRow(
-	partition, key, value string, updated hlc.Timestamp, topic string,
-) error {
-	valueJSON, err := json.ParseJSON(value)
-	if err != nil {
-		return err
-	}
-
-	mvccJSON, err := valueJSON.FetchValKey("mvcc_timestamp")
-	if err != nil {
-		return err
-	}
-	if mvccJSON == nil {
-		v.failures = append(v.failures, "expected MVCC timestamp, got nil")
-		return nil
-	}
-
-	mvccJSONText, err := mvccJSON.AsText()
-	if err != nil {
-		return err
-	}
-
-	if *mvccJSONText > updated.AsOfSystemTime() {
-		v.failures = append(v.failures, fmt.Sprintf(
-			`expected MVCC timestamp to be earlier or equal to updated timestamp (%s), got %s`,
-			updated.AsOfSystemTime(), *mvccJSONText))
-	}
-
-	// This check is primarily a sanity check. Even in tests, we see the mvcc
-	// timestamp regularly differ from the updated timestamp by over 5 seconds.
-	// Asserting that the two are within an hour of each other should always pass.
-	if *mvccJSONText < updated.AddDuration(-time.Hour).AsOfSystemTime() {
-		v.failures = append(v.failures, fmt.Sprintf(
-			`expected MVCC timestamp to be within an hour of updated timestamp (%s), got %s`,
-			updated.AsOfSystemTime(), *mvccJSONText))
-	}
-
-	return nil
-}
-
-// NoteResolved implements the Validator interface.
-func (v *mvccTimestampValidator) NoteResolved(partition string, resolved hlc.Timestamp) error {
-	return nil
-}
-
-// Failures implements the Validator interface.
-func (v *mvccTimestampValidator) Failures() []string {
-	return v.failures
-}
-
 type keyInValueValidator struct {
 	primaryKeyCols []string
 	failures       []string
@@ -450,6 +369,12 @@ func (v *keyInValueValidator) NoteRow(
 	if err != nil {
 		return err
 	}
+	keyJSONAsArray, ok := keyJSON.AsArray()
+	if !ok || len(keyJSONAsArray) != len(v.primaryKeyCols) {
+		return errors.Errorf(
+			`Not array: expected primary key columns %s got datums %s`,
+			v.primaryKeyCols, keyJSONAsArray)
+	}
 
 	valueJSON, err := json.ParseJSON(value)
 	if err != nil {
@@ -463,14 +388,14 @@ func (v *keyInValueValidator) NoteRow(
 	}
 
 	if keyInValueJSON == nil {
-		v.failures = append(v.failures, fmt.Sprintf(
-			"no key in value, expected key value %s", keyString))
+		return errors.Errorf(
+			"no key in value, expected key value %s", keyString)
 	} else {
 		keyInValueString := keyInValueJSON.String()
 		if keyInValueString != keyString {
-			v.failures = append(v.failures, fmt.Sprintf(
+			return errors.Errorf(
 				"key in value %s does not match expected key value %s",
-				keyInValueString, keyString))
+				keyInValueString, keyString)
 		}
 	}
 
@@ -516,7 +441,7 @@ func (v *topicValidator) NoteRow(
 	} else {
 		if topic != v.table {
 			v.failures = append(v.failures, fmt.Sprintf(
-				"topic %s does not match expected table %s", topic, v.table))
+				"topic %s does not match expected table d.public.%s", topic, v.table))
 		}
 	}
 	return nil
@@ -661,65 +586,6 @@ func (v *FingerprintValidator) NoteRow(
 	return nil
 }
 
-// fetchTableColTypes fetches the column types for the given table tableName.
-// Note that the table has to exist at the updated timestamp.
-func (v *FingerprintValidator) fetchTableColTypes(
-	tableName string, updated hlc.Timestamp,
-) (map[string]*types.T, error) {
-	parts := strings.Split(tableName, ".")
-	var dbName string
-	if len(parts) == 2 {
-		dbName = parts[0] + "."
-	}
-
-	colToType := make(map[string]*types.T)
-	if err := v.sqlDBFunc(func(sqlDB *gosql.DB) error {
-		var rows *gosql.Rows
-		queryStr := fmt.Sprintf(`SELECT a.attname AS column_name, t.oid AS type_oid, t.typname AS type_name
-		FROM %spg_catalog.pg_attribute a JOIN %spg_catalog.pg_type t ON a.atttypid = t.oid AS OF SYSTEM TIME '%s'
-		WHERE a.attrelid = $1::regclass AND a.attnum > 0`, dbName, dbName, updated.AsOfSystemTime())
-
-		rows, err := sqlDB.Query(queryStr, tableName)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = rows.Close() }()
-		type result struct {
-			keyColumn string
-			oid       string
-			typeName  string
-		}
-
-		var results []result
-		for rows.Next() {
-			var keyColumn, oidStr, typeName string
-			if err := rows.Scan(&keyColumn, &oidStr, &typeName); err != nil {
-				return err
-			}
-			if err := rows.Err(); err != nil {
-				return err
-			}
-			results = append(results, result{
-				keyColumn: keyColumn,
-				oid:       oidStr,
-				typeName:  typeName,
-			})
-			oidNum, err := strconv.Atoi(oidStr)
-			if err != nil {
-				return err
-			}
-			colToType[keyColumn] = types.OidToType[oid.Oid(oidNum)]
-		}
-		if len(results) == 0 {
-			return errors.Errorf("no columns found for table %s", tableName)
-		}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return colToType, nil
-}
-
 // applyRowUpdate applies the update represented by `row` to the scratch table.
 func (v *FingerprintValidator) applyRowUpdate(row validatorRow) (_err error) {
 	defer func() {
@@ -727,70 +593,34 @@ func (v *FingerprintValidator) applyRowUpdate(row validatorRow) (_err error) {
 	}()
 
 	var args []interface{}
-	keyJSON, err := json.ParseJSON(row.key)
-	if err != nil {
+	var primaryKeyDatums []interface{}
+	if err := gojson.Unmarshal([]byte(row.key), &primaryKeyDatums); err != nil {
 		return err
 	}
-	keyJSONAsArray, ok := keyJSON.AsArray()
-	if !ok || len(keyJSONAsArray) != len(v.primaryKeyCols) {
-		return errors.Errorf(
-			`notArray: %t expected primary key columns %s got datums %s`,
-			ok, v.primaryKeyCols, keyJSONAsArray)
+	if len(primaryKeyDatums) != len(v.primaryKeyCols) {
+		return errors.Errorf(`expected primary key columns %s got datums %s`,
+			v.primaryKeyCols, primaryKeyDatums)
 	}
 
 	var stmtBuf bytes.Buffer
-	valueJSON, err := json.ParseJSON(row.value)
-	if err != nil {
+	type wrapper struct {
+		After map[string]interface{} `json:"after"`
+	}
+	var value wrapper
+	if err := gojson.Unmarshal([]byte(row.value), &value); err != nil {
 		return err
 	}
-	afterJSON, err := valueJSON.FetchValKey("after")
-	if err != nil {
-		return err
-	}
-
-	if afterJSON != nil && afterJSON.Type() != json.NullJSONType {
+	if value.After != nil {
 		// UPDATE or INSERT
 		fmt.Fprintf(&stmtBuf, `UPSERT INTO %s (`, v.fprintTable)
-		iter, err := afterJSON.ObjectIter()
-		if err != nil {
-			return err
-		}
-		colNames := make([]string, 0)
-		for iter.Next() {
-			colNames = append(colNames, iter.Key())
-		}
-
-		typeofCol, err := v.fetchTableColTypes(v.origTable, row.updated)
-		for _, colValue := range colNames {
+		for col, colValue := range value.After {
 			if len(args) != 0 {
 				stmtBuf.WriteString(`,`)
 			}
-			stmtBuf.WriteString(colValue)
-			if err != nil {
-				return err
-			}
-			colType, exists := typeofCol[colValue]
-			if !exists {
-				return errors.Errorf("column %s not found in table %s", colValue, v.origTable)
-			}
-			jsonValue, err := afterJSON.FetchValKey(colValue)
-			if err != nil {
-				return err
-			}
-			str, err := jsonValue.AsText()
-			if err != nil {
-				return err
-			}
-			if str != nil {
-				datum, _ := rowenc.ParseDatumStringAs(context.Background(), colType, *str,
-					eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings()), nil)
-				args = append(args, datum)
-			} else {
-				args = append(args, nil)
-			}
+			stmtBuf.WriteString(col)
+			args = append(args, colValue)
 		}
-
-		for i := len(colNames) - v.fprintOrigColumns; i < v.fprintTestColumns; i++ {
+		for i := len(value.After) - v.fprintOrigColumns; i < v.fprintTestColumns; i++ {
 			fmt.Fprintf(&stmtBuf, `, test%d`, i)
 			args = append(args, nil)
 		}
@@ -804,26 +634,35 @@ func (v *FingerprintValidator) applyRowUpdate(row validatorRow) (_err error) {
 		stmtBuf.WriteString(`)`)
 
 		// Also verify that the key matches the value.
+		primaryKeyDatums = make([]interface{}, len(v.primaryKeyCols))
 		for idx, primaryKeyCol := range v.primaryKeyCols {
-			valueJSON, err := afterJSON.FetchValKey(primaryKeyCol)
-			if err != nil {
-				return err
-			}
-			if rowKeyValue := keyJSONAsArray[idx]; valueJSON != rowKeyValue {
-				v.failures = append(v.failures,
-					fmt.Sprintf(`key %s did not match expected key %s for value %s`,
-						primaryKeyCol, rowKeyValue, valueJSON))
-			}
+			primaryKeyDatums[idx] = value.After[primaryKeyCol]
+		}
+		primaryKeyJSON, err := gojson.Marshal(primaryKeyDatums)
+		if err != nil {
+			return err
+		}
+
+		rowKey := row.key
+		if len(primaryKeyDatums) > 1 {
+			// format the key using the Go marshaller; otherwise, differences
+			// in formatting could lead to the comparison below failing
+			rowKey = asGoJSON(row.key)
+		}
+		if string(primaryKeyJSON) != rowKey {
+			v.failures = append(v.failures,
+				fmt.Sprintf(`key %s did not match expected key %s for value %s`,
+					rowKey, primaryKeyJSON, row.value))
 		}
 	} else {
 		// DELETE
 		fmt.Fprintf(&stmtBuf, `DELETE FROM %s WHERE `, v.fprintTable)
-		for i, datum := range keyJSONAsArray {
+		for i, datum := range primaryKeyDatums {
 			if len(args) != 0 {
 				stmtBuf.WriteString(` AND `)
 			}
-			fmt.Fprintf(&stmtBuf, `to_json(%s)::text = $%d`, v.primaryKeyCols[i], i+1)
-			args = append(args, datum.String())
+			fmt.Fprintf(&stmtBuf, `%s = $%d`, v.primaryKeyCols[i], i+1)
+			args = append(args, datum)
 		}
 	}
 
@@ -1017,26 +856,21 @@ func ParseJSONValueTimestamps(v []byte) (updated, resolved hlc.Timestamp, err er
 	var valueRaw struct {
 		Resolved string `json:"resolved"`
 		Updated  string `json:"updated"`
-		Source   struct {
-			TsHLC string `json:"ts_hlc"`
-		} `json:"source"`
 	}
 	if err := gojson.Unmarshal(v, &valueRaw); err != nil {
 		return hlc.Timestamp{}, hlc.Timestamp{}, errors.Wrapf(err, "parsing [%s] as json", v)
 	}
-
 	if valueRaw.Updated != `` {
-		if updated, err = hlc.ParseHLC(valueRaw.Updated); err != nil {
+		var err error
+		updated, err = hlc.ParseHLC(valueRaw.Updated)
+		if err != nil {
 			return hlc.Timestamp{}, hlc.Timestamp{}, err
 		}
 	}
 	if valueRaw.Resolved != `` {
-		if resolved, err = hlc.ParseHLC(valueRaw.Resolved); err != nil {
-			return hlc.Timestamp{}, hlc.Timestamp{}, err
-		}
-	}
-	if valueRaw.Source.TsHLC != `` {
-		if updated, err = hlc.ParseHLC(valueRaw.Source.TsHLC); err != nil {
+		var err error
+		resolved, err = hlc.ParseHLC(valueRaw.Resolved)
+		if err != nil {
 			return hlc.Timestamp{}, hlc.Timestamp{}, err
 		}
 	}
@@ -1084,4 +918,23 @@ func fetchPrimaryKeyCols(sqlDB *gosql.DB, tableStr string) ([]string, error) {
 		return nil, errors.Errorf("no primary key information found for %s", tableStr)
 	}
 	return primaryKeyCols, nil
+}
+
+// asGoJSON tries to unmarshal the given string as JSON; if
+// successful, the struct is marshalled back to JSON. This is to
+// enforce the default formatting of the standard library marshaller,
+// allowing comparisons of JSON strings when we don't control the
+// formatting of the strings.
+func asGoJSON(s string) string {
+	var obj interface{}
+	if err := gojson.Unmarshal([]byte(s), &obj); err != nil {
+		return s
+	}
+
+	blob, err := gojson.Marshal(obj)
+	if err != nil {
+		return s
+	}
+
+	return string(blob)
 }

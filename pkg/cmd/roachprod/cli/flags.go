@@ -47,9 +47,9 @@ var (
 	listJSON              bool
 	listMine              bool
 	listPattern           string
-	isSecure              bool // Set based on the values passed to --secure and --insecure
-	secure                = false
-	insecure              = envutil.EnvOrDefaultBool("COCKROACH_ROACHPROD_INSECURE", true)
+	isSecure              bool   // Set based on the values passed to --secure and --insecure
+	secure                = true // DEPRECATED
+	insecure              = envutil.EnvOrDefaultBool("COCKROACH_ROACHPROD_INSECURE", false)
 	virtualClusterName    string
 	sqlInstance           int
 	extraSSHOptions       = ""
@@ -107,13 +107,6 @@ var (
 	fetchLogsTimeout time.Duration
 )
 
-// Intended to be called once from drtprod main package to update defaults which differ from roachprod.
-func UpdateFlagDefaults() {
-	// N.B. unlike roachprod, which defaults to "insecure mode", drtprod defaults to "secure mode".
-	secure = true
-	insecure = envutil.EnvOrDefaultBool("COCKROACH_ROACHPROD_INSECURE", false)
-}
-
 func initRootCmdFlags(rootCmd *cobra.Command) {
 	rootCmd.PersistentFlags().BoolVarP(&config.Quiet, "quiet", "q",
 		!term.IsTerminal(int(os.Stdout.Fd())), "disable fancy progress output")
@@ -164,12 +157,11 @@ func initCreateCmdFlags(createCmd *cobra.Command) {
 
 	// Allow each Provider to inject additional configuration flags
 	for _, providerName := range vm.AllProviderNames() {
-		provider := vm.Providers[providerName]
-		if provider.Active() {
+		if vm.Providers[providerName].Active() {
 			providerOptsContainer[providerName].ConfigureCreateFlags(createCmd.Flags())
 			// createCmd only accepts a single GCE project, as opposed to all the other
 			// commands.
-			provider.ConfigureProviderFlags(createCmd.Flags(), vm.SingleProject)
+			providerOptsContainer[providerName].ConfigureClusterFlags(createCmd.Flags(), vm.SingleProject)
 		}
 	}
 }
@@ -178,8 +170,7 @@ func initClusterFlagsForMultiProjects(
 	rootCmd *cobra.Command, excludeFromClusterFlagsMulti []*cobra.Command,
 ) {
 	for _, providerName := range vm.AllProviderNames() {
-		provider := vm.Providers[providerName]
-		if provider.Active() {
+		if vm.Providers[providerName].Active() {
 			for _, cmd := range rootCmd.Commands() {
 				excludeCmd := false
 				for _, c := range excludeFromClusterFlagsMulti {
@@ -191,7 +182,7 @@ func initClusterFlagsForMultiProjects(
 				if excludeCmd {
 					continue
 				}
-				provider.ConfigureProviderFlags(cmd.Flags(), vm.AcceptMultipleProjects)
+				providerOptsContainer[providerName].ConfigureClusterFlags(cmd.Flags(), vm.AcceptMultipleProjects)
 			}
 		}
 	}
@@ -396,9 +387,10 @@ func initGCCmdFlags(gcCmd *cobra.Command) {
 		"dry-run", "n", dryrun, "dry run (don't perform any actions)")
 	gcCmd.Flags().StringVar(&config.SlackToken, "slack-token", "", "Slack bot token")
 	// Allow each Provider to inject additional configuration flags
-	for _, provider := range vm.Providers {
-		if provider.Active() {
-			provider.ConfigureClusterCleanupFlags(gcCmd.Flags())
+	for _, providerName := range vm.AllProviderNames() {
+		if vm.Providers[providerName].Active() {
+			// set up cluster cleanup flag for gcCmd
+			providerOptsContainer[providerName].ConfigureClusterCleanupFlags(gcCmd.Flags())
 		}
 	}
 }
@@ -473,8 +465,10 @@ func initFlagBinaryForCmd(cmd *cobra.Command) {
 }
 
 func initFlagInsecureForCmd(cmd *cobra.Command) {
+	// TODO(renato): remove --secure once the default of secure
+	// clusters has existed in roachprod long enough.
 	cmd.Flags().BoolVar(&secure,
-		"secure", secure, "use a secure cluster")
+		"secure", secure, "use a secure cluster (DEPRECATED: clusters are secure by default; use --insecure to create insecure clusters.)")
 	cmd.Flags().BoolVar(&insecure,
 		"insecure", insecure, "use an insecure cluster")
 }

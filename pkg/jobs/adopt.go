@@ -31,30 +31,26 @@ import (
 )
 
 const (
-	claimableStateList = `'` + string(StateRunning) + `', ` +
-		`'` + string(StatePending) + `', ` +
-		`'` + string(StateCancelRequested) + `', ` +
-		`'` + string(StatePauseRequested) + `', ` +
-		`'` + string(StateReverting) + `'`
+	claimableStatusList = `'` + string(StatusRunning) + `', ` +
+		`'` + string(StatusPending) + `', ` +
+		`'` + string(StatusCancelRequested) + `', ` +
+		`'` + string(StatusPauseRequested) + `', ` +
+		`'` + string(StatusReverting) + `'`
 
-	terminalStateList = `'` + string(StateFailed) + `', ` +
-		`'` + string(StateCanceled) + `', ` +
-		`'` + string(StateSucceeded) + `'`
+	claimableStatusTupleString = `(` + claimableStatusList + `)`
 
-	claimableStateTupleString = `(` + claimableStateList + `)`
+	nonTerminalStatusList = claimableStatusList + `, ` +
+		`'` + string(StatusPaused) + `'`
 
-	nonTerminalStateList = claimableStateList + `, ` +
-		`'` + string(StatePaused) + `'`
-
-	// NonTerminalStateTupleString is a sql tuple corresponding to states of
+	// NonTerminalStatusTupleString is a sql tuple corresponding to statuses of
 	// non-terminal jobs.
-	NonTerminalStateTupleString = `(` + nonTerminalStateList + `)`
+	NonTerminalStatusTupleString = `(` + nonTerminalStatusList + `)`
 
 	claimQuery = `
    UPDATE system.jobs
       SET claim_session_id = $1, claim_instance_id = $2
     WHERE ((claim_session_id IS NULL)
-      AND (status IN ` + claimableStateTupleString + `))
+      AND (status IN ` + claimableStatusTupleString + `))
  ORDER BY created DESC
     LIMIT $3
 RETURNING id;`
@@ -73,14 +69,14 @@ func (r *Registry) maybeDumpTrace(resumerCtx context.Context, resumer Resumer, j
 	// could have been canceled at this point.
 	dumpCtx, _ := r.makeCtx()
 	sp := tracing.SpanFromContext(resumerCtx)
-	if sp == nil {
+	if sp == nil || sp.IsNoop() {
 		// Should never be true since TraceableJobs force real tracing spans to be
 		// attached to the context.
 		return
 	}
 
 	resumerTraceFilename := fmt.Sprintf("%s/resumer-trace/%s",
-		timeutil.Now().Format("20060102_150405.00"), r.ID().String())
+		r.ID().String(), timeutil.Now().Format("20060102_150405.00"))
 	td := jobspb.TraceData{CollectedSpans: sp.GetConfiguredRecording()}
 	if err := r.db.Txn(dumpCtx, func(ctx context.Context, txn isql.Txn) error {
 		return WriteProtobinExecutionDetailFile(dumpCtx, resumerTraceFilename, &td, txn, jobID)
@@ -113,16 +109,16 @@ func (r *Registry) claimJobs(ctx context.Context, s sqlliveness.Session) error {
 }
 
 const (
-	// processQueryStateTupleString includes the states of a job in which a
+	// processQueryStatusTupleString includes the states of a job in which a
 	// job can be claimed and resumed.
-	processQueryStateTupleString = `(` +
-		`'` + string(StateRunning) + `', ` +
-		`'` + string(StateReverting) + `'` +
+	processQueryStatusTupleString = `(` +
+		`'` + string(StatusRunning) + `', ` +
+		`'` + string(StatusReverting) + `'` +
 		`)`
 
 	// processQuery select IDs of the jobs that can be processed among the claimed jobs.
 	processQuery = `SELECT id FROM system.jobs ` +
-		` WHERE status IN ` + processQueryStateTupleString +
+		` WHERE status IN ` + processQueryStatusTupleString +
 		` AND (claim_session_id = $1 AND claim_instance_id = $2)`
 
 	// resumeQuery retrieves the job record for a job we intend to resume.
@@ -260,11 +256,11 @@ func (r *Registry) resumeJob(
 	r.metrics.ResumedJobs.Inc(1)
 	if err := r.stopper.RunAsyncTask(resumeCtx, string(job.taskName()), func(ctx context.Context) {
 		// Wait for the job to finish. No need to print the error because if there
-		// was one it's been set in the job state already.
+		// was one it's been set in the job status already.
 		var cleanup func()
 		ctx, cleanup = r.stopper.WithCancelOnQuiesce(ctx)
 		defer cleanup()
-		_ = r.runJob(ctx, resumer, job, job.State(), job.taskName())
+		_ = r.runJob(ctx, resumer, job, job.Status(), job.taskName())
 	}); err != nil {
 		r.unregister(jobID)
 		// Also avoid leaking a goroutine in this case.
@@ -292,14 +288,14 @@ func (r *Registry) loadJobForResume(
 		return nil, errors.Errorf("job %d: claim with session id %s does not exist", jobID, s.ID())
 	}
 
-	state := State(*row[0].(*tree.DString))
-	if state == StateSucceeded {
+	status := Status(*row[0].(*tree.DString))
+	if status == StatusSucceeded {
 		// A concurrent registry could have already executed the job.
 		return nil, nil
 	}
-	if state != StateRunning && state != StateReverting {
+	if status != StatusRunning && status != StatusReverting {
 		// A concurrent registry could have requested the job to be paused or canceled.
-		return nil, errors.Errorf("job %d: state changed to %s which is not resumable", jobID, state)
+		return nil, errors.Errorf("job %d: status changed to %s which is not resumable", jobID, status)
 	}
 
 	if isAlive := *row[1].(*tree.DBool); !isAlive {
@@ -341,7 +337,7 @@ func (r *Registry) loadJobForResume(
 
 	job.mu.payload = *payload
 	job.mu.progress = *progress
-	job.mu.state = state
+	job.mu.status = status
 	job.session = s
 	return job, nil
 }
@@ -372,7 +368,7 @@ func (r *Registry) addAdoptedJob(
 }
 
 func (r *Registry) runJob(
-	ctx context.Context, resumer Resumer, job *Job, state State, taskName redact.SafeString,
+	ctx context.Context, resumer Resumer, job *Job, status Status, taskName redact.SafeString,
 ) error {
 	if r.IsDraining() {
 		return errors.Newf("refusing to start %q; job registry is draining", taskName)
@@ -411,7 +407,7 @@ func (r *Registry) runJob(
 	defer span.Finish()
 
 	// Run the actual job.
-	err := r.stepThroughStateMachine(ctx, execCtx, resumer, job, state, finalResumeError)
+	err := r.stepThroughStateMachine(ctx, execCtx, resumer, job, status, finalResumeError)
 	// If the context has been canceled, disregard errors for the sake of logging
 	// as presumably they are due to the context cancellation which commonly
 	// happens during shutdown.
@@ -466,13 +462,13 @@ const pauseAndCancelUpdate = `
    UPDATE system.jobs
       SET status =
           CASE
-						 WHEN status = '` + string(StatePauseRequested) + `' THEN '` + string(StatePaused) + `'
-						 WHEN status = '` + string(StateCancelRequested) + `' THEN '` + string(StateReverting) + `'
+						 WHEN status = '` + string(StatusPauseRequested) + `' THEN '` + string(StatusPaused) + `'
+						 WHEN status = '` + string(StatusCancelRequested) + `' THEN '` + string(StatusReverting) + `'
 						 ELSE status
           END,
 					num_runs = 0,
 					last_run = NULL
-    WHERE (status IN ('` + string(StatePauseRequested) + `', '` + string(StateCancelRequested) + `'))
+    WHERE (status IN ('` + string(StatusPauseRequested) + `', '` + string(StatusCancelRequested) + `'))
       AND ((claim_session_id = $1) AND (claim_instance_id = $2))
 RETURNING id, status, job_type
 `
@@ -498,10 +494,10 @@ func (r *Registry) servePauseAndCancelRequests(ctx context.Context, s sqllivenes
 		for _, row := range rows {
 			id := jobspb.JobID(*row[0].(*tree.DInt))
 			job := &Job{id: id, registry: r}
-			stateString := *row[1].(*tree.DString)
+			statusString := *row[1].(*tree.DString)
 			jobTypeString := *row[2].(*tree.DString)
-			switch State(stateString) {
-			case StatePaused:
+			switch Status(statusString) {
+			case StatusPaused:
 				if !r.cancelRegisteredJobContext(id) {
 					// If we didn't already have a running job for this lease,
 					// clear out the lease here since it won't be cleared be
@@ -509,15 +505,15 @@ func (r *Registry) servePauseAndCancelRequests(ctx context.Context, s sqllivenes
 					r.clearLeaseForJobID(id, txn, txn.KV())
 				}
 				txn.KV().AddCommitTrigger(func(ctx context.Context) {
-					LogStateChangeStructured(ctx,
+					LogStatusChangeStructured(ctx,
 						id,
 						string(jobTypeString),
 						nil,
-						StatePauseRequested,
-						StatePaused)
+						StatusPauseRequested,
+						StatusPaused)
 				})
 				log.Infof(ctx, "job %d, session %s: paused", id, s.ID())
-			case StateReverting:
+			case StatusReverting:
 				if err := job.WithTxn(txn).Update(ctx, func(
 					txn isql.Txn, md JobMetadata, ju *JobUpdater,
 				) error {
@@ -540,12 +536,12 @@ func (r *Registry) servePauseAndCancelRequests(ctx context.Context, s sqllivenes
 					md.Payload.FinalResumeError = &encodedErr
 					ju.UpdatePayload(md.Payload)
 					txn.KV().AddCommitTrigger(func(ctx context.Context) {
-						LogStateChangeStructured(ctx,
+						LogStatusChangeStructured(ctx,
 							id,
 							md.Payload.Type().String(),
 							md.Payload,
-							StateCancelRequested,
-							StateReverting)
+							StatusCancelRequested,
+							StatusReverting)
 					})
 					return nil
 				}); err != nil {
@@ -554,7 +550,7 @@ func (r *Registry) servePauseAndCancelRequests(ctx context.Context, s sqllivenes
 				log.Infof(ctx, "job %d, session id: %s canceled: the job is now reverting",
 					id, s.ID())
 			default:
-				return errors.AssertionFailedf("unexpected job state %s: %v", stateString, job)
+				return errors.AssertionFailedf("unexpected job status %s: %v", statusString, job)
 			}
 		}
 		return nil

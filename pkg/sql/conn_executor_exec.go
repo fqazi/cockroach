@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catsessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
@@ -40,7 +39,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/physicalplan"
-	"github.com/cockroachdb/cockroach/pkg/sql/prep"
 	"github.com/cockroachdb/cockroach/pkg/sql/regions"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/asof"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
@@ -57,12 +55,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/cancelchecker"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxlog"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
-	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/fsm"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	// This import is needed here to properly inject tree.ValidateJSONPath from
-	// pkg/util/jsonpath/parser/parse.go.
-	_ "github.com/cockroachdb/cockroach/pkg/util/jsonpath/parser"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
@@ -76,7 +70,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
 	"github.com/lib/pq/oid"
 	"go.opentelemetry.io/otel/attribute"
@@ -129,7 +122,6 @@ func (ex *connExecutor) execStmt(
 	// Stop the session idle timeout when a new statement is executed.
 	ex.mu.IdleInSessionTimeout.Stop()
 	ex.mu.IdleInTransactionSessionTimeout.Stop()
-	ex.mu.TransactionTimeout.Stop()
 
 	// Run observer statements in a separate code path; their execution does not
 	// depend on the current transaction state.
@@ -154,7 +146,7 @@ func (ex *connExecutor) execStmt(
 		ev, payload = ex.execStmtInNoTxnState(ctx, parserStmt, res)
 
 	case stateOpen:
-		var preparedStmt *prep.Statement
+		var preparedStmt *PreparedStatement
 		if portal != nil {
 			preparedStmt = portal.Stmt
 		}
@@ -176,7 +168,7 @@ func (ex *connExecutor) execStmt(
 			})
 		}
 		switch p := payload.(type) {
-		case eventNonRetryableErrPayload:
+		case eventNonRetriableErrPayload:
 			ex.recordFailure(p)
 		}
 
@@ -217,39 +209,6 @@ func (ex *connExecutor) execStmt(
 		}
 	}
 
-	txnTimeoutRemaining :=
-		ex.sessionData().TransactionTimeout - ex.phaseTimes.GetSessionPhaseTime(sessionphase.SessionTransactionStarted).Elapsed()
-	if txnTimeoutRemaining > 0 {
-		startTransactionTimeout := func() {
-			switch ast.(type) {
-			case *tree.CommitTransaction, *tree.RollbackTransaction:
-				// Do nothing, the transaction is completed, we do not want to start
-				// an idle timer.
-			default:
-				// The transaction_timeout setting should move the transaction to the
-				// aborted state.
-				// NOTE: In Postgres, the transaction_timeout causes the entire session
-				// to be terminated. We intentionally diverge from that behavior.
-				ex.mu.TransactionTimeout = timeout{time.AfterFunc(
-					txnTimeoutRemaining,
-					func() {
-						// An error is only returned if stmtBuf was closed already, so
-						// there's nothing else to do in that case.
-						_ = ex.stmtBuf.Push(ctx, SendError{Err: sqlerrors.TxnTimeoutError})
-					},
-				)}
-			}
-		}
-		switch ex.machine.CurState().(type) {
-		case stateOpen:
-			// Only start timeout if the statement is executed in an
-			// explicit transaction.
-			if !ex.implicitTxn() {
-				startTransactionTimeout()
-			}
-		}
-	}
-
 	return ev, payload, err
 }
 
@@ -264,8 +223,8 @@ func (ex *connExecutor) startIdleInSessionTimeout() {
 	}
 }
 
-func (ex *connExecutor) recordFailure(p eventNonRetryableErrPayload) {
-	ex.metrics.EngineMetrics.FailureCount.Inc(1, ex.sessionData().Database, ex.sessionData().ApplicationName)
+func (ex *connExecutor) recordFailure(p eventNonRetriableErrPayload) {
+	ex.metrics.EngineMetrics.FailureCount.Inc(1)
 	switch {
 	case errors.Is(p.errorCause(), sqlerrors.QueryTimeoutError):
 		ex.metrics.EngineMetrics.StatementTimeoutCount.Inc(1)
@@ -353,7 +312,7 @@ func (ex *connExecutor) execPortal(
 func (ex *connExecutor) execStmtInOpenState(
 	ctx context.Context,
 	parserStmt statements.Statement[tree.Statement],
-	prepared *prep.Statement,
+	prepared *PreparedStatement,
 	pinfo *tree.PlaceholderInfo,
 	res RestrictedCommandResult,
 	canAutoCommit bool,
@@ -389,14 +348,6 @@ func (ex *connExecutor) execStmtInOpenState(
 		stmt = makeStatement(parserStmt, queryID, stmtFingerprintFmtMask)
 	}
 
-	if len(stmt.QueryTags) > 0 {
-		tags := &logtags.Buffer{}
-		for _, tag := range stmt.QueryTags {
-			tags = tags.Add("querytag-"+tag.Key, tag.Value)
-		}
-		ctx = logtags.AddTags(ctx, tags)
-	}
-
 	var queryTimeoutTicker *time.Timer
 	var txnTimeoutTicker *time.Timer
 	queryTimedOut := false
@@ -426,8 +377,7 @@ func (ex *connExecutor) execStmtInOpenState(
 
 		// Note ex.metrics is Server.Metrics for the connExecutor that serves the
 		// client connection, and is Server.InternalMetrics for internal executors.
-		ex.metrics.EngineMetrics.SQLActiveStatements.Dec(1,
-			ex.sessionData().Database, ex.sessionData().ApplicationName)
+		ex.metrics.EngineMetrics.SQLActiveStatements.Dec(1)
 	}()
 
 	// Special handling for SET TRANSACTION statements within a stored procedure
@@ -442,8 +392,7 @@ func (ex *connExecutor) execStmtInOpenState(
 
 	// Note ex.metrics is Server.Metrics for the connExecutor that serves the
 	// client connection, and is Server.InternalMetrics for internal executors.
-	ex.metrics.EngineMetrics.SQLActiveStatements.Inc(1,
-		ex.sessionData().Database, ex.sessionData().ApplicationName)
+	ex.metrics.EngineMetrics.SQLActiveStatements.Inc(1)
 
 	p := &ex.planner
 	stmtTS := ex.server.cfg.Clock.PhysicalTime()
@@ -538,10 +487,11 @@ func (ex *connExecutor) execStmtInOpenState(
 		// Replace the `EXECUTE foo` statement with the prepared statement, and
 		// continue execution.
 		name := e.Name.String()
-		ps, ok := ex.extraTxnState.prepStmtsNamespace.prepStmts.Get(name)
+		ps, ok := ex.extraTxnState.prepStmtsNamespace.prepStmts[name]
 		if !ok {
 			return makeErrEvent(newPreparedStmtDNEError(ex.sessionData(), name))
 		}
+		ex.extraTxnState.prepStmtsNamespace.touchLRUEntry(name)
 
 		var err error
 		pinfo, err = ex.planner.fillInPlaceholders(ctx, ps, name, e.Params)
@@ -730,7 +680,7 @@ func (ex *connExecutor) execStmtInOpenState(
 		p.maybeLogStatement(
 			ctx,
 			ex.executorType,
-			int(ex.state.mu.autoRetryCounter)+p.autoRetryStmtCounter,
+			int(ex.state.mu.autoRetryCounter),
 			int(ex.extraTxnState.txnCounter.Load()),
 			rowsAffected,
 			ex.state.mu.stmtCount,
@@ -773,12 +723,12 @@ func (ex *connExecutor) execStmtInOpenState(
 			// Even in the cases where the error is a retryable error, we want to
 			// intercept the event and payload returned here to ensure that the query
 			// is not retried.
-			retEv = eventNonRetryableErr{
+			retEv = eventNonRetriableErr{
 				IsCommit: fsm.FromBool(isCommit(ast)),
 			}
 			errToPush := cancelchecker.QueryCanceledError
 			res.SetError(errToPush)
-			retPayload = eventNonRetryableErrPayload{err: errToPush}
+			retPayload = eventNonRetriableErrPayload{err: errToPush}
 			logErr = errToPush
 			// Cancel the txn if we are inside an implicit txn too.
 			if ex.implicitTxn() && ex.state.txnCancelFn != nil {
@@ -799,18 +749,18 @@ func (ex *connExecutor) execStmtInOpenState(
 		if queryTimedOut {
 			// A timed out query should never produce retryable errors/events/payloads
 			// so we intercept and overwrite them all here.
-			retEv = eventNonRetryableErr{
+			retEv = eventNonRetriableErr{
 				IsCommit: fsm.FromBool(isCommit(ast)),
 			}
 			res.SetError(sqlerrors.QueryTimeoutError)
-			retPayload = eventNonRetryableErrPayload{err: sqlerrors.QueryTimeoutError}
+			retPayload = eventNonRetriableErrPayload{err: sqlerrors.QueryTimeoutError}
 			logErr = sqlerrors.QueryTimeoutError
 		} else if txnTimedOut {
-			retEv = eventNonRetryableErr{
+			retEv = eventNonRetriableErr{
 				IsCommit: fsm.FromBool(isCommit(ast)),
 			}
 			res.SetError(sqlerrors.TxnTimeoutError)
-			retPayload = eventNonRetryableErrPayload{err: sqlerrors.TxnTimeoutError}
+			retPayload = eventNonRetriableErrPayload{err: sqlerrors.TxnTimeoutError}
 			logErr = sqlerrors.TxnTimeoutError
 		}
 
@@ -863,7 +813,7 @@ func (ex *connExecutor) execStmtInOpenState(
 		// This is handling the SQL statement "PREPARE". See execPrepare for
 		// handling of the protocol-level command for preparing statements.
 		name := s.Name.String()
-		if ex.extraTxnState.prepStmtsNamespace.prepStmts.Has(name) {
+		if _, ok := ex.extraTxnState.prepStmtsNamespace.prepStmts[name]; ok {
 			err := pgerror.Newf(
 				pgcode.DuplicatePreparedStatement,
 				"prepared statement %q already exists", name,
@@ -924,7 +874,7 @@ func (ex *connExecutor) execStmtInOpenState(
 			p.extendedEvalCtx.Placeholders = oldPlaceholders
 		}()
 		if _, err := ex.addPreparedStmt(
-			ctx, name, prepStmt, typeHints, rawTypeHints, prep.StatementOriginSQL,
+			ctx, name, prepStmt, typeHints, rawTypeHints, PreparedStatementOriginSQL,
 		); err != nil {
 			return makeErrEvent(err)
 		}
@@ -1080,16 +1030,6 @@ func (ex *connExecutor) execStmtInOpenState(
 		}()
 	}
 
-	if ex.state.mu.autoRetryReason != nil {
-		p.autoRetryCounter = int(ex.state.mu.autoRetryCounter)
-		ex.sessionTracing.TraceRetryInformation(
-			ctx, "transaction", int(ex.state.mu.autoRetryCounter), ex.state.mu.autoRetryReason,
-		)
-		if ex.server.cfg.TestingKnobs.OnTxnRetry != nil {
-			ex.server.cfg.TestingKnobs.OnTxnRetry(ex.state.mu.autoRetryReason, p.EvalContext())
-		}
-	}
-
 	if ex.executorType != executorTypeInternal &&
 		ex.state.mu.txn.IsoLevel() == isolation.ReadCommitted &&
 		!ex.implicitTxn() {
@@ -1186,11 +1126,11 @@ func (ex *connExecutor) execStmtInOpenState(
 	if !os.ImplicitTxn.Get() && txn.IsSerializablePushAndRefreshNotPossible() {
 		rc, canAutoRetry := ex.getRewindTxnCapability()
 		if canAutoRetry {
-			ev := eventRetryableErr{
+			ev := eventRetriableErr{
 				IsCommit:     fsm.FromBool(isCommit(ast)),
 				CanAutoRetry: fsm.FromBool(canAutoRetry),
 			}
-			payload := eventRetryableErrPayload{
+			payload := eventRetriableErrPayload{
 				err:    txn.GenerateForcedRetryableErr(ctx, "serializable transaction timestamp pushed (detected by connExecutor)"),
 				rewCap: rc,
 			}
@@ -1398,8 +1338,7 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 
 		// Note ex.metrics is Server.Metrics for the connExecutor that serves the
 		// client connection, and is Server.InternalMetrics for internal executors.
-		ex.metrics.EngineMetrics.SQLActiveStatements.Dec(1,
-			ex.sessionData().Database, ex.sessionData().ApplicationName)
+		ex.metrics.EngineMetrics.SQLActiveStatements.Dec(1)
 	}()
 
 	// Special handling for SET TRANSACTION statements within a stored procedure
@@ -1414,8 +1353,7 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 
 	// Note ex.metrics is Server.Metrics for the connExecutor that serves the
 	// client connection, and is Server.InternalMetrics for internal executors.
-	ex.metrics.EngineMetrics.SQLActiveStatements.Inc(1,
-		ex.sessionData().Database, ex.sessionData().ApplicationName)
+	ex.metrics.EngineMetrics.SQLActiveStatements.Inc(1)
 
 	// TODO(sql-sessions): persist the planner for a pausable portal, and reuse
 	// it for each re-execution.
@@ -1513,10 +1451,11 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 		// Replace the `EXECUTE foo` statement with the prepared statement, and
 		// continue execution.
 		name := e.Name.String()
-		ps, ok := ex.extraTxnState.prepStmtsNamespace.prepStmts.Get(name)
+		ps, ok := ex.extraTxnState.prepStmtsNamespace.prepStmts[name]
 		if !ok {
 			return makeErrEvent(newPreparedStmtDNEError(ex.sessionData(), name))
 		}
+		ex.extraTxnState.prepStmtsNamespace.touchLRUEntry(name)
 
 		var err error
 		pinfo, err = ex.planner.fillInPlaceholders(ctx, ps, name, e.Params)
@@ -1753,7 +1692,7 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 		p.maybeLogStatement(
 			ctx,
 			ex.executorType,
-			int(ex.state.mu.autoRetryCounter)+p.autoRetryStmtCounter,
+			int(ex.state.mu.autoRetryCounter),
 			int(ex.extraTxnState.txnCounter.Load()),
 			rowsAffected,
 			ex.state.mu.stmtCount,
@@ -1808,7 +1747,7 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 				// Even in the cases where the error is a retryable error, we want to
 				// intercept the event and payload returned here to ensure that the query
 				// is not retried.
-				retEv = eventNonRetryableErr{
+				retEv = eventNonRetriableErr{
 					IsCommit: fsm.FromBool(isCommit(vars.ast)),
 				}
 				errToPush := cancelchecker.QueryCanceledError
@@ -1821,7 +1760,7 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 					errToPush = resToPushErr.Err()
 				}
 				resToPushErr.SetError(errToPush)
-				retPayload = eventNonRetryableErrPayload{err: errToPush}
+				retPayload = eventNonRetriableErrPayload{err: errToPush}
 				vars.logErr = errToPush
 				// Cancel the txn if we are inside an implicit txn too.
 				if ex.implicitTxn() && ex.state.txnCancelFn != nil {
@@ -1843,18 +1782,18 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 		if queryTimedOut {
 			// A timed out query should never produce retryable errors/events/payloads
 			// so we intercept and overwrite them all here.
-			retEv = eventNonRetryableErr{
+			retEv = eventNonRetriableErr{
 				IsCommit: fsm.FromBool(isCommit(vars.ast)),
 			}
 			res.SetError(sqlerrors.QueryTimeoutError)
-			retPayload = eventNonRetryableErrPayload{err: sqlerrors.QueryTimeoutError}
+			retPayload = eventNonRetriableErrPayload{err: sqlerrors.QueryTimeoutError}
 			vars.logErr = sqlerrors.QueryTimeoutError
 		} else if txnTimedOut {
-			retEv = eventNonRetryableErr{
+			retEv = eventNonRetriableErr{
 				IsCommit: fsm.FromBool(isCommit(vars.ast)),
 			}
 			res.SetError(sqlerrors.TxnTimeoutError)
-			retPayload = eventNonRetryableErrPayload{err: sqlerrors.TxnTimeoutError}
+			retPayload = eventNonRetriableErrPayload{err: sqlerrors.TxnTimeoutError}
 			vars.logErr = sqlerrors.TxnTimeoutError
 		}
 
@@ -1907,7 +1846,7 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 		// This is handling the SQL statement "PREPARE". See execPrepare for
 		// handling of the protocol-level command for preparing statements.
 		name := s.Name.String()
-		if ex.extraTxnState.prepStmtsNamespace.prepStmts.Has(name) {
+		if _, ok := ex.extraTxnState.prepStmtsNamespace.prepStmts[name]; ok {
 			err := pgerror.Newf(
 				pgcode.DuplicatePreparedStatement,
 				"prepared statement %q already exists", name,
@@ -1968,7 +1907,7 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 			p.extendedEvalCtx.Placeholders = oldPlaceholders
 		}()
 		if _, err := ex.addPreparedStmt(
-			ctx, name, prepStmt, typeHints, rawTypeHints, prep.StatementOriginSQL,
+			ctx, name, prepStmt, typeHints, rawTypeHints, PreparedStatementOriginSQL,
 		); err != nil {
 			return makeErrEvent(err)
 		}
@@ -2138,16 +2077,6 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 		}()
 	}
 
-	if ex.state.mu.autoRetryReason != nil {
-		p.autoRetryCounter = int(ex.state.mu.autoRetryCounter)
-		ex.sessionTracing.TraceRetryInformation(
-			ctx, "transaction", int(ex.state.mu.autoRetryCounter), ex.state.mu.autoRetryReason,
-		)
-		if ex.server.cfg.TestingKnobs.OnTxnRetry != nil {
-			ex.server.cfg.TestingKnobs.OnTxnRetry(ex.state.mu.autoRetryReason, p.EvalContext())
-		}
-	}
-
 	if ex.executorType != executorTypeInternal &&
 		ex.state.mu.txn.IsoLevel() == isolation.ReadCommitted &&
 		!ex.implicitTxn() {
@@ -2244,11 +2173,11 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 	if !os.ImplicitTxn.Get() && txn.IsSerializablePushAndRefreshNotPossible() {
 		rc, canAutoRetry := ex.getRewindTxnCapability()
 		if canAutoRetry {
-			ev := eventRetryableErr{
+			ev := eventRetriableErr{
 				IsCommit:     fsm.FromBool(isCommit(vars.ast)),
 				CanAutoRetry: fsm.FromBool(canAutoRetry),
 			}
-			payload := eventRetryableErrPayload{
+			payload := eventRetriableErrPayload{
 				err:    txn.GenerateForcedRetryableErr(ctx, "serializable transaction timestamp pushed (detected by connExecutor)"),
 				rewCap: rc,
 			}
@@ -2326,18 +2255,16 @@ func (ex *connExecutor) handleAOST(ctx context.Context, stmt tree.Statement) err
 	if ex.implicitTxn() && !ex.extraTxnState.firstStmtExecuted {
 		if p.extendedEvalCtx.AsOfSystemTime == nil {
 			p.extendedEvalCtx.AsOfSystemTime = asOf
-			if !asOf.ForBackfill {
-				if !asOf.BoundedStaleness {
-					p.extendedEvalCtx.SetTxnTimestamp(asOf.Timestamp.GoTime())
-					if err := ex.state.setHistoricalTimestamp(ctx, asOf.Timestamp); err != nil {
-						return err
-					}
-				}
-				if err := ex.state.setReadOnlyMode(tree.ReadOnly); err != nil {
+			if !asOf.BoundedStaleness {
+				p.extendedEvalCtx.SetTxnTimestamp(asOf.Timestamp.GoTime())
+				if err := ex.state.setHistoricalTimestamp(ctx, asOf.Timestamp); err != nil {
 					return err
 				}
-				p.extendedEvalCtx.TxnReadOnly = ex.state.readOnly.Load()
 			}
+			if err := ex.state.setReadOnlyMode(tree.ReadOnly); err != nil {
+				return err
+			}
+			p.extendedEvalCtx.TxnReadOnly = ex.state.readOnly.Load()
 			return nil
 		}
 		if *p.extendedEvalCtx.AsOfSystemTime == *asOf {
@@ -2359,24 +2286,16 @@ func (ex *connExecutor) handleAOST(ctx context.Context, stmt tree.Statement) err
 			asOf.Timestamp,
 		)
 	}
-	// Bounded staleness and backfills with a historical timestamp are both not
-	// allowed in explicit transactions.
+	// If we're in an explicit txn, we allow AOST but only if it matches with
+	// the transaction's timestamp. This is useful for running AOST statements
+	// using the Executor inside an external transaction; one might want
+	// to do that to force p.avoidLeasedDescriptors to be set below.
 	if asOf.BoundedStaleness {
 		return pgerror.Newf(
 			pgcode.FeatureNotSupported,
 			"cannot use a bounded staleness query in a transaction",
 		)
 	}
-	if asOf.ForBackfill {
-		return unimplemented.NewWithIssuef(
-			35712,
-			"cannot run a backfill with AS OF SYSTEM TIME in a transaction",
-		)
-	}
-	// If we're in an explicit txn, we allow AOST but only if it matches with
-	// the transaction's timestamp. This is useful for running AOST statements
-	// using the Executor inside an external transaction; one might want
-	// to do that to force p.avoidLeasedDescriptors to be set below.
 	if readTs := ex.state.getReadTimestamp(); asOf.Timestamp != readTs {
 		err = pgerror.Newf(pgcode.FeatureNotSupported,
 			"inconsistent AS OF SYSTEM TIME timestamp; expected: %s, got: %s", readTs, asOf.Timestamp)
@@ -2459,13 +2378,6 @@ func (ex *connExecutor) resetTransactionOnSchemaChangeRetry(ctx context.Context)
 	if omitInRangefeeds {
 		newTxn.SetOmitInRangefeeds()
 	}
-	if buildutil.CrdbTestBuild {
-		// For now, we explicitly disable buffered writes before executing DDLs.
-		// TODO(#140695): we should consider allowing this in the future.
-		if ex.state.mu.txn.BufferedWritesEnabled() {
-			return errors.AssertionFailedf("buffered writes should have been disabled on a DDL")
-		}
-	}
 	ex.state.mu.txn = newTxn
 	return nil
 }
@@ -2493,7 +2405,7 @@ func (ex *connExecutor) commitSQLTransaction(
 		// For certain retryable errors, we should turn them into client visible
 		// errors, since the client needs to retry now.
 		var conversionError error
-		err, conversionError = ex.convertRetryableErrorIntoUserVisibleError(ctx, err)
+		err, conversionError = ex.convertRetriableErrorIntoUserVisibleError(ctx, err)
 		if conversionError != nil {
 			return ex.makeErrEvent(conversionError, ast)
 		}
@@ -2555,11 +2467,11 @@ func (ex *connExecutor) commitSQLTransactionInternal(ctx context.Context) (retEr
 		ex.recordDDLTxnTelemetry(failed)
 	}()
 
-	if err := ex.extraTxnState.sqlCursors.closeAll(&ex.planner, cursorCloseForTxnCommit); err != nil {
+	if err := ex.extraTxnState.sqlCursors.closeAll(cursorCloseForTxnCommit); err != nil {
 		return err
 	}
 
-	ex.extraTxnState.prepStmtsNamespace.closePortals(ctx, &ex.extraTxnState.prepStmtsNamespaceMemAcc)
+	ex.extraTxnState.prepStmtsNamespace.closeAllPortals(ctx, &ex.extraTxnState.prepStmtsNamespaceMemAcc)
 
 	// We need to step the transaction's read sequence before committing if it has
 	// stepping enabled. If it doesn't have stepping enabled, then we just set the
@@ -2682,27 +2594,15 @@ func (ex *connExecutor) createJobs(ctx context.Context) error {
 func (ex *connExecutor) rollbackSQLTransaction(
 	ctx context.Context, stmt tree.Statement,
 ) (fsm.Event, fsm.EventPayload) {
-	ex.extraTxnState.idleLatency += ex.statsCollector.PhaseTimes().
-		GetIdleLatency(ex.statsCollector.PreviousPhaseTimes())
-
-	if err := ex.extraTxnState.sqlCursors.closeAll(&ex.planner, cursorCloseForTxnRollback); err != nil {
+	if err := ex.extraTxnState.sqlCursors.closeAll(cursorCloseForTxnRollback); err != nil {
 		return ex.makeErrEvent(err, stmt)
 	}
 
-	ex.extraTxnState.prepStmtsNamespace.closePortals(ctx, &ex.extraTxnState.prepStmtsNamespaceMemAcc)
+	ex.extraTxnState.prepStmtsNamespace.closeAllPortals(ctx, &ex.extraTxnState.prepStmtsNamespaceMemAcc)
 	ex.recordDDLTxnTelemetry(true /* failed */)
 
-	// A non-retryable error automatically rolls-back the transaction if there are
-	// no savepoints; see the state transition logic in conn_fsm.go. In that case,
-	// we can skip rolling-back the transaction here.
-	isKVTxnOpen := true
-	if _, isAbortedTxn := ex.machine.CurState().(stateAborted); isAbortedTxn {
-		isKVTxnOpen = ex.state.mu.txn.IsOpen()
-	}
-	if isKVTxnOpen {
-		if err := ex.state.mu.txn.Rollback(ctx); err != nil {
-			log.Warningf(ctx, "txn rollback failed: %s", err)
-		}
+	if err := ex.state.mu.txn.Rollback(ctx); err != nil {
+		log.Warningf(ctx, "txn rollback failed: %s", err)
 	}
 	if err := ex.reportSessionDataChanges(func() error {
 		ex.sessionDataStack.PopAll()
@@ -2731,17 +2631,6 @@ func (ex *connExecutor) dispatchReadCommittedStmtToExecutionEngine(
 		)
 	}
 
-	getPausablePortalInfo := func() *portalPauseInfo {
-		if p != nil && p.pausablePortal != nil {
-			return p.pausablePortal.pauseInfo
-		}
-		return nil
-	}
-	if ppInfo := getPausablePortalInfo(); ppInfo != nil {
-		p.autoRetryStmtReason = ppInfo.dispatchReadCommittedStmtToExecutionEngine.autoRetryStmtReason
-		p.autoRetryStmtCounter = ppInfo.dispatchReadCommittedStmtToExecutionEngine.autoRetryStmtCounter
-	}
-
 	readCommittedSavePointToken, err := ex.state.mu.txn.CreateSavepoint(ctx)
 	if err != nil {
 		return err
@@ -2760,15 +2649,7 @@ func (ex *connExecutor) dispatchReadCommittedStmtToExecutionEngine(
 		RandomizationFactor: 1.0,
 	}
 	for attemptNum, r := 0, retry.StartWithCtx(ctx, opts); !useBackoff || r.Next(); attemptNum++ {
-		// TODO(99410): Fix the phase time for pausable portals.
-		startExecTS := crtime.NowMono()
-		ex.statsCollector.PhaseTimes().SetSessionPhaseTime(sessionphase.PlannerMostRecentStartExecStmt, startExecTS)
-		if attemptNum == 0 {
-			ex.statsCollector.PhaseTimes().SetSessionPhaseTime(sessionphase.PlannerFirstStartExecStmt, startExecTS)
-		} else {
-			ex.sessionTracing.TraceRetryInformation(
-				ctx, "statement", p.autoRetryStmtCounter, p.autoRetryStmtReason,
-			)
+		if attemptNum != 0 {
 			// Step both the sequence number and the read timestamp so that we can see
 			// the results of the conflicting transactions that caused us to fail and
 			// any other transactions that occurred in the meantime.
@@ -2783,8 +2664,8 @@ func (ex *connExecutor) dispatchReadCommittedStmtToExecutionEngine(
 		if err = ex.dispatchToExecutionEngine(ctx, p, res); err != nil {
 			return err
 		}
-		maybeRetryableErr := res.Err()
-		if maybeRetryableErr == nil {
+		maybeRetriableErr := res.Err()
+		if maybeRetriableErr == nil {
 			// If there was no error, then we must release the savepoint and break.
 			if err := ex.state.mu.txn.ReleaseSavepoint(ctx, readCommittedSavePointToken); err != nil {
 				return err
@@ -2794,14 +2675,14 @@ func (ex *connExecutor) dispatchReadCommittedStmtToExecutionEngine(
 		// If the error does not allow for a partial retry, then stop. The error
 		// is already set on res.Err() and will be returned to the client.
 		var txnRetryErr *kvpb.TransactionRetryWithProtoRefreshError
-		if !errors.As(maybeRetryableErr, &txnRetryErr) || txnRetryErr.TxnMustRestartFromBeginning() {
+		if !errors.As(maybeRetriableErr, &txnRetryErr) || txnRetryErr.TxnMustRestartFromBeginning() {
 			break
 		}
 
 		// If we reached the maximum number of retries, then we must stop.
 		if attemptNum == maxRetries {
 			res.SetError(errors.Wrapf(
-				maybeRetryableErr,
+				maybeRetriableErr,
 				"read committed retry limit exceeded; set by max_retries_for_read_committed=%d",
 				maxRetries,
 			))
@@ -2816,7 +2697,7 @@ func (ex *connExecutor) dispatchReadCommittedStmtToExecutionEngine(
 			// flushed and sent back to the client already. In that case, we can't
 			// retry the statement.
 			res.SetError(errors.Wrapf(
-				maybeRetryableErr,
+				maybeRetriableErr,
 				"cannot automatically retry since some results were already sent to the client",
 			))
 			break
@@ -2831,12 +2712,8 @@ func (ex *connExecutor) dispatchReadCommittedStmtToExecutionEngine(
 		if err := ex.state.mu.txn.PrepareForPartialRetry(ctx); err != nil {
 			return err
 		}
-		p.autoRetryStmtCounter++
-		p.autoRetryStmtReason = maybeRetryableErr
-		if ppInfo := getPausablePortalInfo(); ppInfo != nil {
-			ppInfo.dispatchReadCommittedStmtToExecutionEngine.autoRetryStmtReason = p.autoRetryStmtReason
-			ppInfo.dispatchReadCommittedStmtToExecutionEngine.autoRetryStmtCounter = p.autoRetryStmtCounter
-		}
+		ex.state.mu.autoRetryCounter++
+		ex.state.mu.autoRetryReason = txnRetryErr
 		ex.metrics.EngineMetrics.StatementRetryCount.Inc(1)
 	}
 	// Check if we exited the loop due to cancelation.
@@ -2853,8 +2730,8 @@ func (ex *connExecutor) dispatchReadCommittedStmtToExecutionEngine(
 // dispatchToExecutionEngine executes the statement, writes the result to res
 // and returns an event for the connection's state machine.
 //
-// If an error is returned, the connection needs to stop processing queries.
-// Query execution errors are written to res; they are not returned; it is
+// If an error is returned, the connection needs to stop processing queries.`
+// Query execution errors are written to res; they are not returned; it is`
 // expected that the caller will inspect res and react to query errors by
 // producing an appropriate state machine event.
 func (ex *connExecutor) dispatchToExecutionEngine(
@@ -2891,46 +2768,8 @@ func (ex *connExecutor) dispatchToExecutionEngine(
 		}
 	}
 
-	// If we've been tasked with backfilling a schema change operation at a
-	// particular system time, it's important that we do planning for the
-	// operation at the timestamp that we're expecting to perform the backfill at,
-	// in case the schema of the objects that we read have changed in between the
-	// present transaction timestamp and the user-defined backfill timestamp.
-	//
-	// Set the planner's transaction to a new historical transaction pinned at
-	// that timestamp, and give it a new collection. We'll restore it after
-	// planning.
-	var restoreOriginalPlanner func() error
-	if asOf := planner.extendedEvalCtx.AsOfSystemTime; asOf != nil && asOf.ForBackfill {
-		nodeID, _ := planner.execCfg.NodeInfo.NodeID.OptionalNodeID()
-		historicalTxn := kv.NewTxnWithSteppingEnabled(ctx, planner.execCfg.DB, nodeID, ex.QualityOfService())
-		if err := historicalTxn.SetFixedTimestamp(ctx, asOf.Timestamp); err != nil {
-			res.SetError(err)
-			return nil
-		}
-		originalTxn := planner.txn
-		planner.txn = historicalTxn
-		planner.schemaResolver.txn = historicalTxn
-		dsdp := catsessiondata.NewDescriptorSessionDataStackProvider(planner.sessionDataStack)
-		historicalCollection := planner.execCfg.CollectionFactory.NewCollection(
-			ctx, descs.WithDescriptorSessionDataProvider(dsdp),
-		)
-		planner.descCollection = historicalCollection
-		planner.extendedEvalCtx.Descs = historicalCollection
-		restoreOriginalPlanner = func() error {
-			planner.txn = originalTxn
-			planner.schemaResolver.txn = originalTxn
-			planner.descCollection = ex.extraTxnState.descCollection
-			planner.extendedEvalCtx.Descs = ex.extraTxnState.descCollection
-			historicalCollection.ReleaseAll(ctx)
-			if err := historicalTxn.Commit(ctx); err != nil {
-				return err
-			}
-			return nil
-		}
-	}
-
 	var err error
+
 	if ppInfo := getPausablePortalInfo(); ppInfo != nil {
 		if !ppInfo.dispatchToExecutionEngine.cleanup.isComplete {
 			ctx, err = ex.makeExecPlan(ctx, planner)
@@ -2971,15 +2810,6 @@ func (ex *connExecutor) dispatchToExecutionEngine(
 	// https://github.com/cockroachdb/cockroach/issues/99410
 	ex.statsCollector.PhaseTimes().SetSessionPhaseTime(sessionphase.PlannerEndLogicalPlan, crtime.NowMono())
 	ex.sessionTracing.TracePlanEnd(ctx, err)
-
-	if restoreOriginalPlanner != nil {
-		// Reset the planner's transaction to the current-timestamp, original
-		// transaction.
-		if err := restoreOriginalPlanner(); err != nil {
-			res.SetError(err)
-			return nil
-		}
-	}
 
 	// Finally, process the planning error from above.
 	if err != nil {
@@ -3073,6 +2903,10 @@ func (ex *connExecutor) dispatchToExecutionEngine(
 		planner.curPlan.flags.Set(planFlagPartiallyDistributed)
 	}
 
+	ex.sessionTracing.TraceRetryInformation(ctx, int(ex.state.mu.autoRetryCounter), ex.state.mu.autoRetryReason)
+	if ex.server.cfg.TestingKnobs.OnTxnRetry != nil && ex.state.mu.autoRetryReason != nil {
+		ex.server.cfg.TestingKnobs.OnTxnRetry(ex.state.mu.autoRetryReason, planner.EvalContext())
+	}
 	distribute := DistributionType(LocalDistribution)
 	if distributePlan.WillDistribute() {
 		distribute = FullDistribution
@@ -3115,16 +2949,15 @@ func (ex *connExecutor) dispatchToExecutionEngine(
 		ppInfo.dispatchToExecutionEngine.cleanup.appendFunc(func(ctx context.Context) {
 			populateQueryLevelStats(ctx, &curPlanner, ex.server.cfg, ppInfo.dispatchToExecutionEngine.queryStats, &ex.cpuStatsCollector)
 			ppInfo.dispatchToExecutionEngine.stmtFingerprintID = ex.recordStatementSummary(
-				ctx, &curPlanner, int(ex.state.mu.autoRetryCounter), planner.autoRetryStmtCounter,
-				ppInfo.dispatchToExecutionEngine.rowsAffected, ppInfo.curRes.ErrAllowReleased(),
-				*ppInfo.dispatchToExecutionEngine.queryStats,
+				ctx, &curPlanner,
+				int(ex.state.mu.autoRetryCounter), ppInfo.dispatchToExecutionEngine.rowsAffected, ppInfo.curRes.ErrAllowReleased(), *ppInfo.dispatchToExecutionEngine.queryStats,
 			)
 		})
 	} else {
 		populateQueryLevelStats(ctx, planner, ex.server.cfg, &stats, &ex.cpuStatsCollector)
 		ex.recordStatementSummary(
-			ctx, planner, int(ex.state.mu.autoRetryCounter), planner.autoRetryStmtCounter,
-			res.RowsAffected(), res.Err(), stats,
+			ctx, planner,
+			int(ex.state.mu.autoRetryCounter), res.RowsAffected(), res.Err(), stats,
 		)
 	}
 
@@ -3195,8 +3028,7 @@ func populateQueryLevelStats(
 	trace := ih.sp.GetRecording(tracingpb.RecordingStructured)
 	var err error
 	queryLevelStats, err := execstats.GetQueryLevelStats(
-		trace, cfg.TestingKnobs.DeterministicExplain, flowsMetadata,
-	)
+		trace, cfg.TestingKnobs.DeterministicExplain, flowsMetadata)
 	queryLevelStatsWithErr := execstats.MakeQueryLevelStatsWithErr(queryLevelStats, err)
 	ih.queryLevelStatsWithErr = &queryLevelStatsWithErr
 	if err != nil {
@@ -3399,7 +3231,7 @@ var txnSchemaChangeErr = pgerror.Newf(
 func (ex *connExecutor) makeExecPlan(
 	ctx context.Context, planner *planner,
 ) (context.Context, error) {
-	if err := ex.maybeAdjustTxnForDDL(ctx, planner.stmt); err != nil {
+	if err := ex.maybeUpgradeToSerializable(ctx, planner.stmt); err != nil {
 		return ctx, err
 	}
 
@@ -3426,11 +3258,11 @@ func (ex *connExecutor) makeExecPlan(
 					pgerror.Newf(pgcode.TooManyRows,
 						"query `%s` contains a full table/index scan which is explicitly disallowed",
 						planner.stmt.SQL),
-					"to permit this scan, set disallow_full_table_scans to false or increase the large_full_scan_rows threshold",
+					"try overriding the `disallow_full_table_scans` or increasing the `large_full_scan_rows` cluster/session settings",
 				)
 			}
 		}
-		ex.metrics.EngineMetrics.FullTableOrIndexScanCount.Inc(1, ex.sessionData().Database, ex.sessionData().ApplicationName)
+		ex.metrics.EngineMetrics.FullTableOrIndexScanCount.Inc(1)
 	}
 
 	// TODO(knz): Remove this accounting if/when savepoint rollbacks
@@ -3705,8 +3537,6 @@ func (ex *connExecutor) execStmtInNoTxnState(
 				ex.QualityOfService(),
 				ex.txnIsolationLevelToKV(ctx, s.Modes.Isolation),
 				ex.omitInRangefeeds(),
-				ex.bufferedWritesEnabled(ctx),
-				ex.rng.internal,
 			)
 	case *tree.ShowCommitTimestamp:
 		return ex.execShowCommitTimestampInNoTxnState(ctx, s, res)
@@ -3740,8 +3570,6 @@ func (ex *connExecutor) execStmtInNoTxnState(
 				ex.QualityOfService(),
 				ex.txnIsolationLevelToKV(ctx, tree.UnspecifiedIsolation),
 				ex.omitInRangefeeds(),
-				ex.bufferedWritesEnabled(ctx),
-				ex.rng.internal,
 			)
 	}
 }
@@ -3775,8 +3603,6 @@ func (ex *connExecutor) beginImplicitTxn(
 			qos,
 			ex.txnIsolationLevelToKV(ctx, tree.UnspecifiedIsolation),
 			ex.omitInRangefeeds(),
-			ex.bufferedWritesEnabled(ctx),
-			ex.rng.internal,
 		)
 }
 
@@ -3796,8 +3622,8 @@ func (ex *connExecutor) execStmtInAbortedState(
 	}()
 
 	reject := func() (fsm.Event, fsm.EventPayload) {
-		ev := eventNonRetryableErr{IsCommit: fsm.False}
-		payload := eventNonRetryableErrPayload{
+		ev := eventNonRetriableErr{IsCommit: fsm.False}
+		payload := eventNonRetriableErrPayload{
 			err: sqlerrors.NewTransactionAbortedError("" /* customMsg */),
 		}
 		return ev, payload
@@ -3871,8 +3697,8 @@ func (ex *connExecutor) execStmtInCommitWaitState(
 			},
 		)
 	}
-	return eventNonRetryableErr{IsCommit: fsm.False},
-		eventNonRetryableErrPayload{
+	return eventNonRetriableErr{IsCommit: fsm.False},
+		eventNonRetriableErrPayload{
 			err: sqlerrors.NewTransactionCommittedError(),
 		}
 }
@@ -4181,8 +4007,6 @@ func (ex *connExecutor) enableTracing(modes []string) error {
 			traceKV = true
 		case "cluster":
 			recordingType = tracingpb.RecordingVerbose
-		case "compact":
-			// compact modifies the output format.
 		default:
 			return pgerror.Newf(pgcode.Syntax,
 				"set tracing: unknown mode %q", s)
@@ -4304,7 +4128,10 @@ func (ex *connExecutor) onTxnFinish(ctx context.Context, ev txnEvent, txnErr err
 			}
 		}
 
-		discardedStats := ex.statsCollector.EndTransaction(ctx, transactionFingerprintID)
+		discardedStats := ex.statsCollector.EndTransaction(
+			ctx,
+			transactionFingerprintID,
+		)
 		if discardedStats > 0 {
 			ex.server.ServerMetrics.StatsMetrics.DiscardedStatsCount.Inc(discardedStats)
 		}
@@ -4386,8 +4213,7 @@ func (ex *connExecutor) recordTransactionStart(txnID uuid.UUID) {
 
 	// Note ex.metrics is Server.Metrics for the connExecutor that serves the
 	// client connection, and is Server.InternalMetrics for internal executors.
-	ex.metrics.EngineMetrics.SQLTxnsOpen.Inc(1,
-		ex.sessionData().Database, ex.sessionData().ApplicationName)
+	ex.metrics.EngineMetrics.SQLTxnsOpen.Inc(1)
 
 	ex.extraTxnState.shouldExecuteOnTxnFinish = true
 	ex.extraTxnState.txnFinishClosure.txnStartTime = txnStart
@@ -4432,10 +4258,8 @@ func (ex *connExecutor) recordTransactionFinish(
 	if contentionDuration := ex.extraTxnState.accumulatedStats.ContentionTime.Nanoseconds(); contentionDuration > 0 {
 		ex.metrics.EngineMetrics.SQLContendedTxns.Inc(1)
 	}
-	ex.metrics.EngineMetrics.SQLTxnsOpen.Dec(1,
-		ex.sessionData().Database, ex.sessionData().ApplicationName)
-	ex.metrics.EngineMetrics.SQLTxnLatency.RecordValue(elapsedTime.Nanoseconds(),
-		ex.sessionData().Database, ex.sessionData().ApplicationName)
+	ex.metrics.EngineMetrics.SQLTxnsOpen.Dec(1)
+	ex.metrics.EngineMetrics.SQLTxnLatency.RecordValue(elapsedTime.Nanoseconds())
 	ex.metrics.EngineMetrics.TxnRetryCount.Inc(int64(ex.state.mu.autoRetryCounter))
 
 	ex.txnIDCacheWriter.Record(contentionpb.ResolvedTxnID{
@@ -4457,8 +4281,7 @@ func (ex *connExecutor) recordTransactionFinish(
 	txnRetryLat := ex.phaseTimes.GetTransactionRetryLatency()
 	commitLat := ex.phaseTimes.GetCommitLatency()
 
-	recordedTxnStats := &sqlstats.RecordedTxnStats{
-		FingerprintID:           transactionFingerprintID,
+	recordedTxnStats := sqlstats.RecordedTxnStats{
 		SessionID:               ex.planner.extendedEvalCtx.SessionID,
 		TransactionID:           ev.txnID,
 		TransactionTimeSec:      elapsedTime.Seconds(),
@@ -4484,9 +4307,8 @@ func (ex *connExecutor) recordTransactionFinish(
 		// TODO(107318): add qos
 		// TODO(107318): add asoftime or ishistorical
 		// TODO(107318): add readonly
-		TxnErr:         txnErr,
-		Application:    ex.applicationName.Load().(string),
-		UserNormalized: ex.sessionData().User().Normalized(),
+		SessionData: ex.sessionData(),
+		TxnErr:      txnErr,
 	}
 
 	if ex.server.cfg.TestingKnobs.OnRecordTxnFinish != nil {
@@ -4501,12 +4323,18 @@ func (ex *connExecutor) recordTransactionFinish(
 		ex.planner.logTransaction(ctx,
 			int(ex.extraTxnState.txnCounter.Load()),
 			transactionFingerprintID,
-			recordedTxnStats,
+			&recordedTxnStats,
 			ex.extraTxnState.telemetrySkippedTxns,
 		)
 	}
 
-	return ex.statsCollector.RecordTransaction(ctx, recordedTxnStats)
+	ex.statsCollector.ObserveTransaction(ctx, transactionFingerprintID, recordedTxnStats)
+
+	return ex.statsCollector.RecordTransaction(
+		ctx,
+		transactionFingerprintID,
+		recordedTxnStats,
+	)
 }
 
 // Records a SERIALIZATION_CONFLICT contention event to the contention registry event
@@ -4554,7 +4382,10 @@ func logTraceAboveThreshold(
 }
 
 func (ex *connExecutor) execWithProfiling(
-	ctx context.Context, ast tree.Statement, prepared *prep.Statement, op func(context.Context) error,
+	ctx context.Context,
+	ast tree.Statement,
+	prepared *PreparedStatement,
+	op func(context.Context) error,
 ) error {
 	var err error
 	if ex.server.cfg.Settings.CPUProfileType() == cluster.CPUProfileWithLabels {

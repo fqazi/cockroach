@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/semenumpb"
-	"github.com/cockroachdb/redact"
 )
 
 //go:generate go run ./generate_visitor.go scop ImmediateMutation immediate_mutation.go immediate_mutation_visitor_generated.go
@@ -25,10 +24,6 @@ type immediateMutationOp struct{ baseOp }
 var _ = immediateMutationOp{baseOp: baseOp{}}
 
 func (immediateMutationOp) Type() Type { return MutationType }
-
-func (immediateMutationOp) Description() redact.RedactableString {
-	return "Updating schema metadata"
-}
 
 // NotImplemented is a placeholder for operations which haven't been defined yet.
 // TODO(postamar): remove all of these
@@ -43,7 +38,6 @@ type NotImplementedForPublicObjects struct {
 	immediateMutationOp
 	ElementType string
 	DescID      catid.DescID
-	TriggerID   catid.TriggerID
 }
 
 // UndoAllInTxnImmediateMutationOpSideEffects undoes the side effects of all
@@ -614,43 +608,6 @@ type SetPolicyName struct {
 	Name     string
 }
 
-// AddPolicyRole adds a new role to a policy.
-type AddPolicyRole struct {
-	immediateMutationOp
-	Role scpb.PolicyRole
-}
-
-// RemovePolicyRole removes an existing role from a policy.
-type RemovePolicyRole struct {
-	immediateMutationOp
-	Role scpb.PolicyRole
-}
-
-// SetPolicyUsingExpression will set a new USING expression for a policy.
-type SetPolicyUsingExpression struct {
-	immediateMutationOp
-	TableID   descpb.ID
-	PolicyID  descpb.PolicyID
-	Expr      string
-	ColumnIDs descpb.ColumnIDs
-}
-
-// SetPolicyWithCheckExpression will set a new WITH CHECK expression for a policy.
-type SetPolicyWithCheckExpression struct {
-	immediateMutationOp
-	TableID   descpb.ID
-	PolicyID  descpb.PolicyID
-	Expr      string
-	ColumnIDs descpb.ColumnIDs
-}
-
-// SetPolicyForwardReferences sets new forward references to relations, types,
-// and routines for the expressions in a policy.
-type SetPolicyForwardReferences struct {
-	immediateMutationOp
-	Deps scpb.PolicyDeps
-}
-
 // UpdateTableBackReferencesInTypes updates back references to a table
 // in the specified types.
 type UpdateTableBackReferencesInTypes struct {
@@ -737,24 +694,6 @@ type RemoveTableColumnBackReferencesInFunctions struct {
 	FunctionIDs            []descpb.ID
 }
 
-// AddTableIndexBackReferencesInFunctions adds back-references to indexes
-// from referenced functions.
-type AddTableIndexBackReferencesInFunctions struct {
-	immediateMutationOp
-	BackReferencedTableID descpb.ID
-	BackReferencedIndexID descpb.IndexID
-	FunctionIDs           []descpb.ID
-}
-
-// RemoveTableIndexBackReferencesInFunctions removes back-references to indexes
-// from referenced functions.
-type RemoveTableIndexBackReferencesInFunctions struct {
-	immediateMutationOp
-	BackReferencedTableID descpb.ID
-	BackReferencedIndexID descpb.IndexID
-	FunctionIDs           []descpb.ID
-}
-
 // AddTriggerBackReferencesInRoutines adds back references to a trigger from
 // referenced functions.
 type AddTriggerBackReferencesInRoutines struct {
@@ -771,24 +710,6 @@ type RemoveTriggerBackReferencesInRoutines struct {
 	BackReferencedTableID   descpb.ID
 	BackReferencedTriggerID descpb.TriggerID
 	RoutineIDs              []descpb.ID
-}
-
-// AddPolicyBackReferenceInFunctions adds back references to a policy from
-// referenced functions.
-type AddPolicyBackReferenceInFunctions struct {
-	immediateMutationOp
-	BackReferencedTableID  descpb.ID
-	BackReferencedPolicyID descpb.PolicyID
-	FunctionIDs            []descpb.ID
-}
-
-// RemovePolicyBackReferenceInFunctions removes back-references to a policy
-// from referenced functions.
-type RemovePolicyBackReferenceInFunctions struct {
-	immediateMutationOp
-	BackReferencedTableID  descpb.ID
-	BackReferencedPolicyID descpb.PolicyID
-	FunctionIDs            []descpb.ID
 }
 
 // SetColumnName renames a column.
@@ -1036,14 +957,10 @@ type UpdateFunctionRelationReferences struct {
 	FunctionReferences []descpb.ID
 }
 
-// UpdateTableBackReferencesInRelations updates the DependedOnBy metadata in
-// relation descriptors (e.g., tableDesc) for triggers. It handles both adding
-// and removing dependencies. The function relies on forward references being
-// set beforehand to determine whether a back-reference should be added or removed.
 type UpdateTableBackReferencesInRelations struct {
 	immediateMutationOp
-	TableID            descpb.ID
-	RelationReferences []scpb.TriggerDeps_RelationReference
+	TableID     descpb.ID
+	RelationIDs []descpb.ID
 }
 
 type SetObjectParentID struct {
@@ -1161,44 +1078,4 @@ type AddPartitionZoneConfig struct {
 	Subzone              zonepb.Subzone
 	SubzoneSpans         []zonepb.SubzoneSpan
 	SubzoneIndexToDelete int32
-}
-
-// EnableRowLevelSecurityMode sets the row-level security mode on a table.
-type EnableRowLevelSecurityMode struct {
-	immediateMutationOp
-	TableID descpb.ID
-	Enabled bool
-}
-
-// ForcedRowLevelSecurityMode configures the force setting of row-level security on a table.
-type ForcedRowLevelSecurityMode struct {
-	immediateMutationOp
-	TableID descpb.ID
-	Forced  bool
-}
-
-// MarkRecreatedIndexAsInvisible is used to mark secondary indexes recreated
-// after a primary key swap as invisible. This is to prevent their use before
-// primary key swap is complete.
-type MarkRecreatedIndexAsInvisible struct {
-	immediateMutationOp
-	TableID              descpb.ID
-	IndexID              descpb.IndexID
-	TargetPrimaryIndexID descpb.IndexID
-}
-
-// MarkRecreatedIndexesAsVisible is used to mark secondary indexes recreated
-// after a primary key swap as visible. This is to allow their use after
-// primary key swap is complete.
-type MarkRecreatedIndexesAsVisible struct {
-	immediateMutationOp
-	TableID           descpb.ID
-	IndexVisibilities map[descpb.IndexID]float64
-}
-
-// SetTableSchemaLocked is used to toggle a table schema as locked.
-type SetTableSchemaLocked struct {
-	immediateMutationOp
-	TableID descpb.ID
-	Locked  bool
 }

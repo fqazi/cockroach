@@ -23,16 +23,13 @@ if [ -z "${WORKLOAD_CLUSTER}" ]; then
   echo "environment CLUSTER is not set"
   exit 1
 fi
-if [ -z "${DD_API_KEY}" ]; then
-  DD_API_KEY="$(gcloud --project=cockroach-drt secrets versions access latest --secret datadog-api-key)"
-fi
 
-if [ -z "${DD_API_KEY}" ]; then
+dd_api_key="$(gcloud --project=cockroach-drt secrets versions access latest --secret datadog-api-key)"
+
+if [ -z "${dd_api_key}" ]; then
   echo "Missing Datadog API key!"
   exit 1
 fi
-
-export ROACHPROD_DISABLED_PROVIDERS=IBM
 
 # sync cluster is needed for operations
 drtprod ssh ${WORKLOAD_CLUSTER} -- "ROACHPROD_GCE_DEFAULT_PROJECT=${ROACHPROD_GCE_DEFAULT_PROJECT} ./roachprod sync"
@@ -59,7 +56,7 @@ for entry in "$@"; do
 
 export ROACHPROD_GCE_DEFAULT_PROJECT=${ROACHPROD_GCE_DEFAULT_PROJECT}
 export ROACHPROD_DNS=${ROACHPROD_DNS}
-${pwd}/roachtest-operations run-operation ${CLUSTER} \"${operation_regex}\" --datadog-api-key ${DD_API_KEY} \
+${pwd}/roachtest-operations run-operation ${CLUSTER} \"${operation_regex}\" --datadog-api-key ${dd_api_key} \
 --datadog-tags env:development,cluster:${WORKLOAD_CLUSTER},team:drt,service:drt-cockroachdb \
 --datadog-app-key 1 --certs-dir ./certs  | tee -a roachtest_ops_${identifier}.log
 EOF"

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
+	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/clusterstats"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
@@ -201,7 +202,7 @@ func runTPCE(ctx context.Context, t test.Test, c cluster.Cluster, opts tpceOptio
 	}
 
 	if opts.setupType == usingTPCEInit && !t.SkipInit() {
-		m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+		m := c.NewMonitor(ctx, c.CRDBNodes())
 		m.Go(func(ctx context.Context) error {
 			estimatedSetupTimeStr := ""
 			if opts.estimatedSetupTime != 0 {
@@ -223,7 +224,7 @@ func runTPCE(ctx context.Context, t test.Test, c cluster.Cluster, opts tpceOptio
 		return
 	}
 
-	m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+	m := c.NewMonitor(ctx, c.CRDBNodes())
 	m.Go(func(ctx context.Context) error {
 		t.Status("running workload")
 		workloadDuration := opts.workloadDuration
@@ -367,8 +368,8 @@ func exportTPCEResults(t test.Test, c cluster.Cluster, result string) error {
 			labels := map[string]string{
 				"workload": "tpce",
 			}
-			labelString := roachtestutil.GetOpenmetricsLabelString(t, c, labels)
-			metricBytes = GetTpceOpenmetricsBytes(metrics, fields[5], labelString)
+			labelString := clusterstats.GetOpenmetricsLabelString(t, c, labels)
+			metricBytes = getOpenMetrics(metrics, fields[5], labelString)
 		} else {
 			metricBytes, err = json.Marshal(metrics)
 		}
@@ -389,29 +390,19 @@ func exportTPCEResults(t test.Test, c cluster.Cluster, result string) error {
 	return errors.Errorf("exportTPCEResults: found no lines starting with TradeResult")
 }
 
-func GetTpceOpenmetricsBytes(
-	metrics tpceMetrics, countOfLatencies string, labelString string,
-) []byte {
+func getOpenMetrics(metrics tpceMetrics, countOfLatencies string, labelString string) []byte {
 
 	var buffer bytes.Buffer
 	now := timeutil.Now().Unix()
 
 	buffer.WriteString("# TYPE tpce_latency summary\n")
 	buffer.WriteString("# HELP tpce_latency Latency metrics for TPC-E transactions\n")
-
-	latencyString := func(quantile, latency string) string {
-		return fmt.Sprintf("tpce_latency{%s,unit=\"ms\",is_higher_better=\"false\",quantile=\"%s\"} %s %d\n", labelString, quantile, latency, now)
-	}
-
-	buffer.WriteString(latencyString("0.5", metrics.P50Latency))
-	buffer.WriteString(latencyString("0.9", metrics.P90Latency))
-	buffer.WriteString(latencyString("0.99", metrics.P99Latency))
-	buffer.WriteString(latencyString("1.0", metrics.PMaxLatency))
-	// Sum is hardcoded is zero to denote null values, since we don't have exact values
+	buffer.WriteString(fmt.Sprintf("tpce_latency{%s,quantile=\"0.5\"} %s %d\n", labelString, metrics.P50Latency, now))
+	buffer.WriteString(fmt.Sprintf("tpce_latency{%s,quantile=\"0.9\"} %s %d\n", labelString, metrics.P90Latency, now))
+	buffer.WriteString(fmt.Sprintf("tpce_latency{%s,quantile=\"0.99\"} %s %d\n", labelString, metrics.P99Latency, now))
+	buffer.WriteString(fmt.Sprintf("tpce_latency{%s,quantile=\"1.0\"} %s %d\n", labelString, metrics.PMaxLatency, now))
 	buffer.WriteString(fmt.Sprintf("tpce_latency_sum{%s} %d %d\n", labelString, 0, now))
 	buffer.WriteString(fmt.Sprintf("tpce_latency_count{%s} %s %d\n", labelString, countOfLatencies, now))
-	buffer.WriteString("# TYPE tpce_avg_latency gauge\n")
-	buffer.WriteString(fmt.Sprintf("tpce_avg_latency{%s,unit=\"ms\",is_higher_better=\"false\"} %s %d\n", labelString, metrics.AvgLatency, now))
 	buffer.WriteString("# EOF")
 
 	metricsBytes := buffer.Bytes()

@@ -36,7 +36,7 @@ func TestTypeSchemaChangeRetriesTransparently(t *testing.T) {
 	// Protects errorReturned.
 	var mu syncutil.Mutex
 	errorReturned := false
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	params.Knobs.SQLTypeSchemaChanger = &sql.TypeSchemaChangerTestingKnobs{
 		RunBeforeExec: func() error {
 			mu.Lock()
@@ -81,7 +81,7 @@ func TestFailedTypeSchemaChangeRetriesTransparently(t *testing.T) {
 	var mu syncutil.Mutex
 	// Ensures just the first try to cleanup returns a retryable error.
 	errReturned := false
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	cleanupSuccessfullyFinished := make(chan struct{})
 	params.Knobs.SQLTypeSchemaChanger = &sql.TypeSchemaChangerTestingKnobs{
 		RunBeforeExec: func() error {
@@ -134,14 +134,14 @@ CREATE TYPE d.t AS ENUM();
 }
 
 // TestFailedTypeSchemaChangeIgnoresDrops when a type schema change notices
-// a dropped descriptor during a rollback that is treated as a non-retryable
+// a dropped descriptor during a rollback that is treated as a non-retriable
 // error.
 func TestFailedTypeSchemaChangeIgnoresDrops(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	startDrop := make(chan struct{})
 	dropFinished := make(chan struct{})
 	cancelled := atomic.Bool{}
@@ -201,7 +201,7 @@ func TestAddDropValuesInTransaction(t *testing.T) {
 
 	ctx := context.Background()
 
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	// Decrease the adopt loop interval so that retries happen quickly.
 	params.Knobs.JobsTestingKnobs = jobs.NewTestingKnobsWithShortIntervals()
 
@@ -346,7 +346,7 @@ func TestEnumMemberTransitionIsolation(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	// Protects blocker.
 	var mu syncutil.Mutex
 	blocker := make(chan struct{})
@@ -493,7 +493,7 @@ func TestTypeChangeJobCancelSemantics(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
 
-			params, _ := createTestServerParamsAllowTenants()
+			params, _ := createTestServerParams()
 
 			// Wait groups for synchronizing various parts of the test.
 			typeSchemaChangeStarted := make(chan struct{})
@@ -542,7 +542,7 @@ SELECT job_id FROM [SHOW JOBS]
 WHERE 
 	job_type = 'TYPEDESC SCHEMA CHANGE' AND 
 	status = $1
-	)`, jobs.StateRunning)
+	)`, jobs.StatusRunning)
 
 			if !tc.cancelable && !testutils.IsError(err, "not cancelable") {
 				t.Fatalf("expected type schema change job to be not cancelable; found %v ", err)
@@ -583,7 +583,7 @@ func TestAddDropEnumValues(t *testing.T) {
 	defer ccl.TestingEnableEnterprise()()
 	ctx := context.Background()
 
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	// Decrease the adopt loop interval so that retries happen quickly.
 	params.Knobs.JobsTestingKnobs = jobs.NewTestingKnobsWithShortIntervals()
 

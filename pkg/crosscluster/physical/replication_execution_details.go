@@ -15,6 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
@@ -68,7 +69,7 @@ func constructSpanFrontierExecutionDetailsWithFrontier(
 	res := make([]frontierExecutionDetails, 0)
 	for _, spec := range partitionSpecs.Specs {
 		for _, sp := range spec.Spans {
-			for r, timestamp := range f.SpanEntries(sp) {
+			f.SpanEntries(sp, func(r roachpb.Span, timestamp hlc.Timestamp) (done span.OpResult) {
 				res = append(res, frontierExecutionDetails{
 					srcInstanceID:  spec.SrcInstanceID,
 					destInstanceID: spec.DestInstanceID,
@@ -76,7 +77,8 @@ func constructSpanFrontierExecutionDetailsWithFrontier(
 					frontierTS:     timestamp,
 					behindBy:       humanizeutil.Duration(now.Sub(timestamp.GoTime())),
 				})
-			}
+				return span.ContinueMatch
+			})
 		}
 
 		// Sort res on the basis of srcInstanceID, destInstanceID.

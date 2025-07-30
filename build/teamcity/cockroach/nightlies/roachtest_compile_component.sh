@@ -15,7 +15,7 @@ if [ "$#" -eq 0 ]; then
   echo ""
   echo "Usage: $(basename $0) [--with-coverage] <os/arch/component>"
   echo "  where os is one of: linux"
-  echo "        arch is one of: amd64, arm64, amd64-fips, s390x"
+  echo "        arch is one of: amd64, arm64, amd64-fips"
   echo "        component is one of: cockroach, cockroach-ea, workload, libgeos, roachtest"
   echo "  --with-coverage enables go code coverage instrumentation (only applies to cockroach binaries)"
   exit 1
@@ -66,12 +66,12 @@ artifacts=()
 case "$component" in
   cockroach)
     # Cockroach binary.
-    bazel_args=(--config force_build_cdeps --config pgo --norun_validations //pkg/cmd/cockroach $crdb_extra_flags)
+    bazel_args=(--config force_build_cdeps --norun_validations //pkg/cmd/cockroach $crdb_extra_flags)
     artifacts=("pkg/cmd/cockroach/cockroach_/cockroach:bin/cockroach.$os-$arch")
     ;;
   cockroach-ea)
     # Cockroach binary with enabled assertions (EA).
-    bazel_args=(--config force_build_cdeps --config pgo --norun_validations //pkg/cmd/cockroach --crdb_test $crdb_extra_flags)
+    bazel_args=(--config force_build_cdeps --norun_validations //pkg/cmd/cockroach --crdb_test $crdb_extra_flags)
     artifacts=("pkg/cmd/cockroach/cockroach_/cockroach:bin/cockroach-ea.$os-$arch")
     ;;
   workload)

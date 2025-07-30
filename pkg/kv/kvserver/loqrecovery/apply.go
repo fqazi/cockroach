@@ -317,8 +317,6 @@ func applyReplicaUpdate(
 
 	hs.LeadEpoch = 0
 
-	// TODO(sep-raft-log): when raft and state machine engines are separated, this
-	// update must be written to the raft engine.
 	if err := sl.SetHardState(ctx, readWriter, hs); err != nil {
 		return PrepareReplicaReport{}, errors.Wrap(err, "setting HardState")
 	}
@@ -388,7 +386,7 @@ func MaybeApplyPendingRecoveryPlan(
 				return errors.Wrap(err, "failed to read store ident when trying to apply loss of quorum recovery plan")
 			}
 			b := e.NewBatch()
-			defer b.Close() //nolint:deferloop
+			defer b.Close()
 			batches[ident.StoreID] = b
 		}
 		prepRep, err := PrepareUpdateReplicas(ctx, plan, uuid.DefaultGenerator, clock.Now(), nodeID, batches)

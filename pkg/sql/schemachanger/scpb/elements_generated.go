@@ -1712,43 +1712,6 @@ func (c *ElementCollection[E]) FilterPolicy() *ElementCollection[*Policy] {
 	return (*ElementCollection[*Policy])(ret)
 }
 
-func (e PolicyDeps) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_PolicyDeps) Element() Element {
-	return e.PolicyDeps
-}
-
-// ForEachPolicyDeps iterates over elements of type PolicyDeps.
-// Deprecated
-func ForEachPolicyDeps(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *PolicyDeps),
-) {
-  c.FilterPolicyDeps().ForEach(fn)
-}
-
-// FindPolicyDeps finds the first element of type PolicyDeps.
-// Deprecated
-func FindPolicyDeps(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *PolicyDeps) {
-	if tc := c.FilterPolicyDeps(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*PolicyDeps)
-	}
-	return current, target, element
-}
-
-// PolicyDepsElements filters elements of type PolicyDeps.
-func (c *ElementCollection[E]) FilterPolicyDeps() *ElementCollection[*PolicyDeps] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*PolicyDeps)
-		return ok
-	})
-	return (*ElementCollection[*PolicyDeps])(ret)
-}
-
 func (e PolicyName) element() {}
 
 // Element implements ElementGetter.
@@ -1786,117 +1749,6 @@ func (c *ElementCollection[E]) FilterPolicyName() *ElementCollection[*PolicyName
 	return (*ElementCollection[*PolicyName])(ret)
 }
 
-func (e PolicyRole) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_PolicyRole) Element() Element {
-	return e.PolicyRole
-}
-
-// ForEachPolicyRole iterates over elements of type PolicyRole.
-// Deprecated
-func ForEachPolicyRole(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *PolicyRole),
-) {
-  c.FilterPolicyRole().ForEach(fn)
-}
-
-// FindPolicyRole finds the first element of type PolicyRole.
-// Deprecated
-func FindPolicyRole(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *PolicyRole) {
-	if tc := c.FilterPolicyRole(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*PolicyRole)
-	}
-	return current, target, element
-}
-
-// PolicyRoleElements filters elements of type PolicyRole.
-func (c *ElementCollection[E]) FilterPolicyRole() *ElementCollection[*PolicyRole] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*PolicyRole)
-		return ok
-	})
-	return (*ElementCollection[*PolicyRole])(ret)
-}
-
-func (e PolicyUsingExpr) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_PolicyUsingExpr) Element() Element {
-	return e.PolicyUsingExpr
-}
-
-// ForEachPolicyUsingExpr iterates over elements of type PolicyUsingExpr.
-// Deprecated
-func ForEachPolicyUsingExpr(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *PolicyUsingExpr),
-) {
-  c.FilterPolicyUsingExpr().ForEach(fn)
-}
-
-// FindPolicyUsingExpr finds the first element of type PolicyUsingExpr.
-// Deprecated
-func FindPolicyUsingExpr(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *PolicyUsingExpr) {
-	if tc := c.FilterPolicyUsingExpr(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*PolicyUsingExpr)
-	}
-	return current, target, element
-}
-
-// PolicyUsingExprElements filters elements of type PolicyUsingExpr.
-func (c *ElementCollection[E]) FilterPolicyUsingExpr() *ElementCollection[*PolicyUsingExpr] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*PolicyUsingExpr)
-		return ok
-	})
-	return (*ElementCollection[*PolicyUsingExpr])(ret)
-}
-
-func (e PolicyWithCheckExpr) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_PolicyWithCheckExpr) Element() Element {
-	return e.PolicyWithCheckExpr
-}
-
-// ForEachPolicyWithCheckExpr iterates over elements of type PolicyWithCheckExpr.
-// Deprecated
-func ForEachPolicyWithCheckExpr(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *PolicyWithCheckExpr),
-) {
-  c.FilterPolicyWithCheckExpr().ForEach(fn)
-}
-
-// FindPolicyWithCheckExpr finds the first element of type PolicyWithCheckExpr.
-// Deprecated
-func FindPolicyWithCheckExpr(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *PolicyWithCheckExpr) {
-	if tc := c.FilterPolicyWithCheckExpr(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*PolicyWithCheckExpr)
-	}
-	return current, target, element
-}
-
-// PolicyWithCheckExprElements filters elements of type PolicyWithCheckExpr.
-func (c *ElementCollection[E]) FilterPolicyWithCheckExpr() *ElementCollection[*PolicyWithCheckExpr] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*PolicyWithCheckExpr)
-		return ok
-	})
-	return (*ElementCollection[*PolicyWithCheckExpr])(ret)
-}
-
 func (e PrimaryIndex) element() {}
 
 // Element implements ElementGetter.
@@ -1932,80 +1784,6 @@ func (c *ElementCollection[E]) FilterPrimaryIndex() *ElementCollection[*PrimaryI
 		return ok
 	})
 	return (*ElementCollection[*PrimaryIndex])(ret)
-}
-
-func (e RowLevelSecurityEnabled) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_RowLevelSecurityEnabled) Element() Element {
-	return e.RowLevelSecurityEnabled
-}
-
-// ForEachRowLevelSecurityEnabled iterates over elements of type RowLevelSecurityEnabled.
-// Deprecated
-func ForEachRowLevelSecurityEnabled(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *RowLevelSecurityEnabled),
-) {
-  c.FilterRowLevelSecurityEnabled().ForEach(fn)
-}
-
-// FindRowLevelSecurityEnabled finds the first element of type RowLevelSecurityEnabled.
-// Deprecated
-func FindRowLevelSecurityEnabled(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *RowLevelSecurityEnabled) {
-	if tc := c.FilterRowLevelSecurityEnabled(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*RowLevelSecurityEnabled)
-	}
-	return current, target, element
-}
-
-// RowLevelSecurityEnabledElements filters elements of type RowLevelSecurityEnabled.
-func (c *ElementCollection[E]) FilterRowLevelSecurityEnabled() *ElementCollection[*RowLevelSecurityEnabled] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*RowLevelSecurityEnabled)
-		return ok
-	})
-	return (*ElementCollection[*RowLevelSecurityEnabled])(ret)
-}
-
-func (e RowLevelSecurityForced) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_RowLevelSecurityForced) Element() Element {
-	return e.RowLevelSecurityForced
-}
-
-// ForEachRowLevelSecurityForced iterates over elements of type RowLevelSecurityForced.
-// Deprecated
-func ForEachRowLevelSecurityForced(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *RowLevelSecurityForced),
-) {
-  c.FilterRowLevelSecurityForced().ForEach(fn)
-}
-
-// FindRowLevelSecurityForced finds the first element of type RowLevelSecurityForced.
-// Deprecated
-func FindRowLevelSecurityForced(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *RowLevelSecurityForced) {
-	if tc := c.FilterRowLevelSecurityForced(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*RowLevelSecurityForced)
-	}
-	return current, target, element
-}
-
-// RowLevelSecurityForcedElements filters elements of type RowLevelSecurityForced.
-func (c *ElementCollection[E]) FilterRowLevelSecurityForced() *ElementCollection[*RowLevelSecurityForced] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*RowLevelSecurityForced)
-		return ok
-	})
-	return (*ElementCollection[*RowLevelSecurityForced])(ret)
 }
 
 func (e RowLevelTTL) element() {}
@@ -2228,6 +2006,43 @@ func (c *ElementCollection[E]) FilterSecondaryIndex() *ElementCollection[*Second
 		return ok
 	})
 	return (*ElementCollection[*SecondaryIndex])(ret)
+}
+
+func (e SecondaryIndexPartial) element() {}
+
+// Element implements ElementGetter.
+func (e * ElementProto_SecondaryIndexPartial) Element() Element {
+	return e.SecondaryIndexPartial
+}
+
+// ForEachSecondaryIndexPartial iterates over elements of type SecondaryIndexPartial.
+// Deprecated
+func ForEachSecondaryIndexPartial(
+	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *SecondaryIndexPartial),
+) {
+  c.FilterSecondaryIndexPartial().ForEach(fn)
+}
+
+// FindSecondaryIndexPartial finds the first element of type SecondaryIndexPartial.
+// Deprecated
+func FindSecondaryIndexPartial(
+	c *ElementCollection[Element],
+) (current Status, target TargetStatus, element *SecondaryIndexPartial) {
+	if tc := c.FilterSecondaryIndexPartial(); !tc.IsEmpty() {
+		var e Element
+		current, target, e = tc.Get(0)
+		element = e.(*SecondaryIndexPartial)
+	}
+	return current, target, element
+}
+
+// SecondaryIndexPartialElements filters elements of type SecondaryIndexPartial.
+func (c *ElementCollection[E]) FilterSecondaryIndexPartial() *ElementCollection[*SecondaryIndexPartial] {
+	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
+		_, ok := e.(*SecondaryIndexPartial)
+		return ok
+	})
+	return (*ElementCollection[*SecondaryIndexPartial])(ret)
 }
 
 func (e Sequence) element() {}
@@ -2561,43 +2376,6 @@ func (c *ElementCollection[E]) FilterTableLocalityRegionalByRow() *ElementCollec
 		return ok
 	})
 	return (*ElementCollection[*TableLocalityRegionalByRow])(ret)
-}
-
-func (e TableLocalityRegionalByRowUsingConstraint) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_TableLocalityRegionalByRowUsingConstraint) Element() Element {
-	return e.TableLocalityRegionalByRowUsingConstraint
-}
-
-// ForEachTableLocalityRegionalByRowUsingConstraint iterates over elements of type TableLocalityRegionalByRowUsingConstraint.
-// Deprecated
-func ForEachTableLocalityRegionalByRowUsingConstraint(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *TableLocalityRegionalByRowUsingConstraint),
-) {
-  c.FilterTableLocalityRegionalByRowUsingConstraint().ForEach(fn)
-}
-
-// FindTableLocalityRegionalByRowUsingConstraint finds the first element of type TableLocalityRegionalByRowUsingConstraint.
-// Deprecated
-func FindTableLocalityRegionalByRowUsingConstraint(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *TableLocalityRegionalByRowUsingConstraint) {
-	if tc := c.FilterTableLocalityRegionalByRowUsingConstraint(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*TableLocalityRegionalByRowUsingConstraint)
-	}
-	return current, target, element
-}
-
-// TableLocalityRegionalByRowUsingConstraintElements filters elements of type TableLocalityRegionalByRowUsingConstraint.
-func (c *ElementCollection[E]) FilterTableLocalityRegionalByRowUsingConstraint() *ElementCollection[*TableLocalityRegionalByRowUsingConstraint] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*TableLocalityRegionalByRowUsingConstraint)
-		return ok
-	})
-	return (*ElementCollection[*TableLocalityRegionalByRowUsingConstraint])(ret)
 }
 
 func (e TableLocalitySecondaryRegion) element() {}
@@ -3400,22 +3178,10 @@ func (e* ElementProto) SetElement(element Element) {
 			e.ElementOneOf = &ElementProto_PartitionZoneConfig{ PartitionZoneConfig: t}
 		case *Policy:
 			e.ElementOneOf = &ElementProto_Policy{ Policy: t}
-		case *PolicyDeps:
-			e.ElementOneOf = &ElementProto_PolicyDeps{ PolicyDeps: t}
 		case *PolicyName:
 			e.ElementOneOf = &ElementProto_PolicyName{ PolicyName: t}
-		case *PolicyRole:
-			e.ElementOneOf = &ElementProto_PolicyRole{ PolicyRole: t}
-		case *PolicyUsingExpr:
-			e.ElementOneOf = &ElementProto_PolicyUsingExpr{ PolicyUsingExpr: t}
-		case *PolicyWithCheckExpr:
-			e.ElementOneOf = &ElementProto_PolicyWithCheckExpr{ PolicyWithCheckExpr: t}
 		case *PrimaryIndex:
 			e.ElementOneOf = &ElementProto_PrimaryIndex{ PrimaryIndex: t}
-		case *RowLevelSecurityEnabled:
-			e.ElementOneOf = &ElementProto_RowLevelSecurityEnabled{ RowLevelSecurityEnabled: t}
-		case *RowLevelSecurityForced:
-			e.ElementOneOf = &ElementProto_RowLevelSecurityForced{ RowLevelSecurityForced: t}
 		case *RowLevelTTL:
 			e.ElementOneOf = &ElementProto_RowLevelTTL{ RowLevelTTL: t}
 		case *Schema:
@@ -3428,6 +3194,8 @@ func (e* ElementProto) SetElement(element Element) {
 			e.ElementOneOf = &ElementProto_SchemaParent{ SchemaParent: t}
 		case *SecondaryIndex:
 			e.ElementOneOf = &ElementProto_SecondaryIndex{ SecondaryIndex: t}
+		case *SecondaryIndexPartial:
+			e.ElementOneOf = &ElementProto_SecondaryIndexPartial{ SecondaryIndexPartial: t}
 		case *Sequence:
 			e.ElementOneOf = &ElementProto_Sequence{ Sequence: t}
 		case *SequenceOption:
@@ -3446,8 +3214,6 @@ func (e* ElementProto) SetElement(element Element) {
 			e.ElementOneOf = &ElementProto_TableLocalityPrimaryRegion{ TableLocalityPrimaryRegion: t}
 		case *TableLocalityRegionalByRow:
 			e.ElementOneOf = &ElementProto_TableLocalityRegionalByRow{ TableLocalityRegionalByRow: t}
-		case *TableLocalityRegionalByRowUsingConstraint:
-			e.ElementOneOf = &ElementProto_TableLocalityRegionalByRowUsingConstraint{ TableLocalityRegionalByRowUsingConstraint: t}
 		case *TableLocalitySecondaryRegion:
 			e.ElementOneOf = &ElementProto_TableLocalitySecondaryRegion{ TableLocalitySecondaryRegion: t}
 		case *TablePartitioning:
@@ -3538,20 +3304,15 @@ func GetElementOneOfProtos() []interface{} {
 	((*ElementProto_Owner)(nil)),
 	((*ElementProto_PartitionZoneConfig)(nil)),
 	((*ElementProto_Policy)(nil)),
-	((*ElementProto_PolicyDeps)(nil)),
 	((*ElementProto_PolicyName)(nil)),
-	((*ElementProto_PolicyRole)(nil)),
-	((*ElementProto_PolicyUsingExpr)(nil)),
-	((*ElementProto_PolicyWithCheckExpr)(nil)),
 	((*ElementProto_PrimaryIndex)(nil)),
-	((*ElementProto_RowLevelSecurityEnabled)(nil)),
-	((*ElementProto_RowLevelSecurityForced)(nil)),
 	((*ElementProto_RowLevelTTL)(nil)),
 	((*ElementProto_Schema)(nil)),
 	((*ElementProto_SchemaChild)(nil)),
 	((*ElementProto_SchemaComment)(nil)),
 	((*ElementProto_SchemaParent)(nil)),
 	((*ElementProto_SecondaryIndex)(nil)),
+	((*ElementProto_SecondaryIndexPartial)(nil)),
 	((*ElementProto_Sequence)(nil)),
 	((*ElementProto_SequenceOption)(nil)),
 	((*ElementProto_SequenceOwner)(nil)),
@@ -3561,7 +3322,6 @@ func GetElementOneOfProtos() []interface{} {
 	((*ElementProto_TableLocalityGlobal)(nil)),
 	((*ElementProto_TableLocalityPrimaryRegion)(nil)),
 	((*ElementProto_TableLocalityRegionalByRow)(nil)),
-	((*ElementProto_TableLocalityRegionalByRowUsingConstraint)(nil)),
 	((*ElementProto_TableLocalitySecondaryRegion)(nil)),
 	((*ElementProto_TablePartitioning)(nil)),
 	((*ElementProto_TableSchemaLocked)(nil)),
@@ -3634,20 +3394,15 @@ func GetElementTypes() []interface{} {
 	((*Owner)(nil)),
 	((*PartitionZoneConfig)(nil)),
 	((*Policy)(nil)),
-	((*PolicyDeps)(nil)),
 	((*PolicyName)(nil)),
-	((*PolicyRole)(nil)),
-	((*PolicyUsingExpr)(nil)),
-	((*PolicyWithCheckExpr)(nil)),
 	((*PrimaryIndex)(nil)),
-	((*RowLevelSecurityEnabled)(nil)),
-	((*RowLevelSecurityForced)(nil)),
 	((*RowLevelTTL)(nil)),
 	((*Schema)(nil)),
 	((*SchemaChild)(nil)),
 	((*SchemaComment)(nil)),
 	((*SchemaParent)(nil)),
 	((*SecondaryIndex)(nil)),
+	((*SecondaryIndexPartial)(nil)),
 	((*Sequence)(nil)),
 	((*SequenceOption)(nil)),
 	((*SequenceOwner)(nil)),
@@ -3657,7 +3412,6 @@ func GetElementTypes() []interface{} {
 	((*TableLocalityGlobal)(nil)),
 	((*TableLocalityPrimaryRegion)(nil)),
 	((*TableLocalityRegionalByRow)(nil)),
-	((*TableLocalityRegionalByRowUsingConstraint)(nil)),
 	((*TableLocalitySecondaryRegion)(nil)),
 	((*TablePartitioning)(nil)),
 	((*TableSchemaLocked)(nil)),

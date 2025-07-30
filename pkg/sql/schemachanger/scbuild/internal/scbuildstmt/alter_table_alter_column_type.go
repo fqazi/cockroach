@@ -30,7 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 func alterTableAlterColumnType(
@@ -70,17 +69,6 @@ func alterTableAlterColumnType(
 		case *scpb.FunctionBody:
 			fnName := b.QueryByID(e.FunctionID).FilterFunctionName().MustGetOneElement()
 			panic(sqlerrors.NewDependentBlocksOpError(op, objType, t.Column.String(), "function", fnName.Name))
-		case *scpb.TriggerDeps:
-			tableElts := b.QueryByID(e.TableID)
-			tableName := tableElts.FilterNamespace().MustGetOneElement()
-			triggerName := tableElts.FilterTriggerName().Filter(
-				func(_ scpb.Status, _ scpb.TargetStatus, tn *scpb.TriggerName) bool {
-					return tn.TriggerID == e.TriggerID
-				}).MustGetOneElement()
-			panic(sqlerrors.NewDependentObjectErrorf(
-				"cannot %s %s %q because trigger %q on table %q depends on it",
-				redact.SafeString(op), redact.SafeString(objType), t.Column.String(), triggerName.Name, tableName.Name,
-			))
 		case *scpb.RowLevelTTL:
 			// If a duration expression is set, the column level dependency is on the
 			// internal ttl column, which we are attempting to alter.
@@ -90,8 +78,6 @@ func alterTableAlterColumnType(
 			// Otherwise, it is a dependency on the column used in the expiration
 			// expression.
 			panic(sqlerrors.NewAlterDependsOnExpirationExprError(op, objType, t.Column.String(), tn.Object(), string(e.ExpirationExpr)))
-		case *scpb.PolicyUsingExpr, *scpb.PolicyWithCheckExpr:
-			panic(sqlerrors.NewAlterDependsOnPolicyExprError(op, objType, t.Column.String()))
 		}
 	})
 

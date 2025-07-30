@@ -22,10 +22,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rafttrace"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/listenerutil"
@@ -95,7 +96,7 @@ func TestRaftLogQueue(t *testing.T) {
 		// Get the raft leader (and ensure one exists).
 		raftLeaderRepl := tc.GetRaftLeader(t, roachpb.RKey(key))
 		require.NotNil(t, raftLeaderRepl)
-		originalIndex := raftLeaderRepl.GetCompactedIndex()
+		originalIndex := raftLeaderRepl.GetFirstIndex()
 
 		// Write a collection of values to increase the raft log.
 		value := bytes.Repeat(key, 1000) // 1KB
@@ -115,9 +116,9 @@ func TestRaftLogQueue(t *testing.T) {
 			}
 			// Flush the engine to advance durability, which triggers truncation.
 			require.NoError(t, raftLeaderRepl.Store().TODOEngine().Flush())
-			// Ensure that compacted index has increased indicating that the log
+			// Ensure that firstIndex has increased indicating that the log
 			// truncation has occurred.
-			afterTruncationIndex = raftLeaderRepl.GetCompactedIndex()
+			afterTruncationIndex = raftLeaderRepl.GetFirstIndex()
 			if afterTruncationIndex <= originalIndex {
 				return errors.Errorf("raft log has not been truncated yet, afterTruncationIndex:%d originalIndex:%d",
 					afterTruncationIndex, originalIndex)
@@ -129,14 +130,14 @@ func TestRaftLogQueue(t *testing.T) {
 		// already truncated log has no effect. This check, unlike in the last
 		// iteration, cannot use a succeedsSoon. This check is fragile in that the
 		// truncation triggered here may lose the race against the call to
-		// GetCompactedIndex, giving a false negative. Fixing this requires
-		// additional instrumentation of the queues, which was deemed to require too
-		// much work at the time of this writing.
+		// GetFirstIndex, giving a false negative. Fixing this requires additional
+		// instrumentation of the queues, which was deemed to require too much work
+		// at the time of this writing.
 		for i := range tc.Servers {
 			tc.GetFirstStoreFromServer(t, i).MustForceRaftLogScanAndProcess()
 		}
 
-		after2ndTruncationIndex := raftLeaderRepl.GetCompactedIndex()
+		after2ndTruncationIndex := raftLeaderRepl.GetFirstIndex()
 		if afterTruncationIndex > after2ndTruncationIndex {
 			t.Fatalf("second truncation destroyed state: afterTruncationIndex:%d after2ndTruncationIndex:%d",
 				afterTruncationIndex, after2ndTruncationIndex)
@@ -204,9 +205,7 @@ func TestRaftTracing(t *testing.T) {
 					// the ordering may change between 1->2 and 1->3. It should be
 					// sufficient to just check one of them for tracing.
 					`replica_raft.* 1->2 MsgApp`,
-					`replica_raft.* appended entries`,
-					`replica_raft.* synced log storage write at mark`,
-					`replica_raft.* applying entries`,
+					`replica_raft.* AppendThread->1 MsgStorageAppendResp`,
 					`ack-ing replication success to the client`,
 				}
 				require.NoError(t, testutils.MatchInOrder(output, expectedMessages...))
@@ -262,7 +261,7 @@ func TestCrashWhileTruncatingSideloadedEntries(t *testing.T) {
 		propFilter := newAtomicFunc(func(kvserverbase.ProposalFilterArgs) *kvpb.Error {
 			return nil
 		})
-		applyThrottle := newAtomicFunc(func(roachpb.FullReplicaID) {})
+		applyThrottle := newAtomicFunc(func(storage.FullReplicaID) {})
 		postSideEffects := newAtomicFunc(func(args kvserverbase.ApplyFilterArgs) (int, *kvpb.Error) {
 			return 0, nil
 		})
@@ -292,7 +291,7 @@ func TestCrashWhileTruncatingSideloadedEntries(t *testing.T) {
 					Store: &kvserver.StoreTestingKnobs{
 						DisableRaftLogQueue:     true, // we send a log truncation manually
 						DisableSyncLogWriteToss: true, // always use async log writes
-						TestingAfterRaftLogSync: func(id roachpb.FullReplicaID) { applyThrottle.get()(id) },
+						TestingAfterRaftLogSync: func(id storage.FullReplicaID) { applyThrottle.get()(id) },
 						TestingProposalFilter: func(args kvserverbase.ProposalFilterArgs) *kvpb.Error {
 							return propFilter.get()(args)
 						},
@@ -331,11 +330,11 @@ func TestCrashWhileTruncatingSideloadedEntries(t *testing.T) {
 		// Pin the leaseholder to the leader node (most likely it's already there).
 		require.NoError(t, tc.TransferRangeLease(*leader.Desc(), tc.Target(0)))
 
-		info := func(r *kvserver.Replica, name string) kvpb.RaftIndex {
-			compacted, last := r.GetCompactedIndex(), r.GetLastIndex()
-			t.Logf("%s: log indices: (%d..%d]", name, compacted, last)
+		info := func(r *kvserver.Replica, name string) (kvpb.RaftIndex, kvpb.RaftIndex) {
+			first, last := r.GetFirstIndex(), r.GetLastIndex()
+			t.Logf("%s: log indices: [%d..%d]", name, first, last)
 			t.Logf("%s: applied to: %d", name, r.State(ctx).ReplicaState.RaftAppliedIndex)
-			return last
+			return first, last
 		}
 		info(leader, "leader")
 		info(follower, "follower")
@@ -346,7 +345,7 @@ func TestCrashWhileTruncatingSideloadedEntries(t *testing.T) {
 		// Before writing more commands, block the raft commands application flow on
 		// the follower replica.
 		unblockApply := make(chan struct{})
-		applyThrottle.set(func(id roachpb.FullReplicaID) {
+		applyThrottle.set(func(id storage.FullReplicaID) {
 			if id == follower.ID() {
 				applyThrottle.reset()
 				<-unblockApply
@@ -359,7 +358,7 @@ func TestCrashWhileTruncatingSideloadedEntries(t *testing.T) {
 			require.NoError(t, pErr.GoError())
 		}
 		t.Log("committed AddSSTs")
-		lastIndex := info(leader, "leader")
+		_, lastIndex := info(leader, "leader")
 		info(follower, "follower")
 
 		// Trigger raft log truncation. When the corresponding command is proposed,
@@ -425,8 +424,8 @@ func TestCrashWhileTruncatingSideloadedEntries(t *testing.T) {
 		// leader sent is now above the last index in the log.
 		for _, peer := range []int{0, 2} { // the leader and the other follower
 			dialer := tc.Servers[1].NodeDialer().(*nodedialer.Dialer)
-			for c := 0; c < rpcbase.NumConnectionClasses; c++ {
-				brk, found := dialer.GetCircuitBreaker(tc.Servers[peer].NodeID(), rpcbase.ConnectionClass(c))
+			for c := 0; c < rpc.NumConnectionClasses; c++ {
+				brk, found := dialer.GetCircuitBreaker(tc.Servers[peer].NodeID(), rpc.ConnectionClass(c))
 				if found {
 					brk.Report(errors.New("connection is terminated by the test"))
 				}

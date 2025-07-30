@@ -7,22 +7,22 @@ package rowexec
 
 import (
 	"context"
+	"encoding/binary"
 	"math/rand"
 	"time"
 
-	"github.com/axiomhq/hyperloglog"
+	hllNew "github.com/axiomhq/hyperloglog"
+	hllOld "github.com/axiomhq/hyperloglog/000"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
+	"github.com/cockroachdb/cockroach/pkg/sql/execversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/collatedstring"
-	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
@@ -33,11 +33,13 @@ import (
 
 // sketchInfo contains the specification and run-time state for each sketch.
 type sketchInfo struct {
-	spec     execinfrapb.SketchSpec
-	sketch   *hyperloglog.Sketch
-	numNulls int64
-	numRows  int64
-	size     int64
+	spec execinfrapb.SketchSpec
+	// Exactly one of sketchOld and sketchNew will be set.
+	sketchOld *hllOld.Sketch
+	sketchNew *hllNew.Sketch
+	numNulls  int64
+	numRows   int64
+	size      int64
 }
 
 // A sampler processor returns a random sample of rows, as well as "global"
@@ -97,6 +99,8 @@ func newSamplerProcessor(
 	input execinfra.RowSource,
 	post *execinfrapb.PostProcessSpec,
 ) (*samplerProcessor, error) {
+	useNewHLL := execversion.FromContext(ctx) >= execversion.V25_1
+
 	// Limit the memory use by creating a child monitor with a hard limit.
 	// The processor will disable histogram collection if this limit is not
 	// enough.
@@ -124,9 +128,13 @@ func newSamplerProcessor(
 	for i := range spec.Sketches {
 		s.sketches[i] = sketchInfo{
 			spec:     spec.Sketches[i],
-			sketch:   hyperloglog.New14(),
 			numNulls: 0,
 			numRows:  0,
+		}
+		if useNewHLL {
+			s.sketches[i].sketchNew = hllNew.New14()
+		} else {
+			s.sketches[i].sketchOld = hllOld.New14()
 		}
 		if spec.Sketches[i].GenerateHistogram {
 			sampleCols.Add(int(spec.Sketches[i].Columns[0]))
@@ -146,9 +154,13 @@ func newSamplerProcessor(
 		sketchSpec.Columns = []uint32{0}
 		s.invSketch[col] = &sketchInfo{
 			spec:     sketchSpec,
-			sketch:   hyperloglog.New14(),
 			numNulls: 0,
 			numRows:  0,
+		}
+		if useNewHLL {
+			s.invSketch[col].sketchNew = hllNew.New14()
+		} else {
+			s.invSketch[col].sketchOld = hllOld.New14()
 		}
 	}
 
@@ -294,6 +306,7 @@ func (s *samplerProcessor) mainLoop(
 					timer.Reset(wait)
 					select {
 					case <-timer.C:
+						timer.Read = true
 						break
 					case <-s.FlowCtx.Stopper().ShouldQuiesce():
 						break
@@ -419,7 +432,12 @@ func (s *samplerProcessor) emitSketchRow(
 	outRow[s.numRowsCol] = rowenc.EncDatum{Datum: tree.NewDInt(tree.DInt(si.numRows))}
 	outRow[s.numNullsCol] = rowenc.EncDatum{Datum: tree.NewDInt(tree.DInt(si.numNulls))}
 	outRow[s.sizeCol] = rowenc.EncDatum{Datum: tree.NewDInt(tree.DInt(si.size))}
-	data, err := si.sketch.MarshalBinary()
+	var data []byte
+	if si.sketchNew != nil {
+		data, err = si.sketchNew.MarshalBinary()
+	} else {
+		data, err = si.sketchOld.MarshalBinary()
+	}
 	if err != nil {
 		return false, err
 	}
@@ -492,109 +510,89 @@ func (s *samplerProcessor) DoesNotUseTxn() bool {
 // addRow adds a row to the sketch and updates row counts.
 func (s *sketchInfo) addRow(
 	ctx context.Context, row rowenc.EncDatumRow, typs []*types.T, buf *[]byte,
-) (err error) {
+) error {
+	var err error
 	s.numRows++
-	allNulls := true
-	*buf = (*buf)[:0]
-	for _, col := range s.spec.Columns {
-		// Avoid calling IsNull() if the datum is unset because it will panic.
-		// Instead, return an assertion error that might help in debugging.
+
+	var col uint32
+	var useFastPath bool
+	if len(s.spec.Columns) == 1 {
+		col = s.spec.Columns[0]
 		if row[col].IsUnset() {
 			return errors.AssertionFailedf("unset datum: col=%d row=%s", col, row.String(typs))
 		}
 		isNull := row[col].IsNull()
-		allNulls = allNulls && isNull
-		if b := row[col].EncodedBytes(); b != nil && !containsCollatedString(typs[col]) && !isNull {
-			// Composite, value encoded datums may have different encodings for
-			// semantically equivalent types, so using the encoded bytes can
-			// skew the cardinality estimate slightly. This should be rare and
-			// hyperloglog cardinality is already an estimate, so it is
-			// considered acceptable. For floats, the only values affected are 0
-			// and -0, which are semantically equivalent but have different
-			// value encodings. For decimals, 0 and -0 are affected, as well as
-			// any equal values with different numbers of trailing zeros. JSON
-			// and array types containing decimals are also affected similarly.
-			//
-			// Value-encoded collated strings are more likely than other types
-			// to cause cardinality over-estimations because the ratio of
-			// physically distinct strings to semantically distinct strings can
-			// be much higher. For example, the und-u-ks-level2 locale is
-			// case-insensitive, so there are 8 different physical strings all
-			// equivalent to "foo": "foo", "Foo", "fOo", "foO", "FOo", "FoO",
-			// "fOO", and "FOO". For this reason, we fall-back to using
-			// Fingerprint for collated strings.
-			//
-			// For NULL datums we use the Fingerprint method so that regardless
-			// of datum encoding, all of them got the same encoding.
-			//
-			// TODO(mgartner): We should probably truncate b to some max size to
-			// prevent a really wide value from growing buf. Since the distinct
-			// count is an estimate anyway, truncating the value shouldn't have
-			// any real impact.
-			if enc, _ := row[col].Encoding(); enc == catenumpb.DatumEncoding_VALUE {
-				// Value encoding includes column ID delta in the prefix which
-				// can differ based on the values of other columns within the
-				// same row (i.e. whether the previous columns had NULL or
-				// non-NULL values). To prevent this detail from artificially
-				// increasing the distinct estimate, we'll remove the column ID
-				// delta from encoding that we use for the current datum.
-				_, dataOffset, _, typ, err := encoding.DecodeValueTag(b)
-				if err != nil {
-					return err
-				}
-				// Including the value tag (i.e. the type) allows us to
-				// differentiate some non-NULL values (like integer 0) from NULL
-				// ones.
-				*buf = append(*buf, byte(typ))
-				*buf = append(*buf, b[dataOffset:]...)
-			} else {
-				// Key-encoded datums can be used as is.
-				*buf = append(*buf, b...)
-			}
+		useFastPath = typs[col].Family() == types.IntFamily && !isNull
+	}
+
+	if useFastPath {
+		// Fast path for integers.
+		// TODO(radu): make this more general.
+		val, err := row[col].GetInt()
+		if err != nil {
+			return err
+		}
+
+		if cap(*buf) < 8 {
+			*buf = make([]byte, 8)
 		} else {
-			// Fallback to using the Fingerprint method to generate bytes to
-			// insert into the sketch.
-			//
-			// We pass nil DatumAlloc so that each datum allocation was
-			// independent (to prevent bounded memory leaks like we've seen in
-			// #136394). The problem in that issue was that the same backing
-			// slice of datums was shared across rows, so if a single row was
-			// kept as a sample, it could keep many garbage datums alive. To go
-			// around that we simply disabled the batching.
-			//
-			// We choose to not perform the memory accounting for possibly
-			// decoded tree.Datum because we will lose the references to row
-			// very soon.
-			*buf, err = row[col].Fingerprint(ctx, typs[col], nil /* da */, *buf, nil /* acc */)
-			if err != nil {
-				return err
+			*buf = (*buf)[:8]
+		}
+
+		s.size += int64(row[col].DiskSize())
+
+		// Note: this encoding is not identical with the one in the general path
+		// below, but it achieves the same thing (we want equal integers to
+		// encode to equal []bytes). The only caveat is that all samplers must
+		// use the same encodings, so changes will require a new SketchType to
+		// avoid problems during upgrade.
+		//
+		// We could use a more efficient hash function and use InsertHash, but
+		// it must be a very good hash function (HLL expects the hash values to
+		// be uniformly distributed in the 2^64 range). Experiments (on tpcc
+		// order_line) with simplistic functions yielded bad results.
+		binary.LittleEndian.PutUint64(*buf, uint64(val))
+		if s.sketchNew != nil {
+			s.sketchNew.Insert(*buf)
+		} else {
+			s.sketchOld.Insert(*buf)
+		}
+		return nil
+	}
+	isNull := true
+	*buf = (*buf)[:0]
+	for _, col := range s.spec.Columns {
+		// We pass nil DatumAlloc so that each datum allocation was independent
+		// (to prevent bounded memory leaks like we've seen in #136394).
+		// TODO(yuzefovich): the problem in that issue was that the same backing
+		// slice of datums was shared across rows, so if a single row was kept
+		// as a sample, it could keep many garbage alive. To go around that we
+		// simply disabled the batching. We could improve that behavior by using
+		// a DatumAlloc in which we set typeAllocSizes in such a way that all
+		// columns of the same type in a single row would be backed by a single
+		// slice allocation.
+		//
+		// We choose to not perform the memory accounting for possibly decoded
+		// tree.Datum because we will lose the references to row very soon.
+		*buf, err = row[col].Fingerprint(ctx, typs[col], nil /* da */, *buf, nil /* acc */)
+		if err != nil {
+			return err
+		}
+		if isNull {
+			if row[col].IsUnset() {
+				return errors.AssertionFailedf("unset datum: col=%d row=%s", col, row.String(typs))
 			}
+			isNull = row[col].IsNull()
 		}
 		s.size += int64(row[col].DiskSize())
 	}
-
-	if allNulls {
+	if isNull {
 		s.numNulls++
 	}
-	s.sketch.Insert(*buf)
-	return nil
-}
-
-// containsCollatedString returns true if the type is a collated string type
-// or a container type included a collated string type. It does not return
-// true with collated string types with a default-equivalent collation.
-func containsCollatedString(t *types.T) bool {
-	switch t.Family() {
-	case types.CollatedStringFamily:
-		return !collatedstring.IsDefaultEquivalentCollation(t.Locale())
-	case types.ArrayFamily:
-		return containsCollatedString(t.ArrayContents())
-	case types.TupleFamily:
-		for _, t := range t.TupleContents() {
-			if containsCollatedString(t) {
-				return true
-			}
-		}
+	if s.sketchNew != nil {
+		s.sketchNew.Insert(*buf)
+	} else {
+		s.sketchOld.Insert(*buf)
 	}
-	return false
+	return nil
 }

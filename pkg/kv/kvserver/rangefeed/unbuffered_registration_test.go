@@ -33,9 +33,9 @@ func TestUnbufferedRegWithStreamManager(t *testing.T) {
 	p, h, stopper := newTestProcessor(t, withRangefeedTestType(scheduledProcessorWithBufferedSender))
 	defer stopper.Stop(ctx)
 	testServerStream := newTestServerStream()
-	smMetrics := NewStreamManagerMetrics()
-	bs := NewBufferedSender(testServerStream, NewBufferedSenderMetrics())
-	sm := NewStreamManager(bs, smMetrics)
+	testRangefeedCounter := newTestRangefeedCounter()
+	bs := NewBufferedSender(testServerStream)
+	sm := NewStreamManager(bs, testRangefeedCounter)
 	require.NoError(t, sm.Start(ctx, stopper))
 
 	const r1 = 1
@@ -46,12 +46,12 @@ func TestUnbufferedRegWithStreamManager(t *testing.T) {
 	t.Run("register 50 streams", func(t *testing.T) {
 		for id := int64(0); id < 50; id++ {
 			registered, d, _ := p.Register(ctx, h.span, hlc.Timestamp{}, nil, /* catchUpIter */
-				false /* withDiff */, false /* withFiltering */, false /* withOmitRemote */, noBulkDelivery,
+				false /* withDiff */, false /* withFiltering */, false, /* withOmitRemote */
 				sm.NewStream(id, r1))
 			require.True(t, registered)
 			sm.AddStream(id, d)
 		}
-		require.Equal(t, int64(50), smMetrics.ActiveMuxRangeFeed.Value())
+		require.Equal(t, 50, testRangefeedCounter.get())
 		require.Equal(t, 50, p.Len())
 	})
 	t.Run("publish a 0-valued checkpoint to signal catch-up completion", func(t *testing.T) {
@@ -84,7 +84,7 @@ func TestUnbufferedRegWithStreamManager(t *testing.T) {
 		}
 		wg.Wait()
 		require.NoError(t, bs.waitForEmptyBuffer(ctx))
-		waitForRangefeedCount(t, smMetrics, 0)
+		testRangefeedCounter.waitForRangefeedCount(t, 0)
 		testutils.SucceedsSoon(t, func() error {
 			if p.Len() == 0 {
 				return nil
@@ -105,9 +105,9 @@ func TestUnbufferedRegCorrectnessOnDisconnect(t *testing.T) {
 	p, h, stopper := newTestProcessor(t, withRangefeedTestType(scheduledProcessorWithBufferedSender))
 	defer stopper.Stop(ctx)
 	testServerStream := newTestServerStream()
-	smMetrics := NewStreamManagerMetrics()
-	bs := NewBufferedSender(testServerStream, NewBufferedSenderMetrics())
-	sm := NewStreamManager(bs, smMetrics)
+	testRangefeedCounter := newTestRangefeedCounter()
+	bs := NewBufferedSender(testServerStream)
+	sm := NewStreamManager(bs, testRangefeedCounter)
 	require.NoError(t, sm.Start(ctx, stopper))
 	defer sm.Stop(ctx)
 
@@ -139,11 +139,11 @@ func TestUnbufferedRegCorrectnessOnDisconnect(t *testing.T) {
 	// Register one stream.
 	registered, d, _ := p.Register(ctx, h.span, startTs,
 		makeCatchUpIterator(catchUpIter, span, startTs), /* catchUpIter */
-		true /* withDiff */, false /* withFiltering */, false /* withOmitRemote */, noBulkDelivery,
+		true /* withDiff */, false /* withFiltering */, false, /* withOmitRemote */
 		sm.NewStream(s1, r1))
 	sm.AddStream(s1, d)
 	require.True(t, registered)
-	require.Equal(t, int64(1), smMetrics.ActiveMuxRangeFeed.Value())
+	require.Equal(t, 1, testRangefeedCounter.get())
 
 	// Publish two real live events to the stream.
 	p.ConsumeLogicalOps(ctx, op1)
@@ -169,7 +169,7 @@ func TestUnbufferedRegCorrectnessOnDisconnect(t *testing.T) {
 	expectedEvents[len(catchUpEvents)+3] = evErr
 
 	require.Equal(t, testServerStream.getEventsByStreamID(s1), expectedEvents)
-	waitForRangefeedCount(t, smMetrics, 0)
+	testRangefeedCounter.waitForRangefeedCount(t, 0)
 }
 
 // TestCatchUpBufDrain tests that the catchUpBuf is drained after all events are

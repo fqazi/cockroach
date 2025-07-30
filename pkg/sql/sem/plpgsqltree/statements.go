@@ -827,21 +827,11 @@ func (s *Return) WalkStmt(visitor StatementVisitor) Statement {
 
 type ReturnNext struct {
 	StatementImpl
-	Expr Expr
-}
-
-func (s *ReturnNext) CopyNode() *ReturnNext {
-	copyNode := *s
-	return &copyNode
+	Expr   Expr
+	RetVar Variable
 }
 
 func (s *ReturnNext) Format(ctx *tree.FmtCtx) {
-	ctx.WriteString("RETURN NEXT")
-	if s.Expr != nil {
-		ctx.WriteByte(' ')
-		ctx.FormatNode(s.Expr)
-	}
-	ctx.WriteString(";\n")
 }
 
 func (s *ReturnNext) PlpgSQLStatementTag() string {
@@ -849,30 +839,17 @@ func (s *ReturnNext) PlpgSQLStatementTag() string {
 }
 
 func (s *ReturnNext) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+	panic(unimplemented.New("plpgsql visitor", "Unimplemented PLpgSQL visitor pattern"))
 }
 
 type ReturnQuery struct {
 	StatementImpl
-	SqlStmt     tree.Statement
-	Annotations *tree.Annotations
-}
-
-func (s *ReturnQuery) CopyNode() *ReturnQuery {
-	copyNode := *s
-	return &copyNode
+	Query        Expr
+	DynamicQuery Expr
+	Params       []Expr
 }
 
 func (s *ReturnQuery) Format(ctx *tree.FmtCtx) {
-	ctx.WithAnnotations(s.Annotations, func() {
-		ctx.WriteString("RETURN QUERY")
-		if s.SqlStmt != nil {
-			ctx.WriteByte(' ')
-			ctx.FormatNode(s.SqlStmt)
-		}
-		ctx.WriteString(";\n")
-	})
 }
 
 func (s *ReturnQuery) PlpgSQLStatementTag() string {
@@ -880,8 +857,7 @@ func (s *ReturnQuery) PlpgSQLStatementTag() string {
 }
 
 func (s *ReturnQuery) WalkStmt(visitor StatementVisitor) Statement {
-	newStmt, _ := visitor.Visit(s)
-	return newStmt
+	panic(unimplemented.New("plpgsql visitor", "Unimplemented PLpgSQL visitor pattern"))
 }
 
 // stmt_raise

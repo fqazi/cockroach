@@ -8,83 +8,63 @@
 package checkpoint
 
 import (
-	"iter"
-
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/cockroach/pkg/util/span"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/errors"
 )
+
+// SpanIter is an iterator over a collection of spans.
+type SpanIter func(forEachSpan span.Operation)
 
 // Make creates a checkpoint with as many spans that should be checkpointed (are
 // above the highwater mark) as can fit in maxBytes, along with the earliest
-// timestamp of the checkpointed spans. Adjacent spans at the same timestamp
-// are merged together to reduce checkpoint size.
+// timestamp of the checkpointed spans. A SpanGroup is used to merge adjacent
+// spans above the high-water mark.
 func Make(
-	overallResolved hlc.Timestamp,
-	spans iter.Seq2[roachpb.Span, hlc.Timestamp],
-	maxBytes int64,
-	metrics *Metrics,
-) *jobspb.TimestampSpansMap {
+	frontier hlc.Timestamp, forEachSpan SpanIter, maxBytes int64, metrics *Metrics,
+) jobspb.ChangefeedProgress_Checkpoint {
 	start := timeutil.Now()
 
-	spanGroupMap := make(map[hlc.Timestamp]*roachpb.SpanGroup)
-	for s, ts := range spans {
-		if ts.After(overallResolved) {
-			if spanGroupMap[ts] == nil {
-				spanGroupMap[ts] = new(roachpb.SpanGroup)
+	// Collect leading spans into a SpanGroup to merge adjacent spans and store
+	// the lowest timestamp found.
+	var checkpointSpanGroup roachpb.SpanGroup
+	checkpointTS := hlc.MaxTimestamp
+	forEachSpan(func(s roachpb.Span, ts hlc.Timestamp) span.OpResult {
+		if frontier.Less(ts) {
+			checkpointSpanGroup.Add(s)
+			if ts.Less(checkpointTS) {
+				checkpointTS = ts
 			}
-			spanGroupMap[ts].Add(s)
 		}
-	}
-	if len(spanGroupMap) == 0 {
-		return nil
+		return span.ContinueMatch
+	})
+	if checkpointSpanGroup.Len() == 0 {
+		return jobspb.ChangefeedProgress_Checkpoint{}
 	}
 
-	checkpointSpansMap := make(map[hlc.Timestamp]roachpb.Spans)
-	var totalSpanKeyBytes int64
-	for ts, spanGroup := range spanGroupMap {
-		for _, sp := range spanGroup.Slice() {
-			spanKeyBytes := int64(len(sp.Key)) + int64(len(sp.EndKey))
-			if totalSpanKeyBytes+spanKeyBytes > maxBytes {
-				break
-			}
-			checkpointSpansMap[ts] = append(checkpointSpansMap[ts], sp)
-			totalSpanKeyBytes += spanKeyBytes
+	// Ensure we only return up to maxBytes spans.
+	var checkpointSpans []roachpb.Span
+	var used int64
+	for _, span := range checkpointSpanGroup.Slice() {
+		used += int64(len(span.Key)) + int64(len(span.EndKey))
+		if used > maxBytes {
+			break
 		}
+		checkpointSpans = append(checkpointSpans, span)
 	}
-	cp := jobspb.NewTimestampSpansMap(checkpointSpansMap)
-	if cp == nil {
-		return nil
+
+	cp := jobspb.ChangefeedProgress_Checkpoint{
+		Spans:     checkpointSpans,
+		Timestamp: checkpointTS,
 	}
 
 	if metrics != nil {
 		metrics.CreateNanos.RecordValue(int64(timeutil.Since(start)))
 		metrics.TotalBytes.RecordValue(int64(cp.Size()))
-		metrics.TimestampCount.RecordValue(int64(cp.TimestampCount()))
-		metrics.SpanCount.RecordValue(int64(cp.SpanCount()))
+		metrics.SpanCount.RecordValue(int64(len(cp.Spans)))
 	}
 
 	return cp
-}
-
-// SpanForwarder is an interface for forwarding spans to a changefeed.
-type SpanForwarder interface {
-	Forward(span roachpb.Span, ts hlc.Timestamp) (bool, error)
-}
-
-// Restore restores the saved progress from a checkpoint to the given SpanForwarder.
-func Restore(sf SpanForwarder, checkpoint *jobspb.TimestampSpansMap) error {
-	for ts, spans := range checkpoint.All() {
-		if ts.IsEmpty() {
-			return errors.New("checkpoint timestamp is empty")
-		}
-		for _, sp := range spans {
-			if _, err := sf.Forward(sp, ts); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }

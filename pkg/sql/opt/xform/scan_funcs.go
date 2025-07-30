@@ -505,7 +505,7 @@ func (c *CustomFuncs) IsRegionalByRowTableScanOrSelect(input memo.RelExpr) bool 
 	if !ok {
 		return false
 	}
-	table := c.e.mem.Metadata().Table(scanExpr.Table)
+	table := scanExpr.Memo().Metadata().Table(scanExpr.Table)
 	return table.IsRegionalByRow()
 }
 
@@ -514,7 +514,7 @@ func (c *CustomFuncs) IsRegionalByRowTableScanOrSelect(input memo.RelExpr) bool 
 // region without bounded staleness. Bounded staleness would allow local
 // replicas to be used for the scan.
 func (c *CustomFuncs) IsSelectFromRemoteTableRowsOnly(input memo.RelExpr) bool {
-	scanExpr, inputFilters, ok := c.GetFilteredCanonicalScan(input)
+	scanExpr, inputFilters, ok := c.getfilteredCanonicalScan(input)
 	if !ok {
 		return false
 	}
@@ -524,7 +524,7 @@ func (c *CustomFuncs) IsSelectFromRemoteTableRowsOnly(input memo.RelExpr) bool {
 	if c.e.evalCtx.BoundedStaleness() {
 		return false
 	}
-	table := c.e.mem.Metadata().Table(scanExpr.Table)
+	table := scanExpr.Memo().Metadata().Table(scanExpr.Table)
 	if table.IsRegionalByRow() {
 		tabMeta := c.e.mem.Metadata().TableMeta(scanExpr.Table)
 		index := table.Index(scanExpr.Index)

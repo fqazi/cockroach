@@ -490,7 +490,7 @@ func (c *CustomFuncs) GetEquivGroups(
 func (c *CustomFuncs) JoinFiltersMatchAllLeftRows(
 	left, right memo.RelExpr, on memo.FiltersExpr,
 ) bool {
-	multiplicity := memo.DeriveJoinMultiplicityFromInputs(c.mem, left, right, on)
+	multiplicity := memo.DeriveJoinMultiplicityFromInputs(left, right, on)
 	return multiplicity.JoinFiltersMatchAllLeftRows()
 }
 
@@ -918,18 +918,4 @@ func getJoinKeyAndEquijoinCols(
 		return tableKeyCols, reducedTableJoinCols, reducedInputRelJoinCols, true
 	}
 	return opt.ColSet{}, opt.ColList{}, opt.ColList{}, false
-}
-
-// MakeNullProjections creates a projection for each column in the right input,
-// producing NULL values for each column in the right input.
-func (c *CustomFuncs) MakeNullProjections(right memo.RelExpr) memo.ProjectionsExpr {
-	rightCols := right.Relational().OutputCols
-	projections := make(memo.ProjectionsExpr, 0, rightCols.Len())
-
-	for i, ok := rightCols.Next(0); ok; i, ok = rightCols.Next(i + 1) {
-		nullExpr := c.f.ConstructNull(c.mem.Metadata().ColumnMeta(i).Type)
-		projections = append(projections, c.f.ConstructProjectionsItem(nullExpr, i))
-	}
-
-	return projections
 }

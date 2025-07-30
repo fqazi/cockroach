@@ -29,11 +29,8 @@ exec-sql
 INSERT INTO foo VALUES (3,'z');
 ----
 
-save-cluster-ts tag=start
-----
-
-backup aost=start
-BACKUP INTO 'nodelocal://1/test-root/' AS OF SYSTEM TIME start;
+exec-sql
+BACKUP INTO 'nodelocal://1/test-root/';
 ----
 
 exec-sql
@@ -64,15 +61,6 @@ exec-sql
 INSERT INTO foo VALUES (4,'a'),(5,'b');
 ----
 
-# Create two incremental backups to test compaction
-exec-sql
-BACKUP INTO LATEST IN 'nodelocal://1/test-root/';
-----
-
-exec-sql
-INSERT INTO foo VALUES (6,'a'),(7,'b');
-----
-
 kv request=DeleteRange target=baz
 ----
 
@@ -80,11 +68,8 @@ exec-sql
 INSERT INTO baz VALUES (33,'zz');
 ----
 
-save-cluster-ts tag=end
-----
-
-backup aost=end
-BACKUP INTO LATEST IN 'nodelocal://1/test-root/' AS OF SYSTEM TIME end;
+exec-sql
+BACKUP INTO LATEST IN 'nodelocal://1/test-root/';
 ----
 
 exec-sql
@@ -99,25 +84,9 @@ regex matches error
 query-sql
 SELECT count(*) from orig1.foo
 ----
-5
+3
 
 query-sql
 SELECT count(*) from orig1.baz
 ----
 1
-
-let $backup_path
-SHOW BACKUPS IN 'nodelocal://1/test-root/';
-----
-
-compact start=start end=end tag=comp_job
-SELECT crdb_internal.backup_compaction(0, 'BACKUP INTO LATEST IN ''nodelocal://1/test-root/''', '$backup_path', start, end);
-----
-
-job tag=comp_job wait-for-state=failed
-----
-
-query-sql regex=(compactions does not support range keys)
-SELECT error FROM [SHOW JOBS] WHERE job_type = 'BACKUP' AND status = 'failed' ORDER BY created DESC LIMIT 1;
-----
-true

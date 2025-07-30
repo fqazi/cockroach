@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/lease"
@@ -28,6 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/row"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -40,9 +40,11 @@ import (
 type kvRowProcessor struct {
 	decoder cdcevent.Decoder
 	lastRow cdcevent.Row
+	alloc   *tree.DatumAlloc
 	cfg     *execinfra.ServerConfig
 	spec    execinfrapb.LogicalReplicationWriterSpec
 	evalCtx *eval.Context
+	sd      *sessiondata.SessionData
 
 	dstBySrc map[descpb.ID]descpb.ID
 	writers  map[descpb.ID]*kvTableWriter
@@ -58,16 +60,28 @@ func newKVRowProcessor(
 	ctx context.Context,
 	cfg *execinfra.ServerConfig,
 	evalCtx *eval.Context,
+	sd *sessiondata.SessionData,
 	spec execinfrapb.LogicalReplicationWriterSpec,
 	procConfigByDestID map[descpb.ID]sqlProcessorTableConfig,
 ) (*kvRowProcessor, error) {
+	cdcEventTargets := changefeedbase.Targets{}
+	srcTablesBySrcID := make(map[descpb.ID]catalog.TableDescriptor, len(procConfigByDestID))
 	dstBySrc := make(map[descpb.ID]descpb.ID, len(procConfigByDestID))
 
 	for dstID, s := range procConfigByDestID {
 		dstBySrc[s.srcDesc.GetID()] = dstID
+		srcTablesBySrcID[s.srcDesc.GetID()] = s.srcDesc
+		cdcEventTargets.Add(changefeedbase.Target{
+			Type:              jobspb.ChangefeedTargetSpecification_EACH_FAMILY,
+			TableID:           s.srcDesc.GetID(),
+			StatementTimeName: changefeedbase.StatementTimeName(s.srcDesc.GetName()),
+		})
 	}
 
-	decoder, err := newCdcEventDecoder(ctx, procConfigByDestID, evalCtx.Settings)
+	prefixlessCodec := keys.SystemSQLCodec
+	rfCache, err := cdcevent.NewFixedRowFetcherCache(
+		ctx, prefixlessCodec, evalCtx.Settings, cdcEventTargets, srcTablesBySrcID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -76,39 +90,13 @@ func newKVRowProcessor(
 		cfg:      cfg,
 		spec:     spec,
 		evalCtx:  evalCtx,
+		sd:       sd,
 		dstBySrc: dstBySrc,
 		writers:  make(map[descpb.ID]*kvTableWriter, len(procConfigByDestID)),
-		decoder:  decoder,
+		decoder:  cdcevent.NewEventDecoderWithCache(ctx, rfCache, false, false),
+		alloc:    &tree.DatumAlloc{},
 	}
 	return p, nil
-}
-
-func newCdcEventDecoder(
-	ctx context.Context,
-	procConfigByDestID map[descpb.ID]sqlProcessorTableConfig,
-	settings *cluster.Settings,
-) (cdcevent.Decoder, error) {
-	cdcEventTargets := changefeedbase.Targets{}
-	srcTablesBySrcID := make(map[descpb.ID]catalog.TableDescriptor, len(procConfigByDestID))
-
-	for _, s := range procConfigByDestID {
-		srcTablesBySrcID[s.srcDesc.GetID()] = s.srcDesc
-		cdcEventTargets.Add(changefeedbase.Target{
-			Type:              jobspb.ChangefeedTargetSpecification_EACH_FAMILY,
-			DescID:            s.srcDesc.GetID(),
-			StatementTimeName: changefeedbase.StatementTimeName(s.srcDesc.GetName()),
-		})
-	}
-
-	prefixlessCodec := keys.SystemSQLCodec
-	rfCache, err := cdcevent.NewFixedRowFetcherCache(
-		ctx, prefixlessCodec, settings, cdcEventTargets, srcTablesBySrcID,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return cdcevent.NewEventDecoderWithCache(ctx, rfCache, false, false), nil
 }
 
 var originID1Options = &kvpb.WriteOptions{OriginID: 1}
@@ -149,10 +137,6 @@ func (p *kvRowProcessor) HandleBatch(
 	// want batch handling with a bit of hysteresis that prevents constantly building
 	// multi-batch transactions that are likely to fail.
 	return batchStats{}, errors.AssertionFailedf("TODO: multi-row transactions not supported by the kvRowProcessor")
-}
-
-func (p *kvRowProcessor) BatchSize() int {
-	return 1
 }
 
 func (p *kvRowProcessor) processRow(
@@ -242,7 +226,6 @@ func (p *kvRowProcessor) processOneRow(
 	refreshCount int,
 ) error {
 	if err := p.cfg.DB.KV().Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-		txn.SetBufferedWritesEnabled(false)
 		b := makeKVBatch(useLowPriority.Get(&p.cfg.Settings.SV), txn)
 
 		if err := p.addToBatch(ctx, txn, b, dstTableID, row, k, prevValue); err != nil {
@@ -397,7 +380,7 @@ func (p *kvRowProcessor) getWriter(
 	}
 
 	// New lease and desc version; make a new writer.
-	w, err = newKVTableWriter(ctx, l, p.evalCtx)
+	w, err = newKVTableWriter(ctx, l, p.alloc, p.evalCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -424,10 +407,12 @@ type kvTableWriter struct {
 }
 
 func newKVTableWriter(
-	ctx context.Context, leased lease.LeasedDescriptor, evalCtx *eval.Context,
+	ctx context.Context, leased lease.LeasedDescriptor, a *tree.DatumAlloc, evalCtx *eval.Context,
 ) (*kvTableWriter, error) {
 
 	tableDesc := leased.Underlying().(catalog.TableDescriptor)
+
+	const internal = true
 
 	// TODO(dt): figure out the right sets of columns here and in fillNew/fillOld.
 	writeCols, err := writeableColunms(ctx, tableDesc)
@@ -438,13 +423,13 @@ func newKVTableWriter(
 
 	// TODO(dt): pass these some sort fo flag to have them use versions of CPut
 	// or a new LWW KV API. For now they're not detecting/handling conflicts.
-	ri, err := row.MakeInserter(evalCtx.Codec, tableDesc, nil /* uniqueWithTombstoneIndexes */, writeCols, evalCtx.SessionData(), &evalCtx.Settings.SV, nil /* metrics */)
+	ri, err := row.MakeInserter(ctx, nil, evalCtx.Codec, tableDesc, nil /* uniqueWithTombstoneIndexes */, writeCols, a, &evalCtx.Settings.SV, internal, nil)
 	if err != nil {
 		return nil, err
 	}
-	rd := row.MakeDeleter(evalCtx.Codec, tableDesc, nil /* lockedIndexes */, readCols, evalCtx.SessionData(), &evalCtx.Settings.SV, nil /* metrics */)
+	rd := row.MakeDeleter(evalCtx.Codec, tableDesc, readCols, &evalCtx.Settings.SV, internal, nil)
 	ru, err := row.MakeUpdater(
-		evalCtx.Codec, tableDesc, nil /* uniqueWithTombstoneIndexes */, nil /* lockedIndexes */, readCols, writeCols, row.UpdaterDefault, evalCtx.SessionData(), &evalCtx.Settings.SV, nil, /* metrics */
+		ctx, nil, evalCtx.Codec, tableDesc, nil /* uniqueWithTombstoneIndexes */, readCols, writeCols, row.UpdaterDefault, a, &evalCtx.Settings.SV, internal, nil,
 	)
 	if err != nil {
 		return nil, err
@@ -491,15 +476,13 @@ func (p *kvTableWriter) insertRow(ctx context.Context, b *kv.Batch, after cdceve
 
 	var ph row.PartialIndexUpdateHelper
 	// TODO(dt): support partial indexes.
-	var vh row.VectorIndexUpdateHelper
-	// TODO(mw5h, drewk): support vector indexes.
-	oth := row.OriginTimestampCPutHelper{
+	oth := &row.OriginTimestampCPutHelper{
 		OriginTimestamp: after.MvccTimestamp,
 		// TODO(ssd): We should choose this based by comparing the cluster IDs of the source
 		// and destination clusters.
 		// ShouldWinTie: true,
 	}
-	return p.ri.InsertRow(ctx, &row.KVBatchAdapter{Batch: b}, p.newVals, ph, vh, oth, row.CPutOp, false /* traceKV */)
+	return p.ri.InsertRow(ctx, &row.KVBatchAdapter{Batch: b}, p.newVals, ph, oth, false, false)
 }
 
 func (p *kvTableWriter) updateRow(
@@ -514,18 +497,13 @@ func (p *kvTableWriter) updateRow(
 
 	var ph row.PartialIndexUpdateHelper
 	// TODO(dt): support partial indexes.
-	var vh row.VectorIndexUpdateHelper
-	// TODO(mw5h, drewk): support vector indexes.
-	oth := row.OriginTimestampCPutHelper{
+	oth := &row.OriginTimestampCPutHelper{
 		OriginTimestamp: after.MvccTimestamp,
 		// TODO(ssd): We should choose this based by comparing the cluster IDs of the source
 		// and destination clusters.
 		// ShouldWinTie: true,
 	}
-	_, err := p.ru.UpdateRow(
-		ctx, b, p.oldVals, p.newVals, ph, vh, oth, false, /* mustValidateOldPKValues */
-		false, /* traceKV */
-	)
+	_, err := p.ru.UpdateRow(ctx, b, p.oldVals, p.newVals, ph, oth, false)
 	return err
 }
 
@@ -538,9 +516,7 @@ func (p *kvTableWriter) deleteRow(
 
 	var ph row.PartialIndexUpdateHelper
 	// TODO(dt): support partial indexes.
-	var vh row.VectorIndexUpdateHelper
-	// TODO(mw5h, drewk): support vector indexes.
-	oth := row.OriginTimestampCPutHelper{
+	oth := &row.OriginTimestampCPutHelper{
 		PreviousWasDeleted: before.IsDeleted(),
 		OriginTimestamp:    after.MvccTimestamp,
 		// TODO(ssd): We should choose this based by comparing the cluster IDs of the source
@@ -548,9 +524,7 @@ func (p *kvTableWriter) deleteRow(
 		// ShouldWinTie: true,
 	}
 
-	return p.rd.DeleteRow(
-		ctx, b, p.oldVals, ph, vh, oth, false /* mustValidateOldPKValues */, false, /* traceKV */
-	)
+	return p.rd.DeleteRow(ctx, b, p.oldVals, ph, oth, false)
 }
 
 func (p *kvTableWriter) fillOld(vals cdcevent.Row) error {

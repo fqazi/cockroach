@@ -12,12 +12,11 @@ import {
   Anchor,
   EmptyTable,
   util,
-  ISortedTablePagination,
 } from "@cockroachlabs/cluster-ui";
 import { Tooltip } from "antd";
 import classNames from "classnames/bind";
 import round from "lodash/round";
-import React, { useEffect } from "react";
+import React from "react";
 import { connect } from "react-redux";
 import { Link } from "react-router-dom";
 
@@ -36,11 +35,6 @@ import styles from "./hotRanges.module.styl";
 const PAGE_SIZE = 50;
 const cx = classNames.bind(styles);
 
-interface EmptyMessage {
-  title: string;
-  message: string;
-}
-
 interface HotRangesTableProps {
   hotRangesList: cockroach.server.serverpb.HotRangesResponseV2.IHotRange[];
   lastUpdate?: string;
@@ -48,11 +42,6 @@ interface HotRangesTableProps {
   clearFilterContainer: React.ReactNode;
   sortSetting?: SortSetting;
   onSortChange?: (ss: SortSetting) => void;
-  onViewPropertiesChange?: (vp: {
-    sortSetting: SortSetting;
-    pagination: ISortedTablePagination;
-  }) => void;
-  emptyMessage?: EmptyMessage;
 }
 
 const HotRangesTable = ({
@@ -62,8 +51,6 @@ const HotRangesTable = ({
   clearFilterContainer,
   sortSetting,
   onSortChange,
-  onViewPropertiesChange,
-  emptyMessage,
 }: HotRangesTableProps) => {
   const [pagination, updatePagination] = util.usePagination(1, PAGE_SIZE);
   const columns: ColumnDescriptor<cockroach.server.serverpb.HotRangesResponseV2.IHotRange>[] =
@@ -284,13 +271,6 @@ const HotRangesTable = ({
       },
     ];
 
-  useEffect(() => {
-    onViewPropertiesChange?.({
-      sortSetting,
-      pagination,
-    });
-  }, [sortSetting, pagination, onViewPropertiesChange]);
-
   return (
     <div className="section">
       <div className={cx("hotranges-heading-container")}>
@@ -317,16 +297,12 @@ const HotRangesTable = ({
         pagination={pagination}
         renderNoResult={
           <EmptyTable
-            title={emptyMessage.title}
+            title="No hot ranges"
             icon={emptyTableResultsImg}
             footer={
-              <div>
-                <span>{emptyMessage.message}</span>
-                <br />
-                <Anchor href={performanceBestPracticesHotSpots} target="_blank">
-                  Learn more about hot ranges
-                </Anchor>
-              </div>
+              <Anchor href={performanceBestPracticesHotSpots} target="_blank">
+                Learn more about hot ranges
+              </Anchor>
             }
           />
         }

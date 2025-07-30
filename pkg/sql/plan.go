@@ -100,27 +100,21 @@ type planNode interface {
 
 	InputCount() int
 	Input(i int) (planNode, error)
-	SetInput(i int, p planNode) error
 }
 
 // zeroInputPlanNode is embedded in planNode implementations that have no input
-// planNode. It implements the InputCount, Input, and SetInput methods of
-// planNode.
+// planNode. It implements the InputCount and Input methods of planNode.
 type zeroInputPlanNode struct{}
 
 func (zeroInputPlanNode) InputCount() int { return 0 }
 
 func (zeroInputPlanNode) Input(i int) (planNode, error) {
-	return nil, errors.AssertionFailedf("node has no inputs")
-}
-
-func (zeroInputPlanNode) SetInput(i int, p planNode) error {
-	return errors.AssertionFailedf("node has no inputs")
+	return nil, errors.AssertionFailedf("input node has no inputs")
 }
 
 // singleInputPlanNode is embedded in planNode implementations that have a
-// single input planNode. It implements the InputCount, Input, and SetInput
-// methods of planNode.
+// single input planNode. It implements the InputCount and Input methods of
+// planNode.
 type singleInputPlanNode struct {
 	input planNode
 }
@@ -132,14 +126,6 @@ func (n *singleInputPlanNode) Input(i int) (planNode, error) {
 		return n.input, nil
 	}
 	return nil, errors.AssertionFailedf("input index %d is out of range", i)
-}
-
-func (n *singleInputPlanNode) SetInput(i int, p planNode) error {
-	if i == 0 {
-		n.input = p
-		return nil
-	}
-	return errors.AssertionFailedf("input index %d is out of range", i)
 }
 
 // mutationPlanNode is a specification of planNode for mutations operations
@@ -206,7 +192,6 @@ var _ planNode = &CreateRoleNode{}
 var _ planNode = &createViewNode{}
 var _ planNode = &delayedNode{}
 var _ planNode = &deleteNode{}
-var _ planNode = &deleteSwapNode{}
 var _ planNode = &deleteRangeNode{}
 var _ planNode = &distinctNode{}
 var _ planNode = &dropDatabaseNode{}
@@ -260,11 +245,8 @@ var _ planNode = &truncateNode{}
 var _ planNode = &unaryNode{}
 var _ planNode = &unionNode{}
 var _ planNode = &updateNode{}
-var _ planNode = &updateSwapNode{}
 var _ planNode = &upsertNode{}
 var _ planNode = &valuesNode{}
-var _ planNode = &vectorMutationSearchNode{}
-var _ planNode = &vectorSearchNode{}
 var _ planNode = &virtualTableNode{}
 var _ planNode = &windowNode{}
 var _ planNode = &zeroNode{}
@@ -320,10 +302,7 @@ type planNodeSpooled interface {
 var _ planNodeSpooled = &spoolNode{}
 
 type flowInfo struct {
-	typ planComponentType
-	// diagram is only populated when instrumentationHelper.shouldSaveDiagrams()
-	// returns true. (Even in that case we've seen a sentry report #149987 where
-	// it was nil.)
+	typ     planComponentType
 	diagram execinfrapb.FlowDiagram
 	// explainVec and explainVecVerbose are only populated when collecting a
 	// statement bundle when the plan was vectorized.

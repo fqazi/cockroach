@@ -18,7 +18,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -255,11 +255,6 @@ type TestClusterInterface interface {
 	// cluster.
 	StorageLayer(idx int) StorageLayerInterface
 
-	// DefaultTenantDeploymentMode returns the deployment mode of the default
-	// server or tenant, which can be single-tenant (system-only),
-	// shared-process, or external-process.
-	DefaultTenantDeploymentMode() DeploymentMode
-
 	// SplitTable splits a range in the table, creates a replica for the right
 	// side of the split on TargetNodeIdx, and moves the lease for the right
 	// side of the split to TargetNodeIdx for each SplitPoint. This forces the
@@ -269,22 +264,11 @@ type TestClusterInterface interface {
 	// are indeed distributed as intended.
 	SplitTable(t TestFataler, desc catalog.TableDescriptor, sps []SplitPoint)
 
-	// GrantTenantCapabilities grants a capability to a tenant and waits until all
-	// servers have the in-memory cache reflects the change.
-	//
-	// Note: There is no need to call WaitForTenantCapabilities separately.
-	GrantTenantCapabilities(
-		context.Context,
-		TestFataler,
-		roachpb.TenantID,
-		map[tenantcapabilitiespb.ID]string,
-	)
-
 	// WaitForTenantCapabilities waits until all servers have the specified
 	// tenant capabilities for the specified tenant ID.
 	// Only boolean capabilities are currently supported as we wait for the
 	// specified capabilities to have a "true" value.
-	WaitForTenantCapabilities(TestFataler, roachpb.TenantID, map[tenantcapabilitiespb.ID]string)
+	WaitForTenantCapabilities(TestFataler, roachpb.TenantID, map[tenantcapabilities.ID]string)
 
 	// ToggleReplicateQueues activates or deactivates the replication queues on all
 	// the stores on all the nodes.

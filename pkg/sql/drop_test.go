@@ -127,7 +127,7 @@ INSERT INTO t.kv VALUES ('c', 'e'), ('a', 'c'), ('b', 'd');
 
 	tbDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, s.Codec(), "t", "kv")
 	var dbDesc catalog.DatabaseDescriptor
-	require.NoError(t, sqltestutils.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
+	require.NoError(t, sql.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
 		dbDesc, err = col.ByIDWithoutLeased(txn.KV()).Get().Database(ctx, tbDesc.GetParentID())
 		return err
 	}))
@@ -205,7 +205,7 @@ INSERT INTO t.kv VALUES ('c', 'e'), ('a', 'c'), ('b', 'd');
 	// Job still running, waiting for GC.
 	// TODO (lucy): Maybe this test API should use an offset starting
 	// from the most recent job instead.
-	if err := jobutils.VerifySystemJob(t, sqlRun, 0, jobspb.TypeNewSchemaChange, jobs.StateSucceeded, jobs.Record{
+	if err := jobutils.VerifySystemJob(t, sqlRun, 0, jobspb.TypeNewSchemaChange, jobs.StatusSucceeded, jobs.Record{
 		Username:      username.RootUserName(),
 		Description:   "DROP DATABASE t CASCADE",
 		DescriptorIDs: nil,
@@ -334,7 +334,7 @@ INSERT INTO t.kv2 VALUES ('c', 'd'), ('a', 'b'), ('e', 'a');
 	tbDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, s.Codec(), "t", "kv")
 	tb2Desc := desctestutils.TestingGetPublicTableDescriptor(kvDB, s.Codec(), "t", "kv2")
 	var dbDesc catalog.DatabaseDescriptor
-	require.NoError(t, sqltestutils.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
+	require.NoError(t, sql.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
 		dbDesc, err = col.ByIDWithoutLeased(txn.KV()).Get().Database(ctx, tbDesc.GetParentID())
 		return err
 	}))
@@ -368,7 +368,7 @@ INSERT INTO t.kv2 VALUES ('c', 'd'), ('a', 'b'), ('e', 'a');
 
 	sqlRun := sqlutils.MakeSQLRunner(sqlDB)
 	if err := jobutils.VerifySystemJob(t, sqlRun, 0,
-		jobspb.TypeNewSchemaChange, jobs.StateSucceeded, jobs.Record{
+		jobspb.TypeNewSchemaChange, jobs.StatusSucceeded, jobs.Record{
 			Username:    username.RootUserName(),
 			Description: "DROP DATABASE t CASCADE",
 		}); err != nil {
@@ -398,7 +398,7 @@ INSERT INTO t.kv2 VALUES ('c', 'd'), ('a', 'b'), ('e', 'a');
 	}
 
 	testutils.SucceedsSoon(t, func() error {
-		return jobutils.VerifySystemJob(t, sqlRun, 0, jobspb.TypeSchemaChangeGC, jobs.StateRunning, jobs.Record{
+		return jobutils.VerifySystemJob(t, sqlRun, 0, jobspb.TypeSchemaChangeGC, jobs.StatusRunning, jobs.Record{
 			Username:    username.NodeUserName(),
 			Description: "GC for DROP DATABASE t CASCADE",
 			DescriptorIDs: descpb.IDs{
@@ -426,7 +426,7 @@ INSERT INTO t.kv2 VALUES ('c', 'd'), ('a', 'b'), ('e', 'a');
 	tests.CheckKeyCountIncludingTombstoned(t, srv.StorageLayer(), table2Span, 0)
 
 	testutils.SucceedsSoon(t, func() error {
-		return jobutils.VerifySystemJob(t, sqlRun, 0, jobspb.TypeSchemaChangeGC, jobs.StateSucceeded, jobs.Record{
+		return jobutils.VerifySystemJob(t, sqlRun, 0, jobspb.TypeSchemaChangeGC, jobs.StatusSucceeded, jobs.Record{
 			Username:    username.NodeUserName(),
 			Description: "GC for DROP DATABASE t CASCADE",
 			DescriptorIDs: descpb.IDs{
@@ -495,7 +495,7 @@ func TestDropIndex(t *testing.T) {
 		t.Fatalf("table descriptor still contains index after index is dropped")
 	}
 	sqlRun := sqlutils.MakeSQLRunner(sqlDB)
-	if err := jobutils.VerifySystemJob(t, sqlRun, 1, jobspb.TypeNewSchemaChange, jobs.StateSucceeded, jobs.Record{
+	if err := jobutils.VerifySystemJob(t, sqlRun, 1, jobspb.TypeNewSchemaChange, jobs.StatusSucceeded, jobs.Record{
 		Username:    username.RootUserName(),
 		Description: `DROP INDEX t.public.kv@foo`,
 	}); err != nil {
@@ -503,7 +503,7 @@ func TestDropIndex(t *testing.T) {
 	}
 
 	testutils.SucceedsSoon(t, func() error {
-		if err := jobutils.VerifyRunningSystemJob(t, sqlRun, 1, jobspb.TypeSchemaChangeGC, sql.StatusWaitingForMVCCGC, jobs.Record{
+		if err := jobutils.VerifyRunningSystemJob(t, sqlRun, 1, jobspb.TypeSchemaChangeGC, sql.RunningStatusWaitingForMVCCGC, jobs.Record{
 			Username:    username.NodeUserName(),
 			Description: `GC for DROP INDEX t.public.kv@foo`,
 			DescriptorIDs: descpb.IDs{
@@ -527,7 +527,7 @@ func TestDropIndex(t *testing.T) {
 	newIdxSpan := tableDesc.IndexSpan(codec, newIdx.GetID())
 
 	testutils.SucceedsSoon(t, func() error {
-		if err := jobutils.VerifyRunningSystemJob(t, sqlRun, 2, jobspb.TypeSchemaChangeGC, sql.StatusWaitingForMVCCGC, jobs.Record{
+		if err := jobutils.VerifyRunningSystemJob(t, sqlRun, 2, jobspb.TypeSchemaChangeGC, sql.RunningStatusWaitingForMVCCGC, jobs.Record{
 			Username:    username.NodeUserName(),
 			Description: `GC for CREATE INDEX foo ON t.public.kv (v)`,
 			DescriptorIDs: descpb.IDs{
@@ -535,7 +535,7 @@ func TestDropIndex(t *testing.T) {
 			},
 		}); err != nil {
 			// If the job is not running, check if it already succeeded.
-			if secondErr := jobutils.VerifySystemJob(t, sqlRun, 2, jobspb.TypeSchemaChangeGC, jobs.StateSucceeded, jobs.Record{
+			if secondErr := jobutils.VerifySystemJob(t, sqlRun, 2, jobspb.TypeSchemaChangeGC, jobs.StatusSucceeded, jobs.Record{
 				Username:    username.NodeUserName(),
 				Description: `GC for CREATE INDEX foo ON t.public.kv (v)`,
 				DescriptorIDs: descpb.IDs{
@@ -698,7 +698,7 @@ func TestDropTable(t *testing.T) {
 	// Job still running, waiting for GC.
 	sqlRun := sqlutils.MakeSQLRunner(sqlDB)
 	if err := jobutils.VerifySystemJob(t, sqlRun, 1,
-		jobspb.TypeNewSchemaChange, jobs.StateSucceeded, jobs.Record{
+		jobspb.TypeNewSchemaChange, jobs.StatusSucceeded, jobs.Record{
 			Username:      username.RootUserName(),
 			Description:   `DROP TABLE t.public.kv`,
 			DescriptorIDs: nil,
@@ -813,7 +813,7 @@ func TestDropTableDeleteData(t *testing.T) {
 	sqlRun := sqlutils.MakeSQLRunner(sqlDB)
 	for i := 0; i < numTables; i++ {
 		if err := jobutils.VerifySystemJob(t, sqlRun, numTables+i,
-			jobspb.TypeNewSchemaChange, jobs.StateSucceeded, jobs.Record{
+			jobspb.TypeNewSchemaChange, jobs.StatusSucceeded, jobs.Record{
 				Username:    username.RootUserName(),
 				Description: fmt.Sprintf(`DROP TABLE t.public.%s`, descs[i].GetName()),
 			}); err != nil {
@@ -839,7 +839,7 @@ func TestDropTableDeleteData(t *testing.T) {
 
 		// Ensure that the job is marked as succeeded.
 		if err := jobutils.VerifySystemJob(t, sqlRun, numTables+i,
-			jobspb.TypeNewSchemaChange, jobs.StateSucceeded, jobs.Record{
+			jobspb.TypeNewSchemaChange, jobs.StatusSucceeded, jobs.Record{
 				Username:    username.RootUserName(),
 				Description: fmt.Sprintf(`DROP TABLE t.public.%s`, descs[i].GetName()),
 			}); err != nil {
@@ -849,7 +849,7 @@ func TestDropTableDeleteData(t *testing.T) {
 		// Ensure that the gc job is marked as succeeded.
 		testutils.SucceedsSoon(t, func() error {
 			return jobutils.VerifySystemJob(t, sqlRun, numTables+i,
-				jobspb.TypeSchemaChangeGC, jobs.StateSucceeded, jobs.Record{
+				jobspb.TypeSchemaChangeGC, jobs.StatusSucceeded, jobs.Record{
 					Username:    username.NodeUserName(),
 					Description: fmt.Sprintf(`GC for DROP TABLE t.public.%s`, descs[i].GetName()),
 					DescriptorIDs: descpb.IDs{
@@ -933,7 +933,7 @@ func TestDropTableWhileUpgradingFormat(t *testing.T) {
 
 	// Simulate a migration upgrading the table descriptor's format version after
 	// the table has been dropped but before the truncation has occurred.
-	if err := sqltestutils.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
+	if err := sql.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
 		tbl, err := col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, tableDesc.ID)
 		if err != nil {
 			return err
@@ -1095,10 +1095,10 @@ CREATE TABLE test.t(a INT PRIMARY KEY);
 	}
 }
 
-// TestDropIndexHandlesRetryableErrors is a regression test against #48474.
-// The bug was that retryable errors, which are generally possible, were being
+// TestDropIndexHandlesRetriableErrors is a regression test against #48474.
+// The bug was that retriable errors, which are generally possible, were being
 // treated as assertion failures.
-func TestDropIndexHandlesRetryableErrors(t *testing.T) {
+func TestDropIndexHandlesRetriableErrors(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
@@ -1134,7 +1134,6 @@ func TestDropIndexHandlesRetryableErrors(t *testing.T) {
 	// after planning has concluded.
 
 	tdb := sqlutils.MakeSQLRunner(conn)
-	tdb.Exec(t, "SET create_table_with_schema_locked=false")
 	tdb.Exec(t, "CREATE TABLE foo (i INT PRIMARY KEY, j INT, INDEX j_idx (j))")
 
 	var tableID uint32
@@ -1205,7 +1204,7 @@ WHERE
 
 	// Now set up a filter to detect when the DROP INDEX execution will begin and
 	// inject an error forcing a refresh above the conflicting write which will
-	// fail. We'll want to ensure that we get a retryable error. Use the below
+	// fail. We'll want to ensure that we get a retriable error. Use the below
 	// pattern to detect when the user transaction has finished planning and is
 	// now executing: we don't want to inject the error during planning.
 	rf.setFilter(func(ctx context.Context, request *kvpb.BatchRequest) *kvpb.Error {
@@ -1283,7 +1282,7 @@ func TestDropIndexOnHashShardedIndexWithStoredShardColumn(t *testing.T) {
 	var tableDesc catalog.TableDescriptor
 	query = `SELECT id FROM system.namespace WHERE name = 'tbl'`
 	tdb.QueryRow(t, query).Scan(&tableID)
-	require.NoError(t, sqltestutils.TestingDescsTxn(ctx, s,
+	require.NoError(t, sql.TestingDescsTxn(ctx, s,
 		func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
 			tableDesc, err = col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, tableID)
 			return err
@@ -1301,7 +1300,7 @@ func TestDropIndexOnHashShardedIndexWithStoredShardColumn(t *testing.T) {
 	tdb.Exec(t, query)
 
 	// Assert that the index is dropped but the shard column remains after dropping the index.
-	require.NoError(t, sqltestutils.TestingDescsTxn(ctx, s,
+	require.NoError(t, sql.TestingDescsTxn(ctx, s,
 		func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
 			tableDesc, err = col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, tableID)
 			return err

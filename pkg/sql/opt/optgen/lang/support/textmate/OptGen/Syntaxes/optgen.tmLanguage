@@ -124,7 +124,6 @@
                         AggregationsItem |
                         Filters |
                         FiltersItem |
-                        Barrier |
                         Zip |
                         ZipItem |
                         ZipItemPrivate |
@@ -259,7 +258,7 @@
                         Sort |
                         TopK |
                         VectorSearch |
-                        VectorMutationSearch |
+                        VectorPartitionSearch |
                         VectorDistance |
                         VectorCosVectorDistance |
                         VectorNegInnerProduct |

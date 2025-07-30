@@ -18,10 +18,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/keyvisualizer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
-	"github.com/cockroachdb/cockroach/pkg/upgrade/upgradebase"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/workload/bank"
@@ -161,6 +161,12 @@ func StartBackupRestoreTestCluster(
 		sqlDB.Exec(t, `SET CLUSTER SETTING kv.bulk_ingest.pk_buffer_size = '16MiB'`)
 		sqlDB.Exec(t, `SET CLUSTER SETTING kv.bulk_ingest.index_buffer_size = '16MiB'`)
 
+		// Set the max buffer size to something low to prevent
+		// backup/restore tests from hitting OOM errors. If any test
+		// cares about this setting in particular, they will override
+		// it inline after setting up the test cluster.
+		sqlDB.Exec(t, `SET CLUSTER SETTING bulkio.backup.merge_file_buffer_size = '16MiB'`)
+
 		sqlDB.Exec(t, `CREATE DATABASE data`)
 		l := workloadsql.InsertsDataLoader{BatchSize: 1000, Concurrency: 4}
 		if _, err := workloadsql.Setup(ctx, sqlDB.DB.(*gosql.DB), bankData, l); err != nil {
@@ -216,8 +222,8 @@ func setTestClusterDefaults(params *base.TestClusterArgs, dataDir string, useDat
 			SkipZoneConfigBootstrap: true,
 		}
 	}
-	if params.ServerArgs.Knobs.UpgradeManager == nil {
-		params.ServerArgs.Knobs.UpgradeManager = &upgradebase.TestingKnobs{
+	if params.ServerArgs.Knobs.SQLStatsKnobs == nil {
+		params.ServerArgs.Knobs.SQLStatsKnobs = &sqlstats.TestingKnobs{
 			SkipZoneConfigBootstrap: true,
 		}
 	}

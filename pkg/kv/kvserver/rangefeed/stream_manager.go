@@ -58,7 +58,7 @@ type StreamManager struct {
 
 	// metrics is used to record rangefeed metrics for the node. It tracks number
 	// of active rangefeeds.
-	metrics *StreamManagerMetrics
+	metrics RangefeedMetricsRecorder
 }
 
 // sender is an interface that is implemented by BufferedSender and
@@ -80,7 +80,7 @@ type sender interface {
 	cleanup(ctx context.Context)
 }
 
-func NewStreamManager(sender sender, metrics *StreamManagerMetrics) *StreamManager {
+func NewStreamManager(sender sender, metrics RangefeedMetricsRecorder) *StreamManager {
 	sm := &StreamManager{
 		sender:  sender,
 		metrics: metrics,
@@ -112,7 +112,7 @@ func (sm *StreamManager) OnError(streamID int64) {
 	defer sm.streams.Unlock()
 	if _, ok := sm.streams.m[streamID]; ok {
 		delete(sm.streams.m, streamID)
-		sm.metrics.ActiveMuxRangeFeed.Dec(1)
+		sm.metrics.UpdateMetricsOnRangefeedDisconnect()
 	}
 }
 
@@ -149,8 +149,7 @@ func (sm *StreamManager) AddStream(streamID int64, d Disconnector) {
 		log.Fatalf(context.Background(), "stream %d already exists", streamID)
 	}
 	sm.streams.m[streamID] = d
-	sm.metrics.ActiveMuxRangeFeed.Inc(1)
-	sm.metrics.NumMuxRangeFeed.Inc(1)
+	sm.metrics.UpdateMetricsOnRangefeedConnect()
 }
 
 // Start launches sender.run in the background if no error is returned.
@@ -191,7 +190,7 @@ func (sm *StreamManager) Stop(ctx context.Context) {
 	defer sm.streams.Unlock()
 	rangefeedClosedErr := kvpb.NewError(
 		kvpb.NewRangeFeedRetryError(kvpb.RangeFeedRetryError_REASON_RANGEFEED_CLOSED))
-	sm.metrics.ActiveMuxRangeFeed.Dec(int64(len(sm.streams.m)))
+	sm.metrics.UpdateMetricsOnRangefeedDisconnectBy(int64(len(sm.streams.m)))
 	for _, disconnector := range sm.streams.m {
 		// Disconnect all streams with a retry error. No rangefeed errors will be
 		// sent to the client after shutdown, but the gRPC stream will still

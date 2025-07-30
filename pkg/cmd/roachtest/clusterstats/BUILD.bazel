@@ -17,11 +17,11 @@ go_library(
         "//pkg/cmd/roachprod/grafana",  #keep
         "//pkg/cmd/roachtest/cluster",
         "//pkg/cmd/roachtest/option",
+        "//pkg/cmd/roachtest/registry",
         "//pkg/cmd/roachtest/test",
         # Required for generated mocks
         "//pkg/roachprod",  #keep
         # Required for generated mocks
-        "//pkg/roachprod/failureinjection/failures",  #keep
         "//pkg/roachprod/install",  #keep
         "//pkg/roachprod/logger",
         "//pkg/roachprod/prometheus",
@@ -29,13 +29,13 @@ go_library(
         "//pkg/roachprod/vm",  #keep
         "//pkg/util/search",
         "//pkg/util/timeutil",
-        "@com_github_cockroachdb_errors//:errors",
         # Required for generated mocks
-        "@com_github_cockroachdb_version//:version",  # keep
+        "//pkg/util/version",  #keep
+        "@com_github_cockroachdb_errors//:errors",
         "@com_github_prometheus_client_golang//api",
         "@com_github_prometheus_client_golang//api/prometheus/v1:prometheus",
         "@com_github_prometheus_common//model",
-        "//pkg/cmd/roachtest/roachtestutil",
+        "@org_golang_x_exp//maps",
     ],
 )
 
@@ -64,7 +64,6 @@ go_test(
         "@com_github_prometheus_client_golang//api/prometheus/v1:prometheus",
         "@com_github_prometheus_common//model",
         "@com_github_stretchr_testify//require",
-        "//pkg/cmd/roachtest/roachtestutil",
     ],
 )
 

@@ -189,8 +189,6 @@ func parseChoice[T any](s string) (any, error) {
 		return strconv.ParseFloat(s, 32)
 	case float64:
 		return strconv.ParseFloat(s, 64)
-	case bool:
-		return strconv.ParseBool(s)
 	default:
 		panic(fmt.Sprintf("unable to parse %T", zero))
 	}
@@ -231,8 +229,6 @@ var (
 		r *rand.Rand
 		syncutil.Mutex
 	}
-	// Exposed for testing.
-	rngSeed int64
 )
 
 // Returns true iff the current process is eligible to enable metamorphic
@@ -271,13 +267,8 @@ func valueFromOverride[T any](name string, parser func(string) (T, error)) (T, b
 func init() {
 	if metamorphicEligible() {
 		if !disableMetamorphicTesting {
-			rng.r, rngSeed = randutil.NewPseudoRandWithGlobalSeed()
+			rng.r, _ = randutil.NewTestRand()
 			metamorphicutil.IsMetamorphicBuild = rng.r.Float64() < IsMetamorphicBuildProbability
-			if metamorphicutil.IsMetamorphicBuild {
-				logf("metamorphic: use COCKROACH_RANDOM_SEED=%d for reproduction\n", rngSeed)
-			} else {
-				logf("IsMetamorphicBuild==false\n")
-			}
 		}
 
 		if overrideList, ok := envutil.EnvString(MetamorphicOverridesEnvVar, 0); ok {

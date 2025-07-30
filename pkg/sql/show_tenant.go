@@ -12,7 +12,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
@@ -125,8 +124,8 @@ func (n *showTenantNode) getTenantValues(
 
 	// Add capabilities if requested.
 	if n.withCapabilities {
-		showTenantNodeCapabilities := make([]showTenantNodeCapability, 0, len(tenantcapabilitiespb.IDs))
-		for _, id := range tenantcapabilitiespb.IDs {
+		showTenantNodeCapabilities := make([]showTenantNodeCapability, 0, len(tenantcapabilities.IDs))
+		for _, id := range tenantcapabilities.IDs {
 			value := tenantcapabilities.MustGetValueByID(&tenantInfo.Capabilities, id)
 			showTenantNodeCapabilities = append(showTenantNodeCapabilities, showTenantNodeCapability{
 				name:  id.String(),

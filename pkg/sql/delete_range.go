@@ -121,7 +121,7 @@ func (d *deleteRangeNode) startExec(params runParams) error {
 			d.deleteSpans(params, b, spans)
 			log.VEventf(ctx, 2, "fast delete: processing %d spans", len(spans))
 			if err := params.p.txn.Run(ctx, b); err != nil {
-				return row.ConvertBatchError(ctx, d.desc, b, false /* alwaysConvertCondFailed */)
+				return row.ConvertBatchError(ctx, d.desc, b)
 			}
 
 			spans = spans[:0]
@@ -144,7 +144,7 @@ func (d *deleteRangeNode) startExec(params runParams) error {
 		d.deleteSpans(params, b, spans)
 		log.VEventf(ctx, 2, "fast delete: processing %d spans and committing", len(spans))
 		if err := params.p.txn.CommitInBatch(ctx, b); err != nil {
-			return row.ConvertBatchError(ctx, d.desc, b, false /* alwaysConvertCondFailed */)
+			return row.ConvertBatchError(ctx, d.desc, b)
 		}
 		if resumeSpans, err := d.processResults(b.Results, nil /* resumeSpans */); err != nil {
 			return err
@@ -168,15 +168,9 @@ func (d *deleteRangeNode) deleteSpans(params runParams, b *kv.Batch, spans roach
 	for _, span := range spans {
 		if span.EndKey == nil {
 			if traceKV {
-				log.VEventf(ctx, 2, "Del (locking) %s", span.Key)
+				log.VEventf(ctx, 2, "Del %s", span.Key)
 			}
-			// We use the locking Del here unconditionally since:
-			// - if buffered writes are enabled, since we haven't performed the
-			// read, we need to tell the KV layer to acquire the lock
-			// explicitly.
-			// - if buffered writes are disabled, then the KV layer will write
-			// an intent which acts as a lock.
-			b.DelMustAcquireExclusiveLock(span.Key)
+			b.Del(span.Key)
 		} else {
 			if traceKV {
 				log.VEventf(ctx, 2, "DelRange %s - %s", span.Key, span.EndKey)

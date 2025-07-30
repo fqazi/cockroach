@@ -659,7 +659,6 @@ func (h *uniqueCheckHelper) buildTableScan() (outScope *scope, ordinals []int) {
 	if h.mb.b.evalCtx.SessionData().AvoidFullTableScansInMutations {
 		indexFlags.AvoidFullScan = true
 	}
-	// The scan is exempt from RLS to maintain data integrity.
 	return h.mb.b.buildScan(
 		tabMeta,
 		ordinals,
@@ -667,7 +666,6 @@ func (h *uniqueCheckHelper) buildTableScan() (outScope *scope, ordinals []int) {
 		locking,
 		h.mb.b.allocScope(),
 		true, /* disableNotVisibleIndex */
-		cat.PolicyScopeExempt,
 	), ordinals
 }
 

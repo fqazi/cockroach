@@ -166,7 +166,7 @@ type RaftInterface interface {
 	//
 	// If it returns true, all the entries in the slice are in the message, and
 	// Next is advanced to be equal to end.
-	SendMsgAppRaftMuLocked(replicaID roachpb.ReplicaID, slice raft.LeadSlice) (raftpb.Message, bool)
+	SendMsgAppRaftMuLocked(replicaID roachpb.ReplicaID, slice raft.LogSlice) (raftpb.Message, bool)
 }
 
 // RaftMsgAppMode specifies how Raft (at the leader) generates MsgApps. In
@@ -432,19 +432,18 @@ type MsgAppSender interface {
 func RaftEventFromMsgStorageAppendAndMsgApps(
 	mode RaftMsgAppMode,
 	replicaID roachpb.ReplicaID,
-	appendMsg raft.StorageAppend,
+	appendMsg raftpb.Message,
 	outboundMsgs []raftpb.Message,
 	logSnapshot raft.LogSnapshot,
 	msgAppScratch map[roachpb.ReplicaID][]raftpb.Message,
 	replicaStateInfoMap map[roachpb.ReplicaID]ReplicaStateInfo,
 ) RaftEvent {
 	event := RaftEvent{
-		MsgAppMode:        mode,
-		Term:              appendMsg.LeadTerm,
-		Snap:              appendMsg.Snapshot,
-		Entries:           appendMsg.Entries,
-		LogSnapshot:       logSnapshot,
-		ReplicasStateInfo: replicaStateInfoMap,
+		MsgAppMode: mode, LogSnapshot: logSnapshot, ReplicasStateInfo: replicaStateInfoMap}
+	if appendMsg.Type == raftpb.MsgStorageAppend {
+		event.Term = appendMsg.LogTerm
+		event.Snap = appendMsg.Snapshot
+		event.Entries = appendMsg.Entries
 	}
 	if len(outboundMsgs) == 0 || mode == MsgAppPull {
 		// MsgAppPull mode can have MsgApps with entries under some cases: (a)
@@ -2631,7 +2630,7 @@ func (rs *replicaState) scheduledRaftMuLocked(
 	// replication AC in pull mode, and a send-queue forms, and these entries
 	// are > 4KiB, we will empty the send-queue one entry at a time.
 	// Specifically, we will only deduct 4KiB of tokens, since the approx size
-	// of the send-queue will be zero. Then we will call LeadSlice with
+	// of the send-queue will be zero. Then we will call LogSlice with
 	// maxSize=4KiB, which will return one entry. And then we will repeat. If
 	// this is a real problem, we can fix this by keeping track of not just the
 	// preciseSizeSum of tokens needed, but also the size sum of these entries.
@@ -2649,7 +2648,7 @@ func (rs *replicaState) scheduledRaftMuLocked(
 	// and elastic work, and MsgAppPull mode, in which case the total size of
 	// entries not subject to flow control will be tiny. We of course return the
 	// unused tokens for entries not subject to flow control.
-	slice, err := logSnapshot.LeadSlice(
+	slice, err := logSnapshot.LogSlice(
 		rss.mu.sendQueue.indexToSend-1, rss.mu.sendQueue.nextRaftIndex-1, uint64(bytesToSend))
 	var msg raftpb.Message
 	if err == nil {
@@ -2905,7 +2904,7 @@ func (rss *replicaSendStream) handleReadyEntriesRaftMuAndStreamLocked(
 	if n := len(event.sendingEntries); n > 0 && event.mode == MsgAppPull {
 		// NB: this will not do IO since everything here is in the unstable log
 		// (see raft.LogSnapshot.unstable).
-		slice, err := event.logSnapshot.LeadSlice(
+		slice, err := event.logSnapshot.LogSlice(
 			event.sendingEntries[0].id.index-1, event.sendingEntries[n-1].id.index, infinityEntryIndex)
 		if err != nil {
 			return false, err
@@ -2936,7 +2935,7 @@ func (rss *replicaSendStream) handleReadyEntriesRaftMuAndStreamLocked(
 	return transitionedSendQState, nil
 }
 
-func (rss *replicaSendStream) updateInflightRaftMuAndStreamLocked(ls raft.LeadSlice) {
+func (rss *replicaSendStream) updateInflightRaftMuAndStreamLocked(ls raft.LogSlice) {
 	rss.parent.parent.opts.ReplicaMutexAsserter.RaftMuAssertHeld()
 	rss.mu.AssertHeld()
 	entries := ls.Entries()

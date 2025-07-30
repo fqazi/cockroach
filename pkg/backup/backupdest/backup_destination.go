@@ -15,13 +15,11 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/backup/backupbase"
-	"github.com/cockroachdb/cockroach/pkg/backup/backupencryption"
 	"github.com/cockroachdb/cockroach/pkg/backup/backupinfo"
 	"github.com/cockroachdb/cockroach/pkg/backup/backuppb"
 	"github.com/cockroachdb/cockroach/pkg/backup/backuputils"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
 	"github.com/cockroachdb/cockroach/pkg/cloud/cloudpb"
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
@@ -109,26 +107,13 @@ type ResolvedDestination struct {
 // In addition, in this case that this backup is an incremental backup (either
 // explicitly, or due to the auto-append feature), it will resolve the
 // encryption options based on the base backup, as well as find all previous
-// backup manifests in the backup chain. Additionally, if a startTime is
-// provided, it will be used to determine its destination. If one is not
-// provided, we assume that the incremental is chained off of the most recent
-// backup in the chain and that backup's manifest will be fetched to determine
-// the start time.
-//
-// The encryptions passed to the encryption options should include the raw
-// encryption options, not the resolved key.
-//
-// TODO (kev-cao): Once we have completed the backup directory index work, we
-// can remove the need for encryption and KMS.
+// backup manifests in the backup chain.
 func ResolveDest(
 	ctx context.Context,
 	user username.SQLUsername,
 	dest jobspb.BackupDetails_Destination,
-	startTime hlc.Timestamp,
 	endTime hlc.Timestamp,
 	execCfg *sql.ExecutorConfig,
-	encryption *jobspb.BackupEncryptionOptions,
-	kmsEnv cloud.KMSEnv,
 ) (ResolvedDestination, error) {
 	makeCloudStorage := execCfg.DistSQLSrv.ExternalStorageFromURI
 
@@ -198,6 +183,7 @@ func ResolveDest(
 			PrevBackupURIs:   nil,
 		}, nil
 	}
+
 	// The defaultStore contains a full backup; consequently, we're conducting an incremental backup.
 	fullyResolvedIncrementalsLocation, err := ResolveIncrementalsBackupLocation(
 		ctx,
@@ -239,39 +225,6 @@ func ResolveDest(
 
 	// Within the chosenSuffix dir, differentiate incremental backups with partName.
 	partName := endTime.GoTime().Format(backupbase.DateBasedIncFolderName)
-	if execCfg.Settings.Version.IsActive(ctx, clusterversion.V25_2) {
-		if startTime.IsEmpty() {
-			baseEncryptionOptions, err := backupencryption.GetEncryptionFromBase(
-				ctx, user, execCfg.DistSQLSrv.ExternalStorageFromURI, prevBackupURIs[0],
-				encryption, kmsEnv,
-			)
-			if err != nil {
-				return ResolvedDestination{}, err
-			}
-
-			// TODO (kev-cao): Once we have completed the backup directory index work, we
-			// can remove the need to read an entire backup manifest just to fetch the
-			// start time. We can instead read the metadata protobuf.
-			mem := execCfg.RootMemoryMonitor.MakeBoundAccount()
-			defer mem.Close(ctx)
-			precedingBackupManifest, size, err := backupinfo.ReadBackupManifestFromURI(
-				ctx, &mem, prevBackupURIs[len(prevBackupURIs)-1], user,
-				execCfg.DistSQLSrv.ExternalStorageFromURI, baseEncryptionOptions, kmsEnv,
-			)
-			if err != nil {
-				return ResolvedDestination{}, err
-			}
-			if err := mem.Grow(ctx, size); err != nil {
-				return ResolvedDestination{}, err
-			}
-			defer mem.Shrink(ctx, size)
-			startTime = precedingBackupManifest.EndTime
-			if startTime.IsEmpty() {
-				return ResolvedDestination{}, errors.Errorf("empty end time in prior backup manifest")
-			}
-		}
-		partName = partName + "-" + startTime.GoTime().Format(backupbase.DateBasedIncFolderNameSuffix)
-	}
 	defaultIncrementalsURI, urisByLocalityKV, err := GetURIsByLocalityKV(fullyResolvedIncrementalsLocation, partName)
 	if err != nil {
 		return ResolvedDestination{}, err
@@ -534,9 +487,7 @@ func ListFullBackupsInCollection(
 // that are then expanded into the result layers returned, similar to if those
 // layers had been specified in `from` explicitly. If `includeSkipped` is true,
 // layers that do not actually contribute to the path from the base to the end
-// timestamp are included in the result, otherwise they are elided. If
-// `includedCompacted` is true, then backups created from compaction will be
-// included in the result, otherwise they are filtered out.
+// timestamp are included in the result, otherwise they are elided.
 func ResolveBackupManifests(
 	ctx context.Context,
 	mem *mon.BoundAccount,
@@ -550,7 +501,6 @@ func ResolveBackupManifests(
 	kmsEnv cloud.KMSEnv,
 	user username.SQLUsername,
 	includeSkipped bool,
-	includeCompacted bool,
 ) (
 	defaultURIs []string,
 	// mainBackupManifests contains the manifest located at each defaultURI in the backup chain.
@@ -659,9 +609,9 @@ func ResolveBackupManifests(
 
 	totalMemSize := ownedMemSize
 	ownedMemSize = 0
+
 	validatedDefaultURIs, validatedMainBackupManifests, validatedLocalityInfo, err := backupinfo.ValidateEndTimeAndTruncate(
-		defaultURIs, mainBackupManifests, localityInfo, endTime, includeSkipped, includeCompacted,
-	)
+		defaultURIs, mainBackupManifests, localityInfo, endTime, includeSkipped)
 
 	if err != nil {
 		return nil, nil, nil, 0, err

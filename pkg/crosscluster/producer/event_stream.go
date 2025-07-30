@@ -330,9 +330,10 @@ func (s *eventStream) sendCheckpoint(ctx context.Context, frontier rangefeed.Vis
 	}
 
 	spans := make([]jobspb.ResolvedSpan, 0, s.lastCheckpointLen)
-	for sp, ts := range frontier.Entries() {
+	frontier.Entries(func(sp roachpb.Span, ts hlc.Timestamp) (done span.OpResult) {
 		spans = append(spans, jobspb.ResolvedSpan{Span: sp, Timestamp: ts})
-	}
+		return span.ContinueMatch
+	})
 	s.lastCheckpointLen = len(spans)
 
 	s.seqNum++
@@ -366,26 +367,14 @@ func (s *eventStream) maybeFlushBatch(ctx context.Context) error {
 	return nil
 }
 
-var debugSettingDropData = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"physical_replication.producer.unsafe_debug.discard_all_data.enabled",
-	"discard all row data during cluster replication (for experimental debugging purposes only)",
-	false,
-	settings.WithUnsafe,
-)
-
 func (s *eventStream) flushBatch(ctx context.Context, reason streampb.FlushReason) error {
 	if s.seb.size == 0 {
 		return nil
 	}
-	defer s.seb.reset()
-
-	if debugSettingDropData.Get(s.execCfg.SV()) {
-		return nil
-	}
-
 	s.seqNum++
 	s.debug.Flushed(int64(s.seb.size), reason, s.seqNum)
+
+	defer s.seb.reset()
 
 	return s.sendFlush(ctx, &streampb.StreamEvent{StreamSeq: s.seqNum, Batch: &s.seb.batch})
 }
@@ -460,8 +449,8 @@ func (s *eventStream) validateProducerJobAndSpec(ctx context.Context) (roachpb.T
 	if sp.StreamReplication == nil {
 		return roachpb.TenantID{}, errors.AssertionFailedf("unexpected nil StreamReplication in producer job %d payload", producerJobID)
 	}
-	if job.State() != jobs.StateRunning {
-		return roachpb.TenantID{}, jobIsNotRunningError(producerJobID, job.State(), "stream events")
+	if job.Status() != jobs.StatusRunning {
+		return roachpb.TenantID{}, jobIsNotRunningError(producerJobID, job.Status(), "stream events")
 	}
 
 	// Validate that the requested spans are a subset of the

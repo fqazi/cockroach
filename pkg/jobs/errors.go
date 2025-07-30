@@ -74,27 +74,27 @@ const PauseRequestExplained = "pausing due to error; use RESUME JOB to try to pr
 // knows or finds out it no longer has a job lease.
 var errJobLeaseNotHeld = errors.New("job lease not held")
 
-// InvalidStateError is the error returned when the desired operation is
-// invalid given the job's current state.
-type InvalidStateError struct {
-	id    jobspb.JobID
-	state State
-	op    string
-	err   string
+// InvalidStatusError is the error returned when the desired operation is
+// invalid given the job's current status.
+type InvalidStatusError struct {
+	id     jobspb.JobID
+	status Status
+	op     string
+	err    string
 }
 
-func (e *InvalidStateError) Error() string {
+func (e *InvalidStatusError) Error() string {
 	if e.err != "" {
-		return fmt.Sprintf("cannot %s %s job (id %d, err: %q)", e.op, e.state, e.id, e.err)
+		return fmt.Sprintf("cannot %s %s job (id %d, err: %q)", e.op, e.status, e.id, e.err)
 	}
-	return fmt.Sprintf("cannot %s %s job (id %d)", e.op, e.state, e.id)
+	return fmt.Sprintf("cannot %s %s job (id %d)", e.op, e.status, e.id)
 }
 
-// SimplifyInvalidStateError unwraps an *InvalidStateError into an error
+// SimplifyInvalidStatusError unwraps an *InvalidStatusError into an error
 // message suitable for users. Other errors are returned as passed.
-func SimplifyInvalidStateError(err error) error {
-	if ierr := (*InvalidStateError)(nil); errors.As(err, &ierr) {
-		return errors.Errorf("job %s", ierr.state)
+func SimplifyInvalidStatusError(err error) error {
+	if ierr := (*InvalidStatusError)(nil); errors.As(err, &ierr) {
+		return errors.Errorf("job %s", ierr.status)
 	}
 	return err
 }
@@ -105,16 +105,16 @@ func SimplifyInvalidStateError(err error) error {
 type retriableExecutionError struct {
 	instanceID base.SQLInstanceID
 	start, end time.Time
-	state      State
+	status     Status
 	cause      error
 }
 
 func newRetriableExecutionError(
-	instanceID base.SQLInstanceID, state State, end time.Time, cause error,
+	instanceID base.SQLInstanceID, status Status, end time.Time, cause error,
 ) *retriableExecutionError {
 	return &retriableExecutionError{
 		instanceID: instanceID,
-		state:      state,
+		status:     status,
 		end:        end,
 		cause:      cause,
 	}
@@ -123,13 +123,13 @@ func newRetriableExecutionError(
 // Error makes retriableExecutionError and error.
 func (e *retriableExecutionError) Error() string {
 	return formatRetriableExecutionFailure(
-		e.instanceID, e.state, e.start, e.end, e.cause,
+		e.instanceID, e.status, e.start, e.end, e.cause,
 	)
 
 }
 
 func formatRetriableExecutionFailure(
-	instanceID base.SQLInstanceID, state State, start, end time.Time, cause error,
+	instanceID base.SQLInstanceID, status Status, start, end time.Time, cause error,
 ) string {
 	mustTimestamp := func(ts time.Time) *tree.DTimestamp {
 		ret, _ := tree.MakeDTimestamp(ts, time.Microsecond)
@@ -137,7 +137,7 @@ func formatRetriableExecutionFailure(
 	}
 	return fmt.Sprintf(
 		"%s execution from %v to %v on %d failed: %v",
-		state,
+		status,
 		mustTimestamp(start),
 		mustTimestamp(end),
 		instanceID,

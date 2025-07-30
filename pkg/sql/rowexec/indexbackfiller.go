@@ -26,7 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -84,9 +83,8 @@ func newIndexBackfiller(
 	processorID int32,
 	spec execinfrapb.BackfillerSpec,
 ) (*indexBackfiller, error) {
-	indexBackfillerMon := execinfra.NewMonitor(
-		ctx, flowCtx.Cfg.BackfillerMonitor, mon.MakeName("index-backfill-mon"),
-	)
+	indexBackfillerMon := execinfra.NewMonitor(ctx, flowCtx.Cfg.BackfillerMonitor,
+		"index-backfill-mon")
 	ib := &indexBackfiller{
 		desc:        flowCtx.TableDescriptor(ctx, &spec.Table),
 		spec:        spec,
@@ -95,9 +93,8 @@ func newIndexBackfiller(
 		filter:      backfill.IndexMutationFilter,
 	}
 
-	if err := ib.IndexBackfiller.InitForDistributedUse(
-		ctx, flowCtx, ib.desc, ib.spec.IndexesToBackfill, ib.spec.SourceIndexID, indexBackfillerMon,
-	); err != nil {
+	if err := ib.IndexBackfiller.InitForDistributedUse(ctx, flowCtx, ib.desc,
+		ib.spec.IndexesToBackfill, indexBackfillerMon); err != nil {
 		return nil, err
 	}
 
@@ -183,73 +180,6 @@ func (ib *indexBackfiller) constructIndexEntries(
 	return nil
 }
 
-func (ib *indexBackfiller) maybeReencodeAndWriteVectorIndexEntry(
-	ctx context.Context, tmpEntry *rowenc.IndexEntry, indexEntry *rowenc.IndexEntry,
-) (bool, error) {
-	indexID, _, err := rowenc.DecodeIndexKeyPrefix(ib.flowCtx.EvalCtx.Codec, ib.desc.GetID(), indexEntry.Key)
-	if err != nil {
-		return false, err
-	}
-
-	vih, ok := ib.VectorIndexes[indexID]
-	if !ok {
-		return false, nil
-	}
-
-	// Initialize the tmpEntry. This will store the input entry that we are encoding
-	// so that we can overwrite the indexEntry we were given with the output
-	// encoding. This allows us to preserve the initial template indexEntry across
-	// transaction retries.
-	if tmpEntry.Key == nil {
-		tmpEntry.Key = make(roachpb.Key, len(indexEntry.Key))
-		tmpEntry.Value.RawBytes = make([]byte, len(indexEntry.Value.RawBytes))
-	}
-	tmpEntry.Key = append(tmpEntry.Key[:0], indexEntry.Key...)
-	tmpEntry.Value.RawBytes = append(tmpEntry.Value.RawBytes[:0], indexEntry.Value.RawBytes...)
-	tmpEntry.Family = indexEntry.Family
-
-	firstAttempt := true
-	err = ib.flowCtx.Cfg.DB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		// If the first attempt failed, we need to provide a new buffer to KV for
-		// subsequent attempts because KV might still be using the previous buffer.
-		var entryBuffer *rowenc.IndexEntry
-		if firstAttempt {
-			entryBuffer = indexEntry
-			firstAttempt = false
-		} else {
-			entryBuffer = &rowenc.IndexEntry{
-				Key: make(roachpb.Key, len(tmpEntry.Key)),
-				Value: roachpb.Value{
-					RawBytes: make([]byte, len(tmpEntry.Value.RawBytes)),
-				},
-				Family: tmpEntry.Family,
-			}
-		}
-		entry, err := vih.ReEncodeVector(ctx, txn.KV(), *tmpEntry, entryBuffer)
-		if err != nil {
-			return err
-		}
-
-		if ib.flowCtx.Cfg.TestingKnobs.RunDuringReencodeVectorIndexEntry != nil {
-			err = ib.flowCtx.Cfg.TestingKnobs.RunDuringReencodeVectorIndexEntry(txn.KV())
-			if err != nil {
-				return err
-			}
-		}
-
-		b := txn.KV().NewBatch()
-		// If the backfill job was interrupted and restarted, we may redo work, so allow
-		// that we may see duplicate keys here.
-		b.CPutAllowingIfNotExists(entry.Key, &entry.Value, entry.Value.TagAndDataBytes())
-		return txn.KV().Run(ctx, b)
-	})
-	if err != nil {
-		return false, err
-	}
-
-	return true, nil
-}
-
 // ingestIndexEntries adds the batches of built index entries to the buffering
 // adder and reports progress back to the coordinator node.
 func (ib *indexBackfiller) ingestIndexEntries(
@@ -289,13 +219,12 @@ func (ib *indexBackfiller) ingestIndexEntries(
 	// When the bulk adder flushes, the spans which were previously marked as
 	// "added" can now be considered "completed", and be sent back to the
 	// coordinator node as part of the next progress report.
-	flushAddedSpans := func(_ kvpb.BulkOpSummary) {
+	adder.SetOnFlush(func(_ kvpb.BulkOpSummary) {
 		mu.Lock()
 		defer mu.Unlock()
 		mu.completedSpans = append(mu.completedSpans, mu.addedSpans...)
 		mu.addedSpans = nil
-	}
-	adder.SetOnFlush(flushAddedSpans)
+	})
 
 	pushProgress := func() {
 		mu.Lock()
@@ -329,24 +258,8 @@ func (ib *indexBackfiller) ingestIndexEntries(
 	g.GoCtx(func(ctx context.Context) error {
 		defer close(stopProgress)
 
-		var vectorInputEntry rowenc.IndexEntry
 		for indexBatch := range indexEntryCh {
 			for _, indexEntry := range indexBatch.indexEntries {
-				// If there is at least one vector index being written, we need to check to see
-				// if this IndexEntry is going to a vector index and then re-encode it for that
-				// index if so.
-				//
-				// TODO(mw5h): batch up multiple index entries into a single batch.
-				// As is, we insert a single vector per batch, which is very slow.
-				if len(ib.VectorIndexes) > 0 {
-					isVectorIndex, err := ib.maybeReencodeAndWriteVectorIndexEntry(ctx, &vectorInputEntry, &indexEntry)
-					if err != nil {
-						return ib.wrapDupError(ctx, err)
-					} else if isVectorIndex {
-						continue
-					}
-				}
-
 				if err := adder.Add(ctx, indexEntry.Key, indexEntry.Value.RawBytes); err != nil {
 					return ib.wrapDupError(ctx, err)
 				}
@@ -389,13 +302,6 @@ func (ib *indexBackfiller) ingestIndexEntries(
 		return err
 	}
 
-	// If there are only vector indexes, we push the completed spans manually so that
-	// progress reporting works.
-	// TODO(mw5h): this is a hack to get progress reporting to work for vector only
-	// backfills. We should remove this once we have a more permanent solution.
-	if ib.VectorOnly {
-		flushAddedSpans(kvpb.BulkOpSummary{})
-	}
 	if err := adder.Flush(ctx); err != nil {
 		return ib.wrapDupError(ctx, err)
 	}
@@ -453,6 +359,7 @@ func (ib *indexBackfiller) runBackfill(
 
 func (ib *indexBackfiller) Run(ctx context.Context, output execinfra.RowReceiver) {
 	opName := "indexBackfillerProcessor"
+	ctx = logtags.AddTag(ctx, "job", ib.spec.JobID)
 	ctx = logtags.AddTag(ctx, opName, int(ib.spec.Table.ID))
 	ctx, span := execinfra.ProcessorSpan(ctx, ib.flowCtx, opName, ib.processorID)
 	defer span.Finish()

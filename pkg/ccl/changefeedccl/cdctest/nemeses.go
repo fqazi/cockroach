@@ -9,229 +9,61 @@ import (
 	"bytes"
 	"context"
 	gosql "database/sql"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"strings"
-	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/internal/sqlsmith"
 	"github.com/cockroachdb/cockroach/pkg/util/fsm"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 )
 
 type ChangefeedOption struct {
-	Format           string
-	PubsubSinkConfig string
-	BooleanOptions   map[string]bool
-	KafkaSinkConfig  string
-}
-
-type SinkConfig struct {
-	Flush map[string]any
-	Retry map[string]any
-	Base  map[string]any
-}
-
-func (sk SinkConfig) OptionString() (string, error) {
-	nonEmptyConfig := make(map[string]any)
-
-	if len(sk.Flush) > 0 {
-		nonEmptyConfig["Flush"] = sk.Flush
-	}
-	if len(sk.Retry) > 0 {
-		nonEmptyConfig["Retry"] = sk.Retry
-	}
-	for k, v := range sk.Base {
-		nonEmptyConfig[k] = v
-	}
-
-	jsonData, err := json.Marshal(nonEmptyConfig)
-	if err != nil {
-		return "", err
-	}
-
-	return string(jsonData), nil
-}
-
-func newFlushConfig(isKafka bool) map[string]any {
-	flush := make(map[string]any)
-
-	nonZeroInterval := "500ms"
-	if rand.Intn(2) < 1 {
-		// Setting either Messages or Bytes with a non-zero value without setting
-		// Frequency is an invalid configuration. We set Frequency to a non-zero
-		// interval here but can reset it later.
-		flush["Messages"] = rand.Intn(10) + 1
-		flush["Frequency"] = nonZeroInterval
-	}
-	if rand.Intn(2) < 1 {
-		flush["Bytes"] = rand.Intn(1000) + 1
-		flush["Frequency"] = nonZeroInterval
-	}
-	if rand.Intn(2) < 1 {
-		intervals := []string{"100ms", "500ms", "1s", "5s"}
-		interval := intervals[rand.Intn(len(intervals))]
-		flush["Frequency"] = interval
-	}
-
-	if isKafka && rand.Intn(2) < 1 {
-		flush["MaxMessages"] = rand.Intn(10000) + 1
-	}
-
-	return flush
-}
-
-func newRetryConfig() map[string]any {
-	retry := make(map[string]any)
-	if rand.Intn(2) < 1 {
-		if rand.Intn(2) < 1 {
-			retry["Max"] = "inf"
-		} else {
-			retry["Max"] = rand.Intn(5) + 1
-		}
-	}
-	if rand.Intn(2) < 1 {
-		intervals := []string{"100ms", "500ms", "1s", "5s"}
-		interval := intervals[rand.Intn(len(intervals))]
-		retry["Backoff"] = interval
-	}
-	return retry
-}
-
-func newKafkaBaseConfig() map[string]any {
-	base := make(map[string]any)
-	if rand.Intn(2) < 1 {
-		clientIds := []string{"ABCabc123._-", "FooBar", "2002-02-02.1_1"}
-		clientId := clientIds[rand.Intn(len(clientIds))]
-		base["ClientID"] = clientId
-	}
-	if rand.Intn(2) < 1 {
-		versions := []string{"2.7.2", "0.8.2.0"}
-		version := versions[rand.Intn(len(versions))]
-		base["Version"] = version
-	}
-	if rand.Intn(2) < 1 {
-		compressions := []string{"NONE", "GZIP", "SNAPPY"}
-		// lz4 compression requires Version >= V0_10_0_0
-		if base["Version"] != "0.8.2.0" {
-			compressions = append(compressions, "LZ4")
-		}
-		// zstd compression requires Version >= V2_1_0_0
-		if base["Version"] == "2.7.2" {
-			compressions = append(compressions, "ZSTD")
-		}
-		compression := compressions[rand.Intn(len(compressions))]
-		base["Compression"] = compression
-		if compression == "GZIP" {
-			// GZIP compression can be integers -1 to 10
-			level := rand.Intn(11) - 1
-			base["CompressionLevel"] = level
-
-		}
-		if base["Version"] == "2.7.2" && compression == "ZSTD" {
-			level := rand.Intn(4) + 1
-			base["CompressionLevel"] = level
-		}
-
-		if base["Version"] != "0.8.2.0" && compression == "LZ4" {
-			levels := []int{0, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072}
-			level := levels[rand.Intn(len(levels))]
-			base["CompressionLevel"] = level
-		}
-	}
-	if rand.Intn(2) < 1 {
-		levels := []string{"ONE", "NONE", "ALL"}
-		level := levels[rand.Intn(len(levels))]
-		base["RequiredAcks"] = level
-	}
-	return base
-}
-
-func newSinkConfig(isKafka bool) SinkConfig {
-	if isKafka {
-		return SinkConfig{
-			Flush: newFlushConfig(isKafka),
-			Base:  newKafkaBaseConfig(),
-		}
-	}
-
-	return SinkConfig{
-		Flush: newFlushConfig(isKafka),
-		Retry: newRetryConfig(),
-	}
+	FullTableName bool
+	Format        string
+	KeyInValue    bool
 }
 
 func newChangefeedOption(testName string) ChangefeedOption {
 	isCloudstorage := strings.Contains(testName, "cloudstorage")
 	isWebhook := strings.Contains(testName, "webhook")
-	isPubsub := strings.Contains(testName, "pubsub")
-	isKafka := strings.Contains(testName, "kafka")
+	cfo := ChangefeedOption{
+		FullTableName: rand.Intn(2) < 1,
 
-	cfo := ChangefeedOption{}
-
-	cfo.BooleanOptions = make(map[string]bool)
-
-	booleanOptionEligibility := map[string]bool{
-		changefeedbase.OptFullTableName: true,
 		// Because key_in_value is on by default for cloudstorage and webhook sinks,
 		// the key in the value is extracted and removed from the test feed
 		// messages (see extractKeyFromJSONValue function).
-		changefeedbase.OptKeyInValue:     !isCloudstorage && !isWebhook,
-		changefeedbase.OptDiff:           true,
-		changefeedbase.OptMVCCTimestamps: true,
-	}
-
-	for option, eligible := range booleanOptionEligibility {
-		cfo.BooleanOptions[option] = eligible && rand.Intn(2) < 1
-	}
-
-	if isPubsub {
-		sinkConfigOptionString, err := newSinkConfig(isKafka).OptionString()
-		if err != nil {
-			cfo.PubsubSinkConfig = sinkConfigOptionString
-		}
-	}
-
-	if isKafka {
-		sinkConfigOptionString, err := newSinkConfig(isKafka).OptionString()
-		if err != nil {
-			cfo.KafkaSinkConfig = sinkConfigOptionString
-		}
+		// TODO: (#138749) enable testing key_in_value for cloudstorage
+		// and webhook sinks
+		KeyInValue: !isCloudstorage && !isWebhook && rand.Intn(2) < 1,
+		Format:     "json",
 	}
 
 	if isCloudstorage && rand.Intn(2) < 1 {
 		cfo.Format = "parquet"
-	} else {
-		cfo.Format = "json"
 	}
 
 	return cfo
 }
 
+func (co ChangefeedOption) String() string {
+	return fmt.Sprintf("full_table_name=%t,key_in_value=%t,format=%s",
+		co.FullTableName, co.KeyInValue, co.Format)
+}
+
 func (cfo ChangefeedOption) OptionString() string {
-	var options []string
-	for option, value := range cfo.BooleanOptions {
-		if value {
-			options = append(options, option)
-		}
+	options := ""
+	if cfo.Format == "parquet" {
+		options = ", format=parquet"
 	}
-	if cfo.Format != "" {
-		option := fmt.Sprintf("format=%s", cfo.Format)
-		options = append(options, option)
+	if cfo.FullTableName {
+		options = options + ", full_table_name"
 	}
-	if cfo.PubsubSinkConfig != "" {
-		option := fmt.Sprintf("pubsub_sink_config='%s'", cfo.PubsubSinkConfig)
-		options = append(options, option)
+	if cfo.KeyInValue {
+		options = options + ", key_in_value"
 	}
-	if cfo.KafkaSinkConfig != "" {
-		option := fmt.Sprintf("kafka_sink_config='%s'", cfo.KafkaSinkConfig)
-		options = append(options, option)
-	}
-	return fmt.Sprintf("WITH updated, resolved, %s", strings.Join(options, ","))
+	return options
 }
 
 type NemesesOption struct {
@@ -242,6 +74,10 @@ type NemesesOption struct {
 var NemesesOptions = []NemesesOption{
 	{
 		EnableFpValidator: true,
+		EnableSQLSmith:    false,
+	},
+	{
+		EnableFpValidator: false,
 		EnableSQLSmith:    true,
 	},
 }
@@ -358,11 +194,6 @@ func RunNemesis(
 		},
 	}
 
-	if nOp.EnableFpValidator {
-		// TODO(#139351): Fingerprint validator doesn't support user defined types.
-		ns.eventMix[eventCreateEnum{}] = 0
-	}
-
 	// Create the table and set up some initial splits.
 	if _, err := db.Exec(`CREATE TABLE foo (id INT PRIMARY KEY, ts STRING DEFAULT '0')`); err != nil {
 		return nil, err
@@ -376,93 +207,50 @@ func RunNemesis(
 	// Initialize table rows by repeatedly running the `openTxn` transition,
 	// then randomly either committing or rolling back transactions. This will
 	// leave some committed rows.
-	// If sql smith is enabled, we'll insert rows below instead.
-	if !nOp.EnableSQLSmith {
-		for i := 0; i < ns.rowCount*5; i++ {
-			payload, err := newOpenTxnPayload(ns)
-			if err != nil {
+	for i := 0; i < ns.rowCount*5; i++ {
+		payload, err := newOpenTxnPayload(ns)
+		if err != nil {
+			return nil, err
+		}
+		if err := openTxn(fsm.Args{Ctx: ctx, Extended: ns, Payload: payload}); err != nil {
+			return nil, err
+		}
+		// Randomly commit or rollback, but commit at least one row to the table.
+		if rand.Intn(3) < 2 || i == 0 {
+			if err := commit(fsm.Args{Ctx: ctx, Extended: ns}); err != nil {
 				return nil, err
 			}
-			if err := openTxn(fsm.Args{Ctx: ctx, Extended: ns, Payload: payload}); err != nil {
+		} else {
+			if err := rollback(fsm.Args{Ctx: ctx, Extended: ns}); err != nil {
 				return nil, err
-			}
-			// Randomly commit or rollback, but commit at least one row to the table.
-			if rand.Intn(3) < 2 || i == 0 {
-				if err := commit(fsm.Args{Ctx: ctx, Extended: ns}); err != nil {
-					return nil, err
-				}
-			} else {
-				if err := rollback(fsm.Args{Ctx: ctx, Extended: ns}); err != nil {
-					return nil, err
-				}
 			}
 		}
 	}
 
 	if nOp.EnableSQLSmith {
-		// Some unsafe queries can hang, so avoid them.
-		if _, err := db.Exec("SET sql_safe_updates=true"); err != nil {
-			return nil, err
-		}
 		queryGen, _ := sqlsmith.NewSmither(db, rng,
-			sqlsmith.InsUpdDelOnly(),
+			sqlsmith.MutationsOnly(),
 			sqlsmith.SetScalarComplexity(0.5),
 			sqlsmith.SetComplexity(0.1),
 			// TODO(#129072): Reenable cross joins when the likelihood of generating
 			// queries that could hang decreases.
 			sqlsmith.DisableCrossJoins(),
 			sqlsmith.SimpleDatums(),
-			// We rely on cluster_logical_timestamp() builtin which is only
-			// supported under the serializable isolation.
-			sqlsmith.DisableIsolationChange(),
 		)
-
 		defer queryGen.Close()
 		const numInserts = 100
-		const insertTimeout = 5 * time.Second
-		time := timeutil.Now()
 		for i := 0; i < numInserts; i++ {
 			query := queryGen.Generate()
-			log.Infof(ctx, "Executing query: %s", query)
-			err := timeutil.RunWithTimeout(ctx, "nemeses populate table",
-				insertTimeout, func(ctx context.Context) error {
-					_, err := db.ExecContext(ctx, query)
-					return err
-				})
-			log.Infof(ctx, "Time taken to execute last query: %s", timeutil.Since(time))
-			time = timeutil.Now()
-			if err != nil {
+			if _, err := db.Exec(query); err != nil {
 				log.Infof(ctx, "Skipping query %s because error %s", query, err)
 				continue
 			}
 		}
-		// Reenable unsafe queries, since the test sometimes alters tables.
-		if _, err := db.Exec("SET sql_safe_updates=false"); err != nil {
-			return nil, err
-		}
-	}
-
-	// Print the contents of the table in a way that can be reproduced.
-	rows, err := db.Query("SELECT * FROM foo")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	// Iterate over the rows and print them
-	for rows.Next() {
-		var id int
-		var ts string
-		if err := rows.Scan(&id, &ts); err != nil {
-			log.Infof(ctx, "# skipping row because error: %s", err)
-			continue
-		}
-		log.Infof(ctx, "INSERT INTO foo (id,ts) VALUES (%d, %s);", id, ts)
 	}
 
 	cfo := newChangefeedOption(testName)
 	changefeedStatement := fmt.Sprintf(
-		`CREATE CHANGEFEED FOR foo %s`,
+		`CREATE CHANGEFEED FOR foo WITH updated, resolved, diff%s`,
 		cfo.OptionString(),
 	)
 	log.Infof(ctx, "Using changefeed options: %s", changefeedStatement)
@@ -482,12 +270,12 @@ func RunNemesis(
 		return nil, err
 	}
 
-	baV, err := NewBeforeAfterValidator(db, `foo`, cfo.BooleanOptions[changefeedbase.OptDiff])
+	baV, err := NewBeforeAfterValidator(db, `foo`)
 	if err != nil {
 		return nil, err
 	}
 
-	tV := NewTopicValidator(`foo`, cfo.BooleanOptions[changefeedbase.OptFullTableName])
+	tV := NewTopicValidator(`foo`, cfo.FullTableName)
 
 	validators := Validators{
 		NewOrderValidator(`foo`),
@@ -503,17 +291,12 @@ func RunNemesis(
 		validators = append(validators, fprintV)
 	}
 
-	if cfo.BooleanOptions[changefeedbase.OptKeyInValue] {
+	if cfo.KeyInValue {
 		kivV, err := NewKeyInValueValidator(db, `foo`)
 		if err != nil {
 			return nil, err
 		}
 		validators = append(validators, kivV)
-	}
-
-	if cfo.BooleanOptions[changefeedbase.OptMVCCTimestamps] {
-		mvccV := NewMvccTimestampValidator()
-		validators = append(validators, mvccV)
 	}
 
 	ns.v = NewCountValidator(validators)

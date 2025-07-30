@@ -68,7 +68,7 @@ func (rn raftNodeForRACv2) SendPingRaftMuLocked(to roachpb.ReplicaID) bool {
 
 // SendMsgAppRaftMuLocked implements rac2.RaftInterface.
 func (rn raftNodeForRACv2) SendMsgAppRaftMuLocked(
-	replicaID roachpb.ReplicaID, ls raft.LeadSlice,
+	replicaID roachpb.ReplicaID, ls raft.LogSlice,
 ) (raftpb.Message, bool) {
 	rn.r.MuLock()
 	defer rn.r.MuUnlock()

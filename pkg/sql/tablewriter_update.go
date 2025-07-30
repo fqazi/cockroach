@@ -34,14 +34,6 @@ func (tu *tableUpdater) init(_ context.Context, txn *kv.Txn, evalCtx *eval.Conte
 // to avoid updating when performing row modification. This is necessary
 // because not all rows are indexed by partial indexes.
 //
-// The VectorIndexUpdateHelper is used to determine which partitions to update
-// in each vector index and supply the quantized vectors to add to the
-// partitions. This is necessary because these values are not part of the table,
-// and are materialized only for the purpose of updating vector indexes.
-//
-// The mustValidateOldPKValues parameter indicates whether the expected previous
-// row must be verified (using CPut).
-//
 // The traceKV parameter determines whether the individual K/V operations
 // should be logged to the context. We use a separate argument here instead
 // of a Value field on the context because Value access in context.Context
@@ -50,15 +42,10 @@ func (tu *tableUpdater) rowForUpdate(
 	ctx context.Context,
 	oldValues, updateValues tree.Datums,
 	pm row.PartialIndexUpdateHelper,
-	vh row.VectorIndexUpdateHelper,
-	oth row.OriginTimestampCPutHelper,
-	mustValidateOldPKValues bool,
 	traceKV bool,
 ) (tree.Datums, error) {
 	tu.currentBatchSize++
-	return tu.ru.UpdateRow(
-		ctx, tu.b, oldValues, updateValues, pm, vh, oth, mustValidateOldPKValues, traceKV,
-	)
+	return tu.ru.UpdateRow(ctx, tu.b, oldValues, updateValues, pm, nil, traceKV)
 }
 
 // tableDesc returns the TableDescriptor for the table that the tableUpdater

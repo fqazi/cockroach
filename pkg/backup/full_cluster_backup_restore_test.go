@@ -9,7 +9,6 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -666,14 +665,14 @@ func TestClusterRestoreFailCleanup(t *testing.T) {
 
 	// Bugger the backup by removing the SST files. (Note this messes up all of
 	// the backups, but there is only one at this point.)
-	if err := filepath.WalkDir(tempDir, func(path string, d fs.DirEntry, err error) error {
+	if err := filepath.Walk(tempDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if d.Name() == backupbase.BackupManifestName ||
+		if info.Name() == backupbase.BackupManifestName ||
 			!strings.HasSuffix(path, ".sst") ||
-			d.Name() == backupinfo.BackupMetadataDescriptorsListPath ||
-			d.Name() == backupinfo.BackupMetadataFilesListPath {
+			info.Name() == backupinfo.BackupMetadataDescriptorsListPath ||
+			info.Name() == backupinfo.BackupMetadataFilesListPath {
 			return nil
 		}
 		return os.Remove(path)
@@ -689,13 +688,19 @@ func TestClusterRestoreFailCleanup(t *testing.T) {
 	sqlDB.Exec(t, `BACKUP data.bank INTO 'nodelocal://1/throwawayjob'`)
 	sqlDB.Exec(t, `BACKUP INTO $1`, localFoo)
 
+	waitForJobPauseCancel := func(db *sqlutils.SQLRunner, jobID jobspb.JobID) {
+		db.Exec(t, `USE system;`)
+		jobutils.WaitForJobToPause(t, db, jobID)
+		db.Exec(t, `CANCEL JOB $1`, jobID)
+		jobutils.WaitForJobToCancel(t, db, jobID)
+	}
+
 	t.Run("during restoration of data", func(t *testing.T) {
 		_, sqlDBRestore, cleanupEmptyCluster := backupRestoreTestSetupEmpty(t, singleNode, tempDir, InitManualReplication, base.TestClusterArgs{})
 		defer cleanupEmptyCluster()
 		var jobID jobspb.JobID
 		sqlDBRestore.QueryRow(t, `RESTORE FROM LATEST IN 'nodelocal://1/missing-ssts' WITH detached`).Scan(&jobID)
-		sqlDBRestore.Exec(t, "USE system")
-		jobutils.WaitForJobToFail(t, sqlDBRestore, jobID)
+		waitForJobPauseCancel(sqlDBRestore, jobID)
 		// Verify the failed RESTORE added some DROP tables.
 		// Note that the system tables here correspond to the temporary tables
 		// imported, not the system tables themselves.
@@ -1024,6 +1029,10 @@ func TestReintroduceOfflineSpans(t *testing.T) {
 	// and not report any progress in the meantime unless it is disabled.
 	srcDB.Exec(t, `SET CLUSTER SETTING bulkio.backup.file_size = '1'`)
 
+	// Test servers only have 128MB root memory monitors, reduce the buffer size
+	// so we don't see memory errors.
+	srcDB.Exec(t, `SET CLUSTER SETTING bulkio.backup.merge_file_buffer_size = '1MiB'`)
+
 	// Take a backup that we'll use to create an OFFLINE descriptor.
 	srcDB.Exec(t, `CREATE INDEX new_idx ON data.bank (balance)`)
 	srcDB.Exec(t, `BACKUP DATABASE data INTO $1 WITH revision_history`, dbBackupLoc)
@@ -1183,7 +1192,7 @@ func TestFullClusterRestoreWithUserIDs(t *testing.T) {
 	sqlDB.Exec(t, `CREATE USER test2`)
 	sqlDB.Exec(t, `BACKUP INTO $1`, localFoo)
 
-	sqlDB.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole", user_id FROM system.users ORDER BY user_id`, [][]string{
+	sqlDB.CheckQueryResults(t, `SELECT * FROM system.users ORDER BY user_id`, [][]string{
 		{"root", "", "false", "1"},
 		{"admin", "", "true", "2"},
 		{"test1", "NULL", "false", "100"},
@@ -1192,7 +1201,7 @@ func TestFullClusterRestoreWithUserIDs(t *testing.T) {
 	// Ensure that the new backup succeeds.
 	sqlDBRestore.Exec(t, `RESTORE FROM LATEST IN $1`, localFoo)
 
-	sqlDBRestore.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole", user_id FROM system.users ORDER BY user_id`, [][]string{
+	sqlDBRestore.CheckQueryResults(t, `SELECT * FROM system.users ORDER BY user_id`, [][]string{
 		{"root", "", "false", "1"},
 		{"admin", "", "true", "2"},
 		{"test1", "NULL", "false", "100"},
@@ -1201,7 +1210,7 @@ func TestFullClusterRestoreWithUserIDs(t *testing.T) {
 
 	sqlDBRestore.Exec(t, `CREATE USER test3`)
 
-	sqlDBRestore.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole", user_id FROM system.users ORDER BY user_id`, [][]string{
+	sqlDBRestore.CheckQueryResults(t, `SELECT * FROM system.users ORDER BY user_id`, [][]string{
 		{"root", "", "false", "1"},
 		{"admin", "", "true", "2"},
 		{"test1", "NULL", "false", "100"},

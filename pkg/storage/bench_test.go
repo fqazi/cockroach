@@ -1331,6 +1331,60 @@ func runMVCCBlindConditionalPut(ctx context.Context, b *testing.B, emk engineMak
 	b.StopTimer()
 }
 
+func runMVCCInitPut(ctx context.Context, b *testing.B, emk engineMaker, valueSize int) {
+	rng, _ := randutil.NewTestRand()
+	value := roachpb.MakeValueFromBytes(randutil.RandBytes(rng, valueSize))
+	keyBuf := append(make([]byte, 0, 64), []byte("key-")...)
+
+	eng := emk(b, fmt.Sprintf("iput_%d", valueSize))
+	defer eng.Close()
+
+	b.SetBytes(int64(valueSize))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		key := roachpb.Key(encoding.EncodeUvarintAscending(keyBuf[:4], uint64(i)))
+		ts := hlc.Timestamp{WallTime: timeutil.Now().UnixNano()}
+		batch := eng.NewBatch()
+		if _, err := MVCCInitPut(ctx, batch, key, ts, value, false, MVCCWriteOptions{}); err != nil {
+			b.Fatalf("failed put: %+v", err)
+		}
+		if err := batch.Commit(true); err != nil {
+			b.Fatalf("failed commit: %v", err)
+		}
+		batch.Close()
+	}
+
+	b.StopTimer()
+}
+
+func runMVCCBlindInitPut(ctx context.Context, b *testing.B, emk engineMaker, valueSize int) {
+	rng, _ := randutil.NewTestRand()
+	value := roachpb.MakeValueFromBytes(randutil.RandBytes(rng, valueSize))
+	keyBuf := append(make([]byte, 0, 64), []byte("key-")...)
+
+	eng := emk(b, fmt.Sprintf("iput_%d", valueSize))
+	defer eng.Close()
+
+	b.SetBytes(int64(valueSize))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		key := roachpb.Key(encoding.EncodeUvarintAscending(keyBuf[:4], uint64(i)))
+		ts := hlc.Timestamp{WallTime: timeutil.Now().UnixNano()}
+		wb := eng.NewWriteBatch()
+		if _, err := MVCCBlindInitPut(ctx, wb, key, ts, value, false, MVCCWriteOptions{}); err != nil {
+			b.Fatalf("failed put: %+v", err)
+		}
+		if err := wb.Commit(true); err != nil {
+			b.Fatalf("failed commit: %v", err)
+		}
+		wb.Close()
+	}
+
+	b.StopTimer()
+}
+
 func runMVCCBatchPut(ctx context.Context, b *testing.B, emk engineMaker, valueSize, batchSize int) {
 	rng, _ := randutil.NewTestRand()
 	value := roachpb.MakeValueFromBytes(randutil.RandBytes(rng, valueSize))
@@ -1950,11 +2004,11 @@ func runMVCCAcquireLockCommon(
 				txn = &txn2
 			}
 			// Acquire a shared and an exclusive lock on the key.
-			err := MVCCAcquireLock(ctx, eng, &txn.TxnMeta, txn.IgnoredSeqNums, lock.Shared, key, nil, 0, 0, false)
+			err := MVCCAcquireLock(ctx, eng, txn, lock.Shared, key, nil, 0, 0)
 			if err != nil {
 				b.Fatal(err)
 			}
-			err = MVCCAcquireLock(ctx, eng, &txn.TxnMeta, txn.IgnoredSeqNums, lock.Exclusive, key, nil, 0, 0, false)
+			err = MVCCAcquireLock(ctx, eng, txn, lock.Exclusive, key, nil, 0, 0)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -1978,7 +2032,7 @@ func runMVCCAcquireLockCommon(
 		if checkFor {
 			err = MVCCCheckForAcquireLock(ctx, rw, txn, strength, key, 0, 0)
 		} else {
-			err = MVCCAcquireLock(ctx, rw, &txn.TxnMeta, txn.IgnoredSeqNums, strength, key, ms, 0, 0, false)
+			err = MVCCAcquireLock(ctx, rw, txn, strength, key, ms, 0, 0)
 		}
 		if heldOtherTxn {
 			if err == nil {
@@ -2247,7 +2301,7 @@ func runCheckSSTConflicts(
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := CheckSSTConflicts(context.Background(), sstFile.Data(), eng, sstStart, sstEnd, sstStart.Key, sstEnd.Key.Next(), hlc.Timestamp{}, hlc.Timestamp{}, math.MaxInt64, 0, usePrefixSeek)
+		_, err := CheckSSTConflicts(context.Background(), sstFile.Data(), eng, sstStart, sstEnd, sstStart.Key, sstEnd.Key.Next(), false, hlc.Timestamp{}, hlc.Timestamp{}, math.MaxInt64, 0, usePrefixSeek)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2422,7 +2476,7 @@ func BenchmarkMVCCScannerWithIntentsAndVersions(b *testing.B) {
 			b.Fatal(err)
 		}
 		sort.Slice(kvPairs, func(i, j int) bool {
-			cmp := EngineComparer.Compare(kvPairs[i].key, kvPairs[j].key)
+			cmp := EngineKeyCompare(kvPairs[i].key, kvPairs[j].key)
 			if cmp == 0 {
 				// Should not happen since we resolve in a different batch from the
 				// one where we wrote the intent.
@@ -2439,7 +2493,7 @@ func BenchmarkMVCCScannerWithIntentsAndVersions(b *testing.B) {
 		opts := DefaultPebbleOptions().MakeWriterOptions(0, format)
 		writer := sstable.NewWriter(objstorageprovider.NewFileWritable(sstFile), opts)
 		for _, kv := range kvPairs {
-			require.NoError(b, writer.Raw().Add(
+			require.NoError(b, writer.Raw().AddWithForceObsolete(
 				pebble.MakeInternalKey(kv.key, 0 /* seqNum */, kv.kind), kv.value, false /* forceObsolete */))
 		}
 		require.NoError(b, writer.Close())
@@ -2531,6 +2585,38 @@ func BenchmarkMVCCBlindConditionalPut(b *testing.B) {
 		b.Run(fmt.Sprintf("valueSize=%d", valueSize), func(b *testing.B) {
 			ctx := context.Background()
 			runMVCCBlindConditionalPut(ctx, b, setupMVCCInMemPebble, valueSize)
+		})
+	}
+}
+
+func BenchmarkMVCCInitPut(b *testing.B) {
+	defer log.Scope(b).Close(b)
+
+	valueSizes := []int{10, 100, 1000, 10000}
+	if testing.Short() {
+		valueSizes = []int{10, 10000}
+	}
+
+	for _, valueSize := range valueSizes {
+		b.Run(fmt.Sprintf("valueSize=%d", valueSize), func(b *testing.B) {
+			ctx := context.Background()
+			runMVCCInitPut(ctx, b, setupMVCCInMemPebble, valueSize)
+		})
+	}
+}
+
+func BenchmarkMVCCBlindInitPut(b *testing.B) {
+	defer log.Scope(b).Close(b)
+
+	valueSizes := []int{10, 100, 1000, 10000}
+	if testing.Short() {
+		valueSizes = []int{10, 10000}
+	}
+
+	for _, valueSize := range valueSizes {
+		b.Run(fmt.Sprintf("valueSize=%d", valueSize), func(b *testing.B) {
+			ctx := context.Background()
+			runMVCCBlindInitPut(ctx, b, setupMVCCInMemPebble, valueSize)
 		})
 	}
 }

@@ -6,13 +6,11 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
-	"io/fs"
 	"math/rand"
 	"net"
 	"net/http"
@@ -39,7 +37,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/promhelperclient"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/cockroach/pkg/util/allstacks"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
@@ -48,8 +45,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"github.com/cockroachdb/cockroach/pkg/util/version"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/version"
 	"github.com/petermattis/goid"
 )
 
@@ -62,14 +59,8 @@ func init() {
 var (
 	errTestsFailed = fmt.Errorf("some tests failed")
 
-	// errSomeClusterProvisioningFailed error sent after a run in
-	// [testRunner.Run] if any worker encountered a cluster provisioning error.
-	// Used in main.go to determine the run exit code.
+	// reference error used by main.go at the end of a run of tests
 	errSomeClusterProvisioningFailed = fmt.Errorf("some clusters could not be created")
-
-	// errGithubPostFailed error sent after a run in [testRunner.Run] if any
-	// worker encountered an error when trying to POST to GitHub
-	errGithubPostFailed = fmt.Errorf("failed to POST to GitHub")
 
 	prometheusNameSpace = "roachtest"
 	// prometheusScrapeInterval should be consistent with the scrape interval defined in
@@ -114,16 +105,6 @@ var (
 		)
 	}
 
-	// liveMigrationError indicates that a test failed and also experienced
-	// a live migration. These errors are directed to Test Eng instead of owning teams.
-	liveMigrationError = func(liveMigrationVMs string) error {
-		return registry.ErrorWithOwner(
-			registry.OwnerTestEng, fmt.Errorf("liveMigrationError VMs: %s", liveMigrationVMs),
-			registry.WithTitleOverride("live_migration_error"),
-			registry.InfraFlake,
-		)
-	}
-
 	prng, _ = randutil.NewLockedPseudoRand()
 
 	runID string
@@ -143,7 +124,12 @@ type testRunner struct {
 	stopper *stop.Stopper
 
 	config struct {
-		// Skips wiping the cluster unless roachtestflags.ClusterWipe is set.
+		// skipClusterValidationOnAttach skips validation on existing clusters that
+		// the registry uses for running tests.
+		skipClusterValidationOnAttach bool
+		// skipClusterStopOnAttach skips stopping existing clusters that
+		// the registry uses for running tests. It implies skipClusterWipeOnAttach.
+		skipClusterStopOnAttach bool
 		skipClusterWipeOnAttach bool
 		// disableIssue disables posting GitHub issues for test failures.
 		disableIssue bool
@@ -155,11 +141,10 @@ type testRunner struct {
 
 	status struct {
 		syncutil.Mutex
-		running     map[*testImpl]struct{}
-		pass        map[*testImpl]struct{}
-		fail        map[*testImpl]struct{}
-		skip        map[*testImpl]struct{}
-		skipDetails map[*testImpl]string
+		running map[*testImpl]struct{}
+		pass    map[*testImpl]struct{}
+		fail    map[*testImpl]struct{}
+		skip    map[*testImpl]struct{}
 	}
 
 	// cr keeps track of all live clusters.
@@ -180,25 +165,8 @@ type testRunner struct {
 		completed []completedTestInfo
 	}
 
-	// numClusterErrs Counts cluster creation errors across all workers.
+	// Counts cluster creation errors across all workers.
 	numClusterErrs int32
-
-	// numGithubPostErrs Counts GitHub post errors across all workers
-	numGithubPostErrs int32
-}
-
-type perfMetricsCollector struct {
-	// histogramMetrics is the total metrics from every file
-	histogramMetrics *roachtestutil.HistogramMetric
-	// labels is the slice of openmetrics label key and values for the run
-	labels []*roachtestutil.Label
-	// elapsed is the avg elapsed time of the run
-	elapsed int64
-	// count is the count of perf files
-	count     int64
-	t         *testImpl
-	ctx       context.Context
-	perfNodes []int
 }
 
 // newTestRunner constructs a testRunner.
@@ -317,7 +285,6 @@ func (r *testRunner) Run(
 	clustersOpt clustersOpt,
 	topt testOpts,
 	lopt loggingOpt,
-	github GithubPoster,
 ) error {
 	// Validate options.
 	if len(tests) == 0 {
@@ -387,7 +354,6 @@ func (r *testRunner) Run(
 	r.status.pass = make(map[*testImpl]struct{})
 	r.status.fail = make(map[*testImpl]struct{})
 	r.status.skip = make(map[*testImpl]struct{})
-	r.status.skipDetails = make(map[*testImpl]string)
 
 	r.work = newWorkPool(tests, count)
 	errs := &workerErrors{}
@@ -421,7 +387,6 @@ func (r *testRunner) Run(
 				topt,
 				childLogger,
 				n*count,
-				github,
 			)
 
 			if err != nil {
@@ -459,25 +424,14 @@ func (r *testRunner) Run(
 	passFailLine := r.generateReport()
 	shout(ctx, l, lopt.stdout, passFailLine)
 
-	// For the errors that don't short-circuit the pipeline run, return a joined
-	// error and leave case handling to the caller
-	var err error
-	if r.numGithubPostErrs > 0 {
-		shout(ctx, l, lopt.stdout, "%d errors occurred while posting to github", r.numGithubPostErrs)
-		err = errors.Join(err, errGithubPostFailed)
-	}
 	if r.numClusterErrs > 0 {
 		shout(ctx, l, lopt.stdout, "%d clusters could not be created", r.numClusterErrs)
-		err = errors.Join(err, errSomeClusterProvisioningFailed)
-	}
-	if len(r.status.fail) > 0 {
-		shout(ctx, l, lopt.stdout, "%d tests failed", r.status.fail)
-		err = errors.Join(err, errTestsFailed)
-	}
-	if err != nil {
-		return err
+		return errSomeClusterProvisioningFailed
 	}
 
+	if len(r.status.fail) > 0 {
+		return errTestsFailed
+	}
 	// To ensure all prometheus metrics have been scraped, ensure shutdown takes
 	// at least one scrapeInterval, unless the roachtest fails or gets cancelled.
 	requiredShutDownTime := prometheusScrapeInterval
@@ -517,9 +471,7 @@ func generateRunID(cOpts clustersOpt) string {
 	return fmt.Sprintf("%s-%s", cOpts.user, cOpts.clusterID)
 }
 
-// If clustersOpt.clusterName is empty, create a fresh cluster; otherwise, attempt to attach to the existing cluster.
-// If the existing cluster isn't found, we fall back to creating a new cluster. Otherwise, we bail out with an error.
-func (r *testRunner) allocateOrAttachToCluster(
+func (r *testRunner) allocateCluster(
 	ctx context.Context,
 	clusterFactory *clusterFactory,
 	clustersOpt clustersOpt,
@@ -547,23 +499,22 @@ func (r *testRunner) allocateOrAttachToCluster(
 		}
 		defer clusterL.Close()
 		opt := attachOpt{
-			skipWipe: r.config.skipClusterWipeOnAttach,
+			skipValidation: r.config.skipClusterValidationOnAttach,
+			skipStop:       r.config.skipClusterStopOnAttach,
+			skipWipe:       r.config.skipClusterWipeOnAttach,
 		}
 		// TODO(srosenberg): we need to think about validation here. Attaching to an incompatible cluster, e.g.,
 		// using arm64 AMI with amd64 binary, would result in obscure errors. The test runner ensures compatibility
 		// during cluster reuse, whereas attachment via CLI (e.g., via roachprod) does not.
 		lopt.l.PrintfCtx(ctx, "Attaching to existing cluster %s for test %s", existingClusterName, t.Name)
-		if c, err := attachToExistingCluster(ctx, existingClusterName, clusterL, t.Cluster, opt, r.cr); err != nil {
-			// If the cluster is not found, we fall through to create a new cluster. Otherwise, we bail out.
-			if errors.Is(err, errClusterNotFound) {
-				lopt.l.PrintfCtx(ctx, "Error attaching to existing cluster %s: %s", existingClusterName, err)
-			} else {
-				return nil, nil, err
-			}
-		} else {
+		c, err := attachToExistingCluster(ctx, existingClusterName, clusterL, t.Cluster, opt, r.cr)
+		if err == nil {
 			// Pretend pre-existing's cluster architecture matches the desired one; see the above TODO wrt validation.
 			c.arch = arch
 			return c, nil, nil
+		}
+		if !errors.Is(err, errClusterNotFound) {
+			return nil, nil, err
 		}
 		// Fall through to create new cluster with name override.
 		lopt.l.PrintfCtx(
@@ -618,7 +569,6 @@ func (r *testRunner) runWorker(
 	topt testOpts,
 	l *logger.Logger,
 	maxTotalFailures int,
-	github GithubPoster,
 ) error {
 	stdout := lopt.stdout
 
@@ -788,7 +738,7 @@ func (r *testRunner) runWorker(
 			// Create a new cluster if can't reuse or reuse attempt failed.
 			// N.B. non-reusable cluster would have been destroyed above.
 			wStatus.SetTest(nil /* test */, testToRun)
-			c, vmCreateOpts, clusterCreateErr = r.allocateOrAttachToCluster(
+			c, vmCreateOpts, clusterCreateErr = r.allocateCluster(
 				ctx, clusterFactory, clustersOpt, lopt,
 				testToRun.spec, arch, wStatus)
 
@@ -853,9 +803,10 @@ func (r *testRunner) runWorker(
 			cockroach:              cockroach[arch],
 			cockroachEA:            cockroachEA[arch],
 			deprecatedWorkload:     workload[arch],
-			buildVersion:           &binaryVersion,
+			buildVersion:           binaryVersion,
 			artifactsDir:           testArtifactsDir,
 			artifactsSpec:          artifactsSpec,
+			l:                      testL,
 			versionsBinaryOverride: topt.versionsBinaryOverride,
 			skipInit:               topt.skipInit,
 			debug:                  clustersOpt.debugMode.IsDebug(),
@@ -863,23 +814,18 @@ func (r *testRunner) runWorker(
 			exportOpenmetrics:      topt.exportOpenMetrics,
 			runID:                  generateRunID(clustersOpt),
 		}
-		t.ReplaceL(testL)
-		issueInfo := newGithubIssueInfo(c, vmCreateOpts)
+		github := newGithubIssues(r.config.disableIssue, c, vmCreateOpts)
+
 		// handleClusterCreationFailure can be called when the `err` given
 		// occurred for reasons related to creating or setting up a
 		// cluster for a test.
-		handleClusterCreationFailure := func(clusterCreateErr error) {
-			t.Error(errClusterProvisioningFailed(clusterCreateErr))
+		handleClusterCreationFailure := func(err error) {
+			t.Error(errClusterProvisioningFailed(err))
 
-			// Technically don't need the issueInfo struct here because we have access
-			// to the clusterImpl and vm.CreateOpts in runWorker()
-			// but not in runTests() so keeping the invocation of getTestParameters()
-			// the same in both spots
-			params := getTestParameters(t, issueInfo.cluster, issueInfo.vmCreateOpts)
+			params := getTestParameters(t, github.cluster, github.vmCreateOpts)
 			logTestParameters(l, params)
-			if _, githubErr := github.MaybePost(t, issueInfo, l, t.failureMsg(), params); githubErr != nil {
-				atomic.AddInt32(&r.numGithubPostErrs, 1)
-				shout(ctx, l, stdout, "failed to post issue: %s", githubErr)
+			if _, err := github.MaybePost(t, l, t.failureMsg(), params); err != nil {
+				shout(ctx, l, stdout, "failed to post issue: %s", err)
 			}
 		}
 
@@ -960,53 +906,11 @@ func (r *testRunner) runWorker(
 					t.Fatalf("unknown lease type %s", leases)
 				}
 
-				// Choose which write optimization to use. These are currently used only
-				// in benchmark tests. For non-benchmark tests, write buffering will be
-				// enabled metamorphically below.
-				switch testSpec.WriteOptimization {
-				case registry.DefaultWriteOptimization:
-				case registry.Pipelining:
-					c.clusterSettings["kv.transaction.write_pipelining.enabled"] = "true"
-					c.clusterSettings["kv.transaction.write_buffering.enabled"] = "false"
-				case registry.Buffering:
-					c.clusterSettings["kv.transaction.write_buffering.enabled"] = "true"
-					c.clusterSettings["kv.transaction.write_pipelining.enabled"] = "false"
-				case registry.PipeliningBuffering:
-					c.clusterSettings["kv.transaction.write_pipelining.enabled"] = "true"
-					c.clusterSettings["kv.transaction.write_buffering.enabled"] = "true"
-				}
-
-				// Apply metamorphic settings not explicitly defined by the test.
-				// These settings should only be applied to non-benchmark tests.
-				if !testSpec.Benchmark {
-					// 50% chance of enabling the rangefeed buffered sender.
-					// 50% change of enabling buffered writes.
-					//
-					// Disabled by default. Disabled for mixed-version tests
-					// because they use a separate mechanism for metamorphic
-					// cluster settings.
-					for _, tc := range []struct {
-						setting string
-						label   string
-					}{
-						{setting: "kv.rangefeed.buffered_sender.enabled", label: "metamorphicBufferedSender"},
-						{setting: "kv.transaction.write_buffering.enabled", label: "metamorphicWriteBuffering"},
-					} {
-						enable := prng.Intn(2) == 0
-						if !t.spec.Suites.Contains(registry.MixedVersion) && enable {
-							c.clusterSettings[tc.setting] = "true"
-							c.status(fmt.Sprintf("metamorphically setting %q to 'true'", tc.setting))
-							t.AddParam(tc.label, fmt.Sprint(enable))
-						}
-					}
-				}
-
 				c.goCoverDir = t.GoCoverArtifactsDir()
 				wStatus.SetTest(t, testToRun)
 				wStatus.SetStatus("running test")
 
-				r.runTest(ctx, t, testToRun.runNum, testToRun.runCount, c, stdout, testL,
-					github, issueInfo)
+				r.runTest(ctx, t, testToRun.runNum, testToRun.runCount, c, stdout, testL, github)
 			}
 		}
 
@@ -1031,25 +935,17 @@ func (r *testRunner) runWorker(
 					// Continue with a fresh cluster.
 					c = nil
 				case NoDebug:
-					if !c.saved() {
-						// On any test failure or error, we destroy the cluster. We could be
-						// more selective, but this sounds safer.
-						l.PrintfCtx(ctx, "destroying cluster %s because: %s", c, failureMsg)
-						c.Destroy(context.Background(), closeLogger, l)
-					}
+					// On any test failure or error, we destroy the cluster. We could be
+					// more selective, but this sounds safer.
+					l.PrintfCtx(ctx, "destroying cluster %s because: %s", c, failureMsg)
+					c.Destroy(context.Background(), closeLogger, l)
 					c = nil
 				}
 			}
 		} else {
 			// Upon success fetch the perf artifacts from the remote hosts.
 			if t.spec.Benchmark {
-				dstDirFn := func(nodeIdx int) string {
-					return fmt.Sprintf("%s/%d.%s", t.ArtifactsDir(), nodeIdx, perfArtifactsDir)
-				}
-				getPerfArtifacts(ctx, c, t, dstDirFn)
-				if t.ExportOpenmetrics() {
-					r.postProcessPerfMetrics(ctx, t, c, dstDirFn)
-				}
+				getPerfArtifacts(ctx, c, t)
 			}
 			if clustersOpt.debugMode == DebugKeepAlways {
 				// We already marked the cluster as a saved cluster above.
@@ -1128,9 +1024,10 @@ fi'`
 }
 
 // getPerfArtifacts retrieves the perf artifacts for the test.
-func getPerfArtifacts(
-	ctx context.Context, c *clusterImpl, t test.Test, dstDirFn func(nodeIdx int) string,
-) {
+func getPerfArtifacts(ctx context.Context, c *clusterImpl, t test.Test) {
+	dstDirFn := func(nodeIdx int) string {
+		return fmt.Sprintf("%s/%d.%s", t.ArtifactsDir(), nodeIdx, perfArtifactsDir)
+	}
 	getArtifacts(ctx, c, t, t.PerfArtifactsDir(), dstDirFn)
 }
 
@@ -1163,8 +1060,7 @@ func (r *testRunner) runTest(
 	c *clusterImpl,
 	stdout io.Writer,
 	l *logger.Logger,
-	github GithubPoster,
-	issueInfo *githubIssueInfo,
+	github *githubIssues,
 ) {
 	testRunID := t.Name()
 	if runCount > 1 {
@@ -1180,15 +1076,7 @@ func (r *testRunner) runTest(
 
 	s := t.Spec().(*registry.TestSpec)
 
-	// Get the Prometheus reachability for the cloud we run the tests on.
-	promReachability := promhelperclient.ProviderReachability(
-		roachtestflags.Cloud.String(),
-		promhelperclient.Default,
-	)
-
-	// If reachability is not None, we can assume that metrics will be scrapped
-	// and that Grafana will display something.
-	grafanaAvailable := promReachability != promhelperclient.None
+	grafanaAvailable := roachtestflags.Cloud == spec.GCE
 	if err := c.addLabels(map[string]string{VmLabelTestName: testRunID, VmLabelTestOwner: t.Owner()}); err != nil {
 		shout(ctx, l, stdout, "failed to add label to cluster [%s] - %s", c.Name(), err)
 		grafanaAvailable = false
@@ -1229,9 +1117,9 @@ func (r *testRunner) runTest(
 			// service messages else the test will be reported as having run twice.
 			if roachtestflags.TeamCity {
 				shout(ctx, l, stdout, "##teamcity[testIgnored name='%s' message='%s' duration='%d']\n",
-					s.Name, TeamCityEscape(skipDetails(s)), t.duration().Milliseconds())
+					s.Name, TeamCityEscape(s.Skip), t.duration().Milliseconds())
 			}
-			shout(ctx, l, stdout, "--- SKIP: %s (%s)\n\t%s\n", s.Name, "N/A", skipDetails(s))
+			shout(ctx, l, stdout, "--- SKIP: %s (%s)\n\t%s\n", s.Name, "N/A", s.Skip)
 		} else {
 			// Delaying the ##teamcity[testStarted...] service message until the test is finished allows us to branch
 			// separately for skipped tests. The duration of the test is passed to ##teamcity[testFinished...] for
@@ -1259,20 +1147,13 @@ func (r *testRunner) runTest(
 					t.resetFailures()
 					t.Error(vmHostError(hostErrorVMNames))
 				}
-				liveMigrationVMNames := getLiveMigrationVMNames(c, l)
-				if liveMigrationVMNames != "" {
-					failureMsg = fmt.Sprintf("VMs had live migrations during the test run: %s\n\n**Other Failures:**\n%s", liveMigrationVMNames, failureMsg)
-					t.resetFailures()
-					t.Error(liveMigrationError(hostErrorVMNames))
-				}
 
 				output := fmt.Sprintf("%s\ntest artifacts and logs in: %s", failureMsg, t.ArtifactsDir())
-				params := getTestParameters(t, issueInfo.cluster, issueInfo.vmCreateOpts)
+				params := getTestParameters(t, github.cluster, github.vmCreateOpts)
 				logTestParameters(l, params)
-				issue, err := github.MaybePost(t, issueInfo, l, output, params)
+				issue, err := github.MaybePost(t, l, output, params)
 				if err != nil {
 					shout(ctx, l, stdout, "failed to post issue: %s", err)
-					atomic.AddInt32(&r.numGithubPostErrs, 1)
 				}
 
 				// If an issue was created (or comment added) on GitHub,
@@ -1335,9 +1216,8 @@ func (r *testRunner) runTest(
 			run:     runNum,
 			start:   t.start,
 			end:     t.end,
-			pass:    !t.Failed() && s.Skip == "",
+			pass:    !t.Failed(),
 			failure: t.failureMsg(),
-			skip:    skipDetails(s),
 		})
 		r.status.Lock()
 		delete(r.status.running, t)
@@ -1353,7 +1233,6 @@ func (r *testRunner) runTest(
 				}
 			} else if s.Skip != "" {
 				r.status.skip[t] = struct{}{}
-				r.status.skipDetails[t] = skipDetails(s)
 			} else {
 				r.status.pass[t] = struct{}{}
 			}
@@ -1380,9 +1259,6 @@ func (r *testRunner) runTest(
 	defer cancel()
 
 	t.taskManager = task.NewManager(runCtx, t.L())
-	testMonitor := newTestMonitor(runCtx, t, c)
-	t.monitor = testMonitor.monitor
-
 	t.mu.Lock()
 	// t.Fatal() will cancel this context.
 	t.mu.cancel = cancel
@@ -1410,14 +1286,28 @@ func (r *testRunner) runTest(
 		// Actively poll for VM preemptions, so we can bail out of tests early and
 		// avoid situations where a test times out and the flake assignment logic fails.
 		monitorForPreemptedVMs(runCtx, t, c, l)
-
-		defer monitorTasks(runCtx, t.taskManager, t, l)()
-		if t.spec.Monitor {
-			testMonitor.start()
-		}
 		// This is the call to actually run the test.
 		s.Run(runCtx, t, c)
+	}()
 
+	// Monitor the task manager for completed events, or failure events and log
+	// them. A failure will call t.Errorf which cancels the test's context.
+	go func() {
+		for {
+			select {
+			case event := <-t.taskManager.CompletedEvents():
+				if event.Err == nil {
+					t.L().Printf("task finished: %s", event.Name)
+					continue
+				} else if event.TriggeredByTest {
+					t.L().Printf("task canceled by test: %s", event.Name)
+					continue
+				}
+				t.Errorf("task `%s` returned error: %v", event.Name, event.Err)
+			case <-runCtx.Done():
+				return
+			}
+		}
 	}()
 
 	var timedOut bool
@@ -1443,7 +1333,6 @@ func (r *testRunner) runTest(
 		if err := c.AddGrafanaAnnotation(ctx, t.L(), grafana.AddAnnotationRequest{Text: annotationText}); err != nil {
 			t.L().Printf(errors.Wrap(err, "error adding annotation for test end").Error())
 		}
-
 	case <-time.After(timeout):
 		// NB: We're adding the timeout failure intentionally without cancelling the context
 		// to capture as much state as possible during artifact collection.
@@ -1452,7 +1341,6 @@ func (r *testRunner) runTest(
 		// We suppress other failures from being surfaced to the top as the timeout is always going
 		// to be the main error and subsequent errors (i.e. context cancelled) add noise.
 		t.suppressFailures()
-
 		timedOut = true
 	}
 
@@ -1475,12 +1363,8 @@ func (r *testRunner) runTest(
 		// We still want to run the post-test assertions even if the test timed out as it
 		// might provide useful information about the health of the nodes. Any assertion failures
 		// will be recorded against, and eventually fail, the test.
-		if t.spec.SkipPostValidations != registry.PostValidationAll {
-			if err := r.postTestAssertions(ctx, t, c, 10*time.Minute); err != nil {
-				l.Printf("error during post test assertions: %v; see test-post-assertions.log for details", err)
-			}
-		} else {
-			l.Printf("skipping all post test assertions due to `PostValidationAll`")
+		if err := r.postTestAssertions(ctx, t, c, 10*time.Minute); err != nil {
+			l.Printf("error during post test assertions: %v; see test-post-assertions.log for details", err)
 		}
 	} else {
 		l.Printf("skipping post test assertions as test failed")
@@ -1547,18 +1431,6 @@ func getHostErrorVMNames(ctx context.Context, c *clusterImpl, l *logger.Logger) 
 	return getVMNames(hostErrorVMs)
 }
 
-// getLiveMigrationVMNames returns a comma separated list of VMs that
-// experienced a live migration over the duration of the test.
-func getLiveMigrationVMNames(c *clusterImpl, l *logger.Logger) string {
-	liveMigrationVMs, err := c.GetLiveMigrationVMs(l)
-	if err != nil {
-		l.Printf("failed to check live migrations:\n%+v", err)
-		return ""
-	}
-
-	return strings.Join(liveMigrationVMs, ", ")
-}
-
 // The assertions here are executed after each test, and may result in a test failure. Test authors
 // may opt out of these assertions by setting the relevant `SkipPostValidations` flag in the test spec.
 // An error caused by a timeout will not result in a failure.
@@ -1585,26 +1457,21 @@ func (r *testRunner) postTestAssertions(
 		}
 
 		validationNode := 0
-		// Shuffle node statuses so that we don't always pick the same node for validation checks.
-		prng.Shuffle(len(statuses), func(i, j int) {
-			statuses[i], statuses[j] = statuses[j], statuses[i]
-		})
-
 		for _, s := range statuses {
 			if s.Err != nil {
-				t.L().Printf("n%d: %s error=%s", s.Node, s.URL, s.Err)
+				t.L().Printf("n%d:/health?ready=1 error=%s", s.Node, s.Err)
 				continue
 			}
 
 			if s.Status != http.StatusOK {
-				t.L().Printf("n%d: %s status=%d body=%s", s.Node, s.URL, s.Status, s.Body)
+				t.L().Printf("n%d:/health?ready=1 status=%d body=%s", s.Node, s.Status, s.Body)
 				continue
 			}
 
 			if validationNode == 0 {
 				validationNode = s.Node // NB: s.Node is never zero
 			}
-			t.L().Printf("n%d: %s status=200 ok", s.Node, s.URL)
+			t.L().Printf("n%d:/health?ready=1 status=200 ok", s.Node)
 		}
 
 		// We avoid trying to do this when t.Failed() (and in particular when there
@@ -1664,10 +1531,11 @@ func (r *testRunner) postTestAssertions(
 func (r *testRunner) teardownTest(
 	ctx context.Context, t *testImpl, c *clusterImpl, timedOut bool,
 ) error {
-	// Check for rare conditions (such as storage durability crashes) at this
-	// point. This may still mark the test as failed (so that we enter artifacts
-	// collection below).
-	r.maybeSaveClusterDueToInvariantProblems(ctx, t, c)
+	defer func() {
+		// Terminate tasks to ensure that any stray tasks are cleaned up.
+		t.L().Printf("terminating tasks")
+		t.taskManager.Terminate(t.L())
+	}()
 
 	if timedOut || t.Failed() || roachtestflags.AlwaysCollectArtifacts {
 		err := r.collectArtifacts(ctx, t, c, timedOut, time.Hour)
@@ -1686,9 +1554,6 @@ func (r *testRunner) teardownTest(
 				t.mu.cancel()
 			}
 			t.L().Printf("test timed out; check __stacks.log and CRDB logs for goroutine dumps")
-
-			// Cancel tasks to ensure that any stray tasks are cleaned up.
-			t.taskManager.Cancel()
 		}
 		return err
 	}
@@ -1721,47 +1586,6 @@ func (r *testRunner) teardownTest(
 		getCpuProfileArtifacts(ctx, c, t)
 	}
 	return nil
-}
-
-// maybeSaveClusterDueToInvariantProblems detects rare conditions (such as
-// storage durability crashes) on the cluster and if one is detected,
-// unconditionally preserves the cluster for future debugging. It also creates
-// volume snapshots so that the durable state close to the incident is
-// preserved.
-func (r *testRunner) maybeSaveClusterDueToInvariantProblems(
-	ctx context.Context, t *testImpl, c *clusterImpl,
-) {
-	if len(c.Nodes()) == 0 {
-		return // test only
-	}
-	dets, err := c.RunWithDetails(ctx, t.L(), option.WithNodes(c.All()),
-		"([ -d logs ] && grep -RE '^F.*Was the raft log corrupted' logs) || true",
-	)
-	for _, det := range dets {
-		err = errors.CombineErrors(err, det.Err)
-	}
-	if err != nil {
-		t.L().Printf(
-			"failed to check whether to save cluster due to invariant problems: %s",
-			err,
-		)
-		return
-	}
-
-	for _, det := range dets {
-		if det.Stdout != "" {
-			_ = c.Extend(ctx, 7*24*time.Hour, t.L())
-			timestamp := timeutil.Now().Format("20060102_150405")
-			snapName := fmt.Sprintf("invariant-problem-%s-%s", c.Name(), timestamp)
-			if _, err := c.CreateSnapshot(ctx, snapName); err != nil {
-				t.L().Printf("failed to create snapshot %q: %s", snapName, err)
-				snapName = "<failed>"
-			}
-			c.Save(ctx, "invariant problem - snap name "+snapName, t.L())
-			t.Error("invariant problem - snap name " + snapName + ":\n" + det.Stdout)
-			return
-		}
-	}
 }
 
 func (r *testRunner) collectArtifacts(
@@ -1849,11 +1673,8 @@ func (r *testRunner) collectArtifacts(
 		if err := c.FetchPebbleCheckpoints(ctx, t.L()); err != nil {
 			t.L().Printf("failed to fetch Pebble checkpoints: %s", err)
 		}
-		// Bypass the collection of timeseries data for "large" clusters.
-		if c.spec.NodeCount < 30 {
-			if err := c.FetchTimeseriesData(ctx, t.L()); err != nil {
-				t.L().Printf("failed to fetch timeseries data: %s", err)
-			}
+		if err := c.FetchTimeseriesData(ctx, t.L()); err != nil {
+			t.L().Printf("failed to fetch timeseries data: %s", err)
 		}
 		if err := c.FetchDebugZip(ctx, t.L(), "debug.zip"); err != nil {
 			t.L().Printf("failed to collect zip: %s", err)
@@ -2079,115 +1900,6 @@ func (r *testRunner) getCompletedTests() []completedTestInfo {
 	return res
 }
 
-func (r *testRunner) postProcessPerfMetrics(
-	ctx context.Context, t *testImpl, c *clusterImpl, dstDirFn func(nodeIdx int) string,
-) {
-	// Initialize metrics collector
-	metrics := &perfMetricsCollector{
-		histogramMetrics: &roachtestutil.HistogramMetric{},
-		t:                t,
-		ctx:              ctx,
-	}
-
-	// Collect and aggregate metrics from all relevant nodes
-	if err := metrics.collectFromNodes(c, dstDirFn, t.L()); err != nil {
-		t.L().PrintfCtx(ctx, "failed to collect metrics: %v", err)
-		return
-	}
-
-	// Process and write aggregated metrics
-	if err := metrics.processAndWrite(dstDirFn); err != nil {
-		t.L().PrintfCtx(ctx, "failed to process and write metrics: %v", err)
-	}
-}
-
-func (m *perfMetricsCollector) collectFromNodes(
-	c *clusterImpl, dstDirFn func(nodeIdx int) string, log *logger.Logger,
-) error {
-	for _, node := range getPerfArtifactsNode(c) {
-		files, err := m.findMetricsFiles(dstDirFn(node))
-		if err != nil {
-			log.Printf("failed to find metrics files for node %d will continue: %s", node, err)
-			continue
-		}
-		m.perfNodes = append(m.perfNodes, node)
-		if err := m.processFiles(files, log); err != nil {
-			return errors.Wrapf(err, "error while processing files")
-		}
-	}
-	return nil
-}
-
-func (m *perfMetricsCollector) findMetricsFiles(dirPath string) ([]string, error) {
-	var files []string
-	err := filepath.WalkDir(dirPath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() && strings.Contains(d.Name(), roachtestutil.GetBenchmarkMetricsFileName(m.t)) {
-			files = append(files, path)
-		}
-		return nil
-	})
-	return files, err
-}
-
-func (m *perfMetricsCollector) processFiles(files []string, log *logger.Logger) error {
-	for _, file := range files {
-		fileBytes, err := os.ReadFile(file)
-		if err != nil {
-			return errors.Wrapf(err, "reading file %s:", file)
-		}
-
-		histograms, labels, err := roachtestutil.GetHistogramMetrics(bytes.NewBuffer(fileBytes))
-		if err != nil {
-			// This file didn't have valid histograms, continue with other files
-			log.Errorf("error getting histogram metrics for file %s: %v", file, err)
-			continue
-		}
-
-		m.histogramMetrics.Summaries = append(m.histogramMetrics.Summaries, histograms.Summaries...)
-		m.elapsed += int64(histograms.Elapsed)
-		m.labels = labels
-		m.count++
-	}
-	return nil
-}
-
-func (m *perfMetricsCollector) processAndWrite(dstDirFn func(nodeIdx int) string) error {
-	if m.count == 0 {
-		return errors.New("no metrics files found")
-	}
-	m.histogramMetrics.Elapsed = roachtestutil.MetricPoint(m.elapsed / m.count)
-
-	// Post-process metrics
-	aggregatedMetrics, err := roachtestutil.PostProcessMetrics(
-		m.t.Name(),
-		m.t.spec.GetPostProcessWorkloadMetricsFunction(),
-		m.histogramMetrics,
-	)
-	if err != nil {
-		return errors.Wrapf(err, "post-processing metrics")
-	}
-
-	// Convert to bytes
-	finalMetricsBuffer := &bytes.Buffer{}
-	if err := roachtestutil.GetAggregatedMetricBytes(aggregatedMetrics, m.labels, m.t.start, finalMetricsBuffer); err != nil {
-		return errors.Wrapf(err, "converting metrics to bytes")
-	}
-
-	// Write the file to the first directory of any node where perf artifacts are present
-	outputPath := filepath.Join(dstDirFn(m.perfNodes[0]), "aggregated_stats.om")
-	return os.WriteFile(outputPath, finalMetricsBuffer.Bytes(), 0644)
-}
-
-func getPerfArtifactsNode(c cluster.Cluster) option.NodeListOption {
-	if c.Spec().WorkloadNode {
-		return c.WorkloadNode()
-	}
-	return c.All()
-}
-
 // completedTestInfo represents information on a completed test run.
 type completedTestInfo struct {
 	test    string
@@ -2196,7 +1908,6 @@ type completedTestInfo struct {
 	end     time.Time
 	pass    bool
 	failure string
-	skip    string
 }
 
 type workerErrors struct {
@@ -2324,7 +2035,6 @@ func logTestParameters(l *logger.Logger, params map[string]string) {
 
 func getTestParameters(t *testImpl, c *clusterImpl, createOpts *vm.CreateOpts) map[string]string {
 	spec := t.spec
-
 	clusterParams := map[string]string{
 		"cloud":                  roachtestflags.Cloud.String(),
 		"cpu":                    fmt.Sprintf("%d", spec.Cluster.CPUs),
@@ -2332,7 +2042,6 @@ func getTestParameters(t *testImpl, c *clusterImpl, createOpts *vm.CreateOpts) m
 		"runtimeAssertionsBuild": fmt.Sprintf("%t", roachtestutil.UsingRuntimeAssertions(t)),
 		"coverageBuild":          fmt.Sprintf("%t", t.goCoverEnabled),
 	}
-
 	// Emit CPU architecture only if it was specified; otherwise, it's captured below, assuming cluster was created.
 	if spec.Cluster.Arch != "" {
 		clusterParams["arch"] = string(spec.Cluster.Arch)
@@ -2350,13 +2059,6 @@ func getTestParameters(t *testImpl, c *clusterImpl, createOpts *vm.CreateOpts) m
 			// N.B. when Arch is specified, it cannot differ from cluster's arch.
 			// Hence, we only emit when arch was unspecified.
 			clusterParams["arch"] = string(c.arch)
-		}
-
-		c.destroyState.mu.Lock()
-		saved, savedMsg := c.destroyState.mu.saved, c.destroyState.mu.savedMsg
-		c.destroyState.mu.Unlock()
-		if saved {
-			clusterParams["saved"] = savedMsg
 		}
 	}
 
@@ -2380,39 +2082,6 @@ var getPreemptedVMsHook = func(c cluster.Cluster, ctx context.Context, l *logger
 var pollPreemptionInterval struct {
 	syncutil.Mutex
 	interval time.Duration
-}
-
-func monitorTasks(
-	ctx context.Context, taskManager task.Manager, t test.Test, l *logger.Logger,
-) func() {
-	// Monitor the task manager for completed events, or failure events and log
-	// them. A failure will call t.Errorf which cancels the test's context.
-	go func() {
-		for {
-			select {
-			case event := <-taskManager.CompletedEvents():
-				if event.Err == nil {
-					l.Printf("task finished: %s", event.Name)
-					continue
-				} else if event.TriggeredByTest {
-					t.L().Printf("task canceled by test: %s", event.Name)
-					continue
-				}
-				t.Errorf("task `%s` returned error: %v", event.Name, event.Err)
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	return func() {
-		// Terminate tasks to ensure that any stray tasks are cleaned up.
-		// Tasks can only be safely terminated after the test has returned. If
-		// we terminate the manager before test code has finished executing, the
-		// test could try to initiate new tasks resulting in undefined behavior.
-		t.L().Printf("terminating stray tasks")
-		taskManager.Terminate(t.L())
-	}
 }
 
 func monitorForPreemptedVMs(ctx context.Context, t test.Test, c cluster.Cluster, l *logger.Logger) {

@@ -24,7 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/multitenant"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util"
@@ -87,20 +87,22 @@ var (
 	metaDistSenderCrossZoneBatchRequestBytes = metric.Metadata{
 		Name: "distsender.batch_requests.cross_zone.bytes",
 		Help: `Total byte count of replica-addressed batch requests processed cross
-		zone within the same region when zone tiers are configured. If region tiers
-		are not set, it is assumed to be within the same region. To ensure accurate
-		monitoring of cross-zone data transfer, region and zone tiers should be
-		consistently configured across all nodes.`,
+		zone within the same region when region and zone tiers are configured.
+		However, if the region tiers are not configured, this count may also include
+		batch data sent between different regions. Ensuring consistent configuration
+		of region and zone tiers across nodes helps to accurately monitor the data
+		transmitted.`,
 		Measurement: "Bytes",
 		Unit:        metric.Unit_BYTES,
 	}
 	metaDistSenderCrossZoneBatchResponseBytes = metric.Metadata{
 		Name: "distsender.batch_responses.cross_zone.bytes",
 		Help: `Total byte count of replica-addressed batch responses received cross
-		zone within the same region when zone tiers are configured. If region tiers
-		are not set, it is assumed to be within the same region. To ensure accurate
-		monitoring of cross-zone data transfer, region and zone tiers should be
-		consistently configured across all nodes.`,
+		zone within the same region when region and zone tiers are configured.
+		However, if the region tiers are not configured, this count may also include
+		batch data received between different regions. Ensuring consistent
+		configuration of region and zone tiers across nodes helps to accurately
+		monitor the data transmitted.`,
 		Measurement: "Bytes",
 		Unit:        metric.Unit_BYTES,
 	}
@@ -145,18 +147,12 @@ var (
 		Help:        "Number of replica-addressed RPCs sent due to per-replica errors",
 		Measurement: "RPCs",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_DISTRIBUTED,
-		HowToUse:    `RPC errors do not necessarily indicate a problem. This metric tracks remote procedure calls that return a status value other than "success". A non-success status of an RPC should not be misconstrued as a network transport issue. It is database code logic executed on another cluster node. The non-success status is a result of an orderly execution of an RPC that reports a specific logical condition.`,
 	}
 	metaDistSenderNotLeaseHolderErrCount = metric.Metadata{
 		Name:        "distsender.errors.notleaseholder",
 		Help:        "Number of NotLeaseHolderErrors encountered from replica-addressed RPCs",
 		Measurement: "Errors",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_DISTRIBUTED,
-		HowToUse:    `Errors of this type are normal during elastic cluster topology changes when leaseholders are actively rebalancing. They are automatically retried. However they may create occasional response time spikes. In that case, this metric may provide the explanation of the cause.`,
 	}
 	metaDistSenderInLeaseTransferBackoffsCount = metric.Metadata{
 		Name:        "distsender.errors.inleasetransferbackoffs",
@@ -610,25 +606,21 @@ func (DistSenderRangeFeedMetrics) MetricStruct() {}
 
 // updateCrossLocalityMetricsOnReplicaAddressedBatchRequest updates
 // DistSenderMetrics for batch requests that have been divided and are currently
-// forwarding to a specific replica for the corresponding range. These metrics
-// may include batches that were not successfully sent but were terminated at an
-// early stage.
+// forwarding to a specific replica for the corresponding range. The metrics
+// being updated include 1. total byte count of replica-addressed batch requests
+// processed 2. cross-region metrics, which monitor activities across different
+// regions, and 3. cross-zone metrics, which monitor activities across different
+// zones within the same region or in cases where region tiers are not
+// configured. These metrics may include batches that were not successfully sent
+// but were terminated at an early stage.
 func (dm *DistSenderMetrics) updateCrossLocalityMetricsOnReplicaAddressedBatchRequest(
 	comparisonResult roachpb.LocalityComparisonType, inc int64,
 ) {
-	// Update metrics for total byte count of replica-addressed batch requests
-	// processed.
 	dm.ReplicaAddressedBatchRequestBytes.Inc(inc)
-	// In cases where both region and zone tiers are not configured,
-	// comparisonResult will be UNDEFINED.
 	switch comparisonResult {
 	case roachpb.LocalityComparisonType_CROSS_REGION:
-		// Update cross-region metrics: monitor activities across different regions.
 		dm.CrossRegionBatchRequestBytes.Inc(inc)
 	case roachpb.LocalityComparisonType_SAME_REGION_CROSS_ZONE:
-		// Update cross-zone metrics: monitor activities across different zones
-		// within the same region. If region tiers are not set, it is assumed to be
-		// within the same region.
 		dm.CrossZoneBatchRequestBytes.Inc(inc)
 	}
 }
@@ -642,8 +634,6 @@ func (dm *DistSenderMetrics) updateCrossLocalityMetricsOnReplicaAddressedBatchRe
 	comparisonResult roachpb.LocalityComparisonType, inc int64,
 ) {
 	dm.ReplicaAddressedBatchResponseBytes.Inc(inc)
-	// Read more about locality comparison in
-	// updateCrossLocalityMetricsOnReplicaAddressedBatchRequest above.
 	switch comparisonResult {
 	case roachpb.LocalityComparisonType_CROSS_REGION:
 		dm.CrossRegionBatchResponseBytes.Inc(inc)
@@ -1098,7 +1088,7 @@ func (ds *DistSender) initAndVerifyBatch(ctx context.Context, ba *kvpb.BatchRequ
 				foundReverse = true
 
 			case *kvpb.QueryIntentRequest, *kvpb.EndTxnRequest,
-				*kvpb.GetRequest, *kvpb.ResolveIntentRequest, *kvpb.DeleteRequest, *kvpb.PutRequest:
+				*kvpb.GetRequest, *kvpb.ResolveIntentRequest, *kvpb.DeleteRequest:
 				// Accepted point requests that can be in batches with limit.
 
 			default:
@@ -1232,6 +1222,12 @@ func (ds *DistSender) Send(
 		splitET = true
 	}
 	parts := splitBatchAndCheckForRefreshSpans(ba, splitET)
+	if len(parts) > 1 && (ba.MaxSpanRequestKeys != 0 || ba.TargetBytes != 0) {
+		// We already verified above that the batch contains only scan requests of the same type.
+		// Such a batch should never need splitting.
+		log.Fatalf(ctx, "batch with MaxSpanRequestKeys=%d, TargetBytes=%d needs splitting",
+			redact.Safe(ba.MaxSpanRequestKeys), redact.Safe(ba.TargetBytes))
+	}
 	var singleRplChunk [1]*kvpb.BatchResponse
 	rplChunks := singleRplChunk[:0:1]
 
@@ -1354,7 +1350,7 @@ func (ds *DistSender) sendProxyRequest(
 
 	// Use the same connection class as we normally use for this request.
 	opts := SendOptions{
-		class:   rpcbase.ConnectionClassForKey(ba.ProxyRangeInfo.Desc.RSpan().Key, ba.ConnectionClass),
+		class:   rpc.ConnectionClassForKey(ba.ProxyRangeInfo.Desc.RSpan().Key, ba.ConnectionClass),
 		metrics: &ds.metrics,
 	}
 
@@ -1504,7 +1500,11 @@ func (ds *DistSender) divideAndSendParallelCommit(
 	qiBatchIdx := batchIdx + 1
 	qiResponseCh := make(chan response, 1)
 
-	sendPreCommit := func(ctx context.Context) {
+	runTask := ds.stopper.RunAsyncTask
+	if ds.disableParallelBatches {
+		runTask = ds.stopper.RunTask
+	}
+	if err := runTask(ctx, "kv.DistSender: sending pre-commit query intents", func(ctx context.Context) {
 		log.VEvent(ctx, 3, "sending split out pre-commit QueryIntent batch")
 		// Map response index to the original un-swapped batch index.
 		// Remember that we moved the last QueryIntent in this batch
@@ -1528,24 +1528,8 @@ func (ds *DistSender) divideAndSendParallelCommit(
 		// concurrently with the EndTxn batch below.
 		reply, pErr := ds.divideAndSendBatchToRanges(ctx, qiBa, qiRS, qiIsReverse, true /* withCommit */, qiBatchIdx)
 		qiResponseCh <- response{reply: reply, positions: positions, pErr: pErr}
-	}
-
-	const taskName = "kv.DistSender: sending pre-commit query intents"
-	if ds.disableParallelBatches {
-		if err := ds.stopper.RunTask(ctx, taskName, sendPreCommit); err != nil {
-			return nil, kvpb.NewError(err)
-		}
-	} else {
-		ctx, hdl, err := ds.stopper.GetHandle(ctx, stop.TaskOpts{
-			TaskName: taskName,
-		})
-		if err != nil {
-			return nil, kvpb.NewError(err)
-		}
-		go func(ctx context.Context) {
-			defer hdl.Activate(ctx).Release(ctx)
-			sendPreCommit(ctx)
-		}(ctx)
+	}); err != nil {
+		return nil, kvpb.NewError(err)
 	}
 
 	// Adjust the original batch request to ignore the pre-commit
@@ -2085,25 +2069,26 @@ func (ds *DistSender) sendPartialBatchAsync(
 	responseCh chan response,
 	positions []int,
 ) bool {
-	ctx, hdl, err := ds.stopper.GetHandle(ctx, stop.TaskOpts{
-		TaskName:   "kv.DistSender: sending partial batch",
-		SpanOpt:    stop.ChildSpan,
-		Sem:        ds.asyncSenderSem,
-		WaitForSem: false,
-	})
-	if err != nil {
+	if err := ds.stopper.RunAsyncTaskEx(
+		ctx,
+		stop.TaskOpts{
+			TaskName:   "kv.DistSender: sending partial batch",
+			SpanOpt:    stop.ChildSpan,
+			Sem:        ds.asyncSenderSem,
+			WaitForSem: false,
+		},
+		func(ctx context.Context) {
+			ds.metrics.AsyncSentCount.Inc(1)
+			ds.metrics.AsyncInProgress.Inc(1)
+			defer ds.metrics.AsyncInProgress.Dec(1)
+			resp := ds.sendPartialBatch(ctx, ba, rs, isReverse, withCommit, batchIdx, routing)
+			resp.positions = positions
+			responseCh <- resp
+		},
+	); err != nil {
 		ds.metrics.AsyncThrottledCount.Inc(1)
 		return false
 	}
-	go func(ctx context.Context) {
-		defer hdl.Activate(ctx).Release(ctx)
-		ds.metrics.AsyncSentCount.Inc(1)
-		ds.metrics.AsyncInProgress.Inc(1)
-		defer ds.metrics.AsyncInProgress.Dec(1)
-		resp := ds.sendPartialBatch(ctx, ba, rs, isReverse, withCommit, batchIdx, routing)
-		resp.positions = positions
-		responseCh <- resp
-	}(ctx)
 	return true
 }
 
@@ -2249,8 +2234,6 @@ func (ds *DistSender) sendPartialBatch(
 			// RPC is not retried any more.
 			if err != nil || reply.Error != nil {
 				ds.metrics.SlowRPCs.Inc(1)
-				// This defer is intended to run after the loop; this code runs at most once per loop.
-				//nolint:deferloop
 				defer func(tBegin crtime.Mono, attempts int64) {
 					ds.metrics.SlowRPCs.Dec(1)
 					var s redact.StringBuilder
@@ -2630,7 +2613,7 @@ func (ds *DistSender) sendToReplicas(
 	// DEFAULT if the class is unknown, to handle mixed-version states gracefully.
 	// Other kinds of overrides are possible, see rpc.ConnectionClassForKey().
 	opts := SendOptions{
-		class:                  rpcbase.ConnectionClassForKey(desc.RSpan().Key, ba.ConnectionClass),
+		class:                  rpc.ConnectionClassForKey(desc.RSpan().Key, ba.ConnectionClass),
 		metrics:                &ds.metrics,
 		dontConsiderConnHealth: ds.dontConsiderConnHealth,
 	}
@@ -3176,7 +3159,15 @@ func (ds *DistSender) getLocalityComparison(
 		log.VEventf(ctx, 5, "failed to perform look up for node descriptor %v", err)
 		return roachpb.LocalityComparisonType_UNDEFINED
 	}
-	return gatewayNodeDesc.Locality.Compare(destinationNodeDesc.Locality)
+
+	comparisonResult, regionValid, zoneValid := gatewayNodeDesc.Locality.CompareWithLocality(destinationNodeDesc.Locality)
+	if !regionValid {
+		log.VInfof(ctx, 5, "unable to determine if the given nodes are cross region")
+	}
+	if !zoneValid {
+		log.VInfof(ctx, 5, "unable to determine if the given nodes are cross zone")
+	}
+	return comparisonResult
 }
 
 func (ds *DistSender) maybeIncrementErrCounters(br *kvpb.BatchResponse, err error) {

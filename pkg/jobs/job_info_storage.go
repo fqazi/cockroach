@@ -99,6 +99,13 @@ func (i ProgressStorage) Set(
 	ctx, sp := tracing.ChildSpan(ctx, "write-job-progress")
 	defer sp.Finish()
 
+	if _, err := txn.ExecEx(
+		ctx, "write-job-progress-delete", txn.KV(), sessiondata.NodeUserSessionDataOverride,
+		`DELETE FROM system.job_progress WHERE job_id = $1`, i,
+	); err != nil {
+		return err
+	}
+
 	var frac, ts interface{}
 	if !math.IsNaN(fraction) {
 		frac = fraction
@@ -107,12 +114,6 @@ func (i ProgressStorage) Set(
 		ts = resolved.AsOfSystemTime()
 	}
 
-	if _, err := txn.ExecEx(
-		ctx, "write-job-progress-delete", txn.KV(), sessiondata.NodeUserSessionDataOverride,
-		`DELETE FROM system.job_progress where job_id = $1`,
-		i); err != nil {
-		return err
-	}
 	if _, err := txn.ExecEx(
 		ctx, "write-job-progress-insert", txn.KV(), sessiondata.NodeUserSessionDataOverride,
 		`INSERT INTO system.job_progress (job_id, written, fraction, resolved) VALUES ($1, now(), $2, $3)`,
@@ -179,20 +180,25 @@ func (i StatusStorage) Set(ctx context.Context, txn isql.Txn, status string) err
 	ctx, sp := tracing.ChildSpan(ctx, "write-job-status")
 	defer sp.Finish()
 
-	if err := MessageStorage(i).Record(ctx, txn, "status", status); err != nil {
-		return err
-	}
-
+	// Delete any existing status row in the same transaction before replacing it
+	// with the new one.
 	if err := i.Clear(ctx, txn); err != nil {
 		return err
 	}
 
-	_, err := txn.ExecEx(
+	if _, err := txn.ExecEx(
 		ctx, "write-job-status-insert", txn.KV(), sessiondata.NodeUserSessionDataOverride,
 		`INSERT INTO system.job_status (job_id, written, status) VALUES ($1, now(), $2)`,
 		i, status,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+
+	if err := MessageStorage(i).Record(ctx, txn, "status", status); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // Get gets the current status mesasge for a job, if any.
@@ -409,31 +415,31 @@ func (i InfoStorage) get(ctx context.Context, opName, infoKey string) ([]byte, b
 	return []byte(*value), true, nil
 }
 
-func (i InfoStorage) write(
-	ctx context.Context, infoKey string, value []byte, firstWrite bool,
-) error {
+func (i InfoStorage) write(ctx context.Context, infoKey string, value []byte) error {
 	return i.doWrite(ctx, func(ctx context.Context, j *Job, txn isql.Txn) error {
-		if !firstWrite {
-			if _, err := txn.ExecEx(
-				ctx, "write-job-info-delete", txn.KV(),
-				sessiondata.NodeUserSessionDataOverride,
-				"DELETE FROM system.job_info WHERE job_id = $1 AND info_key::string = $2",
-				j.ID(), infoKey,
-			); err != nil {
-				return err
-			}
+		// First clear out any older revisions of this info.
+		_, err := txn.ExecEx(
+			ctx, "write-job-info-delete", txn.KV(),
+			sessiondata.NodeUserSessionDataOverride,
+			"DELETE FROM system.job_info WHERE job_id = $1 AND info_key::string = $2",
+			j.ID(), infoKey,
+		)
+		if err != nil {
+			return err
 		}
-		if value != nil {
-			if _, err := txn.ExecEx(
-				ctx, "write-job-info-insert", txn.KV(),
-				sessiondata.NodeUserSessionDataOverride,
-				`INSERT INTO system.job_info (job_id, info_key, written, value) VALUES ($1, $2, now(), $3)`,
-				j.ID(), infoKey, value,
-			); err != nil {
-				return err
-			}
+
+		if value == nil {
+			// Nothing else to do.
+			return nil
 		}
-		return nil
+		// Write the new info, using the same transaction.
+		_, err = txn.ExecEx(
+			ctx, "write-job-info-insert", txn.KV(),
+			sessiondata.NodeUserSessionDataOverride,
+			`INSERT INTO system.job_info (job_id, info_key, written, value) VALUES ($1, $2, now(), $3)`,
+			j.ID(), infoKey, value,
+		)
+		return err
 	})
 }
 
@@ -542,22 +548,12 @@ func (i InfoStorage) Write(ctx context.Context, infoKey string, value []byte) er
 	if value == nil {
 		return errors.AssertionFailedf("missing value (infoKey %q)", infoKey)
 	}
-	return i.write(ctx, infoKey, value, false /* firstWrite */)
-}
-
-// WriteFirstKey writes the provided value to an info record for the provided
-// jobID and infoKey via a blind insert. It is the caller's responsibility to
-// ensure that the info record does not already exist.
-func (i InfoStorage) WriteFirstKey(ctx context.Context, infoKey string, value []byte) error {
-	if value == nil {
-		return errors.AssertionFailedf("missing value (infoKey %q)", infoKey)
-	}
-	return i.write(ctx, infoKey, value, true /* firstWrite */)
+	return i.write(ctx, infoKey, value)
 }
 
 // Delete removes the info record for the provided infoKey.
 func (i InfoStorage) Delete(ctx context.Context, infoKey string) error {
-	return i.write(ctx, infoKey, nil /* value */, false /* firstWrite */)
+	return i.write(ctx, infoKey, nil /* value */)
 }
 
 // DeleteRange removes the info records between the provided
@@ -672,18 +668,4 @@ func (i InfoStorage) GetLegacyProgress(ctx context.Context, opName string) ([]by
 // WriteLegacyProgress writes the job's Progress to the system.job_info table.
 func (i InfoStorage) WriteLegacyProgress(ctx context.Context, progress []byte) error {
 	return i.Write(ctx, LegacyProgressKey, progress)
-}
-
-// writeFirstLegacyProgress writes the job's Progress to the system.job_info table
-// via a blind insert. It is the caller's responsibility to ensure that the
-// info record does not already exist.
-func (i InfoStorage) writeFirstLegacyProgress(ctx context.Context, progress []byte) error {
-	return i.WriteFirstKey(ctx, LegacyProgressKey, progress)
-}
-
-// writeFirstLegacyPayload writes the job's Payload to the system.job_info table
-// via a blind insert. It is the caller's responsibility to ensure that the
-// info record does not already exist.
-func (i InfoStorage) writeFirstLegacyPayload(ctx context.Context, payload []byte) error {
-	return i.WriteFirstKey(ctx, LegacyPayloadKey, payload)
 }

@@ -22,7 +22,8 @@ import (
 type tableDeleter struct {
 	tableWriterBase
 
-	rd row.Deleter
+	rd    row.Deleter
+	alloc *tree.DatumAlloc
 }
 
 // init initializes the tableDeleter with a Txn.
@@ -38,29 +39,15 @@ func (td *tableDeleter) init(_ context.Context, txn *kv.Txn, evalCtx *eval.Conte
 // to avoid updating when performing row modification. This is necessary
 // because not all rows are indexed by partial indexes.
 //
-// The VectorIndexUpdateHelper is used to determine which partitions to update
-// in each vector index. This is necessary because these values are not part
-// of the table, and are materialized only for the purpose of updating vector
-// indexes.
-//
-// The mustValidateOldPKValues parameter indicates whether the expected previous
-// row must be verified (using CPut).
-//
 // The traceKV parameter determines whether the individual K/V operations
 // should be logged to the context. We use a separate argument here instead
 // of a Value field on the context because Value access in context.Context
 // is rather expensive.
 func (td *tableDeleter) row(
-	ctx context.Context,
-	values tree.Datums,
-	pm row.PartialIndexUpdateHelper,
-	vh row.VectorIndexUpdateHelper,
-	oth row.OriginTimestampCPutHelper,
-	mustValidateOldPKValues bool,
-	traceKV bool,
+	ctx context.Context, values tree.Datums, pm row.PartialIndexUpdateHelper, traceKV bool,
 ) error {
 	td.currentBatchSize++
-	return td.rd.DeleteRow(ctx, td.b, values, pm, vh, oth, mustValidateOldPKValues, traceKV)
+	return td.rd.DeleteRow(ctx, td.b, values, pm, nil, traceKV)
 }
 
 // deleteIndex runs the kv operations necessary to delete all kv entries in the

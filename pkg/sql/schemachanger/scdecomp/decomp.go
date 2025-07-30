@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -275,7 +274,7 @@ func GetSequenceOptions(
 	addSequenceOption(tree.SeqOptMaxValue, defaultOpts.MaxValue, opts.MaxValue)
 	addSequenceOption(tree.SeqOptStart, defaultOpts.Start, opts.Start)
 	addSequenceOption(tree.SeqOptVirtual, defaultOpts.Virtual, opts.Virtual)
-	addSequenceOption(tree.SeqOptCacheSession, defaultOpts.SessionCacheSize, opts.SessionCacheSize)
+	addSequenceOption(tree.SeqOptCache, defaultOpts.CacheSize, opts.CacheSize)
 	addSequenceOption(tree.SeqOptCacheNode, defaultOpts.NodeCacheSize, opts.NodeCacheSize)
 	addSequenceOption(tree.SeqOptAs, defaultOpts.AsIntegerType, opts.AsIntegerType)
 	return sequenceOptions
@@ -302,7 +301,6 @@ func (w *walkCtx) walkRelation(tbl catalog.TableDescriptor) {
 			ViewID:          tbl.GetID(),
 			UsesTypeIDs:     catalog.MakeDescriptorIDSet(tbl.GetDependsOnTypes()...).Ordered(),
 			UsesRelationIDs: catalog.MakeDescriptorIDSet(tbl.GetDependsOn()...).Ordered(),
-			UsesRoutineIDs:  catalog.MakeDescriptorIDSet(tbl.GetDependsOnFunctions()...).Ordered(),
 			IsTemporary:     tbl.IsTemporary(),
 			IsMaterialized:  tbl.MaterializedView(),
 			ForwardReferences: func(tbl catalog.TableDescriptor) []*scpb.View_Reference {
@@ -316,7 +314,7 @@ func (w *walkCtx) walkRelation(tbl catalog.TableDescriptor) {
 						panic(err)
 					}
 
-					err = toDesc.ForeachDependedOnBy(func(dep *descpb.TableDescriptor_Reference) error {
+					_ = toDesc.ForeachDependedOnBy(func(dep *descpb.TableDescriptor_Reference) error {
 						if dep.ID != tbl.GetID() {
 							return nil
 						}
@@ -337,9 +335,6 @@ func (w *walkCtx) walkRelation(tbl catalog.TableDescriptor) {
 						result = append(result, ref)
 						return nil
 					})
-					if err != nil {
-						panic(err)
-					}
 				}
 
 				return result
@@ -421,12 +416,10 @@ func (w *walkCtx) walkRelation(tbl catalog.TableDescriptor) {
 		w.walkPolicy(tbl, &policies[i])
 	}
 
-	if err := tbl.ForeachDependedOnBy(func(dep *descpb.TableDescriptor_Reference) error {
+	_ = tbl.ForeachDependedOnBy(func(dep *descpb.TableDescriptor_Reference) error {
 		w.backRefs.Add(dep.ID)
 		return nil
-	}); err != nil {
-		panic(err)
-	}
+	})
 	for _, fk := range tbl.InboundForeignKeys() {
 		w.backRefs.Add(fk.GetOriginTableID())
 	}
@@ -475,12 +468,6 @@ func (w *walkCtx) walkRelation(tbl catalog.TableDescriptor) {
 	if tbl.IsSchemaLocked() {
 		w.ev(scpb.Status_PUBLIC, &scpb.TableSchemaLocked{TableID: tbl.GetID()})
 	}
-	if tbl.IsRowLevelSecurityEnabled() {
-		w.ev(scpb.Status_PUBLIC, &scpb.RowLevelSecurityEnabled{TableID: tbl.GetID()})
-	}
-	if tbl.IsRowLevelSecurityForced() {
-		w.ev(scpb.Status_PUBLIC, &scpb.RowLevelSecurityForced{TableID: tbl.GetID()})
-	}
 	if tbl.TableDesc().LDRJobIDs != nil {
 		w.ev(scpb.Status_PUBLIC, &scpb.LDRJobIDs{
 			TableID: tbl.GetID(),
@@ -504,12 +491,6 @@ func (w *walkCtx) walkLocality(tbl catalog.TableDescriptor, l *catpb.LocalityCon
 			TableID: tbl.GetID(),
 			As:      as,
 		})
-		if fkID := tbl.GetRegionalByRowUsingConstraint(); fkID != descpb.ConstraintID(0) {
-			w.ev(scpb.Status_PUBLIC, &scpb.TableLocalityRegionalByRowUsingConstraint{
-				TableID:      tbl.GetID(),
-				ConstraintID: fkID,
-			})
-		}
 	} else if rbt := l.GetRegionalByTable(); rbt != nil {
 		if rgn := rbt.Region; rgn != nil {
 			parent := w.lookupFn(tbl.GetParentID())
@@ -651,8 +632,7 @@ func (w *walkCtx) walkIndex(tbl catalog.TableDescriptor, idx catalog.Index) {
 			TableID:             tbl.GetID(),
 			IndexID:             idx.GetID(),
 			IsUnique:            idx.IsUnique(),
-			IsInverted:          idx.GetType() == idxtype.INVERTED,
-			Type:                idx.GetType(),
+			IsInverted:          idx.GetType() == descpb.IndexDescriptor_INVERTED,
 			IsCreatedExplicitly: idx.IsCreatedExplicitly(),
 			ConstraintID:        idx.GetConstraintID(),
 			IsNotVisible:        idx.GetInvisibility() != 0.0,
@@ -661,13 +641,9 @@ func (w *walkCtx) walkIndex(tbl catalog.TableDescriptor, idx catalog.Index) {
 		if geoConfig := idx.GetGeoConfig(); !geoConfig.IsEmpty() {
 			index.GeoConfig = protoutil.Clone(&geoConfig).(*geopb.Config)
 		}
-		if index.Type == idxtype.VECTOR {
-			vecConfig := idx.GetVecConfig()
-			index.VecConfig = &vecConfig
-		}
 		for i, c := range cpy.KeyColumnIDs {
 			invertedKind := catpb.InvertedIndexColumnKind_DEFAULT
-			if index.Type == idxtype.INVERTED && c == idx.InvertedColumnID() {
+			if index.IsInverted && c == idx.InvertedColumnID() {
 				invertedKind = idx.InvertedColumnKind()
 			}
 			w.ev(scpb.Status_PUBLIC, &scpb.IndexColumn{
@@ -890,45 +866,12 @@ func (w *walkCtx) walkTrigger(tbl catalog.TableDescriptor, t *descpb.TriggerDesc
 		FuncArgs:  t.FuncArgs,
 	})
 	w.ev(scpb.Status_PUBLIC, &scpb.TriggerDeps{
-		TableID:        tbl.GetID(),
-		TriggerID:      t.ID,
-		UsesRelations:  w.buildTriggerRelationDependencies(tbl, t),
-		UsesTypeIDs:    t.DependsOnTypes,
-		UsesRoutineIDs: t.DependsOnRoutines,
+		TableID:         tbl.GetID(),
+		TriggerID:       t.ID,
+		UsesRelationIDs: t.DependsOn,
+		UsesTypeIDs:     t.DependsOnTypes,
+		UsesRoutineIDs:  t.DependsOnRoutines,
 	})
-}
-
-func (w *walkCtx) buildTriggerRelationDependencies(
-	tbl catalog.TableDescriptor, t *descpb.TriggerDescriptor,
-) []scpb.TriggerDeps_RelationReference {
-	usesRelations := make([]scpb.TriggerDeps_RelationReference, 0)
-	for _, id := range t.DependsOn {
-		foundRelation := false
-		to := w.lookupFn(id)
-		toDesc, err := catalog.AsTableDescriptor(to)
-		if err != nil {
-			panic(err)
-		}
-		err = toDesc.ForeachDependedOnBy(func(dep *descpb.TableDescriptor_Reference) error {
-			if dep.ID != tbl.GetID() {
-				return nil
-			}
-			usesRelations = append(usesRelations, scpb.TriggerDeps_RelationReference{
-				ID:        id,
-				IndexID:   dep.IndexID,
-				ColumnIDs: dep.ColumnIDs,
-			})
-			foundRelation = true
-			return nil
-		})
-		if err != nil {
-			panic(err)
-		}
-		if !foundRelation {
-			panic(errors.AssertionFailedf("could not find back-reference to relation %d", id))
-		}
-	}
-	return usesRelations
 }
 
 func (w *walkCtx) walkPolicy(tbl catalog.TableDescriptor, p *descpb.PolicyDescriptor) {
@@ -943,46 +886,6 @@ func (w *walkCtx) walkPolicy(tbl catalog.TableDescriptor, p *descpb.PolicyDescri
 		PolicyID: p.ID,
 		Name:     p.Name,
 	})
-	for _, role := range p.RoleNames {
-		w.ev(scpb.Status_PUBLIC, &scpb.PolicyRole{
-			TableID:  tbl.GetID(),
-			PolicyID: p.ID,
-			RoleName: role,
-		})
-	}
-	if p.UsingExpr != "" {
-		expr, err := w.newExpression(p.UsingExpr)
-		if err != nil {
-			panic(errors.NewAssertionErrorWithWrappedErrf(err, "USING expression for policy %q in table %q (%d)",
-				p.Name, tbl.GetName(), tbl.GetID()))
-		}
-		w.ev(scpb.Status_PUBLIC, &scpb.PolicyUsingExpr{
-			TableID:    tbl.GetID(),
-			PolicyID:   p.ID,
-			Expression: *expr,
-		})
-	}
-	if p.WithCheckExpr != "" {
-		expr, err := w.newExpression(p.WithCheckExpr)
-		if err != nil {
-			panic(errors.NewAssertionErrorWithWrappedErrf(err, "WITH CHECK expression for policy %q in table %q (%d)",
-				p.Name, tbl.GetName(), tbl.GetID()))
-		}
-		w.ev(scpb.Status_PUBLIC, &scpb.PolicyWithCheckExpr{
-			TableID:    tbl.GetID(),
-			PolicyID:   p.ID,
-			Expression: *expr,
-		})
-	}
-	if p.UsingExpr != "" || p.WithCheckExpr != "" {
-		w.ev(scpb.Status_PUBLIC, &scpb.PolicyDeps{
-			TableID:         tbl.GetID(),
-			PolicyID:        p.ID,
-			UsesTypeIDs:     p.DependsOnTypes,
-			UsesRelationIDs: p.DependsOnRelations,
-			UsesFunctionIDs: p.DependsOnFunctions,
-		})
-	}
 }
 
 func (w *walkCtx) walkForeignKeyConstraint(

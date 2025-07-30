@@ -4,6 +4,7 @@
 // included in the /LICENSE file.
 
 //go:build lint
+// +build lint
 
 package lint
 
@@ -251,7 +252,7 @@ func TestLint(t *testing.T) {
 
 		cmd, stderr, filter, err := dirCmd(crdbDir,
 			"git", "grep", "-nE", fmt.Sprintf(`[^_a-zA-Z](%s)\(`, strings.Join(names, "|")),
-			"--", "pkg", ":!pkg/cmd/roachtest/testdata/pg_regress/*")
+			"--", "pkg", ":!pkg/cmd/roachtest/testdata/regression.diffs")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -757,8 +758,8 @@ func TestLint(t *testing.T) {
 			":!testutils/lint/passes/deferunlockcheck/testdata/src/github.com/cockroachdb/cockroach/pkg/util/syncutil/mutex_sync.go",
 			// Exception needed for goroutineStalledStates.
 			":!kv/kvserver/concurrency/concurrency_manager_test.go",
-			// See comment in memLock class.
-			":!sql/vecindex/cspann/memstore/memstore_lock.go",
+			// See comment in inMemoryLock class.
+			":!sql/vecindex/vecstore/in_memory_lock.go",
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1242,7 +1243,6 @@ func TestLint(t *testing.T) {
 			":!rpc/context.go",
 			":!rpc/nodedialer/nodedialer_test.go",
 			":!util/grpcutil/grpc_util_test.go",
-			":!util/log/otlp_client_test.go",
 			":!server/server_obs_service.go",
 			":!server/testserver.go",
 			":!util/tracing/*_test.go",
@@ -1395,7 +1395,6 @@ func TestLint(t *testing.T) {
 			"--",
 			"*.go",
 			":!testutils/skip/skip.go",
-			":!util/randutil/rand.go",
 			":!cmd/roachtest/*.go",
 			":!acceptance/compose/*.go",
 			":!util/syncutil/*.go",
@@ -1444,7 +1443,6 @@ func TestLint(t *testing.T) {
 			":!sql/types/types_jsonpb.go",
 			":!sql/schemachanger/scplan/scviz/maps.go",
 			":!workload/schemachange/tracing.go",
-			":!util/log/otlp_client.go",
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1493,7 +1491,6 @@ func TestLint(t *testing.T) {
 			":!storage/mvcc_value.go",
 			":!roachpb/data.go",
 			":!sql/types/types_jsonpb.go",
-			":!util/log/otlp_client_test.go",
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1770,7 +1767,7 @@ func TestLint(t *testing.T) {
 			}
 		}
 
-		ignore := `zcgo*|\.(pb(\.gw)?)|(\.[eo]g)\.go|/testdata/|^sql/parser/sql\.go$|(_)?generated(_test)?\.go$|^sql/pgrepl/pgreplparser/pgrepl\.go$|^sql/plpgsql/parser/plpgsql\.go$|^util/jsonpath/parser/jsonpath\.go$`
+		ignore := `zcgo*|\.(pb(\.gw)?)|(\.[eo]g)\.go|/testdata/|^sql/parser/sql\.go$|(_)?generated(_test)?\.go$|^sql/pgrepl/pgreplparser/pgrepl\.go$|^sql/plpgsql/parser/plpgsql\.go$`
 		cmd, stderr, filter, err := dirCmd(pkgDir, crlfmt, "-fast", "-ignore", ignore, "-tab", "2", ".")
 		if err != nil {
 			t.Fatal(err)
@@ -2595,49 +2592,6 @@ func TestLint(t *testing.T) {
 		}
 	})
 
-	// This linter prohibits ignoring the context.CancelFunc that is returned on
-	// stop.Stopper.WithCancelOnQuiesce call (which can result in a memory
-	// leak).
-	//
-	// If the context is derived for a server singleton and has the same
-	// lifetime as the server, this linter can be ignored with
-	// 'nolint:quiesce' comment.
-	t.Run("TestWithCancelOnQuiesce", func(t *testing.T) {
-		t.Parallel()
-		cmd, stderr, filter, err := dirCmd(
-			pkgDir,
-			"git",
-			"grep",
-			"-nE",
-			`_.*WithCancelOnQuiesce`,
-			"--",
-			"*",
-			":!*_test.go",
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if err := cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
-
-		if err := stream.ForEach(stream.Sequence(
-			filter,
-			stream.GrepNot(`nolint:quiesce`),
-		), func(s string) {
-			t.Errorf("\n%s <- forbidden; ensure the cancellation function is called", s)
-		}); err != nil {
-			t.Error(err)
-		}
-
-		if err := cmd.Wait(); err != nil {
-			if out := stderr.String(); len(out) > 0 {
-				t.Fatalf("err=%s, stderr=%s", err, out)
-			}
-		}
-	})
-
 	// RoachVet is expensive memory-wise and thus should not run with t.Parallel().
 	// RoachVet includes all of the passes of `go vet` plus first-party additions.
 	// See pkg/cmd/roachvet.
@@ -2877,7 +2831,7 @@ func TestLint(t *testing.T) {
 			":!sql/catalog/systemschema_test/testdata/bootstrap*",  // exempt: deliberate test of bootstrap catalog.
 			":!sql/catalog/internal/catkv/testdata/",               // TODO(foundations): #137029.
 			":!cli/testdata/doctor/",                               // TODO(foundations): #137030.
-			":!cmd/roachtest/testdata/pg_regress/*",                // TODO(queries): #137026.
+			":!cmd/roachtest/testdata/regression.diffs",            // TODO(queries): #137026.
 			":!cli/testdata/zip/file-filters/testzip_file_filters", // exempt: deliberate test to fetch all tables in debug zip.
 		)
 		if err != nil {
@@ -2901,19 +2855,15 @@ func TestLint(t *testing.T) {
 		}
 	})
 
-	// Test forbidden roachtest imports. The mixedversion and task packages are
-	// allowed because they are part of the roachtest framework.
+	// Test forbidden roachtest imports.
 	t.Run("TestRoachtestForbiddenImports", func(t *testing.T) {
 		t.Parallel()
 
 		roachprodLoggerPkg := "github.com/cockroachdb/cockroach/pkg/roachprod/logger"
-		roachtestTaskPkg := "github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/task"
 		// forbiddenImportPkg -> permittedReplacementPkg
 		forbiddenImports := map[string]string{
 			"github.com/cockroachdb/cockroach/pkg/util/log": roachprodLoggerPkg,
 			"log": roachprodLoggerPkg,
-			"github.com/cockroachdb/cockroach/pkg/util/ctxgroup": roachtestTaskPkg,
-			"golang.org/x/sync/errgroup":                         roachtestTaskPkg,
 		}
 
 		// grepBuf creates a grep string that matches any forbidden import pkgs.
@@ -2938,8 +2888,7 @@ func TestLint(t *testing.T) {
 			filter,
 			stream.Sort(),
 			stream.Uniq(),
-			stream.Grep(`cockroach/pkg/cmd/roachtest/.*: `),
-			stream.GrepNot(`cockroach/pkg/cmd/roachtest/roachtestutil/(mixedversion|task): `),
+			stream.Grep(`cockroach/pkg/cmd/roachtest/(tests|operations): `),
 		), func(s string) {
 			pkgStr := strings.Split(s, ": ")
 			_, importedPkg := pkgStr[0], pkgStr[1]

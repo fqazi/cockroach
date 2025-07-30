@@ -395,17 +395,17 @@ func TestShowChangefeedJobsStatusChange(t *testing.T) {
 		'experimental-http://fake-bucket-name/fake/path?AWS_ACCESS_KEY_ID=123&AWS_SECRET_ACCESS_KEY=456'`
 	sqlDB.QueryRow(t, query).Scan(&changefeedID)
 
-	waitForJobState(sqlDB, t, changefeedID, "running")
+	waitForJobStatus(sqlDB, t, changefeedID, "running")
 
 	query = `PAUSE JOB $1`
 	sqlDB.Exec(t, query, changefeedID)
 
-	waitForJobState(sqlDB, t, changefeedID, "paused")
+	waitForJobStatus(sqlDB, t, changefeedID, "paused")
 
 	query = `RESUME JOB $1`
 	sqlDB.Exec(t, query, changefeedID)
 
-	waitForJobState(sqlDB, t, changefeedID, "running")
+	waitForJobStatus(sqlDB, t, changefeedID, "running")
 }
 
 func TestShowChangefeedJobsNoResults(t *testing.T) {
@@ -465,7 +465,7 @@ func TestShowChangefeedJobsAlterChangefeed(t *testing.T) {
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
 		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 
-		foo := feed(t, f, `CREATE CHANGEFEED FOR foo`, optOutOfMetamorphicEnrichedEnvelope{reason: "compares text of changefeed statement"})
+		foo := feed(t, f, `CREATE CHANGEFEED FOR foo`)
 		defer closeFeed(t, foo)
 
 		feed, ok := foo.(cdctest.EnterpriseTestFeed)
@@ -511,7 +511,7 @@ func TestShowChangefeedJobsAlterChangefeed(t *testing.T) {
 		}
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, jobID)
-		waitForJobState(sqlDB, t, jobID, `paused`)
+		waitForJobStatus(sqlDB, t, jobID, `paused`)
 
 		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d ADD bar`, jobID))
 
@@ -568,6 +568,7 @@ func TestShowChangefeedJobsAuthorization(t *testing.T) {
 			require.NoError(t, err)
 			jobID = successfulFeed.(cdctest.EnterpriseTestFeed).JobID()
 		}
+		rootDB := sqlutils.MakeSQLRunner(s.DB)
 
 		// Create a changefeed and assert who can see it.
 		asUser(t, f, `feedCreator`, func(userDB *sqlutils.SQLRunner) {
@@ -578,12 +579,22 @@ func TestShowChangefeedJobsAuthorization(t *testing.T) {
 			userDB.CheckQueryResults(t, `SELECT job_id FROM [SHOW CHANGEFEED JOBS]`, [][]string{{expectedJobIDStr}})
 		})
 		asUser(t, f, `userWithAllGrants`, func(userDB *sqlutils.SQLRunner) {
-			userDB.CheckQueryResults(t, `SELECT job_id FROM [SHOW CHANGEFEED JOBS]`, [][]string{})
+			userDB.CheckQueryResults(t, `SELECT job_id FROM [SHOW CHANGEFEED JOBS]`, [][]string{{expectedJobIDStr}})
 		})
 		asUser(t, f, `userWithSomeGrants`, func(userDB *sqlutils.SQLRunner) {
 			userDB.CheckQueryResults(t, `SELECT job_id FROM [SHOW CHANGEFEED JOBS]`, [][]string{})
 		})
 		asUser(t, f, `jobController`, func(userDB *sqlutils.SQLRunner) {
+			userDB.CheckQueryResults(t, `SELECT job_id FROM [SHOW CHANGEFEED JOBS]`, [][]string{{expectedJobIDStr}})
+		})
+		asUser(t, f, `regularUser`, func(userDB *sqlutils.SQLRunner) {
+			userDB.CheckQueryResults(t, `SELECT job_id FROM [SHOW CHANGEFEED JOBS]`, [][]string{})
+		})
+
+		// Assert behavior when one of the tables is dropped.
+		rootDB.Exec(t, "DROP TABLE table_b")
+		// Having CHANGEFEED on only table_a is now sufficient.
+		asUser(t, f, `userWithSomeGrants`, func(userDB *sqlutils.SQLRunner) {
 			userDB.CheckQueryResults(t, `SELECT job_id FROM [SHOW CHANGEFEED JOBS]`, [][]string{{expectedJobIDStr}})
 		})
 		asUser(t, f, `regularUser`, func(userDB *sqlutils.SQLRunner) {
@@ -618,7 +629,7 @@ func TestShowChangefeedJobsDefaultFilter(t *testing.T) {
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
 
 		foo := feed(t, f, `CREATE CHANGEFEED FOR foo`)
-		waitForJobState(sqlDB, t, foo.(cdctest.EnterpriseTestFeed).JobID(), jobs.StateRunning)
+		waitForJobStatus(sqlDB, t, foo.(cdctest.EnterpriseTestFeed).JobID(), jobs.StatusRunning)
 		require.Equal(t, 1, countChangefeedJobs())
 
 		// The job is not visible after closed (and its finished time is older than 12 hours).

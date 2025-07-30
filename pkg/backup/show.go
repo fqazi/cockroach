@@ -135,7 +135,7 @@ func showBackupTypeCheck(
 	if !ok {
 		return false, nil, nil
 	}
-	if backup.Path == nil {
+	if backup.Path == nil && backup.InCollection != nil {
 		return showBackupsInCollectionTypeCheck(ctx, backup, p)
 	}
 	if err := exprutil.TypeCheck(
@@ -172,7 +172,7 @@ func showBackupPlanHook(
 	}
 	exprEval := p.ExprEvaluator("SHOW BACKUP")
 
-	if showStmt.Path == nil {
+	if showStmt.Path == nil && showStmt.InCollection != nil {
 		collection, err := exprEval.StringArray(
 			ctx, tree.Exprs(showStmt.InCollection),
 		)
@@ -182,14 +182,17 @@ func showBackupPlanHook(
 		return showBackupsInCollectionPlanHook(ctx, collection, showStmt, p)
 	}
 
-	subdir, err := exprEval.String(ctx, showStmt.Path)
+	to, err := exprEval.String(ctx, showStmt.Path)
 	if err != nil {
 		return nil, nil, false, err
 	}
 
-	dest, err := exprEval.StringArray(ctx, tree.Exprs(showStmt.InCollection))
-	if err != nil {
-		return nil, nil, false, err
+	var inCol []string
+	if showStmt.InCollection != nil {
+		inCol, err = exprEval.StringArray(ctx, tree.Exprs(showStmt.InCollection))
+		if err != nil {
+			return nil, nil, false, err
+		}
 	}
 
 	infoReader := getBackupInfoReader(p, showStmt)
@@ -202,21 +205,46 @@ func showBackupPlanHook(
 		ctx, span := tracing.ChildSpan(ctx, stmt.StatementTag())
 		defer span.Finish()
 
+		var (
+			dest   []string
+			subdir string
+		)
+		// For old style show backup, 'to' is the resolved path to the full backup;
+		// for new SHOW BACKUP, 'to' is the subdirectory.
+		if inCol != nil {
+			subdir = to
+			dest = inCol
+		} else {
+			dest = append(dest, to)
+			// Deprecation notice for old `SHOW BACKUP` syntax. Remove this once the syntax is
+			// deleted in 22.2.
+			p.BufferClientNotice(ctx,
+				pgnotice.Newf("The `SHOW BACKUP` syntax without the `IN` keyword will be removed in a"+
+					" future release. Please switch over to using `SHOW BACKUP FROM <backup> IN"+
+					" <collection>` to view metadata on a backup collection: %s."+
+					" Also note that backups created using the `BACKUP TO` syntax may not be showable or"+
+					" restoreable in the next major version release. Use `BACKUP INTO` instead.",
+					"https://www.cockroachlabs.com/docs/stable/show-backup.html"))
+		}
+
 		if err := sql.CheckDestinationPrivileges(ctx, p, dest); err != nil {
 			return err
 		}
 
-		if strings.EqualFold(subdir, backupbase.LatestFileName) {
-			subdir, err = backupdest.ReadLatestFile(ctx, dest[0],
-				p.ExecCfg().DistSQLSrv.ExternalStorageFromURI,
-				p.User())
-			if err != nil {
-				return errors.Wrap(err, "read LATEST path")
+		fullyResolvedDest := dest
+		if subdir != "" {
+			if strings.EqualFold(subdir, backupbase.LatestFileName) {
+				subdir, err = backupdest.ReadLatestFile(ctx, dest[0],
+					p.ExecCfg().DistSQLSrv.ExternalStorageFromURI,
+					p.User())
+				if err != nil {
+					return errors.Wrap(err, "read LATEST path")
+				}
 			}
-		}
-		fullyResolvedDest, err := backuputils.AppendPaths(dest, subdir)
-		if err != nil {
-			return err
+			fullyResolvedDest, err = backuputils.AppendPaths(dest, subdir)
+			if err != nil {
+				return err
+			}
 		}
 		baseStores := make([]cloud.ExternalStorage, len(fullyResolvedDest))
 		for j := range fullyResolvedDest {
@@ -224,7 +252,6 @@ func showBackupPlanHook(
 			if err != nil {
 				return errors.Wrapf(err, "make storage")
 			}
-			//nolint:deferloop
 			defer baseStores[j].Close()
 		}
 
@@ -356,9 +383,7 @@ you must pass the 'encryption_info_dir' parameter that points to the directory o
 		info.defaultURIs, info.manifests, info.localityInfo, memReserved,
 			err = backupdest.ResolveBackupManifests(
 			ctx, &mem, baseStores, incStores, mkStore, fullyResolvedDest,
-			fullyResolvedIncrementalsDirectory, hlc.Timestamp{}, encryption, &kmsEnv, p.User(),
-			true /* includeSkipped */, true, /* includeCompacted */
-		)
+			fullyResolvedIncrementalsDirectory, hlc.Timestamp{}, encryption, &kmsEnv, p.User(), true)
 		defer func() {
 			mem.Shrink(ctx, memReserved)
 		}()
@@ -415,7 +440,11 @@ you must pass the 'encryption_info_dir' parameter that points to the directory o
 		if err := infoReader.showBackup(ctx, &mem, mkStore, info, p.User(), &kmsEnv, resultsCh); err != nil {
 			return err
 		}
-		telemetry.Count("show-backup.collection")
+		if showStmt.InCollection == nil {
+			telemetry.Count("show-backup.deprecated-subdir-syntax")
+		} else {
+			telemetry.Count("show-backup.collection")
+		}
 		return nil
 	}
 
@@ -432,7 +461,7 @@ func getBackupInfoReader(p sql.PlanHookState, showStmt *tree.ShowBackup) backupI
 		case tree.BackupRangeDetails:
 			shower = backupShowerRanges
 		case tree.BackupFileDetails:
-			shower = backupShowerFileSetup()
+			shower = backupShowerFileSetup(p, showStmt.InCollection)
 		case tree.BackupSchemaDetails:
 			shower = backupShowerDefault(p, true, showStmt.Options)
 		case tree.BackupValidateDetails:
@@ -1185,7 +1214,9 @@ var backupShowerDoctor = backupShower{
 	},
 }
 
-func backupShowerFileSetup() backupShower {
+func backupShowerFileSetup(
+	p sql.PlanHookState, inCol tree.StringOrPlaceholderOptList,
+) backupShower {
 	return backupShower{header: colinfo.ResultColumns{
 		{Name: "path", Typ: types.String},
 		{Name: "backup_type", Typ: types.String},
@@ -1201,14 +1232,17 @@ func backupShowerFileSetup() backupShower {
 
 		fn: func(ctx context.Context, info backupInfo) (rows []tree.Datums, err error) {
 
+			var manifestDirs []string
 			var localityAware bool
-			manifestDirs, err := getManifestDirs(info.subdir, info.defaultURIs)
-			if err != nil {
-				return nil, err
-			}
+			if len(inCol) > 0 {
+				manifestDirs, err = getManifestDirs(info.subdir, info.defaultURIs)
+				if err != nil {
+					return nil, err
+				}
 
-			if len(info.localityInfo[0].URIsByOriginalLocalityKV) > 0 {
-				localityAware = true
+				if len(info.localityInfo[0].URIsByOriginalLocalityKV) > 0 {
+					localityAware = true
+				}
 			}
 			for i, manifest := range info.manifests {
 				backupType := "full"
@@ -1225,16 +1259,19 @@ func backupShowerFileSetup() backupShower {
 				if err != nil {
 					return nil, err
 				}
+				defer it.Close()
 				var idx int
 				for ; ; it.Next() {
 					if ok, err := it.Valid(); err != nil {
-						it.Close()
 						return nil, err
 					} else if !ok {
 						break
 					}
 					file := it.Value()
-					filePath := path.Join(manifestDirs[i], file.Path)
+					filePath := file.Path
+					if inCol != nil {
+						filePath = path.Join(manifestDirs[i], filePath)
+					}
 					locality := "NULL"
 					if localityAware {
 						locality = "default"
@@ -1261,7 +1298,6 @@ func backupShowerFileSetup() backupShower {
 					})
 					idx++
 				}
-				it.Close()
 			}
 			return rows, nil
 		},

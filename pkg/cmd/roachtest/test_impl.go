@@ -14,19 +14,17 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestflags"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/task"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"github.com/cockroachdb/cockroach/pkg/util/version"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/version"
 	"github.com/petermattis/goid"
 )
 
@@ -79,17 +77,10 @@ type testImpl struct {
 	buildVersion *version.Version
 
 	// l is the logger that the test will use for its output.
-	//
-	// N.B. We need to use an atomic pointer here since the test
-	// runner can swap the logger out when running post test assertions
-	// and artifacts collection.
-	l atomic.Pointer[logger.Logger]
+	l *logger.Logger
 
 	// taskManager manages tasks (goroutines) for tests.
 	taskManager task.Manager
-
-	// monitor monitors for process death in the cluster.
-	monitor test.Monitor
 
 	runner string
 	// runnerID is the test's main goroutine ID.
@@ -181,7 +172,7 @@ func (t *testImpl) Cockroach() string {
 			// If the test is a benchmark test, we don't want to enable assertions
 			// as it will slow down performance.
 			if t.spec.Benchmark {
-				t.L().Printf("Benchmark test, running with standard cockroach")
+				t.l.Printf("Benchmark test, running with standard cockroach")
 				t.randomizedCockroach = t.StandardCockroach()
 				return
 			}
@@ -190,20 +181,20 @@ func (t *testImpl) Cockroach() string {
 				// The build with runtime assertions should exist in every nightly
 				// CI build, but we can't assume it exists in every roachtest call.
 				if path := t.RuntimeAssertionsCockroach(); path != "" {
-					t.L().Printf("Runtime assertions enabled")
+					t.l.Printf("Runtime assertions enabled")
 					t.randomizedCockroach = path
 					return
 				} else {
-					t.L().Printf("WARNING: running without runtime assertions since the corresponding binary was not specified")
+					t.l.Printf("WARNING: running without runtime assertions since the corresponding binary was not specified")
 				}
 			}
-			t.L().Printf("Runtime assertions disabled")
+			t.l.Printf("Runtime assertions disabled")
 			t.randomizedCockroach = t.StandardCockroach()
 		case registry.StandardCockroach:
-			t.L().Printf("Runtime assertions disabled: registry.StandardCockroach set")
+			t.l.Printf("Runtime assertions disabled: registry.StandardCockroach set")
 			t.randomizedCockroach = t.StandardCockroach()
 		case registry.RuntimeAssertionsCockroach:
-			t.L().Printf("Runtime assertions enabled: registry.RuntimeAssertionsCockroach set")
+			t.l.Printf("Runtime assertions enabled: registry.RuntimeAssertionsCockroach set")
 			t.randomizedCockroach = t.RuntimeAssertionsCockroach()
 		default:
 			t.Fatal("Specified cockroach binary does not exist.")
@@ -268,12 +259,13 @@ func (t *testImpl) SnapshotPrefix() string {
 
 // L returns the test's logger.
 func (t *testImpl) L() *logger.Logger {
-	return t.l.Load()
+	return t.l
 }
 
 // ReplaceL replaces the test's logger.
 func (t *testImpl) ReplaceL(l *logger.Logger) {
-	t.l.Store(l)
+	// TODO(tbg): get rid of this, this is racy & hacky.
+	t.l = l
 }
 
 func (t *testImpl) status(ctx context.Context, id int64, args ...interface{}) {
@@ -686,8 +678,8 @@ func (t *testImpl) IsBuildVersion(minVersion string) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if vers.IsPrerelease() {
-		panic("cannot specify a prerelease: " + vers.Format("%P"))
+	if p := vers.PreRelease(); p != "" {
+		panic("cannot specify a prerelease: " + p)
 	}
 	// We append "-0" to the min-version spec so that we capture all
 	// prereleases of the specified version. Otherwise, "v2.1.0" would compare
@@ -726,11 +718,6 @@ func (t *testImpl) NewGroup(opts ...task.Option) task.Group {
 // NewErrorGroup starts a new task error group.
 func (t *testImpl) NewErrorGroup(opts ...task.Option) task.ErrorGroup {
 	return t.taskManager.NewErrorGroup(task.OptionList(defaultTaskOptions()...), task.OptionList(opts...))
-}
-
-// Monitor returns the test's monitor.
-func (t *testImpl) Monitor() test.Monitor {
-	return t.monitor
 }
 
 // TeamCityEscape escapes a string for use as <value> in a key='<value>' attribute

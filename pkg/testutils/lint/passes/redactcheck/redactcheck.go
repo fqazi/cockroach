@@ -74,8 +74,8 @@ func runAnalyzer(pass *analysis.Pass) (interface{}, error) {
 						"timing": {},
 					},
 					"github.com/cockroachdb/cockroach/pkg/jobs": {
-						"StatusMessage": {},
-						"State":         {},
+						"RunningStatus": {},
+						"Status":        {},
 					},
 					"github.com/cockroachdb/cockroach/pkg/jobs/jobspb": {
 						"Type":                      {},
@@ -135,14 +135,12 @@ func runAnalyzer(pass *analysis.Pass) (interface{}, error) {
 					"github.com/cockroachdb/cockroach/pkg/kv/kvserver/storeliveness/storelivenesspb": {
 						"Epoch": {},
 					},
-					"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb": {
+					"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities": {
 						"ID": {},
 					},
 					"github.com/cockroachdb/cockroach/pkg/raft/raftpb": {
 						"Epoch":                {},
 						"PeerID":               {},
-						"Index":                {},
-						"Term":                 {},
 						"MessageType":          {},
 						"EntryType":            {},
 						"ConfChangeType":       {},
@@ -173,9 +171,6 @@ func runAnalyzer(pass *analysis.Pass) (interface{}, error) {
 					},
 					"github.com/cockroachdb/cockroach/pkg/server/license": {
 						"LicType": {},
-					},
-					"github.com/cockroachdb/cockroach/pkg/sql/catalog": {
-						"DescriptorType": {},
 					},
 					"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb": {
 						"JobID":         {},

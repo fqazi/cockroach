@@ -3575,6 +3575,121 @@ Support status: [reserved](#support-status)
 
 
 
+## HotRanges
+
+`GET /_status/hotranges`
+
+
+
+Support status: [reserved](#support-status)
+
+#### Request Parameters
+
+
+
+
+HotRangesRequest queries one or more cluster nodes for a list
+of ranges currently considered “hot” by the node(s).
+
+
+| Field | Type | Label | Description | Support status |
+| ----- | ---- | ----- | ----------- | -------------- |
+| node_id | [string](#cockroach.server.serverpb.HotRangesRequest-string) |  | NodeID indicates which node to query for a hot range report. It is possible to populate any node ID; if the node receiving the request is not the target node, it will forward the request to the target node.<br><br>If left empty, the request is forwarded to every node in the cluster. | [alpha](#support-status) |
+| page_size | [int32](#cockroach.server.serverpb.HotRangesRequest-int32) |  |  | [reserved](#support-status) |
+| page_token | [string](#cockroach.server.serverpb.HotRangesRequest-string) |  |  | [reserved](#support-status) |
+| tenant_id | [string](#cockroach.server.serverpb.HotRangesRequest-string) |  |  | [reserved](#support-status) |
+
+
+
+
+
+
+
+#### Response Parameters
+
+
+
+
+HotRangesResponse is the payload produced in response
+to a HotRangesRequest.
+
+
+| Field | Type | Label | Description | Support status |
+| ----- | ---- | ----- | ----------- | -------------- |
+| node_id | [int32](#cockroach.server.serverpb.HotRangesResponse-int32) |  | NodeID is the node that received the HotRangesRequest and forwarded requests to the selected target node(s). | [alpha](#support-status) |
+| hot_ranges_by_node_id | [HotRangesResponse.HotRangesByNodeIdEntry](#cockroach.server.serverpb.HotRangesResponse-cockroach.server.serverpb.HotRangesResponse.HotRangesByNodeIdEntry) | repeated | HotRangesByNodeID contains a hot range report for each selected target node ID in the HotRangesRequest. | [alpha](#support-status) |
+
+
+
+
+
+
+<a name="cockroach.server.serverpb.HotRangesResponse-cockroach.server.serverpb.HotRangesResponse.HotRangesByNodeIdEntry"></a>
+#### HotRangesResponse.HotRangesByNodeIdEntry
+
+
+
+| Field | Type | Label | Description | Support status |
+| ----- | ---- | ----- | ----------- | -------------- |
+| key | [int32](#cockroach.server.serverpb.HotRangesResponse-int32) |  |  |  |
+| value | [HotRangesResponse.NodeResponse](#cockroach.server.serverpb.HotRangesResponse-cockroach.server.serverpb.HotRangesResponse.NodeResponse) |  |  |  |
+
+
+
+
+
+<a name="cockroach.server.serverpb.HotRangesResponse-cockroach.server.serverpb.HotRangesResponse.NodeResponse"></a>
+#### HotRangesResponse.NodeResponse
+
+NodeResponse is a hot range report for a single target node.
+
+| Field | Type | Label | Description | Support status |
+| ----- | ---- | ----- | ----------- | -------------- |
+| error_message | [string](#cockroach.server.serverpb.HotRangesResponse-string) |  | ErrorMessage is set to a non-empty string if this target node was unable to produce a hot range report.<br><br>The contents of this string indicates the cause of the failure. | [alpha](#support-status) |
+| stores | [HotRangesResponse.StoreResponse](#cockroach.server.serverpb.HotRangesResponse-cockroach.server.serverpb.HotRangesResponse.StoreResponse) | repeated | Stores contains the hot ranges report if no error was encountered. There is one part to the report for each store in the target node. | [alpha](#support-status) |
+
+
+
+
+
+<a name="cockroach.server.serverpb.HotRangesResponse-cockroach.server.serverpb.HotRangesResponse.StoreResponse"></a>
+#### HotRangesResponse.StoreResponse
+
+StoreResponse contains the part of a hot ranges report that
+pertains to a single store on a target node.
+
+| Field | Type | Label | Description | Support status |
+| ----- | ---- | ----- | ----------- | -------------- |
+| store_id | [int32](#cockroach.server.serverpb.HotRangesResponse-int32) |  | StoreID identifies the store for which the report was produced. | [alpha](#support-status) |
+| hot_ranges | [HotRangesResponse.HotRange](#cockroach.server.serverpb.HotRangesResponse-cockroach.server.serverpb.HotRangesResponse.HotRange) | repeated | HotRanges is the hot ranges report for this store on the target node. | [alpha](#support-status) |
+
+
+
+
+
+<a name="cockroach.server.serverpb.HotRangesResponse-cockroach.server.serverpb.HotRangesResponse.HotRange"></a>
+#### HotRangesResponse.HotRange
+
+HotRange is a hot range report for a single store on one of the
+target node(s) selected in a HotRangesRequest.
+
+| Field | Type | Label | Description | Support status |
+| ----- | ---- | ----- | ----------- | -------------- |
+| desc | [cockroach.roachpb.RangeDescriptor](#cockroach.server.serverpb.HotRangesResponse-cockroach.roachpb.RangeDescriptor) |  | Desc is the descriptor of the range for which the report was produced.<br><br>TODO(knz): This field should be removed. See: https://github.com/cockroachdb/cockroach/issues/53212 | [reserved](#support-status) |
+| queries_per_second | [double](#cockroach.server.serverpb.HotRangesResponse-double) |  | QueriesPerSecond is the recent number of queries per second on this range. | [alpha](#support-status) |
+| leaseholder_node_id | [int32](#cockroach.server.serverpb.HotRangesResponse-int32) |  | LeaseholderNodeID indicates the Node ID that is the current leaseholder for the given range. | [reserved](#support-status) |
+| requests_per_second | [double](#cockroach.server.serverpb.HotRangesResponse-double) |  | Requests per second is the recent number of requests received  per second on this range. | [reserved](#support-status) |
+| writes_per_second | [double](#cockroach.server.serverpb.HotRangesResponse-double) |  | Writes per second is the recent number of keys written per second on this range. | [reserved](#support-status) |
+| reads_per_second | [double](#cockroach.server.serverpb.HotRangesResponse-double) |  | Reads per second is the recent number of keys read per second on this range. | [reserved](#support-status) |
+| write_bytes_per_second | [double](#cockroach.server.serverpb.HotRangesResponse-double) |  | Write bytes per second is the recent number of bytes written per second on this range. | [reserved](#support-status) |
+| read_bytes_per_second | [double](#cockroach.server.serverpb.HotRangesResponse-double) |  | Read bytes per second is the recent number of bytes read per second on this range. | [reserved](#support-status) |
+| cpu_time_per_second | [double](#cockroach.server.serverpb.HotRangesResponse-double) |  | CPU time per second is the recent cpu usage in nanoseconds of this range. | [reserved](#support-status) |
+
+
+
+
+
+
 ## HotRangesV2
 
 `POST /_status/v2/hotranges`
@@ -3598,9 +3713,6 @@ of ranges currently considered “hot” by the node(s).
 | page_size | [int32](#cockroach.server.serverpb.HotRangesRequest-int32) |  |  | [reserved](#support-status) |
 | page_token | [string](#cockroach.server.serverpb.HotRangesRequest-string) |  |  | [reserved](#support-status) |
 | tenant_id | [string](#cockroach.server.serverpb.HotRangesRequest-string) |  |  | [reserved](#support-status) |
-| nodes | [string](#cockroach.server.serverpb.HotRangesRequest-string) | repeated |  | [reserved](#support-status) |
-| per_node_limit | [int32](#cockroach.server.serverpb.HotRangesRequest-int32) |  | per_node_limit indicates the maximum number of hot ranges to return for each node. If left empty, the default is 128. | [reserved](#support-status) |
-| stats_only | [bool](#cockroach.server.serverpb.HotRangesRequest-bool) |  | stats_only indicates whether to return only the stats for the hot ranges, without pulling descriptor information. | [reserved](#support-status) |
 
 
 
@@ -3649,7 +3761,6 @@ HotRange message describes a single hot range, ie its QPS, node ID it belongs to
 | databases | [string](#cockroach.server.serverpb.HotRangesResponseV2-string) | repeated | Databases for the range. | [reserved](#support-status) |
 | tables | [string](#cockroach.server.serverpb.HotRangesResponseV2-string) | repeated | Tables for the range | [reserved](#support-status) |
 | indexes | [string](#cockroach.server.serverpb.HotRangesResponseV2-string) | repeated | Indexes for the range | [reserved](#support-status) |
-| desc | [cockroach.roachpb.RangeDescriptor](#cockroach.server.serverpb.HotRangesResponseV2-cockroach.roachpb.RangeDescriptor) |  | Range Descriptor for the range | [reserved](#support-status) |
 
 
 
@@ -4149,7 +4260,7 @@ Support status: [reserved](#support-status)
 | ----- | ---- | ----- | ----------- | -------------- |
 | store_id | [int32](#cockroach.server.serverpb.StoresResponse-int32) |  |  | [reserved](#support-status) |
 | node_id | [int32](#cockroach.server.serverpb.StoresResponse-int32) |  |  | [reserved](#support-status) |
-| encryption_status | [bytes](#cockroach.server.serverpb.StoresResponse-bytes) |  | encryption_status is a serialized storage/enginepb/stats.go::EncryptionStatus protobuf. | [reserved](#support-status) |
+| encryption_status | [bytes](#cockroach.server.serverpb.StoresResponse-bytes) |  | encryption_status is a serialized ccl/storageccl/engineccl/enginepbccl/stats.go::EncryptionStatus protobuf. | [reserved](#support-status) |
 | total_files | [uint64](#cockroach.server.serverpb.StoresResponse-uint64) |  | Basic file stats when encryption is enabled. Total files/bytes. | [reserved](#support-status) |
 | total_bytes | [uint64](#cockroach.server.serverpb.StoresResponse-uint64) |  |  | [reserved](#support-status) |
 | active_key_files | [uint64](#cockroach.server.serverpb.StoresResponse-uint64) |  | Files/bytes using the active data key. | [reserved](#support-status) |
@@ -4545,7 +4656,7 @@ Support status: [reserved](#support-status)
 | statement_diagnostics_id | [int64](#cockroach.server.serverpb.CreateStatementDiagnosticsReportResponse-int64) |  |  | [reserved](#support-status) |
 | requested_at | [google.protobuf.Timestamp](#cockroach.server.serverpb.CreateStatementDiagnosticsReportResponse-google.protobuf.Timestamp) |  |  | [reserved](#support-status) |
 | min_execution_latency | [google.protobuf.Duration](#cockroach.server.serverpb.CreateStatementDiagnosticsReportResponse-google.protobuf.Duration) |  |  | [reserved](#support-status) |
-| expires_at | [google.protobuf.Timestamp](#cockroach.server.serverpb.CreateStatementDiagnosticsReportResponse-google.protobuf.Timestamp) |  | TODO(yuzefovich): should we populate plan_gist, anti_plan_gist, redacted, and username fields? | [reserved](#support-status) |
+| expires_at | [google.protobuf.Timestamp](#cockroach.server.serverpb.CreateStatementDiagnosticsReportResponse-google.protobuf.Timestamp) |  | TODO(yuzefovich): should we populate plan_gist, anti_plan_gist, and redacted fields? | [reserved](#support-status) |
 
 
 
@@ -4649,7 +4760,7 @@ Support status: [reserved](#support-status)
 | statement_diagnostics_id | [int64](#cockroach.server.serverpb.StatementDiagnosticsReportsResponse-int64) |  |  | [reserved](#support-status) |
 | requested_at | [google.protobuf.Timestamp](#cockroach.server.serverpb.StatementDiagnosticsReportsResponse-google.protobuf.Timestamp) |  |  | [reserved](#support-status) |
 | min_execution_latency | [google.protobuf.Duration](#cockroach.server.serverpb.StatementDiagnosticsReportsResponse-google.protobuf.Duration) |  |  | [reserved](#support-status) |
-| expires_at | [google.protobuf.Timestamp](#cockroach.server.serverpb.StatementDiagnosticsReportsResponse-google.protobuf.Timestamp) |  | TODO(yuzefovich): should we populate plan_gist, anti_plan_gist, redacted, and username fields? | [reserved](#support-status) |
+| expires_at | [google.protobuf.Timestamp](#cockroach.server.serverpb.StatementDiagnosticsReportsResponse-google.protobuf.Timestamp) |  | TODO(yuzefovich): should we populate plan_gist, anti_plan_gist, and redacted fields? | [reserved](#support-status) |
 
 
 
@@ -4851,52 +4962,6 @@ Request object for issuing a SQL stats reset request.
 
 Response object returned by ResetSQLStats.
 
-
-
-
-
-
-
-
-## DrainSqlStats
-
-
-
-
-
-Support status: [reserved](#support-status)
-
-#### Request Parameters
-
-
-
-
-
-
-
-| Field | Type | Label | Description | Support status |
-| ----- | ---- | ----- | ----------- | -------------- |
-| node_id | [string](#cockroach.server.serverpb.DrainSqlStatsRequest-string) |  |  | [reserved](#support-status) |
-
-
-
-
-
-
-
-#### Response Parameters
-
-
-
-
-
-
-
-| Field | Type | Label | Description | Support status |
-| ----- | ---- | ----- | ----------- | -------------- |
-| statements | [cockroach.sql.CollectedStatementStatistics](#cockroach.server.serverpb.DrainStatsResponse-cockroach.sql.CollectedStatementStatistics) | repeated |  | [reserved](#support-status) |
-| transactions | [cockroach.sql.CollectedTransactionStatistics](#cockroach.server.serverpb.DrainStatsResponse-cockroach.sql.CollectedTransactionStatistics) | repeated |  | [reserved](#support-status) |
-| fingerprint_count | [int64](#cockroach.server.serverpb.DrainStatsResponse-int64) |  |  | [reserved](#support-status) |
 
 
 

@@ -305,50 +305,15 @@ Policy :  PolicyID
 Policy :  Type
 Policy :  Command
 
-object PolicyDeps
-
-PolicyDeps :  TableID
-PolicyDeps :  PolicyID
-PolicyDeps : []UsesTypeIDs
-PolicyDeps : []UsesRelationIDs
-PolicyDeps : []UsesFunctionIDs
-
 object PolicyName
 
 PolicyName :  TableID
 PolicyName :  PolicyID
 PolicyName :  Name
 
-object PolicyRole
-
-PolicyRole :  TableID
-PolicyRole :  PolicyID
-PolicyRole :  RoleName
-
-object PolicyUsingExpr
-
-PolicyUsingExpr :  TableID
-PolicyUsingExpr :  PolicyID
-PolicyUsingExpr :  Expression
-
-object PolicyWithCheckExpr
-
-PolicyWithCheckExpr :  TableID
-PolicyWithCheckExpr :  PolicyID
-PolicyWithCheckExpr :  Expression
-
 object PrimaryIndex
 
 PrimaryIndex :  Index
-
-object RowLevelSecurityEnabled
-
-RowLevelSecurityEnabled :  TableID
-
-object RowLevelSecurityForced
-
-RowLevelSecurityForced :  TableID
-RowLevelSecurityForced :  IsForced
 
 object RowLevelTTL
 
@@ -383,7 +348,12 @@ object SecondaryIndex
 SecondaryIndex :  Index
 SecondaryIndex :  EmbeddedExpr
 SecondaryIndex :  RecreateSourceIndexID
-SecondaryIndex :  RecreateTargetIndexID
+
+object SecondaryIndexPartial
+
+SecondaryIndexPartial :  TableID
+SecondaryIndexPartial :  IndexID
+SecondaryIndexPartial :  Expression
 
 object Sequence
 
@@ -432,11 +402,6 @@ object TableLocalityRegionalByRow
 TableLocalityRegionalByRow :  TableID
 TableLocalityRegionalByRow :  As
 
-object TableLocalityRegionalByRowUsingConstraint
-
-TableLocalityRegionalByRowUsingConstraint :  TableID
-TableLocalityRegionalByRowUsingConstraint :  ConstraintID
-
 object TableLocalitySecondaryRegion
 
 TableLocalitySecondaryRegion :  TableID
@@ -473,7 +438,6 @@ object TriggerDeps
 TriggerDeps :  TableID
 TriggerDeps :  TriggerID
 TriggerDeps : []UsesRelationIDs
-TriggerDeps : []UsesRelations
 TriggerDeps : []UsesTypeIDs
 TriggerDeps : []UsesRoutineIDs
 
@@ -555,7 +519,6 @@ object View
 View :  ViewID
 View : []UsesTypeIDs
 View : []UsesRelationIDs
-View : []UsesRoutineIDs
 View : []ForwardReferences
 View :  IsTemporary
 View :  IsMaterialized
@@ -627,15 +590,9 @@ AliasType <|-- Owner
 EnumType <|-- Owner
 TablePartitioning <|-- PartitionZoneConfig
 Table <|-- Policy
-Policy <|-- PolicyDeps
 Policy <|-- PolicyName
-Policy <|-- PolicyRole
-Policy <|-- PolicyUsingExpr
-Policy <|-- PolicyWithCheckExpr
 Table <|-- PrimaryIndex
 View <|-- PrimaryIndex
-Table <|-- RowLevelSecurityEnabled
-Table <|-- RowLevelSecurityForced
 Table <|-- RowLevelTTL
 AliasType <|-- SchemaChild
 EnumType <|-- SchemaChild
@@ -646,6 +603,7 @@ Schema <|-- SchemaComment
 Schema <|-- SchemaParent
 Table <|-- SecondaryIndex
 View <|-- SecondaryIndex
+SecondaryIndex <|-- SecondaryIndexPartial
 Sequence <|-- SequenceOption
 Column <|-- SequenceOwner
 Table <|-- TableComment
@@ -657,7 +615,6 @@ Sequence <|-- TableData
 Table <|-- TableLocalityGlobal
 Table <|-- TableLocalityPrimaryRegion
 Table <|-- TableLocalityRegionalByRow
-Table <|-- TableLocalityRegionalByRowUsingConstraint
 Table <|-- TableLocalitySecondaryRegion
 Table <|-- TablePartitioning
 Table <|-- TableSchemaLocked

@@ -34,7 +34,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/redact"
 )
 
@@ -571,12 +570,6 @@ func EndTxn(
 			ctx, cArgs.EvalCtx, readWriter.(storage.Batch), ms, args, reply.Txn,
 		)
 		if err != nil {
-			// Commit triggers might fail in a way the doesn't mean that the replica
-			// is corrupted. In this case, we need to reset the reply to avoid
-			// returning to the client that the txn is committed. If that happened,
-			// the client throws an error due to a sanity check regarding a failed txn
-			// shouldn't be committed.
-			reply.Reset()
 			return result.Result{}, err
 		}
 		if err := txnResult.MergeAndDestroy(triggerResult); err != nil {
@@ -600,6 +593,11 @@ func IsEndTxnExceedingDeadline(commitTS hlc.Timestamp, deadline hlc.Timestamp) b
 func IsEndTxnTriggeringRetryError(
 	txn *roachpb.Transaction, deadline hlc.Timestamp,
 ) (retry bool, reason kvpb.TransactionRetryReason, extraMsg redact.RedactableString) {
+	if txn.WriteTooOld {
+		// If we saw any WriteTooOldErrors, we must restart to avoid lost
+		// update anomalies.
+		return true, kvpb.RETRY_WRITE_TOO_OLD, ""
+	}
 	if !txn.IsoLevel.ToleratesWriteSkew() && txn.WriteTimestamp != txn.ReadTimestamp {
 		// Return a transaction retry error if the commit timestamp isn't equal to
 		// the txn timestamp.
@@ -859,11 +857,6 @@ func RunCommitTrigger(
 	args *kvpb.EndTxnRequest,
 	txn *roachpb.Transaction,
 ) (result.Result, error) {
-	if fn := rec.EvalKnobs().CommitTriggerError; fn != nil {
-		if err := fn(); err != nil {
-			return result.Result{}, err
-		}
-	}
 	ct := args.InternalCommitTrigger
 	if ct == nil {
 		return result.Result{}, nil
@@ -890,18 +883,7 @@ func RunCommitTrigger(
 			ctx, rec, batch, *ms, ct.SplitTrigger, txn.WriteTimestamp,
 		)
 		if err != nil {
-			if info := pebble.ExtractDataCorruptionInfo(err); info != nil {
-				// We want to handle the data corruption error here because it's possible
-				// that a file that an external SSTable references got deleted. We want to
-				// fail the split and propagate the error, but we don't want to crash the
-				// process. An excise command could be used to get out of this data
-				// corruption.
-				return result.Result{}, err
-			} else {
-				// Otherwise, failing the split is a critical error. We should crash
-				// the process and report a replica corruption.
-				return result.Result{}, kvpb.MaybeWrapReplicaCorruptionError(ctx, err)
-			}
+			return result.Result{}, kvpb.MaybeWrapReplicaCorruptionError(ctx, err)
 		}
 		*ms = newMS
 		return res, nil
@@ -909,18 +891,7 @@ func RunCommitTrigger(
 	if mt := ct.GetMergeTrigger(); mt != nil {
 		res, err := mergeTrigger(ctx, rec, batch, ms, mt, txn.WriteTimestamp)
 		if err != nil {
-			if info := pebble.ExtractDataCorruptionInfo(err); info != nil {
-				// We want to handle the data corruption error here because it's
-				// possible that a file that an external SSTable references got deleted.
-				// We want to fail the merge and propagate the error, but we don't want
-				// to crash the process. An excise command could be used to get out of
-				// this data corruption.
-				return result.Result{}, err
-			} else {
-				// Otherwise, failing the merge is a critical error. We should crash
-				// the process and report a replica corruption.
-				return result.Result{}, kvpb.MaybeWrapReplicaCorruptionError(ctx, err)
-			}
+			return result.Result{}, kvpb.MaybeWrapReplicaCorruptionError(ctx, err)
 		}
 		return res, nil
 	}
@@ -1349,25 +1320,6 @@ func splitTriggerHelper(
 		return enginepb.MVCCStats{}, result.Result{}, err
 	}
 
-	// Copy the last consistency checker run timestamp from the LHS to the RHS.
-	// This avoids running the consistency checker on the RHS immediately after
-	// the split.
-	lastTS := hlc.Timestamp{}
-	if _, err := storage.MVCCGetProto(ctx, batch,
-		keys.QueueLastProcessedKey(split.LeftDesc.StartKey, "consistencyChecker"),
-		hlc.Timestamp{}, &lastTS, storage.MVCCGetOptions{}); err != nil {
-		return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err,
-			"unable to fetch the last consistency checker run for LHS")
-	}
-
-	if err := storage.MVCCPutProto(ctx, batch,
-		keys.QueueLastProcessedKey(split.RightDesc.StartKey, "consistencyChecker"),
-		hlc.Timestamp{}, &lastTS,
-		storage.MVCCWriteOptions{Stats: h.AbsPostSplitRight(), Category: fs.BatchEvalReadCategory}); err != nil {
-		return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err,
-			"unable to copy the last consistency checker run to RHS")
-	}
-
 	// Note: we don't copy the queue last processed times. This means
 	// we'll process the RHS range in consistency and time series
 	// maintenance queues again possibly sooner than if we copied. The
@@ -1475,21 +1427,12 @@ func splitTriggerHelper(
 		if err != nil {
 			return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "unable to load replica version")
 		}
-		if *h.AbsPostSplitRight(), err = stateloader.WriteInitialReplicaState(
+		*h.AbsPostSplitRight(), err = stateloader.WriteInitialReplicaState(
 			ctx, batch, *h.AbsPostSplitRight(), split.RightDesc, rightLease,
 			*gcThreshold, *gcHint, replicaVersion,
-		); err != nil {
+		)
+		if err != nil {
 			return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "unable to write initial Replica state")
-		}
-		// TODO(arulajmani): This can be removed once all nodes are past the
-		// V25_3_WriteInitialTruncStateBeforeSplitApplication cluster version.
-		// At that point, we'll no longer need to replicate the truncated state
-		// as all replicas will be responsible for writing it locally before
-		// applying the split.
-		if !rec.ClusterSettings().Version.IsActive(ctx, clusterversion.V25_3_WriteInitialTruncStateBeforeSplitApplication) {
-			if err := stateloader.WriteInitialTruncState(ctx, batch, split.RightDesc.RangeID); err != nil {
-				return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "unable to write initial Replica state")
-			}
 		}
 	}
 
@@ -1505,7 +1448,9 @@ func splitTriggerHelper(
 	// replicas that already have the unsplit range, *and* these snapshots are
 	// rejected (which is very wasteful). See the long comment in
 	// split_delay_helper.go for more details.
-	pd.Replicated.DoTimelyApplicationToAllReplicas = true
+	if rec.ClusterSettings().Version.IsActive(ctx, clusterversion.V25_1_AddRangeForceFlushKey) {
+		pd.Replicated.DoTimelyApplicationToAllReplicas = true
+	}
 
 	pd.Local.Metrics = &result.Metrics{
 		SplitsWithEstimatedStats:     h.splitsWithEstimates,
@@ -1608,7 +1553,9 @@ func mergeTrigger(
 	// the merge distributed txn, when sending a kvpb.SubsumeRequest. But since
 	// we have force-flushed once during the merge txn anyway, we choose to
 	// complete the merge story and finish the merge on all replicas.
-	pd.Replicated.DoTimelyApplicationToAllReplicas = true
+	if rec.ClusterSettings().Version.IsActive(ctx, clusterversion.V25_1_AddRangeForceFlushKey) {
+		pd.Replicated.DoTimelyApplicationToAllReplicas = true
+	}
 
 	{
 		// If we have GC hints populated that means we are trying to perform

@@ -17,6 +17,7 @@ import (
 	_ "github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl"
 	_ "github.com/cockroachdb/cockroach/pkg/crosscluster/producer"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/replicationtestutils"
+	"github.com/cockroachdb/cockroach/pkg/crosscluster/replicationutils"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/streamclient"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
@@ -29,7 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -54,7 +54,7 @@ func TestTenantStreamingCreationErrors(t *testing.T) {
 	sysSQL := sqlutils.MakeSQLRunner(db)
 	sysSQL.Exec(t, `SET CLUSTER SETTING kv.rangefeed.enabled = true`)
 
-	srcPgURL, cleanupSink := pgurlutils.PGUrl(t, srv.SystemLayer().AdvSQLAddr(), t.Name(), url.User(username.RootUser))
+	srcPgURL, cleanupSink := sqlutils.PGUrl(t, srv.SystemLayer().AdvSQLAddr(), t.Name(), url.User(username.RootUser))
 	defer cleanupSink()
 
 	telemetry.GetFeatureCounts(telemetry.Raw, telemetry.ResetCounts)
@@ -67,7 +67,7 @@ func TestTenantStreamingCreationErrors(t *testing.T) {
 			"CREATE TENANT [1] FROM REPLICATION OF source ON $1", srcPgURL.String())
 	})
 	t.Run("cannot set expiration window on create tenant from replication", func(t *testing.T) {
-		sysSQL.ExpectErr(t, `at or near "expiration": syntax error`,
+		sysSQL.ExpectErr(t, `pq: cannot specify EXPIRATION WINDOW option while starting a physical replication stream`,
 			"CREATE TENANT system FROM REPLICATION OF source ON $1 WITH EXPIRATION WINDOW='42s'", srcPgURL.String())
 	})
 	t.Run("destination cannot exist without resume timestamp", func(t *testing.T) {
@@ -273,6 +273,7 @@ func TestTenantStreamingFailback(t *testing.T) {
 
 	sqlB.Exec(t, "ALTER VIRTUAL CLUSTER g STOP SERVICE")
 	waitUntilTenantServerStopped(t, serverB.SystemLayer(), "g")
+	sqlB.ExpectErr(t, "cannot specify EXPIRATION WINDOW option while starting a physical replication stream", "ALTER VIRTUAL CLUSTER g START REPLICATION OF f ON $1 WITH EXPIRATION WINDOW = '1ms'", serverAURL.String())
 	t.Logf("starting replication f->g")
 	sqlB.Exec(t, "ALTER VIRTUAL CLUSTER g START REPLICATION OF f ON $1", serverAURL.String())
 	var producerFJobID int
@@ -304,7 +305,7 @@ func TestTenantStreamingFailback(t *testing.T) {
 	jobutils.WaitForJobToSucceed(t, sqlB, jobspb.JobID(consumerGJobID))
 
 	// Ensure failback fails if pts has expired
-	sqlA.Exec(t, `ALTER TENANT f SET REPLICATION SOURCE EXPIRATION WINDOW ='10ms'`)
+	sqlA.Exec(t, `ALTER TENANT f SET REPLICATION EXPIRATION WINDOW ='10ms'`)
 	// Ensure all producer jobs on F have succeeded to verify that we require a
 	// valid pts to resume replication.
 	jobutils.WaitForJobToSucceed(t, sqlA, jobspb.JobID(producerFJobID))
@@ -393,7 +394,7 @@ func TestReplicationJobResumptionStartTime(t *testing.T) {
 	jobutils.WaitForJobToRun(c.T, c.DestSysSQL, jobspb.JobID(replicationJobID))
 
 	<-planned
-	stats := replicationtestutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, replicationJobID)
+	stats := replicationutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, replicationJobID)
 
 	// Assert that the start time hasn't changed.
 	require.Equal(t, startTime, stats.IngestionDetails.ReplicationStartTime)

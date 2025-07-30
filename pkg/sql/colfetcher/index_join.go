@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvstreamer"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexec/colexecspan"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecerror"
@@ -63,16 +62,6 @@ type ColIndexJoin struct {
 	// because the size of input rows from which spans are generated is limited,
 	// and may not correspond to batch boundaries.
 	startIdx int
-
-	// scanRowCounts contains the expected and actual number of rows fetched for
-	// the current lookup scan. The expected row count is equal to the number of
-	// input rows that have been consumed to create the spans. These counts are
-	// used to make assertions that prevent returning incorrect results due to
-	// index corruption. See assertScanRowCounts() for more details.
-	scanRowCounts struct {
-		expected int64
-		actual   int64
-	}
 
 	// limitHintHelper is used in limiting batches of input rows in the presence
 	// of hard and soft limits.
@@ -130,10 +119,6 @@ type ColIndexJoin struct {
 	// It should be used rather than the slice of column types from the scanned
 	// table because the scan might synthesize additional implicit system columns.
 	ResultTypes []*types.T
-
-	// lockingWaitPolicy is the wait policy for the cFetcher's underlying
-	// row.KVFetcher.
-	lockingWaitPolicy descpb.ScanLockingWaitPolicy
 
 	// maintainOrdering is true when the index join is required to maintain its
 	// input ordering, in which case the ordering of the spans cannot be changed.
@@ -219,11 +204,8 @@ func (s *ColIndexJoin) Next() coldata.Batch {
 				sort.Sort(spans)
 			}
 
-			// For memory accounting, we assume the index join will return
-			// exactly one output row per input row. This is true most of the
-			// time, except when the locking wait policy is SKIP LOCKED.
+			// Index joins will always return exactly one output row per input row.
 			s.cf.setEstimatedRowCount(uint64(rowCount))
-			s.scanRowCounts.expected = rowCount
 			// Note that the fetcher takes ownership of the spans slice - it
 			// will modify it and perform the memory accounting. We don't care
 			// about the modification here, but we want to be conscious about
@@ -233,7 +215,7 @@ func (s *ColIndexJoin) Next() coldata.Batch {
 			if err := s.cf.StartScan(
 				s.Ctx,
 				spans,
-				true, /* parallelize */
+				false, /* limitBatches */
 				rowinfra.NoBytesLimit,
 				rowinfra.NoRowLimit,
 			); err != nil {
@@ -257,11 +239,8 @@ func (s *ColIndexJoin) Next() coldata.Batch {
 				// still has the references to it.
 				s.spanAssembler.AccountForSpans()
 				s.state = indexJoinConstructingSpans
-				s.assertScanRowCounts()
-				s.scanRowCounts.actual = 0
 				continue
 			}
-			s.scanRowCounts.actual += int64(n)
 			s.mu.Lock()
 			s.mu.rowsRead += int64(n)
 			s.mu.Unlock()
@@ -331,30 +310,6 @@ func (s *ColIndexJoin) getRowSize(idx int) int64 {
 		}
 	}
 	return rowSize
-}
-
-// assertScanRowCounts performs assertions to prevent silently returning
-// incorrect results, e.g., if an index is corrupt. In the common case, the
-// number of fetched rows in an index join should be equal to the number of
-// input rows. The only exception is when the locking wait policy is
-// SKIP LOCKED, in which case the number of fetched rows may be less than
-// the number of input rows, but never greater.
-func (s *ColIndexJoin) assertScanRowCounts() {
-	if s.lockingWaitPolicy == descpb.ScanLockingWaitPolicy_SKIP_LOCKED {
-		if s.scanRowCounts.actual > s.scanRowCounts.expected {
-			colexecerror.InternalError(errors.AssertionFailedf(
-				"expected to fetch no more than %d rows, found %d",
-				s.scanRowCounts.expected, s.scanRowCounts.actual,
-			))
-		}
-	} else {
-		if s.scanRowCounts.actual != s.scanRowCounts.expected {
-			colexecerror.InternalError(errors.AssertionFailedf(
-				"expected to fetch %d rows, found %d",
-				s.scanRowCounts.expected, s.scanRowCounts.actual,
-			))
-		}
-	}
 }
 
 // getBatchSize calculates the size of the entire current batch. Note that it
@@ -595,7 +550,7 @@ func NewColIndexJoin(
 			// which will close the acc.
 			diskBufferMemAcc := streamerBudgetAcc.Monitor().MakeBoundAccount()
 			diskBuffer = rowcontainer.NewKVStreamerResultDiskBuffer(
-				flowCtx.Cfg.TempStorage, diskBufferMemAcc, diskMonitor, false, /* reverse */
+				flowCtx.Cfg.TempStorage, diskBufferMemAcc, diskMonitor,
 			)
 		}
 		kvFetcher = row.NewStreamingKVFetcher(
@@ -613,7 +568,6 @@ func NewColIndexJoin(
 			maintainOrdering,
 			true, /* singleRowLookup */
 			int(spec.FetchSpec.MaxKeysPerRow),
-			false, /* reverse */
 			diskBuffer,
 			kvFetcherMemAcc,
 			spec.FetchSpec.External,
@@ -636,7 +590,6 @@ func NewColIndexJoin(
 		)
 	}
 
-	shouldCollectStats := execstats.ShouldCollectStats(ctx, flowCtx.CollectStats)
 	fetcher := cFetcherPool.Get().(*cFetcher)
 	fetcher.cFetcherArgs = cFetcherArgs{
 		cFetcherMemoryLimit,
@@ -645,9 +598,8 @@ func NewColIndexJoin(
 		0, /* estimatedRowCount */
 		flowCtx.TraceKV,
 		false, /* singleUse */
-		shouldCollectStats,
+		execstats.ShouldCollectStats(ctx, flowCtx.CollectStats),
 		false, /* alwaysReallocate */
-		txn,
 	}
 	if err = fetcher.Init(
 		fetcherAllocator, kvFetcher, tableArgs,
@@ -661,17 +613,16 @@ func NewColIndexJoin(
 	)
 
 	op := &ColIndexJoin{
-		OneInputNode:      colexecop.NewOneInputNode(input),
-		flowCtx:           flowCtx,
-		processorID:       processorID,
-		cf:                fetcher,
-		spanAssembler:     spanAssembler,
-		ResultTypes:       tableArgs.typs,
-		maintainOrdering:  spec.MaintainOrdering,
-		txn:               txn,
-		usesStreamer:      useStreamer,
-		limitHintHelper:   execinfra.MakeLimitHintHelper(spec.LimitHint, post),
-		lockingWaitPolicy: spec.LockingWaitPolicy,
+		OneInputNode:     colexecop.NewOneInputNode(input),
+		flowCtx:          flowCtx,
+		processorID:      processorID,
+		cf:               fetcher,
+		spanAssembler:    spanAssembler,
+		ResultTypes:      tableArgs.typs,
+		maintainOrdering: spec.MaintainOrdering,
+		txn:              txn,
+		usesStreamer:     useStreamer,
+		limitHintHelper:  execinfra.MakeLimitHintHelper(spec.LimitHint, post),
 	}
 	op.mem.inputBatchSizeLimit = getIndexJoinBatchSize(
 		useStreamer, flowCtx.EvalCtx.TestingKnobs.ForceProductionValues, flowCtx.EvalCtx.SessionData(),
@@ -689,11 +640,6 @@ func NewColIndexJoin(
 		// enqueued requests) alone might exceed the budget leading to the
 		// Streamer erroring out in Enqueue().
 		op.mem.inputBatchSizeLimit = cFetcherMemoryLimit
-	}
-	if shouldCollectStats {
-		if flowTxn := flowCtx.EvalCtx.Txn; flowTxn != nil {
-			op.ContentionEventsListener.Init(flowTxn.ID())
-		}
 	}
 
 	return op, nil

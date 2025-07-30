@@ -352,10 +352,10 @@ func TestStreamIngestionProcessor(t *testing.T) {
 			if token == string(p2) {
 				sp = p2Span
 			}
-			for _, t := range clientStartTimes.SpanEntries(sp) {
+			clientStartTimes.SpanEntries(sp, func(s roachpb.Span, t hlc.Timestamp) (done span.OpResult) {
 				lastClientStart[token] = t
-				break
-			}
+				return span.StopMatch
+			})
 		}}
 		out, err := runStreamIngestionProcessor(ctx, t, registry, db,
 			topology, initialScanTimestamp, checkpoint, tenantRekey, mockClient,

@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/debugutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/interval"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -162,10 +161,9 @@ type TxnCoordSender struct {
 	// additional heap allocations necessary.
 	interceptorStack []txnInterceptor
 	interceptorAlloc struct {
-		arr [7]txnInterceptor
+		arr [6]txnInterceptor
 		txnHeartbeater
 		txnSeqNumAllocator
-		txnWriteBuffer
 		txnPipeliner
 		txnCommitter
 		txnSpanRefresher
@@ -192,16 +190,7 @@ type txnInterceptor interface {
 
 	// populateLeafInputState populates the given input payload
 	// for a LeafTxn.
-	//
-	// readsTree, when non-nil, specifies an interval tree of key spans that
-	// will be read by the caller. As such, any non-overlapping writes could be
-	// ignored when populating the LeafTxnInputState. If readsTree is nil, then
-	// all writes should be included.
-	populateLeafInputState(*roachpb.LeafTxnInputState, interval.Tree)
-
-	// initializeLeaf updates any internal state held inside the interceptor
-	// from the given LeafTxn input state.
-	initializeLeaf(*roachpb.LeafTxnInputState)
+	populateLeafInputState(*roachpb.LeafTxnInputState)
 
 	// populateLeafFinalState populates the final payload
 	// for a LeafTxn to bring back into a RootTxn.
@@ -222,10 +211,6 @@ type txnInterceptor interface {
 	// rollbackToSavepointLocked is used to restore the state previously saved by
 	// createSavepointLocked().
 	rollbackToSavepointLocked(context.Context, savepoint)
-
-	// releaseSavepointLocked is called when a savepoint is being
-	// released.
-	releaseSavepointLocked(context.Context, *savepoint)
 
 	// closeLocked closes the interceptor. It is called when the TxnCoordSender
 	// shuts down due to either a txn commit or a txn abort. The method will
@@ -281,10 +266,6 @@ func newRootTxnCoordSender(
 		timeSource: timeutil.DefaultTimeSource{},
 		txn:        &tcs.mu.txn,
 	}
-	tcs.interceptorAlloc.txnWriteBuffer.init(
-		&tcs.interceptorAlloc.txnPipeliner,
-	)
-
 	tcs.initCommonInterceptors(tcf, txn, kv.RootTxn)
 
 	// Once the interceptors are initialized, piece them all together in the
@@ -294,10 +275,6 @@ func newRootTxnCoordSender(
 		// Various interceptors below rely on sequence number allocation,
 		// so the sequence number allocator is near the top of the stack.
 		&tcs.interceptorAlloc.txnSeqNumAllocator,
-		// The write buffer sits above the pipeliner to ensure it doesn't need to
-		// know how to handle QueryIntentRequests, as those are only generated (and
-		// handled) by the pipeliner.
-		&tcs.interceptorAlloc.txnWriteBuffer,
 		// The pipeliner sits above the span refresher because it will
 		// never generate transaction retry errors that could be avoided
 		// with a refresh.
@@ -334,10 +311,6 @@ func (tc *TxnCoordSender) initCommonInterceptors(
 	var riGen rangeIteratorFactory
 	if ds, ok := tcf.wrapped.(*DistSender); ok {
 		riGen.ds = ds
-	}
-	tc.interceptorAlloc.txnWriteBuffer = txnWriteBuffer{
-		st:         tcf.st,
-		txnMetrics: &tc.metrics,
 	}
 	tc.interceptorAlloc.txnPipeliner = txnPipeliner{
 		st:                       tcf.st,
@@ -401,16 +374,20 @@ func newLeafTxnCoordSender(
 	// is initialized.
 	tcs.initCommonInterceptors(tcf, txn, kv.LeafTxn)
 
-	// Piece necessary interceptors together in the correct order.
+	// Per-interceptor leaf initialization. If/when more interceptors
+	// need leaf initialization, this should be turned into an interface
+	// method on txnInterceptor with a loop here.
+	tcs.interceptorAlloc.txnPipeliner.initializeLeaf(tis)
+	tcs.interceptorAlloc.txnSeqNumAllocator.initializeLeaf(tis)
+
+	// Once the interceptors are initialized, piece them all together in the
+	// correct order.
 	tcs.interceptorAlloc.arr = [cap(tcs.interceptorAlloc.arr)]txnInterceptor{
 		// LeafTxns never perform writes so the sequence number allocator
 		// should never increment its sequence number counter over its
 		// lifetime, but it still plays the important role of assigning each
 		// read request the latest sequence number.
 		&tcs.interceptorAlloc.txnSeqNumAllocator,
-		// The write buffer is needed on leaves in order to serve
-		// read-your-own-writes that were buffered on the root.
-		&tcs.interceptorAlloc.txnWriteBuffer,
 		// The pipeliner is needed on leaves to ensure that in-flight writes
 		// are chained onto by reads that should see them.
 		&tcs.interceptorAlloc.txnPipeliner,
@@ -427,14 +404,9 @@ func newLeafTxnCoordSender(
 	// If the root has informed us that the read spans are not needed by
 	// the root, we don't need the txnSpanRefresher.
 	if tis.RefreshInvalid {
-		tcs.interceptorStack = tcs.interceptorAlloc.arr[:3]
+		tcs.interceptorStack = tcs.interceptorAlloc.arr[:2]
 	} else {
-		tcs.interceptorStack = tcs.interceptorAlloc.arr[:4]
-	}
-
-	// Per-interceptor leaf initialization.
-	for _, reqInt := range tcs.interceptorStack {
-		reqInt.initializeLeaf(tis)
+		tcs.interceptorStack = tcs.interceptorAlloc.arr[:3]
 	}
 
 	tcs.connectInterceptors()
@@ -450,7 +422,6 @@ func (tc *TxnCoordSender) DisablePipelining() error {
 	if tc.mu.active {
 		return errors.Errorf("cannot disable pipelining on a running transaction")
 	}
-	tc.interceptorAlloc.txnPipeliner.disabledExplicitly = true
 	tc.interceptorAlloc.txnPipeliner.disabled = true
 	return nil
 }
@@ -529,8 +500,7 @@ func (tc *TxnCoordSender) Send(
 		return nil, pErr
 	}
 
-	if ba.IsSingleEndTxnRequest() && !tc.interceptorAlloc.txnPipeliner.hasAcquiredLocks() &&
-		!tc.interceptorAlloc.txnWriteBuffer.hasBufferedWrites() {
+	if ba.IsSingleEndTxnRequest() && !tc.interceptorAlloc.txnPipeliner.hasAcquiredLocks() {
 		return nil, tc.finalizeNonLockingTxnLocked(ctx, ba)
 	}
 
@@ -902,9 +872,6 @@ func (tc *TxnCoordSender) handleRetryableErrLocked(ctx context.Context, pErr *kv
 	case *kvpb.ReadWithinUncertaintyIntervalError:
 		tc.metrics.RestartsReadWithinUncertainty.Inc()
 
-	case *kvpb.ExclusionViolationError:
-		tc.metrics.RestartsExclusionViolation.Inc()
-
 	case *kvpb.TransactionAbortedError:
 		tc.metrics.RestartsTxnAborted.Inc()
 
@@ -1183,33 +1150,6 @@ func (tc *TxnCoordSender) SetOmitInRangefeeds() {
 	tc.mu.txn.OmitInRangefeeds = true
 }
 
-// SetBufferedWritesEnabled is part of the kv.TxnSender interface.
-func (tc *TxnCoordSender) SetBufferedWritesEnabled(enabled bool) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	if enabled == tc.interceptorAlloc.txnWriteBuffer.enabled {
-		// No-op since we don't change whether write buffering is enabled.
-		return
-	}
-
-	if tc.mu.active && enabled {
-		panic("cannot enable buffered writes on a running transaction")
-	}
-	tc.interceptorAlloc.txnWriteBuffer.setEnabled(enabled)
-	if enabled {
-		tc.interceptorAlloc.txnPipeliner.disabled = true
-	}
-}
-
-// BufferedWritesEnabled is part of the kv.TxnSender interface.
-func (tc *TxnCoordSender) BufferedWritesEnabled() bool {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	return tc.interceptorAlloc.txnWriteBuffer.enabled
-}
-
 // String is part of the kv.TxnSender interface.
 func (tc *TxnCoordSender) String() string {
 	tc.mu.Lock()
@@ -1421,7 +1361,7 @@ func (tc *TxnCoordSender) Active() bool {
 
 // GetLeafTxnInputState is part of the kv.TxnSender interface.
 func (tc *TxnCoordSender) GetLeafTxnInputState(
-	ctx context.Context, readsTree interval.Tree,
+	ctx context.Context,
 ) (*roachpb.LeafTxnInputState, error) {
 	tis := new(roachpb.LeafTxnInputState)
 	tc.mu.Lock()
@@ -1435,7 +1375,7 @@ func (tc *TxnCoordSender) GetLeafTxnInputState(
 	// Copy mutable state so access is safe for the caller.
 	tis.Txn = tc.mu.txn
 	for _, reqInt := range tc.interceptorStack {
-		reqInt.populateLeafInputState(tis, readsTree)
+		reqInt.populateLeafInputState(tis)
 	}
 
 	// Also mark the TxnCoordSender as "active".  This prevents changing
@@ -1463,6 +1403,14 @@ func (tc *TxnCoordSender) GetLeafTxnFinalState(
 	//   if pErr != nil {
 	//   	return nil, pErr.GoError()
 	//   }
+
+	// For compatibility with pre-20.1 nodes: populate the command
+	// count.
+	// TODO(knz,andrei): Remove this and the command count
+	// field in 20.2.
+	if tc.mu.active {
+		tfs.DeprecatedCommandCount = 1
+	}
 
 	// Copy mutable state so access is safe for the caller.
 	tfs.Txn = tc.mu.txn
@@ -1707,7 +1655,6 @@ func (tc *TxnCoordSender) TestingShouldRetry() bool {
 	return false
 }
 
-// TODO(148760): this doesn't work under Read Committed isolation.
 func (tc *TxnCoordSender) hasPerformedReadsLocked() bool {
 	return !tc.interceptorAlloc.txnSpanRefresher.refreshFootprint.empty()
 }

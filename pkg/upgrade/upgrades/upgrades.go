@@ -59,34 +59,37 @@ var upgrades = []upgradebase.Upgrade{
 		bootstrapCluster,
 		upgrade.RestoreActionNotRequired("initialization runs before restore")),
 
-	newFirstUpgrade(clusterversion.V25_3_Start.Version()),
+	newFirstUpgrade(clusterversion.V25_1_Start.Version()),
 
 	upgrade.NewTenantUpgrade(
-		"add 'payload' column to system.eventlog table and add new index on eventType column",
-		clusterversion.V25_3_AddEventLogColumnAndIndex.Version(),
+		"add new jobs tables",
+		clusterversion.V25_1_AddJobsTables.Version(),
 		upgrade.NoPrecondition,
-		eventLogTableMigration,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore the new column or index"),
+		addJobsTables,
+		upgrade.RestoreActionNotRequired("cluster restore does not restore the new field"),
 	),
 
 	upgrade.NewTenantUpgrade(
-		"add 'estimated_last_login_time' column to system.users table",
-		clusterversion.V25_3_AddEstimatedLastLoginTime.Version(),
+		"create prepared_transactions table",
+		clusterversion.V25_1_PreparedTransactionsTable.Version(),
 		upgrade.NoPrecondition,
-		usersLastLoginTimeTableMigration,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore the new column"),
+		createPreparedTransactionsTable,
+		upgrade.RestoreActionNotRequired("cluster restore does not restore this table"),
 	),
-
 	upgrade.NewTenantUpgrade(
-		"add new hot range logger job",
-		clusterversion.V25_3_AddHotRangeLoggerJob.Version(),
+		"add new jobs tables",
+		clusterversion.V25_1_AddJobsColumns.Version(),
 		upgrade.NoPrecondition,
-		addHotRangeLoggerJob,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore this job"),
+		addJobsColumns,
+		upgrade.RestoreActionNotRequired("cluster restore does not restore the new field"),
 	),
-
-	newFirstUpgrade(clusterversion.V25_4_Start.Version()),
-
+	upgrade.NewTenantUpgrade(
+		"backfill new jobs tables",
+		clusterversion.V25_1_JobsBackfill.Version(),
+		upgrade.NoPrecondition,
+		backfillJobsTablesAndColumns,
+		upgrade.RestoreActionNotRequired("cluster restore does not restore jobs tables"),
+	),
 	// Note: when starting a new release version, the first upgrade (for
 	// Vxy_zStart) must be a newFirstUpgrade. Keep this comment at the bottom.
 }

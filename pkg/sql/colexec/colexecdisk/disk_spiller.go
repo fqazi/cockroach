@@ -15,8 +15,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execopnode"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/redact"
 )
 
 // oneInputDiskSpiller is an Operator that manages the fallback from a one
@@ -80,7 +80,7 @@ import (
 func NewOneInputDiskSpiller(
 	input colexecop.Operator,
 	inMemoryOp colexecop.BufferingInMemoryOperator,
-	inMemoryMemMonitorName mon.Name,
+	inMemoryMemMonitorName redact.SafeString,
 	diskBackedOpConstructor func(input colexecop.Operator) colexecop.Operator,
 	diskBackedReuseMode colexecop.BufferingOpReuseMode,
 	spillingCallbackFn func(),
@@ -92,7 +92,7 @@ func NewOneInputDiskSpiller(
 	op.diskSpillerBase = diskSpillerBase{
 		inputs:                  []colexecop.Operator{input},
 		inMemoryOp:              inMemoryOp,
-		inMemoryMemMonitorNames: [2]mon.Name{inMemoryMemMonitorName, mon.EmptyName},
+		inMemoryMemMonitorNames: []string{string(inMemoryMemMonitorName)},
 		diskBackedOpConstructor: op.constructDiskBackedOp,
 		spillingCallbackFn:      spillingCallbackFn,
 	}
@@ -169,17 +169,21 @@ func (d *oneInputDiskSpiller) constructDiskBackedOp() colexecop.Operator {
 func NewTwoInputDiskSpiller(
 	inputOne, inputTwo colexecop.Operator,
 	inMemoryOp colexecop.BufferingInMemoryOperator,
-	inMemoryMemMonitorNames [2]mon.Name,
+	inMemoryMemMonitorNames []redact.SafeString,
 	diskBackedOpConstructor func(inputOne, inputTwo colexecop.Operator) colexecop.Operator,
 	spillingCallbackFn func(),
 ) colexecop.ClosableOperator {
 	op := &twoInputDiskSpiller{
 		diskBackedOpConstructor: diskBackedOpConstructor,
 	}
+	names := make([]string, len(inMemoryMemMonitorNames))
+	for i := range names {
+		names[i] = string(inMemoryMemMonitorNames[i])
+	}
 	op.diskSpillerBase = diskSpillerBase{
 		inputs:                  []colexecop.Operator{inputOne, inputTwo},
 		inMemoryOp:              inMemoryOp,
-		inMemoryMemMonitorNames: inMemoryMemMonitorNames,
+		inMemoryMemMonitorNames: names,
 		diskBackedOpConstructor: op.constructDiskBackedOp,
 		spillingCallbackFn:      spillingCallbackFn,
 	}
@@ -213,7 +217,7 @@ type diskSpillerBase struct {
 	spilled bool
 
 	inMemoryOp              colexecop.BufferingInMemoryOperator
-	inMemoryMemMonitorNames [2]mon.Name
+	inMemoryMemMonitorNames []string
 	// diskBackedOp is created lazily when the diskSpillerBase spills to disk
 	// for the first time throughout its lifetime.
 	diskBackedOp            colexecop.Operator
@@ -250,8 +254,7 @@ func (d *diskSpillerBase) Next() coldata.Batch {
 			// Check if this error is from one of our memory monitors.
 			var found bool
 			for i := range d.inMemoryMemMonitorNames {
-				name := &d.inMemoryMemMonitorNames[i]
-				if !name.Empty() && strings.Contains(err.Error(), name.String()) {
+				if strings.Contains(err.Error(), d.inMemoryMemMonitorNames[i]) {
 					found = true
 					break
 				}

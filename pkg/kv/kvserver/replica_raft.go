@@ -26,14 +26,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/print"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/uncertainty"
 	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util"
@@ -55,20 +53,6 @@ import (
 // raftDisableLeaderFollowsLeaseholder disables lease/leader collocation.
 var raftDisableLeaderFollowsLeaseholder = envutil.EnvOrDefaultBool(
 	"COCKROACH_DISABLE_LEADER_FOLLOWS_LEASEHOLDER", false)
-
-// ReplicaLeaderlessUnavailableThreshold is the duration after which leaderless
-// replicas are considered unavailable. Set to 0 to disable.
-var ReplicaLeaderlessUnavailableThreshold = settings.RegisterDurationSettingWithExplicitUnit(
-	settings.SystemOnly,
-	"kv.replica_raft.leaderless_unavailable_threshold",
-	"duration after which leaderless replicas is considered unavailable. Set to 0"+
-		" to disable leaderless replica availability checks",
-	60*time.Second,
-	settings.WithPublic,
-	// Setting the duration too low could be very dangerous to cluster health as
-	// replicas under normal operation could be considered unavailable.
-	settings.DurationWithMinimumOrZeroDisable(5*time.Second),
-)
 
 // evalAndPropose prepares the necessary pending command struct and initializes
 // a client command ID if one hasn't been. A verified lease is supplied as a
@@ -96,8 +80,6 @@ var ReplicaLeaderlessUnavailableThreshold = settings.RegisterDurationSettingWith
 //     terminate execution, although it is given no guarantee that the proposal
 //     won't still go on to commit and apply at some later time.
 //   - the proposal's ID.
-//   - the bytes that will be written by the replica during the application of
-//     the Raft command.
 //   - any error obtained during the creation or proposal of the command, in
 //     which case the other returned values are zero.
 func (r *Replica) evalAndPropose(
@@ -146,10 +128,6 @@ func (r *Replica) evalAndPropose(
 		}
 		intents := proposal.Local.DetachEncounteredIntents()
 		endTxns := proposal.Local.DetachEndTxns(pErr != nil /* alwaysOnly */)
-
-		// If we had no proposal, then the existing LeaseAppliedIndex is sufficient.
-		proposal.Local.DetachRepopulateSubsumeResponse()
-
 		r.handleReadWriteLocalEvalResult(ctx, *proposal.Local)
 
 		// NB: it is intentional that this returns both an error and results.
@@ -206,7 +184,7 @@ func (r *Replica) evalAndPropose(
 
 		// Fork the proposal's context span so that the proposal's context
 		// can outlive the original proposer's context.
-		if s := tracing.SpanFromContext(ctx); s != nil {
+		if s := tracing.SpanFromContext(ctx); s != nil && !s.IsNoop() {
 			ctx, sp := tracing.ForkSpan(ctx, "async consensus")
 			proposal.ctx.Store(&ctx)
 			proposal.sp = sp
@@ -380,6 +358,10 @@ func (r *Replica) abandon(tok abandonToken) {
 	last.ctx.Store(&ctx)
 }
 
+func (r *Replica) encodePriorityForRACv2() bool {
+	return r.flowControlV2.GetEnabledWhenLeader() == kvflowcontrol.V2EnabledWhenLeaderV2Encoding
+}
+
 // propose encodes a command, starts tracking it, and proposes it to Raft.
 //
 // The method hands ownership of the command over to the Raft machinery. After
@@ -431,16 +413,18 @@ func (r *Replica) propose(
 		raftAdmissionMeta = nil
 	}
 
-	if raftAdmissionMeta != nil {
-		// AdmissionPriority is the admissionpb.WorkPriority until we get here.
-		// From now on, it is the raftpb.Priority.
+	encodePriority := r.encodePriorityForRACv2()
+	if encodePriority && raftAdmissionMeta != nil {
+		// AdmissionPriority is the same for both v1 and v2 replication flow control
+		// until we get here. If the v2 encoding is enabled, we need to convert the
+		// priority to the v2 encoding.
 		raftAdmissionMeta.AdmissionPriority = int32(rac2.AdmissionToRaftPriority(
 			admissionpb.WorkPriority(raftAdmissionMeta.AdmissionPriority)))
 	}
 	data, err := raftlog.EncodeCommand(ctx, p.command, p.idKey,
 		raftlog.EncodeOptions{
 			RaftAdmissionMeta: raftAdmissionMeta,
-			EncodePriority:    true,
+			EncodePriority:    encodePriority,
 		})
 	if err != nil {
 		return kvpb.NewError(err)
@@ -633,12 +617,6 @@ func (r *Replica) ticksSinceLastProposalRLocked() int64 {
 	return r.mu.ticks - r.mu.lastProposalAtTicks
 }
 
-// ticksSinceLastMessageRLocked returns the number of ticks since the last
-// received message.
-func (r *Replica) ticksSinceLastMessageRLocked() int64 {
-	return r.mu.ticks - r.mu.lastMessageAtTicks
-}
-
 // isRaftLeader returns true if this replica believes it is the current
 // Raft leader.
 //
@@ -648,7 +626,7 @@ func (r *Replica) ticksSinceLastMessageRLocked() int64 {
 // status where necessary.
 func (r *Replica) isRaftLeaderRLocked() bool {
 	// Defensively check replicaID != 0.
-	return r.replicaID != 0 && r.replicaID == r.shMu.leaderID
+	return r.replicaID != 0 && r.replicaID == r.mu.leaderID
 }
 
 var errRemoved = errors.New("replica removed")
@@ -693,7 +671,6 @@ func (r *Replica) stepRaftGroupRaftMuLocked(req *kvserverpb.RaftMessageRequest) 
 			wakeLeader := hasLeader && !fromLeader
 			r.maybeUnquiesceLocked(wakeLeader, false /* mayCampaign */)
 		}
-		r.maybeWakeUpRMuLocked()
 
 		{
 			// Update the lastUpdateTimes map, unless configured not to by a testing
@@ -709,8 +686,6 @@ func (r *Replica) stepRaftGroupRaftMuLocked(req *kvserverpb.RaftMessageRequest) 
 			}
 		}
 
-		r.mu.lastMessageAtTicks = r.mu.ticks
-
 		switch req.Message.Type {
 		case raftpb.MsgPreVote, raftpb.MsgVote:
 			// If we receive a (pre)vote request, and we find our leader to be dead or
@@ -719,10 +694,11 @@ func (r *Replica) stepRaftGroupRaftMuLocked(req *kvserverpb.RaftMessageRequest) 
 		case raftpb.MsgApp:
 			if n := len(req.Message.Entries); n > 0 {
 				sideChannelInfo = replica_rac2.SideChannelInfoUsingRaftMessageRequest{
-					LeaderTerm:     req.Message.Term,
-					First:          req.Message.Entries[0].Index,
-					Last:           req.Message.Entries[n-1].Index,
-					LowPriOverride: req.LowPriorityOverride,
+					UsingV2Protocol: req.UsingRac2Protocol,
+					LeaderTerm:      req.Message.Term,
+					First:           req.Message.Entries[0].Index,
+					Last:            req.Message.Entries[n-1].Index,
+					LowPriOverride:  req.LowPriorityOverride,
 				}
 			}
 		case raftpb.MsgAppResp:
@@ -823,12 +799,9 @@ func (s handleRaftReadyStats) SafeFormat(p redact.SafePrinter, _ rune) {
 			p.Printf(" (copies=%d)", c)
 		}
 	}
-	if b := s.apply.numWriteAndIngestedBytes; b > 0 {
-		p.Printf(", apply-write-bytes=%s", humanizeutil.IBytes(b))
-	}
 	p.SafeString("]")
 
-	if n := s.apply.assertionsRequested; n > 0 {
+	if n := s.apply.stateAssertions; n > 0 {
 		p.Printf(", state_assertions=%d", n)
 	}
 	if s.snap.offered {
@@ -874,6 +847,19 @@ func (r *Replica) handleRaftReady(
 	return r.handleRaftReadyRaftMuLocked(ctx, inSnap)
 }
 
+func (r *Replica) attachRaftEntriesMonitorRaftMuLocked() {
+	r.raftMu.bytesAccount = r.store.cfg.RaftEntriesMonitor.NewAccount(
+		r.store.metrics.RaftLoadedEntriesBytes)
+}
+
+func (r *Replica) detachRaftEntriesMonitorRaftMuLocked() {
+	// Return all the used bytes back to the limiter.
+	r.raftMu.bytesAccount.Clear()
+	// De-initialize the account so that log storage Entries() calls don't track
+	// the entries anymore.
+	r.raftMu.bytesAccount = logstore.BytesAccount{}
+}
+
 // handleRaftReadyRaftMuLocked is the same as handleRaftReady but requires that
 // the replica's raftMu be held.
 //
@@ -888,6 +874,35 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 		return handleRaftReadyStats{}, errors.AssertionFailedf(
 			"handleRaftReadyRaftMuLocked cannot be called with a cancellable context")
 	}
+	// Before doing anything, including calling Ready(), see if we need to
+	// ratchet up the flow control level. This code will go away when RACv1 =>
+	// RACv2 transition is complete and RACv1 code is removed.
+	if r.raftMu.flowControlLevel < kvflowcontrol.V2EnabledWhenLeaderV2Encoding {
+		// Not already at highest level.
+		level := kvflowcontrol.GetV2EnabledWhenLeaderLevel(
+			ctx, r.store.ClusterSettings(), r.store.TestingKnobs().FlowControlTestingKnobs)
+		if level > r.raftMu.flowControlLevel {
+			var basicState replica_rac2.RaftNodeBasicState
+			func() {
+				r.mu.Lock()
+				defer r.mu.Unlock()
+				basicState = replica_rac2.MakeRaftNodeBasicStateLocked(
+					r.mu.internalRaftGroup, r.shMu.state.Lease.Replica.ReplicaID)
+				if r.raftMu.flowControlLevel == kvflowcontrol.V2NotEnabledWhenLeader {
+					// This will close all connected streams and consequently all
+					// requests waiting on v1 kvflowcontrol.ReplicationAdmissionHandles
+					// will return.
+					r.mu.replicaFlowControlIntegration.onDestroyed(ctx)
+					// Replace with a noop integration since want no code to execute on
+					// various calls.
+					r.mu.replicaFlowControlIntegration = noopReplicaFlowControlIntegration{}
+				}
+			}()
+			r.raftMu.flowControlLevel = level
+			r.flowControlV2.SetEnabledWhenLeaderRaftMuLocked(ctx, level, basicState)
+		}
+	}
+
 	// NB: we need to reference the named return parameter here. If `stats` were
 	// just a local, we'd be modifying the local but not the return value in the
 	// defer below.
@@ -903,20 +918,18 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 	}
 
 	var hasReady bool
-	var ready raft.Ready
-	var logSnapshot raft.LogSnapshot
-
+	var outboundMsgs []raftpb.Message
+	var msgStorageAppend, msgStorageApply raftpb.Message
 	rac2ModeToUse := r.replicationAdmissionControlModeToUse(ctx)
 	// Replication AC v2 state that is initialized while holding Replica.mu.
 	replicaStateInfoMap := r.raftMu.replicaStateScratchForFlowControl
 	var raftNodeBasicState replica_rac2.RaftNodeBasicState
+	var logSnapshot raft.LogSnapshot
 
-	rac2ModeForReady := r.shMu.currentRACv2Mode
-	leaderID := r.shMu.leaderID
-	lastLeaderID := leaderID
-
-	shouldResetLastReplicaAdded := r.shouldResetLastReplicaAdded()
 	r.mu.Lock()
+	rac2ModeForReady := r.mu.currentRACv2Mode
+	leaderID := r.mu.leaderID
+	lastLeaderID := leaderID
 	err := r.withRaftGroupLocked(func(raftGroup *raft.RawNode) (bool, error) {
 		r.deliverLocalRaftMsgsRaftMuLockedReplicaMuLocked(ctx, raftGroup)
 
@@ -934,14 +947,32 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 				// Ready, and switch to pull mode after that.
 				switchToPullModeAfterReady = true
 			}
-			r.shMu.currentRACv2Mode = rac2ModeToUse
+			r.mu.currentRACv2Mode = rac2ModeToUse
 		}
-		logSnapshot = raftGroup.LogSnapshot()
 		if hasReady = raftGroup.HasReady(); hasReady {
-			ready = raftGroup.Ready()
+			// Since we are holding raftMu, only this Ready() call will use
+			// raftMu.bytesAccount. It tracks memory usage that this Ready incurs.
+			r.attachRaftEntriesMonitorRaftMuLocked()
+			// TODO(pav-kv): currently, Ready() only accounts for entry bytes loaded
+			// from log storage, and ignores the in-memory unstable entries. Pass a
+			// flow control struct down the stack, and do a more complete accounting
+			// in raft. This will also eliminate the "side channel" plumbing hack with
+			// this bytesAccount.
+			syncRd := raftGroup.Ready()
+			// We apply committed entries during this handleRaftReady, so it is ok to
+			// release the corresponding memory tokens at the end of this func. Next
+			// time we enter this function, the account will be empty again.
+			defer r.detachRaftEntriesMonitorRaftMuLocked()
+
+			logRaftReady(ctx, syncRd)
+			asyncRd := makeAsyncReady(syncRd)
+			outboundMsgs, msgStorageAppend, msgStorageApply = splitLocalStorageMsgs(asyncRd.Messages)
 		}
 		if switchToPullModeAfterReady {
 			raftGroup.SetLazyReplication(true)
+		}
+		if rac2ModeForReady == rac2.MsgAppPull {
+			logSnapshot = raftGroup.LogSnapshot()
 		}
 		raftNodeBasicState = replica_rac2.MakeRaftNodeBasicStateLocked(
 			raftGroup, r.shMu.state.Lease.Replica.ReplicaID)
@@ -961,14 +992,8 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 		unquiesceAndWakeLeader := hasReady || numFlushed > 0 || len(r.mu.proposals) > 0
 		return unquiesceAndWakeLeader, nil
 	})
-	r.mu.applyingEntries = !ready.Committed.Empty()
+	r.mu.applyingEntries = hasMsg(msgStorageApply)
 	pausedFollowers := r.mu.pausedFollowers
-	if shouldResetLastReplicaAdded {
-		// Since we already hold the Replica.mu lock, reset the lastReplicaAdded
-		// here if we need to.
-		r.mu.lastReplicaAdded = 0
-		r.mu.lastReplicaAddedTime = time.Time{}
-	}
 	r.mu.Unlock()
 	if errors.Is(err, errRemoved) {
 		// If we've been removed then just return.
@@ -976,15 +1001,11 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 	} else if err != nil {
 		return stats, errors.Wrap(err, "checking raft group for Ready")
 	}
-
-	if hasReady {
-		r.maybeLogRaftReadyRaftMuLocked(ctx, ready)
-	}
 	// Even if we don't have a Ready, or entries in Ready,
 	// replica_rac2.Processor may need to do some work.
 	raftEvent := rac2.RaftEventFromMsgStorageAppendAndMsgApps(
-		rac2ModeForReady, r.ReplicaID(), ready.StorageAppend, ready.Messages,
-		logSnapshot, r.raftMu.msgAppScratchForFlowControl, replicaStateInfoMap)
+		rac2ModeForReady, r.ReplicaID(), msgStorageAppend, outboundMsgs, logSnapshot,
+		r.raftMu.msgAppScratchForFlowControl, replicaStateInfoMap)
 	// The scratch map is used only while in this Ready handling call. Stop
 	// referencing the entry data from the content of this map, after the call is
 	// done. Not doing so could result in holding entry data for extended periods
@@ -1014,33 +1035,9 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 		return stats, nil
 	}
 
-	r.traceMessageSends(ready.Messages, "sending messages")
-	r.sendRaftMessages(ctx, ready.Messages, pausedFollowers)
+	r.traceMessageSends(outboundMsgs, "sending messages")
+	r.sendRaftMessages(ctx, outboundMsgs, pausedFollowers, true /* willDeliverLocal */)
 
-	// Load the committed entries to be applied after releasing Replica.mu, to
-	// ensure that we don't have IO under this narrow/lightweight mutex. The
-	// RawNode can be making progress in the meantime, but it will never overwrite
-	// the committed entries it has been observing during the Ready() call.
-	//
-	// Also, do this loading after r.sendRaftMessages so that the outgoing
-	// messages don't need to wait for the storage interaction.
-	var toApply []raftpb.Entry
-	if !ready.Committed.Empty() {
-		// TODO(pav-kv): currently, Slice() only accounts for entry bytes loaded
-		// from log storage, and ignores the in-memory unstable entries. Consider a
-		// more complete flow control mechanism here, and eliminating the plumbing
-		// hack with the bytesAccount.
-		r.asLogStorage().attachRaftEntriesMonitorRaftMuLocked()
-		// We apply committed entries during this handleRaftReady, so it is ok to
-		// release the corresponding memory tokens at the end of this func. Next
-		// time we enter this function, the account will be empty again.
-		defer r.asLogStorage().detachRaftEntriesMonitorRaftMuLocked()
-		if toApply, err = logSnapshot.Slice(
-			ready.Committed, r.store.cfg.RaftMaxCommittedSizePerReady,
-		); err != nil {
-			return stats, errors.Wrap(err, "loading committed entries")
-		}
-	}
 	// If the ready struct includes entries that have been committed, these
 	// entries will be applied to the Replica's replicated state machine down
 	// below, after appending new entries to the raft log and sending messages
@@ -1052,12 +1049,11 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 	// entries and acknowledge as many as we can trivially prove will not be
 	// rejected beneath raft.
 	//
-	// Note that the Ready.Committed span cannot refer to entries that are also in
-	// the Entries slice in the MsgStorageAppend. Raft will not allow unstable
-	// entries to be applied.
-	// TODO(pav-kv): Reconsider if this can be relaxed.
+	// Note that the Entries slice in the MsgStorageApply cannot refer to entries
+	// that are also in the Entries slice in the MsgStorageAppend. Raft will not
+	// allow unstable entries to be applied when AsyncStorageWrites is enabled.
 	//
-	// If we disable async storage writes in the future, this property will no
+	// If we disable AsyncStorageWrites in the future, this property will no
 	// longer be true, and the two slices could overlap. For example, this can
 	// happen when a follower is being caught up on committed commands. We could
 	// acknowledge these commands early even though they aren't durably in the
@@ -1072,12 +1068,11 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 	sm := r.getStateMachine()
 	dec := r.getDecoder()
 	var appTask apply.Task
-	if len(toApply) != 0 {
-		r.mu.raftTracer.MaybeTraceApplying(toApply)
+	if hasMsg(msgStorageApply) {
 		appTask = apply.MakeTask(sm, dec)
 		appTask.SetMaxBatchSize(r.store.TestingKnobs().MaxApplicationBatchSize)
 		defer appTask.Close()
-		if err := appTask.Decode(ctx, toApply); err != nil {
+		if err := appTask.Decode(ctx, msgStorageApply.Entries); err != nil {
 			return stats, err
 		}
 		if knobs := r.store.TestingKnobs(); knobs == nil || !knobs.DisableCanAckBeforeApplication {
@@ -1087,22 +1082,18 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 		}
 	}
 
-	// If this field is set, by the end of the method (after snapshot, append,
-	// apply handling), we will verify invariants including checking that
-	// in-memory state is congruent with disk state.
-	var shouldAssert bool
-
 	// Grab the known leaseholder before applying to the state machine.
 	startingLeaseholderID := r.shMu.state.Lease.Replica.ReplicaID
 	refreshReason := noReason
 
 	state := r.asLogStorage().stateRaftMuLocked()
-	if app := ready.StorageAppend; !app.Empty() {
+	if hasMsg(msgStorageAppend) {
+		app := logstore.MakeMsgStorageAppend(msgStorageAppend)
 		cb := (*replicaSyncCallback)(r)
 
-		// Leadership changes, if any, are communicated through StorageAppend. Check
-		// if that's the case here.
-		if hs := app.HardState; !raft.IsEmptyHardState(hs) && leaderID != roachpb.ReplicaID(hs.Lead) {
+		// Leadership changes, if any, are communicated through MsgStorageAppends.
+		// Check if that's the case here.
+		if hs := app.HardState(); !raft.IsEmptyHardState(hs) && leaderID != roachpb.ReplicaID(hs.Lead) {
 			// Refresh pending commands if the Raft leader has changed. This is
 			// usually the first indication we have of a new leader on a restarted
 			// node.
@@ -1121,7 +1112,6 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 		}
 
 		if app.Snapshot != nil {
-			shouldAssert = true
 			if inSnap.Desc == nil {
 				// If we didn't expect Raft to have a snapshot but it has one
 				// regardless, that is unexpected and indicates a programming
@@ -1157,7 +1147,7 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 			defer releaseMergeLock()
 
 			stats.tSnapBegin = crtime.NowMono()
-			if err := r.applySnapshotRaftMuLocked(ctx, inSnap, snap, app.HardState, subsumedRepls); err != nil {
+			if err := r.applySnapshot(ctx, inSnap, snap, app.HardState(), subsumedRepls); err != nil {
 				return stats, errors.Wrap(err, "while applying snapshot")
 			}
 			for _, msg := range app.Responses {
@@ -1175,7 +1165,7 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 			stats.tSnapEnd = crtime.NowMono()
 			stats.snap.applied = true
 
-			// The raft log state was updated in applySnapshotRaftMuLocked, but we also want to
+			// The raft log state was updated in applySnapshot, but we also want to
 			// reflect these changes in the state variable here.
 			// TODO(pav-kv): this is unnecessary. We only do it because there is an
 			// unconditional storing of this state below. Avoid doing it twice.
@@ -1192,7 +1182,7 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 				refreshReason = reasonSnapshotApplied
 			}
 
-			cb.OnSnapSync(ctx, app.Ack())
+			cb.OnSnapSync(ctx, app.OnDone())
 		} else {
 			// TODO(pavelkalinnikov): find a way to move it to storeEntries.
 			if app.Commit != 0 && !r.IsInitialized() {
@@ -1202,10 +1192,22 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 			if r.IsInitialized() && r.store.cfg.KVAdmissionController != nil {
 				// Enqueue raft log entries into admission queues. This is
 				// non-blocking; actual admission happens asynchronously.
-				r.flowControlV2.AdmitRaftEntriesRaftMuLocked(ctx, raftEvent)
+				isUsingV2OrDestroyed := r.flowControlV2.AdmitRaftEntriesRaftMuLocked(ctx, raftEvent)
+				if !isUsingV2OrDestroyed {
+					// Leader is using RACv1 protocol.
+					tenantID, _ := r.TenantID()
+					for _, entry := range raftEvent.Entries {
+						if len(entry.Data) == 0 {
+							continue // nothing to do
+						}
+						r.store.cfg.KVAdmissionController.AdmitRaftEntry(
+							ctx, tenantID, r.StoreID(), r.RangeID, r.replicaID, raftEvent.Term, entry,
+						)
+					}
+				}
 			}
 
-			r.mu.raftTracer.MaybeTraceAppend(app)
+			r.mu.raftTracer.MaybeTrace(msgStorageAppend)
 			if state, err = r.asLogStorage().appendRaftMuLocked(ctx, app, &stats.append); err != nil {
 				return stats, errors.Wrap(err, "while storing log entries")
 			}
@@ -1217,11 +1219,11 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 	r.mu.Lock()
 	r.asLogStorage().updateStateRaftMuLockedMuLocked(state)
 	var becameLeader bool
-	if r.shMu.leaderID != leaderID {
-		r.shMu.leaderID = leaderID
+	if r.mu.leaderID != leaderID {
+		r.mu.leaderID = leaderID
 		// Clear the remote proposal set. Would have been nil already if not
 		// previously the leader.
-		becameLeader = leaderID == r.replicaID
+		becameLeader = r.mu.leaderID == r.replicaID
 	}
 	r.mu.Unlock()
 
@@ -1233,8 +1235,9 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 	}
 
 	stats.tApplicationBegin = crtime.NowMono()
-	if len(toApply) != 0 {
-		r.traceEntries(toApply, "committed, before applying any entries")
+	if hasMsg(msgStorageApply) {
+		r.mu.raftTracer.MaybeTrace(msgStorageApply)
+		r.traceEntries(msgStorageApply.Entries, "committed, before applying any entries")
 
 		err := appTask.ApplyCommittedEntries(ctx)
 		stats.apply = sm.moveStats()
@@ -1247,7 +1250,6 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 			// it is now marked as destroyed.
 			return stats, err
 		}
-		shouldAssert = shouldAssert || stats.apply.assertionsRequested > 0
 
 		if r.store.cfg.KVAdmissionController != nil &&
 			stats.apply.followerStoreWriteBytes.NumEntries > 0 {
@@ -1271,24 +1273,17 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 				refreshReason = reasonNewLeaderOrConfigChange
 			}
 		}
-		r.mu.raftTracer.MaybeTraceApplied(toApply)
+
+		// Send MsgStorageApply's responses.
+		r.sendRaftMessages(ctx, msgStorageApply.Responses, nil /* blocked */, true /* willDeliverLocal */)
 	}
 	stats.tApplicationEnd = crtime.NowMono()
 	applicationElapsed := stats.tApplicationEnd.Sub(stats.tApplicationBegin).Nanoseconds()
 	r.store.metrics.RaftApplyCommittedLatency.RecordValue(applicationElapsed)
-	r.store.metrics.RaftCommandsApplied.Inc(int64(len(toApply)))
+	r.store.metrics.RaftCommandsApplied.Inc(int64(len(msgStorageApply.Entries)))
 	if r.store.TestingKnobs().EnableUnconditionalRefreshesInRaftReady {
 		refreshReason = reasonNewLeaderOrConfigChange
 	}
-
-	if shouldAssert {
-		sm.r.mu.RLock()
-		// TODO(sep-raft-log): either check only statemachine invariants or
-		// pass both engines in.
-		sm.r.assertStateRaftMuLockedReplicaMuRLocked(ctx, sm.r.store.TODOEngine())
-		sm.r.mu.RUnlock()
-	}
-
 	if refreshReason != noReason {
 		r.mu.Lock()
 		r.refreshProposalsLocked(ctx, 0 /* refreshAtDelta */, refreshReason)
@@ -1303,7 +1298,6 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 	r.mu.Lock()
 	err = r.withRaftGroupLocked(func(raftGroup *raft.RawNode) (bool, error) {
 		r.deliverLocalRaftMsgsRaftMuLockedReplicaMuLocked(ctx, raftGroup)
-		raftGroup.AckApplied(toApply)
 
 		if stats.apply.numConfChangeEntries > 0 {
 			// If the raft leader got removed, campaign on the leaseholder. Uses
@@ -1342,7 +1336,6 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 		// send-queue for the new leaseholder.
 		r.store.scheduler.EnqueueRaftReady(r.RangeID)
 	}
-	r.maybeInitOrResetLastUpdateTimes(lastLeaderID, r.shMu.leaderID /* currentLeaderId */)
 
 	// NB: All early returns other than the one due to not having a ready
 	// which also makes the below call are due to fatal errors.
@@ -1356,6 +1349,60 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 	// get blocked.
 	r.updateProposalQuotaRaftMuLocked(ctx, lastLeaderID)
 	return stats, nil
+}
+
+// asyncReady encapsulates the messages that are ready to be sent to other peers
+// or to be sent to local storage routines when async storage writes are enabled.
+// All fields in asyncReady are read-only.
+// TODO(nvanbenschoten): move this into go.etcd.io/raft.
+type asyncReady struct {
+	// Messages specifies outbound messages to other peers and to local storage
+	// threads. These messages can be sent in any order.
+	//
+	// If it contains a MsgSnap message, the application MUST report back to raft
+	// when the snapshot has been received or has failed by calling ReportSnapshot.
+	Messages []raftpb.Message
+}
+
+// makeAsyncReady constructs an asyncReady from the provided Ready.
+func makeAsyncReady(rd raft.Ready) asyncReady {
+	return asyncReady{
+		Messages: rd.Messages,
+	}
+}
+
+// hasMsg returns whether the provided raftpb.Message is present.
+// It serves as a poor man's Optional[raftpb.Message].
+func hasMsg(m raftpb.Message) bool { return m.Type != 0 }
+
+// splitLocalStorageMsgs filters out local storage messages from the provided
+// message slice and returns them separately.
+func splitLocalStorageMsgs(
+	msgs []raftpb.Message,
+) (otherMsgs []raftpb.Message, msgStorageAppend, msgStorageApply raftpb.Message) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		switch msgs[i].Type {
+		case raftpb.MsgStorageAppend:
+			if hasMsg(msgStorageAppend) {
+				panic("two MsgStorageAppend")
+			}
+			msgStorageAppend = msgs[i]
+		case raftpb.MsgStorageApply:
+			if hasMsg(msgStorageApply) {
+				panic("two MsgStorageApply")
+			}
+			msgStorageApply = msgs[i]
+		default:
+			// Local storage messages will always be at the end of the messages slice,
+			// so we can terminate iteration as soon as we reach any other message
+			// type. This is leaking an implementation detail from etcd/raft which may
+			// not always hold, but while it does, we use it for convenience and
+			// assert against it changing in sendRaftMessages.
+			return msgs[:i+1], msgStorageAppend, msgStorageApply
+		}
+	}
+	// Only local storage messages.
+	return nil, msgStorageAppend, msgStorageApply
 }
 
 // maybeFatalOnRaftReadyErr will fatal if err is neither nil nor
@@ -1395,7 +1442,7 @@ func (r *Replica) tick(
 	if r.mu.internalRaftGroup == nil {
 		return false, nil
 	}
-	if r.mu.quiescent || r.mu.asleep {
+	if r.mu.quiescent {
 		return false, nil
 	}
 
@@ -1424,12 +1471,9 @@ func (r *Replica) tick(
 	// contention.
 	r.mu.lastTickTimestamp = storeClockTimestamp
 	leaseStatus := r.leaseStatusAtRLocked(ctx, storeClockTimestamp)
-	// TODO(pav-kv): modify the quiescence and sleep criteria so that we don't
-	// quiesce or fall asleep if RACv2 holds some send tokens.
+	// TODO(pav-kv): modify the quiescence criterion so that we don't quiesce if
+	// RACv2 holds some send tokens.
 	if r.maybeQuiesceRaftMuLockedReplicaMuLocked(ctx, leaseStatus, livenessMap) {
-		return false, nil
-	}
-	if r.maybeFallAsleepRMuLocked(leaseStatus) {
 		return false, nil
 	}
 
@@ -1465,26 +1509,19 @@ func (r *Replica) tick(
 	//
 	// This is likely unintentional, and the leader should likely consider itself
 	// live even when quiesced.
-	nowPhysicalTime := r.Clock().PhysicalTime()
 	if r.isRaftLeaderRLocked() {
-		r.mu.lastUpdateTimes.update(r.replicaID, nowPhysicalTime)
+		r.mu.lastUpdateTimes.update(r.replicaID, r.Clock().PhysicalTime())
 		// We also update lastUpdateTimes for replicas that provide store liveness
 		// support to the leader.
 		r.updateLastUpdateTimesUsingStoreLivenessRLocked(storeClockTimestamp)
 	}
 
 	r.mu.ticks++
-	preTickStatus := r.mu.internalRaftGroup.BasicStatus()
+	preTickState := r.mu.internalRaftGroup.BasicStatus().RaftState
 	r.mu.internalRaftGroup.Tick()
-	postTickStatus := r.mu.internalRaftGroup.BasicStatus()
-
-	// Refresh the unavailability state on the leaderlessWatcher.
-	r.LeaderlessWatcher.refreshUnavailableState(
-		ctx, postTickStatus.Lead, nowPhysicalTime, r.store.cfg.Settings, r.replicaUnavailableErrorRLocked,
-	)
-
-	if preTickStatus.RaftState != postTickStatus.RaftState {
-		if postTickStatus.RaftState == raftpb.StatePreCandidate {
+	postTickState := r.mu.internalRaftGroup.BasicStatus().RaftState
+	if preTickState != postTickState {
+		if postTickState == raftpb.StatePreCandidate {
 			r.store.Metrics().RaftTimeoutCampaign.Inc(1)
 			if k := r.store.TestingKnobs(); k != nil && k.OnRaftTimeoutCampaign != nil {
 				k.OnRaftTimeoutCampaign(r.RangeID)
@@ -1514,7 +1551,9 @@ func (r *Replica) processRACv2PiggybackedAdmitted(ctx context.Context) {
 func (r *Replica) processRACv2RangeController(ctx context.Context) {
 	r.raftMu.Lock()
 	defer r.raftMu.Unlock()
-	mode := r.shMu.currentRACv2Mode
+	// Can read Replica.mu.currentRACv2Mode since updates require both raftMu
+	// and Replica.mu.
+	mode := r.mu.currentRACv2Mode
 	var logSnapshot raft.LogSnapshot
 	if mode == rac2.MsgAppPull {
 		err := r.withRaftGroup(func(raftGroup *raft.RawNode) (bool, error) {
@@ -1527,7 +1566,7 @@ func (r *Replica) processRACv2RangeController(ctx context.Context) {
 		}
 	}
 	r.flowControlV2.ProcessSchedulerEventRaftMuLocked(
-		ctx, r.shMu.currentRACv2Mode, logSnapshot)
+		ctx, r.mu.currentRACv2Mode, logSnapshot)
 }
 
 // SendMsgApp implements rac2.MsgAppSender.
@@ -1769,12 +1808,12 @@ func (r *Replica) maybeCoalesceHeartbeat(
 type replicaSyncCallback Replica
 
 func (r *replicaSyncCallback) OnLogSync(
-	ctx context.Context, ack raft.StorageAppendAck, stats logstore.WriteStats,
+	ctx context.Context, done logstore.MsgStorageAppendDone, commitStats storage.BatchCommitStats,
 ) {
 	repl := (*Replica)(r)
 	// The log mark is non-empty only if this was a non-empty log append that
 	// updated the stable log mark.
-	if mark := ack.Mark; mark.After(raft.LogMark{}) {
+	if mark := done.Mark(); mark.Term != 0 {
 		repl.flowControlV2.SyncedLogStorage(ctx, mark)
 	}
 	// Block sending the responses back to raft, if a test needs to.
@@ -1782,19 +1821,17 @@ func (r *replicaSyncCallback) OnLogSync(
 		fn(repl.ID())
 	}
 	// Send MsgStorageAppend's responses.
-	repl.sendStorageAck(ctx, ack, false /* willDeliver */)
-
-	r.store.metrics.RaftLogCommitLatency.RecordValue(stats.CommitDur.Nanoseconds())
-	if stats.TotalDuration > defaultReplicaRaftMuWarnThreshold {
-		log.Infof(repl.raftCtx, "slow non-blocking raft commit: %s", stats.BatchCommitStats)
+	repl.sendRaftMessages(ctx, done.Responses(), nil /* blocked */, false /* willDeliverLocal */)
+	if commitStats.TotalDuration > defaultReplicaRaftMuWarnThreshold {
+		log.Infof(repl.raftCtx, "slow non-blocking raft commit: %s", commitStats)
 	}
 }
 
-func (r *replicaSyncCallback) OnSnapSync(ctx context.Context, ack raft.StorageAppendAck) {
+func (r *replicaSyncCallback) OnSnapSync(ctx context.Context, done logstore.MsgStorageAppendDone) {
 	repl := (*Replica)(r)
-	// NB: when storing snapshot, ack always contains a non-zero log mark.
-	repl.flowControlV2.SyncedLogStorage(ctx, ack.Mark)
-	repl.sendStorageAck(ctx, ack, true /* willDeliverLocal */)
+	// NB: when storing snapshot, done always contains a non-zero log mark.
+	repl.flowControlV2.SyncedLogStorage(ctx, done.Mark())
+	repl.sendRaftMessages(ctx, done.Responses(), nil /* blocked */, true /* willDeliverLocal */)
 }
 
 // sendRaftMessages sends a slice of Raft messages.
@@ -1809,79 +1846,104 @@ func (r *replicaSyncCallback) OnSnapSync(ctx context.Context, ack raft.StorageAp
 // When calling this method, the raftMu may be held, but it does not need to be.
 // The Replica mu must not be held.
 func (r *Replica) sendRaftMessages(
-	ctx context.Context, messages []raftpb.Message, blocked map[roachpb.ReplicaID]struct{},
+	ctx context.Context,
+	messages []raftpb.Message,
+	blocked map[roachpb.ReplicaID]struct{},
+	willDeliverLocal bool,
 ) {
 	var lastAppResp raftpb.Message
 	for _, message := range messages {
-		_, drop := blocked[roachpb.ReplicaID(message.To)]
-		if drop {
-			r.store.Metrics().RaftPausedFollowerDroppedMsgs.Inc(1)
-		}
-		switch message.Type {
-		case raftpb.MsgApp:
-			if util.RaceEnabled {
-				// Iterate over the entries to assert that all sideloaded commands
-				// are already inlined. replicaRaftStorage.Entries already performs
-				// the sideload inlining for stable entries and raft.unstable always
-				// contain fat entries. Since these are the only two sources that
-				// raft.sendAppend gathers entries from to populate MsgApps, we
-				// should never see thin entries here.
-				//
-				// Also assert that the log term only ever increases (most of the
-				// time it stays constant, as term changes are rare), and that
-				// the index increases by exactly one with each entry.
-				//
-				// This assertion came out of #61990.
-				prevTerm := message.LogTerm // term of entry preceding the append
-				prevIndex := message.Index  // index of entry preceding the append
-				for j := range message.Entries {
-					ent := &message.Entries[j]
-					logstore.AssertSideloadedRaftCommandInlined(ctx, ent)
+		switch message.To {
+		case raft.LocalAppendThread:
+			// To local append thread.
+			// NOTE: we don't currently split append work off into an async goroutine.
+			// Instead, we handle messages to LocalAppendThread inline on the raft
+			// scheduler goroutine, so this code path is unused.
+			panic("unsupported, currently processed inline on raft scheduler goroutine")
+		case raft.LocalApplyThread:
+			// To local apply thread.
+			// NOTE: we don't currently split apply work off into an async goroutine.
+			// Instead, we handle messages to LocalAppendThread inline on the raft
+			// scheduler goroutine, so this code path is unused.
+			panic("unsupported, currently processed inline on raft scheduler goroutine")
+		case raftpb.PeerID(r.ReplicaID()):
+			// To local raft state machine, from local storage append and apply work.
+			// NOTE: For async Raft log appends, these messages come from calls to
+			// replicaSyncCallback.OnLogSync. For other local storage work (log
+			// application and snapshot application), these messages come from
+			// Replica.handleRaftReadyRaftMuLocked.
+			r.sendLocalRaftMsg(message, willDeliverLocal)
+		default:
+			_, drop := blocked[roachpb.ReplicaID(message.To)]
+			if drop {
+				r.store.Metrics().RaftPausedFollowerDroppedMsgs.Inc(1)
+			}
+			switch message.Type {
+			case raftpb.MsgApp:
+				if util.RaceEnabled {
+					// Iterate over the entries to assert that all sideloaded commands
+					// are already inlined. replicaRaftStorage.Entries already performs
+					// the sideload inlining for stable entries and raft.unstable always
+					// contain fat entries. Since these are the only two sources that
+					// raft.sendAppend gathers entries from to populate MsgApps, we
+					// should never see thin entries here.
+					//
+					// Also assert that the log term only ever increases (most of the
+					// time it stays constant, as term changes are rare), and that
+					// the index increases by exactly one with each entry.
+					//
+					// This assertion came out of #61990.
+					prevTerm := message.LogTerm // term of entry preceding the append
+					prevIndex := message.Index  // index of entry preceding the append
+					for j := range message.Entries {
+						ent := &message.Entries[j]
+						logstore.AssertSideloadedRaftCommandInlined(ctx, ent)
 
-					if prevIndex+1 != ent.Index {
-						log.Fatalf(ctx,
-							"index gap in outgoing MsgApp: idx %d followed by %d",
-							prevIndex, ent.Index,
-						)
+						if prevIndex+1 != ent.Index {
+							log.Fatalf(ctx,
+								"index gap in outgoing MsgApp: idx %d followed by %d",
+								prevIndex, ent.Index,
+							)
+						}
+						prevIndex = ent.Index
+						if prevTerm > ent.Term {
+							log.Fatalf(ctx,
+								"term regression in outgoing MsgApp: idx %d at term=%d "+
+									"appended with logterm=%d",
+								ent.Index, ent.Term, message.LogTerm,
+							)
+						}
+						prevTerm = ent.Term
 					}
-					prevIndex = ent.Index
-					if prevTerm > ent.Term {
-						log.Fatalf(ctx,
-							"term regression in outgoing MsgApp: idx %d at term=%d "+
-								"appended with logterm=%d",
-							ent.Index, ent.Term, message.LogTerm,
-						)
-					}
-					prevTerm = ent.Term
+				}
+
+			case raftpb.MsgAppResp:
+				// A successful (non-reject) MsgAppResp contains two pieces of
+				// information: the highest log index and the commit index. Raft
+				// currently queues up one MsgAppResp per incoming MsgApp, and we may
+				// process multiple messages in one handleRaftReady call (because
+				// multiple messages may arrive while we're blocked syncing to
+				// disk). If we get redundant MsgAppResps, drop all but the
+				// last (we've seen that too many MsgAppResps can overflow
+				// message queues on the receiving side).
+				//
+				// Note that this reorders the chosen MsgAppResp relative to
+				// other messages (including any MsgAppResps with the Reject flag),
+				// but raft is fine with this reordering.
+				//
+				// TODO(bdarnell): Consider pushing this optimization into etcd/raft.
+				// Similar optimizations may be possible for other message types,
+				// although MsgAppResp is the only one that has been seen as a
+				// problem in practice.
+				if !message.Reject && message.Index > lastAppResp.Index {
+					lastAppResp = message
+					drop = true
 				}
 			}
 
-		case raftpb.MsgAppResp:
-			// A successful (non-reject) MsgAppResp contains two pieces of
-			// information: the highest log index and the commit index. Raft
-			// currently queues up one MsgAppResp per incoming MsgApp, and we may
-			// process multiple messages in one handleRaftReady call (because
-			// multiple messages may arrive while we're blocked syncing to
-			// disk). If we get redundant MsgAppResps, drop all but the
-			// last (we've seen that too many MsgAppResps can overflow
-			// message queues on the receiving side).
-			//
-			// Note that this reorders the chosen MsgAppResp relative to
-			// other messages (including any MsgAppResps with the Reject flag),
-			// but raft is fine with this reordering.
-			//
-			// TODO(bdarnell): Consider pushing this optimization into etcd/raft.
-			// Similar optimizations may be possible for other message types,
-			// although MsgAppResp is the only one that has been seen as a
-			// problem in practice.
-			if !message.Reject && message.Index > lastAppResp.Index {
-				lastAppResp = message
-				drop = true
+			if !drop {
+				r.sendRaftMessage(ctx, message, false)
 			}
-		}
-
-		if !drop {
-			r.sendRaftMessage(ctx, message, false)
 		}
 	}
 	if lastAppResp.Index > 0 {
@@ -1889,20 +1951,20 @@ func (r *Replica) sendRaftMessages(
 	}
 }
 
-// sendStorageAck sends a storage append ack to the local raft.RawNode.
-func (r *Replica) sendStorageAck(ctx context.Context, ack raft.StorageAppendAck, willDeliver bool) {
-	for msg := range ack.Send(raftpb.PeerID(r.replicaID)) {
-		r.sendRaftMessage(ctx, msg, false)
+// sendLocalRaftMsg sends a message to the local raft state machine.
+func (r *Replica) sendLocalRaftMsg(msg raftpb.Message, willDeliverLocal bool) {
+	if msg.To != raftpb.PeerID(r.ReplicaID()) {
+		panic("incorrect message target")
 	}
 	r.localMsgs.Lock()
 	wasEmpty := len(r.localMsgs.active) == 0
-	r.localMsgs.active = append(r.localMsgs.active, ack)
+	r.localMsgs.active = append(r.localMsgs.active, msg)
 	r.localMsgs.Unlock()
-	// If this is the first ack and the caller will not deliver acknowledgements
-	// itself, schedule a Raft update check to inform Raft processing about the
-	// new local message. Everyone else can rely on the call that added the first
-	// message having already scheduled a Raft update check.
-	if wasEmpty && !willDeliver {
+	// If this is the first local message and the caller will not deliver local
+	// messages itself, schedule a Raft update check to inform Raft processing
+	// about the new local message. Everyone else can rely on the call that added
+	// the first message having already scheduled a Raft update check.
+	if wasEmpty && !willDeliverLocal {
 		r.store.enqueueRaftUpdateCheck(r.RangeID)
 	}
 }
@@ -1933,13 +1995,16 @@ func (r *Replica) deliverLocalRaftMsgsRaftMuLockedReplicaMuLocked(
 	}
 
 	for i, m := range localMsgs {
-		r.mu.raftTracer.MaybeTraceAppendAck(m)
-		raftGroup.AckAppend(m)
+		r.mu.raftTracer.MaybeTrace(m)
+		if err := raftGroup.Step(m); err != nil {
+			log.Fatalf(ctx, "unexpected error stepping local raft message [%s]: %v",
+				raft.DescribeMessage(m, raftEntryFormatter), err)
+		}
 		// NB: we can reset messages in the localMsgs.recycled slice without holding
 		// the localMsgs mutex because no-one ever writes to localMsgs.recycled and
 		// we are holding raftMu, which must be held to switch localMsgs.active and
 		// localMsgs.recycled.
-		localMsgs[i] = raft.StorageAppendAck{} // for GC
+		localMsgs[i].Reset() // for GC
 	}
 }
 
@@ -2005,6 +2070,7 @@ func (r *Replica) sendRaftMessage(
 		FromReplica:         fromReplica,
 		Message:             msg,
 		RangeStartKey:       startKey, // usually nil
+		UsingRac2Protocol:   r.flowControlV2.GetEnabledWhenLeader() >= kvflowcontrol.V2EnabledWhenLeaderV1Encoding,
 		LowPriorityOverride: lowPriorityOverride,
 		TracedEntries:       traced,
 	}
@@ -2353,7 +2419,7 @@ func (r *Replica) maybeCampaignOnWakeLocked(ctx context.Context) {
 	raftStatus := r.mu.internalRaftGroup.BasicStatus()
 	livenessMap, _ := r.store.livenessMap.Load().(livenesspb.IsLiveMap)
 	if shouldCampaignOnWake(leaseStatus, r.store.StoreID(), raftStatus, livenessMap, r.descRLocked(),
-		r.requiresExpirationLease(r.descRLocked()), now.ToTimestamp()) {
+		r.requiresExpirationLeaseRLocked(), now.ToTimestamp()) {
 		r.campaignLocked(ctx)
 	}
 }
@@ -2625,23 +2691,12 @@ func (r *Replica) maybeTransferRaftLeadershipToLeaseholderLocked(
 	if r.store.TestingKnobs().DisableLeaderFollowsLeaseholder {
 		return
 	}
-	raftStatus := r.mu.internalRaftGroup.BasicStatus()
-
-	// Return early if we are not the leader, or if we are already the
-	// leaseholder. This is a short circuit fast-path for
-	// shouldTransferRaftLeadershipToLeaseholderLocked(), but the same checks are
-	// also handled there.
-	if raftStatus.RaftState != raftpb.StateLeader ||
-		leaseStatus.OwnedBy(r.store.StoreID()) {
-		return
-	}
-
-	lhReplicaID := raftpb.PeerID(leaseStatus.Lease.Replica.ReplicaID)
+	raftStatus := r.mu.internalRaftGroup.SparseStatus()
 	leaseAcquisitionPending := r.mu.pendingLeaseRequest.AcquisitionInProgress()
 	ok := shouldTransferRaftLeadershipToLeaseholderLocked(
-		raftStatus, r.mu.internalRaftGroup.ReplicaProgress(lhReplicaID), leaseStatus,
-		leaseAcquisitionPending, r.StoreID(), r.store.IsDraining())
+		raftStatus, leaseStatus, leaseAcquisitionPending, r.StoreID(), r.store.IsDraining())
 	if ok {
+		lhReplicaID := raftpb.PeerID(leaseStatus.Lease.Replica.ReplicaID)
 		log.VEventf(ctx, 1, "transferring raft leadership to replica ID %v", lhReplicaID)
 		r.store.metrics.RangeRaftLeaderTransfers.Inc(1)
 		r.mu.internalRaftGroup.TransferLeader(lhReplicaID)
@@ -2649,8 +2704,7 @@ func (r *Replica) maybeTransferRaftLeadershipToLeaseholderLocked(
 }
 
 func shouldTransferRaftLeadershipToLeaseholderLocked(
-	raftStatus raft.BasicStatus,
-	lhProgress *tracker.Progress,
+	raftStatus raft.SparseStatus,
 	leaseStatus kvserverpb.LeaseStatus,
 	leaseAcquisitionPending bool,
 	storeID roachpb.StoreID,
@@ -2702,7 +2756,9 @@ func shouldTransferRaftLeadershipToLeaseholderLocked(
 	}
 
 	// Otherwise, only transfer if the leaseholder is caught up on the raft log.
-	lhCaughtUp := lhProgress != nil && lhProgress.Match >= raftStatus.Commit
+	lhReplicaID := raftpb.PeerID(leaseStatus.Lease.Replica.ReplicaID)
+	lhProgress, ok := raftStatus.Progress[lhReplicaID]
+	lhCaughtUp := ok && lhProgress.Match >= raftStatus.Commit
 	return lhCaughtUp
 }
 
@@ -2822,10 +2878,9 @@ func (r *Replica) acquireSplitLock(
 	ctx context.Context, split *roachpb.SplitTrigger,
 ) (func(), error) {
 	rightReplDesc, _ := split.RightDesc.GetReplicaDescriptor(r.StoreID())
-	rightRepl, _, err := r.store.getOrCreateReplica(ctx, roachpb.FullReplicaID{
-		RangeID:   split.RightDesc.RangeID,
-		ReplicaID: rightReplDesc.ReplicaID,
-	}, nil /* creatingReplica */)
+	rightRepl, _, err := r.store.getOrCreateReplica(
+		ctx, split.RightDesc.RangeID, rightReplDesc.ReplicaID, nil, /* creatingReplica */
+	)
 	// If getOrCreateReplica returns RaftGroupDeletedError we know that the RHS
 	// has already been removed. This case is handled properly in splitPostApply.
 	if errors.HasType(err, (*kvpb.RaftGroupDeletedError)(nil)) {
@@ -2858,10 +2913,9 @@ func (r *Replica) acquireMergeLock(
 	// complete, after which the replica will realize it has been destroyed and
 	// reject the snapshot.
 	rightReplDesc, _ := merge.RightDesc.GetReplicaDescriptor(r.StoreID())
-	rightRepl, _, err := r.store.getOrCreateReplica(ctx, roachpb.FullReplicaID{
-		RangeID:   merge.RightDesc.RangeID,
-		ReplicaID: rightReplDesc.ReplicaID,
-	}, nil /* creatingReplica */)
+	rightRepl, _, err := r.store.getOrCreateReplica(
+		ctx, merge.RightDesc.RangeID, rightReplDesc.ReplicaID, nil, /* creatingReplica */
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -2907,12 +2961,13 @@ func (r *Replica) acquireMergeLock(
 // snapshot.
 func handleTruncatedStateBelowRaftPreApply(
 	ctx context.Context,
-	prev kvserverpb.RaftTruncatedState,
-	next kvserverpb.RaftTruncatedState,
+	currentTruncatedState kvserverpb.RaftTruncatedState,
+	suggestedTruncatedState *kvserverpb.RaftTruncatedState,
 	loader logstore.StateLoader,
-	writer storage.Writer,
-) error {
-	return logstore.Compact(ctx, prev, next, loader, writer)
+	readWriter storage.ReadWriter,
+) (_apply bool, _ error) {
+	return logstore.Compact(ctx, currentTruncatedState, suggestedTruncatedState,
+		loader, readWriter)
 }
 
 // shouldCampaignAfterConfChange returns true if the current replica should
@@ -3009,7 +3064,7 @@ func (r *Replica) printRaftTail(
 			Key:   mvccKey,
 			Value: v,
 		}
-		sb.WriteString(truncateEntryString(print.SprintMVCCKeyValue(kv, true /* printKey */), 2000))
+		sb.WriteString(truncateEntryString(SprintMVCCKeyValue(kv, true /* printKey */), 2000))
 		sb.WriteRune('\n')
 
 		valid, err := it.PrevEngineKey()
@@ -3050,44 +3105,6 @@ func (r *Replica) updateLastUpdateTimesUsingStoreLivenessRLocked(
 			r.mu.lastUpdateTimes.update(desc.ReplicaID, r.Clock().PhysicalTime())
 		}
 	}
-}
-
-// maybeInitOrResetLastUpdateTimes initializes or resets the lastUpdateTimes
-// on leadership changes.
-func (r *Replica) maybeInitOrResetLastUpdateTimes(
-	lastLeaderID roachpb.ReplicaID, currentLeaderId roachpb.ReplicaID,
-) {
-	if lastLeaderID == currentLeaderId {
-		// There has been no leadership change, so we don't need to do anything.
-		return
-	}
-
-	// Only on leadership changes we take the replica mutex and initialize or
-	// reset the lastUpdateTimes map.
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.replicaID == currentLeaderId {
-		// We are the new leader, initialize the lastUpdateTimes map.
-		r.mu.lastUpdateTimes = make(map[roachpb.ReplicaID]time.Time)
-		r.mu.lastUpdateTimes.updateOnBecomeLeader(r.shMu.state.Desc.Replicas().Descriptors(),
-			r.Clock().PhysicalTime())
-	} else {
-		// We're becoming a follower, reset the lastUpdateTimes map.
-		r.mu.lastUpdateTimes = nil
-	}
-}
-
-// shouldResetLastReplicaAdded returns true is the last replica added has caught
-// up with the leader.
-func (r *Replica) shouldResetLastReplicaAdded() bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if pr := r.mu.internalRaftGroup.ReplicaProgress(raftpb.PeerID(r.mu.lastReplicaAdded)); pr != nil {
-		if kvpb.RaftIndex(pr.Match) >= kvpb.RaftIndex(r.raftBasicStatusRLocked().Commit) {
-			return true
-		}
-	}
-	return false
 }
 
 func truncateEntryString(s string, maxChars int) string {

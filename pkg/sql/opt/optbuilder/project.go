@@ -166,7 +166,7 @@ func (b *Builder) analyzeSelectList(
 				}
 			}
 
-			desired := types.AnyElement
+			desired := types.Any
 			if i < len(desiredTypes) {
 				desired = desiredTypes[i]
 			}
@@ -195,12 +195,10 @@ func (b *Builder) analyzeSelectList(
 // expressions in projectionsScope.
 //
 // See Builder.buildStmt for a description of the remaining input values.
-func (b *Builder) buildProjectionList(
-	inScope *scope, projectionsScope *scope, colRefs *opt.ColSet,
-) {
+func (b *Builder) buildProjectionList(inScope *scope, projectionsScope *scope) {
 	for i := range projectionsScope.cols {
 		col := &projectionsScope.cols[i]
-		b.buildScalar(col.getExpr(), inScope, projectionsScope, col, colRefs)
+		b.buildScalar(col.getExpr(), inScope, projectionsScope, col, nil)
 	}
 }
 
@@ -221,7 +219,7 @@ func (b *Builder) resolveColRef(e tree.Expr, inScope *scope) tree.TypedExpr {
 			if sqlerrors.IsUndefinedColumnError(resolveErr) {
 				return func() tree.TypedExpr {
 					defer wrapColTupleStarPanic(resolveErr)
-					return inScope.resolveType(columnNameAsTupleStar(colName), types.AnyElement)
+					return inScope.resolveType(columnNameAsTupleStar(colName), types.Any)
 				}()
 			}
 			panic(resolveErr)

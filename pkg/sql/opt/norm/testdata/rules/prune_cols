@@ -1838,19 +1838,16 @@ project
  ├── columns: ntile:7(int)
  ├── stats: [rows=1000]
  ├── cost: 1088.56
- ├── cost-flags: unbounded-cardinality
  ├── prune: (7)
  └── window partition=()
       ├── columns: t.public.a.i:2(int) ntile:7(int)
       ├── stats: [rows=1000]
       ├── cost: 1078.54
-      ├── cost-flags: unbounded-cardinality
       ├── prune: (7)
       ├── scan t.public.a
       │    ├── columns: t.public.a.i:2(int)
       │    ├── stats: [rows=1000]
       │    ├── cost: 1078.52
-      │    ├── cost-flags: unbounded-cardinality
       │    └── prune: (2)
       └── windows
            └── ntile [as=ntile:7, type=int, outer=(2)]
@@ -1959,19 +1956,16 @@ project
  ├── columns: x:7(int)
  ├── stats: [rows=1000]
  ├── cost: 1088.56
- ├── cost-flags: unbounded-cardinality
  ├── prune: (7)
  └── window partition=()
       ├── columns: t.public.a.i:2(int) ntile:7(int)
       ├── stats: [rows=1000]
       ├── cost: 1078.54
-      ├── cost-flags: unbounded-cardinality
       ├── prune: (7)
       ├── scan t.public.a
       │    ├── columns: t.public.a.i:2(int)
       │    ├── stats: [rows=1000]
       │    ├── cost: 1078.52
-      │    ├── cost-flags: unbounded-cardinality
       │    └── prune: (2)
       └── windows
            └── ntile [as=ntile:7, type=int, outer=(2)]
@@ -4791,16 +4785,22 @@ with &2
  │              │    └── fd: (30)-->(23-25), (23)~~>(24,25,30)
  │              └── projections
  │                   └── returning_test.a:23 + 1 [as=a_new:33, outer=(23), immutable]
- └── project
-      ├── columns: a:37!null b:38 a:11 b:12
+ └── inner-join (cross)
+      ├── columns: a:11 b:12 a:37!null b:38
       ├── fd: (11)~~>(12)
-      ├── inner-join (cross)
-      │    ├── columns: returning_test.a:1 returning_test.b:2 a:34!null b:35
-      │    ├── fd: (1)~~>(2)
+      ├── project
+      │    ├── columns: a:11 b:12
+      │    ├── lax-key: (11,12)
+      │    ├── fd: (11)~~>(12)
       │    ├── scan returning_test
       │    │    ├── columns: returning_test.a:1 returning_test.b:2
       │    │    ├── lax-key: (1,2)
       │    │    └── fd: (1)~~>(2)
+      │    └── projections
+      │         ├── returning_test.a:1 [as=a:11, outer=(1)]
+      │         └── returning_test.b:2 [as=b:12, outer=(2)]
+      ├── project
+      │    ├── columns: a:37!null b:38
       │    ├── select
       │    │    ├── columns: a:34!null b:35
       │    │    ├── with-scan &2
@@ -4810,12 +4810,10 @@ with &2
       │    │    │         └──  returning_test.b:14 => b:35
       │    │    └── filters
       │    │         └── a:34 > 1 [outer=(34), constraints=(/34: [/2 - ]; tight)]
-      │    └── filters (true)
-      └── projections
-           ├── a:34 [as=a:37, outer=(34)]
-           ├── b:35 [as=b:38, outer=(35)]
-           ├── returning_test.a:1 [as=a:11, outer=(1)]
-           └── returning_test.b:2 [as=b:12, outer=(2)]
+      │    └── projections
+      │         ├── a:34 [as=a:37, outer=(34)]
+      │         └── b:35 [as=b:38, outer=(35)]
+      └── filters (true)
 
 # Check if the rule works as desired for other mutations.
 norm
@@ -5200,13 +5198,11 @@ with &1 (foo)
  ├── columns: i:8(int)
  ├── stats: [rows=1000]
  ├── cost: 1108.86
- ├── cost-flags: unbounded-cardinality
  ├── prune: (8)
  ├── scan t.public.a
  │    ├── columns: t.public.a.k:1(int!null) t.public.a.i:2(int) t.public.a.f:3(float) t.public.a.s:4(string)
  │    ├── stats: [rows=1000]
  │    ├── cost: 1108.82
- │    ├── cost-flags: unbounded-cardinality
  │    ├── key: (1)
  │    ├── fd: (1)-->(2-4)
  │    ├── prune: (1-4)
@@ -5217,7 +5213,6 @@ with &1 (foo)
       │    └──  t.public.a.i:2(int) => i:8(int)
       ├── stats: [rows=1000]
       ├── cost: 0.02
-      ├── cost-flags: unbounded-cardinality
       ├── prune: (8)
       └── cte-uses
            └── &1: count=1 used-columns=(2)

@@ -525,6 +525,7 @@ func (w *sendStreamTokenWatcher) run(_ context.Context) {
 			case <-w.stopper.ShouldQuiesce():
 				return
 			case <-w.timer.Ch():
+				w.timer.MarkRead()
 				w.timer.Stop()
 				w.mu.Lock()
 				// The queue has been empty for watcherIdleCloseDuration, check if
@@ -537,7 +538,7 @@ func (w *sendStreamTokenWatcher) run(_ context.Context) {
 				// item is added a short time after, it will wait to acquire the lock,
 				// notice the watcher is now stopped and start it again.
 				if w.emptyLocked() {
-					defer w.mu.Unlock() //nolint:deferloop
+					defer w.mu.Unlock()
 					w.mu.started = false
 					return
 				}

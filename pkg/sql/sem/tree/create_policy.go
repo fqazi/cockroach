@@ -78,21 +78,17 @@ func (node *PolicyExpressions) Format(ctx *FmtCtx) {
 
 // CreatePolicy is a tree struct for the CREATE POLICY DDL statement
 type CreatePolicy struct {
-	IfNotExists bool
-	PolicyName  Name
-	TableName   *UnresolvedObjectName
-	Type        PolicyType
-	Cmd         PolicyCommand
-	Roles       RoleSpecList
-	Exprs       PolicyExpressions
+	PolicyName Name
+	TableName  *UnresolvedObjectName
+	Type       PolicyType
+	Cmd        PolicyCommand
+	Roles      RoleSpecList
+	Exprs      PolicyExpressions
 }
 
 // Format implements the NodeFormatter interface.
 func (node *CreatePolicy) Format(ctx *FmtCtx) {
 	ctx.WriteString("CREATE POLICY ")
-	if node.IfNotExists {
-		ctx.WriteString("IF NOT EXISTS ")
-	}
 	ctx.FormatNode(&node.PolicyName)
 	ctx.WriteString(" ON ")
 	ctx.FormatNode(node.TableName)

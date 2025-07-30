@@ -335,13 +335,6 @@ func TestRepeatableReadLogic_bpchar(
 	runLogicTest(t, "bpchar")
 }
 
-func TestRepeatableReadLogic_buffered_writes(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "buffered_writes")
-}
-
 func TestRepeatableReadLogic_builtin_function(
 	t *testing.T,
 ) {
@@ -389,13 +382,6 @@ func TestRepeatableReadLogic_check_constraints(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "check_constraints")
-}
-
-func TestRepeatableReadLogic_citext(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "citext")
 }
 
 func TestRepeatableReadLogic_cluster_settings(
@@ -613,13 +599,6 @@ func TestRepeatableReadLogic_dependencies(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "dependencies")
-}
-
-func TestRepeatableReadLogic_direct_columnar_scans(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "direct_columnar_scans")
 }
 
 func TestRepeatableReadLogic_discard(
@@ -1070,13 +1049,6 @@ func TestRepeatableReadLogic_insert(
 	runLogicTest(t, "insert")
 }
 
-func TestRepeatableReadLogic_inspect(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "inspect")
-}
-
 func TestRepeatableReadLogic_int_size(
 	t *testing.T,
 ) {
@@ -1180,48 +1152,6 @@ func TestRepeatableReadLogic_json_index(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "json_index")
-}
-
-func TestRepeatableReadLogic_jsonb_path_exists(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "jsonb_path_exists")
-}
-
-func TestRepeatableReadLogic_jsonb_path_match(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "jsonb_path_match")
-}
-
-func TestRepeatableReadLogic_jsonb_path_query(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "jsonb_path_query")
-}
-
-func TestRepeatableReadLogic_jsonb_path_query_array(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "jsonb_path_query_array")
-}
-
-func TestRepeatableReadLogic_jsonb_path_query_first(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "jsonb_path_query_first")
-}
-
-func TestRepeatableReadLogic_jsonpath(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "jsonpath")
 }
 
 func TestRepeatableReadLogic_kv_builtin_functions(
@@ -1938,13 +1868,6 @@ func TestRepeatableReadLogic_show_create(
 	runLogicTest(t, "show_create")
 }
 
-func TestRepeatableReadLogic_show_create_all_routines(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_create_all_routines")
-}
-
 func TestRepeatableReadLogic_show_create_all_schemas(
 	t *testing.T,
 ) {
@@ -1964,13 +1887,6 @@ func TestRepeatableReadLogic_show_create_all_tables_builtin(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "show_create_all_tables_builtin")
-}
-
-func TestRepeatableReadLogic_show_create_all_triggers(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_create_all_triggers")
 }
 
 func TestRepeatableReadLogic_show_create_all_types(
@@ -2372,25 +2288,18 @@ func TestRepeatableReadLogic_udf_fk(
 	runLogicTest(t, "udf_fk")
 }
 
+func TestRepeatableReadLogic_udf_in_column_defaults(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runLogicTest(t, "udf_in_column_defaults")
+}
+
 func TestRepeatableReadLogic_udf_in_constraints(
 	t *testing.T,
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "udf_in_constraints")
-}
-
-func TestRepeatableReadLogic_udf_in_index(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "udf_in_index")
-}
-
-func TestRepeatableReadLogic_udf_in_table(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "udf_in_table")
 }
 
 func TestRepeatableReadLogic_udf_insert(
@@ -2589,13 +2498,6 @@ func TestRepeatableReadLogic_values(
 	runLogicTest(t, "values")
 }
 
-func TestRepeatableReadLogic_vector_index(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "vector_index")
-}
-
 func TestRepeatableReadLogic_vectorize_agg(
 	t *testing.T,
 ) {
@@ -2715,13 +2617,6 @@ func TestRepeatableReadLogic_zone_config_system_tenant(
 	runLogicTest(t, "zone_config_system_tenant")
 }
 
-func TestRepeatableReadLogicCCL_buffered_writes_lock_loss(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "buffered_writes_lock_loss")
-}
-
 func TestRepeatableReadLogicCCL_fips_ready(
 	t *testing.T,
 ) {
@@ -2820,13 +2715,6 @@ func TestRepeatableReadLogicCCL_plpgsql_record(
 	runCCLLogicTest(t, "plpgsql_record")
 }
 
-func TestRepeatableReadLogicCCL_plpgsql_srf(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_srf")
-}
-
 func TestRepeatableReadLogicCCL_plpgsql_txn(
 	t *testing.T,
 ) {
@@ -2853,13 +2741,6 @@ func TestRepeatableReadLogicCCL_procedure_plpgsql(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "procedure_plpgsql")
-}
-
-func TestRepeatableReadLogicCCL_provisioning(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "provisioning")
 }
 
 func TestRepeatableReadLogicCCL_read_committed(
@@ -2916,13 +2797,6 @@ func TestRepeatableReadLogicCCL_triggers(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "triggers")
-}
-
-func TestRepeatableReadLogicCCL_txn_retry(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "txn_retry")
 }
 
 func TestRepeatableReadLogicCCL_udf_params(

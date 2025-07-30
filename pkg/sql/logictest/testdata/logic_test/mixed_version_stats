@@ -5,6 +5,11 @@
 # plan that older node is the coordinator while the newer node has a sampler
 # processor.
 
+query T
+SELECT version FROM [SHOW CLUSTER SETTING version]
+----
+24.3
+
 upgrade 1
 
 statement ok

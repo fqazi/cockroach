@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 )
 
@@ -98,7 +97,6 @@ func newUnbufferedRegistration(
 	withDiff bool,
 	withFiltering bool,
 	withOmitRemote bool,
-	bulkDeliverySize int,
 	bufferSz int,
 	metrics *Metrics,
 	stream BufferedStream,
@@ -113,7 +111,6 @@ func newUnbufferedRegistration(
 			withFiltering:          withFiltering,
 			withOmitRemote:         withOmitRemote,
 			removeRegFromProcessor: removeRegFromProcessor,
-			bulkDelivery:           bulkDeliverySize,
 		},
 		metrics: metrics,
 		stream:  stream,
@@ -226,13 +223,9 @@ func (ubr *unbufferedRegistration) IsDisconnected() bool {
 //
 // nolint:deferunlockcheck
 func (ubr *unbufferedRegistration) runOutputLoop(ctx context.Context, forStacks roachpb.RangeID) {
-	start := crtime.NowMono()
 	ubr.mu.Lock()
-	defer func() {
-		// Noop if publishCatchUpBuffer below returns no error.
-		ubr.drainAllocations(ctx)
-		ubr.metrics.RangefeedOutputLoopNanosForUnbufferedReg.Inc(start.Elapsed().Nanoseconds())
-	}()
+	// Noop if publishCatchUpBuffer below returns no error.
+	defer ubr.drainAllocations(ctx)
 
 	if ubr.mu.disconnected {
 		ubr.mu.Unlock()
@@ -366,8 +359,7 @@ func (ubr *unbufferedRegistration) maybeRunCatchUpScan(ctx context.Context) erro
 	}()
 
 	return catchUpIter.CatchUpScan(ctx, ubr.stream.SendUnbuffered, ubr.withDiff, ubr.withFiltering,
-		ubr.withOmitRemote, ubr.bulkDelivery)
-
+		ubr.withOmitRemote)
 }
 
 // Used for testing only.
