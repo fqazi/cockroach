@@ -5,9 +5,8 @@
 
 import { Moment } from "moment-timezone";
 import React, { useContext } from "react";
-
-import { CoordinatedUniversalTime, TimezoneContext } from "../contexts";
 import { FormatWithTimezone } from "../util";
+import { CoordinatedUniversalTime, TimezoneContext } from "../contexts";
 
 export function Timezone() {
   const timezone = useContext(TimezoneContext);

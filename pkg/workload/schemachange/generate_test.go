@@ -7,7 +7,6 @@ package schemachange
 
 import (
 	"math/rand"
-	"slices"
 	"testing"
 	"testing/quick"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/slices"
 )
 
 func TestPickOne(t *testing.T) {

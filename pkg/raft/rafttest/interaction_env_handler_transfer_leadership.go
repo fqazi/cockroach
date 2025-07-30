@@ -1,6 +1,3 @@
-// This code has been modified from its original form by The Cockroach Authors.
-// All modifications are Copyright 2024 The Cockroach Authors.
-//
 // Copyright 2021 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,27 +17,24 @@ package rafttest
 import (
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/datadriven"
 )
 
 func (env *InteractionEnv) handleTransferLeadership(t *testing.T, d datadriven.TestData) error {
-	var fromRaw, toRaw uint64
-	d.ScanArgs(t, "from", &fromRaw)
-	d.ScanArgs(t, "to", &toRaw)
-	from := raftpb.PeerID(fromRaw)
-	to := raftpb.PeerID(toRaw)
-	if from == 0 || from > raftpb.PeerID(len(env.Nodes)) {
+	var from, to uint64
+	d.ScanArgs(t, "from", &from)
+	d.ScanArgs(t, "to", &to)
+	if from == 0 || from > uint64(len(env.Nodes)) {
 		t.Fatalf(`expected valid "from" argument`)
 	}
-	if to == 0 || to > raftpb.PeerID(len(env.Nodes)) {
+	if to == 0 || to > uint64(len(env.Nodes)) {
 		t.Fatalf(`expected valid "to" argument`)
 	}
 	return env.transferLeadership(from, to)
 }
 
 // Initiate leadership transfer.
-func (env *InteractionEnv) transferLeadership(from, to raftpb.PeerID) error {
+func (env *InteractionEnv) transferLeadership(from, to uint64) error {
 	fromIdx := from - 1
 	env.Nodes[fromIdx].TransferLeader(to)
 	return nil

@@ -58,20 +58,22 @@ const (
 	// bi-level key addressing scheme. The value is a roachpb.RangeDescriptor.
 	KeyFirstRangeDescriptor = "first-range"
 
-	// KeyDeprecatedSystemConfig was used in the 21.2<->22.1 mixed version state,
-	// and it's no longer used anywhere. It was the gossip key for the system DB
-	// span. Its value was a config.SystemConfig which held all key/value	pairs
-	// in the system DB span.
+	// KeyDeprecatedSystemConfig is the gossip key for the system DB span.
+	// The value if a config.SystemConfig which holds all key/value
+	// pairs in the system DB span.
 	//
-	// This key was written without a TTL, so 	there is no guarantee that it will
-	// actually be removed from the gossip 	network. We would need to write a
-	// migration to remove the data. Until then, this placeholder key should
-	// remain to make sure the same key doesn't get reused.
+	// This key is used in the 21.2<->22.1 mixed version state. It is not used
+	// in 22.1. However, it was written without a TTL, so there no guarantee
+	// that it will actually be removed from the gossip network.
 	//
-	// TODO(rafi): Write a migration to remove the data, or release a a version
-	// which drops the key entirely, and then, in a subsequent release, delete
-	// this key.
+	// TODO(ajwerner): Write a migration to remove the data, or release a
+	// a version which drops the key entirely, and then, in a subsequent
+	// release, delete this key.
 	KeyDeprecatedSystemConfig = "system-db"
+
+	// KeyDistSQLNodeVersionKeyPrefix is key prefix for each node's DistSQL
+	// version.
+	KeyDistSQLNodeVersionKeyPrefix = "distsql-version"
 
 	// KeyDistSQLDrainingPrefix is the key prefix for each node's DistSQL
 	// draining state.
@@ -147,6 +149,11 @@ func DecodeStoreDescKey(storeKey string) (roachpb.StoreID, error) {
 		return 0, errors.Wrapf(err, "failed parsing StoreID from key %q", storeKey)
 	}
 	return roachpb.StoreID(storeID), nil
+}
+
+// MakeDistSQLNodeVersionKey returns the gossip key for the given store.
+func MakeDistSQLNodeVersionKey(instanceID base.SQLInstanceID) string {
+	return MakeKey(KeyDistSQLNodeVersionKeyPrefix, instanceID.String())
 }
 
 // MakeDistSQLDrainingKey returns the gossip key for the given node's distsql

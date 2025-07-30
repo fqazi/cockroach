@@ -3,13 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import concat from "lodash/concat";
-import forEach from "lodash/forEach";
-import has from "lodash/has";
-import isEqual from "lodash/isEqual";
-import range from "lodash/range";
-import some from "lodash/some";
-import sumBy from "lodash/sumBy";
+import _ from "lodash";
 
 export interface TreeNode<T> {
   name: string;
@@ -20,7 +14,7 @@ export interface TreeNode<T> {
 export type TreePath = string[];
 
 export function isLeaf<T>(t: TreeNode<T>): boolean {
-  return !has(t, "children");
+  return !_.has(t, "children");
 }
 
 /**
@@ -170,7 +164,7 @@ export function layoutTreeHorizontal<T>(
     const childrenLayout = horizontalConcatLayouts(childLayouts);
 
     const currentCell = {
-      width: sumBy(childLayouts, cl => cl[0][0].width),
+      width: _.sumBy(childLayouts, cl => cl[0][0].width),
       data: node.data,
       path: pathToThis,
       isCollapsed,
@@ -200,11 +194,11 @@ function horizontalConcatLayouts<T>(layouts: Layout<T>[]): Layout<T> {
   if (layouts.length === 0) {
     return [];
   }
-  const output = range(layouts[0].length).map(() => []);
+  const output = _.range(layouts[0].length).map(() => []);
 
-  forEach(layouts, childLayout => {
-    forEach(childLayout, (row, rowIdx) => {
-      forEach(row, col => {
+  _.forEach(layouts, childLayout => {
+    _.forEach(childLayout, (row, rowIdx) => {
+      _.forEach(row, col => {
         output[rowIdx].push(col);
       });
     });
@@ -231,7 +225,7 @@ function horizontalConcatLayouts<T>(layouts: Layout<T>[]): Layout<T> {
  */
 function verticalConcatLayouts<T>(layouts: Layout<T>[]): Layout<T> {
   const output: Layout<T> = [];
-  return concat(output, ...layouts);
+  return _.concat(output, ...layouts);
 }
 
 function layoutFromCell<T>(cell: LayoutCell<T>): Layout<T> {
@@ -502,7 +496,7 @@ export function sumValuesUnderPaths<R, C>(
  * a deep equality comparison.
  */
 export function deepIncludes<T>(array: T[], val: T): boolean {
-  return some(array, v => isEqual(val, v));
+  return _.some(array, v => _.isEqual(val, v));
 }
 
 /**

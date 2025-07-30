@@ -362,11 +362,17 @@ func BenchmarkSortUUID(b *testing.B) {
 						// all abbreviated values are the same, then comparing
 						// them is unnecessary work because we must always fall
 						// back to full comparisons.
-						id := uuid.NewV4()
+						id, err := uuid.NewV4()
+						if err != nil {
+							b.Fatalf("unexpected error: %s", err)
+						}
 						constPrefix := id[:8]
 
 						for j := 0; j < coldata.BatchSize(); j++ {
-							id := uuid.NewV4()
+							id, err := uuid.NewV4()
+							if err != nil {
+								b.Fatalf("unexpected error: %s", err)
+							}
 							idBytes := id[:16]
 							// Make the abbreviated bytes constant constAbbrPct% of
 							// the time.
@@ -412,13 +418,6 @@ func BenchmarkAllSpooler(b *testing.B) {
 					for j := 0; j < coldata.BatchSize(); j++ {
 						col[j] = rng.Int63() % int64((i*1024)+1)
 					}
-				}
-				// Warm up.
-				for n := 0; n < 250; n++ {
-					source := colexectestutils.NewFiniteBatchSource(testAllocator, batch, typs, nBatches)
-					allSpooler := newAllSpooler(testAllocator, source, typs)
-					allSpooler.init(ctx)
-					allSpooler.spool()
 				}
 				b.ResetTimer()
 				for n := 0; n < b.N; n++ {

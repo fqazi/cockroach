@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for and_or_projection.eg.go. It's
@@ -196,7 +197,7 @@ func (o *_OP_LOWERProjOp) Next() coldata.Batch {
 	// fully determines the result of the logical operation.
 	var (
 		knownResult                   bool
-		leftVec, rightVec             *coldata.Vec
+		leftVec, rightVec             coldata.Vec
 		leftValIsNull, rightValIsNull bool
 		leftVal, rightVal             bool
 	)

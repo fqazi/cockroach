@@ -47,8 +47,11 @@ func TestCommitSanityCheckAssertionFiresOnUndetectedAmbiguousCommit(t *testing.T
 	}
 	args.ServerArgs.Knobs.KVClient = &kvcoord.ClientTestingKnobs{
 		TransportFactory: func(factory kvcoord.TransportFactory) kvcoord.TransportFactory {
-			return func(options kvcoord.SendOptions, slice kvcoord.ReplicaSlice) kvcoord.Transport {
-				tf := factory(options, slice)
+			return func(options kvcoord.SendOptions, slice kvcoord.ReplicaSlice) (kvcoord.Transport, error) {
+				tf, err := factory(options, slice)
+				if err != nil {
+					return nil, err
+				}
 				return &interceptingTransport{
 					Transport: tf,
 					afterSend: func(ctx context.Context, req *interceptedReq, resp *interceptedResp) (overrideResp *interceptedResp) {
@@ -63,7 +66,7 @@ func TestCommitSanityCheckAssertionFiresOnUndetectedAmbiguousCommit(t *testing.T
 						assert.True(t, grpcutil.RequestDidNotStart(err)) // avoid Fatal on goroutine
 						return &interceptedResp{err: err}
 					},
-				}
+				}, nil
 
 			}
 

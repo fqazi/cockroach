@@ -60,7 +60,7 @@ func TestFirstUpgrade(t *testing.T) {
 		Knobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
 				DisableAutomaticVersionUpgrade: make(chan struct{}),
-				ClusterVersionOverride:         v0,
+				BinaryVersionOverride:          v0,
 			},
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 		},
@@ -179,7 +179,7 @@ func TestFirstUpgradeRepair(t *testing.T) {
 			},
 			Server: &server.TestingKnobs{
 				DisableAutomaticVersionUpgrade: make(chan struct{}),
-				ClusterVersionOverride:         v0,
+				BinaryVersionOverride:          v0,
 			},
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 		},
@@ -382,7 +382,7 @@ func TestFirstUpgradeRepairBatchSize(t *testing.T) {
 		Knobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
 				DisableAutomaticVersionUpgrade: make(chan struct{}),
-				ClusterVersionOverride:         v0,
+				BinaryVersionOverride:          v0,
 			},
 			SQLEvalContext: &eval.TestingKnobs{
 				ForceProductionValues: true,
@@ -396,8 +396,6 @@ func TestFirstUpgradeRepairBatchSize(t *testing.T) {
 	sqlRunner := sqlutils.MakeSQLRunner(sqlDB)
 	idb := testServer.InternalDB().(*sql.InternalDB)
 	tx := sqlRunner.Begin(t)
-	_, err := tx.Exec("SET LOCAL autocommit_before_ddl = false")
-	require.NoError(t, err)
 	const batchSize = 100
 	lastCommit := 0
 	commitFn := func(startIdx int) {
@@ -441,8 +439,6 @@ func TestFirstUpgradeRepairBatchSize(t *testing.T) {
 			return
 		}
 		tx = sqlRunner.Begin(t)
-		_, err = tx.Exec("SET LOCAL autocommit_before_ddl = false")
-		require.NoError(t, err)
 	}
 	for i := 0; i < totalDescriptorsToTest; i++ {
 		if i%batchSize == 0 {

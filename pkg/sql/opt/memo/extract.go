@@ -6,8 +6,6 @@
 package memo
 
 import (
-	"context"
-
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -137,33 +135,6 @@ func ExtractAggInputColumns(e opt.ScalarExpr) opt.ColSet {
 	}
 
 	return res
-}
-
-// AddAggInputColumns adds the set of columns the aggregate depands on to the
-// given set. The modified set is returned.
-//
-// NOTE: The original set may be mutated.
-func AddAggInputColumns(cols opt.ColSet, e opt.ScalarExpr) opt.ColSet {
-	if filter, ok := e.(*AggFilterExpr); ok {
-		cols.Add(filter.Filter.(*VariableExpr).Col)
-		e = filter.Input
-	}
-
-	if distinct, ok := e.(*AggDistinctExpr); ok {
-		e = distinct.Input
-	}
-
-	if !opt.IsAggregateOp(e) {
-		panic(errors.AssertionFailedf("not an Aggregate"))
-	}
-
-	for i, n := 0, e.ChildCount(); i < n; i++ {
-		if variable, ok := e.Child(i).(*VariableExpr); ok {
-			cols.Add(variable.Col)
-		}
-	}
-
-	return cols
 }
 
 // ExtractAggFirstVar is given an aggregate expression and returns the Variable
@@ -447,14 +418,12 @@ func ExtractRemainingJoinFilters(on FiltersExpr, leftEq, rightEq opt.ColList) Fi
 
 // ExtractConstColumns returns columns in the filters expression that have been
 // constrained to fixed values.
-func ExtractConstColumns(
-	ctx context.Context, on FiltersExpr, evalCtx *eval.Context,
-) (fixedCols opt.ColSet) {
+func ExtractConstColumns(on FiltersExpr, evalCtx *eval.Context) (fixedCols opt.ColSet) {
 	for i := range on {
 		scalar := on[i]
 		scalarProps := scalar.ScalarProps()
 		if scalarProps.Constraints != nil && !scalarProps.Constraints.IsUnconstrained() {
-			fixedCols.UnionWith(scalarProps.Constraints.ExtractConstCols(ctx, evalCtx))
+			fixedCols.UnionWith(scalarProps.Constraints.ExtractConstCols(evalCtx))
 		}
 	}
 	return fixedCols
@@ -463,13 +432,13 @@ func ExtractConstColumns(
 // ExtractValueForConstColumn returns the constant value of a column returned by
 // ExtractConstColumns.
 func ExtractValueForConstColumn(
-	ctx context.Context, on FiltersExpr, evalCtx *eval.Context, col opt.ColumnID,
+	on FiltersExpr, evalCtx *eval.Context, col opt.ColumnID,
 ) tree.Datum {
 	for i := range on {
 		scalar := on[i]
 		scalarProps := scalar.ScalarProps()
 		if scalarProps.Constraints != nil {
-			if val := scalarProps.Constraints.ExtractValueForConstCol(ctx, evalCtx, col); val != nil {
+			if val := scalarProps.Constraints.ExtractValueForConstCol(evalCtx, col); val != nil {
 				return val
 			}
 		}
@@ -493,7 +462,7 @@ func ExtractValueForConstColumn(
 // NOTE: ExtractTailCalls does not take into account whether the calling routine
 // has an exception handler. The execution engine must take this into account
 // before applying tail-call optimization.
-func ExtractTailCalls(expr opt.Expr, tailCalls map[opt.ScalarExpr]struct{}) {
+func ExtractTailCalls(expr opt.Expr, tailCalls map[*UDFCallExpr]struct{}) {
 	switch t := expr.(type) {
 	case *ProjectExpr:
 		// * The cardinality cannot be greater than one: Otherwise, a nested routine
@@ -525,6 +494,16 @@ func ExtractTailCalls(expr opt.Expr, tailCalls map[opt.ScalarExpr]struct{}) {
 			ExtractTailCalls(t.Rows[0].(*TupleExpr).Elems[0], tailCalls)
 		}
 
+	case *SubqueryExpr:
+		// A subquery within a routine is lazily evaluated and passes through a
+		// single input row. Similar to Project, we require that the input have only
+		// one row and one column, since otherwise work may happen after the nested
+		// routine evaluates.
+		if t.Input.Relational().Cardinality.IsZeroOrOne() &&
+			t.Input.Relational().OutputCols.Len() == 1 {
+			ExtractTailCalls(t.Input, tailCalls)
+		}
+
 	case *CaseExpr:
 		// Case expressions guarantee that exactly one branch is evaluated, and pass
 		// through the result of the chosen branch. Therefore, a routine within a
@@ -533,11 +512,6 @@ func ExtractTailCalls(expr opt.Expr, tailCalls map[opt.ScalarExpr]struct{}) {
 			ExtractTailCalls(t.Whens[i].(*WhenExpr).Value, tailCalls)
 		}
 		ExtractTailCalls(t.OrElse, tailCalls)
-
-	case *SubqueryExpr:
-		// A subquery within a routine is lazily evaluated as a nested routine.
-		// Therefore, we consider it a tail call.
-		tailCalls[t] = struct{}{}
 
 	case *UDFCallExpr:
 		// If we reached a scalar UDFCall expression, it is a tail call.

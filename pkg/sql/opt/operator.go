@@ -73,6 +73,10 @@ type Expr interface {
 	// For example, an operator may choose to return one of its fields, or perhaps
 	// a pointer to itself, or nil if there is nothing useful to return.
 	Private() interface{}
+
+	// String returns a human-readable string representation for the expression
+	// that can be used for debugging and testing.
+	String() string
 }
 
 // ScalarRank is the type of the sort order given to every scalar
@@ -91,11 +95,6 @@ type ScalarExpr interface {
 
 	// DataType is the SQL type of the expression.
 	DataType() *types.T
-
-	// String returns a human-readable string representation for the expression
-	// that can be used for debugging and testing. It is only implemented for
-	// scalar expressions because relational expressions need access to the memo.
-	String() string
 }
 
 // MutableExpr is implemented by expressions that allow their children to be
@@ -147,26 +146,23 @@ var ComparisonOpReverseMap = map[Operator]treecmp.ComparisonOperatorSymbol{
 // BinaryOpReverseMap maps from an optimizer operator type to a semantic tree
 // binary operator type.
 var BinaryOpReverseMap = map[Operator]treebin.BinaryOperatorSymbol{
-	BitandOp:                treebin.Bitand,
-	BitorOp:                 treebin.Bitor,
-	BitxorOp:                treebin.Bitxor,
-	PlusOp:                  treebin.Plus,
-	MinusOp:                 treebin.Minus,
-	MultOp:                  treebin.Mult,
-	DivOp:                   treebin.Div,
-	FloorDivOp:              treebin.FloorDiv,
-	ModOp:                   treebin.Mod,
-	PowOp:                   treebin.Pow,
-	ConcatOp:                treebin.Concat,
-	LShiftOp:                treebin.LShift,
-	RShiftOp:                treebin.RShift,
-	FetchValOp:              treebin.JSONFetchVal,
-	FetchTextOp:             treebin.JSONFetchText,
-	FetchValPathOp:          treebin.JSONFetchValPath,
-	FetchTextPathOp:         treebin.JSONFetchTextPath,
-	VectorDistanceOp:        treebin.Distance,
-	VectorCosDistanceOp:     treebin.CosDistance,
-	VectorNegInnerProductOp: treebin.NegInnerProduct,
+	BitandOp:        treebin.Bitand,
+	BitorOp:         treebin.Bitor,
+	BitxorOp:        treebin.Bitxor,
+	PlusOp:          treebin.Plus,
+	MinusOp:         treebin.Minus,
+	MultOp:          treebin.Mult,
+	DivOp:           treebin.Div,
+	FloorDivOp:      treebin.FloorDiv,
+	ModOp:           treebin.Mod,
+	PowOp:           treebin.Pow,
+	ConcatOp:        treebin.Concat,
+	LShiftOp:        treebin.LShift,
+	RShiftOp:        treebin.RShift,
+	FetchValOp:      treebin.JSONFetchVal,
+	FetchTextOp:     treebin.JSONFetchText,
+	FetchValPathOp:  treebin.JSONFetchValPath,
+	FetchTextPathOp: treebin.JSONFetchTextPath,
 }
 
 // UnaryOpReverseMap maps from an optimizer operator type to a semantic tree

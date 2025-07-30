@@ -889,7 +889,7 @@ func (g *newRuleGen) genBoundStatements(e lang.Expr) {
 // that genNestedExpr can generate references to those statements.
 func (g *newRuleGen) genNestedExpr(e lang.Expr) {
 	if label, ok := g.boundStmts[e]; ok {
-		g.w.write("%s", label)
+		g.w.write(label)
 		return
 	}
 
@@ -910,18 +910,18 @@ func (g *newRuleGen) genNestedExpr(e lang.Expr) {
 			// untyped version.
 			varName = typed
 		}
-		g.w.write("%s", varName)
+		g.w.write(varName)
 
 	case *lang.LetExpr:
-		g.w.write("%s", string(t.Result.Label))
+		g.w.write(string(t.Result.Label))
 
 	case *lang.StringExpr:
-		// Literal string expressions construct Go strings.
-		g.w.write("%s", t)
+		// Literal string expressions construct DString datums.
+		g.w.write("tree.NewDString(%s)", t)
 
 	case *lang.NumberExpr:
-		// Literal numeric expressions construct Go ints.
-		g.w.write("%s", t)
+		// Literal numeric expressions construct DInt datums.
+		g.w.write("tree.NewDInt(%s)", t)
 
 	case *lang.NameExpr:
 		// OpName literal expressions construct an op identifier like SelectOp,

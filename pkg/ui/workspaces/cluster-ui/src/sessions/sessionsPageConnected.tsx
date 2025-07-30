@@ -3,25 +3,25 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
-import { Dispatch } from "redux";
-import { createSelector } from "reselect";
-
+import { connect } from "react-redux";
 import { analyticsActions, AppState } from "src/store";
+import { SessionsState } from "src/store/sessions";
+
+import { createSelector } from "reselect";
+import { SessionsPage } from "./index";
+
+import { actions as sessionsActions } from "src/store/sessions";
 import { actions as localStorageActions } from "src/store/localStorage";
-import { SessionsState, actions as sessionsActions } from "src/store/sessions";
 import {
   actions as terminateQueryActions,
   ICancelQueryRequest,
   ICancelSessionRequest,
 } from "src/store/terminateQuery";
-
+import { Dispatch } from "redux";
 import { Filters } from "../queryFilter";
 import { sqlStatsSelector } from "../store/sqlStats/sqlStats.selector";
 import { localStorageSelector } from "../store/utils/selectors";
-
-import { SessionsPage } from "./index";
 
 export const selectSessionsData = createSelector(
   sqlStatsSelector,

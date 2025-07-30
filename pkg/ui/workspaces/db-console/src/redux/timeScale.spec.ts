@@ -4,9 +4,8 @@
 // included in the /LICENSE file.
 
 import { defaultTimeScaleOptions, TimeScale } from "@cockroachlabs/cluster-ui";
-import moment from "moment-timezone";
-
 import * as timeScale from "./timeScale";
+import moment from "moment-timezone";
 
 describe("time scale reducer", function () {
   describe("actions", function () {

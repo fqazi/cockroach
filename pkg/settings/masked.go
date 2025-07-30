@@ -35,7 +35,7 @@ func (s *MaskedSetting) String(sv *Values) string {
 	}
 	isSensitive := false
 	if st, ok := s.setting.(internalSetting); ok {
-		isSensitive = st.IsSensitive()
+		isSensitive = st.isSensitive()
 	}
 	sensitiveRedactionEnabled := redactSensitiveSettingsEnabled.Get(sv)
 	// Non-reportable settings are always redacted. Sensitive settings are
@@ -47,23 +47,13 @@ func (s *MaskedSetting) String(sv *Values) string {
 }
 
 // DefaultString returns the default value for the setting as a string.
-func (s *MaskedSetting) DefaultString() string {
-	return s.setting.DefaultString()
+func (s *MaskedSetting) DefaultString() (string, error) {
+	return s.setting.DecodeToString(s.setting.EncodedDefault())
 }
 
 // Visibility returns the visibility setting for the underlying setting.
 func (s *MaskedSetting) Visibility() Visibility {
 	return s.setting.Visibility()
-}
-
-// IsSensitive returns whether the underlying setting is sensitive.
-func (s *MaskedSetting) IsSensitive() bool {
-	return s.setting.IsSensitive()
-}
-
-// IsReportable returns whether the underlying setting is reportable.
-func (s *MaskedSetting) IsReportable() bool {
-	return s.setting.IsReportable()
 }
 
 // InternalKey returns the key string for the underlying setting.
@@ -99,4 +89,15 @@ func (s *MaskedSetting) ValueOrigin(ctx context.Context, sv *Values) ValueOrigin
 // IsUnsafe returns whether the underlying setting is unsafe.
 func (s *MaskedSetting) IsUnsafe() bool {
 	return s.setting.IsUnsafe()
+}
+
+// TestingIsReportable is used in testing for reportability.
+func TestingIsReportable(s Setting) bool {
+	if _, ok := s.(*MaskedSetting); ok {
+		return false
+	}
+	if e, ok := s.(internalSetting); ok {
+		return e.isReportable()
+	}
+	return true
 }

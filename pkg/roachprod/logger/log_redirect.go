@@ -47,7 +47,7 @@ func InitCRDBLogConfig(logger *Logger) {
 	if err := logConf.Validate(nil); err != nil {
 		panic(fmt.Errorf("internal error: could not validate CRDB log config: %w", err))
 	}
-	if _, err := log.ApplyConfig(logConf, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */); err != nil {
+	if _, err := log.ApplyConfig(logConf); err != nil {
 		panic(fmt.Errorf("internal error: could not apply CRDB log config: %w", err))
 	}
 	logRedirectInst.logger = logger

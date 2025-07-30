@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import { unset } from "src/util";
-
 import {
   ExecutionDetails,
   getInsightFromCause,
@@ -286,14 +285,14 @@ export function getInsightsFromProblemsAndCauses(
 
         if (insights.length === 0) {
           insights.push(
-            getInsightFromCause(InsightNameEnum.SLOW_EXECUTION, execType),
+            getInsightFromCause(InsightNameEnum.slowExecution, execType),
           );
         }
         break;
 
       case "FailedExecution":
         insights.push(
-          getInsightFromCause(InsightNameEnum.FAILED_EXECUTION, execType),
+          getInsightFromCause(InsightNameEnum.failedExecution, execType),
         );
         break;
 
@@ -335,39 +334,39 @@ export function getRecommendationForExecInsight(
   execDetails: ExecutionDetails | null,
 ): InsightRecommendation {
   switch (insight.name) {
-    case InsightNameEnum.HIGH_CONTENTION:
+    case InsightNameEnum.highContention:
       return {
-        type: InsightNameEnum.HIGH_CONTENTION,
+        type: InsightNameEnum.highContention,
         execution: execDetails,
         details: {
           duration: execDetails.contentionTimeMs,
           description: insight.description,
         },
       };
-    case InsightNameEnum.FAILED_EXECUTION:
+    case InsightNameEnum.failedExecution:
       return {
-        type: InsightNameEnum.FAILED_EXECUTION,
+        type: InsightNameEnum.failedExecution,
         execution: execDetails,
       };
-    case InsightNameEnum.HIGH_RETRY_COUNT:
+    case InsightNameEnum.highRetryCount:
       return {
-        type: InsightNameEnum.HIGH_RETRY_COUNT,
-        execution: execDetails,
-        details: {
-          description: insight.description,
-        },
-      };
-    case InsightNameEnum.PLAN_REGRESSION:
-      return {
-        type: InsightNameEnum.PLAN_REGRESSION,
+        type: InsightNameEnum.highRetryCount,
         execution: execDetails,
         details: {
           description: insight.description,
         },
       };
-    case InsightNameEnum.SUBOPTIMAL_PLAN:
+    case InsightNameEnum.planRegression:
       return {
-        type: InsightNameEnum.SUBOPTIMAL_PLAN,
+        type: InsightNameEnum.planRegression,
+        execution: execDetails,
+        details: {
+          description: insight.description,
+        },
+      };
+    case InsightNameEnum.suboptimalPlan:
+      return {
+        type: InsightNameEnum.suboptimalPlan,
         database: execDetails.databaseName,
         execution: execDetails,
         details: {

@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for first_value.eg.go, last_value.eg.go,
@@ -63,7 +64,7 @@ func New_UPPERCASE_NAMEOperator(
 	mainMemLimit := args.MemoryLimit - bufferMemLimit
 	buffer := colexecutils.NewSpillingBuffer(
 		args.BufferAllocator, bufferMemLimit, args.QueueCfg, args.FdSemaphore,
-		args.InputTypes, args.DiskAcc, args.DiskQueueMemAcc, colsToStore...,
+		args.InputTypes, args.DiskAcc, args.ConverterMemAcc, colsToStore...,
 	)
 	base := _OP_NAMEBase{
 		partitionSeekerBase: partitionSeekerBase{
@@ -90,7 +91,7 @@ func New_UPPERCASE_NAMEOperator(
 		}
 		// {{end}}
 	}
-	return nil, errors.AssertionFailedf("unsupported _OP_NAME window operator type %s", argType.Name())
+	return nil, errors.Errorf("unsupported _OP_NAME window operator type %s", argType.Name())
 }
 
 type _OP_NAMEBase struct {

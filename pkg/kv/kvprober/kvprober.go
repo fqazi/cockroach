@@ -15,7 +15,6 @@ package kvprober
 import (
 	"context"
 	"math/rand"
-	"regexp"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -31,10 +30,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
-	"github.com/cockroachdb/redact"
 )
 
 const putValue = "thekvproberwrotethis"
@@ -326,6 +323,7 @@ func (p *Prober) Start(ctx context.Context, stopper *stop.Stopper) error {
 			for {
 				select {
 				case <-t.C:
+					t.Read = true
 					// Jitter added to de-synchronize different nodes' probe loops.
 					t.Reset(d())
 				case <-stopper.ShouldQuiesce():
@@ -364,15 +362,8 @@ func (p *Prober) readProbeImpl(ctx context.Context, ops proberOpsI, txns proberT
 	}
 
 	p.metrics.ProbePlanAttempts.Inc(1)
-	var finishAndGetRecording func() tracingpb.Recording
-	var probeCtx = ctx
 
-	isTracingEnabled := tracingEnabled.Get(&p.settings.SV)
-	if isTracingEnabled {
-		probeCtx, finishAndGetRecording = tracing.ContextWithRecordingSpan(ctx, p.tracer, "read probe")
-	}
-
-	step, err := pl.next(probeCtx)
+	step, err := pl.next(ctx)
 	if err == nil && step.RangeID == 0 {
 		return
 	}
@@ -395,14 +386,12 @@ func (p *Prober) readProbeImpl(ctx context.Context, ops proberOpsI, txns proberT
 	// impact production issue.
 	p.metrics.ReadProbeAttempts.Inc(1)
 
-	ctx = logtags.AddTag(ctx, "range", step.RangeID)
-
 	start := timeutil.Now()
 
 	// Slow enough response times are not different than errors from the
 	// perspective of the user.
 	timeout := readTimeout.Get(&p.settings.SV)
-	err = timeutil.RunWithTimeout(probeCtx, "read probe", timeout, func(ctx context.Context) error {
+	err = timeutil.RunWithTimeout(ctx, "read probe", timeout, func(ctx context.Context) error {
 		// We read a "range-local" key dedicated to probing. See pkg/keys for more.
 		// There is no data at the key, but that is okay. Even tho there is no data
 		// at the key, the prober still executes a read operation on the range.
@@ -425,14 +414,7 @@ func (p *Prober) readProbeImpl(ctx context.Context, ops proberOpsI, txns proberT
 	}
 
 	d := timeutil.Since(start)
-	// Extract leaseholder information from the trace recording if enabled.
-	if isTracingEnabled {
-		leaseholder := p.returnLeaseholderInfo(finishAndGetRecording())
-		ctx = logtags.AddTag(ctx, "leaseholder", leaseholder)
-		log.Health.Infof(ctx, "kv.Get(%s), r=%v having likely leaseholder=%s returned success in %v", step.Key, step.RangeID, leaseholder, d)
-	} else {
-		log.Health.Infof(ctx, "kv.Get(%s), r=%v returned success in %v", step.Key, step.RangeID, d)
-	}
+	log.Health.Infof(ctx, "kv.Get(%s), r=%v returned success in %v", step.Key, step.RangeID, d)
 
 	// Latency of failures is not recorded. They are counted as failures tho.
 	p.metrics.ReadProbeLatency.RecordValue(d.Nanoseconds())
@@ -449,15 +431,8 @@ func (p *Prober) writeProbeImpl(ctx context.Context, ops proberOpsI, txns prober
 	}
 
 	p.metrics.ProbePlanAttempts.Inc(1)
-	var finishAndGetRecording func() tracingpb.Recording
-	var probeCtx = ctx
 
-	isTracingEnabled := tracingEnabled.Get(&p.settings.SV)
-	if isTracingEnabled {
-		probeCtx, finishAndGetRecording = tracing.ContextWithRecordingSpan(ctx, p.tracer, "write probe")
-	}
-
-	step, err := pl.next(probeCtx)
+	step, err := pl.next(ctx)
 	// In the case where the quarantine pool is empty don't record a planning failure since
 	// it isn't an actual plan failure.
 	if err == nil && step.RangeID == 0 {
@@ -475,14 +450,12 @@ func (p *Prober) writeProbeImpl(ctx context.Context, ops proberOpsI, txns prober
 
 	p.metrics.WriteProbeAttempts.Inc(1)
 
-	ctx = logtags.AddTag(ctx, "range", step.RangeID)
-
 	start := timeutil.Now()
 
 	// Slow enough response times are not different than errors from the
 	// perspective of the user.
 	timeout := writeTimeout.Get(&p.settings.SV)
-	err = timeutil.RunWithTimeout(probeCtx, "write probe", timeout, func(ctx context.Context) error {
+	err = timeutil.RunWithTimeout(ctx, "write probe", timeout, func(ctx context.Context) error {
 		f := ops.Write(step.Key)
 		if bypassAdmissionControl.Get(&p.settings.SV) {
 			return txns.Txn(ctx, f)
@@ -507,14 +480,7 @@ func (p *Prober) writeProbeImpl(ctx context.Context, ops proberOpsI, txns prober
 	p.quarantineWritePool.maybeRemove(ctx, step)
 
 	d := timeutil.Since(start)
-	// Extract leaseholder information from the trace recording if enabled.
-	if isTracingEnabled {
-		leaseholder := p.returnLeaseholderInfo(finishAndGetRecording())
-		ctx = logtags.AddTag(ctx, "leaseholder", leaseholder)
-		log.Health.Infof(ctx, "kv.Txn(Put(%s); Del(-)), r=%v having likely leaseholder=%s returned success in %v", step.Key, step.RangeID, leaseholder, d)
-	} else {
-		log.Health.Infof(ctx, "kv.Txn(Put(%s); Del(-)), r=%v returned success in %v", step.Key, step.RangeID, d)
-	}
+	log.Health.Infof(ctx, "kv.Txn(Put(%s); Del(-)), r=%v returned success in %v", step.Key, step.RangeID, d)
 
 	// Latency of failures is not recorded. They are counted as failures tho.
 	p.metrics.WriteProbeLatency.RecordValue(d.Nanoseconds())
@@ -527,53 +493,6 @@ func (p *Prober) quarantineProbe(ctx context.Context, pl planner) {
 	}
 
 	p.writeProbe(ctx, pl)
-}
-
-// returnLeaseholderInfo searches through the given tracing recording for
-// log messages indicating leaseholder information, extracts leaseholder
-// node ID, and returns this information. Returns an empty string if
-// leaseholder information is not found.
-func (p *Prober) returnLeaseholderInfo(recording tracingpb.Recording) redact.SafeString {
-	// The leaseholder is determined by the kvclient in dist_sender.go,
-	// which decides the node to handle the request and sends it. The log
-	// entry with "node received request" shows the leaseholder acknowledging
-	// and processing the request. Earlier entries with the same phrase might
-	// relate to planning in planner.go, not the execution by the leaseholder.
-	//
-	// Example trace snippet:
-	// event:kv/kvclient/kvcoord/dist_sender.go:2644 [n2,kvprober,txn=‹9d8205b4›] r22: sending batch ‹1 Get› to (n3,s3):2
-	// event:server/node.go:1407 [n3] node received request: ‹1 Get›
-	informationLog, isPresent := p.findLastLogMessage(recording, "node received request")
-
-	if isPresent {
-		// Regular expression to extract leaseholder node ID.
-		leaseRegex := regexp.MustCompile(`\[n(\d+)\]`)
-		leaseholder := leaseRegex.FindStringSubmatch(informationLog)
-		// Return leaseholder node ID if found.
-		if len(leaseholder) == 2 {
-			return redact.SafeString(leaseholder[1])
-		}
-	}
-	return ""
-}
-
-// findLastLogMessage returns the last log message in the recording that matches
-// the given regexp. The bool return value is true if such a message is found.
-//
-// This method strips the redaction markers from all the log messages, which is
-// pretty inefficient.
-func (p *Prober) findLastLogMessage(r tracingpb.Recording, pattern string) (string, bool) {
-	re := regexp.MustCompile(pattern)
-	for i := len(r) - 1; i >= 0; i-- {
-		sp := r[i]
-		for j := len(sp.Logs) - 1; j >= 0; j-- {
-			msg := sp.Logs[j].Msg().StripMarkers()
-			if re.MatchString(msg) {
-				return msg, true
-			}
-		}
-	}
-	return "", false
 }
 
 // Returns a random duration pulled from the uniform distribution given below:

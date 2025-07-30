@@ -4,8 +4,6 @@
 // included in the /LICENSE file.
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import moment from "moment-timezone";
-
 import {
   convertStatementRawFormatToAggregatedStatistics,
   executeInternalSql,
@@ -17,10 +15,10 @@ import {
   sqlResultsAreEmpty,
   StatementRawFormat,
 } from "src/api";
-
-import { INTERNAL_APP_NAME_PREFIX } from "../activeExecutions/activeStatementUtils";
+import moment from "moment-timezone";
+import { TimeScale, toRoundedDateRange } from "../timeScaleDropdown";
 import { AggregateStatistics } from "../statementsTable";
-import { TimeScale, toDateRange } from "../timeScaleDropdown";
+import { INTERNAL_APP_NAME_PREFIX } from "../activeExecutions/activeStatementUtils";
 
 export type TableIndexStatsRequest =
   cockroach.server.serverpb.TableIndexStatsRequest;
@@ -77,7 +75,7 @@ export function StatementsListRequestFromDetails(
   ts: TimeScale,
 ): StatementsUsingIndexRequest {
   if (ts === null) return { table, index, database };
-  const [start, end] = toDateRange(ts);
+  const [start, end] = toRoundedDateRange(ts);
   return { table, index, database, start, end };
 }
 
@@ -90,7 +88,7 @@ export async function getStatementsUsingIndex({
 }: StatementsUsingIndexRequest): Promise<
   SqlApiResponse<AggregateStatistics[]>
 > {
-  const args = [`"${table}@${index}"`];
+  const args: any = [`"${table}@${index}"`];
   let whereClause = "";
   if (start) {
     whereClause = `${whereClause} AND aggregated_ts >= '${start.toISOString()}'`;

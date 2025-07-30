@@ -30,7 +30,6 @@ import (
 )
 
 type dropTableNode struct {
-	zeroInputPlanNode
 	n *tree.DropTable
 	// td is a map from table descriptor to toDelete struct, indicating which
 	// tables this operation should delete.
@@ -72,10 +71,6 @@ func (p *planner) DropTable(ctx context.Context, n *tree.DropTable) (planNode, e
 
 	for _, toDel := range td {
 		droppedDesc := toDel.desc
-		// Disallow the DROP if this table's schema is locked.
-		if err := p.checkSchemaChangeIsAllowed(ctx, droppedDesc, n); err != nil {
-			return nil, err
-		}
 		for _, fk := range droppedDesc.InboundForeignKeys() {
 			if _, ok := td[fk.GetOriginTableID()]; !ok {
 				if err := p.canRemoveFKBackreference(ctx, droppedDesc.Name, fk, n.DropBehavior); err != nil {
@@ -235,11 +230,6 @@ func (p *planner) dropTableImpl(
 	if catalog.HasConcurrentDeclarativeSchemaChange(tableDesc) {
 		return nil, scerrors.ConcurrentSchemaChangeError(tableDesc)
 	}
-	// Early out if the table is already dropped. This can happen during a cascade
-	// with a trigger.
-	if tableDesc.Dropped() {
-		return droppedViews, nil
-	}
 	// Remove foreign key back references from tables that this table has foreign
 	// keys to.
 	// Copy out the set of outbound fks as it may be overwritten in the loop.
@@ -276,19 +266,6 @@ func (p *planner) dropTableImpl(
 		}
 	}
 
-	// Remove trigger dependencies on other tables.
-	//
-	// NOTE: we don't have to explicitly do this for other types of backreferences
-	// because they use the "GetAll..." methods.
-	for i := range tableDesc.Triggers {
-		trigger := &tableDesc.Triggers[i]
-		for _, id := range trigger.DependsOn {
-			if err := p.removeTriggerBackReference(ctx, tableDesc, id, trigger.Name); err != nil {
-				return droppedViews, err
-			}
-		}
-	}
-
 	// Remove function dependencies
 	fnIDs, err := tableDesc.GetAllReferencedFunctionIDs()
 	if err != nil {
@@ -304,7 +281,7 @@ func (p *planner) dropTableImpl(
 	dependedOnBy := append([]descpb.TableDescriptor_Reference(nil), tableDesc.DependedOnBy...)
 	for _, ref := range dependedOnBy {
 		depDesc, err := p.getDescForCascade(
-			ctx, string(tableDesc.DescriptorType()), tableDesc.Name, tableDesc.ParentID, ref.ID, tableDesc.ID, tree.DropCascade,
+			ctx, string(tableDesc.DescriptorType()), tableDesc.Name, tableDesc.ParentID, ref.ID, tree.DropCascade,
 		)
 		if err != nil {
 			return droppedViews, err
@@ -316,17 +293,9 @@ func (p *planner) dropTableImpl(
 
 		switch t := depDesc.(type) {
 		case *tabledesc.Mutable:
-			var cascadedViews []string
-			if t.IsTable() {
-				cascadedViews, err = p.dropTableImpl(ctx, t, !droppingParent, "dropping dependent table", tree.DropCascade)
-				if err != nil {
-					return droppedViews, err
-				}
-			} else {
-				cascadedViews, err = p.dropViewImpl(ctx, t, !droppingParent, "dropping dependent view", tree.DropCascade)
-				if err != nil {
-					return droppedViews, err
-				}
+			cascadedViews, err := p.dropViewImpl(ctx, t, !droppingParent, "dropping dependent view", tree.DropCascade)
+			if err != nil {
+				return droppedViews, err
 			}
 
 			qualifiedView, err := p.getQualifiedTableName(ctx, t)
@@ -337,7 +306,7 @@ func (p *planner) dropTableImpl(
 			droppedViews = append(droppedViews, cascadedViews...)
 			droppedViews = append(droppedViews, qualifiedView.FQString())
 		case *funcdesc.Mutable:
-			if err := p.dropFunctionImpl(ctx, t, behavior); err != nil {
+			if err := p.dropFunctionImpl(ctx, t); err != nil {
 				return droppedViews, err
 			}
 		}
@@ -465,20 +434,20 @@ func (p *planner) markTableMutationJobsSuccessful(
 		if err := mutationJob.WithTxn(p.InternalSQLTxn()).Update(ctx, func(
 			txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater,
 		) error {
-			status := md.State
+			status := md.Status
 			switch status {
-			case jobs.StateSucceeded, jobs.StateCanceled, jobs.StateFailed, jobs.StateRevertFailed:
+			case jobs.StatusSucceeded, jobs.StatusCanceled, jobs.StatusFailed, jobs.StatusRevertFailed:
 				log.Warningf(ctx, "mutation job %d in unexpected state %s", jobID, status)
 				return nil
-			case jobs.StateRunning, jobs.StatePending:
-				status = jobs.StateSucceeded
+			case jobs.StatusRunning, jobs.StatusPending:
+				status = jobs.StatusSucceeded
 			default:
 				// We shouldn't mark jobs as succeeded if they're not in a state where
 				// they're eligible to ever succeed, so mark them as failed.
-				status = jobs.StateFailed
+				status = jobs.StatusFailed
 			}
 			log.Infof(ctx, "marking mutation job %d for dropped table as %s", jobID, status)
-			ju.UpdateState(status)
+			ju.UpdateStatus(status)
 			return nil
 		}); err != nil {
 			return errors.Wrap(err, "updating mutation job for dropped table")
@@ -680,41 +649,6 @@ func removeFKBackReferenceFromTable(
 	referencedTableDesc.InboundFKs = append(referencedTableDesc.InboundFKs[:matchIdx],
 		referencedTableDesc.InboundFKs[matchIdx+1:]...)
 	return nil
-}
-
-// removeTriggerBackReference removes the trigger back reference for the
-// referenced table with the given ID.
-func (p *planner) removeTriggerBackReference(
-	ctx context.Context, tableDesc *tabledesc.Mutable, refID descpb.ID, triggerName string,
-) error {
-	var refTableDesc *tabledesc.Mutable
-	// We don't want to lookup/edit a second copy of the same table.
-	if tableDesc.ID == refID {
-		refTableDesc = tableDesc
-	} else {
-		lookup, err := p.Descriptors().MutableByID(p.txn).Table(ctx, refID)
-		if err != nil {
-			return errors.Wrapf(err, "error resolving referenced table ID %d", refID)
-		}
-		refTableDesc = lookup
-	}
-	if refTableDesc.Dropped() {
-		// The referenced table is being dropped. No need to modify it further.
-		return nil
-	}
-	refTableDesc.DependedOnBy = removeMatchingReferences(refTableDesc.DependedOnBy, tableDesc.ID)
-
-	name, err := p.getQualifiedTableName(ctx, tableDesc)
-	if err != nil {
-		return err
-	}
-	refName, err := p.getQualifiedTableName(ctx, refTableDesc)
-	if err != nil {
-		return err
-	}
-	jobDesc := fmt.Sprintf("updating table %q after removing trigger %q from table %q",
-		refName.FQString(), triggerName, name.FQString())
-	return p.writeSchemaChange(ctx, refTableDesc, descpb.InvalidMutationID, jobDesc)
 }
 
 // removeMatchingReferences removes all refs from the provided slice that

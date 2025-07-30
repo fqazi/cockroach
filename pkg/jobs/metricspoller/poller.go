@@ -69,6 +69,7 @@ func (mp *metricsPoller) Resume(ctx context.Context, execCtx interface{}) error 
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
+			t.Read = true
 			for name, task := range metricPollerTasks {
 				if err := runTask(name, task); err != nil {
 					log.Errorf(ctx, "Periodic stats collector task %s completed with error %s", name, err)
@@ -88,7 +89,6 @@ type pollerMetrics struct {
 var metricPollerTasks = map[string]func(ctx context.Context, execCtx sql.JobExecContext) error{
 	"paused-jobs": updatePausedMetrics,
 	"manage-pts":  manageProtectedTimestamps,
-	"resolved-ts": updateTSMetrics,
 }
 
 func (m pollerMetrics) MetricStruct() {}

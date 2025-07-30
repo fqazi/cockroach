@@ -14,9 +14,9 @@ mkdir -p $ARTIFACTS_DIR
 
 echo "TC_SERVER_URL is $TC_SERVER_URL"
 
-bazel build //pkg/cmd/bazci
+bazel build //pkg/cmd/bazci --config=ci
 
-BAZEL_BIN=$(bazel info bazel-bin)
+BAZEL_BIN=$(bazel info bazel-bin --config ci)
 
 exit_status=0
 # NB: If adjusting the metamorphic test flags below, be sure to also update
@@ -27,7 +27,7 @@ $BAZEL_BIN/pkg/cmd/bazci/bazci_/bazci --formatter=pebble-metamorphic -- test --c
                                       --test_env TC_SERVER_URL=$TC_SERVER_URL \
                                       --test_timeout=25200 '--test_filter=TestMeta$' \
                                       --define gotags=bazel,invariants \
-                                      --run_under "@com_github_cockroachdb_stress//:stress -bazel -shardable-artifacts 'XML_OUTPUT_FILE=$BAZEL_BIN/pkg/cmd/bazci/bazci_/bazci merge-test-xmls' -maxtime 6h -maxfails 1 -timeout 60m -stderr -p 1" \
+                                      --run_under "@com_github_cockroachdb_stress//:stress -bazel -shardable-artifacts 'XML_OUTPUT_FILE=$BAZEL_BIN/pkg/cmd/bazci/bazci_/bazci merge-test-xmls' -maxtime 6h -maxfails 1 -timeout 20m -stderr -p 1" \
                                       --test_arg -dir --test_arg $ARTIFACTS_DIR \
                                       --test_arg -ops --test_arg "uniform:5000-10000" \
                                       --test_output streamed \

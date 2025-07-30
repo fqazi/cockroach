@@ -3,27 +3,25 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { TimeScale, toRoundedDateRange, util } from "@cockroachlabs/cluster-ui";
-import * as H from "history";
-import merge from "lodash/merge";
 import Long from "long";
 import moment from "moment-timezone";
 import { RouteComponentProps } from "react-router-dom";
+import * as H from "history";
+import { merge } from "lodash";
 
 import "src/protobufInit";
 import * as protos from "src/js/protos";
-import { AdminUIState, createAdminUIStore } from "src/redux/state";
 import {
   appAttr,
   appNamesAttr,
   statementAttr,
   unset,
 } from "src/util/constants";
-
-import { selectStatementDetails } from "./statementDetails";
 import { selectLastReset } from "./statementsPage";
-
+import { selectStatementDetails } from "./statementDetails";
 import ISensitiveInfo = protos.cockroach.sql.ISensitiveInfo;
+import { AdminUIState, createAdminUIStore } from "src/redux/state";
+import { TimeScale, toRoundedDateRange, util } from "@cockroachlabs/cluster-ui";
 
 const { generateStmtDetailsToID, longToInt } = util;
 
@@ -204,11 +202,11 @@ describe("selectStatement", () => {
 
 function makeFingerprint(
   id: number,
-  app = "",
-  nodeId = 1,
-  distSQL = false,
-  failed = false,
-  vec = false,
+  app: string = "",
+  nodeId: number = 1,
+  distSQL: boolean = false,
+  failed: boolean = false,
+  vec: boolean = false,
 ) {
   return {
     key: {
@@ -280,9 +278,7 @@ function makeStats(): Required<StatementStatistics> {
       nanos: 111613000,
     },
     nodes: [Long.fromInt(1), Long.fromInt(2), Long.fromInt(3)],
-    kv_node_ids: [1, 2, 3],
     regions: ["gcp-us-east1"],
-    used_follower_read: false,
     plan_gists: ["Ais="],
     index_recommendations: [],
     indexes: ["123@456"],
@@ -295,7 +291,6 @@ function makeStats(): Required<StatementStatistics> {
     },
     last_error_code: "",
     failure_count: Long.fromNumber(0),
-    generic_count: Long.fromNumber(0),
   };
 }
 

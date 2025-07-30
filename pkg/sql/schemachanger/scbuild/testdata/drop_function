@@ -30,7 +30,7 @@ DROP FUNCTION f;
 - [[UserPrivileges:{DescID: 109, Name: root}, ABSENT], PUBLIC]
   {descriptorId: 109, privileges: "2", userName: root, withGrantOption: "2"}
 - [[Function:{DescID: 109}, ABSENT], PUBLIC]
-  {functionId: 109, params: [{class: {}, name: a, type: {closedTypeIds: [107, 108], type: {family: EnumFamily, oid: 100107, udtMetadata: {arrayTypeOid: 100108}}, typeName: public.notmyworkday}}], returnType: {type: {family: IntFamily, oid: 20, width: 64}, typeName: INT8}}
+  {functionId: 109, params: [{class: {}, name: a, type: {closedTypeIds: [107, 108], type: {family: EnumFamily, oid: 100107, udtMetadata: {arrayTypeOid: 100108}}}}], returnType: {type: {family: IntFamily, oid: 20, width: 64}}}
 - [[SchemaChild:{DescID: 109, ReferencedDescID: 101}, ABSENT], PUBLIC]
   {childObjectId: 109, schemaId: 101}
 - [[FunctionName:{DescID: 109}, ABSENT], PUBLIC]
@@ -41,7 +41,5 @@ DROP FUNCTION f;
   {functionId: 109}
 - [[FunctionNullInputBehavior:{DescID: 109}, ABSENT], PUBLIC]
   {functionId: 109, nullInputBehavior: {nullInputBehavior: CALLED_ON_NULL_INPUT}}
-- [[FunctionSecurity:{DescID: 109}, ABSENT], PUBLIC]
-  {functionId: 109, security: {}}
 - [[FunctionBody:{DescID: 109}, ABSENT], PUBLIC]
   {body: "SELECT a FROM defaultdb.public.t;\nSELECT b FROM defaultdb.public.t@t_idx_b;\nSELECT c FROM defaultdb.public.t@t_idx_c;\nSELECT a FROM defaultdb.public.v;\nSELECT nextval(105:::REGCLASS);", functionId: 109, lang: {lang: SQL}, usesSequenceIds: [105], usesTables: [{columnIds: [1], tableId: 104}, {columnIds: [2], indexId: 2, tableId: 104}, {columnIds: [3], indexId: 3, tableId: 104}], usesTypeIds: [107, 108], usesViews: [{columnIds: [1], viewId: 106}]}

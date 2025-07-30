@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import React from "react";
-
 import { Dropdown, DropdownOption } from "src/dropdown";
 
 export type DropDownSelectProps = {

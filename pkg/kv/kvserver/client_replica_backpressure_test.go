@@ -20,16 +20,14 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -69,15 +67,15 @@ func TestBackpressureNotAppliedWhenReducingRangeSize(t *testing.T) {
 		var allowSplits atomic.Value
 		allowSplits.Store(true)
 		unblockCh := make(chan struct{}, 1)
-		var rangesBlocked syncutil.Set[roachpb.RangeID]
+		var rangesBlocked sync.Map
 		args = base.TestClusterArgs{
 			ServerArgs: base.TestServerArgs{
 				Knobs: base.TestingKnobs{
 					Store: &kvserver.StoreTestingKnobs{
 						TestingRequestFilter: func(ctx context.Context, ba *kvpb.BatchRequest) *kvpb.Error {
 							if ba.Header.Txn != nil && ba.Header.Txn.Name == "split" && !allowSplits.Load().(bool) {
-								rangesBlocked.Add(ba.Header.RangeID)
-								defer rangesBlocked.Remove(ba.Header.RangeID)
+								rangesBlocked.Store(ba.Header.RangeID, true)
+								defer rangesBlocked.Delete(ba.Header.RangeID)
 								select {
 								case <-unblockCh:
 									return kvpb.NewError(errors.Errorf("splits disabled"))
@@ -126,7 +124,7 @@ func TestBackpressureNotAppliedWhenReducingRangeSize(t *testing.T) {
 		}
 		waitForBlockedRange = func(id roachpb.RangeID) {
 			testutils.SucceedsSoon(t, func() error {
-				if !rangesBlocked.Contains(id) {
+				if _, ok := rangesBlocked.Load(id); !ok {
 					return errors.Errorf("waiting for %v to be blocked", id)
 				}
 				return nil
@@ -305,7 +303,7 @@ func TestBackpressureNotAppliedWhenReducingRangeSize(t *testing.T) {
 
 		// Observe backpressure now that the range is just over the limit.
 		// Use pgx so that cancellation does something reasonable.
-		url, cleanup := pgurlutils.PGUrl(t, tc.Server(1).AdvSQLAddr(), "", url.User("root"))
+		url, cleanup := sqlutils.PGUrl(t, tc.Server(1).AdvSQLAddr(), "", url.User("root"))
 		defer cleanup()
 		conf, err := pgx.ParseConfig(url.String())
 		require.NoError(t, err)

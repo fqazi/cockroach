@@ -61,25 +61,18 @@ type file struct {
 // compressAndFlush is called, which compresses all bytes and writes them to the
 // wrapped io.Writer.
 type diskQueueWriter struct {
-	// ctx is captured so that diskQueueWriter.Write signature is preserved.
-	ctx context.Context
 	// testingKnobAlwaysCompress specifies whether the writer should always
 	// compress writes (i.e. don't bother measuring whether compression passes
 	// a certain threshold of size improvement before writing compressed bytes).
 	testingKnobAlwaysCompress bool
 	buffer                    bytes.Buffer
 	wrapped                   io.Writer
-	memAcc                    *mon.BoundAccount
 	scratch                   struct {
 		// blockType is a single byte that specifies whether the following block on
 		// disk (i.e. compressedBuf in memory) is compressed or not. It is an array
 		// due to having to pass this byte in as a slice to Write.
 		blockType     [1]byte
 		compressedBuf []byte
-	}
-	accountedFor struct {
-		buffer        int64
-		compressedBuf int64
 	}
 }
 
@@ -88,16 +81,7 @@ const (
 	snappyCompressedBlock   byte = 1
 )
 
-func (w *diskQueueWriter) Write(p []byte) (_ int, retErr error) {
-	defer func() {
-		if retErr == nil && w.accountedFor.buffer != int64(w.buffer.Cap()) {
-			newAccountedFor := int64(w.buffer.Cap())
-			retErr = w.memAcc.Resize(w.ctx, w.accountedFor.buffer, newAccountedFor)
-			if retErr == nil {
-				w.accountedFor.buffer = newAccountedFor
-			}
-		}
-	}()
+func (w *diskQueueWriter) Write(p []byte) (int, error) {
 	return w.buffer.Write(p)
 }
 
@@ -111,16 +95,10 @@ func (w *diskQueueWriter) reset(wrapped io.Writer) {
 // compressAndFlush compresses all buffered bytes and writes them to the wrapped
 // io.Writer. The number of total bytes written to the wrapped writer is
 // returned if no error occurred, otherwise 0, err is returned.
-func (w *diskQueueWriter) compressAndFlush(ctx context.Context) (int, error) {
+func (w *diskQueueWriter) compressAndFlush() (int, error) {
 	b := w.buffer.Bytes()
 	compressed := snappy.Encode(w.scratch.compressedBuf, b)
 	w.scratch.compressedBuf = compressed[:cap(compressed)]
-	if newAccountedFor := int64(cap(compressed)); newAccountedFor != w.accountedFor.compressedBuf {
-		if err := w.memAcc.Resize(ctx, w.accountedFor.compressedBuf, newAccountedFor); err != nil {
-			return 0, err
-		}
-		w.accountedFor.compressedBuf = newAccountedFor
-	}
 
 	blockType := snappyUncompressedBlock
 	// Discard result if < 12.5% size reduction. All code that uses snappy
@@ -211,9 +189,8 @@ type diskQueue struct {
 	readFile                     vfs.File
 	scratchDecompressedReadBytes []byte
 
-	diskAcc             *mon.BoundAccount
-	memAcc              *mon.BoundAccount
-	scratchAccountedFor int64
+	diskAcc         *mon.BoundAccount
+	converterMemAcc *mon.BoundAccount
 }
 
 var _ RewindableQueue = &diskQueue{}
@@ -386,9 +363,9 @@ func NewDiskQueue(
 	typs []*types.T,
 	cfg DiskQueueCfg,
 	diskAcc *mon.BoundAccount,
-	diskQueueMemAcc *mon.BoundAccount,
+	converterMemAcc *mon.BoundAccount,
 ) (Queue, error) {
-	return newDiskQueue(ctx, typs, cfg, diskAcc, diskQueueMemAcc)
+	return newDiskQueue(ctx, typs, cfg, diskAcc, converterMemAcc)
 }
 
 // NewRewindableDiskQueue creates a RewindableQueue that spills to disk.
@@ -397,9 +374,9 @@ func NewRewindableDiskQueue(
 	typs []*types.T,
 	cfg DiskQueueCfg,
 	diskAcc *mon.BoundAccount,
-	diskQueueMemAcc *mon.BoundAccount,
+	converterMemAcc *mon.BoundAccount,
 ) (RewindableQueue, error) {
-	d, err := newDiskQueue(ctx, typs, cfg, diskAcc, diskQueueMemAcc)
+	d, err := newDiskQueue(ctx, typs, cfg, diskAcc, converterMemAcc)
 	if err != nil {
 		return nil, err
 	}
@@ -412,19 +389,19 @@ func newDiskQueue(
 	typs []*types.T,
 	cfg DiskQueueCfg,
 	diskAcc *mon.BoundAccount,
-	memAcc *mon.BoundAccount,
+	converterMemAcc *mon.BoundAccount,
 ) (*diskQueue, error) {
 	if err := cfg.EnsureDefaults(); err != nil {
 		return nil, err
 	}
 	d := &diskQueue{
-		dirName:          uuid.MakeV4().String(),
+		dirName:          uuid.FastMakeV4().String(),
 		typs:             typs,
 		cfg:              cfg,
 		files:            make([]file, 0, 4),
 		writeBufferLimit: cfg.BufferSizeBytes / 3,
 		diskAcc:          diskAcc,
-		memAcc:           memAcc,
+		converterMemAcc:  converterMemAcc,
 	}
 	// Refer to the DiskQueueCacheMode comment for why this division of
 	// BufferSizeBytes.
@@ -467,8 +444,6 @@ func (d *diskQueue) Close(ctx context.Context) (retErr error) {
 				retErr = errors.CombineErrors(retErr, err)
 			}
 		}
-		d.writer.memAcc.Shrink(ctx, d.writer.accountedFor.buffer+d.writer.accountedFor.compressedBuf)
-		d.memAcc.Shrink(ctx, d.scratchAccountedFor)
 		// Zero out the structure completely upon return. If users of this diskQueue
 		// retain a pointer to it, and we don't remove all references to large
 		// backing slices (various scratch spaces in this struct and children),
@@ -521,7 +496,7 @@ func (d *diskQueue) Close(ctx context.Context) (retErr error) {
 // to write to.
 func (d *diskQueue) rotateFile(ctx context.Context) (retErr error) {
 	fName := filepath.Join(d.cfg.GetPather.GetPath(ctx), d.dirName, strconv.Itoa(d.seqNo))
-	f, err := fs.CreateWithSync(d.cfg.FS, fName, bytesPerSync, fs.SQLColumnSpillWriteCategory)
+	f, err := fs.CreateWithSync(d.cfg.FS, fName, bytesPerSync)
 	if err != nil {
 		return err
 	}
@@ -537,13 +512,8 @@ func (d *diskQueue) rotateFile(ctx context.Context) (retErr error) {
 	d.seqNo++
 
 	if d.serializer == nil {
-		writer := &diskQueueWriter{
-			ctx:                       ctx,
-			testingKnobAlwaysCompress: d.cfg.TestingKnobs.AlwaysCompress,
-			wrapped:                   f,
-			memAcc:                    d.memAcc,
-		}
-		d.serializer, err = colserde.NewFileSerializer(writer, d.typs, d.memAcc)
+		writer := &diskQueueWriter{testingKnobAlwaysCompress: d.cfg.TestingKnobs.AlwaysCompress, wrapped: f}
+		d.serializer, err = colserde.NewFileSerializer(writer, d.typs, d.converterMemAcc)
 		if err != nil {
 			return err
 		}
@@ -587,7 +557,7 @@ func (d *diskQueue) writeFooterAndFlush(ctx context.Context) (err error) {
 	if err := d.serializer.Finish(); err != nil {
 		return err
 	}
-	written, err := d.writer.compressAndFlush(ctx)
+	written, err := d.writer.compressAndFlush()
 	if err != nil {
 		return err
 	}
@@ -620,13 +590,13 @@ func (d *diskQueue) Enqueue(ctx context.Context, b coldata.Batch) error {
 	}
 	if d.state == diskQueueStateDequeueing {
 		if d.cfg.CacheMode != DiskQueueCacheModeIntertwinedCalls {
-			return errors.AssertionFailedf(
+			return errors.Errorf(
 				"attempted to Enqueue to DiskQueue after Dequeueing "+
 					"in mode that disallows it: %d", d.cfg.CacheMode,
 			)
 		}
 		if d.rewindable {
-			return errors.AssertionFailedf("attempted to Enqueue to RewindableDiskQueue after Dequeue has been called")
+			return errors.Errorf("attempted to Enqueue to RewindableDiskQueue after Dequeue has been called")
 		}
 	}
 	d.state = diskQueueStateEnqueueing
@@ -653,13 +623,9 @@ func (d *diskQueue) Enqueue(ctx context.Context, b coldata.Batch) error {
 			// Clear the cache. d.scratchDecompressedReadBytes should already be nil
 			// since we don't allow writes once reads happen in this mode.
 			d.scratchDecompressedReadBytes = nil
-			d.memAcc.Shrink(ctx, d.scratchAccountedFor)
-			d.scratchAccountedFor = 0
 			// Clear the write side of the cache.
 			d.writer.buffer = bytes.Buffer{}
 			d.writer.scratch.compressedBuf = nil
-			d.writer.memAcc.Shrink(ctx, d.writer.accountedFor.buffer+d.writer.accountedFor.compressedBuf)
-			d.writer.accountedFor.buffer, d.writer.accountedFor.compressedBuf = 0, 0
 		}
 		return nil
 	}
@@ -734,11 +700,6 @@ func (d *diskQueue) maybeInitDeserializer(ctx context.Context) (bool, error) {
 	if cap(d.writer.scratch.compressedBuf) < readRegionLength {
 		// Not enough capacity, we have to allocate a new compressedBuf.
 		d.writer.scratch.compressedBuf = make([]byte, readRegionLength)
-		newAccountedFor := int64(cap(d.writer.scratch.compressedBuf))
-		if err := d.writer.memAcc.Resize(ctx, d.writer.accountedFor.compressedBuf, newAccountedFor); err != nil {
-			return false, err
-		}
-		d.writer.accountedFor.compressedBuf = newAccountedFor
 	}
 	// Slice the compressedBuf to be of the desired length, encoded in
 	// readRegionLength.
@@ -752,7 +713,7 @@ func (d *diskQueue) maybeInitDeserializer(ctx context.Context) (bool, error) {
 		d.cfg.SpilledBytesRead.Inc(int64(n))
 	}
 	if n != len(d.writer.scratch.compressedBuf) {
-		return false, errors.AssertionFailedf("expected to read %d bytes but read %d", len(d.writer.scratch.compressedBuf), n)
+		return false, errors.Errorf("expected to read %d bytes but read %d", len(d.writer.scratch.compressedBuf), n)
 	}
 
 	blockType := d.writer.scratch.compressedBuf[0]
@@ -770,10 +731,6 @@ func (d *diskQueue) maybeInitDeserializer(ctx context.Context) (bool, error) {
 		// calls of the same buffered coldata.Batches to return, the memory would
 		// be corrupted. The following code ensures that
 		// scratchDecompressedReadBytes is of the required capacity.
-		// TODO(yuzefovich): we reuse the compressed write buffer when not in
-		// DiskQueueCacheModeIntertwinedCalls, in which case no Enqueue calls
-		// are allowed after the first Dequeue. In other words, either the
-		// comment is stale or the copy is not needed.
 		if cap(d.scratchDecompressedReadBytes) < len(compressedBytes) {
 			d.scratchDecompressedReadBytes = make([]byte, len(compressedBytes))
 		}
@@ -782,12 +739,6 @@ func (d *diskQueue) maybeInitDeserializer(ctx context.Context) (bool, error) {
 		d.scratchDecompressedReadBytes = d.scratchDecompressedReadBytes[:len(compressedBytes)]
 		copy(d.scratchDecompressedReadBytes, compressedBytes)
 		decompressedBytes = d.scratchDecompressedReadBytes
-	}
-	if newAccountedFor := int64(cap(d.scratchDecompressedReadBytes)); newAccountedFor != d.scratchAccountedFor {
-		if err = d.memAcc.Resize(ctx, d.scratchAccountedFor, newAccountedFor); err != nil {
-			return false, err
-		}
-		d.scratchAccountedFor = newAccountedFor
 	}
 
 	deserializer, err := colserde.NewFileDeserializerFromBytes(d.typs, decompressedBytes)
@@ -829,12 +780,6 @@ func (d *diskQueue) Dequeue(ctx context.Context, b coldata.Batch) (bool, error) 
 		// that.
 		d.writer.buffer.Reset()
 		d.scratchDecompressedReadBytes = d.writer.buffer.Bytes()
-		// Move accounting from the writer into the disk queue. Note that we
-		// don't actually need to update the memory account because it is shared
-		// between two components.
-		d.scratchAccountedFor, d.writer.accountedFor.buffer = d.writer.accountedFor.buffer, 0
-		// We won't need the write cache anymore, so reset it explicitly.
-		d.writer.buffer = bytes.Buffer{}
 	}
 	d.state = diskQueueStateDequeueing
 

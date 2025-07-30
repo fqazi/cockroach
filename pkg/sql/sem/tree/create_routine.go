@@ -140,13 +140,14 @@ func (node *CreateRoutine) Format(ctx *FmtCtx) {
 			if i > 0 {
 				ctx.WriteByte(' ')
 			}
-			ctx.WithAnnotations(node.BodyAnnotations[i], func() {
-				ctx.FormatNode(stmt)
-				if !isPLpgSQL {
-					// PL/pgSQL statements handle printing semicolons themselves.
-					ctx.WriteByte(';')
-				}
-			})
+			oldAnn := ctx.ann
+			ctx.ann = node.BodyAnnotations[i]
+			ctx.FormatNode(stmt)
+			if !isPLpgSQL {
+				// PL/pgSQL statements handle printing semicolons themselves.
+				ctx.WriteByte(';')
+			}
+			ctx.ann = oldAnn
 		}
 		ctx.WriteString("$$")
 	} else if node.RoutineBody != nil {
@@ -197,7 +198,6 @@ func (RoutineVolatility) routineOption()        {}
 func (RoutineLeakproof) routineOption()         {}
 func (RoutineBodyStr) routineOption()           {}
 func (RoutineLanguage) routineOption()          {}
-func (RoutineSecurity) routineOption()          {}
 
 // RoutineNullInputBehavior represent the UDF property on null parameters.
 type RoutineNullInputBehavior int
@@ -305,40 +305,27 @@ func AsRoutineLanguage(lang string) (RoutineLanguage, error) {
 	return RoutineLanguage(lang), nil
 }
 
-// RoutineSecurity indicates the mode of security that the routine will
-// be executed with.
-type RoutineSecurity int
-
-const (
-	// RoutineInvoker indicates that the routine is run with the privileges of
-	// the user invoking it. This is the default security mode if none is
-	// provided.
-	RoutineInvoker RoutineSecurity = iota
-	// RoutineDefiner indicates that the routine is run with the privileges of
-	// the user who defined it.
-	RoutineDefiner
-)
-
-// Format implements the NodeFormatter interface.
-func (node RoutineSecurity) Format(ctx *FmtCtx) {
-	ctx.WriteString("SECURITY ")
-	switch node {
-	case RoutineInvoker:
-		ctx.WriteString("INVOKER")
-	case RoutineDefiner:
-		ctx.WriteString("DEFINER")
-	default:
-		panic(pgerror.New(pgcode.InvalidParameterValue, "unknown routine option"))
-	}
-}
-
 // RoutineBodyStr is a string containing all statements in a UDF body.
 type RoutineBodyStr string
 
 // Format implements the NodeFormatter interface.
 func (node RoutineBodyStr) Format(ctx *FmtCtx) {
 	ctx.WriteString("AS ")
-	ctx.FormatStringDollarQuotes(string(node))
+	if ctx.flags.HasFlags(FmtTagDollarQuotes) {
+		ctx.WriteString("$funcbody$")
+	} else {
+		ctx.WriteString("$$")
+	}
+	if ctx.flags.HasFlags(FmtAnonymize) || ctx.flags.HasFlags(FmtHideConstants) {
+		ctx.WriteString("_")
+	} else {
+		ctx.WriteString(string(node))
+	}
+	if ctx.flags.HasFlags(FmtTagDollarQuotes) {
+		ctx.WriteString("$funcbody$")
+	} else {
+		ctx.WriteString("$$")
+	}
 }
 
 // RoutineParams represents a list of RoutineParam.
@@ -636,8 +623,6 @@ const (
 	TTLExpirationExpr               SchemaExprContext = "TTL EXPIRATION EXPRESSION"
 	TTLDefaultExpr                  SchemaExprContext = "TTL DEFAULT"
 	TTLUpdateExpr                   SchemaExprContext = "TTL UPDATE"
-	PolicyUsingExpr                 SchemaExprContext = "POLICY USING"
-	PolicyWithCheckExpr             SchemaExprContext = "POLICY WITH CHECK"
 )
 
 func ComputedColumnExprContext(isVirtual bool) SchemaExprContext {
@@ -650,7 +635,7 @@ func ComputedColumnExprContext(isVirtual bool) SchemaExprContext {
 // ValidateRoutineOptions checks whether there are conflicting or redundant
 // routine options in the given slice.
 func ValidateRoutineOptions(options RoutineOptions, isProc bool) error {
-	var hasLang, hasBody, hasLeakProof, hasVolatility, hasNullInputBehavior, hasSecurity bool
+	var hasLang, hasBody, hasLeakProof, hasVolatility, hasNullInputBehavior bool
 	conflictingErr := func(opt RoutineOption) error {
 		return errors.Wrapf(ErrConflictingRoutineOption, "%s", AsString(opt))
 	}
@@ -690,11 +675,6 @@ func ValidateRoutineOptions(options RoutineOptions, isProc bool) error {
 				return conflictingErr(option)
 			}
 			hasNullInputBehavior = true
-		case RoutineSecurity:
-			if hasSecurity {
-				return conflictingErr(option)
-			}
-			hasSecurity = true
 		default:
 			return pgerror.Newf(pgcode.InvalidParameterValue, "unknown function option: ", AsString(option))
 		}

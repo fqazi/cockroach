@@ -3,10 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { ForkEffect } from "@redux-saga/core/effects";
 import { ActionPattern } from "@redux-saga/types";
-import { Action } from "redux";
-import { buffers, Task } from "redux-saga";
+import { ForkEffect } from "@redux-saga/core/effects";
 import {
   actionChannel,
   cancel,
@@ -15,6 +13,8 @@ import {
   race,
   take,
 } from "redux-saga/effects";
+import { buffers, Task } from "redux-saga";
+import { Action } from "redux";
 
 /***
  * Extended version of default `redux-saga/effects/throttle` effect implementation

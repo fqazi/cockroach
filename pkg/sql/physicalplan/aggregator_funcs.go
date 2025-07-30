@@ -135,9 +135,9 @@ var DistAggregationTable = map[execinfrapb.AggregatorSpec_Func]DistAggregationIn
 					Type: types.Float,
 				}
 			}
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
+			semaCtx := tree.MakeSemaContext()
 			semaCtx.IVarContainer = h.Container()
-			return expr.TypeCheck(context.TODO(), &semaCtx, types.AnyElement)
+			return expr.TypeCheck(context.TODO(), &semaCtx, types.Any)
 		},
 	},
 

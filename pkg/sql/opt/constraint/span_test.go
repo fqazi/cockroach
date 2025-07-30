@@ -8,7 +8,6 @@
 package constraint
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"strconv"
@@ -187,13 +186,13 @@ func TestSpanSingleKey(t *testing.T) {
 	}
 
 	for i, tc := range testCases {
-		ctx := context.Background()
-		evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+		st := cluster.MakeTestingClusterSettings()
+		evalCtx := eval.MakeTestingEvalContext(st)
 
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 			var sp Span
 			sp.Init(tc.start, tc.startBoundary, tc.end, tc.endBoundary)
-			if sp.HasSingleKey(ctx, &evalCtx) != tc.expected {
+			if sp.HasSingleKey(&evalCtx) != tc.expected {
 				t.Errorf("expected: %v, actual: %v", tc.expected, !tc.expected)
 			}
 		})

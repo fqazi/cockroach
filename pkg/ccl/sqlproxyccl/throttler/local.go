@@ -15,10 +15,7 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-var (
-	errRequestDeniedAtLogin   = errors.New("throttler refused connection due to too many failed authentication attempts")
-	errRequestDeniedAfterAuth = errors.New("throttler refused connection after authentication")
-)
+var errRequestDenied = errors.New("request denied")
 
 type timeNow func() time.Time
 
@@ -75,8 +72,6 @@ func NewLocalService(opts ...LocalOption) Service {
 	return s
 }
 
-var _ Service = (*localService)(nil)
-
 func (s *localService) lockedGetThrottle(connection ConnectionTags) *throttle {
 	l, ok := s.mu.throttleCache.Get(connection)
 	if ok && l != nil {
@@ -91,22 +86,18 @@ func (s *localService) lockedInsertThrottle(connection ConnectionTags) *throttle
 	return l
 }
 
-// LoginCheck implements the Service interface.
-func (s *localService) LoginCheck(
-	ctx context.Context, connection ConnectionTags,
-) (time.Time, error) {
+func (s *localService) LoginCheck(connection ConnectionTags) (time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := s.clock()
 	throttle := s.lockedGetThrottle(connection)
 	if throttle != nil && throttle.isThrottled(now) {
-		return now, errRequestDeniedAtLogin
+		return now, errRequestDenied
 	}
 	return now, nil
 }
 
-// ReportAttempt implements the Service interface.
 func (s *localService) ReportAttempt(
 	ctx context.Context, connection ConnectionTags, throttleTime time.Time, status AttemptStatus,
 ) error {
@@ -119,7 +110,7 @@ func (s *localService) ReportAttempt(
 	}
 
 	if throttle.isThrottled(throttleTime) {
-		return errRequestDeniedAfterAuth
+		return errRequestDenied
 	}
 
 	switch {

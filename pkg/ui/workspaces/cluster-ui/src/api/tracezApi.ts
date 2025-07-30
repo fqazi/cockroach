@@ -4,10 +4,8 @@
 // included in the /LICENSE file.
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import Long from "long";
-
 import { fetchData } from "src/api";
-
+import Long from "long";
 export type ListTracingSnapshotsRequest =
   cockroach.server.serverpb.ListTracingSnapshotsRequest;
 export type ListTracingSnapshotsResponse =
@@ -59,7 +57,7 @@ export function takeTracingSnapshot(
     cockroach.server.serverpb.TakeTracingSnapshotResponse,
     `${API_PREFIX}/trace_snapshots?remote_node_id=${nodeID}`,
     cockroach.server.serverpb.TakeTracingSnapshotRequest,
-    req,
+    req as any,
   );
 }
 
@@ -92,7 +90,7 @@ export function getRawTrace(req: {
     cockroach.server.serverpb.GetTraceResponse,
     `${API_PREFIX}/traces?remote_node_id=${req.nodeID}`,
     cockroach.server.serverpb.GetTraceRequest,
-    rpcReq,
+    rpcReq as any,
   );
 }
 
@@ -110,6 +108,6 @@ export function setTraceRecordingType(
     // TODO(davidh): Consider making this endpoint just POST to `/traces/{trace_ID}`
     `${API_PREFIX}/settracerecordingtype?remote_node_id=${nodeID}`,
     cockroach.server.serverpb.SetTraceRecordingTypeRequest,
-    req,
+    req as any,
   );
 }

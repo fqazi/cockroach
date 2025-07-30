@@ -3,37 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import {
-  Badge,
-  BadgeProps,
-  ColumnsConfig,
-  SortSetting,
-  Table,
-  Timestamp,
-  util,
-} from "@cockroachlabs/cluster-ui";
-import capitalize from "lodash/capitalize";
-import flow from "lodash/flow";
-import groupBy from "lodash/groupBy";
-import head from "lodash/head";
-import isEmpty from "lodash/isEmpty";
-import isUndefined from "lodash/isUndefined";
-import last from "lodash/last";
-import map from "lodash/map";
-import orderBy from "lodash/orderBy";
-import sum from "lodash/sum";
-import take from "lodash/take";
-import moment, { Moment } from "moment-timezone";
 import React from "react";
-import { connect } from "react-redux";
 import { Link } from "react-router-dom";
+import { connect } from "react-redux";
+import moment, { Moment } from "moment-timezone";
 import { createSelector } from "reselect";
+import _ from "lodash";
 
-import { Text, TextTypes, Tooltip } from "src/components";
-import { cockroach } from "src/js/protos";
-import { refreshLiveness, refreshNodes } from "src/redux/apiReducers";
-import { LocalityTier } from "src/redux/localities";
-import { LocalSetting } from "src/redux/localsettings";
 import {
   LivenessStatus,
   nodeCapacityStats,
@@ -42,27 +18,40 @@ import {
   selectNodesSummaryValid,
 } from "src/redux/nodes";
 import { AdminUIState } from "src/redux/state";
+import { refreshNodes, refreshLiveness } from "src/redux/apiReducers";
+import { LocalSetting } from "src/redux/localsettings";
+import { INodeStatus, MetricConstants } from "src/util/proto";
+import { Text, TextTypes, Tooltip } from "src/components";
+import {
+  Badge,
+  BadgeProps,
+  ColumnsConfig,
+  Table,
+  SortSetting,
+  util,
+  Timestamp,
+} from "@cockroachlabs/cluster-ui";
 import { FixLong } from "src/util/fixLong";
 import { getNodeLocalityTiers } from "src/util/localities";
-import { INodeStatus, MetricConstants } from "src/util/proto";
+import { LocalityTier } from "src/redux/localities";
 
 import TableSection from "./tableSection";
 import "./nodes.styl";
-import {
-  CPUsTooltip,
-  getNodeStatusDescription,
-  getStatusDescription,
-  MemoryUseTooltip,
-  NodeCountTooltip,
-  NodelistCapacityUsageTooltip,
-  ReplicasTooltip,
-  StatusTooltip,
-  UptimeTooltip,
-  VersionTooltip,
-} from "./tooltips";
 
+import {
+  getStatusDescription,
+  getNodeStatusDescription,
+  NodeCountTooltip,
+  UptimeTooltip,
+  ReplicasTooltip,
+  NodelistCapacityUsageTooltip,
+  MemoryUseTooltip,
+  CPUsTooltip,
+  VersionTooltip,
+  StatusTooltip,
+} from "./tooltips";
+import { cockroach } from "src/js/protos";
 import MembershipStatus = cockroach.kv.kvserver.liveness.livenesspb.MembershipStatus;
-import ILiveness = cockroach.kv.kvserver.liveness.livenesspb.ILiveness;
 
 const liveNodesSortSetting = new LocalSetting<AdminUIState, SortSetting>(
   "nodes/live_sort_setting",
@@ -252,12 +241,7 @@ export class NodeList extends React.Component<LiveNodeListProps> {
         }
       },
       sorter: (a: NodeStatusRow, b: NodeStatusRow) => {
-        if (!isUndefined(a.nodeId) && !isUndefined(b.nodeId)) {
-          // If nodeId is defined but regionId is not, this means that there is only
-          // a single region. In this case, sort the by nodeId.
-          if (isUndefined(a.region) && isUndefined(b.region)) {
-            return a.nodeId - b.nodeId;
-          }
+        if (!_.isUndefined(a.nodeId) && !_.isUndefined(b.nodeId)) {
           return 0;
         }
         if (a.region < b.region) {
@@ -275,10 +259,16 @@ export class NodeList extends React.Component<LiveNodeListProps> {
       key: "nodesCount",
       title: <NodeCountTooltip>Node Count</NodeCountTooltip>,
       sorter: (a: NodeStatusRow, b: NodeStatusRow) => {
-        if (isUndefined(a.nodesCount) || isUndefined(b.nodesCount)) {
+        if (_.isUndefined(a.nodesCount) || _.isUndefined(b.nodesCount)) {
           return 0;
         }
-        return a.nodesCount - b.nodesCount;
+        if (a.nodesCount < b.nodesCount) {
+          return -1;
+        }
+        if (a.nodesCount > b.nodesCount) {
+          return 1;
+        }
+        return 0;
       },
       render: (_text: string, record: NodeStatusRow) => record.nodesCount,
       sortDirections: ["ascend", "descend"],
@@ -290,7 +280,7 @@ export class NodeList extends React.Component<LiveNodeListProps> {
       dataIndex: "uptime",
       render: formatWithPossibleStaleIndicator,
       title: <UptimeTooltip>Uptime</UptimeTooltip>,
-      sorter: false,
+      sorter: true,
       className: "column--align-right",
       width: "10%",
       ellipsis: true,
@@ -300,7 +290,7 @@ export class NodeList extends React.Component<LiveNodeListProps> {
       dataIndex: "replicas",
       render: formatWithPossibleStaleIndicator,
       title: <ReplicasTooltip>Replicas</ReplicasTooltip>,
-      sorter: (a: NodeStatusRow, b: NodeStatusRow) => a.replicas - b.replicas,
+      sorter: true,
       className: "column--align-right",
       width: "10%",
     },
@@ -339,7 +329,7 @@ export class NodeList extends React.Component<LiveNodeListProps> {
       key: "numCpus",
       title: <CPUsTooltip>vCPUs</CPUsTooltip>,
       dataIndex: "numCpus",
-      sorter: (a: NodeStatusRow, b: NodeStatusRow) => a.numCpus - b.numCpus,
+      sorter: true,
       className: "column--align-right",
       width: "8%",
     },
@@ -347,7 +337,7 @@ export class NodeList extends React.Component<LiveNodeListProps> {
       key: "version",
       dataIndex: "version",
       title: <VersionTooltip>Version</VersionTooltip>,
-      sorter: false,
+      sorter: true,
       width: "8%",
       ellipsis: true,
     },
@@ -405,7 +395,7 @@ export class NodeList extends React.Component<LiveNodeListProps> {
     },
     {
       key: "logs",
-      title: <span />,
+      title: "",
       render: (_text: string, record: NodeStatusRow) =>
         record.nodeId && (
           <div className="cell--show-on-hover ">
@@ -428,8 +418,10 @@ export class NodeList extends React.Component<LiveNodeListProps> {
 
     // Remove "Nodes Count" column If nodes are not partitioned by regions,
     if (regionsCount === 1) {
-      columns = columns.filter(column => column.key !== "nodesCount");
-      dataSource = head(dataSource).children;
+      columns = columns.filter(
+        (column: NodeStatusRow) => column.key !== "nodesCount",
+      );
+      dataSource = _.head(dataSource).children;
     }
     return (
       <div className="nodes-overview__panel">
@@ -477,7 +469,7 @@ class DecommissionedNodeList extends React.Component<DecommissionedNodeListProps
       key: "status",
       title: "status",
       render: (_text: string, record: DecommissionedNodeStatusRow) => {
-        const badgeText = capitalize(LivenessStatus[record.status]);
+        const badgeText = _.capitalize(LivenessStatus[record.status]);
         const tooltipText = getStatusDescription(record.status);
         return (
           <Badge
@@ -491,7 +483,7 @@ class DecommissionedNodeList extends React.Component<DecommissionedNodeListProps
 
   render() {
     const { dataSource, isCollapsible } = this.props;
-    if (isEmpty(dataSource)) {
+    if (_.isEmpty(dataSource)) {
       return null;
     }
 
@@ -535,90 +527,87 @@ export const liveNodesTableDataSelector = createSelector(
     // - top level record contains aggregated information about nodes in current region
     // In case cluster is setup without localities:
     // - it represents a flat structure.
-    const data = flow(
-      (statuses: INodeStatus[]) =>
-        groupBy(statuses, s =>
-          s.desc.locality.tiers.map(tier => tier.value).join("."),
-        ),
-      statusesByTiers =>
-        map(
-          statusesByTiers,
-          (nodesPerRegion: INodeStatus[], regionKey: string): NodeStatusRow => {
-            const nestedRows = nodesPerRegion.map((ns, idx): NodeStatusRow => {
-              const { used: usedCapacity, usable: availableCapacity } =
-                nodeCapacityStats(ns);
-              return {
-                key: `${regionKey}-${idx}`,
-                nodeId: ns.desc.node_id,
-                nodeName: ns.desc.address.address_field,
-                uptime: moment
-                  .duration(util.LongToMoment(ns.started_at).diff(moment()))
-                  .humanize(),
-                replicas: ns.metrics[MetricConstants.replicas],
-                usedCapacity,
-                availableCapacity,
-                usedMemory: ns.metrics[MetricConstants.rss],
-                availableMemory: FixLong(ns.total_system_memory).toNumber(),
-                numCpus: ns.num_cpus,
-                version: ns.build_info.tag,
-                status:
-                  nodesSummary.livenessStatusByNodeID[ns.desc.node_id] ||
-                  LivenessStatus.NODE_STATUS_LIVE,
-              };
-            });
-
-            // Grouped buckets with node statuses contain at least one element.
-            // The list of tires and lower level location are the same for every
-            // element in the group because grouping is made by string composed
-            // from location values.
-            const firstNodeInGroup = nodesPerRegion[0];
-            const tiers = getNodeLocalityTiers(firstNodeInGroup);
-            const lastTier = last(tiers);
-
-            const getLocalityStatus = () => {
-              const nodesByStatus = groupBy(
-                nestedRows,
-                (row: NodeStatusRow) => row.status,
-              );
-
-              // Return DEAD status if at least one node is dead;
-              if (!isEmpty(nodesByStatus[LivenessStatus.NODE_STATUS_DEAD])) {
-                return AggregatedNodeStatus.DEAD;
-              }
-
-              // Return WARNING status if at least one node is decommissioning or suspected;
-              if (
-                !isEmpty(
-                  nodesByStatus[LivenessStatus.NODE_STATUS_DECOMMISSIONING],
-                ) ||
-                !isEmpty(nodesByStatus[LivenessStatus.NODE_STATUS_UNKNOWN]) ||
-                !isEmpty(nodesByStatus[LivenessStatus.NODE_STATUS_UNAVAILABLE])
-              ) {
-                return AggregatedNodeStatus.WARNING;
-              }
-
-              return AggregatedNodeStatus.LIVE;
-            };
-
+    const data = _.chain(liveStatuses)
+      .groupBy((node: INodeStatus) => {
+        return node.desc.locality.tiers.map(tier => tier.value).join(".");
+      })
+      .map(
+        (nodesPerRegion: INodeStatus[], regionKey: string): NodeStatusRow => {
+          const nestedRows = nodesPerRegion.map((ns, idx): NodeStatusRow => {
+            const { used: usedCapacity, usable: availableCapacity } =
+              nodeCapacityStats(ns);
             return {
-              key: `${regionKey}`,
-              region: lastTier?.value,
-              tiers,
-              nodesCount: nodesPerRegion.length,
-              replicas: sum(nestedRows.map(nr => nr.replicas)),
-              usedCapacity: sum(nestedRows.map(nr => nr.usedCapacity)),
-              availableCapacity: sum(
-                nestedRows.map(nr => nr.availableCapacity),
-              ),
-              usedMemory: sum(nestedRows.map(nr => nr.usedMemory)),
-              availableMemory: sum(nestedRows.map(nr => nr.availableMemory)),
-              numCpus: sum(nestedRows.map(nr => nr.numCpus)),
-              status: getLocalityStatus(),
-              children: nestedRows,
+              key: `${regionKey}-${idx}`,
+              nodeId: ns.desc.node_id,
+              nodeName: ns.desc.address.address_field,
+              uptime: moment
+                .duration(util.LongToMoment(ns.started_at).diff(moment()))
+                .humanize(),
+              replicas: ns.metrics[MetricConstants.replicas],
+              usedCapacity,
+              availableCapacity,
+              usedMemory: ns.metrics[MetricConstants.rss],
+              availableMemory: FixLong(ns.total_system_memory).toNumber(),
+              numCpus: ns.num_cpus,
+              version: ns.build_info.tag,
+              status:
+                nodesSummary.livenessStatusByNodeID[ns.desc.node_id] ||
+                LivenessStatus.NODE_STATUS_LIVE,
             };
-          },
-        ),
-    )(liveStatuses);
+          });
+
+          // Grouped buckets with node statuses contain at least one element.
+          // The list of tires and lower level location are the same for every
+          // element in the group because grouping is made by string composed
+          // from location values.
+          const firstNodeInGroup = nodesPerRegion[0];
+          const tiers = getNodeLocalityTiers(firstNodeInGroup);
+          const lastTier = _.last(tiers);
+
+          const getLocalityStatus = () => {
+            const nodesByStatus = _.groupBy(
+              nestedRows,
+              (row: NodeStatusRow) => row.status,
+            );
+
+            // Return DEAD status if at least one node is dead;
+            if (!_.isEmpty(nodesByStatus[LivenessStatus.NODE_STATUS_DEAD])) {
+              return AggregatedNodeStatus.DEAD;
+            }
+
+            // Return WARNING status if at least one node is decommissioning or suspected;
+            if (
+              !_.isEmpty(
+                nodesByStatus[LivenessStatus.NODE_STATUS_DECOMMISSIONING],
+              ) ||
+              !_.isEmpty(nodesByStatus[LivenessStatus.NODE_STATUS_UNKNOWN]) ||
+              !_.isEmpty(nodesByStatus[LivenessStatus.NODE_STATUS_UNAVAILABLE])
+            ) {
+              return AggregatedNodeStatus.WARNING;
+            }
+
+            return AggregatedNodeStatus.LIVE;
+          };
+
+          return {
+            key: `${regionKey}`,
+            region: lastTier?.value,
+            tiers,
+            nodesCount: nodesPerRegion.length,
+            replicas: _.sum(nestedRows.map(nr => nr.replicas)),
+            usedCapacity: _.sum(nestedRows.map(nr => nr.usedCapacity)),
+            availableCapacity: _.sum(
+              nestedRows.map(nr => nr.availableCapacity),
+            ),
+            usedMemory: _.sum(nestedRows.map(nr => nr.usedMemory)),
+            availableMemory: _.sum(nestedRows.map(nr => nr.availableMemory)),
+            numCpus: _.sum(nestedRows.map(nr => nr.numCpus)),
+            status: getLocalityStatus(),
+            children: nestedRows,
+          };
+        },
+      )
+      .value();
 
     return data;
   },
@@ -643,26 +632,20 @@ export const decommissionedNodesTableDataSelector = createSelector(
     });
 
     // DecommissionedNodeList displays 5 most recent nodes.
-    const data = flow(
-      (nodes: ILiveness[]) =>
-        orderBy(
-          nodes,
-          [liveness => getDecommissionedTime(liveness.node_id)],
-          ["desc"],
-        ),
-      nodes => take(nodes, 5),
-      nodes =>
-        map(nodes, (liveness, idx: number) => {
-          const { node_id } = liveness;
-          return {
-            key: `${idx}`,
-            nodeId: node_id,
-            nodeName: `${node_id}`,
-            status: nodesSummary.livenessStatusByNodeID[node_id],
-            decommissionedDate: getDecommissionedTime(node_id),
-          };
-        }),
-    )(decommissionedNodes);
+    const data = _.chain(decommissionedNodes)
+      .orderBy([liveness => getDecommissionedTime(liveness.node_id)], ["desc"])
+      .take(5)
+      .map((liveness, idx: number) => {
+        const { node_id } = liveness;
+        return {
+          key: `${idx}`,
+          nodeId: node_id,
+          nodeName: `${node_id}`,
+          status: nodesSummary.livenessStatusByNodeID[node_id],
+          decommissionedDate: getDecommissionedTime(node_id),
+        };
+      })
+      .value();
     return data;
   },
 );

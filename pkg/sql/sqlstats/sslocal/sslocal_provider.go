@@ -8,12 +8,14 @@ package sslocal
 import (
 	"context"
 	"sort"
+	"sync"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/insights"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/ssmemstorage"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
@@ -30,9 +32,11 @@ func New(
 	maxTxnFingerprints *settings.IntSetting,
 	curMemoryBytesCount *metric.Gauge,
 	maxMemoryBytesHist metric.IHistogram,
+	insightsWriter insights.WriterProvider,
 	pool *mon.BytesMonitor,
 	reportingSink Sink,
 	knobs *sqlstats.TestingKnobs,
+	latencyInformation insights.LatencyInformation,
 ) *SQLStats {
 	return newSQLStats(
 		settings,
@@ -40,12 +44,23 @@ func New(
 		maxTxnFingerprints,
 		curMemoryBytesCount,
 		maxMemoryBytesHist,
+		insightsWriter,
 		pool,
 		reportingSink,
 		knobs,
+		latencyInformation,
 	)
 }
 
+var _ sqlstats.Provider = &SQLStats{}
+
+// GetController returns a sqlstats.Controller responsible for the current
+// SQLStats.
+func (s *SQLStats) GetController(server serverpb.SQLStatusServer) *Controller {
+	return NewController(s, server)
+}
+
+// Start implements sqlstats.Provider interface.
 func (s *SQLStats) Start(ctx context.Context, stopper *stop.Stopper) {
 	// We run a periodic async job to clean up the in-memory stats.
 	_ = stopper.RunAsyncTask(ctx, "sql-stats-clearer", func(ctx context.Context) {
@@ -72,13 +87,15 @@ func (s *SQLStats) Start(ctx context.Context, stopper *stop.Stopper) {
 				case <-stopper.ShouldQuiesce():
 					return
 				case <-timer.C:
+					timer.Read = true
 				}
 			}
 		}
 	})
 }
 
-func (s *SQLStats) GetApplicationStats(appName string) *ssmemstorage.Container {
+// GetApplicationStats implements sqlstats.Provider interface.
+func (s *SQLStats) GetApplicationStats(appName string, internal bool) sqlstats.ApplicationStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if a, ok := s.mu.apps[appName]; ok {
@@ -90,17 +107,21 @@ func (s *SQLStats) GetApplicationStats(appName string) *ssmemstorage.Container {
 		s.mu.mon,
 		appName,
 		s.knobs,
+		s.insights(internal),
+		s.latencyInformation,
 	)
 	s.mu.apps[appName] = a
 	return a
 }
 
+// GetLastReset implements sqlstats.Provider interface.
 func (s *SQLStats) GetLastReset() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.mu.lastReset
 }
 
+// IterateStatementStats implements sqlstats.Provider interface.
 func (s *SQLStats) IterateStatementStats(
 	ctx context.Context, options sqlstats.IteratorOptions, visitor sqlstats.StatementVisitor,
 ) error {
@@ -115,30 +136,69 @@ func (s *SQLStats) IterateStatementStats(
 	return nil
 }
 
-// DrainStats leverages the process of atomic pulling stats from in-memory storage and clearing in-memory stats.
-// DrainStats allows to process pulled statements while new sql stats can be added to in-memory statistics.
-func (s *SQLStats) DrainStats(
+// ConsumeStats leverages the process of atomic pulling stats from in-memory storage, clearing in-memory stats, and
+// then iterating over them pulled stats calling stmtVisitor and txnVisitor on statement and transaction stats
+// respectively. ConsumeStats allows to process pulled statements while new sql stats can be added to in-memory statistics.
+func (s *SQLStats) ConsumeStats(
 	ctx context.Context,
-) (
-	[]*appstatspb.CollectedStatementStatistics,
-	[]*appstatspb.CollectedTransactionStatistics,
-	int64,
+	stopper *stop.Stopper,
+	stmtVisitor sqlstats.StatementVisitor,
+	txnVisitor sqlstats.TransactionVisitor,
 ) {
-	stmtStats := make([]*appstatspb.CollectedStatementStatistics, 0)
-	txnStats := make([]*appstatspb.CollectedTransactionStatistics, 0)
+	if s.knobs != nil {
+		if s.knobs != nil && s.knobs.ConsumeStmtStatsInterceptor != nil {
+			stmtVisitor = s.knobs.ConsumeStmtStatsInterceptor
+		}
+		if s.knobs != nil && s.knobs.ConsumeTxnStatsInterceptor != nil {
+			txnVisitor = s.knobs.ConsumeTxnStatsInterceptor
+		}
+	}
 	apps := s.getAppNames(false)
-	totalFingerprintCount := s.GetTotalFingerprintCount()
-
 	for _, app := range apps {
-		container := s.GetApplicationStats(app)
+		container := s.GetApplicationStats(app, true).(*ssmemstorage.Container)
 		if err := s.MaybeDumpStatsToLog(ctx, app, container, s.flushTarget); err != nil {
 			log.Warningf(ctx, "failed to dump stats to log, %s", err.Error())
 		}
-		containerStmtStats, containerTxnStats := container.DrainStats(ctx)
-		stmtStats = append(stmtStats, containerStmtStats...)
-		txnStats = append(txnStats, containerTxnStats...)
+		stmtStats, txnStats := container.PopAllStats(ctx)
+
+		// Iterate over collected stats that have been already cleared from in-memory stats and persist them
+		// the system statement|transaction_statistics tables.
+		// In-memory stats storage is not locked here and it is safe to call stmtVisitor or txnVisitor functions
+		// that might be time consuming operations.
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		err := stopper.RunAsyncTask(ctx, "sql-stmt-stats-flush", func(ctx context.Context) {
+			defer wg.Done()
+			for _, stat := range stmtStats {
+				stat := stat
+				if err := stmtVisitor(ctx, stat); err != nil {
+					log.Warningf(ctx, "failed to consume statement statistics, %s", err.Error())
+				}
+			}
+		})
+		if err != nil {
+			log.Warningf(ctx, "failed to execute sql-stmt-stats-flush task, %s", err.Error())
+			wg.Done()
+			return
+		}
+
+		err = stopper.RunAsyncTask(ctx, "sql-txn-stats-flush", func(ctx context.Context) {
+			defer wg.Done()
+			for _, stat := range txnStats {
+				stat := stat
+				if err := txnVisitor(ctx, stat); err != nil {
+					log.Warningf(ctx, "failed to consume transaction statistics, %s", err.Error())
+				}
+			}
+		})
+		if err != nil {
+			log.Warningf(ctx, "failed to execute sql-txn-stats-flush task, %s", err.Error())
+			wg.Done()
+			return
+		}
+		wg.Wait()
 	}
-	return stmtStats, txnStats, totalFingerprintCount
 }
 
 // StmtStatsIterator returns an instance of sslocal.StmtStatsIterator for
@@ -147,6 +207,7 @@ func (s *SQLStats) StmtStatsIterator(options sqlstats.IteratorOptions) StmtStats
 	return NewStmtStatsIterator(s, options)
 }
 
+// IterateTransactionStats implements sqlstats.Provider interface.
 func (s *SQLStats) IterateTransactionStats(
 	ctx context.Context, options sqlstats.IteratorOptions, visitor sqlstats.TransactionVisitor,
 ) error {
@@ -168,6 +229,7 @@ func (s *SQLStats) TxnStatsIterator(options sqlstats.IteratorOptions) TxnStatsIt
 	return NewTxnStatsIterator(s, options)
 }
 
+// IterateAggregatedTransactionStats implements sqlstats.Provider interface.
 func (s *SQLStats) IterateAggregatedTransactionStats(
 	ctx context.Context,
 	options sqlstats.IteratorOptions,
@@ -187,6 +249,7 @@ func (s *SQLStats) IterateAggregatedTransactionStats(
 	return nil
 }
 
+// Reset implements sqlstats.Provider interface.
 func (s *SQLStats) Reset(ctx context.Context) error {
 	return s.resetAndMaybeDumpStats(ctx, s.flushTarget)
 }

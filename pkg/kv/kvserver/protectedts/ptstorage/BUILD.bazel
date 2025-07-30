@@ -13,6 +13,7 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts/ptstorage",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/clusterversion",
         "//pkg/kv/kvserver/protectedts",
         "//pkg/kv/kvserver/protectedts/ptpb",
         "//pkg/settings/cluster",
@@ -54,7 +55,6 @@ go_test(
         "//pkg/sql/catalog/colinfo",
         "//pkg/sql/catalog/descpb",
         "//pkg/sql/isql",
-        "//pkg/sql/parser/statements",
         "//pkg/sql/sem/tree",
         "//pkg/sql/sessiondata",
         "//pkg/testutils",
@@ -69,7 +69,6 @@ go_test(
         "//pkg/util/randutil",
         "//pkg/util/uuid",
         "@com_github_cockroachdb_errors//:errors",
-        "@com_github_cockroachdb_redact//:redact",
         "@com_github_stretchr_testify//require",
     ],
 )

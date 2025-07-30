@@ -35,7 +35,7 @@ func TestUWIConstraintReferencingTypes(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 
-	testutils.RunTrueAndFalse(t, "use-declarative-schema-changer", func(
+	testutils.RunTrueAndFalse(t, "test-in-both-legacy-and-declarative-schema-changer", func(
 		t *testing.T, useDeclarativeSchemaChanger bool,
 	) {
 		s, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
@@ -45,7 +45,6 @@ func TestUWIConstraintReferencingTypes(t *testing.T) {
 		if useDeclarativeSchemaChanger {
 			tdb.Exec(t, "SET use_declarative_schema_changer = on;")
 		} else {
-			tdb.Exec(t, "SET create_table_with_schema_locked=false")
 			tdb.Exec(t, "SET use_declarative_schema_changer = off;")
 		}
 		tdb.Exec(t, "SET experimental_enable_unique_without_index_constraints = true;")
@@ -134,7 +133,7 @@ func TestAddUniqChecks(t *testing.T) {
 			// The following 2 checks mimic ones found in a subsequent commit in
 			// insert_funcs.go.
 			// Verify there is a single key...
-			if span.Prefix(ctx, &evalCtx) != span.StartKey().Length() {
+			if span.Prefix(&evalCtx) != span.StartKey().Length() {
 				if expectedError == "More than one key found" {
 					return
 				}
@@ -202,9 +201,7 @@ func TestAddUniqChecks(t *testing.T) {
 					if datum == out.DatumsFromConstraint[i][j] {
 						continue
 					}
-					if cmp, err := datum.Compare(ctx, &evalCtx, out.DatumsFromConstraint[i][j]); err != nil {
-						t.Fatal(err)
-					} else if cmp != 0 {
+					if datum.Compare(&evalCtx, out.DatumsFromConstraint[i][j]) != 0 {
 						t.Fatalf("expected built row datum, %v, to match DatumsFromConstraint item, %v", datum, out.DatumsFromConstraint[i][j])
 					}
 				}

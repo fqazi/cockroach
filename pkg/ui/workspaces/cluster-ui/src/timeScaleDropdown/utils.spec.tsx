@@ -3,16 +3,15 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { assert } from "chai";
-import moment from "moment-timezone";
-
 import { TimeScale } from "./timeScaleTypes";
+import moment from "moment-timezone";
 import {
   defaultTimeScaleOptions,
   findClosestTimeScale,
   toDateRange,
   toRoundedDateRange,
 } from "./utils";
+import { assert } from "chai";
 
 describe("timescale utils", (): void => {
   describe("toDateRange", () => {

@@ -4,15 +4,13 @@
 // included in the /LICENSE file.
 
 import * as protos from "@cockroachlabs/crdb-protobuf-client";
-import classNames from "classnames/bind";
-
-import { AggregateStatistics } from "src/statementsTable/statementsTable";
 import { stdDevLong, longToInt } from "src/util";
 import { Duration, Bytes, PercentageCustom } from "src/util/format";
-
-import { barChartFactory, BarChartOptions } from "./barChartFactory";
+import classNames from "classnames/bind";
 import styles from "./barCharts.module.scss";
 import { bar, approximify } from "./utils";
+import { barChartFactory, BarChartOptions } from "./barChartFactory";
+import { AggregateStatistics } from "src/statementsTable/statementsTable";
 
 type StatementStatistics =
   protos.cockroach.server.serverpb.StatementsResponse.ICollectedStatementStatistics;
@@ -140,7 +138,7 @@ export const retryBarChart = barChartFactory("red", retryBars, approximify);
 
 export function workloadPctBarChart(
   statements: AggregateStatistics[],
-  defaultBarChartOptions: BarChartOptions<object>,
+  defaultBarChartOptions: BarChartOptions<any>,
   totalWorkload: number,
 ) {
   return barChartFactory(

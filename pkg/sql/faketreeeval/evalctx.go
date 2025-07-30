@@ -30,7 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/rangedesc"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"github.com/lib/pq/oid"
 )
 
@@ -467,8 +466,8 @@ func (ep *DummyEvalPlanner) ResolveType(
 // QueryRowEx is part of the eval.Planner interface.
 func (ep *DummyEvalPlanner) QueryRowEx(
 	ctx context.Context,
-	opName redact.RedactableString,
-	override sessiondata.InternalExecutorOverride,
+	opName string,
+	session sessiondata.InternalExecutorOverride,
 	stmt string,
 	qargs ...interface{},
 ) (tree.Datums, error) {
@@ -478,7 +477,7 @@ func (ep *DummyEvalPlanner) QueryRowEx(
 // QueryIteratorEx is part of the eval.Planner interface.
 func (ep *DummyEvalPlanner) QueryIteratorEx(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	override sessiondata.InternalExecutorOverride,
 	stmt string,
 	qargs ...interface{},
@@ -559,24 +558,6 @@ func (ep *DummyEvalPlanner) AutoCommit() bool {
 	return false
 }
 
-// InsertTemporarySchema is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) InsertTemporarySchema(
-	tempSchemaName string, databaseID descpb.ID, schemaID descpb.ID,
-) {
-
-}
-
-// ClearQueryPlanCache is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) ClearQueryPlanCache() {}
-
-// ClearTableStatsCache is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) ClearTableStatsCache() {}
-
-// RetryCounter is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) RetryCounter() int {
-	return 0
-}
-
 // DummyPrivilegedAccessor implements the tree.PrivilegedAccessor interface by returning errors.
 type DummyPrivilegedAccessor struct{}
 
@@ -647,21 +628,6 @@ func (ep *DummySessionAccessor) HasViewActivityOrViewActivityRedactedRole(
 	return false, false, errors.WithStack(errEvalSessionVar)
 }
 
-// HasViewAccessToJob implements SessionAccessor.
-func (ep *DummySessionAccessor) HasViewAccessToJob(
-	ctx context.Context, owner username.SQLUsername,
-) bool {
-	// This is a no-op in the dummy implementation.
-	return false
-}
-
-func (ep *DummySessionAccessor) ForEachSessionPendingJob(
-	_ func(job jobspb.PendingJob) error,
-) error {
-	// This is a no-op in the dummy implementation.
-	return nil
-}
-
 // DummyClientNoticeSender implements the eval.ClientNoticeSender interface.
 type DummyClientNoticeSender struct{}
 
@@ -671,7 +637,7 @@ var _ eval.ClientNoticeSender = &DummyClientNoticeSender{}
 func (c *DummyClientNoticeSender) BufferClientNotice(context.Context, pgnotice.Notice) {}
 
 // SendClientNotice is part of the eval.ClientNoticeSender interface.
-func (c *DummyClientNoticeSender) SendClientNotice(context.Context, pgnotice.Notice, bool) error {
+func (c *DummyClientNoticeSender) SendClientNotice(context.Context, pgnotice.Notice) error {
 	return nil
 }
 
@@ -706,9 +672,11 @@ func (c *DummyTenantOperator) DropTenantByID(
 func (c *DummyTenantOperator) UpdateTenantResourceLimits(
 	_ context.Context,
 	tenantID uint64,
-	availableTokens float64,
+	availableRU float64,
 	refillRate float64,
-	maxBurstTokens float64,
+	maxBurstRU float64,
+	asOf time.Time,
+	asOfConsumedRequestUnits float64,
 ) error {
 	return errors.WithStack(errEvalTenant)
 }
@@ -725,11 +693,8 @@ func (ps *DummyPreparedStatementState) HasActivePortals() bool {
 }
 
 // MigratablePreparedStatements is part of the tree.PreparedStatementState interface.
-func (ps *DummyPreparedStatementState) MigratablePreparedStatements() (
-	[]sessiondatapb.MigratableSession_PreparedStatement,
-	error,
-) {
-	return nil, nil
+func (ps *DummyPreparedStatementState) MigratablePreparedStatements() []sessiondatapb.MigratableSession_PreparedStatement {
+	return nil
 }
 
 // HasPortal is part of the tree.PreparedStatementState interface.

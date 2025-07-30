@@ -7,7 +7,6 @@ package kvserver
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"math/rand"
 	"sync"
@@ -17,19 +16,20 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/ctpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/tracker"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowcontrolpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowinspectpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/leases"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftutil"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	rafttracker "github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -45,25 +45,29 @@ type testProposer struct {
 	syncutil.RWMutex
 	clock      *hlc.Clock
 	ds         destroyStatus
-	ci         kvpb.RaftIndex
+	fi         kvpb.RaftIndex
 	lai        kvpb.LeaseAppliedIndex
 	enqueued   int
 	registered int
 
 	// If not nil, this can be a testProposerRaft used to mock the raft group
-	// passed to FlushLockedWithRaftGroup.
+	// passed to FlushLockedWithRaftGroup().
 	raftGroup proposerRaft
-	// If not nil, this is called by rejectProposalWithErrLocked.
-	// If nil, rejectProposalWithErrLocked panics.
-	onRejectProposalWithErrLocked func(err error)
-	// If not nil, this is called by onErrProposalDropped.
+	// If not nil, this is called by rejectProposalWithRedirectLocked().
+	// If nil, rejectProposalWithRedirectLocked() panics.
+	onRejectProposalWithRedirectLocked func(redirectTo roachpb.ReplicaID)
+	// If not nil, this is called by rejectProposalWithLeaseTransferRejectedLocked().
+	// If nil, rejectProposalWithLeaseTransferRejectedLocked() panics.
+	onRejectProposalWithLeaseTransferRejectedLocked func(
+		lease *roachpb.Lease, reason raftutil.ReplicaNeedsSnapshotStatus)
 	onProposalsDropped func(
-		ents []raftpb.Entry, proposalData []*ProposalData, stateType raftpb.StateType,
+		ents []raftpb.Entry, proposalData []*ProposalData, stateType raft.StateType,
 	)
-	// validLease is returned by ownsValidLease.
+	// validLease is returned by ownsValidLease()
 	validLease bool
-	// leaderNotLive is returned from shouldCampaignOnRedirect.
+	// leaderNotLive is returned from shouldCampaignOnRedirect().
 	leaderNotLive bool
+
 	// leaderReplicaInDescriptor is set if the leader (as indicated by raftGroup)
 	// is known, and that leader is part of the range's descriptor (as seen by the
 	// current replica). This can be used to simulate the local replica being so
@@ -72,8 +76,7 @@ type testProposer struct {
 	// If leaderReplicaInDescriptor is set, this specifies what type of replica it
 	// is. Some types of replicas are not eligible to get a lease.
 	leaderReplicaType roachpb.ReplicaType
-	// rangePolicy is used in closedTimestampTarget.
-	rangePolicy ctpb.RangeClosedTimestampPolicy
+	rangePolicy       roachpb.RangeClosedTimestampPolicy
 }
 
 var _ proposer = &testProposer{}
@@ -139,21 +142,20 @@ func (t *testProposer) locker() sync.Locker {
 func (t *testProposer) rlocker() sync.Locker {
 	return t.RWMutex.RLocker()
 }
-
-func (t *testProposer) getStoreID() roachpb.StoreID {
-	return 1
+func (t *testProposer) flowControlHandle(ctx context.Context) kvflowcontrol.Handle {
+	return &testFlowTokenHandle{}
 }
 
 func (t *testProposer) getReplicaID() roachpb.ReplicaID {
 	return 1
 }
 
-func (t *testProposer) getReplicaDesc() roachpb.ReplicaDescriptor {
-	return roachpb.ReplicaDescriptor{StoreID: t.getStoreID(), ReplicaID: t.getReplicaID()}
-}
-
 func (t *testProposer) destroyed() destroyStatus {
 	return t.ds
+}
+
+func (t *testProposer) firstIndex() kvpb.RaftIndex {
+	return t.fi
 }
 
 func (t *testProposer) leaseAppliedIndex() kvpb.LeaseAppliedIndex {
@@ -184,7 +186,7 @@ func (t *testProposer) withGroupLocked(fn func(proposerRaft) error) error {
 }
 
 func (rp *testProposer) onErrProposalDropped(
-	ents []raftpb.Entry, props []*ProposalData, typ raftpb.StateType,
+	ents []raftpb.Entry, props []*ProposalData, typ raft.StateType,
 ) {
 	if rp.onProposalsDropped == nil {
 		return
@@ -200,9 +202,44 @@ func (t *testProposer) registerProposalLocked(p *ProposalData) {
 	t.registered++
 }
 
-func (t *testProposer) shouldCampaignOnRedirect(
-	raftGroup proposerRaft, leaseType roachpb.LeaseType,
-) bool {
+func (t *testProposer) leaderStatus(ctx context.Context, raftGroup proposerRaft) rangeLeaderInfo {
+	lead := raftGroup.BasicStatus().Lead
+	leaderKnown := lead != raft.None
+	var leaderRep roachpb.ReplicaID
+	var iAmTheLeader, leaderEligibleForLease bool
+	if leaderKnown {
+		leaderRep = roachpb.ReplicaID(lead)
+		iAmTheLeader = leaderRep == t.getReplicaID()
+		repDesc := roachpb.ReplicaDescriptor{
+			ReplicaID: leaderRep,
+			Type:      t.leaderReplicaType,
+		}
+
+		if t.leaderReplicaInDescriptor {
+			// Fill in a RangeDescriptor just enough for the CheckCanReceiveLease()
+			// call.
+			rngDesc := roachpb.RangeDescriptor{
+				InternalReplicas: []roachpb.ReplicaDescriptor{repDesc},
+			}
+			err := roachpb.CheckCanReceiveLease(repDesc, rngDesc.Replicas(), true)
+			leaderEligibleForLease = err == nil
+		} else {
+			// This matches replicaProposed.leaderStatusRLocked().
+			leaderEligibleForLease = true
+		}
+	}
+	return rangeLeaderInfo{
+		iAmTheLeader:           iAmTheLeader,
+		leader:                 leaderRep,
+		leaderEligibleForLease: leaderEligibleForLease,
+	}
+}
+
+func (t *testProposer) ownsValidLease(ctx context.Context, now hlc.ClockTimestamp) bool {
+	return t.validLease
+}
+
+func (t *testProposer) shouldCampaignOnRedirect(raftGroup proposerRaft) bool {
 	return t.leaderNotLive
 }
 
@@ -212,48 +249,25 @@ func (t *testProposer) campaignLocked(ctx context.Context) {
 	}
 }
 
-func (t *testProposer) registerForTracing(*ProposalData, raftpb.Entry) bool { return true }
-
-func (t *testProposer) rejectProposalWithErrLocked(_ context.Context, _ *ProposalData, err error) {
-	if t.onRejectProposalWithErrLocked == nil {
-		panic(fmt.Sprintf("unexpected rejectProposalWithErrLocked call: err=%v", err))
+func (t *testProposer) rejectProposalWithRedirectLocked(
+	_ context.Context, _ *ProposalData, redirectTo roachpb.ReplicaID,
+) {
+	if t.onRejectProposalWithRedirectLocked == nil {
+		panic("unexpected rejectProposalWithRedirectLocked() call")
 	}
-	t.onRejectProposalWithErrLocked(err)
+	t.onRejectProposalWithRedirectLocked(redirectTo)
 }
 
-func (t *testProposer) verifyLeaseRequestSafetyRLocked(
-	ctx context.Context,
-	raftGroup proposerRaft,
-	prevLease, nextLease roachpb.Lease,
-	bypassSafetyChecks bool,
-) error {
-	st := leases.Settings{}
-	raftStatus := raftGroup.Status()
-	desc := &roachpb.RangeDescriptor{
-		// TestProposalBufferRejectLeaseAcqOnFollower configures raftStatus.Lead to
-		// be either replica 1 or 2. Add a few more replicas to the descriptor to
-		// avoid a single-replica range, which bypasses some safety checks during
-		// lease acquisition.
-		InternalReplicas: []roachpb.ReplicaDescriptor{{ReplicaID: 3}, {ReplicaID: 4}},
+func (t *testProposer) rejectProposalWithLeaseTransferRejectedLocked(
+	_ context.Context,
+	_ *ProposalData,
+	lease *roachpb.Lease,
+	reason raftutil.ReplicaNeedsSnapshotStatus,
+) {
+	if t.onRejectProposalWithLeaseTransferRejectedLocked == nil {
+		panic("unexpected rejectProposalWithLeaseTransferRejectedLocked() call")
 	}
-	if t.leaderReplicaInDescriptor {
-		desc.InternalReplicas = append(desc.InternalReplicas, roachpb.ReplicaDescriptor{
-			ReplicaID: roachpb.ReplicaID(raftStatus.Lead),
-			Type:      t.leaderReplicaType,
-		})
-	}
-	in := leases.VerifyInput{
-		LocalStoreID:       t.getStoreID(),
-		LocalReplicaID:     t.getReplicaID(),
-		Desc:               desc,
-		RaftStatus:         &raftStatus,
-		RaftCompacted:      t.ci,
-		PrevLease:          prevLease,
-		PrevLeaseExpired:   !t.validLease,
-		NextLeaseHolder:    nextLease.Replica,
-		BypassSafetyChecks: bypassSafetyChecks,
-	}
-	return leases.Verify(ctx, st, in)
+	t.onRejectProposalWithLeaseTransferRejectedLocked(lease, reason)
 }
 
 // proposalCreator holds on to a lease and creates proposals using it.
@@ -298,6 +312,7 @@ func (pc proposalCreator) newProposal(ba *kvpb.BatchRequest) *ProposalData {
 		}
 	}
 	p := &ProposalData{
+		ctx:   context.Background(),
 		idKey: kvserverbase.CmdIDKey("test-cmd"),
 		command: &kvserverpb.RaftCommand{
 			ReplicatedEvalResult: kvserverpb.ReplicatedEvalResult{
@@ -309,14 +324,12 @@ func (pc proposalCreator) newProposal(ba *kvpb.BatchRequest) *ProposalData {
 		Request:     ba,
 		leaseStatus: pc.lease,
 	}
-	ctx := context.Background()
-	p.ctx.Store(&ctx)
 	p.encodedCommand = pc.encodeProposal(p)
 	return p
 }
 
 func (pc proposalCreator) encodeProposal(p *ProposalData) []byte {
-	b, err := raftlog.EncodeCommand(context.Background(), p.command, p.idKey, raftlog.EncodeOptions{})
+	b, err := raftlog.EncodeCommand(context.Background(), p.command, p.idKey, nil /* raftAdmissionMeta */)
 	if err != nil {
 		panic(err)
 	}
@@ -345,7 +358,7 @@ func TestProposalBuffer(t *testing.T) {
 		leaseReq := i == leaseReqIdx
 		var pd *ProposalData
 		if leaseReq {
-			pd = pc.newLeaseRequestProposal(roachpb.Lease{Replica: p.getReplicaDesc()})
+			pd = pc.newLeaseRequestProposal(roachpb.Lease{})
 		} else {
 			pd = pc.newPutProposal(hlc.Timestamp{})
 		}
@@ -368,12 +381,12 @@ func TestProposalBuffer(t *testing.T) {
 	require.Equal(t, num, p.registered)
 	// We've flushed num requests, out of which one is a lease request (so that
 	// one did not increment the MLAI).
-	require.Equal(t, kvpb.LeaseAppliedIndex(stateloader.InitialLeaseAppliedIndex+num-1), b.assignedLAI)
+	require.Equal(t, kvpb.LeaseAppliedIndex(num-1), b.assignedLAI)
 	require.Equal(t, 2*propBufArrayMinSize, b.arr.len())
 	require.Equal(t, 1, b.evalTracker.Count())
 	proposals := r.consumeProposals()
 	require.Len(t, proposals, propBufArrayMinSize)
-	lai := kvpb.LeaseAppliedIndex(stateloader.InitialLeaseAppliedIndex)
+	var lai kvpb.LeaseAppliedIndex
 	for i, p := range proposals {
 		if i != leaseReqIdx {
 			lai++
@@ -509,14 +522,14 @@ func TestProposalBufferRejectLeaseAcqOnFollower(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 
-	self := raftpb.PeerID(1)
+	self := uint64(1)
 	// Each subtest will try to propose a lease acquisition in a different Raft
 	// scenario. Some proposals should be allowed, some should be rejected.
 	for _, tc := range []struct {
 		name  string
-		state raftpb.StateType
+		state raft.StateType
 		// raft.None means there's no leader, or the leader is unknown.
-		leader raftpb.PeerID
+		leader uint64
 		// Empty means VOTER_FULL.
 		leaderRepType roachpb.ReplicaType
 		// Set to simulate situations where the local replica is so behind that the
@@ -533,14 +546,14 @@ func TestProposalBufferRejectLeaseAcqOnFollower(t *testing.T) {
 	}{
 		{
 			name:   "leader",
-			state:  raftpb.StateLeader,
+			state:  raft.StateLeader,
 			leader: self,
 			// No rejection. The leader can request a lease.
 			expRejection: false,
 		},
 		{
 			name:  "follower, known eligible leader",
-			state: raftpb.StateFollower,
+			state: raft.StateFollower,
 			// Someone else is leader.
 			leader: self + 1,
 			// Rejection - a follower can't request a lease.
@@ -548,7 +561,7 @@ func TestProposalBufferRejectLeaseAcqOnFollower(t *testing.T) {
 		},
 		{
 			name:  "follower, lease extension despite known eligible leader",
-			state: raftpb.StateFollower,
+			state: raft.StateFollower,
 			// Someone else is leader, but we're the leaseholder.
 			leader:         self + 1,
 			ownsValidLease: true,
@@ -557,7 +570,7 @@ func TestProposalBufferRejectLeaseAcqOnFollower(t *testing.T) {
 		},
 		{
 			name:  "follower, known ineligible leader",
-			state: raftpb.StateFollower,
+			state: raft.StateFollower,
 			// Someone else is leader.
 			leader: self + 1,
 			// The leader type makes it ineligible to get the lease. Thus, the local
@@ -569,7 +582,7 @@ func TestProposalBufferRejectLeaseAcqOnFollower(t *testing.T) {
 			// Here we simulate the leader being known by Raft, but the local replica
 			// is so far behind that it doesn't contain the leader replica.
 			name:  "follower, known leader not in range descriptor",
-			state: raftpb.StateFollower,
+			state: raft.StateFollower,
 			// Someone else is leader.
 			leader:             self + 1,
 			leaderNotInRngDesc: true,
@@ -578,16 +591,16 @@ func TestProposalBufferRejectLeaseAcqOnFollower(t *testing.T) {
 		},
 		{
 			name:  "follower, unknown leader",
-			state: raftpb.StateFollower,
+			state: raft.StateFollower,
 			// Unknown leader.
 			leader: raft.None,
 			// No rejection if the leader is unknown. See comments in
-			// leases.verifyAcquisition.
+			// FlushLockedWithRaftGroup().
 			expRejection: false,
 		},
 		{
 			name:  "follower, known eligible non-live leader",
-			state: raftpb.StateFollower,
+			state: raft.StateFollower,
 			// Someone else is leader.
 			leader:        self + 1,
 			leaderNotLive: true,
@@ -602,25 +615,18 @@ func TestProposalBufferRejectLeaseAcqOnFollower(t *testing.T) {
 			var pc proposalCreator
 			// p.getReplicaID() is hardcoded; it'd better be hardcoded to what this
 			// test expects.
-			require.Equal(t, self, raftpb.PeerID(p.getStoreID()))
-			require.Equal(t, self, raftpb.PeerID(p.getReplicaID()))
+			require.Equal(t, self, uint64(p.getReplicaID()))
 
-			var rejected bool
-			var rejectedLease *roachpb.Lease
+			var rejected roachpb.ReplicaID
 			if tc.expRejection {
-				p.onRejectProposalWithErrLocked = func(err error) {
-					if rejected {
+				p.onRejectProposalWithRedirectLocked = func(redirectTo roachpb.ReplicaID) {
+					if rejected != 0 {
 						t.Fatalf("unexpected 2nd rejection")
 					}
-					var nlhe *kvpb.NotLeaseHolderError
-					if ok := errors.As(err, &nlhe); !ok {
-						t.Fatalf("expected NotLeaseHolderError, got %v", err)
-					}
-					rejected = true
-					rejectedLease = nlhe.Lease
+					rejected = redirectTo
 				}
 			} else {
-				p.onRejectProposalWithErrLocked = func(err error) {
+				p.onRejectProposalWithRedirectLocked = func(_ roachpb.ReplicaID) {
 					t.Fatalf("unexpected redirection")
 				}
 			}
@@ -643,25 +649,15 @@ func TestProposalBufferRejectLeaseAcqOnFollower(t *testing.T) {
 			tracker := tracker.NewLockfreeTracker()
 			b.Init(&p, tracker, clock, cluster.MakeTestingClusterSettings())
 
-			repl := p.getReplicaDesc()
-			if tc.ownsValidLease {
-				pc.lease.Lease.Replica = repl
-			}
-			pd := pc.newLeaseRequestProposal(roachpb.Lease{Replica: repl})
+			pd := pc.newLeaseRequestProposal(roachpb.Lease{})
 			_, tok := b.TrackEvaluatingRequest(ctx, hlc.MinTimestamp)
 			err := b.Insert(ctx, pd, tok.Move(ctx))
 			require.NoError(t, err)
 			require.NoError(t, b.flushLocked(ctx))
 			if tc.expRejection {
-				require.True(t, rejected)
-				if tc.leaderNotInRngDesc {
-					require.Nil(t, rejectedLease)
-				} else {
-					require.NotNil(t, rejectedLease)
-					require.Equal(t, roachpb.ReplicaID(tc.leader), rejectedLease.Replica.ReplicaID)
-				}
+				require.Equal(t, roachpb.ReplicaID(tc.leader), rejected)
 			} else {
-				require.False(t, rejected)
+				require.Equal(t, roachpb.ReplicaID(0), rejected)
 			}
 			require.Equal(t, tc.expCampaign, r.campaigned)
 			require.Zero(t, tracker.Count())
@@ -676,15 +672,15 @@ func TestProposalBufferRejectUnsafeLeaseTransfer(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 
-	proposer := raftpb.PeerID(1)
-	proposerCompactedIndex := kvpb.RaftIndex(4)
-	target := raftpb.PeerID(2)
+	proposer := uint64(1)
+	proposerFirstIndex := kvpb.RaftIndex(5)
+	target := uint64(2)
 
 	// Each subtest will try to propose a lease transfer in a different Raft
 	// scenario. Some proposals should be allowed, some should be rejected.
 	for _, tc := range []struct {
 		name          string
-		proposerState raftpb.StateType
+		proposerState raft.StateType
 		// math.MaxUint64 if the target is not in the raft group.
 		targetState rafttracker.StateType
 		targetMatch kvpb.RaftIndex
@@ -694,76 +690,77 @@ func TestProposalBufferRejectUnsafeLeaseTransfer(t *testing.T) {
 	}{
 		{
 			name:               "follower",
-			proposerState:      raftpb.StateFollower,
+			proposerState:      raft.StateFollower,
 			expRejection:       true,
 			expRejectionReason: raftutil.LocalReplicaNotLeader,
 		},
 		{
 			name:               "candidate",
-			proposerState:      raftpb.StateCandidate,
+			proposerState:      raft.StateCandidate,
 			expRejection:       true,
 			expRejectionReason: raftutil.LocalReplicaNotLeader,
 		},
 		{
 			name:               "leader, no progress for target",
-			proposerState:      raftpb.StateLeader,
+			proposerState:      raft.StateLeader,
 			targetState:        math.MaxUint64,
 			expRejection:       true,
 			expRejectionReason: raftutil.ReplicaUnknown,
 		},
 		{
 			name:               "leader, target state probe",
-			proposerState:      raftpb.StateLeader,
+			proposerState:      raft.StateLeader,
 			targetState:        rafttracker.StateProbe,
 			expRejection:       true,
 			expRejectionReason: raftutil.ReplicaStateProbe,
 		},
 		{
 			name:               "leader, target state snapshot",
-			proposerState:      raftpb.StateLeader,
+			proposerState:      raft.StateLeader,
 			targetState:        rafttracker.StateSnapshot,
 			expRejection:       true,
 			expRejectionReason: raftutil.ReplicaStateSnapshot,
 		},
 		{
 			name:               "leader, target state replicate, match+1 < firstIndex",
-			proposerState:      raftpb.StateLeader,
+			proposerState:      raft.StateLeader,
 			targetState:        rafttracker.StateReplicate,
-			targetMatch:        proposerCompactedIndex - 1,
+			targetMatch:        proposerFirstIndex - 2,
 			expRejection:       true,
 			expRejectionReason: raftutil.ReplicaMatchBelowLeadersFirstIndex,
 		},
 		{
 			name:          "leader, target state replicate, match+1 == firstIndex",
-			proposerState: raftpb.StateLeader,
+			proposerState: raft.StateLeader,
 			targetState:   rafttracker.StateReplicate,
-			targetMatch:   proposerCompactedIndex,
+			targetMatch:   proposerFirstIndex - 1,
 			expRejection:  false,
 		},
 		{
 			name:          "leader, target state replicate, match+1 > firstIndex",
-			proposerState: raftpb.StateLeader,
+			proposerState: raft.StateLeader,
 			targetState:   rafttracker.StateReplicate,
-			targetMatch:   proposerCompactedIndex + 1,
+			targetMatch:   proposerFirstIndex,
 			expRejection:  false,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var p testProposer
 			var pc proposalCreator
-			require.Equal(t, proposer, raftpb.PeerID(p.getStoreID()))
-			require.Equal(t, proposer, raftpb.PeerID(p.getReplicaID()))
+			require.Equal(t, proposer, uint64(p.getReplicaID()))
 
-			var rejectedErr error
+			var rejectedLease *roachpb.Lease
+			var rejectedReason raftutil.ReplicaNeedsSnapshotStatus
 			if tc.expRejection {
-				p.onRejectProposalWithErrLocked = func(err error) {
-					if rejectedErr != nil {
+				p.onRejectProposalWithLeaseTransferRejectedLocked = func(lease *roachpb.Lease, reason raftutil.ReplicaNeedsSnapshotStatus) {
+					if rejectedLease != nil {
 						t.Fatalf("unexpected 2nd rejection")
 					}
-					rejectedErr = err
+					rejectedLease = lease
+					rejectedReason = reason
 				}
 			} else {
-				p.onRejectProposalWithErrLocked = func(err error) {
+				p.onRejectProposalWithLeaseTransferRejectedLocked = func(lease *roachpb.Lease, reason raftutil.ReplicaNeedsSnapshotStatus) {
 					t.Fatalf("unexpected rejection")
 				}
 			}
@@ -771,10 +768,10 @@ func TestProposalBufferRejectUnsafeLeaseTransfer(t *testing.T) {
 			var raftStatus raft.Status
 			raftStatus.ID = proposer
 			raftStatus.RaftState = tc.proposerState
-			if tc.proposerState == raftpb.StateLeader {
+			if tc.proposerState == raft.StateLeader {
 				raftStatus.Lead = proposer
-				raftStatus.Progress = map[raftpb.PeerID]rafttracker.Progress{
-					proposer: {State: rafttracker.StateReplicate, Match: uint64(proposerCompactedIndex)},
+				raftStatus.Progress = map[uint64]rafttracker.Progress{
+					proposer: {State: rafttracker.StateReplicate, Match: uint64(proposerFirstIndex)},
 				}
 				if tc.targetState != math.MaxUint64 {
 					raftStatus.Progress[target] = rafttracker.Progress{
@@ -786,19 +783,17 @@ func TestProposalBufferRejectUnsafeLeaseTransfer(t *testing.T) {
 				status: raftStatus,
 			}
 			p.raftGroup = r
-			p.ci = proposerCompactedIndex
+			p.fi = proposerFirstIndex
 
 			var b propBuf
 			clock := hlc.NewClockForTesting(nil)
 			tracker := tracker.NewLockfreeTracker()
 			b.Init(&p, tracker, clock, cluster.MakeTestingClusterSettings())
 
-			pc.lease.Lease.Replica = p.getReplicaDesc()
 			nextLease := roachpb.Lease{
 				Start:    clock.NowAsClockTimestamp(),
 				Sequence: pc.lease.Lease.Sequence + 1,
 				Replica: roachpb.ReplicaDescriptor{
-					StoreID:   roachpb.StoreID(target),
 					ReplicaID: roachpb.ReplicaID(target),
 				},
 			}
@@ -809,10 +804,12 @@ func TestProposalBufferRejectUnsafeLeaseTransfer(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, b.flushLocked(ctx))
 			if tc.expRejection {
-				require.NotNil(t, rejectedErr)
-				require.Contains(t, rejectedErr.Error(), tc.expRejectionReason.String())
+				require.NotNil(t, rejectedLease)
+				require.Equal(t, nextLease, *rejectedLease)
+				require.Equal(t, tc.expRejectionReason, rejectedReason)
 			} else {
-				require.Nil(t, rejectedErr)
+				require.Nil(t, rejectedLease)
+				require.Zero(t, rejectedReason)
 			}
 			require.Zero(t, tracker.Count())
 		})
@@ -825,11 +822,11 @@ func TestProposalBufferLinesUpEntriesAndProposals(t *testing.T) {
 	ctx := context.Background()
 
 	proposer := uint64(1)
-	proposerCompactedIndex := kvpb.RaftIndex(4)
+	proposerFirstIndex := kvpb.RaftIndex(5)
 
 	var matchingDroppedProposalsSeen int
 	p := testProposer{
-		onProposalsDropped: func(ents []raftpb.Entry, props []*ProposalData, _ raftpb.StateType) {
+		onProposalsDropped: func(ents []raftpb.Entry, props []*ProposalData, _ raft.StateType) {
 			require.Equal(t, len(ents), len(props))
 			for i := range ents {
 				if ents[i].Type == raftpb.EntryNormal {
@@ -850,7 +847,7 @@ func TestProposalBufferLinesUpEntriesAndProposals(t *testing.T) {
 		return raft.ErrProposalDropped
 	}}
 	p.raftGroup = r
-	p.ci = proposerCompactedIndex
+	p.fi = proposerFirstIndex
 
 	var b propBuf
 	// Make the proposal buffer large so that all the proposals we're putting in
@@ -911,7 +908,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 
 	const maxOffset = 500 * time.Millisecond
 	mc := timeutil.NewManualTime(timeutil.Unix(1613588135, 0))
-	clock := hlc.NewClock(mc, maxOffset, maxOffset, hlc.PanicLogger)
+	clock := hlc.NewClock(mc, maxOffset, maxOffset)
 	st := cluster.MakeTestingClusterSettings()
 	closedts.TargetDuration.Override(ctx, &st.SV, time.Second)
 	closedts.SideTransportCloseInterval.Override(ctx, &st.SV, 200*time.Millisecond)
@@ -947,7 +944,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 		Start:    hlc.ClockTimestamp{},
 		// Expiration is filled by each test.
 		Expiration: nil,
-		Replica:    roachpb.ReplicaDescriptor{StoreID: 1, ReplicaID: 1},
+		Replica:    roachpb.ReplicaDescriptor{ReplicaID: 1},
 	}
 
 	const (
@@ -971,7 +968,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 		// like to close a timestamp above the current lease expiration because it
 		// wouldn't be processing commands if the lease is expired).
 		leaseExp    hlc.Timestamp
-		rangePolicy ctpb.RangeClosedTimestampPolicy
+		rangePolicy roachpb.RangeClosedTimestampPolicy
 		// The highest closed timestamp that the propBuf has previously attached to
 		// a proposal. The propBuf should never propose a new closedTS below this.
 		prevClosedTimestamp hlc.Timestamp
@@ -995,7 +992,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 			reqType:                 regularWrite,
 			trackerLowerBound:       hlc.Timestamp{},
 			leaseExp:                hlc.MaxTimestamp,
-			rangePolicy:             ctpb.LAG_BY_CLUSTER_SETTING,
+			rangePolicy:             roachpb.LAG_BY_CLUSTER_SETTING,
 			prevClosedTimestamp:     hlc.Timestamp{},
 			expClosed:               nowMinusClosedLag,
 			expAssignedClosedBumped: true,
@@ -1006,7 +1003,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 			reqType:                 regularWrite,
 			trackerLowerBound:       nowMinusTwiceClosedLag,
 			leaseExp:                hlc.MaxTimestamp,
-			rangePolicy:             ctpb.LAG_BY_CLUSTER_SETTING,
+			rangePolicy:             roachpb.LAG_BY_CLUSTER_SETTING,
 			prevClosedTimestamp:     hlc.Timestamp{},
 			expClosed:               nowMinusTwiceClosedLag.FloorPrev(),
 			expAssignedClosedBumped: true,
@@ -1018,7 +1015,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 			reqType:                 regularWrite,
 			trackerLowerBound:       hlc.Timestamp{},
 			leaseExp:                hlc.MaxTimestamp,
-			rangePolicy:             ctpb.LAG_BY_CLUSTER_SETTING,
+			rangePolicy:             roachpb.LAG_BY_CLUSTER_SETTING,
 			prevClosedTimestamp:     someClosedTS,
 			expClosed:               someClosedTS,
 			expAssignedClosedBumped: false,
@@ -1030,13 +1027,12 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 				// Higher sequence => this is a brand new lease, not an extension.
 				Sequence: curLease.Sequence + 1,
 				Start:    now,
-				Replica:  curLease.Replica,
 			},
 			trackerLowerBound: hlc.Timestamp{},
 			// The current lease can be expired; we won't backtrack the closed
 			// timestamp to this expiration.
 			leaseExp:    expiredLeaseTimestamp,
-			rangePolicy: ctpb.LAG_BY_CLUSTER_SETTING,
+			rangePolicy: roachpb.LAG_BY_CLUSTER_SETTING,
 			// Lease requests don't carry closed timestamps.
 			expClosed: hlc.Timestamp{},
 			// Check that the lease proposal does not bump b.assignedClosedTimestamp.
@@ -1052,13 +1048,12 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 				// Same sequence => this is a lease extension.
 				Sequence: curLease.Sequence,
 				Start:    now,
-				Replica:  curLease.Replica,
 			},
 			trackerLowerBound: hlc.Timestamp{},
 			// The current lease can be expired; we won't backtrack the closed
 			// timestamp to this expiration.
 			leaseExp:    expiredLeaseTimestamp,
-			rangePolicy: ctpb.LAG_BY_CLUSTER_SETTING,
+			rangePolicy: roachpb.LAG_BY_CLUSTER_SETTING,
 			// Lease extensions don't carry closed timestamps.
 			expClosed:               hlc.Timestamp{},
 			expAssignedClosedBumped: false,
@@ -1075,7 +1070,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 			},
 			trackerLowerBound:       hlc.Timestamp{},
 			leaseExp:                hlc.MaxTimestamp,
-			rangePolicy:             ctpb.LAG_BY_CLUSTER_SETTING,
+			rangePolicy:             roachpb.LAG_BY_CLUSTER_SETTING,
 			expClosed:               nowMinusClosedLag,
 			expAssignedClosedBumped: true,
 		},
@@ -1086,7 +1081,7 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 			reqType:                 regularWrite,
 			trackerLowerBound:       hlc.Timestamp{},
 			leaseExp:                hlc.MaxTimestamp,
-			rangePolicy:             ctpb.LEAD_FOR_GLOBAL_READS_WITH_NO_LATENCY_INFO,
+			rangePolicy:             roachpb.LEAD_FOR_GLOBAL_READS,
 			prevClosedTimestamp:     hlc.Timestamp{},
 			expClosed:               nowPlusGlobalReadLead,
 			expAssignedClosedBumped: true,
@@ -1094,9 +1089,8 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &testProposerRaft{}
-			r.status.Lead = 1
-			r.status.RaftState = raftpb.StateLeader
-			r.status.Progress = map[raftpb.PeerID]rafttracker.Progress{
+			r.status.RaftState = raft.StateLeader
+			r.status.Progress = map[uint64]rafttracker.Progress{
 				1: {State: rafttracker.StateReplicate},
 			}
 			p := testProposer{
@@ -1158,3 +1152,47 @@ func (t mockTracker) Count() int {
 }
 
 var _ tracker.Tracker = mockTracker{}
+
+type testFlowTokenHandle struct{}
+
+var _ kvflowcontrol.Handle = &testFlowTokenHandle{}
+
+func (t *testFlowTokenHandle) Admit(
+	ctx context.Context, priority admissionpb.WorkPriority, t2 time.Time,
+) (bool, error) {
+	return false, nil
+}
+
+func (t *testFlowTokenHandle) DeductTokensFor(
+	ctx context.Context,
+	priority admissionpb.WorkPriority,
+	position kvflowcontrolpb.RaftLogPosition,
+	tokens kvflowcontrol.Tokens,
+) {
+}
+
+func (t *testFlowTokenHandle) ReturnTokensUpto(
+	ctx context.Context,
+	priority admissionpb.WorkPriority,
+	position kvflowcontrolpb.RaftLogPosition,
+	stream kvflowcontrol.Stream,
+) {
+}
+
+func (t *testFlowTokenHandle) ConnectStream(
+	ctx context.Context, position kvflowcontrolpb.RaftLogPosition, stream kvflowcontrol.Stream,
+) {
+}
+
+func (t *testFlowTokenHandle) DisconnectStream(ctx context.Context, stream kvflowcontrol.Stream) {
+}
+
+func (t *testFlowTokenHandle) ResetStreams(ctx context.Context) {
+}
+
+func (t *testFlowTokenHandle) Inspect(context.Context) kvflowinspectpb.Handle {
+	return kvflowinspectpb.Handle{}
+}
+
+func (t *testFlowTokenHandle) Close(ctx context.Context) {
+}

@@ -3,12 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
 import * as hljs from "highlight.js";
 import React from "react";
-
-import { SqlBoxProps } from "./box";
+import classNames from "classnames/bind";
 import styles from "./sqlhighlight.module.styl";
+import { SqlBoxProps } from "./box";
 
 const cx = classNames.bind(styles);
 

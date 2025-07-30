@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for const.eg.go. It's formatted in a
@@ -77,7 +78,7 @@ func NewConstOp(
 		}
 		// {{end}}
 	}
-	return nil, errors.AssertionFailedf("unsupported const type %s", t.Name())
+	return nil, errors.Errorf("unsupported const type %s", t.Name())
 }
 
 // {{range .}}
@@ -100,7 +101,7 @@ func (c const_TYPEOp) Next() coldata.Batch {
 	vec := batch.ColVec(c.outputIdx)
 	col := vec.TemplateType()
 	c.allocator.PerformOperation(
-		[]*coldata.Vec{vec},
+		[]coldata.Vec{vec},
 		func() {
 			// Shallow copy col to work around Go issue
 			// https://github.com/golang/go/issues/39756 which prevents bound check

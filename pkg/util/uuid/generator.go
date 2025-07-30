@@ -13,11 +13,12 @@ package uuid
 
 import (
 	"crypto/md5"
+	crypto_rand "crypto/rand"
 	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
 	"hash"
-	math_rand "math/rand/v2"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -36,9 +37,7 @@ type epochFunc func() time.Time
 type HWAddrFunc func() (net.HardwareAddr, error)
 
 // DefaultGenerator is the default UUID Generator used by this package.
-// It uses math/rand as the source of entropy, which is backed by the
-// cryptographically random ChaCha8 algorithm.
-// See https://go.dev/blog/chacha8rand.
+// It uses crypto/rand as the source of entropy.
 var DefaultGenerator Generator = NewGen()
 
 // NewV1 returns a UUID based on the current timestamp and MAC address.
@@ -52,7 +51,7 @@ func NewV3(ns UUID, name string) UUID {
 }
 
 // NewV4 returns a randomly generated UUID.
-func NewV4() UUID {
+func NewV4() (UUID, error) {
 	return DefaultGenerator.NewV4()
 }
 
@@ -66,7 +65,7 @@ type Generator interface {
 	NewV1() (UUID, error)
 	// NewV2(domain byte) (UUID, error) // CRL: Removed support for V2.
 	NewV3(ns UUID, name string) UUID
-	NewV4() UUID
+	NewV4() (UUID, error)
 	NewV5(ns UUID, name string) UUID
 }
 
@@ -86,9 +85,7 @@ type Gen struct {
 	hardwareAddrOnce  sync.Once
 	storageMutex      syncutil.Mutex
 
-	// randUint64 is the function used to generate random uint64 values. The
-	// function is stored directly to avoid the overhead of interface dispatch.
-	randUint64 func() uint64
+	rand io.Reader
 
 	epochFunc     epochFunc
 	hwAddrFunc    HWAddrFunc
@@ -107,11 +104,11 @@ func NewGen() *Gen {
 	return NewGenWithHWAF(defaultHWAddrFunc)
 }
 
-// NewGenWithRand returns a new instance of gen which uses randUint64 as its
-// source of randomness.
-func NewGenWithRand(randUint64 func() uint64) *Gen {
+// NewGenWithReader returns a new instance of gen which uses r as its source of
+// randomness.
+func NewGenWithReader(r io.Reader) *Gen {
 	g := NewGen()
-	g.randUint64 = randUint64
+	g.rand = r
 	return g
 }
 
@@ -130,10 +127,7 @@ func NewGenWithHWAF(hwaf HWAddrFunc) *Gen {
 	return &Gen{
 		epochFunc:  time.Now,
 		hwAddrFunc: hwaf,
-		// "math/rand".Uint64 is safe for concurrent use. As of go1.22, the
-		// math/rand (and math/rand/v2) package uses a cryptographically secure RNG.
-		// See https://go.dev/blog/randv2 and https://go.dev/blog/chacha8rand.
-		randUint64: math_rand.Uint64,
+		rand:       crypto_rand.Reader,
 	}
 }
 
@@ -141,7 +135,10 @@ func NewGenWithHWAF(hwaf HWAddrFunc) *Gen {
 func (g *Gen) NewV1() (UUID, error) {
 	u := UUID{}
 
-	timeNow, clockSeq := g.getClockSequence()
+	timeNow, clockSeq, err := g.getClockSequence()
+	if err != nil {
+		return Nil, err
+	}
 	binary.BigEndian.PutUint32(u[0:], uint32(timeNow))
 	binary.BigEndian.PutUint16(u[4:], uint16(timeNow>>32))
 	binary.BigEndian.PutUint16(u[6:], uint16(timeNow>>48))
@@ -169,14 +166,25 @@ func (g *Gen) NewV3(ns UUID, name string) UUID {
 }
 
 // NewV4 returns a randomly generated UUID.
-func (g *Gen) NewV4() UUID {
+func (g *Gen) NewV4() (UUID, error) {
 	u := UUID{}
-	binary.BigEndian.PutUint64(u[:Size/2], g.randUint64())
-	binary.BigEndian.PutUint64(u[Size/2:], g.randUint64())
+	if r, ok := g.rand.(mathRandReader); ok {
+		if n, err := r.Read(u[:]); n != len(u) {
+			panic("math/rand.Read always returns len(p)")
+		} else if err != nil {
+			panic("math/rand.Read always returns a nil error")
+		}
+	} else {
+		willEscape := UUID{}
+		if _, err := io.ReadFull(g.rand, willEscape[:]); err != nil {
+			return Nil, err
+		}
+		u = willEscape
+	}
 	u.SetVersion(V4)
 	u.SetVariant(VariantRFC4122)
 
-	return u
+	return u, nil
 }
 
 // NewV5 returns a UUID based on SHA-1 hash of the namespace UUID and name.
@@ -189,12 +197,18 @@ func (g *Gen) NewV5(ns UUID, name string) UUID {
 }
 
 // Returns the epoch and clock sequence.
-func (g *Gen) getClockSequence() (uint64, uint16) {
+func (g *Gen) getClockSequence() (uint64, uint16, error) {
+	var err error
 	g.clockSequenceOnce.Do(func() {
-		buf := make([]byte, 8)
-		binary.BigEndian.PutUint64(buf[:], g.randUint64())
+		buf := make([]byte, 2)
+		if _, err = io.ReadFull(g.rand, buf); err != nil {
+			return
+		}
 		g.clockSequence = binary.BigEndian.Uint16(buf)
 	})
+	if err != nil {
+		return 0, 0, err
+	}
 
 	g.storageMutex.Lock()
 	defer g.storageMutex.Unlock()
@@ -207,7 +221,7 @@ func (g *Gen) getClockSequence() (uint64, uint16) {
 	}
 	g.lastTime = timeNow
 
-	return timeNow, g.clockSequence
+	return timeNow, g.clockSequence, nil
 }
 
 // Returns the hardware address.
@@ -220,13 +234,11 @@ func (g *Gen) getHardwareAddr() ([]byte, error) {
 			return
 		}
 
-		// Initialize hardwareAddr randomly in case of real network interfaces
-		// absence.
-		hwAddr, err = RandomHardwareAddrFunc()
-		if err != nil {
-			panic("RandomHardwareAddrFunc does not return an error")
+		// Initialize hardwareAddr randomly in case
+		// of real network interfaces absence.
+		if _, err = io.ReadFull(g.rand, g.hardwareAddr[:]); err != nil {
+			return
 		}
-		copy(g.hardwareAddr[:], hwAddr)
 		// Set multicast bit as recommended by RFC-4122
 		g.hardwareAddr[0] |= 0x01
 	})
@@ -271,13 +283,14 @@ func defaultHWAddrFunc() (net.HardwareAddr, error) {
 }
 
 // RandomHardwareAddrFunc returns a random hardware address, with the multicast
-// and local-admin bits set as per the IEEE802 spec. This function never
-// returns an error, but the signature has to match the HWAddrFunc type.
+// and local-admin bits set as per the IEEE802 spec.
 func RandomHardwareAddrFunc() (net.HardwareAddr, error) {
-	var hardwareAddr = make([]byte, 8)
-	binary.BigEndian.PutUint64(hardwareAddr, math_rand.Uint64())
+	var err error
+	var hardwareAddr = make(net.HardwareAddr, 6)
+	if _, err = io.ReadFull(crypto_rand.Reader, hardwareAddr[:]); err != nil {
+		return []byte{}, err
+	}
 	// Set multicast bit and local-admin bit to match Postgres.
 	hardwareAddr[0] |= 0x03
-	// Discard the last 2 bytes.
-	return hardwareAddr[:6], nil
+	return hardwareAddr, nil
 }

@@ -12,7 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 )
 
 func init() {
@@ -35,11 +34,9 @@ func Increment(
 		Stats:                          cArgs.Stats,
 		ReplayWriteTimestampProtection: h.AmbiguousReplayProtection,
 		OmitInRangefeeds:               cArgs.OmitInRangefeeds,
-		OriginID:                       h.WriteOptions.GetOriginID(),
-		OriginTimestamp:                h.WriteOptions.GetOriginTimestamp(),
 		MaxLockConflicts:               storage.MaxConflictsPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV),
 		TargetLockConflictBytes:        storage.TargetBytesPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV),
-		Category:                       fs.BatchEvalReadCategory,
+		Category:                       storage.BatchEvalReadCategory,
 	}
 
 	var err error

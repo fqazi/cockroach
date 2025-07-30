@@ -89,13 +89,6 @@ func TestCCLLogic_auto_rehoming(
 	runCCLLogicTest(t, "auto_rehoming")
 }
 
-func TestCCLLogic_buffered_writes_lock_loss(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "buffered_writes_lock_loss")
-}
-
 func TestCCLLogic_builtins(
 	t *testing.T,
 ) {
@@ -124,6 +117,13 @@ func TestCCLLogic_crdb_internal(
 	runCCLLogicTest(t, "crdb_internal")
 }
 
+func TestCCLLogic_explain_call_plpgsql(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runCCLLogicTest(t, "explain_call_plpgsql")
+}
+
 func TestCCLLogic_explain_redact(
 	t *testing.T,
 ) {
@@ -143,6 +143,13 @@ func TestCCLLogic_fk_read_committed(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "fk_read_committed")
+}
+
+func TestCCLLogic_generic(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runCCLLogicTest(t, "generic")
 }
 
 func TestCCLLogic_hash_sharded_index_read_committed(
@@ -201,13 +208,6 @@ func TestCCLLogic_partitioning_implicit(
 	runCCLLogicTest(t, "partitioning_implicit")
 }
 
-func TestCCLLogic_partitioning_implicit_read_committed(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "partitioning_implicit_read_committed")
-}
-
 func TestCCLLogic_partitioning_index(
 	t *testing.T,
 ) {
@@ -222,13 +222,6 @@ func TestCCLLogic_pgcrypto_builtins(
 	runCCLLogicTest(t, "pgcrypto_builtins")
 }
 
-func TestCCLLogic_plpgsql_assign(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_assign")
-}
-
 func TestCCLLogic_plpgsql_block(
 	t *testing.T,
 ) {
@@ -241,13 +234,6 @@ func TestCCLLogic_plpgsql_call(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "plpgsql_call")
-}
-
-func TestCCLLogic_plpgsql_cte(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_cte")
 }
 
 func TestCCLLogic_plpgsql_cursor(
@@ -269,13 +255,6 @@ func TestCCLLogic_plpgsql_record(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "plpgsql_record")
-}
-
-func TestCCLLogic_plpgsql_srf(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_srf")
 }
 
 func TestCCLLogic_plpgsql_txn(
@@ -304,13 +283,6 @@ func TestCCLLogic_procedure_plpgsql(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "procedure_plpgsql")
-}
-
-func TestCCLLogic_provisioning(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "provisioning")
 }
 
 func TestCCLLogic_read_committed(
@@ -383,20 +355,6 @@ func TestCCLLogic_tenant_usage(
 	runCCLLogicTest(t, "tenant_usage")
 }
 
-func TestCCLLogic_triggers(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "triggers")
-}
-
-func TestCCLLogic_txn_retry(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "txn_retry")
-}
-
 func TestCCLLogic_udf_params(
 	t *testing.T,
 ) {
@@ -430,11 +388,4 @@ func TestCCLLogic_unique_read_committed(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "unique_read_committed")
-}
-
-func TestCCLLogic_vector(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "vector")
 }

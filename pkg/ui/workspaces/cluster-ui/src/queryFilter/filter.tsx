@@ -3,18 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { CaretDown, Cancel } from "@cockroachlabs/icons";
-import { Input } from "antd";
-import { History } from "history";
-import isEqual from "lodash/isEqual";
 import React from "react";
 import Select from "react-select";
-
 import { Button } from "../button";
-import { selectCustomStyles } from "../common";
-import { MultiSelectCheckbox } from "../multiSelectCheckbox/multiSelectCheckbox";
-import { syncHistory } from "../util";
-
+import { CaretDown, Cancel } from "@cockroachlabs/icons";
+import { Input } from "antd";
+import "antd/lib/input/style";
+import { History } from "history";
+import { isEqual } from "lodash";
 import {
   dropdownButton,
   dropdownContentWrapper,
@@ -28,6 +24,9 @@ import {
   badge,
   clearBnt,
 } from "./filterClasses";
+import { MultiSelectCheckbox } from "../multiSelectCheckbox/multiSelectCheckbox";
+import { syncHistory } from "../util";
+import { selectCustomStyles } from "../common";
 
 interface QueryFilter {
   onSubmitFilters: (filters: Filters) => void;
@@ -142,8 +141,8 @@ export const getFiltersFromQueryString = (
       queryStringFilter == null
         ? defaultValue // If this filter doesn't exist on query string, use default value.
         : typeof defaultValue == "boolean"
-          ? searchParams.get(filter) === "true" // If it's a Boolean, convert from String to Boolean;
-          : defaultValue.constructor(searchParams.get(filter)); // Otherwise, use the constructor for that class.
+        ? searchParams.get(filter) === "true" // If it's a Boolean, convert from String to Boolean;
+        : defaultValue.constructor(searchParams.get(filter)); // Otherwise, use the constructor for that class.
     // Boolean is converted without using its own constructor because the value from the query
     // params is a string and Boolean('false') = true, which would be incorrect.
     return { [filter]: filterValue, ...filters };
@@ -773,9 +772,7 @@ export class Filter extends React.Component<QueryFilter, FilterState> {
                     <section className={timePair.wrapper}>
                       <Input
                         value={filters.timeNumber}
-                        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                          this.handleChange(e, "timeNumber")
-                        }
+                        onChange={e => this.handleChange(e, "timeNumber")}
                         onFocus={this.clearInput}
                         className={timePair.timeNumber}
                       />

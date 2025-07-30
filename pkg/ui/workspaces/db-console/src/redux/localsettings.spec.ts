@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import { Action } from "redux";
-
 import {
   LocalSettingData,
   LocalSetting,

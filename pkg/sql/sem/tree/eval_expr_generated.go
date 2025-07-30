@@ -203,11 +203,6 @@ func (node *DJSON) Eval(ctx context.Context, v ExprEvaluator) (Datum, error) {
 }
 
 // Eval is part of the TypedExpr interface.
-func (node *DJsonpath) Eval(ctx context.Context, v ExprEvaluator) (Datum, error) {
-	return node, nil
-}
-
-// Eval is part of the TypedExpr interface.
 func (node *DOid) Eval(ctx context.Context, v ExprEvaluator) (Datum, error) {
 	return node, nil
 }
@@ -219,11 +214,6 @@ func (node *DOidWrapper) Eval(ctx context.Context, v ExprEvaluator) (Datum, erro
 
 // Eval is part of the TypedExpr interface.
 func (node *DPGLSN) Eval(ctx context.Context, v ExprEvaluator) (Datum, error) {
-	return node, nil
-}
-
-// Eval is part of the TypedExpr interface.
-func (node *DPGVector) Eval(ctx context.Context, v ExprEvaluator) (Datum, error) {
 	return node, nil
 }
 

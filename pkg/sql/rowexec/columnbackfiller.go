@@ -21,11 +21,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowinfra"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
@@ -42,6 +42,7 @@ type columnBackfiller struct {
 	filter backfill.MutationFilter
 
 	spec        execinfrapb.BackfillerSpec
+	out         execinfra.ProcOutputHelper
 	flowCtx     *execinfra.FlowCtx
 	processorID int32
 
@@ -61,7 +62,7 @@ func newColumnBackfiller(
 	spec execinfrapb.BackfillerSpec,
 ) (*columnBackfiller, error) {
 	columnBackfillerMon := execinfra.NewMonitor(
-		ctx, flowCtx.Cfg.BackfillerMonitor, mon.MakeName("column-backfill-mon"),
+		ctx, flowCtx.Cfg.BackfillerMonitor, "column-backfill-mon",
 	)
 	cb := &columnBackfiller{
 		desc:        flowCtx.TableDescriptor(ctx, &spec.Table),
@@ -97,8 +98,9 @@ func (cb *columnBackfiller) Run(ctx context.Context, output execinfra.RowReceive
 	defer span.Finish()
 	meta := cb.doRun(ctx)
 	execinfra.SendTraceData(ctx, cb.flowCtx, output)
-	output.Push(nil /* row */, meta)
-	output.ProducerDone()
+	if emitHelper(ctx, output, &cb.out, nil /* row */, meta, func(context.Context, execinfra.RowReceiver) {}) {
+		output.ProducerDone()
+	}
 }
 
 // Resume is part of the execinfra.Processor interface.
@@ -106,10 +108,11 @@ func (*columnBackfiller) Resume(output execinfra.RowReceiver) {
 	panic("not implemented")
 }
 
-// Close is part of the execinfra.Processor interface.
-func (*columnBackfiller) Close(context.Context) {}
-
 func (cb *columnBackfiller) doRun(ctx context.Context) *execinfrapb.ProducerMetadata {
+	semaCtx := tree.MakeSemaContext()
+	if err := cb.out.Init(ctx, &execinfrapb.PostProcessSpec{}, nil, &semaCtx, cb.flowCtx.NewEvalCtx()); err != nil {
+		return &execinfrapb.ProducerMetadata{Err: err}
+	}
 	finishedSpans, err := cb.mainLoop(ctx)
 	if err != nil {
 		return &execinfrapb.ProducerMetadata{Err: err}
@@ -195,7 +198,7 @@ func GetResumeSpans(
 	mutationID descpb.MutationID,
 	filter backfill.MutationFilter,
 ) ([]roachpb.Span, *jobs.Job, int, error) {
-	tableDesc, err := col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, tableID)
+	tableDesc, err := col.ByID(txn.KV()).Get().Table(ctx, tableID)
 	if err != nil {
 		return nil, nil, 0, err
 	}

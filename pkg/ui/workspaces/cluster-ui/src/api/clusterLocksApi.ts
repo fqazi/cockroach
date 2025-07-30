@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import moment from "moment-timezone";
-
 import {
   executeInternalSql,
   LONG_TIMEOUT,

@@ -3,9 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-// See grunning.Supported for an explanation behind this build tag.
+// See grunning.Supported() for an explanation behind this build tag.
 //
-//go:build bazel
+//go:build !((linux && s390x) || !bazel)
+// +build !linux !s390x
+// +build bazel
 
 package grunning_test
 
@@ -27,7 +29,7 @@ import (
 // tests are useful to understand the properties we expect running time to have.
 
 func TestEnabled(t *testing.T) {
-	require.True(t, grunning.Supported)
+	require.True(t, grunning.Supported())
 }
 
 // TestEquivalentGoroutines is a variant of the "parallel test" in

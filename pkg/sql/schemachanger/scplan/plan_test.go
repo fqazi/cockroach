@@ -15,7 +15,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl"
-	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scbuild"
@@ -41,10 +40,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v2"
 )
-
-func init() {
-	sql.TestForceDisableCreateTableWithSchemaLocked()
-}
 
 func TestPlanDataDriven(t *testing.T) {
 	defer leaktest.AfterTest(t)()
@@ -84,7 +79,7 @@ func TestPlanDataDriven(t *testing.T) {
 					var state scpb.CurrentState
 					var logSchemaChangesFn scbuild.LogSchemaChangerEventsFn
 					for i := range stmts {
-						state, logSchemaChangesFn, err = scbuild.Build(ctx, deps, state, stmts[i].AST, mon.NewStandaloneUnlimitedAccount())
+						state, logSchemaChangesFn, err = scbuild.Build(ctx, deps, state, stmts[i].AST, nil /* memAcc */)
 						require.NoError(t, err)
 						require.NoError(t, logSchemaChangesFn(ctx))
 					}
@@ -107,7 +102,7 @@ func TestPlanDataDriven(t *testing.T) {
 					stmt := stmts[0]
 					alter, ok := stmt.AST.(*tree.AlterTable)
 					require.Truef(t, ok, "not an ALTER TABLE statement: %s", stmt.SQL)
-					_, _, err = scbuild.Build(ctx, deps, scpb.CurrentState{}, alter, mon.NewStandaloneUnlimitedAccount())
+					_, _, err = scbuild.Build(ctx, deps, scpb.CurrentState{}, alter, nil /* memAcc */)
 					require.Truef(t, scerrors.HasNotImplemented(err), "expected unimplemented, got %v", err)
 				})
 				return ""
@@ -273,13 +268,13 @@ func TestExplainPlanIsMemoryMonitored(t *testing.T) {
 	sctestutils.WithBuilderDependenciesFromTestServer(tt, nodeID, func(dependencies scbuild.Dependencies) {
 		stmt, err := parser.ParseOne(`DROP DATABASE defaultdb CASCADE`)
 		require.NoError(t, err)
-		incumbent, logSchemaChangesFn, err = scbuild.Build(ctx, dependencies, scpb.CurrentState{}, stmt.AST, mon.NewStandaloneUnlimitedAccount())
+		incumbent, logSchemaChangesFn, err = scbuild.Build(ctx, dependencies, scpb.CurrentState{}, stmt.AST, nil /* memAcc */)
 		require.NoError(t, err)
 		require.NoError(t, logSchemaChangesFn(ctx))
 	})
 
 	monitor := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("test-sc-plan-mon"),
+		Name:     "test-sc-plan-mon",
 		Settings: tt.ClusterSettings(),
 	})
 	monitor.Start(ctx, nil, mon.NewStandaloneBudget(5.243e+6 /* 5MiB */))

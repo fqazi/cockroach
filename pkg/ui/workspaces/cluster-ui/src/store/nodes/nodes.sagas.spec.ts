@@ -4,20 +4,17 @@
 // included in the /LICENSE file.
 
 import { expectSaga } from "redux-saga-test-plan";
-import * as matchers from "redux-saga-test-plan/matchers";
 import { throwError } from "redux-saga-test-plan/providers";
-
+import * as matchers from "redux-saga-test-plan/matchers";
 import { getNodes } from "src/api/nodesApi";
-
-import { accumulateMetrics } from "../../util";
-
-import { getNodesResponse } from "./nodes.fixtures";
-import { actions, reducer, NodesState } from "./nodes.reducer";
 import {
   receivedNodesSaga,
   requestNodesSaga,
   refreshNodesSaga,
 } from "./nodes.sagas";
+import { actions, reducer, NodesState } from "./nodes.reducer";
+import { getNodesResponse } from "./nodes.fixtures";
+import { accumulateMetrics } from "../../util";
 
 describe("Nodes sagas", () => {
   const nodesResponse = getNodesResponse();

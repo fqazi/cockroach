@@ -228,7 +228,7 @@ type mjBuilderCrossProductState struct {
 type mjBufferedGroupState struct {
 	// leftFirstTuple is the first tuple of the left buffered group. It is set
 	// only in case the left buffered group spans more than one input batch.
-	leftFirstTuple []*coldata.Vec
+	leftFirstTuple []coldata.Vec
 	// leftGroupStartIdx is the position within the current left batch where the
 	// left buffered group starts. If the group spans multiple batches, this
 	// will be set to 0 on all consecutive batches.
@@ -241,7 +241,7 @@ type mjBufferedGroupState struct {
 	leftBatchDone bool
 	// rightFirstTuple is the first tuple of the right buffered group. It is set
 	// only in case the right buffered group spans more than one input batch.
-	rightFirstTuple []*coldata.Vec
+	rightFirstTuple []coldata.Vec
 	// scratchSel is a scratch selection vector initialized only when needed.
 	scratchSel []int
 
@@ -300,7 +300,6 @@ type mergeJoinInput struct {
 //
 // evalCtx will not be mutated.
 func NewMergeJoinOp(
-	ctx context.Context,
 	unlimitedAllocator *colmem.Allocator,
 	memoryLimit int64,
 	diskQueueCfg colcontainer.DiskQueueCfg,
@@ -313,7 +312,7 @@ func NewMergeJoinOp(
 	leftOrdering []execinfrapb.Ordering_Column,
 	rightOrdering []execinfrapb.Ordering_Column,
 	diskAcc *mon.BoundAccount,
-	diskQueueMemAcc *mon.BoundAccount,
+	converterMemAcc *mon.BoundAccount,
 	evalCtx *eval.Context,
 ) colexecop.ResettableOperator {
 	// Merge joiner only supports the case when the physical types in the
@@ -364,7 +363,7 @@ func NewMergeJoinOp(
 			}
 			if castLeftToRight {
 				castColumnIdx := len(actualLeftTypes)
-				left, err = colexecbase.GetCastOperator(ctx, unlimitedAllocator, left, int(leftColIdx), castColumnIdx, leftType, rightType, evalCtx)
+				left, err = colexecbase.GetCastOperator(unlimitedAllocator, left, int(leftColIdx), castColumnIdx, leftType, rightType, evalCtx)
 				if err != nil {
 					colexecerror.InternalError(err)
 				}
@@ -372,7 +371,7 @@ func NewMergeJoinOp(
 				actualLeftOrdering[i].ColIdx = uint32(castColumnIdx)
 			} else {
 				castColumnIdx := len(actualRightTypes)
-				right, err = colexecbase.GetCastOperator(ctx, unlimitedAllocator, right, int(rightColIdx), castColumnIdx, rightType, leftType, evalCtx)
+				right, err = colexecbase.GetCastOperator(unlimitedAllocator, right, int(rightColIdx), castColumnIdx, rightType, leftType, evalCtx)
 				if err != nil {
 					colexecerror.InternalError(err)
 				}
@@ -384,7 +383,7 @@ func NewMergeJoinOp(
 	}
 	base := newMergeJoinBase(
 		unlimitedAllocator, memoryLimit, diskQueueCfg, fdSemaphore, joinType, left, right,
-		actualLeftTypes, actualRightTypes, actualLeftOrdering, actualRightOrdering, diskAcc, diskQueueMemAcc,
+		actualLeftTypes, actualRightTypes, actualLeftOrdering, actualRightOrdering, diskAcc, converterMemAcc,
 	)
 	var mergeJoinerOp colexecop.ResettableOperator
 	switch joinType {
@@ -488,7 +487,7 @@ func newMergeJoinBase(
 	leftOrdering []execinfrapb.Ordering_Column,
 	rightOrdering []execinfrapb.Ordering_Column,
 	diskAcc *mon.BoundAccount,
-	diskQueueMemAcc *mon.BoundAccount,
+	converterMemAcc *mon.BoundAccount,
 ) *mergeJoinBase {
 	lEqCols := make([]uint32, len(leftOrdering))
 	lDirections := make([]execinfrapb.Ordering_Column_Direction, len(leftOrdering))
@@ -524,7 +523,7 @@ func newMergeJoinBase(
 			directions:            rDirections,
 		},
 		diskAcc:         diskAcc,
-		diskQueueMemAcc: diskQueueMemAcc,
+		converterMemAcc: converterMemAcc,
 	}
 	base.helper.Init(unlimitedAllocator, memoryLimit)
 	base.left.distincterInput = &colexecop.FeedOperator{}
@@ -568,7 +567,7 @@ type mergeJoinBase struct {
 	builderState  mjBuilderState
 
 	diskAcc         *mon.BoundAccount
-	diskQueueMemAcc *mon.BoundAccount
+	converterMemAcc *mon.BoundAccount
 }
 
 var _ colexecop.Resetter = &mergeJoinBase{}
@@ -597,7 +596,7 @@ func (o *mergeJoinBase) Init(ctx context.Context) {
 	).ColVecs()
 	o.bufferedGroup.helper = newCrossJoinerBase(
 		o.unlimitedAllocator, o.joinType, o.left.sourceTypes, o.right.sourceTypes,
-		o.memoryLimit, o.diskQueueCfg, o.fdSemaphore, o.diskAcc, o.diskQueueMemAcc,
+		o.memoryLimit, o.diskQueueCfg, o.fdSemaphore, o.diskAcc, o.converterMemAcc,
 	)
 	o.bufferedGroup.helper.init(o.Ctx)
 	o.cancelChecker.Init(o.Ctx)

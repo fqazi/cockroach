@@ -3,19 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { all, call, put, takeEvery, select } from "redux-saga/effects";
-import { createSelector } from "reselect";
-
-import { PayloadAction } from "src/interfaces/action";
 import { cockroach } from "src/js/protos";
-import {
-  invalidateIndexStats,
-  KeyedCachedDataReducerState,
-  refreshIndexStats,
-} from "src/redux/apiReducers";
-import { AdminUIState } from "src/redux/state";
-import { IndexStatsResponseMessage, resetIndexUsageStats } from "src/util/api";
-
+import { all, call, put, takeEvery, select } from "redux-saga/effects";
 import {
   RESET_INDEX_USAGE_STATS,
   resetIndexUsageStatsCompleteAction,
@@ -23,8 +12,17 @@ import {
   resetIndexUsageStatsPayload,
 } from "./indexUsageStatsActions";
 
-import TableIndexStatsRequest = cockroach.server.serverpb.TableIndexStatsRequest;
 import ResetIndexUsageStatsRequest = cockroach.server.serverpb.ResetIndexUsageStatsRequest;
+import {
+  invalidateIndexStats,
+  KeyedCachedDataReducerState,
+  refreshIndexStats,
+} from "src/redux/apiReducers";
+import { IndexStatsResponseMessage, resetIndexUsageStats } from "src/util/api";
+import { createSelector } from "reselect";
+import { AdminUIState } from "src/redux/state";
+import TableIndexStatsRequest = cockroach.server.serverpb.TableIndexStatsRequest;
+import { PayloadAction } from "src/interfaces/action";
 
 export const selectIndexStatsKeys = createSelector(
   (state: AdminUIState) => state.cachedData.indexStats,

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/internal/team"
 	"github.com/cockroachdb/datadriven"
 )
@@ -65,7 +64,7 @@ func TestTestFilter(t *testing.T) {
 			for _, arg := range d.CmdArgs {
 				switch arg.Key {
 				case "cloud":
-					options = append(options, WithCloud(spec.CloudFromString(arg.Vals[0])))
+					options = append(options, WithCloud(arg.Vals[0]))
 				case "suite":
 					options = append(options, WithSuite(arg.Vals[0]))
 				case "owner":

@@ -3,51 +3,56 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { ArrowLeft } from "@cockroachlabs/icons";
-import { Col, Row } from "antd";
-import classNames from "classnames/bind";
-import isNil from "lodash/isNil";
-import moment from "moment-timezone";
 import React from "react";
+import { getMatchParamByName } from "src/util/query";
+import { sessionAttr } from "src/util/constants";
 import { Helmet } from "react-helmet";
+import { Loading } from "../loading";
+import _ from "lodash";
 import { RouteComponentProps } from "react-router-dom";
 
-import { commonStyles } from "src/common";
-import { SqlBox, SqlBoxSize } from "src/sql/box";
-import statementsPageStyles from "src/statementsPage/statementsPage.module.scss";
-import { NodeLink } from "src/statementsTable/statementsTableContent";
-import { UIConfigState } from "src/store";
-import {
-  ICancelQueryRequest,
-  ICancelSessionRequest,
-} from "src/store/terminateQuery";
-import { createTimeScaleFromDateRange, TimeScale } from "src/timeScaleDropdown";
-import { sessionAttr } from "src/util/constants";
-import { DurationToMomentDuration, TimestampToMoment } from "src/util/convert";
-import { Bytes, DATE_FORMAT_24_TZ, Count } from "src/util/format";
-import { getMatchParamByName } from "src/util/query";
-
-import { Button } from "../button";
-import { CircleFilled } from "../icon";
-import { Loading } from "../loading";
-import LoadingError from "../sqlActivity/errorComponent";
-import { SummaryCard, SummaryCardItem } from "../summaryCard";
-import { Text, TextTypes } from "../text";
-import { Timestamp } from "../timestamp";
-import { FixLong } from "../util";
-
-import styles from "./sessionDetails.module.scss";
 import {
   getStatusClassname,
   getStatusString,
   SessionInfo,
 } from "./sessionsTable";
-import TerminateQueryModal, {
-  TerminateQueryModalRef,
-} from "./terminateQueryModal";
+
+import { SummaryCard, SummaryCardItem } from "../summaryCard";
+import LoadingError from "../sqlActivity/errorComponent";
+
+import { DurationToMomentDuration, TimestampToMoment } from "src/util/convert";
+import { Bytes, DATE_FORMAT_24_TZ, Count } from "src/util/format";
+import { Col, Row } from "antd";
+import "antd/lib/col/style";
+import "antd/lib/row/style";
+
 import TerminateSessionModal, {
   TerminateSessionModalRef,
 } from "./terminateSessionModal";
+import TerminateQueryModal, {
+  TerminateQueryModalRef,
+} from "./terminateQueryModal";
+import { Button } from "../button";
+import { ArrowLeft } from "@cockroachlabs/icons";
+import { Text, TextTypes } from "../text";
+import { SqlBox, SqlBoxSize } from "src/sql/box";
+import { NodeLink } from "src/statementsTable/statementsTableContent";
+
+import {
+  ICancelQueryRequest,
+  ICancelSessionRequest,
+} from "src/store/terminateQuery";
+import { UIConfigState } from "src/store";
+
+import statementsPageStyles from "src/statementsPage/statementsPage.module.scss";
+import styles from "./sessionDetails.module.scss";
+import classNames from "classnames/bind";
+import { commonStyles } from "src/common";
+import { CircleFilled } from "../icon";
+import { createTimeScaleFromDateRange, TimeScale } from "src/timeScaleDropdown";
+import moment from "moment-timezone";
+import { Timestamp } from "../timestamp";
+import { FixLong } from "../util";
 
 const cx = classNames.bind(styles);
 const statementsPageCx = classNames.bind(statementsPageStyles);
@@ -78,15 +83,15 @@ function yesOrNo(b: boolean) {
 }
 
 export const MemoryUsageItem: React.FC<{
-  allocBytes: Long;
-  maxAllocBytes: Long;
-}> = ({ allocBytes, maxAllocBytes }) => (
+  alloc_bytes: Long;
+  max_alloc_bytes: Long;
+}> = ({ alloc_bytes, max_alloc_bytes }) => (
   <SummaryCardItem
     label={"Memory Usage"}
     value={
-      Bytes(FixLong(allocBytes ?? 0).toNumber()) +
+      Bytes(FixLong(alloc_bytes ?? 0).toNumber()) +
       "/" +
-      Bytes(FixLong(maxAllocBytes ?? 0).toNumber())
+      Bytes(FixLong(max_alloc_bytes ?? 0).toNumber())
     }
   />
 );
@@ -199,7 +204,7 @@ export class SessionDetails extends React.Component<SessionDetailsProps> {
           )}`}
         >
           <Loading
-            loading={isNil(this.props.session)}
+            loading={_.isNil(this.props.session)}
             page={"sessions details"}
             error={this.props.sessionError}
             render={this.renderContent}
@@ -311,8 +316,8 @@ export class SessionDetails extends React.Component<SessionDetailsProps> {
                 />
                 <SummaryCardItem label={"Priority"} value={txn.priority} />
                 <MemoryUsageItem
-                  allocBytes={txn.alloc_bytes}
-                  maxAllocBytes={txn.max_alloc_bytes}
+                  alloc_bytes={txn.alloc_bytes}
+                  max_alloc_bytes={txn.max_alloc_bytes}
                 />
               </SummaryCard>
             </Col>
@@ -322,7 +327,7 @@ export class SessionDetails extends React.Component<SessionDetailsProps> {
     }
 
     let curStmtInfo = session.last_active_query ? (
-      <SqlBox value={session.last_active_query} size={SqlBoxSize.CUSTOM} />
+      <SqlBox value={session.last_active_query} size={SqlBoxSize.custom} />
     ) : (
       <SummaryCard className={cx("details-section")}>
         No Active Statement
@@ -333,7 +338,7 @@ export class SessionDetails extends React.Component<SessionDetailsProps> {
       const stmt = session.active_queries[0];
       curStmtInfo = (
         <React.Fragment>
-          <SqlBox value={stmt.sql} size={SqlBoxSize.CUSTOM} />
+          <SqlBox value={stmt.sql} size={SqlBoxSize.custom} />
           <SummaryCard className={cx("details-section")}>
             <Row>
               <Col className="gutter-row" span={10}>
@@ -434,8 +439,8 @@ export class SessionDetails extends React.Component<SessionDetailsProps> {
                 value={session.client_address}
               />
               <MemoryUsageItem
-                allocBytes={session.alloc_bytes}
-                maxAllocBytes={session.max_alloc_bytes}
+                alloc_bytes={session.alloc_bytes}
+                max_alloc_bytes={session.max_alloc_bytes}
               />
               <SummaryCardItem label={"User Name"} value={session.username} />
               <SummaryCardItem

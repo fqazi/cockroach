@@ -22,11 +22,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/raft"
 	pb "github.com/cockroachdb/cockroach/pkg/raft/raftpb"
-	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/errors"
 )
@@ -35,22 +32,16 @@ func (env *InteractionEnv) handleAddNodes(t *testing.T, d datadriven.TestData) e
 	n := firstAsInt(t, d)
 	var snap pb.Snapshot
 	cfg := raftConfigStub()
-	// NB: the datadriven tests use the async storage API, but have an option to
-	// sync writes immediately in imitation of the previous synchronous API.
-	var asyncWrites bool
-
 	for _, arg := range d.CmdArgs[1:] {
 		for i := range arg.Vals {
 			switch arg.Key {
 			case "voters":
-				var rawID uint64
-				arg.Scan(t, i, &rawID)
-				id := pb.PeerID(rawID)
+				var id uint64
+				arg.Scan(t, i, &id)
 				snap.Metadata.ConfState.Voters = append(snap.Metadata.ConfState.Voters, id)
 			case "learners":
-				var rawID uint64
-				arg.Scan(t, i, &rawID)
-				id := pb.PeerID(rawID)
+				var id uint64
+				arg.Scan(t, i, &id)
 				snap.Metadata.ConfState.Learners = append(snap.Metadata.ConfState.Learners, id)
 			case "inflight":
 				arg.Scan(t, i, &cfg.MaxInflightMsgs)
@@ -60,9 +51,7 @@ func (env *InteractionEnv) handleAddNodes(t *testing.T, d datadriven.TestData) e
 			case "content":
 				arg.Scan(t, i, &snap.Data)
 			case "async-storage-writes":
-				arg.Scan(t, i, &asyncWrites)
-			case "lazy-replication":
-				arg.Scan(t, i, &cfg.LazyReplication)
+				arg.Scan(t, i, &cfg.AsyncStorageWrites)
 			case "prevote":
 				arg.Scan(t, i, &cfg.PreVote)
 			case "checkquorum":
@@ -71,21 +60,21 @@ func (env *InteractionEnv) handleAddNodes(t *testing.T, d datadriven.TestData) e
 				arg.Scan(t, i, &cfg.MaxCommittedSizePerReady)
 			case "disable-conf-change-validation":
 				arg.Scan(t, i, &cfg.DisableConfChangeValidation)
-			case "crdb-version":
-				var key string
-				arg.Scan(t, i, &key)
-				version, err := roachpb.ParseVersion(key)
-				if err != nil {
-					return err
+			case "read-only":
+				switch arg.Vals[i] {
+				case "safe":
+					cfg.ReadOnlyOption = raft.ReadOnlySafe
+				case "lease-based":
+					cfg.ReadOnlyOption = raft.ReadOnlyLeaseBased
+				default:
+					return fmt.Errorf("invalid read-only option %q", arg.Vals[i])
 				}
-				settings := cluster.MakeTestingClusterSettingsWithVersions(version,
-					clusterversion.RemoveDevOffset(clusterversion.MinSupported.Version()),
-					true /* initializeVersion */)
-				cfg.CRDBVersion = settings.Version
+			case "step-down-on-removal":
+				arg.Scan(t, i, &cfg.StepDownOnRemoval)
 			}
 		}
 	}
-	return env.AddNodes(n, cfg, snap, asyncWrites)
+	return env.AddNodes(n, cfg, snap)
 }
 
 type snapOverrideStorage struct {
@@ -104,12 +93,10 @@ var _ raft.Storage = snapOverrideStorage{}
 
 // AddNodes adds n new nodes initialized from the given snapshot (which may be
 // empty), and using the cfg as template. They will be assigned consecutive IDs.
-func (env *InteractionEnv) AddNodes(
-	n int, cfg raft.Config, snap pb.Snapshot, asyncWrites bool,
-) error {
+func (env *InteractionEnv) AddNodes(n int, cfg raft.Config, snap pb.Snapshot) error {
 	bootstrap := !reflect.DeepEqual(snap, pb.Snapshot{})
 	for i := 0; i < n; i++ {
-		id := pb.PeerID(1 + len(env.Nodes))
+		id := uint64(1 + len(env.Nodes))
 		s := snapOverrideStorage{
 			Storage: raft.NewMemoryStorage(),
 			// When you ask for a snapshot, you get the most recent snapshot.
@@ -133,27 +120,19 @@ func (env *InteractionEnv) AddNodes(
 			if err := s.ApplySnapshot(snap); err != nil {
 				return err
 			}
-			ci := s.Compacted()
+			fi, err := s.FirstIndex()
+			if err != nil {
+				return err
+			}
 			// At the time of writing and for *MemoryStorage, applying a
 			// snapshot also truncates appropriately, but this would change with
 			// other storage engines potentially.
-			if exp := snap.Metadata.Index; ci != exp {
-				return fmt.Errorf("failed to establish compacted index %d; got %d", exp, ci)
+			if exp := snap.Metadata.Index + 1; fi != exp {
+				return fmt.Errorf("failed to establish first index %d; got %d", exp, fi)
 			}
 		}
 		cfg := cfg // fork the config stub
 		cfg.ID, cfg.Storage = id, s
-
-		// If the node creating command hasn't specified the CRDBVersion, use the
-		// latest one.
-		if cfg.CRDBVersion == nil {
-			cfg.CRDBVersion = cluster.MakeTestingClusterSettings().Version
-		}
-
-		cfg.StoreLiveness = newStoreLiveness(env.Fabric, id)
-
-		cfg.Metrics = raft.NewMetrics()
-
 		if env.Options.OnConfig != nil {
 			env.Options.OnConfig(&cfg)
 			if cfg.ID != id {
@@ -176,22 +155,11 @@ func (env *InteractionEnv) AddNodes(
 			RawNode: rn,
 			// TODO(tbg): allow a more general Storage, as long as it also allows
 			// us to apply snapshots, append entries, and update the HardState.
-			Storage:     s,
-			asyncWrites: asyncWrites,
-			Config:      &cfg,
-			History:     []pb.Snapshot{snap},
+			Storage: s,
+			Config:  &cfg,
+			History: []pb.Snapshot{snap},
 		}
 		env.Nodes = append(env.Nodes, node)
-	}
-
-	// The potential store nodes is the max between the number of nodes in the env
-	// and the sum of voters and learners. Add the difference between the
-	// potential nodes and the current store nodes.
-	allPotential := max(len(env.Nodes),
-		len(snap.Metadata.ConfState.Voters)+len(snap.Metadata.ConfState.Learners))
-	curNodesCount := len(env.Fabric.state) - 1 // 1-indexed stores
-	for rem := allPotential - curNodesCount; rem > 0; rem-- {
-		env.Fabric.addNode()
 	}
 	return nil
 }

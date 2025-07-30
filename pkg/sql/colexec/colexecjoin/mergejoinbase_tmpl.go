@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for mergejoinbase.eg.go. It's formatted
@@ -53,7 +54,7 @@ func _ASSIGN_EQ(_, _, _, _, _, _ interface{}) int {
 // isBufferedGroupFinished checks to see whether or not the buffered group
 // corresponding to the first tuple continues in batch.
 func (o *mergeJoinBase) isBufferedGroupFinished(
-	input *mergeJoinInput, firstTuple []*coldata.Vec, batch coldata.Batch, rowIdx int,
+	input *mergeJoinInput, firstTuple []coldata.Vec, batch coldata.Batch, rowIdx int,
 ) bool {
 	if batch.Length() == 0 {
 		return true

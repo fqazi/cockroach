@@ -3,32 +3,18 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { util } from "@cockroachlabs/cluster-ui";
 import classNames from "classnames";
-import concat from "lodash/concat";
-import flow from "lodash/flow";
-import forEach from "lodash/forEach";
-import head from "lodash/head";
-import isEqual from "lodash/isEqual";
-import isNil from "lodash/isNil";
-import isNull from "lodash/isNull";
-import join from "lodash/join";
-import map from "lodash/map";
-import size from "lodash/size";
-import sortBy from "lodash/sortBy";
-import toLower from "lodash/toLower";
+import _ from "lodash";
 import Long from "long";
 import moment from "moment-timezone";
 import React from "react";
-
-import { cockroach } from "src/js/protos";
 import * as protos from "src/js/protos";
+import { cockroach } from "src/js/protos";
+import { util } from "@cockroachlabs/cluster-ui";
 import { FixLong } from "src/util/fixLong";
 import Lease from "src/views/reports/containers/range/lease";
 import Print from "src/views/reports/containers/range/print";
 import RangeInfo from "src/views/reports/containers/range/rangeInfo";
-
-import IRangeInfo = cockroach.server.serverpb.IRangeInfo;
 
 interface RangeTableProps {
   infos: protos.cockroach.server.serverpb.IRangeInfo[];
@@ -69,7 +55,6 @@ const rangeTableDisplayList: RangeTableRow[] = [
   { variable: "leaseState", display: "Lease State", compareToLeader: true },
   { variable: "leaseHolder", display: "Lease Holder", compareToLeader: true },
   { variable: "leaseEpoch", display: "Lease Epoch", compareToLeader: true },
-  { variable: "leaseTerm", display: "Lease Term", compareToLeader: true },
   {
     variable: "isLeaseholder",
     display: "Is Leaseholder",
@@ -81,16 +66,6 @@ const rangeTableDisplayList: RangeTableRow[] = [
     variable: "leaseExpiration",
     display: "Lease Expiration",
     compareToLeader: true,
-  },
-  {
-    variable: "leaseMinExpiration",
-    display: "Lease Minimum Expiration",
-    compareToLeader: true,
-  },
-  {
-    variable: "leadSupportUntil",
-    display: "Lead Support Until",
-    compareToLeader: false,
   },
   {
     variable: "leaseAppliedIndex",
@@ -319,7 +294,7 @@ function convertLeaseState(
 
 export default class RangeTable extends React.Component<RangeTableProps, {}> {
   cleanRaftState(state: string) {
-    switch (toLower(state)) {
+    switch (_.toLower(state)) {
       case "statedormant":
         return "dormant";
       case "stateleader":
@@ -378,7 +353,7 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
     toolTip: string = null,
   ): RangeTableCellContent {
     const humanized = util.Bytes(bytes.toNumber());
-    if (isNull(className)) {
+    if (_.isNull(className)) {
       return {
         value: [humanized],
         title: [humanized, bytes.toString()],
@@ -428,7 +403,7 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
     value: string | Long | number,
     className: string = null,
   ): RangeTableCellContent {
-    if (isNull(className)) {
+    if (_.isNull(className)) {
       return {
         value: [value.toString()],
       };
@@ -443,7 +418,7 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
     timestamp: protos.cockroach.util.hlc.ITimestamp,
     now: moment.Moment,
   ): RangeTableCellContent {
-    if (isNil(timestamp) || isNil(timestamp.wall_time)) {
+    if (_.isNil(timestamp) || _.isNil(timestamp.wall_time)) {
       return {
         value: ["no timestamp"],
         className: ["range-table__cell--warning"],
@@ -469,34 +444,31 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
   ): RangeTableCellContent {
     let results: string[] = [];
     if (problems.no_lease) {
-      results = concat(results, "Invalid Lease");
+      results = _.concat(results, "Invalid Lease");
     }
     if (problems.leader_not_lease_holder) {
-      results = concat(results, "Leader is Not Lease holder");
+      results = _.concat(results, "Leader is Not Lease holder");
     }
     if (problems.underreplicated) {
-      results = concat(results, "Underreplicated (or slow)");
+      results = _.concat(results, "Underreplicated (or slow)");
     }
     if (problems.overreplicated) {
-      results = concat(results, "Overreplicated");
+      results = _.concat(results, "Overreplicated");
     }
     if (problems.no_raft_leader) {
-      results = concat(results, "No Raft Leader");
+      results = _.concat(results, "No Raft Leader");
     }
     if (problems.unavailable) {
-      results = concat(results, "Unavailable");
+      results = _.concat(results, "Unavailable");
     }
     if (problems.quiescent_equals_ticking) {
-      results = concat(results, "Quiescent equals ticking");
+      results = _.concat(results, "Quiescent equals ticking");
     }
     if (problems.raft_log_too_large) {
-      results = concat(results, "Raft log too large");
-    }
-    if (problems.range_too_large) {
-      results = concat(results, "Range too large");
+      results = _.concat(results, "Raft log too large");
     }
     if (awaitingGC) {
-      results = concat(results, "Awaiting GC");
+      results = _.concat(results, "Awaiting GC");
     }
     return {
       value: results,
@@ -524,25 +496,25 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
     dormant: boolean,
     leaderCell?: RangeTableCellContent,
   ) {
-    const title = join(isNil(cell.title) ? cell.value : cell.title, "\n");
+    const title = _.join(_.isNil(cell.title) ? cell.value : cell.title, "\n");
     const differentFromLeader =
       !dormant &&
-      !isNil(leaderCell) &&
+      !_.isNil(leaderCell) &&
       row.compareToLeader &&
-      (!isEqual(cell.value, leaderCell.value) ||
-        !isEqual(cell.title, leaderCell.title));
+      (!_.isEqual(cell.value, leaderCell.value) ||
+        !_.isEqual(cell.title, leaderCell.title));
     const className = classNames(
       "range-table__cell",
       {
         "range-table__cell--dormant": dormant,
         "range-table__cell--different-from-leader-warning": differentFromLeader,
       },
-      !dormant && !isNil(cell.className) ? cell.className : [],
+      !dormant && !_.isNil(cell.className) ? cell.className : [],
     );
     return (
       <td key={key} className={className} title={title}>
         <ul className="range-entries-list">
-          {map(cell.value, (value, k) => (
+          {_.map(cell.value, (value, k) => (
             <li key={k}>{value}</li>
           ))}
         </ul>
@@ -563,7 +535,7 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
     if (row.compareToLeader) {
       detailsByStoreID.forEach((detail, storeID) => {
         if (!dormantStoreIDs.has(storeID)) {
-          values.add(join(detail[row.variable].value, " "));
+          values.add(_.join(detail[row.variable].value, " "));
         }
       });
     }
@@ -575,7 +547,7 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
     return (
       <tr key={key} className="range-table__row">
         <th className={headerClassName}>{row.display}</th>
-        {map(sortedStoreIDs, storeID => {
+        {_.map(sortedStoreIDs, storeID => {
           const cell = detailsByStoreID.get(storeID)[row.variable];
           const leaderCell =
             storeID === leaderStoreID ? null : leaderDetail[row.variable];
@@ -601,7 +573,7 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
   ) {
     const differentFromLeader =
       !dormant &&
-      (isNil(replica)
+      (_.isNil(replica)
         ? leaderReplicaIDs.has(replicaID)
         : !leaderReplicaIDs.has(replica.replica_id));
     const localReplica =
@@ -615,7 +587,7 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
       "range-table__cell--different-from-leader-warning": differentFromLeader,
       "range-table__cell--local-replica": localReplica,
     });
-    if (isNil(replica)) {
+    if (_.isNil(replica)) {
       return (
         <td key={localStoreID} className={className}>
           -
@@ -649,7 +621,7 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
           Replica {referenceReplica.replica_id} - (
           {Print.ReplicaID(rangeID, referenceReplica)})
         </th>
-        {map(sortedStoreIDs, storeID => {
+        {_.map(sortedStoreIDs, storeID => {
           let replica: protos.cockroach.roachpb.IReplicaDescriptor = null;
           if (
             replicasByReplicaIDByStoreID.has(storeID) &&
@@ -676,14 +648,15 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
 
   render() {
     const { infos, replicas } = this.props;
-    const leader = head(infos);
+    const leader = _.head(infos);
     const rangeID = leader.state.state.desc.range_id;
+    const data = _.chain(infos);
 
     // We want to display ordered by store ID.
-    const sortedStoreIDs = flow(
-      (infos: IRangeInfo[]) => map(infos, info => info.source_store_id),
-      storeIds => sortBy(storeIds, id => id),
-    )(infos);
+    const sortedStoreIDs = data
+      .map(info => info.source_store_id)
+      .sortBy(id => id)
+      .value();
 
     const dormantStoreIDs: Set<number> = new Set();
 
@@ -692,13 +665,11 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
     // Convert the infos to a simpler object for display purposes. This helps when trying to
     // determine if any warnings should be displayed.
     const detailsByStoreID: Map<number, RangeTableDetail> = new Map();
-    forEach(infos, info => {
+    _.forEach(infos, info => {
       const localReplica = RangeInfo.GetLocalReplica(info);
-      const awaitingGC = isNil(localReplica);
+      const awaitingGC = _.isNil(localReplica);
       const lease = info.state.state.lease;
-      const leaseEpoch = Lease.IsEpoch(lease);
-      const leaseLeader = Lease.IsLeader(lease);
-      const leaseExpiration = !leaseEpoch && !leaseLeader;
+      const epoch = Lease.IsEpoch(lease);
       const raftLeader =
         !awaitingGC &&
         FixLong(info.raft_state.lead).eq(localReplica.replica_id);
@@ -708,7 +679,7 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
       const raftState = this.contentRaftState(info.raft_state.state);
       const vote = FixLong(info.raft_state.hard_state.vote);
       let leaseState: RangeTableCellContent;
-      if (isNil(info.lease_status)) {
+      if (_.isNil(info.lease_status)) {
         leaseState = rangeTableEmptyContentWithWarning;
       } else {
         leaseState = this.createContent(
@@ -740,10 +711,6 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
           ? this.createContent("") // `problems` above will report "Awaiting GC" in this case
           : this.createContent(contentReplicaType(localReplica.type)),
         raftState: raftState,
-        leadSupportUntil: this.contentTimestamp(
-          info.raft_state.lead_support_until,
-          now,
-        ),
         quiescent: info.quiescent
           ? rangeTableQuiescent
           : rangeTableEmptyContent,
@@ -755,24 +722,16 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
             ? "range-table__cell--lease-holder"
             : "range-table__cell--lease-follower",
         ),
-        leaseType: this.createContent(
-          leaseEpoch ? "epoch" : leaseLeader ? "leader" : "expiration",
-        ),
-        leaseEpoch: leaseEpoch
+        leaseType: this.createContent(epoch ? "epoch" : "expiration"),
+        leaseEpoch: epoch
           ? this.createContent(lease.epoch)
-          : rangeTableEmptyContent,
-        leaseTerm: leaseLeader
-          ? this.createContent(lease.term)
           : rangeTableEmptyContent,
         isLeaseholder: this.createContent(String(info.is_leaseholder)),
         leaseValid: this.createContent(String(info.lease_valid)),
         leaseStart: this.contentTimestamp(lease.start, now),
-        leaseExpiration: leaseExpiration
-          ? this.contentTimestamp(lease.expiration, now)
-          : rangeTableEmptyContent,
-        leaseMinExpiration: !leaseExpiration
-          ? this.contentTimestamp(lease.min_expiration, now)
-          : rangeTableEmptyContent,
+        leaseExpiration: epoch
+          ? rangeTableEmptyContent
+          : this.contentTimestamp(lease.expiration, now),
         leaseAppliedIndex: this.createContent(
           FixLong(info.state.state.lease_applied_index),
         ),
@@ -882,9 +841,9 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
           FixLong(info.lock_wait_queue_waiters),
         ),
         top_k_locks_by_wait_queue_waiters: this.contentIf(
-          size(info.top_k_locks_by_wait_queue_waiters) > 0,
+          _.size(info.top_k_locks_by_wait_queue_waiters) > 0,
           () => ({
-            value: map(
+            value: _.map(
               info.top_k_locks_by_wait_queue_waiters,
               lock => `${lock.pretty_key} (${lock.waiters} waiters)`,
             ),
@@ -933,8 +892,11 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
         circuitBreakerError: this.createContent(
           info.state.circuit_breaker_error,
         ),
-        locality: this.contentIf(size(info.locality.tiers) > 0, () => ({
-          value: map(info.locality.tiers, tier => `${tier.key}: ${tier.value}`),
+        locality: this.contentIf(_.size(info.locality.tiers) > 0, () => ({
+          value: _.map(
+            info.locality.tiers,
+            tier => `${tier.key}: ${tier.value}`,
+          ),
         })),
         pausedFollowers: this.createContent(
           info.state.paused_replicas?.join(", "),
@@ -943,7 +905,7 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
     });
 
     const leaderReplicaIDs = new Set(
-      map(leader.state.state.desc.internal_replicas, rep => rep.replica_id),
+      _.map(leader.state.state.desc.internal_replicas, rep => rep.replica_id),
     );
 
     // Go through all the replicas and add them to map for easy printing.
@@ -951,12 +913,12 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
       number,
       Map<number, protos.cockroach.roachpb.IReplicaDescriptor>
     > = new Map();
-    forEach(infos, info => {
+    _.forEach(infos, info => {
       const replicasByReplicaID: Map<
         number,
         protos.cockroach.roachpb.IReplicaDescriptor
       > = new Map();
-      forEach(info.state.state.desc.internal_replicas, rep => {
+      _.forEach(info.state.state.desc.internal_replicas, rep => {
         replicasByReplicaID.set(rep.replica_id, rep);
       });
       replicasByReplicaIDByStoreID.set(
@@ -972,7 +934,7 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
         </h2>
         <table className="range-table">
           <tbody>
-            {map(rangeTableDisplayList, (title, key) =>
+            {_.map(rangeTableDisplayList, (title, key) =>
               this.renderRangeRow(
                 title,
                 detailsByStoreID,
@@ -982,7 +944,7 @@ export default class RangeTable extends React.Component<RangeTableProps, {}> {
                 key,
               ),
             )}
-            {map(replicas, (replica, key) =>
+            {_.map(replicas, (replica, key) =>
               this.renderRangeReplicaRow(
                 replicasByReplicaIDByStoreID,
                 replica,

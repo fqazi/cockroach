@@ -134,14 +134,6 @@ message KVStats {
   // other transactions. This time accounts for a portion of KVTime above.
   optional util.optional.Duration contention_time = 4 [(gogoproto.nullable) = false];
 
-  // LockWaitTime is the cumulative time a KV request spent waiting in the lock
-  // table. This time accounts for a portion of ContentionTime above.
-  optional util.optional.Duration lock_wait_time = 29 [(gogoproto.nullable) = false];
-
-  // LatchWaitTime is the cumulative time a KV request spent waiting to acquire
-  // a latch. This time accounts for a portion of ContentionTime above.
-  optional util.optional.Duration latch_wait_time = 30 [(gogoproto.nullable) = false];
-
   // Internal iteration statistics.
   // For details, see pkg/sql/opt/exec/factory.go, pkg/storage/engine.go,
   // pebble.InternalIteratorStats, and pebble.RangeKeyIteratorStats.
@@ -176,17 +168,6 @@ message KVStats {
   // UsedStreamer indicates whether the Streamer API was used to perform KV
   // operations.
   optional bool used_streamer = 25 [(gogoproto.nullable) = false];
-
-  // NodeIDs are the NodeIDs of the KV servers that evaluated the requests.
-  repeated int32 node_ids = 26 [(gogoproto.customname) = "NodeIDs"];
-  // Regions are all regions that the KV servers which evaluated the requests
-  // reside in.
-  repeated string regions = 27;
-  // UsedFollowerRead indicates whether at least some reads were served by the
-  // follower replicas.
-  optional bool used_follower_read = 28 [(gogoproto.nullable) = false];
-
-  // Next ID: 31
 }
 
 // ExecStats contains statistics about the execution of a component.

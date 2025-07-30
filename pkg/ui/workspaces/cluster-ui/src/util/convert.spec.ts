@@ -3,10 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import * as protos from "@cockroachlabs/crdb-protobuf-client";
-import { fromNumber } from "long";
 import moment from "moment-timezone";
-
+import * as protos from "@cockroachlabs/crdb-protobuf-client";
 import {
   NanoToMilli,
   MilliToNano,
@@ -18,6 +16,7 @@ import {
   NumberToDuration,
   makeTimestamp,
 } from "./convert";
+import { fromNumber } from "long";
 
 const SECONDS = [0, 1, 2, 3, 4, 5, 100, 200, 300];
 

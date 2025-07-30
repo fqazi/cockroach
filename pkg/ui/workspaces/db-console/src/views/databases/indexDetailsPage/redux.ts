@@ -8,32 +8,30 @@ import {
   util,
   RecommendationType as RecType,
 } from "@cockroachlabs/cluster-ui";
+import { AdminUIState } from "src/redux/state";
 import { RouteComponentProps } from "react-router";
-
-import { cockroach } from "src/js/protos";
+import { getMatchParamByName } from "src/util/query";
+import {
+  databaseNameAttr,
+  tableNameAttr,
+  indexNameAttr,
+} from "src/util/constants";
 import {
   refreshIndexStats,
   refreshNodes,
   refreshUserSQLRoles,
 } from "src/redux/apiReducers";
 import { resetIndexUsageStatsAction } from "src/redux/indexUsageStats";
-import { nodeRegionsByIDSelector } from "src/redux/nodes";
-import { AdminUIState } from "src/redux/state";
-import { setGlobalTimeScaleAction } from "src/redux/statements";
-import { selectTimeScale } from "src/redux/timeScale";
+import { longToInt } from "src/util/fixLong";
+import { cockroach } from "src/js/protos";
+import TableIndexStatsRequest = cockroach.server.serverpb.TableIndexStatsRequest;
 import {
   selectHasViewActivityRedactedRole,
   selectHasAdminRole,
 } from "src/redux/user";
-import {
-  databaseNameAttr,
-  tableNameAttr,
-  indexNameAttr,
-} from "src/util/constants";
-import { longToInt } from "src/util/fixLong";
-import { getMatchParamByName } from "src/util/query";
-
-import TableIndexStatsRequest = cockroach.server.serverpb.TableIndexStatsRequest;
+import { nodeRegionsByIDSelector } from "src/redux/nodes";
+import { setGlobalTimeScaleAction } from "src/redux/statements";
+import { selectTimeScale } from "src/redux/timeScale";
 const { RecommendationType } = cockroach.sql.IndexRecommendation;
 
 export const mapStateToProps = (
@@ -90,8 +88,8 @@ export const mapStateToProps = (
       ),
       lastReset: util.TimestampToMoment(stats?.data?.last_reset, util.minDate),
       indexRecommendations,
-      databaseID: stats?.data?.database_id,
     },
+    breadcrumbItems: null,
   };
 };
 

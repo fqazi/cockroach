@@ -57,7 +57,7 @@ type TestingKnobs struct {
 
 	// StoreKVSubscriberOverride is used to override the KVSubscriber used when
 	// setting up a new store.
-	StoreKVSubscriberOverride func(KVSubscriber) KVSubscriber
+	StoreKVSubscriberOverride KVSubscriber
 
 	// KVAccessorPaginationInterceptor, if set, is invoked on every pagination
 	// event.
@@ -123,16 +123,13 @@ type TestingKnobs struct {
 	// coalescing system database ranges for the host tenant.
 	StoreIgnoreCoalesceAdjacentExceptions bool
 
+	// StoreInternConfigsInDryRuns, if set, will intern span configs even when
+	// applying mutations in dry run mode.
+	StoreInternConfigsInDryRuns bool
+
 	// OverrideFallbackConf, if set, allows tests to override fields in the
 	// fallback config that will be applied to the span.
 	OverrideFallbackConf func(roachpb.SpanConfig) roachpb.SpanConfig
-
-	// OnFullReconcilerStart is invoked when full reconciliation starts.
-	OnFullReconcilerStart func()
-
-	// OnWatchForZoneConfigUpdatesEstablished is invoked when the RangeFeed over
-	// system.zones starts.
-	OnWatchForZoneConfigUpdatesEstablished func()
 }
 
 // ModuleTestingKnobs is part of the base.ModuleTestingKnobs interface.

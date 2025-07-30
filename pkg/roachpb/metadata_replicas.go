@@ -325,7 +325,7 @@ func (d ReplicaSet) ConfState() raftpb.ConfState {
 	// config is not joint. If it is joint, slot the voters into the right
 	// category.
 	for _, rep := range d.wrapped {
-		id := raftpb.PeerID(rep.ReplicaID)
+		id := uint64(rep.ReplicaID)
 		switch rep.Type {
 		case VOTER_FULL:
 			cs.Voters = append(cs.Voters, id)
@@ -554,14 +554,6 @@ func CheckCanReceiveLease(
 	repDesc, ok := replDescs.GetReplicaDescriptorByID(wouldbeLeaseholder.ReplicaID)
 	if !ok {
 		return ErrReplicaNotFound
-	}
-	if repDesc.StoreID != wouldbeLeaseholder.StoreID {
-		return errors.AssertionFailedf("store ID mismatch: %d != %d",
-			repDesc.StoreID, wouldbeLeaseholder.StoreID)
-	}
-	if repDesc.NodeID != wouldbeLeaseholder.NodeID {
-		return errors.AssertionFailedf("node ID mismatch: %d != %d",
-			repDesc.NodeID, wouldbeLeaseholder.NodeID)
 	}
 	if !(repDesc.IsVoterNewConfig() ||
 		(repDesc.IsVoterOldConfig() && replDescs.containsVoterIncoming() && wasLastLeaseholder)) {

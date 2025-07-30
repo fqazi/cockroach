@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/errors"
 )
 
 // ExprContext is an interface containing objects necessary for creating
@@ -73,7 +72,8 @@ type ExprFactory struct {
 	indexVarMap     []int
 	indexedVarsHint int
 
-	replacer *iVarAndSubqueryReplacer
+	subqueryVisitor *evalAndReplaceSubqueryVisitor
+	remapper        *ivarRemapper
 }
 
 // Init initializes the ExprFactory.
@@ -101,25 +101,6 @@ func (ef *ExprFactory) IndexedVarsHint(hint int) {
 	ef.indexedVarsHint = hint
 }
 
-// exprFmtCtxBase produces a FmtCtx used for serializing expressions; a proper
-// IndexedVar formatting function needs to be added on. It replaces placeholders
-// with their values.
-func exprFmtCtxBase(ctx context.Context, evalCtx *eval.Context) *tree.FmtCtx {
-	fmtCtx := evalCtx.FmtCtx(
-		tree.FmtCheckEquivalence,
-		tree.FmtPlaceholderFormat(
-			func(fmtCtx *tree.FmtCtx, p *tree.Placeholder) {
-				d, err := eval.Expr(ctx, evalCtx, p)
-				if err != nil {
-					panic(errors.NewAssertionErrorWithWrappedErrf(err, "failed to serialize placeholder"))
-				}
-				d.Format(fmtCtx)
-			},
-		),
-	)
-	return fmtCtx
-}
-
 // Make creates a execinfrapb.Expression. Init must be called on the ExprFactory
 // before Make.
 //
@@ -137,26 +118,27 @@ func (ef *ExprFactory) Make(expr tree.TypedExpr) (execinfrapb.Expression, error)
 		ef.eCtx = &fakeExprContext{}
 	}
 
-	// Replace subqueries with their results (they must have been executed
-	// before the main query) and remap IndexedVars.
+	// Always replace the subqueries with their results (they must have been
+	// executed before the main query).
 	evalCtx := ef.eCtx.EvalContext()
-	if ef.replacer == nil {
-		// Lazily allocate the replacer.
-		ef.replacer = newIVarAndSubqueryReplacer(evalCtx, ef.indexVarMap, ef.indexedVarsHint)
+	if ef.subqueryVisitor == nil {
+		// Lazily allocate the subquery visitor.
+		ef.subqueryVisitor = &evalAndReplaceSubqueryVisitor{evalCtx: evalCtx}
 	}
-	newExpr, _ := tree.WalkExpr(ef.replacer, expr)
-	if ef.replacer.err != nil {
-		return execinfrapb.Expression{}, ef.replacer.err
+	outExpr, _ := tree.WalkExpr(ef.subqueryVisitor, expr)
+	if ef.subqueryVisitor.err != nil {
+		return execinfrapb.Expression{}, ef.subqueryVisitor.err
 	}
-	expr = newExpr.(tree.TypedExpr)
+	expr = outExpr.(tree.TypedExpr)
 
+	expr = ef.maybeRemapIVarsInTypedExpr(expr)
 	expression := execinfrapb.Expression{LocalExpr: expr}
 	if ef.eCtx.IsLocal() {
 		return expression, nil
 	}
 
 	// Since the plan is not fully local, serialize the expression.
-	fmtCtx := exprFmtCtxBase(ef.ctx, evalCtx)
+	fmtCtx := execinfrapb.ExprFmtCtxBase(ef.ctx, evalCtx)
 	fmtCtx.FormatNode(expr)
 	if log.V(1) {
 		log.Infof(ef.ctx, "Expr %s:\n%s", fmtCtx.String(), tree.ExprDebugString(expr))
@@ -165,75 +147,79 @@ func (ef *ExprFactory) Make(expr tree.TypedExpr) (execinfrapb.Expression, error)
 	return expression, nil
 }
 
-// iVarAndSubqueryReplacer is a tree.Visitor that replaces subqueries with their
-// results (they must have been executed before the main query) and remaps
-// tree.IndexedVars in expr using indexVarMap, if it is non-nil.
-type iVarAndSubqueryReplacer struct {
-	evalCtx       *eval.Context
-	indexVarMap   []int
-	indexVarAlloc []tree.IndexedVar
-	err           error
+// maybeRemapIVarsInTypedExpr remaps tree.IndexedVars in expr using indexVarMap
+// and the new expression is returned. If indexVarMap is nil, no remapping
+// occurs and the expression is returned as-is.
+func (ef *ExprFactory) maybeRemapIVarsInTypedExpr(expr tree.TypedExpr) tree.TypedExpr {
+	if ef.indexVarMap == nil {
+		return expr
+	}
+	if ef.remapper == nil {
+		// Lazily allocate the IndexVar remapper visitor.
+		ef.remapper = &ivarRemapper{indexVarMap: ef.indexVarMap}
+		if ef.indexedVarsHint > 0 {
+			// If there is a hint for the number of indexed vars that will be
+			// needed, allocate them ahead of time.
+			ef.remapper.indexVarAlloc = make([]tree.IndexedVar, ef.indexedVarsHint)
+		}
+	}
+	newExpr, _ := tree.WalkExpr(ef.remapper, expr)
+	return newExpr.(tree.TypedExpr)
 }
 
-var _ tree.Visitor = &iVarAndSubqueryReplacer{}
-
-func newIVarAndSubqueryReplacer(
-	evalCtx *eval.Context, indexVarMap []int, indexVarHint int,
-) *iVarAndSubqueryReplacer {
-	r := &iVarAndSubqueryReplacer{
-		evalCtx:     evalCtx,
-		indexVarMap: indexVarMap,
-	}
-	if indexVarHint > 0 {
-		// If there is a hint for the number of indexed vars that will be
-		// needed, allocate them ahead of time.
-		r.indexVarAlloc = make([]tree.IndexedVar, indexVarHint)
-	}
-	return r
+type evalAndReplaceSubqueryVisitor struct {
+	evalCtx *eval.Context
+	err     error
 }
 
-func (r *iVarAndSubqueryReplacer) VisitPre(expr tree.Expr) (bool, tree.Expr) {
-	switch t := expr.(type) {
+var _ tree.Visitor = &evalAndReplaceSubqueryVisitor{}
+
+func (e *evalAndReplaceSubqueryVisitor) VisitPre(expr tree.Expr) (bool, tree.Expr) {
+	switch expr := expr.(type) {
 	case *tree.Subquery:
-		val, err := r.evalCtx.Planner.EvalSubquery(t)
+		val, err := e.evalCtx.Planner.EvalSubquery(expr)
 		if err != nil {
-			r.err = err
+			e.err = err
 			return false, expr
 		}
 		newExpr := tree.Expr(val)
-		typ := t.ResolvedType()
+		typ := expr.ResolvedType()
 		if _, isTuple := val.(*tree.DTuple); !isTuple && typ.Family() != types.UnknownFamily && typ.Family() != types.TupleFamily {
 			newExpr = tree.NewTypedCastExpr(val, typ)
 		}
 		return false, newExpr
-
-	case *tree.IndexedVar:
-		if r.indexVarMap == nil {
-			// No-op if there is no index var map.
-			return false, expr
-		}
-		if t.Idx == r.indexVarMap[t.Idx] {
-			// Avoid the identical remapping since it's redundant.
-			return false, expr
-		}
-		newIvar := r.allocIndexedVar()
-		*newIvar = *t
-		newIvar.Idx = r.indexVarMap[t.Idx]
-		return false, newIvar
-
 	default:
 		return true, expr
 	}
 }
 
-func (*iVarAndSubqueryReplacer) VisitPost(expr tree.Expr) tree.Expr { return expr }
+func (evalAndReplaceSubqueryVisitor) VisitPost(expr tree.Expr) tree.Expr { return expr }
 
-func (r *iVarAndSubqueryReplacer) allocIndexedVar() *tree.IndexedVar {
-	if len(r.indexVarAlloc) == 0 {
-		// Allocate indexed vars in small batches.
-		r.indexVarAlloc = make([]tree.IndexedVar, 4)
+type ivarRemapper struct {
+	indexVarMap   []int
+	indexVarAlloc []tree.IndexedVar
+}
+
+var _ tree.Visitor = &ivarRemapper{}
+
+func (v *ivarRemapper) VisitPre(expr tree.Expr) (recurse bool, newExpr tree.Expr) {
+	if ivar, ok := expr.(*tree.IndexedVar); ok {
+		newIvar := v.allocIndexedVar()
+		*newIvar = *ivar
+		newIvar.Idx = v.indexVarMap[ivar.Idx]
+		return false, newIvar
 	}
-	iv := &r.indexVarAlloc[0]
-	r.indexVarAlloc = r.indexVarAlloc[1:]
+	return true, expr
+}
+
+func (*ivarRemapper) VisitPost(expr tree.Expr) tree.Expr { return expr }
+
+func (v *ivarRemapper) allocIndexedVar() *tree.IndexedVar {
+	if len(v.indexVarAlloc) == 0 {
+		// Allocate indexed vars in small batches.
+		v.indexVarAlloc = make([]tree.IndexedVar, 4)
+	}
+	iv := &v.indexVarAlloc[0]
+	v.indexVarAlloc = v.indexVarAlloc[1:]
 	return iv
 }

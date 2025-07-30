@@ -4,12 +4,10 @@
 // included in the /LICENSE file.
 
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-import moment, { Moment } from "moment-timezone";
-
-import { SqlApiResponse, ErrorWithKey, StmtInsightsReq } from "src/api";
-
-import { StmtInsightEvent } from "../../../insights";
 import { DOMAIN_NAME } from "../../utils";
+import moment, { Moment } from "moment-timezone";
+import { SqlApiResponse, ErrorWithKey, StmtInsightsReq } from "src/api";
+import { StmtInsightEvent } from "../../../insights";
 
 export type StatementFingerprintInsightsState = {
   data: SqlApiResponse<StmtInsightEvent[]> | null;

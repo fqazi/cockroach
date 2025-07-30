@@ -3,12 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { ConnectedRouter } from "connected-react-router";
-import { mount, ReactWrapper } from "enzyme";
-import { createMemoryHistory } from "history";
 import React from "react";
-import { Provider } from "react-redux";
+import { mount, ReactWrapper } from "enzyme";
 import { Action, Store } from "redux";
+import { Provider } from "react-redux";
+import { ConnectedRouter } from "connected-react-router";
+import { createMemoryHistory } from "history";
 
 import { AdminUIState, createAdminUIStore } from "src/redux/state";
 

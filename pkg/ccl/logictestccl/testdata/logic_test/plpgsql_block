@@ -1,3 +1,5 @@
+# LogicTest: !local-mixed-23.1
+
 statement ok
 CREATE TABLE ab (a INT, b INT);
 
@@ -246,6 +248,7 @@ CREATE PROCEDURE p_nested(curs REFCURSOR) AS $$
   END;
 $$ LANGUAGE PLpgSQL;
 
+skipif config local-mixed-23.2
 statement ok
 DROP FUNCTION f;
 CREATE FUNCTION f(n INT) RETURNS INT AS $$
@@ -281,6 +284,7 @@ $$ LANGUAGE PLpgSQL;
 statement ok
 CLOSE ALL;
 
+skipif config local-mixed-23.2
 query I
 SELECT f(0);
 ----
@@ -289,6 +293,7 @@ SELECT f(0);
 statement ok
 CLOSE ALL;
 
+skipif config local-mixed-23.2
 query I
 SELECT f(1);
 ----
@@ -297,6 +302,7 @@ SELECT f(1);
 statement ok
 CLOSE ALL;
 
+skipif config local-mixed-23.2
 query I
 SELECT f(2);
 ----
@@ -305,6 +311,7 @@ SELECT f(2);
 statement ok
 CLOSE ALL;
 
+skipif config local-mixed-23.2
 query I
 SELECT f(3);
 ----
@@ -490,7 +497,7 @@ query T noticetrace
 CALL p();
 ----
 NOTICE: outer handler
-NOTICE: inner block x=100
+NOTICE: inner block 100
 
 # A block nested in an exception handler can have its own exception handler.
 statement ok
@@ -519,7 +526,7 @@ CALL p();
 ----
 NOTICE: outer handler
 NOTICE: inner block
-NOTICE: inner handler x=100
+NOTICE: inner handler 100
 
 # A block can be nested inside another block that has an exception handler.
 statement ok

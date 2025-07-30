@@ -2,15 +2,12 @@
 //
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
-import { Dropdown } from "@cockroachlabs/cluster-ui";
-import React from "react";
-
 import { getCookieValue, setCookie } from "src/redux/cookies";
-import { isSystemTenant } from "src/redux/tenants";
-
+import React from "react";
+import { Dropdown } from "@cockroachlabs/cluster-ui";
 import ErrorBoundary from "../errorMessage/errorBoundary";
-
 import "./tenantDropdown.styl";
+import { isSystemTenant } from "src/redux/tenants";
 
 const tenantIDKey = "tenant";
 

@@ -3,8 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import startsWith from "lodash/startsWith";
-import toLower from "lodash/toLower";
+import _ from "lodash";
 
 export interface StatementSummary {
   statement?: string;
@@ -25,7 +24,7 @@ const keywords: { [key: string]: RegExp } = {
 // of the query.
 export function summarize(statement: string): StatementSummary {
   for (const keyword in keywords) {
-    if (startsWith(toLower(statement), toLower(keyword))) {
+    if (_.startsWith(_.toLower(statement), _.toLower(keyword))) {
       const tablePattern = keywords[keyword];
       const tableMatch = tablePattern.exec(statement);
 

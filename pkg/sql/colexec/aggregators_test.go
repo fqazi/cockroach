@@ -66,10 +66,9 @@ const (
 // aggType is a helper struct that allows tests to test both the ordered and
 // hash aggregators at the same time.
 type aggType struct {
-	new          func(context.Context, *colexecagg.NewAggregatorArgs) colexecop.ResettableOperator
-	afterEachRun func() // if set, will be called at the end of each benchmark iteration
-	name         string
-	order        ordering
+	new   func(context.Context, *colexecagg.NewAggregatorArgs) colexecop.ResettableOperator
+	name  string
+	order ordering
 }
 
 var aggTypesWithPartial = []aggType{
@@ -823,6 +822,7 @@ func TestAggregators(t *testing.T) {
 				func(input []colexecop.Operator) (colexecop.Operator, error) {
 					args := &colexecagg.NewAggregatorArgs{
 						Allocator:      testAllocator,
+						MemAccount:     testMemAcc,
 						Input:          input[0],
 						InputTypes:     tc.typs,
 						Spec:           tc.spec,
@@ -859,13 +859,13 @@ func TestAggregatorRandom(t *testing.T) {
 					log.Infof(context.Background(), "%s/groupSize=%d/numInputBatches=%d/hasNulls=%t", agg.name, groupSize, numInputBatches, hasNulls)
 					nTuples := coldata.BatchSize() * numInputBatches
 					typs := []*types.T{types.Int, types.Float}
-					cols := []*coldata.Vec{
-						testAllocator.NewVec(typs[0], nTuples),
-						testAllocator.NewVec(typs[1], nTuples),
+					cols := []coldata.Vec{
+						testAllocator.NewMemColumn(typs[0], nTuples),
+						testAllocator.NewMemColumn(typs[1], nTuples),
 					}
 					if agg.order == partial {
 						typs = append(typs, types.Int)
-						cols = append(cols, testAllocator.NewVec(typs[2], nTuples))
+						cols = append(cols, testAllocator.NewMemColumn(typs[2], nTuples))
 					}
 					groups, aggCol, aggColNulls := cols[0].Int64(), cols[1].Float64(), cols[1].Nulls()
 					expectedTuples := colexectestutils.Tuples{}
@@ -951,6 +951,7 @@ func TestAggregatorRandom(t *testing.T) {
 					require.NoError(t, err)
 					args := &colexecagg.NewAggregatorArgs{
 						Allocator:      testAllocator,
+						MemAccount:     testMemAcc,
 						Input:          source,
 						InputTypes:     tc.typs,
 						Spec:           tc.spec,
@@ -1036,9 +1037,9 @@ func benchmarkAggregateFunction(
 		groupCols = append(groupCols, uint32(g))
 	}
 	typs = append(typs, aggInputTypes...)
-	cols := make([]*coldata.Vec, len(typs))
+	cols := make([]coldata.Vec, len(typs))
 	for i := range typs {
-		cols[i] = testAllocator.NewVec(typs[i], numInputRows)
+		cols[i] = testAllocator.NewMemColumn(typs[i], numInputRows)
 	}
 	groups := cols[0].Int64()
 	if agg.order == ordered {
@@ -1156,21 +1157,10 @@ func benchmarkAggregateFunction(
 	if numSameAggs != 1 {
 		numSameAggsSuffix = fmt.Sprintf("/numSameAggs=%d", numSameAggs)
 	}
-	afterEachRunDefault := func(b *testing.B, op colexecop.Operator) {
-		if err = op.(colexecop.Closer).Close(ctx); err != nil {
-			b.Fatal(err)
-		}
-	}
 	b.Run(fmt.Sprintf(
 		"%s/%s/%s%s/groupSize=%d%s/numInputRows=%d",
 		fName, agg.name, inputTypesString, numSameAggsSuffix, groupSize, distinctProbString, numInputRows),
 		func(b *testing.B) {
-			afterEachRun := afterEachRunDefault
-			if agg.afterEachRun != nil {
-				afterEachRun = func(*testing.B, colexecop.Operator) {
-					agg.afterEachRun()
-				}
-			}
 			// Simulate the scenario when the optimizer has the perfect
 			// estimate.
 			estimatedRowCount := uint64(math.Ceil(float64(numInputRows) / float64(groupSize)))
@@ -1179,6 +1169,7 @@ func benchmarkAggregateFunction(
 			for i := 0; i < b.N; i++ {
 				a := agg.new(ctx, &colexecagg.NewAggregatorArgs{
 					Allocator:         testAllocator,
+					MemAccount:        testMemAcc,
 					Input:             source,
 					InputTypes:        tc.typs,
 					Spec:              tc.spec,
@@ -1198,7 +1189,9 @@ func benchmarkAggregateFunction(
 						break
 					}
 				}
-				afterEachRun(b, a)
+				if err = a.(colexecop.Closer).Close(ctx); err != nil {
+					b.Fatal(err)
+				}
 				source.Reset(ctx)
 			}
 		},

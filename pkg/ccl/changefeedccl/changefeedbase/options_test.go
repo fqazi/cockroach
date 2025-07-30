@@ -6,9 +6,13 @@
 package changefeedbase
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
+	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/stretchr/testify/require"
@@ -51,31 +55,37 @@ func TestOptionsValidations(t *testing.T) {
 	}
 }
 
-func TestEncodingOptionsValidations(t *testing.T) {
+func TestLaggingRangesVersionGate(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	cases := []struct {
-		opts      EncodingOptions
-		expectErr string
-	}{
-		{EncodingOptions{Envelope: OptEnvelopeRow, Format: OptFormatAvro}, "envelope=row is not supported with format=avro"},
-		{EncodingOptions{Format: OptFormatAvro, EncodeJSONValueNullAsObject: true}, "is only usable with format=json"},
-		{EncodingOptions{Format: OptFormatAvro, Envelope: OptEnvelopeBare, KeyInValue: true}, "is only usable with envelope=wrapped"},
-		{EncodingOptions{Format: OptFormatAvro, Envelope: OptEnvelopeBare, TopicInValue: true}, "is only usable with envelope=wrapped"},
-		{EncodingOptions{Format: OptFormatAvro, Envelope: OptEnvelopeBare, UpdatedTimestamps: true}, "is only usable with envelope=wrapped"},
-		{EncodingOptions{Format: OptFormatAvro, Envelope: OptEnvelopeBare, MVCCTimestamps: true}, "is only usable with envelope=wrapped"},
-		{EncodingOptions{Format: OptFormatAvro, Envelope: OptEnvelopeBare, Diff: true}, "is only usable with envelope=wrapped"},
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
 
-	for _, c := range cases {
-		err := c.opts.Validate()
-		if c.expectErr == "" {
-			require.NoError(t, err)
-		} else {
-			require.Error(t, err)
-			require.Contains(t, err.Error(), c.expectErr)
-		}
-	}
+	// The version does not matter if the default config is used.
+	t.Run("default config", func(t *testing.T) {
+		opts := MakeDefaultOptions()
+		settings := cluster.MakeTestingClusterSettingsWithVersions(clusterversion.V23_2_ChangefeedLaggingRangesOpts.Version(), clusterversion.V23_1.Version(), true)
+		_, _, err := opts.GetLaggingRangesConfig(ctx, settings)
+		require.NoError(t, err)
 
+		settings = cluster.MakeTestingClusterSettingsWithVersions((clusterversion.V23_2_ChangefeedLaggingRangesOpts - 1).Version(), clusterversion.V23_1.Version(), true)
+		_, _, err = opts.GetLaggingRangesConfig(ctx, settings)
+		require.NoError(t, err)
+	})
+
+	t.Run("non-default options", func(t *testing.T) {
+		opts := MakeDefaultOptions()
+
+		opts.m[OptLaggingRangesThreshold] = "25ms"
+		opts.m[OptLaggingRangesPollingInterval] = "250ms"
+
+		settings := cluster.MakeTestingClusterSettingsWithVersions(clusterversion.V23_2_ChangefeedLaggingRangesOpts.Version(), clusterversion.V23_1.Version(), true)
+		_, _, err := opts.GetLaggingRangesConfig(ctx, settings)
+		require.NoError(t, err)
+
+		settings = cluster.MakeTestingClusterSettingsWithVersions((clusterversion.V23_2_ChangefeedLaggingRangesOpts - 1).Version(), clusterversion.V23_1.Version(), true)
+		_, _, err = opts.GetLaggingRangesConfig(ctx, settings)
+		require.Error(t, err, "cluster version must be 23.2 or greater")
+	})
 }

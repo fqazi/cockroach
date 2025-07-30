@@ -6,13 +6,11 @@
 package rttanalysis
 
 import (
-	"cmp"
 	"encoding/csv"
 	"flag"
 	"os"
 	"os/exec"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -218,8 +216,8 @@ func (s *resultSet) toSlice() (res []benchmarkResult) {
 }
 
 func resultsToExpectations(t *testing.T, results []benchmarkResult) benchmarkExpectations {
-	slices.SortFunc(results, func(a, b benchmarkResult) int {
-		return cmp.Compare(a.name, b.name)
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].name < results[j].name
 	})
 	var res benchmarkExpectations
 	var cur benchmarkExpectation

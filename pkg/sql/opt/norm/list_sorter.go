@@ -26,9 +26,5 @@ func (s listSorter) less(i, j int) bool {
 func (s listSorter) compare(i, j int) int {
 	leftD := memo.ExtractConstDatum(s.list[i])
 	rightD := memo.ExtractConstDatum(s.list[j])
-	cmp, err := leftD.Compare(s.cf.f.ctx, s.cf.f.evalCtx, rightD)
-	if err != nil {
-		panic(err)
-	}
-	return cmp
+	return leftD.Compare(s.cf.f.evalCtx, rightD)
 }

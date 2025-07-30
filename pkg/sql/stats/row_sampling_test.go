@@ -107,7 +107,7 @@ func TestSampleReservoir(t *testing.T) {
 			for _, mem := range []int64{1 << 8, 1 << 10, 1 << 12} {
 				t.Run(fmt.Sprintf("n=%d/k=%d/mem=%d", n, k, mem), func(t *testing.T) {
 					monitor := mon.NewMonitor(mon.Options{
-						Name:      mon.MakeName("test-monitor"),
+						Name:      "test-monitor",
 						Limit:     mem,
 						Increment: 1,
 						Settings:  st,
@@ -130,13 +130,10 @@ func TestSampleReservoir(t *testing.T) {
 }
 
 func TestTruncateDatum(t *testing.T) {
-	ctx := context.Background()
 	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
 	runTest := func(d, expected tree.Datum) {
 		actual := truncateDatum(&evalCtx, d, 10 /* maxBytes */)
-		if cmp, err := actual.Compare(ctx, &evalCtx, expected); err != nil {
-			t.Fatal(err)
-		} else if cmp != 0 {
+		if actual.Compare(&evalCtx, expected) != 0 {
 			t.Fatalf("expected %s but found %s", expected.String(), actual.String())
 		}
 	}
@@ -201,7 +198,7 @@ func TestSampleReservoirMemAccounting(t *testing.T) {
 		{getStringDatum(maxBytesPerSample), getStringDatum(0)}, // rank 1
 	}
 	monitor := mon.NewMonitor(mon.Options{
-		Name:      mon.MakeName("test-monitor"),
+		Name:      "test-monitor",
 		Limit:     memLimit,
 		Increment: 1,
 		Settings:  st,

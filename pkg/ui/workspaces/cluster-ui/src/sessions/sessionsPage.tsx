@@ -3,14 +3,20 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
-import isNil from "lodash/isNil";
-import merge from "lodash/merge";
-import moment from "moment-timezone";
 import React from "react";
-import { RouteComponentProps } from "react-router-dom";
+import { isNil, merge } from "lodash";
 
-import { Loading } from "src/loading";
+import { syncHistory } from "src/util/query";
+import {
+  getStatusString,
+  makeSessionsColumns,
+  SessionInfo,
+  SessionsSortedTable,
+} from "./sessionsTable";
+import { RouteComponentProps } from "react-router-dom";
+import classNames from "classnames/bind";
+
+import LoadingError, { mergeErrors } from "../sqlActivity/errorComponent";
 import { Pagination } from "src/pagination";
 import {
   SortSetting,
@@ -18,17 +24,7 @@ import {
   updateSortSettingQueryParamsOnTab,
   ColumnDescriptor,
 } from "src/sortedtable";
-import statementsPageStyles from "src/statementsPage/statementsPage.module.scss";
-import {
-  ICancelSessionRequest,
-  ICancelQueryRequest,
-} from "src/store/terminateQuery";
-import { TimestampToMoment, unset } from "src/util";
-import { syncHistory } from "src/util/query";
-
-import ColumnsSelector, {
-  SelectOption,
-} from "../columnsSelector/columnsSelector";
+import { Loading } from "src/loading";
 import {
   calculateActiveFilters,
   defaultFilters,
@@ -38,27 +34,32 @@ import {
   handleFiltersFromQueryString,
   SelectedFilters,
 } from "../queryFilter";
-import LoadingError, { mergeErrors } from "../sqlActivity/errorComponent";
-import {
-  getLabel,
-  StatisticTableColumnKeys,
-} from "../statsTableUtil/statsTableUtil";
-import { TableStatistics } from "../tableStatistics";
 
-import { EmptySessionsTablePlaceholder } from "./emptySessionsTablePlaceholder";
-import sessionPageStyles from "./sessionPage.module.scss";
-import {
-  getStatusString,
-  makeSessionsColumns,
-  SessionInfo,
-  SessionsSortedTable,
-} from "./sessionsTable";
 import TerminateQueryModal, {
   TerminateQueryModalRef,
 } from "./terminateQueryModal";
 import TerminateSessionModal, {
   TerminateSessionModalRef,
 } from "./terminateSessionModal";
+
+import {
+  ICancelSessionRequest,
+  ICancelQueryRequest,
+} from "src/store/terminateQuery";
+
+import statementsPageStyles from "src/statementsPage/statementsPage.module.scss";
+import sessionPageStyles from "./sessionPage.module.scss";
+import ColumnsSelector, {
+  SelectOption,
+} from "../columnsSelector/columnsSelector";
+import { TimestampToMoment, unset } from "src/util";
+import moment from "moment-timezone";
+import {
+  getLabel,
+  StatisticTableColumnKeys,
+} from "../statsTableUtil/statsTableUtil";
+import { TableStatistics } from "../tableStatistics";
+import { EmptySessionsTablePlaceholder } from "./emptySessionsTablePlaceholder";
 
 const statementsPageCx = classNames.bind(statementsPageStyles);
 const sessionsPageCx = classNames.bind(sessionPageStyles);

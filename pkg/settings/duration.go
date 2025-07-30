@@ -45,11 +45,6 @@ func (d *DurationSetting) String(sv *Values) string {
 	return EncodeDuration(d.Get(sv))
 }
 
-// DefaultString returns the default value for the setting as a string.
-func (d *DurationSetting) DefaultString() string {
-	return EncodeDuration(d.defaultValue)
-}
-
 // Encoded returns the encoded value of the current value of the setting.
 func (d *DurationSetting) Encoded(sv *Values) string {
 	return d.String(sv)
@@ -66,7 +61,7 @@ func (d *DurationSetting) DecodeToString(encoded string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return v.String(), nil
+	return EncodeDuration(v), nil
 }
 
 // DecodeValue decodes the value into a float.
@@ -82,6 +77,11 @@ func (*DurationSetting) Typ() string {
 // Default returns default value for setting.
 func (d *DurationSetting) Default() time.Duration {
 	return d.defaultValue
+}
+
+// DefaultString returns the default value for the setting as a string.
+func (d *DurationSetting) DefaultString() (string, error) {
+	return d.DecodeToString(d.EncodedDefault())
 }
 
 // Defeat the linter.
@@ -115,25 +115,6 @@ func (d *DurationSetting) set(ctx context.Context, sv *Values, v time.Duration) 
 	return nil
 }
 
-func (d *DurationSetting) decodeAndSet(ctx context.Context, sv *Values, encoded string) error {
-	v, err := d.DecodeValue(encoded)
-	if err != nil {
-		return err
-	}
-	return d.set(ctx, sv, v)
-}
-
-func (d *DurationSetting) decodeAndSetDefaultOverride(
-	ctx context.Context, sv *Values, encoded string,
-) error {
-	v, err := d.DecodeValue(encoded)
-	if err != nil {
-		return err
-	}
-	sv.setDefaultOverride(d.slot, v)
-	return nil
-}
-
 func (d *DurationSetting) setToDefault(ctx context.Context, sv *Values) {
 	// See if the default value was overridden.
 	if val := sv.getDefaultOverride(d.slot); val != nil {
@@ -147,14 +128,11 @@ func (d *DurationSetting) setToDefault(ctx context.Context, sv *Values) {
 	}
 }
 
-// RegisterDurationSetting defines a new setting with type duration and any
-// supplied validation function(s). If no validation functions are given, then
-// the non-negative duration validation is performed.
+// RegisterDurationSetting defines a new setting with type duration.
 func RegisterDurationSetting(
 	class Class, key InternalKey, desc string, defaultValue time.Duration, opts ...SettingOption,
 ) *DurationSetting {
 	validateFn := func(val time.Duration) error {
-		hasExplicitValidationFn := false
 		for _, opt := range opts {
 			switch {
 			case opt.commonOpt != nil:
@@ -163,14 +141,9 @@ func RegisterDurationSetting(
 			default:
 				panic(errors.AssertionFailedf("wrong validator type"))
 			}
-			hasExplicitValidationFn = true
 			if err := opt.validateDurationFn(val); err != nil {
-				return err
+				return errors.Wrapf(err, "invalid value for %s", key)
 			}
-		}
-		if !hasExplicitValidationFn {
-			// Default validation.
-			return nonNegativeDurationInternal(val)
 		}
 		return nil
 	}
@@ -187,14 +160,13 @@ func RegisterDurationSetting(
 	return setting
 }
 
-// RegisterDurationSettingWithExplicitUnit defines a new setting with type
-// duration which requires an explicit unit when being set. If no validation
-// functions are given, then the non-negative duration validation is performed.
+// RegisterPublicDurationSettingWithExplicitUnit defines a new
+// public setting with type duration which requires an explicit unit when being
+// set.
 func RegisterDurationSettingWithExplicitUnit(
 	class Class, key InternalKey, desc string, defaultValue time.Duration, opts ...SettingOption,
 ) *DurationSettingWithExplicitUnit {
 	validateFn := func(val time.Duration) error {
-		hasExplicitValidationFn := false
 		for _, opt := range opts {
 			switch {
 			case opt.commonOpt != nil:
@@ -203,14 +175,9 @@ func RegisterDurationSettingWithExplicitUnit(
 			default:
 				panic(errors.AssertionFailedf("wrong validator type"))
 			}
-			hasExplicitValidationFn = true
 			if err := opt.validateDurationFn(val); err != nil {
-				return err
+				return errors.Wrapf(err, "invalid value for %s", key)
 			}
-		}
-		if !hasExplicitValidationFn {
-			// Default validation.
-			return nonNegativeDurationInternal(val)
 		}
 		return nil
 	}
@@ -227,6 +194,10 @@ func RegisterDurationSettingWithExplicitUnit(
 	setting.apply(opts)
 	return setting
 }
+
+// NonNegativeDuration checks that the duration is greater or equal to
+// zero. It can be passed to RegisterDurationSetting.
+var NonNegativeDuration SettingOption = WithValidateDuration(nonNegativeDurationInternal)
 
 func nonNegativeDurationInternal(v time.Duration) error {
 	if v < 0 {

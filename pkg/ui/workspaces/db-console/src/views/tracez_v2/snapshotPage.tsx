@@ -7,12 +7,10 @@ import {
   SnapshotPage,
   SnapshotPageStateProps,
   SortSetting,
-  api as clusterUiApi,
 } from "@cockroachlabs/cluster-ui";
-import Long from "long";
+import { api as clusterUiApi } from "@cockroachlabs/cluster-ui";
 import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
-
 import {
   rawTraceKey,
   refreshNodes,
@@ -24,6 +22,7 @@ import {
 import { LocalSetting } from "src/redux/localsettings";
 import { AdminUIState } from "src/redux/state";
 import { getMatchParamByName } from "src/util/query";
+import Long from "long";
 
 export const sortSetting = new LocalSetting<AdminUIState, SortSetting>(
   "sortSetting/spans",

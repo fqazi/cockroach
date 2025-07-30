@@ -3,11 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Heading, Text } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
-import isString from "lodash/isString";
 import React from "react";
-
+import classNames from "classnames/bind";
+import { isString } from "lodash";
+import { Heading, Text } from "@cockroachlabs/ui-components";
 import styles from "./emptyTable.module.scss";
 
 export interface EmptyTableProps {

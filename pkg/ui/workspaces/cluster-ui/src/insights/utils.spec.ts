@@ -4,7 +4,14 @@
 // included in the /LICENSE file.
 
 import moment from "moment-timezone";
-
+import {
+  filterStatementInsights,
+  filterTransactionInsights,
+  getAppsFromStatementInsights,
+  getAppsFromTransactionInsights,
+  getInsightsFromProblemsAndCauses,
+  mergeTxnInsightDetails,
+} from "./utils";
 import {
   ContentionDetails,
   failedExecutionInsight,
@@ -21,14 +28,6 @@ import {
   TxnInsightDetails,
   TxnInsightEvent,
 } from "./types";
-import {
-  filterStatementInsights,
-  filterTransactionInsights,
-  getAppsFromStatementInsights,
-  getAppsFromTransactionInsights,
-  getInsightsFromProblemsAndCauses,
-  mergeTxnInsightDetails,
-} from "./utils";
 
 const INTERNAL_APP_PREFIX = "$ internal";
 
@@ -450,12 +449,12 @@ describe("test workload insights utils", () => {
     const createTestCases = (execType: InsightExecEnum) => [
       {
         problem: "FailedExecution",
-        causes: [InsightNameEnum.FAILED_EXECUTION],
+        causes: [InsightNameEnum.failedExecution],
         expectedInsights: [failedExecutionInsight(execType)],
       },
       {
         problem: "SlowExecution",
-        causes: [InsightNameEnum.FAILED_EXECUTION],
+        causes: [InsightNameEnum.failedExecution],
         expectedInsights: [failedExecutionInsight(execType)],
       },
       {
@@ -466,10 +465,10 @@ describe("test workload insights utils", () => {
       {
         problem: "SlowExecution",
         causes: [
-          InsightNameEnum.PLAN_REGRESSION,
-          InsightNameEnum.SUBOPTIMAL_PLAN,
-          InsightNameEnum.HIGH_RETRY_COUNT,
-          InsightNameEnum.HIGH_CONTENTION,
+          InsightNameEnum.planRegression,
+          InsightNameEnum.suboptimalPlan,
+          InsightNameEnum.highRetryCount,
+          InsightNameEnum.highContention,
         ],
         expectedInsights: [
           planRegressionInsight(execType),
@@ -480,7 +479,7 @@ describe("test workload insights utils", () => {
       },
       {
         problem: "random",
-        causes: [InsightNameEnum.FAILED_EXECUTION],
+        causes: [InsightNameEnum.failedExecution],
         expectedInsights: [],
       },
     ];

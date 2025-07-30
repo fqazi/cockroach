@@ -4,21 +4,17 @@
 // included in the /LICENSE file.
 
 import React from "react";
-
-import { Anchor } from "src/anchor";
+import { TransactionViewType } from "./transactionsPageTypes";
 import { Option } from "src/selectWithDescription/selectWithDescription";
 import { SQLActivityRootControls } from "src/sqlActivityRootControls/sqlActivityRootControls";
-
+import { TransactionsPageProps } from "./transactionsPage";
+import { TransactionsPage } from ".";
 import { statementsSql } from "../util/docs";
-
 import {
   ActiveTransactionsView,
   ActiveTransactionsViewProps,
 } from "./activeTransactionsView";
-import { TransactionsPageProps } from "./transactionsPage";
-import { TransactionViewType } from "./transactionsPageTypes";
-
-import { TransactionsPage } from ".";
+import { Anchor } from "src/anchor";
 
 export type TransactionsPageRootProps = {
   fingerprintsPageProps: TransactionsPageProps;

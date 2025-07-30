@@ -6,8 +6,8 @@
 # included in the /LICENSE file.
 
 #
-# On a Debian/Ubuntu system, bootstraps all the required dependencies for the
-# cockroach & managed-service repos.
+# On a Debian/Ubuntu system, bootstraps a docker install and the cockroach
+# repo.
 
 set -euxo pipefail
 
@@ -31,9 +31,13 @@ sudo apt-get install -y --no-install-recommends \
 
 # pnpm doesn't provide a Debian repository, and supports either `curl | sh` or `npm install -g` installations.
 curl -fsSL https://get.pnpm.io/install.sh | env PNPM_VERSION=8.6.6 sh -
-echo >> ~/.bashrc
 
 sudo adduser "${USER}" docker
+
+# Configure environment variables.
+echo 'export PATH="${PATH}:$HOME/go/src/github.com/cockroachdb/cockroach/bin:/usr/local/go/bin"' >> ~/.bashrc_bootstrap
+echo '. ~/.bashrc_bootstrap' >> ~/.bashrc
+. ~/.bashrc_bootstrap
 
 # Upgrade cmake.
 trap 'rm -f /tmp/cmake.tgz' EXIT
@@ -45,21 +49,15 @@ sudo tar -C /usr --strip-components=1 -zxf /tmp/cmake.tgz && rm /tmp/cmake.tgz
 
 # Install Go.
 trap 'rm -f /tmp/go.tgz' EXIT
-curl -fsSL https://dl.google.com/go/go1.23.7.linux-amd64.tar.gz >/tmp/go.tgz
+curl -fsSL https://dl.google.com/go/go1.22.5.linux-amd64.tar.gz >/tmp/go.tgz
 sha256sum -c - <<EOF
-4741525e69841f2e22f9992af25df0c1112b07501f61f741c12c6389fcb119f3  /tmp/go.tgz
+904b924d435eaea086515bc63235b192ea441bd8c9b198c507e85009e6e4c7f0  /tmp/go.tgz
 EOF
 sudo tar -C /usr/local -zxf /tmp/go.tgz && rm /tmp/go.tgz
 
-# Install Docker compose.
-sudo curl -L "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64" -o /usr/local/bin/docker-compose
-sudo chmod +x /usr/local/bin/docker-compose
-docker-compose --version
-
-# Install NVM.
-# Note: you still required to run `nvm install <version>` to install a specific version of Node.js.
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-echo >> ~/.bashrc
+# Clone CockroachDB.
+git clone https://github.com/cockroachdb/cockroach "$(go env GOPATH)/src/github.com/cockroachdb/cockroach"
+git -C "$(go env GOPATH)/src/github.com/cockroachdb/cockroach" submodule update --init
 
 # Install Bazelisk as Bazel.
 # NOTE: you should keep this in sync with build/packer/teamcity-agent.sh and build/bazelbuilder/Dockerfile -- if
@@ -72,13 +70,3 @@ sudo mv /tmp/bazelisk /usr/bin/bazel
 
 # Install the Unison file-syncer.
 . bootstrap/bootstrap-unison.sh
-
-# Configure environment variables for CockroachDB
-echo 'export PATH="${PATH}:${HOME}/go/src/github.com/cockroachdb/cockroach/bin:/usr/local/go/bin"' >> ~/.bashrc_bootstrap
-echo >> ~/.bashrc
-echo '. ~/.bashrc_bootstrap' >> ~/.bashrc
-. ~/.bashrc_bootstrap
-
-git clone https://github.com/cockroachdb/cockroach "$(go env GOPATH)/src/github.com/cockroachdb/cockroach"
-git -C "$(go env GOPATH)/src/github.com/cockroachdb/cockroach" submodule update --init
-

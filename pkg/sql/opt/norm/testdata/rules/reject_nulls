@@ -547,40 +547,51 @@ norm
 SELECT 1 FROM a AS ref_0 LEFT JOIN a AS ref_1 ON EXISTS(SELECT 1 FROM a WHERE a.s = ref_0.s)
 ----
 project
- ├── columns: "?column?":23!null
- ├── fd: ()-->(23)
+ ├── columns: "?column?":24!null
+ ├── fd: ()-->(24)
  ├── left-join-apply
- │    ├── columns: ref_0.s:4 exists:22
+ │    ├── columns: ref_0.s:4 exists:23
  │    ├── scan a [as=ref_0]
  │    │    └── columns: ref_0.s:4
  │    ├── project
- │    │    ├── columns: exists:22!null
+ │    │    ├── columns: exists:23!null
  │    │    ├── outer: (4)
  │    │    ├── group-by (hash)
- │    │    │    ├── columns: ref_1.k:7!null canary_agg:21
+ │    │    │    ├── columns: ref_1.k:7!null true_agg:22
  │    │    │    ├── grouping columns: ref_1.k:7!null
  │    │    │    ├── outer: (4)
  │    │    │    ├── key: (7)
- │    │    │    ├── fd: (7)-->(21)
+ │    │    │    ├── fd: (7)-->(22)
  │    │    │    ├── left-join (cross)
- │    │    │    │    ├── columns: ref_1.k:7!null a.s:16
+ │    │    │    │    ├── columns: ref_1.k:7!null true:21
  │    │    │    │    ├── outer: (4)
  │    │    │    │    ├── scan a [as=ref_1]
  │    │    │    │    │    ├── columns: ref_1.k:7!null
  │    │    │    │    │    └── key: (7)
- │    │    │    │    ├── scan a
- │    │    │    │    │    └── columns: a.s:16
- │    │    │    │    └── filters
- │    │    │    │         └── a.s:16 = ref_0.s:4 [outer=(4,16), constraints=(/4: (/NULL - ]; /16: (/NULL - ]), fd=(4)==(16), (16)==(4)]
+ │    │    │    │    ├── project
+ │    │    │    │    │    ├── columns: true:21!null
+ │    │    │    │    │    ├── outer: (4)
+ │    │    │    │    │    ├── fd: ()-->(21)
+ │    │    │    │    │    ├── select
+ │    │    │    │    │    │    ├── columns: a.s:16!null
+ │    │    │    │    │    │    ├── outer: (4)
+ │    │    │    │    │    │    ├── fd: ()-->(16)
+ │    │    │    │    │    │    ├── scan a
+ │    │    │    │    │    │    │    └── columns: a.s:16
+ │    │    │    │    │    │    └── filters
+ │    │    │    │    │    │         └── a.s:16 = ref_0.s:4 [outer=(4,16), constraints=(/4: (/NULL - ]; /16: (/NULL - ]), fd=(4)==(16), (16)==(4)]
+ │    │    │    │    │    └── projections
+ │    │    │    │    │         └── true [as=true:21]
+ │    │    │    │    └── filters (true)
  │    │    │    └── aggregations
- │    │    │         └── const-not-null-agg [as=canary_agg:21, outer=(16)]
- │    │    │              └── a.s:16
+ │    │    │         └── const-not-null-agg [as=true_agg:22, outer=(21)]
+ │    │    │              └── true:21
  │    │    └── projections
- │    │         └── canary_agg:21 IS NOT NULL [as=exists:22, outer=(21)]
+ │    │         └── true_agg:22 IS NOT NULL [as=exists:23, outer=(22)]
  │    └── filters
- │         └── exists:22 [outer=(22), constraints=(/22: [/true - /true]; tight), fd=()-->(22)]
+ │         └── exists:23 [outer=(23), constraints=(/23: [/true - /true]; tight), fd=()-->(23)]
  └── projections
-      └── 1 [as="?column?":23]
+      └── 1 [as="?column?":24]
 
 # Use with multi-argument aggregate function.
 norm expect=RejectNullsGroupBy
@@ -767,7 +778,7 @@ inner-join (hash)
  ├── columns: k:1!null i:2 f:3 s:4 x:7!null y:8!null u:11!null v:12
  ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-more)
  ├── key: (7)
- ├── fd: (1)-->(2-4), (7)-->(8), (11)-->(12), (1)==(7), (7)==(1), (8)==(11), (11)==(8)
+ ├── fd: (1)-->(2-4), (7)-->(8), (1)==(7), (7)==(1), (11)-->(12), (8)==(11), (11)==(8)
  ├── inner-join (hash)
  │    ├── columns: k:1!null i:2 f:3 s:4 x:7!null y:8!null
  │    ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-one)
@@ -849,7 +860,7 @@ inner-join (hash)
  ├── columns: k:1!null i:2 f:3 s:4 x:7!null y:8!null u:11!null v:12
  ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-more)
  ├── key: (7)
- ├── fd: (1)-->(2-4), (7)-->(8), (11)-->(12), (1)==(7), (7)==(1), (8)==(11), (11)==(8)
+ ├── fd: (1)-->(2-4), (7)-->(8), (1)==(7), (7)==(1), (11)-->(12), (8)==(11), (11)==(8)
  ├── inner-join (hash)
  │    ├── columns: k:1!null i:2 f:3 s:4 x:7!null y:8
  │    ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-one)
@@ -974,7 +985,7 @@ inner-join-apply
  │    ├── cardinality: [0 - 1]
  │    ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-one)
  │    ├── key: ()
- │    ├── fd: ()-->(5-9), (5)==(6), (6)==(5)
+ │    ├── fd: ()-->(5-9), (6)==(5), (5)==(6)
  │    ├── values
  │    │    ├── columns: column1:5
  │    │    ├── outer: (2)
@@ -1136,7 +1147,7 @@ left-join-apply
  │    ├── cardinality: [0 - 1]
  │    ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-one)
  │    ├── key: ()
- │    ├── fd: ()-->(5-7), (5)==(6), (6)==(5)
+ │    ├── fd: ()-->(5-7), (6)==(5), (5)==(6)
  │    ├── values
  │    │    ├── columns: column1:5
  │    │    ├── outer: (1)

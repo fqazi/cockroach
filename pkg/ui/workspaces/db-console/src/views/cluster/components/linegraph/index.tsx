@@ -3,41 +3,18 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import {
-  calculateXAxisDomain,
-  calculateYAxisDomain,
-  AxisDomain,
-  TimeScale,
-  Visualization,
-  util,
-  WithTimezoneProps,
-  findClosestTimeScale,
-  defaultTimeScaleOptions,
-  TimeWindow,
-  WithTimezone,
-} from "@cockroachlabs/cluster-ui";
-import { Tooltip } from "antd";
-import filter from "lodash/filter";
-import flatMap from "lodash/flatMap";
-import Long from "long";
-import moment from "moment-timezone";
 import React from "react";
+import moment from "moment-timezone";
 import { createSelector } from "reselect";
-import uPlot from "uplot";
-import "uplot/dist/uPlot.min.css";
 
 import * as protos from "src/js/protos";
 import { hoverOff, hoverOn, HoverState } from "src/redux/hover";
-import { isSecondaryTenant } from "src/redux/tenants";
-import { unique } from "src/util/arrays";
 import { findChildrenOfType } from "src/util/find";
 import {
-  canShowMetric,
   configureUPlotLineChart,
   formatMetricData,
   formattedSeries,
 } from "src/views/cluster/util/graphs";
-import { MonitoringIcon } from "src/views/shared/components/icons/monitoring";
 import {
   Axis,
   AxisProps,
@@ -46,8 +23,31 @@ import {
   MetricsDataComponentProps,
   QueryTimeInfo,
 } from "src/views/shared/components/metricQuery";
-
+import {
+  calculateXAxisDomain,
+  calculateYAxisDomain,
+  AxisDomain,
+  TimeScale,
+  Visualization,
+  util,
+  WithTimezoneProps,
+} from "@cockroachlabs/cluster-ui";
+import uPlot from "uplot";
+import "uplot/dist/uPlot.min.css";
 import "./linegraph.styl";
+import Long from "long";
+import {
+  findClosestTimeScale,
+  defaultTimeScaleOptions,
+  TimeWindow,
+  WithTimezone,
+} from "@cockroachlabs/cluster-ui";
+import _ from "lodash";
+import { isSecondaryTenant } from "src/redux/tenants";
+import { Tooltip } from "antd";
+import "antd/lib/tooltip/style";
+import { MonitoringIcon } from "src/views/shared/components/icons/monitoring";
+import { unique } from "src/util/arrays";
 
 type TSResponse = protos.cockroach.ts.tspb.TimeSeriesQueryResponse;
 
@@ -183,14 +183,12 @@ export class InternalLineGraph extends React.Component<LineGraphProps, {}> {
         Axis,
       );
       if (axes.length === 0) {
-        // eslint-disable-next-line no-console
         console.warn(
           "LineGraph requires the specification of at least one axis.",
         );
         return null;
       }
       if (axes.length > 1) {
-        // eslint-disable-next-line no-console
         console.warn(
           "LineGraph currently only supports a single axis; ignoring additional axes.",
         );
@@ -309,7 +307,7 @@ export class InternalLineGraph extends React.Component<LineGraphProps, {}> {
     // and are called when recomputing certain axis and
     // series options. This lets us use updated domains
     // when redrawing the uPlot chart on data change.
-    const resultDatapoints = flatMap(fData, result =>
+    const resultDatapoints = _.flatMap(fData, result =>
       result.values.map(dp => dp.value),
     );
     this.yAxisDomain = calculateYAxisDomain(axis.props.units, resultDatapoints);
@@ -388,24 +386,23 @@ export class InternalLineGraph extends React.Component<LineGraphProps, {}> {
     ) : null;
     // Extend tooltip to include metrics names
     if (showMetricsInTooltip) {
-      const metrics = filter(data?.results, canShowMetric);
-      if (metrics.length === 1) {
+      if (data?.results?.length === 1) {
         tt = (
           <>
             {tt}
             {addLines}
-            Metric: {metrics[0].query.name}
+            Metric: {data.results[0].query.name}
           </>
         );
-      } else if (metrics.length > 1) {
-        const metricNames = unique(metrics.map(m => m.query.name));
+      } else if (data?.results?.length > 1) {
+        const metrics = unique(data.results.map(m => m.query.name));
         tt = (
           <>
             {tt}
             {addLines}
             Metrics:
             <ul>
-              {metricNames.map(m => (
+              {metrics.map(m => (
                 <li key={m}>{m}</li>
               ))}
             </ul>

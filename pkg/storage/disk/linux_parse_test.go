@@ -4,6 +4,7 @@
 // included in the /LICENSE file.
 
 //go:build linux
+// +build linux
 
 package disk
 
@@ -18,7 +19,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/stretchr/testify/require"
@@ -48,8 +48,7 @@ func TestLinux_CollectDiskStats(t *testing.T) {
 				v, err = strconv.ParseUint(cmdArg.Vals[1], 10, 32)
 				require.NoError(t, err)
 				deviceID.minor = uint32(v)
-				tracer := newMonitorTracer(1000)
-				disks = append(disks, &monitoredDisk{deviceID: deviceID, tracer: tracer})
+				disks = append(disks, &monitoredDisk{deviceID: deviceID})
 			}
 			slices.SortFunc(disks, func(a, b *monitoredDisk) int { return compareDeviceIDs(a.deviceID, b.deviceID) })
 
@@ -60,20 +59,16 @@ func TestLinux_CollectDiskStats(t *testing.T) {
 				// resizing logic.
 				buf: make([]byte, 16),
 			}
-			_, err := s.collect(disks, timeutil.Now())
+			err := s.collect(disks)
 			if err != nil {
 				return err.Error()
 			}
 			for i := range disks {
-				monitor := Monitor{monitoredDisk: disks[i]}
-				stats, err := monitor.CumulativeStats()
-				require.NoError(t, err)
-
 				if i > 0 {
 					fmt.Fprintln(&buf)
 				}
 				fmt.Fprintf(&buf, "%s: ", disks[i].deviceID)
-				fmt.Fprint(&buf, stats.String())
+				fmt.Fprint(&buf, disks[i].stats.lastMeasurement.String())
 			}
 			return buf.String()
 		default:

@@ -3,27 +3,25 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import debounce from "lodash/debounce";
-import isEmpty from "lodash/isEmpty";
+import _ from "lodash";
 import React from "react";
 import { Link } from "react-router-dom";
-
-import { cockroach } from "src/js/protos";
-import { LocalityTier, LocalityTree } from "src/redux/localities";
-import { LocationTree } from "src/redux/locations";
-import { LivenessStatus } from "src/redux/nodes";
-import { CLUSTERVIZ_ROOT } from "src/routes/visualization";
-import { generateLocalityRoute, getLocalityLabel } from "src/util/localities";
-import { trustIcon } from "src/util/trust";
-import InstructionsBox, {
-  showInstructionsBox,
-} from "src/views/clusterviz/components/instructionsBox";
 
 import { CircleLayout } from "./circleLayout";
 import { renderAsMap } from "./layout";
 import { MapLayout } from "./mapLayout";
 
+import { LivenessStatus } from "src/redux/nodes";
+import { LocalityTier, LocalityTree } from "src/redux/localities";
+import { LocationTree } from "src/redux/locations";
+import { CLUSTERVIZ_ROOT } from "src/routes/visualization";
+import { generateLocalityRoute, getLocalityLabel } from "src/util/localities";
 import arrowUpIcon from "!!raw-loader!assets/arrowUp.svg";
+import { trustIcon } from "src/util/trust";
+import { cockroach } from "src/js/protos";
+import InstructionsBox, {
+  showInstructionsBox,
+} from "src/views/clusterviz/components/instructionsBox";
 
 type Liveness = cockroach.kv.kvserver.liveness.livenesspb.ILiveness;
 
@@ -52,7 +50,7 @@ export class NodeCanvas extends React.Component<
     super(props);
 
     // Add debounced resize listener.
-    this.debouncedOnResize = debounce(this.onResize, 200);
+    this.debouncedOnResize = _.debounce(this.onResize, 200);
   }
 
   updateViewport = () => {
@@ -109,7 +107,7 @@ export class NodeCanvas extends React.Component<
   renderBackButton() {
     const { tiers } = this.props;
 
-    if (!this.state || isEmpty(tiers)) {
+    if (!this.state || _.isEmpty(tiers)) {
       return null;
     }
 

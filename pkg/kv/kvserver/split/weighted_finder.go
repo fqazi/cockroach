@@ -6,9 +6,8 @@
 package split
 
 import (
-	"bytes"
 	"math"
-	"slices"
+	"sort"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -126,7 +125,7 @@ func (f *WeightedFinder) record(key roachpb.Key, weight float64) {
 		}
 		return
 	} else {
-		idx = f.randSource.IntN(splitKeySampleSize)
+		idx = f.randSource.Intn(splitKeySampleSize)
 	}
 
 	// Note we always use the start key of the span. We could
@@ -252,18 +251,17 @@ func (f *WeightedFinder) NoSplitKeyCauseLogMsg() redact.RedactableString {
 		insufficientCounters, imbalance)
 }
 
-// PopularKey implements the LoadBasedSplitter interface.
-func (f *WeightedFinder) PopularKey() PopularKey {
+// PopularKeyFrequency implements the LoadBasedSplitter interface.
+func (f *WeightedFinder) PopularKeyFrequency() float64 {
 	// Sort the sample slice to determine the frequency that a popular key
 	// appears. We could copy the slice, however it would require an allocation.
 	// The probability a sample is replaced doesn't change as it is independent
 	// of position.
-	slices.SortFunc(f.samples[:], func(a, b weightedSample) int {
-		return bytes.Compare(a.key, b.key)
+	sort.Slice(f.samples[:], func(i, j int) bool {
+		return f.samples[i].key.Compare(f.samples[j].key) < 0
 	})
 
 	weight := f.samples[0].weight
-	key := f.samples[0].key
 	currentKeyWeight := weight
 	popularKeyWeight := weight
 	totalWeight := weight
@@ -275,32 +273,12 @@ func (f *WeightedFinder) PopularKey() PopularKey {
 			currentKeyWeight = weight
 		}
 		if popularKeyWeight < currentKeyWeight {
-			key = f.samples[i].key
 			popularKeyWeight = currentKeyWeight
 		}
 		totalWeight += weight
 	}
 
-	return PopularKey{
-		Key:       key,
-		Frequency: popularKeyWeight / totalWeight,
-	}
-}
-
-// AccessDirection returns a value in [-1, 1] indicating the direction of access
-// requests over time. A negative value implies more traffic is moving to the left
-// (lower keys), a positive value implies more traffic is moving to the right
-// (higher keys), and zero indicates even distribution.
-func (f *WeightedFinder) AccessDirection() float64 {
-	var left, right float64
-	for _, s := range f.samples {
-		left += s.left
-		right += s.right
-	}
-	if left+right == 0 {
-		return 0
-	}
-	return (right - left) / (right + left)
+	return popularKeyWeight / totalWeight
 }
 
 // SafeFormat implements the redact.SafeFormatter interface.

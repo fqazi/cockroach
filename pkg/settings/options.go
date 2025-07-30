@@ -14,13 +14,11 @@ import (
 // SettingOption is the type of an option that can be passed to Register.
 type SettingOption struct {
 	commonOpt          func(*common)
-	validateBoolFn     func(*Values, bool) error
 	validateDurationFn func(time.Duration) error
 	validateInt64Fn    func(int64) error
 	validateFloat64Fn  func(float64) error
 	validateStringFn   func(*Values, string) error
 	validateProtoFn    func(*Values, protoutil.Message) error
-	validateEnumFn     func(string) error
 }
 
 // NameStatus indicates the status of a setting name.
@@ -42,7 +40,7 @@ func WithName(name SettingName) SettingOption {
 }
 
 // WithRetiredName configures a previous user-visible name of the setting,
-// when that name was different from the key and is not in use any more.
+// when that name was diferent from the key and is not in use any more.
 func WithRetiredName(name SettingName) SettingOption {
 	return SettingOption{commonOpt: func(c *common) {
 		registerAlias(c.key, name, NameRetired)
@@ -105,11 +103,6 @@ func WithValidateFloat(fn func(float64) error) SettingOption {
 	return SettingOption{validateFloat64Fn: fn}
 }
 
-// WithValidateBool adds a validation function for a boolean setting.
-func WithValidateBool(fn func(*Values, bool) error) SettingOption {
-	return SettingOption{validateBoolFn: fn}
-}
-
 // WithValidateString adds a validation function for a string setting.
 func WithValidateString(fn func(*Values, string) error) SettingOption {
 	return SettingOption{validateStringFn: fn}
@@ -118,11 +111,6 @@ func WithValidateString(fn func(*Values, string) error) SettingOption {
 // WithValidateProto adds a validation function for a proto setting.
 func WithValidateProto(fn func(*Values, protoutil.Message) error) SettingOption {
 	return SettingOption{validateProtoFn: fn}
-}
-
-// WithValidateEnum adds a validation function for an enum setting.
-func WithValidateEnum(fn func(string) error) SettingOption {
-	return SettingOption{validateEnumFn: fn}
 }
 
 func (c *common) apply(opts []SettingOption) {

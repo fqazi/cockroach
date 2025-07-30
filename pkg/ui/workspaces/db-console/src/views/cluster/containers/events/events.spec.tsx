@@ -3,19 +3,19 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { api as clusterUiApi } from "@cockroachlabs/cluster-ui";
-import { mount, shallow } from "enzyme";
-import each from "lodash/each";
 import React from "react";
+import { mount, shallow } from "enzyme";
+import _ from "lodash";
 
-import { refreshEvents } from "src/redux/apiReducers";
-import { allEvents } from "src/util/eventTypes";
 import {
   EventBoxUnconnected as EventBox,
   EventRow,
   getEventInfo,
 } from "src/views/cluster/containers/events";
+import { refreshEvents } from "src/redux/apiReducers";
+import { allEvents } from "src/util/eventTypes";
 import { ToolTipWrapper } from "src/views/shared/components/toolTip";
+import { api as clusterUiApi } from "@cockroachlabs/cluster-ui";
 
 function makeEventBox(
   events: clusterUiApi.EventsResponse,
@@ -87,7 +87,7 @@ describe("<EventRow>", function () {
 
 describe("getEventInfo", function () {
   it("covers every currently known event", function () {
-    each(allEvents, eventType => {
+    _.each(allEvents, eventType => {
       const event: clusterUiApi.EventColumns =
         createEventWithEventType(eventType);
       const eventContent = shallow(

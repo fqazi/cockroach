@@ -10,7 +10,6 @@ import (
 	gosql "database/sql"
 	"fmt"
 	"math"
-	"math/rand/v2"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +20,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/workload/histogram"
 	"github.com/cockroachdb/errors"
 	"github.com/spf13/pflag"
+	"golang.org/x/exp/rand"
 )
 
 const (
@@ -119,9 +119,6 @@ func (*tpch) Meta() workload.Meta { return tpchMeta }
 // Flags implements the Flagser interface.
 func (w *tpch) Flags() workload.Flags { return w.flags }
 
-// ConnFlags implements the ConnFlagser interface.
-func (w *tpch) ConnFlags() *workload.ConnFlags { return w.connFlags }
-
 // Hooks implements the Hookser interface.
 func (w *tpch) Hooks() workload.Hooks {
 	return workload.Hooks{
@@ -186,27 +183,9 @@ func (w *tpch) Hooks() workload.Hooks {
 }
 
 type generateLocals struct {
-	seedableRand seedableRand
+	rng *rand.Rand
 
 	orderData *orderSharedRandomData
-}
-
-// seedableRand is a helper for creating a seeded *rand.Rand without allocating.
-type seedableRand struct {
-	rng    *rand.Rand
-	source *rand.PCG
-}
-
-func makeSeedableRand() seedableRand {
-	source := rand.NewPCG(0, 0)
-	return seedableRand{rng: rand.New(source), source: source}
-}
-
-// Seed is equivalent to rand.New(rand.NewPCG(seed, 0)) but reuses the same
-// rand.Rand object.
-func (r *seedableRand) Seed(seed uint64) *rand.Rand {
-	r.source.Seed(seed, 0)
-	return r.rng
 }
 
 // Tables implements the Generator interface.
@@ -215,7 +194,7 @@ func (w *tpch) Tables() []workload.Table {
 		w.localsPool = &sync.Pool{
 			New: func() interface{} {
 				return &generateLocals{
-					seedableRand: makeSeedableRand(),
+					rng: rand.New(rand.NewSource(uint64(timeutil.Now().UnixNano()))),
 					orderData: &orderSharedRandomData{
 						partKeys:   make([]int, 0, 7),
 						shipDates:  make([]int64, 0, 7),
@@ -311,6 +290,10 @@ func (w *tpch) Tables() []workload.Table {
 func (w *tpch) Ops(
 	ctx context.Context, urls []string, reg *histogram.Registry,
 ) (workload.QueryLoad, error) {
+	sqlDatabase, err := workload.SanitizeUrls(w, w.connFlags.DBOverride, urls)
+	if err != nil {
+		return workload.QueryLoad{}, err
+	}
 	db, err := gosql.Open(`cockroach`, strings.Join(urls, ` `))
 	if err != nil {
 		return workload.QueryLoad{}, err
@@ -319,7 +302,7 @@ func (w *tpch) Ops(
 	db.SetMaxOpenConns(w.connFlags.Concurrency + 1)
 	db.SetMaxIdleConns(w.connFlags.Concurrency + 1)
 
-	ql := workload.QueryLoad{}
+	ql := workload.QueryLoad{SQLDatabase: sqlDatabase}
 	for i := 0; i < w.connFlags.Concurrency; i++ {
 		worker := &worker{
 			config:  w,

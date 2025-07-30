@@ -22,15 +22,23 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/raft/raftlogger"
 	pb "github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 )
 
+func (st StateType) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf("%q", st.String())), nil
+}
+
 var isLocalMsg = [...]bool{
-	pb.MsgHup:         true,
-	pb.MsgBeat:        true,
-	pb.MsgUnreachable: true,
-	pb.MsgSnapStatus:  true,
+	pb.MsgHup:               true,
+	pb.MsgBeat:              true,
+	pb.MsgUnreachable:       true,
+	pb.MsgSnapStatus:        true,
+	pb.MsgCheckQuorum:       true,
+	pb.MsgStorageAppend:     true,
+	pb.MsgStorageAppendResp: true,
+	pb.MsgStorageApply:      true,
+	pb.MsgStorageApplyResp:  true,
 }
 
 var isResponseMsg = [...]bool{
@@ -38,35 +46,10 @@ var isResponseMsg = [...]bool{
 	pb.MsgVoteResp:          true,
 	pb.MsgHeartbeatResp:     true,
 	pb.MsgUnreachable:       true,
+	pb.MsgReadIndexResp:     true,
 	pb.MsgPreVoteResp:       true,
-	pb.MsgFortifyLeaderResp: true,
-}
-
-// isMsgFromLeader contains message types that come from the leader of the
-// message's term.
-var isMsgFromLeader = [...]bool{
-	pb.MsgApp: true,
-	// TODO(nvanbenschoten): we can't consider MsgSnap to be from the leader of
-	// Message.Term until we address #127348 and #127349.
-	// pb.MsgSnap:            true,
-	pb.MsgHeartbeat:       true,
-	pb.MsgTimeoutNow:      true,
-	pb.MsgFortifyLeader:   true,
-	pb.MsgDeFortifyLeader: true,
-}
-
-// isMsgIndicatingLeader contains message types that indicate that there is a
-// leader at the message's term, even if the message is not from the leader
-// itself.
-//
-// TODO(nvanbenschoten): remove this when we address the TODO above.
-var isMsgIndicatingLeader = [...]bool{
-	pb.MsgApp:             true,
-	pb.MsgSnap:            true,
-	pb.MsgHeartbeat:       true,
-	pb.MsgTimeoutNow:      true,
-	pb.MsgFortifyLeader:   true,
-	pb.MsgDeFortifyLeader: true,
+	pb.MsgStorageAppendResp: true,
+	pb.MsgStorageApplyResp:  true,
 }
 
 func isMsgInArray(msgt pb.MessageType, arr []bool) bool {
@@ -82,32 +65,8 @@ func IsResponseMsg(msgt pb.MessageType) bool {
 	return isMsgInArray(msgt, isResponseMsg[:])
 }
 
-func IsMsgFromLeader(msgt pb.MessageType) bool {
-	return isMsgInArray(msgt, isMsgFromLeader[:])
-}
-
-func IsMsgIndicatingLeader(msgt pb.MessageType) bool {
-	return isMsgInArray(msgt, isMsgIndicatingLeader[:])
-}
-
-// senderHasMsgTerm returns true if the message type is one that should have
-// the sender's term.
-func senderHasMsgTerm(m pb.Message) bool {
-	switch {
-	case m.Type == pb.MsgPreVote:
-		// We send pre-vote requests with a term in our future.
-		return false
-	case m.Type == pb.MsgPreVoteResp && !m.Reject:
-		// We send pre-vote requests with a term in our future. If the
-		// pre-vote is granted, we will increment our term when we get a
-		// quorum. If it is not, the term comes from the node that
-		// rejected our vote so we should become a follower at the new
-		// term.
-		return false
-	default:
-		// All other messages are sent with the sender's term.
-		return true
-	}
+func IsLocalMsgTarget(id uint64) bool {
+	return id == LocalAppendThread || id == LocalApplyThread
 }
 
 // voteResponseType maps vote and prevote message types to their corresponding responses.
@@ -129,19 +88,23 @@ func DescribeHardState(hs pb.HardState) string {
 		fmt.Fprintf(&buf, " Vote:%d", hs.Vote)
 	}
 	fmt.Fprintf(&buf, " Commit:%d", hs.Commit)
-	fmt.Fprintf(&buf, " Lead:%d", hs.Lead)
-	fmt.Fprintf(&buf, " LeadEpoch:%d", hs.LeadEpoch)
 	return buf.String()
 }
 
 func DescribeSoftState(ss SoftState) string {
-	return fmt.Sprintf("State:%s", ss.RaftState)
+	return fmt.Sprintf("Lead:%d State:%s", ss.Lead, ss.RaftState)
+}
+
+func DescribeConfState(state pb.ConfState) string {
+	return fmt.Sprintf(
+		"Voters:%v VotersOutgoing:%v Learners:%v LearnersNext:%v AutoLeave:%v",
+		state.Voters, state.VotersOutgoing, state.Learners, state.LearnersNext, state.AutoLeave,
+	)
 }
 
 func DescribeSnapshot(snap pb.Snapshot) string {
 	m := snap.Metadata
-	return fmt.Sprintf("Index:%d Term:%d ConfState:%s",
-		m.Index, m.Term, m.ConfState.Describe())
+	return fmt.Sprintf("Index:%d Term:%d ConfState:%s", m.Index, m.Term, DescribeConfState(m.ConfState))
 }
 
 func DescribeReady(rd Ready, f EntryFormatter) string {
@@ -154,15 +117,19 @@ func DescribeReady(rd Ready, f EntryFormatter) string {
 		fmt.Fprintf(&buf, "HardState %s", DescribeHardState(rd.HardState))
 		buf.WriteByte('\n')
 	}
+	if len(rd.ReadStates) > 0 {
+		fmt.Fprintf(&buf, "ReadStates %v\n", rd.ReadStates)
+	}
 	if len(rd.Entries) > 0 {
 		buf.WriteString("Entries:\n")
 		fmt.Fprint(&buf, DescribeEntries(rd.Entries, f))
 	}
-	if rd.Snapshot != nil {
-		fmt.Fprintf(&buf, "Snapshot %s\n", DescribeSnapshot(*rd.Snapshot))
+	if !IsEmptySnap(rd.Snapshot) {
+		fmt.Fprintf(&buf, "Snapshot %s\n", DescribeSnapshot(rd.Snapshot))
 	}
-	if !rd.Committed.Empty() {
-		fmt.Fprintf(&buf, "Committed: %s\n", rd.Committed)
+	if len(rd.CommittedEntries) > 0 {
+		buf.WriteString("CommittedEntries:\n")
+		fmt.Fprint(&buf, DescribeEntries(rd.CommittedEntries, f))
 	}
 	if len(rd.Messages) > 0 {
 		buf.WriteString("Messages:\n")
@@ -171,15 +138,8 @@ func DescribeReady(rd Ready, f EntryFormatter) string {
 			buf.WriteByte('\n')
 		}
 	}
-	if len(rd.Responses) > 0 {
-		buf.WriteString("OnSync:\n")
-		for _, msg := range rd.Responses {
-			fmt.Fprint(&buf, DescribeMessage(msg, f))
-			buf.WriteByte('\n')
-		}
-	}
 	if buf.Len() > 0 {
-		return fmt.Sprintf("Ready:\n%s", buf.String())
+		return fmt.Sprintf("Ready MustSync=%t:\n%s", rd.MustSync, buf.String())
 	}
 	return "<empty Ready>"
 }
@@ -188,13 +148,15 @@ func DescribeReady(rd Ready, f EntryFormatter) string {
 // of entry data. Nil is a valid EntryFormatter and will use a default format.
 type EntryFormatter func([]byte) string
 
-var emptyEntryFormatter EntryFormatter = func([]byte) string { return "" }
-
 // DescribeMessage returns a concise human-readable description of a
 // Message for debugging.
 func DescribeMessage(m pb.Message, f EntryFormatter) string {
+	return describeMessageWithIndent("", m, f)
+}
+
+func describeMessageWithIndent(indent string, m pb.Message, f EntryFormatter) string {
 	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "%s->%s %v Term:%d Log:%d/%d",
+	fmt.Fprintf(&buf, "%s%s->%s %v Term:%d Log:%d/%d", indent,
 		describeTarget(m.From), describeTarget(m.To), m.Type, m.Term, m.LogTerm, m.Index)
 	if m.Reject {
 		fmt.Fprintf(&buf, " Rejected (Hint: %d)", m.RejectHint)
@@ -202,34 +164,44 @@ func DescribeMessage(m pb.Message, f EntryFormatter) string {
 	if m.Commit != 0 {
 		fmt.Fprintf(&buf, " Commit:%d", m.Commit)
 	}
-	if m.LeadEpoch != 0 {
-		fmt.Fprintf(&buf, " LeadEpoch:%d", m.LeadEpoch)
+	if m.Vote != 0 {
+		fmt.Fprintf(&buf, " Vote:%d", m.Vote)
 	}
 	if ln := len(m.Entries); ln == 1 {
 		fmt.Fprintf(&buf, " Entries:[%s]", DescribeEntry(m.Entries[0], f))
 	} else if ln > 1 {
 		fmt.Fprint(&buf, " Entries:[")
 		for _, e := range m.Entries {
-			fmt.Fprintf(&buf, "\n  ")
+			fmt.Fprintf(&buf, "\n%s  ", indent)
 			buf.WriteString(DescribeEntry(e, f))
 		}
-		fmt.Fprintf(&buf, "\n]")
+		fmt.Fprintf(&buf, "\n%s]", indent)
 	}
-	if s := m.Snapshot; s != nil {
-		fmt.Fprintf(&buf, "\n  Snapshot: %s", DescribeSnapshot(*s))
+	if s := m.Snapshot; s != nil && !IsEmptySnap(*s) {
+		fmt.Fprintf(&buf, "\n%s  Snapshot: %s", indent, DescribeSnapshot(*s))
+	}
+	if len(m.Responses) > 0 {
+		fmt.Fprintf(&buf, " Responses:[")
+		for _, m := range m.Responses {
+			buf.WriteString("\n")
+			buf.WriteString(describeMessageWithIndent(indent+"  ", m, f))
+		}
+		fmt.Fprintf(&buf, "\n%s]", indent)
 	}
 	return buf.String()
 }
 
-func DescribeTarget(id pb.PeerID) string {
-	return describeTarget(id)
-}
-
-func describeTarget(id pb.PeerID) string {
-	if id == None {
+func describeTarget(id uint64) string {
+	switch id {
+	case None:
 		return "None"
+	case LocalAppendThread:
+		return "AppendThread"
+	case LocalApplyThread:
+		return "ApplyThread"
+	default:
+		return fmt.Sprintf("%x", id)
 	}
-	return fmt.Sprintf("%x", id)
 }
 
 // DescribeEntry returns a concise human-readable description of an
@@ -330,20 +302,12 @@ func payloadsSize(ents []pb.Entry) entryPayloadSize {
 	return s
 }
 
-func assertConfStatesEquivalent(l raftlogger.Logger, cs1, cs2 pb.ConfState) {
+func assertConfStatesEquivalent(l Logger, cs1, cs2 pb.ConfState) {
 	err := cs1.Equivalent(cs2)
 	if err == nil {
 		return
 	}
 	l.Panic(err)
-}
-
-// assertTrue panics with the supplied message if the condition does not hold
-// true.
-func assertTrue(condition bool, msg string) {
-	if !condition {
-		panic(msg)
-	}
 }
 
 // extend appends vals to the given dst slice. It differs from the standard

@@ -3,23 +3,22 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "antd";
-import classNames from "classnames/bind";
-import moment from "moment";
 import React from "react";
+import { Tooltip } from "antd";
+import "antd/lib/tooltip/style";
 import { useSelector } from "react-redux";
-
-import ErrorIcon from "assets/error-circle.svg";
-import InfoIcon from "assets/info-filled-circle.svg";
-import WarningIcon from "assets/warning.svg";
+import classNames from "classnames/bind";
 import {
   daysUntilLicenseExpiresSelector,
   isManagedClusterSelector,
   licenseTypeSelector,
 } from "src/redux/alerts";
-import { licensingFaqs } from "src/util/docs";
-
+import moment from "moment";
+import ErrorIcon from "assets/error-circle.svg";
+import InfoIcon from "assets/info-filled-circle.svg";
+import WarningIcon from "assets/warning.svg";
 import styles from "./licenseNotification.module.styl";
+import { licensingFaqs } from "src/util/docs";
 
 const cn = classNames.bind(styles);
 

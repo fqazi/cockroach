@@ -3,11 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import head from "lodash/head";
-import isEmpty from "lodash/isEmpty";
-import isNil from "lodash/isNil";
-import map from "lodash/map";
-import reverse from "lodash/reverse";
+import _ from "lodash";
 import React from "react";
 
 import * as protos from "src/js/protos";
@@ -20,8 +16,8 @@ interface LeaseTableProps {
 }
 
 export default class LeaseTable extends React.Component<LeaseTableProps, {}> {
-  renderLeaseCell(value: string, title = "") {
-    if (isEmpty(title)) {
+  renderLeaseCell(value: string, title: string = "") {
+    if (_.isEmpty(title)) {
       return (
         <td className="lease-table__cell" title={value}>
           {value}
@@ -36,7 +32,7 @@ export default class LeaseTable extends React.Component<LeaseTableProps, {}> {
   }
 
   renderLeaseTimestampCell(timestamp: protos.cockroach.util.hlc.ITimestamp) {
-    if (isNil(timestamp)) {
+    if (_.isNil(timestamp)) {
       return this.renderLeaseCell("<no value>");
     }
 
@@ -58,7 +54,7 @@ export default class LeaseTable extends React.Component<LeaseTableProps, {}> {
         {Print.ReplicaID(rangeID, RangeInfo.GetLocalReplica(info))})
       </h2>
     );
-    if (isEmpty(info.lease_history)) {
+    if (_.isEmpty(info.lease_history)) {
       return (
         <div>
           {header}
@@ -67,8 +63,8 @@ export default class LeaseTable extends React.Component<LeaseTableProps, {}> {
       );
     }
 
-    const isEpoch = Lease.IsEpoch(head(info.lease_history));
-    const leaseHistory = reverse(info.lease_history);
+    const isEpoch = Lease.IsEpoch(_.head(info.lease_history));
+    const leaseHistory = _.reverse(info.lease_history);
     return (
       <div>
         {header}
@@ -104,7 +100,7 @@ export default class LeaseTable extends React.Component<LeaseTableProps, {}> {
                 Acquisition Type
               </th>
             </tr>
-            {map(leaseHistory, (lease, key) => {
+            {_.map(leaseHistory, (lease, key) => {
               let prevProposedTimestamp: protos.cockroach.util.hlc.ITimestamp =
                 null;
               let prevStart: protos.cockroach.util.hlc.ITimestamp = null;

@@ -6,9 +6,8 @@
 package loqrecovery
 
 import (
-	"cmp"
 	"fmt"
-	"slices"
+	"sort"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -32,7 +31,7 @@ func (s storeIDSet) storeSliceFromSet() []roachpb.StoreID {
 	for k := range s {
 		storeIDs = append(storeIDs, k)
 	}
-	slices.Sort(storeIDs)
+	sort.Sort(roachpb.StoreIDSlice(storeIDs))
 	return storeIDs
 }
 
@@ -90,8 +89,8 @@ func (m locationsMap) asSortedSlice() []NodeStores {
 	for k, v := range m {
 		nodes = append(nodes, NodeStores{NodeID: k, StoreIDs: v.storeSliceFromSet()})
 	}
-	slices.SortFunc(nodes, func(a, b NodeStores) int {
-		return cmp.Compare(a.NodeID, b.NodeID)
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i].NodeID < nodes[j].NodeID
 	})
 	return nodes
 }
@@ -136,7 +135,7 @@ func (m locationsMap) joinNodeIDs() string {
 	for k := range m {
 		nodeIDs = append(nodeIDs, k)
 	}
-	slices.Sort(nodeIDs)
+	sort.Sort(roachpb.NodeIDSlice(nodeIDs))
 	return strutil.JoinIDs("n", nodeIDs)
 }
 

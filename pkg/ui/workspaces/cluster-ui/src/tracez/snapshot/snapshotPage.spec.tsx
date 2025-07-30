@@ -3,24 +3,21 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
+import { ROUTE_PREFIX, SnapshotPage, SnapshotPageProps } from "./snapshotPage";
 import { render } from "@testing-library/react";
-import * as H from "history";
-import Long from "long";
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
+import * as H from "history";
 
+import { SortSetting } from "../../sortedtable";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import {
   RecordingMode,
   SetTraceRecordingTypeResponse,
   TakeTracingSnapshotResponse,
 } from "src/api/tracezApi";
-
-import { SortSetting } from "../../sortedtable";
-
-import { ROUTE_PREFIX, SnapshotPage, SnapshotPageProps } from "./snapshotPage";
-
 import GetTracingSnapshotResponse = cockroach.server.serverpb.GetTracingSnapshotResponse;
+import Long from "long";
 
 const getMockSnapshotPageProps = (): SnapshotPageProps => {
   const history = H.createHashHistory();

@@ -10,6 +10,7 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/kv/kvserver/intentresolver",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/build",
         "//pkg/internal/client/requestbatcher",
         "//pkg/keys",
         "//pkg/kv",
@@ -21,7 +22,6 @@ go_library(
         "//pkg/settings",
         "//pkg/settings/cluster",
         "//pkg/storage/enginepb",
-        "//pkg/util/debugutil",
         "//pkg/util/envutil",
         "//pkg/util/hlc",
         "//pkg/util/log",

@@ -197,10 +197,6 @@ func testMultiRegionDataDriven(t *testing.T, testPath string) {
 									}
 								},
 							},
-							// NB: This test is asserting on whether it reads from the leaseholder
-							// or the follower first, so it has to route to leaseholder when
-							// requested.
-							KVClient: &kvcoord.ClientTestingKnobs{RouteToLeaseholderFirst: true},
 						},
 					}
 				}
@@ -343,7 +339,7 @@ SET CLUSTER SETTING kv.allocator.min_lease_transfer_interval = '5m'
 				}
 				cache := ds.tc.Server(idx).DistSenderI().(*kvcoord.DistSender).RangeDescriptorCache()
 				tablePrefix := keys.MustAddr(keys.SystemSQLCodec.TablePrefix(tableID))
-				entry, err := cache.TestingGetCached(ctx, tablePrefix, false, roachpb.LAG_BY_CLUSTER_SETTING)
+				entry, err := cache.TestingGetCached(ctx, tablePrefix, false /* inverted */)
 				if err != nil {
 					return err.Error()
 				}
@@ -385,7 +381,7 @@ SET CLUSTER SETTING kv.allocator.min_lease_transfer_interval = '5m'
 						return errors.New(`could not find replica`)
 					}
 					for _, queueName := range []string{"split", "replicate", "raftsnapshot"} {
-						processErr, err := store.Enqueue(
+						_, processErr, err := store.Enqueue(
 							ctx, queueName, repl, true /* skipShouldQueue */, false, /* async */
 						)
 						if processErr != nil {

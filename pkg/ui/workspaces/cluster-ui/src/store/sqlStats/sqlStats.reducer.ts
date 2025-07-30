@@ -3,15 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-import moment from "moment-timezone";
-
-import { StatementsRequest } from "src/api/statementsApi";
-import { createInitialState, RequestState } from "src/api/types";
-
-import { TimeScale } from "../../timeScaleDropdown";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { DOMAIN_NAME } from "../utils";
+import { StatementsRequest } from "src/api/statementsApi";
+import { TimeScale } from "../../timeScaleDropdown";
+import moment from "moment-timezone";
+import { createInitialState, RequestState } from "src/api/types";
 
 export type StatementsResponse = cockroach.server.serverpb.StatementsResponse;
 

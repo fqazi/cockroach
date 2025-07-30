@@ -6,8 +6,6 @@
 package colexecdisk
 
 import (
-	"context"
-
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexec/colexecargs"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexec/colexecjoin"
@@ -58,7 +56,6 @@ import (
 // components of the external hash joiner which is responsible for making sure
 // that the components stay within the memory limit.
 func NewExternalHashJoiner(
-	ctx context.Context,
 	unlimitedAllocator *colmem.Allocator,
 	flowCtx *execinfra.FlowCtx,
 	args *colexecargs.NewColOperatorArgs,
@@ -66,7 +63,7 @@ func NewExternalHashJoiner(
 	leftInput, rightInput colexecop.Operator,
 	createDiskBackedSorter DiskBackedSorterConstructor,
 	diskAcc *mon.BoundAccount,
-	diskQueueMemAcc *mon.BoundAccount,
+	converterMemAcc *mon.BoundAccount,
 ) colexecop.ClosableOperator {
 	// This memory limit will restrict the size of the batches output by the
 	// in-memory hash joiner in the main strategy as well as by the merge joiner
@@ -112,9 +109,9 @@ func NewExternalHashJoiner(
 			partitionedInputs[1], spec.Right.SourceTypes, rightOrdering, externalSorterMaxNumberPartitions,
 		)
 		return colexecjoin.NewMergeJoinOp(
-			ctx, unlimitedAllocator, memoryLimit, args.DiskQueueCfg, fdSemaphore, spec.JoinType,
+			unlimitedAllocator, memoryLimit, args.DiskQueueCfg, fdSemaphore, spec.JoinType,
 			leftPartitionSorter, rightPartitionSorter, spec.Left.SourceTypes,
-			spec.Right.SourceTypes, leftOrdering, rightOrdering, diskAcc, diskQueueMemAcc, flowCtx.EvalCtx,
+			spec.Right.SourceTypes, leftOrdering, rightOrdering, diskAcc, converterMemAcc, flowCtx.EvalCtx,
 		)
 	}
 	return newHashBasedPartitioner(
@@ -128,7 +125,7 @@ func NewExternalHashJoiner(
 		inMemMainOpConstructor,
 		diskBackedFallbackOpConstructor,
 		diskAcc,
-		diskQueueMemAcc,
+		converterMemAcc,
 		colexecop.ExternalHJMinPartitions,
 	)
 }

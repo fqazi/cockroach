@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/util/search"
 	"github.com/cockroachdb/cockroach/pkg/workload/histogram"
-	"github.com/cockroachdb/cockroach/pkg/workload/histogram/exporter"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/ttycolor"
 	"github.com/codahale/hdrhistogram"
@@ -203,7 +202,7 @@ func runKVBench(ctx context.Context, t test.Test, c cluster.Cluster, b kvBenchSp
 	}
 	s := search.NewLineSearcher(100 /* min */, 10000000 /* max */, b.EstimatedMaxThroughput, initStepSize, precision)
 	searchPredicate := func(maxrate int) (bool, error) {
-		m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+		m := c.NewMonitor(ctx, c.CRDBNodes())
 		// Restart
 		m.ExpectDeaths(int32(len(c.CRDBNodes())))
 		// Wipe cluster before starting a new run because factors like load-based
@@ -340,7 +339,7 @@ type kvBenchResult struct {
 // TODO(aayush): The result related logic below is similar to `workload/tpcc/result.go`,
 // so this could definitely be cleaner and better abstracted.
 func newResultFromSnapshots(
-	maxrate int, snapshots map[string][]exporter.SnapshotTick,
+	maxrate int, snapshots map[string][]histogram.SnapshotTick,
 ) *kvBenchResult {
 	var start, end time.Time
 	ret := make(map[string]*hdrhistogram.Histogram, len(snapshots))

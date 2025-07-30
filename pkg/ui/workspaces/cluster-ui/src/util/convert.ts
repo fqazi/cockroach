@@ -3,9 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import moment from "moment-timezone";
 import * as protos from "@cockroachlabs/crdb-protobuf-client";
 import { fromNumber } from "long";
-import moment from "moment-timezone";
 
 export type Timestamp = protos.google.protobuf.ITimestamp;
 

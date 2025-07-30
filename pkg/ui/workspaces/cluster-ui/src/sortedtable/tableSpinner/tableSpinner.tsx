@@ -3,10 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import React from "react";
 import { Spinner } from "@cockroachlabs/ui-components";
 import classNames from "classnames/bind";
-import React from "react";
-
 import styles from "./tableSpinner.module.scss";
 
 const cx = classNames.bind(styles);

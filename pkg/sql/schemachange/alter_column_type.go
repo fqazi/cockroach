@@ -9,12 +9,9 @@ package schemachange
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 )
 
@@ -76,7 +73,7 @@ var classifiers = map[types.Family]map[types.Family]classifier{
 	},
 	types.DecimalFamily: {
 		// Decimals are always encoded as an apd.Decimal
-		types.DecimalFamily: classifierHardestOf(classifierDecimalPrecision, classifierDecimalScale),
+		types.DecimalFamily: classifierHardestOf(classifierDecimalPrecision, classifierWidth),
 	},
 	types.FloatFamily: {
 		// Floats are always encoded as 64-bit values on disk and we don't
@@ -112,30 +109,6 @@ var classifiers = map[types.Family]map[types.Family]classifier{
 	},
 	types.TimeTZFamily: {
 		types.TimeTZFamily: classifierTimePrecision,
-	},
-}
-
-// virtualGeneralReclassifier is used to classify general conversions for virtual
-// computed columns. General conversions don’t apply to these columns, as they
-// aren’t physically stored on disk. If this map is used and the type family is
-// missing, it’s assumed that the type conversion cannot be applied.
-var virtualGeneralReclassifier = map[types.Family]map[types.Family]classifier{
-	types.DecimalFamily: {
-		types.DecimalFamily: ColumnConversionTrivial.classifier(),
-	},
-	types.TimestampFamily: {
-		types.TimestampTZFamily: ColumnConversionTrivial.classifier(),
-		types.TimestampFamily:   ColumnConversionTrivial.classifier(),
-	},
-	types.TimestampTZFamily: {
-		types.TimestampFamily:   ColumnConversionTrivial.classifier(),
-		types.TimestampTZFamily: ColumnConversionTrivial.classifier(),
-	},
-	types.TimeFamily: {
-		types.TimeFamily: ColumnConversionTrivial.classifier(),
-	},
-	types.TimeTZFamily: {
-		types.TimeTZFamily: ColumnConversionTrivial.classifier(),
 	},
 }
 
@@ -210,23 +183,6 @@ func classifierWidth(oldType *types.T, newType *types.T) ColumnConversionKind {
 	}
 }
 
-// classifierDecimalScale handles when the scale of the decimal changes.
-func classifierDecimalScale(oldType *types.T, newType *types.T) ColumnConversionKind {
-	// Changing the scale of decimals differs from other types because the SQL
-	// standard allows for some data loss. For example, if a column is defined as
-	// DECIMAL(5,3) with a value of 12.345, changing the column type to DECIMAL(5,2)
-	// would round the value to two decimal places, resulting in 12.35. To achieve
-	// this behavior, when decreasing the scale, we need to rewrite the entire column.
-	switch {
-	case oldType.Width() == newType.Width():
-		return ColumnConversionTrivial
-	case newType.Width() < oldType.Width():
-		return ColumnConversionGeneral
-	default:
-		return ColumnConversionTrivial
-	}
-}
-
 // ClassifyConversion takes two ColumnTypes and determines "how hard"
 // the conversion is.  Note that this function will return
 // ColumnConversionTrivial if the two types are equal.
@@ -248,7 +204,7 @@ func ClassifyConversion(
 	}
 
 	// See if there's existing cast logic.  If so, return general.
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	semaCtx.Placeholders.Init(1 /* numPlaceholders */, nil /* typeHints */)
 
 	// Use a placeholder just to sub in the original type.
@@ -265,82 +221,4 @@ func ClassifyConversion(
 
 	return ColumnConversionImpossible,
 		pgerror.Newf(pgcode.CannotCoerce, "cannot convert %s to %s", oldType.SQLString(), newType.SQLString())
-}
-
-// ClassifyConversionFromTree is a wrapper for ClassifyConversion when we want
-// to take into account the parsed AST for ALTER TABLE .. ALTER COLUMN.
-func ClassifyConversionFromTree(
-	ctx context.Context,
-	t *tree.AlterTableAlterColumnType,
-	oldType *types.T,
-	newType *types.T,
-	isVirtual bool,
-) (ColumnConversionKind, error) {
-	if t.Using != nil {
-		// If an expression is provided, we always need to try a general conversion.
-		// We have to follow the process to create a new column and backfill it
-		// using the expression.
-		return ColumnConversionGeneral, nil
-	}
-	kind, err := ClassifyConversion(ctx, oldType, newType)
-	if err != nil {
-		return kind, err
-	}
-	// A general rewrite isn't applicable for virtual columns since they don’t exist
-	// physically. We need to pick a new classifier. For conversions that would require
-	// general handling due to incompatible type families (e.g., INT -> TEXT), we
-	// assume these will already be rejected because the computed expression doesn’t
-	// match the new type. Such cases are handled by validateNewTypeForComputedColumn.
-	if isVirtual && kind == ColumnConversionGeneral {
-		if inner, oldTypeFamilyFound := virtualGeneralReclassifier[oldType.Family()]; oldTypeFamilyFound {
-			if fn, newTypeFamilyFound := inner[newType.Family()]; newTypeFamilyFound {
-				kind = fn(oldType, newType)
-				return kind, nil
-			}
-		}
-		return ColumnConversionImpossible,
-			pgerror.Newf(pgcode.CannotCoerce, "cannot convert %s to %s for a virtual column",
-				oldType.SQLString(), newType.SQLString())
-	}
-	return kind, nil
-}
-
-// ValidateAlterColumnTypeChecks performs validation checks on the proposed type
-// change. This function is common to both legacy schema change and the
-// declarative schema change. As such, it cannot reference the state system of
-// either: catalog for legacy, and elements for dsc.
-func ValidateAlterColumnTypeChecks(
-	ctx context.Context,
-	t *tree.AlterTableAlterColumnType,
-	settions *cluster.Settings,
-	origTyp *types.T,
-	isGeneratedAsIdentity bool,
-	isVirtual bool,
-) (*types.T, error) {
-	typ := origTyp
-	// Special handling for STRING COLLATE xy to verify that we recognize the language.
-	if t.Collation != "" {
-		if types.IsStringType(typ) {
-			typ = types.MakeCollatedString(typ, t.Collation)
-		} else {
-			return typ, pgerror.New(pgcode.Syntax, "COLLATE can only be used with string types")
-		}
-	}
-
-	// Special handling for IDENTITY column to make sure it cannot be altered into
-	// a non-integer type.
-	if isGeneratedAsIdentity {
-		if typ.InternalType.Family != types.IntFamily {
-			return typ, sqlerrors.NewIdentityColumnTypeError()
-		}
-	}
-
-	// A USING expression is unnecessary when altering the type of a virtual column,
-	// as its value is always computed at runtime and is not stored on disk.
-	if isVirtual && t.Using != nil {
-		return typ, pgerror.Newf(pgcode.FeatureNotSupported,
-			"type change for virtual column %q cannot be altered with a USING expression", t.Column)
-	}
-
-	return typ, colinfo.ValidateColumnDefType(ctx, settions, typ)
 }

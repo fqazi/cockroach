@@ -29,7 +29,7 @@ type WindowArgs struct {
 	QueueCfg        colcontainer.DiskQueueCfg
 	FdSemaphore     semaphore.Semaphore
 	DiskAcc         *mon.BoundAccount
-	DiskQueueMemAcc *mon.BoundAccount
+	ConverterMemAcc *mon.BoundAccount
 	Input           colexecop.Operator
 	InputTypes      []*types.T
 	OutputColIdx    int

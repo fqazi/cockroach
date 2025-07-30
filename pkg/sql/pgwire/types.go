@@ -6,7 +6,6 @@
 package pgwire
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"math"
@@ -30,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/ipaddr"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/system"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil/pgdate"
 	"github.com/cockroachdb/cockroach/pkg/util/tsearch"
@@ -101,17 +99,8 @@ func writeTextUUID(b *writeBuffer, v uuid.UUID) {
 	b.write(s)
 }
 
-func writeTextString(b *writeBuffer, s string, t *types.T) {
-	pad := bpcharPadding(len(s), t)
-	b.putInt32(int32(len(s) + pad))
-	b.writeString(s)
-
-	// apply padding (in the form of blanks spaces) to the right of the write buffer
-	for pad > 0 {
-		n := min(pad, len(spaces))
-		b.write(spaces[:n])
-		pad -= n
-	}
+func writeTextString(b *writeBuffer, v string, t *types.T) {
+	b.writeLengthPrefixedString(tree.ResolveBlankPaddedChar(v, t))
 }
 
 func writeTextTimestamp(b *writeBuffer, v time.Time) {
@@ -198,7 +187,7 @@ func writeTextDatumNotNull(
 		writeTextString(b, string(*v), t)
 
 	case *tree.DCollatedString:
-		writeTextString(b, v.Contents, t)
+		b.writeLengthPrefixedString(tree.ResolveBlankPaddedChar(v.Contents, t))
 
 	case *tree.DDate:
 		b.textFormatter.FormatNode(v)
@@ -252,10 +241,6 @@ func writeTextDatumNotNull(
 	case *tree.DJSON:
 		b.writeLengthPrefixedString(v.JSON.String())
 
-	case *tree.DJsonpath:
-		b.textFormatter.FormatNode(v)
-		b.writeFromFmtCtx(b.textFormatter)
-
 	case *tree.DTSQuery:
 		b.textFormatter.FormatNode(v)
 		b.writeFromFmtCtx(b.textFormatter)
@@ -265,10 +250,6 @@ func writeTextDatumNotNull(
 		b.writeFromFmtCtx(b.textFormatter)
 
 	case *tree.DTuple:
-		b.textFormatter.FormatNode(v)
-		b.writeFromFmtCtx(b.textFormatter)
-
-	case *tree.DPGVector:
 		b.textFormatter.FormatNode(v)
 		b.writeFromFmtCtx(b.textFormatter)
 
@@ -530,44 +511,19 @@ func writeBinaryDecimal(b *writeBuffer, v *apd.Decimal) {
 	}
 }
 
-// spaces is used for padding CHAR(N) datums.
-var spaces = bytes.Repeat([]byte{' '}, system.CacheLineSize)
-
-func writeBinaryBytes(b *writeBuffer, v []byte, t *types.T) {
-	if t.Oid() == oid.T_char && len(v) == 0 {
-		// Match Postgres and always explicitly include a null byte if we have
-		// an empty string for the "char" type in the binary format.
-		v = []byte{0}
-	}
-
-	pad := bpcharPadding(len(v), t)
-	b.putInt32(int32(len(v) + pad))
+func writeBinaryBytes(b *writeBuffer, v []byte) {
+	b.putInt32(int32(len(v)))
 	b.write(v)
-
-	// apply padding (in the form of blanks spaces) to the right of the write buffer
-	for pad > 0 {
-		n := min(pad, len(spaces))
-		b.write(spaces[:n])
-		pad -= n
-	}
 }
 
-// bpcharPadding returns the number of spaces to pad when writing a BPCHAR datum of length n.
-func bpcharPadding(n int, t *types.T) int {
-	if t.Oid() == oid.T_bpchar && n < int(t.Width()) {
-		return int(t.Width()) - n
-	}
-	return 0
-}
-
-func writeBinaryString(b *writeBuffer, s string, t *types.T) {
+func writeBinaryString(b *writeBuffer, v string, t *types.T) {
+	s := tree.ResolveBlankPaddedChar(v, t)
 	if t.Oid() == oid.T_char && s == "" {
 		// Match Postgres and always explicitly include a null byte if we have
 		// an empty string for the "char" type in the binary format.
 		s = string([]byte{0})
 	}
-
-	writeTextString(b, s, t)
+	b.writeLengthPrefixedString(s)
 }
 
 func writeBinaryTimestamp(b *writeBuffer, v time.Time) {
@@ -673,10 +629,10 @@ func writeBinaryDatumNotNull(
 		writeBinaryDecimal(b, &v.Decimal)
 
 	case *tree.DBytes:
-		writeBinaryBytes(b, []byte(*v), t)
+		writeBinaryBytes(b, []byte(*v))
 
 	case *tree.DUuid:
-		writeBinaryBytes(b, v.GetBytes(), t)
+		writeBinaryBytes(b, v.GetBytes())
 
 	case *tree.DIPAddr:
 		// We calculate the Postgres binary format for an IPAddr. For the spec see,
@@ -720,7 +676,7 @@ func writeBinaryDatumNotNull(
 		writeBinaryString(b, string(*v), t)
 
 	case *tree.DCollatedString:
-		writeTextString(b, v.Contents, t)
+		b.writeLengthPrefixedString(tree.ResolveBlankPaddedChar(v.Contents, t))
 
 	case *tree.DTimestamp:
 		writeBinaryTimestamp(b, v.Time)
@@ -810,16 +766,6 @@ func writeBinaryDatumNotNull(
 		lengthToWrite := b.Len() - (initialLen + 4)
 		b.putInt32AtIndex(initialLen /* index to write at */, int32(lengthToWrite))
 
-	case *tree.DPGVector:
-		// 2 bytes for dimensions, 2 bytes for unused, and 4 bytes for each
-		// float4.
-		b.putInt32(int32(4 + 4*len(v.T)))
-		b.putInt16(int16(len(v.T)))
-		b.putInt16(int16(0)) // vec->unused - "reserved for future use, always zero"
-		for _, f := range v.T {
-			b.putInt32(int32(math.Float32bits(f)))
-		}
-
 	case *tree.DArray:
 		if v.ParamTyp.Family() == types.ArrayFamily {
 			b.setError(unimplemented.NewWithIssueDetail(32552,
@@ -860,13 +806,6 @@ func writeBinaryDatumNotNull(
 	case *tree.DJSON:
 		writeBinaryJSON(b, v.JSON, t)
 
-	case *tree.DJsonpath:
-		// Version number prefix, as of writing, `1` is the only valid value.
-		s := v.String()
-		b.putInt32(int32(len(s) + 1))
-		b.writeByte(1)
-		b.writeString(s)
-
 	case *tree.DOid:
 		b.putInt32(4)
 		b.putInt32(int32(v.Oid))
@@ -906,13 +845,13 @@ func (b *writeBuffer) writeBinaryColumnarElement(
 		writeBinaryDecimal(b, &v)
 
 	case types.BytesFamily:
-		writeBinaryBytes(b, vecs.BytesCols[colIdx].Get(rowIdx), typ)
+		writeBinaryBytes(b, vecs.BytesCols[colIdx].Get(rowIdx))
 
 	case types.UuidFamily:
-		writeBinaryBytes(b, vecs.BytesCols[colIdx].Get(rowIdx), typ)
+		writeBinaryBytes(b, vecs.BytesCols[colIdx].Get(rowIdx))
 
 	case types.StringFamily:
-		writeBinaryBytes(b, vecs.BytesCols[colIdx].Get(rowIdx), typ)
+		writeBinaryString(b, string(vecs.BytesCols[colIdx].Get(rowIdx)), typ)
 
 	case types.TimestampFamily:
 		writeBinaryTimestamp(b, vecs.TimestampCols[colIdx].Get(rowIdx))
@@ -947,17 +886,6 @@ func (b *writeBuffer) writeBinaryColumnarElement(
 // is represented as the number of microseconds between the given time and Jan 1, 2000
 // (dubbed the PGEpochJDate), stored within an int64.
 func timeToPgBinary(t time.Time, offset *time.Location) int64 {
-	if t == pgdate.TimeInfinity {
-		// Postgres uses math.MaxInt64 microseconds as the infinity value.
-		// See: https://github.com/postgres/postgres/blob/42aa1f0ab321fd43cbfdd875dd9e13940b485900/src/include/datatype/timestamp.h#L107.
-		return math.MaxInt64
-	}
-	if t == pgdate.TimeNegativeInfinity {
-		// Postgres uses math.MinInt64 microseconds as the negative infinity value.
-		// See: https://github.com/postgres/postgres/blob/42aa1f0ab321fd43cbfdd875dd9e13940b485900/src/include/datatype/timestamp.h#L107.
-		return math.MinInt64
-	}
-
 	if offset != nil {
 		t = t.In(offset)
 	} else {

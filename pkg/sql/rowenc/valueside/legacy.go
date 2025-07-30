@@ -9,7 +9,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/geo"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/lex"
-	"github.com/cockroachdb/cockroach/pkg/sql/oidext"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgrepl/lsn"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
@@ -18,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil/pgdate"
 	"github.com/cockroachdb/cockroach/pkg/util/tsearch"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/cockroach/pkg/util/vector"
 	"github.com/cockroachdb/errors"
 	"github.com/lib/pq/oid"
 )
@@ -165,15 +163,6 @@ func MarshalLegacy(colType *types.T, val tree.Datum) (roachpb.Value, error) {
 			r.SetBytes(data)
 			return r, nil
 		}
-	case types.PGVectorFamily:
-		if v, ok := val.(*tree.DPGVector); ok {
-			data, err := vector.Encode(nil, v.T)
-			if err != nil {
-				return r, err
-			}
-			r.SetBytes(data)
-			return r, nil
-		}
 	case types.ArrayFamily:
 		if v, ok := val.(*tree.DArray); ok {
 			if err := checkElementType(v.ParamTyp, colType.ArrayContents()); err != nil {
@@ -188,7 +177,7 @@ func MarshalLegacy(colType *types.T, val tree.Datum) (roachpb.Value, error) {
 		}
 	case types.TupleFamily:
 		if v, ok := val.(*tree.DTuple); ok {
-			b, _, err := encodeUntaggedTuple(v, nil /* appendTo */, nil /* scratch */)
+			b, err := encodeUntaggedTuple(v, nil /* appendTo */, 0 /* colID */, nil /* scratch */)
 			if err != nil {
 				return r, err
 			}
@@ -196,9 +185,6 @@ func MarshalLegacy(colType *types.T, val tree.Datum) (roachpb.Value, error) {
 			return r, nil
 		}
 	case types.CollatedStringFamily:
-		if colType.Oid() == oidext.T_citext {
-			val = tree.UnwrapDOidWrapper(val)
-		}
 		if v, ok := val.(*tree.DCollatedString); ok {
 			if lex.LocaleNamesAreEqual(v.Locale, colType.Locale()) {
 				r.SetString(v.Contents)
@@ -358,9 +344,6 @@ func UnmarshalLegacy(a *tree.DatumAlloc, typ *types.T, value roachpb.Value) (tre
 		if err != nil {
 			return nil, err
 		}
-		if typ.Oid() == oidext.T_citext {
-			return a.NewDCIText(string(v))
-		}
 		return a.NewDCollatedString(string(v), typ.Locale())
 	case types.UuidFamily:
 		v, err := value.GetBytes()
@@ -434,16 +417,6 @@ func UnmarshalLegacy(a *tree.DatumAlloc, typ *types.T, value roachpb.Value) (tre
 			return nil, err
 		}
 		return tree.NewDTSVector(vec), nil
-	case types.PGVectorFamily:
-		v, err := value.GetBytes()
-		if err != nil {
-			return nil, err
-		}
-		_, vec, err := vector.Decode(v)
-		if err != nil {
-			return nil, err
-		}
-		return tree.NewDPGVector(vec), nil
 	case types.EnumFamily:
 		v, err := value.GetBytes()
 		if err != nil {

@@ -18,12 +18,11 @@
 package rafttest
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/raft"
-	pb "github.com/cockroachdb/cockroach/pkg/raft/raftpb"
-	"github.com/stretchr/testify/require"
 )
 
 func TestBasicProgress(t *testing.T) {
@@ -33,14 +32,14 @@ func TestBasicProgress(t *testing.T) {
 	nodes := make([]*node, 0)
 
 	for i := 1; i <= 5; i++ {
-		n := startNode(pb.PeerID(i), peers, nt.nodeNetwork(pb.PeerID(i)))
+		n := startNode(uint64(i), peers, nt.nodeNetwork(uint64(i)))
 		nodes = append(nodes, n)
 	}
 
-	l := waitLeader(nodes)
+	waitLeader(nodes)
 
 	for i := 0; i < 100; i++ {
-		require.NoError(t, nodes[l].propose([]byte("somedata")), i)
+		nodes[0].Propose(context.TODO(), []byte("somedata"))
 	}
 
 	if !waitCommitConverge(nodes, 100) {
@@ -59,7 +58,7 @@ func TestRestart(t *testing.T) {
 	nodes := make([]*node, 0)
 
 	for i := 1; i <= 5; i++ {
-		n := startNode(pb.PeerID(i), peers, nt.nodeNetwork(pb.PeerID(i)))
+		n := startNode(uint64(i), peers, nt.nodeNetwork(uint64(i)))
 		nodes = append(nodes, n)
 	}
 
@@ -67,19 +66,19 @@ func TestRestart(t *testing.T) {
 	k1, k2 := (l+1)%5, (l+2)%5
 
 	for i := 0; i < 30; i++ {
-		require.NoError(t, nodes[l].propose([]byte("somedata")))
+		nodes[l].Propose(context.TODO(), []byte("somedata"))
 	}
 	nodes[k1].stop()
 	for i := 0; i < 30; i++ {
-		require.NoError(t, nodes[l].propose([]byte("somedata")))
+		nodes[(l+3)%5].Propose(context.TODO(), []byte("somedata"))
 	}
 	nodes[k2].stop()
 	for i := 0; i < 30; i++ {
-		require.NoError(t, nodes[l].propose([]byte("somedata")))
+		nodes[(l+4)%5].Propose(context.TODO(), []byte("somedata"))
 	}
 	nodes[k2].restart()
 	for i := 0; i < 30; i++ {
-		require.NoError(t, nodes[l].propose([]byte("somedata")))
+		nodes[l].Propose(context.TODO(), []byte("somedata"))
 	}
 	nodes[k1].restart()
 
@@ -99,28 +98,28 @@ func TestPause(t *testing.T) {
 	nodes := make([]*node, 0)
 
 	for i := 1; i <= 5; i++ {
-		n := startNode(pb.PeerID(i), peers, nt.nodeNetwork(pb.PeerID(i)))
+		n := startNode(uint64(i), peers, nt.nodeNetwork(uint64(i)))
 		nodes = append(nodes, n)
 	}
 
-	l := waitLeader(nodes)
+	waitLeader(nodes)
 
 	for i := 0; i < 30; i++ {
-		require.NoError(t, nodes[l].propose([]byte("somedata")))
+		nodes[0].Propose(context.TODO(), []byte("somedata"))
 	}
-	nodes[(l+1)%5].pause()
+	nodes[1].pause()
 	for i := 0; i < 30; i++ {
-		require.NoError(t, nodes[l].propose([]byte("somedata")))
+		nodes[0].Propose(context.TODO(), []byte("somedata"))
 	}
-	nodes[(l+2)%5].pause()
+	nodes[2].pause()
 	for i := 0; i < 30; i++ {
-		require.NoError(t, nodes[l].propose([]byte("somedata")))
+		nodes[0].Propose(context.TODO(), []byte("somedata"))
 	}
-	nodes[(l+2)%5].resume()
+	nodes[2].resume()
 	for i := 0; i < 30; i++ {
-		require.NoError(t, nodes[l].propose([]byte("somedata")))
+		nodes[0].Propose(context.TODO(), []byte("somedata"))
 	}
-	nodes[(l+1)%5].resume()
+	nodes[1].resume()
 
 	if !waitCommitConverge(nodes, 120) {
 		t.Errorf("commits failed to converge!")
@@ -132,13 +131,13 @@ func TestPause(t *testing.T) {
 }
 
 func waitLeader(ns []*node) int {
-	l := make(map[pb.PeerID]struct{})
+	l := make(map[uint64]struct{})
 	for {
 		clear(l)
 		lindex := -1
 
 		for i, n := range ns {
-			lead := n.status().HardState.Lead
+			lead := n.Status().SoftState.Lead
 			if lead != raft.None {
 				l[lead] = struct{}{}
 				if n.id == lead {
@@ -161,7 +160,7 @@ func waitCommitConverge(ns []*node, target uint64) bool {
 		var good int
 
 		for _, n := range ns {
-			commit := n.status().HardState.Commit
+			commit := n.Node.Status().HardState.Commit
 			c[commit] = struct{}{}
 			if commit > target {
 				good++

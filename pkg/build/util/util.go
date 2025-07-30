@@ -8,13 +8,12 @@
 package util
 
 import (
-	"cmp"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"path/filepath"
 	"regexp"
-	"slices"
+	"sort"
 	"strings"
 )
 
@@ -179,8 +178,8 @@ func MergeTestXMLs(suitesToMerge []TestSuites, outFile io.Writer) error {
 	for _, testCase := range cases {
 		resultSuite.TestCases = append(resultSuite.TestCases, testCase)
 	}
-	slices.SortFunc(resultSuite.TestCases, func(a, b *testCase) int {
-		return cmp.Compare(a.Name, b.Name)
+	sort.Slice(resultSuite.TestCases, func(i, j int) bool {
+		return resultSuite.TestCases[i].Name < resultSuite.TestCases[j].Name
 	})
 	return writeToFile(&resultSuites, outFile)
 }

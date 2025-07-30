@@ -26,7 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/colmem"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
-	"github.com/cockroachdb/cockroach/pkg/sql/flowinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -109,11 +108,11 @@ func TestVectorizedFlowShutdown(t *testing.T) {
 	ctx := context.Background()
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
-	_, mockServer, addr, err := flowinfra.StartMockDistSQLServer(ctx,
+	_, mockServer, addr, err := execinfrapb.StartMockDistSQLServer(ctx,
 		hlc.NewClockForTesting(nil), stopper, execinfra.StaticSQLInstanceID,
 	)
 	require.NoError(t, err)
-	dialer := &flowinfra.MockDialer{Addr: addr}
+	dialer := &execinfrapb.MockDialer{Addr: addr}
 	defer dialer.Close()
 
 	queueCfg, cleanup := colcontainerutils.NewTestingDiskQueueCfg(t, true /* inMem */)
@@ -166,7 +165,7 @@ func TestVectorizedFlowShutdown(t *testing.T) {
 				// Create an allocator for each output.
 				allocators := make([]*colmem.Allocator, numHashRouterOutputs)
 				diskAccounts := make([]*mon.BoundAccount, numHashRouterOutputs)
-				diskQueueMemAccounts := make([]*mon.BoundAccount, numHashRouterOutputs)
+				converterMemAccounts := make([]*mon.BoundAccount, numHashRouterOutputs)
 				for i := range allocators {
 					acc := testMemMonitor.MakeBoundAccount()
 					defer acc.Close(ctxRemote)
@@ -174,9 +173,9 @@ func TestVectorizedFlowShutdown(t *testing.T) {
 					diskAcc := testDiskMonitor.MakeBoundAccount()
 					diskAccounts[i] = &diskAcc
 					defer diskAcc.Close(ctxRemote)
-					diskQueueMemAcc := testMemMonitor.MakeBoundAccount()
-					diskQueueMemAccounts[i] = &diskQueueMemAcc
-					defer diskQueueMemAcc.Close(ctx)
+					converterMemAcc := testMemMonitor.MakeBoundAccount()
+					converterMemAccounts[i] = &converterMemAcc
+					defer converterMemAcc.Close(ctx)
 				}
 				createMetadataSourceForID := func(id int) colexecop.MetadataSource {
 					return colexectestutils.CallbackMetadataSource{
@@ -207,7 +206,7 @@ func TestVectorizedFlowShutdown(t *testing.T) {
 					queueCfg,
 					&colexecop.TestingSemaphore{},
 					diskAccounts,
-					diskQueueMemAccounts,
+					converterMemAccounts,
 				)
 				for i := 0; i < numInboxes; i++ {
 					inboxMemAccount := testMemMonitor.MakeBoundAccount()
@@ -223,8 +222,14 @@ func TestVectorizedFlowShutdown(t *testing.T) {
 						},
 					)
 				}
+				syncMemAccount := testMemMonitor.MakeBoundAccount()
+				defer syncMemAccount.Close(ctx)
+				// Note that here - for the purposes of the test - it doesn't
+				// matter which context we use since it'll only be used by the
+				// memory accounting system.
+				syncAllocator := colmem.NewAllocator(ctx, &syncMemAccount, testColumnFactory)
 				syncFlowCtx := &execinfra.FlowCtx{Local: false, Gateway: !addAnotherRemote}
-				synchronizer := colexec.NewParallelUnorderedSynchronizer(syncFlowCtx, 0 /* processorID */, testAllocator, typs, synchronizerInputs, &wg)
+				synchronizer := colexec.NewParallelUnorderedSynchronizer(syncFlowCtx, 0 /* processorID */, syncAllocator, typs, synchronizerInputs, &wg)
 				inputMetadataSource := colexecop.MetadataSource(synchronizer)
 
 				runOutboxInbox := func(
@@ -360,7 +365,7 @@ func TestVectorizedFlowShutdown(t *testing.T) {
 				// coordinator.
 				runFlowCoordinator := func() *colflow.FlowCoordinator {
 					materializer := colexec.NewMaterializer(
-						nil, /* streamingMemAcc */
+						nil, /* allocator */
 						flowCtx,
 						1, /* processorID */
 						inputInfo,

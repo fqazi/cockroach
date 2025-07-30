@@ -2,28 +2,29 @@
 //
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
-import { ArrowLeft } from "@cockroachlabs/icons";
-import { Row, Col, Tabs } from "antd";
-import classNames from "classnames/bind";
 import React, { useEffect, useState } from "react";
 import Helmet from "react-helmet";
 import { RouteComponentProps } from "react-router-dom";
-
-import { getExplainPlanFromGist } from "src/api/decodePlanGistApi";
-import { getStmtInsightsApi } from "src/api/stmtInsightsApi";
+import { ArrowLeft } from "@cockroachlabs/icons";
+import { Row, Col, Tabs } from "antd";
+import "antd/lib/tabs/style";
+import "antd/lib/col/style";
+import "antd/lib/row/style";
 import { Button } from "src/button";
-import { commonStyles } from "src/common";
-import insightsDetailsStyles from "src/insights/workloadInsightDetails/insightsDetails.module.scss";
 import { Loading } from "src/loading";
 import { SqlBox, SqlBoxSize } from "src/sql";
 import { getMatchParamByName, idAttr } from "src/util";
-// Styles
-
-import { TimeScale, toDateRange } from "../../timeScaleDropdown";
-import { InsightsError } from "../insightsErrorComponent";
 import { StmtInsightEvent } from "../types";
-
+import { getExplainPlanFromGist } from "src/api/decodePlanGistApi";
 import { StatementInsightDetailsOverviewTab } from "./statementInsightDetailsOverviewTab";
+import { TimeScale, toDateRange } from "../../timeScaleDropdown";
+import { getStmtInsightsApi } from "src/api/stmtInsightsApi";
+import { InsightsError } from "../insightsErrorComponent";
+
+// Styles
+import classNames from "classnames/bind";
+import { commonStyles } from "src/common";
+import insightsDetailsStyles from "src/insights/workloadInsightDetails/insightsDetails.module.scss";
 
 const cx = classNames.bind(insightsDetailsStyles);
 
@@ -45,7 +46,7 @@ export interface StatementInsightDetailsDispatchProps {
 
 export type StatementInsightDetailsProps = StatementInsightDetailsStateProps &
   StatementInsightDetailsDispatchProps &
-  RouteComponentProps;
+  RouteComponentProps<unknown>;
 
 type ExplainPlanState = {
   explainPlan: string;
@@ -154,7 +155,7 @@ export const StatementInsightDetails: React.FC<
             <Row>
               <Col span={24}>
                 <SqlBox
-                  size={SqlBoxSize.CUSTOM}
+                  size={SqlBoxSize.custom}
                   value={details?.query}
                   format={true}
                 />
@@ -189,7 +190,7 @@ export const StatementInsightDetails: React.FC<
                     >
                       <SqlBox
                         value={explainPlanState.explainPlan || "Not available."}
-                        size={SqlBoxSize.CUSTOM}
+                        size={SqlBoxSize.custom}
                       />
                     </Loading>
                   </Col>

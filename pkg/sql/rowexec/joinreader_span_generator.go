@@ -625,9 +625,7 @@ func (g *multiSpanGenerator) setResizeMemoryAccountFunc(f resizeMemoryAccountFun
 
 // generateNonNullSpans generates spans for a given row. It does not include
 // null values, since those values would not match the lookup condition anyway.
-func (g *multiSpanGenerator) generateNonNullSpans(
-	ctx context.Context, row rowenc.EncDatumRow,
-) (roachpb.Spans, error) {
+func (g *multiSpanGenerator) generateNonNullSpans(row rowenc.EncDatumRow) (roachpb.Spans, error) {
 	// Fill in the holes in g.indexKeyRows that correspond to input row values.
 	for i := 0; i < len(g.indexKeyRows); i++ {
 		for j, info := range g.indexColInfos {
@@ -655,7 +653,7 @@ func (g *multiSpanGenerator) generateNonNullSpans(
 			s, containsNull, err = g.spanBuilder.SpanFromEncDatums(indexKeyRow[:len(g.indexColInfos)])
 		} else {
 			s, containsNull, filterRow, err = g.spanBuilder.SpanFromEncDatumsWithRange(
-				ctx, indexKeyRow, len(g.indexColInfos), startBound, endBound,
+				indexKeyRow, len(g.indexColInfos), startBound, endBound,
 				g.inequalityInfo.startInclusive, g.inequalityInfo.endInclusive, g.inequalityInfo.colTyp)
 		}
 
@@ -683,7 +681,7 @@ func (g *multiSpanGenerator) generateSpans(
 	g.spanIDHelper.reset()
 	g.scratchSpans = g.scratchSpans[:0]
 	for i, inputRow := range rows {
-		generatedSpans, err := g.generateNonNullSpans(ctx, inputRow)
+		generatedSpans, err := g.generateNonNullSpans(inputRow)
 		if err != nil {
 			return nil, nil, err
 		}

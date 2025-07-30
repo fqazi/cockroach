@@ -94,8 +94,8 @@ func TestNormalizeAndValidate(t *testing.T) {
 			name: "UDTs fully qualified",
 			desc: fooDesc,
 			stmt: "SELECT *, 'inactive':::status FROM foo AS bar WHERE status = 'open':::status",
-			expectStmt: "SELECT *, 'inactive':::public.status " +
-				"FROM foo AS bar WHERE status = 'open':::public.status",
+			expectStmt: "SELECT *, 'inactive':::defaultdb.public.status " +
+				"FROM foo AS bar WHERE status = 'open':::defaultdb.public.status",
 			splitColFams: false,
 		},
 		{
@@ -228,7 +228,7 @@ func TestNormalizeAndValidate(t *testing.T) {
 				return
 			}
 			target := jobspb.ChangefeedTargetSpecification{
-				DescID:            tc.desc.GetID(),
+				TableID:           tc.desc.GetID(),
 				StatementTimeName: tc.desc.GetName(),
 			}
 
@@ -354,7 +354,7 @@ func TestSelectClauseRequiresPrev(t *testing.T) {
 			sc, err := ParseChangefeedExpression(tc.stmt)
 			require.NoError(t, err)
 			target := jobspb.ChangefeedTargetSpecification{
-				DescID:            tc.desc.GetID(),
+				TableID:           tc.desc.GetID(),
 				StatementTimeName: tc.desc.GetName(),
 			}
 

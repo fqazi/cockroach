@@ -4,11 +4,11 @@
 // included in the /LICENSE file.
 
 import React from "react";
-import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
+import { connect } from "react-redux";
 
-import { selectLoginState, LoginState, getLoginPage } from "src/redux/login";
 import { AdminUIState } from "src/redux/state";
+import { selectLoginState, LoginState, getLoginPage } from "src/redux/login";
 
 interface RequireLoginProps {
   loginState: LoginState;

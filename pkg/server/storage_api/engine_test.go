@@ -7,21 +7,17 @@ package storage_api_test
 
 import (
 	"context"
-	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
-	"github.com/cockroachdb/cockroach/pkg/server/debug"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/srvtestutils"
+	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/pkg/errors"
-	"github.com/stretchr/testify/require"
 )
 
 // TestStatusEngineStatsJson ensures that the output response for the engine
@@ -29,26 +25,18 @@ import (
 func TestStatusEngineStatsJson(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	ctx := context.Background()
 
 	dir, cleanupFn := testutils.TempDir(t)
 	defer cleanupFn()
 
 	srv := serverutils.StartServerOnly(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(110020),
+
 		StoreSpecs: []base.StoreSpec{{
 			Path: dir,
 		}},
 	})
-	defer srv.Stopper().Stop(ctx)
-
-	if srv.DeploymentMode().IsExternal() {
-		// Explicitly enabling CanViewNodeInfo capability for the secondary/application tenant
-		// when in external process mode, as shared process mode already has all capabilities.
-		require.NoError(t, srv.GrantTenantCapabilities(
-			ctx, serverutils.TestTenantID(),
-			map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanViewNodeInfo: "true"}))
-	}
-
+	defer srv.Stopper().Stop(context.Background())
 	s := srv.ApplicationLayer()
 
 	t.Logf("using admin URL %s", s.AdminURL())
@@ -62,38 +50,41 @@ func TestStatusEngineStatsJson(t *testing.T) {
 		return srvtestutils.GetStatusJSONProto(s, "enginestats/local", &engineStats)
 	})
 
-	formattedStats := debug.FormatLSMStats(engineStats.StatsByStoreId)
-	re := regexp.MustCompile(`^(Store \d+:(.|\n)+?)+$`)
-	if !re.MatchString(formattedStats) {
-		t.Fatal(errors.Errorf("expected engine metrics to be correctly formatted, got:\n %s", formattedStats))
+	if len(engineStats.Stats) != 1 {
+		t.Fatal(errors.Errorf("expected one engine stats, got: %v", engineStats))
 	}
-}
 
-func TestStatusEngineStatsJsonWithoutTenantCapability(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
+	if engineStats.Stats[0].EngineType == enginepb.EngineTypePebble ||
+		engineStats.Stats[0].EngineType == enginepb.EngineTypeDefault {
+		// Pebble does not have RocksDB style TickersAnd Histogram.
+		return
+	}
 
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{
-		// Note: We're only testing external-process mode because shared service
-		// mode tenants have all capabilities.
-		DefaultTestTenant: base.ExternalTestTenantAlwaysEnabled,
-	})
-	defer srv.Stopper().Stop(context.Background())
-
-	s := srv.ApplicationLayer()
-
-	var engineStats serverpb.EngineStatsResponse
-	// Using SucceedsSoon because we have seen in the wild that
-	// occasionally requests don't go through with error "transport:
-	// error while dialing: connection interrupted (did the remote node
-	// shut down or are there networking issues?)"
-	testutils.SucceedsSoon(t, func() error {
-		actualErr := srvtestutils.GetStatusJSONProto(s, "enginestats/local", &engineStats)
-		require.Error(t, actualErr)
-		if !strings.Contains(actualErr.Error(), "client tenant does not have capability to query cluster node metadata") {
-			return errors.Wrap(actualErr, "unexpected error message")
+	tickers := engineStats.Stats[0].TickersAndHistograms.Tickers
+	if len(tickers) == 0 {
+		t.Fatal(errors.Errorf("expected non-empty tickers list, got: %v", tickers))
+	}
+	allTickersZero := true
+	for _, ticker := range tickers {
+		if ticker != 0 {
+			allTickersZero = false
 		}
-		return nil
-	})
+	}
+	if allTickersZero {
+		t.Fatal(errors.Errorf("expected some tickers nonzero, got: %v", tickers))
+	}
 
+	histograms := engineStats.Stats[0].TickersAndHistograms.Histograms
+	if len(histograms) == 0 {
+		t.Fatal(errors.Errorf("expected non-empty histograms list, got: %v", histograms))
+	}
+	allHistogramsZero := true
+	for _, histogram := range histograms {
+		if histogram.Max == 0 {
+			allHistogramsZero = false
+		}
+	}
+	if allHistogramsZero {
+		t.Fatal(errors.Errorf("expected some histograms nonzero, got: %v", histograms))
+	}
 }

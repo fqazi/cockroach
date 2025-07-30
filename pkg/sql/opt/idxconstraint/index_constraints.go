@@ -6,12 +6,10 @@
 package idxconstraint
 
 import (
-	"context"
 	"regexp"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
-	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/constraint"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/norm"
@@ -263,17 +261,17 @@ func (c *indexConstraintCtx) makeSpansForSingleColumnDatum(
 		}
 		key := constraint.MakeKey(datum)
 		descending := c.columns[offset].Descending()
-		if !(startKey.IsEmpty() && c.isNullable(offset)) && datum.IsMin(c.ctx, c.evalCtx) {
+		if !(startKey.IsEmpty() && c.isNullable(offset)) && datum.IsMin(c.evalCtx) {
 			// Omit the (/NULL - key) span by setting a contradiction, so that the
 			// UnionWith call below will result in just the second span.
 			c.contradiction(offset, out)
 		} else {
 			c.singleSpan(offset, startKey, startBoundary, key, excludeBoundary, descending, out)
 		}
-		if !datum.IsMax(c.ctx, c.evalCtx) {
+		if !datum.IsMax(c.evalCtx) {
 			var other constraint.Constraint
 			c.singleSpan(offset, key, excludeBoundary, emptyKey, includeBoundary, descending, &other)
-			out.UnionWith(c.ctx, c.evalCtx, &other)
+			out.UnionWith(c.evalCtx, &other)
 		}
 		return true
 
@@ -424,7 +422,7 @@ func (c *indexConstraintCtx) makeSpansForTupleInequality(
 		c.singleSpan(offset, emptyKey, includeBoundary, key, excludeBoundary, false /* swap */, out)
 		var other constraint.Constraint
 		c.singleSpan(offset, key, excludeBoundary, emptyKey, includeBoundary, false /* swap */, &other)
-		out.UnionWith(c.ctx, c.evalCtx, &other)
+		out.UnionWith(c.evalCtx, &other)
 		// If any columns are nullable, the spans could include unwanted NULLs.
 		// For example, for
 		//   (@1, @2, @3) != (1, 2, 3)
@@ -627,10 +625,9 @@ func (c *indexConstraintCtx) makeSpansForExpr(
 
 	// Attempt to build a single tight constraint from a scalar expression and use
 	// it to derive predicates/constraints on computed columns.
-	if !c.skipComputedColPredDerivation &&
+	if c.computedColSet.Intersects(c.keyCols) &&
 		c.evalCtx.SessionData().OptimizerUseImprovedComputedColumnFiltersDerivation &&
-		c.computedColSet.Intersects(c.keyCols) &&
-		c.computedColInSuffix(offset) {
+		!c.skipComputedColPredDerivation {
 		switch t := e.(type) {
 		case *memo.FiltersExpr, *memo.FiltersItem, *memo.AndExpr, *memo.OrExpr:
 		// Skip over scalar expressions that are not conditions, require special
@@ -638,7 +635,7 @@ func (c *indexConstraintCtx) makeSpansForExpr(
 		case opt.ScalarExpr:
 			// Attempt to build a single tight constraint from the IN expression.
 			constraints, tightConstraints :=
-				memo.BuildConstraints(c.ctx, t, c.md, c.evalCtx, true /* skipExtraConstraints */)
+				memo.BuildConstraints(t, c.md, c.evalCtx, true /* skipExtraConstraints */)
 			if tightConstraints && constraints.Length() == 1 {
 				// Attempt to convert the constraint into a disjunction of ANDed IS
 				// predicates, with additional derived IS conjuncts on computed
@@ -657,10 +654,9 @@ func (c *indexConstraintCtx) makeSpansForExpr(
 					// All disjunctions fully represent the original condition
 					// plus derived predicates, so we only have to make spans on
 					// the list of disjunctions.
-					origSkip := c.skipComputedColPredDerivation
 					c.skipComputedColPredDerivation = true
-					defer func() { c.skipComputedColPredDerivation = origSkip }()
 					localTight := c.binaryMergeSpansForOr(offset, disjunctions, out)
+					c.skipComputedColPredDerivation = false
 					return localTight
 				}
 			}
@@ -800,7 +796,7 @@ func (c *indexConstraintCtx) makeSpansForAnd(
 			tightDeltaMap.Set(i, 0)
 		}
 		tight = tight && filterTight
-		out.IntersectWith(c.ctx, c.evalCtx, &exprConstraint)
+		out.IntersectWith(c.evalCtx, &exprConstraint)
 	}
 	if out.IsUnconstrained() {
 		return tight
@@ -847,9 +843,9 @@ func (c *indexConstraintCtx) makeSpansForAnd(
 			if tight {
 				tightDeltaMap.Set(j, delta)
 			}
-			ofsC.IntersectWith(c.ctx, c.evalCtx, &exprConstraint)
+			ofsC.IntersectWith(c.evalCtx, &exprConstraint)
 		}
-		out.Combine(c.ctx, c.evalCtx, &ofsC, c.checkCancellation)
+		out.Combine(c.evalCtx, &ofsC, c.checkCancellation)
 		numIterations++
 		// In case we can't exit this loop, allow the cancel checker to cancel
 		// this query.
@@ -868,7 +864,7 @@ func (c *indexConstraintCtx) makeSpansForAnd(
 	//
 	// This is because the Combine call above can only keep the constraints tight
 	// if it is "appending" to single-value spans.
-	prefix := out.Prefix(c.ctx, c.evalCtx)
+	prefix := out.Prefix(c.evalCtx)
 	for i := range filters {
 		delta, ok := tightDeltaMap.Get(i)
 		if !ok || delta > prefix {
@@ -914,7 +910,7 @@ func (c *indexConstraintCtx) binaryMergeSpansForOr(
 		c.unconstrained(offset, out)
 		return false
 	}
-	out.UnionWith(c.ctx, c.evalCtx, &rightConstraint)
+	out.UnionWith(c.evalCtx, &rightConstraint)
 
 	// The OR is "tight" if both constraints were tight.
 	return tightLeft && tightRight
@@ -958,9 +954,7 @@ func (c *indexConstraintCtx) getMaxSimplifyPrefix(idxConstraint *constraint.Cons
 		j := 0
 		// Find the longest prefix of equal values.
 		for ; j < sp.StartKey().Length() && j < sp.EndKey().Length(); j++ {
-			if cmp, err := sp.StartKey().Value(j).Compare(c.ctx, c.evalCtx, sp.EndKey().Value(j)); err != nil {
-				panic(err)
-			} else if cmp != 0 {
+			if sp.StartKey().Value(j).Compare(c.evalCtx, sp.EndKey().Value(j)) != 0 {
 				break
 			}
 		}
@@ -1047,7 +1041,7 @@ func (c *indexConstraintCtx) simplifyFilter(
 				if offset > 0 {
 					sp.CutFront(offset)
 				}
-				if !cExpr.ContainsSpan(c.ctx, c.evalCtx, &sp) {
+				if !cExpr.ContainsSpan(c.evalCtx, &sp) {
 					// We won't get another tight constraint at another offset.
 					return scalar
 				}
@@ -1103,7 +1097,6 @@ type Instance struct {
 // constraints that can help generate better spans but don't actually need to be
 // enforced.
 func (ic *Instance) Init(
-	ctx context.Context,
 	requiredFilters memo.FiltersExpr,
 	optionalFilters memo.FiltersExpr,
 	columns []opt.OrderingColumn,
@@ -1130,7 +1123,7 @@ func (ic *Instance) Init(
 		ic.allFilters = requiredFilters[:len(requiredFilters):len(requiredFilters)]
 		ic.allFilters = append(ic.allFilters, optionalFilters...)
 	}
-	ic.indexConstraintCtx.init(ctx, columns, notNullCols, computedCols, colsInComputedColsExpressions, evalCtx, factory, checkCancellation)
+	ic.indexConstraintCtx.init(columns, notNullCols, computedCols, colsInComputedColsExpressions, evalCtx, factory, checkCancellation)
 	ic.tight = ic.makeSpansForExpr(0 /* offset */, &ic.allFilters, &ic.constraint)
 
 	// Note: If consolidate is true, we only consolidate spans at the
@@ -1152,40 +1145,32 @@ func (ic *Instance) Init(
 	// we have [/1/1 - /1/2].
 	if consolidate {
 		ic.consolidatedConstraint = ic.constraint
-		ic.consolidatedConstraint.ConsolidateSpans(ctx, evalCtx, ps)
+		ic.consolidatedConstraint.ConsolidateSpans(evalCtx, ps)
 		ic.consolidated = true
 	}
 	ic.initialized = true
 }
 
-// Constraint shallow-copies the constraint created by Init into c. Panics if
-// Init wasn't called, or if a consolidated constraint was not built because
+// Constraint returns the constraint created by Init. Panics if Init wasn't
+// called, or if a consolidated constraint was not built because
 // consolidate=false was passed as an argument to Init.
-//
-// This method is designed specifically to avoid returning a reference to
-// Instance.consolidatedConstraint. If it did so, the entire Instance could not
-// be GC'd while the reference lived.
-func (ic *Instance) Constraint(c *constraint.Constraint) {
+func (ic *Instance) Constraint() *constraint.Constraint {
 	if !ic.initialized {
 		panic(errors.AssertionFailedf("Init was not called"))
 	}
 	if !ic.consolidated {
 		panic(errors.AssertionFailedf("Init was called with consolidate=false"))
 	}
-	*c = ic.consolidatedConstraint
+	return &ic.consolidatedConstraint
 }
 
-// UnconsolidatedConstraint shallow-copies the unconsolidated constraint created
-// by Init into c. Panics if Init wasn't called.
-//
-// This method is designed specifically to avoid returning a reference to
-// Instance.constraint. If it did so, the entire Instance could not be GC'd
-// while the reference lived.
-func (ic *Instance) UnconsolidatedConstraint(c *constraint.Constraint) {
+// UnconsolidatedConstraint returns the constraint created by Init before it was
+// consolidated. Panics if Init wasn't called.
+func (ic *Instance) UnconsolidatedConstraint() *constraint.Constraint {
 	if !ic.initialized {
 		panic(errors.AssertionFailedf("Init was not called"))
 	}
-	*c = ic.constraint
+	return &ic.constraint
 }
 
 // RemainingFilters calculates a simplified FiltersExpr that needs to be applied
@@ -1239,7 +1224,6 @@ type indexConstraintCtx struct {
 	// processing derived predicates.
 	skipComputedColPredDerivation bool
 
-	ctx     context.Context
 	evalCtx *eval.Context
 
 	// We pre-initialize the KeyContext for each suffix of the index columns.
@@ -1251,7 +1235,6 @@ type indexConstraintCtx struct {
 }
 
 func (c *indexConstraintCtx) init(
-	ctx context.Context,
 	columns []opt.OrderingColumn,
 	notNullCols opt.ColSet,
 	computedCols map[opt.ColumnID]opt.ScalarExpr,
@@ -1277,14 +1260,12 @@ func (c *indexConstraintCtx) init(
 		computedCols:                  computedCols,
 		computedColSet:                computedColSet,
 		colsInComputedColsExpressions: colsInComputedColsExpressions,
-		ctx:                           ctx,
 		evalCtx:                       evalCtx,
 		factory:                       factory,
 		keyCtx:                        make([]constraint.KeyContext, len(columns)),
 		checkCancellation:             checkCancellation,
 	}
 	for i := range columns {
-		c.keyCtx[i].Ctx = ctx
 		c.keyCtx[i].EvalCtx = evalCtx
 		c.keyCtx[i].Columns.Init(columns[i:])
 	}
@@ -1322,100 +1303,4 @@ func (c *indexConstraintCtx) isNullable(offset int) bool {
 // colType returns the type of the index column <offset>.
 func (c *indexConstraintCtx) colType(offset int) *types.T {
 	return c.md.ColumnMeta(c.columns[offset].ID()).Type
-}
-
-// computedColInSuffix returns true if one of the key columns at or after offset
-// is a computed column.
-func (c *indexConstraintCtx) computedColInSuffix(offset int) bool {
-	for _, col := range c.columns[offset:] {
-		if c.computedColSet.Contains(col.ID()) {
-			return true
-		}
-	}
-	return false
-}
-
-// IndexPrefixCols returns a slice of ordering columns for each of the prefix
-// columns of the inverted or vector index. It also returns a set of those
-// columns that are NOT NULL. If the index is a single-column inverted index,
-// the function returns nil ordering columns.
-func IndexPrefixCols(
-	tabID opt.TableID, index cat.Index,
-) (_ []opt.OrderingColumn, notNullCols opt.ColSet) {
-	prefixColumnCount := index.PrefixColumnCount()
-
-	// If this is a single-column inverted/vector index, there are no prefix
-	// columns.
-	if prefixColumnCount == 0 {
-		return nil, opt.ColSet{}
-	}
-
-	prefixColumns := make([]opt.OrderingColumn, prefixColumnCount)
-	for i := range prefixColumns {
-		col := index.Column(i)
-		colID := tabID.ColumnID(col.Ordinal())
-		prefixColumns[i] = opt.MakeOrderingColumn(colID, col.Descending)
-		if !col.IsNullable() {
-			notNullCols.Add(colID)
-		}
-	}
-	return prefixColumns, notNullCols
-}
-
-// ConstrainIndexPrefixCols attempts to build a constraint for the prefix
-// columns of the given inverted or vector index. If a constraint is
-// successfully built, it is returned along with remaining filters and ok=true.
-// The function is only successful if it can generate a constraint where all
-// spans have the same start and end keys for all prefix columns. This is
-// required for building spans for scanning multi-column inverted/vector indexes
-// (see span.Builder.SpansFromInvertedSpans).
-func ConstrainIndexPrefixCols(
-	ctx context.Context,
-	evalCtx *eval.Context,
-	factory *norm.Factory,
-	columns []opt.OrderingColumn,
-	notNullCols opt.ColSet,
-	filters memo.FiltersExpr,
-	optionalFilters memo.FiltersExpr,
-	tabID opt.TableID,
-	index cat.Index,
-	checkCancellation func(),
-) (_ *constraint.Constraint, remainingFilters memo.FiltersExpr, ok bool) {
-	tabMeta := factory.Metadata().TableMeta(tabID)
-	prefixColumnCount := index.PrefixColumnCount()
-	ps := tabMeta.IndexPartitionLocality(index.Ordinal())
-
-	// Consolidation of a constraint converts contiguous spans into a single
-	// span. By definition, the consolidated span would have different start and
-	// end keys and could not be used for multi-column inverted index scans.
-	// Therefore, we only generate and check the unconsolidated constraint,
-	// allowing the optimizer to plan multi-column inverted/vector index scans in
-	// more cases.
-	//
-	// For example, the consolidated constraint for (x IN (1, 2, 3)) is:
-	//
-	//   /x: [/1 - /3]
-	//   Prefix: 0
-	//
-	// The unconsolidated constraint for the same expression is:
-	//
-	//   /x: [/1 - /1] [/2 - /2] [/3 - /3]
-	//   Prefix: 1
-	//
-	var ic Instance
-	ic.Init(
-		ctx, filters, optionalFilters,
-		columns, notNullCols, tabMeta.ComputedCols,
-		tabMeta.ColsInComputedColsExpressions,
-		false, /* consolidate */
-		evalCtx, factory, ps, checkCancellation,
-	)
-	var c constraint.Constraint
-	ic.UnconsolidatedConstraint(&c)
-	if c.Prefix(ctx, evalCtx) != prefixColumnCount {
-		// The prefix columns must be constrained to single values.
-		return nil, nil, false
-	}
-
-	return &c, ic.RemainingFilters(), true
 }

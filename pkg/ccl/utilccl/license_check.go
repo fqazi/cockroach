@@ -45,7 +45,6 @@ var EnterpriseLicense = settings.RegisterStringSetting(
 				return errors.WithHint(errors.Newf("a trial license has previously been installed on this cluster"),
 					"Please install a non-trial license to continue")
 			}
-
 			return nil
 		},
 	),
@@ -128,14 +127,13 @@ func GetLicense(st *cluster.Settings) (*licenseccl.License, error) {
 	}
 	cacheKey := licenseCacheKey(str)
 	if cachedLicense, ok := st.Cache.Load(cacheKey); ok {
-		return (*cachedLicense).(*licenseccl.License), nil
+		return cachedLicense.(*licenseccl.License), nil
 	}
 	license, err := decode(str)
 	if err != nil {
 		return nil, err
 	}
-	licenseBox := any(license)
-	st.Cache.Store(cacheKey, &licenseBox)
+	st.Cache.Store(cacheKey, license)
 	return license, nil
 }
 

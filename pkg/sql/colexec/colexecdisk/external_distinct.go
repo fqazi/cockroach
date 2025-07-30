@@ -31,7 +31,7 @@ func NewExternalDistinct(
 	createDiskBackedSorter DiskBackedSorterConstructor,
 	inMemUnorderedDistinct colexecop.Operator,
 	diskAcc *mon.BoundAccount,
-	diskQueueMemAcc *mon.BoundAccount,
+	converterMemAcc *mon.BoundAccount,
 ) (colexecop.Operator, colexecop.Closer) {
 	distinctSpec := args.Spec.Core.Distinct
 	distinctCols := distinctSpec.DistinctColumns
@@ -95,7 +95,7 @@ func NewExternalDistinct(
 		inMemMainOpConstructor,
 		diskBackedFallbackOpConstructor,
 		diskAcc,
-		diskQueueMemAcc,
+		converterMemAcc,
 		numRequiredActivePartitions,
 	)
 	// The last thing we need to do is making sure that the output has the

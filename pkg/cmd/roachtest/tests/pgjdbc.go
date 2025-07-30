@@ -21,7 +21,7 @@ var pgjdbcReleaseTagRegex = regexp.MustCompile(`^REL(?P<major>\d+)\.(?P<minor>\d
 
 // WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
 // This is used by docs automation to produce a list of supported versions for ORM's.
-var supportedPGJDBCTag = "REL42.7.3"
+var supportedPGJDBCTag = "REL42.3.3"
 
 // This test runs pgjdbc's full test suite against a single cockroach node.
 
@@ -65,13 +65,14 @@ func registerPgjdbc(r registry.Registry) {
 			t.Fatal(err)
 		}
 
+		// TODO(rafi): use openjdk-11-jdk-headless once we are off of Ubuntu 16.
 		if err := repeatRunE(
 			ctx,
 			t,
 			c,
 			node,
 			"install dependencies",
-			`sudo apt-get -qq install default-jre openjdk-17-jdk-headless gradle`,
+			`sudo apt-get -qq install default-jre openjdk-8-jdk-headless gradle`,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -105,21 +106,6 @@ func registerPgjdbc(r registry.Registry) {
 			fmt.Sprintf(
 				"echo \"%s\" > /mnt/data1/pgjdbc/build.local.properties", pgjdbcDatabaseParams,
 			),
-		); err != nil {
-			t.Fatal(err)
-		}
-
-		// Remove an unsupported deferrable qualifier (#31632) from the XA test
-		// suite setup. This prevents XADataSourceTest.mappingOfConstraintViolations
-		// from running properly (it fails either way), but it allows the rest of
-		// the XA tests to run.
-		if err := repeatRunE(
-			ctx,
-			t,
-			c,
-			node,
-			"removing unsupported deferrable qualifier from test",
-			"sed -i 's/ deferrable//' /mnt/data1/pgjdbc/pgjdbc/src/test/java/org/postgresql/test/xa/XADataSourceTest.java",
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -202,6 +188,8 @@ func registerPgjdbc(r registry.Registry) {
 	}
 
 	r.Add(registry.TestSpec{
+		Skip:             `https://github.com/cockroachdb/cockroach/issues/127209#issuecomment-2233446488`,
+		SkipDetails:      `a test dependency was pulled from the upstream package repository`,
 		Name:             "pgjdbc",
 		Owner:            registry.OwnerSQLFoundations,
 		Cluster:          r.MakeClusterSpec(1),

@@ -25,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -37,8 +38,6 @@ func BackupSuccess(t *testing.T, path string, factory TestServerFactory) {
 	skip.UnderRace(t)
 	skip.UnderDeadlock(t)
 
-	// Disable schema_locked in backup and restore tests, since the userfiles table
-	// cannot be created with schema_locked by default yet.
 	cumulativeTestForEachPostCommitStage(t, path, factory, func(t *testing.T, cs CumulativeTestCaseSpec) {
 		backupSuccess(t, factory, cs)
 	})
@@ -54,9 +53,7 @@ func BackupRollbacks(t *testing.T, path string, factory TestServerFactory) {
 	// These tests are only marginally more useful than BackupSuccess
 	// and at least as expensive to run.
 	skip.UnderShort(t)
-	// Disable schema_locked in backup and restore tests, since the userfiles table
-	// cannot be created with schema_locked by default yet.
-	factory = factory.WithSchemaLockDisabled()
+
 	cumulativeTestForEachPostCommitStage(t, path, factory, func(t *testing.T, cs CumulativeTestCaseSpec) {
 		backupRollbacks(t, factory, cs)
 	})
@@ -72,10 +69,8 @@ func BackupSuccessMixedVersion(t *testing.T, path string, factory TestServerFact
 	// These tests are only marginally more useful than BackupSuccess
 	// and at least as expensive to run.
 	skip.UnderShort(t)
+
 	factory = factory.WithMixedVersion()
-	// Disable schema_locked in mixed version tests, since we do not support
-	// disabling schema_locked in a mixed version state yet.
-	factory = factory.WithSchemaLockDisabled()
 	cumulativeTestForEachPostCommitStage(t, path, factory, func(t *testing.T, cs CumulativeTestCaseSpec) {
 		backupSuccess(t, factory, cs)
 	})
@@ -93,9 +88,6 @@ func BackupRollbacksMixedVersion(t *testing.T, path string, factory TestServerFa
 	skip.UnderShort(t)
 
 	factory = factory.WithMixedVersion()
-	// Disable schema_locked in mixed version tests, since we do not support
-	// disabling schema_locked in a mixed version state yet.
-	factory = factory.WithSchemaLockDisabled()
 	cumulativeTestForEachPostCommitStage(t, path, factory, func(t *testing.T, cs CumulativeTestCaseSpec) {
 		backupRollbacks(t, factory, cs)
 	})
@@ -143,17 +135,12 @@ func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCas
 	url := fmt.Sprintf("userfile://backups.public.userfiles_$user/data_%s_%d",
 		cs.Phase, cs.StageOrdinal)
 	var dbForBackup atomic.Pointer[gosql.DB]
-	var isBackupPostBackfill atomic.Bool
-	var knobEnabled atomic.Bool
+	var isBackupPostBackfill syncutil.AtomicBool
 	pe := MakePlanExplainer()
 	knobs := &scexec.TestingKnobs{
 		// Back up the database exactly once when reaching the stage prescribed
 		// by the test case specification.
 		BeforeStage: func(p scplan.Plan, stageIdx int) error {
-			// Only enabled after setup.
-			if !knobEnabled.Load() {
-				return nil
-			}
 			// Collect EXPLAIN (DDL) diagram for debug purposes.
 			if err := pe.MaybeUpdateWithPlan(p); err != nil {
 				return err
@@ -176,7 +163,7 @@ func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCas
 						// schema changer state.
 						for j := i + 1; j < stageIdx; j++ {
 							if p.Stages[j].Type() == scop.MutationType {
-								isBackupPostBackfill.Store(true)
+								isBackupPostBackfill.Set(true)
 								break OuterLoop
 							}
 						}
@@ -191,14 +178,13 @@ func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCas
 			return nil
 		},
 	}
-	runfn := func(s serverutils.TestServerInterface, db *gosql.DB) {
+	runfn := func(_ serverutils.TestServerInterface, db *gosql.DB) {
 		dbForBackup.Store(db)
 		tdb := sqlutils.MakeSQLRunner(db)
 
 		// Setup the test cluster.
 		tdb.Exec(t, "CREATE DATABASE backups")
 		require.NoError(t, setupSchemaChange(ctx, t, cs.CumulativeTestSpec, db))
-		knobEnabled.Swap(true)
 
 		// Fetch the state of the cluster before the schema change kicks off.
 		tdb.Exec(t, fmt.Sprintf("USE %q", cs.DatabaseName))
@@ -223,7 +209,7 @@ func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCas
 			mayRollback:             false,
 			expectedOnRollback:      before,
 		}
-		if isBackupPostBackfill.Load() {
+		if isBackupPostBackfill.Get() {
 			const countRowsQ = `
 				SELECT coalesce(sum(rows), 0)
 				FROM [SHOW BACKUP FROM LATEST IN $2]
@@ -259,16 +245,11 @@ func backupRollbacks(t *testing.T, factory TestServerFactory, cs CumulativeTestC
 	var urls atomic.Value
 	var dbForBackup atomic.Pointer[gosql.DB]
 	pe := MakePlanExplainer()
-	var knobEnabled atomic.Bool
 	knobs := &scexec.TestingKnobs{
 		// Inject an error when reaching the stage prescribed by the test case
 		// specification. This will trigger a rollback.
 		// Before each stage during the rollback, back up the database.
 		BeforeStage: func(p scplan.Plan, stageIdx int) error {
-			// Only enabled after setup.
-			if !knobEnabled.Load() {
-				return nil
-			}
 			// Collect EXPLAIN (DDL) diagram for debug purposes.
 			if err := pe.MaybeUpdateWithPlan(p); err != nil {
 				return err
@@ -287,7 +268,7 @@ func backupRollbacks(t *testing.T, factory TestServerFactory, cs CumulativeTestC
 					urls.Store(append(v.([]string), url))
 				}
 				backupStmt := fmt.Sprintf("BACKUP DATABASE %s INTO '%s'", cs.DatabaseName, url)
-				_, err := dbForBackup.Load().ExecContext(ctx, backupStmt)
+				_, err := dbForBackup.Load().Exec(backupStmt)
 				return err
 			}
 			if s := p.Stages[stageIdx]; s.Phase == cs.Phase && s.Ordinal == cs.StageOrdinal {
@@ -296,15 +277,13 @@ func backupRollbacks(t *testing.T, factory TestServerFactory, cs CumulativeTestC
 			return nil
 		},
 	}
-	runfn := func(s serverutils.TestServerInterface, db *gosql.DB) {
-		_, err := db.Exec("SET create_table_with_schema_locked = 'off'")
-		require.NoError(t, err)
+	runfn := func(_ serverutils.TestServerInterface, db *gosql.DB) {
 		dbForBackup.Store(db)
 		tdb := sqlutils.MakeSQLRunner(db)
+
 		// Setup the test cluster.
 		tdb.Exec(t, "CREATE DATABASE backups")
 		require.NoError(t, setupSchemaChange(ctx, t, cs.CumulativeTestSpec, db))
-		knobEnabled.Swap(true)
 
 		// Fetch the state of the cluster before the schema change kicks off.
 		tdb.Exec(t, fmt.Sprintf("USE %q", cs.DatabaseName))
@@ -455,7 +434,7 @@ func exerciseBackupRestore(
 			tdb.Exec(t, fmt.Sprintf("DROP DATABASE IF EXISTS %q CASCADE", cs.DatabaseName))
 			if rc.restoreFlavor == restoreAllTablesInDatabase {
 				// Database must be created explicitly pre-RESTORE in this case.
-				tdb.Exec(t, cs.CreateDatabaseStmt)
+				tdb.Exec(t, fmt.Sprintf("CREATE DATABASE %q", cs.DatabaseName))
 			}
 
 			// RESTORE.

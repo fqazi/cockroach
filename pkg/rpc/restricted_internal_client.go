@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
+	"google.golang.org/grpc"
 )
 
 // RestrictedInternalClient represents the part of the kvpb.InternalClient
@@ -19,6 +20,7 @@ import (
 // For a more contextualized explanation, see the comment that decorates
 // (*rpc.Context).loopbackDialFn.
 type RestrictedInternalClient interface {
-	Batch(ctx context.Context, in *kvpb.BatchRequest) (*kvpb.BatchResponse, error)
-	MuxRangeFeed(ctx context.Context) (kvpb.RPCInternal_MuxRangeFeedClient, error)
+	Batch(ctx context.Context, in *kvpb.BatchRequest, opts ...grpc.CallOption) (*kvpb.BatchResponse, error)
+	RangeFeed(ctx context.Context, in *kvpb.RangeFeedRequest, opts ...grpc.CallOption) (kvpb.Internal_RangeFeedClient, error)
+	MuxRangeFeed(ctx context.Context, opts ...grpc.CallOption) (kvpb.Internal_MuxRangeFeedClient, error)
 }

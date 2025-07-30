@@ -22,7 +22,7 @@ func init() {
 		"dependent", "complex-constraint",
 		func(from, to NodeVars) rel.Clauses {
 			return rel.Clauses{
-				from.TypeFilter(rulesVersionKey, isConstraintDependent, Not(isConstraintWithoutIndexName)),
+				from.TypeFilter(rulesVersionKey, isConstraintDependent, Not(isConstraintWithIndexName)),
 				to.TypeFilter(rulesVersionKey, isNonIndexBackedConstraint, isSubjectTo2VersionInvariant),
 				JoinOnConstraintID(from, to, "table-id", "constraint-id"),
 				StatusesToPublicOrTransient(from, scpb.Status_PUBLIC, to, scpb.Status_PUBLIC),
@@ -53,7 +53,7 @@ func init() {
 		func(from, to NodeVars) rel.Clauses {
 			return rel.Clauses{
 				from.TypeFilter(rulesVersionKey, isNonIndexBackedConstraint),
-				to.TypeFilter(rulesVersionKey, isConstraintWithoutIndexName),
+				to.TypeFilter(rulesVersionKey, isConstraintWithIndexName),
 				JoinOnConstraintID(from, to, "table-id", "constraint-id"),
 				StatusesToPublicOrTransient(from, scpb.Status_WRITE_ONLY, to, scpb.Status_PUBLIC),
 			}

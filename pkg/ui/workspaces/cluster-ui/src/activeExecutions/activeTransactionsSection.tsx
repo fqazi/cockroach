@@ -3,9 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
 import React, { useMemo } from "react";
-
+import classNames from "classnames/bind";
 import {
   ActiveTransaction,
   ActiveTransactionFilters,
@@ -13,23 +12,21 @@ import {
 import ColumnsSelector, {
   SelectOption,
 } from "src/columnsSelector/columnsSelector";
-import { isSelectedColumn } from "src/columnsSelector/utils";
-import { calculateActiveFilters } from "src/queryFilter/filter";
-import { SortedTable } from "src/sortedtable";
 import sortableTableStyles from "src/sortedtable/sortedtable.module.scss";
-import { TableStatistics } from "src/tableStatistics";
 import { EmptyTransactionsPlaceholder } from "src/transactionsPage/emptyTransactionsPlaceholder";
-import { TransactionViewType } from "src/transactionsPage/transactionsPageTypes";
-
+import { TableStatistics } from "src/tableStatistics";
 import {
   ISortedTablePagination,
   SortSetting,
 } from "../sortedtable/sortedtable";
-
 import {
   makeActiveTransactionsColumns,
   getColumnOptions,
 } from "./activeTransactionsTable";
+import { TransactionViewType } from "src/transactionsPage/transactionsPageTypes";
+import { calculateActiveFilters } from "src/queryFilter/filter";
+import { isSelectedColumn } from "src/columnsSelector/utils";
+import { SortedTable } from "src/sortedtable";
 
 const sortableTableCx = classNames.bind(sortableTableStyles);
 

@@ -316,7 +316,7 @@ func (r *FileRegistry) maybeElideEntries(ctx context.Context) error {
 	for _, filename := range filenames {
 		entry, ok := r.writeMu.mu.entries[filename]
 		if !ok {
-			panic(errors.AssertionFailedf("entry disappeared from map"))
+			panic("entry disappeared from map")
 		}
 
 		// Some entries may be elided. This is used within
@@ -537,7 +537,7 @@ func (r *FileRegistry) createNewRegistryFileLocked() error {
 	// is moved to the new filename.
 	filename := makeRegistryFilename(r.writeMu.marker.NextIter())
 	filepath := r.FS.PathJoin(r.DBDir, filename)
-	f, err := r.FS.Create(filepath, EncryptionRegistryWriteCategory)
+	f, err := r.FS.Create(filepath)
 	if err != nil {
 		return err
 	}

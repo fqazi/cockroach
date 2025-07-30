@@ -3,25 +3,22 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { min, max } from "d3-array";
-import clone from "lodash/clone";
-import isEmpty from "lodash/isEmpty";
-import isNil from "lodash/isNil";
-
+import _ from "lodash";
 import * as vector from "src/util/vector";
+import * as d3 from "d3";
 
 // Box is an immutable construct for a box.
 export class Box {
   // Compute a minimum bounding box for a supplied collection of boxes.
   static boundingBox(...boxes: Box[]): Box {
-    if (isEmpty(boxes)) {
+    if (_.isEmpty(boxes)) {
       return null;
     }
 
-    const left = min(boxes, b => b.left());
-    const top = min(boxes, b => b.top());
-    const right = max(boxes, b => b.right());
-    const bottom = max(boxes, b => b.bottom());
+    const left = d3.min(boxes, b => b.left());
+    const top = d3.min(boxes, b => b.top());
+    const right = d3.max(boxes, b => b.right());
+    const bottom = d3.max(boxes, b => b.bottom());
     return new Box(left, top, right - left, bottom - top);
   }
 
@@ -125,14 +122,14 @@ export class ZoomTransformer {
   }
 
   withViewportSize(viewportSize: Size): ZoomTransformer {
-    const newZoom = clone(this);
+    const newZoom = _.clone(this);
     newZoom._viewportSize = viewportSize;
     newZoom.adjustZoom();
     return newZoom;
   }
 
   withScaleAndTranslate(scale: number, translate: Point) {
-    const newZoom = clone(this);
+    const newZoom = _.clone(this);
     newZoom._scale = scale;
     newZoom._translate = translate;
     newZoom.adjustZoom();
@@ -144,11 +141,11 @@ export class ZoomTransformer {
   // in frame. Note that the resulting zoom will be adjusted if it does not fit
   // inside the top-level bounds of the ZoomTransformer.
   zoomedToBox(bounding: Box): ZoomTransformer {
-    if (isNil(bounding)) {
+    if (_.isNil(bounding)) {
       return this;
     }
 
-    const newZoom = clone(this);
+    const newZoom = _.clone(this);
     const boundingSize = bounding.size();
     newZoom._scale = Math.min(
       this._viewportSize[0] / boundingSize[0],
@@ -177,7 +174,7 @@ export class ZoomTransformer {
     // Increase scaling if we are below the minimum.
     const newScale = Math.max(this._scale, this.minScale());
     const scaledBounds = this._bounds.scale(newScale);
-    const newTranslate = clone(this._translate);
+    const newTranslate = _.clone(this._translate);
 
     // Adjust translation so that viewport is within the bounds.
     const translatedBounds = scaledBounds.translate(this._translate);

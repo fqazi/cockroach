@@ -5,35 +5,32 @@
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { PayloadAction } from "@reduxjs/toolkit";
+import { generateTableID } from "../../util";
 import Long from "long";
-import { expectSaga } from "redux-saga-test-plan";
-import * as matchers from "redux-saga-test-plan/matchers";
+import RecommendationType = cockroach.sql.IndexRecommendation.RecommendationType;
 import {
   EffectProviders,
   StaticProvider,
   throwError,
 } from "redux-saga-test-plan/providers";
-
+import * as matchers from "redux-saga-test-plan/matchers";
 import {
   getIndexStats,
   resetIndexStats,
   TableIndexStatsRequest,
 } from "../../api/indexDetailsApi";
-import { generateTableID } from "../../util";
-
+import { expectSaga } from "redux-saga-test-plan";
+import {
+  refreshIndexStatsSaga,
+  requestIndexStatsSaga,
+  resetIndexStatsSaga,
+} from "./indexStats.sagas";
 import {
   actions,
   IndexStatsReducerState,
   reducer,
   ResetIndexUsageStatsPayload,
 } from "./indexStats.reducer";
-import {
-  refreshIndexStatsSaga,
-  requestIndexStatsSaga,
-  resetIndexStatsSaga,
-} from "./indexStats.sagas";
-
-import RecommendationType = cockroach.sql.IndexRecommendation.RecommendationType;
 
 describe("IndexStats sagas", () => {
   const database = "test_db";
@@ -77,7 +74,6 @@ describe("IndexStats sagas", () => {
           created_at: null,
         },
       ],
-      database_id: 10,
       last_reset: null,
       index_recommendations: [
         {

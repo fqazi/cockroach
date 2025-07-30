@@ -3,15 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
 import React, { ReactElement } from "react";
-
+import { Tooltip } from "@cockroachlabs/ui-components";
 import { InsightExecEnum } from "src/insights/types";
-import { Timezone } from "src/timestamp";
-
-import { Anchor } from "../../../anchor";
 import { contentModifiers } from "../../../statsTableUtil/statsTableUtil";
+import { Anchor } from "../../../anchor";
 import { contentionTime, readFromDisk, writtenToDisk } from "../../../util";
+import { Timezone } from "src/timestamp";
 
 export const insightsColumnLabels = {
   executionID: "Execution ID",
@@ -36,7 +34,6 @@ export const insightsColumnLabels = {
   tableName: "Table Name",
   indexName: "Index Name",
   cpu: "SQL CPU Time",
-  queryTags: "Query Tags",
 };
 
 export type InsightsTableColumnKeys = keyof typeof insightsColumnLabels;
@@ -239,16 +236,6 @@ export const insightsTableTitles: InsightsTableTitleType = {
       <p>{`SQL CPU Time spent executing within the specified time interval. It
       does not include SQL planning time nor KV execution time.`}</p>,
       "cpu",
-    );
-  },
-  queryTags: (execType: InsightExecEnum) => {
-    return makeToolTip(
-      <p>
-        The query tags extracted from comments in the {execType} query. These
-        tags provide application context and can be used to correlate query
-        performance with client-side application state.
-      </p>,
-      "queryTags",
     );
   },
 };

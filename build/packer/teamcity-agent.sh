@@ -25,7 +25,7 @@ ARCH=$(uname -m)
 # Add third-party APT repositories.
 apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 0EBFCD88
 cat > /etc/apt/sources.list.d/docker.list <<EOF
-deb https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable
+deb https://download.docker.com/linux/ubuntu focal stable
 EOF
 
 curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
@@ -37,14 +37,8 @@ echo "deb https://packages.microsoft.com/repos/azure-cli/ $(lsb_release -cs) mai
 # Some images come with apt autoupgrade job running at start, let's give it a few minutes to finish to avoid races.
 echo "Sleeping for 3 minutes to allow apt daily cronjob to finish..."
 sleep 3m
-
-add-apt-repository ppa:git-core/ppa
 apt-get update
 
-python_packages="python3"
-if [[ $(lsb_release -cs) = "focal" ]]; then
-    python_packages="$python_packages python2"
-fi
 # Installing gnome-keyring prevents the error described in
 # https://github.com/moby/moby/issues/34048
 apt-get install --yes \
@@ -56,28 +50,27 @@ apt-get install --yes \
   docker-ce \
   docker-compose \
   flex \
-  git \
   gnome-keyring \
   google-cloud-sdk \
   google-cloud-cli-gke-gcloud-auth-plugin \
   gnupg2 \
+  git \
   jq \
   openjdk-11-jre-headless \
   pass \
-  $python_packages \
+  python2 \
+  python3 \
   sudo \
   unzip \
   zip
 
 # Enable support for executing binaries of all architectures via qemu emulation
 # (necessary for building arm64 Docker images)
-apt-get install --yes binfmt-support qemu-user-static
+apt-get install --yes qemu binfmt-support qemu-user-static
 
 # Verify that both of the platforms we support Docker for can be built.
-if [[ $ARCH = x86_64 ]]; then
-    docker run --attach=stdout --attach=stderr --platform=linux/amd64 --rm --pull=always registry.access.redhat.com/ubi9/ubi-minimal uname -p
-    docker run --attach=stdout --attach=stderr --platform=linux/arm64 --rm --pull=always registry.access.redhat.com/ubi9/ubi-minimal uname -p
-fi
+docker run --attach=stdout --attach=stderr --platform=linux/amd64 --rm --pull=always registry.access.redhat.com/ubi9/ubi-minimal uname -p
+docker run --attach=stdout --attach=stderr --platform=linux/arm64 --rm --pull=always registry.access.redhat.com/ubi9/ubi-minimal uname -p
 
 case $ARCH in
     x86_64) WHICH=x86_64; SHASUM=97bf730372f9900b2dfb9206fccbcf92f5c7f3b502148b832e77451aa0f9e0e6 ;;

@@ -32,7 +32,7 @@ func NewLagOperator(
 	mainMemLimit := args.MemoryLimit - bufferMemLimit
 	buffer := colexecutils.NewSpillingBuffer(
 		args.BufferAllocator, bufferMemLimit, args.QueueCfg, args.FdSemaphore,
-		args.InputTypes, args.DiskAcc, args.DiskQueueMemAcc, argIdx,
+		args.InputTypes, args.DiskAcc, args.ConverterMemAcc, argIdx,
 	)
 	base := lagBase{
 		partitionSeekerBase: partitionSeekerBase{
@@ -116,7 +116,7 @@ func NewLagOperator(
 				args, &lagDatumWindow{lagBase: base}, argType, mainMemLimit), nil
 		}
 	}
-	return nil, errors.AssertionFailedf("unsupported lag window operator type %s", argType.Name())
+	return nil, errors.Errorf("unsupported lag window operator type %s", argType.Name())
 }
 
 // lagBase extracts common fields and methods of the lag windower

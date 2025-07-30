@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 // completionsNode is a shim planNode around a completionsGenerator.
@@ -22,7 +21,6 @@ import (
 // used without a planNode by the connExecutor when running SHOW
 // COMPLETIONS as an observer statement.
 type completionsNode struct {
-	zeroInputPlanNode
 	optColumnsSlot
 
 	n       *tree.ShowCompletions
@@ -31,7 +29,7 @@ type completionsNode struct {
 
 func (n *completionsNode) startExec(params runParams) (err error) {
 	override := sessiondata.InternalExecutorOverride{User: params.p.User()}
-	queryIterFn := func(ctx context.Context, opName redact.RedactableString, stmt string, args ...interface{}) (compengine.Rows, error) {
+	queryIterFn := func(ctx context.Context, opName string, stmt string, args ...interface{}) (compengine.Rows, error) {
 		return params.p.QueryIteratorEx(ctx, opName,
 			override,
 			stmt, args...)

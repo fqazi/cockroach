@@ -10,8 +10,6 @@
 package cast
 
 import (
-	"sort"
-
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/lib/pq/oid"
@@ -130,31 +128,14 @@ type Cast struct {
 }
 
 // ForEachCast calls fn for every valid cast from a source type to a target
-// type. Iteration order is deterministic.
+// type.
 func ForEachCast(
 	fn func(
 		src oid.Oid, tgt oid.Oid, castCtx Context, ctxOrigin ContextOrigin, v volatility.V,
 	),
 ) {
-	srcOids := make([]oid.Oid, 0, len(castMap))
-	for src := range castMap {
-		srcOids = append(srcOids, src)
-	}
-	sort.Slice(srcOids, func(i, j int) bool {
-		return srcOids[i] < srcOids[j]
-	})
-	var tgtOids []oid.Oid
-	for _, src := range srcOids {
-		tgts := castMap[src]
-		tgtOids = tgtOids[:0]
-		for tgt := range tgts {
-			tgtOids = append(tgtOids, tgt)
-		}
-		sort.Slice(tgtOids, func(i, j int) bool {
-			return tgtOids[i] < tgtOids[j]
-		})
-		for _, tgt := range tgtOids {
-			cast := tgts[tgt]
+	for src, tgts := range castMap {
+		for tgt, cast := range tgts {
 			fn(src, tgt, cast.MaxContext, cast.origin, cast.Volatility)
 		}
 	}
@@ -259,23 +240,6 @@ func LookupCast(src, tgt *types.T) (Cast, bool) {
 	// Casts from array types to string types are stable and allowed in
 	// assignment contexts.
 	if srcFamily == types.ArrayFamily && tgtFamily == types.StringFamily {
-		return Cast{
-			MaxContext: ContextAssignment,
-			Volatility: volatility.Stable,
-		}, true
-	}
-
-	if srcFamily == types.ArrayFamily && tgtFamily == types.PGVectorFamily {
-		return Cast{
-			MaxContext: ContextAssignment,
-			Volatility: volatility.Stable,
-		}, true
-	}
-	if srcFamily == types.PGVectorFamily && tgtFamily == types.ArrayFamily &&
-		tgt.ArrayContents().Family() == types.FloatFamily {
-		// Note that postgres only allows casts to FLOAT4[], but given that
-		// under the hood FLOAT8 and FLOAT4 represented exactly the same way in
-		// CRDB we'll allow both.
 		return Cast{
 			MaxContext: ContextAssignment,
 			Volatility: volatility.Stable,

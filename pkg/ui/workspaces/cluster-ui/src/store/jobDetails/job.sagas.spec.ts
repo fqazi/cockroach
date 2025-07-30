@@ -3,29 +3,26 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import { PayloadAction } from "@reduxjs/toolkit";
-import Long from "long";
-import moment from "moment-timezone";
 import { expectSaga } from "redux-saga-test-plan";
-import * as matchers from "redux-saga-test-plan/matchers";
 import {
   EffectProviders,
   StaticProvider,
   throwError,
 } from "redux-saga-test-plan/providers";
-
+import * as matchers from "redux-saga-test-plan/matchers";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import {
   ErrorWithKey,
   getJob,
   JobRequest,
   JobResponseWithKey,
 } from "src/api/jobsApi";
-
-import { succeededJobFixture } from "../../jobs/jobsPage/jobsPage.fixture";
-
-import { actions, reducer, JobDetailsReducerState } from "./job.reducer";
 import { refreshJobSaga, requestJobSaga } from "./job.sagas";
+import { actions, reducer, JobDetailsReducerState } from "./job.reducer";
+import { succeededJobFixture } from "../../jobs/jobsPage/jobsPage.fixture";
+import Long from "long";
+import { PayloadAction } from "@reduxjs/toolkit";
+import moment from "moment-timezone";
 
 describe("job sagas", () => {
   const payload = new cockroach.server.serverpb.JobRequest({
