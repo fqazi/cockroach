@@ -72,7 +72,7 @@ var (
 // The default region used for non-geo clusters.
 // Leave this field empty to randomize the region for non-geo clusters.
 // This could be useful in case of quota issues in the default region.
-const defaultRegionForNonGeoClusters = "ca-tor"
+const defaultRegionForNonGeoClusters = ""
 
 var (
 	// defaultZones is the list of availability zones agreed upon with IBM.
@@ -545,16 +545,8 @@ func (p *Provider) DeleteCluster(l *logger.Logger, name string) error {
 
 	svc := p.getGlobalSearchService()
 
-	// The IBM API sometimes silently fails on the tagging request and resources
-	// end up being created without any tags.
-	// The query below will look for resources that are properly tagged with the
-	// roachprod and cluster tags, but will also fallback to searching via the
-	// instance name to ensure all instances are properly deleted.
-	query := fmt.Sprintf(
-		`(tags:"%s:true AND %s:%s") OR (NOT (tags:"%s:true") AND name:%s-*)`,
-		vm.TagRoachprod, vm.TagCluster, name,
-		vm.TagRoachprod, name,
-	)
+	// Get the resources with the cluster name tag.
+	query := fmt.Sprintf(`tags:"%s:true" AND "%s:%s"`, vm.TagRoachprod, vm.TagCluster, name)
 	searchOptions := svc.NewSearchOptions().SetLimit(defaultPaginationLimit).SetQuery(query)
 
 	instances := make([]*instance, 0)

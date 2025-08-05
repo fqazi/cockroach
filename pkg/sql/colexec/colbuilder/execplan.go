@@ -320,8 +320,6 @@ func canWrap(mode sessiondatapb.VectorizeExecMode, core *execinfrapb.ProcessorCo
 		return errIndexBackfillMergerWrap
 	case core.Ttl != nil:
 		return errCoreNotWorthWrapping
-	case core.Inspect != nil:
-		return errCoreNotWorthWrapping
 	case core.HashGroupJoiner != nil:
 	case core.GenerativeSplitAndScatter != nil:
 		return errCoreNotWorthWrapping
@@ -2386,7 +2384,7 @@ func planProjectionOperators(
 		if datumType.Family() == types.UnknownFamily {
 			// We handle Unknown type by planning a special constant null
 			// operator.
-			return colexecbase.NewConstNullOp(allocator, input, resultIdx), nil
+			return colexecbase.NewConstNullOp(allocator, datumType, input, resultIdx), nil
 		}
 		constVal := colconv.GetDatumToPhysicalFn(datumType)(datum)
 		return colexecbase.NewConstOp(allocator, input, datumType, constVal, resultIdx)
@@ -2866,7 +2864,7 @@ func planProjectionExpr(
 			if !calledOnNullInput && right == tree.DNull {
 				// If the right is NULL and the operator is not called on NULL,
 				// simply project NULL.
-				op = colexecbase.NewConstNullOp(allocator, input, resultIdx)
+				op = colexecbase.NewConstNullOp(allocator, outputType, input, resultIdx)
 			} else if isCmpProjOp {
 				// Use optimized operators for special cases.
 				switch cmpProjOp.Symbol {
