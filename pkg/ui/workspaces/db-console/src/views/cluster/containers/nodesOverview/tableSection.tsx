@@ -3,15 +3,16 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { CaretLeftOutlined, CaretDownOutlined } from "@ant-design/icons";
-import cn from "classnames";
 import * as React from "react";
 import { connect } from "react-redux";
+import cn from "classnames";
+import { Icon } from "antd";
+import "antd/lib/icon/style";
 import { Action, Dispatch } from "redux";
 
-import { Text, TextTypes } from "src/components";
 import { LocalSetting, setLocalSetting } from "src/redux/localsettings";
 import { AdminUIState } from "src/redux/state";
+import { Text, TextTypes } from "src/components";
 
 import "./tableSection.styl";
 
@@ -45,8 +46,9 @@ class TableSection extends React.Component<
   TableSectionProps & MapStateToProps & MapDispatchToProps,
   TableSectionState
 > {
-  static defaultProps = {
+  static defaultProps: Partial<TableSectionProps> = {
     isCollapsible: false,
+    footer: null,
     className: "",
   };
 
@@ -76,17 +78,16 @@ class TableSection extends React.Component<
     return (
       <div className="collapse-toggle" onClick={this.onExpandSectionToggle}>
         <span>{isCollapsed ? "Show" : "Hide"}</span>
-        {isCollapsed ? (
-          <CaretLeftOutlined className="collapse-toggle__icon" />
-        ) : (
-          <CaretDownOutlined className="collapse-toggle__icon" />
-        )}
+        <Icon
+          className="collapse-toggle__icon"
+          type={isCollapsed ? "caret-left" : "caret-down"}
+        />
       </div>
     );
   };
 
   render() {
-    const { children, title, className } = this.props;
+    const { children, title, footer, className } = this.props;
     const { isCollapsed } = this.state;
     const rootClass = cn("table-section", className);
     const contentClass = cn("table-section__content", {
@@ -102,9 +103,7 @@ class TableSection extends React.Component<
         </section>
         <div className={contentClass}>
           {children}
-          {this.props.footer && (
-            <div className="table-section__footer">{this.props.footer}</div>
-          )}
+          {footer && <div className="table-section__footer">{footer}</div>}
         </div>
       </div>
     );
@@ -114,10 +113,7 @@ class TableSection extends React.Component<
 const getTableSectionKey = (id: string) =>
   `cluster_overview/table_section/${id}/is_expanded`;
 
-const mapStateToProps = (
-  state: AdminUIState,
-  props: TableSectionProps,
-): MapStateToProps => {
+const mapStateToProps = (state: AdminUIState, props: TableSectionProps) => {
   const tableSectionState = new LocalSetting<AdminUIState, boolean>(
     getTableSectionKey(props.id),
     s => s.localSettings,
@@ -131,19 +127,11 @@ const mapStateToProps = (
 const mapDispatchToProps = (
   dispatch: Dispatch<Action>,
   props: TableSectionProps,
-): MapDispatchToProps => ({
+) => ({
   saveExpandedState: (isCollapsed: boolean) => {
     const tableSectionKey = getTableSectionKey(props.id);
     dispatch(setLocalSetting(tableSectionKey, isCollapsed));
   },
 });
 
-export default connect<
-  MapStateToProps,
-  MapDispatchToProps,
-  TableSectionProps,
-  AdminUIState
->(
-  mapStateToProps,
-  mapDispatchToProps,
-)(TableSection);
+export default connect(mapStateToProps, mapDispatchToProps)(TableSection);

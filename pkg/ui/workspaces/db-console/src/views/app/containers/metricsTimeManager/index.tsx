@@ -3,13 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import isEqual from "lodash/isEqual";
-import moment from "moment-timezone";
 import React from "react";
 import { connect } from "react-redux";
+import moment from "moment-timezone";
 
 import { AdminUIState } from "src/redux/state";
 import * as timewindow from "src/redux/timeScale";
+import _ from "lodash";
 
 interface MetricsTimeManagerProps {
   // The current timescale redux state.
@@ -119,7 +119,7 @@ class MetricsTimeManager extends React.Component<
   }
 
   componentDidUpdate(prevProps: MetricsTimeManagerProps) {
-    if (!isEqual(prevProps.timeScale, this.props.timeScale)) {
+    if (!_.isEqual(prevProps.timeScale, this.props.timeScale)) {
       this.checkWindow(this.props);
     }
   }

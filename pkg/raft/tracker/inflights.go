@@ -1,6 +1,3 @@
-// This code has been modified from its original form by The Cockroach Authors.
-// All modifications are Copyright 2024 The Cockroach Authors.
-//
 // Copyright 2019 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,8 +14,6 @@
 
 package tracker
 
-import "github.com/cockroachdb/cockroach/pkg/util/container/ring"
-
 // inflight describes an in-flight MsgApp message.
 type inflight struct {
 	index uint64 // the index of the last entry inside the message
@@ -31,15 +26,17 @@ type inflight struct {
 // they are sending a new append, and release "quota" via FreeLE() whenever an
 // ack is received.
 type Inflights struct {
+	// the starting index in the buffer
+	start int
+
+	count int    // number of inflight messages in the buffer
 	bytes uint64 // number of inflight bytes
 
-	// TODO(pav-kv): do not store the limits here, pass them to methods. For flow
-	// control, we need to support dynamic limits.
 	size     int    // the max number of inflight messages
 	maxBytes uint64 // the max total byte size of inflight messages
 
 	// buffer is a ring buffer containing info about all in-flight messages.
-	buffer ring.Buffer[inflight]
+	buffer []inflight
 }
 
 // NewInflights sets up an Inflights that allows up to size inflight messages,
@@ -57,56 +54,90 @@ func NewInflights(size int, maxBytes uint64) *Inflights {
 // the receiver.
 func (in *Inflights) Clone() *Inflights {
 	ins := *in
-	ins.buffer = in.buffer.Clone()
+	ins.buffer = append([]inflight(nil), in.buffer...)
 	return &ins
 }
 
 // Add notifies the Inflights that a new message with the given index and byte
-// size is being dispatched. Consecutive calls to Add() must provide a monotonic
-// sequence of log indices.
-//
-// The caller should check that the tracker is not Full(), before calling Add().
-// If the tracker is full, the caller should hold off sending entries to the
-// peer. However, Add() is still valid and allowed, for cases when this pacing
-// is implemented at the higher app level. The tracker correctly tracks all the
-// in-flight entries.
+// size is being dispatched. Full() must be called prior to Add() to verify that
+// there is room for one more message, and consecutive calls to Add() must
+// provide a monotonic sequence of indexes.
 func (in *Inflights) Add(index, bytes uint64) {
-	in.buffer.Push(inflight{index: index, bytes: bytes})
+	if in.Full() {
+		panic("cannot add into a Full inflights")
+	}
+	next := in.start + in.count
+	size := in.size
+	if next >= size {
+		next -= size
+	}
+	if next >= len(in.buffer) {
+		in.grow()
+	}
+	in.buffer[next] = inflight{index: index, bytes: bytes}
+	in.count++
 	in.bytes += bytes
+}
+
+// grow the inflight buffer by doubling up to inflights.size. We grow on demand
+// instead of preallocating to inflights.size to handle systems which have
+// thousands of Raft groups per process.
+func (in *Inflights) grow() {
+	newSize := len(in.buffer) * 2
+	if newSize == 0 {
+		newSize = 1
+	} else if newSize > in.size {
+		newSize = in.size
+	}
+	newBuffer := make([]inflight, newSize)
+	copy(newBuffer, in.buffer)
+	in.buffer = newBuffer
 }
 
 // FreeLE frees the inflights smaller or equal to the given `to` flight.
 func (in *Inflights) FreeLE(to uint64) {
-	n := in.buffer.Length()
-	if n == 0 || to < in.buffer.At(0).index {
+	if in.count == 0 || to < in.buffer[in.start].index {
 		// out of the left side of the window
 		return
 	}
 
+	idx := in.start
 	var i int
 	var bytes uint64
-	for i = 0; i < n; i++ {
-		e := in.buffer.At(i)
-		if to < e.index { // found the first large inflight
+	for i = 0; i < in.count; i++ {
+		if to < in.buffer[idx].index { // found the first large inflight
 			break
 		}
-		bytes += e.bytes
+		bytes += in.buffer[idx].bytes
+
+		// increase index and maybe rotate
+		size := in.size
+		if idx++; idx >= size {
+			idx -= size
+		}
 	}
 	// free i inflights and set new start index
-	in.buffer.Pop(i)
+	in.count -= i
 	in.bytes -= bytes
+	in.start = idx
+	if in.count == 0 {
+		// inflights is empty, reset the start index so that we don't grow the
+		// buffer unnecessarily.
+		in.start = 0
+	}
 }
 
 // Full returns true if no more messages can be sent at the moment.
 func (in *Inflights) Full() bool {
-	return in.buffer.Length() >= in.size || (in.maxBytes != 0 && in.bytes >= in.maxBytes)
+	return in.count == in.size || (in.maxBytes != 0 && in.bytes >= in.maxBytes)
 }
 
 // Count returns the number of inflight messages.
-func (in *Inflights) Count() int { return in.buffer.Length() }
+func (in *Inflights) Count() int { return in.count }
 
 // reset frees all inflights.
 func (in *Inflights) reset() {
-	in.buffer.ShrinkToPrefix(0)
+	in.start = 0
+	in.count = 0
 	in.bytes = 0
 }

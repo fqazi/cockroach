@@ -300,7 +300,7 @@ func newZigzagJoiner(
 
 	leftColumnTypes := spec.Sides[0].FetchSpec.FetchedColumnTypes()
 	rightColumnTypes := spec.Sides[1].FetchSpec.FetchedColumnTypes()
-	_, err := z.joinerBase.init(
+	err := z.joinerBase.init(
 		ctx,
 		z, /* self */
 		flowCtx,
@@ -331,9 +331,6 @@ func newZigzagJoiner(
 
 	collectingStats := false
 	if execstats.ShouldCollectStats(ctx, flowCtx.CollectStats) {
-		if flowTxn := flowCtx.EvalCtx.Txn; flowTxn != nil {
-			z.contentionEventsListener.Init(flowTxn.ID())
-		}
 		collectingStats = true
 		z.ExecStatsForTrace = z.execStatsForTrace
 	}
@@ -470,7 +467,6 @@ func (z *zigzagJoiner) setupInfo(
 			LockWaitPolicy:             spec.LockingWaitPolicy,
 			LockDurability:             spec.LockingDurability,
 			LockTimeout:                flowCtx.EvalCtx.SessionData().LockTimeout,
-			DeadlockTimeout:            flowCtx.EvalCtx.SessionData().DeadlockTimeout,
 			Alloc:                      &info.alloc,
 			MemMonitor:                 flowCtx.Mon,
 			Spec:                       &spec.FetchSpec,
@@ -577,7 +573,9 @@ func (z *zigzagJoiner) matchBase(curRow rowenc.EncDatumRow, side int) (bool, err
 	ordering := z.infos[side].eqColOrdering
 
 	// Compare the equality columns of the baseRow to that of the curRow.
-	cmp, err := prevEqDatums.CompareEx(z.Ctx(), prevEqColTypes, &z.infos[side].alloc, ordering, z.FlowCtx.EvalCtx, curEqDatums, curEqColTypes)
+	cmp, err := prevEqDatums.CompareEx(
+		prevEqColTypes, &z.infos[side].alloc, ordering, z.FlowCtx.EvalCtx, curEqDatums, curEqColTypes,
+	)
 	if err != nil {
 		return false, err
 	}
@@ -659,7 +657,7 @@ func (z *zigzagJoiner) nextRow(ctx context.Context) (rowenc.EncDatumRow, error) 
 			ctx,
 			roachpb.Spans{roachpb.Span{Key: curInfo.key, EndKey: curInfo.endKey}},
 			nil, /* spanIDs */
-			rowinfra.GetDefaultBatchBytesLimit(z.FlowCtx.EvalCtx.TestingKnobs.ForceProductionValues),
+			rowinfra.GetDefaultBatchBytesLimit(z.EvalCtx.TestingKnobs.ForceProductionValues),
 			zigzagJoinerBatchSize,
 		)
 		if err != nil {
@@ -720,7 +718,10 @@ func (z *zigzagJoiner) nextRow(ctx context.Context) (rowenc.EncDatumRow, error) 
 			prevEqColTypes := z.infos[prevSide].eqColTypes
 			curEqColTypes := z.infos[z.side].eqColTypes
 			ordering := curInfo.eqColOrdering
-			cmp, err := prevEqCols.CompareEx(ctx, prevEqColTypes, &z.infos[z.side].alloc, ordering, z.FlowCtx.EvalCtx, currentEqCols, curEqColTypes)
+			cmp, err := prevEqCols.CompareEx(
+				prevEqColTypes, &z.infos[z.side].alloc, ordering,
+				z.FlowCtx.EvalCtx, currentEqCols, curEqColTypes,
+			)
 			if err != nil {
 				return nil, err
 			}
@@ -799,7 +800,7 @@ func (z *zigzagJoiner) maybeFetchInitialRow() error {
 			z.Ctx(),
 			roachpb.Spans{roachpb.Span{Key: curInfo.key, EndKey: curInfo.endKey}},
 			nil, /* spanIDs */
-			rowinfra.GetDefaultBatchBytesLimit(z.FlowCtx.EvalCtx.TestingKnobs.ForceProductionValues),
+			rowinfra.GetDefaultBatchBytesLimit(z.EvalCtx.TestingKnobs.ForceProductionValues),
 			zigzagJoinerBatchSize,
 		)
 		if err != nil {
@@ -853,8 +854,6 @@ func (z *zigzagJoiner) execStatsForTrace() *execinfrapb.ComponentStats {
 		BytesRead:           optional.MakeUint(uint64(z.getBytesRead())),
 		KVPairsRead:         optional.MakeUint(uint64(z.getKVPairsRead())),
 		ContentionTime:      optional.MakeTimeValue(z.contentionEventsListener.GetContentionTime()),
-		LockWaitTime:        optional.MakeTimeValue(z.contentionEventsListener.GetLockWaitTime()),
-		LatchWaitTime:       optional.MakeTimeValue(z.contentionEventsListener.GetLatchWaitTime()),
 		BatchRequestsIssued: optional.MakeUint(uint64(z.getBatchRequestsIssued())),
 	}
 	scanStats := z.scanStatsListener.GetScanStats()

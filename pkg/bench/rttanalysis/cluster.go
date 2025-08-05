@@ -7,16 +7,16 @@ package rttanalysis
 
 import (
 	gosql "database/sql"
+	"sync"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/sql"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 )
 
 // ClusterConstructor is used to construct a Cluster for an individual case run.
-type ClusterConstructor func(tb testing.TB, measureRoundtrips bool) *Cluster
+type ClusterConstructor func(testing.TB) *Cluster
 
 // MakeClusterConstructor creates a new ClusterConstructor using the provided
 // function. The intention is that the caller will use the provided knobs when
@@ -24,25 +24,25 @@ type ClusterConstructor func(tb testing.TB, measureRoundtrips bool) *Cluster
 func MakeClusterConstructor(
 	f func(testing.TB, base.TestingKnobs) (_, _ *gosql.DB, cleanup func()),
 ) ClusterConstructor {
-	return func(t testing.TB, measureRoundtrips bool) *Cluster {
+	return func(t testing.TB) *Cluster {
 		c := &Cluster{}
 		beforePlan := func(trace tracingpb.Recording, stmt string) {
-			c.stmtToKVBatchRequests.Store(stmt, &trace)
-		}
-		knobs := base.TestingKnobs{}
-		if measureRoundtrips {
-			knobs.SQLExecutor = &sql.ExecutorTestingKnobs{
-				WithStatementTrace: beforePlan,
+			if _, ok := c.stmtToKVBatchRequests.Load(stmt); ok {
+				c.stmtToKVBatchRequests.Store(stmt, trace)
 			}
 		}
-		c.adminSQLConn, c.nonAdminSQLConn, c.cleanup = f(t, knobs)
+		c.adminSQLConn, c.nonAdminSQLConn, c.cleanup = f(t, base.TestingKnobs{
+			SQLExecutor: &sql.ExecutorTestingKnobs{
+				WithStatementTrace: beforePlan,
+			},
+		})
 		return c
 	}
 }
 
 // Cluster abstracts a cockroach cluster for use in rttanalysis benchmarks.
 type Cluster struct {
-	stmtToKVBatchRequests syncutil.Map[string, tracingpb.Recording]
+	stmtToKVBatchRequests sync.Map
 	cleanup               func()
 
 	// adminSQLConn should be the default connection for tests. It specifies a
@@ -63,14 +63,13 @@ func (c *Cluster) nonAdminConn() *gosql.DB {
 }
 
 func (c *Cluster) clearStatementTrace(stmt string) {
-	c.stmtToKVBatchRequests.Delete(stmt)
+	c.stmtToKVBatchRequests.Store(stmt, nil)
 }
 
 func (c *Cluster) getStatementTrace(stmt string) (tracingpb.Recording, bool) {
-	if out, ok := c.stmtToKVBatchRequests.Load(stmt); ok {
-		return *out, true
-	}
-	return tracingpb.Recording{}, false
+	out, _ := c.stmtToKVBatchRequests.Load(stmt)
+	r, ok := out.(tracingpb.Recording)
+	return r, ok
 }
 
 func (c *Cluster) close() {

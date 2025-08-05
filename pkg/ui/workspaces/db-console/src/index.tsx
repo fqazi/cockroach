@@ -7,8 +7,8 @@ import * as ReactDOM from "react-dom";
 
 import "src/polyfills";
 import "src/protobufInit";
-import { App } from "src/app";
 import { alertDataSync } from "src/redux/alerts";
+import { App } from "src/app";
 import { history } from "src/redux/history";
 import { createAdminUIStore } from "src/redux/state";
 import "src/redux/analytics";
@@ -28,7 +28,6 @@ async function fetchAndRender() {
   const store = createAdminUIStore(history, getDataFromServer());
   recomputeDocsURLs();
 
-  /* eslint react/no-deprecated: "off" */
   ReactDOM.render(
     <App history={history} store={store} />,
     document.getElementById("react-layout"),

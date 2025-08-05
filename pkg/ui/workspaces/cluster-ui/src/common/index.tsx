@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import classNames from "classnames/bind";
-
 import styles from "./styles.module.scss";
 
 export const commonStyles = classNames.bind(styles);

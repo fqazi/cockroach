@@ -19,15 +19,12 @@ package rafttest
 
 import (
 	"fmt"
-	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
-	"github.com/cockroachdb/datadriven"
 )
 
 // isVoter checks whether node id is in the voter list within st.
-func isVoter(id raftpb.PeerID, st raft.Status) bool {
+func isVoter(id uint64, st raft.Status) bool {
 	idMap := st.Config.Voters.IDs()
 	for idx := range idMap {
 		if id == idx {
@@ -48,18 +45,8 @@ func (env *InteractionEnv) handleRaftState() error {
 		} else {
 			voterStatus = "(Non-Voter)"
 		}
-		fmt.Fprintf(env.Output, "%d: %s %s Term:%d Lead:%d LeadEpoch:%d\n",
-			st.ID, st.RaftState, voterStatus, st.Term, st.Lead, st.LeadEpoch)
+		fmt.Fprintf(env.Output, "%d: %s %s Term:%d Lead:%d\n",
+			st.ID, st.RaftState, voterStatus, st.Term, st.Lead)
 	}
-	return nil
-}
-
-// handlePrintFortificationState pretty-prints the support map being tracked by a raft
-// peer.
-func (env *InteractionEnv) handlePrintFortificationState(
-	t *testing.T, d datadriven.TestData,
-) error {
-	idx := firstAsNodeIdx(t, d)
-	fmt.Fprint(env.Output, env.Nodes[idx].TestingFortificationStateString())
 	return nil
 }

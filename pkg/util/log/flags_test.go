@@ -63,7 +63,7 @@ func TestAppliedConfig(t *testing.T) {
 			}
 
 			TestingResetActive()
-			cleanup, err := ApplyConfig(h.Config, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+			cleanup, err := ApplyConfig(h.Config)
 			if err != nil {
 				t.Fatal(err)
 			}

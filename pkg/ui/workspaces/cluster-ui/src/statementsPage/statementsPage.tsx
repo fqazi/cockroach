@@ -3,59 +3,20 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { InlineAlert } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
-import flatMap from "lodash/flatMap";
-import groupBy from "lodash/groupBy";
-import isString from "lodash/isString";
-import merge from "lodash/merge";
-import moment from "moment-timezone";
 import React from "react";
 import { RouteComponentProps } from "react-router-dom";
-
-import {
-  SqlStatsSortType,
-  StatementsRequest,
-  createCombinedStmtsRequest,
-  SqlStatsSortOptions,
-} from "src/api/statementsApi";
-import { RequestState } from "src/api/types";
-import { isSelectedColumn } from "src/columnsSelector/utils";
-import { Delayed } from "src/delayed";
+import { flatMap, merge, groupBy } from "lodash";
+import classNames from "classnames/bind";
 import { getValidErrorsList, Loading } from "src/loading";
+import { Delayed } from "src/delayed";
 import { PageConfig, PageConfigItem } from "src/pageConfig";
-import { Pagination, ResultsPerPageLabel } from "src/pagination";
-import { Search } from "src/search";
-import { SearchCriteria } from "src/searchCriteria/searchCriteria";
 import {
   handleSortSettingFromQueryString,
   SortSetting,
   updateSortSettingQueryParamsOnTab,
 } from "src/sortedtable";
-import sortableTableStyles from "src/sortedtable/sortedtable.module.scss";
-import {
-  ActivateDiagnosticsModalRef,
-  ActivateStatementDiagnosticsModal,
-} from "src/statementsDiagnostics";
-import { TimeScaleLabel } from "src/timeScaleDropdown/timeScaleLabel";
-import { Timestamp, TimestampToMoment, syncHistory, unique } from "src/util";
-import {
-  STATS_LONG_LOADING_DURATION,
-  getSortLabel,
-  getSortColumn,
-  getSubsetWarning,
-  getReqSortColumn,
-} from "src/util/sqlActivityConstants";
-
-import {
-  InsertStmtDiagnosticRequest,
-  StatementDiagnosticsReport,
-  SqlStatsResponse,
-  StatementDiagnosticsResponse,
-} from "../api";
-import ColumnsSelector from "../columnsSelector/columnsSelector";
-import { commonStyles } from "../common";
-import { SelectOption } from "../multiSelectCheckbox/multiSelectCheckbox";
+import { Search } from "src/search";
+import { Pagination, ResultsPerPageLabel } from "src/pagination";
 import {
   calculateActiveFilters,
   defaultFilters,
@@ -65,14 +26,8 @@ import {
   SelectedFilters,
   updateFiltersQueryParamsOnTab,
 } from "../queryFilter";
-import { ISortedTablePagination } from "../sortedtable";
-import ClearStats from "../sqlActivity/clearStats";
-import LoadingError from "../sqlActivity/errorComponent";
-import {
-  filterStatementsData,
-  convertRawStmtsToAggregateStatisticsMemoized,
-  getAppsFromStmtsResponseMemoized,
-} from "../sqlActivity/util";
+
+import { Timestamp, TimestampToMoment, syncHistory, unique } from "src/util";
 import {
   AggregateStatistics,
   makeStatementsColumns,
@@ -83,18 +38,59 @@ import {
   getLabel,
   StatisticTableColumnKeys,
 } from "../statsTableUtil/statsTableUtil";
+import {
+  ActivateDiagnosticsModalRef,
+  ActivateStatementDiagnosticsModal,
+} from "src/statementsDiagnostics";
+import { ISortedTablePagination } from "../sortedtable";
+import styles from "./statementsPage.module.scss";
+import { EmptyStatementsPlaceholder } from "./emptyStatementsPlaceholder";
+import { InlineAlert } from "@cockroachlabs/ui-components";
+import sortableTableStyles from "src/sortedtable/sortedtable.module.scss";
+import ColumnsSelector from "../columnsSelector/columnsSelector";
+import { SelectOption } from "../multiSelectCheckbox/multiSelectCheckbox";
 import { UIConfigState } from "../store";
+import {
+  SqlStatsSortType,
+  StatementsRequest,
+  createCombinedStmtsRequest,
+  SqlStatsSortOptions,
+} from "src/api/statementsApi";
+import ClearStats from "../sqlActivity/clearStats";
+import LoadingError from "../sqlActivity/errorComponent";
 import {
   getValidOption,
   TimeScale,
   timeScale1hMinOptions,
-  toDateRange,
+  toRoundedDateRange,
 } from "../timeScaleDropdown";
-import timeScaleStyles from "../timeScaleDropdown/timeScale.module.scss";
 
-import { EmptyStatementsPlaceholder } from "./emptyStatementsPlaceholder";
+import { commonStyles } from "../common";
+import { isSelectedColumn } from "src/columnsSelector/utils";
 import { StatementViewType } from "./statementPageTypes";
-import styles from "./statementsPage.module.scss";
+import moment from "moment-timezone";
+import {
+  InsertStmtDiagnosticRequest,
+  StatementDiagnosticsReport,
+  SqlStatsResponse,
+  StatementDiagnosticsResponse,
+} from "../api";
+import {
+  filterStatementsData,
+  convertRawStmtsToAggregateStatisticsMemoized,
+  getAppsFromStmtsResponseMemoized,
+} from "../sqlActivity/util";
+import {
+  STATS_LONG_LOADING_DURATION,
+  getSortLabel,
+  getSortColumn,
+  getSubsetWarning,
+  getReqSortColumn,
+} from "src/util/sqlActivityConstants";
+import { SearchCriteria } from "src/searchCriteria/searchCriteria";
+import timeScaleStyles from "../timeScaleDropdown/timeScale.module.scss";
+import { RequestState } from "src/api/types";
+import { TimeScaleLabel } from "src/timeScaleDropdown/timeScaleLabel";
 
 const cx = classNames.bind(styles);
 const sortableTableCx = classNames.bind(sortableTableStyles);
@@ -175,7 +171,7 @@ type RequestParams = Pick<
 >;
 
 function stmtsRequestFromParams(params: RequestParams): StatementsRequest {
-  const [start, end] = toDateRange(params.timeScale);
+  const [start, end] = toRoundedDateRange(params.timeScale);
   return createCombinedStmtsRequest({
     start,
     end,
@@ -504,9 +500,8 @@ export class StatementsPage extends React.Component<
 
   hasReqSortOption = (): boolean => {
     let found = false;
-    Object.values(SqlStatsSortOptions).forEach(option => {
-      const optionString = isString(option) ? option : getSortColumn(option);
-      if (optionString === this.props.sortSetting.columnTitle) {
+    Object.values(SqlStatsSortOptions).forEach((option: SqlStatsSortType) => {
+      if (getSortColumn(option) === this.props.sortSetting.columnTitle) {
         found = true;
       }
     });

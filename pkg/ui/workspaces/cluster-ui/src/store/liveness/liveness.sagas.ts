@@ -4,14 +4,12 @@
 // included in the /LICENSE file.
 
 import { all, call, put, delay, takeLatest } from "redux-saga/effects";
-
 import { getLiveness } from "src/api/livenessApi";
+import { actions } from "./liveness.reducer";
+
 import { CACHE_INVALIDATION_PERIOD, throttleWithReset } from "src/store/utils";
 
-import { maybeError } from "../../util";
 import { rootActions } from "../rootActions";
-
-import { actions } from "./liveness.reducer";
 
 export function* refreshLivenessSaga() {
   yield put(actions.request());
@@ -22,7 +20,7 @@ export function* requestLivenessSaga(): any {
     const result = yield call(getLiveness);
     yield put(actions.received(result));
   } catch (e) {
-    yield put(actions.failed(maybeError(e)));
+    yield put(actions.failed(e));
   }
 }
 

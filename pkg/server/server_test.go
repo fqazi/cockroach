@@ -44,7 +44,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/ui"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/hlc/logger"
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -110,7 +109,7 @@ func TestHealthCheck(t *testing.T) {
 		store.Metrics().UnavailableRangeCount.Update(100)
 		result := recorder.CheckHealth(ctx, *recorder.GenerateNodeStatus(ctx))
 		expAlerts := []statuspb.HealthAlert{
-			{StoreID: 1, Category: statuspb.HealthAlert_METRICS, SafeDescription: "ranges.unavailable", Value: 100.0},
+			{StoreID: 1, Category: statuspb.HealthAlert_METRICS, Description: "ranges.unavailable", Value: 100.0},
 		}
 		if !reflect.DeepEqual(expAlerts, result.Alerts) {
 			return errors.Newf("expected %+v, got %+v", expAlerts, result.Alerts)
@@ -484,7 +483,7 @@ func TestEnsureInitialWallTimeMonotonicity(t *testing.T) {
 
 			const maxOffset = 500 * time.Millisecond
 			m := timeutil.NewManualTime(timeutil.Unix(0, test.clockStartTime))
-			c := hlc.NewClock(m, maxOffset, maxOffset, hlc.PanicLogger)
+			c := hlc.NewClock(m, maxOffset, maxOffset)
 
 			sleepUntilFn := func(ctx context.Context, t hlc.Timestamp) error {
 				delta := t.GoTime().Sub(c.Now().GoTime())
@@ -560,7 +559,7 @@ func TestPersistHLCUpperBound(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			a := assert.New(t)
 			m := timeutil.NewManualTime(timeutil.Unix(0, 1))
-			c := hlc.NewClock(m, 0 /* maxOffset */, 0 /* toleratedOffset */, logger.CRDBLogger)
+			c := hlc.NewClockForTesting(m)
 
 			var persistErr error
 			var persistedUpperBound int64
@@ -577,7 +576,7 @@ func TestPersistHLCUpperBound(t *testing.T) {
 			tickProcessedCh := make(chan struct{})
 			persistHLCUpperBoundIntervalCh := make(chan time.Duration, 1)
 			stopCh := make(chan struct{}, 1)
-			defer close(stopCh)
+			defer close(persistHLCUpperBoundIntervalCh)
 
 			go periodicallyPersistHLCUpperBound(
 				c,
@@ -696,8 +695,6 @@ func TestServeIndexHTML(t *testing.T) {
 	unlinkFakeUI := func() {
 		ui.HaveUI = false
 	}
-	major, minor := build.BranchReleaseSeries()
-	version := fmt.Sprintf("v%d.%d", major, minor)
 
 	t.Run("Insecure mode", func(t *testing.T) {
 		srv := serverutils.StartServerOnly(t, base.TestServerArgs{
@@ -724,7 +721,7 @@ func TestServeIndexHTML(t *testing.T) {
 			// in `server` and not in `server_test`). However, serverutils
 			// doesn't link ccl, so it says it uses OSS distribution. Reconcile
 			// this mismatch.
-			buildInfo := strings.Replace(build.GetInfo().Short().StripMarkers(), "CockroachDB CCL", "CockroachDB OSS", 1)
+			buildInfo := strings.Replace(build.GetInfo().Short(), "CockroachDB CCL", "CockroachDB OSS", 1)
 			expected := fmt.Sprintf(`<!DOCTYPE html>
 <title>CockroachDB</title>
 Binary built without web UI.
@@ -757,7 +754,7 @@ Binary built without web UI.
 			expected := fmt.Sprintf(
 				`{"Insecure":true,"LoggedInUser":null,"Tag":"%s","Version":"%s","NodeID":"%d","OIDCAutoLogin":false,"OIDCLoginEnabled":false,"OIDCButtonText":"","FeatureFlags":{"can_view_kv_metric_dashboards":true},"OIDCGenerateJWTAuthTokenEnabled":false,"LicenseType":"OSS","SecondsUntilLicenseExpiry":0,"IsManaged":false}`,
 				build.GetInfo().Tag,
-				version,
+				build.BinaryVersionPrefix(),
 				1,
 			)
 			require.Equal(t, expected, string(respBytes))
@@ -785,7 +782,7 @@ Binary built without web UI.
 				fmt.Sprintf(
 					`{"Insecure":false,"LoggedInUser":"authentic_user","Tag":"%s","Version":"%s","NodeID":"%d","OIDCAutoLogin":false,"OIDCLoginEnabled":false,"OIDCButtonText":"","FeatureFlags":{"can_view_kv_metric_dashboards":true},"OIDCGenerateJWTAuthTokenEnabled":false,"LicenseType":"OSS","SecondsUntilLicenseExpiry":0,"IsManaged":false}`,
 					build.GetInfo().Tag,
-					version,
+					build.BinaryVersionPrefix(),
 					1,
 				),
 			},
@@ -794,7 +791,7 @@ Binary built without web UI.
 				fmt.Sprintf(
 					`{"Insecure":false,"LoggedInUser":null,"Tag":"%s","Version":"%s","NodeID":"%d","OIDCAutoLogin":false,"OIDCLoginEnabled":false,"OIDCButtonText":"","FeatureFlags":{"can_view_kv_metric_dashboards":true},"OIDCGenerateJWTAuthTokenEnabled":false,"LicenseType":"OSS","SecondsUntilLicenseExpiry":0,"IsManaged":false}`,
 					build.GetInfo().Tag,
-					version,
+					build.BinaryVersionPrefix(),
 					1,
 				),
 			},

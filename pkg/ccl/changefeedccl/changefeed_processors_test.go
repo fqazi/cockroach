@@ -23,105 +23,181 @@ func TestSetupSpansAndFrontier(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	statementTime := hlc.Timestamp{WallTime: 10}
-
-	type checkpointSpan struct {
-		span roachpb.Span
-		ts   hlc.Timestamp
-	}
-
-	type checkpointSpans []checkpointSpan
-
 	for _, tc := range []struct {
-		name                 string
-		initialHighWater     hlc.Timestamp
-		watches              []execinfrapb.ChangeAggregatorSpec_Watch
-		spanLevelCheckpoint  *jobspb.TimestampSpansMap
-		expectedFrontierTs   hlc.Timestamp
-		expectedFrontierSpan checkpointSpans
+		name             string
+		expectedFrontier hlc.Timestamp
+		watches          []execinfrapb.ChangeAggregatorSpec_Watch
 	}{
 		{
 			name:             "new initial scan",
-			initialHighWater: hlc.Timestamp{},
+			expectedFrontier: hlc.Timestamp{},
 			watches: []execinfrapb.ChangeAggregatorSpec_Watch{
-				{Span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}},
-				{Span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("e")}},
-				{Span: roachpb.Span{Key: roachpb.Key("g"), EndKey: roachpb.Key("h")}},
-			},
-			expectedFrontierTs: hlc.Timestamp{},
-			expectedFrontierSpan: checkpointSpans{
-				{span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}, ts: hlc.Timestamp{}},
-				{span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("e")}, ts: hlc.Timestamp{}},
-				{span: roachpb.Span{Key: roachpb.Key("g"), EndKey: roachpb.Key("h")}, ts: hlc.Timestamp{}},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")},
+					InitialResolved: hlc.Timestamp{},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")},
+					InitialResolved: hlc.Timestamp{},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")},
+					InitialResolved: hlc.Timestamp{},
+				},
 			},
 		},
 		{
-			name:             "complete initial scan with empty span level checkpoints",
-			initialHighWater: hlc.Timestamp{WallTime: 5},
+			name:             "incomplete initial scan with non-empty initial resolved in the middle",
+			expectedFrontier: hlc.Timestamp{},
 			watches: []execinfrapb.ChangeAggregatorSpec_Watch{
-				{Span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}},
-				{Span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("e")}},
-				{Span: roachpb.Span{Key: roachpb.Key("g"), EndKey: roachpb.Key("h")}},
-			},
-			expectedFrontierTs: hlc.Timestamp{WallTime: 5},
-			expectedFrontierSpan: checkpointSpans{
-				{span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}, ts: hlc.Timestamp{WallTime: 5}},
-				{span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("e")}, ts: hlc.Timestamp{WallTime: 5}},
-				{span: roachpb.Span{Key: roachpb.Key("g"), EndKey: roachpb.Key("h")}, ts: hlc.Timestamp{WallTime: 5}},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")},
+					InitialResolved: hlc.Timestamp{WallTime: 5},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")},
+					InitialResolved: hlc.Timestamp{},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")},
+					InitialResolved: hlc.Timestamp{WallTime: 20},
+				},
 			},
 		},
 		{
-			name:             "initial scan in progress with span level checkpoints and checkpoint ts",
-			initialHighWater: hlc.Timestamp{},
+			name:             "incomplete initial scan with non-empty initial resolved in the front",
+			expectedFrontier: hlc.Timestamp{},
 			watches: []execinfrapb.ChangeAggregatorSpec_Watch{
-				{Span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}},
-				{Span: roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}},
-				{Span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")}},
-			},
-			spanLevelCheckpoint: jobspb.NewTimestampSpansMap(map[hlc.Timestamp]roachpb.Spans{
-				{WallTime: 5}: []roachpb.Span{{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}, {Key: roachpb.Key("c"), EndKey: roachpb.Key("d")}},
-			}),
-			expectedFrontierTs: hlc.Timestamp{},
-			expectedFrontierSpan: checkpointSpans{
-				{span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}, ts: hlc.Timestamp{WallTime: 5}},
-				{span: roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}, ts: hlc.Timestamp{}},
-				{span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")}, ts: hlc.Timestamp{WallTime: 5}},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")},
+					InitialResolved: hlc.Timestamp{},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")},
+					InitialResolved: hlc.Timestamp{WallTime: 10},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")},
+					InitialResolved: hlc.Timestamp{WallTime: 20},
+				},
 			},
 		},
 		{
-			name:             "schema backfill with span level checkpoints and checkpoint ts",
-			initialHighWater: hlc.Timestamp{WallTime: 5},
+			name:             "incomplete initial scan with empty initial resolved in the end",
+			expectedFrontier: hlc.Timestamp{},
 			watches: []execinfrapb.ChangeAggregatorSpec_Watch{
-				{Span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}},
-				{Span: roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}},
-				{Span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")}},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")},
+					InitialResolved: hlc.Timestamp{WallTime: 10},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")},
+					InitialResolved: hlc.Timestamp{WallTime: 20},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")},
+					InitialResolved: hlc.Timestamp{},
+				},
 			},
-			spanLevelCheckpoint: jobspb.NewTimestampSpansMap(map[hlc.Timestamp]roachpb.Spans{
-				{WallTime: 7}: []roachpb.Span{{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}, {Key: roachpb.Key("c"), EndKey: roachpb.Key("d")}},
-			}),
-			expectedFrontierTs: hlc.Timestamp{WallTime: 5},
-			expectedFrontierSpan: checkpointSpans{
-				{span: roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")}, ts: hlc.Timestamp{WallTime: 7}},
-				{span: roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")}, ts: hlc.Timestamp{WallTime: 5}},
-				{span: roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")}, ts: hlc.Timestamp{WallTime: 7}},
+		},
+		{
+			name:             "complete initial scan",
+			expectedFrontier: hlc.Timestamp{WallTime: 5},
+			watches: []execinfrapb.ChangeAggregatorSpec_Watch{
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")},
+					InitialResolved: hlc.Timestamp{WallTime: 10},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")},
+					InitialResolved: hlc.Timestamp{WallTime: 20},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")},
+					InitialResolved: hlc.Timestamp{WallTime: 5},
+				},
 			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ca := &changeAggregator{}
-			ca.spec.Feed.StatementTime = statementTime
-			ca.spec.Watches = tc.watches
-			ca.spec.InitialHighWater = &tc.initialHighWater
-			ca.spec.SpanLevelCheckpoint = tc.spanLevelCheckpoint
+			ca := &changeAggregator{
+				spec: execinfrapb.ChangeAggregatorSpec{
+					Watches: tc.watches,
+				},
+			}
 			_, err := ca.setupSpansAndFrontier()
 			require.NoError(t, err)
-			actualFrontierSpan := checkpointSpans{}
-			for sp, ts := range ca.frontier.Entries() {
-				actualFrontierSpan = append(actualFrontierSpan, checkpointSpan{span: sp, ts: ts})
-			}
-
-			require.Equal(t, tc.expectedFrontierSpan, actualFrontierSpan)
-			require.Equal(t, tc.expectedFrontierTs, ca.frontier.Frontier())
+			require.Equal(t, tc.expectedFrontier, ca.frontier.Frontier())
 		})
 	}
+}
+
+func makeTS(wt int64) hlc.Timestamp {
+	return hlc.Timestamp{WallTime: wt}
+}
+
+func makeResolvedSpan(
+	start, end string, ts hlc.Timestamp, boundaryType jobspb.ResolvedSpan_BoundaryType,
+) jobspb.ResolvedSpan {
+	return jobspb.ResolvedSpan{
+		Span:         makeSpan(start, end),
+		Timestamp:    ts,
+		BoundaryType: boundaryType,
+	}
+}
+
+func makeSpan(start, end string) roachpb.Span {
+	return roachpb.Span{
+		Key:    roachpb.Key(start),
+		EndKey: roachpb.Key(end),
+	}
+}
+
+func TestSchemaChangeFrontier_ForwardResolvedSpan(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	// Create a fresh frontier with no progress.
+	f, err := makeSchemaChangeFrontier(
+		hlc.Timestamp{},
+		makeSpan("a", "f"),
+	)
+	require.NoError(t, err)
+	require.Zero(t, f.Frontier())
+
+	t.Run("advance frontier with no boundary", func(t *testing.T) {
+		// Forwarding part of the span space to 10 should not advance the frontier.
+		forwarded, err := f.ForwardResolvedSpan(
+			makeResolvedSpan("a", "b", makeTS(10), jobspb.ResolvedSpan_NONE))
+		require.NoError(t, err)
+		require.False(t, forwarded)
+		require.Zero(t, f.Frontier())
+
+		// Forwarding the rest of the span space to 10 should advance the frontier.
+		forwarded, err = f.ForwardResolvedSpan(
+			makeResolvedSpan("b", "f", makeTS(10), jobspb.ResolvedSpan_NONE))
+		require.NoError(t, err)
+		require.True(t, forwarded)
+		require.Equal(t, makeTS(10), f.Frontier())
+	})
+
+	t.Run("advance frontier with same timestamp and new boundary", func(t *testing.T) {
+		// Forwarding part of the span space to 10 again with a non-NONE boundary
+		// should be considered forwarding the frontier because we're learning
+		// about a new boundary.
+		forwarded, err := f.ForwardResolvedSpan(
+			makeResolvedSpan("c", "f", makeTS(10), jobspb.ResolvedSpan_RESTART))
+		require.NoError(t, err)
+		require.True(t, forwarded)
+		require.Equal(t, makeTS(10), f.Frontier())
+
+		// Forwarding the rest of the span space to 10 again with a non-NONE boundary
+		// should not be considered forwarding the frontier because we already
+		// know about the new boundary.
+		forwarded, err = f.ForwardResolvedSpan(
+			makeResolvedSpan("a", "c", makeTS(10), jobspb.ResolvedSpan_RESTART))
+		require.NoError(t, err)
+		require.False(t, forwarded)
+		require.Equal(t, makeTS(10), f.Frontier())
+	})
 }

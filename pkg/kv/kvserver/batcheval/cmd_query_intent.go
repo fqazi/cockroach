@@ -97,7 +97,7 @@ func QueryIntent(
 	if args.StrengthOrDefault() == lock.Intent {
 		// Read from the lock table to see if an intent exists.
 		var err error
-		intent, err = storage.GetIntent(ctx, reader, args.Key)
+		intent, err = storage.GetIntent(ctx, reader, args.Key, storage.BatchEvalReadCategory)
 		if err != nil {
 			return result.Result{}, err
 		}
@@ -157,11 +157,8 @@ func QueryIntent(
 		}
 	}
 
-	res := result.Result{}
 	if !reply.FoundIntent && args.ErrorIfMissing {
-		l := roachpb.MakeLockAcquisition(args.Txn, args.Key, lock.Replicated, args.Strength, args.IgnoredSeqNums)
-		res.Local.ReportedMissingLocks = []roachpb.LockAcquisition{l}
-		return res, kvpb.NewIntentMissingError(args.Key, intent)
+		return result.Result{}, kvpb.NewIntentMissingError(args.Key, intent)
 	}
-	return res, nil
+	return result.Result{}, nil
 }

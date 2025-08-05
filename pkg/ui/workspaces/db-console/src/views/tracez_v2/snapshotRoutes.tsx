@@ -3,13 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { join } from "path";
-
-import React, { useEffect } from "react";
 import { Route, Switch, useHistory, useRouteMatch } from "react-router-dom";
-
-import { getDataFromServer } from "src/util/dataFromServer";
+import React, { useEffect } from "react";
 import SnapshotPage from "src/views/tracez_v2/snapshotPage";
+import { join } from "path";
+import { getDataFromServer } from "src/util/dataFromServer";
 
 const NodePicker: React.FC = () => {
   // If no node was provided, navigate explicitly to the local node.

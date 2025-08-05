@@ -8,18 +8,14 @@ package builtins
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
-	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins/builtinconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
-	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -120,9 +116,6 @@ var replicationBuiltins = map[string]builtinDefinition{
 				if err != nil {
 					return nil, err
 				}
-				if err := mgr.AuthorizeViaReplicationPriv(ctx); err != nil {
-					return nil, err
-				}
 				tenantName := string(tree.MustBeDString(args[0]))
 				replicationProducerSpec, err := mgr.StartReplicationStream(ctx, roachpb.TenantName(tenantName), streampb.ReplicationProducerRequest{})
 				if err != nil {
@@ -149,9 +142,6 @@ var replicationBuiltins = map[string]builtinDefinition{
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				mgr, err := evalCtx.StreamManagerFactory.GetReplicationStreamManager(ctx)
 				if err != nil {
-					return nil, err
-				}
-				if err := mgr.AuthorizeViaReplicationPriv(ctx); err != nil {
 					return nil, err
 				}
 				tenantName := string(tree.MustBeDString(args[0]))
@@ -206,9 +196,6 @@ var replicationBuiltins = map[string]builtinDefinition{
 					return nil, err
 				}
 				streamID := streampb.StreamID(int(tree.MustBeDInt(args[0])))
-				if err := mgr.AuthorizeViaJob(ctx, streamID); err != nil {
-					return nil, err
-				}
 				sps, err := mgr.HeartbeatReplicationStream(ctx, streamID, frontier)
 				if err != nil {
 					return nil, err
@@ -246,12 +233,7 @@ var replicationBuiltins = map[string]builtinDefinition{
 				if err != nil {
 					return nil, err
 				}
-				streamID := streampb.StreamID(tree.MustBeDInt(args[0]))
-				if err := mgr.AuthorizeViaJob(ctx, streamID); err != nil {
-					return nil, err
-				}
 				return mgr.StreamPartition(
-					ctx,
 					streampb.StreamID(tree.MustBeDInt(args[0])),
 					[]byte(tree.MustBeDBytes(args[1])),
 				)
@@ -279,10 +261,7 @@ var replicationBuiltins = map[string]builtinDefinition{
 				}
 
 				streamID := int64(tree.MustBeDInt(args[0]))
-				if err := mgr.AuthorizeViaJob(ctx, streampb.StreamID(streamID)); err != nil {
-					return nil, err
-				}
-				spec, err := mgr.GetPhysicalReplicationStreamSpec(ctx, streampb.StreamID(streamID))
+				spec, err := mgr.GetReplicationStreamSpec(ctx, streampb.StreamID(streamID))
 				if err != nil {
 					return nil, err
 				}
@@ -319,9 +298,6 @@ var replicationBuiltins = map[string]builtinDefinition{
 
 				streamID := int64(tree.MustBeDInt(args[0]))
 				successfulIngestion := bool(tree.MustBeDBool(args[1]))
-				if err := mgr.AuthorizeViaJob(ctx, streampb.StreamID(streamID)); err != nil {
-					return nil, err
-				}
 				if err := mgr.CompleteReplicationStream(
 					ctx, streampb.StreamID(streamID), successfulIngestion,
 				); err != nil {
@@ -352,9 +328,6 @@ var replicationBuiltins = map[string]builtinDefinition{
 			func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (eval.ValueGenerator, error) {
 				mgr, err := evalCtx.StreamManagerFactory.GetReplicationStreamManager(ctx)
 				if err != nil {
-					return nil, err
-				}
-				if err := mgr.AuthorizeViaReplicationPriv(ctx); err != nil {
 					return nil, err
 				}
 				return mgr.SetupSpanConfigsStream(ctx, roachpb.TenantName(tree.MustBeDString(args[0])))
@@ -404,228 +377,6 @@ var replicationBuiltins = map[string]builtinDefinition{
 				return &tsDec, err
 			},
 			Info:       "This function reverts the given tenant to a particular timestamp.",
-			Volatility: volatility.Volatile,
-		},
-	),
-	"crdb_internal.split_at": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemRepair,
-			Undocumented:     true,
-			DistsqlBlocklist: true,
-		},
-		tree.Overload{
-			Types: tree.ParamTypes{
-				{Name: "key", Typ: types.Bytes},
-				{Name: "ttl", Typ: types.Interval},
-			},
-			ReturnType: tree.FixedReturnType(types.Void),
-			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
-				if err := evalCtx.SessionAccessor.CheckPrivilege(
-					ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER,
-				); err != nil {
-					return nil, err
-				}
-				key := roachpb.Key(tree.MustBeDBytes(args[0]))
-				ttl := tree.MustBeDInterval(args[1])
-				expiration := evalCtx.Txn.DB().Clock().Now().Add(ttl.Nanos(), 0)
-				return tree.DVoidDatum, evalCtx.Txn.DB().AdminSplit(ctx, key, expiration)
-			},
-			Info:       "Splits at an *arbitrary* byte key.",
-			Volatility: volatility.Volatile,
-		},
-	),
-	"crdb_internal.scatter": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemRepair,
-			Undocumented:     true,
-			DistsqlBlocklist: true,
-		},
-		tree.Overload{
-			Types: tree.ParamTypes{
-				{Name: "key", Typ: types.Bytes},
-			},
-			ReturnType: tree.FixedReturnType(types.Void),
-			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
-				if err := evalCtx.SessionAccessor.CheckPrivilege(
-					ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER,
-				); err != nil {
-					return nil, err
-				}
-				key := roachpb.Key(tree.MustBeDBytes(args[0]))
-				_, err := evalCtx.Txn.DB().AdminScatter(ctx, key, 0)
-				return tree.DVoidDatum, err
-			},
-			Info:       "Scatters the passed arbitrary key",
-			Volatility: volatility.Volatile,
-		},
-		tree.Overload{
-			Types: tree.ParamTypes{
-				{Name: "key", Typ: types.Bytes},
-				{Name: "end_key", Typ: types.Bytes},
-			},
-			ReturnType: tree.FixedReturnType(types.Void),
-			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
-				if err := evalCtx.SessionAccessor.CheckPrivilege(
-					ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER,
-				); err != nil {
-					return nil, err
-				}
-				key := roachpb.Key(tree.MustBeDBytes(args[0]))
-				endKey := roachpb.Key(tree.MustBeDBytes(args[1]))
-
-				scatterReq := &kvpb.AdminScatterRequest{
-					RequestHeader:   kvpb.RequestHeaderFromSpan(roachpb.Span{Key: key, EndKey: endKey}),
-					RandomizeLeases: true,
-				}
-				_, pErr := kv.SendWrapped(ctx, evalCtx.Txn.DB().NonTransactionalSender(), scatterReq)
-				if pErr != nil {
-					return nil, pErr.GoError()
-				}
-				return tree.DVoidDatum, nil
-			},
-			Info:       "Scatters the passed arbitrary key",
-			Volatility: volatility.Volatile,
-		},
-	),
-	// TODO(ssd): These functions likely aren't the final API we
-	// want.  Namely, boths should perhaps just be overloads of
-	// existing functions.
-	"crdb_internal.plan_logical_replication": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategoryClusterReplication,
-			Undocumented:     true,
-			DistsqlBlocklist: true,
-		},
-		tree.Overload{
-			Types: tree.ParamTypes{
-				{Name: "req", Typ: types.Bytes},
-			},
-			ReturnType: tree.FixedReturnType(types.Bytes),
-			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
-				mgr, err := evalCtx.StreamManagerFactory.GetReplicationStreamManager(ctx)
-				if err != nil {
-					return nil, err
-				}
-				reqBytes := []byte(tree.MustBeDBytes(args[0]))
-				req := streampb.LogicalReplicationPlanRequest{}
-				if err := protoutil.Unmarshal(reqBytes, &req); err != nil {
-					return nil, err
-				}
-				if req.StreamID != 0 {
-					if err := mgr.AuthorizeViaJob(ctx, req.StreamID); err != nil {
-						return nil, err
-					}
-					// Auth via replication priv exists to ensure a user that planned their
-					// job pre 25.2, which will not send a stream id, can still plan their
-					// distsql flow.
-				} else if err := mgr.AuthorizeViaReplicationPriv(ctx); err != nil {
-					return nil, err
-				}
-
-				spec, err := mgr.PlanLogicalReplication(ctx, req)
-				if err != nil {
-					return nil, err
-				}
-				rawSpec, err := protoutil.Marshal(spec)
-				if err != nil {
-					return nil, err
-				}
-				return tree.NewDBytes(tree.DBytes(rawSpec)), err
-			},
-			Info:       "Returns a replication stream spec for the given logical replication plan request",
-			Volatility: volatility.Volatile,
-		},
-	),
-
-	"crdb_internal.start_replication_stream_for_tables": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategoryClusterReplication,
-			Undocumented:     true,
-			DistsqlBlocklist: true,
-		},
-		tree.Overload{
-			Types: tree.ParamTypes{
-				{Name: "req", Typ: types.Bytes},
-			},
-			ReturnType: tree.FixedReturnType(types.Bytes),
-			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
-				mgr, err := evalCtx.StreamManagerFactory.GetReplicationStreamManager(ctx)
-				if err != nil {
-					return nil, err
-				}
-				reqBytes := []byte(tree.MustBeDBytes(args[0]))
-				req := streampb.ReplicationProducerRequest{}
-				if err := protoutil.Unmarshal(reqBytes, &req); err != nil {
-					return nil, err
-				}
-				if err := mgr.AuthorizeViaReplicationPriv(ctx, req.TableNames...); err != nil {
-					return nil, errors.Wrapf(err, "failed to auth")
-				}
-
-				spec, err := mgr.StartReplicationStreamForTables(ctx, req)
-				if err != nil {
-					return nil, err
-				}
-
-				rawSpec, err := protoutil.Marshal(&spec)
-				if err != nil {
-					return nil, err
-				}
-				return tree.NewDBytes(tree.DBytes(rawSpec)), err
-			},
-			Info:       "TODO(ssd)",
-			Volatility: volatility.Volatile,
-		},
-	),
-	"crdb_internal.logical_replication_inject_failures": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategoryClusterReplication,
-			Undocumented:     true,
-			DistsqlBlocklist: true,
-		},
-		tree.Overload{
-			Types: tree.ParamTypes{
-				{Name: "stream", Typ: types.Int},
-				{Name: "proc", Typ: types.Int},
-				{Name: "percent", Typ: types.Int},
-			},
-			ReturnType: tree.FixedReturnType(types.Void),
-			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
-				mgr, err := evalCtx.StreamManagerFactory.GetReplicationStreamManager(ctx)
-				if err != nil {
-					return nil, err
-				}
-				stream := streampb.StreamID(int(tree.MustBeDInt(args[0])))
-				proc := int32(int(tree.MustBeDInt(args[1])))
-				percent := streampb.StreamID(int(tree.MustBeDInt(args[2])))
-
-				if err := mgr.AuthorizeViaJob(ctx, stream); err != nil {
-					return nil, err
-				}
-
-				if percent > 100 {
-					return nil, errors.New("invalid percent")
-				}
-
-				found := false
-				statuses, err := mgr.DebugGetLogicalConsumerStatuses(ctx)
-				if err != nil {
-					return nil, err
-				}
-				for _, i := range statuses {
-					if stream == 0 || stream == i.StreamID {
-						if proc == 0 || proc == i.ProcessorID {
-							found = true
-							i.SetInjectedFailurePercent(uint32(percent))
-						}
-					}
-				}
-				if !found {
-					return nil, errors.New("no matching processors found")
-				}
-				return tree.DVoidDatum, nil
-			},
-			Info:       "Debugging tool to force failures during application of LDR events",
 			Volatility: volatility.Volatile,
 		},
 	),

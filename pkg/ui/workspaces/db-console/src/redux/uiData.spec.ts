@@ -3,14 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import keys from "lodash/keys";
-import * as protobuf from "protobufjs/minimal";
+import _ from "lodash";
 import { Action } from "redux";
+import * as protobuf from "protobufjs/minimal";
+import fetchMock from "src/util/fetch-mock";
 
 import * as protos from "src/js/protos";
 import * as api from "src/util/api";
-import fetchMock from "src/util/fetch-mock";
-
 import * as uidata from "./uiData";
 
 describe("UIData reducer", function () {
@@ -235,7 +234,7 @@ describe("UIData reducer", function () {
       dispatch(uidata.setUIDataKey(boolKey, bool));
       dispatch(uidata.setUIDataKey(numKey, num));
 
-      expect(keys(state).length).toBe(3);
+      expect(_.keys(state).length).toBe(3);
       expect(state[objKey].data).toEqual(obj);
       expect(state[objKey].status).toEqual(uidata.UIDataStatus.VALID);
       expect(state[boolKey].data).toEqual(bool);
@@ -246,7 +245,7 @@ describe("UIData reducer", function () {
       // validate overwrite.
       const obj2 = { value: 2 };
       dispatch(uidata.setUIDataKey(objKey, obj2));
-      expect(keys(state).length).toBe(3);
+      expect(_.keys(state).length).toBe(3);
       expect(state[objKey].data).toEqual(obj2);
       expect(state[objKey].status).toEqual(uidata.UIDataStatus.VALID);
     });
@@ -280,9 +279,9 @@ describe("UIData reducer", function () {
     it("should correctly dispatch beginSaveUIData", function () {
       const key1 = "key1";
       const key2 = "key2";
-      const keysArr = [key1, key2];
-      dispatch(uidata.beginSaveUIData(keysArr));
-      expect(keys(state).length).toBe(2);
+      const keys = [key1, key2];
+      dispatch(uidata.beginSaveUIData(keys));
+      expect(_.keys(state).length).toBe(2);
       expect(state[key1].status).toEqual(uidata.UIDataStatus.SAVING);
       expect(state[key2].status).toEqual(uidata.UIDataStatus.SAVING);
       dispatch(uidata.setUIDataKey(key1, "value1"));
@@ -294,9 +293,9 @@ describe("UIData reducer", function () {
     it("should correctly dispatch beginLoadUIData", function () {
       const key1 = "key1";
       const key2 = "key2";
-      const keysArr = [key1, key2];
-      dispatch(uidata.beginLoadUIData(keysArr));
-      expect(keys(state).length).toBe(2);
+      const keys = [key1, key2];
+      dispatch(uidata.beginLoadUIData(keys));
+      expect(_.keys(state).length).toBe(2);
       expect(state[key1].status).toEqual(uidata.UIDataStatus.LOADING);
       expect(state[key2].status).toEqual(uidata.UIDataStatus.LOADING);
       dispatch(uidata.setUIDataKey(key1, "value1"));
@@ -323,16 +322,12 @@ describe("UIData reducer", function () {
     const uiObj2 = 1234;
 
     const saveUIData = function (...values: uidata.KeyValue[]): Promise<void> {
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-      // @ts-ignore
       return uidata.saveUIData.apply(this, values)(dispatch, () => {
         return { uiData: state };
       });
     };
 
     const loadUIData = function (...keys: string[]): Promise<void> {
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-      // @ts-ignore
       return uidata.loadUIData.apply(this, keys)(dispatch, () => {
         return { uiData: state };
       });
@@ -356,7 +351,7 @@ describe("UIData reducer", function () {
             new Uint8Array(requestObj.body as ArrayBuffer),
           ).key_values;
 
-          expect(keys(kvs).length).toBe(2);
+          expect(_.keys(kvs).length).toBe(2);
 
           const deserialize = function (buffer: Uint8Array): Object {
             return JSON.parse(
@@ -390,7 +385,7 @@ describe("UIData reducer", function () {
 
       return Promise.all([p, p2]).then(() => {
         expect(fetchMock.calls(`${api.API_PREFIX}/uidata`).length).toBe(1);
-        expect(keys(state).length).toBe(2);
+        expect(_.keys(state).length).toBe(2);
         expect(state[uiKey1].data).toEqual(uiObj1);
         expect(state[uiKey2].data).toEqual(uiObj2);
         expect(state[uiKey1].error).toBeNull();
@@ -417,7 +412,7 @@ describe("UIData reducer", function () {
 
       p.then(() => {
         expect(fetchMock.calls(`${api.API_PREFIX}/uidata`).length).toBe(1);
-        expect(keys(state).length).toBe(2);
+        expect(_.keys(state).length).toBe(2);
         expect(state[uiKey1].status).toEqual(uidata.UIDataStatus.SAVING);
         expect(state[uiKey2].status).toEqual(uidata.UIDataStatus.SAVING);
         expect(state[uiKey1].data).toBeUndefined();
@@ -478,7 +473,7 @@ describe("UIData reducer", function () {
 
       return Promise.all([p, p2]).then(() => {
         expect(fetchMock.calls(expectedURL).length).toBe(1);
-        expect(keys(state).length).toBe(2);
+        expect(_.keys(state).length).toBe(2);
         expect(state[uiKey1].data).toEqual(uiObj1);
         expect(state[uiKey2].data).toEqual(uiObj2);
         expect(state[uiKey1].error).toBeNull();
@@ -504,7 +499,7 @@ describe("UIData reducer", function () {
 
       p.then(() => {
         expect(fetchMock.calls(uidataPrefixMatcher).length).toBe(1);
-        expect(keys(state).length).toBe(2);
+        expect(_.keys(state).length).toBe(2);
         expect(state[uiKey1].status).toEqual(uidata.UIDataStatus.LOADING);
         expect(state[uiKey2].status).toEqual(uidata.UIDataStatus.LOADING);
         expect(state[uiKey1].data).toBeUndefined();
@@ -547,7 +542,7 @@ describe("UIData reducer", function () {
 
       return p.then(() => {
         expect(fetchMock.calls(expectedURL).length).toBe(1);
-        expect(keys(state).length).toBe(1);
+        expect(_.keys(state).length).toBe(1);
         expect(state[missingKey].data).toEqual(undefined);
         expect("data" in state[missingKey]).toBeTruthy();
         expect(state[missingKey].status).toEqual(uidata.UIDataStatus.VALID);

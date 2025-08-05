@@ -26,8 +26,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/cockroach/pkg/testutils/release"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
+	"github.com/cockroachdb/cockroach/pkg/util/version"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/version"
 )
 
 var (
@@ -74,19 +74,13 @@ func (v *Version) IsCurrent() bool {
 // Equal compares the two versions, returning whether they represent
 // the same version.
 func (v *Version) Equal(other *Version) bool {
-	return v.Version.Compare(other.Version) == 0
+	return v.Version.Compare(&other.Version) == 0
 }
 
 // AtLeast is a thin wrapper around `(*version.Version).AtLeast`,
 // allowing two `Version` objects to be compared directly.
 func (v *Version) AtLeast(other *Version) bool {
-	return v.Version.AtLeast(other.Version)
-}
-
-// LessThan returns true if the version is strictly
-// older than the other version. `v < other`
-func (v *Version) LessThan(other *Version) bool {
-	return !v.Version.AtLeast(other.Version)
+	return v.Version.AtLeast(&other.Version)
 }
 
 // Series returns the release series this version is a part of.
@@ -101,28 +95,17 @@ func CurrentVersion() *Version {
 		return &Version{*TestBuildVersion} // test-only
 	}
 
-	return &Version{version.MustParse(build.BinaryVersion())}
+	return &Version{*version.MustParse(build.BinaryVersion())}
 }
 
 // MustParseVersion parses the version string given (with or without
 // leading 'v') and returns the corresponding `Version` object.
 func MustParseVersion(v string) *Version {
-	parsedVersion, err := ParseVersion(v)
-	if err != nil {
-		panic(err)
-	}
-	return parsedVersion
-}
-
-// ParseVersion parses the version string given (with or without
-// leading 'v') and returns the corresponding `Version` object. Returns
-// an error if the version string is not valid.
-func ParseVersion(v string) (*Version, error) {
 	// The current version is rendered differently (see String()
 	// implementation). If the user passed that string representation,
 	// return the current version object.
 	if currentVersion := CurrentVersion(); v == currentVersion.String() {
-		return currentVersion, nil
+		return currentVersion
 	}
 
 	versionStr := v
@@ -130,26 +113,7 @@ func ParseVersion(v string) (*Version, error) {
 		versionStr = "v" + v
 	}
 
-	parsedVersion, err := version.Parse(versionStr)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Version{parsedVersion}, nil
-}
-
-// LatestPatchRelease returns the latest patch release version for a given
-// release series.
-func LatestPatchRelease(series string) (*Version, error) {
-	seriesStr := strings.TrimPrefix(series, "v")
-	versionStr, err := release.LatestPatch(seriesStr)
-	if err != nil {
-		return nil, err
-	}
-
-	// release.LatestPatch uses mustParseVersion internally, so the returned
-	// version is guaranteed to be valid.
-	return MustParseVersion(versionStr), nil
+	return &Version{*version.MustParse(versionStr)}
 }
 
 // BinaryVersion returns the binary version running on the node
@@ -196,13 +160,6 @@ func UploadCockroach(
 	nodes option.NodeListOption,
 	v *Version,
 ) (string, error) {
-	// Short-circuit this special case to avoid the extra SSH
-	// connections: the current version is always uploaded to every node
-	// in the cluster in a fixed location.
-	if v.IsCurrent() {
-		return test.DefaultCockroachPath, nil
-	}
-
 	return uploadBinaryVersion(ctx, t, l, "cockroach", c, nodes, v)
 }
 
@@ -271,7 +228,7 @@ func uploadBinaryVersion(
 		return "", fmt.Errorf("unknown binary name: %s", binary)
 	}
 
-	if isOverridden {
+	if v.IsCurrent() || isOverridden {
 		if err := c.PutE(ctx, l, defaultBinary, dstBinary, nodes); err != nil {
 			return "", err
 		}
@@ -298,7 +255,7 @@ func uploadBinaryVersion(
 			// a build for a specific release. Instead, we stage the binary
 			// for the corresponding release branch, which is good enough in
 			// most cases.
-			stageVersion = v.Format("release-%X.%Y")
+			stageVersion = fmt.Sprintf("release-%d.%d", v.Major(), v.Minor())
 		}
 
 		if err := c.Stage(ctx, l, application, stageVersion, dir, nodes); err != nil {
@@ -323,7 +280,7 @@ func InstallFixtures(
 	// The fixtures use cluster version (major.minor) but the input might be
 	// a patch release.
 	name := CheckpointName(
-		roachpb.Version{Major: int32(v.Major().Year), Minor: int32(v.Major().Ordinal)}.String(),
+		roachpb.Version{Major: int32(v.Major()), Minor: int32(v.Minor())}.String(),
 	)
 	for n := 1; n <= len(nodes); n++ {
 		if err := c.PutE(ctx, l,
@@ -406,26 +363,19 @@ func RestartNodesWithNewBinary(
 	rand.Shuffle(len(nodes), func(i, j int) {
 		nodes[i], nodes[j] = nodes[j], nodes[i]
 	})
-
-	// Stop the cockroach process gracefully in order to drain it properly.
-	// This makes the upgrade closer to how users do it in production, but
-	// it's also needed to eliminate flakiness. In particular, this will
-	// make sure that DistSQL draining information is communicated through
-	// gossip so that other nodes running an older version don't consider
-	// this upgraded node for DistSQL plans (see #87154 for more details).
-	stopOptions := []option.StartStopOption{option.Graceful(gracePeriod)}
-
-	// If we are starting the cockroach process with a tag, we apply the
-	// same tag when stopping.
-	for _, s := range settings {
-		if t, ok := s.(install.TagOption); ok {
-			stopOptions = append(stopOptions, option.Tag(string(t)))
-		}
-	}
-
 	for _, node := range nodes {
 		l.Printf("restarting node %d into version %s", node, newVersion.String())
-		if err := c.StopE(ctx, l, option.NewStopOpts(stopOptions...), c.Node(node)); err != nil {
+		// Stop the cockroach process gracefully in order to drain it properly.
+		// This makes the upgrade closer to how users do it in production, but
+		// it's also needed to eliminate flakiness. In particular, this will
+		// make sure that DistSQL draining information is dissipated through
+		// gossip so that other nodes running an older version don't consider
+		// this upgraded node for DistSQL plans (see #87154 for more details).
+		// TODO(yuzefovich): ideally, we would also check that the drain was
+		// successful since if it wasn't, then we might see flakes too.
+		if err := c.StopE(
+			ctx, l, option.NewStopOpts(option.Graceful(gracePeriod)), c.Node(node),
+		); err != nil {
 			return err
 		}
 

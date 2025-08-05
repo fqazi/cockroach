@@ -10,10 +10,11 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"slices"
+	"sort"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -23,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/benignerror"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
@@ -31,8 +31,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
@@ -136,8 +136,13 @@ func maybeDescriptorChangedError(
 
 func splitSnapshotWarningStr(rangeID roachpb.RangeID, status *raft.Status) redact.RedactableString {
 	var s redact.RedactableString
-	if status != nil && status.RaftState == raftpb.StateLeader {
+	if status != nil && status.RaftState == raft.StateLeader {
 		for replicaID, pr := range status.Progress {
+			if replicaID == status.Lead {
+				// TODO(tschottdorf): remove this line once we have picked up
+				// https://github.com/etcd-io/etcd/pull/10279
+				continue
+			}
 			if pr.State == tracker.StateReplicate {
 				// This follower is in good working order.
 				continue
@@ -284,20 +289,11 @@ func splitTxnStickyUpdateAttempt(
 	newDesc := *desc
 	newDesc.StickyBit = expiration
 
-	{
-		b := txn.NewBatch()
-		descKey := keys.RangeDescriptorKey(desc.StartKey)
-		if err := updateRangeDescriptor(b, descKey, dbDescValue, &newDesc); err != nil {
-			return err
-		}
-		// Run this batch first to ensure that the transaction record is created in
-		// the right place. The sticky bit trigger relies on this.
-		if err := txn.Run(ctx, b); err != nil {
-			return err
-		}
-	}
-
 	b := txn.NewBatch()
+	descKey := keys.RangeDescriptorKey(desc.StartKey)
+	if err := updateRangeDescriptor(b, descKey, dbDescValue, &newDesc); err != nil {
+		return err
+	}
 	if err := updateRangeAddressing(b, &newDesc); err != nil {
 		return err
 	}
@@ -429,7 +425,7 @@ func (r *Replica) adminSplitWithDescriptor(
 		if !storage.IsValidSplitKey(foundSplitKey) {
 			return reply, errors.Errorf("cannot split range at key %s", splitKey)
 		}
-		if _, _, err := keys.DecodeTenantPrefix(splitKey.AsRawKey()); err != nil {
+		if _, _, err := keys.DecodeTenantPrefixE(splitKey.AsRawKey()); err != nil {
 			return reply, errors.Wrapf(err, "checking for valid tenantID")
 		}
 	}
@@ -474,7 +470,7 @@ func (r *Replica) adminSplitWithDescriptor(
 	}
 	extra += splitSnapshotWarningStr(r.RangeID, r.RaftStatus())
 
-	log.KvDistribution.Infof(ctx, "initiating a split of this range at key %v [r%d] (%s)%s",
+	log.Infof(ctx, "initiating a split of this range at key %v [r%d] (%s)%s",
 		splitKey, rightRangeID, reason, extra)
 
 	leftDesc, rightDesc := prepareSplitDescs(rightRangeID, splitKey, args.ExpirationTime, desc)
@@ -505,6 +501,7 @@ func (r *Replica) adminSplitWithDescriptor(
 	var userOnlyLeftStats enginepb.MVCCStats
 	var totalStats enginepb.MVCCStats
 	if EnableEstimatedMVCCStatsInSplit.Get(&r.store.ClusterSettings().SV) &&
+		r.ClusterSettings().Version.IsActive(ctx, clusterversion.V24_1_EstimatedMVCCStatsInSplit) &&
 		reason != manualAdminReason &&
 		!useEstimatedStatsForExternalBytes {
 		// If the stats contain estimates, re-compute them to prevent estimates
@@ -609,20 +606,10 @@ func (r *Replica) adminUnsplitWithDescriptor(
 		newDesc.StickyBit = hlc.Timestamp{}
 		descKey := keys.RangeDescriptorKey(newDesc.StartKey)
 
-		{
-			b := txn.NewBatch()
-			if err := updateRangeDescriptor(b, descKey, dbDescValue, &newDesc); err != nil {
-				return err
-			}
-			// Run this batch first to ensure that the transaction record is
-			// created in the right place. The sticky bit trigger relies on
-			// this.
-			if err := txn.Run(ctx, b); err != nil {
-				return err
-			}
-		}
-
 		b := txn.NewBatch()
+		if err := updateRangeDescriptor(b, descKey, dbDescValue, &newDesc); err != nil {
+			return err
+		}
 		if err := updateRangeAddressing(b, &newDesc); err != nil {
 			return err
 		}
@@ -877,48 +864,12 @@ func (r *Replica) AdminMerge(
 		// Intents have been placed, so the merge is now in its critical phase. Get
 		// a consistent view of the data from the right-hand range. If the merge
 		// commits, we'll write this data to the left-hand range in the merge
-		// trigger. This consistent view is dependent on two things (a) the
-		// SubsumeRequest is evaluated at a leaseholder that is at least as recent
-		// as the leaseholder that evaluated the deletion intent placed on the RHS
-		// RangeDescriptor, (b) the SubsumeRequest freezes the range for new reads
-		// and writes at the leaseholder, and freezes the closed timestamp so
-		// follower reads cannot occur at a timestamp beyond what is accounted for
-		// in SubsumeResponse.ClosedTimestamp (see batcheval.Subsume for more
-		// details).
-		//
-		// When SubsumeRequest does a write (on newer cluster versions), (a) is
-		// guaranteed by the fact that this request needs to be replicated and so
-		// cannot be successfully processed by a stale leaseholder (due to the
-		// protection in RaftCommand.ProposerLeaseSequence). When SubsumeRequest
-		// is a read, it may seem that (a) is not guaranteed since the request
-		// below is sent outside the txn, and does not set a timestamp, so could
-		// be assigned a timestamp lower than the txn timestamp, and routed to an
-		// older leaseholder. The reason this doesn't happen is subtle:
-		// - Say the txn (whose txn coordinator is this node) got assigned a
-		//   timestamp t1.
-		// - The intent put went to the RHS leaseholder which was ahead, at
-		//   timestamp t2. The response to the intent put will bump up the local
-		//   hlc.Timestamp to t2.
-		// - This SubsumeRequest does not set kvpb.Header.Timestamp, but it will
-		//   include in kvpb.Header.Now a value that is >= t2. When this request
-		//   is received by an old leaseholder (the aforementioned hazard), the
-		//   old leaseholder will bump its hlc.Clock to >= t2 and stop being the
-		//   leaseholder, and reject the request. The request will get eventually
-		//   (successfully) retried at a leaseholder that has the lease at
-		//   timestamp >= t2.
-		//
-		// This must be a single request in a BatchRequest: there are multiple
-		// places that do special logic (needed for safety) that rely on
-		// BatchRequest.IsSingleSubsumeRequest() returning true.
-		shouldPreserveLocks := concurrency.UnreplicatedLockReliabilityMerge.Get(&r.ClusterSettings().SV)
+		// trigger.
 		br, pErr := kv.SendWrapped(ctx, r.store.DB().NonTransactionalSender(),
 			&kvpb.SubsumeRequest{
-				RequestHeader: kvpb.RequestHeader{
-					Key: rightDesc.StartKey.AsRawKey(),
-				},
-				PreserveUnreplicatedLocks: shouldPreserveLocks,
-				LeftDesc:                  *origLeftDesc,
-				RightDesc:                 rightDesc,
+				RequestHeader: kvpb.RequestHeader{Key: rightDesc.StartKey.AsRawKey()},
+				LeftDesc:      *origLeftDesc,
+				RightDesc:     rightDesc,
 			})
 		if pErr != nil {
 			return pErr.GoError()
@@ -975,38 +926,24 @@ func (r *Replica) AdminMerge(
 	// is finicky and only allows disabling pipelining before any operations have
 	// been sent, even in prior epochs. Calling DisablePipelining() on a restarted
 	// transaction yields an error.
-	for attempt := 1; ; attempt++ {
+	for {
 		txn := kv.NewTxn(ctx, r.store.DB(), r.NodeID())
 		err := runMergeTxn(txn)
 		if err != nil {
-			if attempt < 3 {
-				log.VEventf(ctx, 2, "merge txn failed: %s", err)
-			} else {
-				log.Warningf(ctx, "merge txn failed (attempt %d): %s", attempt, err)
-			}
+			log.VEventf(ctx, 2, "merge txn failed: %s", err)
 			if rollbackErr := txn.Rollback(ctx); rollbackErr != nil {
 				log.VEventf(ctx, 2, "merge txn rollback failed: %s", rollbackErr)
 			}
 		}
 		if !errors.HasType(err, (*kvpb.TransactionRetryWithProtoRefreshError)(nil)) {
 			if err != nil {
-				return reply, kvpb.NewError(errors.Wrap(err, "merge failed"))
+				return reply, kvpb.NewErrorf("merge failed: %s", err)
 			}
 			return reply, nil
 		}
 	}
 }
 
-// waitForApplication is waiting for application at all replicas (voters or
-// non-voters). This is an outlier in that the system is typically expected to
-// function with only a quorum of voters being available. So it should be used
-// extremely sparingly.
-//
-// IMPORTANT: if adding a call to this method, ensure that whatever command is
-// needing this behavior sets
-// ReplicatedEvalResult.DoTimelyApplicationToAllReplicas. That ensures that
-// replication flow control will not arbitrarily delay application on a
-// replica by maintaining a non-empty send-queue.
 func waitForApplication(
 	ctx context.Context,
 	dialer *nodedialer.Dialer,
@@ -1018,11 +955,11 @@ func waitForApplication(
 	for _, repl := range replicas {
 		repl := repl // copy for goroutine
 		g.GoCtx(func(ctx context.Context) error {
-			client, err := DialPerReplicaClient(dialer, ctx, repl.NodeID, rpcbase.DefaultClass)
+			conn, err := dialer.Dial(ctx, repl.NodeID, rpc.DefaultClass)
 			if err != nil {
 				return errors.Wrapf(err, "could not dial n%d", repl.NodeID)
 			}
-			_, err = client.WaitForApplication(ctx, &WaitForApplicationRequest{
+			_, err = NewPerReplicaClient(conn).WaitForApplication(ctx, &WaitForApplicationRequest{
 				StoreRequestHeader: StoreRequestHeader{NodeID: repl.NodeID, StoreID: repl.StoreID},
 				RangeID:            rangeID,
 				LeaseIndex:         leaseIndex,
@@ -1048,11 +985,11 @@ func waitForReplicasInit(
 		for _, repl := range replicas {
 			repl := repl // copy for goroutine
 			g.GoCtx(func(ctx context.Context) error {
-				client, err := DialPerReplicaClient(dialer, ctx, repl.NodeID, rpcbase.DefaultClass)
+				conn, err := dialer.Dial(ctx, repl.NodeID, rpc.DefaultClass)
 				if err != nil {
 					return errors.Wrapf(err, "could not dial n%d", repl.NodeID)
 				}
-				_, err = client.WaitForReplicaInit(ctx, &WaitForReplicaInitRequest{
+				_, err = NewPerReplicaClient(conn).WaitForReplicaInit(ctx, &WaitForReplicaInitRequest{
 					StoreRequestHeader: StoreRequestHeader{NodeID: repl.NodeID, StoreID: repl.StoreID},
 					RangeID:            rangeID,
 				})
@@ -2303,16 +2240,27 @@ func prepareChangeReplicasTrigger(
 				}
 				added = append(added, rDesc)
 			case internalChangeTypeRemoveLearner, internalChangeTypeRemoveNonVoter:
-				rDesc, ok := updatedDesc.RemoveReplica(chg.target.NodeID, chg.target.StoreID)
+				rDesc, ok := updatedDesc.GetReplicaDescriptor(chg.target.StoreID)
 				if !ok {
-					return nil, errors.Errorf("target %v not found", chg.target)
+					return nil, errors.Errorf("target %s not found", chg.target)
 				}
-				if prevTyp := rDesc.Type; prevTyp != roachpb.LEARNER && prevTyp != roachpb.NON_VOTER {
-					return nil, errors.Errorf("cannot remove %s target %v, not a LEARNER or NON_VOTER",
-						prevTyp, chg.target)
+				prevTyp := rDesc.Type
+				isRaftLearner := prevTyp == roachpb.LEARNER || prevTyp == roachpb.NON_VOTER
+				if !useJoint || isRaftLearner {
+					rDesc, _ = updatedDesc.RemoveReplica(chg.target.NodeID, chg.target.StoreID)
+				} else if prevTyp != roachpb.VOTER_FULL {
+					// NB: prevTyp is already known to be VOTER_FULL because of
+					// !InAtomicReplicationChange() and the learner handling
+					// above. We check it anyway.
+					return nil, errors.AssertionFailedf("cannot transition from %s to VOTER_OUTGOING", prevTyp)
+				} else {
+					rDesc, _, _ = updatedDesc.SetReplicaType(chg.target.NodeID, chg.target.StoreID, roachpb.VOTER_OUTGOING)
 				}
 				removed = append(removed, rDesc)
 			case internalChangeTypeDemoteVoterToLearner:
+				// Demotion is similar to removal, except that a demotion
+				// cannot apply to a learner, and that the resulting type is
+				// different when entering a joint config.
 				rDesc, ok := updatedDesc.GetReplicaDescriptor(chg.target.StoreID)
 				if !ok {
 					return nil, errors.Errorf("target %s not found", chg.target)
@@ -2358,9 +2306,6 @@ func prepareChangeReplicasTrigger(
 				updatedDesc.SetReplicaType(rDesc.NodeID, rDesc.StoreID, roachpb.VOTER_FULL)
 				isJoint = true
 			case roachpb.VOTER_OUTGOING:
-				// Note: Replicas have not been given a VOTER_OUTGOING type since v20.1.
-				// However, we have not run the migration to remove existing replicas
-				// with the type from old clusters, so we retain this code. See #42251.
 				updatedDesc.RemoveReplica(rDesc.NodeID, rDesc.StoreID)
 				isJoint = true
 			case roachpb.VOTER_DEMOTING_LEARNER:
@@ -2735,6 +2680,12 @@ func (r *Replica) getSenderReplicas(
 		return nil, err
 	}
 
+	// Unless all nodes are on V23.1, don't delegate. This prevents sending to a
+	// node that doesn't understand the request.
+	if !r.store.ClusterSettings().Version.IsActive(ctx, clusterversion.V23_1) {
+		return []roachpb.ReplicaDescriptor{coordinator}, nil
+	}
+
 	// Check follower snapshots, if zero just self-delegate.
 	numFollowers := int(NumDelegateLimit.Get(&r.ClusterSettings().SV))
 	if numFollowers == 0 {
@@ -2920,7 +2871,7 @@ func (r *Replica) getSenderReplicas(
 // there is either an initialized[2] replica or a `ReplicaPlaceholder`[3] to
 // accept the snapshot by creating a placeholder if necessary. Finally, a *Raft
 // snapshot* message is manually handed to the replica's Raft node (by calling
-// `stepRaftGroupRaftMuLocked` + `handleRaftReadyRaftMuLocked`). During the application
+// `stepRaftGroup` + `handleRaftReadyRaftMuLocked`). During the application
 // process, several other SSTs may be created for direct ingestion. An SST for
 // the unreplicated range-ID local keys is created for the Raft entries, hard
 // state, and truncated state. An SST is created for deleting each subsumed
@@ -2980,11 +2931,12 @@ func (r *Replica) sendSnapshotUsingDelegate(
 		)
 	}
 
-	status := r.RaftBasicStatus()
-	if status.Empty() {
-		// This code path is sometimes hit during scatter for replicas that haven't
-		// woken up yet.
-		return benignerror.New(errors.Wrap(errMarkSnapshotError, "raft status not initialized"))
+	status := r.RaftStatus()
+	if status == nil {
+		// This code path is sometimes hit during scatter for replicas that
+		// haven't woken up yet.
+		retErr = benignerror.New(errors.Wrap(errMarkSnapshotError, "raft status not initialized"))
+		return
 	}
 
 	snapUUID := uuid.MakeV4()
@@ -3138,13 +3090,13 @@ func (r *Replica) validateSnapshotDelegationRequest(
 	// is not too far behind the leaseholder. If the delegate is too far behind
 	// that is also needs a snapshot, then any snapshot it sends will be useless.
 	r.mu.RLock()
-	replIdx := r.shMu.state.RaftAppliedIndex + 1
-	status := r.raftBasicStatusRLocked()
+	replIdx := r.mu.state.RaftAppliedIndex + 1
+	status := r.raftStatusRLocked()
 	r.mu.RUnlock()
 
-	if status.Empty() {
-		// This code path is sometimes hit during scatter for replicas that haven't
-		// woken up yet.
+	if status == nil {
+		// This code path is sometimes hit during scatter for replicas that
+		// haven't woken up yet.
 		return errors.Errorf("raft status not initialized")
 	}
 	replTerm := kvpb.RaftTerm(status.Term)
@@ -3229,8 +3181,7 @@ var traceSnapshotThreshold = settings.RegisterDurationSetting(
 	"kv.trace.snapshot.enable_threshold",
 	"enables tracing and gathers timing information on all snapshots;"+
 		"snapshots with a duration longer than this threshold will have their "+
-		"trace logged (set to 0 to disable);",
-	0,
+		"trace logged (set to 0 to disable);", 0,
 )
 
 var externalFileSnapshotting = settings.RegisterBoolSetting(
@@ -3300,6 +3251,16 @@ func (r *Replica) followerSendSnapshot(
 	defer snap.Close()
 	log.Event(ctx, "generated snapshot")
 
+	// We avoid shipping over the past Raft log in the snapshot by changing the
+	// truncated state (we're allowed to -- it's an unreplicated key and not
+	// subject to mapping across replicas). The actual sending happens in
+	// kvBatchSnapshotStrategy.Send and results in no log entries being sent at
+	// all. Note that Metadata.Index is really the applied index of the replica.
+	snap.State.TruncatedState = &kvserverpb.RaftTruncatedState{
+		Index: kvpb.RaftIndex(snap.RaftSnap.Metadata.Index),
+		Term:  kvpb.RaftTerm(snap.RaftSnap.Metadata.Term),
+	}
+
 	// See comment on DeprecatedUsingAppliedStateKey for why we need to set this
 	// explicitly for snapshots going out to followers.
 	snap.State.DeprecatedUsingAppliedStateKey = true
@@ -3315,6 +3276,7 @@ func (r *Replica) followerSendSnapshot(
 	// replication, are dealing with a non-system range, are on at
 	// least 24.1, and our store has external files.
 	externalReplicate := !sharedReplicate && nonSystemRange &&
+		r.store.ClusterSettings().Version.IsActive(ctx, clusterversion.V24_1) &&
 		externalFileSnapshotting.Get(&r.store.ClusterSettings().SV)
 	if externalReplicate {
 		start := snap.State.Desc.StartKey.AsRawKey()
@@ -3339,8 +3301,8 @@ func (r *Replica) followerSendSnapshot(
 			ToReplica:   req.RecipientReplica,
 			Message: raftpb.Message{
 				Type:     raftpb.MsgSnap,
-				From:     raftpb.PeerID(req.CoordinatorReplica.ReplicaID),
-				To:       raftpb.PeerID(req.RecipientReplica.ReplicaID),
+				From:     uint64(req.CoordinatorReplica.ReplicaID),
+				To:       uint64(req.RecipientReplica.ReplicaID),
 				Term:     uint64(req.Term),
 				Snapshot: &snap.RaftSnap,
 			},
@@ -3358,7 +3320,7 @@ func (r *Replica) followerSendSnapshot(
 	sent := func() {
 		r.store.metrics.RangeSnapshotsGenerated.Inc(1)
 	}
-	comparisonResult := r.store.getLocalityComparison(req.CoordinatorReplica.NodeID,
+	comparisonResult := r.store.getLocalityComparison(ctx, req.CoordinatorReplica.NodeID,
 		req.RecipientReplica.NodeID)
 
 	recordBytesSent := func(inc int64) {
@@ -3994,16 +3956,13 @@ func RelocateOne(
 					[]roachpb.ReplicaDescriptor(nil),
 					existingVoters[:len(existingVoters)-added]...,
 				)
-				slices.SortStableFunc(sortedTargetReplicas, func(a, b roachpb.ReplicaDescriptor) int {
-					// finalRelocationTargets[0] goes to the front (if it's present).
-					front := args.finalRelocationTargets()[0].StoreID
-					if a.StoreID == front {
-						return -1
-					} else if b.StoreID == front {
-						return +1
-					}
-					return 0
-				})
+				sort.Slice(
+					sortedTargetReplicas, func(i, j int) bool {
+						sl := sortedTargetReplicas
+						// finalRelocationTargets[0] goes to the front (if it's present).
+						return sl[i].StoreID == args.finalRelocationTargets()[0].StoreID
+					},
+				)
 				for _, rDesc := range sortedTargetReplicas {
 					if rDesc.StoreID != curLeaseholder.StoreID {
 						transferTarget = &roachpb.ReplicationTarget{
@@ -4174,7 +4133,7 @@ func (r *Replica) scatterRangeAndRandomizeLeases(ctx context.Context, randomizeL
 
 	// Return early with number of replicas moved as 0.
 	if tokenErr != nil {
-		log.Warningf(ctx, "unable to acquire allocator "+
+		log.Warningf(ctx, "failed to scatter range: unable to acquire allocator "+
 			"due to %v after %d attempts", tokenErr, retryOpts.MaxRetries)
 		return 0
 	}
@@ -4212,32 +4171,22 @@ func (r *Replica) scatterRangeAndRandomizeLeases(ctx context.Context, randomizeL
 	// currentAttempt, but no backoff between different attempts.
 	for re := retry.StartWithCtx(ctx, retryOpts); re.Next(); {
 		if currentAttempt == maxAttempts {
-			log.Infof(ctx, "stopped scattering after hitting max %d attempts", maxAttempts)
 			break
 		}
 		desc, conf := r.DescAndSpanConfig()
 		_, err := rq.replicaCanBeProcessed(ctx, r, false /* acquireLeaseIfNeeded */)
 		if err != nil {
 			// The replica can not be processed, so skip it.
-			log.Warningf(ctx,
-				"cannot process range (%v) due to %v at attempt %d",
-				desc, err, currentAttempt+1)
 			break
 		}
 		_, err = rq.processOneChange(
 			ctx, r, desc, conf, true /* scatter */, false, /* dryRun */
 		)
 		if err != nil {
-			// If the error is expected to be transient, retry processing the range.
-			// This is most likely to occur when concurrent split and scatters are
-			// issued, in which case the scatter may fail due to the range split
-			// updating the descriptor while processing.
-			if IsRetriableReplicationChangeError(err) {
-				log.Errorf(ctx, "retrying scatter process for range %v after retryable error: %v", desc, err)
+			// TODO(tbg): can this use IsRetriableReplicationError?
+			if isSnapshotError(err) {
 				continue
 			}
-			log.Warningf(ctx, "failed to process range (%v) due to %v at attempt %d",
-				desc, err, currentAttempt+1)
 			break
 		}
 		currentAttempt++
@@ -4303,4 +4252,24 @@ func (r *Replica) adminScatter(
 		// adequate.
 		ReplicasScatteredBytes: stats.Total() * int64(numReplicasMoved),
 	}, nil
+}
+
+// TODO(arul): AdminVerifyProtectedTimestampRequest can entirely go away in
+// 22.2.
+func (r *Replica) adminVerifyProtectedTimestamp(
+	ctx context.Context, _ kvpb.AdminVerifyProtectedTimestampRequest,
+) (resp kvpb.AdminVerifyProtectedTimestampResponse, err error) {
+	// AdminVerifyProtectedTimestampRequest is not supported starting from the
+	// 22.1 release. We expect nodes running a 22.1 binary to still service this
+	// request in a {21.2, 22.1} mixed version cluster. This can happen if the
+	// request is initiated on a 21.2 node and the leaseholder of the range it is
+	// trying to verify is on a 22.1 node.
+	//
+	// We simply return true without attempting to verify in such a case. This
+	// ensures upstream jobs (backups) don't fail as a result. It is okay to
+	// return true regardless even if the PTS record being verified does not apply
+	// as the failure mode is non-destructive. Infact, this is the reason we're
+	// no longer supporting Verification past 22.1.
+	resp.Verified = true
+	return resp, nil
 }

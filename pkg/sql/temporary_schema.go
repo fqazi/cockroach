@@ -36,7 +36,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	io_prometheus_client "github.com/prometheus/client_model/go"
 )
 
@@ -89,15 +88,6 @@ var (
 	}
 )
 
-func (p *planner) InsertTemporarySchema(
-	tempSchemaName string, databaseID descpb.ID, schemaID descpb.ID,
-) {
-	p.sessionDataMutatorIterator.applyOnEachMutator(func(m sessionDataMutator) {
-		m.SetTemporarySchemaName(tempSchemaName)
-		m.SetTemporarySchemaIDForDatabase(uint32(databaseID), uint32(schemaID))
-	})
-}
-
 func (p *planner) getOrCreateTemporarySchema(
 	ctx context.Context, db catalog.DatabaseDescriptor,
 ) (catalog.SchemaDescriptor, error) {
@@ -121,7 +111,10 @@ func (p *planner) getOrCreateTemporarySchema(
 	if err := p.txn.Run(ctx, b); err != nil {
 		return nil, err
 	}
-	p.InsertTemporarySchema(tempSchemaName, db.GetID(), id)
+	p.sessionDataMutatorIterator.applyOnEachMutator(func(m sessionDataMutator) {
+		m.SetTemporarySchemaName(tempSchemaName)
+		m.SetTemporarySchemaIDForDatabase(uint32(db.GetID()), uint32(id))
+	})
 	return p.byIDGetterBuilder().WithoutNonPublic().Get().Schema(ctx, id)
 }
 
@@ -299,15 +292,15 @@ func cleanupTempSchemaObjects(
 					if _, ok := tblDescsByID[d.ID]; ok {
 						return nil
 					}
-					dTableDesc, err := descsCol.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Table(ctx, d.ID)
+					dTableDesc, err := descsCol.ByID(txn.KV()).WithoutNonPublic().Get().Table(ctx, d.ID)
 					if err != nil {
 						return err
 					}
-					db, err := descsCol.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Database(ctx, dTableDesc.GetParentID())
+					db, err := descsCol.ByID(txn.KV()).WithoutNonPublic().Get().Database(ctx, dTableDesc.GetParentID())
 					if err != nil {
 						return err
 					}
-					sc, err := descsCol.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Schema(ctx, dTableDesc.GetParentSchemaID())
+					sc, err := descsCol.ByID(txn.KV()).WithoutNonPublic().Get().Schema(ctx, dTableDesc.GetParentSchemaID())
 					if err != nil {
 						return err
 					}
@@ -365,7 +358,7 @@ func cleanupTempSchemaObjects(
 				query.WriteString(tbName.FQString())
 			}
 			query.WriteString(" CASCADE")
-			_, err = txn.ExecEx(ctx, redact.Sprintf("delete-temp-%s", toDelete.typeName), txn.KV(), override, query.String())
+			_, err = txn.ExecEx(ctx, "delete-temp-"+toDelete.typeName, txn.KV(), override, query.String())
 			if err != nil {
 				return err
 			}

@@ -9,13 +9,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"runtime/trace"
+	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/util/debugutil"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
@@ -42,7 +42,7 @@ func register(s *Stopper) {
 	trackedStoppers.Lock()
 	defer trackedStoppers.Unlock()
 	trackedStoppers.stoppers = append(trackedStoppers.stoppers,
-		stopperWithStack{s: s, createdAt: debugutil.Stack()})
+		stopperWithStack{s: s, createdAt: string(debug.Stack())})
 }
 
 func unregister(s *Stopper) {
@@ -60,7 +60,7 @@ func unregister(s *Stopper) {
 
 type stopperWithStack struct {
 	s         *Stopper
-	createdAt debugutil.SafeStack // stack from NewStopper()
+	createdAt string // stack from NewStopper()
 }
 
 var trackedStoppers struct {
@@ -172,7 +172,7 @@ type Stopper struct {
 		// idAlloc is incremented atomically under the read lock when adding a
 		// context to be canceled.
 		idAlloc  int64 // allocates index into qCancels
-		qCancels syncutil.Map[int64, context.CancelFunc]
+		qCancels sync.Map
 	}
 }
 
@@ -216,7 +216,7 @@ func NewStopper(options ...Option) *Stopper {
 	return s
 }
 
-// recover reports the current panic, if any, and panics again.
+// recover reports the current panic, if any, any panics again.
 //
 // Note: this function _must_ be called with `defer s.recover()`, otherwise
 // the panic recovery won't work.
@@ -274,7 +274,7 @@ func (s *Stopper) AddCloser(c Closer) {
 // Canceling this context releases resources associated with it, so code should
 // call cancel as soon as the operations running in this Context complete.
 func (s *Stopper) WithCancelOnQuiesce(ctx context.Context) (context.Context, func()) {
-	var cancel context.CancelFunc
+	var cancel func()
 	ctx, cancel = context.WithCancel(ctx)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -283,7 +283,7 @@ func (s *Stopper) WithCancelOnQuiesce(ctx context.Context) (context.Context, fun
 		return ctx, func() {}
 	}
 	id := atomic.AddInt64(&s.mu.idAlloc, 1)
-	s.mu.qCancels.Store(id, &cancel)
+	s.mu.qCancels.Store(id, cancel)
 	return ctx, func() {
 		cancel()
 		s.mu.qCancels.Delete(id)
@@ -311,25 +311,9 @@ func (s *Stopper) RunTask(ctx context.Context, taskName string, f func(context.C
 	// Call f.
 	defer s.recover(ctx)
 	defer s.runPostlude()
-	defer s.startRegion(ctx, taskName).End()
 
 	f(ctx)
 	return nil
-}
-
-type region interface {
-	End()
-}
-
-type noopRegion struct{}
-
-func (n noopRegion) End() {}
-
-func (s *Stopper) startRegion(ctx context.Context, taskName string) region {
-	if !trace.IsEnabled() {
-		return noopRegion{}
-	}
-	return trace.StartRegion(ctx, taskName)
 }
 
 // RunTaskWithErr is like RunTask(), but takes in a callback that can return an
@@ -344,7 +328,6 @@ func (s *Stopper) RunTaskWithErr(
 	// Call f.
 	defer s.recover(ctx)
 	defer s.runPostlude()
-	defer s.startRegion(ctx, taskName).End()
 
 	return f(ctx)
 }
@@ -429,38 +412,6 @@ type TaskOpts struct {
 // RunAsyncTaskEx is like RunTask, except the callback f is run in a goroutine.
 // The call doesn't block for the callback to finish execution.
 func (s *Stopper) RunAsyncTaskEx(ctx context.Context, opt TaskOpts, f func(context.Context)) error {
-	ctx, hdl, err := s.GetHandle(ctx, opt)
-	if err != nil {
-		return err
-	}
-	go func(ctx context.Context) {
-		defer hdl.Activate(ctx).Release(ctx)
-		f(ctx)
-	}(ctx)
-	return nil
-}
-
-// GetHandle returns a Handle or (if the context is cancelled or the Stopper is
-// draining or stopped), an error. A Handle represents permission and obligation
-// to launch a task (a goroutine) decorated with the handle's Activate and
-// Release functions. See ExampleStopper_GetHandle for usage.
-//
-// A Handle must only be used as shown in the example. In particular, it is illegal
-// to access the handle outside of the single spawned goroutine that activates
-// it. Handles must always be released.
-//
-// A handle always returns a valid Context derived from the input, even on
-// error.
-//
-// The example pattern allocates only once (`go` always allocates) save for any
-// context or execution trace region allocations that may occur when such
-// functionality is enabled.
-//
-// Importantly, the fact that the caller's code launches the async task improves
-// observability because it records the caller's call frame as the creating
-// goroutine (as opposed to some location in the stopper code). This makes it
-// straightforward to discover spawned goroutines in Go execution traces.
-func (s *Stopper) GetHandle(ctx context.Context, opt TaskOpts) (context.Context, *Handle, error) {
 	var alloc *quotapool.IntAlloc
 	taskStarted := false
 	if opt.Sem != nil {
@@ -477,7 +428,7 @@ func (s *Stopper) GetHandle(ctx context.Context, opt TaskOpts) (context.Context,
 			err = ErrUnavailable
 		}
 		if err != nil {
-			return ctx, nil, err
+			return err
 		}
 		defer func() {
 			// If the task is started, the alloc will be released async.
@@ -489,25 +440,26 @@ func (s *Stopper) GetHandle(ctx context.Context, opt TaskOpts) (context.Context,
 		// Check for canceled context: it's possible to get the semaphore even
 		// if the context is canceled.
 		if ctx.Err() != nil {
-			return ctx, nil, ctx.Err()
+			return ctx.Err()
 		}
 	}
 
 	if !s.runPrelude() {
-		return ctx, nil, ErrUnavailable
+		return ErrUnavailable
 	}
 
 	// If the caller has a span, the task gets a child span.
 	//
-	// Because we're in the spawned async goroutine, the parent span might get
-	// Finish()ed by then. That's okay, if the parent goes away without waiting
-	// for the child, it will not collect the child anyway.
+	// Note that we have to create the child in this parent goroutine; we can't
+	// defer the creation to the spawned async goroutine since the parent span
+	// might get Finish()ed by then. However, we'll update the child's goroutine
+	// ID.
 	var sp *tracing.Span
 	switch opt.SpanOpt {
 	case FollowsFromSpan:
-		ctx, sp = tracing.ForkSpan(ctx, opt.TaskName)
+		ctx, sp = tracing.EnsureForkSpan(ctx, s.tracer, opt.TaskName)
 	case ChildSpan:
-		ctx, sp = tracing.ChildSpan(ctx, opt.TaskName)
+		ctx, sp = tracing.EnsureChildSpan(ctx, s.tracer, opt.TaskName)
 	case SterileRootSpan:
 		ctx, sp = s.tracer.StartSpanCtx(ctx, opt.TaskName, tracing.WithSterile())
 	default:
@@ -516,19 +468,18 @@ func (s *Stopper) GetHandle(ctx context.Context, opt TaskOpts) (context.Context,
 
 	// Call f on another goroutine.
 	taskStarted = true // Another goroutine now takes ownership of the alloc, if any.
+	go func() {
+		defer s.runPostlude()
+		defer sp.Finish()
+		defer s.recover(ctx)
+		if alloc != nil {
+			defer alloc.Release()
+		}
 
-	hdl := handlePool.Get().(*Handle)
-	*hdl = Handle{
-		s:        s,
-		taskName: opt.TaskName,
-		spanOpt:  opt.SpanOpt,
-		alloc:    alloc,
-		sp:       sp,
-
-		region: nil, // in Activate
-	}
-
-	return ctx, hdl, nil
+		sp.UpdateGoroutineIDToCurrent()
+		f(ctx)
+	}()
+	return nil
 }
 
 func (s *Stopper) runPrelude() bool {
@@ -590,12 +541,8 @@ func (s *Stopper) Stop(ctx context.Context) {
 	// Run the closers without holding s.mu. There's no concern around new
 	// closers being added; we've marked this stopper as `stopping` above, so
 	// any attempts to do so will be refused.
-	//
-	// We want to run the closers in the reverse order they were added. This is
-	// similar to using `defer` and makes sense since we have to initialize lower
-	// levels first.
-	for i := len(s.mu.closers) - 1; i >= 0; i-- {
-		s.mu.closers[i].Close()
+	for _, c := range s.mu.closers {
+		c.Close()
 	}
 }
 
@@ -632,9 +579,10 @@ func (s *Stopper) Quiesce(ctx context.Context) {
 			close(s.quiescer)
 		}
 
-		s.mu.qCancels.Range(func(id int64, cancel *context.CancelFunc) (wantMore bool) {
-			(*cancel)()
-			s.mu.qCancels.Delete(id)
+		s.mu.qCancels.Range(func(k, v interface{}) (wantMore bool) {
+			cancel := v.(func())
+			cancel()
+			s.mu.qCancels.Delete(k)
 			return true
 		})
 		for _, f := range s.mu.quiescers {

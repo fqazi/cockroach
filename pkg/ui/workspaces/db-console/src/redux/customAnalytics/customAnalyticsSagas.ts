@@ -3,12 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import Analytics from "analytics-node";
 import { call, put, takeEvery } from "redux-saga/effects";
+import Analytics from "analytics-node";
 
 import { PayloadAction } from "src/interfaces/action";
-import { emailSubscriptionAlertLocalSetting } from "src/redux/alerts";
 import { COCKROACHLABS_ADDR } from "src/util/cockroachlabsAPI";
+import { emailSubscriptionAlertLocalSetting } from "src/redux/alerts";
 
 import {
   EMAIL_SUBSCRIPTION_SIGN_UP,

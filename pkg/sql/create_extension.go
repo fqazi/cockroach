@@ -17,7 +17,6 @@ import (
 )
 
 type createExtensionNode struct {
-	zeroInputPlanNode
 	CreateExtension tree.CreateExtension
 }
 
@@ -43,8 +42,7 @@ func (n *createExtensionNode) startExec(params runParams) error {
 		"pg_trgm",
 		"fuzzystrmatch",
 		"pgcrypto",
-		"uuid-ossp",
-		"vector":
+		"uuid-ossp":
 		telemetry.Inc(sqltelemetry.CreateExtensionCounter(string(n.CreateExtension.Name)))
 		return nil
 	case "postgis_raster",

@@ -5,10 +5,6 @@
 
 import { expectSaga } from "redux-saga-test-plan";
 import { call, select } from "redux-saga-test-plan/matchers";
-import { throwError } from "redux-saga-test-plan/providers";
-
-import { cockroach } from "src/js/protos";
-import { resetIndexUsageStats } from "src/util/api";
 
 import {
   resetIndexUsageStatsFailedAction,
@@ -19,6 +15,10 @@ import {
   resetIndexUsageStatsSaga,
   selectIndexStatsKeys,
 } from "./indexUsageStatsSagas";
+import { resetIndexUsageStats } from "src/util/api";
+import { throwError } from "redux-saga-test-plan/providers";
+
+import { cockroach } from "src/js/protos";
 
 describe("Index Usage Stats sagas", () => {
   describe("resetIndexUsageStatsSaga", () => {

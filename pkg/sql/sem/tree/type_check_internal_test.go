@@ -31,7 +31,7 @@ func BenchmarkTypeCheck(b *testing.B) {
 	if err != nil {
 		b.Fatalf("%s: %v", expr, err)
 	}
-	ctx := tree.MakeSemaContext(nil /* resolver */)
+	ctx := tree.MakeSemaContext()
 	ctx.Placeholders.Init(1 /* numPlaceholders */, nil /* typeHints */)
 	for i := 0; i < b.N; i++ {
 		_, err := tree.TypeCheck(context.Background(), expr, &ctx, types.Int)
@@ -60,8 +60,8 @@ func TestTypeCheckNormalize(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
-			typeChecked, err := tree.TypeCheck(ctx, expr, &semaCtx, types.AnyElement)
+			semaCtx := tree.MakeSemaContext()
+			typeChecked, err := tree.TypeCheck(ctx, expr, &semaCtx, types.Any)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -180,9 +180,9 @@ func attemptTypeCheckSameTypedExprs(t *testing.T, idx int, test sameTypedExprsTe
 	}
 	ctx := context.Background()
 	forEachPerm(test.exprs, 0, func(exprs []copyableExpr) {
-		semaCtx := tree.MakeSemaContext(nil /* resolver */)
+		semaCtx := tree.MakeSemaContext()
 		semaCtx.Placeholders.Init(len(test.ptypes), clonePlaceholderTypes(test.ptypes))
-		desired := types.AnyElement
+		desired := types.Any
 		if test.desired != nil {
 			desired = test.desired
 		}
@@ -335,9 +335,9 @@ func TestTypeCheckSameTypedExprsError(t *testing.T) {
 	ctx := context.Background()
 	for i, d := range testData {
 		t.Run(fmt.Sprintf("test_%d", i), func(t *testing.T) {
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
+			semaCtx := tree.MakeSemaContext()
 			semaCtx.Placeholders.Init(len(d.ptypes), d.ptypes)
-			desired := types.AnyElement
+			desired := types.Any
 			if d.desired != nil {
 				desired = d.desired
 			}
@@ -375,9 +375,9 @@ func TestTypeCheckSameTypedExprsImplicitCastOneWay(t *testing.T) {
 	ctx := context.Background()
 	for i, d := range testData {
 		t.Run(fmt.Sprintf("test_%d", i), func(t *testing.T) {
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
+			semaCtx := tree.MakeSemaContext()
 			semaCtx.Placeholders.Init(len(d.ptypes), d.ptypes)
-			desired := types.AnyElement
+			desired := types.Any
 			if d.desired != nil {
 				desired = d.desired
 			}
@@ -411,7 +411,7 @@ func TestProcessPlaceholderAnnotations(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	intType := types.Int
 	boolType := types.Bool
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 
 	testData := []struct {
 		initArgs  tree.PlaceholderTypes
@@ -591,7 +591,7 @@ func TestProcessPlaceholderAnnotationsError(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	intType := types.Int
 	floatType := types.Float
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 
 	testData := []struct {
 		initArgs  tree.PlaceholderTypes

@@ -4,17 +4,15 @@
 // included in the /LICENSE file.
 
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-import moment from "moment-timezone";
-
+import { DOMAIN_NAME } from "../utils";
 import {
   ErrorWithKey,
   StatementDetailsRequest,
   StatementDetailsResponse,
   StatementDetailsResponseWithKey,
 } from "src/api/statementsApi";
-
 import { generateStmtDetailsToID } from "../../util";
-import { DOMAIN_NAME } from "../utils";
+import moment from "moment-timezone";
 
 export type SQLDetailsStatsState = {
   data: StatementDetailsResponse;

@@ -3,29 +3,30 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { CockroachMarkLightFull } from "@cockroachlabs/icons";
-import classNames from "classnames";
 import React from "react";
+import classNames from "classnames";
+
+import "./alertbox.styl";
 
 import { AlertInfo, AlertLevel } from "src/redux/alerts";
 import {
   warningIcon,
+  notificationIcon,
   criticalIcon,
   informationIcon,
 } from "src/views/shared/components/icons";
-
-import "./alertbox.styl";
+import { trustIcon } from "src/util/trust";
 
 function alertIcon(level: AlertLevel) {
   switch (level) {
     case AlertLevel.CRITICAL:
-      return criticalIcon;
+      return trustIcon(criticalIcon);
     case AlertLevel.WARNING:
-      return warningIcon;
+      return trustIcon(warningIcon);
     case AlertLevel.INFORMATION:
-      return informationIcon;
+      return trustIcon(informationIcon);
     default:
-      return <CockroachMarkLightFull />;
+      return trustIcon(notificationIcon);
   }
 }
 
@@ -65,7 +66,10 @@ export class AlertBox extends React.Component<AlertBoxProps, {}> {
           `alert-box--${AlertLevel[this.props.level].toLowerCase()}`,
         )}
       >
-        <div className="alert-box__icon">{alertIcon(this.props.level)}</div>
+        <div
+          className="alert-box__icon"
+          dangerouslySetInnerHTML={alertIcon(this.props.level)}
+        />
         {content}
         <div className="alert-box__dismiss">
           <a className="alert-box__link" onClick={this.props.dismiss}>

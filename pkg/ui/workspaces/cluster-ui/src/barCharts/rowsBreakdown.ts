@@ -3,12 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import * as protos from "@cockroachlabs/crdb-protobuf-client";
 import { scaleLinear } from "d3-scale";
-
 import { stdDevLong } from "src/util";
-
 import { formatTwoPlaces, normalizeClosedDomain } from "./utils";
+import * as protos from "@cockroachlabs/crdb-protobuf-client";
 
 type StatementStatistics =
   protos.cockroach.server.serverpb.StatementsResponse.ICollectedStatementStatistics;

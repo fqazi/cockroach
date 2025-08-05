@@ -11,7 +11,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 )
@@ -36,9 +36,6 @@ type Reader interface {
 // signals other than just the tenant capability state. For example, request
 // usage pattern over a timespan.
 type Authorizer interface {
-	// HasCrossTenantRead returns true if a tenant can read other tenant spans.
-	HasCrossTenantRead(ctx context.Context, tenID roachpb.TenantID) bool
-
 	// HasCapabilityForBatch returns an error if a tenant, referenced by its ID,
 	// is not allowed to execute the supplied batch request given the capabilities
 	// it possesses.

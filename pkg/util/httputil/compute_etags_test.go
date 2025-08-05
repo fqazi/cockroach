@@ -8,11 +8,11 @@ package httputil
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"testing"
 	"testing/fstest"
 
-	"github.com/cockroachdb/cockroach/pkg/util/assetbundle"
-	"github.com/klauspost/compress/zstd"
+	"github.com/cockroachdb/cockroach/pkg/util/targz"
 	"github.com/stretchr/testify/require"
 )
 
@@ -79,7 +79,7 @@ func TestComputeEtags_NilMap(t *testing.T) {
 	require.Errorf(t, result, "Unable to hash files without a hash destination")
 }
 
-func TestComputeEtags_TarFS(t *testing.T) {
+func TestComputeEtags_TarGzFS(t *testing.T) {
 	// Build a tar ball
 	var tarContents bytes.Buffer
 	tarWriter := tar.NewWriter(&tarContents)
@@ -96,20 +96,20 @@ func TestComputeEtags_TarFS(t *testing.T) {
 
 	require.NoError(t, tarWriter.Close())
 
-	// Compress the tar ball
-	var compressedTarContents bytes.Buffer
-	writer, _ := zstd.NewWriter(&compressedTarContents)
-	_, err := writer.Write(tarContents.Bytes())
+	// GZip-compress the tar ball
+	var tarGzContents bytes.Buffer
+	gzipWriter := gzip.NewWriter(&tarGzContents)
+	_, err := gzipWriter.Write(tarContents.Bytes())
 	require.NoError(t, err)
-	require.NoError(t, writer.Close())
+	require.NoError(t, gzipWriter.Close())
 
-	// Create an io/fs.FS from the .tar.zst file
-	fs, err := assetbundle.AsFS(bytes.NewBuffer(compressedTarContents.Bytes()))
+	// Create an io/fs.FS from the .tar.gz file
+	gzfs, err := targz.AsFS(bytes.NewBuffer(tarGzContents.Bytes()))
 	require.NoError(t, err)
 
-	// Hash the files in that .tar.zst file system
+	// Hash the files in that .tar.gz file system
 	hashes := make(map[string]string)
-	result := ComputeEtags(fs, hashes)
+	result := ComputeEtags(gzfs, hashes)
 	require.NoError(t, result)
 
 	expected := map[string]string{

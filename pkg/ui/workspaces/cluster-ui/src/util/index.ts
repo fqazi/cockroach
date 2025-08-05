@@ -24,4 +24,3 @@ export * from "./proto";
 export * from "./formatNumber";
 export * from "./totalWorkload";
 export * from "./versions";
-export * from "./maybeError";

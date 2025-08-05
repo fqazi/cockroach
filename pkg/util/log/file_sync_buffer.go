@@ -51,12 +51,8 @@ func (sb *syncBuffer) Write(p []byte) (n int, err error) {
 // writeToFileLocked writes to the file and applies the synchronization policy.
 // Assumes that l.mu is held by the caller.
 func (l *fileSink) writeToFileLocked(data []byte) error {
-	if n, err := l.mu.file.Write(data); err != nil {
-		return err
-	} else if l.logBytesWritten != nil {
-		l.logBytesWritten.Add(uint64(n))
-	}
-	return nil
+	_, err := l.mu.file.Write(data)
+	return err
 }
 
 // ensureFileLocked ensures that l.file is set and valid.

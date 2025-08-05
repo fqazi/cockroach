@@ -28,7 +28,6 @@ func TestUUID(t *testing.T) {
 	t.Run("Variant", testUUIDVariant)
 	t.Run("SetVersion", testUUIDSetVersion)
 	t.Run("SetVariant", testUUIDSetVariant)
-	t.Run("Short", testUUIDShort)
 }
 
 func testUUIDBytes(t *testing.T) {
@@ -44,14 +43,6 @@ func testUUIDString(t *testing.T) {
 	want := "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 	if got != want {
 		t.Errorf("%v.String() = %q, want %q", NamespaceDNS, got, want)
-	}
-}
-
-func testUUIDShort(t *testing.T) {
-	got := NamespaceDNS.Short().String()
-	want := "6ba7b810"
-	if got != want {
-		t.Errorf("%v.Short() = %q, want %q", NamespaceDNS, got, want)
 	}
 }
 
@@ -169,7 +160,7 @@ func TestTimestampFromV1(t *testing.T) {
 		want    Timestamp
 		wanterr bool
 	}{
-		{u: NewV4(), wanterr: true},
+		{u: Must(NewV4()), wanterr: true},
 		{u: Must(FromString("00000000-0000-1000-0000-000000000000")), want: 0},
 		{u: Must(FromString("424f137e-a2aa-11e8-98d0-529269fb1459")), want: 137538640775418750},
 		{u: Must(FromString("ffffffff-ffff-1fff-ffff-ffffffffffff")), want: Timestamp(1<<60 - 1)},

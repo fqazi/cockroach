@@ -4,7 +4,7 @@
 // included in the /LICENSE file.
 
 import moment from "moment-timezone";
-import { Action, AnyAction } from "redux";
+import { Action } from "redux";
 
 import nextState from "src/util/nextState";
 
@@ -147,7 +147,7 @@ export interface QueryManagerState {
  */
 export function queryManagerReducer(
   state: QueryManagerState = {},
-  action: AnyAction,
+  action: QueryAction,
 ): QueryManagerState {
   switch (action.type) {
     case QUERY_BEGIN:
@@ -157,7 +157,7 @@ export function queryManagerReducer(
         ...state,
         [action.payload.id]: managedQueryReducer(
           state[action.payload.id],
-          action as QueryAction,
+          action,
         ),
       };
     default:

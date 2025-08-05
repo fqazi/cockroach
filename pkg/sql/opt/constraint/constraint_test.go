@@ -6,7 +6,6 @@
 package constraint
 
 import (
-	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -25,20 +24,20 @@ import (
 )
 
 func TestConstraintUnion(t *testing.T) {
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
-	data := newConstraintTestData(&evalCtx)
-
 	test := func(t *testing.T, evalCtx *eval.Context, left, right *Constraint, expected string) {
 		t.Helper()
 		clone := *left
-		clone.UnionWith(ctx, evalCtx, right)
+		clone.UnionWith(evalCtx, right)
 
 		if actual := clone.String(); actual != expected {
 			format := "left: %s, right: %s, expected: %v, actual: %v"
 			t.Errorf(format, left.String(), right.String(), expected, actual)
 		}
 	}
+
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
+	data := newConstraintTestData(&evalCtx)
 
 	// Union constraint with itself.
 	test(t, &evalCtx, &data.c1to10, &data.c1to10, "/1: [/1 - /10]")
@@ -58,21 +57,21 @@ func TestConstraintUnion(t *testing.T) {
 	// Merge multiple spans down to single span.
 	var left, right Constraint
 	left = data.c1to10
-	left.UnionWith(ctx, &evalCtx, &data.c20to30)
-	left.UnionWith(ctx, &evalCtx, &data.c40to50)
+	left.UnionWith(&evalCtx, &data.c20to30)
+	left.UnionWith(&evalCtx, &data.c40to50)
 
 	right = data.c5to25
-	right.UnionWith(ctx, &evalCtx, &data.c30to40)
+	right.UnionWith(&evalCtx, &data.c30to40)
 
 	test(t, &evalCtx, &left, &right, "/1: [/1 - /50]")
 	test(t, &evalCtx, &right, &left, "/1: [/1 - /50]")
 
 	// Multiple disjoint spans on each side.
 	left = data.c1to10
-	left.UnionWith(ctx, &evalCtx, &data.c20to30)
+	left.UnionWith(&evalCtx, &data.c20to30)
 
 	right = data.c40to50
-	right.UnionWith(ctx, &evalCtx, &data.c60to70)
+	right.UnionWith(&evalCtx, &data.c60to70)
 
 	test(t, &evalCtx, &left, &right, "/1: [/1 - /10] [/20 - /30) [/40 - /50] (/60 - /70)")
 	test(t, &evalCtx, &right, &left, "/1: [/1 - /10] [/20 - /30) [/40 - /50] (/60 - /70)")
@@ -80,7 +79,7 @@ func TestConstraintUnion(t *testing.T) {
 	// Multiple spans that yield the unconstrained span.
 	left = data.cLt10
 	right = data.c5to25
-	right.UnionWith(ctx, &evalCtx, &data.cGt20)
+	right.UnionWith(&evalCtx, &data.cGt20)
 
 	test(t, &evalCtx, &left, &right, "/1: unconstrained")
 	test(t, &evalCtx, &right, &left, "/1: unconstrained")
@@ -99,19 +98,19 @@ func TestConstraintUnion(t *testing.T) {
 }
 
 func TestConstraintIntersect(t *testing.T) {
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
-	data := newConstraintTestData(&evalCtx)
-
 	test := func(t *testing.T, evalCtx *eval.Context, left, right *Constraint, expected string) {
 		t.Helper()
 		clone := *left
-		clone.IntersectWith(ctx, evalCtx, right)
+		clone.IntersectWith(evalCtx, right)
 		if actual := clone.String(); actual != expected {
 			format := "left: %s, right: %s, expected: %v, actual: %v"
 			t.Errorf(format, left.String(), right.String(), expected, actual)
 		}
 	}
+
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
+	data := newConstraintTestData(&evalCtx)
 
 	// Intersect constraint with itself.
 	test(t, &evalCtx, &data.c1to10, &data.c1to10, "/1: [/1 - /10]")
@@ -127,21 +126,21 @@ func TestConstraintIntersect(t *testing.T) {
 	// Intersect multiple spans.
 	var left, right Constraint
 	left = data.c1to10
-	left.UnionWith(ctx, &evalCtx, &data.c20to30)
-	left.UnionWith(ctx, &evalCtx, &data.c40to50)
+	left.UnionWith(&evalCtx, &data.c20to30)
+	left.UnionWith(&evalCtx, &data.c40to50)
 
 	right = data.c5to25
-	right.UnionWith(ctx, &evalCtx, &data.c30to40)
+	right.UnionWith(&evalCtx, &data.c30to40)
 
 	test(t, &evalCtx, &right, &left, "/1: (/5 - /10] [/20 - /25) [/40 - /40]")
 	test(t, &evalCtx, &left, &right, "/1: (/5 - /10] [/20 - /25) [/40 - /40]")
 
 	// Intersect multiple disjoint spans.
 	left = data.c1to10
-	left.UnionWith(ctx, &evalCtx, &data.c20to30)
+	left.UnionWith(&evalCtx, &data.c20to30)
 
 	right = data.c40to50
-	right.UnionWith(ctx, &evalCtx, &data.c60to70)
+	right.UnionWith(&evalCtx, &data.c60to70)
 
 	test(t, &evalCtx, &left, &right, "/1: contradiction")
 	test(t, &evalCtx, &right, &left, "/1: contradiction")
@@ -160,8 +159,8 @@ func TestConstraintIntersect(t *testing.T) {
 }
 
 func TestConstraintContains(t *testing.T) {
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
 
 	testData := []struct {
 		a        string
@@ -446,7 +445,7 @@ func TestConstraintContains(t *testing.T) {
 			ac := ParseConstraint(&evalCtx, tc.a)
 			bc := ParseConstraint(&evalCtx, tc.b)
 
-			res := ac.Contains(ctx, &evalCtx, &bc)
+			res := ac.Contains(&evalCtx, &bc)
 			if res == tc.expected {
 				return
 			}
@@ -460,8 +459,8 @@ func TestConstraintContains(t *testing.T) {
 }
 
 func TestConstraintContainsSpan(t *testing.T) {
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
 
 	// Each test case has a bunch of spans that are expected to be contained, and
 	// a bunch of spans that are expected not to be contained.
@@ -495,13 +494,13 @@ func TestConstraintContainsSpan(t *testing.T) {
 
 			spans := parseSpans(&evalCtx, tc.containedSpans)
 			for i := 0; i < spans.Count(); i++ {
-				if sp := spans.Get(i); !c.ContainsSpan(ctx, &evalCtx, sp) {
+				if sp := spans.Get(i); !c.ContainsSpan(&evalCtx, sp) {
 					t.Errorf("%s should contain span %s", c, sp)
 				}
 			}
 			spans = parseSpans(&evalCtx, tc.notContainedSpans)
 			for i := 0; i < spans.Count(); i++ {
-				if sp := spans.Get(i); c.ContainsSpan(ctx, &evalCtx, sp) {
+				if sp := spans.Get(i); c.ContainsSpan(&evalCtx, sp) {
 					t.Errorf("%s should not contain span %s", c, sp)
 				}
 			}
@@ -510,8 +509,8 @@ func TestConstraintContainsSpan(t *testing.T) {
 }
 
 func TestConstraintIntersectsSpan(t *testing.T) {
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
 
 	// Each test case has a bunch of spans that are expected to intersect the
 	// constraint, and a bunch of spans that are expected not to.
@@ -544,13 +543,13 @@ func TestConstraintIntersectsSpan(t *testing.T) {
 
 			spans := parseSpans(&evalCtx, tc.intersectingSpans)
 			for i := 0; i < spans.Count(); i++ {
-				if sp := spans.Get(i); !c.IntersectsSpan(ctx, &evalCtx, sp) {
+				if sp := spans.Get(i); !c.IntersectsSpan(&evalCtx, sp) {
 					t.Errorf("%s should intersect span %s", c, sp)
 				}
 			}
 			spans = parseSpans(&evalCtx, tc.notIntersectingSpans)
 			for i := 0; i < spans.Count(); i++ {
-				if sp := spans.Get(i); c.IntersectsSpan(ctx, &evalCtx, sp) {
+				if sp := spans.Get(i); c.IntersectsSpan(&evalCtx, sp) {
 					t.Errorf("%s should not intersect span %s", c, sp)
 				}
 			}
@@ -559,8 +558,8 @@ func TestConstraintIntersectsSpan(t *testing.T) {
 }
 
 func TestConstraintCombine(t *testing.T) {
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
 
 	testData := []struct {
 		a, b, e string
@@ -601,7 +600,7 @@ func TestConstraintCombine(t *testing.T) {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 			a := ParseConstraint(&evalCtx, tc.a)
 			b := ParseConstraint(&evalCtx, tc.b)
-			a.Combine(ctx, &evalCtx, &b, nil /* checkCancellation */)
+			a.Combine(&evalCtx, &b, nil /* checkCancellation */)
 			if res := a.String(); res != tc.e {
 				t.Errorf("expected\n  %s; got\n  %s", tc.e, res)
 			}
@@ -612,8 +611,8 @@ func TestConstraintCombine(t *testing.T) {
 // TestCancelLargeConstraintCombine tests that combining constraints can be
 // successfully cancelled with a cancel function.
 func TestCancelLargeConstraintCombine(t *testing.T) {
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
 
 	testData := []struct {
 		a, b, c, d, e, f, g, h, j, k, l, m, n, o, p, q string
@@ -648,7 +647,7 @@ func TestCancelLargeConstraintCombine(t *testing.T) {
 		}
 		testFunc := func(constraint1, constraint2 *Constraint) {
 			ts := timeutil.Now()
-			constraint1.Combine(ctx, &evalCtx, constraint2, cancelFunc)
+			constraint1.Combine(&evalCtx, constraint2, cancelFunc)
 			if d := timeutil.Since(ts); d > time.Second {
 				t.Errorf("expected cancellation to occur in under 1 second, but took %v", d)
 			}
@@ -747,7 +746,7 @@ func TestConsolidateSpans(t *testing.T) {
 			spans := parseSpans(&evalCtx, tc.s)
 			var c Constraint
 			c.Init(kc, &spans)
-			c.ConsolidateSpans(kc.Ctx, kc.EvalCtx, partition.PrefixSorter{})
+			c.ConsolidateSpans(kc.EvalCtx, partition.PrefixSorter{})
 			if res := c.Spans.String(); res != tc.e {
 				t.Errorf("expected  %s  got  %s", tc.e, res)
 			}
@@ -757,8 +756,8 @@ func TestConsolidateSpans(t *testing.T) {
 
 func TestConsolidateLocalAndRemoteSpans(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
 
 	testData := []struct {
 		spanInputs string
@@ -848,13 +847,13 @@ func TestConsolidateLocalAndRemoteSpans(t *testing.T) {
 			index := &testcat.Index{}
 			index.SetPartitions(partitions)
 			// Make the PrefixSorter.
-			ps := partition.GetSortedPrefixes(ctx, index, localPartitions, &evalCtx)
+			ps := partition.GetSortedPrefixes(index, localPartitions, &evalCtx)
 
 			// Run the test.
 			spans := parseSpans(&evalCtx, tc.spanInputs)
 			var c Constraint
 			c.Init(kc, &spans)
-			c.ConsolidateSpans(kc.Ctx, kc.EvalCtx, ps)
+			c.ConsolidateSpans(kc.EvalCtx, ps)
 			if res := c.Spans.String(); res != tc.expected {
 				t.Errorf("expected  %s  got  %s", tc.expected, res)
 			}
@@ -865,8 +864,8 @@ func TestConsolidateLocalAndRemoteSpans(t *testing.T) {
 
 func TestExactPrefix(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
 
 	testData := []struct {
 		s string
@@ -921,7 +920,7 @@ func TestExactPrefix(t *testing.T) {
 			spans := parseSpans(&evalCtx, tc.s)
 			var c Constraint
 			c.Init(kc, &spans)
-			if res := c.ExactPrefix(ctx, kc.EvalCtx); res != tc.e {
+			if res := c.ExactPrefix(kc.EvalCtx); res != tc.e {
 				t.Errorf("expected  %d  got  %d", tc.e, res)
 			}
 		})
@@ -930,8 +929,8 @@ func TestExactPrefix(t *testing.T) {
 
 func TestPrefix(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
 
 	testData := []struct {
 		s string
@@ -986,7 +985,7 @@ func TestPrefix(t *testing.T) {
 			spans := parseSpans(&evalCtx, tc.s)
 			var c Constraint
 			c.Init(kc, &spans)
-			if res := c.Prefix(ctx, kc.EvalCtx); res != tc.e {
+			if res := c.Prefix(kc.EvalCtx); res != tc.e {
 				t.Errorf("expected  %d  got  %d", tc.e, res)
 			}
 		})
@@ -1074,8 +1073,8 @@ func newConstraintTestData(evalCtx *eval.Context) *constraintTestData {
 }
 
 func TestExtractConstCols(t *testing.T) {
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
 
 	testData := []struct {
 		c string
@@ -1147,7 +1146,7 @@ func TestExtractConstCols(t *testing.T) {
 	for i, tc := range testData {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 			c := ParseConstraint(&evalCtx, tc.c)
-			cols := c.ExtractConstCols(ctx, &evalCtx)
+			cols := c.ExtractConstCols(&evalCtx)
 			if exp := opt.MakeColSet(tc.e...); !cols.Equals(exp) {
 				t.Errorf("expected %s; got %s", exp, cols)
 			}
@@ -1156,8 +1155,8 @@ func TestExtractConstCols(t *testing.T) {
 }
 
 func TestExtractNotNullCols(t *testing.T) {
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
 
 	testData := []struct {
 		c string
@@ -1229,7 +1228,7 @@ func TestExtractNotNullCols(t *testing.T) {
 	for i, tc := range testData {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 			c := ParseConstraint(&evalCtx, tc.c)
-			cols := c.ExtractNotNullCols(ctx, &evalCtx)
+			cols := c.ExtractNotNullCols(&evalCtx)
 			if exp := opt.MakeColSet(tc.e...); !cols.Equals(exp) {
 				t.Errorf("expected %s; got %s", exp, cols)
 			}
@@ -1238,14 +1237,12 @@ func TestExtractNotNullCols(t *testing.T) {
 }
 
 func TestCollectFirstColumnValues(t *testing.T) {
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
-	test := func(t *testing.T, testConstraint *Constraint, expected string, hasNull bool) {
+	test := func(t *testing.T, evalCtx *eval.Context, testConstraint *Constraint, expected string, hasNull bool) {
 		t.Helper()
 
 		var values tree.Datums
 		var hasNullValue, ok bool
-		values, hasNullValue, ok = testConstraint.CollectFirstColumnValues(ctx, &evalCtx)
+		values, hasNullValue, ok = testConstraint.CollectFirstColumnValues(evalCtx)
 		if !ok {
 			if expected != "()" {
 				format := "Failed to collect values from constraint: %s  Expected values: %v"
@@ -1264,6 +1261,8 @@ func TestCollectFirstColumnValues(t *testing.T) {
 			t.Errorf(format, testConstraint.String(), expected, actual)
 		}
 	}
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
 
 	testData := []struct {
 		spans          string
@@ -1335,7 +1334,7 @@ func TestCollectFirstColumnValues(t *testing.T) {
 	for i, tc := range testData {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 			c := ParseConstraint(&evalCtx, tc.spans)
-			test(t, &c, tc.expectedValues, tc.hasNull)
+			test(t, &evalCtx, &c, tc.expectedValues, tc.hasNull)
 		})
 	}
 }

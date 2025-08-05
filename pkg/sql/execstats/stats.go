@@ -12,12 +12,10 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
-	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/optional"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
-	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 )
 
 // ShouldCollectStats is a helper function used to determine if a processor
@@ -32,29 +30,9 @@ func ShouldCollectStats(ctx context.Context, collectStats bool) bool {
 // kvpb.ContentionEvents seen by the listener.
 type ContentionEventsListener struct {
 	cumulativeContentionTime int64 // atomic
-
-	// lockWaitTime is the cumulative time spent waiting in the lock table. It
-	// accounts for a portion of the time in cumulativeContentionTime.
-	lockWaitTime int64 // atomic
-
-	// latchWaitTime is the cumulative time spent waiting to acquire latches. It
-	// accounts for a portion of the time in cumulativeContentionTime.
-	latchWaitTime int64 // atomic
-
-	// txnID is the ID of the transaction that this listener is associated with.
-	// This is used to distinguish self-induced latch wait time
-	// (e.g. for QueryIntent) from contention-induced latch wait time.
-	txnID uuid.UUID
 }
 
 var _ tracing.EventListener = &ContentionEventsListener{}
-
-// Init initializes the listener with the current transaction ID. This is used
-// to distinguish self-induced latch wait time (e.g. for QueryIntent) from
-// contention-induced latch wait time.
-func (c *ContentionEventsListener) Init(txnID uuid.UUID) {
-	c.txnID = txnID
-}
 
 // Notify is part of the tracing.EventListener interface.
 func (c *ContentionEventsListener) Notify(event tracing.Structured) tracing.EventConsumptionStatus {
@@ -62,17 +40,7 @@ func (c *ContentionEventsListener) Notify(event tracing.Structured) tracing.Even
 	if !ok {
 		return tracing.EventNotConsumed
 	}
-	// Avoid counting this event as contention time if the current transaction
-	// (if any) waited on itself. This can happen when a QueryIntent request
-	// waits for a pipelined write to finish replication.
-	if c.txnID == uuid.Nil || c.txnID != ce.TxnMeta.ID {
-		atomic.AddInt64(&c.cumulativeContentionTime, int64(ce.Duration))
-		if ce.IsLatch {
-			atomic.AddInt64(&c.latchWaitTime, int64(ce.Duration))
-		} else {
-			atomic.AddInt64(&c.lockWaitTime, int64(ce.Duration))
-		}
-	}
+	atomic.AddInt64(&c.cumulativeContentionTime, int64(ce.Duration))
 	return tracing.EventConsumed
 }
 
@@ -82,20 +50,8 @@ func (c *ContentionEventsListener) GetContentionTime() time.Duration {
 	return time.Duration(atomic.LoadInt64(&c.cumulativeContentionTime))
 }
 
-// GetLockWaitTime returns the cumulative lock wait time this listener has seen
-// so far.
-func (c *ContentionEventsListener) GetLockWaitTime() time.Duration {
-	return time.Duration(atomic.LoadInt64(&c.lockWaitTime))
-}
-
-// GetLatchWaitTime returns the cumulative latch wait time this listener has
-// seen so far.
-func (c *ContentionEventsListener) GetLatchWaitTime() time.Duration {
-	return time.Duration(atomic.LoadInt64(&c.latchWaitTime))
-}
-
 // ScanStatsListener aggregates all kvpb.ScanStats objects into a single
-// ScanStats object. It additionally looks for kvpb.UsedFollowerRead objects.
+// ScanStats object.
 type ScanStatsListener struct {
 	mu struct {
 		syncutil.Mutex
@@ -107,16 +63,8 @@ var _ tracing.EventListener = &ScanStatsListener{}
 
 // Notify is part of the tracing.EventListener interface.
 func (l *ScanStatsListener) Notify(event tracing.Structured) tracing.EventConsumptionStatus {
-	var ss *kvpb.ScanStats
-	switch t := event.(type) {
-	case *kvpb.ScanStats:
-		ss = t
-	case *kvpb.UsedFollowerRead:
-		l.mu.Lock()
-		defer l.mu.Unlock()
-		l.mu.ScanStats.usedFollowerRead = true
-		return tracing.EventConsumed
-	default:
+	ss, ok := event.(protoutil.Message).(*kvpb.ScanStats)
+	if !ok {
 		return tracing.EventNotConsumed
 	}
 	l.mu.Lock()
@@ -140,10 +88,6 @@ func (l *ScanStatsListener) Notify(event tracing.Structured) tracing.EventConsum
 	l.mu.ScanStats.numGets += ss.NumGets
 	l.mu.ScanStats.numScans += ss.NumScans
 	l.mu.ScanStats.numReverseScans += ss.NumReverseScans
-	l.mu.ScanStats.nodeIDs = util.InsertUnique(l.mu.ScanStats.nodeIDs, int32(ss.NodeID))
-	if ss.Region != "" {
-		l.mu.ScanStats.regions = util.InsertUnique(l.mu.ScanStats.regions, ss.Region)
-	}
 	return tracing.EventConsumed
 }
 
@@ -212,15 +156,6 @@ type ScanStats struct {
 	numGets                         uint64
 	numScans                        uint64
 	numReverseScans                 uint64
-	// nodeIDs stores the ordered list of all KV nodes that were used to
-	// evaluate the KV requests.
-	nodeIDs []int32
-	// regions stores the ordered list of all regions that KV nodes used to
-	// evaluate the KV requests reside in.
-	regions []string
-	// usedFollowerRead indicates whether at least some reads were served by the
-	// follower replicas.
-	usedFollowerRead bool
 }
 
 // PopulateKVMVCCStats adds data from the input ScanStats to the input KVStats.
@@ -241,7 +176,4 @@ func PopulateKVMVCCStats(kvStats *execinfrapb.KVStats, ss *ScanStats) {
 	kvStats.NumGets = optional.MakeUint(ss.numGets)
 	kvStats.NumScans = optional.MakeUint(ss.numScans)
 	kvStats.NumReverseScans = optional.MakeUint(ss.numReverseScans)
-	kvStats.NodeIDs = ss.nodeIDs
-	kvStats.Regions = ss.regions
-	kvStats.UsedFollowerRead = ss.usedFollowerRead
 }

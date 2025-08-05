@@ -3,13 +3,15 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { CaretLeft, CaretRight } from "@cockroachlabs/icons";
-import { Button, Tooltip } from "antd";
-import classNames from "classnames/bind";
 import React from "react";
+import classNames from "classnames/bind";
+import { Button, Tooltip } from "antd";
+import "antd/lib/button/style";
+import "antd/lib/tooltip/style";
+import { CaretLeft, CaretRight } from "@cockroachlabs/icons";
+import { ArrowDirection } from "./timeScaleTypes";
 
 import styles from "./timeFrameControls.module.scss";
-import { ArrowDirection } from "./timeScaleTypes";
 
 const cx = classNames.bind(styles);
 

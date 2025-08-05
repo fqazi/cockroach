@@ -29,7 +29,6 @@ import (
 )
 
 type truncateNode struct {
-	zeroInputPlanNode
 	n *tree.Truncate
 }
 
@@ -292,8 +291,7 @@ func (p *planner) truncateTable(ctx context.Context, id descpb.ID, jobDesc strin
 		NewIndexes:        newIndexIDs[1:],
 	}
 	if err := maybeUpdateZoneConfigsForPKChange(
-		ctx, p.InternalSQLTxn(), p.ExecCfg(), p.ExtendedEvalContext().Tracing.KVTracingEnabled(),
-		tableDesc, swapInfo, true, /* forceSwap */
+		ctx, p.InternalSQLTxn(), p.ExecCfg(), p.ExtendedEvalContext().Tracing.KVTracingEnabled(), tableDesc, swapInfo,
 	); err != nil {
 		return err
 	}

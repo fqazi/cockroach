@@ -13,13 +13,11 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -34,7 +32,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -361,7 +358,6 @@ func newRangeDistributionTester(
 
 	const nodes = 8
 	args := base.TestClusterArgs{
-		ReplicationMode:   base.ReplicationManual,
 		ServerArgsPerNode: map[int]base.TestServerArgs{},
 		ServerArgs: base.TestServerArgs{
 			DefaultTestTenant: base.TestTenantProbabilistic,
@@ -390,10 +386,7 @@ func newRangeDistributionTester(
 	}
 
 	ctx := context.Background()
-
-	start := timeutil.Now()
 	tc := testcluster.StartTestCluster(t, nodes, args)
-	t.Logf("%s: starting the test cluster took %s", timeutil.Now().Format(time.DateTime), timeutil.Since(start))
 
 	lastNode := tc.Server(len(tc.Servers) - 1).ApplicationLayer()
 	sqlDB := sqlutils.MakeSQLRunner(lastNode.SQLConn(t))
@@ -401,43 +394,34 @@ func newRangeDistributionTester(
 
 	systemDB := sqlutils.MakeSQLRunner(tc.SystemLayer(len(tc.Servers) - 1).SQLConn(t))
 	systemDB.Exec(t, "SET CLUSTER SETTING kv.rangefeed.enabled = true")
-	if tc.DefaultTenantDeploymentMode().IsExternal() {
-		tc.GrantTenantCapabilities(
-			ctx, t, serverutils.TestTenantID(),
-			map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanAdminRelocateRange: "true"})
-	}
-
 	if tc.StartedDefaultTestTenant() {
-		// Give 1,000,000 upfront tokens to the tenant, and keep the tokens per
-		// second rate to the default value of 10,000. This helps avoid throttling
-		// in the tests.
-		systemDB.Exec(t,
-			"SELECT crdb_internal.update_tenant_resource_limits($1::INT, 1000000, 10000, 0, now(), 0)",
-			serverutils.TestTenantID().ToUint64())
+		systemDB.Exec(t, `ALTER TENANT [$1] GRANT CAPABILITY can_admin_relocate_range=true`, serverutils.TestTenantID().ToUint64())
 	}
 
-	t.Logf("%s: creating and inserting rows into table", timeutil.Now().Format(time.DateTime))
-	start = timeutil.Now()
+	// Use manual replication only.
+	tc.ToggleReplicateQueues(false)
+
+	t.Logf("creating and splitting table into single-key ranges")
 	sqlDB.ExecMultiple(t,
 		"CREATE TABLE x (id INT PRIMARY KEY)",
 		"INSERT INTO x SELECT generate_series(0, 63)",
-	)
-	t.Logf("%s: creating and inserting rows into table took %s", timeutil.Now().Format(time.DateTime), timeutil.Since(start))
-
-	t.Logf("%s: splitting table into single-key ranges", timeutil.Now().Format(time.DateTime))
-	start = timeutil.Now()
-	sqlDB.Exec(t,
 		"ALTER TABLE x SPLIT AT SELECT id FROM x WHERE id > 0",
 	)
-	t.Logf("%s: spitting the table took %s", timeutil.Now().Format(time.DateTime), timeutil.Since(start))
 
 	// Distribute the leases exponentially across the first 5 nodes.
-	t.Logf("%s: relocating ranges in exponential distribution", timeutil.Now().Format(time.DateTime))
-	start = timeutil.Now()
-	// Relocate can fail with errors like `change replicas... descriptor changed` thus the SucceedsSoon.
-	sqlDB.ExecSucceedsSoon(t,
-		`ALTER TABLE x RELOCATE SELECT ARRAY[floor(log(greatest(1,id)::DECIMAL)/log(2::DECIMAL))::INT+1], id FROM x`)
-	t.Logf("%s: relocating ranges took %s", timeutil.Now().Format(time.DateTime), timeutil.Since(start))
+	for i := 0; i < 64; i += 1 {
+		nodeID := 1
+		// Avoid log(0).
+		if i != 0 {
+			nodeID = int(math.Floor(math.Log2(float64(i)))) + 1
+		}
+		t.Logf("relocating range for %d to store %d", i, nodeID)
+		cmd := fmt.Sprintf(`ALTER TABLE x EXPERIMENTAL_RELOCATE VALUES (ARRAY[%d], %d)`,
+			nodeID, i,
+		)
+		// Relocate can fail with errors like `change replicas... descriptor changed` thus the SucceedsSoon.
+		sqlDB.ExecSucceedsSoon(t, cmd)
+	}
 
 	return &rangeDistributionTester{
 		ctx:          ctx,

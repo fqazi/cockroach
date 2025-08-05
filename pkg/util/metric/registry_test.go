@@ -19,7 +19,7 @@ func (r *Registry) findMetricByName(name string) Iterable {
 	r.Lock()
 	defer r.Unlock()
 	for _, metric := range r.tracked {
-		if metric.GetName(false /* useStaticLabels */) == name {
+		if metric.GetName() == name {
 			return metric
 		}
 	}
@@ -97,7 +97,6 @@ func TestRegistry(t *testing.T) {
 		StructHistogram     IHistogram
 		NestedStructGauge   NestedStruct
 		ArrayStructCounters [4]*Counter
-		MapOfCounters       map[int32]*Counter
 		// Ensure that nil struct values in arrays are safe.
 		NestedStructArray [2]*NestedStruct
 		// A few extra ones: either not exported, or not metric objects.
@@ -125,10 +124,6 @@ func TestRegistry(t *testing.T) {
 			NewCounter(Metadata{Name: "array.struct.counter.1"}),
 			nil, // skipped
 			NewCounter(Metadata{Name: "array.struct.counter.3"}),
-		},
-		MapOfCounters: map[int32]*Counter{
-			1: NewCounter(Metadata{Name: "map.counter.0"}),
-			2: NewCounter(Metadata{Name: "map.counter.1"}),
 		},
 		NestedStructArray: [2]*NestedStruct{
 			0: nil, // skipped
@@ -159,8 +154,6 @@ func TestRegistry(t *testing.T) {
 		"array.struct.counter.0":      {},
 		"array.struct.counter.1":      {},
 		"array.struct.counter.3":      {},
-		"map.counter.0":               {},
-		"map.counter.1":               {},
 		"nested.struct.array.1.gauge": {},
 	}
 	totalMetrics := len(expNames)

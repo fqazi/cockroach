@@ -304,6 +304,11 @@ func (mb *mutationBuilder) buildAntiJoinForDoNothingArbiter(
 						Strength:   tree.ForShare,
 						Targets:    []tree.TableName{tree.MakeUnqualifiedTableName(mb.tab.Name())},
 						WaitPolicy: tree.LockWaitBlock,
+						// Unique arbiters must ensure the non-existence of certain rows, so
+						// we use predicate locks instead of record locks to prevent
+						// insertion of new rows into the locked span(s) by other concurrent
+						// transactions.
+						Form: tree.LockPredicate,
 					},
 				},
 			}
@@ -313,12 +318,6 @@ func (mb *mutationBuilder) buildAntiJoinForDoNothingArbiter(
 	var indexFlags *tree.IndexFlags
 	if source, ok := texpr.(*tree.AliasedTableExpr); ok {
 		indexFlags = source.IndexFlags
-	}
-	if mb.b.evalCtx.SessionData().AvoidFullTableScansInMutations {
-		if indexFlags == nil {
-			indexFlags = &tree.IndexFlags{}
-		}
-		indexFlags.AvoidFullScan = true
 	}
 
 	// Build the right side of the anti-join. Use a new metadata instance
@@ -335,7 +334,6 @@ func (mb *mutationBuilder) buildAntiJoinForDoNothingArbiter(
 		locking,
 		inScope,
 		true, /* disableNotVisibleIndex */
-		cat.PolicyScopeExempt,
 	)
 
 	// If the index is a unique partial index, then rows that are not in the
@@ -441,6 +439,11 @@ func (mb *mutationBuilder) buildLeftJoinForUpsertArbiter(
 						Strength:   tree.ForUpdate,
 						Targets:    []tree.TableName{tree.MakeUnqualifiedTableName(mb.tab.Name())},
 						WaitPolicy: tree.LockWaitBlock,
+						// Unique arbiters must ensure the non-existence of certain rows, so
+						// we use predicate locks instead of record locks to prevent
+						// insertion of new rows into the locked span(s) by other concurrent
+						// transactions.
+						Form: tree.LockPredicate,
 					},
 				},
 			}
@@ -450,12 +453,6 @@ func (mb *mutationBuilder) buildLeftJoinForUpsertArbiter(
 	var indexFlags *tree.IndexFlags
 	if source, ok := texpr.(*tree.AliasedTableExpr); ok {
 		indexFlags = source.IndexFlags
-	}
-	if mb.b.evalCtx.SessionData().AvoidFullTableScansInMutations {
-		if indexFlags == nil {
-			indexFlags = &tree.IndexFlags{}
-		}
-		indexFlags.AvoidFullScan = true
 	}
 
 	// Build the right side of the left outer join. Use a different instance of
@@ -475,7 +472,6 @@ func (mb *mutationBuilder) buildLeftJoinForUpsertArbiter(
 		locking,
 		inScope,
 		true, /* disableNotVisibleIndex */
-		cat.PolicyScopeExempt,
 	)
 	// Set fetchColIDs to reference the columns created for the fetch values.
 	mb.setFetchColIDs(mb.fetchScope.cols)
@@ -675,7 +671,7 @@ func (h *arbiterPredicateHelper) init(mb *mutationBuilder, arbiterPredicate tree
 		tabMeta:          mb.md.TableMeta(mb.tabID),
 		arbiterPredicate: arbiterPredicate,
 	}
-	h.im.Init(mb.b.ctx, mb.b.factory, mb.md, mb.b.evalCtx)
+	h.im.Init(mb.b.factory, mb.md, mb.b.evalCtx)
 }
 
 // tableScope returns a scope that can be used to build predicate expressions.
@@ -693,7 +689,6 @@ func (h *arbiterPredicateHelper) tableScope() *scope {
 			noRowLocking,
 			h.mb.b.allocScope(),
 			false, /* disableNotVisibleIndex */
-			cat.PolicyScopeExempt,
 		)
 	}
 	return h.tableScopeLazy

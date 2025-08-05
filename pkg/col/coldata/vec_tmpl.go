@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for vec.eg.go. It's formatted in a
@@ -58,7 +59,7 @@ const _TYPE_WIDTH = 0
 // they are working with can then access the typed column directly, avoiding
 // expensive type casts.
 type TypedVecs struct {
-	Vecs  []*Vec
+	Vecs  []Vec
 	Nulls []*Nulls
 
 	// Fields below need to be accessed by an index mapped via ColsMap.
@@ -132,23 +133,15 @@ func (v *TypedVecs) Reset() {
 	// {{end}}
 }
 
-// Append uses SliceArgs to append elements of a source Vec into this Vec.
-// It is logically equivalent to:
-// destVec = append(destVec[:args.DestIdx], args.Src[args.SrcStartIdx:args.SrcEndIdx])
-// An optional Sel slice can also be provided to apply a filter on the source
-// Vec.
-// Refer to the SliceArgs comment for specifics and TestAppend for examples.
-//
-// Note: Append()'ing from a Vector into itself is not supported.
-func (v *Vec) Append(args SliceArgs) {
-	switch v.CanonicalTypeFamily() {
+func (m *memColumn) Append(args SliceArgs) {
+	switch m.CanonicalTypeFamily() {
 	// {{range .}}
 	case _CANONICAL_TYPE_FAMILY:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		// {{range .WidthOverloads}}
 		case _TYPE_WIDTH:
 			fromCol := args.Src.TemplateType()
-			toCol := v.TemplateType()
+			toCol := m.TemplateType()
 			// NOTE: it is unfortunate that we always append whole slice without paying
 			// attention to whether the values are NULL. However, if we do start paying
 			// attention, the performance suffers dramatically, so we choose to copy
@@ -168,40 +161,34 @@ func (v *Vec) Append(args SliceArgs) {
 				}
 				// {{end}}
 			}
-			v.nulls.set(args)
-			v.col = toCol
+			m.nulls.set(args)
+			m.col = toCol
 			// {{end}}
 		}
 		// {{end}}
 	default:
-		panic(fmt.Sprintf("unhandled type %s", v.t))
+		panic(fmt.Sprintf("unhandled type %s", m.t))
 	}
 }
 
-// Copy uses SliceArgs to copy elements of a source Vec into this Vec. It is
-// logically equivalent to:
-// copy(destVec[args.DestIdx:], args.Src[args.SrcStartIdx:args.SrcEndIdx])
-// An optional Sel slice can also be provided to apply a filter on the source
-// Vec.
-// Refer to the SliceArgs comment for specifics and TestCopy for examples.
-func (v *Vec) Copy(args SliceArgs) {
+func (m *memColumn) Copy(args SliceArgs) {
 	if args.SrcStartIdx == args.SrcEndIdx {
 		// Nothing to copy, so return early.
 		return
 	}
-	if v.Nulls().MaybeHasNulls() {
+	if m.Nulls().MaybeHasNulls() {
 		// We're about to overwrite this entire range, so unset all the nulls.
-		v.Nulls().UnsetNullRange(args.DestIdx, args.DestIdx+(args.SrcEndIdx-args.SrcStartIdx))
+		m.Nulls().UnsetNullRange(args.DestIdx, args.DestIdx+(args.SrcEndIdx-args.SrcStartIdx))
 	}
 
-	switch v.CanonicalTypeFamily() {
+	switch m.CanonicalTypeFamily() {
 	// {{range .}}
 	case _CANONICAL_TYPE_FAMILY:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		// {{range .WidthOverloads}}
 		case _TYPE_WIDTH:
 			fromCol := args.Src.TemplateType()
-			toCol := v.TemplateType()
+			toCol := m.TemplateType()
 			if args.Sel != nil {
 				sel := args.Sel[args.SrcStartIdx:args.SrcEndIdx]
 				n := len(sel)
@@ -215,7 +202,7 @@ func (v *Vec) Copy(args SliceArgs) {
 						//gcassert:bce
 						selIdx := sel[i]
 						if nulls.NullAt(selIdx) {
-							v.nulls.SetNull(i + args.DestIdx)
+							m.nulls.SetNull(i + args.DestIdx)
 						} else {
 							// {{if .IsBytesLike}}
 							toCol.Copy(fromCol, i+args.DestIdx, selIdx)
@@ -270,12 +257,12 @@ func (v *Vec) Copy(args SliceArgs) {
 			}
 			// No Sel.
 			toCol.CopySlice(fromCol, args.DestIdx, args.SrcStartIdx, args.SrcEndIdx)
-			v.nulls.set(args)
+			m.nulls.set(args)
 			// {{end}}
 		}
 		// {{end}}
 	default:
-		panic(fmt.Sprintf("unhandled type %s", v.t))
+		panic(fmt.Sprintf("unhandled type %s", m.t))
 	}
 }
 
@@ -288,7 +275,7 @@ func _COPY_WITH_REORDERED_SOURCE(_SRC_HAS_NULLS bool) { // */}}
 		srcIdx := order[destIdx]
 		// {{if .SrcHasNulls}}
 		if nulls.NullAt(srcIdx) {
-			v.nulls.SetNull(destIdx)
+			m.nulls.SetNull(destIdx)
 		} else
 		// {{end}}
 		{
@@ -306,25 +293,21 @@ func _COPY_WITH_REORDERED_SOURCE(_SRC_HAS_NULLS bool) { // */}}
 
 // */}}
 
-// CopyWithReorderedSource copies a value at position order[sel[i]] in src
-// into the receiver at position sel[i]. len(sel) elements are copied.
-// Resulting values of elements not mentioned in sel are undefined after
-// this function.
-func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
+func (m *memColumn) CopyWithReorderedSource(src Vec, sel, order []int) {
 	if len(sel) == 0 {
 		return
 	}
-	if v.nulls.MaybeHasNulls() {
-		v.nulls.UnsetNulls()
+	if m.nulls.MaybeHasNulls() {
+		m.nulls.UnsetNulls()
 	}
-	switch v.CanonicalTypeFamily() {
+	switch m.CanonicalTypeFamily() {
 	// {{range .}}
 	case _CANONICAL_TYPE_FAMILY:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		// {{range .WidthOverloads}}
 		case _TYPE_WIDTH:
 			fromCol := src.TemplateType()
-			toCol := v.TemplateType()
+			toCol := m.TemplateType()
 			n := len(sel)
 			_ = sel[n-1]
 			if src.MaybeHasNulls() {
@@ -337,38 +320,34 @@ func (v *Vec) CopyWithReorderedSource(src *Vec, sel, order []int) {
 		}
 		// {{end}}
 	default:
-		panic(fmt.Sprintf("unhandled type %s", v.t))
+		panic(fmt.Sprintf("unhandled type %s", m.t))
 	}
 }
 
-// Window returns a "window" into the Vec. A "window" is similar to Golang's
-// slice of the current Vec from [start, end), but the returned object is NOT
-// allowed to be modified (the modification might result in an undefined
-// behavior).
-func (v *Vec) Window(start int, end int) *Vec {
-	switch v.CanonicalTypeFamily() {
+func (m *memColumn) Window(start int, end int) Vec {
+	switch m.CanonicalTypeFamily() {
 	// {{range .}}
 	case _CANONICAL_TYPE_FAMILY:
-		switch v.t.Width() {
+		switch m.t.Width() {
 		// {{range .WidthOverloads}}
 		case _TYPE_WIDTH:
-			col := v.TemplateType()
-			return &Vec{
-				t:                   v.t,
-				canonicalTypeFamily: v.canonicalTypeFamily,
+			col := m.TemplateType()
+			return &memColumn{
+				t:                   m.t,
+				canonicalTypeFamily: m.canonicalTypeFamily,
 				col:                 col.Window(start, end),
-				nulls:               v.nulls.Slice(start, end),
+				nulls:               m.nulls.Slice(start, end),
 			}
 			// {{end}}
 		}
 		// {{end}}
 	}
-	panic(fmt.Sprintf("unhandled type %s", v.t))
+	panic(fmt.Sprintf("unhandled type %s", m.t))
 }
 
 // SetValueAt is an inefficient helper to set the value in a Vec when the type
 // is unknown.
-func SetValueAt(v *Vec, elem interface{}, rowIdx int) {
+func SetValueAt(v Vec, elem interface{}, rowIdx int) {
 	switch t := v.Type(); v.CanonicalTypeFamily() {
 	// {{range .}}
 	case _CANONICAL_TYPE_FAMILY:
@@ -388,7 +367,7 @@ func SetValueAt(v *Vec, elem interface{}, rowIdx int) {
 
 // GetValueAt is an inefficient helper to get the value in a Vec when the type
 // is unknown.
-func GetValueAt(v *Vec, rowIdx int) interface{} {
+func GetValueAt(v Vec, rowIdx int) interface{} {
 	if v.Nulls().NullAt(rowIdx) {
 		return nil
 	}

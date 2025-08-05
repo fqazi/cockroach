@@ -3,9 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
 import React, { ButtonHTMLAttributes } from "react";
-
+import classNames from "classnames/bind";
 import styles from "./button.module.styl";
 
 export interface ButtonProps {

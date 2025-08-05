@@ -74,7 +74,6 @@ type kafkaSinkKnobs struct {
 	OverrideClientInit              func(config *sarama.Config) (kafkaClient, error)
 	OverrideAsyncProducerFromClient func(kafkaClient) (sarama.AsyncProducer, error)
 	OverrideSyncProducerFromClient  func(kafkaClient) (sarama.SyncProducer, error)
-	BypassConnectionCheck           bool
 }
 
 var _ sarama.StdLogger = (*kafkaLogAdapter)(nil)
@@ -115,8 +114,6 @@ type kafkaClient interface {
 	Config() *sarama.Config
 	// Close closes kafka connection.
 	Close() error
-	// LeastLoadedBroker retrieves broker that has the least responses pending.
-	LeastLoadedBroker() *sarama.Broker
 }
 
 // kafkaSink emits to Kafka asynchronously. It is not concurrency-safe; all
@@ -201,8 +198,7 @@ type saramaConfig struct {
 		MaxMessages int          `json:",omitempty"`
 	}
 
-	Compression      compressionCodec `json:",omitempty"`
-	CompressionLevel int              `json:",omitempty"`
+	Compression compressionCodec `json:",omitempty"`
 
 	RequiredAcks string `json:",omitempty"`
 
@@ -243,7 +239,6 @@ func defaultSaramaConfig() *saramaConfig {
 	// The default compression protocol is sarama.CompressionNone,
 	// which is 0.
 	config.Compression = 0
-	config.CompressionLevel = sarama.CompressionLevelDefault
 
 	// This works around what seems to be a bug in sarama where it isn't
 	// computing the right value to compare against `Producer.MaxMessageBytes`
@@ -267,16 +262,10 @@ func (s *kafkaSink) Dial() error {
 		return err
 	}
 
-	// Make sure the broker can be reached.
-	if broker := client.LeastLoadedBroker(); broker != nil {
-		if err := broker.Open(s.kafkaCfg); err != nil && !errors.Is(err, sarama.ErrAlreadyConnected) {
-			return errors.CombineErrors(err, client.Close())
-		}
-		if ok, err := broker.Connected(); !ok || err != nil {
-			return errors.CombineErrors(err, client.Close())
-		}
-	} else if !s.knobs.BypassConnectionCheck {
-		return errors.CombineErrors(errors.New("client has run out of available brokers"), client.Close())
+	if err = client.RefreshMetadata(s.Topics()...); err != nil {
+		// Now that we do not fetch metadata for all topics by default, we try
+		// RefreshMetadata manually to check for any connection error.
+		return errors.CombineErrors(err, client.Close())
 	}
 
 	producer, err := s.newAsyncProducer(client)
@@ -371,7 +360,6 @@ func (s *kafkaSink) EmitRow(
 	key, value []byte,
 	updated, mvcc hlc.Timestamp,
 	alloc kvevent.Alloc,
-	headers rowHeaders,
 ) error {
 	topic, err := s.topics.Name(topicDescr)
 	if err != nil {
@@ -388,20 +376,11 @@ func (s *kafkaSink) EmitRow(
 		downstreamClientSendCb()
 	}
 
-	recordHeaders := make([]sarama.RecordHeader, 0, len(headers))
-	for key, value := range headers {
-		recordHeaders = append(recordHeaders, sarama.RecordHeader{
-			Key:   []byte(key),
-			Value: value,
-		})
-	}
-
 	msg := &sarama.ProducerMessage{
 		Topic:    topic,
 		Key:      sarama.ByteEncoder(key),
 		Value:    sarama.ByteEncoder(value),
 		Metadata: messageMetadata{alloc: alloc, mvcc: mvcc, updateMetrics: updateMetrics},
-		Headers:  recordHeaders,
 	}
 	s.stats.startMessage(int64(msg.Key.Length() + msg.Value.Length()))
 	return s.emitMessage(ctx, msg)
@@ -433,7 +412,7 @@ func (s *kafkaSink) EmitResolvedTimestamp(
 		if err != nil {
 			return err
 		}
-		s.scratch, payload = s.scratch.Copy(payload)
+		s.scratch, payload = s.scratch.Copy(payload, 0 /* extraCap */)
 
 		// sarama caches this, which is why we have to periodically refresh the
 		// metadata above. Staleness here does not impact correctness. Some new
@@ -809,9 +788,6 @@ func (c *saramaConfig) Apply(kafka *sarama.Config) error {
 	kafka.Producer.Flush.MaxMessages = c.Flush.MaxMessages
 	kafka.ClientID = c.ClientID
 
-	kafka.Producer.Compression = sarama.CompressionCodec(c.Compression)
-	kafka.Producer.CompressionLevel = c.CompressionLevel
-
 	if c.Version != "" {
 		parsedVersion, err := sarama.ParseKafkaVersion(c.Version)
 		if err != nil {
@@ -826,7 +802,7 @@ func (c *saramaConfig) Apply(kafka *sarama.Config) error {
 		}
 		kafka.Producer.RequiredAcks = parsedAcks
 	}
-
+	kafka.Producer.Compression = sarama.CompressionCodec(c.Compression)
 	return nil
 }
 
@@ -1200,7 +1176,7 @@ func makeKafkaSink(
 	ctx context.Context,
 	u *changefeedbase.SinkURL,
 	targets changefeedbase.Targets,
-	sinkOpts changefeedbase.KafkaSinkOptions,
+	jsonStr changefeedbase.SinkSpecificJSONConfig,
 	settings *cluster.Settings,
 	mb metricsRecorderBuilder,
 ) (Sink, error) {
@@ -1208,12 +1184,6 @@ func makeKafkaSink(
 	kafkaTopicName := u.ConsumeParam(changefeedbase.SinkParamTopicName)
 	if schemaTopic := u.ConsumeParam(changefeedbase.SinkParamSchemaTopic); schemaTopic != `` {
 		return nil, errors.Errorf(`%s is not yet supported`, changefeedbase.SinkParamSchemaTopic)
-	}
-
-	jsonStr := sinkOpts.JSONConfig
-	if len(sinkOpts.Headers) > 0 {
-		return nil, errors.Newf("headers are not supported for the v1 kafka sink;"+
-			" use the v2 sink instead via the `%s` cluster setting", KafkaV2Enabled.Name())
 	}
 
 	m := mb(requiresResourceAccounting)
@@ -1224,7 +1194,7 @@ func makeKafkaSink(
 
 	topics, err := MakeTopicNamer(
 		targets,
-		WithPrefix(kafkaTopicPrefix), WithSingleName(kafkaTopicName), WithSanitizeFn(changefeedbase.SQLNameToKafkaName))
+		WithPrefix(kafkaTopicPrefix), WithSingleName(kafkaTopicName), WithSanitizeFn(SQLNameToKafkaName))
 
 	if err != nil {
 		return nil, err
@@ -1258,14 +1228,8 @@ type kafkaStats struct {
 func (s *kafkaStats) startMessage(sz int64) {
 	atomic.AddInt64(&s.outstandingBytes, sz)
 	atomic.AddInt64(&s.outstandingMessages, 1)
-	for {
-		curLargest := atomic.LoadInt64(&s.largestMessageSize)
-		if curLargest >= sz {
-			break
-		}
-		if atomic.CompareAndSwapInt64(&s.largestMessageSize, curLargest, sz) {
-			break
-		}
+	if atomic.LoadInt64(&s.largestMessageSize) < sz {
+		atomic.AddInt64(&s.largestMessageSize, sz)
 	}
 }
 

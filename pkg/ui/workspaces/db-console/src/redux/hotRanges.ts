@@ -3,11 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { createSelector } from "reselect";
-
-import { cockroach } from "src/js/protos";
 import { AdminUIState } from "src/redux/state";
-
+import { createSelector } from "reselect";
+import { cockroach } from "src/js/protos";
 import { LocalSetting } from "./localsettings";
 
 const hotRangesState = (state: AdminUIState) => state.cachedData.hotRanges;

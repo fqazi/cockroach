@@ -4,8 +4,9 @@
 // included in the /LICENSE file.
 
 import { Modal, Button } from "antd";
+import "antd/lib/modal/style";
+import "antd/lib/button/style";
 import React, { Fragment } from "react";
-
 import "./styles.styl";
 import type { ModalProps } from "antd/lib/modal";
 
@@ -57,7 +58,7 @@ class CustomModal extends React.Component<
           </a>
         )}
         <Modal
-          open={trigger ? visible : this.state.visible}
+          visible={trigger ? visible : this.state.visible}
           onOk={this.handleOk}
           onCancel={this.handleCancel}
           className="custom--modal"

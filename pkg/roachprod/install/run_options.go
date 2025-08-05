@@ -22,11 +22,6 @@ type RunOptions struct {
 	// recommended to check the documentation of the function you are using to see
 	// what the default behaviour is.
 	FailOption FailOption
-	// ExpanderConfig configures the behaviour of the roachprod expander
-	// during a run.
-	ExpanderConfig ExpanderConfig
-	// LogExpandedCmd will log the expanded command if it differs from the original.
-	LogExpandedCmd bool
 
 	// These are private to roachprod
 	Nodes       Nodes
@@ -101,15 +96,5 @@ func (r RunOptions) WithConcurrency(concurrency int) RunOptions {
 
 func (r RunOptions) WithDisplay(display string) RunOptions {
 	r.Display = display
-	return r
-}
-
-func (r RunOptions) WithExpanderConfig(cfg ExpanderConfig) RunOptions {
-	r.ExpanderConfig = cfg
-	return r
-}
-
-func (r RunOptions) WithLogExpandedCommand() RunOptions {
-	r.LogExpandedCmd = true
 	return r
 }

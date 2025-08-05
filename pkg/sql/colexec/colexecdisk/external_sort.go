@@ -235,7 +235,7 @@ func NewExternalSorter(
 	diskQueueCfg colcontainer.DiskQueueCfg,
 	fdSemaphore semaphore.Semaphore,
 	diskAcc *mon.BoundAccount,
-	diskQueueMemAcc *mon.BoundAccount,
+	converterMemAcc *mon.BoundAccount,
 	testingVecFDsToAcquire int,
 ) colexecop.Operator {
 	if diskQueueCfg.BufferSizeBytes > 0 && maxNumberPartitions == 0 {
@@ -308,7 +308,7 @@ func NewExternalSorter(
 		partitionerCreator: func() colcontainer.PartitionedQueue {
 			return colcontainer.NewPartitionedDiskQueue(
 				inputTypes, diskQueueCfg, partitionedDiskQueueSemaphore,
-				colcontainer.PartitionerStrategyCloseOnNewPartition, diskAcc, diskQueueMemAcc,
+				colcontainer.PartitionerStrategyCloseOnNewPartition, diskAcc, converterMemAcc,
 			)
 		},
 		inputTypes:           inputTypes,
@@ -663,10 +663,6 @@ func (s *externalSorter) Close(ctx context.Context) error {
 // to the last n current partitions to be merged.
 func (s *externalSorter) createPartitionerToOperators(n int) {
 	oldPartitioners := s.partitionerToOperators
-	for i := range oldPartitioners {
-		// Prepare the partitioner for reuse.
-		oldPartitioners[i].Reset(s.Ctx)
-	}
 	if len(oldPartitioners) < n {
 		s.partitionerToOperators = make([]*partitionerToOperator, n)
 		copy(s.partitionerToOperators, oldPartitioners)

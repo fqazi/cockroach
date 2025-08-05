@@ -2,14 +2,11 @@
 //
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
-import { Nodes, MagnifyingGlass } from "@cockroachlabs/icons";
 import { Tooltip } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
-import isEqual from "lodash/isEqual";
-import map from "lodash/map";
+import { isEqual, map } from "lodash";
 import React from "react";
 import { Link } from "react-router-dom";
-
+import { Nodes, MagnifyingGlass } from "@cockroachlabs/icons";
 import { Anchor } from "src/anchor";
 import { Schedule, Schedules } from "src/api/schedulesApi";
 import { EmptyTable } from "src/empty";
@@ -18,8 +15,9 @@ import { ColumnDescriptor, SortSetting, SortedTable } from "src/sortedtable";
 import { dropSchedules, pauseSchedules, resumeSchedules } from "src/util/docs";
 import { DATE_FORMAT } from "src/util/format";
 
-import { Timestamp, Timezone } from "../../timestamp";
 import styles from "../schedules.module.scss";
+import classNames from "classnames/bind";
+import { Timestamp, Timezone } from "../../timestamp";
 const cx = classNames.bind(styles);
 
 class SchedulesSortedTable extends SortedTable<Schedule> {}
@@ -292,7 +290,7 @@ export class ScheduleTable extends React.Component<
         }),
       )
     ) {
-      this.setState((prevState: Readonly<ScheduleTableState>) => {
+      this.setState((prevState: Readonly<any>) => {
         return {
           pagination: {
             ...prevState.pagination,

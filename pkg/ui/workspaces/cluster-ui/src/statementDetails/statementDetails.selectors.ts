@@ -3,15 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import { createSelector } from "@reduxjs/toolkit";
 import Long from "long";
-import moment from "moment-timezone";
+import { createSelector } from "@reduxjs/toolkit";
 import { RouteComponentProps } from "react-router-dom";
-
 import { AppState } from "../store";
-import { selectTimeScale } from "../store/utils/selectors";
-import { TimeScale, toDateRange } from "../timeScaleDropdown";
 import {
   appNamesAttr,
   statementAttr,
@@ -19,6 +14,10 @@ import {
   queryByName,
   generateStmtDetailsToID,
 } from "../util";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
+import { TimeScale, toRoundedDateRange } from "../timeScaleDropdown";
+import { selectTimeScale } from "../store/utils/selectors";
+import moment from "moment-timezone";
 
 type StatementDetailsResponseMessage =
   cockroach.server.serverpb.StatementDetailsResponse;
@@ -41,10 +40,12 @@ export const selectStatementDetails = createSelector(
     lastError: Error;
     lastUpdated: moment.Moment | null;
   } => {
-    // Use the exact time range selected by the user, not rounded to hour boundaries.
-    // This allows for more granular time ranges when sql.stats.aggregation.interval
-    // is set to a value smaller than 1 hour.
-    const [start, end] = toDateRange(timeScale);
+    // Since the aggregation interval is 1h, we want to round the selected timeScale to include
+    // the full hour. If a timeScale is between 14:32 - 15:17 we want to search for values
+    // between 14:00 - 16:00. We don't encourage the aggregation interval to be modified, but
+    // in case that changes in the future we might consider changing this function to use the
+    // cluster settings value for the rounding function.
+    const [start, end] = toRoundedDateRange(timeScale);
     const key = generateStmtDetailsToID(
       fingerprintID,
       appNames,

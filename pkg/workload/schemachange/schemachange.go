@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -76,6 +77,7 @@ type schemaChangeCounter struct {
 type schemaChange struct {
 	flags                           workload.Flags
 	connFlags                       *workload.ConnFlags
+	dbOverride                      string
 	maxOpsPerWorker                 int
 	errorRate                       int
 	enumPct                         int
@@ -105,6 +107,8 @@ var schemaChangeMeta = workload.Meta{
 	New: func() workload.Generator {
 		s := &schemaChange{}
 		s.flags.FlagSet = pflag.NewFlagSet(`schemachange`, pflag.ContinueOnError)
+		s.flags.StringVar(&s.dbOverride, `db`, ``,
+			`Override for the SQL database to use. If empty, defaults to the generator name`)
 		s.flags.IntVar(&s.maxOpsPerWorker, `max-ops-per-worker`, defaultMaxOpsPerWorker,
 			`Number of operations to execute in a single transaction`)
 		s.flags.IntVar(&s.errorRate, `error-rate`, defaultErrorRate,
@@ -164,16 +168,19 @@ func setupSchemaChangePromCounter(reg prometheus.Registerer) schemaChangeCounter
 }
 
 // Meta implements the workload.Generator interface.
-func (s *schemaChange) Meta() workload.Meta { return schemaChangeMeta }
+func (s *schemaChange) Meta() workload.Meta {
+	return schemaChangeMeta
+}
 
 // Flags implements the workload.Flagser interface.
-func (s *schemaChange) Flags() workload.Flags { return s.flags }
-
-// ConnFlags implements the ConnFlagser interface.
-func (s *schemaChange) ConnFlags() *workload.ConnFlags { return s.connFlags }
+func (s *schemaChange) Flags() workload.Flags {
+	return s.flags
+}
 
 // Tables implements the workload.Generator interface.
-func (s *schemaChange) Tables() []workload.Table { return nil }
+func (s *schemaChange) Tables() []workload.Table {
+	return nil
+}
 
 // Ops implements the workload.Opser interface.
 func (s *schemaChange) Ops(
@@ -203,6 +210,10 @@ func (s *schemaChange) Ops(
 	ctx, span := tracer.Start(ctx, "schemaChange.Ops")
 	defer func() { EndSpan(span, err) }()
 
+	sqlDatabase, err := workload.SanitizeUrls(s, s.dbOverride, urls)
+	if err != nil {
+		return workload.QueryLoad{}, err
+	}
 	cfg := workload.NewMultiConnPoolCfgFromFlags(s.connFlags)
 	// We will need double the concurrency, since we need watch
 	// dog connections. There is a danger of the pool emptying on
@@ -245,6 +256,7 @@ func (s *schemaChange) Ops(
 	}
 
 	ql := workload.QueryLoad{
+		SQLDatabase: sqlDatabase,
 		Close: func(_ context.Context) error {
 			// Create a new context for shutting down the tracer provider. The
 			// provided context may be cancelled depending on why the workload is
@@ -350,16 +362,12 @@ func (s *schemaChange) setClusterSettings(ctx context.Context, url string) (err 
 	for _, stmt := range []string{
 		`SET CLUSTER SETTING sql.defaults.super_regions.enabled = 'on'`,
 		`SET CLUSTER SETTING sql.log.all_statements.enabled = 'on'`,
-
-		// This workload is designed to test multiple statements in a transaction.
-		`SET CLUSTER SETTING sql.defaults.autocommit_before_ddl.enabled = 'false'`,
 	} {
 		_, err := conn.Exec(ctx, stmt)
 		if err != nil {
 			return errors.WithStack(err)
 		}
 	}
-
 	return nil
 }
 
@@ -421,23 +429,15 @@ var (
 	errRunInTxnRbkSentinel   = errors.New("txn needs to rollback")
 )
 
-// LogEntry is used to log information about the operations performed, expected errors,
-// the worker ID, the corresponding timestamp, and any additional messages or error states.
-// Note: LogEntry and its fields must be public so that the json package can encode this struct.
+// LogEntry and its fields must be public so that the json package can encode this struct.
 type LogEntry struct {
-	// WorkerID identifies the worker executing the operations.
-	WorkerID int `json:"workerId"`
-	// ClientTimestamp tracks when the operation was executed.
-	ClientTimestamp string `json:"clientTimestamp"`
-	// Ops a collection of the various types of operations performed.
-	Ops []interface{} `json:"ops"`
-	// ExpectedExecErrors errors which occur as soon as you run the statement.
-	ExpectedExecErrors string `json:"expectedExecErrors"`
-	// ExpectedCommitErrors errors which occur only during commit.
-	ExpectedCommitErrors string `json:"expectedCommitErrors"`
+	WorkerID             int           `json:"workerId"`
+	ClientTimestamp      string        `json:"clientTimestamp"`
+	Ops                  []interface{} `json:"ops"`
+	ExpectedExecErrors   string        `json:"expectedExecErrors"`
+	ExpectedCommitErrors string        `json:"expectedCommitErrors"`
 	// Optional message for errors or if a hook was called.
-	Message string `json:"message"`
-	// ErrorState holds information on the error's state when an error occurs.
+	Message    string      `json:"message"`
 	ErrorState *ErrorState `json:"errorState,omitempty"`
 }
 
@@ -480,12 +480,12 @@ func (w *schemaChangeWorker) runInTxn(
 ) error {
 	w.logger.startLog(w.id)
 	w.logger.writeLog("BEGIN")
-	numOps := 1 + w.opGen.randIntn(w.maxOpsPerWorker)
-	if useDeclarativeSchemaChanger && numOps > w.workload.declarativeSchemaMaxStmtsPerTxn {
-		numOps = w.workload.declarativeSchemaMaxStmtsPerTxn
+	opsNum := 1 + w.opGen.randIntn(w.maxOpsPerWorker)
+	if useDeclarativeSchemaChanger && opsNum > w.workload.declarativeSchemaMaxStmtsPerTxn {
+		opsNum = w.workload.declarativeSchemaMaxStmtsPerTxn
 	}
 
-	for i := 0; i < numOps; i++ {
+	for i := 0; i < opsNum; i++ {
 		// Terminating this loop early if there are expected commit errors prevents unexpected commit behavior from being
 		// hidden by subsequent operations. Consider the case where there are expected commit errors.
 		// It is possible that committing the transaction now will fail the workload because the error does not occur
@@ -498,7 +498,7 @@ func (w *schemaChangeWorker) runInTxn(
 			break
 		}
 
-		op, err := w.opGen.randOp(ctx, tx, useDeclarativeSchemaChanger, numOps)
+		op, err := w.opGen.randOp(ctx, tx, useDeclarativeSchemaChanger)
 		if pgErr := new(pgconn.PgError); errors.As(err, &pgErr) &&
 			pgcode.MakeCode(pgErr.Code) == pgcode.SerializationFailure {
 			return errors.Mark(err, errRunInTxnRbkSentinel)
@@ -579,22 +579,28 @@ func (w *schemaChangeWorker) run(ctx context.Context) error {
 
 	// Enable extra schema changes, if they are available this moment.
 	if !w.workload.declarativeStatementsEnabled.Load() {
-		// Transaction confirmed we are on a new enough version, so set the
-		// cluster setting.
-		err := tx.Rollback(ctx)
+		cannotEnableSchemaChanges, err := isClusterVersionLessThan(ctx, tx, clusterversion.V23_2.Version())
 		if err != nil {
-			return errors.Wrap(err, "could not rollback before cluster setting")
+			return errors.Wrap(err, "cannot to get active")
 		}
-		_, err = conn.Exec(ctx, `SET CLUSTER SETTING sql.schema.force_declarative_statements="+CREATE SCHEMA, +CREATE SEQUENCE"`)
-		if err != nil {
-			return errors.Wrap(err, "cannot enable extra schema changes")
+		if !cannotEnableSchemaChanges {
+			// Transaction confirmed we are on a new enough version, so set the
+			// cluster setting.
+			err := tx.Rollback(ctx)
+			if err != nil {
+				return errors.Wrap(err, "could not rollback before cluster setting")
+			}
+			_, err = conn.Exec(ctx, `SET CLUSTER SETTING sql.schema.force_declarative_statements="+CREATE SCHEMA, +CREATE SEQUENCE"`)
+			if err != nil {
+				return errors.Wrap(err, "cannot enable extra schema changes")
+			}
+			// Restart the txn after the update.
+			tx, err = conn.Begin(ctx)
+			if err != nil {
+				return errors.Wrap(err, "cannot get a connection and begin a txn")
+			}
+			w.workload.declarativeStatementsEnabled.Store(true)
 		}
-		// Restart the txn after the update.
-		tx, err = conn.Begin(ctx)
-		if err != nil {
-			return errors.Wrap(err, "cannot get a connection and begin a txn")
-		}
-		w.workload.declarativeStatementsEnabled.Store(true)
 	}
 
 	// Release log entry locks if holding all.

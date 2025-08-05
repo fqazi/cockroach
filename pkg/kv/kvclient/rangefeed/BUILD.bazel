@@ -1,4 +1,5 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test", "gomock")
+load("@bazel_gomock//:gomock.bzl", "gomock")
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "rangefeed",
@@ -25,6 +26,7 @@ go_library(
         "//pkg/util/hlc",
         "//pkg/util/limit",
         "//pkg/util/log",
+        "//pkg/util/metamorphic",
         "//pkg/util/mon",
         "//pkg/util/retry",
         "//pkg/util/span",
@@ -86,6 +88,7 @@ go_test(
         "//pkg/testutils/testcluster",
         "//pkg/util/ctxgroup",
         "//pkg/util/encoding",
+        "//pkg/util/future",
         "//pkg/util/hlc",
         "//pkg/util/leaktest",
         "//pkg/util/log",

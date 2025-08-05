@@ -43,12 +43,6 @@ var (
 	_ Details = MVCCStatisticsJobDetails{}
 	_ Details = ImportRollbackDetails{}
 	_ Details = HistoryRetentionDetails{}
-	_ Details = LogicalReplicationDetails{}
-	_ Details = UpdateTableMetadataCacheDetails{}
-	_ Details = StandbyReadTSPollerDetails{}
-	_ Details = SqlActivityFlushDetails{}
-	_ Details = HotRangesLoggerDetails{}
-	_ Details = InspectDetails{}
 )
 
 // ProgressDetails is a marker interface for job progress details proto structs.
@@ -76,12 +70,6 @@ var (
 	_ ProgressDetails = MVCCStatisticsJobProgress{}
 	_ ProgressDetails = ImportRollbackProgress{}
 	_ ProgressDetails = HistoryRetentionProgress{}
-	_ ProgressDetails = LogicalReplicationProgress{}
-	_ ProgressDetails = UpdateTableMetadataCacheProgress{}
-	_ ProgressDetails = StandbyReadTSPollerProgress{}
-	_ ProgressDetails = SqlActivityFlushProgress{}
-	_ ProgressDetails = HotRangesLoggerProgress{}
-	_ ProgressDetails = InspectProgress{}
 )
 
 // Type returns the payload's job type and panics if the type is invalid.
@@ -108,14 +96,13 @@ var _ base.SQLInstanceID
 type ReplicationStatus uint8
 
 const (
-	InitializingReplication    ReplicationStatus = 0
-	CreatingInitialSplits      ReplicationStatus = 6
-	Replicating                ReplicationStatus = 1
-	ReplicationPaused          ReplicationStatus = 2
-	ReplicationPendingFailover ReplicationStatus = 3
-	ReplicationFailingOver     ReplicationStatus = 4
-	ReplicationError           ReplicationStatus = 5
-	InitialScan                ReplicationStatus = 7
+	InitializingReplication   ReplicationStatus = 0
+	CreatingInitialSplits     ReplicationStatus = 6
+	Replicating               ReplicationStatus = 1
+	ReplicationPaused         ReplicationStatus = 2
+	ReplicationPendingCutover ReplicationStatus = 3
+	ReplicationCuttingOver    ReplicationStatus = 4
+	ReplicationError          ReplicationStatus = 5
 )
 
 // String implements fmt.Stringer.
@@ -127,16 +114,14 @@ func (rs ReplicationStatus) String() string {
 		return "replicating"
 	case ReplicationPaused:
 		return "replication paused"
-	case ReplicationPendingFailover:
-		return "replication pending failover"
-	case ReplicationFailingOver:
-		return "replication failing over"
+	case ReplicationPendingCutover:
+		return "replication pending cutover"
+	case ReplicationCuttingOver:
+		return "replication cutting over"
 	case ReplicationError:
 		return "replication error"
 	case CreatingInitialSplits:
 		return "creating initial splits"
-	case InitialScan:
-		return "running initial scan"
 	default:
 		return fmt.Sprintf("unimplemented-%d", int(rs))
 	}
@@ -146,10 +131,6 @@ func (rs ReplicationStatus) String() string {
 // The name is chosen to be something that users are unlikely to choose when
 // running CREATE STATISTICS manually.
 const AutoStatsName = "__auto__"
-
-// AutoPartialStatsName is the name to use for partial statistics created
-// automatically.
-const AutoPartialStatsName = "__auto_partial__"
 
 // ImportStatsName is the name to use for statistics created automatically
 // during import.
@@ -166,7 +147,6 @@ const MergedStatsName = "__merged__"
 // AutomaticJobTypes is a list of automatic job types that currently exist.
 var AutomaticJobTypes = [...]Type{
 	TypeAutoCreateStats,
-	TypeAutoCreatePartialStats,
 	TypeAutoSpanConfigReconciliation,
 	TypeAutoSQLStatsCompaction,
 	TypeAutoSchemaTelemetry,
@@ -177,9 +157,6 @@ var AutomaticJobTypes = [...]Type{
 	TypeKeyVisualizer,
 	TypeAutoUpdateSQLActivity,
 	TypeMVCCStatisticsUpdate,
-	TypeUpdateTableMetadataCache,
-	TypeSQLActivityFlush,
-	TypeHotRangesLogger,
 }
 
 // DetailsType returns the type for a payload detail.
@@ -199,8 +176,6 @@ func DetailsType(d isPayload_Details) (Type, error) {
 		createStatsName := d.CreateStats.Name
 		if createStatsName == AutoStatsName {
 			return TypeAutoCreateStats, nil
-		} else if createStatsName == AutoPartialStatsName {
-			return TypeAutoCreatePartialStats, nil
 		}
 		return TypeCreateStats, nil
 	case *Payload_SchemaChangeGC:
@@ -241,18 +216,6 @@ func DetailsType(d isPayload_Details) (Type, error) {
 		return TypeImportRollback, nil
 	case *Payload_HistoryRetentionDetails:
 		return TypeHistoryRetention, nil
-	case *Payload_LogicalReplicationDetails:
-		return TypeLogicalReplication, nil
-	case *Payload_UpdateTableMetadataCacheDetails:
-		return TypeUpdateTableMetadataCache, nil
-	case *Payload_StandbyReadTsPollerDetails:
-		return TypeStandbyReadTSPoller, nil
-	case *Payload_SqlActivityFlushDetails:
-		return TypeSQLActivityFlush, nil
-	case *Payload_HotRangesLoggerDetails:
-		return TypeHotRangesLogger, nil
-	case *Payload_InspectDetails:
-		return TypeInspect, nil
 	default:
 		return TypeUnspecified, errors.Newf("Payload.Type called on a payload with an unknown details type: %T", d)
 	}
@@ -281,9 +244,6 @@ var JobDetailsForEveryJobType = map[Type]Details{
 	TypeAutoCreateStats: CreateStatsDetails{
 		Name: AutoStatsName,
 	},
-	TypeAutoCreatePartialStats: CreateStatsDetails{
-		Name: AutoPartialStatsName,
-	},
 	TypeSchemaChangeGC:               SchemaChangeGCDetails{},
 	TypeTypeSchemaChange:             TypeSchemaChangeDetails{},
 	TypeReplicationStreamIngestion:   StreamIngestionDetails{},
@@ -303,12 +263,6 @@ var JobDetailsForEveryJobType = map[Type]Details{
 	TypeMVCCStatisticsUpdate:         MVCCStatisticsJobDetails{},
 	TypeImportRollback:               ImportRollbackDetails{},
 	TypeHistoryRetention:             HistoryRetentionDetails{},
-	TypeLogicalReplication:           LogicalReplicationDetails{},
-	TypeUpdateTableMetadataCache:     UpdateTableMetadataCacheDetails{},
-	TypeStandbyReadTSPoller:          StandbyReadTSPollerDetails{},
-	TypeSQLActivityFlush:             SqlActivityFlushDetails{},
-	TypeHotRangesLogger:              HotRangesLoggerDetails{},
-	TypeInspect:                      InspectDetails{},
 }
 
 // WrapProgressDetails wraps a ProgressDetails object in the protobuf wrapper
@@ -370,18 +324,6 @@ func WrapProgressDetails(details ProgressDetails) interface {
 		return &Progress_ImportRollbackProgress{ImportRollbackProgress: &d}
 	case HistoryRetentionProgress:
 		return &Progress_HistoryRetentionProgress{HistoryRetentionProgress: &d}
-	case LogicalReplicationProgress:
-		return &Progress_LogicalReplication{LogicalReplication: &d}
-	case UpdateTableMetadataCacheProgress:
-		return &Progress_TableMetadataCache{TableMetadataCache: &d}
-	case StandbyReadTSPollerProgress:
-		return &Progress_StandbyReadTsPoller{StandbyReadTsPoller: &d}
-	case SqlActivityFlushProgress:
-		return &Progress_SqlActivityFlush{SqlActivityFlush: &d}
-	case HotRangesLoggerProgress:
-		return &Progress_HotRangesLogger{HotRangesLogger: &d}
-	case InspectProgress:
-		return &Progress_Inspect{Inspect: &d}
 	default:
 		panic(errors.AssertionFailedf("WrapProgressDetails: unknown progress type %T", d))
 	}
@@ -441,18 +383,6 @@ func (p *Payload) UnwrapDetails() Details {
 		return *d.ImportRollbackDetails
 	case *Payload_HistoryRetentionDetails:
 		return *d.HistoryRetentionDetails
-	case *Payload_LogicalReplicationDetails:
-		return *d.LogicalReplicationDetails
-	case *Payload_UpdateTableMetadataCacheDetails:
-		return *d.UpdateTableMetadataCacheDetails
-	case *Payload_StandbyReadTsPollerDetails:
-		return *d.StandbyReadTsPollerDetails
-	case *Payload_SqlActivityFlushDetails:
-		return *d.SqlActivityFlushDetails
-	case *Payload_HotRangesLoggerDetails:
-		return *d.HotRangesLoggerDetails
-	case *Payload_InspectDetails:
-		return *d.InspectDetails
 	default:
 		return nil
 	}
@@ -512,18 +442,6 @@ func (p *Progress) UnwrapDetails() ProgressDetails {
 		return *d.ImportRollbackProgress
 	case *Progress_HistoryRetentionProgress:
 		return *d.HistoryRetentionProgress
-	case *Progress_LogicalReplication:
-		return *d.LogicalReplication
-	case *Progress_TableMetadataCache:
-		return *d.TableMetadataCache
-	case *Progress_StandbyReadTsPoller:
-		return *d.StandbyReadTsPoller
-	case *Progress_SqlActivityFlush:
-		return *d.SqlActivityFlush
-	case *Progress_HotRangesLogger:
-		return *d.HotRangesLogger
-	case *Progress_Inspect:
-		return d.Inspect
 	default:
 		return nil
 	}
@@ -607,18 +525,6 @@ func WrapPayloadDetails(details Details) interface {
 		return &Payload_ImportRollbackDetails{ImportRollbackDetails: &d}
 	case HistoryRetentionDetails:
 		return &Payload_HistoryRetentionDetails{HistoryRetentionDetails: &d}
-	case LogicalReplicationDetails:
-		return &Payload_LogicalReplicationDetails{LogicalReplicationDetails: &d}
-	case UpdateTableMetadataCacheDetails:
-		return &Payload_UpdateTableMetadataCacheDetails{UpdateTableMetadataCacheDetails: &d}
-	case StandbyReadTSPollerDetails:
-		return &Payload_StandbyReadTsPollerDetails{StandbyReadTsPollerDetails: &d}
-	case SqlActivityFlushDetails:
-		return &Payload_SqlActivityFlushDetails{SqlActivityFlushDetails: &d}
-	case HotRangesLoggerDetails:
-		return &Payload_HotRangesLoggerDetails{HotRangesLoggerDetails: &d}
-	case InspectDetails:
-		return &Payload_InspectDetails{InspectDetails: &d}
 	default:
 		panic(errors.AssertionFailedf("jobs.WrapPayloadDetails: unknown details type %T", d))
 	}
@@ -654,7 +560,7 @@ const (
 func (Type) SafeValue() {}
 
 // NumJobTypes is the number of jobs types.
-const NumJobTypes = 34
+const NumJobTypes = 27
 
 // ChangefeedDetailsMarshaler allows for dependency injection of
 // cloud.SanitizeExternalStorageURI to avoid the dependency from this

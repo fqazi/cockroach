@@ -133,15 +133,15 @@
   opacity .6
   font-size 10px
 
-.crdb-ant-divider
+.ant-divider
   background $button-border-color
   margin-left 0
   margin-right 22px
-  &.crdb-ant-divider-vertical
+  &.ant-divider-vertical
     height auto
 
-.crdb-ant-tooltip
-  .crdb-ant-tooltip-inner
+.ant-tooltip
+  .ant-tooltip-inner
     font-size 12px
     border-radius 4px
     background-color $body-color
@@ -152,7 +152,7 @@
     min-width 0
     min-height 0
   &.preset-black
-    .crdb-ant-tooltip-inner
+    .ant-tooltip-inner
       background-color #000
       pre
         font-family RobotoMono-Medium
@@ -164,7 +164,7 @@
           font-family RobotoMono-Bold
           color #0055ff
 
-.crdb-ant-time-picker-input
+.ant-input, .ant-time-picker-input
   height 40px
   padding 0px 11px
   border-radius 3px
@@ -175,72 +175,72 @@
   &:hover
     border-color $link-color
 
-.crdb-ant-time-picker-panel-combobox
+.ant-time-picker-panel-combobox
   display flex
 
-.crdb-ant-calendar-picker:hover .crdb-ant-calendar-picker-input:not(.crdb-ant-input-disabled)
+.ant-calendar-picker:hover .ant-calendar-picker-input:not(.ant-input-disabled)
   border-color $link-color
 
-.crdb-ant-fullcalendar-header
+.ant-fullcalendar-header
   padding: 10px 4px
   text-align: center
 
-.crdb-ant-fullcalendar
+.ant-fullcalendar
   font-size 12px
   font-family Lato-Regular
 
-.crdb-ant-fullcalendar-selected-day
-  .crdb-ant-fullcalendar-date
+.ant-fullcalendar-selected-day
+  .ant-fullcalendar-date
     background #eff5fe
     color #3a7ce1
     &:hover
       background #e0efff
       color $blue-color
 
-.crdb-ant-fullcalendar-today
-  &.crdb-ant-fullcalendar-date
+.ant-fullcalendar-today 
+  &.ant-fullcalendar-date
     color #3a7ce1
     border-color #3a7ce1
     &:hover
       background #eff5fd
-  &.crdb-ant-fullcalendar-selected-day
-    .crdb-ant-fullcalendar-date
+  &.ant-fullcalendar-selected-day
+    .ant-fullcalendar-date
       background #eff5fd
       &:hover
         background $grey4
         font-weight bold
-  &.crdb-ant-fullcalendar-disabled-cell
-    .crdb-ant-fullcalendar-date
+  &.ant-fullcalendar-disabled-cell
+    .ant-fullcalendar-date
       background #E7ECF3
       &:hover
         background #E7ECF3
 
-.crdb-ant-fullcalendar-date, .crdb-ant-time-picker-panel li
+.ant-fullcalendar-date, .ant-time-picker-panel li
   color #5F6C87
   font-family Lato-Regular
   font-size 12px
-  &.crdb-ant-time-picker-panel-addon-option-disabled
+  &.ant-time-picker-panel-addon-option-disabled
     color #a3a5af
   &:hover
     background #f6f6f6
   &:focus
     color $link-color
 
-.crdb-ant-time-picker-panel li
+.ant-time-picker-panel li
   display flex
   align-items center
 
-.crdb-ant-fullcalendar-disabled-cell .crdb-ant-fullcalendar-date
+.ant-fullcalendar-disabled-cell .ant-fullcalendar-date
   background #E7ECF3
 
-.crdb-ant-fullcalendar-disabled-cell.crdb-ant-fullcalendar-today .crdb-ant-fullcalendar-date
+.ant-fullcalendar-disabled-cell.ant-fullcalendar-today .ant-fullcalendar-date
   color #a3a5af
   font-weight bold
   border-color transparent
   &:before
     border 1px solid #a3a5af
 
-.crdb-ant-calendar-today-btn
+.ant-btn-default, .ant-calendar-today-btn 
   width 100%
   font-family Lato-Bold
   color $link-color
@@ -254,13 +254,13 @@
     line-height 1.71
     letter-spacing 0.1px
 
-.crdb-ant-btn:focus
+.ant-btn:focus
   color: $link-color
 
-.crdb-ant-btn:after
+.ant-btn:after
   display: none !important;
 
-.crdb-ant-btn-background-ghost
+.ant-btn-background-ghost
   box-shadow: none
   
 .color
@@ -269,20 +269,20 @@
     &:hover
       text-decoration underline
 
-.crdb-ant-checkbox-wrapper
+.ant-checkbox-wrapper
   &:hover
-    .crdb-ant-checkbox-inner
+    .ant-checkbox-inner
       border solid 1px $checkbox-border-hover
       background $popover-border-color
-  .crdb-ant-checkbox-inner
+  .ant-checkbox-inner
     border solid 1px $checkbox-border
     border-radius 3px
-  .crdb-ant-checkbox-checked
+  .ant-checkbox-checked
     &:hover
-      .crdb-ant-checkbox-inner
+      .ant-checkbox-inner
         border solid 1px $link
         background $link
-    .crdb-ant-checkbox-inner
+    .ant-checkbox-inner
       background-color $link
   span
     font-family SourceSansPro-SemiBold
@@ -291,39 +291,39 @@
     letter-spacing 0.1px
     color $popover-color
 
-.crdb-ant-pagination
+.ant-pagination
   display flex
   justify-content center
   align-items flex-end
   margin 40px 0
   &.mini
-    .crdb-ant-pagination-item, .crdb-ant-pagination-prev, .crdb-ant-pagination-next
+    .ant-pagination-item, .ant-pagination-prev, .ant-pagination-next
       margin 0 5px
-  .crdb-ant-pagination-item
+  .ant-pagination-item
     a
       color $body-color
       font-size 14px
       font-family Lato-Medium
       &:hover
         color $link-color
-  .crdb-ant-pagination-item-active
+  .ant-pagination-item-active
     background transparent
     border-radius 2px
     border 1px solid $link-color
     a
       color $link-color
-  .crdb-ant-pagination-next, .crdb-ant-pagination-prev
-    .crdb-ant-pagination-item-link
+  .ant-pagination-next, .ant-pagination-prev
+    .ant-pagination-item-link
       font-size 12px
       color $body-color
     &:hover
-      .crdb-ant-pagination-item-link
+      .ant-pagination-item-link
         color $link-color
-    &.crdb-ant-pagination-disabled
-      .crdb-ant-pagination-item-link
+    &.ant-pagination-disabled
+      .ant-pagination-item-link
         color #b8bbbc
       &:hover
-        .crdb-ant-pagination-item-link
+        .ant-pagination-item-link
           color #b8bbbc
 
 .drawer--preset-black
@@ -350,7 +350,7 @@
   ::-webkit-scrollbar-thumb:hover {
     background #5f6c87ad
   }
-  .crdb-ant-divider
+  .ant-divider
     width 1px
     background #5f6c87
     margin: 0 15px
@@ -365,21 +365,21 @@
       letter-spacing 0.1px
       &:hover
         color #5f6c87
-  .crdb-ant-drawer-content
+  .ant-drawer-content
     overflow auto
-  .crdb-ant-drawer-mask
+  .ant-drawer-mask
     background-color transparent
-  .crdb-ant-drawer-content-wrapper
+  .ant-drawer-content-wrapper
     padding-left 80px
     box-shadow none !important
-  .crdb-ant-drawer-content
+  .ant-drawer-content
     background #242a35
-  .crdb-ant-drawer-header
+  .ant-drawer-header
     padding 15px 0
     margin 0 24px
     background transparent
     border-bottom: 1px solid #5f6c87;
-  .crdb-ant-drawer-body
+  .ant-drawer-body
     padding 15px 20px
     margin 0 4px
     height 190px
@@ -395,9 +395,9 @@
       font-family RobotoMono-Bold
 
 .cockroach--tabs
-  .crdb-ant-tabs-bar
+  .ant-tabs-bar
     border-bottom 1px solid $grey2
-  .crdb-ant-tabs-tab
+  .ant-tabs-tab
     font-family SourceSansPro-Regular
     font-size 16px
     line-height 1.5
@@ -405,9 +405,9 @@
     color $placeholder
     &:hover
       color $adminui-grey-1 
-  .crdb-ant-tabs-tab-active
+  .ant-tabs-tab-active
     color $adminui-grey-1 
-  .crdb-ant-tabs-ink-bar
+  .ant-tabs-ink-bar
     height 3px
     border-radius 40px
     background-color $blue

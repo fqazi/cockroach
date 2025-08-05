@@ -3,9 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { createAction } from "@reduxjs/toolkit";
-
 import { DOMAIN_NAME } from "./utils";
+import { createAction } from "@reduxjs/toolkit";
 
 export const rootActions = {
   resetState: createAction(`${DOMAIN_NAME}/RESET_STATE`),

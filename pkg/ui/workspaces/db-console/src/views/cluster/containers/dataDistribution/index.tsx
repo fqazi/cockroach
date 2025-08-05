@@ -3,18 +3,19 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Loading } from "@cockroachlabs/cluster-ui";
-import forEach from "lodash/forEach";
-import map from "lodash/map";
-import sortBy from "lodash/sortBy";
+import _ from "lodash";
 import React from "react";
-import Helmet from "react-helmet";
-import { connect } from "react-redux";
-import { RouteComponentProps, withRouter } from "react-router-dom";
 import { createSelector } from "reselect";
+import { connect } from "react-redux";
+import Helmet from "react-helmet";
+import { RouteComponentProps, withRouter } from "react-router-dom";
 
+import { Loading } from "@cockroachlabs/cluster-ui";
 import { InfoTooltip } from "src/components/infoTooltip";
+import * as docsURL from "src/util/docs";
+import { FixLong } from "src/util/fixLong";
 import { cockroach } from "src/js/protos";
+import { AdminUIState } from "src/redux/state";
 import {
   refreshDataDistribution,
   refreshNodes,
@@ -22,18 +23,14 @@ import {
   CachedDataReducerState,
 } from "src/redux/apiReducers";
 import { LocalityTree, selectLocalityTree } from "src/redux/localities";
+import ReplicaMatrix, { SchemaObject } from "./replicaMatrix";
+import { TreeNode, TreePath } from "./tree";
+import "./index.styl";
 import {
   selectLivenessRequestStatus,
   selectNodeRequestStatus,
 } from "src/redux/nodes";
-import { AdminUIState } from "src/redux/state";
-import * as docsURL from "src/util/docs";
-import { FixLong } from "src/util/fixLong";
 import { BackToAdvanceDebug } from "src/views/reports/containers/util";
-
-import ReplicaMatrix, { SchemaObject } from "./replicaMatrix";
-import { TreeNode, TreePath } from "./tree";
-import "./index.styl";
 
 type DataDistributionResponse =
   cockroach.server.serverpb.DataDistributionResponse;
@@ -118,12 +115,12 @@ class DataDistribution extends React.Component<DataDistributionProps> {
         dbName: null,
         tableName: null,
       },
-      children: map(databaseInfo, (dbInfo, dbName) => ({
+      children: _.map(databaseInfo, (dbInfo, dbName) => ({
         name: dbName,
         data: {
           dbName,
         },
-        children: map(dbInfo.table_info, (tableInfo, tableName) => ({
+        children: _.map(dbInfo.table_info, (tableInfo, tableName) => ({
           name: tableName,
           data: {
             dbName,
@@ -229,7 +226,7 @@ const sortedZoneConfigs = createSelector(
     if (!dataDistributionState.data) {
       return null;
     }
-    return sortBy(dataDistributionState.data.zone_configs, zc => zc.target);
+    return _.sortBy(dataDistributionState.data.zone_configs, zc => zc.target);
   },
 );
 
@@ -266,8 +263,8 @@ function nodeTreeFromLocalityTree(
   const children: TreeNode<any>[] = [];
 
   // Add child localities.
-  forEach(localityTree.localities, (valuesForKey, key) => {
-    forEach(valuesForKey, (subLocalityTree, value) => {
+  _.forEach(localityTree.localities, (valuesForKey, key) => {
+    _.forEach(valuesForKey, (subLocalityTree, value) => {
       children.push(
         nodeTreeFromLocalityTree(`${key}=${value}`, subLocalityTree),
       );
@@ -275,7 +272,7 @@ function nodeTreeFromLocalityTree(
   });
 
   // Add child nodes.
-  forEach(localityTree.nodes, node => {
+  _.forEach(localityTree.nodes, node => {
     children.push({
       name: node.desc.node_id.toString(),
       data: node.desc,

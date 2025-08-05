@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,11 +54,8 @@ and stats in an unzipped statement bundle directory.
 	Args: cobra.ExactArgs(1),
 }
 
-var (
-	placeholderPairs []string
-	explainPrefix    string
-	commentPattern   = regexp.MustCompile(`^\s*--`)
-)
+var placeholderPairs []string
+var explainPrefix string
 
 func init() {
 	statementBundleRecreateCmd.RunE = clierrorplus.MaybeDecorateError(runBundleRecreate)
@@ -173,10 +169,8 @@ func runBundleRecreate(cmd *cobra.Command, args []string) (resErr error) {
 	return runDemoInternal(cmd, nil /* gen */, func(ctx context.Context, conn clisqlclient.Conn) error {
 		// SET CLUSTER SETTING statements cannot be executed in multi-statement
 		// implicit transaction, so we need to separate them out into their own
-		// implicit transactions. Comments are stripped from the env file first.
-		lines := strings.Split(string(bundle.env), "\n")
-		lines = slices.DeleteFunc(lines, commentPattern.MatchString)
-		initStmts := strings.Split(strings.Join(lines, "\n"), "SET CLUSTER SETTING")
+		// implicit transactions.
+		initStmts := strings.Split(string(bundle.env), "SET CLUSTER SETTING")
 		for i := 1; i < len(initStmts); i++ {
 			initStmts[i] = "SET CLUSTER SETTING " + initStmts[i]
 		}
@@ -428,11 +422,7 @@ func getExplainCombinations(
 				if err != nil {
 					panic("failed parsing datum string as " + datum.String() + " " + err.Error())
 				}
-				if maxUpperBound == nil {
-					maxUpperBound = datum
-				} else if cmp, err := maxUpperBound.Compare(ctx, &evalCtx, datum); err != nil {
-					panic(err)
-				} else if cmp < 0 {
+				if maxUpperBound == nil || maxUpperBound.Compare(&evalCtx, datum) < 0 {
 					maxUpperBound = datum
 				}
 				// If we have any datums within the bucket (i.e. not equal to
@@ -450,7 +440,7 @@ func getExplainCombinations(
 					addPrevious = true
 				}
 				if addPrevious {
-					if prev, ok := tree.DatumPrev(ctx, datum, &evalCtx, &evalCtx.CollationEnv); ok {
+					if prev, ok := tree.DatumPrev(datum, &evalCtx, &evalCtx.CollationEnv); ok {
 						bucketMap[key] = append(bucketMap[key], tree.AsStringWithFlags(prev, fmtCtx))
 						addedNonExistent = addedNonExistent || numRange == 0
 					}
@@ -462,7 +452,7 @@ func getExplainCombinations(
 			}
 			// Create a value that's outside of histogram range by incrementing the
 			// max value that we've seen.
-			if outside, ok := tree.DatumNext(ctx, maxUpperBound, &evalCtx, &evalCtx.CollationEnv); ok {
+			if outside, ok := tree.DatumNext(maxUpperBound, &evalCtx, &evalCtx.CollationEnv); ok {
 				colSamples = append(colSamples, tree.AsStringWithFlags(outside, fmtCtx))
 			}
 			sort.Strings(colSamples)

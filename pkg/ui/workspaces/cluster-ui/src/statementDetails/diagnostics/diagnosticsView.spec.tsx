@@ -3,20 +3,18 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Button } from "@cockroachlabs/ui-components";
+import React from "react";
 import { assert } from "chai";
 import { mount, ReactWrapper } from "enzyme";
-import moment from "moment-timezone";
-import React from "react";
 import { MemoryRouter } from "react-router-dom";
-
-import { SortedTable } from "src/sortedtable";
-import { TestStoreProvider } from "src/test-utils";
-import { TimeScale } from "src/timeScaleDropdown";
-
-import { StatementDiagnosticsReport } from "../../api";
+import { Button } from "@cockroachlabs/ui-components";
 
 import { DiagnosticsView } from "./diagnosticsView";
+import { TestStoreProvider } from "src/test-utils";
+import { StatementDiagnosticsReport } from "../../api";
+import moment from "moment-timezone";
+import { SortedTable } from "src/sortedtable";
+import { TimeScale } from "src/timeScaleDropdown";
 
 const activateDiagnosticsRef = { current: { showModalFor: jest.fn() } };
 const ts: TimeScale = {

@@ -45,10 +45,6 @@ message CommonSQLEventDetails {
 
   // The mapping of SQL placeholders to their values, for prepared statements.
   repeated string placeholder_values = 5 [(gogoproto.jsontag) = ",omitempty"];
-
-  // The current read timestamp of the transaction that triggered the event, if
-  // in a transaction.
-  int64 txn_read_timestamp = 7 [(gogoproto.jsontag) = ",omitempty"];
 }
 
 // CommonJobEventDetails contains the fields common to all job events.
@@ -97,7 +93,4 @@ message CommonChangefeedEventDetails {
 
   // The data format being emitted (ex: JSON, Avro).
   string format = 7 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) =  "redact:\"nonsensitive\""];
-
-  // The job id for enterprise changefeeds.
-  int64 job_id = 8 [(gogoproto.jsontag) = ",omitempty"];
 }

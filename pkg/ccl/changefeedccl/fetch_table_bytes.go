@@ -34,8 +34,8 @@ func FetchChangefeedUsageBytes(
 	// Inspired by AllTargets in changefeedccl/changefeed.go.
 	if len(details.TargetSpecifications) > 0 {
 		for _, ts := range details.TargetSpecifications {
-			if ts.DescID > 0 {
-				uniqueTableIDs[ts.DescID] = struct{}{}
+			if ts.TableID > 0 {
+				uniqueTableIDs[ts.TableID] = struct{}{}
 			}
 		}
 	} else {
@@ -94,7 +94,7 @@ func getTableDesc(
 ) (catalog.TableDescriptor, error) {
 	var desc catalog.TableDescriptor
 	f := func(ctx context.Context, txn descs.Txn) error {
-		tableDesc, err := txn.Descriptors().ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Table(ctx, tableID)
+		tableDesc, err := txn.Descriptors().ByID(txn.KV()).WithoutNonPublic().Get().Table(ctx, tableID)
 		if err != nil {
 			return err
 		}

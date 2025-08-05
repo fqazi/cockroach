@@ -114,7 +114,7 @@ func (p synthetic) ConcurrentSchemaChangeJobIDs() []catpb.JobID {
 // SkipNamespace implements the descriptor interface.
 // We never store synthetic descriptors.
 func (p synthetic) SkipNamespace() bool {
-	return p.SchemaKind() != catalog.SchemaTemporary
+	return true
 }
 
 // GetObjectType implements the Object interface.
@@ -148,9 +148,6 @@ func (p synthetic) ForEachFunctionSignature(
 func (p synthetic) ForEachUDTDependentForHydration(fn func(t *types.T) error) error {
 	return nil
 }
-
-// MaybeRequiresTypeHydration implements the catalog.Descriptor interface.
-func (p synthetic) MaybeRequiresTypeHydration() bool { return false }
 
 func (p synthetic) GetRawBytesInStorage() []byte {
 	return nil

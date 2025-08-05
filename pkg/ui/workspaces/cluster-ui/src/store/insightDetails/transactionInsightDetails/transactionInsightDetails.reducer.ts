@@ -4,13 +4,11 @@
 // included in the /LICENSE file.
 
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
+import { DOMAIN_NAME } from "src/store/utils";
 import moment, { Moment } from "moment-timezone";
-
-import { SqlApiResponse, TxnInsightDetailsReqErrs } from "src/api";
 import { ErrorWithKey } from "src/api/statementsApi";
 import { TxnInsightDetails } from "src/insights";
-import { DOMAIN_NAME } from "src/store/utils";
-
+import { SqlApiResponse, TxnInsightDetailsReqErrs } from "src/api";
 import {
   TxnInsightDetailsRequest,
   TxnInsightDetailsResponse,

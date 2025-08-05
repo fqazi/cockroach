@@ -3,9 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Moment } from "moment-timezone";
 import React from "react";
-
+import { Moment } from "moment-timezone";
 import { Text, TextTypes } from "src/components";
 
 export interface DateRangeLabelProps {

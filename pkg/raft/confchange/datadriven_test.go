@@ -23,7 +23,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/raft/quorum"
 	pb "github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/datadriven"
@@ -32,12 +31,10 @@ import (
 
 func TestConfChangeDataDriven(t *testing.T) {
 	datadriven.Walk(t, "testdata", func(t *testing.T, path string) {
+		tr := tracker.MakeProgressTracker(10, 0)
 		c := Changer{
-			Config:           quorum.MakeEmptyConfig(),
-			ProgressMap:      tracker.MakeEmptyProgressMap(),
-			MaxInflight:      10,
-			MaxInflightBytes: 0,
-			LastIndex:        0, // incremented in this test with each cmd
+			Tracker:   tr,
+			LastIndex: 0, // incremented in this test with each cmd
 		}
 
 		// The test files use the commands
@@ -80,27 +77,27 @@ func TestConfChangeDataDriven(t *testing.T) {
 				if err != nil {
 					return err.Error()
 				}
-				cc.NodeID = pb.PeerID(id)
+				cc.NodeID = id
 				ccs = append(ccs, cc)
 			}
 
-			var cfg quorum.Config
-			var progressMap tracker.ProgressMap
+			var cfg tracker.Config
+			var trk tracker.ProgressMap
 			var err error
 			switch d.Cmd {
 			case "simple":
-				cfg, progressMap, err = c.Simple(ccs...)
+				cfg, trk, err = c.Simple(ccs...)
 			case "enter-joint":
 				var autoLeave bool
 				if len(d.CmdArgs) > 0 {
 					d.ScanArgs(t, "autoleave", &autoLeave)
 				}
-				cfg, progressMap, err = c.EnterJoint(autoLeave, ccs...)
+				cfg, trk, err = c.EnterJoint(autoLeave, ccs...)
 			case "leave-joint":
 				if len(ccs) > 0 {
 					err = errors.New("this command takes no input")
 				} else {
-					cfg, progressMap, err = c.LeaveJoint()
+					cfg, trk, err = c.LeaveJoint()
 				}
 			default:
 				return "unknown command"
@@ -108,8 +105,8 @@ func TestConfChangeDataDriven(t *testing.T) {
 			if err != nil {
 				return err.Error() + "\n"
 			}
-			c.Config, c.ProgressMap = cfg, progressMap
-			return fmt.Sprintf("%s\n%s", c.Config, c.ProgressMap)
+			c.Tracker.Config, c.Tracker.Progress = cfg, trk
+			return fmt.Sprintf("%s\n%s", c.Tracker.Config, c.Tracker.Progress)
 		})
 	})
 }

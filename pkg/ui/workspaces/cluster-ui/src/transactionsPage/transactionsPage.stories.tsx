@@ -3,16 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { storiesOf } from "@storybook/react";
-import cloneDeep from "lodash/cloneDeep";
-import extend from "lodash/extend";
-import noop from "lodash/noop";
 import React from "react";
+import { storiesOf } from "@storybook/react";
 import { MemoryRouter } from "react-router-dom";
-
-import { RequestState, SqlStatsResponse, SqlStatsSortOptions } from "../api";
-import { RequestError } from "../util";
-
+import { cloneDeep, extend, noop } from "lodash";
 import {
   columns,
   data,
@@ -27,6 +21,8 @@ import {
 } from "./transactions.fixture";
 
 import { TransactionsPage } from ".";
+import { RequestError } from "../util";
+import { RequestState, SqlStatsResponse, SqlStatsSortOptions } from "../api";
 
 const getEmptyData = () =>
   extend({}, data, { transactions: [], statements: [] });
@@ -189,7 +185,11 @@ storiesOf("Transactions Page", module)
       inFlight: true,
       data: undefined,
       lastUpdated,
-      error: new RequestError(403, "this operation requires admin privilege"),
+      error: new RequestError(
+        "Forbidden",
+        403,
+        "this operation requires admin privilege",
+      ),
     };
 
     return (

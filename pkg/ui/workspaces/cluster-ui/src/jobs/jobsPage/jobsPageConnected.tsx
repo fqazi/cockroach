@@ -5,9 +5,7 @@
 
 import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
-import { Dispatch } from "redux";
 
-import { JobsRequest } from "src/api/jobsApi";
 import { AppState } from "src/store";
 import {
   selectShowSetting,
@@ -18,16 +16,16 @@ import {
   initialState,
   actions as jobsActions,
 } from "src/store/jobs";
-
-import { SortSetting } from "../../sortedtable";
-import { actions as analyticsActions } from "../../store/analytics";
-import { actions as localStorageActions } from "../../store/localStorage";
-
 import {
   JobsPageStateProps,
   JobsPageDispatchProps,
   JobsPage,
 } from "./jobsPage";
+import { JobsRequest } from "src/api/jobsApi";
+import { actions as localStorageActions } from "../../store/localStorage";
+import { Dispatch } from "redux";
+import { SortSetting } from "../../sortedtable";
+import { actions as analyticsActions } from "../../store/analytics";
 
 const mapStateToProps = (
   state: AppState,
@@ -120,12 +118,7 @@ const mapDispatchToProps = (dispatch: Dispatch): JobsPageDispatchProps => ({
 });
 
 export const JobsPageConnected = withRouter(
-  connect<
-    JobsPageStateProps,
-    JobsPageDispatchProps,
-    RouteComponentProps,
-    AppState
-  >(
+  connect<JobsPageStateProps, JobsPageDispatchProps, RouteComponentProps>(
     mapStateToProps,
     mapDispatchToProps,
   )(JobsPage),

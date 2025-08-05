@@ -50,7 +50,7 @@ func makeFingerprintWriter(
 	// TODO(adityamaru,dt): Once
 	// https://github.com/cockroachdb/cockroach/issues/90450 has been addressed we
 	// should write to a kvBuf instead of a Backup SST writer.
-	sstWriter := MakeTransportSSTWriter(ctx, cs, f)
+	sstWriter := MakeBackupSSTWriter(ctx, cs, f)
 	return fingerprintWriter{
 		sstWriter: &sstWriter,
 		hasher:    hasher,
@@ -288,7 +288,10 @@ func FingerprintRangekeys(
 			if err := fw.hashTimestamp(v.Timestamp); err != nil {
 				return 0, err
 			}
-			mvccValue, err := decodeMVCCValueIgnoringHeader(v.Value)
+			mvccValue, ok, err := tryDecodeSimpleMVCCValue(v.Value)
+			if !ok && err == nil {
+				mvccValue, err = decodeExtendedMVCCValue(v.Value)
+			}
 			if err != nil {
 				return 0, errors.Wrapf(err, "decoding mvcc value %s", v.Value)
 			}

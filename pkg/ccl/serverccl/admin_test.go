@@ -49,7 +49,14 @@ func TestAdminAPIDataDistributionPartitioning(t *testing.T) {
 	// TODO(clust-obs): This test should work with just a single node,
 	// i.e. using serverutils.StartServer` instead of
 	// `StartCluster`.
-	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{})
+	testCluster := serverutils.StartCluster(t, 3,
+		base.TestClusterArgs{
+			ServerArgs: base.TestServerArgs{
+				// The code below ought to work when this is omitted. This
+				// needs to be investigated further.
+				DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(106897),
+			},
+		})
 	defer testCluster.Stopper().Stop(context.Background())
 
 	firstServer := testCluster.Server(0)
@@ -118,7 +125,10 @@ func TestAdminAPIJobs(t *testing.T) {
 
 	dir, dirCleanupFn := testutils.TempDir(t)
 	defer dirCleanupFn()
-	s, conn, _ := serverutils.StartServer(t, base.TestServerArgs{ExternalIODir: dir})
+	s, conn, _ := serverutils.StartServer(t, base.TestServerArgs{
+		// Fails with the default test tenant. Tracked with #76378.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
+		ExternalIODir:     dir})
 	defer s.Stopper().Stop(context.Background())
 	sqlDB := sqlutils.MakeSQLRunner(conn)
 
@@ -148,9 +158,6 @@ func TestAdminAPIJobs(t *testing.T) {
 	err = getAdminJSONProto(s, path, &jobRes)
 	require.NoError(t, err)
 
-	// Messages are not equal, since they only appear in the single job response,
-	// so the deep-equal check would fail; copy it so the overall check passes.
-	jobRes.Messages = backups[0].Messages
 	require.Equal(t, backups[0], jobRes)
 }
 

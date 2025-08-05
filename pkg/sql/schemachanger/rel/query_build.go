@@ -27,22 +27,12 @@ type queryBuilder struct {
 	// slotIdx is a join target.
 	slotIsEntity []bool
 
-	// This slice mirrors the slots slice. It identifies the clause that caused
-	// each slot to be created. It is separate from the slots directory since its
-	// constant from query to query, so it doesn't need to be cloned like the slots
-	// directory is.
-	clauseIDs []int
-
-	// curClauseID is the ID of the clause to use for any new slots that are
-	// created.
-	curClauseID int
-
 	notJoins []subQuery
 }
 
 // newQuery constructs a query. Errors are panicked and caught
 // in the calling NewQuery function.
-func newQuery(sc *Schema, clauses Clauses, cib *clauseIDBuilder) *Query {
+func newQuery(sc *Schema, clauses Clauses) *Query {
 	p := &queryBuilder{
 		sc:            sc,
 		variableSlots: map[Var]slotIdx{},
@@ -51,15 +41,8 @@ func newQuery(sc *Schema, clauses Clauses, cib *clauseIDBuilder) *Query {
 	// if we add something like or-join or not-join. At time of writing,
 	// the and case in processClause is an assertion failure.
 	forDisplay := flattened(clauses)
-	for _, displayClause := range forDisplay {
-		// Advance the clause ID only for clauses in forDisplay. The clauseID is used
-		// for debugging to report clauses that didn't match, so it must correspond
-		// to the clauses shown for display purposes.
-		p.curClauseID = cib.nextID()
-
-		for _, t := range expanded([]Clause{displayClause}) {
-			p.processClause(t, cib)
-		}
+	for _, t := range expanded(clauses) {
+		p.processClause(t)
 	}
 	for _, s := range p.variableSlots {
 		p.facts = append(p.facts, fact{
@@ -115,11 +98,10 @@ func newQuery(sc *Schema, clauses Clauses, cib *clauseIDBuilder) *Query {
 		slots:         p.slots,
 		filters:       p.filters,
 		notJoins:      p.notJoins,
-		clauseIDs:     p.clauseIDs,
 	}
 }
 
-func (p *queryBuilder) processClause(t Clause, cib *clauseIDBuilder) {
+func (p *queryBuilder) processClause(t Clause) {
 	defer func() {
 		if r := recover(); r != nil {
 			rErr, ok := r.(error)
@@ -149,7 +131,7 @@ func (p *queryBuilder) processClause(t Clause, cib *clauseIDBuilder) {
 			panic(errors.AssertionFailedf("rule invocations which aren't not-joins" +
 				" should have been flattened away"))
 		}
-		p.processNotJoin(t, cib)
+		p.processNotJoin(t)
 	case and:
 		panic(errors.AssertionFailedf("and clauses should be flattened away"))
 	default:
@@ -286,7 +268,6 @@ func (p *queryBuilder) processFilterDecl(t filterDecl) {
 	p.filters = append(p.filters, filter{
 		input:     slots,
 		predicate: fv,
-		clauseID:  p.curClauseID,
 	})
 }
 
@@ -349,7 +330,6 @@ func (p *queryBuilder) fillSlot(sd slot, isEntity bool) slotIdx {
 	s := slotIdx(len(p.slots))
 	p.slots = append(p.slots, sd)
 	p.slotIsEntity = append(p.slotIsEntity, isEntity)
-	p.clauseIDs = append(p.clauseIDs, p.curClauseID)
 	return s
 }
 
@@ -380,7 +360,7 @@ func (p *queryBuilder) typeCheck(f fact) {
 	}
 }
 
-func (p *queryBuilder) processNotJoin(t ruleInvocation, cib *clauseIDBuilder) {
+func (p *queryBuilder) processNotJoin(t ruleInvocation) {
 	// If we have a not-join, then we need to find the slots for the inputs,
 	// and we have to build the sub-query, which is a whole new query, and
 	// we have to then figure out its depth. At this point, we build the
@@ -407,7 +387,7 @@ func (p *queryBuilder) processNotJoin(t ruleInvocation, cib *clauseIDBuilder) {
 		}
 	}
 	clauses = append(clauses, t.rule.clauses...)
-	sub.query = newQuery(p.sc, clauses, cib.newBuilderForSubquery())
+	sub.query = newQuery(p.sc, clauses)
 	for i, v := range t.args {
 		src := p.variableSlots[v]
 		dst, ok := sub.query.variableSlots[t.rule.paramVars[i]]

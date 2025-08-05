@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
-	"github.com/cockroachdb/redact"
 )
 
 // completions is the actual implementation of the completion logic.
@@ -36,7 +35,7 @@ type completions struct {
 	tracePrefix string
 
 	// opName is the current operation name for queries.
-	opName redact.RedactableString
+	opName string
 
 	// curMethodIdx is the index of the method being considered.
 	curMethodIdx int
@@ -109,9 +108,9 @@ func (c *completions) Next(ctx context.Context) (bool, error) {
 		c.opName = "completions"
 		if c.mlabel = fn.Name(); c.mlabel != "" {
 			c.tracePrefix = c.mlabel + ": "
-			c.opName = redact.Sprintf("comp-%s", c.mlabel)
+			c.opName = "comp-" + c.mlabel
 		}
-		ctx := logtags.AddTag(ctx, c.opName.StripMarkers(), nil)
+		ctx := logtags.AddTag(ctx, c.opName, nil)
 		rows, err := fn.Call(ctx, c)
 		if err != nil {
 			c.curMethodIdx = compEndIdx

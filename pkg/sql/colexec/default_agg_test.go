@@ -131,7 +131,7 @@ func TestDefaultAggregateFunc(t *testing.T) {
 	aggMemAcc := evalCtx.TestingMon.MakeBoundAccount()
 	defer aggMemAcc.Close(context.Background())
 	evalCtx.SingleDatumAggMemAccount = &aggMemAcc
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	for _, agg := range aggTypes {
 		for _, tc := range testCases {
 			t.Run(fmt.Sprintf("%s/%s", agg.name, tc.name), func(t *testing.T) {
@@ -145,6 +145,7 @@ func TestDefaultAggregateFunc(t *testing.T) {
 				colexectestutils.RunTestsWithTyps(t, testAllocator, []colexectestutils.Tuples{tc.input}, [][]*types.T{tc.typs}, tc.expected, colexectestutils.UnorderedVerifier, func(input []colexecop.Operator) (colexecop.Operator, error) {
 					return agg.new(context.Background(), &colexecagg.NewAggregatorArgs{
 						Allocator:      testAllocator,
+						MemAccount:     testMemAcc,
 						Input:          input[0],
 						InputTypes:     tc.typs,
 						Spec:           tc.spec,

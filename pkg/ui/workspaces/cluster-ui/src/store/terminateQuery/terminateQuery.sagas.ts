@@ -3,16 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { PayloadAction } from "@reduxjs/toolkit";
 import { all, call, put, takeEvery } from "redux-saga/effects";
 
 import { terminateQuery, terminateSession } from "src/api/terminateQueryApi";
 import { actions as sessionsActions } from "src/store/sessions";
-
-import { maybeError } from "../../util";
-
 import { actions as terminateQueryActions } from "./terminateQuery.reducer";
+
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 
 const CancelSessionRequest = cockroach.server.serverpb.CancelSessionRequest;
 const CancelQueryRequest = cockroach.server.serverpb.CancelQueryRequest;
@@ -30,7 +28,7 @@ export function* terminateSessionSaga(
     yield put(sessionsActions.invalidated());
     yield put(sessionsActions.refresh());
   } catch (e) {
-    yield put(terminateQueryActions.terminateSessionFailed(maybeError(e)));
+    yield put(terminateQueryActions.terminateSessionFailed(e));
   }
 }
 
@@ -44,7 +42,7 @@ export function* terminateQuerySaga(
     yield put(sessionsActions.invalidated());
     yield put(sessionsActions.refresh());
   } catch (e) {
-    yield put(terminateQueryActions.terminateQueryFailed(maybeError(e)));
+    yield put(terminateQueryActions.terminateQueryFailed(e));
   }
 }
 

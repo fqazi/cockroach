@@ -157,7 +157,7 @@ type Flow interface {
 	// GetOnCleanupFns returns a couple of functions that should be called at
 	// the very beginning and the very end of Cleanup, respectively. Both will
 	// be non-nil.
-	GetOnCleanupFns() (startCleanup func(), endCleanup func(context.Context))
+	GetOnCleanupFns() (startCleanup, endCleanup func())
 
 	// Cleanup must be called whenever the flow is done (meaning it either
 	// completes gracefully after all processors and mailboxes exited or an
@@ -227,7 +227,7 @@ type FlowBase struct {
 	// onCleanupStart and onCleanupEnd will be called in the very beginning and
 	// the very end of Cleanup(), respectively.
 	onCleanupStart func()
-	onCleanupEnd   func(context.Context)
+	onCleanupEnd   func()
 
 	statementSQL string
 
@@ -323,7 +323,7 @@ func NewFlowBase(
 	batchSyncFlowConsumer execinfra.BatchReceiver,
 	localProcessors []execinfra.LocalProcessor,
 	localVectorSources map[int32]any,
-	onFlowCleanupEnd func(context.Context),
+	onFlowCleanupEnd func(),
 	statementSQL string,
 ) *FlowBase {
 	// We are either in a single tenant cluster, or a SQL node in a multi-tenant
@@ -642,18 +642,50 @@ func (f *FlowBase) AddOnCleanupStart(fn func()) {
 }
 
 var noopFn = func() {}
-var noopCtxFn = func(context.Context) {}
 
 // GetOnCleanupFns is part of the Flow interface.
-func (f *FlowBase) GetOnCleanupFns() (startCleanup func(), endCleanup func(context.Context)) {
+func (f *FlowBase) GetOnCleanupFns() (startCleanup, endCleanup func()) {
 	onCleanupStart, onCleanupEnd := f.onCleanupStart, f.onCleanupEnd
 	if onCleanupStart == nil {
 		onCleanupStart = noopFn
 	}
 	if onCleanupEnd == nil {
-		onCleanupEnd = noopCtxFn
+		onCleanupEnd = noopFn
 	}
 	return onCleanupStart, onCleanupEnd
+}
+
+// ConsumerClosedOnHeadProc calls ConsumerClosed method on the "head" processor
+// of this flow to make sure that all resources are released. This is needed for
+// pausable portal execution model where execinfra.Run might never call
+// ConsumerClosed on the source (i.e. the "head" processor).
+//
+// The method is only called if:
+// - the flow is local (pausable portals currently don't support DistSQL)
+// - there is exactly 1 processor in the flow that runs in its own goroutine
+// (which is always the case for pausable portal model at this time)
+// - Start was called on that processor (ConsumerClosed is only valid to be
+// called after Start)
+// - that single processor implements execinfra.RowSource interface (those
+// processors that don't implement it shouldn't be running through pausable
+// portal model).
+//
+// Otherwise, this method is a noop.
+func (f *FlowBase) ConsumerClosedOnHeadProc() {
+	if !f.IsLocal() {
+		return
+	}
+	if len(f.processors) != 1 {
+		return
+	}
+	if !f.headProcStarted {
+		return
+	}
+	rs, ok := f.processors[0].(execinfra.RowSource)
+	if !ok {
+		return
+	}
+	rs.ConsumerClosed()
 }
 
 // Cleanup is part of the Flow interface.
@@ -664,18 +696,6 @@ func (f *FlowBase) Cleanup(ctx context.Context) {
 		if f.getStatus() == flowFinished {
 			panic("flow cleanup called twice")
 		}
-	}
-
-	// Ensure that all processors are closed. Usually this is done automatically
-	// (when a processor is exhausted or at the end of execinfra.Run loop), but
-	// in edge cases we need to do it here. Close can be called multiple times.
-	//
-	// Note that Close is not thread-safe, but at this point if the processor
-	// wasn't fused and ran in its own goroutine, that goroutine must have
-	// exited since Cleanup is called after having waited for all started
-	// goroutines to exit.
-	for _, proc := range f.processors {
-		proc.Close(ctx)
 	}
 
 	// Release any descriptors accessed by this flow.

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
@@ -29,10 +30,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
-	"github.com/cockroachdb/cockroach/pkg/sql/regionliveness"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
@@ -44,7 +42,6 @@ import (
 )
 
 type alterDatabaseOwnerNode struct {
-	zeroInputPlanNode
 	n    *tree.AlterDatabaseOwner
 	desc *dbdesc.Mutable
 }
@@ -130,7 +127,6 @@ func (n *alterDatabaseOwnerNode) Values() tree.Datums          { return tree.Dat
 func (n *alterDatabaseOwnerNode) Close(context.Context)        {}
 
 type alterDatabaseAddRegionNode struct {
-	zeroInputPlanNode
 	n    *tree.AlterDatabaseAddRegion
 	desc *dbdesc.Mutable
 }
@@ -202,16 +198,6 @@ var GetMultiRegionEnumAddValuePlacementCCL = func(
 	)
 }
 
-// validateExistingZoneCfg validates existing zone configs for a given descriptor
-// ID.
-func (p *planner) validateExistingZoneCfg(ctx context.Context, id descpb.ID) error {
-	zc, err := p.Descriptors().GetZoneConfig(ctx, p.txn, id)
-	if err != nil || zc == nil {
-		return err
-	}
-	return zc.ZoneConfigProto().Validate()
-}
-
 func (n *alterDatabaseAddRegionNode) startExec(params runParams) error {
 	if err := params.p.validateZoneConfigForMultiRegionDatabaseWasNotModifiedByUser(
 		params.ctx,
@@ -227,13 +213,6 @@ func (n *alterDatabaseAddRegionNode) startExec(params runParams) error {
 		catpb.RegionName(n.n.Region),
 		n.desc.ID == keys.SystemDatabaseID,
 	); err != nil {
-		return err
-	}
-
-	// Validate if the existing zone config of this descriptor is sane,
-	// since otherwise, any modifications for multi-region could fail during
-	// the job phase.
-	if err := params.p.validateExistingZoneCfg(params.ctx, n.desc.ID); err != nil {
 		return err
 	}
 
@@ -284,11 +263,6 @@ func (n *alterDatabaseAddRegionNode) startExec(params runParams) error {
 		if err := params.p.setSystemDatabaseSurvival(params.ctx); err != nil {
 			return err
 		}
-
-		params.p.BufferClientNotice(
-			params.ctx,
-			pgnotice.Newf("Rolling restart is recommended after adding a region to system database in order to propagate region information."),
-		)
 	}
 
 	// Validate the type descriptor after the changes. We have to do this explicitly here, because
@@ -313,7 +287,6 @@ func (n *alterDatabaseAddRegionNode) Values() tree.Datums          { return tree
 func (n *alterDatabaseAddRegionNode) Close(context.Context)        {}
 
 type alterDatabaseDropRegionNode struct {
-	zeroInputPlanNode
 	n                     *tree.AlterDatabaseDropRegion
 	desc                  *dbdesc.Mutable
 	removingPrimaryRegion bool
@@ -402,22 +375,23 @@ func (p *planner) AlterDatabaseDropRegion(
 
 	removingPrimaryRegion := false
 	var toDrop []*typedesc.Mutable
-	typeID, err := dbDesc.MultiRegionEnumID()
-	if err != nil {
-		return nil, err
-	}
-	typeDesc, err := p.Descriptors().MutableByID(p.txn).Type(ctx, typeID)
-	if err != nil {
-		return nil, err
-	}
-	regionEnumDesc := typeDesc.AsRegionEnumTypeDescriptor()
-	if regionEnumDesc == nil {
-		return nil, errors.AssertionFailedf(
-			"expected region enum type, not %s for type %q (%d)",
-			typeDesc.GetKind(), typeDesc.GetName(), typeDesc.GetID())
-	}
 	if dbDesc.RegionConfig.PrimaryRegion == catpb.RegionName(n.Region) {
 		removingPrimaryRegion = true
+
+		typeID, err := dbDesc.MultiRegionEnumID()
+		if err != nil {
+			return nil, err
+		}
+		typeDesc, err := p.Descriptors().MutableByID(p.txn).Type(ctx, typeID)
+		if err != nil {
+			return nil, err
+		}
+		regionEnumDesc := typeDesc.AsRegionEnumTypeDescriptor()
+		if regionEnumDesc == nil {
+			return nil, errors.AssertionFailedf(
+				"expected region enum type, not %s for type %q (%d)",
+				typeDesc.GetKind(), typeDesc.GetName(), typeDesc.GetID())
+		}
 
 		// Ensure that there's only 1 region on the multi-region enum (the primary
 		// region) as this can only be dropped once all other regions have been
@@ -447,16 +421,16 @@ func (p *planner) AlterDatabaseDropRegion(
 		if isSystemDatabase {
 			return nil, pgerror.Newf(
 				pgcode.InvalidDatabaseDefinition,
-				"cannot drop %q; system database must have at least 1 region",
-				catpb.RegionName(n.Region),
+				"cannot drop %s; system database must have at least 1 region",
+				n.Region,
 			)
 		}
 		if allowDrop := allowDropFinalRegion.Get(&p.execCfg.Settings.SV); !allowDrop {
 			return nil, errors.WithHintf(
 				pgerror.Newf(
 					pgcode.InvalidDatabaseDefinition,
-					"cannot drop %q; databases in this cluster must have at least 1 region",
-					catpb.RegionName(n.Region),
+					"cannot drop %s; databases in this cluster must have at least 1 region",
+					n.Region,
 				),
 				"Try enabling the %s cluster setting.",
 				allowDropFinalRegion.Name(),
@@ -487,6 +461,14 @@ func (p *planner) AlterDatabaseDropRegion(
 		}
 	}
 
+	// If this is the system database, we can only drop a region if it is
+	// not a part of any other database.
+	if isSystemDatabase := dbDesc.ID == keys.SystemDatabaseID; isSystemDatabase {
+		if err := p.checkCanDropSystemDatabaseRegion(ctx, n.Region); err != nil {
+			return nil, err
+		}
+	}
+
 	// Ensure survivability goal and number of regions after the drop jive.
 	regionConfig, err := SynthesizeRegionConfig(ctx, p.txn, dbDesc.ID, p.Descriptors())
 	if err != nil {
@@ -497,18 +479,16 @@ func (p *planner) AlterDatabaseDropRegion(
 	}
 
 	return &alterDatabaseDropRegionNode{
-		n:                     n,
-		desc:                  dbDesc,
-		removingPrimaryRegion: removingPrimaryRegion,
-		toDrop:                toDrop,
+		n,
+		dbDesc,
+		removingPrimaryRegion,
+		toDrop,
 	}, nil
 }
 
 // checkCanDropSystemDatabaseRegion checks if region is in use in any database
 // other than the system database. If it is, an error is returned.
-func (p *planner) checkCanDropSystemDatabaseRegion(
-	ctx context.Context, region catpb.RegionName,
-) error {
+func (p *planner) checkCanDropSystemDatabaseRegion(ctx context.Context, region tree.Name) error {
 	dbs, err := p.Descriptors().GetAllDatabases(ctx, p.txn)
 	if err != nil {
 		return err
@@ -541,7 +521,7 @@ func (p *planner) checkCanDropSystemDatabaseRegion(
 		return err
 	}
 	typeIDsToFetch := typeIDsToFetchSet.Ordered()
-	dbTypes, err := p.Descriptors().ByIDWithoutLeased(p.txn).Get().Descs(ctx, typeIDsToFetch)
+	dbTypes, err := p.Descriptors().ByID(p.txn).Get().Descs(ctx, typeIDsToFetch)
 	if err != nil {
 		return errors.Wrapf(err, "failed to fetch multi-region enums while attempting to drop"+
 			" system database region %s", &region)
@@ -578,37 +558,10 @@ func (p *planner) checkCanDropSystemDatabaseRegion(
 		})
 		return errors.WithHintf(
 			pgerror.Newf(pgcode.DependentObjectsStillExist,
-				"cannot drop region %q from the system database while that region is still in use",
-				region,
+				"cannot drop region %v from the system database while that region is still in use",
+				&region,
 			), "region is in use by databases: %v", &databases)
 	}
-
-	tablesToClean := []string{"sqlliveness", "lease", "sql_instances"}
-	for _, t := range tablesToClean {
-		// Use the synchronous version of sql_liveness_is_alive to make sure
-		// data is fresh.
-		livenessQuery := fmt.Sprintf(
-			`SELECT count(*) > 0 FROM system.%s WHERE crdb_region = $1 AND
-          crdb_internal.sql_liveness_is_alive(session_id, true)`, t)
-		row, err := p.QueryRowEx(ctx, "check-session-liveness-for-region",
-			sessiondata.NodeUserSessionDataOverride, livenessQuery, region)
-		if err != nil {
-			return err
-		}
-		// Block dropping n.Region if any associated session is active.
-		if tree.MustBeDBool(row[0]) {
-			return errors.WithHintf(
-				pgerror.Newf(
-					pgcode.InvalidDatabaseDefinition,
-					"cannot drop region %q from the system database while there are live nodes in that region",
-					region,
-				),
-				"You must not have any active sessions that are in this region. "+
-					"Ensure that there no nodes that still belong to region %q", region,
-			)
-		}
-	}
-
 	return nil
 }
 
@@ -628,16 +581,15 @@ func (p *planner) checkPrivilegesForMultiRegionOp(
 	ctx context.Context, desc catalog.Descriptor,
 ) error {
 
-	// Unless MultiRegionSystemDatabaseEnabled is true, only secondary tenants may
-	// have their system database set up for multi-region operations. Even then,
-	// ensure that only the node user may configure the system database.
+	// Ensure that only secondary tenants may have their system database
+	// set up for multi-region operations. Even then, ensure that only the
+	// node user may configure the system database.
 	//
-	// TODO(rafi): For now, we also allow root to perform the various operations
-	// to enable testing. When MultiRegionSystemDatabaseEnabled leaves preview,
-	// we may want to allow any admin user to perform these operations as well.
+	// TODO(ajwerner): Adopt the auto-config infrastructure for configuring
+	// multi-region primitives in the system database. For now, we also allow
+	// root to perform the various operations to enable testing.
 	if desc.GetID() == keys.SystemDatabaseID {
-		if multiRegionSystemDatabase := sqlclustersettings.MultiRegionSystemDatabaseEnabled.Get(&p.execCfg.Settings.SV); !multiRegionSystemDatabase &&
-			p.execCfg.Codec.ForSystemTenant() {
+		if p.execCfg.Codec.ForSystemTenant() {
 			return pgerror.Newf(
 				pgcode.FeatureNotSupported,
 				"modifying the regions of system database is not supported",
@@ -772,65 +724,9 @@ func (n *alterDatabaseDropRegionNode) startExec(params runParams) error {
 	if n.n == nil {
 		return nil
 	}
-
-	// Validate if the existing zone config of this descriptor is sane,
-	// since otherwise, any modifications for multi-region could fail during
-	// the job phase.
-	if err := params.p.validateExistingZoneCfg(params.ctx, n.desc.ID); err != nil {
-		return err
-	}
-
 	typeDesc, err := params.p.Descriptors().MutableByID(params.p.txn).Type(params.ctx, n.desc.RegionConfig.RegionEnumID)
 	if err != nil {
 		return err
-	}
-
-	// Resolve the physical value for this region.
-	var physicalRegionRep []byte
-	for i := 0; i < typeDesc.NumEnumMembers(); i++ {
-		if typeDesc.GetMemberLogicalRepresentation(i) == string(n.n.Region) {
-			physicalRegionRep = typeDesc.GetMemberPhysicalRepresentation(i)
-			break
-		}
-	}
-
-	if len(physicalRegionRep) == 0 {
-		if n.n.IfExists {
-			params.p.BufferClientNotice(
-				params.ctx,
-				pgnotice.Newf("region %q is not defined on the database; skipping", n.n.Region),
-			)
-			return nil
-		}
-		return pgerror.Newf(
-			pgcode.UndefinedObject,
-			"region %q has not been added to the database",
-			n.n.Region,
-		)
-	}
-
-	// If the region is being dropped from the system database, we need to make
-	// sure no other databases are using that region and there are no nodes alive
-	// in that region. Then we must clean out all the rows from system tables that
-	// reference the region.
-	if n.desc.GetID() == keys.SystemDatabaseID {
-		if err := params.p.checkCanDropSystemDatabaseRegion(params.ctx, catpb.RegionName(n.n.Region)); err != nil {
-			return err
-		}
-
-		// For the region_liveness table, we can just safely remove the reference
-		// (if any) of the dropping region from the table.
-		if _, err := params.p.ExecEx(params.ctx, "remove-region-liveness-ref",
-			sessiondata.NodeUserSessionDataOverride, `DELETE FROM system.region_liveness
-			        WHERE crdb_region = $1`, n.n.Region); err != nil {
-			return err
-		}
-
-		if err := regionliveness.CleanupSystemTableForRegion(
-			params.ctx, params.p.execCfg.Codec, string(physicalRegionRep), params.p.txn,
-		); err != nil {
-			return err
-		}
 	}
 
 	if n.removingPrimaryRegion {
@@ -867,6 +763,20 @@ func (n *alterDatabaseDropRegionNode) startExec(params runParams) error {
 		// ROW table is homed in that region. The type schema changer is responsible
 		// for all the requisite validation.
 		if err := params.p.dropEnumValue(params.ctx, typeDesc, tree.EnumValue(n.n.Region)); err != nil {
+			if pgerror.GetPGCode(err) == pgcode.UndefinedObject {
+				if n.n.IfExists {
+					params.p.BufferClientNotice(
+						params.ctx,
+						pgnotice.Newf("region %q is not defined on the database; skipping", n.n.Region),
+					)
+					return nil
+				}
+				return pgerror.Newf(
+					pgcode.UndefinedObject,
+					"region %q has not been added to the database",
+					n.n.Region,
+				)
+			}
 			return err
 		}
 	}
@@ -894,7 +804,6 @@ func (n *alterDatabaseDropRegionNode) Values() tree.Datums          { return tre
 func (n *alterDatabaseDropRegionNode) Close(context.Context)        {}
 
 type alterDatabasePrimaryRegionNode struct {
-	zeroInputPlanNode
 	n    *tree.AlterDatabasePrimaryRegion
 	desc *dbdesc.Mutable
 }
@@ -1226,13 +1135,6 @@ func (n *alterDatabasePrimaryRegionNode) setInitialPrimaryRegion(params runParam
 
 func (n *alterDatabasePrimaryRegionNode) startExec(params runParams) error {
 
-	// Validate if the existing zone config of this descriptor is sane,
-	// since otherwise, any modifications for multi-region could fail during
-	// the job phase.
-	if err := params.p.validateExistingZoneCfg(params.ctx, n.desc.ID); err != nil {
-		return err
-	}
-
 	// There are two paths to consider here: either this is the first setting of
 	// the primary region, OR we're updating the primary region. In the case where
 	// this is the first setting of the primary region, the call will turn the
@@ -1281,7 +1183,6 @@ func (n *alterDatabasePrimaryRegionNode) Close(context.Context)        {}
 func (n *alterDatabasePrimaryRegionNode) ReadingOwnWrites()            {}
 
 type alterDatabaseSurvivalGoalNode struct {
-	zeroInputPlanNode
 	n    *tree.AlterDatabaseSurvivalGoal
 	desc *dbdesc.Mutable
 }
@@ -1310,9 +1211,16 @@ func (p *planner) AlterDatabaseSurvivalGoal(
 }
 
 func (n *alterDatabaseSurvivalGoalNode) startExec(params runParams) error {
-	return params.p.alterDatabaseSurvivalGoal(
+	if err := params.p.alterDatabaseSurvivalGoal(
 		params.ctx, n.desc, n.n.SurvivalGoal, tree.AsStringWithFQNames(n.n, params.Ann()),
-	)
+	); err != nil {
+		return err
+	}
+
+	if n.desc.GetID() == keys.SystemDatabaseID {
+		return nil
+	}
+	return params.p.maybeUpdateSystemDBSurvivalGoal(params.ctx)
 }
 
 // alterDatabaseSurvivalGoal modifies a multi-region database's survival goal,
@@ -1416,12 +1324,88 @@ func (p *planner) alterDatabaseSurvivalGoal(
 	)
 }
 
+// maybeUpdateSystemDBSurvivalGoal updates the survival goal of system database
+// to the max survival goal of all non-system databases, which means that the
+// survival goal could be either upgraded or downgraded.
+func (p *planner) maybeUpdateSystemDBSurvivalGoal(ctx context.Context) error {
+	// Now that the zone survival goal is properly supported on the system database,
+	// with region liveness support we no longer to inherit the stronger guarantees
+	// assigned to other databases. i.e. Previously if any database had survive region,
+	// the system database would be forced to inherit those stronger guarantees.
+	if p.EvalContext().Settings.Version.IsActive(ctx, clusterversion.V24_1_SystemDatabaseSurvivability) {
+		return nil
+	}
+
+	sysDB, err := p.Descriptors().MutableByID(p.Txn()).Database(ctx, keys.SystemDatabaseID)
+	if err != nil {
+		return err
+	}
+
+	if !sysDB.IsMultiRegion() {
+		return nil
+	}
+
+	var maxSurvivalGoal descpb.SurvivalGoal
+	maybeUpdateMaxGoal := func(db catalog.DatabaseDescriptor) {
+		// Skip if it's a system db.
+		if db.GetID() == keys.SystemDatabaseID {
+			return
+		}
+		if !db.IsMultiRegion() {
+			return
+		}
+		if db.Dropped() {
+			return
+		}
+		curGoal := db.GetRegionConfig().SurvivalGoal
+		if curGoal > maxSurvivalGoal {
+			maxSurvivalGoal = curGoal
+		}
+	}
+
+	dbs, err := p.Descriptors().GetAllDatabases(ctx, p.Txn())
+	if err != nil {
+		return err
+	}
+
+	if err := dbs.ForEachDescriptor(func(desc catalog.Descriptor) error {
+		db, ok := desc.(catalog.DatabaseDescriptor)
+		if !ok {
+			return errors.WithDetailf(
+				errors.AssertionFailedf(
+					"got unexpected non-database %T while iterating databases",
+					desc,
+				),
+				"unexpected descriptor: %v", desc)
+		}
+		maybeUpdateMaxGoal(db)
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	cfg := sysDB.GetRegionConfig()
+	if cfg.SurvivalGoal == maxSurvivalGoal {
+		return nil
+	}
+
+	targetSurvivalGoal, err := TranslateProtoSurvivalGoal(maxSurvivalGoal)
+	if err != nil {
+		return err
+	}
+	return p.alterDatabaseSurvivalGoal(
+		ctx,
+		sysDB,
+		targetSurvivalGoal,
+		"update system database survival goal to max non-system db survival goal", /* jobDesc */
+	)
+}
+
 func (n *alterDatabaseSurvivalGoalNode) Next(runParams) (bool, error) { return false, nil }
 func (n *alterDatabaseSurvivalGoalNode) Values() tree.Datums          { return tree.Datums{} }
 func (n *alterDatabaseSurvivalGoalNode) Close(context.Context)        {}
 
 type alterDatabasePlacementNode struct {
-	zeroInputPlanNode
 	n    *tree.AlterDatabasePlacement
 	desc *dbdesc.Mutable
 }
@@ -1565,7 +1549,6 @@ func (n *alterDatabasePlacementNode) Values() tree.Datums          { return tree
 func (n *alterDatabasePlacementNode) Close(context.Context)        {}
 
 type alterDatabaseAddSuperRegion struct {
-	zeroInputPlanNode
 	n    *tree.AlterDatabaseAddSuperRegion
 	desc *dbdesc.Mutable
 }
@@ -1670,7 +1653,6 @@ func (n *alterDatabaseAddSuperRegion) Values() tree.Datums          { return tre
 func (n *alterDatabaseAddSuperRegion) Close(context.Context)        {}
 
 type alterDatabaseDropSuperRegion struct {
-	zeroInputPlanNode
 	n    *tree.AlterDatabaseDropSuperRegion
 	desc *dbdesc.Mutable
 }
@@ -1793,7 +1775,6 @@ func (p *planner) getSuperRegionsForDatabase(
 }
 
 type alterDatabaseAlterSuperRegion struct {
-	zeroInputPlanNode
 	n    *tree.AlterDatabaseAlterSuperRegion
 	desc *dbdesc.Mutable
 }
@@ -1961,7 +1942,6 @@ func (p *planner) addSuperRegion(
 }
 
 type alterDatabaseSecondaryRegion struct {
-	zeroInputPlanNode
 	n    *tree.AlterDatabaseSecondaryRegion
 	desc *dbdesc.Mutable
 }
@@ -2000,13 +1980,6 @@ func (n *alterDatabaseSecondaryRegion) startExec(params runParams) error {
 		)
 	}
 
-	// Validate if the existing zone config of this descriptor is sane,
-	// since otherwise, any modifications for multi-region could fail during
-	// the job phase.
-	if err := params.p.validateExistingZoneCfg(params.ctx, n.desc.ID); err != nil {
-		return err
-	}
-
 	// Verify that the secondary region is part of the region list.
 	prevRegionConfig, err := SynthesizeRegionConfig(params.ctx, params.p.txn, n.desc.ID, params.p.Descriptors())
 	if err != nil {
@@ -2041,7 +2014,7 @@ func (n *alterDatabaseSecondaryRegion) startExec(params runParams) error {
 	}
 
 	regions, ok := prevRegionConfig.GetSuperRegionRegionsForRegion(prevRegionConfig.PrimaryRegion())
-	if !ok && prevRegionConfig.IsMemberOfSuperRegion(catpb.RegionName(n.n.SecondaryRegion)) {
+	if !ok && prevRegionConfig.IsMemberOfExplicitSuperRegion(catpb.RegionName(n.n.SecondaryRegion)) {
 		return pgerror.New(pgcode.InvalidDatabaseDefinition,
 			"the secondary region can not be in a super region, unless the primary is also "+
 				"within a super region",
@@ -2110,7 +2083,6 @@ func (n *alterDatabaseSecondaryRegion) Values() tree.Datums          { return tr
 func (n *alterDatabaseSecondaryRegion) Close(context.Context)        {}
 
 type alterDatabaseDropSecondaryRegion struct {
-	zeroInputPlanNode
 	n    *tree.AlterDatabaseDropSecondaryRegion
 	desc *dbdesc.Mutable
 }
@@ -2260,7 +2232,6 @@ func (n *alterDatabaseDropSecondaryRegion) Values() tree.Datums          { retur
 func (n *alterDatabaseDropSecondaryRegion) Close(context.Context)        {}
 
 type alterDatabaseSetZoneConfigExtensionNode struct {
-	zeroInputPlanNode
 	n          *tree.AlterDatabaseSetZoneConfigExtension
 	desc       *dbdesc.Mutable
 	yamlConfig tree.TypedExpr
@@ -2439,7 +2410,7 @@ func (n *alterDatabaseSetZoneConfigExtensionNode) startExec(params runParams) er
 		}
 
 		// Validate that there are no conflicts in the zone setup.
-		if err := zonepb.ValidateNoRepeatKeysInZone(newZone); err != nil {
+		if err := validateNoRepeatKeysInZone(newZone); err != nil {
 			return err
 		}
 

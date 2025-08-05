@@ -19,9 +19,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/version"
 	"github.com/cockroachdb/cockroach/pkg/workload"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/version"
 	"golang.org/x/time/rate"
 )
 
@@ -84,7 +84,7 @@ func maybeDisableMergeQueue(db *gosql.DB) error {
 	v, err := version.Parse(versionStr)
 	// If we can't parse the error then we'll assume that we should disable the
 	// queue. This happens in testing.
-	if err == nil && v.Major().AtLeast(version.MustParseMajorVersion("v19.2")) {
+	if err == nil && (v.Major() > 19 || (v.Major() == 19 && v.Minor() >= 2)) {
 		return nil
 	}
 	_, err = db.Exec("SET CLUSTER SETTING kv.range_merge.queue.enabled = false")
@@ -98,8 +98,31 @@ func Split(ctx context.Context, db *gosql.DB, table workload.Table, concurrency 
 		return err
 	}
 
+	// Check to see if we're allowed to perform any splits - if we're in a tenant,
+	// we can't perform splits.
+	_, err := db.Exec("SHOW RANGES FROM TABLE system.descriptor")
+	if err != nil {
+		if strings.Contains(err.Error(), "not fully contained in tenant") ||
+			strings.Contains(err.Error(), errorutil.UnsupportedUnderClusterVirtualizationMessage) {
+			log.Infof(ctx, `skipping workload splits; can't split on tenants'`)
+			//nolint:returnerrcheck
+			return nil
+		}
+		return err
+	}
+
 	if table.Splits.NumBatches <= 0 {
 		return nil
+	}
+
+	// Test that we can actually perform a scatter.
+	if _, err := db.Exec("ALTER TABLE system.jobs SCATTER"); err != nil {
+		if strings.Contains(err.Error(), "operation is disabled within a virtual cluster") {
+			log.Infof(ctx, `skipping workload splits; can't scatter on tenants'`)
+			//nolint:returnerrcheck
+			return nil
+		}
+		return err
 	}
 
 	splitPoints := make([][]interface{}, 0, table.Splits.NumBatches)

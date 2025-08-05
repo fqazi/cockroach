@@ -96,7 +96,7 @@ func newAnyNotNullHashAggAlloc(
 			return &anyNotNullDatumHashAggAlloc{aggAllocBase: allocBase}, nil
 		}
 	}
-	return nil, errors.AssertionFailedf("unsupported any not null agg type %s", t.Name())
+	return nil, errors.Errorf("unsupported any not null agg type %s", t.Name())
 }
 
 // anyNotNullBoolHashAgg implements the ANY_NOT_NULL aggregate, returning the
@@ -110,7 +110,7 @@ type anyNotNullBoolHashAgg struct {
 var _ AggregateFunc = &anyNotNullBoolHashAgg{}
 
 func (a *anyNotNullBoolHashAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	if a.foundNonNullForCurrentGroup {
 		// We have already seen non-null for the current group, and since there
@@ -122,7 +122,7 @@ func (a *anyNotNullBoolHashAgg) Compute(
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Bool(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		{
 			sel = sel[startIdx:endIdx]
 			if nulls.MaybeHasNulls() {
@@ -218,7 +218,7 @@ type anyNotNullBytesHashAgg struct {
 var _ AggregateFunc = &anyNotNullBytesHashAgg{}
 
 func (a *anyNotNullBytesHashAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	if a.foundNonNullForCurrentGroup {
 		// We have already seen non-null for the current group, and since there
@@ -230,7 +230,7 @@ func (a *anyNotNullBytesHashAgg) Compute(
 	oldCurAggSize := len(a.curAgg)
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Bytes(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		{
 			sel = sel[startIdx:endIdx]
 			if nulls.MaybeHasNulls() {
@@ -330,7 +330,7 @@ type anyNotNullDecimalHashAgg struct {
 var _ AggregateFunc = &anyNotNullDecimalHashAgg{}
 
 func (a *anyNotNullDecimalHashAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	if a.foundNonNullForCurrentGroup {
 		// We have already seen non-null for the current group, and since there
@@ -342,7 +342,7 @@ func (a *anyNotNullDecimalHashAgg) Compute(
 	oldCurAggSize := a.curAgg.Size()
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Decimal(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		{
 			sel = sel[startIdx:endIdx]
 			if nulls.MaybeHasNulls() {
@@ -438,7 +438,7 @@ type anyNotNullInt16HashAgg struct {
 var _ AggregateFunc = &anyNotNullInt16HashAgg{}
 
 func (a *anyNotNullInt16HashAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	if a.foundNonNullForCurrentGroup {
 		// We have already seen non-null for the current group, and since there
@@ -450,7 +450,7 @@ func (a *anyNotNullInt16HashAgg) Compute(
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Int16(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		{
 			sel = sel[startIdx:endIdx]
 			if nulls.MaybeHasNulls() {
@@ -546,7 +546,7 @@ type anyNotNullInt32HashAgg struct {
 var _ AggregateFunc = &anyNotNullInt32HashAgg{}
 
 func (a *anyNotNullInt32HashAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	if a.foundNonNullForCurrentGroup {
 		// We have already seen non-null for the current group, and since there
@@ -558,7 +558,7 @@ func (a *anyNotNullInt32HashAgg) Compute(
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Int32(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		{
 			sel = sel[startIdx:endIdx]
 			if nulls.MaybeHasNulls() {
@@ -654,7 +654,7 @@ type anyNotNullInt64HashAgg struct {
 var _ AggregateFunc = &anyNotNullInt64HashAgg{}
 
 func (a *anyNotNullInt64HashAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	if a.foundNonNullForCurrentGroup {
 		// We have already seen non-null for the current group, and since there
@@ -666,7 +666,7 @@ func (a *anyNotNullInt64HashAgg) Compute(
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Int64(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		{
 			sel = sel[startIdx:endIdx]
 			if nulls.MaybeHasNulls() {
@@ -762,7 +762,7 @@ type anyNotNullFloat64HashAgg struct {
 var _ AggregateFunc = &anyNotNullFloat64HashAgg{}
 
 func (a *anyNotNullFloat64HashAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	if a.foundNonNullForCurrentGroup {
 		// We have already seen non-null for the current group, and since there
@@ -774,7 +774,7 @@ func (a *anyNotNullFloat64HashAgg) Compute(
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Float64(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		{
 			sel = sel[startIdx:endIdx]
 			if nulls.MaybeHasNulls() {
@@ -870,7 +870,7 @@ type anyNotNullTimestampHashAgg struct {
 var _ AggregateFunc = &anyNotNullTimestampHashAgg{}
 
 func (a *anyNotNullTimestampHashAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	if a.foundNonNullForCurrentGroup {
 		// We have already seen non-null for the current group, and since there
@@ -882,7 +882,7 @@ func (a *anyNotNullTimestampHashAgg) Compute(
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Timestamp(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		{
 			sel = sel[startIdx:endIdx]
 			if nulls.MaybeHasNulls() {
@@ -978,7 +978,7 @@ type anyNotNullIntervalHashAgg struct {
 var _ AggregateFunc = &anyNotNullIntervalHashAgg{}
 
 func (a *anyNotNullIntervalHashAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	if a.foundNonNullForCurrentGroup {
 		// We have already seen non-null for the current group, and since there
@@ -990,7 +990,7 @@ func (a *anyNotNullIntervalHashAgg) Compute(
 	var oldCurAggSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Interval(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		{
 			sel = sel[startIdx:endIdx]
 			if nulls.MaybeHasNulls() {
@@ -1086,7 +1086,7 @@ type anyNotNullJSONHashAgg struct {
 var _ AggregateFunc = &anyNotNullJSONHashAgg{}
 
 func (a *anyNotNullJSONHashAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	if a.foundNonNullForCurrentGroup {
 		// We have already seen non-null for the current group, and since there
@@ -1101,7 +1101,7 @@ func (a *anyNotNullJSONHashAgg) Compute(
 	}
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.JSON(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		{
 			sel = sel[startIdx:endIdx]
 			if nulls.MaybeHasNulls() {
@@ -1229,7 +1229,7 @@ type anyNotNullDatumHashAgg struct {
 var _ AggregateFunc = &anyNotNullDatumHashAgg{}
 
 func (a *anyNotNullDatumHashAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	if a.foundNonNullForCurrentGroup {
 		// We have already seen non-null for the current group, and since there
@@ -1244,7 +1244,7 @@ func (a *anyNotNullDatumHashAgg) Compute(
 	}
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Datum(), vec.Nulls()
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		{
 			sel = sel[startIdx:endIdx]
 			if nulls.MaybeHasNulls() {

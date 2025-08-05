@@ -17,7 +17,7 @@ import (
 
 // valuesideEncodeCol is the vector version of valueside.Encode.
 func valuesideEncodeCol(
-	appendTo []byte, colID valueside.ColumnIDDelta, vec *coldata.Vec, row int,
+	appendTo []byte, colID valueside.ColumnIDDelta, vec coldata.Vec, row int,
 ) ([]byte, error) {
 	if vec.Nulls().NullAt(row) {
 		return encoding.EncodeNullValue(appendTo, uint32(colID)), nil
@@ -70,6 +70,6 @@ func valuesideEncodeCol(
 		}
 		return encoding.EncodeUUIDValue(appendTo, uint32(colID), u), nil
 	default:
-		return valueside.Encode(appendTo, colID, vec.Datum().Get(row).(tree.Datum))
+		return valueside.Encode(appendTo, colID, vec.Datum().Get(row).(tree.Datum), nil)
 	}
 }

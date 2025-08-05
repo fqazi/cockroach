@@ -17,12 +17,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestVecWindow(t *testing.T) {
+func TestMemColumnWindow(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
 	rng, _ := randutil.NewTestRand()
 
-	c := coldata.NewVec(types.Int, coldata.BatchSize(), coldata.StandardColumnFactory)
+	c := coldata.NewMemColumn(types.Int, coldata.BatchSize(), coldata.StandardColumnFactory)
 
 	ints := c.Int64()
 	for i := 0; i < coldata.BatchSize(); i++ {
@@ -110,7 +110,7 @@ func TestNullRanges(t *testing.T) {
 		},
 	}
 
-	c := coldata.NewVec(types.Int, coldata.BatchSize(), coldata.StandardColumnFactory)
+	c := coldata.NewMemColumn(types.Int, coldata.BatchSize(), coldata.StandardColumnFactory)
 	for _, tc := range tcs {
 		if tc.end > coldata.BatchSize() {
 			continue
@@ -136,7 +136,7 @@ func TestAppend(t *testing.T) {
 	// TODO(asubiotto): Test nulls.
 	var typ = types.Int
 
-	src := coldata.NewVec(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
+	src := coldata.NewMemColumn(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
 	sel := make([]int, len(src.Int64()))
 	for i := range sel {
 		sel[i] = i
@@ -212,7 +212,7 @@ func TestAppend(t *testing.T) {
 			tc.args.SrcEndIdx = coldata.BatchSize()
 		}
 		t.Run(tc.name, func(t *testing.T) {
-			dest := coldata.NewVec(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
+			dest := coldata.NewMemColumn(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
 			dest.Append(tc.args)
 			require.Equal(t, tc.expectedLength, len(dest.Int64()))
 		})
@@ -223,7 +223,7 @@ func TestCopy(t *testing.T) {
 	// TODO(asubiotto): Test nulls.
 	var typ = types.Int
 
-	src := coldata.NewVec(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
+	src := coldata.NewMemColumn(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
 	srcInts := src.Int64()
 	for i := range srcInts {
 		srcInts[i] = int64(i + 1)
@@ -280,7 +280,7 @@ func TestCopy(t *testing.T) {
 		}
 		tc.args.Src = src
 		t.Run(tc.name, func(t *testing.T) {
-			dest := coldata.NewVec(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
+			dest := coldata.NewMemColumn(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
 			dest.Copy(tc.args)
 			destInts := dest.Int64()
 			firstNonZero := 0
@@ -304,7 +304,7 @@ func TestCopyNulls(t *testing.T) {
 	var typ = types.Int
 
 	// Set up the destination vector.
-	dst := coldata.NewVec(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
+	dst := coldata.NewMemColumn(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
 	dstInts := dst.Int64()
 	for i := range dstInts {
 		dstInts[i] = int64(1)
@@ -315,7 +315,7 @@ func TestCopyNulls(t *testing.T) {
 	}
 
 	// Set up the source vector.
-	src := coldata.NewVec(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
+	src := coldata.NewMemColumn(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
 	srcInts := src.Int64()
 	for i := range srcInts {
 		srcInts[i] = 2
@@ -358,7 +358,7 @@ func TestCopyWithReorderedSource(t *testing.T) {
 	var typ = types.Int
 
 	for _, hasNulls := range []bool{false, true} {
-		src := coldata.NewVec(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
+		src := coldata.NewMemColumn(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
 		srcInts := src.Int64()
 		sel := make([]int, 0, coldata.BatchSize())
 		for i := range srcInts {
@@ -376,7 +376,7 @@ func TestCopyWithReorderedSource(t *testing.T) {
 			order[sel[i]] = o
 		}
 
-		dest := coldata.NewVec(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
+		dest := coldata.NewMemColumn(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
 		dest.CopyWithReorderedSource(src, sel, order)
 		destInts := dest.Int64()
 
@@ -430,7 +430,7 @@ func BenchmarkAppend(b *testing.B) {
 				if !typ.Identical(types.Bytes) && bc.bytesLen == longBytesLen {
 					continue
 				}
-				src := coldata.NewVec(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
+				src := coldata.NewMemColumn(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
 				coldatatestutils.RandomVec(coldatatestutils.RandomVecArgs{
 					Rand:             rng,
 					Vec:              src,
@@ -443,7 +443,7 @@ func BenchmarkAppend(b *testing.B) {
 				b.Run(fmt.Sprintf("%s/%s/NullProbability=%.1f", typ, bc.name, nullProbability), func(b *testing.B) {
 					b.SetBytes(int64(bc.bytesLen * coldata.BatchSize()))
 					bc.args.DestIdx = 0
-					dest := coldata.NewVec(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
+					dest := coldata.NewMemColumn(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
 					for i := 0; i < b.N; i++ {
 						dest.Append(bc.args)
 						bc.args.DestIdx += coldata.BatchSize()
@@ -476,7 +476,7 @@ func BenchmarkCopy(b *testing.B) {
 
 	for _, typ := range []*types.T{types.Bytes, types.Decimal, types.Int} {
 		for _, nullProbability := range []float64{0, 0.2} {
-			src := coldata.NewVec(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
+			src := coldata.NewMemColumn(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
 			coldatatestutils.RandomVec(coldatatestutils.RandomVecArgs{
 				Rand:             rng,
 				Vec:              src,
@@ -487,7 +487,7 @@ func BenchmarkCopy(b *testing.B) {
 			for _, bc := range benchCases {
 				bc.args.Src = src
 				bc.args.SrcEndIdx = coldata.BatchSize()
-				dest := coldata.NewVec(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
+				dest := coldata.NewMemColumn(typ, coldata.BatchSize(), coldata.StandardColumnFactory)
 				b.Run(fmt.Sprintf("%s/%s/NullProbability=%.1f", typ, bc.name, nullProbability), func(b *testing.B) {
 					b.SetBytes(8 * int64(coldata.BatchSize()))
 					for i := 0; i < b.N; i++ {

@@ -12,7 +12,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/server/debug"
 	"github.com/cockroachdb/cockroach/pkg/server/dumpstore"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/util/cgroups"
@@ -59,13 +58,6 @@ const (
 	QueryFileNameSuffix = ".csv"
 )
 
-var activeQueryCombinedFileSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"server.active_query.total_dump_size_limit",
-	"maximum combined disk size of preserved active query profiles",
-	64<<20, // 64MiB
-)
-
 // NewActiveQueryProfiler creates a NewQueryProfiler. dir is the directory in which
 // profiles are to be stored.
 func NewActiveQueryProfiler(
@@ -75,7 +67,7 @@ func NewActiveQueryProfiler(
 		return nil, errors.AssertionFailedf("need to specify dir for NewQueryProfiler")
 	}
 
-	dumpStore := dumpstore.NewStore(dir, activeQueryCombinedFileSize, st)
+	dumpStore := dumpstore.NewStore(dir, maxCombinedFileSize, st)
 
 	maxMem, warn, err := memLimitFn()
 	if err != nil {

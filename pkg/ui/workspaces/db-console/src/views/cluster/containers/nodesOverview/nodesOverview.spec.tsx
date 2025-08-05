@@ -3,17 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { SortSetting } from "@cockroachlabs/cluster-ui";
-import { ReactWrapper } from "enzyme";
-import times from "lodash/times";
-import Long from "long";
 import React from "react";
-
-import { cockroach } from "src/js/protos";
-import { LocalSetting } from "src/redux/localsettings";
-import { livenessByNodeIDSelector, LivenessStatus } from "src/redux/nodes";
-import { AdminUIState } from "src/redux/state";
-import { connectedMount } from "src/test-utils";
+import { ReactWrapper } from "enzyme";
+import { times } from "lodash";
+import Long from "long";
 
 import {
   decommissionedNodesTableDataSelector,
@@ -22,6 +15,12 @@ import {
   NodeList,
   NodeStatusRow,
 } from "./index";
+import { AdminUIState } from "src/redux/state";
+import { LocalSetting } from "src/redux/localsettings";
+import { connectedMount } from "src/test-utils";
+import { cockroach } from "src/js/protos";
+import { livenessByNodeIDSelector, LivenessStatus } from "src/redux/nodes";
+import { SortSetting } from "@cockroachlabs/cluster-ui";
 
 import NodeLivenessStatus = cockroach.kv.kvserver.liveness.livenesspb.NodeLivenessStatus;
 import MembershipStatus = cockroach.kv.kvserver.liveness.livenesspb.MembershipStatus;

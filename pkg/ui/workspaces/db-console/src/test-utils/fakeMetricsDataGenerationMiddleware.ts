@@ -3,15 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import clone from "lodash/clone";
-import Long from "long";
 import { Store, Action, Dispatch } from "redux";
-
+import Long from "long";
+import { clone } from "lodash";
+import { AdminUIState } from "src/redux/state";
+import { RECEIVE, RequestWithResponse, WithID } from "src/redux/metrics";
 import { PayloadAction } from "src/interfaces/action";
 import { cockroach } from "src/js/protos";
-import { RECEIVE, RequestWithResponse, WithID } from "src/redux/metrics";
-import { AdminUIState } from "src/redux/state";
-
 import ITimeSeriesDatapoint = cockroach.ts.tspb.ITimeSeriesDatapoint;
 
 function fakeTimeSeriesDatapoint(timestamp?: Long): ITimeSeriesDatapoint {

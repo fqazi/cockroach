@@ -9,7 +9,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"slices"
+	"sort"
 	"testing"
 	"time"
 
@@ -26,7 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -34,7 +33,7 @@ func TestRangeIDChunk(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var c rangeIDChunk[roachpb.RangeID]
+	var c rangeIDChunk
 	if c.Len() != 0 {
 		t.Fatalf("expected empty chunk, but found %d", c.Len())
 	}
@@ -90,7 +89,7 @@ func TestRangeIDQueue(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var q rangeIDQueue[roachpb.RangeID]
+	var q rangeIDQueue
 	if q.Len() != 0 {
 		t.Fatalf("expected empty queue, but found %d", q.Len())
 	}
@@ -129,26 +128,18 @@ func TestRangeIDQueue(t *testing.T) {
 type testProcessor struct {
 	mu struct {
 		syncutil.Mutex
-		raftReady               map[roachpb.RangeID]int
-		raftRequest             map[roachpb.RangeID]int
-		raftTick                map[roachpb.RangeID]int
-		rac2PiggybackedAdmitted map[roachpb.RangeID]int
-		rac2RangeController     map[roachpb.RangeID]int
-		ready                   func(roachpb.RangeID)
+		raftReady   map[roachpb.RangeID]int
+		raftRequest map[roachpb.RangeID]int
+		raftTick    map[roachpb.RangeID]int
+		ready       func(roachpb.RangeID)
 	}
-	testEventCh chan func(queuedRangeID, *raftSchedulerShard, raftScheduleState)
 }
-
-var _ testProcessorI = (*testProcessor)(nil)
 
 func newTestProcessor() *testProcessor {
 	p := &testProcessor{}
 	p.mu.raftReady = make(map[roachpb.RangeID]int)
 	p.mu.raftRequest = make(map[roachpb.RangeID]int)
 	p.mu.raftTick = make(map[roachpb.RangeID]int)
-	p.mu.rac2PiggybackedAdmitted = make(map[roachpb.RangeID]int)
-	p.mu.rac2RangeController = make(map[roachpb.RangeID]int)
-	p.testEventCh = make(chan func(queuedRangeID, *raftSchedulerShard, raftScheduleState), 10)
 	return p
 }
 
@@ -183,30 +174,6 @@ func (p *testProcessor) processTick(_ context.Context, rangeID roachpb.RangeID) 
 	return false
 }
 
-func (p *testProcessor) processRACv2PiggybackedAdmitted(
-	_ context.Context, rangeID roachpb.RangeID,
-) {
-	p.mu.Lock()
-	p.mu.rac2PiggybackedAdmitted[rangeID]++
-	p.mu.Unlock()
-}
-
-func (p *testProcessor) processRACv2RangeController(_ context.Context, rangeID roachpb.RangeID) {
-	p.mu.Lock()
-	p.mu.rac2RangeController[rangeID]++
-	p.mu.Unlock()
-}
-
-func (p *testProcessor) processTestEvent(
-	q queuedRangeID, ss *raftSchedulerShard, ev raftScheduleState,
-) {
-	select {
-	case fn := <-p.testEventCh:
-		fn(q, ss, ev)
-	default:
-	}
-}
-
 func (p *testProcessor) readyCount(rangeID roachpb.RangeID) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -214,11 +181,11 @@ func (p *testProcessor) readyCount(rangeID roachpb.RangeID) int {
 }
 
 func (p *testProcessor) countsLocked(m map[roachpb.RangeID]int) string {
-	var ids []roachpb.RangeID
+	var ids roachpb.RangeIDSlice
 	for id := range m {
 		ids = append(ids, id)
 	}
-	slices.Sort(ids)
+	sort.Sort(ids)
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "[")
 	for i, id := range ids {
@@ -234,12 +201,10 @@ func (p *testProcessor) countsLocked(m map[roachpb.RangeID]int) string {
 func (p *testProcessor) String() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return fmt.Sprintf("ready=%s request=%s tick=%s piggybacked-admitted=%s range-controller=%s",
+	return fmt.Sprintf("ready=%s request=%s tick=%s",
 		p.countsLocked(p.mu.raftReady),
 		p.countsLocked(p.mu.raftRequest),
-		p.countsLocked(p.mu.raftTick),
-		p.countsLocked(p.mu.rac2PiggybackedAdmitted),
-		p.countsLocked(p.mu.rac2RangeController))
+		p.countsLocked(p.mu.raftTick))
 }
 
 // Verify that enqueuing more ranges than the number of workers correctly
@@ -266,7 +231,7 @@ func TestSchedulerLoop(t *testing.T) {
 	s.EnqueueRaftTicks(batch)
 
 	testutils.SucceedsSoon(t, func() error {
-		const expected = "ready=[] request=[] tick=[1:1,2:1,3:1] piggybacked-admitted=[] range-controller=[]"
+		const expected = "ready=[] request=[] tick=[1:1,2:1,3:1]"
 		if s := p.String(); expected != s {
 			return errors.Errorf("expected %s, but got %s", expected, s)
 		}
@@ -300,29 +265,18 @@ func TestSchedulerBuffering(t *testing.T) {
 		ticks int
 		want  string
 	}{
-		{flag: stateRaftReady,
-			want: "ready=[1:1] request=[] tick=[] piggybacked-admitted=[] range-controller=[]"},
-		{flag: stateRaftRequest,
-			want: "ready=[1:1] request=[1:1] tick=[] piggybacked-admitted=[] range-controller=[]"},
-		{flag: stateRaftTick,
-			want: "ready=[1:1] request=[1:1] tick=[1:5] piggybacked-admitted=[] range-controller=[]"},
+		{flag: stateRaftReady, want: "ready=[1:1] request=[] tick=[]"},
+		{flag: stateRaftRequest, want: "ready=[1:1] request=[1:1] tick=[]"},
+		{flag: stateRaftTick, want: "ready=[1:1] request=[1:1] tick=[1:5]"},
 		{flag: stateRaftReady | stateRaftRequest | stateRaftTick,
-			want: "ready=[1:2] request=[1:2] tick=[1:10] piggybacked-admitted=[] range-controller=[]"},
-		{flag: stateRaftTick,
-			want: "ready=[1:2] request=[1:2] tick=[1:15] piggybacked-admitted=[] range-controller=[]"},
+			want: "ready=[1:2] request=[1:2] tick=[1:10]"},
+		{flag: stateRaftTick, want: "ready=[1:2] request=[1:2] tick=[1:15]"},
 		// All 4 ticks are processed.
-		{flag: 0, ticks: 4,
-			want: "ready=[1:2] request=[1:2] tick=[1:19] piggybacked-admitted=[] range-controller=[]"},
+		{flag: 0, ticks: 4, want: "ready=[1:2] request=[1:2] tick=[1:19]"},
 		// Only 5/10 ticks are buffered while Raft processing is slow.
-		{flag: stateRaftReady, slow: true, ticks: 10,
-			want: "ready=[1:3] request=[1:2] tick=[1:24] piggybacked-admitted=[] range-controller=[]"},
+		{flag: stateRaftReady, slow: true, ticks: 10, want: "ready=[1:3] request=[1:2] tick=[1:24]"},
 		// All 3 ticks are processed even if processing is slow.
-		{flag: stateRaftReady, slow: true, ticks: 3,
-			want: "ready=[1:4] request=[1:2] tick=[1:27] piggybacked-admitted=[] range-controller=[]"},
-		{flag: stateRACv2PiggybackedAdmitted,
-			want: "ready=[1:4] request=[1:2] tick=[1:27] piggybacked-admitted=[1:1] range-controller=[]"},
-		{flag: stateRACv2RangeController,
-			want: "ready=[1:4] request=[1:2] tick=[1:27] piggybacked-admitted=[1:1] range-controller=[1:1]"},
+		{flag: stateRaftReady, slow: true, ticks: 3, want: "ready=[1:4] request=[1:2] tick=[1:27]"},
 	}
 
 	for _, c := range testCases {
@@ -364,67 +318,6 @@ func TestSchedulerBuffering(t *testing.T) {
 			}
 			return nil
 		})
-	}
-}
-
-func TestSchedulerEnqueueWhileProcessing(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.UnderNonTestBuild(t) // stateTestIntercept needs CrdbTestBuild
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	stopper := stop.NewStopper()
-	defer stopper.Stop(ctx)
-
-	m := newStoreMetrics(metric.TestSampleInterval)
-	p := newTestProcessor()
-	s := newRaftScheduler(log.MakeTestingAmbientContext(stopper.Tracer()), m, p, 1, 1, 1, 5)
-	s.Start(stopper)
-
-	done := make(chan struct{})
-
-	// Inject code into the "middle" of event processing - after having consumed
-	// from the queue, but before re-checking of overlapping enqueue calls.
-	p.testEventCh <- func(q queuedRangeID, ss *raftSchedulerShard, ev raftScheduleState) {
-		// First call into this method. The `queued` timestamp must be set.
-		assert.NotZero(t, q.queued)
-
-		// Even though our event is currently being processed, there is a queued
-		// and otherwise blank event in the scheduler state (which is how we have
-		// concurrent enqueue calls coalesce onto the still pending processing of
-		// the current event).
-		ss.Lock()
-		statePre := ss.state[q.rangeID]
-		ss.Unlock()
-		assert.Equal(t, stateQueued, statePre.flags)
-
-		// Simulate a concurrent actor that enqueues the same range again.
-		// This will not trigger the interceptor again, since the done channel
-		// is closed by that time.
-		s.enqueue1(stateTestIntercept, 1)
-
-		// Seeing that there is an existing "queued" event, the enqueue call does
-		// not enqueue the rangeID again. It will be done after having handled `ev`.
-		ss.Lock()
-		statePost := ss.state[q.rangeID]
-		ss.Unlock()
-
-		assert.Equal(t, stateQueued|stateTestIntercept, statePost.flags)
-		close(done)
-	}
-	p.testEventCh <- func(q queuedRangeID, shard *raftSchedulerShard, ev raftScheduleState) {
-		// Second call into this method, i.e. the overlappingly-enqeued event is
-		// being processed. Check that `queued` timestamp is set.
-		assert.NotZero(t, q.queued)
-		assert.Equal(t, stateQueued|stateTestIntercept, ev.flags)
-	}
-	s.enqueue1(stateTestIntercept, 1) // will become 'ev' in the intercept
-	select {
-	case <-done:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
 	}
 }
 
@@ -680,7 +573,7 @@ func runSchedulerEnqueueRaftTicks(
 		// Flush the queue. We haven't started any workers that pull from it, so we
 		// just clear it out.
 		for _, shard := range s.shards {
-			shard.queue = rangeIDQueue[queuedRangeID]{}
+			shard.queue = rangeIDQueue{}
 		}
 	}
 	ids.Close()

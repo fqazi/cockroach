@@ -3,20 +3,19 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
 import React, { useContext, useEffect, useRef } from "react";
-import uPlot, { AlignedData, Options } from "uplot";
-
-import { TimezoneContext } from "../../contexts";
+import classNames from "classnames/bind";
+import { getStackedBarOpts, stack } from "./bars";
+import uPlot, { AlignedData } from "uplot";
+import styles from "./bargraph.module.scss";
+import { Visualization } from "../visualization";
 import {
   AxisUnits,
   calculateXAxisDomainBarChart,
   calculateYAxisDomain,
 } from "../utils/domain";
-import { Visualization } from "../visualization";
-
-import styles from "./bargraph.module.scss";
-import { getStackedBarOpts, stack } from "./bars";
+import { Options } from "uplot";
+import { TimezoneContext } from "../../contexts";
 
 const cx = classNames.bind(styles);
 

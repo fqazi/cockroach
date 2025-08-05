@@ -3,9 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classnames from "classnames/bind";
 import React from "react";
-
+import classnames from "classnames/bind";
 import styles from "./summaryCard.module.styl";
 
 interface ISummaryCardProps {

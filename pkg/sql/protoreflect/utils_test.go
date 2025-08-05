@@ -15,8 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/protoreflect"
-	gprotoreflecttest "github.com/cockroachdb/cockroach/pkg/sql/protoreflect/gprototest"
-	"github.com/cockroachdb/cockroach/pkg/sql/protoreflect/test"
+	protoreflecttest "github.com/cockroachdb/cockroach/pkg/sql/protoreflect/test"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	jsonb "github.com/cockroachdb/cockroach/pkg/util/json"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -254,27 +253,6 @@ func TestInvalidConversions(t *testing.T) {
 	t.Run("must be message type", func(t *testing.T) {
 		// Valid proto enum, but we require types.
 		_, err := protoreflect.DecodeMessage("cockroach.sql.sqlbase.SystemColumnKind", nil)
-		require.Error(t, err)
-	})
-}
-
-func TestNewMessageFromFileDescriptor(t *testing.T) {
-	msg := "Hello, World"
-	in := gprotoreflecttest.Inner{
-		Value: msg,
-	}
-	fd := gprotoreflecttest.File_sql_protoreflect_gprototest_gprototest_proto
-	bin, err := protoutil.TODOMarshal(&in)
-	require.Nil(t, err)
-
-	t.Run("successfully gets message from FileDescriptor", func(t *testing.T) {
-		out, err := protoreflect.NewJSONMessageFromFileDescriptor("Inner", fd, bin, nil)
-		require.Nil(t, err)
-		require.Equal(t, msg, fetchPath(t, out, "value"))
-	})
-	t.Run("fails if name is  incorrect", func(t *testing.T) {
-		out, err := protoreflect.NewJSONMessageFromFileDescriptor("foo", fd, bin, nil)
-		require.Nil(t, out)
 		require.Error(t, err)
 	})
 }

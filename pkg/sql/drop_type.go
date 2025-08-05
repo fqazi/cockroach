@@ -10,7 +10,6 @@ import (
 	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
@@ -26,7 +25,6 @@ import (
 )
 
 type dropTypeNode struct {
-	zeroInputPlanNode
 	n      *tree.DropType
 	toDrop map[descpb.ID]*typedesc.Mutable
 }
@@ -197,7 +195,7 @@ func (p *planner) removeTypeBackReferences(
 func (p *planner) addBackRefsFromAllTypesInTable(
 	ctx context.Context, desc *tabledesc.Mutable,
 ) error {
-	dbDesc, err := p.Descriptors().ByIDWithoutLeased(p.txn).WithoutNonPublic().Get().Database(ctx, desc.GetParentID())
+	dbDesc, err := p.Descriptors().ByID(p.txn).WithoutNonPublic().Get().Database(ctx, desc.GetParentID())
 	if err != nil {
 		return err
 	}
@@ -223,7 +221,7 @@ func (p *planner) addBackRefsFromAllTypesInTable(
 func (p *planner) removeBackRefsFromAllTypesInTable(
 	ctx context.Context, desc *tabledesc.Mutable,
 ) error {
-	dbDesc, err := p.Descriptors().ByIDWithoutLeased(p.txn).WithoutNonPublic().Get().Database(ctx, desc.GetParentID())
+	dbDesc, err := p.Descriptors().ByID(p.txn).WithoutNonPublic().Get().Database(ctx, desc.GetParentID())
 	if err != nil {
 		return err
 	}
@@ -289,11 +287,6 @@ func (p *planner) dropTypeImpl(
 		return err
 	}
 	if err := p.txn.Run(ctx, b); err != nil {
-		return err
-	}
-
-	// Delete any comments associated with this type.
-	if err := p.deleteComment(ctx, typeDesc.ID, 0, catalogkeys.TypeCommentType); err != nil {
 		return err
 	}
 

@@ -3,9 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Badge, BadgeIntent, FuzzyTime } from "@cockroachlabs/ui-components";
-import classnames from "classnames/bind";
 import React, { FunctionComponent } from "react";
+import classnames from "classnames/bind";
+import { Badge, BadgeIntent, FuzzyTime } from "@cockroachlabs/ui-components";
 
 import {
   NotificationTypeProp,

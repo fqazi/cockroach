@@ -15,8 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 )
 
-// delegateShowDefaultSessionVariablesForRole implements SHOW DEFAULT SESSION VARIABLES FOR ROLE <name> which returns all the default session variables for a
-// user.
+// delegateShowDefaultSessionVariablesForRole implements SHOW DEFAULT SESSION VARIABLES FOR ROLE <name> which returns all the default session variables for a user.
 // for the given role.
 // Privileges: None.
 func (d *delegator) delegateShowDefaultSessionVariablesForRole(
@@ -25,23 +24,20 @@ func (d *delegator) delegateShowDefaultSessionVariablesForRole(
 
 	// Check if user has at least one of CREATEROLE, MODIFYCLUSTERSETTING, or MODIFYSQLCLUSTERSETTING privileges
 	hasPrivilege := false
-	cat := d.catalog
-	globalPrivObj := syntheticprivilege.GlobalPrivilegeObject
-	user := cat.GetCurrentUser()
-	if err := cat.CheckPrivilege(d.ctx, globalPrivObj, user, privilege.CREATEROLE); err == nil {
+	if err := d.catalog.CheckPrivilege(d.ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.CREATEROLE); err == nil {
 		hasPrivilege = true
 	} else if pgerror.GetPGCode(err) != pgcode.InsufficientPrivilege {
 		return nil, err
 	}
 	if !hasPrivilege {
-		if err := cat.CheckPrivilege(d.ctx, globalPrivObj, user, privilege.MODIFYCLUSTERSETTING); err == nil {
+		if err := d.catalog.CheckPrivilege(d.ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.MODIFYCLUSTERSETTING); err == nil {
 			hasPrivilege = true
 		} else if pgerror.GetPGCode(err) != pgcode.InsufficientPrivilege {
 			return nil, err
 		}
 	}
 	if !hasPrivilege {
-		if err := cat.CheckPrivilege(d.ctx, globalPrivObj, user, privilege.MODIFYSQLCLUSTERSETTING); err == nil {
+		if err := d.catalog.CheckPrivilege(d.ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.MODIFYSQLCLUSTERSETTING); err == nil {
 			hasPrivilege = true
 		} else if pgerror.GetPGCode(err) != pgcode.InsufficientPrivilege {
 			return nil, err

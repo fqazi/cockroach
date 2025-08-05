@@ -41,9 +41,9 @@ func (l pebbleLogger) Errorf(format string, args ...interface{}) {
 const eventAlsoLogVerbosityLevel = 2
 
 func (l pebbleLogger) Eventf(ctx context.Context, format string, args ...interface{}) {
-	log.VEventfDepth(ctx, l.depth, eventAlsoLogVerbosityLevel, format, args...)
+	log.VEventf(ctx, eventAlsoLogVerbosityLevel, format, args...)
 }
 
 func (l pebbleLogger) IsTracingEnabled(ctx context.Context) bool {
-	return log.HasSpan(ctx) || log.ExpensiveLogEnabledVDepth(ctx, l.depth, eventAlsoLogVerbosityLevel)
+	return log.HasSpan(ctx) || log.ExpensiveLogEnabled(ctx, eventAlsoLogVerbosityLevel)
 }

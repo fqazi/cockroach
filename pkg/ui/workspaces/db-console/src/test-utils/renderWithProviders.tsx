@@ -3,23 +3,22 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { configureStore } from "@reduxjs/toolkit";
-import { connectRouter } from "connected-react-router";
-import { createMemoryHistory } from "history";
 import React from "react";
+import { configureStore } from "@reduxjs/toolkit";
+import type { PreloadedState } from "@reduxjs/toolkit";
 import { Provider } from "react-redux";
 
+import { AdminUIState, flagsReducer } from "src/redux/state";
+import { createMemoryHistory } from "history";
 import { apiReducersReducer } from "src/redux/apiReducers";
 import { hoverReducer } from "src/redux/hover";
 import { localSettingsReducer } from "src/redux/localsettings";
-import { loginReducer } from "src/redux/login";
 import { metricsReducer } from "src/redux/metrics";
 import { queryManagerReducer } from "src/redux/queryManager/reducer";
-import { AdminUIState, flagsReducer } from "src/redux/state";
 import { timeScaleReducer } from "src/redux/timeScale";
 import { uiDataReducer } from "src/redux/uiData";
-
-import type { PreloadedState } from "@reduxjs/toolkit";
+import { loginReducer } from "src/redux/login";
+import { connectRouter } from "connected-react-router";
 
 export function renderWithProviders(
   element: React.ReactElement,
@@ -35,9 +34,6 @@ export function renderWithProviders(
       hover: hoverReducer,
       localSettings: localSettingsReducer,
       metrics: metricsReducer,
-      // TODO (koorosh): cannot properly cast Query Manager Action types to AnyAction.
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-      // @ts-ignore
       queryManager: queryManagerReducer,
       router: routerReducer,
       timeScale: timeScaleReducer,

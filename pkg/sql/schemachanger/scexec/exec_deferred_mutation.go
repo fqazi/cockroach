@@ -42,7 +42,7 @@ type indexesToSplitAndScatter struct {
 
 type schemaChangerJobUpdate struct {
 	isNonCancelable       bool
-	runningStatus         redact.RedactableString
+	runningStatus         string
 	descriptorIDsToRemove catalog.DescriptorIDSet
 }
 
@@ -80,7 +80,7 @@ func (s *deferredState) AddNewSchemaChangerJob(
 	isNonCancelable bool,
 	auth scpb.Authorization,
 	descriptorIDs catalog.DescriptorIDSet,
-	runningStatus redact.RedactableString,
+	runningStatus string,
 ) error {
 	if s.schemaChangerJob != nil {
 		return errors.AssertionFailedf("cannot create more than one new schema change job")
@@ -111,7 +111,7 @@ func MakeDeclarativeSchemaChangeJobRecord(
 	isNonCancelable bool,
 	auth scpb.Authorization,
 	descriptorIDs catalog.DescriptorIDSet,
-	runningStatus redact.RedactableString,
+	runningStatus string,
 ) *jobs.Record {
 	stmtStrs := make([]string, len(stmts))
 	for i, stmt := range stmts {
@@ -120,7 +120,7 @@ func MakeDeclarativeSchemaChangeJobRecord(
 		// but that's a possibly ambiguous value and not what the old
 		// schema changer used. It's probably that the right thing to use
 		// is the redactable string with the redaction markers.
-		stmtStrs[i] = stmt.RedactedStatement.StripMarkers()
+		stmtStrs[i] = redact.RedactableString(stmt.RedactedStatement).StripMarkers()
 	}
 	// The description being all the statements might seem a bit suspect, but
 	// it's what the old schema changer does, so it's what we'll do.
@@ -133,7 +133,7 @@ func MakeDeclarativeSchemaChangeJobRecord(
 		DescriptorIDs: descriptorIDs.Ordered(),
 		Details:       jobspb.NewSchemaChangeDetails{},
 		Progress:      jobspb.NewSchemaChangeProgress{},
-		StatusMessage: jobs.StatusMessage(runningStatus),
+		RunningStatus: jobs.RunningStatus(runningStatus),
 		NonCancelable: isNonCancelable,
 	}
 	return rec
@@ -142,7 +142,7 @@ func MakeDeclarativeSchemaChangeJobRecord(
 func (s *deferredState) UpdateSchemaChangerJob(
 	jobID jobspb.JobID,
 	isNonCancelable bool,
-	runningStatus redact.RedactableString,
+	runningStatus string,
 	descriptorIDsToRemove catalog.DescriptorIDSet,
 ) error {
 	if s.schemaChangerJobUpdates == nil {
@@ -244,7 +244,7 @@ func manageJobs(
 		) error {
 			s := schemaChangeJobUpdateState{md: md}
 			defer s.doUpdate(updateProgress, updatePayload)
-			s.updatedProgress().StatusMessage = update.runningStatus.StripMarkers() // TODO(150233): should use RedactableString
+			s.updatedProgress().RunningStatus = update.runningStatus
 			if !md.Payload.Noncancelable && update.isNonCancelable {
 				s.updatedPayload().Noncancelable = true
 			}

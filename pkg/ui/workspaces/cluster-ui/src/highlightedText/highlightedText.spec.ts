@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import ReactDomServer from "react-dom/server";
-
 import { getHighlightedText } from "./highlightedText";
 
 function elementToString(value: string | JSX.Element): string {

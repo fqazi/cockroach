@@ -3,18 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { createMemoryHistory } from "history";
-import merge from "lodash/merge";
-
-import { AdminUIState, createAdminUIStore } from "src/redux/state";
-
 import {
   selectLocalityTree,
   LocalityTier,
   selectNodeLocalities,
 } from "./localities";
 
-function makeStateWithLocalities(localities: LocalityTier[][]): AdminUIState {
+function makeStateWithLocalities(localities: LocalityTier[][]) {
   const nodes = localities.map((locality, i) => {
     return {
       desc: {
@@ -23,8 +18,8 @@ function makeStateWithLocalities(localities: LocalityTier[][]): AdminUIState {
       },
     };
   });
-  const store = createAdminUIStore(createMemoryHistory());
-  return merge<AdminUIState, RecursivePartial<AdminUIState>>(store.getState(), {
+
+  return {
     cachedData: {
       nodes: {
         data: nodes,
@@ -34,7 +29,7 @@ function makeStateWithLocalities(localities: LocalityTier[][]): AdminUIState {
       },
       liveness: {},
     },
-  });
+  };
 }
 
 describe("selectLocalityTree", function () {

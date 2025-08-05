@@ -21,15 +21,10 @@ message TxnMeta {
   bytes id = 1 [(gogoproto.customname) = "ID",
       (gogoproto.customtype) = "github.com/cockroachdb/cockroach/pkg/util/uuid.UUID",
       (gogoproto.nullable) = false];
-  // key is the key which anchors the transaction. This is any key (that is
-  // locked) in the first locking batch executed by the transaction. Typically,
-  // this is the first locking key in the first locking batch executed by the
-  // transaction, but this behavior can be changed by toggling the
-  // RandomizedTxnAnchorKeyEnabled cluster setting.
-  //
-  // The range to which this key belongs will hold the transaction's record. By
-  // extension, the leaseholder of this range may also be responsible for
-  // coordinating async intent resolution once the transaction is finalized.
+  // key is the key which anchors the transaction. This is typically
+  // the first key read or written during the transaction and
+  // determines which range in the cluster will hold the transaction
+  // record.
   bytes key = 3; // TODO(tschottdorf): [(gogoproto.casttype) = "Key"];
   // iso_level is the isolation level of the transaction.
   cockroach.kv.kvserver.concurrency.isolation.Level iso_level = 2;
@@ -145,9 +140,15 @@ message IgnoredSeqNumRange {
 //
 // NB: a shallow copy of this value has to equal a deep copy, i.e. there
 // must be (recursively) no pointers in this type. Should this need to
-// change, need to update mvccGet.
+// change, need to update mvccGetWithValueHeader.
+//
+// NB: ensure that this struct stays in sync with MVCCValueHeader{Pure,CrdbTest}.
+// See kvpb.RequestHeader for details on how they help us keep the KVNemesisSeq
+// field out of production code.
 message MVCCValueHeader {
   option (gogoproto.equal) = true;
+  option (gogoproto.marshaler) = false;
+  option (gogoproto.sizer) = false;
 
   message Empty{};
   // Empty is zero-size in production. It's an int64 under the crdb_test build tag.
@@ -160,7 +161,6 @@ message MVCCValueHeader {
   Empty kvnemesis_seq = 2 [
     (gogoproto.customname) = "KVNemesisSeq",
     (gogoproto.nullable) = false,
-    (gogoproto.omitempty) = true,
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/kv/kvnemesis/kvnemesisutil.Container"];
 
   // The local clock timestamp records the value of the local HLC clock on the
@@ -186,11 +186,7 @@ message MVCCValueHeader {
   // this will simply lead to additional uncertainty restarts. However, it is
   // not safe for the local clock timestamp to be rounded up, as this could lead
   // to stale reads.
-  //
-  // TODO(radu): use gogoproto.omitempty (after investigating if changing the
-  // encoding is a problem).
-  util.hlc.Timestamp local_timestamp = 1 [
-    (gogoproto.nullable) = false,
+  util.hlc.Timestamp local_timestamp = 1 [(gogoproto.nullable) = false,
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/util/hlc.ClockTimestamp"];
 
   // When set to true, this value will be filtered out by rangefeeds and will
@@ -201,23 +197,29 @@ message MVCCValueHeader {
   // ImportEpoch identifies the number of times a user has called IMPORT
   // INTO on the table this key belongs to when the table was not empty.
   uint32 import_epoch = 4;
-  
-  // OriginID identifes the original cluster that wrote this key during Logical
-  // Data Replication (LDR). 0 identifies a local write and the default value
-  // when LDR is not being run, 1 identifies a remote write, and 2+ are reserved
-  // to identify remote clusters.
-  uint32 origin_id = 5 [(gogoproto.customname) = "OriginID"];
-  
-  // OriginTimestamp identifies the timestamp this kv was written on the
-  // original source cluster during Logical Data Replication. A default empty
-  // timestamp implies that this kv did not originate from a Logical Data
-  // Replication stream. 
-  util.hlc.Timestamp origin_timestamp = 6 [
-    (gogoproto.nullable) = false,
-    (gogoproto.omitempty) = true,
-    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/util/hlc.Timestamp"];
+}
 
-   // NextID = 7.
+// MVCCValueHeaderPure is not to be used directly. It's generated only for use of
+// its marshaling methods by MVCCValueHeader. See the comment there.
+message MVCCValueHeaderPure {
+  util.hlc.Timestamp local_timestamp = 1 [(gogoproto.nullable) = false,
+    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/util/hlc.ClockTimestamp"];
+
+  bool omit_in_rangefeeds = 3;
+  uint32 import_epoch = 4;
+}
+// MVCCValueHeaderCrdbTest is not to be used directly. It's generated only for use of
+// its marshaling methods by MVCCValueHeader. See the comment there.
+message MVCCValueHeaderCrdbTest {
+  message Empty{};
+  Empty kvnemesis_seq = 2 [
+    (gogoproto.customname) = "KVNemesisSeq",
+    (gogoproto.nullable) = false,
+    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/kv/kvnemesis/kvnemesisutil.Container"];
+  util.hlc.Timestamp local_timestamp = 1 [(gogoproto.nullable) = false,
+    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/util/hlc.ClockTimestamp"];
+  bool omit_in_rangefeeds = 3;
+  uint32 import_epoch = 4;
 }
 
 // MVCCStatsDelta is convertible to MVCCStats, but uses signed variable width
@@ -266,11 +268,6 @@ message MVCCWriteValueOp {
   // MVCCValueHeader of the corresponding write. It is only relevant for
   // transactional writes, which in the case of MVCCWriteValueOp are 1PC writes.
   bool omit_in_rangefeeds = 6;
-
-  // OriginID identifes the original cluster that wrote this key in Logical Data
-  // Replication. 0 identifies a local write, 1 identifies a remote write, and
-  // 2+ are reserved to identify remote clusters.
-  uint32 origin_id = 5  [(gogoproto.customname) = "OriginID"];
 }
 
 // MVCCUpdateIntentOp corresponds to an intent being written for a given
@@ -312,11 +309,6 @@ message MVCCCommitIntentOp {
   // MVCCValueHeader of the corresponding write. It is only relevant for
   // transactional writes.
   bool omit_in_rangefeeds = 6;
-  
-  // OriginID identifes the original cluster that wrote this key in Logical Data
-  // Replication. 0 identifies a local write, 1 identifies a remote write, and
-  // 2+ are reserved to identify remote clusters.
-  uint32 origin_id = 7  [(gogoproto.customname) = "OriginID"];
 }
 
 // MVCCAbortIntentOp corresponds to an intent being aborted for a given

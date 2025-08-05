@@ -4,13 +4,12 @@
 // included in the /LICENSE file.
 
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-
+import { DOMAIN_NAME, noopReducer } from "../utils";
 import {
   CancelStmtDiagnosticRequest,
   InsertStmtDiagnosticRequest,
   StatementDiagnosticsResponse,
 } from "../../api";
-import { DOMAIN_NAME, noopReducer } from "../utils";
 
 export type StatementDiagnosticsState = {
   data: StatementDiagnosticsResponse;
@@ -28,12 +27,18 @@ const statementDiagnosticsSlice = createSlice({
   name: `${DOMAIN_NAME}/statementDiagnostics`,
   initialState,
   reducers: {
-    received: (state, action: PayloadAction<StatementDiagnosticsResponse>) => {
+    received: (
+      state: StatementDiagnosticsState,
+      action: PayloadAction<StatementDiagnosticsResponse>,
+    ) => {
       state.data = action.payload;
       state.lastError = null;
       state.valid = true;
     },
-    failed: (state, action: PayloadAction<Error>) => {
+    failed: (
+      state: StatementDiagnosticsState,
+      action: PayloadAction<Error>,
+    ) => {
       state.lastError = action.payload;
       state.valid = false;
     },

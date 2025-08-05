@@ -8,16 +8,17 @@ package scbuildstmt
 import (
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
+	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
-	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/errors"
 )
 
@@ -37,8 +38,6 @@ import (
 // to search all tables in current db and in schemas in the search path till
 // we first find a table with an index of name `idx`).
 func DropIndex(b BuildCtx, n *tree.DropIndex) {
-	failIfSafeUpdates(b, n)
-
 	if n.Concurrently {
 		b.EvalCtx().ClientNoticeSender.BufferClientNotice(b,
 			pgnotice.Newf("CONCURRENTLY is not required as all indexes are dropped concurrently"))
@@ -46,7 +45,7 @@ func DropIndex(b BuildCtx, n *tree.DropIndex) {
 
 	var anyIndexesDropped bool
 	for _, index := range n.IndexList {
-		if droppedIndex := maybeDropIndex(b, index, n); droppedIndex != nil {
+		if droppedIndex := maybeDropIndex(b, index, n.IfExists, n.DropBehavior); droppedIndex != nil {
 			b.LogEventForExistingTarget(droppedIndex)
 			anyIndexesDropped = true
 		}
@@ -71,10 +70,10 @@ func DropIndex(b BuildCtx, n *tree.DropIndex) {
 // maybeDropIndex resolves `index` and mark its constituent elements as ToAbsent
 // in the builder state enclosed by `b`.
 func maybeDropIndex(
-	b BuildCtx, indexName *tree.TableIndexName, n *tree.DropIndex,
+	b BuildCtx, indexName *tree.TableIndexName, ifExists bool, dropBehavior tree.DropBehavior,
 ) (droppedIndex *scpb.SecondaryIndex) {
 	toBeDroppedIndexElms := b.ResolveIndexByName(indexName, ResolveParams{
-		IsExistenceOptional: n.IfExists,
+		IsExistenceOptional: ifExists,
 		RequiredPrivilege:   privilege.CREATE,
 	})
 	if toBeDroppedIndexElms == nil {
@@ -91,21 +90,24 @@ func maybeDropIndex(
 				"use DROP CONSTRAINT ... PRIMARY KEY followed by ADD CONSTRAINT ... PRIMARY KEY in a transaction",
 		))
 	}
+	// TODO (Xiang): Check if requires CCL binary for eventual zone config removal.
 	_, _, sie := scpb.FindSecondaryIndex(toBeDroppedIndexElms)
 	if sie == nil {
 		panic(errors.AssertionFailedf("programming error: cannot find secondary index element."))
 	}
-	panicIfRegionChangeUnderwayOnRBRTable(b, "DROP INDEX", sie.TableID)
-	defer checkTableSchemaChangePrerequisites(b, b.QueryByID(sie.TableID), n)()
+	// We don't support handling zone config related properties for tables, so
+	// throw an unsupported error.
+	fallBackIfSubZoneConfigExists(b, nil, sie.TableID)
+	panicIfSchemaIsLocked(b.QueryByID(sie.TableID))
 	// Cannot drop the index if not CASCADE and a unique constraint depends on it.
-	if n.DropBehavior != tree.DropCascade && sie.IsUnique && !sie.IsCreatedExplicitly {
+	if dropBehavior != tree.DropCascade && sie.IsUnique && !sie.IsCreatedExplicitly {
 		panic(errors.WithHint(
 			pgerror.Newf(pgcode.DependentObjectsStillExist,
 				"index %q is in use as unique constraint", indexName.Index.String()),
 			"use CASCADE if you really want to drop it.",
 		))
 	}
-	dropSecondaryIndex(b, indexName, n.DropBehavior, sie, n)
+	dropSecondaryIndex(b, indexName, dropBehavior, sie)
 	return sie
 }
 
@@ -116,7 +118,6 @@ func dropSecondaryIndex(
 	indexName *tree.TableIndexName,
 	dropBehavior tree.DropBehavior,
 	sie *scpb.SecondaryIndex,
-	stmt tree.Statement,
 ) {
 	{
 		next := b.WithNewSourceElementID()
@@ -143,16 +144,11 @@ func dropSecondaryIndex(
 
 		// If shard index, also drop the shard column and all check constraints that
 		// uses this shard column if no other index uses the shard column.
-		maybeDropAdditionallyForShardedIndex(
-			next, sie, indexName.Index.String(), stmt, dropBehavior,
-		)
+		maybeDropAdditionallyForShardedIndex(next, sie, indexName.Index.String(), dropBehavior)
 
 		// If expression index, also drop the expression column if no other index is
 		// using the expression column.
 		dropAdditionallyForExpressionIndex(next, sie)
-
-		// This handles if the index is referenced in a trigger.
-		maybeDropTriggers(b, sie.TableID, sie.IndexID, indexName.Index.String(), dropBehavior)
 	}
 	// Finally, drop all elements associated with this index.
 	tblElts := b.QueryByID(sie.TableID)
@@ -215,7 +211,7 @@ func maybeDropDependentFunctions(
 			if forwardRef.IndexID != toBeDroppedIndex.IndexID {
 				continue
 			}
-			// This function depends on the to-be-dropped index.
+			// This view depends on the to-be-dropped index;
 			if dropBehavior != tree.DropCascade {
 				// Get view name for the error message
 				_, _, fnName := scpb.FindFunctionName(b.QueryByID(e.FunctionID))
@@ -243,6 +239,12 @@ func maybeDropDependentFKConstraints(
 	// shouldDropFK returns true if it is a dependent FK and no uniqueness-providing
 	// replacement can be found.
 	shouldDropFK := func(fkReferencedColIDs []catid.ColumnID) bool {
+		// Until the appropriate version gate is hit, we still do not allow
+		// dropping foreign keys in any the context of secondary indexes.
+		if !b.ClusterSettings().Version.IsActive(b, clusterversion.V23_1) {
+			panic(scerrors.NotImplementedErrorf(nil, "dropping FK constraints"+
+				" as a result of `DROP INDEX CASCADE` is not supported yet."))
+		}
 		return canToBeDroppedConstraintServeFK(fkReferencedColIDs) &&
 			!hasColsUniquenessConstraintOtherThan(b, tableID, fkReferencedColIDs, toBeDroppedConstraintID)
 	}
@@ -299,7 +301,6 @@ func maybeDropAdditionallyForShardedIndex(
 	b BuildCtx,
 	toBeDroppedIndex *scpb.SecondaryIndex,
 	toBeDroppedIndexName string,
-	stmt tree.Statement,
 	dropBehavior tree.DropBehavior,
 ) {
 	if toBeDroppedIndex.Sharding == nil || !toBeDroppedIndex.Sharding.IsSharded {
@@ -355,45 +356,6 @@ func maybeDropAdditionallyForShardedIndex(
 	shardColElms.ForEach(func(current scpb.Status, target scpb.TargetStatus, e scpb.Element) {
 		if target != scpb.ToAbsent {
 			b.Drop(e)
-		}
-	})
-	tbl := b.QueryByID(toBeDroppedIndex.TableID).FilterTable().MustGetOneElement()
-	ns := b.QueryByID(toBeDroppedIndex.TableID).FilterNamespace().MustGetOneElement()
-	tn := tree.MakeTableNameFromPrefix(b.NamePrefix(tbl), tree.Name(ns.Name))
-	shardCol := shardColElms.FilterColumn().MustGetOneElement()
-	dropColumn(b, &tn, tbl, stmt, stmt, shardCol, shardColElms, dropBehavior)
-}
-
-// maybeDropTriggers attempts to drop all triggers that depend on the index
-// being dropped, but only if the drop behavior is CASCADE. It panics if any
-// dependent trigger exists and the drop behavior is not CASCADE.
-func maybeDropTriggers(
-	b BuildCtx,
-	tableID catid.DescID,
-	indexID catid.IndexID,
-	indexName string,
-	behavior tree.DropBehavior,
-) {
-	undroppedBackrefs(b, tableID).ForEach(func(_ scpb.Status, target scpb.TargetStatus, e scpb.Element) {
-		switch elt := e.(type) {
-		case *scpb.TriggerDeps:
-			for _, ref := range elt.UsesRelations {
-				if ref.ID == tableID && ref.IndexID == indexID {
-					if behavior == tree.DropCascade {
-						panic(unimplemented.NewWithIssuef(
-							146667, "DROP INDEX cascade is not supported with triggers"))
-					}
-					tableElts := b.QueryByID(elt.TableID)
-					tableName := tableElts.FilterNamespace().MustGetOneElement()
-					triggerName := tableElts.FilterTriggerName().Filter(
-						func(_ scpb.Status, _ scpb.TargetStatus, e *scpb.TriggerName) bool {
-							return e.TriggerID == elt.TriggerID
-						}).MustGetOneElement()
-					panic(sqlerrors.NewDependentObjectErrorf(
-						"cannot drop index %q because trigger %q on table %q depends on it",
-						indexName, triggerName.Name, tableName.Name))
-				}
-			}
 		}
 	})
 }
@@ -519,11 +481,11 @@ func isIndexUniqueAndCanServeFK(
 	}
 
 	isPartial := false
-	scpb.ForEachSecondaryIndex(b.QueryByID(ie.TableID), func(
-		current scpb.Status, target scpb.TargetStatus, sie *scpb.SecondaryIndex,
+	scpb.ForEachSecondaryIndexPartial(b.QueryByID(ie.TableID), func(
+		current scpb.Status, target scpb.TargetStatus, sipe *scpb.SecondaryIndexPartial,
 	) {
-		if sie.TableID == ie.TableID && sie.IndexID == ie.IndexID {
-			isPartial = sie.EmbeddedExpr != nil
+		if sipe.TableID == ie.TableID && sipe.IndexID == ie.IndexID {
+			isPartial = true
 		}
 	})
 	if isPartial {

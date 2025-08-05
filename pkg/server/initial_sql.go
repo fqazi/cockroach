@@ -11,7 +11,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
@@ -36,7 +35,7 @@ func (s *topLevelServer) RunInitialSQL(
 		return nil
 	}
 
-	if startSingleNode && (*s.cfg.DefaultSystemZoneConfig.NumReplicas != 1 || *s.cfg.DefaultZoneConfig.NumReplicas != 1) {
+	if startSingleNode {
 		// For start-single-node, set the default replication factor to
 		// 1 so as to avoid warning messages and unnecessary rebalance
 		// churn.
@@ -90,36 +89,22 @@ func (s *topLevelServer) createAdminUser(
 func (s *topLevelServer) disableReplication(ctx context.Context) (retErr error) {
 	ie := s.sqlServer.internalExecutor
 
-	it, err := ie.QueryIteratorEx(ctx, "get-zones", nil, sessiondata.NodeUserSessionDataOverride,
+	it, err := ie.QueryIterator(ctx, "get-zones", nil,
 		"SELECT target FROM crdb_internal.zones")
 	if err != nil {
 		return err
 	}
-
 	// We have to make sure to close the iterator since we might return
 	// from the for loop early (before Next() returns false).
 	defer func() { retErr = errors.CombineErrors(retErr, it.Close()) }()
 
-	// TODO(#125882): For now, we need to cache the zones before we can
-	// modify them. This is because the iterator will open a transaction that
-	// holds a lease to the system database, which will block the ALTER DATABASE
-	// system schema change in declarative-schema-changer-land.
 	var ok bool
-	var zones []string
 	for ok, err = it.Next(ctx); ok; ok, err = it.Next(ctx) {
 		zone := string(*it.Cur()[0].(*tree.DString))
-		zones = append(zones, zone)
-	}
-	if err != nil {
-		return err
-	}
-
-	for _, zone := range zones {
 		if _, err := ie.Exec(ctx, "set-zone", nil,
 			fmt.Sprintf("ALTER %s CONFIGURE ZONE USING num_replicas = 1", zone)); err != nil {
 			return err
 		}
 	}
-
-	return nil
+	return err
 }

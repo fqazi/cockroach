@@ -23,7 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
@@ -92,7 +92,7 @@ func TestDebugJobTrace(t *testing.T) {
 	defer close(completeResumerCh)
 	defer close(recordedSpanCh)
 
-	defer jobs.TestingRegisterConstructor(
+	jobs.RegisterConstructor(
 		jobspb.TypeBackup,
 		func(job *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 			return &traceSpanResumer{
@@ -102,7 +102,7 @@ func TestDebugJobTrace(t *testing.T) {
 			}
 		},
 		jobs.UsesTenantCostControl,
-	)()
+	)
 
 	// Create a "backup job" but we have overridden the resumer constructor above
 	// to inject our traceSpanResumer.
@@ -125,7 +125,7 @@ func TestDebugJobTrace(t *testing.T) {
 	<-recordedSpanCh
 
 	args := []string{strconv.Itoa(int(id))}
-	pgURL, cleanup := pgurlutils.PGUrl(t, c.Server.AdvSQLAddr(),
+	pgURL, cleanup := sqlutils.PGUrl(t, c.Server.AdvSQLAddr(),
 		"TestDebugJobTrace", url.User(username.RootUser))
 	defer cleanup()
 
