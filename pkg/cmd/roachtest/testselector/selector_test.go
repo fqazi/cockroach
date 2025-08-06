@@ -7,11 +7,7 @@ package testselector
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	gosql "database/sql"
-	"encoding/pem"
 	"fmt"
 	"os"
 	"regexp"
@@ -25,16 +21,16 @@ import (
 
 func TestCategoriseTests(t *testing.T) {
 	_ = os.Unsetenv(sfUsernameEnv)
-	_ = os.Unsetenv(sfPrivateKey)
-	t.Run("expect getConnect to fail due to missing SNOWFLAKE_USER env", func(t *testing.T) {
+	_ = os.Unsetenv(sfPasswordEnv)
+	t.Run("expect getConnect to fail due to missing SFUSER env", func(t *testing.T) {
 		SqlConnectorFunc = nil
 		tds, err := CategoriseTests(context.Background(), nil)
 		require.Nil(t, tds)
 		require.NotNil(t, err)
-		require.Equal(t, "environment variable SNOWFLAKE_USER is not set", err.Error())
+		require.Equal(t, "environment variable SFUSER is not set", err.Error())
 	})
 	_ = os.Setenv(sfUsernameEnv, "dummy_user")
-	_ = os.Setenv(sfPrivateKey, createPrivateKey(t))
+	_ = os.Setenv(sfPasswordEnv, "dummy_password")
 	t.Run("expect sql connector to fail", func(t *testing.T) {
 		SqlConnectorFunc = func(_, _ string) (*gosql.DB, error) {
 			return nil, fmt.Errorf("failed to connect to DB")
@@ -116,15 +112,6 @@ func TestCategoriseTests(t *testing.T) {
 			require.Equal(t, d[DataLastPreempted] == "yes", td.LastFailureIsPreempt)
 		}
 	})
-	t.Run("expect failure due to invalid private key", func(t *testing.T) {
-		SqlConnectorFunc = nil
-		_ = os.Setenv(sfPrivateKey, "invalid")
-		tds, err := CategoriseTests(context.Background(), nil)
-		require.Nil(t, tds)
-		require.NotNil(t, err)
-		require.Equal(t, "failed to decode PEM block containing the key", err.Error())
-
-	})
 }
 
 func TestNewDefaultSelectTestsReq(t *testing.T) {
@@ -138,7 +125,7 @@ func TestNewDefaultSelectTestsReq(t *testing.T) {
 
 func Test_getSFCreds(t *testing.T) {
 	_ = os.Unsetenv(sfUsernameEnv)
-	_ = os.Unsetenv(sfPrivateKey)
+	_ = os.Unsetenv(sfPasswordEnv)
 	t.Run("expect username env failure", func(t *testing.T) {
 		u, p, e := getSFCreds()
 		require.Empty(t, u)
@@ -146,33 +133,20 @@ func Test_getSFCreds(t *testing.T) {
 		require.NotNil(t, e)
 		require.Equal(t, fmt.Sprintf("environment variable %s is not set", sfUsernameEnv), e.Error())
 	})
-	t.Run("expect private key file env failure", func(t *testing.T) {
+	t.Run("expect password env failure", func(t *testing.T) {
 		_ = os.Setenv(sfUsernameEnv, "dummy_user")
 		u, p, e := getSFCreds()
 		require.Empty(t, u)
 		require.Empty(t, p)
 		require.NotNil(t, e)
-		require.Equal(t, fmt.Sprintf("environment variable %s is not set", sfPrivateKey), e.Error())
+		require.Equal(t, fmt.Sprintf("environment variable %s is not set", sfPasswordEnv), e.Error())
 	})
 	t.Run("expect no failure", func(t *testing.T) {
 		_ = os.Setenv(sfUsernameEnv, "dummy_user")
-		key := createPrivateKey(t)
-		_ = os.Setenv(sfPrivateKey, key)
+		_ = os.Setenv(sfPasswordEnv, "dummy_password")
 		u, p, e := getSFCreds()
 		require.Equal(t, os.Getenv(sfUsernameEnv), u)
-		require.Equal(t, key, p)
+		require.Equal(t, os.Getenv(sfPasswordEnv), p)
 		require.Nil(t, e)
 	})
-}
-
-// create a private key for testing
-func createPrivateKey(t *testing.T) string {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.Nil(t, err)
-	// Convert private key to PKCS#1 ASN.1 PEM
-	pemBlock := &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
-	}
-	return string(pem.EncodeToMemory(pemBlock))
 }

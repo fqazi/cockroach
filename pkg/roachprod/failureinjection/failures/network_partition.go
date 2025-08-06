@@ -9,24 +9,12 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 )
 
 type PartitionType int
-
-func (p PartitionType) String() string {
-	switch p {
-	case Bidirectional:
-		return "Bidirectional"
-	case Incoming:
-		return "Incoming"
-	case Outgoing:
-		return "Outgoing"
-	default:
-		panic(fmt.Sprintf("unknown PartitionType: %d", p))
-	}
-}
 
 const (
 	// Bidirectional drops traffic in both directions.
@@ -36,12 +24,6 @@ const (
 	// Outgoing drops outgoing traffic from the source to the destination
 	Outgoing
 )
-
-var AllPartitionTypes = []PartitionType{
-	Bidirectional,
-	Incoming,
-	Outgoing,
-}
 
 type NetworkPartition struct {
 	// Source is a list of nodes that will have the network partition created as
@@ -68,13 +50,15 @@ type IPTablesPartitionFailure struct {
 }
 
 func MakeIPTablesPartitionFailure(
-	clusterName string, l *logger.Logger, clusterOpts ClusterOptions,
+	clusterName string, l *logger.Logger, secure bool,
 ) (FailureMode, error) {
-	genericFailure, err := makeGenericFailure(clusterName, l, clusterOpts, IPTablesNetworkPartitionName)
+	c, err := roachprod.GetClusterFromCache(l, clusterName, install.SecureOption(secure))
 	if err != nil {
 		return nil, err
 	}
-	return &IPTablesPartitionFailure{*genericFailure}, nil
+
+	genericFailure := GenericFailure{c: c, runTitle: "iptables"}
+	return &IPTablesPartitionFailure{genericFailure}, nil
 }
 
 const IPTablesNetworkPartitionName = "iptables-network-partition"

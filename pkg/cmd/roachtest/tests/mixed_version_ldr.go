@@ -45,7 +45,6 @@ func registerLDRMixedVersions(r registry.Registry) {
 		Cluster:          r.MakeClusterSpec(sp.leftNodes+sp.rightNodes+1, spec.WorkloadNode()),
 		CompatibleClouds: registry.OnlyGCE,
 		Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
-		Monitor:          true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runLDRMixedVersions(ctx, t, c, sp)
 		},
@@ -258,10 +257,10 @@ func (lm *ldrMixed) SetupHook(ctx context.Context) {
 
 func (lm *ldrMixed) WorkloadHook(ctx context.Context) {
 	leftWorkloadCmd := workloadRunCmd(lm.sp.LeftNodesList())
-	lm.leftWorkloadStopper = lm.leftMvt.Workload("kv", lm.c.WorkloadNode(), nil, leftWorkloadCmd, false /* overrideBinary */)
+	lm.leftWorkloadStopper = lm.leftMvt.Workload("kv", lm.c.WorkloadNode(), nil, leftWorkloadCmd)
 
 	rightWorkloadCmd := workloadRunCmd(lm.sp.RightNodesList())
-	lm.rightWorkloadStopper = lm.rightMvt.Workload("kv", lm.c.WorkloadNode(), nil, rightWorkloadCmd, false /* overrideBinary */)
+	lm.rightWorkloadStopper = lm.rightMvt.Workload("kv", lm.c.WorkloadNode(), nil, rightWorkloadCmd)
 }
 
 func (lm *ldrMixed) LatencyHook(ctx context.Context) {

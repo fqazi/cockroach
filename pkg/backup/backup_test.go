@@ -1065,7 +1065,7 @@ func TestBackupRestoreSystemTables(t *testing.T) {
 	expectedFingerprints := map[string][][]string{}
 	err := crdb.ExecuteTx(ctx, conn, nil /* txopts */, func(tx *gosql.Tx) error {
 		for _, table := range tables {
-			rows, err := tx.Query("SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE system." + table)
+			rows, err := conn.Query("SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE system." + table)
 			if err != nil {
 				return err
 			}
@@ -1077,7 +1077,7 @@ func TestBackupRestoreSystemTables(t *testing.T) {
 		}
 		// Record the transaction's timestamp so we can take a backup at the
 		// same time.
-		return tx.QueryRow("SELECT cluster_logical_timestamp()").Scan(&backupAsOf)
+		return conn.QueryRow("SELECT cluster_logical_timestamp()").Scan(&backupAsOf)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1404,6 +1404,8 @@ func TestRestoreJobRetryReset(t *testing.T) {
 	}{}
 	waitForProgress := make(chan struct{})
 
+	maxRetries := 4
+
 	params := base.TestClusterArgs{}
 	knobs := base.TestingKnobs{
 		BackupRestore: &sql.BackupRestoreTestingKnobs{
@@ -1411,20 +1413,17 @@ func TestRestoreJobRetryReset(t *testing.T) {
 				InitialBackoff: time.Microsecond,
 				Multiplier:     2,
 				MaxBackoff:     2 * time.Microsecond,
-				MaxDuration:    time.Second,
+				MaxRetries:     maxRetries,
 			},
-			// Disable switching to the secondary retry policy for this test since it
-			// is not relevant to the test. Set to an unachievable value.
-			RestoreRetryProgressThreshold: 1.1,
 			RunBeforeRestoreFlow: func() error {
 				mu.Lock()
 				defer mu.Unlock()
-				if mu.retryCount < maxRestoreRetryFastFail {
-					mu.retryCount++
-					// Send a retryable error
-					return syscall.ECONNRESET
+				if mu.retryCount >= maxRetries-1 {
+					return nil
 				}
-				return nil
+				mu.retryCount++
+				// Send a retryable error
+				return syscall.ECONNRESET
 			},
 			RunAfterRestoreFlow: func() error {
 				mu.Lock()
@@ -1455,9 +1454,9 @@ func TestRestoreJobRetryReset(t *testing.T) {
 	})
 	close(waitForProgress)
 
-	jobutils.WaitForJobToFail(t, sqlDB, restoreJobId)
+	jobutils.WaitForJobToPause(t, sqlDB, restoreJobId)
 
-	require.Greater(t, mu.retryCount, maxRestoreRetryFastFail+2)
+	require.Greater(t, mu.retryCount, maxRetries+2)
 }
 
 // TestRestoreRetryProcErr tests that the restore data processor will mark
@@ -1494,7 +1493,7 @@ func TestRestoreRetryProcErr(t *testing.T) {
 					InitialBackoff: time.Microsecond,
 					Multiplier:     2,
 					MaxBackoff:     2 * time.Microsecond,
-					MaxDuration:    time.Second,
+					MaxRetries:     4,
 				},
 				RunBeforeRestoreFlow: func() error {
 					mu.Lock()
@@ -1557,6 +1556,7 @@ func TestRestoreReplanOnLag(t *testing.T) {
 				// procCompleteCh receives a ping.
 				timer.Reset(replanFreq * 2)
 				for range timer.C {
+					timer.Read = true
 					break
 				}
 			},
@@ -1708,10 +1708,6 @@ func TestBackupRestoreResume(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	// This test flakes in TC CI, but not under Engflow, so we're just skipping it
-	// under race.
-	skip.UnderRace(t, "flaky under race after #150384")
-
 	ctx := context.Background()
 
 	params := base.TestClusterArgs{ServerArgs: base.TestServerArgs{
@@ -1761,13 +1757,11 @@ func TestBackupRestoreResume(t *testing.T) {
 				if err := os.WriteFile(checkpointFile, mockManifest, 0644); err != nil {
 					t.Fatal(err)
 				}
-				uri := "nodelocal://1/backup" + "-" + item.testName
 				createAndWaitForJob(
 					t, sqlDB, []descpb.ID{backupTableDesc.GetID()},
 					jobspb.BackupDetails{
-						EndTime:       srv.Clock().Now(),
-						CollectionURI: uri,
-						URI:           uri,
+						EndTime: srv.Clock().Now(),
+						URI:     "nodelocal://1/backup" + "-" + item.testName,
 					},
 					jobspb.BackupProgress{},
 					roachpb.Version{},
@@ -2990,7 +2984,7 @@ func TestBackupRestoreCrossTableReferences(t *testing.T) {
 		db := sqlutils.MakeSQLRunner(tc.Conns[0])
 		db.Exec(t, createStore)
 		db.ExpectErr(
-			t, `cannot restore view "early_customers" without restoring referenced object`,
+			t, `cannot restore view "early_customers" without restoring referenced table`,
 			`RESTORE TABLE store.early_customers FROM LATEST IN $1`, localFoo,
 		)
 		db.Exec(t, `RESTORE TABLE store.early_customers, store.customers, store.orders FROM LATEST IN $1`, localFoo)
@@ -3021,7 +3015,7 @@ func TestBackupRestoreCrossTableReferences(t *testing.T) {
 		db := sqlutils.MakeSQLRunner(tc.Conns[0])
 
 		db.ExpectErr(
-			t, `cannot restore view "ordercounts" without restoring referenced object`,
+			t, `cannot restore view "ordercounts" without restoring referenced table`,
 			`RESTORE DATABASE storestats FROM LATEST IN $1`, localFoo,
 		)
 
@@ -3029,7 +3023,7 @@ func TestBackupRestoreCrossTableReferences(t *testing.T) {
 		db.Exec(t, createStoreStats)
 
 		db.ExpectErr(
-			t, `cannot restore view "ordercounts" without restoring referenced object`,
+			t, `cannot restore view "ordercounts" without restoring referenced table`,
 			`RESTORE TABLE storestats.ordercounts, store.customers FROM LATEST IN $1`, localFoo,
 		)
 
@@ -5351,7 +5345,7 @@ func TestBackupRestoreSequencesInViews(t *testing.T) {
 		sqlDB.CheckQueryResults(t, `SELECT * FROM d.v`, [][]string{{"2"}})
 		sqlDB.CheckQueryResults(t, `SHOW CREATE VIEW d.v`, [][]string{{
 			"d.public.v", "CREATE VIEW public.v (\n\tk\n) AS " +
-				"SELECT k FROM (SELECT nextval('public.s2'::REGCLASS) AS k) AS \"?subquery1?\";",
+				"SELECT k FROM (SELECT nextval('public.s2'::REGCLASS) AS k) AS \"?subquery1?\"",
 		}})
 
 		// Test that references are still tracked.
@@ -5377,7 +5371,7 @@ func TestBackupRestoreSequencesInViews(t *testing.T) {
 		sqlDB.Exec(t, `RESTORE TABLE s, v FROM LATEST IN 'nodelocal://1/test/'`)
 		sqlDB.CheckQueryResults(t, `SHOW CREATE VIEW d.v`, [][]string{{
 			"d.public.v", "CREATE VIEW public.v (\n\tk\n) AS " +
-				"(SELECT k FROM (SELECT nextval('public.s'::REGCLASS) AS k) AS \"?subquery1?\");",
+				"(SELECT k FROM (SELECT nextval('public.s'::REGCLASS) AS k) AS \"?subquery1?\")",
 		}})
 
 		// Check that v is not corrupted.
@@ -5387,7 +5381,7 @@ func TestBackupRestoreSequencesInViews(t *testing.T) {
 		sqlDB.Exec(t, `ALTER SEQUENCE s RENAME TO s2`)
 		sqlDB.CheckQueryResults(t, `SHOW CREATE VIEW d.v`, [][]string{{
 			"d.public.v", "CREATE VIEW public.v (\n\tk\n) AS " +
-				"(SELECT k FROM (SELECT nextval('public.s2'::REGCLASS) AS k) AS \"?subquery1?\");",
+				"(SELECT k FROM (SELECT nextval('public.s2'::REGCLASS) AS k) AS \"?subquery1?\")",
 		}})
 		sqlDB.CheckQueryResults(t, `SELECT * FROM v`, [][]string{{"2"}})
 
@@ -5410,7 +5404,7 @@ func TestBackupRestoreSequencesInViews(t *testing.T) {
 		sqlDB.Exec(t, `DROP VIEW v`)
 		// Restore v.
 		sqlDB.ExpectErr(
-			t, "pq: cannot restore view \"v\" without restoring referenced object \\(or \"skip_missing_views\" option\\)",
+			t, "pq: cannot restore view \"v\" without restoring referenced table \\(or \"skip_missing_views\" option\\)",
 			`RESTORE TABLE v FROM LATEST IN 'nodelocal://1/test/'`,
 		)
 	})
@@ -8814,15 +8808,8 @@ func TestBackupOnlyPublicIndexes(t *testing.T) {
 	// appear in the backup once it is PUBLIC.
 	var g errgroup.Group
 	g.Go(func() error {
-		// This test intentionally uses hooks that require the legacy schema changer. Because
-		// the legacy schema changer cannot toggle schema_locked for backfilling schema changes,
-		// we will manually do that here.
-		_, err := sqlDB.DB.ExecContext(ctx, `ALTER TABLE data.bank SET (schema_locked=false)`)
-		if err != nil {
-			return errors.Wrap(err, "unsetting schema_locked")
-		}
 		// We use the underlying DB since the goroutine should not call t.Fatal.
-		_, err = sqlDB.DB.ExecContext(ctx,
+		_, err := sqlDB.DB.ExecContext(ctx,
 			`CREATE INDEX new_balance_idx ON data.bank(balance)`)
 		return errors.Wrap(err, "creating index")
 	})
@@ -9867,13 +9854,13 @@ func TestBackupRestoreSystemUsers(t *testing.T) {
 			{"app_role", "app", "false"},
 			{"app_role", "test_role", "false"},
 		})
-		sqlDBRestore.CheckQueryResults(t, "SELECT username, options, member_of from [SHOW USERS] ORDER BY username", [][]string{
-			{"admin", "{}", "{}"},
-			{"app", "{}", "{admin,app_role}"},
-			{"app_role", "{NOLOGIN}", "{}"},
-			{"root", "{}", "{admin}"},
-			{"test", "{}", "{}"},
-			{"test_role", "{NOLOGIN}", "{app_role}"},
+		sqlDBRestore.CheckQueryResults(t, "SHOW USERS", [][]string{
+			{"admin", "", "{}"},
+			{"app", "", "{admin,app_role}"},
+			{"app_role", "NOLOGIN", "{}"},
+			{"root", "", "{admin}"},
+			{"test", "", "{}"},
+			{"test_role", "NOLOGIN", "{app_role}"},
 		})
 	})
 
@@ -9897,13 +9884,13 @@ func TestBackupRestoreSystemUsers(t *testing.T) {
 			{"test", "false"},
 			{"test_role", "true"},
 		})
-		sqlDBRestore1.CheckQueryResults(t, "SELECT username, options, member_of from [SHOW USERS] ORDER BY username", [][]string{
-			{"admin", "{}", "{}"},
-			{"app", "{}", "{}"},
-			{"app_role", "{}", "{}"},
-			{"root", "{}", "{admin}"},
-			{"test", "{}", "{}"},
-			{"test_role", "{}", "{}"},
+		sqlDBRestore1.CheckQueryResults(t, "SHOW USERS", [][]string{
+			{"admin", "", "{}"},
+			{"app", "", "{}"},
+			{"app_role", "", "{}"},
+			{"root", "", "{admin}"},
+			{"test", "", "{}"},
+			{"test_role", "", "{}"},
 		})
 	})
 	_, sqlDBRestore2, cleanupEmptyCluster2 := backupRestoreTestSetupEmpty(t, singleNode, tempDir, InitManualReplication, base.TestClusterArgs{})
@@ -9925,14 +9912,14 @@ func TestBackupRestoreSystemUsers(t *testing.T) {
 			{"test_role", "true"},
 			{"testuser", "false"},
 		})
-		sqlDBRestore2.CheckQueryResults(t, "SELECT username, options, member_of from [SHOW USERS] ORDER BY username", [][]string{
-			{"admin", "{}", "{}"},
-			{"app", "{}", "{}"},
-			{"app_role", "{}", "{}"},
-			{"root", "{}", "{admin}"},
-			{"test", "{}", "{}"},
-			{"test_role", "{}", "{}"},
-			{"testuser", "{}", "{}"},
+		sqlDBRestore2.CheckQueryResults(t, "SHOW USERS", [][]string{
+			{"admin", "", "{}"},
+			{"app", "", "{}"},
+			{"app_role", "", "{}"},
+			{"root", "", "{admin}"},
+			{"test", "", "{}"},
+			{"test_role", "", "{}"},
+			{"testuser", "", "{}"},
 		})
 	})
 }
@@ -10653,7 +10640,7 @@ func TestBackupDoNotIncludeViewSpans(t *testing.T) {
 
 	sqlDB.Exec(t, "DROP DATABASE d")
 	sqlDB.Exec(t, "RESTORE DATABASE d FROM LATEST IN $1", localFoo)
-	sqlDB.CheckQueryResults(t, "SHOW CREATE VIEW d.tview", [][]string{{"d.public.tview", "CREATE VIEW public.tview (\n\tk,\n\tb\n) AS SELECT k, b FROM d.public.t;"}})
+	sqlDB.CheckQueryResults(t, "SHOW CREATE VIEW d.tview", [][]string{{"d.public.tview", "CREATE VIEW public.tview (\n\tk,\n\tb\n) AS SELECT k, b FROM d.public.t"}})
 	sqlDB.CheckQueryResults(t, "SELECT * from d.tview", [][]string{{"1", "101"}, {"2", "202"}})
 }
 
@@ -11202,7 +11189,7 @@ CREATE TABLE child_pk (k INT8 PRIMARY KEY REFERENCES parent);
 		sqlDB.Exec(t, `CREATE DATABASE test`)
 		sqlDB.Exec(t, fmt.Sprintf(`RESTORE TABLE test.circular FROM LATEST IN $1 AS OF SYSTEM TIME %s`, ts[0]), localFoo)
 		require.Equal(t, [][]string{
-			{"test.public.circular", "CREATE TABLE public.circular (\n\tk INT8 NOT NULL,\n\tselfid INT8 NULL,\n\tCONSTRAINT circular_pkey PRIMARY KEY (k ASC),\n\tCONSTRAINT self_fk FOREIGN KEY (selfid) REFERENCES public.circular(selfid) NOT VALID,\n\tUNIQUE INDEX circular_selfid_key (selfid ASC)\n) WITH (schema_locked = true);"},
+			{"test.public.circular", "CREATE TABLE public.circular (\n\tk INT8 NOT NULL,\n\tselfid INT8 NULL,\n\tCONSTRAINT circular_pkey PRIMARY KEY (k ASC),\n\tCONSTRAINT self_fk FOREIGN KEY (selfid) REFERENCES public.circular(selfid) NOT VALID,\n\tUNIQUE INDEX circular_selfid_key (selfid ASC)\n)"},
 		}, sqlDB.QueryStr(t, `SHOW CREATE TABLE test.circular`))
 		sqlDB.Exec(t, fmt.Sprintf(`RESTORE TABLE test.parent, test.child FROM LATEST IN $1 AS OF SYSTEM TIME %s `, ts[0]), localFoo)
 		sqlDB.Exec(t, `SELECT * FROM pg_catalog.pg_constraint`)
@@ -11219,123 +11206,4 @@ CREATE TABLE child_pk (k INT8 PRIMARY KEY REFERENCES parent);
 		sqlDB.Exec(t, `SELECT * FROM pg_catalog.pg_constraint`)
 		sqlDB.Exec(t, `DROP DATABASE test`)
 	}
-}
-
-func TestRestoreFailureDeletesComments(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	_, sqlDB, cleanupFn := backupRestoreTestSetupEmpty(t, singleNode, "", InitManualReplication, base.TestClusterArgs{})
-	defer cleanupFn()
-
-	// Set pause point for after the system tables have been published.
-	sqlDB.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = 'restore.after_cleanup_temp_system_tables'`)
-
-	commentCountQuery := `SELECT count(*) FROM system.comments`
-
-	var count int
-	sqlDB.QueryRow(t, commentCountQuery).Scan(&count)
-	require.Equal(t, 0, count)
-
-	// Create a database with tables, types, and schemas that have comments
-	sqlDB.Exec(t, `CREATE DATABASE test_db`)
-	sqlDB.Exec(t, `USE test_db`)
-
-	sqlDB.Exec(t, `CREATE TYPE custom_type AS ENUM ('val1', 'val2')`)
-	sqlDB.Exec(t, `COMMENT ON TYPE custom_type IS 'This is a custom type comment'`)
-
-	sqlDB.Exec(t, `CREATE SCHEMA test_schema`)
-	sqlDB.Exec(t, `COMMENT ON SCHEMA test_schema IS 'This is a schema comment'`)
-
-	sqlDB.Exec(t, `CREATE TABLE test_schema.test_table (id INT PRIMARY KEY, name STRING)`)
-	sqlDB.Exec(t, `COMMENT ON TABLE test_schema.test_table IS 'This is a table comment'`)
-
-	sqlDB.Exec(t, `COMMENT ON DATABASE test_db IS 'This is a database comment'`)
-
-	sqlDB.QueryRow(t, commentCountQuery).Scan(&count)
-	require.Equal(t, 4, count)
-
-	sqlDB.Exec(t, `BACKUP INTO 'nodelocal://1/test_backup'`)
-
-	sqlDB.Exec(t, `USE system`)
-
-	sqlDB.Exec(t, `DROP DATABASE test_db CASCADE`)
-	sqlDB.QueryRow(t, commentCountQuery).Scan(&count)
-	require.Equal(t, 0, count)
-
-	var jobID jobspb.JobID
-	sqlDB.QueryRow(t, `RESTORE FROM LATEST IN 'nodelocal://1/test_backup' WITH detached`).Scan(&jobID)
-	jobutils.WaitForJobToPause(t, sqlDB, jobID)
-
-	sqlDB.QueryRow(t, commentCountQuery).Scan(&count)
-	require.Equal(t, 4, count)
-
-	// Cancel the restore job
-	sqlDB.Exec(t, `CANCEL JOB $1`, jobID)
-	jobutils.WaitForJobToCancel(t, sqlDB, jobID)
-
-	sqlDB.QueryRow(t, commentCountQuery).Scan(&count)
-	require.Equal(t, 0, count)
-}
-
-func TestBackupIndexCreatedAfterBackup(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	th, cleanup := newTestHelper(t)
-	defer cleanup()
-
-	th.setOverrideAsOfClauseKnob(t)
-	// Time is set to a time such that no full backup will unexpectedly run as we
-	// artificially time travel. This ensures deterministic behavior that is not
-	// impacted by when the test runs.
-	th.env.SetTime(time.Date(2025, 7, 18, 0, 0, 0, 0, time.UTC))
-
-	th.sqlDB.Exec(t, "SET CLUSTER SETTING backup.compaction.threshold = 4")
-	th.sqlDB.Exec(t, "SET CLUSTER SETTING backup.compaction.window_size = 3")
-
-	schedules, err := th.createBackupSchedule(
-		t, "CREATE SCHEDULE FOR BACKUP INTO $1 RECURRING '@hourly'", "nodelocal://1/backup",
-	)
-	require.NoError(t, err)
-	require.Equal(t, 2, len(schedules))
-
-	full, inc := schedules[0], schedules[1]
-	if full.IsPaused() {
-		full, inc = inc, full
-	}
-
-	th.env.SetTime(full.NextRun().Add(time.Second))
-	require.NoError(t, th.executeSchedules())
-	th.waitForSuccessfulScheduledJob(t, full.ScheduleID())
-
-	var backupPath string
-	th.sqlDB.QueryRow(t, "SHOW BACKUPS IN 'nodelocal://1/backup'").Scan(&backupPath)
-
-	for range 3 {
-		inc, err = jobs.ScheduledJobDB(th.internalDB()).Load(ctx, th.env, inc.ScheduleID())
-		require.NoError(t, err)
-
-		th.env.SetTime(inc.NextRun().Add(time.Second))
-		require.NoError(t, th.executeSchedules())
-		th.waitForSuccessfulScheduledJob(t, inc.ScheduleID())
-	}
-	var compactionJob jobspb.JobID
-	require.NoError(
-		t, th.sqlDB.DB.QueryRowContext(
-			ctx,
-			`SELECT job_id FROM [SHOW JOBS] WHERE description ILIKE 'COMPACT%' AND job_type = 'BACKUP'`,
-		).Scan(&compactionJob),
-	)
-	jobutils.WaitForJobToSucceed(t, th.sqlDB, compactionJob)
-
-	fullIndexes, err := os.ReadDir(path.Join(th.iodir, "backup", backupbase.BackupIndexDirectoryPath))
-	require.NoError(t, err)
-	require.Len(t, fullIndexes, 1)
-	files, err := os.ReadDir(
-		path.Join(th.iodir, "backup", backupbase.BackupIndexDirectoryPath, fullIndexes[0].Name()),
-	)
-	require.NoError(t, err)
-	require.Len(t, files, 5)
 }

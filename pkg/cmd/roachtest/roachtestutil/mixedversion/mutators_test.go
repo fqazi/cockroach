@@ -29,8 +29,7 @@ func TestPreserveDowngradeOptionRandomizerMutator(t *testing.T) {
 	require.NoError(t, err)
 
 	var mut preserveDowngradeOptionRandomizerMutator
-	mutations, err := mut.Generate(newRand(), plan, nil)
-	require.NoError(t, err)
+	mutations := mut.Generate(newRand(), plan)
 	require.NotEmpty(t, mutations)
 	require.True(t, len(mutations)%2 == 0, "should produce even number of mutations") // one removal and one insertion per upgrade
 
@@ -98,8 +97,7 @@ func TestClusterSettingMutator(t *testing.T) {
 
 		const settingName = "test_cluster_setting"
 		mut := newClusterSettingMutator(settingName, possibleValues, options...)
-		mutations, err := mut.Generate(newRand(), plan, nil)
-		require.NoError(t, err)
+		mutations := mut.Generate(newRand(), plan)
 
 		// Number of mutations should be 1 <= n <= maxChanges
 		require.GreaterOrEqual(t, len(mutations), 1, "plan:\n%s", plan.PrettyPrint())

@@ -238,7 +238,7 @@ type archiveKeys struct {
 func makeArchiveKeys(platform Platform, versionStr string, archivePrefix string) archiveKeys {
 	suffix := SuffixFromPlatform(platform)
 	targetSuffix, hasExe := TrimDotExe(suffix)
-	if platform == PlatformLinux || platform == PlatformLinuxArm || platform == PlatformLinuxFIPS || platform == PlatformLinuxS390x {
+	if platform == PlatformLinux || platform == PlatformLinuxArm || platform == PlatformLinuxFIPS {
 		targetSuffix = strings.Replace(targetSuffix, "gnu-", "", -1)
 		targetSuffix = osVersionRe.ReplaceAllLiteralString(targetSuffix, "")
 	}
@@ -253,6 +253,34 @@ func makeArchiveKeys(platform Platform, versionStr string, archivePrefix string)
 		keys.archive = targetArchiveBase + ".tgz"
 	}
 	return keys
+}
+
+const latestStr = "latest"
+
+// LatestOpts are parameters passed to MarkLatestReleaseWithSuffix
+type LatestOpts struct {
+	Platform   Platform
+	VersionStr string
+}
+
+// MarkLatestReleaseWithSuffix adds redirects to release files using "latest" instead of the version
+func MarkLatestReleaseWithSuffix(
+	svc ObjectPutGetter, o LatestOpts, archivePrefix string, suffix string,
+) {
+	keys := makeArchiveKeys(o.Platform, o.VersionStr, archivePrefix)
+	versionedKey := "/" + keys.archive + suffix
+	oLatest := o
+	oLatest.VersionStr = latestStr
+	latestKeys := makeArchiveKeys(oLatest.Platform, oLatest.VersionStr, archivePrefix)
+	latestKey := latestKeys.archive + suffix
+	log.Printf("Adding redirect to %s", svc.URL(latestKey))
+	if err := svc.PutObject(&PutObjectInput{
+		CacheControl:            &NoCache,
+		Key:                     &latestKey,
+		WebsiteRedirectLocation: &versionedKey,
+	}); err != nil {
+		log.Fatalf("failed adding a redirect to %s: %s", versionedKey, err)
+	}
 }
 
 // GetObjectInput specifies input parameters for GetOject

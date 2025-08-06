@@ -6,13 +6,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	cryptorand "crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	gosql "database/sql"
-	"encoding/pem"
 	"fmt"
 	"math"
 	"math/rand"
@@ -119,8 +114,8 @@ func Test_updateSpecForSelectiveTests(t *testing.T) {
 	var mock sqlmock.Sqlmock
 	var db *gosql.DB
 	var err error
-	_ = os.Setenv("SNOWFLAKE_USER", "dummy_user")
-	_ = os.Setenv("SNOWFLAKE_PVT_KEY", createPrivateKey(t))
+	_ = os.Setenv("SFUSER", "dummy_user")
+	_ = os.Setenv("SFPASSWORD", "dummy_password")
 	testselector.SqlConnectorFunc = func(_, _ string) (*gosql.DB, error) {
 		return db, err
 	}
@@ -487,40 +482,4 @@ func shuffleStrings(r *rand.Rand, strings []string) []string {
 		strings[i], strings[j] = strings[j], strings[i]
 	})
 	return strings
-}
-
-func TestSkippedSelectSpecs(t *testing.T) {
-	specs := []registry.TestSpec{}
-	for i := range 5 {
-		specs = append(specs, registry.TestSpec{Name: fmt.Sprintf("t%d", i+1)})
-	}
-
-	rng := randutil.NewTestRandWithSeed(0)
-	buf := bytes.NewBuffer(nil)
-	_ = selectSpecs(specs, rng, 0.1, false, buf)
-
-	containsTestSkip := func(testName string) bool {
-		return strings.Contains(buf.String(), fmt.Sprintf("--- SKIP: %s", testName))
-	}
-
-	// With the fixed random seed above, these are the expected skipped tests.
-	expectedSkippedTests := []string{"t1", "t2", "t3", "t5"}
-	for _, testName := range expectedSkippedTests {
-		assert.True(t, containsTestSkip(testName), "Expected skip message for %s not found in buffer", testName)
-	}
-	// With the fixed random seed above, the test t4 should not be skipped.
-	testName := "t4"
-	assert.False(t, containsTestSkip(testName), "Expected no skip message for %s but found in buffer", testName)
-}
-
-// create a private key for testing
-func createPrivateKey(t *testing.T) string {
-	privateKey, err := rsa.GenerateKey(cryptorand.Reader, 2048)
-	require.Nil(t, err)
-	// Convert private key to PKCS#1 ASN.1 PEM
-	pemBlock := &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
-	}
-	return string(pem.EncodeToMemory(pemBlock))
 }

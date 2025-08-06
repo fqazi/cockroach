@@ -53,7 +53,6 @@ func registerC2CMixedVersions(r registry.Registry) {
 		Cluster:          r.MakeClusterSpec(sp.dstNodes+sp.srcNodes+1, spec.WorkloadNode(), spec.CPU(8)),
 		CompatibleClouds: sp.clouds,
 		Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
-		Monitor:          true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runC2CMixedVersions(ctx, t, c, sp)
 		},
@@ -124,15 +123,12 @@ func InitC2CMixed(
 		return 0.0
 	}
 
-	// This test has the source and destination clusters interacting with each other
-	// through specific nodes, so it is incompatible with failure injections.
 	sourceMvt := mixedversion.NewTest(ctx, t, t.L(), c, c.Range(1, sp.srcNodes),
 		mixedversion.AlwaysUseLatestPredecessors,
 		mixedversion.NumUpgrades(expectedMajorUpgrades),
 		mixedversion.EnabledDeploymentModes(mixedversion.SharedProcessDeployment),
 		mixedversion.WithTag("source"),
 		mixedversion.WithSkipVersionProbability(boolToProb(sourceVersionSkips)),
-		mixedversion.DisableAllFailureInjectionMutators(),
 	)
 
 	destMvt := mixedversion.NewTest(ctx, t, t.L(), c, c.Range(sp.srcNodes+1, sp.srcNodes+sp.dstNodes),
@@ -141,7 +137,6 @@ func InitC2CMixed(
 		mixedversion.EnabledDeploymentModes(mixedversion.SystemOnlyDeployment),
 		mixedversion.WithTag("dest"),
 		mixedversion.WithSkipVersionProbability(boolToProb(destVersionSkips)),
-		mixedversion.DisableAllFailureInjectionMutators(),
 	)
 
 	return &c2cMixed{
@@ -276,7 +271,7 @@ func (cm *c2cMixed) WorkloadHook(ctx context.Context) {
 		Arg("{pgurl%s}", cm.c.Range(1, cm.sp.srcNodes)).
 		Option("tolerate-errors").
 		Flag("warehouses", 500)
-	cm.workloadStopper = cm.sourceMvt.Workload("tpcc", cm.c.WorkloadNode(), tpccInitCmd, tpccRunCmd, false /* overrideBinary */)
+	cm.workloadStopper = cm.sourceMvt.Workload("tpcc", cm.c.WorkloadNode(), tpccInitCmd, tpccRunCmd)
 
 	readerTenantName := fmt.Sprintf("%s-readonly", destTenantName)
 
@@ -286,7 +281,7 @@ func (cm *c2cMixed) WorkloadHook(ctx context.Context) {
 		Flag("warehouses", 500).
 		Flag("mix", "newOrder=0,payment=0,orderStatus=1,delivery=0,stockLevel=1")
 
-	cm.readOnlyWorkloadStopper = cm.destMvt.Workload("tpcc-read-only", cm.c.WorkloadNode(), nil, tpccStandbyRunCmd, false /* overrideBinary */)
+	cm.readOnlyWorkloadStopper = cm.destMvt.Workload("tpcc-read-only", cm.c.WorkloadNode(), nil, tpccStandbyRunCmd)
 
 }
 

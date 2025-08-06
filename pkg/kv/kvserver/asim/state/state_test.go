@@ -6,9 +6,7 @@
 package state
 
 import (
-	"fmt"
 	"math/rand"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,9 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/echotest"
-	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -89,9 +84,7 @@ func TestRangeMap(t *testing.T) {
 	// Assert that the first range is correctly initialized upon creation of a
 	// new state.
 	require.Len(t, s.ranges.rangeMap, 1)
-	maxRes, _ := s.ranges.rangeTree.Max()
-	minRes, _ := s.ranges.rangeTree.Min()
-	require.Equal(t, maxRes, minRes)
+	require.Equal(t, s.ranges.rangeTree.Max(), s.ranges.rangeTree.Min())
 	firstRange := s.ranges.rangeMap[1]
 	require.Equal(t, s.rangeFor(MinKey), firstRange)
 	require.Equal(t, firstRange.startKey, MinKey)
@@ -292,30 +285,23 @@ func TestWorkloadApply(t *testing.T) {
 	require.Equal(t, expectedLoad, sc3)
 }
 
-// TestReplicaLoadRangeUsageInfo asserts that the rated replica load accounting
-// maintains the average per second corresponding to the tick clock.
-func TestReplicaLoadRangeUsageInfo(t *testing.T) {
+// TestReplicaLoadQPS asserts that the rated replica load accounting maintains
+// the average per second corresponding to the tick clock.
+func TestReplicaLoadQPS(t *testing.T) {
 	settings := config.DefaultSimulationSettings()
 	s := NewState(settings)
 	start := settings.StartTime
 
 	n1 := s.AddNode()
-	n2 := s.AddNode()
-	n3 := s.AddNode()
 	k1 := Key(100)
 	qps := 1000
 	s1, _ := s.AddStore(n1.NodeID())
-	s2, _ := s.AddStore(n2.NodeID())
-	s3, _ := s.AddStore(n3.NodeID())
 	_, r1, _ := s.SplitRange(k1)
 	s.AddReplica(r1.RangeID(), s1.StoreID(), roachpb.VOTER_FULL)
-	s.AddReplica(r1.RangeID(), s2.StoreID(), roachpb.VOTER_FULL)
-	s.AddReplica(r1.RangeID(), s3.StoreID(), roachpb.VOTER_FULL)
 
 	applyLoadToStats := func(key int64, count int) {
 		for i := 0; i < count; i++ {
-			s.ApplyLoad(workload.LoadBatch{workload.LoadEvent{
-				Key: key, Writes: 1, WriteSize: 1, RequestCPU: 1, RaftCPU: 1}})
+			s.ApplyLoad(workload.LoadBatch{workload.LoadEvent{Key: key, Writes: 1}})
 		}
 	}
 
@@ -329,24 +315,6 @@ func TestReplicaLoadRangeUsageInfo(t *testing.T) {
 	// Assert that the rated avg comes out to rate of queries applied per
 	// second.
 	require.Equal(t, float64(qps), s.RangeUsageInfo(r1.RangeID(), s1.StoreID()).QueriesPerSecond)
-	// The non-leaseholder replicas should have no QPS.
-	require.Equal(t, float64(0), s.RangeUsageInfo(r1.RangeID(), s2.StoreID()).QueriesPerSecond)
-	require.Equal(t, float64(0), s.RangeUsageInfo(r1.RangeID(), s2.StoreID()).QueriesPerSecond)
-	// Similarly, only the leaseholder should have request CPU recorded.
-	require.Equal(t, float64(qps),
-		s.RangeUsageInfo(r1.RangeID(), s1.StoreID()).RequestCPUNanosPerSecond)
-	require.Equal(t, float64(0),
-		s.RangeUsageInfo(r1.RangeID(), s2.StoreID()).RequestCPUNanosPerSecond)
-	require.Equal(t, float64(0),
-		s.RangeUsageInfo(r1.RangeID(), s3.StoreID()).RequestCPUNanosPerSecond)
-	// All the replicas should have identical write bytes/s, which is equal to
-	// the QPS. The replicas should also have identical raft CPU usage.
-	require.Equal(t, float64(qps),
-		s.RangeUsageInfo(r1.RangeID(), s1.StoreID()).RaftCPUNanosPerSecond)
-	require.Equal(t, float64(qps),
-		s.RangeUsageInfo(r1.RangeID(), s2.StoreID()).RaftCPUNanosPerSecond)
-	require.Equal(t, float64(qps),
-		s.RangeUsageInfo(r1.RangeID(), s3.StoreID()).RaftCPUNanosPerSecond)
 }
 
 // TestKeyTranslation asserts that key encoding between roachpb keys and
@@ -791,74 +759,4 @@ func TestCapacityOverride(t *testing.T) {
 	// writes to the store - we expect it to be 500 instead of 100 for that
 	// reason.
 	require.Equal(t, 500.0, capacity.WritesPerSecond)
-}
-
-// TestDistribution tests the distribution helper functions. The invariants
-// are that the distributions sum to 1.0 and that the distribution is
-// expected.
-func TestDistribution(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	sum := func(values []float64) float64 {
-		total := 0.0
-		for _, v := range values {
-			total += v
-		}
-		return total
-	}
-
-	const seed = 42
-	randSource := rand.New(rand.NewSource(seed))
-
-	testCases := []struct {
-		numStores int
-		fns       []struct {
-			name string
-			fn   func() []float64
-		}
-	}{
-		{
-			numStores: 3,
-			fns: []struct {
-				name string
-				fn   func() []float64
-			}{
-				{name: "even", fn: func() []float64 { return evenDistribution(3) }},
-				{name: "skewed", fn: func() []float64 { return skewedDistribution(3) }},
-				{name: "exact", fn: func() []float64 { return exactDistribution([]int{1, 1, 1}) }},
-				{name: "weighted_rand", fn: func() []float64 {
-					return weightedRandDistribution(randSource, []float64{0.6, 0.2, 0.2})
-				}},
-				{name: "rand", fn: func() []float64 { return randDistribution(randSource, 3) }},
-			},
-		},
-		{
-			numStores: 10,
-			fns: []struct {
-				name string
-				fn   func() []float64
-			}{
-				{name: "even", fn: func() []float64 { return evenDistribution(10) }},
-				{name: "skewed", fn: func() []float64 { return skewedDistribution(10) }},
-				{name: "exact", fn: func() []float64 { return exactDistribution([]int{2, 2, 2, 2, 2, 1, 1, 1, 1, 1}) }},
-				{name: "weighted_rand", fn: func() []float64 {
-					return weightedRandDistribution(randSource, []float64{0.5, 0.1, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05})
-				}},
-				{name: "rand", fn: func() []float64 { return randDistribution(randSource, 10) }},
-			},
-		},
-	}
-	w := echotest.NewWalker(t, datapathutils.TestDataPath(t, "echotest"))
-	for _, testCase := range testCases {
-		t.Run(fmt.Sprintf("%d_stores", testCase.numStores), func(t *testing.T) {
-			t.Run("distribution", w.Run(t, fmt.Sprintf("%d_stores", testCase.numStores), func(t *testing.T) string {
-				var str strings.Builder
-				for _, fn := range testCase.fns {
-					dist := fn.fn()
-					str.WriteString(fmt.Sprintf("[%s: %.2f, sum: %.2f]\n", fn.name, dist, sum(dist)))
-				}
-				return str.String()
-			}))
-		})
-	}
 }

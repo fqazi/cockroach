@@ -7,11 +7,8 @@ package testselector
 
 import (
 	"context"
-	"crypto/rsa"
-	"crypto/x509"
 	gosql "database/sql"
 	_ "embed"
-	"encoding/pem"
 	"fmt"
 	"os"
 	"strconv"
@@ -30,9 +27,9 @@ const (
 	schema    = "TEAMCITY"
 	warehouse = "COMPUTE_WH"
 
-	// sfUsernameEnv and sfPrivateKey are the environment variables that are used for Snowflake access
-	sfUsernameEnv = "SNOWFLAKE_USER"
-	sfPrivateKey  = "SNOWFLAKE_PVT_KEY"
+	// sfUsernameEnv and sfPasswordEnv are the environment variables that are used for Snowflake access
+	sfUsernameEnv = "SFUSER"
+	sfPasswordEnv = "SFPASSWORD"
 
 	// DataTestNameIndex and the following corresponds to the index of the row where the data is returned
 	DataTestNameIndex = 0
@@ -172,57 +169,30 @@ func getConnect(_ context.Context) (*gosql.DB, error) {
 
 // getDSN returns the dataSource name for snowflake driver
 func getDSN() (string, error) {
-	username, privateKeyStr, err := getSFCreds()
+	username, password, err := getSFCreds()
 	if err != nil {
 		return "", err
 	}
-	privateKey, err := loadPrivateKey(privateKeyStr)
-	if err != nil {
-		return "", err
-	}
+
 	return sf.DSN(&sf.Config{
-		Account:       account,
-		Database:      database,
-		Schema:        schema,
-		Warehouse:     warehouse,
-		Authenticator: sf.AuthTypeJwt,
-		User:          username,
-		PrivateKey:    privateKey,
+		Account:   account,
+		Database:  database,
+		Schema:    schema,
+		Warehouse: warehouse,
+		Password:  password,
+		User:      username,
 	})
 }
 
 // getSFCreds gets the snowflake credentials from the secrets manager
 func getSFCreds() (string, string, error) {
 	username := os.Getenv(sfUsernameEnv)
-	privateKey := os.Getenv(sfPrivateKey)
+	password := os.Getenv(sfPasswordEnv)
 	if username == "" {
 		return "", "", fmt.Errorf("environment variable %s is not set", sfUsernameEnv)
 	}
-	if privateKey == "" {
-		return "", "", fmt.Errorf("environment variable %s is not set", sfPrivateKey)
+	if password == "" {
+		return "", "", fmt.Errorf("environment variable %s is not set", sfPasswordEnv)
 	}
-	return username, privateKey, nil
-}
-
-// loadPrivateKey loads an RSA private key by parsing the PEM-encoded key bytes.
-func loadPrivateKey(privateKeyString string) (privateKey *rsa.PrivateKey, err error) {
-	block, _ := pem.Decode([]byte(privateKeyString))
-	if block == nil {
-		return nil, fmt.Errorf("failed to decode PEM block containing the key")
-	}
-
-	var parsedKey interface{}
-	if parsedKey, err = x509.ParsePKCS8PrivateKey(block.Bytes); err != nil {
-		parsedKey, err = x509.ParsePKCS1PrivateKey(block.Bytes)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	privateKey, ok := parsedKey.(*rsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("not an RSA private key")
-	}
-
-	return privateKey, nil
+	return username, password, nil
 }

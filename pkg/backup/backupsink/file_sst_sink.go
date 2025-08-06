@@ -231,13 +231,11 @@ func (s *FileSSTSink) Close() error {
 	if s.cancel != nil {
 		s.cancel()
 	}
-
-	var err error
 	if s.out != nil {
-		err = s.out.Close()
+		return s.out.Close()
 	}
 	s.sst.Close()
-	return err
+	return nil
 }
 
 func (s *FileSSTSink) Flush(ctx context.Context) error {
