@@ -436,7 +436,7 @@ func TestTenantAuthRequest(t *testing.T) {
 		}
 	}
 
-	tenantThree := roachpb.MustMakeTenantID(3)
+	tenantTwo := roachpb.MustMakeTenantID(2)
 	makeTimeseriesQueryReq := func(tenantID *roachpb.TenantID) *tspb.TimeSeriesQueryRequest {
 		req := &tspb.TimeSeriesQueryRequest{
 			Queries: []tspb.Query{{}},
@@ -998,7 +998,7 @@ func TestTenantAuthRequest(t *testing.T) {
 				expErr: noError,
 			},
 			{
-				req:    makeTimeseriesQueryReq(&tenantThree),
+				req:    makeTimeseriesQueryReq(&tenantTwo),
 				expErr: `tsdb query with invalid tenant not permitted`,
 			},
 		},

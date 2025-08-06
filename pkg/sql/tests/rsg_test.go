@@ -421,10 +421,6 @@ func TestRandomSyntaxFunctions(t *testing.T) {
 					// Some spatial function are slow and testing them here
 					// is not worth it.
 					continue
-				case "trigger_in", "trigger_out":
-					// Skip trigger I/O functions since we can't generate random trigger
-					// arguments.
-					continue
 				case "crdb_internal.reset_sql_stats",
 					"crdb_internal.check_consistency",
 					"crdb_internal.request_statement_bundle",
@@ -434,9 +430,6 @@ func TestRandomSyntaxFunctions(t *testing.T) {
 					"crdb_internal.validate_ttl_scheduled_jobs",
 					"crdb_internal.fingerprint":
 					// Skipped due to long execution time.
-					continue
-				case "st_snap":
-					// TODO(#151103): unskip st_snap.
 					continue
 				}
 				_, variations := builtinsregistry.GetBuiltinProperties(name)

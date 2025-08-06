@@ -126,7 +126,7 @@ func TestTestPlanner(t *testing.T) {
 			case "workload":
 				initCmd := roachtestutil.NewCommand("./cockroach workload init some-workload")
 				runCmd := roachtestutil.NewCommand("./cockroach workload run some-workload")
-				mvt.Workload(d.CmdArgs[0].Vals[0], nodes, initCmd, runCmd, false /* overrideBinary */)
+				mvt.Workload(d.CmdArgs[0].Vals[0], nodes, initCmd, runCmd)
 			case "background-command":
 				cmd := roachtestutil.NewCommand("./cockroach some-command")
 				mvt.BackgroundCommand(d.CmdArgs[0].Vals[0], nodes, cmd)
@@ -389,7 +389,6 @@ func newTest(options ...CustomOption) *Test {
 	defaultTestOverrides := []CustomOption{
 		EnabledDeploymentModes(SystemOnlyDeployment),
 		DisableSkipVersionUpgrades,
-		DisableAllFailureInjectionMutators(),
 	}
 
 	for _, fn := range defaultTestOverrides {
@@ -554,7 +553,7 @@ func Test_stepSelectorFilter(t *testing.T) {
 			name:                   "no filter",
 			predicate:              func(*singleStep) bool { return true },
 			expectedAllSteps:       true,
-			expectedRandomStepType: runHookStep{},
+			expectedRandomStepType: restartWithNewBinaryStep{},
 		},
 		{
 			name: "filter eliminates all steps",
@@ -864,7 +863,7 @@ func (concurrentUserHooksMutator) Probability() float64 { return 0.5 }
 
 func (concurrentUserHooksMutator) Generate(
 	rng *rand.Rand, plan *TestPlan, planner *testPlanner,
-) ([]mutation, error) {
+) []mutation {
 	// Insert our `testSingleStep` implementation concurrently with every
 	// user-provided function.
 	return plan.
@@ -873,7 +872,7 @@ func (concurrentUserHooksMutator) Generate(
 			_, ok := s.impl.(runHookStep)
 			return ok
 		}).
-		InsertConcurrent(&testSingleStep{}), nil
+		InsertConcurrent(&testSingleStep{})
 }
 
 // removeUserHooksMutator is a test mutator that removes every
@@ -885,14 +884,14 @@ func (removeUserHooksMutator) Probability() float64 { return 0.5 }
 
 func (removeUserHooksMutator) Generate(
 	rng *rand.Rand, plan *TestPlan, planner *testPlanner,
-) ([]mutation, error) {
+) []mutation {
 	return plan.
 		newStepSelector().
 		Filter(func(s *singleStep) bool {
 			_, ok := s.impl.(runHookStep)
 			return ok
 		}).
-		Remove(), nil
+		Remove()
 }
 
 func dummyHook(context.Context, *logger.Logger, *rand.Rand, *Helper) error {
@@ -936,7 +935,6 @@ func Test_SeparateProcessUsesLatestPred(t *testing.T) {
 	testOverrides := []CustomOption{
 		EnabledDeploymentModes(SeparateProcessDeployment),
 		DisableSkipVersionUpgrades,
-		DisableAllFailureInjectionMutators(),
 		MinUpgrades(5),
 		MaxUpgrades(5),
 	}
@@ -958,6 +956,7 @@ func Test_SeparateProcessUsesLatestPred(t *testing.T) {
 
 	plan, err := mvt.plan()
 	require.NoError(t, err)
+	//
 	upgradePath := plan.Versions()
 	// Remove the last element as it's the current version which is a special case.
 	// The unit test framework hardcodes the current version which should have no

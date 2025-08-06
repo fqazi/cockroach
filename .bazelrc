@@ -22,7 +22,6 @@ startup --host_jvm_args=-DBAZEL_TRACK_SOURCE_DIRECTORIES=1
 build --flag_alias=bazel_code_coverage=//build/toolchains:bazel_code_coverage_flag
 build --flag_alias=crdb_test=//build/toolchains:crdb_test_flag
 build --flag_alias=crdb_test_off=//build/toolchains:crdb_test_off_flag
-build --flag_alias=crdb_bench=//build/toolchains:crdb_bench_flag
 build --flag_alias=cross=//build/toolchains:cross_flag
 build --flag_alias=dev=//build/toolchains:dev_flag
 build --flag_alias=force_build_cdeps=//build/toolchains:force_build_cdeps_flag
@@ -101,7 +100,7 @@ build:crosslinuxfips '--workspace_status_command=./build/bazelutil/stamp.sh -t x
 build:crosslinuxfips --config=crosslinuxfipsbase
 build:crosslinuxfipsbase --platforms=//build/toolchains:cross_linux
 build:crosslinuxfipsbase --config=cross
-build:crosslinuxfipsbase --@io_bazel_rules_go//go/toolchain:sdk_version=1.24.5fips
+build:crosslinuxfipsbase --@io_bazel_rules_go//go/toolchain:sdk_version=1.23.11fips
 build:crosswindows '--workspace_status_command=./build/bazelutil/stamp.sh -t x86_64-w64-mingw32'
 build:crosswindows --config=crosswindowsbase
 build:crosswindowsbase --platforms=//build/toolchains:cross_windows
