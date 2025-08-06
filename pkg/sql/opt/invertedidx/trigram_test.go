@@ -20,10 +20,9 @@ import (
 )
 
 func TestTryFilterTrigram(t *testing.T) {
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.NewTestingEvalContext(st)
-	evalCtx.SessionData().TrigramSimilarityThreshold = 0.3
 
 	tc := testcat.New()
 	if _, err := tc.ExecuteDDL(

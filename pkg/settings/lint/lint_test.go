@@ -113,7 +113,7 @@ func TestLintClusterSettingNames(t *testing.T) {
 			exceptions []string
 		}{
 			"_ttl":     {suggestion: ".ttl"},
-			"_enabled": {suggestion: ".enabled", exceptions: []string{".fraction_enabled"}},
+			"_enabled": {suggestion: ".enabled"},
 			"_timeout": {suggestion: ".timeout", exceptions: []string{".read_timeout", ".write_timeout"}},
 		}
 

@@ -1,4 +1,4 @@
-# LogicTest: local
+# LogicTest: local local-mixed-23.1
 
 statement ok
 CREATE DATABASE db
@@ -14,7 +14,7 @@ INSERT INTO db.other (t) VALUES ('other')
 statement ok
 ALTER TABLE db.kv ALTER PRIMARY KEY USING COLUMNS (k)
 
-statement ok
+statement ok;
 DROP TABLE db.kv
 
 statement ok

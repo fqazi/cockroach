@@ -1,6 +1,3 @@
-// This code has been modified from its original form by The Cockroach Authors.
-// All modifications are Copyright 2024 The Cockroach Authors.
-//
 // Copyright 2019 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,8 +20,6 @@ import (
 	"reflect"
 	"testing"
 	"testing/quick"
-
-	pb "github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 )
 
 // TestQuick uses quickcheck to heuristically assert that the main
@@ -49,7 +44,7 @@ func TestQuick(t *testing.T) {
 }
 
 // smallRandIdxMap returns a reasonably sized map of ids to commit indexes.
-func smallRandIdxMap(rand *rand.Rand, _ int) map[pb.PeerID]Index {
+func smallRandIdxMap(rand *rand.Rand, _ int) map[uint64]Index {
 	// Hard-code a reasonably small size here (quick will hard-code 50, which
 	// is not useful here).
 	size := 10
@@ -61,25 +56,25 @@ func smallRandIdxMap(rand *rand.Rand, _ int) map[pb.PeerID]Index {
 		idxs[i] = rand.Intn(n)
 	}
 
-	m := map[pb.PeerID]Index{}
+	m := map[uint64]Index{}
 	for i := range ids {
-		m[pb.PeerID(ids[i])] = Index(idxs[i])
+		m[uint64(ids[i])] = Index(idxs[i])
 	}
 	return m
 }
 
-type idxMap map[pb.PeerID]Index
+type idxMap map[uint64]Index
 
 func (idxMap) Generate(rand *rand.Rand, size int) reflect.Value {
 	m := smallRandIdxMap(rand, size)
 	return reflect.ValueOf(m)
 }
 
-type memberMap map[pb.PeerID]struct{}
+type memberMap map[uint64]struct{}
 
 func (memberMap) Generate(rand *rand.Rand, size int) reflect.Value {
 	m := smallRandIdxMap(rand, size)
-	mm := map[pb.PeerID]struct{}{}
+	mm := map[uint64]struct{}{}
 	for id := range m {
 		mm[id] = struct{}{}
 	}
@@ -92,7 +87,7 @@ func alternativeMajorityCommittedIndex(c MajorityConfig, l AckedIndexer) Index {
 		return math.MaxUint64
 	}
 
-	idToIdx := map[pb.PeerID]Index{}
+	idToIdx := map[uint64]Index{}
 	for id := range c {
 		if idx, ok := l.AckedIndex(id); ok {
 			idToIdx[id] = idx

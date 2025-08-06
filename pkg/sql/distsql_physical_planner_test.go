@@ -7,9 +7,7 @@ package sql
 
 import (
 	"context"
-	gosql "database/sql"
 	"fmt"
-	"io"
 	"reflect"
 	"strconv"
 	"strings"
@@ -23,10 +21,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangecache"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
-	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -255,7 +251,7 @@ func TestDistSQLReceiverUpdatesCaches(t *testing.T) {
 	}
 
 	for i := range descs {
-		ri, err := rangeCache.TestingGetCached(ctx, descs[i].StartKey, false, roachpb.LAG_BY_CLUSTER_SETTING)
+		ri, err := rangeCache.TestingGetCached(ctx, descs[i].StartKey, false /* inclusive */)
 		require.NoError(t, err)
 		require.Equal(t, descs[i], ri.Desc)
 		require.NotNil(t, ri.Lease)
@@ -384,445 +380,184 @@ func TestDistSQLRangeCachesIntegrationTest(t *testing.T) {
 	}
 }
 
-func TestDistSQLUnavailableHosts(t *testing.T) {
+func TestDistSQLDeadHosts(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderDuress(t, "takes 1m")
-
-	ctx := context.Background()
-
-	const numNodes = 5
-	const lastServerIdx = numNodes - 1
+	skip.UnderShort(t, "takes 20s")
 
 	const n = 100
+	const numNodes = 5
 
-	type tenantMode int
-	const (
-		singleTenant tenantMode = iota
-		sharedProcess
-		externalProcess
+	tc := serverutils.StartCluster(t, numNodes, base.TestClusterArgs{
+		ReplicationMode: base.ReplicationManual,
+		ServerArgs:      base.TestServerArgs{UseDatabase: "test"},
+	})
+	defer tc.Stopper().Stop(context.Background())
+
+	db := tc.ServerConn(0)
+	db.SetMaxOpenConns(1)
+	r := sqlutils.MakeSQLRunner(db)
+	r.Exec(t, "CREATE DATABASE test")
+
+	r.Exec(t, "CREATE TABLE t (x INT PRIMARY KEY, xsquared INT)")
+
+	for i := 0; i < numNodes; i++ {
+		r.Exec(t, fmt.Sprintf("ALTER TABLE t SPLIT AT VALUES (%d)", n*i/5))
+	}
+
+	// Evenly spread the ranges between the first 4 nodes. Only the last range
+	// has a replica on the fifth node.
+	for i := 0; i < numNodes; i++ {
+		r.Exec(t, fmt.Sprintf(
+			"ALTER TABLE t EXPERIMENTAL_RELOCATE VALUES (ARRAY[%d,%d,%d], %d)",
+			i+1, (i+1)%4+1, (i+2)%4+1, n*i/5,
+		))
+	}
+	r.CheckQueryResults(t,
+		`SELECT IF(substring(start_key for 1)='…',start_key,NULL),
+            IF(substring(end_key for 1)='…',end_key,NULL),
+            lease_holder, replicas FROM [SHOW RANGES FROM TABLE t WITH DETAILS]`,
+		[][]string{
+			{"NULL", "…/1/0", "1", "{1}"},
+			{"…/1/0", "…/1/20", "1", "{1,2,3}"},
+			{"…/1/20", "…/1/40", "2", "{2,3,4}"},
+			{"…/1/40", "…/1/60", "3", "{1,3,4}"},
+			{"…/1/60", "…/1/80", "4", "{1,2,4}"},
+			{"…/1/80", "NULL", "5", "{2,3,5}"},
+		},
 	)
 
-	startAndSetupCluster := func(t *testing.T, mode tenantMode) (
-		serverutils.TestClusterInterface, serverutils.ApplicationLayerInterface, *sqlutils.SQLRunner) {
-		tc := serverutils.StartCluster(t, numNodes, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				UseDatabase:       "test",
-				DefaultTestTenant: base.TestControlsTenantsExplicitly,
-			},
-		})
+	r.Exec(t, fmt.Sprintf("INSERT INTO t SELECT i, i*i FROM generate_series(1, %d) AS g(i)", n))
 
-		var db *gosql.DB
-		var lastServer serverutils.ApplicationLayerInterface
-		switch mode {
-		case singleTenant:
-			db = tc.ServerConn(0)
-			lastServer = tc.Server(lastServerIdx)
-		case sharedProcess:
-			for i := range tc.NumServers() {
-				tenant, tenantDB, err := tc.Server(i).TenantController().StartSharedProcessTenant(
-					ctx, base.TestSharedProcessTenantArgs{TenantName: "app"})
-				require.NoError(t, err)
-				if db == nil {
-					db = tenantDB
-				}
-				if i == lastServerIdx {
-					lastServer = tenant
-				}
-			}
-		case externalProcess:
-			for i := range tc.NumServers() {
-				s := tc.Server(i)
-				tenant, err := s.TenantController().StartTenant(
-					ctx, base.TestTenantArgs{
-						TenantID: serverutils.TestTenantID(),
-						Locality: s.ApplicationLayer().Locality(),
-					})
-				require.NoError(t, err)
-				if db == nil {
-					db = tenant.SQLConn(t)
-				}
-				if i == lastServerIdx {
-					lastServer = tenant
-				}
-			}
+	r.Exec(t, "SET DISTSQL = ON")
 
-			// Grant capability to run RELOCATE to secondary (test) tenant.
-			tc.GrantTenantCapabilities(
-				ctx, t, serverutils.TestTenantID(),
-				map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanAdminRelocateRange: "true"})
-		}
-
-		// Connect to node 1 (gateway node)
-		db.SetMaxOpenConns(1)
-		r := sqlutils.MakeSQLRunner(db)
-
-		r.Exec(t, "CREATE DATABASE test")
-		r.Exec(t, "CREATE TABLE t (x INT PRIMARY KEY, xsquared INT)")
-
-		for i := 0; i < numNodes; i++ {
-			r.Exec(t, fmt.Sprintf("ALTER TABLE t SPLIT AT VALUES (%d)", n*i/5))
-		}
-
-		// Evenly spread the ranges between the first 4 nodes. Only the last range
-		// has a replica on the fifth node.
-		for i := 0; i < numNodes; i++ {
-			r.Exec(t, fmt.Sprintf(
-				"ALTER TABLE t RELOCATE VALUES (ARRAY[%d,%d,%d], %d)",
-				i+1, (i+1)%4+1, (i+2)%4+1, n*i/5,
-			))
-		}
-
-		r.Exec(t, fmt.Sprintf("INSERT INTO t SELECT i, i*i FROM generate_series(1, %d) AS g(i)", n))
-		return tc, lastServer, r
-	}
-
-	// Use a query that uses the entire table and is easy to verify.
-	const query = "SELECT sum(xsquared) FROM t"
-
-	runQuery := func(t *testing.T, r *sqlutils.SQLRunner) error {
+	// Run a query that uses the entire table and is easy to verify.
+	runQuery := func() error {
+		log.Infof(context.Background(), "running test query")
 		var res int
-		r.QueryRow(t, query).Scan(&res)
-		if exp := (n * (n + 1) * (2*n + 1)) / 6; res != exp {
-			return errors.Errorf("incorrect result %d, expected %d", res, exp)
+		if err := db.QueryRow("SELECT sum(xsquared) FROM t").Scan(&res); err != nil {
+			return err
 		}
+		if exp := (n * (n + 1) * (2*n + 1)) / 6; res != exp {
+			t.Fatalf("incorrect result %d, expected %d", res, exp)
+		}
+		log.Infof(context.Background(), "test query OK")
 		return nil
 	}
-
-	checkQueryPlan := func(t *testing.T, r *sqlutils.SQLRunner, expectedPlans []string) error {
-		planQuery := fmt.Sprintf("SELECT info FROM [EXPLAIN (DISTSQL, SHAPE) %s] WHERE info LIKE 'Diagram%%'", query)
-		var result string
-		r.QueryRow(t, planQuery).Scan(&result)
-		for _, expected := range expectedPlans {
-			if result == expected {
-				return nil
-			}
-		}
-		if len(expectedPlans) == 1 {
-			return errors.Errorf("query '%s':\nexpected:\n%v\ngot:\n%s\n", planQuery, expectedPlans[0], result)
-		}
-		return errors.Errorf("query '%s':\nexpected one of:\n%v\ngot:\n%s\n",
-			planQuery, strings.Join(expectedPlans, "\n"), result)
+	if err := runQuery(); err != nil {
+		t.Error(err)
 	}
 
-	t.Run("unhealthy-nodes-in-single-tenant-mode", func(t *testing.T) {
-		tc, _, r := startAndSetupCluster(t, singleTenant)
-		defer tc.Stopper().Stop(context.Background())
+	// Verify the plan (should include all 5 nodes).
+	r.CheckQueryResults(t,
+		"SELECT info FROM [EXPLAIN (DISTSQL, SHAPE) SELECT sum(xsquared) FROM t] WHERE info LIKE 'Diagram%'",
+		[][]string{{"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklV9ro0wUxu_fTyEHXtrCiI4aY7xqaVwaNv2zMcsulFBm46krNU46M9KWku--GNutcRtR40XAceZ5fvOcmZNXkI8p-BAG0-B8riXZPde-zK4vtdvg5830bHKlHY8n4Tz8NiVaeHF2E5xob1Nlvjp-lo85ExidlGvUQvtxEcyCUmY6-RpoR-OExYKt_j8CAhmP8IqtUIJ_CxQIWEDABgIOEBjAgsBa8CVKyUUx5XW7YBI9g28SSLJ1rorhBYElFwj-K6hEpQg-zNmvFGfIIhSGCQQiVCxJtzbqVN2tH_AFCJzzNF9l0tfesYFAuGbFiG5YJiw2BHiuPmykYjGCTytckzH45oa0RzuLY4ExU1wYg12y8Pvl8Sk92Wtr1WwHe20_3PKMiwjLrX1YLTbNYNTsRmbXyOhuIrR9sWifYhmWqRtO-3rRLnSVWNzD6uXu2FrtQ7F6heKYuuG2D8XqQlcJZXhYKMMdW7t9KHavUFxTN7z2odhd6CqheIeF4u3YOu1DcXqF4pl660ScLmiVREaHJTLq0mJnKNc8k1jreZ87mTUnnRbNEaMYy04qeS6WeCP4cju3fL3eCm0HIpSq_ErLl0n2_kkqgWz19x-iqkQblawdJVpVGtSVrGamLlB2o5SzX4nWlZy-23PrSoNGJXc_k1VXcvsyDetKw0Ylbz-TXVfy-jJ5daVR8zEw90M5_5zN5mPeQDUqrs59yp_ukgh8MN8e_ZOf9weKBSyWxf0Nf_Onrez8ZV3cvnuWSiRwyR5wjArFKskSqZIl-ErkuNn89ycAAP__hKt0rw=="}},
+	)
 
-		r.CheckQueryResults(t,
-			`SELECT IF(substring(start_key for 1)='…',start_key,NULL),
-							IF(substring(end_key for 1)='…',end_key,NULL),
-							lease_holder, replicas FROM [SHOW RANGES FROM TABLE t WITH DETAILS]`,
-			[][]string{
-				{"NULL", "…/1/0", "1", "{1}"},
-				{"…/1/0", "…/1/20", "1", "{1,2,3}"},
-				{"…/1/20", "…/1/40", "2", "{2,3,4}"},
-				{"…/1/40", "…/1/60", "3", "{1,3,4}"},
-				{"…/1/60", "…/1/80", "4", "{1,2,4}"},
-				{"…/1/80", "NULL", "5", "{2,3,5}"},
-			},
+	// Stop node 5.
+	tc.StopServer(4)
+
+	testutils.SucceedsSoon(t, runQuery)
+
+	// The leaseholder for the last range should have moved to either node 2 or 3.
+	query := "SELECT info FROM [EXPLAIN (DISTSQL, SHAPE) SELECT sum(xsquared) FROM t] WHERE info LIKE 'Diagram%'"
+	exp2 := [][]string{{"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF9vmzAUxd_3KawrTW0lR2AgJOOpVcPUaOmfhUybVEWVF24pKsGpbdRWVb77BLQrQQ0CygMStvmd43Pt-wLqIQEPAn_mny5InN4K8n1-eU6u_T9Xs5PpBTmcTINF8HNGSXB2cuUfkdelKlsfPqmHjEsMj8p_9JL8PvPnfomZTX_45GAS80jy9dcDoJCKEC_4GhV418CAggUUbKDgwJLCRooVKiVkPv1SLJ6GT-CZFOJ0k-l8eElhJSSC9wI61gmCBwv-N8E58hClYQKFEDWPk0JCH-ubzT0-A4VTkWTrVHnkzTJQCDY8HxkYlgnLLQWR6XcZpXmE4LGKr-kEPHNL21s7iSKJEddCGs6us-DX-eExO9ora9Vknb2y72pZKmSI5dbepZbbZmPjbsbsmrHxjjHWvlSsT6kMyxwYTvtqsS7uKqEMP1et4Y6s1T4Uq1cojjkwXJPwNCSMCH2HsnVAVhenlYDczwXk7sja7QOyewXkmgNj3P7U2F3cVUIZfS6UUZfWMke1EanC2l3_WMmsKQ1Y3hQwjLDsIEpkcoVXUqyKteXnZQEqBkJUupxl5cc0fZtSWiJf_--MVRJrJFk7JFYlOXWS1Uj61sGT3Uhy9pNYneT03d2wTho2ktz9nqw6ye3rya2TRo2k8X5Pdp007utplJ_R20Q83sQheGC-PoMPXm8P5D_wSOUXJbgTjwV28bzJj_ktTxRSOOf3OEGNch2nsdLxCjwtM9xuv_wLAAD__6oi7LA="}}
+	exp3 := [][]string{{"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF9vmzAUxd_3KawrTW0lR2AgJOOpVcPUaOmfhUybVEWVF24pKsGpbdRWVb77BLQrQQ0CygMStvmd43Pt-wLqIQEPAn_mny5InN4K8n1-eU6u_T9Xs5PpBTmcTINF8HNGSXB2cuUfkdelKlsfPqmHjEsMj8p_9JL8PvPnfomZTX_45GAS80jy9dcDoJCKEC_4GhV418CAggUUbKDgwJLCRooVKiVkPv1SLJ6GT-CZFOJ0k-l8eElhJSSC9wI61gmCBwv-N8E58hClYQKFEDWPk0JCH-ubzT0-A4VTkWTrVHnkzTJQCDY8HxkYlgnLLQWR6XcZpXmE4LGKr-kEPHNL21s7iSKJEddCGs6us-DX-eExO9ora9Vknb2y72pZKmSI5dbepZbbZmPjbsbsmrHxjjHWvlSsT6kMyxwYjkl4GhJGhL5D2bpyrIvTSkDDz1VuuCNrtQ_I6hWQYw4Mt_1xtrq4q4Tifi4Ud0fWbh-K3SsU1xwY4_ah2F3cVUIZfS6UUZfWMke1EanC2l3_WMmsKQ1Y3hQwjLDsIEpkcoVXUqyKteXnZQEqBkJUupxl5cc0fZtSWiJf_--MVRJrJFk7JFYlOXWS1Uj61sGT3Uhy9pNYneT03d2wTho2ktz9nqw6ye3rya2TRo2k8X5Pdp007utplJ_R20Q83sQheGC-PoMPXm8P5D_wSOUXJbgTjwV28bzJj_ktTxRSOOf3OEGNch2nsdLxCjwtM9xuv_wLAAD__7Co7LA="}}
+
+	res := r.QueryStr(t, query)
+	if !reflect.DeepEqual(res, exp2) && !reflect.DeepEqual(res, exp3) {
+		t.Errorf("query '%s': expected:\neither\n%vor\n%v\ngot:\n%v\n",
+			query, sqlutils.MatrixToStr(exp2), sqlutils.MatrixToStr(exp3), sqlutils.MatrixToStr(res),
 		)
-
-		require.NoError(t, runQuery(t, r))
-
-		// Verify the plan should include all 5 nodes.
-		require.NoError(t, checkQueryPlan(t, r,
-			[]string{"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklV9ro0wUxu_fTyEHXtrCiI4aY7xqaVwaNv2zMcsulFBm46krNU46M9KWku--GNutcRtR40XAceZ5fvOcmZNXkI8p-BAG0-B8riXZPde-zK4vtdvg5830bHKlHY8n4Tz8NiVaeHF2E5xob1Nlvjp-lo85ExidlGvUQvtxEcyCUmY6-RpoR-OExYKt_j8CAhmP8IqtUIJ_CxQIWEDABgIOEBjAgsBa8CVKyUUx5XW7YBI9g28SSLJ1rorhBYElFwj-K6hEpQg-zNmvFGfIIhSGCQQiVCxJtzbqVN2tH_AFCJzzNF9l0tfesYFAuGbFiG5YJiw2BHiuPmykYjGCTytckzH45oa0RzuLY4ExU1wYg12y8Pvl8Sk92Wtr1WwHe20_3PKMiwjLrX1YLTbNYNTsRmbXyOhuIrR9sWifYhmWqRtO-3rRLnSVWNzD6uXu2FrtQ7F6heKYuuG2D8XqQlcJZXhYKMMdW7t9KHavUFxTN7z2odhd6CqheIeF4u3YOu1DcXqF4pl660ScLmiVREaHJTLq0mJnKNc8k1jreZ87mTUnnRbNEaMYy04qeS6WeCP4cju3fL3eCm0HIpSq_ErLl0n2_kkqgWz19x-iqkQblawdJVpVGtSVrGamLlB2o5SzX4nWlZy-23PrSoNGJXc_k1VXcvsyDetKw0Ylbz-TXVfy-jJ5daVR8zEw90M5_5zN5mPeQDUqrs59yp_ukgh8MN8e_ZOf9weKBSyWxf0Nf_Onrez8ZV3cvnuWSiRwyR5wjArFKskSqZIl-ErkuNn89ycAAP__hKt0rw=="}))
-
-		// Stop node 5.
-		tc.StopServer(4)
-
-		plans := []string{
-			// 5th range is planned on 1st node (gateway)
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF9vmzAUxd_3KawrTW0lR2AgJOOpVcPUaOmfhUybVEWVF24pKsGpbdRWVb77BLQrQQ0CygMStvmd43Pt-wLqIQEPAn_mny5InN4K8n1-eU6u_T9Xs5PpBTmcTINF8HNGSXB2cuUfkdelKlsfPqmHjEsMj8p_9JL8PvPnfomZTX_45GAS80jy9dcDoJCKEC_4GhV418CAggUUbKDgwJLCRooVKiVkPv1SLJ6GT-CZFOJ0k-l8eElhJSSC9wI61gmCBwv-N8E58hClYQKFEDWPk0JCH-ubzT0-A4VTkWTrVHnkzTJQCDY8HxkYlkl4GhJGhL5DCcstBZHpd0mleYTgsYrH6QQ8c0vb2zyJIokR10Iazq7L4Nf54TE72itr1WSdvbLvalkqZIjlNt-llttmY-NuxuyasfGOMda-bKxP2QzLHBiO2bparIu7SijDz1VruCNrtQ_F6hWKYw4Mt30oVhd3lVDcz4Xi7sja7UOxe4XimgNj3D4Uu4u7Siijz4Uy6tJO5qg2IlVYu98fK5k1pQHLGwGGEZZdQ4lMrvBKilWxtvy8LEDFQIhKl7Os_Jimb1NKS-Tr_92wSmKNJGuHxKokp06yGknfOniyG0nOfhKrk5y-uxvWScNGkrvfk1UnuX09uXXSqJE03u_JrpPGfT2N8jN6m4jHmzgED8zXZ_DB6-2B_AceqfyiBHfiscAunjf5Mb_liUIK5_weJ6hRruM0Vjpegadlhtvtl38BAAD__7Hc7LA=",
-			// 5th range is planned on 2nd node
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF9vmzAUxd_3KawrTW0lR2AgJOOpVcPUaOmfhUybVEWVF24pKsGpbdRWVb77BLQrQQ0CygMStvmd43Pt-wLqIQEPAn_mny5InN4K8n1-eU6u_T9Xs5PpBTmcTINF8HNGSXB2cuUfkdelKlsfPqmHjEsMj8p_9JL8PvPnfomZTX_45GAS80jy9dcDoJCKEC_4GhV418CAggUUbKDgwJLCRooVKiVkPv1SLJ6GT-CZFOJ0k-l8eElhJSSC9wI61gmCBwv-N8E58hClYQKFEDWPk0JCH-ubzT0-A4VTkWTrVHnkzTJQCDY8HxkYlgnLLQWR6XcZpXmE4LGKr-kEPHNL21s7iSKJEddCGs6us-DX-eExO9ora9Vknb2y72pZKmSI5dbepZbbZmPjbsbsmrHxjjHWvlSsT6kMyxwYjkl4GhJGhL5D2bpyrIvTSkDDz1VuuCNrtQ_I6hWQYw4Mt_1xtrq4q4Tifi4Ud0fWbh-K3SsU1xwY4_ah2F3cVUIZfS6UUZfWMke1EanC2l3_WMmsKQ1Y3hQwjLDsIEpkcoVXUqyKteXnZQEqBkJUupxl5cc0fZtSWiJf_--MVRJrJFk7JFYlOXWS1Uj61sGT3Uhy9pNYneT03d2wTho2ktz9nqw6ye3rya2TRo2k8X5Pdp007utplJ_R20Q83sQheGC-PoMPXm8P5D_wSOUXJbgTjwV28bzJj_ktTxRSOOf3OEGNch2nsdLxCjwtM9xuv_wLAAD__7Co7LA=",
-			// 5th range is planned on 3rd node
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF9vmzAUxd_3KawrTW0lR2AgJOOpVcPUaOmfhUybVEWVF24pKsGpbdRWVb77BLQrQQ0CygMStvmd43Pt-wLqIQEPAn_mny5InN4K8n1-eU6u_T9Xs5PpBTmcTINF8HNGSXB2cuUfkdelKlsfPqmHjEsMj8p_9JL8PvPnfomZTX_45GAS80jy9dcDoJCKEC_4GhV418CAggUUbKDgwJLCRooVKiVkPv1SLJ6GT-CZFOJ0k-l8eElhJSSC9wI61gmCBwv-N8E58hClYQKFEDWPk0JCH-ubzT0-A4VTkWTrVHnkzTJQCDY8HxkYlgnLLQWR6XcZpXmE4LGKr-kEPHNL21s7iSKJEddCGs6us-DX-eExO9ora9Vknb2y72pZKmSI5dbepZbbZmPjbsbsmrHxjjHWvlSsT6kMyxwYTvtqsS7uKqEMP1et4Y6s1T4Uq1cojjkwXJPwNCSMCH2HsnVAVhenlYDczwXk7sja7QOyewXkmgNj3P7U2F3cVUIZfS6UUZfWMke1EanC2l3_WMmsKQ1Y3hQwjLDsIEpkcoVXUqyKteXnZQEqBkJUupxl5cc0fZtSWiJf_--MVRJrJFk7JFYlOXWS1Uj61sGT3Uhy9pNYneT03d2wTho2ktz9nqw6ye3rya2TRo2k8X5Pdp007utplJ_R20Q83sQheGC-PoMPXm8P5D_wSOUXJbgTjwV28bzJj_ktTxRSOOf3OEGNch2nsdLxCjwtM9xuv_wLAAD__6oi7LA=",
-		}
-
-		// It can be either planned on gateway if lease for range 5 haven't moved or
-		// node 2/3 if it did.
-		testutils.SucceedsWithin(t, func() error {
-			return checkQueryPlan(t, r, plans)
-		}, 2*time.Second)
-
-		// Now run the query to ensure the correct result
-		require.NoError(t, runQuery(t, r))
-
-		// The leaseholder for the last range should have moved to either node 2 or 3.
-		require.NoError(t, checkQueryPlan(t, r, plans[1:3]))
-		// Stop node 4; note that no range had replicas on both 4 and 5.
-
-		tc.StopServer(3)
-
-		require.NoError(t, runQuery(t, r))
-	})
-
-	t.Run("unhealthy-nodes-in-shared-mode", func(t *testing.T) {
-		tc, _, r := startAndSetupCluster(t, sharedProcess)
-		defer tc.Stopper().Stop(context.Background())
-
-		r.CheckQueryResults(t,
-			`SELECT IF(substring(start_key for 1)='…',start_key,NULL),
-							IF(substring(end_key for 1)='…',end_key,NULL),
-							lease_holder, replicas FROM [SHOW RANGES FROM TABLE t WITH DETAILS]`,
-			[][]string{
-				{"NULL", "…/Table/106/1/0", "1", "{1}"},
-				{"…/Table/106/1/0", "…/Table/106/1/20", "1", "{1,2,3}"},
-				{"…/Table/106/1/20", "…/Table/106/1/40", "2", "{2,3,4}"},
-				{"…/Table/106/1/40", "…/Table/106/1/60", "3", "{1,3,4}"},
-				{"…/Table/106/1/60", "…/Table/106/1/80", "4", "{1,2,4}"},
-				{"…/Table/106/1/80", "NULL", "5", "{2,3,5}"},
-			},
-		)
-
-		require.NoError(t, runQuery(t, r))
-
-		// Verify the plan should include all 5 nodes.
-		require.NoError(t, checkQueryPlan(t, r,
-			[]string{"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklV9vmzAUxd_3KdCVpraSq2AghPDUqmFqtPTPQqZNqqLKC7cMleDUNmqrKt99IjQNYQVB4CERxj7n8Lv25Q3kUwwu-N7Eu5hpUfLAtW_Tmyvtzvt9OzkfX2vHo7E_839MiOZfnt96J9r7VJkuj1_kU8oEBif5GjXXfl16Uy-XmYy_e9rRKGKhYMuvR0Ag4QFesyVKcO-AAgEDCJhAwAICfZgTWAm-QCm5yKa8bRaMgxdwdQJRskpVNjwnsOACwX0DFakYwYUZ-xPjFFmAoqcDgQAVi-KNjTpT96tHfAUCFzxOl4l0tW1sIOCvWDbSo7rdo6f5X8_QYb4mwFO1s5SKhQguLWQcj8DV16R5zPMwFBgyxUWvv5_S_3l1fEZPKm2Nkm2_0nbnliZcBJi_5s5qvq4PRvV2ycxSMrpPhDYvHD28cD1D39bOal472iZpAZHdrXb2nq3RHJDRAZD1AchuDshok7QAaNAN0GDP1mwOyOwAyP4A5DQHZLZJWgDkdAPk7NlazQFZHQA574CMxnSsNjELdIbd6AzbtOQpyhVPJJZ65OdOesnplGbNFIMQ884reSoWeCv4YjM3v73ZCG0GApQqf0rzm3GyfSSVQLb8-KIUlWitkrGnRItK_bKSUZ-pTSizVsqqVqJlJevQ17PLSv1aJbs6k1FWsg_NNCgrDWqVnOpMZlnJOTSTU1Ya1m8DvTqU9d_erN_mNamG2dF5iPnzfRSAC_r7dfrJz_aCbAELZXZ-_b_8eSM7e11lp--BxRIJXLFHHKFCsYySSKpoAa4SKa7XX_4FAAD__5H-gCw="}))
-
-		// Stop node 5.
-		tc.StopServer(4)
-
-		// Verify that the 5th node is not included in the plan before any query is
-		// run, as running a query would update the leaseholder in the cache. In
-		// this plan, ranges for the 5th node should be assigned to the gateway node
-		// (node 1).
-		testutils.SucceedsWithin(t, func() error {
-			return checkQueryPlan(t, r,
-				[]string{"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF1ro04Uxu__n2I48KctTImjxmS9amlcGjZ92ZhlF0oos_HUSo1jZ0baUvLdF7VpjDSiiRcJzsvveeY543kH9RyDC7438S5mJEoeBPk-vbkid96f28n5-Jocj8b-zP85ocS_PL_1TsjHUpUtj1_Vc8YlBiflHj0nvy-9qVdiJuMfHjkaRTyUfPn_EVBIRIDXfIkK3DtgQMEEChZQsGFOIZVigUoJmU-_F4vHwSu4BoUoSTOdD88pLIREcN9BRzpGcGHG_8Y4RR6g7BlAIUDNo7iQ0Gf6Pn3CN6BwIeJsmSiXrC0DBT_l-UiPGU6PnZZ_PdMgPAkII0I_ooT5ioLI9EZeaR4iuKzidzwC11jR9pbPw1BiyLWQPXvbsf_r6viMneyUNWuy9k7ZjVqWCBlgeeSN1HzVbGzYzZhVMzbcMsbal5DtX8KeaayraButK8e6OK0E1D-scv0tWbN9QOYBAdmfATntAzK7OK0E5BwWkLMla7UPyDogIOczoGH7gKwuTisBDQ4LaNCl5UxRpSJRWOsBXysZNaVTljcLDEIsO4sSmVzgrRSLYm35elOAioEAlS5nWfkyTtZTSkvky8-OWSWxRpK5RWJVkl0nmY2kbx08WY0kezeJ1Un2vqfr10n9RpKz25NZJzn7enLqpEEjabjbk1UnDff1NMjv6EMsXu6jAFwwPp7TL37WD-QbeKjyD8V_FC8FdvaW5tf8gccKKVzxJxyhRrmMkkjpaAGulhmuVv_9CwAA__-0ofXg"})
-		}, 2*time.Second)
-
-		// Now run the query to ensure the correct result
-		require.NoError(t, runQuery(t, r))
-
-		// The leaseholder for the last range should now have moved to either node 2
-		// or 3.
-		require.NoError(t, checkQueryPlan(t, r,
-			[]string{
-				"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF1ro04Uxu__n2I48KctTImjxmS9amlcGjZ92ZhlF0oos_HUSo1jZ0baUvLdF7VpjDSiiRcJzsvveeY543kH9RyDC7438S5mJEoeBPk-vbkid96f28n5-Jocj8b-zP85ocS_PL_1TsjHUpUtj1_Vc8YlBiflHj0nvy-9qVdiJuMfHjkaRTyUfPn_EVBIRIDXfIkK3DtgQMEEChZQsGFOIZVigUoJmU-_F4vHwSu4BoUoSTOdD88pLIREcN9BRzpGcGHG_8Y4RR6g7BlAIUDNo7iQ0Gf6Pn3CN6BwIeJsmSiXrC0DBT_l-UiPGU6PnZZ_PdOA-YqCyPRGUmkeIris4nE8AtdY0fY2z8NQYsi1kD1726X_6-r4jJ3slDVrsvZO2Y1alggZYHnMjdR81Wxs2M2YVTM23DLG2peN7V-2nmmsK2e3rxzr4rQSUP-wyvW3ZM32AZkHBGR_BuQYhCcBYUToR5StwzK7uK6E5RwWlrMla7UPyzogLOczrGH722R1cVoJaHBYQIMu7WeKKhWJwlo_-FrJqCmdsrxxYBBi2WWUyOQCb6VYFGvL15sCVAwEqHQ5y8qXcbKeUloiX352zyqJNZLMLRKrkuw6yWwkfevgyWok2btJrE6y9z1dv07qN5Kc3Z7MOsnZ15NTJw0aScPdnqw6abivp0F-Rx9i8XIfBeCC8fGcfvGzfiDfwEOVfyj-o3gpsLO3NL_mDzxWSOGKP-EINcpllERKRwtwtcxwtfrvXwAAAP__hnf14A==",
-				"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF1ro04Uxu__n2I48KctTImjxmS9amlcGjZ92ZhlF0oos_HUSo1jZ0baUvLdF7VpjDSiiRcJzsvveeY543kH9RyDC7438S5mJEoeBPk-vbkid96f28n5-Jocj8b-zP85ocS_PL_1TsjHUpUtj1_Vc8YlBiflHj0nvy-9qVdiJuMfHjkaRTyUfPn_EVBIRIDXfIkK3DtgQMEEChZQsGFOIZVigUoJmU-_F4vHwSu4BoUoSTOdD88pLIREcN9BRzpGcGHG_8Y4RR6g7BlAIUDNo7iQ0Gf6Pn3CN6BwIeJsmSiXrC0DBT_l-UiPGU6PnZZ_PdOA-YqCyPRGUmkeIris4nE8AtdY0fY2z8NQYsi1kD1726X_6-r4jJ3slDVrsvZO2Y1alggZYHnMjdR81Wxs2M2YVTM23DLG2peN7V-2nmmsK2cbhCcBYUToR5Stq8i6uK6E1T-siv0tWbN9WOYBYdmfYTntr7nZxWklIOewgJwtWat9QNYBATmfAQ3bB2R1cVoJaHBYQIMu7WeKKhWJwlo_-FrJqCmdsrxxYBBi2WWUyOQCb6VYFGvL15sCVAwEqHQ5y8qXcbKeUloiX352zyqJNZLMLRKrkuw6yWwkfevgyWok2btJrE6y9z1dv07qN5Kc3Z7MOsnZ15NTJw0aScPdnqw6abivp0F-Rx9i8XIfBeCC8fGcfvGzfiDfwEOVfyj-o3gpsLO3NL_mDzxWSOGKP-EINcpllERKRwtwtcxwtfrvXwAAAP__oDX14A==",
-			}))
-	})
-
-	t.Run("unhealthy-nodes-in-external-mode", func(t *testing.T) {
-		tc, _, r := startAndSetupCluster(t, externalProcess)
-		defer tc.Stopper().Stop(context.Background())
-
-		r.CheckQueryResults(t,
-			`SELECT IF(substring(start_key for 1)='…',start_key,NULL),
-							IF(substring(end_key for 1)='…',end_key,NULL),
-							lease_holder, replicas FROM [SHOW RANGES FROM TABLE t WITH DETAILS]`,
-			[][]string{
-				{"NULL", "…/Table/106/1/0", "1", "{1}"},
-				{"…/Table/106/1/0", "…/Table/106/1/20", "1", "{1,2,3}"},
-				{"…/Table/106/1/20", "…/Table/106/1/40", "2", "{2,3,4}"},
-				{"…/Table/106/1/40", "…/Table/106/1/60", "3", "{1,3,4}"},
-				{"…/Table/106/1/60", "…/Table/106/1/80", "4", "{1,2,4}"},
-				{"…/Table/106/1/80", "NULL", "5", "{2,3,5}"},
-			},
-		)
-
-		require.NoError(t, runQuery(t, r))
-
-		// Verify the plan should include all 5 nodes.
-		require.NoError(t, checkQueryPlan(t, r,
-			[]string{"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklV9vmzAUxd_3KdCVpraSq2AghPDUqmFqtPTPQqZNqqLKC7cMleDUNmqrKt99IjQNYQVB4CERxj7n8Lv25Q3kUwwu-N7Eu5hpUfLAtW_Tmyvtzvt9OzkfX2vHo7E_839MiOZfnt96J9r7VJkuj1_kU8oEBif5GjXXfl16Uy-XmYy_e9rRKGKhYMuvR0Ag4QFesyVKcO-AAgEDCJhAwAICfZgTWAm-QCm5yKa8bRaMgxdwdQJRskpVNjwnsOACwX0DFakYwYUZ-xPjFFmAoqcDgQAVi-KNjTpT96tHfAUCFzxOl4l0tW1sIOCvWDbSo7rdo6f5X8_QYb4mwFO1s5SKhQguLWQcj8DV16R5zPMwFBgyxUWvv5_S_3l1fEZPKm2Nkm2_0nbnliZcBJi_5s5qvq4PRvV2ycxSMrpPhDYvHD28cD1D39bOal472iZpAZHdrXb2nq3RHJDRAZD1AchuDshok7QAaNAN0GDP1mwOyOwAyP4A5DQHZLZJWgDkdAPk7NlazQFZHQA574CMxnSsNjELdIbd6AzbtOQpyhVPJJZ65OdOesnplGbNFIMQ884reSoWeCv4YjM3v73ZCG0GApQqf0rzm3GyfSSVQLb8-KIUlWitkrGnRItK_bKSUZ-pTSizVsqqVqJlJevQ17PLSv1aJbs6k1FWsg_NNCgrDWqVnOpMZlnJOTSTU1Ya1m8DvTqU9d_erN_mNamG2dF5iPnzfRSAC_r7dfrJz_aCbAELZXZ-_b_8eSM7e11lp--BxRIJXLFHHKFCsYySSKpoAa4SKa7XX_4FAAD__5H-gCw="}))
-
-		// Stop node 5.
-		tc.StopServer(4)
-
-		// Since we only stopped the server, the storage node would be still up. So
-		// our range for the 5th storage node could be randomly planned on any of the
-		// remaining nodes as all of them are equally "close" here.
-		expectedPlans := []string{
-			// Planned on 1st node
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF1ro04Uxu__n2I48KctTImjxmS9amlcGjZ92ZhlF0oos_HUSo1jZ0baUvLdF7VpjDSiiRcJzsvveeY543kH9RyDC7438S5mJEoeBPk-vbkid96f28n5-Jocj8b-zP85ocS_PL_1TsjHUpUtj1_Vc8YlBiflHj0nvy-9qVdiJuMfHjkaRTyUfPn_EVBIRIDXfIkK3DtgQMEEChZQsGFOIZVigUoJmU-_F4vHwSu4BoUoSTOdD88pLIREcN9BRzpGcGHG_8Y4RR6g7BlAIUDNo7iQ0Gf6Pn3CN6BwIeJsmSiXrC0DBT_l-UiPGU6PnZZ_PdMgPAkII0I_ooT5ioLI9EZeaR4iuKzidzwC11jR9pbPw1BiyLWQPXvbsf_r6viMneyUNWuy9k7ZjVqWCBlgeeSN1HzVbGzYzZhVMzbcMsbal5DtX8KeaayraButK8e6OK0E1D-scv0tWbN9QOYBAdmfATntAzK7OK0E5BwWkLMla7UPyDogIOczoGH7gKwuTisBDQ4LaNCl5UxRpSJRWOsBXysZNaVTljcLDEIsO4sSmVzgrRSLYm35elOAioEAlS5nWfkyTtZTSkvky8-OWSWxRpK5RWJVkl0nmY2kbx08WY0kezeJ1Un2vqfr10n9RpKz25NZJzn7enLqpEEjabjbk1UnDff1NMjv6EMsXu6jAFwwPp7TL37WD-QbeKjyD8V_FC8FdvaW5tf8gccKKVzxJxyhRrmMkkjpaAGulhmuVv_9CwAA__-0ofXg",
-
-			// Planned on 2nd node
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF1ro04Uxu__n2I48KctTImjxmS9amlcGjZ92ZhlF0oos_HUSo1jZ0baUvLdF7VpjDSiiRcJzsvveeY543kH9RyDC7438S5mJEoeBPk-vbkid96f28n5-Jocj8b-zP85ocS_PL_1TsjHUpUtj1_Vc8YlBiflHj0nvy-9qVdiJuMfHjkaRTyUfPn_EVBIRIDXfIkK3DtgQMEEChZQsGFOIZVigUoJmU-_F4vHwSu4BoUoSTOdD88pLIREcN9BRzpGcGHG_8Y4RR6g7BlAIUDNo7iQ0Gf6Pn3CN6BwIeJsmSiXrC0DBT_l-UiPGU6PnZZ_PdOA-YqCyPRGUmkeIris4nE8AtdY0fY2z8NQYsi1kD1726X_6-r4jJ3slDVrsvZO2Y1alggZYHnMjdR81Wxs2M2YVTM23DLG2peN7V-2nmmsK2cbhCcBYUToR5Stq8i6uK6E1T-siv0tWbN9WOYBYdmfYTntr7nZxWklIOewgJwtWat9QNYBATmfAQ3bB2R1cVoJaHBYQIMu7WeKKhWJwlo_-FrJqCmdsrxxYBBi2WWUyOQCb6VYFGvL15sCVAwEqHQ5y8qXcbKeUloiX352zyqJNZLMLRKrkuw6yWwkfevgyWok2btJrE6y9z1dv07qN5Kc3Z7MOsnZ15NTJw0aScPdnqw6abivp0F-Rx9i8XIfBeCC8fGcfvGzfiDfwEOVfyj-o3gpsLO3NL_mDzxWSOGKP-EINcpllERKRwtwtcxwtfrvXwAAAP__oDX14A==",
-
-			// Planned on 3rd node
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF1ro04Uxu__n2I48KctTImjxmS9amlcGjZ92ZhlF0oos_HUSo1jZ0baUvLdF7VpjDSiiRcJzsvveeY543kH9RyDC7438S5mJEoeBPk-vbkid96f28n5-Jocj8b-zP85ocS_PL_1TsjHUpUtj1_Vc8YlBiflHj0nvy-9qVdiJuMfHjkaRTyUfPn_EVBIRIDXfIkK3DtgQMEEChZQsGFOIZVigUoJmU-_F4vHwSu4BoUoSTOdD88pLIREcN9BRzpGcGHG_8Y4RR6g7BlAIUDNo7iQ0Gf6Pn3CN6BwIeJsmSiXrC0DBT_l-UiPGU6PnZZ_PdOA-YqCyPRGUmkeIris4nE8AtdY0fY2z8NQYsi1kD1726X_6-r4jJ3slDVrsvZO2Y1alggZYHnMjdR81Wxs2M2YVTM23DLG2peN7V-2nmmsK2e3rxzr4rQSUP-wyvW3ZM32AZkHBGR_BuQYhCcBYUToR5StwzK7uK6E5RwWlrMla7UPyzogLOczrGH722R1cVoJaHBYQIMu7WeKKhWJwlo_-FrJqCmdsrxxYBBi2WWUyOQCb6VYFGvL15sCVAwEqHQ5y8qXcbKeUloiX352zyqJNZLMLRKrkuw6yWwkfevgyWok2btJrE6y9z1dv07qN5Kc3Z7MOsnZ15NTJw0aScPdnqw6abivp0F-Rx9i8XIfBeCC8fGcfvGzfiDfwEOVfyj-o3gpsLO3NL_mDzxWSOGKP-EINcpllERKRwtwtcxwtfrvXwAAAP__hnf14A==",
-
-			// Planned on 4th node
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF9ro0AUxd_3U8iFpS1MiaPGZH1qaVwqm_7ZmGUXSiiz8daVqmNnRtpS8t0XtWmMNKKJDwnOn985c-5430A-xeCA707di7kWpQ9c-z67udLu3D-303PvWjueeP7c_zklmn95fuueaO9LZZ4cv8innAkMTqo9aqH9vnRnboWZej9c7WgSsVCw5OsREEh5gNcsQQnOHVAgYAABEwhYsCCQCb5EKbkopt_KxV7wAo5OIEqzXBXDCwJLLhCcN1CRihEcmLO_Mc6QBSgGOhAIULEoLiXUmbrPHvEVCFzwOE9S6Whry0DAz1gxMqC6PaCn1d_A0GGxIsBztZGUioUIDq159Cbg6CvS3eZ5GAoMmeJiYG279H9dHZ_Rk52yRkPW2im7UctTLgKsjrmRWqzajY37GTMbxsZbxmj3stH9yzYw9HXlrO6Vo32c1gIaHla54Zas0T0g44CArI-A7O4BGX2c1gKyDwvI3pI1uwdkHhCQ_R6Q0Tkds4_NWjqjw9IZ9ek3M5QZTyU2GsDnSnpD6ZQWnQKDEKu2Inkulngr-LJcW73elKByIECpqllavXjpekoqgSz5aJd1Em0lGVskWidZTZLRSvrWw5PZSrJ2k2iTZO17umGTNGwl2bs9GU2Sva8nu0katZLGuz2ZTdJ4X0-j4o4-xPz5PgrAAf39Of3kZ_1AsYGFsvhQ_H_8ucTOX7Pimj-wWCKBK_aIE1QokiiNpIqW4CiR42r15X8AAAD__-4H8WQ=",
-		}
-
-		// Verify that the 5th node is exclude from the plan before running any query.
-		// Otherwise if we do `runQuery` first that would be fix any caches that the
-		// 5th node is down after failure to reach out to that node. Our aim here is
-		// how soon our physical planning detects such unhealthy nodes and avoid
-		// planning on them. After stress testing 3 seconds seems appropriate.
-		testutils.SucceedsWithin(t, func() error {
-			return checkQueryPlan(t, r, expectedPlans)
-		}, 3*time.Second)
-
-		// Now run the query to ensure the correct result
-		if err := runQuery(t, r); err != nil {
-			t.Error(err)
-		}
-	})
-
-	drainServer := func(t *testing.T, server serverutils.ApplicationLayerInterface, idx int) {
-		c := server.GetAdminClient(t)
-		req := &serverpb.DrainRequest{DoDrain: true}
-		stream, err := c.Drain(ctx, req)
-		require.NoError(t, err)
-		_, err = stream.Recv()
-		require.NoError(t, err)
-		unexpected, err := stream.Recv()
-		if err != io.EOF {
-			if unexpected != nil {
-				t.Fatalf("unexpected additional response: %v // %v", unexpected, err)
-			}
-			if err == nil {
-				err = errors.New("unexpected response")
-			}
-			t.Fatal(err)
-		}
 	}
 
-	t.Run("draining-nodes-in-single-tenant-mode", func(t *testing.T) {
-		tc, lastServer, r := startAndSetupCluster(t, singleTenant)
-		defer tc.Stopper().Stop(context.Background())
+	// Stop node 4; note that no range had replicas on both 4 and 5.
+	tc.StopServer(3)
 
-		r.CheckQueryResults(t,
-			`SELECT IF(substring(start_key for 1)='…',start_key,NULL),
-							IF(substring(end_key for 1)='…',end_key,NULL),
-							lease_holder, replicas FROM [SHOW RANGES FROM TABLE t WITH DETAILS]`,
-			[][]string{
-				{"NULL", "…/1/0", "1", "{1}"},
-				{"…/1/0", "…/1/20", "1", "{1,2,3}"},
-				{"…/1/20", "…/1/40", "2", "{2,3,4}"},
-				{"…/1/40", "…/1/60", "3", "{1,3,4}"},
-				{"…/1/60", "…/1/80", "4", "{1,2,4}"},
-				{"…/1/80", "NULL", "5", "{2,3,5}"},
-			},
+	testutils.SucceedsSoon(t, runQuery)
+}
+
+func TestDistSQLDrainingHosts(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	const numNodes = 2
+	tc := serverutils.StartCluster(
+		t,
+		numNodes,
+		base.TestClusterArgs{
+			ReplicationMode: base.ReplicationManual,
+			ServerArgs:      base.TestServerArgs{Knobs: base.TestingKnobs{DistSQL: &execinfra.TestingKnobs{DrainFast: true}}, UseDatabase: "test"},
+		},
+	)
+	ctx := context.Background()
+	defer tc.Stopper().Stop(ctx)
+
+	conn := tc.ServerConn(0)
+	sqlutils.CreateTable(
+		t,
+		conn,
+		"nums",
+		"num INT",
+		numNodes, /* numRows */
+		sqlutils.ToRowFn(sqlutils.RowIdxFn),
+	)
+
+	db := tc.ServerConn(0)
+	db.SetMaxOpenConns(1)
+	r := sqlutils.MakeSQLRunner(db)
+
+	// Force the query to be distributed.
+	r.Exec(t, "SET DISTSQL = ON")
+
+	// Shortly after starting a cluster, the first server's StorePool may not be
+	// fully initialized and ready to do rebalancing yet, so wrap this in a
+	// SucceedsSoon.
+	testutils.SucceedsSoon(t, func() error {
+		_, err := db.Exec(
+			fmt.Sprintf(`ALTER TABLE nums SPLIT AT VALUES (1);
+									 ALTER TABLE nums EXPERIMENTAL_RELOCATE VALUES (ARRAY[%d], 1);`,
+				tc.Server(1).GetFirstStoreID(),
+			),
 		)
-
-		require.NoError(t, runQuery(t, r))
-
-		// Verify the plan should include all 5 nodes.
-		require.NoError(t, checkQueryPlan(t, r,
-			[]string{"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklV9ro0wUxu_fTyEHXtrCiI4aY7xqaVwaNv2zMcsulFBm46krNU46M9KWku--GNutcRtR40XAceZ5fvOcmZNXkI8p-BAG0-B8riXZPde-zK4vtdvg5830bHKlHY8n4Tz8NiVaeHF2E5xob1Nlvjp-lo85ExidlGvUQvtxEcyCUmY6-RpoR-OExYKt_j8CAhmP8IqtUIJ_CxQIWEDABgIOEBjAgsBa8CVKyUUx5XW7YBI9g28SSLJ1rorhBYElFwj-K6hEpQg-zNmvFGfIIhSGCQQiVCxJtzbqVN2tH_AFCJzzNF9l0tfesYFAuGbFiG5YJiw2BHiuPmykYjGCTytckzH45oa0RzuLY4ExU1wYg12y8Pvl8Sk92Wtr1WwHe20_3PKMiwjLrX1YLTbNYNTsRmbXyOhuIrR9sWifYhmWqRtO-3rRLnSVWNzD6uXu2FrtQ7F6heKYuuG2D8XqQlcJZXhYKMMdW7t9KHavUFxTN7z2odhd6CqheIeF4u3YOu1DcXqF4pl660ScLmiVREaHJTLq0mJnKNc8k1jreZ87mTUnnRbNEaMYy04qeS6WeCP4cju3fL3eCm0HIpSq_ErLl0n2_kkqgWz19x-iqkQblawdJVpVGtSVrGamLlB2o5SzX4nWlZy-23PrSoNGJXc_k1VXcvsyDetKw0Ylbz-TXVfy-jJ5daVR8zEw90M5_5zN5mPeQDUqrs59yp_ukgh8MN8e_ZOf9weKBSyWxf0Nf_Onrez8ZV3cvnuWSiRwyR5wjArFKskSqZIl-ErkuNn89ycAAP__hKt0rw=="}))
-
-		// Drain the fourth node.
-		drainServer(t, lastServer, 4 /* idx */)
-
-		plans := []string{
-			// 5th range is planned on 1st node (gateway)
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF9vmzAUxd_3KawrTW0lR2AgJOOpVcPUaOmfhUybVEWVF24pKsGpbdRWVb77BLQrQQ0CygMStvmd43Pt-wLqIQEPAn_mny5InN4K8n1-eU6u_T9Xs5PpBTmcTINF8HNGSXB2cuUfkdelKlsfPqmHjEsMj8p_9JL8PvPnfomZTX_45GAS80jy9dcDoJCKEC_4GhV418CAggUUbKDgwJLCRooVKiVkPv1SLJ6GT-CZFOJ0k-l8eElhJSSC9wI61gmCBwv-N8E58hClYQKFEDWPk0JCH-ubzT0-A4VTkWTrVHnkzTJQCDY8HxkYlkl4GhJGhL5DCcstBZHpd0mleYTgsYrH6QQ8c0vb2zyJIokR10Iazq7L4Nf54TE72itr1WSdvbLvalkqZIjlNt-llttmY-NuxuyasfGOMda-bKxP2QzLHBiO2bparIu7SijDz1VruCNrtQ_F6hWKYw4Mt30oVhd3lVDcz4Xi7sja7UOxe4XimgNj3D4Uu4u7Siijz4Uy6tJO5qg2IlVYu98fK5k1pQHLGwGGEZZdQ4lMrvBKilWxtvy8LEDFQIhKl7Os_Jimb1NKS-Tr_92wSmKNJGuHxKokp06yGknfOniyG0nOfhKrk5y-uxvWScNGkrvfk1UnuX09uXXSqJE03u_JrpPGfT2N8jN6m4jHmzgED8zXZ_DB6-2B_AceqfyiBHfiscAunjf5Mb_liUIK5_weJ6hRruM0Vjpegadlhtvtl38BAAD__7Hc7LA=",
-			// 5th range is planned on 2nd node
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF9vmzAUxd_3KawrTW0lR2AgJOOpVcPUaOmfhUybVEWVF24pKsGpbdRWVb77BLQrQQ0CygMStvmd43Pt-wLqIQEPAn_mny5InN4K8n1-eU6u_T9Xs5PpBTmcTINF8HNGSXB2cuUfkdelKlsfPqmHjEsMj8p_9JL8PvPnfomZTX_45GAS80jy9dcDoJCKEC_4GhV418CAggUUbKDgwJLCRooVKiVkPv1SLJ6GT-CZFOJ0k-l8eElhJSSC9wI61gmCBwv-N8E58hClYQKFEDWPk0JCH-ubzT0-A4VTkWTrVHnkzTJQCDY8HxkYlgnLLQWR6XcZpXmE4LGKr-kEPHNL21s7iSKJEddCGs6us-DX-eExO9ora9Vknb2y72pZKmSI5dbepZbbZmPjbsbsmrHxjjHWvlSsT6kMyxwYjkl4GhJGhL5D2bpyrIvTSkDDz1VuuCNrtQ_I6hWQYw4Mt_1xtrq4q4Tifi4Ud0fWbh-K3SsU1xwY4_ah2F3cVUIZfS6UUZfWMke1EanC2l3_WMmsKQ1Y3hQwjLDsIEpkcoVXUqyKteXnZQEqBkJUupxl5cc0fZtSWiJf_--MVRJrJFk7JFYlOXWS1Uj61sGT3Uhy9pNYneT03d2wTho2ktz9nqw6ye3rya2TRo2k8X5Pdp007utplJ_R20Q83sQheGC-PoMPXm8P5D_wSOUXJbgTjwV28bzJj_ktTxRSOOf3OEGNch2nsdLxCjwtM9xuv_wLAAD__7Co7LA=",
-			// 5th range is planned on 3rd node
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF9vmzAUxd_3KawrTW0lR2AgJOOpVcPUaOmfhUybVEWVF24pKsGpbdRWVb77BLQrQQ0CygMStvmd43Pt-wLqIQEPAn_mny5InN4K8n1-eU6u_T9Xs5PpBTmcTINF8HNGSXB2cuUfkdelKlsfPqmHjEsMj8p_9JL8PvPnfomZTX_45GAS80jy9dcDoJCKEC_4GhV418CAggUUbKDgwJLCRooVKiVkPv1SLJ6GT-CZFOJ0k-l8eElhJSSC9wI61gmCBwv-N8E58hClYQKFEDWPk0JCH-ubzT0-A4VTkWTrVHnkzTJQCDY8HxkYlgnLLQWR6XcZpXmE4LGKr-kEPHNL21s7iSKJEddCGs6us-DX-eExO9ora9Vknb2y72pZKmSI5dbepZbbZmPjbsbsmrHxjjHWvlSsT6kMyxwYTvtqsS7uKqEMP1et4Y6s1T4Uq1cojjkwXJPwNCSMCH2HsnVAVhenlYDczwXk7sja7QOyewXkmgNj3P7U2F3cVUIZfS6UUZfWMke1EanC2l3_WMmsKQ1Y3hQwjLDsIEpkcoVXUqyKteXnZQEqBkJUupxl5cc0fZtSWiJf_--MVRJrJFk7JFYlOXWS1Uj61sGT3Uhy9pNYneT03d2wTho2ktz9nqw6ye3rya2TRo2k8X5Pdp007utplJ_R20Q83sQheGC-PoMPXm8P5D_wSOUXJbgTjwV28bzJj_ktTxRSOOf3OEGNch2nsdLxCjwtM9xuv_wLAAD__6oi7LA=",
-		}
-
-		// It can be either planned on gateway if lease for range 5 haven't moved or
-		// node 2/3 if it did.
-		testutils.SucceedsWithin(t, func() error {
-			return checkQueryPlan(t, r, plans)
-		}, 2*time.Second)
-
-		// Now run the query to ensure the correct result
-		require.NoError(t, runQuery(t, r))
+		return err
 	})
 
-	t.Run("draining-nodes-in-shared-mode", func(t *testing.T) {
-		skip.UnderShort(t, "takes 20s")
+	// Ensure that the range cache is populated (see #31235).
+	r.Exec(t, "SHOW RANGES FROM TABLE nums")
 
-		tc, lastServer, r := startAndSetupCluster(t, sharedProcess)
-		defer tc.Stopper().Stop(context.Background())
+	const query = "SELECT count(*) FROM NUMS"
+	expectPlan := func(expectedPlan [][]string) {
+		t.Helper()
+		planQuery := fmt.Sprintf(`SELECT info FROM [EXPLAIN (DISTSQL, SHAPE) %s] WHERE info LIKE 'Diagram%%'`, query)
+		testutils.SucceedsSoon(t, func() error {
+			resultPlan := r.QueryStr(t, planQuery)
+			if !reflect.DeepEqual(resultPlan, expectedPlan) {
+				return errors.Errorf("\nexpected:%v\ngot:%v", expectedPlan, resultPlan)
+			}
+			return nil
+		})
+	}
 
-		r.CheckQueryResults(t,
-			`SELECT IF(substring(start_key for 1)='…',start_key,NULL),
-							IF(substring(end_key for 1)='…',end_key,NULL),
-							lease_holder, replicas FROM [SHOW RANGES FROM TABLE t WITH DETAILS]`,
-			[][]string{
-				{"NULL", "…/Table/106/1/0", "1", "{1}"},
-				{"…/Table/106/1/0", "…/Table/106/1/20", "1", "{1,2,3}"},
-				{"…/Table/106/1/20", "…/Table/106/1/40", "2", "{2,3,4}"},
-				{"…/Table/106/1/40", "…/Table/106/1/60", "3", "{1,3,4}"},
-				{"…/Table/106/1/60", "…/Table/106/1/80", "4", "{1,2,4}"},
-				{"…/Table/106/1/80", "NULL", "5", "{2,3,5}"},
-			},
-		)
+	// Verify distribution.
+	expectPlan([][]string{{"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyskl9r2zAUxd_3KcyF0XQoJHKyFz01JB41y7_FLh0UEzT7xjO1JU-S6Urwdx-22zU2TUjG9CDQ1fXvHOvcPehfKTDwnLkz9a1E7KT1ZbNaWA_O9_V84i6t3sz1fO_bnFje7WTtXFsvraEshOl9um7aRZHpwLq_dTZOA5m7Xx3rapbwWPHs4xUQEDLCJc9QA3sACgRsCAjkSoaotVRVeV83udFvYEMCicgLU5UDAqFUCGwPJjEpAgOf_0hxgzxCNRgCgQgNT9IaXVm5qbZt_ojPQGAq0yITmgEBL-dCM6s_oBCUBGRh3iS04TECowee3BmwYUnOtzWJY4UxN1IN7Lar6epu6W83q3uvd31U2-5o20e13yQLIVWECqOWXlCedjduu_PuFlt36fdu6HFzo465ccscPT8venFeA9o_Oy96ia2DFxn9h7xGl8zKBnUuhcZObu8rDTtKfVoFjFGMzTRoWagQ10qGdW9zXNWguhChNs0tbQ6ueL3SRiHP_o76IYmeJNktEj0k2V2SfZL0-QJPo5Ok8XES7ZLG__p3o-rtd6l82iYRMBi-rP472-uC6gMe62oAvJ_yqcb6z3kV346nGgks-CPO0KDKEpFok4TAjCqwLD_8CQAA__-76dKf"}})
 
-		require.NoError(t, runQuery(t, r))
+	// Drain the second node and expect the query to be planned on only the
+	// first node.
+	distServer := tc.Server(1).DistSQLServer().(*distsql.ServerImpl)
+	distServer.Drain(ctx, 0 /* flowDrainWait */, nil /* reporter */)
 
-		// Verify the plan should include all 5 nodes.
-		require.NoError(t, checkQueryPlan(t, r,
-			[]string{"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklV9vmzAUxd_3KdCVpraSq2AghPDUqmFqtPTPQqZNqqLKC7cMleDUNmqrKt99IjQNYQVB4CERxj7n8Lv25Q3kUwwu-N7Eu5hpUfLAtW_Tmyvtzvt9OzkfX2vHo7E_839MiOZfnt96J9r7VJkuj1_kU8oEBif5GjXXfl16Uy-XmYy_e9rRKGKhYMuvR0Ag4QFesyVKcO-AAgEDCJhAwAICfZgTWAm-QCm5yKa8bRaMgxdwdQJRskpVNjwnsOACwX0DFakYwYUZ-xPjFFmAoqcDgQAVi-KNjTpT96tHfAUCFzxOl4l0tW1sIOCvWDbSo7rdo6f5X8_QYb4mwFO1s5SKhQguLWQcj8DV16R5zPMwFBgyxUWvv5_S_3l1fEZPKm2Nkm2_0nbnliZcBJi_5s5qvq4PRvV2ycxSMrpPhDYvHD28cD1D39bOal472iZpAZHdrXb2nq3RHJDRAZD1AchuDshok7QAaNAN0GDP1mwOyOwAyP4A5DQHZLZJWgDkdAPk7NlazQFZHQA574CMxnSsNjELdIbd6AzbtOQpyhVPJJZ65OdOesnplGbNFIMQ884reSoWeCv4YjM3v73ZCG0GApQqf0rzm3GyfSSVQLb8-KIUlWitkrGnRItK_bKSUZ-pTSizVsqqVqJlJevQ17PLSv1aJbs6k1FWsg_NNCgrDWqVnOpMZlnJOTSTU1Ya1m8DvTqU9d_erN_mNamG2dF5iPnzfRSAC_r7dfrJz_aCbAELZXZ-_b_8eSM7e11lp--BxRIJXLFHHKFCsYySSKpoAa4SKa7XX_4FAAD__5H-gCw="}))
+	expectPlan([][]string{{"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyUkVFr2z4Uxd__n0Ic-NNkKNTuo54WEo-apUlme3RQTNDsG0_UljxJpivB333Ybre2rGXTg-Dee3x-x1cnuO81BNJoE60ypvTRsA_J7ordRF_2m2W8ZbN1nGbppw1n6eVyH83Zg7Qwnfazd_NJrrvG5ez6MkqiyWQTf4zY2VrJysrm_zNwaFPSVjbkIG4QIudorSnIOWOH1mkUxOUPiIBD6bbzQzvnKIwliBO88jVBIJNfa0pIlmTPA3CU5KWqR9shxvvhOrS3dA-Olam7RjsBjrSV2gm2QN5zmM7_BjgvK4IInySK1xBBz_8-1LKqLFXSG3sePs-02n3eZodkd53O5q-yL16ww39hJ-Raox09475GCl6QFmGfc1BZ0fQKznS2oL01xaidyt1oNDZKcn6ahlMR68eR85Zk82t1T53CN50u3nLKOY61uTuoEgLBw1n84Xo8GD6QlRtWlH4zd6Ntdt8OP3iUtSOOK3lLa_JkG6WV86qA8Lajvv_vZwAAAP__7rz6og=="}})
 
-		// Drain the fourth node.
-		drainServer(t, lastServer, 4 /* idx */)
-
-		// Range for 5th node should be planned on the gateway
-		testutils.SucceedsWithin(t, func() error {
-			return checkQueryPlan(t, r,
-				[]string{"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF1ro04Uxu__n2I48KctTImjxmS9amlcGjZ92ZhlF0oos_HUSo1jZ0baUvLdF7VpjDSiiRcJzsvveeY543kH9RyDC7438S5mJEoeBPk-vbkid96f28n5-Jocj8b-zP85ocS_PL_1TsjHUpUtj1_Vc8YlBiflHj0nvy-9qVdiJuMfHjkaRTyUfPn_EVBIRIDXfIkK3DtgQMEEChZQsGFOIZVigUoJmU-_F4vHwSu4BoUoSTOdD88pLIREcN9BRzpGcGHG_8Y4RR6g7BlAIUDNo7iQ0Gf6Pn3CN6BwIeJsmSiXrC0DBT_l-UiPGU6PnZZ_PdMgPAkII0I_ooT5ioLI9EZeaR4iuKzidzwC11jR9pbPw1BiyLWQPXvbsf_r6viMneyUNWuy9k7ZjVqWCBlgeeSN1HzVbGzYzZhVMzbcMsbal5DtX8KeaayraButK8e6OK0E1D-scv0tWbN9QOYBAdmfATntAzK7OK0E5BwWkLMla7UPyDogIOczoGH7gKwuTisBDQ4LaNCl5UxRpSJRWOsBXysZNaVTljcLDEIsO4sSmVzgrRSLYm35elOAioEAlS5nWfkyTtZTSkvky8-OWSWxRpK5RWJVkl0nmY2kbx08WY0kezeJ1Un2vqfr10n9RpKz25NZJzn7enLqpEEjabjbk1UnDff1NMjv6EMsXu6jAFwwPp7TL37WD-QbeKjyD8V_FC8FdvaW5tf8gccKKVzxJxyhRrmMkkjpaAGulhmuVv_9CwAA__-0ofXg"})
-		}, time.Second)
-
-		// Now run the query to ensure the correct result
-		require.NoError(t, runQuery(t, r))
-	})
-
-	t.Run("draining-nodes-in-external-mode", func(t *testing.T) {
-		tc, lastServer, r := startAndSetupCluster(t, externalProcess)
-		defer tc.Stopper().Stop(context.Background())
-
-		r.CheckQueryResults(t,
-			`SELECT IF(substring(start_key for 1)='…',start_key,NULL),
-							IF(substring(end_key for 1)='…',end_key,NULL),
-							lease_holder, replicas FROM [SHOW RANGES FROM TABLE t WITH DETAILS]`,
-			[][]string{
-				{"NULL", "…/Table/106/1/0", "1", "{1}"},
-				{"…/Table/106/1/0", "…/Table/106/1/20", "1", "{1,2,3}"},
-				{"…/Table/106/1/20", "…/Table/106/1/40", "2", "{2,3,4}"},
-				{"…/Table/106/1/40", "…/Table/106/1/60", "3", "{1,3,4}"},
-				{"…/Table/106/1/60", "…/Table/106/1/80", "4", "{1,2,4}"},
-				{"…/Table/106/1/80", "NULL", "5", "{2,3,5}"},
-			},
-		)
-
-		require.NoError(t, runQuery(t, r))
-
-		// Verify the plan should include all 5 nodes.
-		require.NoError(t, checkQueryPlan(t, r,
-			[]string{"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklV9vmzAUxd_3KdCVpraSq2AghPDUqmFqtPTPQqZNqqLKC7cMleDUNmqrKt99IjQNYQVB4CERxj7n8Lv25Q3kUwwu-N7Eu5hpUfLAtW_Tmyvtzvt9OzkfX2vHo7E_839MiOZfnt96J9r7VJkuj1_kU8oEBif5GjXXfl16Uy-XmYy_e9rRKGKhYMuvR0Ag4QFesyVKcO-AAgEDCJhAwAICfZgTWAm-QCm5yKa8bRaMgxdwdQJRskpVNjwnsOACwX0DFakYwYUZ-xPjFFmAoqcDgQAVi-KNjTpT96tHfAUCFzxOl4l0tW1sIOCvWDbSo7rdo6f5X8_QYb4mwFO1s5SKhQguLWQcj8DV16R5zPMwFBgyxUWvv5_S_3l1fEZPKm2Nkm2_0nbnliZcBJi_5s5qvq4PRvV2ycxSMrpPhDYvHD28cD1D39bOal472iZpAZHdrXb2nq3RHJDRAZD1AchuDshok7QAaNAN0GDP1mwOyOwAyP4A5DQHZLZJWgDkdAPk7NlazQFZHQA574CMxnSsNjELdIbd6AzbtOQpyhVPJJZ65OdOesnplGbNFIMQ884reSoWeCv4YjM3v73ZCG0GApQqf0rzm3GyfSSVQLb8-KIUlWitkrGnRItK_bKSUZ-pTSizVsqqVqJlJevQ17PLSv1aJbs6k1FWsg_NNCgrDWqVnOpMZlnJOTSTU1Ya1m8DvTqU9d_erN_mNamG2dF5iPnzfRSAC_r7dfrJz_aCbAELZXZ-_b_8eSM7e11lp--BxRIJXLFHHKFCsYySSKpoAa4SKa7XX_4FAAD__5H-gCw="}))
-
-		// Drain the fourth node.
-		drainServer(t, lastServer, 4 /* idx */)
-
-		// Since we only stopped the server, the storage node would be still up. So
-		// our range for the 5th storage node could be randomly planned on any of the
-		// remaining nodes as all of them are equally "close" here.
-		expectedPlans := []string{
-			// Planned on 1st node
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF1ro04Uxu__n2I48KctTImjxmS9amlcGjZ92ZhlF0oos_HUSo1jZ0baUvLdF7VpjDSiiRcJzsvveeY543kH9RyDC7438S5mJEoeBPk-vbkid96f28n5-Jocj8b-zP85ocS_PL_1TsjHUpUtj1_Vc8YlBiflHj0nvy-9qVdiJuMfHjkaRTyUfPn_EVBIRIDXfIkK3DtgQMEEChZQsGFOIZVigUoJmU-_F4vHwSu4BoUoSTOdD88pLIREcN9BRzpGcGHG_8Y4RR6g7BlAIUDNo7iQ0Gf6Pn3CN6BwIeJsmSiXrC0DBT_l-UiPGU6PnZZ_PdMgPAkII0I_ooT5ioLI9EZeaR4iuKzidzwC11jR9pbPw1BiyLWQPXvbsf_r6viMneyUNWuy9k7ZjVqWCBlgeeSN1HzVbGzYzZhVMzbcMsbal5DtX8KeaayraButK8e6OK0E1D-scv0tWbN9QOYBAdmfATntAzK7OK0E5BwWkLMla7UPyDogIOczoGH7gKwuTisBDQ4LaNCl5UxRpSJRWOsBXysZNaVTljcLDEIsO4sSmVzgrRSLYm35elOAioEAlS5nWfkyTtZTSkvky8-OWSWxRpK5RWJVkl0nmY2kbx08WY0kezeJ1Un2vqfr10n9RpKz25NZJzn7enLqpEEjabjbk1UnDff1NMjv6EMsXu6jAFwwPp7TL37WD-QbeKjyD8V_FC8FdvaW5tf8gccKKVzxJxyhRrmMkkjpaAGulhmuVv_9CwAA__-0ofXg",
-
-			// Planned on 2nd node
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF1ro04Uxu__n2I48KctTImjxmS9amlcGjZ92ZhlF0oos_HUSo1jZ0baUvLdF7VpjDSiiRcJzsvveeY543kH9RyDC7438S5mJEoeBPk-vbkid96f28n5-Jocj8b-zP85ocS_PL_1TsjHUpUtj1_Vc8YlBiflHj0nvy-9qVdiJuMfHjkaRTyUfPn_EVBIRIDXfIkK3DtgQMEEChZQsGFOIZVigUoJmU-_F4vHwSu4BoUoSTOdD88pLIREcN9BRzpGcGHG_8Y4RR6g7BlAIUDNo7iQ0Gf6Pn3CN6BwIeJsmSiXrC0DBT_l-UiPGU6PnZZ_PdOA-YqCyPRGUmkeIris4nE8AtdY0fY2z8NQYsi1kD1726X_6-r4jJ3slDVrsvZO2Y1alggZYHnMjdR81Wxs2M2YVTM23DLG2peN7V-2nmmsK2cbhCcBYUToR5Stq8i6uK6E1T-siv0tWbN9WOYBYdmfYTntr7nZxWklIOewgJwtWat9QNYBATmfAQ3bB2R1cVoJaHBYQIMu7WeKKhWJwlo_-FrJqCmdsrxxYBBi2WWUyOQCb6VYFGvL15sCVAwEqHQ5y8qXcbKeUloiX352zyqJNZLMLRKrkuw6yWwkfevgyWok2btJrE6y9z1dv07qN5Kc3Z7MOsnZ15NTJw0aScPdnqw6abivp0F-Rx9i8XIfBeCC8fGcfvGzfiDfwEOVfyj-o3gpsLO3NL_mDzxWSOGKP-EINcpllERKRwtwtcxwtfrvXwAAAP__oDX14A==",
-
-			// Planned on 3rd node
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF1ro04Uxu__n2I48KctTImjxmS9amlcGjZ92ZhlF0oos_HUSo1jZ0baUvLdF7VpjDSiiRcJzsvveeY543kH9RyDC7438S5mJEoeBPk-vbkid96f28n5-Jocj8b-zP85ocS_PL_1TsjHUpUtj1_Vc8YlBiflHj0nvy-9qVdiJuMfHjkaRTyUfPn_EVBIRIDXfIkK3DtgQMEEChZQsGFOIZVigUoJmU-_F4vHwSu4BoUoSTOdD88pLIREcN9BRzpGcGHG_8Y4RR6g7BlAIUDNo7iQ0Gf6Pn3CN6BwIeJsmSiXrC0DBT_l-UiPGU6PnZZ_PdOA-YqCyPRGUmkeIris4nE8AtdY0fY2z8NQYsi1kD1726X_6-r4jJ3slDVrsvZO2Y1alggZYHnMjdR81Wxs2M2YVTM23DLG2peN7V-2nmmsK2e3rxzr4rQSUP-wyvW3ZM32AZkHBGR_BuQYhCcBYUToR5StwzK7uK6E5RwWlrMla7UPyzogLOczrGH722R1cVoJaHBYQIMu7WeKKhWJwlo_-FrJqCmdsrxxYBBi2WWUyOQCb6VYFGvL15sCVAwEqHQ5y8qXcbKeUloiX352zyqJNZLMLRKrkuw6yWwkfevgyWok2btJrE6y9z1dv07qN5Kc3Z7MOsnZ15NTJw0aScPdnqw6abivp0F-Rx9i8XIfBeCC8fGcfvGzfiDfwEOVfyj-o3gpsLO3NL_mDzxWSOGKP-EINcpllERKRwtwtcxwtfrvXwAAAP__hnf14A==",
-
-			// Planned on 4th node
-			"Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyklF9ro0AUxd_3U8iFpS1MiaPGZH1qaVwqm_7ZmGUXSiiz8daVqmNnRtpS8t0XtWmMNKKJDwnOn985c-5430A-xeCA707di7kWpQ9c-z67udLu3D-303PvWjueeP7c_zklmn95fuueaO9LZZ4cv8innAkMTqo9aqH9vnRnboWZej9c7WgSsVCw5OsREEh5gNcsQQnOHVAgYAABEwhYsCCQCb5EKbkopt_KxV7wAo5OIEqzXBXDCwJLLhCcN1CRihEcmLO_Mc6QBSgGOhAIULEoLiXUmbrPHvEVCFzwOE9S6Whry0DAz1gxMqC6PaCn1d_A0GGxIsBztZGUioUIDq159Cbg6CvS3eZ5GAoMmeJiYG279H9dHZ_Rk52yRkPW2im7UctTLgKsjrmRWqzajY37GTMbxsZbxmj3stH9yzYw9HXlrO6Vo32c1gIaHla54Zas0T0g44CArI-A7O4BGX2c1gKyDwvI3pI1uwdkHhCQ_R6Q0Tkds4_NWjqjw9IZ9ek3M5QZTyU2GsDnSnpD6ZQWnQKDEKu2Inkulngr-LJcW73elKByIECpqllavXjpekoqgSz5aJd1Em0lGVskWidZTZLRSvrWw5PZSrJ2k2iTZO17umGTNGwl2bs9GU2Sva8nu0katZLGuz2ZTdJ4X0-j4o4-xPz5PgrAAf39Of3kZ_1AsYGFsvhQ_H_8ucTOX7Pimj-wWCKBK_aIE1QokiiNpIqW4CiR42r15X8AAAD__-4H8WQ=",
-		}
-		// Range for 5th node should be planned on the gateway
-		testutils.SucceedsWithin(t, func() error {
-			return checkQueryPlan(t, r, expectedPlans)
-		}, 4*time.Second)
-
-		// Now run the query to ensure the correct result
-		require.NoError(t, runQuery(t, r))
-	})
+	// Verify correctness.
+	var res int
+	if err := db.QueryRow(query).Scan(&res); err != nil {
+		t.Fatal(err)
+	}
+	if res != numNodes {
+		t.Fatalf("expected %d rows but got %d", numNodes, res)
+	}
 }
 
 // testSpanResolverRange describes a range in a test. The ranges are specified
@@ -932,12 +667,13 @@ func TestPartitionSpans(t *testing.T) {
 
 		locFilter string
 
+		withoutMerging bool
+
 		// expected result: a map of node to list of spans.
 		partitions      map[int][][2]string
 		partitionStates []string
 		partitionState  spanPartitionState
 	}{
-		// 0
 		{
 			ranges:      []testSpanResolverRange{{"A", 1}, {"B", 2}, {"C", 1}, {"D", 3}},
 			gatewayNode: 1,
@@ -951,10 +687,10 @@ func TestPartitionSpans(t *testing.T) {
 			},
 
 			partitionStates: []string{
-				"partition span: {A1-B}, instance ID: 1, reason: target-healthy",
-				"partition span: {B-C}, instance ID: 2, reason: target-healthy",
-				"partition span: C{-1}, instance ID: 1, reason: target-healthy",
-				"partition span: {D1-X}, instance ID: 3, reason: target-healthy",
+				"partition span: {A1-B}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: {B-C}, instance ID: 2, reason: gossip-target-healthy",
+				"partition span: C{-1}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: {D1-X}, instance ID: 3, reason: gossip-target-healthy",
 			},
 
 			partitionState: spanPartitionState{
@@ -963,14 +699,13 @@ func TestPartitionSpans(t *testing.T) {
 					2: 1,
 					3: 1,
 				},
-				partitionSpanDecisions: [SpanPartitionReasonMax]int{
-					SpanPartitionReason_TARGET_HEALTHY: 4,
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
+					SpanPartitionReason_GOSSIP_TARGET_HEALTHY: 4,
 				},
 				totalPartitionSpans: 4,
 			},
 		},
 
-		// 1
 		{
 			ranges:      []testSpanResolverRange{{"A", 1}, {"B", 2}, {"C", 1}, {"D", 3}},
 			deadNodes:   []int{1}, // The health status of the gateway node shouldn't matter.
@@ -985,10 +720,10 @@ func TestPartitionSpans(t *testing.T) {
 			},
 
 			partitionStates: []string{
-				"partition span: {A1-B}, instance ID: 1, reason: target-healthy",
-				"partition span: {B-C}, instance ID: 2, reason: target-healthy",
-				"partition span: C{-1}, instance ID: 1, reason: target-healthy",
-				"partition span: {D1-X}, instance ID: 3, reason: target-healthy",
+				"partition span: {A1-B}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: {B-C}, instance ID: 2, reason: gossip-target-healthy",
+				"partition span: C{-1}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: {D1-X}, instance ID: 3, reason: gossip-target-healthy",
 			},
 
 			partitionState: spanPartitionState{
@@ -997,14 +732,13 @@ func TestPartitionSpans(t *testing.T) {
 					2: 1,
 					3: 1,
 				},
-				partitionSpanDecisions: [SpanPartitionReasonMax]int{
-					SpanPartitionReason_TARGET_HEALTHY: 4,
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
+					SpanPartitionReason_GOSSIP_TARGET_HEALTHY: 4,
 				},
 				totalPartitionSpans: 4,
 			},
 		},
 
-		// 2
 		{
 			ranges:      []testSpanResolverRange{{"A", 1}, {"B", 2}, {"C", 1}, {"D", 3}},
 			deadNodes:   []int{2},
@@ -1018,10 +752,10 @@ func TestPartitionSpans(t *testing.T) {
 			},
 
 			partitionStates: []string{
-				"partition span: {A1-B}, instance ID: 1, reason: target-healthy",
-				"partition span: {B-C}, instance ID: 1, reason: gateway-target-unhealthy",
-				"partition span: C{-1}, instance ID: 1, reason: target-healthy",
-				"partition span: {D1-X}, instance ID: 3, reason: target-healthy",
+				"partition span: {A1-B}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: {B-C}, instance ID: 1, reason: gossip-gateway-target-unhealthy",
+				"partition span: C{-1}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: {D1-X}, instance ID: 3, reason: gossip-target-healthy",
 			},
 
 			partitionState: spanPartitionState{
@@ -1029,15 +763,14 @@ func TestPartitionSpans(t *testing.T) {
 					1: 3,
 					3: 1,
 				},
-				partitionSpanDecisions: [SpanPartitionReasonMax]int{
-					SpanPartitionReason_TARGET_HEALTHY:           3,
-					SpanPartitionReason_GATEWAY_TARGET_UNHEALTHY: 1,
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
+					SpanPartitionReason_GOSSIP_TARGET_HEALTHY:           3,
+					SpanPartitionReason_GOSSIP_GATEWAY_TARGET_UNHEALTHY: 1,
 				},
 				totalPartitionSpans: 4,
 			},
 		},
 
-		// 3
 		{
 			ranges:      []testSpanResolverRange{{"A", 1}, {"B", 2}, {"C", 1}, {"D", 3}},
 			deadNodes:   []int{3},
@@ -1051,10 +784,10 @@ func TestPartitionSpans(t *testing.T) {
 			},
 
 			partitionStates: []string{
-				"partition span: {A1-B}, instance ID: 1, reason: target-healthy",
-				"partition span: {B-C}, instance ID: 2, reason: target-healthy",
-				"partition span: C{-1}, instance ID: 1, reason: target-healthy",
-				"partition span: {D1-X}, instance ID: 1, reason: gateway-target-unhealthy",
+				"partition span: {A1-B}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: {B-C}, instance ID: 2, reason: gossip-target-healthy",
+				"partition span: C{-1}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: {D1-X}, instance ID: 1, reason: gossip-gateway-target-unhealthy",
 			},
 
 			partitionState: spanPartitionState{
@@ -1062,15 +795,14 @@ func TestPartitionSpans(t *testing.T) {
 					1: 3,
 					2: 1,
 				},
-				partitionSpanDecisions: [SpanPartitionReasonMax]int{
-					SpanPartitionReason_TARGET_HEALTHY:           3,
-					SpanPartitionReason_GATEWAY_TARGET_UNHEALTHY: 1,
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
+					SpanPartitionReason_GOSSIP_TARGET_HEALTHY:           3,
+					SpanPartitionReason_GOSSIP_GATEWAY_TARGET_UNHEALTHY: 1,
 				},
 				totalPartitionSpans: 4,
 			},
 		},
 
-		// 4
 		{
 			ranges:      []testSpanResolverRange{{"A", 1}, {"B", 2}, {"C", 1}, {"D", 3}},
 			deadNodes:   []int{1},
@@ -1084,10 +816,10 @@ func TestPartitionSpans(t *testing.T) {
 			},
 
 			partitionStates: []string{
-				"partition span: {A1-B}, instance ID: 2, reason: gateway-target-unhealthy",
-				"partition span: {B-C}, instance ID: 2, reason: target-healthy",
-				"partition span: C{-1}, instance ID: 2, reason: gateway-target-unhealthy",
-				"partition span: {D1-X}, instance ID: 3, reason: target-healthy",
+				"partition span: {A1-B}, instance ID: 2, reason: gossip-gateway-target-unhealthy",
+				"partition span: {B-C}, instance ID: 2, reason: gossip-target-healthy",
+				"partition span: C{-1}, instance ID: 2, reason: gossip-gateway-target-unhealthy",
+				"partition span: {D1-X}, instance ID: 3, reason: gossip-target-healthy",
 			},
 
 			partitionState: spanPartitionState{
@@ -1095,15 +827,14 @@ func TestPartitionSpans(t *testing.T) {
 					2: 3,
 					3: 1,
 				},
-				partitionSpanDecisions: [SpanPartitionReasonMax]int{
-					SpanPartitionReason_TARGET_HEALTHY:           2,
-					SpanPartitionReason_GATEWAY_TARGET_UNHEALTHY: 2,
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
+					SpanPartitionReason_GOSSIP_TARGET_HEALTHY:           2,
+					SpanPartitionReason_GOSSIP_GATEWAY_TARGET_UNHEALTHY: 2,
 				},
 				totalPartitionSpans: 4,
 			},
 		},
 
-		// 5
 		{
 			ranges:      []testSpanResolverRange{{"A", 1}, {"B", 2}, {"C", 1}, {"D", 3}},
 			deadNodes:   []int{1},
@@ -1117,10 +848,10 @@ func TestPartitionSpans(t *testing.T) {
 			},
 
 			partitionStates: []string{
-				"partition span: {A1-B}, instance ID: 3, reason: gateway-target-unhealthy",
-				"partition span: {B-C}, instance ID: 2, reason: target-healthy",
-				"partition span: C{-1}, instance ID: 3, reason: gateway-target-unhealthy",
-				"partition span: {D1-X}, instance ID: 3, reason: target-healthy",
+				"partition span: {A1-B}, instance ID: 3, reason: gossip-gateway-target-unhealthy",
+				"partition span: {B-C}, instance ID: 2, reason: gossip-target-healthy",
+				"partition span: C{-1}, instance ID: 3, reason: gossip-gateway-target-unhealthy",
+				"partition span: {D1-X}, instance ID: 3, reason: gossip-target-healthy",
 			},
 
 			partitionState: spanPartitionState{
@@ -1128,15 +859,15 @@ func TestPartitionSpans(t *testing.T) {
 					2: 1,
 					3: 3,
 				},
-				partitionSpanDecisions: [SpanPartitionReasonMax]int{
-					SpanPartitionReason_TARGET_HEALTHY:           2,
-					SpanPartitionReason_GATEWAY_TARGET_UNHEALTHY: 2,
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
+					SpanPartitionReason_GOSSIP_TARGET_HEALTHY:           2,
+					SpanPartitionReason_GOSSIP_GATEWAY_TARGET_UNHEALTHY: 2,
 				},
 				totalPartitionSpans: 4,
 			},
 		},
 
-		// 6: Test point lookups in isolation.
+		// Test point lookups in isolation.
 		{
 			ranges:      []testSpanResolverRange{{"A", 1}, {"B", 2}},
 			gatewayNode: 1,
@@ -1149,9 +880,9 @@ func TestPartitionSpans(t *testing.T) {
 			},
 
 			partitionStates: []string{
-				"partition span: A2, instance ID: 1, reason: target-healthy",
-				"partition span: A1, instance ID: 1, reason: target-healthy",
-				"partition span: B1, instance ID: 2, reason: target-healthy",
+				"partition span: A2, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: A1, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: B1, instance ID: 2, reason: gossip-target-healthy",
 			},
 
 			partitionState: spanPartitionState{
@@ -1159,14 +890,14 @@ func TestPartitionSpans(t *testing.T) {
 					1: 2,
 					2: 1,
 				},
-				partitionSpanDecisions: [SpanPartitionReasonMax]int{
-					SpanPartitionReason_TARGET_HEALTHY: 3,
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
+					SpanPartitionReason_GOSSIP_TARGET_HEALTHY: 3,
 				},
 				totalPartitionSpans: 3,
 			},
 		},
 
-		// 7: Test point lookups intertwined with span scans.
+		// Test point lookups intertwined with span scans.
 		{
 			ranges:      []testSpanResolverRange{{"A", 1}, {"B", 1}, {"C", 2}},
 			gatewayNode: 1,
@@ -1179,16 +910,16 @@ func TestPartitionSpans(t *testing.T) {
 			},
 
 			partitionStates: []string{
-				"partition span: A1, instance ID: 1, reason: target-healthy",
-				"partition span: A{1-2}, instance ID: 1, reason: target-healthy",
-				"partition span: A2, instance ID: 1, reason: target-healthy",
-				"partition span: {A2-B}, instance ID: 1, reason: target-healthy",
-				"partition span: {B-C}, instance ID: 1, reason: target-healthy",
-				"partition span: C{-2}, instance ID: 2, reason: target-healthy",
-				"partition span: B1, instance ID: 1, reason: target-healthy",
-				"partition span: {A3-B}, instance ID: 1, reason: target-healthy",
-				"partition span: B{-3}, instance ID: 1, reason: target-healthy",
-				"partition span: B2, instance ID: 1, reason: target-healthy",
+				"partition span: A1, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: A{1-2}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: A2, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: {A2-B}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: {B-C}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: C{-2}, instance ID: 2, reason: gossip-target-healthy",
+				"partition span: B1, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: {A3-B}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: B{-3}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: B2, instance ID: 1, reason: gossip-target-healthy",
 			},
 
 			partitionState: spanPartitionState{
@@ -1196,14 +927,14 @@ func TestPartitionSpans(t *testing.T) {
 					1: 9,
 					2: 1,
 				},
-				partitionSpanDecisions: [SpanPartitionReasonMax]int{
-					SpanPartitionReason_TARGET_HEALTHY: 10,
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
+					SpanPartitionReason_GOSSIP_TARGET_HEALTHY: 10,
 				},
 				totalPartitionSpans: 10,
 			},
 		},
 
-		// 8: A single span touching multiple ranges but on the same node results
+		// A single span touching multiple ranges but on the same node results
 		// in a single partitioned span.
 		{
 			ranges:      []testSpanResolverRange{{"A", 1}, {"A1", 1}, {"B", 2}},
@@ -1216,22 +947,49 @@ func TestPartitionSpans(t *testing.T) {
 			},
 
 			partitionStates: []string{
-				"partition span: A{-1}, instance ID: 1, reason: target-healthy",
-				"partition span: {A1-B}, instance ID: 1, reason: target-healthy",
+				"partition span: A{-1}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: {A1-B}, instance ID: 1, reason: gossip-target-healthy",
 			},
 
 			partitionState: spanPartitionState{
 				partitionSpans: map[base.SQLInstanceID]int{
 					1: 2,
 				},
-				partitionSpanDecisions: [SpanPartitionReasonMax]int{
-					SpanPartitionReason_TARGET_HEALTHY: 2,
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
+					SpanPartitionReason_GOSSIP_TARGET_HEALTHY: 2,
 				},
 				totalPartitionSpans: 2,
 			},
 		},
+		// A single span touching multiple ranges but on the same node results
+		// in a multiple partitioned span iff ParitionSpansWithoutMerging is used.
+		{
+			withoutMerging: true,
+			ranges:         []testSpanResolverRange{{"A", 1}, {"A1", 1}, {"B", 2}},
+			gatewayNode:    1,
 
-		// 9: Test some locality-filtered planning too.
+			spans: [][2]string{{"A", "B"}},
+
+			partitions: map[int][][2]string{
+				1: {{"A", "A1"}, {"A1", "B"}},
+			},
+
+			partitionStates: []string{
+				"partition span: A{-1}, instance ID: 1, reason: gossip-target-healthy",
+				"partition span: {A1-B}, instance ID: 1, reason: gossip-target-healthy",
+			},
+
+			partitionState: spanPartitionState{
+				partitionSpans: map[base.SQLInstanceID]int{
+					1: 2,
+				},
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
+					SpanPartitionReason_GOSSIP_TARGET_HEALTHY: 2,
+				},
+				totalPartitionSpans: 2,
+			},
+		},
+		// Test some locality-filtered planning too.
 		//
 		// Since this test is run on a system tenant but there is a locality filter,
 		// the spans are resolved in a mixed process mode. As a result, the
@@ -1260,7 +1018,7 @@ func TestPartitionSpans(t *testing.T) {
 					1: 2,
 					2: 2,
 				},
-				partitionSpanDecisions: [SpanPartitionReasonMax]int{
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
 					SpanPartitionReason_TARGET_HEALTHY:                              3,
 					SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED: 1,
 				},
@@ -1270,8 +1028,6 @@ func TestPartitionSpans(t *testing.T) {
 				totalPartitionSpans: 4,
 			},
 		},
-
-		// 10
 		{
 			ranges:      []testSpanResolverRange{{"A", 1}, {"B", 2}, {"C", 1}, {"D", 3}},
 			gatewayNode: 1,
@@ -1295,15 +1051,13 @@ func TestPartitionSpans(t *testing.T) {
 					2: 3,
 					4: 1,
 				},
-				partitionSpanDecisions: [SpanPartitionReasonMax]int{
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
 					SpanPartitionReason_TARGET_HEALTHY:         1,
 					SpanPartitionReason_CLOSEST_LOCALITY_MATCH: 3,
 				},
 				totalPartitionSpans: 4,
 			},
 		},
-
-		// 11
 		{
 			ranges:      []testSpanResolverRange{{"A", 1}, {"B", 2}, {"C", 1}, {"D", 3}},
 			gatewayNode: 7,
@@ -1327,7 +1081,7 @@ func TestPartitionSpans(t *testing.T) {
 					6: 2,
 					7: 2,
 				},
-				partitionSpanDecisions: [SpanPartitionReasonMax]int{
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
 					SpanPartitionReason_GATEWAY_NO_LOCALITY_MATCH:                   2,
 					SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED: 2,
 				},
@@ -1337,8 +1091,6 @@ func TestPartitionSpans(t *testing.T) {
 				},
 			},
 		},
-
-		// 12
 		{
 			ranges:      []testSpanResolverRange{{"A", 1}, {"B", 2}, {"C", 1}, {"D", 3}},
 			gatewayNode: 1,
@@ -1360,7 +1112,7 @@ func TestPartitionSpans(t *testing.T) {
 				partitionSpans: map[base.SQLInstanceID]int{
 					7: 4,
 				},
-				partitionSpanDecisions: [SpanPartitionReasonMax]int{
+				partitionSpanDecisions: [SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED + 1]int{
 					SpanPartitionReason_LOCALITY_FILTERED_RANDOM: 4,
 				},
 				totalPartitionSpans: 4,
@@ -1396,8 +1148,11 @@ func TestPartitionSpans(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := mockGossip.AddInfoProto(
-			gossip.MakeDistSQLDrainingKey(sqlInstanceID),
-			&execinfrapb.DistSQLDrainingInfo{Draining: false},
+			gossip.MakeDistSQLNodeVersionKey(sqlInstanceID),
+			&execinfrapb.DistSQLVersionGossipInfo{
+				MinAcceptedVersion: execinfra.MinAcceptedVersion,
+				Version:            execinfra.Version,
+			},
 			0, // ttl - no expiration
 		); err != nil {
 			t.Fatal(err)
@@ -1423,16 +1178,6 @@ func TestPartitionSpans(t *testing.T) {
 			nID.Reset(tsp.nodes[tc.gatewayNode-1].NodeID)
 
 			gw := gossip.MakeOptionalGossip(mockGossip)
-
-			connHealth := func(nodeId roachpb.NodeID) error {
-				for _, n := range tc.deadNodes {
-					if int(nodeId) == n {
-						return fmt.Errorf("test node is unhealthy")
-					}
-				}
-				return nil
-			}
-
 			dsp := DistSQLPlanner{
 				st:                   cluster.MakeTestingClusterSettings(),
 				gatewaySQLInstanceID: base.SQLInstanceID(tsp.nodes[tc.gatewayNode-1].NodeID),
@@ -1441,11 +1186,13 @@ func TestPartitionSpans(t *testing.T) {
 				gossip:               gw,
 				nodeHealth: distSQLNodeHealth{
 					gossip: gw,
-					connHealthSystem: func(node roachpb.NodeID, _ rpcbase.ConnectionClass) error {
-						return connHealth(node)
-					},
-					connHealthInstance: func(sqlInstance base.SQLInstanceID, _ string) error {
-						return connHealth(roachpb.NodeID(sqlInstance))
+					connHealth: func(node roachpb.NodeID, _ rpc.ConnectionClass) error {
+						for _, n := range tc.deadNodes {
+							if int(node) == n {
+								return fmt.Errorf("test node is unhealthy")
+							}
+						}
+						return nil
 					},
 					isAvailable: func(base.SQLInstanceID) bool {
 						return true
@@ -1483,11 +1230,17 @@ func TestPartitionSpans(t *testing.T) {
 			for _, s := range tc.spans {
 				spans = append(spans, roachpb.Span{Key: roachpb.Key(s[0]), EndKey: roachpb.Key(s[1])})
 			}
-
-			partitions, err := dsp.PartitionSpans(ctx, planCtx, spans, PartitionSpansBoundDefault)
+			var partitions []SpanPartition
+			var err error
+			if tc.withoutMerging {
+				partitions, err = dsp.PartitionSpansWithoutMerging(ctx, planCtx, spans)
+			} else {
+				partitions, err = dsp.PartitionSpans(ctx, planCtx, spans)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
+
 			countRanges := func(parts []SpanPartition) (count int) {
 				for _, sp := range parts {
 					ri := tsp.NewSpanResolverIterator(nil, nil)
@@ -1536,6 +1289,7 @@ func TestPartitionSpans(t *testing.T) {
 			}
 
 			recording := getRecAndFinish()
+			t.Logf("recording is %s", recording)
 			for _, expectedMsg := range tc.partitionStates {
 				require.NotEqual(t, -1, tracing.FindMsgInRecording(recording, expectedMsg))
 			}
@@ -1774,15 +1528,15 @@ func TestPartitionSpansSkipsNodesNotInGossip(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		// All the nodes advertise that they are not draining. This is to
-		// simulate the "node overridden by another node at the same address"
-		// case mentioned in the test comment - for such a node, the descriptor
-		// would be taken out of the gossip data, but other datums it advertised
-		// are left in place.
+		// All the nodes advertise their DistSQL versions. This is to simulate the
+		// "node overridden by another node at the same address" case mentioned in
+		// the test comment - for such a node, the descriptor would be taken out of
+		// the gossip data, but other datums it advertised are left in place.
 		if err := mockGossip.AddInfoProto(
-			gossip.MakeDistSQLDrainingKey(sqlInstanceID),
-			&execinfrapb.DistSQLDrainingInfo{
-				Draining: false,
+			gossip.MakeDistSQLNodeVersionKey(sqlInstanceID),
+			&execinfrapb.DistSQLVersionGossipInfo{
+				MinAcceptedVersion: execinfra.MinAcceptedVersion,
+				Version:            execinfra.Version,
 			},
 			0, // ttl - no expiration
 		); err != nil {
@@ -1796,17 +1550,16 @@ func TestPartitionSpansSkipsNodesNotInGossip(t *testing.T) {
 		ranges: ranges,
 	}
 
-	st := cluster.MakeTestingClusterSettings()
 	gw := gossip.MakeOptionalGossip(mockGossip)
 	dsp := DistSQLPlanner{
-		st:                   st,
+		st:                   cluster.MakeTestingClusterSettings(),
 		gatewaySQLInstanceID: base.SQLInstanceID(tsp.nodes[gatewayNode-1].NodeID),
 		stopper:              stopper,
 		spanResolver:         tsp,
 		gossip:               gw,
 		nodeHealth: distSQLNodeHealth{
 			gossip: gw,
-			connHealthSystem: func(node roachpb.NodeID, _ rpcbase.ConnectionClass) error {
+			connHealth: func(node roachpb.NodeID, _ rpc.ConnectionClass) error {
 				_, _, err := mockGossip.GetNodeIDAddress(node)
 				return err
 			},
@@ -1818,13 +1571,11 @@ func TestPartitionSpansSkipsNodesNotInGossip(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	// This test is specific to gossip-based planning.
-	useGossipPlanning.Override(ctx, &st.SV, true)
 	planCtx := dsp.NewPlanningCtx(
-		ctx, &extendedEvalContext{Context: eval.Context{Codec: keys.SystemSQLCodec, Settings: st}},
+		ctx, &extendedEvalContext{Context: eval.Context{Codec: keys.SystemSQLCodec}},
 		nil /* planner */, nil /* txn */, FullDistribution,
 	)
-	partitions, err := dsp.PartitionSpans(ctx, planCtx, roachpb.Spans{span}, PartitionSpansBoundDefault)
+	partitions, err := dsp.PartitionSpans(ctx, planCtx, roachpb.Spans{span})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1869,8 +1620,11 @@ func TestCheckNodeHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := mockGossip.AddInfoProto(
-		gossip.MakeDistSQLDrainingKey(sqlInstanceID),
-		&execinfrapb.DistSQLDrainingInfo{Draining: false},
+		gossip.MakeDistSQLNodeVersionKey(sqlInstanceID),
+		&execinfrapb.DistSQLVersionGossipInfo{
+			MinAcceptedVersion: execinfra.MinAcceptedVersion,
+			Version:            execinfra.Version,
+		},
 		0, // ttl - no expiration
 	); err != nil {
 		t.Fatal(err)
@@ -1883,10 +1637,10 @@ func TestCheckNodeHealth(t *testing.T) {
 		return true
 	}
 
-	connHealthy := func(roachpb.NodeID, rpcbase.ConnectionClass) error {
+	connHealthy := func(roachpb.NodeID, rpc.ConnectionClass) error {
 		return nil
 	}
-	connUnhealthy := func(roachpb.NodeID, rpcbase.ConnectionClass) error {
+	connUnhealthy := func(roachpb.NodeID, rpc.ConnectionClass) error {
 		return errors.New("injected conn health error")
 	}
 	_ = connUnhealthy
@@ -1903,9 +1657,9 @@ func TestCheckNodeHealth(t *testing.T) {
 	for _, test := range livenessTests {
 		t.Run("liveness", func(t *testing.T) {
 			h := distSQLNodeHealth{
-				gossip:           gw,
-				connHealthSystem: connHealthy,
-				isAvailable:      test.isAvailable,
+				gossip:      gw,
+				connHealth:  connHealthy,
+				isAvailable: test.isAvailable,
 			}
 			if err := h.checkSystem(context.Background(), sqlInstanceID); !testutils.IsError(err, test.exp) {
 				t.Fatalf("expected %v, got %v", test.exp, err)
@@ -1914,7 +1668,7 @@ func TestCheckNodeHealth(t *testing.T) {
 	}
 
 	connHealthTests := []struct {
-		connHealth func(roachpb.NodeID, rpcbase.ConnectionClass) error
+		connHealth func(roachpb.NodeID, rpc.ConnectionClass) error
 		exp        string
 	}{
 		{connHealthy, ""},
@@ -1924,9 +1678,9 @@ func TestCheckNodeHealth(t *testing.T) {
 	for _, test := range connHealthTests {
 		t.Run("connHealth", func(t *testing.T) {
 			h := distSQLNodeHealth{
-				gossip:           gw,
-				connHealthSystem: test.connHealth,
-				isAvailable:      available,
+				gossip:      gw,
+				connHealth:  test.connHealth,
+				isAvailable: available,
 			}
 			if err := h.checkSystem(context.Background(), sqlInstanceID); !testutils.IsError(err, test.exp) {
 				t.Fatalf("expected %v, got %v", test.exp, err)
@@ -1969,70 +1723,57 @@ func TestCheckScanParallelizationIfLocal(t *testing.T) {
 			hasScanNodeToParallelize: true,
 		},
 		{
-			plan:                     planComponents{main: planMaybePhysical{planNode: &distinctNode{singleInputPlanNode: singleInputPlanNode{scanToParallelize}}}},
+			plan:                     planComponents{main: planMaybePhysical{planNode: &distinctNode{plan: scanToParallelize}}},
 			hasScanNodeToParallelize: true,
 		},
 		{
-			plan: planComponents{main: planMaybePhysical{planNode: &filterNode{singleInputPlanNode: singleInputPlanNode{scanToParallelize}}}},
+			plan: planComponents{main: planMaybePhysical{planNode: &filterNode{source: planDataSource{plan: scanToParallelize}}}},
 			// filterNode might be handled via wrapping a row-execution
 			// processor, so we safely prohibit the parallelization.
 			prohibitParallelization: true,
 		},
 		{
 			plan: planComponents{main: planMaybePhysical{planNode: &groupNode{
-				singleInputPlanNode: singleInputPlanNode{scanToParallelize},
-				funcs:               []*aggregateFuncHolder{{filterRenderIdx: tree.NoColumnIdx}}},
+				plan:  scanToParallelize,
+				funcs: []*aggregateFuncHolder{{filterRenderIdx: tree.NoColumnIdx}}},
 			}},
 			// Non-filtering aggregation is supported.
 			hasScanNodeToParallelize: true,
 		},
 		{
 			plan: planComponents{main: planMaybePhysical{planNode: &groupNode{
-				singleInputPlanNode: singleInputPlanNode{scanToParallelize},
-				funcs:               []*aggregateFuncHolder{{filterRenderIdx: 0}}},
-			}},
-			// Filtering aggregation is not natively supported.
-			prohibitParallelization: true,
-		},
-		{
-			plan: planComponents{main: planMaybePhysical{planNode: &groupNode{
-				singleInputPlanNode: singleInputPlanNode{scanToParallelize},
-				funcs: []*aggregateFuncHolder{
-					{filterRenderIdx: 0},
-					{filterRenderIdx: tree.NoColumnIdx},
-				}},
+				plan:  scanToParallelize,
+				funcs: []*aggregateFuncHolder{{filterRenderIdx: 0}}},
 			}},
 			// Filtering aggregation is not natively supported.
 			prohibitParallelization: true,
 		},
 		{
 			plan: planComponents{main: planMaybePhysical{planNode: &indexJoinNode{
-				singleInputPlanNode: singleInputPlanNode{scanToParallelize},
-				indexJoinPlanningInfo: indexJoinPlanningInfo{
-					fetch: fetchPlanningInfo{desc: makeTableDesc()},
-				},
+				input: scanToParallelize,
+				table: &scanNode{desc: makeTableDesc()},
 			}}},
 			hasScanNodeToParallelize: true,
 		},
 		{
-			plan:                     planComponents{main: planMaybePhysical{planNode: &limitNode{singleInputPlanNode: singleInputPlanNode{scanToParallelize}}}},
+			plan:                     planComponents{main: planMaybePhysical{planNode: &limitNode{plan: scanToParallelize}}},
 			hasScanNodeToParallelize: true,
 		},
 		{
-			plan:                     planComponents{main: planMaybePhysical{planNode: &ordinalityNode{singleInputPlanNode: singleInputPlanNode{scanToParallelize}}}},
+			plan:                     planComponents{main: planMaybePhysical{planNode: &ordinalityNode{source: scanToParallelize}}},
 			hasScanNodeToParallelize: true,
 		},
 		{
 			plan: planComponents{main: planMaybePhysical{planNode: &renderNode{
-				singleInputPlanNode: singleInputPlanNode{scanToParallelize},
-				render:              []tree.TypedExpr{&tree.IndexedVar{Idx: 0}},
+				source: planDataSource{plan: scanToParallelize},
+				render: []tree.TypedExpr{&tree.IndexedVar{Idx: 0}},
 			}}},
 			hasScanNodeToParallelize: true,
 		},
 		{
 			plan: planComponents{main: planMaybePhysical{planNode: &renderNode{
-				singleInputPlanNode: singleInputPlanNode{scanToParallelize},
-				render:              []tree.TypedExpr{&tree.IsNullExpr{}},
+				source: planDataSource{plan: scanToParallelize},
+				render: []tree.TypedExpr{&tree.IsNullExpr{}},
 			}}},
 			// Not a simple projection (some expressions might be handled by
 			// wrapping a row-execution processor, so we choose to be safe and
@@ -2040,17 +1781,7 @@ func TestCheckScanParallelizationIfLocal(t *testing.T) {
 			prohibitParallelization: true,
 		},
 		{
-			plan: planComponents{main: planMaybePhysical{planNode: &renderNode{
-				singleInputPlanNode: singleInputPlanNode{scanToParallelize},
-				render:              []tree.TypedExpr{&tree.IndexedVar{Idx: 0}, &tree.IsNullExpr{}},
-			}}},
-			// Not a simple projection (some expressions might be handled by
-			// wrapping a row-execution processor, so we choose to be safe and
-			// prohibit the parallelization for all non-IndexedVar expressions).
-			prohibitParallelization: true,
-		},
-		{
-			plan:                     planComponents{main: planMaybePhysical{planNode: &sortNode{singleInputPlanNode: singleInputPlanNode{scanToParallelize}}}},
+			plan:                     planComponents{main: planMaybePhysical{planNode: &sortNode{plan: scanToParallelize}}},
 			hasScanNodeToParallelize: true,
 		},
 		{
@@ -2066,7 +1797,7 @@ func TestCheckScanParallelizationIfLocal(t *testing.T) {
 			hasScanNodeToParallelize: false,
 		},
 		{
-			plan: planComponents{main: planMaybePhysical{planNode: &windowNode{singleInputPlanNode: singleInputPlanNode{scanToParallelize}}}},
+			plan: planComponents{main: planMaybePhysical{planNode: &windowNode{plan: scanToParallelize}}},
 			// windowNode is not fully supported by the vectorized.
 			prohibitParallelization: true,
 		},
@@ -2077,7 +1808,7 @@ func TestCheckScanParallelizationIfLocal(t *testing.T) {
 			prohibitParallelization: true,
 		},
 		{
-			plan:                    planComponents{cascades: []postQueryMetadata{{}}},
+			plan:                    planComponents{cascades: []cascadeMetadata{{}}},
 			prohibitParallelization: true,
 		},
 		{
@@ -2085,7 +1816,8 @@ func TestCheckScanParallelizationIfLocal(t *testing.T) {
 			prohibitParallelization: true,
 		},
 	} {
-		prohibitParallelization, hasScanNodeToParallize := checkScanParallelizationIfLocal(context.Background(), &tc.plan)
+		var c localScanParallelizationChecker
+		prohibitParallelization, hasScanNodeToParallize := checkScanParallelizationIfLocal(context.Background(), &tc.plan, &c)
 		require.Equal(t, tc.prohibitParallelization, prohibitParallelization)
 		require.Equal(t, tc.hasScanNodeToParallelize, hasScanNodeToParallize)
 	}

@@ -6,6 +6,7 @@
 package pgwire
 
 import (
+	"bytes"
 	"context"
 	gosql "database/sql"
 	"database/sql/driver"
@@ -835,10 +836,10 @@ func expectExecStmt(
 		t.Fatalf("expected %s, got %s", expSQL, es.AST.String())
 	}
 
-	if es.ParseStart == 0 {
+	if es.ParseStart == (time.Time{}) {
 		t.Fatalf("ParseStart not filled in")
 	}
-	if es.ParseEnd == 0 {
+	if es.ParseEnd == (time.Time{}) {
 		t.Fatalf("ParseEnd not filled in")
 	}
 	if typ == queryStringComplete {
@@ -1298,6 +1299,80 @@ func TestMaliciousInputs(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+// TestReadTimeoutConn asserts that a readTimeoutConn performs reads normally
+// and exits with an appropriate error when exit conditions are satisfied.
+func TestReadTimeoutConnExits(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	// Cannot use net.Pipe because deadlines are not supported.
+	ln, err := net.Listen(util.TestAddr.Network(), util.TestAddr.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Infof(context.Background(), "started listener on %s", ln.Addr())
+	defer func() {
+		if err := ln.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	expectedRead := []byte("expectedRead")
+
+	// Start a goroutine that performs reads using a readTimeoutConn.
+	errChan := make(chan error)
+	go func() {
+		defer close(errChan)
+		errChan <- func() error {
+			c, err := ln.Accept()
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+
+			readTimeoutConn := &readTimeoutConn{
+				Conn: c,
+				checkExitConds: func() error {
+					return ctx.Err()
+				},
+			}
+			// Assert that reads are performed normally.
+			readBytes := make([]byte, len(expectedRead))
+			if _, err := readTimeoutConn.Read(readBytes); err != nil {
+				return err
+			}
+			if !bytes.Equal(readBytes, expectedRead) {
+				return errors.Errorf("expected %v got %v", expectedRead, readBytes)
+			}
+
+			// The main goroutine will cancel the context, which should abort
+			// this read with an appropriate error.
+			_, err = readTimeoutConn.Read(make([]byte, 1))
+			return err
+		}()
+	}()
+
+	c, err := net.Dial(ln.Addr().Network(), ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	if _, err := c.Write(expectedRead); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-errChan:
+		t.Fatalf("goroutine unexpectedly returned: %v", err)
+	default:
+	}
+	cancel()
+	if err := <-errChan; !errors.Is(err, context.Canceled) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -2283,122 +2358,4 @@ func TestConnCloseReleasesReservedMem(t *testing.T) {
 	// Check that no accounted-for memory is leaked, after the connection attempt fails.
 	after := s.PGServer().(*Server).tenantSpecificConnMonitor.AllocBytes()
 	require.Equal(t, before, after)
-}
-
-// write unit tests for the function publishConnLatencyMetric
-func TestPublishConnLatencyMetric(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	c := conn{
-		metrics: &tenantSpecificMetrics{
-			AuthJWTConnLatency: metric.NewHistogram(
-				getHistogramOptionsForIOLatency(AuthJWTConnLatency, time.Hour)),
-			AuthCertConnLatency: metric.NewHistogram(
-				getHistogramOptionsForIOLatency(AuthCertConnLatency, time.Hour)),
-			AuthPassConnLatency: metric.NewHistogram(
-				getHistogramOptionsForIOLatency(AuthPassConnLatency, time.Hour)),
-			AuthLDAPConnLatency: metric.NewHistogram(
-				getHistogramOptionsForIOLatency(AuthLDAPConnLatency, time.Hour)),
-			AuthGSSConnLatency: metric.NewHistogram(
-				getHistogramOptionsForIOLatency(AuthGSSConnLatency, time.Hour)),
-			AuthScramConnLatency: metric.NewHistogram(
-				getHistogramOptionsForIOLatency(AuthScramConnLatency, time.Hour)),
-		},
-	}
-
-	// JWT Token Authentication
-	jwtDuration := int64(1)
-	c.publishConnLatencyMetric(jwtDuration, jwtHBAEntry.string())
-	w := c.metrics.AuthJWTConnLatency.WindowedSnapshot()
-	count, sum := w.Total()
-	require.Equal(t, int64(1), count)
-	require.Equal(t, float64(1), sum)
-
-	// republish on JWT
-	jwtDuration = int64(2)
-	c.publishConnLatencyMetric(jwtDuration, jwtHBAEntry.string())
-	w = c.metrics.AuthJWTConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(2), count)
-	require.Equal(t, float64(3), sum)
-
-	// Cert
-	certDuration := int64(3)
-	c.publishConnLatencyMetric(certDuration, certHBAEntry.string())
-	w = c.metrics.AuthCertConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(1), count)
-	require.Equal(t, float64(3), sum)
-
-	// republish on cert
-	certDuration = int64(2)
-	c.publishConnLatencyMetric(certDuration, certHBAEntry.string())
-	w = c.metrics.AuthCertConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(2), count)
-	require.Equal(t, float64(5), sum)
-
-	// Password
-	passDuration := int64(4)
-	c.publishConnLatencyMetric(passDuration, passwordHBAEntry.string())
-	w = c.metrics.AuthPassConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(1), count)
-	require.Equal(t, float64(4), sum)
-
-	// republish on pass
-	passDuration = int64(3)
-	c.publishConnLatencyMetric(passDuration, passwordHBAEntry.string())
-	w = c.metrics.AuthPassConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(2), count)
-	require.Equal(t, float64(7), sum)
-
-	// LDAP
-	ldapDuration := int64(5)
-	c.publishConnLatencyMetric(ldapDuration, ldapHBAEntry.string())
-	w = c.metrics.AuthLDAPConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(1), count)
-	require.Equal(t, float64(5), sum)
-
-	// republish on LDAP
-	ldapDuration = int64(2)
-	c.publishConnLatencyMetric(ldapDuration, ldapHBAEntry.string())
-	w = c.metrics.AuthLDAPConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(2), count)
-	require.Equal(t, float64(7), sum)
-
-	// GSS
-	gssDuration := int64(6)
-	c.publishConnLatencyMetric(gssDuration, gssHBAEntry.string())
-	w = c.metrics.AuthGSSConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(1), count)
-	require.Equal(t, float64(6), sum)
-
-	// republish on GSS
-	gssDuration = int64(3)
-	c.publishConnLatencyMetric(gssDuration, gssHBAEntry.string())
-	w = c.metrics.AuthGSSConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(2), count)
-	require.Equal(t, float64(9), sum)
-
-	// scram
-	scramDuration := int64(7)
-	c.publishConnLatencyMetric(scramDuration, scramSHA256HBAEntry.string())
-	w = c.metrics.AuthScramConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(1), count)
-	require.Equal(t, float64(7), sum)
-
-	// republish on scram
-	scramDuration = int64(2)
-	c.publishConnLatencyMetric(scramDuration, scramSHA256HBAEntry.string())
-	w = c.metrics.AuthScramConnLatency.WindowedSnapshot()
-	count, sum = w.Total()
-	require.Equal(t, int64(2), count)
-	require.Equal(t, float64(9), sum)
 }

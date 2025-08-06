@@ -7,54 +7,17 @@ package uuid
 
 import (
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	math_rand "math/rand"
 
 	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
-const (
-	shortSize    = 4
-	shortStrSize = 8
-)
-
-// Short is an abbreviated version of a UUID containing the first four bytes.
-type Short struct {
-	b [shortSize]byte
-}
-
-var _ redact.SafeValue = Short{}
-
-// SafeValue implements the redact.SafeValue interface.
-func (s Short) SafeValue() {}
-
-// String returns the 8-character hexidecimal representation of the abbreviated
-// UUID.
-func (s Short) String() string {
-	var b [shortStrSize]byte
-	hex.Encode(b[:], s.b[:])
-	return string(b[:])
-}
-
-// ToInt32 returns an int32 representation of the abbreviated UUID.
-func (s Short) ToInt32() int32 {
-	return int32(binary.BigEndian.Uint32(s.b[:]))
-}
-
-// FromInt32 sets the abbreviated UUID from an int32.
-func (s *Short) FromInt32(i int32) {
-	binary.BigEndian.PutUint32(s.b[:], uint32(i))
-}
-
-// Short returns an abbreviated version of the UUID containing the first four
-// bytes.
-func (u UUID) Short() Short {
-	return Short{
-		b: [shortSize]byte(u[0:shortSize]),
-	}
+// Short returns the first eight characters of the output of String().
+func (u UUID) Short() string {
+	return u.String()[:8]
 }
 
 // ShortStringer implements fmt.Stringer to output Short() on String().
@@ -62,7 +25,7 @@ type ShortStringer UUID
 
 // String is part of fmt.Stringer.
 func (s ShortStringer) String() string {
-	return UUID(s).Short().String()
+	return UUID(s).Short()
 }
 
 var _ fmt.Stringer = ShortStringer{}
@@ -126,10 +89,34 @@ func (u *UUID) UnmarshalJSON(data []byte) error {
 	return err
 }
 
-// MakeV4 calls NewV4.
+// MakeV4 calls Must(NewV4)
 func MakeV4() UUID {
-	return NewV4()
+	return Must(NewV4())
 }
+
+// FastMakeV4 generates a UUID using a fast but not cryptographically secure
+// source of randomness.
+func FastMakeV4() UUID {
+	u, err := fastGen.NewV4()
+	if err != nil {
+		panic(errors.Wrap(err, "should never happen with math/rand.Rand"))
+	}
+	return u
+}
+
+// mathRandReader is an io.Reader that calls through to "math/rand".Read
+// which is safe for concurrent use.
+type mathRandReader struct{}
+
+func (r mathRandReader) Read(p []byte) (n int, err error) {
+	// https://github.com/cockroachdb/cockroach/issues/110597 tracks this
+	// deprecated usage.
+	//lint:ignore SA1019 deprecated
+	return math_rand.Read(p)
+}
+
+// fastGen is a non-cryptographically secure Generator.
+var fastGen = NewGenWithReader(mathRandReader{})
 
 // NewPopulatedUUID returns a populated UUID.
 func NewPopulatedUUID(r interface {

@@ -29,10 +29,7 @@ type OptionValue struct {
 type ZoneConfigOption struct {
 	Field        config.Field
 	RequiredType *types.T
-	// Setter is used to set `Field` in the `zone config` to `datum`.
-	Setter func(*zonepb.ZoneConfig, tree.Datum)
-	// CheckAllowed, if not nil, is called to check if one is allowed to set this
-	// zone config field.
+	Setter       func(*zonepb.ZoneConfig, tree.Datum)
 	CheckAllowed func(context.Context, *cluster.Settings, tree.Datum) error
 }
 

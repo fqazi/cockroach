@@ -314,13 +314,8 @@ func TestRegionAddDropEnclosingRegionalByRowOps(t *testing.T) {
 		expectedIndexes []string
 	}{
 		{
-			name: "create-rbr-table",
-			op: `
-BEGIN;
-SET LOCAL autocommit_before_ddl = false;
-DROP TABLE IF EXISTS db.rbr;
-CREATE TABLE db.rbr() LOCALITY REGIONAL BY ROW;
-COMMIT;`,
+			name:            "create-rbr-table",
+			op:              `DROP TABLE IF EXISTS db.rbr; CREATE TABLE db.rbr() LOCALITY REGIONAL BY ROW`,
 			expectedIndexes: []string{"rbr@rbr_pkey"},
 		},
 	}
@@ -929,7 +924,6 @@ func testRegionAddDropWithConcurrentBackupOps(
 	},
 ) {
 	skip.UnderRace(t, "times out under race")
-	skip.UnderDeadlock(t)
 
 	testCases := []struct {
 		name      string
@@ -938,8 +932,8 @@ func testRegionAddDropWithConcurrentBackupOps(
 	}{
 		{
 			name:      "backup-database",
-			backupOp:  `BACKUP DATABASE db INTO 'nodelocal://1/db_backup'`,
-			restoreOp: `RESTORE DATABASE db FROM LATEST IN 'nodelocal://1/db_backup'`,
+			backupOp:  `BACKUP DATABASE db TO 'nodelocal://1/db_backup'`,
+			restoreOp: `RESTORE DATABASE db FROM 'nodelocal://1/db_backup'`,
 		},
 	}
 

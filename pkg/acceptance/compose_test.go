@@ -39,21 +39,21 @@ func testCompose(t *testing.T, path string, exitCodeFrom string) {
 		tmpComposeDir := t.TempDir()
 		err := copyRunfiles(composeDir, tmpComposeDir)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf(err.Error())
 		}
 		path = filepath.Join(tmpComposeDir, path)
 		// If running under Bazel, export 2 environment variables that will be interpolated in docker-compose.yml files.
 		cockroachBinary, err := filepath.Abs(*cluster.CockroachBinary)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf(err.Error())
 		}
 		err = os.Setenv("COCKROACH_BINARY", cockroachBinary)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf(err.Error())
 		}
 		err = os.Setenv("CERTS_DIR", cluster.AbsCertsDir())
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf(err.Error())
 		}
 	} else {
 		path = filepath.Join(composeDir, path)
@@ -61,12 +61,12 @@ func testCompose(t *testing.T, path string, exitCodeFrom string) {
 	uid := os.Getuid()
 	err := os.Setenv("UID", strconv.Itoa(uid))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf(err.Error())
 	}
 	gid := os.Getgid()
 	err = os.Setenv("GID", strconv.Itoa(gid))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf(err.Error())
 	}
 	cmd := exec.Command(
 		"docker",

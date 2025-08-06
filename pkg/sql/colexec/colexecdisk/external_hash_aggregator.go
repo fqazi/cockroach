@@ -35,7 +35,7 @@ func NewExternalHashAggregator(
 	newHashAggArgs *colexecagg.NewHashAggregatorArgs,
 	createDiskBackedSorter DiskBackedSorterConstructor,
 	diskAcc *mon.BoundAccount,
-	diskQueueMemAcc *mon.BoundAccount,
+	converterMemAcc *mon.BoundAccount,
 	outputOrdering execinfrapb.Ordering,
 ) (colexecop.Operator, colexecop.Closer) {
 	inMemMainOpConstructor := func(partitionedInputs []*partitionerToOperator) colexecop.ResettableOperator {
@@ -73,7 +73,7 @@ func NewExternalHashAggregator(
 		inMemMainOpConstructor,
 		diskBackedFallbackOpConstructor,
 		diskAcc,
-		diskQueueMemAcc,
+		converterMemAcc,
 		ehaNumRequiredActivePartitions,
 	)
 	// The last thing we need to do is making sure that the output has the

@@ -48,7 +48,7 @@ func toTableDescriptor(
 	t workload.Table, tableID descpb.ID, ts time.Time,
 ) (catalog.TableDescriptor, error) {
 	ctx := context.Background()
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	stmt, err := parser.ParseOne(fmt.Sprintf(`CREATE TABLE "%s" %s`, t.Name, t.Schema))
 	if err != nil {
 		return nil, err
@@ -97,7 +97,7 @@ func benchmarkConvertToKVs(b *testing.B, g workload.Generator) {
 				Codec:            keys.SystemSQLCodec,
 				Settings:         cluster.MakeTestingClusterSettings(),
 			}
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
+			semaCtx := tree.MakeSemaContext()
 			return wc.Worker(ctx, evalCtx, &semaCtx)
 		})
 		for kvBatch := range kvCh {

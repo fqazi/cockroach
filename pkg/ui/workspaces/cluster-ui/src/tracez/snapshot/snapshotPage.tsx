@@ -3,13 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { join } from "path";
-
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import Long from "long";
 import React, { useCallback, useEffect } from "react";
 import { RouteComponentProps } from "react-router-dom";
-
 import {
   ListTracingSnapshotsResponse,
   GetTracingSnapshotResponse,
@@ -18,13 +13,17 @@ import {
   RecordingMode,
   GetTraceResponse,
 } from "src/api/tracezApi";
-import { Breadcrumbs } from "src/breadcrumbs";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { SortSetting } from "src/sortedtable";
-import { getMatchParamByName, syncHistory } from "src/util";
+import { join } from "path";
+import { getMatchParamByName } from "src/util";
+import { syncHistory } from "src/util";
 
-import { RawTraceComponent } from "./rawTraceComponent";
 import { SnapshotComponent } from "./snapshotComponent";
+import Long from "long";
 import { SpanComponent } from "./spanComponent";
+import { RawTraceComponent } from "./rawTraceComponent";
+import { Breadcrumbs } from "src/breadcrumbs";
 
 // This component does some manual route management and navigation.
 // This is because the data model doesn't match the ideal route form.

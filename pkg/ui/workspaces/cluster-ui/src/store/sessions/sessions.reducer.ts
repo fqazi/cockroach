@@ -3,11 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-import moment, { Moment } from "moment-timezone";
-
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { DOMAIN_NAME, noopReducer } from "../utils";
+import moment, { Moment } from "moment-timezone";
 
 type SessionsResponse = cockroach.server.serverpb.ListSessionsResponse;
 

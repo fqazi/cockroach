@@ -29,7 +29,7 @@ import (
 type partitioner interface {
 	// partition partitions the input colVec of size n, writing true to the
 	// outputCol for every value that differs from the previous one.
-	partition(colVec *coldata.Vec, outputCol []bool, n int)
+	partition(colVec coldata.Vec, outputCol []bool, n int)
 
 	// partitionWithOrder is like partition, except it performs the partitioning
 	// on the input Vec as if it were ordered via the input order vector, which is
@@ -38,7 +38,7 @@ type partitioner interface {
 	// implies a reordered input vector [b,b,a], the resultant outputCol would be
 	// [true, false, true], indicating a distinct value at the 0th and 2nd
 	// elements.
-	partitionWithOrder(colVec *coldata.Vec, order []int, outputCol []bool, n int)
+	partitionWithOrder(colVec coldata.Vec, order []int, outputCol []bool, n int)
 }
 
 // newPartitioner returns a new partitioner on type t.
@@ -117,7 +117,7 @@ type partitionerBool struct {
 }
 
 func (p partitionerBool) partitionWithOrder(
-	colVec *coldata.Vec, order []int, outputCol []bool, n int,
+	colVec coldata.Vec, order []int, outputCol []bool, n int,
 ) {
 	var lastVal bool
 	var lastValNull bool
@@ -226,7 +226,7 @@ func (p partitionerBool) partitionWithOrder(
 	}
 }
 
-func (p partitionerBool) partition(colVec *coldata.Vec, outputCol []bool, n int) {
+func (p partitionerBool) partition(colVec coldata.Vec, outputCol []bool, n int) {
 	var (
 		lastVal     bool
 		lastValNull bool
@@ -350,7 +350,7 @@ type partitionerBytes struct {
 }
 
 func (p partitionerBytes) partitionWithOrder(
-	colVec *coldata.Vec, order []int, outputCol []bool, n int,
+	colVec coldata.Vec, order []int, outputCol []bool, n int,
 ) {
 	var lastVal []byte
 	var lastValNull bool
@@ -443,7 +443,7 @@ func (p partitionerBytes) partitionWithOrder(
 	}
 }
 
-func (p partitionerBytes) partition(colVec *coldata.Vec, outputCol []bool, n int) {
+func (p partitionerBytes) partition(colVec coldata.Vec, outputCol []bool, n int) {
 	var (
 		lastVal     []byte
 		lastValNull bool
@@ -548,7 +548,7 @@ type partitionerDecimal struct {
 }
 
 func (p partitionerDecimal) partitionWithOrder(
-	colVec *coldata.Vec, order []int, outputCol []bool, n int,
+	colVec coldata.Vec, order []int, outputCol []bool, n int,
 ) {
 	var lastVal apd.Decimal
 	var lastValNull bool
@@ -641,7 +641,7 @@ func (p partitionerDecimal) partitionWithOrder(
 	}
 }
 
-func (p partitionerDecimal) partition(colVec *coldata.Vec, outputCol []bool, n int) {
+func (p partitionerDecimal) partition(colVec coldata.Vec, outputCol []bool, n int) {
 	var (
 		lastVal     apd.Decimal
 		lastValNull bool
@@ -749,7 +749,7 @@ type partitionerInt16 struct {
 }
 
 func (p partitionerInt16) partitionWithOrder(
-	colVec *coldata.Vec, order []int, outputCol []bool, n int,
+	colVec coldata.Vec, order []int, outputCol []bool, n int,
 ) {
 	var lastVal int16
 	var lastValNull bool
@@ -864,7 +864,7 @@ func (p partitionerInt16) partitionWithOrder(
 	}
 }
 
-func (p partitionerInt16) partition(colVec *coldata.Vec, outputCol []bool, n int) {
+func (p partitionerInt16) partition(colVec coldata.Vec, outputCol []bool, n int) {
 	var (
 		lastVal     int16
 		lastValNull bool
@@ -994,7 +994,7 @@ type partitionerInt32 struct {
 }
 
 func (p partitionerInt32) partitionWithOrder(
-	colVec *coldata.Vec, order []int, outputCol []bool, n int,
+	colVec coldata.Vec, order []int, outputCol []bool, n int,
 ) {
 	var lastVal int32
 	var lastValNull bool
@@ -1109,7 +1109,7 @@ func (p partitionerInt32) partitionWithOrder(
 	}
 }
 
-func (p partitionerInt32) partition(colVec *coldata.Vec, outputCol []bool, n int) {
+func (p partitionerInt32) partition(colVec coldata.Vec, outputCol []bool, n int) {
 	var (
 		lastVal     int32
 		lastValNull bool
@@ -1239,7 +1239,7 @@ type partitionerInt64 struct {
 }
 
 func (p partitionerInt64) partitionWithOrder(
-	colVec *coldata.Vec, order []int, outputCol []bool, n int,
+	colVec coldata.Vec, order []int, outputCol []bool, n int,
 ) {
 	var lastVal int64
 	var lastValNull bool
@@ -1354,7 +1354,7 @@ func (p partitionerInt64) partitionWithOrder(
 	}
 }
 
-func (p partitionerInt64) partition(colVec *coldata.Vec, outputCol []bool, n int) {
+func (p partitionerInt64) partition(colVec coldata.Vec, outputCol []bool, n int) {
 	var (
 		lastVal     int64
 		lastValNull bool
@@ -1484,7 +1484,7 @@ type partitionerFloat64 struct {
 }
 
 func (p partitionerFloat64) partitionWithOrder(
-	colVec *coldata.Vec, order []int, outputCol []bool, n int,
+	colVec coldata.Vec, order []int, outputCol []bool, n int,
 ) {
 	var lastVal float64
 	var lastValNull bool
@@ -1615,7 +1615,7 @@ func (p partitionerFloat64) partitionWithOrder(
 	}
 }
 
-func (p partitionerFloat64) partition(colVec *coldata.Vec, outputCol []bool, n int) {
+func (p partitionerFloat64) partition(colVec coldata.Vec, outputCol []bool, n int) {
 	var (
 		lastVal     float64
 		lastValNull bool
@@ -1761,7 +1761,7 @@ type partitionerTimestamp struct {
 }
 
 func (p partitionerTimestamp) partitionWithOrder(
-	colVec *coldata.Vec, order []int, outputCol []bool, n int,
+	colVec coldata.Vec, order []int, outputCol []bool, n int,
 ) {
 	var lastVal time.Time
 	var lastValNull bool
@@ -1868,7 +1868,7 @@ func (p partitionerTimestamp) partitionWithOrder(
 	}
 }
 
-func (p partitionerTimestamp) partition(colVec *coldata.Vec, outputCol []bool, n int) {
+func (p partitionerTimestamp) partition(colVec coldata.Vec, outputCol []bool, n int) {
 	var (
 		lastVal     time.Time
 		lastValNull bool
@@ -1990,7 +1990,7 @@ type partitionerInterval struct {
 }
 
 func (p partitionerInterval) partitionWithOrder(
-	colVec *coldata.Vec, order []int, outputCol []bool, n int,
+	colVec coldata.Vec, order []int, outputCol []bool, n int,
 ) {
 	var lastVal duration.Duration
 	var lastValNull bool
@@ -2083,7 +2083,7 @@ func (p partitionerInterval) partitionWithOrder(
 	}
 }
 
-func (p partitionerInterval) partition(colVec *coldata.Vec, outputCol []bool, n int) {
+func (p partitionerInterval) partition(colVec coldata.Vec, outputCol []bool, n int) {
 	var (
 		lastVal     duration.Duration
 		lastValNull bool
@@ -2191,7 +2191,7 @@ type partitionerJSON struct {
 }
 
 func (p partitionerJSON) partitionWithOrder(
-	colVec *coldata.Vec, order []int, outputCol []bool, n int,
+	colVec coldata.Vec, order []int, outputCol []bool, n int,
 ) {
 	var lastVal json.JSON
 	var lastValNull bool
@@ -2296,7 +2296,7 @@ func (p partitionerJSON) partitionWithOrder(
 	}
 }
 
-func (p partitionerJSON) partition(colVec *coldata.Vec, outputCol []bool, n int) {
+func (p partitionerJSON) partition(colVec coldata.Vec, outputCol []bool, n int) {
 	var (
 		lastVal     json.JSON
 		lastValNull bool
@@ -2413,7 +2413,7 @@ type partitionerDatum struct {
 }
 
 func (p partitionerDatum) partitionWithOrder(
-	colVec *coldata.Vec, order []int, outputCol []bool, n int,
+	colVec coldata.Vec, order []int, outputCol []bool, n int,
 ) {
 	var lastVal interface{}
 	var lastValNull bool
@@ -2510,7 +2510,7 @@ func (p partitionerDatum) partitionWithOrder(
 	}
 }
 
-func (p partitionerDatum) partition(colVec *coldata.Vec, outputCol []bool, n int) {
+func (p partitionerDatum) partition(colVec coldata.Vec, outputCol []bool, n int) {
 	var (
 		lastVal     interface{}
 		lastValNull bool

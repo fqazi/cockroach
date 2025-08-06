@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/errors"
 )
@@ -30,6 +29,7 @@ var QueryResolvedTimestampIntentCleanupAge = settings.RegisterDurationSetting(
 	"kv.query_resolved_timestamp.intent_cleanup_age",
 	"minimum intent age that QueryResolvedTimestamp requests will consider for async intent cleanup",
 	10*time.Second,
+	settings.NonNegativeDuration,
 )
 
 func init() {
@@ -105,7 +105,7 @@ func computeMinIntentTimestamp(
 		UpperBound: ltEnd,
 		// Ignore Exclusive and Shared locks. We only care about intents.
 		MatchMinStr:  lock.Intent,
-		ReadCategory: fs.BatchEvalReadCategory,
+		ReadCategory: storage.BatchEvalReadCategory,
 	}
 	iter, err := storage.NewLockTableIterator(ctx, reader, opts)
 	if err != nil {

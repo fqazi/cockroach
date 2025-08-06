@@ -3,22 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { InlineAlert } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
 import React, { useCallback, useEffect, useState } from "react";
+import classNames from "classnames/bind";
 import { useHistory } from "react-router-dom";
-
-import { Anchor } from "src/anchor";
-import { TxnInsightsRequest } from "src/api";
-import {
-  filterTransactionInsights,
-  getAppsFromTransactionInsights,
-  WorkloadInsightEventFilters,
-  TxnInsightEvent,
-} from "src/insights";
+import { SortSetting } from "src/sortedtable/sortedtable";
 import { Loading } from "src/loading/loading";
 import { PageConfig, PageConfigItem } from "src/pageConfig/pageConfig";
-import { Pagination } from "src/pagination";
+import { Search } from "src/search/search";
 import {
   calculateActiveFilters,
   defaultFilters,
@@ -27,28 +18,35 @@ import {
   SelectedFilters,
 } from "src/queryFilter/filter";
 import { getWorkloadInsightEventFiltersFromURL } from "src/queryFilter/utils";
-import { Search } from "src/search/search";
-import { getTableSortFromURL } from "src/sortedtable/getTableSortFromURL";
-import { SortSetting } from "src/sortedtable/sortedtable";
-import sortableTableStyles from "src/sortedtable/sortedtable.module.scss";
-import styles from "src/statementsPage/statementsPage.module.scss";
-import { TableStatistics } from "src/tableStatistics";
-import { insights } from "src/util";
-import { useScheduleFunction } from "src/util/hooks";
+import { Pagination } from "src/pagination";
 import { queryByName, syncHistory } from "src/util/query";
+import { getTableSortFromURL } from "src/sortedtable/getTableSortFromURL";
+import { TableStatistics } from "src/tableStatistics";
 
-import { commonStyles } from "../../../common";
+import {
+  filterTransactionInsights,
+  getAppsFromTransactionInsights,
+  WorkloadInsightEventFilters,
+  TxnInsightEvent,
+} from "src/insights";
+import { EmptyInsightsTablePlaceholder } from "../util";
+import { TransactionInsightsTable } from "./transactionInsightsTable";
+import { InsightsError } from "../../insightsErrorComponent";
 import {
   TimeScale,
   defaultTimeScaleOptions,
   TimeScaleDropdown,
   timeScaleRangeToObj,
 } from "../../../timeScaleDropdown";
-import { usePagination } from "../../../util";
-import { InsightsError } from "../../insightsErrorComponent";
-import { EmptyInsightsTablePlaceholder } from "../util";
+import { TxnInsightsRequest } from "src/api";
 
-import { TransactionInsightsTable } from "./transactionInsightsTable";
+import styles from "src/statementsPage/statementsPage.module.scss";
+import sortableTableStyles from "src/sortedtable/sortedtable.module.scss";
+import { commonStyles } from "../../../common";
+import { useScheduleFunction, usePagination } from "src/util/hooks";
+import { InlineAlert } from "@cockroachlabs/ui-components";
+import { insights } from "src/util";
+import { Anchor } from "src/anchor";
 
 const cx = classNames.bind(styles);
 const sortableTableCx = classNames.bind(sortableTableStyles);

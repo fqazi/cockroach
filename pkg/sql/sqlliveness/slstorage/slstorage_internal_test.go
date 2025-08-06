@@ -46,8 +46,8 @@ func TestGetEncoder(t *testing.T) {
 	}
 	tests := []testCase{
 		{
-			name:      "current",
-			version:   clusterversion.Latest,
+			name:      "v23_1",
+			version:   clusterversion.V23_1,
 			readCodec: isRbr,
 			dualCodec: isNil,
 		},

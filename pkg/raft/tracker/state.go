@@ -1,6 +1,3 @@
-// This code has been modified from its original form by The Cockroach Authors.
-// All modifications are Copyright 2024 The Cockroach Authors.
-//
 // Copyright 2019 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,10 +31,6 @@ const (
 	// from the leader's Raft log. Such a follower needs a full snapshot to
 	// return to StateReplicate.
 	StateSnapshot
-
-	// StateCount is a sentinel value equal to the number of distinct replication
-	// flow states. This is not a valid state.
-	StateCount
 )
 
 var prstmap = [...]string{
@@ -47,4 +40,3 @@ var prstmap = [...]string{
 }
 
 func (st StateType) String() string { return prstmap[st] }
-func (st StateType) SafeValue()     {}

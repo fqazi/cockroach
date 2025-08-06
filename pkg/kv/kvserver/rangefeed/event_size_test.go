@@ -6,7 +6,6 @@
 package rangefeed
 
 import (
-	"context"
 	"math/rand"
 	"testing"
 
@@ -16,8 +15,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/randgen"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc/keyside"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/storageutils"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
@@ -33,7 +32,6 @@ var (
 	pointKV = storageutils.PointKV
 	rangeKV = storageutils.RangeKV
 )
-
 var (
 	testKey            = roachpb.Key("/db1")
 	testTxnID          = uuid.MakeV4()
@@ -96,7 +94,6 @@ func generateStaticTestdata() testData {
 func TestEventSizeCalculation(t *testing.T) {
 	st := cluster.MakeTestingClusterSettings()
 	data := generateStaticTestdata()
-	storage.CompressionAlgorithmStorage.Override(context.Background(), &st.SV, storage.StoreCompressionSnappy)
 
 	key := data.key
 	timestamp := data.timestamp
@@ -132,7 +129,7 @@ func TestEventSizeCalculation(t *testing.T) {
 			expectedCurrMemUsage: int64(241),
 			actualCurrMemUsage: eventOverhead + mvccLogicalOp + mvccWriteValueOp +
 				int64(cap(key)) + int64(cap(value)) + int64(cap(prevValue)),
-			expectedFutureMemUsage: int64(217),
+			expectedFutureMemUsage: int64(209),
 			actualFutureMemUsage: futureEventBaseOverhead + rangefeedValueOverhead +
 				int64(cap(key)) + int64(cap(value)) + int64(cap(prevValue)),
 		},
@@ -144,8 +141,8 @@ func TestEventSizeCalculation(t *testing.T) {
 			expectedCurrMemUsage: int64(202),
 			actualCurrMemUsage: eventOverhead + mvccLogicalOp + mvccDeleteRangeOp +
 				int64(cap(startKey)) + int64(cap(endKey)),
-			expectedFutureMemUsage: int64(170),
-			actualFutureMemUsage: futureEventBaseOverhead + rangefeedDeleteRangeOverhead +
+			expectedFutureMemUsage: int64(202),
+			actualFutureMemUsage: futureEventBaseOverhead + rangefeedValueOverhead +
 				int64(cap(startKey)) + int64(cap(endKey)),
 		},
 		{
@@ -177,7 +174,7 @@ func TestEventSizeCalculation(t *testing.T) {
 			expectedCurrMemUsage: int64(273),
 			actualCurrMemUsage: eventOverhead + mvccLogicalOp + mvccCommitIntentOp +
 				int64(cap(txnID)) + int64(cap(key)) + int64(cap(value)) + int64(cap(prevValue)),
-			expectedFutureMemUsage: int64(217),
+			expectedFutureMemUsage: int64(209),
 			actualFutureMemUsage: futureEventBaseOverhead + rangefeedValueOverhead +
 				int64(cap(key)) + int64(cap(value)) + int64(cap(prevValue)),
 		},
@@ -206,7 +203,7 @@ func TestEventSizeCalculation(t *testing.T) {
 			ev:                     event{ct: ctEvent{Timestamp: data.timestamp}},
 			expectedCurrMemUsage:   int64(80),
 			actualCurrMemUsage:     eventOverhead,
-			expectedFutureMemUsage: int64(168),
+			expectedFutureMemUsage: int64(160),
 			actualFutureMemUsage:   futureEventBaseOverhead + rangefeedCheckpointOverhead,
 		},
 		{
@@ -214,16 +211,16 @@ func TestEventSizeCalculation(t *testing.T) {
 			ev:                     event{initRTS: true},
 			expectedCurrMemUsage:   int64(80),
 			actualCurrMemUsage:     eventOverhead,
-			expectedFutureMemUsage: int64(168),
+			expectedFutureMemUsage: int64(160),
 			actualFutureMemUsage:   futureEventBaseOverhead + rangefeedCheckpointOverhead,
 		},
 		{
 			name:                 "sstEvent event",
 			ev:                   event{sst: &sstEvent{data: sst, span: span, ts: timestamp}},
-			expectedCurrMemUsage: int64(2218),
+			expectedCurrMemUsage: int64(1962),
 			actualCurrMemUsage: eventOverhead + sstEventOverhead +
 				int64(cap(sst)+cap(span.Key)+cap(span.EndKey)),
-			expectedFutureMemUsage: int64(2242),
+			expectedFutureMemUsage: int64(1978),
 			actualFutureMemUsage: futureEventBaseOverhead + rangefeedSSTTableOverhead +
 				int64(cap(sst)+cap(span.Key)+cap(span.EndKey)),
 		},
@@ -237,7 +234,6 @@ func TestEventSizeCalculation(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Helper()
 			mem := MemUsage(tc.ev)
 			require.Equal(t, tc.expectedCurrMemUsage, tc.actualCurrMemUsage)
 			require.Equal(t, tc.expectedFutureMemUsage, tc.actualFutureMemUsage)
@@ -248,6 +244,11 @@ func TestEventSizeCalculation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func generateRandomizedTs(rand *rand.Rand) hlc.Timestamp {
+	// Avoid generating zero timestamp which will equal to an empty event.
+	return hlc.Timestamp{WallTime: int64(rand.Intn(100)) + 1}
 }
 
 func generateRandomizedBytes(rand *rand.Rand) []byte {
@@ -264,6 +265,33 @@ func generateRandomizedBytes(rand *rand.Rand) []byte {
 		panic(err)
 	}
 	return key
+}
+
+func generateStartAndEndKey(rand *rand.Rand) (roachpb.Key, roachpb.Key) {
+	start := rand.Intn(2 << 20)
+	end := start + rand.Intn(2<<20)
+	startDatum := tree.NewDInt(tree.DInt(start))
+	endDatum := tree.NewDInt(tree.DInt(end))
+	const tableID = 42
+
+	startKey, err := keyside.Encode(
+		keys.SystemSQLCodec.TablePrefix(tableID),
+		startDatum,
+		encoding.Ascending,
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	endKey, err := keyside.Encode(
+		keys.SystemSQLCodec.TablePrefix(tableID),
+		endDatum,
+		encoding.Ascending,
+	)
+	if err != nil {
+		panic(err)
+	}
+	return startKey, endKey
 }
 
 func generateRandomizedTxnId(rand *rand.Rand) uuid.UUID {
@@ -293,14 +321,14 @@ func generateRandomTestData(rand *rand.Rand) testData {
 		kvs:              testSSTKVs,
 		span:             generateRandomizedSpan(rand).AsRawSpanWithNoLocals(),
 		key:              generateRandomizedBytes(rand),
-		timestamp:        GenerateRandomizedTs(rand, 100 /* maxTime */),
+		timestamp:        generateRandomizedTs(rand),
 		value:            generateRandomizedBytes(rand),
 		startKey:         startKey,
 		endKey:           endkey,
 		txnID:            generateRandomizedTxnId(rand),
 		txnKey:           generateRandomizedBytes(rand),
 		txnIsoLevel:      isolation.Levels()[rand.Intn(len(isolation.Levels()))],
-		txnMinTimestamp:  GenerateRandomizedTs(rand, 100 /* maxTime */),
+		txnMinTimestamp:  generateRandomizedTs(rand),
 		omitInRangefeeds: rand.Intn(2) == 1,
 	}
 }

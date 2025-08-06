@@ -160,13 +160,17 @@ func (idxRec *IndexRecCache) UpdateIndexRecommendations(
 	return recInfo.recommendations
 }
 
-// statementCanHaveRecommendation returns true if that type of statement can
-// have recommendations generated for it. We only want to recommend for
-// non-internal DML statements when recommendations are enabled.
+// statementCanHaveRecommendation returns true if that type of statement can have recommendations
+// generated for it. We only want to recommend if the statement is DML, recommendations are enabled and
+// is not internal.
 func (idxRec *IndexRecCache) statementCanHaveRecommendation(
 	stmtType tree.StatementType, isInternal bool,
 ) bool {
-	return !isInternal && stmtType == tree.TypeDML && sqlstats.SampleIndexRecommendation.Get(&idxRec.st.SV)
+	if !sqlstats.SampleIndexRecommendation.Get(&idxRec.st.SV) || stmtType != tree.TypeDML || isInternal {
+		return false
+	}
+
+	return true
 }
 
 func (idxRec *IndexRecCache) getIndexRecommendationAndInfo(

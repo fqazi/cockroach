@@ -42,13 +42,10 @@ func addKV(rng *rand.Rand, cfg *config.SystemConfig, key int) {
 			}
 		}
 	}
-	rawBytes := randutil.RandBytes(rng, 100)
-	// Ensure we don't accidentally make this look like an extended encoding sentinel.
-	rawBytes[4] = byte(roachpb.ValueType_MVCC_EXTENDED_ENCODING_SENTINEL + 1)
 	newKVs = append(newKVs, roachpb.KeyValue{
 		Key: newKey,
 		Value: roachpb.Value{
-			RawBytes: rawBytes,
+			RawBytes: randutil.RandBytes(rng, 100),
 		},
 	})
 	sort.Sort(roachpb.KeyValueByKey(newKVs))

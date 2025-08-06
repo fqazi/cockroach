@@ -19,8 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
-	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -34,18 +32,12 @@ var (
 		Help:        "Number of lease transfers motivated by store-level load imbalances",
 		Measurement: "Lease Transfers",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_REPLICATION,
-		HowToUse:    `Used to identify when there has been more rebalancing activity triggered by imbalance between stores (of QPS or CPU). If this is high (when the count is rated), it indicates that more rebalancing activity is taking place due to load imbalance between stores.`,
 	}
 	metaStoreRebalancerRangeRebalanceCount = metric.Metadata{
 		Name:        "rebalancing.range.rebalances",
 		Help:        "Number of range rebalance operations motivated by store-level load imbalances",
 		Measurement: "Range Rebalances",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_REPLICATION,
-		HowToUse:    `Used to identify when there has been more rebalancing activity triggered by imbalance between stores (of QPS or CPU). If this is high (when the count is rated), it indicates that more rebalancing activity is taking place due to load imbalance between stores.`,
 	}
 	metaStoreRebalancerImbalancedOverfullOptionsExhausted = metric.Metadata{
 		Name: "rebalancing.state.imbalanced_overfull_options_exhausted",
@@ -71,9 +63,6 @@ func makeStoreRebalancerMetrics() StoreRebalancerMetrics {
 	}
 }
 
-var ErrMultiMetricRebalancingNotSupported = unimplemented.NewWithIssue(
-	103320, "multi-metric rebalancing not supported for production use")
-
 // LoadBasedRebalancingMode controls whether range rebalancing takes
 // additional variables such as write load and disk usage into account.
 // If disabled, rebalancing is done purely based on replica count.
@@ -82,20 +71,12 @@ var LoadBasedRebalancingMode = settings.RegisterEnumSetting(
 	"kv.allocator.load_based_rebalancing",
 	"whether to rebalance based on the distribution of load across stores",
 	"leases and replicas",
-	map[LBRebalancingMode]string{
-		LBRebalancingOff:               "off",
-		LBRebalancingLeasesOnly:        "leases",
-		LBRebalancingLeasesAndReplicas: "leases and replicas",
-		LBRebalancingMultiMetric:       "multi-metric",
+	map[int64]string{
+		int64(LBRebalancingOff):               "off",
+		int64(LBRebalancingLeasesOnly):        "leases",
+		int64(LBRebalancingLeasesAndReplicas): "leases and replicas",
 	},
-	settings.WithPublic,
-	settings.WithValidateEnum(func(enumStr string) error {
-		if buildutil.CrdbTestBuild || enumStr != "multi-metric" {
-			return nil
-		}
-		return ErrMultiMetricRebalancingNotSupported
-	}),
-)
+	settings.WithPublic)
 
 // LBRebalancingMode controls if and when we do store-level rebalancing
 // based on load.
@@ -111,10 +92,6 @@ const (
 	// LBRebalancingLeasesAndReplicas means that we rebalance both leases and
 	// replicas based on store-level load imbalances.
 	LBRebalancingLeasesAndReplicas
-	// LBRebalancingMultiMetric means that the store rebalancer yields to the
-	// multi-metric store rebalancer, balancing both leases and replicas based on
-	// store-level load imbalances.
-	LBRebalancingMultiMetric
 )
 
 // RebalanceSearchOutcome returns the result of a rebalance target search. It
@@ -172,7 +149,6 @@ type StoreRebalancer struct {
 	processTimeoutFn        func(replica CandidateReplica) time.Duration
 	objectiveProvider       RebalanceObjectiveProvider
 	subscribedToSpanConfigs func() bool
-	disabled                func() bool
 }
 
 // NewStoreRebalancer creates a StoreRebalancer to work in tandem with the
@@ -214,11 +190,6 @@ func NewStoreRebalancer(
 				return false
 			}
 			return !rq.store.cfg.SpanConfigSubscriber.LastUpdated().IsEmpty()
-		},
-		disabled: func() bool {
-			mode := LoadBasedRebalancingMode.Get(&st.SV)
-			return mode == LBRebalancingOff || mode == LBRebalancingMultiMetric ||
-				rq.store.cfg.TestingKnobs.DisableStoreRebalancer
 		},
 	}
 	sr.AddLogTag("store-rebalancer", nil)
@@ -264,7 +235,7 @@ type RebalanceContext struct {
 // RebalanceMode returns the mode of the store rebalancer. See
 // LoadBasedRebalancingMode.
 func (sr *StoreRebalancer) RebalanceMode() LBRebalancingMode {
-	return LoadBasedRebalancingMode.Get(&sr.st.SV)
+	return LBRebalancingMode(LoadBasedRebalancingMode.Get(&sr.st.SV))
 }
 
 // RebalanceDimension returns the dimension the store rebalancer is balancing.
@@ -334,15 +305,18 @@ func (sr *StoreRebalancer) Start(ctx context.Context, stopper *stop.Stopper) {
 			case <-stopper.ShouldQuiesce():
 				return
 			case <-timer.C:
+				timer.Read = true
 				timer.Reset(jitteredInterval(allocator.LoadBasedRebalanceInterval.Get(&sr.st.SV)))
 			}
-			if sr.disabled() {
-				continue
-			}
+
 			// Once the rebalance mode and rebalance objective are defined for
 			// this loop, they are immutable and do not change. This avoids
 			// inconsistency where the rebalance objective changes and very
 			// different or contradicting actions are then taken.
+			mode := sr.RebalanceMode()
+			if mode == LBRebalancingOff {
+				continue
+			}
 			if !sr.subscribedToSpanConfigs() {
 				continue
 			}
@@ -352,7 +326,7 @@ func (sr *StoreRebalancer) Start(ctx context.Context, stopper *stop.Stopper) {
 
 			hottestRanges := sr.replicaRankings.TopLoad(objective.ToDimension())
 			options := sr.scorerOptions(ctx, objective.ToDimension())
-			rctx := sr.NewRebalanceContext(ctx, options, hottestRanges, sr.RebalanceMode())
+			rctx := sr.NewRebalanceContext(ctx, options, hottestRanges, mode)
 			sr.rebalanceStore(ctx, rctx)
 		}
 	})
@@ -504,14 +478,6 @@ func (sr *StoreRebalancer) ShouldRebalanceStore(ctx context.Context, rctx *Rebal
 		return false
 	}
 
-	if !(rctx.mode == LBRebalancingLeasesOnly || rctx.mode == LBRebalancingLeasesAndReplicas) {
-		// There's nothing to do, the store rebalancer is disabled. Note that this
-		// is redundant when called via the store rebalancer's Start method, but
-		// it's necessary when called from tests, which don't start the store
-		// rebalancer loop, such as the asim pkg.
-		return false
-	}
-
 	// We only bother rebalancing stores that are fielding more than the
 	// cluster-level overfull threshold of load.
 	if rctx.LessThanMaxThresholds() {
@@ -581,14 +547,8 @@ func (sr *StoreRebalancer) applyLeaseRebalance(
 		return sr.rr.TransferLease(
 			ctx,
 			candidateReplica,
-			roachpb.ReplicationTarget{
-				NodeID:  candidateReplica.NodeID(),
-				StoreID: candidateReplica.StoreID(),
-			},
-			roachpb.ReplicationTarget{
-				NodeID:  target.NodeID,
-				StoreID: target.StoreID,
-			},
+			candidateReplica.StoreID(),
+			target.StoreID,
 			candidateReplica.RangeUsageInfo(),
 		)
 	}); err != nil {

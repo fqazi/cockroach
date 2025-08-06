@@ -4,10 +4,7 @@
 // included in the /LICENSE file.
 
 import { Location } from "history";
-import compact from "lodash/compact";
-import isNull from "lodash/isNull";
-import isUndefined from "lodash/isUndefined";
-import map from "lodash/map";
+import _ from "lodash";
 import { match as Match } from "react-router-dom";
 
 interface ParamsObj {
@@ -23,9 +20,9 @@ interface URLSearchParamsWithKeys extends URLSearchParams {
 // - keys with null or undefined values will be skipped
 // - non-string values will be toString'd
 export function propsToQueryString(props: { [k: string]: any }): string {
-  return compact(
-    map(props, (v: any, k: string) =>
-      !isNull(v) && !isUndefined(v)
+  return _.compact(
+    _.map(props, (v: any, k: string) =>
+      !_.isNull(v) && !_.isUndefined(v)
         ? `${encodeURIComponent(k)}=${encodeURIComponent(v.toString())}`
         : null,
     ),

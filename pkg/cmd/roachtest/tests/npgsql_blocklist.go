@@ -488,6 +488,12 @@ var npgsqlBlocklist = blocklist{
 	`Npgsql.Tests.Types.CompositeTests(NonMultiplexing).Table_as_composite(True)`:                                                                 "unknown",
 	`Npgsql.Tests.Types.CompositeTests(NonMultiplexing).Table_as_composite_with_deleted_columns`:                                                  "unknown",
 	`Npgsql.Tests.Types.CompositeTests(NonMultiplexing).With_schema`:                                                                              "unknown",
+	`Npgsql.Tests.Types.DateTimeInfinityTests(False).TimestampTz_read`:                                                                            "unknown",
+	`Npgsql.Tests.Types.DateTimeInfinityTests(False).TimestampTz_write`:                                                                           "unknown",
+	`Npgsql.Tests.Types.DateTimeInfinityTests(False).Timestamp_read`:                                                                              "unknown",
+	`Npgsql.Tests.Types.DateTimeInfinityTests(False).Timestamp_write`:                                                                             "unknown",
+	`Npgsql.Tests.Types.DateTimeInfinityTests(True).TimestampTz_read`:                                                                             "unknown",
+	`Npgsql.Tests.Types.DateTimeInfinityTests(True).Timestamp_read`:                                                                               "unknown",
 	`Npgsql.Tests.Types.DateTimeTests.Cannot_mix_DateTime_Kinds_in_range`:                                                                         "unknown",
 	`Npgsql.Tests.Types.DateTimeTests.Daterange_as_NpgsqlRange_of_DateOnly`:                                                                       "unknown",
 	`Npgsql.Tests.Types.DateTimeTests.Daterange_as_NpgsqlRange_of_DateTime`:                                                                       "unknown",
@@ -661,7 +667,6 @@ var npgsqlBlocklist = blocklist{
 }
 
 var npgsqlIgnoreList = blocklist{
-	`Npgsql.Tests.ConnectionTests(Multiplexing).Fail_connect_then_succeed(True)`:                     "flaky",
 	`Npgsql.Tests.TransactionTests(NonMultiplexing).Failed_transaction_on_close_with_custom_timeout`: "flaky",
 	`Npgsql.Tests.TransactionTests(Multiplexing).Failed_transaction_on_close_with_custom_timeout`:    "flaky",
 }

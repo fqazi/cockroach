@@ -255,7 +255,7 @@ func TestAggregatorAgainstProcessor(t *testing.T) {
 								// There is a special case for some functions when at
 								// least one argument is a tuple or an array of
 								// tuples.
-								// Such cases pass GetAggregateOutputType check below,
+								// Such cases pass GetAggregateInfo check below,
 								// but they are actually invalid, and during normal
 								// execution it is caught during type-checking.
 								// However, we don't want to do fully-fledged type
@@ -283,7 +283,7 @@ func TestAggregatorAgainstProcessor(t *testing.T) {
 								for _, typ := range aggFnInputTypes {
 									hasJSONColumn = hasJSONColumn || typ.Family() == types.JsonFamily
 								}
-								if outputType, err := execagg.GetAggregateOutputType(aggFn, aggFnInputTypes); err == nil {
+								if _, outputType, err := execagg.GetAggregateInfo(aggFn, aggFnInputTypes...); err == nil {
 									outputTypes[i] = outputType
 									break
 								}
@@ -329,7 +329,7 @@ func TestAggregatorAgainstProcessor(t *testing.T) {
 						}
 						if hashAgg {
 							// Let's shuffle the rows for the hash aggregator.
-							rng.Shuffle(nRows, func(i, j int) {
+							rand.Shuffle(nRows, func(i, j int) {
 								rows[i], rows[j] = rows[j], rows[i]
 							})
 						} else {
@@ -341,7 +341,7 @@ func TestAggregatorAgainstProcessor(t *testing.T) {
 							// possible that some NULL values are present here and there, so we
 							// need to sort the rows to satisfy the ordering conditions.
 							sort.Slice(rows, func(i, j int) bool {
-								cmp, err := rows[i].Compare(context.Background(), inputTypes, &da, orderedCols, &evalCtx, rows[j])
+								cmp, err := rows[i].Compare(inputTypes, &da, orderedCols, &evalCtx, rows[j])
 								if err != nil {
 									t.Fatal(err)
 								}
@@ -469,7 +469,11 @@ func TestDistinctAgainstProcessor(t *testing.T) {
 							outputOrdering.Columns = ordCols
 						}
 						sort.Slice(rows, func(i, j int) bool {
-							cmp, err := rows[i].Compare(context.Background(), inputTypes, &da, execinfrapb.ConvertToColumnOrdering(execinfrapb.Ordering{Columns: ordCols}), &evalCtx, rows[j])
+							cmp, err := rows[i].Compare(
+								inputTypes, &da,
+								execinfrapb.ConvertToColumnOrdering(execinfrapb.Ordering{Columns: ordCols}),
+								&evalCtx, rows[j],
+							)
 							if err != nil {
 								t.Fatal(err)
 							}
@@ -626,7 +630,7 @@ func TestSortChunksAgainstProcessor(t *testing.T) {
 					matchedCols := execinfrapb.ConvertToColumnOrdering(execinfrapb.Ordering{Columns: orderingCols[:matchLen]})
 					// Presort the input on first matchLen columns.
 					sort.Slice(rows, func(i, j int) bool {
-						cmp, err := rows[i].Compare(context.Background(), inputTypes, &da, matchedCols, &evalCtx, rows[j])
+						cmp, err := rows[i].Compare(inputTypes, &da, matchedCols, &evalCtx, rows[j])
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -958,14 +962,14 @@ func TestMergeJoinerAgainstProcessor(t *testing.T) {
 						lMatchedCols := execinfrapb.ConvertToColumnOrdering(execinfrapb.Ordering{Columns: lOrderingCols})
 						rMatchedCols := execinfrapb.ConvertToColumnOrdering(execinfrapb.Ordering{Columns: rOrderingCols})
 						sort.Slice(lRows, func(i, j int) bool {
-							cmp, err := lRows[i].Compare(context.Background(), lInputTypes, &da, lMatchedCols, &evalCtx, lRows[j])
+							cmp, err := lRows[i].Compare(lInputTypes, &da, lMatchedCols, &evalCtx, lRows[j])
 							if err != nil {
 								t.Fatal(err)
 							}
 							return cmp < 0
 						})
 						sort.Slice(rRows, func(i, j int) bool {
-							cmp, err := rRows[i].Compare(context.Background(), rInputTypes, &da, rMatchedCols, &evalCtx, rRows[j])
+							cmp, err := rRows[i].Compare(rInputTypes, &da, rMatchedCols, &evalCtx, rRows[j])
 							if err != nil {
 								t.Fatal(err)
 							}

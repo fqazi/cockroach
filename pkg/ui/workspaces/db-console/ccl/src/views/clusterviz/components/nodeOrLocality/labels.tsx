@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import React from "react";
-
 import { DARK_BLUE, MAIN_BLUE } from "src/views/shared/colors";
 
 interface LabelsProps {

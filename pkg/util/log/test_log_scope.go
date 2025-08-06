@@ -14,7 +14,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/cli/exit"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
-	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/fileutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log/channel"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logconfig"
@@ -23,11 +22,6 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/errors/oserror"
 )
-
-// envAlwaysKeepTestLogsEnabled controls whether test and CRDB logs are kept
-// even when the test passes. By default, it’s disabled, so logs are deleted on
-// test success.
-var envAlwaysKeepTestLogsEnabled = envutil.EnvOrDefaultBool("COCKROACH_ALWAYS_KEEP_TEST_LOGS", false)
 
 // TestLogScope represents the lifetime of a logging output.  It
 // ensures that the log files are stored in a directory specific to a
@@ -68,7 +62,7 @@ type tShim interface {
 
 // Scope creates a TestLogScope which corresponds to the lifetime of a
 // temporary logging directory. If -show-logs was passed on the
-// // command line, this is a no-op. Otherwise, it behaves
+// command line, this is a no-op. Otherwise, it behaves
 // like ScopeWithoutShowLogs().
 //
 // See the documentation of ScopeWithoutShowLogs() for API usage and
@@ -163,7 +157,7 @@ func newLogScope(t tShim, mostlyInline bool) (sc *TestLogScope) {
 
 		// Switch to the new configuration.
 		TestingResetActive()
-		sc.cleanupFn, err = ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+		sc.cleanupFn, err = ApplyConfig(cfg)
 		if err != nil {
 			return err
 		}
@@ -356,7 +350,7 @@ func (l *TestLogScope) SetupSingleFileLogging() (cleanup func()) {
 
 	// Apply the configuration.
 	TestingResetActive()
-	cleanup, err := ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+	cleanup, err := ApplyConfig(cfg)
 	if err != nil {
 		panic(errors.NewAssertionErrorWithWrappedErrf(err, "unexpected error in predefined log config"))
 	}
@@ -416,7 +410,7 @@ func (l *TestLogScope) Close(t tShim) {
 				t.Fatal(err)
 			}
 			inPanic := calledDuringPanic()
-			if (t.Failed() && !emptyDir) || inPanic || envAlwaysKeepTestLogsEnabled {
+			if (t.Failed() && !emptyDir) || inPanic {
 				// If the test failed or there was a panic, we keep the log
 				// files for further investigation.
 				if inPanic {

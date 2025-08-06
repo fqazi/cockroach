@@ -7,8 +7,10 @@ package throttler
 
 import "time"
 
-// throttleDisabled is a sentinel value used to disable the throttle.
-const throttleDisabled = time.Duration(0)
+const (
+	// throttleDisabled is a sentinal value used to disable the throttle.
+	throttleDisabled = time.Duration(0)
+)
 
 type throttle struct {
 	// The next time an operation blocked by this throttle can proceed.

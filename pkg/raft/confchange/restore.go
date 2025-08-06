@@ -18,7 +18,6 @@
 package confchange
 
 import (
-	"github.com/cockroachdb/cockroach/pkg/raft/quorum"
 	pb "github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 )
@@ -101,17 +100,17 @@ func toConfChangeSingle(cs pb.ConfState) (out []pb.ConfChangeSingle, in []pb.Con
 }
 
 func chain(
-	chg Changer, ops ...func(Changer) (quorum.Config, tracker.ProgressMap, error),
-) (quorum.Config, tracker.ProgressMap, error) {
+	chg Changer, ops ...func(Changer) (tracker.Config, tracker.ProgressMap, error),
+) (tracker.Config, tracker.ProgressMap, error) {
 	for _, op := range ops {
-		cfg, progressMap, err := op(chg)
+		cfg, trk, err := op(chg)
 		if err != nil {
-			return quorum.Config{}, nil, err
+			return tracker.Config{}, nil, err
 		}
-		chg.Config = cfg
-		chg.ProgressMap = progressMap
+		chg.Tracker.Config = cfg
+		chg.Tracker.Progress = trk
 	}
-	return chg.Config, chg.ProgressMap, nil
+	return chg.Tracker.Config, chg.Tracker.Progress, nil
 }
 
 // Restore takes a Changer (which must represent an empty configuration), and
@@ -122,16 +121,16 @@ func chain(
 // the Changer only needs a ProgressMap (not a whole Tracker) at which point
 // this can just take LastIndex and MaxInflight directly instead and cook up
 // the results from that alone.
-func Restore(chg Changer, cs pb.ConfState) (quorum.Config, tracker.ProgressMap, error) {
+func Restore(chg Changer, cs pb.ConfState) (tracker.Config, tracker.ProgressMap, error) {
 	outgoing, incoming := toConfChangeSingle(cs)
 
-	var ops []func(Changer) (quorum.Config, tracker.ProgressMap, error)
+	var ops []func(Changer) (tracker.Config, tracker.ProgressMap, error)
 
 	if len(outgoing) == 0 {
 		// No outgoing config, so just apply the incoming changes one by one.
 		for _, cc := range incoming {
 			cc := cc // loop-local copy
-			ops = append(ops, func(chg Changer) (quorum.Config, tracker.ProgressMap, error) {
+			ops = append(ops, func(chg Changer) (tracker.Config, tracker.ProgressMap, error) {
 				return chg.Simple(cc)
 			})
 		}
@@ -143,7 +142,7 @@ func Restore(chg Changer, cs pb.ConfState) (quorum.Config, tracker.ProgressMap, 
 		// if the config is (1 2 3)&(2 3 4), this will establish (2 3 4)&().
 		for _, cc := range outgoing {
 			cc := cc // loop-local copy
-			ops = append(ops, func(chg Changer) (quorum.Config, tracker.ProgressMap, error) {
+			ops = append(ops, func(chg Changer) (tracker.Config, tracker.ProgressMap, error) {
 				return chg.Simple(cc)
 			})
 		}
@@ -152,7 +151,7 @@ func Restore(chg Changer, cs pb.ConfState) (quorum.Config, tracker.ProgressMap, 
 		// example above, we'd get (1 2 3)&(2 3 4), i.e. the incoming operations
 		// would be removing 2,3,4 and then adding in 1,2,3 while transitioning
 		// into a joint state.
-		ops = append(ops, func(chg Changer) (quorum.Config, tracker.ProgressMap, error) {
+		ops = append(ops, func(chg Changer) (tracker.Config, tracker.ProgressMap, error) {
 			return chg.EnterJoint(cs.AutoLeave, incoming...)
 		})
 	}

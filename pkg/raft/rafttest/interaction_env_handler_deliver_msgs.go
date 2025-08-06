@@ -36,14 +36,13 @@ func (env *InteractionEnv) handleDeliverMsgs(t *testing.T, d datadriven.TestData
 			if err != nil {
 				t.Fatal(err)
 			}
-			rs = append(rs, Recipient{ID: raftpb.PeerID(id)})
+			rs = append(rs, Recipient{ID: id})
 		}
 		for i := range arg.Vals {
 			switch arg.Key {
 			case "drop":
-				var rawID uint64
-				arg.Scan(t, i, &rawID)
-				id := raftpb.PeerID(rawID)
+				var id uint64
+				arg.Scan(t, i, &id)
 				var found bool
 				for _, r := range rs {
 					if r.ID == id {
@@ -73,7 +72,7 @@ func (env *InteractionEnv) handleDeliverMsgs(t *testing.T, d datadriven.TestData
 }
 
 type Recipient struct {
-	ID   raftpb.PeerID
+	ID   uint64
 	Drop bool
 }
 
@@ -84,43 +83,23 @@ type Recipient struct {
 func (env *InteractionEnv) DeliverMsgs(typ raftpb.MessageType, rs ...Recipient) int {
 	var n int
 	for _, r := range rs {
-		n += env.deliverMsgs(typ, r)
-	}
-	return n
-}
-
-func (env *InteractionEnv) deliverMsgs(typ raftpb.MessageType, r Recipient) int {
-	var n int
-	// Deliver all storage write acknowledgements.
-	if int(r.ID) <= len(env.Nodes) {
-		to := &env.Nodes[r.ID-1]
-		for _, ack := range to.AppendAcks {
-			for msg := range ack.Step(r.ID) {
-				fmt.Fprintln(env.Output, raft.DescribeMessage(msg, defaultEntryFormatter))
+		var msgs []raftpb.Message
+		msgs, env.Messages = splitMsgs(env.Messages, r.ID, typ, r.Drop)
+		n += len(msgs)
+		for _, msg := range msgs {
+			if r.Drop {
+				fmt.Fprint(env.Output, "dropped: ")
 			}
-			fmt.Fprintf(env.Output, "%d->%d StorageAppendAck Mark:%+v\n", r.ID, r.ID, ack.Mark)
-			to.AckAppend(ack)
-		}
-		to.AppendAcks = nil
-		n += len(to.AppendAcks)
-	}
-	// Deliver all other messages.
-	var msgs []raftpb.Message
-	msgs, env.Messages = splitMsgs(env.Messages, r.ID, typ)
-	n += len(msgs)
-	for _, msg := range msgs {
-		if r.Drop {
-			fmt.Fprint(env.Output, "dropped: ")
-		}
-		fmt.Fprintln(env.Output, raft.DescribeMessage(msg, defaultEntryFormatter))
-		if r.Drop {
-			// NB: it's allowed to drop messages to nodes that haven't been instantiated yet,
-			// we haven't used msg.To yet.
-			continue
-		}
-		toIdx := int(msg.To - 1)
-		if err := env.Nodes[toIdx].Step(msg); err != nil {
-			fmt.Fprintln(env.Output, err)
+			fmt.Fprintln(env.Output, raft.DescribeMessage(msg, defaultEntryFormatter))
+			if r.Drop {
+				// NB: it's allowed to drop messages to nodes that haven't been instantiated yet,
+				// we haven't used msg.To yet.
+				continue
+			}
+			toIdx := int(msg.To - 1)
+			if err := env.Nodes[toIdx].Step(msg); err != nil {
+				fmt.Fprintln(env.Output, err)
+			}
 		}
 	}
 	return n

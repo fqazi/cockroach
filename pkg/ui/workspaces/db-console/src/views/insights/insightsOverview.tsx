@@ -6,16 +6,15 @@
 // All changes made on this file, should also be done on the equivalent
 // file on managed-service repo.
 
-import { commonStyles, util } from "@cockroachlabs/cluster-ui";
-import { Tabs } from "antd";
 import React, { useState } from "react";
 import Helmet from "react-helmet";
+import { Tabs } from "antd";
+import "antd/lib/tabs/style";
+import { commonStyles, util } from "@cockroachlabs/cluster-ui";
 import { RouteComponentProps } from "react-router-dom";
-
 import { tabAttr, viewAttr } from "src/util/constants";
-
-import SchemaInsightsPage from "./schemaInsightsPage";
 import WorkloadInsightsPage from "./workloadInsightsPage";
+import SchemaInsightsPage from "./schemaInsightsPage";
 
 const { TabPane } = Tabs;
 

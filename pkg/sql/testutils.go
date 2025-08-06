@@ -45,7 +45,7 @@ func CreateTestTableDescriptor(
 	if err != nil {
 		return nil, err
 	}
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	evalCtx := eval.MakeTestingEvalContext(st)
 	sessionData := &sessiondata.SessionData{
 		LocalOnlySessionData: sessiondatapb.LocalOnlySessionData{
@@ -72,7 +72,6 @@ func CreateTestTableDescriptor(
 			&evalCtx,
 			sessionData,
 			tree.PersistencePermanent,
-			nil, /* colToSequenceRefs */
 		)
 		return desc, err
 	case *tree.CreateSequence:
@@ -159,4 +158,37 @@ func (dsp *DistSQLPlanner) Exec(
 
 	dsp.PlanAndRun(ctx, evalCtx, planCtx, p.txn, p.curPlan.main, recv, nil /* finishedSetupFn */)
 	return rw.Err()
+}
+
+// ExecLocalAll is basically a conn_executor free version of execWithDistSQLEngine
+// hard coded for non-distributed statements (currently used by copy testing).
+func (dsp *DistSQLPlanner) ExecLocalAll(
+	ctx context.Context, execCfg ExecutorConfig, p *planner, res RestrictedCommandResult,
+) error {
+	defer p.curPlan.close(ctx)
+	recv := MakeDistSQLReceiver(
+		ctx,
+		res,
+		p.stmt.AST.StatementReturnType(),
+		execCfg.RangeDescriptorCache,
+		p.txn,
+		execCfg.Clock,
+		p.ExtendedEvalContext().Tracing,
+	)
+	defer recv.Release()
+
+	distributionType := DistributionType(LocalDistribution)
+	evalCtx := p.ExtendedEvalContext()
+	planCtx := execCfg.DistSQLPlanner.NewPlanningCtx(ctx, evalCtx, p, p.txn,
+		distributionType)
+	planCtx.stmtType = recv.stmtType
+
+	var factoryEvalCtx = extendedEvalContext{Tracing: &SessionTracing{}}
+	evalCtxFactory := func(bool) *extendedEvalContext {
+		factoryEvalCtx.Context = evalCtx.Context
+		factoryEvalCtx.Placeholders = &p.semaCtx.Placeholders
+		factoryEvalCtx.Annotations = &p.semaCtx.Annotations
+		return &factoryEvalCtx
+	}
+	return dsp.PlanAndRunAll(ctx, evalCtx, planCtx, p, recv, evalCtxFactory)
 }

@@ -12,11 +12,11 @@ import (
 	"os"
 	"testing"
 
+	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -63,12 +63,12 @@ func TestWALFailover(t *testing.T) {
 
 				var envConfig fs.EnvConfig
 				if td.HasArg("encrypted-at-rest") {
-					envConfig.EncryptionOptions = &storageconfig.EncryptionOptions{}
+					envConfig.EncryptionOptions = []byte("test-encryption-options")
 				}
 				if td.HasArg("read-only") {
 					envConfig.RW = fs.ReadOnly
 				}
-				e, err := fs.InitEnv(context.Background(), memfs, dir, envConfig, nil)
+				e, err := fs.InitEnv(context.Background(), memfs, dir, envConfig)
 				if err != nil {
 					return fmt.Sprintf("err = %q", err)
 				}
@@ -81,17 +81,17 @@ func TestWALFailover(t *testing.T) {
 				td.ScanArgs(t, "open", &openDir)
 				td.ScanArgs(t, "envs", &envDirs)
 
-				var cfg storageconfig.WALFailover
+				var cfg base.WALFailoverConfig
 				if flagStr != "" {
 					if err := cfg.Set(flagStr); err != nil {
 						return fmt.Sprintf("error parsing flag: %q", err)
 					}
 				}
 				if td.HasArg("path-encrypted") {
-					cfg.Path.Encryption = &storageconfig.EncryptionOptions{}
+					cfg.Path.EncryptionOptions = []byte("path-encryption-options")
 				}
 				if td.HasArg("prev-path-encrypted") {
-					cfg.PrevPath.Encryption = &storageconfig.EncryptionOptions{}
+					cfg.PrevPath.EncryptionOptions = []byte("prev-encryption-options")
 				}
 				openEnv := getEnv(openDir)
 				if openEnv == nil {
@@ -117,13 +117,9 @@ func TestWALFailover(t *testing.T) {
 						Minor: int32(minor),
 					}
 				}
-				// Match the current offsetting policy.
-				if clusterversion.Latest.Version().Major > clusterversion.DevOffset {
-					version.Major += clusterversion.DevOffset
-				}
 				settings := cluster.MakeTestingClusterSettingsWithVersions(version, version, true /* initializeVersion */)
 
-				engine, err := Open(context.Background(), openEnv, settings, WALFailover(cfg, envs, defaultFS, nil))
+				engine, err := Open(context.Background(), openEnv, settings, WALFailover(cfg, envs, defaultFS))
 				if err != nil {
 					openEnv.Close()
 					return fmt.Sprintf("open error: %s", err)

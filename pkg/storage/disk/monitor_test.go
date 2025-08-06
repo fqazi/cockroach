@@ -6,27 +6,23 @@
 package disk
 
 import (
-	"context"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/stretchr/testify/require"
 )
 
 type spyCollector struct {
-	collectCallCount atomic.Int32
+	collectCount int
 }
 
-func (s *spyCollector) collect(
-	disks []*monitoredDisk, now time.Time,
-) (countCollected int, err error) {
-	s.collectCallCount.Add(1)
-	return len(disks), nil
+func (s *spyCollector) collect(disks []*monitoredDisk) error {
+	s.collectCount++
+	return nil
 }
 
 func TestMonitorManager_monitorDisks(t *testing.T) {
@@ -44,84 +40,12 @@ func TestMonitorManager_monitorDisks(t *testing.T) {
 	manager.mu.disks = []*monitoredDisk{testDisk}
 
 	testCollector := &spyCollector{}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go manager.monitorDisks(ctx, testCollector)
+	stop := make(chan struct{})
+	go manager.monitorDisks(testCollector, stop)
 
-	require.Eventually(t, func() bool {
-		return testCollector.collectCallCount.Load() > 0
-	}, 100*DefaultDiskStatsPollingInterval, DefaultDiskStatsPollingInterval)
-}
-
-func TestMonitor_StatsWindow(t *testing.T) {
-	window := StatsWindow{
-		Stats: []Stats{
-			{
-				ReadsCount:      1,
-				InProgressCount: 3,
-			},
-			{
-				ReadsCount:      4,
-				InProgressCount: 1,
-			},
-			{
-				ReadsCount:      9,
-				InProgressCount: 7,
-			},
-		},
-	}
-
-	maxStats := window.Max()
-	expectedMaxStats := Stats{ReadsCount: 5, InProgressCount: 7}
-	require.Equal(t, expectedMaxStats, maxStats)
-
-	latestStats := window.Latest()
-	expectedLatestStats := Stats{ReadsCount: 9, InProgressCount: 7}
-	require.Equal(t, expectedLatestStats, latestStats)
-}
-
-func TestMonitor_IncrementalStats(t *testing.T) {
-	now := time.Now()
-	tracer := newMonitorTracer(4)
-	events := []traceEvent{
-		{
-			time:  now.Add(-4 * time.Minute),
-			stats: Stats{ReadsCount: 1, InProgressCount: 7},
-			err:   nil,
-		},
-		{
-			time:  now.Add(-2 * time.Minute),
-			stats: Stats{ReadsCount: 4, InProgressCount: 5},
-			err:   nil,
-		},
-		{
-			time:  now.Add(-time.Minute),
-			stats: Stats{ReadsCount: 9, InProgressCount: 1},
-			err:   nil,
-		},
-		{
-			time:  now,
-			stats: Stats{},
-			err:   errors.New("failed to collect disk stats"),
-		},
-	}
-	for _, event := range events {
-		tracer.RecordEvent(event)
-	}
-	monitor := Monitor{
-		monitoredDisk: &monitoredDisk{tracer: tracer},
-	}
-	monitor.mu.lastIncrementedAt = now.Add(-3 * time.Minute)
-
-	rollingWindow := monitor.IncrementalStats()
-	// Skip the event collected 4 minutes ago since we last incremented 3 minutes ago.
-	expectedWindow := StatsWindow{
-		Stats: []Stats{
-			{ReadsCount: 4, InProgressCount: 5},
-			{ReadsCount: 9, InProgressCount: 1},
-		},
-	}
-	require.Equal(t, expectedWindow, rollingWindow)
+	time.Sleep(2 * defaultDiskStatsPollingInterval)
+	stop <- struct{}{}
+	require.Greater(t, testCollector.collectCount, 0)
 }
 
 func TestMonitor_Close(t *testing.T) {
@@ -137,25 +61,60 @@ func TestMonitor_Close(t *testing.T) {
 		},
 		refCount: 2,
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	manager.mu.cancel = cancel
+	stop := make(chan struct{})
+	manager.mu.stop = stop
 	manager.mu.disks = []*monitoredDisk{testDisk}
 	monitor1 := Monitor{monitoredDisk: testDisk}
 	monitor2 := Monitor{monitoredDisk: testDisk}
 
 	monitor1.Close()
-	require.Equal(t, 1, testDisk.refCount)
+	require.Equal(t, testDisk.refCount, 1)
 
 	monitor1.Close()
 	// Subsequent calls to a closed monitor should not reduce refCount.
-	require.Equal(t, 1, testDisk.refCount)
+	require.Equal(t, testDisk.refCount, 1)
 
 	go monitor2.Close()
 	// If there are no monitors, stop the stat polling loop.
 	select {
-	case <-ctx.Done():
+	case <-stop:
 	case <-time.After(time.Second):
 		t.Fatal("Failed to receive stop signal")
 	}
-	require.Equal(t, 0, testDisk.refCount)
+	require.Equal(t, testDisk.refCount, 0)
+}
+
+func TestMonitor_IncrementalStats(t *testing.T) {
+	testDisk := &monitoredDisk{
+		stats: struct {
+			syncutil.Mutex
+			err             error
+			lastMeasurement Stats
+		}{
+			lastMeasurement: Stats{
+				ReadsCount:      1,
+				InProgressCount: 3,
+			},
+		},
+	}
+	monitor := Monitor{monitoredDisk: testDisk}
+
+	// First attempt at getting incremental stats should return empty stats.
+	stats, err := monitor.IncrementalStats()
+	require.NoError(t, err)
+	require.Equal(t, stats, Stats{})
+
+	testDisk.stats.lastMeasurement = Stats{
+		ReadsCount:      2,
+		InProgressCount: 2,
+	}
+	wantIncremental := Stats{
+		ReadsCount: 1,
+		// InProgressCount is a gauge so the increment should not be computed.
+		InProgressCount: 2,
+	}
+
+	stats, err = monitor.IncrementalStats()
+	require.NoError(t, err)
+	require.Equal(t, stats, wantIncremental)
 }

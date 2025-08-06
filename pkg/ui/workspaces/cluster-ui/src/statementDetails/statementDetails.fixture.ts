@@ -3,14 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { createMemoryHistory } from "history";
-import noop from "lodash/noop";
-import Long from "long";
 import moment from "moment-timezone";
-
-import { StatementDetailsResponse } from "../api";
-
+import Long from "long";
+import { createMemoryHistory } from "history";
+import { noop } from "lodash";
 import { StatementDetailsProps } from "./statementDetails";
+import { StatementDetailsResponse } from "../api";
 
 const lastUpdated = moment("Nov 28 2022 01:30:00 GMT");
 
@@ -30,7 +28,6 @@ const statementDetailsNoData: StatementDetailsResponse = {
     stats: {
       count: new Long(0),
       failure_count: new Long(0),
-      generic_count: new Long(0),
       first_attempt_count: new Long(0),
       max_retries: new Long(0),
       legacy_last_err: "",
@@ -87,7 +84,6 @@ const statementDetailsData: StatementDetailsResponse = {
     stats: {
       count: new Long(5),
       failure_count: new Long(2),
-      generic_count: new Long(1),
       first_attempt_count: new Long(5),
       max_retries: new Long(0),
       legacy_last_err: "",
@@ -182,7 +178,6 @@ const statementDetailsData: StatementDetailsResponse = {
         nanos: 111613000,
       },
       nodes: [new Long(1)],
-      kv_node_ids: [2],
       plan_gists: ["AgH6////nxkAAA4AAAAGBg=="],
     },
   },
@@ -284,7 +279,6 @@ const statementDetailsData: StatementDetailsResponse = {
           nanos: 111613000,
         },
         nodes: [new Long(1)],
-        kv_node_ids: [2],
         plan_gists: ["AgH6////nxkAAA4AAAAGBg=="],
       },
       aggregated_ts: {
@@ -389,7 +383,6 @@ const statementDetailsData: StatementDetailsResponse = {
           nanos: 111613000,
         },
         nodes: [new Long(1)],
-        kv_node_ids: [2],
         plan_gists: ["AgH6////nxkAAA4AAAAGBg=="],
       },
       aggregated_ts: {
@@ -494,7 +487,6 @@ const statementDetailsData: StatementDetailsResponse = {
           nanos: 111613000,
         },
         nodes: [new Long(1)],
-        kv_node_ids: [2],
         plan_gists: ["AgH6////nxkAAA4AAAAGBg=="],
       },
       aggregated_ts: {
@@ -599,7 +591,6 @@ const statementDetailsData: StatementDetailsResponse = {
           nanos: 111613000,
         },
         nodes: [new Long(1)],
-        kv_node_ids: [2],
         plan_gists: ["AgH6////nxkAAA4AAAAGBg=="],
       },
       aggregated_ts: {
@@ -706,11 +697,10 @@ const statementDetailsData: StatementDetailsResponse = {
           nanos: 111613000,
         },
         nodes: [new Long(1)],
-        kv_node_ids: [2],
         plan_gists: ["AgH6////nxkAAA4AAAAGBg=="],
       },
       explain_plan: "• virtual table\n  table: @primary",
-      plan_hash: Long.fromString("14192395335876201826"),
+      plan_hash: new Long(14192395335876201826),
     },
     {
       stats: {
@@ -809,11 +799,10 @@ const statementDetailsData: StatementDetailsResponse = {
           nanos: 111613000,
         },
         nodes: [new Long(1)],
-        kv_node_ids: [2],
         plan_gists: ["Ah0GAg=="],
       },
       explain_plan: "• virtual table\n  table: @primary\nFULL SCAN",
-      plan_hash: Long.fromString("14192395335876212345"),
+      plan_hash: new Long(14192395335876212345),
     },
   ],
   internal_app_name_prefix: "$ internal",

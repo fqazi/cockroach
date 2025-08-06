@@ -28,7 +28,6 @@ import (
 )
 
 type dropDatabaseNode struct {
-	zeroInputPlanNode
 	n      *tree.DropDatabase
 	dbDesc *dbdesc.Mutable
 	d      *dropCascadeState
@@ -211,6 +210,10 @@ func (n *dropDatabaseNode) startExec(params runParams) error {
 	if err := p.deleteComment(
 		ctx, n.dbDesc.GetID(), 0 /* subID */, catalogkeys.DatabaseCommentType,
 	); err != nil {
+		return err
+	}
+
+	if err := p.maybeUpdateSystemDBSurvivalGoal(ctx); err != nil {
 		return err
 	}
 

@@ -3,15 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { AxisUnits } from "@cockroachlabs/cluster-ui";
-import assign from "lodash/assign";
-import isEmpty from "lodash/isEmpty";
+import _ from "lodash";
 import * as React from "react";
-import Select, { Option } from "react-select";
+import Select from "react-select";
 
 import * as protos from "src/js/protos";
-import { isSystemTenant } from "src/redux/tenants";
+import { AxisUnits } from "@cockroachlabs/cluster-ui";
 import Dropdown, { DropdownOption } from "src/views/shared/components/dropdown";
+import { isSystemTenant } from "src/redux/tenants";
 
 import { MetricOption } from "./metricOption";
 
@@ -80,41 +79,41 @@ export class CustomMetricRow extends React.Component<CustomMetricRowProps> {
   changeState(newState: Partial<CustomMetricState>) {
     this.props.onChange(
       this.props.index,
-      assign(this.props.rowState, newState),
+      _.assign(this.props.rowState, newState),
     );
   }
 
-  changeMetric = (selectedOption: Option<string>) => {
+  changeMetric = (selectedOption: DropdownOption) => {
     this.changeState({
       metric: selectedOption.value,
     });
   };
 
-  changeDownsampler = (selectedOption: Option<string>) => {
+  changeDownsampler = (selectedOption: DropdownOption) => {
     this.changeState({
       downsampler: +selectedOption.value,
     });
   };
 
-  changeAggregator = (selectedOption: Option<string>) => {
+  changeAggregator = (selectedOption: DropdownOption) => {
     this.changeState({
       aggregator: +selectedOption.value,
     });
   };
 
-  changeDerivative = (selectedOption: Option<string>) => {
+  changeDerivative = (selectedOption: DropdownOption) => {
     this.changeState({
       derivative: +selectedOption.value,
     });
   };
 
-  changeNodeSource = (selectedOption: Option<string>) => {
+  changeNodeSource = (selectedOption: DropdownOption) => {
     this.changeState({
       nodeSource: selectedOption.value,
     });
   };
 
-  changeTenant = (selectedOption: Option<string>) => {
+  changeTenant = (selectedOption: DropdownOption) => {
     this.changeState({
       tenantSource: selectedOption.value,
     });
@@ -326,7 +325,7 @@ export class CustomChartTable extends React.Component<CustomChartTableProps> {
       <h3>Click "Add Metric" to add a metric to the custom chart.</h3>
     );
 
-    if (!isEmpty(metrics)) {
+    if (!_.isEmpty(metrics)) {
       table = (
         <table className="metric-table">
           <thead>

@@ -3,14 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
 import React, { useMemo } from "react";
+import classNames from "classnames/bind";
 
+import styles from "./inlineAlert.module.styl";
 import ErrorIcon from "assets/error-circle.svg";
 import InfoIcon from "assets/info-filled-circle.svg";
 import WarningIcon from "assets/warning.svg";
-
-import styles from "./inlineAlert.module.styl";
 
 export type InlineAlertIntent = "info" | "error" | "warning";
 

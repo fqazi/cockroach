@@ -46,13 +46,13 @@ func TestSessionCacheBasic(t *testing.T) {
 
 				st := &cluster.Settings{}
 				monitor := mon.NewUnlimitedMonitor(ctx, mon.Options{
-					Name:     mon.MakeName("test"),
+					Name:     "test",
 					Settings: st,
 				})
 				cache = NewClosedSessionCache(st, monitor, time.Now)
 
-				closedSessionCacheCapacity.Override(ctx, &st.SV, int64(capacity))
-				closedSessionCacheTimeToLive.Override(ctx, &st.SV, int64(timeToLive))
+				ClosedSessionCacheCapacity.Override(ctx, &st.SV, int64(capacity))
+				ClosedSessionCacheTimeToLive.Override(ctx, &st.SV, int64(timeToLive))
 
 				return fmt.Sprintf("cache_size: %d", cache.size())
 			case "addSession":

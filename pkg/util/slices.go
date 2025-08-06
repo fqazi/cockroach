@@ -6,8 +6,8 @@
 package util
 
 import (
-	"cmp"
-	"slices"
+	"golang.org/x/exp/constraints"
+	"golang.org/x/exp/slices"
 )
 
 // CombineUnique merges two ordered slices. If both slices have unique elements
@@ -20,7 +20,7 @@ import (
 // has mostly the same elements as the other. If the two slices are large and
 // don't have many duplicates, this function should be avoided, because of the
 // usage of `copy` that can increase CPU.
-func CombineUnique[T cmp.Ordered](a, b []T) []T {
+func CombineUnique[T constraints.Ordered](a, b []T) []T {
 	// We want b to be the smaller slice, so there are fewer elements to be added.
 	if len(b) > len(a) {
 		b, a = a, b
@@ -99,25 +99,4 @@ func MapFrom[T any, K comparable, V any](collection []T, fn func(T) (K, V)) map[
 		out[key] = value
 	}
 	return out
-}
-
-// InsertUnique inserts an element into an ordered slice if the element is not
-// already present while maintaining the ordering property. Possibly updated
-// slice is returned.
-func InsertUnique[T cmp.Ordered](s []T, v T) []T {
-	idx, found := slices.BinarySearch(s, v)
-	if found {
-		return s
-	}
-	return slices.Insert(s, idx, v)
-}
-
-// Reduce applies a function against an accumulator and each element of a
-// collection, reducing it to a single value.
-func Reduce[T any, U any](collection []T, fn func(acc U, el T, idx int) U, init U) U {
-	acc := init
-	for idx, el := range collection {
-		acc = fn(acc, el, idx)
-	}
-	return acc
 }

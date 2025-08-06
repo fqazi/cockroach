@@ -12,14 +12,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/insights"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/ssmemstorage"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 )
-
-var _ sqlstats.SSDrainer = &SQLStats{}
 
 // SQLStats carries per-application in-memory statistics for all applications.
 type SQLStats struct {
@@ -45,6 +44,9 @@ type SQLStats struct {
 	flushTarget Sink
 
 	knobs *sqlstats.TestingKnobs
+
+	insights           insights.WriterProvider
+	latencyInformation insights.LatencyInformation
 }
 
 func newSQLStats(
@@ -53,21 +55,24 @@ func newSQLStats(
 	uniqueTxnFingerprintLimit *settings.IntSetting,
 	curMemBytesCount *metric.Gauge,
 	maxMemBytesHist metric.IHistogram,
+	insightsWriter insights.WriterProvider,
 	parentMon *mon.BytesMonitor,
 	flushTarget Sink,
 	knobs *sqlstats.TestingKnobs,
+	latencyInformation insights.LatencyInformation,
 ) *SQLStats {
 	monitor := mon.NewMonitor(mon.Options{
-		Name:       mon.MakeName("SQLStats"),
-		CurCount:   curMemBytesCount,
-		MaxHist:    maxMemBytesHist,
-		Settings:   st,
-		LongLiving: true,
+		Name:     "SQLStats",
+		CurCount: curMemBytesCount,
+		MaxHist:  maxMemBytesHist,
+		Settings: st,
 	})
 	s := &SQLStats{
-		st:          st,
-		flushTarget: flushTarget,
-		knobs:       knobs,
+		st:                 st,
+		flushTarget:        flushTarget,
+		knobs:              knobs,
+		insights:           insightsWriter,
+		latencyInformation: latencyInformation,
 	}
 	s.atomic = ssmemstorage.NewSQLStatsAtomicCounters(
 		st,
@@ -110,6 +115,8 @@ func (s *SQLStats) getStatsForApplication(appName string) *ssmemstorage.Containe
 		s.mu.mon,
 		appName,
 		s.knobs,
+		s.insights(false /* internal */),
+		s.latencyInformation,
 	)
 	s.mu.apps[appName] = a
 	return a

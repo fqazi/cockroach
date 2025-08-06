@@ -11,7 +11,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
-	"github.com/cockroachdb/redact"
 )
 
 // InstallLogFileSink installs a file sink for logging tests.
@@ -36,33 +35,10 @@ func InstallLogFileSink(sc *log.TestLogScope, t *testing.T, channel logpb.Channe
 	if err := cfg.Validate(&dir); err != nil {
 		t.Fatal(err)
 	}
-	cleanup, err := log.ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+	cleanup, err := log.ApplyConfig(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	return cleanup
-}
-
-const TestEventType = "test_event"
-
-type TestEvent struct {
-	Timestamp int64 `json:"timestamp"`
-}
-
-func (t TestEvent) CommonDetails() *logpb.CommonEventDetails {
-	return &logpb.CommonEventDetails{
-		Timestamp: t.Timestamp,
-		EventType: TestEventType,
-	}
-}
-
-func (t TestEvent) LoggingChannel() logpb.Channel {
-	return logpb.Channel_DEV
-}
-
-func (t TestEvent) AppendJSONFields(
-	printComma bool, b redact.RedactableBytes,
-) (bool, redact.RedactableBytes) {
-	return t.CommonDetails().AppendJSONFields(printComma, b)
 }

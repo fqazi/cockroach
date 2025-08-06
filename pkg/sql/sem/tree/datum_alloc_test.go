@@ -6,7 +6,6 @@
 package tree_test
 
 import (
-	"context"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -27,7 +26,6 @@ func TestNilDatumAlloc(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	ctx := context.Background()
 	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
 	rng, _ := randutil.NewPseudoRand()
 	var buf []byte
@@ -37,11 +35,11 @@ func TestNilDatumAlloc(t *testing.T) {
 		typ := randgen.RandType(rng)
 		d := randgen.RandDatum(rng, typ, false /* nullOk */)
 		var err error
-		buf, err = valueside.Encode(buf[:0], valueside.NoColumnID, d)
+		buf, err = valueside.Encode(buf[:0], valueside.NoColumnID, d, nil /* scratch */)
 		require.NoError(t, err)
 		decoded, _, err := valueside.Decode(da, typ, buf)
 		require.NoError(t, err)
-		cmp, err := d.Compare(ctx, &evalCtx, decoded)
+		cmp, err := d.CompareError(&evalCtx, decoded)
 		require.NoError(t, err)
 		require.Equal(t, 0, cmp)
 	}

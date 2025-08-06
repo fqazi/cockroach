@@ -12,7 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
@@ -201,7 +200,7 @@ type MVCCIncrementalIterOptions struct {
 
 	// ReadCategory is used to map to a user-understandable category string, for
 	// stats aggregation and metrics, and a Pebble-understandable QoS.
-	ReadCategory fs.ReadCategory
+	ReadCategory ReadCategory
 
 	// MaxLockConflicts is a maximum number of conflicting locks collected before
 	// returning LockConflictError. This setting only work under
@@ -910,7 +909,7 @@ func (i *MVCCIncrementalIterator) assertInvariants() error {
 	// i.meta should match the underlying iterator's key.
 	if hasPoint, _ := i.iter.HasPointAndRange(); hasPoint {
 		metaTS := i.meta.Timestamp.ToTimestamp()
-		if iterKey.Timestamp.IsSet() && metaTS != iterKey.Timestamp {
+		if iterKey.Timestamp.IsSet() && !metaTS.EqOrdering(iterKey.Timestamp) {
 			return errors.AssertionFailedf("i.meta.Timestamp %s differs from i.iter.UnsafeKey %s",
 				metaTS, iterKey)
 		}

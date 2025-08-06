@@ -1,3 +1,5 @@
+# LogicTest: !local-mixed-23.1
+
 statement ok
 CREATE SEQUENCE seq;
 
@@ -94,7 +96,6 @@ f_rewrite  CREATE FUNCTION public.f_rewrite()
              NOT LEAKPROOF
              CALLED ON NULL INPUT
              LANGUAGE plpgsql
-             SECURITY INVOKER
              AS $$
              DECLARE
              i INT8 := nextval('public.seq'::REGCLASS);
@@ -158,7 +159,6 @@ f_rewrite  CREATE FUNCTION public.f_rewrite()
              NOT LEAKPROOF
              CALLED ON NULL INPUT
              LANGUAGE plpgsql
-             SECURITY INVOKER
              AS $$
              DECLARE
              i INT8 := nextval('public.renamed'::REGCLASS);
@@ -231,6 +231,8 @@ $$ LANGUAGE PLpgSQL;
 statement ok
 DROP FUNCTION f_rewrite();
 
+skipif config local-mixed-23.2
+skipif config local-mixed-23.1
 statement ok
 CREATE FUNCTION f_rewrite() RETURNS weekday AS
 $$
@@ -277,64 +279,67 @@ $$
   END
 $$ LANGUAGE PLPGSQL;
 
+skipif config local-mixed-23.2
+skipif config local-mixed-23.1
 query T
 SELECT get_body_str('f_rewrite');
 ----
 "DECLARE\nday @100107 := b'\\x80':::@100107;\ntoday @100107 := b'\\xa0':::@100107;\ncurs REFCURSOR := b' ':::@100107::STRING;\ncurs2 CURSOR FOR SELECT b'@':::@100107;\nBEGIN\nRAISE NOTICE\nUSING MESSAGE = format('val: %d':::STRING, b'\\x80':::@100107);\nRAISE NOTICE 'val1: %, val2: %', b'\\x80':::@100107, b'\\xa0':::@100107;\nSELECT public.f_nested(1:::INT8, b'\\x80':::@100107);\nCALL public.p_nested(1, b'\\x80':::@100107, day);\nDECLARE\nyesterday @100107 := b'\\x80':::@100107;\nBEGIN\nRAISE NOTICE 'val3: %, val4: %', b'\\x80':::@100107, b'\\xa0':::@100107;\nIF yesterday IS NOT NULL THEN\n\tSELECT b'\\x80':::@100107;\nEND IF;\nEXCEPTION\nWHEN division_by_zero THEN\nRAISE NOTICE\nUSING MESSAGE = format('val: %d':::STRING, b'\\x80':::@100107);\nWHEN not_null_violation THEN\nSELECT b'\\x80':::@100107;\nRAISE NOTICE 'val: %', b'\\x80':::@100107;\nEND;\nWHILE day != b'\\x80':::@100107 LOOP\nday := b'\\xc0':::@100107;\nSELECT b'\\x80':::@100107;\nIF day = b'\\x80':::@100107 THEN\n\tday := b'\\xa0':::@100107;\n\tSELECT b'@':::@100107;\n\tCONTINUE;\nELSIF day = b' ':::@100107 THEN\n\tSELECT b'@':::@100107 INTO day;\nELSIF day = b'@':::@100107 THEN\n\tSELECT b'\\x80':::@100107 INTO day;\n\tSELECT b'\\x80':::@100107;\nEND IF;\nEND LOOP;\nOPEN curs FOR SELECT b'\\x80':::@100107;\nRETURN b'\\x80':::@100107;\nEND;\n"
 
+skipif config local-mixed-23.2
+skipif config local-mixed-23.1
 query TT
 SHOW CREATE FUNCTION f_rewrite;
 ----
 f_rewrite  CREATE FUNCTION public.f_rewrite()
-             RETURNS public.weekday
+             RETURNS test.public.weekday
              VOLATILE
              NOT LEAKPROOF
              CALLED ON NULL INPUT
              LANGUAGE plpgsql
-             SECURITY INVOKER
              AS $$
              DECLARE
-             day public.weekday := 'wednesday':::public.weekday;
-             today public.weekday := 'thursday':::public.weekday;
-             curs REFCURSOR := 'monday':::public.weekday::STRING;
-             curs2 CURSOR FOR SELECT 'tuesday':::public.weekday;
+             day test.public.weekday := 'wednesday':::test.public.weekday;
+             today test.public.weekday := 'thursday':::test.public.weekday;
+             curs REFCURSOR := 'monday':::test.public.weekday::STRING;
+             curs2 CURSOR FOR SELECT 'tuesday':::test.public.weekday;
              BEGIN
              RAISE NOTICE
-             USING MESSAGE = format('val: %d':::STRING, 'wednesday':::public.weekday);
-             RAISE NOTICE 'val1: %, val2: %', 'wednesday':::public.weekday, 'thursday':::public.weekday;
-             SELECT public.f_nested(1:::INT8, 'wednesday':::public.weekday);
-             CALL public.p_nested(1, 'wednesday':::public.weekday, day);
+             USING MESSAGE = format('val: %d':::STRING, 'wednesday':::test.public.weekday);
+             RAISE NOTICE 'val1: %, val2: %', 'wednesday':::test.public.weekday, 'thursday':::test.public.weekday;
+             SELECT public.f_nested(1:::INT8, 'wednesday':::test.public.weekday);
+             CALL public.p_nested(1, 'wednesday':::test.public.weekday, day);
              DECLARE
-             yesterday public.weekday := 'wednesday':::public.weekday;
+             yesterday test.public.weekday := 'wednesday':::test.public.weekday;
              BEGIN
-             RAISE NOTICE 'val3: %, val4: %', 'wednesday':::public.weekday, 'thursday':::public.weekday;
+             RAISE NOTICE 'val3: %, val4: %', 'wednesday':::test.public.weekday, 'thursday':::test.public.weekday;
              IF yesterday IS NOT NULL THEN
-               SELECT 'wednesday':::public.weekday;
+               SELECT 'wednesday':::test.public.weekday;
              END IF;
              EXCEPTION
              WHEN division_by_zero THEN
              RAISE NOTICE
-             USING MESSAGE = format('val: %d':::STRING, 'wednesday':::public.weekday);
+             USING MESSAGE = format('val: %d':::STRING, 'wednesday':::test.public.weekday);
              WHEN not_null_violation THEN
-             SELECT 'wednesday':::public.weekday;
-             RAISE NOTICE 'val: %', 'wednesday':::public.weekday;
+             SELECT 'wednesday':::test.public.weekday;
+             RAISE NOTICE 'val: %', 'wednesday':::test.public.weekday;
              END;
-             WHILE day != 'wednesday':::public.weekday LOOP
-             day := 'friday':::public.weekday;
-             SELECT 'wednesday':::public.weekday;
-             IF day = 'wednesday':::public.weekday THEN
-               day := 'thursday':::public.weekday;
-               SELECT 'tuesday':::public.weekday;
+             WHILE day != 'wednesday':::test.public.weekday LOOP
+             day := 'friday':::test.public.weekday;
+             SELECT 'wednesday':::test.public.weekday;
+             IF day = 'wednesday':::test.public.weekday THEN
+               day := 'thursday':::test.public.weekday;
+               SELECT 'tuesday':::test.public.weekday;
                CONTINUE;
-             ELSIF day = 'monday':::public.weekday THEN
-               SELECT 'tuesday':::public.weekday INTO day;
-             ELSIF day = 'tuesday':::public.weekday THEN
-               SELECT 'wednesday':::public.weekday INTO day;
-               SELECT 'wednesday':::public.weekday;
+             ELSIF day = 'monday':::test.public.weekday THEN
+               SELECT 'tuesday':::test.public.weekday INTO day;
+             ELSIF day = 'tuesday':::test.public.weekday THEN
+               SELECT 'wednesday':::test.public.weekday INTO day;
+               SELECT 'wednesday':::test.public.weekday;
              END IF;
              END LOOP;
-             OPEN curs FOR SELECT 'wednesday':::public.weekday;
-             RETURN 'wednesday':::public.weekday;
+             OPEN curs FOR SELECT 'wednesday':::test.public.weekday;
+             RETURN 'wednesday':::test.public.weekday;
              END;
            $$
 
@@ -344,64 +349,67 @@ ALTER TYPE weekday RENAME VALUE 'wednesday' TO 'humpday';
 statement ok
 ALTER TYPE weekday RENAME TO workday;
 
+skipif config local-mixed-23.2
+skipif config local-mixed-23.1
 query T
 SELECT get_body_str('f_rewrite');
 ----
 "DECLARE\nday @100107 := b'\\x80':::@100107;\ntoday @100107 := b'\\xa0':::@100107;\ncurs REFCURSOR := b' ':::@100107::STRING;\ncurs2 CURSOR FOR SELECT b'@':::@100107;\nBEGIN\nRAISE NOTICE\nUSING MESSAGE = format('val: %d':::STRING, b'\\x80':::@100107);\nRAISE NOTICE 'val1: %, val2: %', b'\\x80':::@100107, b'\\xa0':::@100107;\nSELECT public.f_nested(1:::INT8, b'\\x80':::@100107);\nCALL public.p_nested(1, b'\\x80':::@100107, day);\nDECLARE\nyesterday @100107 := b'\\x80':::@100107;\nBEGIN\nRAISE NOTICE 'val3: %, val4: %', b'\\x80':::@100107, b'\\xa0':::@100107;\nIF yesterday IS NOT NULL THEN\n\tSELECT b'\\x80':::@100107;\nEND IF;\nEXCEPTION\nWHEN division_by_zero THEN\nRAISE NOTICE\nUSING MESSAGE = format('val: %d':::STRING, b'\\x80':::@100107);\nWHEN not_null_violation THEN\nSELECT b'\\x80':::@100107;\nRAISE NOTICE 'val: %', b'\\x80':::@100107;\nEND;\nWHILE day != b'\\x80':::@100107 LOOP\nday := b'\\xc0':::@100107;\nSELECT b'\\x80':::@100107;\nIF day = b'\\x80':::@100107 THEN\n\tday := b'\\xa0':::@100107;\n\tSELECT b'@':::@100107;\n\tCONTINUE;\nELSIF day = b' ':::@100107 THEN\n\tSELECT b'@':::@100107 INTO day;\nELSIF day = b'@':::@100107 THEN\n\tSELECT b'\\x80':::@100107 INTO day;\n\tSELECT b'\\x80':::@100107;\nEND IF;\nEND LOOP;\nOPEN curs FOR SELECT b'\\x80':::@100107;\nRETURN b'\\x80':::@100107;\nEND;\n"
 
+skipif config local-mixed-23.2
+skipif config local-mixed-23.1
 query TT
 SHOW CREATE FUNCTION f_rewrite;
 ----
 f_rewrite  CREATE FUNCTION public.f_rewrite()
-             RETURNS public.workday
+             RETURNS test.public.workday
              VOLATILE
              NOT LEAKPROOF
              CALLED ON NULL INPUT
              LANGUAGE plpgsql
-             SECURITY INVOKER
              AS $$
              DECLARE
-             day public.workday := 'humpday':::public.workday;
-             today public.workday := 'thursday':::public.workday;
-             curs REFCURSOR := 'monday':::public.workday::STRING;
-             curs2 CURSOR FOR SELECT 'tuesday':::public.workday;
+             day test.public.workday := 'humpday':::test.public.workday;
+             today test.public.workday := 'thursday':::test.public.workday;
+             curs REFCURSOR := 'monday':::test.public.workday::STRING;
+             curs2 CURSOR FOR SELECT 'tuesday':::test.public.workday;
              BEGIN
              RAISE NOTICE
-             USING MESSAGE = format('val: %d':::STRING, 'humpday':::public.workday);
-             RAISE NOTICE 'val1: %, val2: %', 'humpday':::public.workday, 'thursday':::public.workday;
-             SELECT public.f_nested(1:::INT8, 'humpday':::public.workday);
-             CALL public.p_nested(1, 'humpday':::public.workday, day);
+             USING MESSAGE = format('val: %d':::STRING, 'humpday':::test.public.workday);
+             RAISE NOTICE 'val1: %, val2: %', 'humpday':::test.public.workday, 'thursday':::test.public.workday;
+             SELECT public.f_nested(1:::INT8, 'humpday':::test.public.workday);
+             CALL public.p_nested(1, 'humpday':::test.public.workday, day);
              DECLARE
-             yesterday public.workday := 'humpday':::public.workday;
+             yesterday test.public.workday := 'humpday':::test.public.workday;
              BEGIN
-             RAISE NOTICE 'val3: %, val4: %', 'humpday':::public.workday, 'thursday':::public.workday;
+             RAISE NOTICE 'val3: %, val4: %', 'humpday':::test.public.workday, 'thursday':::test.public.workday;
              IF yesterday IS NOT NULL THEN
-               SELECT 'humpday':::public.workday;
+               SELECT 'humpday':::test.public.workday;
              END IF;
              EXCEPTION
              WHEN division_by_zero THEN
              RAISE NOTICE
-             USING MESSAGE = format('val: %d':::STRING, 'humpday':::public.workday);
+             USING MESSAGE = format('val: %d':::STRING, 'humpday':::test.public.workday);
              WHEN not_null_violation THEN
-             SELECT 'humpday':::public.workday;
-             RAISE NOTICE 'val: %', 'humpday':::public.workday;
+             SELECT 'humpday':::test.public.workday;
+             RAISE NOTICE 'val: %', 'humpday':::test.public.workday;
              END;
-             WHILE day != 'humpday':::public.workday LOOP
-             day := 'friday':::public.workday;
-             SELECT 'humpday':::public.workday;
-             IF day = 'humpday':::public.workday THEN
-               day := 'thursday':::public.workday;
-               SELECT 'tuesday':::public.workday;
+             WHILE day != 'humpday':::test.public.workday LOOP
+             day := 'friday':::test.public.workday;
+             SELECT 'humpday':::test.public.workday;
+             IF day = 'humpday':::test.public.workday THEN
+               day := 'thursday':::test.public.workday;
+               SELECT 'tuesday':::test.public.workday;
                CONTINUE;
-             ELSIF day = 'monday':::public.workday THEN
-               SELECT 'tuesday':::public.workday INTO day;
-             ELSIF day = 'tuesday':::public.workday THEN
-               SELECT 'humpday':::public.workday INTO day;
-               SELECT 'humpday':::public.workday;
+             ELSIF day = 'monday':::test.public.workday THEN
+               SELECT 'tuesday':::test.public.workday INTO day;
+             ELSIF day = 'tuesday':::test.public.workday THEN
+               SELECT 'humpday':::test.public.workday INTO day;
+               SELECT 'humpday':::test.public.workday;
              END IF;
              END LOOP;
-             OPEN curs FOR SELECT 'humpday':::public.workday;
-             RETURN 'humpday':::public.workday;
+             OPEN curs FOR SELECT 'humpday':::test.public.workday;
+             RETURN 'humpday':::test.public.workday;
              END;
            $$
 
@@ -412,6 +420,8 @@ ALTER TYPE workday RENAME TO weekday;
 statement ok
 ALTER TYPE weekday RENAME VALUE 'humpday' TO 'wednesday';
 
+skipif config local-mixed-23.2
+skipif config local-mixed-23.1
 statement ok
 DROP FUNCTION f_rewrite();
 
@@ -432,17 +442,16 @@ SELECT get_body_str('f_rewrite');
 query TT
 SHOW CREATE FUNCTION f_rewrite;
 ----
-f_rewrite  CREATE FUNCTION public.f_rewrite(INOUT param1 public.weekday, OUT param2 public.weekday)
+f_rewrite  CREATE FUNCTION public.f_rewrite(INOUT param1 test.public.weekday, OUT param2 test.public.weekday)
              RETURNS RECORD
              VOLATILE
              NOT LEAKPROOF
              CALLED ON NULL INPUT
              LANGUAGE plpgsql
-             SECURITY INVOKER
              AS $$
              BEGIN
              param2 := param1;
-             param1 := 'friday':::public.weekday;
+             param1 := 'friday':::test.public.weekday;
              END;
            $$
 
@@ -460,17 +469,16 @@ SELECT get_body_str('f_rewrite');
 query TT
 SHOW CREATE FUNCTION f_rewrite;
 ----
-f_rewrite  CREATE FUNCTION public.f_rewrite(INOUT param1 public.workday, OUT param2 public.workday)
+f_rewrite  CREATE FUNCTION public.f_rewrite(INOUT param1 test.public.workday, OUT param2 test.public.workday)
              RETURNS RECORD
              VOLATILE
              NOT LEAKPROOF
              CALLED ON NULL INPUT
              LANGUAGE plpgsql
-             SECURITY INVOKER
              AS $$
              BEGIN
              param2 := param1;
-             param1 := 'humpday':::public.workday;
+             param1 := 'humpday':::test.public.workday;
              END;
            $$
 
@@ -537,13 +545,12 @@ SELECT get_body_str('p_rewrite');
 query TT
 SHOW CREATE PROCEDURE p_rewrite;
 ----
-p_rewrite  CREATE PROCEDURE public.p_rewrite(INOUT param1 public.weekday, OUT param2 public.weekday)
+p_rewrite  CREATE PROCEDURE public.p_rewrite(INOUT param1 test.public.weekday, OUT param2 test.public.weekday)
              LANGUAGE plpgsql
-             SECURITY INVOKER
              AS $$
              BEGIN
              param2 := param1;
-             param1 := 'friday':::public.weekday;
+             param1 := 'friday':::test.public.weekday;
              END;
            $$
 
@@ -561,13 +568,12 @@ SELECT get_body_str('p_rewrite');
 query TT
 SHOW CREATE PROCEDURE p_rewrite;
 ----
-p_rewrite  CREATE PROCEDURE public.p_rewrite(INOUT param1 public.workday, OUT param2 public.workday)
+p_rewrite  CREATE PROCEDURE public.p_rewrite(INOUT param1 test.public.workday, OUT param2 test.public.workday)
              LANGUAGE plpgsql
-             SECURITY INVOKER
              AS $$
              BEGIN
              param2 := param1;
-             param1 := 'humpday':::public.workday;
+             param1 := 'humpday':::test.public.workday;
              END;
            $$
 
@@ -580,116 +586,5 @@ ALTER TYPE weekday RENAME VALUE 'humpday' TO 'friday';
 
 statement ok
 DROP PROCEDURE p_rewrite;
-
-subtest end
-
-subtest do_block
-
-statement ok
-CREATE FUNCTION f_rewrite() RETURNS INT AS $$
-  BEGIN
-    DO $foo$
-      BEGIN
-        SELECT nextval('seq');
-        SELECT 'wednesday'::weekday;
-        RAISE NOTICE 'foo';
-        DO $bar$
-          BEGIN
-            RAISE NOTICE 'bar';
-            SELECT nextval('seq');
-            SELECT 'wednesday'::weekday;
-          END;
-        $bar$;
-      END
-    $foo$;
-    RETURN 100;
-  END
-$$ LANGUAGE PLpgSQL;
-
-query T
-SELECT get_body_str('f_rewrite');
-----
-"BEGIN\nDO $funcbody$\nBEGIN\nSELECT nextval(106:::REGCLASS);\nSELECT b'\\x80':::@100107;\nRAISE NOTICE 'foo';\nDO $$\nBEGIN\nRAISE NOTICE 'bar';\nSELECT nextval(106:::REGCLASS);\nSELECT b'\\x80':::@100107;\nEND;\n$$;\nEND;\n$funcbody$;\nRETURN 100;\nEND;\n"
-
-query TT
-SHOW CREATE FUNCTION f_rewrite;
-----
-f_rewrite  CREATE FUNCTION public.f_rewrite()
-             RETURNS INT8
-             VOLATILE
-             NOT LEAKPROOF
-             CALLED ON NULL INPUT
-             LANGUAGE plpgsql
-             SECURITY INVOKER
-             AS $funcbodyx$
-             BEGIN
-             DO $funcbody$
-             BEGIN
-             SELECT nextval('public.seq'::REGCLASS);
-             SELECT 'wednesday':::public.weekday;
-             RAISE NOTICE 'foo';
-             DO $$
-             BEGIN
-             RAISE NOTICE 'bar';
-             SELECT nextval('public.seq'::REGCLASS);
-             SELECT 'wednesday':::public.weekday;
-             END;
-             $$;
-             END;
-             $funcbody$;
-             RETURN 100;
-             END;
-           $funcbodyx$
-
-statement ok
-ALTER TYPE weekday RENAME VALUE 'friday' TO 'humpday';
-
-statement ok
-ALTER TYPE weekday RENAME TO workday;
-
-query T
-SELECT get_body_str('f_rewrite');
-----
-"BEGIN\nDO $funcbody$\nBEGIN\nSELECT nextval(106:::REGCLASS);\nSELECT b'\\x80':::@100107;\nRAISE NOTICE 'foo';\nDO $$\nBEGIN\nRAISE NOTICE 'bar';\nSELECT nextval(106:::REGCLASS);\nSELECT b'\\x80':::@100107;\nEND;\n$$;\nEND;\n$funcbody$;\nRETURN 100;\nEND;\n"
-
-query TT
-SHOW CREATE FUNCTION f_rewrite;
-----
-f_rewrite  CREATE FUNCTION public.f_rewrite()
-             RETURNS INT8
-             VOLATILE
-             NOT LEAKPROOF
-             CALLED ON NULL INPUT
-             LANGUAGE plpgsql
-             SECURITY INVOKER
-             AS $funcbodyx$
-             BEGIN
-             DO $funcbody$
-             BEGIN
-             SELECT nextval('public.seq'::REGCLASS);
-             SELECT 'wednesday':::public.workday;
-             RAISE NOTICE 'foo';
-             DO $$
-             BEGIN
-             RAISE NOTICE 'bar';
-             SELECT nextval('public.seq'::REGCLASS);
-             SELECT 'wednesday':::public.workday;
-             END;
-             $$;
-             END;
-             $funcbody$;
-             RETURN 100;
-             END;
-           $funcbodyx$
-
-# Reset types for subtest.
-statement ok
-ALTER TYPE workday RENAME TO weekday;
-
-statement ok
-ALTER TYPE weekday RENAME VALUE 'humpday' TO 'friday';
-
-statement ok
-DROP FUNCTION f_rewrite;
 
 subtest end

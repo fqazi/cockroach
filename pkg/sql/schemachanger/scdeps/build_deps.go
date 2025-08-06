@@ -8,7 +8,6 @@ package scdeps
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -22,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/resolver"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scbuild"
-	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scdecomp"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -52,12 +50,6 @@ func NewBuilderDependencies(
 	eventLogger scbuild.EventLogger,
 	referenceProviderFactory scbuild.ReferenceProviderFactory,
 	descIDGenerator eval.DescIDGenerator,
-	temporarySchemaProvider scbuild.TemporarySchemaProvider,
-	nodesStatusInfo scbuild.NodesStatusInfo,
-	regionProvider scbuild.RegionProvider,
-	semaCtx *tree.SemaContext,
-	evalCtx *eval.Context,
-	defaultZoneConfig *zonepb.ZoneConfig,
 ) scbuild.Dependencies {
 	return &buildDeps{
 		clusterID:       clusterID,
@@ -77,12 +69,6 @@ func NewBuilderDependencies(
 		eventLogger:              eventLogger,
 		descIDGenerator:          descIDGenerator,
 		referenceProviderFactory: referenceProviderFactory,
-		temporarySchemaProvider:  temporarySchemaProvider,
-		nodesStatusInfo:          nodesStatusInfo,
-		regionProvider:           regionProvider,
-		semaCtx:                  semaCtx,
-		evalCtx:                  evalCtx,
-		defaultZoneConfig:        defaultZoneConfig,
 	}
 }
 
@@ -102,12 +88,6 @@ type buildDeps struct {
 	eventLogger              scbuild.EventLogger
 	referenceProviderFactory scbuild.ReferenceProviderFactory
 	descIDGenerator          eval.DescIDGenerator
-	temporarySchemaProvider  scbuild.TemporarySchemaProvider
-	nodesStatusInfo          scbuild.NodesStatusInfo
-	regionProvider           scbuild.RegionProvider
-	semaCtx                  *tree.SemaContext
-	evalCtx                  *eval.Context
-	defaultZoneConfig        *zonepb.ZoneConfig
 }
 
 var _ scbuild.CatalogReader = (*buildDeps)(nil)
@@ -300,7 +280,7 @@ func (d *buildDeps) CurrentDatabase() string {
 
 // MustReadDescriptor implements the scbuild.CatalogReader interface.
 func (d *buildDeps) MustReadDescriptor(ctx context.Context, id descpb.ID) catalog.Descriptor {
-	desc, err := d.descsCollection.ByIDWithoutLeased(d.txn).Get().Desc(ctx, id)
+	desc, err := d.descsCollection.ByID(d.txn).Get().Desc(ctx, id)
 	if err != nil {
 		panic(err)
 	}
@@ -375,16 +355,6 @@ func (d *buildDeps) ClusterSettings() *cluster.Settings {
 // Statements implements the scbuild.Dependencies interface.
 func (d *buildDeps) Statements() []string {
 	return d.statements
-}
-
-// EvalCtx implements the scbuild.Dependencies interface.
-func (d *buildDeps) EvalCtx() *eval.Context {
-	return d.evalCtx
-}
-
-// SemaCtx implements the scbuild.Dependencies interface.
-func (d *buildDeps) SemaCtx() *tree.SemaContext {
-	return d.semaCtx
 }
 
 // AstFormatter implements the scbuild.Dependencies interface.
@@ -477,7 +447,7 @@ func (d *buildDeps) DescriptorCommentGetter() scbuild.CommentGetter {
 	return d.descsCollection
 }
 
-func (d *buildDeps) ZoneConfigGetter() scdecomp.ZoneConfigGetter {
+func (d *buildDeps) ZoneConfigGetter() scbuild.ZoneConfigGetter {
 	return &zoneConfigGetter{
 		txn:         d.txn,
 		descriptors: d.descsCollection,
@@ -511,20 +481,4 @@ func (d *buildDeps) DescIDGenerator() eval.DescIDGenerator {
 
 func (d *buildDeps) ReferenceProviderFactory() scbuild.ReferenceProviderFactory {
 	return d.referenceProviderFactory
-}
-
-func (d *buildDeps) TemporarySchemaProvider() scbuild.TemporarySchemaProvider {
-	return d.temporarySchemaProvider
-}
-
-func (d *buildDeps) NodesStatusInfo() scbuild.NodesStatusInfo {
-	return d.nodesStatusInfo
-}
-
-func (d *buildDeps) RegionProvider() scbuild.RegionProvider {
-	return d.regionProvider
-}
-
-func (d *buildDeps) GetDefaultZoneConfig() *zonepb.ZoneConfig {
-	return d.defaultZoneConfig
 }

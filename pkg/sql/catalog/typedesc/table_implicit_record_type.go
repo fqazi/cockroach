@@ -189,9 +189,6 @@ func (v *tableImplicitRecordType) ForEachUDTDependentForHydration(_ func(t *type
 	return nil
 }
 
-// MaybeRequiresTypeHydration implements the catalog.Descriptor interface.
-func (v *tableImplicitRecordType) MaybeRequiresTypeHydration() bool { return false }
-
 // TypeDesc implements the catalog.TypeDescriptor interface.
 func (v *tableImplicitRecordType) TypeDesc() *descpb.TypeDescriptor {
 	v.panicNotSupported("TypeDesc")
@@ -344,9 +341,4 @@ func (v *tableImplicitRecordType) AsTableImplicitRecordTypeDescriptor() catalog.
 // catalog.TableImplicitRecordTypeDescriptor interface.
 func (v *tableImplicitRecordType) UnderlyingTableDescriptor() catalog.TableDescriptor {
 	return v.desc
-}
-
-// GetReplicatedPCRVersion is a part of the catalog.Descriptor
-func (v *tableImplicitRecordType) GetReplicatedPCRVersion() descpb.DescriptorVersion {
-	return v.desc.GetReplicatedPCRVersion()
 }

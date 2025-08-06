@@ -50,9 +50,9 @@ func convertToVecTree(
 		// the creator.
 		&fakeBatchReceiver{},
 		localProcessors,
-		nil, /* localVectorSources */
-		nil, /* onFlowCleanupEnd */
-		"",  /* statementSQL */
+		nil,       /* localVectorSources */
+		func() {}, /* onFlowCleanupEnd */
+		"",        /* statementSQL */
 	)
 	creator := newVectorizedFlowCreator(
 		flowBase, nil /* componentCreator */, recordingStats,
@@ -60,13 +60,6 @@ func convertToVecTree(
 	)
 	fuseOpt := flowinfra.FuseNormally
 	if flowCtx.Local && !execinfra.HasParallelProcessors(flow) {
-		// TODO(yuzefovich): this check doesn't exactly match what we have on
-		// the main code path where we use !LocalState.MustUseLeafTxn() in the
-		// conditional. Concretely, it means that if we choose to use the
-		// Streamer at the execution time, we will use FuseNormally, yet here
-		// we'd pick FuseAggressively. The issue is minor though since we do
-		// capture the correct vectorized plan in the stmt bundle, so only
-		// explicit EXPLAIN (VEC) is affected.
 		fuseOpt = flowinfra.FuseAggressively
 	}
 	opChains, _, err = creator.setupFlow(ctx, flow.Processors, fuseOpt)
@@ -133,13 +126,14 @@ func ExplainVec(
 			for _, flow := range sortedFlows {
 				var cleanup func()
 				opChains, cleanup, err = convertToVecTree(ctx, flowCtx, flow.flow, localProcessors, recordingStats)
+				// We need to delay the cleanup until after the tree has been
+				// formatted.
+				defer cleanup()
 				if err != nil {
 					conversionErr = err
-					cleanup()
 					return
 				}
 				formatChains(root, flow.sqlInstanceID, opChains, verbose)
-				cleanup()
 			}
 		}
 	}); err != nil {

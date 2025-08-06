@@ -24,22 +24,17 @@ func _() {
 	_ = x[TemporaryIndexID-9]
 	_ = x[SourceIndexID-10]
 	_ = x[RecreateSourceIndexID-11]
-	_ = x[SeqNum-12]
-	_ = x[TriggerID-13]
-	_ = x[TargetStatus-14]
-	_ = x[CurrentStatus-15]
-	_ = x[Element-16]
-	_ = x[Target-17]
-	_ = x[ReferencedTypeIDs-18]
-	_ = x[ReferencedSequenceIDs-19]
-	_ = x[ReferencedFunctionIDs-20]
-	_ = x[ReferencedColumnIDs-21]
-	_ = x[Expr-22]
-	_ = x[TypeName-23]
-	_ = x[PartitionName-24]
-	_ = x[Usage-25]
-	_ = x[PolicyID-26]
-	_ = x[AttrMax-26]
+	_ = x[TargetStatus-12]
+	_ = x[CurrentStatus-13]
+	_ = x[Element-14]
+	_ = x[Target-15]
+	_ = x[ReferencedTypeIDs-16]
+	_ = x[ReferencedSequenceIDs-17]
+	_ = x[ReferencedFunctionIDs-18]
+	_ = x[ReferencedColumnIDs-19]
+	_ = x[Expr-20]
+	_ = x[PartitionName-21]
+	_ = x[AttrMax-21]
 }
 
 func (i Attr) String() string {
@@ -66,10 +61,6 @@ func (i Attr) String() string {
 		return "SourceIndexID"
 	case RecreateSourceIndexID:
 		return "RecreateSourceIndexID"
-	case SeqNum:
-		return "SeqNum"
-	case TriggerID:
-		return "TriggerID"
 	case TargetStatus:
 		return "TargetStatus"
 	case CurrentStatus:
@@ -88,14 +79,8 @@ func (i Attr) String() string {
 		return "ReferencedColumnIDs"
 	case Expr:
 		return "Expr"
-	case TypeName:
-		return "TypeName"
 	case PartitionName:
 		return "PartitionName"
-	case Usage:
-		return "Usage"
-	case PolicyID:
-		return "PolicyID"
 	default:
 		return "Attr(" + strconv.FormatInt(int64(i), 10) + ")"
 	}

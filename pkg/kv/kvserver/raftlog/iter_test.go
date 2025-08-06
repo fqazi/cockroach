@@ -45,7 +45,7 @@ func ents(inds ...uint64) []raftpb.Entry {
 			if ind%2 == 0 {
 				enc = EntryEncodingSideloadedWithAC
 			}
-			data = EncodeCommandBytes(enc, cmdID, b, 0 /* pri */)
+			data = EncodeCommandBytes(enc, cmdID, b)
 		case raftpb.EntryConfChangeV2:
 			c := kvserverpb.ConfChangeContext{
 				CommandID: string(cmdID),

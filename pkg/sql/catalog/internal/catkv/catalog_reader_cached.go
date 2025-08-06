@@ -11,7 +11,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/nstree"
@@ -104,7 +103,7 @@ func (c *cachedCatalogReader) IsIDInCache(id descpb.ID) bool {
 }
 
 // IsNameInCache is part of the CatalogReader interface.
-func (c *cachedCatalogReader) IsNameInCache(key descpb.NameInfo) bool {
+func (c *cachedCatalogReader) IsNameInCache(key catalog.NameKey) bool {
 	return c.cache.LookupNamespaceEntry(key) != nil
 }
 
@@ -219,15 +218,6 @@ func (c *cachedCatalogReader) ScanAll(ctx context.Context, txn *kv.Txn) (nstree.
 		return nstree.Catalog{}, err
 	}
 	return read, nil
-}
-
-// ScanDescriptorsInSpans is part of the CatalogReader interface.
-func (c *cachedCatalogReader) ScanDescriptorsInSpans(
-	ctx context.Context, txn *kv.Txn, spans []roachpb.Span,
-) (nstree.Catalog, error) {
-	// TODO (brian.dillmann@): explore caching these calls.
-	// https://github.com/cockroachdb/cockroach/issues/134666
-	return c.cr.ScanDescriptorsInSpans(ctx, txn, spans)
 }
 
 // ScanNamespaceForDatabases is part of the CatalogReader interface.
@@ -388,8 +378,8 @@ func (c *cachedCatalogReader) GetByNames(
 		if c.byNameState[ni].hasGetNamespaceEntries || c.hasScanAll {
 			continue
 		}
-		if id, ts := c.systemDatabaseCache.lookupDescriptorID(c.version, ni); id != descpb.InvalidID {
-			c.cache.UpsertNamespaceEntry(ni, id, ts)
+		if id, ts := c.systemDatabaseCache.lookupDescriptorID(c.version, &ni); id != descpb.InvalidID {
+			c.cache.UpsertNamespaceEntry(&ni, id, ts)
 			s := c.byNameState[ni]
 			s.hasGetNamespaceEntries = true
 			c.setByNameState(ni, s)

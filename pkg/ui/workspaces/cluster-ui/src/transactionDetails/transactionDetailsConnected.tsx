@@ -6,43 +6,38 @@
 import { connect } from "react-redux";
 import { withRouter } from "react-router-dom";
 import { Dispatch } from "redux";
-
-import { StatementsRequest } from "src/api/statementsApi";
+import { actions as localStorageActions } from "src/store/localStorage";
 import { AppState, uiConfigActions } from "src/store";
+import { actions as nodesActions } from "../store/nodes";
+import { actions as sqlStatsActions } from "src/store/sqlStats";
+import { actions as txnStatsActions } from "src/store/transactionStats";
+import { TxnInsightsRequest } from "../api";
 import {
   actions as transactionInsights,
   selectTxnInsightsByFingerprint,
 } from "src/store/insights/transactionInsights";
-import { actions as localStorageActions } from "src/store/localStorage";
-import { actions as sqlStatsActions } from "src/store/sqlStats";
-import { actions as txnStatsActions } from "src/store/transactionStats";
-import { selectRequestTime } from "src/transactionsPage/transactionsPage.selectors";
-
-import { TxnInsightsRequest } from "../api";
-import { actions as analyticsActions } from "../store/analytics";
-import {
-  nodeRegionsByIDSelector,
-  actions as nodesActions,
-} from "../store/nodes";
-import {
-  selectIsTenant,
-  selectHasViewActivityRedactedRole,
-  selectHasAdminRole,
-} from "../store/uiConfig";
-import {
-  selectTimeScale,
-  selectTxnsPageLimit,
-  selectTxnsPageReqSort,
-} from "../store/utils/selectors";
-import { TimeScale } from "../timeScaleDropdown";
-import { txnFingerprintIdAttr, getMatchParamByName } from "../util";
-
 import {
   TransactionDetails,
   TransactionDetailsDispatchProps,
   TransactionDetailsProps,
   TransactionDetailsStateProps,
 } from "./transactionDetails";
+import {
+  selectIsTenant,
+  selectHasViewActivityRedactedRole,
+  selectHasAdminRole,
+} from "../store/uiConfig";
+import { nodeRegionsByIDSelector } from "../store/nodes";
+import {
+  selectTimeScale,
+  selectTxnsPageLimit,
+  selectTxnsPageReqSort,
+} from "../store/utils/selectors";
+import { StatementsRequest } from "src/api/statementsApi";
+import { txnFingerprintIdAttr, getMatchParamByName } from "../util";
+import { TimeScale } from "../timeScaleDropdown";
+import { actions as analyticsActions } from "../store/analytics";
+import { selectRequestTime } from "src/transactionsPage/transactionsPage.selectors";
 
 const mapStateToProps = (
   state: AppState,
@@ -100,6 +95,6 @@ const mapDispatchToProps = (
   },
 });
 
-export const TransactionDetailsPageConnected = withRouter(
+export const TransactionDetailsPageConnected = withRouter<any, any>(
   connect(mapStateToProps, mapDispatchToProps)(TransactionDetails),
 );

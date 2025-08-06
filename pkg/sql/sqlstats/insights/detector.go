@@ -11,18 +11,17 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
 	"github.com/cockroachdb/cockroach/pkg/util/quantile"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 )
 
 type detector interface {
 	enabled() bool
-	isSlow(stats *sqlstats.RecordedStmtStats) bool
+	isSlow(*Statement) bool
 }
 
 var _ detector = &compositeDetector{}
-var _ detector = &AnomalyDetector{}
+var _ detector = &anomalyDetector{}
 var _ detector = &latencyThresholdDetector{}
 
 type compositeDetector struct {
@@ -38,7 +37,7 @@ func (d *compositeDetector) enabled() bool {
 	return false
 }
 
-func (d *compositeDetector) isSlow(statement *sqlstats.RecordedStmtStats) bool {
+func (d *compositeDetector) isSlow(statement *Statement) bool {
 	// Because some detectors may need to observe all statements to build up
 	// their baseline sense of what "normal" is, we avoid short-circuiting.
 	result := false
@@ -50,7 +49,7 @@ func (d *compositeDetector) isSlow(statement *sqlstats.RecordedStmtStats) bool {
 
 var desiredQuantiles = map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001}
 
-type AnomalyDetector struct {
+type anomalyDetector struct {
 	settings *cluster.Settings
 	metrics  Metrics
 	store    *list.List
@@ -66,32 +65,33 @@ type latencySummaryEntry struct {
 	value *quantile.Stream
 }
 
-func (d *AnomalyDetector) enabled() bool {
+func (d *anomalyDetector) enabled() bool {
 	return AnomalyDetectionEnabled.Get(&d.settings.SV)
 }
 
-func (d *AnomalyDetector) isSlow(stmt *sqlstats.RecordedStmtStats) (decision bool) {
+func (d *anomalyDetector) isSlow(stmt *Statement) (decision bool) {
 	if !d.enabled() {
 		return
 	}
 
-	d.withFingerprintLatencySummary(stmt.FingerprintID, stmt.ServiceLatencySec, func(latencySummary *quantile.Stream) {
-		latencySummary.Insert(stmt.ServiceLatencySec)
+	d.withFingerprintLatencySummary(stmt, func(latencySummary *quantile.Stream) {
+		latencySummary.Insert(stmt.LatencyInSeconds)
 		p50 := latencySummary.Query(0.5, true)
 		p99 := latencySummary.Query(0.99, true)
-		decision = stmt.ServiceLatencySec >= p99 &&
-			stmt.ServiceLatencySec >= 2*p50 &&
-			stmt.ServiceLatencySec >= AnomalyDetectionLatencyThreshold.Get(&d.settings.SV).Seconds()
+		decision = stmt.LatencyInSeconds >= p99 &&
+			stmt.LatencyInSeconds >= 2*p50 &&
+			stmt.LatencyInSeconds >= AnomalyDetectionLatencyThreshold.Get(&d.settings.SV).Seconds()
 	})
 
 	return
 }
 
-func (d *AnomalyDetector) GetPercentileValues(id appstatspb.StmtFingerprintID) PercentileValues {
-	// Ensure that Query doesn't flush which allows us to take the read lock.
-	const shouldFlush = false
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+func (d *anomalyDetector) GetPercentileValues(
+	id appstatspb.StmtFingerprintID, shouldFlush bool,
+) PercentileValues {
+	// latencySummary.Query might modify its own state (Stream.flush), so a read-write lock is necessary.
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	latencies := PercentileValues{}
 	if entry, ok := d.mu.index[id]; ok {
 		latencySummary := entry.Value.(latencySummaryEntry).value
@@ -104,24 +104,22 @@ func (d *AnomalyDetector) GetPercentileValues(id appstatspb.StmtFingerprintID) P
 	return latencies
 }
 
-func (d *AnomalyDetector) withFingerprintLatencySummary(
-	stmtFingerprintID appstatspb.StmtFingerprintID,
-	latencySecs float64,
-	consumer func(latencySummary *quantile.Stream),
+func (d *anomalyDetector) withFingerprintLatencySummary(
+	stmt *Statement, consumer func(latencySummary *quantile.Stream),
 ) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var latencySummary *quantile.Stream
 
-	if element, ok := d.mu.index[stmtFingerprintID]; ok {
+	if element, ok := d.mu.index[stmt.FingerprintID]; ok {
 		// We are already tracking latencies for this fingerprint.
 		latencySummary = element.Value.(latencySummaryEntry).value
 		d.store.MoveToFront(element) // Mark this latency summary as recently used.
-	} else if latencySecs >= AnomalyDetectionLatencyThreshold.Get(&d.settings.SV).Seconds() {
+	} else if stmt.LatencyInSeconds >= AnomalyDetectionLatencyThreshold.Get(&d.settings.SV).Seconds() {
 		// We want to start tracking latencies for this fingerprint.
 		latencySummary = quantile.NewTargeted(desiredQuantiles)
-		entry := latencySummaryEntry{key: stmtFingerprintID, value: latencySummary}
-		d.mu.index[stmtFingerprintID] = d.store.PushFront(entry)
+		entry := latencySummaryEntry{key: stmt.FingerprintID, value: latencySummary}
+		d.mu.index[stmt.FingerprintID] = d.store.PushFront(entry)
 		d.metrics.Fingerprints.Inc(1)
 		d.metrics.Memory.Inc(latencySummary.ByteSize())
 	} else {
@@ -144,8 +142,8 @@ func (d *AnomalyDetector) withFingerprintLatencySummary(
 	}
 }
 
-func newAnomalyDetector(settings *cluster.Settings, metrics Metrics) *AnomalyDetector {
-	anomaly := &AnomalyDetector{
+func newAnomalyDetector(settings *cluster.Settings, metrics Metrics) *anomalyDetector {
+	anomaly := &anomalyDetector{
 		settings: settings,
 		metrics:  metrics,
 		store:    list.New(),
@@ -163,14 +161,18 @@ func (d *latencyThresholdDetector) enabled() bool {
 	return LatencyThreshold.Get(&d.st.SV) > 0
 }
 
-func (d *latencyThresholdDetector) isSlow(s *sqlstats.RecordedStmtStats) bool {
-	return d.enabled() && s.ServiceLatencySec >= LatencyThreshold.Get(&d.st.SV).Seconds()
+func (d *latencyThresholdDetector) isSlow(s *Statement) bool {
+	return d.enabled() && s.LatencyInSeconds >= LatencyThreshold.Get(&d.st.SV).Seconds()
+}
+
+func isFailed(s *Statement) bool {
+	return s.Status == Statement_Failed
 }
 
 var prefixesToIgnore = []string{"SET ", "EXPLAIN "}
 
 // shouldIgnoreStatement returns true if we don't want to analyze the statement.
-func shouldIgnoreStatement(s *sqlstats.RecordedStmtStats) bool {
+func shouldIgnoreStatement(s *Statement) bool {
 	for _, start := range prefixesToIgnore {
 		if strings.HasPrefix(s.Query, start) {
 			return true

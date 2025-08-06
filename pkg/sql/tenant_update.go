@@ -9,6 +9,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -118,9 +119,11 @@ func TestingUpdateTenantRecord(
 func (p *planner) UpdateTenantResourceLimits(
 	ctx context.Context,
 	tenantID uint64,
-	availableTokens float64,
+	availableRU float64,
 	refillRate float64,
-	maxBurstTokens float64,
+	maxBurstRU float64,
+	asOf time.Time,
+	asOfConsumedRequestUnits float64,
 ) error {
 	const op = "update-resource-limits"
 	if err := p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER); err != nil {
@@ -135,8 +138,8 @@ func (p *planner) UpdateTenantResourceLimits(
 	}
 
 	return p.ExecCfg().TenantUsageServer.ReconfigureTokenBucket(
-		ctx, p.InternalSQLTxn(), roachpb.MustMakeTenantID(tenantID), availableTokens, refillRate,
-		maxBurstTokens,
+		ctx, p.InternalSQLTxn(), roachpb.MustMakeTenantID(tenantID), availableRU, refillRate,
+		maxBurstRU, asOf, asOfConsumedRequestUnits,
 	)
 }
 
@@ -169,6 +172,7 @@ func ActivateRestoredTenant(
 	// Mark the tenant as active.
 	info.DataState = mtinfopb.DataStateReady
 	info.ServiceMode = serviceMode
+	info.PreviousSourceTenant.CutoverAsOf = txn.KV().DB().Clock().Now()
 	if err := UpdateTenantRecord(ctx, settings, txn, info); err != nil {
 		return errors.Wrap(err, "activating tenant")
 	}
@@ -258,7 +262,11 @@ func stepTenantServiceState(
 		case mtinfopb.ServiceModeShared, mtinfopb.ServiceModeExternal:
 			switch targetMode {
 			case mtinfopb.ServiceModeNone:
-				return mtinfopb.ServiceModeStopping, nil
+				if settings.Version.IsActive(ctx, clusterversion.V24_1) {
+					return mtinfopb.ServiceModeStopping, nil
+				} else {
+					return mtinfopb.ServiceModeNone, nil
+				}
 			case mtinfopb.ServiceModeExternal, mtinfopb.ServiceModeShared:
 				return 0, errors.WithHint(pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
 					"cannot change service mode %v to %v directly", currentMode, targetMode),

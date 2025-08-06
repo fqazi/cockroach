@@ -6,12 +6,10 @@
 package kvcoord
 
 import (
-	"cmp"
 	"context"
-	"slices"
+	"sort"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/kv/kvclient"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
@@ -88,7 +86,7 @@ const (
 // sendError is returned.
 func NewReplicaSlice(
 	ctx context.Context,
-	nodeDescs kvclient.NodeDescStore,
+	nodeDescs NodeDescStore,
 	desc *roachpb.RangeDescriptor,
 	leaseholder *roachpb.ReplicaDescriptor,
 	filter ReplicaSliceFilter,
@@ -252,40 +250,37 @@ func (rs ReplicaSlice) OptimizeReplicaOrder(
 	}
 
 	// Sort replicas by latency and then attribute affinity.
-	slices.SortFunc(rs, func(a, b ReplicaInfo) int {
+	sort.Slice(rs, func(i, j int) bool {
 		// Always sort healthy nodes before unhealthy nodes.
-		if a.healthy != b.healthy {
-			if a.healthy {
-				return -1
-			}
-			return +1
+		if rs[i].healthy != rs[j].healthy {
+			return rs[i].healthy
 		}
 
 		// If the region is different choose the closer one.
 		// If the setting is true(default) consider locality before latency.
 		if sortByLocalityFirst {
 			// If the region is different choose the closer one.
-			if a.tierMatchLength != b.tierMatchLength {
-				return -cmp.Compare(a.tierMatchLength, b.tierMatchLength)
+			if rs[i].tierMatchLength != rs[j].tierMatchLength {
+				return rs[i].tierMatchLength > rs[j].tierMatchLength
 			}
 		}
 
 		// Use latency if they are different. The local node has a latency of -1
 		// so will sort before any other node.
-		if a.latency != b.latency {
-			return cmp.Compare(a.latency, b.latency)
+		if rs[i].latency != rs[j].latency {
+			return rs[i].latency < rs[j].latency
 		}
 
 		// If the setting is false, sort locality after latency.
 		if !sortByLocalityFirst {
 			// If the region is different choose the closer one.
-			if a.tierMatchLength != b.tierMatchLength {
-				return -cmp.Compare(a.tierMatchLength, b.tierMatchLength)
+			if rs[i].tierMatchLength != rs[j].tierMatchLength {
+				return rs[i].tierMatchLength > rs[j].tierMatchLength
 			}
 		}
 
 		// If everything else is equal sort by node id.
-		return cmp.Compare(a.NodeID, b.NodeID)
+		return rs[i].NodeID < rs[j].NodeID
 	})
 }
 

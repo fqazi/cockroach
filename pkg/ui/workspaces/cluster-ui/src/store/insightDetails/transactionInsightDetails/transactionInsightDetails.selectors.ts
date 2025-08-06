@@ -4,11 +4,11 @@
 // included in the /LICENSE file.
 
 import { createSelector } from "reselect";
-
-import { TxnInsightEvent } from "src/insights";
-import { selectID, selectStmtInsights } from "src/selectors/common";
-import { selectTxnInsightDetailsCombiner } from "src/selectors/insightsCommon.selectors";
 import { AppState } from "src/store/reducers";
+import { selectID } from "src/selectors/common";
+import { selectTxnInsightDetailsCombiner } from "src/selectors/insightsCommon.selectors";
+import { TxnInsightEvent } from "src/insights";
+import { selectStmtInsights } from "src/store/insights/statementInsights";
 
 const selectTxnContentionInsightsDetails = createSelector(
   (state: AppState) => state.adminUI?.txnInsightDetails.cachedData,

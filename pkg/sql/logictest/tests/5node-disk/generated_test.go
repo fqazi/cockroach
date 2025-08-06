@@ -25,7 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 )
 
-const configIdx = 9
+const configIdx = 8
 
 var logicTestDir string
 
@@ -127,13 +127,6 @@ func TestLogic_distsql_enum(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "distsql_enum")
-}
-
-func TestLogic_distsql_inspect(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "distsql_inspect")
 }
 
 func TestLogic_distsql_numtables(

@@ -73,7 +73,7 @@ func NewEntryDecoderWithFormat(
 		}
 		in = io.MultiReader(read, in)
 	}
-	f, ok := FormatParsers[format]
+	f, ok := formatParsers[format]
 	if !ok {
 		return nil, errors.Newf("unknown log file format: %s", format)
 	}
@@ -91,12 +91,6 @@ func NewEntryDecoderWithFormat(
 			sensitiveEditor: getEditor(editMode),
 		}
 		decoder.scanner.Split(decoder.split)
-		d = decoder
-	case "v1-zip-upload":
-		decoder := &entryDecoderV1ZipUpload{
-			reader:          bufio.NewReader(in),
-			sensitiveEditor: getEditor(editMode),
-		}
 		d = decoder
 	case "json":
 		d = &entryDecoderJSON{
@@ -128,7 +122,7 @@ func ReadFormatFromLogFile(in io.Reader) (read io.Reader, format string, err err
 	var buf bytes.Buffer
 	rest := bufio.NewReader(in)
 	r := io.TeeReader(rest, &buf)
-	const headerBytes = 4 * 8192
+	const headerBytes = 8096
 	header := make([]byte, headerBytes)
 	n, err := r.Read(header)
 	if err != nil {

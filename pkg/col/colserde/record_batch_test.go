@@ -227,9 +227,7 @@ func randomDataFromType(rng *rand.Rand, t *types.T, n int, nullProbability float
 		)
 		for i := range data {
 			d := randgen.RandDatum(rng, t, false /* nullOk */)
-			data[i], scratch, err = valueside.EncodeWithScratch(
-				data[i], valueside.NoColumnID, d, scratch[:0],
-			)
+			data[i], err = valueside.Encode(data[i], valueside.NoColumnID, d, scratch)
 			if err != nil {
 				panic(err)
 			}
@@ -346,7 +344,7 @@ func TestRecordBatchSerializerDeserializeMemoryEstimate(t *testing.T) {
 
 	c, err := colserde.NewArrowBatchConverter(typs, colserde.BiDirectional, testMemAcc)
 	require.NoError(t, err)
-	defer c.Close(context.Background())
+	defer c.Release(context.Background())
 	r, err := colserde.NewRecordBatchSerializer(typs)
 	require.NoError(t, err)
 	require.NoError(t, roundTripBatch(src, dest, c, r))

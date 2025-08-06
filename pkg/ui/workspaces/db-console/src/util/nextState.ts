@@ -3,7 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import assign from "lodash/assign";
+import _ from "lodash";
 
 /**
  * nextState is a utility function that allows type-safe replacement of fields
@@ -34,5 +34,5 @@ export default function nextState<T extends Object>(
   lastState: T,
   changes: Partial<T>,
 ): T {
-  return assign({}, lastState, changes);
+  return _.assign({}, lastState, changes);
 }

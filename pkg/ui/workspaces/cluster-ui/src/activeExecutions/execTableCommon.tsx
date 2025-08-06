@@ -3,17 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
 import React from "react";
-import { Link } from "react-router-dom";
-
-import { ColumnDescriptor } from "src/sortedtable";
-import { capitalize, DATE_FORMAT, Duration } from "src/util";
-
-import { Timestamp, Timezone } from "../timestamp";
-
-import { StatusIcon } from "./statusIcon";
+import { Tooltip } from "@cockroachlabs/ui-components";
 import { ExecutionType, ActiveExecution } from "./types";
+import { ColumnDescriptor } from "src/sortedtable";
+import { Link } from "react-router-dom";
+import { capitalize, DATE_FORMAT, Duration } from "src/util";
+import { StatusIcon } from "./statusIcon";
+import { Timestamp, Timezone } from "../timestamp";
 
 export type ExecutionsColumn =
   | "applicationName"

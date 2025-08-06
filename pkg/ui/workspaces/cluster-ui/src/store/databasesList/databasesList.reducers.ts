@@ -4,9 +4,7 @@
 // included in the /LICENSE file.
 
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-
 import { DatabasesListResponse } from "src/api";
-
 import { DOMAIN_NAME, noopReducer } from "../utils";
 
 export type DatabasesListState = {

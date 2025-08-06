@@ -12,7 +12,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/sqlproxyccl/tenant"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -160,19 +159,6 @@ func (d *TestStaticDirectoryServer) WatchPods(
 	c := make(chan *tenant.WatchPodsResponse, 10)
 	chElement := addListener(c)
 
-	initialPods := func() (result []tenant.WatchPodsResponse) {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		for _, pods := range d.mu.tenantPods {
-			for _, pod := range pods {
-				result = append(result, tenant.WatchPodsResponse{
-					Pod: protoutil.Clone(pod).(*tenant.Pod),
-				})
-			}
-		}
-		return result
-	}()
-
 	return stopper.RunTask(
 		server.Context(),
 		"watch-pods-server",
@@ -183,24 +169,19 @@ func (d *TestStaticDirectoryServer) WatchPods(
 				}
 			}()
 
-			for i := range initialPods {
-				if err := server.Send(&initialPods[i]); err != nil {
-					return
-				}
-			}
-
-			for {
+			for watch := true; watch; {
 				select {
 				case e, ok := <-c:
 					// Channel was closed.
 					if !ok {
-						return
+						watch = false
+						break
 					}
 					if err := server.Send(e); err != nil {
-						return
+						watch = false
 					}
 				case <-stopper.ShouldQuiesce():
-					return
+					watch = false
 				}
 			}
 		},
@@ -290,18 +271,6 @@ func (d *TestStaticDirectoryServer) WatchTenants(
 	c := make(chan *tenant.WatchTenantsResponse, 10)
 	chElement := addListener(c)
 
-	initialTenants := func() (result []tenant.WatchTenantsResponse) {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		for id := range d.mu.tenants {
-			result = append(result, tenant.WatchTenantsResponse{
-				Type:   tenant.EVENT_ADDED,
-				Tenant: protoutil.Clone(d.mu.tenants[id]).(*tenant.Tenant),
-			})
-		}
-		return result
-	}()
-
 	return stopper.RunTask(
 		server.Context(),
 		"watch-tenants-server",
@@ -312,24 +281,19 @@ func (d *TestStaticDirectoryServer) WatchTenants(
 				}
 			}()
 
-			for i := range initialTenants {
-				if err := server.Send(&initialTenants[i]); err != nil {
-					return
-				}
-			}
-
-			for {
+			for watch := true; watch; {
 				select {
 				case e, ok := <-c:
 					// Channel was closed.
 					if !ok {
-						return
+						watch = false
+						break
 					}
 					if err := server.Send(e); err != nil {
-						return
+						watch = false
 					}
 				case <-stopper.ShouldQuiesce():
-					return
+					watch = false
 				}
 			}
 		},
@@ -594,10 +558,12 @@ func (d *TestStaticDirectoryServer) notifyTenantUpdateLocked(
 	typ tenant.WatchEventType, t *tenant.Tenant,
 ) {
 	// Make a copy of the tenant to prevent race issues.
-	res := &tenant.WatchTenantsResponse{
-		Type:   typ,
-		Tenant: protoutil.Clone(t).(*tenant.Tenant),
-	}
+	copyTenant := *t
+	copyTenant.AllowedCIDRRanges = make([]string, len(t.AllowedCIDRRanges))
+	copy(copyTenant.AllowedCIDRRanges, t.AllowedCIDRRanges)
+	copyTenant.AllowedPrivateEndpoints = make([]string, len(t.AllowedPrivateEndpoints))
+	copy(copyTenant.AllowedPrivateEndpoints, t.AllowedPrivateEndpoints)
+	res := &tenant.WatchTenantsResponse{Type: typ, Tenant: &copyTenant}
 
 	for e := d.mu.tenantEventListeners.Front(); e != nil; {
 		select {

@@ -22,11 +22,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 type renameTableNode struct {
-	zeroInputPlanNode
 	n            *tree.RenameTable
 	oldTn, newTn *tree.TableName
 	tableDesc    *tabledesc.Mutable
@@ -83,13 +81,13 @@ func (p *planner) RenameTable(ctx context.Context, n *tree.RenameTable) (planNod
 		if !dependent.ByID {
 			return nil, p.dependentError(
 				ctx, string(tableDesc.DescriptorType()), oldTn.String(),
-				tableDesc.ParentID, dependent.ID, tableDesc.ID, "rename",
+				tableDesc.ParentID, dependent.ID, "rename",
 			)
 		}
 	}
 
 	// Disallow schema changes if this table's schema is locked.
-	if err := p.checkSchemaChangeIsAllowed(ctx, tableDesc, n); err != nil {
+	if err := checkTableSchemaUnlocked(tableDesc); err != nil {
 		return nil, err
 	}
 
@@ -259,32 +257,18 @@ func (n *renameTableNode) Next(runParams) (bool, error) { return false, nil }
 func (n *renameTableNode) Values() tree.Datums          { return tree.Datums{} }
 func (n *renameTableNode) Close(context.Context)        {}
 
-// dependentError returns an error indicating that an operation on a target object
-// (e.g., rename or drop) cannot proceed because it is depended on by another object.
-//
-// The dependent object is identified by dependentID, and the target object is the one
-// being operated on. parentID refers to the database containing the target. The function
-// dispatches to a specific error formatter based on the dependent's descriptor type.
-//
 // TODO(a-robinson): Support renaming objects depended on by views once we have
 // a better encoding for view queries (#10083).
 func (p *planner) dependentError(
-	ctx context.Context,
-	typeName string,
-	objName string,
-	parentID descpb.ID,
-	dependentID descpb.ID,
-	targetID descpb.ID,
-	op string,
+	ctx context.Context, typeName string, objName string, parentID descpb.ID, id descpb.ID, op string,
 ) error {
-	desc, err := p.Descriptors().ByIDWithLeased(p.txn).WithoutNonPublic().Get().Desc(ctx, dependentID)
+	desc, err := p.Descriptors().ByIDWithLeased(p.txn).WithoutNonPublic().Get().Desc(ctx, id)
 	if err != nil {
 		return err
 	}
 	switch desc.DescriptorType() {
 	case catalog.Table:
-		return p.dependentRelationError(ctx, redact.SafeString(typeName), objName, parentID, desc.(catalog.TableDescriptor),
-			targetID, redact.SafeString(op))
+		return p.dependentViewError(ctx, typeName, objName, parentID, desc.(catalog.TableDescriptor), op)
 	case catalog.Function:
 		return p.dependentFunctionError(typeName, objName, desc.(catalog.FunctionDescriptor), op)
 	default:
@@ -301,40 +285,25 @@ func (p *planner) dependentFunctionError(
 	return sqlerrors.NewDependentBlocksOpError(op, typeName, objName, "function", fnDesc.GetName())
 }
 
-func (p *planner) dependentRelationError(
+func (p *planner) dependentViewError(
 	ctx context.Context,
-	typeName redact.SafeString,
-	objName string,
+	typeName, objName string,
 	parentID descpb.ID,
-	desc catalog.TableDescriptor,
-	targetID descpb.ID,
-	op redact.SafeString,
+	viewDesc catalog.TableDescriptor,
+	op string,
 ) error {
-	// Check if any triggers on the table depend on the target object.
-	for i := range desc.GetTriggers() {
-		trigger := &desc.GetTriggers()[i]
-		for _, id := range trigger.DependsOn {
-			if id == targetID {
-				return sqlerrors.NewDependentObjectErrorf(
-					"cannot %s %s %q because trigger %q on table %q depends on it",
-					op, typeName, objName, trigger.Name, desc.GetName(),
-				)
-			}
-		}
-	}
-
-	relationName := desc.GetName()
-	if desc.GetParentID() != parentID {
-		viewFQName, err := p.getQualifiedTableName(ctx, desc)
+	viewName := viewDesc.GetName()
+	if viewDesc.GetParentID() != parentID {
+		viewFQName, err := p.getQualifiedTableName(ctx, viewDesc)
 		if err != nil {
-			log.Warningf(ctx, "unable to retrieve name of relation %d: %v", desc.GetID(), err)
+			log.Warningf(ctx, "unable to retrieve name of view %d: %v", viewDesc.GetID(), err)
 			return sqlerrors.NewDependentObjectErrorf(
-				"cannot %s %s %q because a %s depends on it",
-				op, typeName, objName, redact.SafeString(desc.GetObjectTypeString()))
+				"cannot %s %s %q because a view depends on it",
+				op, typeName, objName)
 		}
-		relationName = viewFQName.FQString()
+		viewName = viewFQName.FQString()
 	}
-	return sqlerrors.NewDependentBlocksOpError(string(op), string(typeName), objName, desc.GetObjectTypeString(), relationName)
+	return sqlerrors.NewDependentBlocksOpError(op, typeName, objName, "view", viewName)
 }
 
 // checkForCrossDbReferences validates if any cross DB references
@@ -355,7 +324,7 @@ func (n *renameTableNode) checkForCrossDbReferences(
 			tableID = fk.GetOriginTableID()
 		}
 
-		referencedTable, err := p.Descriptors().ByIDWithoutLeased(p.txn).WithoutNonPublic().Get().Table(ctx, tableID)
+		referencedTable, err := p.Descriptors().ByID(p.txn).WithoutNonPublic().Get().Table(ctx, tableID)
 		if err != nil {
 			return err
 		}
@@ -364,7 +333,7 @@ func (n *renameTableNode) checkForCrossDbReferences(
 			return nil
 		}
 
-		return errors.WithHint(
+		return errors.WithHintf(
 			pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
 				"a foreign key constraint %q will exist between databases after rename "+
 					"(see the '%s' cluster setting)",
@@ -379,7 +348,7 @@ func (n *renameTableNode) checkForCrossDbReferences(
 	type crossDBDepType int
 	const owner, reference crossDBDepType = 0, 1
 	checkDepForCrossDbRef := func(depID descpb.ID, depType crossDBDepType) error {
-		dependentObject, err := p.Descriptors().ByIDWithoutLeased(p.txn).WithoutNonPublic().Get().Table(ctx, depID)
+		dependentObject, err := p.Descriptors().ByID(p.txn).WithoutNonPublic().Get().Table(ctx, depID)
 		if err != nil {
 			return err
 		}
@@ -396,7 +365,7 @@ func (n *renameTableNode) checkForCrossDbReferences(
 			switch {
 			case dependentObject.IsView():
 				if !allowCrossDatabaseViews.Get(&p.execCfg.Settings.SV) {
-					return errors.WithHint(
+					return errors.WithHintf(
 						pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
 							"a view %q reference to this table will refer to another databases after rename "+
 								"(see the '%s' cluster setting)",
@@ -407,7 +376,7 @@ func (n *renameTableNode) checkForCrossDbReferences(
 				}
 			case dependentObject.IsSequence() && depType == owner:
 				if !allowCrossDatabaseSeqOwner.Get(&p.execCfg.Settings.SV) {
-					return errors.WithHint(
+					return errors.WithHintf(
 						pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
 							"a sequence %q will be OWNED BY a table in a different database after rename "+
 								"(see the '%s' cluster setting)",
@@ -418,7 +387,7 @@ func (n *renameTableNode) checkForCrossDbReferences(
 				}
 			case dependentObject.IsSequence() && depType == reference:
 				if !allowCrossDatabaseSeqReferences.Get(&p.execCfg.Settings.SV) {
-					return errors.WithHint(
+					return errors.WithHintf(
 						pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
 							"a sequence %q will be referenced by a table in a different database after rename "+
 								"(see the '%s' cluster setting)",
@@ -432,7 +401,7 @@ func (n *renameTableNode) checkForCrossDbReferences(
 			if !allowCrossDatabaseViews.Get(&p.execCfg.Settings.SV) {
 				// For view's dependent objects can only be
 				// relations.
-				return errors.WithHint(
+				return errors.WithHintf(
 					pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
 						"this view will reference a table %q in another databases after rename "+
 							"(see the '%s' cluster setting)",
@@ -445,7 +414,7 @@ func (n *renameTableNode) checkForCrossDbReferences(
 			if !allowCrossDatabaseSeqReferences.Get(&p.execCfg.Settings.SV) {
 				// For sequences dependent references can only be
 				// a relations.
-				return errors.WithHint(
+				return errors.WithHintf(
 					pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
 						"this sequence will be referenced by a table %q in a different database after rename "+
 							"(see the '%s' cluster setting)",
@@ -458,7 +427,7 @@ func (n *renameTableNode) checkForCrossDbReferences(
 			if !allowCrossDatabaseSeqOwner.Get(&p.execCfg.Settings.SV) {
 				// For sequences dependent owners can only be
 				// a relations.
-				return errors.WithHint(
+				return errors.WithHintf(
 					pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
 						"this sequence will be OWNED BY a table %q in a different database after rename "+
 							"(see the '%s' cluster setting)",
@@ -475,7 +444,7 @@ func (n *renameTableNode) checkForCrossDbReferences(
 		if allowCrossDatabaseViews.Get(&p.execCfg.Settings.SV) {
 			return nil
 		}
-		dependentObject, err := p.Descriptors().ByIDWithoutLeased(p.txn).WithoutNonPublic().Get().Type(ctx, depID)
+		dependentObject, err := p.Descriptors().ByID(p.txn).WithoutNonPublic().Get().Type(ctx, depID)
 		if err != nil {
 			return err
 		}
@@ -483,7 +452,7 @@ func (n *renameTableNode) checkForCrossDbReferences(
 		if dependentObject.GetParentID() == targetDbDesc.GetID() {
 			return nil
 		}
-		return errors.WithHint(
+		return errors.WithHintf(
 			pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
 				"this view will reference a type %q in another databases after rename "+
 					"(see the '%s' cluster setting)",

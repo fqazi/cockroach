@@ -172,7 +172,7 @@ func (p Plan) explainTargets(s scstage.Stage, sn treeprinter.Node, style treepri
 	// Generate format string for printing element status transition.
 	fmtCompactTransition := fmt.Sprintf("%%-%ds → %%-%ds %%s", beforeMaxLen, afterMaxLen)
 	// Go over each target grouping.
-	for _, ts := range []scpb.TargetStatus{scpb.ToPublic, scpb.TransientAbsent, scpb.TransientPublic, scpb.ToAbsent} {
+	for _, ts := range []scpb.TargetStatus{scpb.ToPublic, scpb.Transient, scpb.ToAbsent} {
 		numTransitions := targetTypeMap.GetDefault(int(ts))
 		if numTransitions == 0 {
 			continue
@@ -410,14 +410,14 @@ func (p Plan) rootNodeLabel() string {
 		sb.WriteString("rolling back ")
 	}
 	lastStmt := p.Statements[len(p.Statements)-1].RedactedStatement
-	sb.WriteString(strings.TrimSuffix(string(lastStmt), ";"))
+	sb.WriteString(strings.TrimSuffix(lastStmt, ";"))
 	if len(p.Statements) > 1 {
 		sb.WriteString("; following ")
 		for i, stmt := range p.Statements[:len(p.Statements)-1] {
 			if i > 0 {
 				sb.WriteString("; ")
 			}
-			sb.WriteString(strings.TrimSuffix(string(stmt.RedactedStatement), ";"))
+			sb.WriteString(strings.TrimSuffix(stmt.RedactedStatement, ";"))
 		}
 	}
 	sb.WriteString(";")

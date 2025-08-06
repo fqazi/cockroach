@@ -27,10 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemaexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
-	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/constraint"
-	"github.com/cockroachdb/cockroach/pkg/sql/opt/exec"
-	"github.com/cockroachdb/cockroach/pkg/sql/opt/exec/explain"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
@@ -41,12 +38,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
-	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -190,7 +185,7 @@ func (t virtualSchemaTable) initVirtualTableDesc(
 
 	// Virtual tables never use SERIAL so we need not process SERIAL
 	// types here.
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	mutDesc, err := NewTableDesc(
 		ctx,
 		nil, /* txn */
@@ -200,8 +195,8 @@ func (t virtualSchemaTable) initVirtualTableDesc(
 		nil,
 		sc,
 		id,
-		nil, /* regionConfig */
-		virtualTableCreationTime,
+		nil,       /* regionConfig */
+		startTime, /* creationTime */
 		catpb.NewPrivilegeDescriptor(
 			username.PublicRoleName(),
 			privilege.List{privilege.SELECT},
@@ -217,7 +212,6 @@ func (t virtualSchemaTable) initVirtualTableDesc(
 		&eval.Context{Settings: st}, /* evalCtx */
 		&sessiondata.SessionData{},  /* sessionData */
 		tree.PersistencePermanent,
-		nil, /* colToSequenceRefs */
 	)
 	if err != nil {
 		err = errors.Wrapf(err, "initVirtualDesc problem with schema: \n%s", t.schema)
@@ -298,7 +292,7 @@ func (t virtualSchemaTable) isUnimplemented() bool {
 // not using a partial index, and therefore do not need to fallback on an
 // undefined populate function.
 func (t virtualSchemaTable) preferIndexOverGenerator(
-	ctx context.Context, p *planner, index catalog.Index, idxConstraint *constraint.Constraint,
+	p *planner, index catalog.Index, idxConstraint *constraint.Constraint,
 ) bool {
 	if idxConstraint == nil || idxConstraint.IsUnconstrained() {
 		return false
@@ -315,47 +309,12 @@ func (t virtualSchemaTable) preferIndexOverGenerator(
 
 	for i := 0; i < idxConstraint.Spans.Count(); i++ {
 		constraintSpan := idxConstraint.Spans.Get(i)
-		if !constraintSpan.HasSingleKey(ctx, p.EvalContext()) {
+		if !constraintSpan.HasSingleKey(p.EvalContext()) {
 			return false
 		}
 	}
 
 	return true
-}
-
-func maybeAdjustVirtualIndexScanForExplain(
-	ctx context.Context, evalCtx *eval.Context, index cat.Index, params exec.ScanParams,
-) (_ cat.Index, _ exec.ScanParams, extraAttribute string) {
-	idx, ok := index.(*optVirtualIndex)
-	if !ok {
-		return index, params, extraAttribute
-	}
-	if idx.idx != nil && idx.idx.GetID() != 1 && params.IndexConstraint != nil {
-		// If we picked the virtual index, check that we can actually use it.
-		spans := params.IndexConstraint.Spans
-		for i := 0; i < spans.Count(); i++ {
-			if !spans.Get(i).HasSingleKey(ctx, evalCtx) {
-				// We'll have to fall back to the full scan of the virtual
-				// table, so adjust the index choice accordingly (and be careful
-				// to not modify the existing struct just to be safe).
-				idxCopy := *idx
-				idxCopy.idx = nil
-				// Also adjust the scan params since under the hood we'll
-				// effectively perform the "full scan" of the primary index of
-				// the virtual table (while filtering out rows that don't fall
-				// within the index constraint).
-				params.IndexConstraint = nil
-				// Include the detail about the filtering mentioned above.
-				extraAttribute = "virtual table filter"
-				return &idxCopy, params, extraAttribute
-			}
-		}
-	}
-	return idx, params, extraAttribute
-}
-
-func init() {
-	explain.MaybeAdjustVirtualIndexScan = maybeAdjustVirtualIndexScanForExplain
 }
 
 // getSchema is part of the virtualSchemaDef interface.
@@ -386,7 +345,7 @@ func (v virtualSchemaView) initVirtualTableDesc(
 		sc.GetID(),
 		id,
 		columns,
-		virtualTableCreationTime,
+		startTime,
 		catpb.NewPrivilegeDescriptor(
 			username.PublicRoleName(),
 			privilege.List{privilege.SELECT},
@@ -428,7 +387,7 @@ var virtualSchemas = map[descpb.ID]virtualSchema{
 	catconstants.PgExtensionSchemaID: pgExtension,
 }
 
-var virtualTableCreationTime = hlc.Timestamp{
+var startTime = hlc.Timestamp{
 	WallTime: time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC).UnixNano(),
 }
 
@@ -449,6 +408,9 @@ type VirtualSchemaHolder struct {
 	orderedNames  []string
 
 	catalogCache nstree.MutableCatalog
+	// Needed for backward-compat on crdb_internal.ranges{_no_leases}.
+	// Remove in v23.2.
+	st *cluster.Settings
 }
 
 var _ VirtualTabler = (*VirtualSchemaHolder)(nil)
@@ -667,7 +629,7 @@ func (e *virtualDefEntry) getPlanInfo(
 				return nil, newInvalidVirtualSchemaError()
 			}
 
-			if def.generator != nil && !def.preferIndexOverGenerator(ctx, p, index, idxConstraint) {
+			if def.generator != nil && !def.preferIndexOverGenerator(p, index, idxConstraint) {
 				next, cleanup, err := def.generator(ctx, p, dbDesc, stopper)
 				if err != nil {
 					return nil, err
@@ -792,7 +754,7 @@ func (e *virtualDefEntry) makeConstrainedRowsGenerator(
 				// will tell us whether or not to let the current row pass the filter.
 				key := constraint.MakeCompositeKey(indexKeyDatums...)
 				span.Init(key, constraint.IncludeBoundary, key, constraint.IncludeBoundary)
-				if !idxConstraint.ContainsSpan(ctx, p.EvalContext(), &span) {
+				if !idxConstraint.ContainsSpan(p.EvalContext(), &span) {
 					return nil
 				}
 				if err := e.validateRow(datums, columns); err != nil {
@@ -823,7 +785,7 @@ func (e *virtualDefEntry) makeConstrainedRowsGenerator(
 				return errors.AssertionFailedf(
 					"programming error: can't push down composite constraints into vtables")
 			}
-			if !span.HasSingleKey(ctx, p.EvalContext()) {
+			if !span.HasSingleKey(p.EvalContext()) {
 				// No hope - we can't deal with range scans on virtual indexes.
 				break
 			}
@@ -932,6 +894,10 @@ func NewVirtualSchemaHolder(
 		schemasByID:   make(map[descpb.ID]*virtualSchemaEntry, len(virtualSchemas)),
 		orderedNames:  make([]string, len(virtualSchemas)),
 		defsByID:      make(map[descpb.ID]*virtualDefEntry, math.MaxUint32-catconstants.MinVirtualID),
+
+		// Needed for backward-compat on crdb_internal.ranges{_no_leases}.
+		// Remove in v23.2.
+		st: st,
 	}
 
 	order := 0
@@ -983,29 +949,16 @@ func NewVirtualSchemaHolder(
 			return tableDesc, entry, nil
 		}
 
-		// Initialize virtual tables concurrently. This happens all at once during
-		// server startup, which is a bottleneck for startup time, especially in
-		// the TestServer used by unit tests. Adding concurrency here speeds up
-		// TestServer startup by about 7% in SharedTenant mode.
-		g := ctxgroup.WithContext(ctx)
-		var mu syncutil.Mutex
 		for id, def := range schema.tableDefs {
-			g.GoCtx(func(ctx context.Context) error {
-				tableDesc, entry, err := doTheWork(id, def, false /* bumpVersion */)
-				if err != nil {
-					return err
-				}
-				mu.Lock()
-				defer mu.Unlock()
-				defs[tableDesc.Name] = entry
-				vs.defsByID[tableDesc.ID] = entry
-				orderedDefNames = append(orderedDefNames, tableDesc.Name)
-				return nil
-			})
+			tableDesc, entry, err := doTheWork(id, def, false /* bumpVersion */)
+			if err != nil {
+				return nil, err
+			}
+			defs[tableDesc.Name] = entry
+			vs.defsByID[tableDesc.ID] = entry
+			orderedDefNames = append(orderedDefNames, tableDesc.Name)
 		}
-		if err := g.Wait(); err != nil {
-			return nil, err
-		}
+
 		sort.Strings(orderedDefNames)
 
 		vse := &virtualSchemaEntry{

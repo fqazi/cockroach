@@ -3,8 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import isEmpty from "lodash/isEmpty";
-
+import { isEmpty } from "lodash";
 import { ColumnDescriptor } from "src/sortedtable/sortedtable";
 
 // We show a column if:
@@ -12,9 +11,9 @@ import { ColumnDescriptor } from "src/sortedtable/sortedtable";
 // the column is set to 'showByDefault'
 // b. If the column appears in the selectedColumns list
 // c. If the column is labelled as 'alwaysShow'
-export const isSelectedColumn = <T>(
+export const isSelectedColumn = (
   selectedColumns: string[] | null | undefined,
-  c: ColumnDescriptor<T>,
+  c: ColumnDescriptor<unknown>,
 ): boolean => {
   return (
     (isEmpty(selectedColumns) && c.showByDefault !== false) ||

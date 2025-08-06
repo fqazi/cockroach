@@ -40,7 +40,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/stretchr/testify/require"
 )
@@ -74,7 +73,6 @@ func (ti testInfra) newExecDeps(txn descs.Txn) scexec.Dependencies {
 		noopValidator{},
 		scdeps.NewConstantClock(timeutil.Now()),
 		noopMetadataUpdater{},
-		noopTemporarySchemaCreator{},
 		noopStatsReferesher{},
 		&scexec.TestingKnobs{},
 		kvTrace,
@@ -364,7 +362,7 @@ func TestSchemaChanger(t *testing.T) {
 				parsed, err := parser.Parse("ALTER TABLE db.foo ADD COLUMN j INT")
 				require.NoError(t, err)
 				require.Len(t, parsed, 1)
-				cs, logSchemaChangesFn, err = scbuild.Build(ctx, buildDeps, scpb.CurrentState{}, parsed[0].AST.(*tree.AlterTable), mon.NewStandaloneUnlimitedAccount())
+				cs, logSchemaChangesFn, err = scbuild.Build(ctx, buildDeps, scpb.CurrentState{}, parsed[0].AST.(*tree.AlterTable), nil /* memAcc */)
 				require.NoError(t, err)
 				require.NoError(t, logSchemaChangesFn(ctx))
 				{
@@ -526,15 +524,4 @@ func (noopMetadataUpdater) UpdateTTLScheduleLabel(
 	ctx context.Context, tbl *tabledesc.Mutable,
 ) error {
 	return nil
-}
-
-type noopTemporarySchemaCreator struct{}
-
-var _ scexec.TemporarySchemaCreator = noopTemporarySchemaCreator{}
-
-// InsertTemporarySchema implements scexec.TemporarySchemaCreator.
-func (noopTemporarySchemaCreator) InsertTemporarySchema(
-	tempSchemaName string, databaseID descpb.ID, schemaID descpb.ID,
-) {
-
 }

@@ -9,20 +9,20 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
-	"github.com/cockroachdb/cockroach/pkg/sql/opt/exec"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 )
 
 // A groupNode implements the planNode interface and handles the grouping logic.
 // It "wraps" a planNode which is used to retrieve the ungrouped results.
 type groupNode struct {
-	singleInputPlanNode
-
 	// The schema for this groupNode.
 	columns colinfo.ResultColumns
 
+	// The source node (which returns values that feed into the aggregation).
+	plan planNode
+
 	// Indices of the group by columns in the source plan.
-	groupCols []exec.NodeColumnOrdinal
+	groupCols []int
 
 	// Set when we have an input ordering on (a subset of) grouping columns. Only
 	// column indices in groupCols can appear in this ordering.
@@ -40,10 +40,6 @@ type groupNode struct {
 	// estimatedRowCount, when set, is the estimated number of rows that this
 	// groupNode will output.
 	estimatedRowCount uint64
-
-	// estimatedInputRowCount, when set, is the estimated number of rows that
-	// this groupNode will read from its input.
-	estimatedInputRowCount uint64
 }
 
 func (n *groupNode) startExec(params runParams) error {
@@ -59,7 +55,7 @@ func (n *groupNode) Values() tree.Datums {
 }
 
 func (n *groupNode) Close(ctx context.Context) {
-	n.input.Close(ctx)
+	n.plan.Close(ctx)
 }
 
 type aggregateFuncHolder struct {
@@ -67,7 +63,7 @@ type aggregateFuncHolder struct {
 	funcName string
 	// The argument of the function is a single value produced by the renderNode
 	// underneath. If the function has no argument (COUNT_ROWS), it is empty.
-	argRenderIdxs []exec.NodeColumnOrdinal
+	argRenderIdxs []int
 	// If there is a filter, the result is a single value produced by the
 	// renderNode underneath. If there is no filter, it is set to
 	// tree.NoColumnIdx.
@@ -91,7 +87,7 @@ type aggregateFuncHolder struct {
 // argRenderIdx is noRenderIdx.
 func newAggregateFuncHolder(
 	funcName string,
-	argRenderIdxs []exec.NodeColumnOrdinal,
+	argRenderIdxs []int,
 	arguments tree.Datums,
 	isDistinct bool,
 	distsqlBlocklist bool,

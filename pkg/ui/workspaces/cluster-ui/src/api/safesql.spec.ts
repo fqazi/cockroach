@@ -3,19 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import {
-  Format,
-  Identifier,
-  Join,
-  QuoteIdentifier,
-  SQL,
-  SqlFormatArg,
-} from "./safesql";
+import { Format, Identifier, Join, QuoteIdentifier, SQL } from "./safesql";
 
 describe("safesql", () => {
   test("format", () => {
-    type CustomString = string;
-    type CustomNum = number;
+    type customString = string;
+    type customNum = number;
 
     const testCases: {
       expected: string;
@@ -67,11 +60,11 @@ describe("safesql", () => {
       },
       {
         expected: `hello 'world'`,
-        formatted: Format(`hello %1`, ["world" as CustomString]),
+        formatted: Format(`hello %1`, ["world" as customString]),
       },
       {
         expected: `hello 1`,
-        formatted: Format(`hello %1`, [1 as CustomNum]),
+        formatted: Format(`hello %1`, [1 as customNum]),
       },
     ];
 
@@ -84,7 +77,7 @@ describe("safesql", () => {
     const testCases: {
       expected: string;
       format: string;
-      args: SqlFormatArg[];
+      args: any[];
     }[] = [
       { format: `hello %s`, args: null, expected: `invalid placeholder: %s` },
       { format: `hello %`, args: null, expected: `invalid placeholder: %` },
@@ -96,7 +89,7 @@ describe("safesql", () => {
       },
       {
         format: `hello %1`,
-        args: [new Date() as any],
+        args: [new Date()],
         expected: `bad argument 1: unsupported type: object`,
       },
     ];
@@ -143,7 +136,7 @@ describe("safesql", () => {
     ];
 
     testCases.forEach(tc => {
-      expect(tc.got.sqlString()).toEqual(tc.expected);
+      expect(tc.got.SQLString()).toEqual(tc.expected);
     });
   });
 

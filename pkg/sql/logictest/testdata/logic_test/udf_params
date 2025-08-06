@@ -1,3 +1,5 @@
+# LogicTest: !local-mixed-23.1
+
 subtest types
 
 statement error pgcode 42P13 pq: function result type must be specified
@@ -98,7 +100,6 @@ CREATE FUNCTION public.f_param_types(IN p1 INT8, INOUT p2 INT8, INOUT p3 INT8, O
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT p2, p3, p1;
 $$
@@ -120,7 +121,6 @@ CREATE FUNCTION public.f_param_types(OUT param INT8)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -250,7 +250,6 @@ CREATE FUNCTION public.f_out_int(OUT param_new INT8)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -301,7 +300,6 @@ CREATE FUNCTION public.f_int(INOUT param INT8)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT param;
 $$
@@ -330,7 +328,6 @@ CREATE FUNCTION public.f_int(IN param INT8, OUT param_out INT8)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT param;
 $$
@@ -353,7 +350,6 @@ CREATE FUNCTION public.f_int(OUT param_out INT8, IN param INT8)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT param;
 $$
@@ -376,7 +372,6 @@ CREATE FUNCTION public.f_int(INOUT param INT8)
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT param;
 $$
@@ -398,12 +393,6 @@ SELECT * FROM f_3_in_2_out(2, 2, 2);
 param1 param2
 2 4
 
-query TIITTTTT
-SELECT proname, pronargs, pronargdefaults, proargtypes, proallargtypes, proargmodes, proargnames, proargdefaults
-FROM pg_catalog.pg_proc WHERE proname = 'f_3_in_2_out';
-----
-f_3_in_2_out  3  0  20 20 20  {20,20,20,20,20}  {i,i,i,o,o}  {param1,param2,param3,param1,param2}  NULL
-
 statement ok
 CREATE OR REPLACE FUNCTION f_3_in_2_out(IN param1 INT, OUT param1 INT, IN param2 INT, IN param3 INT, OUT param2 INT) AS $$ SELECT (param1, param2 + param3); $$ LANGUAGE SQL;
 
@@ -416,7 +405,6 @@ CREATE FUNCTION public.f_3_in_2_out(IN param1 INT8, OUT param1 INT8, IN param2 I
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT (param1, param2 + param3);
 $$
@@ -443,7 +431,6 @@ CREATE FUNCTION public.f_3_in_2_out(INOUT param1 INT8, INOUT param2 INT8, IN par
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT (param1, param2 + param3);
 $$
@@ -474,7 +461,6 @@ CREATE FUNCTION public.f_default_names(OUT INT8, OUT param2 INT8, IN INT8, OUT I
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT (1:::INT8, 2:::INT8, 3:::INT8);
 $$
@@ -509,12 +495,6 @@ SELECT column3 FROM f_default_names(0);
 column3
 3
 
-query TIITTTTT
-SELECT proname, pronargs, pronargdefaults, proargtypes, proallargtypes, proargmodes, proargnames, proargdefaults
-FROM pg_catalog.pg_proc WHERE proname = 'f_default_names';
-----
-f_default_names  1  0  20  {20,20,20,20}  {o,o,i,o}  {"",param2,"",""}  NULL
-
 # Introducing the OUT parameter name is disallowed because it'd change the
 # return type.
 statement error cannot change return type of existing function
@@ -533,7 +513,6 @@ CREATE FUNCTION public.f_default_names(OUT INT8, OUT param2 INT8, IN INT8, OUT c
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT (1:::INT8, 2:::INT8, 3:::INT8);
 $$
@@ -551,7 +530,6 @@ CREATE FUNCTION public.f_default_names(OUT INT8, OUT param2 INT8, IN INT8, OUT I
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT (1:::INT8, 2:::INT8, 3:::INT8);
 $$
@@ -569,7 +547,6 @@ CREATE FUNCTION public.f_default_names(OUT INT8, OUT param2 INT8, IN in_param IN
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT (in_param, 2, 3);
 $$
@@ -688,12 +665,6 @@ CREATE OR REPLACE FUNCTION my_sum(a INT = 1, b INT, c INT = 3) RETURNS INT LANGU
 statement ok
 CREATE OR REPLACE FUNCTION my_sum(a INT, b INT DEFAULT 2, c INT = 3) RETURNS INT LANGUAGE SQL AS $$ SELECT a + b + c; $$;
 
-query TIITTTTT
-SELECT proname, pronargs, pronargdefaults, proargtypes, proallargtypes, proargmodes, proargnames, proargdefaults
-FROM pg_catalog.pg_proc WHERE proname = 'my_sum';
-----
-my_sum  3  2  20 20 20  NULL  NULL  {a,b,c}  ({2:::INT8}, {3:::INT8})
-
 # But removing an existing default expression is not ok.
 statement error pgcode 42P13 cannot remove parameter defaults from existing function
 CREATE OR REPLACE FUNCTION my_sum(a INT, b INT, c INT = 3) RETURNS INT LANGUAGE SQL AS $$ SELECT a + b + c; $$;
@@ -801,9 +772,11 @@ DROP FUNCTION f;
 statement ok
 CREATE FUNCTION f1(a INT, b INT = 2) RETURNS INT LANGUAGE SQL AS $$ SELECT a + b; $$;
 
+skipif config local-mixed-23.2
 statement ok
 CREATE FUNCTION f2(a INT, b INT = f1(1)) RETURNS INT LANGUAGE SQL AS $$ SELECT a + b; $$;
 
+skipif config local-mixed-23.2
 query III
 SELECT f1(1), f2(1), f2(1, 1);
 ----
@@ -812,14 +785,17 @@ SELECT f1(1), f2(1), f2(1, 1);
 statement ok
 CREATE OR REPLACE FUNCTION f1 (a INT, b INT = 2) RETURNS INT LANGUAGE SQL AS $$ SELECT a * b; $$;
 
+skipif config local-mixed-23.2
 query III
 SELECT f1(1), f2(1), f2(1, 1);
 ----
 2  3  2
 
+skipif config local-mixed-23.2
 statement error pgcode 2BP01 cannot drop function "f1" because other objects \(\[test.public.f2\]\) still depend on it
 DROP FUNCTION f1;
 
+skipif config local-mixed-23.2
 statement ok
 DROP FUNCTION f2;
 

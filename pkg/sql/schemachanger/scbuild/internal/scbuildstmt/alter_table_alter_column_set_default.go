@@ -21,11 +21,7 @@ import (
 )
 
 func alterTableSetDefault(
-	b BuildCtx,
-	tn *tree.TableName,
-	tbl *scpb.Table,
-	stmt tree.Statement,
-	t *tree.AlterTableSetDefault,
+	b BuildCtx, tn *tree.TableName, tbl *scpb.Table, t *tree.AlterTableSetDefault,
 ) {
 	alterColumnPreChecks(b, tn, tbl, t.Column)
 	colID := getColumnIDFromColumnName(b, tbl.TableID, t.Column, true /* required */)
@@ -37,7 +33,7 @@ func alterTableSetDefault(
 	panicIfSystemColumn(col, t.Column.String())
 
 	// Block disallowed operations on computed columns.
-	panicIfComputedColumn(b, tn.ObjectName, colType, t.Column.String(), t.Default)
+	panicIfComputedColumn(tn.ObjectName, colType, t.Column.String(), t.Default)
 
 	// For DROP DEFAULT.
 	if t.Default == nil {
@@ -80,7 +76,7 @@ func panicIfInvalidNonComputedColumnExpr(
 	}
 
 	colType := mustRetrieveColumnTypeElem(b, tbl.TableID, col.ColumnID)
-	typedNewExpr, _, err := sanitizeColumnExpression(b, b.SemaCtx(), newExpr, colType, schemaChange)
+	typedNewExpr, _, err := sanitizeColumnExpression(context.Background(), b.SemaCtx(), newExpr, colType, schemaChange)
 	if err != nil {
 		panic(err)
 	}
@@ -147,12 +143,9 @@ func sanitizeColumnExpression(
 }
 
 // panicIfComputedColumn blocks disallowed operations on computed columns.
-func panicIfComputedColumn(
-	b BuildCtx, tn tree.Name, col *scpb.ColumnType, colName string, def tree.Expr,
-) {
-	computeExpr := retrieveColumnComputeExpression(b, col.TableID, col.ColumnID)
+func panicIfComputedColumn(tn tree.Name, col *scpb.ColumnType, colName string, def tree.Expr) {
 	// Block setting a column default if the column is computed.
-	if computeExpr != nil {
+	if col.ComputeExpr != nil {
 		// Block dropping a computed col "default" as well.
 		if def == nil {
 			panic(pgerror.Newf(

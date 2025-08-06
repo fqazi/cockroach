@@ -19,9 +19,9 @@ type stickyConfig struct {
 }
 
 // UseStrictMemFS option instructs StickyRegistry to produce strict in-memory
-// filesystems, i.e. to use vfs.NewCrashableMem instead of vfs.NewMem.
+// filesystems, i.e. to use vfs.NewStrictMem instead of vfs.NewMem.
 var UseStrictMemFS = StickyOption(func(cfg *stickyConfig) {
-	cfg.newFS = vfs.NewCrashableMem
+	cfg.newFS = vfs.NewStrictMem
 })
 
 // StickyRegistry manages the lifecycle of sticky in-memory filesystems. It
@@ -31,9 +31,6 @@ type StickyRegistry interface {
 	// Get returns the named in-memory FS, constructing a new one if this is the
 	// first time a FS with the provided ID has been requested.
 	Get(stickyVFSID string) *vfs.MemFS
-	// Set changes the named in-memory FS; the given instance will be returned by
-	// subsequent Gets for this ID.
-	Set(stickyVFSID string, fs *vfs.MemFS)
 }
 
 // stickyRegistryImpl is the bookkeeper for all active sticky filesystems,
@@ -59,7 +56,7 @@ func NewStickyRegistry(opts ...StickyOption) StickyRegistry {
 	return registry
 }
 
-// Get is part of the StickyRegistry interface.
+// Get implements the StickyRegistry interface.
 func (registry *stickyRegistryImpl) Get(stickyVFSID string) *vfs.MemFS {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
@@ -70,12 +67,4 @@ func (registry *stickyRegistryImpl) Get(stickyVFSID string) *vfs.MemFS {
 	fs := registry.cfg.newFS()
 	registry.entries[stickyVFSID] = fs
 	return fs
-}
-
-// Set is part of the StickyRegistry interface.
-func (registry *stickyRegistryImpl) Set(stickyVFSID string, fs *vfs.MemFS) {
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-
-	registry.entries[stickyVFSID] = fs
 }

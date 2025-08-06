@@ -3,8 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import Analytics from "analytics-node";
 import { expectSaga } from "redux-saga-test-plan";
+import Analytics from "analytics-node";
 
 import { signUpEmailSubscription } from "./customAnalyticsSagas";
 import { signUpForEmailSubscription } from "./customAnanlyticsActions";

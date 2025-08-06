@@ -139,17 +139,16 @@ distribution: <hidden>
 vectorized: <hidden>
 plan type: custom
 maximum memory usage: <hidden>
-DistSQL network usage: <hidden>
+network usage: <hidden>
 regions: <hidden>
 isolation level: serializable
 priority: normal
 quality of service: regular
 ·
 • call
-  sql nodes: <hidden>
+  nodes: <hidden>
   regions: <hidden>
   actual row count: 0
-  execution time: 0µs
   estimated row count: 0
   procedure: foo(3)
 
@@ -162,17 +161,16 @@ distribution: <hidden>
 vectorized: <hidden>
 plan type: custom
 maximum memory usage: <hidden>
-DistSQL network usage: <hidden>
+network usage: <hidden>
 regions: <hidden>
 isolation level: serializable
 priority: normal
 quality of service: regular
 ·
 • call
-  sql nodes: <hidden>
+  nodes: <hidden>
   regions: <hidden>
   actual row count: 0
-  execution time: 0µs
   estimated row count: 0
   procedure: foo(3)
 ·

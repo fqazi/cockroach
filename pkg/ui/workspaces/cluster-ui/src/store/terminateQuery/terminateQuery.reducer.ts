@@ -3,11 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { DOMAIN_NAME, noopReducer } from "../utils";
-
 import { ICancelQueryRequest, ICancelSessionRequest } from ".";
 
 type CancelQueryResponse = cockroach.server.serverpb.CancelQueryResponse;

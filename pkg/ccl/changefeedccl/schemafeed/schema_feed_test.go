@@ -7,7 +7,6 @@ package schemafeed
 
 import (
 	"context"
-	"slices"
 	"testing"
 	"time"
 
@@ -33,6 +32,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/slices"
 )
 
 func TestTableHistoryIngestionTracking(t *testing.T) {
@@ -235,7 +235,7 @@ func TestFetchDescriptorVersionsCPULimiterPagination(t *testing.T) {
 		&tableID, &statementTimeName)
 	targets.Add(changefeedbase.Target{
 		Type:              jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY,
-		DescID:            tableID,
+		TableID:           tableID,
 		FamilyName:        "primary",
 		StatementTimeName: statementTimeName,
 	})
@@ -243,7 +243,7 @@ func TestFetchDescriptorVersionsCPULimiterPagination(t *testing.T) {
 		&tableID, &statementTimeName)
 	targets.Add(changefeedbase.Target{
 		Type:              jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY,
-		DescID:            tableID,
+		TableID:           tableID,
 		FamilyName:        "primary",
 		StatementTimeName: statementTimeName,
 	})
@@ -288,7 +288,7 @@ func TestSchemaFeedHandlesCascadeDatabaseDrop(t *testing.T) {
 	sqlDB.QueryRow(t, "SELECT 'test.foo'::regclass::int").Scan(&tableID)
 	targets.Add(changefeedbase.Target{
 		Type:              jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY,
-		DescID:            tableID,
+		TableID:           tableID,
 		FamilyName:        "primary",
 		StatementTimeName: "foo",
 	})

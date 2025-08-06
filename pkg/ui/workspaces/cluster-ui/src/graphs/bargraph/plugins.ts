@@ -3,9 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import moment from "moment-timezone";
 import uPlot, { Plugin } from "uplot";
-
+import { AxisUnits } from "../utils/domain";
 import {
   Bytes,
   Duration,
@@ -14,7 +13,7 @@ import {
   FormatWithTimezone,
   DATE_WITH_SECONDS_FORMAT_24_TZ,
 } from "../../util";
-import { AxisUnits } from "../utils/domain";
+import moment from "moment-timezone";
 
 // Fallback color for series stroke if one is not defined.
 const DEFAULT_STROKE = "#7e89a9";
@@ -91,8 +90,6 @@ function getFormattedValue(value: number, yAxisUnits: AxisUnits): string {
     case AxisUnits.Bytes:
       return Bytes(value);
     case AxisUnits.Duration:
-      return Duration(value);
-    case AxisUnits.DurationMillis:
       return Duration(value);
     case AxisUnits.Percentage:
       return Percentage(value, 1);

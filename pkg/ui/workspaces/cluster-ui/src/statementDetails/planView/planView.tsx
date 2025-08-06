@@ -3,13 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import React, { Fragment } from "react";
+import _ from "lodash";
+import classNames from "classnames/bind";
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { Tooltip } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
-import sortBy from "lodash/sortBy";
-import values from "lodash/values";
-import React, { Fragment } from "react";
-
 import {
   getAttributeTooltip,
   getOperatorTooltip,
@@ -106,8 +104,8 @@ export function flattenAttributes(
       }
     }
   });
-  const flattenedAttrs = values(flattenedAttrsMap);
-  return sortBy(flattenedAttrs, attr =>
+  const flattenedAttrs = _.values(flattenedAttrsMap);
+  return _.sortBy(flattenedAttrs, attr =>
     attr.key === "table" ? "table" : "z" + attr.key,
   );
 }

@@ -89,13 +89,13 @@ const (
 
 // LoadBasedRebalancingObjectiveMap maps the LoadBasedRebalancingObjective enum
 // value to a string.
-var LoadBasedRebalancingObjectiveMap = map[LBRebalancingObjective]string{
-	LBRebalancingQueries: "qps",
-	LBRebalancingCPU:     "cpu",
+var LoadBasedRebalancingObjectiveMap map[int64]string = map[int64]string{
+	int64(LBRebalancingQueries): "qps",
+	int64(LBRebalancingCPU):     "cpu",
 }
 
 func (lbro LBRebalancingObjective) String() string {
-	return LoadBasedRebalancingObjectiveMap[lbro]
+	return LoadBasedRebalancingObjectiveMap[int64(lbro)]
 }
 
 // LoadBasedRebalancingObjective is a cluster setting that defines the load
@@ -258,12 +258,12 @@ func ResolveLBRebalancingObjective(
 ) LBRebalancingObjective {
 	set := LoadBasedRebalancingObjective.Get(&st.SV)
 	// Queries should always be supported, return early if set.
-	if set == LBRebalancingQueries {
+	if set == int64(LBRebalancingQueries) {
 		return LBRebalancingQueries
 	}
 	// When the cpu timekeeping utility is unsupported on this aarch, the cpu
 	// usage cannot be gathered. Fall back to QPS balancing.
-	if !grunning.Supported {
+	if !grunning.Supported() {
 		log.Infof(ctx, "cpu timekeeping unavailable on host, reverting to qps balance objective")
 		return LBRebalancingQueries
 	}
@@ -285,5 +285,5 @@ func ResolveLBRebalancingObjective(
 	// The cluster is on a supported version and this local store is on aarch
 	// which supported the cpu timekeeping utility, return the cluster setting
 	// as is.
-	return set
+	return LBRebalancingObjective(set)
 }

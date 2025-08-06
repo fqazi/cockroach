@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -164,10 +165,14 @@ func (rts *resolvedTimestamp) consumeLogicalOp(
 		return rts.intentQ.UpdateTS(t.TxnID, t.Timestamp)
 
 	case *enginepb.MVCCCommitIntentOp:
+		// This assertion can be violated in mixed-version clusters, so make it
+		// fatal only in 24.1, gated by an envvar just in case. See:
+		// https://github.com/cockroachdb/cockroach/issues/104309
+		//
 		// TODO(erikgrinaker): make this unconditionally fatal.
-		fatal := !DisableCommitIntentTimestampAssertion
+		fatal := rts.settings.Version.IsActive(ctx, clusterversion.V24_1Start) &&
+			!DisableCommitIntentTimestampAssertion
 		rts.assertOpAboveRTS(ctx, op, t.Timestamp, fatal)
-
 		return rts.intentQ.DecrRef(t.TxnID, t.Timestamp)
 
 	case *enginepb.MVCCAbortIntentOp:
@@ -270,7 +275,7 @@ func (rts *resolvedTimestamp) recompute(ctx context.Context) bool {
 func (rts *resolvedTimestamp) assertNoChange(ctx context.Context) {
 	before := rts.resolvedTS
 	changed := rts.recompute(ctx)
-	if changed || before != rts.resolvedTS {
+	if changed || !before.EqOrdering(rts.resolvedTS) {
 		log.Fatalf(ctx, "unexpected resolved timestamp change on recomputation, "+
 			"was %s, recomputed as %s", before, rts.resolvedTS)
 	}
@@ -364,7 +369,7 @@ func (h unresolvedTxnHeap) Less(i, j int) bool {
 	// container/heap constructs a min-heap by default, so prioritize the txn
 	// with the smaller timestamp. Break ties by comparing IDs to establish a
 	// total order.
-	if h[i].timestamp == h[j].timestamp {
+	if h[i].timestamp.EqOrdering(h[j].timestamp) {
 		return bytes.Compare(h[i].txnID.GetBytes(), h[j].txnID.GetBytes()) < 0
 	}
 	return h[i].timestamp.Less(h[j].timestamp)

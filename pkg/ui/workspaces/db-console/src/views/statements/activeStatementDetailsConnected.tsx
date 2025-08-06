@@ -10,21 +10,19 @@ import {
 } from "@cockroachlabs/cluster-ui";
 import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
-
-import { refreshLiveWorkload } from "src/redux/apiReducers";
 import { AdminUIState } from "src/redux/state";
-import { selectHasAdminRole } from "src/redux/user";
+import { refreshLiveWorkload } from "src/redux/apiReducers";
 import {
   selectActiveStatement,
   selectContentionDetailsForStatement,
 } from "src/selectors";
+import { selectHasAdminRole } from "src/redux/user";
 
 export default withRouter(
   connect<
     ActiveStatementDetailsStateProps,
     ActiveStatementDetailsDispatchProps,
-    RouteComponentProps,
-    AdminUIState
+    RouteComponentProps
   >(
     (state: AdminUIState, props: RouteComponentProps) => ({
       match: props.match,

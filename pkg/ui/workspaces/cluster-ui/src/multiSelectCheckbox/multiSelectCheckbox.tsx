@@ -3,13 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
 import React from "react";
 import Select, { components, OptionsType } from "react-select";
-
-import { Filter } from "../queryFilter";
-
 import styles from "./multiSelectCheckbox.module.scss";
+import classNames from "classnames/bind";
 
 const cx = classNames.bind(styles);
 
@@ -22,7 +19,7 @@ export interface SelectOption {
 export interface MultiSelectCheckboxProps {
   field: string;
   options: SelectOption[];
-  parent: Filter;
+  parent: any;
   placeholder: string;
   value?: SelectOption[];
 }
@@ -83,6 +80,7 @@ const customStyles = {
 
 /**
  * Creates the MultiSelectCheckbox from the props
+ * @param props:
  * parent (any): the element creating this multiselect that will have its state
  * updated when a new value is selected
  * field (string): the name of the state's field on the parent that will be
@@ -92,13 +90,12 @@ const customStyles = {
  * placeholder (string): the placeholder for the multiselect
  * value (SelectOption[]): a list of the selected options (optional)
  * @constructor
- * @param props
  */
 export const MultiSelectCheckbox = (props: MultiSelectCheckboxProps) => {
   const handleChange = (
     selectedOptions: OptionsType<SelectOption>,
     field: string,
-    parent: Filter,
+    parent: any,
   ) => {
     const selected =
       selectedOptions

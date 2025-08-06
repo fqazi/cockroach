@@ -4,12 +4,11 @@
 // included in the /LICENSE file.
 
 import React from "react";
-
-import { Anchor } from "src/anchor";
-import emptyTableResultsImg from "src/assets/emptyState/empty-table-results.svg";
-import magnifyingGlassImg from "src/assets/emptyState/magnifying-glass.svg";
 import { EmptyTable, EmptyTableProps } from "src/empty";
+import { Anchor } from "src/anchor";
 import { insights } from "src/util";
+import magnifyingGlassImg from "src/assets/emptyState/magnifying-glass.svg";
+import emptyTableResultsImg from "src/assets/emptyState/empty-table-results.svg";
 
 const footer = (
   <Anchor href={insights} target="_blank">

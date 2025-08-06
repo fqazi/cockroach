@@ -88,8 +88,8 @@ func TestAmbiguousCommit(t *testing.T) {
 
 		params.Knobs.KVClient = &kvcoord.ClientTestingKnobs{
 			TransportFactory: func(factory kvcoord.TransportFactory) kvcoord.TransportFactory {
-				return func(options kvcoord.SendOptions, slice kvcoord.ReplicaSlice) kvcoord.Transport {
-					transport := factory(options, slice)
+				return func(options kvcoord.SendOptions, slice kvcoord.ReplicaSlice) (kvcoord.Transport, error) {
+					transport, err := factory(options, slice)
 					return &interceptingTransport{
 						Transport: transport,
 						sendNext: func(ctx context.Context, ba *kvpb.BatchRequest) (*kvpb.BatchResponse, error) {
@@ -119,7 +119,7 @@ func TestAmbiguousCommit(t *testing.T) {
 								return transport.SendNext(ctx, ba)
 							}
 						},
-					}
+					}, err
 				}
 			},
 		}
@@ -151,7 +151,7 @@ func TestAmbiguousCommit(t *testing.T) {
 		for _, server := range tc.Servers {
 			st := server.ClusterSettings()
 			st.Manual.Store(true)
-			sql.DistSQLClusterExecMode.Override(ctx, &st.SV, sessiondatapb.DistSQLOff)
+			sql.DistSQLClusterExecMode.Override(ctx, &st.SV, int64(sessiondatapb.DistSQLOff))
 		}
 
 		sqlDB := tc.Conns[0]

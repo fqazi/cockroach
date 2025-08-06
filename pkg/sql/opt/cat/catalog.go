@@ -10,13 +10,10 @@ package cat
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/config"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/roleoption"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/lib/pq/oid"
 )
@@ -43,16 +40,6 @@ import (
 // prepends the database ID, since the same descriptor ID is reused across
 // databases.
 type StableID uint64
-
-// DefaultStableID is the uninitialized stable ID, used to represent an
-// invalid or default state for catalog objects. GlobalPrivilege objects
-// always return this value as their ID.
-const DefaultStableID = StableID(catid.InvalidDescID)
-
-// InvalidVersion is the version number used to represent objects that
-// are not versioned in any way. For example the GlobalPrivilege object,
-// which is not backed by a descriptor.
-const InvalidVersion = uint64(0)
 
 // SchemaName is an alias for tree.ObjectNamePrefix, since it consists of the
 // catalog + schema name.
@@ -84,45 +71,6 @@ type Flags struct {
 	IncludeNonActiveIndexes bool
 }
 
-// DependencyDigest can be stored and confirm that all catalog objects resolved,
-// at the current point in time will have the same version, stats, valid privileges,
-// and name resolution.
-type DependencyDigest struct {
-	// LeaseGeneration tracks if any new version of descriptors has been published
-	// by the lease manager.
-	LeaseGeneration int64
-
-	// StatsGeneration tracks if any new statistics have been published.
-	StatsGeneration int64
-
-	// SystemConfig tracks the current system config, which is refreshed on
-	// any zone config update.
-	SystemConfig *config.SystemConfig
-
-	CurrentDatabase string
-	SearchPath      sessiondata.SearchPath
-	CurrentUser     username.SQLUsername
-}
-
-// Equal compares if two dependency digests match.
-func (d *DependencyDigest) Equal(other *DependencyDigest) bool {
-	return d.LeaseGeneration == other.LeaseGeneration &&
-		d.StatsGeneration == other.StatsGeneration &&
-		// Note: If the system config is modified a new SystemConfig structure
-		// is always allocated. Individual fields cannot change on the caller,
-		// so for the purpose of the dependency digest its sufficient to just
-		// compare / store pointers.
-		d.SystemConfig == other.SystemConfig &&
-		d.CurrentDatabase == other.CurrentDatabase &&
-		d.SearchPath.Equals(&other.SearchPath) &&
-		d.CurrentUser == other.CurrentUser
-}
-
-// Clear clears a dependency digest.
-func (d *DependencyDigest) Clear() {
-	*d = DependencyDigest{}
-}
-
 // Catalog is an interface to a database catalog, exposing only the information
 // needed by the query optimizer.
 //
@@ -152,10 +100,6 @@ type Catalog interface {
 	// NOTE: The returned schema must be immutable after construction, and so can
 	// be safely copied or used across goroutines.
 	ResolveSchema(ctx context.Context, flags Flags, name *SchemaName) (Schema, SchemaName, error)
-
-	// ResolveSchemaByID is similar to ResolveSchema, except that it locates a
-	// schema by its StableID. See the comment for StableID for more details.
-	ResolveSchemaByID(ctx context.Context, flags Flags, id StableID) (Schema, error)
 
 	// GetAllSchemaNamesForDB Gets all the SchemaNames for a database.
 	GetAllSchemaNamesForDB(ctx context.Context, dbName string) ([]SchemaName, error)
@@ -216,29 +160,22 @@ type Catalog interface {
 	// ResolveFunctionByOID resolves a function overload by OID.
 	ResolveFunctionByOID(ctx context.Context, oid oid.Oid) (*tree.RoutineName, *tree.Overload, error)
 
-	// CheckPrivilege verifies that the given user has the given privilege on
+	// CheckPrivilege verifies that the current user has the given privilege on
 	// the given catalog object. If not, then CheckPrivilege returns an error.
-	CheckPrivilege(ctx context.Context, o Object, user username.SQLUsername, priv privilege.Kind) error
+	CheckPrivilege(ctx context.Context, o Object, priv privilege.Kind) error
 
 	// CheckAnyPrivilege verifies that the current user has any privilege on
 	// the given catalog object. If not, then CheckAnyPrivilege returns an error.
 	CheckAnyPrivilege(ctx context.Context, o Object) error
 
-	// CheckExecutionPrivilege verifies that the given user has execution
+	// CheckExecutionPrivilege verifies that the current user has execution
 	// privileges for the UDF with the given OID. If not, then CheckPrivilege
 	// returns an error.
-	CheckExecutionPrivilege(ctx context.Context, oid oid.Oid, user username.SQLUsername) error
+	CheckExecutionPrivilege(ctx context.Context, oid oid.Oid) error
 
 	// HasAdminRole checks that the current user has admin privileges. If yes,
 	// returns true. Returns an error if query on the `system.users` table failed
 	HasAdminRole(ctx context.Context) (bool, error)
-
-	// UserHasAdminRole checks if the specified user has admin privileges.
-	UserHasAdminRole(ctx context.Context, user username.SQLUsername) (bool, error)
-
-	// UserIsMemberOfAnyRole checks if the specified user is a member of any of the given roles,
-	// either directly or indirectly through role inheritance.
-	UserIsMemberOfAnyRole(ctx context.Context, user username.SQLUsername, roles map[username.SQLUsername]struct{}) (bool, error)
 
 	// HasRoleOption converts the roleoption to its SQL column name and checks if
 	// the user belongs to a role where the option has value true. Requires a
@@ -248,10 +185,6 @@ type Catalog interface {
 	// the role options table. Example: CREATEROLE instead of NOCREATEROLE.
 	// NOLOGIN instead of LOGIN.
 	HasRoleOption(ctx context.Context, roleOption roleoption.Option) (bool, error)
-
-	// UserHasGlobalPrivilegeOrRoleOption returns a bool representing whether the given user
-	// has a global privilege or the corresponding legacy role option.
-	UserHasGlobalPrivilegeOrRoleOption(ctx context.Context, privilege privilege.Kind, user username.SQLUsername) (bool, error)
 
 	// FullyQualifiedName retrieves the fully qualified name of a data source.
 	// Note that:
@@ -267,23 +200,4 @@ type Catalog interface {
 	// Optimizer returns the query Optimizer used to optimize SQL statements
 	// referencing objects in this catalog, if any.
 	Optimizer() interface{}
-
-	// GetCurrentUser returns the username.SQLUsername of the current session.
-	GetCurrentUser() username.SQLUsername
-
-	// GetDependencyDigest fetches the current dependency digest, which can be
-	// used as a fast comparison to guarantee that all dependencies will resolve
-	// exactly the same.
-	GetDependencyDigest() DependencyDigest
-
-	// LeaseByStableID leases out a descriptor by the stable ID, which will block
-	// schema changes. The version of the underlying object is returned.
-	LeaseByStableID(ctx context.Context, id StableID) (uint64, error)
-
-	// GetRoutineOwner returns the username.SQLUsername of the routine's
-	// (specified by routineOid) owner.
-	GetRoutineOwner(ctx context.Context, routineOid oid.Oid) (username.SQLUsername, error)
-
-	// IsOwner returns true if user is the owner of the object o
-	IsOwner(ctx context.Context, o Object, user username.SQLUsername) (bool, error)
 }

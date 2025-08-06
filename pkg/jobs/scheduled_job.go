@@ -171,18 +171,12 @@ func (j *ScheduledJob) ExecutionArgs() *jobspb.ExecutionArguments {
 	return &j.rec.ExecutionArgs
 }
 
-// SetScheduleAndNextRun updates periodicity of this schedule, and updates this schedules
+// SetSchedule updates periodicity of this schedule, and updates this schedules
 // next run time.
-func (j *ScheduledJob) SetScheduleAndNextRun(scheduleExpr string) error {
+func (j *ScheduledJob) SetSchedule(scheduleExpr string) error {
 	j.rec.ScheduleExpr = scheduleExpr
 	j.markDirty("schedule_expr")
 	return j.ScheduleNextRun()
-}
-
-// SetScheduleExpr updates schedule expression for this schedule without updating next run time.
-func (j *ScheduledJob) SetScheduleExpr(scheduleExpr string) {
-	j.rec.ScheduleExpr = scheduleExpr
-	j.markDirty("schedule_expr")
 }
 
 // HasRecurringSchedule returns true if this schedule job runs periodically.
@@ -240,14 +234,12 @@ func (j *ScheduledJob) SetScheduleDetails(details jobspb.ScheduleDetails) {
 }
 
 // SetScheduleStatus sets schedule status.
-func (j *ScheduledJob) SetScheduleStatus(msg string) {
-	j.rec.ScheduleState.Status = msg
-	j.markDirty("schedule_state")
-}
-
-// SetScheduleStatusf sets schedule status.
-func (j *ScheduledJob) SetScheduleStatusf(format string, args ...interface{}) {
-	j.rec.ScheduleState.Status = fmt.Sprintf(format, args...)
+func (j *ScheduledJob) SetScheduleStatus(fmtOrMsg string, args ...interface{}) {
+	if len(args) == 0 {
+		j.rec.ScheduleState.Status = fmtOrMsg
+	} else {
+		j.rec.ScheduleState.Status = fmt.Sprintf(fmtOrMsg, args...)
+	}
 	j.markDirty("schedule_state")
 }
 

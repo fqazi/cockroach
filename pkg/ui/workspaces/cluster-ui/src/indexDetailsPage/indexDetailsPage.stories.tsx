@@ -3,14 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { storiesOf } from "@storybook/react";
-import moment from "moment-timezone";
 import React from "react";
+import { storiesOf } from "@storybook/react";
 
 import { withBackground, withRouterProvider } from "src/storybook/decorators";
 import { randomName } from "src/storybook/fixtures";
-
 import { IndexDetailsPage, IndexDetailsPageProps } from "./indexDetailsPage";
+import moment from "moment-timezone";
 
 const withData: IndexDetailsPageProps = {
   databaseName: randomName(),
@@ -20,7 +19,6 @@ const withData: IndexDetailsPageProps = {
   nodeRegions: {},
   timeScale: null,
   details: {
-    databaseID: 1,
     loading: false,
     loaded: true,
     createStatement: `
@@ -39,6 +37,21 @@ const withData: IndexDetailsPageProps = {
       },
     ],
   },
+  breadcrumbItems: [
+    { link: "/databases", name: "Databases" },
+    {
+      link: `/databases/story_db`,
+      name: "Tables",
+    },
+    {
+      link: `/database/story_db/$public/story_table`,
+      name: `Table: story_table`,
+    },
+    {
+      link: `/database/story_db/public/story_table/story_index`,
+      name: `Index: story_index`,
+    },
+  ],
   refreshIndexStats: () => {},
   resetIndexUsageStats: () => {},
   refreshNodes: () => {},

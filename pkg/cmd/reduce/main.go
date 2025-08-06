@@ -47,8 +47,6 @@ var (
 	}()
 	flags             = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	binary            = flags.String("binary", "./cockroach", "path to cockroach binary")
-	httpPort          = flags.Int("http-port", 8080, "first port number for HTTP servers in demo")
-	sqlPort           = flags.Int("sql-port", 26257, "first port number for SQL servers in demo")
 	file              = flags.String("file", "", "the path to a file containing SQL queries to reduce; required")
 	outFlag           = flags.String("out", "", "if set, the path to a new file where reduced result will be written to")
 	verbose           = flags.Bool("v", false, "print progress to standard output and the original test case output if it is not interesting")
@@ -119,8 +117,8 @@ func main() {
 	}
 	reducesql.LogUnknown = *unknown
 	out, err := reduceSQL(
-		*binary, *httpPort, *sqlPort, *contains, file, *workers, *verbose,
-		*chunkReductions, *multiRegion, *tlp, *costfuzz, *unoptimizedOracle,
+		*binary, *contains, file, *workers, *verbose, *chunkReductions, *multiRegion,
+		*tlp, *costfuzz, *unoptimizedOracle,
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -138,9 +136,7 @@ func main() {
 }
 
 func reduceSQL(
-	binary string,
-	httpPort, sqlPort int,
-	contains string,
+	binary, contains string,
 	file *string,
 	workers int,
 	verbose bool,
@@ -296,22 +292,27 @@ SELECT '%[1]s';
 	}
 
 	isInteresting := func(ctx context.Context, sql string) (interesting bool, logOriginalHint func()) {
-		args := []string{
-			"demo",
-			"--insecure",
-			"--empty",
-			// Do not exit on errors so the entirety of the input SQL is
-			// processed.
-			"--set=errexit=false",
-			"--format=tsv",
-			fmt.Sprintf("--http-port=%d", httpPort),
-			fmt.Sprintf("--sql-port=%d", sqlPort),
-		}
+		// If not multi-region, disable license generation. Do not exit on errors so
+		// the entirety of the input SQL is processed.
+		var cmd *exec.Cmd
 		if multiRegion {
-			args = append(args, "--nodes=9")
-			args = append(args, "--multitenant=false")
+			cmd = exec.CommandContext(ctx, binary,
+				"demo",
+				"--empty",
+				"--nodes=9",
+				"--multitenant=false",
+				"--set=errexit=false",
+				"--format=tsv",
+			)
+		} else {
+			cmd = exec.CommandContext(ctx, binary,
+				"demo",
+				"--empty",
+				"--disable-demo-license",
+				"--set=errexit=false",
+				"--format=tsv",
+			)
 		}
-		cmd := exec.CommandContext(ctx, binary, args...)
 		// Disable telemetry.
 		cmd.Env = []string{"COCKROACH_SKIP_ENABLING_DIAGNOSTIC_REPORTING", "true"}
 		sql = settings + sql
@@ -397,9 +398,9 @@ func findPreviousQuery(lines []string, lineIdx int) (string, int) {
 		lineIdx--
 	}
 	// lineIdx right now points at an empty line before the query.
-	query := strings.Join(lines[lineIdx+1:lastQueryLineIdx+1], "\n")
+	query := strings.Join(lines[lineIdx+1:lastQueryLineIdx+1], " ")
 	// Remove the semicolon.
-	return strings.TrimSuffix(query, ";"), lineIdx
+	return query[:len(query)-1], lineIdx
 }
 
 // findPreviousSetStatements returns any SET or RESET statements preceding
@@ -426,7 +427,7 @@ func findPreviousSetStatements(lines []string, lineIdx int) (string, int) {
 		}
 	}
 	// firstQueryLineIdx right now points at an empty line before the statement.
-	query := strings.Join(lines[firstQueryLineIdx+1:lastQueryLineIdx+1], "\n")
+	query := strings.Join(lines[firstQueryLineIdx+1:lastQueryLineIdx+1], " ")
 	return query, firstQueryLineIdx
 }
 

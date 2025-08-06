@@ -2399,7 +2399,6 @@
         "protrftypes",
         "prosrc",
         "probin",
-        "prosqlbody",
         "proconfig",
         "proacl"
       ],
@@ -2499,10 +2498,6 @@
         "prosecdef": {
           "oid": 16,
           "dataType": "bool"
-        },
-        "prosqlbody": {
-          "oid": 25,
-          "dataType": "TEXT"
         },
         "prosrc": {
           "oid": 25,

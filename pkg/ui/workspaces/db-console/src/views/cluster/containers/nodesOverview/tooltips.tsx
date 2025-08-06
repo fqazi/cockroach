@@ -4,14 +4,12 @@
 // included in the /LICENSE file.
 
 import React from "react";
-
 import { Anchor, Tooltip, Text } from "src/components";
-import { TooltipProps } from "src/components/tooltip/tooltip";
-import { LivenessStatus } from "src/redux/nodes";
 import { nodeLivenessIssues, howItWork, capacityMetrics } from "src/util/docs";
+import { LivenessStatus } from "src/redux/nodes";
 import { NodeStatusRow } from "src/views/cluster/containers/nodesOverview/index";
-
 import { AggregatedNodeStatus } from ".";
+import { TooltipProps } from "src/components/tooltip/tooltip";
 
 export const getStatusDescription = (status: LivenessStatus) => {
   switch (status) {

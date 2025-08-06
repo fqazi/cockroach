@@ -7,9 +7,8 @@
 package kvnemesis
 
 import (
-	"cmp"
 	"fmt"
-	"slices"
+	"sort"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvnemesis/kvnemesisutil"
@@ -40,8 +39,8 @@ func (tr *SeqTracker) String() string {
 	for k := range tr.seen {
 		sl = append(sl, k)
 	}
-	slices.SortFunc(sl, func(a, b keyTS) int {
-		return cmp.Compare(fmt.Sprintf("%v", a), fmt.Sprintf("%v", b))
+	sort.Slice(sl, func(i, j int) bool {
+		return fmt.Sprintf("%v", sl[i]) < fmt.Sprintf("%v", sl[j])
 	})
 
 	var buf strings.Builder

@@ -9,7 +9,6 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
@@ -87,7 +86,7 @@ type serverController struct {
 
 	// draining is set when the surrounding server starts draining, and
 	// prevents further creation of new tenant servers.
-	draining atomic.Bool
+	draining syncutil.AtomicBool
 	drainCh  chan struct{}
 
 	// disableSQLServer disables starting the SQL service.
@@ -99,8 +98,6 @@ type serverController struct {
 	watcher *tenantcapabilitieswatcher.Watcher
 
 	disableTLSForHTTP bool
-
-	insecure bool
 
 	mu struct {
 		syncutil.RWMutex
@@ -138,7 +135,6 @@ func newServerController(
 	watcher *tenantcapabilitieswatcher.Watcher,
 	disableSQLServer bool,
 	disableTLSForHTTP bool,
-	insecure bool,
 ) *serverController {
 	c := &serverController{
 		AmbientContext:      ambientCtx,
@@ -153,7 +149,6 @@ func newServerController(
 		drainCh:             make(chan struct{}),
 		disableSQLServer:    disableSQLServer,
 		disableTLSForHTTP:   disableTLSForHTTP,
-		insecure:            insecure,
 	}
 	c.orchestrator = newChannelOrchestrator(parentStopper, c)
 	c.mu.servers = map[roachpb.TenantName]*serverState{
@@ -166,8 +161,8 @@ func newServerController(
 }
 
 func (s *serverController) SetDraining() {
-	if !s.draining.Load() {
-		s.draining.Store(true)
+	if !s.draining.Get() {
+		s.draining.Set(true)
 		close(s.drainCh)
 	}
 }
@@ -214,6 +209,7 @@ func (c *serverController) start(ctx context.Context, ie isql.Executor) error {
 			select {
 			case <-updateCh:
 			case <-timer.C:
+				timer.Read = true
 			case <-c.stopper.ShouldQuiesce():
 				// Expedited server shutdown of outer server.
 				return
@@ -286,7 +282,7 @@ func (c *serverController) startMissingServers(
 func (c *serverController) createServerEntryLocked(
 	ctx context.Context, tenantName roachpb.TenantName,
 ) (*serverState, error) {
-	if c.draining.Load() {
+	if c.draining.Get() {
 		return nil, errors.New("server is draining")
 	}
 

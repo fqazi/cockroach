@@ -241,12 +241,6 @@ type ByNameGetter getterBase
 func (g ByNameGetter) Database(
 	ctx context.Context, name string,
 ) (catalog.DatabaseDescriptor, error) {
-	if name == "" {
-		if g.flags.isOptional {
-			return nil, nil
-		}
-		return nil, sqlerrors.ErrEmptyDatabaseName
-	}
 	desc, err := getDescriptorByName(
 		ctx, g.KV(), g.Descriptors(), nil /* db */, nil /* sc */, name, g.flags, catalog.Database,
 	)
@@ -483,10 +477,10 @@ func defaultUnleasedFlags() (f getterFlags) {
 	return f
 }
 
-// ByIDWithoutLeased returns a ByIDGetterBuilder set up to look up descriptors by ID
+// ByID returns a ByIDGetterBuilder set up to look up descriptors by ID
 // in all layers except the leased descriptors layer. To opt in to the
 // leased descriptors, use ByIDWithLeased instead.
-func (tc *Collection) ByIDWithoutLeased(txn *kv.Txn) ByIDGetterBuilder {
+func (tc *Collection) ByID(txn *kv.Txn) ByIDGetterBuilder {
 	return ByIDGetterBuilder(makeGetterBase(txn, tc, getterFlags{
 		layerFilters: layerFilters{
 			withoutLeased: true,
@@ -494,7 +488,7 @@ func (tc *Collection) ByIDWithoutLeased(txn *kv.Txn) ByIDGetterBuilder {
 	}))
 }
 
-// ByIDWithLeased is like ByIDWithoutLeased but also looks up in the leased descriptors
+// ByIDWithLeased is like ByID but also looks up in the leased descriptors
 // layer. This may save a round-trip to KV at the expense of the descriptor
 // being slightly stale (one version off).
 func (tc *Collection) ByIDWithLeased(txn *kv.Txn) ByIDGetterBuilder {

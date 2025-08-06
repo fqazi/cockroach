@@ -15,30 +15,16 @@ func init() {
 		toPublic(
 			scpb.Status_ABSENT,
 			to(scpb.Status_PUBLIC,
-				emit(func(this *scpb.IndexZoneConfig) *scop.AddIndexZoneConfig {
-					return &scop.AddIndexZoneConfig{
-						TableID:              this.TableID,
-						Subzone:              this.Subzone,
-						SubzoneSpans:         this.SubzoneSpans,
-						SubzoneIndexToDelete: this.OldIdxRef,
-					}
+				emit(func(this *scpb.IndexZoneConfig) *scop.NotImplemented {
+					return &scop.NotImplemented{}
 				}),
 			),
 		),
 		toAbsent(
 			scpb.Status_PUBLIC,
 			to(scpb.Status_ABSENT,
-				emit(func(this *scpb.IndexZoneConfig, md *opGenContext) *scop.DiscardSubzoneConfig {
-					// If this belongs to a drop instead of a CONFIGURE ZONE DISCARD, let
-					// the GC job take care of dropping the zone config.
-					if checkIfIndexHasGCDependents(this.TableID, md) {
-						return nil
-					}
-					return &scop.DiscardSubzoneConfig{
-						TableID:      this.TableID,
-						Subzone:      this.Subzone,
-						SubzoneSpans: this.SubzoneSpans,
-					}
+				emit(func(this *scpb.IndexZoneConfig) *scop.NotImplementedForPublicObjects {
+					return notImplementedForPublicObjects(this)
 				}),
 			),
 		),

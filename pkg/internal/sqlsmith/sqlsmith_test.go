@@ -47,7 +47,7 @@ func TestRandTableInserts(t *testing.T) {
 	defer s.Stopper().Stop(ctx)
 
 	rnd, _ := randutil.NewTestRand()
-	setup := randTablesN(rnd, 10, "", false /* isMultiRegion */)
+	setup := randTablesN(rnd, 10, "")
 	for _, stmt := range setup {
 		if _, err := sqlDB.Exec(stmt); err != nil {
 			t.Log(stmt)

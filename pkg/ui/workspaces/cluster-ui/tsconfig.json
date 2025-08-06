@@ -14,10 +14,8 @@
     "target": "es6",
     "skipLibCheck": true,
     "sourceMap": false,
+    "baseUrl": ".",
     "preserveSymlinks": true,
-    "noEmitOnError": true,
-    "strict": true,
-    "strictNullChecks": false,
     "paths": {
       "@cockroachlabs/crdb-protobuf-client": [
         "../../../../_bazel/bin/pkg/ui/workspaces/db-console/src/js",
