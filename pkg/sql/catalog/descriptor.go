@@ -21,21 +21,16 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
 
 // DescriptorType is a symbol representing the (sub)type of a descriptor.
 type DescriptorType string
-
-var _ redact.SafeValue = DescriptorType("")
-
-// SafeValue implements redact.SafeValue.
-func (DescriptorType) SafeValue() {}
 
 const (
 	// Any represents any descriptor.
@@ -55,22 +50,6 @@ const (
 
 	// Function is for function descriptors.
 	Function DescriptorType = "function"
-)
-
-// DescExprType describes the type for a serialized expression or statement
-// within a descriptor. This determines how the serialized expression should be
-// interpreted.
-type DescExprType uint8
-
-const (
-	// SQLExpr is a serialized SQL expression, such as "1 * 2".
-	SQLExpr DescExprType = iota
-	// SQLStmt is a serialized SQL statement or series of statements. Ex:
-	//   INSERT INTO xy VALUES (1, 2)
-	SQLStmt
-	// PLpgSQLStmt is a serialized PLpgSQL statement or series of statements. Ex:
-	//   BEGIN RAISE NOTICE 'foo'; END;
-	PLpgSQLStmt
 )
 
 // MutationPublicationFilter is used by MakeFirstMutationPublic to filter the
@@ -166,24 +145,13 @@ type NameKey interface {
 	GetParentSchemaID() descpb.ID
 }
 
-var _ NameKey = descpb.NameInfo{}
-
-func MakeNameInfo(nk NameKey) descpb.NameInfo {
-	if ni, ok := nk.(descpb.NameInfo); ok {
-		return ni
-	}
-	return descpb.NameInfo{
-		ParentID:       nk.GetParentID(),
-		ParentSchemaID: nk.GetParentSchemaID(),
-		Name:           nk.GetName(),
-	}
-}
-
 // NameEntry corresponds to an entry in the namespace table.
 type NameEntry interface {
 	NameKey
 	GetID() descpb.ID
 }
+
+var _ NameKey = descpb.NameInfo{}
 
 // LeasableDescriptor is an interface for objects which can be leased via the
 // descriptor leasing system.
@@ -293,14 +261,6 @@ type Descriptor interface {
 	// referenced by this descriptor which must be hydrated prior to using it.
 	// iterutil.StopIteration is supported.
 	ForEachUDTDependentForHydration(func(t *types.T) error) error
-
-	// MaybeRequiresTypeHydration returns false if the descriptor definitely does not
-	// depend on any types.T being hydrated.
-	MaybeRequiresTypeHydration() bool
-
-	// GetReplicatedPCRVersion return the version from the source
-	// tenant if this descriptor is replicated.
-	GetReplicatedPCRVersion() descpb.DescriptorVersion
 }
 
 // DatabaseDescriptor encapsulates the concept of a database.
@@ -372,9 +332,6 @@ type TableDescriptor interface {
 	IsPhysicalTable() bool
 	// MaterializedView returns whether this TableDescriptor is a MaterializedView.
 	MaterializedView() bool
-	// IsReadOnly returns if this table descriptor has external data, and cannot
-	// be written to.
-	IsReadOnly() bool
 	// IsAs returns true if the TableDescriptor describes a Table that was created
 	// with a CREATE TABLE AS command.
 	IsAs() bool
@@ -412,23 +369,15 @@ type TableDescriptor interface {
 	IsPartitionAllBy() bool
 
 	// PrimaryIndexSpan returns the Span that corresponds to the entire primary
-	// index; can be used for a full table scan. This will not be an external span
-	// even if the table uses external row data.
+	// index; can be used for a full table scan.
 	PrimaryIndexSpan(codec keys.SQLCodec) roachpb.Span
 	// IndexSpan returns the Span that corresponds to an entire index; can be used
-	// for a full index scan. This will not be an external span even if the table
-	// uses external row data.
+	// for a full index scan.
 	IndexSpan(codec keys.SQLCodec, id descpb.IndexID) roachpb.Span
-	// IndexSpanAllowingExternalRowData returns the Span that corresponds to an
-	// entire index; can be used for a full index scan. If the table uses external
-	// row data, this will be an external span.
-	IndexSpanAllowingExternalRowData(codec keys.SQLCodec, id descpb.IndexID) roachpb.Span
-	// AllIndexSpans returns the Spans for each index in the table, including
-	// those being added in the mutations. These will not be external spans even
-	// if the table uses external row data.
+	// AllIndexSpans returns the Spans for each index in the table, including those
+	// being added in the mutations.
 	AllIndexSpans(codec keys.SQLCodec) roachpb.Spans
-	// TableSpan returns the Span that corresponds to the entire table. This will
-	// not be an external span even if the table uses external row data.
+	// TableSpan returns the Span that corresponds to the entire table.
 	TableSpan(codec keys.SQLCodec) roachpb.Span
 	// GetIndexMutationCapabilities returns:
 	// 1. Whether the index is a mutation
@@ -466,11 +415,6 @@ type TableDescriptor interface {
 	// proto, in their canonical order. This is equivalent to taking the slice
 	// produced by AllIndexes and removing indexes with empty expressions.
 	PartialIndexes() []Index
-
-	// VectorIndexes returns a slice of all vector indexes in the underlying
-	// proto, in their canonical order. This is equivalent to taking the slice
-	// produced by AllIndexes and removing indexes which are not vector indexes.
-	VectorIndexes() []Index
 
 	// PublicNonPrimaryIndexes returns a slice of all active secondary indexes,
 	// in their canonical order. This is equivalent to the Indexes array in the
@@ -646,12 +590,6 @@ type TableDescriptor interface {
 	// Note: This was only used in pre-20.2 truncate and 20.2 mixed version and
 	// is now deprecated.
 	GetReplacementOf() descpb.TableDescriptor_Replacement
-
-	// GetAllReferencedRelationIDsExceptFKs returns the IDs of all relations
-	// this table depends on, excluding foreign key dependencies. Dependencies can
-	// originate from triggers, policies, or direct references in views.
-	GetAllReferencedRelationIDsExceptFKs() descpb.IDs
-
 	// GetAllReferencedTypeIDs returns all user defined type descriptor IDs that
 	// this table references. It takes in a function that returns the TypeDescriptor
 	// with the desired ID.
@@ -663,20 +601,11 @@ type TableDescriptor interface {
 	// functions referenced in this table.
 	GetAllReferencedFunctionIDs() (DescriptorIDSet, error)
 
-	// GetAllReferencedFunctionIDsInPolicy returns descriptor IDs of all user
-	// defined functions referenced in this policy.
-	GetAllReferencedFunctionIDsInPolicy(policyID descpb.PolicyID) DescriptorIDSet
-
 	// GetAllReferencedFunctionIDsInConstraint returns descriptor IDs of all user
 	// defined functions referenced in this check constraint.
 	GetAllReferencedFunctionIDsInConstraint(
 		cstID descpb.ConstraintID,
 	) (DescriptorIDSet, error)
-
-	// GetAllReferencedFunctionIDsInTrigger returns descriptor IDs of all user
-	// defined functions referenced in this trigger. This includes the trigger
-	// function as well as any functions it references transitively.
-	GetAllReferencedFunctionIDsInTrigger(triggerID descpb.TriggerID) DescriptorIDSet
 
 	// GetAllReferencedFunctionIDsInColumnExprs returns descriptor IDs of all user
 	// defined functions referenced by expressions in this column.
@@ -684,12 +613,6 @@ type TableDescriptor interface {
 	// field of column descriptors.
 	GetAllReferencedFunctionIDsInColumnExprs(
 		colID descpb.ColumnID,
-	) (DescriptorIDSet, error)
-
-	// GetAllReferencedFunctionIDsInIndex returns descriptor IDs of all user
-	// defined functions referenced in expressions used by this index.
-	GetAllReferencedFunctionIDsInIndex(
-		indexID descpb.IndexID,
 	) (DescriptorIDSet, error)
 
 	// ForeachDependedOnBy runs a function on all indexes, including those being
@@ -730,10 +653,6 @@ type TableDescriptor interface {
 	// EnforcedCheckConstraints returns the subset of check constraints in
 	// EnforcedConstraints for this table, in the same order.
 	EnforcedCheckConstraints() []CheckConstraint
-	// EnforcedCheckValidators returns all check constraints that should
-	// be validated for violations, including both actual check constraints and
-	// any synthetic ones added (e.g., for row-level security).
-	EnforcedCheckValidators() []CheckConstraintValidator
 
 	// OutboundForeignKeys returns the subset of foreign key constraints in
 	// AllConstraints for this table, in the same order.
@@ -790,11 +709,6 @@ type TableDescriptor interface {
 	// GetRegionalByRowTableRegionColumnName returns the region column name of a
 	// REGIONAL BY ROW table.
 	GetRegionalByRowTableRegionColumnName() (tree.Name, error)
-	// GetRegionalByRowUsingConstraint returns the ID of the foreign-key
-	// constraint that is used to determine the region for each row in a
-	// REGIONAL BY ROW table. It returns the zero value if the table is not RBR or
-	// no such constraint is set.
-	GetRegionalByRowUsingConstraint() descpb.ConstraintID
 	// GetRowLevelTTL returns the row-level TTL config for the table.
 	GetRowLevelTTL() *catpb.RowLevelTTL
 	// HasRowLevelTTL returns where there is a row-level TTL config for the table.
@@ -803,19 +717,13 @@ type TableDescriptor interface {
 	// to be excluded during backup.
 	GetExcludeDataFromBackup() bool
 	// GetStorageParams returns a list of storage parameters for the table.
-	GetStorageParams(spaceBetweenEqual bool) ([]string, error)
+	GetStorageParams(spaceBetweenEqual bool) []string
 	// NoAutoStatsSettingsOverrides is true if no auto stats related settings are
 	// set at the table level for the given table.
 	NoAutoStatsSettingsOverrides() bool
 	// AutoStatsCollectionEnabled indicates if automatic statistics collection is
 	// explicitly enabled or disabled for this table.
 	AutoStatsCollectionEnabled() catpb.AutoStatsCollectionStatus
-	// AutoPartialStatsCollectionEnabled indicates if automatic partial statistics
-	// collection is explicitly enabled or disabled for this table.
-	AutoPartialStatsCollectionEnabled() catpb.AutoPartialStatsCollectionStatus
-	// AutoFullStatsCollectionEnabled indicates if automatic full statistics
-	// collection is explicitly enabled or disabled for this table.
-	AutoFullStatsCollectionEnabled() catpb.AutoFullStatsCollectionStatus
 	// AutoStatsMinStaleRows indicates the setting of
 	// sql_stats_automatic_collection_min_stale_rows for this table.
 	// If ok is true, then the minStaleRows value is valid, otherwise this has not
@@ -855,26 +763,6 @@ type TableDescriptor interface {
 	// swap mutation or a secondary index used by the declarative schema changer
 	// for a primary index swap.
 	IsPrimaryKeySwapMutation(m *descpb.DescriptorMutation) bool
-	// ExternalRowData indicates where the row data for this object is stored if
-	// it is stored outside the span of the object.
-	ExternalRowData() *descpb.ExternalRowData
-	// GetTriggers returns a slice with all triggers defined on the table.
-	GetTriggers() []descpb.TriggerDescriptor
-	// GetNextTriggerID returns the next unused trigger ID for this table.
-	// Trigger IDs are unique per table, but not unique globally.
-	GetNextTriggerID() descpb.TriggerID
-	// GetPolicies returns a slice with all policies defined on the table.
-	GetPolicies() []descpb.PolicyDescriptor
-	// GetNextPolicyID returns the next unused policy ID for this table.
-	// Policy IDs are unique per table.
-	GetNextPolicyID() descpb.PolicyID
-	// IsRowLevelSecurityEnabled returns true if we have enabled row level
-	// security for the table and false if it is disabled.
-	IsRowLevelSecurityEnabled() bool
-	// IsRowLevelSecurityForced returns true if we have forced row level
-	// security for the table and false if it is no force. When forced is
-	// set the table's RLS policies are enforced even on the table owner.
-	IsRowLevelSecurityForced() bool
 }
 
 // MutableTableDescriptor is both a MutableDescriptor and a TableDescriptor.
@@ -1069,7 +957,7 @@ type FunctionDescriptor interface {
 	// GetFunctionBody returns the function body string.
 	GetFunctionBody() string
 
-	// GetParams returns a list of all parameters of the function.
+	// GetParams returns a list of argument definition from the function.
 	GetParams() []descpb.FunctionDescriptor_Parameter
 
 	// GetDependsOn returns a list of IDs of the relation this function depends on.
@@ -1103,9 +991,6 @@ type FunctionDescriptor interface {
 	// IsProcedure returns true if the descriptor represents a procedure. It
 	// returns false if the descriptor represents a user-defined function.
 	IsProcedure() bool
-
-	// GetSecurity returns the security specification of this function.
-	GetSecurity() catpb.Function_Security
 }
 
 // FilterDroppedDescriptor returns an error if the descriptor state is DROP.
@@ -1209,45 +1094,12 @@ func HasConcurrentDeclarativeSchemaChange(desc Descriptor) bool {
 	return desc.GetDeclarativeSchemaChangerState() != nil
 }
 
-// HasDeclarativeMergedPrimaryIndex returns if a primary key swap is occurring
-// via the declarative schema changer, and the new index is in a write-only state.
-func HasDeclarativeMergedPrimaryIndex(desc TableDescriptor) bool {
-	// For declarative schema changes detect when a new primary index becomes
-	// WRITE_ONLY (i.e. backfill has been completed).
-	state := desc.GetDeclarativeSchemaChangerState()
-	if state == nil {
-		return false
-	}
-	for idx, target := range state.Targets {
-		if target.GetPrimaryIndex() != nil &&
-			target.GetPrimaryIndex().TableID == desc.GetID() &&
-			(target.TargetStatus == scpb.Status_PUBLIC || target.TargetStatus == scpb.Status_TRANSIENT_ABSENT) &&
-			state.CurrentStatuses[idx] == scpb.Status_WRITE_ONLY {
-			return true
-		}
-	}
-	return false
-}
-
-// FindPreviousColumnNameForDeclarativeSchemaChange attempts to resolve the previous
-// column name for a declarative schema change. This is handy for cases where the
-// original name needs to be known.
-func FindPreviousColumnNameForDeclarativeSchemaChange(
-	desc TableDescriptor, columnID catid.ColumnID,
-) (bool, string) {
-	state := desc.GetDeclarativeSchemaChangerState()
-	if state == nil {
-		// No declarative schema change is active.
-		return false, ""
-	}
-	// Find the dropped column name element name that maps to the old name.
-	for _, elem := range state.Targets {
-		if nameElem, ok := elem.Element().(*scpb.ColumnName); ok &&
-			nameElem.TableID == desc.GetID() &&
-			nameElem.ColumnID == columnID &&
-			elem.TargetStatus == scpb.Status_ABSENT {
-			return true, nameElem.Name
-		}
-	}
-	return false, ""
+// MaybeRequiresHydration returns false if the descriptor definitely does not
+// depend on any types.T being hydrated.
+func MaybeRequiresHydration(desc Descriptor) (ret bool) {
+	_ = desc.ForEachUDTDependentForHydration(func(t *types.T) error {
+		ret = true
+		return iterutil.StopIteration()
+	})
+	return ret
 }

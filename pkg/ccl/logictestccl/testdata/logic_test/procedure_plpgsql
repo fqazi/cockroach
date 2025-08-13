@@ -1,3 +1,5 @@
+# LogicTest: !local-mixed-23.1
+
 statement ok
 CREATE TABLE t (
   k INT PRIMARY KEY,
@@ -641,6 +643,7 @@ statement ok
 CREATE PROCEDURE p_inner_o(OUT param INTEGER) AS $$ SELECT 1; $$ LANGUAGE SQL;
 CREATE PROCEDURE p_inner_io(INOUT param INTEGER) AS $$ SELECT 1; $$ LANGUAGE SQL;
 
+skipif config local-mixed-23.2
 statement ok
 CREATE PROCEDURE p_nested() AS $$
   DECLARE
@@ -653,33 +656,40 @@ CREATE PROCEDURE p_nested() AS $$
   END
 $$ LANGUAGE PLpgSQL;
 
+skipif config local-mixed-23.2
 statement ok
 CREATE FUNCTION f() RETURNS VOID AS $$ CALL p_nested(); $$ LANGUAGE SQL;
 
+skipif config local-mixed-23.2
 query T noticetrace
 SELECT f();
 ----
 NOTICE: a: 1
 NOTICE: a: 1
 
+skipif config local-mixed-23.2
 statement ok
 DROP FUNCTION f;
 
 statement ok
 DROP PROCEDURE IF EXISTS p;
 
+skipif config local-mixed-23.2
 statement ok
 CREATE PROCEDURE p() AS $$ CALL p_nested(); $$ LANGUAGE SQL;
 
+skipif config local-mixed-23.2
 query T noticetrace
 CALL p();
 ----
 NOTICE: a: 1
 NOTICE: a: 1
 
+skipif config local-mixed-23.2
 statement ok
 DROP PROCEDURE p;
 
+skipif config local-mixed-23.2
 statement ok
 DROP PROCEDURE p_nested;
 

@@ -7,13 +7,13 @@ package sqlproxyccl
 
 import (
 	"net"
-	"slices"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/sqlproxyccl/interceptor"
 	"github.com/cockroachdb/cockroach/pkg/ccl/sqlproxyccl/throttler"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/errors"
 	pgproto3 "github.com/jackc/pgproto3/v2"
+	"golang.org/x/exp/slices"
 )
 
 // These errors occur after successful auth but are sent back as a result of
@@ -104,8 +104,7 @@ var authenticate = func(
 		case *pgproto3.AuthenticationOk:
 			throttleError := throttleHook(throttler.AttemptOK)
 			if throttleError != nil {
-				// Send a user-facing error.
-				if err = feSend(toPgError(authThrottledError)); err != nil {
+				if err = feSend(toPgError(throttleError)); err != nil {
 					return nil, err
 				}
 				return nil, throttleError
@@ -126,8 +125,7 @@ var authenticate = func(
 				throttleError = throttleHook(throttler.AttemptInvalidCredentials)
 			}
 			if throttleError != nil {
-				// Send a user-facing error.
-				if err = feSend(toPgError(authThrottledError)); err != nil {
+				if err = feSend(toPgError(throttleError)); err != nil {
 					return nil, err
 				}
 				return nil, throttleError

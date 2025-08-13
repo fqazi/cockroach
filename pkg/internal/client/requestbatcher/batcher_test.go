@@ -17,12 +17,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
-	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
@@ -77,9 +74,6 @@ func (g *senderGroup) Wait() error {
 }
 
 func TestBatcherSendOnSizeWithReset(t *testing.T) {
-	// Note: the timing-dependency and possible flakiness can be addressed by
-	// using a manual time(r) source, see TestBatcherSend for an example.
-
 	// This test ensures that when a single batch ends up sending due to size
 	// constrains its timer is successfully canceled and does not lead to a
 	// nil panic due to an attempt to send a batch due to the old timer.
@@ -139,12 +133,11 @@ func TestBatchesAtTheSameTime(t *testing.T) {
 	sc := make(chanSender)
 	start := timeutil.Now()
 	then := start.Add(10 * time.Millisecond)
-	mt := timeutil.NewManualTime(then)
 	b := New(Config{
-		MaxIdle:    20 * time.Millisecond,
-		Sender:     sc,
-		Stopper:    stopper,
-		manualTime: mt,
+		MaxIdle: 20 * time.Millisecond,
+		Sender:  sc,
+		Stopper: stopper,
+		NowFunc: func() time.Time { return then },
 	})
 	const N = 20
 	sendChan := make(chan Response, N)
@@ -152,22 +145,6 @@ func TestBatchesAtTheSameTime(t *testing.T) {
 		assert.Nil(t, b.SendWithChan(
 			context.Background(), sendChan, roachpb.RangeID(i), &kvpb.GetRequest{}, kvpb.AdmissionHeader{}))
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func(ctx context.Context) {
-		// At this point, all the requests should've made it into the
-		// batcher and have been timestamped. We want to be a real clock
-		// so that the timers fire on their own accord.
-		for {
-			select {
-			case <-time.After(5 * time.Millisecond):
-				mt.Advance(5 * time.Millisecond)
-			case <-ctx.Done():
-				return
-			}
-		}
-	}(ctx)
 	for i := 0; i < N; i++ {
 		bs := <-sc
 		bs.respChan <- batchResp{}
@@ -178,10 +155,6 @@ func TestBackpressure(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	stopper := stop.NewStopper()
 	defer stopper.Stop(context.Background())
-
-	// Note: the timing-dependency and possible flakiness can be addressed by
-	// using a manual time(r) source, see TestBatcherSend for an example.
-
 	sc := make(chanSender)
 	backpressureLimit := 3
 	b := New(Config{
@@ -282,74 +255,30 @@ func TestBatcherSend(t *testing.T) {
 	stopper := stop.NewStopper()
 	defer stopper.Stop(context.Background())
 	sc := make(chanSender)
-	mt := timeutil.NewManualTime(time.Time{})
-	peekCh := make(chan *RequestBatcher) // must be unbuffered
 	b := New(Config{
-		// We're using a manual timer here, so these fire when we advance `mt`
-		// accordingly.
 		MaxIdle:         50 * time.Millisecond,
 		MaxWait:         50 * time.Millisecond,
 		MaxMsgsPerBatch: 3,
 		Sender:          sc,
 		Stopper:         stopper,
-		manualTime:      mt,
-		testingPeekCh:   peekCh,
 	})
-
 	// Send 3 requests to range 2 and 2 to range 1.
 	// The 3rd range 2 request will trigger immediate sending due to the
 	// MaxMsgsPerBatch configuration. The range 1 batch will be sent after the
-	// MaxWait timeout expires (manually via `mt`).
+	// MaxWait timeout expires.
 	g := senderGroup{b: b}
 	g.Send(1, &kvpb.GetRequest{})
 	g.Send(2, &kvpb.GetRequest{})
 	g.Send(1, &kvpb.GetRequest{})
 	g.Send(2, &kvpb.GetRequest{})
 	g.Send(2, &kvpb.GetRequest{})
-
-	// We should ~immediately see the requests to r2 show up in a single
-	// batch because no timers are firing but three is the limit for when
-	// a batch is full. We should not see anything to r1 yet because this
-	// is waiting for us to fire a timer.
-	// NB: we don't actually verify that they're for r2. This could be added
-	// (noting that ba.RangeID is zero at this level of the stack, so that won't
-	// do it). But - we check that the requests to r1 are still in the batcher
-	// later in the test.
-	select {
-	case s := <-sc:
-		require.Len(t, s.ba.Requests, 3)
-		s.respChan <- batchResp{}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("requests to r2 did not show up")
-	}
-
-	// Check that r1 is queued up in entirety. This is
-	// a nice check and also assures that once we fire
-	// the timer, we can expect to see everything at once.
-	testutils.SucceedsSoon(t, func() error {
-		b := <-peekCh
-		defer func() {
-			peekCh <- b
-		}()
-		var r1waiting int
-		if r1b, ok := b.batches.get(1, kvpb.AdmissionHeader{}); ok {
-			r1waiting = len(r1b.reqs)
-		}
-		if r1waiting != 2 {
-			return errors.Errorf("expect two requests waiting on r1, not %d", r1waiting)
-		}
-		return nil
-	})
-
-	// There should be a timer at this point since we know we have the requests
-	// to r1 waiting.
-	require.Len(t, mt.Timers(), 1)
-	// Time passes and the timer is triggered.
-	mt.AdvanceTo(mt.Timers()[0])
-
-	// Wait for the range 1 request and ensure it contains 2 requests.
+	// Wait for the range 2 request and ensure it contains 3 requests.
 	s := <-sc
-	require.Len(t, s.ba.Requests, 2)
+	assert.Len(t, s.ba.Requests, 3)
+	s.respChan <- batchResp{}
+	// Wait for the range 1 request and ensure it contains 2 requests.
+	s = <-sc
+	assert.Len(t, s.ba.Requests, 2)
 	s.respChan <- batchResp{}
 	// Make sure everything gets a response.
 	if err := g.Wait(); err != nil {
@@ -427,10 +356,6 @@ func TestBatchTimeout(t *testing.T) {
 	const timeout = 5 * time.Millisecond
 	stopper := stop.NewStopper()
 	defer stopper.Stop(context.Background())
-
-	// Note: the timing-dependency and possible flakiness can be addressed by
-	// using a manual time(r) source, see TestBatcherSend for an example.
-
 	testCases := []struct {
 		requestTimeout  time.Duration
 		maxTimeout      time.Duration
@@ -780,215 +705,4 @@ func TestPanicWithNilSender(t *testing.T) {
 		}
 	}()
 	New(Config{Stopper: stopper})
-}
-
-// TestBatcherAdmissionPriorities ensures that the RequestBatcher uses AC to
-// construct batches. In particular, batches are constructed per-range, per-AC
-// priority.
-func TestBatcherAdmissionPriorities(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	stopper := stop.NewStopper()
-	defer stopper.Stop(ctx)
-
-	sc := make(chanSender)
-	mt := timeutil.NewManualTime(time.Time{})
-	peekCh := make(chan *RequestBatcher) // must be unbuffered
-	b := New(Config{
-		// We're using a manual timer here, so these fire when we advance `mt`
-		// accordingly.
-		MaxIdle:         50 * time.Millisecond,
-		MaxWait:         50 * time.Millisecond,
-		MaxMsgsPerBatch: 3,
-		Sender:          sc,
-		Stopper:         stopper,
-		manualTime:      mt,
-		testingPeekCh:   peekCh,
-	})
-
-	respChan := make(chan Response, 5) // we'll send 5 requests
-	highPriAdmissionHeader := kvpb.AdmissionHeader{Source: kvpb.AdmissionHeader_FROM_SQL, Priority: int32(admissionpb.HighPri)}
-	lowPriAdmissionHeader := kvpb.AdmissionHeader{Source: kvpb.AdmissionHeader_FROM_SQL, Priority: int32(admissionpb.LowPri)}
-	bypassAdmissionControlHeader := kvpb.AdmissionHeader{Source: kvpb.AdmissionHeader_OTHER}
-	err := b.SendWithChan(ctx, respChan, 2, &kvpb.GetRequest{}, highPriAdmissionHeader)
-	require.NoError(t, err)
-	err = b.SendWithChan(ctx, respChan, 2, &kvpb.GetRequest{}, lowPriAdmissionHeader)
-	require.NoError(t, err)
-	err = b.SendWithChan(ctx, respChan, 2, &kvpb.ScanRequest{}, lowPriAdmissionHeader)
-	require.NoError(t, err)
-	err = b.SendWithChan(ctx, respChan, 3, &kvpb.PutRequest{}, highPriAdmissionHeader) // different range ID
-	require.NoError(t, err)
-	err = b.SendWithChan(ctx, respChan, 2, &kvpb.PutRequest{}, bypassAdmissionControlHeader) // bypasses AC
-	require.NoError(t, err)
-
-	testutils.SucceedsSoon(t, func() error {
-		b := <-peekCh
-		defer func() {
-			peekCh <- b
-		}()
-
-		r2HiPriB, ok := b.batches.get(2, highPriAdmissionHeader)
-		if !ok {
-			return errors.Errorf("waiting for batcher to get populated")
-		}
-		if len(r2HiPriB.reqs) != 1 {
-			return errors.Errorf("expected 1 high-pri request for range 2, got %d", len(r2HiPriB.reqs))
-		}
-
-		r2LowPriB, ok := b.batches.get(2, lowPriAdmissionHeader)
-		if !ok {
-			return errors.Errorf("waiting for batcher to get populated")
-		}
-		if len(r2LowPriB.reqs) != 2 {
-			return errors.Errorf("expected 2 low-pri request for range 2, got %d", len(r2LowPriB.reqs))
-		}
-		r3HighPriB, ok := b.batches.get(3, highPriAdmissionHeader)
-		if !ok {
-			return errors.Errorf("waiting for batcher to get populated")
-		}
-		if len(r3HighPriB.reqs) != 1 {
-			return errors.Errorf("expected 1 high-pri request for range 3, got %d", len(r3HighPriB.reqs))
-		}
-
-		r2bypassACB, ok := b.batches.get(2, bypassAdmissionControlHeader)
-		if !ok {
-			return errors.Errorf("waiting for batcher to get populated")
-		}
-		if len(r2bypassACB.reqs) != 1 {
-			return errors.Errorf("expected 1 high-pri request for range 3, got %d", len(r2bypassACB.reqs))
-		}
-		return nil
-	})
-
-	// There should be a timer at this point since we know we have requests
-	// waiting.
-	require.Len(t, mt.Timers(), 1)
-	// Time passes and the timer is triggered.
-	mt.AdvanceTo(mt.Timers()[0])
-
-	for i := 0; i < 4; i++ {
-		s := <-sc
-		s.respChan <- batchResp{}
-	}
-}
-
-// TestBatcherBatchQueueOrder ensures that the RequestBatcher's batch queue pops
-// batches in the correct order. The sort order is:
-// 1. Earlier deadline is popped first.
-// 2. If deadlines are the same, the batch with the highest AC priority is
-// popped next.
-// 3. If both deadlines and AC priorities are the same, the batch
-// with the lowest range ID is popped next.
-func TestBatcherBatchQueueOrder(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	stopper := stop.NewStopper()
-	defer stopper.Stop(ctx)
-	sc := make(chanSender)
-	mt := timeutil.NewManualTime(time.Time{})
-	peekCh := make(chan *RequestBatcher) // must be unbuffered
-
-	b := New(Config{
-		// We're using a manual timer here, so these fire when we advance `mt`
-		// accordingly.
-		MaxIdle:         50 * time.Millisecond,
-		MaxWait:         50 * time.Millisecond,
-		MaxMsgsPerBatch: 3,
-		Sender:          sc,
-		Stopper:         stopper,
-		manualTime:      mt,
-		testingPeekCh:   peekCh,
-	})
-
-	respChan := make(chan Response, 6) // we'll send 6 requests
-	highPriAdmissionHeader := kvpb.AdmissionHeader{Source: kvpb.AdmissionHeader_FROM_SQL, Priority: int32(admissionpb.HighPri)}
-	lowPriAdmissionHeader := kvpb.AdmissionHeader{Source: kvpb.AdmissionHeader_FROM_SQL, Priority: int32(admissionpb.LowPri)}
-	bypassAdmissionControlHeader := kvpb.AdmissionHeader{Source: kvpb.AdmissionHeader_OTHER}
-
-	err := b.SendWithChan(ctx, respChan, 10, &kvpb.GetRequest{}, lowPriAdmissionHeader)
-	require.NoError(t, err)
-	// Wait till the request has made it to the batcher before advancing the
-	// clock. this ensures that the first request has an earlier deadline than the
-	// requests we'll send below.
-	testutils.SucceedsSoon(t, func() error {
-		r := <-peekCh
-		defer func() {
-			peekCh <- r
-		}()
-
-		if r.batches.Len() != 1 {
-			return errors.Errorf("expected 1 batch, got %d", r.batches.Len())
-		}
-		return nil
-	})
-
-	mt.AdvanceTo(mt.Now().Add(10 * time.Millisecond))
-
-	err = b.SendWithChan(ctx, respChan, 2, &kvpb.GetRequest{}, highPriAdmissionHeader)
-	require.NoError(t, err)
-	err = b.SendWithChan(ctx, respChan, 3, &kvpb.GetRequest{}, lowPriAdmissionHeader)
-	require.NoError(t, err)
-	err = b.SendWithChan(ctx, respChan, 3, &kvpb.ScanRequest{}, lowPriAdmissionHeader)
-	require.NoError(t, err)
-	err = b.SendWithChan(ctx, respChan, 4, &kvpb.PutRequest{}, highPriAdmissionHeader) // different range ID
-	require.NoError(t, err)
-	err = b.SendWithChan(ctx, respChan, 5, &kvpb.PutRequest{}, bypassAdmissionControlHeader) // bypasses AC
-	require.NoError(t, err)
-
-	// Wait for the batcher to get populated with all the requests we sent above
-	// before we scrutinize the batchQueue closely.
-	testutils.SucceedsSoon(t, func() error {
-		r := <-peekCh
-		defer func() {
-			peekCh <- r
-		}()
-
-		if r.batches.Len() != 5 {
-			return errors.Errorf("expected 5 batches, got %d", r.batches.Len())
-		}
-		return nil
-	})
-
-	r := <-peekCh
-	defer func() {
-		peekCh <- r
-	}()
-
-	// Earliest deadline first.
-	ba := b.batches.popFront()
-	require.Equal(t, roachpb.RangeID(10), ba.rangeID())
-	require.Equal(t, lowPriAdmissionHeader, ba.admissionHeader())
-	require.Equal(t, 1, len(ba.reqs))
-	require.Equal(t, mt.Now().Add(40*time.Millisecond), ba.deadline)
-
-	// Next, we should see batches in decreasing AC priority order. Starting with
-	// the batch which bypasses AC entirely.
-	ba = b.batches.popFront()
-	require.Equal(t, roachpb.RangeID(5), ba.rangeID())
-	require.Equal(t, bypassAdmissionControlHeader, ba.admissionHeader())
-	require.Equal(t, 1, len(ba.reqs))
-	require.Equal(t, mt.Now().Add(50*time.Millisecond), ba.deadline)
-
-	// Next up, high priority AC batches, with range IDs serving as a tiebreaker.
-	ba = b.batches.popFront()
-	require.Equal(t, roachpb.RangeID(2), ba.rangeID())
-	require.Equal(t, highPriAdmissionHeader, ba.admissionHeader())
-	require.Equal(t, 1, len(ba.reqs))
-	require.Equal(t, mt.Now().Add(50*time.Millisecond), ba.deadline)
-	ba = b.batches.popFront()
-	require.Equal(t, roachpb.RangeID(4), ba.rangeID())
-	require.Equal(t, highPriAdmissionHeader, ba.admissionHeader())
-	require.Equal(t, 1, len(ba.reqs))
-	require.Equal(t, mt.Now().Add(50*time.Millisecond), ba.deadline)
-
-	// And finally, low priority AC batches.
-	ba = b.batches.popFront()
-	require.Equal(t, roachpb.RangeID(3), ba.rangeID())
-	require.Equal(t, lowPriAdmissionHeader, ba.admissionHeader())
-	require.Equal(t, 2, len(ba.reqs))
-	require.Equal(t, mt.Now().Add(50*time.Millisecond), ba.deadline)
 }

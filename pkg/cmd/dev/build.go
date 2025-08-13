@@ -25,10 +25,8 @@ import (
 
 const (
 	crossFlag       = "cross"
-	lintFlag        = "lint"
 	cockroachTarget = "//pkg/cmd/cockroach:cockroach"
-	nogoEnableFlag  = "--run_validations"
-	nogoDisableFlag = "--norun_validations"
+	nogoDisableFlag = "--//build/toolchains:nogo_disable_flag"
 	geosTarget      = "//c-deps:libgeos"
 	devTarget       = "//pkg/cmd/dev:dev"
 )
@@ -61,7 +59,6 @@ func makeBuildCmd(runE func(cmd *cobra.Command, args []string) error) *cobra.Com
 		RunE: runE,
 	}
 	buildCmd.Flags().String(volumeFlag, "bzlhome", "the Docker volume to use as the container home directory (only used for cross builds)")
-	buildCmd.Flags().BoolP(lintFlag, "l", false, "perform linting (nogo) as part of the build process (i.e. override nolintonbuild config)")
 	buildCmd.Flags().String(crossFlag, "", "cross-compiles using the builder image (options: linux, linuxarm, macos, macosarm, windows)")
 	buildCmd.Flags().Lookup(crossFlag).NoOptDefVal = "linux"
 	buildCmd.Flags().StringArray(dockerArgsFlag, []string{}, "additional arguments to pass to Docker (only used for cross builds)")
@@ -83,18 +80,16 @@ var buildTargetMapping = map[string]string{
 	"dev":                  devTarget,
 	"docgen":               "//pkg/cmd/docgen:docgen",
 	"docs-issue-gen":       "//pkg/cmd/docs-issue-generation:docs-issue-generation",
-	"drt-run":              "//pkg/cmd/drt-run:drt-run",
 	"execgen":              "//pkg/sql/colexec/execgen/cmd/execgen:execgen",
 	"gofmt":                "@com_github_cockroachdb_gostdlib//cmd/gofmt:gofmt",
 	"goimports":            "@com_github_cockroachdb_gostdlib//x/tools/cmd/goimports:goimports",
+	"label-merged-pr":      "//pkg/cmd/label-merged-pr:label-merged-pr",
 	"geos":                 geosTarget,
 	"langgen":              "//pkg/sql/opt/optgen/cmd/langgen:langgen",
 	"libgeos":              geosTarget,
-	"microbench-ci":        "//pkg/cmd/microbench-ci:microbench-ci",
 	"optgen":               "//pkg/sql/opt/optgen/cmd/optgen:optgen",
 	"optfmt":               "//pkg/sql/opt/optgen/cmd/optfmt:optfmt",
 	"reduce":               "//pkg/cmd/reduce:reduce",
-	"drtprod":              "//pkg/cmd/drtprod:drtprod",
 	"roachprod":            "//pkg/cmd/roachprod:roachprod",
 	"roachprod-stress":     "//pkg/cmd/roachprod-stress:roachprod-stress",
 	"roachprod-microbench": "//pkg/cmd/roachprod-microbench:roachprod-microbench",
@@ -105,8 +100,8 @@ var buildTargetMapping = map[string]string{
 	"smithtest":            "//pkg/cmd/smithtest:smithtest",
 	"sql-bootstrap-data":   "//pkg/cmd/sql-bootstrap-data:sql-bootstrap-data",
 	"staticcheck":          "@co_honnef_go_tools//cmd/staticcheck:staticcheck",
+	"swagger":              "@com_github_go_swagger_go_swagger//cmd/swagger:swagger",
 	"tests":                "//pkg:all_tests",
-	"whoownsit":            "//pkg/cmd/whoownsit:whoownsit",
 	"workload":             "//pkg/cmd/workload:workload",
 }
 
@@ -144,15 +139,11 @@ func (d *dev) build(cmd *cobra.Command, commandLine []string) error {
 	targets, additionalBazelArgs := splitArgsAtDash(cmd, commandLine)
 	ctx := cmd.Context()
 	cross := mustGetFlagString(cmd, crossFlag)
-	lint := mustGetFlagBool(cmd, lintFlag)
 	dockerArgs := mustGetFlagStringArray(cmd, dockerArgsFlag)
 
 	args, buildTargets, err := d.getBasicBuildArgs(ctx, targets)
 	if err != nil {
 		return err
-	}
-	if lint {
-		args = append(args, nogoEnableFlag)
 	}
 	args = append(args, additionalBazelArgs...)
 	configArgs := getConfigArgs(args)
@@ -188,7 +179,7 @@ func (d *dev) crossBuild(
 	volume string,
 	dockerArgs []string,
 ) error {
-	bazelArgs = append(bazelArgs, fmt.Sprintf("--config=%s", crossConfig), "--config=nolintonbuild", "-c", "opt", "--config=pgo")
+	bazelArgs = append(bazelArgs, fmt.Sprintf("--config=%s", crossConfig), "--config=ci", "-c", "opt")
 	configArgs := getConfigArgs(bazelArgs)
 	dockerArgs, err := d.getDockerRunArgs(ctx, volume, false, dockerArgs)
 	if err != nil {
@@ -377,7 +368,9 @@ func (d *dev) getBasicBuildArgs(
 	}
 
 	args = append(args, "build")
-	addCommonBazelArguments(&args)
+	if numCPUs != 0 {
+		args = append(args, fmt.Sprintf("--local_cpu_resources=%d", numCPUs))
+	}
 
 	canDisableNogo := true
 	shouldBuildWithTestConfig := false

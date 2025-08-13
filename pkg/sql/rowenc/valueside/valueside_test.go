@@ -6,7 +6,6 @@
 package valueside_test
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"reflect"
@@ -38,11 +37,7 @@ func TestEncodeDecode(t *testing.T) {
 	var scratch []byte
 	properties.Property("roundtrip", prop.ForAll(
 		func(d tree.Datum) string {
-			var (
-				b   []byte
-				err error
-			)
-			b, scratch, err = valueside.EncodeWithScratch(nil, 0, d, scratch[:0])
+			b, err := valueside.Encode(nil, 0, d, scratch)
 			if err != nil {
 				return "error: " + err.Error()
 			}
@@ -53,9 +48,7 @@ func TestEncodeDecode(t *testing.T) {
 			if err != nil {
 				return "error: " + err.Error()
 			}
-			if cmp, err := newD.Compare(context.Background(), ctx, d); err != nil {
-				return "error: " + err.Error()
-			} else if cmp != 0 {
+			if newD.Compare(ctx, d) != 0 {
 				return "unequal"
 			}
 			return ""
@@ -82,8 +75,8 @@ func TestDecode(t *testing.T) {
 		{tree.DBoolTrue, types.Int, "decoding failed"},
 	} {
 		t.Run("", func(t *testing.T) {
-			var prefix []byte
-			buf, err := valueside.Encode(prefix, 0 /* colID */, tc.in)
+			var prefix, scratch []byte
+			buf, err := valueside.Encode(prefix, 0 /* colID */, tc.in, scratch)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -93,10 +86,7 @@ func TestDecode(t *testing.T) {
 			} else if err != nil {
 				return
 			}
-			evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
-			if cmp, err := tc.in.Compare(context.Background(), evalCtx, d); err != nil {
-				t.Fatal(err)
-			} else if cmp != 0 {
+			if tc.in.Compare(eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings()), d) != 0 {
 				t.Fatalf("decoded datum %[1]v (%[1]T) does not match encoded datum %[2]v (%[2]T)", d, tc.in)
 			}
 		})
@@ -112,7 +102,7 @@ func TestDecodeTableValueOutOfRangeTimestamp(t *testing.T) {
 	} {
 		t.Run(d.String(), func(t *testing.T) {
 			var b []byte
-			encoded, err := valueside.Encode(b, 1 /* colID */, d)
+			encoded, err := valueside.Encode(b, 1 /* colID */, d, []byte{})
 			require.NoError(t, err)
 			a := &tree.DatumAlloc{}
 			decoded, _, err := valueside.Decode(a, d.ResolvedType(), encoded)
@@ -127,7 +117,7 @@ func TestDecodeTableValueOutOfRangeTimestamp(t *testing.T) {
 func TestDecodeTupleValueWithType(t *testing.T) {
 	tupleType := types.MakeLabeledTuple([]*types.T{types.Int, types.String}, []string{"a", "b"})
 	datum := tree.NewDTuple(tupleType, tree.NewDInt(tree.DInt(1)), tree.NewDString("foo"))
-	buf, err := valueside.Encode(nil, valueside.NoColumnID, datum)
+	buf, err := valueside.Encode(nil, valueside.NoColumnID, datum, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,9 +295,7 @@ func TestLegacyRoundtrip(t *testing.T) {
 				if err != nil {
 					return "error unmarshaling: " + err.Error()
 				}
-				if cmp, err := datum.Compare(context.Background(), ctx, outDatum); err != nil {
-					return "error: " + err.Error()
-				} else if cmp != 0 {
+				if datum.Compare(ctx, outDatum) != 0 {
 					return fmt.Sprintf("datum didn't roundtrip.\ninput: %v\noutput: %v", datum, outDatum)
 				}
 				return ""

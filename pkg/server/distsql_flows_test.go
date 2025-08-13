@@ -26,7 +26,7 @@ func TestMergeDistSQLRemoteFlows(t *testing.T) {
 
 	flowIDs := make([]execinfrapb.FlowID, 4)
 	for i := range flowIDs {
-		flowIDs[i].UUID = uuid.MakeV4()
+		flowIDs[i].UUID = uuid.FastMakeV4()
 	}
 	sort.Slice(flowIDs, func(i, j int) bool {
 		return bytes.Compare(flowIDs[i].GetBytes(), flowIDs[j].GetBytes()) < 0

@@ -5,7 +5,6 @@
 
 import * as protos from "@cockroachlabs/crdb-protobuf-client";
 import { Moment } from "moment-timezone";
-
 import { Filters } from "src/queryFilter";
 
 export type SessionsResponse =

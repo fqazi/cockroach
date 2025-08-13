@@ -9,11 +9,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/pebble"
@@ -444,7 +444,7 @@ func (s spanSetReader) ScanInternal(
 	ctx context.Context,
 	lower, upper roachpb.Key,
 	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum) error,
+	visitRangeDel func(start []byte, end []byte, seqNum uint64) error,
 	visitRangeKey func(start []byte, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 	visitExternalFile func(sst *pebble.ExternalFile) error,
@@ -465,7 +465,7 @@ func (s spanSetReader) MVCCIterate(
 	start, end roachpb.Key,
 	iterKind storage.MVCCIterKind,
 	keyTypes storage.IterKeyType,
-	readCategory fs.ReadCategory,
+	readCategory storage.ReadCategory,
 	f func(storage.MVCCKeyValue, storage.MVCCRangeKeyStack) error,
 ) error {
 	if s.spansOnly {
@@ -514,7 +514,7 @@ func (s spanSetReader) ConsistentIterators() bool {
 }
 
 // PinEngineStateForIterators implements the storage.Reader interface.
-func (s spanSetReader) PinEngineStateForIterators(readCategory fs.ReadCategory) error {
+func (s spanSetReader) PinEngineStateForIterators(readCategory storage.ReadCategory) error {
 	return s.r.PinEngineStateForIterators(readCategory)
 }
 
@@ -748,8 +748,6 @@ func makeSpanSetReadWriterAt(rw storage.ReadWriter, spans *SpanSet, ts hlc.Times
 // NewReader returns a storage.Reader that asserts access of the underlying
 // Reader against the given SpanSet at a given timestamp. If zero timestamp is
 // provided, accesses are considered non-MVCC.
-//
-// NewReader clones and does not retain the provided span set.
 func NewReader(r storage.Reader, spans *SpanSet, ts hlc.Timestamp) storage.Reader {
 	spans = addLockTableSpans(spans)
 	return spanSetReader{r: r, spans: spans, ts: ts}
@@ -758,8 +756,6 @@ func NewReader(r storage.Reader, spans *SpanSet, ts hlc.Timestamp) storage.Reade
 // NewReadWriterAt returns a storage.ReadWriter that asserts access of the
 // underlying ReadWriter against the given SpanSet at a given timestamp.
 // If zero timestamp is provided, accesses are considered non-MVCC.
-//
-// NewReadWriterAt clones and does not retain the provided span set.
 func NewReadWriterAt(rw storage.ReadWriter, spans *SpanSet, ts hlc.Timestamp) storage.ReadWriter {
 	return makeSpanSetReadWriterAt(rw, spans, ts)
 }
@@ -785,7 +781,7 @@ func (s spanSetBatch) ScanInternal(
 	ctx context.Context,
 	lower, upper roachpb.Key,
 	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum) error,
+	visitRangeDel func(start []byte, end []byte, seqNum uint64) error,
 	visitRangeKey func(start []byte, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 	visitExternalFile func(sst *pebble.ExternalFile) error,
@@ -927,4 +923,29 @@ func addLockTableSpans(spans *SpanSet) *SpanSet {
 		withLocks.AddNonMVCC(sa, roachpb.Span{Key: ltKey, EndKey: ltEndKey})
 	})
 	return withLocks
+}
+
+type spanSetEFOS struct {
+	spanSetReader
+	efos storage.EventuallyFileOnlyReader
+}
+
+// NewEventuallyFileOnlySnapshot returns a storage.EventuallyFileOnlyReader that
+// asserts access of the underlying EFOS against the given SpanSet. We only
+// consider span boundaries, associated timestamps are not considered.
+func NewEventuallyFileOnlySnapshot(
+	e storage.EventuallyFileOnlyReader, spans *SpanSet,
+) storage.EventuallyFileOnlyReader {
+	spans = addLockTableSpans(spans)
+	return &spanSetEFOS{
+		spanSetReader: spanSetReader{r: e, spans: spans, spansOnly: true},
+		efos:          e,
+	}
+}
+
+// WaitForFileOnly implements the storage.EventuallyFileOnlyReader interface.
+func (e *spanSetEFOS) WaitForFileOnly(
+	ctx context.Context, gracePeriodBeforeFlush time.Duration,
+) error {
+	return e.efos.WaitForFileOnly(ctx, gracePeriodBeforeFlush)
 }

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"testing"
@@ -19,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
-	"github.com/cockroachdb/cockroach/pkg/util/debugutil"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/datadriven"
@@ -91,7 +91,7 @@ func TestFileRegistryOps(t *testing.T) {
 		for path := range expected {
 			path = mem.PathJoin("/mydb", path)
 			require.NoError(t, mem.MkdirAll(mem.PathDir(path), 0655))
-			f, err := mem.Create(path, UnspecifiedWriteCategory)
+			f, err := mem.Create(path)
 			require.NoError(t, err)
 			require.NoError(t, f.Close())
 		}
@@ -101,7 +101,7 @@ func TestFileRegistryOps(t *testing.T) {
 		registry.writeMu.Lock()
 		defer registry.writeMu.Unlock()
 		if diff := pretty.Diff(registry.writeMu.mu.entries, expected); diff != nil {
-			t.Log(debugutil.Stack())
+			t.Log(string(debug.Stack()))
 			t.Fatalf("%s\n%v", strings.Join(diff, "\n"), registry.writeMu.mu.entries)
 		}
 	}
@@ -212,7 +212,7 @@ func TestFileRegistryElideUnencrypted(t *testing.T) {
 	mem := vfs.NewMem()
 
 	for _, name := range []string{"test1", "test2"} {
-		f, err := mem.Create(name, UnspecifiedWriteCategory)
+		f, err := mem.Create(name)
 		require.NoError(t, err)
 		require.NoError(t, f.Close())
 	}
@@ -242,7 +242,7 @@ func TestFileRegistryElideNonexistent(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	mem := vfs.NewMem()
-	f, err := mem.Create("bar", UnspecifiedWriteCategory)
+	f, err := mem.Create("bar")
 	require.NoError(t, err)
 	require.NoError(t, f.Close())
 	{
@@ -284,7 +284,7 @@ func TestFileRegistryRecordsReadAndWrite(t *testing.T) {
 	// Ensure all the expected paths exist, otherwise Load will elide
 	// them and this test is not designed to test elision.
 	for name := range files {
-		f, err := mem.Create(name, UnspecifiedWriteCategory)
+		f, err := mem.Create(name)
 		require.NoError(t, err)
 		require.NoError(t, f.Close())
 	}
@@ -375,7 +375,7 @@ func TestFileRegistry(t *testing.T) {
 			return buf.String()
 		case "touch":
 			for _, filename := range strings.Split(d.Input, "\n") {
-				f, err := fs.Create(filename, UnspecifiedWriteCategory)
+				f, err := fs.Create(filename)
 				require.NoError(t, err)
 				require.NoError(t, f.Close())
 			}
@@ -414,9 +414,9 @@ type loggingFS struct {
 	w io.Writer
 }
 
-func (fs loggingFS) Create(name string, category vfs.DiskWriteCategory) (vfs.File, error) {
+func (fs loggingFS) Create(name string) (vfs.File, error) {
 	fmt.Fprintf(fs.w, "create(%q)\n", name)
-	f, err := fs.FS.Create(name, category)
+	f, err := fs.FS.Create(name)
 	if err != nil {
 		return nil, err
 	}
@@ -456,18 +456,16 @@ func (fs loggingFS) Rename(oldname, newname string) error {
 	return fs.FS.Rename(oldname, newname)
 }
 
-func (fs loggingFS) ReuseForWrite(
-	oldname, newname string, category vfs.DiskWriteCategory,
-) (vfs.File, error) {
+func (fs loggingFS) ReuseForWrite(oldname, newname string) (vfs.File, error) {
 	fmt.Fprintf(fs.w, "reuseForWrite(%q, %q)\n", oldname, newname)
-	f, err := fs.FS.ReuseForWrite(oldname, newname, category)
+	f, err := fs.FS.ReuseForWrite(oldname, newname)
 	if err == nil {
 		f = loggingFile{f, newname, fs.w}
 	}
 	return f, err
 }
 
-func (fs loggingFS) Stat(path string) (vfs.FileInfo, error) {
+func (fs loggingFS) Stat(path string) (os.FileInfo, error) {
 	fmt.Fprintf(fs.w, "stat(%q)\n", path)
 	return fs.FS.Stat(path)
 }
@@ -532,7 +530,7 @@ func (c *fileRegistryEntryChecker) addEntry(r *FileRegistry) {
 	filename := fmt.Sprintf("%04d", c.numAddedEntries)
 	// Create a file for this added entry so that it doesn't get cleaned up
 	// when we reopen the file registry.
-	f, err := c.fs.Create(c.fs.PathJoin(c.dir, filename), UnspecifiedWriteCategory)
+	f, err := c.fs.Create(c.fs.PathJoin(c.dir, filename))
 	require.NoError(c.t, err)
 	require.NoError(c.t, f.Sync())
 	require.NoError(c.t, f.Close())
@@ -619,7 +617,7 @@ func TestFileRegistryKeepOldFilesAndSync(t *testing.T) {
 	skip.UnderRace(t) // Slow under race.
 
 	const dir = "/mydb"
-	mem := vfs.NewCrashableMem()
+	mem := vfs.NewStrictMem()
 	{
 		require.NoError(t, mem.MkdirAll(dir, 0755))
 		// Sync the root dir so that /mydb does not vanish later.
@@ -667,11 +665,11 @@ func TestFileRegistryKeepOldFilesAndSync(t *testing.T) {
 			}
 			expectedFiles = append(expectedFiles, registryFiles[n-1])
 			// Also check that it matches what is in the filesystem.
-			lsFiles, err := registry.FS.List(dir)
+			lsFiles, err := mem.List(dir)
 			require.NoError(t, err)
 			var foundFiles []string
 			for _, f := range lsFiles {
-				f = registry.FS.PathBase(f)
+				f = mem.PathBase(f)
 				if strings.HasPrefix(f, registryFilenameBase) {
 					foundFiles = append(foundFiles, f)
 				}
@@ -695,22 +693,21 @@ func TestFileRegistryKeepOldFilesAndSync(t *testing.T) {
 		}
 		registryChecker.addEntry(registry)
 	}
-	// Take a crash-consistent snapshot.
-	crashFS := mem.CrashClone(vfs.CrashCloneCfg{})
+	// Start ignoring syncs.
+	mem.SetIgnoreSyncs(true)
 	// Add another entry, that will be deliberately lost.
 	registryChecker.addEntry(registry)
 	registryChecker.checkEntries(registry)
 	require.NoError(t, registry.Close())
-
-	numAddedEntries := registryChecker.numAddedEntries
-	registryChecker = makeFileRegistryEntryChecker(t, crashFS, dir)
+	mem.ResetToSyncedState()
 	// Remove the lost entry from what we check.
-	registryChecker.numAddedEntries = numAddedEntries - 1
+	registryChecker.numAddedEntries--
 
+	mem.SetIgnoreSyncs(false)
 	// Keep no old registry files.
 	numOldRegistryFiles = 0
 	registry = &FileRegistry{
-		FS:                  crashFS,
+		FS:                  mem,
 		DBDir:               dir,
 		NumOldRegistryFiles: numOldRegistryFiles,
 		SoftMaxSize:         1024,
@@ -724,7 +721,7 @@ func TestFileRegistryKeepOldFilesAndSync(t *testing.T) {
 
 	// Another load, with a different NumOldRegistryFiles, just for fun.
 	numOldRegistryFiles = 1
-	registry = &FileRegistry{FS: crashFS, DBDir: dir, NumOldRegistryFiles: numOldRegistryFiles}
+	registry = &FileRegistry{FS: mem, DBDir: dir, NumOldRegistryFiles: numOldRegistryFiles}
 	require.NoError(t, registry.Load(context.Background()))
 	registryChecker.checkEntries(registry)
 }

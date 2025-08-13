@@ -10,13 +10,13 @@ package log
 
 import (
 	"context"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cli/exit"
 	"github.com/cockroachdb/cockroach/pkg/util/allstacks"
-	"github.com/cockroachdb/cockroach/pkg/util/debugutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -94,7 +94,7 @@ type loggingT struct {
 		// active indicates that at least one event has been logged
 		// to this logger already.
 		active        bool
-		firstUseStack debugutil.SafeStack
+		firstUseStack string
 
 		// redactionPolicyManaged indicates whether we're running as part of a managed
 		// service (sourced from COCKROACH_REDACTION_POLICY_MANAGED env var). Impacts
@@ -105,7 +105,6 @@ type loggingT struct {
 	allSinkInfos sinkInfoRegistry
 	allLoggers   loggerRegistry
 	metrics      LogMetrics
-	processor    StructuredLogProcessor
 }
 
 // SetLogMetrics injects an initialized implementation of
@@ -118,13 +117,6 @@ type loggingT struct {
 // LogMetrics during server startups.
 func SetLogMetrics(m LogMetrics) {
 	logging.metrics = m
-}
-
-func SetStructuredLogProcessor(p StructuredLogProcessor) {
-	if logging.processor != nil {
-		panic(errors.AssertionFailedf("log package's StructuredLogProcessor has already been set"))
-	}
-	logging.processor = p
 }
 
 func init() {
@@ -257,15 +249,6 @@ func (l *loggingT) hasManagedRedactionPolicy() bool {
 	return l.mu.redactionPolicyManaged
 }
 
-func (l *loggingT) processStructured(ctx context.Context, eventType EventType, e any) {
-	// TODO(abarganier): I'm not sure how possible this is, need to examine further (we use dependency injection).
-	// For now, panic.
-	if l.processor == nil {
-		panic(errors.AssertionFailedf("attempted to process a structured record before processor initialized"))
-	}
-	l.processor.Process(ctx, eventType, e)
-}
-
 // outputLogEntry marshals a log entry proto into bytes, and writes
 // the data to the log files. If a trace location is set, stack traces
 // are added to the entry before marshaling.
@@ -289,7 +272,7 @@ func (l *loggerT) outputLogEntry(entry logEntry) {
 
 		switch traceback {
 		case tracebackSingle:
-			entry.stacks = debugutil.Stack()
+			entry.stacks = debug.Stack()
 		case tracebackAll:
 			entry.stacks = allstacks.Get()
 		}
@@ -446,7 +429,7 @@ func setActive() {
 	defer logging.mu.Unlock()
 	if !logging.mu.active {
 		logging.mu.active = true
-		logging.mu.firstUseStack = debugutil.Stack()
+		logging.mu.firstUseStack = string(debug.Stack())
 	}
 }
 

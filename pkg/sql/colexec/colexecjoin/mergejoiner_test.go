@@ -55,15 +55,13 @@ func TestMergeJoinCrossProduct(t *testing.T) {
 	nTuples := 2*coldata.BatchSize() + 1
 	queueCfg, cleanup := colcontainerutils.NewTestingDiskQueueCfg(t, true /* inMem */)
 	defer cleanup()
-	diskQueueMemAcc := testMemMonitor.MakeBoundAccount()
-	defer diskQueueMemAcc.Close(ctx)
 	rng, _ := randutil.NewTestRand()
 	typs := []*types.T{types.Int, types.Bytes, types.Decimal}
-	colsLeft := make([]*coldata.Vec, len(typs))
-	colsRight := make([]*coldata.Vec, len(typs))
+	colsLeft := make([]coldata.Vec, len(typs))
+	colsRight := make([]coldata.Vec, len(typs))
 	for i, typ := range typs {
-		colsLeft[i] = testAllocator.NewVec(typ, nTuples)
-		colsRight[i] = testAllocator.NewVec(typ, nTuples)
+		colsLeft[i] = testAllocator.NewMemColumn(typ, nTuples)
+		colsRight[i] = testAllocator.NewMemColumn(typ, nTuples)
 	}
 	groupsLeft := colsLeft[0].Int64()
 	groupsRight := colsRight[0].Int64()
@@ -79,7 +77,7 @@ func TestMergeJoinCrossProduct(t *testing.T) {
 		groupsRight[i] = int64(rightGroupIdx)
 	}
 	for i := range typs[1:] {
-		for _, vecs := range [][]*coldata.Vec{colsLeft, colsRight} {
+		for _, vecs := range [][]coldata.Vec{colsLeft, colsRight} {
 			coldatatestutils.RandomVec(coldatatestutils.RandomVecArgs{
 				Rand:            rng,
 				Vec:             vecs[i+1],
@@ -93,12 +91,12 @@ func TestMergeJoinCrossProduct(t *testing.T) {
 	leftHJSource := colexectestutils.NewChunkingBatchSource(testAllocator, typs, colsLeft, nTuples)
 	rightHJSource := colexectestutils.NewChunkingBatchSource(testAllocator, typs, colsRight, nTuples)
 	mj := NewMergeJoinOp(
-		ctx, testAllocator, execinfra.DefaultMemoryLimit, queueCfg,
+		testAllocator, execinfra.DefaultMemoryLimit, queueCfg,
 		colexecop.NewTestingSemaphore(mjFDLimit), descpb.InnerJoin,
 		leftMJSource, rightMJSource, typs, typs,
 		[]execinfrapb.Ordering_Column{{ColIdx: 0, Direction: execinfrapb.Ordering_Column_ASC}},
 		[]execinfrapb.Ordering_Column{{ColIdx: 0, Direction: execinfrapb.Ordering_Column_ASC}},
-		testDiskAcc, &diskQueueMemAcc, evalCtx,
+		testDiskAcc, testMemAcc, evalCtx,
 	)
 	mj.Init(ctx)
 	hj := NewHashJoiner(NewHashJoinerArgs{
@@ -130,7 +128,7 @@ func TestMergeJoinCrossProduct(t *testing.T) {
 			hjOutputTuples = append(hjOutputTuples, colexectestutils.GetTupleFromBatch(b, i))
 		}
 	}
-	err := colexectestutils.AssertTuplesSetsEqual(ctx, hjOutputTuples, mjOutputTuples, evalCtx)
+	err := colexectestutils.AssertTuplesSetsEqual(hjOutputTuples, mjOutputTuples, evalCtx)
 	// Note that the error message can be extremely verbose (it
 	// might contain all output tuples), so we manually check that
 	// comparing err to nil returns true (if we were to use

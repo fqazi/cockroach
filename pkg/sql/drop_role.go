@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessioninit"
@@ -28,13 +27,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 // DropRoleNode deletes entries from the system.users table.
 // This is called from DROP USER and DROP ROLE.
 type DropRoleNode struct {
-	zeroInputPlanNode
 	ifExists  bool
 	isRole    bool
 	roleNames []username.SQLUsername
@@ -82,7 +79,7 @@ type objectAndType struct {
 }
 
 func (n *DropRoleNode) startExec(params runParams) error {
-	var opName redact.RedactableString
+	var opName string
 	if n.isRole {
 		sqltelemetry.IncIAMDropCounter(sqltelemetry.Role)
 		opName = "drop-role"
@@ -138,7 +135,7 @@ func (n *DropRoleNode) startExec(params runParams) error {
 
 	// First check all the databases.
 	if err := forEachDatabaseDesc(params.ctx, params.p, nil /*nil prefix = all databases*/, true, /* requiresPrivileges */
-		func(ctx context.Context, db catalog.DatabaseDescriptor) error {
+		func(db catalog.DatabaseDescriptor) error {
 			if _, ok := userNames[db.GetPrivileges().Owner()]; ok {
 				userNames[db.GetPrivileges().Owner()] = append(
 					userNames[db.GetPrivileges().Owner()],
@@ -176,7 +173,7 @@ func (n *DropRoleNode) startExec(params runParams) error {
 	// privileges are added.
 	for _, tbID := range lCtx.tbIDs {
 		tableDescriptor := lCtx.tbDescs[tbID]
-		if !descriptorIsVisible(tableDescriptor, true /*allowAdding*/, false /* includeDropped */) {
+		if !descriptorIsVisible(tableDescriptor, true /*allowAdding*/) {
 			continue
 		}
 		if _, ok := userNames[tableDescriptor.GetPrivileges().Owner()]; ok {
@@ -203,23 +200,9 @@ func (n *DropRoleNode) startExec(params runParams) error {
 				break
 			}
 		}
-		// Check that any of the roles we are dropping aren't referenced in any of
-		// the row-level security policies defined on this table.
-		for _, p := range tableDescriptor.GetPolicies() {
-			for _, rn := range p.RoleNames {
-				roleName := username.MakeSQLUsernameFromPreNormalizedString(rn)
-				if _, found := userNames[roleName]; found {
-					return errors.WithDetailf(
-						pgerror.Newf(pgcode.DependentObjectsStillExist,
-							"role %q cannot be dropped because some objects depend on it",
-							roleName),
-						"target of policy %q on table %q", p.Name, tableDescriptor.GetName())
-				}
-			}
-		}
 	}
 	for _, schemaDesc := range lCtx.schemaDescs {
-		if !descriptorIsVisible(schemaDesc, true /* allowAdding */, false /* includeDropped */) {
+		if !descriptorIsVisible(schemaDesc, true /* allowAdding */) {
 			continue
 		}
 		if _, ok := userNames[schemaDesc.GetPrivileges().Owner()]; ok {
@@ -262,7 +245,7 @@ func (n *DropRoleNode) startExec(params runParams) error {
 	}
 	for _, typDesc := range lCtx.typDescs {
 		if _, ok := userNames[typDesc.GetPrivileges().Owner()]; ok {
-			if !descriptorIsVisible(typDesc, true /* allowAdding */, false /* includeDropped */) {
+			if !descriptorIsVisible(typDesc, true /* allowAdding */) {
 				continue
 			}
 			tn, err := getTypeNameFromTypeDescriptor(lCtx, typDesc)
@@ -292,7 +275,7 @@ func (n *DropRoleNode) startExec(params runParams) error {
 	}
 	for _, fnDesc := range lCtx.fnDescs {
 		if _, ok := userNames[fnDesc.GetPrivileges().Owner()]; ok {
-			if !descriptorIsVisible(fnDesc, true /* allowAdding */, false /* includeDropped */) {
+			if !descriptorIsVisible(fnDesc, true /* allowAdding */) {
 				continue
 			}
 			name, err := getFunctionNameFromFunctionDescriptor(lCtx, fnDesc)
@@ -463,8 +446,8 @@ func (n *DropRoleNode) startExec(params runParams) error {
 			params.p.txn,
 			sessiondata.NodeUserSessionDataOverride,
 			fmt.Sprintf(
-				`DELETE FROM system.public.%s WHERE username=$1`,
-				catconstants.RoleOptionsTableName,
+				`DELETE FROM %s WHERE username=$1`,
+				sessioninit.RoleOptionsTableName,
 			),
 			normalizedUsername,
 		)
@@ -478,8 +461,8 @@ func (n *DropRoleNode) startExec(params runParams) error {
 			params.p.txn,
 			sessiondata.NodeUserSessionDataOverride,
 			fmt.Sprintf(
-				`DELETE FROM system.public.%s WHERE role_name = $1`,
-				catconstants.DatabaseRoleSettingsTableName,
+				`DELETE FROM %s WHERE role_name = $1`,
+				sessioninit.DatabaseRoleSettingsTableName,
 			),
 			normalizedUsername,
 		); err != nil {

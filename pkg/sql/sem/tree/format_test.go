@@ -237,8 +237,8 @@ func TestFormatExpr(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			semaContext := tree.MakeSemaContext(nil /* resolver */)
-			typeChecked, err := tree.TypeCheck(ctx, expr, &semaContext, types.AnyElement)
+			semaContext := tree.MakeSemaContext()
+			typeChecked, err := tree.TypeCheck(ctx, expr, &semaContext, types.Any)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -362,17 +362,17 @@ func TestFormatExpr2(t *testing.T) {
 		f        tree.FmtFlags
 		expected string
 	}{
-		{tree.NewDOidWithTypeAndName(10, types.RegClass, "foo"),
+		{tree.NewDOidWithName(10, types.RegClass, "foo"),
 			tree.FmtParsable, `crdb_internal.create_regclass(10,'foo'):::REGCLASS`},
-		{tree.NewDOidWithTypeAndName(10, types.RegNamespace, "foo"),
+		{tree.NewDOidWithName(10, types.RegNamespace, "foo"),
 			tree.FmtParsable, `crdb_internal.create_regnamespace(10,'foo'):::REGNAMESPACE`},
-		{tree.NewDOidWithTypeAndName(10, types.RegProc, "foo"),
+		{tree.NewDOidWithName(10, types.RegProc, "foo"),
 			tree.FmtParsable, `crdb_internal.create_regproc(10,'foo'):::REGPROC`},
-		{tree.NewDOidWithTypeAndName(10, types.RegProcedure, "foo"),
+		{tree.NewDOidWithName(10, types.RegProcedure, "foo"),
 			tree.FmtParsable, `crdb_internal.create_regprocedure(10,'foo'):::REGPROCEDURE`},
-		{tree.NewDOidWithTypeAndName(10, types.RegRole, "foo"),
+		{tree.NewDOidWithName(10, types.RegRole, "foo"),
 			tree.FmtParsable, `crdb_internal.create_regrole(10,'foo'):::REGROLE`},
-		{tree.NewDOidWithTypeAndName(10, types.RegType, "foo"),
+		{tree.NewDOidWithName(10, types.RegType, "foo"),
 			tree.FmtParsable, `crdb_internal.create_regtype(10,'foo'):::REGTYPE`},
 
 		// Ensure that nulls get properly type annotated when printed in an
@@ -423,8 +423,8 @@ func TestFormatExpr2(t *testing.T) {
 	ctx := context.Background()
 	for i, test := range testData {
 		t.Run(fmt.Sprintf("%d %s", i, test.expr), func(t *testing.T) {
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
-			typeChecked, err := tree.TypeCheck(ctx, test.expr, &semaCtx, types.AnyElement)
+			semaCtx := tree.MakeSemaContext()
+			typeChecked, err := tree.TypeCheck(ctx, test.expr, &semaCtx, types.Any)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -484,8 +484,8 @@ func TestFormatPgwireText(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
-			typeChecked, err := tree.TypeCheck(ctx, expr, &semaCtx, types.AnyElement)
+			semaCtx := tree.MakeSemaContext()
+			typeChecked, err := tree.TypeCheck(ctx, expr, &semaCtx, types.Any)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -733,65 +733,6 @@ func TestFmtCollapseListsFormatFlag(t *testing.T) {
 			exprStr := tree.AsStringWithFlags(stmt.AST, tree.FmtCollapseLists)
 			if exprStr != test.expected {
 				t.Fatalf("expected %q, got %q", test.expected, exprStr)
-			}
-		})
-	}
-}
-
-func TestFormatStringDollarQuotes(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	tests := []struct {
-		input string
-		delim string
-	}{
-		{
-			input: ``,
-			delim: `$$`,
-		},
-		{
-			input: `foo`,
-			delim: `$$`,
-		},
-		{
-			input: `foo $ bar`,
-			delim: `$$`,
-		},
-		{
-			input: `foo $bar$ baz`,
-			delim: `$$`,
-		},
-		{
-			input: `foo $$ bar`,
-			delim: `$funcbody$`,
-		},
-		{
-			input: `foo $$ $funcbody$ bar`,
-			delim: `$funcbodyx$`,
-		},
-		{
-			input: `foo $$ $funcbody$ $funcbodyx$ bar`,
-			delim: `$funcbodyxx$`,
-		},
-		{
-			input: `foo $funcbody$ bar`,
-			delim: `$$`,
-		},
-		{
-			input: `foo $$ $funcbodyx$ bar`,
-			delim: `$funcbody$`,
-		},
-	}
-
-	for i, test := range tests {
-		t.Run(fmt.Sprintf("%d %s", i, test.input), func(t *testing.T) {
-			f := tree.NewFmtCtx(tree.FmtSimple)
-			f.FormatStringDollarQuotes(test.input)
-			res := f.CloseAndGetString()
-			expected := test.delim + test.input + test.delim
-			if res != expected {
-				t.Fatalf("expected %q, got %q", expected, res)
 			}
 		})
 	}

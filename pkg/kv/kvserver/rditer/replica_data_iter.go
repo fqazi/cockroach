@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/pebble"
@@ -31,7 +30,7 @@ type ReplicaDataIteratorOptions struct {
 	// ExcludeUserKeySpan removes UserKeySpace span portion.
 	ExcludeUserKeySpan bool
 	// ReadCategory is used for stats etc.
-	ReadCategory fs.ReadCategory
+	ReadCategory storage.ReadCategory
 }
 
 // ReplicaMVCCDataIterator provides a complete iteration over MVCC or unversioned
@@ -65,12 +64,7 @@ type ReplicaMVCCDataIterator struct {
 // sorted order.
 func MakeAllKeySpans(d *roachpb.RangeDescriptor) []roachpb.Span {
 	return Select(d.RangeID, SelectOpts{
-		Ranged: SelectRangedOptions{
-			RSpan:      d.RSpan(),
-			SystemKeys: true,
-			UserKeys:   true,
-			LockTable:  true,
-		},
+		ReplicatedBySpan:      d.RSpan(),
 		ReplicatedByRangeID:   true,
 		UnreplicatedByRangeID: true,
 	})
@@ -80,16 +74,12 @@ func MakeAllKeySpans(d *roachpb.RangeDescriptor) []roachpb.Span {
 // instead of a slice of spans. Note that lock table spans are skipped.
 func MakeAllKeySpanSet(d *roachpb.RangeDescriptor) *spanset.SpanSet {
 	spans := Select(d.RangeID, SelectOpts{
-		Ranged: SelectRangedOptions{
-			RSpan:      d.RSpan(),
-			SystemKeys: true,
-			// NB: We don't need to add lock table spans. The caller is expected to
-			// add these.
-			LockTable: false,
-			UserKeys:  true,
-		},
+		ReplicatedBySpan:      d.RSpan(),
 		ReplicatedByRangeID:   true,
 		UnreplicatedByRangeID: true,
+		// NB: We don't need to add lock table spans. The caller is expected to add
+		// these.
+		ReplicatedSpansFilter: ReplicatedSpansExcludeLocks,
 	})
 	ss := spanset.New()
 	for _, span := range spans {
@@ -113,12 +103,7 @@ func MakeAllKeySpanSet(d *roachpb.RangeDescriptor) *spanset.SpanSet {
 // 5. User key span.
 func MakeReplicatedKeySpans(d *roachpb.RangeDescriptor) []roachpb.Span {
 	return Select(d.RangeID, SelectOpts{
-		Ranged: SelectRangedOptions{
-			RSpan:      d.RSpan(),
-			SystemKeys: true,
-			LockTable:  true,
-			UserKeys:   true,
-		},
+		ReplicatedBySpan:    d.RSpan(),
 		ReplicatedByRangeID: true,
 	})
 }
@@ -128,15 +113,11 @@ func MakeReplicatedKeySpans(d *roachpb.RangeDescriptor) []roachpb.Span {
 // are skipped.
 func MakeReplicatedKeySpanSet(d *roachpb.RangeDescriptor) *spanset.SpanSet {
 	spans := Select(d.RangeID, SelectOpts{
-		Ranged: SelectRangedOptions{
-			RSpan:      d.RSpan(),
-			SystemKeys: true,
-			// NB: We don't need to add lock table spans. The caller is expected to
-			// add these.
-			LockTable: false,
-			UserKeys:  true,
-		},
+		ReplicatedBySpan:    d.RSpan(),
 		ReplicatedByRangeID: true,
+		// NB: We don't need to add lock table spans. The caller is expected to add
+		// these.
+		ReplicatedSpansFilter: ReplicatedSpansExcludeLocks,
 	})
 	ss := spanset.New()
 	for _, span := range spans {
@@ -155,10 +136,8 @@ func MakeReplicatedKeySpanSet(d *roachpb.RangeDescriptor) *spanset.SpanSet {
 // keys.
 func MakeReplicatedKeySpansUserOnly(d *roachpb.RangeDescriptor) []roachpb.Span {
 	return Select(d.RangeID, SelectOpts{
-		Ranged: SelectRangedOptions{
-			RSpan:    d.RSpan(),
-			UserKeys: true,
-		},
+		ReplicatedBySpan:      d.RSpan(),
+		ReplicatedSpansFilter: ReplicatedSpansUserOnly,
 	})
 }
 
@@ -166,12 +145,9 @@ func MakeReplicatedKeySpansUserOnly(d *roachpb.RangeDescriptor) []roachpb.Span {
 // non-user keys.
 func MakeReplicatedKeySpansExcludingUser(d *roachpb.RangeDescriptor) []roachpb.Span {
 	return Select(d.RangeID, SelectOpts{
-		Ranged: SelectRangedOptions{
-			RSpan:      d.RSpan(),
-			SystemKeys: true,
-			LockTable:  true,
-		},
-		ReplicatedByRangeID: true,
+		ReplicatedBySpan:      d.RSpan(),
+		ReplicatedByRangeID:   true,
+		ReplicatedSpansFilter: ReplicatedSpansExcludeUser,
 	})
 }
 
@@ -405,7 +381,7 @@ func (ri *ReplicaMVCCDataIterator) HasPointAndRange() (bool, bool) {
 // IterateReplicaKeySpans iterates over each of a range's key spans, and calls
 // the given visitor with an iterator over its data. Specifically, it iterates
 // over the spans returned by a Select() over all spans or replicated only spans
-// (with filterOrOptions applied on replicated spans), and for each one
+// (with replicatedSpansFilter applied on replicated spans), and for each one
 // provides first a point key iterator and then a range key iterator. This is the
 // expected order for Raft snapshots.
 //
@@ -420,15 +396,30 @@ func IterateReplicaKeySpans(
 	ctx context.Context,
 	desc *roachpb.RangeDescriptor,
 	reader storage.Reader,
-	opts SelectOpts,
+	replicatedOnly bool,
+	replicatedSpansFilter ReplicatedSpansFilter,
 	visitor func(storage.EngineIterator, roachpb.Span) error,
 ) error {
 	if !reader.ConsistentIterators() {
 		panic("reader must provide consistent iterators")
 	}
-
-	opts.Ranged.RSpan = desc.RSpan()
-	spans := Select(desc.RangeID, opts)
+	var spans []roachpb.Span
+	if replicatedOnly {
+		spans = Select(desc.RangeID, SelectOpts{
+			ReplicatedBySpan:      desc.RSpan(),
+			ReplicatedSpansFilter: replicatedSpansFilter,
+			// NB: We exclude ReplicatedByRangeID if replicatedSpansFilter is
+			// ReplicatedSpansUserOnly.
+			ReplicatedByRangeID: replicatedSpansFilter != ReplicatedSpansUserOnly,
+		})
+	} else {
+		spans = Select(desc.RangeID, SelectOpts{
+			ReplicatedBySpan:      desc.RSpan(),
+			ReplicatedSpansFilter: replicatedSpansFilter,
+			ReplicatedByRangeID:   true,
+			UnreplicatedByRangeID: true,
+		})
+	}
 	for _, span := range spans {
 		err := func() error {
 			iter, err := reader.NewEngineIterator(ctx, storage.IterOptions{
@@ -456,9 +447,6 @@ func IterateReplicaKeySpans(
 // IterateReplicaKeySpansShared is a shared-replicate version of
 // IterateReplicaKeySpans. See definitions of this method for how it is
 // implemented.
-//
-// The impl of this method along with a comment is in
-// engineccl/shared_storage.go.
 var IterateReplicaKeySpansShared func(
 	ctx context.Context,
 	desc *roachpb.RangeDescriptor,
@@ -466,7 +454,7 @@ var IterateReplicaKeySpansShared func(
 	clusterID uuid.UUID,
 	reader storage.Reader,
 	visitPoint func(key *pebble.InternalKey, val pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start, end []byte, seqNum pebble.SeqNum) error,
+	visitRangeDel func(start, end []byte, seqNum uint64) error,
 	visitRangeKey func(start, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 	visitExternalFile func(sst *pebble.ExternalFile) error,
@@ -480,7 +468,7 @@ type IterateOptions struct {
 	CombineRangesAndPoints bool
 	Reverse                bool
 	ExcludeUserKeySpan     bool
-	ReadCategory           fs.ReadCategory
+	ReadCategory           storage.ReadCategory
 }
 
 // IterateMVCCReplicaKeySpans iterates over replica's key spans in the similar

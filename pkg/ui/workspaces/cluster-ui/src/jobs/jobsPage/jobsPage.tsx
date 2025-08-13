@@ -4,30 +4,24 @@
 // included in the /LICENSE file.
 import { cockroach, google } from "@cockroachlabs/crdb-protobuf-client";
 import { InlineAlert } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
 import moment from "moment-timezone";
 import React from "react";
 import { Helmet } from "react-helmet";
 import { RouteComponentProps } from "react-router-dom";
-
 import { JobsRequest, JobsResponse } from "src/api/jobsApi";
 import { RequestState } from "src/api/types";
-import ColumnsSelector, {
-  SelectOption,
-} from "src/columnsSelector/columnsSelector";
-import { isSelectedColumn } from "src/columnsSelector/utils";
-import { commonStyles } from "src/common";
 import { Delayed } from "src/delayed";
 import { Dropdown } from "src/dropdown";
 import { Loading } from "src/loading";
 import { PageConfig, PageConfigItem } from "src/pageConfig";
-import { Pagination, ResultsPerPageLabel } from "src/pagination";
 import { ISortedTablePagination, SortSetting } from "src/sortedtable";
-import sortableTableStyles from "src/sortedtable/sortedtable.module.scss";
+import ColumnsSelector, {
+  SelectOption,
+} from "src/columnsSelector/columnsSelector";
+import { Pagination, ResultsPerPageLabel } from "src/pagination";
+import { isSelectedColumn } from "src/columnsSelector/utils";
 import { DATE_FORMAT_24_TZ, syncHistory, TimestampToMoment } from "src/util";
-
-import { Timestamp } from "../../timestamp";
-import styles from "../jobs.module.scss";
+import { jobsColumnLabels, JobsTable, makeJobsColumns } from "./jobsTable";
 import {
   showOptions,
   statusOptions,
@@ -37,7 +31,11 @@ import {
   isValidJobType,
 } from "../util";
 
-import { jobsColumnLabels, JobsTable, makeJobsColumns } from "./jobsTable";
+import { commonStyles } from "src/common";
+import sortableTableStyles from "src/sortedtable/sortedtable.module.scss";
+import styles from "../jobs.module.scss";
+import classNames from "classnames/bind";
+import { Timestamp } from "../../timestamp";
 
 const cx = classNames.bind(styles);
 const sortableTableCx = classNames.bind(sortableTableStyles);

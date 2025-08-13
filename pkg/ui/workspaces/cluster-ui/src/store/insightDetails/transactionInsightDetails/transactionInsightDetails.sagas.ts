@@ -3,19 +3,16 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { PayloadAction } from "@reduxjs/toolkit";
 import { all, call, put, takeLatest, takeEvery } from "redux-saga/effects";
 
+import { actions } from "./transactionInsightDetails.reducer";
+import { PayloadAction } from "@reduxjs/toolkit";
 import { ErrorWithKey, SqlApiResponse } from "src/api";
-
 import {
   getTxnInsightDetailsApi,
   TxnInsightDetailsRequest,
   TxnInsightDetailsResponse,
 } from "../../../api/txnInsightDetailsApi";
-import { maybeError } from "../../../util";
-
-import { actions } from "./transactionInsightDetails.reducer";
 
 export function* refreshTransactionInsightDetailsSaga(
   action: PayloadAction<TxnInsightDetailsRequest>,
@@ -31,7 +28,7 @@ export function* requestTransactionInsightDetailsSaga(
     yield put(actions.received(result));
   } catch (e) {
     const err: ErrorWithKey = {
-      err: maybeError(e),
+      err: e,
       key: action.payload.txnExecutionID,
     };
     yield put(actions.failed(err));

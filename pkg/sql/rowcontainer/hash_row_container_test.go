@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
-	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/randgen"
@@ -35,13 +34,12 @@ func TestHashDiskBackedRowContainer(t *testing.T) {
 	ctx := context.Background()
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.MakeTestingEvalContext(st)
-	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec, nil /* statsCollector */)
+	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tempEngine.Close()
 
-	unlimitedMemMonitor := execinfra.NewTestMemMonitor(ctx, st)
 	// These monitors are started and stopped by subtests.
 	memoryMonitor := getMemoryMonitor(st)
 	diskMonitor := getDiskMonitor(st)
@@ -54,7 +52,7 @@ func TestHashDiskBackedRowContainer(t *testing.T) {
 	ordering := colinfo.ColumnOrdering{{ColIdx: 0, Direction: encoding.Ascending}}
 
 	getRowContainer := func() *HashDiskBackedRowContainer {
-		rc := NewHashDiskBackedRowContainer(&evalCtx, memoryMonitor, unlimitedMemMonitor, diskMonitor, tempEngine)
+		rc := NewHashDiskBackedRowContainer(&evalCtx, memoryMonitor, diskMonitor, tempEngine)
 		err = rc.Init(
 			ctx,
 			false, /* shouldMark */
@@ -92,7 +90,7 @@ func TestHashDiskBackedRowContainer(t *testing.T) {
 			// over all rows added so far.
 			i := rc.NewUnmarkedIterator(ctx)
 			defer i.Close()
-			if err := verifyRows(ctx, i, rows[:mid], &evalCtx, ordering); err != nil {
+			if err := verifyRows(i, rows[:mid], &evalCtx, ordering); err != nil {
 				t.Fatalf("verifying memory rows failed with: %s", err)
 			}
 		}()
@@ -110,7 +108,7 @@ func TestHashDiskBackedRowContainer(t *testing.T) {
 		func() {
 			i := rc.NewUnmarkedIterator(ctx)
 			defer i.Close()
-			if err := verifyRows(ctx, i, rows, &evalCtx, ordering); err != nil {
+			if err := verifyRows(i, rows, &evalCtx, ordering); err != nil {
 				t.Fatalf("verifying disk rows failed with: %s", err)
 			}
 		}()
@@ -199,7 +197,7 @@ func TestHashDiskBackedRowContainer(t *testing.T) {
 				t.Fatal(err)
 			}
 			if cmp, err := compareEncRows(
-				ctx, types.OneIntCol, row, rows[counter], &evalCtx, &tree.DatumAlloc{}, ordering,
+				types.OneIntCol, row, rows[counter], &evalCtx, &tree.DatumAlloc{}, ordering,
 			); err != nil {
 				t.Fatal(err)
 			} else if cmp != 0 {
@@ -224,7 +222,7 @@ func TestHashDiskBackedRowContainer(t *testing.T) {
 				t.Fatal(err)
 			}
 			if cmp, err := compareEncRows(
-				ctx, types.OneIntCol, row, rows[counter], &evalCtx, &tree.DatumAlloc{}, ordering,
+				types.OneIntCol, row, rows[counter], &evalCtx, &tree.DatumAlloc{}, ordering,
 			); err != nil {
 				t.Fatal(err)
 			} else if cmp != 0 {
@@ -274,7 +272,7 @@ func TestHashDiskBackedRowContainer(t *testing.T) {
 				t.Fatal(err)
 			}
 			if cmp, err := compareEncRows(
-				ctx, types.OneIntCol, row, rows[counter], &evalCtx, &tree.DatumAlloc{}, ordering,
+				types.OneIntCol, row, rows[counter], &evalCtx, &tree.DatumAlloc{}, ordering,
 			); err != nil {
 				t.Fatal(err)
 			} else if cmp != 0 {
@@ -306,13 +304,12 @@ func TestHashDiskBackedRowContainerPreservesMatchesAndMarks(t *testing.T) {
 	ctx := context.Background()
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.MakeTestingEvalContext(st)
-	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec, nil /* statsCollector */)
+	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tempEngine.Close()
 
-	unlimitedMemMonitor := execinfra.NewTestMemMonitor(ctx, st)
 	// These monitors are started and stopped by subtests.
 	memoryMonitor := getMemoryMonitor(st)
 	diskMonitor := getDiskMonitor(st)
@@ -326,7 +323,7 @@ func TestHashDiskBackedRowContainerPreservesMatchesAndMarks(t *testing.T) {
 	ordering := colinfo.ColumnOrdering{{ColIdx: 0, Direction: encoding.Ascending}}
 
 	getRowContainer := func() *HashDiskBackedRowContainer {
-		rc := NewHashDiskBackedRowContainer(&evalCtx, memoryMonitor, unlimitedMemMonitor, diskMonitor, tempEngine)
+		rc := NewHashDiskBackedRowContainer(&evalCtx, memoryMonitor, diskMonitor, tempEngine)
 		err = rc.Init(
 			ctx,
 			true, /* shouldMark */
@@ -366,7 +363,7 @@ func TestHashDiskBackedRowContainerPreservesMatchesAndMarks(t *testing.T) {
 			// over all rows added so far.
 			i := rc.NewUnmarkedIterator(ctx)
 			defer i.Close()
-			if err := verifyRows(ctx, i, rows[:mid], &evalCtx, ordering); err != nil {
+			if err := verifyRows(i, rows[:mid], &evalCtx, ordering); err != nil {
 				t.Fatalf("verifying memory rows failed with: %s", err)
 			}
 		}()
@@ -384,7 +381,7 @@ func TestHashDiskBackedRowContainerPreservesMatchesAndMarks(t *testing.T) {
 		func() {
 			i := rc.NewUnmarkedIterator(ctx)
 			defer i.Close()
-			if err := verifyRows(ctx, i, rows, &evalCtx, ordering); err != nil {
+			if err := verifyRows(i, rows, &evalCtx, ordering); err != nil {
 				t.Fatalf("verifying disk rows failed with: %s", err)
 			}
 		}()
@@ -414,7 +411,7 @@ func TestHashDiskBackedRowContainerPreservesMatchesAndMarks(t *testing.T) {
 			// over all rows added so far.
 			i := rc.NewUnmarkedIterator(ctx)
 			defer i.Close()
-			if err := verifyRows(ctx, i, rows, &evalCtx, ordering); err != nil {
+			if err := verifyRows(i, rows, &evalCtx, ordering); err != nil {
 				t.Fatalf("verifying memory rows failed with: %s", err)
 			}
 		}()

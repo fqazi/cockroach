@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for min_max_removable_agg.eg.go. It's
@@ -169,7 +170,7 @@ func (a *_AGG_TYPEAggregator) processBatch(batch coldata.Batch, startIdx, endIdx
 	outVec := batch.ColVec(a.outputColIdx)
 	outNulls := outVec.Nulls()
 	outCol := outVec.TemplateType()
-	a.allocator.PerformOperation([]*coldata.Vec{outVec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{outVec}, func() {
 		// {{if not .IsBytesLike}}
 		_, _ = outCol.Get(startIdx), outCol.Get(endIdx-1)
 		// {{end}}

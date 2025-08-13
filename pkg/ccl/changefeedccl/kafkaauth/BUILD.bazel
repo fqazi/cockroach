@@ -5,7 +5,6 @@ go_library(
     srcs = [
         "doc.go",
         "kafkaauth.go",
-        "sasl_msk.go",
         "sasl_oauth.go",
         "sasl_plain.go",
         "sasl_proprietary_oauth.go",
@@ -17,7 +16,6 @@ go_library(
     deps = [
         "//pkg/ccl/changefeedccl/changefeedbase",
         "//pkg/util/timeutil",
-        "@com_github_aws_aws_msk_iam_sasl_signer_go//signer",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_ibm_sarama//:sarama",
         "@com_github_twmb_franz_go//pkg/kgo",

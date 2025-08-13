@@ -13,21 +13,19 @@ import {
   SortSetting,
   analyticsActions,
 } from "src";
-
 import {
   selectAppName,
   selectActiveTransactions,
   selectClusterLocksMaxApiSizeReached,
 } from "src/selectors/activeExecutions.selectors";
-import { selectIsAutoRefreshEnabled } from "src/statementsPage/activeStatementsPage.selectors";
 import {
   LocalStorageKeys,
   actions as localStorageActions,
 } from "src/store/localStorage";
 import { actions as sessionsActions } from "src/store/sessions";
-import { selectIsTenant } from "src/store/uiConfig";
-
 import { localStorageSelector } from "../store/utils/selectors";
+import { selectIsTenant } from "src/store/uiConfig";
+import { selectIsAutoRefreshEnabled } from "src/statementsPage/activeStatementsPage.selectors";
 
 export const selectSortSetting = (state: AppState): SortSetting =>
   localStorageSelector(state)["sortSetting/ActiveTransactionsPage"];

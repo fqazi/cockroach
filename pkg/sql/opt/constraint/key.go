@@ -7,13 +7,10 @@ package constraint
 
 import (
 	"bytes"
-	"context"
 	"fmt"
-	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 )
 
 // EmptyKey has zero values. If it's a start key, then it sorts before all
@@ -294,14 +291,7 @@ func (k Key) Prev(keyCtx *KeyContext) (_ Key, ok bool) {
 func (k Key) String() string {
 	var buf bytes.Buffer
 	for i := 0; i < k.Length(); i++ {
-		if enc, ok := k.Value(i).(*tree.DEncodedKey); ok {
-			// Pretty-print encoded keys, which are used for constraints of
-			// inverted indexes, instead of printing the raw bytes.
-			vals, _ := encoding.PrettyPrintValuesWithTypes(nil, []byte(*enc))
-			fmt.Fprintf(&buf, "/%s", strings.Join(vals, "/"))
-		} else {
-			fmt.Fprintf(&buf, "/%s", k.Value(i))
-		}
+		fmt.Fprintf(&buf, "/%s", k.Value(i))
 	}
 	return buf.String()
 }
@@ -309,13 +299,12 @@ func (k Key) String() string {
 // KeyContext contains the necessary metadata for comparing Keys.
 type KeyContext struct {
 	Columns Columns
-	Ctx     context.Context
 	EvalCtx *eval.Context
 }
 
 // MakeKeyContext initializes a KeyContext.
-func MakeKeyContext(ctx context.Context, cols *Columns, evalCtx *eval.Context) KeyContext {
-	return KeyContext{Columns: *cols, Ctx: ctx, EvalCtx: evalCtx}
+func MakeKeyContext(cols *Columns, evalCtx *eval.Context) KeyContext {
+	return KeyContext{Columns: *cols, EvalCtx: evalCtx}
 }
 
 // Compare two values for a given column.
@@ -326,10 +315,7 @@ func (c *KeyContext) Compare(colIdx int, a, b tree.Datum) int {
 	if a == b {
 		return 0
 	}
-	cmp, err := a.Compare(c.Ctx, c.EvalCtx, b)
-	if err != nil {
-		panic(err)
-	}
+	cmp := a.Compare(c.EvalCtx, b)
 	if c.Columns.Get(colIdx).Descending() {
 		cmp = -cmp
 	}
@@ -340,28 +326,28 @@ func (c *KeyContext) Compare(colIdx int, a, b tree.Datum) int {
 // integers). See Datum.Next/Prev.
 func (c *KeyContext) Next(colIdx int, val tree.Datum) (_ tree.Datum, ok bool) {
 	if c.Columns.Get(colIdx).Ascending() {
-		if val.IsMax(c.Ctx, c.EvalCtx) {
+		if val.IsMax(c.EvalCtx) {
 			return nil, false
 		}
-		return val.Next(c.Ctx, c.EvalCtx)
+		return val.Next(c.EvalCtx)
 	}
-	if val.IsMin(c.Ctx, c.EvalCtx) {
+	if val.IsMin(c.EvalCtx) {
 		return nil, false
 	}
-	return val.Prev(c.Ctx, c.EvalCtx)
+	return val.Prev(c.EvalCtx)
 }
 
 // Prev returns the previous value on a given column (for discrete types like
 // integers). See Datum.Next/Prev.
 func (c *KeyContext) Prev(colIdx int, val tree.Datum) (_ tree.Datum, ok bool) {
 	if c.Columns.Get(colIdx).Ascending() {
-		if val.IsMin(c.Ctx, c.EvalCtx) {
+		if val.IsMin(c.EvalCtx) {
 			return nil, false
 		}
-		return val.Prev(c.Ctx, c.EvalCtx)
+		return val.Prev(c.EvalCtx)
 	}
-	if val.IsMax(c.Ctx, c.EvalCtx) {
+	if val.IsMax(c.EvalCtx) {
 		return nil, false
 	}
-	return val.Next(c.Ctx, c.EvalCtx)
+	return val.Next(c.EvalCtx)
 }

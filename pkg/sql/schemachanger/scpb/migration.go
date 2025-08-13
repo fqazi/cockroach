@@ -10,81 +10,28 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
-	idxtype "github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 )
 
-// HasDeprecatedElements returns if the target contains any element or fields
-// marked for deprecation.
+// HasDeprecatedElements returns if the target contains any element marked
+// for deprecation.
 func HasDeprecatedElements(version clusterversion.ClusterVersion, target Target) bool {
-	return false
-}
-
-// migrateDeprecatedFields will check if any of the deprecated fields are being
-// used. If one is found, it will make the necessary migration, potentially
-// returning a new target that must be added.
-func migrateDeprecatedFields(
-	version clusterversion.ClusterVersion, target Target,
-) (migrated bool, newTargets []Target) {
-	newTargets = make([]Target, 0)
-
-	// Migrate IsInverted boolean to index Type enumeration.
-	var idx *Index
-	if primary := target.GetPrimaryIndex(); primary != nil {
-		idx = &primary.Index
-	}
-	if secondary := target.GetSecondaryIndex(); secondary != nil {
-		idx = &secondary.Index
-	}
-	if temp := target.GetTemporaryIndex(); temp != nil {
-		idx = &temp.Index
-	}
-	if idx != nil && idx.IsInverted && idx.Type != idxtype.INVERTED {
-		idx.Type = idxtype.INVERTED
-		migrated = true
-	}
-
-	// In TriggerDeps, map the deprecated UsesRelationIDs to a
-	// TriggerDeps_RelationReference.
-	if deps := target.GetTriggerDeps(); deps != nil {
-		if len(deps.UsesRelationIDs) > 0 {
-			deps.UsesRelations = make([]TriggerDeps_RelationReference, len(deps.UsesRelationIDs))
-			for i := range deps.UsesRelationIDs {
-				deps.UsesRelations[i] = TriggerDeps_RelationReference{
-					ID: deps.UsesRelationIDs[i],
-				}
-			}
-			deps.UsesRelationIDs = nil
-			migrated = true
-		}
-	}
-
-	// Migrate ComputeExpr field  to separate ColumnComputeExpression target.
-	if columnType := target.GetColumnType(); columnType != nil {
-		if columnType.ComputeExpr != nil {
-			newTarget := MakeTarget(
-				AsTargetStatus(target.TargetStatus),
-				&ColumnComputeExpression{
-					TableID:    columnType.TableID,
-					ColumnID:   columnType.ColumnID,
-					Expression: *columnType.ComputeExpr,
-				},
-				&target.Metadata,
-			)
-			newTargets = append(newTargets, newTarget)
-			columnType.ComputeExpr = nil
-			migrated = true
-		}
-	}
-	return
+	return target.GetSecondaryIndexPartial() != nil
 }
 
 // migrateTargetElement migrates an individual target at a given index.
 func migrateTargetElement(targets []Target, idx int) {
 	targetToMigrate := targets[idx]
 	switch t := targetToMigrate.Element().(type) {
-	default:
-		// No-op case to defeat unused linter when there are no elements to migrate.
-		_ = t.element
+	case *SecondaryIndexPartial:
+		for _, target := range targets {
+			if secondaryIndex := target.GetSecondaryIndex(); secondaryIndex != nil &&
+				secondaryIndex.TableID == t.TableID &&
+				secondaryIndex.IndexID == t.IndexID &&
+				target.TargetStatus == targetToMigrate.TargetStatus {
+				secondaryIndex.EmbeddedExpr = &t.Expression
+				break
+			}
+		}
 	}
 }
 
@@ -173,8 +120,6 @@ func MigrateDescriptorState(
 		return false
 	}
 	targetsToRemove := make(map[int]struct{})
-	targetsToAdd := make([]Target, 0)
-	currentStatusesToAdd := make([]Status, 0)
 	newIndexes := make(map[catid.DescID]*TargetMetadata)
 	newTargets := 0
 	updated := false
@@ -197,15 +142,6 @@ func MigrateDescriptorState(
 			state.CurrentStatuses[idx] = current
 			target.TargetStatus = targetStatus
 			updated = true
-		}
-		if migrated, newTargets := migrateDeprecatedFields(version, target); migrated {
-			updated = true
-			for i := range newTargets {
-				targetsToAdd = append(targetsToAdd, newTargets[i])
-				// When adding new targets, we will just match the status of the target
-				// that caused the migration.
-				currentStatusesToAdd = append(currentStatusesToAdd, state.CurrentStatuses[idx])
-			}
 		}
 	}
 	for id, md := range newIndexes {
@@ -230,22 +166,13 @@ func MigrateDescriptorState(
 	state.Targets = make([]Target, 0, len(existingTargets))
 	state.TargetRanks = make([]uint32, 0, len(existingTargetRanks))
 	state.CurrentStatuses = make([]Status, 0, len(existingStatuses))
-	var maxRank uint32 // Keep track of rank in case we have targets to add
 	for idx := range existingTargets {
 		if _, ok := targetsToRemove[idx]; ok {
 			continue
 		}
 		state.Targets = append(state.Targets, existingTargets[idx])
 		state.TargetRanks = append(state.TargetRanks, existingTargetRanks[idx])
-		maxRank = max(maxRank, existingTargetRanks[idx])
 		state.CurrentStatuses = append(state.CurrentStatuses, existingStatuses[idx])
-	}
-	for idx, newTarget := range targetsToAdd {
-		state.Targets = append(state.Targets, newTarget)
-		// These targets are appended to the end. So, we will just set the rank to be max + 1.
-		state.TargetRanks = append(state.TargetRanks, maxRank+1)
-		maxRank++
-		state.CurrentStatuses = append(state.CurrentStatuses, currentStatusesToAdd[idx])
 	}
 
 	return updated

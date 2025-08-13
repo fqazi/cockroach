@@ -9,7 +9,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins/builtinsregistry"
@@ -23,32 +22,30 @@ import (
 // AggregateConstructor is a function that creates an aggregate function.
 type AggregateConstructor func(*eval.Context, tree.Datums) eval.AggregateFunc
 
-// getAggregateInfo returns the aggregate constructor and the return type for
-// the given aggregate function when applied on the given types.
-//
-// inputTypes cannot be mutated if aggregateConstructor will be used.
-func getAggregateInfo(
-	fn execinfrapb.AggregatorSpec_Func, paramTypes []*types.T,
+// GetAggregateInfo returns the aggregate constructor and the return type for
+// the given aggregate function when applied on the given type.
+func GetAggregateInfo(
+	fn execinfrapb.AggregatorSpec_Func, inputTypes ...*types.T,
 ) (aggregateConstructor AggregateConstructor, returnType *types.T, err error) {
 	if fn == execinfrapb.AnyNotNull {
 		// The ANY_NOT_NULL builtin does not have a fixed return type;
 		// handle it separately.
-		if len(paramTypes) != 1 {
+		if len(inputTypes) != 1 {
 			return nil, nil, errors.Errorf("any_not_null aggregate needs 1 input")
 		}
-		return builtins.NewAnyNotNullAggregate, paramTypes[0], nil
+		return builtins.NewAnyNotNullAggregate, inputTypes[0], nil
 	}
 
 	_, builtins := builtinsregistry.GetBuiltinProperties(strings.ToLower(fn.String()))
 	for _, b := range builtins {
 		typs := b.Types.Types()
-		if len(typs) != len(paramTypes) {
+		if len(typs) != len(inputTypes) {
 			continue
 		}
 		match := true
 		for i, t := range typs {
-			if !paramTypes[i].Equivalent(t) {
-				if b.CalledOnNullInput && paramTypes[i].IsAmbiguous() {
+			if !inputTypes[i].Equivalent(t) {
+				if b.CalledOnNullInput && inputTypes[i].IsAmbiguous() {
 					continue
 				}
 				match = false
@@ -58,14 +55,14 @@ func getAggregateInfo(
 		if match {
 			// Found!
 			constructAgg := func(evalCtx *eval.Context, arguments tree.Datums) eval.AggregateFunc {
-				return b.AggregateFunc.(eval.AggregateOverload)(paramTypes, evalCtx, arguments)
+				return b.AggregateFunc.(eval.AggregateOverload)(inputTypes, evalCtx, arguments)
 			}
-			colTyp := b.InferReturnTypeFromInputArgTypes(paramTypes)
+			colTyp := b.InferReturnTypeFromInputArgTypes(inputTypes)
 			return constructAgg, colTyp, nil
 		}
 	}
 	return nil, nil, errors.Errorf(
-		"no builtin aggregate for %s on %+v", fn, paramTypes,
+		"no builtin aggregate for %s on %+v", fn, inputTypes,
 	)
 }
 
@@ -79,23 +76,19 @@ func GetAggregateConstructor(
 	semaCtx *tree.SemaContext,
 	aggInfo *execinfrapb.AggregatorSpec_Aggregation,
 	inputTypes []*types.T,
-	pAlloc *ParamTypesAllocator,
 ) (constructor AggregateConstructor, arguments tree.Datums, outputType *types.T, err error) {
-	paramTypes, err := pAlloc.alloc(len(aggInfo.ColIdx) + len(aggInfo.Arguments))
-	if err != nil {
-		return nil, nil, nil, err
-	}
+	argTypes := make([]*types.T, len(aggInfo.ColIdx)+len(aggInfo.Arguments))
 	for j, c := range aggInfo.ColIdx {
 		if c >= uint32(len(inputTypes)) {
 			err = errors.Errorf("ColIdx out of range (%d)", aggInfo.ColIdx)
 			return
 		}
-		paramTypes[j] = inputTypes[c]
+		argTypes[j] = inputTypes[c]
 	}
 	arguments = make(tree.Datums, len(aggInfo.Arguments))
 	var d tree.Datum
 	for j, argument := range aggInfo.Arguments {
-		h := execexpr.Helper{}
+		h := execinfrapb.ExprHelper{}
 		// Pass nil types and row - there are no variables in these expressions.
 		if err = h.Init(ctx, argument, nil /* types */, semaCtx, evalCtx); err != nil {
 			err = errors.Wrapf(err, "%s", argument)
@@ -106,55 +99,11 @@ func GetAggregateConstructor(
 			err = errors.Wrapf(err, "%s", argument)
 			return
 		}
-		paramTypes[len(aggInfo.ColIdx)+j] = d.ResolvedType()
+		argTypes[len(aggInfo.ColIdx)+j] = d.ResolvedType()
 		arguments[j] = d
 	}
-	constructor, outputType, err = getAggregateInfo(aggInfo.Func, paramTypes)
+	constructor, outputType, err = GetAggregateInfo(aggInfo.Func, argTypes...)
 	return
-}
-
-// ParamTypesAllocator is a helper struct for batching allocations of aggregate
-// function parameter types.
-type ParamTypesAllocator struct {
-	typs []*types.T
-}
-
-// MakeParamTypesAllocator creates a new ParamTypesAllocator with enough space
-// to allocate slices of parameter types for all the given aggregate functions.
-func MakeParamTypesAllocator(
-	aggregations []execinfrapb.AggregatorSpec_Aggregation,
-) ParamTypesAllocator {
-	numParamTypes := 0
-	for _, aggFn := range aggregations {
-		numParamTypes += len(aggFn.ColIdx)
-		numParamTypes += len(aggFn.Arguments)
-	}
-	return ParamTypesAllocator{
-		typs: make([]*types.T, numParamTypes),
-	}
-}
-
-// alloc returns a slice of types.T of length n. It returns a slice of the
-// allocator's type slice and returns an error if the allocator's type slice is
-// not long enough.
-func (p *ParamTypesAllocator) alloc(n int) (_ []*types.T, err error) {
-	if len(p.typs) < n {
-		return nil, errors.AssertionFailedf("not enough types; requested %d, have %d", n, len(p.typs))
-	}
-	res := p.typs[:n:n]
-	p.typs = p.typs[n:]
-	return res, nil
-}
-
-// GetAggregateOutputType returns the output type for the given aggregate
-// function when applied on the given types.
-//
-// inputTypes argument can be mutated by the caller.
-func GetAggregateOutputType(
-	fn execinfrapb.AggregatorSpec_Func, paramTypes []*types.T,
-) (outputType *types.T, err error) {
-	_, outputType, err = getAggregateInfo(fn, paramTypes)
-	return outputType, err
 }
 
 // GetWindowFunctionInfo returns windowFunc constructor and the return type

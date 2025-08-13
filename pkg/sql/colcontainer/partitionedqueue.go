@@ -119,7 +119,7 @@ type PartitionedDiskQueue struct {
 	// share the accounts given that they only grow or shrink and never get
 	// closed.
 	diskAcc         *mon.BoundAccount
-	diskQueueMemAcc *mon.BoundAccount
+	converterMemAcc *mon.BoundAccount
 }
 
 var _ PartitionedQueue = &PartitionedDiskQueue{}
@@ -140,7 +140,7 @@ func NewPartitionedDiskQueue(
 	fdSemaphore semaphore.Semaphore,
 	partitionerStrategy PartitionerStrategy,
 	diskAcc *mon.BoundAccount,
-	diskQueueMemAcc *mon.BoundAccount,
+	converterMemAcc *mon.BoundAccount,
 ) *PartitionedDiskQueue {
 	return &PartitionedDiskQueue{
 		typs:                     typs,
@@ -151,7 +151,7 @@ func NewPartitionedDiskQueue(
 		lastEnqueuedPartitionIdx: -1,
 		fdSemaphore:              fdSemaphore,
 		diskAcc:                  diskAcc,
-		diskQueueMemAcc:          diskQueueMemAcc,
+		converterMemAcc:          converterMemAcc,
 	}
 }
 
@@ -221,7 +221,7 @@ func (p *PartitionedDiskQueue) Enqueue(
 			idxToClose, found := p.partitionIdxToIndex[p.lastEnqueuedPartitionIdx]
 			if !found {
 				// This would be unexpected.
-				return errors.AssertionFailedf("PartitionerStrategyCloseOnNewPartition unable to find last Enqueued partition")
+				return errors.New("PartitionerStrategyCloseOnNewPartition unable to find last Enqueued partition")
 			}
 			if p.partitions[idxToClose].state == partitionStateWriting {
 				// Close the last enqueued partition. No need to release or acquire a new
@@ -245,7 +245,7 @@ func (p *PartitionedDiskQueue) Enqueue(
 			p.acquireNewFD(ctx)
 		}
 		// Partition has not been created yet.
-		q, err := NewDiskQueue(ctx, p.typs, p.cfg, p.diskAcc, p.diskQueueMemAcc)
+		q, err := NewDiskQueue(ctx, p.typs, p.cfg, p.diskAcc, p.converterMemAcc)
 		if err != nil {
 			return err
 		}
@@ -255,9 +255,9 @@ func (p *PartitionedDiskQueue) Enqueue(
 	}
 	if state := p.partitions[idx].state; state != partitionStateWriting {
 		if state == partitionStatePermanentlyClosed {
-			return errors.AssertionFailedf("partition at index %d permanently closed, cannot Enqueue", partitionIdx)
+			return errors.Errorf("partition at index %d permanently closed, cannot Enqueue", partitionIdx)
 		}
-		return errors.AssertionFailedf("Enqueue illegally called after Dequeue or CloseAllOpenWriteFileDescriptors")
+		return errors.New("Enqueue illegally called after Dequeue or CloseAllOpenWriteFileDescriptors")
 	}
 	p.lastEnqueuedPartitionIdx = partitionIdx
 	return p.partitions[idx].Enqueue(ctx, batch)
@@ -290,7 +290,7 @@ func (p *PartitionedDiskQueue) Dequeue(
 	case partitionStateReading:
 	// Do nothing.
 	case partitionStatePermanentlyClosed:
-		return errors.AssertionFailedf("partition at index %d permanently closed, cannot Dequeue", partitionIdx)
+		return errors.Errorf("partition at index %d permanently closed, cannot Dequeue", partitionIdx)
 	default:
 		colexecerror.InternalError(errors.AssertionFailedf("unhandled state %d", state))
 	}

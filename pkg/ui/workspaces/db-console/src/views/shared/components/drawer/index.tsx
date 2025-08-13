@@ -3,11 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Drawer, Button, Divider } from "antd";
-import classNames from "classnames/bind";
 import React from "react";
+import { Drawer, Button, Divider } from "antd";
+import "antd/lib/drawer/style";
+import "antd/lib/button/style";
+import "antd/lib/divider/style";
 import { Link } from "react-router-dom";
-
+import classNames from "classnames/bind";
 import styles from "./drawer.module.styl";
 
 const cx = classNames.bind(styles);
@@ -54,8 +56,9 @@ export const DrawerComponent = ({
     placement="bottom"
     closable={false}
     onClose={onClose}
-    open={visible}
-    rootClassName={cx("drawer--preset-black")}
+    visible={visible}
+    className={cx("drawer--preset-black")}
+    // getContainer={false}
     {...props}
   >
     {children}

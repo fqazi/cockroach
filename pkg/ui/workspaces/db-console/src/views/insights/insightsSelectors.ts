@@ -3,6 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import { LocalSetting } from "src/redux/localsettings";
+import { AdminUIState } from "src/redux/state";
+import { createSelector } from "reselect";
 import {
   defaultFilters,
   WorkloadInsightEventFilters,
@@ -18,10 +21,6 @@ import {
   api,
   util,
 } from "@cockroachlabs/cluster-ui";
-import { createSelector } from "reselect";
-
-import { LocalSetting } from "src/redux/localsettings";
-import { AdminUIState } from "src/redux/state";
 
 export const filtersLocalSetting = new LocalSetting<
   AdminUIState,
@@ -97,13 +96,9 @@ export const selectTransactionInsightDetailsError = createSelector(
     if (!insights) {
       return null;
     }
-    // TODO (koorosh): code within IF clause below doesn't look like affect result of the function and
-    // can be removed.
     const reqErrors = insights[insightId]?.data?.results.errors;
     if (insights[insightId]?.lastError) {
       Object.keys(reqErrors).forEach(
-        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-        // @ts-ignore
         (key: keyof api.TxnInsightDetailsReqErrs) => {
           reqErrors[key] = insights[insightId].lastError;
         },

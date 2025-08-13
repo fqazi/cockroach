@@ -4,10 +4,8 @@
 // included in the /LICENSE file.
 
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-
-import { ClusterLocksResponse, SqlApiResponse } from "src/api";
-
 import { DOMAIN_NAME, noopReducer } from "../utils";
+import { ClusterLocksResponse, SqlApiResponse } from "src/api";
 
 export type ClusterLocksReqState = {
   data: SqlApiResponse<ClusterLocksResponse>;

@@ -2,11 +2,10 @@
 //
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
-import { shallow } from "enzyme";
 import React from "react";
-
-import { allSchedulesFixture } from "./schedulesPage.fixture";
+import { shallow } from "enzyme";
 import { ScheduleTable, ScheduleTableProps } from "./scheduleTable";
+import { allSchedulesFixture } from "./schedulesPage.fixture";
 
 describe("<ScheduleTable>", () => {
   it("should reset page to 1 after schedule list prop changes", () => {

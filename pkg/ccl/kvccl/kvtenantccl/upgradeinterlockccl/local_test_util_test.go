@@ -78,7 +78,7 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 		stats.AutomaticStatisticsClusterMode.Override(ctx, &s.SV, false)
 		stats.UseStatisticsOnSystemTables.Override(ctx, &s.SV, false)
 		stats.AutomaticStatisticsOnSystemTables.Override(ctx, &s.SV, false)
-		sql.DistSQLClusterExecMode.Override(ctx, &s.SV, sessiondatapb.DistSQLOff)
+		sql.DistSQLClusterExecMode.Override(ctx, &s.SV, int64(sessiondatapb.DistSQLOff))
 	}
 
 	reduceLeaseDurationAndReclaimLoopInterval := func(s *cluster.Settings) {
@@ -136,7 +136,7 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 					DisableAutomaticVersionUpgrade: make(chan struct{}),
 					// Initialize to the minimum supported version
 					// so that we can perform the upgrade below.
-					ClusterVersionOverride: msv,
+					BinaryVersionOverride: msv,
 				},
 			},
 		},

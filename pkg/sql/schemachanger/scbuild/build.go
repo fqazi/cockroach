@@ -24,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
-	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/redact"
 )
@@ -71,13 +70,13 @@ func Build(
 
 	// localMemAcc tracks memory allocations for local objects.
 	var localMemAcc *mon.BoundAccount
+	defer func() {
+		localMemAcc.Clear(ctx)
+	}()
 	if monitor := memAcc.Monitor(); monitor != nil {
 		acc := monitor.MakeBoundAccount()
 		localMemAcc = &acc
-	} else {
-		localMemAcc = mon.NewStandaloneUnlimitedAccount()
 	}
-	defer localMemAcc.Clear(ctx)
 	bs := newBuilderState(ctx, dependencies, incumbent, localMemAcc)
 	els := newEventLogState(dependencies, incumbent, n)
 
@@ -89,27 +88,21 @@ func Build(
 		return scpb.CurrentState{}, stubLogSchemaChangerEventsFn, err
 	}
 	b := buildCtx{
-		Context:                 ctx,
-		Dependencies:            dependencies,
-		BuilderState:            bs,
-		EventLogState:           els,
-		TreeAnnotator:           an,
-		SchemaFeatureChecker:    dependencies.FeatureChecker(),
-		TemporarySchemaProvider: dependencies.TemporarySchemaProvider(),
-		NodesStatusInfo:         dependencies.NodesStatusInfo(),
-		RegionProvider:          dependencies.RegionProvider(),
+		Context:              ctx,
+		Dependencies:         dependencies,
+		BuilderState:         bs,
+		EventLogState:        els,
+		TreeAnnotator:        an,
+		SchemaFeatureChecker: dependencies.FeatureChecker(),
 	}
 	scbuildstmt.Process(b, an.GetStatement())
 
 	// Generate redacted statement.
 	{
-		if _, ok := n.(*tree.CreateRoutine); !ok {
-			// This validation fails for references to CTEs, which need not be
-			// qualified.
-			an.ValidateAnnotations()
-		}
+		an.ValidateAnnotations()
 		currentStatementID := uint32(len(els.statements) - 1)
-		els.statements[currentStatementID].RedactedStatement = dependencies.AstFormatter().FormatAstAsRedactableString(an.GetStatement(), &an.annotation)
+		els.statements[currentStatementID].RedactedStatement = string(
+			dependencies.AstFormatter().FormatAstAsRedactableString(an.GetStatement(), &an.annotation))
 	}
 
 	// Generate returned state.
@@ -127,16 +120,11 @@ func Build(
 	return ret, eventLogCallBack, nil
 }
 
-type loggedTarget struct {
-	target    scpb.Target
-	maybeInfo logpb.EventPayload
-}
-
 // makeState populates the declarative schema changer state returned by Build
 // with the targets and the statuses present in the builderState.
 func makeState(
 	version clusterversion.ClusterVersion, bs *builderState,
-) (s scpb.CurrentState, loggedTargets []loggedTarget) {
+) (s scpb.CurrentState, loggedTargets []scpb.Target) {
 	s = scpb.CurrentState{
 		TargetState: scpb.TargetState{
 			Targets:      make([]scpb.Target, 0, len(bs.output)),
@@ -145,7 +133,7 @@ func makeState(
 		Initial: make([]scpb.Status, 0, len(bs.output)),
 		Current: make([]scpb.Status, 0, len(bs.output)),
 	}
-	loggedTargets = make([]loggedTarget, 0, len(bs.output))
+	loggedTargets = make([]scpb.Target, 0, len(bs.output))
 	isElementAllowedInVersion := func(e scpb.Element) bool {
 		if !screl.VersionSupportsElementUse(e, version) {
 			// Exclude targets which are not yet usable in the currently active
@@ -165,9 +153,11 @@ func makeState(
 	// certain transitions and fences like the two version invariant.
 	// This only applies for cluster at or beyond version 23.2.
 	var descriptorIDsInSchemaChange catalog.DescriptorIDSet
-	for _, e := range bs.output {
-		if isElementAllowedInVersion(e.element) && e.metadata.IsLinkedToSchemaChange() {
-			descriptorIDsInSchemaChange.Add(screl.GetDescID(e.element))
+	if version.IsActive(clusterversion.V23_2) {
+		for _, e := range bs.output {
+			if isElementAllowedInVersion(e.element) && e.metadata.IsLinkedToSchemaChange() {
+				descriptorIDsInSchemaChange.Add(screl.GetDescID(e.element))
+			}
 		}
 	}
 	for _, e := range bs.output {
@@ -188,8 +178,7 @@ func makeState(
 		s.Initial = append(s.Initial, e.initial)
 		s.Current = append(s.Current, e.current)
 		if e.withLogEvent {
-			lt := loggedTarget{target: t, maybeInfo: e.maybePayload}
-			loggedTargets = append(loggedTargets, lt)
+			loggedTargets = append(loggedTargets, t)
 		}
 	}
 	return s, loggedTargets
@@ -218,9 +207,6 @@ type elementState struct {
 	// withLogEvent is true iff an event should be written to the event log
 	// based on this element.
 	withLogEvent bool
-	// maybePayload exists if extra details need to be passed down to our
-	// payload builder in order to log our event.
-	maybePayload logpb.EventPayload
 }
 
 // byteSize returns an estimated memory usage of `es` in bytes.
@@ -285,12 +271,11 @@ type cachedDesc struct {
 func newBuilderState(
 	ctx context.Context, d Dependencies, incumbent scpb.CurrentState, localMemAcc *mon.BoundAccount,
 ) *builderState {
-
 	bs := builderState{
 		ctx:                      ctx,
 		clusterSettings:          d.ClusterSettings(),
-		evalCtx:                  d.EvalCtx(),
-		semaCtx:                  d.SemaCtx(),
+		evalCtx:                  newEvalCtx(ctx, d),
+		semaCtx:                  newSemaCtx(d),
 		cr:                       d.CatalogReader(),
 		tr:                       d.TableReader(),
 		auth:                     d.AuthorizationAccessor(),
@@ -341,7 +326,7 @@ func makeNameMappings(elementStates []elementState) (ret scpb.NameMappings) {
 		return &ret[idx], true /* isNew */
 	}
 	isNotDropping := func(ts scpb.TargetStatus) bool {
-		return ts != scpb.ToAbsent && ts != scpb.TransientAbsent
+		return ts != scpb.ToAbsent && ts != scpb.Transient
 	}
 	for _, es := range elementStates {
 		switch e := es.element.(type) {
@@ -434,9 +419,6 @@ type buildCtx struct {
 	scbuildstmt.EventLogState
 	scbuildstmt.TreeAnnotator
 	scbuildstmt.SchemaFeatureChecker
-	TemporarySchemaProvider
-	NodesStatusInfo
-	RegionProvider
 }
 
 var _ scbuildstmt.BuildCtx = buildCtx{}
@@ -447,11 +429,7 @@ func (b buildCtx) Add(element scpb.Element) {
 }
 
 func (b buildCtx) AddTransient(element scpb.Element) {
-	b.Ensure(element, scpb.TransientAbsent, b.TargetMetadata())
-}
-
-func (b buildCtx) DropTransient(element scpb.Element) {
-	b.Ensure(element, scpb.TransientPublic, b.TargetMetadata())
+	b.Ensure(element, scpb.Transient, b.TargetMetadata())
 }
 
 // Drop implements the scbuildstmt.BuildCtx interface.

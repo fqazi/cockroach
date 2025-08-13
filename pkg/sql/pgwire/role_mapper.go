@@ -25,27 +25,18 @@ import (
 // maps groups of users onto database roles.
 type RoleMapper = func(
 	ctx context.Context,
-	systemIdentity string,
+	systemIdentity username.SQLUsername,
 ) ([]username.SQLUsername, error)
 
 // UseProvidedIdentity is a trivial implementation of RoleMapper which always
 // returns its input.
-func UseProvidedIdentity(_ context.Context, id string) ([]username.SQLUsername, error) {
-	u, err := username.MakeSQLUsernameFromUserInput(id, username.PurposeValidation)
-	if err != nil {
-		return nil, err
-	}
-	return []username.SQLUsername{u}, nil
+func UseProvidedIdentity(
+	_ context.Context, id username.SQLUsername,
+) ([]username.SQLUsername, error) {
+	return []username.SQLUsername{id}, nil
 }
 
 var _ RoleMapper = UseProvidedIdentity
-
-// UseSpecifiedIdentity is a RoleMapper that always returns a fixed user.
-func UseSpecifiedIdentity(user username.SQLUsername) RoleMapper {
-	return func(_ context.Context, _ string) ([]username.SQLUsername, error) {
-		return []username.SQLUsername{user}, nil
-	}
-}
 
 // HbaMapper implements the "map" option that may be defined in a
 // host-based authentication rule. If the HBA entry does not define a
@@ -59,15 +50,15 @@ func HbaMapper(hbaEntry *hba.Entry, identMap *identmap.Conf) RoleMapper {
 	if mapName == "" {
 		return UseProvidedIdentity
 	}
-	return func(_ context.Context, id string) ([]username.SQLUsername, error) {
-		users, _, err := identMap.Map(mapName, id)
+	return func(_ context.Context, id username.SQLUsername) ([]username.SQLUsername, error) {
+		users, _, err := identMap.Map(mapName, id.Normalized())
 		if err != nil {
 			return nil, err
 		}
 		for _, user := range users {
 			if user.IsRootUser() || user.IsReserved() {
 				return nil, errors.Newf("system identity %q mapped to reserved database role %q",
-					id, user.Normalized())
+					id.Normalized(), user.Normalized())
 			}
 		}
 		return users, nil

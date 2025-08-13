@@ -4,14 +4,6 @@
 // included in the /LICENSE file.
 
 import React from "react";
-import { Link } from "react-router-dom";
-
-import { Badge } from "src/badge";
-import {
-  InsightExecEnum,
-  TransactionStatus,
-  TxnInsightEvent,
-} from "src/insights";
 import {
   ColumnDescriptor,
   ISortedTablePagination,
@@ -22,15 +14,21 @@ import {
   DATE_WITH_SECONDS_AND_MILLISECONDS_FORMAT_24_TZ,
   Duration,
 } from "src/util";
-
-import { TimeScale } from "../../../timeScaleDropdown";
-import { Timestamp } from "../../../timestamp";
+import {
+  InsightExecEnum,
+  TransactionStatus,
+  TxnInsightEvent,
+} from "src/insights";
 import {
   InsightCell,
   insightsTableTitles,
   QueriesCell,
   TransactionDetailsLink,
 } from "../util";
+import { Link } from "react-router-dom";
+import { TimeScale } from "../../../timeScaleDropdown";
+import { Badge } from "src/badge";
+import { Timestamp } from "../../../timestamp";
 
 function txnStatusToString(status: TransactionStatus) {
   switch (status) {

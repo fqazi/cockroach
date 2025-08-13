@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for concat_agg.eg.go. It's formatted in a
@@ -46,7 +47,7 @@ type concat_AGGKINDAgg struct {
 }
 
 // {{if eq "_AGGKIND" "Ordered"}}
-func (a *concat_AGGKINDAgg) SetOutput(vec *coldata.Vec) {
+func (a *concat_AGGKINDAgg) SetOutput(vec coldata.Vec) {
 	a.orderedAggregateFuncBase.SetOutput(vec)
 	a.col = vec.Bytes()
 }
@@ -54,13 +55,13 @@ func (a *concat_AGGKINDAgg) SetOutput(vec *coldata.Vec) {
 // {{end}}
 
 func (a *concat_AGGKINDAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	execgen.SETVARIABLESIZE(oldCurAggSize, a.curAgg)
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Bytes(), vec.Nulls()
 	// {{if not (eq "_AGGKIND" "Window")}}
-	a.allocator.PerformOperation([]*coldata.Vec{a.vec}, func() {
+	a.allocator.PerformOperation([]coldata.Vec{a.vec}, func() {
 		// {{if eq "_AGGKIND" "Ordered"}}
 		// Capture groups to force bounds check to work. See
 		// https://github.com/golang/go/issues/39756

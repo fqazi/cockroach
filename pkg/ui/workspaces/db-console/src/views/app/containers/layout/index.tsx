@@ -3,12 +3,23 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Badge } from "@cockroachlabs/cluster-ui";
 import React from "react";
 import { Helmet } from "react-helmet";
-import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
+import { connect } from "react-redux";
 
+import NavigationBar from "src/views/app/components/layoutSidebar";
+import ErrorBoundary from "src/views/app/components/errorMessage/errorBoundary";
+import TimeWindowManager from "src/views/app/containers/metricsTimeManager";
+import AlertBanner from "src/views/app/containers/alertBanner";
+import RequireLogin from "src/views/login/requireLogin";
+import {
+  clusterIdSelector,
+  clusterNameSelector,
+  clusterVersionLabelSelector,
+} from "src/redux/nodes";
+import { AdminUIState } from "src/redux/state";
+import LoginIndicator from "src/views/app/components/loginIndicator";
 import {
   GlobalNavigation,
   CockroachLabsLockupIcon,
@@ -18,24 +29,12 @@ import {
   Text,
   TextTypes,
 } from "src/components";
-import {
-  clusterIdSelector,
-  clusterNameSelector,
-  clusterVersionLabelSelector,
-} from "src/redux/nodes";
-import { AdminUIState } from "src/redux/state";
-import { getDataFromServer } from "src/util/dataFromServer";
-import ErrorBoundary from "src/views/app/components/errorMessage/errorBoundary";
-import NavigationBar from "src/views/app/components/layoutSidebar";
-import LoginIndicator from "src/views/app/components/loginIndicator";
-import AlertBanner from "src/views/app/containers/alertBanner";
-import TimeWindowManager from "src/views/app/containers/metricsTimeManager";
-import RequireLogin from "src/views/login/requireLogin";
 import { ThrottleNotificationBar } from "src/views/shared/components/alertBar/alertBar";
+import { Badge } from "@cockroachlabs/cluster-ui";
 
 import "./layout.styl";
 import "./layoutPanel.styl";
-
+import { getDataFromServer } from "src/util/dataFromServer";
 import TenantDropdown from "../../components/tenantDropdown/tenantDropdown";
 import { LicenseNotification } from "../licenseNotification/licenseNotification";
 

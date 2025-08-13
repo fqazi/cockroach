@@ -18,14 +18,10 @@ import "util/unresolved_addr.proto";
 import "gogoproto/gogo.proto";
 import "google/protobuf/duration.proto";
 import "roachpb/span_config.proto";
-import "sql/catalog/descpb/structured.proto";
-import "sql/catalog/externalcatalog/externalpb/external.proto";
 
 // ReplicationProducerSpec is the specification returned by the replication
 // producer job when it is created.
 message ReplicationProducerSpec {
-  reserved 5, 6;
-
   int64 stream_id = 1 [(gogoproto.customname) = "StreamID", (gogoproto.casttype) = "StreamID"];
 
   // ReplicationStartTime is the initial timestamp from which the replication
@@ -45,10 +41,6 @@ message ReplicationProducerSpec {
     (gogoproto.nullable) = false,
     (gogoproto.customname) = "SourceTenantID"
   ];
-  
-  reserved 7;
-  reserved 8;
-  sql.catalog.externalcatalog.externalpb.ExternalCatalog external_catalog = 9 [(gogoproto.nullable) = false];
 }
 
 // ReplicationProducerRequest is sent by the consuming cluster when
@@ -78,25 +70,9 @@ message ReplicationProducerRequest {
     (gogoproto.nullable) = false,
     (gogoproto.customname) = "TenantID"
   ];
-
-
-  // TableNames, if set, are the names of the individual tables that a
-  // logical replication ingestion processor are interested in.
-  repeated string table_names = 4;
-
-  bool allow_offline = 5;
-  
-  // Sent during bidirectional LDR setup to validate the reverse stream URI.
-  string unvalidated_reverse_stream_uri = 6 [(gogoproto.customname) = "UnvalidatedReverseStreamURI"];
 }
 
-enum ReplicationType {
-  PHYSICAL = 0;
-  LOGICAL = 1;
-}
-
-// StreamPartitionSpec is the stream partition specification used to init an
-// eventStream.
+// StreamPartitionSpec is the stream partition specification.
 message StreamPartitionSpec {
   // PreviousReplicatedTimestamp specifies the timestamp from which spans will
   // start ingesting data in the replication job. This timestamp is empty unless
@@ -118,7 +94,8 @@ message StreamPartitionSpec {
   // ExecutionConfig describes various knobs to control execution behavior
   // of the stream.  If unspecified, reasonable defaults will be set.
   message ExecutionConfig {
-    reserved 1;
+    // Controls the number of concurrent scan requests issued during initial scan.
+    int32 initial_scan_parallelism = 1;
 
     // Controls how often checkpoint records are published.
     google.protobuf.Duration min_checkpoint_frequency = 2
@@ -130,26 +107,10 @@ message StreamPartitionSpec {
 
   ExecutionConfig config = 3 [(gogoproto.nullable) = false];
 
-  int32 consumer_node = 5;
-  int32 consumer_proc = 9;
+  int32 consumer_id = 5 [(gogoproto.customname) = "ConsumerID"];
 
   // Progress describes previous progress made towards replicating these spans.
   repeated cockroach.sql.jobs.jobspb.ResolvedSpan progress = 6  [(gogoproto.nullable) = false];
-
-  bool compressed = 7;
-
-  // WithFiltering controls whether the rangefeed started for this
-  // partition should filter datums where OmitInRangefeeds should be
-  // set.
-  bool with_filtering = 8;
-
-  bool with_diff = 10;
-
-  bool wrapped_events = 11;
-
-  ReplicationType type = 12;
-
-  // NEXT ID: 13.
 }
 
 // SpanConfigEventStreamSpec is the span config event stream specification.
@@ -161,25 +122,7 @@ message SpanConfigEventStreamSpec {
   // Controls how often checkpoint records are published.
   google.protobuf.Duration min_checkpoint_frequency = 3
   [(gogoproto.nullable) = false, (gogoproto.stdduration) = true];
-  bool wrapped_events = 4;
-}
 
-message LogicalReplicationPlanRequest {
-    // TableIDs are the destination table IDs that the caller would like a plan for.
-    repeated int32 table_ids = 1 [(gogoproto.customname) = "TableIDs"];
-    // PlanAsOf is the time as of which the plan should be produced.
-    util.hlc.Timestamp plan_as_of = 2 [(gogoproto.nullable) = false];
-    bool use_table_span = 3;
-    int64 stream_id = 4 [(gogoproto.customname) = "StreamID", (gogoproto.casttype) = "StreamID"];
-}
-
-// SourcePartition contains per partition information for a replication plan.
-message SourcePartition {
-  // To maintain compatibility with the StreamPartitionSpec proto, reserve all
-  // wire types it uses.
-  reserved 1, 3, 4, 5, 6, 7, 8, 9, 10, 11;
-  // List of spans to stream.
-  repeated roachpb.Span spans = 2 [(gogoproto.nullable) = false];
 }
 
 message ReplicationStreamSpec {
@@ -195,7 +138,8 @@ message ReplicationStreamSpec {
     // Locality of the node
     roachpb.Locality locality = 3 [(gogoproto.nullable) = false];
 
-    SourcePartition source_partition = 4; 
+    // The spec of the processor responsible for streaming this partition
+    StreamPartitionSpec partition_spec = 4 [(gogoproto.customname) = "PartitionSpec"];
   }
 
   repeated Partition partitions = 1 [(gogoproto.nullable) = false];
@@ -205,11 +149,6 @@ message ReplicationStreamSpec {
   int64 span_config_stream_id = 3 [(gogoproto.customname) = "SpanConfigStreamID", (gogoproto
     .casttype) = "StreamID"];
 
-  // TableSpans is the set of spans that cover the requested tables if
-  // this is in response to a LogicalReplicationPlanRequest.
-  repeated roachpb.Span table_spans = 4 [(gogoproto.nullable) = false];
-  repeated cockroach.sql.sqlbase.TableDescriptor table_descriptors = 5 [(gogoproto.nullable) = false];
-  repeated cockroach.sql.sqlbase.TypeDescriptor type_descriptors = 6 [(gogoproto.nullable) = false];
 }
 
 // StreamedSpanConfigEntry holds a span config update and its source side commit timestamp
@@ -222,49 +161,23 @@ message StreamedSpanConfigEntry {
 // StreamEvent describes a replication stream event
 message StreamEvent {
 
-  message KV {
-    roachpb.KeyValue key_value = 1 [(gogoproto.nullable) = false];
-    roachpb.Value prev_value = 2 [(gogoproto.nullable) = false];
-  }
-
   message Batch {
-    repeated roachpb.KeyValue deprecated_key_values = 1 [(gogoproto.nullable) = false];
+    repeated roachpb.KeyValue key_values = 1 [(gogoproto.nullable) = false];
     repeated roachpb.RangeFeedSSTable ssts = 2 [(gogoproto.nullable) = false];
     repeated roachpb.RangeFeedDeleteRange del_ranges = 3 [(gogoproto.nullable) = false];
     repeated StreamedSpanConfigEntry span_configs = 4 [(gogoproto.nullable) = false];
     repeated bytes split_points = 5 [(gogoproto.casttype) =  "github.com/cockroachdb/cockroach/pkg/roachpb.Key"];
-    repeated KV kvs = 6 [(gogoproto.nullable) = false, (gogoproto.customname) = "KVs"];
-  }
-
-  message RangeStats {
-    // RangeCount is the number of ranges covered by the spans specified when
-    // starting the event stream. The number of ranges is counted per requested
-    // span, so the count will be an overestimate if a range is shared between
-    // multiple requested spans.
-    int64 range_count = 1;
-
-    // ScanningRangeCount is the number of ranges that have yet to complete the
-    // initial scan. ScanningRangeCount <= RangeCount.
-    int64 scanning_range_count = 2;
-    
-    // LaggingRangeCount is the number of ranges that are signficantly behind,
-    // after completing the initial scan.
-    int64 lagging_range_count = 3;
   }
 
   // Checkpoint represents stream checkpoint.
   message StreamCheckpoint {
     reserved 1;
     repeated cockroach.sql.jobs.jobspb.ResolvedSpan resolved_spans = 2  [(gogoproto.nullable) = false];
-    RangeStats range_stats = 3;
   }
 
   // Only 1 field ought to be set.
   Batch batch = 1;
   StreamCheckpoint checkpoint = 2;
-
-  uint64 stream_seq = 3;
-  int64 emit_unix_nanos = 4;
 }
 
 message StreamReplicationStatus {

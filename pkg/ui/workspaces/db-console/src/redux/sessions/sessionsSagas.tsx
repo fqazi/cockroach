@@ -3,18 +3,16 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Action } from "redux";
-import { all, call, put, takeEvery } from "redux-saga/effects";
-
 import { PayloadAction } from "src/interfaces/action";
-import { cockroach } from "src/js/protos";
+import { all, call, put, takeEvery } from "redux-saga/effects";
+import { terminateQuery, terminateSession } from "src/util/api";
+import { invalidateSessions, refreshSessions } from "src/redux/apiReducers";
 import {
   terminateQueryAlertLocalSetting,
   terminateSessionAlertLocalSetting,
 } from "src/redux/alerts";
-import { invalidateSessions, refreshSessions } from "src/redux/apiReducers";
-import { terminateQuery, terminateSession } from "src/util/api";
-
+import { cockroach } from "src/js/protos";
+import { Action } from "redux";
 import ICancelSessionRequest = cockroach.server.serverpb.ICancelSessionRequest;
 import CancelSessionRequest = cockroach.server.serverpb.CancelSessionRequest;
 import ICancelQueryRequest = cockroach.server.serverpb.ICancelQueryRequest;

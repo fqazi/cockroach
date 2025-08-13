@@ -217,14 +217,14 @@ func TestNormalizeExpr(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	for _, d := range testData {
 		t.Run(d.expr, func(t *testing.T) {
 			expr, err := parser.ParseExpr(d.expr)
 			if err != nil {
 				t.Fatalf("%s: %v", d.expr, err)
 			}
-			typedExpr, err := expr.TypeCheck(ctx, &semaCtx, types.AnyElement)
+			typedExpr, err := expr.TypeCheck(ctx, &semaCtx, types.Any)
 			if err != nil {
 				t.Fatalf("%s: %v", d.expr, err)
 			}

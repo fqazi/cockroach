@@ -15,13 +15,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log/channel"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logconfig"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
@@ -61,7 +61,7 @@ func testBase(
 
 	// seenMessage is true after the request predicate
 	// has seen the expected message from the client.
-	var seenMessage atomic.Bool
+	var seenMessage syncutil.AtomicBool
 
 	handler := func(rw http.ResponseWriter, r *http.Request) {
 		buf := make([]byte, 5000)
@@ -82,7 +82,7 @@ func testBase(
 				// non-failing, in case there are extra log messages generated
 				t.Log(err)
 			} else {
-				seenMessage.Store(true)
+				seenMessage.Set(true)
 			}
 		}
 	}
@@ -107,7 +107,7 @@ func testBase(
 
 	// Apply the configuration.
 	TestingResetActive()
-	cleanup, err := ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+	cleanup, err := ApplyConfig(cfg)
 	require.NoError(t, err)
 	defer cleanup()
 
@@ -144,7 +144,7 @@ func testBase(
 	// If the test was not requiring a timeout, it was requiring some
 	// logging message to match the predicate. If we don't see the
 	// predicate match, it is a test failure.
-	if !seenMessage.Load() {
+	if !seenMessage.Get() {
 		t.Error("expected message matching predicate, found none")
 	}
 }

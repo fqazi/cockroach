@@ -3,10 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import get from "lodash/get";
-import isNumber from "lodash/isNumber";
-import isString from "lodash/isString";
-
+import { get, isString, isNumber } from "lodash";
 import { track } from "./trackSearch";
 
 describe("trackSearch", () => {

@@ -134,6 +134,7 @@ func newSplitQueue(store *Store, db *kv.DB) *splitQueue {
 			acceptsUnsplitRanges: true,
 			successes:            store.metrics.SplitQueueSuccesses,
 			failures:             store.metrics.SplitQueueFailures,
+			storeFailures:        store.metrics.StoreFailures,
 			pending:              store.metrics.SplitQueuePending,
 			processingNanos:      store.metrics.SplitQueueProcessingNanos,
 			purgatory:            store.metrics.SplitQueuePurgatory,
@@ -241,35 +242,33 @@ func (sq *splitQueue) processAttemptWithTracing(
 	ctx context.Context, r *Replica, confReader spanconfig.StoreReader,
 ) (processed bool, _ error) {
 	processStart := r.Clock().PhysicalTime()
-	startTracing := log.ExpensiveLogEnabled(ctx, 1)
-	var opts []tracing.SpanOption
-	if startTracing {
-		opts = append(opts, tracing.WithRecording(tracingpb.RecordingVerbose))
-	}
-	ctx, sp := tracing.EnsureChildSpan(ctx, sq.Tracer, "split", opts...)
+	ctx, sp := tracing.EnsureChildSpan(ctx, sq.Tracer, "split",
+		tracing.WithRecording(tracingpb.RecordingVerbose))
 	defer sp.Finish()
 
 	processed, err := sq.processAttempt(ctx, r, confReader)
-	processDuration := r.Clock().PhysicalTime().Sub(processStart)
-	exceededDuration := sq.logTracesThreshold > time.Duration(0) && processDuration > sq.logTracesThreshold
-	var traceOutput redact.RedactableString
-	if startTracing {
-		// Utilize a new background context (properly annotated) to avoid writing
-		// traces from a child context into its parent.
-		ctx = r.AnnotateCtx(sq.AnnotateCtx(context.Background()))
 
-		traceLoggingNeeded := (err != nil || exceededDuration)
+	// Utilize a new background context (properly annotated) to avoid writing
+	// traces from a child context into its parent.
+	{
+		ctx := r.AnnotateCtx(sq.AnnotateCtx(context.Background()))
+		processDuration := r.Clock().PhysicalTime().Sub(processStart)
+		exceededDuration := sq.logTracesThreshold > time.Duration(0) && processDuration > sq.logTracesThreshold
+
+		var traceOutput redact.RedactableString
+		traceLoggingNeeded := (err != nil || exceededDuration) && log.ExpensiveLogEnabled(ctx, 1)
 		if traceLoggingNeeded {
 			// Add any trace filtering here if the output is too verbose.
 			rec := sp.GetConfiguredRecording()
 			traceOutput = redact.Sprintf("\ntrace:\n%s", rec)
 		}
-	}
-	if err != nil {
-		log.Infof(ctx, "error during range split: %v%s", err, traceOutput)
-	} else if exceededDuration {
-		log.Infof(ctx, "range split took %s, exceeding threshold of %s%s",
-			processDuration, sq.logTracesThreshold, traceOutput)
+
+		if err != nil {
+			log.Infof(ctx, "error during range split: %v%s", err, traceOutput)
+		} else if exceededDuration {
+			log.Infof(ctx, "range split took %s, exceeding threshold of %s%s",
+				processDuration, sq.logTracesThreshold, traceOutput)
+		}
 	}
 
 	return processed, err
@@ -302,9 +301,6 @@ func (sq *splitQueue) processAttempt(
 			return false, errors.Wrapf(err, "unable to split %s at key %q", r, splitKey)
 		}
 		sq.metrics.SpanConfigBasedSplitCount.Inc(1)
-
-		// Reset the splitter now that the bounds of the range changed.
-		r.loadBasedSplitter.Reset(sq.store.Clock().PhysicalTime())
 		return true, nil
 	}
 
@@ -330,9 +326,6 @@ func (sq *splitQueue) processAttempt(
 			return false, err
 		}
 		sq.metrics.SizeBasedSplitCount.Inc(1)
-
-		// Reset the splitter now that the bounds of the range changed.
-		r.loadBasedSplitter.Reset(sq.store.Clock().PhysicalTime())
 		return true, nil
 	}
 

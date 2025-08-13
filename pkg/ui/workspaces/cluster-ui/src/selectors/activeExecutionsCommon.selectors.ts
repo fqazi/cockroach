@@ -9,7 +9,6 @@ import {
   SessionsResponse,
 } from "src/activeExecutions/types";
 import { ClusterLocksResponse } from "src/api";
-
 import {
   getActiveExecutionsFromSessions,
   getWaitTimeByTxnIDFromLocks,

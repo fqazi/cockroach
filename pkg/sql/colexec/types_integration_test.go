@@ -78,13 +78,13 @@ func TestSQLTypesIntegration(t *testing.T) {
 
 			c, err := colserde.NewArrowBatchConverter(typs, colserde.BiDirectional, testMemAcc)
 			require.NoError(t, err)
-			defer c.Close(ctx)
+			defer c.Release(ctx)
 			r, err := colserde.NewRecordBatchSerializer(typs)
 			require.NoError(t, err)
 			arrowOp := newArrowTestOperator(columnarizer, c, r, typs)
 
 			materializer := NewMaterializer(
-				nil, /* streamingMemAcc */
+				nil, /* allocator */
 				flowCtx,
 				1, /* processorID */
 				colexecargs.OpWithMetaInfo{Root: arrowOp},
@@ -98,7 +98,7 @@ func TestSQLTypesIntegration(t *testing.T) {
 				require.Nil(t, meta)
 				numActualRows++
 				require.Equal(t, len(expectedRow), len(actualRow))
-				cmp, err := expectedRow[0].Compare(ctx, typ, &da, &evalCtx, &actualRow[0])
+				cmp, err := expectedRow[0].Compare(typ, &da, &evalCtx, &actualRow[0])
 				require.NoError(t, err)
 				require.Equal(t, 0, cmp)
 			}

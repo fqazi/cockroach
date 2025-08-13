@@ -3,9 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
 import React from "react";
-
+import classNames from "classnames/bind";
 import styles from "./workloadInsights/util/workloadInsights.module.scss";
 
 const cx = classNames.bind(styles);

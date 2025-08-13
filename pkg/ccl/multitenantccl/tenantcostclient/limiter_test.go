@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcostmodel"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
@@ -18,8 +18,8 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-// TestLimiterNotify tests that low tokens notifications are sent at the
-// expected times.
+// TestLimiterNotify tests that low RU notifications are sent at the expected
+// times.
 func TestLimiterNotify(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
@@ -29,7 +29,7 @@ func TestLimiterNotify(t *testing.T) {
 	ch := make(chan struct{}, 100)
 
 	var met metrics
-	met.Init(roachpb.Locality{})
+	met.Init()
 
 	var lim limiter
 	lim.Init(&met, ts, ch)
@@ -70,18 +70,18 @@ func TestLimiterNotify(t *testing.T) {
 	}
 	lim.Reconfigure(ts.Now(), args)
 	checkNoNotification()
-	check("30.00 tokens filling @ 10.00 tokens/s")
+	check("30.00 RU filling @ 10.00 RU/s")
 
-	lim.RemoveTokens(ts.Now(), 20)
+	lim.RemoveRU(ts.Now(), 20)
 	// No notification: we did not go below the threshold.
 	checkNoNotification()
 	// Now we should get a notification.
-	lim.RemoveTokens(ts.Now(), 8)
+	lim.RemoveRU(ts.Now(), 8)
 	checkNotification()
-	check("2.00 tokens filling @ 10.00 tokens/s")
+	check("2.00 RU filling @ 10.00 RU/s")
 
 	// We only get one notification (until we Reconfigure or StartNotification).
-	lim.RemoveTokens(ts.Now(), 1)
+	lim.RemoveRU(ts.Now(), 1)
 	checkNoNotification()
 
 	// Reconfigure without enough tokens to meet the threshold and ensure we get
@@ -92,7 +92,7 @@ func TestLimiterNotify(t *testing.T) {
 	}
 	lim.Reconfigure(ts.Now(), args)
 	checkNotification()
-	check("2.00 tokens filling @ 0.00 tokens/s")
+	check("2.00 RU filling @ 0.00 RU/s")
 
 	// Reconfigure with enough tokens to exceed threshold and ensure there is no
 	// notification.
@@ -102,7 +102,7 @@ func TestLimiterNotify(t *testing.T) {
 	}
 	lim.Reconfigure(ts.Now(), args)
 	checkNoNotification()
-	check("82.00 tokens filling @ 1.00 tokens/s")
+	check("82.00 RU filling @ 1.00 RU/s")
 
 	// Call SetupNotification with a high threshold and ensure notification.
 	lim.SetupNotification(ts.Now(), 83)
@@ -120,10 +120,10 @@ func TestLimiterNotify(t *testing.T) {
 	}
 	lim.Reconfigure(ts.Now(), args)
 	checkNoNotification()
-	check("105.00 tokens filling @ 10.00 tokens/s")
+	check("105.00 RU filling @ 10.00 RU/s")
 
 	// Try a fulfilled Acquire that doesn't drop below threshold.
-	fulfill := func(amount float64) {
+	fulfill := func(amount tenantcostmodel.RU) {
 		t.Helper()
 		req := &waitRequest{needed: amount}
 		if ok, _ := req.Acquire(ctx, &lim); !ok {
@@ -133,18 +133,18 @@ func TestLimiterNotify(t *testing.T) {
 
 	fulfill(10)
 	checkNoNotification()
-	check("95.00 tokens filling @ 10.00 tokens/s")
+	check("95.00 RU filling @ 10.00 RU/s")
 
 	// Try a fulfilled Acquire that does drop below the threshold.
 	fulfill(60)
 	checkNotification()
-	check("35.00 tokens filling @ 10.00 tokens/s")
+	check("35.00 RU filling @ 10.00 RU/s")
 
 	// Refill bucket.
 	ts.Advance(5 * time.Second)
 	fulfill(0)
 	checkNoNotification()
-	check("85.00 tokens filling @ 10.00 tokens/s")
+	check("85.00 RU filling @ 10.00 RU/s")
 	lim.SetupNotification(ts.Now(), 5)
 
 	// Fail to fulfill a request and expect a notification.
@@ -153,9 +153,9 @@ func TestLimiterNotify(t *testing.T) {
 		t.Fatalf("fulfilled incorrectly")
 	}
 	checkNotification()
-	check("85.00 tokens filling @ 10.00 tokens/s (100.00 waiting tokens)")
+	check("85.00 RU filling @ 10.00 RU/s (100.00 waiting RU)")
 
-	// Add enough tokens to fulfill the waiting request and trigger a notification.
+	// Add enough RU to fulfill the waiting request and trigger a notification.
 	args = limiterReconfigureArgs{
 		NewTokens:       15,
 		NotifyThreshold: 5,
@@ -165,7 +165,7 @@ func TestLimiterNotify(t *testing.T) {
 		t.Fatalf("failed to fulfill")
 	}
 	checkNotification()
-	check("0.00 tokens filling @ 0.00 tokens/s")
+	check("0.00 RU filling @ 0.00 RU/s")
 
 	// Ensure that MaxTokens is enforced.
 	args = limiterReconfigureArgs{
@@ -174,7 +174,7 @@ func TestLimiterNotify(t *testing.T) {
 	}
 	lim.Reconfigure(ts.Now(), args)
 	checkNoNotification()
-	check("50.00 tokens filling @ 0.00 tokens/s (limited to 50.00 tokens)")
+	check("50.00 RU filling @ 0.00 RU/s (limited to 50.00 RU)")
 }
 
 // TestLimiterMetrics tests that limiter metrics are updated.
@@ -187,7 +187,7 @@ func TestLimiterMetrics(t *testing.T) {
 	ch := make(chan struct{}, 100)
 
 	var met metrics
-	met.Init(roachpb.Locality{})
+	met.Init()
 
 	var lim limiter
 	lim.Init(&met, ts, ch)

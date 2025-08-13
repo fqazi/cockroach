@@ -7,47 +7,17 @@ import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
 import { Dispatch } from "redux";
 
-import { StatementsRequest } from "src/api/statementsApi";
 import { AppState, uiConfigActions } from "src/store";
+import { actions as statementDiagnosticsActions } from "src/store/statementDiagnostics";
 import { actions as analyticsActions } from "src/store/analytics";
-import { actions as databasesListActions } from "src/store/databasesList";
 import {
   actions as localStorageActions,
   updateStmtsPageLimitAction,
   updateStmsPageReqSortAction,
 } from "src/store/localStorage";
 import { actions as sqlStatsActions } from "src/store/sqlStats";
-import { actions as statementDiagnosticsActions } from "src/store/statementDiagnostics";
-
-import {
-  InsertStmtDiagnosticRequest,
-  StatementDiagnosticsReport,
-  SqlStatsSortType,
-} from "../api";
-import {
-  actions as nodesActions,
-  nodeRegionsByIDSelector,
-} from "../store/nodes";
-import {
-  selectIsTenant,
-  selectHasViewActivityRedactedRole,
-  selectHasAdminRole,
-} from "../store/uiConfig";
-import {
-  selectTimeScale,
-  selectStmtsPageLimit,
-  selectStmtsPageReqSort,
-} from "../store/utils/selectors";
-import { TimeScale } from "../timeScaleDropdown";
-
-import {
-  mapDispatchToActiveStatementsPageProps,
-  mapStateToActiveStatementsPageProps,
-} from "./activeStatementsPage.selectors";
-import {
-  ActiveStatementsViewDispatchProps,
-  ActiveStatementsViewStateProps,
-} from "./activeStatementsView";
+import { actions as databasesListActions } from "src/store/databasesList";
+import { actions as nodesActions } from "../store/nodes";
 import {
   StatementsPageDispatchProps,
   StatementsPageStateProps,
@@ -61,9 +31,35 @@ import {
   selectRequestTime,
 } from "./statementsPage.selectors";
 import {
+  selectTimeScale,
+  selectStmtsPageLimit,
+  selectStmtsPageReqSort,
+} from "../store/utils/selectors";
+import {
+  selectIsTenant,
+  selectHasViewActivityRedactedRole,
+  selectHasAdminRole,
+} from "../store/uiConfig";
+import { nodeRegionsByIDSelector } from "../store/nodes";
+import { StatementsRequest } from "src/api/statementsApi";
+import { TimeScale } from "../timeScaleDropdown";
+import {
   StatementsPageRoot,
   StatementsPageRootProps,
 } from "./statementsPageRoot";
+import {
+  ActiveStatementsViewDispatchProps,
+  ActiveStatementsViewStateProps,
+} from "./activeStatementsView";
+import {
+  mapDispatchToActiveStatementsPageProps,
+  mapStateToActiveStatementsPageProps,
+} from "./activeStatementsPage.selectors";
+import {
+  InsertStmtDiagnosticRequest,
+  StatementDiagnosticsReport,
+  SqlStatsSortType,
+} from "../api";
 
 type StateProps = {
   fingerprintsPageProps: StatementsPageStateProps & RouteComponentProps;
@@ -80,10 +76,9 @@ export const ConnectedStatementsPage = withRouter(
     StateProps,
     DispatchProps,
     RouteComponentProps,
-    StatementsPageRootProps,
-    AppState
+    StatementsPageRootProps
   >(
-    (state: AppState, props: RouteComponentProps): StateProps => ({
+    (state: AppState, props: RouteComponentProps) => ({
       fingerprintsPageProps: {
         ...props,
         columns: selectColumns(state),
@@ -189,7 +184,7 @@ export const ConnectedStatementsPage = withRouter(
             }),
           );
         },
-        onFilterChange: (value: any) => {
+        onFilterChange: value => {
           dispatch(
             analyticsActions.track({
               name: "Filter Clicked",
@@ -269,7 +264,7 @@ export const ConnectedStatementsPage = withRouter(
       },
       activePageProps: mapDispatchToActiveStatementsPageProps(dispatch),
     }),
-    (stateProps, dispatchProps): StatementsPageRootProps => ({
+    (stateProps, dispatchProps) => ({
       fingerprintsPageProps: {
         ...stateProps.fingerprintsPageProps,
         ...dispatchProps.fingerprintsPageProps,

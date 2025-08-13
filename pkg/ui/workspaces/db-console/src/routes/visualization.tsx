@@ -6,8 +6,8 @@
 import React from "react";
 import { Route, Switch, Redirect } from "react-router-dom";
 
-import ClusterOverview from "src/views/cluster/containers/clusterOverview";
 import { NodesOverview } from "src/views/cluster/containers/nodesOverview";
+import ClusterOverview from "src/views/cluster/containers/clusterOverview";
 
 class NodesWrapper extends React.Component<{}, {}> {
   render() {

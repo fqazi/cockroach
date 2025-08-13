@@ -12,7 +12,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvclient"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
@@ -31,7 +31,7 @@ type indexSplitAndScatter struct {
 	codec     keys.SQLCodec
 	sv        *settings.Values
 	rangeIter rangedesc.IteratorFactory
-	nodeDescs kvclient.NodeDescStore
+	nodeDescs kvcoord.NodeDescStore
 }
 
 // NewIndexSplitAndScatter creates a new scexec.IndexSpanSplitter implementation.

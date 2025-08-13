@@ -14,27 +14,7 @@ import "util/hlc/timestamp.proto";
 import "gogoproto/gogo.proto";
 
 enum LeaseState {
-  // ERROR indicates that the lease can't be used or acquired. The state is
-  // not a definitive indication of the lease's validity. Rather, it is an
-  // indication that the validity is indeterminate; it may be valid or it
-  // may not be.
-  //
-  // The ERROR state is returned in the following cases:
-  // 1. An epoch lease has a reference to a node liveness record which the
-  //    lease status evaluator is not aware of. This can happen when gossip
-  //    is down and node liveness information is not available for the lease
-  //    holder. In such cases, it would be unsafe to use the lease because
-  //    the evaluator cannot determine the lease's expiration, so it may
-  //    have expired. However, it would also be unsafe to replace the lease,
-  //    because it may still be valid.
-  // 2. A leader lease is evaluated on a replica that is not the raft leader
-  //    and is not aware of a successor raft leader at a future term (either
-  //    itself or some other replica). In such cases, the lease may be valid
-  //    or it may have expired. The raft leader (+leaseholder) itself would
-  //    be able to tell, but the only way for a follower replica to tell is
-  //    for it to try to become the raft leader, while respecting raft
-  //    fortification rules. In the meantime, it is best for the follower
-  //    replica to redirect any requests to the raft leader (+leaseholder).
+  // ERROR indicates that the lease can't be used or acquired.
   ERROR = 0;
   // VALID indicates that the lease is not expired at the current clock
   // time and can be used to serve a given request.
@@ -94,10 +74,7 @@ enum LeaseState {
 
 // LeaseStatus holds the lease state, the current clock time at which the
 // state is accurate, the request time at which the status is accurate, the
-// lease itself, and optionally the liveness if the lease is epoch-based.
-//
-// LeaseStatus is not persisted anywhere. However, it is part of the
-// serverpb.RangeInfo proto.
+// lease iself, and optionally the liveness if the lease is epoch-based.
 message LeaseStatus {
   // Lease which this status describes.
   roachpb.Lease lease = 1 [(gogoproto.nullable) = false];
@@ -115,17 +92,4 @@ message LeaseStatus {
   // The minimum observed timestamp on a transaction that is respected by this lease.
   util.hlc.Timestamp min_valid_observed_timestamp = 7 [(gogoproto.nullable) = false,
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/util/hlc.ClockTimestamp"];
-  // Raft leadership support, if this is a leader lease for a leader lease's
-  // associated term.
-  RaftLeaderSupport leader_support = 8 [(gogoproto.nullable) = false];
-}
-
-// RaftLeaderSupport holds the leader lease state.
-message RaftLeaderSupport {
-  // Term is the current raft term known to the local replica.
-  uint64 term = 1;
-  // LeadSupportUntil is the timestamp at which the local replica, if leader,
-  // knows it has support to remain leader until. If the leader has not yet
-  // fortified its leadership, this will be the zero timestamp.
-  util.hlc.Timestamp lead_support_until = 2 [(gogoproto.nullable) = false];
 }

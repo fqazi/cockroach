@@ -27,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan/scviz"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
@@ -64,15 +63,10 @@ func WithBuilderDependenciesFromTestServer(
 		InternalSQLTxn() descs.Txn
 		Descriptors() *descs.Collection
 		SessionData() *sessiondata.SessionData
-		SemaCtx() *tree.SemaContext
-		EvalContext() *eval.Context
 		resolver.SchemaResolver
 		scbuild.AuthorizationAccessor
 		scbuild.AstFormatter
 		scbuild.FeatureChecker
-		scbuild.TemporarySchemaProvider
-		scbuild.NodesStatusInfo
-		scbuild.RegionProvider
 	})
 
 	refProviderFactory, refCleanup := sql.NewReferenceProviderFactoryForTest(
@@ -86,7 +80,6 @@ func WithBuilderDependenciesFromTestServer(
 	// changer will allow non-fully implemented operations.
 	planner.SessionData().NewSchemaChangerMode = sessiondatapb.UseNewSchemaChangerUnsafe
 	planner.SessionData().EnableUniqueWithoutIndexConstraints = true
-	planner.SessionData().AlterColumnTypeGeneralEnabled = true
 	fn(scdeps.NewBuilderDependencies(
 		execCfg.NodeInfo.LogicalClusterID(),
 		execCfg.Codec,
@@ -102,12 +95,6 @@ func WithBuilderDependenciesFromTestServer(
 		sql.NewSchemaChangerBuildEventLogger(planner.InternalSQLTxn(), &execCfg),
 		refProviderFactory,
 		descidgen.NewGenerator(s.ClusterSettings(), s.Codec(), s.DB()),
-		planner, /* temporarySchemaProvider */
-		planner, /* nodesStatusInfo */
-		planner, /* regionProvider */
-		planner.SemaCtx(),
-		planner.EvalContext(),
-		execCfg.DefaultZoneConfig,
 	))
 }
 
@@ -192,9 +179,6 @@ func ProtoDiff(a, b protoutil.Message, args DiffArgs, rewrites ...func(interface
 func MakePlan(
 	t *testing.T, state scpb.CurrentState, phase scop.Phase, memAcc *mon.BoundAccount,
 ) scplan.Plan {
-	if memAcc == nil {
-		memAcc = mon.NewStandaloneUnlimitedAccount()
-	}
 	plan, err := scplan.MakePlan(context.Background(), state, scplan.Params{
 		Ctx:                        context.Background(),
 		ActiveVersion:              clusterversion.TestingClusterVersion,

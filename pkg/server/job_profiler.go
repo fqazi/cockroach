@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/kv"
@@ -23,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/zipper"
+	"github.com/cockroachdb/errors"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -53,13 +55,17 @@ func (s *statusServer) RequestJobProfilerExecutionDetails(
 
 	nodeID, local, err := s.parseNodeID(strconv.Itoa(int(coordinatorID)))
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, status.Errorf(codes.InvalidArgument, err.Error())
 	}
 
 	// If this node is the current coordinator of the job then we can collect the
 	// profiler details.
 	if local {
 		jobID := jobspb.JobID(req.JobId)
+		if !execCfg.Settings.Version.IsActive(ctx, clusterversion.V23_2) {
+			return nil, errors.Newf("execution details can only be requested on a cluster with version >= %s",
+				clusterversion.V23_2.String())
+		}
 		e := makeJobProfilerExecutionDetailsBuilder(execCfg.SQLStatusServer, execCfg.InternalDB, jobID, execCfg.JobRegistry)
 
 		// TODO(adityamaru): When we start collecting more information we can consider
@@ -127,7 +133,7 @@ func (e *executionDetailsBuilder) addLabelledGoroutines(ctx context.Context) {
 		log.Errorf(ctx, "failed to collect goroutines for job %d: %v", e.jobID, err.Error())
 		return
 	}
-	filename := fmt.Sprintf("%s/job-goroutines.txt", timeutil.Now().Format("20060102_150405.00"))
+	filename := fmt.Sprintf("goroutines.%s.txt", timeutil.Now().Format("20060102_150405.00"))
 	if err := e.db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 		return jobs.WriteExecutionDetailFile(ctx, filename, resp.Data, txn, e.jobID)
 	}); err != nil {
@@ -146,7 +152,7 @@ func (e *executionDetailsBuilder) addDistSQLDiagram(ctx context.Context) {
 	}
 	if row != nil && row[0] != tree.DNull {
 		dspDiagramURL := string(tree.MustBeDString(row[0]))
-		filename := fmt.Sprintf("%s/distsql-plan.html", timeutil.Now().Format("20060102_150405.00"))
+		filename := fmt.Sprintf("distsql.%s.html", timeutil.Now().Format("20060102_150405.00"))
 		if err := e.db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 			return jobs.WriteExecutionDetailFile(ctx, filename,
 				[]byte(fmt.Sprintf(`<meta http-equiv="Refresh" content="0; url=%s">`, dspDiagramURL)),
@@ -172,7 +178,7 @@ func (e *executionDetailsBuilder) addClusterWideTraces(ctx context.Context) {
 		return
 	}
 
-	filename := fmt.Sprintf("%s/trace.zip", timeutil.Now().Format("20060102_150405.00"))
+	filename := fmt.Sprintf("trace.%s.zip", timeutil.Now().Format("20060102_150405.00"))
 	if err := e.db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 		return jobs.WriteExecutionDetailFile(ctx, filename, zippedTrace, txn, e.jobID)
 	}); err != nil {

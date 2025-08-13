@@ -491,7 +491,7 @@ func (b *Builder) buildScalar(
 		panic(unimplemented.Newf(fmt.Sprintf("optbuilder.%T", scalar), "not yet implemented: scalar expression: %T", scalar))
 	}
 
-	return b.finishBuildScalar(scalar, out, outScope, outCol)
+	return b.finishBuildScalar(scalar, out, inScope, outScope, outCol)
 }
 
 func (b *Builder) hasSubOperator(t *tree.ComparisonExpr) bool {
@@ -591,7 +591,7 @@ func (b *Builder) buildFunction(
 			var ds cat.DataSource
 			if seqIdentifier.IsByID() {
 				flags := cat.Flags{
-					AvoidDescriptorCaches: b.insideViewDef || b.insideFuncDef || b.insideTriggerDef,
+					AvoidDescriptorCaches: b.insideViewDef || b.insideFuncDef,
 				}
 				ds, _, err = b.catalog.ResolveDataSourceByID(b.ctx, flags, cat.StableID(seqIdentifier.SeqID))
 				if err != nil {
@@ -610,7 +610,7 @@ func (b *Builder) buildFunction(
 		}
 	}
 
-	return b.finishBuildScalar(f, out, outScope, outCol)
+	return b.finishBuildScalar(f, out, inScope, outScope, outCol)
 }
 
 // getColumnDefinitionListTypes returns a composite type representing the column
@@ -850,12 +850,6 @@ func (b *Builder) constructBinary(
 		return b.factory.ConstructFetchValPath(left, right)
 	case treebin.JSONFetchTextPath:
 		return b.factory.ConstructFetchTextPath(left, right)
-	case treebin.Distance:
-		return b.factory.ConstructVectorDistance(left, right)
-	case treebin.CosDistance:
-		return b.factory.ConstructVectorCosDistance(left, right)
-	case treebin.NegInnerProduct:
-		return b.factory.ConstructVectorNegInnerProduct(left, right)
 	}
 	panic(errors.AssertionFailedf("unhandled binary operator: %s", redact.Safe(bin)))
 }
@@ -943,7 +937,7 @@ func (sb *ScalarBuilder) Build(expr tree.Expr) (_ opt.ScalarExpr, err error) {
 		}
 	}()
 
-	typedExpr := sb.scope.resolveType(expr, types.AnyElement)
+	typedExpr := sb.scope.resolveType(expr, types.Any)
 	scalar := sb.buildScalar(typedExpr, &sb.scope, nil, nil, nil)
 	return scalar, nil
 }

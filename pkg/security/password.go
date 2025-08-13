@@ -99,9 +99,9 @@ var PasswordHashMethod = settings.RegisterEnumSetting(
 	// previous-version nodes do not know anything about SCRAM. This is handled
 	// in the GetConfiguredPasswordHashMethod() function.
 	"scram-sha-256",
-	map[password.HashMethod]string{
-		password.HashBCrypt:      password.HashBCrypt.String(),
-		password.HashSCRAMSHA256: password.HashSCRAMSHA256.String(),
+	map[int64]string{
+		int64(password.HashBCrypt):      password.HashBCrypt.String(),
+		int64(password.HashSCRAMSHA256): password.HashSCRAMSHA256.String(),
 	},
 	settings.WithPublic)
 
@@ -125,7 +125,7 @@ func GetConfiguredPasswordCost(
 // GetConfiguredPasswordHashMethod returns the configured hash method
 // to use before storing passwords provided in cleartext from clients.
 func GetConfiguredPasswordHashMethod(sv *settings.Values) (method password.HashMethod) {
-	return PasswordHashMethod.Get(sv)
+	return password.HashMethod(PasswordHashMethod.Get(sv))
 }
 
 // AutoDetectPasswordHashes is the cluster setting that configures whether
@@ -143,8 +143,7 @@ var MinPasswordLength = settings.RegisterIntSetting(
 	settings.ApplicationLevel,
 	"server.user_login.min_password_length",
 	"the minimum length accepted for passwords set in cleartext via SQL. "+
-		"Note that a value lower than 1 is ignored: passwords cannot be empty in any case. "+
-		"This setting only applies when adding new users or altering an existing user's password; it will not affect existing logins.",
+		"Note that a value lower than 1 is ignored: passwords cannot be empty in any case.",
 	1,
 	settings.NonNegativeInt,
 	settings.WithPublic)

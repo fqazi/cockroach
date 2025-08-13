@@ -6,19 +6,19 @@
 import React from "react";
 import { connect } from "react-redux";
 
-import { doLogout, LoginState, selectLoginState } from "src/redux/login";
 import { AdminUIState, AppDispatch } from "src/redux/state";
 import { trustIcon } from "src/util/trust";
-import UserMenu from "src/views/app/components/userMenu";
 import Popover from "src/views/shared/components/popover";
 import UserAvatar from "src/views/shared/components/userAvatar";
+import UserMenu from "src/views/app/components/userMenu";
+import { doLogout, LoginState, selectLoginState } from "src/redux/login";
 
 import unlockedIcon from "!!raw-loader!assets/unlocked.svg";
 import "./loginIndicator.styl";
 
 interface LoginIndicatorProps {
   loginState: LoginState;
-  handleLogout: () => void;
+  handleLogout: () => null;
 }
 
 interface LoginIndicatorState {

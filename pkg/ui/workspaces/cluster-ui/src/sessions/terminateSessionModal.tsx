@@ -9,9 +9,7 @@ import React, {
   useImperativeHandle,
   useState,
 } from "react";
-
 import { ICancelSessionRequest } from "src/store/terminateQuery";
-
 import { Modal } from "../modal";
 import { Text } from "../text";
 
@@ -23,10 +21,10 @@ interface TerminateSessionModalProps {
   cancel: (payload: ICancelSessionRequest) => void;
 }
 
-const TerminateSessionModal: React.ForwardRefRenderFunction<
-  TerminateSessionModalRef,
-  TerminateSessionModalProps
-> = (props, ref) => {
+const TerminateSessionModal = (
+  props: TerminateSessionModalProps,
+  ref: React.RefObject<TerminateSessionModalRef>,
+) => {
   const { cancel } = props;
   const [visible, setVisible] = useState(false);
   const [req, setReq] = useState<ICancelSessionRequest>();

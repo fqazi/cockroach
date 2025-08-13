@@ -8,15 +8,14 @@ import { Action } from "redux";
 import { ThunkAction } from "redux-thunk";
 import { createSelector } from "reselect";
 
-import { cockroach } from "src/js/protos";
+import { userLogin, userLogout } from "src/util/api";
 import { AdminUIState } from "src/redux/state";
 import { LOGIN_PAGE, LOGOUT_PAGE } from "src/routes/login";
-import { userLogin, userLogout } from "src/util/api";
+import { cockroach } from "src/js/protos";
 import { getDataFromServer } from "src/util/dataFromServer";
 
-import { clearTenantCookie } from "./cookies";
-
 import UserLoginRequest = cockroach.server.serverpb.UserLoginRequest;
+import { clearTenantCookie } from "./cookies";
 
 const dataFromServer = getDataFromServer();
 
@@ -186,7 +185,7 @@ const logoutBeginAction = {
 export function doLogin(
   username: string,
   password: string,
-): ThunkAction<Promise<void>, AdminUIState, unknown, Action> {
+): ThunkAction<Promise<void>, AdminUIState, void, Action> {
   return dispatch => {
     dispatch(loginBeginAction);
 
@@ -208,7 +207,7 @@ export function doLogin(
 export function doLogout(): ThunkAction<
   Promise<void>,
   AdminUIState,
-  unknown,
+  void,
   Action
 > {
   return dispatch => {

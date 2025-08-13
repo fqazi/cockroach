@@ -22,10 +22,7 @@ func (d *delegator) delegateShowClusterSettingList(
 	hasModify := false
 	hasSqlModify := false
 	hasView := false
-	cat := d.catalog
-	globalPrivObj := syntheticprivilege.GlobalPrivilegeObject
-	user := cat.GetCurrentUser()
-	if err := cat.CheckPrivilege(d.ctx, globalPrivObj, user, privilege.MODIFYCLUSTERSETTING); err == nil {
+	if err := d.catalog.CheckPrivilege(d.ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.MODIFYCLUSTERSETTING); err == nil {
 		hasModify = true
 		hasSqlModify = true
 		hasView = true
@@ -33,7 +30,7 @@ func (d *delegator) delegateShowClusterSettingList(
 		return nil, err
 	}
 	if !hasSqlModify {
-		if err := cat.CheckPrivilege(d.ctx, globalPrivObj, user, privilege.MODIFYSQLCLUSTERSETTING); err == nil {
+		if err := d.catalog.CheckPrivilege(d.ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.MODIFYSQLCLUSTERSETTING); err == nil {
 			hasSqlModify = true
 			hasView = true
 		} else if pgerror.GetPGCode(err) != pgcode.InsufficientPrivilege {
@@ -41,7 +38,7 @@ func (d *delegator) delegateShowClusterSettingList(
 		}
 	}
 	if !hasView {
-		if err := cat.CheckPrivilege(d.ctx, globalPrivObj, user, privilege.VIEWCLUSTERSETTING); err == nil {
+		if err := d.catalog.CheckPrivilege(d.ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.VIEWCLUSTERSETTING); err == nil {
 			hasView = true
 		} else if pgerror.GetPGCode(err) != pgcode.InsufficientPrivilege {
 			return nil, err
@@ -50,7 +47,7 @@ func (d *delegator) delegateShowClusterSettingList(
 
 	// Fallback to role option if the user doesn't have the privilege.
 	if !hasModify {
-		ok, err := cat.HasRoleOption(d.ctx, roleoption.MODIFYCLUSTERSETTING)
+		ok, err := d.catalog.HasRoleOption(d.ctx, roleoption.MODIFYCLUSTERSETTING)
 		if err != nil {
 			return nil, err
 		}
@@ -59,7 +56,7 @@ func (d *delegator) delegateShowClusterSettingList(
 	}
 
 	if !hasView {
-		ok, err := cat.HasRoleOption(d.ctx, roleoption.VIEWCLUSTERSETTING)
+		ok, err := d.catalog.HasRoleOption(d.ctx, roleoption.VIEWCLUSTERSETTING)
 		if err != nil {
 			return nil, err
 		}
@@ -93,7 +90,7 @@ func (d *delegator) delegateShowTenantClusterSettingList(
 	// privileged operation than viewing local cluster settings. So we
 	// shouldn't be allowing with just the role option
 	// VIEWCLUSTERSETTINGS.
-	if err := d.catalog.CheckPrivilege(d.ctx, syntheticprivilege.GlobalPrivilegeObject, d.catalog.GetCurrentUser(), privilege.VIEWCLUSTERMETADATA); err != nil {
+	if err := d.catalog.CheckPrivilege(d.ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.VIEWCLUSTERMETADATA); err != nil {
 		return nil, err
 	}
 

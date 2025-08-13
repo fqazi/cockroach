@@ -11,15 +11,13 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/storage/disk"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/pebble/vfs"
 )
 
-func TestNewTempEngine(t *testing.T) {
+func TestNewPebbleTempEngine(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
@@ -27,13 +25,12 @@ func TestNewTempEngine(t *testing.T) {
 	tempDir, tempDirCleanup := testutils.TempDir(t)
 	defer tempDirCleanup()
 
-	diskWriteStats := disk.NewWriteStatsManager(vfs.Default)
-	db, filesystem, err := NewTempEngine(context.Background(), base.TempStorageConfig{
+	db, filesystem, err := NewPebbleTempEngine(context.Background(), base.TempStorageConfig{
 		Path:     tempDir,
 		Settings: cluster.MakeTestingClusterSettings(),
-	}, base.StoreSpec{Path: tempDir}, diskWriteStats)
+	}, base.StoreSpec{Path: tempDir})
 	if err != nil {
-		t.Fatalf("error encountered when invoking NewTempEngine: %+v", err)
+		t.Fatalf("error encountered when invoking NewRocksDBTempEngine: %+v", err)
 	}
 	defer db.Close()
 

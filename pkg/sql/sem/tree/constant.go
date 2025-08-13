@@ -505,7 +505,6 @@ var (
 		// assertions.
 		types.String,
 		types.BPChar,
-		types.CIText,
 		types.AnyCollatedString,
 		types.Bytes,
 		types.Bool,
@@ -537,24 +536,19 @@ var (
 		types.UUIDArray,
 		types.INet,
 		types.Jsonb,
-		types.Jsonpath,
 		types.PGLSN,
 		types.PGLSNArray,
-		types.PGVector,
-		types.PGVectorArray,
 		types.RefCursor,
 		types.RefCursorArray,
 		types.TSQuery,
 		types.TSVector,
 		types.VarBit,
-		types.LTree,
 		types.AnyEnum,
 		types.AnyEnumArray,
 		types.INetArray,
 		types.VarBitArray,
 		types.AnyTuple,
 		types.AnyTupleArray,
-		// TODO(#22513): Reevaluate conversions for jsonpath array.
 	}
 	// StrValAvailBytes is the set of types convertible to byte array.
 	StrValAvailBytes = []*types.T{types.Bytes, types.Uuid, types.String, types.AnyEnum}
@@ -629,9 +623,6 @@ func (expr *StrVal) ResolveAsType(
 
 	// Typing a string literal constant into some value type.
 	switch typ.Family() {
-	// If we don't care about output type, just pick the low effort conversion.
-	case types.AnyFamily:
-		fallthrough
 	case types.StringFamily:
 		switch typ.Oid() {
 		case oid.T_name:

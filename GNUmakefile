@@ -3,11 +3,9 @@
 # Use of this software is governed by the CockroachDB Software License
 # included in the /LICENSE file.
 
-.PHONY: all
 all: build
 	$(MAKE) help
 
-.PHONY: help
 help:
 	@echo
 	@echo "Tip: use ./dev instead of 'make'."

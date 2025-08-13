@@ -9,10 +9,7 @@ import (
 	"bytes"
 	"context"
 	gosql "database/sql"
-	"encoding/json"
 	"fmt"
-	"regexp"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvprober"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
-	slpb "github.com/cockroachdb/cockroach/pkg/kv/kvserver/storeliveness/storelivenesspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -30,32 +26,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
-	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
-
-// Implements the interceptor interface to intercept log entries.
-type kvproberLogSpy struct {
-	t *testing.T
-
-	entries syncutil.Map[uuid.UUID, logpb.Entry]
-}
-
-func (l *kvproberLogSpy) Intercept(entry []byte) {
-	var rawLog logpb.Entry
-
-	if err := json.Unmarshal(entry, &rawLog); err != nil {
-		l.t.Errorf("failed unmarshalling entry %s: %v", entry, err)
-		return
-	}
-	l.entries.Store(uuid.MakeV4(), &rawLog)
-}
-
-var _ log.Interceptor = &kvproberLogSpy{}
 
 func TestProberDoesReadsAndWrites(t *testing.T) {
 	defer leaktest.AfterTest(t)()
@@ -86,13 +61,6 @@ func TestProberDoesReadsAndWrites(t *testing.T) {
 	})
 
 	t.Run("happy path", func(t *testing.T) {
-		logSpy := &kvproberLogSpy{
-			t: t,
-		}
-
-		spyCleanup := log.InterceptWith(ctx, logSpy)
-		defer spyCleanup()
-
 		s, _, p, cleanup := initTestServer(t, base.TestingKnobs{})
 		defer cleanup()
 
@@ -105,8 +73,6 @@ func TestProberDoesReadsAndWrites(t *testing.T) {
 		kvprober.QuarantineEnabled.Override(ctx, &s.ClusterSettings().SV, true)
 		kvprober.QuarantineInterval.Override(ctx, &s.ClusterSettings().SV, 5*time.Millisecond)
 
-		kvprober.TracingEnabled.Override(ctx, &s.ClusterSettings().SV, true)
-
 		testutils.SucceedsSoon(t, func() error {
 			if p.Metrics().ReadProbeAttempts.Count() < int64(50) {
 				return errors.Newf("read count too low: %v", p.Metrics().ReadProbeAttempts.Count())
@@ -116,13 +82,9 @@ func TestProberDoesReadsAndWrites(t *testing.T) {
 			}
 			return nil
 		})
-
 		require.Zero(t, p.Metrics().ReadProbeFailures.Count())
 		require.Zero(t, p.Metrics().WriteProbeFailures.Count())
 		require.Zero(t, p.Metrics().ProbePlanFailures.Count())
-		// Check if the logs contain the expected log line.
-		expectedPattern := `r=.+ having likely leaseholder=.+ returned success`
-		require.True(t, containsPattern(&logSpy.entries, expectedPattern))
 	})
 
 	t.Run("a single range is unavailable for all KV ops", func(t *testing.T) {
@@ -166,13 +128,13 @@ func TestProberDoesReadsAndWrites(t *testing.T) {
 	})
 
 	t.Run("all ranges are unavailable for Gets only", func(t *testing.T) {
-		var dbIsAvailable atomic.Bool
-		dbIsAvailable.Store(true)
+		var dbIsAvailable syncutil.AtomicBool
+		dbIsAvailable.Set(true)
 
 		s, _, p, cleanup := initTestServer(t, base.TestingKnobs{
 			Store: &kvserver.StoreTestingKnobs{
 				TestingRequestFilter: func(i context.Context, ba *kvpb.BatchRequest) *kvpb.Error {
-					if !dbIsAvailable.Load() {
+					if !dbIsAvailable.Get() {
 						for _, ru := range ba.Requests {
 							if ru.GetGet() != nil {
 								return kvpb.NewError(fmt.Errorf("boom"))
@@ -187,7 +149,7 @@ func TestProberDoesReadsAndWrites(t *testing.T) {
 		defer cleanup()
 
 		// Want server to startup successfully then become unavailable.
-		dbIsAvailable.Store(false)
+		dbIsAvailable.Set(false)
 
 		kvprober.ReadEnabled.Override(ctx, &s.ClusterSettings().SV, true)
 		kvprober.ReadInterval.Override(ctx, &s.ClusterSettings().SV, 5*time.Millisecond)
@@ -213,13 +175,13 @@ func TestProberDoesReadsAndWrites(t *testing.T) {
 		require.Zero(t, p.Metrics().ProbePlanFailures.Count())
 	})
 	t.Run("all ranges are unavailable for Puts only", func(t *testing.T) {
-		var dbIsAvailable atomic.Bool
-		dbIsAvailable.Store(true)
+		var dbIsAvailable syncutil.AtomicBool
+		dbIsAvailable.Set(true)
 
 		s, _, p, cleanup := initTestServer(t, base.TestingKnobs{
 			Store: &kvserver.StoreTestingKnobs{
 				TestingRequestFilter: func(i context.Context, ba *kvpb.BatchRequest) *kvpb.Error {
-					if !dbIsAvailable.Load() {
+					if !dbIsAvailable.Get() {
 						for _, ru := range ba.Requests {
 							if ru.GetPut() != nil {
 								return kvpb.NewError(fmt.Errorf("boom"))
@@ -234,7 +196,7 @@ func TestProberDoesReadsAndWrites(t *testing.T) {
 		defer cleanup()
 
 		// Want server to startup successfully then become unavailable.
-		dbIsAvailable.Store(false)
+		dbIsAvailable.Set(false)
 
 		kvprober.ReadEnabled.Override(ctx, &s.ClusterSettings().SV, true)
 		kvprober.ReadInterval.Override(ctx, &s.ClusterSettings().SV, 5*time.Millisecond)
@@ -412,29 +374,9 @@ func initTestServer(
 	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
 		// KV probes always go to the storage layer.
 		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-		Settings:          cluster.MakeClusterSettings(),
-		Knobs:             knobs,
-		RaftConfig: base.RaftConfig{
-			// Speed up tests.
-			RaftTickInterval:           100 * time.Millisecond,
-			RaftElectionTimeoutTicks:   2,
-			RaftHeartbeatIntervalTicks: 1,
-		},
-	})
 
-	// With leader leases, wait for store liveness support to be established. This
-	// is useful as the leader will only be elected once it has quorum support
-	// in store liveness. Without this, we could see some deadline exceeded errors
-	// until the store liveness support is established and the leader is elected.
-	store, err := s.GetStores().(*kvserver.Stores).GetStore(s.GetFirstStoreID())
-	require.NoError(t, err)
-	testutils.SucceedsSoon(t, func() error {
-		ident := slpb.StoreIdent{NodeID: store.NodeID(), StoreID: store.StoreID()}
-		epoch, _ := store.TestingStoreLivenessSupportManager().SupportFrom(ident)
-		if epoch == 0 {
-			return errors.New("support not established")
-		}
-		return nil
+		Settings: cluster.MakeClusterSettings(),
+		Knobs:    knobs,
 	})
 
 	// Given small test cluster, this better exercises the planning logic.
@@ -448,19 +390,4 @@ func initTestServer(
 	return s, sqlDB, p, func() {
 		s.Stopper().Stop(context.Background())
 	}
-}
-
-// containsPattern returns true if any of the log entries contain the given pattern.
-func containsPattern(entries *syncutil.Map[uuid.UUID, logpb.Entry], pattern string) bool {
-	expectedPattern := regexp.MustCompile(pattern)
-	found := false
-
-	entries.Range(func(key uuid.UUID, value *logpb.Entry) bool {
-		if expectedPattern.MatchString(value.Message) {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
 }

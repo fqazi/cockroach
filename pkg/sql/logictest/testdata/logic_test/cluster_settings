@@ -1,7 +1,7 @@
 statement ok
 SET CLUSTER SETTING sql.log.slow_query.latency_threshold = '1ms'
 
-statement error pq: cannot be set to a negative duration
+statement error pq: invalid value for sql.log.slow_query.latency_threshold: cannot be set to a negative duration
 SET CLUSTER SETTING sql.log.slow_query.latency_threshold = '-1ms'
 
 statement error pq: invalid cluster setting argument type
@@ -294,16 +294,8 @@ statement error cannot use this statement to access cluster settings in system t
 ALTER TENANT [1] SET CLUSTER SETTING server.mem_profile.total_dump_size_limit='10M'
 
 skipif config 3node-tenant-default-configs
-statement error cannot set 'version' for tenants
-ALTER TENANT ALL SET CLUSTER SETTING version='23.1'
-
-skipif config 3node-tenant-default-configs
 statement ok
 SELECT crdb_internal.create_tenant(10)
-
-skipif config 3node-tenant-default-configs
-statement error cannot set 'version' for tenants
-ALTER TENANT "cluster-10" SET CLUSTER SETTING version='23.1'
 
 skipif config 3node-tenant-default-configs
 statement ok
@@ -455,7 +447,7 @@ query T noticetrace
 SET CLUSTER SETTING sql.ttl.default_delete_rate_limit = 90;
 ----
 NOTICE: The TTL rate limit is per leaseholder per table.
-DETAIL: See the documentation for additional details: https://www.cockroachlabs.com/docs/dev/row-level-ttl#ttl-storage-parameters
+DETAIL: See the documentation for additional details: https://www.cockroachlabs.com/docs/v24.1/row-level-ttl#ttl-storage-parameters
 
 statement ok
 SET CLUSTER SETTING sql.ttl.default_delete_rate_limit = 100;
@@ -464,7 +456,7 @@ query T noticetrace
 SET CLUSTER SETTING sql.ttl.default_select_rate_limit = 100;
 ----
 NOTICE: The TTL rate limit is per leaseholder per table.
-DETAIL: See the documentation for additional details: https://www.cockroachlabs.com/docs/dev/row-level-ttl#ttl-storage-parameters
+DETAIL: See the documentation for additional details: https://www.cockroachlabs.com/docs/v24.1/row-level-ttl#ttl-storage-parameters
 
 statement ok
 SET CLUSTER SETTING sql.ttl.default_select_rate_limit = 0;

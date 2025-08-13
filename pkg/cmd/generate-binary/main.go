@@ -12,25 +12,9 @@
 // The target postgres server must accept plaintext (non-ssl) connections from
 // the postgres:postgres account. A suitable server can be started with:
 //
-// Ensure no other Postgres server is running on localhost:5432.
+// `docker run -p 127.0.0.1:5432:5432 postgres:11`
 //
-// Start a postgres14 server:
-//
-//	docker run --name postgres \
-//	  -e POSTGRES_DB=db \
-//	  -e POSTGRES_HOST_AUTH_METHOD=trust \
-//	  -p	127.0.0.1:5432:5432 \
-//	  postgis/postgis:14-3.4
-//
-// Generate file "encodings.json":
-//
-//	bazel run pkg/cmd/generate-binary > pkg/sql/pgwire/testdata/encodings.json
-//
-// For any new types under a Postgres Extension, ensure that extension is listed in
-// the extensions slice below for the extension to be created on startup.
-// Extensions can also be created manually with:
-//
-//	docker exec -it postgres psql -U postgres -c "CREATE EXTENSION <extension_name>;"
+// The output of this file generates pkg/sql/pgwire/testdata/encodings.json.
 package main
 
 import (
@@ -49,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/cmp-protocol/pgconnect"
 	"github.com/cockroachdb/cockroach/pkg/sql/oidext"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgwirebase"
-	"github.com/lib/pq/oid"
 )
 
 var (
@@ -64,18 +47,6 @@ var (
 		"binary": toString,
 	}
 	tmpl = template.Must(template.New("json").Funcs(funcMap).Parse(outputJSON))
-
-	// Adding a Postgres extension here will create the extension on startup if it doesn't already exist.
-	extensions = []string{
-		"postgis",
-		"ltree",
-	}
-
-	hardcodedOidsMap = map[string]oid.Oid{
-		"geometry":  oidext.T_geometry,
-		"geography": oidext.T_geography,
-		"ltree":     oidext.T_ltree,
-	}
 )
 
 func main() {
@@ -103,11 +74,6 @@ func main() {
 		}
 	}
 
-	for _, ext := range extensions {
-		sql := fmt.Sprintf("CREATE EXTENSION IF NOT EXISTS %s", ext)
-		pgconnect.Connect(ctx, sql, *postgresAddr, *postgresUser, pgwirebase.FormatText)
-	}
-
 	for _, expr := range stmts {
 		sql := fmt.Sprintf("SELECT %s", expr)
 		text, err := pgconnect.Connect(ctx, sql, *postgresAddr, *postgresUser, pgwirebase.FormatText)
@@ -123,14 +89,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("oid: %s: %v", sql, err)
 		}
-		// Hardcode OIDs for types created by PG extensions.
-		for name, oid := range hardcodedOidsMap {
-			if strings.HasSuffix(expr, fmt.Sprintf("::%s", name)) {
-				id = []byte(fmt.Sprintf("%d", oid))
-				break
-			}
+		// Hardcode OIDs for geometry and geography.
+		if strings.HasSuffix(expr, "::geometry") {
+			id = []byte(fmt.Sprintf("%d", oidext.T_geometry))
 		}
-
+		if strings.HasSuffix(expr, "::geography") {
+			id = []byte(fmt.Sprintf("%d", oidext.T_geography))
+		}
 		data = append(data, entry{
 			SQL:          expr,
 			Oid:          string(id),
@@ -343,8 +308,6 @@ var inputs = map[string][]string{
 		"0004-10-19 10:23:54 BC",
 		"4004-10-19 10:23:54",
 		"9004-10-19 10:23:54",
-		"infinity",
-		"-infinity",
 	},
 
 	"'%s'::timestamptz": {
@@ -621,7 +584,6 @@ var inputs = map[string][]string{
 	`%s::text`: {
 		`''`,
 	},
-
 	`%s::tsvector`: {
 		`'hi'`,
 		`'hi"'`,
@@ -632,7 +594,6 @@ var inputs = map[string][]string{
 		`'hi:10A'`,
 		`'hi:1A,2B,3C,4D bye:5,6,10 foo'`,
 	},
-
 	`%s::tsquery`: {
 		`'hi'`,
 		`'hi:B'`,
@@ -648,14 +609,5 @@ var inputs = map[string][]string{
 		`'hi & (!bye | foo <10> bar)'`,
 		`'hi & (!bye | foo <0> bar)'`,
 		`'hi & (!bye:A | foo:B <1> bar:C* )'`,
-	},
-
-	`%s::ltree`: {
-		`''`,
-		`'A'`,
-		`'AB'`,
-		`'A.B'`,
-		`'AA.BB'`,
-		`'AA.BB.CC'`,
 	},
 }

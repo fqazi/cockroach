@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -114,7 +113,8 @@ func ClearRange(
 	// outside of the cleared range).
 	maxLockConflicts := storage.MaxConflictsPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV)
 	targetLockConflictBytes := storage.TargetBytesPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV)
-	locks, err := storage.ScanLocks(ctx, readWriter, from, to, maxLockConflicts, targetLockConflictBytes)
+	locks, err := storage.ScanLocks(ctx, readWriter, from, to, maxLockConflicts, targetLockConflictBytes,
+		storage.BatchEvalReadCategory)
 	if err != nil {
 		return result.Result{}, err
 	} else if len(locks) > 0 {
@@ -150,9 +150,9 @@ func ClearRange(
 	// If we're writing Pebble range tombstones, use ClearRangeWithHeuristic to
 	// avoid writing tombstones across empty spans -- in particular, across the
 	// range key span, since we expect range keys to be rare.
-	const pointKeyThreshold = 2
+	const pointKeyThreshold, rangeKeyThreshold = 2, 2
 	if err := storage.ClearRangeWithHeuristic(
-		ctx, readWriter, readWriter, from, to, pointKeyThreshold,
+		ctx, readWriter, readWriter, from, to, pointKeyThreshold, rangeKeyThreshold,
 	); err != nil {
 		return result.Result{}, err
 	}
@@ -218,7 +218,7 @@ func computeStatsDelta(
 				KeyTypes:     storage.IterKeyTypeRangesOnly,
 				LowerBound:   leftPeekBound,
 				UpperBound:   rightPeekBound,
-				ReadCategory: fs.BatchEvalReadCategory,
+				ReadCategory: storage.BatchEvalReadCategory,
 			})
 			if err != nil {
 				return enginepb.MVCCStats{}, err

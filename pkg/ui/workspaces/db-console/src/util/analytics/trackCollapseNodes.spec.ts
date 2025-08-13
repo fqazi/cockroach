@@ -3,8 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import get from "lodash/get";
-
+import { get } from "lodash";
 import { track } from "./trackCollapseNodes";
 
 describe("trackCollapseNodes", () => {

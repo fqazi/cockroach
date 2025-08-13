@@ -7,17 +7,17 @@
 @import "src/sortedtable/tableHead/tableHead.module";
 
 .crl-table-wrapper {
-  :global(.crdb-ant-table) {
+  :global(.ant-table) {
     color: $colors--primary-text;
   }
 
   // Table header
-  :global(.crdb-ant-table-thead) {
+  :global(.ant-table-thead) {
     @include table-header-text;
     background-color: $colors--neutral-0;
   }
 
-  :global(.crdb-ant-table-thead) > tr > th {
+  :global(.ant-table-thead) > tr > th {
     color: $colors--neutral-7;
     background-color: $colors--neutral-0;
     padding: $spacing-smaller $spacing-smaller;
@@ -27,18 +27,10 @@
       @include table-header-text;
     }
     :global {
-      .crdb-ant-table-header-column .crdb-ant-table-column-sorters:hover::before {
+      .ant-table-header-column .ant-table-column-sorters:hover::before {
         background-color: $colors--neutral-0;
       }
     }
-  }
-
-  // Sorter icons on table's header
-  :global(.crdb-ant-table-thead .crdb-ant-table-column-sorter-inner .anticon) {
-    display: flex;
-    color: $colors--neutral-4;
-    transform: scale(0.91666667) rotate(0deg);
-    font-size: $font-size--small;
   }
   // END: Table header
 
@@ -52,58 +44,75 @@
   }
   // END: Table Column
 
+  // Expand/Collapse icon
+  :global(.ant-table-row-expand-icon) {
+    border: none;
+    background-color: transparent;
+  }
+
+  :global(.ant-table-row-collapsed)::after {
+    content: "▶";
+    font-size: 8px;
+  }
+
+  :global(.ant-table-row-expanded)::after {
+    content: "▼";
+    font-size: 8px;
+  }
+  // END: Expand/Collapse icon
+
   // Table row
-  :global(.crdb-ant-table-row) {
+  :global(.ant-table-row) {
     @include text--body;
     height: $line-height--xxx-large;
   }
 
-  :global(.crdb-ant-table-row) .cell--show-on-hover {
+  :global(.ant-table-row) .cell--show-on-hover {
     visibility: hidden;
   }
 
-  :global(.crdb-ant-table-row):hover .cell--show-on-hover {
+  :global(.ant-table-row):hover .cell--show-on-hover {
     visibility: visible;
   }
   // END: Table row
 
   // Table cell
-  :global(.crdb-ant-table-tbody) > tr > td {
+  :global(.ant-table-tbody) > tr > td {
     padding: $spacing-smaller $spacing-smaller;
     border-bottom-color: $colors--neutral-3;
   }
 
   // Increase right padding for columns aligned by right
-  :global(.crdb-ant-table-tbody) > tr > td.column--align-right {
+  :global(.ant-table-tbody) > tr > td.column--align-right {
     padding-right: $spacing-mid-large;
   }
 
   // show column with right border
-  :global(.crdb-ant-table-tbody) > tr > td.column--border-right {
+  :global(.ant-table-tbody) > tr > td.column--border-right {
     border-right: $colors--neutral-3 solid 1px;
   }
   // END: Table cell
 
   // Table cell on hover
   :global {
-    .crdb-ant-table-thead
-      > tr.crdb-ant-table-row-hover:not(.crdb-ant-table-expanded-row):not(.crdb-ant-table-row-selected)
+    .ant-table-thead
+      > tr.ant-table-row-hover:not(.ant-table-expanded-row):not(.ant-table-row-selected)
       > td,
-    .crdb-ant-table-tbody
-      > tr.crdb-ant-table-row-hover:not(.crdb-ant-table-expanded-row):not(.crdb-ant-table-row-selected)
+    .ant-table-tbody
+      > tr.ant-table-row-hover:not(.ant-table-expanded-row):not(.ant-table-row-selected)
       > td,
-    .crdb-ant-table-thead
-      > tr:hover:not(.crdb-ant-table-expanded-row):not(.crdb-ant-table-row-selected)
+    .ant-table-thead
+      > tr:hover:not(.ant-table-expanded-row):not(.ant-table-row-selected)
       > td,
-    .crdb-ant-table-tbody
-      > tr:hover:not(.crdb-ant-table-expanded-row):not(.crdb-ant-table-row-selected)
+    .ant-table-tbody
+      > tr:hover:not(.ant-table-expanded-row):not(.ant-table-row-selected)
       > td {
       background: $colors--neutral-1;
     }
   }
   // END: Table cell on hover
 
-  :global(.crdb-ant-table-placeholder) {
+  :global(.ant-table-placeholder) {
     border: $colors--neutral-1 solid 1px;
   }
 
@@ -113,12 +122,8 @@
   }
 
   &__empty {
-    :global(.crdb-ant-table-placeholder) {
+    :global(.ant-table-placeholder) {
       border: none;
     }
   }
-}
-
-.expand-toggle {
-  margin-right: 8px;
 }

@@ -3,14 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classnames from "classnames/bind";
 import React from "react";
-
-import { Button } from "../button";
 import { DropdownButton } from "../dropdown";
-import styles from "../dropdown/dropdown.module.scss";
 import { OutsideEventHandler } from "../outsideEventHandler";
+import classnames from "classnames/bind";
+import styles from "../dropdown/dropdown.module.scss";
 import { applyBtn } from "../queryFilter/filterClasses";
+import { Button } from "../button";
 
 const cx = classnames.bind(styles);
 

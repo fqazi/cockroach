@@ -2,30 +2,32 @@
 //
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
-import { ArrowLeft } from "@cockroachlabs/icons";
-import { InlineAlert } from "@cockroachlabs/ui-components";
-import { Tabs } from "antd";
 import React, { useEffect, useRef } from "react";
 import Helmet from "react-helmet";
 import { RouteComponentProps } from "react-router-dom";
-
-import { Anchor } from "src/anchor";
-import { TxnInsightDetailsRequest, TxnInsightDetailsReqErrs } from "src/api";
+import { ArrowLeft } from "@cockroachlabs/icons";
+import { Tabs } from "antd";
+import "antd/lib/col/style";
+import "antd/lib/row/style";
+import "antd/lib/tabs/style";
 import { Button } from "src/button";
-import { commonStyles } from "src/common";
-import { timeScaleRangeToObj } from "src/timeScaleDropdown/utils";
-import { idAttr, insights } from "src/util";
 import { getMatchParamByName } from "src/util/query";
-
-import { TimeScale } from "../../timeScaleDropdown";
+import { TxnInsightDetailsRequest, TxnInsightDetailsReqErrs } from "src/api";
 import {
   InsightNameEnum,
   StmtFailureCodesStr,
   TxnInsightDetails,
 } from "../types";
 
+import { commonStyles } from "src/common";
+import { TimeScale } from "../../timeScaleDropdown";
+import { idAttr } from "src/util";
 import { TransactionInsightDetailsOverviewTab } from "./transactionInsightDetailsOverviewTab";
 import { TransactionInsightsDetailsStmtsTab } from "./transactionInsightDetailsStmtsTab";
+import { timeScaleRangeToObj } from "src/timeScaleDropdown/utils";
+import { InlineAlert } from "@cockroachlabs/ui-components";
+import { insights } from "src/util";
+import { Anchor } from "src/anchor";
 
 export interface TransactionInsightDetailsStateProps {
   insightDetails: TxnInsightDetails;
@@ -44,7 +46,7 @@ export interface TransactionInsightDetailsDispatchProps {
 export type TransactionInsightDetailsProps =
   TransactionInsightDetailsStateProps &
     TransactionInsightDetailsDispatchProps &
-    RouteComponentProps;
+    RouteComponentProps<unknown>;
 
 enum TabKeysEnum {
   OVERVIEW = "overview",
@@ -90,7 +92,7 @@ export const TransactionInsightDetails: React.FC<
       contentionInfo != null ||
       (txnDetails != null &&
         txnDetails.insights.find(
-          i => i.name === InsightNameEnum.HIGH_CONTENTION,
+          i => i.name === InsightNameEnum.highContention,
         ) == null &&
         txnDetails.errorCode !== StmtFailureCodesStr.RETRY_SERIALIZABLE);
 

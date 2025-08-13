@@ -69,12 +69,6 @@ type IndexID = catid.IndexID
 // ConstraintID is a custom type for TableDescriptor constraint IDs.
 type ConstraintID = catid.ConstraintID
 
-// TriggerID is a custom type for TableDescriptor trigger IDs.
-type TriggerID = catid.TriggerID
-
-// PolicyID is a custom type for TableDescriptor policy IDs.
-type PolicyID = catid.PolicyID
-
 // DescriptorVersion is a custom type for TableDescriptor Versions.
 type DescriptorVersion uint64
 
@@ -231,11 +225,6 @@ func (desc *TableDescriptor) MaterializedView() bool {
 	return desc.IsMaterializedView
 }
 
-// IsReadOnly implements the TableDescriptor interface.
-func (desc *TableDescriptor) IsReadOnly() bool {
-	return desc.IsMaterializedView || desc.GetExternal() != nil
-}
-
 // IsPhysicalTable implements the TableDescriptor interface.
 func (desc *TableDescriptor) IsPhysicalTable() bool {
 	return desc.IsSequence() || (desc.IsTable() && !desc.IsVirtualTable()) || desc.MaterializedView()
@@ -296,25 +285,24 @@ func (opts *TableDescriptor_SequenceOpts) HasOwner() bool {
 	return !opts.SequenceOwner.Equal(TableDescriptor_SequenceOpts_SequenceOwner{})
 }
 
-// EffectiveCacheSize evaluates the cache size fields of a sequence option.
-// A cache size of 1 indicates that the cache is disabled.
-// The session cache size takes precedence: If set and enabled, it will be the one used.
+// EffectiveCacheSize returns the CacheSize or NodeCacheSize field of a sequence option with
+// the exception that it will return 1 if both fields are set to 0.
+// A cache size of 1 indicates that there is no caching. A node cache size of 0 indicates there is no
+// node-level caching. The returned value
+// will always be greater than or equal to 1.
 //
-// Note: An unset cache size is considered disabled.
+// Prior to #51259, sequence caching was unimplemented and cache sizes were
+// left uninitialized (ie. to have a value of 0). If a sequence has a cache
+// size of 0, it should be treated in the same was as sequences with cache
+// sizes of 1.
 func (opts *TableDescriptor_SequenceOpts) EffectiveCacheSize() int64 {
-	switch sessionCacheSize := opts.SessionCacheSize; sessionCacheSize {
-	case 0, 1:
-	default:
-		return sessionCacheSize
+	if opts.CacheSize == 0 && opts.NodeCacheSize == 0 {
+		return 1
 	}
-
-	switch nodeCacheSize := opts.NodeCacheSize; nodeCacheSize {
-	case 0, 1:
-	default:
-		return nodeCacheSize
+	if opts.CacheSize == 1 && opts.NodeCacheSize != 0 {
+		return opts.NodeCacheSize
 	}
-
-	return 1 // caches disabled
+	return opts.CacheSize
 }
 
 // SafeValue implements the redact.SafeValue interface.

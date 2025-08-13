@@ -11,14 +11,9 @@ import (
 	"strconv"
 
 	"github.com/cockroachdb/cockroach/pkg/security/certnames"
-	"github.com/cockroachdb/cockroach/pkg/security/clientcert"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
-	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/sysutil"
@@ -58,7 +53,7 @@ type CertificateManager struct {
 	certMetrics *Metrics
 
 	// Client cert expiration cache.
-	clientCertExpirationCache *clientcert.Cache
+	clientCertExpirationCache *ClientCertExpirationCache
 
 	// mu protects all remaining fields.
 	mu syncutil.RWMutex
@@ -189,51 +184,33 @@ func (cm *CertificateManager) RegisterSignalHandler(
 				}
 				if err := cm.LoadCertificates(); err != nil {
 					log.Ops.Warningf(ctx, "could not reload certificates: %v", err)
-					log.StructuredEvent(ctx, severity.INFO, &eventpb.CertsReload{Success: false, ErrorMessage: err.Error()})
+					log.StructuredEvent(ctx, &eventpb.CertsReload{Success: false, ErrorMessage: err.Error()})
 				} else {
-					log.StructuredEvent(ctx, severity.INFO, &eventpb.CertsReload{Success: true})
+					log.StructuredEvent(ctx, &eventpb.CertsReload{Success: true})
 				}
 			}
 		}
 	})
 }
 
-var certCacheMemLimit = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"security.client_cert.cache_memory_limit",
-	"memory limit for the client certificate expiration cache",
-	1<<29, // 512MiB
-)
-
 // RegisterExpirationCache registers a cache for client certificate expiration.
 // It is called during server startup.
-func (cm *CertificateManager) RegisterExpirationCache(
-	ctx context.Context,
-	stopper *stop.Stopper,
-	timeSrc timeutil.TimeSource,
-	parentMon *mon.BytesMonitor,
-	st *cluster.Settings,
-) error {
-	limit := certCacheMemLimit.Get(&st.SV)
-	m := mon.NewMonitorInheritWithLimit(mon.MakeName("client-expiration-caches"), limit, parentMon, true /* longLiving */)
-	acc := m.MakeConcurrentBoundAccount()
-	m.StartNoReserved(ctx, parentMon)
-
-	cm.clientCertExpirationCache = clientcert.NewCache(timeSrc, acc, cm.certMetrics.ClientExpiration, cm.certMetrics.ClientTTL)
-	return cm.clientCertExpirationCache.StartPurgeJob(ctx, stopper)
+func (cm *CertificateManager) RegisterExpirationCache(cache *ClientCertExpirationCache) {
+	cm.clientCertExpirationCache = cache
 }
 
 // MaybeUpsertClientExpiration updates or inserts the expiration time for the
 // given client certificate. An update is contingent on whether the old
 // expiration is after the new expiration.
 func (cm *CertificateManager) MaybeUpsertClientExpiration(
-	ctx context.Context, identity string, serial string, expiration int64,
+	ctx context.Context, identity username.SQLUsername, expiration int64,
 ) {
 	if cache := cm.clientCertExpirationCache; cache != nil {
-		cache.Upsert(ctx,
-			identity,
-			serial,
+		cache.MaybeUpsert(ctx,
+			identity.Normalized(),
 			expiration,
+			cm.certMetrics.ClientExpiration,
+			cm.certMetrics.ClientTTL,
 		)
 	}
 }

@@ -6,8 +6,6 @@
 package partialidx
 
 import (
-	"context"
-
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/constraint"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
@@ -121,7 +119,6 @@ import (
 type Implicator struct {
 	f       *norm.Factory
 	md      *opt.Metadata
-	ctx     context.Context
 	evalCtx *eval.Context
 
 	// constraintCache stores constraints built from atoms. Caching the
@@ -139,15 +136,12 @@ type constraintCacheItem struct {
 
 // Init initializes an Implicator with the given factory, metadata, and eval
 // context. It also resets the constraint cache.
-func (im *Implicator) Init(
-	ctx context.Context, f *norm.Factory, md *opt.Metadata, evalCtx *eval.Context,
-) {
+func (im *Implicator) Init(f *norm.Factory, md *opt.Metadata, evalCtx *eval.Context) {
 	// This initialization pattern ensures that fields are not unwittingly
 	// reused. Field reuse must be explicit.
 	*im = Implicator{
 		f:       f,
 		md:      md,
-		ctx:     ctx,
 		evalCtx: evalCtx,
 	}
 }
@@ -570,12 +564,12 @@ func (im *Implicator) atomContainsAtom(
 	// Build constraint sets for e and pred, unless they have been cached.
 	eSet, eTight, ok := im.fetchConstraint(e)
 	if !ok {
-		eSet, eTight = memo.BuildConstraints(im.ctx, e, im.md, im.evalCtx, false /* skipExtraConstraints */)
+		eSet, eTight = memo.BuildConstraints(e, im.md, im.evalCtx, false /* skipExtraConstraints */)
 		im.cacheConstraint(e, eSet, eTight)
 	}
 	predSet, predTight, ok := im.fetchConstraint(pred)
 	if !ok {
-		predSet, predTight = memo.BuildConstraints(im.ctx, pred, im.md, im.evalCtx, false /* skipExtraConstraints */)
+		predSet, predTight = memo.BuildConstraints(pred, im.md, im.evalCtx, false /* skipExtraConstraints */)
 		im.cacheConstraint(pred, predSet, predTight)
 	}
 
@@ -592,48 +586,48 @@ func (im *Implicator) atomContainsAtom(
 		return false
 	}
 
-	// Containment cannot be proven if the predicate constraint set is not tight
-	// or has multiple constraints.
+	// If either set has more than one constraint, then constraints cannot be
+	// used to prove containment. This happens when an expression has more than
+	// one variable. For example:
 	//
-	// TODO(mgartner): It may be possible to lift this restriction. Because
-	// constraint sets are conjunctions of constraints, we can use the rules:
+	//   @1 > @2
 	//
-	//   AND-expr A => atom B iff:      any of A's children => B
-	//   AND-expr A => AND-expr B iff:  A => each of B's children
+	// Produces the constraint set:
 	//
-	// which translate here to: eSet implies predSet if every constraint in
-	// predSet contains any of eSet's constraints. This should be valid if
-	// predSet is not tight.
-	if !predTight || predSet.Length() > 1 {
+	//   /1: (/NULL - ]; /2: (/NULL - ]
+	//
+	if eSet.Length() > 1 || predSet.Length() > 1 {
 		return false
 	}
 
-	// If predConstraint contains any constraints in eSet, then eSet implies
-	// predConstraint.
+	// Containment cannot be proven if either constraint is not tight, because
+	// the constraint does not fully represent the expression.
+	if !eTight || !predTight {
+		return false
+	}
+
+	eConstraint := eSet.Constraint(0)
 	predConstraint := predSet.Constraint(0)
-	for i := 0; i < eSet.Length(); i++ {
-		eConstraint := eSet.Constraint(i)
-		if predConstraint.Contains(im.ctx, im.evalCtx, eConstraint) {
-			// If the constraint sets have a single, tight constraint that
-			// contain one another, then they are semantically equivalent and
-			// the filter atom can be removed from the remaining filters. For
-			// example:
-			//
-			//   (a::INT > 17)
-			//   =>
-			//   (a::INT >= 18)
-			//
-			// (a > 17) is not the same expression as (a >= 18) syntactically,
-			// but they are semantically equivalent because there are no
-			// integers between 17 and 18. Therefore, there is no need to apply
-			// (a > 17) as a filter after the partial index scan.
-			if eTight && predTight && eSet.Length() == 1 && predSet.Length() == 1 {
-				exactMatches.addIf(e, func() bool {
-					return eConstraint.Contains(im.ctx, im.evalCtx, predConstraint)
-				})
-			}
-			return true
-		}
+
+	// If predConstraint contains eConstraint, then eConstraint implies
+	// predConstraint.
+	if predConstraint.Contains(im.evalCtx, eConstraint) {
+		// If the constraints contain each other, then they are semantically
+		// equivalent and the filter atom can be removed from the remaining filters.
+		// For example:
+		//
+		//   (a::INT > 17)
+		//   =>
+		//   (a::INT >= 18)
+		//
+		// (a > 17) is not the same expression as (a >= 18) syntactically, but
+		// they are semantically equivalent because there are no integers
+		// between 17 and 18. Therefore, there is no need to apply (a > 17) as a
+		// filter after the partial index scan.
+		exactMatches.addIf(e, func() bool {
+			return eConstraint.Contains(im.evalCtx, predConstraint)
+		})
+		return true
 	}
 
 	return false

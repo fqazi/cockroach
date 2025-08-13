@@ -42,16 +42,7 @@ type partitionerToOperator struct {
 	batch        coldata.Batch
 }
 
-var _ colexecop.ResettableOperator = &partitionerToOperator{}
-
-func (p *partitionerToOperator) Reset(ctx context.Context) {
-	// When resetting we simply want to update the context - this will allow us
-	// to make Init a no-op and reuse already allocated batch. If Init hasn't
-	// been called yet, then Reset is a no-op.
-	if p.Ctx != nil {
-		p.Ctx = ctx
-	}
-}
+var _ colexecop.Operator = &partitionerToOperator{}
 
 func (p *partitionerToOperator) Init(ctx context.Context) {
 	if !p.InitHelper.Init(ctx) {

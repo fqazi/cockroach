@@ -3,15 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "antd";
-import classnames from "classnames/bind";
 import React from "react";
-
-import { CircleFilled } from "src/icon";
-
-import booleanSettingStyles from "../settings/booleanSetting.module.scss";
-
+import classnames from "classnames/bind";
 import styles from "./summaryCard.module.scss";
+import booleanSettingStyles from "../settings/booleanSetting.module.scss";
+import { CircleFilled } from "src/icon";
+import { Tooltip } from "antd";
+import "antd/lib/tooltip/style";
 
 interface ISummaryCardProps {
   children: React.ReactNode;

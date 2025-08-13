@@ -81,6 +81,9 @@ func TestNewColOperatorExpectedTypeSchema(t *testing.T) {
 		NodeID: evalCtx.NodeID,
 	}
 
+	streamingMemAcc := evalCtx.TestingMon.MakeBoundAccount()
+	defer streamingMemAcc.Close(ctx)
+
 	desc := desctestutils.TestingGetPublicTableDescriptor(kvDB, s.Codec(), "test", "t")
 	var spec fetchpb.IndexFetchSpec
 	if err := rowenc.InitIndexFetchSpec(
@@ -105,18 +108,17 @@ func TestNewColOperatorExpectedTypeSchema(t *testing.T) {
 	}
 	var monitorRegistry colexecargs.MonitorRegistry
 	defer monitorRegistry.Close(ctx)
-	var closerRegistry colexecargs.CloserRegistry
-	defer closerRegistry.Close(ctx)
 	args := &colexecargs.NewColOperatorArgs{
 		Spec: &execinfrapb.ProcessorSpec{
 			Core:        execinfrapb.ProcessorCoreUnion{TableReader: &tr},
 			ResultTypes: []*types.T{types.Int4},
 		},
-		MonitorRegistry: &monitorRegistry,
-		CloserRegistry:  &closerRegistry,
+		StreamingMemAccount: &streamingMemAcc,
+		MonitorRegistry:     &monitorRegistry,
 	}
 	r1, err := NewColOperator(ctx, flowCtx, args)
 	require.NoError(t, err)
+	defer r1.TestCleanupNoError(t)
 
 	args = &colexecargs.NewColOperatorArgs{
 		Spec: &execinfrapb.ProcessorSpec{
@@ -125,15 +127,16 @@ func TestNewColOperatorExpectedTypeSchema(t *testing.T) {
 			Post:        execinfrapb.PostProcessSpec{RenderExprs: []execinfrapb.Expression{{Expr: "@1 - 1"}}},
 			ResultTypes: []*types.T{types.Int},
 		},
-		Inputs:          []colexecargs.OpWithMetaInfo{{Root: r1.Root}},
-		MonitorRegistry: &monitorRegistry,
-		CloserRegistry:  &closerRegistry,
+		Inputs:              []colexecargs.OpWithMetaInfo{{Root: r1.Root}},
+		StreamingMemAccount: &streamingMemAcc,
+		MonitorRegistry:     &monitorRegistry,
 	}
 	r, err := NewColOperator(ctx, flowCtx, args)
 	require.NoError(t, err)
+	defer r.TestCleanupNoError(t)
 
 	m := colexec.NewMaterializer(
-		nil, /* streamingMemAcc */
+		nil, /* allocator */
 		flowCtx,
 		0, /* processorID */
 		r.OpWithMetaInfo,
@@ -150,9 +153,7 @@ func TestNewColOperatorExpectedTypeSchema(t *testing.T) {
 		}
 		require.Equal(t, 1, len(row))
 		expected := tree.DInt(rowIdx)
-		cmp, err := row[0].Datum.Compare(ctx, &evalCtx, &expected)
-		require.NoError(t, err)
-		require.True(t, cmp == 0)
+		require.True(t, row[0].Datum.Compare(&evalCtx, &expected) == 0)
 		rowIdx++
 	}
 	require.Equal(t, numRows, rowIdx)

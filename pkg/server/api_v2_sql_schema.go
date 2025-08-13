@@ -20,6 +20,8 @@ import (
 )
 
 // Response for listUsers.
+//
+// swagger:model usersResponse
 type usersResponse struct {
 	serverpb.UsersResponse
 
@@ -28,6 +30,8 @@ type usersResponse struct {
 	Next int `json:"next,omitempty"`
 }
 
+// swagger:operation GET /users/ listUsers
+//
 // # List users
 //
 // List SQL users on this cluster.
@@ -96,6 +100,8 @@ func (a *apiV2Server) listUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 // Response for listEvents.
+//
+// swagger:model eventsResponse
 type eventsResponse struct {
 	serverpb.EventsResponse
 
@@ -104,6 +110,8 @@ type eventsResponse struct {
 	Next int `json:"next,omitempty"`
 }
 
+// swagger:operation GET /events/ listEvents
+//
 // # List events
 //
 // Lists the latest event log entries, in descending order.
@@ -163,6 +171,8 @@ func (a *apiV2Server) listEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // Response for listDatabases.
+//
+// swagger:model databasesResponse
 type databasesResponse struct {
 	serverpb.DatabasesResponse
 
@@ -171,6 +181,8 @@ type databasesResponse struct {
 	Next int `json:"next,omitempty"`
 }
 
+// swagger:operation GET /databases/ listDatabases
+//
 // # List databases
 //
 // Lists all databases on this cluster.
@@ -216,11 +228,15 @@ func (a *apiV2Server) listDatabases(w http.ResponseWriter, r *http.Request) {
 }
 
 // Response for databaseDetails.
+//
+// swagger:model databaseDetailsResponse
 type databaseDetailsResponse struct {
 	// DescriptorID is an identifier used to uniquely identify this database.
 	DescriptorID int64 `json:"descriptor_id,omitempty"`
 }
 
+// swagger:operation GET /databases/{database}/ databaseDetails
+//
 // # Get database descriptor ID
 //
 // Returns the database's descriptor ID.
@@ -270,6 +286,8 @@ func (a *apiV2Server) databaseDetails(w http.ResponseWriter, r *http.Request) {
 }
 
 // Response for databaseGrants.
+//
+// swagger:model databaseGrantsResponse
 type databaseGrantsResponse struct {
 	// Grants are the privileges granted to users on this database.
 	Grants []serverpb.DatabaseDetailsResponse_Grant `json:"grants"`
@@ -279,6 +297,8 @@ type databaseGrantsResponse struct {
 	Next int `json:"next,omitempty"`
 }
 
+// swagger:operation GET /databases/{database}/grants/ databaseGrants
+//
 // # Lists grants on a database
 //
 // Returns grants on a database. Grants are the privileges granted to users
@@ -338,6 +358,8 @@ func (a *apiV2Server) databaseGrants(w http.ResponseWriter, r *http.Request) {
 }
 
 // Response for databaseTables.
+//
+// swagger:model databaseTablesResponse
 type databaseTablesResponse struct {
 	// TableNames contains the names of all tables in this database. Note that
 	// all responses will be schema-qualified (schema.table) and that every schema
@@ -350,6 +372,8 @@ type databaseTablesResponse struct {
 	Next int `json:"next,omitempty"`
 }
 
+// swagger:operation GET /databases/{database}/tables/ databaseTables
+//
 // # Lists tables on a database
 //
 // Lists names of all tables in the database. The names of all responses will
@@ -409,8 +433,12 @@ func (a *apiV2Server) databaseTables(w http.ResponseWriter, r *http.Request) {
 }
 
 // Response for tableDetails.
+//
+// swagger:model tableDetailsResponse
 type tableDetailsResponse serverpb.TableDetailsResponse
 
+// swagger:operation GET /databases/{database}/tables/{table}/ tableDetails
+//
 // # Get table details
 //
 // Returns details about a table.

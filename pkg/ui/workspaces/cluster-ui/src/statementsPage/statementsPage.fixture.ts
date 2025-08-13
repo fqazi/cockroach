@@ -4,20 +4,17 @@
 // included in the /LICENSE file.
 
 /* eslint-disable prettier/prettier */
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import * as protos from "@cockroachlabs/crdb-protobuf-client";
-import { createMemoryHistory } from "history";
-import noop from "lodash/noop";
-import Long from "long";
+import { StatementsPageProps } from "./statementsPage";
 import moment from "moment-timezone";
-
+import { createMemoryHistory } from "history";
+import Long from "long";
+import { noop } from "lodash";
+import { RequestError } from "src/util";
+import { StatementDiagnosticsReport } from "../api";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { DEFAULT_STATS_REQ_OPTIONS } from "src/api/statementsApi";
 import { mockStmtStats } from "src/api/testUtils";
-import { RequestError } from "src/util";
-
-import { StatementDiagnosticsReport } from "../api";
-
-import { StatementsPageProps } from "./statementsPage";
+import * as protos from "@cockroachlabs/crdb-protobuf-client";
 
 const history = createMemoryHistory({ initialEntries: ["/statements"] });
 const timestamp = new protos.google.protobuf.Timestamp({
@@ -413,7 +410,11 @@ export const statementsPagePropsWithRequestError: StatementsPageProps = {
     data: null,
     lastUpdated,
     valid: true,
-    error: new RequestError(403, "this operation requires admin privilege"),
+    error: new RequestError(
+      "request_error",
+      403,
+      "this operation requires admin privilege",
+    ),
     inFlight: false,
   },
 };

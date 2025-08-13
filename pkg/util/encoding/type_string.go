@@ -58,8 +58,6 @@ func _() {
 	_ = x[JSONObjectDesc-41]
 	_ = x[JsonEmptyArray-42]
 	_ = x[JsonEmptyArrayDesc-43]
-	_ = x[PGVector-44]
-	_ = x[LTree-45]
 }
 
 func (i Type) String() string {
@@ -152,10 +150,6 @@ func (i Type) String() string {
 		return "JsonEmptyArray"
 	case JsonEmptyArrayDesc:
 		return "JsonEmptyArrayDesc"
-	case PGVector:
-		return "PGVector"
-	case LTree:
-		return "LTree"
 	default:
 		return "Type(" + strconv.FormatInt(int64(i), 10) + ")"
 	}

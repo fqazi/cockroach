@@ -36,7 +36,7 @@ type engineConfig struct {
 }
 
 func (e *engineConfig) create(path string, baseFS vfs.FS) (storage.Engine, error) {
-	env, err := fs.InitEnv(context.Background(), baseFS, path, fs.EnvConfig{}, nil /* diskWriteStats */)
+	env, err := fs.InitEnv(context.Background(), baseFS, path, fs.EnvConfig{})
 	if err != nil {
 		return nil, err
 	}

@@ -26,7 +26,7 @@ var defaultAutocommitBeforeDDL = settings.RegisterBoolSetting(
 	"sql.defaults.autocommit_before_ddl.enabled",
 	"default value for autocommit_before_ddl session setting; "+
 		"forces transactions to autocommit before running any DDL statement",
-	true,
+	false,
 )
 
 // maybeAutoCommitBeforeDDL checks if the current transaction needs to be
@@ -36,22 +36,14 @@ var defaultAutocommitBeforeDDL = settings.RegisterBoolSetting(
 func (ex *connExecutor) maybeAutoCommitBeforeDDL(
 	ctx context.Context, ast tree.Statement,
 ) (fsm.Event, fsm.EventPayload) {
-	// We will auto-commit if all of the following conditions are met:
-	// - The query is not internal.
-	// - Auto-commit before DDL is enabled.
-	// - We have an explicit transaction or have executed at least one
-	//   statement in the transaction. The former check ensures that we commit
-	//   if we haven't executed the first statement, which can happen if only the
-	//   BEGIN statement was executed.
-	explicitTxn := !ex.implicitTxn()
-	if ex.executorType != executorTypeInternal &&
-		tree.CanModifySchema(ast) &&
+	if tree.CanModifySchema(ast) &&
+		ex.executorType != executorTypeInternal &&
 		ex.sessionData().AutoCommitBeforeDDL &&
-		(explicitTxn || ex.extraTxnState.firstStmtExecuted) {
+		(!ex.planner.EvalContext().TxnIsSingleStmt || !ex.implicitTxn()) &&
+		ex.extraTxnState.firstStmtExecuted {
 		if err := ex.planner.SendClientNotice(
 			ctx,
 			pgnotice.Newf("auto-committing transaction before processing DDL due to autocommit_before_ddl setting"),
-			false, /* immediateFlush */
 		); err != nil {
 			return ex.makeErrEvent(err, ast)
 		}
@@ -66,14 +58,11 @@ func (ex *connExecutor) maybeAutoCommitBeforeDDL(
 	return nil, nil
 }
 
-// maybeAdjustTxnForDDL checks if the statement is a schema change and adjusts
-// the txn if it is. The following adjustments will be performed:
-// - upgrading to serializable isolation. If the txn contains multiple
-// statements, and an upgrade was attempted, an error is returned.
-// - disabling buffered writes.
-// TODO(#140695): we disable buffered writes out of caution. We should consider
-// allowing this in the future.
-func (ex *connExecutor) maybeAdjustTxnForDDL(ctx context.Context, stmt Statement) error {
+// maybeUpgradeToSerializable checks if the statement is a schema change, and
+// upgrades the transaction to serializable isolation if it is. If the
+// transaction contains multiple statements, and an upgrade was attempted, an
+// error is returned.
+func (ex *connExecutor) maybeUpgradeToSerializable(ctx context.Context, stmt Statement) error {
 	p := &ex.planner
 	if tree.CanModifySchema(stmt.AST) {
 		if ex.state.mu.txn.IsoLevel().ToleratesWriteSkew() {
@@ -86,9 +75,6 @@ func (ex *connExecutor) maybeAdjustTxnForDDL(ctx context.Context, stmt Statement
 			} else {
 				return txnSchemaChangeErr
 			}
-		}
-		if ex.state.mu.txn.BufferedWritesEnabled() {
-			ex.state.mu.txn.SetBufferedWritesEnabled(false /* enabled */)
 		}
 	}
 	return nil

@@ -55,18 +55,12 @@ func V(level Level) bool {
 //	  log.VEventf(ctx, 2, msg)
 //	}
 func ExpensiveLogEnabled(ctx context.Context, level Level) bool {
-	return ExpensiveLogEnabledVDepth(ctx, 1 /* depth */, level)
-}
-
-// ExpensiveLogEnabledVDepth is like ExpensiveLogEnabled, and additionally
-// accepts a depth parameter for determining the caller's verbosity.
-func ExpensiveLogEnabledVDepth(ctx context.Context, depth int, level Level) bool {
 	if sp := tracing.SpanFromContext(ctx); sp != nil {
 		if sp.IsVerbose() || sp.Tracer().HasExternalSink() {
 			return true
 		}
 	}
-	if VDepth(level, depth+1) {
+	if VDepth(level, 1 /* depth */) {
 		return true
 	}
 	return false

@@ -30,7 +30,9 @@ foreground TPC-C workload`,
 		g := &tpccChecks{}
 		g.flags.FlagSet = pflag.NewFlagSet(`tpcc`, pflag.ContinueOnError)
 		g.flags.Meta = map[string]workload.FlagMeta{
-			`as-of`: {RuntimeOnly: true},
+			`db`:          {RuntimeOnly: true},
+			`concurrency`: {RuntimeOnly: true},
+			`as-of`:       {RuntimeOnly: true},
 		}
 		g.flags.IntVar(&g.concurrency, `concurrency`, 1,
 			`Number of concurrent workers. Defaults to 1.`,
@@ -63,13 +65,9 @@ foreground TPC-C workload`,
 	},
 }
 
-// Flags implements the Flagser interface.
 func (w *tpccChecks) Flags() workload.Flags {
 	return w.flags
 }
-
-// ConnFlags implements the ConnFlagser interface.
-func (w *tpccChecks) ConnFlags() *workload.ConnFlags { return w.connFlags }
 
 func init() {
 	workload.Register(tpccChecksMeta)
@@ -97,9 +95,12 @@ func (*tpccChecks) Meta() workload.Meta {
 func (w *tpccChecks) Ops(
 	ctx context.Context, urls []string, reg *histogram.Registry,
 ) (workload.QueryLoad, error) {
+	sqlDatabase, err := workload.SanitizeUrls(w, w.flags.Lookup("db").Value.String(), urls)
+	if err != nil {
+		return workload.QueryLoad{}, errors.Wrapf(err, "could not sanitize urls %v", urls)
+	}
 	dbs := make([]*gosql.DB, len(urls))
 	for i, url := range urls {
-		var err error
 		dbs[i], err = gosql.Open(`cockroach`, url)
 		if err != nil {
 			return workload.QueryLoad{}, errors.Wrapf(err, "failed to dial %s", url)
@@ -109,7 +110,7 @@ func (w *tpccChecks) Ops(
 		dbs[i].SetMaxOpenConns(3 * w.concurrency)
 		dbs[i].SetMaxIdleConns(3 * w.concurrency)
 	}
-	ql := workload.QueryLoad{}
+	ql := workload.QueryLoad{SQLDatabase: sqlDatabase}
 	ql.WorkerFns = make([]func(context.Context) error, w.concurrency)
 	checks, err := filterChecks(tpcc.AllChecks(), w.checks)
 	if err != nil {

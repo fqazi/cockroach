@@ -3,46 +3,40 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import {
-  TransactionDetailsStateProps,
-  TransactionDetailsDispatchProps,
-  TransactionDetails,
-} from "@cockroachlabs/cluster-ui";
 import { connect } from "react-redux";
-import { RouteComponentProps } from "react-router";
 import { withRouter } from "react-router-dom";
-
 import {
   refreshNodes,
   refreshTxns,
   refreshTxnInsights,
   refreshUserSQLRoles,
 } from "src/redux/apiReducers";
-import { nodeRegionsByIDSelector } from "src/redux/nodes";
 import { AdminUIState } from "src/redux/state";
-import { setGlobalTimeScaleAction } from "src/redux/statements";
-import { selectTimeScale } from "src/redux/timeScale";
-import { selectHasAdminRole } from "src/redux/user";
-import { txnFingerprintIdAttr } from "src/util/constants";
-import { getMatchParamByName } from "src/util/query";
-import { selectTxnInsightsByFingerprint } from "src/views/insights/insightsSelectors";
+import { nodeRegionsByIDSelector } from "src/redux/nodes";
 import {
   reqSortSetting,
   limitSetting,
   selectTxns,
   requestTimeLocalSetting,
 } from "src/views/transactions/transactionsPage";
+import {
+  TransactionDetailsStateProps,
+  TransactionDetailsDispatchProps,
+  TransactionDetailsProps,
+  TransactionDetails,
+} from "@cockroachlabs/cluster-ui";
+import { setGlobalTimeScaleAction } from "src/redux/statements";
+import { selectTimeScale } from "src/redux/timeScale";
+import { selectTxnInsightsByFingerprint } from "src/views/insights/insightsSelectors";
+import { selectHasAdminRole } from "src/redux/user";
+import { getMatchParamByName } from "src/util/query";
+import { txnFingerprintIdAttr } from "src/util/constants";
 
 export default withRouter(
-  connect<
-    TransactionDetailsStateProps,
-    TransactionDetailsDispatchProps,
-    RouteComponentProps,
-    AdminUIState
-  >(
+  connect<TransactionDetailsStateProps, TransactionDetailsDispatchProps>(
     (
       state: AdminUIState,
-      props: RouteComponentProps,
+      props: TransactionDetailsProps,
     ): TransactionDetailsStateProps => {
       return {
         timeScale: selectTimeScale(state),

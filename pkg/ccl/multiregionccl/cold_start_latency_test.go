@@ -18,12 +18,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils/regionlatency"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -35,7 +33,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -47,7 +45,6 @@ func TestColdStartLatency(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	skip.UnderDuress(t, "too slow")
-	skip.WithIssue(t, 150251, "skipping as timeout settings causes #150105 to fail")
 	// We'll need to make some per-node args to assign the different
 	// KV nodes to different regions and AZs. We'll want to do it to
 	// look somewhat like the real cluster topologies we have in mind.
@@ -70,8 +67,8 @@ func TestColdStartLatency(t *testing.T) {
 	}
 	pauseAfter := make(chan struct{})
 	signalAfter := make([]chan struct{}, numNodes)
-	var latencyEnabled atomic.Bool
-	var addrsToNodeIDs syncutil.Map[string, int]
+	var latencyEnabled syncutil.AtomicBool
+	var addrsToNodeIDs sync.Map
 
 	// Set up the host cluster.
 	perServerArgs := make(map[int]base.TestServerArgs, numNodes)
@@ -86,9 +83,9 @@ func TestColdStartLatency(t *testing.T) {
 			SignalAfterGettingRPCAddress: signalAfter[i],
 			ContextTestingKnobs: rpc.ContextTestingKnobs{
 				InjectedLatencyOracle:  regionlatency.MakeAddrMap(),
-				InjectedLatencyEnabled: latencyEnabled.Load,
+				InjectedLatencyEnabled: latencyEnabled.Get,
 				UnaryClientInterceptor: func(
-					target string, class rpcbase.ConnectionClass,
+					target string, class rpc.ConnectionClass,
 				) grpc.UnaryClientInterceptor {
 					return func(
 						ctx context.Context, method string, req, reply interface{},
@@ -98,10 +95,8 @@ func TestColdStartLatency(t *testing.T) {
 						if !log.ExpensiveLogEnabled(ctx, 2) {
 							return invoker(ctx, method, req, reply, cc, opts...)
 						}
-						var nodeID int
-						if nodeIDPtr, ok := addrsToNodeIDs.Load(target); ok {
-							nodeID = *nodeIDPtr
-						}
+						nodeIDi, _ := addrsToNodeIDs.Load(target)
+						nodeID, _ := nodeIDi.(int)
 						start := timeutil.Now()
 						defer func() {
 							log.VEventf(ctx, 2, "%d->%d (%v->%v) %s %v %v took %v",
@@ -137,15 +132,14 @@ func TestColdStartLatency(t *testing.T) {
 	ctx := context.Background()
 	defer tc.Stopper().Stop(ctx)
 	enableLatency := func() {
-		latencyEnabled.Store(true)
+		latencyEnabled.Set(true)
 		for i := 0; i < numNodes; i++ {
 			tc.Server(i).RPCContext().RemoteClocks.TestingResetLatencyInfos()
 		}
 	}
 
 	for i := 0; i < numNodes; i++ {
-		nodeID := i
-		addrsToNodeIDs.Store(tc.Server(i).RPCAddr(), &nodeID)
+		addrsToNodeIDs.Store(tc.Server(i).RPCAddr(), i)
 	}
 	tdb := sqlutils.MakeSQLRunner(tc.ServerConn(1))
 
@@ -155,6 +149,10 @@ func TestColdStartLatency(t *testing.T) {
 	tdb.Exec(t, `SET CLUSTER SETTING kv.rangefeed.closed_timestamp_refresh_interval = '200ms'`)
 	tdb.Exec(t, "SET CLUSTER SETTING kv.allocator.load_based_rebalancing = off")
 	tdb.Exec(t, "SET CLUSTER SETTING kv.allocator.min_lease_transfer_interval = '10ms'")
+	// Until a migration is added, we cannot guarantee that the descriptor will have
+	// the appropriate zone config for MR testing with fake latency. So, avoid using
+	// session based leases here.
+	tdb.Exec(t, "SET CLUSTER SETTING sql.catalog.experimental_use_session_based_leasing='off'")
 	// Lengthen the lead time for the global tables to prevent overload from
 	// resulting in delays in propagating closed timestamps and, ultimately
 	// forcing requests from being redirected to the leaseholder. Without this
@@ -174,7 +172,6 @@ func TestColdStartLatency(t *testing.T) {
 		} else {
 			stmts = []string{`
 BEGIN;
-SET LOCAL autocommit_before_ddl = false;
 ALTER DATABASE system PRIMARY REGION "us-east1";
 ALTER DATABASE system ADD REGION "us-west1";
 ALTER DATABASE system ADD REGION "europe-west1";
@@ -200,18 +197,16 @@ COMMIT;`}
 				InjectedLatencyOracle: tc.Server(i).TestingKnobs().
 					Server.(*server.TestingKnobs).ContextTestingKnobs.
 					InjectedLatencyOracle,
-				InjectedLatencyEnabled: latencyEnabled.Load,
+				InjectedLatencyEnabled: latencyEnabled.Get,
 				StreamClientInterceptor: func(
-					target string, class rpcbase.ConnectionClass,
+					target string, class rpc.ConnectionClass,
 				) grpc.StreamClientInterceptor {
 					return func(
 						ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn,
 						method string, streamer grpc.Streamer, opts ...grpc.CallOption,
 					) (grpc.ClientStream, error) {
-						var nodeID int
-						if nodeIDPtr, ok := addrsToNodeIDs.Load(target); ok {
-							nodeID = *nodeIDPtr
-						}
+						nodeIDi, _ := addrsToNodeIDs.Load(target)
+						nodeID, _ := nodeIDi.(int)
 						start := timeutil.Now()
 						maybeWait(ctx, i, nodeID)
 						defer func() {
@@ -233,11 +228,9 @@ COMMIT;`}
 						}, nil
 					}
 				},
-				UnaryClientInterceptor: func(target string, class rpcbase.ConnectionClass) grpc.UnaryClientInterceptor {
-					var nodeID int
-					if nodeIDPtr, ok := addrsToNodeIDs.Load(target); ok {
-						nodeID = *nodeIDPtr
-					}
+				UnaryClientInterceptor: func(target string, class rpc.ConnectionClass) grpc.UnaryClientInterceptor {
+					nodeIDi, _ := addrsToNodeIDs.Load(target)
+					nodeID, _ := nodeIDi.(int)
 					return func(
 						ctx context.Context, method string, req, reply interface{},
 						cc *grpc.ClientConn, invoker grpc.UnaryInvoker,
@@ -321,7 +314,7 @@ COMMIT;`}
 		})
 		require.NoError(t, err)
 		defer tenant.AppStopper().Stop(ctx)
-		pgURL, cleanup, err := pgurlutils.PGUrlWithOptionalClientCertsE(
+		pgURL, cleanup, err := sqlutils.PGUrlWithOptionalClientCertsE(
 			tenant.AdvSQLAddr(), "tenantdata", url.UserPassword("foo", password),
 			false, "", // withClientCerts
 		)

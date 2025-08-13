@@ -52,7 +52,7 @@ func (e *eventLogState) EventLogStateWithNewSourceElementID() scbuildstmt.EventL
 // makeEventLogCallback makes a callback that will generate event log
 // entries based on the builder targets (elements and target state).
 func makeEventLogCallback(
-	b buildCtx, ts scpb.TargetState, loggedTargets []loggedTarget,
+	b buildCtx, ts scpb.TargetState, loggedTargets []scpb.Target,
 ) LogSchemaChangerEventsFn {
 	if len(loggedTargets) == 0 {
 		return stubLogSchemaChangerEventsFn
@@ -62,27 +62,26 @@ func makeEventLogCallback(
 		b.Context,
 		0, /* level */
 		"event logging for declarative schema change targets built for %s",
-		redact.Safe(ts.Statements[loggedTargets[0].target.Metadata.StatementID].StatementTag),
+		redact.Safe(ts.Statements[loggedTargets[0].Metadata.StatementID].StatementTag),
 	).HandlePanicAndLogError(b.Context, &swallowedError)
 	detailSlice := make([]eventpb.CommonSQLEventDetails, 0, len(loggedTargets))
 	payLoadsSlice := make([]logpb.EventPayload, 0, len(loggedTargets))
 	for _, lt := range loggedTargets {
-		descID := screl.GetDescID(lt.target.Element())
-		stmtID := lt.target.Metadata.StatementID
+		descID := screl.GetDescID(lt.Element())
+		stmtID := lt.Metadata.StatementID
 		details := eventpb.CommonSQLEventDetails{
-			Statement:       ts.Statements[stmtID].RedactedStatement,
+			Statement:       redact.RedactableString(ts.Statements[stmtID].RedactedStatement),
 			Tag:             ts.Statements[stmtID].StatementTag,
 			User:            ts.Authorization.UserName,
 			DescriptorID:    uint32(descID),
 			ApplicationName: ts.Authorization.AppName,
 		}
 		pb := payloadBuilder{
-			Target:         lt.target,
+			Target:         lt,
 			relatedTargets: make([]scpb.Target, 0, len(ts.Targets)),
-			maybePayload:   lt.maybeInfo,
 		}
 		for _, t := range ts.Targets {
-			if t.Metadata.StatementID != stmtID || t.Metadata.SubWorkID != lt.target.Metadata.SubWorkID {
+			if t.Metadata.StatementID != stmtID || t.Metadata.SubWorkID != lt.Metadata.SubWorkID {
 				continue
 			}
 			pb.relatedTargets = append(pb.relatedTargets, t)
@@ -108,7 +107,6 @@ func makeEventLogCallback(
 type payloadBuilder struct {
 	relatedTargets []scpb.Target
 	scpb.Target
-	maybePayload logpb.EventPayload
 }
 
 func namespace(b buildCtx, id descpb.ID) (ns *scpb.Namespace) {
@@ -127,11 +125,7 @@ func namespace(b buildCtx, id descpb.ID) (ns *scpb.Namespace) {
 }
 
 func fullyQualifiedName(b buildCtx, e scpb.Element) string {
-	return fullyQualifiedNameFromID(b, screl.GetDescID(e))
-}
-
-func fullyQualifiedNameFromID(b buildCtx, id descpb.ID) string {
-	ns := namespace(b, id)
+	ns := namespace(b, screl.GetDescID(e))
 	if ns.DatabaseID == descpb.InvalidID {
 		return ns.Name
 	}
@@ -181,46 +175,6 @@ func functionName(b buildCtx, e scpb.Element) string {
 	databaseNamespaceElem := namespace(b, schemaNamespaceElem.DatabaseID)
 	fnName := tree.MakeQualifiedRoutineName(databaseNamespaceElem.Name, schemaNamespaceElem.Name, fnNameElem.Name)
 	return fnName.FQString()
-}
-
-// triggerName returns the name of the trigger that element `e` belongs to.
-// `e` must therefore have a DescID and TriggerID attr and is a trigger-related
-// element.
-func triggerName(b buildCtx, e scpb.Element) string {
-	descID := screl.GetDescID(e)
-	triggerID, err := screl.Schema.GetAttribute(screl.TriggerID, e)
-	if err != nil {
-		panic(err)
-	}
-	var triggerNameElem *scpb.TriggerName
-	scpb.ForEachTriggerName(
-		b.QueryByID(descID),
-		func(_ scpb.Status, target scpb.TargetStatus, e *scpb.TriggerName) {
-			if e.TriggerID == triggerID && (triggerNameElem == nil || target != scpb.ToAbsent) {
-				triggerNameElem = e
-			}
-		},
-	)
-	if triggerNameElem == nil {
-		panic(errors.AssertionFailedf("missing TriggerName element for table #%d and trigger ID #%s",
-			descID, triggerID))
-	}
-	return triggerNameElem.Name
-}
-
-// policyName returns the name of the policy that element `e` belongs to.
-// `e` must therefore have a DescID and PolicyID attr and is a policy-related
-// element.
-func policyName(b buildCtx, e scpb.Element) string {
-	descID := screl.GetDescID(e)
-	policyID, err := screl.Schema.GetAttribute(screl.PolicyID, e)
-	if err != nil {
-		panic(err)
-	}
-	pn := b.QueryByID(descID).FilterPolicyName().FilterElement(func(e *scpb.PolicyName) bool {
-		return e.PolicyID == policyID
-	}).MustGetOneElement()
-	return pn.Name
 }
 
 // ownerName finds the owner of the descriptor that element `e` belongs to.
@@ -439,12 +393,6 @@ func (pb payloadBuilder) build(b buildCtx) logpb.EventPayload {
 			Comment:     e.Comment,
 			NullComment: pb.TargetStatus != scpb.Status_PUBLIC,
 		}
-	case *scpb.TypeComment:
-		return &eventpb.CommentOnType{
-			TypeName:    fullyQualifiedName(b, e),
-			Comment:     e.Comment,
-			NullComment: pb.TargetStatus != scpb.Status_PUBLIC,
-		}
 	case *scpb.ColumnComment:
 		return &eventpb.CommentOnColumn{
 			TableName:   fullyQualifiedName(b, e),
@@ -475,62 +423,6 @@ func (pb payloadBuilder) build(b buildCtx) logpb.EventPayload {
 		} else {
 			return &eventpb.DropFunction{
 				FunctionName: functionName(b, e),
-			}
-		}
-	case *scpb.DatabaseZoneConfig, *scpb.TableZoneConfig, *scpb.IndexZoneConfig,
-		*scpb.PartitionZoneConfig, *scpb.NamedRangeZoneConfig:
-		if pb.TargetStatus == scpb.Status_PUBLIC {
-			var zcDetails eventpb.CommonZoneConfigDetails
-			var oldConfig string
-			if pb.maybePayload != nil {
-				if payload, ok := pb.maybePayload.(*eventpb.SetZoneConfig); ok {
-					zcDetails = eventpb.CommonZoneConfigDetails{
-						Target:  payload.Target,
-						Options: payload.Options,
-					}
-					oldConfig = payload.ResolvedOldConfig
-				}
-			}
-			return &eventpb.SetZoneConfig{
-				CommonZoneConfigDetails: zcDetails,
-				ResolvedOldConfig:       oldConfig,
-			}
-		} else {
-			var zcDetails eventpb.CommonZoneConfigDetails
-			if pb.maybePayload != nil {
-				if payload, ok := pb.maybePayload.(*eventpb.RemoveZoneConfig); ok {
-					zcDetails = eventpb.CommonZoneConfigDetails{
-						Target:  payload.Target,
-						Options: payload.Options,
-					}
-				}
-			}
-			return &eventpb.RemoveZoneConfig{
-				CommonZoneConfigDetails: zcDetails,
-			}
-		}
-	case *scpb.Trigger:
-		if pb.TargetStatus == scpb.Status_PUBLIC {
-			return &eventpb.CreateTrigger{
-				TableName:   fullyQualifiedNameFromID(b, e.TableID),
-				TriggerName: triggerName(b, e),
-			}
-		} else {
-			return &eventpb.DropTrigger{
-				TableName:   fullyQualifiedNameFromID(b, e.TableID),
-				TriggerName: triggerName(b, e),
-			}
-		}
-	case *scpb.Policy:
-		if pb.TargetStatus == scpb.Status_PUBLIC {
-			return &eventpb.CreatePolicy{
-				TableName:  fullyQualifiedNameFromID(b, e.TableID),
-				PolicyName: policyName(b, e),
-			}
-		} else {
-			return &eventpb.DropPolicy{
-				TableName:  fullyQualifiedNameFromID(b, e.TableID),
-				PolicyName: policyName(b, e),
 			}
 		}
 	}

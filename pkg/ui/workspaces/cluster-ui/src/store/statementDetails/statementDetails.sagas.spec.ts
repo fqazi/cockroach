@@ -3,29 +3,28 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { PayloadAction } from "@reduxjs/toolkit";
-import Long from "long";
-import moment from "moment-timezone";
 import { expectSaga } from "redux-saga-test-plan";
-import * as matchers from "redux-saga-test-plan/matchers";
+import Long from "long";
 import {
   EffectProviders,
   StaticProvider,
   throwError,
 } from "redux-saga-test-plan/providers";
-
+import * as matchers from "redux-saga-test-plan/matchers";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { getStatementDetails } from "src/api/statementsApi";
-
+import {
+  refreshSQLDetailsStatsSaga,
+  requestSQLDetailsStatsSaga,
+} from "./statementDetails.sagas";
 import {
   actions,
   reducer,
   SQLDetailsStatsReducerState,
 } from "./statementDetails.reducer";
-import {
-  refreshSQLDetailsStatsSaga,
-  requestSQLDetailsStatsSaga,
-} from "./statementDetails.sagas";
+
+import moment from "moment-timezone";
 
 const lastUpdated = moment();
 
@@ -157,7 +156,6 @@ describe("SQLDetailsStats sagas", () => {
             nanos: 111613000,
           },
           nodes: [new Long(1)],
-          kv_node_ids: [2],
           plan_gists: ["AgH6////nxkAAA4AAAAGBg=="],
           failure_count: new Long(2),
         },
@@ -252,7 +250,6 @@ describe("SQLDetailsStats sagas", () => {
               nanos: 111613000,
             },
             nodes: [new Long(1)],
-            kv_node_ids: [2],
             plan_gists: ["AgH6////nxkAAA4AAAAGBg=="],
           },
           aggregated_ts: {
@@ -349,7 +346,6 @@ describe("SQLDetailsStats sagas", () => {
               nanos: 111613000,
             },
             nodes: [new Long(1)],
-            kv_node_ids: [2],
             plan_gists: ["AgH6////nxkAAA4AAAAGBg=="],
           },
           aggregated_ts: {
@@ -446,7 +442,6 @@ describe("SQLDetailsStats sagas", () => {
               nanos: 111613000,
             },
             nodes: [new Long(1)],
-            kv_node_ids: [2],
             plan_gists: ["AgH6////nxkAAA4AAAAGBg=="],
           },
           aggregated_ts: {
@@ -543,7 +538,6 @@ describe("SQLDetailsStats sagas", () => {
               nanos: 111613000,
             },
             nodes: [new Long(1)],
-            kv_node_ids: [2],
             plan_gists: ["AgH6////nxkAAA4AAAAGBg=="],
           },
           aggregated_ts: {
@@ -642,11 +636,10 @@ describe("SQLDetailsStats sagas", () => {
               nanos: 111613000,
             },
             nodes: [new Long(1)],
-            kv_node_ids: [2],
             plan_gists: ["AgH6////nxkAAA4AAAAGBg=="],
           },
           explain_plan: "• virtual table\n  table: @primary",
-          plan_hash: Long.fromString("14192395335876201826"),
+          plan_hash: new Long(14192395335876201826),
         },
       ],
       internal_app_name_prefix: "$ internal",

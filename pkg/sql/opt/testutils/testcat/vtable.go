@@ -133,8 +133,6 @@ var systemTables = []string{
 	systemschema.SystemMVCCStatisticsSchema,
 	systemschema.TxnExecutionStatsTableSchema,
 	systemschema.StatementExecutionStatsTableSchema,
-	systemschema.TableMetadataTableSchema,
-	systemschema.PreparedTransactionsTableSchema,
 }
 
 func init() {

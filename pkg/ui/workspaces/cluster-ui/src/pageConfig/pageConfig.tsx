@@ -3,12 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classnames from "classnames/bind";
 import React, { useContext } from "react";
-
-import { CockroachCloudContext } from "../contexts";
-
+import classnames from "classnames/bind";
 import styles from "./pageConfig.module.scss";
+import { CockroachCloudContext } from "../contexts";
 
 export interface PageConfigProps {
   layout?: "list" | "spread";
@@ -41,20 +39,11 @@ export function PageConfig(props: PageConfigProps): React.ReactElement {
 export interface PageConfigItemProps {
   children?: React.ReactNode;
   className?: string;
-  minWidth?: string;
 }
 
 export function PageConfigItem(props: PageConfigItemProps): React.ReactElement {
-  const minWidth = props.minWidth;
-  const itemStyles = React.useMemo(
-    () => ({
-      minWidth: minWidth || undefined,
-    }),
-    [minWidth],
-  );
-
   return (
-    <li className={cx("page-config__item", props.className)} style={itemStyles}>
+    <li className={`${cx("page-config__item")} ${props.className}`}>
       {props.children}
     </li>
   );

@@ -29,7 +29,7 @@ import (
 )
 
 func TestTryJoinGeoIndex(t *testing.T) {
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.NewTestingEvalContext(st)
 
@@ -310,7 +310,7 @@ func TestTryJoinGeoIndex(t *testing.T) {
 }
 
 func TestTryFilterGeoIndex(t *testing.T) {
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.NewTestingEvalContext(st)
 

@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -35,7 +36,6 @@ import (
 type functionDependencies map[catid.DescID]struct{}
 
 type createFunctionNode struct {
-	zeroInputPlanNode
 	cf *tree.CreateRoutine
 
 	dbDesc       catalog.DatabaseDescriptor
@@ -81,7 +81,7 @@ func (n *createFunctionNode) startExec(params runParams) error {
 		return err
 	}
 	if scDesc.SchemaKind() == catalog.SchemaTemporary {
-		return unimplemented.NewWithIssue(104687, "cannot create user-defined functions under a temporary schema")
+		return unimplemented.NewWithIssue(104687, "cannot create UDFs under a temporary schema")
 	}
 
 	telemetry.Inc(sqltelemetry.SchemaChangeCreateCounter("function"))
@@ -226,15 +226,6 @@ func (n *createFunctionNode) replaceFunction(
 		udfDesc.ReturnType.Type = retType
 	}
 
-	// Make sure that a trigger function is not replaced.
-	if retType.Identical(types.Trigger) && len(udfDesc.DependedOnBy) > 0 {
-		return errors.WithHint(
-			unimplemented.NewWithIssue(134555,
-				"cannot replace a trigger function with an active trigger"),
-			"consider dropping and recreating the trigger",
-		)
-	}
-
 	// Verify whether changes, if any, to the parameter names and classes are
 	// allowed. This needs to happen after the return type has already been
 	// checked.
@@ -291,6 +282,11 @@ func (n *createFunctionNode) replaceFunction(
 	jobDesc := fmt.Sprintf("updating type back reference %d for function %d", udfDesc.DependsOnTypes, udfDesc.ID)
 	if err := params.p.removeTypeBackReferences(params.ctx, udfDesc.DependsOnTypes, udfDesc.ID, jobDesc); err != nil {
 		return err
+	}
+	if !params.p.IsActive(params.ctx, clusterversion.V24_1) &&
+		len(udfDesc.DependsOnFunctions) > 0 {
+		return pgerror.Newf(pgcode.FeatureNotSupported,
+			"user defined functions cannot reference other user defined functions")
 	}
 	for _, id := range udfDesc.DependsOnFunctions {
 		backRefMutable, err := params.p.Descriptors().MutableByID(params.p.txn).Function(params.ctx, id)
@@ -506,6 +502,11 @@ func (n *createFunctionNode) addUDFReferences(udfDesc *funcdesc.Mutable, params 
 		}
 	}
 
+	if !params.p.IsActive(params.ctx, clusterversion.V24_1) &&
+		len(n.functionDeps) > 0 {
+		return pgerror.Newf(pgcode.FeatureNotSupported,
+			"user defined functions cannot reference other user defined functions")
+	}
 	udfDesc.DependsOnFunctions = make([]descpb.ID, 0, len(n.functionDeps))
 	for id := range n.functionDeps {
 		// Add a reference to the dependency in here. Note that we need to add
@@ -569,37 +570,23 @@ func setFuncOptions(
 			// Handle the body after the loop, since we don't yet know what language
 			// it is.
 			body = string(t)
-		case tree.RoutineSecurity:
-			sec, err := funcinfo.SecurityToProto(t)
-			if err != nil {
-				return err
-			}
-			udfDesc.SetSecurity(sec)
 		default:
 			return pgerror.Newf(pgcode.InvalidParameterValue, "Unknown function option %q", t)
 		}
 	}
 
 	if lang != catpb.Function_UNKNOWN_LANGUAGE && body != "" {
-		// Trigger functions do not analyze SQL statements beyond parsing, so type
-		// and sequence names should not be replaced during trigger-function
-		// creation.
-		returnType := udfDesc.ReturnType.Type
-		lazilyEvalSQL := returnType != nil && returnType.Identical(types.Trigger)
-		if !lazilyEvalSQL {
-			// Replace any sequence names in the function body with IDs.
-			body, err = replaceSeqNamesWithIDsLang(params.ctx, params.p, body, true, lang)
-			if err != nil {
-				return err
-			}
-			// Replace any UDT names in the function body with IDs.
-			body, err = serializeUserDefinedTypesLang(
-				params.ctx, params.p.SemaCtx(), body, true /* multiStmt */, "UDFs", lang)
-			if err != nil {
-				return err
-			}
+		// Replace any sequence names in the function body with IDs.
+		seqReplacedFuncBody, err := replaceSeqNamesWithIDsLang(params.ctx, params.p, body, true, lang)
+		if err != nil {
+			return err
 		}
-		udfDesc.SetFuncBody(body)
+		typeReplacedFuncBody, err := serializeUserDefinedTypesLang(
+			params.ctx, params.p.SemaCtx(), seqReplacedFuncBody, true /* multiStmt */, "UDFs", lang)
+		if err != nil {
+			return err
+		}
+		udfDesc.SetFuncBody(typeReplacedFuncBody)
 	}
 	return nil
 }

@@ -13,7 +13,6 @@ import (
 	"hash"
 	"hash/fnv"
 	"math"
-	"math/rand/v2"
 	"strings"
 	"sync/atomic"
 
@@ -25,12 +24,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/workload"
 	"github.com/cockroachdb/cockroach/pkg/workload/histogram"
-	"github.com/cockroachdb/cockroach/pkg/workload/workloadimpl"
 	"github.com/cockroachdb/errors"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/pflag"
+	"golang.org/x/exp/rand"
 )
 
 const (
@@ -89,6 +88,7 @@ type ycsb struct {
 	flags     workload.Flags
 	connFlags *workload.ConnFlags
 
+	isoLevel    string
 	timeString  bool
 	insertHash  bool
 	zeroPadding int
@@ -101,12 +101,11 @@ type ycsb struct {
 	sfu         bool
 	splits      int
 
-	workload                                                string
-	requestDistribution                                     string
-	scanLengthDistribution                                  string
-	minScanLength, maxScanLength                            uint64
-	readFreq, scanFreq                                      float32
-	insertFreq, updateFreq, readModifyWriteFreq, deleteFreq float32
+	workload                                                        string
+	requestDistribution                                             string
+	scanLengthDistribution                                          string
+	minScanLength, maxScanLength                                    uint64
+	readFreq, insertFreq, updateFreq, scanFreq, readModifyWriteFreq float32
 }
 
 func init() {
@@ -122,15 +121,11 @@ var ycsbMeta = workload.Meta{
 		g := &ycsb{}
 		g.flags.FlagSet = pflag.NewFlagSet(`ycsb`, pflag.ContinueOnError)
 		g.flags.Meta = map[string]workload.FlagMeta{
+			`isolation-level`:          {RuntimeOnly: true},
 			`read-modify-write-in-txn`: {RuntimeOnly: true},
 			`workload`:                 {RuntimeOnly: true},
-			`read-freq`:                {RuntimeOnly: true},
-			`delete-freq`:              {RuntimeOnly: true},
-			`insert-freq`:              {RuntimeOnly: true},
-			`update-freq`:              {RuntimeOnly: true},
-			`scan-freq`:                {RuntimeOnly: true},
-			`read-modify-write-freq`:   {RuntimeOnly: true},
 		}
+		g.flags.StringVar(&g.isoLevel, `isolation-level`, ``, `Isolation level to run workload transactions under [serializable, snapshot, read_committed]. If unset, the workload will run with the default isolation level of the database.`)
 		g.flags.BoolVar(&g.timeString, `time-string`, false, `Prepend field[0-9] data with current time in microsecond precision.`)
 		g.flags.BoolVar(&g.insertHash, `insert-hash`, true, `Key to be hashed or ordered.`)
 		g.flags.IntVar(&g.zeroPadding, `zero-padding`, 1, `Key using "insert-hash=false" has zeros padded to left to make this length of digits.`)
@@ -142,17 +137,11 @@ var ycsbMeta = workload.Meta{
 		g.flags.BoolVar(&g.rmwInTxn, `read-modify-write-in-txn`, false, `Run workload F's read-modify-write operation in an explicit transaction.`)
 		g.flags.BoolVar(&g.sfu, `select-for-update`, true, `Use SELECT FOR UPDATE syntax in read-modify-write operation, if run in an explicit transactions.`)
 		g.flags.IntVar(&g.splits, `splits`, 0, `Number of splits to perform before starting normal operations.`)
-		g.flags.StringVar(&g.workload, `workload`, `B`, `Workload type. Choose from A-F or CUSTOM. (default B)`)
-		g.flags.StringVar(&g.requestDistribution, `request-distribution`, ``, `Distribution for request key generation [zipfian, uniform, latest]. The default for workloads A, B, C, E, F and CUSTOM is zipfian, and the default for workload D is latest.`)
+		g.flags.StringVar(&g.workload, `workload`, `B`, `Workload type. Choose from A-F.`)
+		g.flags.StringVar(&g.requestDistribution, `request-distribution`, ``, `Distribution for request key generation [zipfian, uniform, latest]. The default for workloads A, B, C, E, and F is zipfian, and the default for workload D is latest.`)
 		g.flags.StringVar(&g.scanLengthDistribution, `scan-length-distribution`, `uniform`, `Distribution for scan length generation [zipfian, uniform]. Primarily used for workload E.`)
 		g.flags.Uint64Var(&g.minScanLength, `min-scan-length`, 1, `The minimum length for scan operations. Primarily used for workload E.`)
 		g.flags.Uint64Var(&g.maxScanLength, `max-scan-length`, 1000, `The maximum length for scan operations. Primarily used for workload E.`)
-		g.flags.Float32Var(&g.readFreq, `read-freq`, 0.0, `Percentage of reads in the workload. Used in conjunction with --workload=CUSTOM to specify an alternative workload mix. (default 0.0)`)
-		g.flags.Float32Var(&g.insertFreq, `insert-freq`, 0.0, `Percentage of inserts in the workload. Used in conjunction --workload=CUSTOM to specify an alternative workload mix. (default 0.0)`)
-		g.flags.Float32Var(&g.updateFreq, `update-freq`, 0.0, `Percentage of updates in the workload. Used in conjunction with --workload=CUSTOM to specify an alternative workload mix. (default 0.0)`)
-		g.flags.Float32Var(&g.scanFreq, `scan-freq`, 0.0, `Percentage of scans in the workload. Used in conjunction with --workload=CUSTOM to specify an alternative workload mix. (default 0.0)`)
-		g.flags.Float32Var(&g.readModifyWriteFreq, `read-modify-write-freq`, 0.0, `Percentage of read-modify-writes in the workload. Used in conjunction with --workload=CUSTOM to specify an alternative workload mix. (default 0.0)`)
-		g.flags.Float32Var(&g.deleteFreq, `delete-freq`, 0.0, `Percentage of deletes in the workload. Used in conjunction with --workload=CUSTOM to specify an alternative workload mix. (default 0.0)`)
 		RandomSeed.AddFlag(&g.flags)
 
 		// TODO(dan): g.flags.Uint64Var(&g.maxWrites, `max-writes`,
@@ -170,25 +159,12 @@ func (*ycsb) Meta() workload.Meta { return ycsbMeta }
 // Flags implements the Flagser interface.
 func (g *ycsb) Flags() workload.Flags { return g.flags }
 
-// ConnFlags implements the ConnFlagser interface.
-func (g *ycsb) ConnFlags() *workload.ConnFlags { return g.connFlags }
-
 // Hooks implements the Hookser interface.
 func (g *ycsb) Hooks() workload.Hooks {
 	return workload.Hooks{
 		Validate: func() error {
 			g.workload = strings.ToUpper(g.workload)
 			var defaultReqDist string
-			incomingFreqSum := g.readFreq + g.insertFreq + g.updateFreq + g.deleteFreq + g.scanFreq + g.readModifyWriteFreq
-			if g.workload == "CUSTOM" {
-				if math.Abs(float64(incomingFreqSum)-1.0) > 0.000001 {
-					return errors.Errorf("Custom workload frequencies do not sum to 1.0")
-				}
-			} else {
-				if incomingFreqSum != 0.0 {
-					return errors.Errorf("Custom workload frequencies set with non-custom workload")
-				}
-			}
 			switch g.workload {
 			case "A":
 				g.readFreq = 0.5
@@ -212,8 +188,6 @@ func (g *ycsb) Hooks() workload.Hooks {
 			case "F":
 				g.readFreq = 0.5
 				g.readModifyWriteFreq = 0.5
-				defaultReqDist = "zipfian"
-			case "CUSTOM":
 				defaultReqDist = "zipfian"
 			default:
 				return errors.Errorf("Unknown workload: %q", g.workload)
@@ -306,11 +280,6 @@ func preferColumnFamilies(workload string) bool {
 		// contention between all updates to different columns of the same row,
 		// so we use them by default.
 		return true
-	case "CUSTOM":
-		// We have no idea what workload is going to be run with the "custom"
-		// option. Default to true and rely on the user to set the --families
-		// flag if they don't want column families.
-		return true
 	default:
 		panic(fmt.Sprintf("unexpected workload: %s", workload))
 	}
@@ -381,13 +350,13 @@ func (g *ycsb) Tables() []workload.Table {
 					config:   g,
 					hashFunc: fnv.New64(),
 				}
-				rng := rand.NewPCG(RandomSeed.Seed(), uint64(batchIdx))
+				rng := rand.NewSource(RandomSeed.Seed() + uint64(batchIdx))
 
 				var tmpbuf [fieldLength]byte
 				for rowIdx := rowBegin; rowIdx < rowEnd; rowIdx++ {
 					rowOffset := rowIdx - rowBegin
 
-					key.Set(rowOffset, []byte(w.buildKeyName(uint64(g.insertStart+rowIdx))))
+					key.Set(rowOffset, []byte(w.buildKeyName(uint64(rowIdx))))
 
 					for i := range fields {
 						randStringLetters(rng, tmpbuf[:])
@@ -404,8 +373,15 @@ func (g *ycsb) Tables() []workload.Table {
 func (g *ycsb) Ops(
 	ctx context.Context, urls []string, reg *histogram.Registry,
 ) (workload.QueryLoad, error) {
+	sqlDatabase, err := workload.SanitizeUrls(g, g.connFlags.DBOverride, urls)
+	if err != nil {
+		return workload.QueryLoad{}, err
+	}
+	if err := workload.SetDefaultIsolationLevel(urls, g.isoLevel); err != nil {
+		return workload.QueryLoad{}, err
+	}
+
 	const readStmtStr = `SELECT * FROM usertable WHERE ycsb_key = $1`
-	const deleteStmtStr = `DELETE FROM usertable WHERE ycsb_key = $1`
 
 	readFieldForUpdateStmtStrs := make([]string, numTableFields)
 	for i := range readFieldForUpdateStmtStrs {
@@ -458,19 +434,16 @@ func (g *ycsb) Ops(
 	rowCounter := NewAcknowledgedCounter((uint64)(g.recordCount))
 
 	var requestGen randGenerator
-	var err error
-	requestGenRng := rand.New(rand.NewPCG(RandomSeed.Seed(), 0))
+	requestGenRng := rand.New(rand.NewSource(RandomSeed.Seed()))
 	switch strings.ToLower(g.requestDistribution) {
 	case "zipfian":
-		requestGen, err = workloadimpl.NewZipfGenerator(
-			requestGenRng, zipfIMin,
-			workloadimpl.DefaultIMax-1, workloadimpl.DefaultTheta, false /* verbose */)
+		requestGen, err = NewZipfGenerator(
+			requestGenRng, zipfIMin, defaultIMax-1, defaultTheta, false /* verbose */)
 	case "uniform":
 		requestGen, err = NewUniformGenerator(requestGenRng, 0, uint64(g.recordCount)-1)
 	case "latest":
 		requestGen, err = NewSkewedLatestGenerator(
-			requestGenRng, zipfIMin, uint64(g.recordCount)-1,
-			workloadimpl.DefaultTheta, false /* verbose */)
+			requestGenRng, zipfIMin, uint64(g.recordCount)-1, defaultTheta, false /* verbose */)
 	default:
 		return workload.QueryLoad{}, errors.Errorf("Unknown request distribution: %s", g.requestDistribution)
 	}
@@ -479,12 +452,10 @@ func (g *ycsb) Ops(
 	}
 
 	var scanLengthGen randGenerator
-	scanLengthGenRng := rand.New(rand.NewPCG(RandomSeed.Seed(), 1))
+	scanLengthGenRng := rand.New(rand.NewSource(RandomSeed.Seed() + 1))
 	switch strings.ToLower(g.scanLengthDistribution) {
 	case "zipfian":
-		scanLengthGen, err = workloadimpl.NewZipfGenerator(
-			scanLengthGenRng, g.minScanLength, g.maxScanLength,
-			workloadimpl.DefaultTheta, false /* verbose */)
+		scanLengthGen, err = NewZipfGenerator(scanLengthGenRng, g.minScanLength, g.maxScanLength, defaultTheta, false /* verbose */)
 	case "uniform":
 		scanLengthGen, err = NewUniformGenerator(scanLengthGenRng, g.minScanLength, g.maxScanLength)
 	default:
@@ -499,12 +470,11 @@ func (g *ycsb) Ops(
 		return workload.QueryLoad{}, err
 	}
 
-	ql := workload.QueryLoad{}
+	ql := workload.QueryLoad{SQLDatabase: sqlDatabase}
 
 	const (
 		readStmt                     stmtKey = "read"
 		scanStmt                     stmtKey = "scan"
-		deleteStmt                   stmtKey = "delete"
 		insertStmt                   stmtKey = "insert"
 		readFieldForUpdateStmtFormat         = "readFieldForUpdate%d"
 		updateStmtFormat                     = "update%d"
@@ -517,7 +487,6 @@ func (g *ycsb) Ops(
 		readFieldForUpdateStmts[i] = key
 	}
 	pool.AddPreparedStatement(scanStmt, scanStmtStr)
-	pool.AddPreparedStatement(deleteStmt, deleteStmtStr)
 	pool.AddPreparedStatement(insertStmt, insertStmtStr)
 	updateStmts := make([]stmtKey, len(updateStmtStrs))
 	for i, q := range updateStmtStrs {
@@ -553,16 +522,14 @@ func (g *ycsb) Ops(
 			return workload.QueryLoad{}, err
 		}
 
-		rng := rand.New(rand.NewPCG(RandomSeed.Seed(), uint64(i)))
+		rng := rand.New(rand.NewSource(RandomSeed.Seed() + uint64(i)))
 		w := &ycsbWorker{
 			config:                  g,
 			hists:                   reg.GetHandle(),
-			pool:                    pool,
 			conn:                    conn,
 			readStmt:                readStmt,
 			readFieldForUpdateStmts: readFieldForUpdateStmts,
 			scanStmt:                scanStmt,
-			deleteStmt:              deleteStmt,
 			insertStmt:              insertStmt,
 			updateStmts:             updateStmts,
 			rowIndex:                &rowIndex,
@@ -588,7 +555,6 @@ type stmtKey = string
 type ycsbWorker struct {
 	config *ycsb
 	hists  *histogram.Histograms
-	pool   *workload.MultiConnPool
 	conn   *pgxpool.Conn
 	// Statement to read all the fields of a row. Used for read requests.
 	readStmt stmtKey
@@ -596,12 +562,6 @@ type ycsbWorker struct {
 	// updating it. Used for read-modify-write requests.
 	readFieldForUpdateStmts []stmtKey
 	scanStmt, insertStmt    stmtKey
-
-	// Statement to use for deletes. Deletes are NOT part of the yscb benchmark
-	// standard, but are added here for testing purposes only. Deletes can only
-	// be triggered under workload=CUSTOM.
-	deleteStmt stmtKey
-
 	// In normal mode this is one statement per field, since the field name
 	// cannot be parametrized. In JSON mode it's a single statement.
 	updateStmts []stmtKey
@@ -617,23 +577,13 @@ type ycsbWorker struct {
 	scanLengthGen randGenerator // used to generate length of scan operations
 	rng           *rand.Rand    // used to generate random strings for the values
 	hashFunc      hash.Hash64
-	hashBuf       [binary.MaxVarintLen64]byte
+	hashBuf       [8]byte
 }
 
 func (yw *ycsbWorker) run(ctx context.Context) error {
-	// If we enter this function without a connection, that implies that our
-	// connection was dropped due to a connection error the last time we were
-	// in here. Grab a new connection for future operations.
-	if yw.conn == nil {
-		conn, err := yw.pool.Get().Acquire(ctx)
-		if err != nil {
-			return err
-		}
-		yw.conn = conn
-	}
-
-	var err error
 	op := yw.chooseOp()
+	var err error
+
 	start := timeutil.Now()
 	switch op {
 	case updateOp:
@@ -642,8 +592,6 @@ func (yw *ycsbWorker) run(ctx context.Context) error {
 		err = yw.readRow(ctx)
 	case insertOp:
 		err = yw.insertRow(ctx)
-	case deleteOp:
-		err = yw.deleteRow(ctx)
 	case scanOp:
 		err = yw.scanRows(ctx)
 	case readModifyWriteOp:
@@ -651,21 +599,7 @@ func (yw *ycsbWorker) run(ctx context.Context) error {
 	default:
 		return errors.Errorf(`unknown operation: %s`, op)
 	}
-
-	// If we get an error, check to see if the connection has been closed
-	// underneath us. If that's the case, we need to release the connection
-	// back to the pool since we obtained this connection using Acquire() and
-	// as a result, the connection will not be automatically reestablished for
-	// us. Once the connection is returned to the pool, we can reestablish it
-	// the next time we come through this function. We don't reestablish the
-	// connection here, as we're already dealing with an error which we don't
-	// want to overwrite (and reacquiring the connection could result in a new
-	// error).
 	if err != nil {
-		if yw.conn.Conn().IsClosed() {
-			yw.conn.Release()
-			yw.conn = nil
-		}
 		return err
 	}
 
@@ -674,19 +608,20 @@ func (yw *ycsbWorker) run(ctx context.Context) error {
 	return nil
 }
 
+var readOnly atomic.Int32
+
 type operation string
 
 const (
 	updateOp          operation = `update`
 	insertOp          operation = `insert`
-	deleteOp          operation = `delete`
 	readOp            operation = `read`
 	scanOp            operation = `scan`
 	readModifyWriteOp operation = `readModifyWrite`
 )
 
 func (yw *ycsbWorker) hashKey(key uint64) uint64 {
-	yw.hashBuf = [binary.MaxVarintLen64]byte{} // clear hashBuf
+	yw.hashBuf = [8]byte{} // clear hashBuf
 	binary.PutUvarint(yw.hashBuf[:], key)
 	yw.hashFunc.Reset()
 	if _, err := yw.hashFunc.Write(yw.hashBuf[:]); err != nil {
@@ -715,9 +650,7 @@ func keyNameFromOrder(keynum uint64, zeroPadding int) string {
 // close together.
 // See YCSB paper section 5.3 for a complete description of how keys are chosen.
 func (yw *ycsbWorker) nextReadKey() string {
-	// To derive the count of actually inserted rows, take the value stored in
-	// the insert counter, and subtract out the insertStart point.
-	rowCount := yw.rowCounter.Last() - uint64(yw.config.insertStart)
+	rowCount := yw.rowCounter.Last()
 	// TODO(jeffreyxiao): The official YCSB implementation creates a very large
 	// key space for the zipfian distribution, hashes, mods it by the number of
 	// expected number of keys at the end of the workload to obtain the key index
@@ -736,10 +669,6 @@ func (yw *ycsbWorker) nextReadKey() string {
 	// distribution, so it might be worthwhile to exactly emulate what they're
 	// doing.
 	rowIndex := yw.requestGen.Uint64() % rowCount
-	// Now that we have a index constrained to the range of keys actually
-	// inserted, add back in the starting point to get to the start-biased
-	// index.
-	rowIndex += uint64(yw.config.insertStart)
 	return yw.buildKeyName(rowIndex)
 }
 
@@ -767,7 +696,7 @@ func (yw *ycsbWorker) randString(length int) string {
 	}
 	// the rest of data is random str
 	for i := strStart; i < length; i++ {
-		str[i] = letters[yw.rng.IntN(len(letters))]
+		str[i] = letters[yw.rng.Intn(len(letters))]
 	}
 	return string(str)
 }
@@ -803,19 +732,8 @@ func (yw *ycsbWorker) insertRow(ctx context.Context) error {
 		args[i] = yw.randString(fieldLength)
 	}
 	if _, err := yw.conn.Exec(ctx, yw.insertStmt, args[:]...); err != nil {
-		var pgErr *pgconn.PgError
-		// In cases where we've received a unique violation error, we don't want
-		// to preserve the key index. Doing so will retry the same insert the
-		// next iteration, which will hit the same unique violation error. This
-		// situation can be hit in cases where an insert is sent to the cluster
-		// and the connection is terminated after the insert was received and
-		// processed, but before it was acknowledged. In this case, we should
-		// just move on to the next key for inserting.
-		if !errors.As(err, &pgErr) ||
-			pgcode.MakeCode(pgErr.Code) != pgcode.UniqueViolation {
-			yw.nextInsertIndex = new(uint64)
-			*yw.nextInsertIndex = keyIndex
-		}
+		yw.nextInsertIndex = new(uint64)
+		*yw.nextInsertIndex = keyIndex
 		return err
 	}
 
@@ -830,7 +748,7 @@ func (yw *ycsbWorker) updateRow(ctx context.Context) error {
 	var stmt stmtKey
 	var args [2]interface{}
 	args[0] = yw.nextReadKey()
-	fieldIdx := yw.rng.IntN(numTableFields)
+	fieldIdx := yw.rng.Intn(numTableFields)
 	value := yw.randString(fieldLength)
 	if yw.config.json {
 		stmt = yw.updateStmts[0]
@@ -840,15 +758,6 @@ func (yw *ycsbWorker) updateRow(ctx context.Context) error {
 		args[1] = value
 	}
 	if _, err := yw.conn.Exec(ctx, stmt, args[:]...); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (yw *ycsbWorker) deleteRow(ctx context.Context) error {
-	key := yw.nextReadKey()
-	_, err := yw.conn.Exec(ctx, yw.deleteStmt, key)
-	if err != nil {
 		return err
 	}
 	return nil
@@ -912,7 +821,7 @@ func (yw *ycsbWorker) readModifyWriteRow(ctx context.Context) error {
 	}
 	run := func(db conn) error {
 		key := yw.nextReadKey()
-		fieldIdx := yw.rng.IntN(numTableFields)
+		fieldIdx := yw.rng.Intn(numTableFields)
 		// Read.
 		var oldValue []byte
 		readStmt := yw.readFieldForUpdateStmts[fieldIdx]
@@ -957,30 +866,16 @@ func (yw *ycsbWorker) readModifyWriteRow(ctx context.Context) error {
 
 // Choose an operation in proportion to the frequencies.
 func (yw *ycsbWorker) chooseOp() operation {
-	// To get to an operation which matches the provided distribution, we first
-	// obtain a pseudo-random float value in the range of [0.0,1.0). Then, for
-	// each of the operation distributions (which sum to 1.0), we determine if
-	// the float value is less than or equal to the given operation
-	// distribution. If it is, we select that operation. If it's not, then we
-	// subtract the given distribution from the float value obtained, and
-	// compare the resultant value against the next operation's distribution.
-	// This is guaranteed to find an operation with correct distribution because
-	// the distributions sum to 1.0 and the pseudo-random float range is
-	// exclusive of the value 1.0.
 	p := yw.rng.Float32()
-	if p <= yw.config.updateFreq {
+	if readOnly.Load() == 0 && p <= yw.config.updateFreq {
 		return updateOp
 	}
 	p -= yw.config.updateFreq
-	if p <= yw.config.insertFreq {
+	if readOnly.Load() == 0 && p <= yw.config.insertFreq {
 		return insertOp
 	}
 	p -= yw.config.insertFreq
-	if p <= yw.config.deleteFreq {
-		return deleteOp
-	}
-	p -= yw.config.deleteFreq
-	if p <= yw.config.readModifyWriteFreq {
+	if readOnly.Load() == 0 && p <= yw.config.readModifyWriteFreq {
 		return readModifyWriteOp
 	}
 	p -= yw.config.readModifyWriteFreq

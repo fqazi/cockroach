@@ -16,7 +16,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
@@ -52,6 +51,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/netutil/addr"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/workload"
 	"github.com/cockroachdb/cockroach/pkg/workload/histogram"
@@ -65,7 +65,7 @@ import (
 
 type serverEntry struct {
 	serverutils.TestServerInterface
-	adminClient    serverpb.RPCAdminClient
+	adminClient    serverpb.AdminClient
 	nodeID         roachpb.NodeID
 	decommissioned bool
 }
@@ -87,7 +87,7 @@ type transientCluster struct {
 
 	stickyVFSRegistry fs.StickyRegistry
 
-	drainAndShutdown func(ctx context.Context, adminClient serverpb.RPCAdminClient) error
+	drainAndShutdown func(ctx context.Context, adminClient serverpb.AdminClient) error
 
 	infoLog  LoggerFn
 	warnLog  LoggerFn
@@ -95,7 +95,7 @@ type transientCluster struct {
 
 	// latencyEnabled controls whether simulated latency is currently enabled.
 	// It is only relevant when using SimulateLatency.
-	latencyEnabled atomic.Bool
+	latencyEnabled syncutil.AtomicBool
 }
 
 // maxNodeInitTime is the maximum amount of time to wait for nodes to
@@ -104,7 +104,7 @@ const maxNodeInitTime = 60 * time.Second
 
 // secondaryTenantID is the ID of the secondary tenant to use when
 // --multitenant=true.
-const secondaryTenantID = 3
+const secondaryTenantID = 2
 
 // demoOrg is the organization to use to request an evaluation
 // license.
@@ -146,7 +146,7 @@ func NewDemoCluster(
 	warnLog LoggerFn,
 	shoutLog ShoutLoggerFn,
 	startStopper func(ctx context.Context) (*stop.Stopper, error),
-	drainAndShutdown func(ctx context.Context, s serverpb.RPCAdminClient) error,
+	drainAndShutdown func(ctx context.Context, s serverpb.AdminClient) error,
 ) (DemoCluster, error) {
 	c := &transientCluster{
 		demoCtx:          demoCtx,
@@ -542,7 +542,7 @@ func (c *transientCluster) startTenantService(
 				Server: &server.TestingKnobs{
 					ContextTestingKnobs: rpc.ContextTestingKnobs{
 						InjectedLatencyOracle:  latencyMap,
-						InjectedLatencyEnabled: c.latencyEnabled.Load,
+						InjectedLatencyEnabled: c.latencyEnabled.Get,
 					},
 				},
 			},
@@ -570,7 +570,7 @@ func (c *transientCluster) startTenantService(
 					Server: &server.TestingKnobs{
 						ContextTestingKnobs: rpc.ContextTestingKnobs{
 							InjectedLatencyOracle:  latencyMap,
-							InjectedLatencyEnabled: c.latencyEnabled.Load,
+							InjectedLatencyEnabled: c.latencyEnabled.Get,
 						},
 					},
 				},
@@ -589,7 +589,7 @@ func (c *transientCluster) startTenantService(
 // clears the remote clock tracking. If the remote clocks were not cleared,
 // bad routing decisions would be made as soon as latency is turned on.
 func (c *transientCluster) SetSimulatedLatency(on bool) {
-	c.latencyEnabled.Store(on)
+	c.latencyEnabled.Set(on)
 	for _, s := range c.servers {
 		s.RPCContext().RemoteClocks.TestingResetLatencyInfos()
 	}
@@ -649,7 +649,7 @@ func (c *transientCluster) createAndAddNode(
 		// startup routine.
 		serverKnobs.ContextTestingKnobs = rpc.ContextTestingKnobs{
 			InjectedLatencyOracle:  regionlatency.MakeAddrMap(),
-			InjectedLatencyEnabled: c.latencyEnabled.Load,
+			InjectedLatencyEnabled: c.latencyEnabled.Get,
 		}
 	}
 
@@ -795,7 +795,7 @@ func (c *transientCluster) waitForNodeIDReadiness(
 			if err != nil {
 				return err
 			}
-			c.servers[idx].adminClient = conn.NewAdminClient()
+			c.servers[idx].adminClient = serverpb.NewAdminClient(conn)
 
 		}
 		break
@@ -924,8 +924,7 @@ func (demoCtx *Context) testServerArgsForTransientCluster(
 		EnableDemoLoginEndpoint: true,
 		// Demo clusters by default will create their own tenants, so we
 		// don't need to create them here.
-		DefaultTestTenant: base.TestControlsTenantsExplicitly,
-		DefaultTenantName: roachpb.TenantName(demoTenantName),
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 
 		Knobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
@@ -1083,9 +1082,9 @@ func (c *transientCluster) DrainAndShutdown(ctx context.Context, nodeID int32) e
 // server than the one referred to by the node ID.
 func (c *transientCluster) findOtherServer(
 	ctx context.Context, nodeID int32, op string,
-) (serverpb.RPCAdminClient, error) {
+) (serverpb.AdminClient, error) {
 	// Find a node to use as the sender.
-	var adminClient serverpb.RPCAdminClient
+	var adminClient serverpb.AdminClient
 	for _, s := range c.servers {
 		if s.adminClient != nil && s.nodeID != roachpb.NodeID(nodeID) {
 			adminClient = s.adminClient
@@ -1219,7 +1218,7 @@ func (c *transientCluster) startServerInternal(
 
 	c.servers[serverIdx] = serverEntry{
 		TestServerInterface: s,
-		adminClient:         conn.NewAdminClient(),
+		adminClient:         serverpb.NewAdminClient(conn),
 		nodeID:              nodeID,
 	}
 
@@ -1482,7 +1481,6 @@ func (c *transientCluster) generateCerts(ctx context.Context, certsDir string) (
 			true, /* overwrite */
 			username.RootUserName(),
 			nil,  /* tenantIDs - this makes it valid for all tenants */
-			nil,  /* tenantNames - this makes it valid for all tenants */
 			true, /* generatePKCS8Key */
 		); err != nil {
 			return err
@@ -1499,7 +1497,6 @@ func (c *transientCluster) generateCerts(ctx context.Context, certsDir string) (
 			true, /* overwrite */
 			demoUser,
 			nil,  /* tenantIDs - this makes it valid for all tenants */
-			nil,  /* tenantNames - this makes it valid for all tenants */
 			true, /* generatePKCS8Key */
 		); err != nil {
 			return err
@@ -1714,7 +1711,7 @@ func (c *transientCluster) SetupWorkload(ctx context.Context) error {
 				if err != nil {
 					return err
 				}
-				sqlURLs = append(sqlURLs, sqlURL.WithDatabase(gen.Meta().Name).ToPQ().String())
+				sqlURLs = append(sqlURLs, sqlURL.ToPQ().String())
 			}
 			if err := c.runWorkload(ctx, c.demoCtx.WorkloadGenerator, sqlURLs); err != nil {
 				return errors.Wrapf(err, "starting background workload")

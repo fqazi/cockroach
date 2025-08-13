@@ -3,9 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import join from "lodash/join";
-import random from "lodash/random";
-import sample from "lodash/sample";
+import _ from "lodash";
 
 export function randomName(): string {
   // Add more! Have fun.
@@ -48,5 +46,5 @@ export function randomName(): string {
     "turkey",
   ];
 
-  return join([sample(adjectives), sample(nouns), random(1, 42)], "_");
+  return _.join([_.sample(adjectives), _.sample(nouns), _.random(1, 42)], "_");
 }

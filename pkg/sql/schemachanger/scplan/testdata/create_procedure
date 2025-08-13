@@ -55,13 +55,11 @@ StatementPhase stage 1 of 1 with 11 MutationType ops
             closedtypeids:
             - 107
             - 108
-            typename: public.notmyworkday
           defaultexpr: ""
         ReturnType:
           Type:
             family: VoidFamily
             oid: 2278
-          TypeName: VOID
     *scop.SetFunctionName
       FunctionID: 109
       Name: p
@@ -199,13 +197,11 @@ PreCommitPhase stage 2 of 2 with 11 MutationType ops
             closedtypeids:
             - 107
             - 108
-            typename: public.notmyworkday
           defaultexpr: ""
         ReturnType:
           Type:
             family: VoidFamily
             oid: 2278
-          TypeName: VOID
     *scop.SetFunctionName
       FunctionID: 109
       Name: p
@@ -414,13 +410,11 @@ StatementPhase stage 1 of 1 with 11 MutationType ops
             closedtypeids:
             - 107
             - 108
-            typename: public.notmyworkday
           defaultexpr: ""
         ReturnType:
           Type:
             family: VoidFamily
             oid: 2278
-          TypeName: VOID
     *scop.SetFunctionName
       FunctionID: 111
       Name: p
@@ -560,13 +554,11 @@ PreCommitPhase stage 2 of 2 with 11 MutationType ops
             closedtypeids:
             - 107
             - 108
-            typename: public.notmyworkday
           defaultexpr: ""
         ReturnType:
           Type:
             family: VoidFamily
             oid: 2278
-          TypeName: VOID
     *scop.SetFunctionName
       FunctionID: 111
       Name: p

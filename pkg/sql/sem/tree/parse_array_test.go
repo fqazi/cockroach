@@ -7,7 +7,6 @@ package tree
 
 import (
 	"bytes"
-	"context"
 	"math/rand"
 	"testing"
 
@@ -129,9 +128,7 @@ lo}`, types.String, Datums{NewDString(`hel`), NewDString(`lo`)}},
 			if err != nil {
 				t.Fatalf("ARRAY %s: got error %s, expected %s", td.str, err.Error(), expected)
 			}
-			if cmp, err := actual.Compare(context.Background(), noopUnwrapCompareContext{}, expected); err != nil {
-				t.Fatal(err)
-			} else if cmp != 0 {
+			if actual.Compare(noopUnwrapCompareContext{}, expected) != 0 {
 				t.Fatalf("ARRAY %s: got %s, expected %s", td.str, actual, expected)
 			}
 		})
@@ -142,7 +139,7 @@ type noopUnwrapCompareContext struct {
 	CompareContext
 }
 
-func (noopUnwrapCompareContext) UnwrapDatum(ctx context.Context, d Datum) Datum { return d }
+func (noopUnwrapCompareContext) UnwrapDatum(d Datum) Datum { return d }
 
 const randomArrayIterations = 1000
 const randomArrayMaxLength = 10

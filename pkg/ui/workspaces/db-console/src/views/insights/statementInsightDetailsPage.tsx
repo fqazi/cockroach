@@ -9,13 +9,12 @@ import {
 } from "@cockroachlabs/cluster-ui";
 import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
-
-import { refreshUserSQLRoles } from "src/redux/apiReducers";
 import { AdminUIState } from "src/redux/state";
+import { refreshUserSQLRoles } from "src/redux/apiReducers";
+import { selectStatementInsightDetails } from "src/views/insights/insightsSelectors";
 import { setGlobalTimeScaleAction } from "src/redux/statements";
 import { selectTimeScale } from "src/redux/timeScale";
 import { selectHasAdminRole } from "src/redux/user";
-import { selectStatementInsightDetails } from "src/views/insights/insightsSelectors";
 
 const mapStateToProps = (
   state: AdminUIState,
@@ -38,8 +37,7 @@ const StatementInsightDetailsPage = withRouter(
   connect<
     StatementInsightDetailsStateProps,
     StatementInsightDetailsDispatchProps,
-    RouteComponentProps,
-    AdminUIState
+    RouteComponentProps
   >(
     mapStateToProps,
     mapDispatchToProps,

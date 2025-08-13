@@ -22,7 +22,6 @@ func (p *planner) Discard(ctx context.Context, s *tree.Discard) (planNode, error
 }
 
 type discardNode struct {
-	zeroInputPlanNode
 	mode tree.DiscardMode
 }
 
@@ -44,6 +43,7 @@ func (n *discardNode) startExec(params runParams) error {
 
 		// RESET ALL
 		if err := params.p.resetAllSessionVars(params.ctx); err != nil {
+
 			return err
 		}
 

@@ -16,7 +16,7 @@ import (
 
 // MakeTenantPrefix creates the key prefix associated with the specified tenant.
 func MakeTenantPrefix(tenID roachpb.TenantID) roachpb.Key {
-	if tenID == roachpb.TenantOne {
+	if tenID == roachpb.SystemTenantID {
 		return nil
 	}
 	return encoding.EncodeUvarintAscending(TenantPrefix, tenID.ToUint64())
@@ -24,8 +24,8 @@ func MakeTenantPrefix(tenID roachpb.TenantID) roachpb.Key {
 
 // MakeTenantSpan creates the start/end key pair associated with the specified tenant.
 func MakeTenantSpan(tenID roachpb.TenantID) roachpb.Span {
-	if tenID == roachpb.TenantOne {
-		return roachpb.Span{Key: TableDataMin, EndKey: TableDataMax}
+	if tenID == roachpb.SystemTenantID {
+		return roachpb.Span{Key: MinKey, EndKey: MaxKey}
 	}
 	tenIDint := tenID.ToUint64()
 	return roachpb.Span{
@@ -38,10 +38,10 @@ func MakeTenantSpan(tenID roachpb.TenantID) roachpb.Span {
 // the remainder of the key (with the prefix removed) and the decoded tenant ID.
 func DecodeTenantPrefix(key roachpb.Key) ([]byte, roachpb.TenantID, error) {
 	if len(key) == 0 { // key.Equal(roachpb.RKeyMin)
-		return nil, roachpb.TenantOne, nil
+		return nil, roachpb.SystemTenantID, nil
 	}
 	if key[0] != tenantPrefixByte {
-		return key, roachpb.TenantOne, nil
+		return key, roachpb.SystemTenantID, nil
 	}
 	rem, tenID, err := encoding.DecodeUvarintAscending(key[1:])
 	if err != nil {
@@ -50,6 +50,28 @@ func DecodeTenantPrefix(key roachpb.Key) ([]byte, roachpb.TenantID, error) {
 	id, err := roachpb.MakeTenantID(tenID)
 	if err != nil {
 		return nil, roachpb.TenantID{}, err
+	}
+	return rem, id, nil
+}
+
+// DecodeTenantPrefixE determines the tenant ID from the key prefix, returning
+// the remainder of the key (with the prefix removed) and the decoded tenant ID.
+// Unlike DecodeTenantPrefix, it returns an error rather than panicking if the
+// tenant ID is invalid.
+func DecodeTenantPrefixE(key roachpb.Key) ([]byte, roachpb.TenantID, error) {
+	if len(key) == 0 { // key.Equal(roachpb.RKeyMin)
+		return nil, roachpb.SystemTenantID, nil
+	}
+	if key[0] != tenantPrefixByte {
+		return key, roachpb.SystemTenantID, nil
+	}
+	rem, tenID, err := encoding.DecodeUvarintAscending(key[1:])
+	if err != nil {
+		return nil, roachpb.TenantID{}, err
+	}
+	id, err := roachpb.MakeTenantID(tenID)
+	if err != nil {
+		return rem, roachpb.TenantID{}, err
 	}
 	return rem, id, nil
 }
@@ -124,7 +146,6 @@ type sqlEncoder struct {
 	// compute it once, and store it here, instead of having to do so every time
 	// we need access to it.
 	endKey *roachpb.Key
-	roachpb.TenantID
 }
 
 // sqlDecoder implements the decoding logic for SQL keys.
@@ -138,34 +159,21 @@ type sqlDecoder struct {
 
 // MakeSQLCodec creates a new  SQLCodec suitable for manipulating SQL keys.
 func MakeSQLCodec(tenID roachpb.TenantID) SQLCodec {
-	if tenID.IsSystem() {
-		return SystemSQLCodec
-	}
 	sp := MakeTenantSpan(tenID)
 	sp.Key = sp.Key[:len(sp.Key):len(sp.Key)]             // bound capacity, avoid aliasing
 	sp.EndKey = sp.EndKey[:len(sp.EndKey):len(sp.EndKey)] // bound capacity, avoid aliasing
 	return SQLCodec{
-		sqlEncoder: sqlEncoder{&sp.Key, &sp.EndKey, tenID},
+		sqlEncoder: sqlEncoder{&sp.Key, &sp.EndKey},
 		sqlDecoder: sqlDecoder{&sp.Key},
 	}
 }
 
 // SystemSQLCodec is a SQL key codec for the system tenant.
-//
-// NB: We don't use MakeSQLCodec here since the system tenant is special and its
-// prefix is empty, rather than the start of its span, so the Codec for it wants
-// the empty key, rather than start key, as its buf. Ideally we would set the
-// endKey to TableDataMax instead of MaxKey here, but TableDataMax is currently
-// defined in terms of this codec. We would want to fix this if/when we make the
-// tenant with ID one non-system, but we'll get rid of/rename this then as well.
-var SystemSQLCodec = SQLCodec{
-	sqlEncoder: sqlEncoder{&MinKey, &MaxKey, roachpb.SystemTenantID},
-	sqlDecoder: sqlDecoder{&MinKey},
-}
+var SystemSQLCodec = MakeSQLCodec(roachpb.SystemTenantID)
 
 // ForSystemTenant returns whether the encoder is bound to the system tenant.
 func (e sqlEncoder) ForSystemTenant() bool {
-	return e.TenantID.IsSystem()
+	return len(e.TenantPrefix()) == 0
 }
 
 // TenantPrefix returns the key prefix used for the tenants's data.
@@ -183,12 +191,6 @@ func (e sqlEncoder) TenantSpan() roachpb.Span {
 	key := *e.buf
 	endKey := *e.endKey
 	return roachpb.Span{Key: key, EndKey: endKey}
-}
-
-// TableSpan returns a span representing the table's keyspace.
-func (e sqlEncoder) TableSpan(tableID uint32) roachpb.Span {
-	key := e.TablePrefix(tableID)
-	return roachpb.Span{Key: key, EndKey: key.PrefixEnd()}
 }
 
 // TablePrefix returns the key prefix used for the table's data.

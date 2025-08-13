@@ -24,7 +24,7 @@ func ParseDatumStringAs(
 	// only parses the internal postgres string representation of arrays.
 	case types.ArrayFamily, types.CollatedStringFamily:
 		if semaCtx == nil {
-			sema := tree.MakeSemaContext(nil /* resolver */)
+			sema := tree.MakeSemaContext()
 			semaCtx = &sema
 		}
 		return parseAsTyp(ctx, evalCtx, semaCtx, t, s)

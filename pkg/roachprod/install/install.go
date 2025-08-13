@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strings"
 
 	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
@@ -81,36 +80,9 @@ sudo apt-get update;
 sudo apt-get install -y postgresql;
 `,
 
-	"fluent-bit": `
-curl -fsSL https://packages.fluentbit.io/fluentbit.key | sudo gpg --no-tty --batch --yes --dearmor -o /etc/apt/keyrings/fluent-bit.gpg;
-code_name="$(. /etc/os-release && echo "${VERSION_CODENAME}")";
-echo "deb [signed-by=/etc/apt/keyrings/fluent-bit.gpg] https://packages.fluentbit.io/ubuntu/${code_name} ${code_name} main" | \
-  sudo tee /etc/apt/sources.list.d/fluent-bit.list > /dev/null;
-sudo apt-get update;
-sudo apt-get install -y fluent-bit;
-`,
-
-	"opentelemetry": `
-sudo apt-get update;
-sudo apt-get install -y curl;
-curl -L -o /tmp/otelcol-contrib.deb https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.101.0/otelcol-contrib_0.101.0_linux_amd64.deb;
-sudo apt-get install -y /tmp/otelcol-contrib.deb;
-rm /tmp/otelcol-contrib.deb;
-`,
-
 	"bzip2": `
 sudo apt-get update;
 sudo apt-get install -y bzip2;
-`,
-
-	"nmap": `
-sudo apt-get update;
-sudo apt-get install -y nmap;
-`,
-
-	"vmtouch": `
-sudo apt-get update;
-sudo apt-get install -y vmtouch;
 `,
 }
 
@@ -148,8 +120,6 @@ func InstallTool(
 	if !ok {
 		return fmt.Errorf("unknown tool %q", softwareName)
 	}
-	cmd = strings.ReplaceAll(cmd, "%ROACHPROD_CLUSTER_NAME%", c.Name)
-
 	// Ensure that we early exit if any of the shell statements fail.
 	cmd = "set -exuo pipefail;" + cmd
 	if err := c.Run(ctx, l, stdout, stderr, WithNodes(nodes), "installing "+softwareName, cmd); err != nil {

@@ -164,8 +164,14 @@ module.exports = (env, argv) => {
         profile: true,
       }),
       new MomentLocalesPlugin(),
-      // Use MomentTimezoneDataPlugin to include all timezone data
+      new webpack.NormalModuleReplacementPlugin(
+        /node_modules\/antd\/lib\/style\/index\.less/,
+        path.resolve(__dirname, "src/core/antd-patch.less"),
+      ),
+
+      // Use MomentTimezoneDataPlugin to remove timezone data that we don't need.
       new MomentTimezoneDataPlugin({
+        matchZones: ['Etc/UTC', 'America/New_York'],
         startYear: 2021,
         endYear: currentYear + 10,
         // We have to tell the plugin where to store the pruned file

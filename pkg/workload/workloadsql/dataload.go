@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cockroachdb/cockroach-go/v2/crdb"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/workload"
@@ -57,44 +57,12 @@ func (l InsertsDataLoader) InitialDataLoad(
 		}
 	}
 
-	const maxTableBatchSize = 5000
-	currentTable := 0
-	// When dealing with large number of tables, opt to use transactions
-	// to minimize the round trips involved, which can be bad on multi-region
-	// clusters.
-	for currentTable < len(tables) {
-		batchEnd := min(currentTable+maxTableBatchSize, len(tables))
-		nextBatch := tables[currentTable:batchEnd]
-		if err := crdb.ExecuteTx(ctx, db, &gosql.TxOptions{}, func(tx *gosql.Tx) error {
-			// Run the operations in a single txn so they complete more quickly.
-			if _, err := tx.Exec("SET LOCAL autocommit_before_ddl = false"); err != nil {
-				return err
-			}
-			currentDatabase := ""
-			for _, table := range nextBatch {
-				// Switch databases if one is explicitly specified for multi-region
-				// configurations with multiple databases.
-				if table.ObjectPrefix != nil &&
-					table.ObjectPrefix.ExplicitCatalog &&
-					currentDatabase != table.ObjectPrefix.Catalog() {
-					_, err := tx.ExecContext(ctx, "USE $1", table.ObjectPrefix.Catalog())
-					if err != nil {
-						return err
-					}
-					currentDatabase = table.ObjectPrefix.Catalog()
-				}
-				tableName := table.GetResolvedName()
-				createStmt := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s %s`, tableName.String(), table.Schema)
-				if _, err := tx.ExecContext(ctx, createStmt); err != nil {
-					return errors.WithDetailf(errors.Wrapf(err, "could not create table: %q", table.Name),
-						"SQL: %s", createStmt)
-				}
-			}
-			return nil
-		}); err != nil {
-			return 0, err
+	for _, table := range tables {
+		createStmt := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s %s`, tree.NameString(table.Name), table.Schema)
+		if _, err := db.ExecContext(ctx, createStmt); err != nil {
+			return 0, errors.WithDetailf(errors.Wrapf(err, "could not create table: %q", table.Name),
+				"SQL: %s", createStmt)
 		}
-		currentTable += maxTableBatchSize
 	}
 
 	if hooks.PreLoad != nil {
@@ -124,7 +92,6 @@ func (l InsertsDataLoader) InitialDataLoad(
 				endIdx = table.InitialRows.NumBatches
 			}
 			table := table // copy for safe reference in Go routine
-			tableName := table.GetResolvedName()
 			g.Go(func() error {
 				var insertStmtBuf bytes.Buffer
 				var params []interface{}
@@ -133,11 +100,11 @@ func (l InsertsDataLoader) InitialDataLoad(
 					if len(params) > 0 {
 						insertStmt := insertStmtBuf.String()
 						if _, err := db.ExecContext(gCtx, insertStmt, params...); err != nil {
-							return errors.Wrapf(err, "failed insert into %s", tableName.String())
+							return errors.Wrapf(err, "failed insert into %s", table.Name)
 						}
 					}
 					insertStmtBuf.Reset()
-					fmt.Fprintf(&insertStmtBuf, `INSERT INTO %s VALUES `, tableName.String())
+					fmt.Fprintf(&insertStmtBuf, `INSERT INTO %s VALUES `, tree.NameString(table.Name))
 					params = params[:0]
 					numRows = 0
 					return nil

@@ -94,37 +94,10 @@ func (ba *BatchRequest) EarliestActiveTimestamp() hlc.Timestamp {
 	ts := ba.Timestamp
 	for _, ru := range ba.Requests {
 		switch t := ru.GetInner().(type) {
-		case *DeleteRequest:
-			// A DeleteRequest with ExpectExclusionSince set need to be able to
-			// observe MVCC versions from the specified time to correctly detect
-			// isolation violations.
-			//
-			// See the example in RefreshRequest for more details.
-			if !t.ExpectExclusionSince.IsEmpty() {
-				ts.Backward(t.ExpectExclusionSince.Next())
-			}
 		case *ExportRequest:
 			if !t.StartTime.IsEmpty() {
 				// NB: StartTime.Next() because StartTime is exclusive.
 				ts.Backward(t.StartTime.Next())
-			}
-		case *GetRequest:
-			// A GetRequest with ExpectExclusionSince set need to be able to observe
-			// MVCC versions from the specified time to correctly detect isolation
-			// violations.
-			//
-			// See the example in RefreshRequest for more details.
-			if !t.ExpectExclusionSince.IsEmpty() {
-				ts.Backward(t.ExpectExclusionSince.Next())
-			}
-		case *PutRequest:
-			// A PutRequest with ExpectExclusionSince set need to be able to observe MVCC
-			// versions from the specified time to correctly detect isolation
-			// violations.
-			//
-			// See the example in RefreshRequest for more details.
-			if !t.ExpectExclusionSince.IsEmpty() {
-				ts.Backward(t.ExpectExclusionSince)
 			}
 		case *RevertRangeRequest:
 			// This method is only used to check GC Threshold so Revert requests that
@@ -432,25 +405,25 @@ func (ba *BatchRequest) IsCompleteTransaction() bool {
 	panic(fmt.Sprintf("unreachable. Batch requests: %s", TruncatedRequestsString(ba.Requests, 1024)))
 }
 
-// hasFlag returns true iff at least one of the requests within the batch
-// contains at least one of the specified flags.
-func (ba *BatchRequest) hasFlag(flags flag) bool {
+// hasFlag returns true iff one of the requests within the batch contains the
+// specified flag.
+func (ba *BatchRequest) hasFlag(flag flag) bool {
 	for _, union := range ba.Requests {
-		if (union.GetInner().flags() & flags) != 0 {
+		if (union.GetInner().flags() & flag) != 0 {
 			return true
 		}
 	}
 	return false
 }
 
-// hasFlagForAll returns true iff all of the requests within the batch contain
-// all of the specified flags.
-func (ba *BatchRequest) hasFlagForAll(flags flag) bool {
+// hasFlagForAll returns true iff all of the requests within the batch contains
+// the specified flag.
+func (ba *BatchRequest) hasFlagForAll(flag flag) bool {
 	if len(ba.Requests) == 0 {
 		return false
 	}
 	for _, union := range ba.Requests {
-		if (union.GetInner().flags() & flags) != flags {
+		if (union.GetInner().flags() & flag) == 0 {
 			return false
 		}
 	}
@@ -480,26 +453,20 @@ func (ba *BatchRequest) GetArg(method Method) (Request, bool) {
 }
 
 func (br *BatchResponse) String() string {
-	return redact.StringWithoutMarkers(br)
-}
-
-// SafeFormat implements the redact.SafeFormatter interface.
-func (br *BatchResponse) SafeFormat(s redact.SafePrinter, verb rune) {
-	// Marking Error of BatchResponse as safe as Outside of the RPC boundaries,
-	// this field is nil and must neither be checked nor populated
-	s.Printf("(err: %v)", br.Error)
-
+	var str []string
+	str = append(str, fmt.Sprintf("(err: %v)", br.Error))
 	for count, union := range br.Responses {
 		// Limit the strings to provide just a summary. Without this limit a log
 		// message with a BatchResponse can be very long.
 		if count >= 20 && count < len(br.Responses)-5 {
 			if count == 20 {
-				s.Printf(", ... %d skipped ...", len(br.Responses)-25)
+				str = append(str, fmt.Sprintf("... %d skipped ...", len(br.Responses)-25))
 			}
 			continue
 		}
-		s.Printf(", %T", redact.Safe(union.GetInner()))
+		str = append(str, fmt.Sprintf("%T", union.GetInner()))
 	}
+	return strings.Join(str, ", ")
 }
 
 // LockSpanIterate calls LockSpanIterate for each request in the batch.
@@ -537,7 +504,7 @@ func LockSpanIterate(req Request, resp Response, fn func(roachpb.Span, lock.Dura
 	if canIterateResponseKeys(req, resp) {
 		return ResponseKeyIterate(req, resp, func(key roachpb.Key) {
 			fn(roachpb.Span{Key: key}, dur)
-		}, true /* includeLockedNonExisting */)
+		})
 	}
 	if span, ok := actualSpan(req, resp); ok {
 		fn(span, dur)
@@ -581,7 +548,7 @@ func (ba *BatchRequest) RefreshSpanIterate(br *BatchResponse, fn func(roachpb.Sp
 			// transaction ever needs to refresh.
 			if err := ResponseKeyIterate(req, resp, func(k roachpb.Key) {
 				fn(roachpb.Span{Key: k})
-			}, false /* includeLockedNonExisting */); err != nil {
+			}); err != nil {
 				return err
 			}
 		} else {
@@ -641,19 +608,13 @@ func canIterateResponseKeys(req Request, resp Response) bool {
 // the function will not be called.
 // NOTE: it is assumed that req (if it is a Scan or a ReverseScan) didn't use
 // COL_BATCH_RESPONSE scan format.
-func ResponseKeyIterate(
-	req Request, resp Response, fn func(roachpb.Key), includeLockedNonExisting bool,
-) error {
+func ResponseKeyIterate(req Request, resp Response, fn func(roachpb.Key)) error {
 	if resp == nil {
 		return errors.Errorf("cannot iterate over response keys of %s request with nil response", req.Method())
 	}
 	switch v := resp.(type) {
 	case *GetResponse:
-		getReq, ok := req.(*GetRequest)
-		if !ok {
-			return errors.AssertionFailedf("GetRequest expected for GetResponse: %#+v", req)
-		}
-		if (v.Value != nil) || (includeLockedNonExisting && getReq.LockNonExisting) {
+		if v.Value != nil {
 			fn(req.Header().Key)
 		}
 	case *ScanResponse:
@@ -929,9 +890,6 @@ func (ba *BatchRequest) SafeFormat(s redact.SafePrinter, verb rune) {
 	if ba.LockTimeout != 0 {
 		s.Printf(", [lock-timeout: %s]", ba.LockTimeout)
 	}
-	if ba.DeadlockTimeout != 0 {
-		s.Printf(", [deadlock-timeout: %s]", ba.DeadlockTimeout)
-	}
 	if ba.AmbiguousReplayProtection {
 		s.Printf(", [protect-ambiguous-replay]")
 	}
@@ -970,6 +928,11 @@ func (ba *BatchRequest) ValidateForEvaluation() error {
 	}
 	if _, ok := ba.GetArg(EndTxn); ok && ba.Txn == nil {
 		return errors.AssertionFailedf("EndTxn request without transaction")
+	}
+	if ba.Txn != nil {
+		if ba.Txn.WriteTooOld && ba.Txn.ReadTimestamp == ba.Txn.WriteTimestamp {
+			return errors.AssertionFailedf("WriteTooOld set but no offset in timestamps. txn: %s", ba.Txn)
+		}
 	}
 	return nil
 }

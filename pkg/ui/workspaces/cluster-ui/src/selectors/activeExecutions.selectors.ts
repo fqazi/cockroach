@@ -4,16 +4,15 @@
 // included in the /LICENSE file.
 
 import { createSelector } from "reselect";
-
+import { ActiveExecutions } from "src/activeExecutions/types";
+import { AppState } from "src/store";
+import { selectActiveExecutionsCombiner } from "src/selectors/activeExecutionsCommon.selectors";
+import { selectExecutionID } from "src/selectors/common";
 import {
   getActiveTransaction,
   getContentionDetailsFromLocksAndTxns,
   getActiveStatement,
 } from "src/activeExecutions/activeStatementUtils";
-import { ActiveExecutions } from "src/activeExecutions/types";
-import { selectActiveExecutionsCombiner } from "src/selectors/activeExecutionsCommon.selectors";
-import { selectExecutionID } from "src/selectors/common";
-import { AppState } from "src/store";
 
 // This file contains selector functions used across active execution
 // pages that are specific to cluster-ui.

@@ -6,8 +6,6 @@
 package colexecutils
 
 import (
-	"context"
-
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecerror"
@@ -15,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/errors"
 )
 
@@ -102,7 +99,7 @@ type AppendOnlyBufferedBatch struct {
 
 	allocator   *colmem.Allocator
 	length      int
-	colVecs     []*coldata.Vec
+	colVecs     []coldata.Vec
 	colsToStore []int
 	// sel is the selection vector on this batch. Note that it is stored
 	// separately from embedded coldata.Batch because we need to be able to
@@ -137,12 +134,12 @@ func (b *AppendOnlyBufferedBatch) Width() int {
 }
 
 // ColVec implements the coldata.Batch interface.
-func (b *AppendOnlyBufferedBatch) ColVec(i int) *coldata.Vec {
+func (b *AppendOnlyBufferedBatch) ColVec(i int) coldata.Vec {
 	return b.colVecs[i]
 }
 
 // ColVecs implements the coldata.Batch interface.
-func (b *AppendOnlyBufferedBatch) ColVecs() []*coldata.Vec {
+func (b *AppendOnlyBufferedBatch) ColVecs() []coldata.Vec {
 	return b.colVecs
 }
 
@@ -168,12 +165,12 @@ func (b *AppendOnlyBufferedBatch) SetSelection(useSel bool) {
 }
 
 // AppendCol implements the coldata.Batch interface.
-func (b *AppendOnlyBufferedBatch) AppendCol(*coldata.Vec) {
+func (b *AppendOnlyBufferedBatch) AppendCol(coldata.Vec) {
 	colexecerror.InternalError(errors.AssertionFailedf("AppendCol is prohibited on AppendOnlyBufferedBatch"))
 }
 
 // ReplaceCol implements the coldata.Batch interface.
-func (b *AppendOnlyBufferedBatch) ReplaceCol(*coldata.Vec, int) {
+func (b *AppendOnlyBufferedBatch) ReplaceCol(coldata.Vec, int) {
 	colexecerror.InternalError(errors.AssertionFailedf("ReplaceCol is prohibited on AppendOnlyBufferedBatch"))
 }
 
@@ -319,22 +316,14 @@ func init() {
 	}
 }
 
-// AccountForMetadata registers the memory footprint of meta with the memory
-// account and returns the total new memory usage.
-func AccountForMetadata(
-	ctx context.Context, memAcc *mon.BoundAccount, meta []execinfrapb.ProducerMetadata,
-) int64 {
-	var newMemUsage int64
+// AccountForMetadata registers the memory footprint of meta with the allocator.
+func AccountForMetadata(allocator *colmem.Allocator, meta []execinfrapb.ProducerMetadata) {
 	for i := range meta {
 		// Perform the memory accounting for the LeafTxnFinalState metadata
 		// since it might be of non-trivial size.
 		if ltfs := meta[i].LeafTxnFinalState; ltfs != nil {
 			memUsage := roachpb.Spans(ltfs.RefreshSpans).MemUsageUpToLen()
-			if err := memAcc.Grow(ctx, memUsage); err != nil {
-				colexecerror.InternalError(err)
-			}
-			newMemUsage += memUsage
+			allocator.AdjustMemoryUsageAfterAllocation(memUsage)
 		}
 	}
-	return newMemUsage
 }

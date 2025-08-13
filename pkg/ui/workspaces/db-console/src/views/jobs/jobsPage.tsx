@@ -10,7 +10,6 @@ import {
 } from "@cockroachlabs/cluster-ui";
 import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
-
 import {
   createSelectorForKeyedCachedDataField,
   jobsKey,

@@ -3,18 +3,6 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import moment from "moment-timezone";
-
-import {
-  ContentionDetails,
-  ContentionTypeKey,
-  InsightExecEnum,
-  InsightNameEnum,
-  TxnContentionInsightDetails,
-} from "src/insights/types";
-
-import { FixFingerprintHexValue, getLogger } from "../util";
-
 import {
   executeInternalSql,
   formatApiResult,
@@ -27,13 +15,22 @@ import {
   SqlExecutionResponse,
   sqlResultsAreEmpty,
 } from "./sqlApi";
+import {
+  ContentionDetails,
+  ContentionTypeKey,
+  InsightExecEnum,
+  InsightNameEnum,
+  TxnContentionInsightDetails,
+} from "src/insights/types";
+import moment from "moment-timezone";
+import { FixFingerprintHexValue, getLogger } from "../util";
 import { TxnInsightDetailsRequest } from "./txnInsightDetailsApi";
+import { makeInsightsSqlRequest } from "./txnInsightsUtils";
 import {
   FingerprintStmtsResponseColumns,
   TxnStmtFingerprintsResponseColumns,
   TxnWithStmtFingerprints,
 } from "./txnInsightsApi";
-import { makeInsightsSqlRequest } from "./txnInsightsUtils";
 
 export type ContentionFilters = {
   waitingTxnID?: string;
@@ -221,7 +218,7 @@ function formatTxnContentionDetailsResponse(
       row.waitingTxnFingerprintID,
     ),
     blockingContentionDetails: response,
-    insightName: InsightNameEnum.HIGH_CONTENTION,
+    insightName: InsightNameEnum.highContention,
     execType: InsightExecEnum.TRANSACTION,
   };
 }

@@ -55,27 +55,42 @@ type TestingKnobs struct {
 	// server fails to start.
 	RPCListener net.Listener
 
-	// ClusterVersionOverride can be used to override the version of the cluster
-	// (assuming that one has to be created).
+	// BinaryVersionOverride overrides the binary version that the CRDB server
+	// will end up running. This value could also influence what version the
+	// cluster is bootstrapped at.
 	//
-	// Normally (when this knob isn't used), the cluster is initialized at
-	// cluster.Settings.Version.LatestVersion().
+	// This value, when set, influences test cluster/server creation in two
+	// different ways:
 	//
-	// When ClusterVersionOverride is set, the cluster will be at this version
-	// once initialization is complete. Note that we cannot bootstrap clusters at
-	// arbitrary versions - we can only bootstrap clusters at the Latest version
-	// and at final versions of previous supported releases. The cluster will be
-	// bootstrapped at the most recent bootstrappable version that is at most
-	// ClusterVersionOverride; after all the servers in the test cluster have been
-	// started, `SET CLUSTER SETTING version = ClusterVersionOverride` will be run
-	// to step through the upgrades until the specified version.
+	// Case 1:
+	// ------
+	// If the test has not overridden the
+	// `cluster.Settings.Version.MinSupportedVersion`, then the cluster will be
+	// bootstrapped at `minSupportedVersion`  (if this server is the one
+	// bootstrapping the cluster). After all the servers in the test cluster have
+	// been started, `SET CLUSTER SETTING version = BinaryVersionOverride` will be
+	// run to step through the upgrades until the specified override.
 	//
-	// ClusterVersionOverride is also used when advertising this server's binary
-	// version when sending out join requests.
+	// Case 2:
+	// ------
+	// If the test has overridden the
+	// `cluster.Settings.Version.MinSupportedVersion` then it is not safe for us
+	// to bootstrap at `minSupportedVersion` as it might be less than the
+	// overridden minimum supported version. Furthermore, we do not have the
+	// initial cluster data (system tables etc.) to bootstrap at the overridden
+	// minimum supported version. In this case we bootstrap at
+	// `BinaryVersionOverride` and populate the cluster with initial data
+	// corresponding to the `binaryVersion`. In other words no upgrades are
+	// *really* run and the server only thinks that it is running at
+	// `BinaryVersionOverride`. Tests that fall in this category should be audited
+	// for correctness.
+	//
+	// The version that we bootstrap at is also used when advertising this
+	// server's binary version when sending out join requests.
 	//
 	// NB: When setting this, you probably also want to set
 	// DisableAutomaticVersionUpgrade.
-	ClusterVersionOverride roachpb.Version
+	BinaryVersionOverride roachpb.Version
 	// An (additional) callback invoked whenever a
 	// node is permanently removed from the cluster.
 	OnDecommissionedCallback func(id roachpb.NodeID)
@@ -143,9 +158,16 @@ type TestingKnobs struct {
 		UpgradeTo roachpb.Version
 	}
 
-	// TenantAutoUpgradeLoopFrequency indicates how often the tenant
-	// auto upgrade loop will check if the tenant can be auto-upgraded.
-	TenantAutoUpgradeLoopFrequency time.Duration
+	// As of September 2023, only `v23.1` and master support shared process tenants. `v23.2` is not
+	// cut yet so the difference between the current binary version on master and v23.1 is only in the
+	// Internal version (both are major=23 minor=1). We only trigger shared process tenant auto upgrade
+	// on changes to major/minor versions but since we can only start shared process tenants in `v23.1`,
+	// there will not be any change to major/minor versions when upgrading from `v23.1` to master and
+	// we won't be able to test this new feature. This testing knob allows `TestTenantAutoUpgrade` to
+	// auto upgrade on changes to the Internal version.
+	// // TODO(ahmad/healthy-pod): Remove this once `v23.2` is cut and update `TestTenantAutoUpgrade`
+	// to reflect the changes.
+	AllowTenantAutoUpgradeOnInternalVersionChanges bool
 
 	// EnvironmentSampleInterval overrides base.DefaultMetricsSampleInterval when used to construct sampleEnvironmentCfg.
 	EnvironmentSampleInterval time.Duration

@@ -172,7 +172,7 @@ func TestTxnIDCacheCanBeDisabledViaClusterSetting(t *testing.T) {
 	sink := &counterSink{}
 	w := newWriter(st, sink)
 	w.Record(contentionpb.ResolvedTxnID{
-		TxnID: uuid.MakeV4(),
+		TxnID: uuid.FastMakeV4(),
 	})
 
 	w.DrainWriteBuffer()
@@ -182,7 +182,7 @@ func TestTxnIDCacheCanBeDisabledViaClusterSetting(t *testing.T) {
 	MaxSize.Override(ctx, &st.SV, 0)
 
 	w.Record(contentionpb.ResolvedTxnID{
-		TxnID: uuid.MakeV4(),
+		TxnID: uuid.FastMakeV4(),
 	})
 	w.DrainWriteBuffer()
 	require.Equal(t, 1, sink.numOfRecord)
@@ -191,7 +191,7 @@ func TestTxnIDCacheCanBeDisabledViaClusterSetting(t *testing.T) {
 	MaxSize.Override(ctx, &st.SV, 1<<10)
 
 	w.Record(contentionpb.ResolvedTxnID{
-		TxnID: uuid.MakeV4(),
+		TxnID: uuid.FastMakeV4(),
 	})
 	w.DrainWriteBuffer()
 	require.Equal(t, 2, sink.numOfRecord)

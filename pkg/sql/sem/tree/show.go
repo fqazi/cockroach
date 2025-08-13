@@ -86,6 +86,8 @@ const (
 	// BackupValidateDetails identifies a SHOW BACKUP VALIDATION
 	// statement.
 	BackupValidateDetails
+	// BackupConnectionTest identifies a SHOW BACKUP CONNECTION statement
+	BackupConnectionTest
 )
 
 // TODO (msbutler): 22.2 after removing old style show backup syntax, rename
@@ -104,7 +106,7 @@ type ShowBackup struct {
 
 // Format implements the NodeFormatter interface.
 func (node *ShowBackup) Format(ctx *FmtCtx) {
-	if node.Path == nil {
+	if node.InCollection != nil && node.Path == nil {
 		ctx.WriteString("SHOW BACKUPS IN ")
 		ctx.FormatURIs(node.InCollection)
 		return
@@ -118,16 +120,21 @@ func (node *ShowBackup) Format(ctx *FmtCtx) {
 		ctx.WriteString("FILES ")
 	case BackupSchemaDetails:
 		ctx.WriteString("SCHEMAS ")
+	case BackupConnectionTest:
+		ctx.WriteString("CONNECTION ")
 	}
 
 	if node.From {
 		ctx.WriteString("FROM ")
 	}
 
-	ctx.FormatNode(node.Path)
-	ctx.WriteString(" IN ")
-	ctx.FormatURIs(node.InCollection)
-
+	if node.InCollection != nil {
+		ctx.FormatNode(node.Path)
+		ctx.WriteString(" IN ")
+		ctx.FormatURIs(node.InCollection)
+	} else {
+		ctx.FormatURI(node.Path)
+	}
 	if !node.Options.IsDefault() {
 		ctx.WriteString(" WITH OPTIONS (")
 		ctx.FormatNode(&node.Options)
@@ -154,6 +161,7 @@ type ShowBackupOptions struct {
 	// `ENCRYPTION-INFO` file necessary to decode the incremental backup lives in
 	// the full backup dir.
 	EncryptionInfoDir Expr
+	DebugMetadataSST  bool
 
 	CheckConnectionTransferSize Expr
 	CheckConnectionDuration     Expr
@@ -216,6 +224,10 @@ func (o *ShowBackupOptions) Format(ctx *FmtCtx) {
 		maybeAddSep()
 		ctx.WriteString("skip size")
 	}
+	if o.DebugMetadataSST {
+		maybeAddSep()
+		ctx.WriteString("debug_dump_metadata_sst")
+	}
 
 	// The following are only used in connection-check SHOW.
 	if o.CheckConnectionConcurrency != nil {
@@ -245,6 +257,7 @@ func (o ShowBackupOptions) IsDefault() bool {
 		o.EncryptionPassphrase == options.EncryptionPassphrase &&
 		o.Privileges == options.Privileges &&
 		o.SkipSize == options.SkipSize &&
+		o.DebugMetadataSST == options.DebugMetadataSST &&
 		o.EncryptionInfoDir == options.EncryptionInfoDir &&
 		o.CheckConnectionTransferSize == options.CheckConnectionTransferSize &&
 		o.CheckConnectionDuration == options.CheckConnectionDuration &&
@@ -317,6 +330,11 @@ func (o *ShowBackupOptions) CombineWith(other *ShowBackupOptions) error {
 	if err != nil {
 		return err
 	}
+	o.DebugMetadataSST, err = combineBools(o.DebugMetadataSST, other.DebugMetadataSST,
+		"debug_dump_metadata_sst")
+	if err != nil {
+		return err
+	}
 	o.EncryptionInfoDir, err = combineExpr(o.EncryptionInfoDir, other.EncryptionInfoDir,
 		"encryption_info_dir")
 	if err != nil {
@@ -385,17 +403,11 @@ func (node *ShowEnums) Format(ctx *FmtCtx) {
 }
 
 // ShowTypes represents a SHOW TYPES statement.
-type ShowTypes struct {
-	WithComment bool
-}
+type ShowTypes struct{}
 
 // Format implements the NodeFormatter interface.
 func (node *ShowTypes) Format(ctx *FmtCtx) {
 	ctx.WriteString("SHOW TYPES")
-
-	if node.WithComment {
-		ctx.WriteString(" WITH COMMENT")
-	}
 }
 
 // ShowTraceType is an enum of SHOW TRACE variants.
@@ -637,8 +649,7 @@ func (node *ShowSessions) Format(ctx *FmtCtx) {
 
 // ShowSchemas represents a SHOW SCHEMAS statement.
 type ShowSchemas struct {
-	Database    Name
-	WithComment bool
+	Database Name
 }
 
 // Format implements the NodeFormatter interface.
@@ -647,9 +658,6 @@ func (node *ShowSchemas) Format(ctx *FmtCtx) {
 	if node.Database != "" {
 		ctx.WriteString(" FROM ")
 		ctx.FormatNode(&node.Database)
-	}
-	if node.WithComment {
-		ctx.WriteString(" WITH COMMENT")
 	}
 }
 
@@ -859,28 +867,12 @@ func (node *ShowCreateAllTables) Format(ctx *FmtCtx) {
 	ctx.WriteString("SHOW CREATE ALL TABLES")
 }
 
-// ShowCreateAllTriggers represents a SHOW CREATE ALL TRIGGERS statement.
-type ShowCreateAllTriggers struct{}
-
-// Format implements the NodeFormatter interface.
-func (node *ShowCreateAllTriggers) Format(ctx *FmtCtx) {
-	ctx.WriteString("SHOW CREATE ALL TRIGGERS")
-}
-
 // ShowCreateAllTypes represents a SHOW CREATE ALL TYPES statement.
 type ShowCreateAllTypes struct{}
 
 // Format implements the NodeFormatter interface.
 func (node *ShowCreateAllTypes) Format(ctx *FmtCtx) {
 	ctx.WriteString("SHOW CREATE ALL TYPES")
-}
-
-// ShowCreateAllRoutines represents a SHOW CREATE ALL ROUTINES statement.
-type ShowCreateAllRoutines struct{}
-
-// Format implements the NodeFormatter interface.
-func (node *ShowCreateAllRoutines) Format(ctx *FmtCtx) {
-	ctx.WriteString("SHOW CREATE ALL ROUTINES")
 }
 
 // ShowCreateSchedules represents a SHOW CREATE SCHEDULE statement.
@@ -1165,21 +1157,11 @@ func (node *ShowFingerprints) Format(ctx *FmtCtx) {
 // ShowFingerprintOptions describes options for the SHOW EXPERIMENTAL_FINGERPINT
 // execution.
 type ShowFingerprintOptions struct {
-	StartTimestamp      Expr
-	ExcludedUserColumns StringOrPlaceholderOptList
+	StartTimestamp Expr
 }
 
 func (s *ShowFingerprintOptions) Format(ctx *FmtCtx) {
-	var addSep bool
-	maybeAddSep := func() {
-		if addSep {
-			ctx.WriteString(", ")
-		}
-		addSep = true
-	}
-
 	if s.StartTimestamp != nil {
-		maybeAddSep()
 		ctx.WriteString("START TIMESTAMP = ")
 		_, canOmitParentheses := s.StartTimestamp.(alreadyDelimitedAsSyntacticDExpr)
 		if !canOmitParentheses {
@@ -1189,11 +1171,6 @@ func (s *ShowFingerprintOptions) Format(ctx *FmtCtx) {
 		if !canOmitParentheses {
 			ctx.WriteByte(')')
 		}
-	}
-	if s.ExcludedUserColumns != nil {
-		maybeAddSep()
-		ctx.WriteString("EXCLUDE COLUMNS = ")
-		s.ExcludedUserColumns.Format(ctx)
 	}
 }
 
@@ -1208,18 +1185,13 @@ func (s *ShowFingerprintOptions) CombineWith(other *ShowFingerprintOptions) erro
 		s.StartTimestamp = other.StartTimestamp
 	}
 
-	var err error
-	s.ExcludedUserColumns, err = combineStringOrPlaceholderOptList(s.ExcludedUserColumns, other.ExcludedUserColumns, "excluded_user_columns")
-	if err != nil {
-		return err
-	}
 	return nil
 }
 
 // IsDefault returns true if this backup options struct has default value.
 func (s ShowFingerprintOptions) IsDefault() bool {
 	options := ShowFingerprintOptions{}
-	return s.StartTimestamp == options.StartTimestamp && cmp.Equal(s.ExcludedUserColumns, options.ExcludedUserColumns)
+	return s.StartTimestamp == options.StartTimestamp
 }
 
 var _ NodeFormatter = &ShowFingerprintOptions{}
@@ -1280,25 +1252,6 @@ func (node *ShowTenant) Format(ctx *FmtCtx) {
 	}
 }
 
-// ShowLogicalReplicationJobsOptions represents the WITH clause in SHOW LOGICAL REPLICATION JOBS.
-type ShowLogicalReplicationJobsOptions struct {
-	WithDetails bool
-}
-
-// ShowLogicalReplicationJobs represents a SHOW LOGICAL REPLICATION JOBS statement.
-type ShowLogicalReplicationJobs struct {
-	ShowLogicalReplicationJobsOptions
-}
-
-// Format implements the NodeFormatter interface.
-func (node *ShowLogicalReplicationJobs) Format(ctx *FmtCtx) {
-	ctx.WriteString("SHOW LOGICAL REPLICATION JOBS")
-
-	if node.WithDetails {
-		ctx.WriteString(" WITH DETAILS")
-	}
-}
-
 // ShowHistogram represents a SHOW HISTOGRAM statement.
 type ShowHistogram struct {
 	HistogramID int64
@@ -1334,19 +1287,6 @@ func (node *ShowPartitions) Format(ctx *FmtCtx) {
 		ctx.FormatNode(node.Table)
 	}
 }
-
-// ShowPolicies represents a SHOW POLICIES statement.
-type ShowPolicies struct {
-	Table *UnresolvedObjectName
-}
-
-// Format implements the NodeFormatter interface.
-func (node *ShowPolicies) Format(ctx *FmtCtx) {
-	ctx.WriteString("SHOW POLICIES FOR ")
-	ctx.FormatNode(node.Table)
-}
-
-var _ Statement = &ShowPolicies{}
 
 // ScheduledJobExecutorType is a type identifying the names of
 // the supported scheduled job executors.
@@ -1594,49 +1534,3 @@ func (s ShowCommitTimestamp) Format(ctx *FmtCtx) {
 }
 
 var _ Statement = (*ShowCommitTimestamp)(nil)
-
-// ShowExternalConnections represents a SHOW EXTERNAL CONNECTIONS statement.
-type ShowExternalConnections struct {
-	ConnectionLabel Expr
-}
-
-// Format implements the NodeFormatter interface.
-func (node *ShowExternalConnections) Format(ctx *FmtCtx) {
-	if node.ConnectionLabel != nil {
-		ctx.WriteString("SHOW EXTERNAL CONNECTION ")
-		ctx.FormatNode(node.ConnectionLabel)
-		return
-	}
-	ctx.Printf("SHOW EXTERNAL CONNECTIONS")
-}
-
-var _ Statement = &ShowExternalConnections{}
-
-// ShowTriggers represents a SHOW TRIGGERS statement.
-type ShowTriggers struct {
-	Table *UnresolvedObjectName
-}
-
-// Format implements the NodeFormatter interface.
-func (node *ShowTriggers) Format(ctx *FmtCtx) {
-	ctx.WriteString("SHOW TRIGGERS FROM ")
-	ctx.FormatNode(node.Table)
-}
-
-var _ Statement = &ShowTriggers{}
-
-// ShowCreateTrigger represents a SHOW CREATE TRIGGER statement.
-type ShowCreateTrigger struct {
-	Name      Name
-	TableName *UnresolvedObjectName
-}
-
-// Format implements the NodeFormatter interface.
-func (node *ShowCreateTrigger) Format(ctx *FmtCtx) {
-	ctx.WriteString("SHOW CREATE TRIGGER ")
-	ctx.FormatNode(&node.Name)
-	ctx.WriteString(" ON ")
-	ctx.FormatNode(node.TableName)
-}
-
-var _ Statement = &ShowCreateTrigger{}

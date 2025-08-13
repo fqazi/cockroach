@@ -210,14 +210,6 @@ func (f fakeLeaseManager) IncGaugeAfterLeaseDuration(gauge lease.AfterLeaseDurat
 	return func() {}
 }
 
-func (f fakeLeaseManager) GetSafeReplicationTS() hlc.Timestamp {
-	return hlc.Timestamp{}
-}
-
-func (f fakeLeaseManager) GetLeaseGeneration() int64 {
-	return 0
-}
-
 var _ descs.LeaseManager = (*fakeLeaseManager)(nil)
 
 type fakeSystemDatabase struct {
@@ -244,7 +236,6 @@ func (d fakeSystemDatabase) Adding() bool               { return false }
 func (d fakeSystemDatabase) ForEachUDTDependentForHydration(func(t *types.T) error) error {
 	return nil
 }
-func (d fakeSystemDatabase) MaybeRequiresTypeHydration() bool { return false }
 
 type fakeLeasedDescriptor struct {
 	catalog.Descriptor
@@ -288,7 +279,6 @@ func (d fakeRegionEnum) Adding() bool               { return false }
 func (d fakeRegionEnum) ForEachUDTDependentForHydration(func(t *types.T) error) error {
 	return nil
 }
-func (d fakeRegionEnum) MaybeRequiresTypeHydration() bool { return false }
 func (d fakeRegionEnum) AsEnumTypeDescriptor() catalog.EnumTypeDescriptor {
 	if d.isNotEnum {
 		return nil

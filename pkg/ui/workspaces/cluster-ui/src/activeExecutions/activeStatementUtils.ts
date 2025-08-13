@@ -4,12 +4,9 @@
 // included in the /LICENSE file.
 
 import moment from "moment-timezone";
-
-import { ClusterLocksResponse, ClusterLockState } from "src/api";
 import { byteArrayToUuid } from "src/sessions";
 import { TimestampToMoment, unset } from "src/util";
-import { DurationToMomentDuration } from "src/util/convert";
-
+import { ActiveTransaction } from ".";
 import {
   SessionsResponse,
   ActiveStatementPhase,
@@ -20,11 +17,10 @@ import {
   ActiveExecutions,
   ExecutionContentionDetails,
   ActiveExecution,
-  ActiveStatement,
-  ActiveStatementFilters,
 } from "./types";
-
-import { ActiveTransaction } from ".";
+import { ActiveStatement, ActiveStatementFilters } from "./types";
+import { ClusterLocksResponse, ClusterLockState } from "src/api";
+import { DurationToMomentDuration } from "src/util/convert";
 
 export const ACTIVE_STATEMENT_SEARCH_PARAM = "q";
 export const INTERNAL_APP_NAME_PREFIX = "$ internal";

@@ -13,11 +13,10 @@ type Object interface {
 	// StableID for more detail.
 	ID() StableID
 
-	// PostgresDescriptorID is the descriptor ID for this object. This can differ
-	// from the ID of this object in some cases. This is only important for
-	// reporting the Postgres-compatible identifiers for objects in the various
-	// object catalogs. In the vast majority of cases, you should use ID()
-	// instead.
+	// DescriptorID is the descriptor ID for this object. This can differ from the
+	// ID of this object in some cases. This is only important for reporting the
+	// Postgres-compatible identifiers for objects in the various object catalogs.
+	// In the vast majority of cases, you should use ID() instead.
 	PostgresDescriptorID() catid.DescID
 
 	// Equals returns true if this object is identical to the given Object.
@@ -28,7 +27,4 @@ type Object interface {
 	//
 	// Used for invalidating cached plans.
 	Equals(other Object) bool
-
-	// Version returns the underlying version of the descriptor backing this object.
-	Version() uint64
 }

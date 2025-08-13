@@ -51,9 +51,11 @@ func newDatumVec(t *types.T, n int, evalCtx *eval.Context) coldata.DatumVec {
 // Note that the method is named differently from "Compare" so that we do not
 // overload tree.Datum.Compare method.
 func CompareDatum(d, dVec, other interface{}) int {
-	// TODO(yuzefovich): use proper context after the execversion change lands
-	// (#119114).
-	res, err := d.(tree.Datum).Compare(context.TODO(), dVec.(*datumVec).evalCtx, convertToDatum(other))
+	// Note that it's not strictly necessary to use CompareError here instead of
+	// just Compare since pkg/sql/sem/eval is in the allow-list of paths that
+	// colexecerror catches panics from. Still, it seems nicer to be explicit
+	// about this.
+	res, err := d.(tree.Datum).CompareError(dVec.(*datumVec).evalCtx, convertToDatum(other))
 	if err != nil {
 		colexecerror.InternalError(err)
 	}
@@ -142,12 +144,11 @@ func (dv *datumVec) Cap() int {
 }
 
 // MarshalAt implements coldata.DatumVec interface.
-func (dv *datumVec) MarshalAt(appendTo []byte, i int) (_ []byte, err error) {
+func (dv *datumVec) MarshalAt(appendTo []byte, i int) ([]byte, error) {
 	dv.maybeSetDNull(i)
-	appendTo, dv.scratch, err = valueside.EncodeWithScratch(
-		appendTo, valueside.NoColumnID, dv.data[i], dv.scratch[:0],
+	return valueside.Encode(
+		appendTo, valueside.NoColumnID, dv.data[i], dv.scratch,
 	)
-	return appendTo, err
 }
 
 // UnmarshalTo implements coldata.DatumVec interface.

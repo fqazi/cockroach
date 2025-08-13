@@ -347,7 +347,7 @@ var aggregates = map[string]builtinDefinition{
 	),
 
 	"count": makeBuiltin(tree.FunctionProperties{},
-		makeAggOverload([]*types.T{types.AnyElement}, types.Int, newCountAggregate,
+		makeAggOverload([]*types.T{types.Any}, types.Int, newCountAggregate,
 			"Calculates the number of selected elements.", volatility.Immutable, true /* calledOnNullInput */),
 	),
 
@@ -526,21 +526,21 @@ var aggregates = map[string]builtinDefinition{
 	),
 
 	"json_agg": makeBuiltin(tree.FunctionProperties{},
-		makeAggOverload([]*types.T{types.AnyElement}, types.Jsonb, newJSONAggregate,
+		makeAggOverload([]*types.T{types.Any}, types.Jsonb, newJSONAggregate,
 			"Aggregates values as a JSON or JSONB array.", volatility.Stable, true /* calledOnNullInput */),
 	),
 
 	"jsonb_agg": makeBuiltin(tree.FunctionProperties{},
-		makeAggOverload([]*types.T{types.AnyElement}, types.Jsonb, newJSONAggregate,
+		makeAggOverload([]*types.T{types.Any}, types.Jsonb, newJSONAggregate,
 			"Aggregates values as a JSON or JSONB array.", volatility.Stable, true /* calledOnNullInput */),
 	),
 
 	"json_object_agg": makeBuiltin(tree.FunctionProperties{},
-		makeAggOverload([]*types.T{types.String, types.AnyElement}, types.Jsonb, newJSONObjectAggregate,
+		makeAggOverload([]*types.T{types.String, types.Any}, types.Jsonb, newJSONObjectAggregate,
 			"Aggregates values as a JSON or JSONB object.", volatility.Stable, true /* calledOnNullInput */),
 	),
 	"jsonb_object_agg": makeBuiltin(tree.FunctionProperties{},
-		makeAggOverload([]*types.T{types.String, types.AnyElement}, types.Jsonb, newJSONObjectAggregate,
+		makeAggOverload([]*types.T{types.String, types.Any}, types.Jsonb, newJSONObjectAggregate,
 			"Aggregates values as a JSON or JSONB object.", volatility.Stable, true /* calledOnNullInput */),
 	),
 
@@ -591,7 +591,7 @@ var aggregates = map[string]builtinDefinition{
 
 	AnyNotNull: makePrivate(makeBuiltin(tree.FunctionProperties{},
 		makeImmutableAggOverloadWithReturnType(
-			[]*types.T{types.AnyElement},
+			[]*types.T{types.Any},
 			tree.IdentityReturnType(0),
 			newAnyNotNullAggregate,
 			"Returns an arbitrary not-NULL value, or NULL if none exists.",
@@ -747,15 +747,14 @@ func makeAggOverloadWithReturnType(
 			switch w := aggWindowFunc.(type) {
 			case *minAggregate:
 				min := &slidingWindowFunc{}
-				min.sw = makeSlidingWindow(evalCtx, func(ctx context.Context, evalCtx *eval.Context, a, b tree.Datum) (int, error) {
-					cmp, err := a.Compare(ctx, evalCtx, b)
-					return -cmp, err
+				min.sw = makeSlidingWindow(evalCtx, func(evalCtx *eval.Context, a, b tree.Datum) int {
+					return -a.Compare(evalCtx, b)
 				})
 				return min
 			case *maxAggregate:
 				max := &slidingWindowFunc{}
-				max.sw = makeSlidingWindow(evalCtx, func(ctx context.Context, evalCtx *eval.Context, a, b tree.Datum) (int, error) {
-					return a.Compare(ctx, evalCtx, b)
+				max.sw = makeSlidingWindow(evalCtx, func(evalCtx *eval.Context, a, b tree.Datum) int {
+					return a.Compare(evalCtx, b)
 				})
 				return max
 			case *intSumAggregate:
@@ -3633,7 +3632,7 @@ func (a *maxAggregate) Add(ctx context.Context, datum tree.Datum, _ ...tree.Datu
 		a.max = datum
 		return nil
 	}
-	c, err := a.max.Compare(ctx, a.evalCtx, datum)
+	c, err := a.max.CompareError(a.evalCtx, datum)
 	if err != nil {
 		return err
 	}
@@ -3706,7 +3705,7 @@ func (a *minAggregate) Add(ctx context.Context, datum tree.Datum, _ ...tree.Datu
 		a.min = datum
 		return nil
 	}
-	c, err := a.min.Compare(ctx, a.evalCtx, datum)
+	c, err := a.min.CompareError(a.evalCtx, datum)
 	if err != nil {
 		return err
 	}
@@ -5076,14 +5075,14 @@ func validateInputFractions(datum tree.Datum) ([]float64, bool, error) {
 		return nil
 	}
 
-	if t := datum.ResolvedType(); t.Family() == types.FloatFamily {
+	if datum.ResolvedType().Identical(types.Float) {
 		fraction := float64(tree.MustBeDFloat(datum))
 		singleInput = true
 		if err := validate(fraction); err != nil {
 			return nil, false, err
 		}
 		fractions = append(fractions, fraction)
-	} else if t.Family() == types.ArrayFamily && t.ArrayContents().Family() == types.FloatFamily {
+	} else if datum.ResolvedType().Equivalent(types.FloatArray) {
 		fractionsDatum := tree.MustBeDArray(datum)
 		for _, f := range fractionsDatum.Array {
 			fraction := float64(tree.MustBeDFloat(f))
@@ -5266,7 +5265,7 @@ func (a *percentileContAggregate) Result() (tree.Datum, error) {
 			ceilRowNumber := int(math.Ceil(rowNumber))
 			floorRowNumber := int(math.Floor(rowNumber))
 
-			if t := a.arr.ParamTyp; t.Family() == types.FloatFamily {
+			if a.arr.ParamTyp.Identical(types.Float) {
 				var target float64
 				if rowNumber == float64(ceilRowNumber) && rowNumber == float64(floorRowNumber) {
 					target = float64(tree.MustBeDFloat(a.arr.Array[int(rowNumber)-1]))
@@ -5279,7 +5278,7 @@ func (a *percentileContAggregate) Result() (tree.Datum, error) {
 				if err := res.Append(tree.NewDFloat(tree.DFloat(target))); err != nil {
 					return nil, err
 				}
-			} else if t.Family() == types.IntervalFamily {
+			} else if a.arr.ParamTyp.Family() == types.IntervalFamily {
 				var target *tree.DInterval
 				if rowNumber == float64(ceilRowNumber) && rowNumber == float64(floorRowNumber) {
 					target = tree.MustBeDInterval(a.arr.Array[int(rowNumber)-1])

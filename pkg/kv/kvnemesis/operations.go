@@ -38,8 +38,6 @@ func (op Operation) Result() *Result {
 		return &o.Result
 	case *BarrierOperation:
 		return &o.Result
-	case *FlushLockTableOperation:
-		return &o.Result
 	case *SplitOperation:
 		return &o.Result
 	case *MergeOperation:
@@ -47,8 +45,6 @@ func (op Operation) Result() *Result {
 	case *ChangeReplicasOperation:
 		return &o.Result
 	case *TransferLeaseOperation:
-		return &o.Result
-	case *ChangeSettingOperation:
 		return &o.Result
 	case *ChangeZoneOperation:
 		return &o.Result
@@ -140,8 +136,6 @@ func (op Operation) format(w *strings.Builder, fctx formatCtx) {
 		o.format(w, fctx)
 	case *BarrierOperation:
 		o.format(w, fctx)
-	case *FlushLockTableOperation:
-		o.format(w, fctx)
 	case *SplitOperation:
 		o.format(w, fctx)
 	case *MergeOperation:
@@ -149,8 +143,6 @@ func (op Operation) format(w *strings.Builder, fctx formatCtx) {
 	case *ChangeReplicasOperation:
 		o.format(w, fctx)
 	case *TransferLeaseOperation:
-		o.format(w, fctx)
-	case *ChangeSettingOperation:
 		o.format(w, fctx)
 	case *ChangeZoneOperation:
 		o.format(w, fctx)
@@ -173,32 +165,23 @@ func (op Operation) format(w *strings.Builder, fctx formatCtx) {
 		newFctx := fctx
 		newFctx.indent = fctx.indent + `  `
 		newFctx.receiver = txnName
-
-		txnFuncf := func(fmtStr string, args ...any) {
-			w.WriteString("\n")
-			w.WriteString(newFctx.indent)
-			w.WriteString(newFctx.receiver)
-			fmt.Fprintf(w, fmtStr, args...)
-		}
-
 		w.WriteString(fctx.receiver)
 		fmt.Fprintf(w, `.Txn(ctx, func(ctx context.Context, %s *kv.Txn) error {`, txnName)
-
-		txnFuncf(`.SetIsoLevel(isolation.%s)`, o.IsoLevel)
-		if o.UserPriority > 0 {
-			txnFuncf(`.SetUserPriority(roachpb.UserPriority(%f))`, float64(o.UserPriority))
-		}
-		txnFuncf(`.SetBufferedWritesEnabled(%v)`, o.BufferedWrites)
-
+		w.WriteString("\n")
+		w.WriteString(newFctx.indent)
+		w.WriteString(newFctx.receiver)
+		fmt.Fprintf(w, `.SetIsoLevel(isolation.%s)`, o.IsoLevel)
 		formatOps(w, newFctx, o.Ops)
 		if o.CommitInBatch != nil {
 			newFctx.receiver = `b`
 			o.CommitInBatch.format(w, newFctx)
 			newFctx.receiver = txnName
-			txnFuncf(`.CommitInBatch(ctx, b)`)
+			w.WriteString("\n")
+			w.WriteString(newFctx.indent)
+			w.WriteString(newFctx.receiver)
+			w.WriteString(`.CommitInBatch(ctx, b)`)
 			o.CommitInBatch.Result.format(w)
 		}
-
 		w.WriteString("\n")
 		w.WriteString(newFctx.indent)
 		switch o.Type {
@@ -313,8 +296,8 @@ func (op DeleteRangeUsingTombstoneOperation) format(w *strings.Builder, fctx for
 }
 
 func (op AddSSTableOperation) format(w *strings.Builder, fctx formatCtx) {
-	fmt.Fprintf(w, `%s.AddSSTable(%s%s, %s, ... /* @%s */)`,
-		fctx.receiver, fctx.maybeCtx(), fmtKey(op.Span.Key), fmtKey(op.Span.EndKey), op.Seq)
+	fmt.Fprintf(w, `%s.AddSSTable(%s%s, %s, ... /* @%s */) // %d bytes`,
+		fctx.receiver, fctx.maybeCtx(), fmtKey(op.Span.Key), fmtKey(op.Span.EndKey), op.Seq, len(op.Data))
 	if op.AsWrites {
 		fmt.Fprintf(w, ` (as writes)`)
 	}
@@ -377,11 +360,6 @@ func (op BarrierOperation) format(w *strings.Builder, fctx formatCtx) {
 	op.Result.format(w)
 }
 
-func (op FlushLockTableOperation) format(w *strings.Builder, fctx formatCtx) {
-	fmt.Fprintf(w, `%s.FlushLockTable(ctx, %s, %s)`, fctx.receiver, fmtKey(op.Key), fmtKey(op.EndKey))
-	op.Result.format(w)
-}
-
 func (op SplitOperation) format(w *strings.Builder, fctx formatCtx) {
 	fmt.Fprintf(w, `%s.AdminSplit(ctx, %s, hlc.MaxTimestamp)`, fctx.receiver, fmtKey(op.Key))
 	op.Result.format(w)
@@ -412,16 +390,6 @@ func (op ChangeReplicasOperation) format(w *strings.Builder, fctx formatCtx) {
 
 func (op TransferLeaseOperation) format(w *strings.Builder, fctx formatCtx) {
 	fmt.Fprintf(w, `%s.AdminTransferLease(ctx, %s, %d)`, fctx.receiver, fmtKey(op.Key), op.Target)
-	op.Result.format(w)
-}
-
-func (op ChangeSettingOperation) format(w *strings.Builder, fctx formatCtx) {
-	switch op.Type {
-	case ChangeSettingType_SetLeaseType:
-		fmt.Fprintf(w, `env.SetClusterSetting(ctx, %s, %s)`, op.Type, op.LeaseType)
-	default:
-		panic(errors.AssertionFailedf(`unknown ChangeSettingType: %v`, op.Type))
-	}
 	op.Result.format(w)
 }
 

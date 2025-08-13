@@ -3,9 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { assert } from "chai";
 
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import {
   FlatPlanNode,
   FlatPlanNodeAttribute,
@@ -15,7 +15,6 @@ import {
   planNodeToString,
   planNodeAttrsToString,
 } from "./planView";
-
 import IAttr = cockroach.sql.ExplainTreePlanNode.IAttr;
 
 type IExplainTreePlanNode = cockroach.sql.IExplainTreePlanNode;

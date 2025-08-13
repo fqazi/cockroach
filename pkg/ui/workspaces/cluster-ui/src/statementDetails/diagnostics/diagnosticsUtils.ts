@@ -3,12 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import moment from "moment-timezone";
-
-import { DiagnosticStatuses } from "src/statementsDiagnostics";
 import { TimeScale, toDateRange } from "src/timeScaleDropdown";
-
+import { DiagnosticStatuses } from "src/statementsDiagnostics";
 import { StatementDiagnosticsReport } from "../../api";
+import moment from "moment-timezone";
 
 export function getDiagnosticsStatus(
   diagnosticsRequest: StatementDiagnosticsReport,

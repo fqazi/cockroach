@@ -2,16 +2,12 @@
 //
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
-import { Dropdown } from "@cockroachlabs/cluster-ui";
-import React from "react";
-
 import { getCookieValue, setCookie } from "src/redux/cookies";
-import { isSystemTenant } from "src/redux/tenants";
-import { getDataFromServer } from "src/util/dataFromServer";
-
+import React from "react";
+import { Dropdown } from "@cockroachlabs/cluster-ui";
 import ErrorBoundary from "../errorMessage/errorBoundary";
-
 import "./tenantDropdown.styl";
+import { isSystemTenant } from "src/redux/tenants";
 
 const tenantIDKey = "tenant";
 
@@ -77,27 +73,13 @@ export default class TenantDropdown extends React.Component<
   }
 
   render() {
-    const dataFromServer = getDataFromServer();
-    const isInsecure = dataFromServer.Insecure;
-    // In insecure mode, show dropdown if there are >1 virtual clusters
-    if (isInsecure) {
-      if (this.state.virtualClusters?.length <= 1) {
-        return null;
-      }
-    } else {
-      // In secure mode, use the original logic
-      if (
-        !this.state.currentTenant ||
-        (this.state.virtualClusters?.length < 2 &&
-          isSystemTenant(this.state.currentTenant))
-      ) {
-        return null;
-      }
+    if (
+      !this.state.currentTenant ||
+      (this.state.virtualClusters?.length < 2 &&
+        isSystemTenant(this.state.currentTenant))
+    ) {
+      return null;
     }
-
-    // In insecure mode, show "default" if no tenant is set
-    const displayTenant =
-      this.state.currentTenant || (isInsecure ? "default" : "");
 
     return (
       <ErrorBoundary>
@@ -106,7 +88,7 @@ export default class TenantDropdown extends React.Component<
           onChange={(tenantID: string) => this.onTenantChange(tenantID)}
         >
           <div className="virtual-cluster-selected">
-            {"Virtual cluster: " + displayTenant}
+            {"Virtual cluster: " + this.state.currentTenant}
           </div>
         </Dropdown>
       </ErrorBoundary>

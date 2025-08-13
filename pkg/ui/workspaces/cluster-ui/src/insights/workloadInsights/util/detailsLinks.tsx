@@ -3,13 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import { StmtInsightEvent } from "../../types";
 import React from "react";
+import { HexStringToInt64String } from "../../../util";
 import { Link } from "react-router-dom";
-
 import { StatementLinkTarget } from "../../../statementsTable";
 import { TransactionLinkTarget } from "../../../transactionsTable";
-import { HexStringToInt64String } from "../../../util";
-import { StmtInsightEvent } from "../../types";
 
 export function TransactionDetailsLink(
   transactionFingerprintID: string,

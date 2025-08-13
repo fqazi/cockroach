@@ -3,12 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { CoordinatedUniversalTime, util } from "@cockroachlabs/cluster-ui";
-import moment from "moment-timezone";
 import { createSelector } from "reselect";
-
-import { cockroach } from "src/js/protos";
 import { AdminUIState } from "src/redux/state";
+import { cockroach } from "src/js/protos";
+import moment from "moment-timezone";
+import { CoordinatedUniversalTime, util } from "@cockroachlabs/cluster-ui";
 import { indexUnusedDuration } from "src/util/constants";
 
 export const selectClusterSettings = createSelector(
@@ -23,11 +22,7 @@ export const selectTimezoneSetting = createSelector(
     if (!settings) {
       return CoordinatedUniversalTime;
     }
-    return (
-      settings["ui.default_timezone"]?.value ||
-      settings["ui.display_timezone"]?.value ||
-      CoordinatedUniversalTime
-    );
+    return settings["ui.display_timezone"]?.value || CoordinatedUniversalTime;
   },
 );
 

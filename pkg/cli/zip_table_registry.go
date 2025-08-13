@@ -222,31 +222,11 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 		},
 	},
 	"crdb_internal.cluster_settings": {
-		customQueryUnredacted: `SELECT
-			variable,
-			CASE 
-			  WHEN sensitive THEN '<redacted>'
-			  ELSE value 
-			END value,
-			type,
-			public,
-			sensitive,
-			reportable,
-			description,
-			default_value,
-			origin
-		FROM crdb_internal.cluster_settings`,
 		customQueryRedacted: `SELECT
 			variable,
-			CASE 
-			  WHEN NOT reportable AND value != default_value THEN '<redacted>'
-			  WHEN sensitive THEN '<redacted>'
-			  ELSE value 
-			END value,
+			CASE WHEN type = 's' AND value != default_value THEN '<redacted>' ELSE value END value,
 			type,
 			public,
-			sensitive,
-			reportable,
 			description,
 			default_value,
 			origin
@@ -292,19 +272,6 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 			"crdb_internal.hide_sql_constants(create_statement) as create_statement",
 		},
 	},
-	`"".crdb_internal.create_trigger_statements`: {
-		nonSensitiveCols: NonSensitiveColumns{
-			"database_id",
-			"database_name",
-			"schema_id",
-			"schema_name",
-			"table_id",
-			"table_name",
-			"trigger_id",
-			"trigger_name",
-			"crdb_internal.hide_sql_constants(create_statement) as create_statement",
-		},
-	},
 	`"".crdb_internal.create_procedure_statements`: {
 		nonSensitiveCols: NonSensitiveColumns{
 			"database_id",
@@ -340,7 +307,7 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 			"is_virtual",
 			"is_temporary",
 			"crdb_internal.hide_sql_constants(create_statement) as create_statement",
-			"crdb_internal.hide_sql_constants(fk_statements) as fk_statements",
+			"crdb_internal.hide_sql_constants(alter_statements) as alter_statements",
 			"crdb_internal.hide_sql_constants(create_nofks) as create_nofks",
 			"crdb_internal.redact(create_redactable) as create_redactable",
 		},
@@ -364,9 +331,33 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 			"resolved_age",
 		},
 	},
-	`"".crdb_internal.logical_replication_spans`: {
+	`"".crdb_internal.cluster_replication_node_streams`: {
 		nonSensitiveCols: NonSensitiveColumns{
-			"job_id",
+			"stream_id",
+			"consumer_id",
+			"spans",
+			"initial_ts",
+			"prev_ts",
+			"batches",
+			"checkpoints",
+			"last_checkpoint",
+			"rf_checkpoints",
+			"rf_advances",
+			"rf_last_advance",
+			"rf_resolved",
+			"rf_resolved_age",
+		},
+	},
+	`"".crdb_internal.cluster_replication_node_stream_spans`: {
+		nonSensitiveCols: NonSensitiveColumns{
+			"stream_id",
+			"consumer_id",
+		},
+	},
+	`"".crdb_internal.cluster_replication_node_stream_checkpoints`: {
+		nonSensitiveCols: NonSensitiveColumns{
+			"stream_id",
+			"consumer_id",
 			"resolved",
 			"resolved_age",
 		},
@@ -402,21 +393,28 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 	},
 	// `statement` column can contain customer URI params such as
 	// AWS_ACCESS_KEY_ID.
-	// `error` column contains error text that may contain sensitive data.
+	// `error`, `execution_errors`, and `execution_events` columns contain
+	// error text that may contain sensitive data.
 	"crdb_internal.jobs": {
 		nonSensitiveCols: NonSensitiveColumns{
 			"job_id",
 			"job_type",
 			"description",
 			"user_name",
+			"descriptor_ids",
 			"status",
 			"running_status",
 			"created",
+			"started",
 			"finished",
 			"modified",
 			"fraction_completed",
 			"high_water_timestamp",
 			"coordinator_id",
+			"trace_id",
+			"last_run",
+			"next_run",
+			"num_runs",
 		},
 	},
 	"crdb_internal.system_jobs": {
@@ -459,32 +457,28 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 	"crdb_internal.kv_node_status": {
 		// `env` column can contain sensitive node environment variable values,
 		// such as AWS_ACCESS_KEY.
-		// Some fields are marked as `<redacted>` because we want to redact hostname, ip address and other sensitive fields
-		// in the db dump files contained in debugzip
-		customQueryRedacted: `SELECT 
-				"node_id",
-				"network",
-				'<redacted>' as address,
-				"attrs",
-				"locality",
-				"server_version",
-				"go_version",
-				"tag",
-				"time",
-				"revision",
-				"cgo_compiler",
-				"platform",
-				"distribution",
-				"type",
-				"dependencies",
-				"started_at",
-				"updated_at",
-				"metrics",
-				'<redacted>' as args,
-				'<redacted>' as env,
-				"activity"
-			FROM crdb_internal.kv_node_status
-		`,
+		nonSensitiveCols: NonSensitiveColumns{
+			"node_id",
+			"network",
+			"address",
+			"attrs",
+			"locality",
+			"server_version",
+			"go_version",
+			"tag",
+			"time",
+			"revision",
+			"cgo_compiler",
+			"platform",
+			"distribution",
+			"type",
+			"dependencies",
+			"started_at",
+			"updated_at",
+			"metrics",
+			"args",
+			"activity",
+		},
 	},
 	"crdb_internal.kv_store_status": {
 		nonSensitiveCols: NonSensitiveColumns{
@@ -579,43 +573,26 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 	},
 	"crdb_internal.transaction_contention_events": {
 		customQueryUnredacted: `
-WITH contention_fingerprints AS (
-    -- First, extract all relevant fingerprints from contention events
-    SELECT DISTINCT waiting_stmt_fingerprint_id, blocking_txn_fingerprint_id
-    FROM crdb_internal.transaction_contention_events
-    WHERE blocking_txn_fingerprint_id != '\x0000000000000000'
+with fingerprint_queries as (
+	SELECT distinct fingerprint_id, metadata->> 'query' as query  
+	FROM system.statement_statistics
 ),
-fingerprint_queries AS (
-    -- Only fetch statement data for fingerprints that appear in contention events
-    SELECT DISTINCT fingerprint_id, metadata->>'query' as query
-    FROM system.statement_statistics ss
-    WHERE EXISTS (
-        SELECT 1 FROM contention_fingerprints cf
-        WHERE cf.waiting_stmt_fingerprint_id = ss.fingerprint_id
-    )
-),
-transaction_fingerprints AS (
-    -- Only fetch transaction data for fingerprints that appear in contention events
-    SELECT DISTINCT fingerprint_id, transaction_fingerprint_id
-    FROM system.statement_statistics ss
-    WHERE EXISTS (
-        SELECT 1 FROM contention_fingerprints cf
-        WHERE cf.waiting_stmt_fingerprint_id = ss.fingerprint_id
-    )
-),
-transaction_queries AS (
-    -- Build transaction queries only for relevant transactions
-    SELECT tf.transaction_fingerprint_id, array_agg(fq.query) as queries
-    FROM fingerprint_queries fq
-    JOIN transaction_fingerprints tf ON tf.fingerprint_id = fq.fingerprint_id
-    GROUP BY tf.transaction_fingerprint_id
+transaction_fingerprints as (
+		SELECT distinct fingerprint_id, transaction_fingerprint_id
+		FROM system.statement_statistics
+), 
+transaction_queries as (
+		SELECT tf.transaction_fingerprint_id, array_agg(fq.query) as queries
+		FROM fingerprint_queries fq
+		JOIN transaction_fingerprints tf on tf.fingerprint_id = fq.fingerprint_id
+		GROUP BY tf.transaction_fingerprint_id
 )
 SELECT collection_ts,
        contention_duration,
        waiting_txn_id,
        waiting_txn_fingerprint_id,
        waiting_stmt_fingerprint_id,
-       fq.query AS waiting_stmt_query,
+       fq.query                      AS waiting_stmt_query,
        blocking_txn_id,
        blocking_txn_fingerprint_id,
        tq.queries AS blocking_txn_queries_unordered,
@@ -674,61 +651,6 @@ FROM crdb_internal.transaction_contention_events
 			"full_config_sql",
 		},
 	},
-	// cluster_settings_history Provides a history of cluster settings changes
-	// via the system.eventlog table. If the value is reset via `RESET
-	// CLUSTER SETTING <x>`, the value is shown as 'DEFAULT'. This can be used
-	// to distinguish between when a user explicitly sets the value to the
-	// default value via `SET CLUSTER SETTING <x> = <y>`. For cluster settings
-	// set in v25.4+, the `default_value` column will show the default value
-	// for the setting at the time of the change, which may differ from the
-	// current default value.
-	// The `value` column will always be redacted if the setting is sensitive.
-	// If a redacted debug zip is requested, non-reportable settings will
-	// also be redacted.
-	"cluster_settings_history": {
-		customQueryUnredacted: `
-WITH setting_events AS (
-	SELECT
-		timestamp,
-		info::jsonb AS info_json
-	FROM system.eventlog
-	WHERE "eventType" = 'set_cluster_setting'
-)
-SELECT
-	info_json ->> 'SettingName' as setting_name,
-	CASE
-      WHEN cs.sensitive AND info_json ->> 'Value' <> 'DEFAULT' THEN '<redacted>'
-      ELSE info_json ->> 'Value'
-	END value,
-	info_json ->> 'DefaultValue' as default_value,
-	cs.default_value as current_default_value,
-	info_json ->> 'ApplicationName' as application_name,
-	se.timestamp
-FROM setting_events se
-JOIN crdb_internal.cluster_settings cs on cs.variable = se.info_json ->> 'SettingName'
-ORDER BY setting_name, timestamp`,
-		customQueryRedacted: `
-WITH setting_events AS (
-	SELECT
-		timestamp,
-		info::jsonb AS info_json
-	FROM system.eventlog
-	WHERE "eventType" = 'set_cluster_setting'
-)
-SELECT
-	info_json ->> 'SettingName' as setting_name,
-	CASE
-      WHEN (cs.sensitive OR NOT cs.reportable) AND info_json ->> 'Value' <> 'DEFAULT' THEN '<redacted>'
-      ELSE info_json ->> 'Value'
- 	END value,
-	info_json ->> 'DefaultValue' as default_value,
-	cs.default_value as current_default_value,
-	info_json ->> 'ApplicationName' as application_name,
-	se.timestamp
-FROM setting_events se
-JOIN crdb_internal.cluster_settings cs on cs.variable = se.info_json ->> 'SettingName'
-ORDER BY setting_name, timestamp`,
-	},
 }
 
 var zipInternalTablesPerNode = DebugZipTableRegistry{
@@ -778,25 +700,10 @@ var zipInternalTablesPerNode = DebugZipTableRegistry{
 	"crdb_internal.gossip_nodes": {
 		// `cluster_name` is hashed as we only care to see whether values are
 		// identical across nodes.
-		// Some fields are marked as `<redacted>` because we want to redact hostname, ip address and other sensitive fields
-		// in the db dump files contained in debugzip
 		customQueryRedacted: `SELECT 
-				node_id, 
-				network, 
-				'<redacted>' as address, 
-				'<redacted>' as advertise_address, 
-				sql_network, 
-				'<redacted>' as sql_address, 
-				'<redacted>' as advertise_sql_address, 
-				attrs, 
-				'<redacted>' as locality, 
-				fnv32(cluster_name) as cluster_name,
-				server_version, 
-				build_tag, 
-				started_at, 
-				is_live, 
-				ranges,
-				leases
+			node_id, network, address, advertise_address, sql_network, sql_address, 
+			advertise_sql_address, attrs, locality, fnv32(cluster_name) as cluster_name,
+			server_version, build_tag, started_at, is_live, ranges, leases
 			FROM crdb_internal.gossip_nodes`,
 	},
 	"crdb_internal.leases": {
@@ -869,7 +776,6 @@ var zipInternalTablesPerNode = DebugZipTableRegistry{
 			"priority",
 			"retries",
 			"exec_node_ids",
-			"kv_node_ids",
 			"error_code",
 			"crdb_internal.redact(last_error_redactable) as last_error_redactable",
 		},
@@ -924,24 +830,12 @@ var zipInternalTablesPerNode = DebugZipTableRegistry{
 		},
 	},
 	"crdb_internal.node_runtime_info": {
-		// Some fields are marked as `<redacted>` because we want to redact hostname, ip address and other sensitive fields
-		// in the db dump files contained in debugzip
-		customQueryRedacted: `SELECT * FROM (
-			SELECT
-				"node_id",
-				"component",
-				"field",
-				"value"
-			FROM crdb_internal.node_runtime_info 
-      WHERE field NOT IN ('URL', 'Host', 'URI') UNION
-    		SELECT
-					"node_id",
-					"component",
-					"field",
-					'<redacted>' AS value
-				FROM crdb_internal.node_runtime_info
-				WHERE field IN ('URL', 'Host', 'URI')
-      ) ORDER BY node_id`,
+		nonSensitiveCols: NonSensitiveColumns{
+			"node_id",
+			"component",
+			"field",
+			"value",
+		},
 	},
 	"crdb_internal.node_sessions": {
 		// `client_address` contains unredacted client IP addresses.
@@ -1034,12 +928,13 @@ var zipInternalTablesPerNode = DebugZipTableRegistry{
 			"sample_plan",
 			"database_name",
 			"exec_node_ids",
-			"kv_node_ids",
-			"used_follower_read",
 			"txn_fingerprint_id",
 			"index_recommendations",
 			"latency_seconds_min",
 			"latency_seconds_max",
+			"latency_seconds_p50",
+			"latency_seconds_p90",
+			"latency_seconds_p99",
 		},
 	},
 	"crdb_internal.node_transaction_statistics": {
@@ -1157,84 +1052,25 @@ var zipInternalTablesPerNode = DebugZipTableRegistry{
 			"capability_value",
 		},
 	},
-	"crdb_internal.cluster_replication_node_streams": {
-		nonSensitiveCols: NonSensitiveColumns{
-			"stream_id",
-			"consumer",
-			"spans",
-			"state",
-			"read",
-			"emit",
-			"last_read_ms",
-			"last_emit_ms",
-			"seq",
-			"chkpts",
-			"last_chkpt",
-			"batches",
-			"megabytes",
-			"last_kb",
-			"rf_chk",
-			"rf_adv",
-			"rf_last_adv",
-			"resolved_age",
-		},
-	},
-	"crdb_internal.cluster_replication_node_stream_spans": {
-		nonSensitiveCols: NonSensitiveColumns{
-			"stream_id",
-			"consumer",
-		},
-	},
-	"crdb_internal.cluster_replication_node_stream_checkpoints": {
-		nonSensitiveCols: NonSensitiveColumns{
-			"stream_id",
-			"consumer",
-			"resolved",
-			"resolved_age",
-		},
-	},
-	"crdb_internal.logical_replication_node_processors": {
-		nonSensitiveCols: NonSensitiveColumns{
-			"stream_id",
-			"consumer",
-			"state",
-			"recv_time",
-			"last_recv_time",
-			"ingest_time",
-			"flush_time",
-			"flush_count",
-			"flush_kvs",
-			"flush_bytes",
-			"flush_batches",
-			"last_flush_time",
-			"chunks_running",
-			"chunks_done",
-			"last_kvs_done",
-			"last_kvs_todo",
-			"last_batches",
-			"last_slowest",
-			"checkpoints",
-			"retry_size",
-			"resolved_age",
-		},
-	},
 }
 
-// NB: The following system tables explicitly forbidden:
-//   - system.users: avoid downloading passwords.
-//   - system.web_sessions: avoid downloading active session tokens.
-//   - system.join_tokens: avoid downloading secret join keys.
-//   - system.comments: avoid downloading noise from SQL schema.
-//   - system.ui: avoid downloading noise from UI customizations.
-//   - system.statement_bundle_chunks: avoid downloading a large table that's
-//     hard to interpret currently.
-//   - system.statement_statistics: historical data, usually too much to
-//     download.
-//   - system.transaction_statistics: ditto
-//   - system.statement_activity: ditto
-//   - system.transaction_activity: ditto
-//
-// A test makes this assertion in pkg/cli/zip_table_registry.go:TestNoForbiddenSystemTablesInDebugZip
+/**
+ * NB: The following system tables explicitly forbidden:
+ * 	- system.users: avoid downloading passwords.
+ * 	- system.web_sessions: avoid downloading active session tokens.
+ * 	- system.join_tokens: avoid downloading secret join keys.
+ * 	- system.comments: avoid downloading noise from SQL schema.
+ * 	- system.ui: avoid downloading noise from UI customizations.
+ * 	- system.statement_bundle_chunks: avoid downloading a large table that's
+ *    hard to interpret currently.
+ * 	- system.statement_statistics: historical data, usually too much to
+ *    download.
+ * 	- system.transaction_statistics: ditto
+ *  - system.statement_activity: ditto
+ *  - system.transaction_activity: ditto
+ *
+ * A test makes this assertion in pkg/cli/zip_table_registry.go:TestNoForbiddenSystemTablesInDebugZip
+ */
 var zipSystemTables = DebugZipTableRegistry{
 	"system.database_role_settings": {
 		nonSensitiveCols: NonSensitiveColumns{
@@ -1298,18 +1134,6 @@ var zipSystemTables = DebugZipTableRegistry{
 			written,
 			'redacted' AS value
 			FROM system.job_info`,
-	},
-	"system.job_progress": {
-		nonSensitiveCols: NonSensitiveColumns{"job_id", "written", "fraction", "resolved"},
-	},
-	"system.job_progress_history": {
-		nonSensitiveCols: NonSensitiveColumns{"job_id", "written", "fraction", "resolved"},
-	},
-	"system.job_status": {
-		nonSensitiveCols: NonSensitiveColumns{"job_id", "written", "status"},
-	},
-	"system.job_message": {
-		nonSensitiveCols: NonSensitiveColumns{"job_id", "written", "kind", "message"},
 	},
 	"system.lease": {
 		nonSensitiveCols: NonSensitiveColumns{
@@ -1459,29 +1283,18 @@ var zipSystemTables = DebugZipTableRegistry{
 		},
 	},
 	"system.settings": {
-		customQueryUnredacted: `
-SELECT 
-     name,
-     CASE
-          WHEN cs.sensitive THEN '<redacted>'
-          ELSE s.value
-     END value,
-	s."lastUpdated",
-	s."valueType"
-FROM system.settings s
-JOIN crdb_internal.cluster_settings cs ON cs.variable = s.name`,
-		customQueryRedacted: `
-SELECT 
-     name,
-     CASE
-          WHEN cs.sensitive THEN '<redacted>'
-          WHEN NOT cs.reportable THEN '<redacted>'
-          ELSE s.value
-     END value,
-	s."lastUpdated",
-	s."valueType"
-FROM system.settings s
-JOIN crdb_internal.cluster_settings cs ON cs.variable = s.name`,
+		customQueryUnredacted: `SELECT * FROM system.settings`,
+		customQueryRedacted: `SELECT * FROM (
+    		SELECT *
+    		FROM system.settings
+			WHERE "valueType" <> 's'
+    	) UNION (
+			SELECT name, '<redacted>' as value,
+			"lastUpdated",
+			"valueType"
+			FROM system.settings
+			WHERE "valueType"  = 's'
+    	)`,
 	},
 	"system.span_configurations": {
 		nonSensitiveCols: NonSensitiveColumns{
@@ -1497,16 +1310,12 @@ JOIN crdb_internal.cluster_settings cs ON cs.variable = s.name`,
 		},
 	},
 	"system.sql_instances": {
-		// Some fields are marked as `<redacted>` because we want to redact hostname, ip address and other sensitive fields
-		// in the db dump files contained in debugzip
-		customQueryRedacted: `SELECT 
+		nonSensitiveCols: NonSensitiveColumns{
 			"id",
-			'<redacted>' as addr,
+			"addr",
 			"session_id",
-			'<redacted>' as locality,
-			'<redacted>' as sql_addr
-			FROM system.sql_instances
-		`,
+			"locality",
+		},
 	},
 	// system.sql_stats_cardinality shows row counts for all of the system tables related to the SQL Stats
 	// system, grouped by aggregated timestamp. None of this information is sensitive. It aids in escalations
@@ -1567,8 +1376,6 @@ JOIN crdb_internal.cluster_settings cs ON cs.variable = s.name`,
 			"sampling_probability",
 			"plan_gist",
 			"anti_plan_gist",
-			"redacted",
-			"username",
 		},
 	},
 	// statement_statistics can have over 100k rows in just the last hour.

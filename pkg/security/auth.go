@@ -92,9 +92,8 @@ func UnsetNodeSubject() {
 // GetCertificateUserScope function expands a cert into a set of "scopes" with
 // each possible username (and tenant ID).
 type CertificateUserScope struct {
-	Username   string
-	TenantID   roachpb.TenantID
-	TenantName roachpb.TenantName
+	Username string
+	TenantID roachpb.TenantID
 	// global is set to true to indicate that the certificate unscoped to
 	// any tenant is a global client certificate which can authenticate
 	// on any tenant. This is ONLY for backward compatibility with old
@@ -111,7 +110,7 @@ type CertificateUserScope struct {
 // that may have been applied to the given connection.
 type UserAuthHook func(
 	ctx context.Context,
-	systemIdentity string,
+	systemIdentity username.SQLUsername,
 	clientConnection bool,
 ) error
 
@@ -120,12 +119,14 @@ type UserAuthHook func(
 // respectively if systemIdentity conforms to one of these 2 users. It may also
 // return previously set subject option and systemIdentity is not root or node.
 // Root and Node roles cannot have subject role option set for them.
-func applyRootOrNodeDNFlag(previouslySetRoleSubject *ldap.DN, systemIdentity string) (dn *ldap.DN) {
+func applyRootOrNodeDNFlag(
+	previouslySetRoleSubject *ldap.DN, systemIdentity username.SQLUsername,
+) (dn *ldap.DN) {
 	dn = previouslySetRoleSubject
 	switch {
-	case systemIdentity == username.RootUser:
+	case systemIdentity.IsRootUser():
 		dn = rootSubjectMu.getDN()
-	case systemIdentity == username.NodeUser:
+	case systemIdentity.IsNodeUser():
 		dn = nodeSubjectMu.getDN()
 	}
 	return dn
@@ -189,6 +190,15 @@ func transformPrincipal(commonName string) string {
 	return mappedName
 }
 
+func getCertificatePrincipals(cert *x509.Certificate) []string {
+	results := make([]string, 0, 1+len(cert.DNSNames))
+	results = append(results, transformPrincipal(cert.Subject.CommonName))
+	for _, name := range cert.DNSNames {
+		results = append(results, transformPrincipal(name))
+	}
+	return results
+}
+
 // GetCertificateUserScope extracts the certificate scopes from a client
 // certificate. It tries to get CRDB prefixed SAN URIs and extracts tenantID and
 // user information. If there is no such URI, then it gets principal transformed
@@ -196,82 +206,31 @@ func transformPrincipal(commonName string) string {
 func GetCertificateUserScope(
 	peerCert *x509.Certificate,
 ) (userScopes []CertificateUserScope, _ error) {
-	collectFn := func(userScope CertificateUserScope) (halt bool, err error) {
-		userScopes = append(userScopes, userScope)
-		return false, nil
-	}
-	err := forEachCertificateUserScope(peerCert, collectFn)
-	return userScopes, err
-}
-
-// CertificateUserScopeContainsFunc returns true if the given function returns
-// true for any of the scopes in the client certificate.
-func CertificateUserScopeContainsFunc(
-	peerCert *x509.Certificate, fn func(CertificateUserScope) bool,
-) (ok bool, _ error) {
-	res := false
-	containsFn := func(userScope CertificateUserScope) (halt bool, err error) {
-		if fn(userScope) {
-			res = true
-			return true, nil
-		}
-		return false, nil
-	}
-	err := forEachCertificateUserScope(peerCert, containsFn)
-	return res, err
-}
-
-func forEachCertificateUserScope(
-	peerCert *x509.Certificate, fn func(userScope CertificateUserScope) (halt bool, err error),
-) error {
-	hasCRDBSANURI := false
 	for _, uri := range peerCert.URIs {
-		if !isCRDBSANURI(uri) {
-			continue
-		}
-		hasCRDBSANURI = true
-		var scope CertificateUserScope
-		if isTenantNameSANURI(uri) {
-			tenantName, user, err := parseTenantNameURISAN(uri)
+		uriString := uri.String()
+		if URISANHasCRDBPrefix(uriString) {
+			tenantID, user, err := ParseTenantURISAN(uriString)
 			if err != nil {
-				return err
+				return nil, err
 			}
-			scope = CertificateUserScope{
-				Username:   user,
-				TenantName: tenantName,
-			}
-		} else {
-			tenantID, user, err := parseTenantURISAN(uri)
-			if err != nil {
-				return err
-			}
-			scope = CertificateUserScope{
+			scope := CertificateUserScope{
 				Username: user,
 				TenantID: tenantID,
 			}
-		}
-		if halt, err := fn(scope); halt || err != nil {
-			return err
+			userScopes = append(userScopes, scope)
 		}
 	}
-	if !hasCRDBSANURI {
-		globalScope := func(user string) CertificateUserScope {
-			return CertificateUserScope{
+	if len(userScopes) == 0 {
+		users := getCertificatePrincipals(peerCert)
+		for _, user := range users {
+			scope := CertificateUserScope{
 				Username: user,
 				Global:   true,
 			}
-		}
-		halt, err := fn(globalScope(transformPrincipal(peerCert.Subject.CommonName)))
-		if halt || err != nil {
-			return err
-		}
-		for _, name := range peerCert.DNSNames {
-			if halt, err := fn(globalScope(transformPrincipal(name))); halt || err != nil {
-				return err
-			}
+			userScopes = append(userScopes, scope)
 		}
 	}
-	return nil
+	return userScopes, nil
 }
 
 // Contains returns true if the specified string is present in the given slice.
@@ -290,7 +249,6 @@ func UserAuthCertHook(
 	insecureMode bool,
 	tlsState *tls.ConnectionState,
 	tenantID roachpb.TenantID,
-	tenantName roachpb.TenantName,
 	certManager *CertificateManager,
 	roleSubject *ldap.DN,
 	subjectRequired bool,
@@ -312,12 +270,13 @@ func UserAuthCertHook(
 		}
 	}
 
-	return func(ctx context.Context, systemIdentity string, clientConnection bool) error {
-		if systemIdentity == "" {
+	return func(ctx context.Context, systemIdentity username.SQLUsername, clientConnection bool) error {
+		// TODO(marc): we may eventually need stricter user syntax rules.
+		if systemIdentity.Undefined() {
 			return errors.New("user is missing")
 		}
 
-		if !clientConnection && systemIdentity != username.NodeUser {
+		if !clientConnection && !systemIdentity.IsNodeUser() {
 			return errors.Errorf("user %q is not allowed", systemIdentity)
 		}
 
@@ -339,7 +298,7 @@ func UserAuthCertHook(
 		if subjectRequired && roleSubject == nil {
 			return errors.Newf(
 				"user %q does not have a distinguished name set which subject_required cluster setting mandates",
-				systemIdentity,
+				systemIdentity.Normalized(),
 			)
 		}
 
@@ -351,12 +310,11 @@ func UserAuthCertHook(
 			}
 		}
 
-		if ValidateUserScope(certUserScope, systemIdentity, tenantID, tenantName, roleSubject, certSubject) {
+		if ValidateUserScope(certUserScope, systemIdentity.Normalized(), tenantID, roleSubject, certSubject) {
 			if certManager != nil {
 				certManager.MaybeUpsertClientExpiration(
 					ctx,
 					systemIdentity,
-					peerCert.SerialNumber.String(),
 					peerCert.NotAfter.Unix(),
 				)
 			}
@@ -382,12 +340,7 @@ func FormatUserScopes(certUserScope []CertificateUserScope) string {
 		if scope.Global {
 			buf.WriteString("all tenants")
 		} else {
-			if scope.TenantID.IsSet() {
-				fmt.Fprintf(&buf, "tenantID %v", scope.TenantID)
-			}
-			if scope.TenantName != "" {
-				fmt.Fprintf(&buf, "tenantName %v", scope.TenantName)
-			}
+			fmt.Fprintf(&buf, "tenant %v", scope.TenantID)
 		}
 		comma = ", "
 	}
@@ -405,12 +358,8 @@ func IsTenantCertificate(cert *x509.Certificate) bool {
 func UserAuthPasswordHook(
 	insecureMode bool, passwordStr string, hashedPassword password.PasswordHash, gauge *metric.Gauge,
 ) UserAuthHook {
-	return func(ctx context.Context, systemIdentity string, clientConnection bool) error {
-		u, err := username.MakeSQLUsernameFromUserInput(systemIdentity, username.PurposeValidation)
-		if err != nil {
-			return err
-		}
-		if u.Undefined() {
+	return func(ctx context.Context, systemIdentity username.SQLUsername, clientConnection bool) error {
+		if systemIdentity.Undefined() {
 			return errors.New("user is missing")
 		}
 
@@ -424,7 +373,7 @@ func UserAuthPasswordHook(
 
 		// If the requested user has an empty password, disallow authentication.
 		if len(passwordStr) == 0 {
-			return NewErrPasswordUserAuthFailed(u)
+			return NewErrPasswordUserAuthFailed(systemIdentity)
 		}
 		ok, err := password.CompareHashAndCleartextPassword(ctx,
 			hashedPassword, passwordStr, GetExpensiveHashComputeSemWithGauge(ctx, gauge))
@@ -432,7 +381,7 @@ func UserAuthPasswordHook(
 			return err
 		}
 		if !ok {
-			return NewErrPasswordUserAuthFailed(u)
+			return NewErrPasswordUserAuthFailed(systemIdentity)
 		}
 
 		return nil
@@ -481,7 +430,6 @@ func ValidateUserScope(
 	certUserScope []CertificateUserScope,
 	user string,
 	tenantID roachpb.TenantID,
-	tenantName roachpb.TenantName,
 	roleSubject *ldap.DN,
 	certSubject *ldap.DN,
 ) bool {
@@ -493,13 +441,7 @@ func ValidateUserScope(
 		if scope.Username == user {
 			// If username matches, allow authentication to succeed if
 			// the tenantID is a match or if the certificate scope is global.
-			if scope.Global {
-				return true
-			}
-			if scope.TenantID.IsSet() && scope.TenantID == tenantID {
-				return true
-			}
-			if scope.TenantName != "" && scope.TenantName == tenantName {
+			if scope.TenantID == tenantID || scope.Global {
 				return true
 			}
 		}

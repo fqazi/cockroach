@@ -6,7 +6,6 @@
 package constraint
 
 import (
-	"context"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
@@ -113,7 +112,7 @@ func (s *Set) IsUnconstrained() bool {
 // Constraints that exist in either of the input sets will get merged into the
 // combined set. Compatible constraints (that share same column list) are
 // intersected with one another. Intersect returns the merged set.
-func (s *Set) Intersect(ctx context.Context, evalCtx *eval.Context, other *Set) *Set {
+func (s *Set) Intersect(evalCtx *eval.Context, other *Set) *Set {
 	// Intersection with the contradiction set is always the contradiction set.
 	if s == Contradiction || other == Contradiction {
 		return Contradiction
@@ -154,7 +153,7 @@ func (s *Set) Intersect(ctx context.Context, evalCtx *eval.Context, other *Set) 
 			// Constraints have same columns, so they're compatible and need to
 			// be merged.
 			*merge = *s.Constraint(index)
-			merge.IntersectWith(ctx, evalCtx, other.Constraint(otherIndex))
+			merge.IntersectWith(evalCtx, other.Constraint(otherIndex))
 			if merge.IsContradiction() {
 				return Contradiction
 			}
@@ -187,7 +186,7 @@ func (s *Set) Intersect(ctx context.Context, evalCtx *eval.Context, other *Set) 
 // the union is unconstrained (and thus allows combinations like x,y = 10,0).
 //
 // Union returns the merged set.
-func (s *Set) Union(ctx context.Context, evalCtx *eval.Context, other *Set) *Set {
+func (s *Set) Union(evalCtx *eval.Context, other *Set) *Set {
 	// Union with the contradiction set is an identity operation.
 	if s == Contradiction {
 		return other
@@ -235,7 +234,7 @@ func (s *Set) Union(ctx context.Context, evalCtx *eval.Context, other *Set) *Set
 		merge := mergeSet.allocConstraint(length - index + otherLength - otherIndex)
 
 		*merge = *s.Constraint(index)
-		merge.UnionWith(ctx, evalCtx, other.Constraint(otherIndex))
+		merge.UnionWith(evalCtx, other.Constraint(otherIndex))
 		if merge.IsUnconstrained() {
 			// Together, constraints allow any possible value, and so there's nothing
 			// to add to the set.
@@ -264,35 +263,33 @@ func (s *Set) ExtractCols() opt.ColSet {
 
 // ExtractNotNullCols returns a set of columns that cannot be NULL for the
 // constraints in the set to hold.
-func (s *Set) ExtractNotNullCols(ctx context.Context, evalCtx *eval.Context) opt.ColSet {
+func (s *Set) ExtractNotNullCols(evalCtx *eval.Context) opt.ColSet {
 	if s == Unconstrained || s == Contradiction {
 		return opt.ColSet{}
 	}
-	res := s.Constraint(0).ExtractNotNullCols(ctx, evalCtx)
+	res := s.Constraint(0).ExtractNotNullCols(evalCtx)
 	for i := 1; i < s.Length(); i++ {
-		res.UnionWith(s.Constraint(i).ExtractNotNullCols(ctx, evalCtx))
+		res.UnionWith(s.Constraint(i).ExtractNotNullCols(evalCtx))
 	}
 	return res
 }
 
 // ExtractConstCols returns a set of columns which can only have one value
 // for the constraints in the set to hold.
-func (s *Set) ExtractConstCols(ctx context.Context, evalCtx *eval.Context) opt.ColSet {
+func (s *Set) ExtractConstCols(evalCtx *eval.Context) opt.ColSet {
 	if s == Unconstrained || s == Contradiction {
 		return opt.ColSet{}
 	}
-	res := s.Constraint(0).ExtractConstCols(ctx, evalCtx)
+	res := s.Constraint(0).ExtractConstCols(evalCtx)
 	for i := 1; i < s.Length(); i++ {
-		res.UnionWith(s.Constraint(i).ExtractConstCols(ctx, evalCtx))
+		res.UnionWith(s.Constraint(i).ExtractConstCols(evalCtx))
 	}
 	return res
 }
 
 // ExtractValueForConstCol extracts the value for a constant column returned
 // by ExtractConstCols. If the given column is not constant, nil is returned.
-func (s *Set) ExtractValueForConstCol(
-	ctx context.Context, evalCtx *eval.Context, col opt.ColumnID,
-) tree.Datum {
+func (s *Set) ExtractValueForConstCol(evalCtx *eval.Context, col opt.ColumnID) tree.Datum {
 	if s == Unconstrained || s == Contradiction {
 		return nil
 	}
@@ -305,7 +302,7 @@ func (s *Set) ExtractValueForConstCol(
 				break
 			}
 		}
-		if colOrd != -1 && s.ExtractConstCols(ctx, evalCtx).Contains(col) {
+		if colOrd != -1 && s.ExtractConstCols(evalCtx).Contains(col) {
 			return c.Spans.Get(0).StartKey().Value(colOrd)
 		}
 	}
@@ -317,9 +314,7 @@ func (s *Set) ExtractValueForConstCol(
 //   - The given column is the only constrained column.
 //   - The column is constrained to a set of constant values.
 //   - None of the values are NULL.
-func (s *Set) HasSingleColumnNonNullConstValues(
-	ctx context.Context, evalCtx *eval.Context, col opt.ColumnID,
-) bool {
+func (s *Set) HasSingleColumnNonNullConstValues(evalCtx *eval.Context, col opt.ColumnID) bool {
 	if s.Length() != 1 {
 		return false
 	}
@@ -341,9 +336,7 @@ func (s *Set) HasSingleColumnNonNullConstValues(
 		if startVal == tree.DNull {
 			return false
 		}
-		if cmp, err := startVal.Compare(ctx, evalCtx, end.Value(0)); err != nil {
-			panic(err)
-		} else if cmp != 0 {
+		if startVal.Compare(evalCtx, end.Value(0)) != 0 {
 			return false
 		}
 	}
@@ -357,9 +350,9 @@ func (s *Set) HasSingleColumnNonNullConstValues(
 //   - The column is constrained to a set of constant values.
 //   - None of the values are NULL.
 func (s *Set) ExtractSingleColumnNonNullConstValues(
-	ctx context.Context, evalCtx *eval.Context, col opt.ColumnID,
+	evalCtx *eval.Context, col opt.ColumnID,
 ) (constValues tree.Datums, ok bool) {
-	if ok := s.HasSingleColumnNonNullConstValues(ctx, evalCtx, col); !ok {
+	if ok := s.HasSingleColumnNonNullConstValues(evalCtx, col); !ok {
 		return nil, false
 	}
 	c := s.Constraint(0)

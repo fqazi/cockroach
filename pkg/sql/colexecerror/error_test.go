@@ -15,6 +15,8 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecerror"
+	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
+	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -30,10 +32,6 @@ import (
 func TestCatchVectorizedRuntimeError(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	// Use the release-build panic-catching behavior instead of the
-	// crdb_test-build behavior.
-	defer colexecerror.ProductionBehaviorForTests()()
 
 	// Setup multiple levels of catchers to ensure that the panic-catcher
 	// doesn't fool itself into catching panics that the inner catcher emitted.
@@ -74,10 +72,6 @@ func TestNonCatchablePanicIsNotCaught(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	// Use the release-build panic-catching behavior instead of the
-	// crdb_test-build behavior.
-	defer colexecerror.ProductionBehaviorForTests()()
-
 	require.Panics(t, func() {
 		require.NoError(t, colexecerror.CatchVectorizedRuntimeError(func() {
 			colexecerror.NonCatchablePanic("should panic")
@@ -108,15 +102,76 @@ func TestRuntimePanicIsCaught(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	// Use the release-build panic-catching behavior instead of the
-	// crdb_test-build behavior.
-	defer colexecerror.ProductionBehaviorForTests()()
-
 	require.Error(t, colexecerror.CatchVectorizedRuntimeError(func() {
 		// Attempt an invalid interface conversion.
 		var o testInterface = &testImpl1{}
 		_ = o.(*testImpl2)
 	}))
+}
+
+// BenchmarkCatchVectorizedRuntimeError measures the time for
+// CatchVectorizedRuntimeError to catch and process an error.
+func BenchmarkCatchVectorizedRuntimeError(b *testing.B) {
+	err := errors.New("oops")
+	storageErr := colexecerror.NewStorageError(err)
+	pgErr := pgerror.WithCandidateCode(err, pgcode.Warning)
+
+	cases := []struct {
+		name    string
+		thrower func()
+	}{
+		{
+			"noError",
+			func() {},
+		},
+		{
+			"expected",
+			func() {
+				colexecerror.ExpectedError(err)
+			},
+		},
+		{
+			"storage",
+			func() {
+				colexecerror.InternalError(storageErr)
+			},
+		},
+		{
+			"contextCanceled",
+			func() {
+				colexecerror.InternalError(context.Canceled)
+			},
+		},
+		{
+			"internalWithCode",
+			func() {
+				colexecerror.InternalError(pgErr)
+			},
+		},
+		{
+			"internal",
+			func() {
+				colexecerror.InternalError(err)
+			},
+		},
+		{
+			"runtime",
+			func() {
+				arr := []int{0, 1, 2}
+				_ = arr[3]
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					_ = colexecerror.CatchVectorizedRuntimeError(tc.thrower)
+				}
+			})
+		})
+	}
 }
 
 // BenchmarkSQLCatchVectorizedRuntimeError measures the time for
@@ -180,36 +235,22 @@ func BenchmarkSQLCatchVectorizedRuntimeError(b *testing.B) {
 	s := serverutils.StartServerOnly(b, base.TestServerArgs{SQLMemoryPoolSize: 10 << 30})
 	defer s.Stopper().Stop(ctx)
 
-	// Use the release-build panic-catching behavior instead of the
-	// crdb_test-build behavior.
-	defer colexecerror.ProductionBehaviorForTests()()
-
-	const maxParallelism = 32
-	maxNumConns := runtime.GOMAXPROCS(0) * maxParallelism
-	// Create as many warm connections as we will need for the benchmark. These
-	// will be reused across all test cases to avoid the connection churn.
-	connsPool := make([]*gosql.DB, maxNumConns)
-	for i := range connsPool {
-		conn := s.ApplicationLayer().SQLConn(b, serverutils.DBName(""))
-		// Make sure we're using local, vectorized execution.
-		sqlDB := sqlutils.MakeSQLRunner(conn)
-		sqlDB.Exec(b, "SET distsql = off")
-		sqlDB.Exec(b, "SET vectorize = on")
-		connsPool[i] = conn
-	}
-
-	for _, parallelism := range []int{1, 8, maxParallelism} {
+	for _, parallelism := range []int{1, 20, 50} {
 		numConns := runtime.GOMAXPROCS(0) * parallelism
 		b.Run(fmt.Sprintf("conns=%d", numConns), func(b *testing.B) {
 			for _, tc := range cases {
 				stmt := fmt.Sprintf(sqlFmt, tc.builtin)
 				b.Run(tc.name, func(b *testing.B) {
+					// Create as many warm connections as we will need for the benchmark.
 					conns := make(chan *gosql.DB, numConns)
 					for i := 0; i < numConns; i++ {
-						conn := connsPool[i]
-						// Warm up the connection by executing the statement
-						// once. We should always go through the query plan
-						// cache after this.
+						conn := s.ApplicationLayer().SQLConn(b, serverutils.DBName(""))
+						// Make sure we're using local, vectorized execution.
+						sqlDB := sqlutils.MakeSQLRunner(conn)
+						sqlDB.Exec(b, "SET distsql = off")
+						sqlDB.Exec(b, "SET vectorize = on")
+						// Warm up the connection by executing the statement once. We should
+						// always go through the query plan cache after this.
 						_, _ = conn.Exec(stmt)
 						conns <- conn
 					}

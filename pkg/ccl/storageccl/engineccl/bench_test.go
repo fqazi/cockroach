@@ -94,9 +94,6 @@ func loadTestData(
 				minWallTime = minSStableTimestamps[i/scaled]
 			}
 			timestamp := hlc.Timestamp{WallTime: minWallTime + rand.Int63n(int64(batchTimeSpan))}
-			if timestamp.Less(hlc.MinTimestamp) {
-				timestamp = hlc.MinTimestamp
-			}
 			value := roachpb.MakeValueFromBytes(randutil.RandBytes(rng, valueBytes))
 			value.InitChecksum(key)
 			if _, err := storage.MVCCPut(ctx, batch, key, timestamp, value, storage.MVCCWriteOptions{}); err != nil {
@@ -142,7 +139,7 @@ func runIterate(
 
 	// Store the database in this directory so we don't have to regenerate it on
 	// each benchmark run.
-	eng := loadTestData(b, "mvcc_data_v3", numKeys, numBatches, batchTimeSpan, valueBytes)
+	eng := loadTestData(b, "mvcc_data_v2", numKeys, numBatches, batchTimeSpan, valueBytes)
 	defer eng.Close()
 
 	b.SetBytes(int64(numKeys * valueBytes))

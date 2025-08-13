@@ -4,12 +4,10 @@
 // included in the /LICENSE file.
 
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-import moment, { Moment } from "moment-timezone";
-
-import { SqlApiResponse, TxnInsightsRequest } from "src/api";
-import { TxnInsightEvent } from "src/insights";
-
 import { DOMAIN_NAME } from "../../utils";
+import { TxnInsightEvent } from "src/insights";
+import moment, { Moment } from "moment-timezone";
+import { SqlApiResponse, TxnInsightsRequest } from "src/api";
 
 export type TxnInsightsState = {
   data: SqlApiResponse<TxnInsightEvent[]>;

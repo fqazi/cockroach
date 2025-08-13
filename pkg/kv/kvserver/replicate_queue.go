@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/mmaintegration"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
@@ -98,6 +97,7 @@ var EnqueueProblemRangeInReplicateQueueInterval = settings.RegisterDurationSetti
 		"one which is underreplicated or has a replica on a decommissioning store, "+
 		"disabled when set to 0",
 	0,
+	settings.NonNegativeDuration,
 )
 
 var (
@@ -262,9 +262,6 @@ var (
 		Help:        "Number of failed decommissioning replica replacements processed by the replicate queue",
 		Measurement: "Replicas",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_REPLICATION,
-		HowToUse:    `Refer to Decommission the node.`,
 	}
 	metaReplicateQueueRemoveDecommissioningReplicaSuccessCount = metric.Metadata{
 		Name:        "queue.replicate.removedecommissioningreplica.success",
@@ -526,7 +523,6 @@ type replicateQueue struct {
 	*baseQueue
 	metrics   ReplicateQueueMetrics
 	allocator allocatorimpl.Allocator
-	as        *mmaintegration.AllocatorSync
 	storePool storepool.AllocatorStorePool
 	planner   plan.ReplicationPlanner
 
@@ -560,7 +556,6 @@ func newReplicateQueue(store *Store, allocator allocatorimpl.Allocator) *replica
 		logTracesThresholdFunc: makeRateLimitedTimeoutFuncByPermittedSlowdown(
 			permittedRangeScanSlowdown/2, rebalanceSnapshotRate,
 		),
-		as: store.cfg.AllocatorSync,
 	}
 	store.metrics.registry.AddMetricStruct(&rq.metrics)
 	rq.baseQueue = newBaseQueue(
@@ -577,6 +572,7 @@ func newReplicateQueue(store *Store, allocator allocatorimpl.Allocator) *replica
 			processTimeoutFunc: makeRateLimitedTimeoutFunc(rebalanceSnapshotRate),
 			successes:          store.metrics.ReplicateQueueSuccesses,
 			failures:           store.metrics.ReplicateQueueFailures,
+			storeFailures:      store.metrics.StoreFailures,
 			pending:            store.metrics.ReplicateQueuePending,
 			processingNanos:    store.metrics.ReplicateQueueProcessingNanos,
 			purgatory:          store.metrics.ReplicateQueuePurgatory,
@@ -593,7 +589,7 @@ func newReplicateQueue(store *Store, allocator allocatorimpl.Allocator) *replica
 	// Register gossip and node liveness callbacks to signal that
 	// replicas in purgatory might be retried.
 	if g := store.cfg.Gossip; g != nil { // gossip is nil for some unittests
-		g.RegisterCallback(gossip.MakePrefixPattern(gossip.KeyStoreDescPrefix), func(key string, _ roachpb.Value, _ int64) {
+		g.RegisterCallback(gossip.MakePrefixPattern(gossip.KeyStoreDescPrefix), func(key string, _ roachpb.Value) {
 			if !rq.store.IsStarted() {
 				return
 			}
@@ -749,31 +745,25 @@ func (rq *replicateQueue) processOneChangeWithTracing(
 	ctx context.Context, repl *Replica, desc *roachpb.RangeDescriptor, conf *roachpb.SpanConfig,
 ) (requeue bool, _ error) {
 	processStart := timeutil.Now()
-	startTracing := log.ExpensiveLogEnabled(ctx, 1)
-	var opts []tracing.SpanOption
-	if startTracing {
-		// If we enable expensive logging, we also want to record the traces for
-		// the entire operation. We only log the trace below if we both exceed
-		// the timeout and expensive logging is enabled.
-		opts = append(opts, tracing.WithRecording(tracingpb.RecordingVerbose))
-	}
-	ctx, sp := tracing.EnsureChildSpan(ctx, rq.Tracer, "process replica", opts...)
+	ctx, sp := tracing.EnsureChildSpan(ctx, rq.Tracer, "process replica",
+		tracing.WithRecording(tracingpb.RecordingVerbose))
 	defer sp.Finish()
 
 	requeue, err := rq.processOneChange(ctx, repl, desc, conf,
 		false /* scatter */, false, /* dryRun */
 	)
-	processDuration := timeutil.Since(processStart)
-	loggingThreshold := rq.logTracesThresholdFunc(rq.store.cfg.Settings, repl)
-	exceededDuration := loggingThreshold > time.Duration(0) && processDuration > loggingThreshold
 
-	var traceOutput redact.RedactableString
-	if startTracing {
-		// Utilize a new background context (properly annotated) to avoid writing
-		// traces from a child context into its parent.
-		ctx = repl.AnnotateCtx(rq.AnnotateCtx(context.Background()))
+	// Utilize a new background context (properly annotated) to avoid writing
+	// traces from a child context into its parent.
+	{
+		ctx := repl.AnnotateCtx(rq.AnnotateCtx(context.Background()))
 		var rec tracingpb.Recording
-		traceLoggingNeeded := (err != nil || exceededDuration)
+		processDuration := timeutil.Since(processStart)
+		loggingThreshold := rq.logTracesThresholdFunc(rq.store.cfg.Settings, repl)
+		exceededDuration := loggingThreshold > time.Duration(0) && processDuration > loggingThreshold
+
+		var traceOutput redact.RedactableString
+		traceLoggingNeeded := (err != nil || exceededDuration) && log.ExpensiveLogEnabled(ctx, 1)
 		if traceLoggingNeeded {
 			// If we have tracing spans from execChangeReplicasTxn, filter it from
 			// the recording so that we can render the traces to the log without it,
@@ -783,12 +773,13 @@ func (rq *replicateQueue) processOneChangeWithTracing(
 			)
 			traceOutput = redact.Sprintf("\ntrace:\n%s", rec)
 		}
-	}
-	if err != nil {
-		log.KvDistribution.Infof(ctx, "error processing replica: %v%s", err, traceOutput)
-	} else if exceededDuration {
-		log.KvDistribution.Infof(ctx, "processing replica took %s, exceeding threshold of %s%s",
-			processDuration, loggingThreshold, traceOutput)
+
+		if err != nil {
+			log.KvDistribution.Infof(ctx, "error processing replica: %v%s", err, traceOutput)
+		} else if exceededDuration {
+			log.KvDistribution.Infof(ctx, "processing replica took %s, exceeding threshold of %s%s",
+				processDuration, loggingThreshold, traceOutput)
+		}
 	}
 
 	return requeue, err
@@ -819,7 +810,6 @@ func (rq *replicateQueue) applyChange(
 			replica,
 			op.Chgs,
 			replica.Desc(),
-			op.Usage,
 			op.AllocatorPriority,
 			op.Reason,
 			op.Details,
@@ -918,6 +908,10 @@ func (rq *replicateQueue) processOneChange(
 		return false, maybeAnnotateDecommissionErr(err, change.Action)
 	}
 
+	// Update the local storepool state to reflect the successful application
+	// of the change.
+	change.Op.ApplyImpact(rq.storePool)
+
 	// Requeue the replica if it meets the criteria in ShouldRequeue.
 	return ShouldRequeue(ctx, change, conf), nil
 }
@@ -949,7 +943,7 @@ func (rq *replicateQueue) shedLease(
 	rangeUsageInfo := repl.RangeUsageInfo()
 	// Learner replicas aren't allowed to become the leaseholder or raft leader,
 	// so only consider the `VoterDescriptors` replicas.
-	targetDesc := rq.allocator.TransferLeaseTarget(
+	target := rq.allocator.TransferLeaseTarget(
 		ctx,
 		rq.storePool,
 		desc,
@@ -960,18 +954,11 @@ func (rq *replicateQueue) shedLease(
 		false, /* forceDecisionWithoutStats */
 		opts,
 	)
-	if targetDesc == (roachpb.ReplicaDescriptor{}) {
+	if target == (roachpb.ReplicaDescriptor{}) {
 		return allocator.NoSuitableTarget, nil
 	}
-	source := roachpb.ReplicationTarget{
-		NodeID:  repl.NodeID(),
-		StoreID: repl.StoreID(),
-	}
-	target := roachpb.ReplicationTarget{
-		NodeID:  targetDesc.NodeID,
-		StoreID: targetDesc.StoreID,
-	}
-	if err := rq.TransferLease(ctx, repl, source, target, rangeUsageInfo); err != nil {
+
+	if err := rq.TransferLease(ctx, repl, repl.store.StoreID(), target.StoreID, rangeUsageInfo); err != nil {
 		return allocator.TransferErr, err
 	}
 	return allocator.TransferOK, nil
@@ -979,10 +966,9 @@ func (rq *replicateQueue) shedLease(
 
 // ReplicaLeaseMover handles lease transfers for a single range.
 type ReplicaLeaseMover interface {
-	// Desc returns the range descriptor of the range.
-	Desc() *roachpb.RangeDescriptor
 	// AdminTransferLease moves the lease to the requested store.
 	AdminTransferLease(ctx context.Context, target roachpb.StoreID, bypassSafetyChecks bool) error
+
 	// String returns info about the replica.
 	String() string
 }
@@ -998,7 +984,7 @@ type RangeRebalancer interface {
 	TransferLease(
 		ctx context.Context,
 		rlm ReplicaLeaseMover,
-		source, target roachpb.ReplicationTarget,
+		source, target roachpb.StoreID,
 		rangeUsageInfo allocator.RangeUsageInfo,
 	) error
 
@@ -1027,26 +1013,16 @@ func (rq *replicateQueue) finalizeAtomicReplication(ctx context.Context, repl *R
 func (rq *replicateQueue) TransferLease(
 	ctx context.Context,
 	rlm ReplicaLeaseMover,
-	source, target roachpb.ReplicationTarget,
+	source, target roachpb.StoreID,
 	rangeUsageInfo allocator.RangeUsageInfo,
 ) error {
 	rq.metrics.TransferLeaseCount.Inc(1)
 	log.KvDistribution.Infof(ctx, "transferring lease to s%d", target)
-	// Inform allocator sync that the change has been applied which applies
-	// changes to store pool and inform mma.
-	changeID := rq.as.NonMMAPreTransferLease(
-		rlm.Desc(),
-		rangeUsageInfo,
-		source,
-		target,
-	)
-
-	err := rlm.AdminTransferLease(ctx, target.StoreID, false /* bypassSafetyChecks */)
-	rq.as.PostApply(changeID, err == nil /*success*/)
-
-	if err != nil {
+	if err := rlm.AdminTransferLease(ctx, target, false /* bypassSafetyChecks */); err != nil {
 		return errors.Wrapf(err, "%s: unable to transfer lease to s%d", rlm, target)
 	}
+
+	rq.storePool.UpdateLocalStoresAfterLeaseTransfer(source, target, rangeUsageInfo)
 	return nil
 }
 
@@ -1071,19 +1047,10 @@ func (rq *replicateQueue) changeReplicas(
 	repl *Replica,
 	chgs kvpb.ReplicationChanges,
 	desc *roachpb.RangeDescriptor,
-	rangeUsageInfo allocator.RangeUsageInfo,
 	allocatorPriority float64,
 	reason kvserverpb.RangeLogEventReason,
 	details string,
 ) error {
-	// Inform allocator sync that the change has been applied which applies
-	// changes to store pool and inform mma.
-	changeID := rq.as.NonMMAPreChangeReplicas(
-		desc,
-		rangeUsageInfo,
-		chgs,
-		repl.StoreID(),
-	)
 	// NB: this calls the impl rather than ChangeReplicas because
 	// the latter traps tests that try to call it while the replication
 	// queue is active.
@@ -1091,8 +1058,6 @@ func (rq *replicateQueue) changeReplicas(
 		ctx, desc, kvserverpb.SnapshotRequest_REPLICATE_QUEUE, allocatorPriority, reason,
 		details, chgs,
 	)
-
-	rq.as.PostApply(changeID, err == nil /*success*/)
 	return err
 }
 

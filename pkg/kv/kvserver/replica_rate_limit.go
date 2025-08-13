@@ -18,30 +18,17 @@ import (
 // maybeRateLimitBatch may block the batch waiting to be rate-limited. Note that
 // the replica must be initialized and thus there is no synchronization issue
 // on the tenantRateLimiter.
-func (r *Replica) maybeRateLimitBatch(
-	ctx context.Context, ba *kvpb.BatchRequest, tenantIDOrZero roachpb.TenantID,
-) error {
+func (r *Replica) maybeRateLimitBatch(ctx context.Context, ba *kvpb.BatchRequest) error {
 	if r.tenantLimiter == nil {
 		return nil
 	}
-	if !tenantIDOrZero.IsSet() || tenantIDOrZero.IsSystem() {
+	tenantID, ok := roachpb.ClientTenantFromContext(ctx)
+	if !ok || tenantID == roachpb.SystemTenantID {
 		return nil
 	}
 
-	var info tenantcostmodel.BatchInfo
-	for i := range ba.Requests {
-		req := ba.Requests[i].GetInner()
-		if !kvpb.IsReadOnly(req) {
-			info.WriteCount++
-			if swr, isSizedWrite := req.(kvpb.SizedWriteRequest); isSizedWrite {
-				info.WriteBytes += swr.WriteBytes()
-			}
-		}
-	}
-
-	// Request object only needs to account for writeCount and writeBytes. All
-	// the others are only used to calculate usage, and not for rate limiting.
-	err := r.tenantLimiter.Wait(ctx, info)
+	// writeMultiplier isn't needed here since it's only used to calculate RUs.
+	err := r.tenantLimiter.Wait(ctx, tenantcostmodel.MakeRequestInfo(ba, 1, 1))
 
 	// For performance reasons, we do not hold any Replica's mutexes while waiting
 	// on the tenantLimiter, and so we are racing with the Replica lifecycle. The
@@ -66,13 +53,6 @@ func (r *Replica) recordImpactOnRateLimiter(
 	if r.tenantLimiter == nil || br == nil || !isReadOnly {
 		return
 	}
-
-	var info tenantcostmodel.BatchInfo
-	for i := range br.Responses {
-		resp := br.Responses[i].GetInner()
-		info.ReadCount++
-		info.ReadBytes += resp.Header().NumBytes
-	}
-
-	r.tenantLimiter.RecordRead(ctx, info)
+	// readMultiplier isn't needed here since it's only used to calculate RUs.
+	r.tenantLimiter.RecordRead(ctx, tenantcostmodel.MakeResponseInfo(br, isReadOnly, 1))
 }

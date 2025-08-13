@@ -3,10 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import isError from "lodash/isError";
-import moment from "moment-timezone";
+import _ from "lodash";
 import { Action } from "redux";
-
+import moment from "moment-timezone";
 import {
   CachedDataReducer,
   CachedDataReducerState,
@@ -174,7 +173,7 @@ describe("basic cachedDataReducer", function () {
           "duplicatenamespace",
         );
       } catch (e) {
-        expect(isError(e)).toBeTruthy();
+        expect(_.isError(e)).toBeTruthy();
         return;
       }
       // expected to throw an error after using a duplicate actionNamespace
@@ -343,18 +342,15 @@ describe("PaginatedCachedDataReducer", function () {
   }
 
   class Response implements WithPaginationResponse {
-    constructor(
-      public response: string,
-      public next_page_token: string,
-    ) {}
+    constructor(public response: string, public next_page_token: string) {}
   }
 
   const apiEndpointMockFactory: (
     totalPages: number,
     pageSize: number,
   ) => (req: Request) => Promise<Response> = (
-    totalPages = 5,
-    pageSize = 10,
+    totalPages: number = 5,
+    pageSize: number = 10,
   ) => {
     let requestCounter = 0;
     return (req = new Request(null, pageSize, requestCounter.toString())) => {

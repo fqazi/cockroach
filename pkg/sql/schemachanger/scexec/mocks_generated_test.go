@@ -8,7 +8,6 @@ import (
 	context "context"
 	reflect "reflect"
 
-	zonepb "github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	jobs "github.com/cockroachdb/cockroach/pkg/jobs"
 	username "github.com/cockroachdb/cockroach/pkg/security/username"
 	cluster "github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -114,20 +113,6 @@ func (mr *MockCatalogMockRecorder) DeleteName(arg0, arg1, arg2 interface{}) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteName", reflect.TypeOf((*MockCatalog)(nil).DeleteName), arg0, arg1, arg2)
 }
 
-// DeleteSubzoneConfig mocks base method.
-func (m *MockCatalog) DeleteSubzoneConfig(arg0 context.Context, arg1 catid.DescID, arg2 zonepb.Subzone, arg3 []zonepb.SubzoneSpan) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteSubzoneConfig", arg0, arg1, arg2, arg3)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// DeleteSubzoneConfig indicates an expected call of DeleteSubzoneConfig.
-func (mr *MockCatalogMockRecorder) DeleteSubzoneConfig(arg0, arg1, arg2, arg3 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteSubzoneConfig", reflect.TypeOf((*MockCatalog)(nil).DeleteSubzoneConfig), arg0, arg1, arg2, arg3)
-}
-
 // DeleteZoneConfig mocks base method.
 func (m *MockCatalog) DeleteZoneConfig(arg0 context.Context, arg1 catid.DescID) error {
 	m.ctrl.T.Helper()
@@ -157,21 +142,6 @@ func (mr *MockCatalogMockRecorder) GetFullyQualifiedName(arg0, arg1 interface{})
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetFullyQualifiedName", reflect.TypeOf((*MockCatalog)(nil).GetFullyQualifiedName), arg0, arg1)
 }
 
-// GetZoneConfig mocks base method.
-func (m *MockCatalog) GetZoneConfig(arg0 context.Context, arg1 catid.DescID) (catalog.ZoneConfig, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetZoneConfig", arg0, arg1)
-	ret0, _ := ret[0].(catalog.ZoneConfig)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetZoneConfig indicates an expected call of GetZoneConfig.
-func (mr *MockCatalogMockRecorder) GetZoneConfig(arg0, arg1 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetZoneConfig", reflect.TypeOf((*MockCatalog)(nil).GetZoneConfig), arg0, arg1)
-}
-
 // InitializeSequence mocks base method.
 func (m *MockCatalog) InitializeSequence(arg0 catid.DescID, arg1 int64) {
 	m.ctrl.T.Helper()
@@ -182,18 +152,6 @@ func (m *MockCatalog) InitializeSequence(arg0 catid.DescID, arg1 int64) {
 func (mr *MockCatalogMockRecorder) InitializeSequence(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InitializeSequence", reflect.TypeOf((*MockCatalog)(nil).InitializeSequence), arg0, arg1)
-}
-
-// InsertTemporarySchema mocks base method.
-func (m *MockCatalog) InsertTemporarySchema(arg0 string, arg1, arg2 catid.DescID) {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "InsertTemporarySchema", arg0, arg1, arg2)
-}
-
-// InsertTemporarySchema indicates an expected call of InsertTemporarySchema.
-func (mr *MockCatalogMockRecorder) InsertTemporarySchema(arg0, arg1, arg2 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertTemporarySchema", reflect.TypeOf((*MockCatalog)(nil).InsertTemporarySchema), arg0, arg1, arg2)
 }
 
 // MustReadImmutableDescriptors mocks base method.
@@ -273,35 +231,6 @@ func (mr *MockCatalogMockRecorder) UpdateComment(arg0, arg1, arg2 interface{}) *
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateComment", reflect.TypeOf((*MockCatalog)(nil).UpdateComment), arg0, arg1, arg2)
 }
 
-// UpdateSubzoneConfig mocks base method.
-func (m *MockCatalog) UpdateSubzoneConfig(arg0 context.Context, arg1 catalog.ZoneConfig, arg2 zonepb.Subzone, arg3 []zonepb.SubzoneSpan, arg4 int32) (catalog.ZoneConfig, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateSubzoneConfig", arg0, arg1, arg2, arg3, arg4)
-	ret0, _ := ret[0].(catalog.ZoneConfig)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// UpdateSubzoneConfig indicates an expected call of UpdateSubzoneConfig.
-func (mr *MockCatalogMockRecorder) UpdateSubzoneConfig(arg0, arg1, arg2, arg3, arg4 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateSubzoneConfig", reflect.TypeOf((*MockCatalog)(nil).UpdateSubzoneConfig), arg0, arg1, arg2, arg3, arg4)
-}
-
-// UpdateZoneConfig mocks base method.
-func (m *MockCatalog) UpdateZoneConfig(arg0 context.Context, arg1 catid.DescID, arg2 *zonepb.ZoneConfig) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateZoneConfig", arg0, arg1, arg2)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// UpdateZoneConfig indicates an expected call of UpdateZoneConfig.
-func (mr *MockCatalogMockRecorder) UpdateZoneConfig(arg0, arg1, arg2 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateZoneConfig", reflect.TypeOf((*MockCatalog)(nil).UpdateZoneConfig), arg0, arg1, arg2)
-}
-
 // Validate mocks base method.
 func (m *MockCatalog) Validate(arg0 context.Context) error {
 	m.ctrl.T.Helper()
@@ -314,20 +243,6 @@ func (m *MockCatalog) Validate(arg0 context.Context) error {
 func (mr *MockCatalogMockRecorder) Validate(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Validate", reflect.TypeOf((*MockCatalog)(nil).Validate), arg0)
-}
-
-// WriteZoneConfigToBatch mocks base method.
-func (m *MockCatalog) WriteZoneConfigToBatch(arg0 context.Context, arg1 catid.DescID, arg2 catalog.ZoneConfig) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "WriteZoneConfigToBatch", arg0, arg1, arg2)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// WriteZoneConfigToBatch indicates an expected call of WriteZoneConfigToBatch.
-func (mr *MockCatalogMockRecorder) WriteZoneConfigToBatch(arg0, arg1, arg2 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "WriteZoneConfigToBatch", reflect.TypeOf((*MockCatalog)(nil).WriteZoneConfigToBatch), arg0, arg1, arg2)
 }
 
 // MockDependencies is a mock of Dependencies interface.

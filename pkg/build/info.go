@@ -16,8 +16,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
-	"github.com/cockroachdb/redact"
-	"github.com/cockroachdb/version"
+	"github.com/cockroachdb/cockroach/pkg/util/version"
 )
 
 // TimeFormat is the reference format for build.Time. Make sure it stays in sync
@@ -76,7 +75,7 @@ func parseCockroachVersion(versionTxt string) *version.Version {
 	if err != nil {
 		panic(fmt.Errorf("could not parse version.txt: %w", err))
 	}
-	return &v
+	return v
 }
 
 func computeBinaryVersion(
@@ -103,30 +102,19 @@ func BinaryVersion() string {
 	return binaryVersion
 }
 
-// VersionForURLs is used to determine the version to use in public-facing doc URLs.
-// It returns "vX.Y" for all release versions, and all prerelease versions >= "alpha.1".
-// X and Y are the major and minor, respectively, of the version specified in version.txt.
-// For all other prerelease versions, it returns "dev".
-// N.B. new public-facing doc URLs are expected to be up once the "alpha.1" prerelease is shipped. Otherwise, "dev" will
-// cause the url mapper to redirect to the latest stable release.
-func VersionForURLs() string {
-	if parsedVersionTxt.IsPrerelease() {
-		phaseAndOrdinal := parsedVersionTxt.Format("%P.%o")
-		// builds use 'dev' in their URLs until "alpha.1" is shipped
-		if phaseAndOrdinal <= "alpha.1" {
-			return "dev"
-		}
-	} else if parsedVersionTxt.IsCustomOrAdhocBuild() {
+// BinaryVersionPrefix returns the version prefix of the current build.
+func BinaryVersionPrefix() string {
+	v, err := version.Parse(BinaryVersion())
+	if err != nil {
 		return "dev"
 	}
-	return parsedVersionTxt.Major().String()
+	return fmt.Sprintf("v%d.%d", v.Major(), v.Minor())
 }
 
 // BranchReleaseSeries returns tha major and minor in version.txt, without
 // allowing for any overrides.
-func BranchReleaseSeries() (year, ordinal int) {
-	major := parsedVersionTxt.Major()
-	return major.Year, major.Ordinal
+func BranchReleaseSeries() (major, minor int) {
+	return parsedVersionTxt.Major(), parsedVersionTxt.Minor()
 }
 
 func init() {
@@ -138,18 +126,13 @@ func init() {
 }
 
 // Short returns a pretty printed build and version summary.
-func (b Info) Short() redact.RedactableString {
+func (b Info) Short() string {
 	plat := b.Platform
 	if b.CgoTargetTriple != "" {
 		plat = b.CgoTargetTriple
 	}
-	return redact.Sprintf("CockroachDB %s %s (%s, built %s, %s)",
-		redact.SafeString(b.Distribution),
-		redact.SafeString(b.Tag),
-		redact.SafeString(plat),
-		redact.SafeString(b.Time),
-		redact.SafeString(b.GoVersion),
-	)
+	return fmt.Sprintf("CockroachDB %s %s (%s, built %s, %s)",
+		b.Distribution, b.Tag, plat, b.Time, b.GoVersion)
 }
 
 // Long returns a pretty printed build summary
@@ -223,10 +206,5 @@ func TestingOverrideVersion(v string) func() {
 
 // MakeIssueURL produces a URL to a CockroachDB issue.
 func MakeIssueURL(issue int) string {
-	return fmt.Sprintf("https://go.crdb.dev/issue-v/%d/%s", issue, VersionForURLs())
-}
-
-// ParsedVersion returns the parsed version.txt.
-func ParsedVersion() *version.Version {
-	return parsedVersionTxt
+	return fmt.Sprintf("https://go.crdb.dev/issue-v/%d/%s", issue, BinaryVersionPrefix())
 }

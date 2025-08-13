@@ -13,7 +13,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/base",
-        "//pkg/clusterversion",
         "//pkg/keys",
         "//pkg/kv",
         "//pkg/kv/kvclient/rangefeed",
@@ -32,7 +31,6 @@ go_library(
         "//pkg/sql/catalog/systemschema",
         "//pkg/sql/enum",
         "//pkg/sql/regionliveness",
-        "//pkg/sql/regions",
         "//pkg/sql/rowenc/keyside",
         "//pkg/sql/rowenc/valueside",
         "//pkg/sql/sem/tree",

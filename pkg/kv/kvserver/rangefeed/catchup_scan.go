@@ -8,15 +8,16 @@ package rangefeed
 import (
 	"bytes"
 	"context"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/bufalloc"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 )
@@ -90,7 +91,7 @@ func NewCatchUpIterator(
 			// over the provisional values during
 			// iteration.
 			IntentPolicy: storage.MVCCIncrementalIterIntentPolicyEmit,
-			ReadCategory: fs.RangefeedReadCategory,
+			ReadCategory: storage.RangefeedReadCategory,
 		})
 	if err != nil {
 		return nil, err
@@ -117,8 +118,6 @@ func (i *CatchUpIterator) Close() {
 // TODO(ssd): Clarify memory ownership. Currently, the memory backing
 // the RangeFeedEvents isn't modified by the caller after this
 // returns. However, we may revist this in #69596.
-// TODO(dt): Does this really need to be a pointer to a struct containing all
-// pointers? can we pass by value instead?
 type outputEventFn func(e *kvpb.RangeFeedEvent) error
 
 // CatchUpScan iterates over all changes in the configured key/time span, and
@@ -136,12 +135,7 @@ type outputEventFn func(e *kvpb.RangeFeedEvent) error
 // TODO(sumeer): ctx is not used for SeekGE and Next. Fix by adding a method
 // to SimpleMVCCIterator to replace the context.
 func (i *CatchUpIterator) CatchUpScan(
-	ctx context.Context,
-	emitFn outputEventFn,
-	withDiff bool,
-	withFiltering bool,
-	withOmitRemote bool,
-	bulkDeliverySize int,
+	ctx context.Context, outputFn outputEventFn, withDiff bool, withFiltering bool,
 ) error {
 	var a bufalloc.ByteAllocator
 	// MVCCIterator will encounter historical values for each key in
@@ -150,26 +144,6 @@ func (i *CatchUpIterator) CatchUpScan(
 	// the encountered values in reverse. This also allows us to buffer events
 	// as we fill in previous values.
 	reorderBuf := make([]kvpb.RangeFeedEvent, 0, 5)
-
-	outputFn := emitFn
-	var emitBufSize int
-	var emitBuf []*kvpb.RangeFeedEvent
-
-	if bulkDeliverySize > 0 {
-		outputFn = func(event *kvpb.RangeFeedEvent) error {
-			emitBuf = append(emitBuf, event)
-			emitBufSize += event.Size()
-			// If there are ~2MB of buffered events, flush them.
-			if emitBufSize >= bulkDeliverySize {
-				if err := emitFn(&kvpb.RangeFeedEvent{BulkEvents: &kvpb.RangeFeedBulkEvents{Events: emitBuf}}); err != nil {
-					return err
-				}
-				emitBuf = make([]*kvpb.RangeFeedEvent, 0, len(emitBuf))
-				emitBufSize = 0
-			}
-			return nil
-		}
-	}
 
 	outputEvents := func() error {
 		for i := len(reorderBuf) - 1; i >= 0; i-- {
@@ -189,6 +163,7 @@ func (i *CatchUpIterator) CatchUpScan(
 	var meta enginepb.MVCCMetadata
 	i.SeekGE(storage.MVCCKey{Key: i.span.Key})
 
+	every := log.Every(100 * time.Millisecond)
 	for {
 		if ok, err := i.Valid(); err != nil {
 			return err
@@ -197,7 +172,11 @@ func (i *CatchUpIterator) CatchUpScan(
 		}
 
 		if err := i.pacer.Pace(ctx); err != nil {
-			return err
+			// We're unable to pace things automatically -- shout loudly
+			// semi-infrequently but don't fail the rangefeed itself.
+			if every.ShouldLog() {
+				log.Errorf(ctx, "automatic pacing: %v", err)
+			}
 		}
 
 		// Emit any new MVCC range tombstones when their start key is encountered.
@@ -214,8 +193,8 @@ func (i *CatchUpIterator) CatchUpScan(
 				rangeKeys := i.RangeKeys()
 				for j := rangeKeys.Len() - 1; j >= 0; j-- {
 					var span roachpb.Span
-					a, span.Key = a.Copy(rangeKeys.Bounds.Key)
-					a, span.EndKey = a.Copy(rangeKeys.Bounds.EndKey)
+					a, span.Key = a.Copy(rangeKeys.Bounds.Key, 0)
+					a, span.EndKey = a.Copy(rangeKeys.Bounds.EndKey, 0)
 					ts := rangeKeys.Versions[j].Timestamp
 					err := outputFn(&kvpb.RangeFeedEvent{
 						DeleteRange: &kvpb.RangeFeedDeleteRange{
@@ -277,7 +256,7 @@ func (i *CatchUpIterator) CatchUpScan(
 			} else if !ok {
 				return errors.Errorf("expected provisional value for intent")
 			}
-			if meta.Timestamp.ToTimestamp() != i.UnsafeKey().Timestamp {
+			if !meta.Timestamp.ToTimestamp().EqOrdering(i.UnsafeKey().Timestamp) {
 				return errors.Errorf("expected provisional value for intent with ts %s, found %s",
 					meta.Timestamp, i.UnsafeKey().Timestamp)
 			}
@@ -314,7 +293,7 @@ func (i *CatchUpIterator) CatchUpScan(
 			if err := outputEvents(); err != nil {
 				return err
 			}
-			a, lastKey = a.Copy(unsafeKey.Key)
+			a, lastKey = a.Copy(unsafeKey.Key, 0)
 		}
 		key := lastKey
 
@@ -332,15 +311,14 @@ func (i *CatchUpIterator) CatchUpScan(
 		//   value.
 		if !ignore || (withDiff && len(reorderBuf) > 0) {
 			var val []byte
-			a, val = a.Copy(unsafeVal)
+			a, val = a.Copy(unsafeVal, 0)
 			if withDiff {
 				// Update the last version with its previous value (this version).
 				if l := len(reorderBuf) - 1; l >= 0 {
 					// The previous value may have already been set by an event with
-					// either OmitInRangefeeds = true (and withFiltering = true) or
-					// OriginID !=0 (and withOmitRemote = true). That event is not in
-					// reorderBuf because we want to filter it out of the rangefeed, but
-					// we still want to keep it as a previous value.
+					// OmitInRangefeeds = true (and withFiltering = true). That event
+					// is not in reorderBuf because we want to filter it out of the
+					// rangefeed, but we still want to keep it as a previous value.
 					if !reorderBuf[l].Val.PrevValue.IsPresent() {
 						// However, don't emit a value if an MVCC range tombstone existed
 						// between this value and the next one. The RangeKeysIgnoringTime()
@@ -355,12 +333,10 @@ func (i *CatchUpIterator) CatchUpScan(
 				}
 			}
 
-			// The iterator may move to the next version for this key if at least one
-			// of the conditions is met: 1) the value has the OmitInRangefeeds flag,
-			// and this iterator has opted into filtering; 2) the value is from a
-			// remote cluster (non zero originID), and the iterator has opted into
-			// omitting remote values.
-			if (mvccVal.OmitInRangefeeds && withFiltering) || (mvccVal.OriginID != 0 && withOmitRemote) {
+			// If this value has the flag to omit from rangefeeds, and if the consumer
+			// has opted into filtering, move to the next version for this the key
+			// (which may or may not have OmitInRangefeeds = true).
+			if mvccVal.OmitInRangefeeds && withFiltering {
 				i.Next()
 				continue
 			}
@@ -399,16 +375,5 @@ func (i *CatchUpIterator) CatchUpScan(
 	}
 
 	// Output events for the last key encountered.
-	if err := outputEvents(); err != nil {
-		return err
-	}
-	// If bulk delivery has buffered anything for emission, flush it.
-	if len(emitBuf) > 0 {
-		// Flush any remaining buffered events.
-		if err := emitFn(&kvpb.RangeFeedEvent{BulkEvents: &kvpb.RangeFeedBulkEvents{Events: emitBuf}}); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return outputEvents()
 }

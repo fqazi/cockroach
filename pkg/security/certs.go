@@ -370,7 +370,6 @@ func CreateClientPair(
 	overwrite bool,
 	user username.SQLUsername,
 	tenantIDs []roachpb.TenantID,
-	tenantNames []roachpb.TenantName,
 	wantPKCS8Key bool,
 ) error {
 	if len(caKeyPath) == 0 {
@@ -407,7 +406,7 @@ func CreateClientPair(
 		return errors.Wrap(err, "could not generate new client key")
 	}
 
-	clientCert, err := GenerateClientCert(caCert, caPrivateKey, clientKey.Public(), lifetime, user, tenantIDs, tenantNames)
+	clientCert, err := GenerateClientCert(caCert, caPrivateKey, clientKey.Public(), lifetime, user, tenantIDs)
 	if err != nil {
 		return errors.Wrap(err, "error creating client certificate and key")
 	}

@@ -3,24 +3,24 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { util } from "@cockroachlabs/cluster-ui";
-import moment from "moment-timezone";
 import React from "react";
+import moment from "moment-timezone";
 import { Link } from "react-router-dom";
 
-import { cockroach } from "src/js/protos";
-import { nodeCapacityStats, livenessNomenclature } from "src/redux/nodes";
 import { INodeStatus } from "src/util/proto";
+import { nodeCapacityStats, livenessNomenclature } from "src/redux/nodes";
 import { trustIcon } from "src/util/trust";
-import { CapacityArc } from "src/views/clusterviz/components/nodeOrLocality/capacityArc";
-import { Labels } from "src/views/clusterviz/components/nodeOrLocality/labels";
-import { Sparklines } from "src/views/clusterviz/components/nodeOrLocality/sparklines";
-
-import NodeLivenessStatus = cockroach.kv.kvserver.liveness.livenesspb.NodeLivenessStatus;
-import deadIcon from "!!raw-loader!assets/livenessIcons/dead.svg";
 import liveIcon from "!!raw-loader!assets/livenessIcons/live.svg";
 import suspectIcon from "!!raw-loader!assets/livenessIcons/suspect.svg";
+import deadIcon from "!!raw-loader!assets/livenessIcons/dead.svg";
 import nodeIcon from "!!raw-loader!assets/nodeIcon.svg";
+import { Labels } from "src/views/clusterviz/components/nodeOrLocality/labels";
+import { CapacityArc } from "src/views/clusterviz/components/nodeOrLocality/capacityArc";
+import { Sparklines } from "src/views/clusterviz/components/nodeOrLocality/sparklines";
+import { util } from "@cockroachlabs/cluster-ui";
+import { cockroach } from "src/js/protos";
+
+import NodeLivenessStatus = cockroach.kv.kvserver.liveness.livenesspb.NodeLivenessStatus;
 type ILiveness = cockroach.kv.kvserver.liveness.livenesspb.ILiveness;
 
 interface NodeViewProps {

@@ -7,14 +7,15 @@ package tpcc
 
 import (
 	"context"
-	"math/rand/v2"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/util/bufalloc"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/workload"
 	"github.com/cockroachdb/errors"
 	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/exp/rand"
 )
 
 // From the TPCC spec, section 2.6:
@@ -108,25 +109,25 @@ func createOrderStatus(
 	return o, nil
 }
 
-func (o *orderStatus) run(ctx context.Context, wID int) (interface{}, time.Duration, error) {
+func (o *orderStatus) run(ctx context.Context, wID int) (interface{}, error) {
 	o.config.auditor.orderStatusTransactions.Add(1)
 
-	rng := rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
+	rng := rand.New(rand.NewSource(uint64(timeutil.Now().UnixNano())))
 
 	d := orderStatusData{
-		dID: rng.IntN(10) + 1,
+		dID: rng.Intn(10) + 1,
 	}
 
 	// 2.6.1.2: The customer is randomly selected 60% of the time by last name
 	// and 40% by number.
-	if rng.IntN(100) < 60 {
+	if rng.Intn(100) < 60 {
 		d.cLast = string(o.config.randCLast(rng, &o.a))
 		o.config.auditor.orderStatusByLastName.Add(1)
 	} else {
 		d.cID = o.config.randCustomerID(rng)
 	}
 
-	onTxnStartDuration, err := o.config.executeTx(
+	if err := o.config.executeTx(
 		ctx, o.mcp.Get(),
 		func(tx pgx.Tx) error {
 			// 2.6.2.2 explains this entire transaction.
@@ -137,29 +138,28 @@ func (o *orderStatus) run(ctx context.Context, wID int) (interface{}, time.Durat
 				if err := o.selectByCustID.QueryRowTx(
 					ctx, tx, wID, d.dID, d.cID,
 				).Scan(&d.cBalance, &d.cFirst, &d.cMiddle, &d.cLast); err != nil {
-					return errors.Wrap(err, "select customer by id failed")
+					return errors.Wrap(err, "select by customer idfail")
 				}
 			} else {
 				// Case 2: Pick the middle row, rounded up, from the selection by last name.
+				rows, err := o.selectByLastName.QueryTx(ctx, tx, wID, d.dID, d.cLast)
+				if err != nil {
+					return errors.Wrap(err, "select by last name fail")
+				}
 				customers := make([]customerData, 0, 1)
-				if err := func() error {
-					rows, err := o.selectByLastName.QueryTx(ctx, tx, wID, d.dID, d.cLast)
+				for rows.Next() {
+					c := customerData{}
+					err = rows.Scan(&c.cID, &c.cBalance, &c.cFirst, &c.cMiddle)
 					if err != nil {
+						rows.Close()
 						return err
 					}
-					defer rows.Close()
-
-					for rows.Next() {
-						c := customerData{}
-						if err := rows.Scan(&c.cID, &c.cBalance, &c.cFirst, &c.cMiddle); err != nil {
-							return err
-						}
-						customers = append(customers, c)
-					}
-					return rows.Err()
-				}(); err != nil {
-					return errors.Wrap(err, "select customer by last name failed")
+					customers = append(customers, c)
 				}
+				if err := rows.Err(); err != nil {
+					return err
+				}
+				rows.Close()
 				if len(customers) == 0 {
 					return errors.New("found no customers matching query orderStatus.selectByLastName")
 				}
@@ -175,35 +175,28 @@ func (o *orderStatus) run(ctx context.Context, wID int) (interface{}, time.Durat
 			if err := o.selectOrder.QueryRowTx(
 				ctx, tx, wID, d.dID, d.cID,
 			).Scan(&d.oID, &d.oEntryD, &d.oCarrierID); err != nil {
-				return errors.Wrap(err, "select order failed")
+				return errors.Wrap(err, "select order fail")
 			}
 
 			// Select the items from the customer's order.
-			if err := func() error {
-				rows, err := o.selectItems.QueryTx(ctx, tx, wID, d.dID, d.oID)
-				if err != nil {
+			rows, err := o.selectItems.QueryTx(ctx, tx, wID, d.dID, d.oID)
+			if err != nil {
+				return errors.Wrap(err, "select items fail")
+			}
+			defer rows.Close()
+
+			// On average there's 10 items per order - 2.4.1.3
+			d.items = make([]orderItem, 0, 10)
+			for rows.Next() {
+				item := orderItem{}
+				if err := rows.Scan(&item.olIID, &item.olSupplyWID, &item.olQuantity, &item.olAmount, &item.olDeliveryD); err != nil {
 					return err
 				}
-				defer rows.Close()
-
-				// On average there's 10 items per order - 2.4.1.3
-				d.items = make([]orderItem, 0, 10)
-				for rows.Next() {
-					item := orderItem{}
-					if err := rows.Scan(&item.olIID, &item.olSupplyWID, &item.olQuantity, &item.olAmount, &item.olDeliveryD); err != nil {
-						return err
-					}
-					d.items = append(d.items, item)
-				}
-				return rows.Err()
-			}(); err != nil {
-				return errors.Wrap(err, "select order_line failed")
+				d.items = append(d.items, item)
 			}
-
-			return nil
-		})
-	if err != nil {
-		return nil, 0, err
+			return rows.Err()
+		}); err != nil {
+		return nil, err
 	}
-	return d, onTxnStartDuration, nil
+	return d, nil
 }

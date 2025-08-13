@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"math/rand"
 	"regexp"
 	"sort"
@@ -20,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
@@ -44,10 +42,6 @@ var (
 	// PartialIndexMutator adds random partial index predicate expressions to
 	// indexes.
 	PartialIndexMutator MultiStatementMutation = partialIndexMutator
-
-	// DupPartialIndexMutator create a new random partial index based on an
-	// existing index that is selected.
-	DupPartialIndexMutator MultiStatementMutation = duplicatePartialIndexMutator
 
 	// PostgresMutator modifies strings such that they execute identically
 	// in both Postgres and Cockroach (however this mutator does not remove
@@ -206,10 +200,7 @@ func statisticsMutator(
 		}
 		rowCount := randNonNegInt(rng)
 		cols := map[tree.Name]*tree.ColumnTableDef{}
-		var allStats []*stats.JSONStatistic
-		// colNameToStatIdx is a mapping from column name to index within
-		// allStats for the corresponding statistic object.
-		colNameToStatIdx := map[tree.Name]int{}
+		colStats := map[tree.Name]*stats.JSONStatistic{}
 		makeHistogram := func(col *tree.ColumnTableDef) {
 			// If an index appeared before a column definition, col
 			// can be nil.
@@ -222,8 +213,8 @@ func statisticsMutator(
 			}
 			colType := tree.MustBeStaticallyKnownType(col.Type)
 			h := randHistogram(rng, colType)
-			statIdx := colNameToStatIdx[col.Name]
-			if err := allStats[statIdx].SetHistogram(&h); err != nil {
+			stat := colStats[col.Name]
+			if err := stat.SetHistogram(&h); err != nil {
 				panic(err)
 			}
 		}
@@ -239,8 +230,7 @@ func statisticsMutator(
 					avgSize = uint64(rng.Int63n(32))
 				}
 				cols[def.Name] = def
-				colNameToStatIdx[def.Name] = len(allStats)
-				allStats = append(allStats, &stats.JSONStatistic{
+				colStats[def.Name] = &stats.JSONStatistic{
 					Name:          "__auto__",
 					CreatedAt:     "2000-01-01 00:00:00+00:00",
 					RowCount:      uint64(rowCount),
@@ -248,7 +238,7 @@ func statisticsMutator(
 					DistinctCount: distinctCount,
 					NullCount:     nullCount,
 					AvgSize:       avgSize,
-				})
+				}
 				if (def.Unique.IsUnique && !def.Unique.WithoutIndex) || def.PrimaryKey.IsPrimaryKey {
 					makeHistogram(def)
 				}
@@ -264,7 +254,11 @@ func statisticsMutator(
 				}
 			}
 		}
-		if len(allStats) > 0 {
+		if len(colStats) > 0 {
+			var allStats []*stats.JSONStatistic
+			for _, cs := range colStats {
+				allStats = append(allStats, cs)
+			}
 			b, err := json.Marshal(allStats)
 			if err != nil {
 				// Should not happen.
@@ -407,20 +401,7 @@ func foreignKeyMutator(
 	rng *rand.Rand, stmts []tree.Statement,
 ) (mutated []tree.Statement, changed bool) {
 	// Find columns in the tables.
-	var cols [][]*tree.ColumnTableDef
-	// tableNames is 1-to-1 mapping with cols and contains the corresponding
-	// table name.
-	var tableNames []tree.TableName
-	// tableNameToColIdx returns the index for the given table name within cols
-	// (or ok=false if not found).
-	tableNameToColIdx := func(t tree.TableName) (idx int, ok bool) {
-		for i, table := range tableNames {
-			if t == table {
-				return i, true
-			}
-		}
-		return 0, false
-	}
+	cols := map[tree.TableName][]*tree.ColumnTableDef{}
 	byName := map[tree.TableName]*tree.CreateTable{}
 
 	// Keep track of referencing columns since we have a limitation that a
@@ -464,19 +445,7 @@ func foreignKeyMutator(
 		for _, def := range table.Defs {
 			switch def := def.(type) {
 			case *tree.ColumnTableDef:
-				if def.Computed.Virtual {
-					// We currently don't support FK references to / from
-					// virtual columns.
-					// TODO(#59671): remove this skip.
-					continue
-				}
-				idx, ok := tableNameToColIdx(table.Table)
-				if !ok {
-					idx = len(cols)
-					cols = append(cols, []*tree.ColumnTableDef{})
-					tableNames = append(tableNames, table.Table)
-				}
-				cols[idx] = append(cols[idx], def)
+				cols[table.Table] = append(cols[table.Table], def)
 			}
 		}
 	}
@@ -504,8 +473,11 @@ func foreignKeyMutator(
 		table := tables[rng.Intn(len(tables))]
 		// Choose a random column subset.
 		var fkCols []*tree.ColumnTableDef
-		colIdx, _ := tableNameToColIdx(table.Table)
-		for _, c := range cols[colIdx] {
+		for _, c := range cols[table.Table] {
+			if c.Computed.Computed {
+				// We don't support FK references from computed columns (#46672).
+				continue
+			}
 			if usedCols[table.Table][c.Name] {
 				continue
 			}
@@ -528,8 +500,7 @@ func foreignKeyMutator(
 
 		// Check if a table has the needed column types.
 	LoopTable:
-		for j, refCols := range cols {
-			refTable := tableNames[j]
+		for refTable, refCols := range cols {
 			// Prevent circular and self references because
 			// generating valid INSERTs could become impossible or
 			// difficult algorithmically.
@@ -551,9 +522,6 @@ func foreignKeyMutator(
 						// indirectly).
 						continue LoopTable
 					}
-					// Note that this iteration over the 'dependsOn' map can
-					// produce different 'stack' (i.e. with random order of
-					// table names), but it doesn't impact the cycle detection.
 					for t := range dependsOn[curTable] {
 						stack = append(stack, t)
 					}
@@ -615,10 +583,10 @@ func foreignKeyMutator(
 			// TODO(mjibson): Set match once #42498 is fixed.
 			var actions tree.ReferenceActions
 			if rng.Intn(2) == 0 {
-				actions.Delete = randAction(rng, table, false /* onUpdate */)
+				actions.Delete = randAction(rng, table)
 			}
 			if rng.Intn(2) == 0 {
-				actions.Update = randAction(rng, table, true /* onUpdate */)
+				actions.Update = randAction(rng, table)
 			}
 			stmts = append(stmts, &tree.AlterTable{
 				Table: table.Table.ToUnresolvedObjectName(),
@@ -640,7 +608,7 @@ func foreignKeyMutator(
 	return stmts, changed
 }
 
-func randAction(rng *rand.Rand, table *tree.CreateTable, onUpdate bool) tree.ReferenceAction {
+func randAction(rng *rand.Rand, table *tree.CreateTable) tree.ReferenceAction {
 	const highestAction = tree.Cascade
 	// Find a valid action. Depending on the random action chosen, we have
 	// to verify some validity conditions.
@@ -654,15 +622,11 @@ Loop:
 			}
 			switch action {
 			case tree.SetNull:
-				if col.Nullable.Nullability == tree.NotNull || col.IsComputed() {
+				if col.Nullable.Nullability == tree.NotNull {
 					continue Loop
 				}
 			case tree.SetDefault:
-				if (col.DefaultExpr.Expr == nil && col.Nullable.Nullability == tree.NotNull) || col.IsComputed() {
-					continue Loop
-				}
-			case tree.Cascade:
-				if col.IsComputed() && onUpdate {
+				if col.DefaultExpr.Expr == nil && col.Nullable.Nullability == tree.NotNull {
 					continue Loop
 				}
 			}
@@ -812,13 +776,13 @@ func postgresCreateTableMutator(
 				// TODO(rafi): Postgres supports inverted indexes with a different
 				// syntax than Cockroach. Maybe we could add it later.
 				// The syntax is `CREATE INDEX name ON table USING gin(column)`.
-				if def.Type == idxtype.FORWARD {
+				if !def.Inverted {
 					mutated = append(mutated, &tree.CreateIndex{
-						Name:    def.Name,
-						Table:   mutatedStmt.Table,
-						Type:    def.Type,
-						Columns: newCols,
-						Storing: def.Storing,
+						Name:     def.Name,
+						Table:    mutatedStmt.Table,
+						Inverted: def.Inverted,
+						Columns:  newCols,
+						Storing:  def.Storing,
 						// Postgres doesn't support NotVisible Index, so NotVisible is not populated here.
 					})
 				}
@@ -863,12 +827,12 @@ func postgresCreateTableMutator(
 					break
 				}
 				mutated = append(mutated, &tree.CreateIndex{
-					Name:    def.Name,
-					Table:   mutatedStmt.Table,
-					Unique:  true,
-					Type:    def.Type,
-					Columns: newCols,
-					Storing: def.Storing,
+					Name:     def.Name,
+					Table:    mutatedStmt.Table,
+					Unique:   true,
+					Inverted: def.Inverted,
+					Columns:  newCols,
+					Storing:  def.Storing,
 					// Postgres doesn't support NotVisible Index, so NotVisible is not populated here.
 				})
 				changed = true
@@ -897,7 +861,6 @@ func columnFamilyMutator(rng *rand.Rand, stmt tree.Statement) (changed bool) {
 	}
 
 	var columns []tree.Name
-	var foundExplicitPK, foundRowIDColumn bool
 	for _, def := range ast.Defs {
 		switch def := def.(type) {
 		case *tree.FamilyTableDef:
@@ -909,30 +872,7 @@ func columnFamilyMutator(rng *rand.Rand, stmt tree.Statement) (changed bool) {
 			if !def.Computed.Virtual {
 				columns = append(columns, def.Name)
 			}
-			if def.PrimaryKey.IsPrimaryKey {
-				foundExplicitPK = true
-			}
-			if string(def.Name) == "rowid" {
-				foundRowIDColumn = true
-			}
-		case *tree.UniqueConstraintTableDef:
-			if def.PrimaryKey {
-				foundExplicitPK = true
-			}
 		}
-	}
-
-	if len(columns) == 1 && !foundExplicitPK && !foundRowIDColumn {
-		// If we haven't found the explict primary key, it must be the case that
-		// we'll add a hidden column with 'rowid' name, so we'll include it into
-		// set of columns. If there is already user-specified column named
-		// 'rowid', then the hidden PK column will have a different name, and
-		// for simplicity we won't try to use that hidden column.
-		//
-		// We'll only do so when the table has just one explicit column since if
-		// it has multiple, then adding an extra one won't increase the test
-		// coverage.
-		columns = append(columns, "rowid")
 	}
 
 	if len(columns) <= 1 {
@@ -1061,7 +1001,7 @@ func indexStoringMutator(rng *rand.Rand, stmts []tree.Statement) ([]tree.Stateme
 	for _, stmt := range stmts {
 		switch ast := stmt.(type) {
 		case *tree.CreateIndex:
-			if !ast.Type.SupportsStoring() {
+			if ast.Inverted {
 				continue
 			}
 			info, ok := tables[ast.Table.ObjectName]
@@ -1092,7 +1032,7 @@ func indexStoringMutator(rng *rand.Rand, stmts []tree.Statement) ([]tree.Stateme
 						idx = &defType.IndexTableDef
 					}
 				}
-				if idx == nil || !idx.Type.SupportsStoring() {
+				if idx == nil || idx.Inverted {
 					continue
 				}
 				// If we don't have a storing list, make one with 50% chance.
@@ -1166,84 +1106,6 @@ func partialIndexMutator(rng *rand.Rand, stmts []tree.Statement) ([]tree.Stateme
 			}
 		}
 	}
-	return stmts, changed
-}
-
-// duplicatePartialIndexMutator is a mutations.MultiStatementMutator that will
-// copy a random index definition and make it a partial index. Unlike
-// partialIndexMutator, the existing definition will stay the same.
-func duplicatePartialIndexMutator(rng *rand.Rand, stmts []tree.Statement) ([]tree.Statement, bool) {
-	changed := false
-	tables := getTableInfoFromDDLStatements(stmts)
-	var newStmts []tree.Statement
-	for _, stmt := range stmts {
-		switch ast := stmt.(type) {
-		case *tree.CreateIndex:
-			info, ok := tables[ast.Table.ObjectName]
-			if !ok {
-				continue
-			}
-
-			// If the index is not already a partial index, make it a partial index
-			// with a 50% chance. Do not mutate an index that was created to satisfy a
-			// FK constraint.
-			if ast.Predicate == nil &&
-				!hasReferencingConstraint(info, ast.Columns) &&
-				rng.Intn(2) == 0 {
-				astString := tree.AsStringWithFlags(ast, tree.FmtParsableNumerics)
-				astCopy, err := parser.ParseOne(astString)
-				if err != nil {
-					panic(err)
-				}
-				createIndexCopy := astCopy.AST.(*tree.CreateIndex)
-				if len(createIndexCopy.Name) > 0 {
-					createIndexCopy.Name = tree.Name(fmt.Sprintf("%s_partial", createIndexCopy.Name))
-				}
-				tn := tree.MakeUnqualifiedTableName(createIndexCopy.Table.ObjectName)
-				createIndexCopy.Predicate = randPartialIndexPredicateFromCols(rng, info.columnsTableDefs, &tn)
-				changed = true
-				newStmts = append(newStmts, createIndexCopy)
-			}
-		case *tree.CreateTable:
-			info, ok := tables[ast.Table.ObjectName]
-			if !ok {
-				panic("table info could not be found")
-			}
-			var newDefs []tree.TableDef
-			for _, def := range ast.Defs {
-				var idx *tree.IndexTableDef
-				switch defType := def.(type) {
-				case *tree.IndexTableDef:
-					idx = defType
-				case *tree.UniqueConstraintTableDef:
-					if !defType.PrimaryKey && !defType.WithoutIndex {
-						idx = &defType.IndexTableDef
-					}
-				}
-
-				if idx == nil {
-					continue
-				}
-
-				// If the index is not already a partial index, make it a partial
-				// index with a 50% chance.
-				if idx.Predicate == nil &&
-					!hasReferencingConstraint(info, idx.Columns) &&
-					rng.Intn(2) == 0 {
-					idxCopy := *idx
-					if len(idxCopy.Name) > 0 {
-						idxCopy.Name = tree.Name(fmt.Sprintf("%s_partial", idxCopy.Name))
-					}
-					tn := tree.MakeUnqualifiedTableName(ast.Table.ObjectName)
-					idxCopy.Predicate = randPartialIndexPredicateFromCols(rng, info.columnsTableDefs, &tn)
-					changed = true
-					newDefs = append(newDefs, &idxCopy)
-				}
-			}
-			ast.Defs = append(ast.Defs, newDefs...)
-		}
-	}
-	stmts = append(stmts, newStmts...)
 	return stmts, changed
 }
 

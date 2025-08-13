@@ -7,7 +7,6 @@ package valueside
 
 import (
 	"bytes"
-	"context"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -129,9 +128,7 @@ func TestArrayEncoding(t *testing.T) {
 				t.Fatal(err)
 			}
 			evalContext := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
-			if cmp, err := d.Compare(context.Background(), evalContext, &test.datum); err != nil {
-				t.Fatal(err)
-			} else if cmp != 0 {
+			if d.Compare(evalContext, &test.datum) != 0 {
 				t.Fatalf("expected %v to decode to %s, got %s", test.encoding, test.datum.String(), d.String())
 			}
 		})

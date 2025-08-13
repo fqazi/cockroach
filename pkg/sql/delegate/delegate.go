@@ -7,7 +7,6 @@ package delegate
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
@@ -50,14 +49,11 @@ func TryDelegate(
 	case *tree.ShowDatabases:
 		return d.delegateShowDatabases(t)
 
-	case *tree.ShowPolicies:
-		return d.delegateShowPolicies(t)
-
 	case *tree.ShowEnums:
 		return d.delegateShowEnums(t)
 
 	case *tree.ShowTypes:
-		return d.delegateShowTypes(t)
+		return d.delegateShowTypes()
 
 	case *tree.ShowCreate:
 		return d.delegateShowCreate(t)
@@ -71,14 +67,8 @@ func TryDelegate(
 	case *tree.ShowCreateAllTables:
 		return d.delegateShowCreateAllTables()
 
-	case *tree.ShowCreateAllTriggers:
-		return d.delegateShowCreateAllTriggers()
-
 	case *tree.ShowCreateAllTypes:
 		return d.delegateShowCreateAllTypes()
-
-	case *tree.ShowCreateAllRoutines:
-		return d.delegateShowCreateAllRoutines()
 
 	case *tree.ShowDatabaseIndexes:
 		return d.delegateShowDatabaseIndexes(t)
@@ -100,9 +90,6 @@ func TryDelegate(
 
 	case *tree.ShowJobs:
 		return d.delegateShowJobs(t)
-
-	case *tree.ShowLogicalReplicationJobs:
-		return d.delegateShowLogicalReplicationJobs(t)
 
 	case *tree.ShowChangefeedJobs:
 		return d.delegateShowChangefeedJobs(t)
@@ -279,24 +266,4 @@ func (d *delegator) resolveAndModifyTableIndexName(
 		(*name).Table = resName.ToUnresolvedObjectName().ToTableName()
 	}
 	return dataSource, resName, nil
-}
-
-func (d *delegator) getCommentQuery(
-	commentTableName string, classOidType int, objIdColumn string,
-) (string, string) {
-	commentColumn := `, comment`
-	commentJoin := fmt.Sprintf(`
-			LEFT JOIN
-				(
-					SELECT 
-						objoid, description as comment
-					FROM
-						%s
-					WHERE
-						classoid = %d
-				) c
-			ON
-				%s = c.objoid`, commentTableName, classOidType, objIdColumn)
-
-	return commentColumn, commentJoin
 }

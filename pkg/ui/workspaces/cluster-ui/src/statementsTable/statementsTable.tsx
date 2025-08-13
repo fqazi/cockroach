@@ -3,10 +3,21 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import classNames from "classnames/bind";
 import React from "react";
+import classNames from "classnames/bind";
 
+import {
+  FixLong,
+  longToInt,
+  StatementSummary,
+  StatementStatistics,
+  Count,
+  TimestampToNumber,
+  TimestampToMoment,
+  unset,
+  DurationCheckSample,
+} from "src/util";
+import { DATE_FORMAT, Duration } from "src/util/format";
 import {
   countBarChart,
   bytesReadBarChart,
@@ -18,38 +29,26 @@ import {
   retryBarChart,
   workloadPctBarChart,
 } from "src/barCharts";
-import { BarChartOptions } from "src/barCharts/barChartFactory";
+import { ActivateDiagnosticsModalRef } from "src/statementsDiagnostics";
 import {
   ColumnDescriptor,
   longListWithTooltip,
   SortedTable,
 } from "src/sortedtable";
-import { ActivateDiagnosticsModalRef } from "src/statementsDiagnostics";
-import {
-  FixLong,
-  longToInt,
-  StatementSummary,
-  StatementStatistics,
-  Count,
-  TimestampToNumber,
-  TimestampToMoment,
-  unset,
-} from "src/util";
-import { DATE_FORMAT, Duration } from "src/util/format";
 
-import { StatementDiagnosticsReport } from "../api";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
+import { StatementTableCell } from "./statementsTableContent";
 import {
   statisticsTableTitles,
   StatisticType,
 } from "../statsTableUtil/statsTableUtil";
-import { Timestamp } from "../timestamp";
-
-import styles from "./statementsTable.module.scss";
-import { StatementTableCell } from "./statementsTableContent";
+import { BarChartOptions } from "src/barCharts/barChartFactory";
 
 type ICollectedStatementStatistics =
   cockroach.server.serverpb.StatementsResponse.ICollectedStatementStatistics;
-
+import styles from "./statementsTable.module.scss";
+import { StatementDiagnosticsReport } from "../api";
+import { Timestamp } from "../timestamp";
 const cx = classNames.bind(styles);
 
 export interface AggregateStatistics {
@@ -230,6 +229,32 @@ export function makeStatementsColumns(
       cell: cpuBar,
       sort: (stmt: AggregateStatistics) =>
         FixLong(Number(stmt.stats.exec_stats.cpu_sql_nanos?.mean)),
+    },
+    {
+      name: "latencyP50",
+      title: statisticsTableTitles.latencyP50(statType),
+      cell: (stmt: AggregateStatistics) =>
+        DurationCheckSample(stmt.stats.latency_info?.p50 * 1e9),
+      sort: (stmt: AggregateStatistics) =>
+        FixLong(Number(stmt.stats.latency_info?.p50)),
+      showByDefault: false,
+    },
+    {
+      name: "latencyP90",
+      title: statisticsTableTitles.latencyP90(statType),
+      cell: (stmt: AggregateStatistics) =>
+        DurationCheckSample(stmt.stats.latency_info?.p90 * 1e9),
+      sort: (stmt: AggregateStatistics) =>
+        FixLong(Number(stmt.stats.latency_info?.p90)),
+      showByDefault: false,
+    },
+    {
+      name: "latencyP99",
+      title: statisticsTableTitles.latencyP99(statType),
+      cell: (stmt: AggregateStatistics) =>
+        DurationCheckSample(stmt.stats.latency_info?.p99 * 1e9),
+      sort: (stmt: AggregateStatistics) =>
+        FixLong(Number(stmt.stats.latency_info?.p99)),
     },
     {
       name: "latencyMin",

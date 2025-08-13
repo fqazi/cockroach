@@ -1,3 +1,5 @@
+# LogicTest: !local-mixed-23.1
+
 subtest alter_procedure_name
 
 statement ok
@@ -35,7 +37,6 @@ SELECT create_statement FROM [SHOW CREATE PROCEDURE p_new];
 ----
 CREATE PROCEDURE public.p_new()
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -53,13 +54,11 @@ SELECT create_statement FROM [SHOW CREATE PROCEDURE p_int] ORDER BY 1
 ----
 CREATE PROCEDURE public.p_int()
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
 CREATE PROCEDURE public.p_int(INT8)
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -74,7 +73,6 @@ SELECT create_statement FROM [SHOW CREATE PROCEDURE p_int] ORDER BY 1
 ----
 CREATE PROCEDURE public.p_int()
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -84,7 +82,6 @@ SELECT create_statement FROM [SHOW CREATE PROCEDURE p_func]
 ----
 CREATE PROCEDURE public.p_func(INT8)
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -114,21 +111,21 @@ CREATE PROCEDURE sc.p() LANGUAGE SQL AS 'SELECT 3'
 
 # Create a helper function to use in tests below.
 statement ok
-CREATE FUNCTION get_function_id(namespace STRING, name STRING, nargs INT) RETURNS INT AS $$
+CREATE FUNCTION get_function_id(namespace STRING, name STRING, argmodes STRING[]) RETURNS INT AS $$
   SELECT oid::INT8 - 100000 FROM pg_proc
   WHERE proname = name
     AND pronamespace = namespace::REGNAMESPACE
-    AND pronargs = nargs
+    AND proargmodes = argmodes
 $$ LANGUAGE SQL
 
 let $public_p
-SELECT get_function_id('public', 'p', 0)
+SELECT get_function_id('public', 'p', ARRAY[]:::STRING[])
 
 let $public_p_int
-SELECT get_function_id('public', 'p', 1)
+SELECT get_function_id('public', 'p', ARRAY['i'])
 
 let $sc_p
-SELECT get_function_id('sc', 'p', 0)
+SELECT get_function_id('sc', 'p', ARRAY[]:::STRING[])
 
 query TTT
 SELECT oid, proname, prosrc
@@ -181,13 +178,11 @@ SELECT create_statement FROM [SHOW CREATE PROCEDURE public.p] ORDER BY 1
 ----
 CREATE PROCEDURE public.p()
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
 CREATE PROCEDURE public.p(INT8)
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 2;
 $$
@@ -214,7 +209,6 @@ SELECT create_statement FROM [SHOW CREATE PROCEDURE public.p];
 ----
 CREATE PROCEDURE public.p()
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 1;
 $$
@@ -224,13 +218,11 @@ SELECT create_statement FROM [SHOW CREATE PROCEDURE sc.p] ORDER BY 1
 ----
 CREATE PROCEDURE sc.p()
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 3;
 $$
 CREATE PROCEDURE sc.p(INT8)
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT 2;
 $$

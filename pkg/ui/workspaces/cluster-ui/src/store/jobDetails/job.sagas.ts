@@ -3,15 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { PayloadAction } from "@reduxjs/toolkit";
 import { all, call, put, takeLatest } from "redux-saga/effects";
 
-import { getJob, JobRequest, JobResponseWithKey } from "src/api/jobsApi";
-
-import { ErrorWithKey } from "../../api";
-import { maybeError } from "../../util";
-
 import { actions } from "./job.reducer";
+import { getJob, JobRequest, JobResponseWithKey } from "src/api/jobsApi";
+import { PayloadAction } from "@reduxjs/toolkit";
+import { ErrorWithKey } from "../../api";
 
 export function* refreshJobSaga(action: PayloadAction<JobRequest>) {
   yield put(actions.request(action.payload));
@@ -28,7 +25,7 @@ export function* requestJobSaga(action: PayloadAction<JobRequest>): any {
     yield put(actions.received(resultWithKey));
   } catch (e) {
     const err: ErrorWithKey = {
-      err: maybeError(e),
+      err: e,
       key,
     };
     yield put(actions.failed(err));

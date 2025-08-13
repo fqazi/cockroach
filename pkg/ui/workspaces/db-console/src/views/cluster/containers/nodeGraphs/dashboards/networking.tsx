@@ -3,13 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { AxisUnits } from "@cockroachlabs/cluster-ui";
 import React from "react";
 
 import LineGraph from "src/views/cluster/components/linegraph";
 import { Axis, Metric } from "src/views/shared/components/metricQuery";
 
 import { GraphDashboardProps, nodeDisplayName } from "./dashboardUtils";
+import { AxisUnits } from "@cockroachlabs/cluster-ui";
 
 export default function (props: GraphDashboardProps) {
   const { nodeIDs, nodeDisplayNameByID, tenantSource } = props;

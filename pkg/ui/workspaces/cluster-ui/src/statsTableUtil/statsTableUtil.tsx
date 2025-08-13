@@ -3,11 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
 import React from "react";
-
 import { Anchor } from "src/anchor";
-import { Timezone } from "src/timestamp";
+
+import { Tooltip } from "@cockroachlabs/ui-components";
 import {
   contentionTime,
   planningExecutionTime,
@@ -18,6 +17,7 @@ import {
   statementsSql,
   writtenToDisk,
 } from "src/util";
+import { Timezone } from "src/timestamp";
 
 // Single place for column names. Used in table columns and in columns selector.
 export const statisticsColumnLabels = {
@@ -33,6 +33,9 @@ export const statisticsColumnLabels = {
   lastExecTimestamp: "Last Execution Time",
   latencyMax: "Max Latency",
   latencyMin: "Min Latency",
+  latencyP50: "P50 Latency",
+  latencyP90: "P90 Latency",
+  latencyP99: "P99 Latency",
   maxMemUsage: "Max Memory",
   maxMemUsed: "Maximum Memory Usage",
   memUsage: "Memory Usage",
@@ -54,7 +57,6 @@ export const statisticsColumnLabels = {
   statementsCount: "Statements",
   status: "Status",
   time: "Time",
-  commitLatency: "Commit Latency",
   transactionFingerprintId: "Transaction Fingerprint ID",
   transactions: "Transactions",
   txnDuration: "Transaction Duration",
@@ -552,23 +554,6 @@ export const statisticsTableTitles: StatisticTableTitleType = {
       </Tooltip>
     );
   },
-  commitLatency: (_statType: StatisticType) => {
-    return (
-      <Tooltip
-        placement="bottom"
-        style="tableTitle"
-        content={
-          <p>
-            Average commit latency of this transaction. The gray bar indicates
-            the mean latency. The blue bar indicates one standard deviation from
-            the mean.
-          </p>
-        }
-      >
-        {getLabel("commitLatency")}
-      </Tooltip>
-    );
-  },
   time: (statType: StatisticType) => {
     let contentModifier = "";
     let fingerprintModifier = "";
@@ -957,6 +942,108 @@ export const statisticsTableTitles: StatisticTableTitleType = {
         }
       >
         {getLabel("latencyMin")}
+      </Tooltip>
+    );
+  },
+  latencyP50: (statType: StatisticType) => {
+    let contentModifier = "";
+    switch (statType) {
+      case "transaction":
+        contentModifier = contentModifiers.transaction;
+        break;
+      case "statement":
+        contentModifier = contentModifiers.statement;
+        break;
+    }
+
+    return (
+      <Tooltip
+        placement="bottom"
+        style="tableTitle"
+        content={
+          <p>
+            The 50th latency percentile for sampled {contentModifier} executions
+            with this fingerprint.
+            <br />
+            <br />
+            <strong>Warning:</strong> the data source for latency percentiles is
+            different from the source for other execution statistics. These
+            percentiles are not calculated from the same set of executions as
+            the other columns and can be inconsistent. The data is provided for
+            informational purposes here and is not expected to be consistent
+            with max, min, or average latency that is also presented.
+          </p>
+        }
+      >
+        {getLabel("latencyP50")}
+      </Tooltip>
+    );
+  },
+  latencyP90: (statType: StatisticType) => {
+    let contentModifier = "";
+    switch (statType) {
+      case "transaction":
+        contentModifier = contentModifiers.transaction;
+        break;
+      case "statement":
+        contentModifier = contentModifiers.statement;
+        break;
+    }
+
+    return (
+      <Tooltip
+        placement="bottom"
+        style="tableTitle"
+        content={
+          <p>
+            The 90th latency percentile for sampled {contentModifier} executions
+            with this fingerprint.
+            <br />
+            <br />
+            <strong>Warning:</strong> the data source for latency percentiles is
+            different from the source for other execution statistics. These
+            percentiles are not calculated from the same set of executions as
+            the other columns and can be inconsistent. The data is provided for
+            informational purposes here and is not expected to be consistent
+            with max, min, or average latency that is also presented.
+          </p>
+        }
+      >
+        {getLabel("latencyP90")}
+      </Tooltip>
+    );
+  },
+  latencyP99: (statType: StatisticType) => {
+    let contentModifier = "";
+    switch (statType) {
+      case "transaction":
+        contentModifier = contentModifiers.transaction;
+        break;
+      case "statement":
+        contentModifier = contentModifiers.statement;
+        break;
+    }
+
+    return (
+      <Tooltip
+        placement="bottom"
+        style="tableTitle"
+        content={
+          <p>
+            The 99th latency percentile for sampled {contentModifier} executions
+            with this fingerprint.
+            <br />
+            <br />
+            <strong>Warning:</strong> the data source for latency percentiles is
+            different from the source for other execution statistics. These
+            percentiles are not calculated from the same set of executions as
+            the other columns and can be inconsistent. The data is provided for
+            informational purposes here and is not expected to be consistent
+            with max, min, or average latency that is also presented.
+          </p>
+        }
+      >
+        {getLabel("latencyP99")}
       </Tooltip>
     );
   },

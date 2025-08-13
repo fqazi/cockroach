@@ -3,23 +3,20 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import moment from "moment-timezone";
-
-import {
-  getInsightsFromProblemsAndCauses,
-  InsightExecEnum,
-  TransactionStatus,
-  TxnInsightEvent,
-} from "src/insights";
-
-import { INTERNAL_APP_NAME_PREFIX } from "../util";
-
 import {
   executeInternalSql,
   formatApiResult,
   SqlApiResponse,
   sqlResultsAreEmpty,
 } from "./sqlApi";
+import {
+  getInsightsFromProblemsAndCauses,
+  InsightExecEnum,
+  TransactionStatus,
+  TxnInsightEvent,
+} from "src/insights";
+import moment from "moment-timezone";
+import { INTERNAL_APP_NAME_PREFIX } from "../util";
 import { makeInsightsSqlRequest } from "./txnInsightsUtils";
 
 // Txn query string limit for previews in the overview page.

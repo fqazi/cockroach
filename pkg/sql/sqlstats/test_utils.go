@@ -9,16 +9,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
-	"github.com/cockroachdb/cockroach/pkg/util/stop"
-)
-
-type FlushFn func(ctx context.Context,
-	stopper *stop.Stopper,
-	aggregatedTs time.Time,
-	stmtStats []*appstatspb.CollectedStatementStatistics,
-	txnStats []*appstatspb.CollectedTransactionStatistics,
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/insights"
 )
 
 // TestingKnobs provides hooks and knobs for unit tests.
@@ -30,6 +22,16 @@ type TestingKnobs struct {
 	// OnTxnStatsFlushFinished is a callback that is triggered when txn stats
 	// finishes flushing.
 	OnTxnStatsFlushFinished func()
+
+	// InsightsWriterTxnInterceptor is a callback that's triggered when a txn insight
+	// is observed when recording txn stats. The callback is called instead of the legitimate
+	// insights.Writer.
+	InsightsWriterTxnInterceptor func(ctx context.Context, sessionID clusterunique.ID, transaction *insights.Transaction)
+
+	// InsightsWriterStmtInterceptor is a callback that's triggered when a stmt insight
+	// is observed when recording stmt stats. The callback is called instead of the legitimate
+	// insights.Writer.
+	InsightsWriterStmtInterceptor func(sessionID clusterunique.ID, statement *insights.Statement)
 
 	// OnCleanupStartForShard is a callback that is triggered when background
 	// cleanup job starts to delete data from a shard from the system table.
@@ -48,29 +50,20 @@ type TestingKnobs struct {
 	// updated.
 	JobMonitorUpdateCheckInterval time.Duration
 
-	// FlushInterceptor intercepts persistedsqlstats flush operation.
-	FlushInterceptor FlushFn
+	// SkipZoneConfigBootstrap used for backup tests where we want to skip
+	// the Zone Config TTL setup.
+	SkipZoneConfigBootstrap bool
+
+	// ConsumeStmtStatsInterceptor intercepts consumed stmt stats.
+	ConsumeStmtStatsInterceptor StatementVisitor
+
+	// ConsumeTxnStatsInterceptor intercepts consumed transaction stats.
+	ConsumeTxnStatsInterceptor TransactionVisitor
 
 	// OnAfterClear is invoked right after in-memory SQLStats stats cleared.
 	// It can be useful to invoke assertions right after in-memory stats flushed
 	// and cleared, and before new stats added to cache.
 	OnAfterClear func()
-
-	// OnIngesterSessionClear is a callback that is triggered when the ingester
-	// clears a session entry.
-	OnIngesterSessionClear func(sessionID clusterunique.ID)
-
-	// IngesterTxnInterceptor is a callback that's triggered when a txn insight
-	// is observed by the ingester. The callback is called instead of writing the
-	// insight to the buffer.
-	IngesterTxnInterceptor func(sessionID clusterunique.ID, transaction *RecordedTxnStats)
-
-	// IngesterStmtInterceptor is a callback that's triggered when a stmt insight
-	// is observed. The callback is called instead of writing the insight to the buffer.
-	IngesterStmtInterceptor func(sessionID clusterunique.ID, statement *RecordedStmtStats)
-
-	// OnIngesterFlush is a callback that is triggered when the ingester
-	OnIngesterFlush func()
 }
 
 // ModuleTestingKnobs implements base.ModuleTestingKnobs interface.
@@ -88,7 +81,7 @@ func (knobs *TestingKnobs) GetAOSTClause() string {
 
 // CreateTestingKnobs creates a testing knob in the unit tests.
 //
-// Note: SQL Stats read path uses follower read (AS OF SYSTEM TIME
+// Note: SQL Stats’s read path uses follower read (AS OF SYSTEM TIME
 // follower_read_timestamp()) to ensure that contention between reads and writes
 // (SQL Stats flush / SQL Stats cleanup) is minimized.
 //

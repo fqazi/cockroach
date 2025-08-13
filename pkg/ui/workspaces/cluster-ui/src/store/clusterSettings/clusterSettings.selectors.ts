@@ -3,8 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { greaterOrEqualThanVersion, indexUnusedDuration } from "../../util";
 import { AppState } from "../reducers";
+import { greaterOrEqualThanVersion, indexUnusedDuration } from "../../util";
 
 export const selectAutomaticStatsCollectionEnabled = (
   state: AppState,

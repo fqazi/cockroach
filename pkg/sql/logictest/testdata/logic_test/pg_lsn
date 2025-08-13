@@ -1,3 +1,4 @@
+# LogicTest: !local-mixed-23.1
 query T
 SELECT 'A01F0/1AAA'::pg_lsn
 ----
@@ -31,9 +32,6 @@ SELECT '0/0'::pg_lsn + 'Inf'
 
 statement error cannot add NaN to pg_lsn
 SELECT '0/0'::pg_lsn + 'NaN'
-
-statement error cannot subtract NaN from pg_lsn
-SELECT '0/0'::pg_lsn - 'NaN'::numeric
 
 statement error pg_lsn out of range
 SELECT '0/0'::pg_lsn - 50
@@ -86,7 +84,7 @@ SELECT '0G'::pg_lsn
 statement error pgcode 22P02 pq: invalid input syntax for type pg_lsn: \"ab\"
 SELECT 'ab'::PG_LSN;
 
-statement error pgcode 22P02 pq: invalid input syntax for type pg_lsn: \"ab\"
+statement error pgcode 22P02 pq: pg_lsn\(\): invalid input syntax for type pg_lsn: \"ab\"
 SELECT pg_lsn('ab');
 
 statement error pgcode 22P02 pq: invalid input syntax for type pg_lsn: \"1\"

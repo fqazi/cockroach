@@ -4,9 +4,7 @@
 // included in the /LICENSE file.
 
 import moment from "moment-timezone";
-
 import { CoordinatedUniversalTime } from "src/contexts";
-
 import { longToInt } from "./fixLong";
 
 export const kibi = 1024;
@@ -210,9 +208,8 @@ export function DurationCheckSample(nanoseconds: number): string {
 }
 
 export const DATE_FORMAT = "MMM DD, YYYY [at] H:mm";
-export const DATE_WITH_SECONDS_FORMAT = "MMM DD, YYYY [at] H:mm:ss";
 export const DATE_WITH_SECONDS_AND_MILLISECONDS_FORMAT =
-  "MMM DD, YYYY [at] H:mm:ss.ms";
+  "MMM DD, YYYY [at] H:mm:ss:ms";
 
 /**
  * Alternate 24 hour formats
@@ -220,7 +217,7 @@ export const DATE_WITH_SECONDS_AND_MILLISECONDS_FORMAT =
 export const DATE_FORMAT_24_TZ = "MMM DD, YYYY [at] H:mm z";
 export const DATE_WITH_SECONDS_FORMAT_24_TZ = "MMM DD, YYYY [at] H:mm:ss z";
 export const DATE_WITH_SECONDS_AND_MILLISECONDS_FORMAT_24_TZ =
-  "MMM DD, YYYY [at] H:mm:ss.ms z";
+  "MMM DD, YYYY [at] H:mm:ss:ms z";
 
 export function FormatWithTimezone(
   m: moment.Moment,
@@ -356,7 +353,7 @@ export function EncodeUriName(name: string): string {
   return encodeURIComponent(name).replace(/%25/g, "%252525");
 }
 
-function encodeDatabasesUri(db: string): string {
+export function EncodeDatabasesUri(db: string): string {
   return `/databases/${EncodeUriName(db)}`;
 }
 
@@ -366,13 +363,13 @@ export function EncodeDatabasesToIndexUri(
   table: string,
   indexName: string,
 ): string {
-  return `${encodeDatabasesUri(db)}/${EncodeUriName(schema)}/${EncodeUriName(
+  return `${EncodeDatabasesUri(db)}/${EncodeUriName(schema)}/${EncodeUriName(
     table,
   )}/${EncodeUriName(indexName)}`;
 }
 
-function encodeDatabaseTableUri(db: string, table: string): string {
-  return `${encodeDatabaseUri(db)}/table/${EncodeUriName(table)}`;
+export function EncodeDatabaseTableUri(db: string, table: string): string {
+  return `${EncodeDatabaseUri(db)}/table/${EncodeUriName(table)}`;
 }
 
 export function EncodeDatabaseTableIndexUri(
@@ -380,12 +377,12 @@ export function EncodeDatabaseTableIndexUri(
   table: string,
   indexName: string,
 ): string {
-  return `${encodeDatabaseTableUri(db, table)}/index/${EncodeUriName(
+  return `${EncodeDatabaseTableUri(db, table)}/index/${EncodeUriName(
     indexName,
   )}`;
 }
 
-function encodeDatabaseUri(db: string): string {
+export function EncodeDatabaseUri(db: string): string {
   return `/database/${EncodeUriName(db)}`;
 }
 

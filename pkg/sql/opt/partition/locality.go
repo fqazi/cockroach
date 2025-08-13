@@ -7,7 +7,6 @@ package partition
 
 import (
 	"bytes"
-	"context"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
@@ -50,7 +49,6 @@ func (pr Prefix) String() string {
 // that longer prefixes are ordered first and within each group of equal-length
 // prefixes so that they are ordered by value.
 type PrefixSorter struct {
-	Ctx     context.Context
 	EvalCtx *eval.Context
 	Entry   []Prefix
 
@@ -93,7 +91,7 @@ func (ps PrefixSorter) Less(i, j int) bool {
 	if len(ps.Entry[i].Prefix) == 0 {
 		return false
 	}
-	compareResult := ps.Entry[i].Prefix.Compare(ps.Ctx, ps.EvalCtx, ps.Entry[j].Prefix)
+	compareResult := ps.Entry[i].Prefix.Compare(ps.EvalCtx, ps.Entry[j].Prefix)
 	return compareResult == -1
 }
 
@@ -174,7 +172,7 @@ func HasMixOfLocalAndRemotePartitions(
 // group of equal-length prefixes they are ordered by value.
 // This is the main function for building a PrefixSorter.
 func GetSortedPrefixes(
-	ctx context.Context, index cat.Index, localPartitions intsets.Fast, evalCtx *eval.Context,
+	index cat.Index, localPartitions intsets.Fast, evalCtx *eval.Context,
 ) PrefixSorter {
 	if index == nil || index.PartitionCount() < 2 {
 		return PrefixSorter{}
@@ -201,7 +199,7 @@ func GetSortedPrefixes(
 			})
 		}
 	}
-	ps := PrefixSorter{ctx, evalCtx, allPrefixes, []int{}, localPartitions}
+	ps := PrefixSorter{evalCtx, allPrefixes, []int{}, localPartitions}
 	sort.Sort(ps)
 	lastPrefixLength := len(ps.Entry[0].Prefix)
 	// Mark the index of each prefix group of a different length.

@@ -3,30 +3,16 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import filter from "lodash/filter";
-import flatMap from "lodash/flatMap";
-import flow from "lodash/flow";
-import isNil from "lodash/isNil";
-import map from "lodash/map";
-import sortBy from "lodash/sortBy";
-import uniq from "lodash/uniq";
-import values from "lodash/values";
-import moment from "moment-timezone";
+import _ from "lodash";
 import React from "react";
 import ReactPaginate from "react-paginate";
 import { connect } from "react-redux";
 import { Link, RouteComponentProps, withRouter } from "react-router-dom";
-
 import * as protos from "src/js/protos";
 import { refreshRaft } from "src/redux/apiReducers";
 import { CachedDataReducerState } from "src/redux/cachedDataReducer";
 import { AdminUIState } from "src/redux/state";
-import { FixLong } from "src/util/fixLong";
-import Print from "src/views/reports/containers/range/print";
 import { ToolTipWrapper } from "src/views/shared/components/toolTip";
-
-import RaftDebugResponse = cockroach.server.serverpb.RaftDebugResponse;
 
 /******************************
  *   RAFT RANGES MAIN COMPONENT
@@ -180,12 +166,16 @@ export class RangesMain extends React.Component<
       errors = errors.concat(statuses.errors.map(err => err.message));
 
       // Build list of all nodes for static ordering.
-      const nodeIDs = flow(
-        (ranges: RaftDebugResponse["ranges"]) => flatMap(ranges, r => r.nodes),
-        nodes => map(nodes, node => node.node_id),
-        nodeIds => uniq(nodeIds),
-        nodeIds => sortBy(nodeIds),
-      )(statuses.ranges);
+      const nodeIDs = _(statuses.ranges)
+        .flatMap((range: protos.cockroach.server.serverpb.IRaftRangeStatus) => {
+          return range.nodes;
+        })
+        .map((node: protos.cockroach.server.serverpb.IRaftRangeNode) => {
+          return node.node_id;
+        })
+        .uniq()
+        .sort()
+        .value();
 
       const nodeIDIndex: { [nodeID: number]: number } = {};
       const columns = [<th key={-1}>Range</th>];
@@ -201,8 +191,8 @@ export class RangesMain extends React.Component<
       });
 
       // Filter ranges and paginate
-      const justRanges = values(statuses.ranges);
-      const filteredRanges = filter(justRanges, range => {
+      const justRanges = _.values(statuses.ranges);
+      const filteredRanges = _.filter(justRanges, range => {
         return !this.state.showOnlyErrors || range.errors.length > 0;
       });
       let offset = this.state.offset;
@@ -211,11 +201,11 @@ export class RangesMain extends React.Component<
       }
       const ranges = filteredRanges.slice(offset, offset + RANGES_PER_PAGE);
       const rows: React.ReactNode[][] = [];
-      map(ranges, (range, i) => {
+      _.map(ranges, (range, i) => {
         const hasErrors = range.errors.length > 0;
         const rangeErrors = (
           <ul>
-            {map(range.errors, (error, j) => {
+            {_.map(range.errors, (error, j) => {
               return <li key={j}>{error.message}</li>;
             })}
           </ul>
@@ -263,25 +253,6 @@ export class RangesMain extends React.Component<
             }
             return "N/A";
           };
-
-          const displayTimestamp = (
-            timestamp: protos.cockroach.util.hlc.ITimestamp,
-            now: moment.Moment,
-          ): string => {
-            if (isNil(timestamp) || isNil(timestamp.wall_time)) {
-              return "nil";
-            }
-
-            if (FixLong(timestamp.wall_time).isZero()) {
-              return "empty";
-            }
-
-            const humanized = Print.Timestamp(timestamp);
-            const delta = Print.TimestampDeltaFromNow(timestamp, now);
-            return humanized.concat(", ", delta);
-          };
-
-          const now = moment();
           const index = nodeIDIndex[node.node_id];
           const raftState = nodeRange.raft_state;
           const cell = (
@@ -291,8 +262,7 @@ export class RangesMain extends React.Component<
                   State: {raftState.state}&nbsp; ReplicaID=
                   {display(raftState.replica_id)}&nbsp; Term=
                   {display(raftState.hard_state.term)}&nbsp; Lead=
-                  {display(raftState.lead)}&nbsp; LeadSupportUntil=
-                  {displayTimestamp(raftState.lead_support_until, now)}&nbsp;
+                  {display(raftState.lead)}&nbsp;
                 </div>
               ) : (
                 ""
@@ -339,7 +309,7 @@ export class RangesMain extends React.Component<
                 <tr>{columns}</tr>
               </thead>
               <tbody>
-                {values(rows).map((row: React.ReactNode[], i: number) => {
+                {_.values(rows).map((row: React.ReactNode[], i: number) => {
                   return <tr key={i}>{row}</tr>;
                 })}
               </tbody>

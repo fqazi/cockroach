@@ -97,49 +97,6 @@ func DecodeNodeTombstoneKey(key roachpb.Key) (roachpb.NodeID, error) {
 	return roachpb.NodeID(nodeID), err
 }
 
-// StoreLivenessRequesterMetaKey returns the key for the local store's Store
-// Liveness requester metadata.
-func StoreLivenessRequesterMetaKey() roachpb.Key {
-	return MakeStoreKey(localStoreLivenessRequesterMeta, nil)
-}
-
-// StoreLivenessSupporterMetaKey returns the key for the local store's Store
-// Liveness supporter metadata.
-func StoreLivenessSupporterMetaKey() roachpb.Key {
-	return MakeStoreKey(localStoreLivenessSupporterMeta, nil)
-}
-
-// StoreLivenessSupportForKey returns the key for the Store Liveness support
-// by the local store for a given store identified by nodeID and storeID.
-func StoreLivenessSupportForKey(nodeID roachpb.NodeID, storeID roachpb.StoreID) roachpb.Key {
-	nodeIDAndStoreID := uint64(nodeID)<<32 | uint64(storeID)
-	return MakeStoreKey(
-		localStoreLivenessSupportFor, encoding.EncodeUint64Ascending(nil, nodeIDAndStoreID),
-	)
-}
-
-// DecodeStoreLivenessSupportForKey returns the node ID and store ID of a given
-// localStoreLivenessSupportFor key.
-func DecodeStoreLivenessSupportForKey(key roachpb.Key) (roachpb.NodeID, roachpb.StoreID, error) {
-	suffix, detail, err := DecodeStoreKey(key)
-	if err != nil {
-		return 0, 0, err
-	}
-	if !suffix.Equal(localStoreLivenessSupportFor) {
-		return 0, 0, errors.Errorf("key with suffix %q != %q", suffix, localStoreLivenessSupportFor)
-	}
-	detail, nodeIDAndStoreID, err := encoding.DecodeUint64Ascending(detail)
-	if err != nil {
-		return 0, 0, err
-	}
-	if len(detail) != 0 {
-		return 0, 0, errors.Errorf("invalid key has trailing garbage: %q", detail)
-	}
-	nodeID := roachpb.NodeID(nodeIDAndStoreID >> 32)
-	storeID := roachpb.StoreID(nodeIDAndStoreID & math.MaxUint32)
-	return nodeID, storeID, nil
-}
-
 // StoreCachedSettingsKey returns a store-local key for store's cached settings.
 func StoreCachedSettingsKey(settingKey roachpb.Key) roachpb.Key {
 	return MakeStoreKey(localStoreCachedSettingsSuffix, encoding.EncodeBytesAscending(nil, settingKey))
@@ -325,11 +282,6 @@ func DecodeAbortSpanKey(key roachpb.Key, dest []byte) (uuid.UUID, error) {
 // RangeAppliedStateKey returns a system-local key for the range applied state key.
 func RangeAppliedStateKey(rangeID roachpb.RangeID) roachpb.Key {
 	return MakeRangeIDPrefixBuf(rangeID).RangeAppliedStateKey()
-}
-
-// RangeForceFlushKey returns a system-local key for the range force flush key.
-func RangeForceFlushKey(rangeID roachpb.RangeID) roachpb.Key {
-	return MakeRangeIDPrefixBuf(rangeID).RangeForceFlushKey()
 }
 
 // RangeLeaseKey returns a system-local key for a range lease.
@@ -531,7 +483,6 @@ func LockTableSingleKey(key roachpb.Key, buf []byte) (roachpb.Key, []byte) {
 	} else {
 		buf = buf[:0]
 	}
-
 	// Don't unwrap any local prefix on key using Addr(key). This allow for
 	// doubly-local lock table keys. For example, local range descriptor keys can
 	// be locked during split and merge transactions.
@@ -1133,12 +1084,6 @@ func (b RangeIDPrefixBuf) ReplicatedSharedLocksTransactionLatchingKey(txnID uuid
 // See comment on RangeAppliedStateKey function.
 func (b RangeIDPrefixBuf) RangeAppliedStateKey() roachpb.Key {
 	return append(b.replicatedPrefix(), LocalRangeAppliedStateSuffix...)
-}
-
-// RangeForceFlushKey returns a system-local key for the range force flush
-// key.
-func (b RangeIDPrefixBuf) RangeForceFlushKey() roachpb.Key {
-	return append(b.replicatedPrefix(), LocalRangeForceFlushSuffix...)
 }
 
 // RangeLeaseKey returns a system-local key for a range lease.

@@ -139,7 +139,7 @@ SELECT a, b, c FROM abcd WHERE a=$1 AND b=$2
 placeholder-scan abcd@abcd_a_b_idx
  ├── columns: a:1!null b:2!null c:3
  ├── has-placeholder
- ├── stats: [rows=1.98, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(1,2)=1, null(1,2)=0]
+ ├── stats: [rows=1.998, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(1,2)=1, null(1,2)=0]
  ├── fd: ()-->(1,2)
  └── span
       ├── $1
@@ -151,7 +151,7 @@ SELECT a, b, c FROM abcd WHERE b=$1 AND a=$2
 placeholder-scan abcd@abcd_a_b_idx
  ├── columns: a:1!null b:2!null c:3
  ├── has-placeholder
- ├── stats: [rows=1.98, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(1,2)=1, null(1,2)=0]
+ ├── stats: [rows=1.998, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(1,2)=1, null(1,2)=0]
  ├── fd: ()-->(1,2)
  └── span
       ├── $2
@@ -164,7 +164,7 @@ SELECT a, b, c FROM abcd WHERE a=0 AND b=$1
 placeholder-scan abcd@abcd_a_b_idx
  ├── columns: a:1!null b:2!null c:3
  ├── has-placeholder
- ├── stats: [rows=1.98, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(1,2)=1, null(1,2)=0]
+ ├── stats: [rows=1.998, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(1,2)=1, null(1,2)=0]
  ├── fd: ()-->(1,2)
  └── span
       ├── 0
@@ -176,7 +176,7 @@ SELECT a, b, c FROM abcd WHERE a=$1 AND b=0
 placeholder-scan abcd@abcd_a_b_idx
  ├── columns: a:1!null b:2!null c:3
  ├── has-placeholder
- ├── stats: [rows=1.98, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(1,2)=1, null(1,2)=0]
+ ├── stats: [rows=1.998, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(1,2)=1, null(1,2)=0]
  ├── fd: ()-->(1,2)
  └── span
       ├── $1
@@ -189,7 +189,7 @@ SELECT a, b, c FROM abcd WHERE a=1+2 AND b=$1
 placeholder-scan abcd@abcd_a_b_idx
  ├── columns: a:1!null b:2!null c:3
  ├── has-placeholder
- ├── stats: [rows=1.98, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(1,2)=1, null(1,2)=0]
+ ├── stats: [rows=1.998, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(1,2)=1, null(1,2)=0]
  ├── fd: ()-->(1,2)
  └── span
       ├── 3
@@ -201,7 +201,7 @@ SELECT a, b, c FROM abcd WHERE a=fnv32a('foo') AND b=$1
 placeholder-scan abcd@abcd_a_b_idx
  ├── columns: a:1!null b:2!null c:3
  ├── has-placeholder
- ├── stats: [rows=1.98, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(1,2)=1, null(1,2)=0]
+ ├── stats: [rows=1.998, distinct(1)=1, null(1)=0, distinct(2)=1, null(2)=0, distinct(1,2)=1, null(1,2)=0]
  ├── fd: ()-->(1,2)
  └── span
       ├── 2851307223
@@ -249,7 +249,7 @@ SELECT a, d FROM abcd WHERE d=$1 AND c=$2
 placeholder-scan abcd@abcd_d_c_a_idx
  ├── columns: a:1 d:4!null
  ├── has-placeholder
- ├── stats: [rows=9.801]
+ ├── stats: [rows=9.8901]
  ├── fd: ()-->(4)
  └── span
       ├── $1
@@ -345,33 +345,3 @@ placeholder-scan t_dec
  ├── fd: ()-->(1,2)
  └── span
       └── $1
-
-# Regression tests for #147363. The placeholder fast path should respect index
-# flags.
-exec-ddl
-CREATE TABLE t147363 (
-  a INT,
-  b INT,
-  c INT,
-  PRIMARY KEY (a, b),
-  INDEX i (a, b)
-)
-----
-
-# No fast path is selected because i is not covering.
-placeholder-fast-path
-SELECT * FROM t147363@i WHERE a = $1 AND b = $2
-----
-no fast path
-
-# The fast path does not support inverted indexes.
-placeholder-fast-path
-SELECT * FROM t147363@{FORCE_INVERTED_INDEX} WHERE a = $1 AND b = $2
-----
-no fast path
-
-# The fast path does not support zig-zag joins.
-placeholder-fast-path
-SELECT * FROM t147363@{FORCE_ZIGZAG} WHERE a = $1 AND b = $2
-----
-no fast path

@@ -58,6 +58,7 @@ var metricsPollerInterval = settings.RegisterDurationSetting(
 	"spanconfig.kvsubscriber.metrics_poller_interval",
 	"the interval at which the spanconfig.kvsubscriber.* metrics are kept up-to-date; set to 0 to disable the mechanism",
 	5*time.Second,
+	settings.NonNegativeDuration,
 )
 
 // KVSubscriber is used to subscribe to global span configuration changes. It's
@@ -270,6 +271,7 @@ func (s *KVSubscriber) Start(ctx context.Context, stopper *stop.Stopper) error {
 				}
 				select {
 				case <-timer.C:
+					timer.Read = true
 					s.updateMetrics(ctx)
 					continue
 
@@ -407,7 +409,7 @@ func (s *KVSubscriber) handleCompleteUpdate(
 ) {
 	freshStore := spanconfigstore.New(s.fallback, s.settings, s.boundsReader, s.knobs)
 	for _, ev := range events {
-		freshStore.Apply(ctx, ev.Update)
+		freshStore.Apply(ctx, false /* dryrun */, ev.Update)
 	}
 	handlers := func() []handler {
 		s.mu.Lock()
@@ -461,7 +463,7 @@ func (s *KVSubscriber) handlePartialUpdate(
 			// atomically, the updates need to be non-overlapping. That's not the case
 			// here because we can have deletion events followed by additions for
 			// overlapping spans.
-			s.mu.internal.Apply(ctx, ev.Update)
+			s.mu.internal.Apply(ctx, false /* dryrun */, ev.Update)
 		}
 		s.setLastUpdatedLocked(ts)
 		return s.mu.handlers

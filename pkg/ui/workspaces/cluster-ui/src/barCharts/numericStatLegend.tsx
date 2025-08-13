@@ -3,12 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
 import React from "react";
-
-import { longToInt } from "../util";
-
+import classNames from "classnames/bind";
 import styles from "./barCharts.module.scss";
+import { longToInt } from "../util";
 
 const cx = classNames.bind(styles);
 

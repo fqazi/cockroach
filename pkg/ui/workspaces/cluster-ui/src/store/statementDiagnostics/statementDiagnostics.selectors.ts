@@ -3,14 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import groupBy from "lodash/groupBy";
-import mapValues from "lodash/mapValues";
-import orderBy from "lodash/orderBy";
-import moment from "moment-timezone";
 import { createSelector } from "reselect";
-
-import { StatementDiagnosticsReport } from "../../api";
+import { chain, orderBy } from "lodash";
 import { AppState } from "../reducers";
+import { StatementDiagnosticsReport } from "../../api";
+import moment from "moment-timezone";
 
 export const statementDiagnostics = createSelector(
   (state: AppState) => state.adminUI,
@@ -30,15 +27,14 @@ export const selectDiagnosticsReportsPerStatement = createSelector(
   selectStatementDiagnosticsReports,
   (
     diagnosticsReports: StatementDiagnosticsReport[],
-  ): StatementDiagnosticsDictionary => {
-    const diagnosticsPerFingerprint = groupBy(
-      diagnosticsReports,
-      diagnosticsReport => diagnosticsReport.statement_fingerprint,
-    );
-    return mapValues(diagnosticsPerFingerprint, diagnostics =>
-      orderBy(diagnostics, [d => moment(d.requested_at).unix()], ["desc"]),
-    );
-  },
+  ): StatementDiagnosticsDictionary =>
+    chain(diagnosticsReports)
+      .groupBy(diagnosticsReport => diagnosticsReport.statement_fingerprint)
+      // Perform DESC sorting to get latest report on top
+      .mapValues(diagnostics =>
+        orderBy(diagnostics, [d => moment(d.requested_at).unix()], ["desc"]),
+      )
+      .value(),
 );
 
 export const selectDiagnosticsReportsByStatementFingerprint = createSelector(

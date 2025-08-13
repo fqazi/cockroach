@@ -8,7 +8,6 @@ package metric
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"math"
 	"reflect"
 	"sort"
@@ -17,13 +16,10 @@ import (
 	"time"
 
 	_ "github.com/cockroachdb/cockroach/pkg/util/log" // for flags
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/kr/pretty"
 	"github.com/prometheus/client_golang/prometheus"
 	prometheusgo "github.com/prometheus/client_model/go"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/proto"
 )
 
 func testMarshal(t *testing.T, m json.Marshaler, exp string) {
@@ -51,40 +47,6 @@ func TestGauge(t *testing.T) {
 		t.Fatalf("unexpected value: %d", v)
 	}
 	testMarshal(t, g, "10")
-}
-
-func TestGaugeVector(t *testing.T) {
-	g := NewExportedGaugeVec(emptyMetadata, []string{"label1", "label2"})
-	ls1 := map[string]string{"label1": "value1", "label2": "value2"}
-	ls2 := map[string]string{"label1": "value3", "label2": "value4"}
-
-	g.Update(ls1, 10)
-	g.Update(ls2, 10)
-
-	metrics := g.ToPrometheusMetrics()
-	require.Len(t, metrics, 2)
-	require.Equal(t, *metrics[0].Gauge.Value, 10.0)
-	require.Equal(t, *metrics[1].Gauge.Value, 10.0)
-
-	var wg sync.WaitGroup
-	for i := int64(0); i < 10; i++ {
-		wg.Add(2)
-		go func() { g.Inc(ls1, 1); wg.Done() }()
-		go func() { g.Inc(ls2, 2); wg.Done() }()
-	}
-	wg.Wait()
-
-	metrics = g.ToPrometheusMetrics()
-	require.Equal(t, 20.0, *metrics[0].Gauge.Value)
-	require.Equal(t, 30.0, *metrics[1].Gauge.Value)
-	require.Equal(t, "label1", *metrics[0].GetLabel()[0].Name)
-	require.Equal(t, "value1", *metrics[0].GetLabel()[0].Value)
-	require.Equal(t, "label2", *metrics[0].GetLabel()[1].Name)
-	require.Equal(t, "value2", *metrics[0].GetLabel()[1].Value)
-	require.Equal(t, "label1", *metrics[1].GetLabel()[0].Name)
-	require.Equal(t, "value3", *metrics[1].GetLabel()[0].Value)
-	require.Equal(t, "label2", *metrics[1].GetLabel()[1].Name)
-	require.Equal(t, "value4", *metrics[1].GetLabel()[1].Value)
 }
 
 func TestFunctionalGauge(t *testing.T) {
@@ -129,46 +91,30 @@ func TestCounter(t *testing.T) {
 	testMarshal(t, c, "90")
 }
 
-func TestUniqueCounter(t *testing.T) {
-	c := NewUniqueCounter(emptyMetadata)
-	expected := int64(10_000)
-	for i := int64(0); i < expected; i++ {
-		c.Add([]byte(fmt.Sprintf("test-%d", i)))
-	}
-	// UniqueCounter is an approximation
-	margin := float64(expected) * 0.005
-	actual := c.Count()
-	if math.Abs(float64(actual-expected)) > margin {
-		t.Fatalf("unexpected value: %d", actual)
-	}
-
-	testMarshal(t, c, fmt.Sprintf("%d", actual))
-}
-
 func TestCounterFloat64(t *testing.T) {
-	c := NewCounterFloat64(emptyMetadata)
-	c.UpdateIfHigher(10)
-	if v := c.Count(); v != 10 {
+	g := NewCounterFloat64(emptyMetadata)
+	g.Update(10)
+	if v := g.Count(); v != 10 {
 		t.Fatalf("unexpected value: %f", v)
 	}
-	testMarshal(t, c, "10")
+	testMarshal(t, g, "10")
 
 	var wg sync.WaitGroup
 	for i := int64(0); i < 10; i++ {
 		wg.Add(1)
-		go func(i int64) { c.Inc(float64(i)); wg.Done() }(i)
+		go func(i int64) { g.Inc(float64(i)); wg.Done() }(i)
 	}
 	wg.Wait()
-	if v := c.Count(); math.Abs(v-55.0) > 0.001 {
+	if v := g.Count(); math.Abs(v-55.0) > 0.001 {
 		t.Fatalf("unexpected value: %g", v)
 	}
 
 	for i := int64(55); i < 65; i++ {
 		wg.Add(1)
-		go func(i int64) { c.UpdateIfHigher(float64(i)); wg.Done() }(i)
+		go func(i int64) { g.Update(float64(i)); wg.Done() }(i)
 	}
 	wg.Wait()
-	if v := c.Count(); math.Abs(v-64.0) > 0.001 {
+	if v := g.Count(); math.Abs(v-64.0) > 0.001 {
 		t.Fatalf("unexpected value: %g", v)
 	}
 }
@@ -455,7 +401,7 @@ func TestNewHistogramRotate(t *testing.T) {
 			h.RecordValue(12345)
 			f := float64(12345) + sum
 			_, wSum := h.WindowedSnapshot().Total()
-			require.Equal(t, f, wSum)
+			require.Equal(t, wSum, f)
 		}
 		// Tick. This rotates the histogram.
 		now = now.Add(time.Duration(i+1) * 10 * time.Second)
@@ -615,512 +561,5 @@ func TestMergeWindowedHistogram(t *testing.T) {
 		} else if *bucket.UpperBound > float64(measurements[0]) {
 			require.Equal(t, uint64(1), *bucket.CumulativeCount)
 		}
-	}
-}
-
-type toPromMetricsTC struct {
-	labels [][]string
-	value  float64
-}
-
-func (cv *CounterVec) assertPrometheusMetrics(t *testing.T, tc []toPromMetricsTC) {
-	t.Helper()
-
-	promMetrics := cv.ToPrometheusMetrics()
-	assert.Len(t, promMetrics, len(tc))
-
-	for i, m := range promMetrics {
-		labels := []*prometheusgo.LabelPair{}
-
-		for _, l := range tc[i].labels {
-			labels = append(labels, &prometheusgo.LabelPair{
-				Name:  &l[0],
-				Value: &l[1],
-			})
-		}
-
-		assert.Equal(t, &prometheusgo.Metric{
-			Label: labels,
-			Counter: &prometheusgo.Counter{
-				Value: &tc[i].value,
-			},
-		}, m)
-	}
-
-}
-
-func TestCounterVec(t *testing.T) {
-	t.Run("labels provided match what is declared", func(t *testing.T) {
-		c := NewExportedCounterVec(emptyMetadata, []string{"label1", "label2"})
-		t.Run("update", func(t *testing.T) {
-			assert.NotPanics(t, func() {
-				c.Update(map[string]string{
-					"label1": "value1",
-					"label2": "value2",
-				}, 10)
-
-				c.Update(map[string]string{
-					"label1": "value3",
-					"label2": "value4",
-				}, 10)
-
-				// overwrite the previous value
-				c.Update(map[string]string{
-					"label1": "value3",
-					"label2": "value4",
-				}, 20)
-			})
-		})
-
-		t.Run("inc", func(t *testing.T) {
-			assert.NotPanics(t, func() {
-				c.Inc(map[string]string{
-					"label1": "value1",
-					"label2": "value2",
-				}, 10)
-
-				c.Inc(map[string]string{
-					"label1": "value3",
-					"label2": "value4",
-				}, 10)
-			})
-		})
-
-		t.Run("count", func(t *testing.T) {
-			assert.Equal(t, int64(20), c.Count(map[string]string{
-				"label1": "value1",
-				"label2": "value2",
-			}))
-
-			assert.Equal(t, int64(30), c.Count(map[string]string{
-				"label1": "value3",
-				"label2": "value4",
-			}))
-
-			// timeseries doesn't exist
-			assert.Equal(t, int64(0), c.Count(map[string]string{
-				"label1": "value5",
-				"label2": "value6",
-			}))
-		})
-
-		t.Run("to prometheus metrics", func(t *testing.T) {
-			c.assertPrometheusMetrics(t, []toPromMetricsTC{{
-				labels: [][]string{{"label1", "value1"}, {"label2", "value2"}},
-				value:  20,
-			}, {
-				labels: [][]string{{"label1", "value3"}, {"label2", "value4"}},
-				value:  30,
-			}})
-		})
-	})
-
-	t.Run("labels provided exceed what is declared", func(t *testing.T) {
-		c := NewExportedCounterVec(emptyMetadata, []string{"label1", "label2"})
-		t.Run("update", func(t *testing.T) {
-			assert.NotPanics(t, func() {
-				c.Update(map[string]string{
-					"label1": "value1",
-					"label2": "value2",
-					"label3": "value3",
-				}, 10)
-
-				c.Update(map[string]string{
-					"label1": "value1",
-					"label2": "value2",
-					"label3": "value3",
-					"label4": "value4",
-					"label5": "value5",
-				}, 50)
-			})
-		})
-
-		t.Run("count", func(t *testing.T) {
-			assert.NotPanics(t, func() {
-				assert.Equal(t, int64(50), c.Count(map[string]string{
-					"label1": "value1",
-					"label2": "value2",
-					"label3": "value3",
-					"label6": "value6",
-				}))
-			})
-		})
-
-		t.Run("to prometheus metrics", func(t *testing.T) {
-			c.assertPrometheusMetrics(t, []toPromMetricsTC{
-				{
-					labels: [][]string{{"label1", "value1"}, {"label2", "value2"}},
-					value:  50,
-				},
-			})
-		})
-		// we don't have to test all operation again
-	})
-
-	t.Run("labels provided are less than what is declared", func(t *testing.T) {
-		c := NewExportedCounterVec(emptyMetadata, []string{"label1", "label2", "label3"})
-		t.Run("update", func(t *testing.T) {
-			assert.NotPanics(t, func() {
-				c.Update(map[string]string{
-					"label1": "value1",
-					"label2": "value2",
-				}, 10)
-			})
-		})
-
-		t.Run("count", func(t *testing.T) {
-			assert.Equal(t, int64(10), c.Count(map[string]string{
-				"label1": "value1",
-				"label2": "value2",
-				"label3": "",
-			}))
-
-			assert.Equal(t, int64(0), c.Count(map[string]string{
-				"label1": "value1",
-				"label2": "value2",
-				"label3": "value3",
-			}))
-		})
-
-		t.Run("to prometheus metrics", func(t *testing.T) {
-			c.assertPrometheusMetrics(t, []toPromMetricsTC{
-				{
-					labels: [][]string{{"label1", "value1"}, {"label2", "value2"}, {"label3", ""}},
-					value:  10,
-				},
-			})
-		})
-	})
-
-	t.Run("no matching labels", func(t *testing.T) {
-		c := NewExportedCounterVec(emptyMetadata, []string{"label1", "label2"})
-		t.Run("update", func(t *testing.T) {
-			assert.NotPanics(t, func() {
-				c.Update(map[string]string{
-					"label3": "value3",
-					"label4": "value4",
-				}, 10)
-			})
-		})
-
-		t.Run("count", func(t *testing.T) {
-			assert.Equal(t, int64(10), c.Count(map[string]string{
-				"label1": "",
-				"label2": "",
-			}))
-
-			// TODO(arjunmahishi): Handle this case carefully. This is a bug.
-			// assert.Equal(t, int64(0), c.Count(map[string]string{
-			// 	"label3": "value3",
-			// 	"label4": "value4",
-			// }))
-		})
-
-		t.Run("to prometheus metrics", func(t *testing.T) {
-			c.assertPrometheusMetrics(t, []toPromMetricsTC{
-				{
-					labels: [][]string{{"label1", ""}, {"label2", ""}},
-					value:  10,
-				},
-			})
-		})
-	})
-}
-
-func TestHistogramVec(t *testing.T) {
-	t.Run("Observe", func(t *testing.T) {
-
-		h := NewExportedHistogramVec(emptyMetadata, Count1KBuckets, []string{"label1", "label2"})
-		h.Observe(map[string]string{
-			"label1": "value1",
-			"label2": "value2",
-		}, 10)
-
-		metrics := h.ToPrometheusMetrics()
-		require.Len(t, metrics, 1)
-		require.Equal(t, uint64(1), *metrics[0].Histogram.SampleCount)
-		require.Equal(t, float64(10), *metrics[0].Histogram.SampleSum)
-
-		h.Observe(map[string]string{
-			"label1": "value1",
-			"label2": "value2",
-		}, 20)
-
-		metrics = h.ToPrometheusMetrics()
-		require.Len(t, metrics, 1)
-		require.Equal(t, uint64(2), *metrics[0].Histogram.SampleCount)
-		require.Equal(t, float64(30), *metrics[0].Histogram.SampleSum)
-
-		h.Observe(map[string]string{
-			"label1": "value1",
-			"label2": "value3",
-		}, 10)
-
-		metrics = h.ToPrometheusMetrics()
-		require.Len(t, metrics, 2)
-		// metric[0] should be unchanged
-		require.Equal(t, uint64(2), *metrics[0].Histogram.SampleCount)
-		require.Equal(t, float64(30), *metrics[0].Histogram.SampleSum)
-
-		require.Equal(t, uint64(1), *metrics[1].Histogram.SampleCount)
-		require.Equal(t, float64(10), *metrics[1].Histogram.SampleSum)
-
-	})
-
-	t.Run("Observe no matching labels", func(t *testing.T) {
-		h := NewExportedHistogramVec(emptyMetadata, Count1KBuckets, []string{"label1", "label2"})
-		h.Observe(map[string]string{
-			"labelx": "value1",
-			"labely": "value2",
-		}, 10)
-
-		metrics := h.ToPrometheusMetrics()
-		// metric is still recorded
-		require.Len(t, metrics, 1)
-		require.Equal(t, uint64(1), *metrics[0].Histogram.SampleCount)
-		require.Equal(t, float64(10), *metrics[0].Histogram.SampleSum)
-
-		// metric only has pre-defined labels with no values
-		labels := metrics[0].Label
-		require.Len(t, labels, 2)
-		require.Equal(t, "label1", *labels[0].Name)
-		require.Equal(t, "", *labels[0].Value)
-		require.Equal(t, "label2", *labels[1].Name)
-		require.Equal(t, "", *labels[1].Value)
-	})
-
-	t.Run("Observe partial matching labels", func(t *testing.T) {
-		h := NewExportedHistogramVec(emptyMetadata, Count1KBuckets, []string{"label1", "label2"})
-		h.Observe(map[string]string{
-			"label1": "value1",
-			"labely": "value2",
-		}, 10)
-
-		metrics := h.ToPrometheusMetrics()
-		// metric is still recorded
-		require.Len(t, metrics, 1)
-		require.Equal(t, uint64(1), *metrics[0].Histogram.SampleCount)
-		require.Equal(t, float64(10), *metrics[0].Histogram.SampleSum)
-
-		// metric only has pre-defined labels
-		labels := metrics[0].Label
-		require.Len(t, labels, 2)
-		require.Equal(t, "label1", *labels[0].Name)
-		require.Equal(t, "value1", *labels[0].Value)
-		require.Equal(t, "label2", *labels[1].Name)
-		require.Equal(t, "", *labels[1].Value)
-
-		h.Observe(map[string]string{
-			"label1": "value1",
-			"labely": "value3",
-		}, 20)
-
-		metrics = h.ToPrometheusMetrics()
-		// metric is still recorded
-		require.Len(t, metrics, 1)
-		require.Equal(t, uint64(2), *metrics[0].Histogram.SampleCount)
-		require.Equal(t, float64(30), *metrics[0].Histogram.SampleSum)
-
-		h.Observe(map[string]string{
-			"label1": "value1",
-			"label2": "value2",
-			"labely": "value3",
-		}, 1)
-
-		metrics = h.ToPrometheusMetrics()
-		// new metric recorded
-		require.Len(t, metrics, 2)
-		// First metric remains the same
-		require.Equal(t, uint64(2), *metrics[0].Histogram.SampleCount)
-		require.Equal(t, float64(30), *metrics[0].Histogram.SampleSum)
-
-		require.Equal(t, uint64(1), *metrics[1].Histogram.SampleCount)
-		require.Equal(t, float64(1), *metrics[1].Histogram.SampleSum)
-	})
-}
-
-func BenchmarkHistogramRecordValue(b *testing.B) {
-	h := NewHistogram(HistogramOptions{
-		Metadata: Metadata{
-			Name:       "my.test.metric",
-			MetricType: prometheusgo.MetricType_HISTOGRAM,
-		},
-		Duration:     0,
-		BucketConfig: IOLatencyBuckets,
-		Mode:         HistogramModePrometheus,
-	})
-
-	b.ResetTimer()
-	r, _ := randutil.NewTestRand()
-
-	b.Run("insert integers", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			h.RecordValue(int64(i))
-		}
-	})
-	b.Run("insert zero", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			h.RecordValue(0)
-		}
-	})
-	b.Run("random integers", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			h.RecordValue(int64(randutil.RandIntInRange(r, int(IOLatencyBuckets.min), int(IOLatencyBuckets.max))))
-		}
-	})
-}
-
-func TestMetadataGetLabels(t *testing.T) {
-	tests := []struct {
-		name            string
-		metadata        Metadata
-		useStaticLabels bool
-		wantLabels      []*prometheusgo.LabelPair
-	}{
-		{
-			name: "only regular labels",
-			metadata: Metadata{
-				Labels: []*LabelPair{
-					{Name: proto.String("regular1"), Value: proto.String("value1")},
-					{Name: proto.String("regular2"), Value: proto.String("value2")},
-				},
-			},
-			useStaticLabels: false,
-			wantLabels: []*prometheusgo.LabelPair{
-				{Name: proto.String("regular1"), Value: proto.String("value1")},
-				{Name: proto.String("regular2"), Value: proto.String("value2")},
-			},
-		},
-		{
-			name: "only static labels",
-			metadata: Metadata{
-				StaticLabels: []*LabelPair{
-					{Name: proto.String("static1"), Value: proto.String("value1")},
-					{Name: proto.String("static2"), Value: proto.String("value2")},
-				},
-			},
-			useStaticLabels: true,
-			wantLabels: []*prometheusgo.LabelPair{
-				{Name: proto.String("static1"), Value: proto.String("value1")},
-				{Name: proto.String("static2"), Value: proto.String("value2")},
-			},
-		},
-		{
-			name: "both regular and static labels",
-			metadata: Metadata{
-				Labels: []*LabelPair{
-					{Name: proto.String("regular1"), Value: proto.String("value1")},
-				},
-				StaticLabels: []*LabelPair{
-					{Name: proto.String("static1"), Value: proto.String("value1")},
-				},
-			},
-			useStaticLabels: true,
-			wantLabels: []*prometheusgo.LabelPair{
-				{Name: proto.String("static1"), Value: proto.String("value1")},
-				{Name: proto.String("regular1"), Value: proto.String("value1")},
-			},
-		},
-		{
-			name: "both regular and static labels but static disabled",
-			metadata: Metadata{
-				Labels: []*LabelPair{
-					{Name: proto.String("regular1"), Value: proto.String("value1")},
-				},
-				StaticLabels: []*LabelPair{
-					{Name: proto.String("static1"), Value: proto.String("value1")},
-				},
-			},
-			useStaticLabels: false,
-			wantLabels: []*prometheusgo.LabelPair{
-				{Name: proto.String("regular1"), Value: proto.String("value1")},
-			},
-		},
-		{
-			name:            "no labels",
-			metadata:        Metadata{},
-			useStaticLabels: false,
-			wantLabels:      []*prometheusgo.LabelPair{},
-		},
-		{
-			name:            "no labels with static enabled",
-			metadata:        Metadata{},
-			useStaticLabels: true,
-			wantLabels:      []*prometheusgo.LabelPair{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := tt.metadata.GetLabels(tt.useStaticLabels)
-			if len(got) != len(tt.wantLabels) {
-				t.Errorf("GetLabels() returned %d labels, want %d", len(got), len(tt.wantLabels))
-				return
-			}
-			for i := range got {
-				if *got[i].Name != *tt.wantLabels[i].Name {
-					t.Errorf("label %d: got name %q, want %q", i, *got[i].Name, *tt.wantLabels[i].Name)
-				}
-				if *got[i].Value != *tt.wantLabels[i].Value {
-					t.Errorf("label %d: got value %q, want %q", i, *got[i].Value, *tt.wantLabels[i].Value)
-				}
-			}
-		})
-	}
-}
-
-func TestMakeLabelPairs(t *testing.T) {
-	tests := []struct {
-		name        string
-		args        []string
-		want        []*LabelPair
-		expectPanic bool
-	}{
-		{
-			name: "empty args",
-			args: []string{},
-			want: []*LabelPair{},
-		},
-		{
-			name:        "single arg",
-			args:        []string{"label1"},
-			expectPanic: true,
-		},
-		{
-			name:        "odd number of args",
-			args:        []string{"label1", "value1", "label2", "value2", "label3"},
-			expectPanic: true,
-		},
-		{
-			name: "even number of args",
-			args: []string{"label1", "value1", "label2", "value2"},
-			want: []*LabelPair{
-				{Name: proto.String("label1"), Value: proto.String("value1")},
-				{Name: proto.String("label2"), Value: proto.String("value2")},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.expectPanic {
-				require.Panics(t, func() { MakeLabelPairs(tt.args...) })
-				return
-			}
-
-			got := MakeLabelPairs(tt.args...)
-			if len(got) != len(tt.want) {
-				t.Errorf("MakeLabelPairs() returned %d pairs, want %d", len(got), len(tt.want))
-				return
-			}
-			for i := range got {
-				if *got[i].Name != *tt.want[i].Name {
-					t.Errorf("pair %d: got name %q, want %q", i, *got[i].Name, *tt.want[i].Name)
-				}
-				if *got[i].Value != *tt.want[i].Value {
-					t.Errorf("pair %d: got value %q, want %q", i, *got[i].Value, *tt.want[i].Value)
-				}
-			}
-		})
 	}
 }

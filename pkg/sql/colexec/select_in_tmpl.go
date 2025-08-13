@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for select_in.eg.go. It's formatted in a
@@ -16,8 +17,6 @@
 package colexec
 
 import (
-	"context"
-
 	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/col/coldataext"
@@ -78,7 +77,6 @@ const (
 )
 
 func GetInProjectionOperator(
-	ctx context.Context,
 	evalCtx *eval.Context,
 	allocator *colmem.Allocator,
 	t *types.T,
@@ -102,17 +100,16 @@ func GetInProjectionOperator(
 				outputIdx:      resultIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRow_TYPE(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRow_TYPE(evalCtx, t, datumTuple)
 			return obj, nil
 			// {{end}}
 		}
 		// {{end}}
 	}
-	return nil, errors.AssertionFailedf("unhandled type: %s", t.Name())
+	return nil, errors.Errorf("unhandled type: %s", t.Name())
 }
 
 func GetInOperator(
-	ctx context.Context,
 	evalCtx *eval.Context,
 	t *types.T,
 	input colexecop.Operator,
@@ -131,13 +128,13 @@ func GetInOperator(
 				colIdx:         colIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRow_TYPE(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRow_TYPE(evalCtx, t, datumTuple)
 			return obj, nil
 			// {{end}}
 		}
 		// {{end}}
 	}
-	return nil, errors.AssertionFailedf("unhandled type: %s", t.Name())
+	return nil, errors.Errorf("unhandled type: %s", t.Name())
 }
 
 // {{range .}}
@@ -166,10 +163,10 @@ type projectInOp_TYPE struct {
 var _ colexecop.Operator = &projectInOp_TYPE{}
 
 func fillDatumRow_TYPE(
-	ctx context.Context, evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
+	evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
 ) ([]_GOTYPE_UPCAST_INT, bool) {
 	// Sort the contents of the tuple, if they are not already sorted.
-	datumTuple.Normalize(ctx, evalCtx)
+	datumTuple.Normalize(evalCtx)
 
 	// {{if or (eq .VecMethod "Int16") (eq .VecMethod "Int32")}}
 	// Ensure that we always upcast all integer types.

@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import * as protos from "@cockroachlabs/crdb-protobuf-client";
-
 import { ILocation, selectLocations, selectLocationTree } from "./locations";
 
 function makeStateWithLocations(locationData: ILocation[]) {

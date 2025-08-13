@@ -6,7 +6,7 @@
 package opgen
 
 import (
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scop"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -111,35 +111,6 @@ func init() {
 						IndexID: this.IndexID,
 					}
 				}),
-				emit(func(this *scpb.PrimaryIndex, md *opGenContext) *scop.MarkRecreatedIndexesAsVisible {
-					// While making a primary index swap public, we will also make
-					// any invisible indexes that were created as part of the swap
-					// visible.
-					var indexVisibilities map[descpb.IndexID]float64
-					for _, target := range md.Targets {
-						idx := target.GetSecondaryIndex()
-						// Skip unrelated indexes and indexes that are supposed
-						// to be invisible.
-						if idx == nil ||
-							idx.TableID != this.TableID ||
-							idx.RecreateTargetIndexID != this.IndexID ||
-							idx.IsNotVisible ||
-							idx.Invisibility == 1.0 {
-							continue
-						}
-						if indexVisibilities == nil {
-							indexVisibilities = make(map[descpb.IndexID]float64)
-						}
-						indexVisibilities[idx.IndexID] = idx.Invisibility
-					}
-					if len(indexVisibilities) == 0 {
-						return nil
-					}
-					return &scop.MarkRecreatedIndexesAsVisible{
-						TableID:           this.TableID,
-						IndexVisibilities: indexVisibilities,
-					}
-				}),
 			),
 		),
 		toTransientAbsentLikePublic(),
@@ -171,6 +142,13 @@ func init() {
 			equiv(scpb.Status_BACKFILL_ONLY),
 			to(scpb.Status_ABSENT,
 				emit(func(this *scpb.PrimaryIndex, md *opGenContext) *scop.CreateGCJobForIndex {
+					if !md.ActiveVersion.IsActive(clusterversion.V23_1) {
+						return &scop.CreateGCJobForIndex{
+							TableID:             this.TableID,
+							IndexID:             this.IndexID,
+							StatementForDropJob: statementForDropJob(this, md),
+						}
+					}
 					return nil
 				}),
 				emit(func(this *scpb.PrimaryIndex, md *opGenContext) *scop.MakeIndexAbsent {

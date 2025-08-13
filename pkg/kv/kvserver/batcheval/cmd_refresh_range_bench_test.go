@@ -178,7 +178,7 @@ type benchOptions struct {
 type engineMaker func(testing.TB, string, int64, fs.RWMode) storage.Engine
 
 func setupMVCCPebble(b testing.TB, dir string, lBaseMaxBytes int64, rw fs.RWMode) storage.Engine {
-	env, err := fs.InitEnv(context.Background(), vfs.Default, dir, fs.EnvConfig{RW: rw}, nil /* statsCollector */)
+	env, err := fs.InitEnv(context.Background(), vfs.Default, dir, fs.EnvConfig{RW: rw})
 	if err != nil {
 		b.Fatalf("could not initialize fs env at %s: %+v", dir, err)
 	}
@@ -217,7 +217,7 @@ func setupData(
 	if opts.rwMode == fs.ReadOnly {
 		readOnlyStr = "_readonly"
 	}
-	name := fmt.Sprintf("refresh_range_bench_data_%s_%s%s_%d_%d_%d_v2",
+	name := fmt.Sprintf("refresh_range_bench_data_%s_%s%s_%d_%d_%d",
 		verStr, orderStr, readOnlyStr, opts.numKeys, opts.valueBytes, opts.lBaseMaxBytes)
 
 	dir := testfixtures.ReuseOrGenerate(b, name, func(dir string) {

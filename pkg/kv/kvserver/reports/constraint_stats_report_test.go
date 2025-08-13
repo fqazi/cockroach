@@ -1048,7 +1048,9 @@ func generateTableZone(t table, tableDesc descpb.TableDescriptor) (*zonepb.ZoneC
 	// Fill in the SubzoneSpans.
 	if tableZone != nil {
 		var err error
-		tableZone.SubzoneSpans, err = sql.GenerateSubzoneSpans(keys.SystemSQLCodec, tabledesc.NewBuilder(&tableDesc).BuildImmutableTable(), tableZone.Subzones)
+		tableZone.SubzoneSpans, err = sql.GenerateSubzoneSpans(
+			nil, keys.SystemSQLCodec,
+			tabledesc.NewBuilder(&tableDesc).BuildImmutableTable(), tableZone.Subzones, false /* hasNewSubzones */)
 		if err != nil {
 			return nil, errors.Wrap(err, "error generating subzone spans")
 		}

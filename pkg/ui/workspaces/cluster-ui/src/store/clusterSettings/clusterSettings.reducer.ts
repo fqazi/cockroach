@@ -4,12 +4,11 @@
 // included in the /LICENSE file.
 
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-
+import { DOMAIN_NAME } from "../utils";
 import {
   SettingsRequestMessage,
   SettingsResponseMessage,
 } from "../../api/clusterSettingsApi";
-import { DOMAIN_NAME } from "../utils";
 
 export type ClusterSettingsState = {
   data: SettingsResponseMessage;

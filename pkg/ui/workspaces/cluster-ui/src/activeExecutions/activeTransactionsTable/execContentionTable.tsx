@@ -3,16 +3,15 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
 import React from "react";
-import { Link } from "react-router-dom";
-
 import { ColumnDescriptor, SortedTable } from "../../sortedtable";
-import { Timestamp } from "../../timestamp";
-import { DATE_FORMAT_24_TZ, Duration, limitText } from "../../util";
-import { executionsTableTitles } from "../execTableCommon";
-import { StatusIcon } from "../statusIcon";
 import { ContendedExecution, ExecutionType } from "../types";
+import { Link } from "react-router-dom";
+import { StatusIcon } from "../statusIcon";
+import { executionsTableTitles } from "../execTableCommon";
+import { DATE_FORMAT_24_TZ, Duration, limitText } from "../../util";
+import { Tooltip } from "@cockroachlabs/ui-components";
+import { Timestamp } from "../../timestamp";
 
 const getID = (item: ContendedExecution, execType: ExecutionType) =>
   execType === "transaction"

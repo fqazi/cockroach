@@ -21,10 +21,6 @@ import (
 	"github.com/Azure/azure-sdk-for-go/profiles/latest/network/mgmt/network"
 	"github.com/Azure/azure-sdk-for-go/profiles/latest/resources/mgmt/resources"
 	"github.com/Azure/azure-sdk-for-go/profiles/latest/resources/mgmt/subscriptions"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
-	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/monitor/armmonitor"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
@@ -34,13 +30,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"golang.org/x/exp/maps"
 	"golang.org/x/sync/errgroup"
 )
 
 const (
-	defaultSubscription  = "e2e-adhoc"
-	SubscriptionIDEnvVar = "AZURE_SUBSCRIPTION_ID"
+	defaultSubscription = "e2e-infra"
 	// ProviderName is "azure".
 	ProviderName = "azure"
 	remoteUser   = "ubuntu"
@@ -86,9 +80,6 @@ type Provider struct {
 	OperationTimeout time.Duration
 	// Wait for deletions to finish before returning.
 	SyncDelete bool
-	// The list of subscription names to use. Currently only used by GC.
-	// If left empty then falls back to env var then default subscription.
-	SubscriptionNames []string
 
 	mu struct {
 		syncutil.Mutex
@@ -117,93 +108,6 @@ func (p *Provider) GetHostErrorVMs(
 	return nil, nil
 }
 
-type TokenCredential struct {
-	token string
-}
-
-func (t *TokenCredential) GetToken(
-	ctx context.Context, options policy.TokenRequestOptions,
-) (azcore.AccessToken, error) {
-	return azcore.AccessToken{
-		Token: t.token,
-	}, nil
-}
-
-func (p *Provider) GetLiveMigrationVMs(
-	l *logger.Logger, vms vm.List, since time.Time,
-) ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), p.OperationTimeout)
-	defer cancel()
-	sub, err := p.getSubscription(ctx)
-	if err != nil {
-		return nil, err
-	}
-	// Azure expects this exact format for timestamps.
-	startTime := since.Format("2006-01-02 15:04:05.999999999 -0700")
-
-	// Azure lets us query by either resourceID or resourceGroup. We don't keep track
-	// of either but can more easily reconstruct the latter through availability zones.
-	// Find all unique resourceGroups among the VMs; we will send a query to each.
-	resourceGroups := make(map[string]struct{})
-	for _, vm := range vms {
-		// Trim the trailing z we added to mock an availability zone.
-		zone := vm.Zone[:len(vm.Zone)-1]
-		clusterName, err := vm.ClusterName()
-		if err != nil {
-			return nil, err
-		}
-		resourceGroups[fmt.Sprintf("%s-%s", clusterName, zone)] = struct{}{}
-	}
-
-	token, err := p.getAuthToken()
-	if err != nil {
-		return nil, err
-	}
-	cred := &TokenCredential{token: token}
-	activityClient, err := armmonitor.NewActivityLogsClient(sub, cred, &arm.ClientOptions{})
-	if err != nil {
-		return nil, err
-	}
-
-	var liveMigrationVMs []string
-	for group := range resourceGroups {
-		// List all events for the resource group since the given time.
-		filter := fmt.Sprintf(`eventTimestamp ge %s and resourceGroupName eq %s`, startTime, group)
-		pager := activityClient.NewListPager(filter, &armmonitor.ActivityLogsClientListOptions{})
-
-		// Exhaustively search all events for migrations since there could be multiple VMs that migrated
-		// or a VM that migrated multiple times. We rely on the context timeout to prevent us from searching
-		// too long in case we run into an extremely long-lived cluster. In practice, we see this take less
-		// than a second for the average roachtest cluster.
-		for pager.More() {
-			page, err := pager.NextPage(ctx)
-			if err != nil {
-				l.Printf("GetLiveMigrationVMs: error getting activity log page: %v", err)
-				return liveMigrationVMs, nil
-			}
-
-			for _, event := range page.Value {
-				// For some reason, live migration events populate the event property title
-				// field while leaving the event name empty.
-				if event.Properties != nil && event.Properties["title"] != nil {
-					eventTitle := *event.Properties["title"]
-					if strings.Contains(eventTitle, "Migration") {
-						// The activity log does not have a vm name field so we have to parse it out from the ResourceID
-						_, vmName, found := strings.Cut(*event.ResourceID, "VIRTUALMACHINES/")
-						if !found {
-							l.Printf("GetLiveMigrationVMs: could not parse VM name from resource ID %s", *event.ResourceID)
-							vmName = *event.ResourceID
-						}
-						liveMigrationVMs = append(liveMigrationVMs, vmName)
-					}
-				}
-			}
-		}
-	}
-
-	return liveMigrationVMs, nil
-}
-
 func (p *Provider) GetVMSpecs(
 	l *logger.Logger, vms vm.List,
 ) (map[string]map[string]interface{}, error) {
@@ -214,25 +118,25 @@ func (p *Provider) CreateVolumeSnapshot(
 	l *logger.Logger, volume vm.Volume, vsco vm.VolumeSnapshotCreateOpts,
 ) (vm.VolumeSnapshot, error) {
 	// TODO(leon): implement
-	return vm.VolumeSnapshot{}, vm.UnimplementedError
+	panic("unimplemented")
 }
 
 func (p *Provider) ListVolumeSnapshots(
 	l *logger.Logger, vslo vm.VolumeSnapshotListOpts,
 ) ([]vm.VolumeSnapshot, error) {
-	return nil, vm.UnimplementedError
+	panic("unimplemented")
 }
 
 func (p *Provider) DeleteVolumeSnapshots(l *logger.Logger, snapshots ...vm.VolumeSnapshot) error {
-	return vm.UnimplementedError
+	panic("unimplemented")
 }
 
 func (p *Provider) CreateVolume(*logger.Logger, vm.VolumeCreateOpts) (vm.Volume, error) {
-	return vm.Volume{}, vm.UnimplementedError
+	panic("unimplemented")
 }
 
-func (p *Provider) DeleteVolume(l *logger.Logger, volume vm.Volume, _ *vm.VM) error {
-	return vm.UnimplementedError
+func (p *Provider) DeleteVolume(l *logger.Logger, volume vm.Volume, vm *vm.VM) error {
+	panic("unimplemented")
 }
 
 func (p *Provider) ListVolumes(l *logger.Logger, vm *vm.VM) ([]vm.Volume, error) {
@@ -240,23 +144,19 @@ func (p *Provider) ListVolumes(l *logger.Logger, vm *vm.VM) ([]vm.Volume, error)
 }
 
 func (p *Provider) AttachVolume(*logger.Logger, vm.Volume, *vm.VM) (string, error) {
-	return "", vm.UnimplementedError
+	panic("unimplemented")
 }
 
-func (p *Provider) Grow(*logger.Logger, vm.List, string, []string) (vm.List, error) {
-	return nil, vm.UnimplementedError
-}
-
-func (p *Provider) Shrink(*logger.Logger, vm.List, string) error {
-	return vm.UnimplementedError
+func (p *Provider) Grow(*logger.Logger, vm.List, string, []string) error {
+	panic("unimplemented")
 }
 
 func (p *Provider) CreateLoadBalancer(*logger.Logger, vm.List, int) error {
-	return vm.UnimplementedError
+	panic("unimplemented")
 }
 
 func (p *Provider) DeleteLoadBalancer(*logger.Logger, vm.List, int) error {
-	return vm.UnimplementedError
+	panic("unimplemented")
 }
 
 func (p *Provider) ListLoadBalancers(*logger.Logger, vm.List) ([]vm.ServiceAddress, error) {
@@ -303,128 +203,24 @@ func getAzureDefaultLabelMap(opts vm.CreateOpts) map[string]string {
 // AddLabels adds (or updates) the given labels to the given VMs.
 // N.B. If a VM contains a label with the same key, its value will be updated.
 func (p *Provider) AddLabels(l *logger.Logger, vms vm.List, labels map[string]string) error {
-	return p.editLabels(l, vms, labels, false /*removeLabels*/)
-}
-
-func (p *Provider) RemoveLabels(l *logger.Logger, vms vm.List, labels []string) error {
-	labelsMap := make(map[string]string, len(labels))
-	for _, label := range labels {
-		labelsMap[label] = ""
-	}
-	return p.editLabels(l, vms, labelsMap, true /*removeLabels*/)
-}
-
-func (p *Provider) editLabels(
-	l *logger.Logger, vms vm.List, labels map[string]string, removeLabels bool,
-) error {
-	ctx, cancel := context.WithTimeout(context.Background(), p.OperationTimeout)
-	defer cancel()
-
-	sub, err := p.getSubscription(ctx)
-	if err != nil {
-		return err
-	}
-	client := compute.NewVirtualMachinesClient(sub)
-	if client.Authorizer, err = p.getAuthorizer(); err != nil {
-		return err
-	}
-
-	futures := make([]compute.VirtualMachinesUpdateFuture, len(vms))
-	for idx, m := range vms {
-		vmParts, err := parseAzureID(m.ProviderID)
-		if err != nil {
-			return err
-		}
-		// N.B. VirtualMachineUpdate below overwrites _all_ VM tags. Hence, we must copy all unmodified tags.
-		tags := make(map[string]*string)
-		// Copy all known VM tags.
-		for k, v := range m.Labels {
-			tags[k] = to.StringPtr(v)
-		}
-
-		if removeLabels {
-			// Remove the matching VM tags.
-			for k := range labels {
-				delete(tags, k)
-			}
-		} else {
-			// Add the new VM tags.
-			for k, v := range labels {
-				tags[k] = to.StringPtr(v)
-			}
-		}
-
-		update := compute.VirtualMachineUpdate{
-			Tags: tags,
-		}
-		futures[idx], err = client.Update(ctx, vmParts.resourceGroup, vmParts.resourceName, update)
-		if err != nil {
-			return err
-		}
-	}
-
-	for _, future := range futures {
-		if err := future.WaitForCompletionRef(ctx, client.Client); err != nil {
-			return err
-		}
-		if _, err := future.Result(client); err != nil {
-			return err
-		}
-	}
+	l.Printf("adding labels to Azure VMs not yet supported")
 	return nil
 }
 
-type Zone struct {
-	Location         string
-	AvailabilityZone string
-}
-
-func (z Zone) String() string {
-	return fmt.Sprintf("%s-%s", z.Location, z.AvailabilityZone)
-}
-
-func parseZones(opts vm.CreateOpts, providerOpts *ProviderOpts) ([]Zone, error) {
-	zonesFlag, err := vm.ExpandZonesFlag(providerOpts.Zones)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(zonesFlag) == 0 {
-		zonesFlag = DefaultZones(opts.GeoDistributed)
-	}
-
-	var zones []Zone
-	for _, z := range zonesFlag {
-		parts := strings.Split(z, "-")
-		// TODO(darrylwong): Many Azure regions don't actually support Availability Zones.
-		// However the assumption that they all do is made throughout our creation logic.
-		// This means that we can't create VMs in regions that don't support Availability Zones.
-		// We should support this, but a cleaner solution would be to rework the creation logic
-		// to use Terraform instead which will also support geo-distributed clusters.
-		if len(parts) != 2 {
-			return nil, errors.Errorf("parseZones: invalid zone %s. Zones should be of format Location-AvailabilityZone", z)
-		}
-		zones = append(zones, Zone{Location: parts[0], AvailabilityZone: parts[1]})
-	}
-	return zones, nil
-}
-
-func DefaultZones(geoDistributed bool) []string {
-	if geoDistributed {
-		return defaultZones
-	}
-	return []string{defaultZones[0]}
+func (p *Provider) RemoveLabels(l *logger.Logger, vms vm.List, labels []string) error {
+	l.Printf("removing labels from Azure VMs not yet supported")
+	return nil
 }
 
 // Create implements vm.Provider.
 func (p *Provider) Create(
 	l *logger.Logger, names []string, opts vm.CreateOpts, vmProviderOpts vm.ProviderOpts,
-) (vm.List, error) {
+) error {
 	providerOpts := vmProviderOpts.(*ProviderOpts)
 	// Load the user's SSH public key to configure the resulting VMs.
 	sshKey, err := config.SSHPublicKey()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	m := getAzureDefaultLabelMap(opts)
@@ -432,7 +228,7 @@ func (p *Provider) Create(
 	for key, value := range opts.CustomLabels {
 		_, ok := m[strings.ToLower(key)]
 		if ok {
-			return nil, fmt.Errorf("duplicate label name defined: %s", key)
+			return fmt.Errorf("duplicate label name defined: %s", key)
 		}
 
 		clusterTags[key] = to.StringPtr(value)
@@ -448,41 +244,37 @@ func (p *Provider) Create(
 	ctx, cancel := context.WithTimeout(context.Background(), p.OperationTimeout)
 	defer cancel()
 
-	zones, err := parseZones(opts, providerOpts)
-	if err != nil {
-		return nil, err
+	if len(providerOpts.Locations) == 0 {
+		if opts.GeoDistributed {
+			providerOpts.Locations = defaultLocations
+		} else {
+			providerOpts.Locations = []string{defaultLocations[0]}
+		}
 	}
 
-	// Effectively a map of node number to zone.
-	nodeZones := vm.ZonePlacement(len(zones), len(names))
+	if len(providerOpts.Zone) == 0 {
+		providerOpts.Zone = defaultZone
+	}
+
+	if _, err := p.createVNets(l, ctx, providerOpts.Locations, *providerOpts); err != nil {
+		return err
+	}
+
+	// Effectively a map of node number to location.
+	nodeLocations := vm.ZonePlacement(len(providerOpts.Locations), len(names))
 	// Invert it.
-	zoneToHostNames := make(map[Zone][]string, min(len(zones), len(names)))
-	for i, name := range names {
-		zone := zones[nodeZones[i]]
-		zoneToHostNames[zone] = append(zoneToHostNames[zone], name)
+	nodesByLocIdx := make(map[int][]int, len(providerOpts.Locations))
+	for nodeIdx, locIdx := range nodeLocations {
+		nodesByLocIdx[locIdx] = append(nodesByLocIdx[locIdx], nodeIdx)
 	}
 
-	var usedZones []string
-	for zone := range zoneToHostNames {
-		usedZones = append(usedZones, zone.String())
-	}
-	l.Printf("Creating %d instances, distributed across [%s]", len(names), strings.Join(usedZones, ", "))
-
-	uniqueLocations := make(map[string]struct{})
-	for zone := range zoneToHostNames {
-		uniqueLocations[zone.Location] = struct{}{}
-	}
-
-	if _, err := p.createVNets(l, ctx, maps.Keys(uniqueLocations), *providerOpts); err != nil {
-		return nil, err
-	}
-
-	var vmList vm.List
-	var vmMutex syncutil.Mutex
 	errs, _ := errgroup.WithContext(ctx)
-	for zone, nodes := range zoneToHostNames {
+	for locIdx, nodes := range nodesByLocIdx {
+		// Shadow variables for closure.
+		locIdx := locIdx
+		nodes := nodes
 		errs.Go(func() error {
-			location := zone.Location
+			location := providerOpts.Locations[locIdx]
 
 			// Create a resource group within the location.
 			group, err := p.getOrCreateResourceGroup(ctx, getClusterResourceGroupName(location), location, clusterTags)
@@ -500,92 +292,21 @@ func (p *Provider) Create(
 				return errors.Errorf("missing subnet for location %q", location)
 			}
 
-			for _, name := range nodes {
+			for _, nodeIdx := range nodes {
+				name := names[nodeIdx]
 				errs.Go(func() error {
-					cvm, err := p.createVM(l, ctx, group, subnet, name, sshKey, zone, opts, *providerOpts)
-					if err != nil {
-						return errors.Wrapf(err, "creating VM %s", name)
+					_, err := p.createVM(l, ctx, group, subnet, name, sshKey, opts, *providerOpts)
+					err = errors.Wrapf(err, "creating VM %s", name)
+					if err == nil {
+						l.Printf("created VM %s", name)
 					}
-
-					l.Printf("created VM %s", name)
-					v, err := p.computeVirtualMachineToVM(cvm)
-					if err != nil {
-						return err
-					}
-
-					vmMutex.Lock()
-					defer vmMutex.Unlock()
-					vmList = append(vmList, *v)
-
-					return nil
+					return err
 				})
 			}
 			return nil
 		})
 	}
-	return vmList, errs.Wait()
-}
-
-// computeVirtualMachineToVM converts an Azure VirtualMachine to a roachprod vm.VM.
-func (p *Provider) computeVirtualMachineToVM(cvm compute.VirtualMachine) (*vm.VM, error) {
-
-	tags := make(map[string]string)
-	for key, value := range cvm.Tags {
-		tags[key] = *value
-	}
-	// cvm.ID is of the form "/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Compute/virtualMachines/{vmName}"
-	// which encodes the subscription id.
-	azureSubscription := ""
-	if *cvm.ID != "" {
-		azureSubscription = strings.Split(strings.TrimPrefix(*cvm.ID, "/subscriptions/"), "/")[0]
-	}
-
-	m := &vm.VM{
-		Name:              *cvm.Name,
-		Labels:            tags,
-		Provider:          ProviderName,
-		ProviderID:        *cvm.ID,
-		ProviderAccountID: azureSubscription,
-		RemoteUser:        remoteUser,
-		VPC:               "global",
-		// We add a fake availability-zone suffix since other roachprod
-		// code assumes particular formats. For example, "eastus2z".
-		Zone: *cvm.Location + "z",
-	}
-
-	if cvm.HardwareProfile != nil {
-		m.MachineType = string(cvm.HardwareProfile.VMSize)
-		m.CPUArch = CpuArchFromAzureMachineType(string(cvm.HardwareProfile.VMSize))
-	}
-
-	if createdPtr := cvm.Tags[vm.TagCreated]; createdPtr == nil {
-		m.Errors = append(m.Errors, vm.ErrNoExpiration)
-	} else if parsed, err := time.Parse(time.RFC3339, *createdPtr); err == nil {
-		m.CreatedAt = parsed
-	} else {
-		m.Errors = append(m.Errors, vm.ErrNoExpiration)
-	}
-
-	if lifetimePtr := cvm.Tags[vm.TagLifetime]; lifetimePtr == nil {
-		m.Errors = append(m.Errors, vm.ErrNoExpiration)
-	} else if parsed, err := time.ParseDuration(*lifetimePtr); err == nil {
-		m.Lifetime = parsed
-	} else {
-		m.Errors = append(m.Errors, vm.ErrNoExpiration)
-	}
-
-	// The network info needs a separate request.
-	nicID, err := parseAzureID(*(*cvm.NetworkProfile.NetworkInterfaces)[0].ID)
-	if err != nil {
-		return nil, err
-	}
-	if err := p.fillNetworkDetails(context.Background(), m, nicID); errors.Is(err, vm.ErrBadNetwork) {
-		m.Errors = append(m.Errors, err)
-	} else if err != nil {
-		return nil, err
-	}
-
-	return m, nil
+	return errs.Wait()
 }
 
 // Delete implements the vm.Provider interface.
@@ -630,41 +351,8 @@ func (p *Provider) Delete(l *logger.Logger, vms vm.List) error {
 	return nil
 }
 
-// Reset implements the vm.Provider interface.
+// Reset implements the vm.Provider interface. It is a no-op.
 func (p *Provider) Reset(l *logger.Logger, vms vm.List) error {
-	ctx, cancel := context.WithTimeout(context.Background(), p.OperationTimeout)
-	defer cancel()
-
-	sub, err := p.getSubscription(ctx)
-	if err != nil {
-		return err
-	}
-	client := compute.NewVirtualMachinesClient(sub)
-	if client.Authorizer, err = p.getAuthorizer(); err != nil {
-		return err
-	}
-
-	var futures []compute.VirtualMachinesRestartFuture
-	for _, vm := range vms {
-		parts, err := parseAzureID(vm.ProviderID)
-		if err != nil {
-			return err
-		}
-		future, err := client.Restart(ctx, parts.resourceGroup, parts.resourceName)
-		if err != nil {
-			return errors.Wrapf(err, "could not restart %s", vm.ProviderID)
-		}
-		futures = append(futures, future)
-	}
-
-	for _, future := range futures {
-		if err := future.WaitForCompletionRef(ctx, client.Client); err != nil {
-			return err
-		}
-		if _, err := future.Result(client); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -705,13 +393,6 @@ func (p *Provider) DeleteCluster(l *logger.Logger, name string) error {
 		}
 	}
 
-	if len(futures) == 0 {
-		// We have seen occurrences of Azure resource groups losing the necessary tags
-		// needed for roachprod to find them. The cluster may need to be manually deleted
-		// through the Azure portal.
-		return errors.Newf("**** MANUAL INTERVENTION REQUIRED IF ERROR SEEN MULTIPLE TIMES ****\nDeleteCluster: Found no azure resource groups with tag cluster: %s", name)
-	}
-
 	if !p.SyncDelete {
 		return nil
 	}
@@ -729,9 +410,50 @@ func (p *Provider) DeleteCluster(l *logger.Logger, name string) error {
 
 // Extend implements the vm.Provider interface.
 func (p *Provider) Extend(l *logger.Logger, vms vm.List, lifetime time.Duration) error {
-	return p.AddLabels(l, vms, map[string]string{
-		vm.TagLifetime: lifetime.String(),
-	})
+	ctx, cancel := context.WithTimeout(context.Background(), p.OperationTimeout)
+	defer cancel()
+
+	sub, err := p.getSubscription(ctx)
+	if err != nil {
+		return err
+	}
+	client := compute.NewVirtualMachinesClient(sub)
+	if client.Authorizer, err = p.getAuthorizer(); err != nil {
+		return err
+	}
+
+	futures := make([]compute.VirtualMachinesUpdateFuture, len(vms))
+	for idx, m := range vms {
+		vmParts, err := parseAzureID(m.ProviderID)
+		if err != nil {
+			return err
+		}
+		// N.B. VirtualMachineUpdate below overwrites _all_ VM tags. Hence, we must copy all unmodified tags.
+		tags := make(map[string]*string)
+		// Copy all known VM tags.
+		for k, v := range m.Labels {
+			tags[k] = to.StringPtr(v)
+		}
+		// Overwrite Lifetime tag.
+		tags[vm.TagLifetime] = to.StringPtr(lifetime.String())
+		update := compute.VirtualMachineUpdate{
+			Tags: tags,
+		}
+		futures[idx], err = client.Update(ctx, vmParts.resourceGroup, vmParts.resourceName, update)
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, future := range futures {
+		if err := future.WaitForCompletionRef(ctx, client.Client); err != nil {
+			return err
+		}
+		if _, err := future.Result(client); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // FindActiveAccount implements vm.Provider.
@@ -800,14 +522,55 @@ func (p *Provider) List(l *logger.Logger, opts vm.ListOptions) (vm.List, error) 
 			continue
 		}
 
-		m, err := p.computeVirtualMachineToVM(found)
+		tags := make(map[string]string)
+		for key, value := range found.Tags {
+			tags[key] = *value
+		}
+
+		m := vm.VM{
+			Name:        *found.Name,
+			Labels:      tags,
+			Provider:    ProviderName,
+			ProviderID:  *found.ID,
+			RemoteUser:  remoteUser,
+			VPC:         "global",
+			MachineType: string(found.HardwareProfile.VMSize),
+			CPUArch:     CpuArchFromAzureMachineType(string(found.HardwareProfile.VMSize)),
+			// We add a fake availability-zone suffix since other roachprod
+			// code assumes particular formats. For example, "eastus2z".
+			Zone: *found.Location + "z",
+		}
+
+		if createdPtr := found.Tags[vm.TagCreated]; createdPtr == nil {
+			m.Errors = append(m.Errors, vm.ErrNoExpiration)
+		} else if parsed, err := time.Parse(time.RFC3339, *createdPtr); err == nil {
+			m.CreatedAt = parsed
+		} else {
+			m.Errors = append(m.Errors, vm.ErrNoExpiration)
+		}
+
+		if lifetimePtr := found.Tags[vm.TagLifetime]; lifetimePtr == nil {
+			m.Errors = append(m.Errors, vm.ErrNoExpiration)
+		} else if parsed, err := time.ParseDuration(*lifetimePtr); err == nil {
+			m.Lifetime = parsed
+		} else {
+			m.Errors = append(m.Errors, vm.ErrNoExpiration)
+		}
+
+		// The network info needs a separate request.
+		nicID, err := parseAzureID(*(*found.NetworkProfile.NetworkInterfaces)[0].ID)
 		if err != nil {
+			return nil, err
+		}
+		if err := p.fillNetworkDetails(ctx, &m, nicID); errors.Is(err, vm.ErrBadNetwork) {
+			m.Errors = append(m.Errors, err)
+		} else if err != nil {
 			return nil, err
 		}
 
 		clusterName, _ := m.ClusterName()
 		foundClusters[clusterName] = true
-		ret = append(ret, *m)
+		ret = append(ret, m)
 
 		if err := it.NextWithContext(ctx); err != nil {
 			return nil, err
@@ -902,24 +665,14 @@ func (p *Provider) createVM(
 	group resources.Group,
 	subnet network.Subnet,
 	name, sshKey string,
-	zone Zone,
 	opts vm.CreateOpts,
 	providerOpts ProviderOpts,
 ) (machine compute.VirtualMachine, err error) {
-
 	startupArgs := azureStartupArgs{
-		StartupArgs: vm.DefaultStartupArgs(
-			vm.WithVMName(name),
-			vm.WithSharedUser(remoteUser),
-		),
-		DiskControllerNVMe: false,
-		AttachedDiskLun:    nil,
+		RemoteUser:           remoteUser,
+		DisksInitializedFile: vm.DisksInitializedFile,
 	}
-	useNVMe := MachineSupportsNVMe(providerOpts.MachineType)
-	if useNVMe {
-		startupArgs.DiskControllerNVMe = true
-	}
-	if !opts.SSDOpts.UseLocalSSD && !useNVMe {
+	if !opts.SSDOpts.UseLocalSSD {
 		// We define lun42 explicitly in the data disk request below.
 		lun := 42
 		startupArgs.AttachedDiskLun = &lun
@@ -940,7 +693,7 @@ func (p *Provider) createVM(
 	}
 
 	// We first need to allocate a NIC to give the VM network access
-	ip, err := p.createIP(l, ctx, group, name, zone)
+	ip, err := p.createIP(l, ctx, group, name, providerOpts)
 	if err != nil {
 		return compute.VirtualMachine{}, err
 	}
@@ -981,7 +734,7 @@ func (p *Provider) createVM(
 	// https://github.com/Azure-Samples/azure-sdk-for-go-samples/blob/79e3f3af791c3873d810efe094f9d61e93a6ccaa/compute/vm.go#L41
 	machine = compute.VirtualMachine{
 		Location: group.Location,
-		Zones:    to.StringSlicePtr([]string{zone.AvailabilityZone}),
+		Zones:    to.StringSlicePtr([]string{providerOpts.Zone}),
 		Tags:     tags,
 		VirtualMachineProperties: &compute.VirtualMachineProperties{
 			HardwareProfile: &compute.HardwareProfile{
@@ -1037,10 +790,6 @@ func (p *Provider) createVM(
 			},
 		},
 	}
-	if useNVMe {
-		machine.VirtualMachineProperties.StorageProfile.DiskControllerType = compute.NVMe
-	}
-
 	if !opts.SSDOpts.UseLocalSSD {
 		caching := compute.CachingTypesNone
 
@@ -1066,7 +815,7 @@ func (p *Provider) createVM(
 		switch providerOpts.NetworkDiskType {
 		case "ultra-disk":
 			var ultraDisk compute.Disk
-			ultraDisk, err = p.createUltraDisk(l, ctx, group, name+"-ultra-disk", zone, providerOpts)
+			ultraDisk, err = p.createUltraDisk(l, ctx, group, name+"-ultra-disk", providerOpts)
 			if err != nil {
 				return compute.VirtualMachine{}, err
 			}
@@ -1350,7 +1099,7 @@ func (p *Provider) createVNets(
 	}
 	newSubnetsCreated := false
 
-	for _, location := range locations {
+	for _, location := range providerOpts.Locations {
 		group, _ := p.getResourcesAndSecurityGroupByName(vnetResourceGroupName(location), "")
 		// Prefix already exists for the resource group.
 		if prefixString := group.Tags[tagSubnet]; prefixString != nil {
@@ -1529,7 +1278,11 @@ func (p *Provider) createVNetPeerings(
 
 // createIP allocates an IP address that will later be bound to a NIC.
 func (p *Provider) createIP(
-	l *logger.Logger, ctx context.Context, group resources.Group, name string, zone Zone,
+	l *logger.Logger,
+	ctx context.Context,
+	group resources.Group,
+	name string,
+	providerOpts ProviderOpts,
 ) (ip network.PublicIPAddress, err error) {
 	sub, err := p.getSubscription(ctx)
 	if err != nil {
@@ -1546,7 +1299,7 @@ func (p *Provider) createIP(
 				Name: network.PublicIPAddressSkuNameStandard,
 			},
 			Location: group.Location,
-			Zones:    to.StringSlicePtr([]string{zone.AvailabilityZone}),
+			Zones:    to.StringSlicePtr([]string{providerOpts.Zone}),
 			PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 				PublicIPAddressVersion:   network.IPv4,
 				PublicIPAllocationMethod: network.Static,
@@ -1684,7 +1437,6 @@ func (p *Provider) createUltraDisk(
 	ctx context.Context,
 	group resources.Group,
 	name string,
-	zone Zone,
 	providerOpts ProviderOpts,
 ) (compute.Disk, error) {
 	sub, err := p.getSubscription(ctx)
@@ -1699,7 +1451,7 @@ func (p *Provider) createUltraDisk(
 
 	future, err := client.CreateOrUpdate(ctx, *group.Name, name,
 		compute.Disk{
-			Zones:    to.StringSlicePtr([]string{zone.AvailabilityZone}),
+			Zones:    to.StringSlicePtr([]string{providerOpts.Zone}),
 			Location: group.Location,
 			Sku: &compute.DiskSku{
 				Name: compute.UltraSSDLRS,
@@ -1726,57 +1478,6 @@ func (p *Provider) createUltraDisk(
 	return disk, err
 }
 
-// SetSubscription takes in a subscription name then finds and stores the ID
-// in the Provider instance.
-func (p *Provider) SetSubscription(ctx context.Context, subscription string) error {
-	subscriptionId, err := p.findSubscriptionID(ctx, subscription)
-	if err != nil {
-		return err
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.mu.subscriptionId = subscriptionId
-
-	return nil
-}
-
-// findSubscriptionID takes in a subscription name and returns the ID.
-func (p *Provider) findSubscriptionID(ctx context.Context, subscription string) (string, error) {
-	authorizer, err := p.getAuthorizer()
-	if err != nil {
-		return "", err
-	}
-	sc := subscriptions.NewClient()
-	sc.Authorizer = authorizer
-
-	it, err := sc.ListComplete(ctx)
-	if err != nil {
-		return "", errors.Wrapf(err, "error listing Azure subscriptions")
-	}
-
-	var subscriptionId string
-
-	// Iterate through all subscriptions to find the matching subscription name.
-	for it.NotDone() {
-		s := it.Value().SubscriptionID
-		name := it.Value().DisplayName
-		if s != nil && name != nil {
-			if *name == subscription {
-				subscriptionId = *s
-				break
-			}
-		}
-		if err = it.NextWithContext(ctx); err != nil {
-			return "", err
-		}
-	}
-	if subscriptionId == "" {
-		return "", errors.Newf("could not find Azure subscription: %s", subscription)
-	}
-
-	return subscriptionId, nil
-}
-
 // getSubscription returns env.AZURE_SUBSCRIPTION_ID if it exists
 // or the ID of the defaultSubscription.
 // The value is memoized in the Provider instance.
@@ -1787,19 +1488,43 @@ func (p *Provider) getSubscription(ctx context.Context) (string, error) {
 		return p.mu.subscriptionId
 	}()
 
-	// Use the saved subscriptionID.
 	if subscriptionId != "" {
 		return subscriptionId, nil
 	}
 
-	subscriptionId = os.Getenv(SubscriptionIDEnvVar)
+	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
 
 	// Fallback to retrieving the defaultSubscription.
 	if subscriptionId == "" {
-		var err error
-		subscriptionId, err = p.findSubscriptionID(ctx, defaultSubscription)
+		authorizer, err := p.getAuthorizer()
 		if err != nil {
-			return "", errors.Wrapf(err, "Error finding default Azure subscription. Check that you have permission to view the subscription or use a different subscription by specifying the %s env var", SubscriptionIDEnvVar)
+			return "", err
+		}
+		sc := subscriptions.NewClient()
+		sc.Authorizer = authorizer
+
+		it, err := sc.ListComplete(ctx)
+		if err != nil {
+			return "", errors.Wrapf(err, "error listing Azure subscriptions")
+		}
+
+		// Iterate through all subscriptions to find the defaultSubscription.
+		// We have to do this as Azure requires the ID not just the name.
+		for it.NotDone() {
+			s := it.Value().SubscriptionID
+			name := it.Value().DisplayName
+			if s != nil && name != nil {
+				if *name == defaultSubscription {
+					subscriptionId = *s
+					break
+				}
+			}
+			if err = it.NextWithContext(ctx); err != nil {
+				return "", err
+			}
+		}
+		if subscriptionId == "" {
+			return "", errors.Newf("Could not find default subscription: %s", defaultSubscription)
 		}
 	}
 
@@ -1863,26 +1588,4 @@ func MachineFamilyVersionFromMachineType(machineType string) int {
 		}
 	}
 	return -1
-}
-
-// MachineSupportsNVMe Azure supports Nvme for E series v5 machine family.
-// OS disk and network disk support nvme. Local storage do not support nvme.
-func MachineSupportsNVMe(machineType string) bool {
-	version := MachineFamilyVersionFromMachineType(machineType)
-	if version == 5 {
-		matches := azureMachineTypes.FindStringSubmatch(machineType)
-		if len(matches) >= 4 {
-			family, features := matches[1], matches[3]
-			// additive features of azure vm are represented by lower case letter
-			// b = Block Storage performance
-			// d = diskful (that is, a local temp disk is present);
-			// s = Premium Storage capable, including possible use of Ultra SSD
-			// https://learn.microsoft.com/en-us/azure/virtual-machines/vm-naming-conventions
-			// example of supported machine types Standard_E2bds_v5, Standard_E2bs_v5
-			if family == "Standard_E" && (features == "bs" || features == "bds") {
-				return true
-			}
-		}
-	}
-	return false
 }

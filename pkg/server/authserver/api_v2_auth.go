@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -35,6 +34,7 @@ const (
 // verification of sessions for regular endpoints happens in authenticationV2Mux,
 // not here.
 type authenticationV2Server struct {
+	ctx        context.Context
 	sqlServer  SQLServerInterface
 	authServer *authenticationServer
 	mux        *http.ServeMux
@@ -78,12 +78,15 @@ func (a *authenticationV2Server) createSessionFor(
 	return value, nil
 }
 
+// swagger:model loginResponse
 type loginResponse struct {
 	// Session string for a valid API session. Specify this in header for any API
 	// requests that require authentication.
 	Session string `json:"session"`
 }
 
+// swagger:operation POST /login/ login
+//
 // # API Login
 //
 // Creates an API session for use with API endpoints that require
@@ -127,9 +130,8 @@ func (a *authenticationV2Server) login(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "not found", http.StatusNotFound)
 	}
-	ctx := r.Context()
 	if err := r.ParseForm(); err != nil {
-		srverrors.APIV2InternalError(ctx, err, w)
+		srverrors.APIV2InternalError(r.Context(), err, w)
 		return
 	}
 	if r.Form.Get("username") == "" {
@@ -144,21 +146,10 @@ func (a *authenticationV2Server) login(w http.ResponseWriter, r *http.Request) {
 	// without further normalization.
 	username, _ := username.MakeSQLUsernameFromUserInput(r.Form.Get("username"), username.PurposeValidation)
 
-	// Verify the user and check if DB console session could be started.
-	verified, pwRetrieveFn, err := a.authServer.VerifyUserSessionDBConsole(ctx, username)
-	if err != nil {
-		srverrors.APIV2InternalError(ctx, err, w)
-		return
-	}
-	if !verified {
-		http.Error(w, "the provided credentials did not match any account on the server", http.StatusUnauthorized)
-		return
-	}
-
 	// Verify the provided username/password pair.
-	verified, expired, err := a.authServer.VerifyPasswordDBConsole(ctx, username, r.Form.Get("password"), pwRetrieveFn)
+	verified, expired, err := a.authServer.VerifyPasswordDBConsole(a.ctx, username, r.Form.Get("password"))
 	if err != nil {
-		srverrors.APIV2InternalError(ctx, err, w)
+		srverrors.APIV2InternalError(r.Context(), err, w)
 		return
 	}
 	if expired {
@@ -170,20 +161,23 @@ func (a *authenticationV2Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := a.createSessionFor(ctx, username)
+	session, err := a.createSessionFor(a.ctx, username)
 	if err != nil {
-		srverrors.APIV2InternalError(ctx, err, w)
+		srverrors.APIV2InternalError(r.Context(), err, w)
 		return
 	}
 
-	apiutil.WriteJSONResponse(ctx, w, http.StatusOK, &loginResponse{Session: session})
+	apiutil.WriteJSONResponse(r.Context(), w, http.StatusOK, &loginResponse{Session: session})
 }
 
+// swagger:model logoutResponse
 type logoutResponse struct {
 	// Indicates whether logout was successful.
 	LoggedOut bool `json:"logged_out"`
 }
 
+// swagger:operation POST /logout/ logout
+//
 // # API Logout
 //
 // Logs out on a previously-created API session.
@@ -215,37 +209,36 @@ func (a *authenticationV2Server) logout(w http.ResponseWriter, r *http.Request) 
 	}
 	var sessionCookie serverpb.SessionCookie
 	decoded, err := base64.StdEncoding.DecodeString(session)
-	ctx := r.Context()
 	if err != nil {
-		srverrors.APIV2InternalError(ctx, err, w)
+		srverrors.APIV2InternalError(r.Context(), err, w)
 		return
 	}
 	if err := protoutil.Unmarshal(decoded, &sessionCookie); err != nil {
-		srverrors.APIV2InternalError(ctx, err, w)
+		srverrors.APIV2InternalError(r.Context(), err, w)
 		return
 	}
 
 	// Revoke the session.
 	if n, err := a.sqlServer.InternalExecutor().ExecEx(
-		ctx,
+		a.ctx,
 		"revoke-auth-session",
 		nil, /* txn */
 		sessiondata.NodeUserSessionDataOverride,
 		`UPDATE system.web_sessions SET "revokedAt" = now() WHERE id = $1`,
 		sessionCookie.ID,
 	); err != nil {
-		srverrors.APIV2InternalError(ctx, err, w)
+		srverrors.APIV2InternalError(r.Context(), err, w)
 		return
 	} else if n == 0 {
 		err := status.Errorf(
 			codes.InvalidArgument,
 			"session with id %d nonexistent", sessionCookie.ID)
-		log.Infof(ctx, "%v", err)
+		log.Infof(a.ctx, "%v", err)
 		http.Error(w, "invalid session", http.StatusBadRequest)
 		return
 	}
 
-	apiutil.WriteJSONResponse(ctx, w, http.StatusOK, &logoutResponse{LoggedOut: true})
+	apiutil.WriteJSONResponse(r.Context(), w, http.StatusOK, &logoutResponse{LoggedOut: true})
 }
 
 func (a *authenticationV2Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -352,7 +345,7 @@ const (
 	ViewClusterMetadataRole
 )
 
-type authzAccessorFactory func(ctx context.Context, opName redact.SafeString) (_ sql.AuthorizationAccessor, cleanup func())
+type authzAccessorFactory func(ctx context.Context, opName string) (_ sql.AuthorizationAccessor, cleanup func())
 
 // roleAuthorizationMux enforces a role (eg. type of user) for an arbitrary
 // inner mux. Meant to be used under authenticationV2Mux. If the logged-in user

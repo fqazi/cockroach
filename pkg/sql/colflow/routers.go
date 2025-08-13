@@ -174,7 +174,7 @@ type routerOutputOpArgs struct {
 	// when it is exceeded.
 	memoryLimit     int64
 	diskAcc         *mon.BoundAccount
-	diskQueueMemAcc *mon.BoundAccount
+	converterMemAcc *mon.BoundAccount
 	cfg             colcontainer.DiskQueueCfg
 	fdSemaphore     semaphore.Semaphore
 
@@ -205,7 +205,7 @@ func newRouterOutputOp(args routerOutputOpArgs) *routerOutputOp {
 			DiskQueueCfg:       args.cfg,
 			FDSemaphore:        args.fdSemaphore,
 			DiskAcc:            args.diskAcc,
-			DiskQueueMemAcc:    args.diskQueueMemAcc,
+			ConverterMemAcc:    args.converterMemAcc,
 		},
 	)
 
@@ -476,7 +476,7 @@ func NewHashRouter(
 	diskQueueCfg colcontainer.DiskQueueCfg,
 	fdSemaphore semaphore.Semaphore,
 	diskAccounts []*mon.BoundAccount,
-	diskQueueMemAccounts []*mon.BoundAccount,
+	converterMemAccounts []*mon.BoundAccount,
 ) (*HashRouter, []colexecop.DrainableClosableOperator) {
 	outputs := make([]routerOutput, len(unlimitedAllocators))
 	outputsAsOps := make([]colexecop.DrainableClosableOperator, len(unlimitedAllocators))
@@ -502,7 +502,7 @@ func NewHashRouter(
 				unlimitedAllocator:  unlimitedAllocators[i],
 				memoryLimit:         memoryLimitPerOutput,
 				diskAcc:             diskAccounts[i],
-				diskQueueMemAcc:     diskQueueMemAccounts[i],
+				converterMemAcc:     converterMemAccounts[i],
 				cfg:                 diskQueueCfg,
 				fdSemaphore:         fdSemaphore,
 				unblockedEventsChan: unblockEventsChan,

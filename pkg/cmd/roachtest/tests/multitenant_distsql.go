@@ -86,7 +86,7 @@ func runMultiTenantDistSQL(
 	_, err := storConn.Exec(`ALTER TENANT $1 SET CLUSTER SETTING sql.zone_configs.allow_for_secondary_tenant.enabled = true`, tenantName)
 	require.NoError(t, err)
 
-	m := c.NewDeprecatedMonitor(ctx, c.Nodes(1, 2, 3))
+	m := c.NewMonitor(ctx, c.Nodes(1, 2, 3))
 
 	inst1Conn, err := c.ConnE(ctx, t.L(), 1, option.VirtualClusterName(tenantName))
 	require.NoError(t, err)
@@ -130,19 +130,17 @@ func runMultiTenantDistSQL(
 	for {
 		time.Sleep(time.Second)
 		res, err := inst1Conn.Query("EXPLAIN (VEC) SELECT DISTINCT i FROM t")
-		attempts--
 		if err != nil {
+			attempts--
 			require.Greater(t, attempts, 0, "All nodes didn't show up in time")
 			continue
 		}
 
 		var nodesInPlan intsets.Fast
-		var resStr string
 		for res.Next() {
 			str := ""
 			err = res.Scan(&str)
 			require.NoError(t, err)
-			resStr += str + "\n"
 			fields := strings.Fields(str)
 			l := len(fields)
 			if l > 2 && fields[l-2] == "Node" {
@@ -152,13 +150,13 @@ func runMultiTenantDistSQL(
 				}
 			}
 		}
-		if nodes.Equals(nodesInPlan) {
+		if nodes == nodesInPlan {
 			t.L().Printf("Nodes all present")
 			cancel()
 			break
+		} else {
+			t.L().Printf("Only %d nodes present: %v", nodesInPlan.Len(), nodesInPlan)
 		}
-		t.L().Printf("Only %d nodes present: %v, expected %v", nodesInPlan.Len(), nodesInPlan, nodes)
-		require.Greater(t, attempts, 0, "All nodes didn't show up in time. EXPLAIN (VEC):\n%s", resStr)
 	}
 	m.Wait()
 

@@ -3,21 +3,18 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { AxisDomain } from "@cockroachlabs/cluster-ui";
-import each from "lodash/each";
-import isEmpty from "lodash/isEmpty";
-import without from "lodash/without";
 import React from "react";
-import uPlot from "uplot";
-
+import _ from "lodash";
 import * as protos from "src/js/protos";
+import { AxisDomain } from "@cockroachlabs/cluster-ui";
+
 import {
   AxisProps,
   MetricProps,
 } from "src/views/shared/components/metricQuery";
+import uPlot from "uplot";
 
 type TSResponse = protos.cockroach.ts.tspb.TimeSeriesQueryResponse;
-type TSQueryResult = protos.cockroach.ts.tspb.TimeSeriesQueryResponse.IResult;
 
 // Global set of colors for graph series.
 const seriesPalette = [
@@ -47,20 +44,15 @@ export type formattedSeries = {
   color?: string;
 };
 
-// logic to decide when to show a metric based on the query's result
-export function canShowMetric(result: TSQueryResult) {
-  return !isEmpty(result.datapoints);
-}
-
 export function formatMetricData(
   metrics: React.ReactElement<MetricProps>[],
   data: TSResponse,
 ): formattedSeries[] {
   const formattedData: formattedSeries[] = [];
 
-  each(metrics, (s, idx) => {
+  _.each(metrics, (s, idx) => {
     const result = data.results[idx];
-    if (result && canShowMetric(result)) {
+    if (result && !_.isEmpty(result.datapoints)) {
       const transform = s.props.transform ?? (d => d);
       const scale = s.props.scale ?? 1;
       const scaledAndTransformedValues = transform(result.datapoints).map(
@@ -214,7 +206,7 @@ export function configureUPlotLineChart(
   // below to cycle through the colors. This ensures that we always
   // start from the same color for each graph so a single-series
   // graph will always have the first color, etc.
-  const strokeColors = without(
+  const strokeColors = _.without(
     seriesPalette,
     // Exclude custom colors provided in metrics from default list of colors.
     ...formattedRaw.filter(r => !!r.color).map(r => r.color),

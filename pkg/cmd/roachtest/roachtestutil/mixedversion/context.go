@@ -34,9 +34,6 @@ type (
 		// upgraded to a certain version, and the migrations are being
 		// executed).
 		Finalizing bool
-		// hasUnavailableNodes indicates whether this step has any nodes
-		// that are currently marked as unavailable.
-		hasUnavailableNodes bool
 
 		// nodesByVersion maps released versions to which nodes are
 		// currently running that version.
@@ -121,10 +118,6 @@ func (sc *ServiceContext) changeVersion(node int, v *clusterupgrade.Version) err
 
 	sc.nodesByVersion[*v].Add(node)
 	return nil
-}
-
-func (sc *ServiceContext) IsSystem() bool {
-	return sc.Descriptor.Name == install.SystemInterfaceName
 }
 
 // NodeVersion returns the release version the given `node` is
@@ -267,6 +260,25 @@ func (c *Context) DefaultService() *ServiceContext {
 	}
 
 	return c.Tenant
+}
+
+// SetFinalizing sets the `Finalizing` field on all services
+// available.
+func (c *Context) SetFinalizing(b bool) {
+	c.forEachService(func(s *ServiceContext) { s.Finalizing = b })
+}
+
+// SetStage is a helper function to set the upgrade stage on all
+// services available.
+func (c *Context) SetStage(stage UpgradeStage) {
+	c.forEachService(func(s *ServiceContext) { s.Stage = stage })
+}
+
+func (c *Context) forEachService(f func(*ServiceContext)) {
+	f(c.System)
+	if c.Tenant != nil {
+		f(c.Tenant)
+	}
 }
 
 // clone copies the caller Context and returns the copy.

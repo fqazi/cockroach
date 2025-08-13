@@ -87,7 +87,7 @@ func (is Server) WaitForApplication(
 				return err
 			}
 			repl.mu.RLock()
-			leaseAppliedIndex := repl.shMu.state.LeaseAppliedIndex
+			leaseAppliedIndex := repl.mu.state.LeaseAppliedIndex
 			repl.mu.RUnlock()
 			if leaseAppliedIndex >= req.LeaseIndex {
 				// For performance reasons, we don't sync to disk when
@@ -145,7 +145,7 @@ func (is Server) CompactEngineSpan(
 	resp := &CompactEngineSpanResponse{}
 	err := is.execStoreCommand(ctx, req.StoreRequestHeader,
 		func(ctx context.Context, s *Store) error {
-			return s.TODOEngine().CompactRange(ctx, req.Span.Key, req.Span.EndKey)
+			return s.TODOEngine().CompactRange(req.Span.Key, req.Span.EndKey)
 		})
 	return resp, err
 }

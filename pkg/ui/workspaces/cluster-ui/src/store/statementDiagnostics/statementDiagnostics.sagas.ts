@@ -11,18 +11,15 @@ import {
   takeEvery,
   takeLatest,
 } from "redux-saga/effects";
-
 import {
   cancelStatementDiagnosticsReport,
   createStatementDiagnosticsReport,
   getStatementDiagnosticsReports,
 } from "src/api/statementDiagnosticsApi";
-import { maybeError } from "src/util";
-
-import { rootActions } from "../rootActions";
+import { actions } from "./statementDiagnostics.reducer";
 import { CACHE_INVALIDATION_PERIOD, throttleWithReset } from "../utils";
 
-import { actions } from "./statementDiagnostics.reducer";
+import { rootActions } from "../rootActions";
 
 export function* createDiagnosticsReportSaga(
   action: ReturnType<typeof actions.createReport>,
@@ -34,7 +31,7 @@ export function* createDiagnosticsReportSaga(
     // requested statement.
     yield put(actions.request());
   } catch (e) {
-    yield put(actions.createReportFailed(maybeError(e)));
+    yield put(actions.createReportFailed(e));
   }
 }
 
@@ -52,7 +49,7 @@ export function* cancelDiagnosticsReportSaga(
     yield put(actions.cancelReportCompleted());
     yield put(actions.request());
   } catch (e) {
-    yield put(actions.cancelReportFailed(maybeError(e)));
+    yield put(actions.cancelReportFailed(e));
   }
 }
 
@@ -65,7 +62,7 @@ export function* requestStatementsDiagnosticsSaga(): any {
     const response = yield call(getStatementDiagnosticsReports);
     yield put(actions.received(response));
   } catch (e) {
-    yield put(actions.failed(maybeError(e)));
+    yield put(actions.failed(e));
   }
 }
 

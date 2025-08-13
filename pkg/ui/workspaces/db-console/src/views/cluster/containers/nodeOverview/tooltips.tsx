@@ -4,9 +4,7 @@
 // included in the /LICENSE file.
 
 import React from "react";
-
 import { Tooltip, Anchor } from "src/components";
-import { TooltipProps } from "src/components/tooltip/tooltip";
 import {
   keyValuePairs,
   writeIntents,
@@ -14,12 +12,13 @@ import {
   clusterStore,
   capacityMetrics,
 } from "src/util/docs";
+import { TooltipProps } from "src/components/tooltip/tooltip";
 
-export type CellTooltipProps = {
-  nodeName?: string;
-} & TooltipProps;
-
-export const LiveBytesTooltip: React.FC<CellTooltipProps> = props => (
+export const LiveBytesTooltip: React.FC<
+  TooltipProps & {
+    nodeName: string;
+  }
+> = props => (
   <Tooltip
     {...props}
     placement="bottom"
@@ -40,7 +39,11 @@ export const LiveBytesTooltip: React.FC<CellTooltipProps> = props => (
   </Tooltip>
 );
 
-export const KeyBytesTooltip: React.FC<CellTooltipProps> = props => (
+export const KeyBytesTooltip: React.FC<
+  TooltipProps & {
+    nodeName: string;
+  }
+> = props => (
   <Tooltip
     {...props}
     placement="bottom"
@@ -56,7 +59,11 @@ export const KeyBytesTooltip: React.FC<CellTooltipProps> = props => (
   </Tooltip>
 );
 
-export const ValueBytesTooltip: React.FC<CellTooltipProps> = props => (
+export const ValueBytesTooltip: React.FC<
+  TooltipProps & {
+    nodeName: string;
+  }
+> = props => (
   <Tooltip
     {...props}
     placement="bottom"
@@ -73,7 +80,11 @@ export const ValueBytesTooltip: React.FC<CellTooltipProps> = props => (
   </Tooltip>
 );
 
-export const MVCCRangeKeyBytesTooltip: React.FC<CellTooltipProps> = props => (
+export const MVCCRangeKeyBytesTooltip: React.FC<
+  TooltipProps & {
+    nodeName: string;
+  }
+> = props => (
   <Tooltip
     {...props}
     placement="bottom"
@@ -90,7 +101,11 @@ export const MVCCRangeKeyBytesTooltip: React.FC<CellTooltipProps> = props => (
   </Tooltip>
 );
 
-export const MVCCRangeValueBytesTooltip: React.FC<CellTooltipProps> = props => (
+export const MVCCRangeValueBytesTooltip: React.FC<
+  TooltipProps & {
+    nodeName: string;
+  }
+> = props => (
   <Tooltip
     {...props}
     placement="bottom"
@@ -127,7 +142,11 @@ export const IntentBytesTooltip: React.FC<TooltipProps> = props => (
   </Tooltip>
 );
 
-export const SystemBytesTooltip: React.FC<CellTooltipProps> = props => (
+export const SystemBytesTooltip: React.FC<
+  TooltipProps & {
+    nodeName: string;
+  }
+> = props => (
   <Tooltip
     {...props}
     placement="bottom"
@@ -147,7 +166,11 @@ export const SystemBytesTooltip: React.FC<CellTooltipProps> = props => (
   </Tooltip>
 );
 
-export const NodeUsedCapacityTooltip: React.FC<CellTooltipProps> = props => (
+export const NodeUsedCapacityTooltip: React.FC<
+  TooltipProps & {
+    nodeName: string;
+  }
+> = props => (
   <Tooltip
     {...props}
     placement="bottom"
@@ -169,7 +192,9 @@ export const NodeUsedCapacityTooltip: React.FC<CellTooltipProps> = props => (
 );
 
 export const NodeAvailableCapacityTooltip: React.FC<
-  CellTooltipProps
+  TooltipProps & {
+    nodeName: string;
+  }
 > = props => (
   <Tooltip
     {...props}
@@ -187,7 +212,11 @@ export const NodeAvailableCapacityTooltip: React.FC<
   </Tooltip>
 );
 
-export const NodeMaximumCapacityTooltip: React.FC<CellTooltipProps> = props => (
+export const NodeMaximumCapacityTooltip: React.FC<
+  TooltipProps & {
+    nodeName: string;
+  }
+> = props => (
   <Tooltip
     {...props}
     placement="bottom"

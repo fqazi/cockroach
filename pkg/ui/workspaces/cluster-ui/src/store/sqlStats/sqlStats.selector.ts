@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import { createSelector } from "reselect";
-
 import { adminUISelector } from "../utils/selectors";
 
 export const sqlStatsSelector = createSelector(

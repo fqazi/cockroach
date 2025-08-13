@@ -3,14 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import { scaleLinear } from "d3-scale";
+import { extent as d3Extent } from "d3-array";
+import _ from "lodash";
+import React from "react";
 import { Tooltip } from "@cockroachlabs/ui-components";
 import classNames from "classnames/bind";
-import { extent as d3Extent } from "d3-array";
-import { scaleLinear } from "d3-scale";
-import map from "lodash/map";
-import sum from "lodash/sum";
-import React from "react";
-
 import styles from "./barCharts.module.scss";
 import { NumericStatLegend } from "./numericStatLegend";
 import { normalizeClosedDomain } from "./utils";
@@ -43,7 +41,7 @@ export function barChartFactory<T>(
   }
 
   return (rows: T[] = [], options: BarChartOptions<T> = {}) => {
-    const getTotal = (d: T) => sum(map(accessors, ({ value }) => value(d)));
+    const getTotal = (d: T) => _.sum(_.map(accessors, ({ value }) => value(d)));
     const getTotalWithStdDev = (d: T) => getTotal(d) + stdDevAccessor.value(d);
 
     const extent = d3Extent(
@@ -79,7 +77,7 @@ export function barChartFactory<T>(
       }
 
       let sum = 0;
-      map(accessors, ({ name, value }) => {
+      _.map(accessors, ({ name, value }) => {
         const v = value(d);
         sum += v;
         return (

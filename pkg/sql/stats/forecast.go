@@ -7,8 +7,12 @@ package stats
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/json"
+	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
@@ -20,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/sentryutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -322,7 +327,7 @@ func forecastColumnStatistics(
 		// Now adjust for consistency. We don't use any session data for operations
 		// on upper bounds, so a nil *eval.Context works as our tree.CompareContext.
 		var compareCtx *eval.Context
-		hist.adjustCounts(ctx, compareCtx, observed[0].HistogramData.ColumnType, nonNullRowCount, nonNullDistinctCount)
+		hist.adjustCounts(compareCtx, observed[0].HistogramData.ColumnType, nonNullRowCount, nonNullDistinctCount)
 
 		// Finally, convert back to HistogramData.
 		histData, err := hist.toHistogramData(ctx, observed[0].HistogramData.ColumnType, st)
@@ -334,14 +339,51 @@ func forecastColumnStatistics(
 
 		// Verify that the first two buckets (the initial NULL bucket and the first
 		// non-NULL bucket) both have NumRange=0 and DistinctRange=0. (We must check
-		// this after calling setHistogramBuckets to account for rounding.)
+		// this after calling setHistogramBuckets to account for rounding.) See
+		// #93892.
 		for _, bucket := range forecast.Histogram {
 			if bucket.NumRange != 0 || bucket.DistinctRange != 0 {
+				// Build a JSON representation of the first several buckets in each
+				// observed histogram so that we can figure out what happened.
+				const debugBucketCount = 5
+				jsonStats := make([]*JSONStatistic, 0, len(observed))
+
+				addStat := func(stat *TableStatistic) {
+					jsonStat := &JSONStatistic{
+						Name:          stat.Name,
+						CreatedAt:     stat.CreatedAt.String(),
+						Columns:       []string{strconv.FormatInt(int64(stat.ColumnIDs[0]), 10)},
+						RowCount:      stat.RowCount,
+						DistinctCount: stat.DistinctCount,
+						NullCount:     stat.NullCount,
+						AvgSize:       stat.AvgSize,
+					}
+					if err := jsonStat.SetHistogram(stat.HistogramData); err == nil &&
+						len(jsonStat.HistogramBuckets) > debugBucketCount {
+						// Limit the histogram to the first several buckets.
+						jsonStat.HistogramBuckets = jsonStat.HistogramBuckets[0:debugBucketCount]
+					}
+					// Replace UpperBounds with a hash.
+					for i := range jsonStat.HistogramBuckets {
+						hash := md5.Sum([]byte(jsonStat.HistogramBuckets[i].UpperBound))
+						jsonStat.HistogramBuckets[i].UpperBound = fmt.Sprintf("_%x", hash)
+					}
+					jsonStats = append(jsonStats, jsonStat)
+				}
+				addStat(forecast)
+				for i := range observed {
+					addStat(observed[i])
+				}
+				var debugging redact.SafeString
+				if j, err := json.Marshal(jsonStats); err == nil {
+					debugging = redact.SafeString(j)
+				}
 				err := errorutil.UnexpectedWithIssueErrorf(
-					93892, "forecasted histogram for table %v had first bucket with non-zero NumRange or "+
-						"DistinctRange", tableID,
+					93892,
+					"forecasted histogram had first bucket with non-zero NumRange or DistinctRange: %s",
+					debugging,
 				)
-				log.Warningf(ctx, "%v", err)
+				sentryutil.SendReport(ctx, &st.SV, err)
 				return nil, err
 			}
 			if bucket.UpperBound != tree.DNull {
@@ -425,5 +467,5 @@ func predictHistogram(
 	}
 
 	// Finally, convert the predicted quantile function back to a histogram.
-	return yₙ.toHistogram(ctx, colType, nonNullRowCount)
+	return yₙ.toHistogram(colType, nonNullRowCount)
 }

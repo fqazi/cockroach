@@ -75,24 +75,20 @@ func registerLimiterSettings(providerType cloudpb.ExternalStorageProvider) {
 			rate: settings.RegisterByteSizeSetting(settings.ApplicationLevel, readRateName,
 				"limit on number of bytes per second per node across operations writing to the designated cloud storage provider if non-zero",
 				0,
-				settings.WithPublic,
 			),
 			burst: settings.RegisterByteSizeSetting(settings.ApplicationLevel, readBurstName,
 				"burst limit on number of bytes per second per node across operations writing to the designated cloud storage provider if non-zero",
 				0,
-				settings.WithPublic,
 			),
 		},
 		write: rateAndBurstSettings{
 			rate: settings.RegisterByteSizeSetting(settings.ApplicationLevel, writeRateName,
 				"limit on number of bytes per second per node across operations writing to the designated cloud storage provider if non-zero",
 				0,
-				settings.WithPublic,
 			),
 			burst: settings.RegisterByteSizeSetting(settings.ApplicationLevel, writeBurstName,
 				"burst limit on number of bytes per second per node across operations writing to the designated cloud storage provider if non-zero",
 				0,
-				settings.WithPublic,
 			),
 		},
 	}
@@ -159,7 +155,9 @@ func registerExternalStorageProviderImpls(
 			earlyBootConfParsers[scheme] = provider.EarlyBootParseFn
 		}
 
-		RegisterRedactedParams(provider.RedactedParams)
+		for param := range provider.RedactedParams {
+			redactedQueryParams[param] = struct{}{}
+		}
 	}
 
 	if _, ok := implementations[providerType]; ok {
@@ -610,11 +608,5 @@ func ReplaceProviderForTesting(
 		if oldEaryParser != nil {
 			earlyBootConfParsers[scheme] = oldEaryParser
 		}
-	}
-}
-
-func RegisterRedactedParams(params map[string]struct{}) {
-	for param := range params {
-		redactedQueryParams[param] = struct{}{}
 	}
 }

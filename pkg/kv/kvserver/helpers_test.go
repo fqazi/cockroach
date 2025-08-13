@@ -32,11 +32,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rangefeed"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/split"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/storeliveness"
 	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
@@ -53,14 +51,6 @@ import (
 
 func (s *Store) Transport() *RaftTransport {
 	return s.cfg.Transport
-}
-
-func (s *Store) StoreLivenessTransport() *storeliveness.Transport {
-	return s.cfg.StoreLiveness.Transport
-}
-
-func (s *Store) StorePool() *storepool.StorePool {
-	return s.cfg.StorePool
 }
 
 func (s *Store) FindTargetAndTransferLease(
@@ -333,7 +323,7 @@ func (r *Replica) RaftUnlock() {
 
 func (r *Replica) RaftReportUnreachable(id roachpb.ReplicaID) error {
 	return r.withRaftGroup(func(raftGroup *raft.RawNode) (bool, error) {
-		raftGroup.ReportUnreachable(raftpb.PeerID(id))
+		raftGroup.ReportUnreachable(uint64(id))
 		return false /* unquiesceAndWakeLeader */, nil
 	})
 }
@@ -353,10 +343,10 @@ func (r *Replica) Campaign(ctx context.Context) {
 }
 
 // ForceCampaign force-campaigns the replica.
-func (r *Replica) ForceCampaign(ctx context.Context, raftStatus raft.BasicStatus) {
+func (r *Replica) ForceCampaign(ctx context.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.forceCampaignLocked(ctx, raftStatus)
+	r.forceCampaignLocked(ctx)
 }
 
 // LastAssignedLeaseIndexRLocked is like LastAssignedLeaseIndex, but requires
@@ -449,25 +439,25 @@ func (r *Replica) ShouldBackpressureWrites(_ context.Context) bool {
 }
 
 // GetRaftLogSize returns the approximate raft log size and whether it is
-// trustworthy. See replicaLogStorage.shMu.size for details.
+// trustworthy.. See r.mu.raftLogSize for details.
 func (r *Replica) GetRaftLogSize() (int64, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	ls := r.asLogStorage()
-	return ls.shMu.size, ls.shMu.sizeTrusted
+	return r.mu.raftLogSize, r.mu.raftLogSizeTrusted
 }
 
-// GetCachedLastTerm returns the term of the last log entry.
+// GetCachedLastTerm returns the cached last term value. May return
+// invalidLastTerm if the cache is not set.
 func (r *Replica) GetCachedLastTerm() kvpb.RaftTerm {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.asLogStorage().shMu.last.Term
+	return r.mu.lastTermNotDurable
 }
 
 // SideloadedRaftMuLocked returns r.raftMu.sideloaded. Requires a previous call
 // to RaftLock() or some other guarantee that r.raftMu is held.
 func (r *Replica) SideloadedRaftMuLocked() logstore.SideloadStorage {
-	return r.logStorage.ls.Sideload
+	return r.raftMu.sideloaded
 }
 
 // LargestPreviousMaxRangeSizeBytes returns the in-memory value used to mitigate
@@ -603,8 +593,7 @@ func (r *Replica) ReadCachedProtectedTS() (readAt, earliestProtectionTimestamp h
 func (r *Replica) ClosedTimestampPolicy() roachpb.RangeClosedTimestampPolicy {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return toClientClosedTsPolicy(closedTimestampPolicy(r.descRLocked(),
-		*r.cachedClosedTimestampPolicy.Load()))
+	return r.closedTimestampPolicyRLocked()
 }
 
 // TripBreaker synchronously trips the breaker.
@@ -615,7 +604,7 @@ func (r *Replica) TripBreaker() {
 // GetCircuitBreaker returns the circuit breaker controlling
 // connection attempts to the specified node.
 func (t *RaftTransport) GetCircuitBreaker(
-	nodeID roachpb.NodeID, class rpcbase.ConnectionClass,
+	nodeID roachpb.NodeID, class rpc.ConnectionClass,
 ) (*circuit.Breaker, bool) {
 	return t.dialer.GetCircuitBreaker(nodeID, class)
 }
@@ -666,9 +655,8 @@ func WatchForDisappearingReplicas(t testing.TB, store *Store) {
 		default:
 		}
 
-		store.mu.replicasByRangeID.Range(func(rangeID roachpb.RangeID, _ *Replica) bool {
-			m[rangeID] = struct{}{}
-			return true
+		store.mu.replicasByRangeID.Range(func(repl *Replica) {
+			m[repl.RangeID] = struct{}{}
 		})
 
 		for k := range m {
@@ -700,20 +688,4 @@ func NewRangefeedTxnPusher(
 		r:    r,
 		span: span,
 	}
-}
-
-// descRLocked exports (*Replica).descRLocked() for testing purposes.
-func (r *Replica) DescRLocked() *roachpb.RangeDescriptor {
-	return r.descRLocked()
-}
-
-// RaftFortificationEnabledForRangeID exports raftFortificationEnabledForRangeID
-// for use in tests.
-func RaftFortificationEnabledForRangeID(fracEnabled float64, rangeID roachpb.RangeID) bool {
-	return raftFortificationEnabledForRangeID(fracEnabled, rangeID)
-}
-
-// ProcessTick exports processTick for use in tests.
-func (s *Store) ProcessTick(ctx context.Context, rangeID roachpb.RangeID) {
-	s.processTick(ctx, rangeID)
 }

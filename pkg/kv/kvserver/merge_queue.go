@@ -45,6 +45,7 @@ var MergeQueueInterval = settings.RegisterDurationSetting(
 	"kv.range_merge.queue_interval",
 	"how long the merge queue waits between processing replicas",
 	5*time.Second,
+	settings.NonNegativeDuration,
 )
 
 // SkipMergeQueueForExternalBytes is a setting that controls whether
@@ -54,7 +55,7 @@ var SkipMergeQueueForExternalBytes = settings.RegisterBoolSetting(
 	settings.SystemOnly,
 	"kv.range_merge.skip_external_bytes.enabled",
 	"skip the merge queue for external bytes",
-	true,
+	false,
 )
 
 // mergeQueue manages a queue of ranges slated to be merged with their right-
@@ -124,6 +125,7 @@ func newMergeQueue(store *Store, db *kv.DB) *mergeQueue {
 			acceptsUnsplitRanges:                false,
 			successes:                           store.metrics.MergeQueueSuccesses,
 			failures:                            store.metrics.MergeQueueFailures,
+			storeFailures:                       store.metrics.StoreFailures,
 			pending:                             store.metrics.MergeQueuePending,
 			processingNanos:                     store.metrics.MergeQueueProcessingNanos,
 			purgatory:                           store.metrics.MergeQueuePurgatory,

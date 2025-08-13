@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/kv/kvclient"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -27,7 +26,7 @@ type mockNodeStore struct {
 	nodes []roachpb.NodeDescriptor
 }
 
-var _ kvclient.NodeDescStore = &mockNodeStore{}
+var _ NodeDescStore = &mockNodeStore{}
 
 // GetNodeDescriptor is part of the NodeDescStore interface.
 func (ns *mockNodeStore) GetNodeDescriptor(nodeID roachpb.NodeID) (*roachpb.NodeDescriptor, error) {

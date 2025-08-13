@@ -6,6 +6,7 @@
 @import "src/core/index.module";
 
 .custom-menu {
+  width: 500px;
   padding: 12px;
 }
 
@@ -17,7 +18,6 @@
 
 .Range {
   width: 100%;
-  height: 43px;
   display: flex;
   position: relative;
 }
@@ -37,9 +37,7 @@
 
   .trigger-button {
     min-width: 285px;
-    height: 100%;
-    padding-top: 0;
-    padding-bottom: 0;
+    height: fit-content;
   }
 }
 
@@ -182,17 +180,17 @@
       align-items: center;
     }
   }
-  .crdb-ant-fullcalendar-calendar-body {
+  .ant-fullcalendar-calendar-body {
     padding: 8px 16px;
-    .crdb-ant-fullcalendar-column-header {
+    .ant-fullcalendar-column-header {
       font-family: $font-family--bold;
       font-size: 12px;
       line-height: 2;
       letter-spacing: 0.1px;
     }
-    .crdb-ant-fullcalendar-tbody {
-      .crdb-ant-fullcalendar-cell {
-        .crdb-ant-fullcalendar-value {
+    .ant-fullcalendar-tbody {
+      .ant-fullcalendar-cell {
+        .ant-fullcalendar-value {
           width: 24px;
           height: 24px;
           display: flex;
@@ -209,8 +207,8 @@
             background: $background-color;
           }
         }
-        &.crdb-ant-fullcalendar-selected-day {
-          .crdb-ant-fullcalendar-value {
+        &.ant-fullcalendar-selected-day {
+          .ant-fullcalendar-value {
             background: $colors--primary-blue-1;
             color: $colors--primary-blue-3;
             &:hover {
@@ -219,10 +217,10 @@
             }
           }
         }
-        &.crdb-ant-fullcalendar-disabled-cell {
+        &.ant-fullcalendar-disabled-cell {
           background: $background-color;
           color: $colors--neutral-5;
-          .crdb-ant-fullcalendar-value {
+          .ant-fullcalendar-value {
             background: $background-color;
             color: $colors--neutral-5;
           }
@@ -231,11 +229,11 @@
             color: $colors--neutral-5;
           }
         }
-        &.crdb-ant-fullcalendar-today {
+        &.ant-fullcalendar-today {
           &:hover {
             background: transparent;
           }
-          .crdb-ant-fullcalendar-value {
+          .ant-fullcalendar-value {
             width: 24px;
             height: 24px;
             box-shadow: none;
@@ -246,19 +244,19 @@
               background: $colors--primary-blue-1;
             }
           }
-          &.crdb-ant-fullcalendar-selected-day {
-            .crdb-ant-fullcalendar-value {
+          &.ant-fullcalendar-selected-day {
+            .ant-fullcalendar-value {
               background: $colors--primary-blue-1;
               &:hover {
                 background: #e0efff;
               }
             }
           }
-          &.crdb-ant-fullcalendar-disabled-cell {
+          &.ant-fullcalendar-disabled-cell {
             &:hover {
               background: $background-color;
             }
-            .crdb-ant-fullcalendar-value {
+            .ant-fullcalendar-value {
               font-family: $font-family--bold;
               color: $colors--neutral-5;
               background: $background-color;

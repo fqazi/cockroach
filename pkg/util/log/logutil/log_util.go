@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
-	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/redact"
 )
@@ -33,12 +32,12 @@ func LogJobCompletion(
 	if jobErr != nil {
 		redactedErr = redact.Sprint(jobErr)
 	}
-	status := jobs.StateSucceeded
+	status := jobs.StatusSucceeded
 	if !success {
 		if jobs.HasErrJobCanceled(jobErr) {
-			status = jobs.StateCanceled
+			status = jobs.StatusCanceled
 		} else {
-			status = jobs.StateFailed
+			status = jobs.StatusFailed
 		}
 	}
 
@@ -50,7 +49,7 @@ func LogJobCompletion(
 		NumRows:      numRows,
 	}
 
-	log.StructuredEvent(ctx, severity.INFO, event)
+	log.StructuredEvent(ctx, event)
 }
 
 // LogEventsWithDelay logs an eventpb.EventPayload at provided
@@ -68,7 +67,7 @@ func LogEventsWithDelay(
 			return
 		case <-timer.C:
 			event := events[0]
-			log.StructuredEvent(ctx, severity.INFO, event)
+			log.StructuredEvent(ctx, event)
 			events = events[1:]
 			// Apply a delay to subsequent events.
 			timer.Reset(delay)

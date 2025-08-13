@@ -3,31 +3,26 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import React from "react";
+import classNames from "classnames/bind";
+import { chain } from "lodash";
 import {
   InlineAlert,
   InlineAlertProps,
   Spinner,
   InlineAlertIntent,
 } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
-import groupBy from "lodash/groupBy";
-import map from "lodash/map";
-import React from "react";
-
 import { adminUIAccess, getLogger, isForbiddenRequestError } from "src/util";
-
-import { Anchor } from "../anchor";
-
 import styles from "./loading.module.scss";
+import { Anchor } from "../anchor";
 
 interface LoadingProps {
   loading: boolean;
-  loadingText?: string;
   page: string;
   error?: Error | Error[] | null;
   className?: string;
   image?: string;
-  render?: () => React.ReactElement;
+  render?: () => any;
   errorClassName?: string;
   loadingClassName?: string;
   renderError?: () => React.ReactElement;
@@ -62,7 +57,7 @@ export function getValidErrorsList(
  * Loading will display a background image instead of the content if the
  * loading prop is true.
  */
-export const Loading = (props: React.PropsWithChildren<LoadingProps>) => {
+export const Loading: React.FC<LoadingProps> = props => {
   const errors = getValidErrorsList(props.error);
 
   // Check for `error` before `loading`, since tests for `loading` often return
@@ -78,9 +73,8 @@ export const Loading = (props: React.PropsWithChildren<LoadingProps>) => {
 
     // - map Error to InlineAlert props. RestrictedPermissions handled as "info" message;
     // - group errors by intend to show separate alerts per intent.
-    const intentAlertProps = map(
-      errors,
-      (error): Omit<InlineAlertProps, "title"> => {
+    const errorAlerts = chain(errors)
+      .map<Omit<InlineAlertProps, "title">>(error => {
         if (isForbiddenRequestError(error)) {
           return {
             intent: "info",
@@ -101,20 +95,11 @@ export const Loading = (props: React.PropsWithChildren<LoadingProps>) => {
             ),
           };
         }
-      },
-    );
-    const alertPropsByIntent = groupBy(intentAlertProps, r => r.intent);
-    const errorAlerts = map(
-      alertPropsByIntent,
-      (alerts, intent: InlineAlertIntent) => {
+      })
+      .groupBy(alert => alert.intent)
+      .map((alerts, intent: InlineAlertIntent) => {
         if (alerts.length === 1) {
-          return (
-            <InlineAlert
-              intent={intent}
-              title={alerts[0].description}
-              key={intent}
-            />
-          );
+          return <InlineAlert intent={intent} title={alerts[0].description} />;
         } else {
           return (
             <InlineAlert
@@ -127,12 +112,11 @@ export const Loading = (props: React.PropsWithChildren<LoadingProps>) => {
                   ))}
                 </div>
               }
-              key={intent}
             />
           );
         }
-      },
-    );
+      })
+      .value();
 
     return (
       <div className={cx("alerts-container", props.errorClassName)}>
@@ -142,16 +126,8 @@ export const Loading = (props: React.PropsWithChildren<LoadingProps>) => {
   }
   if (props.loading) {
     return (
-      <div data-testid={"loading-spinner"}>
-        <Spinner className={cx("loading-indicator", props.loadingClassName)} />
-        {props.loadingText && (
-          <h2 className={cx("loading-text")}>{props.loadingText}</h2>
-        )}
-      </div>
+      <Spinner className={cx("loading-indicator", props.loadingClassName)} />
     );
   }
-  return (
-    (props.children && <>{props.children}</>) ||
-    (props.render && props.render())
-  );
+  return props.children || (props.render && props.render());
 };

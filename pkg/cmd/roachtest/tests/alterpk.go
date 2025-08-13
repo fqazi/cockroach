@@ -38,7 +38,7 @@ func registerAlterPK(r registry.Registry) {
 		initDone := make(chan struct{}, 1)
 		pkChangeDone := make(chan struct{}, 1)
 
-		m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+		m := c.NewMonitor(ctx, c.CRDBNodes())
 		m.Go(func(ctx context.Context) error {
 			// Load up a relatively small dataset to perform a workload on.
 
@@ -70,6 +70,7 @@ func registerAlterPK(r registry.Registry) {
 			db := c.Conn(ctx, t.L(), c.CRDBNodes()[0])
 			defer db.Close()
 			cmds := []string{
+				`SET CLUSTER SETTING kv.transaction.internal.max_auto_retries = 10000`,
 				`USE bank;`,
 				`ALTER TABLE bank ALTER COLUMN balance SET NOT NULL;`,
 				`ALTER TABLE bank ALTER PRIMARY KEY USING COLUMNS (id, balance)`,
@@ -103,7 +104,7 @@ func registerAlterPK(r registry.Registry) {
 			t.Fatal(err)
 		}
 
-		m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+		m := c.NewMonitor(ctx, c.CRDBNodes())
 		m.Go(func(ctx context.Context) error {
 			// Start running the workload.
 			runCmd := fmt.Sprintf(

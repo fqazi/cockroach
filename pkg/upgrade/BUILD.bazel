@@ -4,7 +4,6 @@ go_library(
     name = "upgrade",
     srcs = [
         "doc.go",
-        "helpers.go",
         "system_upgrade.go",
         "tenant_upgrade.go",
         "upgrade.go",
@@ -14,13 +13,10 @@ go_library(
     deps = [
         "//pkg/clusterversion",
         "//pkg/jobs",
-        "//pkg/jobs/jobspb",
         "//pkg/keys",
         "//pkg/keyvisualizer",
         "//pkg/kv",
-        "//pkg/multitenant/mtinfo",
         "//pkg/roachpb",
-        "//pkg/server/license",
         "//pkg/server/serverpb",
         "//pkg/settings/cluster",
         "//pkg/sql/catalog/descs",
@@ -33,7 +29,6 @@ go_library(
         "//pkg/util/retry",
         "//pkg/util/stop",
         "//pkg/util/uuid",
-        "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_logtags//:logtags",
     ],
 )

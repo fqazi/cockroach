@@ -4,9 +4,7 @@
 // included in the /LICENSE file.
 
 import React from "react";
-
 import { Tooltip, Anchor } from "src/components";
-import { TooltipProps } from "src/components/tooltip/tooltip";
 import {
   clusterStore,
   nodeLivenessIssues,
@@ -14,6 +12,7 @@ import {
   reviewOfCockroachTerminology,
   howAreCapacityMetricsCalculatedOverview,
 } from "src/util/docs";
+import { TooltipProps } from "src/components/tooltip/tooltip";
 
 export const CapacityUsageTooltip: React.FC<TooltipProps> = props => (
   <Tooltip

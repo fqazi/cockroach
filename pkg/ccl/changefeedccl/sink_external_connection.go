@@ -121,16 +121,6 @@ func init() {
 			validateExternalConnectionSinkURI,
 		)
 	}
-
-	cloud.RegisterRedactedParams(cloud.RedactedParams(
-		changefeedbase.SinkParamSASLPassword,
-		changefeedbase.SinkParamCACert,
-		changefeedbase.SinkParamClientCert,
-		changefeedbase.SinkParamClientKey,
-		changefeedbase.SinkParamConfluentAPISecret,
-		changefeedbase.SinkParamAzureAccessKey,
-		changefeedbase.SinkParamAzureAccessKeyCamel,
-	))
 }
 
 type externalConnectionProvider interface {

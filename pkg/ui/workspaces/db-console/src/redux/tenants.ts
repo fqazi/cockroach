@@ -3,9 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 import { createSelector } from "reselect";
-
 import { DropdownOption } from "../views/shared/components/dropdown";
-
 import { SYSTEM_TENANT_NAME } from "./cookies";
 import { AdminUIState } from "./state";
 

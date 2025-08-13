@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/errors"
 )
 
@@ -35,10 +34,6 @@ type rowBasedFlow struct {
 	// Note that due to the row exec engine infrastructure, it is too complicated to attach
 	// flow-level stats to a flow-level span, so they are added to the last outbox's span.
 	numOutboxes int32
-
-	// monitors tracks all memory and disk monitors that this flow created and
-	// is responsible for closing.
-	monitors []*mon.BytesMonitor
 }
 
 var _ flowinfra.Flow = &rowBasedFlow{}
@@ -234,7 +229,7 @@ func (f *rowBasedFlow) makeProcessorAndOutput(
 			return nil, nil, err
 		}
 	} else {
-		r, err := f.setupRouter(ctx, spec, ps.ProcessorID)
+		r, err := f.setupRouter(spec, ps.ProcessorID)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -445,7 +440,7 @@ func (f *rowBasedFlow) setupOutboundStream(
 //
 // Pass-through routers are not supported; they should be handled separately.
 func (f *rowBasedFlow) setupRouter(
-	ctx context.Context, spec *execinfrapb.OutputRouterSpec, processorID int32,
+	spec *execinfrapb.OutputRouterSpec, processorID int32,
 ) (router, error) {
 	streams := make([]execinfra.RowReceiver, len(spec.Streams))
 	for i := range spec.Streams {
@@ -455,30 +450,12 @@ func (f *rowBasedFlow) setupRouter(
 			return nil, err
 		}
 	}
-	// Create monitors after successfully connecting the streams.
-	memoryMonitors := make([]*mon.BytesMonitor, len(spec.Streams))
-	unlimitedMemMonitors := make([]*mon.BytesMonitor, len(spec.Streams))
-	diskMonitors := make([]*mon.BytesMonitor, len(spec.Streams))
-	for i := range spec.Streams {
-		// NB: Stream IDs are indexes into slices, so we'd expect to OOM long
-		// before a stream ID exceeds 2^31.
-		mn := mon.MakeName("router").WithID(int32(spec.Streams[i].StreamID))
-		memoryMonitors[i] = execinfra.NewLimitedMonitor(ctx, f.Mon, &f.FlowCtx, mn.Limited())
-		unlimitedMemMonitors[i] = execinfra.NewMonitor(ctx, f.Mon, mn.Unlimited())
-		diskMonitors[i] = execinfra.NewMonitor(ctx, f.DiskMonitor, mn.Disk())
-	}
-	f.monitors = append(f.monitors, memoryMonitors...)
-	f.monitors = append(f.monitors, unlimitedMemMonitors...)
-	f.monitors = append(f.monitors, diskMonitors...)
-	return makeRouter(spec, streams, memoryMonitors, unlimitedMemMonitors, diskMonitors)
+	return makeRouter(spec, streams)
 }
 
 // Release releases this rowBasedFlow back to the pool.
 func (f *rowBasedFlow) Release() {
-	for i := range f.monitors {
-		f.monitors[i] = nil
-	}
-	*f = rowBasedFlow{monitors: f.monitors[:0]}
+	*f = rowBasedFlow{}
 	rowBasedFlowPool.Put(f)
 }
 
@@ -486,10 +463,9 @@ func (f *rowBasedFlow) Release() {
 func (f *rowBasedFlow) Cleanup(ctx context.Context) {
 	startCleanup, endCleanup := f.FlowBase.GetOnCleanupFns()
 	startCleanup()
-	defer endCleanup(ctx)
-	for i := range f.monitors {
-		f.monitors[i].Stop(ctx)
-	}
+	defer endCleanup()
+	// Ensure that the "head" processor is always closed.
+	f.ConsumerClosedOnHeadProc()
 	f.FlowBase.Cleanup(ctx)
 	f.Release()
 }

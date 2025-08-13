@@ -70,7 +70,6 @@ go_test(
         "//pkg/sql/sem/tree",
         "//pkg/testutils",
         "//pkg/testutils/serverutils",
-        "//pkg/testutils/skip",
         "//pkg/testutils/sqlutils",
         "//pkg/testutils/testcluster",
         "//pkg/util/hlc",

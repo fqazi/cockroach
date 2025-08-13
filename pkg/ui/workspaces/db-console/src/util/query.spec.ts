@@ -3,12 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Location } from "history";
-import mapValues from "lodash/mapValues";
-import toString from "lodash/toString";
-import Long from "long";
-
 import { propsToQueryString, queryByName } from "./query";
+import { Location } from "history";
+import _ from "lodash";
+import Long from "long";
 
 const location: Location = {
   pathname: "/debug/chart",
@@ -104,7 +102,7 @@ describe("Query utils", () => {
       };
 
       const querystring = propsToQueryString(testValues);
-      expect(mapValues(testValues, toString)).toEqual(
+      expect(_.mapValues(testValues, _.toString)).toEqual(
         decodeQueryString(querystring),
       );
     });

@@ -8,7 +8,6 @@
 package constraint
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"testing"
@@ -226,12 +225,12 @@ func testKey(t *testing.T, k Key, expected string) {
 }
 
 func testKeyContext(cols ...opt.OrderingColumn) *KeyContext {
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
 
 	var columns Columns
 	columns.Init(cols)
 
-	keyCtx := MakeKeyContext(ctx, &columns, &evalCtx)
+	keyCtx := MakeKeyContext(&columns, &evalCtx)
 	return &keyCtx
 }

@@ -3,16 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Loading, util } from "@cockroachlabs/cluster-ui";
-import isEmpty from "lodash/isEmpty";
-import map from "lodash/map";
-import orderBy from "lodash/orderBy";
+import _ from "lodash";
 import React from "react";
 
 import * as protos from "src/js/protos";
 import { CachedDataReducerState } from "src/redux/cachedDataReducer";
 import { FixLong } from "src/util/fixLong";
 import Print from "src/views/reports/containers/range/print";
+import { Loading, util } from "@cockroachlabs/cluster-ui";
 
 interface LogTableProps {
   rangeID: Long;
@@ -65,7 +63,7 @@ export default class LogTable extends React.Component<LogTableProps, {}> {
   }
 
   renderLogInfoDescriptor(title: string, desc: string) {
-    if (isEmpty(desc)) {
+    if (_.isEmpty(desc)) {
       return null;
     }
     return (
@@ -97,7 +95,7 @@ export default class LogTable extends React.Component<LogTableProps, {}> {
     const { log } = this.props;
 
     // Sort by descending timestamp.
-    const events = orderBy(
+    const events = _.orderBy(
       log && log.data && log.data.events,
       event => util.TimestampToMoment(event.event.timestamp).valueOf(),
       "desc",
@@ -120,7 +118,7 @@ export default class LogTable extends React.Component<LogTableProps, {}> {
             </th>
             <th className="log-table__cell log-table__cell--header">Info</th>
           </tr>
-          {map(events, (event, key) => (
+          {_.map(events, (event, key) => (
             <tr key={key} className="log-table__row">
               <td className="log-table__cell log-table__cell--date">
                 {Print.Timestamp(event.event.timestamp)}

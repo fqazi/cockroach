@@ -6,6 +6,7 @@
 package opgen
 
 import (
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scop"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 )
@@ -45,15 +46,6 @@ func init() {
 						TypeIDs:                    this.UsesTypeIDs,
 					}
 				}),
-				emit(func(this *scpb.View) *scop.RemoveBackReferenceInFunctions {
-					if len(this.UsesRoutineIDs) == 0 {
-						return nil
-					}
-					return &scop.RemoveBackReferenceInFunctions{
-						BackReferencedDescriptorID: this.ViewID,
-						FunctionIDs:                this.UsesRoutineIDs,
-					}
-				}),
 				emit(func(this *scpb.View) *scop.RemoveBackReferencesInRelations {
 					if len(this.UsesRelationIDs) == 0 {
 						return nil
@@ -66,6 +58,13 @@ func init() {
 			),
 			to(scpb.Status_ABSENT,
 				emit(func(this *scpb.View, md *opGenContext) *scop.CreateGCJobForTable {
+					if this.IsMaterialized && !md.ActiveVersion.IsActive(clusterversion.V23_1) {
+						return &scop.CreateGCJobForTable{
+							TableID:             this.ViewID,
+							DatabaseID:          databaseIDFromDroppedNamespaceTarget(md, this.ViewID),
+							StatementForDropJob: statementForDropJob(this, md),
+						}
+					}
 					return nil
 				}),
 				emit(func(this *scpb.View) *scop.DeleteDescriptor {

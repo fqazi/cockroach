@@ -6,8 +6,6 @@
 package memo
 
 import (
-	"context"
-
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/props"
@@ -31,7 +29,6 @@ func (m *Memo) CheckExpr(e opt.Expr) {
 		return
 	}
 
-	ctx := context.Background()
 	// Check properties.
 	switch t := e.(type) {
 	case RelExpr:
@@ -77,7 +74,7 @@ func (m *Memo) CheckExpr(e opt.Expr) {
 			panic(errors.AssertionFailedf("NoIndexJoin and ForceIndex set"))
 		}
 		if evalCtx := m.logPropsBuilder.evalCtx; evalCtx != nil && t.Constraint != nil {
-			if expected := t.Constraint.ExactPrefix(ctx, evalCtx); expected != t.ExactPrefix {
+			if expected := t.Constraint.ExactPrefix(evalCtx); expected != t.ExactPrefix {
 				panic(errors.AssertionFailedf(
 					"expected exact prefix %d but found %d", expected, t.ExactPrefix,
 				))
@@ -88,7 +85,7 @@ func (m *Memo) CheckExpr(e opt.Expr) {
 		if !t.Passthrough.SubsetOf(t.Input.Relational().OutputCols) {
 			panic(errors.AssertionFailedf(
 				"projection passes through columns not in input: %v",
-				t.Passthrough.Difference(t.Input.Relational().OutputCols),
+				t.Input.Relational().OutputCols.Difference(t.Passthrough),
 			))
 		}
 		for _, item := range t.Projections {
