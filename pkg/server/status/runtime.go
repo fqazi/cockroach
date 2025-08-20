@@ -51,10 +51,7 @@ var (
 		Help:        "Average number of goroutines that are waiting to run, normalized by number of cores",
 		Measurement: "goroutines",
 		Unit:        metric.Unit_COUNT,
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `If this metric has a value over 30, it indicates a CPU overload. If the condition lasts a short period of time (a few seconds), the database users are likely to experience inconsistent response times. If the condition persists for an extended period of time (tens of seconds, or minutes) the cluster may start developing stability issues. Review CPU planning.`}
+	}
 	metaGoAllocBytes = metric.Metadata{
 		Name:        "sys.go.allocbytes",
 		Help:        "Current bytes of memory allocated by go",
@@ -64,12 +61,6 @@ var (
 	metaGoTotalBytes = metric.Metadata{
 		Name:        "sys.go.totalbytes",
 		Help:        "Total bytes of memory allocated by go, but not released",
-		Measurement: "Memory",
-		Unit:        metric.Unit_BYTES,
-	}
-	metaGoLimitBytes = metric.Metadata{
-		Name:        "sys.go.limitbytes",
-		Help:        "Go soft memory limit",
 		Measurement: "Memory",
 		Unit:        metric.Unit_BYTES,
 	}
@@ -169,13 +160,6 @@ var (
 		Help:        "Current user cpu percentage consumed by the CRDB process",
 		Measurement: "CPU Time",
 		Unit:        metric.Unit_PERCENT,
-		Essential:   true,
-		Category:    metric.Metadata_HARDWARE,
-		HowToUse: `This metric gives the CPU usage percentage at the user
-		level by the CockroachDB process only. This is similar to the Linux
-		top command output. The metric value can be more than 1 (or 100%)
-		on multi-core systems. It is best to combine user and system
-		metrics.`,
 	}
 	metaCPUSysNS = metric.Metadata{
 		Name:        "sys.cpu.sys.ns",
@@ -188,25 +172,12 @@ var (
 		Help:        "Current system cpu percentage consumed by the CRDB process",
 		Measurement: "CPU Time",
 		Unit:        metric.Unit_PERCENT,
-		Essential:   true,
-		Category:    metric.Metadata_HARDWARE,
-		HowToUse: `This metric gives the CPU usage percentage at the system
-		(Linux kernel) level by the CockroachDB process only. This is
-		similar to the Linux top command output. The metric value can be
-		more than 1 (or 100%) on multi-core systems. It is best to combine
-		user and system metrics.`,
 	}
 	metaCPUCombinedPercentNorm = metric.Metadata{
 		Name:        "sys.cpu.combined.percent-normalized",
 		Help:        "Current user+system cpu percentage consumed by the CRDB process, normalized 0-1 by number of cores",
 		Measurement: "CPU Time",
 		Unit:        metric.Unit_PERCENT,
-		Essential:   true,
-		Category:    metric.Metadata_HARDWARE,
-		HowToUse: `This metric gives the CPU utilization percentage by the CockroachDB process. 
-		If it is equal to 1 (or 100%), then the CPU is overloaded. The CockroachDB process should 
-		not be running with over 80% utilization for extended periods of time (hours). This metric 
-		is used in the DB Console CPU Percent graph.`,
 	}
 	metaCPUNowNS = metric.Metadata{
 		Name:        "sys.cpu.now.ns",
@@ -220,20 +191,6 @@ var (
 		Help:        "Current user+system cpu percentage across the whole machine, normalized 0-1 by number of cores",
 		Measurement: "CPU Time",
 		Unit:        metric.Unit_PERCENT,
-		Essential:   true,
-		Category:    metric.Metadata_HARDWARE,
-		HowToUse: `This metric gives the CPU utilization percentage of the
-		underlying server, virtual machine, or container hosting the
-		CockroachDB process. It includes CPU usage from both CockroachDB
-		and non-CockroachDB processes. It also accounts for time spent
-		processing hardware (irq) and software (softirq) interrupts, as
-		well as nice time, which represents low-priority user-mode
-		activity.
-
-    A value of 1 (or 100%) indicates that the CPU is overloaded. Avoid
-    running the CockroachDB process in an environment where the CPU
-    remains overloaded for extended periods (e.g. multiple hours). This
-    metric appears in the DB Console on the Host CPU Percent graph.`,
 	}
 
 	metaRSSBytes = metric.Metadata{
@@ -241,15 +198,6 @@ var (
 		Help:        "Current process RSS",
 		Measurement: "RSS",
 		Unit:        metric.Unit_BYTES,
-		Essential:   true,
-		Category:    metric.Metadata_HARDWARE,
-		HowToUse: `This metric gives the amount of RAM used by the
-		CockroachDB process. Persistently low values over an extended
-		period of time suggest there is underutilized memory that can be
-		put to work with adjusted settings for --cache or --max_sql_memory
-		or both. Conversely, a high utilization, even if a temporary spike,
-		indicates an increased risk of Out-of-memory (OOM) crash
-		(particularly since the swap is generally disabled).`,
 	}
 	metaTotalMemBytes = metric.Metadata{
 		Name:        "sys.totalmem",
@@ -274,10 +222,6 @@ var (
 		Help:        "Process uptime",
 		Measurement: "Uptime",
 		Unit:        metric.Unit_SECONDS,
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric measures the length of time, in seconds, that the CockroachDB process has been running. Monitor this metric to detect events such as node restarts, which may require investigation or intervention.`,
 	}
 
 	// These disk and network stats are counters of the number of operations, packets, bytes, and
@@ -289,20 +233,12 @@ var (
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Operations",
 		Help:        "Disk read operations across all disks since this process started (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric reports the effective storage device read IOPS rate. To confirm that storage is sufficiently provisioned, assess the I/O performance rates (IOPS and MBPS) in the context of the sys.host.disk.iopsinprogress metric.`,
 	}
 	metaHostDiskReadBytes = metric.Metadata{
 		Name:        "sys.host.disk.read.bytes",
 		Unit:        metric.Unit_BYTES,
 		Measurement: "Bytes",
 		Help:        "Bytes read from all disks since this process started (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric reports the effective storage device read throughput (MB/s) rate. To confirm that storage is sufficiently provisioned, assess the I/O performance rates (IOPS and MBPS) in the context of the sys.host.disk.iopsinprogress metric.`,
 	}
 	metaHostDiskReadTime = metric.Metadata{
 		Name:        "sys.host.disk.read.time",
@@ -315,20 +251,12 @@ var (
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Operations",
 		Help:        "Disk write operations across all disks since this process started (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric reports the effective storage device write IOPS rate. To confirm that storage is sufficiently provisioned, assess the I/O performance rates (IOPS and MBPS) in the context of the sys.host.disk.iopsinprogress metric.`,
 	}
 	metaHostDiskWriteBytes = metric.Metadata{
 		Name:        "sys.host.disk.write.bytes",
 		Unit:        metric.Unit_BYTES,
 		Measurement: "Bytes",
 		Help:        "Bytes written to all disks since this process started (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric reports the effective storage device write throughput (MB/s) rate. To confirm that storage is sufficiently provisioned, assess the I/O performance rates (IOPS and MBPS) in the context of the sys.host.disk.iopsinprogress metric.`,
 	}
 	metaHostDiskWriteTime = metric.Metadata{
 		Name:        "sys.host.disk.write.time",
@@ -353,20 +281,12 @@ var (
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Operations",
 		Help:        "IO operations currently in progress on this host (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric gives the average queue length of the storage device. It characterizes the storage device's performance capability. All I/O performance metrics are Linux counters and correspond to the avgqu-sz in the Linux iostat command output. You need to view the device queue graph in the context of the actual read/write IOPS and MBPS metrics that show the actual device utilization. If the device is not keeping up, the queue will grow. Values over 10 are bad. Values around 5 mean the device is working hard trying to keep up. For internal (on chassis) NVMe devices, the queue values are typically 0. For network connected devices, such as AWS EBS volumes, the normal operating range of values is 1 to 2. Spikes in values are OK. They indicate an I/O spike where the device fell behind and then caught up. End users may experience inconsistent response times, but there should be no cluster stability issues. If the queue is greater than 5 for an extended period of time and IOPS or MBPS are low, then the storage is most likely not provisioned per Cockroach Labs guidance. In AWS EBS, it is commonly an EBS type, such as gp2, not suitable as database primary storage. If I/O is low and the queue is low, the most likely scenario is that the CPU is lacking and not driving I/O. One such case is a cluster with nodes with only 2 vcpus which is not supported sizing for production deployments. There are quite a few background processes in the database that take CPU away from the workload, so the workload is just not getting the CPU. Review storage and disk I/O.`,
 	}
 	metaHostNetRecvBytes = metric.Metadata{
 		Name:        "sys.host.net.recv.bytes",
 		Unit:        metric.Unit_BYTES,
 		Measurement: "Bytes",
 		Help:        "Bytes received on all network interfaces since this process started (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric gives the node's ingress/egress network transfer rates for flat sections which may indicate insufficiently provisioned networking or high error rates. CockroachDB is using a reliable TCP/IP protocol, so errors result in delivery retries that create a "slow network" effect.`,
 	}
 	metaHostNetRecvPackets = metric.Metadata{
 		Name:        "sys.host.net.recv.packets",
@@ -391,10 +311,6 @@ var (
 		Unit:        metric.Unit_BYTES,
 		Measurement: "Bytes",
 		Help:        "Bytes sent on all network interfaces since this process started (as reported by the OS)",
-
-		Essential: true,
-		Category:  metric.Metadata_HARDWARE,
-		HowToUse:  `This metric gives the node's ingress/egress network transfer rates for flat sections which may indicate insufficiently provisioned networking or high error rates. CockroachDB is using a reliable TCP/IP protocol, so errors result in delivery retries that create a "slow network" effect.`,
 	}
 	metaHostNetSendPackets = metric.Metadata{
 		Name:        "sys.host.net.send.packets",
@@ -418,16 +334,6 @@ var (
 		Name:        "sys.host.net.send.tcp.retrans_segs",
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Segments",
-		Category:    metric.Metadata_NETWORKING,
-		Essential:   true,
-		HowToUse: `
-Phase changes, especially when occurring on groups of nodes, can indicate packet
-loss in the network or a slow consumer of packets. On slow consumers, the
-'sys.host.net.rcvd.drop' metric may be elevated; on overloaded senders, it
-is worth checking the 'sys.host.net.send.drop' metric.
-Additionally, the 'sys.host.net.send.tcp.*' may provide more insight into the
-specific type of retransmission.
-`,
 		Help: `
 The number of TCP segments retransmitted across all network interfaces.
 This can indicate packet loss occurring in the network. However, it can
@@ -448,7 +354,6 @@ shows all TCP counters maintained by the kernel.
 		Measurement: "Segments",
 		Help: `Segments retransmitted due to the fast retransmission mechanism in TCP.
 Fast retransmissions occur when the sender learns that intermediate segments have been lost.`,
-		Category: metric.Metadata_NETWORKING,
 	}
 	metaHostNetSendTCPTimeouts = metric.Metadata{
 		Name:        "sys.host.net.send.tcp_timeouts",
@@ -461,7 +366,6 @@ optimizations such as fast retransmissions and loss probes to avoid hitting
 retransmission timeouts. Anecdotally, they still occasionally present themselves
 even in supposedly healthy cloud environments.
 `,
-		Category: metric.Metadata_NETWORKING,
 	}
 	metaHostNetSendTCPSlowStartRetrans = metric.Metadata{
 		Name:        "sys.host.net.send.tcp.slow_start_retrans",
@@ -472,7 +376,6 @@ Number of TCP retransmissions in slow start. This can indicate that the network
 is unable to support the initial fast ramp-up in window size, and can be a sign
 of packet loss or congestion.
 `,
-		Category: metric.Metadata_NETWORKING,
 	}
 	metaHostNetSendTCPLossProbes = metric.Metadata{
 		Name:        "sys.host.net.send.tcp.loss_probes",
@@ -483,7 +386,6 @@ Number of TCP tail loss probes sent. Loss probes are an optimization to detect
 loss of the last packet earlier than the retransmission timer, and can indicate
 network issues. Tail loss probes are aggressive, so the base rate is often nonzero
 even in healthy networks.`,
-		Category: metric.Metadata_NETWORKING,
 	}
 )
 
@@ -500,18 +402,7 @@ var diskMetricsIgnoredDevices = envutil.EnvOrDefaultString("COCKROACH_DISK_METRI
 // allocated uint: bytes allocated by application
 // total     uint: total bytes requested from system
 // error           : any issues fetching stats. This should be a warning only.
-var getCgoMemStats func(context.Context) (cGoAlloc uint, cGoTotal uint, _ error)
-
-// cgoMemMaybePurge checks if the current jemalloc overhead (relative to
-// cgoAllocMem or cgoTargetMem, whichever is higher) is above overheadPercent;
-// if it is, a purge of all arenas is performed. We perform at most a purge per
-// minPeriod.
-var cgoMemMaybePurge func(
-	ctx context.Context,
-	cgoAllocMem, cgoTotalMem, cgoTargetMem uint64,
-	overheadPercent int,
-	minPeriod time.Duration,
-)
+var getCgoMemStats func(context.Context) (uint, uint, error)
 
 // Distribution of individual GC-related stop-the-world pause
 // latencies. This is the time from deciding to stop the world
@@ -597,9 +488,6 @@ const runtimeMetricMemStackOSBytes = "/memory/classes/os-stacks:bytes"
 // metrics in /memory/classes.
 const runtimeMetricGoTotal = "/memory/classes/total:bytes"
 
-// Current soft memory limit (see debug.SetMemoryLimit).
-const runtimeMetricGoLimit = "/gc/gomemlimit:bytes"
-
 // Count of all completed GC cycles.
 const runtimeMetricGCCount = "/gc/cycles/total:gc-cycles"
 
@@ -607,7 +495,6 @@ var runtimeMetrics = []string{
 	runtimeMetricGCAssist,
 	runtimeMetricGoTotal,
 	runtimeMetricHeapAlloc,
-	runtimeMetricGoLimit,
 	runtimeMetricHeapFragmentBytes,
 	runtimeMetricHeapReservedBytes,
 	runtimeMetricHeapReleasedBytes,
@@ -784,7 +671,6 @@ type RuntimeStatSampler struct {
 	RunnableGoroutinesPerCPU *metric.GaugeFloat64
 	GoAllocBytes             *metric.Gauge
 	GoTotalBytes             *metric.Gauge
-	GoLimitBytes             *metric.Gauge
 	GoMemStackSysBytes       *metric.Gauge
 	GoHeapFragmentBytes      *metric.Gauge
 	GoHeapReservedBytes      *metric.Gauge
@@ -886,7 +772,6 @@ func NewRuntimeStatSampler(ctx context.Context, clock hlc.WallClock) *RuntimeSta
 		RunnableGoroutinesPerCPU: metric.NewGaugeFloat64(metaRunnableGoroutinesPerCPU),
 		GoAllocBytes:             metric.NewGauge(metaGoAllocBytes),
 		GoTotalBytes:             metric.NewGauge(metaGoTotalBytes),
-		GoLimitBytes:             metric.NewGauge(metaGoLimitBytes),
 		GoMemStackSysBytes:       metric.NewGauge(metaGoMemStackSysBytes),
 		GoHeapFragmentBytes:      metric.NewGauge(metaGoHeapFragmentBytes),
 		GoHeapReservedBytes:      metric.NewGauge(metaGoHeapReservedBytes),
@@ -970,21 +855,6 @@ func GetCGoMemStats(ctx context.Context) *CGoMemStats {
 	}
 }
 
-// CGoMemMaybePurge checks if the current allocator overhead (relative to
-// cgoAllocMem or cgoTargetMem, whichever is higher) is above overheadPercent;
-// if it is, a purge of all arenas is performed. We perform at most a purge per
-// minPeriod.
-func CGoMemMaybePurge(
-	ctx context.Context,
-	cgoAllocMem, cgoTotalMem, cgoTargetMem uint64,
-	overheadPercent int,
-	minPeriod time.Duration,
-) {
-	if cgoMemMaybePurge != nil {
-		cgoMemMaybePurge(ctx, cgoAllocMem, cgoTotalMem, cgoTargetMem, overheadPercent, minPeriod)
-	}
-}
-
 var netstatEvery = log.Every(time.Minute)
 
 // SampleEnvironment queries the runtime system for various interesting metrics,
@@ -1011,7 +881,7 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 	if err != nil {
 		log.Ops.Errorf(ctx, "unable to get process CPU usage: %v", err)
 	}
-	cpuCapacity := GetCPUCapacity()
+	cpuCapacity := getCPUCapacity()
 	cpuUsageStats, err := cpu.Times(false /* percpu */)
 	if err != nil {
 		log.Ops.Errorf(ctx, "unable to get system CPU usage: %v", err)
@@ -1148,10 +1018,6 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 	goAlloc := rsr.goRuntimeSampler.uint64(runtimeMetricHeapAlloc)
 	goTotal := rsr.goRuntimeSampler.uint64(runtimeMetricGoTotal) -
 		rsr.goRuntimeSampler.uint64(runtimeMetricHeapReleasedBytes)
-	goLimit := rsr.goRuntimeSampler.uint64(runtimeMetricGoLimit)
-	if goLimit == math.MaxInt64 {
-		goLimit = 0
-	}
 	stackTotal := rsr.goRuntimeSampler.uint64(runtimeMetricMemStackHeapBytes) +
 		osStackBytes
 	heapFragmentBytes := rsr.goRuntimeSampler.uint64(runtimeMetricHeapFragmentBytes)
@@ -1163,7 +1029,6 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 		MemStackSysBytes:  stackTotal,
 		GoAllocBytes:      goAlloc,
 		GoTotalBytes:      goTotal,
-		GoLimitBytes:      goLimit,
 		HeapFragmentBytes: heapFragmentBytes,
 		HeapReservedBytes: heapReservedBytes,
 		HeapReleasedBytes: heapReleasedBytes,
@@ -1185,7 +1050,6 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 
 	rsr.GoAllocBytes.Update(int64(goAlloc))
 	rsr.GoTotalBytes.Update(int64(goTotal))
-	rsr.GoLimitBytes.Update(int64(goLimit))
 	rsr.GoMemStackSysBytes.Update(int64(osStackBytes))
 	rsr.GoHeapFragmentBytes.Update(int64(heapFragmentBytes))
 	rsr.GoHeapReservedBytes.Update(int64(heapReservedBytes))
@@ -1503,10 +1367,10 @@ func GetProcCPUTime(ctx context.Context) (userTimeMillis, sysTimeMillis int64, e
 	return int64(cpuTime.User), int64(cpuTime.Sys), nil
 }
 
-// GetCPUCapacity returns the number of logical CPU processors available for
+// getCPUCapacity returns the number of logical CPU processors available for
 // use by the process. The capacity accounts for cgroup constraints, GOMAXPROCS
-// and the number of host –processors.
-func GetCPUCapacity() float64 {
+// and the number of host processors.
+func getCPUCapacity() float64 {
 	numProcs := float64(runtime.GOMAXPROCS(0 /* read only */))
 	cgroupCPU, err := cgroups.GetCgroupCPU()
 	if err != nil {

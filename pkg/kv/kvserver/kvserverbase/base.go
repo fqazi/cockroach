@@ -17,8 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
-	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
 	"github.com/cockroachdb/redact"
 )
@@ -114,50 +112,6 @@ var MVCCGCQueueEnabled = settings.RegisterBoolSetting(
 	true,
 )
 
-// LoadBasedRebalancingMode controls whether range rebalancing takes
-// additional variables such as write load and disk usage into account.
-// If disabled, rebalancing is done purely based on replica count.
-var LoadBasedRebalancingMode = settings.RegisterEnumSetting(
-	settings.SystemOnly,
-	"kv.allocator.load_based_rebalancing",
-	"whether to rebalance based on the distribution of load across stores",
-	"leases and replicas",
-	map[LBRebalancingMode]string{
-		LBRebalancingOff:               "off",
-		LBRebalancingLeasesOnly:        "leases",
-		LBRebalancingLeasesAndReplicas: "leases and replicas",
-		LBRebalancingMultiMetric:       "multi-metric",
-	},
-	settings.WithPublic,
-	settings.WithValidateEnum(func(enumStr string) error {
-		if buildutil.CrdbTestBuild || enumStr != "multi-metric" {
-			return nil
-		}
-		return unimplemented.NewWithIssue(
-			103320, "multi-metric rebalancing not supported for production use")
-	}),
-)
-
-// LBRebalancingMode controls if and when we do store-level rebalancing
-// based on load.
-type LBRebalancingMode int64
-
-const (
-	// LBRebalancingOff means that we do not do store-level rebalancing
-	// based on load statistics.
-	LBRebalancingOff LBRebalancingMode = iota
-	// LBRebalancingLeasesOnly means that we rebalance leases based on
-	// store-level load imbalances.
-	LBRebalancingLeasesOnly
-	// LBRebalancingLeasesAndReplicas means that we rebalance both leases and
-	// replicas based on store-level load imbalances.
-	LBRebalancingLeasesAndReplicas
-	// LBRebalancingMultiMetric means that the store rebalancer yields to the
-	// multi-metric store rebalancer, balancing both leases and replicas based on
-	// store-level load imbalances.
-	LBRebalancingMultiMetric
-)
-
 // RangeFeedRefreshInterval is injected from kvserver to avoid import cycles
 // when accessed from kvcoord.
 var RangeFeedRefreshInterval *settings.DurationSetting
@@ -178,15 +132,14 @@ var _ redact.SafeFormatter = CmdIDKey("")
 
 // FilterArgs groups the arguments to a ReplicaCommandFilter.
 type FilterArgs struct {
-	Ctx          context.Context
-	CmdID        CmdIDKey
-	Index        int
-	Sid          roachpb.StoreID
-	Req          kvpb.Request
-	Hdr          kvpb.Header
-	AdmissionHdr kvpb.AdmissionHeader
-	Version      roachpb.Version
-	Err          error // only used for TestingPostEvalFilter
+	Ctx     context.Context
+	CmdID   CmdIDKey
+	Index   int
+	Sid     roachpb.StoreID
+	Req     kvpb.Request
+	Hdr     kvpb.Header
+	Version roachpb.Version
+	Err     error // only used for TestingPostEvalFilter
 }
 
 // ProposalFilterArgs groups the arguments to ReplicaProposalFilter.

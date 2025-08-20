@@ -261,7 +261,7 @@ func (o *Optimizer) Optimize() (_ opt.Expr, err error) {
 	o.optimizeRootWithProps()
 
 	// Now optimize the entire expression tree.
-	root := o.mem.RootExpr()
+	root := o.mem.RootExpr().(memo.RelExpr)
 	rootProps := o.mem.RootProps()
 	o.optimizeGroup(root, rootProps)
 
@@ -525,7 +525,7 @@ func (o *Optimizer) optimizeGroup(grp memo.RelExpr, required *physical.Required)
 		if cachedLCP.exists {
 			return cachedLCP.lcp, cachedLCP.ok
 		}
-		interestingOrderings := ordering.DeriveInterestingOrderings(o.mem, grp)
+		interestingOrderings := ordering.DeriveInterestingOrderings(grp)
 		cachedLCP.lcp, cachedLCP.ok = interestingOrderings.LongestCommonPrefix(&required.Ordering)
 		cachedLCP.exists = true
 		return cachedLCP.lcp, cachedLCP.ok
@@ -593,7 +593,7 @@ func (o *Optimizer) optimizeGroupMember(
 	// properties? That case is taken care of by enforceProps, which will
 	// recursively optimize the group with property subsets and then add
 	// enforcers to provide the remainder.
-	if CanProvidePhysicalProps(o.ctx, o.evalCtx, o.mem, member, required) {
+	if CanProvidePhysicalProps(o.ctx, o.evalCtx, member, required) {
 		var cost memo.Cost
 		for i, n := 0, member.ChildCount(); i < n; i++ {
 			// Given required parent properties, get the properties required from
@@ -843,10 +843,8 @@ func (o *Optimizer) setLowestCostTree(parent opt.Expr, parentProps *physical.Req
 		var provided physical.Provided
 		// BuildProvided relies on ProvidedPhysical() being set in the children, so
 		// it must run after the recursive calls on the children.
-		provided.Ordering = ordering.BuildProvided(o.evalCtx, o.mem, relParent, &parentProps.Ordering)
-		provided.Distribution = distribution.BuildProvided(
-			o.ctx, o.evalCtx, o.mem, relParent, &parentProps.Distribution,
-		)
+		provided.Ordering = ordering.BuildProvided(o.evalCtx, relParent, &parentProps.Ordering)
+		provided.Distribution = distribution.BuildProvided(o.ctx, o.evalCtx, relParent, &parentProps.Distribution)
 		o.mem.SetBestProps(relParent, parentProps, &provided, relCost)
 	}
 
@@ -922,7 +920,10 @@ func (o *Optimizer) ensureOptState(grp memo.RelExpr, required *physical.Required
 // properties required of it. This may trigger the creation of a new root and
 // new properties.
 func (o *Optimizer) optimizeRootWithProps() {
-	root := o.mem.RootExpr()
+	root, ok := o.mem.RootExpr().(memo.RelExpr)
+	if !ok {
+		panic(errors.AssertionFailedf("Optimize can only be called on relational root expressions"))
+	}
 	rootProps := o.mem.RootProps()
 
 	// [SimplifyRootOrdering]

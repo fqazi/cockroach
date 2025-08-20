@@ -25,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
 	"github.com/cockroachdb/cockroach/pkg/sql/lex"
 	"github.com/cockroachdb/cockroach/pkg/sql/lexbase"
-	"github.com/cockroachdb/cockroach/pkg/sql/oidext"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgrepl/lsn"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
@@ -33,13 +32,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/bitarray"
-	"github.com/cockroachdb/cockroach/pkg/util/collatedstring"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/ipaddr"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
-	"github.com/cockroachdb/cockroach/pkg/util/jsonpath"
-	"github.com/cockroachdb/cockroach/pkg/util/ltree"
 	"github.com/cockroachdb/cockroach/pkg/util/stringencoding"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timetz"
@@ -97,12 +93,6 @@ var (
 	// deriving the arguments to construct a specific time.Time.
 	MinSupportedTime    = timeutil.Unix(-210866803200, 0) // 4714-11-24 00:00:00+00 BC
 	MinSupportedTimeSec = float64(MinSupportedTime.Unix())
-
-	// ValidateJSONPath is injected from pkg/util/jsonpath/parser/parse.go.
-	ValidateJSONPath func(string) (*jsonpath.Jsonpath, error)
-
-	// EmptyDJSON is an empty JSON object.
-	EmptyDJSON = *NewDJSON(json.EmptyJSONValue)
 )
 
 // CompareContext represents the dependencies used to evaluate comparisons
@@ -1325,8 +1315,7 @@ type DCollatedString struct {
 	Contents string
 	Locale   string
 	// Key is the collation key.
-	Key           []byte
-	Deterministic bool
+	Key []byte
 }
 
 // CollationEnvironment stores the state needed by NewDCollatedString to
@@ -1340,8 +1329,7 @@ type collationEnvironmentCacheEntry struct {
 	// locale is interned.
 	locale string
 	// collator is an expensive factory.
-	collator      *collate.Collator
-	deterministic bool
+	collator *collate.Collator
 }
 
 func (env *CollationEnvironment) getCacheEntry(
@@ -1358,7 +1346,7 @@ func (env *CollationEnvironment) getCacheEntry(
 			return collationEnvironmentCacheEntry{}, err
 		}
 
-		entry = collationEnvironmentCacheEntry{locale, collate.New(tag), collatedstring.IsDeterministicCollation(tag)}
+		entry = collationEnvironmentCacheEntry{locale, collate.New(tag)}
 		env.cache[locale] = entry
 	}
 	return entry, nil
@@ -1377,7 +1365,7 @@ func NewDCollatedString(
 		env.buffer = &collate.Buffer{}
 	}
 	key := entry.collator.KeyFromString(env.buffer, contents)
-	d := DCollatedString{contents, entry.locale, make([]byte, len(key)), entry.deterministic}
+	d := DCollatedString{contents, entry.locale, make([]byte, len(key))}
 	copy(d.Key, key)
 	env.buffer.Reset()
 	return &d, nil
@@ -1450,7 +1438,7 @@ func (d *DCollatedString) IsMin(ctx context.Context, cmpCtx CompareContext) bool
 
 // Min implements the Datum interface.
 func (d *DCollatedString) Min(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	return &DCollatedString{"", d.Locale, nil, false}, true
+	return &DCollatedString{"", d.Locale, nil}, true
 }
 
 // Max implements the Datum interface.
@@ -3882,115 +3870,6 @@ func (d *DBox2D) Size() uintptr {
 	return unsafe.Sizeof(*d) + unsafe.Sizeof(d.CartesianBoundingBox)
 }
 
-// DJsonpath is the Datum representation of the Jsonpath type.
-type DJsonpath struct {
-	jsonpath.Jsonpath
-}
-
-func NewDJsonpath(d jsonpath.Jsonpath) *DJsonpath {
-	return &DJsonpath{Jsonpath: d}
-}
-
-// ResolvedType implements the TypedExpr interface.
-func (d *DJsonpath) ResolvedType() *types.T {
-	return types.Jsonpath
-}
-
-// Compare implements the Datum interface. While we don't support external
-// comparisons between Jsonpath types, we still need to implement Compare
-// because many internal tests rely on it.
-func (d *DJsonpath) Compare(ctx context.Context, cmpCtx CompareContext, other Datum) (int, error) {
-	if other == DNull {
-		return 1, nil
-	}
-	v, ok := cmpCtx.UnwrapDatum(ctx, other).(*DJsonpath)
-	if !ok {
-		return 0, makeUnsupportedComparisonMessage(d, other)
-	}
-	return strings.Compare(d.String(), v.String()), nil
-}
-
-// Prev implements the Datum interface.
-func (d *DJsonpath) Prev(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	return nil, false
-}
-
-// Next implements the Datum interface.
-func (d *DJsonpath) Next(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	return nil, false
-}
-
-// IsMax implements the Datum interface.
-func (d *DJsonpath) IsMax(ctx context.Context, cmpCtx CompareContext) bool {
-	return false
-}
-
-// IsMin implements the Datum interface.
-func (d *DJsonpath) IsMin(ctx context.Context, cmpCtx CompareContext) bool {
-	return false
-}
-
-// Max implements the Datum interface.
-func (d *DJsonpath) Max(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	return nil, false
-}
-
-// Min implements the Datum interface.
-func (d *DJsonpath) Min(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	return nil, false
-}
-
-// AmbiguousFormat implements the Datum interface.
-func (*DJsonpath) AmbiguousFormat() bool { return true }
-
-// Size implements the Datum interface.
-func (d *DJsonpath) Size() uintptr {
-	// TODO(#22513): add size method for JSONPath
-	return unsafe.Sizeof(*d)
-}
-
-// Format implements the NodeFormatter interface.
-func (d *DJsonpath) Format(ctx *FmtCtx) {
-	buf, f := &ctx.Buffer, ctx.flags
-	if f.HasFlags(fmtRawStrings) || f.HasFlags(fmtPgwireFormat) {
-		buf.WriteString(d.Jsonpath.String())
-	} else {
-		lexbase.EncodeSQLStringWithFlags(buf, d.Jsonpath.String(), f.EncodeFlags())
-	}
-}
-
-func ParseDJsonpath(s string) (Datum, error) {
-	jp, err := ValidateJSONPath(s)
-	if err != nil {
-		return nil, MakeParseError(s, types.Jsonpath, err)
-	}
-	return NewDJsonpath(*jp), nil
-}
-
-// AsDJsonpath attempts to retrieve a *DJsonpath from an Expr, returning a *DJsonpath and
-// a flag signifying whether the assertion was successful. The function should
-// be used instead of direct type assertions wherever a *DJsonpath wrapped by a
-// *DOidWrapper is possible.
-func AsDJsonpath(e Expr) (*DJsonpath, bool) {
-	switch t := e.(type) {
-	case *DJsonpath:
-		return t, true
-	case *DOidWrapper:
-		return AsDJsonpath(t.Wrapped)
-	}
-	return nil, false
-}
-
-// MustBeDJsonpath attempts to retrieve a DJsonpath from an Expr, panicking if the
-// assertion fails.
-func MustBeDJsonpath(e Expr) DJsonpath {
-	i, ok := AsDJsonpath(e)
-	if !ok {
-		panic(errors.AssertionFailedf("expected *DJsonpath, found %T", e))
-	}
-	return *i
-}
-
 // DJSON is the JSON Datum.
 type DJSON struct{ json.JSON }
 
@@ -4152,7 +4031,7 @@ func AsJSON(
 		// This is RFC3339Nano, but without the TZ fields.
 		return json.FromString(formatTime(t.UTC(), "2006-01-02T15:04:05.999999999")), nil
 	case *DDate, *DUuid, *DOid, *DInterval, *DBytes, *DIPAddr, *DTime, *DTimeTZ, *DBitArray, *DBox2D,
-		*DTSVector, *DTSQuery, *DPGLSN, *DPGVector, *DLTree:
+		*DTSVector, *DTSQuery, *DPGLSN, *DPGVector:
 		return json.FromString(
 			AsStringWithFlags(t, FmtBareStrings, FmtDataConversionConfig(dcc), FmtLocation(loc)),
 		), nil
@@ -4506,107 +4385,6 @@ func ParseDTSVector(s string) (Datum, error) {
 		return nil, pgerror.Wrapf(err, pgcode.Syntax, "could not parse tsvector")
 	}
 	return NewDTSVector(v), nil
-}
-
-// DLTree is the LTree Datum.
-type DLTree struct {
-	LTree ltree.T
-}
-
-// NewDLTree returns a DLTree from an existing ltree.T.
-func NewDLTree(l ltree.T) *DLTree {
-	return &DLTree{LTree: l}
-}
-
-// ParseDLTree parses a string representation of a ltree.
-func ParseDLTree(pathStr string) (Datum, error) {
-	l, err := ltree.ParseLTree(pathStr)
-	if err != nil {
-		return nil, pgerror.Wrapf(err, pgcode.Syntax, "could not parse ltree")
-	}
-	return NewDLTree(l), nil
-}
-
-// ResolvedType implements the TypedExpr interface.
-func (*DLTree) ResolvedType() *types.T {
-	return types.LTree
-}
-
-// Compare implements the Datum interface.
-func (d *DLTree) Compare(ctx context.Context, cmpCtx CompareContext, other Datum) (int, error) {
-	if other == DNull {
-		// NULL is less than any non-NULL value.
-		return 1, nil
-	}
-	v, ok := cmpCtx.UnwrapDatum(ctx, other).(*DLTree)
-	if !ok {
-		return 0, makeUnsupportedComparisonMessage(d, other)
-	}
-	return d.LTree.Compare(v.LTree), nil
-}
-
-// Prev implements the Datum interface.
-func (d *DLTree) Prev(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	return nil, false
-}
-
-// Next implements the Datum interface.
-func (d *DLTree) Next(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	return nil, false
-}
-
-// IsMax implements the Datum interface.
-func (*DLTree) IsMax(ctx context.Context, cmpCtx CompareContext) bool {
-	return false
-}
-
-// IsMin implements the Datum interface.
-func (d *DLTree) IsMin(ctx context.Context, cmpCtx CompareContext) bool {
-	return d.LTree.Len() == 0
-}
-
-// Min implements the Datum interface.
-func (d *DLTree) Min(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	return NewDLTree(ltree.Empty), true
-}
-
-// Max implements the Datum interface.
-func (d *DLTree) Max(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	return nil, false
-}
-
-// AmbiguousFormat implements the Datum interface.
-func (*DLTree) AmbiguousFormat() bool { return false }
-
-// Format implements the NodeFormatter interface.
-func (d *DLTree) Format(ctx *FmtCtx) {
-	buf, f := &ctx.Buffer, ctx.flags
-
-	if f.HasFlags(fmtRawStrings) || f.HasFlags(fmtPgwireFormat) {
-		d.LTree.FormatToBuffer(buf)
-	} else {
-		pathStr := d.LTree.String()
-		lexbase.EncodeSQLStringWithFlags(buf, pathStr, f.EncodeFlags())
-	}
-}
-
-// Size implements the Datum interface.
-func (d *DLTree) Size() uintptr {
-	return uintptr(d.LTree.ByteSize())
-}
-
-// AsDLTree attempts to retrieve a *DLTree from an Expr, returning a
-// *DLTree and a flag signifying whether the assertion was successful. The
-// function should be used instead of direct type assertions wherever a
-// *DLTree wrapped by a *DOidWrapper is possible.
-func AsDLTree(e Expr) (*DLTree, bool) {
-	switch t := e.(type) {
-	case *DLTree:
-		return t, true
-	case *DOidWrapper:
-		return AsDLTree(t.Wrapped)
-	}
-	return nil, false
 }
 
 // DTuple is the tuple Datum.
@@ -5937,7 +5715,6 @@ func (d *DOid) Name() string {
 // Types that currently benefit from DOidWrapper are:
 // - DName => DOidWrapper(*DString, oid.T_name)
 // - DRefCursor => DOidWrapper(*DString, oid.T_refcursor)
-// - DCIText => DOIDWrapper(*DCollatedString, oidext.T_citext)
 type DOidWrapper struct {
 	Wrapped Datum
 	Oid     oid.Oid
@@ -5950,12 +5727,11 @@ func wrapWithOid(d Datum, oid oid.Oid) Datum {
 		return nil
 	case *DInt:
 	case *DString:
-	case *DCollatedString:
 	case *DArray:
 	case dNull, *DOidWrapper:
 		panic(errors.AssertionFailedf("cannot wrap %T with an Oid", v))
 	default:
-		// Currently only *DInt, *DString, *DCollatedString, *DArray are hooked up to work with
+		// Currently only *DInt, *DString, *DArray are hooked up to work with
 		// *DOidWrapper. To support another base Datum type, replace all type
 		// assertions to that type with calls to functions like AsDInt and
 		// MustBeDInt.
@@ -6048,14 +5824,6 @@ func (d *DOidWrapper) Size() uintptr {
 	return unsafe.Sizeof(*d) + d.Wrapped.Size()
 }
 
-// IsComposite implements the CompositeDatum interface.
-func (d *DOidWrapper) IsComposite() bool {
-	if cdatum, ok := d.Wrapped.(CompositeDatum); ok {
-		return cdatum.IsComposite()
-	}
-	return false
-}
-
 // AmbiguousFormat implements the Datum interface.
 func (d *Placeholder) AmbiguousFormat() bool {
 	return true
@@ -6113,16 +5881,6 @@ func NewDNameFromDString(d *DString) Datum {
 // initialized from a string.
 func NewDName(d string) Datum {
 	return NewDNameFromDString(NewDString(d))
-}
-
-// NewDCIText is a helper routine to create a *DCIText (implemented as a *DOidWrapper)
-// initialized from a string.
-func NewDCIText(contents string, env *CollationEnvironment) (Datum, error) {
-	d, err := NewDCollatedString(contents, collatedstring.CaseInsensitiveLocale, env)
-	if err != nil {
-		return nil, err
-	}
-	return wrapWithOid(d, oidext.T_citext), nil
 }
 
 // NewDRefCursorFromDString is a helper routine to create a *DRefCursor
@@ -6241,9 +5999,6 @@ func NewDefaultDatum(collationEnv *CollationEnvironment, t *types.T) (d Datum, e
 		}
 		return NewDEnum(e), nil
 	default:
-		// TODO(yuzefovich): think through whether we want to explicitly return
-		// FeatureNotSupported error for types like TSQuery, TSVector, PGVector,
-		// Jsonpath, etc that don't have a minimum value.
 		return nil, errors.AssertionFailedf("unhandled type %s", t.SQLStringForError())
 	}
 }
@@ -6330,7 +6085,7 @@ var baseDatumTypeSizes = map[types.Family]struct {
 	types.FloatFamily:          {unsafe.Sizeof(DFloat(0.0)), fixedSize},
 	types.DecimalFamily:        {unsafe.Sizeof(DDecimal{}), variableSize},
 	types.StringFamily:         {unsafe.Sizeof(DString("")), variableSize},
-	types.CollatedStringFamily: {unsafe.Sizeof(DCollatedString{"", "", nil, false}), variableSize},
+	types.CollatedStringFamily: {unsafe.Sizeof(DCollatedString{"", "", nil}), variableSize},
 	types.BytesFamily:          {unsafe.Sizeof(DBytes("")), variableSize},
 	types.EncodedKeyFamily:     {unsafe.Sizeof(DBytes("")), variableSize},
 	types.DateFamily:           {unsafe.Sizeof(DDate{}), fixedSize},
@@ -6347,12 +6102,10 @@ var baseDatumTypeSizes = map[types.Family]struct {
 	types.TSVectorFamily:       {unsafe.Sizeof(DTSVector{}), variableSize},
 	types.IntervalFamily:       {unsafe.Sizeof(DInterval{}), fixedSize},
 	types.JsonFamily:           {unsafe.Sizeof(DJSON{}), variableSize},
-	types.JsonpathFamily:       {unsafe.Sizeof(DJsonpath{}), variableSize},
 	types.UuidFamily:           {unsafe.Sizeof(DUuid{}), fixedSize},
 	types.INetFamily:           {unsafe.Sizeof(DIPAddr{}), fixedSize},
 	types.OidFamily:            {unsafe.Sizeof(DOid{}.Oid), fixedSize},
 	types.EnumFamily:           {unsafe.Sizeof(DEnum{}), variableSize},
-	types.LTreeFamily:          {unsafe.Sizeof(DLTree{}), variableSize},
 
 	types.VoidFamily: {sz: unsafe.Sizeof(DVoid{}), variable: fixedSize},
 	// TODO(jordan,justin): This seems suspicious.
@@ -6517,15 +6270,11 @@ func AdjustValueToType(typ *types.T, inVal Datum) (outVal Datum, err error) {
 	switch typ.Family() {
 	case types.StringFamily, types.CollatedStringFamily:
 		var sv string
-		var isString, isCollatedString bool
 		if v, ok := AsDString(inVal); ok {
 			sv = string(v)
-			isString = true
 		} else if v, ok := inVal.(*DCollatedString); ok {
 			sv = v.Contents
-			isCollatedString = true
 		}
-		origLen := len(sv)
 		switch typ.Oid() {
 		case oid.T_char:
 			// "char" is supposed to truncate long values.
@@ -6560,14 +6309,9 @@ func AdjustValueToType(typ *types.T, inVal Datum) (outVal Datum, err error) {
 		}
 
 		if typ.Oid() == oid.T_bpchar || typ.Oid() == oid.T_char || typ.Oid() == oid.T_varchar {
-			if isString {
-				if len(sv) == origLen {
-					// The string wasn't modified, so we can just return the
-					// original datum.
-					return inVal, nil
-				}
+			if _, ok := AsDString(inVal); ok {
 				return NewDString(sv), nil
-			} else if isCollatedString {
+			} else if _, ok := inVal.(*DCollatedString); ok {
 				return NewDCollatedString(sv, typ.Locale(), &CollationEnvironment{})
 			}
 		}

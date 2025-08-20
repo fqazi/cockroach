@@ -46,7 +46,7 @@ func newColSchema(numCols int) *colSchema {
 // that are not supported by the writer.
 func typSupported(typ *types.T) bool {
 	switch typ.Family() {
-	case types.AnyFamily, types.TSQueryFamily, types.TSVectorFamily, types.PGVectorFamily, types.VoidFamily, types.JsonpathFamily:
+	case types.AnyFamily, types.TSQueryFamily, types.TSVectorFamily, types.PGVectorFamily, types.VoidFamily:
 		return false
 	case types.ArrayFamily:
 		if typ.ArrayContents().Family() == types.ArrayFamily || typ.ArrayContents().Family() == types.TupleFamily {
@@ -461,19 +461,6 @@ func TestBasicDatums(t *testing.T) {
 				d5 := tree.DFloat(math.SmallestNonzeroFloat32)
 				return [][]tree.Datum{
 					{&d1, &d2, &d3, tree.DNull, &d4, &d5, tree.DNull},
-				}, nil
-			},
-		},
-		{
-			name: "ltree",
-			sch: &colSchema{
-				columnTypes: []*types.T{types.LTree, types.LTree},
-				columnNames: []string{"a", "b"},
-			},
-			datums: func() ([][]tree.Datum, error) {
-				dt, _ := tree.ParseDLTree("A.B.C")
-				return [][]tree.Datum{
-					{dt, tree.DNull},
 				}, nil
 			},
 		},

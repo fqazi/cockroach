@@ -7,7 +7,6 @@ package democluster
 
 import (
 	"context"
-	"crypto/rand"
 	gosql "database/sql"
 	"fmt"
 	"io"
@@ -66,7 +65,7 @@ import (
 
 type serverEntry struct {
 	serverutils.TestServerInterface
-	adminClient    serverpb.RPCAdminClient
+	adminClient    serverpb.AdminClient
 	nodeID         roachpb.NodeID
 	decommissioned bool
 }
@@ -88,7 +87,7 @@ type transientCluster struct {
 
 	stickyVFSRegistry fs.StickyRegistry
 
-	drainAndShutdown func(ctx context.Context, adminClient serverpb.RPCAdminClient) error
+	drainAndShutdown func(ctx context.Context, adminClient serverpb.AdminClient) error
 
 	infoLog  LoggerFn
 	warnLog  LoggerFn
@@ -147,7 +146,7 @@ func NewDemoCluster(
 	warnLog LoggerFn,
 	shoutLog ShoutLoggerFn,
 	startStopper func(ctx context.Context) (*stop.Stopper, error),
-	drainAndShutdown func(ctx context.Context, s serverpb.RPCAdminClient) error,
+	drainAndShutdown func(ctx context.Context, s serverpb.AdminClient) error,
 ) (DemoCluster, error) {
 	c := &transientCluster{
 		demoCtx:          demoCtx,
@@ -380,12 +379,7 @@ func (c *transientCluster) Start(ctx context.Context) (err error) {
 		return err
 	}
 
-	st := c.firstServer.ClusterSettings()
-	minPasswordLength := security.MinPasswordLength.Get(&st.SV)
-	demoPassword, err := genDemoPassword(demoUsername, minPasswordLength)
-	if err != nil {
-		return errors.Wrap(err, "failed to generate demo password")
-	}
+	demoPassword := genDemoPassword(demoUsername)
 
 	// Step 8: initialize tenant servers, if enabled.
 	phaseCtx = logtags.AddTag(ctx, "phase", 8)
@@ -801,7 +795,7 @@ func (c *transientCluster) waitForNodeIDReadiness(
 			if err != nil {
 				return err
 			}
-			c.servers[idx].adminClient = conn.NewAdminClient()
+			c.servers[idx].adminClient = serverpb.NewAdminClient(conn)
 
 		}
 		break
@@ -930,8 +924,7 @@ func (demoCtx *Context) testServerArgsForTransientCluster(
 		EnableDemoLoginEndpoint: true,
 		// Demo clusters by default will create their own tenants, so we
 		// don't need to create them here.
-		DefaultTestTenant: base.TestControlsTenantsExplicitly,
-		DefaultTenantName: roachpb.TenantName(demoTenantName),
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 
 		Knobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
@@ -1089,9 +1082,9 @@ func (c *transientCluster) DrainAndShutdown(ctx context.Context, nodeID int32) e
 // server than the one referred to by the node ID.
 func (c *transientCluster) findOtherServer(
 	ctx context.Context, nodeID int32, op string,
-) (serverpb.RPCAdminClient, error) {
+) (serverpb.AdminClient, error) {
 	// Find a node to use as the sender.
-	var adminClient serverpb.RPCAdminClient
+	var adminClient serverpb.AdminClient
 	for _, s := range c.servers {
 		if s.adminClient != nil && s.nodeID != roachpb.NodeID(nodeID) {
 			adminClient = s.adminClient
@@ -1225,7 +1218,7 @@ func (c *transientCluster) startServerInternal(
 
 	c.servers[serverIdx] = serverEntry{
 		TestServerInterface: s,
-		adminClient:         conn.NewAdminClient(),
+		adminClient:         serverpb.NewAdminClient(conn),
 		nodeID:              nodeID,
 	}
 
@@ -2127,21 +2120,10 @@ func (c *transientCluster) addDemoLoginToURL(uiURL *url.URL, includeTenantName b
 //
 // The password can be overridden via the env var
 // COCKROACH_DEMO_PASSWORD for the benefit of test automation.
-func genDemoPassword(username string, minPasswordLength int64) (string, error) {
-	if password := envutil.EnvOrDefaultString("COCKROACH_DEMO_PASSWORD", ""); password != "" {
-		if len(password) < int(minPasswordLength) {
-			return "", errors.Newf("password is too short: %s", password)
-		}
-		return password, nil
-	}
+func genDemoPassword(username string) string {
 	mypid := os.Getpid()
-	password := fmt.Sprintf("%s%d", username, mypid)
-	// If the password is too short, append random characters until it is long enough.
-	for len(password) < int(minPasswordLength) {
-		randText := strings.ToLower(rand.Text())
-		password += string(randText[0])
-	}
-	return password, nil
+	candidatePassword := fmt.Sprintf("%s%d", username, mypid)
+	return envutil.EnvOrDefaultString("COCKROACH_DEMO_PASSWORD", candidatePassword)
 }
 
 // lockDir uses a file lock to prevent concurrent writes to the

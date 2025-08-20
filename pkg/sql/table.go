@@ -201,9 +201,9 @@ func (p *planner) createOrUpdateSchemaChangeJob(
 		if mutationID != descpb.InvalidMutationID {
 			tableDesc.MutationJobs = append(tableDesc.MutationJobs, descpb.TableDescriptor_MutationJob{
 				MutationID: mutationID, JobID: newRecord.JobID})
-			log.Infof(ctx, "queued new schema-change job %d for table %d, mutation %d",
-				newRecord.JobID, tableDesc.ID, mutationID)
 		}
+		log.Infof(ctx, "queued new schema-change job %d for table %d, mutation %d",
+			newRecord.JobID, tableDesc.ID, mutationID)
 		return nil
 	}
 
@@ -275,41 +275,12 @@ func (p *planner) writeSchemaChange(
 	if catalog.HasConcurrentDeclarativeSchemaChange(tableDesc) {
 		return scerrors.ConcurrentSchemaChangeError(tableDesc)
 	}
-	// Legacy schema changes with schema_locked can wait for one version within a
-	// single job (via connExecutor.maybeDeferDescriptorUpdatesForSchemaLocked),
-	// so no need to create new jobs. These schema changes are white-listed
-	// to only update *metadata*.
 	if !tableDesc.IsNew() {
 		if err := p.createOrUpdateSchemaChangeJob(ctx, tableDesc, jobDesc, mutationID); err != nil {
 			return err
 		}
 	}
 	return p.writeTableDesc(ctx, tableDesc)
-}
-
-// writeVersionBump performs a mutation-free write to a specified table in order
-// to ensure a version bump. It does so without queuing a schema change job.
-func (p *planner) writeVersionBump(ctx context.Context, id descpb.ID) error {
-	tableDesc, err := p.Descriptors().MutableByID(p.Txn()).Table(ctx, id)
-	if err != nil {
-		return err
-	}
-
-	if !p.EvalContext().TxnImplicit {
-		telemetry.Inc(sqltelemetry.SchemaChangeInExplicitTxnCounter)
-	}
-	if tableDesc.Dropped() {
-		// We don't allow schema changes on a dropped table.
-		return errors.Errorf("no schema changes allowed on table %q as it is being dropped",
-			tableDesc.Name)
-	}
-	// Exit early with an error if the table is undergoing a declarative schema
-	// change.
-	if catalog.HasConcurrentDeclarativeSchemaChange(tableDesc) {
-		return scerrors.ConcurrentSchemaChangeError(tableDesc)
-	}
-
-	return p.writeTableDesc(ctx, tableDesc, withIsVersionBump())
 }
 
 func (p *planner) writeSchemaChangeToBatch(
@@ -337,37 +308,17 @@ func (p *planner) writeDropTable(
 	return p.writeTableDesc(ctx, tableDesc)
 }
 
-type writeTableDescOptions struct {
-	isVersionBump bool
-}
-
-// Option is a function that modifies Options
-type writeTableDescOption func(*writeTableDescOptions)
-
-func withIsVersionBump() writeTableDescOption {
-	return func(opts *writeTableDescOptions) {
-		opts.isVersionBump = true
-	}
-}
-
-func (p *planner) writeTableDesc(
-	ctx context.Context, tableDesc *tabledesc.Mutable, opts ...writeTableDescOption,
-) error {
+func (p *planner) writeTableDesc(ctx context.Context, tableDesc *tabledesc.Mutable) error {
 	b := p.txn.NewBatch()
-	if err := p.writeTableDescToBatch(ctx, tableDesc, b, opts...); err != nil {
+	if err := p.writeTableDescToBatch(ctx, tableDesc, b); err != nil {
 		return err
 	}
 	return p.txn.Run(ctx, b)
 }
 
 func (p *planner) writeTableDescToBatch(
-	ctx context.Context, tableDesc *tabledesc.Mutable, b *kv.Batch, opts ...writeTableDescOption,
+	ctx context.Context, tableDesc *tabledesc.Mutable, b *kv.Batch,
 ) error {
-	options := &writeTableDescOptions{}
-	for _, opt := range opts {
-		opt(options)
-	}
-
 	if tableDesc.IsVirtualTable() {
 		return errors.AssertionFailedf("virtual descriptors cannot be stored, found: %v", tableDesc)
 	}
@@ -385,11 +336,6 @@ func (p *planner) writeTableDescToBatch(
 	if err := descs.ValidateSelf(tableDesc, version, dvmp); err != nil {
 		return errors.NewAssertionErrorWithWrappedErrf(err, "table descriptor is not valid\n%v\n", tableDesc)
 	}
-
-	// Noop writes to a descriptor (version bumps) are used to trigger cache
-	// invalidations. In that case, transactions block on visibility instead of
-	// convergence
-	defer p.descCollection.MaybeMarkVersionBump(tableDesc, options.isVersionBump)()
 
 	return p.Descriptors().WriteDescToBatch(
 		ctx, p.extendedEvalCtx.Tracing.KVTracingEnabled(), tableDesc, b,

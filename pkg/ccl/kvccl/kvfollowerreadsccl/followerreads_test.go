@@ -26,10 +26,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvtestutils"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -540,7 +538,7 @@ func TestOracle(t *testing.T) {
 		// the exponentially-weighted moving average to work properly. See the
 		// comment on the WARMUP_SAMPLES const in the ewma package for details.
 		for i := 0; i < 11; i++ {
-			rpcContext.RemoteClocks.UpdateOffset(ctx, id, rpc.RemoteOffset{}, latency, rpcbase.DefaultClass)
+			rpcContext.RemoteClocks.UpdateOffset(ctx, id, rpc.RemoteOffset{}, latency, rpc.DefaultClass)
 		}
 	}
 	setLatency(1, 100*time.Millisecond)
@@ -845,7 +843,7 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 
 	// Further down, we'll set up the test to pin the lease to store 1. Turn off
 	// load based rebalancing to make sure it doesn't move.
-	kvserverbase.LoadBasedRebalancingMode.Override(ctx, &settings.SV, kvserverbase.LBRebalancingOff)
+	kvserver.LoadBasedRebalancingMode.Override(ctx, &settings.SV, kvserver.LBRebalancingOff)
 
 	n1 := sqlutils.MakeSQLRunner(tc.Conns[0])
 	n1.Exec(t, `CREATE DATABASE t`)
@@ -892,7 +890,7 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 	n4.Exec(t, historicalQuery.Load().(string))
 	// As a sanity check, verify that this was not a follower read.
 	rec := <-recCh
-	require.False(t, kvtestutils.OnlyFollowerReads(rec), "query was served through follower reads: %s", rec)
+	require.False(t, kv.OnlyFollowerReads(rec), "query was served through follower reads: %s", rec)
 	// Check that the cache was properly updated.
 	entry, err = n4Cache.TestingGetCached(ctx, tablePrefix, false, roachpb.LAG_BY_CLUSTER_SETTING)
 	require.NoError(t, err)
@@ -919,7 +917,7 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 	rec = <-recCh
 
 	// Look at the trace and check that we've served a follower read.
-	require.True(t, kvtestutils.OnlyFollowerReads(rec), "query was not served through follower reads: %s", rec)
+	require.True(t, kv.OnlyFollowerReads(rec), "query was not served through follower reads: %s", rec)
 
 	// Check that the follower read metric was incremented.
 	var followerReadsCountAfter int64
@@ -965,7 +963,7 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 	// Sanity check that the plan was distributed.
 	require.True(t, strings.Contains(rec.String(), "creating DistSQL plan with isLocal=false"))
 	// Look at the trace and check that we've served a follower read.
-	require.True(t, kvtestutils.OnlyFollowerReads(rec), "query was not served through follower reads: %s", rec)
+	require.True(t, kv.OnlyFollowerReads(rec), "query was not served through follower reads: %s", rec)
 	// Verify that we didn't produce the "misplanned ranges" metadata that would
 	// purge the non-stale entries from the range cache on n4.
 	require.False(t, strings.Contains(rec.String(), "clearing entries overlapping"))
