@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
 	"github.com/cockroachdb/cockroach/pkg/sql/execstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlcommenter"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 )
 
@@ -68,6 +67,7 @@ type RecordedStmtStats struct {
 	TransactionFingerprintID appstatspb.TransactionFingerprintID
 	SessionID                clusterunique.ID
 	StatementID              clusterunique.ID
+	TransactionID            uuid.UUID
 	AutoRetryCount           int
 	Failed                   bool
 	Generic                  bool
@@ -93,8 +93,6 @@ type RecordedStmtStats struct {
 	EndTime                  time.Time
 	ExecStats                *execstats.QueryLevelStats
 	Indexes                  []string
-	QueryTags                []sqlcommenter.QueryTag
-	UnderOuterTxn            bool
 }
 
 // RecordedTxnStats stores the statistics of a transaction to be recorded.
@@ -124,8 +122,7 @@ type RecordedTxnStats struct {
 	TxnErr                  error
 	Application             string
 	// Normalized user name.
-	UserNormalized   string
-	InternalExecutor bool
+	UserNormalized string
 }
 
 // SSDrainer is the interface for draining or resetting sql stats.

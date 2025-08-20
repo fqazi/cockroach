@@ -240,7 +240,7 @@ func (p *compactBackupsProcessor) processSpanEntries(
 	entryCh chan execinfrapb.RestoreSpanEntry,
 	encryption *jobspb.BackupEncryptionOptions,
 	store cloud.ExternalStorage,
-) (err error) {
+) error {
 	var fileEncryption *kvpb.FileEncryptionOptions
 	if encryption != nil {
 		fileEncryption = &kvpb.FileEncryptionOptions{Key: encryption.Key}
@@ -256,7 +256,12 @@ func (p *compactBackupsProcessor) processSpanEntries(
 	if err != nil {
 		return err
 	}
-	defer logClose(ctx, sink, "failed to close sst sink")
+	defer func() {
+		if err := sink.Flush(ctx); err != nil {
+			log.Warningf(ctx, "failed to flush sink: %v", err)
+			logClose(ctx, sink, "SST sink")
+		}
+	}()
 	pacer := newBackupPacer(
 		ctx, p.FlowCtx.Cfg.AdmissionPacerFactory, p.FlowCtx.Cfg.Settings,
 	)
@@ -269,7 +274,7 @@ func (p *compactBackupsProcessor) processSpanEntries(
 			return ctx.Err()
 		case entry, ok := <-entryCh:
 			if !ok {
-				return sink.Flush(ctx)
+				return nil
 			}
 			if assigned, err := p.isAssignedEntry(entry); err != nil {
 				return err

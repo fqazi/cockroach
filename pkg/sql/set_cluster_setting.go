@@ -464,9 +464,8 @@ func writeSettingInternal(
 		return logFn(ctx,
 			0, /* no target */
 			&eventpb.SetClusterSetting{
-				SettingName:  string(name),
-				Value:        reportedValue,
-				DefaultValue: setting.DefaultString(),
+				SettingName: string(name),
+				Value:       reportedValue,
 			})
 	}(); err != nil {
 		return "", err
@@ -821,9 +820,6 @@ func toSettingString(
 		if i, intOK := d.(*tree.DInt); intOK {
 			v, ok := setting.ParseEnum(settings.EncodeInt(int64(*i)))
 			if ok {
-				if err := setting.Validate(v); err != nil {
-					return "", err
-				}
 				return settings.EncodeInt(v), nil
 			}
 			return "", errors.WithHint(errors.Errorf("invalid integer value '%d' for enum setting", *i), setting.GetAvailableValuesAsHint())
@@ -831,9 +827,6 @@ func toSettingString(
 			str := string(*s)
 			v, ok := setting.ParseEnum(str)
 			if ok {
-				if err := setting.Validate(v); err != nil {
-					return "", err
-				}
 				return settings.EncodeInt(v), nil
 			}
 			return "", errors.WithHint(errors.Errorf("invalid string value '%s' for enum setting", str), setting.GetAvailableValuesAsHint())

@@ -299,7 +299,7 @@ func IterateRangeDescriptorsFromDisk(
 				// This case shouldn't happen in practice: we have a key that isn't
 				// associated with any range descriptor.
 				if buildutil.CrdbTestBuild {
-					return errors.AssertionFailedf("range local key %s outside of a known range", key.Key)
+					panic(errors.AssertionFailedf("range local key %s outside of a known range", key.Key))
 				}
 				iter.NextKey()
 			}
@@ -388,8 +388,8 @@ type Replica struct {
 }
 
 // ID returns the FullReplicaID.
-func (r Replica) ID() roachpb.FullReplicaID {
-	return roachpb.FullReplicaID{
+func (r Replica) ID() storage.FullReplicaID {
+	return storage.FullReplicaID{
 		RangeID:   r.RangeID,
 		ReplicaID: r.ReplicaID,
 	}

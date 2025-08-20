@@ -185,7 +185,6 @@ func (s *SettingsWatcher) Start(ctx context.Context) error {
 		defer s.mu.Unlock()
 		s.mu.updater.ResetRemaining(ctx)
 		if !initialScan.done {
-			log.VInfof(ctx, 1, "initial settings scan complete")
 			initialScan.done = true
 			close(initialScan.ch)
 		}

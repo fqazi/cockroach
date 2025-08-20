@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/geo"
 	"github.com/cockroachdb/cockroach/pkg/geo/geogen"
 	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
-	"github.com/cockroachdb/cockroach/pkg/sql/oidext"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgrepl/lsn"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
@@ -29,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/ipaddr"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
 	jsonpathparser "github.com/cockroachdb/cockroach/pkg/util/jsonpath/parser"
-	"github.com/cockroachdb/cockroach/pkg/util/ltree"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil/pgdate"
@@ -301,40 +299,13 @@ func RandDatumWithNullChance(
 			}
 			buf.WriteRune(r)
 		}
-		var d tree.Datum
-		var err error
-		switch typ.Oid() {
-		case oidext.T_citext:
-			d, err = tree.NewDCIText(buf.String(), &tree.CollationEnvironment{})
-		default:
-			d, err = tree.NewDCollatedString(buf.String(), typ.Locale(), &tree.CollationEnvironment{})
-		}
+		d, err := tree.NewDCollatedString(buf.String(), typ.Locale(), &tree.CollationEnvironment{})
 		if err != nil {
 			panic(err)
 		}
 		return d
 	case types.OidFamily:
 		return tree.NewDOidWithType(oid.Oid(rng.Uint32()), typ)
-	case types.LTreeFamily:
-		length := rng.Intn(10)
-		if length == 1 && rng.Intn(4) == 0 {
-			return tree.NewDLTree(ltree.Empty)
-		}
-		labels := make([]string, length)
-		for i := range labels {
-			// Labels cannot be empty.
-			labelLen := rng.Intn(9) + 1
-			p := make([]byte, labelLen)
-			for j := range p {
-				p[j] = charSet[rng.Intn(len(charSet))]
-			}
-			labels[i] = string(p)
-		}
-		l, err := tree.ParseDLTree(strings.Join(labels, ltree.PathSeparator))
-		if err != nil {
-			return nil
-		}
-		return l
 	case types.UnknownFamily:
 		return tree.DNull
 	case types.ArrayFamily:
@@ -612,7 +583,7 @@ func randJSONSimpleDepth(rng *rand.Rand, depth int) json.JSON {
 
 const charSet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-// TODO(#22513): Add support for more complex jsonpath queries.
+// TODO(normanchenn): Add support for more complex jsonpath queries.
 func randJsonpath(rng *rand.Rand) string {
 	var parts []string
 	depth := 1 + rng.Intn(20)
@@ -906,24 +877,6 @@ func getRandInterestingDatums(typ types.Family) ([]tree.Datum, bool) {
 					1<<63 - 1,
 				} {
 					d, err := tree.NewDBitArrayFromInt(i, 64)
-					if err != nil {
-						panic(err)
-					}
-					res = append(res, d)
-				}
-				return res
-			}(),
-			types.LTreeFamily: func() []tree.Datum {
-				var res []tree.Datum
-				for _, s := range []string{
-					"",
-					"foo",
-					"foo.bar",
-					"foo.bar.baz",
-					"foo_bar.baz",
-					"foo-bar.baz",
-				} {
-					d, err := tree.ParseDLTree(s)
 					if err != nil {
 						panic(err)
 					}

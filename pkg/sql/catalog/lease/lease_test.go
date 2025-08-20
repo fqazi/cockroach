@@ -271,7 +271,6 @@ func (t *leaseTest) node(nodeID uint32) *lease.Manager {
 		)
 		cfgCpy.SQLLiveness.Start(context.Background(), nil)
 		mgr = lease.NewLeaseManager(
-			context.Background(),
 			ambientCtx,
 			nc,
 			cfgCpy.InternalDB,
@@ -283,7 +282,6 @@ func (t *leaseTest) node(nodeID uint32) *lease.Manager {
 			t.leaseManagerTestingKnobs,
 			t.server.AppStopper(),
 			cfgCpy.RangeFeedFactory,
-			cfgCpy.RootMemoryMonitor,
 		)
 		ctx := logtags.AddTag(context.Background(), "leasemgr", nodeID)
 		mgr.RunBackgroundLeasingTask(ctx)
@@ -522,8 +520,8 @@ func TestLeaseManagerDrain(testingT *testing.T) {
 		// starts draining.
 		l1RemovalTracker := leaseRemovalTracker.TrackRemoval(l1.Underlying())
 
-		t.node(1).SetDraining(ctx, true, nil /* reporter */, false)
-		t.node(2).SetDraining(ctx, true, nil /* reporter */, false)
+		t.node(1).SetDraining(ctx, true, nil /* reporter */)
+		t.node(2).SetDraining(ctx, true, nil /* reporter */)
 
 		// Leases cannot be acquired when in draining mode.
 		if _, err := t.acquire(1, descID); !testutils.IsError(err, "cannot acquire lease when draining") {
@@ -546,60 +544,10 @@ func TestLeaseManagerDrain(testingT *testing.T) {
 	{
 		// Check that leases with a refcount of 0 are correctly kept in the
 		// store once the drain mode has been exited.
-		t.node(1).SetDraining(ctx, false, nil /* reporter */, false /* assertOnLeakedDescriptor */)
+		t.node(1).SetDraining(ctx, false, nil /* reporter */)
 		l1 := t.mustAcquire(1, descID)
 		t.mustRelease(1, l1, nil)
 		t.expectLeases(descID, "/1/1")
-	}
-}
-
-func TestWaitForNewVersion(testingT *testing.T) {
-	defer leaktest.AfterTest(testingT)()
-	defer log.Scope(testingT).Close(testingT)
-
-	var params base.TestClusterArgs
-	params.ServerArgs.Knobs = base.TestingKnobs{
-		SQLLeaseManager: &lease.ManagerTestingKnobs{
-			LeaseStoreTestingKnobs: lease.StorageTestingKnobs{
-				LeaseAcquiredEvent: nil, // TODO
-			},
-		},
-	}
-	t := newLeaseTest(testingT, params)
-	defer t.cleanup()
-
-	ctx := context.Background()
-	descID := t.makeTableForTest()
-
-	_, _ = t.mustAcquire(1, descID), t.mustAcquire(2, descID)
-
-	t.expectLeases(descID, "/1/1 /1/2")
-
-	t.mustPublish(ctx, 1, descID)
-
-	require.NoError(t, t.node(1).AcquireFreshestFromStore(ctx, descID))
-	t.expectLeases(descID, "/1/1 /1/2 /2/1")
-
-	leaseMgr := t.server.LeaseManager().(*lease.Manager)
-
-	{ // expect a timeout
-		timeoutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		_, err := leaseMgr.WaitForNewVersion(timeoutCtx, descID, retry.Options{}, nil)
-		require.ErrorIs(t, err, context.DeadlineExceeded)
-	}
-
-	t.mustAcquire(3, descID)
-	t.expectLeases(descID, "/1/1 /1/2 /2/1 /2/3")
-
-	{ // succeeds when all nodes have the latest version
-		require.NoError(t, t.node(2).AcquireFreshestFromStore(ctx, descID))
-		t.expectLeases(descID, "/1/1 /1/2 /2/1 /2/2 /2/3")
-
-		desc, err := leaseMgr.WaitForNewVersion(context.Background(), descID, retry.Options{}, nil)
-		require.NoError(t, err)
-		require.Equal(t, desc.GetVersion(), descpb.DescriptorVersion(2))
 	}
 }
 
@@ -1383,7 +1331,7 @@ CREATE TABLE t.kv (k CHAR PRIMARY KEY, v CHAR);
 // transaction needs to be restarted, a retryable error is returned to the
 // user. This specific version validations that release savepoint does the
 // same with cockroach_restart, which commits on release.
-func TestTwoVersionInvariantRetryErrorWithSavePoint(t *testing.T) {
+func TestTwoVersionInvariantRetryErrorWitSavePoint(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
@@ -3687,37 +3635,4 @@ func BenchmarkAcquireLeaseConcurrent(b *testing.B) {
 		})
 	}
 
-}
-
-// TestLeaseManagerIsMemoryMonitored basic sanity test to confirm memory monitoring
-// is working.
-func TestLeaseManagerIsMemoryMonitored(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	// This test creates a large number of objects, which
-	// can timeout under stress / race.
-	skip.UnderDuress(t)
-
-	ctx := context.Background()
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer s.Stopper().Stop(ctx)
-	lm := s.LeaseManager().(*lease.Manager)
-	startBytes := lm.TestingGetBoundAccount().Used()
-	lastBytes := startBytes
-	runner := sqlutils.MakeSQLRunner(sqlDB)
-	// First, acquire leases on all the tables
-	for i := 0; i < 100; i++ {
-		runner.Exec(t, fmt.Sprintf("CREATE TABLE t%d(n int)", i))
-		runner.Exec(t, fmt.Sprintf("INSERT INTO t%d VALUES (1)", i))
-		currentBytes := lm.TestingGetBoundAccount().Used()
-		require.Greaterf(t, currentBytes, lastBytes, "memory usage should increase after using a table")
-		lastBytes = currentBytes
-	}
-	// Next we will release the leases on all of them.
-	lastBytes = lm.TestingGetBoundAccount().Used()
-	for i := 0; i < 100; i++ {
-		runner.Exec(t, fmt.Sprintf("DROP TABLE t%d", i))
-	}
-	currentBytes := lm.TestingGetBoundAccount().Used()
-	require.Lessf(t, currentBytes, lastBytes, "memory usage should be decreasing after dropping a table")
 }

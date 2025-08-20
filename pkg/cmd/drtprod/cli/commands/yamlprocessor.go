@@ -15,10 +15,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/drtprod/helpers"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachprod/cli"
 	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -65,7 +63,7 @@ You can also specify the rollback commands in case of a step failure.
 `,
 		Args: cobra.ExactArgs(1),
 		// Wraps the command execution with additional error handling
-		Run: cli.Wrap(func(cmd *cobra.Command, args []string) (retErr error) {
+		Run: helpers.Wrap(func(cmd *cobra.Command, args []string) (retErr error) {
 			_, err := exec.LookPath("drtprod")
 			if err != nil {
 				// drtprod is needed in the path to run yaml commands
@@ -118,8 +116,6 @@ type step struct {
 	Flags             map[string]interface{} `yaml:"flags"`               // Flags to pass to the command or script
 	ContinueOnFailure bool                   `yaml:"continue_on_failure"` // Whether to continue on failure
 	OnRollback        []step                 `yaml:"on_rollback"`         // Steps to execute if rollback is needed
-	WaitBefore        int                    `yaml:"wait_before"`         // Wait time in seconds before executing the step
-	WaitAfter         int                    `yaml:"wait_after"`          // Wait time in seconds after executing the step
 }
 
 // target defines a target cluster with associated steps to be executed.
@@ -144,8 +140,6 @@ type command struct {
 	args              []string   // Command arguments
 	continueOnFailure bool       // Whether to continue on failure
 	rollbackCmds      []*command // Rollback commands to execute in case of failure
-	waitAfter         int        // Wait time in seconds after executing the command
-	waitBefore        int        // Wait time in seconds before executing the command
 }
 
 // String returns the command as a string for easy printing.
@@ -283,19 +277,9 @@ func setupAndExecute(
 ) error {
 	logger := config.Logger
 	// Move the drtprod binary to /usr/bin to ensure it is available system-wide on the cluster.
-	err := roachprodRun(ctx, logger, monitorClusterName, "", "", install.SimpleSecureOption(true),
+	err := roachprodRun(ctx, logger, monitorClusterName, "", "", true,
 		os.Stdout, os.Stderr,
-		[]string{fmt.Sprintf("sudo cp %s /usr/bin", drtprodLocation)},
-		install.RunOptions{FailOption: install.FailSlow})
-	if err != nil {
-		return err
-	}
-
-	// Enable linger for the default user, so that the cloud subprocess is not
-	// killed when the user logs out.
-	err = roachprodRun(ctx, logger, monitorClusterName, "", "", install.SimpleSecureOption(true),
-		os.Stdout, os.Stderr,
-		[]string{fmt.Sprintf("sudo loginctl enable-linger %s", config.SharedUser)},
+		[]string{fmt.Sprintf("sudo mv %s /usr/bin", drtprodLocation)},
 		install.RunOptions{FailOption: install.FailSlow})
 	if err != nil {
 		return err
@@ -318,7 +302,7 @@ func setupAndExecute(
 	}
 
 	// Run the systemd command on the remote cluster.
-	return roachprodRun(ctx, logger, monitorClusterName, "", "", install.SimpleSecureOption(true),
+	return roachprodRun(ctx, logger, monitorClusterName, "", "", true,
 		os.Stdout, os.Stderr,
 		[]string{executeArgs},
 		install.RunOptions{FailOption: install.FailSlow})
@@ -340,7 +324,7 @@ func uploadAllDependentFiles(
 			if strings.Contains(fl, "/") {
 				dirLocation := filepath.Dir(fl)
 				// Use roachprod to create the directory on the remote.
-				err := roachprodRun(ctx, logger, monitorClusterName, "", "", install.SimpleSecureOption(true),
+				err := roachprodRun(ctx, logger, monitorClusterName, "", "", true,
 					os.Stdout, os.Stderr,
 					[]string{fmt.Sprintf("mkdir -p %s", dirLocation)},
 					install.RunOptions{FailOption: install.FailSlow})
@@ -552,10 +536,6 @@ func executeCommands(ctx context.Context, logPrefix string, cmds []*command) err
 	}()
 
 	for _, cmd := range cmds {
-		if cmd.waitBefore > 0 {
-			fmt.Printf("[%s] Waiting for %d seconds\n", logPrefix, cmd.waitBefore)
-			time.Sleep(time.Duration(cmd.waitBefore) * time.Second)
-		}
 		fmt.Printf("[%s] Starting <%v>\n", logPrefix, cmd)
 		err := commandExecutor(ctx, logPrefix, cmd.name, cmd.args...)
 		if err != nil {
@@ -567,10 +547,6 @@ func executeCommands(ctx context.Context, logPrefix string, cmds []*command) err
 			fmt.Printf("[%s] Failed <%v>, Error Ignored: %v\n", logPrefix, cmd, err)
 		} else {
 			fmt.Printf("[%s] Completed <%v>\n", logPrefix, cmd)
-			if cmd.waitAfter > 0 {
-				fmt.Printf("[%s] Waiting for %d seconds\n", logPrefix, cmd.waitAfter)
-				time.Sleep(time.Duration(cmd.waitAfter) * time.Second)
-			}
 		}
 
 		// Add rollback commands if specified
@@ -628,8 +604,6 @@ func generateStepCmd(clusterName string, s step) (*command, error) {
 			return nil, err
 		}
 	}
-	cmd.waitAfter = s.WaitAfter
-	cmd.waitBefore = s.WaitBefore
 	return cmd, err
 }
 

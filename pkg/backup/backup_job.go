@@ -126,17 +126,19 @@ func filterSpans(includes []roachpb.Span, excludes []roachpb.Span) []roachpb.Spa
 func backup(
 	ctx context.Context,
 	execCtx sql.JobExecContext,
-	details jobspb.BackupDetails,
+	defaultURI string,
+	urisByLocalityKV map[string]string,
 	settings *cluster.Settings,
 	defaultStore cloud.ExternalStorage,
 	storageByLocalityKV map[string]*cloudpb.ExternalStorage,
 	resumer *backupResumer,
 	backupManifest *backuppb.BackupManifest,
 	makeExternalStorage cloud.ExternalStorageFactory,
+	encryption *jobspb.BackupEncryptionOptions,
+	execLocality roachpb.Locality,
 ) (_ roachpb.RowCount, numBackupInstances int, _ error) {
 	resumerSpan := tracing.SpanFromContext(ctx)
 	var lastCheckpoint time.Time
-	encryption := details.EncryptionOptions
 
 	kmsEnv := backupencryption.MakeBackupKMSEnv(
 		execCtx.ExecCfg().Settings,
@@ -168,16 +170,14 @@ func backup(
 	oracle := physicalplan.DefaultReplicaChooser
 	if useBulkOracle.Get(&evalCtx.Settings.SV) {
 		oracle = kvfollowerreadsccl.NewBulkOracle(
-			dsp.ReplicaOracleConfig(evalCtx.Locality),
-			details.ExecutionLocality,
-			kvfollowerreadsccl.StreakConfig{},
+			dsp.ReplicaOracleConfig(evalCtx.Locality), execLocality, kvfollowerreadsccl.StreakConfig{},
 		)
 	}
 
 	// We don't return the compatible nodes here since PartitionSpans will
 	// filter out incompatible nodes.
 	planCtx, _, err := dsp.SetupAllNodesPlanningWithOracle(
-		ctx, evalCtx, execCtx.ExecCfg(), oracle, details.ExecutionLocality,
+		ctx, evalCtx, execCtx.ExecCfg(), oracle, execLocality,
 	)
 	if err != nil {
 		return roachpb.RowCount{}, 0, errors.Wrap(err, "failed to determine nodes on which to run")
@@ -193,8 +193,8 @@ func backup(
 		spans,
 		introducedSpans,
 		pkIDs,
-		details.URI,
-		details.URIsByLocalityKV,
+		defaultURI,
+		urisByLocalityKV,
 		encryption,
 		&kmsEnv,
 		kvpb.MVCCFilter(backupManifest.MVCCFilter),
@@ -226,35 +226,17 @@ func backup(
 		}
 	}
 
-	// Create a channel with a little buffering, but plan on dropping if blocked.
-	perNodeProgressCh := make(chan map[execinfrapb.ComponentID]float32, len(backupSpecs))
+	// Create a channel that is large enough that it does not block.
+	perNodeProgressCh := make(chan map[execinfrapb.ComponentID]float32, numTotalSpans)
 	storePerNodeProgressLoop := func(ctx context.Context) error {
-		// track the last progress per component, periodically flushing those that
-		// have changed to info rows.
-		current, persisted := make(map[execinfrapb.ComponentID]float32), make(map[execinfrapb.ComponentID]float32)
-		lastSaved := timeutil.Now()
-
 		for {
 			select {
 			case prog, ok := <-perNodeProgressCh:
 				if !ok {
 					return nil
 				}
-				for k, v := range prog {
-					current[k] = v
-				}
-				if timeutil.Since(lastSaved) > time.Second*15 {
-					lastSaved = timeutil.Now()
-					updates := make(map[execinfrapb.ComponentID]float32)
-					for k := range current {
-						if current[k] != persisted[k] {
-							persisted[k] = current[k]
-							updates[k] = current[k]
-						}
-					}
-					jobsprofiler.StorePerNodeProcessorProgressFraction(
-						ctx, execCtx.ExecCfg().InternalDB, job.ID(), updates)
-				}
+				jobsprofiler.StorePerNodeProcessorProgressFraction(
+					ctx, execCtx.ExecCfg().InternalDB, job.ID(), prog)
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -303,8 +285,11 @@ func backup(
 				perComponentProgress[component] = fraction
 			}
 			select {
+			// This send to a buffered channel should never block but incase it does
+			// we will fallthrough to the default case.
 			case perNodeProgressCh <- perComponentProgress:
-			default: // discard the update if the flusher is backed up.
+			default:
+				log.Warningf(ctx, "skipping persisting per component progress as buffered channel was full")
 			}
 
 			// Check if we should persist a checkpoint backup manifest.
@@ -317,7 +302,7 @@ func backup(
 				})
 
 				err := backupinfo.WriteBackupManifestCheckpoint(
-					ctx, details.URI, encryption, &kmsEnv, backupManifest, execCtx.ExecCfg(), execCtx.User(),
+					ctx, defaultURI, encryption, &kmsEnv, backupManifest, execCtx.ExecCfg(), execCtx.User(),
 				)
 				if err != nil {
 					log.Errorf(ctx, "unable to checkpoint backup descriptor: %+v", err)
@@ -452,16 +437,6 @@ func backup(
 	statsTable := getTableStatsForBackup(ctx, execCtx.ExecCfg().InternalDB.Executor(), backupManifest.Descriptors)
 	if err := backupinfo.WriteTableStatistics(ctx, defaultStore, encryption, &kmsEnv, &statsTable); err != nil {
 		return roachpb.RowCount{}, 0, err
-	}
-
-	if err := backupdest.WriteBackupIndexMetadata(
-		ctx,
-		execCtx.ExecCfg(),
-		execCtx.User(),
-		execCtx.ExecCfg().DistSQLSrv.ExternalStorageFromURI,
-		details,
-	); err != nil {
-		return roachpb.RowCount{}, 0, errors.Wrapf(err, "writing backup index metadata")
 	}
 
 	return backupManifest.EntryCounts, numBackupInstances, nil
@@ -748,13 +723,16 @@ func (b *backupResumer) Resume(ctx context.Context, execCtx interface{}) error {
 		res, numBackupInstances, err = backup(
 			ctx,
 			p,
-			details,
+			details.URI,
+			details.URIsByLocalityKV,
 			p.ExecCfg().Settings,
 			defaultStore,
 			storageByLocalityKV,
 			b,
 			backupManifest,
 			p.ExecCfg().DistSQLSrv.ExternalStorage,
+			details.EncryptionOptions,
+			details.ExecutionLocality,
 		)
 		if err == nil {
 			break

@@ -110,8 +110,7 @@ func ValidateColumnDefType(ctx context.Context, st *cluster.Settings, t *types.T
 		types.INetFamily, types.IntervalFamily, types.JsonFamily, types.OidFamily, types.TimeFamily,
 		types.TimestampFamily, types.TimestampTZFamily, types.UuidFamily, types.TimeTZFamily,
 		types.GeographyFamily, types.GeometryFamily, types.EnumFamily, types.Box2DFamily,
-		types.TSQueryFamily, types.TSVectorFamily, types.PGLSNFamily, types.PGVectorFamily, types.RefCursorFamily,
-		types.LTreeFamily:
+		types.TSQueryFamily, types.TSVectorFamily, types.PGLSNFamily, types.PGVectorFamily, types.RefCursorFamily:
 	// These types are OK.
 
 	case types.JsonpathFamily:
@@ -224,8 +223,6 @@ func MustBeValueEncoded(semanticType *types.T) bool {
 		return true
 	case types.PGVectorFamily:
 		return true
-		// NB: if you're adding a new type here, you probably also want to
-		// include it into rowenc.mustUseValueEncodingForFingerprinting.
 	}
 	return false
 }

@@ -6,17 +6,6 @@
 # Any change to the kv batches produced by these statements should be treated
 # with care.
 
-# Write buffering changes the trace, so we unconditionally enable it.
-statement ok
-SET kv_transaction_buffered_writes_enabled = true
-
-# The buffer size can be changed metamoprhically, and if it happens to be too
-# small (around 500B), then some of the txns below might flush the buffer,
-# resulting in different KV requests. To ensure deterministic traces we always
-# update the buffer size to be large enough for txns in this file.
-statement ok
-SET CLUSTER SETTING kv.transaction.write_buffering.max_buffer_size = '2KiB';
-
 statement ok
 CREATE TABLE ab (a INT PRIMARY KEY, b INT, FAMILY f1 (a, b))
 
@@ -104,7 +93,7 @@ WHERE message     LIKE '%r$rangeid: sending batch%'
   AND message NOT LIKE '%QueryTxn%'
   AND message NOT LIKE '%ResolveIntent%'
 ----
-dist sender send  r74: sending batch 2 Get to (n1,s1):1
+dist sender send  r74: sending batch 2 CPut to (n1,s1):1
 
 statement ok
 ROLLBACK
@@ -181,8 +170,8 @@ WHERE message       LIKE '%r$rangeid: sending batch%'
   AND message   NOT LIKE '%ResolveIntent%'
   AND operation NOT LIKE '%async%'
 ----
-dist sender send  r74: sending batch 2 Get to (n1,s1):1
-dist sender send  r74: sending batch 2 Put, 1 EndTxn to (n1,s1):1
+dist sender send  r74: sending batch 2 CPut to (n1,s1):1
+dist sender send  r74: sending batch 1 EndTxn to (n1,s1):1
 
 # Another way to test the scenario above: generate an error and ensure that the
 # mutation was not committed.
@@ -269,7 +258,7 @@ WHERE message     LIKE '%r$rangeid: sending batch%'
   AND message NOT LIKE '%QueryTxn%'
   AND message NOT LIKE '%ResolveIntent%'
 ----
-dist sender send  r74: sending batch 2 Get to (n1,s1):1
+dist sender send  r74: sending batch 2 Put to (n1,s1):1
 
 statement ok
 ROLLBACK
@@ -321,8 +310,8 @@ WHERE message       LIKE '%r$rangeid: sending batch%'
   AND message   NOT LIKE '%ResolveIntent%'
   AND operation NOT LIKE '%async%'
 ----
-dist sender send  r74: sending batch 2 Get to (n1,s1):1
-dist sender send  r74: sending batch 2 Put, 1 EndTxn to (n1,s1):1
+dist sender send  r74: sending batch 2 Put to (n1,s1):1
+dist sender send  r74: sending batch 1 EndTxn to (n1,s1):1
 
 # Upsert with RETURNING statement with side-effects should not auto-commit.
 # In this case division can (in principle) error out.
@@ -348,8 +337,8 @@ WHERE message       LIKE '%r$rangeid: sending batch%'
   AND message   NOT LIKE '%ResolveIntent%'
   AND operation NOT LIKE '%async%'
 ----
-dist sender send  r74: sending batch 2 Get to (n1,s1):1
-dist sender send  r74: sending batch 2 Put, 1 EndTxn to (n1,s1):1
+dist sender send  r74: sending batch 2 Put to (n1,s1):1
+dist sender send  r74: sending batch 1 EndTxn to (n1,s1):1
 
 # Another way to test the scenario above: generate an error and ensure that the
 # mutation was not committed.
@@ -414,6 +403,7 @@ WHERE message     LIKE '%r$rangeid: sending batch%'
   AND message NOT LIKE '%ResolveIntent%'
 ----
 dist sender send  r74: sending batch 1 Scan to (n1,s1):1
+dist sender send  r74: sending batch 2 Put to (n1,s1):1
 
 statement ok
 ROLLBACK
@@ -467,7 +457,8 @@ WHERE message       LIKE '%r$rangeid: sending batch%'
   AND operation NOT LIKE '%async%'
 ----
 dist sender send  r74: sending batch 1 Scan to (n1,s1):1
-dist sender send  r74: sending batch 2 Put, 1 EndTxn to (n1,s1):1
+dist sender send  r74: sending batch 2 Put to (n1,s1):1
+dist sender send  r74: sending batch 1 EndTxn to (n1,s1):1
 
 # Update with RETURNING statement with side-effects should not auto-commit.
 # In this case division can (in principle) error out.
@@ -494,7 +485,8 @@ WHERE message       LIKE '%r$rangeid: sending batch%'
   AND operation NOT LIKE '%async%'
 ----
 dist sender send  r74: sending batch 1 Scan to (n1,s1):1
-dist sender send  r74: sending batch 2 Put, 1 EndTxn to (n1,s1):1
+dist sender send  r74: sending batch 2 Put to (n1,s1):1
+dist sender send  r74: sending batch 1 EndTxn to (n1,s1):1
 
 # Another way to test the scenario above: generate an error and ensure that the
 # mutation was not committed.
@@ -635,7 +627,8 @@ WHERE message       LIKE '%r$rangeid: sending batch%'
   AND operation NOT LIKE '%async%'
 ----
 dist sender send  r74: sending batch 1 Scan to (n1,s1):1
-dist sender send  r74: sending batch 2 Del, 1 EndTxn to (n1,s1):1
+dist sender send  r74: sending batch 2 Del to (n1,s1):1
+dist sender send  r74: sending batch 1 EndTxn to (n1,s1):1
 
 # Insert with RETURNING statement with side-effects should not auto-commit.
 # In this case division can (in principle) error out.
@@ -662,7 +655,8 @@ WHERE message       LIKE '%r$rangeid: sending batch%'
   AND operation NOT LIKE '%async%'
 ----
 dist sender send  r74: sending batch 1 Scan to (n1,s1):1
-dist sender send  r74: sending batch 2 Del, 1 EndTxn to (n1,s1):1
+dist sender send  r74: sending batch 2 Del to (n1,s1):1
+dist sender send  r74: sending batch 1 EndTxn to (n1,s1):1
 
 statement ok
 INSERT INTO ab VALUES (12, 0);
@@ -712,9 +706,9 @@ WHERE message       LIKE '%r$rangeid: sending batch%'
   AND message   NOT LIKE '%ResolveIntent%'
   AND operation NOT LIKE '%async%'
 ----
+dist sender send  r74: sending batch 2 CPut to (n1,s1):1
 dist sender send  r74: sending batch 2 Get to (n1,s1):1
-dist sender send  r74: sending batch 2 Get to (n1,s1):1
-dist sender send  r74: sending batch 2 Put, 1 EndTxn to (n1,s1):1
+dist sender send  r74: sending batch 1 EndTxn to (n1,s1):1
 
 query B
 SELECT count(*) > 0 FROM [
@@ -739,9 +733,9 @@ WHERE message       LIKE '%r$rangeid: sending batch%'
   AND operation NOT LIKE '%async%'
 ----
 dist sender send  r74: sending batch 1 Scan to (n1,s1):1
+dist sender send  r74: sending batch 1 Put to (n1,s1):1
 dist sender send  r74: sending batch 1 Get to (n1,s1):1
-dist sender send  r74: sending batch 1 Get to (n1,s1):1
-dist sender send  r74: sending batch 1 Put, 1 EndTxn to (n1,s1):1
+dist sender send  r74: sending batch 1 EndTxn to (n1,s1):1
 
 query B
 SELECT count(*) > 0 FROM [
@@ -767,8 +761,9 @@ WHERE message       LIKE '%r$rangeid: sending batch%'
   AND operation NOT LIKE '%async%'
 ----
 dist sender send  r74: sending batch 1 Get to (n1,s1):1
+dist sender send  r74: sending batch 1 Del to (n1,s1):1
 dist sender send  r74: sending batch 1 Scan to (n1,s1):1
-dist sender send  r74: sending batch 1 Del, 1 EndTxn to (n1,s1):1
+dist sender send  r74: sending batch 1 EndTxn to (n1,s1):1
 
 # Test with a single cascade, which should use autocommit.
 statement ok
@@ -799,9 +794,9 @@ WHERE message       LIKE '%r$rangeid: sending batch%'
   AND message   NOT LIKE '%ResolveIntent%'
   AND operation NOT LIKE '%async%'
 ----
-dist sender send  r74: sending batch 1 Get to (n1,s1):1
+dist sender send  r74: sending batch 1 Del to (n1,s1):1
 dist sender send  r74: sending batch 1 Scan to (n1,s1):1
-dist sender send  r74: sending batch 2 Del, 1 EndTxn to (n1,s1):1
+dist sender send  r74: sending batch 1 Del, 1 EndTxn to (n1,s1):1
 
 # -----------------------
 # Multiple mutation tests
@@ -832,9 +827,9 @@ WHERE message       LIKE '%r$rangeid: sending batch%'
   AND message   NOT LIKE '%ResolveIntent%'
   AND operation NOT LIKE '%async%'
 ----
-dist sender send  r74: sending batch 2 Get to (n1,s1):1
-dist sender send  r74: sending batch 2 Get to (n1,s1):1
-dist sender send  r74: sending batch 4 Put, 1 EndTxn to (n1,s1):1
+dist sender send  r74: sending batch 2 CPut to (n1,s1):1
+dist sender send  r74: sending batch 2 CPut to (n1,s1):1
+dist sender send  r74: sending batch 1 EndTxn to (n1,s1):1
 
 query B
 SELECT count(*) > 0 FROM [
@@ -860,9 +855,9 @@ WHERE message       LIKE '%r$rangeid: sending batch%'
   AND message   NOT LIKE '%ResolveIntent%'
   AND operation NOT LIKE '%async%'
 ----
-dist sender send  r74: sending batch 2 Get to (n1,s1):1
-dist sender send  r74: sending batch 2 Get to (n1,s1):1
-dist sender send  r74: sending batch 4 Put, 1 EndTxn to (n1,s1):1
+dist sender send  r74: sending batch 2 CPut to (n1,s1):1
+dist sender send  r74: sending batch 2 CPut to (n1,s1):1
+dist sender send  r74: sending batch 1 EndTxn to (n1,s1):1
 
 # Check that the statement can still be auto-committed when the txn rows written
 # erring guardrail is enabled.

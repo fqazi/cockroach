@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
@@ -158,7 +157,7 @@ func (hs *HeartbeatService) Ping(ctx context.Context, request *PingRequest) (*Pi
 	serverOffset.Offset = -serverOffset.Offset
 	// In this case, we won't be recording the RTT (note the 0 RTT). Therefore, the RPC class is gonna be ignored.
 	hs.remoteClockMonitor.UpdateOffset(ctx, request.OriginNodeID, serverOffset, 0, /* roundTripLatency */
-		rpcbase.DefaultClass)
+		DefaultClass)
 	response := PingResponse{
 		Pong:                           request.Ping,
 		ServerTime:                     hs.clock.Now().UnixNano(),

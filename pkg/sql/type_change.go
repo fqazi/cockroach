@@ -407,7 +407,7 @@ func (t *typeSchemaChanger) exec(ctx context.Context) error {
 		var idsToRemove []int
 		populateIDsToRemove := func(holder context.Context, txn descs.Txn) error {
 			typeDesc, err := txn.Descriptors().MutableByID(txn.KV()).Type(ctx, t.typeID)
-			if err != nil || typeDesc.GetParentID() != keys.SystemDatabaseID {
+			if err != nil {
 				return err
 			}
 			for _, member := range typeDesc.EnumMembers {
@@ -1421,7 +1421,7 @@ func (t *typeSchemaChanger) execWithRetry(ctx context.Context) error {
 			return nil
 		case !IsPermanentSchemaChangeError(tcErr):
 			// If this isn't a permanent error, then retry.
-			log.Infof(ctx, "retrying type schema change due to retryable error %v", tcErr)
+			log.Infof(ctx, "retrying type schema change due to retriable error %v", tcErr)
 		default:
 			return tcErr
 		}

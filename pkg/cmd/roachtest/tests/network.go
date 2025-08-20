@@ -166,7 +166,7 @@ SELECT $1::INT = ALL (
 	// in case an error occurs.
 	woopsCh := make(chan struct{}, len(serverNodes)-1)
 
-	m := c.NewDeprecatedMonitor(ctx, serverNodes)
+	m := c.NewMonitor(ctx, serverNodes)
 
 	var numConns uint32
 
@@ -338,7 +338,7 @@ func runClientNetworkConnectionTimeout(ctx context.Context, t test.Test, c clust
 	grp.Go(func(ctx context.Context, l *logger.Logger) error {
 		urls, err := roachprod.PgURL(ctx, l, c.MakeNodes(c.Node(1)), certsDir, roachprod.PGURLOptions{
 			External: true,
-			Secure:   install.SimpleSecureOption(true),
+			Secure:   true,
 		})
 		if err != nil {
 			return err

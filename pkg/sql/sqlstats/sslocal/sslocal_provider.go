@@ -10,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
@@ -23,14 +24,13 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-// NewSQLStats returns an instance of SQLStats.
-func NewSQLStats(
+// New returns an instance of SQLStats.
+func New(
 	settings *cluster.Settings,
 	maxStmtFingerprints *settings.IntSetting,
 	maxTxnFingerprints *settings.IntSetting,
 	curMemoryBytesCount *metric.Gauge,
 	maxMemoryBytesHist metric.IHistogram,
-	discarededCount *metric.Counter,
 	pool *mon.BytesMonitor,
 	reportingSink Sink,
 	knobs *sqlstats.TestingKnobs,
@@ -41,11 +41,16 @@ func NewSQLStats(
 		maxTxnFingerprints,
 		curMemoryBytesCount,
 		maxMemoryBytesHist,
-		discarededCount,
 		pool,
 		reportingSink,
 		knobs,
 	)
+}
+
+// GetController returns a sqlstats.Controller responsible for the current
+// SQLStats.
+func (s *SQLStats) GetController(server serverpb.SQLStatusServer) *Controller {
+	return NewController(s, server)
 }
 
 func (s *SQLStats) Start(ctx context.Context, stopper *stop.Stopper) {
@@ -74,6 +79,7 @@ func (s *SQLStats) Start(ctx context.Context, stopper *stop.Stopper) {
 				case <-stopper.ShouldQuiesce():
 					return
 				case <-timer.C:
+					timer.Read = true
 				}
 			}
 		}

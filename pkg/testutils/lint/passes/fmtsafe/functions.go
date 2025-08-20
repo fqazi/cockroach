@@ -44,9 +44,6 @@ var requireConstFmt = map[string]bool{
 	"(*log.Logger).Panicf": true,
 	"(*log.Logger).Printf": true,
 
-	"(*github.com/cockroachdb/cockroach/pkg/util/hlc/logger.logLogger).Fatalf":   true,
-	"(*github.com/cockroachdb/cockroach/pkg/util/hlc/logger.logLogger).Warningf": true,
-
 	"github.com/cockroachdb/cockroach/pkg/util/log.Shoutf":          true,
 	"github.com/cockroachdb/cockroach/pkg/util/log.Eventf":          true,
 	"github.com/cockroachdb/cockroach/pkg/util/log.vEventf":         true,
@@ -176,13 +173,6 @@ var requireConstFmt = map[string]bool{
 	"(github.com/cockroachdb/cockroach/pkg/kv/kvpb.TestPrinter).Printf": true,
 
 	"(*github.com/cockroachdb/cockroach/pkg/cloud/amazon.awsLogAdapter).Logf": true,
-
-	"(github.com/cockroachdb/cockroach/pkg/util/log.Migrator).logfDepth": true,
-	"(github.com/cockroachdb/cockroach/pkg/util/log.Migrator).Infof":     true,
-	"(github.com/cockroachdb/cockroach/pkg/util/log.Migrator).Warningf":  true,
-	"(github.com/cockroachdb/cockroach/pkg/util/log.Migrator).Errorf":    true,
-	"(github.com/cockroachdb/cockroach/pkg/util/log.Migrator).Fatalf":    true,
-	"(github.com/cockroachdb/cockroach/pkg/util/log.Migrator).VEventf":   true,
 
 	// Error things are populated in the init() message.
 }

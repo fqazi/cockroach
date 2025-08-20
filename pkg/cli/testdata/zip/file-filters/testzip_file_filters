@@ -1,7 +1,6 @@
-#include all filters. We are excluding cpu.pprof file to avoid flakiness in tests.
---include-files=* --exclude-files=cpu.pprof
+#include all filters
+--include-files=*
 ----
-debug/cluster_settings_history.txt
 debug/crdb_internal.cluster_contention_events.txt
 debug/crdb_internal.cluster_database_privileges.txt
 debug/crdb_internal.cluster_distsql_flows.txt
@@ -15,7 +14,6 @@ debug/crdb_internal.create_function_statements.txt
 debug/crdb_internal.create_procedure_statements.txt
 debug/crdb_internal.create_schema_statements.txt
 debug/crdb_internal.create_statements.txt
-debug/crdb_internal.create_trigger_statements.txt
 debug/crdb_internal.create_type_statements.txt
 debug/crdb_internal.default_privileges.txt
 debug/crdb_internal.index_usage_statistics.txt
@@ -42,6 +40,7 @@ debug/hot-ranges-tenant.sh
 debug/hot-ranges.sh
 debug/liveness.json
 debug/nodes.json
+debug/nodes/1/cpu.pprof
 debug/nodes/1/crdb_internal.active_range_feeds.txt
 debug/nodes/1/crdb_internal.cluster_replication_node_stream_checkpoints.txt
 debug/nodes/1/crdb_internal.cluster_replication_node_stream_spans.txt
@@ -145,7 +144,6 @@ debug/tenant_ranges.err.txt
 #include only txt files
 --include-files=*.txt
 ----
-debug/cluster_settings_history.txt
 debug/crdb_internal.cluster_contention_events.txt
 debug/crdb_internal.cluster_database_privileges.txt
 debug/crdb_internal.cluster_distsql_flows.txt
@@ -159,7 +157,6 @@ debug/crdb_internal.create_function_statements.txt
 debug/crdb_internal.create_procedure_statements.txt
 debug/crdb_internal.create_schema_statements.txt
 debug/crdb_internal.create_statements.txt
-debug/crdb_internal.create_trigger_statements.txt
 debug/crdb_internal.create_type_statements.txt
 debug/crdb_internal.default_privileges.txt
 debug/crdb_internal.index_usage_statistics.txt
@@ -293,10 +290,9 @@ debug/hot-ranges.sh
 debug/pprof-summary.sh
 debug/tenant_ranges.err.txt
 
-#exclude only log files. We are excluding cpu.pprof file to avoid flakiness in tests.
---exclude-files=*.log,cpu.pprof
+#exclude only log files
+--exclude-files=*.log
 ----
-debug/cluster_settings_history.txt
 debug/crdb_internal.cluster_contention_events.txt
 debug/crdb_internal.cluster_database_privileges.txt
 debug/crdb_internal.cluster_distsql_flows.txt
@@ -310,7 +306,6 @@ debug/crdb_internal.create_function_statements.txt
 debug/crdb_internal.create_procedure_statements.txt
 debug/crdb_internal.create_schema_statements.txt
 debug/crdb_internal.create_statements.txt
-debug/crdb_internal.create_trigger_statements.txt
 debug/crdb_internal.create_type_statements.txt
 debug/crdb_internal.default_privileges.txt
 debug/crdb_internal.index_usage_statistics.txt
@@ -337,6 +332,7 @@ debug/hot-ranges-tenant.sh
 debug/hot-ranges.sh
 debug/liveness.json
 debug/nodes.json
+debug/nodes/1/cpu.pprof
 debug/nodes/1/crdb_internal.active_range_feeds.txt
 debug/nodes/1/crdb_internal.cluster_replication_node_stream_checkpoints.txt
 debug/nodes/1/crdb_internal.cluster_replication_node_stream_spans.txt
@@ -416,8 +412,8 @@ debug/system.zones.txt
 debug/tenant_ranges.err.txt
 
 
-#exclude only txt files. We are excluding cpu.pprof file to avoid flakiness in tests.
---exclude-files=*.txt,cpu.pprof
+#exclude only txt files
+--exclude-files=*.txt
 ----
 debug/debug_zip_command_flags.txt
 debug/events.json
@@ -425,6 +421,7 @@ debug/hot-ranges-tenant.sh
 debug/hot-ranges.sh
 debug/liveness.json
 debug/nodes.json
+debug/nodes/1/cpu.pprof
 debug/nodes/1/details.json
 debug/nodes/1/gossip.json
 debug/nodes/1/heap.pprof
@@ -438,10 +435,9 @@ debug/settings.json
 debug/tenant_ranges.err.txt
 
 
-#exclude only json files. We are excluding cpu.pprof file to avoid flakiness in tests.
---exclude-files=*.json,cpu.pprof
+#exclude only json files
+--exclude-files=*.json
 ----
-debug/cluster_settings_history.txt
 debug/crdb_internal.cluster_contention_events.txt
 debug/crdb_internal.cluster_database_privileges.txt
 debug/crdb_internal.cluster_distsql_flows.txt
@@ -455,7 +451,6 @@ debug/crdb_internal.create_function_statements.txt
 debug/crdb_internal.create_procedure_statements.txt
 debug/crdb_internal.create_schema_statements.txt
 debug/crdb_internal.create_statements.txt
-debug/crdb_internal.create_trigger_statements.txt
 debug/crdb_internal.create_type_statements.txt
 debug/crdb_internal.default_privileges.txt
 debug/crdb_internal.index_usage_statistics.txt
@@ -479,6 +474,7 @@ debug/crdb_internal.zones.txt
 debug/debug_zip_command_flags.txt
 debug/hot-ranges-tenant.sh
 debug/hot-ranges.sh
+debug/nodes/1/cpu.pprof
 debug/nodes/1/crdb_internal.active_range_feeds.txt
 debug/nodes/1/crdb_internal.cluster_replication_node_stream_checkpoints.txt
 debug/nodes/1/crdb_internal.cluster_replication_node_stream_spans.txt
@@ -554,7 +550,6 @@ debug/tenant_ranges.err.txt
 #include only txt files with system table file exclustion
 --include-files=*.txt --exclude-files=system.*.txt
 ----
-debug/cluster_settings_history.txt
 debug/crdb_internal.cluster_contention_events.txt
 debug/crdb_internal.cluster_database_privileges.txt
 debug/crdb_internal.cluster_distsql_flows.txt
@@ -568,7 +563,6 @@ debug/crdb_internal.create_function_statements.txt
 debug/crdb_internal.create_procedure_statements.txt
 debug/crdb_internal.create_schema_statements.txt
 debug/crdb_internal.create_statements.txt
-debug/crdb_internal.create_trigger_statements.txt
 debug/crdb_internal.create_type_statements.txt
 debug/crdb_internal.default_privileges.txt
 debug/crdb_internal.index_usage_statistics.txt

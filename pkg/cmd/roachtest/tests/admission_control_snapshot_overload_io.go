@@ -175,7 +175,7 @@ func runAdmissionControlSnapshotOverloadIO(
 		const bandwidthLimit = 128 << 20 // 128 MiB
 		t.Status(fmt.Sprintf("limiting disk bandwidth to %d bytes/s", bandwidthLimit))
 		staller := roachtestutil.MakeCgroupDiskStaller(t, c,
-			false /* readsToo */, false /* logsToo */, false /* disableStateValidation */)
+			false /* readsToo */, false /* logsToo */)
 		staller.Setup(ctx)
 		staller.Slow(ctx, c.CRDBNodes(), bandwidthLimit)
 
@@ -190,7 +190,7 @@ func runAdmissionControlSnapshotOverloadIO(
 	}
 
 	t.Status(fmt.Sprintf("starting kv workload thread (<%s)", time.Minute))
-	m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+	m := c.NewMonitor(ctx, c.CRDBNodes())
 	m.Go(func(ctx context.Context) error {
 
 		labels := map[string]string{

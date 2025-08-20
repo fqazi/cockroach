@@ -1364,7 +1364,7 @@ func TestJoinReaderDrain(t *testing.T) {
 	defer diskMonitor.Stop(ctx)
 
 	rootTxn := kv.NewTxn(ctx, s.DB(), s.NodeID())
-	leafInputState, err := rootTxn.GetLeafTxnInputState(ctx, nil /* readsTree */)
+	leafInputState, err := rootTxn.GetLeafTxnInputState(ctx)
 	require.NoError(t, err)
 	leafTxn := kv.NewLeafTxn(ctx, s.DB(), s.NodeID(), leafInputState, nil /* header */)
 
@@ -1814,9 +1814,8 @@ func benchmarkJoinReader(b *testing.B, bc JRBenchConfig) {
 
 								spec := execinfrapb.JoinReaderSpec{
 									FetchSpec:           fetchSpec,
-									LookupColumnsAreKey: parallel && columnDef.matchesPerLookupRow == 1,
+									LookupColumnsAreKey: parallel,
 									MaintainOrdering:    reqOrdering,
-									Parallelize:         parallel,
 								}
 								if lookupExpr {
 									// @1 is the column in the input, @2 is the only fetched column.
@@ -2027,10 +2026,9 @@ func BenchmarkJoinReaderLookupStress(b *testing.B) {
 				b.Fatal(err)
 			}
 			spec := execinfrapb.JoinReaderSpec{
-				FetchSpec:           fetchSpec,
-				LookupColumnsAreKey: true,
-				MaintainOrdering:    false,
-				Parallelize:         true,
+				FetchSpec: fetchSpec,
+				LookupColumnsAreKey:/*parallel=*/ true,
+				MaintainOrdering:/*reqOrdering=*/ false,
 			}
 			lookupExprString := "@1 = @2"
 			for i := 0; i < numExprs; i++ {

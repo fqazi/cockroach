@@ -83,8 +83,7 @@ func CanHaveCompositeKeyEncoding(typ *types.T) bool {
 		types.EncodedKeyFamily,
 		types.TSQueryFamily,
 		types.TSVectorFamily,
-		types.JsonpathFamily,
-		types.LTreeFamily:
+		types.JsonpathFamily:
 		return false
 	case types.UnknownFamily,
 		types.AnyFamily:

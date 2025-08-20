@@ -83,8 +83,6 @@ type kv struct {
 	sequential                           bool
 	zipfian                              bool
 	sfuDelay                             time.Duration
-	longRunningTxn                       bool
-	longRunningTxnNumWrites              int
 	splits                               int
 	scatter                              bool
 	secondaryIndex                       bool
@@ -121,20 +119,18 @@ var kvMeta = workload.Meta{
 		g := &kv{}
 		g.flags.FlagSet = pflag.NewFlagSet(`kv`, pflag.ContinueOnError)
 		g.flags.Meta = map[string]workload.FlagMeta{
-			`batch`:                       {RuntimeOnly: true},
-			`sfu-wait-delay`:              {RuntimeOnly: true},
-			`sfu-writes`:                  {RuntimeOnly: true},
-			`long-running-txn`:            {RuntimeOnly: true},
-			`long-running-txn-num-writes`: {RuntimeOnly: true},
-			`read-percent`:                {RuntimeOnly: true},
-			`span-percent`:                {RuntimeOnly: true},
-			`span-limit`:                  {RuntimeOnly: true},
-			`del-percent`:                 {RuntimeOnly: true},
-			`splits`:                      {RuntimeOnly: true},
-			`scatter`:                     {RuntimeOnly: true},
-			`timeout`:                     {RuntimeOnly: true},
-			`prepare-read-only`:           {RuntimeOnly: true},
-			`sel1-writes`:                 {RuntimeOnly: true},
+			`batch`:             {RuntimeOnly: true},
+			`sfu-wait-delay`:    {RuntimeOnly: true},
+			`sfu-writes`:        {RuntimeOnly: true},
+			`read-percent`:      {RuntimeOnly: true},
+			`span-percent`:      {RuntimeOnly: true},
+			`span-limit`:        {RuntimeOnly: true},
+			`del-percent`:       {RuntimeOnly: true},
+			`splits`:            {RuntimeOnly: true},
+			`scatter`:           {RuntimeOnly: true},
+			`timeout`:           {RuntimeOnly: true},
+			`prepare-read-only`: {RuntimeOnly: true},
+			`sel1-writes`:       {RuntimeOnly: true},
 		}
 		g.flags.IntVar(&g.batchSize, `batch`, 1,
 			`Number of blocks to read/insert in a single SQL statement.`)
@@ -191,13 +187,6 @@ var kvMeta = workload.Meta{
 		g.flags.BoolVar(&g.prepareReadOnly, `prepare-read-only`, false, `Prepare and perform only read statements.`)
 		g.flags.BoolVar(&g.writesUseSelect1, `sel1-writes`, false,
 			`Use SELECT 1 as the first statement of transactional writes with a sleep after SELECT 1.`)
-		g.flags.BoolVar(&g.longRunningTxn, `long-running-txn`, false,
-			`Use a long-running transaction for running lock contention scenarios. If run with `+
-				`--sfu-writes or --sel1-writes, it will use those writes in the long-running transaction; `+
-				`otherwise, it will use regular writes. Each long-running write transaction counts for a`+
-				`single write, as measured by --read-percent.`)
-		g.flags.IntVar(&g.longRunningTxnNumWrites, `long-running-txn-num-writes`, 10,
-			`Number of writes in the long-running transaction when using --long-running-txn.`)
 		g.connFlags = workload.NewConnFlags(&g.flags)
 		return g
 	},
@@ -450,7 +439,7 @@ func (w *kv) Tables() []workload.Table {
 					rowOffset := rowIdx - rowBegin
 					var payload []byte
 					blockSize, uniqueSize := w.randBlockSize(rndBlock)
-					*a, payload = a.Alloc(blockSize)
+					*a, payload = a.Alloc(blockSize, 0 /* extraCap */)
 					w.randFillBlock(rndBlock, payload, uniqueSize)
 					valCol.Set(rowOffset, payload)
 				}
@@ -681,26 +670,23 @@ func (o *kvOp) run(ctx context.Context) (retErr error) {
 		o.hists.Get(`span`).Record(elapsed)
 		return err
 	}
-	makeWriteBatchArgs := func() ([]interface{}, []interface{}) {
-		const argCount = 2
-		writeArgs := make([]interface{}, argCount*o.config.batchSize)
-		var sfuArgs []interface{}
-		if o.config.writesUseSelectForUpdate {
-			sfuArgs = make([]interface{}, o.config.batchSize)
+	const argCount = 2
+	writeArgs := make([]interface{}, argCount*o.config.batchSize)
+	var sfuArgs []interface{}
+	if o.config.writesUseSelectForUpdate {
+		sfuArgs = make([]interface{}, o.config.batchSize)
+	}
+	for i := 0; i < o.config.batchSize; i++ {
+		j := i * argCount
+		writeArgs[j+0] = o.t.getKey(o.g.writeKey())
+		if sfuArgs != nil {
+			sfuArgs[i] = writeArgs[j]
 		}
-		for i := 0; i < o.config.batchSize; i++ {
-			j := i * argCount
-			writeArgs[j+0] = o.t.getKey(o.g.writeKey())
-			if sfuArgs != nil {
-				sfuArgs[i] = writeArgs[j]
-			}
-			writeArgs[j+1] = o.config.randBlock(o.g.rand())
-		}
-		return writeArgs, sfuArgs
+		writeArgs[j+1] = o.config.randBlock(o.g.rand())
 	}
 	start := timeutil.Now()
 	var err error
-	if o.config.writesUseSelect1 || o.config.writesUseSelectForUpdate || o.config.longRunningTxn {
+	if o.config.writesUseSelect1 || o.config.writesUseSelectForUpdate {
 		// We could use crdb.ExecuteTx, but we avoid retries in this workload so
 		// that each run call makes 1 attempt, so that rate limiting in workerRun
 		// behaves as expected.
@@ -709,52 +695,44 @@ func (o *kvOp) run(ctx context.Context) (retErr error) {
 		if err != nil {
 			return err
 		}
+
 		defer func() {
 			rollbackErr := tx.Rollback(ctx)
 			if !errors.Is(rollbackErr, pgx.ErrTxClosed) {
 				retErr = errors.CombineErrors(retErr, rollbackErr)
 			}
 		}()
-		iterations := 1
-		if o.config.longRunningTxn {
-			iterations = o.config.longRunningTxnNumWrites
+		if o.config.writesUseSelect1 {
+			rows, err := o.sel1Stmt.QueryTx(ctx, tx)
+			if err != nil {
+				return err
+			}
+			rows.Close()
+			if err = rows.Err(); err != nil {
+				return err
+			}
 		}
-		for i := 0; i < iterations; i++ {
-			writeArgs, sfuArgs := makeWriteBatchArgs()
-			if o.config.writesUseSelect1 {
-				rows, err := o.sel1Stmt.QueryTx(ctx, tx)
-				if err != nil {
-					return err
-				}
-				rows.Close()
-				if err = rows.Err(); err != nil {
-					return err
-				}
+		if o.config.writesUseSelectForUpdate {
+			rows, err := o.sfuStmt.QueryTx(ctx, tx, sfuArgs...)
+			if err != nil {
+				return err
 			}
-			if o.config.writesUseSelectForUpdate {
-				rows, err := o.sfuStmt.QueryTx(ctx, tx, sfuArgs...)
-				if err != nil {
-					return err
-				}
-				rows.Close()
-				if err = rows.Err(); err != nil {
-					// The transaction may have experienced an error in the meantime.
-					return o.tryHandleWriteErr("write-write-err", start, err)
-				}
+			rows.Close()
+			if err = rows.Err(); err != nil {
+				return err
 			}
-			// Simulate a transaction that does other work between the sel1 / SFU and write.
-			time.Sleep(o.config.sfuDelay)
-			if _, err = o.writeStmt.ExecTx(ctx, tx, writeArgs...); err != nil {
-				// Multiple write transactions can contend and encounter
-				// a serialization failure. We swallow such an error.
-				return o.tryHandleWriteErr("write-write-err", start, err)
-			}
+		}
+		// Simulate a transaction that does other work between the sel1 / SFU and write.
+		time.Sleep(o.config.sfuDelay)
+		if _, err = o.writeStmt.ExecTx(ctx, tx, writeArgs...); err != nil {
+			// Multiple write transactions can contend and encounter
+			// a serialization failure. We swallow such an error.
+			return o.tryHandleWriteErr("write-write-err", start, err)
 		}
 		if err = tx.Commit(ctx); err != nil {
 			return o.tryHandleWriteErr("write-commit-err", start, err)
 		}
 	} else {
-		writeArgs, _ := makeWriteBatchArgs()
 		_, err = o.writeStmt.Exec(ctx, writeArgs...)
 	}
 	if err != nil {

@@ -241,8 +241,6 @@ func DatumTypeToArrayElementEncodingType(t *types.T) (encoding.Type, error) {
 		return encoding.IPAddr, nil
 	case types.JsonFamily:
 		return encoding.JSON, nil
-	case types.LTreeFamily:
-		return encoding.LTree, nil
 	case types.TupleFamily:
 		return encoding.Tuple, nil
 	case types.ArrayFamily:
@@ -338,6 +336,8 @@ func encodeArrayElement(b []byte, d tree.Datum) ([]byte, error) {
 		return encoding.EncodeUntaggedIntValue(b, int64(t.Oid)), nil
 	case *tree.DCollatedString:
 		return encoding.EncodeUntaggedBytesValue(b, []byte(t.Contents)), nil
+	case *tree.DOidWrapper:
+		return encodeArrayElement(b, t.Wrapped)
 	case *tree.DEnum:
 		return encoding.EncodeUntaggedBytesValue(b, t.PhysicalRep), nil
 	case *tree.DJSON:
@@ -364,8 +364,6 @@ func encodeArrayElement(b []byte, d tree.Datum) ([]byte, error) {
 			return nil, err
 		}
 		return encoding.EncodeUntaggedBytesValue(b, encoded), nil
-	case *tree.DLTree:
-		return encoding.EncodeUntaggedLTreeValue(b, t.LTree), nil
 	default:
 		return nil, errors.Errorf("don't know how to encode %s (%T)", d, d)
 	}

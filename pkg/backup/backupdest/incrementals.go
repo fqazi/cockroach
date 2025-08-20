@@ -196,55 +196,44 @@ func ResolveIncrementalsBackupLocation(
 		return incPaths, nil
 	}
 
+	resolvedIncrementalsBackupLocationOld, err := backuputils.AppendPaths(fullBackupCollections, subdir)
+	if err != nil {
+		return nil, err
+	}
+
+	// We can have >1 full backup collection specified, but each will have an
+	// incremental layer iff all of them do. So it suffices to check only the
+	// first.
+	// Check we can read from this location, though we don't need the backups here.
+	prevOld, err := backupsFromLocation(ctx, user, execCfg, resolvedIncrementalsBackupLocationOld[0])
+	if err != nil {
+		return nil, err
+	}
+
 	resolvedIncrementalsBackupLocation, err := backuputils.AppendPaths(fullBackupCollections, backupbase.DefaultIncrementalsSubdir, subdir)
 	if err != nil {
 		return nil, err
 	}
 
-	_, err = backupsFromLocation(ctx, user, execCfg, resolvedIncrementalsBackupLocation[0])
+	prev, err := backupsFromLocation(ctx, user, execCfg, resolvedIncrementalsBackupLocation[0])
 	if err != nil {
 		return nil, err
 	}
 
+	// TODO(bardin): This algorithm divides "destination resolution" and "actual backup lookup" for historical reasons,
+	// but this doesn't quite make sense now that destination resolution depends on backup lookup.
+	// Try to figure out a clearer way to organize this.
+	if len(prevOld) > 0 && len(prev) > 0 {
+		return nil, errors.New(
+			"Incremental layers found in both old and new default locations. " +
+				"Please choose a location manually with the `incremental_location` parameter.")
+	}
+
+	// If we have backups in the old default location, continue to use the old location.
+	if len(prevOld) > 0 {
+		return resolvedIncrementalsBackupLocationOld, nil
+	}
+
+	// Otherwise, use the new location.
 	return resolvedIncrementalsBackupLocation, nil
-}
-
-// ResolveDefaultBaseIncrementalStorageLocation returns the default incremental
-// storage location that contains all incremental backups.
-// It is passed an array of locality-aware full backup collections and an
-// optional array of explicit incremental backup locations.
-//
-// e.g. details for:
-//
-// BACKUP INTO (
-//
-//	'nodelocal://1/backup?COCKROACH_LOCALITY=default',
-//	'nodelocal://1/backup2?COCKROACH_LOCALITY=region%3Dus-west'
-//
-// )
-//
-// returns 'nodelocal://1/backup/incrementals'
-func ResolveDefaultBaseIncrementalStorageLocation(
-	fullBackupCollections []string, explicitIncrementalCollections []string,
-) (string, error) {
-	if len(explicitIncrementalCollections) > 0 {
-		defaultURI, _, err := GetURIsByLocalityKV(explicitIncrementalCollections, "")
-		if err != nil {
-			return "", errors.Wrapf(err, "get default incremental backup collection URI")
-		}
-		return defaultURI, nil
-	}
-
-	if len(fullBackupCollections) == 0 {
-		return "", errors.New(
-			"no full backup collections provided to resolve default incremental storage location",
-		)
-	}
-
-	defaultURI, _, err := GetURIsByLocalityKV(fullBackupCollections, backupbase.DefaultIncrementalsSubdir)
-	if err != nil {
-		return "", errors.Wrapf(err, "get default incremental backup collection URI")
-	}
-
-	return defaultURI, nil
 }

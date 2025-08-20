@@ -1672,28 +1672,12 @@ let $hist_id_1
 SELECT histogram_id FROM [SHOW STATISTICS FOR TABLE geo_table]
 WHERE statistics_name = 's' AND column_names = '{geog}'
 
-# s390x produces slightly different inverted index key for the linestring (among
-# other shapes) because it has architecture support for trigonometric functions
-# (used by s2 library), so we have different expectations for s390x vs other
-# systems. s390x is the only big endian system we support right now, so we abuse
-# the corresponding option a bit.
-skipif bigendian
-
 query TIRI colnames,nosort
 SHOW HISTOGRAM $hist_id_1
 ----
 upper_bound                                                                                 range_rows  distinct_range_rows  equal_rows
 '\x42fd1000000000000000000000000000000000bcc00000000000003ffbecde5da115a83ff661bdc396bcdc'  0           0                    1
 '\x42fd5000000000000000000000000000000000bcc00000000000003ffbecde5da115a83ff661bdc396bcdc'  0           0                    1
-
-skipif littleendian
-
-query TIRI colnames,nosort
-SHOW HISTOGRAM $hist_id_1
-----
-upper_bound                                                                                 range_rows  distinct_range_rows  equal_rows
-'\x42fd1000000000000000000000000000000000bcc00000000000003ffbecde5da115a93ff661bdc396bcdc'  0           0                    1
-'\x42fd5000000000000000000000000000000000bcc00000000000003ffbecde5da115a93ff661bdc396bcdc'  0           0                    1
 
 statement ok
 DROP INDEX geo_table@geog_idx_1;
@@ -1706,8 +1690,6 @@ let $hist_id_1
 SELECT histogram_id FROM [SHOW STATISTICS FOR TABLE geo_table]
 WHERE statistics_name = 's' AND column_names = '{geog}'
 
-skipif bigendian
-
 query TIRI colnames,nosort
 SHOW HISTOGRAM $hist_id_1
 ----
@@ -1716,17 +1698,6 @@ upper_bound                                                                     
 '\x42fd4500000000000000000000000000000000bcc00000000000003ffbecde5da115a83ff661bdc396bcdc'  0           0                    1
 '\x42fd4700000000000000000000000000000000bcc00000000000003ffbecde5da115a83ff661bdc396bcdc'  0           0                    1
 '\x42fd5ad4000000000000000000000000000000bcc00000000000003ffbecde5da115a83ff661bdc396bcdc'  0           0                    1
-
-skipif littleendian
-
-query TIRI colnames,nosort
-SHOW HISTOGRAM $hist_id_1
-----
-upper_bound                                                                                 range_rows  distinct_range_rows  equal_rows
-'\x42fd1000000000000000000000000000000000bcc00000000000003ffbecde5da115a93ff661bdc396bcdc'  0           0                    1
-'\x42fd4500000000000000000000000000000000bcc00000000000003ffbecde5da115a93ff661bdc396bcdc'  0           0                    1
-'\x42fd4700000000000000000000000000000000bcc00000000000003ffbecde5da115a93ff661bdc396bcdc'  0           0                    1
-'\x42fd5ad4000000000000000000000000000000bcc00000000000003ffbecde5da115a93ff661bdc396bcdc'  0           0                    1
 
 # Stats for multi-column inverted indexes.
 statement ok
@@ -3411,36 +3382,76 @@ NULL  {m}  1000  1000  true
 NULL  {n}  1000  50    true
 NULL  {o}  1000  33    true
 
-# All we care about is the row counts, so don't error if other parts of the explain output change
 query T retry
-SELECT info FROM [EXPLAIN SELECT * FROM mno WHERE n = 1 AND o = 9] WHERE info LIKE '%estimated row count:%'
+EXPLAIN SELECT * FROM mno WHERE n = 1 AND o = 9
 ----
-    │ estimated row count: 1
+distribution: full
+vectorized: true
+·
+• render
+│
+└── • filter
+    │ estimated row count: 0
+    │ filter: n = 1
+    │
+    └── • scan
           estimated row count: 18 (1.8% of the table; stats collected <hidden> ago)
+          table: mno@mno_o_idx
+          spans: [/9 - /9]
 
-# All we care about is the row counts, so don't error if other parts of the explain output change
 query T
-SELECT info FROM [EXPLAIN SELECT * FROM mno WHERE n = 1 AND o = 11] WHERE info LIKE '%estimated row count:%'
+EXPLAIN SELECT * FROM mno WHERE n = 1 AND o = 11
 ----
-    │ estimated row count: 1
+distribution: full
+vectorized: true
+·
+• render
+│
+└── • filter
+    │ estimated row count: 0
+    │ filter: sqrt(m::FLOAT8)::INT8 = 11
+    │
+    └── • scan
           estimated row count: 20 (2.0% of the table; stats collected <hidden> ago)
+          table: mno@mno_n_idx
+          spans: [/1 - /1]
 
 statement ok
 SET optimizer_use_virtual_computed_column_stats = false
 
-# All we care about is the row counts, so don't error if other parts of the explain output change
 query T
-SELECT info FROM [EXPLAIN SELECT * FROM mno WHERE n = 1 AND o = 9] WHERE info LIKE '%estimated row count:%'
+EXPLAIN SELECT * FROM mno WHERE n = 1 AND o = 9
 ----
+distribution: full
+vectorized: true
+·
+• render
+│
+└── • filter
     │ estimated row count: 7
+    │ filter: n = 1
+    │
+    └── • scan
           estimated row count: 10 (1.0% of the table; stats collected <hidden> ago)
+          table: mno@mno_o_idx
+          spans: [/9 - /9]
 
-# All we care about is the row counts, so don't error if other parts of the explain output change
 query T
-SELECT info FROM [EXPLAIN SELECT * FROM mno WHERE n = 1 AND o = 11] WHERE info LIKE '%estimated row count:%'
+EXPLAIN SELECT * FROM mno WHERE n = 1 AND o = 11
 ----
+distribution: full
+vectorized: true
+·
+• render
+│
+└── • filter
     │ estimated row count: 7
+    │ filter: n = 1
+    │
+    └── • scan
           estimated row count: 10 (1.0% of the table; stats collected <hidden> ago)
+          table: mno@mno_o_idx
+          spans: [/11 - /11]
 
 # Regression for not setting the TypeResolver on the SemaContext when dealing
 # with stats on virtual computed columns (#122312).
@@ -3537,12 +3548,19 @@ column_names  row_count  null_count  distinct_count  avg_size  has_histogram
 {b}           2          0           2               8         true
 {c}           2          0           2               8         true
 
-# All we care about is the row counts, so don't error if other parts of the explain output change
 query T retry
-SELECT info FROM [EXPLAIN SELECT count(*) FROM t138809 WHERE b > 1] WHERE info LIKE '%estimated row count:%'
+EXPLAIN SELECT count(*) FROM t138809 WHERE b > 1
 ----
+distribution: full
+vectorized: true
+·
+• group (scalar)
 │ estimated row count: 1
+│
+└── • scan
       estimated row count: 2 (100% of the table; stats collected <hidden> ago)
+      table: t138809@t138809_pkey
+      spans: [/1 - ]
 
 statement ok
 SET CLUSTER SETTING jobs.debug.pausepoints = 'schemachanger.root..1'
@@ -3550,12 +3568,19 @@ SET CLUSTER SETTING jobs.debug.pausepoints = 'schemachanger.root..1'
 statement error job \d+ was paused before it completed with reason: pause point "schemachanger\.root\.\.1" hit
 ALTER TABLE t138809 DROP COLUMN c
 
-# All we care about is the row counts, so don't error if other parts of the explain output change
 query T
-SELECT info FROM [EXPLAIN SELECT count(*) FROM t138809 WHERE b > 1] WHERE info LIKE '%estimated row count:%'
+EXPLAIN SELECT count(*) FROM t138809 WHERE b > 1
 ----
+distribution: full
+vectorized: true
+·
+• group (scalar)
 │ estimated row count: 1
+│
+└── • scan
       estimated row count: 2 (100% of the table; stats collected <hidden> ago)
+      table: t138809@t138809_pkey
+      spans: [/1 - ]
 
 statement ok
 SET CLUSTER SETTING jobs.debug.pausepoints = DEFAULT

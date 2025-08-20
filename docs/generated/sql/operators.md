@@ -195,7 +195,6 @@
 <tr><td><a href="interval.html">interval</a> <code><</code> <a href="interval.html">interval</a></td><td><a href="bool.html">bool</a></td></tr>
 <tr><td><a href="interval.html">interval[]</a> <code><</code> <a href="interval.html">interval[]</a></td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>jsonb <code><</code> jsonb</td><td><a href="bool.html">bool</a></td></tr>
-<tr><td>ltree <code><</code> ltree</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>oid <code><</code> <a href="int.html">int</a></td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>oid <code><</code> oid</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>pg_lsn <code><</code> pg_lsn</td><td><a href="bool.html">bool</a></td></tr>
@@ -274,7 +273,6 @@
 <tr><td><a href="interval.html">interval</a> <code><=</code> <a href="interval.html">interval</a></td><td><a href="bool.html">bool</a></td></tr>
 <tr><td><a href="interval.html">interval[]</a> <code><=</code> <a href="interval.html">interval[]</a></td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>jsonb <code><=</code> jsonb</td><td><a href="bool.html">bool</a></td></tr>
-<tr><td>ltree <code><=</code> ltree</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>oid <code><=</code> <a href="int.html">int</a></td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>oid <code><=</code> oid</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>pg_lsn <code><=</code> pg_lsn</td><td><a href="bool.html">bool</a></td></tr>
@@ -347,7 +345,6 @@
 <tr><td><a href="interval.html">interval</a> <code>=</code> <a href="interval.html">interval</a></td><td><a href="bool.html">bool</a></td></tr>
 <tr><td><a href="interval.html">interval[]</a> <code>=</code> <a href="interval.html">interval[]</a></td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>jsonb <code>=</code> jsonb</td><td><a href="bool.html">bool</a></td></tr>
-<tr><td>ltree <code>=</code> ltree</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>oid <code>=</code> <a href="int.html">int</a></td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>oid <code>=</code> oid</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>pg_lsn <code>=</code> pg_lsn</td><td><a href="bool.html">bool</a></td></tr>
@@ -432,7 +429,6 @@
 <tr><td><a href="int.html">int</a> <code>IN</code> tuple</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td><a href="interval.html">interval</a> <code>IN</code> tuple</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>jsonb <code>IN</code> tuple</td><td><a href="bool.html">bool</a></td></tr>
-<tr><td>ltree <code>IN</code> tuple</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>oid <code>IN</code> tuple</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>pg_lsn <code>IN</code> tuple</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>refcursor <code>IN</code> tuple</td><td><a href="bool.html">bool</a></td></tr>
@@ -484,7 +480,6 @@
 <tr><td><a href="interval.html">interval[]</a> <code>IS NOT DISTINCT FROM</code> <a href="interval.html">interval[]</a></td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>jsonb <code>IS NOT DISTINCT FROM</code> jsonb</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>jsonpath <code>IS NOT DISTINCT FROM</code> jsonpath</td><td><a href="bool.html">bool</a></td></tr>
-<tr><td>ltree <code>IS NOT DISTINCT FROM</code> ltree</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>oid <code>IS NOT DISTINCT FROM</code> <a href="int.html">int</a></td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>oid <code>IS NOT DISTINCT FROM</code> oid</td><td><a href="bool.html">bool</a></td></tr>
 <tr><td>pg_lsn <code>IS NOT DISTINCT FROM</code> pg_lsn</td><td><a href="bool.html">bool</a></td></tr>
@@ -518,7 +513,6 @@
 <table><thead>
 <tr><td><code>LIKE</code></td><td>Return</td></tr>
 </thead><tbody>
-<tr><td><a href="collate.html">collatedstring</a> <code>LIKE</code> <a href="collate.html">collatedstring</a></td><td><a href="bool.html">bool</a></td></tr>
 <tr><td><a href="string.html">string</a> <code>LIKE</code> <a href="string.html">string</a></td><td><a href="bool.html">bool</a></td></tr>
 </tbody></table>
 <table><thead>
@@ -591,8 +585,6 @@
 <tr><td><a href="interval.html">interval[]</a> <code>||</code> <a href="interval.html">interval[]</a></td><td><a href="interval.html">interval[]</a></td></tr>
 <tr><td>jsonb <code>||</code> jsonb</td><td>jsonb</td></tr>
 <tr><td>jsonb <code>||</code> <a href="string.html">string</a></td><td><a href="string.html">string</a></td></tr>
-<tr><td>ltree <code>||</code> ltree</td><td>ltree</td></tr>
-<tr><td>ltree <code>||</code> <a href="string.html">string</a></td><td><a href="string.html">string</a></td></tr>
 <tr><td>oid <code>||</code> oid</td><td>oid</td></tr>
 <tr><td>oid <code>||</code> <a href="string.html">string</a></td><td><a href="string.html">string</a></td></tr>
 <tr><td>pg_lsn <code>||</code> pg_lsn</td><td>pg_lsn</td></tr>
@@ -610,7 +602,6 @@
 <tr><td><a href="string.html">string</a> <code>||</code> <a href="int.html">int</a></td><td><a href="string.html">string</a></td></tr>
 <tr><td><a href="string.html">string</a> <code>||</code> <a href="interval.html">interval</a></td><td><a href="string.html">string</a></td></tr>
 <tr><td><a href="string.html">string</a> <code>||</code> jsonb</td><td><a href="string.html">string</a></td></tr>
-<tr><td><a href="string.html">string</a> <code>||</code> ltree</td><td><a href="string.html">string</a></td></tr>
 <tr><td><a href="string.html">string</a> <code>||</code> oid</td><td><a href="string.html">string</a></td></tr>
 <tr><td><a href="string.html">string</a> <code>||</code> pg_lsn</td><td><a href="string.html">string</a></td></tr>
 <tr><td><a href="string.html">string</a> <code>||</code> refcursor</td><td><a href="string.html">string</a></td></tr>

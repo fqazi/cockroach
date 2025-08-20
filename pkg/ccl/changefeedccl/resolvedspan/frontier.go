@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/span"
 	"github.com/cockroachdb/errors"
@@ -29,13 +28,9 @@ type AggregatorFrontier struct {
 
 // NewAggregatorFrontier returns a new AggregatorFrontier.
 func NewAggregatorFrontier(
-	statementTime hlc.Timestamp,
-	initialHighWater hlc.Timestamp,
-	decoder TablePrefixDecoder,
-	perTableTracking bool,
-	spans ...roachpb.Span,
+	statementTime hlc.Timestamp, initialHighWater hlc.Timestamp, spans ...roachpb.Span,
 ) (*AggregatorFrontier, error) {
-	rsf, err := newResolvedSpanFrontier(statementTime, initialHighWater, decoder, perTableTracking, spans...)
+	rsf, err := newResolvedSpanFrontier(statementTime, initialHighWater, spans...)
 	if err != nil {
 		return nil, err
 	}
@@ -78,13 +73,9 @@ type CoordinatorFrontier struct {
 
 // NewCoordinatorFrontier returns a new CoordinatorFrontier.
 func NewCoordinatorFrontier(
-	statementTime hlc.Timestamp,
-	initialHighWater hlc.Timestamp,
-	decoder TablePrefixDecoder,
-	perTableTracking bool,
-	spans ...roachpb.Span,
+	statementTime hlc.Timestamp, initialHighWater hlc.Timestamp, spans ...roachpb.Span,
 ) (*CoordinatorFrontier, error) {
-	rsf, err := newResolvedSpanFrontier(statementTime, initialHighWater, decoder, perTableTracking, spans...)
+	rsf, err := newResolvedSpanFrontier(statementTime, initialHighWater, spans...)
 	if err != nil {
 		return nil, err
 	}
@@ -193,11 +184,15 @@ func (f *CoordinatorFrontier) MakeCheckpoint(
 	return checkpoint.Make(f.Frontier(), f.Entries(), maxBytes, metrics)
 }
 
+// spanFrontier is a type alias to make it possible to embed and forward calls
+// (e.g. Frontier()) to the underlying span.Frontier.
+type spanFrontier = span.Frontier
+
 // resolvedSpanFrontier wraps a spanFrontier with additional bookkeeping fields
 // used to track resolved spans for a changefeed and methods for computing
 // lagging and checkpoint spans.
 type resolvedSpanFrontier struct {
-	maybeTablePartitionedFrontier
+	spanFrontier
 
 	// statementTime is the statement time of the changefeed.
 	statementTime hlc.Timestamp
@@ -216,29 +211,17 @@ type resolvedSpanFrontier struct {
 
 // newResolvedSpanFrontier returns a new resolvedSpanFrontier.
 func newResolvedSpanFrontier(
-	statementTime hlc.Timestamp,
-	initialHighWater hlc.Timestamp,
-	decoder TablePrefixDecoder,
-	perTableTracking bool,
-	spans ...roachpb.Span,
+	statementTime hlc.Timestamp, initialHighWater hlc.Timestamp, spans ...roachpb.Span,
 ) (*resolvedSpanFrontier, error) {
-	sf, err := func() (maybeTablePartitionedFrontier, error) {
-		if perTableTracking {
-			return span.NewMultiFrontierAt(newTableIDPartitioner(decoder), initialHighWater, spans...)
-		}
-		f, err := span.MakeFrontierAt(initialHighWater, spans...)
-		if err != nil {
-			return nil, err
-		}
-		return notTablePartitionedFrontier{spanFrontier: span.MakeConcurrentFrontier(f)}, nil
-	}()
+	sf, err := span.MakeFrontierAt(initialHighWater, spans...)
 	if err != nil {
 		return nil, err
 	}
+	sf = span.MakeConcurrentFrontier(sf)
 	return &resolvedSpanFrontier{
-		maybeTablePartitionedFrontier: sf,
-		statementTime:                 statementTime,
-		initialHighWater:              initialHighWater,
+		spanFrontier:     sf,
+		statementTime:    statementTime,
+		initialHighWater: initialHighWater,
 	}, nil
 }
 
@@ -357,7 +340,7 @@ func (f *resolvedSpanFrontier) HasLaggingSpans(sv *settings.Values) bool {
 // All returns an iterator over the resolved spans in the frontier.
 func (f *resolvedSpanFrontier) All() iter.Seq[jobspb.ResolvedSpan] {
 	return func(yield func(jobspb.ResolvedSpan) bool) {
-		for sp, ts := range f.Entries() {
+		for sp, ts := range f.spanFrontier.Entries() {
 			var boundaryType jobspb.ResolvedSpan_BoundaryType
 			if ok, bt := f.boundary.At(ts); ok {
 				boundaryType = bt
@@ -427,60 +410,4 @@ func (b *resolvedSpanBoundary) Forward(newBoundary resolvedSpanBoundary) bool {
 // SafeFormat implements the redact.SafeFormatter interface.
 func (b *resolvedSpanBoundary) SafeFormat(s redact.SafePrinter, _ rune) {
 	s.Printf("%v boundary (%v)", b.typ, b.ts)
-}
-
-// A maybeTablePartitionedFrontier is a frontier that might be tracking
-// spans in per-table sub-frontiers.
-type maybeTablePartitionedFrontier interface {
-	span.Frontier
-
-	// Frontiers returns an iterator over the table ID and sub-frontiers
-	// being tracked by the frontier. If the frontier is not tracking
-	// on a per-table basis, the iterator will return a single frontier
-	// with an ID of 0.
-	Frontiers() iter.Seq2[descpb.ID, span.Frontier]
-}
-
-var _ maybeTablePartitionedFrontier = (*span.MultiFrontier[descpb.ID])(nil)
-
-// spanFrontier is a type alias to make it possible to embed and forward calls
-// (e.g. Frontier()) to the underlying span.Frontier.
-type spanFrontier = span.Frontier
-
-// notTablePartitionedFrontier is a frontier that does not track spans on
-// a per-table basis.
-type notTablePartitionedFrontier struct {
-	spanFrontier
-}
-
-var _ maybeTablePartitionedFrontier = notTablePartitionedFrontier{}
-
-// Frontiers implements maybeTablePartitionedFrontier.
-func (f notTablePartitionedFrontier) Frontiers() iter.Seq2[descpb.ID, span.Frontier] {
-	return func(yield func(descpb.ID, span.Frontier) bool) {
-		yield(0, f.spanFrontier)
-	}
-}
-
-// A TablePrefixDecoder decodes table prefixes from keys.
-// The production implementation is keys.SQLCodec.
-type TablePrefixDecoder interface {
-	DecodeTablePrefix(key roachpb.Key) ([]byte, uint32, error)
-}
-
-func newTableIDPartitioner(decoder TablePrefixDecoder) span.PartitionerFunc[descpb.ID] {
-	return func(sp roachpb.Span) (descpb.ID, error) {
-		_, startKeyTableID, err := decoder.DecodeTablePrefix(sp.Key)
-		if err != nil {
-			return 0, err
-		}
-		_, endKeyTableID, err := decoder.DecodeTablePrefix(sp.EndKey)
-		if err != nil {
-			return 0, err
-		}
-		if startKeyTableID != endKeyTableID {
-			return 0, errors.AssertionFailedf("span encompassing multiple tables: %s", sp)
-		}
-		return descpb.ID(startKeyTableID), nil
-	}
 }

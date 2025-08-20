@@ -47,11 +47,6 @@ type deleteRangeNode struct {
 
 	// rowCount will be set to the count of rows deleted.
 	rowCount int
-
-	// curRowPrefix is the prefix for all KVs (i.e. for all column families) of
-	// the SQL row that increased rowCount last. It is maintained across
-	// different BatchRequests in order to not double count the same SQL row.
-	curRowPrefix []byte
 }
 
 var _ planNode = &deleteRangeNode{}
@@ -120,13 +115,13 @@ func (d *deleteRangeNode) startExec(params runParams) error {
 		// hits the key limit).
 		for len(spans) != 0 {
 			b := params.p.txn.NewBatch()
-			b.Header.MaxSpanRequestKeys = int64(row.DeleteRangeChunkSize(params.extendedEvalCtx.TestingKnobs.ForceProductionValues))
+			b.Header.MaxSpanRequestKeys = row.TableTruncateChunkSize
 			b.Header.LockTimeout = params.SessionData().LockTimeout
 			b.Header.DeadlockTimeout = params.SessionData().DeadlockTimeout
 			d.deleteSpans(params, b, spans)
 			log.VEventf(ctx, 2, "fast delete: processing %d spans", len(spans))
 			if err := params.p.txn.Run(ctx, b); err != nil {
-				return row.ConvertBatchError(ctx, d.desc, b, false /* alwaysConvertCondFailed */)
+				return row.ConvertBatchError(ctx, d.desc, b)
 			}
 
 			spans = spans[:0]
@@ -149,7 +144,7 @@ func (d *deleteRangeNode) startExec(params runParams) error {
 		d.deleteSpans(params, b, spans)
 		log.VEventf(ctx, 2, "fast delete: processing %d spans and committing", len(spans))
 		if err := params.p.txn.CommitInBatch(ctx, b); err != nil {
-			return row.ConvertBatchError(ctx, d.desc, b, false /* alwaysConvertCondFailed */)
+			return row.ConvertBatchError(ctx, d.desc, b)
 		}
 		if resumeSpans, err := d.processResults(b.Results, nil /* resumeSpans */); err != nil {
 			return err
@@ -199,12 +194,10 @@ func (d *deleteRangeNode) processResults(
 	results []kv.Result, resumeSpans []roachpb.Span,
 ) (roachpb.Spans, error) {
 	for _, r := range results {
-		// TODO(yuzefovich): when the table has 1 column family, we don't need
-		// to compare the key prefixes since each deleted key corresponds to a
-		// different deleted row.
+		var prev []byte
 		for _, keyBytes := range r.Keys {
 			// If prefix is same, don't bother decoding key.
-			if len(d.curRowPrefix) > 0 && bytes.HasPrefix(keyBytes, d.curRowPrefix) {
+			if len(prev) > 0 && bytes.HasPrefix(keyBytes, prev) {
 				continue
 			}
 
@@ -213,8 +206,8 @@ func (d *deleteRangeNode) processResults(
 				return nil, err
 			}
 			k := keyBytes[:len(keyBytes)-len(after)]
-			if !bytes.Equal(k, d.curRowPrefix) {
-				d.curRowPrefix = k
+			if !bytes.Equal(k, prev) {
+				prev = k
 				d.rowCount++
 			}
 		}

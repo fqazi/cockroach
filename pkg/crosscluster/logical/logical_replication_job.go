@@ -8,11 +8,9 @@ package logical
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/cloud/externalconn"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/physical"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/replicationutils"
@@ -59,7 +57,8 @@ var (
 		settings.ApplicationLevel,
 		"logical_replication.consumer.job_checkpoint_frequency",
 		"controls the frequency with which the job updates their progress; if 0, disabled",
-		10*time.Second)
+		10*time.Second,
+		settings.NonNegativeDuration)
 
 	// heartbeatFrequency controls frequency the stream replication
 	// destination cluster sends heartbeat to the source cluster to keep
@@ -70,6 +69,7 @@ var (
 		"controls frequency the stream replication destination cluster sends heartbeat "+
 			"to the source cluster to keep the stream alive",
 		30*time.Second,
+		settings.NonNegativeDuration,
 	)
 )
 
@@ -281,9 +281,7 @@ func (r *logicalReplicationResumer) ingest(
 		stopReplanner()
 	}()
 
-	confPoller := make(chan struct{})
 	execPlan := func(ctx context.Context) error {
-		defer close(confPoller)
 		rh := rowHandler{
 			replicatedTimeAtStart: replicatedTimeAtStart,
 			frontier:              frontier,
@@ -326,36 +324,6 @@ func (r *logicalReplicationResumer) ingest(
 		return err
 	}
 
-	refreshConn := func(ctx context.Context) error {
-		ingestionJob := r.job
-		details := ingestionJob.Details().(jobspb.LogicalReplicationDetails)
-		resolvedDest, err := resolveDest(ctx, jobExecCtx.ExecCfg(), details.SourceClusterConnUri)
-		if err != nil {
-			return err
-		}
-		pollingInterval := 2 * time.Minute
-		if knobs := jobExecCtx.ExecCfg().StreamingTestingKnobs; knobs != nil && knobs.ExternalConnectionPollingInterval != nil {
-			pollingInterval = *knobs.ExternalConnectionPollingInterval
-		}
-		t := time.NewTicker(pollingInterval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-confPoller:
-				return nil
-			case <-t.C:
-				newDest, err := reloadDest(ctx, ingestionJob.ID(), jobExecCtx.ExecCfg())
-				if err != nil {
-					log.Warningf(ctx, "failed to check for updated configuration: %v", err)
-				} else if newDest != resolvedDest {
-					return errors.Mark(errors.Newf("replan due to detail change: old=%s, new=%s", resolvedDest, newDest), sql.ErrPlanChanged)
-				}
-			}
-		}
-	}
-
 	defer func() {
 		if l := payload.MetricsLabel; l != "" {
 			metrics.LabeledScanningRanges.Update(map[string]string{"label": l}, 0)
@@ -365,7 +333,7 @@ func (r *logicalReplicationResumer) ingest(
 		metrics.CatchupRanges.Update(0)
 	}()
 
-	err = ctxgroup.GoAndWait(ctx, execPlan, replanner, startHeartbeat, refreshConn)
+	err = ctxgroup.GoAndWait(ctx, execPlan, replanner, startHeartbeat)
 	if errors.Is(err, sql.ErrPlanChanged) {
 		metrics.ReplanCount.Inc(1)
 	}
@@ -924,7 +892,6 @@ func (r *logicalReplicationResumer) ingestWithRetries(
 	ro := getRetryPolicy(execCtx.ExecCfg().StreamingTestingKnobs)
 	var err error
 	var lastReplicatedTime hlc.Timestamp
-
 	for retrier := retry.Start(ro); retrier.Next(); {
 		err = r.ingest(ctx, execCtx)
 		if err == nil {
@@ -1087,35 +1054,6 @@ func getRetryPolicy(knobs *sql.StreamingTestingKnobs) retry.Options {
 		MaxBackoff:     1 * time.Minute,
 		MaxRetries:     30,
 	}
-}
-
-func resolveDest(
-	ctx context.Context, execCfg *sql.ExecutorConfig, sourceURI string,
-) (string, error) {
-	u, err := url.Parse(sourceURI)
-	if err != nil {
-		return "", err
-	}
-
-	resolved := ""
-	err = execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		conn, err := externalconn.LoadExternalConnection(ctx, u.Host, txn)
-		if err != nil {
-			return err
-		}
-		resolved = conn.UnredactedConnectionStatement()
-		return nil
-	})
-	return resolved, err
-}
-
-func reloadDest(ctx context.Context, id jobspb.JobID, execCfg *sql.ExecutorConfig) (string, error) {
-	reloadedJob, err := execCfg.JobRegistry.LoadJob(ctx, id)
-	if err != nil {
-		return "", err
-	}
-	newDetails := reloadedJob.Details().(jobspb.LogicalReplicationDetails)
-	return resolveDest(ctx, execCfg, newDetails.SourceClusterConnUri)
 }
 
 func init() {

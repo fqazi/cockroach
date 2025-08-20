@@ -10,7 +10,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/cloud",
-        "//pkg/util/encoding",
         "//pkg/util/mon",
         "//pkg/util/quotapool",
         "//pkg/util/syncutil",

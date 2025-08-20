@@ -791,7 +791,7 @@ func concludeBackupCompaction(
 	ctx context.Context,
 	execCtx sql.JobExecContext,
 	store cloud.ExternalStorage,
-	details jobspb.BackupDetails,
+	encryption *jobspb.BackupEncryptionOptions,
 	kmsEnv cloud.KMSEnv,
 	backupManifest *backuppb.BackupManifest,
 ) error {
@@ -799,33 +799,18 @@ func concludeBackupCompaction(
 	backupManifest.ID = backupID
 
 	if err := backupinfo.WriteBackupManifest(ctx, store, backupbase.BackupManifestName,
-		details.EncryptionOptions, kmsEnv, backupManifest); err != nil {
+		encryption, kmsEnv, backupManifest); err != nil {
 		return err
 	}
 	if backupinfo.WriteMetadataWithExternalSSTsEnabled.Get(&execCtx.ExecCfg().Settings.SV) {
-		if err := backupinfo.WriteMetadataWithExternalSSTs(ctx, store, details.EncryptionOptions,
+		if err := backupinfo.WriteMetadataWithExternalSSTs(ctx, store, encryption,
 			kmsEnv, backupManifest); err != nil {
 			return err
 		}
 	}
 
 	statsTable := getTableStatsForBackup(ctx, execCtx.ExecCfg().InternalDB.Executor(), backupManifest.Descriptors)
-	if err := backupinfo.WriteTableStatistics(
-		ctx, store, details.EncryptionOptions, kmsEnv, &statsTable,
-	); err != nil {
-		return errors.Wrapf(err, "writing table statistics")
-	}
-
-	return errors.Wrapf(
-		backupdest.WriteBackupIndexMetadata(
-			ctx,
-			execCtx.ExecCfg(),
-			execCtx.User(),
-			execCtx.ExecCfg().DistSQLSrv.ExternalStorageFromURI,
-			details,
-		),
-		"writing backup index metadata",
-	)
+	return backupinfo.WriteTableStatistics(ctx, store, encryption, kmsEnv, &statsTable)
 }
 
 // processProgress processes progress updates from the bulk processor for a backup and updates
@@ -930,7 +915,7 @@ func doCompaction(
 	}
 
 	return concludeBackupCompaction(
-		ctx, execCtx, defaultStore, details, kmsEnv, manifest,
+		ctx, execCtx, defaultStore, details.EncryptionOptions, kmsEnv, manifest,
 	)
 }
 
