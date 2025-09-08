@@ -323,7 +323,7 @@ you must pass the 'encryption_info_dir' parameter that points to the directory o
 			if errors.Is(err, cloud.ErrListingUnsupported) {
 				// We can proceed with base backups here just fine, so log a warning and move on.
 				// Note that actually _writing_ an incremental backup to this location would fail loudly.
-				log.Dev.Warningf(
+				log.Warningf(
 					ctx, "storage sink %v does not support listing, only showing the base backup", explicitIncPaths)
 			} else {
 				return err
@@ -336,11 +336,7 @@ you must pass the 'encryption_info_dir' parameter that points to the directory o
 			info        backupInfo
 			memReserved int64
 		)
-		defaultCollectionURI, _, err := backupdest.GetURIsByLocalityKV(dest, "")
-		if err != nil {
-			return err
-		}
-		info.collectionURI = defaultCollectionURI
+		info.collectionURI = dest[0]
 		info.subdir = computedSubdir
 		info.kmsEnv = &kmsEnv
 		info.enc = encryption
@@ -353,15 +349,15 @@ you must pass the 'encryption_info_dir' parameter that points to the directory o
 		}
 		defer func() {
 			if err := cleanupFn(); err != nil {
-				log.Dev.Warningf(ctx, "failed to close incremental store: %+v", err)
+				log.Warningf(ctx, "failed to close incremental store: %+v", err)
 			}
 		}()
 
 		info.defaultURIs, info.manifests, info.localityInfo, memReserved,
 			err = backupdest.ResolveBackupManifests(
-			ctx, p.ExecCfg(), &mem, defaultCollectionURI, baseStores, incStores, mkStore, subdir,
-			fullyResolvedDest, fullyResolvedIncrementalsDirectory, hlc.Timestamp{},
-			encryption, &kmsEnv, p.User(), true /* includeSkipped */, true, /* includeCompacted */
+			ctx, &mem, baseStores, incStores, mkStore, fullyResolvedDest,
+			fullyResolvedIncrementalsDirectory, hlc.Timestamp{}, encryption, &kmsEnv, p.User(),
+			true /* includeSkipped */, true, /* includeCompacted */
 		)
 		defer func() {
 			mem.Shrink(ctx, memReserved)
@@ -474,11 +470,11 @@ func checkBackupFiles(
 
 		defer func() {
 			if err := defaultStore.Close(); err != nil {
-				log.Dev.Warningf(ctx, "close export storage failed %v", err)
+				log.Warningf(ctx, "close export storage failed %v", err)
 			}
 			for _, store := range localityStores {
 				if err := store.Close(); err != nil {
-					log.Dev.Warningf(ctx, "close export storage failed %v", err)
+					log.Warningf(ctx, "close export storage failed %v", err)
 				}
 			}
 		}()
@@ -786,7 +782,7 @@ func backupShowerDefault(
 							if err != nil {
 								// We expect that we might get an error here due to X-DB
 								// references, which were possible on 20.2 betas and rcs.
-								log.Dev.Errorf(ctx, "error while generating create statement: %+v", err)
+								log.Errorf(ctx, "error while generating create statement: %+v", err)
 							}
 							createStmtDatum = nullIfEmpty(createStmt)
 						}

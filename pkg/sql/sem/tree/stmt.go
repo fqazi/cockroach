@@ -206,22 +206,7 @@ func ReturnsAtMostOneRow(stmt Statement) bool {
 		return true
 	}
 	return false
-}
 
-// UserStmtAllowedForInternalExecutor returns whether the user-provided stmt is
-// allowed to be executed via the internal executor.
-func UserStmtAllowedForInternalExecutor(stmt Statement) bool {
-	if stmt.StatementType() == TypeTCL || stmt.StatementReturnType() == Ack {
-		// We need to disallow stmts that modify txn state (i.e. TCL) since the
-		// internal executor doesn't support them.
-		//
-		// Additionally, out of caution, we disallow stmts that have the Ack
-		// return type (which include some AlterTenant*, Cursor-related, and a
-		// few others). The only exception that seems nice to allow is TRUNCATE.
-		_, isTruncate := stmt.(*Truncate)
-		return isTruncate
-	}
-	return true
 }
 
 // HiddenFromShowQueries is a pseudo-interface to be implemented
@@ -962,15 +947,6 @@ func (*CreateExternalConnection) StatementType() StatementType { return TypeDDL 
 
 // StatementTag returns a short string identifying the type of statement.
 func (*CreateExternalConnection) StatementTag() string { return "CREATE EXTERNAL CONNECTION" }
-
-// StatementReturnType implements the Statement interface.
-func (*AlterExternalConnection) StatementReturnType() StatementReturnType { return Ack }
-
-// StatementType implements the Statement interface.
-func (*AlterExternalConnection) StatementType() StatementType { return TypeDDL }
-
-// StatementTag returns a short string identifying the type of statement.
-func (*AlterExternalConnection) StatementTag() string { return "ALTER EXTERNAL CONNECTION" }
 
 // StatementReturnType implements the Statement interface.
 func (*CheckExternalConnection) StatementReturnType() StatementReturnType { return Rows }
@@ -2605,7 +2581,6 @@ func (n *Explain) String() string                             { return AsString(
 func (n *ExplainAnalyze) String() string                      { return AsString(n) }
 func (n *Export) String() string                              { return AsString(n) }
 func (n *CreateExternalConnection) String() string            { return AsString(n) }
-func (n *AlterExternalConnection) String() string             { return AsString(n) }
 func (n *CheckExternalConnection) String() string             { return AsString(n) }
 func (n *DropExternalConnection) String() string              { return AsString(n) }
 func (n *FetchCursor) String() string                         { return AsString(n) }

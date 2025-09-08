@@ -1053,13 +1053,6 @@ func TestLogic_insert(
 	runLogicTest(t, "insert")
 }
 
-func TestLogic_inspect(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "inspect")
-}
-
 func TestLogic_int_size(
 	t *testing.T,
 ) {
@@ -1247,13 +1240,6 @@ func TestLogic_lookup_join_spans(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "lookup_join_spans")
-}
-
-func TestLogic_ltree(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "ltree")
 }
 
 func TestLogic_manual_retry(

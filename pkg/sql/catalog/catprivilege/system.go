@@ -27,7 +27,6 @@ var (
 		catconstants.StatementActivityTableName,
 		catconstants.TransactionActivityTableName,
 		catconstants.PreparedTransactionsTableName,
-		catconstants.InspectErrorsTableName,
 	}
 
 	readWriteSystemTables = []catconstants.SystemTableName{

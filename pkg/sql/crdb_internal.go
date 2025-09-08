@@ -24,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/gossip"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
+	"github.com/cockroachdb/cockroach/pkg/jobs/jobsauth"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobsprotectedts"
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -235,29 +236,29 @@ var crdbInternal = virtualSchema{
 	validWithNoDatabaseContext: true,
 }
 
-// SupportedCRDBInternal are the crdb_internal tables that are "supported" for real
+// SupportedVTables are the crdb_internal tables that are "supported" for real
 // customer use in production for legacy reasons. Avoid adding to this list if
 // possible and prefer to add new customer-facing tables that should be public
 // under the non-"internal" namespace of information_schema.
-var SupportedCRDBInternalTables = map[string]struct{}{
-	`cluster_contended_indexes`:     {},
-	`cluster_contended_keys`:        {},
-	`cluster_contended_tables`:      {},
-	`cluster_contention_events`:     {},
-	`cluster_locks`:                 {},
-	`cluster_queries`:               {},
-	`cluster_sessions`:              {},
-	`cluster_transactions`:          {},
-	`index_usage_statistics`:        {},
-	`statement_statistics`:          {},
-	`transaction_contention_events`: {},
-	`transaction_statistics`:        {},
-	`zones`:                         {},
+var SupportedVTables = map[string]struct{}{
+	`"".crdb_internal.cluster_contended_indexes`:     {},
+	`"".crdb_internal.cluster_contended_keys`:        {},
+	`"".crdb_internal.cluster_contended_tables`:      {},
+	`"".crdb_internal.cluster_contention_events`:     {},
+	`"".crdb_internal.cluster_locks`:                 {},
+	`"".crdb_internal.cluster_queries`:               {},
+	`"".crdb_internal.cluster_sessions`:              {},
+	`"".crdb_internal.cluster_transactions`:          {},
+	`"".crdb_internal.index_usage_statistics`:        {},
+	`"".crdb_internal.statement_statistics`:          {},
+	`"".crdb_internal.transaction_contention_events`: {},
+	`"".crdb_internal.transaction_statistics`:        {},
+	`"".crdb_internal.zones`:                         {},
 }
 
 // Note that this map is currently unused but serves to document which vtables
 // are expected to be used in production setting.
-var _ = SupportedCRDBInternalTables
+var _ = SupportedVTables
 
 var crdbInternalBuildInfoTable = virtualSchemaTable{
 	comment: `detailed identification strings (RAM, local node only)`,
@@ -957,46 +958,181 @@ CREATE TABLE crdb_internal.leases (
 	},
 }
 
-// TODO(tbg): prefix with kv_.
-var crdbInternalSystemJobsTable = virtualSchemaView{
-	schema: `
-CREATE VIEW crdb_internal.system_jobs (
-  id,
-  status,
-  created,
-  payload,
-  progress,
-  created_by_type,
-  created_by_id,
-  claim_session_id,
-  claim_instance_id,
-  num_runs,
-  last_run,
-  job_type
-) AS (SELECT j.id, j.status, j.created, payload.value, progress.value,
-	j.created_by_type, j.created_by_id, j.claim_session_id, j.claim_instance_id,
-	j.num_runs, j.last_run, j.job_type
-	FROM system.jobs AS j
-	LEFT JOIN system.job_info AS progress ON j.id = progress.job_id AND progress.info_key = 'legacy_progress'
-	INNER JOIN system.job_info AS payload ON j.id = payload.job_id AND payload.info_key = 'legacy_payload'
-	WHERE crdb_internal.can_view_job(j.owner)
+const (
+	// systemJobsAndJobInfoBaseQuery consults both the `system.jobs` and
+	// `system.job_info` tables to return relevant information about a job.
+	//
+	// NB: Every job on creation writes a row each for its payload and progress to
+	// the `system.job_info` table. For a given job there will always be at most
+	// one row each for its payload and progress. This is because of the
+	// `system.job_info` write semantics described `InfoStorage.Write`.
+	// Theoretically, a job could have no rows corresponding to its progress and
+	// so we perform a LEFT JOIN to get a NULL value when no progress row is
+	// found.
+	systemJobsAndJobInfoBaseQuery = `
+SELECT
+DISTINCT(id), status, created, payload.value AS payload, progress.value AS progress,
+created_by_type, created_by_id, claim_session_id, claim_instance_id, num_runs, last_run, job_type
+FROM
+system.jobs AS j
+LEFT JOIN system.job_info AS progress ON j.id = progress.job_id AND progress.info_key = 'legacy_progress'
+INNER JOIN system.job_info AS payload ON j.id = payload.job_id AND payload.info_key = 'legacy_payload'
+`
+	systemJobsIDPredicate     = ` WHERE id = $1`
+	systemJobsTypePredicate   = ` WHERE job_type = $1`
+	systemJobsStatusPredicate = ` WHERE status = $1`
 )
-`,
+
+type systemJobsPredicate int
+
+const (
+	noPredicate systemJobsPredicate = iota
+	jobID
+	jobType
+	jobStatus
+)
+
+func getInternalSystemJobsQuery(predicate systemJobsPredicate) string {
+	switch predicate {
+	case noPredicate:
+		return systemJobsAndJobInfoBaseQuery
+	case jobID:
+		return systemJobsAndJobInfoBaseQuery + systemJobsIDPredicate
+	case jobType:
+		return systemJobsAndJobInfoBaseQuery + systemJobsTypePredicate
+	case jobStatus:
+		return systemJobsAndJobInfoBaseQuery + systemJobsStatusPredicate
+	}
+
+	return ""
+}
+
+// TODO(tbg): prefix with kv_.
+var crdbInternalSystemJobsTable = virtualSchemaTable{
+	schema: `
+CREATE TABLE crdb_internal.system_jobs (
+  id                INT8      NOT NULL,
+  status            STRING    NOT NULL,
+  created           TIMESTAMP NOT NULL,
+  payload           BYTES     NOT NULL,
+  progress          BYTES,
+  created_by_type   STRING,
+  created_by_id     INT,
+  claim_session_id  BYTES,
+  claim_instance_id INT8,
+  num_runs          INT8,
+  last_run          TIMESTAMP,
+  job_type          STRING,
+  INDEX (id),
+  INDEX (job_type),
+  INDEX (status)
+)`,
 	comment: `wrapper over system.jobs with row access control (KV scan)`,
-	resultColumns: colinfo.ResultColumns{
-		{Name: "id", Typ: types.Int},
-		{Name: "status", Typ: types.String},
-		{Name: "created", Typ: types.TimestampTZ},
-		{Name: "payload", Typ: types.Bytes},
-		{Name: "progress", Typ: types.Bytes},
-		{Name: "created_by_type", Typ: types.String},
-		{Name: "created_by_id", Typ: types.Int},
-		{Name: "claim_session_id", Typ: types.Int},
-		{Name: "claim_instance_id", Typ: types.Int},
-		{Name: "num_runs", Typ: types.Int},
-		{Name: "last_run", Typ: types.TimestampTZ},
-		{Name: "job_type", Typ: types.String},
+	indexes: []virtualIndex{
+		{
+			populate: func(ctx context.Context, unwrappedConstraint tree.Datum, p *planner, _ catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) (matched bool, err error) {
+				q := getInternalSystemJobsQuery(jobID)
+				targetType := tree.MustBeDInt(unwrappedConstraint)
+				return populateSystemJobsTableRows(ctx, p, addRow, q, targetType)
+			},
+		},
+		{
+			populate: func(ctx context.Context, unwrappedConstraint tree.Datum, p *planner, _ catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) (matched bool, err error) {
+				q := getInternalSystemJobsQuery(jobType)
+				targetType := tree.MustBeDString(unwrappedConstraint)
+				return populateSystemJobsTableRows(ctx, p, addRow, q, targetType)
+			},
+		},
+		{
+			populate: func(ctx context.Context, unwrappedConstraint tree.Datum, p *planner, _ catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) (matched bool, err error) {
+				q := getInternalSystemJobsQuery(jobStatus)
+				targetType := tree.MustBeDString(unwrappedConstraint)
+				return populateSystemJobsTableRows(ctx, p, addRow, q, targetType)
+			},
+		},
 	},
+	populate: func(ctx context.Context, p *planner, db catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
+		_, err := populateSystemJobsTableRows(ctx, p, addRow, getInternalSystemJobsQuery(noPredicate))
+		return err
+	},
+}
+
+// populateSystemJobsTableRows calls addRow for all rows of the system.jobs table
+// except for rows that the user does not have access to. It returns true
+// if at least one row was generated.
+func populateSystemJobsTableRows(
+	ctx context.Context,
+	p *planner,
+	addRow func(...tree.Datum) error,
+	query string,
+	params ...interface{},
+) (result bool, retErr error) {
+	const jobIdIdx = 0
+	const jobPayloadIdx = 3
+
+	matched := false
+
+	// Note: we query system.jobs as root, so we must be careful about which rows we return.
+	it, err := p.InternalSQLTxn().QueryIteratorEx(ctx,
+		"system-jobs-scan",
+		p.Txn(),
+		sessiondata.NodeUserSessionDataOverride,
+		query,
+		params...,
+	)
+	if err != nil {
+		return matched, err
+	}
+
+	cleanup := func(ctx context.Context) {
+		if err := it.Close(); err != nil {
+			retErr = errors.CombineErrors(retErr, err)
+		}
+	}
+	defer cleanup(ctx)
+
+	globalPrivileges, err := jobsauth.GetGlobalJobPrivileges(ctx, p)
+	if err != nil {
+		return matched, err
+	}
+
+	for {
+		hasNext, err := it.Next(ctx)
+		if !hasNext || err != nil {
+			return matched, err
+		}
+
+		currentRow := it.Cur()
+		jobID, err := strconv.Atoi(currentRow[jobIdIdx].String())
+		if err != nil {
+			return matched, err
+		}
+		payloadBytes := currentRow[jobPayloadIdx]
+		payload, err := jobs.UnmarshalPayload(payloadBytes)
+		if err != nil {
+			return matched, wrapPayloadUnMarshalError(err, currentRow[jobIdIdx])
+		}
+		err = jobsauth.Authorize(
+			ctx, p, jobspb.JobID(jobID), payload.UsernameProto.Decode(), jobsauth.ViewAccess, globalPrivileges,
+		)
+		if err != nil {
+			// Filter out jobs which the user is not allowed to see.
+			if IsInsufficientPrivilegeError(err) {
+				continue
+			}
+			return matched, err
+		}
+
+		if err := addRow(currentRow...); err != nil {
+			return matched, err
+		}
+		matched = true
+	}
+}
+
+func wrapPayloadUnMarshalError(err error, jobID tree.Datum) error {
+	return errors.WithHintf(err, "could not decode the payload for job %s."+
+		" consider deleting this job from system.jobs", jobID)
 }
 
 var crdbInternalJobsView = virtualSchemaView{
@@ -1128,7 +1264,7 @@ CREATE TABLE crdb_internal.kv_protected_ts_records (
 			if err := it.Close(); err != nil {
 				// TODO(yuzefovich): this error should be propagated further up
 				// and not simply being logged. Fix it (#61123).
-				log.Dev.Warningf(ctx, "error closing an iterator: %v", err)
+				log.Warningf(ctx, "error closing an iterator: %v", err)
 			}
 		}
 		defer cleanup(ctx)
@@ -1494,7 +1630,7 @@ CREATE TABLE crdb_internal.node_statement_statistics (
 		}
 
 		var alloc tree.DatumAlloc
-		localSqlStats := p.extendedEvalCtx.localSQLStats
+		localSqlStats := p.extendedEvalCtx.localStatsProvider
 		nodeID, _ := p.execCfg.NodeInfo.NodeID.OptionalNodeID() // zero if not available
 
 		statementVisitor := func(_ context.Context, stats *appstatspb.CollectedStatementStatistics) error {
@@ -1717,7 +1853,7 @@ CREATE TABLE crdb_internal.node_transaction_statistics (
 			return noViewActivityOrViewActivityRedactedRoleError(p.User())
 		}
 
-		localMemSqlStats := p.extendedEvalCtx.localSQLStats
+		localMemSqlStats := p.extendedEvalCtx.localStatsProvider
 		nodeID, _ := p.execCfg.NodeInfo.NodeID.OptionalNodeID() // zero if not available
 
 		var alloc tree.DatumAlloc
@@ -1819,7 +1955,7 @@ CREATE TABLE crdb_internal.node_txn_stats (
 			return err
 		}
 
-		localMemSqlStats := p.extendedEvalCtx.localSQLStats
+		localMemSqlStats := p.extendedEvalCtx.localStatsProvider
 		nodeID, _ := p.execCfg.NodeInfo.NodeID.OptionalNodeID() // zero if not available
 
 		appTxnStatsVisitor := func(appName string, stats *appstatspb.TxnStats) error {
@@ -1927,7 +2063,7 @@ CREATE TABLE crdb_internal.cluster_inflight_traces (
 		for ; iter.Valid(); iter.Next(ctx) {
 			nodeID, recording := iter.Value()
 			traceString := recording.String()
-			traceJaegerJSON, err := recording.ToJaegerJSON("", "", fmt.Sprintf("node %d", nodeID), true /* indent */)
+			traceJaegerJSON, err := recording.ToJaegerJSON("", "", fmt.Sprintf("node %d", nodeID))
 			if err != nil {
 				return false, err
 			}
@@ -2026,8 +2162,6 @@ CREATE TABLE crdb_internal.cluster_settings (
   value         STRING NOT NULL,
   type          STRING NOT NULL,
   public        BOOL NOT NULL, -- whether the setting is documented, which implies the user can expect support.
-  sensitive     BOOL NOT NULL, -- whether the setting is sensitive and should not be exposed to users without the appropriate privileges
-  reportable    BOOL NOT NULL, -- whether the setting is reportable
   description   STRING NOT NULL,
   default_value STRING NOT NULL,
   origin        STRING NOT NULL, -- the origin of the value: 'default' , 'override' or 'external-override'
@@ -2073,8 +2207,6 @@ CREATE TABLE crdb_internal.cluster_settings (
 				tree.NewDString(strVal),
 				tree.NewDString(setting.Typ()),
 				tree.MakeDBool(tree.DBool(isPublic)),
-				tree.MakeDBool(tree.DBool(setting.IsSensitive())),
-				tree.MakeDBool(tree.DBool(setting.IsReportable())),
 				tree.NewDString(desc),
 				tree.NewDString(defaultVal),
 				tree.NewDString(origin),
@@ -2208,7 +2340,7 @@ func populateTransactionsTable(
 		}
 	}
 	for _, rpcErr := range response.Errors {
-		log.Dev.Warningf(ctx, "%v", rpcErr.Message)
+		log.Warningf(ctx, "%v", rpcErr.Message)
 		if rpcErr.NodeID != 0 {
 			// Add a row with this node ID, the error for the txn string,
 			// and nulls for all other columns.
@@ -2249,8 +2381,7 @@ CREATE TABLE crdb_internal.%s (
   phase            STRING,         -- the current execution phase
   full_scan        BOOL,           -- whether the query contains a full table or index scan
   plan_gist        STRING,         -- Compressed logical plan.
-  database         STRING,         -- the database the statement was executed on
-  isolation_level  STRING          -- the isolation level of the query's transaction
+  database         STRING          -- the database the statement was executed on
 )`
 
 func (p *planner) makeSessionsRequest(
@@ -2415,13 +2546,6 @@ func populateQueriesTable(
 			if shouldRedactOtherUserQuery && session.Username != p.SessionData().User().Normalized() {
 				sql = query.SqlNoConstants
 			}
-
-			// Get isolation level from session's active transaction, or use NULL if none.
-			var isolationLevelDatum tree.Datum = tree.DNull
-			if session.ActiveTxn != nil {
-				isolationLevelDatum = tree.NewDString(session.ActiveTxn.IsolationLevel)
-			}
-
 			if err := addRow(
 				tree.NewDString(query.ID),
 				txnID,
@@ -2437,7 +2561,6 @@ func populateQueriesTable(
 				isFullScanDatum,
 				planGistDatum,
 				tree.NewDString(query.Database),
-				isolationLevelDatum,
 			); err != nil {
 				return err
 			}
@@ -2445,7 +2568,7 @@ func populateQueriesTable(
 	}
 
 	for _, rpcErr := range response.Errors {
-		log.Dev.Warningf(ctx, "%v", rpcErr.Message)
+		log.Warningf(ctx, "%v", rpcErr.Message)
 		if rpcErr.NodeID != 0 {
 			// Add a row with this node ID, the error for query, and
 			// nulls for all other columns.
@@ -2464,7 +2587,6 @@ func populateQueriesTable(
 				tree.DNull,                             // full_scan
 				tree.DNull,                             // plan_gist
 				tree.DNull,                             // database
-				tree.DNull,                             // isolation_level
 			); err != nil {
 				return err
 			}
@@ -2520,8 +2642,7 @@ CREATE TABLE crdb_internal.%s (
   pg_backend_pid     INT,            -- the numerical ID attached to the session which is used to mimic a Postgres backend PID
   trace_id           INT,            -- the ID of the trace of the session
   goroutine_id       INT,            -- the ID of the goroutine of the session
-  authentication_method STRING,      -- the method used to authenticate the session
-  isolation_level       STRING       -- the isolation level of the session's active transaction or default isolation level if no active transaction
+  authentication_method STRING       -- the method used to authenticate the session
 )
 `
 
@@ -2645,16 +2766,6 @@ func populateSessionsTable(
 				return err
 			}
 		}
-
-		// Get isolation level from session's active transaction, or fall back to
-		// default.
-		var isolationLevelDatum tree.Datum = tree.DNull
-		if session.ActiveTxn != nil {
-			isolationLevelDatum = tree.NewDString(session.ActiveTxn.IsolationLevel)
-		} else if session.DefaultIsolationLevel != "" {
-			isolationLevelDatum = tree.NewDString(session.DefaultIsolationLevel)
-		}
-
 		if err := addRow(
 			tree.NewDInt(tree.DInt(session.NodeID)),
 			sessionID,
@@ -2675,14 +2786,13 @@ func populateSessionsTable(
 			tree.NewDInt(tree.DInt(session.TraceID)),
 			tree.NewDInt(tree.DInt(session.GoroutineID)),
 			tree.NewDString(string(session.AuthenticationMethod)),
-			isolationLevelDatum,
 		); err != nil {
 			return err
 		}
 	}
 
 	for _, rpcErr := range response.Errors {
-		log.Dev.Warningf(ctx, "%v", rpcErr.Message)
+		log.Warningf(ctx, "%v", rpcErr.Message)
 		if rpcErr.NodeID != 0 {
 			// Add a row with this node ID, error in active queries, and nulls
 			// for all other columns.
@@ -2706,7 +2816,6 @@ func populateSessionsTable(
 				tree.DNull,                             // trace_id
 				tree.DNull,                             // goroutine_id
 				tree.DNull,                             // authentication_method
-				tree.DNull,                             // isolation_level
 			); err != nil {
 				return err
 			}
@@ -2945,7 +3054,7 @@ func populateContentionEventsTable(
 		}
 	}
 	for _, rpcErr := range response.Errors {
-		log.Dev.Warningf(ctx, "%v", rpcErr.Message)
+		log.Warningf(ctx, "%v", rpcErr.Message)
 	}
 	return nil
 }
@@ -3010,7 +3119,7 @@ func populateDistSQLFlowsTable(
 		}
 	}
 	for _, rpcErr := range response.Errors {
-		log.Dev.Warningf(ctx, "%v", rpcErr.Message)
+		log.Warningf(ctx, "%v", rpcErr.Message)
 	}
 	return nil
 }
@@ -3356,7 +3465,7 @@ func createRoutinePopulate(
 			}
 		}
 
-		fnDescs, err := p.Descriptors().ByIDWithLeased(p.txn).WithoutNonPublic().Get().Descs(ctx, fnIDs)
+		fnDescs, err := p.Descriptors().ByIDWithoutLeased(p.txn).WithoutNonPublic().Get().Descs(ctx, fnIDs)
 		if err != nil {
 			return err
 		}
@@ -3387,11 +3496,6 @@ func createRoutinePopulate(
 					if err != nil {
 						return err
 					}
-					bodyStr, err = formatUnqualifyTableNames(bodyStr, fnIDToDBName[fnDesc.GetID()], fnDesc.GetLanguage())
-					if err != nil {
-						return err
-					}
-
 					bodyStr = strings.TrimSpace(bodyStr)
 					stmtStrs := strings.Split(bodyStr, "\n")
 					for i := range stmtStrs {
@@ -3434,7 +3538,7 @@ func createRoutinePopulateByFnIndex(
 	// `crdb_internal.create_function_statements` and `crdb_internal.create_procedure_statements`, helping
 	// optimize the queries for the create statements output in `SHOW CREATE ALL ROUTINES`.
 	fnID := descpb.ID(tree.MustBeDInt(unwrappedConstraint))
-	fnDesc, err := p.Descriptors().ByIDWithLeased(p.txn).WithoutNonPublic().Get().Function(ctx, fnID)
+	fnDesc, err := p.Descriptors().ByIDWithoutLeased(p.txn).WithoutNonPublic().Get().Function(ctx, fnID)
 	if err != nil || fnDesc == nil {
 		if errors.Is(err, catalog.ErrDescriptorNotFound) || fnDesc == nil {
 			return false, nil
@@ -3442,7 +3546,7 @@ func createRoutinePopulateByFnIndex(
 		return false, err
 	}
 	scID := fnDesc.GetParentSchemaID()
-	sc, err := p.Descriptors().ByIDWithLeased(p.txn).WithoutNonPublic().Get().Schema(ctx, scID)
+	sc, err := p.Descriptors().ByIDWithoutLeased(p.txn).WithoutNonPublic().Get().Schema(ctx, scID)
 	if err != nil || sc == nil {
 		return false, err
 	}
@@ -3955,7 +4059,7 @@ CREATE TABLE crdb_internal.table_indexes (
 						if ts := idx.CreatedAt(); !ts.IsZero() {
 							tsDatum, err := tree.MakeDTimestamp(ts, time.Nanosecond)
 							if err != nil {
-								log.Dev.Warningf(ctx, "failed to construct timestamp for index: %v", err)
+								log.Warningf(ctx, "failed to construct timestamp for index: %v", err)
 							} else {
 								createdAt = tsDatum
 							}
@@ -4074,7 +4178,7 @@ CREATE TABLE crdb_internal.index_columns (
 							// We log an error here, instead of reporting an error
 							// to the user, because we really want to see the
 							// erroneous data in the virtual table.
-							log.Dev.Errorf(ctx, "index descriptor for [%d@%d] (%s.%s@%s) has more key column IDs (%d) than names (%d) (corrupted schema?)",
+							log.Errorf(ctx, "index descriptor for [%d@%d] (%s.%s@%s) has more key column IDs (%d) than names (%d) (corrupted schema?)",
 								table.GetID(), idx.GetID(), parentName, table.GetName(), idx.GetName(),
 								len(idx.IndexDesc().KeyColumnIDs), len(idx.IndexDesc().KeyColumnNames))
 						} else {
@@ -4082,7 +4186,7 @@ CREATE TABLE crdb_internal.index_columns (
 						}
 						if i >= len(idx.IndexDesc().KeyColumnDirections) {
 							// See comment above.
-							log.Dev.Errorf(ctx, "index descriptor for [%d@%d] (%s.%s@%s) has more key column IDs (%d) than directions (%d) (corrupted schema?)",
+							log.Errorf(ctx, "index descriptor for [%d@%d] (%s.%s@%s) has more key column IDs (%d) than directions (%d) (corrupted schema?)",
 								table.GetID(), idx.GetID(), parentName, table.GetName(), idx.GetName(),
 								len(idx.IndexDesc().KeyColumnIDs), len(idx.IndexDesc().KeyColumnDirections))
 						} else {
@@ -6973,7 +7077,7 @@ CREATE TABLE crdb_internal.cluster_statement_statistics (
 			return nil, nil, err
 		}
 
-		s := p.extendedEvalCtx.persistedSQLStats
+		s := p.extendedEvalCtx.statsProvider
 		curAggTs := s.ComputeAggregatedTs()
 		aggInterval := s.GetAggregationInterval()
 
@@ -7406,7 +7510,7 @@ CREATE TABLE crdb_internal.cluster_transaction_statistics (
 			return nil, nil, err
 		}
 
-		s := p.extendedEvalCtx.persistedSQLStats
+		s := p.extendedEvalCtx.statsProvider
 		curAggTs := s.ComputeAggregatedTs()
 		aggInterval := s.GetAggregationInterval()
 
@@ -9232,7 +9336,7 @@ var crdbInternalLogicalReplicationResolvedView = virtualSchemaView{
 			SELECT
 				j.id AS job_id, jsonb_array_elements(crdb_internal.pb_to_json('progress', i.value)->'LogicalReplication'->'checkpoint'->'resolvedSpans') AS s
 			FROM system.jobs j LEFT JOIN system.job_info i ON j.id = i.job_id AND i.info_key = 'legacy_progress'
-			WHERE j.job_type = 'LOGICAL REPLICATION' AND has_system_privilege(current_user, 'REPLICATION')
+			WHERE j.job_type = 'LOGICAL REPLICATION' AND pg_has_role(current_user, 'admin', 'member')
 			) SELECT
 				job_id,
 				crdb_internal.pretty_key(decode(s->'span'->>'key', 'base64'), 0) AS start_key,

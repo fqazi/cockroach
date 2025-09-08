@@ -55,7 +55,7 @@ type failureRecord struct {
 
 type filterVals struct {
 	syncutil.Mutex
-	// key -> number of times an retryable error will be injected when that key
+	// key -> number of times an retriable error will be injected when that key
 	// is written.
 	restartCounts map[string]int
 	// key -> number of times a TransactionAborted error will be injected when
@@ -359,7 +359,7 @@ func (ta *TxnAborter) statementFilter(
 	ctx context.Context, _ *sessiondata.SessionData, stmt string, err error,
 ) {
 	ta.mu.Lock()
-	log.Dev.Infof(ctx, "statement filter running on: %s, with err=%v", stmt, err)
+	log.Infof(ctx, "statement filter running on: %s, with err=%v", stmt, err)
 	ri, ok := ta.mu.stmtsToAbort[stmt]
 	shouldAbort := false
 	if ok {
@@ -369,7 +369,7 @@ func (ta *TxnAborter) statementFilter(
 			ri.satisfied = true
 		}
 		if ri.abortCount > 0 && err == nil {
-			log.Dev.Infof(ctx, "TxnAborter aborting txn for statement %q", stmt)
+			log.Infof(ctx, "TxnAborter aborting txn for statement %q", stmt)
 			ri.abortCount--
 			shouldAbort = true
 		}
@@ -458,7 +458,7 @@ func (ri *restartInfo) Verify() error {
 }
 
 // Test the logic in the sql executor for automatically retrying txns in case of
-// retryable errors.
+// retriable errors.
 func TestTxnAutoRetry(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -646,7 +646,7 @@ BEGIN;
 		t.Fatal(err)
 	}
 
-	// Continue the txn in a new request, which is not retryable.
+	// Continue the txn in a new request, which is not retriable.
 	_, err = sqlDB.Exec("INSERT INTO t.public.test(k, v, t) VALUES (4, 'hooly', cluster_logical_timestamp())")
 	require.Regexp(t, "RETRY_REASON_UNKNOWN - injected err", err)
 }
@@ -792,7 +792,7 @@ func isRetryableErr(err error) bool {
 	return errors.As(err, &pqErr) && pqErr.Code == "40001"
 }
 
-// Returns true on retryable errors.
+// Returns true on retriable errors.
 func runTestTxn(
 	t *testing.T,
 	st *cluster.Settings,
@@ -809,7 +809,7 @@ func runTestTxn(
 		t.Fatal(err)
 	}
 
-	// On the first execution with buffered writes enabled, the arranged retryable
+	// On the first execution with buffered writes enabled, the arranged retriable
 	// error is not observed until the buffer is flushed. Once the buffer is
 	// flushed, future buffering is disabled so then we expect the following
 	// errors on the initial insert.
@@ -849,7 +849,7 @@ func runTestTxn(
 }
 
 // TestUserTxnRestart tests user-directed txn restarts.
-// The test will inject and otherwise create retryable errors of various kinds
+// The test will inject and otherwise create retriable errors of various kinds
 // and checks that we still manage to run a txn despite them.
 func TestTxnUserRestart(t *testing.T) {
 	defer leaktest.AfterTest(t)()
@@ -991,7 +991,7 @@ CREATE DATABASE t; CREATE TABLE t.test (k INT PRIMARY KEY, v TEXT);
 	}
 }
 
-// Test that a COMMIT getting an error, retryable or not, leaves the txn
+// Test that a COMMIT getting an error, retriable or not, leaves the txn
 // finalized and not in Aborted/RestartWait (i.e. COMMIT, like ROLLBACK, is
 // always final). As opposed to an error on a COMMIT in an auto-retry
 // txn, where we retry the txn (not tested here).
@@ -1333,7 +1333,7 @@ SELECT * from t.test WHERE k = 'test_key';
 //
 // This test triggers the above scenario by triggering a restart by returning
 // ReadWithinUncertaintyIntervalError on the first transaction attempt.
-func TestFlushUncommittedDescriptorCacheOnRestart(t *testing.T) {
+func TestFlushUncommitedDescriptorCacheOnRestart(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
@@ -1652,22 +1652,22 @@ func TestTxnAutoRetriesDisabledAfterResultsHaveBeenSentToClient(t *testing.T) {
 		name                              string
 		autoCommit                        bool
 		clientDirectedRetry               bool
-		expectedTxnStateAfterRetryableErr string
+		expectedTxnStateAfterRetriableErr string
 	}{
 		{
 			name:                              "client_directed_retries",
 			clientDirectedRetry:               true,
-			expectedTxnStateAfterRetryableErr: "Aborted",
+			expectedTxnStateAfterRetriableErr: "Aborted",
 		},
 		{
 			name:                              "no_client_directed_retries",
 			clientDirectedRetry:               false,
-			expectedTxnStateAfterRetryableErr: "Aborted",
+			expectedTxnStateAfterRetriableErr: "Aborted",
 		},
 		{
 			name:                              "autocommit",
 			autoCommit:                        true,
-			expectedTxnStateAfterRetryableErr: "NoTxn",
+			expectedTxnStateAfterRetriableErr: "NoTxn",
 		},
 	}
 	for _, tc := range tests {
@@ -1687,7 +1687,7 @@ func TestTxnAutoRetriesDisabledAfterResultsHaveBeenSentToClient(t *testing.T) {
 			}
 
 			// We'll run a statement that produces enough results to overflow the
-			// buffers and start streaming results to the client before the retryable
+			// buffers and start streaming results to the client before the retriable
 			// error is injected. We do this by running a generate series that blows
 			// up at the very end, with a CASE statement.
 			sql := fmt.Sprintf(`
@@ -1702,13 +1702,13 @@ func TestTxnAutoRetriesDisabledAfterResultsHaveBeenSentToClient(t *testing.T) {
 				prefix, suffix)
 			_, err = sqlConn.ExecContext(ctx, sql)
 			if !isRetryableErr(err) {
-				t.Fatalf("expected retryable error, got: %v", err)
+				t.Fatalf("expected retriable error, got: %v", err)
 			}
 			var state string
 			if err := sqlConn.QueryRowContext(ctx, "SHOW TRANSACTION STATUS").Scan(&state); err != nil {
 				t.Fatal(err)
 			}
-			if expStateStr := tc.expectedTxnStateAfterRetryableErr; state != expStateStr {
+			if expStateStr := tc.expectedTxnStateAfterRetriableErr; state != expStateStr {
 				t.Fatalf("expected state %s, got: %s", expStateStr, state)
 			}
 		})

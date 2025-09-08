@@ -328,7 +328,7 @@ func TestTxnPutOutOfOrder(t *testing.T) {
 
 			updatedVal := []byte("updatedVal")
 			if err := txn.CPut(ctx, key, updatedVal, kvclientutils.StrToCPutExistingValue("initVal")); err != nil {
-				log.Dev.Errorf(context.Background(), "failed put value: %+v", err)
+				log.Errorf(context.Background(), "failed put value: %+v", err)
 				return err
 			}
 
@@ -1595,7 +1595,7 @@ func (l *leaseTransferTest) sendRead(t *testing.T, storeIdx int) *kvpb.Error {
 		getArgs(l.leftKey),
 	)
 	if pErr != nil {
-		log.Dev.Warningf(context.Background(), "%v", pErr)
+		log.Warningf(context.Background(), "%v", pErr)
 	}
 	return pErr
 }
@@ -1637,9 +1637,9 @@ func (l *leaseTransferTest) setFilter(setTo bool, extensionSem chan struct{}) {
 			l.evalFilter = nil
 			l.filterMu.Unlock()
 			extensionSem <- struct{}{}
-			log.Dev.Infof(filterArgs.Ctx, "filter blocking request: %s", llReq)
+			log.Infof(filterArgs.Ctx, "filter blocking request: %s", llReq)
 			<-extensionSem
-			log.Dev.Infof(filterArgs.Ctx, "filter unblocking lease request")
+			log.Infof(filterArgs.Ctx, "filter unblocking lease request")
 		}
 		return nil
 	}
@@ -2344,7 +2344,7 @@ func TestLeaseNotUsedAfterRestart(t *testing.T) {
 		})
 	})
 
-	log.Dev.Info(ctx, "restarting")
+	log.Info(ctx, "restarting")
 	require.NoError(t, tc.Restart())
 
 	// Send another read and check that the pre-existing lease has not been used.
@@ -2461,13 +2461,13 @@ func TestLeaseExtensionNotBlockedByRead(t *testing.T) {
 
 			_, pErr := kv.SendWrapped(ctx, s.DB().NonTransactionalSender(), &leaseReq)
 			if _, ok := pErr.GetDetail().(*kvpb.AmbiguousResultError); ok {
-				log.Dev.Infof(ctx, "retrying lease after %s", pErr)
+				log.Infof(ctx, "retrying lease after %s", pErr)
 				continue
 			}
 			if _, ok := pErr.GetDetail().(*kvpb.LeaseRejectedError); ok {
 				// Lease rejected? Try again. The extension should work because
 				// extending is idempotent (assuming the PrevLease matches).
-				log.Dev.Infof(ctx, "retrying lease after %s", pErr)
+				log.Infof(ctx, "retrying lease after %s", pErr)
 				continue
 			}
 			if pErr != nil {
@@ -3021,7 +3021,7 @@ func TestLossQuorumCauseLeaderlessWatcherToSignalUnavailable(t *testing.T) {
 	// Randomly stop server index 0 or 1.
 	stoppedNodeInx := rand.Intn(2)
 	aliveNodeIdx := 1 - stoppedNodeInx
-	log.Dev.Infof(ctx, "stopping node id: %d", stoppedNodeInx+1)
+	log.Infof(ctx, "stopping node id: %d", stoppedNodeInx+1)
 	tc.StopServer(stoppedNodeInx)
 	repl := tc.GetFirstStoreFromServer(t, aliveNodeIdx).LookupReplica(roachpb.RKey(key))
 
@@ -3133,7 +3133,7 @@ func TestLeaderlessWatcherErrorRefreshedOnUnavailabilityTransition(t *testing.T)
 	// The leaderlessWatcher starts off as available.
 	require.False(t, repl.LeaderlessWatcher.IsUnavailable())
 	// Let it know it's leaderless.
-	repl.TestingRefreshLeaderlessWatcherUnavailableState(ctx, raft.None, manual.Now(), st)
+	repl.RefreshLeaderlessWatcherUnavailableStateForTesting(ctx, raft.None, manual.Now(), st)
 	// Even though the replica is leaderless, enough time hasn't passed for it to
 	// be considered unavailable.
 	require.False(t, repl.LeaderlessWatcher.IsUnavailable())
@@ -3141,7 +3141,7 @@ func TestLeaderlessWatcherErrorRefreshedOnUnavailabilityTransition(t *testing.T)
 	require.NoError(t, repl.LeaderlessWatcher.Err())
 	// Let enough time pass.
 	manual.Increment(10 * time.Second.Nanoseconds())
-	repl.TestingRefreshLeaderlessWatcherUnavailableState(ctx, raft.None, manual.Now(), st)
+	repl.RefreshLeaderlessWatcherUnavailableStateForTesting(ctx, raft.None, manual.Now(), st)
 	// Now the replica is considered unavailable.
 	require.True(t, repl.LeaderlessWatcher.IsUnavailable())
 	require.Error(t, repl.LeaderlessWatcher.Err())
@@ -3151,14 +3151,14 @@ func TestLeaderlessWatcherErrorRefreshedOnUnavailabilityTransition(t *testing.T)
 
 	// Next up, let the replica know there's a leader. This should make it
 	// available again.
-	repl.TestingRefreshLeaderlessWatcherUnavailableState(ctx, 1, manual.Now(), st)
+	repl.RefreshLeaderlessWatcherUnavailableStateForTesting(ctx, 1, manual.Now(), st)
 	require.False(t, repl.LeaderlessWatcher.IsUnavailable())
 	// Change the range descriptor. Mark it leaderless and let enough time pass
 	// for it to be considered unavailable again.
 	tc.AddVotersOrFatal(t, key, tc.Targets(2)...)
-	repl.TestingRefreshLeaderlessWatcherUnavailableState(ctx, raft.None, manual.Now(), st)
+	repl.RefreshLeaderlessWatcherUnavailableStateForTesting(ctx, raft.None, manual.Now(), st)
 	manual.Increment(10 * time.Second.Nanoseconds())
-	repl.TestingRefreshLeaderlessWatcherUnavailableState(ctx, raft.None, manual.Now(), st)
+	repl.RefreshLeaderlessWatcherUnavailableStateForTesting(ctx, raft.None, manual.Now(), st)
 	// The replica should now be considered unavailable again.
 	require.True(t, repl.LeaderlessWatcher.IsUnavailable())
 	require.Error(t, repl.LeaderlessWatcher.Err())
@@ -4707,7 +4707,7 @@ func TestStrictGCEnforcement(t *testing.T) {
 					t,
 					spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, l.Start.ToTimestamp().Next()),
 				)
-				require.NoError(t, r.TestingReadProtectedTimestamps(ctx))
+				require.NoError(t, r.ReadProtectedTimestampsForTesting(ctx))
 			}
 		}
 		refreshTo = func(t *testing.T, asOf hlc.Timestamp) {
@@ -4718,7 +4718,7 @@ func TestStrictGCEnforcement(t *testing.T) {
 					t,
 					spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, asOf),
 				)
-				require.NoError(t, r.TestingReadProtectedTimestamps(ctx))
+				require.NoError(t, r.ReadProtectedTimestampsForTesting(ctx))
 			}
 		}
 		// waitForProtectionAndReadProtectedTimestamps waits until the
@@ -4735,7 +4735,7 @@ func TestStrictGCEnforcement(t *testing.T) {
 				ptutil.TestingWaitForProtectedTimestampToExistOnSpans(ctx, t, tc.Server(i),
 					ptsReader, protectionTimestamp,
 					[]roachpb.Span{span})
-				require.NoError(t, r.TestingReadProtectedTimestamps(ctx))
+				require.NoError(t, r.ReadProtectedTimestampsForTesting(ctx))
 			}
 		}
 		insqlDB = tc.Server(0).InternalDB().(isql.DB)
@@ -5151,8 +5151,8 @@ func TestTenantID(t *testing.T) {
 	})
 	defer tc.Stopper().Stop(ctx)
 
-	tenant3 := roachpb.MustMakeTenantID(3)
-	tenant3Prefix := keys.MakeTenantPrefix(tenant3)
+	tenant2 := roachpb.MustMakeTenantID(2)
+	tenant2Prefix := keys.MakeTenantPrefix(tenant2)
 	t.Run("(1) initial set", func(t *testing.T) {
 		// Ensure that a normal range has the system tenant.
 		{
@@ -5162,16 +5162,16 @@ func TestTenantID(t *testing.T) {
 			require.Equal(t, roachpb.SystemTenantID, tenantId, "%v", repl)
 		}
 		// Ensure that a range with a tenant prefix has the proper tenant ID.
-		tc.SplitRangeOrFatal(t, tenant3Prefix)
+		tc.SplitRangeOrFatal(t, tenant2Prefix)
 		{
-			_, repl := getFirstStoreReplica(t, tc.Server(0), tenant3Prefix)
+			_, repl := getFirstStoreReplica(t, tc.Server(0), tenant2Prefix)
 			tenantId, valid := repl.TenantID()
 			require.True(t, valid)
-			require.Equal(t, tenant3, tenantId, "%v", repl)
+			require.Equal(t, tenant2, tenantId, "%v", repl)
 		}
 	})
 	t.Run("(2) not set before snapshot", func(t *testing.T) {
-		_, repl := getFirstStoreReplica(t, tc.Server(0), tenant3Prefix)
+		_, repl := getFirstStoreReplica(t, tc.Server(0), tenant2Prefix)
 		sawSnapshot := make(chan struct{}, 1)
 		blockSnapshot := make(chan struct{})
 		tc.AddAndStartServer(t, base.TestServerArgs{
@@ -5200,7 +5200,7 @@ func TestTenantID(t *testing.T) {
 		// networking handshake timeouts.
 		addReplicaErr := make(chan error)
 		addReplica := func() {
-			_, err := tc.AddVoters(tenant3Prefix, tc.Target(1))
+			_, err := tc.AddVoters(tenant2Prefix, tc.Target(1))
 			addReplicaErr <- err
 		}
 		go addReplica()
@@ -5224,14 +5224,14 @@ func TestTenantID(t *testing.T) {
 		require.NoError(t, <-addReplicaErr)
 		tenantID, valid := uninitializedRepl.TenantID() // now initialized
 		require.True(t, valid)
-		require.Equal(t, tenant3, tenantID)
+		require.Equal(t, tenant2, tenantID)
 	})
 	t.Run("(3) upon restart", func(t *testing.T) {
 		tc.StopServer(0)
 		tc.AddAndStartServer(t, stickySpecTestServerArgs)
-		_, repl := getFirstStoreReplica(t, tc.Server(2), tenant3Prefix)
+		_, repl := getFirstStoreReplica(t, tc.Server(2), tenant2Prefix)
 		tenantID, _ := repl.TenantID() // now initialized
-		require.Equal(t, tenant3, tenantID, "%v", repl)
+		require.Equal(t, tenant2, tenantID, "%v", repl)
 	})
 
 }

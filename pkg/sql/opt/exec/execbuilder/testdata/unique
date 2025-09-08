@@ -3628,8 +3628,10 @@ vectorized: true
 │               │ equality cols are key
 │               │ locking strength: for update
 │               │
-│               └── • values
-│                     size: 3 columns, 2 rows
+│               └── • render
+│                   │
+│                   └── • values
+│                         size: 3 columns, 2 rows
 │
 ├── • constraint-check
 │   │
@@ -3688,8 +3690,10 @@ vectorized: true
 │               │ equality cols are key
 │               │ locking strength: for update
 │               │
-│               └── • values
-│                     size: 3 columns, 2 rows
+│               └── • render
+│                   │
+│                   └── • values
+│                         size: 3 columns, 2 rows
 │
 ├── • constraint-check
 │   │
@@ -3749,8 +3753,10 @@ vectorized: true
 │               │ equality cols are key
 │               │ locking strength: for update
 │               │
-│               └── • values
-│                     size: 2 columns, 2 rows
+│               └── • render
+│                   │
+│                   └── • values
+│                         size: 2 columns, 2 rows
 │
 ├── • constraint-check
 │   │
@@ -3885,8 +3891,10 @@ vectorized: true
 │               │     table: uniq@uniq_pkey
 │               │     spans: FULL SCAN
 │               │
-│               └── • values
-│                     size: 3 columns, 2 rows
+│               └── • render
+│                   │
+│                   └── • values
+│                         size: 3 columns, 2 rows
 │
 ├── • constraint-check
 │   │
@@ -4566,8 +4574,10 @@ vectorized: true
 │               │ equality cols are key
 │               │ locking strength: for update
 │               │
-│               └── • values
-│                     size: 2 columns, 2 rows
+│               └── • render
+│                   │
+│                   └── • values
+│                         size: 2 columns, 2 rows
 │
 ├── • constraint-check
 │   │

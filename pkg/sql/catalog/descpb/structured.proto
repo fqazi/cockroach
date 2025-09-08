@@ -508,11 +508,7 @@ message IndexDescriptor {
   // this vector index.
   optional vecindex.vecpb.Config vec_config = 30 [(gogoproto.nullable) = false];
 
-  // HideForPrimaryKeyRecreate, if set this index is not usable for reads until the
-  // new primary index becomes public.
-  optional bool hide_for_primary_key_recreate = 31  [(gogoproto.nullable) = false];
-
-  // Next ID: 32
+  // Next ID: 31
 }
 
 // TriggerDescriptor describes a trigger on a table.

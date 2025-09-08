@@ -113,7 +113,7 @@ func PlanCDCExpression(
 		return CDCExpressionPlan{}, err
 	}
 	if log.V(2) {
-		log.Dev.Infof(ctx, "Optimized CDC expression: %s", memo)
+		log.Infof(ctx, "Optimized CDC expression: %s", memo)
 	}
 
 	const allowAutoCommit = false

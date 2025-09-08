@@ -1058,7 +1058,7 @@ func TestReplicaNotLeaseHolderError(t *testing.T) {
 func TestReplicaLeaseCounters(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	defer TestingEnableLeaseHistory(100)()
+	defer EnableLeaseHistoryForTesting(100)()
 	ctx := context.Background()
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
@@ -1950,7 +1950,7 @@ func TestLeaseConcurrent(t *testing.T) {
 				// Morally speaking, this is an error, but reproposals can
 				// happen and so we warn (in case this trips the test up
 				// in more unexpected ways).
-				log.Dev.Infof(ctx, "reproposal of %+v", ll)
+				log.Infof(ctx, "reproposal of %+v", ll)
 			}
 			// Wait for all lease requests to join the same LeaseRequest command.
 			wg.Wait()
@@ -7747,7 +7747,7 @@ func TestReplicaRetryRaftProposal(t *testing.T) {
 	}
 	tc.repl.mu.RUnlock()
 
-	log.Dev.Infof(ctx, "test begins")
+	log.Infof(ctx, "test begins")
 
 	ba := &kvpb.BatchRequest{}
 	ba.RangeID = 1
@@ -7823,7 +7823,7 @@ func TestReplicaCancelRaftCommandProgress(t *testing.T) {
 	abandoned := make(map[kvserverbase.CmdIDKey]struct{}) // protected by repl.mu
 	tc.repl.mu.proposalBuf.testing.submitProposalFilter = func(p *ProposalData) (drop bool, _ error) {
 		if _, ok := abandoned[p.idKey]; ok {
-			log.Dev.Infof(p.Context(), "abandoning command")
+			log.Infof(p.Context(), "abandoning command")
 			return true, nil
 		}
 		return false, nil
@@ -7856,7 +7856,7 @@ func TestReplicaCancelRaftCommandProgress(t *testing.T) {
 		repl.mu.Unlock()
 	}
 
-	log.Dev.Infof(ctx, "waiting on %d chans", len(chs))
+	log.Infof(ctx, "waiting on %d chans", len(chs))
 	for _, ch := range chs {
 		if rwe := <-ch; rwe.Err != nil {
 			t.Fatal(rwe.Err)
@@ -9226,7 +9226,7 @@ func TestCancelPendingCommands(t *testing.T) {
 		t.Fatalf("command finished earlier than expected with error %v", pErr)
 	default:
 	}
-	require.NoError(t, tc.store.RemoveReplica(ctx, tc.repl, tc.repl.Desc().NextReplicaID, redact.SafeString(t.Name())))
+	require.NoError(t, tc.store.RemoveReplica(ctx, tc.repl, tc.repl.Desc().NextReplicaID, redact.SafeString(t.Name()), RemoveOptions{DestroyData: true}))
 	pErr := <-errChan
 	if _, ok := pErr.GetDetail().(*kvpb.AmbiguousResultError); !ok {
 		t.Errorf("expected AmbiguousResultError, got %v", pErr)
@@ -10308,7 +10308,7 @@ func TestConsistenctQueueErrorFromCheckConsistency(t *testing.T) {
 	}
 	for i := 0; i < 2; i++ {
 		// Do this twice because it used to deadlock. See #25456.
-		processed, err := tc.store.consistencyQueue.process(ctx, tc.repl, confReader, -1 /*priorityAtEnqueue*/)
+		processed, err := tc.store.consistencyQueue.process(ctx, tc.repl, confReader)
 		if !testutils.IsError(err, "boom") {
 			t.Fatal(err)
 		}
@@ -13781,13 +13781,9 @@ func TestAdminScatterDestroyedReplica(t *testing.T) {
 	tc.Start(ctx, t, stopper)
 
 	errBoom := errors.New("boom")
-	func() {
-		tc.repl.readOnlyCmdMu.Lock()
-		defer tc.repl.readOnlyCmdMu.Unlock()
-		tc.repl.mu.Lock()
-		defer tc.repl.mu.Unlock()
-		tc.repl.shMu.destroyStatus.Set(errBoom, destroyReasonMergePending)
-	}()
+	tc.repl.mu.Lock()
+	tc.repl.mu.destroyStatus.Set(errBoom, destroyReasonMergePending)
+	tc.repl.mu.Unlock()
 
 	desc := tc.repl.Desc()
 	resp, err := tc.repl.adminScatter(ctx, kvpb.AdminScatterRequest{

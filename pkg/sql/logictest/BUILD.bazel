@@ -39,10 +39,8 @@ filegroup(
     visibility = [
         "//pkg/ccl/logictestccl/tests/cockroach-go-testserver-25.1:__pkg__",
         "//pkg/ccl/logictestccl/tests/cockroach-go-testserver-25.2:__pkg__",
-        "//pkg/ccl/logictestccl/tests/cockroach-go-testserver-25.3:__pkg__",
         "//pkg/sql/logictest/tests/cockroach-go-testserver-25.1:__pkg__",
         "//pkg/sql/logictest/tests/cockroach-go-testserver-25.2:__pkg__",
-        "//pkg/sql/logictest/tests/cockroach-go-testserver-25.3:__pkg__",
     ],
 )
 
@@ -98,7 +96,6 @@ go_library(
         "//pkg/util/debugutil",
         "//pkg/util/envutil",
         "//pkg/util/log",
-        "//pkg/util/log/eventlog",
         "//pkg/util/metamorphic",
         "//pkg/util/randutil",
         "//pkg/util/system",

@@ -105,7 +105,7 @@ func (p *planner) findColumnToRename(
 	if col.IsSystemColumn() {
 		return nil, pgerror.Newf(
 			pgcode.FeatureNotSupported,
-			"cannot alter system column %q", col.ColName(),
+			"cannot rename system column %q", col.ColName(),
 		)
 	}
 	for _, tableRef := range tableDesc.DependedOnBy {

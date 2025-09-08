@@ -66,7 +66,7 @@ func (s *slowDisk) startTargetNode(ctx context.Context, t test.Test, v variation
 	if v.IsLocal() {
 		s.staller = roachtestutil.NoopDiskStaller{}
 	} else {
-		s.staller = roachtestutil.MakeCgroupDiskStaller(t, v, false /* readsToo */, false /* logsToo */, false)
+		s.staller = roachtestutil.MakeCgroupDiskStaller(t, v, false /* readsToo */, false /* logsToo */)
 		s.staller.Setup(ctx)
 	}
 }
@@ -81,9 +81,7 @@ func (s *slowDisk) startPerturbation(ctx context.Context, t test.Test, v variati
 
 // endPerturbation implements perturbation.
 func (s *slowDisk) endPerturbation(ctx context.Context, t test.Test, v variations) time.Duration {
-	if err := s.staller.Unstall(ctx, v.targetNodes()); err != nil {
-		t.Fatal("failed to unstall disk:", err)
-	}
+	s.staller.Unstall(ctx, v.targetNodes())
 	waitDuration(ctx, v.validationDuration)
 	return v.validationDuration
 }

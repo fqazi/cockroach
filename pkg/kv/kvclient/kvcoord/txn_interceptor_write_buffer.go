@@ -40,22 +40,36 @@ var BufferedWritesEnabled = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"kv.transaction.write_buffering.enabled",
 	"if enabled, transactional writes are buffered on the client",
-	metamorphic.ConstantWithTestBool("kv.transaction.write_buffering.enabled", true /* defaultValue */),
+	metamorphic.ConstantWithTestBool("kv.transaction.write_buffering.enabled", false /* defaultValue */),
 	settings.WithPublic,
 )
 
-var bufferedWritesScanTransformEnabled = settings.RegisterBoolSetting(
+var unsupportedInProductionBuildErr = errors.New("this option is not supported in production builds")
+
+var BufferedWritesScanTransformEnabled = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"kv.transaction.write_buffering.transformations.scans.enabled",
 	"if enabled, locking scans and reverse scans with replicated durability are transformed to unreplicated durability",
-	metamorphic.ConstantWithTestBool("kv.transaction.write_buffering.transformations.scans.enabled", true /* defaultValue */),
+	metamorphic.ConstantWithTestBool("kv.transaction.write_buffering.transformations.scans.enabled", false /* defaultValue */),
+	settings.WithValidateBool(func(_ *settings.Values, enabled bool) error {
+		if enabled && !buildutil.CrdbTestBuild {
+			return unsupportedInProductionBuildErr
+		}
+		return nil
+	}),
 )
 
-var bufferedWritesGetTransformEnabled = settings.RegisterBoolSetting(
+var BufferedWritesGetTransformEnabled = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"kv.transaction.write_buffering.transformations.get.enabled",
 	"if enabled, locking get requests with replicated durability are transformed to unreplicated durability",
-	metamorphic.ConstantWithTestBool("kv.transaction.write_buffering.transformations.get.enabled", true /* defaultValue */),
+	metamorphic.ConstantWithTestBool("kv.transaction.write_buffering.transformations.get.enabled", false /* defaultValue */),
+	settings.WithValidateBool(func(_ *settings.Values, enabled bool) error {
+		if enabled && !buildutil.CrdbTestBuild {
+			return unsupportedInProductionBuildErr
+		}
+		return nil
+	}),
 )
 
 const defaultBufferSize = 1 << 22 // 4MB
@@ -198,8 +212,6 @@ type txnWriteBuffer struct {
 	// `flushed` tracks whether the buffer has been previously flushed.
 	flushed bool
 
-	pipelineEnabler pipelineEnabler
-
 	// flushOnNextBatch, if set, indicates that write buffering has just been
 	// disabled, and the interceptor should flush any buffered writes when it
 	// sees the next BatchRequest.
@@ -235,14 +247,6 @@ type txnWriteBuffer struct {
 type transformConfig struct {
 	transformScans bool
 	transformGets  bool
-}
-
-type pipelineEnabler interface {
-	enableImplicitPipelining()
-}
-
-func (twb *txnWriteBuffer) init(pe pipelineEnabler) {
-	twb.pipelineEnabler = pe
 }
 
 func (twb *txnWriteBuffer) setEnabled(enabled bool) {
@@ -290,8 +294,8 @@ func (twb *txnWriteBuffer) SendLocked(
 	// We check if scan transforms are enabled once and use that answer until the
 	// end of SendLocked.
 	cfg := transformConfig{
-		transformScans: bufferedWritesScanTransformEnabled.Get(&twb.st.SV),
-		transformGets:  bufferedWritesGetTransformEnabled.Get(&twb.st.SV),
+		transformScans: BufferedWritesScanTransformEnabled.Get(&twb.st.SV),
+		transformGets:  BufferedWritesGetTransformEnabled.Get(&twb.st.SV),
 	}
 
 	if twb.batchRequiresFlush(ctx, ba, cfg) {
@@ -493,8 +497,8 @@ func unsupportedOptionError(m kvpb.Method, option string) error {
 // size if the writes from the supplied batch request are buffered.
 func (twb *txnWriteBuffer) estimateSize(ba *kvpb.BatchRequest, cfg transformConfig) int64 {
 	var scratch bufferedWrite
-	scratch.vals = scratch.valsScratch[:1]
 	estimate := int64(0)
+	scratch.vals = make([]bufferedValue, 1)
 	for _, ru := range ba.Requests {
 		req := ru.GetInner()
 		switch t := req.(type) {
@@ -601,7 +605,7 @@ func (twb *txnWriteBuffer) adjustError(
 				// For requests that were not transformed, attributing an error to them
 				// shouldn't confuse the client.
 				if baIdx == pErr.Index.Index && record.transformed {
-					log.Dev.Warningf(ctx, "error index %d is part of a transformed request", pErr.Index.Index)
+					log.Warningf(ctx, "error index %d is part of a transformed request", pErr.Index.Index)
 					pErr.Index = nil
 					return pErr
 				} else if baIdx == pErr.Index.Index {
@@ -626,7 +630,7 @@ func (twb *txnWriteBuffer) adjustErrorUponFlush(
 		if pErr.Index.Index < int32(numBuffered) {
 			// If the error belongs to a request because part of the buffer flush, nil
 			// out the index.
-			log.Dev.Warningf(ctx, "error index %d is part of the buffer flush", pErr.Index.Index)
+			log.Warningf(ctx, "error index %d is part of the buffer flush", pErr.Index.Index)
 			pErr.Index = nil
 		} else {
 			// Otherwise, adjust the error index to hide the impact of any flushed
@@ -669,6 +673,7 @@ func (twb *txnWriteBuffer) populateLeafInputState(
 				continue
 			}
 		}
+		// TODO(yuzefovich): optimize allocation of vals slices.
 		vals := make([]roachpb.BufferedWrite_Val, 0, len(bw.vals))
 		for _, v := range bw.vals {
 			vals = append(vals, roachpb.BufferedWrite_Val{
@@ -696,6 +701,7 @@ func (twb *txnWriteBuffer) initializeLeaf(tis *roachpb.LeafTxnInputState) {
 	// We have some buffered writes, so they must be enabled on the root.
 	twb.enabled = true
 	for _, bw := range tis.BufferedWrites {
+		// TODO(yuzefovich): optimize allocation of vals slices.
 		vals := make([]bufferedValue, 0, len(bw.Vals))
 		for _, bv := range bw.Vals {
 			vals = append(vals, bufferedValue{
@@ -792,11 +798,6 @@ func (twb *txnWriteBuffer) rollbackToSavepointLocked(ctx context.Context, s save
 		}
 		// Rollback writes by truncating the buffered values.
 		it.Cur().vals = bufferedVals[:idx]
-		if idx == 0 {
-			// Since we lost references to all values, ensure that the scratch
-			// space is also reset.
-			it.Cur().valsScratch[0] = bufferedValue{}
-		}
 		if it.Cur().empty() {
 			// All writes have been rolled back and we hold no locks; we should remove
 			// this key from the buffer entirely.
@@ -1313,7 +1314,7 @@ func (twb *txnWriteBuffer) mergeResponseWithRequestRecords(
 	ctx context.Context, rr requestRecords, br *kvpb.BatchResponse,
 ) (_ *kvpb.BatchResponse, pErr *kvpb.Error) {
 	if rr.Empty() && br == nil {
-		log.Dev.Fatal(ctx, "unexpectedly found no transformations and no batch response")
+		log.Fatal(ctx, "unexpectedly found no transformations and no batch response")
 	} else if rr.Empty() {
 		return br, nil
 	}
@@ -1325,7 +1326,7 @@ func (twb *txnWriteBuffer) mergeResponseWithRequestRecords(
 		brResp := kvpb.ResponseUnion{}
 		if !record.stripped {
 			if len(br.Responses) == 0 {
-				log.Dev.Fatal(ctx, "unexpectedly found a non-stripped request and no batch response")
+				log.Fatal(ctx, "unexpectedly found a non-stripped request and no batch response")
 			}
 			// If the request wasn't stripped from the batch we sent to KV, we
 			// received a response for it, which then needs to be combined with
@@ -1668,11 +1669,10 @@ func (twb *txnWriteBuffer) addToBuffer(
 	} else {
 		twb.bufferIDAlloc++
 		bw := &bufferedWrite{
-			id:          twb.bufferIDAlloc,
-			key:         key,
-			valsScratch: [1]bufferedValue{{val: val, seq: seq, kvNemesisSeq: kvNemSeq}},
+			id:   twb.bufferIDAlloc,
+			key:  key,
+			vals: []bufferedValue{{val: val, seq: seq, kvNemesisSeq: kvNemSeq}},
 		}
-		bw.vals = bw.valsScratch[:1]
 		if lockInfo != nil {
 			bw.acquireLock(lockInfo)
 		}
@@ -1747,14 +1747,7 @@ func (twb *txnWriteBuffer) flushBufferAndSendBatch(
 	// Once we've flushed the buffer, we disable write buffering going forward. We
 	// do this even if the buffer is empty since once we've called this function,
 	// our buffer no longer represents all of the writes in the transaction.
-	log.VEventf(ctx, 2, "disabling write buffering")
-	if twb.pipelineEnabler != nil {
-		// We enable pipelining, but only after this request returns.
-		//
-		// TODO(ssd): Consider enabling pipelining for this batch as well once we
-		// have more discipline around the invariants of the batches we are sending.
-		defer twb.pipelineEnabler.enableImplicitPipelining()
-	}
+	log.VEventf(ctx, 2, "disabling write buffering for this epoch")
 	twb.flushed = true
 
 	numKeysBuffered := twb.buffer.Len()
@@ -1772,20 +1765,12 @@ func (twb *txnWriteBuffer) flushBufferAndSendBatch(
 
 	midTxnFlush := !hasEndTxn
 
-	// SkipLocked reads cannot be in a batch with basically anything else. If we
-	// encounter one, we need to flush our buffer in its own batch.
-	splitBatchRequired := ba.WaitPolicy == lock.WaitPolicy_SkipLocked
-
 	// Flush all buffered writes by pre-pending them to the requests being sent
 	// in the batch.
 	//
 	// TODO(ssd): We can maintain the revision count in the buffer as well to
 	// allocate this more accurately.
-	numReqs := numKeysBuffered
-	if !splitBatchRequired {
-		numReqs += len(ba.Requests)
-	}
-	reqs := make([]kvpb.RequestUnion, 0, numReqs)
+	reqs := make([]kvpb.RequestUnion, 0, numKeysBuffered+len(ba.Requests))
 	it := twb.buffer.MakeIter()
 	numRevisionsBuffered := 0
 	for it.First(); it.Valid(); it.Next() {
@@ -1815,31 +1800,16 @@ func (twb *txnWriteBuffer) flushBufferAndSendBatch(
 		}
 	})
 
-	if splitBatchRequired {
-		log.VEventf(ctx, 2, "flushing buffer via separate batch")
-		flushBatch := ba.ShallowCopy()
-		flushBatch.WaitPolicy = 0
-		flushBatch.Requests = reqs
-		br, pErr := twb.wrapped.SendLocked(ctx, flushBatch)
-		if pErr != nil {
-			pErr.Index = nil
-			return nil, pErr
-		}
-
-		ba.UpdateTxn(br.Txn)
-		return twb.wrapped.SendLocked(ctx, ba)
-	} else {
-		ba = ba.ShallowCopy()
-		ba.Requests = append(reqs, ba.Requests...)
-		br, pErr := twb.wrapped.SendLocked(ctx, ba)
-		if pErr != nil {
-			return nil, twb.adjustErrorUponFlush(ctx, numRevisionsBuffered, pErr)
-		}
-
-		// Strip out responses for all the flushed buffered writes.
-		br.Responses = br.Responses[numRevisionsBuffered:]
-		return br, nil
+	ba = ba.ShallowCopy()
+	ba.Requests = append(reqs, ba.Requests...)
+	br, pErr := twb.wrapped.SendLocked(ctx, ba)
+	if pErr != nil {
+		return nil, twb.adjustErrorUponFlush(ctx, numRevisionsBuffered, pErr)
 	}
+
+	// Strip out responses for all the flushed buffered writes.
+	br.Responses = br.Responses[numRevisionsBuffered:]
+	return br, nil
 }
 
 // hasBufferedWrites returns whether the interceptor has buffered any writes
@@ -1861,10 +1831,9 @@ func (twb *txnWriteBuffer) testingBufferedWritesAsSlice() []bufferedWrite {
 	it := twb.buffer.MakeIter()
 	for it.First(); it.Valid(); it.Next() {
 		bw := *it.Cur()
-		// Scrub the id/endKey/valsScratch for the benefit of tests.
+		// Scrub the id/endKey for the benefit of tests.
 		bw.id = 0
 		bw.endKey = nil
-		bw.valsScratch[0] = bufferedValue{}
 		writes = append(writes, bw)
 	}
 	return writes
@@ -1889,9 +1858,10 @@ type bufferedWrite struct {
 
 	// lki stores information about locks that have been acquired for this key.
 	// NB: In the future it may also cache previously read values of this key.
-	lki         *lockedKeyInfo
-	vals        []bufferedValue  // sorted in increasing sequence number order
-	valsScratch [1]bufferedValue // used as initial space for vals
+	lki *lockedKeyInfo
+	// TODO(arul): instead of this slice, consider adding a small (fixed size,
+	// maybe 1) array instead.
+	vals []bufferedValue // sorted in increasing sequence number order
 }
 
 func (bw *bufferedWrite) size() int64 {

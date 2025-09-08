@@ -78,13 +78,13 @@ func WriteInitialReplicaState(
 	if existingLease, err := rsl.LoadLease(ctx, readWriter); err != nil {
 		return enginepb.MVCCStats{}, errors.Wrap(err, "error reading lease")
 	} else if (existingLease != roachpb.Lease{}) {
-		log.Dev.Fatalf(ctx, "expected trivial lease, but found %+v", existingLease)
+		log.Fatalf(ctx, "expected trivial lease, but found %+v", existingLease)
 	}
 
 	if existingGCThreshold, err := rsl.LoadGCThreshold(ctx, readWriter); err != nil {
 		return enginepb.MVCCStats{}, errors.Wrap(err, "error reading GCThreshold")
 	} else if !existingGCThreshold.IsEmpty() {
-		log.Dev.Fatalf(ctx, "expected trivial GCthreshold, but found %+v", existingGCThreshold)
+		log.Fatalf(ctx, "expected trivial GCthreshold, but found %+v", existingGCThreshold)
 	}
 
 	if existingGCHint, err := rsl.LoadGCHint(ctx, readWriter); err != nil {
@@ -96,7 +96,7 @@ func WriteInitialReplicaState(
 	if existingVersion, err := rsl.LoadVersion(ctx, readWriter); err != nil {
 		return enginepb.MVCCStats{}, errors.Wrap(err, "error reading Version")
 	} else if (existingVersion != roachpb.Version{}) {
-		log.Dev.Fatalf(ctx, "expected trivial version, but found %+v", existingVersion)
+		log.Fatalf(ctx, "expected trivial version, but found %+v", existingVersion)
 	}
 
 	newMS, err := rsl.Save(ctx, readWriter, s)
@@ -107,10 +107,8 @@ func WriteInitialReplicaState(
 	return newMS, nil
 }
 
-// WriteInitialTruncState writes the initial truncated state.
-//
-// TODO(arul): this can be removed once no longer call this from the split
-// evaluation path.
+// WriteInitialTruncState writes the initial RaftTruncatedState.
+// TODO(arulajmani): remove this.
 func WriteInitialTruncState(ctx context.Context, w storage.Writer, rangeID roachpb.RangeID) error {
 	return logstore.NewStateLoader(rangeID).SetRaftTruncatedState(ctx, w,
 		&kvserverpb.RaftTruncatedState{

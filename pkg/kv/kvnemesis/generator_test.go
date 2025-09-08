@@ -36,7 +36,7 @@ func trueForEachIntField(c *OperationConfig, fn func(int) bool) bool {
 			ok := fn(int(v.Int()))
 			if !ok {
 				if log.V(1) {
-					log.Dev.Infof(context.Background(), "returned false for %d: %v", v.Int(), v)
+					log.Infof(context.Background(), "returned false for %d: %v", v.Int(), v)
 				}
 			}
 			return ok
@@ -44,7 +44,7 @@ func trueForEachIntField(c *OperationConfig, fn func(int) bool) bool {
 			for fieldIdx := 0; fieldIdx < v.NumField(); fieldIdx++ {
 				if !forEachIntField(v.Field(fieldIdx)) {
 					if log.V(1) {
-						log.Dev.Infof(context.Background(), "returned false for %s in %s",
+						log.Infof(context.Background(), "returned false for %s in %s",
 							v.Type().Field(fieldIdx).Name, v.Type().Name())
 					}
 					return false
@@ -248,8 +248,6 @@ func TestRandStep(t *testing.T) {
 				client.AddSSTable++
 			case *BarrierOperation:
 				client.Barrier++
-			case *FlushLockTableOperation:
-				client.FlushLockTable++
 			case *BatchOperation:
 				batch.Batch++
 				countClientOps(&batch.Ops, nil, o.Ops...)
@@ -286,8 +284,7 @@ func TestRandStep(t *testing.T) {
 			*DeleteRangeOperation,
 			*DeleteRangeUsingTombstoneOperation,
 			*AddSSTableOperation,
-			*BarrierOperation,
-			*FlushLockTableOperation:
+			*BarrierOperation:
 			countClientOps(&counts.DB, &counts.Batch, step.Op)
 		case *ClosureTxnOperation:
 			countClientOps(&counts.ClosureTxn.TxnClientOps, &counts.ClosureTxn.TxnBatchOps, o.Ops...)

@@ -37,8 +37,6 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
-	"storj.io/drpc/drpcctx"
-	"storj.io/drpc/drpcmetadata"
 )
 
 // mockServerStream is an implementation of grpc.ServerStream that receives a
@@ -100,10 +98,6 @@ func TestWrappedServerStream(t *testing.T) {
 
 func TestAuthenticateTenant(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	testutils.RunTrueAndFalse(t, "drpc", testAuthenticateTenant)
-}
-
-func testAuthenticateTenant(t *testing.T, enableDRPC bool) {
 	correctOU := []string{security.TenantsOU}
 	stid := roachpb.SystemTenantID
 	tenTen := roachpb.MustMakeTenantID(10)
@@ -146,9 +140,9 @@ func testAuthenticateTenant(t *testing.T, enableDRPC bool) {
 		{systemID: tenTen, ous: nil, commonName: "node"},
 
 		// Passing a client ID in metadata instead of relying only on the TLS cert.
-		{clientTenantInMD: "invalid", expErr: `could not parse tenant ID from (gRPC|drpc) metadata`},
-		{clientTenantInMD: "1", expErr: `invalid tenant ID 1 in (gRPC|drpc) metadata`},
-		{clientTenantInMD: "-1", expErr: `could not parse tenant ID from (gRPC|drpc) metadata`},
+		{clientTenantInMD: "invalid", expErr: `could not parse tenant ID from gRPC metadata`},
+		{clientTenantInMD: "1", expErr: `invalid tenant ID 1 in gRPC metadata`},
+		{clientTenantInMD: "-1", expErr: `could not parse tenant ID from gRPC metadata`},
 
 		// tenant ID in MD matches that in client cert.
 		// Server is KV node: expect tenant authorization.
@@ -249,25 +243,17 @@ func testAuthenticateTenant(t *testing.T, enableDRPC bool) {
 				require.NoError(t, err)
 				cert.URIs = append(cert.URIs, tenantSANs...)
 			}
-			var ctx context.Context
-			if enableDRPC {
-				ctx = drpcctx.WithPeerConnectionInfo(context.Background(),
-					drpcctx.PeerConnectionInfo{Certificates: []*x509.Certificate{cert}})
-				if tc.clientTenantInMD != "" {
-					ctx = drpcmetadata.Add(ctx, "client-tid", tc.clientTenantInMD)
-				}
-			} else {
-				tlsInfo := credentials.TLSInfo{
-					State: tls.ConnectionState{
-						PeerCertificates: []*x509.Certificate{cert},
-					},
-				}
-				p := peer.Peer{AuthInfo: tlsInfo}
-				ctx = peer.NewContext(context.Background(), &p)
-				if tc.clientTenantInMD != "" {
-					md := metadata.MD{"client-tid": []string{tc.clientTenantInMD}}
-					ctx = metadata.NewIncomingContext(ctx, md)
-				}
+			tlsInfo := credentials.TLSInfo{
+				State: tls.ConnectionState{
+					PeerCertificates: []*x509.Certificate{cert},
+				},
+			}
+			p := peer.Peer{AuthInfo: tlsInfo}
+			ctx := peer.NewContext(context.Background(), &p)
+
+			if tc.clientTenantInMD != "" {
+				md := metadata.MD{"client-tid": []string{tc.clientTenantInMD}}
+				ctx = metadata.NewIncomingContext(ctx, md)
 			}
 
 			sv := &settings.Values{}
@@ -277,7 +263,7 @@ func testAuthenticateTenant(t *testing.T, enableDRPC bool) {
 				settings.EncodedValue{Value: strconv.FormatBool(tc.subjectRequired), Type: "b"})
 			require.NoError(t, err)
 
-			tenID, err := rpc.TestingAuthenticateTenant(ctx, tc.systemID, sv, enableDRPC)
+			tenID, err := rpc.TestingAuthenticateTenant(ctx, tc.systemID, sv)
 
 			if tc.expErr == "" {
 				require.Equal(t, tc.expTenID, tenID)
@@ -353,7 +339,7 @@ func BenchmarkAuthenticate(b *testing.B) {
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_, err := rpc.TestingAuthenticateTenant(ctx, tc.systemID, sv, false /* enableDRPC */)
+				_, err := rpc.TestingAuthenticateTenant(ctx, tc.systemID, sv)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -450,7 +436,7 @@ func TestTenantAuthRequest(t *testing.T) {
 		}
 	}
 
-	tenantThree := roachpb.MustMakeTenantID(3)
+	tenantTwo := roachpb.MustMakeTenantID(2)
 	makeTimeseriesQueryReq := func(tenantID *roachpb.TenantID) *tspb.TimeSeriesQueryRequest {
 		req := &tspb.TimeSeriesQueryRequest{
 			Queries: []tspb.Query{{}},
@@ -1012,7 +998,7 @@ func TestTenantAuthRequest(t *testing.T) {
 				expErr: noError,
 			},
 			{
-				req:    makeTimeseriesQueryReq(&tenantThree),
+				req:    makeTimeseriesQueryReq(&tenantTwo),
 				expErr: `tsdb query with invalid tenant not permitted`,
 			},
 		},

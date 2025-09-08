@@ -42,6 +42,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/physicalplan"
 	"github.com/cockroachdb/cockroach/pkg/sql/prep"
 	"github.com/cockroachdb/cockroach/pkg/sql/regions"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/asof"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
@@ -175,7 +176,7 @@ func (ex *connExecutor) execStmt(
 			})
 		}
 		switch p := payload.(type) {
-		case eventNonRetryableErrPayload:
+		case eventNonRetriableErrPayload:
 			ex.recordFailure(p)
 		}
 
@@ -263,7 +264,7 @@ func (ex *connExecutor) startIdleInSessionTimeout() {
 	}
 }
 
-func (ex *connExecutor) recordFailure(p eventNonRetryableErrPayload) {
+func (ex *connExecutor) recordFailure(p eventNonRetriableErrPayload) {
 	ex.metrics.EngineMetrics.FailureCount.Inc(1, ex.sessionData().Database, ex.sessionData().ApplicationName)
 	switch {
 	case errors.Is(p.errorCause(), sqlerrors.QueryTimeoutError):
@@ -321,7 +322,6 @@ func (ex *connExecutor) execPortal(
 			return nil, nil, nil
 		}
 		ev, payload, retErr = ex.execStmt(ctx, portal.Stmt.Statement, &portal, pinfo, stmtRes, canAutoCommit)
-
 		// For a non-pausable portal, it is considered exhausted regardless of the
 		// fact whether an error occurred or not - if it did, we still don't want
 		// to re-execute the portal from scratch.
@@ -693,6 +693,11 @@ func (ex *connExecutor) execStmtInOpenState(
 		_ = p.FormatAstAsRedactableString(stmt.AST, p.extendedEvalCtx.Annotations)
 	}
 
+	// This flag informs logging decisions.
+	// Some statements are not dispatched to the execution engine and need
+	// some special plan initialization for logging.
+	dispatchToExecEngine := false
+
 	var logErr error
 	defer func() {
 		// Do not log if this is an eventTxnCommittedDueToDDL event. In that case,
@@ -702,12 +707,10 @@ func (ex *connExecutor) execStmtInOpenState(
 			return
 		}
 
-		if p.curPlan.stmt == nil || p.curPlan.instrumentation == nil {
-			// We short-circuited before we could initialize some fields that
-			// are needed for logging, so do that here.
+		// If we did not dispatch to the execution engine, we need to initialize
+		// the plan here.
+		if !dispatchToExecEngine {
 			p.curPlan.init(&p.stmt, &p.instrumentation)
-		}
-		if logErr == nil {
 			if p, ok := retPayload.(payloadWithError); ok {
 				logErr = p.errorCause()
 			}
@@ -770,12 +773,12 @@ func (ex *connExecutor) execStmtInOpenState(
 			// Even in the cases where the error is a retryable error, we want to
 			// intercept the event and payload returned here to ensure that the query
 			// is not retried.
-			retEv = eventNonRetryableErr{
+			retEv = eventNonRetriableErr{
 				IsCommit: fsm.FromBool(isCommit(ast)),
 			}
 			errToPush := cancelchecker.QueryCanceledError
 			res.SetError(errToPush)
-			retPayload = eventNonRetryableErrPayload{err: errToPush}
+			retPayload = eventNonRetriableErrPayload{err: errToPush}
 			logErr = errToPush
 			// Cancel the txn if we are inside an implicit txn too.
 			if ex.implicitTxn() && ex.state.txnCancelFn != nil {
@@ -796,18 +799,18 @@ func (ex *connExecutor) execStmtInOpenState(
 		if queryTimedOut {
 			// A timed out query should never produce retryable errors/events/payloads
 			// so we intercept and overwrite them all here.
-			retEv = eventNonRetryableErr{
+			retEv = eventNonRetriableErr{
 				IsCommit: fsm.FromBool(isCommit(ast)),
 			}
 			res.SetError(sqlerrors.QueryTimeoutError)
-			retPayload = eventNonRetryableErrPayload{err: sqlerrors.QueryTimeoutError}
+			retPayload = eventNonRetriableErrPayload{err: sqlerrors.QueryTimeoutError}
 			logErr = sqlerrors.QueryTimeoutError
 		} else if txnTimedOut {
-			retEv = eventNonRetryableErr{
+			retEv = eventNonRetriableErr{
 				IsCommit: fsm.FromBool(isCommit(ast)),
 			}
 			res.SetError(sqlerrors.TxnTimeoutError)
-			retPayload = eventNonRetryableErrPayload{err: sqlerrors.TxnTimeoutError}
+			retPayload = eventNonRetriableErrPayload{err: sqlerrors.TxnTimeoutError}
 			logErr = sqlerrors.TxnTimeoutError
 		}
 
@@ -928,6 +931,8 @@ func (ex *connExecutor) execStmtInOpenState(
 		return nil, nil, nil
 	}
 
+	dispatchToExecEngine = true
+
 	// Check if we need to auto-commit the transaction due to DDL.
 	if ev, payload := ex.maybeAutoCommitBeforeDDL(ctx, ast); ev != nil {
 		return ev, payload, nil
@@ -1045,6 +1050,36 @@ func (ex *connExecutor) execStmtInOpenState(
 		stmtCtx = ctx
 	}
 
+	var rollbackHomeRegionSavepoint *tree.RollbackToSavepoint
+	var releaseHomeRegionSavepoint *tree.ReleaseSavepoint
+	enforceHomeRegion := p.EnforceHomeRegion()
+	_, isSelectStmt := stmt.AST.(*tree.Select)
+	if enforceHomeRegion && ex.state.mu.txn.IsOpen() && isSelectStmt {
+		// Create a savepoint at a point before which rows were read so that we can
+		// roll back to it, which will allow the txn to be modified with a
+		// historical timestamp (so that the locality-optimized ops used for error
+		// reporting can run locally and not incur latency). This is currently only
+		// supported for SELECT statements.
+		// Add some unprintable ASCII characters to the name of the savepoint to
+		// decrease the likelihood of collision with a user-created savepoint.
+		const enforceHomeRegionSavepointName = "enforce_home_region_sp\x11\x12\x13"
+		s := &tree.Savepoint{Name: enforceHomeRegionSavepointName}
+		var event fsm.Event
+		var eventPayload fsm.EventPayload
+		if event, eventPayload, err = ex.execSavepointInOpenState(ctx, s, res); err != nil {
+			return event, eventPayload, err
+		}
+
+		releaseHomeRegionSavepoint = &tree.ReleaseSavepoint{Savepoint: enforceHomeRegionSavepointName}
+		rollbackHomeRegionSavepoint = &tree.RollbackToSavepoint{Savepoint: enforceHomeRegionSavepointName}
+		defer func() {
+			// The default case is to roll back the internally-generated savepoint
+			// after every request. We only need it if a retryable "query has no home
+			// region" error occurs.
+			ex.execRelease(ctx, releaseHomeRegionSavepoint, res)
+		}()
+	}
+
 	if ex.state.mu.autoRetryReason != nil {
 		p.autoRetryCounter = int(ex.state.mu.autoRetryCounter)
 		ex.sessionTracing.TraceRetryInformation(
@@ -1088,7 +1123,6 @@ func (ex *connExecutor) execStmtInOpenState(
 				redactableStmt,     /* detail */
 				stmtTraceThreshold, /* threshold */
 				stmtDur,            /* elapsed */
-				false,              /* outputJaegerJSON */
 			)
 		} else {
 			stmtThresholdSpan.Finish()
@@ -1096,6 +1130,54 @@ func (ex *connExecutor) execStmtInOpenState(
 	}
 
 	if err = res.Err(); err != nil {
+		setErrorAndRestoreLocality := func(err error) {
+			res.SetError(err)
+			// We won't be faking the gateway region any more. Restore the original
+			// locality.
+			p.EvalContext().Locality = p.EvalContext().OriginalLocality
+		}
+		if execinfra.IsDynamicQueryHasNoHomeRegionError(err) {
+			if rollbackHomeRegionSavepoint != nil {
+				// A retryable "query has no home region" error has occurred.
+				// Roll back to the internal savepoint in preparation for the next
+				// planning and execution of this query with a different gateway region
+				// (as considered by the optimizer).
+				p.StmtNoConstantsWithHomeRegionEnforced = p.stmt.StmtNoConstants
+				event, eventPayload := ex.execRollbackToSavepointInOpenState(
+					ctx, rollbackHomeRegionSavepoint, res,
+				)
+				_, isTxnRestart := event.(eventTxnRestart)
+				rollbackToSavepointFailed := !isTxnRestart || eventPayload != nil
+				if ex.implicitTxn() && rollbackToSavepointFailed {
+					err = errors.AssertionFailedf(
+						"unable to roll back to internal savepoint for enforce_home_region",
+					)
+					setErrorAndRestoreLocality(err)
+				} else if rollbackToSavepointFailed || int(ex.state.mu.autoRetryCounter) == len(ex.planner.EvalContext().RemoteRegions) {
+					// If rollback to savepoint in the transaction failed (perhaps because
+					// the txn was aborted) and we're in an explicit transaction, or we
+					// have retried the statement using each remote region as a fake
+					// gateway region, then give up and return the generic "query has no
+					// home region" error message.
+					err = execinfra.MaybeGetNonRetryableDynamicQueryHasNoHomeRegionError(err)
+					setErrorAndRestoreLocality(err)
+				}
+			} else {
+				err = execinfra.MaybeGetNonRetryableDynamicQueryHasNoHomeRegionError(err)
+				setErrorAndRestoreLocality(err)
+			}
+		} else if execinfra.IsDynamicQueryHasNoHomeRegionError(ex.state.mu.autoRetryReason) {
+			// If we are retrying a dynamic "query has no home region" error and
+			// we get a different error message when executing with locality-optimized
+			// ops using a different local region (for example, relation does not
+			// exist, due to the AOST read), return the original error message in
+			// non-retryable form.
+			errorMessage := err.Error()
+			if !strings.HasPrefix(errorMessage, execinfra.QueryNotRunningInHomeRegionMessagePrefix) {
+				err = execinfra.MaybeGetNonRetryableDynamicQueryHasNoHomeRegionError(ex.state.mu.autoRetryReason)
+				setErrorAndRestoreLocality(err)
+			}
+		}
 		return makeErrEvent(err)
 	}
 
@@ -1104,11 +1186,11 @@ func (ex *connExecutor) execStmtInOpenState(
 	if !os.ImplicitTxn.Get() && txn.IsSerializablePushAndRefreshNotPossible() {
 		rc, canAutoRetry := ex.getRewindTxnCapability()
 		if canAutoRetry {
-			ev := eventRetryableErr{
+			ev := eventRetriableErr{
 				IsCommit:     fsm.FromBool(isCommit(ast)),
 				CanAutoRetry: fsm.FromBool(canAutoRetry),
 			}
-			payload := eventRetryableErrPayload{
+			payload := eventRetriableErrPayload{
 				err:    txn.GenerateForcedRetryableErr(ctx, "serializable transaction timestamp pushed (detected by connExecutor)"),
 				rewCap: rc,
 			}
@@ -1623,6 +1705,11 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 		_ = p.FormatAstAsRedactableString(vars.stmt.AST, p.extendedEvalCtx.Annotations)
 	}
 
+	// This flag informs logging decisions.
+	// Some statements are not dispatched to the execution engine and need
+	// some special plan initialization for logging.
+	dispatchToExecEngine := false
+
 	defer processCleanupFunc(func() {
 		// Do not log if this is an eventTxnCommittedDueToDDL event. In that case,
 		// the transaction is committed, and the current statement is executed
@@ -1631,12 +1718,10 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 			return
 		}
 
-		if p.curPlan.stmt == nil || p.curPlan.instrumentation == nil {
-			// We short-circuited before we could initialize some fields that
-			// are needed for logging, so do that here.
+		// If we did not dispatch to the execution engine, we need to initialize
+		// the plan here.
+		if !dispatchToExecEngine {
 			p.curPlan.init(&p.stmt, &p.instrumentation)
-		}
-		if vars.logErr == nil {
 			if p, ok := retPayload.(payloadWithError); ok {
 				vars.logErr = p.errorCause()
 			}
@@ -1723,7 +1808,7 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 				// Even in the cases where the error is a retryable error, we want to
 				// intercept the event and payload returned here to ensure that the query
 				// is not retried.
-				retEv = eventNonRetryableErr{
+				retEv = eventNonRetriableErr{
 					IsCommit: fsm.FromBool(isCommit(vars.ast)),
 				}
 				errToPush := cancelchecker.QueryCanceledError
@@ -1736,7 +1821,7 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 					errToPush = resToPushErr.Err()
 				}
 				resToPushErr.SetError(errToPush)
-				retPayload = eventNonRetryableErrPayload{err: errToPush}
+				retPayload = eventNonRetriableErrPayload{err: errToPush}
 				vars.logErr = errToPush
 				// Cancel the txn if we are inside an implicit txn too.
 				if ex.implicitTxn() && ex.state.txnCancelFn != nil {
@@ -1758,18 +1843,18 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 		if queryTimedOut {
 			// A timed out query should never produce retryable errors/events/payloads
 			// so we intercept and overwrite them all here.
-			retEv = eventNonRetryableErr{
+			retEv = eventNonRetriableErr{
 				IsCommit: fsm.FromBool(isCommit(vars.ast)),
 			}
 			res.SetError(sqlerrors.QueryTimeoutError)
-			retPayload = eventNonRetryableErrPayload{err: sqlerrors.QueryTimeoutError}
+			retPayload = eventNonRetriableErrPayload{err: sqlerrors.QueryTimeoutError}
 			vars.logErr = sqlerrors.QueryTimeoutError
 		} else if txnTimedOut {
-			retEv = eventNonRetryableErr{
+			retEv = eventNonRetriableErr{
 				IsCommit: fsm.FromBool(isCommit(vars.ast)),
 			}
 			res.SetError(sqlerrors.TxnTimeoutError)
-			retPayload = eventNonRetryableErrPayload{err: sqlerrors.TxnTimeoutError}
+			retPayload = eventNonRetriableErrPayload{err: sqlerrors.TxnTimeoutError}
 			vars.logErr = sqlerrors.TxnTimeoutError
 		}
 
@@ -1889,6 +1974,8 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 		}
 		return nil, nil, nil
 	}
+
+	dispatchToExecEngine = true
 
 	// Check if we need to auto-commit the transaction due to DDL.
 	if ev, payload := ex.maybeAutoCommitBeforeDDL(ctx, vars.ast); ev != nil {
@@ -2019,6 +2106,38 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 		stmtCtx = ctx
 	}
 
+	var rollbackHomeRegionSavepoint *tree.RollbackToSavepoint
+	var releaseHomeRegionSavepoint *tree.ReleaseSavepoint
+	enforceHomeRegion := p.EnforceHomeRegion()
+	_, isSelectStmt := vars.stmt.AST.(*tree.Select)
+	// TODO(sql-sessions): ensure this is not broken for pausable portals.
+	// https://github.com/cockroachdb/cockroach/issues/99408
+	if enforceHomeRegion && ex.state.mu.txn.IsOpen() && isSelectStmt {
+		// Create a savepoint at a point before which rows were read so that we can
+		// roll back to it, which will allow the txn to be modified with a
+		// historical timestamp (so that the locality-optimized ops used for error
+		// reporting can run locally and not incur latency). This is currently only
+		// supported for SELECT statements.
+		// Add some unprintable ASCII characters to the name of the savepoint to
+		// decrease the likelihood of collision with a user-created savepoint.
+		const enforceHomeRegionSavepointName = "enforce_home_region_sp\x11\x12\x13"
+		s := &tree.Savepoint{Name: enforceHomeRegionSavepointName}
+		var event fsm.Event
+		var eventPayload fsm.EventPayload
+		if event, eventPayload, err = ex.execSavepointInOpenState(ctx, s, res); err != nil {
+			return event, eventPayload, err
+		}
+
+		releaseHomeRegionSavepoint = &tree.ReleaseSavepoint{Savepoint: enforceHomeRegionSavepointName}
+		rollbackHomeRegionSavepoint = &tree.RollbackToSavepoint{Savepoint: enforceHomeRegionSavepointName}
+		defer func() {
+			// The default case is to roll back the internally-generated savepoint
+			// after every request. We only need it if a retryable "query has no home
+			// region" error occurs.
+			ex.execRelease(ctx, releaseHomeRegionSavepoint, res)
+		}()
+	}
+
 	if ex.state.mu.autoRetryReason != nil {
 		p.autoRetryCounter = int(ex.state.mu.autoRetryCounter)
 		ex.sessionTracing.TraceRetryInformation(
@@ -2062,7 +2181,6 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 				redactableStmt,     /* detail */
 				stmtTraceThreshold, /* threshold */
 				stmtDur,            /* elapsed */
-				false,              /* outputJaegerJSON */
 			)
 		} else {
 			stmtThresholdSpan.Finish()
@@ -2070,6 +2188,54 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 	}
 
 	if err = res.Err(); err != nil {
+		setErrorAndRestoreLocality := func(err error) {
+			res.SetError(err)
+			// We won't be faking the gateway region any more. Restore the original
+			// locality.
+			p.EvalContext().Locality = p.EvalContext().OriginalLocality
+		}
+		if execinfra.IsDynamicQueryHasNoHomeRegionError(err) {
+			if rollbackHomeRegionSavepoint != nil {
+				// A retryable "query has no home region" error has occurred.
+				// Roll back to the internal savepoint in preparation for the next
+				// planning and execution of this query with a different gateway region
+				// (as considered by the optimizer).
+				p.StmtNoConstantsWithHomeRegionEnforced = p.stmt.StmtNoConstants
+				event, eventPayload := ex.execRollbackToSavepointInOpenState(
+					ctx, rollbackHomeRegionSavepoint, res,
+				)
+				_, isTxnRestart := event.(eventTxnRestart)
+				rollbackToSavepointFailed := !isTxnRestart || eventPayload != nil
+				if ex.implicitTxn() && rollbackToSavepointFailed {
+					err = errors.AssertionFailedf(
+						"unable to roll back to internal savepoint for enforce_home_region",
+					)
+					setErrorAndRestoreLocality(err)
+				} else if rollbackToSavepointFailed || int(ex.state.mu.autoRetryCounter) == len(ex.planner.EvalContext().RemoteRegions) {
+					// If rollback to savepoint in the transaction failed (perhaps because
+					// the txn was aborted) and we're in an explicit transaction, or we
+					// have retried the statement using each remote region as a fake
+					// gateway region, then give up and return the generic "query has no
+					// home region" error message.
+					err = execinfra.MaybeGetNonRetryableDynamicQueryHasNoHomeRegionError(err)
+					setErrorAndRestoreLocality(err)
+				}
+			} else {
+				err = execinfra.MaybeGetNonRetryableDynamicQueryHasNoHomeRegionError(err)
+				setErrorAndRestoreLocality(err)
+			}
+		} else if execinfra.IsDynamicQueryHasNoHomeRegionError(ex.state.mu.autoRetryReason) {
+			// If we are retrying a dynamic "query has no home region" error and
+			// we get a different error message when executing with locality-optimized
+			// ops using a different local region (for example, relation does not
+			// exist, due to the AOST read), return the original error message in
+			// non-retryable form.
+			errorMessage := err.Error()
+			if !strings.HasPrefix(errorMessage, execinfra.QueryNotRunningInHomeRegionMessagePrefix) {
+				err = execinfra.MaybeGetNonRetryableDynamicQueryHasNoHomeRegionError(ex.state.mu.autoRetryReason)
+				setErrorAndRestoreLocality(err)
+			}
+		}
 		return makeErrEvent(err)
 	}
 
@@ -2078,11 +2244,11 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 	if !os.ImplicitTxn.Get() && txn.IsSerializablePushAndRefreshNotPossible() {
 		rc, canAutoRetry := ex.getRewindTxnCapability()
 		if canAutoRetry {
-			ev := eventRetryableErr{
+			ev := eventRetriableErr{
 				IsCommit:     fsm.FromBool(isCommit(vars.ast)),
 				CanAutoRetry: fsm.FromBool(canAutoRetry),
 			}
-			payload := eventRetryableErrPayload{
+			payload := eventRetriableErrPayload{
 				err:    txn.GenerateForcedRetryableErr(ctx, "serializable transaction timestamp pushed (detected by connExecutor)"),
 				rewCap: rc,
 			}
@@ -2129,6 +2295,23 @@ func (ex *connExecutor) handleAOST(ctx context.Context, stmt tree.Statement) err
 		return errors.AssertionFailedf(
 			"cannot handle AOST clause without a transaction",
 		)
+	} else if execinfra.IsDynamicQueryHasNoHomeRegionError(ex.state.mu.autoRetryReason) {
+		asOfClause := tree.AsOfClause{Expr: followerReadTimestampExpr}
+		// Set the timestamp used by current_timestamp().
+		asOf, err := p.EvalAsOfTimestamp(ctx, asOfClause, asof.OptionAllowBoundedStaleness)
+		if err != nil {
+			return errors.AssertionFailedf(
+				"problem evaluating follower read timestamp for enforce_home_region dynamic error checking",
+			)
+		}
+		// Set up AOST in the txn so re-running of the query with different possible
+		// home regions does not have to read rows from remote regions.
+		p.extendedEvalCtx.SetTxnTimestamp(asOf.Timestamp.GoTime())
+		if err := ex.state.setHistoricalTimestamp(ctx, asOf.Timestamp); err != nil {
+			// If the table was just created, we may not be able to set a historical
+			// timestamp.
+			return execinfra.MaybeGetNonRetryableDynamicQueryHasNoHomeRegionError(ex.state.mu.autoRetryReason)
+		}
 	}
 	asOf, err := p.isAsOf(ctx, stmt)
 	if err != nil {
@@ -2310,7 +2493,7 @@ func (ex *connExecutor) commitSQLTransaction(
 		// For certain retryable errors, we should turn them into client visible
 		// errors, since the client needs to retry now.
 		var conversionError error
-		err, conversionError = ex.convertRetryableErrorIntoUserVisibleError(ctx, err)
+		err, conversionError = ex.convertRetriableErrorIntoUserVisibleError(ctx, err)
 		if conversionError != nil {
 			return ex.makeErrEvent(conversionError, ast)
 		}
@@ -2518,7 +2701,7 @@ func (ex *connExecutor) rollbackSQLTransaction(
 	}
 	if isKVTxnOpen {
 		if err := ex.state.mu.txn.Rollback(ctx); err != nil {
-			log.Dev.Warningf(ctx, "txn rollback failed: %s", err)
+			log.Warningf(ctx, "txn rollback failed: %s", err)
 		}
 	}
 	if err := ex.reportSessionDataChanges(func() error {
@@ -2600,8 +2783,8 @@ func (ex *connExecutor) dispatchReadCommittedStmtToExecutionEngine(
 		if err = ex.dispatchToExecutionEngine(ctx, p, res); err != nil {
 			return err
 		}
-		maybeRetryableErr := res.Err()
-		if maybeRetryableErr == nil {
+		maybeRetriableErr := res.Err()
+		if maybeRetriableErr == nil {
 			// If there was no error, then we must release the savepoint and break.
 			if err := ex.state.mu.txn.ReleaseSavepoint(ctx, readCommittedSavePointToken); err != nil {
 				return err
@@ -2611,14 +2794,14 @@ func (ex *connExecutor) dispatchReadCommittedStmtToExecutionEngine(
 		// If the error does not allow for a partial retry, then stop. The error
 		// is already set on res.Err() and will be returned to the client.
 		var txnRetryErr *kvpb.TransactionRetryWithProtoRefreshError
-		if !errors.As(maybeRetryableErr, &txnRetryErr) || txnRetryErr.TxnMustRestartFromBeginning() {
+		if !errors.As(maybeRetriableErr, &txnRetryErr) || txnRetryErr.TxnMustRestartFromBeginning() {
 			break
 		}
 
 		// If we reached the maximum number of retries, then we must stop.
 		if attemptNum == maxRetries {
 			res.SetError(errors.Wrapf(
-				maybeRetryableErr,
+				maybeRetriableErr,
 				"read committed retry limit exceeded; set by max_retries_for_read_committed=%d",
 				maxRetries,
 			))
@@ -2633,7 +2816,7 @@ func (ex *connExecutor) dispatchReadCommittedStmtToExecutionEngine(
 			// flushed and sent back to the client already. In that case, we can't
 			// retry the statement.
 			res.SetError(errors.Wrapf(
-				maybeRetryableErr,
+				maybeRetriableErr,
 				"cannot automatically retry since some results were already sent to the client",
 			))
 			break
@@ -2649,7 +2832,7 @@ func (ex *connExecutor) dispatchReadCommittedStmtToExecutionEngine(
 			return err
 		}
 		p.autoRetryStmtCounter++
-		p.autoRetryStmtReason = maybeRetryableErr
+		p.autoRetryStmtReason = maybeRetriableErr
 		if ppInfo := getPausablePortalInfo(); ppInfo != nil {
 			ppInfo.dispatchReadCommittedStmtToExecutionEngine.autoRetryStmtReason = p.autoRetryStmtReason
 			ppInfo.dispatchReadCommittedStmtToExecutionEngine.autoRetryStmtCounter = p.autoRetryStmtCounter
@@ -2751,25 +2934,12 @@ func (ex *connExecutor) dispatchToExecutionEngine(
 	if ppInfo := getPausablePortalInfo(); ppInfo != nil {
 		if !ppInfo.dispatchToExecutionEngine.cleanup.isComplete {
 			ctx, err = ex.makeExecPlan(ctx, planner)
-			// TODO(janexing): This is a temporary solution to disallow procedure
-			// call statements that contain mutations for pausable portals. Since
-			// relational.CanMutate is not yet propagated from the function body
-			// via builder.BuildCall(), we must temporarily disallow all
-			// TCL statements, which includes the CALL statements.
-			// This should be removed once CanMutate is fully propagated.
-			// (pending https://github.com/cockroachdb/cockroach/issues/147568)
-			isTCL := planner.curPlan.stmt.AST.StatementType() == tree.TypeTCL
-			if flags := planner.curPlan.flags; err == nil && (isTCL || flags.IsSet(planFlagContainsMutation) || flags.IsSet(planFlagIsDDL)) {
+			if flags := planner.curPlan.flags; err == nil && (flags.IsSet(planFlagContainsMutation) || flags.IsSet(planFlagIsDDL)) {
 				telemetry.Inc(sqltelemetry.NotReadOnlyStmtsTriedWithPausablePortals)
 				// We don't allow mutations in a pausable portal. Set it back to
 				// an un-pausable (normal) portal.
 				planner.pausablePortal.pauseInfo = nil
 				err = res.RevokePortalPausability()
-				// If this plan is a transaction control statement, we don't
-				// even execute it but just early exit.
-				if isTCL {
-					err = errors.CombineErrors(err, ErrStmtNotSupportedForPausablePortal)
-				}
 				defer planner.curPlan.close(ctx)
 			} else {
 				ppInfo.dispatchToExecutionEngine.planTop = planner.curPlan
@@ -2965,6 +3135,36 @@ func (ex *connExecutor) dispatchToExecutionEngine(
 	if limitsErr := ex.handleTxnRowsWrittenReadLimits(ctx); limitsErr != nil && res.Err() == nil {
 		res.SetError(limitsErr)
 	}
+	if res.Err() == nil && err == nil {
+		autoRetryReason := ex.state.mu.autoRetryReason
+		if execinfra.IsDynamicQueryHasNoHomeRegionError(autoRetryReason) {
+			if homeRegion, ok := planner.EvalContext().Locality.Find("region"); ok &&
+				planner.StmtNoConstantsWithHomeRegionEnforced == planner.stmt.StmtNoConstants {
+				// If this is the same query as ran when the dynamic "query has no home
+				// region" error occurred, but this time it didn't error out, report
+				// back the query's home region.
+				err = pgerror.Newf(pgcode.QueryNotRunningInHomeRegion,
+					`%s. Try running the query from region '%s'. %s`,
+					execinfra.QueryNotRunningInHomeRegionMessagePrefix,
+					homeRegion,
+					sqlerrors.EnforceHomeRegionFurtherInfo,
+				)
+				res.SetError(err)
+				// We won't be faking the gateway region any more. Restore the original
+				// locality.
+				planner.EvalContext().Locality = planner.EvalContext().OriginalLocality
+				return nil
+			}
+			// If for some reason we're not running the same query as before, report
+			// the original "query has no home region" error in non-retryable form.
+			err = execinfra.MaybeGetNonRetryableDynamicQueryHasNoHomeRegionError(autoRetryReason)
+			res.SetError(err)
+			// We won't be faking the gateway region any more. Restore the original
+			// locality.
+			planner.EvalContext().Locality = planner.EvalContext().OriginalLocality
+			return nil
+		}
+	}
 
 	return err
 }
@@ -3004,7 +3204,7 @@ func populateQueryLevelStats(
 		if buildutil.CrdbTestBuild {
 			panic(fmt.Sprintf(msg, ih.fingerprint, err))
 		}
-		log.Dev.VInfof(ctx, 1, msg, ih.fingerprint, err)
+		log.VInfof(ctx, 1, msg, ih.fingerprint, err)
 	} else {
 		// If this query is being run by a tenant, record the RUs consumed by CPU
 		// usage and network egress to the client.
@@ -3139,10 +3339,7 @@ func (ex *connExecutor) handleTxnRowsGuardrails(
 					CommonTxnRowsLimitDetails: commonTxnRowsLimitDetails,
 				}
 			}
-			migrator := log.NewStructuredEventMigrator(func() bool {
-				return log.ShouldMigrateEvent(ex.planner.ExecCfg().SV())
-			}, logpb.Channel_SQL_EXEC)
-			migrator.StructuredEvent(ctx, severity.INFO, event)
+			log.StructuredEvent(ctx, severity.INFO, event)
 			logCounter.Inc(1)
 		}
 	}
@@ -3599,8 +3796,8 @@ func (ex *connExecutor) execStmtInAbortedState(
 	}()
 
 	reject := func() (fsm.Event, fsm.EventPayload) {
-		ev := eventNonRetryableErr{IsCommit: fsm.False}
-		payload := eventNonRetryableErrPayload{
+		ev := eventNonRetriableErr{IsCommit: fsm.False}
+		payload := eventNonRetriableErrPayload{
 			err: sqlerrors.NewTransactionAbortedError("" /* customMsg */),
 		}
 		return ev, payload
@@ -3674,8 +3871,8 @@ func (ex *connExecutor) execStmtInCommitWaitState(
 			},
 		)
 	}
-	return eventNonRetryableErr{IsCommit: fsm.False},
-		eventNonRetryableErrPayload{
+	return eventNonRetriableErr{IsCommit: fsm.False},
+		eventNonRetriableErrPayload{
 			err: sqlerrors.NewTransactionCommittedError(),
 		}
 }
@@ -3831,7 +4028,7 @@ func (ex *connExecutor) runShowCompletions(
 	ctx context.Context, n *tree.ShowCompletions, res RestrictedCommandResult,
 ) error {
 	res.SetColumns(ctx, colinfo.ShowCompletionsColumns)
-	log.Dev.Warningf(ctx, "COMPLETION GENERATOR FOR: %+v", *n)
+	log.Warningf(ctx, "COMPLETION GENERATOR FOR: %+v", *n)
 	sd := ex.planner.SessionData()
 	override := sessiondata.InternalExecutorOverride{
 		SearchPath: &sd.SearchPath,
@@ -3858,7 +4055,7 @@ func (ex *connExecutor) runShowCompletions(
 
 	completions, err := newCompletionsGenerator(queryIterFn, n)
 	if err != nil {
-		log.Dev.Warningf(ctx, "COMPLETION GENERATOR FAILED: %v", err)
+		log.Warningf(ctx, "COMPLETION GENERATOR FAILED: %v", err)
 		return err
 	}
 
@@ -3867,12 +4064,12 @@ func (ex *connExecutor) runShowCompletions(
 		row := completions.Values()
 		err = res.AddRow(ctx, row)
 		if err != nil {
-			log.Dev.Warningf(ctx, "COMPLETION ADDROW FAILED: %v", err)
+			log.Warningf(ctx, "COMPLETION ADDROW FAILED: %v", err)
 			return err
 		}
 	}
 	if err != nil {
-		log.Dev.Warningf(ctx, "COMPLETION GENERATOR NEXT FAILED: %v", err)
+		log.Warningf(ctx, "COMPLETION GENERATOR NEXT FAILED: %v", err)
 	}
 	return err
 }
@@ -4103,8 +4300,13 @@ func (ex *connExecutor) onTxnFinish(ctx context.Context, ev txnEvent, txnErr err
 		err := ex.txnFingerprintIDCache.Add(ctx, transactionFingerprintID)
 		if err != nil {
 			if log.V(1) {
-				log.Dev.Warningf(ctx, "failed to enqueue transactionFingerprintID = %d: %s", transactionFingerprintID, err)
+				log.Warningf(ctx, "failed to enqueue transactionFingerprintID = %d: %s", transactionFingerprintID, err)
 			}
+		}
+
+		discardedStats := ex.statsCollector.EndTransaction(ctx, transactionFingerprintID)
+		if discardedStats > 0 {
+			ex.server.ServerMetrics.StatsMetrics.DiscardedStatsCount.Inc(discardedStats)
 		}
 
 		if ex.server.cfg.TestingKnobs.BeforeTxnStatsRecorded != nil {
@@ -4119,7 +4321,7 @@ func (ex *connExecutor) onTxnFinish(ctx context.Context, ev txnEvent, txnErr err
 		err = ex.recordTransactionFinish(ctx, transactionFingerprintID, ev, implicit, txnStart, txnErr)
 		if err != nil {
 			if log.V(1) {
-				log.Dev.Warningf(ctx, "failed to record transaction stats: %s", err)
+				log.Warningf(ctx, "failed to record transaction stats: %s", err)
 			}
 			ex.server.ServerMetrics.StatsMetrics.DiscardedStatsCount.Inc(1)
 		}
@@ -4255,15 +4457,6 @@ func (ex *connExecutor) recordTransactionFinish(
 	txnRetryLat := ex.phaseTimes.GetTransactionRetryLatency()
 	commitLat := ex.phaseTimes.GetCommitLatency()
 
-	isInternaleExec := ex.executorType == executorTypeInternal
-
-	ex.maybeRecordRetrySerializableContention(ev.txnID, transactionFingerprintID, txnErr)
-
-	if !ex.statsCollector.EnabledForTransaction() && !ex.extraTxnState.shouldLogToTelemetry {
-		// No need to create a RecordedTxnStats.
-		return nil
-	}
-
 	recordedTxnStats := &sqlstats.RecordedTxnStats{
 		FingerprintID:           transactionFingerprintID,
 		SessionID:               ex.planner.extendedEvalCtx.SessionID,
@@ -4291,17 +4484,18 @@ func (ex *connExecutor) recordTransactionFinish(
 		// TODO(107318): add qos
 		// TODO(107318): add asoftime or ishistorical
 		// TODO(107318): add readonly
-		TxnErr:           txnErr,
-		Application:      ex.statsCollector.CurrentApplicationName(),
-		UserNormalized:   ex.sessionData().User().Normalized(),
-		InternalExecutor: isInternaleExec,
+		TxnErr:         txnErr,
+		Application:    ex.applicationName.Load().(string),
+		UserNormalized: ex.sessionData().User().Normalized(),
 	}
 
 	if ex.server.cfg.TestingKnobs.OnRecordTxnFinish != nil {
 		ex.server.cfg.TestingKnobs.OnRecordTxnFinish(
-			isInternaleExec, ex.phaseTimes, ex.planner.stmt.SQL, recordedTxnStats,
+			ex.executorType == executorTypeInternal, ex.phaseTimes, ex.planner.stmt.SQL, recordedTxnStats,
 		)
 	}
+
+	ex.maybeRecordRetrySerializableContention(ev.txnID, transactionFingerprintID, txnErr)
 
 	if ex.extraTxnState.shouldLogToTelemetry {
 		ex.planner.logTransaction(ctx,
@@ -4312,8 +4506,7 @@ func (ex *connExecutor) recordTransactionFinish(
 		)
 	}
 
-	ex.statsCollector.RecordTransaction(ctx, recordedTxnStats)
-	return nil
+	return ex.statsCollector.RecordTransaction(ctx, recordedTxnStats)
 }
 
 // Records a SERIALIZATION_CONFLICT contention event to the contention registry event
@@ -4353,23 +4546,11 @@ func logTraceAboveThreshold(
 	opName redact.RedactableString,
 	detail redact.RedactableString,
 	threshold, elapsed time.Duration,
-	outputJaegerJSON bool,
 ) {
 	if r == nil {
-		log.Dev.Warning(ctx, "missing trace when threshold tracing was enabled")
+		log.Warning(ctx, "missing trace when threshold tracing was enabled")
 	}
-	output := ""
-	var err error
-	if outputJaegerJSON {
-		output, err = r.ToJaegerJSON("unknown stmt", "no comment", "unknown node", false /* indent */)
-		if err != nil {
-			log.Dev.Warningf(ctx, "trace could not be converted to jaeger JSON: %s", err.Error())
-			output = r.String()
-		}
-	} else {
-		output = r.String()
-	}
-	log.SqlExec.Infof(ctx, "%s took %s, exceeding threshold of %s:\n%s\n%s", opName, elapsed, threshold, detail, output)
+	log.SqlExec.Infof(ctx, "%s took %s, exceeding threshold of %s:\n%s\n%s", opName, elapsed, threshold, detail, r)
 }
 
 func (ex *connExecutor) execWithProfiling(

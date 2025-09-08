@@ -289,7 +289,7 @@ func (s *stmtFingerprintID) decodeJSON(js json.JSON) error {
 
 func (s *stmtFingerprintID) encodeJSON() (json.JSON, error) {
 	return json.FromString(
-		EncodeStmtFingerprintIDToString((appstatspb.StmtFingerprintID)(*s))), nil
+		encodeStmtFingerprintIDToString((appstatspb.StmtFingerprintID)(*s))), nil
 }
 
 type innerTxnStats appstatspb.TransactionStatistics

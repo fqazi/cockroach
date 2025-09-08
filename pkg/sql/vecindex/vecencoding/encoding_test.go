@@ -223,7 +223,7 @@ func TestEncodeKeys(t *testing.T) {
 		Level:    cspann.LeafLevel,
 		Centroid: vector.T{4, 3},
 	}
-	metadata1.StateDetails.MakeMerging()
+	metadata1.StateDetails.MakeDrainingForMerge(10)
 	encoded := vecencoding.EncodeMetadataValue(metadata1)
 	metadata2, err := vecencoding.DecodeMetadataValue(encoded)
 	require.NoError(t, err)

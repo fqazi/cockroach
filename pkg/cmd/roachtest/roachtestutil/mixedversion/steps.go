@@ -14,11 +14,8 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/clusterupgrade"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
-	"github.com/cockroachdb/cockroach/pkg/roachprod"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/failureinjection/failures"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
@@ -790,9 +787,13 @@ func startStopOpts(opts ...option.StartStopOption) []option.StartStopOption {
 }
 
 // TODO(kyleli): This step currently only affects the system tenant, should support panicking secondary tenants as well.
+// TODO(kyleli): Current mixedversion cannot support separating this into two steps (panic and restart) because during
+// each step the framework checks each node to ensure they are all alive and healthy. Ideally there should be a state
+// that allows the framework to skip this check, so that we can panic a node and then restart it in a separate step.
 type panicNodeStep struct {
 	initTarget int
 	targetNode option.NodeListOption
+	rt         test.Test
 }
 
 func (s panicNodeStep) Background() shouldStop { return nil }
@@ -802,50 +803,6 @@ func (s panicNodeStep) Description() string {
 }
 
 func (s panicNodeStep) Run(ctx context.Context, l *logger.Logger, rng *rand.Rand, h *Helper) error {
-
-	h.runner.monitor.ExpectProcessDead(s.targetNode)
-
-	// ExecWithGateway cannot be used here because the monitor marks the target node as expected
-	// dead, and it will be filtered out of the list of available nodes. This a unique case, so
-	// we manually log the SQL statement and execute it directly on the target node.
-	const query = "SELECT crdb_internal.force_panic('expected panic from panicNodeMutator')"
-	db := h.System.Connect(s.targetNode[0])
-
-	v, err := h.System.NodeVersion(s.targetNode[0])
-	if err != nil {
-		return errors.Wrapf(err, "failed to get node version for %d", s.targetNode[0])
-	}
-	logSQL(
-		h.System.stepLogger, s.targetNode[0], v, h.System.Descriptor.Name, query,
-	)
-
-	if _, err = db.ExecContext(h.System.ctx, query); err == nil {
-		return errors.Errorf("expected panic statement to fail, but it succeeded on %s", s.targetNode)
-	}
-
-	return nil
-}
-
-func (s panicNodeStep) ConcurrencyDisabled() bool {
-	return true
-}
-
-// Restarts a dead node on the same binary version it was running, unlike
-// `restartWithNewBinaryStep` which restarts an alive node with a new binary.
-type restartNodeStep struct {
-	initTarget  int
-	targetNode  option.NodeListOption
-	rt          test.Test
-	description string
-}
-
-func (restartNodeStep) Background() shouldStop { return nil }
-
-func (s restartNodeStep) Description() string {
-	return s.description
-}
-
-func (s restartNodeStep) Run(ctx context.Context, l *logger.Logger, _ *rand.Rand, h *Helper) error {
 	nodeVersion, err := h.System.NodeVersion(s.targetNode[0])
 	if err != nil {
 		return errors.Wrapf(err, "failed to get node version for %s", s.targetNode)
@@ -857,156 +814,31 @@ func (s restartNodeStep) Run(ctx context.Context, l *logger.Logger, _ *rand.Rand
 	)
 	customStartOpts := restartSystemSettings(true, s.initTarget)
 
+	h.runner.monitor.ExpectProcessDead(s.targetNode)
+
+	const stmt = "SELECT crdb_internal.force_panic('expected panic from panicNodeMutator')"
+	err = h.System.ExecWithGateway(
+		rng,
+		s.targetNode,
+		stmt,
+	)
+
+	if err == nil {
+		return errors.Errorf("expected panic statement to fail, but it succeeded on %s", s.targetNode)
+	}
+
 	startCtx, cancel := context.WithTimeout(ctx, startTimeout)
 	defer cancel()
 
-	err = h.runner.cluster.StartE(
+	return h.runner.cluster.StartE(
 		startCtx,
 		l,
 		startOpts(customStartOpts...),
 		settings,
 		s.targetNode,
 	)
-	if err != nil {
-		return errors.Wrapf(
-			err, "failed to restart node %d with binary %s", s.targetNode[0], binary,
-		)
-	}
-	return nil
-
 }
 
-func (s restartNodeStep) ConcurrencyDisabled() bool {
+func (s panicNodeStep) ConcurrencyDisabled() bool {
 	return true
-}
-
-type networkPartitionInjectStep struct {
-	f          *failures.Failer
-	partition  failures.NetworkPartition
-	targetNode option.NodeListOption
-}
-
-func (s networkPartitionInjectStep) Background() shouldStop { return nil }
-
-func (s networkPartitionInjectStep) Description() string {
-	var desc string
-	switch s.partition.Type {
-	case failures.Bidirectional:
-		desc = fmt.Sprintf("setting up bidirectional network partition: dropping connections between nodes %d and %v", s.partition.Source, s.partition.Destination)
-	case failures.Incoming:
-		desc = fmt.Sprintf("setting up incoming network partition: dropping connections from nodes %v to %d", s.partition.Destination, s.partition.Source)
-	case failures.Outgoing:
-		desc = fmt.Sprintf("setting up outgoing network partition: dropping connections from nodes %d to %v", s.partition.Source, s.partition.Destination)
-	}
-	return desc
-}
-
-func (s networkPartitionInjectStep) Run(
-	ctx context.Context, l *logger.Logger, _ *rand.Rand, h *Helper,
-) error {
-	h.runner.monitor.ExpectProcessDead(s.targetNode)
-	if h.DeploymentMode() == SeparateProcessDeployment {
-		opt := option.VirtualClusterName(h.Tenant.Descriptor.Name)
-		h.runner.monitor.ExpectProcessDead(s.targetNode, opt)
-	}
-
-	args := failures.NetworkPartitionArgs{Partitions: []failures.NetworkPartition{s.partition}}
-
-	if err := s.f.Setup(ctx, l, args); err != nil {
-		return errors.Wrapf(err, "failed to setup failure %s", failures.IPTablesNetworkPartitionName)
-	}
-
-	if err := s.f.Inject(ctx, l, args); err != nil {
-		return errors.Wrapf(err, "failed to inject failure %s", failures.IPTablesNetworkPartitionName)
-	}
-
-	return s.f.WaitForFailureToPropagate(ctx, l)
-}
-
-func (s networkPartitionInjectStep) ConcurrencyDisabled() bool {
-	return true
-}
-
-type networkPartitionRecoveryStep struct {
-	f          *failures.Failer
-	partition  failures.NetworkPartition
-	targetNode option.NodeListOption
-}
-
-func (s networkPartitionRecoveryStep) Background() shouldStop { return nil }
-
-func (s networkPartitionRecoveryStep) Description() string {
-	var desc string
-	switch s.partition.Type {
-	case failures.Bidirectional:
-		desc = fmt.Sprintf("recovering from bidirectional network partition: allowing connections between nodes %d and %v", s.partition.Source, s.partition.Destination)
-	case failures.Incoming:
-		desc = fmt.Sprintf("recovering from incoming network partition: allowing connections from nodes %v to %d", s.partition.Destination, s.partition.Source)
-	case failures.Outgoing:
-		desc = fmt.Sprintf("recovering from outgoing network partition: allowing connections from nodes %d to %v", s.partition.Source, s.partition.Destination)
-	}
-	return desc
-}
-
-func (s networkPartitionRecoveryStep) Run(
-	ctx context.Context, l *logger.Logger, _ *rand.Rand, h *Helper,
-) error {
-	if err := s.f.Recover(ctx, l); err != nil {
-		return errors.Wrapf(err, "failed to recover failure %s", failures.IPTablesNetworkPartitionName)
-	}
-
-	if err := s.f.WaitForFailureToRecover(ctx, l); err != nil {
-		return errors.Wrapf(err, "failed to wait for recovery of failure %s", failures.IPTablesNetworkPartitionName)
-	}
-
-	h.runner.monitor.ExpectProcessAlive(s.targetNode)
-	if h.DeploymentMode() == SeparateProcessDeployment {
-		opt := option.VirtualClusterName(h.Tenant.Descriptor.Name)
-		h.runner.monitor.ExpectProcessAlive(s.targetNode, opt)
-	}
-	return s.f.Cleanup(ctx, l)
-
-}
-
-func (s networkPartitionRecoveryStep) ConcurrencyDisabled() bool {
-	return false
-}
-
-type alterReplicationFactorStep struct {
-	replicationFactor int
-	targetNode        option.NodeListOption
-}
-
-func (s alterReplicationFactorStep) Background() shouldStop { return nil }
-
-func (s alterReplicationFactorStep) Description() string {
-	return fmt.Sprintf("alter replication factor to %d", s.replicationFactor)
-}
-
-func (s alterReplicationFactorStep) Run(
-	ctx context.Context, l *logger.Logger, rng *rand.Rand, h *Helper,
-) error {
-	stmt := fmt.Sprintf("ALTER RANGE default CONFIGURE ZONE USING num_replicas = %d", s.replicationFactor)
-	if err := h.System.Exec(
-		rng,
-		stmt,
-	); err != nil {
-		return errors.Wrap(err, "failed to change replication factor")
-	}
-
-	replicationLogger, loggerName, err := roachtestutil.LoggerForCmd(l, s.targetNode, "range-replication")
-	if err != nil {
-		return errors.Wrapf(err, "failed to create logger %s", loggerName)
-	}
-
-	l.Printf("waiting to reach replication factor of %dX; details in %s.log", s.replicationFactor, loggerName)
-	db := h.System.Connect(s.targetNode[0])
-	if err := roachtestutil.WaitForReplication(ctx, replicationLogger, db, s.replicationFactor, roachprod.AtLeastReplicationFactor); err != nil {
-		return errors.Wrapf(err, "failed to reach replication factor of %dX", s.replicationFactor)
-	}
-	return nil
-}
-
-func (s alterReplicationFactorStep) ConcurrencyDisabled() bool {
-	return false
 }

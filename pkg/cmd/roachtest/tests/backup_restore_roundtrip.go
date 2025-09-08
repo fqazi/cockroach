@@ -45,16 +45,6 @@ var (
 	}
 )
 
-func handleSchemaChangeWorkloadError(err error) error {
-	// If the UNEXPECTED ERROR detail appears, the workload likely flaked.
-	// Otherwise, the workload could have failed due to other reasons like a node
-	// crash.
-	if err != nil && strings.Contains(errors.FlattenDetails(err), "UNEXPECTED ERROR") {
-		return registry.ErrorWithOwner(registry.OwnerSQLFoundations, errors.Wrapf(err, "schema change workload failed"))
-	}
-	return err
-}
-
 const numFullBackups = 3
 
 type roundTripSpecs struct {
@@ -140,9 +130,7 @@ func backupRestoreRoundTrip(
 		"COCKROACH_MIN_RANGE_MAX_BYTES=1",
 	})
 
-	startOpts := roachtestutil.MaybeUseMemoryBudget(t, 50)
-	startOpts.RoachprodOpts.ExtraArgs = []string{"--vmodule=split_queue=3,cloud_logging_transport=1"}
-	c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(envOption), c.CRDBNodes())
+	c.Start(ctx, t.L(), roachtestutil.MaybeUseMemoryBudget(t, 50), install.MakeClusterSettings(envOption), c.CRDBNodes())
 	m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
 
 	m.Go(func(ctx context.Context) error {
@@ -271,9 +259,18 @@ func startBackgroundWorkloads(
 		return nil, err
 	}
 
+	handleChemaChangeError := func(err error) error {
+		// If the UNEXPECTED ERROR detail appears, the workload likely flaked.
+		// Otherwise, the workload could have failed due to other reasons like a node
+		// crash.
+		if err != nil && strings.Contains(errors.FlattenDetails(err), "UNEXPECTED ERROR") {
+			return registry.ErrorWithOwner(registry.OwnerSQLFoundations, errors.Wrapf(err, "schema change workload failed"))
+		}
+		return err
+	}
 	err = c.RunE(ctx, option.WithNodes(workloadNode), scInit.String())
 	if err != nil {
-		return nil, handleSchemaChangeWorkloadError(err)
+		return nil, handleChemaChangeError(err)
 	}
 
 	run := func() (func(), error) {
@@ -290,7 +287,7 @@ func startBackgroundWorkloads(
 		})
 		stopSC := workloadWithCancel(m, func(ctx context.Context) error {
 			if err := c.RunE(ctx, option.WithNodes(workloadNode), scRun.String()); err != nil {
-				return handleSchemaChangeWorkloadError(err)
+				return handleChemaChangeError(err)
 			}
 			return nil
 		})

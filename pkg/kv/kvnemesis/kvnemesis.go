@@ -47,7 +47,7 @@ func (l *logLogger) WriteFile(basename string, contents string) string {
 func (l *logLogger) Helper() { /* no-op */ }
 
 func (l *logLogger) Logf(format string, args ...interface{}) {
-	log.Dev.InfofDepth(context.Background(), 2, format, args...)
+	log.InfofDepth(context.Background(), 2, format, args...)
 }
 
 func l(ctx context.Context, basename string, format string, args ...interface{}) (optFile string) {
@@ -177,13 +177,7 @@ func RunNemesis(
 			failuresFile = l(ctx, "failures", "%s", &buf)
 		}
 
-		reproFile := l(ctx, "repro.go", `// Seed: %d
-// Calls to Random Source: %d
-// Reproduction steps:
-%s`,
-			config.SeedForLogging,
-			config.RandSourceCounterForLogging.Count(),
-			printRepro(stepsByWorker))
+		reproFile := l(ctx, "repro.go", "// Reproduction steps:\n%s", printRepro(stepsByWorker))
 		rangefeedFile := l(ctx, "kvs-rangefeed.txt", "kvs (recorded from rangefeed):\n%s", kvs.DebugPrint("  "))
 		kvsFile := "<error>"
 		var scanKVs []kv.KeyValue

@@ -90,7 +90,7 @@ var RangefeedUseBufferedSender = settings.RegisterBoolSetting(
 	"kv.rangefeed.buffered_sender.enabled",
 	"use buffered sender for all range feeds instead of buffering events "+
 		"separately per client per range",
-	metamorphic.ConstantWithTestBool("kv.rangefeed.buffered_sender.enabled", true),
+	metamorphic.ConstantWithTestBool("kv.rangefeed.buffered_sender.enabled", false),
 )
 
 func init() {
@@ -221,13 +221,6 @@ func (tp *rangefeedTxnPusher) Barrier(ctx context.Context) error {
 	return nil
 }
 
-var rangeFeedBulkDeliverySize = settings.RegisterIntSetting(
-	settings.SystemOnly,
-	"kv.rangefeed.bulk_delivery.size",
-	"approx size up to which rangefeeds may buffer events to be delivered in bulk during scans (0=disabled)",
-	int64(metamorphic.ConstantWithTestRange("rangefeed-bulk_delivery", 2<<20, 0, 4<<20)),
-)
-
 // RangeFeed registers a rangefeed over the specified span. It sends updates to
 // the provided stream and returns with a future error when the rangefeed is
 // complete. The surrounding store's ConcurrentRequestLimiter is used to limit
@@ -340,12 +333,8 @@ func (r *Replica) RangeFeed(
 		}
 	}
 
-	bulkDeliverySize := 0
-	if args.WithBulkDelivery {
-		bulkDeliverySize = int(rangeFeedBulkDeliverySize.Get(&r.store.ClusterSettings().SV))
-	}
 	p, disconnector, err := r.registerWithRangefeedRaftMuLocked(
-		streamCtx, rSpan, args.Timestamp, catchUpIter, args.WithDiff, args.WithFiltering, omitRemote, bulkDeliverySize, stream,
+		streamCtx, rSpan, args.Timestamp, catchUpIter, args.WithDiff, args.WithFiltering, omitRemote, stream,
 	)
 	r.raftMu.Unlock()
 
@@ -431,7 +420,7 @@ func logSlowRangefeedRegistration(ctx context.Context) func() {
 	return func() {
 		elapsed := timeutil.Since(start)
 		if elapsed >= slowRaftMuWarnThreshold {
-			log.Dev.Warningf(ctx, "rangefeed registration took %s", elapsed)
+			log.Warningf(ctx, "rangefeed registration took %s", elapsed)
 		}
 	}
 }
@@ -453,7 +442,6 @@ func (r *Replica) registerWithRangefeedRaftMuLocked(
 	withDiff bool,
 	withFiltering bool,
 	withOmitRemote bool,
-	bulkDeliverySize int,
 	stream rangefeed.Stream,
 ) (rangefeed.Processor, rangefeed.Disconnector, error) {
 	defer logSlowRangefeedRegistration(streamCtx)()
@@ -474,7 +462,7 @@ func (r *Replica) registerWithRangefeedRaftMuLocked(
 	p := r.rangefeedMu.proc
 
 	if p != nil {
-		reg, disconnector, filter := p.Register(streamCtx, span, startTS, catchUpIter, withDiff, withFiltering, withOmitRemote, bulkDeliverySize,
+		reg, disconnector, filter := p.Register(streamCtx, span, startTS, catchUpIter, withDiff, withFiltering, withOmitRemote,
 			stream)
 		if reg {
 			// Registered successfully with an existing processor.
@@ -556,7 +544,7 @@ func (r *Replica) registerWithRangefeedRaftMuLocked(
 	// this ensures that the only time the registration fails is during
 	// server shutdown.
 	reg, disconnector, filter := p.Register(streamCtx, span, startTS, catchUpIter, withDiff,
-		withFiltering, withOmitRemote, bulkDeliverySize, stream)
+		withFiltering, withOmitRemote, stream)
 	if !reg {
 		select {
 		case <-r.store.Stopper().ShouldQuiesce():
@@ -889,9 +877,9 @@ func (r *Replica) handleClosedTimestampUpdateRaftMuLocked(
 		expensiveLog := m.RangeFeedSlowClosedTimestampLogN.ShouldLog()
 		if expensiveLog {
 			if closedTS.IsEmpty() {
-				log.Dev.Infof(ctx, "RangeFeed closed timestamp is empty")
+				log.Infof(ctx, "RangeFeed closed timestamp is empty")
 			} else {
-				log.Dev.Infof(ctx, "RangeFeed closed timestamp %s is behind by %s (%v)",
+				log.Infof(ctx, "RangeFeed closed timestamp %s is behind by %s (%v)",
 					closedTS, signal.lag, signal)
 			}
 		}
@@ -919,7 +907,7 @@ func (r *Replica) handleClosedTimestampUpdateRaftMuLocked(
 				}
 				defer func() { <-m.RangeFeedSlowClosedTimestampNudgeSem }()
 				if err := r.ensureClosedTimestampStarted(ctx); err != nil {
-					log.Dev.Infof(ctx, `RangeFeed failed to nudge: %s`, err)
+					log.Infof(ctx, `RangeFeed failed to nudge: %s`, err)
 				} else if signal.exceedsCancelLagThreshold {
 					// We have successfully nudged the leaseholder to make progress on
 					// the closed timestamp. If the lag was already persistently too
@@ -933,7 +921,7 @@ func (r *Replica) handleClosedTimestampUpdateRaftMuLocked(
 					// prohibit us from cancelling the rangefeed in the current version,
 					// due to mixed version compatibility.
 					if expensiveLog {
-						log.Dev.Infof(ctx,
+						log.Infof(ctx,
 							`RangeFeed is too far behind, cancelling for replanning [%v]`, signal)
 					}
 					r.disconnectRangefeedWithReason(kvpb.RangeFeedRetryError_REASON_RANGEFEED_CLOSED)

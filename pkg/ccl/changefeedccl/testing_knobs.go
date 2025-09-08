@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
@@ -90,13 +89,6 @@ type TestingKnobs struct {
 	// PreservePTSTargets is used to prevent a changefeed from upgrading
 	// its PTS record to include all required targets.
 	PreservePTSTargets func() bool
-
-	// ManagePTSError is used to return an error when managing protected timestamps.
-	ManagePTSError func() error
-
-	// IsTableLagging is a callback that's invoked by manage protected timestamp
-	// to check if the table is lagging.
-	IsTableLagging func(tableID descpb.ID) bool
 
 	// PulsarClientSkipCreation skips creating the sink client when
 	// dialing.

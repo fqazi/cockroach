@@ -194,9 +194,9 @@ func (r *Replica) SendWithWriteBytes(
 		// empty batch; shouldn't happen (we could handle it, but it hints
 		// at someone doing weird things, and once we drop the key range
 		// from the header it won't be clear how to route those requests).
-		log.Dev.Fatalf(ctx, "empty batch")
+		log.Fatalf(ctx, "empty batch")
 	} else {
-		log.Dev.Fatalf(ctx, "don't know how to handle command %s", ba)
+		log.Fatalf(ctx, "don't know how to handle command %s", ba)
 	}
 	if pErr != nil {
 		log.Eventf(ctx, "replica.Send got error: %s", pErr)
@@ -219,9 +219,7 @@ func (r *Replica) SendWithWriteBytes(
 	// Record summary throughput information about the batch request for
 	// accounting.
 	r.recordBatchRequestLoad(ctx, ba)
-	if writeBytes != nil {
-		r.recordRequestWriteBytes(writeBytes.WriteBytes + writeBytes.IngestedBytes)
-	}
+	r.recordRequestWriteBytes(writeBytes)
 	r.recordImpactOnRateLimiter(ctx, br, isReadOnly)
 	return br, writeBytes, pErr
 }
@@ -607,7 +605,7 @@ func (r *Replica) executeBatchWithConcurrencyRetries(
 			// for those locks and release latches.
 			requestEvalKind = concurrency.PessimisticAfterFailedOptimisticEval
 		default:
-			log.Dev.Fatalf(ctx, "unexpected concurrency retry error %T", t)
+			log.Fatalf(ctx, "unexpected concurrency retry error %T", t)
 		}
 		// Retry...
 	}
@@ -1069,10 +1067,13 @@ func (r *Replica) getBatchRequestQPS(ctx context.Context, ba *kvpb.BatchRequest)
 
 // recordRequestWriteBytes records the write bytes from a replica batch
 // request.
-func (r *Replica) recordRequestWriteBytes(writeBytes int64) {
+func (r *Replica) recordRequestWriteBytes(writeBytes *kvadmission.StoreWriteBytes) {
+	if writeBytes == nil {
+		return
+	}
 	// TODO(kvoli): Consider recording the ingested bytes (AddSST) separately
 	// to the write bytes.
-	r.loadStats.RecordWriteBytes(float64(writeBytes))
+	r.loadStats.RecordWriteBytes(float64(writeBytes.WriteBytes + writeBytes.IngestedBytes))
 }
 
 // checkBatchRequest verifies BatchRequest validity requirements. In particular,

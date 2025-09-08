@@ -174,7 +174,7 @@ func (ifr *invertedFilterer) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerMe
 		case ifrEmittingRows:
 			ifr.runningState, row, meta = ifr.emitRow()
 		default:
-			log.Dev.Fatalf(ifr.Ctx(), "unsupported state: %d", ifr.runningState)
+			log.Fatalf(ifr.Ctx(), "unsupported state: %d", ifr.runningState)
 		}
 		if row == nil && meta == nil {
 			continue

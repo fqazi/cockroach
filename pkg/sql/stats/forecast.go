@@ -341,7 +341,7 @@ func forecastColumnStatistics(
 					93892, "forecasted histogram for table %v had first bucket with non-zero NumRange or "+
 						"DistinctRange", tableID,
 				)
-				log.Dev.Warningf(ctx, "%v", err)
+				log.Warningf(ctx, "%v", err)
 				return nil, err
 			}
 			if bucket.UpperBound != tree.DNull {

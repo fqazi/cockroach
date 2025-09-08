@@ -95,17 +95,16 @@ func ClearRangeData(
 // writes.
 //
 //  1. Log storage write (durable):
-//     1.1. WAG: apply to RaftAppliedIndex.
-//     1.2. WAG: apply mutation (2).
+//     1.1. Write WAG node with the state machine mutation (2).
 //  2. State machine mutation:
 //     2.1. Clear RangeID-local un-/replicated state.
 //     2.2. (optional) Clear replicated MVCC span.
-//     2.3. Write RangeTombstone with next ReplicaID.
+//     2.3. Write RangeTombstone with next ReplicaID/LogID.
 //  3. Log engine GC (after state machine mutation 2 is durably applied):
-//     3.1. Remove raft state.
+//     3.1. Remove previous LogID.
 //
-// TODO(sep-raft-log): support the status quo in which 2+3 is written
-// atomically, and 1 is not written.
+// TODO(sep-raft-log): support the status quo in which 1+2+3 is written
+// atomically, and 1.1 is not written.
 const DestroyReplicaTODO = 0
 
 // DestroyReplica destroys all or a part of the Replica's state, installing a
@@ -118,30 +117,28 @@ const DestroyReplicaTODO = 0
 // not be cleared.
 func DestroyReplica(
 	ctx context.Context,
-	id roachpb.FullReplicaID,
+	rangeID roachpb.RangeID,
 	reader storage.Reader,
 	writer storage.Writer,
 	nextReplicaID roachpb.ReplicaID,
 	opts ClearRangeDataOptions,
 ) error {
-	diskReplicaID, err := stateloader.Make(id.RangeID).LoadRaftReplicaID(ctx, reader)
+	diskReplicaID, err := stateloader.Make(rangeID).LoadRaftReplicaID(ctx, reader)
 	if err != nil {
 		return err
 	}
-	if repID := diskReplicaID.ReplicaID; repID != id.ReplicaID {
-		return errors.AssertionFailedf("replica %v has a mismatching ID %d", id, repID)
-	} else if repID >= nextReplicaID {
-		return errors.AssertionFailedf("replica %v must not survive its own tombstone", id)
+	if diskReplicaID.ReplicaID >= nextReplicaID {
+		return errors.AssertionFailedf("replica r%d/%d must not survive its own tombstone", rangeID, diskReplicaID)
 	}
-	_ = DestroyReplicaTODO // 2.1 + 2.2 + 3.1
-	if err := ClearRangeData(ctx, id.RangeID, reader, writer, opts); err != nil {
+	_ = DestroyReplicaTODO // 2.1 + 3.1 + 2.2
+	if err := ClearRangeData(ctx, rangeID, reader, writer, opts); err != nil {
 		return err
 	}
 
 	// Save a tombstone to ensure that replica IDs never get reused. Assert that
 	// the provided tombstone moves the existing one strictly forward. Failure to
 	// do so indicates that something is going wrong in the replica lifecycle.
-	sl := stateloader.Make(id.RangeID)
+	sl := stateloader.Make(rangeID)
 	ts, err := sl.LoadRangeTombstone(ctx, reader)
 	if err != nil {
 		return err

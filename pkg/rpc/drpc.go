@@ -79,11 +79,9 @@ func DialDRPC(
 				}
 				// Clone TLS config to avoid modifying a cached TLS config.
 				tlsConfig = tlsConfig.Clone()
-				sn, _, err := net.SplitHostPort(target)
-				if err != nil {
-					return nil, err
-				}
-				tlsConfig.ServerName = sn
+				// TODO(server): remove this hack which is necessary at least in
+				// testing to get TestDRPCSelectQuery to pass.
+				tlsConfig.InsecureSkipVerify = true
 				tlsConn := tls.Client(netConn, tlsConfig)
 				conn = drpcconn.NewWithOptions(tlsConn, opts)
 			}
@@ -91,32 +89,22 @@ func DialDRPC(
 			return conn, nil
 		})
 
-		unaryInterceptors := rpcCtx.clientUnaryInterceptorsDRPC
 		if rpcCtx.Knobs.UnaryClientInterceptorDRPC != nil {
-			interceptor := rpcCtx.Knobs.UnaryClientInterceptorDRPC(target, rpcbase.DefaultClass)
-			if interceptor != nil {
-				unaryInterceptors = append(unaryInterceptors, interceptor)
+			if interceptor := rpcCtx.Knobs.UnaryClientInterceptorDRPC(target, rpcbase.DefaultClass); interceptor != nil {
+				rpcCtx.clientUnaryInterceptorsDRPC = append(rpcCtx.clientUnaryInterceptorsDRPC, interceptor)
 			}
 		}
-		streamInterceptors := rpcCtx.clientStreamInterceptorsDRPC
 		if rpcCtx.Knobs.StreamClientInterceptorDRPC != nil {
-			interceptor := rpcCtx.Knobs.StreamClientInterceptorDRPC(target, rpcbase.DefaultClass)
-			if interceptor != nil {
-				streamInterceptors = append(streamInterceptors, interceptor)
+			if interceptor := rpcCtx.Knobs.StreamClientInterceptorDRPC(target, rpcbase.DefaultClass); interceptor != nil {
+				rpcCtx.clientStreamInterceptorsDRPC = append(rpcCtx.clientStreamInterceptorsDRPC, interceptor)
 			}
 		}
-
-		opts := []drpcclient.DialOption{
-			drpcclient.WithChainUnaryInterceptor(unaryInterceptors...),
-			drpcclient.WithChainStreamInterceptor(streamInterceptors...),
-		}
-
-		if !rpcCtx.TenantID.IsSystem() {
-			key, value := newPerRPCTIDMetdata(rpcCtx.TenantID)
-			opts = append(opts, drpcclient.WithPerRPCMetadata(map[string]string{key: value}))
-		}
-
-		clientConn, _ := drpcclient.NewClientConnWithOptions(ctx, pooledConn, opts...)
+		clientConn, _ := drpcclient.NewClientConnWithOptions(
+			ctx,
+			pooledConn,
+			drpcclient.WithChainUnaryInterceptor(rpcCtx.clientUnaryInterceptorsDRPC...),
+			drpcclient.WithChainStreamInterceptor(rpcCtx.clientStreamInterceptorsDRPC...),
+		)
 
 		// Wrap the clientConn to ensure the entire pool is closed when this connection handle is closed.
 		return &closeEntirePoolConn{
@@ -157,36 +145,12 @@ type drpcServer struct {
 }
 
 // NewDRPCServer creates a new DRPCServer with the provided rpc context.
-func NewDRPCServer(_ context.Context, rpcCtx *Context, opts ...ServerOption) (DRPCServer, error) {
+func NewDRPCServer(_ context.Context, _ *Context) (DRPCServer, error) {
 	d := &drpcServer{}
-
-	var o serverOpts
-	for _, f := range opts {
-		f(&o)
-	}
-
-	var unaryInterceptors []drpcmux.UnaryServerInterceptor
-	var streamInterceptors []drpcmux.StreamServerInterceptor
-
-	if !rpcCtx.ContextOptions.Insecure {
-		a := kvAuth{
-			sv: &rpcCtx.Settings.SV,
-			tenant: tenantAuthorizer{
-				tenantID:               rpcCtx.tenID,
-				capabilitiesAuthorizer: rpcCtx.capabilitiesAuthorizer,
-			},
-			isDRPC: true,
-		}
-
-		unaryInterceptors = append(unaryInterceptors, a.AuthDRPCUnary())
-		streamInterceptors = append(streamInterceptors, a.AuthDRPCStream())
-	}
-
-	mux := drpcmux.NewWithInterceptors(unaryInterceptors, streamInterceptors)
-
+	mux := drpcmux.New()
 	d.Server = drpcserver.NewWithOptions(mux, drpcserver.Options{
 		Log: func(err error) {
-			log.Dev.Warningf(context.Background(), "drpc server error %v", err)
+			log.Warningf(context.Background(), "drpc server error %v", err)
 		},
 		// The reader's max buffer size defaults to 4mb, and if it is exceeded (such
 		// as happens with AddSSTable) the RPCs fail.

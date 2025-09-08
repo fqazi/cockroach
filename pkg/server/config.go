@@ -675,11 +675,11 @@ func (cfg *Config) SafeFormat(sp redact.SafePrinter, _ rune) {
 // the given context.
 func (cfg *Config) Report(ctx context.Context) {
 	if memSize, err := status.GetTotalMemory(ctx); err != nil {
-		log.Dev.Infof(ctx, "unable to retrieve system total memory: %v", err)
+		log.Infof(ctx, "unable to retrieve system total memory: %v", err)
 	} else {
-		log.Dev.Infof(ctx, "system total memory: %s", humanizeutil.IBytes(memSize))
+		log.Infof(ctx, "system total memory: %s", humanizeutil.IBytes(memSize))
 	}
-	log.Dev.Infof(ctx, "server configuration:\n%s", cfg)
+	log.Infof(ctx, "server configuration:\n%s", cfg)
 }
 
 // Engines is a container of engines, allowing convenient closing.
@@ -764,10 +764,7 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 		stickyRegistry = serverKnobs.StickyVFSRegistry
 	}
 
-	storeEnvs, err := fs.InitEnvsFromStoreSpecs(ctx, cfg.Stores.Specs, fs.EnvConfig{
-		RW:      fs.ReadWrite,
-		Version: cfg.Settings.Version,
-	}, stickyRegistry, cfg.DiskWriteStats)
+	storeEnvs, err := fs.InitEnvsFromStoreSpecs(ctx, cfg.Stores.Specs, fs.ReadWrite, stickyRegistry, cfg.DiskWriteStats)
 	if err != nil {
 		return Engines{}, err
 	}
@@ -887,10 +884,10 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 		fileCache.Unref()
 	}
 
-	log.Dev.Infof(ctx, "%d storage engine%s initialized",
+	log.Infof(ctx, "%d storage engine%s initialized",
 		len(engines), redact.Safe(util.Pluralize(int64(len(engines)))))
 	for _, s := range details {
-		log.Dev.Infof(ctx, "%v", s)
+		log.Infof(ctx, "%v", s)
 	}
 
 	// Clear out engines because we have deferred engines.Close().
@@ -942,7 +939,7 @@ func (cfg *Config) FilterGossipBootstrapAddresses(ctx context.Context) []util.Un
 	for _, addr := range cfg.GossipBootstrapAddresses {
 		if addr.String() == advert.String() || addr.String() == listen.String() {
 			if log.V(1) {
-				log.Dev.Infof(ctx, "skipping -join address %q, because a node cannot join itself", addr)
+				log.Infof(ctx, "skipping -join address %q, because a node cannot join itself", addr)
 			}
 		} else {
 			filtered = append(filtered, addr)
@@ -950,7 +947,7 @@ func (cfg *Config) FilterGossipBootstrapAddresses(ctx context.Context) []util.Un
 		}
 	}
 	if log.V(1) {
-		log.Dev.Infof(ctx, "initial addresses: %v", addrs)
+		log.Infof(ctx, "initial addresses: %v", addrs)
 	}
 	return filtered
 }

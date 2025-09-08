@@ -127,7 +127,6 @@ type StartOpts struct {
 	// -- Options that apply only to StartDefault target --
 
 	SkipInit        bool
-	SkipWaitForSQL  bool
 	StoreCount      int
 	EncryptedStores bool
 	// WALFailover, if non-empty, configures the value to supply to the
@@ -520,9 +519,6 @@ func (c *SyncedCluster) ServiceDescriptor(
 	sqlInstance int,
 ) (ServiceDesc, error) {
 	services, err := c.ServiceDescriptors(ctx, Nodes{node}, virtualClusterName, serviceType, sqlInstance)
-	if err != nil {
-		return ServiceDesc{}, err
-	}
 	return services[0], err
 }
 
@@ -1173,7 +1169,7 @@ func (c *SyncedCluster) generateStartArgs(
 	}
 
 	listenHost := ""
-	if c.IsLocal() && runtime.GOOS == "darwin" {
+	if c.IsLocal() && runtime.GOOS == "darwin " {
 		// This avoids annoying firewall prompts on Mac OS X.
 		listenHost = "127.0.0.1"
 	}
@@ -1205,20 +1201,17 @@ func (c *SyncedCluster) generateStartArgs(
 	}
 	args = append(args, fmt.Sprintf("--http-addr=%s:%d", listenHost, desc.Port))
 
-	advertiseHost := ""
 	if !c.IsLocal() {
+		advertiseHost := ""
 		if c.shouldAdvertisePublicIP() {
 			advertiseHost = c.Host(node)
 		} else {
 			advertiseHost = c.VMs[node-1].PrivateIP
 		}
-	} else {
-		// N.B. in local mode, fallback to listenHost; per above, it defaults to 127.0.0.1 on macOS.
-		advertiseHost = listenHost
+		args = append(args,
+			fmt.Sprintf("--advertise-addr=%s:%d", advertiseHost, sqlPort),
+		)
 	}
-	args = append(args,
-		fmt.Sprintf("--advertise-addr=%s:%d", advertiseHost, sqlPort),
-	)
 
 	// --join flags are unsupported/unnecessary in `cockroach start-single-node`.
 	if startOpts.Target == StartDefault && !c.useStartSingleNode() {
@@ -1657,23 +1650,9 @@ func (c *SyncedCluster) upsertVirtualClusterMetadata(
 	ctx context.Context, l *logger.Logger, startOpts StartOpts,
 ) (int, error) {
 	runSQL := func(stmt string) (string, error) {
-		var results []*RunResultDetails
-		var err error
-		// It is possible to target a storage node that is currently down, so
-		// we should attempt connecting to all storage nodes before erroring out.
-		for n := 0; n < len(startOpts.StorageCluster.Nodes); n++ {
-			results, err = startOpts.StorageCluster.ExecSQL(
-				ctx, l, startOpts.StorageCluster.Nodes[n:n+1], SystemInterfaceName, 0, DefaultAuthMode(), "", /* database */
-				[]string{"--format", "csv", "-e", stmt})
-			if err == nil && results[0].Err == nil {
-				return results[0].CombinedOut, nil
-			}
-			if err != nil {
-				l.Printf("failed to execute SQL statement %q on node %d: %s", stmt, n, err)
-			} else if results[0].Err != nil {
-				l.Printf("failed to execute SQL statement %q on node %d: %s", stmt, n, err)
-			}
-		}
+		results, err := startOpts.StorageCluster.ExecSQL(
+			ctx, l, startOpts.StorageCluster.Nodes[:1], SystemInterfaceName, 0, DefaultAuthMode(), "", /* database */
+			[]string{"--format", "csv", "-e", stmt})
 		if err != nil {
 			return "", err
 		}

@@ -23,14 +23,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/limit"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -64,20 +62,6 @@ var (
 		"maximum number of concurrent bulk ingest requests sent by any one sender, such as a processor in an IMPORT, index creation or RESTORE, etc (0 = no limit)",
 		0,
 		settings.NonNegativeInt,
-	)
-
-	computeStatsDiffInStreamBatcher = settings.RegisterBoolSetting(
-		settings.ApplicationLevel,
-		"bulkio.ingest.compute_stats_diff_in_stream_batcher.enabled",
-		"if set, kvserver will compute an accurate stats diff for every addsstable request",
-		metamorphic.ConstantWithTestBool("computeStatsDiffInStreamBatcher", false),
-	)
-
-	sstBatcherElasticCPUControlEnabled = settings.RegisterBoolSetting(
-		settings.ApplicationLevel,
-		"bulkio.ingest.sst_batcher_elastic_control.enabled",
-		"determines whether the sst batcher integrates with elastic CPU control",
-		false, // TODO(dt): enable this by default.
 	)
 )
 
@@ -220,9 +204,6 @@ type SSTBatcher struct {
 	// disallowShadowingBelow is described on kvpb.AddSSTableRequest.
 	disallowShadowingBelow hlc.Timestamp
 
-	// pacer for admission control during SST ingestion
-	pacer *admission.Pacer
-
 	// skips duplicate keys (iff they are buffered together). This is true when
 	// used to backfill an inverted index. An array in JSONB with multiple values
 	// which are the same, will all correspond to the same kv in the inverted
@@ -316,7 +297,7 @@ func MakeSSTBatcher(
 	b := &SSTBatcher{
 		name:                   name,
 		db:                     db,
-		adder:                  newSSTAdder(db, settings, writeAtBatchTs, disallowShadowingBelow, admissionpb.BulkNormalPri, false),
+		adder:                  newSSTAdder(db, settings, writeAtBatchTs, disallowShadowingBelow, admissionpb.BulkNormalPri),
 		settings:               settings,
 		disallowShadowingBelow: disallowShadowingBelow,
 		writeAtBatchTS:         writeAtBatchTs,
@@ -324,7 +305,6 @@ func MakeSSTBatcher(
 		mem:                    mem,
 		limiter:                sendLimiter,
 		rc:                     rc,
-		pacer:                  NewCPUPacer(ctx, db, sstBatcherElasticCPUControlEnabled),
 	}
 	b.mu.lastFlush = timeutil.Now()
 	b.mu.tracingSpan = tracing.SpanFromContext(ctx)
@@ -350,7 +330,7 @@ func MakeStreamSSTBatcher(
 		// be able to handle reduced throughput. We are OK with his for now since
 		// the consuming cluster of a replication stream does not have a latency
 		// sensitive workload running against it.
-		adder:     newSSTAdder(db, settings, false /*writeAtBatchTS*/, hlc.Timestamp{}, admissionpb.BulkNormalPri, computeStatsDiffInStreamBatcher.Get(&settings.SV)),
+		adder:     newSSTAdder(db, settings, false /*writeAtBatchTS*/, hlc.Timestamp{}, admissionpb.BulkNormalPri),
 		settings:  settings,
 		ingestAll: true,
 		mem:       mem,
@@ -364,7 +344,6 @@ func MakeStreamSSTBatcher(
 		// does not however make sense to scatter that range as the RHS maybe
 		// non-empty.
 		disableScatters: true,
-		pacer:           NewCPUPacer(ctx, db, sstBatcherElasticCPUControlEnabled),
 	}
 	b.mu.lastFlush = timeutil.Now()
 	b.mu.tracingSpan = tracing.SpanFromContext(ctx)
@@ -386,13 +365,12 @@ func MakeTestingSSTBatcher(
 ) (*SSTBatcher, error) {
 	b := &SSTBatcher{
 		db:             db,
-		adder:          newSSTAdder(db, settings, false, hlc.Timestamp{}, admissionpb.BulkNormalPri, false),
+		adder:          newSSTAdder(db, settings, false, hlc.Timestamp{}, admissionpb.BulkNormalPri),
 		settings:       settings,
 		skipDuplicates: skipDuplicates,
 		ingestAll:      ingestAll,
 		mem:            mem,
 		limiter:        sendLimiter,
-		pacer:          NewCPUPacer(ctx, db, sstBatcherElasticCPUControlEnabled),
 	}
 	b.init(ctx)
 	return b, nil
@@ -408,6 +386,7 @@ func (b *SSTBatcher) SetOnFlush(onFlush func(summary kvpb.BulkOpSummary)) {
 func (b *SSTBatcher) AddMVCCKeyWithImportEpoch(
 	ctx context.Context, key storage.MVCCKey, value []byte, importEpoch uint32,
 ) error {
+
 	mvccVal, err := storage.DecodeMVCCValue(value)
 	if err != nil {
 		return err
@@ -424,6 +403,7 @@ func (b *SSTBatcher) AddMVCCKeyWithImportEpoch(
 }
 
 func (b *SSTBatcher) AddMVCCKeyLDR(ctx context.Context, key storage.MVCCKey, value []byte) error {
+
 	mvccVal, err := storage.DecodeMVCCValue(value)
 	if err != nil {
 		return err
@@ -444,11 +424,6 @@ func (b *SSTBatcher) AddMVCCKeyLDR(ctx context.Context, key storage.MVCCKey, val
 // keys -- like RESTORE where we want the restored data to look like the backup.
 // Keys must be added in order.
 func (b *SSTBatcher) AddMVCCKey(ctx context.Context, key storage.MVCCKey, value []byte) error {
-	// Pace based on admission control before adding the key.
-	if err := b.pacer.Pace(ctx); err != nil {
-		return err
-	}
-
 	if len(b.batch.endKey) > 0 && bytes.Equal(b.batch.endKey, key.Key) {
 		if b.ingestAll && key.Timestamp.Equal(b.batch.endTimestamp) {
 			if bytes.Equal(b.batch.endValue, value) {
@@ -543,10 +518,10 @@ func (b *SSTBatcher) flushIfNeeded(ctx context.Context, nextKey roachpb.Key) err
 	if !b.batch.flushKeyChecked && b.rc != nil {
 		b.batch.flushKeyChecked = true
 		if k, err := keys.Addr(nextKey); err != nil {
-			log.Dev.Warningf(ctx, "failed to get RKey for flush key lookup: %v", err)
+			log.Warningf(ctx, "failed to get RKey for flush key lookup: %v", err)
 		} else {
 			if r, err := b.rc.Lookup(ctx, k); err != nil {
-				log.Dev.Warningf(ctx, "failed to lookup range cache entry for key %v: %v", k, err)
+				log.Warningf(ctx, "failed to lookup range cache entry for key %v: %v", k, err)
 			} else {
 				k := r.Desc.EndKey.AsRawKey()
 				b.batch.flushKey = k
@@ -568,7 +543,7 @@ func (b *SSTBatcher) flushIfNeeded(ctx context.Context, nextKey roachpb.Key) err
 		return nil
 	}
 
-	if flushLimit := ingestFileSize(b.settings); b.batch.sstWriter.DataSize >= flushLimit {
+	if b.batch.sstWriter.DataSize >= ingestFileSize(b.settings) {
 		// We're at/over size target, so we want to flush, but first check if we are
 		// at a new row boundary. Having row-aligned boundaries is not actually
 		// required by anything, but has the nice property of meaning a split will
@@ -579,20 +554,13 @@ func (b *SSTBatcher) flushIfNeeded(ctx context.Context, nextKey roachpb.Key) err
 		// starts, so when we split at that row, that overhang into the RHS that we
 		// just wrote will be rewritten by the subsequent scatter. By waiting for a
 		// row boundary, we ensure any split is actually between files.
-		//
-		// That said, only do this if we are only moderately over the flush target;
-		// if we are subtantially over the limit, just flush the partial row as we
-		// cannot buffer indefinitely.
-		if b.batch.sstWriter.DataSize < 2*flushLimit {
-			prevRow, prevErr := keys.EnsureSafeSplitKey(b.batch.endKey)
-			nextRow, nextErr := keys.EnsureSafeSplitKey(nextKey)
-			if prevErr == nil && nextErr == nil && bytes.Equal(prevRow, nextRow) {
-				// An error decoding either key implies it is not a valid row key and thus
-				// not the same row for our purposes; we don't care what the error is.
-				return nil // keep going to row boundary.
-			}
+		prevRow, prevErr := keys.EnsureSafeSplitKey(b.batch.endKey)
+		nextRow, nextErr := keys.EnsureSafeSplitKey(nextKey)
+		if prevErr == nil && nextErr == nil && bytes.Equal(prevRow, nextRow) {
+			// An error decoding either key implies it is not a valid row key and thus
+			// not the same row for our purposes; we don't care what the error is.
+			return nil // keep going to row boundary.
 		}
-
 		if b.mustSyncBeforeFlush {
 			err := b.syncFlush()
 			if err != nil {
@@ -659,14 +627,6 @@ func (b *SSTBatcher) syncFlush() error {
 
 	return flushErr
 }
-
-var debugDropSSTOnFlush = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"bulkio.ingest.unsafe_debug.drop_sst_on_flush.enabled",
-	"if set, the SSTBatcher will simply discard data instead of flushing it (destroys data; for performance debugging experiments only)",
-	false,
-	settings.WithUnsafe,
-)
 
 // startFlush starts a flush of the current batch. If it encounters any errors
 // the errors are reported by the call to `syncFlush`.
@@ -752,13 +712,13 @@ func (b *SSTBatcher) startFlush(ctx context.Context, reason int) {
 
 			splitAbove, err := keys.EnsureSafeSplitKey(nextKey)
 			if err != nil {
-				log.Dev.Warningf(ctx, "%s failed to generate split-above key: %v", b.name, err)
+				log.Warningf(ctx, "%s failed to generate split-above key: %v", b.name, err)
 			} else {
 				beforeSplit := timeutil.Now()
 				err := b.db.AdminSplit(ctx, splitAbove, expire)
 				b.batch.stats.SplitWait += timeutil.Since(beforeSplit)
 				if err != nil {
-					log.Dev.Warningf(ctx, "%s failed to split-above: %v", b.name, err)
+					log.Warningf(ctx, "%s failed to split-above: %v", b.name, err)
 				} else {
 					b.batch.stats.Splits++
 				}
@@ -767,13 +727,13 @@ func (b *SSTBatcher) startFlush(ctx context.Context, reason int) {
 
 		splitAt, err := keys.EnsureSafeSplitKey(start)
 		if err != nil {
-			log.Dev.Warningf(ctx, "%s failed to generate split key: %v", b.name, err)
+			log.Warningf(ctx, "%s failed to generate split key: %v", b.name, err)
 		} else {
 			beforeSplit := timeutil.Now()
 			err := b.db.AdminSplit(ctx, splitAt, expire)
 			b.batch.stats.SplitWait += timeutil.Since(beforeSplit)
 			if err != nil {
-				log.Dev.Warningf(ctx, "%s failed to split: %v", b.name, err)
+				log.Warningf(ctx, "%s failed to split: %v", b.name, err)
 			} else {
 				b.batch.stats.Splits++
 
@@ -788,7 +748,7 @@ func (b *SSTBatcher) startFlush(ctx context.Context, reason int) {
 						if strings.Contains(err.Error(), "existing range size") {
 							log.VEventf(ctx, 1, "%s scattered non-empty range rejected: %v", b.name, err)
 						} else {
-							log.Dev.Warningf(ctx, "%s failed to scatter	: %v", b.name, err)
+							log.Warningf(ctx, "%s failed to scatter	: %v", b.name, err)
 						}
 					} else {
 						b.batch.stats.Scatters++
@@ -857,13 +817,9 @@ func (b *SSTBatcher) startFlush(ctx context.Context, reason int) {
 	b.asyncAddSSTs.GoCtx(func(ctx context.Context) error {
 		defer res.Release()
 		defer b.mem.Shrink(ctx, reserved)
-
-		var results []addSSTResult
-		if !debugDropSSTOnFlush.Get(&b.settings.SV) {
-			results, err = b.adder.AddSSTable(ctx, batchTS, start, end, data, mvccStats, performanceStats)
-			if err != nil {
-				return err
-			}
+		results, err := b.adder.AddSSTable(ctx, batchTS, start, end, data, mvccStats, performanceStats)
+		if err != nil {
+			return err
 		}
 
 		// Now that we have completed ingesting the SSTables we take a lock and
@@ -928,7 +884,7 @@ func (b *SSTBatcher) maybeDelay(ctx context.Context) (limit.Reservation, error) 
 	// is on by default.
 	if delay := ingestDelay.Get(&b.settings.SV); delay != 0 {
 		if delay > time.Second || log.V(1) {
-			log.Dev.Infof(ctx, "%s delaying %s before flushing ingestion buffer...", b.name, delay)
+			log.Infof(ctx, "%s delaying %s before flushing ingestion buffer...", b.name, delay)
 		}
 		select {
 		case <-ctx.Done():
@@ -946,9 +902,8 @@ func (b *SSTBatcher) Close(ctx context.Context) {
 		b.cancelFlush()
 	}
 	if err := b.syncFlush(); err != nil {
-		log.Dev.Warningf(ctx, "closing with flushes in-progress encountered an error: %v", err)
+		log.Warningf(ctx, "closing with flushes in-progress encountered an error: %v", err)
 	}
-	b.pacer.Close()
 	b.mem.Close(ctx)
 }
 

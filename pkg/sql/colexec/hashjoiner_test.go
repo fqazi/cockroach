@@ -996,7 +996,7 @@ func runHashJoinTestCase(
 	} else {
 		runner = colexectestutils.RunTestsWithTyps
 	}
-	log.Dev.Infof(context.Background(), "%s", tc.description)
+	log.Infof(context.Background(), "%s", tc.description)
 	runner(t, testAllocator, inputs, typs, tc.expected, verifier, hjOpConstructor)
 }
 

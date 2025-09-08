@@ -8,9 +8,8 @@ package storage
 import (
 	"context"
 	"fmt"
-	"maps"
 	"math/rand"
-	"slices"
+	"sort"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -1846,7 +1845,10 @@ func (s *randomTest) step(t *testing.T) {
 	s.cycle++
 
 	if s.actionNames == nil {
-		s.actionNames = slices.Sorted(maps.Keys(s.actions))
+		for name := range s.actions {
+			s.actionNames = append(s.actionNames, name)
+		}
+		sort.Strings(s.actionNames)
 	}
 	actName := s.actionNames[s.rng.Intn(len(s.actionNames))]
 

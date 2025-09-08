@@ -1,4 +1,4 @@
-# LogicTest: !local-mixed-25.2 !local-schema-locked !local-prepared
+# LogicTest: !local-mixed-25.2 !local-schema-locked
 # TODO(andyk): Remove this once 25.3 is our minimum supported version.
 
 # ------------------------------------------------------------------------------
@@ -359,7 +359,7 @@ statement error column c has type vector, which is only allowed as the last colu
 CREATE TABLE t (a INT PRIMARY KEY, b INT, c VECTOR(3), VECTOR INDEX (c, b))
 
 # Try to use inverted indexable type in vector index.
-statement error column b has type tsvector, which is not indexable in a non-inverted index\nHINT: you may want to create an inverted index instead. See the documentation for inverted indexes: https://www.cockroachlabs.com/docs/dev/inverted-indexes.html
+statement error column b has type tsvector, which is not indexable in a non-inverted index\nHINT: you may want to create an inverted index instead. See the documentation for inverted indexes: https://www.cockroachlabs.com/docs/v25.3/inverted-indexes.html
 CREATE TABLE t (a INT PRIMARY KEY, b TSVECTOR, c VECTOR(3), VECTOR INDEX (b, c))
 
 statement error pq: a vector index does not support the ASC option
@@ -419,7 +419,7 @@ statement error column vec1 has type vector, which is only allowed as the last c
 CREATE VECTOR INDEX ON vec_errors (vec1, b)
 
 # Try to use inverted indexable type in vector index.
-statement error column c has type tsvector, which is not indexable in a non-inverted index\nHINT: you may want to create an inverted index instead. See the documentation for inverted indexes: https://www.cockroachlabs.com/docs/dev/inverted-indexes.html
+statement error column c has type tsvector, which is not indexable in a non-inverted index\nHINT: you may want to create an inverted index instead. See the documentation for inverted indexes: https://www.cockroachlabs.com/docs/v25.3/inverted-indexes.html
 CREATE VECTOR INDEX ON vec_errors (c, vec1)
 
 statement error pq: a vector index does not support the DESC option
@@ -539,36 +539,11 @@ INSERT INTO exec_test (a, b, vec1) VALUES
   (2, 1, '[4, 5, 6]'),
   (3, 2, '[7, 8, 9]'),
   (4, 2, '[10, 11, 12]'),
-  (5, 2, '[13, 14, 15]');
-
-statement ok
-INSERT INTO exec_test (a, b, vec1) VALUES
+  (5, 2, '[13, 14, 15]'),
   (6, NULL, '[16, 17, 18]'),
   (7, NULL, '[1, 1, 1]'),
   (8, NULL, NULL),
   (9, 3, NULL);
-
-# Define helper to force fixup processing for the given index.
-statement ok
-CREATE PROCEDURE process_vector_index_fixups_for(desc_name STRING, idx_name STRING)
-LANGUAGE SQL
-AS $$
-  SELECT crdb_internal.process_vector_index_fixups(
-    (SELECT id FROM system.namespace WHERE name = desc_name),
-    (
-      SELECT index_id
-      FROM crdb_internal.table_indexes
-      WHERE descriptor_name = desc_name AND index_name = idx_name
-    )
-  )
-$$;
-
-# Process split fixups for the two indexes.
-statement ok
-CALL process_vector_index_fixups_for('exec_test', 'idx1');
-
-statement ok
-CALL process_vector_index_fixups_for('exec_test', 'idx2');
 
 statement error pgcode 22000 pq: expected 3 dimensions, not 1
 INSERT INTO exec_test (a, b, vec1) VALUES (10, 1, '[1]');
@@ -790,21 +765,8 @@ INSERT INTO distance_metrics (a, v) VALUES
   (1, '[0, 0]'),
   (2, '[-2, -2]'),
   (3, '[2, 2]'),
-  (4, '[4, 4]');
-
-statement ok
-INSERT INTO distance_metrics (a, v) VALUES
+  (4, '[4, 4]'),
   (5, '[-2, 2]');
-
-# Process split fixups for the three indexes.
-statement ok
-CALL process_vector_index_fixups_for('distance_metrics', 'idx1');
-
-statement ok
-CALL process_vector_index_fixups_for('distance_metrics', 'idx2');
-
-statement ok
-CALL process_vector_index_fixups_for('distance_metrics', 'idx3');
 
 # Results using L2 distance.
 query ITF rowsort
@@ -1177,27 +1139,5 @@ composite_pk  CREATE TABLE public.composite_pk (
 
 statement ok
 DROP TABLE composite_pk
-
-subtest end
-
-subtest test_backfill_149236
-
-statement ok
-set autocommit_before_ddl=off;
-
-statement ok
-BEGIN;
-
-statement ok
-CREATE TABLE test_backfill_149236 (a INT PRIMARY KEY, b INT, vec1 VECTOR(3));
-
-statement error pgcode 0A000 vector index build not supported with the legacy schema changer
-CREATE VECTOR INDEX idx ON test_backfill_149236 (vec1);
-
-statement ok
-COMMIT;
-
-statement ok
-SET autocommit_before_ddl=on;
 
 subtest end

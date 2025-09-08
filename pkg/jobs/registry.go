@@ -29,6 +29,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
+	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/cidr"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -799,7 +800,7 @@ func (r *Registry) CreateStartableJobWithTxn(
 	alreadyInitialized := *sj != nil
 	if alreadyInitialized {
 		if jobID != (*sj).Job.ID() {
-			log.Dev.Fatalf(ctx,
+			log.Fatalf(ctx,
 				"attempted to rewrite startable job for ID %d with unexpected ID %d",
 				(*sj).Job.ID(), jobID,
 			)
@@ -823,7 +824,7 @@ func (r *Registry) CreateStartableJobWithTxn(
 		resumerCtx, cancel = r.makeCtx()
 
 		if alreadyAdopted := r.addAdoptedJob(jobID, j.session, cancel, resumer); alreadyAdopted {
-			log.Dev.Fatalf(
+			log.Fatalf(
 				ctx,
 				"job %d: was just created but found in registered adopted jobs",
 				jobID,
@@ -915,7 +916,7 @@ func (r *Registry) withSession(ctx context.Context, f withSessionFunc) {
 	if err != nil {
 		if log.ExpensiveLogEnabled(ctx, 2) ||
 			(ctx.Err() == nil && r.withSessionEvery.ShouldLog()) {
-			log.Dev.Errorf(ctx, "error getting live session: %s", err)
+			log.Errorf(ctx, "error getting live session: %s", err)
 		}
 		return
 	}
@@ -959,7 +960,7 @@ func (r *Registry) Start(ctx context.Context, stopper *stop.Stopper) error {
 			)
 			return err
 		}); err != nil {
-			log.Dev.Errorf(ctx, "error expiring job sessions: %s", err)
+			log.Errorf(ctx, "error expiring job sessions: %s", err)
 		}
 	}
 	// servePauseAndCancelRequests queries tho pause-requested and cancel-requested
@@ -967,7 +968,7 @@ func (r *Registry) Start(ctx context.Context, stopper *stop.Stopper) error {
 	// respectively, and then stops the execution of those jobs.
 	servePauseAndCancelRequests := func(ctx context.Context, s sqlliveness.Session) {
 		if err := r.servePauseAndCancelRequests(ctx, s); err != nil {
-			log.Dev.Errorf(ctx, "failed to serve pause and cancel requests: %v", err)
+			log.Errorf(ctx, "failed to serve pause and cancel requests: %v", err)
 		}
 	}
 	cancelLoopTask := wrapWithSession(func(ctx context.Context, s sqlliveness.Session) {
@@ -981,13 +982,13 @@ func (r *Registry) Start(ctx context.Context, stopper *stop.Stopper) error {
 	claimJobs := wrapWithSession(func(ctx context.Context, s sqlliveness.Session) {
 		if r.adoptionDisabled(ctx) {
 			if logDisabledAdoptionLimiter.ShouldLog() {
-				log.Dev.Warningf(ctx, "job adoption is disabled, registry will not claim any jobs")
+				log.Warningf(ctx, "job adoption is disabled, registry will not claim any jobs")
 			}
 			return
 		}
 		r.metrics.AdoptIterations.Inc(1)
 		if err := r.claimJobs(ctx, s); err != nil {
-			log.Dev.Errorf(ctx, "error claiming jobs: %s", err)
+			log.Errorf(ctx, "error claiming jobs: %s", err)
 		}
 	})
 	// removeClaimsFromJobs queries the jobs table for non-terminal jobs and
@@ -1007,7 +1008,7 @@ func (r *Registry) Start(ctx context.Context, stopper *stop.Stopper) error {
 			)
 			return err
 		}); err != nil {
-			log.Dev.Errorf(ctx, "error expiring job sessions: %s", err)
+			log.Errorf(ctx, "error expiring job sessions: %s", err)
 		}
 	}
 	// processClaimedJobs iterates the jobs claimed by the current node that
@@ -1019,7 +1020,7 @@ func (r *Registry) Start(ctx context.Context, stopper *stop.Stopper) error {
 		// all adopted job, and cancel them.
 		if r.adoptionDisabled(ctx) {
 			if logDisabledClaimLimiter.ShouldLog() {
-				log.Dev.Warningf(ctx, "job adoptions is disabled, canceling all adopted "+
+				log.Warningf(ctx, "job adoptions is disabled, canceling all adopted "+
 					"jobs due to liveness failure")
 			}
 			removeClaimsFromSession(ctx, s)
@@ -1027,7 +1028,7 @@ func (r *Registry) Start(ctx context.Context, stopper *stop.Stopper) error {
 			return
 		}
 		if err := r.processClaimedJobs(ctx, s); err != nil {
-			log.Dev.Errorf(ctx, "error processing claimed jobs: %s", err)
+			log.Errorf(ctx, "error processing claimed jobs: %s", err)
 		}
 	})
 
@@ -1050,7 +1051,7 @@ func (r *Registry) Start(ctx context.Context, stopper *stop.Stopper) error {
 				// WithCancelOnQuesce context. See the resumeJob() function.
 				return
 			case <-r.drainJobs:
-				log.Dev.Warningf(ctx, "canceling all adopted jobs due to graceful drain request")
+				log.Warningf(ctx, "canceling all adopted jobs due to graceful drain request")
 				r.cancelAllAdoptedJobs()
 				return
 			case <-lc.timer.C:
@@ -1092,7 +1093,7 @@ func (r *Registry) Start(ctx context.Context, stopper *stop.Stopper) error {
 			case <-lc.timer.C:
 				old := timeutil.Now().Add(-1 * retentionDuration())
 				if err := r.cleanupOldJobs(ctx, old); err != nil {
-					log.Dev.Warningf(ctx, "error cleaning up old job records: %v", err)
+					log.Warningf(ctx, "error cleaning up old job records: %v", err)
 				}
 				lc.onExecute()
 			}
@@ -1144,7 +1145,7 @@ func (r *Registry) maybeCancelJobs(ctx context.Context, s sqlliveness.Session) {
 	defer r.mu.Unlock()
 	for id, aj := range r.mu.adoptedJobs {
 		if aj.session.ID() != s.ID() {
-			log.Dev.Warningf(ctx, "job %d: running without having a live claim; killed.", id)
+			log.Warningf(ctx, "job %d: running without having a live claim; killed.", id)
 			aj.cancel()
 			delete(r.mu.adoptedJobs, id)
 		}
@@ -1174,6 +1175,26 @@ FROM system.job_info
 WHERE written < $1 AND job_id NOT IN (SELECT id FROM system.jobs)
 LIMIT $2`
 
+// The ordering is important as we keep track of the maximum ID we've seen.
+const expiredJobsQueryWithJobInfoTable = `
+WITH
+latestpayload AS (
+    SELECT job_id, value
+    FROM system.job_info AS payload
+    WHERE job_id > $2 AND info_key = 'legacy_payload'
+    ORDER BY written desc
+),
+jobpage AS (
+    SELECT id, status
+    FROM system.jobs
+    WHERE (created < $1) and (id > $2)
+    ORDER BY id
+    LIMIT $3
+)
+SELECT distinct (id), latestpayload.value AS payload, status
+FROM jobpage AS j
+INNER JOIN latestpayload ON j.id = latestpayload.job_id`
+
 // jobMetadataTables are all of the tables that have rows storing additional
 // attributes or data about jobs beyond the core job record in system.jobs. All
 // of these tables identity the job which own rows in them using a "job_id"
@@ -1188,31 +1209,86 @@ var jobMetadataTables = []string{"job_info", "job_progress", "job_progress_histo
 func (r *Registry) cleanupOldJobsPage(
 	ctx context.Context, olderThan time.Time, minID jobspb.JobID, pageSize int,
 ) (done bool, maxID jobspb.JobID, retErr error) {
-	query := "SELECT id, status, finished, $1 FROM system.jobs WHERE status in (" + terminalStateList + ") AND (finished < $1) and (id >= $2) ORDER BY id LIMIT $3"
+	query := expiredJobsQueryWithJobInfoTable
 
 	it, err := r.db.Executor().QueryIterator(ctx, "gc-jobs", nil, /* txn */
 		query, olderThan, minID, pageSize)
 	if err != nil {
 		return false, 0, err
 	}
-	var candidates []jobspb.JobID
+	// We have to make sure to close the iterator since we might return from the
+	// for loop early (before Next() returns false).
+	defer func() { retErr = errors.CombineErrors(retErr, it.Close()) }()
+	toDelete := tree.NewDArray(types.Int)
+	oldMicros := timeutil.ToUnixMicros(olderThan)
+
 	var ok bool
+	var numRows int
 	for ok, err = it.Next(ctx); ok; ok, err = it.Next(ctx) {
-		candidates = append(candidates, jobspb.JobID(tree.MustBeDInt(it.Cur()[0])))
-	}
-	err = errors.CombineErrors(err, it.Close())
-
-	if err != nil || len(candidates) == 0 {
-		return len(candidates) == 0, 0, err
-	}
-
-	log.VEventf(ctx, 2, "found %d expired jobs", len(candidates))
-	for _, id := range candidates {
-		if err := r.DeleteTerminalJobByID(ctx, id); err != nil {
+		numRows++
+		row := it.Cur()
+		payload, err := UnmarshalPayload(row[1])
+		if err != nil {
 			return false, 0, err
 		}
+		remove := false
+		switch State(*row[2].(*tree.DString)) {
+		case StateSucceeded, StateCanceled, StateFailed:
+			remove = payload.FinishedMicros < oldMicros
+		}
+		if remove {
+			toDelete.Array = append(toDelete.Array, row[0])
+		}
 	}
-	return len(candidates) < pageSize, candidates[len(candidates)-1], nil
+	if err != nil {
+		return false, 0, err
+	}
+	if numRows == 0 {
+		return true, 0, nil
+	}
+
+	log.VEventf(ctx, 2, "read potentially expired jobs: %d", numRows)
+	if len(toDelete.Array) > 0 {
+		log.VEventf(ctx, 2, "attempting to clean up %d expired job records", len(toDelete.Array))
+		const stmt = `DELETE FROM system.jobs WHERE id = ANY($1)`
+		nDeleted, err := r.db.Executor().Exec(
+			ctx, "gc-jobs", nil /* txn */, stmt, toDelete,
+		)
+		if err != nil {
+			log.Warningf(ctx, "error cleaning up %d jobs: %v", len(toDelete.Array), err)
+			return false, 0, errors.Wrap(err, "deleting old jobs")
+		}
+
+		counts := make(map[string]int)
+		for _, tbl := range jobMetadataTables {
+			var deleted int
+			if err := r.db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+				// Tables other than job_info -- the 0th -- are only present if the txn is
+				// running at a version that includes them.
+				deleted, err = txn.Exec(ctx, redact.RedactableString("gc-job-"+tbl), txn.KV(),
+					"DELETE FROM system."+tbl+" WHERE job_id = ANY($1)", toDelete,
+				)
+				if err != nil {
+					return err
+				}
+				return nil
+			}); err != nil {
+				return false, 0, errors.Wrapf(err, "deleting old job metadata from %s", tbl)
+			}
+			counts[tbl] = deleted
+		}
+		if nDeleted > 0 {
+			log.Infof(ctx, "cleaned up %d expired job records (%d infos, %d progresses, %d progress_hists, %d statuses, %d messages)",
+				nDeleted, counts["job_info"], counts["job_progress"], counts["job_progress_history"], counts["job_status"], counts["job_message"])
+		}
+	}
+	// If we got as many rows as we asked for, there might be more.
+	morePages := numRows == pageSize
+	// Track the highest ID we encounter, so it can serve as the bottom of the
+	// next page.
+	lastRow := it.Cur()
+	maxID = jobspb.JobID(*(lastRow[0].(*tree.DInt)))
+	return !morePages, maxID, nil
 }
 
 // DeleteTerminalJobByID deletes the given job ID if it is in a
@@ -1557,20 +1633,20 @@ func (r *Registry) stepThroughStateMachine(
 	if jobErr != nil {
 		isExpectedError := pgerror.HasCandidateCode(jobErr) || HasErrJobCanceled(jobErr)
 		if isExpectedError {
-			log.Dev.Infof(ctx, "%s job %d: stepping through state %s with error: %v", jobType, job.ID(), state, jobErr)
+			log.Infof(ctx, "%s job %d: stepping through state %s with error: %v", jobType, job.ID(), state, jobErr)
 		} else {
-			log.Dev.Errorf(ctx, "%s job %d: stepping through state %s with unexpected error: %+v", jobType, job.ID(), state, jobErr)
+			log.Errorf(ctx, "%s job %d: stepping through state %s with unexpected error: %+v", jobType, job.ID(), state, jobErr)
 		}
 	} else {
 		if jobType == jobspb.TypeAutoCreateStats || jobType == jobspb.TypeAutoCreatePartialStats {
-			log.Dev.VInfof(ctx, 1, "%s job %d: stepping through state %s", jobType, job.ID(), state)
+			log.VInfof(ctx, 1, "%s job %d: stepping through state %s", jobType, job.ID(), state)
 		} else {
-			log.Dev.Infof(ctx, "%s job %d: stepping through state %s", jobType, job.ID(), state)
+			log.Infof(ctx, "%s job %d: stepping through state %s", jobType, job.ID(), state)
 		}
 	}
 	jm := r.metrics.JobMetrics[jobType]
 	onExecutionFailed := func(cause error) error {
-		log.Dev.ErrorfDepth(
+		log.ErrorfDepth(
 			ctx, 1,
 			"job %d: %s execution encountered retriable error: %+v",
 			job.ID(), state, cause,
@@ -1773,12 +1849,12 @@ func (r *Registry) adoptionDisabled(ctx context.Context) bool {
 	if r.preventAdoptionFile != "" {
 		if _, err := os.Stat(r.preventAdoptionFile); err != nil {
 			if !oserror.IsNotExist(err) {
-				log.Dev.Warningf(ctx, "error checking if job adoption is currently disabled: %v", err)
+				log.Warningf(ctx, "error checking if job adoption is currently disabled: %v", err)
 			}
 			return false
 		}
 		if r.preventAdoptionLogEvery.ShouldLog() {
-			log.Dev.Warningf(ctx, "job adoption is currently disabled by existence of %s", r.preventAdoptionFile)
+			log.Warningf(ctx, "job adoption is currently disabled by existence of %s", r.preventAdoptionFile)
 		}
 		return true
 	}
@@ -1883,7 +1959,7 @@ func (r *Registry) maybeRecordExecutionFailure(ctx context.Context, err error, j
 		return
 	}
 	if updateErr != nil {
-		log.Dev.Warningf(ctx, "failed to record error for job %d: %v: %v", j.ID(), err, updateErr)
+		log.Warningf(ctx, "failed to record error for job %d: %v: %v", j.ID(), err, updateErr)
 	}
 }
 
@@ -1944,8 +2020,8 @@ func (r *Registry) IsDraining() bool {
 
 // WaitForRegistryShutdown waits for all background job registry tasks to complete.
 func (r *Registry) WaitForRegistryShutdown(ctx context.Context) {
-	log.Dev.Infof(ctx, "starting to wait for job registry to shut down")
-	defer log.Dev.Infof(ctx, "job registry tasks successfully shut down")
+	log.Infof(ctx, "starting to wait for job registry to shut down")
+	defer log.Infof(ctx, "job registry tasks successfully shut down")
 	r.startedControllerTasksWG.Wait()
 }
 

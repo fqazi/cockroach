@@ -157,13 +157,6 @@ func TestLogic_alter_default_privileges_with_grant_option(
 	runLogicTest(t, "alter_default_privileges_with_grant_option")
 }
 
-func TestLogic_alter_external_connection(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "alter_external_connection")
-}
-
 func TestLogic_alter_primary_key(
 	t *testing.T,
 ) {
@@ -1165,13 +1158,6 @@ func TestLogic_insert(
 	runLogicTest(t, "insert")
 }
 
-func TestLogic_inspect(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "inspect")
-}
-
 func TestLogic_int_size(
 	t *testing.T,
 ) {
@@ -1387,13 +1373,6 @@ func TestLogic_lookup_join_spans(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "lookup_join_spans")
-}
-
-func TestLogic_ltree(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "ltree")
 }
 
 func TestLogic_manual_retry(

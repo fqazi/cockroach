@@ -184,7 +184,7 @@ func (m *Outbox) flush(ctx context.Context) error {
 		HandleStreamErr(ctx, "flushing", sendErr, m.flowCtxCancel, m.outboxCtxCancel)
 		// Make sure the stream is not used any more.
 		m.stream = nil
-		log.Dev.VWarningf(ctx, 1, "Outbox flush error: %s", sendErr)
+		log.VWarningf(ctx, 1, "Outbox flush error: %s", sendErr)
 	} else {
 		log.VEvent(ctx, 2, "Outbox flushed")
 	}
@@ -231,19 +231,20 @@ func (m *Outbox) mainLoop(ctx context.Context, wg *sync.WaitGroup) (retErr error
 	}
 
 	if err := func() error {
-		client, err := execinfra.GetDistSQLClientForOutbox(
+		conn, err := execinfra.GetConnForOutbox(
 			ctx, m.flowCtx.Cfg.SQLInstanceDialer, m.sqlInstanceID, SettingFlowStreamTimeout.Get(&m.flowCtx.Cfg.Settings.SV),
 		)
 		if err != nil {
-			log.Dev.VWarningf(ctx, 1, "Outbox Dial connection error, distributed query will fail: %+v", err)
+			log.VWarningf(ctx, 1, "Outbox Dial connection error, distributed query will fail: %+v", err)
 			return err
 		}
+		client := execinfrapb.NewGRPCDistSQLClientAdapter(conn)
 		if log.V(2) {
-			log.Dev.Infof(ctx, "outbox: calling FlowStream")
+			log.Infof(ctx, "outbox: calling FlowStream")
 		}
 		m.stream, err = client.FlowStream(ctx)
 		if err != nil {
-			log.Dev.VWarningf(ctx, 1, "Outbox FlowStream connection error, distributed query will fail: %+v", err)
+			log.VWarningf(ctx, 1, "Outbox FlowStream connection error, distributed query will fail: %+v", err)
 			return err
 		}
 		return nil
@@ -254,7 +255,7 @@ func (m *Outbox) mainLoop(ctx context.Context, wg *sync.WaitGroup) (retErr error
 		return err
 	}
 	if log.V(2) {
-		log.Dev.Infof(ctx, "outbox: FlowStream returned")
+		log.Infof(ctx, "outbox: FlowStream returned")
 	}
 
 	// Make sure to always close the stream if it is still usable (if not, then

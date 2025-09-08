@@ -1070,13 +1070,6 @@ func TestRepeatableReadLogic_insert(
 	runLogicTest(t, "insert")
 }
 
-func TestRepeatableReadLogic_inspect(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "inspect")
-}
-
 func TestRepeatableReadLogic_int_size(
 	t *testing.T,
 ) {
@@ -1264,13 +1257,6 @@ func TestRepeatableReadLogic_lookup_join_spans(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "lookup_join_spans")
-}
-
-func TestRepeatableReadLogic_ltree(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "ltree")
 }
 
 func TestRepeatableReadLogic_manual_retry(

@@ -702,7 +702,7 @@ func runCDCMixedVersionCheckpointing(ctx context.Context, t test.Test, c cluster
 			return false
 		}
 
-		if plan != nil && isAffectedBy148620(plan) && isExpectedErrorDueTo148620(err) {
+		if isAffectedBy148620(plan) && isExpectedErrorDueTo148620(err) {
 			t.Skipf("expected error due to #148620: %s", err)
 		}
 

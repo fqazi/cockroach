@@ -40,7 +40,6 @@ variable                                                         value
 allow_create_trigger_function_with_argv_references               off
 allow_ordinal_column_references                                  off
 allow_role_memberships_to_change_during_transaction              off
-allow_unsafe_internals                                           on
 alter_primary_region_super_region_override                       off
 always_distribute_full_scans                                     off
 application_name                                                 ·
@@ -103,12 +102,12 @@ enable_implicit_transaction_for_batch_statements                 on
 enable_insert_fast_path                                          on
 enable_multiple_modifications_of_table                           off
 enable_multiregion_placement_policy                              off
-enable_scrub_job                                                 off
 enable_seqscan                                                   on
 enable_shared_locking_for_serializable                           off
 enable_super_regions                                             off
 enable_zigzag_join                                               off
 enforce_home_region                                              off
+enforce_home_region_follower_reads_enabled                       off
 escape_string_warning                                            on
 expect_and_ignore_not_visible_columns_in_copy                    off
 experimental_enable_implicit_column_partitioning                 off
@@ -172,7 +171,6 @@ optimizer_use_histograms                                         on
 optimizer_use_improved_computed_column_filters_derivation        on
 optimizer_use_improved_disjunction_stats                         on
 optimizer_use_improved_distinct_on_limit_hint_costing            on
-optimizer_use_improved_hoist_join_project                        on
 optimizer_use_improved_join_elimination                          on
 optimizer_use_improved_multi_column_selectivity_estimate         on
 optimizer_use_improved_split_disjunction_for_joins               on
@@ -254,7 +252,7 @@ use_declarative_schema_changer                                   on
 use_improved_routine_dependency_tracking                         on
 use_pre_25_2_variadic_builtins                                   off
 use_proc_txn_control_extended_protocol_fix                       on
-use_soft_limit_for_distribute_scan                               on
+use_soft_limit_for_distribute_scan                               off
 variable_inequality_lookup_join_enabled                          on
 vector_search_beam_size                                          32
 vector_search_rerank_multiplier                                  50
@@ -512,7 +510,7 @@ query TTTI colnames
 SELECT start_key, end_key, replicas, lease_holder FROM [SHOW RANGES FROM CURRENT_CATALOG WITH DETAILS]
 ----
 start_key  end_key  replicas  lease_holder
-/Table/73  /Max     {1}       1
+/Table/72  /Max     {1}       1
 
 query TTTI colnames
 SELECT start_key, end_key, replicas, lease_holder FROM [SHOW RANGES FROM TABLE system.descriptor WITH DETAILS]

@@ -9,10 +9,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"maps"
 	"math"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -303,7 +301,12 @@ func TestMVCCHistories(t *testing.T) {
 
 			// Unreplicated locks.
 			if len(e.unreplLocks) > 0 {
-				for _, k := range slices.Sorted(maps.Keys(e.unreplLocks)) {
+				var ks []string
+				for k := range e.unreplLocks {
+					ks = append(ks, k)
+				}
+				sort.Strings(ks)
+				for _, k := range ks {
 					info := e.unreplLocks[k]
 					buf.Printf("lock (%s): %v/%s -> %+v\n",
 						lock.Unreplicated, k, info.str, info.txn)
@@ -491,7 +494,7 @@ func TestMVCCHistories(t *testing.T) {
 
 					// Trace the execution in testing.T, to clarify where we
 					// are in case an error occurs.
-					log.Dev.Infof(context.Background(), "TestMVCCHistories:\n\t%s: %s", d.Pos, line)
+					log.Infof(context.Background(), "TestMVCCHistories:\n\t%s: %s", d.Pos, line)
 
 					// Decompose the current script line.
 					var err error

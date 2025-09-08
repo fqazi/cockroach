@@ -143,9 +143,9 @@ func tenantSettingsTableRestoreFunc(
 	}
 
 	if count, err := queryTableRowCount(ctx, txn, tempTableName); err == nil && count > 0 {
-		log.Dev.Warningf(ctx, "skipping restore of %d entries in system.tenant_settings table", count)
+		log.Warningf(ctx, "skipping restore of %d entries in system.tenant_settings table", count)
 	} else if err != nil {
-		log.Dev.Warningf(ctx, "skipping restore of entries in system.tenant_settings table (count failed: %s)", err.Error())
+		log.Warningf(ctx, "skipping restore of entries in system.tenant_settings table (count failed: %s)", err.Error())
 	}
 	return nil
 }
@@ -863,9 +863,6 @@ var systemTableBackupConfiguration = map[string]systemBackupConfiguration{
 	systemschema.PreparedTransactionsTable.GetName(): {
 		shouldIncludeInClusterBackup: optOutOfClusterBackup,
 	},
-	systemschema.InspectErrorsTable.GetName(): {
-		shouldIncludeInClusterBackup: optOutOfClusterBackup,
-	},
 }
 
 func rekeySystemTable(
@@ -975,7 +972,7 @@ func GetSystemTableIDsToExcludeFromClusterBackup(
 				// tenant egs: `systemschema.TenantsTable`. In such situations we are
 				// print a warning and move on.
 				if desc == nil || isNotFoundErr {
-					log.Dev.Warningf(ctx, "could not find system table descriptor %q", systemTableName)
+					log.Warningf(ctx, "could not find system table descriptor %q", systemTableName)
 					return nil
 				}
 				systemTableIDsToExclude[desc.GetID()] = struct{}{}

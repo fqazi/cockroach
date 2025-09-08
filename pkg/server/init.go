@@ -194,8 +194,8 @@ func (s *initServer) ServeAndWait(
 		return s.inspectedDiskState, false, nil
 	}
 
-	log.Dev.Info(ctx, "no stores initialized")
-	log.Dev.Info(ctx, "awaiting `cockroach init` or join with an already initialized node")
+	log.Info(ctx, "no stores initialized")
+	log.Info(ctx, "awaiting `cockroach init` or join with an already initialized node")
 
 	// If we end up joining a bootstrapped cluster, the resulting init state
 	// will be passed through this channel.
@@ -259,9 +259,9 @@ func (s *initServer) ServeAndWait(
 				return nil, false, err
 			}
 
-			log.Dev.Infof(ctx, "cluster %s has been created", state.clusterID)
-			log.Dev.Infof(ctx, "allocated node ID: n%d (for self)", state.nodeID)
-			log.Dev.Infof(ctx, "active cluster version: %s", state.clusterVersion)
+			log.Infof(ctx, "cluster %s has been created", state.clusterID)
+			log.Infof(ctx, "allocated node ID: n%d (for self)", state.nodeID)
+			log.Infof(ctx, "active cluster version: %s", state.clusterVersion)
 
 			return state, true, nil
 		case result := <-joinCh:
@@ -282,9 +282,9 @@ func (s *initServer) ServeAndWait(
 
 			state := result.state
 
-			log.Dev.Infof(ctx, "joined cluster %s through join rpc", state.clusterID)
-			log.Dev.Infof(ctx, "received node ID: %d", state.nodeID)
-			log.Dev.Infof(ctx, "received cluster version: %s", state.clusterVersion)
+			log.Infof(ctx, "joined cluster %s through join rpc", state.clusterID)
+			log.Infof(ctx, "received node ID: %d", state.nodeID)
+			log.Infof(ctx, "received cluster version: %s", state.clusterVersion)
 
 			return state, true, nil
 		case <-stopper.ShouldQuiesce():
@@ -323,7 +323,7 @@ func (s *initServer) Bootstrap(
 
 	state, err := bootstrapCluster(ctx, s.inspectedDiskState.uninitializedEngines, s.config)
 	if err != nil {
-		log.Dev.Errorf(ctx, "bootstrap: %v", err)
+		log.Errorf(ctx, "bootstrap: %v", err)
 		s.mu.rejectErr = errInternalBootstrapError
 		return nil, s.mu.rejectErr
 	}
@@ -370,9 +370,9 @@ func (s *initServer) startJoinLoop(ctx context.Context, stopper *stop.Stopper) (
 			// Try the next node if unsuccessful.
 
 			if grpcutil.IsWaitingForInit(err) {
-				log.Dev.Infof(ctx, "%s is itself waiting for init, will retry", addr)
+				log.Infof(ctx, "%s is itself waiting for init, will retry", addr)
 			} else {
-				log.Dev.Warningf(ctx, "outgoing join rpc to %s unsuccessful: %v", addr, err.Error())
+				log.Warningf(ctx, "outgoing join rpc to %s unsuccessful: %v", addr, err.Error())
 			}
 			continue
 		}
@@ -416,9 +416,9 @@ func (s *initServer) startJoinLoop(ctx context.Context, stopper *stop.Stopper) (
 				// logging. See grpcutil.connectionRefusedRe.
 
 				if grpcutil.IsWaitingForInit(err) {
-					log.Dev.Infof(ctx, "%s is itself waiting for init, will retry", addr)
+					log.Infof(ctx, "%s is itself waiting for init, will retry", addr)
 				} else {
-					log.Dev.Warningf(ctx, "outgoing join rpc to %s unsuccessful: %v", addr, err.Error())
+					log.Warningf(ctx, "outgoing join rpc to %s unsuccessful: %v", addr, err.Error())
 				}
 				continue
 			}
@@ -466,7 +466,7 @@ func (s *initServer) attemptJoinTo(
 		BinaryVersion: &latestVersion,
 	}
 
-	var initClient kvpb.RPCNodeClient
+	var initClient kvpb.RPCClusterClient
 	if !rpcbase.TODODRPC {
 		initClient = kvpb.NewGRPCInternalClientAdapter(conn)
 	}
@@ -483,7 +483,7 @@ func (s *initServer) attemptJoinTo(
 		// to be changed as well.
 
 		if status.Code() == codes.PermissionDenied {
-			log.Dev.Infof(ctx, "%s is running a version higher than our binary version %s", addr, req.BinaryVersion.String())
+			log.Infof(ctx, "%s is running a version higher than our binary version %s", addr, req.BinaryVersion.String())
 			return nil, ErrIncompatibleBinaryVersion
 		}
 
@@ -634,7 +634,7 @@ func newInitServerConfig(
 		}
 	}
 	if latestVersion.Less(minSupportedVersion) {
-		log.Dev.Fatalf(ctx, "binary version (%s) less than min supported version (%s)",
+		log.Fatalf(ctx, "binary version (%s) less than min supported version (%s)",
 			latestVersion, minSupportedVersion)
 	}
 

@@ -85,7 +85,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/clusterupgrade"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/failureinjection/failures"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
@@ -349,7 +348,6 @@ type (
 		enabledDeploymentModes         []DeploymentMode
 		tag                            string
 		overriddenMutatorProbabilities map[string]float64
-		hooksSupportFailureInjection   bool
 	}
 
 	CustomOption func(*testOptions)
@@ -385,9 +383,8 @@ type (
 		// the following are test-only fields, allowing tests to simulate
 		// cluster properties without passing a cluster.Cluster
 		// implementation.
-		_arch      *vm.CPUArch
-		_isLocal   *bool
-		_getFailer func(name string) (*failures.Failer, error)
+		_arch    *vm.CPUArch
+		_isLocal *bool
 	}
 
 	shouldStop chan struct{}
@@ -400,12 +397,6 @@ type (
 
 	DeploymentMode string
 )
-
-// EnableHooksDuringFailureInjection is an option that can be passed to
-// `NewTest` to enable the use of mixed-version hooks during failure injections.
-func EnableHooksDuringFailureInjection(opts *testOptions) {
-	opts.hooksSupportFailureInjection = true
-}
 
 // NeverUseFixtures is an option that can be passed to `NewTest` to
 // disable the use of fixtures in the test. Necessary if the test
@@ -551,17 +542,6 @@ func DisableAllClusterSettingMutators() CustomOption {
 	return func(opts *testOptions) {
 		names := []string{}
 		for _, m := range clusterSettingMutators {
-			names = append(names, m.Name())
-		}
-		DisableMutators(names...)(opts)
-	}
-}
-
-// DisableAllFailureInjectionMutators will disable all available failure injection mutators.
-func DisableAllFailureInjectionMutators() CustomOption {
-	return func(opts *testOptions) {
-		names := []string{}
-		for _, m := range failureInjectionMutators {
 			names = append(names, m.Name())
 		}
 		DisableMutators(names...)(opts)
@@ -835,16 +815,8 @@ func (t *Test) BackgroundCommand(
 // if passed, is the command run to initialize the workload; it is run
 // synchronously as a regular startup function. `runCmd` is the
 // command to actually run the command; it is run in the background.
-//
-// If overrideBinary is true, the binary used to run the command(s) will
-// be replaced with the cockroach binary of the current version the
-// cluster is running in.
-// TODO(testeng): Replace with https://github.com/cockroachdb/cockroach/issues/147374
 func (t *Test) Workload(
-	name string,
-	node option.NodeListOption,
-	initCmd, runCmd *roachtestutil.Command,
-	overrideBinary bool,
+	name string, node option.NodeListOption, initCmd, runCmd *roachtestutil.Command,
 ) StopFunc {
 	seed := uint64(t.prng.Int63())
 	addSeed := func(cmd *roachtestutil.Command) {
@@ -855,31 +827,11 @@ func (t *Test) Workload(
 
 	if initCmd != nil {
 		addSeed(initCmd)
-		t.OnStartup(fmt.Sprintf("initialize %s workload", name), func(ctx context.Context, l *logger.Logger, rng *rand.Rand, h *Helper) error {
-			if overrideBinary {
-				binary, err := clusterupgrade.UploadCockroach(ctx, t.rt, t.logger, t.cluster, node, h.System.FromVersion)
-				if err != nil {
-					t.rt.Fatal(err)
-				}
-				initCmd.Binary = binary
-			}
-			l.Printf("running command `%s` on nodes %v", initCmd.String(), node)
-			return t.cluster.RunE(ctx, option.WithNodes(node), initCmd.String())
-		})
+		t.OnStartup(fmt.Sprintf("initialize %s workload", name), t.runCommandFunc(node, initCmd.String()))
 	}
 
 	addSeed(runCmd)
-	return t.BackgroundFunc(fmt.Sprintf("%s workload", name), func(ctx context.Context, l *logger.Logger, rng *rand.Rand, h *Helper) error {
-		if overrideBinary {
-			binary, err := clusterupgrade.UploadCockroach(ctx, t.rt, t.logger, t.cluster, node, h.System.FromVersion)
-			if err != nil {
-				t.rt.Fatal(err)
-			}
-			runCmd.Binary = binary
-		}
-		l.Printf("running command `%s` on nodes %v", runCmd.String(), node)
-		return t.cluster.RunE(ctx, option.WithNodes(node), runCmd.String())
-	})
+	return t.BackgroundCommand(fmt.Sprintf("%s workload", name), node, runCmd)
 }
 
 // Run is like RunE, except it fatals the test if any error occurs.
@@ -971,15 +923,9 @@ func (t *Test) plan() (plan *TestPlan, retErr error) {
 			hooks:          t.hooks,
 			prng:           t.prng,
 			bgChans:        t.bgChans,
-			logger:         t.logger,
-			cluster:        t.cluster,
-			_getFailer:     t._getFailer,
 		}
 		// Let's generate a plan.
-		plan, err = planner.Plan()
-		if err != nil {
-			return nil, errors.Wrapf(err, "error generating test plan")
-		}
+		plan = planner.Plan()
 		if plan.length <= t.options.maxNumPlanSteps {
 			break
 		}

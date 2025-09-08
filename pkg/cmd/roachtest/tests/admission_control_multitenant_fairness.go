@@ -175,7 +175,7 @@ func runMultiTenantFairness(
 		node := virtualClusters[name]
 		c.StartServiceForVirtualCluster(
 			ctx, t.L(),
-			option.StartVirtualClusterOpts(name, node, option.NoBackupSchedule),
+			option.StartVirtualClusterOpts(name, node),
 			install.MakeClusterSettings(),
 		)
 
@@ -205,6 +205,10 @@ func runMultiTenantFairness(
 
 		c.Run(ctx, option.WithNodes(node), initKV)
 	}
+
+	t.L().Printf("setting up prometheus/grafana (<%s)", 2*time.Minute)
+	_, cleanupFunc := setupPrometheusForRoachtest(ctx, t, c, promCfg, nil)
+	defer cleanupFunc()
 
 	t.L().Printf("loading per-tenant data (<%s)", 10*time.Minute)
 	m1 := c.NewDeprecatedMonitor(ctx, c.All())

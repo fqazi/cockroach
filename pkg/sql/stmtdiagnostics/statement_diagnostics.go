@@ -150,9 +150,7 @@ func NewRegistry(db isql.DB, st *cluster.Settings) *Registry {
 
 // Start will start the polling loop for the Registry.
 func (r *Registry) Start(ctx context.Context, stopper *stop.Stopper) {
-	// The registry has the same lifetime as the server, so the cancellation
-	// function can be ignored and it'll be called by the stopper.
-	ctx, _ = stopper.WithCancelOnQuiesce(ctx) // nolint:quiesce
+	ctx, _ = stopper.WithCancelOnQuiesce(ctx)
 
 	// Since background statement diagnostics collection is not under user
 	// control, exclude it from cost accounting and control.
@@ -186,7 +184,7 @@ func (r *Registry) poll(ctx context.Context) {
 				if ctx.Err() != nil {
 					return
 				}
-				log.Dev.Warningf(ctx, "error polling for statement diagnostics requests: %s", err)
+				log.Warningf(ctx, "error polling for statement diagnostics requests: %s", err)
 			}
 			lastPoll = timeutil.Now()
 		}
@@ -739,7 +737,7 @@ func (r *Registry) pollRequests(ctx context.Context) error {
 		if prob, ok := row[4].(*tree.DFloat); ok {
 			samplingProbability = float64(*prob)
 			if samplingProbability < 0 || samplingProbability > 1 {
-				log.Dev.Warningf(ctx, "malformed sampling probability for request %d: %f (expected in range [0, 1]), resetting to 1.0",
+				log.Warningf(ctx, "malformed sampling probability for request %d: %f (expected in range [0, 1]), resetting to 1.0",
 					id, samplingProbability)
 				samplingProbability = 1.0
 			}

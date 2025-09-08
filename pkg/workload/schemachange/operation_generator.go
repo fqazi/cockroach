@@ -1275,19 +1275,24 @@ func (og *operationGenerator) createTable(ctx context.Context, tx pgx.Tx) (*opSt
 	)
 	stmt.Table = *tableName
 	stmt.IfNotExists = og.randIntn(2) == 0
-
-	// Helper function to check if any column has a type with the given prefix.
-	hasColumnTypeWithPrefix := func(typePrefix string) bool {
+	hasVectorType := func() bool {
+		// Check if any of the indexes have PGVector types involved.
 		for _, def := range stmt.Defs {
-			if col, ok := def.(*tree.ColumnTableDef); ok && strings.HasPrefix(col.Type.SQLString(), typePrefix) {
+			if col, ok := def.(*tree.ColumnTableDef); ok && strings.HasPrefix(col.Type.SQLString(), "VECTOR") {
 				return true
 			}
 		}
 		return false
-	}
-	hasVectorType := hasColumnTypeWithPrefix("VECTOR")
-	hasCitextType := hasColumnTypeWithPrefix("CITEXT")
-	hasLtreeType := hasColumnTypeWithPrefix("LTREE")
+	}()
+	hasCitextType := func() bool {
+		// Check if any of the columns have CITEXT types involved.
+		for _, def := range stmt.Defs {
+			if col, ok := def.(*tree.ColumnTableDef); ok && col.Type.SQLString() == "CITEXT" {
+				return true
+			}
+		}
+		return false
+	}()
 
 	// Randomly create as schema locked table.
 	versionBefore253, err := isClusterVersionLessThan(ctx, tx, clusterversion.V25_3.Version())
@@ -1319,13 +1324,8 @@ func (og *operationGenerator) createTable(ctx context.Context, tx pgx.Tx) (*opSt
 	opStmt.potentialExecErrors.addAll(codesWithConditions{
 		{code: pgcode.Syntax, condition: hasVectorType},
 		{code: pgcode.FeatureNotSupported, condition: hasVectorType},
-		{code: pgcode.UndefinedObject, condition: hasVectorType},
 		{code: pgcode.Syntax, condition: hasCitextType},
 		{code: pgcode.FeatureNotSupported, condition: hasCitextType},
-		{code: pgcode.UndefinedObject, condition: hasCitextType},
-		{code: pgcode.Syntax, condition: hasLtreeType},
-		{code: pgcode.FeatureNotSupported, condition: hasLtreeType},
-		{code: pgcode.UndefinedObject, condition: hasLtreeType},
 	})
 	opStmt.sql = tree.Serialize(stmt)
 	return opStmt, nil
@@ -1359,37 +1359,15 @@ func (og *operationGenerator) createType(
 	})
 
 	const letters = "abcdefghijklmnopqrstuvwxyz"
-	var statement *tree.CreateType
+	var statement tree.Statement
 
 	if isEnum {
 		statement = randgen.RandCreateEnumType(og.params.rng, typName.Object(), letters)
 	} else {
 		statement = randgen.RandCreateCompositeType(og.params.rng, typName.Object(), letters)
-
-		hasTypeWithPrefix := func(typePrefix string) bool {
-			for _, field := range statement.CompositeTypeList {
-				if strings.HasPrefix(field.Type.SQLString(), typePrefix) {
-					return true
-				}
-			}
-			return false
-		}
-
-		// Check for references to any types that are not supported in mixed version
-		// clusters.
-		ltreeNotSupported, err := isClusterVersionLessThan(ctx, tx, clusterversion.V25_4.Version())
-		if err != nil {
-			return nil, err
-		}
-		hasLtreeType := hasTypeWithPrefix("LTREE")
-		opStmt.potentialExecErrors.addAll(codesWithConditions{
-			{code: pgcode.UndefinedObject, condition: hasLtreeType && ltreeNotSupported},
-			{code: pgcode.FeatureNotSupported, condition: hasLtreeType && ltreeNotSupported},
-			{code: pgcode.Syntax, condition: hasLtreeType && ltreeNotSupported},
-		})
 	}
 
-	statement.TypeName = typName.ToUnresolvedObjectName()
+	statement.(*tree.CreateType).TypeName = typName.ToUnresolvedObjectName()
 	opStmt.sql = tree.Serialize(statement)
 	return opStmt, nil
 }
@@ -2530,11 +2508,8 @@ func (og *operationGenerator) setColumnDefault(ctx context.Context, tx pgx.Tx) (
 	}
 
 	strDefault := tree.AsStringWithFlags(defaultDatum, tree.FmtParsable)
-	// Always use explicit type casting to ensure consistent behavior and avoid parse errors.
-	// When the types don't match, this will produce the expected DatatypeMismatch error.
-	// When the types do match, the cast is harmless and makes the intent explicit.
-	stmt.sql = fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN %s SET DEFAULT %s::%s`,
-		tableName.String(), columnForDefault.name.String(), strDefault, datumTyp.SQLString())
+	stmt.sql = fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN %s SET DEFAULT %s`,
+		tableName.String(), columnForDefault.name.String(), strDefault)
 	return stmt, nil
 }
 
@@ -4136,19 +4111,9 @@ func (og *operationGenerator) randType(
 		return nil, nil, err
 	}
 
-	// Block LTREE usage until v25.4 is finalized.
-	ltreeNotSupported, err := isClusterVersionLessThan(
-		ctx,
-		tx,
-		clusterversion.V25_4.Version())
-	if err != nil {
-		return nil, nil, err
-	}
-
 	typ := randgen.RandSortingType(og.params.rng)
 	for (pgVectorNotSupported && typ.Family() == types.PGVectorFamily) ||
-		(citextNotSupported && typ.Oid() == oidext.T_citext) ||
-		(ltreeNotSupported && typ.Oid() == oidext.T_ltree) {
+		(citextNotSupported && typ.Oid() == oidext.T_citext) {
 		typ = randgen.RandSortingType(og.params.rng)
 	}
 
@@ -4336,11 +4301,6 @@ FROM
 		return nil, err
 	}
 
-	ltreeNotSupported, err := isClusterVersionLessThan(ctx, tx, clusterversion.V25_4.Version())
-	if err != nil {
-		return nil, err
-	}
-
 	// Generate random parameters / values for builtin types.
 	for i, typeVal := range randgen.SeedTypes {
 		// If we have types where invalid values can exist then skip over these,
@@ -4355,9 +4315,6 @@ FROM
 		}
 
 		if citextNotSupported && typeVal.Oid() == oidext.T_citext {
-			continue
-		}
-		if ltreeNotSupported && typeVal.Oid() == oidext.T_ltree {
 			continue
 		}
 

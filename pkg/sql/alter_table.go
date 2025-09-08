@@ -804,7 +804,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 				tableDesc.GetRowLevelTTL().HasDurationExpr() {
 				return pgerror.Newf(
 					pgcode.InvalidTableDefinition,
-					`cannot alter column %s while ttl_expire_after is set`,
+					`cannot rename column %s while ttl_expire_after is set`,
 					columnName,
 				)
 			}
@@ -986,7 +986,7 @@ func applyColumnMutation(
 			}
 			return pgerror.Newf(
 				pgcode.Syntax,
-				"computed column %q cannot also have a DEFAULT or ON UPDATE expression",
+				"computed column %q cannot also have a DEFAULT expression",
 				col.GetName())
 		}
 		if err := updateNonComputedColExpr(
@@ -1005,12 +1005,6 @@ func applyColumnMutation(
 		}
 
 	case *tree.AlterTableSetOnUpdate:
-		if col.IsComputed() {
-			return pgerror.Newf(
-				pgcode.Syntax,
-				"computed column %q cannot also have a DEFAULT or ON UPDATE expression",
-				col.GetName())
-		}
 		// We want to reject uses of ON UPDATE where there is also a foreign key ON
 		// UPDATE.
 		for _, fk := range tableDesc.OutboundFKs {
@@ -1020,9 +1014,10 @@ func applyColumnMutation(
 					fk.OnUpdate != semenumpb.ForeignKeyAction_RESTRICT {
 					return pgerror.Newf(
 						pgcode.InvalidColumnDefinition,
-						"column cannot specify both ON UPDATE expression and a foreign"+
-							" key ON UPDATE action for column %q",
+						"column %s(%d) cannot have both an ON UPDATE expression and a foreign"+
+							" key ON UPDATE action",
 						col.GetName(),
+						col.GetID(),
 					)
 				}
 			}
@@ -2514,7 +2509,7 @@ func (p *planner) checkSchemaChangeIsAllowed(
 	ctx context.Context, desc catalog.TableDescriptor, n tree.Statement,
 ) (ret error) {
 	// Adding descriptors can be skipped.
-	if desc == nil || desc.Adding() || p.descCollection.IsNewUncommittedDescriptor(desc.GetID()) {
+	if desc == nil || desc.Adding() || p.descCollection.IsNewUncommitedDescriptor(desc.GetID()) {
 		return nil
 	}
 	// Check if this schema change is on the allowed list, which will only

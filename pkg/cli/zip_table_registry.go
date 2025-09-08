@@ -222,31 +222,11 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 		},
 	},
 	"crdb_internal.cluster_settings": {
-		customQueryUnredacted: `SELECT
-			variable,
-			CASE 
-			  WHEN sensitive THEN '<redacted>'
-			  ELSE value 
-			END value,
-			type,
-			public,
-			sensitive,
-			reportable,
-			description,
-			default_value,
-			origin
-		FROM crdb_internal.cluster_settings`,
 		customQueryRedacted: `SELECT
 			variable,
-			CASE 
-			  WHEN NOT reportable AND value != default_value THEN '<redacted>'
-			  WHEN sensitive THEN '<redacted>'
-			  ELSE value 
-			END value,
+			CASE WHEN type = 's' AND value != default_value THEN '<redacted>' ELSE value END value,
 			type,
 			public,
-			sensitive,
-			reportable,
 			description,
 			default_value,
 			origin
@@ -579,43 +559,26 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 	},
 	"crdb_internal.transaction_contention_events": {
 		customQueryUnredacted: `
-WITH contention_fingerprints AS (
-    -- First, extract all relevant fingerprints from contention events
-    SELECT DISTINCT waiting_stmt_fingerprint_id, blocking_txn_fingerprint_id
-    FROM crdb_internal.transaction_contention_events
-    WHERE blocking_txn_fingerprint_id != '\x0000000000000000'
+with fingerprint_queries as (
+	SELECT distinct fingerprint_id, metadata->> 'query' as query  
+	FROM system.statement_statistics
 ),
-fingerprint_queries AS (
-    -- Only fetch statement data for fingerprints that appear in contention events
-    SELECT DISTINCT fingerprint_id, metadata->>'query' as query
-    FROM system.statement_statistics ss
-    WHERE EXISTS (
-        SELECT 1 FROM contention_fingerprints cf
-        WHERE cf.waiting_stmt_fingerprint_id = ss.fingerprint_id
-    )
-),
-transaction_fingerprints AS (
-    -- Only fetch transaction data for fingerprints that appear in contention events
-    SELECT DISTINCT fingerprint_id, transaction_fingerprint_id
-    FROM system.statement_statistics ss
-    WHERE EXISTS (
-        SELECT 1 FROM contention_fingerprints cf
-        WHERE cf.waiting_stmt_fingerprint_id = ss.fingerprint_id
-    )
-),
-transaction_queries AS (
-    -- Build transaction queries only for relevant transactions
-    SELECT tf.transaction_fingerprint_id, array_agg(fq.query) as queries
-    FROM fingerprint_queries fq
-    JOIN transaction_fingerprints tf ON tf.fingerprint_id = fq.fingerprint_id
-    GROUP BY tf.transaction_fingerprint_id
+transaction_fingerprints as (
+		SELECT distinct fingerprint_id, transaction_fingerprint_id
+		FROM system.statement_statistics
+), 
+transaction_queries as (
+		SELECT tf.transaction_fingerprint_id, array_agg(fq.query) as queries
+		FROM fingerprint_queries fq
+		JOIN transaction_fingerprints tf on tf.fingerprint_id = fq.fingerprint_id
+		GROUP BY tf.transaction_fingerprint_id
 )
 SELECT collection_ts,
        contention_duration,
        waiting_txn_id,
        waiting_txn_fingerprint_id,
        waiting_stmt_fingerprint_id,
-       fq.query AS waiting_stmt_query,
+       fq.query                      AS waiting_stmt_query,
        blocking_txn_id,
        blocking_txn_fingerprint_id,
        tq.queries AS blocking_txn_queries_unordered,
@@ -673,61 +636,6 @@ FROM crdb_internal.transaction_contention_events
 			"full_config_yaml",
 			"full_config_sql",
 		},
-	},
-	// cluster_settings_history Provides a history of cluster settings changes
-	// via the system.eventlog table. If the value is reset via `RESET
-	// CLUSTER SETTING <x>`, the value is shown as 'DEFAULT'. This can be used
-	// to distinguish between when a user explicitly sets the value to the
-	// default value via `SET CLUSTER SETTING <x> = <y>`. For cluster settings
-	// set in v25.4+, the `default_value` column will show the default value
-	// for the setting at the time of the change, which may differ from the
-	// current default value.
-	// The `value` column will always be redacted if the setting is sensitive.
-	// If a redacted debug zip is requested, non-reportable settings will
-	// also be redacted.
-	"cluster_settings_history": {
-		customQueryUnredacted: `
-WITH setting_events AS (
-	SELECT
-		timestamp,
-		info::jsonb AS info_json
-	FROM system.eventlog
-	WHERE "eventType" = 'set_cluster_setting'
-)
-SELECT
-	info_json ->> 'SettingName' as setting_name,
-	CASE
-      WHEN cs.sensitive AND info_json ->> 'Value' <> 'DEFAULT' THEN '<redacted>'
-      ELSE info_json ->> 'Value'
-	END value,
-	info_json ->> 'DefaultValue' as default_value,
-	cs.default_value as current_default_value,
-	info_json ->> 'ApplicationName' as application_name,
-	se.timestamp
-FROM setting_events se
-JOIN crdb_internal.cluster_settings cs on cs.variable = se.info_json ->> 'SettingName'
-ORDER BY setting_name, timestamp`,
-		customQueryRedacted: `
-WITH setting_events AS (
-	SELECT
-		timestamp,
-		info::jsonb AS info_json
-	FROM system.eventlog
-	WHERE "eventType" = 'set_cluster_setting'
-)
-SELECT
-	info_json ->> 'SettingName' as setting_name,
-	CASE
-      WHEN (cs.sensitive OR NOT cs.reportable) AND info_json ->> 'Value' <> 'DEFAULT' THEN '<redacted>'
-      ELSE info_json ->> 'Value'
- 	END value,
-	info_json ->> 'DefaultValue' as default_value,
-	cs.default_value as current_default_value,
-	info_json ->> 'ApplicationName' as application_name,
-	se.timestamp
-FROM setting_events se
-JOIN crdb_internal.cluster_settings cs on cs.variable = se.info_json ->> 'SettingName'
-ORDER BY setting_name, timestamp`,
 	},
 }
 
@@ -1459,29 +1367,18 @@ var zipSystemTables = DebugZipTableRegistry{
 		},
 	},
 	"system.settings": {
-		customQueryUnredacted: `
-SELECT 
-     name,
-     CASE
-          WHEN cs.sensitive THEN '<redacted>'
-          ELSE s.value
-     END value,
-	s."lastUpdated",
-	s."valueType"
-FROM system.settings s
-JOIN crdb_internal.cluster_settings cs ON cs.variable = s.name`,
-		customQueryRedacted: `
-SELECT 
-     name,
-     CASE
-          WHEN cs.sensitive THEN '<redacted>'
-          WHEN NOT cs.reportable THEN '<redacted>'
-          ELSE s.value
-     END value,
-	s."lastUpdated",
-	s."valueType"
-FROM system.settings s
-JOIN crdb_internal.cluster_settings cs ON cs.variable = s.name`,
+		customQueryUnredacted: `SELECT * FROM system.settings`,
+		customQueryRedacted: `SELECT * FROM (
+				SELECT *
+				FROM system.settings
+				WHERE "valueType" <> 's'
+    	) UNION (
+				SELECT name, '<redacted>' as value,
+				"lastUpdated",
+				"valueType"
+				FROM system.settings
+				WHERE "valueType"  = 's'
+    	)`,
 	},
 	"system.span_configurations": {
 		nonSensitiveCols: NonSensitiveColumns{

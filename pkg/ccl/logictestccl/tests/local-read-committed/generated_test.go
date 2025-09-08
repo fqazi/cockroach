@@ -1084,13 +1084,6 @@ func TestReadCommittedLogic_insert(
 	runLogicTest(t, "insert")
 }
 
-func TestReadCommittedLogic_inspect(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "inspect")
-}
-
 func TestReadCommittedLogic_int_size(
 	t *testing.T,
 ) {
@@ -1278,13 +1271,6 @@ func TestReadCommittedLogic_lookup_join_spans(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "lookup_join_spans")
-}
-
-func TestReadCommittedLogic_ltree(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "ltree")
 }
 
 func TestReadCommittedLogic_manual_retry(

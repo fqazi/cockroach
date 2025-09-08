@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/clusterupgrade"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/task"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/testutils/release"
@@ -48,8 +47,6 @@ type (
 		connFunc        func(int) *gosql.DB
 		stepLogger      *logger.Logger
 		clusterVersions *atomic.Value
-		monitor         test.Monitor
-		nodes           option.NodeListOption
 	}
 
 	// Helper is the struct passed to `stepFunc`s (user-provided or
@@ -70,17 +67,6 @@ type (
 	}
 )
 
-func (s *Service) randomAvailableNode(rng *rand.Rand) int {
-	nodes := s.AvailableNodes()
-	return nodes.SeededRandNode(rng)[0]
-}
-
-// AvailableNodes uses the monitor implementation to return the
-// set of available nodes as determined by their expected health.
-func (s *Service) AvailableNodes() option.NodeListOption {
-	return s.monitor.AvailableNodes(s.Descriptor.Name).Intersect(s.nodes)
-}
-
 // Connect returns a connection pool to the given node. Note that
 // these connection pools are managed by the framework and therefore
 // *must not* be closed. They are closed automatically when the test
@@ -93,24 +79,17 @@ func (s *Service) Connect(node int) *gosql.DB {
 // cluster. Do *not* call `Close` on the pool returned (see comment on
 // `Connect` function).
 func (s *Service) RandomDB(rng *rand.Rand) (int, *gosql.DB) {
-	node := s.randomAvailableNode(rng)
+	node := s.Descriptor.Nodes.SeededRandNode(rng)[0]
 	return node, s.Connect(node)
 }
 
-// prepareQuery returns a connection to one of the available nodes in `nodes`
-// provided and logs the query and gateway node in the step's log file. Called
+// prepareQuery returns a connection to one of the `nodes` provided
+// and logs the query and gateway node in the step's log file. Called
 // before the query is actually performed.
 func (s *Service) prepareQuery(
 	rng *rand.Rand, nodes option.NodeListOption, query string, args ...any,
 ) (*gosql.DB, error) {
-	availableNodes := s.AvailableNodes().Intersect(nodes)
-	if len(availableNodes) == 0 {
-		return nil, errors.Newf(
-			"no available nodes in the intersection of %s and %s",
-			s.AvailableNodes(), nodes,
-		)
-	}
-	node := availableNodes.SeededRandNode(rng)[0]
+	node := nodes.SeededRandNode(rng)[0]
 	db := s.Connect(node)
 
 	v, err := s.NodeVersion(node)
@@ -195,10 +174,6 @@ func (h *Helper) DefaultService() *Service {
 	}
 
 	return h.System
-}
-
-func (h *Helper) AvailableNodes() option.NodeListOption {
-	return h.DefaultService().AvailableNodes()
 }
 
 func (h *Helper) Context() *ServiceContext {

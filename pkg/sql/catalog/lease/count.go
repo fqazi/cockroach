@@ -275,7 +275,7 @@ func handleRegionLivenessErrors(
 			// Skip this region because we were unable to find region in
 			// type descriptor. Since the database regions are cached, they
 			// may be stale and have dropped regions.
-			log.Dev.Infof(ctx, "count-lease skipping region %s due to error: %v", region, err)
+			log.Infof(ctx, "count-lease skipping region %s due to error: %v", region, err)
 			return nil
 		}
 		return err

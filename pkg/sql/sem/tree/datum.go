@@ -33,14 +33,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/bitarray"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/collatedstring"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/ipaddr"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
 	"github.com/cockroachdb/cockroach/pkg/util/jsonpath"
-	"github.com/cockroachdb/cockroach/pkg/util/ltree"
 	"github.com/cockroachdb/cockroach/pkg/util/stringencoding"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timetz"
@@ -4153,7 +4151,7 @@ func AsJSON(
 		// This is RFC3339Nano, but without the TZ fields.
 		return json.FromString(formatTime(t.UTC(), "2006-01-02T15:04:05.999999999")), nil
 	case *DDate, *DUuid, *DOid, *DInterval, *DBytes, *DIPAddr, *DTime, *DTimeTZ, *DBitArray, *DBox2D,
-		*DTSVector, *DTSQuery, *DPGLSN, *DPGVector, *DLTree:
+		*DTSVector, *DTSQuery, *DPGLSN, *DPGVector:
 		return json.FromString(
 			AsStringWithFlags(t, FmtBareStrings, FmtDataConversionConfig(dcc), FmtLocation(loc)),
 		), nil
@@ -4507,103 +4505,6 @@ func ParseDTSVector(s string) (Datum, error) {
 		return nil, pgerror.Wrapf(err, pgcode.Syntax, "could not parse tsvector")
 	}
 	return NewDTSVector(v), nil
-}
-
-// DLTree is the LTree Datum.
-type DLTree struct {
-	LTree ltree.T
-}
-
-// NewDLTree returns a DLTree from an existing ltree.T.
-func NewDLTree(l ltree.T) *DLTree {
-	return &DLTree{LTree: l}
-}
-
-// ParseDLTree parses a string representation of a ltree.
-func ParseDLTree(pathStr string) (Datum, error) {
-	l, err := ltree.ParseLTree(pathStr)
-	if err != nil {
-		return nil, pgerror.Wrapf(err, pgcode.Syntax, "could not parse ltree")
-	}
-	return NewDLTree(l), nil
-}
-
-// ResolvedType implements the TypedExpr interface.
-func (*DLTree) ResolvedType() *types.T {
-	return types.LTree
-}
-
-// Compare implements the Datum interface.
-func (d *DLTree) Compare(ctx context.Context, cmpCtx CompareContext, other Datum) (int, error) {
-	if other == DNull {
-		// NULL is less than any non-NULL value.
-		return 1, nil
-	}
-	v, ok := cmpCtx.UnwrapDatum(ctx, other).(*DLTree)
-	if !ok {
-		return 0, makeUnsupportedComparisonMessage(d, other)
-	}
-	return d.LTree.Compare(v.LTree), nil
-}
-
-// Prev implements the Datum interface.
-func (d *DLTree) Prev(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	return nil, false
-}
-
-// Next implements the Datum interface.
-func (d *DLTree) Next(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	return nil, false
-}
-
-// IsMax implements the Datum interface.
-func (*DLTree) IsMax(ctx context.Context, cmpCtx CompareContext) bool {
-	return false
-}
-
-// IsMin implements the Datum interface.
-func (d *DLTree) IsMin(ctx context.Context, cmpCtx CompareContext) bool {
-	return d.LTree.Len() == 0
-}
-
-// Min implements the Datum interface.
-func (d *DLTree) Min(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	return NewDLTree(ltree.Empty), true
-}
-
-// Max implements the Datum interface.
-func (d *DLTree) Max(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	return nil, false
-}
-
-// AmbiguousFormat implements the Datum interface.
-func (*DLTree) AmbiguousFormat() bool { return false }
-
-// Format implements the NodeFormatter interface.
-func (d *DLTree) Format(ctx *FmtCtx) {
-	buf, f := &ctx.Buffer, ctx.flags
-
-	if f.HasFlags(fmtRawStrings) || f.HasFlags(fmtPgwireFormat) {
-		d.LTree.FormatToBuffer(buf)
-	} else {
-		pathStr := d.LTree.String()
-		lexbase.EncodeSQLStringWithFlags(buf, pathStr, f.EncodeFlags())
-	}
-}
-
-// Size implements the Datum interface.
-func (d *DLTree) Size() uintptr {
-	return uintptr(d.LTree.ByteSize())
-}
-
-// MustBeDLTree attempts to retrieve a DLTree from an Expr, panicking if the
-// assertion fails.
-func MustBeDLTree(e Expr) *DLTree {
-	b, ok := e.(*DLTree)
-	if !ok {
-		panic(errors.AssertionFailedf("expected *DLTree, found %T", e))
-	}
-	return b
 }
 
 // DTuple is the tuple Datum.
@@ -5074,18 +4975,17 @@ func (d dNull) Size() uintptr {
 	return unsafe.Sizeof(d)
 }
 
-// DArray is the array Datum.
+// DArray is the array Datum. Any Datum inserted into a DArray are treated as
+// text during serialization.
 type DArray struct {
 	ParamTyp *types.T
-	// Array gives access to the underlying array. Using NewDArrayFromDatums or
-	// Append is preferrable for constructing the contents, but modifying the
-	// slice is also allowed - just be sure to update NULL-related flags via
-	// Set* methods accordingly.
-	Array Datums
-	// hasNulls is set to true if any of the datums within the array are null.
-	hasNulls bool
-	// hasNonNulls is set to true if any of the datums within the are non-null.
-	hasNonNulls bool
+	Array    Datums
+	// HasNulls is set to true if any of the datums within the array are null.
+	// This is used in the binary array serialization format.
+	HasNulls bool
+	// HasNonNulls is set to true if any of the datums within the are non-null.
+	// This is used in expression serialization (FmtParsable).
+	HasNonNulls bool
 
 	// customOid, if non-0, is the oid of this array datum.
 	customOid oid.Oid
@@ -5094,31 +4994,6 @@ type DArray struct {
 // NewDArray returns a DArray containing elements of the specified type.
 func NewDArray(paramTyp *types.T) *DArray {
 	return &DArray{ParamTyp: paramTyp}
-}
-
-// NewDArrayFromDatums returns a DArray containing the given datums that are
-// assumed to be of the specified type. It'll populate NULL-related fields
-// accordingly.
-func NewDArrayFromDatums(paramTyp *types.T, datums Datums) *DArray {
-	if buildutil.CrdbTestBuild {
-		for _, d := range datums {
-			if !d.ResolvedType().EquivalentOrNull(paramTyp, true /* allowNullTupleEquivalence */) {
-				panic(errors.AssertionFailedf(
-					"cannot include %s into array containing %s",
-					d.ResolvedType().SQLStringForError(), paramTyp.SQLStringForError(),
-				))
-			}
-		}
-	}
-	d := &DArray{ParamTyp: paramTyp, Array: datums}
-	for _, elem := range d.Array {
-		if elem == DNull {
-			d.hasNulls = true
-		} else {
-			d.hasNonNulls = true
-		}
-	}
-	return d
 }
 
 // AsDArray attempts to retrieve a *DArray from an Expr, returning a *DArray and
@@ -5143,34 +5018,6 @@ func MustBeDArray(e Expr) *DArray {
 		panic(errors.AssertionFailedf("expected *DArray, found %T", e))
 	}
 	return i
-}
-
-func (d *DArray) testOnlyValidation() {
-	if buildutil.CrdbTestBuild {
-		if err := d.Validate(); err != nil {
-			panic(err)
-		}
-	}
-}
-
-func (d *DArray) HasNulls() bool {
-	d.testOnlyValidation()
-	return d.hasNulls
-}
-
-func (d *DArray) SetHasNulls(hasNulls bool) {
-	d.hasNulls = hasNulls
-	d.testOnlyValidation()
-}
-
-func (d *DArray) HasNonNulls() bool {
-	d.testOnlyValidation()
-	return d.hasNonNulls
-}
-
-func (d *DArray) SetHasNonNulls(hasNonNulls bool) {
-	d.hasNonNulls = hasNonNulls
-	d.testOnlyValidation()
 }
 
 // MaybeSetCustomOid checks whether t has a special oid that we want to set into
@@ -5261,10 +5108,10 @@ func (d *DArray) Prev(ctx context.Context, cmpCtx CompareContext) (Datum, bool) 
 
 // Next implements the Datum interface.
 func (d *DArray) Next(ctx context.Context, cmpCtx CompareContext) (Datum, bool) {
-	elements := make(Datums, d.Len()+1)
-	copy(elements, d.Array)
-	elements[d.Len()] = DNull
-	return NewDArrayFromDatums(d.ParamTyp, elements), true
+	a := DArray{ParamTyp: d.ParamTyp, Array: make(Datums, d.Len()+1)}
+	copy(a.Array, d.Array)
+	a.Array[len(a.Array)-1] = DNull
+	return &a, true
 }
 
 // Max implements the Datum interface.
@@ -5297,7 +5144,7 @@ func (d *DArray) AmbiguousFormat() bool {
 		// a valid type. So an array of unknown type is (paradoxically) unambiguous.
 		return false
 	}
-	return !d.HasNonNulls()
+	return !d.HasNonNulls
 }
 
 // Format implements the NodeFormatter interface.
@@ -5332,33 +5179,11 @@ const maxArrayLength = math.MaxInt32
 
 var errArrayTooLongError = errors.New("ARRAYs can be at most 2^31-1 elements long")
 
-// Validate checks that the given array is valid, for example, that it's not too
-// big.
+// Validate checks that the given array is valid,
+// for example, that it's not too big.
 func (d *DArray) Validate() error {
 	if d.Len() > maxArrayLength {
 		return errors.WithStack(errArrayTooLongError)
-	}
-	if buildutil.CrdbTestBuild {
-		// Additionally, in test builds ensure that NULL-related flags are set
-		// correctly.
-		var hasNulls, hasNonNulls bool
-		for _, elem := range d.Array {
-			if elem == DNull {
-				hasNulls = true
-			} else {
-				hasNonNulls = true
-			}
-		}
-		if hasNulls != d.hasNulls {
-			return errors.AssertionFailedf(
-				"found DArray with incorrect HasNulls (expected %t)", hasNulls,
-			)
-		}
-		if hasNonNulls != d.hasNonNulls {
-			return errors.AssertionFailedf(
-				"found DArray with incorrect HasNonNulls (expected %t)", hasNonNulls,
-			)
-		}
 	}
 	return nil
 }
@@ -5410,9 +5235,9 @@ func (d *DArray) Append(v Datum) error {
 		}
 	}
 	if v == DNull {
-		d.hasNulls = true
+		d.HasNulls = true
 	} else {
-		d.hasNonNulls = true
+		d.HasNonNulls = true
 	}
 	d.Array = append(d.Array, v)
 	return d.Validate()
@@ -6425,7 +6250,6 @@ var baseDatumTypeSizes = map[types.Family]struct {
 	types.INetFamily:           {unsafe.Sizeof(DIPAddr{}), fixedSize},
 	types.OidFamily:            {unsafe.Sizeof(DOid{}.Oid), fixedSize},
 	types.EnumFamily:           {unsafe.Sizeof(DEnum{}), variableSize},
-	types.LTreeFamily:          {unsafe.Sizeof(DLTree{}), variableSize},
 
 	types.VoidFamily: {sz: unsafe.Sizeof(DVoid{}), variable: fixedSize},
 	// TODO(jordan,justin): This seems suspicious.
@@ -6723,11 +6547,6 @@ func AdjustValueToType(typ *types.T, inVal Datum) (outVal Datum, err error) {
 				}
 			}
 			if outArr != nil {
-				if buildutil.CrdbTestBuild {
-					if err := outArr.Validate(); err != nil {
-						return nil, err
-					}
-				}
 				return outArr, nil
 			}
 		}

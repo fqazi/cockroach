@@ -27,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -162,15 +161,6 @@ func (a AllocatorAction) Remove() bool {
 		a == AllocatorRemoveDeadNonVoter ||
 		a == AllocatorRemoveDecommissioningVoter ||
 		a == AllocatorRemoveDecommissioningNonVoter
-}
-
-// Decommissioning indicates an action replacing or removing a decommissioning
-// replicas.
-func (a AllocatorAction) Decommissioning() bool {
-	return a == AllocatorRemoveDecommissioningVoter ||
-		a == AllocatorRemoveDecommissioningNonVoter ||
-		a == AllocatorReplaceDecommissioningVoter ||
-		a == AllocatorReplaceDecommissioningNonVoter
 }
 
 // TargetReplicaType returns that the action is for a voter or non-voter replica.
@@ -956,23 +946,8 @@ func (a *Allocator) ComputeAction(
 		return action, action.Priority()
 	}
 
-	action, priority = a.computeAction(ctx, storePool, conf, desc.Replicas().VoterDescriptors(),
+	return a.computeAction(ctx, storePool, conf, desc.Replicas().VoterDescriptors(),
 		desc.Replicas().NonVoterDescriptors())
-	// Ensure that priority is never -1. Typically, computeAction return
-	// action.Priority(), but we sometimes modify the priority for specific
-	// actions like AllocatorAddVoter, AllocatorRemoveDeadVoter, and
-	// AllocatorRemoveVoter. A priority of -1 is a special case, indicating that
-	// the caller expects the processing logic to be invoked even if there's a
-	// priority inversion. If the priority is not -1, the range might be re-queued
-	// to be processed with the correct priority.
-	if priority == -1 {
-		if buildutil.CrdbTestBuild {
-			log.Dev.Fatalf(ctx, "allocator returned -1 priority for range %s: %v", desc, action)
-		} else {
-			log.Dev.Warningf(ctx, "allocator returned -1 priority for range %s: %v", desc, action)
-		}
-	}
-	return action, priority
 }
 
 func (a *Allocator) computeAction(

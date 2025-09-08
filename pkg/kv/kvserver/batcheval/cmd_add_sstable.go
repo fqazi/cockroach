@@ -474,11 +474,12 @@ func computeSSTStatsDiffWithFallback(
 ) (enginepb.MVCCStats, error) {
 	stats, err := storage.ComputeSSTStatsDiff(
 		ctx, sst, readWriter, nowNanos, start, end)
-	if errors.IsAny(err, storage.ComputeSSTStatsDiffReaderHasRangeKeys, storage.ComputeStatsDiffViolation) {
-		log.Dev.Warningf(ctx, "computing SST stats as estimates because of ComputeSSTStatsDiff error: %s", err)
+	if errors.Is(err, storage.ComputeSSTStatsDiffReaderHasRangeKeys) {
+		// Fall back to stats estimates if there are range keys in the engine.
+		log.VEventf(ctx, 2, "computing SST stats as estimates after detecting range keys in engine")
 		sstStats, err := computeSSTStats(ctx, sst, nowNanos)
 		if err != nil {
-			return enginepb.MVCCStats{}, errors.Wrap(err, "error computing SST stats during fallback")
+			return enginepb.MVCCStats{}, errors.Wrap(err, "computing SST stats after detecting range keys in engine")
 		}
 		sstStats.ContainsEstimates = 1
 		return sstStats, nil

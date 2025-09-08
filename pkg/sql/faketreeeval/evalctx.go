@@ -582,13 +582,6 @@ func (ep *DummyEvalPlanner) RetryCounter() int {
 	return 0
 }
 
-// ProcessVectorIndexFixups is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) ProcessVectorIndexFixups(
-	ctx context.Context, tableID descpb.ID, indexID descpb.IndexID,
-) error {
-	return nil
-}
-
 // DummyPrivilegedAccessor implements the tree.PrivilegedAccessor interface by returning errors.
 type DummyPrivilegedAccessor struct{}
 

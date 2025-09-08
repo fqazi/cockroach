@@ -24,7 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/lexbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/workloadindexrec"
-	"github.com/cockroachdb/cockroach/pkg/sql/parserutils"
+	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
@@ -1581,8 +1581,9 @@ func NullGenerator(typ *types.T) (eval.ValueGenerator, error) {
 		return nil, errors.AssertionFailedf("generator expected to return multiple columns")
 	}
 	arrs := make([]*tree.DArray, len(typ.TupleContents()))
-	for i, paramTyp := range typ.TupleContents() {
-		arrs[i] = tree.NewDArrayFromDatums(paramTyp, tree.Datums{tree.DNull})
+	for i := range typ.TupleContents() {
+		arrs[i] = &tree.DArray{}
+		arrs[i].Array = tree.Datums{tree.DNull}
 	}
 	return &multipleArrayValueGenerator{arrays: arrs}, nil
 }
@@ -4060,14 +4061,19 @@ func makeInternallyExecutedQueryGeneratorOverload(
 			// internal executor will parse the query too, but we'd get an
 			// assertion failure error if we gave it more than one statement -
 			// we catch those cases here.
-			stmts, err := parserutils.Parse(query)
+			stmts, err := parser.Parse(query)
 			if err != nil {
 				return nil, err
 			}
 			if len(stmts) != 1 {
 				return nil, errors.Newf("only one statement is supported, %d were given", len(stmts))
 			}
-			if !tree.UserStmtAllowedForInternalExecutor(stmts[0].AST) {
+			if stmts[0].AST.StatementReturnType() == tree.Ack {
+				// We want to disallow statements that modify txn state (like
+				// BEGIN and COMMIT). Such statements (as well as some others
+				// like changing cluster settings and dealing with prepared
+				// statements) have the Ack return type, so we'll lean on the
+				// safe side and prohibit them all.
 				return nil, errors.New("this statement is disallowed")
 			}
 			var sessionBound bool

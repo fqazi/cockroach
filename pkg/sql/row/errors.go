@@ -124,7 +124,7 @@ func NewUniquenessConstraintViolationError(
 	// Resolve the table index descriptor name.
 	indexName, err := catalog.FindTargetIndexNameByID(tableDesc, index.GetID())
 	if err != nil {
-		log.Dev.Warningf(ctx,
+		log.Warningf(ctx,
 			"unable to find index by ID for NewUniquenessConstraintViolationError: %d",
 			index.GetID())
 		indexName = index.GetName()

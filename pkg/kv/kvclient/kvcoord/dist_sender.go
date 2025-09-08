@@ -1049,7 +1049,7 @@ func (ds *DistSender) getRoutingInfo(
 			containsFn = (*roachpb.RangeDescriptor).ContainsKeyInverted
 		}
 		if !containsFn(returnToken.Desc(), descKey) {
-			log.Dev.Fatalf(ctx, "programming error: range resolution returning non-matching descriptor: "+
+			log.Fatalf(ctx, "programming error: range resolution returning non-matching descriptor: "+
 				"desc: %s, key: %s, reverse: %t", returnToken.Desc(), descKey, redact.Safe(useReverseScan))
 		}
 	}
@@ -1284,7 +1284,7 @@ func (ds *DistSender) Send(
 			if len(parts) != 1 {
 				panic("EndTxn not in last chunk of batch")
 			} else if require1PC {
-				log.Dev.Fatalf(ctx, "required 1PC transaction cannot be split: %s", ba)
+				log.Fatalf(ctx, "required 1PC transaction cannot be split: %s", ba)
 			}
 			parts = splitBatchAndCheckForRefreshSpans(ba, true /* split ET */)
 			onePart = false
@@ -1548,7 +1548,6 @@ func (ds *DistSender) divideAndSendParallelCommit(
 	} else {
 		ctx, hdl, err := ds.stopper.GetHandle(ctx, stop.TaskOpts{
 			TaskName: taskName,
-			SpanOpt:  stop.ChildSpan,
 		})
 		if err != nil {
 			return nil, kvpb.NewError(err)
@@ -1898,6 +1897,7 @@ func (ds *DistSender) divideAndSendBatchToRanges(
 	}()
 
 	canParallelize := ba.Header.MaxSpanRequestKeys == 0 && ba.Header.TargetBytes == 0 &&
+		!ba.Header.ReturnOnRangeBoundary &&
 		!ba.Header.ReturnElasticCPUResumeSpans
 	if ba.IsSingleCheckConsistencyRequest() {
 		// Don't parallelize full checksum requests as they have to touch the
@@ -2002,7 +2002,7 @@ func (ds *DistSender) divideAndSendBatchToRanges(
 				ba.UpdateTxn(resp.reply.Txn)
 			}
 
-			mightStopEarly := ba.MaxSpanRequestKeys > 0 || ba.TargetBytes > 0 || ba.ReturnElasticCPUResumeSpans
+			mightStopEarly := ba.MaxSpanRequestKeys > 0 || ba.TargetBytes > 0 || ba.ReturnOnRangeBoundary || ba.ReturnElasticCPUResumeSpans
 			// Check whether we've received enough responses to exit query loop.
 			if mightStopEarly {
 				var replyKeys int64
@@ -2035,6 +2035,13 @@ func (ds *DistSender) divideAndSendBatchToRanges(
 						resumeReason = kvpb.RESUME_BYTE_LIMIT
 						return
 					}
+				}
+				// If we hit a range boundary, return a partial result if requested. We
+				// do this after checking the limits, so that they take precedence.
+				if ba.Header.ReturnOnRangeBoundary && replyKeys > 0 && !lastRange {
+					couldHaveSkippedResponses = true
+					resumeReason = kvpb.RESUME_RANGE_BOUNDARY
+					return
 				}
 			}
 		}
@@ -2230,7 +2237,7 @@ func (ds *DistSender) sendPartialBatch(
 			{
 				var s redact.StringBuilder
 				slowRangeRPCWarningStr(&s, ba, dur, attempts, routingTok.Desc(), err, reply)
-				log.Dev.Warningf(ctx, "slow range RPC: %v", &s)
+				log.Warningf(ctx, "slow range RPC: %v", &s)
 			}
 			// If the RPC wasn't successful, defer the logging of a message once the
 			// RPC is not retried any more.
@@ -2242,7 +2249,7 @@ func (ds *DistSender) sendPartialBatch(
 					ds.metrics.SlowRPCs.Dec(1)
 					var s redact.StringBuilder
 					slowRangeRPCReturnWarningStr(&s, tBegin.Elapsed(), attempts)
-					log.Dev.Warningf(ctx, "slow RPC response: %v", &s)
+					log.Warningf(ctx, "slow RPC response: %v", &s)
 				}(tBegin, attempts)
 			}
 			tBegin = 0 // prevent reentering branch for this RPC
@@ -2335,7 +2342,7 @@ func (ds *DistSender) sendPartialBatch(
 	}
 
 	if pErr == nil {
-		log.Dev.Fatal(ctx, "exited retry loop without an error or early exit")
+		log.Fatal(ctx, "exited retry loop without an error or early exit")
 	}
 
 	return response{pErr: pErr}
@@ -2569,7 +2576,7 @@ func (ds *DistSender) sendToReplicas(
 	case kvpb.RoutingPolicy_NEAREST:
 		replicaFilter = AllExtantReplicas
 	default:
-		log.Dev.Fatalf(ctx, "unknown routing policy: %s", ba.RoutingPolicy)
+		log.Fatalf(ctx, "unknown routing policy: %s", ba.RoutingPolicy)
 	}
 	desc := routing.Desc()
 	replicas, err := NewReplicaSlice(ctx, ds.nodeDescs, desc, routing.Leaseholder(), replicaFilter)
@@ -2609,7 +2616,7 @@ func (ds *DistSender) sendToReplicas(
 		log.VEventf(ctx, 2, "routing to nearest replica; leaseholder not required order=%v", replicas)
 
 	default:
-		log.Dev.Fatalf(ctx, "unknown routing policy: %s", ba.RoutingPolicy)
+		log.Fatalf(ctx, "unknown routing policy: %s", ba.RoutingPolicy)
 	}
 
 	// NB: upgrade the connection class to SYSTEM, for critical ranges. Set it to
@@ -2743,7 +2750,7 @@ func (ds *DistSender) sendToReplicas(
 		} else if routing.Leaseholder() == nil {
 			// NB: Normally we don't have both routeToLeaseholder and a nil
 			// leaseholder. This could be changed to an assertion.
-			log.Dev.Errorf(ctx, "attempting %v to route to leaseholder, but the leaseholder is unknown %v", ba, routing)
+			log.Errorf(ctx, "attempting %v to route to leaseholder, but the leaseholder is unknown %v", ba, routing)
 		} else if ba.Replica.NodeID == routing.Leaseholder().NodeID {
 			// We are sending this request to the leaseholder, so it doesn't
 			// make sense to attempt to proxy it.
@@ -2786,7 +2793,7 @@ func (ds *DistSender) sendToReplicas(
 				if admissionpb.WorkPriority(ba.AdmissionHeader.Priority) >= admissionpb.NormalPri {
 					// Note that these RPC may or may not have succeeded. Errors are counted separately below.
 					ds.metrics.SlowReplicaRPCs.Inc(1)
-					log.Dev.Warningf(ctx, "slow replica RPC: %v", &s)
+					log.Warningf(ctx, "slow replica RPC: %v", &s)
 				} else {
 					log.Eventf(ctx, "slow replica RPC: %v", &s)
 				}

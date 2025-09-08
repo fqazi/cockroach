@@ -12,15 +12,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
-	"github.com/cockroachdb/cockroach/pkg/sql"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
-	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/protoreflect"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
-	"github.com/cockroachdb/errors"
 	"github.com/gogo/protobuf/jsonpb"
 )
 
@@ -42,106 +37,45 @@ type ChangefeedConfig struct {
 
 // makeChangefeedConfigFromJobDetails creates a ChangefeedConfig struct from any
 // version of the ChangefeedDetails protobuf.
-func makeChangefeedConfigFromJobDetails(
-	d jobspb.ChangefeedDetails, targets changefeedbase.Targets,
-) (ChangefeedConfig, error) {
+func makeChangefeedConfigFromJobDetails(d jobspb.ChangefeedDetails) ChangefeedConfig {
 	return ChangefeedConfig{
 		SinkURI:  d.SinkURI,
 		Opts:     changefeedbase.MakeStatementOptions(d.Opts),
 		ScanTime: d.StatementTime,
 		EndTime:  d.EndTime,
-		Targets:  targets,
-	}, nil
+		Targets:  AllTargets(d),
+	}
 }
 
 // AllTargets gets all the targets listed in a ChangefeedDetails,
 // from the statement time name map in old protos
 // or the TargetSpecifications in new ones.
-func AllTargets(
-	ctx context.Context, cd jobspb.ChangefeedDetails, execCfg *sql.ExecutorConfig,
-) (changefeedbase.Targets, error) {
-	targets := changefeedbase.Targets{}
-	var err error
-
+func AllTargets(cd jobspb.ChangefeedDetails) (targets changefeedbase.Targets) {
 	// TODO: Use a version gate for this once we have CDC version gates
 	if len(cd.TargetSpecifications) > 0 {
 		for _, ts := range cd.TargetSpecifications {
-			if ts.DescID > 0 {
-				switch ts.Type {
-				case jobspb.ChangefeedTargetSpecification_DATABASE:
-					if len(cd.TargetSpecifications) > 1 {
-						return changefeedbase.Targets{}, errors.AssertionFailedf("database-level changefeed is not supported with multiple targets")
-					}
-					targets, err = getTargetsFromDatabaseSpec(ctx, ts, execCfg)
-					if err != nil {
-						return changefeedbase.Targets{}, err
-					}
-				case jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY,
-					jobspb.ChangefeedTargetSpecification_COLUMN_FAMILY,
-					jobspb.ChangefeedTargetSpecification_EACH_FAMILY:
-					if ts.StatementTimeName == "" {
-						ts.StatementTimeName = cd.Tables[ts.DescID].StatementTimeName
-					}
-					targets.Add(changefeedbase.Target{
-						Type:              ts.Type,
-						DescID:            ts.DescID,
-						FamilyName:        ts.FamilyName,
-						StatementTimeName: changefeedbase.StatementTimeName(ts.StatementTimeName),
-					})
-				default:
-					return changefeedbase.Targets{}, errors.AssertionFailedf("unsupported target type: %s", ts.Type)
+			if ts.TableID > 0 {
+				if ts.StatementTimeName == "" {
+					ts.StatementTimeName = cd.Tables[ts.TableID].StatementTimeName
 				}
+				targets.Add(changefeedbase.Target{
+					Type:              ts.Type,
+					TableID:           ts.TableID,
+					FamilyName:        ts.FamilyName,
+					StatementTimeName: changefeedbase.StatementTimeName(ts.StatementTimeName),
+				})
 			}
 		}
 	} else {
 		for id, t := range cd.Tables {
 			targets.Add(changefeedbase.Target{
 				Type:              jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY,
-				DescID:            id,
+				TableID:           id,
 				StatementTimeName: changefeedbase.StatementTimeName(t.StatementTimeName),
 			})
 		}
 	}
-	return targets, err
-}
-
-func getTargetsFromDatabaseSpec(
-	ctx context.Context, ts jobspb.ChangefeedTargetSpecification, execCfg *sql.ExecutorConfig,
-) (targets changefeedbase.Targets, err error) {
-	err = sql.DescsTxn(ctx, execCfg, func(ctx context.Context, txn isql.Txn, descs *descs.Collection) error {
-		databaseDescriptor, err := descs.ByIDWithLeased(txn.KV()).Get().Database(ctx, ts.DescID)
-		if err != nil {
-			return err
-		}
-		tables, err := descs.GetAllTablesInDatabase(ctx, txn.KV(), databaseDescriptor)
-		if err != nil {
-			return err
-		}
-		for _, desc := range tables.OrderedDescriptors() {
-			tableDesc, ok := desc.(catalog.TableDescriptor)
-			if !ok {
-				return errors.AssertionFailedf("expected table descriptor, got %T", desc)
-			}
-			// Skip virtual tables
-			if !tableDesc.IsPhysicalTable() {
-				continue
-			}
-			var tableType jobspb.ChangefeedTargetSpecification_TargetType
-			if len(tableDesc.GetFamilies()) == 1 {
-				tableType = jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY
-			} else {
-				tableType = jobspb.ChangefeedTargetSpecification_EACH_FAMILY
-			}
-
-			targets.Add(changefeedbase.Target{
-				Type:              tableType,
-				DescID:            desc.GetID(),
-				StatementTimeName: changefeedbase.StatementTimeName(desc.GetName()),
-			})
-		}
-		return nil
-	})
-	return targets, err
+	return
 }
 
 const (
@@ -164,7 +98,7 @@ func emitResolvedTimestamp(
 		return err
 	}
 	if log.V(2) {
-		log.Dev.Infof(ctx, `resolved %s`, resolved)
+		log.Infof(ctx, `resolved %s`, resolved)
 	}
 	return nil
 }
@@ -182,7 +116,6 @@ func init() {
 				changefeedbase.SinkParamClientCert,
 				changefeedbase.SinkParamConfluentAPISecret,
 				changefeedbase.SinkParamAzureAccessKey,
-				changefeedbase.SinkParamAzureAccessKeyCamel,
 			})
 			if err != nil {
 				return nil, err

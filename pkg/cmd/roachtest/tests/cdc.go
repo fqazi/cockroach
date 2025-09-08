@@ -1679,60 +1679,6 @@ highwaterLoop:
 	}
 }
 
-// runCDCWebhookBackpressureMetrics tests that the sink backpressure metric
-// gets populated when using a slow webhook sink.
-func runCDCWebhookBackpressureMetrics(ctx context.Context, t test.Test, c cluster.Cluster) {
-	ct := newCDCTester(ctx, t, c)
-	defer ct.Close()
-
-	ips, err := c.ExternalIP(ctx, t.L(), c.WorkloadNode())
-	if err != nil {
-		t.Fatal(err)
-	}
-	sinkURL := fmt.Sprintf("https://%s:%d", ips[0], debug.WebhookServerPort)
-	sink := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
-
-	m := c.NewDeprecatedMonitor(ctx, c.All())
-
-	m.Go(func(ctx context.Context) error {
-		t.L().Printf("starting slow webhook server at %s...", sinkURL)
-		// Use webhook-server-slow with delays to create backpressure
-		return c.RunE(ctx, option.WithNodes(c.WorkloadNode()),
-			"./cockroach workload debug webhook-server-slow 100 5000 5000 5000 5000 5000")
-	})
-	defer func() {
-		_, err := sink.Get(sinkURL + "/exit")
-		t.L().Printf("exiting webhook sink status: %v", err)
-	}()
-
-	db := c.Conn(ctx, t.L(), 1)
-	defer db.Close()
-
-	ct.runTPCCWorkload(tpccArgs{warehouses: 10, duration: "1m"})
-
-	ct.newChangefeed(feedArgs{
-		sinkType:        webhookSink,
-		targets:         allTpccTargets,
-		opts:            map[string]string{"updated": "", "min_checkpoint_frequency": "'1s'", "webhook_sink_config": `'{"Flush": {"Messages": 10, "Frequency": "100ms"}}'`},
-		sinkURIOverride: fmt.Sprintf("webhook-%s/?insecure_tls_skip_verify=true", sinkURL),
-	})
-
-	// Wait a bit for metrics to be recorded
-	time.Sleep(30 * time.Second)
-
-	t.L().Printf("verifying backpressure metric...")
-
-	ct.verifyMetrics(ctx, func(metrics map[string]*prompb.MetricFamily) (ok bool) {
-		for _, m := range metrics {
-			if m.GetName() == "changefeed_sink_backpressure_nanos" {
-				count, sum := m.GetMetric()[0].GetHistogram().GetSampleCount(), m.GetMetric()[0].GetHistogram().GetSampleSum()
-				return count > 0 && sum > 0
-			}
-		}
-		return false
-	})
-}
-
 func runMessageTooLarge(ctx context.Context, t test.Test, c cluster.Cluster) {
 	ct := newCDCTester(ctx, t, c)
 	db := ct.DB()
@@ -1783,133 +1729,6 @@ func runMessageTooLarge(ctx context.Context, t test.Test, c cluster.Cluster) {
 	require.Regexp(t, `key=[^ ]+`, logStr, "log should include key")
 	require.Regexp(t, `size=\d+`, logStr, "log should include size")
 	require.Regexp(t, `mvcc=[\d\.]+,\d+`, logStr, "log should include mvcc")
-}
-
-type multiTablePTSBenchmarkParams struct {
-	numTables   int
-	numRanges   int
-	numRows     int
-	duration    string
-	perTablePTS bool
-}
-
-// runCDCMultiTablePTSBenchmark is a benchmark for changefeeds with multiple tables,
-// focusing on the performance of the PTS system. It starts a bank workload on every
-// table it creates and then runs a single changefeed that targets all of these bank tables.
-// Each of those workloads (there will be one per table) will run for the duration specified
-// in the params and have the number of rows specified in the params.
-func runCDCMultiTablePTSBenchmark(
-	ctx context.Context, t test.Test, c cluster.Cluster, params multiTablePTSBenchmarkParams,
-) {
-	ct := newCDCTester(ctx, t, c)
-	defer ct.Close()
-
-	startOpts := option.DefaultStartOpts()
-	startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs,
-		"--vmodule=changefeed=2,changefeed_processors=2,protected_timestamps=2",
-	)
-
-	db := ct.DB()
-	if err := configureDBForMultiTablePTSBenchmark(db); err != nil {
-		t.Fatalf("failed to set cluster settings: %v", err)
-	}
-
-	numRanges := 10
-	if params.numRanges > 0 {
-		numRanges = params.numRanges
-	}
-
-	if params.perTablePTS {
-		if _, err := db.Exec("SET CLUSTER SETTING changefeed.protected_timestamp.per_table.enabled = true"); err != nil {
-			t.Fatalf("failed to set per-table protected timestamps: %v", err)
-		}
-	}
-
-	initCmd := fmt.Sprintf("./cockroach workload init bank --rows=%d --ranges=%d --num-tables=%d {pgurl%s}",
-		params.numRows, numRanges, params.numTables, ct.crdbNodes.RandNode())
-	if err := c.RunE(ctx, option.WithNodes(ct.workloadNode), initCmd); err != nil {
-		t.Fatalf("failed to initialize bank tables: %v", err)
-	}
-
-	ct.workloadWg.Add(1)
-	ct.mon.Go(func(ctx context.Context) error {
-		defer ct.workloadWg.Done()
-		workloadCmd := fmt.Sprintf("./cockroach workload run bank --rows=%d --duration=%s --num-tables=%d {pgurl%s}",
-			params.numRows, params.duration, params.numTables, ct.crdbNodes)
-		return c.RunE(ctx, option.WithNodes(ct.workloadNode), workloadCmd)
-	})
-
-	// We generate and run the changefeed, which requires rangefeeds to be enabled.
-	if _, err := db.Exec("SET CLUSTER SETTING kv.rangefeed.enabled = true"); err != nil {
-		t.Fatalf("failed to enable rangefeeds: %v", err)
-	}
-
-	targetNames := make([]string, 0, params.numTables)
-	for i := range params.numTables {
-		targetNames = append(targetNames, fmt.Sprintf("bank.bank_%d", i))
-	}
-
-	feed := ct.newChangefeed(feedArgs{
-		sinkType: nullSink,
-		targets:  targetNames,
-		opts: map[string]string{
-			"format":                   "'json'",
-			"resolved":                 "'1s'",
-			"full_table_name":          "",
-			"min_checkpoint_frequency": "'1s'",
-			"initial_scan":             "'no'",
-		},
-	})
-
-	t.Status("multi-table PTS benchmark running with jobId ", feed.jobID)
-
-	ct.waitForWorkload()
-
-	t.Status("workload finished, verifying metrics")
-
-	// These metrics are in nanoseconds, so we are asserting that both
-	// of these latency metrics are less than 25 milliseconds.
-	ct.verifyMetrics(ctx, ct.verifyMetricsUnderThreshold([]string{
-		"changefeed_stage_pts_manage_latency",
-		"changefeed_stage_pts_create_latency",
-	}, float64(25*time.Millisecond)))
-
-	t.Status("multi-table PTS benchmark finished")
-}
-
-func configureDBForMultiTablePTSBenchmark(db *gosql.DB) error {
-	// This is used to trigger frequent garbage collection and
-	// protected timestamp updates.
-	if _, err := db.Exec("ALTER DATABASE defaultdb CONFIGURE ZONE USING gc.ttlseconds = 1"); err != nil {
-		return err
-	}
-	if _, err := db.Exec("SET CLUSTER SETTING kv.closed_timestamp.target_duration = '100ms'"); err != nil {
-		return err
-	}
-	if _, err := db.Exec("SET CLUSTER SETTING kv.protectedts.poll_interval = '10ms'"); err != nil {
-		return err
-	}
-
-	// This is used to trigger frequent protected timestamp updates.
-	if _, err := db.Exec("SET CLUSTER SETTING changefeed.protect_timestamp_interval = '10ms'"); err != nil {
-		return err
-	}
-	if _, err := db.Exec("SET CLUSTER SETTING changefeed.protect_timestamp.lag = '1ms'"); err != nil {
-		return err
-	}
-
-	// These settings are used to trigger frequent checkpoints since protected timestamp
-	// management happens on checkpointing.
-	if _, err := db.Exec("SET CLUSTER SETTING changefeed.span_checkpoint.interval = '1s'"); err != nil {
-		return err
-	}
-	if _, err := db.Exec("SET CLUSTER SETTING changefeed.frontier_highwater_lag_checkpoint_threshold = '100ms'"); err != nil {
-		return err
-	}
-	if _, err := db.Exec("SET CLUSTER SETTING changefeed.frontier_checkpoint_frequency = '1s'"); err != nil {
-		return err
-	}
-	return nil
 }
 
 func registerCDC(r registry.Registry) {
@@ -2891,15 +2710,6 @@ func registerCDC(r registry.Registry) {
 		},
 	})
 	r.Add(registry.TestSpec{
-		Name:             "cdc/webhook-sink-backpressure-metrics",
-		Owner:            `cdc`,
-		Cluster:          r.MakeClusterSpec(4, spec.CPU(4), spec.WorkloadNode()),
-		Leases:           registry.MetamorphicLeases,
-		CompatibleClouds: registry.OnlyGCE,
-		Suites:           registry.Suites(registry.Nightly),
-		Run:              runCDCWebhookBackpressureMetrics,
-	})
-	r.Add(registry.TestSpec{
 		Name:             "cdc/message-too-large-error",
 		Owner:            registry.OwnerCDC,
 		Cluster:          r.MakeClusterSpec(3),
@@ -2909,37 +2719,6 @@ func registerCDC(r registry.Registry) {
 		CompatibleClouds: registry.AllExceptIBM,
 		Run:              runMessageTooLarge,
 	})
-
-	for _, perTablePTS := range []bool{false, true} {
-		for _, config := range []struct {
-			numTables int
-			numRanges int
-		}{
-			{numTables: 500, numRanges: 10},
-			{numTables: 5000, numRanges: 10},
-			{numTables: 50000, numRanges: 1}, // Splitting tables into ranges slows down test setup at this scale
-		} {
-			r.Add(registry.TestSpec{
-				Name:             fmt.Sprintf("cdc/multi-table-pts-benchmark/per-table-pts=%t/num-tables=%d/num-ranges=%d", perTablePTS, config.numTables, config.numRanges),
-				Owner:            registry.OwnerCDC,
-				Benchmark:        true,
-				Cluster:          r.MakeClusterSpec(4, spec.CPU(16), spec.WorkloadNode()),
-				CompatibleClouds: registry.AllClouds,
-				Suites:           registry.Suites(registry.Nightly),
-				Timeout:          1 * time.Hour,
-				Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-					params := multiTablePTSBenchmarkParams{
-						numTables:   config.numTables,
-						numRanges:   config.numRanges,
-						numRows:     100,
-						duration:    "20m",
-						perTablePTS: perTablePTS,
-					}
-					runCDCMultiTablePTSBenchmark(ctx, t, c, params)
-				},
-			})
-		}
-	}
 }
 
 const (
@@ -4614,43 +4393,6 @@ func verifyMetricsNonZero(names ...string) func(metrics map[string]*prompb.Metri
 			for _, m := range fam.Metric {
 				if m.Counter.GetValue() > 0 {
 					found[name] = struct{}{}
-				}
-			}
-
-			if len(found) == len(names) {
-				return true
-			}
-		}
-		return false
-	}
-}
-
-func (ct *cdcTester) verifyMetricsUnderThreshold(
-	names []string, threshold float64,
-) func(metrics map[string]*prompb.MetricFamily) (ok bool) {
-	namesMap := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		namesMap[name] = struct{}{}
-	}
-
-	return func(metrics map[string]*prompb.MetricFamily) (ok bool) {
-		found := map[string]struct{}{}
-
-		for name, fam := range metrics {
-			if _, ok := namesMap[name]; !ok {
-				continue
-			}
-
-			for _, m := range fam.Metric {
-				if m.Histogram.GetSampleCount() == 0 {
-					continue
-				}
-
-				observedValue := m.Histogram.GetSampleSum() / float64(m.Histogram.GetSampleCount())
-				if observedValue < threshold {
-					found[name] = struct{}{}
-				} else {
-					ct.t.Fatalf("observed value for metric %s over threshold. observedValue: %f, threshold: %f", name, observedValue, threshold)
 				}
 			}
 

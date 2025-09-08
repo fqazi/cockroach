@@ -324,7 +324,7 @@ func (p *planner) writeDropFuncSchemaChange(ctx context.Context, funcDesc *funcd
 		Progress: jobspb.TypeSchemaChangeProgress{},
 	}
 	p.extendedEvalCtx.jobs.uniqueToCreate[funcDesc.ID] = &jobRecord
-	log.Dev.Infof(ctx, "queued drop function job %d for function %d", jobRecord.JobID, funcDesc.ID)
+	log.Infof(ctx, "queued drop function job %d for function %d", jobRecord.JobID, funcDesc.ID)
 	return p.writeFuncDesc(ctx, funcDesc)
 }
 

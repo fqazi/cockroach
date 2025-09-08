@@ -54,7 +54,7 @@ const (
 // statements to be prepared, etc. At any point in time the buffer contains
 // outstanding commands that have yet to be executed, and it can also contain
 // some history of commands that we might want to retry - in the case of a
-// retryable error, we'd like to retry all the commands pertaining to the
+// retriable error, we'd like to retry all the commands pertaining to the
 // current SQL transaction.
 //
 // The buffer is supposed to be used by one reader and one writer. The writer
@@ -581,11 +581,11 @@ func (buf *StmtBuf) Ltrim(ctx context.Context, pos CmdPos) {
 	buf.mu.Lock()
 	defer buf.mu.Unlock()
 	if pos < buf.mu.startPos {
-		log.Dev.Fatalf(ctx, "invalid ltrim position: %d. buf starting at: %d",
+		log.Fatalf(ctx, "invalid ltrim position: %d. buf starting at: %d",
 			pos, buf.mu.startPos)
 	}
 	if buf.mu.curPos < pos {
-		log.Dev.Fatalf(ctx, "invalid ltrim position: %d when cursor is: %d",
+		log.Fatalf(ctx, "invalid ltrim position: %d when cursor is: %d",
 			pos, buf.mu.curPos)
 	}
 	// Remove commands one by one.
@@ -683,7 +683,7 @@ func (buf *StmtBuf) Rewind(ctx context.Context, pos CmdPos) {
 	buf.mu.Lock()
 	defer buf.mu.Unlock()
 	if pos < buf.mu.startPos {
-		log.Dev.Fatalf(ctx, "attempting to rewind below buffer start")
+		log.Fatalf(ctx, "attempting to rewind below buffer start")
 	}
 	if buf.PipelineCount != nil {
 		buf.PipelineCount.Inc(int64(buf.mu.curPos - pos))

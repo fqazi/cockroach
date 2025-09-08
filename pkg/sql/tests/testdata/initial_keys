@@ -1,6 +1,6 @@
 initial-keys tenant=system
 ----
-145 keys:
+143 keys:
  /Table/3/1/1/2/1
  /Table/3/1/3/2/1
  /Table/3/1/4/2/1
@@ -64,7 +64,6 @@ initial-keys tenant=system
  /Table/3/1/70/2/1
  /Table/3/1/71/2/1
  /Table/3/1/72/2/1
- /Table/3/1/73/2/1
  /Table/5/1/0/2/1
  /Table/5/1/1/2/1
  /Table/5/1/11/2/1
@@ -87,7 +86,6 @@ initial-keys tenant=system
  /NamespaceTable/30/1/1/29/"descriptor_id_seq"/4/1
  /NamespaceTable/30/1/1/29/"eventlog"/4/1
  /NamespaceTable/30/1/1/29/"external_connections"/4/1
- /NamespaceTable/30/1/1/29/"inspect_errors"/4/1
  /NamespaceTable/30/1/1/29/"job_info"/4/1
  /NamespaceTable/30/1/1/29/"job_message"/4/1
  /NamespaceTable/30/1/1/29/"job_progress"/4/1
@@ -146,7 +144,7 @@ initial-keys tenant=system
  /NamespaceTable/30/1/1/29/"zones"/4/1
  /Table/48/1/0/0
  /Table/63/1/0/0
-69 splits:
+68 splits:
  /Table/3
  /Table/4
  /Table/5
@@ -215,11 +213,10 @@ initial-keys tenant=system
  /Table/70
  /Table/71
  /Table/72
- /Table/73
 
 initial-keys tenant=5
 ----
-136 keys:
+134 keys:
  /Tenant/5/Table/3/1/1/2/1
  /Tenant/5/Table/3/1/3/2/1
  /Tenant/5/Table/3/1/4/2/1
@@ -283,7 +280,6 @@ initial-keys tenant=5
  /Tenant/5/Table/3/1/70/2/1
  /Tenant/5/Table/3/1/71/2/1
  /Tenant/5/Table/3/1/72/2/1
- /Tenant/5/Table/3/1/73/2/1
  /Tenant/5/Table/5/1/0/2/1
  /Tenant/5/Table/7/1/0/0
  /Tenant/5/Table/8/1/1/0
@@ -297,7 +293,6 @@ initial-keys tenant=5
  /Tenant/5/NamespaceTable/30/1/1/29/"descriptor_id_seq"/4/1
  /Tenant/5/NamespaceTable/30/1/1/29/"eventlog"/4/1
  /Tenant/5/NamespaceTable/30/1/1/29/"external_connections"/4/1
- /Tenant/5/NamespaceTable/30/1/1/29/"inspect_errors"/4/1
  /Tenant/5/NamespaceTable/30/1/1/29/"job_info"/4/1
  /Tenant/5/NamespaceTable/30/1/1/29/"job_message"/4/1
  /Tenant/5/NamespaceTable/30/1/1/29/"job_progress"/4/1
@@ -362,7 +357,7 @@ initial-keys tenant=5
 
 initial-keys tenant=5
 ----
-136 keys:
+134 keys:
  /Tenant/5/Table/3/1/1/2/1
  /Tenant/5/Table/3/1/3/2/1
  /Tenant/5/Table/3/1/4/2/1
@@ -426,7 +421,6 @@ initial-keys tenant=5
  /Tenant/5/Table/3/1/70/2/1
  /Tenant/5/Table/3/1/71/2/1
  /Tenant/5/Table/3/1/72/2/1
- /Tenant/5/Table/3/1/73/2/1
  /Tenant/5/Table/5/1/0/2/1
  /Tenant/5/Table/7/1/0/0
  /Tenant/5/Table/8/1/1/0
@@ -440,7 +434,6 @@ initial-keys tenant=5
  /Tenant/5/NamespaceTable/30/1/1/29/"descriptor_id_seq"/4/1
  /Tenant/5/NamespaceTable/30/1/1/29/"eventlog"/4/1
  /Tenant/5/NamespaceTable/30/1/1/29/"external_connections"/4/1
- /Tenant/5/NamespaceTable/30/1/1/29/"inspect_errors"/4/1
  /Tenant/5/NamespaceTable/30/1/1/29/"job_info"/4/1
  /Tenant/5/NamespaceTable/30/1/1/29/"job_message"/4/1
  /Tenant/5/NamespaceTable/30/1/1/29/"job_progress"/4/1
@@ -505,7 +498,7 @@ initial-keys tenant=5
 
 initial-keys tenant=999
 ----
-136 keys:
+134 keys:
  /Tenant/999/Table/3/1/1/2/1
  /Tenant/999/Table/3/1/3/2/1
  /Tenant/999/Table/3/1/4/2/1
@@ -569,7 +562,6 @@ initial-keys tenant=999
  /Tenant/999/Table/3/1/70/2/1
  /Tenant/999/Table/3/1/71/2/1
  /Tenant/999/Table/3/1/72/2/1
- /Tenant/999/Table/3/1/73/2/1
  /Tenant/999/Table/5/1/0/2/1
  /Tenant/999/Table/7/1/0/0
  /Tenant/999/Table/8/1/1/0
@@ -583,7 +575,6 @@ initial-keys tenant=999
  /Tenant/999/NamespaceTable/30/1/1/29/"descriptor_id_seq"/4/1
  /Tenant/999/NamespaceTable/30/1/1/29/"eventlog"/4/1
  /Tenant/999/NamespaceTable/30/1/1/29/"external_connections"/4/1
- /Tenant/999/NamespaceTable/30/1/1/29/"inspect_errors"/4/1
  /Tenant/999/NamespaceTable/30/1/1/29/"job_info"/4/1
  /Tenant/999/NamespaceTable/30/1/1/29/"job_message"/4/1
  /Tenant/999/NamespaceTable/30/1/1/29/"job_progress"/4/1

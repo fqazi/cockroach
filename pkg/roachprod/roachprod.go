@@ -416,12 +416,12 @@ func Run(
 	ctx context.Context,
 	l *logger.Logger,
 	clusterName, SSHOptions, processTag string,
-	secure install.SecureOption,
+	secure bool,
 	stdout, stderr io.Writer,
 	cmdArray []string,
 	options install.RunOptions,
 ) error {
-	c, err := GetClusterFromCache(l, clusterName, secure, install.TagOption(processTag))
+	c, err := GetClusterFromCache(l, clusterName, install.SecureOption(secure), install.TagOption(processTag))
 	if err != nil {
 		return err
 	}
@@ -445,11 +445,11 @@ func RunWithDetails(
 	ctx context.Context,
 	l *logger.Logger,
 	clusterName, SSHOptions, processTag string,
-	secure install.SecureOption,
+	secure bool,
 	cmdArray []string,
 	options install.RunOptions,
 ) ([]install.RunResultDetails, error) {
-	c, err := GetClusterFromCache(l, clusterName, secure, install.TagOption(processTag))
+	c, err := GetClusterFromCache(l, clusterName, install.SecureOption(secure), install.TagOption(processTag))
 	if err != nil {
 		return nil, err
 	}
@@ -479,14 +479,14 @@ func SQL(
 	ctx context.Context,
 	l *logger.Logger,
 	clusterName string,
-	secure install.ComplexSecureOption,
+	secure bool,
 	tenantName string,
 	tenantInstance int,
 	authMode install.PGAuthMode,
 	database string,
 	cmdArray []string,
 ) error {
-	c, err := GetClusterFromCache(l, clusterName, secure)
+	c, err := GetClusterFromCache(l, clusterName, install.SecureOption(secure))
 	if err != nil {
 		return err
 	}
@@ -1129,7 +1129,7 @@ func Get(ctx context.Context, l *logger.Logger, clusterName, src, dest string) e
 
 type PGURLOptions struct {
 	Database           string
-	Secure             install.SecureOption
+	Secure             bool
 	External           bool
 	VirtualClusterName string
 	SQLInstance        int
@@ -1140,7 +1140,7 @@ type PGURLOptions struct {
 func PgURL(
 	ctx context.Context, l *logger.Logger, clusterName, certsDir string, opts PGURLOptions,
 ) ([]string, error) {
-	c, err := GetClusterFromCache(l, clusterName, opts.Secure, install.PGUrlCertsDirOption(certsDir))
+	c, err := GetClusterFromCache(l, clusterName, install.SecureOption(opts.Secure), install.PGUrlCertsDirOption(certsDir))
 	if err != nil {
 		return nil, err
 	}
@@ -1172,12 +1172,6 @@ func PgURL(
 	}
 	if len(urls) != len(nodes) {
 		return nil, errors.Errorf("have nodes %v, but urls %v from ips %v", nodes, urls, ips)
-	}
-	// We should never return an empty list of URLs as roachprod clusters always have at least
-	// one node. However, many callers of this function directly index into the slice returned,
-	// so check just in case.
-	if len(urls) == 0 {
-		return nil, errors.Newf("have nodes %v, but no urls were found", nodes)
 	}
 	return urls, nil
 }
@@ -1272,10 +1266,9 @@ func AdminURL(
 	clusterName, virtualClusterName string,
 	sqlInstance int,
 	path string,
-	usePublicIP, openInBrowser bool,
-	secure install.SecureOption,
+	usePublicIP, openInBrowser, secure bool,
 ) ([]string, error) {
-	c, err := GetClusterFromCache(l, clusterName, secure)
+	c, err := GetClusterFromCache(l, clusterName, install.SecureOption(secure))
 	if err != nil {
 		return nil, err
 	}
@@ -1283,7 +1276,7 @@ func AdminURL(
 		path:               path,
 		usePublicIP:        usePublicIP,
 		openInBrowser:      openInBrowser,
-		secure:             c.ClusterSettings.Secure,
+		secure:             secure,
 		virtualClusterName: virtualClusterName,
 		sqlInstance:        sqlInstance,
 	}
@@ -1295,11 +1288,11 @@ func SQLPorts(
 	ctx context.Context,
 	l *logger.Logger,
 	clusterName string,
-	secure install.SecureOption,
+	secure bool,
 	virtualClusterName string,
 	sqlInstance int,
 ) ([]int, error) {
-	c, err := GetClusterFromCache(l, clusterName, secure)
+	c, err := GetClusterFromCache(l, clusterName, install.SecureOption(secure))
 	if err != nil {
 		return nil, err
 	}
@@ -1319,11 +1312,11 @@ func AdminPorts(
 	ctx context.Context,
 	l *logger.Logger,
 	clusterName string,
-	secure install.SecureOption,
+	secure bool,
 	virtualClusterName string,
 	sqlInstance int,
 ) ([]int, error) {
-	c, err := GetClusterFromCache(l, clusterName, secure)
+	c, err := GetClusterFromCache(l, clusterName, install.SecureOption(secure))
 	if err != nil {
 		return nil, err
 	}
@@ -1783,18 +1776,14 @@ func PopulateEtcHosts(ctx context.Context, l *logger.Logger, clusterName string)
 }
 
 func Grow(
-	ctx context.Context,
-	l *logger.Logger,
-	clusterName string,
-	secure install.SecureOption,
-	numNodes int,
+	ctx context.Context, l *logger.Logger, clusterName string, secure bool, numNodes int,
 ) error {
 	if numNodes <= 0 || numNodes >= 1000 {
 		// Upper limit is just for safety.
 		return fmt.Errorf("number of nodes must be in [1..999]")
 	}
 
-	c, err := GetClusterFromCache(l, clusterName, secure)
+	c, err := GetClusterFromCache(l, clusterName)
 	if err != nil {
 		return err
 	}
@@ -1820,10 +1809,10 @@ func Grow(
 		return err
 	}
 
-	if c.Secure {
+	if secure {
 		// Grab the cluster from the cache again to ensure we have the latest
 		// information.
-		c, err = GetClusterFromCache(l, clusterName, secure)
+		c, err = GetClusterFromCache(l, clusterName)
 		if err != nil {
 			return err
 		}
@@ -2422,10 +2411,10 @@ func StartJaeger(
 	l *logger.Logger,
 	clusterName string,
 	virtualClusterName string,
-	secure install.ComplexSecureOption,
+	secure bool,
 	configureNodes string,
 ) error {
-	c, err := GetClusterFromCache(l, clusterName, secure)
+	c, err := GetClusterFromCache(l, clusterName, install.SecureOption(secure))
 	if err != nil {
 		return err
 	}
@@ -2792,11 +2781,11 @@ func CreateLoadBalancer(
 	ctx context.Context,
 	l *logger.Logger,
 	clusterName string,
-	secure install.ComplexSecureOption,
+	secure bool,
 	virtualClusterName string,
 	sqlInstance int,
 ) error {
-	c, err := GetClusterFromCache(l, clusterName, secure)
+	c, err := GetClusterFromCache(l, clusterName, install.SecureOption(secure))
 	if err != nil {
 		return err
 	}
@@ -2850,7 +2839,7 @@ func CreateLoadBalancer(
 
 	// For secure clusters, the load balancer IP needs to be added to the
 	// cluster's certificate.
-	if c.ClusterSettings.Secure {
+	if secure {
 		err = c.RedistributeNodeCert(ctx, l)
 		if err != nil {
 			return err
@@ -2864,7 +2853,7 @@ func CreateLoadBalancer(
 func LoadBalancerPgURL(
 	ctx context.Context, l *logger.Logger, clusterName, certsDir string, opts PGURLOptions,
 ) (string, error) {
-	c, err := GetClusterFromCache(l, clusterName, opts.Secure, install.PGUrlCertsDirOption(certsDir))
+	c, err := GetClusterFromCache(l, clusterName, install.SecureOption(opts.Secure), install.PGUrlCertsDirOption(certsDir))
 	if err != nil {
 		return "", err
 	}
@@ -2921,7 +2910,7 @@ func Deploy(
 	sig int,
 	wait bool,
 	gracePeriod int,
-	secure install.ComplexSecureOption,
+	secure bool,
 ) error {
 	// Stage supports `workload` as well, so it needs to be excluded here. This
 	// list contains a subset that only pulls the cockroach binary.
@@ -2929,7 +2918,7 @@ func Deploy(
 	if !slices.Contains(supportedApplicationNames, applicationName) {
 		return errors.Errorf("unsupported application name %s, supported names are %v", applicationName, supportedApplicationNames)
 	}
-	c, err := GetClusterFromCache(l, clusterName, secure)
+	c, err := GetClusterFromCache(l, clusterName, install.SecureOption(secure))
 	if err != nil {
 		return err
 	}

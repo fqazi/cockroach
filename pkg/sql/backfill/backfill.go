@@ -40,7 +40,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecencoding"
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecstore"
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecstore/vecstorepb"
-	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -326,7 +325,7 @@ func (cb *ColumnBackfiller) RunColumnBackfillChunk(
 
 	// Update the fetcher to use the new txn.
 	if err := cb.fetcher.SetTxn(txn); err != nil {
-		log.Dev.Errorf(ctx, "scan error during SetTxn: %s", err)
+		log.Errorf(ctx, "scan error during SetTxn: %s", err)
 		return roachpb.Key{}, err
 	}
 
@@ -343,7 +342,7 @@ func (cb *ColumnBackfiller) RunColumnBackfillChunk(
 		rowinfra.GetDefaultBatchBytesLimit(cb.evalCtx.TestingKnobs.ForceProductionValues),
 		chunkSize,
 	); err != nil {
-		log.Dev.Errorf(ctx, "scan error: %s", err)
+		log.Errorf(ctx, "scan error: %s", err)
 		return roachpb.Key{}, err
 	}
 
@@ -606,7 +605,6 @@ func (ib *IndexBackfiller) InitForLocalUse(
 	semaCtx *tree.SemaContext,
 	desc catalog.TableDescriptor,
 	mon *mon.BytesMonitor,
-	vecIndexManager *vecindex.Manager,
 ) (retErr error) {
 	if mon == nil {
 		return errors.AssertionFailedf("memory monitor must be provided")
@@ -618,8 +616,7 @@ func (ib *IndexBackfiller) InitForLocalUse(
 	}()
 
 	// Initialize ib.added.
-	// TODO(150163): Pass vecIndexManager once vector index build is supported with the legacy schema changer.
-	if err := ib.initIndexes(ctx, evalCtx, desc, nil /* allowList */, 0 /*sourceIndex*/, nil /*vecIndexManager*/); err != nil {
+	if err := ib.initIndexes(ctx, evalCtx, desc, nil /* allowList */, 0 /*sourceIndex*/, nil); err != nil {
 		return err
 	}
 
@@ -924,13 +921,6 @@ func (ib *IndexBackfiller) initIndexes(
 			continue
 		}
 
-		if vecIndexManager == nil {
-			return unimplemented.NewWithIssue(
-				150163,
-				"vector index build not supported with the legacy schema changer",
-			)
-		}
-
 		if ib.VectorIndexes == nil {
 			ib.VectorIndexes = make(map[descpb.IndexID]VectorIndexHelper)
 		}
@@ -1080,7 +1070,7 @@ func (ib *IndexBackfiller) BuildIndexEntriesChunk(
 		rowinfra.GetDefaultBatchBytesLimit(ib.evalCtx.TestingKnobs.ForceProductionValues),
 		initBufferSize,
 	); err != nil {
-		log.Dev.Errorf(ctx, "scan error: %s", err)
+		log.Errorf(ctx, "scan error: %s", err)
 		return nil, nil, memUsedPerChunk, err
 	}
 

@@ -262,7 +262,7 @@ func (ex *connExecutor) prepare(
 			f := tree.NewFmtCtx(tree.FmtMarkRedactionNode | tree.FmtOmitNameRedaction | tree.FmtSimple)
 			f.FormatNode(stmt.AST)
 			redactableStmt := redact.RedactableString(f.CloseAndGetString())
-			log.Dev.Warningf(ctx, "could not prepare statement during session migration (%s): %v", redactableStmt, err)
+			log.Warningf(ctx, "could not prepare statement during session migration (%s): %v", redactableStmt, err)
 		}
 	}
 
@@ -334,7 +334,7 @@ func (ex *connExecutor) execBind(
 		if ps != nil && ps.StatementSummary != "" {
 			err = errors.WithDetailf(err, "statement summary %q", ps.StatementSummary)
 		}
-		return eventNonRetryableErr{IsCommit: fsm.False}, eventNonRetryableErrPayload{err: err}
+		return eventNonRetriableErr{IsCommit: fsm.False}, eventNonRetriableErrPayload{err: err}
 	}
 
 	var ok bool
@@ -497,7 +497,7 @@ func (ex *connExecutor) execBind(
 			numCols, len(bindCmd.OutFormats))
 		// A user is hitting this error unexpectedly and rarely, dump extra info,
 		// should be okay since this should be a very rare error.
-		log.Dev.Infof(ctx, "%s outformats: %v, AST: %T, prepared statements: %s", err.Error(),
+		log.Infof(ctx, "%s outformats: %v, AST: %T, prepared statements: %s", err.Error(),
 			bindCmd.OutFormats, ps.AST, ex.extraTxnState.prepStmtsNamespace.String())
 		return retErr(err)
 	}
@@ -517,7 +517,7 @@ func (ex *connExecutor) execBind(
 	}
 
 	if log.V(2) {
-		log.Dev.Infof(ctx, "portal: %q for %q, args %q, formats %q",
+		log.Infof(ctx, "portal: %q for %q, args %q, formats %q",
 			portalName, ps.Statement, qargs, columnFormatCodes)
 	}
 
@@ -605,7 +605,7 @@ func (ex *connExecutor) execDescribe(
 ) (fsm.Event, fsm.EventPayload) {
 
 	retErr := func(err error) (fsm.Event, fsm.EventPayload) {
-		return eventNonRetryableErr{IsCommit: fsm.False}, eventNonRetryableErrPayload{err: err}
+		return eventNonRetriableErr{IsCommit: fsm.False}, eventNonRetriableErrPayload{err: err}
 	}
 	_, isAbortedTxn := ex.machine.CurState().(stateAborted)
 

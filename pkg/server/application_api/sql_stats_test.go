@@ -59,7 +59,6 @@ func TestStatusAPICombinedTransactions(t *testing.T) {
 
 	var params base.TestServerArgs
 	params.Knobs.SpanConfig = &spanconfig.TestingKnobs{ManagerDisableJobCreation: true} // TODO(irfansharif): #74919.
-	params.Knobs.SQLStatsKnobs = &sqlstats.TestingKnobs{SynchronousSQLStats: true}
 	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{
 		ServerArgs: params,
 	})
@@ -131,6 +130,8 @@ func TestStatusAPICombinedTransactions(t *testing.T) {
 		}
 	}
 
+	// Wait for last app name to be flushed to in memory stats.
+
 	// Hit query endpoint.
 	var resp serverpb.StatementsResponse
 	if err := srvtestutils.GetStatusJSONProtoWithAdminAndTimeoutOption(firstServerProto, "combinedstmts", &resp, true, additionalTimeout); err != nil {
@@ -198,15 +199,7 @@ func TestStatusAPITransactions(t *testing.T) {
 	skip.UnderDeadlock(t, "test is very slow under deadlock")
 	skip.UnderRace(t, "test is too slow to run under race")
 
-	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
-			Knobs: base.TestingKnobs{
-				SQLStatsKnobs: &sqlstats.TestingKnobs{
-					SynchronousSQLStats: true,
-				},
-			},
-		},
-	})
+	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{})
 	ctx := context.Background()
 	defer testCluster.Stopper().Stop(ctx)
 
@@ -337,15 +330,7 @@ func TestStatusAPITransactionStatementFingerprintIDsTruncation(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
-			Knobs: base.TestingKnobs{
-				SQLStatsKnobs: &sqlstats.TestingKnobs{
-					SynchronousSQLStats: true,
-				},
-			},
-		},
-	})
+	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{})
 	defer testCluster.Stopper().Stop(context.Background())
 
 	firstServerProto := testCluster.Server(0).ApplicationLayer()
@@ -413,7 +398,6 @@ func TestStatusAPIStatements(t *testing.T) {
 	aggregatedTs := int64(1630353000)
 	statsKnobs := sqlstats.CreateTestingKnobs()
 	statsKnobs.StubTimeNow = func() time.Time { return timeutil.Unix(aggregatedTs, 0) }
-	statsKnobs.SynchronousSQLStats = true
 	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			Knobs: base.TestingKnobs{
@@ -537,7 +521,6 @@ func TestStatusAPICombinedStatementsTotalLatency(t *testing.T) {
 	}
 
 	sqlStatsKnobs := sqlstats.CreateTestingKnobs()
-	sqlStatsKnobs.SynchronousSQLStats = true
 	// Start the cluster.
 	srv, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
 		Insecure: true,
@@ -699,7 +682,6 @@ func TestStatusAPICombinedStatementsWithFullScans(t *testing.T) {
 	oneMinAfterAggregatedTs := aggregatedTs + 60
 	statsKnobs := sqlstats.CreateTestingKnobs()
 	statsKnobs.StubTimeNow = func() time.Time { return timeutil.Unix(aggregatedTs, 0) }
-	statsKnobs.SynchronousSQLStats = true
 	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			Knobs: base.TestingKnobs{
@@ -874,7 +856,6 @@ func TestStatusAPICombinedStatements(t *testing.T) {
 	aggregatedTs := int64(1630353000)
 	statsKnobs := sqlstats.CreateTestingKnobs()
 	statsKnobs.StubTimeNow = func() time.Time { return timeutil.Unix(aggregatedTs, 0) }
-	statsKnobs.SynchronousSQLStats = true
 	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			Knobs: base.TestingKnobs{
@@ -1050,7 +1031,6 @@ func TestStatusAPIStatementDetails(t *testing.T) {
 	aggregatedTs := int64(1630353000)
 	statsKnobs := sqlstats.CreateTestingKnobs()
 	statsKnobs.StubTimeNow = func() time.Time { return timeutil.Unix(aggregatedTs, 0) }
-	statsKnobs.SynchronousSQLStats = true
 	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			Knobs: base.TestingKnobs{
@@ -1326,7 +1306,6 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderDuress(t)
 	ctx := context.Background()
 
 	// Disable flushing sql stats so we can manually set the table states
@@ -1335,7 +1314,6 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 	statsKnobs := sqlstats.CreateTestingKnobs()
 	defaultMockInsertedAggTs := timeutil.Unix(1696906800, 0)
 	statsKnobs.StubTimeNow = func() time.Time { return defaultMockInsertedAggTs }
-	statsKnobs.SynchronousSQLStats = true
 	persistedsqlstats.SQLStatsFlushEnabled.Override(ctx, &settings.SV, false)
 	srv := serverutils.StartServerOnly(t, base.TestServerArgs{
 		Settings: settings,
@@ -1572,15 +1550,7 @@ func TestDrainSqlStats(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	appName := "drain_stats_app"
-	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
-			Knobs: base.TestingKnobs{
-				SQLStatsKnobs: &sqlstats.TestingKnobs{
-					SynchronousSQLStats: true,
-				},
-			},
-		},
-	})
+	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{})
 	ctx := context.Background()
 	defer testCluster.Stopper().Stop(ctx)
 
@@ -1617,15 +1587,7 @@ func TestDrainSqlStats_partialOutage(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	appName := "drain_stats_app"
-	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
-			Knobs: base.TestingKnobs{
-				SQLStatsKnobs: &sqlstats.TestingKnobs{
-					SynchronousSQLStats: true,
-				},
-			},
-		},
-	})
+	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{})
 	ctx := context.Background()
 	defer testCluster.Stopper().Stop(ctx)
 
@@ -1674,18 +1636,15 @@ func TestClusterResetSQLStats(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderDuress(t)
-
 	ctx := context.Background()
-	knobs := sqlstats.CreateTestingKnobs()
-	knobs.SynchronousSQLStats = true
+
 	for _, flushed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("flushed=%t", flushed), func(t *testing.T) {
 			testCluster := serverutils.StartCluster(t, 3 /* numNodes */, base.TestClusterArgs{
 				ServerArgs: base.TestServerArgs{
 					Insecure: true,
 					Knobs: base.TestingKnobs{
-						SQLStatsKnobs: knobs,
+						SQLStatsKnobs: sqlstats.CreateTestingKnobs(),
 					},
 				},
 			})

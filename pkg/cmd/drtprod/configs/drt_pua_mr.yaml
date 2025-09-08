@@ -17,25 +17,24 @@ environment:
   CLUSTER_NODES: 15
   WORKLOAD_NODES: 3
   STORE_COUNT: 2
-  COCKROACH_VERSION: v25.2.0
-  COCKROACH_UPGRADE_VERSION: v25.2.1
+  COCKROACH_VERSION: v25.1.1
 
   # variables used by tpcc_run_multiregion.sh
   NUM_REGIONS: 3
   NODES_PER_REGION: 5
-  REGIONS: us-central1,us-east5,us-east1
+  REGIONS: northamerica-northeast2,us-east5,us-east1
   TPCC_WAREHOUSES: 10000
   TPCC_ACTIVE_WAREHOUSES: 7000
   DB_NAME: cct_tpcc
   SURVIVAL_GOAL: region
   RUN_DURATION: 15h
-  NUM_CONNECTIONS: 3000
+  NUM_CONNECTIONS: 500
   NUM_WORKERS: 500
   MAX_RATE: 500
   MAX_CONN_LIFETIME: 3m
 
   # GCP Cloud Storage bucket for storing locality-aware backups
-  BUCKET_NORTH_AMERICA: cockroach-drt-backup
+  BUCKET_NORTH_AMERICA: cockroach-drt-backup-northamerica-northeast2
   BUCKET_US_EAST_5: cockroach-drt-backup-us-east5
   BUCKET_US_EAST_1: cockroach-drt-backup-us-east1
 
@@ -60,7 +59,7 @@ targets:
           clouds: gce
           gce-managed: true
           gce-enable-multiple-stores: true
-          gce-zones: "us-central1-a:2,us-central1-b:2,us-central1-c:1,us-east5-a:2,us-east5-b:2,us-east5-c:1,us-east1-b:2,us-east1-c:2,us-east1-d:1"
+          gce-zones: "northamerica-northeast2-a:2,northamerica-northeast2-b:2,northamerica-northeast2-c:1,us-east5-a:2,us-east5-b:2,us-east5-c:1,us-east1-b:2,us-east1-c:2,us-east1-d:1"
           nodes: $CLUSTER_NODES
           gce-machine-type: n2-standard-16
           local-ssd: true
@@ -127,18 +126,11 @@ targets:
           - --
           - -e
           - "SET CLUSTER SETTING server.shutdown.drain_wait = '15s'"
-      - command: sql
+      - command: run
         args:
-          - $CLUSTER:1
+          - $CLUSTER
           - --
-          - -e
-          - "SET CLUSTER SETTING goschedstats.always_use_short_sample_period.enabled = true"
-      - command: sql
-        args:
-          - $CLUSTER:1
-          - --
-          - -e
-          - "SET CLUSTER SETTING kv.transaction.write_buffering.enabled = true"
+          - "sudo systemctl unmask cron.service ; sudo systemctl enable cron.service ; echo \"crontab -l ; echo '@reboot sleep 100 && ~/cockroach.sh' | crontab -\" > t.sh ; sh t.sh ; rm t.sh"
       - command: load-balancer
         args:
           - create
@@ -152,7 +144,7 @@ targets:
           - $WORKLOAD_CLUSTER
         flags:
           clouds: gce
-          gce-zones: "us-central1-a,us-east5-a,us-east1-b"
+          gce-zones: "northamerica-northeast2-a,us-east5-a,us-east1-b"
           nodes: $NUM_REGIONS
           gce-machine-type: n2d-standard-4
           os-volume-size: 100
@@ -229,7 +221,7 @@ targets:
           regions: $REGIONS
       - script: "pkg/cmd/drtprod/scripts/tpcc_run_multiregion.sh"
       - script: "pkg/cmd/drtprod/scripts/pua_operations.sh"
-        wait_after: 10
+        wait: 10
   - target_name: "Data Import"
     dependent_targets:
       - "Setup Certs & SSH Keys"
@@ -239,7 +231,7 @@ targets:
           - $WORKLOAD_CLUSTER:1
           - --
           - "sudo systemd-run --unit tpcc_init --same-dir --uid $(id -u) --gid $(id -g) bash ./tpcc_init_cct_tpcc.sh"
-        wait_after: 3600
+        wait: 3600
   - target_name: "Phase-1: Baseline Performance"
     dependent_targets:
       - "Data Import"
@@ -249,7 +241,7 @@ targets:
           - $WORKLOAD_CLUSTER
           - --
           - "sudo systemd-run --unit tpcc_run --same-dir --uid $(id -u) --gid $(id -g) bash ./tpcc_run.sh"
-        wait_after: 3600
+        wait: 3600
   - target_name: "Phase-2: Internal Operational Stress"
     dependent_targets:
       - "Phase-1: Baseline Performance"
@@ -264,30 +256,30 @@ targets:
                             'gs://$BUCKET_US_EAST_5/$CLUSTER?AUTH=implicit&COCKROACH_LOCALITY=region%3Dus-east5',
                             'gs://$BUCKET_US_EAST_1/$CLUSTER?AUTH=implicit&COCKROACH_LOCALITY=region%3Dus-east1')
             WITH OPTIONS (revision_history = true, detached)
-        wait_after: 1500
+        wait: 1500
       - command: sql # create changefeed without initial scan
         args:
           - $CLUSTER:1
           - --
           - -e
           - "CREATE CHANGEFEED FOR TABLE cct_tpcc.public.order_line INTO 'null://' WITH initial_scan = 'no'"
-        wait_after: 900
+        wait: 900
       - command: sql # create index on order table
         args:
           - $CLUSTER:1
           - --
           - -e
           - "CREATE INDEX add_index_o_w_id ON cct_tpcc.public.order (o_w_id)"
-        wait_after: 700
+        wait: 700
       - command: deploy # rolling upgrade
         args:
           - $CLUSTER
           - release
-          - $COCKROACH_UPGRADE_VERSION
+          - v25.1.2
         flags:
           pause: 5m
           grace-period: 500
-        wait_after: 300
+        wait: 300
   - target_name: "Phase-3: Disk Stalls"
     dependent_targets:
       - "Phase-2: Internal Operational Stress"
@@ -297,7 +289,7 @@ targets:
           - $WORKLOAD_CLUSTER:1
           - --
           - "./run_ops_disk-stall.sh"
-        wait_after: 1200
+        wait: 1200
   - target_name: "Phase-4: Network Failures"
     dependent_targets:
       - "Phase-3: Disk Stalls"
@@ -307,13 +299,13 @@ targets:
           - $WORKLOAD_CLUSTER:1
           - --
           - "./run_ops_network-partition-partial.sh"
-        wait_after: 1500
+        wait: 1500
       - command: run
         args:
           - $WORKLOAD_CLUSTER:1
           - --
           - "./run_ops_network-partition-full.sh"
-        wait_after: 1500
+        wait: 1500
   - target_name: "Phase-5: Node Restarts"
     dependent_targets:
       - "Phase-4: Network Failures"
@@ -321,33 +313,33 @@ targets:
       - command: stop # ungraceful shutdown of node 4
         args:
           - $CLUSTER:4
-        wait_after: 30
+        wait: 30
       - command: start # restart node 4
         args:
           - $CLUSTER:4
         flags:
           restart: true
-        wait_after: 600
+        wait: 600
       - command: stop # ungraceful shutdown of node 6
         args:
           - $CLUSTER:6
-        wait_after: 30
+        wait: 30
       - command: start # restart node 6
         args:
           - $CLUSTER:6
         flags:
           restart: true
-        wait_after: 1500
+        wait: 1500
       - command: stop # ungraceful shutdown of node 15
         args:
           - $CLUSTER:15
-        wait_after: 30
+        wait: 30
       - command: start # restart node 15
         args:
           - $CLUSTER:15
         flags:
           restart: true
-        wait_after: 1500
+        wait: 1500
   - target_name: "Phase-6: Zone Outages"
     dependent_targets:
       - "Phase-5: Node Restarts"
@@ -355,13 +347,13 @@ targets:
       - command: stop # ungraceful shutdown of nodes 3, 4 to simulate zone outage
         args:
           - $CLUSTER:3-4
-        wait_after: 300
+        wait: 300
       - command: start # restart nodes 3, 4
         args:
           - $CLUSTER:3-4
         flags:
           restart: true
-        wait_after: 3300
+        wait: 3300
   - target_name: "Phase-7: Region Outages"
     dependent_targets:
       - "Phase-6: Zone Outages"
@@ -369,7 +361,7 @@ targets:
       - command: stop # ungraceful shutdown of nodes 11-15 to simulate region outage
         args:
           - $CLUSTER:11-15
-        wait_after: 300
+        wait: 300
       - command: start # restart nodes 11-15
         args:
           - $CLUSTER:11-15

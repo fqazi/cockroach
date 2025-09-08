@@ -16,14 +16,10 @@ import (
 
 // ClusterOptions represents options that can be passed to a
 // Failer to describe how it should interact with the cluster.
+// For now, this just denotes if the cluster is secure or not,
+// but will be expanded on in the future to support multitenant clusters.
 type ClusterOptions struct {
-	ConnectionInfo
-	replicationFactor int
-}
-
-type ConnectionInfo struct {
-	secure         bool
-	localCertsPath string
+	secure bool
 }
 
 type failureSpec struct {
@@ -94,10 +90,7 @@ func (r *FailureRegistry) List(regex string) []string {
 }
 
 func (r *FailureRegistry) GetFailer(
-	clusterName, failureName string,
-	l *logger.Logger,
-	disableStateValidation bool,
-	opts ...ClusterOptionFunc,
+	clusterName, failureName string, l *logger.Logger, opts ...ClusterOptionFunc,
 ) (*Failer, error) {
 	r.Lock()
 	spec, ok := r.failures[failureName]
@@ -116,9 +109,8 @@ func (r *FailureRegistry) GetFailer(
 	}
 
 	failer := &Failer{
-		FailureMode:            failureMode,
-		disableStateValidation: disableStateValidation,
-		state:                  uninitialized,
+		FailureMode: failureMode,
+		state:       uninitialized,
 	}
 	return failer, nil
 }

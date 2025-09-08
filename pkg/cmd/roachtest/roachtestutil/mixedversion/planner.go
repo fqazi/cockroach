@@ -12,13 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/clusterupgrade"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/failureinjection/failures"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 )
 
@@ -96,14 +93,9 @@ type (
 		hooks          *testHooks
 		prng           *rand.Rand
 		bgChans        []shouldStop
-		logger         *logger.Logger
-		cluster        cluster.Cluster
 
 		// State variables updated as the test plan is generated.
 		usingFixtures bool
-
-		// Unit test only fields.
-		_getFailer func(name string) (*failures.Failer, error)
 	}
 
 	// UpgradeStage encodes in what part of an upgrade a test step is in
@@ -139,7 +131,7 @@ type (
 		// mutations that should be applied to the plan. The test plan is the intended output
 		// after applying the mutations. The testPlanner is used to access specific attributes
 		// of the test plan, such as the current context or the services.
-		Generate(*rand.Rand, *TestPlan, *testPlanner) ([]mutation, error)
+		Generate(*rand.Rand, *TestPlan, *testPlanner) []mutation
 	}
 
 	// mutationOp encodes the type of mutation and controls how the
@@ -155,12 +147,6 @@ type (
 		reference *singleStep
 		impl      singleStepProtocol
 		op        mutationOp
-		// unavailableNodes are marked for each step during the `Generate`
-		// method, but the mutator steps themselves are not created until
-		// `applyMutations` is called. These booleans denote whether
-		// the mutator sets any nodes to unavailable.
-		hasUnavailableSystemNodes bool
-		hasUnavailableTenantNodes bool
 	}
 
 	// stepSelector provides a high level API for mutator
@@ -227,11 +213,8 @@ const (
 	spanConfigTenantLimit = 50000
 )
 
-// failureInjectionMutators includes a list of all
-// failure injection mutators.
 var failureInjectionMutators = []mutator{
 	panicNodeMutator{},
-	networkPartitionMutator{},
 }
 
 // clusterSettingMutators includes a list of all
@@ -272,14 +255,15 @@ var clusterSettingMutators = []mutator{
 
 // planMutators includes a list of all known `mutator`
 // implementations. A subset of these mutations might be enabled in
-// planMutators includes a list of all known `mutator`
-// implementations. A subset of these mutations might be enabled in
-var planMutators = func() []mutator {
-	mutators := []mutator{preserveDowngradeOptionRandomizerMutator{}}
-	mutators = append(mutators, clusterSettingMutators...)
-	mutators = append(mutators, failureInjectionMutators...)
-	return mutators
-}()
+// any mixedversion test plan.
+var planMutators = append(
+	append([]mutator{
+		preserveDowngradeOptionRandomizerMutator{},
+	},
+		failureInjectionMutators...,
+	),
+	clusterSettingMutators...,
+)
 
 // Plan returns the TestPlan used to upgrade the cluster from the
 // first to the final version in the `versions` field. The test plan
@@ -306,7 +290,7 @@ var planMutators = func() []mutator {
 //     allowing the cluster version to advance. Mixed-version hooks may be
 //     executed while this is happening.
 //     - AfterUpgradeFinalizedStage: run after-upgrade hooks.
-func (p *testPlanner) Plan() (*TestPlan, error) {
+func (p *testPlanner) Plan() *TestPlan {
 	setup, testUpgrades := p.setupTest()
 
 	upgradeStepsForService := func(
@@ -449,34 +433,23 @@ func (p *testPlanner) Plan() (*TestPlan, error) {
 	}
 
 	// Probabilistically enable some of the mutators on the base test
-	// plan generated above.
+	// plan generated above. We disable any failure injections that
+	// would occur on clusters with less than three nodes as this
+	// can lead to uninteresting failures (e.g. a single node
+	// panic failure).
 	for _, mut := range planMutators {
 		if p.mutatorEnabled(mut) {
-			if _, found := failureInjections[mut.Name()]; found {
-				// We disable any failure injections that would occur on clusters with
-				// less than three nodes as this can lead to uninteresting failures
-				// (e.g. a single node panic failure).
-				if len(p.currentContext.Nodes()) < 3 {
-					continue
-				}
-				// We disable failure injections for local runs as some failure
-				// injections are not supported in that mode and can
-				// cause unintended behaviors (partitions using iptables).
-				if p.isLocal {
-					continue
-				}
+			if _, found := failureInjections[mut.Name()]; found && len(p.currentContext.System.Descriptor.Nodes) < 3 {
+				continue
 			}
-			mutations, err := mut.Generate(p.prng, testPlan, p)
-			if err != nil {
-				return nil, err
-			}
+			mutations := mut.Generate(p.prng, testPlan, p)
 			testPlan.applyMutations(p.prng, mutations)
 			testPlan.enabledMutators = append(testPlan.enabledMutators, mut)
 		}
 	}
 
 	testPlan.assignIDs()
-	return testPlan, nil
+	return testPlan
 }
 
 // nonUpgradeContext builds a mixed-version context to be used during
@@ -1389,51 +1362,6 @@ func (ss stepSelector) Filter(predicate func(*singleStep) bool) stepSelector {
 	return result
 }
 
-// Cut finds the first step that matches the predicate given, returning
-// new selectors for the steps before and after the matching step. It also
-// returns a new selector for the matching cut step. If no step matches the
-// predicate, Cut returns `ss`, nil, nil.
-func (ss stepSelector) Cut(predicate func(*singleStep) bool) (before, after, cut stepSelector) {
-	predicateFound := false
-	for _, s := range ss {
-		if predicateFound {
-			after = append(after, s)
-		} else if predicate(s) {
-			predicateFound = true
-			cut = append(cut, s)
-		} else {
-			before = append(before, s)
-		}
-	}
-	return before, after, cut
-}
-
-// CutAfter is like Cut but the cut step is merged with the `after` selector
-func (ss stepSelector) CutAfter(predicate func(*singleStep) bool) (stepSelector, stepSelector) {
-	before, after, cut := ss.Cut(predicate)
-	return before, append(cut, after...)
-}
-
-// CutBefore is like Cut but the cut step is merged with the `before` selector
-func (ss stepSelector) CutBefore(predicate func(*singleStep) bool) (stepSelector, stepSelector) {
-	before, after, cut := ss.Cut(predicate)
-	return append(before, cut...), after
-}
-
-// MarkNodesUnavailable marks all steps in the given step selector
-// as having unavailable nodes for the given tenant(s). This is used to
-// act as a filter for steps that requires all nodes to be available.
-func (ss stepSelector) MarkNodesUnavailable(systemUnavailable bool, tenantUnavailable bool) {
-	for _, s := range ss {
-		if systemUnavailable {
-			s.context.System.hasUnavailableNodes = true
-		}
-		if tenantUnavailable && s.context.Tenant != nil {
-			s.context.Tenant.hasUnavailableNodes = true
-		}
-	}
-}
-
 // RandomStep returns a new selector that selects a single step,
 // randomly chosen from the list of selected steps in the original
 // selector.
@@ -1530,6 +1458,7 @@ func (plan *TestPlan) applyMutations(rng *rand.Rand, mutations []mutation) {
 	for _, mut := range mutationApplicationOrder(mutations) {
 		plan.mapSingleSteps(func(ss *singleStep, isConcurrent bool) []testStep {
 			index := newStepIndex(plan)
+
 			// If the mutation is not relative to this step, move on.
 			if ss != mut.reference {
 				return []testStep{ss}
@@ -1546,10 +1475,6 @@ func (plan *TestPlan) applyMutations(rng *rand.Rand, mutations []mutation) {
 					context: index.ContextForInsertion(ss, mut.op),
 					impl:    mut.impl,
 					rng:     rngFromRNG(rng),
-				}
-				newSingleStep.context.System.hasUnavailableNodes = mut.hasUnavailableSystemNodes
-				if newSingleStep.context.Tenant != nil {
-					newSingleStep.context.Tenant.hasUnavailableNodes = mut.hasUnavailableTenantNodes
 				}
 			}
 

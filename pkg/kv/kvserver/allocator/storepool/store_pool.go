@@ -482,12 +482,12 @@ func (sp *StorePool) statusString(nl NodeLivenessFunc) redact.RedactableString {
 }
 
 // storeGossipUpdate is the Gossip callback used to keep the StorePool up to date.
-func (sp *StorePool) storeGossipUpdate(_ string, content roachpb.Value, _ int64) {
+func (sp *StorePool) storeGossipUpdate(_ string, content roachpb.Value) {
 	var storeDesc roachpb.StoreDescriptor
 
 	if err := content.GetProto(&storeDesc); err != nil {
 		ctx := sp.AnnotateCtx(context.TODO())
-		log.Dev.Errorf(ctx, "%v", err)
+		log.Errorf(ctx, "%v", err)
 		return
 	}
 
@@ -547,7 +547,6 @@ func (sp *StorePool) UpdateLocalStoreAfterRebalance(
 		detail.Desc.Capacity.RangeCount++
 		detail.Desc.Capacity.LogicalBytes += rangeUsageInfo.LogicalBytes
 		detail.Desc.Capacity.WritesPerSecond += rangeUsageInfo.WritesPerSecond
-		detail.Desc.Capacity.WriteBytesPerSecond += rangeUsageInfo.WriteBytesPerSecond
 		if detail.Desc.Capacity.CPUPerSecond >= 0 {
 			detail.Desc.Capacity.CPUPerSecond += rangeUsageInfo.RaftCPUNanosPerSecond
 		}
@@ -562,11 +561,6 @@ func (sp *StorePool) UpdateLocalStoreAfterRebalance(
 			detail.Desc.Capacity.WritesPerSecond = 0
 		} else {
 			detail.Desc.Capacity.WritesPerSecond -= rangeUsageInfo.WritesPerSecond
-		}
-		if detail.Desc.Capacity.WriteBytesPerSecond <= rangeUsageInfo.WriteBytesPerSecond {
-			detail.Desc.Capacity.WriteBytesPerSecond = 0
-		} else {
-			detail.Desc.Capacity.WriteBytesPerSecond -= rangeUsageInfo.WriteBytesPerSecond
 		}
 		// When CPU attribution is unsupported, the store will set the
 		// CPUPerSecond of its store capacity to be -1.
@@ -930,7 +924,7 @@ func (sp *StorePool) liveAndDeadReplicasWithLiveness(
 				liveReplicas = append(liveReplicas, repl)
 			}
 		default:
-			log.Dev.Fatalf(context.TODO(), "unknown store status %d", status)
+			log.Fatalf(context.TODO(), "unknown store status %d", status)
 		}
 	}
 	return
@@ -1278,11 +1272,11 @@ func (sp *StorePool) Throttle(reason ThrottleReason, why string, storeID roachpb
 		detail.ThrottledUntil = sp.clock.Now().AddDuration(timeout)
 		if log.V(2) {
 			ctx := sp.AnnotateCtx(context.TODO())
-			log.Dev.Infof(ctx, "snapshot failed (%s), s%d will be throttled for %s until %s",
+			log.Infof(ctx, "snapshot failed (%s), s%d will be throttled for %s until %s",
 				why, storeID, timeout, detail.ThrottledUntil)
 		}
 	default:
-		log.Dev.Warningf(sp.AnnotateCtx(context.TODO()), "unknown throttle reason %v", reason)
+		log.Warningf(sp.AnnotateCtx(context.TODO()), "unknown throttle reason %v", reason)
 	}
 }
 

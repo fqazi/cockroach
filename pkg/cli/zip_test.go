@@ -135,7 +135,6 @@ ORDER BY name ASC`)
 		tables = append(tables, table)
 	}
 	tables = append(tables, "crdb_internal.probe_ranges_1s_read_limit_100")
-	tables = append(tables, "cluster_settings_history")
 	sort.Strings(tables)
 
 	var exp []string
@@ -1276,7 +1275,7 @@ func TestCommandFlags(t *testing.T) {
 	}
 
 	for _, f := range r.File {
-		if f.Name == "debug/"+debugZipCommandFlagsFileName {
+		if f.Name == "debug/debug_zip_command_flags.txt" {
 			rc, err := f.Open()
 			if err != nil {
 				t.Fatal(err)
@@ -1293,7 +1292,7 @@ func TestCommandFlags(t *testing.T) {
 			return
 		}
 	}
-	assert.Fail(t, "debug/"+debugZipCommandFlagsFileName+" is not generated")
+	assert.Fail(t, "debug/debug_zip_command_flags.txt is not generated")
 
 	if err = r.Close(); err != nil {
 		t.Fatal(err)

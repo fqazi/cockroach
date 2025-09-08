@@ -75,10 +75,10 @@ func (s *Store) maybeAssertNoHole(ctx context.Context, from, to roachpb.RKey) fu
 						return nil
 					})
 				if err != nil {
-					log.Dev.Fatalf(ctx, "%v", err)
+					log.Fatalf(ctx, "%v", err)
 				}
 				if last.isEmpty() {
-					log.Dev.Fatalf(ctx, "found hole in keyspace [%s,%s), during:\n%s", from, to, caller)
+					log.Fatalf(ctx, "found hole in keyspace [%s,%s), during:\n%s", from, to, caller)
 				}
 				runtime.Gosched()
 			}()
@@ -138,7 +138,7 @@ func (s *Store) MergeRange(
 		return errors.Wrap(err, "cannot remove range")
 	}
 
-	if err := rightRepl.postDestroyRaftMuLocked(ctx); err != nil {
+	if err := rightRepl.postDestroyRaftMuLocked(ctx, rightRepl.GetMVCCStats()); err != nil {
 		return err
 	}
 

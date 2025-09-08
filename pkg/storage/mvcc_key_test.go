@@ -12,7 +12,7 @@ import (
 	"math"
 	"math/rand"
 	"reflect"
-	"slices"
+	"sort"
 	"testing"
 	"testing/quick"
 
@@ -57,7 +57,7 @@ func TestMVCCKeys(t *testing.T) {
 	sortKeys := make(mvccKeys, len(keys))
 	copy(sortKeys, keys)
 	shuffle.Shuffle(sortKeys)
-	slices.SortFunc(sortKeys, MVCCKey.Compare)
+	sort.Sort(sortKeys)
 	if !reflect.DeepEqual(sortKeys, keys) {
 		t.Errorf("expected keys to sort in order %s, but got %s", keys, sortKeys)
 	}
@@ -978,8 +978,8 @@ func BenchmarkMVCCRangeKeyStack_Clone(b *testing.B) {
 			}
 			stack.Versions = append(stack.Versions, version)
 		}
-		slices.SortFunc(stack.Versions, func(i, j MVCCRangeKeyVersion) int {
-			return i.Timestamp.Compare(j.Timestamp)
+		sort.Slice(stack.Versions, func(i, j int) bool {
+			return stack.Versions[i].Timestamp.Less(stack.Versions[j].Timestamp)
 		})
 		return stack
 	}
@@ -1082,7 +1082,7 @@ func rangeKeyVersions(v map[int]MVCCValue) MVCCRangeKeyVersions {
 	for i := range v {
 		timestamps = append(timestamps, i)
 	}
-	slices.Sort(timestamps)
+	sort.Ints(timestamps)
 	for i, ts := range timestamps {
 		versions[len(versions)-1-i] = rangeKeyVersion(ts, v[ts])
 	}

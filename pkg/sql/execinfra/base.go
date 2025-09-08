@@ -236,7 +236,7 @@ func drainAndForwardMetadata(ctx context.Context, src RowSource, dst RowReceiver
 			continue
 		}
 		if row != nil {
-			log.Dev.Fatalf(
+			log.Fatalf(
 				ctx, "both row data and metadata in the same record. row: %s meta: %+v",
 				row.String(src.OutputTypes()), meta,
 			)

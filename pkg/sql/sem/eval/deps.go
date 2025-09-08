@@ -167,10 +167,6 @@ type HasPrivilegeSpecifier struct {
 	// This needs to be a user-defined function OID. Builtin function OIDs won't
 	// work since they're not descriptors based.
 	FunctionOID *oid.Oid
-
-	// Global privilege
-	// When true, this specifier is for checking global/system privileges.
-	IsGlobalPrivilege bool
 }
 
 // TypeResolver is an interface for resolving types and type OIDs.
@@ -458,10 +454,6 @@ type Planner interface {
 
 	// RetryCounter is the number of times this statement has been retried.
 	RetryCounter() int
-
-	// ProcessVectorIndexFixups waits until all outstanding fixups for the vector
-	// index with the given ID have been processed.
-	ProcessVectorIndexFixups(ctx context.Context, tableID descpb.ID, indexID descpb.IndexID) error
 }
 
 // InternalRows is an iterator interface that's exposed by the internal
@@ -679,7 +671,7 @@ type ChangefeedState interface {
 	SetHighwater(frontier hlc.Timestamp)
 
 	// SetCheckpoint sets the checkpoint for the changefeed.
-	SetCheckpoint(checkpoint *jobspb.TimestampSpansMap)
+	SetCheckpoint(checkpoint *jobspb.TimestampSpansMap) error
 }
 
 // TenantOperator is capable of interacting with tenant state, allowing SQL
