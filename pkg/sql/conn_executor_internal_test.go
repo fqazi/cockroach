@@ -237,7 +237,7 @@ func TestPortalsDestroyedOnTxnFinish(t *testing.T) {
 func mustParseOne(s string) statements.Statement[tree.Statement] {
 	stmts, err := parser.Parse(s)
 	if err != nil {
-		log.Dev.Fatalf(context.Background(), "%v", err)
+		log.Fatalf(context.Background(), "%v", err)
 	}
 	return stmts[0]
 }
@@ -280,14 +280,14 @@ func startConnExecutor(
 	nodeID := base.TestingIDContainer
 	distSQLMetrics := execinfra.MakeDistSQLMetrics(time.Hour /* histogramWindow */)
 	gw := gossip.MakeOptionalGossip(nil)
-	tempEngine, tempFS, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), nil /* statsCollector */)
+	tempEngine, tempFS, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec, nil /* statsCollector */)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
 	defer tempEngine.Close()
 	ambientCtx := log.MakeTestingAmbientCtxWithNewTracer()
 	pool := mon.NewUnlimitedMonitor(ctx, mon.Options{
-		Name:     mon.MakeName("test"),
+		Name:     "test",
 		Settings: st,
 	})
 	// This pool should never be Stop()ed because, if the test is failing, memory

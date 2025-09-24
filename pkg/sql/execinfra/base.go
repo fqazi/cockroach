@@ -236,7 +236,7 @@ func drainAndForwardMetadata(ctx context.Context, src RowSource, dst RowReceiver
 			continue
 		}
 		if row != nil {
-			log.Dev.Fatalf(
+			log.Fatalf(
 				ctx, "both row data and metadata in the same record. row: %s meta: %+v",
 				row.String(src.OutputTypes()), meta,
 			)
@@ -293,9 +293,6 @@ func SendTraceData(ctx context.Context, flowCtx *FlowCtx, dst RowReceiver) {
 // a node, and so it's possible for multiple processors to send the same
 // LeafTxnFinalState. The root TxnCoordSender doesn't care if it receives the same
 // thing multiple times.
-//
-// NB: when new call sites of this method are added, check whether
-// constructReadsTreeForLeaf needs to be adjusted accordingly.
 func GetLeafTxnFinalState(ctx context.Context, txn *kv.Txn) *roachpb.LeafTxnFinalState {
 	if txn.Type() != kv.LeafTxn {
 		return nil

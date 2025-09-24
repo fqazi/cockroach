@@ -440,10 +440,7 @@ var _ scexec.IndexSpanSplitter = (*noopIndexSpanSplitter)(nil)
 
 // MaybeSplitIndexSpans will attempt to split the backfilled index span.
 func (n noopIndexSpanSplitter) MaybeSplitIndexSpans(
-	ctx context.Context,
-	table catalog.TableDescriptor,
-	indexToBackfill catalog.Index,
-	copyIndexSource catalog.Index,
+	ctx context.Context, table catalog.TableDescriptor, indexToBackfill catalog.Index,
 ) error {
 	return nil
 }
@@ -526,7 +523,7 @@ func (noopMetadataUpdater) DeleteSchedule(ctx context.Context, scheduleID jobspb
 
 // UpdateTTLScheduleLabel implements scexec.DescriptorMetadataUpdater.
 func (noopMetadataUpdater) UpdateTTLScheduleLabel(
-	ctx context.Context, tbl catalog.TableDescriptor,
+	ctx context.Context, tbl *tabledesc.Mutable,
 ) error {
 	return nil
 }

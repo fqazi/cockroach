@@ -141,14 +141,8 @@ func TestFirstUpgrade(t *testing.T) {
 	// the only post-deserialization change should be SetModTimeToMVCCTimestamp.
 	require.False(t, readDescFromStorage().GetModificationTime().IsEmpty())
 	changes = readDescFromStorage().GetPostDeserializationChanges()
-	if v1.Equal(clusterversion.V25_4.Version()) {
-		// In 25.4, we do a one-time rewrite of all descriptors, so there should be
-		// no changes here. In later versions, there should be one change.
-		require.Equal(t, 0, changes.Len())
-	} else {
-		require.Equal(t, 1, changes.Len())
-		require.True(t, changes.Contains(catalog.SetModTimeToMVCCTimestamp))
-	}
+	require.Equal(t, changes.Len(), 1)
+	require.True(t, changes.Contains(catalog.SetModTimeToMVCCTimestamp))
 }
 
 // TestFirstUpgradeRepair tests the correct repair behavior of upgrade
@@ -404,8 +398,6 @@ func TestFirstUpgradeRepairBatchSize(t *testing.T) {
 	sqlRunner := sqlutils.MakeSQLRunner(sqlDB)
 	idb := testServer.InternalDB().(*sql.InternalDB)
 	tx := sqlRunner.Begin(t)
-	_, err := tx.Exec("SET LOCAL autocommit_before_ddl = false")
-	require.NoError(t, err)
 	const batchSize = 100
 	lastCommit := 0
 	commitFn := func(startIdx int) {
@@ -449,8 +441,6 @@ func TestFirstUpgradeRepairBatchSize(t *testing.T) {
 			return
 		}
 		tx = sqlRunner.Begin(t)
-		_, err = tx.Exec("SET LOCAL autocommit_before_ddl = false")
-		require.NoError(t, err)
 	}
 	for i := 0; i < totalDescriptorsToTest; i++ {
 		if i%batchSize == 0 {

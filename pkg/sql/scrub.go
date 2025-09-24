@@ -10,12 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/jobs"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
-	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
@@ -23,12 +18,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
 
 type scrubNode struct {
-	zeroInputPlanNode
 	optColumnsSlot
 
 	n *tree.Scrub
@@ -155,10 +148,6 @@ func (n *scrubNode) Close(ctx context.Context) {
 // startScrubDatabase prepares a scrub check for each of the tables in
 // the database. Views are skipped without errors.
 func (n *scrubNode) startScrubDatabase(ctx context.Context, p *planner, name *tree.Name) error {
-	if p.extendedEvalCtx.SessionData().EnableScrubJob {
-		return errors.New("SCRUB DATABASE not supported with enable_scrub_job")
-	}
-
 	// Check that the database exists.
 	database := string(*name)
 	db, err := p.Descriptors().ByNameWithLeased(p.txn).Get().Database(ctx, database)
@@ -220,18 +209,6 @@ func (n *scrubNode) startScrubTable(
 	ts, hasTS, err := p.getTimestamp(ctx, n.n.AsOf)
 	if err != nil {
 		return err
-	}
-
-	if p.extendedEvalCtx.SessionData().EnableScrubJob {
-		if !p.extendedEvalCtx.TxnIsSingleStmt {
-			return pgerror.Newf(pgcode.InvalidTransactionState,
-				"cannot run within a multi-statement transaction")
-		}
-		if !hasTS {
-			return pgerror.Newf(pgcode.Syntax,
-				"SCRUB with inspect jobs requires AS OF SYSTEM TIME")
-		}
-		return n.runScrubTableJob(ctx, p, tableDesc, ts)
 	}
 	// Process SCRUB options. These are only present during a SCRUB TABLE
 	// statement.
@@ -471,74 +448,4 @@ func createConstraintCheckOperations(
 		results = append(results, op)
 	}
 	return results, nil
-}
-
-func (n *scrubNode) runScrubTableJob(
-	ctx context.Context, p *planner, tableDesc catalog.TableDescriptor, asOf hlc.Timestamp,
-) error {
-	// Consistency check is done async via a job.
-	jobID, err := TriggerInspectJob(ctx, tree.Serialize(n.n), p.ExecCfg(), tableDesc, asOf)
-	if err != nil {
-		return err
-	}
-	// Let the eval context track this job ID for status and error reporting.
-	p.extendedEvalCtx.jobs.addCreatedJobID(jobID)
-	return nil
-}
-
-// TriggerInspectJob starts an inspect job for the snapshot.
-func TriggerInspectJob(
-	ctx context.Context,
-	jobRecordDescription string,
-	execCfg *ExecutorConfig,
-	tableDesc catalog.TableDescriptor,
-	asOf hlc.Timestamp,
-) (jobspb.JobID, error) {
-	// Consistency check is done async via a job.
-	jobID := execCfg.JobRegistry.MakeJobID()
-
-	// TODO(148300): just grab the first secondary index and use that for the
-	// consistency check.
-	// TODO(148365): When INSPECT is added, we want to skip unsupported indexes
-	// and return a NOTICE.
-	secIndexes := tableDesc.PublicNonPrimaryIndexes()
-	if len(secIndexes) == 0 {
-		return jobID, errors.AssertionFailedf("must have at least one secondary index")
-	}
-
-	// TODO(sql-queries): add row count check when that is implemented.
-	jr := jobs.Record{
-		Description: jobRecordDescription,
-		Details: jobspb.InspectDetails{
-			Checks: []*jobspb.InspectDetails_Check{
-				{
-					Type:    jobspb.InspectCheckIndexConsistency,
-					TableID: tableDesc.GetID(),
-					IndexID: secIndexes[0].GetID(),
-				},
-			},
-			AsOf: asOf,
-		},
-		Progress:      jobspb.InspectProgress{},
-		CreatedBy:     nil,
-		Username:      username.NodeUserName(),
-		DescriptorIDs: descpb.IDs{tableDesc.GetID()},
-	}
-
-	var sj *jobs.StartableJob
-	if err := execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) (err error) {
-		return execCfg.JobRegistry.CreateStartableJobWithTxn(ctx, &sj, jobID, txn, jr)
-	}); err != nil {
-		if sj != nil {
-			if cleanupErr := sj.CleanupOnRollback(ctx); cleanupErr != nil {
-				log.Dev.Warningf(ctx, "failed to cleanup StartableJob: %v", cleanupErr)
-			}
-		}
-		return jobID, err
-	}
-	log.Dev.Infof(ctx, "created and started inspect job %d", jobID)
-	if err := sj.Start(ctx); err != nil {
-		return jobID, err
-	}
-	return jobID, nil
 }

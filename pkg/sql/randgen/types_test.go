@@ -9,10 +9,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/errors"
 )
 
@@ -35,9 +33,6 @@ loop:
 		case types.UnknownFamily, types.AnyFamily, types.TriggerFamily:
 			// These are not included on purpose.
 			continue loop
-		case types.JsonpathFamily:
-			// TODO(#22513): Don't include jsonpath in randomized tests yet.
-			continue loop
 		}
 		noFamilyRepresentative[familyID] = struct{}{}
 	}
@@ -50,52 +45,5 @@ loop:
 			s += fmt.Sprintf("%s (%d) ", types.Family_name[int32(f)], f)
 		}
 		t.Fatal(errors.Errorf("%s", s))
-	}
-}
-
-func TestCanonical(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	rng, _ := randutil.NewTestRand()
-	for range 1000 {
-		typ := RandType(rng)
-
-		if !typ.Canonical().Equivalent(typ.WithoutTypeModifiers()) {
-			t.Errorf("fail: canonical type of %+v should be equivalent to the type without modifiers", typ)
-		}
-
-		datum := RandDatum(rng, typ, false)
-		datumTyp := datum.ResolvedType()
-		if !datumTyp.Equivalent(typ.Canonical()) {
-			var tupleHasNullElement func(tree.Datum) bool
-			tupleHasNullElement = func(d tree.Datum) bool {
-				tup, ok := d.(*tree.DTuple)
-				if !ok {
-					return false
-				}
-				for _, el := range tup.D {
-					if el == tree.DNull {
-						return true
-					}
-					if tupleHasNullElement(el) {
-						return true
-					}
-				}
-				return false
-			}
-			// If we have a tuple, then we might have included a NULL element.
-			// By construction in RandDatum, TupleContents[i] has been updated
-			// to types.Unknown. In such case, we give an exception and don't
-			// fail the test.
-			tupleException := tupleHasNullElement(datum)
-			if !tupleException {
-				t.Errorf("fail: canonical type of %+v is %+v and the datum's type is %+v", typ, typ.Canonical(), datumTyp)
-			}
-		}
-
-		if datumTyp.Oid() != typ.Canonical().Oid() {
-			t.Errorf("fail type %+v: canonical type oid %d does not match the datum's (%+v) oid %+v",
-				typ, typ.Canonical().Oid(), datum, datumTyp.Oid())
-		}
 	}
 }

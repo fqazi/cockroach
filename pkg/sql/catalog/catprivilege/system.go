@@ -26,8 +26,6 @@ var (
 		catconstants.TransactionStatisticsTableName,
 		catconstants.StatementActivityTableName,
 		catconstants.TransactionActivityTableName,
-		catconstants.PreparedTransactionsTableName,
-		catconstants.InspectErrorsTableName,
 	}
 
 	readWriteSystemTables = []catconstants.SystemTableName{
@@ -76,13 +74,6 @@ var (
 		catconstants.TxnExecInsightsTableName,
 		catconstants.StmtExecInsightsTableName,
 		catconstants.TableMetadata,
-		catconstants.JobsProgressTableName,
-		catconstants.JobsProgressHistoryTableName,
-		catconstants.JobsStatusTableName,
-		catconstants.JobsMessageTableName,
-		catconstants.TransactionDiagnosticsRequestsTableName,
-		catconstants.TransactionDiagnosticsTableName,
-		catconstants.StatementHintsTableName,
 	}
 
 	readWriteSystemSequences = []catconstants.SystemTableName{

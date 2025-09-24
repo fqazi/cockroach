@@ -125,7 +125,7 @@ spec:
   selector:
     app: cockroachdb
 ---
-apiVersion: policy/v1
+apiVersion: policy/v1beta1
 kind: PodDisruptionBudget
 metadata:
   name: cockroachdb-budget
@@ -167,7 +167,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
       - name: cockroachdb
-        image: cockroachdb/cockroach:v25.3.1
+        image: cockroachdb/cockroach:v24.2.3
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 26257

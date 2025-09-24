@@ -113,13 +113,6 @@ func TestExecBuild_call(
 	runExecBuildLogicTest(t, "call")
 }
 
-func TestExecBuild_call_plpgsql(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "call_plpgsql")
-}
-
 func TestExecBuild_cascade(
 	t *testing.T,
 ) {
@@ -160,13 +153,6 @@ func TestExecBuild_delete(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "delete")
-}
-
-func TestExecBuild_disable_optimizer_rules(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "disable_optimizer_rules")
 }
 
 func TestExecBuild_distinct(
@@ -407,13 +393,6 @@ func TestExecBuild_lookup_join_limit(
 	runExecBuildLogicTest(t, "lookup_join_limit")
 }
 
-func TestExecBuild_lookup_join_local(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "lookup_join_local")
-}
-
 func TestExecBuild_lookup_join_spans(
 	t *testing.T,
 ) {
@@ -447,6 +426,13 @@ func TestExecBuild_not_visible_index(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "not_visible_index")
+}
+
+func TestExecBuild_observability(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runExecBuildLogicTest(t, "observability")
 }
 
 func TestExecBuild_orderby(
@@ -547,13 +533,6 @@ func TestExecBuild_select_index_vectorize_off(
 	runExecBuildLogicTest(t, "select_index_vectorize_off")
 }
 
-func TestExecBuild_show_tables(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "show_tables")
-}
-
 func TestExecBuild_show_trace(
 	t *testing.T,
 ) {
@@ -624,13 +603,6 @@ func TestExecBuild_subquery_correlated(
 	runExecBuildLogicTest(t, "subquery_correlated")
 }
 
-func TestExecBuild_system(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "system")
-}
-
 func TestExecBuild_topk(
 	t *testing.T,
 ) {
@@ -643,13 +615,6 @@ func TestExecBuild_tpch_vec(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "tpch_vec")
-}
-
-func TestExecBuild_triggers(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "triggers")
 }
 
 func TestExecBuild_trigram_index(
@@ -720,20 +685,6 @@ func TestExecBuild_values(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "values")
-}
-
-func TestExecBuild_vector_mutation(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "vector_mutation")
-}
-
-func TestExecBuild_vector_search(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "vector_search")
 }
 
 func TestExecBuild_vectorize_local(
